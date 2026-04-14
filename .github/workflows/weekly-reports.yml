@@ -1,0 +1,74 @@
+name: Weekly Reports
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: weekly-reports
+  cancel-in-progress: true
+
+jobs:
+  check-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      has_changes: ${{ steps.check.outputs.has_changes }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Check for source changes in last 7 days
+        id: check
+        run: |
+          CHANGES=$(git log --since="7 days ago" --name-only --pretty=format: -- 'src/**/*.ts' | sort -u | wc -l)
+          if [ "$CHANGES" -gt 0 ]; then
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  full-mutation:
+    needs: [check-changes]
+    if: needs.check-changes.outputs.has_changes == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/setup
+      - run: stryker run
+      - uses: actions/upload-artifact@v4
+        with:
+          name: weekly-mutation-report
+          path: reports/mutation/
+          retention-days: 90
+      - name: Publish mutation report to gh-pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: reports/mutation
+          destination_dir: reports/mutation
+          keep_files: true
+
+  benchmark:
+    needs: [check-changes]
+    if: needs.check-changes.outputs.has_changes == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      - run: npm run build
+      - run: npm run test:bench
+      - name: Store benchmark results
+        uses: benchmark-action/github-action-benchmark@v1
+        with:
+          tool: customSmallerIsBetter
+          output-file-path: reports/bench-results.json
+          gh-pages-branch: gh-pages
+          benchmark-data-dir-path: reports/benchmarks
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          auto-push: true
+          alert-threshold: "110%"
+          comment-on-alert: true
+          fail-on-alert: false

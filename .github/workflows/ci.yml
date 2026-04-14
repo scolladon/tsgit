@@ -1,0 +1,371 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ──────────────────────────────────────────────
+  # Stage 1: Static Analysis (parallel, no deps)
+  # ──────────────────────────────────────────────
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      - run: npm run check
+
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      - run: npm run check:types
+
+  dead-code:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      - run: npm run check:dead-code
+
+  duplicates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      - run: npm run check:duplicates
+
+  filesystem:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      - run: npm run check:filesystem
+
+  architecture:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      - run: npm run check:architecture
+
+  spelling:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      - run: npm run check:spelling
+
+  deps:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      - run: npm run check:deps
+
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      - run: npm run check:security
+
+  # ──────────────────────────────────────────────
+  # Stage 2: Build + Verify (needs lint + types)
+  # ──────────────────────────────────────────────
+
+  build:
+    needs: [lint, typecheck]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      - run: npm run build
+      - run: npm run check:size
+      - run: npm run check:exports
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          retention-days: 7
+
+  # ──────────────────────────────────────────────
+  # Stage 3: Unit Tests (matrix)
+  # ──────────────────────────────────────────────
+
+  unit-tests:
+    needs: [lint, typecheck]
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        node: [18, 20, 22]
+        exclude:
+          - os: macos-latest
+            node: 18
+          - os: windows-latest
+            node: 18
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+        with:
+          node-version: ${{ matrix.node }}
+      - run: npm run test:coverage
+      - uses: actions/upload-artifact@v4
+        if: matrix.os == 'ubuntu-latest' && matrix.node == 22
+        with:
+          name: coverage-report
+          path: coverage/
+          retention-days: 14
+
+  # ──────────────────────────────────────────────
+  # Stage 4: Mutation Testing (PRs only, incremental)
+  # ──────────────────────────────────────────────
+
+  mutation:
+    if: github.event_name == 'pull_request'
+    needs: [unit-tests]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/setup
+      - run: npm run test:mutation:incremental
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mutation-report
+          path: reports/mutation/
+          retention-days: 14
+
+  # ──────────────────────────────────────────────
+  # Stage 5: Integration Tests
+  # ──────────────────────────────────────────────
+
+  integration:
+    needs: [unit-tests]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      - run: npm run test:integration
+
+  # ──────────────────────────────────────────────
+  # Stage 6: E2E / Playwright
+  # ──────────────────────────────────────────────
+
+  e2e:
+    needs: [integration]
+    strategy:
+      fail-fast: false
+      matrix:
+        browser: [chromium, firefox, webkit]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      - run: npx playwright install --with-deps ${{ matrix.browser }}
+      - run: npm run test:e2e -- --project=${{ matrix.browser }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: playwright-report-${{ matrix.browser }}
+          path: test-results/
+          retention-days: 14
+
+  # ──────────────────────────────────────────────
+  # Stage 7: Performance
+  #   main: snapshot benchmarks to gh-pages
+  #   PRs: compare base vs PR on same runner
+  # ──────────────────────────────────────────────
+
+  benchmark-snapshot:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [unit-tests]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      - run: npm run build
+      - run: npm run test:bench
+      - name: Publish benchmark to gh-pages
+        uses: benchmark-action/github-action-benchmark@v1
+        with:
+          tool: customSmallerIsBetter
+          output-file-path: reports/bench-results.json
+          gh-pages-branch: gh-pages
+          benchmark-data-dir-path: reports/benchmarks
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          auto-push: true
+
+  benchmark-compare:
+    if: github.event_name == 'pull_request'
+    needs: [unit-tests]
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Checkout base branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+
+      - uses: ./.github/actions/setup
+
+      - name: Build and bench base branch
+        run: |
+          npm run build
+          npm run test:bench
+          cp reports/bench-results.json /tmp/base-bench.json
+          rm -rf dist
+
+      - name: Checkout PR branch
+        uses: actions/checkout@v4
+        with:
+          clean: false
+
+      - run: npm ci
+
+      - name: Build and bench PR branch
+        run: |
+          npm run build
+          npm run test:bench
+          cp reports/bench-results.json /tmp/pr-bench.json
+
+      - name: Compare and comment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REGRESSION_THRESHOLD: "5"
+        run: |
+          node << 'SCRIPT'
+          const fs = require('fs');
+
+          const base = JSON.parse(fs.readFileSync('/tmp/base-bench.json', 'utf8'));
+          const pr = JSON.parse(fs.readFileSync('/tmp/pr-bench.json', 'utf8'));
+
+          function extractBenchmarks(data) {
+            const results = {};
+            const files = data?.testResults || data?.files || [];
+            for (const file of Array.isArray(files) ? files : []) {
+              const groups = file?.groups || file?.benchmarks || [];
+              for (const group of Array.isArray(groups) ? groups : []) {
+                const benches = group?.benchmarks || [];
+                for (const b of Array.isArray(benches) ? benches : []) {
+                  if (b.name && b.hz != null) {
+                    results[b.name] = { hz: b.hz, mean: b.mean, p99: b.p99 };
+                  }
+                }
+              }
+            }
+            if (Object.keys(results).length === 0 && typeof data === 'object') {
+              for (const [key, val] of Object.entries(data)) {
+                if (val && typeof val.hz === 'number') {
+                  results[key] = { hz: val.hz, mean: val.mean, p99: val.p99 };
+                }
+              }
+            }
+            return results;
+          }
+
+          const baseBench = extractBenchmarks(base);
+          const prBench = extractBenchmarks(pr);
+          const threshold = Number(process.env.REGRESSION_THRESHOLD);
+          const allNames = [...new Set([...Object.keys(baseBench), ...Object.keys(prBench)])];
+
+          let hasRegression = false;
+          const rows = [];
+
+          for (const name of allNames.sort()) {
+            const b = baseBench[name];
+            const p = prBench[name];
+            if (!b || !p) {
+              rows.push(`| ${name} | ${b ? b.hz.toFixed(0) : 'N/A'} | ${p ? p.hz.toFixed(0) : 'N/A'} | - | - |`);
+              continue;
+            }
+            const delta = ((p.hz - b.hz) / b.hz) * 100;
+            const status = delta < -threshold ? '🔴 regression' : delta > threshold ? '🟢 faster' : '⚪ neutral';
+            if (delta < -threshold) hasRegression = true;
+            rows.push(`| ${name} | ${b.hz.toFixed(0)} | ${p.hz.toFixed(0)} | ${delta >= 0 ? '+' : ''}${delta.toFixed(1)}% | ${status} |`);
+          }
+
+          if (allNames.length === 0) {
+            console.log('No benchmark data to compare.');
+            process.exit(0);
+          }
+
+          const comment = [
+            '## ⚡ Benchmark Comparison (same runner)',
+            '',
+            `> Regression threshold: ${threshold}%`,
+            '',
+            '| Benchmark | Base (ops/s) | PR (ops/s) | Delta | Status |',
+            '|---|---|---|---|---|',
+            ...rows,
+            '',
+            hasRegression ? '**🔴 Performance regression detected. This PR must not degrade performance.**' : '**✅ No performance regression detected.**',
+          ].join('
+');
+
+          fs.writeFileSync('/tmp/bench-comment.md', comment);
+          fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY || '/dev/null', '
+' + comment + '
+');
+
+          if (hasRegression) {
+            console.error('Performance regression exceeds threshold');
+            process.exit(1);
+          }
+          SCRIPT
+
+      - name: Post PR comment
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          COMMENT_TAG="<!-- benchmark-comparison -->"
+          BODY=$(cat /tmp/bench-comment.md 2>/dev/null || echo "Benchmark comparison failed to generate.")
+          FULL_BODY=$(printf '%s
+%s' "$COMMENT_TAG" "$BODY")
+
+          EXISTING=$(gh api "repos/${{ github.repository }}/issues/${PR_NUMBER}/comments" --jq ".[] | select(.body | startswith("$COMMENT_TAG")) | .id" | head -1)
+
+          if [ -n "$EXISTING" ]; then
+            gh api -X PATCH "repos/${{ github.repository }}/issues/comments/${EXISTING}" -f body="$FULL_BODY"
+          else
+            gh api -X POST "repos/${{ github.repository }}/issues/${PR_NUMBER}/comments" -f body="$FULL_BODY"
+          fi
+
+  # ──────────────────────────────────────────────
+  # Stage 8: MegaLinter (parallel, no deps)
+  # ──────────────────────────────────────────────
+
+  megalinter:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: oxsecurity/megalinter@v8
+        env:
+          VALIDATE_ALL_CODEBASE: false
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: megalinter-report
+          path: megalinter-reports/
+          retention-days: 14

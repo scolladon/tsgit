@@ -1,0 +1,370 @@
+{
+  "name": "tsgit",
+  "version": "0.0.0",
+  "description": "Lightning-fast git, pure TypeScript, everywhere.",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/types/index.d.ts",
+      "import": "./dist/esm/index.js",
+      "require": "./dist/cjs/index.cjs"
+    },
+    "./primitives": {
+      "types": "./dist/types/primitives/index.d.ts",
+      "import": "./dist/esm/primitives/index.js",
+      "require": "./dist/cjs/primitives/index.cjs"
+    },
+    "./commands/*": {
+      "types": "./dist/types/commands/*.d.ts",
+      "import": "./dist/esm/commands/*.js",
+      "require": "./dist/cjs/commands/*.cjs"
+    },
+    "./operators": {
+      "types": "./dist/types/operators/index.d.ts",
+      "import": "./dist/esm/operators/index.js",
+      "require": "./dist/cjs/operators/index.cjs"
+    },
+    "./transport": {
+      "types": "./dist/types/transport/index.d.ts",
+      "import": "./dist/esm/transport/index.js",
+      "require": "./dist/cjs/transport/index.cjs"
+    },
+    "./adapters/node": {
+      "types": "./dist/types/adapters/node/index.d.ts",
+      "import": "./dist/esm/adapters/node/index.js",
+      "require": "./dist/cjs/adapters/node/index.cjs"
+    },
+    "./adapters/browser": {
+      "types": "./dist/types/adapters/browser/index.d.ts",
+      "import": "./dist/esm/adapters/browser/index.js",
+      "require": "./dist/cjs/adapters/browser/index.cjs"
+    },
+    "./adapters/memory": {
+      "types": "./dist/types/adapters/memory/index.d.ts",
+      "import": "./dist/esm/adapters/memory/index.js",
+      "require": "./dist/cjs/adapters/memory/index.cjs"
+    }
+  },
+  "files": [
+    "dist",
+    "LICENSE",
+    "README.md"
+  ],
+  "scripts": {
+    "prepare": "husky",
+    "build": "wireit",
+    "check": "wireit",
+    "check:fix": "wireit",
+    "check:types": "wireit",
+    "check:dead-code": "wireit",
+    "check:duplicates": "wireit",
+    "check:filesystem": "wireit",
+    "check:deps": "wireit",
+    "test": "wireit",
+    "test:unit": "wireit",
+    "test:integration": "wireit",
+    "test:e2e": "wireit",
+    "test:coverage": "wireit",
+    "test:mutation": "wireit",
+    "test:mutation:incremental": "wireit",
+    "test:bench": "wireit",
+    "check:size": "wireit",
+    "check:exports": "wireit",
+    "check:security": "wireit",
+    "check:architecture": "wireit",
+    "check:spelling": "wireit",
+    "validate": "wireit"
+  },
+  "wireit": {
+    "build": {
+      "dependencies": [
+        "build:js"
+      ]
+    },
+    "build:js": {
+      "command": "rollup -c rollup.config.ts --configPlugin @rollup/plugin-typescript",
+      "dependencies": [
+        "check:types"
+      ],
+      "files": [
+        "src/**/*.ts",
+        "rollup.config.ts",
+        "tsconfig.build.json"
+      ],
+      "output": [
+        "dist/esm/**",
+        "dist/cjs/**",
+        "dist/types/**"
+      ],
+      "clean": "if-file-deleted"
+    },
+    "check": {
+      "command": "biome check .",
+      "files": [
+        "src/**/*.ts",
+        "test/**/*.ts",
+        "biome.json"
+      ],
+      "output": []
+    },
+    "check:fix": {
+      "command": "biome check --write .",
+      "files": [
+        "src/**/*.ts",
+        "test/**/*.ts",
+        "biome.json"
+      ],
+      "output": []
+    },
+    "check:types": {
+      "command": "tsc --noEmit",
+      "files": [
+        "src/**/*.ts",
+        "test/**/*.ts",
+        "tsconfig.json"
+      ],
+      "output": []
+    },
+    "check:dead-code": {
+      "command": "knip",
+      "files": [
+        "src/**/*.ts",
+        "knip.json",
+        "package.json"
+      ],
+      "output": []
+    },
+    "check:duplicates": {
+      "command": "jscpd src/",
+      "files": [
+        "src/**/*.ts",
+        ".jscpd.json"
+      ],
+      "output": []
+    },
+    "check:filesystem": {
+      "command": "ls-lint",
+      "files": [
+        "src/**/*.ts",
+        "test/**/*.ts",
+        ".ls-lint.yml"
+      ],
+      "output": []
+    },
+    "check:deps": {
+      "command": "npm outdated || true",
+      "files": [
+        "package.json"
+      ],
+      "output": []
+    },
+    "test": {
+      "command": "vitest run",
+      "dependencies": [
+        "check:types"
+      ],
+      "files": [
+        "src/**/*.ts",
+        "test/**/*.ts",
+        "vitest.config.ts"
+      ],
+      "output": []
+    },
+    "test:unit": {
+      "command": "vitest run --project unit",
+      "dependencies": [
+        "check:types"
+      ],
+      "files": [
+        "src/**/*.ts",
+        "test/unit/**/*.ts",
+        "vitest.config.ts"
+      ],
+      "output": []
+    },
+    "test:integration": {
+      "command": "vitest run --project integration",
+      "dependencies": [
+        "check:types"
+      ],
+      "files": [
+        "src/**/*.ts",
+        "test/integration/**/*.ts",
+        "vitest.config.ts"
+      ],
+      "output": []
+    },
+    "test:e2e": {
+      "command": "npx playwright test",
+      "dependencies": [
+        "build"
+      ],
+      "files": [
+        "test/e2e/**/*.ts"
+      ],
+      "output": []
+    },
+    "test:coverage": {
+      "command": "vitest run --coverage",
+      "dependencies": [
+        "check:types"
+      ],
+      "files": [
+        "src/**/*.ts",
+        "test/**/*.ts",
+        "vitest.config.ts"
+      ],
+      "output": [
+        "coverage/**"
+      ]
+    },
+    "test:mutation": {
+      "command": "stryker run",
+      "dependencies": [
+        "test:unit"
+      ],
+      "files": [
+        "src/**/*.ts",
+        "test/unit/**/*.ts",
+        "stryker.config.json",
+        "vitest.config.ts"
+      ],
+      "output": [
+        "reports/mutation/**"
+      ]
+    },
+    "test:mutation:incremental": {
+      "command": "stryker run --incremental",
+      "dependencies": [
+        "test:unit"
+      ],
+      "files": [
+        "src/**/*.ts",
+        "test/unit/**/*.ts",
+        "stryker.config.json",
+        "vitest.config.ts"
+      ],
+      "output": [
+        "reports/mutation/**"
+      ]
+    },
+    "test:bench": {
+      "command": "vitest bench --run",
+      "dependencies": [
+        "check:types"
+      ],
+      "files": [
+        "src/**/*.ts",
+        "test/**/*.bench.ts",
+        "vitest.config.ts"
+      ],
+      "output": []
+    },
+    "check:size": {
+      "command": "size-limit",
+      "dependencies": [
+        "build"
+      ],
+      "files": [
+        "dist/**",
+        ".size-limit.json"
+      ],
+      "output": []
+    },
+    "check:exports": {
+      "command": "attw --pack .",
+      "dependencies": [
+        "build"
+      ],
+      "files": [
+        "dist/**",
+        "package.json"
+      ],
+      "output": []
+    },
+    "check:security": {
+      "command": "npm audit --audit-level=high || true",
+      "files": [
+        "package-lock.json"
+      ],
+      "output": []
+    },
+    "check:architecture": {
+      "command": "depcruise src/ --config .dependency-cruiser.cjs",
+      "files": [
+        "src/**/*.ts",
+        ".dependency-cruiser.cjs"
+      ],
+      "output": []
+    },
+    "check:spelling": {
+      "command": "cspell \"src/**/*.ts\" \"test/**/*.ts\" \"docs/**/*.md\" \"*.md\"",
+      "files": [
+        "src/**/*.ts",
+        "test/**/*.ts",
+        "docs/**/*.md",
+        "*.md",
+        "cspell.json"
+      ],
+      "output": []
+    },
+    "validate": {
+      "dependencies": [
+        "check",
+        "check:types",
+        "check:dead-code",
+        "check:duplicates",
+        "check:filesystem",
+        "check:architecture",
+        "check:spelling",
+        "check:deps",
+        "check:size",
+        "check:exports",
+        "check:security",
+        "test:coverage",
+        "test:integration"
+      ]
+    }
+  },
+  "lint-staged": {
+    "*.ts": [
+      "biome check --write",
+      "vitest related --run"
+    ]
+  },
+  "devDependencies": {
+    "@arethetypeswrong/cli": "0.18.2",
+    "@biomejs/biome": "2.4.11",
+    "@commitlint/cli": "20.5.0",
+    "@commitlint/config-conventional": "20.5.0",
+    "@ls-lint/ls-lint": "2.3.1",
+    "@playwright/test": "1.59.1",
+    "@rollup/plugin-node-resolve": "16.0.3",
+    "@rollup/plugin-terser": "1.0.0",
+    "@rollup/plugin-typescript": "12.3.0",
+    "@size-limit/file": "12.1.0",
+    "@stryker-mutator/core": "9.6.1",
+    "@stryker-mutator/typescript-checker": "9.6.1",
+    "@stryker-mutator/vitest-runner": "9.6.1",
+    "@vitest/coverage-v8": "4.1.4",
+    "cspell": "10.0.0",
+    "dependency-cruiser": "17.3.10",
+    "fast-check": "4.6.0",
+    "husky": "9.1.7",
+    "jscpd": "4.0.9",
+    "knip": "6.4.1",
+    "lint-staged": "16.4.0",
+    "rollup": "4.60.1",
+    "rollup-plugin-dts": "6.4.1",
+    "rollup-plugin-visualizer": "7.0.1",
+    "size-limit": "12.1.0",
+    "typescript": "6.0.2",
+    "vitest": "4.1.4",
+    "wireit": "0.14.12"
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "threshold": 5,
+  "reporters": ["console"],
+  "ignore": ["node_modules", "dist", "coverage", ".stryker-tmp", "reports"],
+  "gitignore": true,
+  "format": ["typescript"],
+  "minLines": 5,
+  "minTokens": 50
+}

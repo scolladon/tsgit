@@ -1,0 +1,44 @@
+[
+  {
+    "name": "Core (main entry)",
+    "path": "dist/esm/index.js",
+    "limit": "50 kB",
+    "gzip": true
+  },
+  {
+    "name": "Primitives",
+    "path": "dist/esm/primitives/index.js",
+    "limit": "40 kB",
+    "gzip": true
+  },
+  {
+    "name": "Operators",
+    "path": "dist/esm/operators/index.js",
+    "limit": "5 kB",
+    "gzip": true
+  },
+  {
+    "name": "Node adapter",
+    "path": "dist/esm/adapters/node/index.js",
+    "limit": "10 kB",
+    "gzip": true
+  },
+  {
+    "name": "Browser adapter",
+    "path": "dist/esm/adapters/browser/index.js",
+    "limit": "10 kB",
+    "gzip": true
+  },
+  {
+    "name": "Memory adapter",
+    "path": "dist/esm/adapters/memory/index.js",
+    "limit": "10 kB",
+    "gzip": true
+  },
+  {
+    "name": "Full library",
+    "path": "dist/esm/**/*.js",
+    "limit": "150 kB",
+    "gzip": true
+  }
+]

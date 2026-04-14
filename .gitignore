@@ -29,6 +29,13 @@ Thumbs.db
 *.swp
 *.swo
 
+# Playwright
+test-results/
+playwright-report/
+
+# MegaLinter
+megalinter-reports/
+
 # Environment
 .env
 .env.local

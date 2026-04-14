@@ -1,0 +1,15 @@
+{
+  "$schema": "https://unpkg.com/knip@6/schema.json",
+  "entry": [
+    "src/index.ts",
+    "src/repository.ts",
+    "src/domain/index.ts",
+    "src/application/index.ts",
+    "src/ports/index.ts",
+    "src/adapters/index.ts"
+  ],
+  "project": ["src/**/*.ts"],
+  "vitest": {
+    "config": ["vitest.config.ts"]
+  }
+}

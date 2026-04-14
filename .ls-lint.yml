@@ -1,0 +1,37 @@
+ls:
+  src:
+    .ts: kebab-case
+  src/domain:
+    .ts: kebab-case
+  src/application:
+    .ts: kebab-case
+  src/application/commands:
+    .ts: kebab-case
+  src/application/primitives:
+    .ts: kebab-case
+  src/ports:
+    .ts: kebab-case
+  src/adapters:
+    .ts: kebab-case
+  src/adapters/node:
+    .ts: kebab-case
+  src/adapters/browser:
+    .ts: kebab-case
+  src/adapters/memory:
+    .ts: kebab-case
+  src/operators:
+    .ts: kebab-case
+  src/transport:
+    .ts: kebab-case
+  test:
+    .ts: kebab-case
+    .test.ts: kebab-case
+    .bench.ts: kebab-case
+
+ignore:
+  - node_modules
+  - dist
+  - coverage
+  - .stryker-tmp
+  - .git
+  - .husky
