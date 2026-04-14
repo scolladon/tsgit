@@ -125,6 +125,7 @@ Run all of these before merging to main:
 3. Run in parallel: code review, security review, performance review, test review agents
 4. Update docs: README, CONTRIBUTING, design docs if changed
 5. Commit, squash-and-merge to main
+6. Cleanup: delete feature branch and worktree (`git worktree remove`, `git branch -D`)
 
 ### 6. Track progress
 
