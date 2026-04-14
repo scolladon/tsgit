@@ -70,10 +70,62 @@ npm run build         # Compile to dist/
 6. Platform-optimized hashing (SubtleCrypto / node:crypto)
 7. Parallel I/O with bounded concurrency
 
+## Development Workflow (MANDATORY)
+
+Every feature follows this sequence. No exceptions. No skipping steps.
+
+### 1. Design (`docs/design/`)
+
+Before any code, create a design document in `docs/design/`. The design covers:
+- TypeScript types and interfaces
+- Binary/wire format details (if applicable)
+- Function signatures and contracts
+- Module structure and file layout
+- Testing strategy (unit, property-based, interop)
+- Key design decisions with rationale
+
+### 2. ADR (`docs/adr/`) — when choosing between alternatives
+
+If the design requires choosing between multiple valid approaches, create an ADR **before** deciding:
+- Use the template at `docs/adr/000-template.md`
+- Number sequentially: `docs/adr/NNN-title.md`
+- Include the current main SHA in the Status section: `Accepted (at <sha>)`
+- Document context, decision, and consequences (positive, negative, neutral)
+
+### 3. Plan (`docs/plan/`)
+
+Create an implementation plan that breaks the design into TDD steps:
+- Ordered list of files to create/modify
+- Each step: what to test first, what to implement, what to verify
+- Dependencies between steps
+
+### 4. Implement (TDD)
+
+Follow the plan step by step:
+- **Red**: Write the test first. It must fail.
+- **Green**: Write minimal code to pass the test.
+- **Refactor**: Clean up while keeping tests green.
+- Run `npm run validate` before committing.
+
+### 5. Track progress
+
+Update `docs/BACKLOG.md` after each completed item:
+- `[ ]` → `[~]` when starting
+- `[~]` → `[x]` when done
+
+### Workflow summary
+
+```
+BACKLOG.md → design/ → (adr/ if needed) → plan/ → implement (TDD) → BACKLOG.md ✓
+```
+
+**Never skip design. Never code without a plan. Never choose without an ADR.**
+
 ## Docs
 
+- `docs/BACKLOG.md` — V1 roadmap and progress tracker
 - `docs/prd/` — Product requirements
-- `docs/design/` — Architecture decisions
-- `docs/plan/` — Implementation plans
-- `docs/adr/` — Architecture decision records
-- `docs/spike/` — Technical spike findings
+- `docs/design/` — Technical design documents (one per phase/subsystem)
+- `docs/plan/` — Implementation plans (step-by-step TDD sequences)
+- `docs/adr/` — Architecture decision records (when choosing between alternatives)
+- `docs/spike/` — Technical spike findings (research before design)
