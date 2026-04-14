@@ -8,6 +8,10 @@ Lightning-fast git, pure TypeScript, everywhere.
 
 A pure TypeScript git implementation designed to be the fastest portable git library available. Runs identically on Node.js (Windows, macOS, Linux), browsers, and edge runtimes — with zero native dependencies, zero WASM, and zero compromises on developer experience.
 
+## Status
+
+**Phase 1 (Domain Object Model) is complete.** All git object types (blob, tree, commit, tag) have full parse/serialize support with branded types, discriminated unions, and 100% test coverage. Phase 2 (Object Storage) is next.
+
 ## Features
 
 - **Lightning fast** — 3-5x faster than isomorphic-git via fanout binary search, LRU delta cache, zero-copy parsing, streaming inflate

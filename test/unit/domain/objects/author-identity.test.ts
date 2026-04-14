@@ -1,0 +1,446 @@
+import fc from 'fast-check';
+import { describe, expect, it } from 'vitest';
+import type { AuthorIdentity } from '../../../../src/domain/objects/author-identity.js';
+import {
+  parseIdentity,
+  serializeIdentity,
+} from '../../../../src/domain/objects/author-identity.js';
+
+describe('author-identity', () => {
+  describe('parseIdentity', () => {
+    it("Given 'Alice <alice@example.com> 1234567890 +0200', When parsing, Then name='Alice', email='alice@example.com', timestamp=1234567890, tz='+0200'", () => {
+      // Arrange
+      const line = 'Alice <alice@example.com> 1234567890 +0200';
+
+      // Act
+      const sut = parseIdentity(line);
+
+      // Assert
+      expect(sut).toEqual({
+        name: 'Alice',
+        email: 'alice@example.com',
+        timestamp: 1234567890,
+        timezoneOffset: '+0200',
+      });
+    });
+
+    it('Given identity with negative timestamp, When parsing, Then timestamp is negative number', () => {
+      // Arrange
+      const line = 'Bob <bob@test.com> -100 +0000';
+
+      // Act
+      const sut = parseIdentity(line);
+
+      // Assert
+      expect(sut.timestamp).toBe(-100);
+    });
+
+    it("Given identity with -0500 timezone, When parsing, Then timezoneOffset is '-0500'", () => {
+      // Arrange
+      const line = 'Carol <carol@test.com> 0 -0500';
+
+      // Act
+      const sut = parseIdentity(line);
+
+      // Assert
+      expect(sut.timezoneOffset).toBe('-0500');
+    });
+
+    it("Given identity with +0000 timezone, When parsing, Then timezoneOffset is '+0000'", () => {
+      // Arrange
+      const line = 'Dave <dave@test.com> 0 +0000';
+
+      // Act
+      const sut = parseIdentity(line);
+
+      // Assert
+      expect(sut.timezoneOffset).toBe('+0000');
+    });
+
+    it("Given identity with -0000 timezone, When parsing, Then timezoneOffset is '-0000'", () => {
+      // Arrange
+      const line = 'Eve <eve@test.com> 0 -0000';
+
+      // Act
+      const sut = parseIdentity(line);
+
+      // Assert
+      expect(sut.timezoneOffset).toBe('-0000');
+    });
+
+    it("Given identity with empty name '<e@x.com> 0 +0000', When parsing, Then name is ''", () => {
+      // Arrange
+      const line = '<e@x.com> 0 +0000';
+
+      // Act
+      const sut = parseIdentity(line);
+
+      // Assert
+      expect(sut.name).toBe('');
+    });
+
+    it("Given 'A <B> C <real@email.com> 123 +0000', When parsing, Then email is 'real@email.com' (last <> pair)", () => {
+      // Arrange
+      const line = 'A <B> C <real@email.com> 123 +0000';
+
+      // Act
+      const sut = parseIdentity(line);
+
+      // Assert
+      expect(sut.email).toBe('real@email.com');
+    });
+
+    it('Given identity with closing bracket but no opening bracket, When parsing, Then throws INVALID_IDENTITY with reason about opening bracket', () => {
+      // Arrange
+      const line = 'no opening> 0 +0000';
+
+      // Act & Assert
+      expect(() => parseIdentity(line)).toThrow(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            code: 'INVALID_IDENTITY',
+            reason: 'missing opening angle bracket',
+          }),
+        }),
+      );
+    });
+
+    it('Given identity with non-numeric timestamp, When parsing, Then throws INVALID_IDENTITY with reason about invalid timestamp', () => {
+      // Arrange
+      const line = 'Name <email@test.com> NaN +0000';
+
+      // Act & Assert
+      expect(() => parseIdentity(line)).toThrow(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            code: 'INVALID_IDENTITY',
+            reason: 'invalid timestamp',
+          }),
+        }),
+      );
+    });
+
+    it('Given identity with float timestamp, When parsing, Then throws INVALID_IDENTITY with reason about invalid timestamp', () => {
+      // Arrange
+      const line = 'Alice <a@a.com> 100.5 +0000';
+
+      // Act & Assert
+      expect(() => parseIdentity(line)).toThrow(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            code: 'INVALID_IDENTITY',
+            reason: 'invalid timestamp',
+          }),
+        }),
+      );
+    });
+
+    it('Given identity with unsafe integer timestamp, When parsing, Then throws INVALID_IDENTITY', () => {
+      // Arrange — above Number.MAX_SAFE_INTEGER
+      const line = 'Alice <a@a.com> 9007199254740993 +0000';
+
+      // Act & Assert
+      expect(() => parseIdentity(line)).toThrow(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            code: 'INVALID_IDENTITY',
+            reason: 'invalid timestamp',
+          }),
+        }),
+      );
+    });
+
+    it('Given identity with malformed timezone, When parsing, Then throws INVALID_IDENTITY', () => {
+      // Arrange
+      const line = 'Alice <a@a.com> 100 abc';
+
+      // Act & Assert
+      expect(() => parseIdentity(line)).toThrow(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            code: 'INVALID_IDENTITY',
+            reason: 'invalid timezone offset',
+          }),
+        }),
+      );
+    });
+
+    it('Given identity with timezone containing angle bracket, When parsing, Then throws INVALID_IDENTITY', () => {
+      // Arrange
+      const line = 'Alice <a@a.com> 100 <bad';
+
+      // Act & Assert
+      expect(() => parseIdentity(line)).toThrow(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            code: 'INVALID_IDENTITY',
+            reason: 'invalid timezone offset',
+          }),
+        }),
+      );
+    });
+
+    it('Given identity with double space before timezone, When parsing, Then parses correctly with tz=+0000', () => {
+      // Arrange
+      const line = 'Alice <a@a.com> 100  +0000';
+
+      // Act
+      const sut = parseIdentity(line);
+
+      // Assert
+      expect(sut.timestamp).toBe(100);
+      expect(sut.timezoneOffset).toBe('+0000');
+    });
+
+    it('Given malformed identity (no angle brackets), When parsing, Then throws INVALID_IDENTITY with reason about closing bracket', () => {
+      // Arrange
+      const line = 'no brackets here';
+
+      // Act & Assert
+      expect(() => parseIdentity(line)).toThrow(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            code: 'INVALID_IDENTITY',
+            reason: 'missing closing angle bracket',
+          }),
+        }),
+      );
+    });
+
+    it('Given malformed identity (no timestamp after >), When parsing, Then throws INVALID_IDENTITY with reason about missing timestamp or timezone', () => {
+      // Arrange
+      const line = 'Name <email>';
+
+      // Act & Assert
+      expect(() => parseIdentity(line)).toThrow(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            code: 'INVALID_IDENTITY',
+            reason: 'missing timestamp or timezone',
+          }),
+        }),
+      );
+    });
+
+    it('Given malformed identity (no timezone), When parsing, Then throws INVALID_IDENTITY with reason about missing timestamp or timezone', () => {
+      // Arrange
+      const line = 'Name <email> 123';
+
+      // Act & Assert
+      expect(() => parseIdentity(line)).toThrow(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            code: 'INVALID_IDENTITY',
+            reason: 'missing timestamp or timezone',
+          }),
+        }),
+      );
+    });
+
+    it('Given identity with name ending in space, When parsing, Then trailing space is trimmed from name', () => {
+      // Arrange
+      const line = 'Alice <alice@test.com> 0 +0000';
+
+      // Act
+      const sut = parseIdentity(line);
+
+      // Assert
+      expect(sut.name).toBe('Alice');
+    });
+
+    it('Given identity with name not ending in space (no gap before <), When parsing, Then name preserves all characters', () => {
+      // Arrange
+      const line = 'Alice!<alice@test.com> 0 +0000';
+
+      // Act
+      const sut = parseIdentity(line);
+
+      // Assert
+      expect(sut.name).toBe('Alice!');
+    });
+  });
+
+  describe('serializeIdentity', () => {
+    it("Given an AuthorIdentity, When serializing, Then produces 'Name <email> timestamp tz'", () => {
+      // Arrange
+      const identity: AuthorIdentity = {
+        name: 'Alice',
+        email: 'alice@example.com',
+        timestamp: 1234567890,
+        timezoneOffset: '+0200',
+      };
+
+      // Act
+      const sut = serializeIdentity(identity);
+
+      // Assert
+      expect(sut).toBe('Alice <alice@example.com> 1234567890 +0200');
+    });
+
+    it("Given identity with empty name, When serializing, Then produces ' <email> timestamp tz'", () => {
+      // Arrange
+      const identity: AuthorIdentity = {
+        name: '',
+        email: 'e@x.com',
+        timestamp: 0,
+        timezoneOffset: '+0000',
+      };
+
+      // Act
+      const sut = serializeIdentity(identity);
+
+      // Assert
+      expect(sut).toBe(' <e@x.com> 0 +0000');
+    });
+
+    it('Given identity with newline in name, When serializing, Then throws INVALID_IDENTITY', () => {
+      // Arrange
+      const identity: AuthorIdentity = {
+        name: 'Bad\nName',
+        email: 'a@a.com',
+        timestamp: 0,
+        timezoneOffset: '+0000',
+      };
+
+      // Act & Assert
+      expect(() => serializeIdentity(identity)).toThrow(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            code: 'INVALID_IDENTITY',
+            reason: 'invalid identity fields',
+          }),
+        }),
+      );
+    });
+
+    it('Given identity with newline in email, When serializing, Then throws INVALID_IDENTITY', () => {
+      // Arrange
+      const identity: AuthorIdentity = {
+        name: 'Name',
+        email: 'bad\n@a.com',
+        timestamp: 0,
+        timezoneOffset: '+0000',
+      };
+
+      // Act & Assert
+      expect(() => serializeIdentity(identity)).toThrow(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            code: 'INVALID_IDENTITY',
+            reason: 'invalid identity fields',
+          }),
+        }),
+      );
+    });
+
+    it('Given identity with < in name, When serializing, Then throws INVALID_IDENTITY', () => {
+      // Arrange
+      const identity: AuthorIdentity = {
+        name: 'Bad<Name',
+        email: 'a@a.com',
+        timestamp: 0,
+        timezoneOffset: '+0000',
+      };
+
+      // Act & Assert
+      expect(() => serializeIdentity(identity)).toThrow(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            code: 'INVALID_IDENTITY',
+            reason: 'invalid identity fields',
+          }),
+        }),
+      );
+    });
+
+    it('Given identity with > in email, When serializing, Then throws INVALID_IDENTITY', () => {
+      // Arrange
+      const identity: AuthorIdentity = {
+        name: 'Name',
+        email: 'bad>@a.com',
+        timestamp: 0,
+        timezoneOffset: '+0000',
+      };
+
+      // Act & Assert
+      expect(() => serializeIdentity(identity)).toThrow(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            code: 'INVALID_IDENTITY',
+            reason: 'invalid identity fields',
+          }),
+        }),
+      );
+    });
+
+    it('Given identity with invalid timezoneOffset format, When serializing, Then throws INVALID_IDENTITY', () => {
+      // Arrange
+      const identity: AuthorIdentity = {
+        name: 'Name',
+        email: 'a@a.com',
+        timestamp: 0,
+        timezoneOffset: 'bad',
+      };
+
+      // Act & Assert
+      expect(() => serializeIdentity(identity)).toThrow(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            code: 'INVALID_IDENTITY',
+            reason: 'invalid identity fields',
+          }),
+        }),
+      );
+    });
+  });
+
+  describe('roundtrip', () => {
+    it('Given an AuthorIdentity, When roundtripping parse(serialize(identity)), Then equals original', () => {
+      // Arrange
+      const identity: AuthorIdentity = {
+        name: 'Test User',
+        email: 'test@example.com',
+        timestamp: 9999999999,
+        timezoneOffset: '-0800',
+      };
+
+      // Act
+      const sut = parseIdentity(serializeIdentity(identity));
+
+      // Assert
+      expect(sut).toEqual(identity);
+    });
+  });
+
+  describe('property-based tests', () => {
+    it('Roundtrip: parseIdentity(serializeIdentity(identity)) equals original for valid identities', () => {
+      const arbIdentity = fc.record({
+        name: fc.string().filter((s) => !s.includes('<') && !s.includes('>') && !s.includes('\n')),
+        email: fc
+          .string()
+          .filter(
+            (s) => !s.includes('<') && !s.includes('>') && !s.includes(' ') && !s.includes('\n'),
+          ),
+        timestamp: fc.integer({ min: -1000000000, max: 9999999999 }),
+        timezoneOffset: fc
+          .tuple(
+            fc.constantFrom('+', '-'),
+            fc.integer({ min: 0, max: 23 }),
+            fc.constantFrom(0, 15, 30, 45),
+          )
+          .map(
+            ([sign, hours, minutes]) =>
+              `${sign}${hours.toString().padStart(2, '0')}${minutes.toString().padStart(2, '0')}`,
+          ),
+      });
+
+      fc.assert(
+        fc.property(arbIdentity, (identity) => {
+          const serialized = serializeIdentity(identity);
+          const sut = parseIdentity(serialized);
+          expect(sut).toEqual(identity);
+        }),
+      );
+    });
+  });
+});

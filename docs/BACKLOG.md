@@ -21,14 +21,14 @@ Track: `[ ]` todo, `[~]` in progress, `[x]` done, `[-]` skipped
 
 The foundation. Every layer above depends on this.
 
-- [ ] **1.1** Value objects: `ObjectId`, `RefName`, `FilePath`, `FileMode`, `AuthorIdentity`
-- [ ] **1.2** Blob: type definition, parse, serialize
-- [ ] **1.3** Tree: type definition, `TreeEntry`, parse, serialize (binary format with raw SHA bytes)
-- [ ] **1.4** Commit: type definition, `CommitData`, `AuthorIdentity`, parse, serialize
-- [ ] **1.5** Tag: type definition, `TagData`, parse, serialize
-- [ ] **1.6** `GitObject` discriminated union
-- [ ] **1.7** Object header parsing (`<type> <size>\0<content>`)
-- [ ] **1.8** Error types: `TsgitError` discriminated union
+- [x] **1.1** Value objects: `ObjectId`, `RefName`, `FilePath`, `FileMode`, `AuthorIdentity`
+- [x] **1.2** Blob: type definition, parse, serialize
+- [x] **1.3** Tree: type definition, `TreeEntry`, parse, serialize (binary format with raw SHA bytes)
+- [x] **1.4** Commit: type definition, `CommitData`, `AuthorIdentity`, parse, serialize
+- [x] **1.5** Tag: type definition, `TagData`, parse, serialize
+- [x] **1.6** `GitObject` discriminated union
+- [x] **1.7** Object header parsing (`<type> <size>\0<content>`)
+- [x] **1.8** Error types: `TsgitError` discriminated union
 
 Design: `docs/design/domain-object-model.md`
 

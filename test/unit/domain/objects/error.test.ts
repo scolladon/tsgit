@@ -1,0 +1,163 @@
+import { describe, expect, it } from 'vitest';
+import type { DomainObjectError } from '../../../../src/domain/objects/error.js';
+import {
+  invalidCommit,
+  invalidFileMode,
+  invalidIdentity,
+  invalidObjectHeader,
+  invalidObjectId,
+  invalidTag,
+  invalidTreeEntry,
+  type TsgitError,
+} from '../../../../src/domain/objects/error.js';
+
+describe('error', () => {
+  describe('factory functions', () => {
+    it("Given invalidObjectId('xyz'), When checking error.data.code, Then equals 'INVALID_OBJECT_ID'", () => {
+      // Arrange & Act
+      const sut = invalidObjectId('xyz');
+
+      // Assert
+      expect(sut.data.code).toBe('INVALID_OBJECT_ID');
+    });
+
+    it("Given invalidObjectId('xyz'), When checking error.data.value, Then equals 'xyz'", () => {
+      // Arrange & Act
+      const sut = invalidObjectId('xyz');
+
+      // Assert
+      expect(sut.data).toEqual({ code: 'INVALID_OBJECT_ID', value: 'xyz' });
+    });
+
+    it("Given invalidObjectHeader('bad'), When checking error.data.code, Then equals 'INVALID_OBJECT_HEADER'", () => {
+      // Arrange & Act
+      const sut = invalidObjectHeader('bad');
+
+      // Assert
+      expect(sut.data).toEqual({
+        code: 'INVALID_OBJECT_HEADER',
+        reason: 'bad',
+      });
+    });
+
+    it("Given invalidTreeEntry(5, 'truncated'), When checking error.data, Then offset is 5 and reason is 'truncated'", () => {
+      // Arrange & Act
+      const sut = invalidTreeEntry(5, 'truncated');
+
+      // Assert
+      expect(sut.data).toEqual({
+        code: 'INVALID_TREE_ENTRY',
+        offset: 5,
+        reason: 'truncated',
+      });
+    });
+
+    it("Given invalidCommit('missing tree'), When checking error.data.code, Then equals 'INVALID_COMMIT'", () => {
+      // Arrange & Act
+      const sut = invalidCommit('missing tree');
+
+      // Assert
+      expect(sut.data).toEqual({
+        code: 'INVALID_COMMIT',
+        reason: 'missing tree',
+      });
+    });
+
+    it("Given invalidTag('missing object'), When checking error.data.code, Then equals 'INVALID_TAG'", () => {
+      // Arrange & Act
+      const sut = invalidTag('missing object');
+
+      // Assert
+      expect(sut.data).toEqual({
+        code: 'INVALID_TAG',
+        reason: 'missing object',
+      });
+    });
+
+    it("Given invalidFileMode('999'), When checking error.data.code, Then equals 'INVALID_FILE_MODE'", () => {
+      // Arrange & Act
+      const sut = invalidFileMode('999');
+
+      // Assert
+      expect(sut.data).toEqual({ code: 'INVALID_FILE_MODE', value: '999' });
+    });
+
+    it("Given invalidIdentity('bad', 'no email'), When checking error.data, Then line and reason correct", () => {
+      // Arrange & Act
+      const sut = invalidIdentity('bad', 'no email');
+
+      // Assert
+      expect(sut.data).toEqual({
+        code: 'INVALID_IDENTITY',
+        line: 'bad',
+        reason: 'no email',
+      });
+    });
+  });
+
+  describe('TsgitError class', () => {
+    it('Given a TsgitError, When checking instanceof Error, Then returns true', () => {
+      // Arrange & Act
+      const sut = invalidObjectId('xyz');
+
+      // Assert
+      expect(sut).toBeInstanceOf(Error);
+    });
+
+    it("Given a TsgitError, When accessing .name, Then equals 'TsgitError'", () => {
+      // Arrange & Act
+      const sut = invalidObjectId('xyz');
+
+      // Assert
+      expect(sut.name).toBe('TsgitError');
+    });
+
+    it('Given a TsgitError, When accessing .message, Then contains the error code', () => {
+      // Arrange & Act
+      const sut = invalidObjectId('xyz');
+
+      // Assert
+      expect(sut.message).toContain('INVALID_OBJECT_ID');
+    });
+
+    it('Given a TsgitError, When accessing .stack, Then stack trace exists', () => {
+      // Arrange & Act
+      const sut = invalidObjectId('xyz');
+
+      // Assert
+      expect(sut.stack).toBeDefined();
+    });
+
+    it('Given a TsgitError, When switching on data.code in exhaustive switch, Then all 7 cases are handleable', () => {
+      // Arrange
+      const errors: ReadonlyArray<TsgitError> = [
+        invalidObjectId('x'),
+        invalidObjectHeader('x'),
+        invalidTreeEntry(0, 'x'),
+        invalidCommit('x'),
+        invalidTag('x'),
+        invalidFileMode('x'),
+        invalidIdentity('x', 'x'),
+      ];
+
+      // Act & Assert
+      for (const error of errors) {
+        const data: DomainObjectError = error.data;
+        switch (data.code) {
+          case 'INVALID_OBJECT_ID':
+          case 'INVALID_OBJECT_HEADER':
+          case 'INVALID_TREE_ENTRY':
+          case 'INVALID_COMMIT':
+          case 'INVALID_TAG':
+          case 'INVALID_FILE_MODE':
+          case 'INVALID_IDENTITY':
+            break;
+          default: {
+            const _exhaustive: never = data;
+            throw new Error(`Unhandled case: ${_exhaustive}`);
+          }
+        }
+      }
+    });
+  });
+});

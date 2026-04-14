@@ -132,3 +132,11 @@ Before any PR can merge, all of these must pass:
 - [ ] `npm run test:coverage` — 100% on all KPIs
 - [ ] `npm run test:mutation` — Stryker (target 0 survivors)
 - [ ] CI pipeline green (7 stages)
+
+## Branch Finalization Checklist
+
+Before merging a feature branch, verify these additional steps:
+
+1. **Mutation testing** -- Run `npm run test:mutation` and confirm 0 surviving mutants
+2. **Parallel reviews** -- Run security review, code review, and test review (can be done in parallel)
+3. **Documentation updates** -- Update design docs with post-implementation notes, update BACKLOG.md status

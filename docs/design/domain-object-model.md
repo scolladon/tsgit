@@ -1,6 +1,29 @@
 # Design: Domain Object Model
 
+**Status: Implemented** -- Phase 1 complete, all items verified with 100% coverage and mutation testing.
+
 Phase 1 of the [backlog](../BACKLOG.md). Foundation for all layers above.
+
+### Post-Implementation Notes
+
+Changes made during implementation that deviate from or extend this design:
+
+- **Tree entry name validation**: Rejects names containing `/`, `.`, and `..` (path traversal prevention)
+- **Tag name validation**: Rejects empty names and names containing `\0`
+- **Float timestamp rejection**: `Number.isInteger` check on identity timestamps
+- **Duplicate gpgsig rejection**: Parser throws if a second `gpgsig` header appears
+- **Empty-key header rejection**: Parser rejects headers with empty keys
+- **Shared header block parser**: `parseOptionalHeaderBlock` extracted and shared between commit and tag parsers
+- **bytesToHex optimization**: Uses array join instead of string concatenation
+- **serializeTreeContent optimization**: Single-pass allocation instead of incremental buffer growth
+- **Dead code removal**: Unreachable `lines.length === 0` guards removed
+- **serializeIdentity validation**: Rejects name, email, and timezoneOffset containing newlines
+- **formatContinuationHeader validation**: Rejects keys that are empty, contain newlines, or contain spaces
+- **Tag name newline validation**: Both parse and serialize paths reject tag names containing `\n`
+- **parseRequiredTagFields return type**: Returns `nextIndex` instead of relying on a magic number
+- **Duplicate ExtraHeader removed**: Inline type used in `encoding.ts` instead of a separate `ExtraHeader` interface
+- **sortTreeEntries Schwartzian transform**: Pre-encodes names once for O(N) encoding cost instead of O(N log N)
+- **Dead code removal**: Unused `parseContinuationValue` removed from `encoding.ts`
 
 ---
 
@@ -374,9 +397,6 @@ function decode(bytes: Uint8Array): string;
 // Byte operations
 function compareBytes(a: Uint8Array, b: Uint8Array): number;
 function indexOf(bytes: Uint8Array, target: number, fromIndex: number): number;
-
-// Multi-line header parsing (for gpgsig, mergetag, etc.)
-function parseContinuationValue(lines: ReadonlyArray<string>, startIndex: number): { value: string; endIndex: number };
 ```
 
 ### 5.5 Zero-Copy Parsing Strategy

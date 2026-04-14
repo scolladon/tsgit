@@ -42,7 +42,16 @@ npm run build         # Compile to dist/
 - **Body:** AAA — Arrange / Act / Assert with section comments
 - **Variable:** System under test is always named `sut`
 - **Coverage:** 100% line, branch, function, statement
-- **Mutations:** Target 0 surviving mutants
+- **Mutations:** Target 0 surviving mutants (equivalent mutants are acceptable only when provably equivalent)
+- **No ignore directives:** Never use `v8 ignore`, `istanbul ignore`, `stryker-disable`, or any coverage/mutation suppression comments without explicit user approval
+
+### Mutation-Resistant Test Patterns
+
+- **Error assertions must be specific:** Never use `toThrow(ErrorClass)` alone — always assert the error's data (code, reason, value). StringLiteral mutants survive generic type-only checks.
+- **Guard clauses need isolated tests:** For `if (A || B) { throw }`, write separate tests that trigger each condition independently. One test triggering both doesn't prove each guard works alone.
+- **Prefer try/catch over toThrow for data assertions:** `toThrow(expect.objectContaining(...))` can miss nested property mutations. Use try/catch + direct `.data` assertions for reliable mutant killing.
+- **Watch for dead code in guards:** `string.split('\n')` always returns at least one element — `if (lines.length === 0)` is unreachable dead code. Mutation testing reveals these. Remove them rather than writing impossible tests.
+- **Accept provably equivalent mutants:** Loop bounds (`i < len` vs `i <= len` where out-of-bounds returns `undefined`) and search start offsets in homogeneous data are often equivalent. Document why, don't write contrived tests.
 
 ## Code Style
 
@@ -106,8 +115,18 @@ Follow the plan step by step:
 - **Green**: Write minimal code to pass the test.
 - **Refactor**: Clean up while keeping tests green.
 - Run `npm run validate` before committing.
+- **Never commit directly to main.** Always use a feature branch or worktree. Run mutation testing before merging to main.
 
-### 5. Track progress
+### 5. Branch Finalization (before merge)
+
+Run all of these before merging to main:
+1. `npm run validate` — full quality gate
+2. Mutation testing (`stryker run`) — fix survivors, accept only provably equivalent mutants
+3. Run in parallel: code review, security review, performance review, test review agents
+4. Update docs: README, CONTRIBUTING, design docs if changed
+5. Commit, squash-and-merge to main
+
+### 6. Track progress
 
 Update `docs/BACKLOG.md` after each completed item:
 - `[ ]` → `[~]` when starting
@@ -116,7 +135,7 @@ Update `docs/BACKLOG.md` after each completed item:
 ### Workflow summary
 
 ```
-BACKLOG.md → design/ → (adr/ if needed) → plan/ → implement (TDD) → BACKLOG.md ✓
+BACKLOG.md → design/ → (adr/ if needed) → plan/ → implement (TDD) → finalize branch → BACKLOG.md ✓
 ```
 
 **Never skip design. Never code without a plan. Never choose without an ADR.**

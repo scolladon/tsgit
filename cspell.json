@@ -35,7 +35,14 @@
     "mergetag",
     "gpgsig",
     "memcmp",
-    "subarray"
+    "subarray",
+    "roundtripping",
+    "handleable",
+    "keyonly",
+    "BAAB",
+    "notatag",
+    "notcommitter",
+    "aagb"
   ],
   "ignorePaths": [
     "node_modules",
