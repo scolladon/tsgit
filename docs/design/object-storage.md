@@ -719,7 +719,7 @@ Each `Node` stores:
 - **`delete(key)`:** Remove node from list and Map. Subtract `byteSize` from `currentSize`.
 - **`clear()`:** Reset list and Map. Set `currentSize = 0`.
 
-**Edge case:** If a single entry exceeds `maxSize`, it is still added (evicting everything else) but will itself be evicted on the next `set`. This avoids silently dropping oversized objects.
+**Edge case:** If a single entry exceeds `maxSize`, it is added at the head, but the eviction loop runs immediately within the same `set` call and evicts it (since it's the only entry and it exceeds `maxSize`). The entry is never retrievable via `get`. This avoids silently dropping oversized objects with a special-case check — the uniform eviction algorithm handles it naturally.
 
 ### 9.4 Immutability Note
 
