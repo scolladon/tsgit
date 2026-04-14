@@ -1,0 +1,213 @@
+# Backlog — tsgit v1
+
+Track: `[ ]` todo, `[~]` in progress, `[x]` done, `[-]` skipped
+
+---
+
+## Phase 0: Engineering Harness
+
+- [x] **0.1** Project scaffolding (git, dotfiles, package.json, tsconfig)
+- [x] **0.2** Build pipeline (rollup dual ESM/CJS, size-limit, attw)
+- [x] **0.3** Lint & format (biome, ls-lint, knip, jscpd, cspell, dependency-cruiser)
+- [x] **0.4** Test infrastructure (vitest, stryker, playwright config)
+- [x] **0.5** Git hooks (husky, lint-staged, commitlint)
+- [x] **0.6** CI/CD (GitHub Actions, release-please, npm publish, weekly reports)
+- [x] **0.7** Claude Code hooks (auto-format, typecheck, filename validation)
+- [x] **0.8** Docs (README, CONTRIBUTING, DESIGN, RUNBOOK, SECURITY, CLAUDE.md, ADRs)
+
+---
+
+## Phase 1: Domain — Object Model
+
+The foundation. Every layer above depends on this.
+
+- [ ] **1.1** Value objects: `ObjectId`, `RefName`, `FilePath`, `FileMode`, `AuthorIdentity`
+- [ ] **1.2** Blob: type definition, parse, serialize
+- [ ] **1.3** Tree: type definition, `TreeEntry`, parse, serialize (binary format with raw SHA bytes)
+- [ ] **1.4** Commit: type definition, `CommitData`, `AuthorIdentity`, parse, serialize
+- [ ] **1.5** Tag: type definition, `TagData`, parse, serialize
+- [ ] **1.6** `GitObject` discriminated union
+- [ ] **1.7** Object header parsing (`<type> <size>\0<content>`)
+- [ ] **1.8** Error types: `TsgitError` discriminated union
+
+Design: `docs/design/domain-object-model.md`
+
+---
+
+## Phase 2: Domain — Object Storage
+
+How objects are read from and written to disk.
+
+- [ ] **2.1** Loose object reader (decompress zlib, parse header + content)
+- [ ] **2.2** Loose object writer (serialize, compress, write to `.git/objects/xx/yy...`)
+- [ ] **2.3** Pack index reader (v2 `.idx` format, fanout table binary search)
+- [ ] **2.4** Packfile reader (v2 `.pack` format, entry decompression)
+- [ ] **2.5** Delta resolution (OBJ_REF_DELTA, OBJ_OFS_DELTA, iterative not recursive)
+- [ ] **2.6** Delta base LRU cache (configurable, default 64 MB)
+- [ ] **2.7** Object lookup pipeline (loose → packed, short SHA disambiguation)
+- [ ] **2.8** Packfile writer (for push/clone)
+
+Design: `docs/design/object-storage.md`
+
+---
+
+## Phase 3: Domain — Refs & Index
+
+Reference resolution and the staging area.
+
+- [ ] **3.1** Ref resolution (loose refs, symbolic refs, `HEAD`)
+- [ ] **3.2** Packed-refs reader (`.git/packed-refs` format)
+- [ ] **3.3** Ref peeling (tag → commit → tree)
+- [ ] **3.4** Ref writer (create, update, delete — atomic)
+- [ ] **3.5** Git index reader (v2 format, stat cache entries)
+- [ ] **3.6** Git index writer
+- [ ] **3.7** Index entry comparison (stat cache validation for `status`)
+
+Design: `docs/design/refs-and-index.md`
+
+---
+
+## Phase 4: Ports & Adapters
+
+The hexagonal boundary.
+
+- [ ] **4.1** `FileSystem` port interface
+- [ ] **4.2** `HttpTransport` port interface
+- [ ] **4.3** `HashService` port interface
+- [ ] **4.4** `Compressor` port interface
+- [ ] **4.5** `ProgressReporter` port interface
+- [ ] **4.6** `Context` type (aggregates all ports + config)
+- [ ] **4.7** Node adapter (`node:fs`, `node:crypto`, `node:zlib`, `node:http`)
+- [ ] **4.8** Browser adapter (OPFS, SubtleCrypto, DecompressionStream, fetch)
+- [ ] **4.9** Memory adapter (in-memory Map, first-class test adapter)
+
+Design: `docs/design/ports-and-adapters.md`
+
+---
+
+## Phase 5: Domain — Diff & Merge
+
+Tree comparison and three-way merge.
+
+- [ ] **5.1** Tree diff algorithm (compare two trees, yield add/modify/delete/rename)
+- [ ] **5.2** Working tree diff (compare working tree vs index)
+- [ ] **5.3** Index diff (compare index vs HEAD tree)
+- [ ] **5.4** Three-way merge engine (base, ours, theirs)
+- [ ] **5.5** Conflict detection and representation
+
+Design: `docs/design/diff-and-merge.md`
+
+---
+
+## Phase 6: Operators
+
+AsyncIterable composition toolkit (zero domain dependencies).
+
+- [ ] **6.1** `pipe`
+- [ ] **6.2** `filter`
+- [ ] **6.3** `map`
+- [ ] **6.4** `flatMap`
+- [ ] **6.5** `take`
+- [ ] **6.6** `find`
+- [ ] **6.7** `toArray`
+- [ ] **6.8** `groupBy`
+
+Design: `docs/design/operators.md`
+
+---
+
+## Phase 7: Primitives (Tier 2)
+
+Low-level composable operations built from domain + ports.
+
+- [ ] **7.1** `readObject` — read any git object by id
+- [ ] **7.2** `writeObject` — write a git object to storage
+- [ ] **7.3** `readTree` — read a tree by ref
+- [ ] **7.4** `writeTree` — write a tree, return ObjectId
+- [ ] **7.5** `readBlob` — read blob content
+- [ ] **7.6** `walkCommits` — AsyncIterable commit walker
+- [ ] **7.7** `walkTree` — AsyncIterable tree entry walker
+- [ ] **7.8** `resolveRef` — resolve ref to ObjectId
+- [ ] **7.9** `updateRef` — update a ref atomically
+- [ ] **7.10** `readIndex` — read the staging area
+- [ ] **7.11** `createCommit` — create a commit from tree + parents
+- [ ] **7.12** `diffTrees` — compare two tree iterables
+
+Design: `docs/design/primitives.md`
+
+---
+
+## Phase 8: Transport
+
+Smart HTTP protocol and middleware.
+
+- [ ] **8.1** Smart HTTP protocol v1 (discovery, negotiation, packfile exchange)
+- [ ] **8.2** `withRetry` middleware
+- [ ] **8.3** `withAuth` middleware (bearer, basic)
+- [ ] **8.4** `withLogging` middleware
+
+Design: `docs/design/transport.md`
+
+---
+
+## Phase 9: Commands (Tier 1)
+
+High-level operations built from primitives.
+
+- [ ] **9.1** `init` — initialize a new repository
+- [ ] **9.2** `add` — stage files to the index
+- [ ] **9.3** `commit` — create a commit from the current index
+- [ ] **9.4** `status` — compare working tree, index, and HEAD
+- [ ] **9.5** `log` — walk commit history
+- [ ] **9.6** `diff` — diff working tree, index, or commits
+- [ ] **9.7** `branch` — list, create, delete branches
+- [ ] **9.8** `tag` — list, create, delete tags
+- [ ] **9.9** `checkout` — switch branches or restore working tree files
+- [ ] **9.10** `clone` — clone a remote repository
+- [ ] **9.11** `fetch` — fetch refs and objects from remote
+- [ ] **9.12** `push` — push refs and objects to remote
+- [ ] **9.13** `merge` — three-way merge with conflict detection
+
+Design: `docs/design/commands.md`
+
+---
+
+## Phase 10: Repository Facade (Tier 1 Surface)
+
+- [ ] **10.1** `openRepository()` — frozen record of closures over context
+- [ ] **10.2** Auto-detection of adapter (Node vs Browser)
+- [ ] **10.3** Progress reporting integration
+
+Design: `docs/design/repository-facade.md`
+
+---
+
+## Phase 11: Polish & Launch
+
+- [ ] **11.1** Benchmark suite (log, readBlob, status, clone vs isomorphic-git)
+- [ ] **11.2** Cross-platform E2E tests (Ubuntu, macOS, Windows × Node 18/20/22)
+- [ ] **11.3** Browser E2E tests (Chrome, Firefox, Safari via Playwright)
+- [ ] **11.4** TypeDoc API documentation
+- [ ] **11.5** npm publish dry run, verify with arethetypeswrong
+- [ ] **11.6** GitHub repo setup (branch protection, secrets, gh-pages)
+- [ ] **11.7** v1.0.0 release
+
+---
+
+## Dependencies
+
+```
+Phase 1 (objects) → Phase 2 (storage) → Phase 3 (refs & index)
+                                              ↓
+Phase 4 (ports & adapters) ←──────────────────┘
+       ↓
+Phase 5 (diff & merge)
+       ↓
+Phase 6 (operators)  ← independent, can start anytime
+       ↓
+Phase 7 (primitives) → Phase 8 (transport) → Phase 9 (commands)
+                                                    ↓
+                                              Phase 10 (facade)
+                                                    ↓
+                                              Phase 11 (launch)
+```
