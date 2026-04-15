@@ -38,14 +38,14 @@ Design: `docs/design/domain-object-model.md`
 
 How objects are read from and written to disk.
 
-- [ ] **2.1** Loose object reader (decompress zlib, parse header + content)
-- [ ] **2.2** Loose object writer (serialize, compress, write to `.git/objects/xx/yy...`)
-- [ ] **2.3** Pack index reader (v2 `.idx` format, fanout table binary search)
-- [ ] **2.4** Packfile reader (v2 `.pack` format, entry decompression)
-- [ ] **2.5** Delta resolution (OBJ_REF_DELTA, OBJ_OFS_DELTA, iterative not recursive)
-- [ ] **2.6** Delta base LRU cache (configurable, default 64 MB)
-- [ ] **2.7** Object lookup pipeline (loose → packed, short SHA disambiguation)
-- [ ] **2.8** Packfile writer (for push/clone)
+- [x] **2.1** Loose object reader — domain layer: `computeLooseObjectPath` (I/O deferred to Phase 4/7)
+- [x] **2.2** Loose object writer — domain layer: path computation (I/O deferred to Phase 4/7)
+- [x] **2.3** Pack index reader (v2 `.idx` format, fanout table binary search)
+- [x] **2.4** Packfile reader (v2 `.pack` format, entry header parsing)
+- [x] **2.5** Delta resolution (OBJ_REF_DELTA, OBJ_OFS_DELTA, `applyDelta` single-pass)
+- [x] **2.6** Delta base LRU cache (configurable byte-bounded)
+- [~] **2.7** Object lookup pipeline — domain building blocks done, full pipeline in Phase 7
+- [x] **2.8** Packfile writer (`serializePackfile` + `serializePackIndex`)
 
 Design: `docs/design/object-storage.md`
 

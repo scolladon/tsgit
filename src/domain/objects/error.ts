@@ -1,3 +1,7 @@
+import { TsgitError } from '../error.js';
+
+export { TsgitError } from '../error.js';
+
 export type DomainObjectError =
   | { readonly code: 'INVALID_OBJECT_ID'; readonly value: string }
   | { readonly code: 'INVALID_OBJECT_HEADER'; readonly reason: string }
@@ -14,28 +18,6 @@ export type DomainObjectError =
       readonly line: string;
       readonly reason: string;
     };
-
-export class TsgitError extends Error {
-  override readonly name = 'TsgitError';
-
-  constructor(readonly data: DomainObjectError) {
-    super(`${data.code}: ${extractDetail(data)}`);
-  }
-}
-
-function extractDetail(data: DomainObjectError): string {
-  switch (data.code) {
-    case 'INVALID_OBJECT_ID':
-    case 'INVALID_FILE_MODE':
-      return data.value;
-    case 'INVALID_OBJECT_HEADER':
-    case 'INVALID_TREE_ENTRY':
-    case 'INVALID_COMMIT':
-    case 'INVALID_TAG':
-    case 'INVALID_IDENTITY':
-      return data.reason;
-  }
-}
 
 export const invalidObjectId = (value: string): TsgitError =>
   new TsgitError({ code: 'INVALID_OBJECT_ID', value });

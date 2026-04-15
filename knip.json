@@ -6,9 +6,48 @@
     "src/domain/index.ts",
     "src/application/index.ts",
     "src/ports/index.ts",
-    "src/adapters/index.ts"
+    "src/adapters/index.ts",
+    "src/adapters/node/index.ts",
+    "src/adapters/browser/index.ts",
+    "src/adapters/memory/index.ts",
+    "src/application/commands/index.ts",
+    "src/application/primitives/index.ts",
+    "src/operators/index.ts",
+    "src/transport/index.ts"
   ],
   "project": ["src/**/*.ts"],
+  "ignoreDependencies": [
+    "@arethetypeswrong/cli",
+    "@biomejs/biome",
+    "@commitlint/cli",
+    "@ls-lint/ls-lint",
+    "@stryker-mutator/core",
+    "cspell",
+    "husky",
+    "jscpd",
+    "lint-staged",
+    "size-limit",
+    "wireit"
+  ],
+  "ignoreBinaries": [
+    "attw",
+    "biome",
+    "commitlint",
+    "cspell",
+    "depcruise",
+    "husky",
+    "jscpd",
+    "knip",
+    "lint-staged",
+    "ls-lint",
+    "playwright",
+    "rollup",
+    "size-limit",
+    "stryker",
+    "tsc",
+    "vitest",
+    "wireit"
+  ],
   "vitest": {
     "config": ["vitest.config.ts"]
   }

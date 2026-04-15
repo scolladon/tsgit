@@ -1,6 +1,6 @@
 # Design: Object Storage
 
-**Status: Proposed** — Phase 2 of the [backlog](../BACKLOG.md).
+**Status: Implemented** — Phase 2 of the [backlog](../BACKLOG.md). Merged to main at `563040b`.
 
 ### Review Notes
 
@@ -17,6 +17,22 @@ Changes from initial design after architecture, codebase consistency, and binary
 - **Prefix validation rules** documented for `findByPrefix`.
 - **`compareBytes` import path** documented — `domain/storage/` imports directly from `domain/objects/encoding.ts`, not the barrel.
 - **Property-based test fixed** — pack entry header roundtrip restricted to base types (1–4).
+
+Post-implementation security hardening (after code + security + performance reviews):
+
+- **Varint decoding hardened (delta.ts).** First byte read now bounds-checked (empty delta threw silent `undefined`). Continuation bytes capped at 5 to prevent shift overflow past 32 bits.
+- **COPY instruction field bytes bounds-checked (delta.ts).** `countCopyFieldBytes` validates available data before reading optional offset/size bytes.
+- **Target length capped at 2GB (delta.ts).** Prevents DoS via crafted delta with 5-byte header triggering multi-GB allocation.
+- **`parseDelta` INSERT truncation validated.** Previously silently returned short `data` array; now throws `INVALID_DELTA`.
+- **Pack entry size encoding capped at 5 extension bytes (pack-entry.ts).** Prevents silent shift wrap past 32 bits.
+- **Large offset index bounds-checked (pack-index.ts).** `largeIdx` from file data validated against actual large offset table size.
+- **64-bit offset precision guard (pack-index.ts).** Rejects offsets where `high > 0x1fffff` (~8TB) which would lose precision in JavaScript `number` arithmetic.
+- **`serializePackIndex` performance optimized (pack-writer.ts).** Sort comparator pre-computes `hexToBytes` once per entry (O(N) vs O(N log N) allocations). Fanout construction uses count-then-cumulate (O(N+256) vs O(N*256)).
+- **COPY offset sign-safe for values >= 2^31 (delta.ts).** Uses `* 0x1000000` instead of `<< 24` with `|=` to avoid signed Int32 coercion producing negative offsets.
+- **OFS_DELTA distance continuation capped at 4 bytes (pack-entry.ts).** Prevents shift overflow into sign bit on malformed pack entries.
+- **LRU rejects entries larger than `maxSize` upfront (lru-cache.ts).** Prevents DoS via single oversized entry pinning the cache in permanently over-budget state.
+- **Dead `pos > delta.length` guard removed (delta.ts).** Per-instruction bounds checks make the post-loop guard unreachable dead code.
+- **`applyInsert` validates `pos + cmd <= delta.length` (delta.ts).** Prevents silent data corruption from `Uint8Array.subarray` clamping on truncated INSERT data.
 
 Changes from second deep review:
 

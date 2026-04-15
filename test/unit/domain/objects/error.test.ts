@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { DomainObjectError } from '../../../../src/domain/objects/error.js';
+import type { TsgitErrorData } from '../../../../src/domain/error.js';
 import {
   invalidCommit,
   invalidFileMode,
@@ -128,7 +128,7 @@ describe('error', () => {
       expect(sut.stack).toBeDefined();
     });
 
-    it('Given a TsgitError, When switching on data.code in exhaustive switch, Then all 7 cases are handleable', () => {
+    it('Given a TsgitError, When switching on data.code in exhaustive switch, Then all cases are handleable', () => {
       // Arrange
       const errors: ReadonlyArray<TsgitError> = [
         invalidObjectId('x'),
@@ -142,7 +142,7 @@ describe('error', () => {
 
       // Act & Assert
       for (const error of errors) {
-        const data: DomainObjectError = error.data;
+        const data: TsgitErrorData = error.data;
         switch (data.code) {
           case 'INVALID_OBJECT_ID':
           case 'INVALID_OBJECT_HEADER':
@@ -151,6 +151,10 @@ describe('error', () => {
           case 'INVALID_TAG':
           case 'INVALID_FILE_MODE':
           case 'INVALID_IDENTITY':
+          case 'INVALID_PACK_HEADER':
+          case 'INVALID_PACK_INDEX':
+          case 'INVALID_PACK_ENTRY':
+          case 'INVALID_DELTA':
             break;
           default: {
             const _exhaustive: never = data;

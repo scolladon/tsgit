@@ -51,10 +51,13 @@ module.exports = {
     },
     {
       name: 'no-circular',
-      comment: 'No circular dependencies allowed',
+      comment: 'No circular dependencies allowed (type-only cycles are safe — erased at runtime)',
       severity: 'error',
       from: {},
-      to: { circular: true },
+      to: {
+        circular: true,
+        viaOnly: { dependencyTypesNot: ['type-only'] },
+      },
     },
   ],
   options: {
