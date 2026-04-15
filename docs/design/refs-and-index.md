@@ -1,6 +1,6 @@
 # Design: Refs & Index
 
-**Status: Proposed** — Phase 3 of the [backlog](../BACKLOG.md).
+**Status: Implemented** (at 2f7d638) — Phase 3 of the [backlog](../BACKLOG.md).
 
 ### Review Notes
 

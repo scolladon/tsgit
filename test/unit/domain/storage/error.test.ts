@@ -71,7 +71,7 @@ describe('storage error', () => {
       expect(sut.message).toContain('INVALID_PACK_HEADER');
     });
 
-    it('Given a storage TsgitError, When switching on data.code in exhaustive switch, Then all 11 cases handleable', () => {
+    it('Given a storage TsgitError, When switching on data.code in exhaustive switch, Then all 15 cases handleable', () => {
       // Arrange
       const sut = invalidPackHeader('test');
 
@@ -89,6 +89,10 @@ describe('storage error', () => {
         case 'INVALID_PACK_INDEX':
         case 'INVALID_PACK_ENTRY':
         case 'INVALID_DELTA':
+        case 'INVALID_REF':
+        case 'INVALID_PACKED_REFS':
+        case 'INVALID_INDEX_HEADER':
+        case 'INVALID_INDEX_ENTRY':
           break;
         default: {
           const _exhaustive: never = data;

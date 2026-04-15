@@ -55,13 +55,13 @@ Design: `docs/design/object-storage.md`
 
 Reference resolution and the staging area.
 
-- [ ] **3.1** Ref resolution (loose refs, symbolic refs, `HEAD`)
-- [ ] **3.2** Packed-refs reader (`.git/packed-refs` format)
-- [ ] **3.3** Ref peeling (tag → commit → tree)
-- [ ] **3.4** Ref writer (create, update, delete — atomic)
-- [ ] **3.5** Git index reader (v2 format, stat cache entries)
-- [ ] **3.6** Git index writer
-- [ ] **3.7** Index entry comparison (stat cache validation for `status`)
+- [~] **3.1** Ref resolution (loose refs, symbolic refs, `HEAD`)
+- [~] **3.2** Packed-refs reader (`.git/packed-refs` format)
+- [~] **3.3** Ref peeling (tag → commit → tree)
+- [~] **3.4** Ref writer (create, update, delete — atomic)
+- [~] **3.5** Git index reader (v2 format, stat cache entries)
+- [~] **3.6** Git index writer
+- [~] **3.7** Index entry comparison (stat cache validation for `status`)
 
 Design: `docs/design/refs-and-index.md`
 

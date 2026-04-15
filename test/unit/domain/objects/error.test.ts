@@ -155,6 +155,10 @@ describe('error', () => {
           case 'INVALID_PACK_INDEX':
           case 'INVALID_PACK_ENTRY':
           case 'INVALID_DELTA':
+          case 'INVALID_REF':
+          case 'INVALID_PACKED_REFS':
+          case 'INVALID_INDEX_HEADER':
+          case 'INVALID_INDEX_ENTRY':
             break;
           default: {
             const _exhaustive: never = data;

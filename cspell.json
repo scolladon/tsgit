@@ -81,7 +81,12 @@
     "MSVC",
     "Embedder",
     "Postel's",
-    "varint"
+    "varint",
+    "DIRC",
+    "onelevel",
+    "offsetof",
+    "invalidsha",
+    "cket"
   ],
   "ignorePaths": [
     "node_modules",

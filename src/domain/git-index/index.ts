@@ -1,0 +1,19 @@
+// Error types
+export type { IndexError } from './error.js';
+export { invalidIndexEntry, invalidIndexHeader } from './error.js';
+
+// Index entry types + comparison
+export type {
+  GitIndex,
+  IndexEntry,
+  IndexEntryFlags,
+  IndexExtension,
+  StatData,
+} from './index-entry.js';
+export { isStatClean } from './index-entry.js';
+
+// Parser
+export { parseIndex } from './index-parser.js';
+
+// Writer
+export { serializeIndex } from './index-writer.js';
