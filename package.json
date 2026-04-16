@@ -8,46 +8,89 @@
     "node": ">=18"
   },
   "sideEffects": false,
+  "main": "./dist/cjs/index.cjs",
+  "module": "./dist/esm/index.js",
+  "types": "./dist/types/index.d.ts",
   "exports": {
     ".": {
-      "types": "./dist/types/index.d.ts",
-      "import": "./dist/esm/index.js",
-      "require": "./dist/cjs/index.cjs"
+      "import": {
+        "types": "./dist/types/index.d.ts",
+        "default": "./dist/esm/index.js"
+      },
+      "require": {
+        "types": "./dist/types/index.d.cts",
+        "default": "./dist/cjs/index.cjs"
+      }
     },
     "./primitives": {
-      "types": "./dist/types/primitives/index.d.ts",
-      "import": "./dist/esm/primitives/index.js",
-      "require": "./dist/cjs/primitives/index.cjs"
+      "import": {
+        "types": "./dist/types/primitives/index.d.ts",
+        "default": "./dist/esm/primitives/index.js"
+      },
+      "require": {
+        "types": "./dist/types/primitives/index.d.cts",
+        "default": "./dist/cjs/primitives/index.cjs"
+      }
     },
     "./commands/*": {
-      "types": "./dist/types/commands/*.d.ts",
-      "import": "./dist/esm/commands/*.js",
-      "require": "./dist/cjs/commands/*.cjs"
+      "import": {
+        "types": "./dist/types/commands/*.d.ts",
+        "default": "./dist/esm/commands/*.js"
+      },
+      "require": {
+        "types": "./dist/types/commands/*.d.cts",
+        "default": "./dist/cjs/commands/*.cjs"
+      }
     },
     "./operators": {
-      "types": "./dist/types/operators/index.d.ts",
-      "import": "./dist/esm/operators/index.js",
-      "require": "./dist/cjs/operators/index.cjs"
+      "import": {
+        "types": "./dist/types/operators/index.d.ts",
+        "default": "./dist/esm/operators/index.js"
+      },
+      "require": {
+        "types": "./dist/types/operators/index.d.cts",
+        "default": "./dist/cjs/operators/index.cjs"
+      }
     },
     "./transport": {
-      "types": "./dist/types/transport/index.d.ts",
-      "import": "./dist/esm/transport/index.js",
-      "require": "./dist/cjs/transport/index.cjs"
+      "import": {
+        "types": "./dist/types/transport/index.d.ts",
+        "default": "./dist/esm/transport/index.js"
+      },
+      "require": {
+        "types": "./dist/types/transport/index.d.cts",
+        "default": "./dist/cjs/transport/index.cjs"
+      }
     },
     "./adapters/node": {
-      "types": "./dist/types/adapters/node/index.d.ts",
-      "import": "./dist/esm/adapters/node/index.js",
-      "require": "./dist/cjs/adapters/node/index.cjs"
+      "import": {
+        "types": "./dist/types/adapters/node/index.d.ts",
+        "default": "./dist/esm/adapters/node/index.js"
+      },
+      "require": {
+        "types": "./dist/types/adapters/node/index.d.cts",
+        "default": "./dist/cjs/adapters/node/index.cjs"
+      }
     },
     "./adapters/browser": {
-      "types": "./dist/types/adapters/browser/index.d.ts",
-      "import": "./dist/esm/adapters/browser/index.js",
-      "require": "./dist/cjs/adapters/browser/index.cjs"
+      "import": {
+        "types": "./dist/types/adapters/browser/index.d.ts",
+        "default": "./dist/esm/adapters/browser/index.js"
+      },
+      "require": {
+        "types": "./dist/types/adapters/browser/index.d.cts",
+        "default": "./dist/cjs/adapters/browser/index.cjs"
+      }
     },
     "./adapters/memory": {
-      "types": "./dist/types/adapters/memory/index.d.ts",
-      "import": "./dist/esm/adapters/memory/index.js",
-      "require": "./dist/cjs/adapters/memory/index.cjs"
+      "import": {
+        "types": "./dist/types/adapters/memory/index.d.ts",
+        "default": "./dist/esm/adapters/memory/index.js"
+      },
+      "require": {
+        "types": "./dist/types/adapters/memory/index.d.cts",
+        "default": "./dist/cjs/adapters/memory/index.cjs"
+      }
     }
   },
   "files": [
@@ -277,7 +320,7 @@
       "output": []
     },
     "check:exports": {
-      "command": "attw --pack .",
+      "command": "attw --pack . --profile node16",
       "dependencies": [
         "build"
       ],
@@ -351,6 +394,7 @@
     "@stryker-mutator/core": "9.6.1",
     "@stryker-mutator/typescript-checker": "9.6.1",
     "@stryker-mutator/vitest-runner": "9.6.1",
+    "@types/node": "22.19.17",
     "@vitest/coverage-v8": "4.1.4",
     "cspell": "10.0.0",
     "dependency-cruiser": "17.3.10",

@@ -32,6 +32,13 @@ module.exports = {
       to: { path: '^src/adapters/' },
     },
     {
+      name: 'ports-cannot-import-application',
+      comment: 'Port interfaces must not depend on application, operators, transport, or repository',
+      severity: 'error',
+      from: { path: '^src/ports/' },
+      to: { path: '^src/(application|operators|transport|repository\\.ts)' },
+    },
+    {
       name: 'operators-must-be-standalone',
       comment: 'Operators are pure AsyncIterable utilities with zero domain/app dependencies',
       severity: 'error',

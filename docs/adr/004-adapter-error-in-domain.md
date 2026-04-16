@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted (at pending — to be updated with merge SHA in Step 14)
+Accepted
 
 ## Context
 

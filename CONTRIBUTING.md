@@ -72,9 +72,41 @@ it('Given a commit object, When serializing, Then output matches git format', ()
 ```
 test/
 ├── unit/           # Isolated tests, memory adapter, fast
+│   ├── domain/     # Per-module domain tests
+│   ├── ports/      # Contract test suites (*.contract.ts — imported by adapter tests)
+│   └── adapters/   # Per-adapter tests (Memory, Node) that invoke the contract suites
 ├── integration/    # Real repos, cross-adapter, canonical git interop
-└── e2e/            # Full workflows across platforms/browsers
+└── e2e/            # Full workflows across platforms/browsers (Playwright — Phase 11)
 ```
+
+### Contract Test Pattern
+
+Port behaviors are defined once as reusable test suites in `test/unit/ports/*.contract.ts` and executed against every adapter. Adapters pass a factory returning the adapter plus any fixture helpers it needs:
+
+```typescript
+// test/unit/ports/file-system.contract.ts
+export interface FileSystemContractEnv {
+  readonly fs: FileSystem;
+  readonly rootDir: string;
+  readonly getRootDirSibling: () => Promise<string>;   // for sibling-bypass tests
+  readonly getExistingInRoot: () => Promise<string>;   // for rename-dst tests
+  readonly cleanup?: () => Promise<void>;
+}
+
+export function fileSystemContractTests(
+  createSut: () => Promise<FileSystemContractEnv>,
+): void { /* 38 behavioral tests + 34 security-matrix tests */ }
+
+// test/unit/adapters/memory/memory-file-system.test.ts
+fileSystemContractTests(async () => ({
+  fs: new MemoryFileSystem({ rootDir: '/repo' }),
+  rootDir: '/repo',
+  getRootDirSibling: async () => '/repo-evil/x',
+  getExistingInRoot: async () => '/repo/existing.txt',
+}));
+```
+
+**Contract files are `.contract.ts` (NOT `.test.ts`)** — vitest picks up only `*.test.ts` directly. Contract files are plain modules imported by adapter test files, so they must explicitly `import { describe, it, expect } from 'vitest'`.
 
 ### Coverage Requirements
 
@@ -133,10 +165,32 @@ Before any PR can merge, all of these must pass:
 - [ ] `npm run test:mutation` — Stryker (target 0 survivors)
 - [ ] CI pipeline green (7 stages)
 
+## Mutation Testing Discipline
+
+Tests that pass are not necessarily tests that protect. Every feature branch targets **0 surviving mutants**. Mutants that cannot be killed must be:
+
+1. **Provably equivalent** — the mutation produces identical observable behavior for every reachable input. This must be demonstrable via reasoning about the surrounding code, not assumption.
+2. **Documented inline** — add a `// equivalent-mutant:` comment next to the mutated construct explaining why the two branches are equivalent. Example:
+   ```typescript
+   // equivalent-mutant: starting i at segments.length + 1 performs extra undefined-segment
+   // skips before landing on the same real index, so the returned value is identical.
+   for (let i = segments.length - 1; i >= 0; i--) { /* ... */ }
+   ```
+
+**Never use `stryker-disable`, `v8 ignore`, `istanbul ignore`, or other suppression directives without explicit approval.**
+
 ## Branch Finalization Checklist
 
-Before merging a feature branch, verify these additional steps:
+Before merging a feature branch, complete all of these steps:
 
-1. **Mutation testing** -- Run `npm run test:mutation` and confirm 0 surviving mutants
-2. **Parallel reviews** -- Run security review, code review, and test review (can be done in parallel)
-3. **Documentation updates** -- Update design docs with post-implementation notes, update BACKLOG.md status
+1. **100% coverage** — `npm run test:coverage` passes the 100% threshold for lines/branches/functions/statements on all files included in `vitest.config.ts` coverage.
+2. **Mutation testing** — `npm run test:mutation` passes the 90% break threshold with **0 non-equivalent surviving mutants**. Every surviving mutant must be documented per "Mutation Testing Discipline" above.
+3. **Parallel reviews** — run code review, security review, performance review, and test review. For test review, use the `test-review` skill's 10-dimension audit. Address HIGH/CRITICAL findings before merge.
+4. **Documentation** — update post-implementation state:
+   - `docs/BACKLOG.md` — mark all completed items `[x]`
+   - `docs/design/*.md` — status line → `Implemented (at <sha>)` if applicable
+   - `docs/adr/*.md` — status → `Accepted (at <sha>)` for new ADRs
+   - `README.md` — update the phase-status table if a phase transitions
+   - `DESIGN.md` / `CONTRIBUTING.md` — reflect any new architectural or testing conventions introduced
+5. **Clean commit history** — squash WIP commits; ensure every commit passes tests (pre-commit hooks enforce this).
+6. **Worktree cleanup** — after squash-and-merge, `git worktree remove` and `git branch -D` the feature branch.

@@ -79,10 +79,24 @@ export default defineConfig([
   },
   {
     input: entryPoints,
-    output: {
-      dir: 'dist/types',
-      format: 'esm',
-    },
+    // Emit both .d.ts (for ESM consumers) and .d.cts (for CJS consumers) so that
+    // package.json's per-subpath `{ "types": ..., "import": ..., "require": ... }`
+    // maps can point CJS consumers at type files that use .cjs imports instead of
+    // .js imports. Without this, attw reports "Masquerading as ESM" for CJS callers.
+    output: [
+      {
+        dir: 'dist/types',
+        format: 'esm',
+        entryFileNames: '[name].d.ts',
+        chunkFileNames: 'chunks/[name]-[hash].d.ts',
+      },
+      {
+        dir: 'dist/types',
+        format: 'cjs',
+        entryFileNames: '[name].d.cts',
+        chunkFileNames: 'chunks/[name]-[hash].d.cts',
+      },
+    ],
     external,
     plugins: [dts({ tsconfig: './tsconfig.build.json' })],
   },

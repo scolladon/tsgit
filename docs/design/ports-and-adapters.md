@@ -1,6 +1,6 @@
 # Design: Ports & Adapters
 
-**Status: Proposed** — Phase 4 of the [backlog](../BACKLOG.md).
+**Status: Implemented** — Phase 4 of the [backlog](../BACKLOG.md).
 
 ### Review Notes
 

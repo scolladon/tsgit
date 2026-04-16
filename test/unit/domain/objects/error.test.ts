@@ -159,6 +159,16 @@ describe('error', () => {
           case 'INVALID_PACKED_REFS':
           case 'INVALID_INDEX_HEADER':
           case 'INVALID_INDEX_ENTRY':
+          case 'FILE_NOT_FOUND':
+          case 'FILE_EXISTS':
+          case 'NOT_A_DIRECTORY':
+          case 'PERMISSION_DENIED':
+          case 'UNSUPPORTED_OPERATION':
+          case 'HASH_FAILED':
+          case 'COMPRESS_FAILED':
+          case 'DECOMPRESS_FAILED':
+          case 'HTTP_ERROR':
+          case 'NETWORK_ERROR':
             break;
           default: {
             const _exhaustive: never = data;

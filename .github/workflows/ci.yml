@@ -316,13 +316,10 @@ jobs:
             ...rows,
             '',
             hasRegression ? '**🔴 Performance regression detected. This PR must not degrade performance.**' : '**✅ No performance regression detected.**',
-          ].join('
-');
+          ].join('\n');
 
           fs.writeFileSync('/tmp/bench-comment.md', comment);
-          fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY || '/dev/null', '
-' + comment + '
-');
+          fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY || '/dev/null', '\n' + comment + '\n');
 
           if (hasRegression) {
             console.error('Performance regression exceeds threshold');
@@ -338,8 +335,7 @@ jobs:
         run: |
           COMMENT_TAG="<!-- benchmark-comparison -->"
           BODY=$(cat /tmp/bench-comment.md 2>/dev/null || echo "Benchmark comparison failed to generate.")
-          FULL_BODY=$(printf '%s
-%s' "$COMMENT_TAG" "$BODY")
+          FULL_BODY=$(printf '%s\n%s' "$COMMENT_TAG" "$BODY")
 
           EXISTING=$(gh api "repos/${{ github.repository }}/issues/${PR_NUMBER}/comments" --jq ".[] | select(.body | startswith("$COMMENT_TAG")) | .id" | head -1)
 

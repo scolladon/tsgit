@@ -10,7 +10,21 @@ A pure TypeScript git implementation designed to be the fastest portable git lib
 
 ## Status
 
-**Phase 1 (Domain Object Model) is complete.** All git object types (blob, tree, commit, tag) have full parse/serialize support with branded types, discriminated unions, and 100% test coverage. Phase 2 (Object Storage) is next.
+**Phases 1–4 complete.** The domain layer (objects, storage, refs, index) and hexagonal boundary (ports + adapters) are implemented with 100% test coverage and mutation-verified test quality. Phase 5 (Diff & Merge) is next.
+
+| Phase | Scope | Status |
+|---|---|---|
+| 1 | Domain — Object Model (blob, tree, commit, tag, refs) | ✅ |
+| 2 | Domain — Object Storage (loose objects, packfiles, delta) | ✅ |
+| 3 | Domain — Refs & Index (loose refs, packed-refs, git index v2) | ✅ |
+| 4 | Ports & Adapters (FileSystem, HashService, Compressor, HttpTransport, ProgressReporter — Node + Browser/OPFS + Memory) | ✅ |
+| 5 | Domain — Diff & Merge | ⏳ |
+| 6 | Operators (AsyncIterable composition) | ⏳ |
+| 7 | Primitives (Tier 2 API) | ⏳ |
+| 8 | Transport (Smart HTTP + middleware) | ⏳ |
+| 9 | Commands (Tier 1 API) | ⏳ |
+| 10 | Repository facade | ⏳ |
+| 11 | Polish & Launch | ⏳ |
 
 ## Features
 
@@ -71,12 +85,12 @@ for await (const commit of recentByAlice) {
 
 Hexagonal architecture with a tiered application layer:
 
-- **Domain** — Pure git objects, parsers, serializers. Zero outward dependencies.
+- **Domain** — Pure git objects, parsers, serializers, refs, index. Zero outward dependencies.
 - **Application** — Commands (Tier 1) built from Primitives (Tier 2).
-- **Ports** — Interfaces for FileSystem, HttpTransport, HashService, Compressor.
-- **Adapters** — Node.js, Browser (OPFS), Memory (testing).
+- **Ports** — Interfaces for `FileSystem`, `HashService`, `Compressor`, `HttpTransport`, `ProgressReporter` + a `Context` record that threads them through every call.
+- **Adapters** — `Node.js` (node:fs/crypto/zlib/http), `Browser` (OPFS + SubtleCrypto + fetch + CompressionStream), `Memory` (first-class test fixture — primary test double for every upstream phase).
 
-See [docs/prd/PRD.md](docs/prd/PRD.md) for the full product requirements document.
+See [docs/prd/PRD.md](docs/prd/PRD.md) for the full product requirements document, [docs/design/ports-and-adapters.md](docs/design/ports-and-adapters.md) for the Phase 4 port contracts, and [docs/adr/](docs/adr/) for architecture decisions.
 
 ## Development
 

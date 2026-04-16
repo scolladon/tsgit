@@ -20,7 +20,12 @@ export default defineConfig({
     ],
     coverage: {
       provider: 'v8',
-      include: ['src/domain/**/*.ts'],
+      include: [
+        'src/domain/**/*.ts',
+        'src/ports/**/*.ts',
+        'src/adapters/node/**/*.ts',
+        'src/adapters/memory/**/*.ts',
+      ],
       exclude: ['src/**/index.ts', 'src/**/*.d.ts'],
       thresholds: {
         statements: 100,

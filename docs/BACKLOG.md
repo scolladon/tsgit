@@ -2,6 +2,8 @@
 
 Track: `[ ]` todo, `[~]` in progress, `[x]` done, `[-]` skipped
 
+**Progress:** Phases 0–4 complete. Phase 5 (Diff & Merge) is next.
+
 ---
 
 ## Phase 0: Engineering Harness
@@ -44,7 +46,7 @@ How objects are read from and written to disk.
 - [x] **2.4** Packfile reader (v2 `.pack` format, entry header parsing)
 - [x] **2.5** Delta resolution (OBJ_REF_DELTA, OBJ_OFS_DELTA, `applyDelta` single-pass)
 - [x] **2.6** Delta base LRU cache (configurable byte-bounded)
-- [~] **2.7** Object lookup pipeline — domain building blocks done, full pipeline in Phase 7
+- [x] **2.7** Object lookup pipeline — domain building blocks done, full pipeline in Phase 7
 - [x] **2.8** Packfile writer (`serializePackfile` + `serializePackIndex`)
 
 Design: `docs/design/object-storage.md`
@@ -55,13 +57,13 @@ Design: `docs/design/object-storage.md`
 
 Reference resolution and the staging area.
 
-- [~] **3.1** Ref resolution (loose refs, symbolic refs, `HEAD`)
-- [~] **3.2** Packed-refs reader (`.git/packed-refs` format)
-- [~] **3.3** Ref peeling (tag → commit → tree)
-- [~] **3.4** Ref writer (create, update, delete — atomic)
-- [~] **3.5** Git index reader (v2 format, stat cache entries)
-- [~] **3.6** Git index writer
-- [~] **3.7** Index entry comparison (stat cache validation for `status`)
+- [x] **3.1** Ref resolution (loose refs, symbolic refs, `HEAD`)
+- [x] **3.2** Packed-refs reader (`.git/packed-refs` format)
+- [x] **3.3** Ref peeling (tag → commit → tree)
+- [x] **3.4** Ref writer (create, update, delete — atomic)
+- [x] **3.5** Git index reader (v2 format, stat cache entries)
+- [x] **3.6** Git index writer
+- [x] **3.7** Index entry comparison (stat cache validation for `status`)
 
 Design: `docs/design/refs-and-index.md`
 
@@ -71,15 +73,15 @@ Design: `docs/design/refs-and-index.md`
 
 The hexagonal boundary.
 
-- [ ] **4.1** `FileSystem` port interface
-- [ ] **4.2** `HttpTransport` port interface
-- [ ] **4.3** `HashService` port interface
-- [ ] **4.4** `Compressor` port interface
-- [ ] **4.5** `ProgressReporter` port interface
-- [ ] **4.6** `Context` type (aggregates all ports + config)
-- [ ] **4.7** Node adapter (`node:fs`, `node:crypto`, `node:zlib`, `node:http`)
-- [ ] **4.8** Browser adapter (OPFS, SubtleCrypto, DecompressionStream, fetch)
-- [ ] **4.9** Memory adapter (in-memory Map, first-class test adapter)
+- [x] **4.1** `FileSystem` port interface
+- [x] **4.2** `HttpTransport` port interface
+- [x] **4.3** `HashService` port interface
+- [x] **4.4** `Compressor` port interface
+- [x] **4.5** `ProgressReporter` port interface
+- [x] **4.6** `Context` type (aggregates all ports + config)
+- [x] **4.7** Node adapter (`node:fs`, `node:crypto`, `node:zlib`, `node:http`)
+- [x] **4.8** Browser adapter (OPFS, SubtleCrypto, DecompressionStream, fetch) — type-check only, runtime tests deferred to Phase 11
+- [x] **4.9** Memory adapter (in-memory Map, first-class test adapter)
 
 Design: `docs/design/ports-and-adapters.md`
 

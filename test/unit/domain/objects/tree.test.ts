@@ -484,8 +484,17 @@ describe('tree', () => {
     });
 
     it('Tree roundtrip: parseTreeContent(id, serializeTreeContent(tree, hash), hash) preserves all entries', () => {
+      // Git trees cannot contain duplicate entry names — the parser rejects them.
+      // Dedupe by name before building the tree so the arbitrary never generates
+      // a tree that is invalid by construction (which would look like a flaky test).
       fc.assert(
-        fc.property(fc.array(arbTreeEntry), (entries) => {
+        fc.property(fc.array(arbTreeEntry), (rawEntries) => {
+          const seen = new Set<string>();
+          const entries = rawEntries.filter((e) => {
+            if (seen.has(e.name)) return false;
+            seen.add(e.name);
+            return true;
+          });
           const tree = {
             type: 'tree' as const,
             id: DUMMY_ID,

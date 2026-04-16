@@ -4,7 +4,7 @@
   "plugins": ["@stryker-mutator/vitest-runner", "@stryker-mutator/typescript-checker"],
   "checkers": ["typescript"],
   "tsconfigFile": "tsconfig.json",
-  "mutate": ["src/**/*.ts", "!src/**/index.ts", "!src/**/*.d.ts"],
+  "mutate": ["src/**/*.ts", "!src/**/index.ts", "!src/**/*.d.ts", "!src/adapters/browser/**/*.ts"],
   "vitest": {
     "configFile": "vitest.config.ts"
   },

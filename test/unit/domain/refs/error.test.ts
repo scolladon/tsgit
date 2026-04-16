@@ -46,7 +46,7 @@ describe('refs error', () => {
       expect(sut.message).toContain('INVALID_REF');
     });
 
-    it('Given a refs TsgitError, When switching on data.code in exhaustive switch, Then all 15 cases handleable', () => {
+    it('Given a refs TsgitError, When switching on data.code in exhaustive switch, Then all 25 cases handleable', () => {
       // Arrange
       const sut = invalidRef('test');
 
@@ -68,6 +68,16 @@ describe('refs error', () => {
         case 'INVALID_PACKED_REFS':
         case 'INVALID_INDEX_HEADER':
         case 'INVALID_INDEX_ENTRY':
+        case 'FILE_NOT_FOUND':
+        case 'FILE_EXISTS':
+        case 'NOT_A_DIRECTORY':
+        case 'PERMISSION_DENIED':
+        case 'UNSUPPORTED_OPERATION':
+        case 'HASH_FAILED':
+        case 'COMPRESS_FAILED':
+        case 'DECOMPRESS_FAILED':
+        case 'HTTP_ERROR':
+        case 'NETWORK_ERROR':
           break;
         default: {
           const _exhaustive: never = data;
