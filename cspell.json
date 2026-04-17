@@ -153,7 +153,10 @@
     "microtasks",
     "microbenchmarks",
     "desugars",
-    "passthroughs"
+    "passthroughs",
+    "Prereq",
+    "arities",
+    "unreachability"
   ],
   "ignorePaths": [
     "node_modules",

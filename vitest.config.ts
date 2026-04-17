@@ -25,6 +25,7 @@ export default defineConfig({
         'src/ports/**/*.ts',
         'src/adapters/node/**/*.ts',
         'src/adapters/memory/**/*.ts',
+        'src/operators/**/*.ts',
       ],
       exclude: ['src/**/index.ts', 'src/**/*.d.ts'],
       thresholds: {
