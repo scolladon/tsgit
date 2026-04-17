@@ -142,7 +142,18 @@
     "elif",
     "flattree",
     "Mred",
-    "ZWNJ"
+    "ZWNJ",
+    "thenables",
+    "combinators",
+    "nullary",
+    "footgun",
+    "unioning",
+    "affordances",
+    "uncurried",
+    "microtasks",
+    "microbenchmarks",
+    "desugars",
+    "passthroughs"
   ],
   "ignorePaths": [
     "node_modules",
