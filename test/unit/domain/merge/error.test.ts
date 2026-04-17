@@ -1,58 +1,70 @@
 import { describe, expect, it } from 'vitest';
 import type { TsgitErrorData } from '../../../../src/domain/error.js';
-import { invalidIndexEntry, invalidIndexHeader } from '../../../../src/domain/git-index/error.js';
+import { invalidMergeInput, invalidMergeTree } from '../../../../src/domain/merge/error.js';
 
-describe('git-index error', () => {
+describe('merge error', () => {
   describe('factory functions', () => {
-    it("Given invalidIndexHeader('bad magic'), When checking error.data, Then code is 'INVALID_INDEX_HEADER' and reason matches", () => {
+    it("Given invalidMergeTree('too large'), When checking error.data, Then code is 'INVALID_MERGE_TREE' and reason preserved", () => {
       // Arrange & Act
-      const sut = invalidIndexHeader('bad magic');
-
-      // Assert
-      expect(sut.data).toEqual({ code: 'INVALID_INDEX_HEADER', reason: 'bad magic' });
-    });
-
-    it("Given invalidIndexEntry(42, 'truncated'), When checking error.data, Then offset is 42 and reason matches", () => {
-      // Arrange & Act
-      const sut = invalidIndexEntry(42, 'truncated');
+      const sut = invalidMergeTree('too large');
 
       // Assert
       expect(sut.data).toEqual({
-        code: 'INVALID_INDEX_ENTRY',
-        offset: 42,
-        reason: 'truncated',
+        code: 'INVALID_MERGE_TREE',
+        reason: 'too large',
+      });
+    });
+
+    it("Given invalidMergeInput('duplicate conflict path'), When checking error.data, Then code is 'INVALID_MERGE_INPUT' and reason preserved", () => {
+      // Arrange & Act
+      const sut = invalidMergeInput('duplicate conflict path');
+
+      // Assert
+      expect(sut.data).toEqual({
+        code: 'INVALID_MERGE_INPUT',
+        reason: 'duplicate conflict path',
       });
     });
   });
 
   describe('TsgitError class', () => {
-    it('Given an index TsgitError, When checking instanceof Error, Then returns true', () => {
+    it('Given a merge TsgitError, When checking instanceof Error, Then returns true', () => {
       // Arrange & Act
-      const sut = invalidIndexHeader('bad');
+      const sut = invalidMergeTree('bad');
 
       // Assert
       expect(sut).toBeInstanceOf(Error);
     });
 
-    it("Given an index TsgitError, When accessing .name, Then equals 'TsgitError'", () => {
+    it("Given a merge TsgitError, When accessing .name, Then equals 'TsgitError'", () => {
       // Arrange & Act
-      const sut = invalidIndexHeader('bad');
+      const sut = invalidMergeInput('bad');
 
       // Assert
       expect(sut.name).toBe('TsgitError');
     });
 
-    it('Given an index TsgitError, When accessing .message, Then contains the error code', () => {
+    it('Given invalidMergeTree, When accessing .message, Then contains code and reason', () => {
       // Arrange & Act
-      const sut = invalidIndexHeader('bad');
+      const sut = invalidMergeTree('over MAX_FLAT_TREE_ENTRIES');
 
       // Assert
-      expect(sut.message).toContain('INVALID_INDEX_HEADER');
+      expect(sut.message).toContain('INVALID_MERGE_TREE');
+      expect(sut.message).toContain('invalid merge tree: over MAX_FLAT_TREE_ENTRIES');
     });
 
-    it('Given an index TsgitError, When switching on data.code in exhaustive switch, Then all 29 cases handleable', () => {
+    it('Given invalidMergeInput, When accessing .message, Then contains code and reason', () => {
+      // Arrange & Act
+      const sut = invalidMergeInput('oversize content');
+
+      // Assert
+      expect(sut.message).toContain('INVALID_MERGE_INPUT');
+      expect(sut.message).toContain('invalid merge input: oversize content');
+    });
+
+    it('Given a merge TsgitError, When switching on data.code in exhaustive switch, Then all 29 cases handleable', () => {
       // Arrange
-      const sut = invalidIndexHeader('test');
+      const sut = invalidMergeTree('test');
 
       // Act & Assert
       const data: TsgitErrorData = sut.data;

@@ -1,4 +1,6 @@
+import type { DiffError } from './diff/error.js';
 import type { IndexError } from './git-index/error.js';
+import type { MergeError } from './merge/error.js';
 import type { DomainObjectError } from './objects/error.js';
 import type { RefsError } from './refs/error.js';
 import type { StorageError } from './storage/error.js';
@@ -24,7 +26,9 @@ export type TsgitErrorData =
   | StorageError
   | RefsError
   | IndexError
-  | AdapterError;
+  | AdapterError
+  | DiffError
+  | MergeError;
 
 export class TsgitError extends Error {
   override readonly name = 'TsgitError';
@@ -118,6 +122,14 @@ function extractDetail(data: TsgitErrorData): string {
       return `HTTP ${data.statusCode}: ${data.reason}`;
     case 'NETWORK_ERROR':
       return `network error: ${data.reason}`;
+    case 'INVALID_TREE_FOR_DIFF':
+      return `invalid tree for diff: ${data.reason}`;
+    case 'INVALID_DIFF_INPUT':
+      return `invalid diff input: ${data.reason}`;
+    case 'INVALID_MERGE_TREE':
+      return `invalid merge tree: ${data.reason}`;
+    case 'INVALID_MERGE_INPUT':
+      return `invalid merge input: ${data.reason}`;
     default: {
       const _exhaustive: never = data;
       return String(_exhaustive);

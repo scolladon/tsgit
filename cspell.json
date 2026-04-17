@@ -135,7 +135,14 @@
     "dedup",
     "SYMLOOP",
     "somedir",
-    "realpaths"
+    "realpaths",
+    "bytestream",
+    "gitlinks",
+    "sortedness",
+    "elif",
+    "flattree",
+    "Mred",
+    "ZWNJ"
   ],
   "ignorePaths": [
     "node_modules",

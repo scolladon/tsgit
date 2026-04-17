@@ -71,7 +71,7 @@ describe('storage error', () => {
       expect(sut.message).toContain('INVALID_PACK_HEADER');
     });
 
-    it('Given a storage TsgitError, When switching on data.code in exhaustive switch, Then all 25 cases handleable', () => {
+    it('Given a storage TsgitError, When switching on data.code in exhaustive switch, Then all 29 cases handleable', () => {
       // Arrange
       const sut = invalidPackHeader('test');
 
@@ -103,6 +103,10 @@ describe('storage error', () => {
         case 'DECOMPRESS_FAILED':
         case 'HTTP_ERROR':
         case 'NETWORK_ERROR':
+        case 'INVALID_TREE_FOR_DIFF':
+        case 'INVALID_DIFF_INPUT':
+        case 'INVALID_MERGE_TREE':
+        case 'INVALID_MERGE_INPUT':
           break;
         default: {
           const _exhaustive: never = data;

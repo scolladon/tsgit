@@ -2,7 +2,7 @@
 
 Track: `[ ]` todo, `[~]` in progress, `[x]` done, `[-]` skipped
 
-**Progress:** Phases 0–4 complete. Phase 5 (Diff & Merge) is next.
+**Progress:** Phases 0–5 complete. Phase 6 (Operators) is next.
 
 ---
 
@@ -91,11 +91,11 @@ Design: `docs/design/ports-and-adapters.md`
 
 Tree comparison and three-way merge.
 
-- [ ] **5.1** Tree diff algorithm (compare two trees, yield add/modify/delete/rename)
-- [ ] **5.2** Working tree diff (compare working tree vs index)
-- [ ] **5.3** Index diff (compare index vs HEAD tree)
-- [ ] **5.4** Three-way merge engine (base, ours, theirs)
-- [ ] **5.5** Conflict detection and representation
+- [x] **5.1** Tree diff algorithm (`diffTrees`, two-pointer walk + rename detection)
+- [~] **5.2** Working tree diff (filesystem vs index) — deferred to Phase 7 `status`; domain building block (`diffIndexAgainstTree`) delivered
+- [x] **5.3** Index diff (`diffIndexAgainstTree` + `groupUnmergedEntries` + `conflictsToIndexEntries`)
+- [x] **5.4** Three-way merge engine (`mergeTrees` async + `mergeContent` + `writeConflictMarkers`)
+- [x] **5.5** Conflict detection and representation (MergeConflict + 7 ConflictType variants)
 
 Design: `docs/design/diff-and-merge.md`
 

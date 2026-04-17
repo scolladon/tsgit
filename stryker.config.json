@@ -21,7 +21,7 @@
     "low": 95,
     "break": 90
   },
-  "concurrency": 4,
+  "concurrency": "50%",
   "tempDirName": ".stryker-tmp",
   "cleanTempDir": true,
   "ignoreStatic": true,

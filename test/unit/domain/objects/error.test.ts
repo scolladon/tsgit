@@ -169,6 +169,10 @@ describe('error', () => {
           case 'DECOMPRESS_FAILED':
           case 'HTTP_ERROR':
           case 'NETWORK_ERROR':
+          case 'INVALID_TREE_FOR_DIFF':
+          case 'INVALID_DIFF_INPUT':
+          case 'INVALID_MERGE_TREE':
+          case 'INVALID_MERGE_INPUT':
             break;
           default: {
             const _exhaustive: never = data;

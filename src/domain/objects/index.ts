@@ -9,7 +9,7 @@ export { parseBlobContent, serializeBlobContent } from './blob.js';
 export type { Commit, CommitData, ExtraHeader } from './commit.js';
 export { parseCommitContent, serializeCommitContent } from './commit.js';
 // Encoding (public subset)
-export { bytesToHex, hexToBytes } from './encoding.js';
+export { bytesToHex, compareBytes, hexToBytes } from './encoding.js';
 // Errors
 export type { DomainObjectError } from './error.js';
 export {
@@ -48,4 +48,5 @@ export {
   parseTreeContent,
   serializeTreeContent,
   sortTreeEntries,
+  treeEntryCompare,
 } from './tree.js';
