@@ -23,6 +23,7 @@
     "@ls-lint/ls-lint",
     "@stryker-mutator/core",
     "cspell",
+    "expect-type",
     "husky",
     "jscpd",
     "lint-staged",

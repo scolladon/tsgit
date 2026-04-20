@@ -1,6 +1,14 @@
 # Design: Operators
 
-**Status: Proposed** — Phase 6 of the [backlog](../BACKLOG.md).
+**Status: Implemented (2026-04-20)** — Phase 6 of the [backlog](../BACKLOG.md).
+
+### Post-Implementation Notes
+
+- **100% mutation score** (52 killed, 0 survived, 11 TS-type-rejected). The `// Stryker disable next-line all -- equivalent` annotations at §7.6 (pipe.ts, take.ts, to-array.ts, group-by.ts) stayed because the tests kill the non-equivalent variants at those lines.
+- **Bundle size:** 566 B gzipped — 11% of the 5 kB cap.
+- **`groupBy(limit = 0)` boundary test** added during mutation (Step 12). The `limit < 0` guard was killed by a `limit <= 0` mutant that passed validation when `limit = 0`; a factory-construction test pinned the valid-zero behavior.
+- **`trackedRange.returnCalled()` semantics** intentionally conflate "consumer break" and "source abandoned before natural completion." Reviewer flagged this as ambiguity; design keeps the single flag because every cascade test either (a) ends with natural source exhaustion (flag should be false) or (b) aborts mid-stream (flag should be true) — same observable contract.
+- **Fractional `limit` in `toArray` and `groupBy`** (e.g., `limit = 0.5`) passes the `!NaN && !(< 0)` guard per §7.7. Security review flagged this as MEDIUM; design intentionally accepts — `limit` is typed `number`, not `number & integer`, matching user-facing expectations for `Infinity` support. `take`'s stricter `!Number.isInteger || < 0` guard is a separate contract (integer count semantics).
 
 ### Review Notes
 

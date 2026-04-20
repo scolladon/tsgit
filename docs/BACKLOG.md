@@ -2,7 +2,7 @@
 
 Track: `[ ]` todo, `[~]` in progress, `[x]` done, `[-]` skipped
 
-**Progress:** Phases 0–5 complete. Phase 6 (Operators) is next.
+**Progress:** Phases 0–6 complete. Phase 7 (Primitives) is next.
 
 ---
 
@@ -105,14 +105,14 @@ Design: `docs/design/diff-and-merge.md`
 
 AsyncIterable composition toolkit (zero domain dependencies).
 
-- [ ] **6.1** `pipe`
-- [ ] **6.2** `filter`
-- [ ] **6.3** `map`
-- [ ] **6.4** `flatMap`
-- [ ] **6.5** `take`
-- [ ] **6.6** `find`
-- [ ] **6.7** `toArray`
-- [ ] **6.8** `groupBy`
+- [x] **6.1** `pipe`
+- [x] **6.2** `filter`
+- [x] **6.3** `map`
+- [x] **6.4** `flatMap`
+- [x] **6.5** `take`
+- [x] **6.6** `find`
+- [x] **6.7** `toArray`
+- [x] **6.8** `groupBy`
 
 Design: `docs/design/operators.md`
 
