@@ -1,3 +1,5 @@
+import type { HashConfig } from '../domain/objects/hash-config.js';
+import type { LruCache } from '../domain/storage/lru-cache.js';
 import type { Compressor } from './compressor.js';
 import type { FileSystem } from './file-system.js';
 import type { HashService } from './hash-service.js';
@@ -20,6 +22,10 @@ export interface Context {
   readonly transport: HttpTransport;
   readonly progress: ProgressReporter;
   readonly config: RepositoryConfig;
+  /** Object serialization parameters (sha1 vs sha256 digest+hex sizes). */
+  readonly hashConfig: HashConfig;
+  /** Shared delta-base LRU cache; consumed by primitives' iterative delta walker. */
+  readonly deltaCache: LruCache<Uint8Array>;
   /** Optional abort signal for cancelling long-running operations. */
   readonly signal?: AbortSignal;
 }
@@ -31,6 +37,8 @@ export interface CreateContextParts {
   readonly transport: HttpTransport;
   readonly progress: ProgressReporter;
   readonly config: RepositoryConfig;
+  readonly hashConfig: HashConfig;
+  readonly deltaCache: LruCache<Uint8Array>;
   readonly signal?: AbortSignal;
 }
 

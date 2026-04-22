@@ -430,7 +430,8 @@ describe('line-diff — diffLines', () => {
 
     // Assert — should degrade due to one of the caps
     expect(sut.degraded).toBe(true);
-  }, 30_000);
+    // 90s tolerates Stryker dry-run overhead (~3x slower than vitest direct).
+  }, 90_000);
 
   it('Property: diffLines(X, X) yields a single common hunk covering all lines with degraded false', () => {
     fc.assert(

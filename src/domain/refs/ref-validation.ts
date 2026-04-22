@@ -3,14 +3,21 @@ import { invalidRef } from './error.js';
 
 const FORBIDDEN_SIMPLE = new Set(['~', '^', ':', '?', '*', '[', '\\', ' ']);
 
-function hasForbiddenChar(name: string): boolean {
+function throwIfBadChars(name: string): void {
   for (let i = 0; i < name.length; i++) {
     const code = name.charCodeAt(i);
-    if (code <= 0x1f || code === 0x7f) return true;
+    if (code <= 0x1f || code === 0x7f) {
+      throw invalidRef('ref name contains forbidden character');
+    }
     const ch = name[i];
-    if (ch !== undefined && FORBIDDEN_SIMPLE.has(ch)) return true;
+    if (ch !== undefined && FORBIDDEN_SIMPLE.has(ch)) {
+      throw invalidRef('ref name contains forbidden character');
+    }
+    // U+202A..U+202E (LRE/RLE/PDF/LRO/RLO) and U+2066..U+2069 (LRI/RLI/FSI/PDI)
+    if ((code >= 0x202a && code <= 0x202e) || (code >= 0x2066 && code <= 0x2069)) {
+      throw invalidRef('ref name contains forbidden Unicode override');
+    }
   }
-  return false;
 }
 
 export function validateRefName(name: string): RefName {
@@ -38,9 +45,7 @@ export function validateRefName(name: string): RefName {
   if (name.endsWith('.')) {
     throw invalidRef('ref name must not end with .');
   }
-  if (hasForbiddenChar(name)) {
-    throw invalidRef('ref name contains forbidden character');
-  }
+  throwIfBadChars(name);
 
   const components = name.split('/');
   for (const component of components) {

@@ -17,7 +17,10 @@ interface Node<V> {
   next: Node<V> | null;
 }
 
-export function createLruCache<V>(maxSizeBytes: number): LruCache<V> {
+export function createLruCache<V>(
+  maxSizeBytes: number,
+  maxEntries: number = Number.POSITIVE_INFINITY,
+): LruCache<V> {
   const map = new Map<string, Node<V>>();
   let head: Node<V> | null = null;
   let tail: Node<V> | null = null;
@@ -51,7 +54,7 @@ export function createLruCache<V>(maxSizeBytes: number): LruCache<V> {
   }
 
   function evict(): void {
-    while (currentSize > maxSizeBytes && tail !== null) {
+    while ((currentSize > maxSizeBytes || map.size > maxEntries) && tail !== null) {
       const evicted = tail;
       removeNode(evicted);
       map.delete(evicted.key);

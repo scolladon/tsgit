@@ -2,7 +2,7 @@
 
 Track: `[ ]` todo, `[~]` in progress, `[x]` done, `[-]` skipped
 
-**Progress:** Phases 0–6 complete. Phase 7 (Primitives) is next.
+**Progress:** Phases 0–7 complete. Phase 8 (Transport) is next.
 
 ---
 
@@ -122,18 +122,18 @@ Design: `docs/design/operators.md`
 
 Low-level composable operations built from domain + ports.
 
-- [ ] **7.1** `readObject` — read any git object by id
-- [ ] **7.2** `writeObject` — write a git object to storage
-- [ ] **7.3** `readTree` — read a tree by ref
-- [ ] **7.4** `writeTree` — write a tree, return ObjectId
-- [ ] **7.5** `readBlob` — read blob content
-- [ ] **7.6** `walkCommits` — AsyncIterable commit walker
-- [ ] **7.7** `walkTree` — AsyncIterable tree entry walker
-- [ ] **7.8** `resolveRef` — resolve ref to ObjectId
-- [ ] **7.9** `updateRef` — update a ref atomically
-- [ ] **7.10** `readIndex` — read the staging area
-- [ ] **7.11** `createCommit` — create a commit from tree + parents
-- [ ] **7.12** `diffTrees` — compare two tree iterables
+- [x] **7.1** `readObject` — read any git object by id
+- [x] **7.2** `writeObject` — write a git object to storage
+- [x] **7.3** `readTree` — read a tree by ref
+- [x] **7.4** `writeTree` — write a tree, return ObjectId
+- [x] **7.5** `readBlob` — read blob content
+- [x] **7.6** `walkCommits` — AsyncIterable commit walker
+- [x] **7.7** `walkTree` — AsyncIterable tree entry walker
+- [x] **7.8** `resolveRef` — resolve ref to ObjectId
+- [x] **7.9** `updateRef` — update a ref atomically
+- [x] **7.10** `readIndex` — read the staging area
+- [x] **7.11** `createCommit` — create a commit from tree + parents
+- [x] **7.12** `diffTrees` — compare two tree iterables
 
 Design: `docs/design/primitives.md`
 

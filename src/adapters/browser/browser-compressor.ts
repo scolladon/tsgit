@@ -1,6 +1,13 @@
 /// <reference lib="dom" />
 import { compressFailed, decompressFailed } from '../../domain/index.js';
-import type { Compressor } from '../../ports/compressor.js';
+import type { Compressor, InflateStreamResult } from '../../ports/compressor.js';
+
+/**
+ * Safety cap on input size for the progressive-prefix streamInflate scan.
+ * O(n²) behavior makes this adapter unsuitable for production-sized packs;
+ * fail loudly so a misuse with a real pack file does not stall the browser.
+ */
+const BROWSER_STREAM_INFLATE_MAX_INPUT = 64 * 1024;
 
 export class BrowserCompressor implements Compressor {
   async deflate(data: Uint8Array): Promise<Uint8Array> {
@@ -23,6 +30,30 @@ export class BrowserCompressor implements Compressor {
     } catch (err) {
       throw decompressFailed(err instanceof Error ? err.message : String(err));
     }
+  }
+
+  async streamInflate(bytes: Uint8Array, offset: number): Promise<InflateStreamResult> {
+    // Same progressive-prefix approach as the Memory adapter; Web Streams
+    // DecompressionStream doesn't expose consumed-bytes metadata.
+    const slice = bytes.subarray(offset);
+    if (slice.length > BROWSER_STREAM_INFLATE_MAX_INPUT) {
+      throw decompressFailed(
+        `BrowserCompressor.streamInflate input exceeds ${BROWSER_STREAM_INFLATE_MAX_INPUT} byte safety cap`,
+      );
+    }
+    for (let end = 1; end <= slice.length; end += 1) {
+      const attempt = slice.subarray(0, end);
+      try {
+        const stream = new Blob([attempt as BlobPart])
+          .stream()
+          .pipeThrough(new DecompressionStream('deflate'));
+        const output = new Uint8Array(await new Response(stream).arrayBuffer());
+        return { output, bytesConsumed: end };
+      } catch {
+        // Not yet complete — grow.
+      }
+    }
+    throw decompressFailed('no valid zlib stream at offset');
   }
 
   createInflateStream(): TransformStream<Uint8Array, Uint8Array> {

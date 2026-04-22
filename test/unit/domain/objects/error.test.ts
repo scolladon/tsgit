@@ -9,7 +9,10 @@ import {
   invalidTag,
   invalidTreeEntry,
   type TsgitError,
+  treeCycleDetected,
+  treeDepthExceeded,
 } from '../../../../src/domain/objects/error.js';
+import type { ObjectId } from '../../../../src/domain/objects/index.js';
 
 describe('error', () => {
   describe('factory functions', () => {
@@ -93,6 +96,23 @@ describe('error', () => {
         reason: 'no email',
       });
     });
+
+    it('Given treeCycleDetected(id), When checking error.data, Then code and id are set', () => {
+      // Arrange & Act
+      const id = 'a'.repeat(40) as ObjectId;
+      const sut = treeCycleDetected(id);
+
+      // Assert
+      expect(sut.data).toEqual({ code: 'TREE_CYCLE_DETECTED', id });
+    });
+
+    it('Given treeDepthExceeded(depth), When checking error.data, Then code and depth are set', () => {
+      // Arrange & Act
+      const sut = treeDepthExceeded(42);
+
+      // Assert
+      expect(sut.data).toEqual({ code: 'TREE_DEPTH_EXCEEDED', depth: 42 });
+    });
   });
 
   describe('TsgitError class', () => {
@@ -173,6 +193,20 @@ describe('error', () => {
           case 'INVALID_DIFF_INPUT':
           case 'INVALID_MERGE_TREE':
           case 'INVALID_MERGE_INPUT':
+          case 'OBJECT_NOT_FOUND':
+          case 'OBJECT_HASH_MISMATCH':
+          case 'UNEXPECTED_OBJECT_TYPE':
+          case 'TREE_CYCLE_DETECTED':
+          case 'TREE_DEPTH_EXCEEDED':
+          case 'TREE_ENTRY_LIMIT_EXCEEDED':
+          case 'DELTA_CHAIN_TOO_DEEP':
+          case 'REF_NOT_FOUND':
+          case 'REF_CHAIN_TOO_DEEP':
+          case 'REF_CYCLE_DETECTED':
+          case 'REF_LOCKED':
+          case 'REF_UPDATE_CONFLICT':
+          case 'INVALID_WALK_INPUT':
+          case 'OPERATION_ABORTED':
             break;
           default: {
             const _exhaustive: never = data;

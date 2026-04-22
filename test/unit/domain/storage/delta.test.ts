@@ -1,7 +1,11 @@
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import type { TsgitError } from '../../../../src/domain/error.js';
-import { applyDelta, parseDelta } from '../../../../src/domain/storage/delta.js';
+import {
+  applyDelta,
+  MAX_DELTA_CHAIN_DEPTH,
+  parseDelta,
+} from '../../../../src/domain/storage/delta.js';
 import { buildDelta } from './arbitraries.js';
 
 type DeltaInst =
@@ -657,6 +661,13 @@ describe('delta', () => {
           expect(sut.length).toBe(insert.length);
         }),
       );
+    });
+  });
+
+  describe('MAX_DELTA_CHAIN_DEPTH', () => {
+    it('Given the exported constant, When read, Then equals 50 (git default)', () => {
+      // Assert
+      expect(MAX_DELTA_CHAIN_DEPTH).toBe(50);
     });
   });
 });

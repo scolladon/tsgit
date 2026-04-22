@@ -156,7 +156,19 @@
     "passthroughs",
     "Prereq",
     "arities",
-    "unreachability"
+    "unreachability",
+    "topo",
+    "openat",
+    "serialise",
+    "subdirs",
+    "codepoint",
+    "codepoints",
+    "Docstrings",
+    "prereqs",
+    "cdef",
+    "roundtripped",
+    "unvalidated",
+    "linearizations"
   ],
   "ignorePaths": [
     "node_modules",

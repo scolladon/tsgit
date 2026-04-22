@@ -41,17 +41,27 @@ export function parseIdentity(line: string): AuthorIdentity {
   return { name, email, timestamp, timezoneOffset };
 }
 
+const CONTROL_CHARS = /[\n\r\0]/;
+
 export function serializeIdentity(identity: AuthorIdentity): string {
-  if (
-    identity.name.includes('\n') ||
-    identity.name.includes('<') ||
-    identity.name.includes('>') ||
-    identity.email.includes('\n') ||
-    identity.email.includes('<') ||
-    identity.email.includes('>') ||
-    !/^[+-]\d{4}$/.test(identity.timezoneOffset)
-  ) {
-    throw invalidIdentity(`${identity.name} <${identity.email}>`, 'invalid identity fields');
+  const line = `${identity.name} <${identity.email}>`;
+  if (CONTROL_CHARS.test(identity.name)) {
+    throw invalidIdentity(line, 'name contains forbidden control character');
+  }
+  if (CONTROL_CHARS.test(identity.email)) {
+    throw invalidIdentity(line, 'email contains forbidden control character');
+  }
+  if (CONTROL_CHARS.test(identity.timezoneOffset)) {
+    throw invalidIdentity(line, 'timezoneOffset contains forbidden control character');
+  }
+  if (identity.name.includes('<') || identity.name.includes('>')) {
+    throw invalidIdentity(line, 'invalid identity fields');
+  }
+  if (identity.email.includes('<') || identity.email.includes('>')) {
+    throw invalidIdentity(line, 'invalid identity fields');
+  }
+  if (!/^[+-]\d{4}$/.test(identity.timezoneOffset)) {
+    throw invalidIdentity(line, 'invalid identity fields');
   }
   return `${identity.name} <${identity.email}> ${identity.timestamp} ${identity.timezoneOffset}`;
 }

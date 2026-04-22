@@ -368,4 +368,83 @@ describe('lru-cache', () => {
       );
     });
   });
+
+  describe('entry-cap boundary (isolated from byte cap)', () => {
+    it('Given createLruCache(huge, 10) and 9 entries set, When entryCount is read, Then equals 9 (just-under)', () => {
+      // Arrange
+      const sut = createLruCache<number>(Number.MAX_SAFE_INTEGER, 10);
+
+      // Act
+      for (let i = 0; i < 9; i += 1) sut.set(`k${i}`, i, 10);
+
+      // Assert
+      expect(sut.entryCount).toBe(9);
+    });
+
+    it('Given createLruCache(huge, 10) and exactly 10 entries set, When entryCount is read, Then equals 10 and oldest still present (at)', () => {
+      // Arrange
+      const sut = createLruCache<number>(Number.MAX_SAFE_INTEGER, 10);
+
+      // Act
+      for (let i = 0; i < 10; i += 1) sut.set(`k${i}`, i, 10);
+
+      // Assert
+      expect(sut.entryCount).toBe(10);
+      expect(sut.has('k0')).toBe(true);
+    });
+
+    it('Given createLruCache(huge, 10) and 11 entries set, When entryCount is read, Then equals 10 and oldest key is evicted (just-over)', () => {
+      // Arrange
+      const sut = createLruCache<number>(Number.MAX_SAFE_INTEGER, 10);
+
+      // Act
+      for (let i = 0; i < 11; i += 1) sut.set(`k${i}`, i, 10);
+
+      // Assert
+      expect(sut.entryCount).toBe(10);
+      expect(sut.has('k0')).toBe(false);
+      expect(sut.has('k10')).toBe(true);
+    });
+  });
+
+  describe('backward-compat single-arg', () => {
+    it('Given createLruCache(1024) legacy single-arg call, When 1000 tiny entries set within budget, Then all 1000 are present', () => {
+      // Arrange
+      const sut = createLruCache<number>(1024);
+
+      // Act
+      for (let i = 0; i < 1000; i += 1) sut.set(`k${i}`, i, 1);
+
+      // Assert
+      expect(sut.entryCount).toBe(1000);
+    });
+  });
+
+  describe('combined caps first-hit', () => {
+    it('Given createLruCache(100, 10) and 11 tiny entries, When filled, Then entry cap fires first (entryCount capped at 10)', () => {
+      // Arrange
+      const sut = createLruCache<number>(100, 10);
+
+      // Act
+      for (let i = 0; i < 11; i += 1) sut.set(`k${i}`, i, 5);
+
+      // Assert
+      expect(sut.entryCount).toBe(10);
+      expect(sut.currentSize).toBeLessThanOrEqual(100);
+    });
+
+    it('Given createLruCache(100, 10) and 2 × 100-byte entries, When the second is set, Then byte cap fires first (oldest evicted)', () => {
+      // Arrange
+      const sut = createLruCache<number>(100, 10);
+
+      // Act
+      sut.set('a', 1, 100);
+      sut.set('b', 2, 100);
+
+      // Assert
+      expect(sut.has('a')).toBe(false);
+      expect(sut.has('b')).toBe(true);
+      expect(sut.currentSize).toBe(100);
+    });
+  });
 });

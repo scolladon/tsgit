@@ -38,7 +38,20 @@ export interface FileSystem {
   /** Write bytes to file, creating parent directories as needed. Overwrites if exists. */
   readonly write: (path: string, data: Uint8Array) => Promise<void>;
 
-  /** Write bytes to file. Fails with FILE_EXISTS if the file already exists (exclusive create). */
+  /**
+   * Write bytes to file. Fails with FILE_EXISTS if the file already exists (exclusive create).
+   *
+   * Contract obligations (Phase 7 §14.17):
+   * - **Parent-directory creation:** the adapter MUST ensure parent directories exist before the
+   *   exclusive write. Equivalent to `mkdir -p dirname(path)` before `open(path, O_EXCL)`. If the
+   *   parent is removed between the implicit mkdir and the open (e.g. concurrent `git gc` prunes
+   *   the fanout), the adapter retries once: re-create the parent, re-attempt the open. On a second
+   *   ENOENT the error propagates as FILE_NOT_FOUND.
+   * - **Symlink-safe ancestor check:** the adapter MUST reject writes where any ancestor directory
+   *   of `path` is a symbolic link whose resolved target is outside the containment root. This
+   *   closes the attack where an attacker replaces `objects/xx/` with a symlink pointing elsewhere.
+   *   Implementation: lstat-walk the ancestor chain, or use `openat`-style relative opens.
+   */
   readonly writeExclusive: (path: string, data: Uint8Array) => Promise<void>;
 
   /** Write UTF-8 string to file, creating parent directories as needed. */

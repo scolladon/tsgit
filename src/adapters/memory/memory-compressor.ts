@@ -1,5 +1,12 @@
 import { compressFailed, decompressFailed } from '../../domain/index.js';
-import type { Compressor } from '../../ports/compressor.js';
+import type { Compressor, InflateStreamResult } from '../../ports/compressor.js';
+
+/**
+ * Safety cap on input size for the progressive-prefix streamInflate scan.
+ * O(n²) behavior makes inputs above a few KB impractical — guard loudly so a
+ * test accidentally using this adapter for a real packfile fails fast.
+ */
+const MEMORY_STREAM_INFLATE_MAX_INPUT = 64 * 1024;
 
 export class MemoryCompressor implements Compressor {
   constructor() {
@@ -22,6 +29,30 @@ export class MemoryCompressor implements Compressor {
     } catch (err) {
       throw decompressFailed(describeError(err));
     }
+  };
+
+  streamInflate = async (bytes: Uint8Array, offset: number): Promise<InflateStreamResult> => {
+    // DecompressionStream in Web Streams doesn't expose "bytes consumed" when
+    // the stream ends mid-input. Feed progressively-larger prefixes until one
+    // decompresses cleanly — that's the zlib terminator. O(n²) in the
+    // compressed length, so this adapter is explicitly bounded to small
+    // test-sized packs. Use NodeCompressor for production workloads.
+    const slice = bytes.subarray(offset);
+    if (slice.length > MEMORY_STREAM_INFLATE_MAX_INPUT) {
+      throw decompressFailed(
+        `MemoryCompressor.streamInflate input exceeds ${MEMORY_STREAM_INFLATE_MAX_INPUT} byte safety cap; use NodeCompressor for real pack files`,
+      );
+    }
+    for (let end = 1; end <= slice.length; end += 1) {
+      const attempt = slice.subarray(0, end);
+      try {
+        const output = await runTransform(attempt, new DecompressionStream('deflate'));
+        return { output, bytesConsumed: end };
+      } catch {
+        // Not yet a complete zlib stream — keep growing.
+      }
+    }
+    throw decompressFailed('no valid zlib stream at offset');
   };
 
   createInflateStream = (): TransformStream<Uint8Array, Uint8Array> => {

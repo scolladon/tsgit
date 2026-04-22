@@ -304,12 +304,28 @@ interface HashService {
 ### 4.3 Compressor
 
 ```typescript
+interface InflateStreamResult {
+  /** The fully-inflated output bytes. */
+  readonly output: Uint8Array;
+  /** The number of input bytes consumed, counted from `offset`. */
+  readonly bytesConsumed: number;
+}
+
 interface Compressor {
   /** Deflate (compress) data using zlib deflate format. */
   readonly deflate: (data: Uint8Array) => Promise<Uint8Array>;
 
-  /** Inflate (decompress) zlib-compressed data. */
+  /** Inflate (decompress) a single zlib stream covering `data` entirely. */
   readonly inflate: (data: Uint8Array) => Promise<Uint8Array>;
+
+  /**
+   * Inflate one zlib stream starting at `offset` in `bytes`, stopping at the
+   * zlib terminator. Used by the pack-file resolver where each entry is a
+   * separate zlib stream concatenated with other entries; the resolver does
+   * not know the compressed length of a single entry a priori. Returns the
+   * inflated output and the number of input bytes consumed.
+   */
+  readonly streamInflate: (bytes: Uint8Array, offset: number) => Promise<InflateStreamResult>;
 
   /**
    * Create a streaming inflate transform.
@@ -324,6 +340,7 @@ interface Compressor {
 
 - **`createInflateStream` returns `TransformStream`:** `TransformStream` is a Web Streams API standard available in Node 18+ (global, no import needed) and all modern browsers. It composes naturally with `ReadableStream.pipeThrough()`. `@types/node` >= 18 provides the global type.
 - **zlib deflate format (not raw deflate, not gzip):** Git uses zlib-wrapped deflate (RFC 1950) for loose objects and packfile entries. The correct `CompressionStream`/`DecompressionStream` format string is `'deflate'` (which is zlib-wrapped in the spec).
+- **`streamInflate` returns bytesConsumed:** The pack resolver reads a generous slice covering the entry header plus the zlib-compressed body, parses the header to find the body offset, then calls `streamInflate(chunk, offset)`. The returned `bytesConsumed` lets the caller advance to the next entry in a delta chain without an extra read. Node's adapter exposes `inflate.bytesWritten` directly; Web Streams adapters use a progressive-prefix probe to locate the terminator.
 - **No compression level parameter:** Git uses default compression (level 6). If needed later, it can be added to `Context.config` without changing the port interface.
 
 ### 4.4 HttpTransport

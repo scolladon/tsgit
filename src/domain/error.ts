@@ -21,6 +21,11 @@ export type AdapterError =
   | { readonly code: 'HTTP_ERROR'; readonly statusCode: number; readonly reason: string }
   | { readonly code: 'NETWORK_ERROR'; readonly reason: string };
 
+/** Cross-cutting application-tier codes raised by Phase 7 primitives (not adapters). */
+export type ApplicationError =
+  | { readonly code: 'INVALID_WALK_INPUT'; readonly reason: string }
+  | { readonly code: 'OPERATION_ABORTED' };
+
 export type TsgitErrorData =
   | DomainObjectError
   | StorageError
@@ -28,7 +33,8 @@ export type TsgitErrorData =
   | IndexError
   | AdapterError
   | DiffError
-  | MergeError;
+  | MergeError
+  | ApplicationError;
 
 export class TsgitError extends Error {
   override readonly name = 'TsgitError';
@@ -83,6 +89,11 @@ export const httpError = (statusCode: number, reason: string): TsgitError =>
 export const networkError = (reason: string): TsgitError =>
   new TsgitError({ code: 'NETWORK_ERROR', reason });
 
+export const invalidWalkInput = (reason: string): TsgitError =>
+  new TsgitError({ code: 'INVALID_WALK_INPUT', reason });
+
+export const operationAborted = (): TsgitError => new TsgitError({ code: 'OPERATION_ABORTED' });
+
 function extractDetail(data: TsgitErrorData): string {
   switch (data.code) {
     case 'INVALID_OBJECT_ID':
@@ -130,6 +141,34 @@ function extractDetail(data: TsgitErrorData): string {
       return `invalid merge tree: ${data.reason}`;
     case 'INVALID_MERGE_INPUT':
       return `invalid merge input: ${data.reason}`;
+    case 'OBJECT_NOT_FOUND':
+      return `object not found: ${data.id}`;
+    case 'OBJECT_HASH_MISMATCH':
+      return `object hash mismatch: expected=${data.expected} actual=${data.actual}`;
+    case 'UNEXPECTED_OBJECT_TYPE':
+      return `unexpected object type: expected=${data.expected} actual=${data.actual} id=${data.id}`;
+    case 'TREE_CYCLE_DETECTED':
+      return `tree cycle detected: ${data.id}`;
+    case 'TREE_DEPTH_EXCEEDED':
+      return `tree depth exceeded: ${data.depth}`;
+    case 'TREE_ENTRY_LIMIT_EXCEEDED':
+      return `tree entry limit exceeded: count=${data.count} limit=${data.limit}`;
+    case 'DELTA_CHAIN_TOO_DEEP':
+      return `delta chain too deep: ${data.depth}`;
+    case 'REF_NOT_FOUND':
+      return `ref not found: ${data.name}`;
+    case 'REF_CHAIN_TOO_DEEP':
+      return `ref chain too deep: depth=${data.depth} chain=${data.chain.join('->')}`;
+    case 'REF_CYCLE_DETECTED':
+      return `ref cycle detected: ${data.chain.join('->')}`;
+    case 'REF_LOCKED':
+      return `ref locked: ${data.name}`;
+    case 'REF_UPDATE_CONFLICT':
+      return `ref update conflict: name=${data.name} expected=${data.expected} actual=${data.actual}`;
+    case 'INVALID_WALK_INPUT':
+      return `invalid walk input: ${data.reason}`;
+    case 'OPERATION_ABORTED':
+      return 'operation aborted';
     default: {
       const _exhaustive: never = data;
       return String(_exhaustive);

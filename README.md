@@ -10,7 +10,7 @@ A pure TypeScript git implementation designed to be the fastest portable git lib
 
 ## Status
 
-**Phases 1–4 complete.** The domain layer (objects, storage, refs, index) and hexagonal boundary (ports + adapters) are implemented with 100% test coverage and mutation-verified test quality. Phase 5 (Diff & Merge) is next.
+**Phases 1–7 complete.** Domain (objects, storage, refs, index), hexagonal boundary (ports + adapters), diff/merge, AsyncIterable operators, and the Tier-2 primitives (`readObject`, `writeObject`, `readTree`, `writeTree`, `readBlob`, `walkCommits`, `walkTree`, `resolveRef`, `updateRef`, `readIndex`, `createCommit`, `diffTrees`) are implemented with 100% test coverage and mutation-verified test quality. Phase 8 (Transport) is next.
 
 | Phase | Scope | Status |
 |---|---|---|
@@ -18,9 +18,9 @@ A pure TypeScript git implementation designed to be the fastest portable git lib
 | 2 | Domain — Object Storage (loose objects, packfiles, delta) | ✅ |
 | 3 | Domain — Refs & Index (loose refs, packed-refs, git index v2) | ✅ |
 | 4 | Ports & Adapters (FileSystem, HashService, Compressor, HttpTransport, ProgressReporter — Node + Browser/OPFS + Memory) | ✅ |
-| 5 | Domain — Diff & Merge | ⏳ |
-| 6 | Operators (AsyncIterable composition) | ⏳ |
-| 7 | Primitives (Tier 2 API) | ⏳ |
+| 5 | Domain — Diff & Merge | ✅ |
+| 6 | Operators (AsyncIterable composition) | ✅ |
+| 7 | Primitives (Tier 2 API) | ✅ |
 | 8 | Transport (Smart HTTP + middleware) | ⏳ |
 | 9 | Commands (Tier 1 API) | ⏳ |
 | 10 | Repository facade | ⏳ |

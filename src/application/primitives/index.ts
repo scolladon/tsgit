@@ -1,1 +1,13 @@
-export {};
+export { createCommit } from './create-commit.js';
+export { diffTrees } from './diff-trees.js';
+export { readBlob } from './read-blob.js';
+export { readIndex } from './read-index.js';
+export { readObject } from './read-object.js';
+export { readTree } from './read-tree.js';
+export { resolveRef } from './resolve-ref.js';
+export type * from './types.js';
+export { updateRef } from './update-ref.js';
+export { walkCommits } from './walk-commits.js';
+export { walkTree } from './walk-tree.js';
+export { writeObject } from './write-object.js';
+export { writeTree } from './write-tree.js';

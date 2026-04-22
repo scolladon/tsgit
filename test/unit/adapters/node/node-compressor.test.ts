@@ -86,6 +86,56 @@ describe('NodeCompressor', () => {
       expect((caught as TsgitError).data.code).toBe('DECOMPRESS_FAILED');
     });
 
+    it('Given a small inflated-bytes cap and a roundtrip whose output exceeds it, When streamInflate runs, Then rejects with DECOMPRESS_FAILED (zip-bomb cap)', async () => {
+      const sut = new NodeCompressor({ maxInflatedBytes: 4 });
+      const payload = new TextEncoder().encode('aaaaaaaaaaaaaaaaaaaa'); // 20 bytes
+      const deflated = await sut.deflate(payload);
+      let caught: unknown;
+      try {
+        await sut.streamInflate(deflated, 0);
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught).toBeInstanceOf(TsgitError);
+      expect((caught as TsgitError).data.code).toBe('DECOMPRESS_FAILED');
+    });
+
+    it('Given a small inflated-bytes cap and a roundtrip exceeding it via createInflateStream, When piped, Then errors the stream with DECOMPRESS_FAILED', async () => {
+      const sut = new NodeCompressor({ maxInflatedBytes: 4 });
+      const payload = new TextEncoder().encode('aaaaaaaaaaaaaaaaaaaa');
+      const deflated = await sut.deflate(payload);
+      const source = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(deflated);
+          controller.close();
+        },
+      });
+      const sink = new WritableStream<Uint8Array>();
+      let caught: unknown;
+      try {
+        await source.pipeThrough(sut.createInflateStream()).pipeTo(sink);
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught).toBeInstanceOf(TsgitError);
+      expect((caught as TsgitError).data.code).toBe('DECOMPRESS_FAILED');
+    });
+
+    it('Given oversized payload to inflate(), When inflate runs, Then throws DECOMPRESS_FAILED (Node maxOutputLength enforced)', async () => {
+      // Kills the mutant where the inflate() maxOutputLength option is removed.
+      const sut = new NodeCompressor({ maxInflatedBytes: 4 });
+      const payload = new TextEncoder().encode('aaaaaaaaaaaaaaaaaaaa');
+      const deflated = await sut.deflate(payload);
+      let caught: unknown;
+      try {
+        await sut.inflate(deflated);
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught).toBeInstanceOf(TsgitError);
+      expect((caught as TsgitError).data.code).toBe('DECOMPRESS_FAILED');
+    });
+
     it('Given corrupt stream piped through createInflateStream, When awaiting pipeTo completion, Then the promise rejects (does not hang)', async () => {
       // Arrange — this kills the mutant where endPromise only has a resolve path:
       // pipeTo awaits the writable side which awaits flush() which awaits endPromise.

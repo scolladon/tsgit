@@ -39,6 +39,37 @@ export function compressorContractTests(createSut: () => Promise<Compressor>): v
       }
     });
 
+    it('Given a concatenation of two zlib streams, When streamInflate at offset 0, Then returns only the first stream and reports bytesConsumed', async () => {
+      const sut = await createSut();
+      const first = new TextEncoder().encode('first stream');
+      const second = new TextEncoder().encode('second stream payload');
+      const defFirst = await sut.deflate(first);
+      const defSecond = await sut.deflate(second);
+      const combined = new Uint8Array(defFirst.length + defSecond.length);
+      combined.set(defFirst, 0);
+      combined.set(defSecond, defFirst.length);
+
+      const r1 = await sut.streamInflate(combined, 0);
+      expect(r1.output).toEqual(first);
+      expect(r1.bytesConsumed).toBe(defFirst.length);
+
+      const r2 = await sut.streamInflate(combined, r1.bytesConsumed);
+      expect(r2.output).toEqual(second);
+      expect(r2.bytesConsumed).toBe(defSecond.length);
+    });
+
+    it('Given no valid zlib stream, When streamInflate is called, Then throws DECOMPRESS_FAILED', async () => {
+      const sut = await createSut();
+      const junk = new Uint8Array([0xff, 0xfe, 0xfd, 0xfc, 0xfb]);
+      try {
+        await sut.streamInflate(junk, 0);
+        expect.fail('expected DECOMPRESS_FAILED');
+      } catch (err) {
+        expect(err).toBeInstanceOf(TsgitError);
+        expect((err as TsgitError).data.code).toBe('DECOMPRESS_FAILED');
+      }
+    });
+
     it('Given data, When inflating via createInflateStream, Then produces same result as inflate', async () => {
       const sut = await createSut();
       const data = new TextEncoder().encode('streaming test content that is long enough to matter');

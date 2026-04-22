@@ -84,6 +84,24 @@ describe('MemoryCompressor', () => {
       }
     });
 
+    it('Given streamInflate input above the safety cap, When called, Then throws DECOMPRESS_FAILED with a cap-exceeded message', async () => {
+      // Memory adapter uses an O(n^2) progressive-prefix scan; the cap guards
+      // against accidentally using this adapter for real packfiles.
+      const sut = new MemoryCompressor();
+      const oversized = new Uint8Array(64 * 1024 + 1);
+      try {
+        await sut.streamInflate(oversized, 0);
+        expect.unreachable();
+      } catch (err) {
+        expect(err).toBeInstanceOf(TsgitError);
+        const data = (err as TsgitError).data;
+        expect(data.code).toBe('DECOMPRESS_FAILED');
+        if (data.code === 'DECOMPRESS_FAILED') {
+          expect(data.reason).toMatch(/safety cap/);
+        }
+      }
+    });
+
     it('Given non-Error thrown during deflate, When failing, Then reason falls back to String(err)', async () => {
       // Arrange — throw a non-Error (string) to exercise describeError's else branch via deflate.
       const sut = new MemoryCompressor();

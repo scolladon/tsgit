@@ -293,7 +293,7 @@ describe('author-identity', () => {
       expect(sut).toBe(' <e@x.com> 0 +0000');
     });
 
-    it('Given identity with newline in name, When serializing, Then throws INVALID_IDENTITY', () => {
+    it('Given identity with newline in name, When serializing, Then throws INVALID_IDENTITY with forbidden-control-character reason', () => {
       // Arrange
       const identity: AuthorIdentity = {
         name: 'Bad\nName',
@@ -302,18 +302,61 @@ describe('author-identity', () => {
         timezoneOffset: '+0000',
       };
 
-      // Act & Assert
-      expect(() => serializeIdentity(identity)).toThrow(
-        expect.objectContaining({
-          data: expect.objectContaining({
-            code: 'INVALID_IDENTITY',
-            reason: 'invalid identity fields',
-          }),
-        }),
-      );
+      // Act / Assert
+      try {
+        serializeIdentity(identity);
+        expect.unreachable();
+      } catch (error) {
+        expect(error).toHaveProperty('data.code', 'INVALID_IDENTITY');
+        expect((error as { data: { reason: string } }).data.reason).toMatch(
+          /name contains forbidden control character/,
+        );
+      }
     });
 
-    it('Given identity with newline in email, When serializing, Then throws INVALID_IDENTITY', () => {
+    it('Given identity with CR in name, When serializing, Then throws INVALID_IDENTITY /forbidden control character/', () => {
+      // Arrange
+      const identity: AuthorIdentity = {
+        name: 'Bad\rName',
+        email: 'a@a.com',
+        timestamp: 0,
+        timezoneOffset: '+0000',
+      };
+
+      // Act / Assert
+      try {
+        serializeIdentity(identity);
+        expect.unreachable();
+      } catch (error) {
+        expect(error).toHaveProperty('data.code', 'INVALID_IDENTITY');
+        expect((error as { data: { reason: string } }).data.reason).toMatch(
+          /name contains forbidden control character/,
+        );
+      }
+    });
+
+    it('Given identity with NUL in name, When serializing, Then throws INVALID_IDENTITY /forbidden control character/', () => {
+      // Arrange
+      const identity: AuthorIdentity = {
+        name: 'Bad\0Name',
+        email: 'a@a.com',
+        timestamp: 0,
+        timezoneOffset: '+0000',
+      };
+
+      // Act / Assert
+      try {
+        serializeIdentity(identity);
+        expect.unreachable();
+      } catch (error) {
+        expect(error).toHaveProperty('data.code', 'INVALID_IDENTITY');
+        expect((error as { data: { reason: string } }).data.reason).toMatch(
+          /name contains forbidden control character/,
+        );
+      }
+    });
+
+    it('Given identity with newline in email, When serializing, Then throws INVALID_IDENTITY /forbidden control character/', () => {
       // Arrange
       const identity: AuthorIdentity = {
         name: 'Name',
@@ -322,15 +365,169 @@ describe('author-identity', () => {
         timezoneOffset: '+0000',
       };
 
-      // Act & Assert
-      expect(() => serializeIdentity(identity)).toThrow(
-        expect.objectContaining({
-          data: expect.objectContaining({
-            code: 'INVALID_IDENTITY',
-            reason: 'invalid identity fields',
-          }),
-        }),
-      );
+      // Act / Assert
+      try {
+        serializeIdentity(identity);
+        expect.unreachable();
+      } catch (error) {
+        expect(error).toHaveProperty('data.code', 'INVALID_IDENTITY');
+        expect((error as { data: { reason: string } }).data.reason).toMatch(
+          /email contains forbidden control character/,
+        );
+      }
+    });
+
+    it('Given identity with CR in email, When serializing, Then throws INVALID_IDENTITY /forbidden control character/', () => {
+      // Arrange
+      const identity: AuthorIdentity = {
+        name: 'Name',
+        email: 'bad\r@a.com',
+        timestamp: 0,
+        timezoneOffset: '+0000',
+      };
+
+      // Act / Assert
+      try {
+        serializeIdentity(identity);
+        expect.unreachable();
+      } catch (error) {
+        expect(error).toHaveProperty('data.code', 'INVALID_IDENTITY');
+        expect((error as { data: { reason: string } }).data.reason).toMatch(
+          /email contains forbidden control character/,
+        );
+      }
+    });
+
+    it('Given identity with NUL in email, When serializing, Then throws INVALID_IDENTITY /forbidden control character/', () => {
+      // Arrange
+      const identity: AuthorIdentity = {
+        name: 'Name',
+        email: 'bad\0@a.com',
+        timestamp: 0,
+        timezoneOffset: '+0000',
+      };
+
+      // Act / Assert
+      try {
+        serializeIdentity(identity);
+        expect.unreachable();
+      } catch (error) {
+        expect(error).toHaveProperty('data.code', 'INVALID_IDENTITY');
+        expect((error as { data: { reason: string } }).data.reason).toMatch(
+          /email contains forbidden control character/,
+        );
+      }
+    });
+
+    it('Given identity with newline in timezoneOffset, When serializing, Then throws INVALID_IDENTITY /forbidden control character/', () => {
+      // Arrange
+      const identity: AuthorIdentity = {
+        name: 'Name',
+        email: 'a@a.com',
+        timestamp: 0,
+        timezoneOffset: '+00\n00',
+      };
+
+      // Act / Assert
+      try {
+        serializeIdentity(identity);
+        expect.unreachable();
+      } catch (error) {
+        expect(error).toHaveProperty('data.code', 'INVALID_IDENTITY');
+        expect((error as { data: { reason: string } }).data.reason).toMatch(
+          /timezoneOffset contains forbidden control character/,
+        );
+      }
+    });
+
+    it('Given identity with CR in timezoneOffset, When serializing, Then throws INVALID_IDENTITY /forbidden control character/', () => {
+      // Arrange
+      const identity: AuthorIdentity = {
+        name: 'Name',
+        email: 'a@a.com',
+        timestamp: 0,
+        timezoneOffset: '+00\r00',
+      };
+
+      // Act / Assert
+      try {
+        serializeIdentity(identity);
+        expect.unreachable();
+      } catch (error) {
+        expect(error).toHaveProperty('data.code', 'INVALID_IDENTITY');
+        expect((error as { data: { reason: string } }).data.reason).toMatch(
+          /timezoneOffset contains forbidden control character/,
+        );
+      }
+    });
+
+    it('Given identity with NUL in timezoneOffset, When serializing, Then throws INVALID_IDENTITY /forbidden control character/', () => {
+      // Arrange
+      const identity: AuthorIdentity = {
+        name: 'Name',
+        email: 'a@a.com',
+        timestamp: 0,
+        timezoneOffset: '+00\x0000',
+      };
+
+      // Act / Assert
+      try {
+        serializeIdentity(identity);
+        expect.unreachable();
+      } catch (error) {
+        expect(error).toHaveProperty('data.code', 'INVALID_IDENTITY');
+        expect((error as { data: { reason: string } }).data.reason).toMatch(
+          /timezoneOffset contains forbidden control character/,
+        );
+      }
+    });
+
+    it('Given identity.name containing tab (not in reject set), When serializing, Then succeeds', () => {
+      // Arrange
+      const identity: AuthorIdentity = {
+        name: 'Name\twith\ttab',
+        email: 'a@a.com',
+        timestamp: 0,
+        timezoneOffset: '+0000',
+      };
+
+      // Act
+      const sut = serializeIdentity(identity);
+
+      // Assert
+      expect(sut).toContain('\t');
+    });
+
+    it('Given identity.name containing UTF-8 "café", When serializing, Then succeeds', () => {
+      // Arrange
+      const identity: AuthorIdentity = {
+        name: 'café',
+        email: 'a@a.com',
+        timestamp: 0,
+        timezoneOffset: '+0000',
+      };
+
+      // Act
+      const sut = serializeIdentity(identity);
+
+      // Assert
+      expect(sut).toContain('café');
+    });
+
+    it("Given identity.email containing '+' (RFC5322 plus addressing), When serializing, Then succeeds", () => {
+      // Arrange
+      const identity: AuthorIdentity = {
+        name: 'Alice',
+        email: 'alice+tag@example.com',
+        timestamp: 0,
+        timezoneOffset: '+0000',
+      };
+
+      // Act
+      const sut = serializeIdentity(identity);
+
+      // Assert
+      expect(sut).toContain('alice+tag@example.com');
     });
 
     it('Given identity with < in name, When serializing, Then throws INVALID_IDENTITY', () => {

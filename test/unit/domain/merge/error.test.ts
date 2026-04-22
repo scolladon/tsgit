@@ -98,6 +98,20 @@ describe('merge error', () => {
         case 'INVALID_DIFF_INPUT':
         case 'INVALID_MERGE_TREE':
         case 'INVALID_MERGE_INPUT':
+        case 'OBJECT_NOT_FOUND':
+        case 'OBJECT_HASH_MISMATCH':
+        case 'UNEXPECTED_OBJECT_TYPE':
+        case 'TREE_CYCLE_DETECTED':
+        case 'TREE_DEPTH_EXCEEDED':
+        case 'TREE_ENTRY_LIMIT_EXCEEDED':
+        case 'DELTA_CHAIN_TOO_DEEP':
+        case 'REF_NOT_FOUND':
+        case 'REF_CHAIN_TOO_DEEP':
+        case 'REF_CYCLE_DETECTED':
+        case 'REF_LOCKED':
+        case 'REF_UPDATE_CONFLICT':
+        case 'INVALID_WALK_INPUT':
+        case 'OPERATION_ABORTED':
           break;
         default: {
           const _exhaustive: never = data;

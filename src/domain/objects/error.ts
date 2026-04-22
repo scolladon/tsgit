@@ -1,6 +1,9 @@
 import { TsgitError } from '../error.js';
+import type { ObjectId } from './object-id.js';
 
 export { TsgitError } from '../error.js';
+
+export type ObjectType = 'blob' | 'tree' | 'commit' | 'tag';
 
 export type DomainObjectError =
   | { readonly code: 'INVALID_OBJECT_ID'; readonly value: string }
@@ -17,6 +20,25 @@ export type DomainObjectError =
       readonly code: 'INVALID_IDENTITY';
       readonly line: string;
       readonly reason: string;
+    }
+  | { readonly code: 'OBJECT_NOT_FOUND'; readonly id: ObjectId }
+  | {
+      readonly code: 'OBJECT_HASH_MISMATCH';
+      readonly expected: ObjectId;
+      readonly actual: ObjectId;
+    }
+  | {
+      readonly code: 'UNEXPECTED_OBJECT_TYPE';
+      readonly expected: ObjectType;
+      readonly actual: ObjectType;
+      readonly id: ObjectId;
+    }
+  | { readonly code: 'TREE_CYCLE_DETECTED'; readonly id: ObjectId }
+  | { readonly code: 'TREE_DEPTH_EXCEEDED'; readonly depth: number }
+  | {
+      readonly code: 'TREE_ENTRY_LIMIT_EXCEEDED';
+      readonly count: number;
+      readonly limit: number;
     };
 
 export const invalidObjectId = (value: string): TsgitError =>
@@ -39,3 +61,24 @@ export const invalidFileMode = (value: string): TsgitError =>
 
 export const invalidIdentity = (line: string, reason: string): TsgitError =>
   new TsgitError({ code: 'INVALID_IDENTITY', line, reason });
+
+export const objectNotFound = (id: ObjectId): TsgitError =>
+  new TsgitError({ code: 'OBJECT_NOT_FOUND', id });
+
+export const objectHashMismatch = (expected: ObjectId, actual: ObjectId): TsgitError =>
+  new TsgitError({ code: 'OBJECT_HASH_MISMATCH', expected, actual });
+
+export const unexpectedObjectType = (
+  expected: ObjectType,
+  actual: ObjectType,
+  id: ObjectId,
+): TsgitError => new TsgitError({ code: 'UNEXPECTED_OBJECT_TYPE', expected, actual, id });
+
+export const treeCycleDetected = (id: ObjectId): TsgitError =>
+  new TsgitError({ code: 'TREE_CYCLE_DETECTED', id });
+
+export const treeDepthExceeded = (depth: number): TsgitError =>
+  new TsgitError({ code: 'TREE_DEPTH_EXCEEDED', depth });
+
+export const treeEntryLimitExceeded = (count: number, limit: number): TsgitError =>
+  new TsgitError({ code: 'TREE_ENTRY_LIMIT_EXCEEDED', count, limit });

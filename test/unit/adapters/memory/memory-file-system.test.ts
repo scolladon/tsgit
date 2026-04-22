@@ -566,4 +566,28 @@ describe('MemoryFileSystem', () => {
       }
     });
   });
+
+  describe('writeExclusive Phase 7 §14.17 contract', () => {
+    it('Given a path whose parent directory does not exist, When writeExclusive is called, Then parent is auto-created and write succeeds', async () => {
+      // Arrange
+      const sut = new MemoryFileSystem({ rootDir: '/repo' });
+
+      // Act
+      await sut.writeExclusive('/repo/objects/ab/cdef', new Uint8Array([1, 2, 3]));
+
+      // Assert — mkdir-then-write contract (plan Step 0(f)) satisfied by construction.
+      expect(await sut.exists('/repo/objects/ab/cdef')).toBe(true);
+    });
+
+    it('Given the memory fs has no real symlinks, When writeExclusive is called, Then succeeds (symlink-safe contract trivially holds)', async () => {
+      // Arrange
+      const sut = new MemoryFileSystem({ rootDir: '/repo' });
+
+      // Act
+      await sut.writeExclusive('/repo/a/b/c.bin', new Uint8Array([42]));
+
+      // Assert
+      expect(await sut.exists('/repo/a/b/c.bin')).toBe(true);
+    });
+  });
 });

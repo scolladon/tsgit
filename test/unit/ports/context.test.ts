@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest';
+import { SHA1_CONFIG } from '../../../src/domain/objects/hash-config.js';
+import { createLruCache } from '../../../src/domain/storage/lru-cache.js';
 import type { Compressor } from '../../../src/ports/compressor.js';
 import { createContext, type RepositoryConfig } from '../../../src/ports/context.js';
 import type { FileSystem } from '../../../src/ports/file-system.js';
@@ -13,6 +15,8 @@ const sentinelCompressor = {} as Compressor;
 const sentinelTransport = {} as HttpTransport;
 const sentinelProgress = {} as ProgressReporter;
 const sentinelConfig: RepositoryConfig = { workDir: '/w', gitDir: '/w/.git', bare: false };
+const sentinelHashConfig = SHA1_CONFIG;
+const sentinelDeltaCache = createLruCache<Uint8Array>(1024);
 
 describe('Context', () => {
   it('Given distinct sentinel ports, When creating context, Then ctx.fs === sentinelFs', () => {
@@ -23,6 +27,8 @@ describe('Context', () => {
       transport: sentinelTransport,
       progress: sentinelProgress,
       config: sentinelConfig,
+      hashConfig: sentinelHashConfig,
+      deltaCache: sentinelDeltaCache,
     });
     expect(sut.fs).toBe(sentinelFs);
   });
@@ -35,6 +41,8 @@ describe('Context', () => {
       transport: sentinelTransport,
       progress: sentinelProgress,
       config: sentinelConfig,
+      hashConfig: sentinelHashConfig,
+      deltaCache: sentinelDeltaCache,
     });
     expect(sut.hash).toBe(sentinelHash);
   });
@@ -47,6 +55,8 @@ describe('Context', () => {
       transport: sentinelTransport,
       progress: sentinelProgress,
       config: sentinelConfig,
+      hashConfig: sentinelHashConfig,
+      deltaCache: sentinelDeltaCache,
     });
     expect(sut.compressor).toBe(sentinelCompressor);
   });
@@ -59,6 +69,8 @@ describe('Context', () => {
       transport: sentinelTransport,
       progress: sentinelProgress,
       config: sentinelConfig,
+      hashConfig: sentinelHashConfig,
+      deltaCache: sentinelDeltaCache,
     });
     expect(sut.transport).toBe(sentinelTransport);
   });
@@ -71,6 +83,8 @@ describe('Context', () => {
       transport: sentinelTransport,
       progress: sentinelProgress,
       config: sentinelConfig,
+      hashConfig: sentinelHashConfig,
+      deltaCache: sentinelDeltaCache,
     });
     expect(sut.progress).toBe(sentinelProgress);
   });
@@ -83,6 +97,8 @@ describe('Context', () => {
       transport: sentinelTransport,
       progress: sentinelProgress,
       config: sentinelConfig,
+      hashConfig: sentinelHashConfig,
+      deltaCache: sentinelDeltaCache,
     });
     expect(sut.config).toEqual({ workDir: '/w', gitDir: '/w/.git', bare: false });
   });
@@ -95,6 +111,8 @@ describe('Context', () => {
       transport: sentinelTransport,
       progress: sentinelProgress,
       config: sentinelConfig,
+      hashConfig: sentinelHashConfig,
+      deltaCache: sentinelDeltaCache,
     });
     expect(() => Object.assign(sut, { fs: {} })).toThrow();
   });
@@ -108,6 +126,8 @@ describe('Context', () => {
       transport: sentinelTransport,
       progress: sentinelProgress,
       config: sentinelConfig,
+      hashConfig: sentinelHashConfig,
+      deltaCache: sentinelDeltaCache,
       signal: ac.signal,
     });
     expect(sut.signal).toBe(ac.signal);
@@ -121,6 +141,8 @@ describe('Context', () => {
       transport: sentinelTransport,
       progress: sentinelProgress,
       config: sentinelConfig,
+      hashConfig: sentinelHashConfig,
+      deltaCache: sentinelDeltaCache,
     });
     expect(sut.signal).toBeUndefined();
   });

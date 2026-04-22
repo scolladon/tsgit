@@ -1,5 +1,11 @@
 import { invalidDelta } from './error.js';
 
+/**
+ * Maximum number of delta-chain hops a pack resolver will follow before
+ * throwing `DELTA_CHAIN_TOO_DEEP`. Matches git's own default.
+ */
+export const MAX_DELTA_CHAIN_DEPTH = 50;
+
 export interface CopyInstruction {
   readonly type: 'copy';
   readonly offset: number;

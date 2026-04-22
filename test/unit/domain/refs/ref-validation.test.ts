@@ -392,4 +392,52 @@ describe('validateRefName', () => {
       );
     });
   });
+
+  describe('Unicode RTL/LTR override rejection (Step 0(d))', () => {
+    const overrides: ReadonlyArray<[string, number]> = [
+      ['U+202A', 0x202a],
+      ['U+202B', 0x202b],
+      ['U+202C', 0x202c],
+      ['U+202D', 0x202d],
+      ['U+202E', 0x202e],
+      ['U+2066', 0x2066],
+      ['U+2067', 0x2067],
+      ['U+2068', 0x2068],
+      ['U+2069', 0x2069],
+    ];
+
+    for (const [label, code] of overrides) {
+      it(`Given a ref name containing ${label}, When validating, Then throws INVALID_REF /forbidden Unicode override/`, () => {
+        try {
+          validateRefName(`refs/heads/bad${String.fromCharCode(code)}name`);
+          expect.fail('should have thrown');
+        } catch (e) {
+          expect(e).toBeInstanceOf(TsgitError);
+          expect((e as TsgitError).data).toEqual({
+            code: 'INVALID_REF',
+            reason: 'ref name contains forbidden Unicode override',
+          });
+        }
+      });
+    }
+
+    it('Given a ref name with no overrides, When validating, Then succeeds (baseline accept)', () => {
+      const sut = validateRefName('refs/heads/main');
+      expect(sut).toBe('refs/heads/main');
+    });
+
+    const negatives: ReadonlyArray<[string, number]> = [
+      ['U+2029 just-below-first', 0x2029],
+      ['U+202F just-above-upper-end', 0x202f],
+      ['U+2065 just-below-second', 0x2065],
+      ['U+206A just-above-second-end', 0x206a],
+    ];
+
+    for (const [label, code] of negatives) {
+      it(`Given a ref name containing ${label}, When validating, Then succeeds (negative boundary)`, () => {
+        const sut = validateRefName(`refs/heads/ok${String.fromCharCode(code)}name`);
+        expect(sut).toContain('refs/heads/');
+      });
+    }
+  });
 });

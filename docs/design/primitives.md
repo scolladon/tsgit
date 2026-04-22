@@ -6,6 +6,16 @@
 
 Round 0 — initial draft. Open for review.
 
+Round 4 (finalization gate) — implemented amendments:
+
+- **`createCommit` extra-header key validation.** Header keys are now rejected when empty or containing NUL/CR/LF/space/tab — closes a wire-format injection gap distinct from the value-side `hasHeaderInjectionChars` already in place. Predicate `isInvalidExtraHeaderKey` + reason `REASON_EXTRA_HEADER_KEY_INVALID` in `validators.ts`.
+- **`readIndex` checksum-mismatch error sanitization.** The thrown message no longer embeds the computed/expected hex digests; reason promoted to a stable constant `REASON_INDEX_CHECKSUM_MISMATCH`.
+- **`pack-registry` .idx size guard.** Stat-then-read with a 64 MiB cap (`MAX_PACK_IDX_BYTES`); throws `INVALID_PACK_INDEX` with `REASON_PACK_IDX_EXCEEDS_MAX`. Defends against a hostile/corrupt pack directory before any allocation.
+- **NodeCompressor inflated-output cap.** `inflate()` now passes `maxOutputLength: MAX_INFLATED_OBJECT_BYTES` (2 GiB, mirrors the delta target cap); `streamInflate` and `createInflateStream` add cumulative byte counters that destroy the stream and surface `DECOMPRESS_FAILED` when the cap is exceeded. Cap is injectable via the `NodeCompressor` constructor for testability.
+- **BrowserCompressor input cap.** `streamInflate` now rejects inputs above 64 KiB (mirrors `MemoryCompressor`) — the progressive-prefix scan is O(n²) and not appropriate for production-sized packs.
+- **`RefStore` per-Context cache.** A new `getRefStore(ctx)` resolves through a `WeakMap<Context, RefStore>`, mirroring the `read-object.ts` registry-cache pattern. `resolveRef` and `updateRef` consume the cached store, so a session that performs N ref lookups parses `packed-refs` once instead of N times.
+- **`WalkState.queue` type accuracy.** Dropped the misleading `readonly` qualifier on the queue field (the array is mutated in-place via `push`/`shift`) so the interface honestly reflects the implementation.
+
 ---
 
 ## 1. Overview
@@ -240,6 +250,8 @@ interface WalkCommitsOptions {
    * Starting commit ids (resolved from refs by the caller, or walked from HEAD).
    * At least one required; at most `MAX_WALK_SEEDS = 1024` (see §5.10 invariants —
    * prevents seed-admission loop from stalling the event loop on hostile input).
+   * The pending queue is additionally capped at `MAX_WALK_QUEUE_SIZE = 64 * 1024`
+   * to prevent unbounded heap growth on wide octopus-merge repositories.
    */
   readonly from: ReadonlyArray<ObjectId>;
   /** Stop when any of these commit ids is reached. Exclusive: the boundary commit is NOT yielded. */
@@ -247,10 +259,13 @@ interface WalkCommitsOptions {
   /**
    * Walk order:
    *  - 'topo'       — topological (default; parents after children, stable)
-   *  - 'date'       — committer-date descending (approximate; not stable across clocks)
    *  - 'first-parent' — follow only `commit.parents[0]` at each step
+   *
+   * NOTE: `'date'` order is reserved for a future heap-based scheduler; it is
+   * intentionally absent from the public type in Phase 7 so callers cannot
+   * request behavior the current FIFO walker does not actually implement.
    */
-  readonly order?: 'topo' | 'date' | 'first-parent';
+  readonly order?: 'topo' | 'first-parent';
   /**
    * If `true`, missing parent commits are silently skipped instead of throwing
    * `OBJECT_NOT_FOUND`. Required for shallow clones (`.git/shallow`) where
@@ -373,7 +388,7 @@ export function readObject(
 - When `verifyHash: true`, SHA over the serialized object must equal `id`; mismatch throws `OBJECT_HASH_MISMATCH`.
 - Checks `ctx.signal.aborted` before each filesystem read.
 
-**Ports used.** `ctx.fs.read` / `ctx.fs.readSlice`, `ctx.compressor.inflate` (or `createInflateStream` for large entries), `ctx.hash.hashHex` (only when `verifyHash=true` or hashing a reconstructed delta).
+**Ports used.** `ctx.fs.read` / `ctx.fs.readSlice`, `ctx.compressor.inflate` for loose objects, `ctx.compressor.streamInflate(bytes, offset)` for packed entries (pack resolver reads a generous header+stream slice and streamInflate stops at the zlib terminator, returning `{ output, bytesConsumed }`), `ctx.hash.hashHex` (only when `verifyHash=true` or hashing a reconstructed delta).
 
 **Domain used.** `parseHeader`, `parseObject`, pack-index `lookupPackIndex`, pack-entry `parsePackEntryHeader`, `applyDelta`, `computeLooseObjectPath`. (The `LruCache` *type* is imported from `domain/storage/` for `ctx.deltaCache`; the primitive does NOT call `createLruCache` — Context factories do.)
 

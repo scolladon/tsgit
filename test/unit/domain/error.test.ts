@@ -221,6 +221,33 @@ describe('domain error — AdapterError', () => {
       // Assert
       expect(sut.message).toContain('DNS resolution failed');
     });
+
+    it('Given TREE_CYCLE_DETECTED, When reading message, Then contains id', () => {
+      // Arrange & Act
+      const sut = new TsgitErrorClass({
+        code: 'TREE_CYCLE_DETECTED',
+        id: 'abc123' as never,
+      });
+
+      // Assert
+      expect(sut.message).toContain('tree cycle detected: abc123');
+    });
+
+    it('Given TREE_DEPTH_EXCEEDED, When reading message, Then contains depth', () => {
+      // Arrange & Act
+      const sut = new TsgitErrorClass({ code: 'TREE_DEPTH_EXCEEDED', depth: 42 });
+
+      // Assert
+      expect(sut.message).toContain('tree depth exceeded: 42');
+    });
+
+    it('Given DELTA_CHAIN_TOO_DEEP, When reading message, Then contains depth', () => {
+      // Arrange & Act
+      const sut = new TsgitErrorClass({ code: 'DELTA_CHAIN_TOO_DEEP', depth: 51 });
+
+      // Assert
+      expect(sut.message).toContain('delta chain too deep: 51');
+    });
   });
 
   describe('basename helper', () => {
