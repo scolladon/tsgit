@@ -2,7 +2,7 @@
 
 Track: `[ ]` todo, `[~]` in progress, `[x]` done, `[-]` skipped
 
-**Progress:** Phases 0–7 complete. Phase 8 (Transport) is next.
+**Progress:** Phases 0–7 complete. Phase 8 (Transport) — design drafted; plan + implementation pending.
 
 ---
 
@@ -143,12 +143,12 @@ Design: `docs/design/primitives.md`
 
 Smart HTTP protocol and middleware.
 
-- [ ] **8.1** Smart HTTP protocol v1 (discovery, negotiation, packfile exchange)
-- [ ] **8.2** `withRetry` middleware
-- [ ] **8.3** `withAuth` middleware (bearer, basic)
-- [ ] **8.4** `withLogging` middleware
+- [~] **8.1** Smart HTTP protocol v1 (discovery, negotiation, packfile exchange)
+- [~] **8.2** `withRetry` middleware
+- [~] **8.3** `withAuth` middleware (bearer, basic)
+- [~] **8.4** `withLogging` middleware
 
-Design: `docs/design/transport.md`
+Design: `docs/design/transport.md` (drafted; ready for plan phase)
 
 ---
 
