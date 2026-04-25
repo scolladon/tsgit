@@ -250,7 +250,16 @@
     "untracked",
     "intra",
     "openat",
-    "criss"
+    "criss",
+    "substep",
+    "RDONLY",
+    "Afoo",
+    "unparseable",
+    "ELOOP",
+    "WONLY",
+    "substeps",
+    "finalised",
+    "fsyncs"
   ],
   "ignorePaths": [
     "node_modules",
