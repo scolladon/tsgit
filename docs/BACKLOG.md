@@ -169,8 +169,11 @@ High-level operations built from primitives.
 - [ ] **9.11** `fetch` — fetch refs and objects from remote
 - [ ] **9.12** `push` — push refs and objects to remote
 - [ ] **9.13** `merge` — three-way merge with conflict detection
+- [ ] **9.14** `rm` — remove files from the index (and optionally working tree)
+- [ ] **9.15** `reset` — move HEAD with soft / mixed / hard semantics
+- [ ] **9.16** `revParse` — resolve revision expressions to ObjectIds
 
-Design: `docs/design/commands.md`
+Design: `docs/design/commands.md` (drafted; ready for plan phase)
 
 ---
 
