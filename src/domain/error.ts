@@ -2,6 +2,7 @@ import type { DiffError } from './diff/error.js';
 import type { IndexError } from './git-index/error.js';
 import type { MergeError } from './merge/error.js';
 import type { DomainObjectError } from './objects/error.js';
+import type { ProtocolError } from './protocol/error.js';
 import type { RefsError } from './refs/error.js';
 import type { StorageError } from './storage/error.js';
 
@@ -34,7 +35,8 @@ export type TsgitErrorData =
   | AdapterError
   | DiffError
   | MergeError
-  | ApplicationError;
+  | ApplicationError
+  | ProtocolError;
 
 export class TsgitError extends Error {
   override readonly name = 'TsgitError';
@@ -169,6 +171,36 @@ function extractDetail(data: TsgitErrorData): string {
       return `invalid walk input: ${data.reason}`;
     case 'OPERATION_ABORTED':
       return 'operation aborted';
+    case 'INVALID_PKT_LENGTH':
+      return `invalid pkt-line length: ${data.value}`;
+    case 'PKT_LENGTH_RESERVED':
+      return `reserved pkt-line length: ${data.value}`;
+    case 'PKT_TOO_LARGE':
+      return `pkt-line too large: ${data.value} bytes (max 65520)`;
+    case 'PKT_TRUNCATED':
+      return `pkt-line truncated: ${data.remaining} bytes remaining`;
+    case 'INVALID_BASE_URL':
+      return `invalid base URL: ${data.reason}`;
+    case 'MISSING_SERVICE_HEADER':
+      return `missing service header: expected=${data.expected} actual=${data.actual}`;
+    case 'MISSING_CAPABILITIES':
+      return 'missing capabilities in advertisement';
+    case 'INVALID_REF_LINE':
+      return `invalid ref line: ${data.line}`;
+    case 'DUPLICATE_REF':
+      return `duplicate ref: ${data.name}`;
+    case 'INVALID_SIDEBAND_CHANNEL':
+      return `invalid sideband channel: ${data.channel}`;
+    case 'SIDEBAND_FATAL':
+      return `sideband fatal: ${data.message}`;
+    case 'UNKNOWN_ACK_STATUS':
+      return `unknown ack status: ${data.value}`;
+    case 'INVALID_REPORT_STATUS':
+      return `invalid report-status line: ${data.line}`;
+    case 'EMPTY_WANTS':
+      return 'upload-pack request has no wants';
+    case 'EMPTY_RECEIVE_UPDATES':
+      return 'receive-pack request has no updates';
     default: {
       const _exhaustive: never = data;
       return String(_exhaustive);

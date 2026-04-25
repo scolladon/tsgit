@@ -18,6 +18,12 @@
     "gzip": true
   },
   {
+    "name": "Transport",
+    "path": "dist/esm/transport/index.js",
+    "limit": "2 kB",
+    "gzip": true
+  },
+  {
     "name": "Node adapter",
     "path": "dist/esm/adapters/node/index.js",
     "limit": "10 kB",

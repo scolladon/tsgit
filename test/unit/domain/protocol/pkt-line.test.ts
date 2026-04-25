@@ -1,0 +1,496 @@
+import { describe, expect, it } from 'vitest';
+
+import { TsgitError } from '../../../../src/domain/error.js';
+import {
+  DELIM_PKT,
+  decodePktStream,
+  encodePktLine,
+  encodePktStream,
+  FLUSH_PKT,
+  MAX_PKT_LINE_PAYLOAD,
+  type PktLine,
+  RESPONSE_END_PKT,
+} from '../../../../src/domain/protocol/pkt-line.js';
+
+const enc = new TextEncoder();
+
+const bytesOf = (s: string): Uint8Array => enc.encode(s);
+
+const concat = (...parts: ReadonlyArray<Uint8Array>): Uint8Array => {
+  const total = parts.reduce((n, p) => n + p.byteLength, 0);
+  const out = new Uint8Array(total);
+  let off = 0;
+  for (const p of parts) {
+    out.set(p, off);
+    off += p.byteLength;
+  }
+  return out;
+};
+
+async function* asyncOf(chunks: ReadonlyArray<Uint8Array>): AsyncIterable<Uint8Array> {
+  for (const c of chunks) yield c;
+}
+
+async function collect(source: AsyncIterable<PktLine>): Promise<PktLine[]> {
+  const out: PktLine[] = [];
+  for await (const pkt of source) out.push(pkt);
+  return out;
+}
+
+describe('encodePktLine', () => {
+  it('Given an empty payload, When encodePktLine, Then result equals bytesOf("0004")', () => {
+    // Arrange
+    const payload = new Uint8Array(0);
+
+    // Act
+    const sut = encodePktLine(payload);
+
+    // Assert
+    expect(sut).toEqual(bytesOf('0004'));
+  });
+
+  it('Given a 1-byte payload, When encodePktLine, Then result equals "0005A"', () => {
+    // Arrange
+    const payload = bytesOf('A');
+
+    // Act
+    const sut = encodePktLine(payload);
+
+    // Assert
+    expect(sut).toEqual(bytesOf('0005A'));
+  });
+
+  it('Given a payload of MAX_PKT_LINE_PAYLOAD bytes, When encodePktLine, Then byte length equals MAX + 4', () => {
+    // Arrange
+    const payload = new Uint8Array(MAX_PKT_LINE_PAYLOAD);
+
+    // Act
+    const sut = encodePktLine(payload);
+
+    // Assert
+    expect(sut.byteLength).toBe(MAX_PKT_LINE_PAYLOAD + 4);
+  });
+
+  it('Given MAX_PKT_LINE_PAYLOAD bytes, When encodePktLine, Then first 4 bytes equal "fff0"', () => {
+    // Arrange
+    const payload = new Uint8Array(MAX_PKT_LINE_PAYLOAD);
+
+    // Act
+    const sut = encodePktLine(payload);
+
+    // Assert
+    expect(sut.slice(0, 4)).toEqual(bytesOf('fff0'));
+  });
+
+  it('Given MAX_PKT_LINE_PAYLOAD - 1 bytes, When encodePktLine, Then first 4 bytes equal "ffef"', () => {
+    // Arrange
+    const payload = new Uint8Array(MAX_PKT_LINE_PAYLOAD - 1);
+
+    // Act
+    const sut = encodePktLine(payload);
+
+    // Assert
+    expect(sut.slice(0, 4)).toEqual(bytesOf('ffef'));
+  });
+
+  it('Given MAX_PKT_LINE_PAYLOAD + 1 bytes, When encodePktLine, Then it throws RangeError with the exact documented message', () => {
+    // Arrange
+    const payload = new Uint8Array(MAX_PKT_LINE_PAYLOAD + 1);
+    const expected = `pkt-line: payload too large (${MAX_PKT_LINE_PAYLOAD + 1} > ${MAX_PKT_LINE_PAYLOAD})`;
+
+    // Act & Assert
+    try {
+      encodePktLine(payload);
+      throw new Error('expected throw');
+    } catch (err) {
+      expect(err).toBeInstanceOf(RangeError);
+      expect((err as RangeError).message).toBe(expected);
+    }
+  });
+});
+
+describe('encodePktStream', () => {
+  it('Given an empty array, When encodePktStream, Then result equals just the trailing flush "0000"', () => {
+    // Arrange
+    const payloads: ReadonlyArray<Uint8Array> = [];
+
+    // Act
+    const sut = encodePktStream(payloads);
+
+    // Assert
+    expect(sut).toEqual(bytesOf('0000'));
+  });
+
+  it('Given a single "foo" payload, When encodePktStream, Then result equals "0007foo0000"', () => {
+    // Arrange
+    const payloads = [bytesOf('foo')];
+
+    // Act
+    const sut = encodePktStream(payloads);
+
+    // Assert
+    expect(sut).toEqual(bytesOf('0007foo0000'));
+  });
+
+  it('Given three payloads, When encodePktStream, Then result equals concat(encodePktLine each, FLUSH)', () => {
+    // Arrange
+    const a = bytesOf('alpha');
+    const b = bytesOf('beta');
+    const c = bytesOf('gamma');
+
+    // Act
+    const sut = encodePktStream([a, b, c]);
+
+    // Assert
+    expect(sut).toEqual(
+      concat(encodePktLine(a), encodePktLine(b), encodePktLine(c), bytesOf('0000')),
+    );
+  });
+
+  it('Given two 1-KB payloads, When encodePktStream, Then byte length equals (p1+4) + (p2+4) + 4', () => {
+    // Arrange
+    const p1 = new Uint8Array(1024);
+    const p2 = new Uint8Array(1024);
+
+    // Act
+    const sut = encodePktStream([p1, p2]);
+
+    // Assert
+    expect(sut.byteLength).toBe(p1.byteLength + 4 + p2.byteLength + 4 + 4);
+  });
+
+  it('Given a payload above MAX_PKT_LINE_PAYLOAD in the stream, When encodePktStream, Then throws RangeError with the exact documented message', () => {
+    // Arrange
+    const tooBig = new Uint8Array(MAX_PKT_LINE_PAYLOAD + 1);
+    const expected = `pkt-line: payload too large (${MAX_PKT_LINE_PAYLOAD + 1} > ${MAX_PKT_LINE_PAYLOAD})`;
+
+    // Act & Assert
+    try {
+      encodePktStream([tooBig]);
+      throw new Error('expected throw');
+    } catch (err) {
+      expect(err).toBeInstanceOf(RangeError);
+      expect((err as RangeError).message).toBe(expected);
+    }
+  });
+});
+
+describe('FLUSH_PKT / DELIM_PKT / RESPONSE_END_PKT constants', () => {
+  it('Given FLUSH_PKT, When inspected, Then equals bytesOf("0000")', () => {
+    expect(FLUSH_PKT).toEqual(bytesOf('0000'));
+  });
+
+  it('Given DELIM_PKT, When inspected, Then equals bytesOf("0001")', () => {
+    expect(DELIM_PKT).toEqual(bytesOf('0001'));
+  });
+
+  it('Given RESPONSE_END_PKT, When inspected, Then equals bytesOf("0002")', () => {
+    expect(RESPONSE_END_PKT).toEqual(bytesOf('0002'));
+  });
+});
+
+describe('decodePktStream — basic packets', () => {
+  it('Given the chunk "0000", When decoded, Then yields one flush', async () => {
+    // Arrange
+    const chunks = [bytesOf('0000')];
+
+    // Act
+    const sut = await collect(decodePktStream(asyncOf(chunks)));
+
+    // Assert
+    expect(sut).toEqual([{ kind: 'flush' }]);
+  });
+
+  it('Given "0001" with v2:false, When decoded, Then throws PKT_LENGTH_RESERVED with value=1', async () => {
+    // Arrange
+    const chunks = [bytesOf('0001')];
+
+    // Act & Assert
+    try {
+      await collect(decodePktStream(asyncOf(chunks)));
+      throw new Error('expected throw');
+    } catch (err) {
+      expect(err).toBeInstanceOf(TsgitError);
+      const te = err as TsgitError;
+      expect(te.data).toEqual({ code: 'PKT_LENGTH_RESERVED', value: 1 });
+    }
+  });
+
+  it('Given "0001" with v2:true, When decoded, Then yields one delim', async () => {
+    // Arrange
+    const chunks = [bytesOf('0001')];
+
+    // Act
+    const sut = await collect(decodePktStream(asyncOf(chunks), { v2: true }));
+
+    // Assert
+    expect(sut).toEqual([{ kind: 'delim' }]);
+  });
+
+  it('Given "0002" with v2:false, When decoded, Then throws PKT_LENGTH_RESERVED with value=2', async () => {
+    // Arrange
+    const chunks = [bytesOf('0002')];
+
+    // Act & Assert
+    try {
+      await collect(decodePktStream(asyncOf(chunks)));
+      throw new Error('expected throw');
+    } catch (err) {
+      expect(err).toBeInstanceOf(TsgitError);
+      const te = err as TsgitError;
+      expect(te.data).toEqual({ code: 'PKT_LENGTH_RESERVED', value: 2 });
+    }
+  });
+
+  it('Given "0002" with v2:true, When decoded, Then yields one response-end', async () => {
+    // Arrange
+    const chunks = [bytesOf('0002')];
+
+    // Act
+    const sut = await collect(decodePktStream(asyncOf(chunks), { v2: true }));
+
+    // Assert
+    expect(sut).toEqual([{ kind: 'response-end' }]);
+  });
+
+  it('Given "0003" regardless of v2, When decoded, Then throws PKT_LENGTH_RESERVED with value=3', async () => {
+    // Arrange
+    const chunks = [bytesOf('0003')];
+
+    // Act & Assert
+    for (const v2 of [false, true]) {
+      try {
+        await collect(decodePktStream(asyncOf(chunks), { v2 }));
+        throw new Error('expected throw');
+      } catch (err) {
+        expect(err).toBeInstanceOf(TsgitError);
+        const te = err as TsgitError;
+        expect(te.data).toEqual({ code: 'PKT_LENGTH_RESERVED', value: 3 });
+      }
+    }
+  });
+
+  it('Given "00040000", When decoded, Then yields { data, payload: 0 } then flush', async () => {
+    // Arrange
+    const chunks = [bytesOf('00040000')];
+
+    // Act
+    const sut = await collect(decodePktStream(asyncOf(chunks)));
+
+    // Assert
+    expect(sut).toEqual([{ kind: 'data', payload: new Uint8Array(0) }, { kind: 'flush' }]);
+  });
+
+  it('Given "0009done\\n", When decoded, Then yields one data with payload "done\\n"', async () => {
+    // Arrange
+    const chunks = [bytesOf('0009done\n')];
+
+    // Act
+    const sut = await collect(decodePktStream(asyncOf(chunks)));
+
+    // Assert
+    expect(sut).toHaveLength(1);
+    expect(sut[0]).toEqual({ kind: 'data', payload: bytesOf('done\n') });
+  });
+});
+
+describe('decodePktStream — reassembly', () => {
+  it('Given chunks "00", "09do", "ne\\n", When decoded, Then yields one data with payload "done\\n"', async () => {
+    // Arrange
+    const chunks = [bytesOf('00'), bytesOf('09do'), bytesOf('ne\n')];
+
+    // Act
+    const sut = await collect(decodePktStream(asyncOf(chunks)));
+
+    // Assert
+    expect(sut).toEqual([{ kind: 'data', payload: bytesOf('done\n') }]);
+  });
+
+  it('Given chunks "000f0123456" + "789\\n", When decoded, Then yields data "0123456789\\n"', async () => {
+    // Arrange — header "000f" (length 15 = 4 prefix + 11 payload)
+    const chunks = [bytesOf('000f0123456'), bytesOf('789\n')];
+
+    // Act
+    const sut = await collect(decodePktStream(asyncOf(chunks)));
+
+    // Assert
+    expect(sut).toEqual([{ kind: 'data', payload: bytesOf('0123456789\n') }]);
+  });
+
+  it('Given two packets in one chunk "0006A\\n0006B\\n", When decoded, Then yields two data entries in order', async () => {
+    // Arrange
+    const chunks = [bytesOf('0006A\n0006B\n')];
+
+    // Act
+    const sut = await collect(decodePktStream(asyncOf(chunks)));
+
+    // Assert
+    expect(sut).toEqual([
+      { kind: 'data', payload: bytesOf('A\n') },
+      { kind: 'data', payload: bytesOf('B\n') },
+    ]);
+  });
+});
+
+describe('decodePktStream — length boundary triple', () => {
+  it('Given length=0xfff0 (max), When decoded, Then yields data of length MAX_PKT_LINE_PAYLOAD', async () => {
+    // Arrange
+    const payload = new Uint8Array(MAX_PKT_LINE_PAYLOAD);
+    const chunk = encodePktLine(payload);
+
+    // Act
+    const sut = await collect(decodePktStream(asyncOf([chunk])));
+
+    // Assert
+    expect(sut).toHaveLength(1);
+    expect(sut[0]?.kind).toBe('data');
+    if (sut[0]?.kind === 'data') {
+      expect(sut[0].payload.byteLength).toBe(MAX_PKT_LINE_PAYLOAD);
+    }
+  });
+
+  it('Given length=0xfff1 (just over max), When decoded, Then throws PKT_TOO_LARGE with value=0xfff1', async () => {
+    // Arrange — encode the over-cap header manually with placeholder body bytes
+    const headerBytes = bytesOf('fff1');
+    const body = new Uint8Array(0xfff1 - 4); // unused — parser must throw before reading body
+    const chunk = concat(headerBytes, body);
+
+    // Act & Assert
+    try {
+      await collect(decodePktStream(asyncOf([chunk])));
+      throw new Error('expected throw');
+    } catch (err) {
+      expect(err).toBeInstanceOf(TsgitError);
+      const te = err as TsgitError;
+      expect(te.data).toEqual({ code: 'PKT_TOO_LARGE', value: 0xfff1 });
+    }
+  });
+
+  it('Given length=0xffef (just under max), When decoded, Then yields data of length MAX-1', async () => {
+    // Arrange
+    const payload = new Uint8Array(MAX_PKT_LINE_PAYLOAD - 1);
+    const chunk = encodePktLine(payload);
+
+    // Act
+    const sut = await collect(decodePktStream(asyncOf([chunk])));
+
+    // Assert
+    expect(sut).toHaveLength(1);
+    expect(sut[0]?.kind).toBe('data');
+    if (sut[0]?.kind === 'data') {
+      expect(sut[0].payload.byteLength).toBe(MAX_PKT_LINE_PAYLOAD - 1);
+    }
+  });
+});
+
+describe('decodePktStream — truncation', () => {
+  it('Given chunk "00" then EOF, When decoded, Then throws PKT_TRUNCATED with remaining=2', async () => {
+    // Arrange
+    const chunks = [bytesOf('00')];
+
+    // Act & Assert
+    try {
+      await collect(decodePktStream(asyncOf(chunks)));
+      throw new Error('expected throw');
+    } catch (err) {
+      expect(err).toBeInstanceOf(TsgitError);
+      const te = err as TsgitError;
+      expect(te.data).toEqual({ code: 'PKT_TRUNCATED', remaining: 2 });
+    }
+  });
+
+  it('Given chunk "0009do" then EOF, When decoded, Then throws PKT_TRUNCATED with remaining=6', async () => {
+    // Arrange
+    const chunks = [bytesOf('0009do')];
+
+    // Act & Assert
+    try {
+      await collect(decodePktStream(asyncOf(chunks)));
+      throw new Error('expected throw');
+    } catch (err) {
+      expect(err).toBeInstanceOf(TsgitError);
+      const te = err as TsgitError;
+      expect(te.data).toEqual({ code: 'PKT_TRUNCATED', remaining: 6 });
+    }
+  });
+});
+
+describe('decodePktStream — invalid length', () => {
+  it('Given chunk "xxxx", When decoded, Then throws INVALID_PKT_LENGTH with value="xxxx"', async () => {
+    // Arrange
+    const chunks = [bytesOf('xxxx')];
+
+    // Act & Assert
+    try {
+      await collect(decodePktStream(asyncOf(chunks)));
+      throw new Error('expected throw');
+    } catch (err) {
+      expect(err).toBeInstanceOf(TsgitError);
+      const te = err as TsgitError;
+      expect(te.data).toEqual({ code: 'INVALID_PKT_LENGTH', value: 'xxxx' });
+    }
+  });
+
+  it('Given chunk "0g00", When decoded, Then throws INVALID_PKT_LENGTH with value="0g00"', async () => {
+    // Arrange
+    const chunks = [bytesOf('0g00')];
+
+    // Act & Assert
+    try {
+      await collect(decodePktStream(asyncOf(chunks)));
+      throw new Error('expected throw');
+    } catch (err) {
+      expect(err).toBeInstanceOf(TsgitError);
+      const te = err as TsgitError;
+      expect(te.data).toEqual({ code: 'INVALID_PKT_LENGTH', value: '0g00' });
+    }
+  });
+});
+
+describe('decodePktStream — DoS resistance', () => {
+  it('Given a giant chunk whose first 4 bytes are "gggg", When decoded, Then throws INVALID_PKT_LENGTH (parse runs first)', async () => {
+    // Arrange
+    const giant = new Uint8Array(MAX_PKT_LINE_PAYLOAD + 100);
+    giant.set(bytesOf('gggg'), 0);
+
+    // Act & Assert
+    try {
+      await collect(decodePktStream(asyncOf([giant])));
+      throw new Error('expected throw');
+    } catch (err) {
+      expect(err).toBeInstanceOf(TsgitError);
+      const te = err as TsgitError;
+      expect(te.data.code).toBe('INVALID_PKT_LENGTH');
+    }
+  });
+
+  it('Given a giant chunk whose first 4 bytes are "fff5" (length 65525, exceeds max), When decoded, Then throws PKT_TOO_LARGE with value=0xfff5', async () => {
+    // Arrange
+    const giant = new Uint8Array(MAX_PKT_LINE_PAYLOAD + 100);
+    giant.set(bytesOf('fff5'), 0);
+
+    // Act & Assert
+    try {
+      await collect(decodePktStream(asyncOf([giant])));
+      throw new Error('expected throw');
+    } catch (err) {
+      expect(err).toBeInstanceOf(TsgitError);
+      const te = err as TsgitError;
+      expect(te.data).toEqual({ code: 'PKT_TOO_LARGE', value: 0xfff5 });
+    }
+  });
+});
+
+describe('decodePktStream — case-insensitive length parse', () => {
+  it('Given the chunk "000A" + 6 bytes payload, When decoded, Then yields data of length 6', async () => {
+    // Arrange — uppercase length prefix per spec ("accept either case")
+    const chunk = concat(bytesOf('000A'), bytesOf('abcdef'));
+
+    // Act
+    const sut = await collect(decodePktStream(asyncOf([chunk])));
+
+    // Assert
+    expect(sut).toHaveLength(1);
+    expect(sut[0]).toEqual({ kind: 'data', payload: bytesOf('abcdef') });
+  });
+});

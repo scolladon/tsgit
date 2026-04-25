@@ -22,6 +22,8 @@ export const ObjectId = {
   },
 } as const;
 
+export const ZERO_OID: ObjectId = ObjectId.from('0000000000000000000000000000000000000000');
+
 export type RefName = string & { readonly __brand: unique symbol };
 
 export const RefName = {

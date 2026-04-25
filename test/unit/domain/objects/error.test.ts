@@ -207,6 +207,21 @@ describe('error', () => {
           case 'REF_UPDATE_CONFLICT':
           case 'INVALID_WALK_INPUT':
           case 'OPERATION_ABORTED':
+          case 'INVALID_PKT_LENGTH':
+          case 'PKT_LENGTH_RESERVED':
+          case 'PKT_TOO_LARGE':
+          case 'PKT_TRUNCATED':
+          case 'INVALID_BASE_URL':
+          case 'MISSING_SERVICE_HEADER':
+          case 'MISSING_CAPABILITIES':
+          case 'INVALID_REF_LINE':
+          case 'DUPLICATE_REF':
+          case 'INVALID_SIDEBAND_CHANNEL':
+          case 'SIDEBAND_FATAL':
+          case 'UNKNOWN_ACK_STATUS':
+          case 'INVALID_REPORT_STATUS':
+          case 'EMPTY_WANTS':
+          case 'EMPTY_RECEIVE_UPDATES':
             break;
           default: {
             const _exhaustive: never = data;
