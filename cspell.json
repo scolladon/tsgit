@@ -276,7 +276,11 @@
     "eviltext",
     "unstub",
     "Validatable",
-    "gitdir"
+    "gitdir",
+    "APFS",
+    "lobste",
+    "pipefail",
+    "npmjs"
   ],
   "ignorePaths": [
     "node_modules",
