@@ -1,0 +1,152 @@
+import { TsgitError } from '../error.js';
+import type { FilePath, ObjectId, RefName } from '../objects/object-id.js';
+import type { ReceivePackResponse as ReportStatus } from '../protocol/receive-pack.js';
+
+export type CommandError =
+  | { readonly code: 'WORKING_TREE_DIRTY'; readonly paths: ReadonlyArray<FilePath> }
+  | { readonly code: 'PATHSPEC_NO_MATCH'; readonly pattern: string }
+  | { readonly code: 'PATHSPEC_OUTSIDE_REPO'; readonly path: FilePath }
+  | { readonly code: 'NOTHING_TO_COMMIT' }
+  | { readonly code: 'EMPTY_COMMIT_MESSAGE' }
+  | { readonly code: 'AUTHOR_UNCONFIGURED' }
+  | { readonly code: 'BRANCH_EXISTS'; readonly name: RefName }
+  | { readonly code: 'BRANCH_NOT_FOUND'; readonly name: RefName }
+  | { readonly code: 'TAG_EXISTS'; readonly name: RefName }
+  | { readonly code: 'TAG_NOT_FOUND'; readonly name: RefName }
+  | { readonly code: 'CANNOT_DELETE_CHECKED_OUT_BRANCH'; readonly name: RefName }
+  | { readonly code: 'INVALID_URL'; readonly reason: string }
+  | { readonly code: 'BLOCKED_HOST'; readonly host: string; readonly reason: string }
+  | { readonly code: 'TOO_MANY_REDIRECTS'; readonly count: number }
+  | { readonly code: 'UNSUPPORTED_SCHEME'; readonly scheme: string }
+  | { readonly code: 'TARGET_DIRECTORY_NOT_EMPTY'; readonly path: FilePath }
+  | { readonly code: 'REMOTE_ADVERTISES_NO_REFS' }
+  | {
+      readonly code: 'NON_FAST_FORWARD';
+      readonly ref: RefName;
+      readonly local: ObjectId;
+      readonly remote: ObjectId;
+    }
+  | {
+      readonly code: 'PUSH_REJECTED';
+      readonly ref: RefName;
+      readonly reason: string;
+      readonly reportStatus: ReportStatus;
+    }
+  | { readonly code: 'MERGE_HAS_CONFLICTS'; readonly count: number }
+  | { readonly code: 'CHECKOUT_OVERWRITE_DIRTY'; readonly paths: ReadonlyArray<FilePath> }
+  | {
+      readonly code: 'REVPARSE_AMBIGUOUS';
+      readonly expression: string;
+      readonly candidates: ReadonlyArray<ObjectId>;
+    }
+  | { readonly code: 'REVPARSE_UNRESOLVED'; readonly expression: string }
+  | { readonly code: 'EMPTY_PATHSPEC' }
+  | {
+      readonly code: 'OPERATION_IN_PROGRESS';
+      readonly operation: 'merge' | 'rebase' | 'cherry-pick' | 'revert';
+    }
+  | { readonly code: 'MAX_REFSPECS_EXCEEDED'; readonly count: number; readonly limit: number }
+  | { readonly code: 'REMOTE_NOT_CONFIGURED'; readonly remote: string };
+
+const sanitizeForDisplay = (s: string): string => {
+  let out = '';
+  for (let i = 0; i < s.length; i += 1) {
+    const code = s.charCodeAt(i);
+    if (code === 0x09 || code === 0x0a || (code >= 0x20 && code <= 0x7e)) {
+      out += s[i];
+    } else {
+      out += `\\x${code.toString(16).toUpperCase().padStart(2, '0')}`;
+    }
+  }
+  return out;
+};
+
+export const sanitize = sanitizeForDisplay;
+
+export const workingTreeDirty = (paths: ReadonlyArray<FilePath>): TsgitError =>
+  new TsgitError({ code: 'WORKING_TREE_DIRTY', paths });
+
+export const pathspecNoMatch = (pattern: string): TsgitError =>
+  new TsgitError({ code: 'PATHSPEC_NO_MATCH', pattern });
+
+export const pathspecOutsideRepo = (path: FilePath): TsgitError =>
+  new TsgitError({ code: 'PATHSPEC_OUTSIDE_REPO', path });
+
+export const nothingToCommit = (): TsgitError => new TsgitError({ code: 'NOTHING_TO_COMMIT' });
+
+export const emptyCommitMessage = (): TsgitError =>
+  new TsgitError({ code: 'EMPTY_COMMIT_MESSAGE' });
+
+export const authorUnconfigured = (): TsgitError => new TsgitError({ code: 'AUTHOR_UNCONFIGURED' });
+
+export const branchExists = (name: RefName): TsgitError =>
+  new TsgitError({ code: 'BRANCH_EXISTS', name });
+
+export const branchNotFound = (name: RefName): TsgitError =>
+  new TsgitError({ code: 'BRANCH_NOT_FOUND', name });
+
+export const tagExists = (name: RefName): TsgitError =>
+  new TsgitError({ code: 'TAG_EXISTS', name });
+
+export const tagNotFound = (name: RefName): TsgitError =>
+  new TsgitError({ code: 'TAG_NOT_FOUND', name });
+
+export const cannotDeleteCheckedOutBranch = (name: RefName): TsgitError =>
+  new TsgitError({ code: 'CANNOT_DELETE_CHECKED_OUT_BRANCH', name });
+
+export const invalidUrl = (reason: string): TsgitError =>
+  new TsgitError({ code: 'INVALID_URL', reason });
+
+export const blockedHost = (host: string, reason: string): TsgitError =>
+  new TsgitError({
+    code: 'BLOCKED_HOST',
+    host: sanitizeForDisplay(host),
+    reason: sanitizeForDisplay(reason),
+  });
+
+export const tooManyRedirects = (count: number): TsgitError =>
+  new TsgitError({ code: 'TOO_MANY_REDIRECTS', count });
+
+export const unsupportedScheme = (scheme: string): TsgitError =>
+  new TsgitError({ code: 'UNSUPPORTED_SCHEME', scheme });
+
+export const targetDirectoryNotEmpty = (path: FilePath): TsgitError =>
+  new TsgitError({ code: 'TARGET_DIRECTORY_NOT_EMPTY', path });
+
+export const remoteAdvertisesNoRefs = (): TsgitError =>
+  new TsgitError({ code: 'REMOTE_ADVERTISES_NO_REFS' });
+
+export const nonFastForward = (ref: RefName, local: ObjectId, remote: ObjectId): TsgitError =>
+  new TsgitError({ code: 'NON_FAST_FORWARD', ref, local, remote });
+
+export const pushRejected = (
+  ref: RefName,
+  reason: string,
+  reportStatus: ReportStatus,
+): TsgitError => new TsgitError({ code: 'PUSH_REJECTED', ref, reason, reportStatus });
+
+export const mergeHasConflicts = (count: number): TsgitError =>
+  new TsgitError({ code: 'MERGE_HAS_CONFLICTS', count });
+
+export const checkoutOverwriteDirty = (paths: ReadonlyArray<FilePath>): TsgitError =>
+  new TsgitError({ code: 'CHECKOUT_OVERWRITE_DIRTY', paths });
+
+export const revparseAmbiguous = (
+  expression: string,
+  candidates: ReadonlyArray<ObjectId>,
+): TsgitError => new TsgitError({ code: 'REVPARSE_AMBIGUOUS', expression, candidates });
+
+export const revparseUnresolved = (expression: string): TsgitError =>
+  new TsgitError({ code: 'REVPARSE_UNRESOLVED', expression });
+
+export const emptyPathspec = (): TsgitError => new TsgitError({ code: 'EMPTY_PATHSPEC' });
+
+export const operationInProgress = (
+  operation: 'merge' | 'rebase' | 'cherry-pick' | 'revert',
+): TsgitError => new TsgitError({ code: 'OPERATION_IN_PROGRESS', operation });
+
+export const maxRefspecsExceeded = (count: number, limit: number): TsgitError =>
+  new TsgitError({ code: 'MAX_REFSPECS_EXCEEDED', count, limit });
+
+export const remoteNotConfigured = (remote: string): TsgitError =>
+  new TsgitError({ code: 'REMOTE_NOT_CONFIGURED', remote });

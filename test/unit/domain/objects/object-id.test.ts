@@ -3,7 +3,13 @@ import { describe, expect, it } from 'vitest';
 
 import { hexToBytes } from '../../../../src/domain/objects/encoding.js';
 import { TsgitError } from '../../../../src/domain/objects/error.js';
-import { FilePath, ObjectId, RefName, ZERO_OID } from '../../../../src/domain/objects/object-id.js';
+import {
+  EMPTY_TREE_OID,
+  FilePath,
+  ObjectId,
+  RefName,
+  ZERO_OID,
+} from '../../../../src/domain/objects/object-id.js';
 import { arbObjectId } from './arbitraries.js';
 
 describe('object-id', () => {
@@ -151,6 +157,41 @@ describe('object-id', () => {
 
       // Assert
       expect(sut).toBe(ZERO_OID);
+    });
+  });
+
+  describe('EMPTY_TREE_OID', () => {
+    it('Given EMPTY_TREE_OID, When inspected, Then it equals the canonical empty-tree SHA-1 literal', () => {
+      // Arrange
+      const expected = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
+
+      // Act
+      const sut = EMPTY_TREE_OID;
+
+      // Assert
+      expect(sut).toBe(expected);
+    });
+
+    it('Given EMPTY_TREE_OID, When length is read, Then it equals 40', () => {
+      // Arrange
+      // (no arrangement)
+
+      // Act
+      const sut = EMPTY_TREE_OID.length;
+
+      // Assert
+      expect(sut).toBe(40);
+    });
+
+    it('Given EMPTY_TREE_OID, When passed to ObjectId.from, Then it returns the same value', () => {
+      // Arrange
+      const hex: string = EMPTY_TREE_OID;
+
+      // Act
+      const sut = ObjectId.from(hex);
+
+      // Assert
+      expect(sut).toBe(EMPTY_TREE_OID);
     });
   });
 

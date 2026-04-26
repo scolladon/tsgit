@@ -1,3 +1,4 @@
+import * as fs from 'node:fs';
 import * as fsPromises from 'node:fs/promises';
 import * as nodePath from 'node:path';
 import {
@@ -8,7 +9,7 @@ import {
   TsgitError,
   unsupportedOperation,
 } from '../../domain/index.js';
-import type { DirEntry, FileStat, FileSystem } from '../../ports/file-system.js';
+import type { DirEntry, FileHandle, FileStat, FileSystem } from '../../ports/file-system.js';
 
 type ContainmentMode = 'read' | 'lstat' | 'creation';
 
@@ -119,6 +120,25 @@ export function interpretCreationLstat(
     throw mapErrno(err, path);
   }
   throw err;
+}
+
+function wrapNodeHandle(handle: fsPromises.FileHandle): FileHandle {
+  let closed = false;
+  return {
+    read: async (buffer, offset, length, position) => {
+      const { bytesRead } = await handle.read(buffer, offset, length, position ?? null);
+      return bytesRead;
+    },
+    write: async (buffer) => {
+      await handle.write(buffer, 0, buffer.length);
+    },
+    stat: async () => mapStat(await handle.stat({ bigint: true })),
+    close: async () => {
+      if (closed) return;
+      closed = true;
+      await handle.close();
+    },
+  };
 }
 
 /** @internal */
@@ -299,6 +319,62 @@ export class NodeFileSystem implements FileSystem {
     const real = await this.checkContainment(path, 'read');
     await runFs(() => fsPromises.chmod(real, mode), path);
   };
+
+  rmRecursive = async (path: string): Promise<void> => {
+    let real: string;
+    try {
+      real = await this.checkContainment(path, 'lstat');
+      // Verify the leaf exists; checkContainment(lstat) realpaths only the parent.
+      // A missing leaf surfaces as FILE_NOT_FOUND, which we swallow for idempotency.
+      await this.lstat(real);
+    } catch (err) {
+      if (err instanceof TsgitError && err.data.code === 'FILE_NOT_FOUND') return;
+      throw err;
+    }
+    await this.removeTree(real, path);
+  };
+
+  openWithNoFollow = async (path: string, mode: 'read' | 'write'): Promise<FileHandle> => {
+    const real = await this.checkContainment(path, 'lstat');
+    const flag = mode === 'write' ? fs.constants.O_WRONLY : fs.constants.O_RDONLY;
+    const handle = await runFs(
+      () => fsPromises.open(real, flag | fs.constants.O_NOFOLLOW),
+      path,
+    ).catch((err: unknown) => {
+      // ELOOP is the POSIX errno surfaced when O_NOFOLLOW refuses a symlink leaf.
+      // mapErrno funnels it to UNSUPPORTED_OPERATION; rewrap as PERMISSION_DENIED to
+      // give callers a single signal across adapters.
+      if (
+        err instanceof TsgitError &&
+        err.data.code === 'UNSUPPORTED_OPERATION' &&
+        err.data.reason === 'ELOOP'
+      ) {
+        throw permissionDenied(path);
+      }
+      throw err;
+    });
+    return wrapNodeHandle(handle);
+  };
+
+  private async removeTree(real: string, originalPath: string): Promise<void> {
+    // Caller (rmRecursive) verified the leaf exists; on TOCTOU mid-walk a missing child
+    // would surface as FILE_NOT_FOUND through runFs, which is acceptable behavior.
+    const leafStat = await runFs(() => fsPromises.lstat(real), originalPath);
+    if (!leafStat.isDirectory() || leafStat.isSymbolicLink()) {
+      // Symlink leaf or regular file: remove the entry itself; do NOT follow it.
+      await runFs(() => fsPromises.rm(real, { force: true }), originalPath);
+      return;
+    }
+    const entries = await runFs(
+      () => fsPromises.readdir(real, { withFileTypes: true }),
+      originalPath,
+    );
+    for (const entry of entries) {
+      const child = nodePath.join(real, entry.name);
+      await this.removeTree(child, originalPath);
+    }
+    await runFs(() => fsPromises.rmdir(real), originalPath);
+  }
 
   private async resolveForCreation(path: string, resolved: string): Promise<string> {
     // realpathNearestExisting already resolved the existing prefix and rethrew any non-ENOENT

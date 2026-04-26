@@ -589,5 +589,78 @@ describe('MemoryFileSystem', () => {
       // Assert
       expect(await sut.exists('/repo/a/b/c.bin')).toBe(true);
     });
+
+    it('Given a symlink leaf, When rmRecursive, Then the link is removed but its target file is untouched', async () => {
+      // Arrange — exercises the symlink branch of removeLeafEntry; without it the symlink
+      // would be left behind when its containing directory is removed.
+      const sut = new MemoryFileSystem({ rootDir: '/repo' });
+      await sut.write('/repo/target.txt', new Uint8Array([1]));
+      await sut.symlink('/repo/target.txt', '/repo/link.txt');
+
+      // Act
+      await sut.rmRecursive('/repo/link.txt');
+
+      // Assert — the link is gone, the target survives.
+      expect(await sut.exists('/repo/link.txt')).toBe(false);
+      expect(await sut.exists('/repo/target.txt')).toBe(true);
+    });
+
+    it('Given a symlink leaf, When openWithNoFollow, Then throws PERMISSION_DENIED (no traversal through symlinks)', async () => {
+      // Arrange
+      const sut = new MemoryFileSystem({ rootDir: '/repo' });
+      await sut.write('/repo/target.txt', new Uint8Array([1]));
+      await sut.symlink('/repo/target.txt', '/repo/link.txt');
+
+      // Act
+      let caught: unknown;
+      try {
+        await sut.openWithNoFollow('/repo/link.txt', 'read');
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert
+      expect(caught).toBeInstanceOf(TsgitError);
+      expect((caught as TsgitError).data.code).toBe('PERMISSION_DENIED');
+    });
+
+    it('Given an opened FileHandle, When read is called without position, Then reads from offset 0 (default)', async () => {
+      // Arrange — exercises the `position ?? 0` default branch (no test in the contract suite
+      // omits the position argument).
+      const sut = new MemoryFileSystem({ rootDir: '/repo' });
+      await sut.write('/repo/seed.bin', new Uint8Array([10, 20, 30]));
+      const handle = await sut.openWithNoFollow('/repo/seed.bin', 'read');
+
+      // Act
+      const buffer = new Uint8Array(3);
+      try {
+        const bytes = await handle.read(buffer, 0, 3);
+
+        // Assert
+        expect(bytes).toBe(3);
+        expect(buffer).toEqual(new Uint8Array([10, 20, 30]));
+      } finally {
+        await handle.close();
+      }
+    });
+
+    it('Given an opened FileHandle in write mode, When write is called, Then content is replaced', async () => {
+      // Arrange — exercises the memory write-handle branch (the contract suite covers
+      // the read variant; this kills BlockStatement mutants on `write` and `touch`).
+      const sut = new MemoryFileSystem({ rootDir: '/repo' });
+      await sut.write('/repo/seed.bin', new Uint8Array([0]));
+      const handle = await sut.openWithNoFollow('/repo/seed.bin', 'write');
+
+      // Act
+      try {
+        await handle.write(new Uint8Array([1, 2, 3]));
+      } finally {
+        await handle.close();
+      }
+
+      // Assert
+      const result = await sut.read('/repo/seed.bin');
+      expect(result).toEqual(new Uint8Array([1, 2, 3]));
+    });
   });
 });

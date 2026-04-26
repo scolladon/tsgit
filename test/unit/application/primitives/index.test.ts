@@ -2,10 +2,12 @@ import { describe, expect, it } from 'vitest';
 import * as primitives from '../../../../src/application/primitives/index.js';
 
 describe('primitives barrel', () => {
-  it('Given the barrel, When imported, Then all 12 primitives are exposed as functions', () => {
+  it('Given the barrel, When imported, Then all 15 primitives are exposed as functions', () => {
     const names = [
       'createCommit',
       'diffTrees',
+      'getRepoRoot',
+      'mergeBase',
       'readBlob',
       'readIndex',
       'readObject',
@@ -15,6 +17,7 @@ describe('primitives barrel', () => {
       'walkCommits',
       'walkTree',
       'writeObject',
+      'writeSymbolicRef',
       'writeTree',
     ];
     for (const name of names) {
@@ -26,6 +29,8 @@ describe('primitives barrel', () => {
     const expected = new Set([
       'createCommit',
       'diffTrees',
+      'getRepoRoot',
+      'mergeBase',
       'readBlob',
       'readIndex',
       'readObject',
@@ -35,6 +40,7 @@ describe('primitives barrel', () => {
       'walkCommits',
       'walkTree',
       'writeObject',
+      'writeSymbolicRef',
       'writeTree',
     ]);
     const actual = new Set(Object.keys(primitives));

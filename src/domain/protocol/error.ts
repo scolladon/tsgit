@@ -19,7 +19,8 @@ export type ProtocolError =
   | { readonly code: 'UNKNOWN_ACK_STATUS'; readonly value: string }
   | { readonly code: 'INVALID_REPORT_STATUS'; readonly line: string }
   | { readonly code: 'EMPTY_WANTS' }
-  | { readonly code: 'EMPTY_RECEIVE_UPDATES' };
+  | { readonly code: 'EMPTY_RECEIVE_UPDATES' }
+  | { readonly code: 'REFSPEC_INVALID'; readonly raw: string; readonly reason: string };
 
 export const invalidPktLength = (value: string): TsgitError =>
   new TsgitError({ code: 'INVALID_PKT_LENGTH', value });
@@ -64,3 +65,6 @@ export const emptyWants = (): TsgitError => new TsgitError({ code: 'EMPTY_WANTS'
 
 export const emptyReceiveUpdates = (): TsgitError =>
   new TsgitError({ code: 'EMPTY_RECEIVE_UPDATES' });
+
+export const refspecInvalid = (raw: string, reason: string): TsgitError =>
+  new TsgitError({ code: 'REFSPEC_INVALID', raw, reason });

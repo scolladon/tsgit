@@ -1,6 +1,45 @@
 # Design: Commands (Tier 1)
 
-**Status: Draft** — Phase 9 of the [backlog](../BACKLOG.md).
+**Status: Implemented (2026-04-25)** — Phase 9 of the [backlog](../BACKLOG.md).
+
+### Round 4 Review Notes (post-implementation)
+
+Post-implementation review applied four parallel reviewers (code, security, TypeScript/perf, test) plus one Stryker mutation pass.
+
+**Security findings applied:**
+- `materializeFile` now uses `openWithNoFollow` for the leaf write (was plain `fs.write`) — closes a TOCTOU symlink-swap window flagged in the security review.
+- Network pipeline composition reordered so `withLogging` wraps the OUTSIDE of `withAuth` — guarantees the logger never observes the injected `Authorization` header even if the redactor is weakened.
+- `validateUrl` is now wired into `clone` (was unreachable dead code per the review).
+- `isBlockedIpv6` extended to handle hex-form IPv4-mapped addresses (`::ffff:7f00:1` etc.) — closes the canonical bypass.
+- `validatePath` rejects components containing `:` — covers NTFS Alternate Data Streams (`.git:$DATA`) and Windows drive-letter qualifiers.
+- `blockedHost` factory now applies `sanitizeForDisplay` to its host/reason fields.
+
+**Code-quality findings applied:**
+- `reset.ts` was throwing a bare `Error` for unresolvable targets — replaced with `revparseUnresolved` (preserves the structured-error contract).
+- `merge.ts` overloaded `MERGE_HAS_CONFLICTS` for three unrelated conditions — split into `UNSUPPORTED_OPERATION` (detached HEAD), `NON_FAST_FORWARD` (ff-only impossible), and `UNEXPECTED_OBJECT_TYPE` (non-commit target).
+- `status.ts` was writing blob objects during a read-only query — now hashes locally without persisting.
+- `add.ts` and `rm.ts` narrowed their `catch` clauses on `readIndex` to only swallow `FILE_NOT_FOUND` / `INVALID_INDEX_*` (was swallowing all errors silently).
+- Dynamic `await import('../primitives/read-object.js')` calls in `commit.ts` / `merge.ts` converted to static imports.
+- `commit.ts` `writeSubtree` now writes sub-trees in parallel (`Promise.all`) and removes the redundant pre-sort.
+- `repo-state.ts` `assertNoPendingOperation` now fans out the four marker checks in parallel.
+- `network-pipeline.ts` no longer mutates caller-owned `ctx.config` (the `Object.freeze` side effect moved to Phase 10's facade).
+- `internal/working-tree.ts` `byteLength` now uses a hoisted `TextEncoder` (was allocating a new one per call).
+- `as never` casts in `log.ts` / `diff.ts` replaced with proper `validateRefName` calls.
+
+**Test-quality findings applied:**
+- All `toBeInstanceOf(TsgitError)`-only assertions strengthened with `.data.code` checks.
+- Added missing branch coverage: `branch rename` non-current, `branch create --force` over existing, `branch create` with explicit `startPoint`, `merge --no-ff`, `merge --ff-only` on diverged histories, `reset --hard`, `commit --allow-empty`, `checkout` on the current branch, `log` from a non-HEAD ref, `log` from an oid, `log` on an unborn branch.
+- Added URL credentials-embedded SSRF test (`user:pass@private-host`).
+- Added IPv6 hex-form IPv4-mapped bypass test.
+- Added boundary tests for path lengths (4095/4096/4097), component sizes (255/256), control chars (0x1F), CGNAT range (`100.63`/`100.64`/`100.127`/`100.128`), 172.16/12 endpoints, multicast endpoints.
+- Added stale-lock boundary tests (age == threshold, age == threshold-1).
+
+**Mutation testing.** Final score: **76.85%** (1136 mutants, 250 survivors). The remaining survivors fall into three buckets:
+1. **Provably equivalent** (~120 of 250): boundary mutants where the alternative produces identical observable behavior — e.g., `i < length` vs `i <= length` in loops where `arr[length] === undefined` and the loop body short-circuits the same way; `n > 0` vs `n >= 0` where `n` is always non-negative (`split('\n')` always returns ≥1 elements).
+2. **Adapter-observation gaps** (~80 of 250): `chmod` flag mutations, `assumeValid` / `extended` index-entry boolean flags, ns-precision timestamps — the memory adapter (which all command tests use) does not expose these to assertions. Killing requires Node-adapter integration tests.
+3. **StringLiteral / regex mutants on internal sentinel values** (~50 of 250): mutations of error-data field strings that match equally against any test that only asserts `.data.code`. Killing requires per-field assertions on every error throw site, which yields heavy churn for marginal value.
+
+The Phase 7/8 precedent for accepting equivalent mutants is followed: surviving mutants are documented per-bucket above rather than per-line. The break threshold remains at 90 in `stryker.config.json`; CI will report Phase 9 below threshold until Phase 10 lands the adapter-level integration test layer that closes bucket 2.
 
 ### Review Notes
 

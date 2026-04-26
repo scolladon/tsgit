@@ -3,7 +3,16 @@
  * No I/O. No port access. Primitive step 3.
  */
 import type { ObjectId, RefName } from '../../domain/objects/index.js';
+import type { FilePath } from '../../domain/objects/object-id.js';
 import { computeLooseObjectPath } from '../../domain/storage/loose-path.js';
+import type { Context } from '../../ports/context.js';
+
+/**
+ * Repository working-tree root. Returns the workDir from the current context;
+ * facade-tier code (Phase 10) is responsible for discovery / realpath pinning
+ * at construction time. Primitives consume the already-resolved path.
+ */
+export const getRepoRoot = (ctx: Context): FilePath => ctx.config.workDir as FilePath;
 
 export const looseObjectPath = (gitDir: string, id: ObjectId): string =>
   `${gitDir}/objects/${computeLooseObjectPath(id)}`;

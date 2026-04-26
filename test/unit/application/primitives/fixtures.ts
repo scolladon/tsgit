@@ -139,6 +139,14 @@ export function instrumentedContext(base: Context): InstrumentedContext {
       record('chmod', p);
       return base.fs.chmod(p, m);
     },
+    rmRecursive: async (p) => {
+      record('rmRecursive', p);
+      return base.fs.rmRecursive(p);
+    },
+    openWithNoFollow: async (p, m) => {
+      record('openWithNoFollow', p);
+      return base.fs.openWithNoFollow(p, m);
+    },
   };
 
   const ctx: Context = {

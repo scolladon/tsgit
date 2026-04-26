@@ -345,6 +345,34 @@ describe('domain error — AdapterError', () => {
     });
   });
 
+  describe('Phase 9 ApplicationError additions', () => {
+    it('Given RESOURCE_LOCKED, When TsgitError.message is read, Then it equals the documented format', () => {
+      // Arrange & Act
+      const sut = new TsgitErrorClass({
+        code: 'RESOURCE_LOCKED',
+        resource: 'index',
+        path: '/repo/.git/index.lock',
+      });
+
+      // Assert
+      expect(sut.message).toBe('RESOURCE_LOCKED: index locked: index.lock');
+    });
+
+    it('Given PACK_TOO_LARGE, When TsgitError.message is read, Then it equals the documented format', () => {
+      // Arrange & Act
+      const sut = new TsgitErrorClass({
+        code: 'PACK_TOO_LARGE',
+        objectCount: 100_000_000,
+        limit: 50_000_000,
+      });
+
+      // Assert
+      expect(sut.message).toBe(
+        'PACK_TOO_LARGE: pack contains 100000000 objects, exceeds limit 50000000',
+      );
+    });
+  });
+
   describe('extractDetail exhaustive guard', () => {
     it('Given TsgitError with unknown code bypassing the type system, When reading message, Then default branch stringifies the data', () => {
       // Arrange — craft an invalid data shape to exercise the exhaustive never-case.

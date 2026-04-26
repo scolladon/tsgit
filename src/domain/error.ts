@@ -1,9 +1,11 @@
+import type { CommandError } from './commands/error.js';
 import type { DiffError } from './diff/error.js';
 import type { IndexError } from './git-index/error.js';
 import type { MergeError } from './merge/error.js';
 import type { DomainObjectError } from './objects/error.js';
 import type { ProtocolError } from './protocol/error.js';
 import type { RefsError } from './refs/error.js';
+import type { RepositoryError } from './repository/error.js';
 import type { StorageError } from './storage/error.js';
 
 export type AdapterError =
@@ -25,7 +27,18 @@ export type AdapterError =
 /** Cross-cutting application-tier codes raised by Phase 7 primitives (not adapters). */
 export type ApplicationError =
   | { readonly code: 'INVALID_WALK_INPUT'; readonly reason: string }
-  | { readonly code: 'OPERATION_ABORTED' };
+  | { readonly code: 'OPERATION_ABORTED' }
+  | {
+      readonly code: 'RESOURCE_LOCKED';
+      readonly resource: 'index' | 'ref';
+      readonly path: string;
+      readonly mtimeMs?: number;
+    }
+  | {
+      readonly code: 'PACK_TOO_LARGE';
+      readonly objectCount: number;
+      readonly limit: number;
+    };
 
 export type TsgitErrorData =
   | DomainObjectError
@@ -36,7 +49,9 @@ export type TsgitErrorData =
   | DiffError
   | MergeError
   | ApplicationError
-  | ProtocolError;
+  | ProtocolError
+  | RepositoryError
+  | CommandError;
 
 export class TsgitError extends Error {
   override readonly name = 'TsgitError';
@@ -201,6 +216,72 @@ function extractDetail(data: TsgitErrorData): string {
       return 'upload-pack request has no wants';
     case 'EMPTY_RECEIVE_UPDATES':
       return 'receive-pack request has no updates';
+    case 'RESOURCE_LOCKED':
+      return `${data.resource} locked: ${basename(data.path)}`;
+    case 'PACK_TOO_LARGE':
+      return `pack contains ${data.objectCount} objects, exceeds limit ${data.limit}`;
+    case 'NOT_A_REPOSITORY':
+      return `not a git repository: ${basename(data.path)}`;
+    case 'BARE_REPOSITORY':
+      return `operation requires a working tree: ${data.operation}`;
+    case 'ALREADY_INITIALIZED':
+      return `repository already exists: ${basename(data.path)}`;
+    case 'WORKING_TREE_DIRTY':
+      return `working tree has uncommitted changes: ${data.paths.length} files`;
+    case 'PATHSPEC_NO_MATCH':
+      return `pathspec did not match any files: ${data.pattern}`;
+    case 'PATHSPEC_OUTSIDE_REPO':
+      return `pathspec resolves outside repository: ${basename(data.path)}`;
+    case 'NOTHING_TO_COMMIT':
+      return 'nothing to commit (use allowEmpty: true to commit anyway)';
+    case 'EMPTY_COMMIT_MESSAGE':
+      return 'commit message is empty (use allowEmptyMessage: true to commit anyway)';
+    case 'AUTHOR_UNCONFIGURED':
+      return 'author identity not configured (set ctx.config.user or pass author/committer)';
+    case 'BRANCH_EXISTS':
+      return `branch already exists: ${data.name}`;
+    case 'BRANCH_NOT_FOUND':
+      return `branch not found: ${data.name}`;
+    case 'TAG_EXISTS':
+      return `tag already exists: ${data.name}`;
+    case 'TAG_NOT_FOUND':
+      return `tag not found: ${data.name}`;
+    case 'CANNOT_DELETE_CHECKED_OUT_BRANCH':
+      return `cannot delete branch currently checked out: ${data.name}`;
+    case 'INVALID_URL':
+      return `invalid URL: ${data.reason}`;
+    case 'BLOCKED_HOST':
+      return `host blocked: ${data.host} (${data.reason})`;
+    case 'TOO_MANY_REDIRECTS':
+      return `too many redirects: ${data.count}`;
+    case 'UNSUPPORTED_SCHEME':
+      return `unsupported URL scheme: ${data.scheme}`;
+    case 'TARGET_DIRECTORY_NOT_EMPTY':
+      return `target directory is not empty: ${basename(data.path)}`;
+    case 'REMOTE_ADVERTISES_NO_REFS':
+      return 'remote advertised no refs';
+    case 'NON_FAST_FORWARD':
+      return `non-fast-forward update for ${data.ref}: local=${data.local} remote=${data.remote}`;
+    case 'PUSH_REJECTED':
+      return `push rejected for ${data.ref}: ${data.reason}`;
+    case 'MERGE_HAS_CONFLICTS':
+      return `merge has unresolved conflicts: ${data.count} files`;
+    case 'CHECKOUT_OVERWRITE_DIRTY':
+      return `checkout would overwrite uncommitted changes: ${data.paths.length} files`;
+    case 'REVPARSE_AMBIGUOUS':
+      return `revision expression "${data.expression}" is ambiguous (${data.candidates.length} candidates)`;
+    case 'REVPARSE_UNRESOLVED':
+      return `cannot resolve revision: ${data.expression}`;
+    case 'EMPTY_PATHSPEC':
+      return 'pathspec is empty (use "." to mean "all paths")';
+    case 'OPERATION_IN_PROGRESS':
+      return `${data.operation} in progress; complete or abort it before running this command`;
+    case 'MAX_REFSPECS_EXCEEDED':
+      return `${data.count} refspecs exceeds limit ${data.limit}`;
+    case 'REMOTE_NOT_CONFIGURED':
+      return `remote not configured: ${data.remote}`;
+    case 'REFSPEC_INVALID':
+      return `invalid refspec "${data.raw}": ${data.reason}`;
     default: {
       const _exhaustive: never = data;
       return String(_exhaustive);

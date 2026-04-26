@@ -259,7 +259,10 @@
     "WONLY",
     "substeps",
     "finalised",
-    "fsyncs"
+    "fsyncs",
+    "barfoo",
+    "foobar",
+    "pathspecs"
   ],
   "ignorePaths": [
     "node_modules",

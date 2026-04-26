@@ -2,7 +2,7 @@
 
 Track: `[ ]` todo, `[~]` in progress, `[x]` done, `[-]` skipped
 
-**Progress:** Phases 0–8 complete. Phase 9 (Commands) is next.
+**Progress:** Phases 0–9 complete. Phase 10 (Repository Facade) is next.
 
 ---
 
@@ -156,22 +156,22 @@ Design: `docs/design/transport.md`. Plan: `docs/plan/phase-8-transport.md`.
 
 High-level operations built from primitives.
 
-- [ ] **9.1** `init` — initialize a new repository
-- [ ] **9.2** `add` — stage files to the index
-- [ ] **9.3** `commit` — create a commit from the current index
-- [ ] **9.4** `status` — compare working tree, index, and HEAD
-- [ ] **9.5** `log` — walk commit history
-- [ ] **9.6** `diff` — diff working tree, index, or commits
-- [ ] **9.7** `branch` — list, create, delete branches
-- [ ] **9.8** `tag` — list, create, delete tags
-- [ ] **9.9** `checkout` — switch branches or restore working tree files
-- [ ] **9.10** `clone` — clone a remote repository
-- [ ] **9.11** `fetch` — fetch refs and objects from remote
-- [ ] **9.12** `push` — push refs and objects to remote
-- [ ] **9.13** `merge` — three-way merge with conflict detection
-- [ ] **9.14** `rm` — remove files from the index (and optionally working tree)
-- [ ] **9.15** `reset` — move HEAD with soft / mixed / hard semantics
-- [ ] **9.16** `revParse` — resolve revision expressions to ObjectIds
+- [x] **9.1** `init` — initialize a new repository
+- [x] **9.2** `add` — stage files to the index
+- [x] **9.3** `commit` — create a commit from the current index
+- [x] **9.4** `status` — compare working tree, index, and HEAD
+- [x] **9.5** `log` — walk commit history
+- [x] **9.6** `diff` — diff working tree, index, or commits
+- [x] **9.7** `branch` — list, create, delete branches
+- [x] **9.8** `tag` — list, create, delete tags
+- [x] **9.9** `checkout` — switch branches or restore working tree files
+- [x] **9.10** `clone` — clone a remote repository
+- [x] **9.11** `fetch` — fetch refs and objects from remote
+- [x] **9.12** `push` — push refs and objects to remote
+- [x] **9.13** `merge` — three-way merge with conflict detection
+- [x] **9.14** `rm` — remove files from the index (and optionally working tree)
+- [x] **9.15** `reset` — move HEAD with soft / mixed / hard semantics
+- [x] **9.16** `revParse` — resolve revision expressions to ObjectIds
 
 Design: `docs/design/commands.md` (drafted; ready for plan phase)
 

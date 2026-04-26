@@ -6,7 +6,7 @@ import {
   TsgitError,
   unsupportedOperation,
 } from '../../domain/index.js';
-import type { DirEntry, FileStat, FileSystem } from '../../ports/file-system.js';
+import type { DirEntry, FileHandle, FileStat, FileSystem } from '../../ports/file-system.js';
 
 export interface BrowserFileSystemOptions {
   readonly rootHandle: FileSystemDirectoryHandle;
@@ -159,6 +159,29 @@ export class BrowserFileSystem implements FileSystem {
       if (!isFileNotFound(err)) throw err;
       await this.resolveDirHandle(path, false);
     }
+  }
+
+  async rmRecursive(path: string): Promise<void> {
+    const segments = this.splitPath(path);
+    if (segments.length === 0) {
+      // Removing the root itself is meaningless; OPFS does not expose root removal.
+      throw permissionDenied(path);
+    }
+    const parent = await this.walkToParent(segments, false).catch((err: unknown) => {
+      if (isFileNotFound(err)) return undefined;
+      throw err;
+    });
+    if (parent === undefined) return;
+    const leaf = leafSegment(segments, path);
+    try {
+      await parent.removeEntry(leaf, { recursive: true });
+    } catch {
+      // OPFS removeEntry throws NotFoundError if the entry is missing — idempotent contract.
+    }
+  }
+
+  async openWithNoFollow(_path: string, _mode: 'read' | 'write'): Promise<FileHandle> {
+    throw unsupportedOperation('openWithNoFollow', 'browser FS does not support O_NOFOLLOW');
   }
 
   private splitPath(path: string): string[] {

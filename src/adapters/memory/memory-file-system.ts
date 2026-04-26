@@ -5,7 +5,7 @@ import {
   permissionDenied,
   unsupportedOperation,
 } from '../../domain/index.js';
-import type { DirEntry, FileStat, FileSystem } from '../../ports/file-system.js';
+import type { DirEntry, FileHandle, FileStat, FileSystem } from '../../ports/file-system.js';
 
 export interface MemoryFileSystemOptions {
   readonly rootDir: string;
@@ -252,6 +252,72 @@ export class MemoryFileSystem implements FileSystem {
     this.resolve(path);
   };
 
+  rmRecursive = async (path: string): Promise<void> => {
+    const normalized = this.resolve(path);
+    if (this.removeLeafEntry(normalized)) return;
+    // Idempotent: a missing path returns void with no error.
+    if (!this.directories.has(normalized)) return;
+    this.removeSubtree(normalized);
+  };
+
+  private removeLeafEntry(normalized: string): boolean {
+    if (this.files.has(normalized)) {
+      this.files.delete(normalized);
+      this.times.delete(normalized);
+      return true;
+    }
+    if (this.symlinks.has(normalized)) {
+      // Symlink leaf — never follow.
+      this.symlinks.delete(normalized);
+      this.times.delete(normalized);
+      return true;
+    }
+    return false;
+  }
+
+  private removeSubtree(normalized: string): void {
+    const prefix = `${normalized}/`;
+    const matchingFiles = collectStartsWith(this.files.keys(), prefix);
+    const matchingLinks = collectStartsWith(this.symlinks.keys(), prefix);
+    const matchingDirs = collectMatchingDirs(this.directories, normalized, prefix);
+    deleteAll(matchingFiles, this.files, this.times);
+    deleteAll(matchingLinks, this.symlinks, this.times);
+    deleteAllFromSet(matchingDirs, this.directories, this.times);
+  }
+
+  openWithNoFollow = async (path: string, _mode: 'read' | 'write'): Promise<FileHandle> => {
+    const normalized = this.resolve(path);
+    if (this.symlinks.has(normalized)) {
+      // O_NOFOLLOW equivalent: refuse to open through a symlink leaf.
+      throw permissionDenied(path);
+    }
+    if (!this.files.has(normalized)) {
+      throw fileNotFound(path);
+    }
+    return this.makeMemoryHandle(normalized);
+  };
+
+  private makeMemoryHandle(normalized: string): FileHandle {
+    return {
+      read: async (buffer, offset, length, position) => {
+        const stored = this.files.get(normalized) as Uint8Array;
+        const start = position ?? 0;
+        const end = Math.min(start + length, stored.length);
+        const chunk = stored.subarray(start, Math.max(start, end));
+        buffer.set(chunk, offset);
+        return chunk.length;
+      },
+      write: async (data) => {
+        this.files.set(normalized, data.slice());
+        this.touch(normalized);
+      },
+      stat: async () => this.buildStat(normalized, normalized),
+      close: async () => {
+        // No FD to release in memory; close is a no-op (and idempotent).
+      },
+    };
+  }
+
   private resolve(path: string): string {
     const normalized = normalizePath(this.rootDir, path);
     if (normalized !== this.rootDir && !normalized.startsWith(`${this.rootDir}/`)) {
@@ -399,4 +465,42 @@ function normalizePath(rootDir: string, path: string): string {
  */
 function parentOf(normalizedPath: string): string {
   return normalizedPath.slice(0, normalizedPath.lastIndexOf('/'));
+}
+
+function collectStartsWith(keys: Iterable<string>, prefix: string): string[] {
+  const out: string[] = [];
+  for (const key of keys) {
+    if (key.startsWith(prefix)) out.push(key);
+  }
+  return out;
+}
+
+function collectMatchingDirs(dirs: Iterable<string>, exact: string, prefix: string): string[] {
+  const out: string[] = [];
+  for (const key of dirs) {
+    if (key === exact || key.startsWith(prefix)) out.push(key);
+  }
+  return out;
+}
+
+function deleteAll(
+  keys: ReadonlyArray<string>,
+  map: Map<string, unknown>,
+  times: Map<string, unknown>,
+): void {
+  for (const key of keys) {
+    map.delete(key);
+    times.delete(key);
+  }
+}
+
+function deleteAllFromSet(
+  keys: ReadonlyArray<string>,
+  set: Set<string>,
+  times: Map<string, unknown>,
+): void {
+  for (const key of keys) {
+    set.delete(key);
+    times.delete(key);
+  }
 }

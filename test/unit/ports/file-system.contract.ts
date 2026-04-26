@@ -45,6 +45,7 @@ const pathCalls: ReadonlyArray<PathCall> = [
   { name: 'readlink', invoke: (e, p) => e.fs.readlink(p) },
   { name: 'symlink', invoke: (e, p) => e.fs.symlink('target', p) },
   { name: 'chmod', invoke: (e, p) => e.fs.chmod(p, 0o644) },
+  { name: 'rmRecursive', invoke: (e, p) => e.fs.rmRecursive(p) },
 ];
 
 function assertFileNotFound(err: unknown): void {
@@ -559,6 +560,138 @@ export function fileSystemContractTests(createSut: () => Promise<FileSystemContr
       // Assert
       const stat = await env.fs.lstat(link);
       expect(stat.isSymbolicLink).toBe(true);
+    });
+
+    it('Given empty directory, When rmRecursive, Then directory is removed', async () => {
+      // Arrange
+      const dir = `${env.rootDir}/rm-empty`;
+      await env.fs.mkdir(dir);
+
+      // Act
+      await env.fs.rmRecursive(dir);
+
+      // Assert
+      expect(await env.fs.exists(dir)).toBe(false);
+    });
+
+    it('Given missing path, When rmRecursive, Then resolves without error (idempotent)', async () => {
+      // Arrange
+      const path = `${env.rootDir}/never-existed`;
+
+      // Act + Assert — must not throw.
+      await env.fs.rmRecursive(path);
+      expect(await env.fs.exists(path)).toBe(false);
+    });
+
+    it('Given nested tree, When rmRecursive at root, Then everything under it is removed', async () => {
+      // Arrange
+      const root = `${env.rootDir}/rm-tree`;
+      await env.fs.write(`${root}/a/b/c.txt`, new Uint8Array([1]));
+      await env.fs.write(`${root}/a/d.txt`, new Uint8Array([2]));
+      await env.fs.write(`${root}/e.txt`, new Uint8Array([3]));
+
+      // Act
+      await env.fs.rmRecursive(root);
+
+      // Assert
+      expect(await env.fs.exists(root)).toBe(false);
+      expect(await env.fs.exists(`${root}/a/b/c.txt`)).toBe(false);
+      expect(await env.fs.exists(`${root}/a/d.txt`)).toBe(false);
+      expect(await env.fs.exists(`${root}/e.txt`)).toBe(false);
+    });
+
+    it('Given single file, When rmRecursive, Then file is removed', async () => {
+      // Arrange
+      const path = `${env.rootDir}/lone.txt`;
+      await env.fs.write(path, new Uint8Array([7]));
+
+      // Act
+      await env.fs.rmRecursive(path);
+
+      // Assert
+      expect(await env.fs.exists(path)).toBe(false);
+    });
+
+    it('Given regular file, When openWithNoFollow(read), Then can read its bytes', async () => {
+      // Arrange
+      const path = `${env.rootDir}/nofollow-read.bin`;
+      await env.fs.write(path, new Uint8Array([1, 2, 3, 4, 5]));
+
+      // Act
+      const handle = await env.fs.openWithNoFollow(path, 'read');
+      try {
+        const buffer = new Uint8Array(5);
+        const bytes = await handle.read(buffer, 0, 5, 0);
+
+        // Assert
+        expect(bytes).toBe(5);
+        expect(buffer).toEqual(new Uint8Array([1, 2, 3, 4, 5]));
+      } finally {
+        await handle.close();
+      }
+    });
+
+    it('Given opened FileHandle, When stat is called, Then returns size matching file', async () => {
+      // Arrange
+      const path = `${env.rootDir}/nofollow-stat.bin`;
+      await env.fs.write(path, new Uint8Array([1, 2, 3]));
+      const handle = await env.fs.openWithNoFollow(path, 'read');
+
+      // Act
+      try {
+        const stat = await handle.stat();
+
+        // Assert
+        expect(stat.size).toBe(3);
+        expect(stat.isFile).toBe(true);
+      } finally {
+        await handle.close();
+      }
+    });
+
+    it('Given opened FileHandle in write mode, When write is called, Then file content is updated', async () => {
+      // Arrange
+      const path = `${env.rootDir}/nofollow-write.bin`;
+      await env.fs.write(path, new Uint8Array([0, 0, 0]));
+      const handle = await env.fs.openWithNoFollow(path, 'write');
+
+      // Act
+      try {
+        await handle.write(new Uint8Array([9, 9, 9]));
+      } finally {
+        await handle.close();
+      }
+      const result = await env.fs.read(path);
+
+      // Assert
+      expect(result).toEqual(new Uint8Array([9, 9, 9]));
+    });
+
+    it('Given non-existent path, When openWithNoFollow(read), Then throws FILE_NOT_FOUND', async () => {
+      // Arrange
+      const path = `${env.rootDir}/missing-nofollow.bin`;
+
+      // Act
+      try {
+        await env.fs.openWithNoFollow(path, 'read');
+        expect.fail('expected FILE_NOT_FOUND');
+      } catch (err) {
+        // Assert
+        assertFileNotFound(err);
+      }
+    });
+
+    it('Given closed FileHandle, When close is called again, Then resolves (idempotent)', async () => {
+      // Arrange
+      const path = `${env.rootDir}/nofollow-close.bin`;
+      await env.fs.write(path, new Uint8Array([1]));
+      const handle = await env.fs.openWithNoFollow(path, 'read');
+
+      // Act
+      await handle.close();
+
+      // Assert — second close must not throw.
+      await handle.close();
     });
 
     describe('security matrix', () => {

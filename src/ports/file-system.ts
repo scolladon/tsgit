@@ -25,6 +25,28 @@ export interface DirEntry {
   readonly isSymbolicLink: boolean;
 }
 
+/**
+ * Minimal subset of Node's `fs/promises` FileHandle. Returned by `openWithNoFollow`.
+ *
+ * Lifetime: callers MUST `close()` the handle in a `finally` block. Holding handles open
+ * across async boundaries can leak file descriptors on Node — keep usage tight.
+ */
+export interface FileHandle {
+  /** Read up to `length` bytes into `buffer` at `offset` (in the buffer). */
+  readonly read: (
+    buffer: Uint8Array,
+    offset: number,
+    length: number,
+    position?: number,
+  ) => Promise<number>;
+  /** Write the buffer to the file. */
+  readonly write: (buffer: Uint8Array) => Promise<void>;
+  /** Stat the open file (cheap — uses fstat on Node). */
+  readonly stat: () => Promise<FileStat>;
+  /** Release the underlying file descriptor. Idempotent — safe to call twice. */
+  readonly close: () => Promise<void>;
+}
+
 export interface FileSystem {
   /** Read entire file as bytes. Throws FILE_NOT_FOUND if not found. */
   readonly read: (path: string) => Promise<Uint8Array>;
@@ -90,4 +112,31 @@ export interface FileSystem {
 
   /** Set file permissions. No-op on platforms without permission support (OPFS). */
   readonly chmod: (path: string, mode: number) => Promise<void>;
+
+  /**
+   * Recursively remove a file or directory tree.
+   *
+   * Idempotent: a missing path returns void (no error).
+   *
+   * Symlink-safe: does NOT follow symlinks during traversal. When a directory entry is a
+   * symlink, the symlink itself is removed (the link, not its target), and the walk does
+   * not descend into it. This prevents an attacker who plants a symlink under a doomed
+   * directory from having `rmRecursive` reach outside the containment root.
+   */
+  readonly rmRecursive: (path: string) => Promise<void>;
+
+  /**
+   * Open a file with the platform equivalent of `O_NOFOLLOW` — refuses to open the path
+   * if its leaf is a symbolic link. Used by callers that must read/write a regular file
+   * without crossing a symlink hop (e.g., lockfile creation under the git dir).
+   *
+   * - Node: `fs.open(path, O_NOFOLLOW | (mode === 'write' ? O_WRONLY : O_RDONLY))`.
+   * - Memory: rejects with `PERMISSION_DENIED` when the leaf is a memory symlink entry.
+   * - Browser OPFS: throws `UNSUPPORTED_OPERATION` (OPFS has no symlinks; callers can
+   *   fall back to a plain `read`/`write` because the no-follow guarantee holds vacuously).
+   *
+   * Throws `FILE_NOT_FOUND` if the leaf does not exist (in `read` mode).
+   * Throws `PERMISSION_DENIED` if the leaf is a symlink.
+   */
+  readonly openWithNoFollow: (path: string, mode: 'read' | 'write') => Promise<FileHandle>;
 }

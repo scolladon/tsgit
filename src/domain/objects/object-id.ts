@@ -24,6 +24,13 @@ export const ObjectId = {
 
 export const ZERO_OID: ObjectId = ObjectId.from('0000000000000000000000000000000000000000');
 
+/**
+ * SHA-1 of the canonical empty tree object. Used by `merge` for unrelated-history
+ * three-way merges where the merge base is undefined — substituted as the
+ * "empty base" so mergeTrees produces the union of both sides.
+ */
+export const EMPTY_TREE_OID: ObjectId = ObjectId.from('4b825dc642cb6eb9a060e54bf8d69288fbee4904');
+
 export type RefName = string & { readonly __brand: unique symbol };
 
 export const RefName = {
