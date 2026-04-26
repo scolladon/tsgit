@@ -262,7 +262,14 @@
     "fsyncs",
     "barfoo",
     "foobar",
-    "pathspecs"
+    "pathspecs",
+    "polyfilling",
+    "polyfill",
+    "exfiltrated",
+    "macrotask",
+    "Macrotask",
+    "syscall",
+    "unsanitized"
   ],
   "ignorePaths": [
     "node_modules",
