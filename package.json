@@ -5,7 +5,7 @@
   "type": "module",
   "license": "MIT",
   "engines": {
-    "node": ">=18"
+    "node": ">=20.3.0"
   },
   "sideEffects": false,
   "main": "./dist/cjs/index.cjs",
@@ -13,13 +13,61 @@
   "types": "./dist/types/index.d.ts",
   "exports": {
     ".": {
+      "node": {
+        "import": {
+          "types": "./dist/types/index.node.d.ts",
+          "default": "./dist/esm/index.node.js"
+        },
+        "require": {
+          "types": "./dist/types/index.node.d.cts",
+          "default": "./dist/cjs/index.node.cjs"
+        }
+      },
+      "browser": {
+        "import": {
+          "types": "./dist/types/index.browser.d.ts",
+          "default": "./dist/esm/index.browser.js"
+        }
+      },
+      "default": {
+        "import": {
+          "types": "./dist/types/index.default.d.ts",
+          "default": "./dist/esm/index.default.js"
+        },
+        "require": {
+          "types": "./dist/types/index.default.d.cts",
+          "default": "./dist/cjs/index.default.cjs"
+        }
+      }
+    },
+    "./auto/node": {
       "import": {
-        "types": "./dist/types/index.d.ts",
-        "default": "./dist/esm/index.js"
+        "types": "./dist/types/index.node.d.ts",
+        "default": "./dist/esm/index.node.js"
       },
       "require": {
-        "types": "./dist/types/index.d.cts",
-        "default": "./dist/cjs/index.cjs"
+        "types": "./dist/types/index.node.d.cts",
+        "default": "./dist/cjs/index.node.cjs"
+      }
+    },
+    "./auto/browser": {
+      "import": {
+        "types": "./dist/types/index.browser.d.ts",
+        "default": "./dist/esm/index.browser.js"
+      },
+      "require": {
+        "types": "./dist/types/index.browser.d.cts",
+        "default": "./dist/cjs/index.browser.cjs"
+      }
+    },
+    "./auto/memory": {
+      "import": {
+        "types": "./dist/types/index.default.d.ts",
+        "default": "./dist/esm/index.default.js"
+      },
+      "require": {
+        "types": "./dist/types/index.default.d.cts",
+        "default": "./dist/cjs/index.default.cjs"
       }
     },
     "./primitives": {

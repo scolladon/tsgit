@@ -16,9 +16,9 @@ describe('createNodeContext', () => {
     const sut = createNodeContext({ workDir });
 
     // Assert
-    expect(sut.config.workDir).toBe(nodePath.resolve(workDir));
-    expect(sut.config.gitDir).toBe(nodePath.join(nodePath.resolve(workDir), '.git'));
-    expect(sut.config.bare).toBe(false);
+    expect(sut.layout.workDir).toBe(nodePath.resolve(workDir));
+    expect(sut.layout.gitDir).toBe(nodePath.join(nodePath.resolve(workDir), '.git'));
+    expect(sut.layout.bare).toBe(false);
   });
 
   it('Given explicit gitDir, When creating context, Then uses resolved absolute gitDir', () => {
@@ -30,7 +30,7 @@ describe('createNodeContext', () => {
     const sut = createNodeContext({ workDir, gitDir });
 
     // Assert
-    expect(sut.config.gitDir).toBe(nodePath.resolve(gitDir));
+    expect(sut.layout.gitDir).toBe(nodePath.resolve(gitDir));
   });
 
   it('Given bare=true, When creating context, Then config.bare is true', () => {
@@ -38,7 +38,7 @@ describe('createNodeContext', () => {
     const sut = createNodeContext({ workDir: '/tmp/tsgit-bare', bare: true });
 
     // Assert
-    expect(sut.config.bare).toBe(true);
+    expect(sut.layout.bare).toBe(true);
   });
 
   it('Given AbortSignal, When creating context, Then signal is forwarded', () => {
@@ -88,7 +88,7 @@ describe('createNodeContext', () => {
     const sut = createNodeContext({ workDir: relative });
 
     // Assert
-    expect(nodePath.isAbsolute(sut.config.workDir)).toBe(true);
+    expect(nodePath.isAbsolute(sut.layout.workDir)).toBe(true);
   });
 
   it('Given allowInsecureHttp=true, When transport receives http:// URL, Then bypasses HTTPS guard (opt-in propagates through factory)', async () => {

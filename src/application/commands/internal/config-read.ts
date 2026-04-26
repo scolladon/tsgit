@@ -48,7 +48,7 @@ const loadConfig = async (ctx: Context): Promise<ParsedConfig> => {
 
 const readRawConfig = async (ctx: Context): Promise<string | undefined> => {
   try {
-    return await ctx.fs.readUtf8(`${ctx.config.gitDir}/config`);
+    return await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
   } catch (err) {
     if (err instanceof TsgitError && err.data.code === 'FILE_NOT_FOUND') return undefined;
     throw err;

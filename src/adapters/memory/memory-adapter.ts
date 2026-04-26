@@ -1,7 +1,7 @@
 import { SHA1_CONFIG, SHA256_CONFIG } from '../../domain/objects/hash-config.js';
 import { createLruCache } from '../../domain/storage/lru-cache.js';
-import { type Context, createContext, type RepositoryConfig } from '../../ports/context.js';
-import { noopProgressReporter } from '../../ports/progress-reporter.js';
+import { type Context, createContext, type RepositoryLayout } from '../../ports/context.js';
+import { noopProgress } from '../../progress.js';
 import { MemoryCompressor } from './memory-compressor.js';
 import { MemoryFileSystem, type MemoryFileSystemOptions } from './memory-file-system.js';
 import { MemoryHashService } from './memory-hash-service.js';
@@ -31,7 +31,7 @@ export function createMemoryContext(options: MemoryAdapterOptions = {}): Context
   const hash = new MemoryHashService(algorithm);
   const compressor = new MemoryCompressor();
   const transport = new MemoryHttpTransport();
-  const config: RepositoryConfig = {
+  const layout: RepositoryLayout = {
     workDir: DEFAULT_WORK_DIR,
     gitDir: DEFAULT_GIT_DIR,
     bare: false,
@@ -46,8 +46,8 @@ export function createMemoryContext(options: MemoryAdapterOptions = {}): Context
     hash,
     compressor,
     transport,
-    progress: noopProgressReporter,
-    config,
+    progress: noopProgress,
+    layout,
     hashConfig,
     deltaCache,
   };

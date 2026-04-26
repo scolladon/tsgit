@@ -7,9 +7,9 @@ describe('createMemoryContext', () => {
     const sut = createMemoryContext();
 
     // Assert
-    expect(sut.config.workDir).toBe('/repo');
-    expect(sut.config.gitDir).toBe('/repo/.git');
-    expect(sut.config.bare).toBe(false);
+    expect(sut.layout.workDir).toBe('/repo');
+    expect(sut.layout.gitDir).toBe('/repo/.git');
+    expect(sut.layout.bare).toBe(false);
   });
 
   it('Given default options, When reading hash algorithm, Then is sha1', () => {
@@ -75,12 +75,16 @@ describe('createMemoryContext', () => {
     expect(sut.signal).toBe(controller.signal);
   });
 
-  it('Given default options, When reading progress reporter, Then report is a no-op function', () => {
+  it('Given default options, When reading progress reporter, Then start/update/end are no-op functions', () => {
     // Arrange / Act
     const sut = createMemoryContext();
 
     // Assert
-    expect(typeof sut.progress.report).toBe('function');
-    expect(() => sut.progress.report({ phase: 'counting', loaded: 0 })).not.toThrow();
+    expect(typeof sut.progress.start).toBe('function');
+    expect(typeof sut.progress.update).toBe('function');
+    expect(typeof sut.progress.end).toBe('function');
+    expect(() => sut.progress.start('test', 1)).not.toThrow();
+    expect(() => sut.progress.update('test', 0, 1)).not.toThrow();
+    expect(() => sut.progress.end('test')).not.toThrow();
   });
 });

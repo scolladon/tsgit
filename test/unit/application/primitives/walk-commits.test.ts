@@ -248,7 +248,7 @@ describe('walkCommits', () => {
     const bogus = new TextEncoder().encode('commit 3\0xyz');
     const compressed = await ctx.compressor.deflate(bogus);
     await ctx.fs.write(
-      `${ctx.config.gitDir}/objects/${computeLooseObjectPath(commitId)}`,
+      `${ctx.layout.gitDir}/objects/${computeLooseObjectPath(commitId)}`,
       compressed,
     );
     try {
@@ -283,8 +283,8 @@ describe('walkCommits', () => {
     });
     // Overwrite commitA's loose file with commitB's bytes.
     const { computeLooseObjectPath } = await import('../../../../src/domain/storage/loose-path.js');
-    const bPath = `${ctx.config.gitDir}/objects/${computeLooseObjectPath(commitB)}`;
-    const aPath = `${ctx.config.gitDir}/objects/${computeLooseObjectPath(commitA)}`;
+    const bPath = `${ctx.layout.gitDir}/objects/${computeLooseObjectPath(commitB)}`;
+    const aPath = `${ctx.layout.gitDir}/objects/${computeLooseObjectPath(commitA)}`;
     const bBytes = await ctx.fs.read(bPath);
     await ctx.fs.write(aPath, bBytes);
 

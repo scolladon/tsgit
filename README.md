@@ -47,23 +47,61 @@ npm install tsgit
 
 ```typescript
 import { openRepository } from 'tsgit';
-import { nodeAdapter } from 'tsgit/adapters/node';
 
-const repo = openRepository({ adapter: nodeAdapter, dir: '.' });
+const repo = await openRepository({ cwd: process.cwd() });
 
-const commits = await repo.log({ depth: 10 });
+const commits = await repo.log();
 const changes = await repo.status();
+
+await repo.dispose();
 ```
+
+`openRepository` is a frozen handle exposing every command and primitive bound
+to a single `Context`. The Node entry point auto-detects an existing `.git`
+directory by walking up from `cwd`.
 
 ### Browser
 
 ```typescript
-import { openRepository } from 'tsgit';
-import { browserAdapter } from 'tsgit/adapters/browser';
+import { openRepository } from 'tsgit/auto/browser';
 
-const repo = openRepository({ adapter: browserAdapter, dir: '/' });
+const rootHandle = await navigator.storage.getDirectory();
+const repo = await openRepository({ rootHandle });
 
-await repo.clone({ url: 'https://github.com/user/repo' });
+await repo.init();
+```
+
+Browser callers must supply an OPFS `rootHandle` since there is no
+`process.cwd()` equivalent.
+
+### In-memory (deterministic / tests)
+
+```typescript
+import { openRepository } from 'tsgit/auto/memory';
+
+const repo = await openRepository({
+  files: { '/repo/seed.txt': new TextEncoder().encode('hello') },
+});
+
+await repo.init();
+```
+
+### Progress reporting
+
+```typescript
+import { openRepository, consoleProgress } from 'tsgit';
+
+const repo = await openRepository({
+  progress: consoleProgress((line) => console.log(line)),
+});
+```
+
+### Cancellation
+
+```typescript
+const controller = new AbortController();
+const repo = await openRepository({ signal: controller.signal });
+controller.abort(); // every bound method now throws REPOSITORY_DISPOSED
 ```
 
 ### Composable Primitives

@@ -14,7 +14,7 @@ describe('init', () => {
     // Assert
     expect(sut.initialBranch).toBe('main');
     expect(sut.bare).toBe(false);
-    expect(await ctx.fs.exists(`${ctx.config.gitDir}/HEAD`)).toBe(true);
+    expect(await ctx.fs.exists(`${ctx.layout.gitDir}/HEAD`)).toBe(true);
   });
 
   it("Given opts.initialBranch='trunk', When init(), Then HEAD is symref to refs/heads/trunk", async () => {
@@ -26,7 +26,7 @@ describe('init', () => {
 
     // Assert
     expect(sut.initialBranch).toBe('trunk');
-    expect(await ctx.fs.readUtf8(`${ctx.config.gitDir}/HEAD`)).toBe('ref: refs/heads/trunk\n');
+    expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/HEAD`)).toBe('ref: refs/heads/trunk\n');
   });
 
   it('Given opts.bare=true, When init(), Then result.bare is true', async () => {
@@ -43,7 +43,7 @@ describe('init', () => {
   it('Given an existing .git/HEAD, When init(), Then throws ALREADY_INITIALIZED', async () => {
     // Arrange
     const ctx = createMemoryContext();
-    await ctx.fs.writeUtf8(`${ctx.config.gitDir}/HEAD`, 'ref: refs/heads/main\n');
+    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
 
     // Act
     let caught: unknown;
@@ -73,6 +73,6 @@ describe('init', () => {
     // Assert
     expect(caught).toBeInstanceOf(TsgitError);
     expect((caught as TsgitError).data.code).toBe('INVALID_REF');
-    expect(await ctx.fs.exists(`${ctx.config.gitDir}/HEAD`)).toBe(false);
+    expect(await ctx.fs.exists(`${ctx.layout.gitDir}/HEAD`)).toBe(false);
   });
 });

@@ -28,7 +28,7 @@ describe('push', () => {
     const ctx = createMemoryContext();
     await seedRepo(ctx, {});
     await ctx.fs.writeUtf8(
-      `${ctx.config.gitDir}/config`,
+      `${ctx.layout.gitDir}/config`,
       '[remote "origin"]\n  url = https://example.com/r.git\n',
     );
 
@@ -37,5 +37,40 @@ describe('push', () => {
 
     // Assert
     expect(sut.url).toBe('https://example.com/r.git');
+  });
+});
+
+import { recordingProgress, withProgress } from './fixtures.js';
+
+describe('push — progress reporting', () => {
+  it("Given a successful push, When run, Then start/end pair fires with op === 'push:enumerate-objects'", async () => {
+    const ctx = createMemoryContext();
+    await seedRepo(ctx, {});
+    await ctx.fs.writeUtf8(
+      `${ctx.layout.gitDir}/config`,
+      '[remote "origin"]\n  url = https://example.com/r.git\n',
+    );
+    const { reporter, events } = recordingProgress();
+
+    await push(withProgress(ctx, reporter));
+
+    expect(events[0]).toEqual({ kind: 'start', op: 'push:enumerate-objects' });
+    expect(events[events.length - 1]).toEqual({ kind: 'end', op: 'push:enumerate-objects' });
+  });
+
+  it('Given a failing push (no remote), When run, Then end still fires after start', async () => {
+    const ctx = createMemoryContext();
+    await seedRepo(ctx, {});
+    const { reporter, events } = recordingProgress();
+
+    try {
+      await push(withProgress(ctx, reporter));
+    } catch {
+      // expected
+    }
+
+    const startCount = events.filter((e) => e.kind === 'start').length;
+    const endCount = events.filter((e) => e.kind === 'end').length;
+    expect(endCount).toBe(startCount);
   });
 });

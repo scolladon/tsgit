@@ -50,7 +50,7 @@ export function createRefStore(ctx: Context): RefStore {
   let packedCache: { readonly parsed: PackedRefs; readonly mtimeKey: string } | undefined;
 
   async function loadPackedRefs(): Promise<PackedRefs> {
-    const path = packedRefsPath(ctx.config.gitDir);
+    const path = packedRefsPath(ctx.layout.gitDir);
     if (!(await ctx.fs.exists(path))) {
       return { entries: [], peeling: 'none', sorted: false };
     }
@@ -66,7 +66,7 @@ export function createRefStore(ctx: Context): RefStore {
   }
 
   async function readLooseContent(name: RefName): Promise<string | undefined> {
-    const path = looseRefPath(ctx.config.gitDir, name);
+    const path = looseRefPath(ctx.layout.gitDir, name);
     if (!(await ctx.fs.exists(path))) return undefined;
     return ctx.fs.readUtf8(path);
   }
@@ -91,19 +91,19 @@ export function createRefStore(ctx: Context): RefStore {
     },
 
     async writeLoose(name: RefName, id: ObjectId): Promise<void> {
-      const path = looseRefPath(ctx.config.gitDir, name);
+      const path = looseRefPath(ctx.layout.gitDir, name);
       await ctx.fs.writeUtf8(path, serializeDirectRef(id));
     },
 
     async removeLoose(name: RefName): Promise<void> {
-      const path = looseRefPath(ctx.config.gitDir, name);
+      const path = looseRefPath(ctx.layout.gitDir, name);
       if (await ctx.fs.exists(path)) {
         await ctx.fs.rm(path);
       }
     },
 
     async isLoose(name: RefName): Promise<boolean> {
-      return ctx.fs.exists(looseRefPath(ctx.config.gitDir, name));
+      return ctx.fs.exists(looseRefPath(ctx.layout.gitDir, name));
     },
 
     async readLooseRaw(name: RefName): Promise<string | undefined> {

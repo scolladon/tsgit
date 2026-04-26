@@ -151,7 +151,7 @@ describe('internal/working-tree', () => {
       await materializeFile(ctx, path, new TextEncoder().encode('abc'), '100644');
 
       // Assert
-      expect(await ctx.fs.readUtf8(`${ctx.config.workDir}/${path}`)).toBe('abc');
+      expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/${path}`)).toBe('abc');
     });
 
     it('Given mode 100755, When materializeFile, Then file written (executable mode honored where supported)', async () => {
@@ -163,7 +163,7 @@ describe('internal/working-tree', () => {
       await materializeFile(ctx, path, new TextEncoder().encode('#!/bin/sh\n'), '100755');
 
       // Assert
-      expect(await ctx.fs.exists(`${ctx.config.workDir}/${path}`)).toBe(true);
+      expect(await ctx.fs.exists(`${ctx.layout.workDir}/${path}`)).toBe(true);
     });
 
     it('Given mode 120000 on a platform without symlink support (memory), When materializeFile, Then writes a regular file with link target as content (no trailing newline)', async () => {
@@ -176,7 +176,7 @@ describe('internal/working-tree', () => {
       await materializeFile(ctx, path, new TextEncoder().encode('target/path'), '120000');
 
       // Assert — content is byte-exact; no trailing newline injected.
-      const bytes = await ctx.fs.read(`${ctx.config.workDir}/${path}`);
+      const bytes = await ctx.fs.read(`${ctx.layout.workDir}/${path}`);
       expect(new TextDecoder().decode(bytes)).toBe('target/path');
     });
 
@@ -203,7 +203,7 @@ describe('internal/working-tree', () => {
       );
 
       // Assert — no file written.
-      expect(await ctx.fs.exists(`${ctx.config.workDir}/.git/config`)).toBe(false);
+      expect(await ctx.fs.exists(`${ctx.layout.workDir}/.git/config`)).toBe(false);
     });
   });
 
@@ -212,20 +212,20 @@ describe('internal/working-tree', () => {
       // Arrange
       const ctx = createMemoryContext();
       const path = 'src/foo.txt' as FilePath;
-      await ctx.fs.writeUtf8(`${ctx.config.workDir}/${path}`, 'data');
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/${path}`, 'data');
 
       // Act
       await removeFile(ctx, path);
 
       // Assert
-      expect(await ctx.fs.exists(`${ctx.config.workDir}/${path}`)).toBe(false);
+      expect(await ctx.fs.exists(`${ctx.layout.workDir}/${path}`)).toBe(false);
     });
 
     it('Given a directory at the path, When removeFile, Then throws CHECKOUT_OVERWRITE_DIRTY', async () => {
       // Arrange
       const ctx = createMemoryContext();
       const dir = 'subdir' as FilePath;
-      await ctx.fs.mkdir(`${ctx.config.workDir}/${dir}`);
+      await ctx.fs.mkdir(`${ctx.layout.workDir}/${dir}`);
 
       // Act
       await expectError(() => removeFile(ctx, dir), 'CHECKOUT_OVERWRITE_DIRTY');
@@ -258,7 +258,7 @@ describe('internal/working-tree', () => {
       const ctx = createMemoryContext();
       const path = 'src/data.bin' as FilePath;
       const data = new Uint8Array([1, 2, 3, 4]);
-      await ctx.fs.write(`${ctx.config.workDir}/${path}`, data);
+      await ctx.fs.write(`${ctx.layout.workDir}/${path}`, data);
 
       // Act
       const sut = await readFile(ctx, path);

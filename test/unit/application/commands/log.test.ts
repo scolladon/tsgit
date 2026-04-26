@@ -21,7 +21,7 @@ const seedThree = async () => {
     ['b.txt', 'b', 'second'],
     ['c.txt', 'c', 'third'],
   ] as const) {
-    await ctx.fs.writeUtf8(`${ctx.config.workDir}/${path}`, content);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/${path}`, content);
     await add(ctx, [path]);
     await commit(ctx, { message, author });
   }
@@ -94,7 +94,7 @@ describe('log', () => {
     // Arrange — a fresh init produces an unborn `refs/heads/main`; HEAD points at it but the ref does not exist.
     const ctx = await seedThree();
     // Wipe the ref to simulate the unborn-branch state.
-    await ctx.fs.rm(`${ctx.config.gitDir}/refs/heads/main`);
+    await ctx.fs.rm(`${ctx.layout.gitDir}/refs/heads/main`);
 
     // Act
     let caught: unknown;

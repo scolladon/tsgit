@@ -7,7 +7,7 @@ describe('buildSeededContext', () => {
     const sut = await buildSeededContext();
 
     // Assert
-    expect(sut.config.gitDir).toBe('/repo/.git');
+    expect(sut.layout.gitDir).toBe('/repo/.git');
     expect(sut.deltaCache).toBeDefined();
     expect(sut.hashConfig).toBeDefined();
   });

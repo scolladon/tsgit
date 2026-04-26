@@ -47,7 +47,7 @@ export const branch = async (ctx: Context, action: BranchAction): Promise<Branch
 };
 
 const listBranches = async (ctx: Context): Promise<BranchResult> => {
-  const headsDir = `${ctx.config.gitDir}/refs/heads`;
+  const headsDir = `${ctx.layout.gitDir}/refs/heads`;
   if (!(await ctx.fs.exists(headsDir))) return { kind: 'list', branches: [] };
   const head = await readHeadRaw(ctx);
   const currentTarget =
@@ -91,7 +91,7 @@ const deleteBranch = async (
   if (head.kind === 'symbolic' && head.target === name) {
     throw cannotDeleteCheckedOutBranch(name);
   }
-  if (!(await ctx.fs.exists(`${ctx.config.gitDir}/${name}`))) {
+  if (!(await ctx.fs.exists(`${ctx.layout.gitDir}/${name}`))) {
     throw branchNotFound(name);
   }
   await updateRef(ctx, name, '0'.repeat(40) as ObjectId, { delete: true });

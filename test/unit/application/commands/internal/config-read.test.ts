@@ -7,7 +7,7 @@ import {
 import type { Context } from '../../../../../src/ports/context.js';
 
 const seed = async (ctx: Context, content: string): Promise<void> => {
-  await ctx.fs.writeUtf8(`${ctx.config.gitDir}/config`, content);
+  await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, content);
 };
 
 describe('internal/config-read', () => {

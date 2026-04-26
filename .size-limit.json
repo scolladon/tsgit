@@ -6,6 +6,18 @@
     "gzip": true
   },
   {
+    "name": "Facade (Node shim)",
+    "path": "dist/esm/index.node.js",
+    "limit": "60 kB",
+    "gzip": true
+  },
+  {
+    "name": "Facade (memory shim)",
+    "path": "dist/esm/index.default.js",
+    "limit": "60 kB",
+    "gzip": true
+  },
+  {
     "name": "Primitives",
     "path": "dist/esm/primitives/index.js",
     "limit": "40 kB",

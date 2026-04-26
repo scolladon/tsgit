@@ -10,7 +10,7 @@ import {
 } from './validators.js';
 
 export async function readIndex(ctx: Context): Promise<GitIndex> {
-  const path = indexPath(ctx.config.gitDir);
+  const path = indexPath(ctx.layout.gitDir);
   if (!(await ctx.fs.exists(path))) {
     return { version: 2, entries: [], extensions: [] };
   }

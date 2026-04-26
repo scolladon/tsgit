@@ -15,7 +15,7 @@ export interface InitResult {
 }
 
 /**
- * Initialize a fresh repository at `ctx.config.gitDir`. Throws
+ * Initialize a fresh repository at `ctx.layout.gitDir`. Throws
  * `ALREADY_INITIALIZED` when the target gitDir already exists; otherwise
  * delegates to `bootstrapRepository` for the standard layout.
  *
@@ -26,8 +26,8 @@ export interface InitResult {
 export const init = async (ctx: Context, opts: InitOptions = {}): Promise<InitResult> => {
   const initialBranch = opts.initialBranch ?? 'main';
   const bare = opts.bare ?? false;
-  if (await ctx.fs.exists(`${ctx.config.gitDir}/HEAD`)) {
-    throw alreadyInitialized(ctx.config.gitDir as FilePath);
+  if (await ctx.fs.exists(`${ctx.layout.gitDir}/HEAD`)) {
+    throw alreadyInitialized(ctx.layout.gitDir as FilePath);
   }
   const result = await bootstrapRepository(ctx, { initialBranch, bare });
   return { path: result.gitDir, initialBranch: result.initialBranch, bare: result.bare };

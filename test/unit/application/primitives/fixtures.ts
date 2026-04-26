@@ -24,7 +24,7 @@ export async function buildSeededContext(parts: BuildSeededContextParts = {}): P
     parts.signal === undefined
       ? createMemoryContext()
       : createMemoryContext({ signal: parts.signal });
-  const { gitDir } = ctx.config;
+  const { gitDir } = ctx.layout;
 
   // Seed objects
   for (const object of parts.objects ?? []) {

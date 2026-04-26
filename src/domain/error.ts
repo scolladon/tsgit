@@ -282,6 +282,12 @@ function extractDetail(data: TsgitErrorData): string {
       return `remote not configured: ${data.remote}`;
     case 'REFSPEC_INVALID':
       return `invalid refspec "${data.raw}": ${data.reason}`;
+    case 'INVALID_OPTION':
+      return `invalid option: ${data.option} — ${data.reason}`;
+    case 'REPOSITORY_DISPOSED':
+      return 'repository has been disposed; create a new one with openRepository()';
+    case 'ADAPTER_UNAVAILABLE':
+      return `adapter unavailable for runtime ${data.runtime}: ${data.reason}`;
     default: {
       const _exhaustive: never = data;
       return String(_exhaustive);

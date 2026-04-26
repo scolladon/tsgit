@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  adapterUnavailable,
   authorUnconfigured,
   blockedHost,
   branchExists,
@@ -10,6 +11,7 @@ import {
   checkoutOverwriteDirty,
   emptyCommitMessage,
   emptyPathspec,
+  invalidOption,
   invalidUrl,
   maxRefspecsExceeded,
   mergeHasConflicts,
@@ -21,6 +23,7 @@ import {
   pushRejected,
   remoteAdvertisesNoRefs,
   remoteNotConfigured,
+  repositoryDisposed,
   revparseAmbiguous,
   revparseUnresolved,
   sanitize,
@@ -214,6 +217,42 @@ describe('domain commands error — factory data', () => {
       remote: 'upstream',
     });
   });
+
+  it('Given a printable reason, When invalidOption, Then data carries the verbatim option name and sanitized reason', () => {
+    expect(invalidOption('cwd', 'must be absolute').data).toEqual({
+      code: 'INVALID_OPTION',
+      option: 'cwd',
+      reason: 'must be absolute',
+    });
+  });
+
+  it('Given a reason with a CR byte, When invalidOption, Then reason is sanitized via \\xNN', () => {
+    expect(invalidOption('cwd', 'bad\rvalue').data).toEqual({
+      code: 'INVALID_OPTION',
+      option: 'cwd',
+      reason: 'bad\\x0Dvalue',
+    });
+  });
+
+  it('Given no arguments, When repositoryDisposed, Then data has only the code', () => {
+    expect(repositoryDisposed().data).toEqual({ code: 'REPOSITORY_DISPOSED' });
+  });
+
+  it('Given runtime and reason, When adapterUnavailable, Then data carries verbatim runtime and sanitized reason', () => {
+    expect(adapterUnavailable('node', 'process.versions missing').data).toEqual({
+      code: 'ADAPTER_UNAVAILABLE',
+      runtime: 'node',
+      reason: 'process.versions missing',
+    });
+  });
+
+  it('Given a reason with a control byte, When adapterUnavailable, Then reason is sanitized', () => {
+    expect(adapterUnavailable('browser', 'no\x07OPFS').data).toEqual({
+      code: 'ADAPTER_UNAVAILABLE',
+      runtime: 'browser',
+      reason: 'no\\x07OPFS',
+    });
+  });
 });
 
 describe('sanitize helper', () => {
@@ -341,6 +380,30 @@ describe('domain commands error — extractDetail message formatting', () => {
     [
       { code: 'REMOTE_NOT_CONFIGURED', remote: 'upstream' },
       'REMOTE_NOT_CONFIGURED: remote not configured: upstream',
+    ],
+    [
+      { code: 'INVALID_OPTION', option: 'cwd', reason: 'must be absolute' },
+      'INVALID_OPTION: invalid option: cwd — must be absolute',
+    ],
+    [
+      { code: 'INVALID_OPTION', option: 'cwd', reason: 'bad\\x0Dvalue' },
+      'INVALID_OPTION: invalid option: cwd — bad\\x0Dvalue',
+    ],
+    [
+      { code: 'REPOSITORY_DISPOSED' },
+      'REPOSITORY_DISPOSED: repository has been disposed; create a new one with openRepository()',
+    ],
+    [
+      { code: 'ADAPTER_UNAVAILABLE', runtime: 'node', reason: 'process.versions missing' },
+      'ADAPTER_UNAVAILABLE: adapter unavailable for runtime node: process.versions missing',
+    ],
+    [
+      { code: 'ADAPTER_UNAVAILABLE', runtime: 'browser', reason: 'no\\x07OPFS' },
+      'ADAPTER_UNAVAILABLE: adapter unavailable for runtime browser: no\\x07OPFS',
+    ],
+    [
+      { code: 'ADAPTER_UNAVAILABLE', runtime: 'memory', reason: 'k' },
+      'ADAPTER_UNAVAILABLE: adapter unavailable for runtime memory: k',
     ],
   ];
 

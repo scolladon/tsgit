@@ -20,7 +20,7 @@ describe('merge', () => {
     // Arrange
     const ctx = createMemoryContext();
     await init(ctx);
-    await ctx.fs.writeUtf8(`${ctx.config.workDir}/a.txt`, 'a');
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
     await add(ctx, ['a.txt']);
     const c = await commit(ctx, { message: 'first', author });
 
@@ -35,12 +35,12 @@ describe('merge', () => {
     // Arrange — create main with 1 commit, branch feature, advance feature, switch to main, merge feature.
     const ctx = createMemoryContext();
     await init(ctx);
-    await ctx.fs.writeUtf8(`${ctx.config.workDir}/a.txt`, 'a');
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
     await add(ctx, ['a.txt']);
     await commit(ctx, { message: 'first', author });
     await branch(ctx, { kind: 'create', name: 'feature' });
     await checkout(ctx, { target: 'feature' });
-    await ctx.fs.writeUtf8(`${ctx.config.workDir}/b.txt`, 'b');
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.txt`, 'b');
     await add(ctx, ['b.txt']);
     const c2 = await commit(ctx, { message: 'second', author });
     await checkout(ctx, { target: 'main' });
@@ -59,12 +59,12 @@ describe('merge', () => {
     // Arrange
     const ctx = createMemoryContext();
     await init(ctx);
-    await ctx.fs.writeUtf8(`${ctx.config.workDir}/a.txt`, 'a');
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
     await add(ctx, ['a.txt']);
     await commit(ctx, { message: 'first', author });
     await branch(ctx, { kind: 'create', name: 'feature' });
     await checkout(ctx, { target: 'feature' });
-    await ctx.fs.writeUtf8(`${ctx.config.workDir}/b.txt`, 'b');
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.txt`, 'b');
     await add(ctx, ['b.txt']);
     await commit(ctx, { message: 'second', author });
     await checkout(ctx, { target: 'main' });
@@ -88,16 +88,16 @@ describe('merge', () => {
     // Arrange — diverge: both branches advance from a common base.
     const ctx = createMemoryContext();
     await init(ctx);
-    await ctx.fs.writeUtf8(`${ctx.config.workDir}/a.txt`, 'a');
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
     await add(ctx, ['a.txt']);
     await commit(ctx, { message: 'base', author });
     await branch(ctx, { kind: 'create', name: 'feature' });
     await checkout(ctx, { target: 'feature' });
-    await ctx.fs.writeUtf8(`${ctx.config.workDir}/b.txt`, 'b');
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.txt`, 'b');
     await add(ctx, ['b.txt']);
     await commit(ctx, { message: 'on-feature', author });
     await checkout(ctx, { target: 'main' });
-    await ctx.fs.writeUtf8(`${ctx.config.workDir}/c.txt`, 'c');
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/c.txt`, 'c');
     await add(ctx, ['c.txt']);
     await commit(ctx, { message: 'on-main', author });
 
@@ -111,5 +111,22 @@ describe('merge', () => {
 
     // Assert
     expect((caught as { data?: { code?: string } })?.data?.code).toBe('NON_FAST_FORWARD');
+  });
+});
+
+import { recordingProgress, withProgress } from './fixtures.js';
+
+describe('merge — progress reporting', () => {
+  it('Given an up-to-date merge, When run, Then NO progress events fire (early return before start)', async () => {
+    const ctx = createMemoryContext();
+    await init(ctx);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
+    await add(ctx, ['a.txt']);
+    await commit(ctx, { message: 'm', author });
+    const { reporter, events } = recordingProgress();
+
+    await merge(withProgress(ctx, reporter), { target: 'main' });
+
+    expect(events).toEqual([]);
   });
 });

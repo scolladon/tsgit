@@ -34,22 +34,32 @@ const HEADS_PREFIX = 'refs/heads/';
  * untouched. Callers who need a true "switch + checkout files" must run
  * `add` after `checkout` to re-sync.
  */
+const CHECKOUT_MATERIALIZE_OP = 'checkout:materialize';
+
 export const checkout = async (ctx: Context, opts: CheckoutOptions): Promise<CheckoutResult> => {
   await assertRepository(ctx);
   await assertNotBare(ctx, 'checkout');
   await assertNoPendingOperation(ctx);
-  if (opts.detach || /^[0-9a-f]{40}$/.test(opts.target)) {
-    const id = await resolveTargetOid(ctx, opts.target);
-    await ctx.fs.writeUtf8(`${ctx.config.gitDir}/HEAD`, `${id}\n`);
-    return { branch: undefined, id, detached: true };
+  // Phase 10 §6.2 — checkout:materialize. v1 only updates HEAD; full working-
+  // tree materialization (Phase 11) will tick the tracker per-file. The
+  // start/end pair stays in place so consumers can subscribe today.
+  ctx.progress.start(CHECKOUT_MATERIALIZE_OP);
+  try {
+    if (opts.detach || /^[0-9a-f]{40}$/.test(opts.target)) {
+      const id = await resolveTargetOid(ctx, opts.target);
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, `${id}\n`);
+      return { branch: undefined, id, detached: true };
+    }
+    const branchName = validateRefName(`${HEADS_PREFIX}${opts.target}`);
+    if (!(await ctx.fs.exists(`${ctx.layout.gitDir}/${branchName}`))) {
+      throw branchNotFound(branchName);
+    }
+    const id = await resolveRef(ctx, branchName);
+    await writeSymbolicRef(ctx, 'HEAD' as RefName, branchName);
+    return { branch: branchName, id, detached: false };
+  } finally {
+    ctx.progress.end(CHECKOUT_MATERIALIZE_OP);
   }
-  const branchName = validateRefName(`${HEADS_PREFIX}${opts.target}`);
-  if (!(await ctx.fs.exists(`${ctx.config.gitDir}/${branchName}`))) {
-    throw branchNotFound(branchName);
-  }
-  const id = await resolveRef(ctx, branchName);
-  await writeSymbolicRef(ctx, 'HEAD' as RefName, branchName);
-  return { branch: branchName, id, detached: false };
 };
 
 const resolveTargetOid = async (ctx: Context, target: string): Promise<ObjectId> => {

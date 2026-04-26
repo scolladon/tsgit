@@ -2,7 +2,13 @@
   "$schema": "https://unpkg.com/knip@6/schema.json",
   "entry": [
     "src/index.ts",
+    "src/index.default.ts",
+    "src/index.node.ts",
+    "src/index.browser.ts",
     "src/repository.ts",
+    "src/adapter-detect.ts",
+    "src/dispose-adapters.ts",
+    "src/progress.ts",
     "src/domain/index.ts",
     "src/application/index.ts",
     "src/ports/index.ts",

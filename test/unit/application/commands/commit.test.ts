@@ -17,7 +17,7 @@ const seed = async (workingTree: Readonly<Record<string, string>> = { 'a.txt': '
   const ctx = createMemoryContext();
   await init(ctx);
   for (const [path, content] of Object.entries(workingTree)) {
-    await ctx.fs.writeUtf8(`${ctx.config.workDir}/${path}`, content);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/${path}`, content);
   }
   await add(ctx, Object.keys(workingTree));
   return ctx;
@@ -47,7 +47,7 @@ describe('commit', () => {
     expect(sut.id).toMatch(/^[0-9a-f]{40}$/);
     expect(sut.parents).toEqual([]);
     expect(sut.branch).toBe('refs/heads/main');
-    const refContent = await ctx.fs.readUtf8(`${ctx.config.gitDir}/refs/heads/main`);
+    const refContent = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/refs/heads/main`);
     expect(refContent.trim()).toBe(sut.id);
   });
 

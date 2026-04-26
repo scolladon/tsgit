@@ -23,8 +23,8 @@ describe('commands/fixtures', () => {
       const commitId = result.commitIds[0] as ObjectId;
       const obj = await readObject(ctx, commitId);
       expect(obj.type).toBe('commit');
-      expect(await ctx.fs.readUtf8(`${ctx.config.workDir}/README.md`)).toBe('# hello\n');
-      expect(await ctx.fs.readUtf8(`${ctx.config.gitDir}/HEAD`)).toBe('ref: refs/heads/main\n');
+      expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/README.md`)).toBe('# hello\n');
+      expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/HEAD`)).toBe('ref: refs/heads/main\n');
     });
 
     it('Given seed with explicit refs, When seedRepo, Then loose ref files are written', async () => {
@@ -36,7 +36,7 @@ describe('commands/fixtures', () => {
       await seedRepo(ctx, { refs: { 'refs/heads/feature': oid } });
 
       // Assert
-      const content = await ctx.fs.readUtf8(`${ctx.config.gitDir}/refs/heads/feature`);
+      const content = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/refs/heads/feature`);
       expect(content).toBe(`${oid}\n`);
     });
 
@@ -49,7 +49,7 @@ describe('commands/fixtures', () => {
       await seedRepo(ctx, { head: oid });
 
       // Assert
-      const head = await ctx.fs.readUtf8(`${ctx.config.gitDir}/HEAD`);
+      const head = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/HEAD`);
       expect(head).toBe(`${oid}\n`);
     });
   });

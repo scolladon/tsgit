@@ -19,8 +19,8 @@ export async function writeObject(ctx: Context, object: GitObject): Promise<Obje
   if (ctx.signal?.aborted) throw operationAborted();
 
   const prefix = computed.slice(0, 2);
-  await ctx.fs.mkdir(objectsDir(ctx.config.gitDir, prefix));
-  const path = looseObjectPath(ctx.config.gitDir, computed);
+  await ctx.fs.mkdir(objectsDir(ctx.layout.gitDir, prefix));
+  const path = looseObjectPath(ctx.layout.gitDir, computed);
   const compressed = await ctx.compressor.deflate(bytes);
 
   try {

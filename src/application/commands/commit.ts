@@ -75,7 +75,7 @@ export const commit = async (ctx: Context, opts: CommitOptions): Promise<CommitR
   if (branch !== undefined) {
     await updateRef(ctx, branch, id, parentId !== undefined ? { expected: parentId } : {});
   } else {
-    await ctx.fs.writeUtf8(`${ctx.config.gitDir}/HEAD`, `${id}\n`);
+    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, `${id}\n`);
   }
   return { id, tree: treeId, branch, parents };
 };

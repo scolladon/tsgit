@@ -271,7 +271,12 @@
     "syscall",
     "unsanitized",
     "subpaths",
-    "ropts"
+    "ropts",
+    "mtext",
+    "eviltext",
+    "unstub",
+    "Validatable",
+    "gitdir"
   ],
   "ignorePaths": [
     "node_modules",

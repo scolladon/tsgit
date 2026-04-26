@@ -18,10 +18,10 @@ describe('diff', () => {
     // Arrange
     const ctx = createMemoryContext();
     await init(ctx);
-    await ctx.fs.writeUtf8(`${ctx.config.workDir}/a.txt`, 'a1');
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a1');
     await add(ctx, ['a.txt']);
     const c1 = await commit(ctx, { message: 'first', author });
-    await ctx.fs.writeUtf8(`${ctx.config.workDir}/a.txt`, 'a2');
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a2');
     await add(ctx, ['a.txt']);
     const c2 = await commit(ctx, { message: 'second', author });
 

@@ -1,12 +1,19 @@
 import type { HashConfig } from '../domain/objects/hash-config.js';
+import type { RefName } from '../domain/objects/object-id.js';
 import type { LruCache } from '../domain/storage/lru-cache.js';
 import type { Compressor } from './compressor.js';
 import type { FileSystem } from './file-system.js';
 import type { HashService } from './hash-service.js';
 import type { HttpTransport } from './http-transport.js';
+import type { Logger } from './logger.js';
 import type { ProgressReporter } from './progress-reporter.js';
 
-export interface RepositoryConfig {
+/**
+ * Repository physical layout — where the working tree and .git directory live.
+ * Renamed in Phase 10 from the previous `RepositoryConfig` (port-tier) to free that
+ * name for the facade-tier `RepositoryConfig` shape (auth/parallelism/etc.).
+ */
+export interface RepositoryLayout {
   /** Absolute path to the repository root (working tree). */
   readonly workDir: string;
   /** Absolute path to the .git directory (usually `${workDir}/.git`, but may differ for bare repos or worktrees). */
@@ -15,17 +22,61 @@ export interface RepositoryConfig {
   readonly bare: boolean;
 }
 
+/**
+ * Author / committer identity — Phase 9 §4.7 shape.
+ */
+export interface AuthorIdentity {
+  readonly name: string;
+  readonly email: string;
+}
+
+/**
+ * Authentication strategy for transport — narrowed shape consumed by withAuth.
+ */
+export type AuthStrategy =
+  | { readonly type: 'bearer'; readonly token: string }
+  | { readonly type: 'basic'; readonly username: string; readonly password: string };
+
+/**
+ * Facade-tier configuration. Phase 10 introduces this shape; it carries the
+ * auth/parallelism/SSRF/network options the facade plumbs into network-pipeline.
+ * All fields are optional — primitives and commands consult only the keys they need.
+ */
+export interface RepositoryConfig {
+  readonly user?: AuthorIdentity;
+  readonly auth?: AuthStrategy;
+  /** Bounded parallelism for fan-out work. 1..32, default 8 (enforced by facade validation). */
+  readonly parallelism?: number;
+  readonly upstreamRef?: RefName;
+  readonly allowInsecure?: boolean;
+  readonly allowPrivateNetworks?: boolean;
+  readonly maxResponseBytes?: number;
+  readonly maxObjectsPerPack?: number;
+  readonly detectRenames?: boolean;
+  readonly breakStaleLockMs?: number;
+  readonly dnsResolver?: (host: string) => Promise<ReadonlyArray<string>>;
+  /** Hard cap on `dnsResolver` return-array length to bound resolver-amplification DoS. Default 64. */
+  readonly maxDnsResults?: number;
+}
+
 export interface Context {
   readonly fs: FileSystem;
   readonly hash: HashService;
   readonly compressor: Compressor;
   readonly transport: HttpTransport;
   readonly progress: ProgressReporter;
-  readonly config: RepositoryConfig;
+  /** Repository physical layout. Required — every primitive needs gitDir/workDir. */
+  readonly layout: RepositoryLayout;
+  /** User-supplied working directory (may be a sub-path of layout.workDir). Defaults to layout.workDir when not set by the facade. */
+  readonly cwd: string;
   /** Object serialization parameters (sha1 vs sha256 digest+hex sizes). */
   readonly hashConfig: HashConfig;
   /** Shared delta-base LRU cache; consumed by primitives' iterative delta walker. */
   readonly deltaCache: LruCache<Uint8Array>;
+  /** Optional facade-tier configuration (auth, parallelism, SSRF, …). Populated by openRepository. */
+  readonly config?: RepositoryConfig;
+  /** Optional sanitized logger. Populated by openRepository. */
+  readonly logger?: Logger;
   /** Optional abort signal for cancelling long-running operations. */
   readonly signal?: AbortSignal;
 }
@@ -36,13 +87,16 @@ export interface CreateContextParts {
   readonly compressor: Compressor;
   readonly transport: HttpTransport;
   readonly progress: ProgressReporter;
-  readonly config: RepositoryConfig;
+  readonly layout: RepositoryLayout;
+  readonly cwd?: string;
   readonly hashConfig: HashConfig;
   readonly deltaCache: LruCache<Uint8Array>;
+  readonly config?: RepositoryConfig;
+  readonly logger?: Logger;
   readonly signal?: AbortSignal;
 }
 
-/** Assemble a frozen Context from its constituent ports + config. */
+/** Assemble a frozen Context from its constituent ports + layout. */
 export function createContext(parts: CreateContextParts): Context {
-  return Object.freeze({ ...parts });
+  return Object.freeze({ ...parts, cwd: parts.cwd ?? parts.layout.workDir });
 }

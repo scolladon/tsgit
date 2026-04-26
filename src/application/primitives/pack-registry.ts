@@ -62,7 +62,7 @@ export function createPackRegistry(ctx: Context): PackRegistry {
 
   async function loadAll(): Promise<ReadonlyArray<RegisteredPack>> {
     if (cache !== undefined) return cache;
-    const dir = packsDir(ctx.config.gitDir);
+    const dir = packsDir(ctx.layout.gitDir);
     if (!(await ctx.fs.exists(dir))) {
       cache = [];
       return cache;

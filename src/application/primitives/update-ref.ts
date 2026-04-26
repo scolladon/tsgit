@@ -18,7 +18,7 @@ export async function updateRef(
   // that could let `${gitDir}/${name}` escape the repo — no separate path
   // containment check is needed.
   validateRefName(name);
-  const refPath = looseRefPath(ctx.config.gitDir, name);
+  const refPath = looseRefPath(ctx.layout.gitDir, name);
 
   const store = getRefStore(ctx);
 

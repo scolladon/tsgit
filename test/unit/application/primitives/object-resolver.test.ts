@@ -60,7 +60,7 @@ describe('object-resolver', () => {
     const ctx = await buildSeededContext();
     const fakeId = 'a'.repeat(40) as ObjectId;
     const { computeLooseObjectPath } = await import('../../../../src/domain/storage/loose-path.js');
-    const loosePath = `${ctx.config.gitDir}/objects/${computeLooseObjectPath(fakeId)}`;
+    const loosePath = `${ctx.layout.gitDir}/objects/${computeLooseObjectPath(fakeId)}`;
     const rawBytes = new TextEncoder().encode('blob 3\0xyz');
     const compressed = await ctx.compressor.deflate(rawBytes);
     await ctx.fs.write(loosePath, compressed);
@@ -78,7 +78,7 @@ describe('object-resolver', () => {
     const ctx = await buildSeededContext();
     const fakeId = 'a'.repeat(40) as ObjectId;
     const { computeLooseObjectPath } = await import('../../../../src/domain/storage/loose-path.js');
-    const loosePath = `${ctx.config.gitDir}/objects/${computeLooseObjectPath(fakeId)}`;
+    const loosePath = `${ctx.layout.gitDir}/objects/${computeLooseObjectPath(fakeId)}`;
     const rawBytes = new TextEncoder().encode('blob 3\0xyz');
     const compressed = await ctx.compressor.deflate(rawBytes);
     await ctx.fs.write(loosePath, compressed);

@@ -71,7 +71,7 @@ const isForbiddenGitComponent = (component: string): boolean => {
 
 const byteLength = (s: string): number => PATH_ENCODER.encode(s).length;
 
-const repoPath = (ctx: Context, path: FilePath): string => `${ctx.config.workDir}/${path}`;
+const repoPath = (ctx: Context, path: FilePath): string => `${ctx.layout.workDir}/${path}`;
 
 /**
  * Materialize a blob into the working tree at `path` with the given mode.

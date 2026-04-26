@@ -23,7 +23,7 @@ export const writeSymbolicRef = async (
 ): Promise<void> => {
   const validatedName = validateRefName(name);
   const validatedTarget = validateRefName(target);
-  const path = looseRefPath(ctx.config.gitDir, validatedName);
+  const path = looseRefPath(ctx.layout.gitDir, validatedName);
   const content = TEXT_ENCODER.encode(serializeSymbolicRef(validatedTarget));
   await atomicWriteRef(ctx, validatedName, path, content);
 };

@@ -7,6 +7,9 @@ import { visualizer } from 'rollup-plugin-visualizer';
 
 const entryPoints = {
   index: 'src/index.ts',
+  'index.node': 'src/index.node.ts',
+  'index.browser': 'src/index.browser.ts',
+  'index.default': 'src/index.default.ts',
   'primitives/index': 'src/application/primitives/index.ts',
   'commands/index': 'src/application/commands/index.ts',
   'operators/index': 'src/operators/index.ts',

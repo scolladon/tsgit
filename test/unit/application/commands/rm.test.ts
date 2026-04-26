@@ -39,7 +39,7 @@ describe('rm', () => {
 
     // Assert
     expect(sut.removed).toEqual(['a.txt']);
-    expect(await ctx.fs.exists(`${ctx.config.workDir}/a.txt`)).toBe(false);
+    expect(await ctx.fs.exists(`${ctx.layout.workDir}/a.txt`)).toBe(false);
   });
 
   it('Given cached=true, When rm, Then index entry removed but working file kept', async () => {
@@ -50,7 +50,7 @@ describe('rm', () => {
     await rm(ctx, ['a.txt'], { cached: true });
 
     // Assert
-    expect(await ctx.fs.exists(`${ctx.config.workDir}/a.txt`)).toBe(true);
+    expect(await ctx.fs.exists(`${ctx.layout.workDir}/a.txt`)).toBe(true);
   });
 
   it('Given an untracked path, When rm, Then throws PATHSPEC_NO_MATCH', async () => {
@@ -62,7 +62,7 @@ describe('rm', () => {
     // Arrange — fresh ctx with bare=true config seeded BEFORE any read.
     const ctx = createMemoryContext();
     await seedRepo(ctx, {});
-    await ctx.fs.writeUtf8(`${ctx.config.gitDir}/config`, '[core]\n  bare = true\n');
+    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n  bare = true\n');
 
     // Act
     await expectError(() => rm(ctx, ['a.txt']), 'BARE_REPOSITORY');

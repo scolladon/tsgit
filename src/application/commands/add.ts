@@ -93,7 +93,7 @@ const readExistingEntries = async (ctx: Context): Promise<ReadonlyMap<FilePath, 
 };
 
 const stageOne = async (ctx: Context, path: FilePath): Promise<IndexEntry | 'missing'> => {
-  const stat = await ctx.fs.lstat(`${ctx.config.workDir}/${path}`).catch(() => undefined);
+  const stat = await ctx.fs.lstat(`${ctx.layout.workDir}/${path}`).catch(() => undefined);
   if (stat === undefined) return 'missing';
   const mode: FileMode = stat.isSymbolicLink
     ? '120000'
@@ -101,7 +101,7 @@ const stageOne = async (ctx: Context, path: FilePath): Promise<IndexEntry | 'mis
       ? '100755'
       : '100644';
   const bytes = stat.isSymbolicLink
-    ? new TextEncoder().encode(await ctx.fs.readlink(`${ctx.config.workDir}/${path}`))
+    ? new TextEncoder().encode(await ctx.fs.readlink(`${ctx.layout.workDir}/${path}`))
     : await readFile(ctx, path);
   const id = (await writeObject(ctx, {
     type: 'blob',

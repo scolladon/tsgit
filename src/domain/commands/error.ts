@@ -46,7 +46,14 @@ export type CommandError =
       readonly operation: 'merge' | 'rebase' | 'cherry-pick' | 'revert';
     }
   | { readonly code: 'MAX_REFSPECS_EXCEEDED'; readonly count: number; readonly limit: number }
-  | { readonly code: 'REMOTE_NOT_CONFIGURED'; readonly remote: string };
+  | { readonly code: 'REMOTE_NOT_CONFIGURED'; readonly remote: string }
+  | { readonly code: 'INVALID_OPTION'; readonly option: string; readonly reason: string }
+  | { readonly code: 'REPOSITORY_DISPOSED' }
+  | {
+      readonly code: 'ADAPTER_UNAVAILABLE';
+      readonly runtime: 'node' | 'browser' | 'memory';
+      readonly reason: string;
+    };
 
 const sanitizeForDisplay = (s: string): string => {
   let out = '';
@@ -150,3 +157,18 @@ export const maxRefspecsExceeded = (count: number, limit: number): TsgitError =>
 
 export const remoteNotConfigured = (remote: string): TsgitError =>
   new TsgitError({ code: 'REMOTE_NOT_CONFIGURED', remote });
+
+export const invalidOption = (option: string, reason: string): TsgitError =>
+  new TsgitError({ code: 'INVALID_OPTION', option, reason: sanitizeForDisplay(reason) });
+
+export const repositoryDisposed = (): TsgitError => new TsgitError({ code: 'REPOSITORY_DISPOSED' });
+
+export const adapterUnavailable = (
+  runtime: 'node' | 'browser' | 'memory',
+  reason: string,
+): TsgitError =>
+  new TsgitError({
+    code: 'ADAPTER_UNAVAILABLE',
+    runtime,
+    reason: sanitizeForDisplay(reason),
+  });

@@ -17,7 +17,7 @@ const author: AuthorIdentity = {
 const seedWithCommit = async () => {
   const ctx = createMemoryContext();
   await init(ctx);
-  await ctx.fs.writeUtf8(`${ctx.config.workDir}/a.txt`, 'a');
+  await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
   await add(ctx, ['a.txt']);
   const c = await commit(ctx, { message: 'first', author });
   return { ctx, commitId: c.id };
@@ -63,7 +63,7 @@ describe('tag', () => {
     await tag(ctx, { kind: 'delete', name: 'v1.0' });
 
     // Assert
-    expect(await ctx.fs.exists(`${ctx.config.gitDir}/refs/tags/v1.0`)).toBe(false);
+    expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/tags/v1.0`)).toBe(false);
   });
 
   it('Given a non-existent tag, When tag delete, Then throws TAG_NOT_FOUND', async () => {
@@ -133,7 +133,7 @@ describe('tag', () => {
   it('Given a fresh repo with no tags, When tag list, Then returns an empty array', async () => {
     // Arrange
     const ctx = createMemoryContext();
-    await ctx.fs.writeUtf8(`${ctx.config.gitDir}/HEAD`, 'ref: refs/heads/main\n');
+    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
 
     // Act
     const sut = await tag(ctx, { kind: 'list' });

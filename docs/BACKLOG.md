@@ -2,7 +2,7 @@
 
 Track: `[ ]` todo, `[~]` in progress, `[x]` done, `[-]` skipped
 
-**Progress:** Phases 0–9 complete. Phase 10 (Repository Facade) is next.
+**Progress:** Phases 0–10 complete. Phase 11 (Polish & Launch) is next.
 
 ---
 
@@ -179,9 +179,9 @@ Design: `docs/design/commands.md` (drafted; ready for plan phase)
 
 ## Phase 10: Repository Facade (Tier 1 Surface)
 
-- [ ] **10.1** `openRepository()` — frozen record of closures over context
-- [ ] **10.2** Auto-detection of adapter (Node vs Browser)
-- [ ] **10.3** Progress reporting integration
+- [x] **10.1** `openRepository()` — frozen record of closures over context
+- [x] **10.2** Auto-detection of adapter (Node vs Browser)
+- [x] **10.3** Progress reporting integration
 
 Design: `docs/design/repository-facade.md`
 

@@ -12,17 +12,17 @@ describe('internal/bootstrap', () => {
     const result = await bootstrapRepository(ctx, { initialBranch: 'main', bare: false });
 
     // Assert — every documented file/dir is present.
-    expect(await ctx.fs.exists(`${ctx.config.gitDir}/HEAD`)).toBe(true);
-    expect(await ctx.fs.exists(`${ctx.config.gitDir}/config`)).toBe(true);
-    expect(await ctx.fs.exists(`${ctx.config.gitDir}/refs/heads`)).toBe(true);
-    expect(await ctx.fs.exists(`${ctx.config.gitDir}/refs/tags`)).toBe(true);
-    expect(await ctx.fs.exists(`${ctx.config.gitDir}/objects/info`)).toBe(true);
-    expect(await ctx.fs.exists(`${ctx.config.gitDir}/objects/pack`)).toBe(true);
-    expect(await ctx.fs.exists(`${ctx.config.gitDir}/info/exclude`)).toBe(true);
-    expect(await ctx.fs.exists(`${ctx.config.gitDir}/description`)).toBe(true);
+    expect(await ctx.fs.exists(`${ctx.layout.gitDir}/HEAD`)).toBe(true);
+    expect(await ctx.fs.exists(`${ctx.layout.gitDir}/config`)).toBe(true);
+    expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/heads`)).toBe(true);
+    expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/tags`)).toBe(true);
+    expect(await ctx.fs.exists(`${ctx.layout.gitDir}/objects/info`)).toBe(true);
+    expect(await ctx.fs.exists(`${ctx.layout.gitDir}/objects/pack`)).toBe(true);
+    expect(await ctx.fs.exists(`${ctx.layout.gitDir}/info/exclude`)).toBe(true);
+    expect(await ctx.fs.exists(`${ctx.layout.gitDir}/description`)).toBe(true);
     expect(result.bare).toBe(false);
     expect(result.initialBranch).toBe('main');
-    expect(result.gitDir).toBe(ctx.config.gitDir);
+    expect(result.gitDir).toBe(ctx.layout.gitDir);
   });
 
   it("Given initialBranch='trunk', When bootstrapRepository, Then HEAD is a symref to refs/heads/trunk", async () => {
@@ -33,7 +33,7 @@ describe('internal/bootstrap', () => {
     await bootstrapRepository(ctx, { initialBranch: 'trunk', bare: false });
 
     // Assert
-    const head = await ctx.fs.readUtf8(`${ctx.config.gitDir}/HEAD`);
+    const head = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/HEAD`);
     expect(head).toBe('ref: refs/heads/trunk\n');
   });
 
@@ -45,7 +45,7 @@ describe('internal/bootstrap', () => {
     await bootstrapRepository(ctx, { initialBranch: 'main', bare: false });
 
     // Assert
-    const config = await ctx.fs.readUtf8(`${ctx.config.gitDir}/config`);
+    const config = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
     expect(config).toContain('[core]');
     expect(config).toMatch(/bare\s*=\s*false/);
   });
@@ -59,7 +59,7 @@ describe('internal/bootstrap', () => {
 
     // Assert
     expect(result.bare).toBe(true);
-    const config = await ctx.fs.readUtf8(`${ctx.config.gitDir}/config`);
+    const config = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
     expect(config).toMatch(/bare\s*=\s*true/);
   });
 
@@ -78,7 +78,7 @@ describe('internal/bootstrap', () => {
     // Assert
     expect(caught).toBeInstanceOf(TsgitError);
     expect((caught as TsgitError).data.code).toBe('INVALID_REF');
-    expect(await ctx.fs.exists(`${ctx.config.gitDir}/HEAD`)).toBe(false);
+    expect(await ctx.fs.exists(`${ctx.layout.gitDir}/HEAD`)).toBe(false);
   });
 
   it('Given a partial-creation failure (write fails mid-bootstrap), When bootstrapRepository, Then rmRecursive cleans up the .git tree', async () => {
@@ -103,6 +103,6 @@ describe('internal/bootstrap', () => {
     // Assert
     expect(caught).toBeInstanceOf(Error);
     // gitDir should be removed by the rollback.
-    expect(await ctx.fs.exists(ctx.config.gitDir)).toBe(false);
+    expect(await ctx.fs.exists(ctx.layout.gitDir)).toBe(false);
   });
 });

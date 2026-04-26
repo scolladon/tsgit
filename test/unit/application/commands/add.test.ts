@@ -52,7 +52,7 @@ describe('add', () => {
   it('Given a bare repo (core.bare=true), When add, Then throws BARE_REPOSITORY', async () => {
     // Arrange
     const ctx = await seedFreshRepo();
-    await ctx.fs.writeUtf8(`${ctx.config.gitDir}/config`, '[core]\n  bare = true\n');
+    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n  bare = true\n');
 
     // Act
     await expectError(() => add(ctx, ['x']), 'BARE_REPOSITORY');
@@ -66,7 +66,7 @@ describe('add', () => {
   it('Given .git/MERGE_HEAD exists, When add, Then throws OPERATION_IN_PROGRESS', async () => {
     // Arrange
     const ctx = await seedFreshRepo({ 'a.txt': 'a' });
-    await ctx.fs.writeUtf8(`${ctx.config.gitDir}/MERGE_HEAD`, 'oid\n');
+    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/MERGE_HEAD`, 'oid\n');
 
     // Act
     await expectError(() => add(ctx, ['a.txt']), 'OPERATION_IN_PROGRESS');
@@ -76,7 +76,7 @@ describe('add', () => {
     // Arrange
     const ctx = await seedFreshRepo({ 'a.txt': 'a' });
     await add(ctx, ['a.txt']);
-    await ctx.fs.writeUtf8(`${ctx.config.workDir}/a.txt`, 'modified-content');
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'modified-content');
 
     // Act
     const sut = await add(ctx, ['a.txt']);
@@ -105,7 +105,7 @@ describe('add', () => {
     const ctx = await seedFreshRepo({ 'a.txt': 'a' });
     await add(ctx, ['a.txt']);
     // Replace index with garbage that still has the right size to reach the parser.
-    await ctx.fs.write(`${ctx.config.gitDir}/index`, new Uint8Array(50));
+    await ctx.fs.write(`${ctx.layout.gitDir}/index`, new Uint8Array(50));
 
     // Act — should NOT throw because INVALID_INDEX_HEADER is treated as "no entries".
     const sut = await add(ctx, ['a.txt']);

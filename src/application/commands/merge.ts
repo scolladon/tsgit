@@ -67,40 +67,62 @@ export const merge = async (ctx: Context, opts: MergeOptions): Promise<MergeResu
   if (opts.fastForwardOnly === true) {
     throw nonFastForward(head.target, ourId, theirId);
   }
-  const config = await readConfig(ctx);
-  const cfgUser = config.user
-    ? {
-        name: config.user.name,
-        email: config.user.email,
-        timestamp: Math.floor(Date.now() / 1000),
-        timezoneOffset: '+0000',
-      }
-    : undefined;
-  const authorInput: { explicit?: AuthorIdentity; configUser?: AuthorIdentity } = {};
-  if (opts.author !== undefined) authorInput.explicit = opts.author;
-  if (cfgUser !== undefined) authorInput.configUser = cfgUser;
-  const author = resolveAuthor(authorInput);
-  const committerInput: {
-    explicit?: AuthorIdentity;
-    author?: AuthorIdentity;
-    configUser?: AuthorIdentity;
-  } = { author };
-  if (opts.committer !== undefined) committerInput.explicit = opts.committer;
-  if (cfgUser !== undefined) committerInput.configUser = cfgUser;
-  const committer = resolveCommitter(committerInput);
-  const ourTree = await getTree(ctx, ourId);
-  const message = sanitizeMessage(opts.message ?? `Merge ${opts.target}`, { allowEmpty: false });
-  const commitData: CommitData = {
-    tree: ourTree,
-    parents: [ourId, theirId],
-    author,
-    committer,
-    message,
-    extraHeaders: [],
-  };
-  const id = await createCommit(ctx, commitData);
-  await updateRef(ctx, head.target, id, { expected: ourId });
-  return { kind: 'merge', id, branch: head.target, parents: [ourId, theirId] };
+  return mergeCommit(ctx, opts, head.target, ourId, theirId);
+};
+
+const MERGE_WRITE_FILES_OP = 'merge:write-files';
+
+const mergeCommit = async (
+  ctx: Context,
+  opts: MergeOptions,
+  branchName: RefName,
+  ourId: ObjectId,
+  theirId: ObjectId,
+): Promise<MergeResult> => {
+  // Phase 10 §6.2 — merge:write-files. v1 writes a merge commit using HEAD's
+  // tree only (no conflict-file materialization yet); Phase 11 will tick the
+  // tracker per-resolved-file once three-way tree merge lands. start/end
+  // bracket the merge-commit path only — fast-forward and up-to-date paths
+  // do no merge-write work and emit no progress.
+  ctx.progress.start(MERGE_WRITE_FILES_OP);
+  try {
+    const config = await readConfig(ctx);
+    const cfgUser = config.user
+      ? {
+          name: config.user.name,
+          email: config.user.email,
+          timestamp: Math.floor(Date.now() / 1000),
+          timezoneOffset: '+0000',
+        }
+      : undefined;
+    const authorInput: { explicit?: AuthorIdentity; configUser?: AuthorIdentity } = {};
+    if (opts.author !== undefined) authorInput.explicit = opts.author;
+    if (cfgUser !== undefined) authorInput.configUser = cfgUser;
+    const author = resolveAuthor(authorInput);
+    const committerInput: {
+      explicit?: AuthorIdentity;
+      author?: AuthorIdentity;
+      configUser?: AuthorIdentity;
+    } = { author };
+    if (opts.committer !== undefined) committerInput.explicit = opts.committer;
+    if (cfgUser !== undefined) committerInput.configUser = cfgUser;
+    const committer = resolveCommitter(committerInput);
+    const ourTree = await getTree(ctx, ourId);
+    const message = sanitizeMessage(opts.message ?? `Merge ${opts.target}`, { allowEmpty: false });
+    const commitData: CommitData = {
+      tree: ourTree,
+      parents: [ourId, theirId],
+      author,
+      committer,
+      message,
+      extraHeaders: [],
+    };
+    const id = await createCommit(ctx, commitData);
+    await updateRef(ctx, branchName, id, { expected: ourId });
+    return { kind: 'merge', id, branch: branchName, parents: [ourId, theirId] };
+  } finally {
+    ctx.progress.end(MERGE_WRITE_FILES_OP);
+  }
 };
 
 const resolveTarget = async (ctx: Context, target: string): Promise<ObjectId> => {

@@ -16,7 +16,7 @@ describe('writeSymbolicRef', () => {
     await writeSymbolicRef(ctx, name, target);
 
     // Assert
-    const content = await ctx.fs.readUtf8(`${ctx.config.gitDir}/HEAD`);
+    const content = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/HEAD`);
     expect(content).toBe('ref: refs/heads/main\n');
   });
 
@@ -24,7 +24,7 @@ describe('writeSymbolicRef', () => {
     // Arrange
     const ctx = await buildSeededContext();
     await ctx.fs.writeUtf8(
-      `${ctx.config.gitDir}/HEAD`,
+      `${ctx.layout.gitDir}/HEAD`,
       '0123456789abcdef0123456789abcdef01234567\n',
     );
 
@@ -32,7 +32,7 @@ describe('writeSymbolicRef', () => {
     await writeSymbolicRef(ctx, 'HEAD' as RefName, 'refs/heads/main' as RefName);
 
     // Assert
-    const content = await ctx.fs.readUtf8(`${ctx.config.gitDir}/HEAD`);
+    const content = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/HEAD`);
     expect(content).toBe('ref: refs/heads/main\n');
   });
 

@@ -150,7 +150,7 @@ export async function writeSyntheticPack(
   entries: ReadonlyArray<EntrySpec>,
 ): Promise<ReadonlyArray<string>> {
   const result = await buildSyntheticPack(ctx, entries);
-  const base = `${ctx.config.gitDir}/objects/pack/pack-${name}`;
+  const base = `${ctx.layout.gitDir}/objects/pack/pack-${name}`;
   await ctx.fs.write(`${base}.pack`, result.packBytes);
   await ctx.fs.write(`${base}.idx`, result.idxBytes);
   return result.ids;

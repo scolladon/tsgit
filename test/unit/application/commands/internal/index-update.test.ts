@@ -4,7 +4,7 @@ import { acquireIndexLock } from '../../../../../src/application/commands/intern
 import { TsgitError } from '../../../../../src/domain/index.js';
 import type { Context } from '../../../../../src/ports/context.js';
 
-const indexPath = (ctx: Context): string => `${ctx.config.gitDir}/index`;
+const indexPath = (ctx: Context): string => `${ctx.layout.gitDir}/index`;
 const lockPath = (ctx: Context): string => `${indexPath(ctx)}.lock`;
 
 const expectError = async (fn: () => Promise<unknown>, code: string): Promise<TsgitError> => {

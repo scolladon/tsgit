@@ -17,7 +17,7 @@ const author: AuthorIdentity = {
 const seedWithCommit = async () => {
   const ctx = createMemoryContext();
   await init(ctx);
-  await ctx.fs.writeUtf8(`${ctx.config.workDir}/a.txt`, 'a');
+  await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
   await add(ctx, ['a.txt']);
   const c = await commit(ctx, { message: 'first', author });
   return { ctx, commitId: c.id };
@@ -59,7 +59,7 @@ describe('branch', () => {
     // Assert
     if (sut.kind !== 'create') throw new Error('expected create');
     expect(sut.id).toBe(commitId);
-    expect(await ctx.fs.exists(`${ctx.config.gitDir}/refs/heads/feature`)).toBe(true);
+    expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/heads/feature`)).toBe(true);
   });
 
   it('Given an existing branch name, When branch create without force, Then throws BRANCH_EXISTS', async () => {
@@ -80,7 +80,7 @@ describe('branch', () => {
     await branch(ctx, { kind: 'delete', name: 'feature' });
 
     // Assert
-    expect(await ctx.fs.exists(`${ctx.config.gitDir}/refs/heads/feature`)).toBe(false);
+    expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/heads/feature`)).toBe(false);
   });
 
   it('Given the current branch, When branch delete, Then throws CANNOT_DELETE_CHECKED_OUT_BRANCH', async () => {
@@ -111,9 +111,9 @@ describe('branch', () => {
 
     // Assert
     if (sut.kind !== 'rename') throw new Error('expected rename');
-    expect(await ctx.fs.exists(`${ctx.config.gitDir}/refs/heads/main`)).toBe(false);
-    expect(await ctx.fs.exists(`${ctx.config.gitDir}/refs/heads/trunk`)).toBe(true);
-    const head = await ctx.fs.readUtf8(`${ctx.config.gitDir}/HEAD`);
+    expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/heads/main`)).toBe(false);
+    expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/heads/trunk`)).toBe(true);
+    const head = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/HEAD`);
     expect(head).toBe('ref: refs/heads/trunk\n');
   });
 
@@ -126,9 +126,9 @@ describe('branch', () => {
     await branch(ctx, { kind: 'rename', from: 'other', to: 'renamed' });
 
     // Assert
-    const head = await ctx.fs.readUtf8(`${ctx.config.gitDir}/HEAD`);
+    const head = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/HEAD`);
     expect(head).toBe('ref: refs/heads/main\n');
-    expect(await ctx.fs.exists(`${ctx.config.gitDir}/refs/heads/renamed`)).toBe(true);
+    expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/heads/renamed`)).toBe(true);
   });
 
   it('Given an existing branch + force=true, When branch create, Then it overwrites without throwing', async () => {
@@ -181,7 +181,7 @@ describe('branch', () => {
   it('Given branch list on a repo with no refs/heads dir, When branch list, Then returns an empty array', async () => {
     // Arrange — fresh ctx, no init.
     const ctx = createMemoryContext();
-    await ctx.fs.writeUtf8(`${ctx.config.gitDir}/HEAD`, 'ref: refs/heads/main\n');
+    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
 
     // Act
     const sut = await branch(ctx, { kind: 'list' });
@@ -199,7 +199,7 @@ describe('branch', () => {
 
     // Act + Assert — without force this would BRANCH_EXISTS; with force it succeeds.
     await branch(ctx, { kind: 'rename', from: 'a', to: 'b', force: true });
-    expect(await ctx.fs.exists(`${ctx.config.gitDir}/refs/heads/a`)).toBe(false);
+    expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/heads/a`)).toBe(false);
   });
 
   it('Given an existing target branch + force=false, When branch rename, Then throws BRANCH_EXISTS', async () => {

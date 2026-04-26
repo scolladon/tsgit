@@ -28,7 +28,7 @@ const renderConfig = (bare: boolean): string =>
   `[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = ${bare ? 'true' : 'false'}\n`;
 
 /**
- * Create a fresh `.git` layout at `ctx.config.gitDir`. Used by `init` and `clone`.
+ * Create a fresh `.git` layout at `ctx.layout.gitDir`. Used by `init` and `clone`.
  *
  * On any I/O failure mid-bootstrap, the partially-created tree is removed via
  * `rmRecursive` so callers get either a complete repository or none.
@@ -42,7 +42,7 @@ export const bootstrapRepository = async (
   opts: BootstrapOptions,
 ): Promise<BootstrapResult> => {
   const branch = validateRefName(opts.initialBranch);
-  const gitDir = ctx.config.gitDir;
+  const gitDir = ctx.layout.gitDir;
   try {
     await ctx.fs.mkdir(gitDir);
     await ctx.fs.writeUtf8(`${gitDir}/HEAD`, `ref: refs/heads/${branch}\n`);

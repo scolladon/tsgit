@@ -18,7 +18,7 @@ const author: AuthorIdentity = {
 const seedWithBranches = async () => {
   const ctx = createMemoryContext();
   await init(ctx);
-  await ctx.fs.writeUtf8(`${ctx.config.workDir}/a.txt`, 'a');
+  await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
   await add(ctx, ['a.txt']);
   const c = await commit(ctx, { message: 'first', author });
   await branch(ctx, { kind: 'create', name: 'feature' });
@@ -37,7 +37,7 @@ describe('checkout', () => {
     expect(sut.branch).toBe('refs/heads/feature');
     expect(sut.id).toBe(commitId);
     expect(sut.detached).toBe(false);
-    const head = await ctx.fs.readUtf8(`${ctx.config.gitDir}/HEAD`);
+    const head = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/HEAD`);
     expect(head).toBe('ref: refs/heads/feature\n');
   });
 
@@ -51,7 +51,7 @@ describe('checkout', () => {
     // Assert
     expect(sut.detached).toBe(true);
     expect(sut.id).toBe(commitId);
-    const head = await ctx.fs.readUtf8(`${ctx.config.gitDir}/HEAD`);
+    const head = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/HEAD`);
     expect(head).toBe(`${commitId}\n`);
   });
 
@@ -94,5 +94,44 @@ describe('checkout', () => {
     // Assert
     expect(sut.detached).toBe(true);
     expect(sut.id).toBe(commitId);
+  });
+});
+
+import { recordingProgress, withProgress } from './fixtures.js';
+
+describe('checkout — progress reporting', () => {
+  const seedWithBranch = async () => {
+    const ctx = createMemoryContext();
+    await init(ctx);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
+    await add(ctx, ['a.txt']);
+    await commit(ctx, { message: 'first', author });
+    await branch(ctx, { kind: 'create', name: 'feature' });
+    return ctx;
+  };
+
+  it("Given a successful checkout, When run, Then start fires before end with op === 'checkout:materialize'", async () => {
+    const ctx = await seedWithBranch();
+    const { reporter, events } = recordingProgress();
+
+    await checkout(withProgress(ctx, reporter), { target: 'feature' });
+
+    expect(events[0]).toEqual({ kind: 'start', op: 'checkout:materialize' });
+    expect(events[events.length - 1]).toEqual({ kind: 'end', op: 'checkout:materialize' });
+  });
+
+  it('Given a checkout that throws (unknown branch), When run, Then end still fires', async () => {
+    const ctx = await seedWithBranch();
+    const { reporter, events } = recordingProgress();
+
+    try {
+      await checkout(withProgress(ctx, reporter), { target: 'does-not-exist' });
+    } catch {
+      // expected
+    }
+
+    const startCount = events.filter((e) => e.kind === 'start').length;
+    const endCount = events.filter((e) => e.kind === 'end').length;
+    expect(endCount).toBe(startCount);
   });
 });

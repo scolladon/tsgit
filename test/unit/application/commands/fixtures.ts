@@ -23,6 +23,7 @@ import type {
   HttpResponse,
   HttpTransport,
 } from '../../../../src/ports/http-transport.js';
+import type { ProgressReporter } from '../../../../src/ports/progress-reporter.js';
 
 const DEFAULT_AUTHOR: AuthorIdentity = {
   name: 'Test',
@@ -74,16 +75,16 @@ export const seedRepo = async (ctx: Context, seed: RepoSeed): Promise<RepoSeedRe
     commitIds.push(id);
   }
   for (const [name, idHex] of Object.entries(seed.refs ?? {})) {
-    await ctx.fs.writeUtf8(`${ctx.config.gitDir}/${name}`, `${idHex}\n`);
+    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/${name}`, `${idHex}\n`);
   }
   await ctx.fs.writeUtf8(
-    `${ctx.config.gitDir}/HEAD`,
+    `${ctx.layout.gitDir}/HEAD`,
     seed.head !== undefined && /^[0-9a-f]{40}$/.test(seed.head)
       ? `${seed.head}\n`
       : `ref: ${seed.head ?? 'refs/heads/main'}\n`,
   );
   for (const [path, content] of Object.entries(seed.workingTree ?? {})) {
-    await ctx.fs.writeUtf8(`${ctx.config.workDir}/${path}`, content);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/${path}`, content);
   }
   return { commitIds };
 };
@@ -95,7 +96,7 @@ const writeLooseCommit = async (ctx: Context, data: CommitData): Promise<ObjectI
   const bytes = serializeObject(obj, ctx.hashConfig);
   const id = (await ctx.hash.hashHex(bytes)) as ObjectId;
   const compressed = await ctx.compressor.deflate(bytes);
-  await ctx.fs.write(`${ctx.config.gitDir}/objects/${computeLooseObjectPath(id)}`, compressed);
+  await ctx.fs.write(`${ctx.layout.gitDir}/objects/${computeLooseObjectPath(id)}`, compressed);
   return id;
 };
 
@@ -185,3 +186,60 @@ export const recordedTransport = (inner?: HttpTransport): RecordedTransport => {
   };
   return { transport, requests };
 };
+
+/**
+ * Progress event captured by `recordingProgress`. The test fixture stores a
+ * compact, JSON-friendly trace so `expect(events).toEqual([...])` works
+ * without custom matchers.
+ */
+export type ProgressEvent =
+  | { readonly kind: 'start'; readonly op: string; readonly total?: number }
+  | {
+      readonly kind: 'update';
+      readonly op: string;
+      readonly current: number;
+      readonly total?: number;
+      readonly text?: string;
+    }
+  | { readonly kind: 'end'; readonly op: string };
+
+export interface RecordingProgress {
+  readonly reporter: ProgressReporter;
+  readonly events: ReadonlyArray<ProgressEvent>;
+}
+
+/**
+ * Test fixture for command-level progress assertions. Returns a reporter that
+ * pushes every call into a captured array. The shape kills SwitchOmit mutants
+ * (every method emits a distinct kind) and lets tests assert ordering with
+ * straight `.toEqual` comparisons.
+ */
+export const recordingProgress = (): RecordingProgress => {
+  const events: ProgressEvent[] = [];
+  return {
+    reporter: {
+      start: (op, total) => {
+        events.push(total !== undefined ? { kind: 'start', op, total } : { kind: 'start', op });
+      },
+      update: (op, current, total, text) => {
+        events.push({
+          kind: 'update',
+          op,
+          current,
+          ...(total !== undefined ? { total } : {}),
+          ...(text !== undefined ? { text } : {}),
+        });
+      },
+      end: (op) => {
+        events.push({ kind: 'end', op });
+      },
+    },
+    events,
+  };
+};
+
+/** Replace `ctx.progress` with the given reporter for command-progress tests. */
+export const withProgress = (ctx: Context, reporter: ProgressReporter): Context => ({
+  ...ctx,
+  progress: reporter,
+});

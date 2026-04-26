@@ -23,7 +23,7 @@ export interface CloneResult {
 }
 
 /**
- * Clone a remote repository into `ctx.config.workDir`.
+ * Clone a remote repository into `ctx.layout.workDir`.
  *
  * v1 behavior is intentionally minimal: it bootstraps an empty repository at
  * the target path and returns a `CloneResult` shape. Full pack-fetch + ref
@@ -34,32 +34,43 @@ export interface CloneResult {
  * Throws `TARGET_DIRECTORY_NOT_EMPTY` if `gitDir` already exists, and
  * `REMOTE_ADVERTISES_NO_REFS` when discovery returns no refs.
  */
+const CLONE_DISCOVER_OP = 'clone:discover';
+
 export const clone = async (ctx: Context, opts: CloneOptions): Promise<CloneResult> => {
-  if (await ctx.fs.exists(`${ctx.config.gitDir}/HEAD`)) {
-    throw targetDirectoryNotEmpty(ctx.config.workDir as FilePath);
+  if (await ctx.fs.exists(`${ctx.layout.gitDir}/HEAD`)) {
+    throw targetDirectoryNotEmpty(ctx.layout.workDir as FilePath);
   }
   if (opts.url === '') throw remoteAdvertisesNoRefs();
-  // Run SSRF / scheme / DNS-pinning gates BEFORE bootstrapping so a malicious
-  // URL cannot create a repo skeleton on disk and then fail. When no resolver
-  // is supplied the URL is still rejected if the scheme is wrong (validateUrl
-  // enforces scheme + parse before resolving).
-  if (opts.resolver !== undefined) {
-    await validateUrl(opts.url, {
-      resolver: opts.resolver,
-      ...(opts.allowInsecure !== undefined ? { allowInsecure: opts.allowInsecure } : {}),
-      ...(opts.allowPrivateNetworks !== undefined
-        ? { allowPrivateNetworks: opts.allowPrivateNetworks }
-        : {}),
+  // Phase 10 §6.2 — clone:discover. Brackets URL validation + ref discovery.
+  // clone:write-objects and clone:checkout-files come online when the pack
+  // fetch and working-tree materialization wire up (Phase 11+); for now this
+  // pair surfaces the API for consumers.
+  ctx.progress.start(CLONE_DISCOVER_OP);
+  try {
+    // Run SSRF / scheme / DNS-pinning gates BEFORE bootstrapping so a malicious
+    // URL cannot create a repo skeleton on disk and then fail. When no resolver
+    // is supplied the URL is still rejected if the scheme is wrong (validateUrl
+    // enforces scheme + parse before resolving).
+    if (opts.resolver !== undefined) {
+      await validateUrl(opts.url, {
+        resolver: opts.resolver,
+        ...(opts.allowInsecure !== undefined ? { allowInsecure: opts.allowInsecure } : {}),
+        ...(opts.allowPrivateNetworks !== undefined
+          ? { allowPrivateNetworks: opts.allowPrivateNetworks }
+          : {}),
+      });
+    }
+    const result = await bootstrapRepository(ctx, {
+      initialBranch: opts.initialBranch ?? 'main',
+      bare: opts.bare ?? false,
     });
+    // Discovery + pack fetch deferred to integration tier; surface a stable shape.
+    return {
+      path: result.gitDir,
+      head: result.initialBranch,
+      fetchedRefs: [],
+    };
+  } finally {
+    ctx.progress.end(CLONE_DISCOVER_OP);
   }
-  const result = await bootstrapRepository(ctx, {
-    initialBranch: opts.initialBranch ?? 'main',
-    bare: opts.bare ?? false,
-  });
-  // Discovery + pack fetch deferred to integration tier; surface a stable shape.
-  return {
-    path: result.gitDir,
-    head: result.initialBranch,
-    fetchedRefs: [],
-  };
 };

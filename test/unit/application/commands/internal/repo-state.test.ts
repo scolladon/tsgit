@@ -11,7 +11,7 @@ import { TsgitError } from '../../../../../src/domain/index.js';
 import type { Context } from '../../../../../src/ports/context.js';
 
 const seedRepo = async (ctx: Context, head = 'ref: refs/heads/main\n'): Promise<void> => {
-  await ctx.fs.writeUtf8(`${ctx.config.gitDir}/HEAD`, head);
+  await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, head);
 };
 
 describe('internal/repo-state', () => {
@@ -25,7 +25,7 @@ describe('internal/repo-state', () => {
       const sut = await assertRepository(ctx);
 
       // Assert
-      expect(sut).toBe(ctx.config.workDir);
+      expect(sut).toBe(ctx.layout.workDir);
     });
 
     it('Given no .git directory, When called, Then throws NOT_A_REPOSITORY', async () => {
@@ -50,7 +50,7 @@ describe('internal/repo-state', () => {
     it('Given core.bare=true in config, When isBare, Then true', async () => {
       // Arrange
       const ctx = createMemoryContext();
-      await ctx.fs.writeUtf8(`${ctx.config.gitDir}/config`, '[core]\n  bare = true\n');
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n  bare = true\n');
 
       // Act
       const sut = await isBare(ctx);
@@ -62,7 +62,7 @@ describe('internal/repo-state', () => {
     it('Given core.bare=false in config, When isBare, Then false', async () => {
       // Arrange
       const ctx = createMemoryContext();
-      await ctx.fs.writeUtf8(`${ctx.config.gitDir}/config`, '[core]\n  bare = false\n');
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n  bare = false\n');
 
       // Act
       const sut = await isBare(ctx);
@@ -85,7 +85,7 @@ describe('internal/repo-state', () => {
     it('Given config without [core] section, When isBare, Then false (default)', async () => {
       // Arrange
       const ctx = createMemoryContext();
-      await ctx.fs.writeUtf8(`${ctx.config.gitDir}/config`, '[user]\n  name = Bob\n');
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[user]\n  name = Bob\n');
 
       // Act
       const sut = await isBare(ctx);
@@ -107,7 +107,7 @@ describe('internal/repo-state', () => {
     it('Given a bare repo (core.bare=true), When assertNotBare, Then throws BARE_REPOSITORY with operation', async () => {
       // Arrange
       const ctx = createMemoryContext();
-      await ctx.fs.writeUtf8(`${ctx.config.gitDir}/config`, '[core]\n  bare = true\n');
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n  bare = true\n');
 
       // Act
       let caught: unknown;
@@ -189,7 +189,7 @@ describe('internal/repo-state', () => {
     it('Given .git/MERGE_HEAD exists, When called, Then throws OPERATION_IN_PROGRESS with operation merge', async () => {
       // Arrange
       const ctx = createMemoryContext();
-      await ctx.fs.writeUtf8(`${ctx.config.gitDir}/MERGE_HEAD`, 'oid\n');
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/MERGE_HEAD`, 'oid\n');
 
       // Act
       let caught: unknown;
@@ -211,7 +211,7 @@ describe('internal/repo-state', () => {
     it('Given .git/CHERRY_PICK_HEAD exists, When called, Then throws with operation cherry-pick', async () => {
       // Arrange
       const ctx = createMemoryContext();
-      await ctx.fs.writeUtf8(`${ctx.config.gitDir}/CHERRY_PICK_HEAD`, 'oid\n');
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/CHERRY_PICK_HEAD`, 'oid\n');
 
       // Act
       let caught: unknown;
@@ -234,7 +234,7 @@ describe('internal/repo-state', () => {
     it('Given .git/REVERT_HEAD exists, When called, Then throws with operation revert', async () => {
       // Arrange
       const ctx = createMemoryContext();
-      await ctx.fs.writeUtf8(`${ctx.config.gitDir}/REVERT_HEAD`, 'oid\n');
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/REVERT_HEAD`, 'oid\n');
 
       // Act
       let caught: unknown;
@@ -257,7 +257,7 @@ describe('internal/repo-state', () => {
     it('Given .git/REBASE_HEAD exists, When called, Then throws with operation rebase', async () => {
       // Arrange
       const ctx = createMemoryContext();
-      await ctx.fs.writeUtf8(`${ctx.config.gitDir}/REBASE_HEAD`, 'oid\n');
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/REBASE_HEAD`, 'oid\n');
 
       // Act
       let caught: unknown;

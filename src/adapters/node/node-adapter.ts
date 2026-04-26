@@ -1,8 +1,8 @@
 import * as nodePath from 'node:path';
 import { SHA1_CONFIG } from '../../domain/objects/hash-config.js';
 import { createLruCache } from '../../domain/storage/lru-cache.js';
-import { type Context, createContext, type RepositoryConfig } from '../../ports/context.js';
-import { noopProgressReporter } from '../../ports/progress-reporter.js';
+import { type Context, createContext, type RepositoryLayout } from '../../ports/context.js';
+import { noopProgress } from '../../progress.js';
 import { NodeCompressor } from './node-compressor.js';
 import { NodeFileSystem } from './node-file-system.js';
 import { NodeHashService } from './node-hash-service.js';
@@ -33,7 +33,7 @@ export function createNodeContext(options: NodeAdapterOptions): Context {
   const transport = new NodeHttpTransport({
     allowInsecureHttp: options.allowInsecureHttp ?? false,
   });
-  const config: RepositoryConfig = {
+  const layout: RepositoryLayout = {
     workDir,
     gitDir,
     bare: options.bare ?? false,
@@ -47,8 +47,8 @@ export function createNodeContext(options: NodeAdapterOptions): Context {
     hash,
     compressor,
     transport,
-    progress: noopProgressReporter,
-    config,
+    progress: noopProgress,
+    layout,
     hashConfig: SHA1_CONFIG,
     deltaCache,
   };

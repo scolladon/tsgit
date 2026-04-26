@@ -16,10 +16,10 @@ const author: AuthorIdentity = {
 const seedTwoCommits = async () => {
   const ctx = createMemoryContext();
   await init(ctx);
-  await ctx.fs.writeUtf8(`${ctx.config.workDir}/a.txt`, 'a');
+  await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
   await add(ctx, ['a.txt']);
   const c1 = await commit(ctx, { message: 'first', author });
-  await ctx.fs.writeUtf8(`${ctx.config.workDir}/b.txt`, 'b');
+  await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.txt`, 'b');
   await add(ctx, ['b.txt']);
   const c2 = await commit(ctx, { message: 'second', author });
   return { ctx, c1: c1.id, c2: c2.id };
@@ -36,7 +36,7 @@ describe('reset', () => {
     // Assert
     expect(sut.id).toBe(c1);
     expect(sut.branch).toBe('refs/heads/main');
-    const ref = await ctx.fs.readUtf8(`${ctx.config.gitDir}/refs/heads/main`);
+    const ref = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/refs/heads/main`);
     expect(ref.trim()).toBe(c1);
     expect(c2).not.toBe(c1);
   });
@@ -81,8 +81,8 @@ describe('reset', () => {
   it('Given hard mode on a bare repo, When reset, Then throws BARE_REPOSITORY', async () => {
     // Arrange — fresh ctx with bare config seeded BEFORE any read.
     const ctx = createMemoryContext();
-    await ctx.fs.writeUtf8(`${ctx.config.gitDir}/HEAD`, 'ref: refs/heads/main\n');
-    await ctx.fs.writeUtf8(`${ctx.config.gitDir}/config`, '[core]\n  bare = true\n');
+    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
+    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n  bare = true\n');
 
     // Act
     let caught: unknown;

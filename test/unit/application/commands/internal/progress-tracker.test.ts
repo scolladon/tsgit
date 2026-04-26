@@ -1,0 +1,115 @@
+import { describe, expect, it, vi } from 'vitest';
+
+import {
+  createByteGranularityTracker,
+  createGranularityTracker,
+} from '../../../../../src/application/commands/internal/progress-tracker.js';
+import type { ProgressReporter } from '../../../../../src/ports/progress-reporter.js';
+
+const stubReporter = (): ProgressReporter => ({
+  start: vi.fn(),
+  update: vi.fn(),
+  end: vi.fn(),
+});
+
+describe('createGranularityTracker', () => {
+  it('Given granularity 100 and 99 ticks, When ticked, Then update is NEVER called (bucket never crossed)', () => {
+    const reporter = stubReporter();
+    const sut = createGranularityTracker(reporter, 'op', 100);
+
+    for (let i = 0; i < 99; i += 1) sut.tick();
+
+    expect(reporter.update).not.toHaveBeenCalled();
+  });
+
+  it('Given granularity 100 and exactly 100 ticks, When ticked, Then update is called once with current=100', () => {
+    const reporter = stubReporter();
+    const sut = createGranularityTracker(reporter, 'op', 100);
+
+    for (let i = 0; i < 100; i += 1) sut.tick();
+
+    expect(reporter.update).toHaveBeenCalledTimes(1);
+    expect(reporter.update).toHaveBeenCalledWith('op', 100);
+  });
+
+  it('Given granularity 100 and 101 ticks, When ticked, Then update fires once at 100 only (no final flush at 101)', () => {
+    const reporter = stubReporter();
+    const sut = createGranularityTracker(reporter, 'op', 100);
+
+    for (let i = 0; i < 101; i += 1) sut.tick();
+
+    expect(reporter.update).toHaveBeenCalledTimes(1);
+    expect(reporter.update).toHaveBeenCalledWith('op', 100);
+  });
+
+  it('Given granularity 100 and 200 ticks, When ticked, Then update fires twice (at 100 and 200)', () => {
+    const reporter = stubReporter();
+    const sut = createGranularityTracker(reporter, 'op', 100);
+
+    for (let i = 0; i < 200; i += 1) sut.tick();
+
+    expect(reporter.update).toHaveBeenCalledTimes(2);
+    expect(reporter.update).toHaveBeenNthCalledWith(1, 'op', 100);
+    expect(reporter.update).toHaveBeenNthCalledWith(2, 'op', 200);
+  });
+
+  it('Given a known total, When the bucket is crossed, Then update is called with both current and total', () => {
+    const reporter = stubReporter();
+    const sut = createGranularityTracker(reporter, 'op', 100, 250);
+
+    for (let i = 0; i < 100; i += 1) sut.tick();
+
+    expect(reporter.update).toHaveBeenCalledWith('op', 100, 250);
+  });
+});
+
+describe('createByteGranularityTracker', () => {
+  it('Given byte granularity 65536 and 65535 bytes added, When ticked, Then update is NEVER called (boundary not crossed)', () => {
+    const reporter = stubReporter();
+    const sut = createByteGranularityTracker(reporter, 'push:upload', 65536);
+
+    sut.add(65535);
+
+    expect(reporter.update).not.toHaveBeenCalled();
+  });
+
+  it('Given byte granularity 65536 and exactly 65536 bytes added, When ticked, Then update fires once at current=65536', () => {
+    const reporter = stubReporter();
+    const sut = createByteGranularityTracker(reporter, 'push:upload', 65536);
+
+    sut.add(65536);
+
+    expect(reporter.update).toHaveBeenCalledTimes(1);
+    expect(reporter.update).toHaveBeenCalledWith('push:upload', 65536);
+  });
+
+  it('Given byte granularity 65536 and 65537 bytes added, When ticked, Then update fires once at 65536 only', () => {
+    const reporter = stubReporter();
+    const sut = createByteGranularityTracker(reporter, 'push:upload', 65536);
+
+    sut.add(65537);
+
+    expect(reporter.update).toHaveBeenCalledTimes(1);
+    expect(reporter.update).toHaveBeenCalledWith('push:upload', 65537);
+  });
+
+  it('Given two adds that together cross a boundary, When the second add lands, Then update fires with the cumulative count', () => {
+    const reporter = stubReporter();
+    const sut = createByteGranularityTracker(reporter, 'push:upload', 65536);
+
+    sut.add(40000);
+    sut.add(30000);
+
+    expect(reporter.update).toHaveBeenCalledTimes(1);
+    expect(reporter.update).toHaveBeenCalledWith('push:upload', 70000);
+  });
+
+  it('Given a known total, When the bucket is crossed, Then update receives current and total', () => {
+    const reporter = stubReporter();
+    const sut = createByteGranularityTracker(reporter, 'push:upload', 65536, 200_000);
+
+    sut.add(65536);
+
+    expect(reporter.update).toHaveBeenCalledWith('push:upload', 65536, 200_000);
+  });
+});

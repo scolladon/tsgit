@@ -44,7 +44,7 @@ export const reset = async (ctx: Context, opts: ResetOptions): Promise<ResetResu
   if (branch !== undefined) {
     await updateRef(ctx, branch, id, {});
   } else {
-    await ctx.fs.writeUtf8(`${ctx.config.gitDir}/HEAD`, `${id}\n`);
+    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, `${id}\n`);
   }
   return { mode: opts.mode, id, branch };
 };

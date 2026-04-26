@@ -37,7 +37,7 @@ export const tag = async (ctx: Context, action: TagAction): Promise<TagResult> =
 };
 
 const listTags = async (ctx: Context): Promise<TagResult> => {
-  const dir = `${ctx.config.gitDir}/refs/tags`;
+  const dir = `${ctx.layout.gitDir}/refs/tags`;
   if (!(await ctx.fs.exists(dir))) return { kind: 'list', tags: [] };
   const entries = await ctx.fs.readdir(dir);
   const tags: TagInfo[] = [];
@@ -73,7 +73,7 @@ const createTag = async (
 
 const deleteTag = async (ctx: Context, action: { readonly name: string }): Promise<TagResult> => {
   const name = validateRefName(`${TAGS_PREFIX}${action.name}`);
-  if (!(await ctx.fs.exists(`${ctx.config.gitDir}/${name}`))) {
+  if (!(await ctx.fs.exists(`${ctx.layout.gitDir}/${name}`))) {
     throw tagNotFound(name);
   }
   await updateRef(ctx, name, '0'.repeat(40) as ObjectId, { delete: true });

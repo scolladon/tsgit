@@ -21,11 +21,11 @@ type HeadState =
  * gitDir IS the root).
  */
 export const assertRepository = async (ctx: Context): Promise<FilePath> => {
-  const headPath = `${ctx.config.gitDir}/HEAD`;
+  const headPath = `${ctx.layout.gitDir}/HEAD`;
   if (!(await ctx.fs.exists(headPath))) {
-    throw notARepository(ctx.config.workDir as FilePath);
+    throw notARepository(ctx.layout.workDir as FilePath);
   }
-  const root = ctx.config.bare ? ctx.config.gitDir : ctx.config.workDir;
+  const root = ctx.layout.bare ? ctx.layout.gitDir : ctx.layout.workDir;
   return root as FilePath;
 };
 
@@ -47,7 +47,7 @@ export const assertNotBare = async (ctx: Context, operation: string): Promise<vo
 
 /** Read and parse `.git/HEAD`. Missing → REF_NOT_FOUND. */
 export const readHeadRaw = async (ctx: Context): Promise<HeadState> => {
-  const path = `${ctx.config.gitDir}/HEAD`;
+  const path = `${ctx.layout.gitDir}/HEAD`;
   let content: string;
   try {
     content = await ctx.fs.readUtf8(path);
@@ -81,7 +81,7 @@ const PENDING_MARKERS: ReadonlyArray<{
  */
 export const assertNoPendingOperation = async (ctx: Context): Promise<void> => {
   const flags = await Promise.all(
-    PENDING_MARKERS.map((m) => ctx.fs.exists(`${ctx.config.gitDir}/${m.file}`)),
+    PENDING_MARKERS.map((m) => ctx.fs.exists(`${ctx.layout.gitDir}/${m.file}`)),
   );
   for (let i = 0; i < PENDING_MARKERS.length; i += 1) {
     if (flags[i] === true) throw operationInProgress(PENDING_MARKERS[i]?.operation as never);

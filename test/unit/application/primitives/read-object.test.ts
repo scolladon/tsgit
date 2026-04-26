@@ -31,7 +31,7 @@ describe('readObject', () => {
     const rawBytes = new TextEncoder().encode('blob 3\0xyz');
     const compressed = await ctx.compressor.deflate(rawBytes);
     await ctx.fs.write(
-      `${ctx.config.gitDir}/objects/${computeLooseObjectPath(fakeId)}`,
+      `${ctx.layout.gitDir}/objects/${computeLooseObjectPath(fakeId)}`,
       compressed,
     );
 
@@ -50,7 +50,7 @@ describe('readObject', () => {
     const rawBytes = new TextEncoder().encode('blob 3\0xyz');
     const compressed = await ctx.compressor.deflate(rawBytes);
     await ctx.fs.write(
-      `${ctx.config.gitDir}/objects/${computeLooseObjectPath(fakeId)}`,
+      `${ctx.layout.gitDir}/objects/${computeLooseObjectPath(fakeId)}`,
       compressed,
     );
 

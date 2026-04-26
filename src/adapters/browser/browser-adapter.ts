@@ -2,7 +2,7 @@
 import { SHA1_CONFIG } from '../../domain/objects/hash-config.js';
 import { createLruCache } from '../../domain/storage/lru-cache.js';
 import { type Context, type CreateContextParts, createContext } from '../../ports/context.js';
-import { noopProgressReporter } from '../../ports/progress-reporter.js';
+import { noopProgress } from '../../progress.js';
 import { BrowserCompressor } from './browser-compressor.js';
 import { BrowserFileSystem } from './browser-file-system.js';
 import { BrowserHashService } from './browser-hash-service.js';
@@ -34,8 +34,8 @@ export function createBrowserContext(options: BrowserAdapterOptions): Context {
     hash: new BrowserHashService(),
     compressor: new BrowserCompressor(),
     transport: new BrowserHttpTransport(),
-    progress: noopProgressReporter,
-    config: {
+    progress: noopProgress,
+    layout: {
       workDir: ROOT_WORK_DIR,
       gitDir: `${ROOT_WORK_DIR}${gitDirName}`,
       bare: options.bare ?? false,

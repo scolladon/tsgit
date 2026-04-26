@@ -1,6 +1,6 @@
 # Design: Repository Facade
 
-**Status: Draft** — Phase 10 of the [backlog](../BACKLOG.md).
+**Status: Implemented (2026-04-26)** — Phase 10 of the [backlog](../BACKLOG.md). Mutation score 93.95% on the new modules; surviving mutants in `repository.ts` are documented equivalents (setImmediate-vs-setTimeout fallback, exactOptionalPropertyTypes spread mutations on optional ctx fields, dispose-state guards covered by adjacent `ctx.signal.aborted` check).
 
 ### Review Notes
 
@@ -499,9 +499,11 @@ export const noopProgress: ProgressReporter;
 
 export const consoleProgress = (sink: (line: string) => void): ProgressReporter;
   // Calls sink('<op>: <current>/<total> <text?>') on each update; sink('<op>: done') on end.
-  // Sanitizes `text` in two layers: (1) wrapLoggerSanitizer (Phase 9 §4.7) — strips bytes outside 0x20-0x7E
-  // except \n \t, hex-escapes the rest; (2) ANSI escape strip (\x1b[...m) and HTML special-character escape.
-  // Layer order is fixed: log-sanitizer first, then ANSI/HTML — protects both terminal and HTML sinks.
+  // Sanitizes `text` in three layers: (1) ANSI escape strip (\x1b[...m) — must run on raw ESC bytes
+  // BEFORE sanitize hex-escapes them; (2) sanitize (Phase 9 §4.7) — hex-escapes any remaining bytes
+  // outside 0x20-0x7E except \n \t; (3) HTML special-character escape (<, >, &, ", '). Layer order is
+  // fixed: ANSI strip → sanitize → HTML — once sanitize replaces the ESC byte with the literal '\xNN'
+  // text, the ANSI regex can no longer match the sequence as a unit.
 ```
 
 Users can implement their own (TUI bar, OpenTelemetry span, etc.).

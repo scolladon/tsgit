@@ -47,7 +47,7 @@ async function resolveDirectChain(
       // Path containment (§5.6 invariant) — redundant for `HEAD` (which is a
       // literal safe segment), required for every other name as belt-and-braces
       // on top of validateRefName.
-      assertContainment(ctx.config.gitDir, current);
+      assertContainment(ctx.layout.gitDir, current);
     }
     if (chain.includes(current)) {
       throw refCycleDetected([...chain, current]);

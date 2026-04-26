@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { SHA1_CONFIG } from '../../../src/domain/objects/hash-config.js';
 import { createLruCache } from '../../../src/domain/storage/lru-cache.js';
 import type { Compressor } from '../../../src/ports/compressor.js';
-import { createContext, type RepositoryConfig } from '../../../src/ports/context.js';
+import { createContext, type RepositoryLayout } from '../../../src/ports/context.js';
 import type { FileSystem } from '../../../src/ports/file-system.js';
 import type { HashService } from '../../../src/ports/hash-service.js';
 import type { HttpTransport } from '../../../src/ports/http-transport.js';
@@ -14,7 +14,7 @@ const sentinelHash = {} as HashService;
 const sentinelCompressor = {} as Compressor;
 const sentinelTransport = {} as HttpTransport;
 const sentinelProgress = {} as ProgressReporter;
-const sentinelConfig: RepositoryConfig = { workDir: '/w', gitDir: '/w/.git', bare: false };
+const sentinelLayout: RepositoryLayout = { workDir: '/w', gitDir: '/w/.git', bare: false };
 const sentinelHashConfig = SHA1_CONFIG;
 const sentinelDeltaCache = createLruCache<Uint8Array>(1024);
 
@@ -26,7 +26,7 @@ describe('Context', () => {
       compressor: sentinelCompressor,
       transport: sentinelTransport,
       progress: sentinelProgress,
-      config: sentinelConfig,
+      layout: sentinelLayout,
       hashConfig: sentinelHashConfig,
       deltaCache: sentinelDeltaCache,
     });
@@ -40,7 +40,7 @@ describe('Context', () => {
       compressor: sentinelCompressor,
       transport: sentinelTransport,
       progress: sentinelProgress,
-      config: sentinelConfig,
+      layout: sentinelLayout,
       hashConfig: sentinelHashConfig,
       deltaCache: sentinelDeltaCache,
     });
@@ -54,7 +54,7 @@ describe('Context', () => {
       compressor: sentinelCompressor,
       transport: sentinelTransport,
       progress: sentinelProgress,
-      config: sentinelConfig,
+      layout: sentinelLayout,
       hashConfig: sentinelHashConfig,
       deltaCache: sentinelDeltaCache,
     });
@@ -68,7 +68,7 @@ describe('Context', () => {
       compressor: sentinelCompressor,
       transport: sentinelTransport,
       progress: sentinelProgress,
-      config: sentinelConfig,
+      layout: sentinelLayout,
       hashConfig: sentinelHashConfig,
       deltaCache: sentinelDeltaCache,
     });
@@ -82,7 +82,7 @@ describe('Context', () => {
       compressor: sentinelCompressor,
       transport: sentinelTransport,
       progress: sentinelProgress,
-      config: sentinelConfig,
+      layout: sentinelLayout,
       hashConfig: sentinelHashConfig,
       deltaCache: sentinelDeltaCache,
     });
@@ -96,11 +96,11 @@ describe('Context', () => {
       compressor: sentinelCompressor,
       transport: sentinelTransport,
       progress: sentinelProgress,
-      config: sentinelConfig,
+      layout: sentinelLayout,
       hashConfig: sentinelHashConfig,
       deltaCache: sentinelDeltaCache,
     });
-    expect(sut.config).toEqual({ workDir: '/w', gitDir: '/w/.git', bare: false });
+    expect(sut.layout).toEqual({ workDir: '/w', gitDir: '/w/.git', bare: false });
   });
 
   it('Given created context, When attempting mutation, Then throws (frozen)', () => {
@@ -110,7 +110,7 @@ describe('Context', () => {
       compressor: sentinelCompressor,
       transport: sentinelTransport,
       progress: sentinelProgress,
-      config: sentinelConfig,
+      layout: sentinelLayout,
       hashConfig: sentinelHashConfig,
       deltaCache: sentinelDeltaCache,
     });
@@ -125,7 +125,7 @@ describe('Context', () => {
       compressor: sentinelCompressor,
       transport: sentinelTransport,
       progress: sentinelProgress,
-      config: sentinelConfig,
+      layout: sentinelLayout,
       hashConfig: sentinelHashConfig,
       deltaCache: sentinelDeltaCache,
       signal: ac.signal,
@@ -140,7 +140,7 @@ describe('Context', () => {
       compressor: sentinelCompressor,
       transport: sentinelTransport,
       progress: sentinelProgress,
-      config: sentinelConfig,
+      layout: sentinelLayout,
       hashConfig: sentinelHashConfig,
       deltaCache: sentinelDeltaCache,
     });

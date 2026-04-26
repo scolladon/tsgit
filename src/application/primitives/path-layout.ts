@@ -1,5 +1,5 @@
 /**
- * Pure path helpers composing `ctx.config.gitDir` with known sub-paths.
+ * Pure path helpers composing `ctx.layout.gitDir` with known sub-paths.
  * No I/O. No port access. Primitive step 3.
  */
 import type { ObjectId, RefName } from '../../domain/objects/index.js';
@@ -12,7 +12,7 @@ import type { Context } from '../../ports/context.js';
  * facade-tier code (Phase 10) is responsible for discovery / realpath pinning
  * at construction time. Primitives consume the already-resolved path.
  */
-export const getRepoRoot = (ctx: Context): FilePath => ctx.config.workDir as FilePath;
+export const getRepoRoot = (ctx: Context): FilePath => ctx.layout.workDir as FilePath;
 
 export const looseObjectPath = (gitDir: string, id: ObjectId): string =>
   `${gitDir}/objects/${computeLooseObjectPath(id)}`;

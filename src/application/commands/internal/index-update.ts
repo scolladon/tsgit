@@ -42,8 +42,8 @@ export const acquireIndexLock = async (
   ctx: Context,
   opts: AcquireOptions = {},
 ): Promise<IndexLock> => {
-  const lockPath = `${indexPath(ctx.config.gitDir)}${lockSuffix}`;
-  const indexFile = indexPath(ctx.config.gitDir);
+  const lockPath = `${indexPath(ctx.layout.gitDir)}${lockSuffix}`;
+  const indexFile = indexPath(ctx.layout.gitDir);
   const now = opts.now ?? (() => Date.now());
   const breakStaleLockMs = opts.breakStaleLockMs;
 
