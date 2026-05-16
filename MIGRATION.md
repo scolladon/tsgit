@@ -25,13 +25,13 @@ import * as fs from 'node:fs';
 import http from 'isomorphic-git/http/node';
 
 // tsgit (Node — auto)
-import { openRepository } from 'tsgit';
+import { openRepository } from '@scolladon/tsgit';
 const repo = await openRepository({ cwd: '.' });
 // …
 await repo.dispose();
 ```
 
-The browser story is symmetric: `import { openRepository } from 'tsgit/auto/browser';` plus a `rootHandle: await navigator.storage.getDirectory()`.
+The browser story is symmetric: `import { openRepository } from '@scolladon/tsgit/auto/browser';` plus a `rootHandle: await navigator.storage.getDirectory()`.
 
 ## Command-by-command
 
