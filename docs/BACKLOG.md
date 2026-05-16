@@ -286,7 +286,7 @@ tree is the visible gap.
 
 ### Cosmetic / housekeeping
 
-- [ ] **18.1** Fix `examples/try-on-self.mjs` `mode → kind` mapping (currently prints every TreeEntry as `blob` because the helper compares against the wrong literal). Trivial.
+- [x] **18.1** Fix `examples/try-on-self.mjs` `mode → kind` mapping — replaced single-literal compare with the full FILE_MODE table (tree/file/exec/symlink/gitlink).
 
 ---
 
