@@ -91,7 +91,7 @@ jobs:
       - run: npm run build
       - run: npm run check:size
       - run: npm run check:exports
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: dist
           path: dist/
@@ -118,7 +118,7 @@ jobs:
       # Upload regardless of pass/fail so a threshold breach can be diagnosed
       # from the artifact instead of just the failed step. Per-matrix cell
       # naming avoids `actions/upload-artifact@v4` rejecting duplicate names.
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always() && matrix.os == 'ubuntu-latest' && matrix.node == 22
         with:
           name: coverage-report-${{ matrix.os }}-node${{ matrix.node }}
@@ -140,7 +140,7 @@ jobs:
           fetch-depth: 0
       - uses: ./.github/actions/setup
       - run: npm run test:mutation:incremental
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: mutation-report
@@ -175,7 +175,7 @@ jobs:
       - uses: ./.github/actions/setup
       - run: npx playwright install --with-deps ${{ matrix.browser }}
       - run: npm run test:e2e -- --project=${{ matrix.browser }}
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: playwright-report-${{ matrix.browser }}
@@ -358,7 +358,7 @@ jobs:
         env:
           VALIDATE_ALL_CODEBASE: false
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: megalinter-report
