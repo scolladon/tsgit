@@ -258,6 +258,11 @@ tree is the visible gap.
 - [ ] **14.1** `add --all` (bulk mode walking the working tree).
 - [ ] **14.2** Pathspec globs (`*.ts`, `src/**`) across `add`, `rm`, `checkout`, `status` filters.
 - [ ] **14.3** `.gitignore` evaluation in `add --all` and `status` untracked-file enumeration.
+- [ ] **14.4** Full Windows support. `wrap-fs-validator` separator normalization already shipped; remaining work:
+      - `NodeFileSystem.checkContainment` must reconcile realpath outputs that flip between 8.3 short-name and long-name forms on Windows CI runners.
+      - File-system contract test fixtures hardcode `${rootDir}/file.bin` — needs `nodePath.join` everywhere so mixed separators don't leak into the test inputs.
+      - Errno mapping (ELOOP, EACCES) differs across Windows file types; needs platform-specific branches.
+      - Once green, re-add `windows-latest` to the `unit-tests` matrix in `.github/workflows/ci.yml`.
 
 ### Phase 15 — Bench + observability follow-ups (v1.x patch)
 
