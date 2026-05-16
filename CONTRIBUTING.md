@@ -7,7 +7,9 @@
 3. Implement the feature
 4. Run `npm run validate` to verify all quality gates
 5. Commit using conventional commits
-6. Open a PR
+6. Open a PR — `pkg-pr-new` will comment with an install command
+   (`npm install https://pkg.pr.new/scolladon/tsgit@<pr-number>`) that
+   lets reviewers smoke-test the build without waiting for a release
 
 ## Test Conventions
 
