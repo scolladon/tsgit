@@ -47,6 +47,7 @@
     "knip",
     "lint-staged",
     "ls-lint",
+    "pkg-pr-new",
     "playwright",
     "rollup",
     "size-limit",

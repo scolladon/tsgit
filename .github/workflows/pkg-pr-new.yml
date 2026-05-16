@@ -8,7 +8,8 @@ name: Preview package (pkg.pr.new)
 #   npm install https://pkg.pr.new/scolladon/tsgit@<pr-number>
 #
 # Nothing reaches the public npm registry — pkg.pr.new is a separate origin.
-# The action leaves a comment on the PR with the exact install command.
+# The CLI authenticates via the GITHUB_TOKEN implicit in pull-requests: write
+# and leaves a rolling comment on the PR with the install command.
 
 on:
   push:
@@ -32,10 +33,4 @@ jobs:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup
       - run: npm run build
-
-      - name: Publish preview to pkg.pr.new
-        uses: stackblitz-labs/pkg-pr-new@v0
-        with:
-          # `comment: update` keeps a single rolling comment per PR instead of
-          # appending a new one on each rebuild.
-          comment: update
+      - run: npx pkg-pr-new publish --comment=update

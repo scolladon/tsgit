@@ -1,1 +1,2 @@
+npm outdated || true
 npm run validate

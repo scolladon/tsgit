@@ -173,7 +173,8 @@
     "check:security": "wireit",
     "check:architecture": "wireit",
     "check:spelling": "wireit",
-    "validate": "wireit"
+    "validate": "wireit",
+    "upgrade": "npm update && npm install && npm run validate"
   },
   "wireit": {
     "build": {
