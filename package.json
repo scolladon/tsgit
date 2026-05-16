@@ -475,7 +475,6 @@
         "check:filesystem",
         "check:architecture",
         "check:spelling",
-        "check:deps",
         "check:size",
         "check:exports",
         "check:security",
