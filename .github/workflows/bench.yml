@@ -1,0 +1,28 @@
+name: Nightly benchmarks
+
+on:
+  schedule:
+    # Every day at 03:14 UTC. Off-peak to keep variance lower.
+    - cron: '14 3 * * *'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bench-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  bench:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      - run: npm run bench:summary
+      - uses: actions/upload-artifact@v4
+        with:
+          name: benchmarks
+          path: reports/benchmarks/
+          retention-days: 30

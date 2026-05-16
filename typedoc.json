@@ -1,0 +1,39 @@
+{
+  "$schema": "https://typedoc.org/schema.json",
+  "entryPoints": [
+    "src/index.node.ts",
+    "src/index.browser.ts",
+    "src/index.default.ts",
+    "src/repository.ts",
+    "src/application/commands/index.ts",
+    "src/application/primitives/index.ts",
+    "src/operators/index.ts",
+    "src/transport/index.ts",
+    "src/adapters/node/index.ts",
+    "src/adapters/browser/index.ts",
+    "src/adapters/memory/index.ts",
+    "src/ports/index.ts",
+    "src/domain/index.ts"
+  ],
+  "entryPointStrategy": "resolve",
+  "out": "reports/api",
+  "tsconfig": "./tsconfig.build.json",
+  "excludePrivate": true,
+  "excludeInternal": true,
+  "excludeExternals": true,
+  "categorizeByGroup": true,
+  "readme": "README.md",
+  "navigationLinks": {
+    "GitHub": "https://github.com/scolladon/tsgit",
+    "npm": "https://www.npmjs.com/package/tsgit"
+  },
+  "validation": {
+    "notExported": true,
+    "invalidLink": true,
+    "notDocumented": false
+  },
+  "treatWarningsAsErrors": false,
+  "treatValidationWarningsAsErrors": false,
+  "hideGenerator": true,
+  "skipErrorChecking": true
+}

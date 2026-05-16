@@ -10,7 +10,7 @@ A pure TypeScript git implementation designed to be the fastest portable git lib
 
 ## Status
 
-**Phases 1–7 complete.** Domain (objects, storage, refs, index), hexagonal boundary (ports + adapters), diff/merge, AsyncIterable operators, and the Tier-2 primitives (`readObject`, `writeObject`, `readTree`, `writeTree`, `readBlob`, `walkCommits`, `walkTree`, `resolveRef`, `updateRef`, `readIndex`, `createCommit`, `diffTrees`) are implemented with 100% test coverage and mutation-verified test quality. Phase 8 (Transport) is next.
+**v1.0.0-rc — production-ready surface.** All 11 phases (Domain → Repository facade → Polish & Launch) are implemented with 100% line/branch/function/statement coverage and mutation-verified test quality. The pre-publish workflow validates the tarball on every `v*` tag; release-please drives the npm publish.
 
 | Phase | Scope | Status |
 |---|---|---|
@@ -21,10 +21,10 @@ A pure TypeScript git implementation designed to be the fastest portable git lib
 | 5 | Domain — Diff & Merge | ✅ |
 | 6 | Operators (AsyncIterable composition) | ✅ |
 | 7 | Primitives (Tier 2 API) | ✅ |
-| 8 | Transport (Smart HTTP + middleware) | ⏳ |
-| 9 | Commands (Tier 1 API) | ⏳ |
-| 10 | Repository facade | ⏳ |
-| 11 | Polish & Launch | ⏳ |
+| 8 | Transport (Smart HTTP + middleware) | ✅ |
+| 9 | Commands (Tier 1 API) | ✅ |
+| 10 | Repository facade | ✅ |
+| 11 | Polish & Launch (CI matrix, browser E2E, benchmarks, TypeDoc, MIGRATION) | ✅ |
 
 ## Features
 
@@ -118,6 +118,23 @@ for await (const commit of recentByAlice) {
   console.log(commit.data.message);
 }
 ```
+
+## Benchmarks
+
+Comparison against `isomorphic-git@1.38` on a synthetic 50-commit repo. Numbers
+are medians from `vitest bench`; ±RME and full p99 distribution live in
+`reports/benchmarks/raw.json`.
+
+| Scenario | tsgit | isomorphic-git | tsgit speedup |
+|---|---|---|---|
+| `status:clean` | ~1.7 ms | ~4.0 ms | ~2.4× |
+| `status:dirty-25-files` | ~1.7 ms | ~3.7 ms | ~2.2× |
+| `log:walk-50-commits` | ~6 ms | ~4 ms | ~0.7× |
+| `readBlob:warm-cache` | ~0.1 ms | ~0.1 ms | ~1.0× |
+
+Reproduce locally with `npm run bench:summary` (writes `reports/benchmarks/summary.md`).
+GitHub Actions runners introduce ±20% variance — trust direction more than
+absolute numbers.
 
 ## Architecture
 

@@ -37,9 +37,5 @@ export default defineConfig({
       reporter: ['text', 'html', 'lcov', 'json-summary'],
       reportsDirectory: 'coverage',
     },
-    benchmark: {
-      include: ['test/**/*.bench.ts'],
-      outputJson: 'reports/bench-results.json',
-    },
   },
 });

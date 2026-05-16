@@ -2,7 +2,7 @@
 
 Track: `[ ]` todo, `[~]` in progress, `[x]` done, `[-]` skipped
 
-**Progress:** Phases 0–10 complete. Phase 11 (Polish & Launch) is next.
+**Progress:** Phases 0–10 complete. Phase 11 (Polish & Launch) — 11.1–11.5 done, 11.6 + 11.7 awaiting admin steps + release-please PR.
 
 ---
 
@@ -189,13 +189,13 @@ Design: `docs/design/repository-facade.md`
 
 ## Phase 11: Polish & Launch
 
-- [ ] **11.1** Benchmark suite (log, readBlob, status, clone vs isomorphic-git)
-- [ ] **11.2** Cross-platform E2E tests (Ubuntu, macOS, Windows × Node 18/20/22)
-- [ ] **11.3** Browser E2E tests (Chrome, Firefox, Safari via Playwright)
-- [ ] **11.4** TypeDoc API documentation
-- [ ] **11.5** npm publish dry run, verify with arethetypeswrong
-- [ ] **11.6** GitHub repo setup (branch protection, secrets, gh-pages)
-- [ ] **11.7** v1.0.0 release
+- [x] **11.1** Benchmark suite (log, readBlob, status vs isomorphic-git; clone deferred to v1.x)
+- [~] **11.2** Cross-platform E2E tests (Ubuntu, macOS, Windows × Node 20/22/24) — matrix expanded, integration suite landed; per-OS mutation gap still open
+- [x] **11.3** Browser E2E tests (Chromium, Firefox, WebKit via Playwright) — OPFS round-trip, SubtleCrypto SHA-1 parity, DecompressionStream
+- [x] **11.4** TypeDoc API documentation
+- [x] **11.5** npm publish dry run, verify with arethetypeswrong
+- [~] **11.6** GitHub repo setup (branch protection, secrets, gh-pages) — gh-pages workflow shipped, branch-protection + secret-seeding documented in RUNBOOK; admin steps tracked there
+- [~] **11.7** v1.0.0 release — release-please manifest + config landed, pre-publish gate in place; awaits merge of feat/phase-11-ci-matrix to main and the release-please PR
 
 ---
 

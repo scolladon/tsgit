@@ -65,9 +65,4 @@ export const openRepository = async (
 export type { AdapterSet } from './adapter-detect.js';
 export { detectRuntime, isBrowser, isNode } from './adapter-detect.js';
 export { consoleProgress, noopProgress, type ProgressReporter } from './progress.js';
-export type {
-  OpenRepositoryOptions,
-  Repository,
-  RepositoryLayoutInput,
-  RuntimeFallback,
-} from './repository.js';
+export type { OpenRepositoryOptions, Repository } from './repository.js';

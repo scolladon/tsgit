@@ -164,6 +164,10 @@
     "test:mutation": "wireit",
     "test:mutation:incremental": "wireit",
     "test:bench": "wireit",
+    "bench:summary": "wireit",
+    "docs": "wireit",
+    "docs:check": "wireit",
+    "verify:tarball": "wireit",
     "check:size": "wireit",
     "check:exports": "wireit",
     "check:security": "wireit",
@@ -296,9 +300,14 @@
         "build"
       ],
       "files": [
-        "test/e2e/**/*.ts"
+        "test/browser/**/*.ts",
+        "test/browser/**/*.mjs",
+        "test/browser/index.html",
+        "playwright.config.ts"
       ],
-      "output": []
+      "output": [
+        "reports/playwright/**"
+      ]
     },
     "test:coverage": {
       "command": "vitest run --coverage",
@@ -345,14 +354,65 @@
       ]
     },
     "test:bench": {
-      "command": "vitest bench --run",
+      "command": "vitest bench --run --config vitest.bench.config.ts",
       "dependencies": [
         "check:types"
       ],
       "files": [
         "src/**/*.ts",
-        "test/**/*.bench.ts",
-        "vitest.config.ts"
+        "test/bench/**/*.ts",
+        "vitest.bench.config.ts"
+      ],
+      "output": [
+        "reports/benchmarks/raw.json"
+      ]
+    },
+    "bench:summary": {
+      "command": "node --experimental-strip-types scripts/bench-summarize.ts",
+      "dependencies": [
+        "test:bench"
+      ],
+      "files": [
+        "scripts/bench-summarize.ts",
+        "reports/benchmarks/raw.json"
+      ],
+      "output": [
+        "reports/benchmarks/summary.md"
+      ]
+    },
+    "docs": {
+      "command": "typedoc",
+      "files": [
+        "src/**/*.ts",
+        "typedoc.json",
+        "tsconfig.build.json",
+        "README.md"
+      ],
+      "output": [
+        "reports/api/**"
+      ]
+    },
+    "docs:check": {
+      "command": "typedoc --emit none",
+      "files": [
+        "src/**/*.ts",
+        "typedoc.json",
+        "tsconfig.build.json",
+        "README.md"
+      ],
+      "output": []
+    },
+    "verify:tarball": {
+      "command": "bash scripts/verify-tarball.sh",
+      "dependencies": [
+        "build"
+      ],
+      "files": [
+        "scripts/verify-tarball.sh",
+        "dist/**",
+        "package.json",
+        "LICENSE",
+        "README.md"
       ],
       "output": []
     },
@@ -448,6 +508,7 @@
     "dependency-cruiser": "17.3.10",
     "fast-check": "4.6.0",
     "husky": "9.1.7",
+    "isomorphic-git": "1.38.0",
     "jscpd": "4.0.9",
     "knip": "6.4.1",
     "lint-staged": "16.4.0",
@@ -455,6 +516,7 @@
     "rollup-plugin-dts": "6.4.1",
     "rollup-plugin-visualizer": "7.0.1",
     "size-limit": "12.1.0",
+    "typedoc": "0.28.19",
     "typescript": "6.0.2",
     "vitest": "4.1.4",
     "wireit": "0.14.12"

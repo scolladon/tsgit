@@ -76,7 +76,27 @@ test/
 │   ├── ports/      # Contract test suites (*.contract.ts — imported by adapter tests)
 │   └── adapters/   # Per-adapter tests (Memory, Node) that invoke the contract suites
 ├── integration/    # Real repos, cross-adapter, canonical git interop
-└── e2e/            # Full workflows across platforms/browsers (Playwright — Phase 11)
+├── browser/        # Playwright × Chromium/Firefox/WebKit (.spec.ts) — OPFS, SubtleCrypto, DecompressionStream
+└── bench/          # vitest bench scenarios comparing tsgit vs isomorphic-git
+```
+
+### Running test subsets
+
+```bash
+# Vitest filters
+npx vitest run test/unit/domain/objects/blob.test.ts   # one file
+npx vitest run -t "OPFS round-trip"                     # by test title
+npx vitest run --project unit                           # whole project
+npx vitest run --project integration                    # cross-platform shim
+
+# Browser E2E (build is automatic via wireit)
+npm run test:e2e                                        # all 3 browsers
+npx playwright test --project=chromium                  # one browser
+npx playwright install --with-deps chromium             # first-time setup
+
+# Benchmarks
+npm run test:bench                                      # raw JSON in reports/benchmarks/
+npm run bench:summary                                   # markdown summary
 ```
 
 ### Contract Test Pattern

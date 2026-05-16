@@ -58,6 +58,8 @@ export interface OpenRepositoryOptions {
  * design defers full layout discovery (walk up from cwd until `.git` is found)
  * to a follow-up; for this iteration the caller must provide the resolved
  * layout explicitly (the runtime shims do this in Step 5).
+ *
+ * @internal
  */
 export interface RepositoryLayoutInput {
   readonly workDir: string;
@@ -71,6 +73,8 @@ export interface RepositoryLayoutInput {
  * pre-built adapter set + layout discovery + hashConfig + deltaCache. The
  * fallback shape stays internal because the user-facing `OpenRepositoryOptions`
  * does not expose these details.
+ *
+ * @internal
  */
 export interface RuntimeFallback {
   readonly fs: FileSystem;
@@ -151,12 +155,17 @@ export const openRepository = async (
   validateOptions(opts);
   const cwd = opts.cwd ?? defaultCwd();
   const detected = composeAdapters(opts, fallback);
+  // Containment is rooted at the REPO (layout.workDir), not the user's cwd —
+  // when cwd is a sub-directory of the repo, primitives still need to read
+  // files anywhere under the workDir (e.g., gitDir/HEAD lives at the repo root,
+  // not under the sub-directory). The security goal is "no paths outside
+  // the repo," which is exactly the layout.workDir boundary.
   const adapters =
     opts.unsafeRawAdapters === true
       ? detected
       : {
           ...detected,
-          fs: wrapFsValidator(detected.fs, cwd),
+          fs: wrapFsValidator(detected.fs, fallback.layout.workDir),
           transport: wrapTransportValidator(detected.transport, opts.config),
         };
   const config = opts.config !== undefined ? deepFreeze({ ...opts.config }) : undefined;
