@@ -96,6 +96,66 @@ publishers" → Add):
 - Workflow file: `.github/workflows/npm-service.yml`
 - Environment: _(leave blank)_
 
+#### PR preview builds (pkg.pr.new)
+
+Every push to a PR (and every push to `main`) is built and published to
+[`pkg.pr.new`](https://github.com/stackblitz-labs/pkg-pr-new) — a free
+public preview registry that is **separate from the npm registry**. The
+`pkg-pr-new` GitHub Action drops a rolling comment on the PR with the
+install command:
+
+```bash
+# Install a specific PR's build:
+npm install https://pkg.pr.new/scolladon/tsgit@<pr-number>
+
+# Install a specific commit's build (after the PR merges, before release):
+npm install https://pkg.pr.new/scolladon/tsgit@<short-sha>
+```
+
+Use this for early adopter feedback on a feature before tagging a real
+release. Preview tarballs expire on `pkg.pr.new`'s own schedule (weeks,
+not months); never depend on a preview URL from a production
+`package.json`.
+
+#### Bootstrap: the very first publish
+
+npm's trusted-publisher binding can only be added **after** the package
+exists on the registry. The first publish therefore has to happen
+manually with a short-lived token; every subsequent publish runs through
+the OIDC workflow.
+
+```bash
+# 1. Generate a granular automation token scoped to the tsgit package only.
+#    npmjs.com → Access Tokens → "Generate New Token" → "Granular Access Token"
+#      - Token name: tsgit-bootstrap-publish
+#      - Expiration: 7 days (long enough to recover from a bad seed publish)
+#      - Packages and scopes: Read and write, tsgit only
+#      - IP allowlist + 2FA: leave default
+
+# 2. Verify the build + tarball one last time.
+npm run validate
+npm run verify:tarball
+
+# 3. Authenticate and publish. Provenance is NOT signed for this seed —
+#    it requires the GitHub Actions OIDC token; subsequent CI publishes
+#    will carry attestations.
+export NODE_AUTH_TOKEN="<token from step 1>"
+npm publish --access public
+
+# 4. Verify on npmjs.com/package/tsgit that the version landed.
+
+# 5. Add the trusted-publisher binding:
+#    npmjs.com → tsgit package → Settings → "Trusted publishers" → Add
+#      - Publisher:        GitHub Actions
+#      - Organization:     scolladon
+#      - Repository:       tsgit
+#      - Workflow file:    .github/workflows/npm-service.yml
+#      - Environment:      (blank)
+
+# 6. Revoke the bootstrap token (npmjs.com → Access Tokens → Revoke).
+#    From here on the workflow handles publishing via OIDC.
+```
+
 #### Cutting a manual patch release
 
 Prefer the release-please path. If you must publish manually:
