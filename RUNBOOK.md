@@ -99,10 +99,15 @@ publishers" → Add):
 #### PR preview builds (pkg.pr.new)
 
 Every push to a PR (and every push to `main`) is built and published to
-[`pkg.pr.new`](https://github.com/stackblitz-labs/pkg-pr-new) — a free
+[`pkg.pr.new`](https://github.com/stackblitz-labs/pkg.pr.new) — a free
 public preview registry that is **separate from the npm registry**. The
-`pkg-pr-new` GitHub Action drops a rolling comment on the PR with the
-install command:
+`pkg-pr-new` CLI drops a rolling comment on the PR with the install
+command:
+
+**One-time setup** — install the `pkg-pr-new` GitHub App on the
+repository: https://github.com/apps/pkg-pr-new → Configure → Only select
+repositories → tick `tsgit`. Without this the workflow exits 404
+("the app is not installed").
 
 ```bash
 # Install a specific PR's build:

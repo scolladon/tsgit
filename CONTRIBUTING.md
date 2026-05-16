@@ -71,7 +71,7 @@ it('Given a commit object, When serializing, Then output matches git format', ()
 
 ### Test Organization
 
-```
+```text
 test/
 ├── unit/           # Isolated tests, memory adapter, fast
 │   ├── domain/     # Per-module domain tests
@@ -144,7 +144,7 @@ fileSystemContractTests(async () => ({
 
 Follow [Conventional Commits](https://www.conventionalcommits.org/):
 
-```
+```text
 <type>: <description>
 
 <optional body>

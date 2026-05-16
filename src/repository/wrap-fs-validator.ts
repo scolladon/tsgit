@@ -110,11 +110,22 @@ export const wrapFsValidator = (fs: FileSystem, cwd: string): FileSystem => {
 /**
  * Containment check: `path` is inside `cwd` iff `path === cwd` OR
  * `path.startsWith(cwd + '/')`. Naive prefix check is sufficient when
- * `cwd` is absolute and normalized (no trailing slash, no `..` components);
- * the facade enforces these via `validateOptions` and `defaultCwd`.
+ * `cwd` is absolute and normalized (no trailing separator, no `..`
+ * components); the facade enforces these via `validateOptions` and
+ * `defaultCwd`.
+ *
+ * Windows fix: callers may produce paths with a mix of `\` (Node's
+ * `path.resolve` output) and `/` (template-string-built paths like
+ * `${gitDir}/HEAD`). Normalize both sides to forward slash so the prefix
+ * check compares like-with-like. POSIX paths are unaffected — they
+ * already use `/`.
  */
+const normalizeSeparators = (p: string): string => p.replace(/\\/g, '/');
+
 const isContainedIn = (path: string, cwd: string): boolean => {
-  if (path === cwd) return true;
-  const normalizedCwd = cwd.endsWith('/') ? cwd : `${cwd}/`;
-  return path.startsWith(normalizedCwd);
+  const a = normalizeSeparators(path);
+  const b = normalizeSeparators(cwd);
+  if (a === b) return true;
+  const normalizedCwd = b.endsWith('/') ? b : `${b}/`;
+  return a.startsWith(normalizedCwd);
 };

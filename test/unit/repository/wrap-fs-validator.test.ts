@@ -62,6 +62,32 @@ describe('wrapFsValidator — happy path', () => {
   });
 });
 
+describe('wrapFsValidator — Windows path separators', () => {
+  it('Given a Windows-style cwd, When child path uses backslashes, Then it is accepted', async () => {
+    const fs = stubFs();
+    const sut = wrapFsValidator(fs, 'C:\\Users\\runner\\repo');
+
+    await expect(sut.read('C:\\Users\\runner\\repo\\.git\\HEAD')).resolves.toBeInstanceOf(
+      Uint8Array,
+    );
+  });
+
+  it('Given a Windows-style cwd, When child path mixes backslash and forward-slash, Then it is accepted', async () => {
+    const fs = stubFs();
+    const sut = wrapFsValidator(fs, 'C:\\Users\\runner\\repo');
+
+    await expect(sut.read('C:\\Users\\runner\\repo/.git/HEAD')).resolves.toBeInstanceOf(Uint8Array);
+  });
+
+  it('Given a Windows-style cwd, When a sibling Windows path is read, Then it is rejected', async () => {
+    const fs = stubFs();
+    const sut = wrapFsValidator(fs, 'C:\\Users\\runner\\repo');
+
+    await expectOutside(() => sut.read('C:\\Users\\runner\\repo-evil\\steal'));
+    expect(fs.read).not.toHaveBeenCalled();
+  });
+});
+
 describe('wrapFsValidator — outside cwd rejected', () => {
   it('Given a sibling path, When read runs, Then throws PATHSPEC_OUTSIDE_REPO', async () => {
     const fs = stubFs();
