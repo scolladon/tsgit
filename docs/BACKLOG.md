@@ -216,3 +216,86 @@ Phase 7 (primitives) → Phase 8 (transport) → Phase 9 (commands)
                                                     ↓
                                               Phase 11 (launch)
 ```
+
+---
+
+## Post-v1 Backlog
+
+Captured from Phase 11 design §9.2 + parallel-review deferrals. Grouped by
+target release (v1.x patches/minor vs. v2). Each item carries a one-line
+acceptance hint so the next planner can scope it without re-deriving context.
+
+### Phase 12 — Network completion (v1.x minor)
+
+Surface exists today; stub bodies need real loops. Highest user-visible value.
+
+- [ ] **12.1** `clone`: smart-HTTP pack fetch + write-objects loop.
+      _Accept when:_ `repo.clone({ url })` against a real `git-upload-pack` endpoint produces a working repo whose `git log` matches the remote's HEAD line.
+      _Touches:_ `application/commands/clone.ts`, new `application/primitives/fetch-pack.ts`, progress site `clone:write-objects`.
+- [ ] **12.2** `fetch`: ls-refs + want/have negotiation + pack write.
+      _Accept when:_ shallow + non-shallow fetch updates `refs/remotes/<remote>/*` and writes received objects.
+      _Touches:_ `fetch.ts`, shared `fetch-pack.ts`, progress site `fetch:write-objects`.
+- [ ] **12.3** `push`: pack send via `git-receive-pack`.
+      _Accept when:_ `repo.push({ remote, refSpecs })` advances the remote ref and uploads only the missing objects.
+      _Touches:_ `push.ts`, new `application/primitives/send-pack.ts`, progress site `push:upload`.
+- [ ] **12.4** Bench: `clone:small-repo` scenario.
+      _Accept when:_ wired into `test/bench/` and the markdown summary, comparing tsgit vs isomorphic-git clone time against a fixed local `git-http-backend` fixture.
+
+### Phase 13 — Working-tree fidelity (v1.x minor)
+
+Today `checkout` / `reset --hard` move HEAD only. Materializing the working
+tree is the visible gap.
+
+- [ ] **13.1** `checkout:materialize` — diff target tree vs current working tree; write/delete/chmod files atomically.
+      _Accept when:_ branch switch + path-checkout both leave the working tree byte-identical to canonical git, with line-ending + executable-bit fidelity. Progress tick per file.
+- [ ] **13.2** `reset --mixed`: clear index entries beyond the lock-release stub.
+- [ ] **13.3** `reset --hard`: invoke 13.1's materialize routine.
+- [ ] **13.4** Three-way tree merge in `merge`: walk HEAD ∩ THEIRS ∩ BASE, apply per-path resolution, write conflict markers (already implemented for content; tree-walk is the missing piece).
+      _Accept when:_ a clean merge produces the correct merge commit's tree without re-running `add`; a conflicting merge writes `<<<<<<<` markers and leaves index in unmerged state.
+
+### Phase 14 — Glob & pathspec (v1.x patch)
+
+- [ ] **14.1** `add --all` (bulk mode walking the working tree).
+- [ ] **14.2** Pathspec globs (`*.ts`, `src/**`) across `add`, `rm`, `checkout`, `status` filters.
+- [ ] **14.3** `.gitignore` evaluation in `add --all` and `status` untracked-file enumeration.
+
+### Phase 15 — Bench + observability follow-ups (v1.x patch)
+
+- [ ] **15.1** "Medium" bench fixture: 5k commits / 20k blobs / ~50 MB (clone of the tsgit repo snapshot, cached in `~/.cache/tsgit-bench`).
+- [ ] **15.2** "Large" bench fixture: 50k commits / 200k blobs / ~500 MB.
+- [ ] **15.3** `node --prof` profiling captures for the three hot paths (log, status, pack-read).
+- [ ] **15.4** Per-OS mutation testing on macOS + Windows (closes Phase 11.2 `[~]`).
+- [ ] **15.5** Bench DSL convention: adapt vitest `bench` call sites to a thin wrapper that enforces Given/When/Then + `sut` naming (review deferral).
+
+### Phase 16 — Supply-chain & ops hardening (v1.x patch)
+
+- [ ] **16.1** Pin every third-party GitHub Action `uses:` to a 40-char commit SHA (Phase 11 security review MEDIUM).
+- [ ] **16.2** Dependabot config covers action SHAs (group with `update-strategy: lockfile-only`).
+- [ ] **16.3** Browser E2E surface parity: extend `test/browser/` to cover `log`, `branch`, `checkout`, `tag` against OPFS (Phase 11 test-review gap).
+- [ ] **16.4** Split the OPFS round-trip mega-scenario into per-step assertions for sharper failure messages.
+
+### v2.0 — Larger semantic surface
+
+- [ ] **17.1** Reflog (`HEAD@{N}`, `<branch>@{N}` syntax, `.git/logs/` writers).
+- [ ] **17.2** Hooks (`pre-commit`, `commit-msg`, `pre-push` invocation contract; opt-in for the security model).
+- [ ] **17.3** Sparse checkout (`.git/info/sparse-checkout` patterns, partial materialization).
+- [ ] **17.4** Partial clone (`--filter=blob:none`, lazy-fetch on read).
+- [ ] **17.5** Submodule walk (recurse into `.gitmodules`, expose as `repo.submodules` iterator).
+- [ ] **17.6** `git-cat-file --batch` equivalent on the primitive layer for high-throughput readers.
+- [ ] **17.7** isomorphic-git compatibility shim (runtime namespace re-export — explicitly out of scope for v1 per MIGRATION.md, revisit if adoption demands it).
+
+### Cosmetic / housekeeping
+
+- [ ] **18.1** Fix `examples/try-on-self.mjs` `mode → kind` mapping (currently prints every TreeEntry as `blob` because the helper compares against the wrong literal). Trivial.
+
+---
+
+## Out-of-band issues for the maintainer (Phase 11 admin tail)
+
+Tracked here for visibility; none are code changes.
+
+- [ ] Run `gh secret set NPM_TOKEN`, `CODECOV_TOKEN`, `RELEASE_PLEASE_PAT`.
+- [ ] Run the `gh api repos/.../branches/main/protection` block in RUNBOOK §"Branch protection on main".
+- [ ] Run `gh repo edit` metadata block in RUNBOOK §"Repo metadata".
+- [ ] Enable Pages source = "GitHub Actions" in the repo UI.
+- [ ] Merge the release-please PR that the squashed `feat!:` commit will open on next CI run.
