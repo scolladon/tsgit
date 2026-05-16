@@ -209,8 +209,10 @@ jobs:
       - name: Publish benchmark to gh-pages
         uses: benchmark-action/github-action-benchmark@v1
         with:
-          tool: customSmallerIsBetter
-          output-file-path: reports/bench-results.json
+          # vitest tool understands the raw.json shape that
+          # vitest.bench.config.ts writes — no manual conversion needed.
+          tool: vitest
+          output-file-path: reports/benchmarks/raw.json
           gh-pages-branch: gh-pages
           benchmark-data-dir-path: reports/benchmarks
           github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -234,7 +236,7 @@ jobs:
         run: |
           npm run build
           npm run test:bench
-          cp reports/bench-results.json /tmp/base-bench.json
+          cp reports/benchmarks/raw.json /tmp/base-bench.json
           rm -rf dist
 
       - name: Checkout PR branch
@@ -248,7 +250,7 @@ jobs:
         run: |
           npm run build
           npm run test:bench
-          cp reports/bench-results.json /tmp/pr-bench.json
+          cp reports/benchmarks/raw.json /tmp/pr-bench.json
 
       - name: Compare and comment
         env:
