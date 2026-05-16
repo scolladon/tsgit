@@ -77,9 +77,24 @@ Commit message (via commitlint):
 
 1. Merge to `main` triggers release-please
 2. release-please creates a version bump PR with changelog
-3. Merging the release PR pushes a `v*` tag
+3. Merging the release PR pushes a `v*` tag AND publishes a GitHub Release
 4. `pre-publish.yml` runs `npm run verify:tarball` against the actual artifact
-5. On green, `publish.yml` runs `npm publish` with provenance
+5. The GitHub Release event triggers `npm-service.yml`, which runs
+   `npm publish --provenance --access public` over OIDC
+
+Authentication to npm uses **trusted publisher** (OIDC), not a long-lived
+`NPM_TOKEN`. The workflow's `id-token: write` permission lets GitHub mint a
+short-lived OIDC token that npm exchanges for publish rights, gated on the
+`scolladon/tsgit` ↔ `.github/workflows/npm-service.yml` binding configured
+in the package settings on npmjs.com. No secret rotation required.
+
+First-time binding setup (npmjs.com → tsgit package → Settings → "Trusted
+publishers" → Add):
+- Publisher: GitHub Actions
+- Organization / User: `scolladon`
+- Repository: `tsgit`
+- Workflow file: `.github/workflows/npm-service.yml`
+- Environment: _(leave blank)_
 
 #### Cutting a manual patch release
 
@@ -108,16 +123,15 @@ git push origin main --follow-tags
 
 #### Rotating secrets
 
-```bash
-# NPM token (publish auth) — generate at npmjs.com/settings/<user>/tokens
-gh secret set NPM_TOKEN --body "<new-token>"
+Only one long-lived secret remains; publish + coverage need no rotation.
 
-# Codecov upload token
-gh secret set CODECOV_TOKEN --body "<new-token>"
+```bash
+# release-please PAT — must be regenerated when GitHub auto-expires it.
+gh secret set RELEASE_PLEASE_PAT --body "<new-pat>"
 ```
 
-After rotation, re-run the latest CI workflow on `main` to confirm both
-publish and coverage steps still authenticate.
+If you ever revoke the npm trusted-publisher binding on npmjs.com you must
+re-add it from the package settings page; the workflow needs no change.
 
 ### Bumping the engines floor
 
@@ -131,9 +145,12 @@ ADR-005 (Phase 10) set the floor to `>=20.3`. To raise it:
 
 | Secret | Where | Purpose |
 |---|---|---|
-| `RELEASE_PLEASE_PAT` | GitHub repo | PAT for release-please to trigger CI on PRs |
-| `NPM_TOKEN` | GitHub repo | npm publish authentication |
-| `CODECOV_TOKEN` | GitHub repo | Codecov upload from the Ubuntu × 22 cell |
+| `RELEASE_PLEASE_PAT` | GitHub repo | PAT for release-please to trigger CI on its PRs |
+
+npm publish runs via **trusted publisher** OIDC — no `NPM_TOKEN` needed
+(see "Release Process" above). Coverage runs locally in CI via vitest's
+100% threshold and is uploaded as the `coverage-report-*` workflow
+artifact when a run breaches the threshold — no `CODECOV_TOKEN` either.
 
 ## One-time GitHub repo setup
 
@@ -186,13 +203,17 @@ rest.
 
 ### Secret seeding
 
+Only one repository secret is required:
+
 ```bash
-gh secret set NPM_TOKEN
-gh secret set CODECOV_TOKEN
 gh secret set RELEASE_PLEASE_PAT
 ```
 
-`gh secret set` reads from stdin — paste the value and Ctrl+D.
+`gh secret set` reads from stdin — paste the PAT value and Ctrl+D.
+
+Authentication to npm is **trusted-publisher OIDC**, configured once on
+the npmjs.com package page (see "Release Process" above). Coverage runs
+inside CI with no external service.
 
 ## Troubleshooting
 

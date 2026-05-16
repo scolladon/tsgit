@@ -294,7 +294,10 @@ tree is the visible gap.
 
 Tracked here for visibility; none are code changes.
 
-- [ ] Run `gh secret set NPM_TOKEN`, `CODECOV_TOKEN`, `RELEASE_PLEASE_PAT`.
+- [ ] Configure npm **trusted publisher** binding on the tsgit package
+      (npmjs.com → Settings → Trusted publishers) pointing at
+      `scolladon/tsgit` + `.github/workflows/npm-service.yml`.
+- [ ] Run `gh secret set RELEASE_PLEASE_PAT` (the only remaining secret).
 - [ ] Run the `gh api repos/.../branches/main/protection` block in RUNBOOK §"Branch protection on main".
 - [ ] Run `gh repo edit` metadata block in RUNBOOK §"Repo metadata".
 - [ ] Enable Pages source = "GitHub Actions" in the repo UI.

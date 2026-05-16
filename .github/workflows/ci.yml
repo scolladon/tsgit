@@ -115,12 +115,16 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
       - run: npm run test:coverage
+      # Upload regardless of pass/fail so a threshold breach can be diagnosed
+      # from the artifact instead of just the failed step. Per-matrix cell
+      # naming avoids `actions/upload-artifact@v4` rejecting duplicate names.
       - uses: actions/upload-artifact@v4
-        if: matrix.os == 'ubuntu-latest' && matrix.node == 22
+        if: always() && matrix.os == 'ubuntu-latest' && matrix.node == 22
         with:
-          name: coverage-report
+          name: coverage-report-${{ matrix.os }}-node${{ matrix.node }}
           path: coverage/
           retention-days: 14
+          if-no-files-found: warn
 
   # ──────────────────────────────────────────────
   # Stage 4: Mutation Testing (PRs only, incremental)
