@@ -27,7 +27,13 @@ interface Tsgit {
   openRepository: (opts: { rootHandle: FileSystemDirectoryHandle }) => Promise<BrowserRepo>;
 }
 
+// Playwright's WebKit headless build does not expose navigator.storage.getDirectory
+// (OPFS works in production Safari but is gated off in the test browser).
+// Skip OPFS-dependent scenarios on webkit; SubtleCrypto + DecompressionStream
+// coverage still runs there.
 test.describe('OPFS round-trip', () => {
+  test.skip(({ browserName }) => browserName === 'webkit', 'OPFS not exposed in Playwright WebKit');
+
   test('Given an OPFS root, When init→add→commit→status, Then status is clean and HEAD points at refs/heads/main', async ({
     readyPage,
   }) => {

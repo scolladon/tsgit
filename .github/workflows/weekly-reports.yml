@@ -9,6 +9,9 @@ concurrency:
   group: weekly-reports
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
   check-changes:
     runs-on: ubuntu-latest

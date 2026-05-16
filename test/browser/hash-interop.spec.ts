@@ -50,8 +50,12 @@ test.describe('SubtleCrypto SHA-1 parity', () => {
   });
 
   test('Given a blob committed via the repo facade, When readBlob loads it back, Then the bytes round-trip exactly', async ({
+    browserName,
     readyPage,
   }) => {
+    // Same OPFS gap as test/browser/opfs-roundtrip.spec.ts — webkit's headless
+    // test browser doesn't expose navigator.storage.getDirectory().
+    test.skip(browserName === 'webkit', 'OPFS not exposed in Playwright WebKit');
     const roundTrip = await readyPage.evaluate(async () => {
       const tsgit = (window as unknown as { __tsgit: Tsgit }).__tsgit;
       const rootHandle = await navigator.storage.getDirectory();

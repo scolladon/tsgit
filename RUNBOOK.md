@@ -104,10 +104,9 @@ public preview registry that is **separate from the npm registry**. The
 `pkg-pr-new` CLI drops a rolling comment on the PR with the install
 command:
 
-**One-time setup** — install the `pkg-pr-new` GitHub App on the
-repository: https://github.com/apps/pkg-pr-new → Configure → Only select
-repositories → tick `tsgit`. Without this the workflow exits 404
-("the app is not installed").
+**One-time setup** — install the [`pkg-pr-new` GitHub App](https://github.com/apps/pkg-pr-new) on
+the repository: open it, Configure → Only select repositories → tick `tsgit`.
+Without this the workflow exits 404 ("the app is not installed").
 
 ```bash
 # Install a specific PR's build:

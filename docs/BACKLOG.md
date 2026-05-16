@@ -201,7 +201,7 @@ Design: `docs/design/repository-facade.md`
 
 ## Dependencies
 
-```
+```text
 Phase 1 (objects) → Phase 2 (storage) → Phase 3 (refs & index)
                                               ↓
 Phase 4 (ports & adapters) ←──────────────────┘

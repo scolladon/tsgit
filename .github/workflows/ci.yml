@@ -10,6 +10,12 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# Tightest-by-default top-level permissions. Individual jobs that need more
+# (benchmark-snapshot pushes to gh-pages, benchmark-compare comments on PRs)
+# escalate locally.
+permissions:
+  contents: read
+
 jobs:
   # ──────────────────────────────────────────────
   # Stage 1: Static Analysis (parallel, no deps)
