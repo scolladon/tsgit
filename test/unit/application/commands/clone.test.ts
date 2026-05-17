@@ -95,7 +95,7 @@ describe('clone', () => {
     expect(data.reason).toContain('12.2');
   });
 
-  it('Given depth: 0, When clone, Then also throws UNSUPPORTED_OPERATION', async () => {
+  it('Given depth: 0, When clone, Then throws UNSUPPORTED_OPERATION with the full reason', async () => {
     // Arrange
     const ctx = createMemoryContext();
 
@@ -109,10 +109,18 @@ describe('clone', () => {
 
     // Assert
     expect(caught).toBeInstanceOf(TsgitError);
-    expect((caught as TsgitError).data.code).toBe('UNSUPPORTED_OPERATION');
+    const data = (caught as TsgitError).data as {
+      readonly code: string;
+      readonly operation?: string;
+      readonly reason?: string;
+    };
+    expect(data.code).toBe('UNSUPPORTED_OPERATION');
+    expect(data.operation).toBe('clone-shallow');
+    expect(data.reason).toContain('depth');
+    expect(data.reason).toContain('12.2');
   });
 
-  it('Given an existing .git, When clone, Then throws TARGET_DIRECTORY_NOT_EMPTY', async () => {
+  it('Given an existing .git, When clone, Then throws TARGET_DIRECTORY_NOT_EMPTY pointing at workDir', async () => {
     // Arrange
     const ctx = createMemoryContext();
     await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
@@ -127,7 +135,9 @@ describe('clone', () => {
 
     // Assert
     expect(caught).toBeInstanceOf(TsgitError);
-    expect((caught as TsgitError).data.code).toBe('TARGET_DIRECTORY_NOT_EMPTY');
+    const data = (caught as TsgitError).data as { readonly code: string; readonly path?: string };
+    expect(data.code).toBe('TARGET_DIRECTORY_NOT_EMPTY');
+    expect(data.path).toBe(ctx.layout.workDir);
   });
 
   it('Given empty url, When clone, Then throws REMOTE_ADVERTISES_NO_REFS before any I/O', async () => {
@@ -145,6 +155,10 @@ describe('clone', () => {
     // Assert
     expect(caught).toBeInstanceOf(TsgitError);
     expect((caught as TsgitError).data.code).toBe('REMOTE_ADVERTISES_NO_REFS');
+    // Side-channel: the .git dir must NOT have been created — the empty-url
+    // guard fires before bootstrap. Asserting this pins the order of the two
+    // guards at the top of clone() against any reordering mutant.
+    expect(await ctx.fs.exists(`${ctx.layout.gitDir}/HEAD`)).toBe(false);
   });
 
   it('Given a discovery with one branch + a pack, When clone, Then writes refs/heads/main, refs/remotes/origin/main, and HEAD', async () => {
@@ -227,6 +241,31 @@ describe('clone', () => {
     // Assert
     expect(caught).toBeInstanceOf(TsgitError);
     expect((caught as TsgitError).data.code).toBe('REMOTE_ADVERTISES_NO_REFS');
+  });
+
+  it('Given a discovery without symref=HEAD, When clone, Then writes HEAD as a direct oid (detached) and returns head: undefined', async () => {
+    // Arrange — emulate a server that advertises HEAD directly (no symref capability).
+    const ctx = createMemoryContext();
+    const { packBytes, blobId } = await buildPackFromSingleBlob(ctx, 'detached head\n');
+    const transport = buildCloneRemote({
+      capabilities: ['side-band-64k'], // no symref=HEAD:... cap
+      refs: [
+        { name: 'HEAD', id: blobId },
+        { name: 'refs/heads/main', id: blobId },
+      ],
+      head: 'HEAD',
+      packBytes,
+    });
+    const networkCtx = withTransport(ctx, transport);
+
+    // Act
+    const sut = await clone(networkCtx, { url: REMOTE_URL });
+
+    // Assert
+    expect(sut.head).toBeUndefined();
+    const headFile = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/HEAD`);
+    // Direct OID (no `ref: ...` prefix).
+    expect(headFile.trim()).toBe(blobId);
   });
 
   it('Given the bootstrap completed and fetchPack throws, When clone, Then rolls back the .git skeleton', async () => {

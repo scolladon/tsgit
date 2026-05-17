@@ -81,6 +81,11 @@ const handleRequest = (
     REMOTE_ADDR: req.socket.remoteAddress ?? '127.0.0.1',
   };
   const child = spawn(backendPath, [], { env });
+  // If git-http-backend exits before consuming the request body (rejected
+  // request, bad PATH_INFO, etc.), Node emits EPIPE on child.stdin. Without
+  // a listener the error escalates to uncaughtException and would crash the
+  // test process.
+  child.stdin.on('error', () => undefined);
   req.pipe(child.stdin);
   child.stderr.on('data', (chunk: Buffer) => {
     process.stderr.write(chunk);

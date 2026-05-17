@@ -323,10 +323,10 @@ describe('fetchPack', () => {
   });
 
   describe('failure modes', () => {
-    it('Given no wants, When fetchPack runs, Then throws EMPTY_WANTS', async () => {
+    it('Given no wants, When fetchPack runs, Then throws EMPTY_WANTS and never reaches the transport', async () => {
       // Arrange
       const ctx = createMemoryContext();
-      const { transport } = captureRequests(new Uint8Array(0));
+      const { transport, requests } = captureRequests(new Uint8Array(0));
 
       // Act
       let caught: unknown;
@@ -345,6 +345,116 @@ describe('fetchPack', () => {
       // Assert
       expect(caught).toBeInstanceOf(TsgitError);
       expect((caught as TsgitError).data.code).toBe('EMPTY_WANTS');
+      // The wants check lives in `buildUploadPackRequest`; it must fire BEFORE
+      // any transport request is issued.
+      expect(requests).toHaveLength(0);
+    });
+
+    it('Given a pack shorter than header + trailer, When fetchPack runs, Then throws INVALID_PACK_HEADER (too short)', async () => {
+      // Arrange — 31 bytes is one byte short of the SHA-1 minimum (12-byte header + 20-byte trailer).
+      const ctx = createMemoryContext();
+      const blobId = (await computeBlobId(ctx, ENCODER.encode('short\n'))) as ObjectId;
+      const tooShort = new Uint8Array(31);
+      const dv = new DataView(tooShort.buffer);
+      dv.setUint32(0, 0x5041434b);
+      dv.setUint32(4, 2);
+      dv.setUint32(8, 0);
+      const body = buildUploadPackResponseBody({ packBytes: tooShort, sideBand: true });
+      const { transport } = captureRequests(body);
+
+      // Act
+      let caught: unknown;
+      try {
+        await fetchPack(ctx, transport, {
+          wants: [blobId],
+          haves: [],
+          capabilities: ['side-band-64k'],
+          url: REMOTE_URL,
+          progressOp: 'test:write-objects',
+        });
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert
+      expect(caught).toBeInstanceOf(TsgitError);
+      const data = (caught as TsgitError).data as { code: string; reason?: string };
+      expect(data.code).toBe('INVALID_PACK_HEADER');
+      expect(data.reason).toContain('trailer');
+      expect(data.reason).toContain('too short');
+    });
+
+    it('Given a pack exactly 32 bytes (empty pack canonical minimum), When fetchPack runs, Then accepts it', async () => {
+      // Arrange — boundary: 12-byte header + 20-byte trailer = 32 bytes. One byte
+      // longer than the short test above. Together these pin the `<` vs `<=`
+      // mutant on the trailer-length guard.
+      const ctx = createMemoryContext();
+      const dummyId = (await computeBlobId(ctx, ENCODER.encode('dummy\n'))) as ObjectId;
+      const header = new Uint8Array(12);
+      const dv = new DataView(header.buffer);
+      dv.setUint32(0, 0x5041434b);
+      dv.setUint32(4, 2);
+      dv.setUint32(8, 0);
+      const trailerBytes = hexToBytes(await ctx.hash.hashHex(header));
+      const packBytes = new Uint8Array(32);
+      packBytes.set(header, 0);
+      packBytes.set(trailerBytes, 12);
+      const body = buildUploadPackResponseBody({ packBytes, sideBand: true });
+      const { transport } = captureRequests(body);
+
+      // Act
+      const sut = await fetchPack(ctx, transport, {
+        wants: [dummyId],
+        haves: [],
+        capabilities: ['side-band-64k'],
+        url: REMOTE_URL,
+        progressOp: 'test:write-objects',
+      });
+
+      // Assert
+      expect(sut.objectCount).toBe(0);
+    });
+
+    it('Given objectCount > MAX_OBJECT_COUNT, When fetchPack runs, Then throws PACK_TOO_LARGE before iterating entries', async () => {
+      // Arrange — craft a pack header that lies about the entry count.
+      const ctx = createMemoryContext();
+      const dummyId = (await computeBlobId(ctx, ENCODER.encode('lie\n'))) as ObjectId;
+      const header = new Uint8Array(12);
+      const dv = new DataView(header.buffer);
+      dv.setUint32(0, 0x5041434b);
+      dv.setUint32(4, 2);
+      dv.setUint32(8, 60_000_000); // beyond 50_000_000
+      const trailerBytes = hexToBytes(await ctx.hash.hashHex(header));
+      const packBytes = new Uint8Array(32);
+      packBytes.set(header, 0);
+      packBytes.set(trailerBytes, 12);
+      const body = buildUploadPackResponseBody({ packBytes, sideBand: true });
+      const { transport } = captureRequests(body);
+
+      // Act
+      let caught: unknown;
+      try {
+        await fetchPack(ctx, transport, {
+          wants: [dummyId],
+          haves: [],
+          capabilities: ['side-band-64k'],
+          url: REMOTE_URL,
+          progressOp: 'test:write-objects',
+        });
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert
+      expect(caught).toBeInstanceOf(TsgitError);
+      const data = (caught as TsgitError).data as {
+        code: string;
+        objectCount?: number;
+        limit?: number;
+      };
+      expect(data.code).toBe('PACK_TOO_LARGE');
+      expect(data.objectCount).toBe(60_000_000);
+      expect(data.limit).toBe(50_000_000);
     });
 
     it('Given a corrupted trailer, When fetchPack runs, Then throws INVALID_PACK_HEADER with trailer in reason', async () => {
@@ -411,9 +521,9 @@ describe('fetchPack', () => {
 
     it('Given maxResponseBytes one byte over the pack size, When fetchPack runs, Then succeeds', async () => {
       // Arrange
-      const ctx = withMaxResponseBytes(createMemoryContext(), 0);
-      const { packBytes, blobId } = await buildSingleBlobPack(ctx, 'tight cap\n');
-      const tightCtx = withMaxResponseBytes(ctx, packBytes.length + 1);
+      const baseCtx = createMemoryContext();
+      const { packBytes, blobId } = await buildSingleBlobPack(baseCtx, 'tight cap\n');
+      const tightCtx = withMaxResponseBytes(baseCtx, packBytes.length + 1);
       const body = buildUploadPackResponseBody({ packBytes, sideBand: true });
       const { transport } = captureRequests(body);
 
@@ -482,6 +592,9 @@ describe('fetchPack', () => {
       };
       expect(data.code).toBe('PACK_TOO_LARGE');
       expect(data.limit).toBe(packBytes.length - 1);
+      // Byte-cap path sets objectCount=0 (no entries parsed yet) so the count
+      // is unambiguous when consumers distinguish byte-cap from entry-cap.
+      expect(data.objectCount).toBe(0);
     });
 
     it('Given no side-band capability, When fetchPack runs, Then drains the raw pack body and writes both files', async () => {
