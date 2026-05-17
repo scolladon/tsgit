@@ -12,6 +12,7 @@ import {
   buildDiscoveryUrl,
   buildUploadPackRequest,
   parseAdvertisedRefs,
+  parseShallowResponse,
   parseUploadPackResponse,
 } from '../../../../src/domain/protocol/upload-pack.js';
 
@@ -778,5 +779,175 @@ describe('parseUploadPackResponse', () => {
     expect(result.nak).toBe(false);
     expect(result.acks).toEqual([]);
     expect(collected).toEqual([]);
+  });
+});
+
+describe('parseShallowResponse', () => {
+  const dataPkt = (s: string): PktLine => ({ kind: 'data', payload: bytesOf(s) });
+
+  it('Given a flush immediately, When parsed, Then returns empty arrays and the iterator is past the flush', async () => {
+    // Arrange
+    const iter = asyncOf<PktLine>([{ kind: 'flush' }])[Symbol.asyncIterator]();
+
+    // Act
+    const sut = await parseShallowResponse(iter);
+
+    // Assert
+    expect(sut.shallow).toEqual([]);
+    expect(sut.unshallow).toEqual([]);
+    expect((await iter.next()).done).toBe(true);
+  });
+
+  it('Given a single shallow line + flush, When parsed, Then shallow contains one oid', async () => {
+    // Arrange
+    const iter = asyncOf<PktLine>([dataPkt(`shallow ${OID1}\n`), { kind: 'flush' }])[
+      Symbol.asyncIterator
+    ]();
+
+    // Act
+    const sut = await parseShallowResponse(iter);
+
+    // Assert
+    expect(sut.shallow).toEqual([OID1]);
+    expect(sut.unshallow).toEqual([]);
+    // Iterator is past the flush — next read is end-of-stream.
+    expect((await iter.next()).done).toBe(true);
+  });
+
+  it('Given shallow + unshallow + flush, When parsed, Then both arrays are populated in order', async () => {
+    // Arrange
+    const iter = asyncOf<PktLine>([
+      dataPkt(`shallow ${OID1}\n`),
+      dataPkt(`shallow ${OID2}\n`),
+      dataPkt(`unshallow ${OID3}\n`),
+      { kind: 'flush' },
+    ])[Symbol.asyncIterator]();
+
+    // Act
+    const sut = await parseShallowResponse(iter);
+
+    // Assert
+    expect(sut.shallow).toEqual([OID1, OID2]);
+    expect(sut.unshallow).toEqual([OID3]);
+  });
+
+  it('Given a malformed shallow oid, When parsed, Then throws INVALID_REF_LINE with the raw line', async () => {
+    // Arrange
+    const iter = asyncOf<PktLine>([dataPkt('shallow not-an-oid\n'), { kind: 'flush' }])[
+      Symbol.asyncIterator
+    ]();
+
+    // Act & Assert
+    let caught: unknown;
+    try {
+      await parseShallowResponse(iter);
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(TsgitError);
+    const data = (caught as TsgitError).data as { code: string; line?: string };
+    expect(data.code).toBe('INVALID_REF_LINE');
+    expect(data.line).toContain('shallow not-an-oid');
+  });
+
+  it('Given a malformed unshallow oid, When parsed, Then throws INVALID_REF_LINE', async () => {
+    // Arrange
+    const iter = asyncOf<PktLine>([
+      dataPkt(`shallow ${OID1}\n`),
+      dataPkt('unshallow xyz\n'),
+      { kind: 'flush' },
+    ])[Symbol.asyncIterator]();
+
+    // Act & Assert
+    let caught: unknown;
+    try {
+      await parseShallowResponse(iter);
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(TsgitError);
+    expect((caught as TsgitError).data.code).toBe('INVALID_REF_LINE');
+  });
+
+  it('Given a non-shallow data line (server skipped the block), When parsed, Then returns empty arrays via parseUploadPackResponse', async () => {
+    // Arrange — server omitted the shallow section entirely. The caller
+    // calls parseUploadPackResponse with expectShallow:true; the parser must
+    // hand the ACK line back to splitMeta correctly.
+    const source = asyncOf<PktLine>([dataPkt('NAK\n'), { kind: 'flush' }]);
+
+    // Act
+    const result = await parseUploadPackResponse(source, {
+      sideBand: false,
+      expectShallow: true,
+    });
+
+    // Assert
+    expect(result.shallow).toEqual([]);
+    expect(result.unshallow).toEqual([]);
+    expect(result.nak).toBe(true);
+  });
+
+  it('Given a shallow block then NAK + pack via sideband, When parsed (expectShallow + sideBand), Then both shallow and pack body surface', async () => {
+    // Arrange
+    const packBytes = new Uint8Array([1, 2, 3]);
+    const channel1 = new Uint8Array(packBytes.byteLength + 1);
+    channel1[0] = 0x01;
+    channel1.set(packBytes, 1);
+    const source = asyncOf<PktLine>([
+      dataPkt(`shallow ${OID1}\n`),
+      { kind: 'flush' },
+      dataPkt('NAK\n'),
+      { kind: 'data', payload: channel1 },
+      { kind: 'flush' },
+    ]);
+
+    // Act
+    const result = await parseUploadPackResponse(source, {
+      sideBand: true,
+      expectShallow: true,
+    });
+    const collected = await collect(result.packBody);
+
+    // Assert
+    expect(result.shallow).toEqual([OID1]);
+    expect(result.nak).toBe(true);
+    expect(collected.reduce((n, c) => n + c.byteLength, 0)).toBe(packBytes.byteLength);
+  });
+
+  it('Given expectShallow unset (Phase 12.1 regression), When parsed, Then shallow/unshallow are empty and behavior is unchanged', async () => {
+    // Arrange
+    const source = asyncOf<PktLine>([dataPkt('NAK\n'), { kind: 'flush' }]);
+
+    // Act
+    const result = await parseUploadPackResponse(source, { sideBand: false });
+
+    // Assert
+    expect(result.shallow).toEqual([]);
+    expect(result.unshallow).toEqual([]);
+    expect(result.nak).toBe(true);
+  });
+
+  it('Given an unknown verb prefix (`shallowish`), When parsed, Then treats the line as non-shallow and returns empty arrays', async () => {
+    // Arrange — `parseShallowResponse` accepts only verbs whose first token
+    // is exactly "shallow" or "unshallow". Anything else is for the next
+    // consumer (splitMeta). Use `parseUploadPackResponse` so the buffered
+    // line is observable downstream.
+    const source = asyncOf<PktLine>([
+      dataPkt('shallowish bogus\n'),
+      dataPkt('NAK\n'),
+      { kind: 'flush' },
+    ]);
+
+    // Act
+    const result = await parseUploadPackResponse(source, {
+      sideBand: false,
+      expectShallow: true,
+    });
+
+    // Assert — no shallow updates; the bogus line was ignored as a
+    // splitMeta-bound payload (which itself is not `ACK`/`NAK`, so splitMeta
+    // hands it back as a buffered pktLine for the pack body).
+    expect(result.shallow).toEqual([]);
+    expect(result.unshallow).toEqual([]);
   });
 });

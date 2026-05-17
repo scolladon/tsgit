@@ -50,6 +50,15 @@ export interface UploadPackResponse {
   readonly acks: ReadonlyArray<AckEntry>;
   readonly nak: boolean;
   readonly packBody: AsyncIterable<Uint8Array>;
+  /** Commits the server flagged as new shallow boundaries (empty unless `expectShallow` was set). */
+  readonly shallow: ReadonlyArray<ObjectId>;
+  /** Commits the server flagged as no-longer-shallow (empty unless `expectShallow` was set). */
+  readonly unshallow: ReadonlyArray<ObjectId>;
+}
+
+export interface ShallowUpdates {
+  readonly shallow: ReadonlyArray<ObjectId>;
+  readonly unshallow: ReadonlyArray<ObjectId>;
 }
 
 export type Service = 'git-upload-pack' | 'git-receive-pack';
@@ -275,10 +284,82 @@ const parseAckLine = (text: string): AckEntry => {
   throw unknownAckStatus(status);
 };
 
+interface ShallowParseState {
+  readonly shallow: ObjectId[];
+  readonly unshallow: ObjectId[];
+  readonly buffered: PktLine | undefined;
+}
+
+const SHALLOW_PREFIX = 'shallow ';
+const UNSHALLOW_PREFIX = 'unshallow ';
+
+const parseShallowOid = (text: string, prefix: string): ObjectId => {
+  const stripped = stripTrailingNewline(text);
+  const raw = stripped.slice(prefix.length);
+  if (!SHA_ANY_RE.test(raw)) throw invalidRefLine(stripped);
+  return ObjectId.from(raw);
+};
+
+const tryConsumeShallowLine = (text: string, state: ShallowParseState): boolean => {
+  if (text.startsWith(SHALLOW_PREFIX)) {
+    state.shallow.push(parseShallowOid(text, SHALLOW_PREFIX));
+    return true;
+  }
+  if (text.startsWith(UNSHALLOW_PREFIX)) {
+    state.unshallow.push(parseShallowOid(text, UNSHALLOW_PREFIX));
+    return true;
+  }
+  return false;
+};
+
+/**
+ * Consume the optional shallow-response section emitted by `git-upload-pack`
+ * when the request carried `deepen <N>`:
+ *
+ *   shallow <oid>\n     <- zero or more
+ *   unshallow <oid>\n   <- zero or more
+ *   0000                <- flush ends the section
+ *
+ * The iterator is advanced past the terminating flush (or the first
+ * non-shallow data line — that line is returned as a buffered peek so the
+ * downstream consumer can resume cleanly).
+ */
+export const parseShallowResponse = async (
+  iter: AsyncIterator<PktLine>,
+): Promise<ShallowUpdates> => {
+  const state: ShallowParseState = { shallow: [], unshallow: [], buffered: undefined };
+  let pkt = await iter.next();
+  while (!pkt.done) {
+    if (pkt.value.kind !== 'data') {
+      // Flush (or delim) ends the shallow block. Iterator is already past it.
+      return { shallow: state.shallow, unshallow: state.unshallow };
+    }
+    const text = TEXT_DECODER.decode(pkt.value.payload);
+    if (!tryConsumeShallowLine(text, state)) {
+      // First non-shallow data line — return it as a buffered peek for the
+      // next consumer (splitMeta). Encoded via the WeakMap on the iterator.
+      pushbackBuffer.set(iter, pkt.value);
+      return { shallow: state.shallow, unshallow: state.unshallow };
+    }
+    pkt = await iter.next();
+  }
+  return { shallow: state.shallow, unshallow: state.unshallow };
+};
+
+/**
+ * Per-iterator one-line pushback used by `parseShallowResponse` to hand a
+ * data line back to `splitMeta`. WeakMap keying avoids leaking when the
+ * iterator is GCed.
+ */
+const pushbackBuffer = new WeakMap<AsyncIterator<PktLine>, PktLine>();
+
 const splitMeta = async (iter: AsyncIterator<PktLine>): Promise<ResponseSplit> => {
   const acks: AckEntry[] = [];
   let nak = false;
-  let pkt = await iter.next();
+  const first: PktLine | undefined = pushbackBuffer.get(iter);
+  if (first !== undefined) pushbackBuffer.delete(iter);
+  let pkt: IteratorResult<PktLine> =
+    first !== undefined ? { done: false, value: first } : await iter.next();
   while (!pkt.done) {
     if (pkt.value.kind !== 'data') {
       return { acks, nak, buffered: [pkt.value] };
@@ -336,13 +417,23 @@ async function* packBodyStream(
 
 export const parseUploadPackResponse = async (
   source: AsyncIterable<PktLine>,
-  options: { readonly sideBand: boolean; readonly onProgress?: (text: string) => void },
+  options: {
+    readonly sideBand: boolean;
+    readonly onProgress?: (text: string) => void;
+    readonly expectShallow?: boolean;
+  },
 ): Promise<UploadPackResponse> => {
   const iter = source[Symbol.asyncIterator]();
+  const shallowUpdates: ShallowUpdates =
+    options.expectShallow === true
+      ? await parseShallowResponse(iter)
+      : { shallow: [], unshallow: [] };
   const meta = await splitMeta(iter);
   return {
     acks: meta.acks,
     nak: meta.nak,
+    shallow: shallowUpdates.shallow,
+    unshallow: shallowUpdates.unshallow,
     packBody: { [Symbol.asyncIterator]: () => packBodyStream(meta.buffered, iter, options) },
   };
 };
