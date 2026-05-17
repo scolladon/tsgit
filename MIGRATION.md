@@ -157,7 +157,24 @@ const tags = await repo.tag({ kind: 'list' });
 await git.push({ fs, http, dir: '.', ref: 'main' });
 
 // tsgit
-await repo.push({ remote: 'origin', refSpecs: ['refs/heads/main:refs/heads/main'] });
+await repo.push({ remote: 'origin', refspecs: ['refs/heads/main:refs/heads/main'] });
+
+// Phase 12.3 surface:
+//   - `force: true` skips the non-fast-forward guard. `+<src>:<dst>` at the
+//     refspec level has the same effect for that single refspec.
+//   - `forceWithLease: 'auto'` reads `refs/remotes/<remote>/<branch>` as the
+//     lease; mismatch throws PUSH_REJECTED before the pack is sent.
+//   - `forceWithLease: <ObjectId>` accepts an explicit expected oid.
+//   - `':<dst>'` deletes the remote ref (empty pack body).
+//   - `result.pushedRefs[i].status` is `'ok'` or `'rejected'`; per-ref
+//     `ng` from the server surfaces as `'rejected'` with `reason`.
+//   - On accepted heads-branch pushes, `refs/remotes/<remote>/<branch>` is
+//     updated to the new oid.
+await repo.push({
+  remote: 'origin',
+  refspecs: ['refs/heads/main:refs/heads/main'],
+  forceWithLease: 'auto',
+});
 ```
 
 ### `git.fetch` → `repo.fetch`
