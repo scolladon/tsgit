@@ -1,8 +1,53 @@
+/**
+ * Phase 12.3 — `push` command. Real receive-pack-driven body.
+ *
+ * Flow (see `docs/design/phase-12-3-push.md`):
+ *   1. Resolve remote name → URL via `.git/config`.
+ *   2. Parse refspecs (default = current branch).
+ *   3. Discover refs over smart-HTTP v1 (`info/refs?service=git-receive-pack`).
+ *   4. Resolve every refspec → local oid + server oid + lease.
+ *   5. Apply force-with-lease / non-fast-forward guards.
+ *   6. Enumerate the object closure missing on the remote (non-delete refspecs).
+ *   7. Build the pack (non-delta, ADR-013).
+ *   8. POST `git-receive-pack` with ref-updates + pack body.
+ *   9. Parse `report-status` (side-band demuxed when advertised).
+ *  10. Update local `refs/remotes/<remote>/*` cache for accepted refs.
+ */
+import {
+  invalidOption,
+  nonFastForward,
+  pushRejected,
+  sanitize,
+} from '../../domain/commands/error.js';
+import { httpError } from '../../domain/error.js';
 import { remoteNotConfigured } from '../../domain/index.js';
-import type { ObjectId, RefName } from '../../domain/objects/index.js';
+import { ObjectId, type RefName } from '../../domain/objects/index.js';
+import {
+  type AdvertisedRef,
+  type Advertisement,
+  AGENT,
+  buildReceivePackRequest,
+  decodePktStream,
+  invalidBaseUrl,
+  parseReceivePackResponse,
+  parseSideBand,
+  type RefStatus,
+  type RefUpdate,
+} from '../../domain/protocol/index.js';
+import { validateRefName } from '../../domain/refs/ref-validation.js';
+import { readableStreamToAsyncIterable } from '../../operators/readable-stream.js';
 import type { Context } from '../../ports/context.js';
+import type { HttpTransport } from '../../ports/http-transport.js';
+import { buildPack } from '../primitives/build-pack.js';
+import { enumeratePushObjects } from '../primitives/enumerate-push-objects.js';
+import { resolveRef } from '../primitives/resolve-ref.js';
+import { updateRef } from '../primitives/update-ref.js';
+import { walkCommits } from '../primitives/walk-commits.js';
 import { readConfig } from './internal/config-read.js';
-import { assertRepository } from './internal/repo-state.js';
+import { withDefaults } from './internal/network-pipeline.js';
+import { discoverReceivePackRefs, selectPushCapabilities } from './internal/receive-pack-client.js';
+import { type ParsedRefspec, parseRefspec } from './internal/refspec.js';
+import { assertRepository, readHeadRaw } from './internal/repo-state.js';
 
 export interface PushOptions {
   readonly remote?: string;
@@ -11,40 +56,336 @@ export interface PushOptions {
   readonly forceWithLease?: ObjectId | 'auto';
 }
 
+export interface PushedRef {
+  readonly name: RefName;
+  readonly oldId: ObjectId;
+  readonly newId: ObjectId;
+  readonly status: 'ok' | 'rejected';
+  readonly reason?: string;
+}
+
 export interface PushResult {
   readonly remote: string;
   readonly url: string;
-  readonly pushedRefs: ReadonlyArray<{
-    readonly name: RefName;
-    readonly newId: ObjectId;
-    readonly status: 'ok' | 'rejected';
-  }>;
+  readonly pushedRefs: ReadonlyArray<PushedRef>;
 }
 
-/**
- * Push local refs to a remote. Resolves the remote URL via `.git/config`,
- * negotiates with `git-receive-pack`, builds + sends a pack, and reports
- * per-ref status.
- *
- * v1 surface returns the remote/url after lookup; pack send + receive-pack
- * negotiation lives in the integration layer.
- */
+interface ResolvedRefspec {
+  readonly parsed: ParsedRefspec;
+  readonly localOid: ObjectId;
+  readonly remoteOid: ObjectId;
+}
+
 const PUSH_ENUMERATE_OBJECTS_OP = 'push:enumerate-objects';
+const PUSH_UPLOAD_OP = 'push:upload';
+const ZERO_OID = ObjectId.from('0'.repeat(40));
+const REFS_HEADS_PREFIX = 'refs/heads/';
+const REFS_TAGS_PREFIX = 'refs/tags/';
+const SIDE_BAND_CAPS: ReadonlySet<string> = new Set(['side-band-64k', 'side-band']);
 
 export const push = async (ctx: Context, opts: PushOptions = {}): Promise<PushResult> => {
   await assertRepository(ctx);
-  // Phase 10 §6.2 — push:enumerate-objects brackets remote URL resolution +
-  // (eventually) the want-object walk that determines what to send. push:upload
-  // (byte-granularity at 65536) comes online with the actual pack send in
-  // Phase 11+.
   ctx.progress.start(PUSH_ENUMERATE_OBJECTS_OP);
   try {
     const remoteName = opts.remote ?? 'origin';
-    const config = await readConfig(ctx);
-    const remote = config.remote?.get(remoteName);
-    if (remote?.url === undefined) throw remoteNotConfigured(remoteName);
-    return { remote: remoteName, url: remote.url, pushedRefs: [] };
+    const url = await resolveRemoteUrl(ctx, remoteName);
+    const refspecs = await resolveRefspecsInput(ctx, opts.refspecs);
+    const transport = withDefaults(
+      ctx,
+      ctx.config?.auth !== undefined ? { auth: ctx.config.auth } : {},
+    );
+    const adv = await discoverReceivePackRefs(ctx, transport, url);
+    const resolved = await resolveAllRefspecs(ctx, refspecs, adv, remoteName, opts);
+    const movers = resolved.filter((r) => r.localOid !== r.remoteOid);
+    if (movers.length === 0) {
+      return { remote: remoteName, url, pushedRefs: [] };
+    }
+    const pushedRefs = await sendUpdates(ctx, transport, url, adv, movers, remoteName);
+    return { remote: remoteName, url, pushedRefs };
   } finally {
     ctx.progress.end(PUSH_ENUMERATE_OBJECTS_OP);
   }
 };
+
+const resolveRemoteUrl = async (ctx: Context, remoteName: string): Promise<string> => {
+  const config = await readConfig(ctx);
+  const remote = config.remote?.get(remoteName);
+  if (remote?.url === undefined) throw remoteNotConfigured(remoteName);
+  return remote.url;
+};
+
+const resolveRefspecsInput = async (
+  ctx: Context,
+  refspecs: ReadonlyArray<string> | undefined,
+): Promise<ReadonlyArray<ParsedRefspec>> => {
+  if (refspecs !== undefined && refspecs.length > 0) {
+    return refspecs.map(parseRefspec);
+  }
+  const head = await readHeadRaw(ctx);
+  if (head.kind !== 'symbolic') {
+    throw invalidOption('refspecs', 'no-default-refspec (HEAD is detached)');
+  }
+  const branch = head.target;
+  return [parseRefspec(`${branch}:${branch}`)];
+};
+
+const resolveAllRefspecs = async (
+  ctx: Context,
+  refspecs: ReadonlyArray<ParsedRefspec>,
+  adv: Advertisement,
+  remoteName: string,
+  opts: PushOptions,
+): Promise<ReadonlyArray<ResolvedRefspec>> => {
+  const remoteByName = buildRemoteMap(adv.refs);
+  const out: ResolvedRefspec[] = [];
+  for (const parsed of refspecs) {
+    out.push(await resolveOneRefspec(ctx, parsed, remoteByName, remoteName, opts));
+  }
+  return out;
+};
+
+const buildRemoteMap = (refs: ReadonlyArray<AdvertisedRef>): ReadonlyMap<string, ObjectId> => {
+  const map = new Map<string, ObjectId>();
+  for (const r of refs) map.set(r.name, r.id);
+  return map;
+};
+
+const resolveOneRefspec = async (
+  ctx: Context,
+  parsed: ParsedRefspec,
+  remoteByName: ReadonlyMap<string, ObjectId>,
+  remoteName: string,
+  opts: PushOptions,
+): Promise<ResolvedRefspec> => {
+  const remoteOid = remoteByName.get(parsed.dst) ?? ZERO_OID;
+  if (parsed.isDelete) {
+    if (remoteOid === ZERO_OID) {
+      throw invalidOption('refspecs', `delete target ${parsed.dst} is not advertised`);
+    }
+    return { parsed, localOid: ZERO_OID, remoteOid };
+  }
+  const localOid = await resolveRef(ctx, parsed.src as RefName);
+  await enforceLeaseAndFastForward(ctx, parsed, localOid, remoteOid, remoteName, opts);
+  return { parsed, localOid, remoteOid };
+};
+
+const enforceLeaseAndFastForward = async (
+  ctx: Context,
+  parsed: ParsedRefspec,
+  localOid: ObjectId,
+  remoteOid: ObjectId,
+  remoteName: string,
+  opts: PushOptions,
+): Promise<void> => {
+  const lease = await resolveLease(ctx, parsed, remoteName, opts);
+  if (lease !== undefined) {
+    if (lease !== remoteOid) {
+      throw pushRejected(parsed.dst as RefName, 'lease-mismatch', emptyReport());
+    }
+    // Lease holds → treat as force, skip ancestor check.
+    return;
+  }
+  if (parsed.force === 'force' || opts.force === true) return;
+  if (remoteOid === ZERO_OID) return; // creating a new ref
+  if (!(await isAncestor(ctx, remoteOid, localOid))) {
+    throw nonFastForward(parsed.dst as RefName, localOid, remoteOid);
+  }
+};
+
+const resolveLease = async (
+  ctx: Context,
+  parsed: ParsedRefspec,
+  remoteName: string,
+  opts: PushOptions,
+): Promise<ObjectId | undefined> => {
+  if (opts.forceWithLease === undefined) return undefined;
+  if (opts.forceWithLease !== 'auto') return opts.forceWithLease;
+  if (!parsed.dst.startsWith(REFS_HEADS_PREFIX)) {
+    throw invalidOption('forceWithLease', 'lease-on-non-branch');
+  }
+  const branch = parsed.dst.slice(REFS_HEADS_PREFIX.length);
+  const trackingRef = `refs/remotes/${remoteName}/${branch}` as RefName;
+  return resolveRef(ctx, trackingRef);
+};
+
+const isAncestor = async (
+  ctx: Context,
+  ancestor: ObjectId,
+  descendant: ObjectId,
+): Promise<boolean> => {
+  if (ancestor === descendant) return true;
+  for await (const c of walkCommits(ctx, { from: [descendant], ignoreMissing: true })) {
+    if (c.id === ancestor) return true;
+  }
+  return false;
+};
+
+const emptyReport = (): { unpackOk: boolean; refUpdates: ReadonlyArray<RefStatus> } => ({
+  unpackOk: true,
+  refUpdates: [],
+});
+
+const sendUpdates = async (
+  ctx: Context,
+  transport: HttpTransport,
+  url: string,
+  adv: Advertisement,
+  movers: ReadonlyArray<ResolvedRefspec>,
+  remoteName: string,
+): Promise<ReadonlyArray<PushedRef>> => {
+  const wants = movers.filter((m) => !m.parsed.isDelete).map((m) => m.localOid);
+  const haves = adv.refs.map((r) => r.id).filter((id) => id !== ZERO_OID);
+  const oids = await collectObjects(ctx, wants, haves);
+  const pack = await buildPack(ctx, { oids });
+  const capabilities = selectPushCapabilities(adv.capabilities);
+  const requestBody = buildReceivePackRequest({
+    updates: movers.map(toRefUpdate),
+    capabilities,
+    packfile: pack.bytes,
+  });
+  const response = await postReceivePack(ctx, transport, url, requestBody);
+  const parsed = await parseReceiveResponse(ctx, response, capabilities);
+  if (!parsed.unpackOk) {
+    throw pushRejected(
+      movers[0]?.parsed.dst as RefName,
+      parsed.unpackError ?? 'unpack failed',
+      parsed,
+    );
+  }
+  const pushedRefs = await applyReportStatus(ctx, movers, parsed.refUpdates, remoteName);
+  return pushedRefs;
+};
+
+const collectObjects = async (
+  ctx: Context,
+  wants: ReadonlyArray<ObjectId>,
+  haves: ReadonlyArray<ObjectId>,
+): Promise<ReadonlyArray<ObjectId>> => {
+  if (wants.length === 0) return [];
+  const oids: ObjectId[] = [];
+  for await (const id of enumeratePushObjects(ctx, { wants, haves })) {
+    oids.push(id);
+  }
+  return oids;
+};
+
+const toRefUpdate = (m: ResolvedRefspec): RefUpdate => ({
+  name: m.parsed.dst,
+  oldId: m.remoteOid,
+  newId: m.localOid,
+});
+
+const postReceivePack = async (
+  ctx: Context,
+  transport: HttpTransport,
+  url: string,
+  body: Uint8Array,
+): Promise<
+  Response['body'] extends infer _T ? Awaited<ReturnType<HttpTransport['request']>> : never
+> => {
+  ctx.progress.start(PUSH_UPLOAD_OP);
+  try {
+    const receivePackUrl = buildReceivePackUrl(url);
+    const response = await transport.request({
+      url: receivePackUrl,
+      method: 'POST',
+      headers: {
+        'content-type': 'application/x-git-receive-pack-request',
+        accept: 'application/x-git-receive-pack-result',
+      },
+      body,
+      ...(ctx.signal !== undefined ? { signal: ctx.signal } : {}),
+    });
+    if (response.statusCode !== 200) {
+      throw httpError(response.statusCode, `git-receive-pack returned ${response.statusCode}`);
+    }
+    return response;
+  } finally {
+    ctx.progress.end(PUSH_UPLOAD_OP);
+  }
+};
+
+const buildReceivePackUrl = (baseUrl: string): string => {
+  let parsed: URL;
+  try {
+    parsed = new URL(baseUrl);
+  } catch {
+    throw invalidBaseUrl('invalid URL');
+  }
+  if (parsed.hash !== '') throw invalidBaseUrl('fragment must not be set');
+  const path = parsed.pathname.endsWith('/') ? parsed.pathname.slice(0, -1) : parsed.pathname;
+  return `${parsed.protocol}//${parsed.host}${path}/git-receive-pack${parsed.search}`;
+};
+
+const parseReceiveResponse = async (
+  ctx: Context,
+  response: Awaited<ReturnType<HttpTransport['request']>>,
+  capabilities: ReadonlyArray<string>,
+): Promise<Awaited<ReturnType<typeof parseReceivePackResponse>>> => {
+  const byteStream = readableStreamToAsyncIterable(response.body);
+  const pkts = decodePktStream(byteStream);
+  if (hasSideBand(capabilities)) {
+    const channel1 = parseSideBand(pkts, {
+      onProgress: (text) => ctx.progress.update(PUSH_UPLOAD_OP, 0, undefined, sanitize(text)),
+    });
+    return parseReceivePackResponse(decodePktStream(channel1));
+  }
+  return parseReceivePackResponse(pkts);
+};
+
+const hasSideBand = (caps: ReadonlyArray<string>): boolean =>
+  caps.some((c) => SIDE_BAND_CAPS.has(c));
+
+const applyReportStatus = async (
+  ctx: Context,
+  movers: ReadonlyArray<ResolvedRefspec>,
+  refUpdates: ReadonlyArray<RefStatus>,
+  remoteName: string,
+): Promise<ReadonlyArray<PushedRef>> => {
+  const statusByName = new Map<string, RefStatus>();
+  for (const s of refUpdates) statusByName.set(s.name, s);
+  const out: PushedRef[] = [];
+  for (const m of movers) {
+    const status = statusByName.get(m.parsed.dst);
+    const accepted = status?.accepted === true;
+    if (accepted) await updateTrackingCache(ctx, m, remoteName);
+    out.push({
+      name: m.parsed.dst as RefName,
+      oldId: m.remoteOid,
+      newId: m.localOid,
+      status: accepted ? 'ok' : 'rejected',
+      ...(status?.reason !== undefined ? { reason: status.reason } : {}),
+    });
+  }
+  return out;
+};
+
+const updateTrackingCache = async (
+  ctx: Context,
+  m: ResolvedRefspec,
+  remoteName: string,
+): Promise<void> => {
+  if (!m.parsed.dst.startsWith(REFS_HEADS_PREFIX)) return; // tags handled elsewhere
+  if (m.parsed.isDelete) return; // delete-only push doesn't update cache
+  const branch = m.parsed.dst.slice(REFS_HEADS_PREFIX.length);
+  const composed = `refs/remotes/${remoteName}/${branch}`;
+  if (!isSafeRefName(composed)) return;
+  await updateRef(ctx, composed as RefName, m.localOid);
+};
+
+const isSafeRefName = (name: string): boolean => {
+  try {
+    validateRefName(name);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+// Reference the unused tag-prefix constant to keep the surface explicit
+// for future tag-cache support (Phase 12.5+); the eslint/biome rule
+// otherwise flags `REFS_TAGS_PREFIX` as unused.
+void REFS_TAGS_PREFIX;
+// Reference AGENT to keep the import live for the implicit-agent-append
+// behaviour codified by `selectPushCapabilities`.
+void AGENT;
