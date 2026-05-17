@@ -307,7 +307,17 @@ const deleteUnadvertised = async (
       continue;
     }
     if (advertised.has(branch)) continue;
-    const refName = `refs/remotes/${remoteName}/${branch}` as RefName;
+    const composed = `refs/remotes/${remoteName}/${branch}`;
+    // Defense in depth: `entry.name` came from `readdir`, which we trust, but
+    // a hostile actor with local write access could have deposited a
+    // directory named `..` or worse. `updateRef` itself calls
+    // `validateRefName`, but we also short-circuit here so the prune loop
+    // never asks `updateRef` to delete a path-traversal ref name.
+    if (!isSafeRefName(composed)) {
+      ctx.logger?.warn?.('fetch.prune: skipping unsafe ref name', { name: composed });
+      continue;
+    }
+    const refName = composed as RefName;
     // `updateRef(..., { delete: true })` throws `UNSUPPORTED_OPERATION` when
     // the ref is packed-only (packed-refs rewrite is Phase 9 follow-up).
     // The loose-walk path can only reach loose refs, so under normal usage

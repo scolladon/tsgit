@@ -214,11 +214,15 @@ const collectRefs = async (
   let pkt = await iter.next();
   while (!pkt.done) {
     if (pkt.value.kind !== 'data') break;
+    // Inclusive cap: enforce BEFORE `handleRefLine` inserts the next entry so
+    // the limit+1 entry never lands in `acc.refs` or `acc.byName`. The
+    // capability line counts as the first ref (it carries the first oid+name
+    // pair), so the cap fires after exactly MAX_ADVERTISED_REFS lines.
+    if (acc.refs.length >= MAX_ADVERTISED_REFS) {
+      throw tooManyAdvertisedRefs(acc.refs.length + 1, MAX_ADVERTISED_REFS);
+    }
     const line = stripTrailingNewline(TEXT_DECODER.decode(pkt.value.payload));
     capabilities = handleRefLine(acc, capabilities, line);
-    if (acc.refs.length > MAX_ADVERTISED_REFS) {
-      throw tooManyAdvertisedRefs(acc.refs.length, MAX_ADVERTISED_REFS);
-    }
     pkt = await iter.next();
   }
   return { capabilities: capabilities ?? [], refs: acc.refs };
