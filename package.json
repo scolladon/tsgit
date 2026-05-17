@@ -329,7 +329,7 @@
       ]
     },
     "test:coverage": {
-      "command": "vitest run --coverage",
+      "command": "vitest run --project unit --coverage",
       "dependencies": [
         "check:types"
       ],
@@ -528,7 +528,7 @@
     "fast-check": "4.8.0",
     "husky": "9.1.7",
     "isomorphic-git": "1.38.0",
-    "jscpd": "4.2.2",
+    "jscpd": "4.2.3",
     "knip": "6.14.1",
     "lint-staged": "17.0.5",
     "rollup": "4.60.4",

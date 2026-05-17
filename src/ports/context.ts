@@ -50,7 +50,17 @@ export interface RepositoryConfig {
   readonly upstreamRef?: RefName;
   readonly allowInsecure?: boolean;
   readonly allowPrivateNetworks?: boolean;
+  /**
+   * Hard cap (bytes) on a single pack body buffered in memory by `fetchPack`.
+   * Server-controlled byte counts above this raise `PACK_TOO_LARGE`. Default
+   * 512 MiB. Lower it for hardened deployments that clone only small repos.
+   */
   readonly maxResponseBytes?: number;
+  /**
+   * Hard cap on the entry-count field declared in a received pack header.
+   * Server-controlled `uint32` values above this raise `PACK_TOO_LARGE` before
+   * `fetchPack` allocates per-entry state. Default 50_000_000.
+   */
   readonly maxObjectsPerPack?: number;
   readonly detectRenames?: boolean;
   readonly breakStaleLockMs?: number;

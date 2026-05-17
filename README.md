@@ -25,6 +25,7 @@ A pure TypeScript git implementation designed to be the fastest portable git lib
 | 9 | Commands (Tier 1 API) | ✅ |
 | 10 | Repository facade | ✅ |
 | 11 | Polish & Launch (CI matrix, browser E2E, benchmarks, TypeDoc, MIGRATION) | ✅ |
+| 12.1 | Clone — smart-HTTP pack fetch + write-objects loop | ✅ |
 
 ## Features
 
@@ -85,6 +86,32 @@ const repo = await openRepository({
 
 await repo.init();
 ```
+
+### Cloning a remote
+
+```typescript
+import { openRepository } from '@scolladon/tsgit';
+
+const repo = await openRepository({
+  cwd: '/tmp/my-clone',
+  config: {
+    dnsResolver: async (host) => (await import('node:dns')).promises.resolve(host),
+  },
+});
+
+const result = await repo.clone({
+  url: 'https://github.com/owner/repo.git',
+  resolver: async (host) => (await import('node:dns')).promises.resolve(host),
+});
+
+console.log(result.head); // refs/heads/main
+console.log(result.fetchedRefs.length); // total refs propagated
+```
+
+Working-tree materialization (`checkout`) lands in Phase 13.1 — Phase 12.1
+gives you a valid `.git` directory whose `git log` matches the remote's HEAD
+line. See `test/integration/network/clone-http-backend.test.ts` for an
+end-to-end example against a local `git-http-backend`.
 
 ### Progress reporting
 
