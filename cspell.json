@@ -323,7 +323,8 @@
     "dedups",
     "demuxing",
     "receivepack",
-    "Fastforwards"
+    "Fastforwards",
+    "Jcounting"
   ],
   "ignorePaths": [
     "node_modules",
