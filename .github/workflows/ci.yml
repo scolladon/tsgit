@@ -197,32 +197,14 @@ jobs:
 
   # ──────────────────────────────────────────────
   # Stage 7: Performance
-  #   main: snapshot benchmarks to gh-pages
   #   PRs: compare base vs PR on same runner
+  #   (benchmark-snapshot disabled: github-action-benchmark@v1 does not
+  #   accept the vitest output shape; tracked under post-v1 backlog 15.x
+  #   — needs a small node script that converts reports/benchmarks/raw.json
+  #   to the customSmallerIsBetter [{name,value,unit}] schema before the
+  #   action can push to gh-pages. Nightly bench.yml + benchmark-compare
+  #   below still cover the PR-regression and trend-tracking needs.)
   # ──────────────────────────────────────────────
-
-  benchmark-snapshot:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [unit-tests]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
-      - uses: ./.github/actions/setup
-      - run: npm run build
-      - run: npm run test:bench
-      - name: Publish benchmark to gh-pages
-        uses: benchmark-action/github-action-benchmark@v1
-        with:
-          # vitest tool understands the raw.json shape that
-          # vitest.bench.config.ts writes — no manual conversion needed.
-          tool: vitest
-          output-file-path: reports/benchmarks/raw.json
-          gh-pages-branch: gh-pages
-          benchmark-data-dir-path: reports/benchmarks
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          auto-push: true
 
   benchmark-compare:
     if: github.event_name == 'pull_request'
