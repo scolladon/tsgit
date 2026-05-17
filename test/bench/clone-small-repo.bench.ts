@@ -18,7 +18,6 @@
  */
 
 import * as fs from 'node:fs';
-import { accessSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -33,11 +32,14 @@ import { findGitHttpBackend, startGitHttpBackend } from './support/http-backend-
 const FIXTURE_DIR = path.resolve(import.meta.dirname, '../fixtures/clone-source');
 const SOURCE_GIT = path.join(FIXTURE_DIR, 'source.git');
 
-const RUNNING_UNDER_STRYKER = process.cwd().includes('.stryker-tmp');
+// Stryker sets `STRYKER_MUTANT_ID` for every mutant run. Substring-matching
+// the cwd against `.stryker-tmp` is brittle (custom sandbox dirs, CI paths)
+// — the env var is the authoritative signal.
+const RUNNING_UNDER_STRYKER = process.env.STRYKER_MUTANT_ID !== undefined;
 const GIT_HTTP_BACKEND_AVAILABLE = findGitHttpBackend() !== undefined;
 const FIXTURE_AVAILABLE = ((): boolean => {
   try {
-    accessSync(SOURCE_GIT);
+    fs.accessSync(SOURCE_GIT);
     return true;
   } catch {
     return false;
@@ -47,6 +49,10 @@ const FIXTURE_AVAILABLE = ((): boolean => {
 const SKIP = RUNNING_UNDER_STRYKER || !GIT_HTTP_BACKEND_AVAILABLE || !FIXTURE_AVAILABLE;
 
 describe.skipIf(SKIP)('clone:small-repo', async () => {
+  // Belt-and-suspenders: vitest evaluates the describe callback to enumerate
+  // tests even when `skipIf` is true, so without this early return we would
+  // boot a CGI server on every skipped run. (Reviewed: Phase 12.4 pass 1.)
+  if (SKIP) return;
   const server = await startGitHttpBackend({ projectRoot: FIXTURE_DIR });
   const url = `http://127.0.0.1:${server.port}/source.git`;
   const tmpdirs: string[] = [];

@@ -45,10 +45,10 @@ const FIXTURE_AVAILABLE = ((): boolean => {
   }
 })();
 
-// Stryker copies files into `.stryker-tmp/sandbox-XXX/` and re-runs the suite
-// from there. The spawned `git-http-backend` CGI does not work reliably across
-// the sandbox boundary; mutation kills are carried by the unit tests anyway.
-const RUNNING_UNDER_STRYKER = process.cwd().includes('.stryker-tmp');
+// Stryker sets `STRYKER_MUTANT_ID` for every mutant run. The spawned
+// `git-http-backend` CGI does not work reliably across the sandbox boundary;
+// mutation kills are carried by the unit tests anyway.
+const RUNNING_UNDER_STRYKER = process.env.STRYKER_MUTANT_ID !== undefined;
 
 const SKIP_REASON: string | false = RUNNING_UNDER_STRYKER
   ? 'integration suite skipped under Stryker (mutation kills live in unit tests)'

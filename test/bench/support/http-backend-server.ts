@@ -95,6 +95,10 @@ const handleRequest = (
     res.end();
     return;
   }
+  // PATH_INFO and QUERY_STRING are forwarded verbatim to git-http-backend.
+  // The helper is scoped to localhost test/bench traffic — if reused in a
+  // broader harness, the caller is responsible for normalising path traversal
+  // (`..`) and other CGI-meta-character payloads before they reach the env.
   const [pathInfo, queryString = ''] = req.url.split('?', 2);
   const env: NodeJS.ProcessEnv = {
     ...process.env,
