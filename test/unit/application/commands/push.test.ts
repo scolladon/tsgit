@@ -729,6 +729,64 @@ describe('push — side-band response', () => {
     // Assert
     expect(sut.pushedRefs[0]?.status).toBe('ok');
   });
+
+  it('Given the server emits side-band channel-2 progress text, When push runs, Then the reporter receives the sanitized text', async () => {
+    // Arrange — kills the `parseSideBand(pkts, {})` ObjectLiteral mutant
+    // and the `onProgress: () => undefined` ArrowFunction mutant. The
+    // sanitize() call must run on server-supplied progress text before it
+    // reaches the reporter (terminal-injection defense).
+    const ctx = createMemoryContext();
+    const parent = await seedCommit(ctx, [], 'p');
+    const tip = await seedCommit(ctx, [parent.id], 't');
+    await seedRepo(ctx, { refs: { 'refs/heads/main': tip.id } });
+    await writeOriginConfig(ctx);
+    // Hand-craft a transport that returns a discovery body THEN a
+    // side-band response with both channel-2 (progress) and channel-1
+    // (report-status) packets.
+    const discoveryBytes = buildAdvertisementBytes(
+      [{ name: 'refs/heads/main', id: parent.id }],
+      ['report-status', 'side-band-64k'],
+    );
+    const reportPkts = encodePktStream([
+      ENCODER.encode('unpack ok\n'),
+      ENCODER.encode('ok refs/heads/main\n'),
+    ]);
+    // channel-2 progress includes an ANSI escape; sanitize must strip it.
+    const progress = ENCODER.encode('\x1b[2Jcounting objects: 3, done.\n');
+    const channel2 = new Uint8Array(progress.length + 1);
+    channel2[0] = 0x02;
+    channel2.set(progress, 1);
+    const channel1 = new Uint8Array(reportPkts.length + 1);
+    channel1[0] = 0x01;
+    channel1.set(reportPkts, 1);
+    const responseBytes = encodePktStream([channel2, channel1]);
+    const transport: HttpTransport = {
+      request: async (req): Promise<HttpResponse> => ({
+        statusCode: 200,
+        headers: {},
+        body: new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(req.url.includes('info/refs') ? discoveryBytes : responseBytes);
+            controller.close();
+          },
+        }),
+      }),
+    };
+    const { reporter, events } = recordingProgress();
+
+    // Act
+    const sut = await push(withProgress({ ...ctx, transport }, reporter));
+
+    // Assert — push succeeds AND a sanitized progress update reached the
+    // reporter under op === 'push:upload'.
+    expect(sut.pushedRefs[0]?.status).toBe('ok');
+    const progressUpdates = events.filter((e) => e.kind === 'update' && e.op === 'push:upload');
+    expect(progressUpdates.length).toBeGreaterThan(0);
+    const last = progressUpdates[progressUpdates.length - 1];
+    // ANSI escape must be stripped; the human text survives.
+    expect(last?.kind === 'update' && last.text).toContain('counting objects');
+    expect(last?.kind === 'update' && (last.text ?? '')).not.toContain('\x1b');
+  });
 });
 
 describe('push — remote-tracking cache', () => {

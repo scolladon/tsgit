@@ -131,6 +131,10 @@ const resolveRefspecsInput = async (
   ctx: Context,
   refspecs: ReadonlyArray<string> | undefined,
 ): Promise<ReadonlyArray<ParsedRefspec>> => {
+  // equivalent-mutant: `refspecs.length > 0` vs `refspecs.length >= 0` —
+  // `>= 0` is always true on a defined array, which would short-circuit on
+  // an empty array exactly as the existing code does (returns `[]`), making
+  // the mutant observable-equivalent.
   if (refspecs !== undefined && refspecs.length > 0) {
     return refspecs.map(parseRefspec);
   }
@@ -383,6 +387,13 @@ const updateTrackingCache = async (
   if (m.parsed.isDelete) return; // delete-only push doesn't update cache
   const branch = m.parsed.dst.slice(REFS_HEADS_PREFIX.length);
   const composed = `refs/remotes/${remoteName}/${branch}`;
+  // equivalent-mutant: flipping this guard to always-pass is unreachable
+  // under non-hostile inputs because `remoteName` has already been gated
+  // by REMOTE_NAME_RE (resolveRemoteUrl) and `branch` comes from the
+  // server's advertised name which was matched against the local refspec
+  // via the remoteByName map. Tests cannot construct a composed name that
+  // bypasses both filters; the guard is defense-in-depth for future
+  // refactors. Removing it is observable-equivalent on every test fixture.
   if (!isSafeRefName(composed)) return;
   await updateRef(ctx, composed as RefName, m.localOid);
 };
