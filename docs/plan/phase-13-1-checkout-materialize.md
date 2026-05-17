@@ -6,24 +6,17 @@ cycle ending in `npm run validate` green before commit.
 
 ## Step order
 
-### 1. Extend error domain
+### 1. Reuse existing error codes (no domain change)
 
-Add two new discriminants to `TsgitError`:
+Inspection of `src/domain/commands/error.ts` shows the codes we need
+already exist:
 
-```ts
-{ code: 'WORKTREE_DIRTY', paths: ReadonlyArray<FilePath> }
-{ code: 'WORKTREE_UNTRACKED_OVERWRITE', paths: ReadonlyArray<FilePath> }
-{ code: 'PATHSPEC_NOT_FOUND', pathspec: string }
-```
+- `CHECKOUT_OVERWRITE_DIRTY` (`paths: ReadonlyArray<FilePath>`) —
+  used for both tracked-dirty AND untracked-collision in v1; one
+  error per checkout aggregates every offending path.
+- `PATHSPEC_NO_MATCH` (`pattern: string`) — for path-restore misses.
 
-Files touched:
-- `src/domain/error.ts` (or wherever the discriminated union lives)
-- factory helpers next to existing `branchNotFound` style
-
-Red: write a test that constructs the new errors and asserts on
-`.data.code` + `.data.paths` / `.data.pathspec`.
-
-Commit: `feat(domain): WORKTREE_DIRTY / UNTRACKED_OVERWRITE / PATHSPEC_NOT_FOUND errors`.
+Step skipped. Design doc and ADRs reference these existing codes.
 
 ### 2. `compute-changeset` primitive (PURE)
 
