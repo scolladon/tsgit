@@ -26,6 +26,7 @@ A pure TypeScript git implementation designed to be the fastest portable git lib
 | 10 | Repository facade | ✅ |
 | 11 | Polish & Launch (CI matrix, browser E2E, benchmarks, TypeDoc, MIGRATION) | ✅ |
 | 12.1 | Clone — smart-HTTP pack fetch + write-objects loop | ✅ |
+| 12.2 | Fetch — ls-refs + want/have negotiation + shallow + prune | ✅ |
 
 ## Features
 

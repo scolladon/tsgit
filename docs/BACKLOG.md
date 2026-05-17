@@ -2,7 +2,7 @@
 
 Track: `[ ]` todo, `[~]` in progress, `[x]` done, `[-]` skipped
 
-**Progress:** Phases 0–11 complete. `@scolladon/tsgit@1.0.0` published on npm with sigstore provenance (trusted-publisher OIDC). Post-v1 work begins at Phase 12.
+**Progress:** Phases 0–11 complete. `@scolladon/tsgit@1.0.0` published on npm with sigstore provenance (trusted-publisher OIDC). Phase 12.1 (clone smart-HTTP pack fetch) and 12.2 (fetch + shallow + prune) shipped. Phase 12.3 (push) and Phase 12.4 (clone bench) are next.
 
 ---
 
@@ -231,9 +231,8 @@ Surface exists today; stub bodies need real loops. Highest user-visible value.
 
 - [x] **12.1** `clone`: smart-HTTP pack fetch + write-objects loop.
       _Accepted:_ `repo.clone({ url })` against a real `git-upload-pack` endpoint produces a working repo whose `git log` matches the remote's HEAD line. End-to-end integration test against a local `git-http-backend` is green (`test/integration/network/clone-http-backend.test.ts`). Shallow / `depth: N` deferred to 12.2 per [ADR-008](adr/008-clone-defer-shallow.md). Streaming the pack to a temp file (instead of in-memory buffer) deferred per [ADR-007](adr/007-clone-resume-semantics.md). Smart-HTTP v2 deferred per [ADR-005](adr/005-clone-protocol-v1.md).
-- [ ] **12.2** `fetch`: ls-refs + want/have negotiation + pack write.
-      _Accept when:_ shallow + non-shallow fetch updates `refs/remotes/<remote>/*` and writes received objects.
-      _Touches:_ `fetch.ts`, shared `fetch-pack.ts`, progress site `fetch:write-objects`.
+- [x] **12.2** `fetch`: ls-refs + want/have negotiation + pack write.
+      _Accepted:_ shallow + non-shallow fetch updates `refs/remotes/<remote>/*` and writes received objects. End-to-end integration tests against a local `git-http-backend` for both the non-shallow path and the `depth: 1` shallow path (`test/integration/network/fetch-http-backend.test.ts`, `test/integration/network/fetch-shallow-http-backend.test.ts`). `clone({ url, depth })` reopens via the same `fetchPack` extension. ADRs [009](adr/009-fetch-shallow-where.md), [010](adr/010-fetch-haves-strategy.md), [011](adr/011-fetch-ref-update-tx.md), [012](adr/012-fetch-prune-semantics.md) capture the four design choices.
 - [ ] **12.3** `push`: pack send via `git-receive-pack`.
       _Accept when:_ `repo.push({ remote, refSpecs })` advances the remote ref and uploads only the missing objects.
       _Touches:_ `push.ts`, new `application/primitives/send-pack.ts`, progress site `push:upload`.

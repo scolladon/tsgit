@@ -168,6 +168,15 @@ await git.fetch({ fs, http, dir: '.', singleBranch: true, ref: 'main' });
 
 // tsgit
 await repo.fetch({ remote: 'origin', refSpecs: ['refs/heads/main:refs/remotes/origin/main'] });
+
+// Phase 12.2 surface:
+//   - `depth: N` performs a shallow fetch and writes `.git/shallow`.
+//   - `prune: true` deletes `refs/remotes/<remote>/<branch>` entries the
+//     server no longer advertises. Local branches and tags are never
+//     touched (ADR-012).
+//   - `result.updatedRefs`, `result.prunedRefs`, `result.shallow`,
+//     `result.unshallow` are surfaced for programmatic inspection.
+await repo.fetch({ remote: 'origin', depth: 1 });
 ```
 
 ### `git.merge` → `repo.merge`
