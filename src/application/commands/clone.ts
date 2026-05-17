@@ -146,6 +146,13 @@ const discoverRefs = async (
   return parseAdvertisedRefs(pktStream, 'git-upload-pack');
 };
 
+/**
+ * Adapt the response body's web `ReadableStream` to an `AsyncIterable`. On
+ * early exit (consumer throws or breaks) the iterator's `return` hook calls
+ * `cancel()` so the stream + underlying socket close cleanly — `releaseLock`
+ * alone leaves the stream open. fetch-pack.ts holds the matching helper
+ * (kept local to each module per the primitives ↛ commands layering rule).
+ */
 const readableStreamToAsyncIterable = (
   stream: ReadableStream<Uint8Array>,
 ): AsyncIterable<Uint8Array> => ({
@@ -157,7 +164,11 @@ const readableStreamToAsyncIterable = (
         return done ? { done: true, value: undefined } : { done: false, value };
       },
       return: async (): Promise<IteratorResult<Uint8Array>> => {
-        reader.releaseLock();
+        try {
+          await reader.cancel();
+        } catch {
+          // swallow — adapter closes the underlying socket regardless
+        }
         return { done: true, value: undefined };
       },
     };
@@ -177,16 +188,17 @@ const selectCapabilities = (advertised: ReadonlyArray<string>): ReadonlyArray<st
 };
 
 const uniqueOids = (refs: ReadonlyArray<AdvertisedRef>): ReadonlyArray<ObjectId> => {
+  // Only the advertised top-level ref OIDs are valid `want`s; peeled OIDs are
+  // informational (the dereferenced tag target) and a strict v1 server may
+  // reject a `want <peeled-oid>` because the peeled oid is not in the
+  // advertised set. Real `git clone` requests the tag ref and the server
+  // packs the commit transitively.
   const seen = new Set<string>();
   const out: ObjectId[] = [];
   for (const r of refs) {
     if (seen.has(r.id)) continue;
     seen.add(r.id);
     out.push(r.id);
-    if (r.peeled !== undefined && !seen.has(r.peeled)) {
-      seen.add(r.peeled);
-      out.push(r.peeled);
-    }
   }
   return out;
 };

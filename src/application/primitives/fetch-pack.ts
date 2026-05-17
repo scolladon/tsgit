@@ -10,6 +10,7 @@
  * Out of scope here (handled by callers): URL validation, capability
  * negotiation, ref-update propagation.
  */
+import { sanitize } from '../../domain/commands/error.js';
 import { httpError, TsgitError } from '../../domain/error.js';
 import { bytesToHex, hexToBytes } from '../../domain/objects/encoding.js';
 import type { ObjectId } from '../../domain/objects/object-id.js';
@@ -43,6 +44,14 @@ const PROGRESS_TICK_BYTES = 65_536;
  * is not set. Matches the bound documented in ADR-007 (Resume Semantics).
  */
 const DEFAULT_MAX_RESPONSE_BYTES = 512 * 1024 * 1024;
+/**
+ * Hard cap on the entry count declared in the pack header. The 32-bit field is
+ * server-controlled; without an explicit ceiling, a malicious server could
+ * declare 2^32 entries and drive `walkPackEntries` into a DoS loop even though
+ * the pack body itself is bounded by `maxResponseBytes`. Matches the order of
+ * magnitude beyond which canonical git refuses to operate.
+ */
+const MAX_OBJECT_COUNT = 50_000_000;
 
 export interface FetchPackInput {
   /** Advertised refs the caller wants. MUST be non-empty (server-side requirement). */
@@ -110,10 +119,45 @@ const downloadPack = async (
   const pktSource = decodePktStream(readableStreamToAsyncIterable(response.body));
   const parsed = await parseUploadPackResponse(pktSource, {
     sideBand: hasSideBand(input.capabilities),
-    onProgress: (text) => ctx.progress.update(input.progressOp, 0, undefined, text),
+    // Sanitize sideband-2 text BEFORE it crosses the ProgressReporter port:
+    // user-supplied reporters are free implementations and the contract does
+    // not require sanitization — a logging reporter that forwards the bytes
+    // verbatim would be vulnerable to terminal injection from a malicious
+    // server. Sanitizing at the boundary leaves no untrusted byte on the
+    // reporter call surface.
+    onProgress: (text) => ctx.progress.update(input.progressOp, 0, undefined, sanitize(text)),
   });
   return drainPackBodyBounded(ctx, input, parsed.packBody);
 };
+
+/**
+ * Adapt the response body's web `ReadableStream` to an `AsyncIterable`. On
+ * early exit (consumer throws or breaks) the iterator's `return` hook calls
+ * `cancel()` so the stream + underlying socket close cleanly — `releaseLock`
+ * alone leaves the stream open. See clone.ts for the matching helper (kept
+ * local to each module per the primitives ↛ commands layering rule).
+ */
+const readableStreamToAsyncIterable = (
+  stream: ReadableStream<Uint8Array>,
+): AsyncIterable<Uint8Array> => ({
+  [Symbol.asyncIterator](): AsyncIterator<Uint8Array> {
+    const reader = stream.getReader();
+    return {
+      next: async (): Promise<IteratorResult<Uint8Array>> => {
+        const { done, value } = await reader.read();
+        return done ? { done: true, value: undefined } : { done: false, value };
+      },
+      return: async (): Promise<IteratorResult<Uint8Array>> => {
+        try {
+          await reader.cancel();
+        } catch {
+          // swallow — adapter closes the underlying socket regardless
+        }
+        return { done: true, value: undefined };
+      },
+    };
+  },
+});
 
 const drainPackBodyBounded = async (
   ctx: Context,
@@ -171,24 +215,6 @@ const buildUploadPackUrl = (baseUrl: string): string => {
 const hasSideBand = (caps: ReadonlyArray<string>): boolean =>
   caps.some((c) => SIDE_BAND_CAPS.has(c));
 
-const readableStreamToAsyncIterable = (
-  stream: ReadableStream<Uint8Array>,
-): AsyncIterable<Uint8Array> => ({
-  [Symbol.asyncIterator](): AsyncIterator<Uint8Array> {
-    const reader = stream.getReader();
-    return {
-      next: async (): Promise<IteratorResult<Uint8Array>> => {
-        const { done, value } = await reader.read();
-        return done ? { done: true, value: undefined } : { done: false, value };
-      },
-      return: async (): Promise<IteratorResult<Uint8Array>> => {
-        reader.releaseLock();
-        return { done: true, value: undefined };
-      },
-    };
-  },
-});
-
 const verifyPackTrailer = async (packBytes: Uint8Array, ctx: Context): Promise<string> => {
   const trailerLen = ctx.hash.digestLength;
   if (packBytes.length < PACK_HEADER_BYTES + trailerLen) {
@@ -245,6 +271,13 @@ const inflateAllEntries = async (
   packBytes: Uint8Array,
 ): Promise<ReadonlyArray<PendingEntry>> => {
   const header = parsePackHeader(packBytes);
+  if (header.objectCount > MAX_OBJECT_COUNT) {
+    throw new TsgitError({
+      code: 'PACK_TOO_LARGE',
+      objectCount: header.objectCount,
+      limit: MAX_OBJECT_COUNT,
+    });
+  }
   const trailerStart = packBytes.length - ctx.hash.digestLength;
   const out: PendingEntry[] = [];
   let offset = PACK_HEADER_BYTES;
@@ -318,11 +351,6 @@ const tryResolveEntry = async (
 ): Promise<ResolvedEntry | undefined> => {
   if (isBaseHeader(entry.header)) {
     const type = baseTypeName(entry.header.type);
-    if (type === undefined) {
-      throw invalidPackHeader(
-        `unsupported base type ${entry.header.type} at offset ${entry.offset}`,
-      );
-    }
     const id = await computeLooseObjectId(ctx, type, entry.inflated);
     return { id, type, content: entry.inflated, crc32: entry.crc32, offset: entry.offset };
   }
@@ -362,7 +390,7 @@ const isBaseHeader = (header: PackEntryHeader): header is BasePackEntryHeader =>
   );
 };
 
-const baseTypeName = (type: PackEntryHeader['type']): BaseTypeName | undefined => {
+const baseTypeName = (type: BasePackEntryHeader['type']): BaseTypeName => {
   switch (type) {
     case PACK_ENTRY_TYPE.COMMIT:
       return 'commit';
@@ -372,8 +400,6 @@ const baseTypeName = (type: PackEntryHeader['type']): BaseTypeName | undefined =
       return 'blob';
     case PACK_ENTRY_TYPE.TAG:
       return 'tag';
-    default:
-      return undefined;
   }
 };
 
