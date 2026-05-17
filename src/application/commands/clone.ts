@@ -72,6 +72,12 @@ export const clone = async (ctx: Context, opts: CloneOptions): Promise<CloneResu
   }
   ctx.progress.start(CLONE_DISCOVER_OP);
   try {
+    // Defense-in-depth URL validation. Production callers go through
+    // `openRepository`, which wraps `ctx.transport` with `wrapTransportValidator`
+    // — every transport.request() then runs `validateUrl` using
+    // `config.dnsResolver` from the facade. This in-clone path only fires when
+    // a caller manually constructs a Context and passes `opts.resolver`; both
+    // layers run when both are configured, which is harmless.
     if (opts.resolver !== undefined) {
       await validateUrl(opts.url, {
         resolver: opts.resolver,

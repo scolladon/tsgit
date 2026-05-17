@@ -45,13 +45,14 @@ const PROGRESS_TICK_BYTES = 65_536;
  */
 const DEFAULT_MAX_RESPONSE_BYTES = 512 * 1024 * 1024;
 /**
- * Hard cap on the entry count declared in the pack header. The 32-bit field is
- * server-controlled; without an explicit ceiling, a malicious server could
- * declare 2^32 entries and drive `walkPackEntries` into a DoS loop even though
- * the pack body itself is bounded by `maxResponseBytes`. Matches the order of
- * magnitude beyond which canonical git refuses to operate.
+ * Default cap on the entry count declared in the pack header. The 32-bit
+ * field is server-controlled; without an explicit ceiling, a malicious server
+ * could declare 2^32 entries and drive `walkPackEntries` into a DoS loop even
+ * though the pack body itself is bounded by `maxResponseBytes`. Matches the
+ * order of magnitude beyond which canonical git refuses to operate. Callers
+ * can tighten the limit via `ctx.config?.maxObjectsPerPack`.
  */
-const MAX_OBJECT_COUNT = 50_000_000;
+const DEFAULT_MAX_OBJECT_COUNT = 50_000_000;
 
 export interface FetchPackInput {
   /** Advertised refs the caller wants. MUST be non-empty (server-side requirement). */
@@ -271,11 +272,12 @@ const inflateAllEntries = async (
   packBytes: Uint8Array,
 ): Promise<ReadonlyArray<PendingEntry>> => {
   const header = parsePackHeader(packBytes);
-  if (header.objectCount > MAX_OBJECT_COUNT) {
+  const objectCountCap = ctx.config?.maxObjectsPerPack ?? DEFAULT_MAX_OBJECT_COUNT;
+  if (header.objectCount > objectCountCap) {
     throw new TsgitError({
       code: 'PACK_TOO_LARGE',
       objectCount: header.objectCount,
-      limit: MAX_OBJECT_COUNT,
+      limit: objectCountCap,
     });
   }
   const trailerStart = packBytes.length - ctx.hash.digestLength;

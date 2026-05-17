@@ -207,10 +207,19 @@ export const parseAdvertisedRefs = async (
   expectedService: Service,
 ): Promise<Advertisement> => {
   const iter = source[Symbol.asyncIterator]();
-  await consumeServiceHeader(iter, expectedService);
-  const { capabilities, refs } = await collectRefs(iter);
-  const head = findHead(capabilities, refs);
-  return head ? { capabilities, refs, head } : { capabilities, refs };
+  try {
+    await consumeServiceHeader(iter, expectedService);
+    const { capabilities, refs } = await collectRefs(iter);
+    const head = findHead(capabilities, refs);
+    return head ? { capabilities, refs, head } : { capabilities, refs };
+  } finally {
+    // The raw `iter.next()` loop above does not engage the for-await runtime
+    // hook, so an exception thrown by consumeServiceHeader / collectRefs would
+    // leave an upstream ReadableStream reader locked. Calling `iter.return`
+    // propagates the cancel through the decodePktStream generator into the
+    // ReadableStream adapter at the call site (clone / fetch-pack).
+    await iter.return?.();
+  }
 };
 
 const wantLine = (oid: ObjectId, caps: ReadonlyArray<string>): Uint8Array => {

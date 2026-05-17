@@ -69,8 +69,11 @@ const captureRequests = (
 
 type MemCtx = ReturnType<typeof createMemoryContext>;
 
+const withConfig = (ctx: MemCtx, patch: Partial<NonNullable<MemCtx['config']>>): MemCtx =>
+  ({ ...ctx, config: { ...(ctx.config ?? {}), ...patch } }) as MemCtx;
+
 const withMaxResponseBytes = (ctx: MemCtx, max: number): MemCtx =>
-  ({ ...ctx, config: { ...(ctx.config ?? {}), maxResponseBytes: max } }) as MemCtx;
+  withConfig(ctx, { maxResponseBytes: max });
 
 const computeBlobId = async (
   ctx: ReturnType<typeof createMemoryContext>,
@@ -415,7 +418,7 @@ describe('fetchPack', () => {
       expect(sut.objectCount).toBe(0);
     });
 
-    it('Given objectCount > MAX_OBJECT_COUNT, When fetchPack runs, Then throws PACK_TOO_LARGE before iterating entries', async () => {
+    it('Given objectCount > default cap, When fetchPack runs, Then throws PACK_TOO_LARGE before iterating entries', async () => {
       // Arrange — craft a pack header that lies about the entry count.
       const ctx = createMemoryContext();
       const dummyId = (await computeBlobId(ctx, ENCODER.encode('lie\n'))) as ObjectId;
@@ -423,7 +426,7 @@ describe('fetchPack', () => {
       const dv = new DataView(header.buffer);
       dv.setUint32(0, 0x5041434b);
       dv.setUint32(4, 2);
-      dv.setUint32(8, 60_000_000); // beyond 50_000_000
+      dv.setUint32(8, 60_000_000); // beyond the 50_000_000 default
       const trailerBytes = hexToBytes(await ctx.hash.hashHex(header));
       const packBytes = new Uint8Array(32);
       packBytes.set(header, 0);
@@ -455,6 +458,126 @@ describe('fetchPack', () => {
       expect(data.code).toBe('PACK_TOO_LARGE');
       expect(data.objectCount).toBe(60_000_000);
       expect(data.limit).toBe(50_000_000);
+    });
+
+    it('Given pack count exactly equal to cap, When fetchPack runs, Then does NOT throw (boundary: > vs >=)', async () => {
+      // Arrange — declare exactly `maxObjectsPerPack` entries. The cap guard is
+      // `objectCount > cap`, so equality must NOT trigger the throw. The pack
+      // is otherwise empty so the walker will error on missing entries, but it
+      // must error *past* the cap check — proving the boundary lives on `>`,
+      // not `>=`.
+      const baseCtx = createMemoryContext();
+      const dummyId = (await computeBlobId(baseCtx, ENCODER.encode('boundary\n'))) as ObjectId;
+      const header = new Uint8Array(12);
+      const dv = new DataView(header.buffer);
+      dv.setUint32(0, 0x5041434b);
+      dv.setUint32(4, 2);
+      dv.setUint32(8, 7); // exactly the cap
+      const trailerBytes = hexToBytes(await baseCtx.hash.hashHex(header));
+      const packBytes = new Uint8Array(32);
+      packBytes.set(header, 0);
+      packBytes.set(trailerBytes, 12);
+      const ctx = withConfig(baseCtx, { maxObjectsPerPack: 7 });
+      const body = buildUploadPackResponseBody({ packBytes, sideBand: true });
+      const { transport } = captureRequests(body);
+
+      // Act
+      let caught: unknown;
+      try {
+        await fetchPack(ctx, transport, {
+          wants: [dummyId],
+          haves: [],
+          capabilities: ['side-band-64k'],
+          url: REMOTE_URL,
+          progressOp: 'test:write-objects',
+        });
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert — error must be a later-stage failure, NOT PACK_TOO_LARGE.
+      expect(caught).toBeInstanceOf(TsgitError);
+      const code = (caught as TsgitError).data.code;
+      expect(code).not.toBe('PACK_TOO_LARGE');
+    });
+
+    it('Given pack count exactly cap + 1, When fetchPack runs, Then throws PACK_TOO_LARGE (boundary: pinpoint the > side)', async () => {
+      // Arrange — counterpart to the previous test: cap+1 must throw.
+      const baseCtx = createMemoryContext();
+      const dummyId = (await computeBlobId(baseCtx, ENCODER.encode('boundary+1\n'))) as ObjectId;
+      const header = new Uint8Array(12);
+      const dv = new DataView(header.buffer);
+      dv.setUint32(0, 0x5041434b);
+      dv.setUint32(4, 2);
+      dv.setUint32(8, 8); // cap + 1
+      const trailerBytes = hexToBytes(await baseCtx.hash.hashHex(header));
+      const packBytes = new Uint8Array(32);
+      packBytes.set(header, 0);
+      packBytes.set(trailerBytes, 12);
+      const ctx = withConfig(baseCtx, { maxObjectsPerPack: 7 });
+      const body = buildUploadPackResponseBody({ packBytes, sideBand: true });
+      const { transport } = captureRequests(body);
+
+      // Act
+      let caught: unknown;
+      try {
+        await fetchPack(ctx, transport, {
+          wants: [dummyId],
+          haves: [],
+          capabilities: ['side-band-64k'],
+          url: REMOTE_URL,
+          progressOp: 'test:write-objects',
+        });
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert
+      expect((caught as TsgitError).data.code).toBe('PACK_TOO_LARGE');
+      expect((caught as TsgitError).data).toMatchObject({ objectCount: 8, limit: 7 });
+    });
+
+    it('Given config.maxObjectsPerPack < pack count, When fetchPack runs, Then enforces the caller cap', async () => {
+      // Arrange — pack lies about having 100 entries; caller caps at 10.
+      const baseCtx = createMemoryContext();
+      const dummyId = (await computeBlobId(baseCtx, ENCODER.encode('hardened\n'))) as ObjectId;
+      const header = new Uint8Array(12);
+      const dv = new DataView(header.buffer);
+      dv.setUint32(0, 0x5041434b);
+      dv.setUint32(4, 2);
+      dv.setUint32(8, 100);
+      const trailerBytes = hexToBytes(await baseCtx.hash.hashHex(header));
+      const packBytes = new Uint8Array(32);
+      packBytes.set(header, 0);
+      packBytes.set(trailerBytes, 12);
+      const ctx = withConfig(baseCtx, { maxObjectsPerPack: 10 });
+      const body = buildUploadPackResponseBody({ packBytes, sideBand: true });
+      const { transport } = captureRequests(body);
+
+      // Act
+      let caught: unknown;
+      try {
+        await fetchPack(ctx, transport, {
+          wants: [dummyId],
+          haves: [],
+          capabilities: ['side-band-64k'],
+          url: REMOTE_URL,
+          progressOp: 'test:write-objects',
+        });
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert
+      expect(caught).toBeInstanceOf(TsgitError);
+      const data = (caught as TsgitError).data as {
+        code: string;
+        objectCount?: number;
+        limit?: number;
+      };
+      expect(data.code).toBe('PACK_TOO_LARGE');
+      expect(data.objectCount).toBe(100);
+      expect(data.limit).toBe(10);
     });
 
     it('Given a corrupted trailer, When fetchPack runs, Then throws INVALID_PACK_HEADER with trailer in reason', async () => {
