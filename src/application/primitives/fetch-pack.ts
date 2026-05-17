@@ -10,7 +10,7 @@
  * Out of scope here (handled by callers): URL validation, capability
  * negotiation, ref-update propagation.
  */
-import { httpError } from '../../domain/error.js';
+import { httpError, TsgitError } from '../../domain/error.js';
 import { bytesToHex, hexToBytes } from '../../domain/objects/encoding.js';
 import type { ObjectId } from '../../domain/objects/object-id.js';
 import {
@@ -37,6 +37,12 @@ import type { HttpTransport } from '../../ports/http-transport.js';
 const TEXT_ENCODER = new TextEncoder();
 const PACK_HEADER_BYTES = 12;
 const SIDE_BAND_CAPS: ReadonlySet<string> = new Set(['side-band-64k', 'side-band']);
+const PROGRESS_TICK_BYTES = 65_536;
+/**
+ * Default cap on the pack body size, applied when `ctx.config?.maxResponseBytes`
+ * is not set. Matches the bound documented in ADR-007 (Resume Semantics).
+ */
+const DEFAULT_MAX_RESPONSE_BYTES = 512 * 1024 * 1024;
 
 export interface FetchPackInput {
   /** Advertised refs the caller wants. MUST be non-empty (server-side requirement). */
@@ -104,9 +110,51 @@ const downloadPack = async (
   const pktSource = decodePktStream(readableStreamToAsyncIterable(response.body));
   const parsed = await parseUploadPackResponse(pktSource, {
     sideBand: hasSideBand(input.capabilities),
+    onProgress: (text) => ctx.progress.update(input.progressOp, 0, undefined, text),
   });
-  return drainPackBody(parsed.packBody);
+  return drainPackBodyBounded(ctx, input, parsed.packBody);
 };
+
+const drainPackBodyBounded = async (
+  ctx: Context,
+  input: FetchPackInput,
+  source: AsyncIterable<Uint8Array>,
+): Promise<Uint8Array> => {
+  const cap = ctx.config?.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES;
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  let lastTick = 0;
+  for await (const chunk of source) {
+    if (total + chunk.byteLength > cap) {
+      throw packTooLargeBytes(cap);
+    }
+    chunks.push(chunk);
+    total += chunk.byteLength;
+    if (total - lastTick >= PROGRESS_TICK_BYTES) {
+      ctx.progress.update(input.progressOp, total);
+      lastTick = total;
+    }
+  }
+  if (total > 0 && total !== lastTick) {
+    ctx.progress.update(input.progressOp, total);
+  }
+  const out = new Uint8Array(total);
+  let off = 0;
+  for (const c of chunks) {
+    out.set(c, off);
+    off += c.byteLength;
+  }
+  return out;
+};
+
+/**
+ * Raise `PACK_TOO_LARGE` for a byte-cap overrun. The existing variant carries
+ * `objectCount`, which we set to 0 here because the cap is enforced before any
+ * entry is parsed — the message text is informational for byte-cap callers;
+ * `data.limit` is the byte cap that was exceeded.
+ */
+const packTooLargeBytes = (limit: number): TsgitError =>
+  new TsgitError({ code: 'PACK_TOO_LARGE', objectCount: 0, limit });
 
 const buildUploadPackUrl = (baseUrl: string): string => {
   let parsed: URL;
@@ -140,22 +188,6 @@ const readableStreamToAsyncIterable = (
     };
   },
 });
-
-const drainPackBody = async (source: AsyncIterable<Uint8Array>): Promise<Uint8Array> => {
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  for await (const chunk of source) {
-    chunks.push(chunk);
-    total += chunk.byteLength;
-  }
-  const out = new Uint8Array(total);
-  let off = 0;
-  for (const c of chunks) {
-    out.set(c, off);
-    off += c.byteLength;
-  }
-  return out;
-};
 
 const verifyPackTrailer = async (packBytes: Uint8Array, ctx: Context): Promise<string> => {
   const trailerLen = ctx.hash.digestLength;

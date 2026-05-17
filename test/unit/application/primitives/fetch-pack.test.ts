@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { fetchPack } from '../../../../src/application/primitives/fetch-pack.js';
 import { TsgitError } from '../../../../src/domain/index.js';
+import { hexToBytes } from '../../../../src/domain/objects/encoding.js';
 import type { ObjectId } from '../../../../src/domain/objects/object-id.js';
 import { encodePktStream } from '../../../../src/domain/protocol/pkt-line.js';
 import { parsePackHeader } from '../../../../src/domain/storage/pack-entry.js';
@@ -11,6 +12,7 @@ import type {
   HttpResponse,
   HttpTransport,
 } from '../../../../src/ports/http-transport.js';
+import { recordingProgress, withProgress } from '../commands/fixtures.js';
 import { buildSyntheticPack, type EntrySpec } from './pack-fixture.js';
 
 const ENCODER = new TextEncoder();
@@ -64,6 +66,11 @@ const captureRequests = (
   };
   return { transport, requests };
 };
+
+type MemCtx = ReturnType<typeof createMemoryContext>;
+
+const withMaxResponseBytes = (ctx: MemCtx, max: number): MemCtx =>
+  ({ ...ctx, config: { ...(ctx.config ?? {}), maxResponseBytes: max } }) as MemCtx;
 
 const computeBlobId = async (
   ctx: ReturnType<typeof createMemoryContext>,
@@ -338,6 +345,250 @@ describe('fetchPack', () => {
       // Assert
       expect(caught).toBeInstanceOf(TsgitError);
       expect((caught as TsgitError).data.code).toBe('EMPTY_WANTS');
+    });
+
+    it('Given a corrupted trailer, When fetchPack runs, Then throws INVALID_PACK_HEADER with trailer in reason', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      const { packBytes, blobId } = await buildSingleBlobPack(ctx, 'corrupt me\n');
+      const corrupted = packBytes.slice();
+      corrupted[corrupted.length - 1] = (corrupted[corrupted.length - 1] ?? 0) ^ 0xff;
+      const body = buildUploadPackResponseBody({ packBytes: corrupted, sideBand: true });
+      const { transport } = captureRequests(body);
+
+      // Act
+      let caught: unknown;
+      try {
+        await fetchPack(ctx, transport, {
+          wants: [blobId],
+          haves: [],
+          capabilities: ['side-band-64k'],
+          url: REMOTE_URL,
+          progressOp: 'test:write-objects',
+        });
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert
+      expect(caught).toBeInstanceOf(TsgitError);
+      const data = (caught as TsgitError).data as { code: string; reason?: string };
+      expect(data.code).toBe('INVALID_PACK_HEADER');
+      expect(data.reason).toContain('trailer');
+    });
+
+    it('Given an empty pack (0 objects), When fetchPack runs, Then writes a valid .pack + .idx', async () => {
+      // Arrange — assemble a 12-byte header with objectCount=0 + 20-byte trailer.
+      const ctx = createMemoryContext();
+      const dummyId = (await computeBlobId(ctx, ENCODER.encode('dummy\n'))) as ObjectId;
+      const header = new Uint8Array(12);
+      const dv = new DataView(header.buffer);
+      dv.setUint32(0, 0x5041434b);
+      dv.setUint32(4, 2);
+      dv.setUint32(8, 0);
+      const trailerHex = await ctx.hash.hashHex(header);
+      const trailerBytes = hexToBytes(trailerHex);
+      const packBytes = new Uint8Array(header.length + trailerBytes.length);
+      packBytes.set(header, 0);
+      packBytes.set(trailerBytes, header.length);
+      const body = buildUploadPackResponseBody({ packBytes, sideBand: true });
+      const { transport } = captureRequests(body);
+
+      // Act
+      const sut = await fetchPack(ctx, transport, {
+        wants: [dummyId],
+        haves: [],
+        capabilities: ['side-band-64k'],
+        url: REMOTE_URL,
+        progressOp: 'test:write-objects',
+      });
+
+      // Assert
+      expect(sut.objectCount).toBe(0);
+      const idx = parsePackIndex(await ctx.fs.read(sut.idxPath));
+      expect(idx.objectCount).toBe(0);
+    });
+
+    it('Given maxResponseBytes one byte over the pack size, When fetchPack runs, Then succeeds', async () => {
+      // Arrange
+      const ctx = withMaxResponseBytes(createMemoryContext(), 0);
+      const { packBytes, blobId } = await buildSingleBlobPack(ctx, 'tight cap\n');
+      const tightCtx = withMaxResponseBytes(ctx, packBytes.length + 1);
+      const body = buildUploadPackResponseBody({ packBytes, sideBand: true });
+      const { transport } = captureRequests(body);
+
+      // Act
+      const sut = await fetchPack(tightCtx, transport, {
+        wants: [blobId],
+        haves: [],
+        capabilities: ['side-band-64k'],
+        url: REMOTE_URL,
+        progressOp: 'test:write-objects',
+      });
+
+      // Assert
+      expect(sut.objectCount).toBe(1);
+    });
+
+    it('Given maxResponseBytes equal to the pack size, When fetchPack runs, Then succeeds (boundary)', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      const { packBytes, blobId } = await buildSingleBlobPack(ctx, 'exact cap\n');
+      const exactCtx = withMaxResponseBytes(ctx, packBytes.length);
+      const body = buildUploadPackResponseBody({ packBytes, sideBand: true });
+      const { transport } = captureRequests(body);
+
+      // Act
+      const sut = await fetchPack(exactCtx, transport, {
+        wants: [blobId],
+        haves: [],
+        capabilities: ['side-band-64k'],
+        url: REMOTE_URL,
+        progressOp: 'test:write-objects',
+      });
+
+      // Assert
+      expect(sut.objectCount).toBe(1);
+    });
+
+    it('Given maxResponseBytes one byte under the pack size, When fetchPack runs, Then throws PACK_TOO_LARGE', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      const { packBytes, blobId } = await buildSingleBlobPack(ctx, 'over cap\n');
+      const overCtx = withMaxResponseBytes(ctx, packBytes.length - 1);
+      const body = buildUploadPackResponseBody({ packBytes, sideBand: true });
+      const { transport } = captureRequests(body);
+
+      // Act
+      let caught: unknown;
+      try {
+        await fetchPack(overCtx, transport, {
+          wants: [blobId],
+          haves: [],
+          capabilities: ['side-band-64k'],
+          url: REMOTE_URL,
+          progressOp: 'test:write-objects',
+        });
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert
+      expect(caught).toBeInstanceOf(TsgitError);
+      const data = (caught as TsgitError).data as {
+        code: string;
+        objectCount?: number;
+        limit?: number;
+      };
+      expect(data.code).toBe('PACK_TOO_LARGE');
+      expect(data.limit).toBe(packBytes.length - 1);
+    });
+
+    it('Given no side-band capability, When fetchPack runs, Then drains the raw pack body and writes both files', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      const { packBytes, blobId } = await buildSingleBlobPack(ctx, 'no sideband\n');
+      const body = buildUploadPackResponseBody({ packBytes, sideBand: false });
+      const { transport } = captureRequests(body);
+
+      // Act
+      const sut = await fetchPack(ctx, transport, {
+        wants: [blobId],
+        haves: [],
+        capabilities: [], // no side-band advertised
+        url: REMOTE_URL,
+        progressOp: 'test:write-objects',
+      });
+
+      // Assert
+      expect(sut.objectCount).toBe(1);
+      const written = await ctx.fs.read(sut.packPath);
+      expect(written).toEqual(packBytes);
+    });
+  });
+
+  describe('progress reporting', () => {
+    it('Given a successful fetchPack, When run, Then start fires before end with the configured op', async () => {
+      // Arrange
+      const { reporter, events } = recordingProgress();
+      const ctx = withProgress(createMemoryContext(), reporter);
+      const { packBytes, blobId } = await buildSingleBlobPack(ctx, 'progress probe\n');
+      const body = buildUploadPackResponseBody({ packBytes, sideBand: true });
+      const { transport } = captureRequests(body);
+
+      // Act
+      await fetchPack(ctx, transport, {
+        wants: [blobId],
+        haves: [],
+        capabilities: ['side-band-64k'],
+        url: REMOTE_URL,
+        progressOp: 'clone:write-objects',
+      });
+
+      // Assert
+      expect(events[0]).toEqual({ kind: 'start', op: 'clone:write-objects' });
+      expect(events[events.length - 1]).toEqual({ kind: 'end', op: 'clone:write-objects' });
+    });
+
+    it('Given a failing fetchPack, When run, Then end still fires after start', async () => {
+      // Arrange
+      const { reporter, events } = recordingProgress();
+      const ctx = withProgress(createMemoryContext(), reporter);
+      const { packBytes, blobId } = await buildSingleBlobPack(ctx, 'broken trailer\n');
+      const corrupted = packBytes.slice();
+      corrupted[corrupted.length - 1] = (corrupted[corrupted.length - 1] ?? 0) ^ 0xff;
+      const body = buildUploadPackResponseBody({ packBytes: corrupted, sideBand: true });
+      const { transport } = captureRequests(body);
+
+      // Act
+      try {
+        await fetchPack(ctx, transport, {
+          wants: [blobId],
+          haves: [],
+          capabilities: ['side-band-64k'],
+          url: REMOTE_URL,
+          progressOp: 'clone:write-objects',
+        });
+      } catch {
+        // expected
+      }
+
+      // Assert
+      const starts = events.filter((e) => e.kind === 'start').length;
+      const ends = events.filter((e) => e.kind === 'end').length;
+      expect(starts).toBe(1);
+      expect(ends).toBe(1);
+    });
+
+    it('Given channel-2 sideband text, When fetchPack runs, Then the reporter receives the sanitized text', async () => {
+      // Arrange
+      const { reporter, events } = recordingProgress();
+      const ctx = withProgress(createMemoryContext(), reporter);
+      const { packBytes, blobId } = await buildSingleBlobPack(ctx, 'with progress\n');
+      const body = buildUploadPackResponseBody({
+        packBytes,
+        sideBand: true,
+        progressLines: ['Counting objects: 1, done.\n'],
+      });
+      const { transport } = captureRequests(body);
+
+      // Act
+      await fetchPack(ctx, transport, {
+        wants: [blobId],
+        haves: [],
+        capabilities: ['side-band-64k'],
+        url: REMOTE_URL,
+        progressOp: 'clone:write-objects',
+      });
+
+      // Assert
+      const textUpdates = events.filter(
+        (e): e is { kind: 'update'; op: string; current: number; text?: string } =>
+          e.kind === 'update' && typeof e.text === 'string' && e.text.length > 0,
+      );
+      expect(textUpdates.length).toBeGreaterThanOrEqual(1);
+      const first = textUpdates[0];
+      expect(first?.text).toContain('Counting objects');
     });
   });
 });
