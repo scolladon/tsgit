@@ -1016,6 +1016,34 @@ describe('fetch', () => {
       expect((await ctx.fs.readUtf8(`${ctx.layout.gitDir}/refs/heads/main`)).trim()).toBe(localOid);
       expect((await ctx.fs.readUtf8(`${ctx.layout.gitDir}/refs/tags/v0`)).trim()).toBe(localOid);
     });
+
+    it('Given a local refs/heads/main oid, When fetch derives haves, Then that oid is NOT sent as a have (kills the looseDirs scope mutant)', async () => {
+      // Arrange — kills the `'refs/tags'` → `""` StringLiteral mutant in
+      // `looseDirs`. With `""`, `collectFromDir` would walk the entire
+      // gitDir tree and surface `refs/heads/main` content (which IS an oid)
+      // as a have. The deriveHaves contract is "only remote-tracking refs
+      // and tags become haves" — local heads must stay out.
+      const ctx = createMemoryContext();
+      const localHeadOid = '4'.repeat(40);
+      await seedRepo(ctx, {
+        refs: { 'refs/heads/main': localHeadOid },
+      });
+      await writeOriginConfig(ctx);
+      const { packBytes, blobId } = await buildOneBlobPack(ctx, 'no local haves\n');
+      const { transport, requests } = fakeRemote({
+        url: 'https://example.com/r.git',
+        advertisedRefs: [{ name: 'refs/heads/main', id: blobId }],
+        packBytes,
+      });
+
+      // Act
+      await fetch({ ...ctx, transport });
+
+      // Assert
+      const postReq = requests.find((r) => r.method === 'POST');
+      const decoded = new TextDecoder().decode(postReq?.body);
+      expect(decoded).not.toContain(`have ${localHeadOid}`);
+    });
   });
 
   describe('progress reporting', () => {

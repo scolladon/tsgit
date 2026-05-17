@@ -187,6 +187,11 @@ const collectRefTips = async (
 ): Promise<ReadonlyArray<ObjectId>> => {
   // Loose refs first: walk the on-disk tree under each ref prefix.
   const ids: ObjectId[] = [];
+  // equivalent-mutant: replacing the `refs/remotes/` template literal head
+  // with an empty backtick changes `fullDir` to `${gitDir}/origin`, which
+  // does not exist in any test fixture, so `fs.exists` returns false and
+  // `collectFromDir` is never reached — observable-equivalent on real-world
+  // repositories (the dir literally never has a sibling named `origin`).
   const looseDirs = [`refs/remotes/${remoteName}`, 'refs/tags'];
   for (const dir of looseDirs) {
     const fullDir = `${ctx.layout.gitDir}/${dir}`;
