@@ -31,7 +31,10 @@ Commit: `refactor(test): extract git-http-backend CGI helper`.
 
 1. Create `test/bench/clone-small-repo.bench.ts`. Skeleton:
    - `describe.skipIf(SKIP)('clone:small-repo', async () => { … })`
-   - `beforeAll` boots the shared server via `startGitHttpBackend`.
+   - Top of describe body: `if (SKIP) return;` (vitest evaluates the
+     callback to enumerate tests even when skipped — without the guard
+     the server would boot on every skipped run) then
+     `await startGitHttpBackend(...)` to boot the shared server.
    - `afterAll` collects tmpdirs and rm's via `Promise.all`.
    - Two `bench()` calls: `'tsgit'` and `'isomorphic-git'`, each doing
      a fresh-tmpdir clone against `http://127.0.0.1:${port}/source.git`.
