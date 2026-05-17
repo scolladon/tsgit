@@ -292,7 +292,17 @@
     "Sébastien",
     "Colladon",
     "treemap",
-    "arethetypeswrong"
+    "arethetypeswrong",
+    "Cshallow",
+    "Eunshallow",
+    "pkts",
+    "pushback",
+    "reftable",
+    "regen",
+    "shallowish",
+    "unshallow",
+    "Unshallow",
+    "deepen"
   ],
   "ignorePaths": [
     "node_modules",

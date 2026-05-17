@@ -11,6 +11,7 @@ import {
 import {
   buildDiscoveryUrl,
   buildUploadPackRequest,
+  MAX_ADVERTISED_REFS,
   parseAdvertisedRefs,
   parseShallowResponse,
   parseUploadPackResponse,
@@ -322,6 +323,50 @@ describe('parseAdvertisedRefs — ref validation', () => {
       expect(te.data).toEqual({ code: 'DUPLICATE_REF', name: 'refs/heads/main' });
     }
   });
+});
+
+describe('parseAdvertisedRefs — advertised-refs cap (security HIGH-2)', () => {
+  it('Given an advertisement exceeding MAX_ADVERTISED_REFS, When parsed, Then throws TOO_MANY_ADVERTISED_REFS before allocating beyond the cap', async () => {
+    // Arrange — synthesize a PktLine async iterable directly so we don't
+    // have to build MAX_ADVERTISED_REFS+1 raw bytes (that would balloon the
+    // test). The parser consumes pkt-lines, not bytes, so an in-process
+    // generator is the cheapest fixture.
+    const overage = MAX_ADVERTISED_REFS + 1;
+    async function* pkts(): AsyncIterable<PktLine> {
+      yield { kind: 'data', payload: bytesOf('# service=git-upload-pack\n') };
+      yield { kind: 'flush' };
+      // First ref carries the capabilities. Subsequent refs reuse the
+      // capability set parsed once.
+      yield {
+        kind: 'data',
+        payload: bytesOf(`${OID1} refs/heads/b0 ofs-delta\n`),
+      };
+      for (let i = 1; i < overage; i += 1) {
+        const padded = i.toString(16).padStart(40, '0');
+        yield { kind: 'data', payload: bytesOf(`${padded} refs/heads/b${i}\n`) };
+      }
+      yield { kind: 'flush' };
+    }
+
+    // Act
+    let caught: unknown;
+    try {
+      await parseAdvertisedRefs(pkts(), 'git-upload-pack');
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert
+    expect(caught).toBeInstanceOf(TsgitError);
+    const data = (caught as TsgitError).data as {
+      readonly code: string;
+      readonly count?: number;
+      readonly limit?: number;
+    };
+    expect(data.code).toBe('TOO_MANY_ADVERTISED_REFS');
+    expect(data.limit).toBe(MAX_ADVERTISED_REFS);
+    expect((data.count ?? 0) > MAX_ADVERTISED_REFS).toBe(true);
+  }, 30_000);
 });
 
 describe('parseAdvertisedRefs — empty advertisement', () => {
@@ -957,6 +1002,23 @@ describe('parseShallowResponse', () => {
     // would let `shallowish` through as a shallow line would either populate
     // `shallow`/`unshallow` or change the downstream nak flag.
     expect(result.nak).toBe(false);
+  });
+
+  it('Given an iterator that ends without a flush, When parsed, Then returns the accumulated shallow updates without error', async () => {
+    // Arrange — iterator yields one shallow line then ends. The
+    // `while (!pkt.done)` loop exits naturally; the post-loop return must
+    // surface the accumulated updates. Without this test the post-loop
+    // return is unreachable through normal protocol streams.
+    const iter = asyncOf<PktLine>([{ kind: 'data', payload: bytesOf(`shallow ${OID1}\n`) }])[
+      Symbol.asyncIterator
+    ]();
+
+    // Act
+    const sut = await parseShallowResponse(iter);
+
+    // Assert
+    expect(sut.shallow).toEqual([OID1]);
+    expect(sut.unshallow).toEqual([]);
   });
 
   it('Given exactly `shallow` with no space (boundary), When parsed, Then NOT treated as a shallow line', async () => {

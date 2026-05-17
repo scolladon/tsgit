@@ -73,6 +73,46 @@ describe('shallow-file', () => {
       // Assert
       expect(sut.size).toBe(2);
     });
+
+    it('Given a .git/shallow with malformed lines (non-oid), When read, Then skips them silently', async () => {
+      // Arrange — kill the `if (!isShallowOid(trimmed)) continue` survivor.
+      const ctx = createMemoryContext();
+      await ctx.fs.mkdir(ctx.layout.gitDir);
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/shallow`, `not-an-oid\n${OID_A}\nzzz\n`);
+
+      // Act
+      const sut = await readShallow(ctx);
+
+      // Assert
+      expect(sut.size).toBe(1);
+      expect(sut.has(OID_A)).toBe(true);
+    });
+
+    it('Given readUtf8 throws a non-FILE_NOT_FOUND error, When readShallow runs, Then the error propagates', async () => {
+      // Arrange — kill the `if (isFileNotFound(err)) return new Set()` survivor.
+      const ctx = createMemoryContext();
+      const boomCtx = {
+        ...ctx,
+        fs: {
+          ...ctx.fs,
+          readUtf8: async (): Promise<string> => {
+            throw new Error('disk boom');
+          },
+        },
+      };
+
+      // Act
+      let caught: unknown;
+      try {
+        await readShallow(boomCtx);
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert — non-FILE_NOT_FOUND must surface as-is, not get swallowed.
+      expect(caught).toBeInstanceOf(Error);
+      expect((caught as Error).message).toBe('disk boom');
+    });
   });
 
   describe('updateShallow', () => {
