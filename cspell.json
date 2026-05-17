@@ -284,7 +284,11 @@
     "APFS",
     "lobste",
     "pipefail",
-    "npmjs"
+    "npmjs",
+    "Gitea",
+    "Codeberg",
+    "toplevel",
+    "rebuilder"
   ],
   "ignorePaths": [
     "node_modules",
@@ -294,7 +298,8 @@
     ".stryker-tmp",
     ".wireit",
     "package-lock.json",
-    "*.tsbuildinfo"
+    "*.tsbuildinfo",
+    "test/fixtures/clone-source/source.git/**"
   ],
   "ignoreRegExpList": ["[a-f0-9]{40}"]
 }
