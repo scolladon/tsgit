@@ -108,19 +108,9 @@ const SKIP = RUNNING_UNDER_STRYKER
   || !FIXTURE_AVAILABLE;
 
 describe.skipIf(SKIP)('clone:small-repo', async () => {
-  let server: { port: number; close: () => Promise<void> };
+  const server = await startGitHttpBackend({ projectRoot: FIXTURE_DIR });
+  const url = `http://127.0.0.1:${server.port}/source.git`;
   const tmpdirs: string[] = [];
-
-  beforeAll(async () => {
-    server = await startGitHttpBackend({ projectRoot: FIXTURE_DIR });
-  });
-
-  afterAll(async () => {
-    await Promise.all(tmpdirs.map((d) => rm(d, { recursive: true, force: true })));
-    await server.close();
-  });
-
-  const url = () => `http://127.0.0.1:${server.port}/source.git`;
 
   bench('tsgit', async () => {
     const cwd = await mkdtemp(path.join(os.tmpdir(), 'tsgit-bench-clone-'));
@@ -131,7 +121,7 @@ describe.skipIf(SKIP)('clone:small-repo', async () => {
     });
     try {
       await repo.clone({
-        url: url(), allowInsecure: true, allowPrivateNetworks: true,
+        url, allowInsecure: true, allowPrivateNetworks: true,
         resolver: async () => ['127.0.0.1'],
       });
     } finally {
@@ -142,7 +132,12 @@ describe.skipIf(SKIP)('clone:small-repo', async () => {
   bench('isomorphic-git', async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), 'iso-bench-clone-'));
     tmpdirs.push(dir);
-    await git.clone({ fs, http: gitHttp, dir, url: url(), singleBranch: true });
+    await git.clone({ fs, http: gitHttp, dir, url, singleBranch: true });
+  });
+
+  afterAll(async () => {
+    await Promise.all(tmpdirs.map((d) => rm(d, { recursive: true, force: true })));
+    await server.close();
   });
 });
 ```
