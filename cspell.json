@@ -302,7 +302,10 @@
     "shallowish",
     "unshallow",
     "Unshallow",
-    "deepen"
+    "unshallowed",
+    "deepen",
+    "behaviour",
+    "recognises"
   ],
   "ignorePaths": [
     "node_modules",
