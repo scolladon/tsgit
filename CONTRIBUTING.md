@@ -7,7 +7,9 @@
 3. Implement the feature
 4. Run `npm run validate` to verify all quality gates
 5. Commit using conventional commits
-6. Open a PR
+6. Open a PR — `pkg-pr-new` will comment with an install command
+   (`npm install https://pkg.pr.new/scolladon/tsgit@<pr-number>`) that
+   lets reviewers smoke-test the build without waiting for a release
 
 ## Test Conventions
 
@@ -69,7 +71,7 @@ it('Given a commit object, When serializing, Then output matches git format', ()
 
 ### Test Organization
 
-```
+```text
 test/
 ├── unit/           # Isolated tests, memory adapter, fast
 │   ├── domain/     # Per-module domain tests
@@ -142,7 +144,7 @@ fileSystemContractTests(async () => ({
 
 Follow [Conventional Commits](https://www.conventionalcommits.org/):
 
-```
+```text
 <type>: <description>
 
 <optional body>

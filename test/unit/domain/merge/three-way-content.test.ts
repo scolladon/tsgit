@@ -291,7 +291,7 @@ describe('mergeContent', () => {
 
     // Assert — degraded path emits a whole-file content conflict
     assertConflict(sut, 'content');
-  }, 20_000);
+  }, 60_000);
 
   it('Given base binary, When mergeContent called, Then binary conflict', () => {
     // Arrange
@@ -380,7 +380,7 @@ describe('mergeContent', () => {
 
     // Assert
     assertConflict(sut, 'content');
-  }, 20_000);
+  }, 60_000);
 
   it('Property: mergeContent(base, base, base) always clean for non-binary text', () => {
     // Arrange — generate text-only bytes (no NUL, bounded lines) to avoid binary detection

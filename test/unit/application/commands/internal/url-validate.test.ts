@@ -238,6 +238,7 @@ describe('internal/url-validate', () => {
     });
   });
 
+  // secretlint-disable @secretlint/secretlint-rule-basicauth
   describe('Embedded credentials (user:pass@host)', () => {
     it('Given a URL with embedded credentials and a public host, When validateUrl, Then resolves the host portion (not the userinfo)', async () => {
       // Arrange — the SSRF guard must run against the URL.hostname, not user/pass.

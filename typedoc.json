@@ -25,7 +25,7 @@
   "readme": "README.md",
   "navigationLinks": {
     "GitHub": "https://github.com/scolladon/tsgit",
-    "npm": "https://www.npmjs.com/package/tsgit"
+    "npm": "https://www.npmjs.com/package/@scolladon/tsgit"
   },
   "validation": {
     "notExported": true,

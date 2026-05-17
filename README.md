@@ -1,7 +1,7 @@
 # tsgit
 
 [![CI](https://github.com/scolladon/tsgit/actions/workflows/ci.yml/badge.svg)](https://github.com/scolladon/tsgit/actions/workflows/ci.yml)
-[![npm](https://img.shields.io/npm/v/tsgit)](https://www.npmjs.com/package/tsgit)
+[![npm](https://img.shields.io/npm/v/@scolladon/tsgit)](https://www.npmjs.com/package/@scolladon/tsgit)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 Lightning-fast git, pure TypeScript, everywhere.
@@ -38,7 +38,7 @@ A pure TypeScript git implementation designed to be the fastest portable git lib
 ## Installation
 
 ```bash
-npm install tsgit
+npm install @scolladon/tsgit
 ```
 
 ## Quick Start
@@ -46,7 +46,7 @@ npm install tsgit
 ### Node.js
 
 ```typescript
-import { openRepository } from 'tsgit';
+import { openRepository } from '@scolladon/tsgit';
 
 const repo = await openRepository({ cwd: process.cwd() });
 
@@ -63,7 +63,7 @@ directory by walking up from `cwd`.
 ### Browser
 
 ```typescript
-import { openRepository } from 'tsgit/auto/browser';
+import { openRepository } from '@scolladon/tsgit/auto/browser';
 
 const rootHandle = await navigator.storage.getDirectory();
 const repo = await openRepository({ rootHandle });
@@ -77,7 +77,7 @@ Browser callers must supply an OPFS `rootHandle` since there is no
 ### In-memory (deterministic / tests)
 
 ```typescript
-import { openRepository } from 'tsgit/auto/memory';
+import { openRepository } from '@scolladon/tsgit/auto/memory';
 
 const repo = await openRepository({
   files: { '/repo/seed.txt': new TextEncoder().encode('hello') },
@@ -89,7 +89,7 @@ await repo.init();
 ### Progress reporting
 
 ```typescript
-import { openRepository, consoleProgress } from 'tsgit';
+import { openRepository, consoleProgress } from '@scolladon/tsgit';
 
 const repo = await openRepository({
   progress: consoleProgress((line) => console.log(line)),
@@ -107,8 +107,8 @@ controller.abort(); // every bound method now throws REPOSITORY_DISPOSED
 ### Composable Primitives
 
 ```typescript
-import { walkCommits } from 'tsgit/primitives';
-import { pipe, filter, take } from 'tsgit/operators';
+import { walkCommits } from '@scolladon/tsgit/primitives';
+import { pipe, filter, take } from '@scolladon/tsgit/operators';
 
 const recentByAlice = walkCommits(ctx, { from: 'main' })
   |> filter(c => c.data.author.name === 'Alice')

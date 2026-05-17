@@ -1,0 +1,36 @@
+name: Preview package (pkg.pr.new)
+
+# Publishes a transient build of every PR (and every push to main) to the
+# public preview registry hosted at https://pkg.pr.new. Consumers can install
+# the exact build that ran on a PR with:
+#
+#   npm install https://pkg.pr.new/scolladon/tsgit@<short-sha>
+#   npm install https://pkg.pr.new/scolladon/tsgit@<pr-number>
+#
+# Nothing reaches the public npm registry — pkg.pr.new is a separate origin.
+# The CLI authenticates via the GITHUB_TOKEN implicit in pull-requests: write
+# and leaves a rolling comment on the PR with the install command.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    types: [opened, reopened, synchronize]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: pkg-pr-new-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  preview:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      - run: npm run build
+      - run: npx pkg-pr-new publish --comment=update

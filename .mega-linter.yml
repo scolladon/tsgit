@@ -20,3 +20,8 @@ ENABLE_LINTERS:
   - REPOSITORY_CHECKOV
 
 FILTER_REGEX_EXCLUDE: (dist/|coverage/|reports/|\.stryker-tmp/|node_modules/)
+
+REPOSITORY_SECRETLINT_FILTER_REGEX_EXCLUDE: test/unit/application/commands/internal/url-validate\.test\.ts
+REPOSITORY_GITLEAKS_FILTER_REGEX_EXCLUDE: test/unit/application/commands/internal/url-validate\.test\.ts
+
+SPELL_CSPELL_ARGUMENTS: "--words 'RUNBOOK,tsgit,scolladon'"

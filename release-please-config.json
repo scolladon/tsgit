@@ -4,7 +4,7 @@
   "packages": {
     ".": {
       "release-type": "node",
-      "package-name": "tsgit",
+      "package-name": "@scolladon/tsgit",
       "draft": false,
       "prerelease": false,
       "bump-minor-pre-major": false,

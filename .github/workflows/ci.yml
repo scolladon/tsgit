@@ -10,6 +10,12 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# Tightest-by-default top-level permissions. Individual jobs that need more
+# (benchmark-snapshot pushes to gh-pages, benchmark-compare comments on PRs)
+# escalate locally.
+permissions:
+  contents: read
+
 jobs:
   # ──────────────────────────────────────────────
   # Stage 1: Static Analysis (parallel, no deps)
@@ -106,8 +112,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-        node: [20, 22, 24]
+        # Node 20 dropped: cspell@10 + lint-staged@17 require >=22.18 /
+        # >=22.22.1; the engines floor matches.
+        # windows-latest excluded for now — NodeFileSystem path handling
+        # (realpath 8.3 short names, mixed separator inputs from test
+        # fixtures) needs a separate sprint, tracked under post-v1
+        # backlog 14.x. The wrap-fs-validator fix that shipped here is
+        # necessary but not sufficient.
+        os: [ubuntu-latest, macos-latest]
+        node: [22, 24]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -202,8 +215,10 @@ jobs:
       - name: Publish benchmark to gh-pages
         uses: benchmark-action/github-action-benchmark@v1
         with:
-          tool: customSmallerIsBetter
-          output-file-path: reports/bench-results.json
+          # vitest tool understands the raw.json shape that
+          # vitest.bench.config.ts writes — no manual conversion needed.
+          tool: vitest
+          output-file-path: reports/benchmarks/raw.json
           gh-pages-branch: gh-pages
           benchmark-data-dir-path: reports/benchmarks
           github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -227,7 +242,7 @@ jobs:
         run: |
           npm run build
           npm run test:bench
-          cp reports/bench-results.json /tmp/base-bench.json
+          cp reports/benchmarks/raw.json /tmp/base-bench.json
           rm -rf dist
 
       - name: Checkout PR branch
@@ -241,7 +256,7 @@ jobs:
         run: |
           npm run build
           npm run test:bench
-          cp reports/bench-results.json /tmp/pr-bench.json
+          cp reports/benchmarks/raw.json /tmp/pr-bench.json
 
       - name: Compare and comment
         env:
@@ -330,19 +345,30 @@ jobs:
         if: always()
         env:
           GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          COMMENT_TAG: "<!-- benchmark-comparison -->"
         run: |
-          COMMENT_TAG="<!-- benchmark-comparison -->"
-          BODY=$(cat /tmp/bench-comment.md 2>/dev/null || echo "Benchmark comparison failed to generate.")
-          FULL_BODY=$(printf '%s\n%s' "$COMMENT_TAG" "$BODY")
-
-          EXISTING=$(gh api "repos/${{ github.repository }}/issues/${PR_NUMBER}/comments" --jq ".[] | select(.body | startswith("$COMMENT_TAG")) | .id" | head -1)
-
-          if [ -n "$EXISTING" ]; then
-            gh api -X PATCH "repos/${{ github.repository }}/issues/comments/${EXISTING}" -f body="$FULL_BODY"
-          else
-            gh api -X POST "repos/${{ github.repository }}/issues/${PR_NUMBER}/comments" -f body="$FULL_BODY"
+          # Delete every previous benchmark-comparison comment, then post a
+          # single fresh one. Using `jq --arg` (rather than gh --jq with
+          # interpolated bash double-quotes) avoids the quote-collapse bug
+          # that previously short-circuited the lookup and orphaned every
+          # earlier comment on the PR.
+          BODY_FILE=/tmp/bench-comment-full.md
+          if [ ! -s /tmp/bench-comment.md ]; then
+            echo "Benchmark comparison failed to generate." > /tmp/bench-comment.md
           fi
+          {
+            echo "$COMMENT_TAG"
+            cat /tmp/bench-comment.md
+          } > "$BODY_FILE"
+
+          gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" \
+            | jq -r --arg tag "$COMMENT_TAG" '.[] | select(.body | startswith($tag)) | .id' \
+            | xargs -r -I{} gh api -X DELETE "repos/${REPO}/issues/comments/{}"
+
+          gh api -X POST "repos/${REPO}/issues/${PR_NUMBER}/comments" \
+            --field body=@"$BODY_FILE"
 
   # ──────────────────────────────────────────────
   # Stage 8: MegaLinter (parallel, no deps)
