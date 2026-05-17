@@ -20,6 +20,8 @@ import {
   parseUploadPackResponse,
 } from '../../domain/protocol/index.js';
 import {
+  applyDelta,
+  type BasePackEntryHeader,
   crc32,
   invalidPackHeader,
   PACK_ENTRY_TYPE,
@@ -177,13 +179,42 @@ interface WalkedEntry {
   readonly offset: number;
 }
 
+type BaseTypeName = 'commit' | 'tree' | 'blob' | 'tag';
+
+interface PendingEntry {
+  readonly offset: number;
+  readonly header: PackEntryHeader;
+  readonly inflated: Uint8Array;
+  readonly crc32: number;
+}
+
+interface ResolvedEntry {
+  readonly id: string;
+  readonly type: BaseTypeName;
+  readonly content: Uint8Array;
+  readonly crc32: number;
+  readonly offset: number;
+}
+
 const walkPackEntries = async (
   ctx: Context,
   packBytes: Uint8Array,
 ): Promise<ReadonlyArray<WalkedEntry>> => {
+  const pending = await inflateAllEntries(ctx, packBytes);
+  const resolved = await resolveAllEntries(ctx, pending);
+  return resolved
+    .slice()
+    .sort((a, b) => a.offset - b.offset)
+    .map((r) => ({ id: r.id, crc32: r.crc32, offset: r.offset }));
+};
+
+const inflateAllEntries = async (
+  ctx: Context,
+  packBytes: Uint8Array,
+): Promise<ReadonlyArray<PendingEntry>> => {
   const header = parsePackHeader(packBytes);
   const trailerStart = packBytes.length - ctx.hash.digestLength;
-  const out: WalkedEntry[] = [];
+  const out: PendingEntry[] = [];
   let offset = PACK_HEADER_BYTES;
   for (let i = 0; i < header.objectCount; i += 1) {
     const entryHeader = parsePackEntryHeader(packBytes, offset, ctx.hashConfig);
@@ -193,8 +224,7 @@ const walkPackEntries = async (
       throw invalidPackHeader('entry extends past pack trailer');
     }
     const entryCrc = crc32(packBytes.subarray(offset, entryEnd));
-    const id = await resolveEntryId(ctx, entryHeader, inflate.output);
-    out.push({ id, crc32: entryCrc, offset });
+    out.push({ offset, header: entryHeader, inflated: inflate.output, crc32: entryCrc });
     offset = entryEnd;
   }
   if (offset !== trailerStart) {
@@ -203,21 +233,104 @@ const walkPackEntries = async (
   return out;
 };
 
-const resolveEntryId = async (
+const resolveAllEntries = async (
   ctx: Context,
-  header: PackEntryHeader,
-  content: Uint8Array,
-): Promise<string> => {
-  const typeName = baseTypeName(header.type);
-  if (typeName === undefined) {
-    throw invalidPackHeader(
-      `unsupported pack entry type ${header.type}: delta resolution lands in plan-step 3`,
-    );
+  pending: ReadonlyArray<PendingEntry>,
+): Promise<ReadonlyArray<ResolvedEntry>> => {
+  const byOffset = new Map<number, ResolvedEntry>();
+  const byId = new Map<string, ResolvedEntry>();
+  let unresolved: ReadonlyArray<PendingEntry> = pending;
+  while (unresolved.length > 0) {
+    const next: PendingEntry[] = [];
+    let progress = false;
+    for (const entry of unresolved) {
+      const resolved = await tryResolveEntry(ctx, entry, byOffset, byId);
+      if (resolved === undefined) {
+        next.push(entry);
+      } else {
+        byOffset.set(resolved.offset, resolved);
+        byId.set(resolved.id, resolved);
+        progress = true;
+      }
+    }
+    if (!progress) throw firstUnresolvedError(next);
+    unresolved = next;
   }
-  return computeLooseObjectId(ctx, typeName, content);
+  return [...byOffset.values()];
 };
 
-const baseTypeName = (type: PackEntryHeader['type']): string | undefined => {
+const firstUnresolvedError = (unresolved: ReadonlyArray<PendingEntry>): Error => {
+  const first = unresolved[0];
+  if (first === undefined) {
+    // Defensive — `resolveAllEntries` only calls this when `unresolved` is non-empty.
+    return invalidPackHeader('unresolved deltas: empty queue (internal invariant violated)');
+  }
+  const refBaseId = refDeltaBaseId(first.header);
+  if (refBaseId !== undefined) {
+    return invalidPackHeader(`unresolved REF_DELTA: base ${refBaseId} not in pack`);
+  }
+  return invalidPackHeader(`unresolved entry at offset ${first.offset}`);
+};
+
+const refDeltaBaseId = (header: PackEntryHeader): string | undefined => {
+  if (isBaseHeader(header)) return undefined;
+  if (header.type === PACK_ENTRY_TYPE.OFS_DELTA) return undefined;
+  return header.baseId;
+};
+
+const tryResolveEntry = async (
+  ctx: Context,
+  entry: PendingEntry,
+  byOffset: ReadonlyMap<number, ResolvedEntry>,
+  byId: ReadonlyMap<string, ResolvedEntry>,
+): Promise<ResolvedEntry | undefined> => {
+  if (isBaseHeader(entry.header)) {
+    const type = baseTypeName(entry.header.type);
+    if (type === undefined) {
+      throw invalidPackHeader(
+        `unsupported base type ${entry.header.type} at offset ${entry.offset}`,
+      );
+    }
+    const id = await computeLooseObjectId(ctx, type, entry.inflated);
+    return { id, type, content: entry.inflated, crc32: entry.crc32, offset: entry.offset };
+  }
+  if (entry.header.type === PACK_ENTRY_TYPE.OFS_DELTA) {
+    const baseOffset = entry.offset - entry.header.baseDistance;
+    if (baseOffset < PACK_HEADER_BYTES) {
+      throw invalidPackHeader(
+        `OFS_DELTA at offset ${entry.offset} points before pack body: distance ${entry.header.baseDistance}`,
+      );
+    }
+    const base = byOffset.get(baseOffset);
+    if (base === undefined) return undefined;
+    return resolveDelta(ctx, entry, base);
+  }
+  // REF_DELTA — discriminated by the header.type union narrowing above.
+  const refBase = byId.get(entry.header.baseId);
+  if (refBase === undefined) return undefined;
+  return resolveDelta(ctx, entry, refBase);
+};
+
+const resolveDelta = async (
+  ctx: Context,
+  entry: PendingEntry,
+  base: ResolvedEntry,
+): Promise<ResolvedEntry> => {
+  const content = applyDelta(base.content, entry.inflated);
+  const id = await computeLooseObjectId(ctx, base.type, content);
+  return { id, type: base.type, content, crc32: entry.crc32, offset: entry.offset };
+};
+
+const isBaseHeader = (header: PackEntryHeader): header is BasePackEntryHeader => {
+  return (
+    header.type === PACK_ENTRY_TYPE.COMMIT ||
+    header.type === PACK_ENTRY_TYPE.TREE ||
+    header.type === PACK_ENTRY_TYPE.BLOB ||
+    header.type === PACK_ENTRY_TYPE.TAG
+  );
+};
+
+const baseTypeName = (type: PackEntryHeader['type']): BaseTypeName | undefined => {
   switch (type) {
     case PACK_ENTRY_TYPE.COMMIT:
       return 'commit';
