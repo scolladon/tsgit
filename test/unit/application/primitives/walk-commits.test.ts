@@ -393,4 +393,119 @@ describe('walkCommits', () => {
       expect((error as Error).message).toBe('io boom');
     }
   });
+
+  describe('shallow boundary (Phase 12.2)', () => {
+    it('Given options.shallow is undefined, When walking a chain, Then yields every commit (regression guard)', async () => {
+      // Arrange
+      const ctx = await buildSeededContext();
+      const ids = await linearChain(ctx, 4);
+
+      // Act — no shallow option → behavior identical to today.
+      const seen = await collect(walkCommits(ctx, { from: [ids[3] as ObjectId] }));
+
+      // Assert
+      expect(seen.length).toBe(4);
+    });
+
+    it('Given options.shallow is empty, When walking, Then identical to undefined-shallow (regression guard)', async () => {
+      // Arrange
+      const ctx = await buildSeededContext();
+      const ids = await linearChain(ctx, 4);
+
+      // Act
+      const seen = await collect(
+        walkCommits(ctx, { from: [ids[3] as ObjectId], shallow: new Set<ObjectId>() }),
+      );
+
+      // Assert
+      expect(seen.length).toBe(4);
+    });
+
+    it('Given shallow = {tip}, When walking from tip, Then yields ONLY the tip', async () => {
+      // Arrange
+      const ctx = await buildSeededContext();
+      const ids = await linearChain(ctx, 4);
+      const tip = ids[3] as ObjectId;
+
+      // Act
+      const seen = await collect(walkCommits(ctx, { from: [tip], shallow: new Set([tip]) }));
+
+      // Assert
+      expect(seen.length).toBe(1);
+      expect(seen[0]?.id).toBe(tip);
+    });
+
+    it('Given shallow boundary and the parent object is missing, When walking, Then no OBJECT_NOT_FOUND raised', async () => {
+      // Arrange — seed a child commit pointing at a fictional parent oid.
+      const ctx = await buildSeededContext();
+      const tree: Tree = { type: 'tree', entries: [], id: '' as ObjectId };
+      const treeId = await writeObject(ctx, tree);
+      const fakeParent = '0000000000000000000000000000000000000001' as ObjectId;
+      const child = await createCommit(ctx, {
+        tree: treeId,
+        parents: [fakeParent],
+        author: { ...AUTHOR, timestamp: 1 },
+        committer: { ...AUTHOR, timestamp: 1 },
+        message: 'child of missing parent',
+      });
+
+      // Act — shallow boundary at `child` means the walker MUST NOT try to
+      // read the missing parent.
+      const seen = await collect(walkCommits(ctx, { from: [child], shallow: new Set([child]) }));
+
+      // Assert
+      expect(seen.length).toBe(1);
+      expect(seen[0]?.id).toBe(child);
+    });
+
+    it('Given two shallow seeds from distinct histories, When walking, Then both seeds yielded; neither parent walked', async () => {
+      // Arrange — two disjoint linear chains with different message prefixes
+      // so the commit oids differ. linearChain alone would produce identical
+      // oids across calls because the inputs collapse to the same content.
+      const ctx = await buildSeededContext();
+      const tree: Tree = { type: 'tree', entries: [], id: '' as ObjectId };
+      const treeId = await writeObject(ctx, tree);
+      const mkLine = async (label: string): Promise<ObjectId> => {
+        let parent: ObjectId[] = [];
+        let tip: ObjectId = '' as ObjectId;
+        for (let i = 0; i < 3; i += 1) {
+          tip = await createCommit(ctx, {
+            tree: treeId,
+            parents: parent,
+            author: { ...AUTHOR, timestamp: 1700000000 + i },
+            committer: { ...AUTHOR, timestamp: 1700000000 + i },
+            message: `${label}-${i}`,
+          });
+          parent = [tip];
+        }
+        return tip;
+      };
+      const tip1 = await mkLine('alpha');
+      const tip2 = await mkLine('beta');
+
+      // Act
+      const seen = await collect(
+        walkCommits(ctx, { from: [tip1, tip2], shallow: new Set([tip1, tip2]) }),
+      );
+
+      // Assert
+      expect(seen.length).toBe(2);
+      const ids = seen.map((c) => c.id).sort();
+      expect(ids).toEqual([tip1, tip2].sort());
+    });
+
+    it('Given shallow boundary at the parent of the seed, When walking, Then seed + boundary both yielded but no further walk', async () => {
+      // Arrange — linear chain c0 ← c1 ← c2; shallow at c1.
+      const ctx = await buildSeededContext();
+      const ids = await linearChain(ctx, 3);
+      const seed = ids[2] as ObjectId;
+      const boundary = ids[1] as ObjectId;
+
+      // Act
+      const seen = await collect(walkCommits(ctx, { from: [seed], shallow: new Set([boundary]) }));
+
+      // Assert — c2 + c1 are yielded; c0 is NOT walked because c1 is shallow.
+      expect(seen.map((c) => c.id)).toEqual([seed, boundary]);
+    });
+  });
 });
