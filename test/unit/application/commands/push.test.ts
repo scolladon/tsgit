@@ -182,6 +182,30 @@ const seedCommit = async (
 };
 
 describe('push — config + refspec guards', () => {
+  it.each([
+    ['../escape'],
+    ['has space'],
+    ['weird/slash'],
+    [''],
+  ])('Given an invalid remote name %j, When push runs, Then throws INVALID_OPTION', async (badName) => {
+    // Arrange — pins the REMOTE_NAME_RE allowlist guarding the composed
+    // `refs/remotes/<remote>/<branch>` path against traversal.
+    const ctx = createMemoryContext();
+    await seedRepo(ctx, {});
+
+    // Act
+    let caught: unknown;
+    try {
+      await push(ctx, { remote: badName });
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert
+    expect(caught).toBeInstanceOf(TsgitError);
+    expect((caught as TsgitError).data.code).toBe('INVALID_OPTION');
+  });
+
   it('Given no remote configured, When push runs, Then throws REMOTE_NOT_CONFIGURED', async () => {
     const ctx = createMemoryContext();
     await seedRepo(ctx, {});
@@ -281,6 +305,51 @@ describe('push — happy path', () => {
 });
 
 describe('push — server responses', () => {
+  it('Given a non-200 from the git-receive-pack POST, When push runs, Then throws HTTP_ERROR', async () => {
+    // Arrange — kills the `response.statusCode !== 200` guard mutant in
+    // postReceivePack. A 503 must surface as HTTP_ERROR, not as a malformed
+    // report-status parse.
+    const ctx = createMemoryContext();
+    const parent = await seedCommit(ctx, [], 'p');
+    const tip = await seedCommit(ctx, [parent.id], 't');
+    await seedRepo(ctx, { refs: { 'refs/heads/main': tip.id } });
+    await writeOriginConfig(ctx);
+    // Custom transport: 200 for discovery, 503 for the POST.
+    const discoveryBytes = buildAdvertisementBytes(
+      [{ name: 'refs/heads/main', id: parent.id }],
+      ['report-status', 'ofs-delta', 'atomic', 'delete-refs'],
+    );
+    const transport: HttpTransport = {
+      request: async (req): Promise<HttpResponse> => {
+        const isDiscovery = req.url.includes('info/refs');
+        return {
+          statusCode: isDiscovery ? 200 : 503,
+          headers: {},
+          body: new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(isDiscovery ? discoveryBytes.slice() : new Uint8Array(0));
+              controller.close();
+            },
+          }),
+        };
+      },
+    };
+
+    // Act
+    let caught: unknown;
+    try {
+      await push({ ...ctx, transport });
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert
+    expect(caught).toBeInstanceOf(TsgitError);
+    const data = (caught as TsgitError).data as { code: string; statusCode: number };
+    expect(data.code).toBe('HTTP_ERROR');
+    expect(data.statusCode).toBe(503);
+  });
+
   it('Given the server returns `ng <ref> <reason>`, When push runs, Then the ref is reported as rejected with reason', async () => {
     // Arrange — kills the `accepted === true` short-circuit mutant.
     const ctx = createMemoryContext();
@@ -471,6 +540,57 @@ describe('push — force-with-lease', () => {
     expect(requests.map((r) => r.method)).toEqual(['GET']);
   });
 
+  it('Given an explicit ObjectId lease matching the server tip, When push runs, Then the update succeeds without force', async () => {
+    // Arrange — kills the `opts.forceWithLease !== "auto"` branch mutant.
+    const ctx = createMemoryContext();
+    const branchA = await seedCommit(ctx, [], 'a');
+    const branchB = await seedCommit(ctx, [], 'b'); // disjoint of A → non-FF
+    await seedRepo(ctx, { refs: { 'refs/heads/main': branchB.id } });
+    await writeOriginConfig(ctx);
+    const { transport } = fakeServer({
+      url: 'https://example.com/r.git',
+      advertisedRefs: [{ name: 'refs/heads/main', id: branchA.id }],
+      reportStatus: { unpack: 'ok', refs: [{ name: 'refs/heads/main', status: 'ok' }] },
+    });
+
+    // Act
+    const sut = await push({ ...ctx, transport }, { forceWithLease: branchA.id });
+
+    // Assert
+    expect(sut.pushedRefs[0]?.status).toBe('ok');
+  });
+
+  it('Given an explicit ObjectId lease that does NOT match the server tip, When push runs, Then throws PUSH_REJECTED (lease-mismatch)', async () => {
+    // Arrange — kills the lease comparison mutant on the explicit-oid path.
+    const ctx = createMemoryContext();
+    const a = await seedCommit(ctx, [], 'a');
+    const b = await seedCommit(ctx, [], 'b');
+    const c = await seedCommit(ctx, [], 'c'); // server has c, lease claims a
+    await seedRepo(ctx, { refs: { 'refs/heads/main': b.id } });
+    await writeOriginConfig(ctx);
+    const { transport, requests } = fakeServer({
+      url: 'https://example.com/r.git',
+      advertisedRefs: [{ name: 'refs/heads/main', id: c.id }],
+      reportStatus: { unpack: 'ok', refs: [] },
+    });
+
+    // Act
+    let caught: unknown;
+    try {
+      await push({ ...ctx, transport }, { forceWithLease: a.id });
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert
+    expect(caught).toBeInstanceOf(TsgitError);
+    const data = (caught as TsgitError).data as { code: string; reason: string };
+    expect(data.code).toBe('PUSH_REJECTED');
+    expect(data.reason).toBe('lease-mismatch');
+    // POST is NOT issued.
+    expect(requests.map((r) => r.method)).toEqual(['GET']);
+  });
+
   it('Given `forceWithLease: "auto"` on a tag refspec, When push runs, Then throws INVALID_OPTION (lease-on-non-branch)', async () => {
     // Arrange
     const ctx = createMemoryContext();
@@ -554,6 +674,31 @@ describe('push — delete refspec', () => {
     // Assert
     expect(caught).toBeInstanceOf(TsgitError);
     expect((caught as TsgitError).data.code).toBe('INVALID_OPTION');
+  });
+
+  it('Given a successful delete, When push completes, Then refs/remotes/origin/<branch> is NOT created in the cache', async () => {
+    // Arrange — kills the `updateTrackingCache.isDelete` guard mutant.
+    // Without the guard, a delete refspec would write the zero-oid newId
+    // into the local tracking cache.
+    const ctx = createMemoryContext();
+    const feature = await seedCommit(ctx, [], 'feature');
+    await seedRepo(ctx, { refs: { 'refs/heads/feature': feature.id } });
+    await writeOriginConfig(ctx);
+    const { transport } = fakeServer({
+      url: 'https://example.com/r.git',
+      advertisedRefs: [{ name: 'refs/heads/feature', id: feature.id }],
+      reportStatus: {
+        unpack: 'ok',
+        refs: [{ name: 'refs/heads/feature', status: 'ok' }],
+      },
+    });
+
+    // Act
+    await push({ ...ctx, transport }, { refspecs: [':refs/heads/feature'] });
+
+    // Assert — no cache file written for the deleted ref.
+    const exists = await ctx.fs.exists(`${ctx.layout.gitDir}/refs/remotes/origin/feature`);
+    expect(exists).toBe(false);
   });
 });
 

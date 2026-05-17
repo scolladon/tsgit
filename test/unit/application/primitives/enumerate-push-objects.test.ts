@@ -188,8 +188,50 @@ describe('enumeratePushObjects', () => {
 
     // Assert
     expect(caught).toBeInstanceOf(TsgitError);
-    const data = (caught as TsgitError).data as { code: string; limit: number };
+    const data = (caught as TsgitError).data as {
+      code: string;
+      limit: number;
+      objectCount: number;
+    };
     expect(data.code).toBe('PACK_TOO_LARGE');
     expect(data.limit).toBe(1);
+    // objectCount must reflect the SIZE THAT WOULD HAVE EXCEEDED the cap.
+    // Kills the mutant that replaces `state.emitted.size + 1` with a
+    // constant or with `state.emitted.size` post-insert.
+    expect(data.objectCount).toBeGreaterThan(data.limit);
+  });
+
+  it('Given an annotated tag as a want, When enumerated, Then the tag oid AND the unwrapped commit closure are yielded', async () => {
+    // Arrange — write a commit, then an annotated tag pointing at it.
+    const ctx = await buildSeededContext();
+    const tip = await seedCommit(ctx, undefined, 'tagged');
+    const tag = {
+      type: 'tag' as const,
+      id: '' as ObjectId,
+      data: {
+        object: tip.commitId,
+        objectType: 'commit' as const,
+        tagName: 'v1.0',
+        tagger: {
+          name: 'A',
+          email: 'a@a',
+          timestamp: 0,
+          timezoneOffset: '+0000',
+        },
+        message: 'release\n',
+        extraHeaders: [],
+      },
+    };
+    const tagId = await writeObject(ctx, tag);
+
+    // Act — supply the TAG oid as a want; the walker must record the tag
+    // and follow its target to the commit.
+    const sut = await collect(enumeratePushObjects(ctx, { wants: [tagId], haves: [] }));
+
+    // Assert — tag oid + commit + tree + blob all in the stream.
+    expect(sut).toContain(tagId);
+    expect(sut).toContain(tip.commitId);
+    expect(sut).toContain(tip.treeId);
+    expect(sut).toContain(tip.blobId);
   });
 });

@@ -46,14 +46,18 @@ interface EmitState {
 
 const tryEmit = (state: EmitState, id: ObjectId): boolean => {
   if (state.emitted.has(id)) return false;
-  state.emitted.add(id);
-  if (state.emitted.size > state.cap) {
+  // Pre-check the cap so the Set's invariant ("only contains emitted ids
+  // within the cap") holds on the failure path. Without this, the throw
+  // would happen AFTER the cap-violating entry was already inserted,
+  // leaving the Set one element above the cap.
+  if (state.emitted.size >= state.cap) {
     throw new TsgitError({
       code: 'PACK_TOO_LARGE',
-      objectCount: state.emitted.size,
+      objectCount: state.emitted.size + 1,
       limit: state.cap,
     });
   }
+  state.emitted.add(id);
   return true;
 };
 

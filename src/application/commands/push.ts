@@ -105,7 +105,19 @@ export const push = async (ctx: Context, opts: PushOptions = {}): Promise<PushRe
   }
 };
 
+/**
+ * Allowed remote names. Matches the conservative subset of canonical-git's
+ * remote name grammar: alphanumerics, dot, dash, underscore. Rejects path
+ * separators, slashes, and control characters so the remoteName is safe to
+ * interpolate into `refs/remotes/<remoteName>/<branch>` without a
+ * subsequent validateRefName pass needing to catch traversal through it.
+ */
+const REMOTE_NAME_RE = /^[A-Za-z0-9._-]+$/;
+
 const resolveRemoteUrl = async (ctx: Context, remoteName: string): Promise<string> => {
+  if (!REMOTE_NAME_RE.test(remoteName)) {
+    throw invalidOption('remote', `invalid remote name: ${remoteName}`);
+  }
   const config = await readConfig(ctx);
   const remote = config.remote?.get(remoteName);
   if (remote?.url === undefined) throw remoteNotConfigured(remoteName);
@@ -211,7 +223,10 @@ const isAncestor = async (
   ancestor: ObjectId,
   descendant: ObjectId,
 ): Promise<boolean> => {
-  if (ancestor === descendant) return true;
+  // walkCommits yields `descendant` itself first, so the `c.id === ancestor`
+  // check in the loop already handles the `ancestor === descendant` case
+  // without a separate fast-path guard. Callers also filter no-op refspecs
+  // before reaching this predicate via the `movers` step in push().
   for await (const c of walkCommits(ctx, { from: [descendant], ignoreMissing: true })) {
     if (c.id === ancestor) return true;
   }

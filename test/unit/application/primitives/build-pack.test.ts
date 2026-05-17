@@ -83,6 +83,75 @@ describe('buildPack', () => {
     expect(first.type).toBe(PACK_ENTRY_TYPE.BLOB);
   });
 
+  it('Given a commit oid, When buildPack runs, Then the entry header decodes as COMMIT', async () => {
+    // Arrange — kills the `packEntryTypeFor("commit")` mutant by exercising
+    // the commit branch in isolation.
+    const ctx = await buildSeededContext();
+    const blob: Blob = { type: 'blob', content: new Uint8Array([1]), id: '' as ObjectId };
+    const blobId = await writeObject(ctx, blob);
+    const treeId = await writeTree(ctx, [
+      { name: 'a.bin', mode: '100644' as FileMode, id: blobId },
+    ]);
+    const author = {
+      name: 'A',
+      email: 'a@a',
+      timestamp: 0,
+      timezoneOffset: '+0000',
+    };
+    const commit = {
+      type: 'commit' as const,
+      id: '' as ObjectId,
+      data: {
+        tree: treeId,
+        parents: [],
+        author,
+        committer: author,
+        message: 'first',
+        extraHeaders: [],
+      },
+    };
+    const commitId = await writeObject(ctx, commit);
+
+    // Act
+    const sut = await buildPack(ctx, { oids: [commitId] });
+
+    // Assert
+    const header = parsePackEntryHeader(sut.bytes, PACK_HEADER_BYTES, ctx.hashConfig);
+    expect(header.type).toBe(PACK_ENTRY_TYPE.COMMIT);
+  });
+
+  it('Given an annotated tag oid, When buildPack runs, Then the entry header decodes as TAG', async () => {
+    // Arrange — kills the `packEntryTypeFor("tag")` mutant.
+    const ctx = await buildSeededContext();
+    const blob: Blob = { type: 'blob', content: new Uint8Array([2]), id: '' as ObjectId };
+    const blobId = await writeObject(ctx, blob);
+    const tag = {
+      type: 'tag' as const,
+      id: '' as ObjectId,
+      data: {
+        object: blobId,
+        objectType: 'blob' as const,
+        tagName: 'v1',
+        tagger: {
+          name: 'A',
+          email: 'a@a',
+          timestamp: 0,
+          timezoneOffset: '+0000',
+        },
+        message: 'tagged\n',
+        extraHeaders: [],
+      },
+    };
+    const tagId = await writeObject(ctx, tag);
+
+    // Act
+    const sut = await buildPack(ctx, { oids: [tagId] });
+
+    // Assert
+    const header = parsePackEntryHeader(sut.bytes, PACK_HEADER_BYTES, ctx.hashConfig);
+    expect(header.type).toBe(PACK_ENTRY_TYPE.TAG);
+  });
+
   it('Given any pack, When buildPack returns, Then the trailer SHA matches the body hash exactly', async () => {
     // Arrange — a non-empty pack so we exercise both the header-and-trailer
     // path and the body composition.
