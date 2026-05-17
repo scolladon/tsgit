@@ -25,9 +25,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Node 24 ships npm 11.x bundled, which has the trusted-publisher OIDC
+      # handshake fix. Node 22's bundled npm 10.9.x signs provenance OK but
+      # the PUT auth path doesn't propagate the OIDC token, yielding the
+      # misleading 404 "is not in this registry". Upgrading npm in-place via
+      # `npm install -g npm@latest` on a Node 22 runner self-corrupts the
+      # bundled npm (MODULE_NOT_FOUND promise-retry) because the toolcache
+      # install isn't atomically replaceable — Node 24 sidesteps the whole
+      # dance.
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
           registry-url: https://registry.npmjs.org
           cache: npm
 
@@ -36,5 +44,5 @@ jobs:
 
       # Provenance is signed via the same OIDC token; npm verifies it against
       # the trusted-publisher binding and records the attestation in
-      # https://www.npmjs.com/package/tsgit/v/<version>/provenance.
+      # https://www.npmjs.com/package/@scolladon/tsgit/v/<version>/provenance.
       - run: npm publish --provenance --access public
