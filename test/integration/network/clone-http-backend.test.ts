@@ -29,6 +29,7 @@ import { openRepository } from '../../../src/index.node.js';
 const FIXTURE_DIR = path.resolve(import.meta.dirname, '../../fixtures/clone-source');
 const SOURCE_GIT = path.join(FIXTURE_DIR, 'source.git');
 const HEAD_OID_FILE = path.join(FIXTURE_DIR, 'HEAD-oid.txt');
+const HEAD_HISTORY_FILE = path.join(FIXTURE_DIR, 'HEAD-history.txt');
 
 const findGitExecPath = (): string | undefined => {
   try {
@@ -209,14 +210,21 @@ describe.skipIf(SKIP_REASON !== false)('clone — end-to-end against git-http-ba
     expect(result.head).toBe('refs/heads/main');
     expect(result.fetchedRefs.length).toBeGreaterThanOrEqual(1);
 
-    // Assert — walking HEAD yields the canonical first commit oid
+    // Assert — walking HEAD yields every commit in the fixture's chain (newest first)
     const expectedHead = (await readFile(HEAD_OID_FILE, 'utf8')).trim() as ObjectId;
+    const history = (await readFile(HEAD_HISTORY_FILE, 'utf8'))
+      .trim()
+      .split('\n')
+      .filter((line) => line.length > 0) as ObjectId[];
     const walker = walkCommits(repo.ctx, { from: [expectedHead] });
     const seen: ObjectId[] = [];
     for await (const commit of walker) {
       seen.push(commit.id);
     }
+    // Walker yields newest-first; HEAD-history.txt is oldest → newest.
     expect(seen[0]).toBe(expectedHead);
+    expect(seen.length).toBe(history.length);
+    expect([...seen].reverse()).toEqual(history);
 
     await repo.dispose();
   }, 30_000);
