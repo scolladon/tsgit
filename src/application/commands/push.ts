@@ -106,11 +106,14 @@ export const push = async (ctx: Context, opts: PushOptions = {}): Promise<PushRe
 };
 
 /**
- * Allowed remote names. Matches the conservative subset of canonical-git's
- * remote name grammar: alphanumerics, dot, dash, underscore. Rejects path
- * separators, slashes, and control characters so the remoteName is safe to
- * interpolate into `refs/remotes/<remoteName>/<branch>` without a
- * subsequent validateRefName pass needing to catch traversal through it.
+ * First-pass sanity filter on remote names: alphanumerics, dot, dash,
+ * underscore. Rejects obvious traversal vectors (slashes, control chars,
+ * spaces) at the entry point so a hostile caller cannot smuggle a path
+ * separator through `opts.remote`. NOT a sufficient guarantee on its own —
+ * strings like `.git`, `..`, `a..b`, `a.lock` pass this regex but produce
+ * invalid composed ref paths. The definitive guard is `isSafeRefName(composed)`
+ * inside `updateTrackingCache` (and the contract honored by `updateRef`),
+ * which runs `validateRefName` over the full composed path.
  */
 const REMOTE_NAME_RE = /^[A-Za-z0-9._-]+$/;
 

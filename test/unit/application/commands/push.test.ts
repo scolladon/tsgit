@@ -547,7 +547,7 @@ describe('push — force-with-lease', () => {
     const branchB = await seedCommit(ctx, [], 'b'); // disjoint of A → non-FF
     await seedRepo(ctx, { refs: { 'refs/heads/main': branchB.id } });
     await writeOriginConfig(ctx);
-    const { transport } = fakeServer({
+    const { transport, requestBodies } = fakeServer({
       url: 'https://example.com/r.git',
       advertisedRefs: [{ name: 'refs/heads/main', id: branchA.id }],
       reportStatus: { unpack: 'ok', refs: [{ name: 'refs/heads/main', status: 'ok' }] },
@@ -556,8 +556,13 @@ describe('push — force-with-lease', () => {
     // Act
     const sut = await push({ ...ctx, transport }, { forceWithLease: branchA.id });
 
-    // Assert
+    // Assert — request body MUST carry `<serverTip> <localTip> ref`.
+    // Pins toRefUpdate.oldId === m.remoteOid (server tip), not m.localOid.
     expect(sut.pushedRefs[0]?.status).toBe('ok');
+    const body = requestBodies[0];
+    expect(body).toBeDefined();
+    const decoded = new TextDecoder().decode(body);
+    expect(decoded).toContain(`${branchA.id} ${branchB.id} refs/heads/main`);
   });
 
   it('Given an explicit ObjectId lease that does NOT match the server tip, When push runs, Then throws PUSH_REJECTED (lease-mismatch)', async () => {
