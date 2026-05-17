@@ -106,6 +106,7 @@ export function assertExhaustiveSwitch(data: TsgitErrorData): void {
     case 'INVALID_OPTION':
     case 'REPOSITORY_DISPOSED':
     case 'ADAPTER_UNAVAILABLE':
+    case 'TOO_MANY_ADVERTISED_REFS':
       return;
     default: {
       const _exhaustive: never = data;

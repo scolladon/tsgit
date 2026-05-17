@@ -216,6 +216,8 @@ function extractDetail(data: TsgitErrorData): string {
       return 'upload-pack request has no wants';
     case 'EMPTY_RECEIVE_UPDATES':
       return 'receive-pack request has no updates';
+    case 'TOO_MANY_ADVERTISED_REFS':
+      return `advertised refs (${data.count}) exceed limit ${data.limit}`;
     case 'RESOURCE_LOCKED':
       return `${data.resource} locked: ${basename(data.path)}`;
     case 'PACK_TOO_LARGE':

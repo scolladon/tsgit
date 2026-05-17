@@ -7,6 +7,7 @@ import {
   invalidRefLine,
   missingCapabilities,
   missingServiceHeader,
+  tooManyAdvertisedRefs,
   unknownAckStatus,
 } from './error.js';
 import { encodePktLine, encodePktStream, type PktLine } from './pkt-line.js';
@@ -18,6 +19,15 @@ const TEXT_ENCODER = new TextEncoder();
 const SHA_ANY_RE = /^[0-9a-f]{40}([0-9a-f]{24})?$/i;
 const SERVICE_LINE_RE = /^# service=(?<service>[^\n]+)\n?$/;
 const PEELED_SUFFIX = '^{}';
+
+/**
+ * Hard cap on the number of refs the parser will accept in a single
+ * advertisement. A malicious server could otherwise emit millions of ref lines
+ * to exhaust heap before the existing `maxResponseBytes` cap (which gates the
+ * POST pack body) would trigger. 500_000 matches the order of magnitude that
+ * canonical git tolerates and is well past anything a legitimate repo emits.
+ */
+export const MAX_ADVERTISED_REFS = 500_000;
 
 export interface AdvertisedRef {
   readonly name: string;
@@ -50,6 +60,15 @@ export interface UploadPackResponse {
   readonly acks: ReadonlyArray<AckEntry>;
   readonly nak: boolean;
   readonly packBody: AsyncIterable<Uint8Array>;
+  /** Commits the server flagged as new shallow boundaries (empty unless `expectShallow` was set). */
+  readonly shallow: ReadonlyArray<ObjectId>;
+  /** Commits the server flagged as no-longer-shallow (empty unless `expectShallow` was set). */
+  readonly unshallow: ReadonlyArray<ObjectId>;
+}
+
+export interface ShallowUpdates {
+  readonly shallow: ReadonlyArray<ObjectId>;
+  readonly unshallow: ReadonlyArray<ObjectId>;
 }
 
 export type Service = 'git-upload-pack' | 'git-receive-pack';
@@ -195,6 +214,13 @@ const collectRefs = async (
   let pkt = await iter.next();
   while (!pkt.done) {
     if (pkt.value.kind !== 'data') break;
+    // Inclusive cap: enforce BEFORE `handleRefLine` inserts the next entry so
+    // the limit+1 entry never lands in `acc.refs` or `acc.byName`. The
+    // capability line counts as the first ref (it carries the first oid+name
+    // pair), so the cap fires after exactly MAX_ADVERTISED_REFS lines.
+    if (acc.refs.length >= MAX_ADVERTISED_REFS) {
+      throw tooManyAdvertisedRefs(acc.refs.length + 1, MAX_ADVERTISED_REFS);
+    }
     const line = stripTrailingNewline(TEXT_DECODER.decode(pkt.value.payload));
     capabilities = handleRefLine(acc, capabilities, line);
     pkt = await iter.next();
@@ -275,10 +301,87 @@ const parseAckLine = (text: string): AckEntry => {
   throw unknownAckStatus(status);
 };
 
+interface ShallowParseState {
+  readonly shallow: ObjectId[];
+  readonly unshallow: ObjectId[];
+}
+
+const SHALLOW_PREFIX = 'shallow ';
+const UNSHALLOW_PREFIX = 'unshallow ';
+
+const parseShallowOid = (text: string, prefix: string): ObjectId => {
+  const stripped = stripTrailingNewline(text);
+  const raw = stripped.slice(prefix.length);
+  if (!SHA_ANY_RE.test(raw)) throw invalidRefLine(stripped);
+  return ObjectId.from(raw);
+};
+
+const tryConsumeShallowLine = (text: string, state: ShallowParseState): boolean => {
+  if (text.startsWith(SHALLOW_PREFIX)) {
+    state.shallow.push(parseShallowOid(text, SHALLOW_PREFIX));
+    return true;
+  }
+  if (text.startsWith(UNSHALLOW_PREFIX)) {
+    state.unshallow.push(parseShallowOid(text, UNSHALLOW_PREFIX));
+    return true;
+  }
+  return false;
+};
+
+/**
+ * Consume the optional shallow-response section emitted by `git-upload-pack`
+ * when the request carried `deepen <N>`:
+ *
+ *   shallow <oid>\n     <- zero or more
+ *   unshallow <oid>\n   <- zero or more
+ *   0000                <- flush ends the section
+ *
+ * The iterator is advanced past the terminating flush (or the first
+ * non-shallow data line — that line is returned as a buffered peek so the
+ * downstream consumer can resume cleanly).
+ */
+export const parseShallowResponse = async (
+  iter: AsyncIterator<PktLine>,
+): Promise<ShallowUpdates> => {
+  const state: ShallowParseState = { shallow: [], unshallow: [] };
+  let pkt = await iter.next();
+  while (!pkt.done) {
+    if (pkt.value.kind !== 'data') {
+      // Flush (or delim) ends the shallow block. Iterator is already past it.
+      return { shallow: state.shallow, unshallow: state.unshallow };
+    }
+    const text = TEXT_DECODER.decode(pkt.value.payload);
+    if (!tryConsumeShallowLine(text, state)) {
+      // First non-shallow data line — return it as a buffered peek for the
+      // next consumer (splitMeta). Encoded via the WeakMap on the iterator.
+      pushbackBuffer.set(iter, pkt.value);
+      return { shallow: state.shallow, unshallow: state.unshallow };
+    }
+    pkt = await iter.next();
+  }
+  return { shallow: state.shallow, unshallow: state.unshallow };
+};
+
+/**
+ * Per-iterator one-line pushback used by `parseShallowResponse` to hand a
+ * data line back to `splitMeta`. WeakMap keying avoids leaking when the
+ * iterator is GCed.
+ */
+const pushbackBuffer = new WeakMap<AsyncIterator<PktLine>, PktLine>();
+
 const splitMeta = async (iter: AsyncIterator<PktLine>): Promise<ResponseSplit> => {
   const acks: AckEntry[] = [];
   let nak = false;
-  let pkt = await iter.next();
+  const first: PktLine | undefined = pushbackBuffer.get(iter);
+  // equivalent-mutant: flipping the `if (first !== undefined)` guard either
+  // way is observable-equivalent. WeakMap.delete is a no-op when the key
+  // is absent (the always-delete mutant), and skipping the delete leaves a
+  // stale entry that GC reclaims when the iterator is unreferenced (the
+  // never-delete mutant). The next splitMeta call gets a fresh iterator
+  // identity, so the stale entry is unreachable.
+  if (first !== undefined) pushbackBuffer.delete(iter);
+  let pkt: IteratorResult<PktLine> =
+    first !== undefined ? { done: false, value: first } : await iter.next();
   while (!pkt.done) {
     if (pkt.value.kind !== 'data') {
       return { acks, nak, buffered: [pkt.value] };
@@ -336,13 +439,29 @@ async function* packBodyStream(
 
 export const parseUploadPackResponse = async (
   source: AsyncIterable<PktLine>,
-  options: { readonly sideBand: boolean; readonly onProgress?: (text: string) => void },
+  options: {
+    readonly sideBand: boolean;
+    readonly onProgress?: (text: string) => void;
+    readonly expectShallow?: boolean;
+  },
 ): Promise<UploadPackResponse> => {
   const iter = source[Symbol.asyncIterator]();
+  // equivalent-mutant: flipping the `options.expectShallow === true` gate to
+  // always-true is observable-equivalent on non-shallow streams. When the
+  // first pkt-line is `NAK\n`, `parseShallowResponse` recognises it as a
+  // non-shallow data line, pushes it back into the iterator via
+  // `pushbackBuffer`, and returns empty arrays. `splitMeta` then retrieves
+  // the buffered NAK and processes it identically to the non-shallow path.
+  const shallowUpdates: ShallowUpdates =
+    options.expectShallow === true
+      ? await parseShallowResponse(iter)
+      : { shallow: [], unshallow: [] };
   const meta = await splitMeta(iter);
   return {
     acks: meta.acks,
     nak: meta.nak,
+    shallow: shallowUpdates.shallow,
+    unshallow: shallowUpdates.unshallow,
     packBody: { [Symbol.asyncIterator]: () => packBodyStream(meta.buffered, iter, options) },
   };
 };

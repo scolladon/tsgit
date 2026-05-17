@@ -32,6 +32,7 @@ import {
   parsePackHeader,
   serializePackIndex,
 } from '../../domain/storage/index.js';
+import { readableStreamToAsyncIterable } from '../../operators/readable-stream.js';
 import type { Context } from '../../ports/context.js';
 import type { HttpTransport } from '../../ports/http-transport.js';
 
@@ -65,6 +66,12 @@ export interface FetchPackInput {
   readonly url: string;
   /** Progress op label — clone uses 'clone:write-objects', fetch uses 'fetch:write-objects'. */
   readonly progressOp: string;
+  /**
+   * Shallow clone depth. When set, sends `deepen N` and consumes the
+   * accompanying `shallow <oid>` / `unshallow <oid>` response block.
+   * Phase 12.2; see ADR-009.
+   */
+  readonly depth?: number;
 }
 
 export interface FetchPackResult {
@@ -73,6 +80,16 @@ export interface FetchPackResult {
   readonly objectCount: number;
   /** Hex-encoded SHA of the pack trailer; also the on-disk filename stem. */
   readonly packSha: string;
+  /** Commits the server advertised as new shallow boundaries (empty when depth is unset). */
+  readonly shallow: ReadonlyArray<ObjectId>;
+  /** Commits the server advertised as no-longer-shallow (empty when depth is unset). */
+  readonly unshallow: ReadonlyArray<ObjectId>;
+}
+
+interface PackDownload {
+  readonly packBytes: Uint8Array;
+  readonly shallow: ReadonlyArray<ObjectId>;
+  readonly unshallow: ReadonlyArray<ObjectId>;
 }
 
 export const fetchPack = async (
@@ -82,11 +99,36 @@ export const fetchPack = async (
 ): Promise<FetchPackResult> => {
   ctx.progress.start(input.progressOp);
   try {
-    const packBytes = await downloadPack(ctx, transport, input);
-    const packSha = await verifyPackTrailer(packBytes, ctx);
-    const entries = await walkPackEntries(ctx, packBytes);
+    const download = await downloadPack(ctx, transport, input);
+    // git-upload-pack returns a zero-byte body when the client's `have` set
+    // already covers every wanted oid. This is a legitimate protocol state
+    // (the server has nothing to send), not an error. Surface it as an
+    // empty result so the caller can advance refs and return cleanly.
+    if (download.packBytes.length === 0) {
+      return {
+        packPath: '',
+        idxPath: '',
+        objectCount: 0,
+        packSha: '',
+        shallow: download.shallow,
+        unshallow: download.unshallow,
+      };
+    }
+    const packSha = await verifyPackTrailer(download.packBytes, ctx);
+    const entries = await walkPackEntries(ctx, download.packBytes);
     const idxBytes = await buildIdx(ctx, entries, packSha);
-    return writePackArtifacts(ctx, packBytes, idxBytes, packSha, entries.length);
+    const written = await writePackArtifacts(
+      ctx,
+      download.packBytes,
+      idxBytes,
+      packSha,
+      entries.length,
+    );
+    return {
+      ...written,
+      shallow: download.shallow,
+      unshallow: download.unshallow,
+    };
   } finally {
     ctx.progress.end(input.progressOp);
   }
@@ -96,12 +138,17 @@ const downloadPack = async (
   ctx: Context,
   transport: HttpTransport,
   input: FetchPackInput,
-): Promise<Uint8Array> => {
+): Promise<PackDownload> => {
   const requestBody = buildUploadPackRequest({
     wants: input.wants,
     haves: input.haves,
     capabilities: input.capabilities,
     done: true,
+    // equivalent-mutant: dropping the ternary and spreading
+    // `{ depth: input.depth }` unconditionally is observable-equivalent.
+    // `buildUploadPackRequest` treats `depth: undefined` identically to no
+    // `depth` field — no `deepen N\n` line is emitted in either case.
+    ...(input.depth !== undefined ? { depth: input.depth } : {}),
   });
   const uploadUrl = buildUploadPackUrl(input.url);
   const response = await transport.request({
@@ -127,38 +174,11 @@ const downloadPack = async (
     // server. Sanitizing at the boundary leaves no untrusted byte on the
     // reporter call surface.
     onProgress: (text) => ctx.progress.update(input.progressOp, 0, undefined, sanitize(text)),
+    expectShallow: input.depth !== undefined,
   });
-  return drainPackBodyBounded(ctx, input, parsed.packBody);
+  const packBytes = await drainPackBodyBounded(ctx, input, parsed.packBody);
+  return { packBytes, shallow: parsed.shallow, unshallow: parsed.unshallow };
 };
-
-/**
- * Adapt the response body's web `ReadableStream` to an `AsyncIterable`. On
- * early exit (consumer throws or breaks) the iterator's `return` hook calls
- * `cancel()` so the stream + underlying socket close cleanly — `releaseLock`
- * alone leaves the stream open. See clone.ts for the matching helper (kept
- * local to each module per the primitives ↛ commands layering rule).
- */
-const readableStreamToAsyncIterable = (
-  stream: ReadableStream<Uint8Array>,
-): AsyncIterable<Uint8Array> => ({
-  [Symbol.asyncIterator](): AsyncIterator<Uint8Array> {
-    const reader = stream.getReader();
-    return {
-      next: async (): Promise<IteratorResult<Uint8Array>> => {
-        const { done, value } = await reader.read();
-        return done ? { done: true, value: undefined } : { done: false, value };
-      },
-      return: async (): Promise<IteratorResult<Uint8Array>> => {
-        try {
-          await reader.cancel();
-        } catch {
-          // swallow — adapter closes the underlying socket regardless
-        }
-        return { done: true, value: undefined };
-      },
-    };
-  },
-});
 
 const drainPackBodyBounded = async (
   ctx: Context,
@@ -453,13 +473,20 @@ const buildIdx = async (
   return out;
 };
 
+interface WrittenPackArtifacts {
+  readonly packPath: string;
+  readonly idxPath: string;
+  readonly objectCount: number;
+  readonly packSha: string;
+}
+
 const writePackArtifacts = async (
   ctx: Context,
   packBytes: Uint8Array,
   idxBytes: Uint8Array,
   packSha: string,
   objectCount: number,
-): Promise<FetchPackResult> => {
+): Promise<WrittenPackArtifacts> => {
   const packDir = `${ctx.layout.gitDir}/objects/pack`;
   await ctx.fs.mkdir(packDir);
   const packPath = `${packDir}/pack-${packSha}.pack`;

@@ -54,6 +54,7 @@ export type {
   AdvertisedRef,
   Advertisement,
   Service,
+  ShallowUpdates,
   UploadPackResponse,
   WantHaveRequest,
 } from './upload-pack.js';
@@ -61,5 +62,6 @@ export {
   buildDiscoveryUrl,
   buildUploadPackRequest,
   parseAdvertisedRefs,
+  parseShallowResponse,
   parseUploadPackResponse,
 } from './upload-pack.js';

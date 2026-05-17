@@ -19,6 +19,7 @@ interface WalkState {
   readonly visited: Set<string>;
   readonly missing: Set<string>;
   readonly until: Set<ObjectId>;
+  readonly shallow: ReadonlySet<ObjectId>;
 }
 
 export async function* walkCommits(
@@ -34,6 +35,7 @@ export async function* walkCommits(
     visited: new Set<string>(),
     missing: new Set<string>(),
     until: new Set(options.until ?? []),
+    shallow: options.shallow ?? new Set<ObjectId>(),
   };
 
   while (state.queue.length > 0) {
@@ -79,6 +81,9 @@ async function fetchCommit(
 }
 
 function enqueueParents(state: WalkState, commit: Commit, order: 'topo' | 'first-parent'): void {
+  // Shallow boundary: the commit itself is yielded, but its parents are not
+  // walked. Matches canonical git's behavior on a `.git/shallow` repository.
+  if (state.shallow.has(commit.id)) return;
   const parents =
     order === 'first-parent' && commit.data.parents.length > 0
       ? [commit.data.parents[0] as ObjectId]

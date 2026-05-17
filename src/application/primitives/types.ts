@@ -51,7 +51,17 @@ export interface WalkCommitsOptions {
   readonly order?: 'topo' | 'first-parent';
   readonly ignoreMissing?: boolean;
   readonly verifyHash?: boolean;
+  /**
+   * Commits whose parents must NOT be enqueued. Used for shallow boundaries
+   * (Phase 12.2). The commit itself is still yielded — only its parents are
+   * skipped. Callers that want to also skip the boundary commit pass it in
+   * `until`.
+   */
+  readonly shallow?: ReadonlySet<ObjectId>;
 }
+
+/** Maximum `have` lines a single-round fetch will send. See ADR-010. */
+export const MAX_HAVES = 256;
 
 export interface WalkTreeEntry {
   readonly path: FilePath;

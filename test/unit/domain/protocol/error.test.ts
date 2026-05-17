@@ -17,6 +17,7 @@ import {
   pktTooLarge,
   pktTruncated,
   sidebandFatal,
+  tooManyAdvertisedRefs,
   unknownAckStatus,
 } from '../../../../src/domain/protocol/error.js';
 
@@ -145,6 +146,18 @@ describe('domain protocol error', () => {
       // Assert
       expect(sut.data).toEqual({ code: 'EMPTY_RECEIVE_UPDATES' });
     });
+
+    it('Given tooManyAdvertisedRefs(count, limit), When checking data, Then code, count, and limit are preserved', () => {
+      // Arrange & Act
+      const sut = tooManyAdvertisedRefs(500_001, 500_000);
+
+      // Assert
+      expect(sut.data).toEqual({
+        code: 'TOO_MANY_ADVERTISED_REFS',
+        count: 500_001,
+        limit: 500_000,
+      });
+    });
   });
 
   describe('extractDetail message formatting (exact match)', () => {
@@ -211,6 +224,10 @@ describe('domain protocol error', () => {
       [
         { code: 'EMPTY_RECEIVE_UPDATES' },
         'EMPTY_RECEIVE_UPDATES: receive-pack request has no updates',
+      ],
+      [
+        { code: 'TOO_MANY_ADVERTISED_REFS', count: 500_001, limit: 500_000 },
+        'TOO_MANY_ADVERTISED_REFS: advertised refs (500001) exceed limit 500000',
       ],
     ];
 

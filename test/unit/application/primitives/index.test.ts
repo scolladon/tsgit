@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import * as primitives from '../../../../src/application/primitives/index.js';
 
 describe('primitives barrel', () => {
-  it('Given the barrel, When imported, Then all 16 primitives are exposed as functions', () => {
+  it('Given the barrel, When imported, Then all primitives are exposed as functions', () => {
     const names = [
       'createCommit',
       'diffTrees',
@@ -12,9 +12,11 @@ describe('primitives barrel', () => {
       'readBlob',
       'readIndex',
       'readObject',
+      'readShallow',
       'readTree',
       'resolveRef',
       'updateRef',
+      'updateShallow',
       'walkCommits',
       'walkTree',
       'writeObject',
@@ -36,9 +38,11 @@ describe('primitives barrel', () => {
       'readBlob',
       'readIndex',
       'readObject',
+      'readShallow',
       'readTree',
       'resolveRef',
       'updateRef',
+      'updateShallow',
       'walkCommits',
       'walkTree',
       'writeObject',

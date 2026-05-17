@@ -46,6 +46,26 @@ const buildUploadPackResponseBody = (opts: UploadPackBodyOptions): Uint8Array =>
 };
 
 /**
+ * Wrap pack bytes in a shallow-response block (one or more shallow/unshallow
+ * lines + a flush) followed by the NAK + side-band-1 frames. Matches what a
+ * real server emits in response to a `deepen <N>` request.
+ */
+const buildShallowResponseBody = (opts: {
+  readonly packBytes: Uint8Array;
+  readonly shallow: ReadonlyArray<string>;
+  readonly unshallow?: ReadonlyArray<string>;
+}): Uint8Array => {
+  const shallowFrames = opts.shallow.map((oid) => ENCODER.encode(`shallow ${oid}\n`));
+  const unshallowFrames = (opts.unshallow ?? []).map((oid) => ENCODER.encode(`unshallow ${oid}\n`));
+  const shallowSection = encodePktStream([...shallowFrames, ...unshallowFrames]);
+  const body = buildUploadPackResponseBody({ packBytes: opts.packBytes, sideBand: true });
+  const out = new Uint8Array(shallowSection.length + body.length);
+  out.set(shallowSection, 0);
+  out.set(body, shallowSection.length);
+  return out;
+};
+
+/**
  * Build a sideband-1 stream that splits `packBytes` into per-frame chunks of
  * `chunkSize`. Each chunk becomes its own channel-1 pkt-line, which means the
  * downstream `parseUploadPackResponse.packBody` iterator will yield one
@@ -1271,14 +1291,12 @@ describe('fetchPack', () => {
       expect(numericUpdates[0]?.current).toBe(stretched.length);
     });
 
-    it('Given an empty pack body, When fetchPack runs, Then no flush tick fires (total === 0 short-circuits)', async () => {
+    it('Given an empty pack body, When fetchPack runs, Then returns a synthetic empty result (no error, no update tick)', async () => {
       // Arrange — server returns NAK + no sideband frames (zero pack bytes).
-      // The post-loop flush guard `total > 0 && total !== lastTick` must NOT
-      // emit when total === 0. Pins both halves of the AND: a `total >= 0`
-      // mutant would fire a 0-value flush, and a `||` mutant would still fire
-      // (total !== lastTick is false; total > 0 is false). The assertion
-      // counts ALL update events — not just current > 0 — so a flush firing
-      // with current=0 still trips the test.
+      // Phase 12.2: this is a legitimate protocol state when the client's
+      // `have` set already covers every wanted oid (e.g., re-fetching a
+      // fully up-to-date remote). fetchPack returns objectCount=0 with empty
+      // path strings and emits NO progress tick.
       const { reporter, events } = recordingProgress();
       const ctx = withProgress(createMemoryContext(), reporter);
       const dummyId = (await computeBlobId(ctx, ENCODER.encode('empty body\n'))) as ObjectId;
@@ -1286,25 +1304,19 @@ describe('fetchPack', () => {
       const { transport } = captureRequests(body);
 
       // Act
-      let caught: unknown;
-      try {
-        await fetchPack(ctx, transport, {
-          wants: [dummyId],
-          haves: [],
-          capabilities: ['side-band-64k'],
-          url: REMOTE_URL,
-          progressOp: 'test:write-objects',
-        });
-      } catch (err) {
-        caught = err;
-      }
+      const sut = await fetchPack(ctx, transport, {
+        wants: [dummyId],
+        haves: [],
+        capabilities: ['side-band-64k'],
+        url: REMOTE_URL,
+        progressOp: 'test:write-objects',
+      });
 
-      // Assert — empty body cannot have a valid trailer; the trailer guard
-      // fires with the "too short" reason.
-      expect(caught).toBeInstanceOf(TsgitError);
-      const data = (caught as TsgitError).data as { code: string; reason?: string };
-      expect(data.code).toBe('INVALID_PACK_HEADER');
-      expect(data.reason).toContain('too short');
+      // Assert — synthetic empty result.
+      expect(sut.objectCount).toBe(0);
+      expect(sut.packSha).toBe('');
+      expect(sut.packPath).toBe('');
+      expect(sut.idxPath).toBe('');
       // No update events whatsoever (the drain loop never runs).
       const allUpdates = events.filter((e) => e.kind === 'update');
       expect(allUpdates).toHaveLength(0);
@@ -1391,6 +1403,146 @@ describe('fetchPack', () => {
       expect(textUpdates.length).toBeGreaterThanOrEqual(1);
       const first = textUpdates[0];
       expect(first?.text).toContain('Counting objects');
+    });
+  });
+
+  describe('depth + shallow (Phase 12.2)', () => {
+    it('Given depth unset, When fetchPack runs, Then request body has no `deepen` and shallow/unshallow are empty', async () => {
+      // Arrange — regression guard for the Phase 12.1 path.
+      const ctx = createMemoryContext();
+      const { packBytes, blobId } = await buildSingleBlobPack(ctx, 'no depth\n');
+      const body = buildUploadPackResponseBody({ packBytes, sideBand: true });
+      const { transport, requests } = captureRequests(body);
+
+      // Act
+      const sut = await fetchPack(ctx, transport, {
+        wants: [blobId],
+        haves: [],
+        capabilities: ['side-band-64k'],
+        url: REMOTE_URL,
+        progressOp: 'test:write-objects',
+      });
+
+      // Assert
+      expect(sut.shallow).toEqual([]);
+      expect(sut.unshallow).toEqual([]);
+      const decoded = new TextDecoder().decode(requests[0]?.body);
+      expect(decoded.includes('deepen')).toBe(false);
+    });
+
+    it('Given depth = 1 and a server shallow block with one oid, When fetchPack runs, Then result.shallow contains the oid', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      const { packBytes, blobId } = await buildSingleBlobPack(ctx, 'depth\n');
+      const shallowOid = 'a'.repeat(40);
+      const body = buildShallowResponseBody({ packBytes, shallow: [shallowOid] });
+      const { transport, requests } = captureRequests(body);
+
+      // Act
+      const sut = await fetchPack(ctx, transport, {
+        wants: [blobId],
+        haves: [],
+        capabilities: ['side-band-64k'],
+        url: REMOTE_URL,
+        progressOp: 'test:write-objects',
+        depth: 1,
+      });
+
+      // Assert — `deepen 1\n` in the request body.
+      expect(sut.shallow).toEqual([shallowOid]);
+      expect(sut.unshallow).toEqual([]);
+      const decoded = new TextDecoder().decode(requests[0]?.body);
+      expect(decoded).toContain('deepen 1\n');
+    });
+
+    it('Given depth = 1 and a server that omits the shallow block (immediate flush), When fetchPack runs, Then shallow/unshallow are empty arrays', async () => {
+      // Arrange — server ignores deepen; emits only the NAK + pack.
+      const ctx = createMemoryContext();
+      const { packBytes, blobId } = await buildSingleBlobPack(ctx, 'omit shallow\n');
+      // The server still emits a flush at the start of the shallow section.
+      const shallowSection = encodePktStream([]);
+      const tail = buildUploadPackResponseBody({ packBytes, sideBand: true });
+      const body = new Uint8Array(shallowSection.length + tail.length);
+      body.set(shallowSection, 0);
+      body.set(tail, shallowSection.length);
+      const { transport } = captureRequests(body);
+
+      // Act
+      const sut = await fetchPack(ctx, transport, {
+        wants: [blobId],
+        haves: [],
+        capabilities: ['side-band-64k'],
+        url: REMOTE_URL,
+        progressOp: 'test:write-objects',
+        depth: 1,
+      });
+
+      // Assert
+      expect(sut.shallow).toEqual([]);
+      expect(sut.unshallow).toEqual([]);
+    });
+
+    it('Given depth set and a malformed shallow oid, When fetchPack runs, Then INVALID_REF_LINE propagates', async () => {
+      // Arrange — protocol error inside the shallow block surfaces as
+      // INVALID_REF_LINE (parseShallowResponse).
+      const ctx = createMemoryContext();
+      const dummyId = (await computeBlobId(ctx, ENCODER.encode('bad shallow\n'))) as ObjectId;
+      const shallowSection = encodePktStream([ENCODER.encode('shallow not-an-oid\n')]);
+      const tail = buildUploadPackResponseBody({
+        packBytes: new Uint8Array(0),
+        sideBand: true,
+      });
+      const body = new Uint8Array(shallowSection.length + tail.length);
+      body.set(shallowSection, 0);
+      body.set(tail, shallowSection.length);
+      const { transport } = captureRequests(body);
+
+      // Act
+      let caught: unknown;
+      try {
+        await fetchPack(ctx, transport, {
+          wants: [dummyId],
+          haves: [],
+          capabilities: ['side-band-64k'],
+          url: REMOTE_URL,
+          progressOp: 'test:write-objects',
+          depth: 1,
+        });
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert
+      expect(caught).toBeInstanceOf(TsgitError);
+      expect((caught as TsgitError).data.code).toBe('INVALID_REF_LINE');
+    });
+
+    it('Given depth set and a server returning shallow + unshallow lines, When fetchPack runs, Then both arrays surface', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      const { packBytes, blobId } = await buildSingleBlobPack(ctx, 'mix\n');
+      const shallowOid = 'a'.repeat(40);
+      const unshallowOid = 'b'.repeat(40);
+      const body = buildShallowResponseBody({
+        packBytes,
+        shallow: [shallowOid],
+        unshallow: [unshallowOid],
+      });
+      const { transport } = captureRequests(body);
+
+      // Act
+      const sut = await fetchPack(ctx, transport, {
+        wants: [blobId],
+        haves: [],
+        capabilities: ['side-band-64k'],
+        url: REMOTE_URL,
+        progressOp: 'test:write-objects',
+        depth: 3,
+      });
+
+      // Assert
+      expect(sut.shallow).toEqual([shallowOid]);
+      expect(sut.unshallow).toEqual([unshallowOid]);
     });
   });
 });

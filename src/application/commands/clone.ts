@@ -1,21 +1,17 @@
-import { unsupportedOperation } from '../../domain/error.js';
 import { remoteAdvertisesNoRefs, targetDirectoryNotEmpty } from '../../domain/index.js';
 import type { ObjectId, RefName } from '../../domain/objects/index.js';
 import type { FilePath } from '../../domain/objects/object-id.js';
-import type { AdvertisedRef, Advertisement } from '../../domain/protocol/index.js';
-import {
-  AGENT,
-  buildDiscoveryUrl,
-  CLIENT_CAPABILITIES_FETCH,
-  decodePktStream,
-  negotiateCapabilities as negotiateProtocolCapabilities,
-  parseAdvertisedRefs,
-} from '../../domain/protocol/index.js';
+import type { Advertisement } from '../../domain/protocol/index.js';
 import type { Context } from '../../ports/context.js';
-import type { HttpTransport } from '../../ports/http-transport.js';
 import { fetchPack } from '../primitives/fetch-pack.js';
+import { updateShallow } from '../primitives/shallow-file.js';
 import { bootstrapRepository } from './internal/bootstrap.js';
 import { withDefaults } from './internal/network-pipeline.js';
+import {
+  discoverRefs,
+  selectFetchCapabilities,
+  uniqueRefOids,
+} from './internal/upload-pack-client.js';
 import { type DnsResolver, validateUrl } from './internal/url-validate.js';
 
 export interface CloneOptions {
@@ -23,9 +19,8 @@ export interface CloneOptions {
   readonly bare?: boolean;
   readonly initialBranch?: string;
   /**
-   * Shallow clone depth. Accepted on the type for forward compatibility but
-   * NOT honored in Phase 12.1 — setting it throws `UNSUPPORTED_OPERATION`.
-   * Shallow handling lands with Phase 12.2 fetch (see ADR-008).
+   * Shallow clone depth. When set, sends `deepen N` and persists the
+   * resulting shallow boundaries to `.git/shallow`. Phase 12.2 (see ADR-009).
    */
   readonly depth?: number;
   /** DNS resolver injected by the caller; required to enforce SSRF guards. */
@@ -52,9 +47,8 @@ export interface CloneResult {
  *
  * Working-tree materialization is Phase 13.1 — out of scope here.
  *
- * Throws `TARGET_DIRECTORY_NOT_EMPTY` if `gitDir` already exists,
- * `REMOTE_ADVERTISES_NO_REFS` when discovery returns no refs, and
- * `UNSUPPORTED_OPERATION` when `depth: N` is set (ADR-008).
+ * Throws `TARGET_DIRECTORY_NOT_EMPTY` if `gitDir` already exists and
+ * `REMOTE_ADVERTISES_NO_REFS` when discovery returns no refs.
  */
 const CLONE_DISCOVER_OP = 'clone:discover';
 const CLONE_WRITE_OBJECTS_OP = 'clone:write-objects';
@@ -64,12 +58,6 @@ export const clone = async (ctx: Context, opts: CloneOptions): Promise<CloneResu
     throw targetDirectoryNotEmpty(ctx.layout.workDir as FilePath);
   }
   if (opts.url === '') throw remoteAdvertisesNoRefs();
-  if (opts.depth !== undefined) {
-    throw unsupportedOperation(
-      'clone-shallow',
-      'depth: N is supported in Phase 12.2 (fetch); see ADR-008',
-    );
-  }
   ctx.progress.start(CLONE_DISCOVER_OP);
   try {
     // Defense-in-depth URL validation. Production callers go through
@@ -119,94 +107,37 @@ const fetchAndPropagate = async (
   });
   const advertisement = await discoverRefs(ctx, transport, opts.url);
   if (advertisement.refs.length === 0) throw remoteAdvertisesNoRefs();
-  const capabilities = selectCapabilities(advertisement.capabilities);
-  const wants = uniqueOids(advertisement.refs);
-  await fetchPack(ctx, transport, {
+  const capabilities = selectFetchCapabilities(advertisement.capabilities);
+  const wants = uniqueRefOids(advertisement.refs);
+  const packResult = await fetchPack(ctx, transport, {
     wants,
     haves: [],
     capabilities,
     url: opts.url,
     progressOp: CLONE_WRITE_OBJECTS_OP,
+    // equivalent-mutant: spreading `{ depth: opts.depth }` unconditionally
+    // is observable-equivalent. `fetchPack` ignores `depth: undefined`
+    // (its gate is `input.depth !== undefined`), so the ternary's `else`
+    // branch and the unconditional spread produce identical request bodies.
+    ...(opts.depth !== undefined ? { depth: opts.depth } : {}),
   });
+  // equivalent-mutant: replacing `> 0` with `>= 0` is observable-equivalent
+  // when `packResult.shallow.length === 0` because `updateShallow` with two
+  // empty arrays short-circuits to `deleteIfPresent` on a freshly
+  // bootstrapped `.git` (no shallow file exists). The non-equivalent half
+  // (`< 0`) is killed by `clone.test.ts`'s depth:1 shallow-success test.
+  if (packResult.shallow.length > 0) {
+    // Clone never sees `unshallow` (the local repo is empty until now), but
+    // updateShallow handles a populated `unshallow` correctly — pass the
+    // packResult array verbatim instead of dropping it.
+    await updateShallow(ctx, {
+      shallow: packResult.shallow,
+      unshallow: packResult.unshallow,
+    });
+  }
   const fetchedRefs = await writeFetchedRefs(ctx, advertisement);
   const head = await applyRemoteHead(ctx, advertisement);
   return { path: gitDir, head, fetchedRefs };
-};
-
-const discoverRefs = async (
-  ctx: Context,
-  transport: HttpTransport,
-  url: string,
-): Promise<Advertisement> => {
-  const discoveryUrl = buildDiscoveryUrl(url, 'git-upload-pack');
-  const response = await transport.request({
-    url: discoveryUrl,
-    method: 'GET',
-    headers: { accept: 'application/x-git-upload-pack-advertisement' },
-    ...(ctx.signal !== undefined ? { signal: ctx.signal } : {}),
-  });
-  // 2xx responses pass through; HTTP errors surface via withRetry / the
-  // adapter as TsgitError. We don't gate on a specific status here — the
-  // pkt-line parser will reject any non-protocol payload below.
-  const pktStream = decodePktStream(readableStreamToAsyncIterable(response.body));
-  return parseAdvertisedRefs(pktStream, 'git-upload-pack');
-};
-
-/**
- * Adapt the response body's web `ReadableStream` to an `AsyncIterable`. On
- * early exit (consumer throws or breaks) the iterator's `return` hook calls
- * `cancel()` so the stream + underlying socket close cleanly — `releaseLock`
- * alone leaves the stream open. fetch-pack.ts holds the matching helper
- * (kept local to each module per the primitives ↛ commands layering rule).
- */
-const readableStreamToAsyncIterable = (
-  stream: ReadableStream<Uint8Array>,
-): AsyncIterable<Uint8Array> => ({
-  [Symbol.asyncIterator](): AsyncIterator<Uint8Array> {
-    const reader = stream.getReader();
-    return {
-      next: async (): Promise<IteratorResult<Uint8Array>> => {
-        const { done, value } = await reader.read();
-        return done ? { done: true, value: undefined } : { done: false, value };
-      },
-      return: async (): Promise<IteratorResult<Uint8Array>> => {
-        try {
-          await reader.cancel();
-        } catch {
-          // swallow — adapter closes the underlying socket regardless
-        }
-        return { done: true, value: undefined };
-      },
-    };
-  },
-});
-
-const selectCapabilities = (advertised: ReadonlyArray<string>): ReadonlyArray<string> => {
-  // Drop client capabilities Phase 12.1 cannot honor end-to-end (see design
-  // §3.6): no negotiation rounds (`multi_ack_detailed`), no thin-pack repair,
-  // no `no-progress` (we want channel-2 text for the reporter).
-  const clientWants = CLIENT_CAPABILITIES_FETCH.filter(
-    (c) => c !== 'multi_ack_detailed' && c !== 'thin-pack' && c !== 'no-progress' && c !== AGENT,
-  );
-  const intersected = negotiateProtocolCapabilities(advertised, clientWants);
-  // Always send our agent — server doesn't need to advertise it.
-  return [...intersected, AGENT];
-};
-
-const uniqueOids = (refs: ReadonlyArray<AdvertisedRef>): ReadonlyArray<ObjectId> => {
-  // Only the advertised top-level ref OIDs are valid `want`s; peeled OIDs are
-  // informational (the dereferenced tag target) and a strict v1 server may
-  // reject a `want <peeled-oid>` because the peeled oid is not in the
-  // advertised set. Real `git clone` requests the tag ref and the server
-  // packs the commit transitively.
-  const seen = new Set<string>();
-  const out: ObjectId[] = [];
-  for (const r of refs) {
-    if (seen.has(r.id)) continue;
-    seen.add(r.id);
-    out.push(r.id);
-  }
-  return out;
 };
 
 const writeFetchedRefs = async (
