@@ -872,6 +872,40 @@ describe('fetch', () => {
       expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/remotes/origin/feature/x`)).toBe(false);
     });
 
+    it('Given a tag whose slice(11) matches a local remote-tracking ref, When prune=true fetch runs, Then the local ref IS pruned (kills the .filter drop mutant)', async () => {
+      // Arrange — kills the L312 MethodExpression mutant that drops the
+      // `.filter((r) => r.name.startsWith('refs/heads/'))` call but keeps
+      // the `.map((r) => r.name.slice('refs/heads/'.length))`. Without the
+      // filter, advertisedBranches contains BOTH heads/main → 'main' AND
+      // tags/preserved → 'reserved' (sliced at index 11). A local ref named
+      // 'reserved' would then be incorrectly considered advertised and
+      // skipped from prune — observable only when such a name collision
+      // exists in the local fixture.
+      const ctx = createMemoryContext();
+      await seedRepo(ctx, {
+        refs: { 'refs/remotes/origin/reserved': FAKE_OID('7') },
+      });
+      await writeOriginConfig(ctx);
+      const { packBytes, blobId } = await buildOneBlobPack(ctx, 'tag-slice\n');
+      const { transport } = fakeRemote({
+        url: 'https://example.com/r.git',
+        advertisedRefs: [
+          { name: 'refs/heads/main', id: blobId },
+          { name: 'refs/tags/preserved', id: blobId },
+        ],
+        packBytes,
+      });
+
+      // Act
+      const sut = await fetch({ ...ctx, transport }, { prune: true });
+
+      // Assert — the local `reserved` ref IS pruned (not advertised). With
+      // the mutant, advertisedBranches would include 'reserved' and the
+      // ref would be preserved.
+      expect(sut.prunedRefs).toContain('refs/remotes/origin/reserved' as RefName);
+      expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/remotes/origin/reserved`)).toBe(false);
+    });
+
     it('Given prune=true and a tag advertisement, When fetch, Then prune builds the branch set from heads only (kills the .filter mutant)', async () => {
       // Arrange — pins the `advertisement.refs.filter(...).map(...)` chain.
       // With the filter dropped, advertisedBranches would include AdvertisedRef
