@@ -2,10 +2,11 @@ import { describe, expect, it } from 'vitest';
 import * as primitives from '../../../../src/application/primitives/index.js';
 
 describe('primitives barrel', () => {
-  it('Given the barrel, When imported, Then all 15 primitives are exposed as functions', () => {
+  it('Given the barrel, When imported, Then all 16 primitives are exposed as functions', () => {
     const names = [
       'createCommit',
       'diffTrees',
+      'fetchPack',
       'getRepoRoot',
       'mergeBase',
       'readBlob',
@@ -29,6 +30,7 @@ describe('primitives barrel', () => {
     const expected = new Set([
       'createCommit',
       'diffTrees',
+      'fetchPack',
       'getRepoRoot',
       'mergeBase',
       'readBlob',
