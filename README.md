@@ -28,6 +28,7 @@ A pure TypeScript git implementation designed to be the fastest portable git lib
 | 12.1 | Clone — smart-HTTP pack fetch + write-objects loop | ✅ |
 | 12.2 | Fetch — ls-refs + want/have negotiation + shallow + prune | ✅ |
 | 12.3 | Push — receive-pack negotiation + pack send + force-with-lease | ✅ |
+| 12.4 | Bench — `clone:small-repo` vs isomorphic-git over `git-http-backend` | ✅ |
 
 ## Features
 
@@ -182,6 +183,7 @@ are medians from `vitest bench`; ±RME and full p99 distribution live in
 | `status:dirty-25-files` | ~1.7 ms | ~3.7 ms | ~2.2× |
 | `log:walk-50-commits` | ~6 ms | ~4 ms | ~0.7× |
 | `readBlob:warm-cache` | ~0.1 ms | ~0.1 ms | ~1.0× |
+| `clone:small-repo` | ~40 ms | ~40 ms | ~1.0× |
 
 Reproduce locally with `npm run bench:summary` (writes `reports/benchmarks/summary.md`).
 GitHub Actions runners introduce ±20% variance — trust direction more than
