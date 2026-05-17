@@ -73,8 +73,11 @@ describe('discoverRefs', () => {
 
   it.each([
     401, 403, 404, 500, 502, 503,
-  ] as const)('Given a non-200 response (status %s), When discoverRefs runs, Then throws HTTP_ERROR with the status code', async (statusCode) => {
-    // Arrange — kills `if (response.statusCode !== 200) throw httpError`
+  ] as const)('Given a non-200 response (status %s), When discoverRefs runs, Then throws HTTP_ERROR with the status code and a discovery-tagged reason', async (statusCode) => {
+    // Arrange — kills `if (response.statusCode !== 200) throw httpError` AND
+    // the StringLiteral mutant on the `discovery returned ...` reason text
+    // (the message must mention `discovery` so callers can distinguish a
+    // discovery failure from a pack POST failure).
     const ctx = createMemoryContext();
     const { transport } = fakeTransport(statusCode, new Uint8Array(0));
 
@@ -88,9 +91,15 @@ describe('discoverRefs', () => {
 
     // Assert
     expect(caught).toBeInstanceOf(TsgitError);
-    const data = (caught as TsgitError).data as { code: string; statusCode?: number };
+    const data = (caught as TsgitError).data as {
+      code: string;
+      statusCode?: number;
+      reason?: string;
+    };
     expect(data.code).toBe('HTTP_ERROR');
     expect(data.statusCode).toBe(statusCode);
+    expect(data.reason).toContain('discovery');
+    expect(data.reason).toContain(String(statusCode));
   });
 
   it('Given the request, When discoverRefs runs, Then the `accept` header equals `application/x-git-upload-pack-advertisement`', async () => {
@@ -171,6 +180,19 @@ describe('selectFetchCapabilities', () => {
 
     // Assert
     expect(sut).toContain('side-band-64k');
+  });
+
+  it('Given the server advertises its own agent string, When selectFetchCapabilities runs, Then the agent slot is NOT duplicated', async () => {
+    // Arrange — kills the `c !== AGENT` filter mutant on the last
+    // conjunct. With the mutant, AGENT would survive the intersect step
+    // and then get appended a SECOND time at the end of the function.
+    const sut = selectFetchCapabilities(['agent=git/2.x', 'side-band-64k']);
+
+    // Assert — exactly one agent= entry, and it is the client's, not
+    // the server's leaked echo.
+    const agentEntries = sut.filter((c) => c.startsWith('agent='));
+    expect(agentEntries).toHaveLength(1);
+    expect(agentEntries[0]).not.toBe('agent=git/2.x');
   });
 });
 
