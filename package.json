@@ -329,7 +329,7 @@
       ]
     },
     "test:coverage": {
-      "command": "vitest run --coverage",
+      "command": "vitest run --project unit --coverage",
       "dependencies": [
         "check:types"
       ],
