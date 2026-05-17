@@ -373,6 +373,12 @@ const splitMeta = async (iter: AsyncIterator<PktLine>): Promise<ResponseSplit> =
   const acks: AckEntry[] = [];
   let nak = false;
   const first: PktLine | undefined = pushbackBuffer.get(iter);
+  // equivalent-mutant: flipping the `if (first !== undefined)` guard either
+  // way is observable-equivalent. WeakMap.delete is a no-op when the key
+  // is absent (the always-delete mutant), and skipping the delete leaves a
+  // stale entry that GC reclaims when the iterator is unreferenced (the
+  // never-delete mutant). The next splitMeta call gets a fresh iterator
+  // identity, so the stale entry is unreachable.
   if (first !== undefined) pushbackBuffer.delete(iter);
   let pkt: IteratorResult<PktLine> =
     first !== undefined ? { done: false, value: first } : await iter.next();
@@ -440,6 +446,12 @@ export const parseUploadPackResponse = async (
   },
 ): Promise<UploadPackResponse> => {
   const iter = source[Symbol.asyncIterator]();
+  // equivalent-mutant: flipping the `options.expectShallow === true` gate to
+  // always-true is observable-equivalent on non-shallow streams. When the
+  // first pkt-line is `NAK\n`, `parseShallowResponse` recognises it as a
+  // non-shallow data line, pushes it back into the iterator via
+  // `pushbackBuffer`, and returns empty arrays. `splitMeta` then retrieves
+  // the buffered NAK and processes it identically to the non-shallow path.
   const shallowUpdates: ShallowUpdates =
     options.expectShallow === true
       ? await parseShallowResponse(iter)

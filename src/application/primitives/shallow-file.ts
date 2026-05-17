@@ -46,6 +46,10 @@ export const readShallow = async (ctx: Context): Promise<ReadonlySet<ObjectId>> 
   const out = new Set<ObjectId>();
   for (const line of raw.split('\n')) {
     const trimmed = line.trim();
+    // equivalent-mutant: dropping `if (trimmed.length === 0) continue` is
+    // observable-equivalent — the next guard `!isShallowOid(trimmed)` catches
+    // empty strings because `SHA_ANY_RE` requires 40 hex chars. Kept as a
+    // micro-optimization that skips the regex test for blank lines.
     if (trimmed.length === 0) continue;
     if (!isShallowOid(trimmed)) continue;
     out.add(OID.from(trimmed));

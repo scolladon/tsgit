@@ -115,8 +115,17 @@ const fetchAndPropagate = async (
     capabilities,
     url: opts.url,
     progressOp: CLONE_WRITE_OBJECTS_OP,
+    // equivalent-mutant: spreading `{ depth: opts.depth }` unconditionally
+    // is observable-equivalent. `fetchPack` ignores `depth: undefined`
+    // (its gate is `input.depth !== undefined`), so the ternary's `else`
+    // branch and the unconditional spread produce identical request bodies.
     ...(opts.depth !== undefined ? { depth: opts.depth } : {}),
   });
+  // equivalent-mutant: replacing `> 0` with `>= 0` is observable-equivalent
+  // when `packResult.shallow.length === 0` because `updateShallow` with two
+  // empty arrays short-circuits to `deleteIfPresent` on a freshly
+  // bootstrapped `.git` (no shallow file exists). The non-equivalent half
+  // (`< 0`) is killed by `clone.test.ts`'s depth:1 shallow-success test.
   if (packResult.shallow.length > 0) {
     // Clone never sees `unshallow` (the local repo is empty until now), but
     // updateShallow handles a populated `unshallow` correctly — pass the

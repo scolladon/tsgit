@@ -113,6 +113,51 @@ describe('shallow-file', () => {
       expect(caught).toBeInstanceOf(Error);
       expect((caught as Error).message).toBe('disk boom');
     });
+
+    it('Given readUtf8 throws a TsgitError that is NOT FILE_NOT_FOUND, When readShallow runs, Then the error propagates', async () => {
+      // Arrange — pins the RHS of `error instanceof TsgitError && error.data.code === 'FILE_NOT_FOUND'`.
+      // Without this case, the `=== 'FILE_NOT_FOUND'` mutant survives because
+      // the "plain Error" propagation test above hits the LHS (instanceof) check
+      // not the RHS code comparison.
+      const ctx = createMemoryContext();
+      const boomCtx = {
+        ...ctx,
+        fs: {
+          ...ctx.fs,
+          readUtf8: async (): Promise<string> => {
+            throw new TsgitError({ code: 'PERMISSION_DENIED', path: '/etc/shadow' });
+          },
+        },
+      };
+
+      // Act
+      let caught: unknown;
+      try {
+        await readShallow(boomCtx);
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert
+      expect(caught).toBeInstanceOf(TsgitError);
+      expect((caught as TsgitError).data.code).toBe('PERMISSION_DENIED');
+    });
+
+    it('Given a .git/shallow with a leading-space oid line, When read, Then the trimmed oid is captured (kills the line.trim() → line mutant)', async () => {
+      // Arrange — without `trim()`, the regex `^[0-9a-f]{40}$` fails on
+      // `"  ${OID_A}  "` because of the surrounding spaces. The original
+      // code trims, the mutant doesn't — the difference is observable.
+      const ctx = createMemoryContext();
+      await ctx.fs.mkdir(ctx.layout.gitDir);
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/shallow`, `  ${OID_A}  \n`);
+
+      // Act
+      const sut = await readShallow(ctx);
+
+      // Assert
+      expect(sut.size).toBe(1);
+      expect(sut.has(OID_A)).toBe(true);
+    });
   });
 
   describe('updateShallow', () => {
@@ -202,6 +247,37 @@ describe('shallow-file', () => {
       // Assert
       expect(sut.size).toBe(3);
       expect([...sut].sort()).toEqual([OID_A, OID_B, OID_C]);
+    });
+
+    it('Given fs.rm throws a non-FILE_NOT_FOUND error during the empty-set delete, When updateShallow runs, Then the error propagates', async () => {
+      // Arrange — kill both the L108 `BlockStatement -> {}` (catch body
+      // emptied) and the L109 `ConditionalExpression -> true` (always
+      // return) mutants in `deleteIfPresent`. With either mutant, a
+      // PERMISSION_DENIED on rm would be silently swallowed.
+      const ctx = createMemoryContext();
+      await ctx.fs.mkdir(ctx.layout.gitDir);
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/shallow`, `${OID_A}\n`);
+      const failingRm = {
+        ...ctx,
+        fs: {
+          ...ctx.fs,
+          rm: async (): Promise<void> => {
+            throw new TsgitError({ code: 'PERMISSION_DENIED', path: 'shallow' });
+          },
+        },
+      };
+
+      // Act
+      let caught: unknown;
+      try {
+        await updateShallow(failingRm, { shallow: [], unshallow: [OID_A] });
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert
+      expect(caught).toBeInstanceOf(TsgitError);
+      expect((caught as TsgitError).data.code).toBe('PERMISSION_DENIED');
     });
 
     it('Given shallow that re-adds an existing oid, When updateShallow runs, Then no duplicate (Set semantics)', async () => {

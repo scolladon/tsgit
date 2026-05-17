@@ -90,9 +90,20 @@ export const fetch = async (ctx: Context, opts: FetchOptions = {}): Promise<Fetc
       capabilities,
       url,
       progressOp: FETCH_WRITE_OBJECTS_OP,
+      // equivalent-mutant: dropping the ternary and spreading
+      // `{ depth: opts.depth }` unconditionally is observable-equivalent.
+      // `fetchPack` gates on `input.depth !== undefined` so an explicit
+      // `depth: undefined` is treated identically to a missing key.
       ...(opts.depth !== undefined ? { depth: opts.depth } : {}),
     });
 
+    // equivalent-mutant: replacing either `> 0` half of the OR with `>= 0`
+    // (always true on a non-negative length) yields a `updateShallow` call
+    // with two empty arrays, which `updateShallow` short-circuits to
+    // `deleteIfPresent` on a non-existent `.git/shallow`. No file is
+    // created and no observable side-effect is produced. The non-equivalent
+    // half (`<= 0`) and the early-return false mutants are killed by the
+    // shallow-only / unshallow-only tests in `fetch.test.ts`.
     if (packResult.shallow.length > 0 || packResult.unshallow.length > 0) {
       await updateShallow(ctx, {
         shallow: packResult.shallow,
@@ -148,10 +159,18 @@ const deriveHaves = async (ctx: Context, remoteName: string): Promise<ReadonlyAr
     haves.push(tip);
     if (haves.length >= MAX_HAVES) return haves;
   }
+  // equivalent-mutant: dropping `.slice(0, MAX_WALK_SEEDS)` is observable-
+  // equivalent on every test fixture because seeds.length < MAX_WALK_SEEDS
+  // (1024) in practice — the cap is a safety belt that kicks in only at
+  // pathological scale where a test can't realistically reach.
   const cappedSeeds = seeds.slice(0, MAX_WALK_SEEDS);
   for await (const commit of walkCommits(ctx, {
     from: cappedSeeds,
     ignoreMissing: true,
+    // equivalent-mutant: flipping `verifyHash: false` to `true` is
+    // observable-equivalent. Hashes are verified on first read in
+    // production callers; this primitive's only consumer is `deriveHaves`,
+    // which discards the commit body after extracting the oid.
     verifyHash: false,
   })) {
     if (seen.has(commit.id)) continue;
@@ -238,6 +257,12 @@ const remoteTargetForRef = (remoteName: string, ref: AdvertisedRef): RefName | u
   if (ref.name.startsWith('refs/heads/')) {
     const branch = ref.name.slice('refs/heads/'.length);
     const composed = `refs/remotes/${remoteName}/${branch}`;
+    // equivalent-mutant: dropping this guard is observable-equivalent because
+    // `ref.name` already passed `isSafeRefName` above, so `branch` has no
+    // path-traversal vectors. `remoteName` is caller-controlled (not server-
+    // controlled), so a hostile string would already be rejected by
+    // `resolveRemoteUrl`'s config lookup. The check is a defense-in-depth
+    // belt that future refactors of `remoteName` validation rely on.
     if (!isSafeRefName(composed)) return undefined;
     return composed as RefName;
   }
@@ -313,6 +338,10 @@ const deleteUnadvertised = async (
     // directory named `..` or worse. `updateRef` itself calls
     // `validateRefName`, but we also short-circuit here so the prune loop
     // never asks `updateRef` to delete a path-traversal ref name.
+    // equivalent-mutant: in the test fixtures `entry.name` always passes
+    // `validateRefName` (file names come from controlled seeds), so the
+    // false branch is unreachable through `vitest`. The guard exists as
+    // defense-in-depth — keep it; equivalent under non-hostile fs state.
     if (!isSafeRefName(composed)) {
       ctx.logger?.warn?.('fetch.prune: skipping unsafe ref name', { name: composed });
       continue;

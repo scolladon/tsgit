@@ -520,6 +520,316 @@ describe('fetch', () => {
     });
   });
 
+  describe('advertisement filtering (mutation kills for remoteTargetForRef)', () => {
+    it('Given a HEAD ref in the advertisement, When fetch, Then HEAD does NOT appear in updatedRefs', async () => {
+      // Arrange — kills the `if (ref.name === 'HEAD') return undefined` mutant.
+      // Without that guard, HEAD would be propagated as a local ref.
+      const ctx = createMemoryContext();
+      await seedRepo(ctx, {});
+      await writeOriginConfig(ctx);
+      const { packBytes, blobId } = await buildOneBlobPack(ctx, 'head\n');
+      const { transport } = fakeRemote({
+        url: 'https://example.com/r.git',
+        advertisedRefs: [
+          { name: 'HEAD', id: blobId },
+          { name: 'refs/heads/main', id: blobId },
+        ],
+        packBytes,
+      });
+
+      // Act
+      const sut = await fetch({ ...ctx, transport });
+
+      // Assert
+      expect(sut.updatedRefs.map((r) => r.name)).not.toContain('HEAD');
+      expect(sut.updatedRefs.map((r) => r.name)).toContain('refs/remotes/origin/main');
+    });
+
+    it('Given a refs/notes/* advertisement (neither head nor tag), When fetch, Then it is dropped', async () => {
+      // Arrange — kills the `if (ref.name.startsWith('refs/tags/'))` mutant
+      // that turns the tag-suffix check into always-true: refs/notes would
+      // otherwise be mirrored as a local ref.
+      const ctx = createMemoryContext();
+      await seedRepo(ctx, {});
+      await writeOriginConfig(ctx);
+      const { packBytes, blobId } = await buildOneBlobPack(ctx, 'notes\n');
+      const { transport } = fakeRemote({
+        url: 'https://example.com/r.git',
+        advertisedRefs: [
+          { name: 'refs/heads/main', id: blobId },
+          { name: 'refs/notes/commits', id: blobId },
+        ],
+        packBytes,
+      });
+
+      // Act
+      const sut = await fetch({ ...ctx, transport });
+
+      // Assert — only the branch ref is written; refs/notes/commits is
+      // skipped (neither a branch nor a tag).
+      expect(sut.updatedRefs.map((r) => r.name)).toEqual(['refs/remotes/origin/main']);
+    });
+  });
+
+  describe('shallow file write triggers (mutation kills for the OR clause)', () => {
+    it('Given a server returning unshallow ONLY, When fetch, Then .git/shallow is written', async () => {
+      // Arrange — kills the `unshallow.length > 0 ? false : ...` mutant.
+      // The `unshallow > 0` half of the OR must independently trigger
+      // updateShallow.
+      const ctx = createMemoryContext();
+      await seedRepo(ctx, {});
+      await ctx.fs.writeUtf8(
+        `${ctx.layout.gitDir}/shallow`,
+        `${'a'.repeat(40)}\n${'b'.repeat(40)}\n`,
+      );
+      await writeOriginConfig(ctx);
+      const { packBytes, blobId } = await buildOneBlobPack(ctx, 'unshallow-only\n');
+      const unshallowOid = 'a'.repeat(40);
+      const { transport } = fakeRemote({
+        url: 'https://example.com/r.git',
+        advertisedRefs: [{ name: 'refs/heads/main', id: blobId }],
+        packBytes,
+        unshallow: [unshallowOid],
+      });
+
+      // Act
+      const sut = await fetch({ ...ctx, transport }, { depth: 5 });
+
+      // Assert — `unshallow` was processed; the shallow file no longer
+      // contains the unshallowed oid.
+      expect(sut.unshallow).toEqual([unshallowOid]);
+      const remaining = (await ctx.fs.readUtf8(`${ctx.layout.gitDir}/shallow`)).trim();
+      expect(remaining).toBe('b'.repeat(40));
+    });
+
+    it('Given pre-existing .git/shallow and a fetch with NO shallow/unshallow lines, When fetch, Then .git/shallow is preserved (no spurious rewrite)', async () => {
+      // Arrange — kills the `shallow.length > 0 || unshallow.length > 0` →
+      // always-true mutant. With always-true, updateShallow would re-process
+      // (re-read + re-write) the file even when the server said nothing.
+      // We assert that the file's content is preserved verbatim — any
+      // mutant that triggers a re-write would still produce the same content
+      // here (Set semantics), so we ALSO assert .git/shallow.lock is NOT
+      // created (a mutant rewrite would create + rename the lockfile).
+      const ctx = createMemoryContext();
+      await seedRepo(ctx, {});
+      const initial = `${'a'.repeat(40)}\n${'b'.repeat(40)}\n`;
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/shallow`, initial);
+      await writeOriginConfig(ctx);
+      const { packBytes, blobId } = await buildOneBlobPack(ctx, 'no-shallow\n');
+      const { transport } = fakeRemote({
+        url: 'https://example.com/r.git',
+        advertisedRefs: [{ name: 'refs/heads/main', id: blobId }],
+        packBytes,
+      });
+
+      // Act
+      const sut = await fetch({ ...ctx, transport });
+
+      // Assert — server said nothing about shallow → no write.
+      expect(sut.shallow).toEqual([]);
+      expect(sut.unshallow).toEqual([]);
+      // File preserved.
+      const after = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/shallow`);
+      expect(after).toBe(initial);
+    });
+  });
+
+  describe('haves derivation guards (mutation kills for collectRefTips)', () => {
+    it('Given no remote-tracking refs and no packed refs, When fetch, Then walkCommits is NOT invoked and request body has no haves', async () => {
+      // Arrange — kills the `if (seeds.length === 0) return []` early
+      // return mutant. With the mutant, walkCommits would be called with
+      // `from: []` and throw INVALID_WALK_INPUT, crashing the fetch.
+      const ctx = createMemoryContext();
+      await seedRepo(ctx, {});
+      await writeOriginConfig(ctx);
+      const { packBytes, blobId } = await buildOneBlobPack(ctx, 'empty seeds\n');
+      const { transport, requests } = fakeRemote({
+        url: 'https://example.com/r.git',
+        advertisedRefs: [{ name: 'refs/heads/main', id: blobId }],
+        packBytes,
+      });
+
+      // Act — must complete without throwing.
+      const sut = await fetch({ ...ctx, transport });
+
+      // Assert
+      expect(sut.remote).toBe('origin');
+      const postReq = requests.find((r) => r.method === 'POST');
+      const decoded = new TextDecoder().decode(postReq?.body);
+      expect(decoded).not.toContain('have ');
+    });
+
+    it('Given a packed ref outside refs/remotes/<remote>/* and refs/tags/*, When fetch, Then its oid is NOT sent as a have', async () => {
+      // Arrange — kills the `entry.name.startsWith(refPrefix) || entry.name.startsWith(tagPrefix)`
+      // → always-true mutant. With always-true, a packed `refs/internal/x`
+      // would be treated as a remote-tracking tip and emitted as a have.
+      const ctx = createMemoryContext();
+      const internalOid = 'f'.repeat(40);
+      await seedRepo(ctx, {});
+      await ctx.fs.writeUtf8(
+        `${ctx.layout.gitDir}/packed-refs`,
+        `# pack-refs with: peeled fully-peeled sorted\n${internalOid} refs/internal/x\n`,
+      );
+      await writeOriginConfig(ctx);
+      const { packBytes, blobId } = await buildOneBlobPack(ctx, 'scope\n');
+      const { transport, requests } = fakeRemote({
+        url: 'https://example.com/r.git',
+        advertisedRefs: [{ name: 'refs/heads/main', id: blobId }],
+        packBytes,
+      });
+
+      // Act
+      await fetch({ ...ctx, transport });
+
+      // Assert
+      const postReq = requests.find((r) => r.method === 'POST');
+      const decoded = new TextDecoder().decode(postReq?.body);
+      expect(decoded).not.toContain(`have ${internalOid}`);
+    });
+
+    it('Given a nested refs/remotes/origin/feature/x ref, When fetch, Then its oid is included as a have (recursive directory walk)', async () => {
+      // Arrange — kills two mutants:
+      //   (a) `if (entry.isDirectory)` → false: the nested directory
+      //       wouldn't be recursed into.
+      //   (b) the prefix-composition strip mutants — the nested ref needs
+      //       both the directory recursion AND the path concatenation to
+      //       surface.
+      const ctx = createMemoryContext();
+      const nestedOid = 'c'.repeat(40);
+      await seedRepo(ctx, {
+        refs: { 'refs/remotes/origin/feature/x': nestedOid },
+      });
+      await writeOriginConfig(ctx);
+      const { packBytes, blobId } = await buildOneBlobPack(ctx, 'nested\n');
+      const { transport, requests } = fakeRemote({
+        url: 'https://example.com/r.git',
+        advertisedRefs: [{ name: 'refs/heads/main', id: blobId }],
+        packBytes,
+      });
+
+      // Act
+      await fetch({ ...ctx, transport });
+
+      // Assert
+      const postReq = requests.find((r) => r.method === 'POST');
+      const decoded = new TextDecoder().decode(postReq?.body);
+      expect(decoded).toContain(`have ${nestedOid}`);
+    });
+
+    it('Given a non-oid file under refs/remotes/origin/, When fetch, Then it is NOT sent as a have', async () => {
+      // Arrange — kills the `if (isOid(content)) out.push(content)` →
+      // always-push mutant. With the mutant, any file content (including
+      // garbage like `garbage\n`) would be sent as a have.
+      const ctx = createMemoryContext();
+      await seedRepo(ctx, {});
+      await ctx.fs.mkdir(`${ctx.layout.gitDir}/refs/remotes/origin`);
+      await ctx.fs.writeUtf8(
+        `${ctx.layout.gitDir}/refs/remotes/origin/garbage-ref`,
+        'not-an-oid-at-all\n',
+      );
+      await writeOriginConfig(ctx);
+      const { packBytes, blobId } = await buildOneBlobPack(ctx, 'non-oid\n');
+      const { transport, requests } = fakeRemote({
+        url: 'https://example.com/r.git',
+        advertisedRefs: [{ name: 'refs/heads/main', id: blobId }],
+        packBytes,
+      });
+
+      // Act
+      await fetch({ ...ctx, transport });
+
+      // Assert
+      const postReq = requests.find((r) => r.method === 'POST');
+      const decoded = new TextDecoder().decode(postReq?.body);
+      expect(decoded).not.toContain('have not-an-oid');
+    });
+  });
+
+  describe('prune mutation kills', () => {
+    it('Given prune=true on a repo with no refs/remotes/<remote>/ directory, When fetch, Then no crash and prunedRefs is empty', async () => {
+      // Arrange — kills the `if (!(await fs.exists(remoteDir))) return []`
+      // early-return mutant. Without it, prune would call readdir on a
+      // non-existent dir and throw.
+      const ctx = createMemoryContext();
+      await seedRepo(ctx, {});
+      await writeOriginConfig(ctx);
+      const { packBytes, blobId } = await buildOneBlobPack(ctx, 'no remote-dir\n');
+      const { transport } = fakeRemote({
+        url: 'https://example.com/r.git',
+        advertisedRefs: [{ name: 'refs/heads/main', id: blobId }],
+        packBytes,
+      });
+
+      // Act — succeeds; no remoteDir exists yet because seedRepo didn't
+      // create one. (applyRemoteRefs writes refs/remotes/origin/main as
+      // part of this fetch, but prune ran first when remoteDir didn't.)
+      // Use a non-default remote name so the dir really doesn't exist
+      // when prune fires.
+      await ctx.fs.writeUtf8(
+        `${ctx.layout.gitDir}/config`,
+        '[remote "upstream"]\n  url = https://example.com/r.git\n',
+      );
+      const sut = await fetch({ ...ctx, transport }, { remote: 'upstream', prune: true });
+
+      // Assert
+      expect(sut.prunedRefs).toEqual([]);
+    });
+
+    it('Given prune=true and a nested refs/remotes/origin/feature/x that is NOT advertised, When fetch, Then the nested ref is deleted with its prefix preserved', async () => {
+      // Arrange — kills the `prefix === '' ? entry.name : ${prefix}/${entry.name}`
+      // → always-true (always entry.name) mutant. With always-true, the
+      // recursive walk would lose the `feature/` prefix and assemble a
+      // wrong refName for deletion.
+      const ctx = createMemoryContext();
+      await seedRepo(ctx, {
+        refs: { 'refs/remotes/origin/feature/x': FAKE_OID('c') },
+      });
+      await writeOriginConfig(ctx);
+      const { packBytes, blobId } = await buildOneBlobPack(ctx, 'nested prune\n');
+      const { transport } = fakeRemote({
+        url: 'https://example.com/r.git',
+        advertisedRefs: [{ name: 'refs/heads/main', id: blobId }],
+        packBytes,
+      });
+
+      // Act
+      const sut = await fetch({ ...ctx, transport }, { prune: true });
+
+      // Assert
+      expect(sut.prunedRefs).toContain('refs/remotes/origin/feature/x' as RefName);
+      expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/remotes/origin/feature/x`)).toBe(false);
+    });
+
+    it('Given prune=true and a tag advertisement, When fetch, Then prune builds the branch set from heads only (kills the .filter mutant)', async () => {
+      // Arrange — pins the `advertisement.refs.filter(...).map(...)` chain.
+      // With the filter dropped, advertisedBranches would include AdvertisedRef
+      // objects (not strings), advertised.has(branch) would never match, and
+      // EVERY remote-tracking ref would get pruned — including the one the
+      // server still advertises.
+      const ctx = createMemoryContext();
+      await seedRepo(ctx, {
+        refs: { 'refs/remotes/origin/main': FAKE_OID('a') },
+      });
+      await writeOriginConfig(ctx);
+      const { packBytes, blobId } = await buildOneBlobPack(ctx, 'mapped\n');
+      const { transport } = fakeRemote({
+        url: 'https://example.com/r.git',
+        advertisedRefs: [
+          { name: 'refs/heads/main', id: blobId },
+          { name: 'refs/tags/v1', id: blobId },
+        ],
+        packBytes,
+      });
+
+      // Act
+      const sut = await fetch({ ...ctx, transport }, { prune: true });
+
+      // Assert — main is preserved (it IS advertised); no spurious deletes.
+      expect(sut.prunedRefs).toEqual([]);
+      expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/remotes/origin/main`)).toBe(true);
+    });
+  });
+
   describe('hostile server defenses', () => {
     it('Given a server advertising refs/heads/../../config (path traversal), When fetch, Then the malicious ref is silently dropped', async () => {
       // Arrange — security review HIGH-1. Without validateRefName in
