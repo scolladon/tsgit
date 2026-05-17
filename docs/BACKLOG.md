@@ -271,6 +271,7 @@ tree is the visible gap.
 - [ ] **15.3** `node --prof` profiling captures for the three hot paths (log, status, pack-read).
 - [ ] **15.4** Per-OS mutation testing on macOS + Windows (closes Phase 11.2 `[~]`).
 - [ ] **15.5** Bench DSL convention: adapt vitest `bench` call sites to a thin wrapper that enforces Given/When/Then + `sut` naming (review deferral).
+- [ ] **15.6** Re-enable the `benchmark-snapshot` ci.yml job. Needs a node script that converts `reports/benchmarks/raw.json` (vitest schema) into `[{name,value,unit}]` for `benchmark-action/github-action-benchmark@v1`'s `customSmallerIsBetter` tool. Disabled after the `tool: vitest` value was rejected by the action (it only accepts cargo/go/benchmarkjs/.../customSmaller|BiggerIsBetter).
 
 ### Phase 16 — Supply-chain & ops hardening (v1.x patch)
 
