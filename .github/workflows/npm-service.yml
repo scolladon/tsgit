@@ -31,10 +31,18 @@ jobs:
           registry-url: https://registry.npmjs.org
           cache: npm
 
+      # Node 22 ships npm 10.9.x; the trusted-publisher OIDC handshake fix
+      # landed in npm 11.x. Without this step, npm publish signs provenance
+      # successfully but the PUT is rejected with a misleading
+      #   `404 ... is not in this registry`
+      # (npm masks "unauthorized" as not-found to avoid leaking package
+      # existence). Mirrors the pattern in sfdx-git-delta's npm-service.yml.
+      - run: npm install -g npm@latest
+
       - run: npm ci
       - run: npm run build
 
       # Provenance is signed via the same OIDC token; npm verifies it against
       # the trusted-publisher binding and records the attestation in
-      # https://www.npmjs.com/package/tsgit/v/<version>/provenance.
+      # https://www.npmjs.com/package/@scolladon/tsgit/v/<version>/provenance.
       - run: npm publish --provenance --access public
