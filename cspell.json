@@ -321,7 +321,9 @@
     "parametrised",
     "sanitised",
     "dedups",
-    "demuxing"
+    "demuxing",
+    "receivepack",
+    "Fastforwards"
   ],
   "ignorePaths": [
     "node_modules",
