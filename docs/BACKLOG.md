@@ -2,7 +2,7 @@
 
 Track: `[ ]` todo, `[~]` in progress, `[x]` done, `[-]` skipped
 
-**Progress:** Phases 0–10 complete. Phase 11 (Polish & Launch) — 11.1–11.5 done, 11.6 + 11.7 awaiting admin steps + release-please PR.
+**Progress:** Phases 0–11 complete. `@scolladon/tsgit@1.0.0` published on npm with sigstore provenance (trusted-publisher OIDC). Post-v1 work begins at Phase 12.
 
 ---
 
@@ -194,8 +194,8 @@ Design: `docs/design/repository-facade.md`
 - [x] **11.3** Browser E2E tests (Chromium, Firefox, WebKit via Playwright) — OPFS round-trip, SubtleCrypto SHA-1 parity, DecompressionStream
 - [x] **11.4** TypeDoc API documentation
 - [x] **11.5** npm publish dry run, verify with arethetypeswrong
-- [~] **11.6** GitHub repo setup (branch protection, secrets, gh-pages) — gh-pages workflow shipped, branch-protection + secret-seeding documented in RUNBOOK; admin steps tracked there
-- [~] **11.7** v1.0.0 release — release-please manifest + config landed, pre-publish gate in place; awaits merge of feat/phase-11-ci-matrix to main and the release-please PR
+- [x] **11.6** GitHub repo setup (branch protection, secrets, gh-pages) — all admin actions complete
+- [x] **11.7** v1.0.0 release — `@scolladon/tsgit@1.0.0` live on npm with sigstore provenance
 
 ---
 
@@ -296,15 +296,17 @@ tree is the visible gap.
 
 ---
 
-## Out-of-band issues for the maintainer (Phase 11 admin tail)
+## Phase 11 admin tail — all completed 2026-05-17
 
-Tracked here for visibility; none are code changes.
+- [x] npm **trusted publisher** binding configured (scolladon/tsgit ↔ npm-service.yml)
+- [x] `RELEASE_PLEASE_PAT` secret seeded
+- [x] Branch protection on `main` set via `gh api`
+- [x] Repo metadata + topics + Discussions enabled via `gh repo edit`
+- [x] GitHub Pages source set to "GitHub Actions"
+- [x] Release-please PR merged → tag `v1.0.0` → `npm-service.yml` published `@scolladon/tsgit@1.0.0` via OIDC
 
-- [ ] Configure npm **trusted publisher** binding on the tsgit package
-      (npmjs.com → Settings → Trusted publishers) pointing at
-      `scolladon/tsgit` + `.github/workflows/npm-service.yml`.
-- [ ] Run `gh secret set RELEASE_PLEASE_PAT` (the only remaining secret).
-- [ ] Run the `gh api repos/.../branches/main/protection` block in RUNBOOK §"Branch protection on main".
-- [ ] Run `gh repo edit` metadata block in RUNBOOK §"Repo metadata".
-- [ ] Enable Pages source = "GitHub Actions" in the repo UI.
-- [ ] Merge the release-please PR that the squashed `feat!:` commit will open on next CI run.
+### Lessons learned (worth recording for future packages)
+
+- npm 10.9.x (Node 22's bundled npm) has a broken trusted-publisher OIDC PUT path that masks as `404 ... is not in this registry`. Pin the publish workflow to Node 24 so npm 11.x is bundled.
+- npm's trusted-publisher provenance binding validates `package.json#repository.url` against the GitHub repo recorded in the sigstore attestation — set `repository`, `homepage`, `bugs` BEFORE the first publish or expect a `422 Unprocessable Entity`.
+- The npm scoped name `@scolladon/tsgit` was forced after npm rejected the unscoped `tsgit` as too similar to existing `ts-git`.
