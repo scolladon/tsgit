@@ -27,6 +27,7 @@ A pure TypeScript git implementation designed to be the fastest portable git lib
 | 11 | Polish & Launch (CI matrix, browser E2E, benchmarks, TypeDoc, MIGRATION) | ✅ |
 | 12.1 | Clone — smart-HTTP pack fetch + write-objects loop | ✅ |
 | 12.2 | Fetch — ls-refs + want/have negotiation + shallow + prune | ✅ |
+| 12.3 | Push — receive-pack negotiation + pack send + force-with-lease | ✅ |
 
 ## Features
 
@@ -113,6 +114,28 @@ Working-tree materialization (`checkout`) lands in Phase 13.1 — Phase 12.1
 gives you a valid `.git` directory whose `git log` matches the remote's HEAD
 line. See `test/integration/network/clone-http-backend.test.ts` for an
 end-to-end example against a local `git-http-backend`.
+
+### Push
+
+```typescript
+const result = await repo.push({
+  remote: 'origin',
+  refspecs: ['refs/heads/main:refs/heads/main'],
+  // optional: force-with-lease against the cached remote-tracking ref
+  // forceWithLease: 'auto',
+});
+
+for (const r of result.pushedRefs) {
+  console.log(r.name, r.status, r.reason ?? ''); // 'refs/heads/main' 'ok'
+}
+```
+
+Phase 12.3 supports `<src>:<dst>`, `+<src>:<dst>`, `:<dst>` (delete), short-form
+branch names, and `HEAD` as a source. Force-with-lease accepts either an explicit
+`ObjectId` or `'auto'` (resolves to the cached `refs/remotes/<remote>/<branch>`).
+A successful push updates the local remote-tracking cache for accepted refs.
+See `test/integration/network/push-http-backend.test.ts` for an end-to-end
+example.
 
 ### Progress reporting
 

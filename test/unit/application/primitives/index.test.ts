@@ -4,8 +4,10 @@ import * as primitives from '../../../../src/application/primitives/index.js';
 describe('primitives barrel', () => {
   it('Given the barrel, When imported, Then all primitives are exposed as functions', () => {
     const names = [
+      'buildPack',
       'createCommit',
       'diffTrees',
+      'enumeratePushObjects',
       'fetchPack',
       'getRepoRoot',
       'mergeBase',
@@ -30,8 +32,10 @@ describe('primitives barrel', () => {
 
   it('Given the barrel, When inspecting keys, Then only expected public surface is exposed', () => {
     const expected = new Set([
+      'buildPack',
       'createCommit',
       'diffTrees',
+      'enumeratePushObjects',
       'fetchPack',
       'getRepoRoot',
       'mergeBase',

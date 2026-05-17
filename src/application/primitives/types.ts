@@ -63,6 +63,9 @@ export interface WalkCommitsOptions {
 /** Maximum `have` lines a single-round fetch will send. See ADR-010. */
 export const MAX_HAVES = 256;
 
+/** Hard cap on objects enumerated for a single push. See Phase 12.3 design §3.2. */
+export const MAX_PUSH_OBJECTS = 1_000_000;
+
 export interface WalkTreeEntry {
   readonly path: FilePath;
   readonly id: ObjectId;
