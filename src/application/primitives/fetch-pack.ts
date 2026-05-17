@@ -32,6 +32,7 @@ import {
   parsePackHeader,
   serializePackIndex,
 } from '../../domain/storage/index.js';
+import { readableStreamToAsyncIterable } from '../../operators/readable-stream.js';
 import type { Context } from '../../ports/context.js';
 import type { HttpTransport } from '../../ports/http-transport.js';
 
@@ -174,35 +175,6 @@ const downloadPack = async (
   const packBytes = await drainPackBodyBounded(ctx, input, parsed.packBody);
   return { packBytes, shallow: parsed.shallow, unshallow: parsed.unshallow };
 };
-
-/**
- * Adapt the response body's web `ReadableStream` to an `AsyncIterable`. On
- * early exit (consumer throws or breaks) the iterator's `return` hook calls
- * `cancel()` so the stream + underlying socket close cleanly — `releaseLock`
- * alone leaves the stream open. See clone.ts for the matching helper (kept
- * local to each module per the primitives ↛ commands layering rule).
- */
-const readableStreamToAsyncIterable = (
-  stream: ReadableStream<Uint8Array>,
-): AsyncIterable<Uint8Array> => ({
-  [Symbol.asyncIterator](): AsyncIterator<Uint8Array> {
-    const reader = stream.getReader();
-    return {
-      next: async (): Promise<IteratorResult<Uint8Array>> => {
-        const { done, value } = await reader.read();
-        return done ? { done: true, value: undefined } : { done: false, value };
-      },
-      return: async (): Promise<IteratorResult<Uint8Array>> => {
-        try {
-          await reader.cancel();
-        } catch {
-          // swallow — adapter closes the underlying socket regardless
-        }
-        return { done: true, value: undefined };
-      },
-    };
-  },
-});
 
 const drainPackBodyBounded = async (
   ctx: Context,

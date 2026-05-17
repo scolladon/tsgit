@@ -16,11 +16,14 @@
  *
  * Working-tree materialization is Phase 13.1; out of scope.
  */
+import { TsgitError } from '../../domain/error.js';
 import { remoteAdvertisesNoRefs, remoteNotConfigured } from '../../domain/index.js';
 import type { ObjectId, RefName } from '../../domain/objects/index.js';
 import type { AdvertisedRef, Advertisement } from '../../domain/protocol/index.js';
+import { validateRefName } from '../../domain/refs/ref-validation.js';
 import type { Context } from '../../ports/context.js';
 import { fetchPack } from '../primitives/fetch-pack.js';
+import { getRefStore } from '../primitives/ref-store.js';
 import { updateShallow } from '../primitives/shallow-file.js';
 import { MAX_HAVES, MAX_WALK_SEEDS } from '../primitives/types.js';
 import { updateRef } from '../primitives/update-ref.js';
@@ -135,7 +138,7 @@ const resolveRemoteUrl = async (ctx: Context, remoteName: string): Promise<strin
  * keeps the negotiation honest.
  */
 const deriveHaves = async (ctx: Context, remoteName: string): Promise<ReadonlyArray<ObjectId>> => {
-  const seeds = await collectRefTips(ctx, [`refs/remotes/${remoteName}`, 'refs/tags']);
+  const seeds = await collectRefTips(ctx, remoteName);
   if (seeds.length === 0) return [];
   const seen = new Set<string>();
   const haves: ObjectId[] = [];
@@ -161,13 +164,26 @@ const deriveHaves = async (ctx: Context, remoteName: string): Promise<ReadonlyAr
 
 const collectRefTips = async (
   ctx: Context,
-  refDirs: ReadonlyArray<string>,
+  remoteName: string,
 ): Promise<ReadonlyArray<ObjectId>> => {
+  // Loose refs first: walk the on-disk tree under each ref prefix.
   const ids: ObjectId[] = [];
-  for (const dir of refDirs) {
+  const looseDirs = [`refs/remotes/${remoteName}`, 'refs/tags'];
+  for (const dir of looseDirs) {
     const fullDir = `${ctx.layout.gitDir}/${dir}`;
     if (!(await ctx.fs.exists(fullDir))) continue;
     await collectFromDir(ctx, fullDir, ids);
+  }
+  // Packed refs second: consult `.git/packed-refs` so repos that have packed
+  // their refs (e.g., after `git gc`) still contribute haves. Without this,
+  // every fetch would send zero haves and the server would resend a full pack.
+  const refPrefix = `refs/remotes/${remoteName}/`;
+  const tagPrefix = 'refs/tags/';
+  const packed = await getRefStore(ctx).getPackedRefs();
+  for (const entry of packed.entries) {
+    if (entry.name.startsWith(refPrefix) || entry.name.startsWith(tagPrefix)) {
+      ids.push(entry.id);
+    }
   }
   return ids;
 };
@@ -213,9 +229,17 @@ const applyRemoteRefs = async (
 
 const remoteTargetForRef = (remoteName: string, ref: AdvertisedRef): RefName | undefined => {
   if (ref.name === 'HEAD') return undefined;
+  // Validate the server-controlled ref name BEFORE composing the local path.
+  // Without this guard, a malicious server advertising `refs/heads/../../config`
+  // would build `refs/remotes/<remote>/../../config` and let `readExistingRef`
+  // execute a filesystem read on `.git/config`. `validateRefName` rejects every
+  // path-traversal vector that the `as RefName` brand cast otherwise bypasses.
+  if (!isSafeRefName(ref.name)) return undefined;
   if (ref.name.startsWith('refs/heads/')) {
     const branch = ref.name.slice('refs/heads/'.length);
-    return `refs/remotes/${remoteName}/${branch}` as RefName;
+    const composed = `refs/remotes/${remoteName}/${branch}`;
+    if (!isSafeRefName(composed)) return undefined;
+    return composed as RefName;
   }
   if (ref.name.startsWith('refs/tags/')) {
     return ref.name as RefName;
@@ -223,7 +247,21 @@ const remoteTargetForRef = (remoteName: string, ref: AdvertisedRef): RefName | u
   return undefined;
 };
 
+const isSafeRefName = (name: string): boolean => {
+  try {
+    validateRefName(name);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
 const readExistingRef = async (ctx: Context, name: RefName): Promise<ObjectId | undefined> => {
+  // Defense in depth: every caller of `readExistingRef` constructs `name` via
+  // `remoteTargetForRef`, which already validates. We re-validate here so a
+  // future refactor that loses the guard cannot reintroduce the
+  // path-traversal vulnerability. validateRefName throws if invalid.
+  validateRefName(name);
   const path = `${ctx.layout.gitDir}/${name}`;
   if (!(await ctx.fs.exists(path))) return undefined;
   const content = (await ctx.fs.readUtf8(path)).trim();
@@ -270,7 +308,28 @@ const deleteUnadvertised = async (
     }
     if (advertised.has(branch)) continue;
     const refName = `refs/remotes/${remoteName}/${branch}` as RefName;
-    await updateRef(ctx, refName, '0'.repeat(40) as ObjectId, { delete: true });
+    // `updateRef(..., { delete: true })` throws `UNSUPPORTED_OPERATION` when
+    // the ref is packed-only (packed-refs rewrite is Phase 9 follow-up).
+    // The loose-walk path can only reach loose refs, so under normal usage
+    // we never hit this. We still guard defensively in case a packed-only
+    // ref happens to live at the same path as a directory entry on a
+    // case-folding filesystem (unlikely but possible).
+    try {
+      await updateRef(ctx, refName, '0'.repeat(40) as ObjectId, { delete: true });
+    } catch (err) {
+      if (isPackedRefDeleteError(err)) {
+        // Skip packed-only refs rather than crashing the whole fetch.
+        // Documented in ADR-012's Neutral consequences.
+        ctx.logger?.warn?.('fetch.prune: skipping packed-only ref', { name: refName });
+        continue;
+      }
+      throw err;
+    }
     deleted.push(refName);
   }
 };
+
+const isPackedRefDeleteError = (err: unknown): boolean =>
+  err instanceof TsgitError &&
+  err.data.code === 'UNSUPPORTED_OPERATION' &&
+  err.data.operation === 'delete-packed-ref';

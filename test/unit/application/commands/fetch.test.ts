@@ -306,6 +306,94 @@ describe('fetch', () => {
       expect(decoded).toContain(`have ${oldOid}`);
     });
 
+    it('Given 257 remote-tracking ref tips, When fetch, Then haves are capped at MAX_HAVES=256 in the request body', async () => {
+      // Arrange — seed 257 distinct refs/remotes/origin/* tips. The first 256
+      // tips are queued as haves; the 257th is dropped by the cap. Pins the
+      // `if (haves.length >= MAX_HAVES) return haves;` early-return mutant.
+      const ctx = createMemoryContext();
+      const seeds: Record<string, string> = {};
+      const seedOid = (i: number): string => i.toString(16).padStart(40, '0');
+      for (let i = 0; i < 257; i += 1) {
+        seeds[`refs/remotes/origin/b${i}`] = seedOid(i);
+      }
+      await seedRepo(ctx, { refs: seeds });
+      await writeOriginConfig(ctx);
+      const { packBytes, blobId } = await buildOneBlobPack(ctx, 'cap\n');
+      const { transport, requests } = fakeRemote({
+        url: 'https://example.com/r.git',
+        advertisedRefs: [{ name: 'refs/heads/main', id: blobId }],
+        packBytes,
+      });
+
+      // Act
+      await fetch({ ...ctx, transport });
+
+      // Assert — body contains 256 `have ` lines, not 257.
+      const postReq = requests.find((r) => r.method === 'POST');
+      const decoded = new TextDecoder().decode(postReq?.body);
+      const haveCount = (decoded.match(/have [0-9a-f]{40}/g) ?? []).length;
+      expect(haveCount).toBe(256);
+    });
+
+    it('Given exactly MAX_HAVES (256) refs, When fetch, Then all 256 haves are sent (boundary)', async () => {
+      // Arrange — counterpart to the cap test above. Pins the `>=` vs `>`
+      // boundary mutant: exactly-at-cap must send all 256 (the cap fires
+      // AFTER the push when length === 256, but `return haves` returns the
+      // full 256). A `>` mutant would let a 257th line through but the
+      // assertion here also asserts 256 is reached.
+      const ctx = createMemoryContext();
+      const seeds: Record<string, string> = {};
+      const seedOid = (i: number): string => i.toString(16).padStart(40, '0');
+      for (let i = 0; i < 256; i += 1) {
+        seeds[`refs/remotes/origin/b${i}`] = seedOid(i);
+      }
+      await seedRepo(ctx, { refs: seeds });
+      await writeOriginConfig(ctx);
+      const { packBytes, blobId } = await buildOneBlobPack(ctx, 'cap-boundary\n');
+      const { transport, requests } = fakeRemote({
+        url: 'https://example.com/r.git',
+        advertisedRefs: [{ name: 'refs/heads/main', id: blobId }],
+        packBytes,
+      });
+
+      // Act
+      await fetch({ ...ctx, transport });
+
+      // Assert
+      const postReq = requests.find((r) => r.method === 'POST');
+      const decoded = new TextDecoder().decode(postReq?.body);
+      const haveCount = (decoded.match(/have [0-9a-f]{40}/g) ?? []).length;
+      expect(haveCount).toBe(256);
+    });
+
+    it('Given a packed-only remote-tracking ref, When fetch, Then haves include the packed-ref tip', async () => {
+      // Arrange — packed-refs deserve haves too (TS reviewer HIGH-1).
+      // Without consulting `.git/packed-refs`, repos that ran `git gc` would
+      // send zero haves and trigger a full pack on every fetch.
+      const ctx = createMemoryContext();
+      const packedOid = 'd'.repeat(40);
+      await seedRepo(ctx, {});
+      await ctx.fs.writeUtf8(
+        `${ctx.layout.gitDir}/packed-refs`,
+        `# pack-refs with: peeled fully-peeled sorted\n${packedOid} refs/remotes/origin/main\n`,
+      );
+      await writeOriginConfig(ctx);
+      const { packBytes, blobId } = await buildOneBlobPack(ctx, 'packed haves\n');
+      const { transport, requests } = fakeRemote({
+        url: 'https://example.com/r.git',
+        advertisedRefs: [{ name: 'refs/heads/main', id: blobId }],
+        packBytes,
+      });
+
+      // Act
+      await fetch({ ...ctx, transport });
+
+      // Assert
+      const postReq = requests.find((r) => r.method === 'POST');
+      const decoded = new TextDecoder().decode(postReq?.body);
+      expect(decoded).toContain(`have ${packedOid}`);
+    });
+
     it('Given no remote-tracking refs (first fetch), When fetch, Then the request body has no `have` lines', async () => {
       // Arrange
       const ctx = createMemoryContext();
@@ -429,6 +517,34 @@ describe('fetch', () => {
         localHead,
       );
       expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/tags/v0`)).toBe(true);
+    });
+  });
+
+  describe('hostile server defenses', () => {
+    it('Given a server advertising refs/heads/../../config (path traversal), When fetch, Then the malicious ref is silently dropped', async () => {
+      // Arrange — security review HIGH-1. Without validateRefName in
+      // `remoteTargetForRef`, the composed `refs/remotes/origin/../../config`
+      // would point at `.git/config` and `readExistingRef` would `readUtf8`
+      // it. validateRefName rejects `..`, so the ref is dropped entirely —
+      // no on-disk read, no updatedRefs entry.
+      const ctx = createMemoryContext();
+      await seedRepo(ctx, {});
+      await writeOriginConfig(ctx);
+      const { packBytes, blobId } = await buildOneBlobPack(ctx, 'safe\n');
+      const { transport } = fakeRemote({
+        url: 'https://example.com/r.git',
+        advertisedRefs: [
+          { name: 'refs/heads/main', id: blobId },
+          { name: 'refs/heads/../../config', id: blobId },
+        ],
+        packBytes,
+      });
+
+      // Act
+      const sut = await fetch({ ...ctx, transport });
+
+      // Assert — only the safe ref made it through.
+      expect(sut.updatedRefs.map((r) => r.name)).toEqual(['refs/remotes/origin/main']);
     });
   });
 

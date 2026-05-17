@@ -13,6 +13,7 @@
  *   to an `AsyncIterable<Uint8Array>` with `cancel()`-on-early-return so the
  *   underlying socket closes cleanly when the consumer throws or breaks.
  */
+import { httpError } from '../../../domain/error.js';
 import type { ObjectId } from '../../../domain/objects/index.js';
 import type { AdvertisedRef, Advertisement } from '../../../domain/protocol/index.js';
 import {
@@ -23,6 +24,7 @@ import {
   negotiateCapabilities as negotiateProtocolCapabilities,
   parseAdvertisedRefs,
 } from '../../../domain/protocol/index.js';
+import { readableStreamToAsyncIterable } from '../../../operators/readable-stream.js';
 import type { Context } from '../../../ports/context.js';
 import type { HttpTransport } from '../../../ports/http-transport.js';
 
@@ -38,40 +40,19 @@ export const discoverRefs = async (
     headers: { accept: 'application/x-git-upload-pack-advertisement' },
     ...(ctx.signal !== undefined ? { signal: ctx.signal } : {}),
   });
-  // 2xx responses pass through; HTTP errors surface via withRetry / the
-  // adapter as TsgitError. We don't gate on a specific status here — the
-  // pkt-line parser will reject any non-protocol payload below.
+  // A non-200 from the discovery endpoint (401/403/404/5xx) must surface as
+  // HTTP_ERROR — feeding the body to the pkt-line parser instead would mask
+  // an authentication failure or a missing repository as an opaque
+  // protocol-shaped error. Matches `fetchPack`'s practice on the POST.
+  if (response.statusCode !== 200) {
+    throw httpError(
+      response.statusCode,
+      `git-upload-pack discovery returned ${response.statusCode}`,
+    );
+  }
   const pktStream = decodePktStream(readableStreamToAsyncIterable(response.body));
   return parseAdvertisedRefs(pktStream, 'git-upload-pack');
 };
-
-/**
- * Adapt a `ReadableStream<Uint8Array>` body to an `AsyncIterable<Uint8Array>`.
- * On early exit (consumer throws or breaks) the iterator's `return` hook
- * calls `cancel()` so the stream + underlying socket close cleanly —
- * `releaseLock` alone leaves the stream open.
- */
-export const readableStreamToAsyncIterable = (
-  stream: ReadableStream<Uint8Array>,
-): AsyncIterable<Uint8Array> => ({
-  [Symbol.asyncIterator](): AsyncIterator<Uint8Array> {
-    const reader = stream.getReader();
-    return {
-      next: async (): Promise<IteratorResult<Uint8Array>> => {
-        const { done, value } = await reader.read();
-        return done ? { done: true, value: undefined } : { done: false, value };
-      },
-      return: async (): Promise<IteratorResult<Uint8Array>> => {
-        try {
-          await reader.cancel();
-        } catch {
-          // swallow — adapter closes the underlying socket regardless
-        }
-        return { done: true, value: undefined };
-      },
-    };
-  },
-});
 
 /**
  * Drop client capabilities Phase 12.x cannot honor end-to-end (see Phase 12.1

@@ -929,9 +929,12 @@ describe('parseShallowResponse', () => {
 
   it('Given an unknown verb prefix (`shallowish`), When parsed, Then treats the line as non-shallow and returns empty arrays', async () => {
     // Arrange — `parseShallowResponse` accepts only verbs whose first token
-    // is exactly "shallow" or "unshallow". Anything else is for the next
-    // consumer (splitMeta). Use `parseUploadPackResponse` so the buffered
-    // line is observable downstream.
+    // is exactly "shallow " or "unshallow " (trailing space). The fake
+    // `shallowish ` would match a `startsWith('shallow')` mutant but not the
+    // correct `startsWith('shallow ')` guard. The downstream `splitMeta`
+    // sees the bogus line as the buffered peek and falls into the pack-body
+    // branch, NAK is then unreachable — the assertions here pin both the
+    // shallow path AND the downstream consequence.
     const source = asyncOf<PktLine>([
       dataPkt('shallowish bogus\n'),
       dataPkt('NAK\n'),
@@ -944,9 +947,31 @@ describe('parseShallowResponse', () => {
       expectShallow: true,
     });
 
-    // Assert — no shallow updates; the bogus line was ignored as a
-    // splitMeta-bound payload (which itself is not `ACK`/`NAK`, so splitMeta
-    // hands it back as a buffered pktLine for the pack body).
+    // Assert — no shallow updates.
+    expect(result.shallow).toEqual([]);
+    expect(result.unshallow).toEqual([]);
+    // splitMeta receives the bogus line as the buffered peek. Because the
+    // line is neither ACK nor NAK, splitMeta treats it as the first packBody
+    // pkt — `result.nak` stays false (the literal `NAK\n` after never reaches
+    // splitMeta). This kills the prefix-broadening mutant: any mutant that
+    // would let `shallowish` through as a shallow line would either populate
+    // `shallow`/`unshallow` or change the downstream nak flag.
+    expect(result.nak).toBe(false);
+  });
+
+  it('Given exactly `shallow` with no space (boundary), When parsed, Then NOT treated as a shallow line', async () => {
+    // Arrange — pins the `startsWith('shallow ')` vs `startsWith('shallow')`
+    // mutant. The literal word `shallow\n` without a trailing oid is invalid.
+    const source = asyncOf<PktLine>([dataPkt('shallow\n'), dataPkt('NAK\n'), { kind: 'flush' }]);
+
+    // Act
+    const result = await parseUploadPackResponse(source, {
+      sideBand: false,
+      expectShallow: true,
+    });
+
+    // Assert — the `shallow\n` line missed the `'shallow '` prefix (no space
+    // after the verb) so the parser treated it as the first non-shallow line.
     expect(result.shallow).toEqual([]);
     expect(result.unshallow).toEqual([]);
   });

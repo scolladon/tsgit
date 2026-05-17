@@ -7,6 +7,7 @@ import {
   invalidRefLine,
   missingCapabilities,
   missingServiceHeader,
+  tooManyAdvertisedRefs,
   unknownAckStatus,
 } from './error.js';
 import { encodePktLine, encodePktStream, type PktLine } from './pkt-line.js';
@@ -18,6 +19,15 @@ const TEXT_ENCODER = new TextEncoder();
 const SHA_ANY_RE = /^[0-9a-f]{40}([0-9a-f]{24})?$/i;
 const SERVICE_LINE_RE = /^# service=(?<service>[^\n]+)\n?$/;
 const PEELED_SUFFIX = '^{}';
+
+/**
+ * Hard cap on the number of refs the parser will accept in a single
+ * advertisement. A malicious server could otherwise emit millions of ref lines
+ * to exhaust heap before the existing `maxResponseBytes` cap (which gates the
+ * POST pack body) would trigger. 500_000 matches the order of magnitude that
+ * canonical git tolerates and is well past anything a legitimate repo emits.
+ */
+export const MAX_ADVERTISED_REFS = 500_000;
 
 export interface AdvertisedRef {
   readonly name: string;
@@ -206,6 +216,9 @@ const collectRefs = async (
     if (pkt.value.kind !== 'data') break;
     const line = stripTrailingNewline(TEXT_DECODER.decode(pkt.value.payload));
     capabilities = handleRefLine(acc, capabilities, line);
+    if (acc.refs.length > MAX_ADVERTISED_REFS) {
+      throw tooManyAdvertisedRefs(acc.refs.length, MAX_ADVERTISED_REFS);
+    }
     pkt = await iter.next();
   }
   return { capabilities: capabilities ?? [], refs: acc.refs };
@@ -287,7 +300,6 @@ const parseAckLine = (text: string): AckEntry => {
 interface ShallowParseState {
   readonly shallow: ObjectId[];
   readonly unshallow: ObjectId[];
-  readonly buffered: PktLine | undefined;
 }
 
 const SHALLOW_PREFIX = 'shallow ';
@@ -327,7 +339,7 @@ const tryConsumeShallowLine = (text: string, state: ShallowParseState): boolean 
 export const parseShallowResponse = async (
   iter: AsyncIterator<PktLine>,
 ): Promise<ShallowUpdates> => {
-  const state: ShallowParseState = { shallow: [], unshallow: [], buffered: undefined };
+  const state: ShallowParseState = { shallow: [], unshallow: [] };
   let pkt = await iter.next();
   while (!pkt.done) {
     if (pkt.value.kind !== 'data') {

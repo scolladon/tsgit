@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import * as operators from '../../../src/operators/index.js';
 
 describe('operators barrel', () => {
-  it('Given the barrel module, When imported, Then all 8 operators are exposed', () => {
+  it('Given the barrel module, When imported, Then all operators are exposed', () => {
     // Assert
     expect(typeof operators.filter).toBe('function');
     expect(typeof operators.find).toBe('function');
@@ -10,6 +10,7 @@ describe('operators barrel', () => {
     expect(typeof operators.groupBy).toBe('function');
     expect(typeof operators.map).toBe('function');
     expect(typeof operators.pipe).toBe('function');
+    expect(typeof operators.readableStreamToAsyncIterable).toBe('function');
     expect(typeof operators.take).toBe('function');
     expect(typeof operators.toArray).toBe('function');
   });
@@ -23,6 +24,7 @@ describe('operators barrel', () => {
       'groupBy',
       'map',
       'pipe',
+      'readableStreamToAsyncIterable',
       'take',
       'toArray',
     ]);
