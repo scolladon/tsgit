@@ -25,7 +25,6 @@ import { ObjectId, type RefName } from '../../domain/objects/index.js';
 import {
   type AdvertisedRef,
   type Advertisement,
-  AGENT,
   buildReceivePackRequest,
   decodePktStream,
   invalidBaseUrl,
@@ -80,7 +79,6 @@ const PUSH_ENUMERATE_OBJECTS_OP = 'push:enumerate-objects';
 const PUSH_UPLOAD_OP = 'push:upload';
 const ZERO_OID = ObjectId.from('0'.repeat(40));
 const REFS_HEADS_PREFIX = 'refs/heads/';
-const REFS_TAGS_PREFIX = 'refs/tags/';
 const SIDE_BAND_CAPS: ReadonlySet<string> = new Set(['side-band-64k', 'side-band']);
 
 export const push = async (ctx: Context, opts: PushOptions = {}): Promise<PushResult> => {
@@ -280,9 +278,7 @@ const postReceivePack = async (
   transport: HttpTransport,
   url: string,
   body: Uint8Array,
-): Promise<
-  Response['body'] extends infer _T ? Awaited<ReturnType<HttpTransport['request']>> : never
-> => {
+): Promise<Awaited<ReturnType<HttpTransport['request']>>> => {
   ctx.progress.start(PUSH_UPLOAD_OP);
   try {
     const receivePackUrl = buildReceivePackUrl(url);
@@ -381,11 +377,3 @@ const isSafeRefName = (name: string): boolean => {
     return false;
   }
 };
-
-// Reference the unused tag-prefix constant to keep the surface explicit
-// for future tag-cache support (Phase 12.5+); the eslint/biome rule
-// otherwise flags `REFS_TAGS_PREFIX` as unused.
-void REFS_TAGS_PREFIX;
-// Reference AGENT to keep the import live for the implicit-agent-append
-// behaviour codified by `selectPushCapabilities`.
-void AGENT;
