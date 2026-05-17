@@ -144,6 +144,10 @@ const downloadPack = async (
     haves: input.haves,
     capabilities: input.capabilities,
     done: true,
+    // equivalent-mutant: dropping the ternary and spreading
+    // `{ depth: input.depth }` unconditionally is observable-equivalent.
+    // `buildUploadPackRequest` treats `depth: undefined` identically to no
+    // `depth` field — no `deepen N\n` line is emitted in either case.
     ...(input.depth !== undefined ? { depth: input.depth } : {}),
   });
   const uploadUrl = buildUploadPackUrl(input.url);

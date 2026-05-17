@@ -438,9 +438,15 @@ describe('fetch', () => {
       // Act
       const sut = await fetch({ ...ctx, transport }, { prune: true });
 
-      // Assert
+      // Assert — feature-x pruned AND main preserved. The negative assertion
+      // on `main` is what kills the prune `.filter().map()` chain mutant:
+      // without the chain, `advertised.has('main')` returns false (the Set
+      // holds AdvertisedRef objects, not strings) and `main` would also be
+      // deleted.
       expect(sut.prunedRefs).toContain('refs/remotes/origin/feature-x' as RefName);
+      expect(sut.prunedRefs).not.toContain('refs/remotes/origin/main' as RefName);
       expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/remotes/origin/feature-x`)).toBe(false);
+      expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/remotes/origin/main`)).toBe(true);
     });
 
     it('Given prune=false, When fetch, Then stale remote-tracking refs are preserved', async () => {
