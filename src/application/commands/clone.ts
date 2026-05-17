@@ -1,3 +1,4 @@
+import { unsupportedOperation } from '../../domain/error.js';
 import { remoteAdvertisesNoRefs, targetDirectoryNotEmpty } from '../../domain/index.js';
 import type { ObjectId, RefName } from '../../domain/objects/index.js';
 import type { FilePath } from '../../domain/objects/object-id.js';
@@ -9,6 +10,11 @@ export interface CloneOptions {
   readonly url: string;
   readonly bare?: boolean;
   readonly initialBranch?: string;
+  /**
+   * Shallow clone depth. Accepted on the type for forward compatibility but
+   * NOT honored in Phase 12.1 — setting it throws `UNSUPPORTED_OPERATION`.
+   * Shallow handling lands with Phase 12.2 fetch (see ADR-008).
+   */
   readonly depth?: number;
   /** DNS resolver injected by the caller; required to enforce SSRF guards. */
   readonly resolver?: DnsResolver;
@@ -41,6 +47,12 @@ export const clone = async (ctx: Context, opts: CloneOptions): Promise<CloneResu
     throw targetDirectoryNotEmpty(ctx.layout.workDir as FilePath);
   }
   if (opts.url === '') throw remoteAdvertisesNoRefs();
+  if (opts.depth !== undefined) {
+    throw unsupportedOperation(
+      'clone-shallow',
+      'depth: N is supported in Phase 12.2 (fetch); see ADR-008',
+    );
+  }
   // Phase 10 §6.2 — clone:discover. Brackets URL validation + ref discovery.
   // clone:write-objects and clone:checkout-files come online when the pack
   // fetch and working-tree materialization wire up (Phase 11+); for now this

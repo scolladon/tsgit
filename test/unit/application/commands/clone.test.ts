@@ -16,6 +16,48 @@ describe('clone', () => {
     expect(sut.head).toBe('main');
   });
 
+  it('Given depth: 1, When clone, Then throws UNSUPPORTED_OPERATION naming Phase 12.2', async () => {
+    // Arrange
+    const ctx = createMemoryContext();
+
+    // Act
+    let caught: unknown;
+    try {
+      await clone(ctx, { url: 'https://example.com/r.git', depth: 1 });
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert
+    expect(caught).toBeInstanceOf(TsgitError);
+    const data = (caught as TsgitError).data as {
+      readonly code: string;
+      readonly operation?: string;
+      readonly reason?: string;
+    };
+    expect(data.code).toBe('UNSUPPORTED_OPERATION');
+    expect(data.operation).toBe('clone-shallow');
+    expect(data.reason).toContain('depth');
+    expect(data.reason).toContain('12.2');
+  });
+
+  it('Given depth: 0, When clone, Then also throws UNSUPPORTED_OPERATION', async () => {
+    // Arrange
+    const ctx = createMemoryContext();
+
+    // Act
+    let caught: unknown;
+    try {
+      await clone(ctx, { url: 'https://example.com/r.git', depth: 0 });
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert
+    expect(caught).toBeInstanceOf(TsgitError);
+    expect((caught as TsgitError).data.code).toBe('UNSUPPORTED_OPERATION');
+  });
+
   it('Given an existing .git, When clone, Then throws TARGET_DIRECTORY_NOT_EMPTY', async () => {
     // Arrange
     const ctx = createMemoryContext();
