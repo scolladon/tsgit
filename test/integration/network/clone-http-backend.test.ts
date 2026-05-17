@@ -93,27 +93,13 @@ const handleRequest = (
   // test process.
   child.stdin.on('error', () => undefined);
   req.pipe(child.stdin);
-  const stderrChunks: Buffer[] = [];
   child.stderr.on('data', (chunk: Buffer) => {
-    stderrChunks.push(chunk);
     process.stderr.write(chunk);
   });
   const chunks: Buffer[] = [];
   child.stdout.on('data', (chunk: Buffer) => chunks.push(chunk));
-  child.on('close', (exitCode) => {
-    const stdoutBuf = Buffer.concat(chunks);
-    if (process.env.TSGIT_CGI_DEBUG === '1' || stdoutBuf.length === 0) {
-      const stderrBuf = Buffer.concat(stderrChunks);
-      // biome-ignore lint/suspicious/noConsole: diagnostic only — visible in CI logs.
-      console.error(
-        `[git-http-backend] backendPath=${backendPath} ` +
-          `PATH_INFO=${env.PATH_INFO} QUERY_STRING=${env.QUERY_STRING} ` +
-          `GIT_PROJECT_ROOT=${env.GIT_PROJECT_ROOT} ` +
-          `exitCode=${exitCode} stdout.bytes=${stdoutBuf.length} ` +
-          `stderr=${JSON.stringify(stderrBuf.toString('utf8'))}`,
-      );
-    }
-    writeCgiResponse(res, stdoutBuf);
+  child.on('close', () => {
+    writeCgiResponse(res, Buffer.concat(chunks));
   });
   child.on('error', (err) => {
     res.statusCode = 502;

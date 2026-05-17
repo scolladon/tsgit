@@ -4,5 +4,3 @@
 	bare = true
 	ignorecase = true
 	precomposeunicode = true
-[remote "origin"]
-	url = /Users/scolladon/workspace/perso/node/tsgit/test/fixtures/clone-source/work

@@ -30,9 +30,20 @@ mkdir -p "$DEST/work"
 
 git clone --bare "$DEST/work" "$DEST/source.git" --quiet
 git -C "$DEST/source.git" rev-parse HEAD > "$DEST/HEAD-oid.txt"
+# Strip the clone-induced [remote "origin"] section so the committed fixture
+# does not leak the absolute path of the regeneration host.
+git -C "$DEST/source.git" config --remove-section remote.origin 2>/dev/null || true
 # Strip hook samples and the description placeholder so the committed fixture
 # only carries what git-http-backend needs to serve a clone.
 rm -rf "$DEST/source.git/hooks" "$DEST/source.git/description"
+# Git does not track empty directories. Without these .gitkeep files the
+# committed fixture has no `refs/`, `objects/info/`, or `objects/pack/`
+# directories — git-http-backend on a fresh checkout then reports
+# "Not a git repository" because the directory layout is invalid.
+touch "$DEST/source.git/refs/heads/.gitkeep"
+touch "$DEST/source.git/refs/tags/.gitkeep"
+touch "$DEST/source.git/objects/info/.gitkeep"
+touch "$DEST/source.git/objects/pack/.gitkeep"
 rm -rf "$DEST/work"
 
 echo "fixture rebuilt: $DEST/source.git, HEAD = $(cat "$DEST/HEAD-oid.txt")"
