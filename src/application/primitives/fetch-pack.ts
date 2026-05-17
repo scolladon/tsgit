@@ -65,6 +65,12 @@ export interface FetchPackInput {
   readonly url: string;
   /** Progress op label — clone uses 'clone:write-objects', fetch uses 'fetch:write-objects'. */
   readonly progressOp: string;
+  /**
+   * Shallow clone depth. When set, sends `deepen N` and consumes the
+   * accompanying `shallow <oid>` / `unshallow <oid>` response block.
+   * Phase 12.2; see ADR-009.
+   */
+  readonly depth?: number;
 }
 
 export interface FetchPackResult {
@@ -73,6 +79,16 @@ export interface FetchPackResult {
   readonly objectCount: number;
   /** Hex-encoded SHA of the pack trailer; also the on-disk filename stem. */
   readonly packSha: string;
+  /** Commits the server advertised as new shallow boundaries (empty when depth is unset). */
+  readonly shallow: ReadonlyArray<ObjectId>;
+  /** Commits the server advertised as no-longer-shallow (empty when depth is unset). */
+  readonly unshallow: ReadonlyArray<ObjectId>;
+}
+
+interface PackDownload {
+  readonly packBytes: Uint8Array;
+  readonly shallow: ReadonlyArray<ObjectId>;
+  readonly unshallow: ReadonlyArray<ObjectId>;
 }
 
 export const fetchPack = async (
@@ -82,11 +98,22 @@ export const fetchPack = async (
 ): Promise<FetchPackResult> => {
   ctx.progress.start(input.progressOp);
   try {
-    const packBytes = await downloadPack(ctx, transport, input);
-    const packSha = await verifyPackTrailer(packBytes, ctx);
-    const entries = await walkPackEntries(ctx, packBytes);
+    const download = await downloadPack(ctx, transport, input);
+    const packSha = await verifyPackTrailer(download.packBytes, ctx);
+    const entries = await walkPackEntries(ctx, download.packBytes);
     const idxBytes = await buildIdx(ctx, entries, packSha);
-    return writePackArtifacts(ctx, packBytes, idxBytes, packSha, entries.length);
+    const written = await writePackArtifacts(
+      ctx,
+      download.packBytes,
+      idxBytes,
+      packSha,
+      entries.length,
+    );
+    return {
+      ...written,
+      shallow: download.shallow,
+      unshallow: download.unshallow,
+    };
   } finally {
     ctx.progress.end(input.progressOp);
   }
@@ -96,12 +123,13 @@ const downloadPack = async (
   ctx: Context,
   transport: HttpTransport,
   input: FetchPackInput,
-): Promise<Uint8Array> => {
+): Promise<PackDownload> => {
   const requestBody = buildUploadPackRequest({
     wants: input.wants,
     haves: input.haves,
     capabilities: input.capabilities,
     done: true,
+    ...(input.depth !== undefined ? { depth: input.depth } : {}),
   });
   const uploadUrl = buildUploadPackUrl(input.url);
   const response = await transport.request({
@@ -127,8 +155,10 @@ const downloadPack = async (
     // server. Sanitizing at the boundary leaves no untrusted byte on the
     // reporter call surface.
     onProgress: (text) => ctx.progress.update(input.progressOp, 0, undefined, sanitize(text)),
+    expectShallow: input.depth !== undefined,
   });
-  return drainPackBodyBounded(ctx, input, parsed.packBody);
+  const packBytes = await drainPackBodyBounded(ctx, input, parsed.packBody);
+  return { packBytes, shallow: parsed.shallow, unshallow: parsed.unshallow };
 };
 
 /**
@@ -453,13 +483,20 @@ const buildIdx = async (
   return out;
 };
 
+interface WrittenPackArtifacts {
+  readonly packPath: string;
+  readonly idxPath: string;
+  readonly objectCount: number;
+  readonly packSha: string;
+}
+
 const writePackArtifacts = async (
   ctx: Context,
   packBytes: Uint8Array,
   idxBytes: Uint8Array,
   packSha: string,
   objectCount: number,
-): Promise<FetchPackResult> => {
+): Promise<WrittenPackArtifacts> => {
   const packDir = `${ctx.layout.gitDir}/objects/pack`;
   await ctx.fs.mkdir(packDir);
   const packPath = `${packDir}/pack-${packSha}.pack`;
