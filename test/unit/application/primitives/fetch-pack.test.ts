@@ -45,6 +45,25 @@ const buildUploadPackResponseBody = (opts: UploadPackBodyOptions): Uint8Array =>
   return encodePktStream(payloads);
 };
 
+/**
+ * Build a sideband-1 stream that splits `packBytes` into per-frame chunks of
+ * `chunkSize`. Each chunk becomes its own channel-1 pkt-line, which means the
+ * downstream `parseUploadPackResponse.packBody` iterator will yield one
+ * Uint8Array per chunk — perfect for exercising drainPackBodyBounded's
+ * multi-chunk path.
+ */
+const buildMultiChunkSidebandBody = (packBytes: Uint8Array, chunkSize: number): Uint8Array => {
+  const payloads: Uint8Array[] = [ENCODER.encode('NAK\n')];
+  for (let off = 0; off < packBytes.length; off += chunkSize) {
+    const slice = packBytes.subarray(off, Math.min(off + chunkSize, packBytes.length));
+    const framed = new Uint8Array(slice.length + 1);
+    framed[0] = 0x01;
+    framed.set(slice, 1);
+    payloads.push(framed);
+  }
+  return encodePktStream(payloads);
+};
+
 const captureRequests = (
   body: Uint8Array,
 ): { transport: HttpTransport; requests: HttpRequest[] } => {
@@ -58,6 +77,39 @@ const captureRequests = (
         body: new ReadableStream<Uint8Array>({
           start(controller) {
             controller.enqueue(body.slice());
+            controller.close();
+          },
+        }),
+      };
+    },
+  };
+  return { transport, requests };
+};
+
+/**
+ * Same as captureRequests but splits the response body into ~8 KiB chunks at
+ * the ReadableStream layer. Forces the pkt-line decoder buffer to drain
+ * incrementally — required for any test that wants to exercise the
+ * drainPackBodyBounded multi-chunk path while sending a payload that exceeds
+ * the pkt-line buffer capacity (~64 KiB).
+ */
+const captureRequestsChunked = (
+  body: Uint8Array,
+  chunkSize = 8192,
+): { transport: HttpTransport; requests: HttpRequest[] } => {
+  const requests: HttpRequest[] = [];
+  const transport: HttpTransport = {
+    request: async (req): Promise<HttpResponse> => {
+      requests.push(req);
+      const copy = body.slice();
+      return {
+        statusCode: 200,
+        headers: { 'content-type': 'application/x-git-upload-pack-result' },
+        body: new ReadableStream<Uint8Array>({
+          start(controller) {
+            for (let off = 0; off < copy.length; off += chunkSize) {
+              controller.enqueue(copy.subarray(off, Math.min(off + chunkSize, copy.length)));
+            }
             controller.close();
           },
         }),
@@ -286,6 +338,61 @@ describe('fetchPack', () => {
       const idx = parsePackIndex(await ctx.fs.read(sut.idxPath));
       expect(lookupPackIndex(idx, normal.ids[0] as ObjectId)).toBeGreaterThanOrEqual(12);
       expect(lookupPackIndex(idx, normal.ids[1] as ObjectId)).toBeGreaterThanOrEqual(12);
+    });
+
+    it('Given an OFS_DELTA pointing before the pack body, When fetchPack runs, Then throws INVALID_PACK_HEADER referencing the offset', async () => {
+      // Arrange — synthesize a pack with one entry whose OFS_DELTA distance is
+      // larger than its own offset minus the 12-byte header. Real packs cannot
+      // produce such an entry; we craft it directly to exercise the negative
+      // base-offset guard inside tryResolveEntry. The entry header is hand-built:
+      // type-byte sets OFS_DELTA(=6) with a 1-byte size of 0, the distance varint
+      // encodes 100, then a 2-byte zlib stream for an empty target.
+      const ctx = createMemoryContext();
+      // Pack header (12 bytes) — version 2, 1 entry.
+      const header = new Uint8Array(12);
+      const dv = new DataView(header.buffer);
+      dv.setUint32(0, 0x5041434b);
+      dv.setUint32(4, 2);
+      dv.setUint32(8, 1);
+      // Entry header: type=6 (OFS_DELTA), size=0 → byte = (6 << 4) | 0 = 0x60.
+      // Distance = 100, encoded as a single byte 0x64 (no continuation).
+      const entryHeader = new Uint8Array([0x60, 0x64]);
+      // zlib-compressed body for an empty delta payload (sourceLength=0, targetLength=0).
+      const emptyDelta = new Uint8Array([0x00, 0x00]);
+      const zlibBody = await ctx.compressor.deflate(emptyDelta);
+      // Build the full pack: header + entry + trailer.
+      const bodyBytes = new Uint8Array(header.length + entryHeader.length + zlibBody.length);
+      bodyBytes.set(header, 0);
+      bodyBytes.set(entryHeader, header.length);
+      bodyBytes.set(zlibBody, header.length + entryHeader.length);
+      const trailerHex = await ctx.hash.hashHex(bodyBytes);
+      const packBytes = new Uint8Array(bodyBytes.length + 20);
+      packBytes.set(bodyBytes, 0);
+      packBytes.set(hexToBytes(trailerHex), bodyBytes.length);
+      const dummyId = (await computeBlobId(ctx, ENCODER.encode('ofs-back\n'))) as ObjectId;
+      const body = buildUploadPackResponseBody({ packBytes, sideBand: true });
+      const { transport } = captureRequests(body);
+
+      // Act
+      let caught: unknown;
+      try {
+        await fetchPack(ctx, transport, {
+          wants: [dummyId],
+          haves: [],
+          capabilities: ['side-band-64k'],
+          url: REMOTE_URL,
+          progressOp: 'test:write-objects',
+        });
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert
+      expect(caught).toBeInstanceOf(TsgitError);
+      const data = (caught as TsgitError).data as { code: string; reason?: string };
+      expect(data.code).toBe('INVALID_PACK_HEADER');
+      expect(data.reason).toContain('OFS_DELTA');
+      expect(data.reason).toContain('before pack body');
     });
 
     it('Given a REF_DELTA whose base is not in the pack, When fetchPack runs, Then throws unresolved REF_DELTA', async () => {
@@ -743,7 +850,466 @@ describe('fetchPack', () => {
     });
   });
 
+  describe('HTTP request shape', () => {
+    it('Given a successful clone, When fetchPack runs, Then issues POST with smart-HTTP headers and a `done` body', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      const { packBytes, blobId } = await buildSingleBlobPack(ctx, 'request shape\n');
+      const body = buildUploadPackResponseBody({ packBytes, sideBand: true });
+      const { transport, requests } = captureRequests(body);
+
+      // Act
+      await fetchPack(ctx, transport, {
+        wants: [blobId],
+        haves: [],
+        capabilities: ['side-band-64k'],
+        url: REMOTE_URL,
+        progressOp: 'test:write-objects',
+      });
+
+      // Assert
+      expect(requests).toHaveLength(1);
+      const req = requests[0];
+      expect(req?.method).toBe('POST');
+      expect(req?.url).toBe(UPLOAD_PACK_URL);
+      expect(req?.headers['content-type']).toBe('application/x-git-upload-pack-request');
+      expect(req?.headers.accept).toBe('application/x-git-upload-pack-result');
+      const decoded = new TextDecoder().decode(req?.body);
+      // `done: true` adds the literal "done\n" pkt-line at the end.
+      expect(decoded).toContain('done\n');
+      // The first want line is the blob id.
+      expect(decoded).toContain(`want ${blobId}`);
+    });
+
+    it('Given a non-200 server response, When fetchPack runs, Then throws HTTP_ERROR with the status code', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      const dummyId = (await computeBlobId(ctx, ENCODER.encode('boom\n'))) as ObjectId;
+      const transport: HttpTransport = {
+        request: async (): Promise<HttpResponse> => ({
+          statusCode: 503,
+          headers: {},
+          body: new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.close();
+            },
+          }),
+        }),
+      };
+
+      // Act
+      let caught: unknown;
+      try {
+        await fetchPack(ctx, transport, {
+          wants: [dummyId],
+          haves: [],
+          capabilities: ['side-band-64k'],
+          url: REMOTE_URL,
+          progressOp: 'test:write-objects',
+        });
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert
+      expect(caught).toBeInstanceOf(TsgitError);
+      const data = (caught as TsgitError).data as {
+        code: string;
+        statusCode?: number;
+        reason?: string;
+      };
+      expect(data.code).toBe('HTTP_ERROR');
+      expect(data.statusCode).toBe(503);
+      expect(data.reason).toContain('503');
+    });
+
+    it('Given a ctx.signal, When fetchPack runs, Then the signal is forwarded on the HttpRequest', async () => {
+      // Arrange
+      const controller = new AbortController();
+      const baseCtx = createMemoryContext();
+      const ctx = { ...baseCtx, signal: controller.signal };
+      const { packBytes, blobId } = await buildSingleBlobPack(ctx, 'signal\n');
+      const body = buildUploadPackResponseBody({ packBytes, sideBand: true });
+      const { transport, requests } = captureRequests(body);
+
+      // Act
+      await fetchPack(ctx, transport, {
+        wants: [blobId],
+        haves: [],
+        capabilities: ['side-band-64k'],
+        url: REMOTE_URL,
+        progressOp: 'test:write-objects',
+      });
+
+      // Assert — signal flows through to req.signal exactly.
+      expect(requests[0]?.signal).toBe(controller.signal);
+    });
+
+    it('Given a base URL with a fragment, When fetchPack runs, Then throws INVALID_BASE_URL', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      const dummyId = (await computeBlobId(ctx, ENCODER.encode('frag\n'))) as ObjectId;
+      const { transport } = captureRequests(new Uint8Array(0));
+
+      // Act
+      let caught: unknown;
+      try {
+        await fetchPack(ctx, transport, {
+          wants: [dummyId],
+          haves: [],
+          capabilities: ['side-band-64k'],
+          url: `${REMOTE_URL}#frag`,
+          progressOp: 'test:write-objects',
+        });
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert
+      expect(caught).toBeInstanceOf(TsgitError);
+      const data = (caught as TsgitError).data as { code: string; reason?: string };
+      expect(data.code).toBe('INVALID_BASE_URL');
+      expect(data.reason).toContain('fragment');
+    });
+
+    it('Given a malformed URL, When fetchPack runs, Then throws INVALID_BASE_URL', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      const dummyId = (await computeBlobId(ctx, ENCODER.encode('bad\n'))) as ObjectId;
+      const { transport } = captureRequests(new Uint8Array(0));
+
+      // Act
+      let caught: unknown;
+      try {
+        await fetchPack(ctx, transport, {
+          wants: [dummyId],
+          haves: [],
+          capabilities: ['side-band-64k'],
+          url: 'not a url',
+          progressOp: 'test:write-objects',
+        });
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert
+      const data = (caught as TsgitError).data as { code: string; reason?: string };
+      expect(data.code).toBe('INVALID_BASE_URL');
+      expect(data.reason).toContain('invalid URL');
+    });
+
+    it('Given a ctx with no signal, When fetchPack runs, Then the request object omits the signal key entirely', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      // ctx.signal is undefined by default in createMemoryContext.
+      const { packBytes, blobId } = await buildSingleBlobPack(ctx, 'no signal\n');
+      const body = buildUploadPackResponseBody({ packBytes, sideBand: true });
+      const { transport, requests } = captureRequests(body);
+
+      // Act
+      await fetchPack(ctx, transport, {
+        wants: [blobId],
+        haves: [],
+        capabilities: ['side-band-64k'],
+        url: REMOTE_URL,
+        progressOp: 'test:write-objects',
+      });
+
+      // Assert — the spread guard `ctx.signal !== undefined` must omit the
+      // signal key entirely when ctx has no signal. `'signal' in req` returning
+      // false pins the guard; flipping it to always-true would spread
+      // `{ signal: undefined }`, making `'signal' in req` true.
+      expect(requests[0] && 'signal' in requests[0]).toBe(false);
+    });
+
+    it('Given a pack split across two sideband-1 frames, When fetchPack runs, Then the concatenated bytes match the original', async () => {
+      // Arrange — split a valid 1-blob pack into two sideband-1 frames so the
+      // drain loop runs the concat path with multiple chunks. Pins the
+      // `off += c.byteLength` accumulator: a `-=` mutant would write the
+      // second chunk at a negative offset and throw RangeError, OR (if it
+      // somehow succeeds) corrupt the output bytes.
+      const ctx = createMemoryContext();
+      const { packBytes, blobId } = await buildSingleBlobPack(ctx, 'multi-chunk concat\n');
+      const halfPoint = Math.floor(packBytes.length / 2);
+      const frame1 = packBytes.subarray(0, halfPoint);
+      const frame2 = packBytes.subarray(halfPoint);
+      const wrap = (bytes: Uint8Array): Uint8Array => {
+        const out = new Uint8Array(bytes.length + 1);
+        out[0] = 0x01;
+        out.set(bytes, 1);
+        return out;
+      };
+      const body = encodePktStream([ENCODER.encode('NAK\n'), wrap(frame1), wrap(frame2)]);
+      const { transport } = captureRequests(body);
+
+      // Act
+      const sut = await fetchPack(ctx, transport, {
+        wants: [blobId],
+        haves: [],
+        capabilities: ['side-band-64k'],
+        url: REMOTE_URL,
+        progressOp: 'test:write-objects',
+      });
+
+      // Assert — verifies the post-drain concat (off += ...) is correct.
+      const written = await ctx.fs.read(sut.packPath);
+      expect(written).toEqual(packBytes);
+      expect(sut.objectCount).toBe(1);
+    });
+
+    it('Given a base URL with a trailing slash, When fetchPack runs, Then the POST URL is normalized (no doubled slash)', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      const { packBytes, blobId } = await buildSingleBlobPack(ctx, 'trailing slash\n');
+      const body = buildUploadPackResponseBody({ packBytes, sideBand: true });
+      const { transport, requests } = captureRequests(body);
+
+      // Act
+      await fetchPack(ctx, transport, {
+        wants: [blobId],
+        haves: [],
+        capabilities: ['side-band-64k'],
+        url: `${REMOTE_URL}/`,
+        progressOp: 'test:write-objects',
+      });
+
+      // Assert
+      expect(requests[0]?.url).toBe(UPLOAD_PACK_URL);
+    });
+  });
+
+  describe('base entry type coverage', () => {
+    it.each([
+      [
+        'commit',
+        `tree ${'0'.repeat(40)}\nauthor a <a@a> 0 +0000\ncommitter a <a@a> 0 +0000\n\nmsg\n`,
+      ],
+      ['tree', ''],
+      ['tag', `object ${'0'.repeat(40)}\ntype commit\ntag t\ntagger a <a@a> 0 +0000\n\nm\n`],
+    ] as const)('Given a base entry of type %s, When fetchPack runs, Then the .idx surfaces its id', async (type, content) => {
+      // Arrange — synthesize a pack containing one entry of `type`.
+      const ctx = createMemoryContext();
+      const built = await buildSyntheticPack(ctx, [
+        { kind: 'base', type, content: ENCODER.encode(content) },
+      ]);
+      const body = buildUploadPackResponseBody({ packBytes: built.packBytes, sideBand: true });
+      const { transport } = captureRequests(body);
+
+      // Act
+      const sut = await fetchPack(ctx, transport, {
+        wants: [built.ids[0] as ObjectId],
+        haves: [],
+        capabilities: ['side-band-64k'],
+        url: REMOTE_URL,
+        progressOp: 'test:write-objects',
+      });
+
+      // Assert
+      const idx = parsePackIndex(await ctx.fs.read(sut.idxPath));
+      expect(idx.objectCount).toBe(1);
+      expect(lookupPackIndex(idx, built.ids[0] as ObjectId)).toBeGreaterThanOrEqual(12);
+    });
+  });
+
   describe('progress reporting', () => {
+    it('Given a pack split into multi-chunks >= the tick threshold, When fetchPack runs, Then byte-count update events fire mid-stream', async () => {
+      // Arrange — build a synthetic empty pack (objectCount=0). Stream it via
+      // sideband-1 frames sized just under the 64 KiB progress tick. With 3
+      // such frames the cumulative byte count crosses the tick boundary at
+      // least once mid-drain, then once more at flush. Pack stays at 32 bytes
+      // (header + trailer) so the entry walker doesn't care about content; the
+      // drain loop is what we're probing.
+      //
+      // Memory-adapter caveat: the streamInflate cap (64 KiB on the input
+      // slice) means we can't run a real multi-entry pack > 64 KiB through
+      // this path. Padding the empty pack is the lever we have available.
+      const { reporter, events } = recordingProgress();
+      const ctx = withProgress(createMemoryContext(), reporter);
+      const dummyId = (await computeBlobId(ctx, ENCODER.encode('chunked\n'))) as ObjectId;
+      // Build a "stretched" header — 12-byte header + 200_000 zero bytes of
+      // pseudo-content + 20-byte trailer. The walker will reject this (extra
+      // bytes), but drainPackBodyBounded runs first and emits ticks. We catch
+      // the throw and assert on the recorded events.
+      const stretched = new Uint8Array(12 + 200_000 + 20);
+      const dv = new DataView(stretched.buffer);
+      dv.setUint32(0, 0x5041434b);
+      dv.setUint32(4, 2);
+      dv.setUint32(8, 0);
+      const trailerBytes = hexToBytes(await ctx.hash.hashHex(stretched.subarray(0, -20)));
+      stretched.set(trailerBytes, stretched.length - 20);
+      const body = buildMultiChunkSidebandBody(stretched, 50_000);
+      const { transport } = captureRequestsChunked(body);
+
+      // Act
+      let caught: unknown;
+      try {
+        await fetchPack(ctx, transport, {
+          wants: [dummyId],
+          haves: [],
+          capabilities: ['side-band-64k'],
+          url: REMOTE_URL,
+          progressOp: 'test:write-objects',
+        });
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert — the walker must reject the stretched-no-entry pack with the
+      // "extra bytes" reason. Skipping this check would let the
+      // `if (offset !== trailerStart)` guard mutate away.
+      expect(caught).toBeInstanceOf(TsgitError);
+      const data = (caught as TsgitError).data as { code: string; reason?: string };
+      expect(data.code).toBe('INVALID_PACK_HEADER');
+      expect(data.reason).toContain('extra bytes');
+      const numericUpdates = events.filter(
+        (e): e is { kind: 'update'; op: string; current: number } =>
+          e.kind === 'update' && typeof e.current === 'number' && e.current > 0,
+      );
+      // At least one mid-stream tick must fire (50_000 bytes is below the
+      // 65_536 tick threshold but the cumulative 100_000 crosses it).
+      expect(numericUpdates.length).toBeGreaterThanOrEqual(1);
+      // Every cumulative tick is non-decreasing.
+      let prev = 0;
+      for (const u of numericUpdates) {
+        expect(u.current).toBeGreaterThanOrEqual(prev);
+        prev = u.current;
+      }
+      // Final cumulative count equals the full pack size.
+      const last = numericUpdates[numericUpdates.length - 1];
+      expect(last?.current).toBe(stretched.length);
+    });
+
+    it('Given chunks that hit the 65 536-byte tick boundary exactly, When fetchPack runs, Then ticks fire at the threshold (kills >= vs >)', async () => {
+      // Arrange — three 32_768-byte chunks. Cumulative:
+      //   chunk1 → 32_768  (no tick, diff < 65_536)
+      //   chunk2 → 65_536  (TICK with `>=`, no tick with `>`)
+      //   chunk3 → 98_304  (no tick with `>=`, TICK with `>`)
+      //   flush  → fires only if total !== lastTick.
+      // Original: 1 mid + 1 flush = 2 updates.
+      // `>` mutant: 1 mid (at 98_304) + 0 flush = 1 update.
+      // The count differs ⇒ the `>` mutant dies.
+      const { reporter, events } = recordingProgress();
+      const ctx = withProgress(createMemoryContext(), reporter);
+      const dummyId = (await computeBlobId(ctx, ENCODER.encode('tick-boundary\n'))) as ObjectId;
+      const stretched = new Uint8Array(12 + 98_304 + 20);
+      const dv = new DataView(stretched.buffer);
+      dv.setUint32(0, 0x5041434b);
+      dv.setUint32(4, 2);
+      dv.setUint32(8, 0);
+      const trailerBytes = hexToBytes(await ctx.hash.hashHex(stretched.subarray(0, -20)));
+      stretched.set(trailerBytes, stretched.length - 20);
+      const body = buildMultiChunkSidebandBody(stretched, 32_768);
+      const { transport } = captureRequestsChunked(body);
+
+      // Act
+      let caught: unknown;
+      try {
+        await fetchPack(ctx, transport, {
+          wants: [dummyId],
+          haves: [],
+          capabilities: ['side-band-64k'],
+          url: REMOTE_URL,
+          progressOp: 'test:write-objects',
+        });
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert — walker rejects the stretched-empty pack.
+      expect((caught as TsgitError).data.code).toBe('INVALID_PACK_HEADER');
+      // Exactly two numeric updates: mid-stream at 65_536 and flush.
+      const numericUpdates = events.filter(
+        (e): e is { kind: 'update'; op: string; current: number } =>
+          e.kind === 'update' && typeof e.current === 'number' && e.current > 0,
+      );
+      const counts = numericUpdates.map((u) => u.current);
+      expect(counts).toContain(65_536);
+      expect(counts[counts.length - 1]).toBe(stretched.length);
+      expect(numericUpdates.length).toBe(2);
+    });
+
+    it('Given a single sub-tick chunk, When fetchPack runs, Then ONLY a final flush tick fires (no mid-stream tick)', async () => {
+      // Arrange — single ~30 KiB chunk via one sideband-1 frame. Total
+      // bytes < PROGRESS_TICK_BYTES, so the mid-stream guard `>= 64 KiB` must
+      // NOT fire; only the post-loop `total > 0 && total !== lastTick` flush
+      // fires once. Pins the `>=` vs `>` mutant on line 178.
+      const { reporter, events } = recordingProgress();
+      const ctx = withProgress(createMemoryContext(), reporter);
+      const dummyId = (await computeBlobId(ctx, ENCODER.encode('sub-tick\n'))) as ObjectId;
+      const stretched = new Uint8Array(12 + 30_000 + 20);
+      const dv = new DataView(stretched.buffer);
+      dv.setUint32(0, 0x5041434b);
+      dv.setUint32(4, 2);
+      dv.setUint32(8, 0);
+      const trailerBytes = hexToBytes(await ctx.hash.hashHex(stretched.subarray(0, -20)));
+      stretched.set(trailerBytes, stretched.length - 20);
+      const body = buildMultiChunkSidebandBody(stretched, stretched.length);
+      const { transport } = captureRequests(body);
+
+      // Act
+      let caught: unknown;
+      try {
+        await fetchPack(ctx, transport, {
+          wants: [dummyId],
+          haves: [],
+          capabilities: ['side-band-64k'],
+          url: REMOTE_URL,
+          progressOp: 'test:write-objects',
+        });
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert — walker rejects the stretched bytes with "extra bytes" reason.
+      expect((caught as TsgitError).data.code).toBe('INVALID_PACK_HEADER');
+      // Exactly one numeric update (the flush), equal to total size.
+      const numericUpdates = events.filter(
+        (e): e is { kind: 'update'; op: string; current: number } =>
+          e.kind === 'update' && typeof e.current === 'number' && e.current > 0,
+      );
+      expect(numericUpdates).toHaveLength(1);
+      expect(numericUpdates[0]?.current).toBe(stretched.length);
+    });
+
+    it('Given an empty pack body, When fetchPack runs, Then no flush tick fires (total === 0 short-circuits)', async () => {
+      // Arrange — server returns NAK + no sideband frames (zero pack bytes).
+      // The post-loop flush guard `total > 0 && total !== lastTick` must NOT
+      // emit when total === 0. Pins both halves of the AND: a `total >= 0`
+      // mutant would fire a 0-value flush, and a `||` mutant would still fire
+      // (total !== lastTick is false; total > 0 is false). The assertion
+      // counts ALL update events — not just current > 0 — so a flush firing
+      // with current=0 still trips the test.
+      const { reporter, events } = recordingProgress();
+      const ctx = withProgress(createMemoryContext(), reporter);
+      const dummyId = (await computeBlobId(ctx, ENCODER.encode('empty body\n'))) as ObjectId;
+      const body = encodePktStream([ENCODER.encode('NAK\n')]);
+      const { transport } = captureRequests(body);
+
+      // Act
+      let caught: unknown;
+      try {
+        await fetchPack(ctx, transport, {
+          wants: [dummyId],
+          haves: [],
+          capabilities: ['side-band-64k'],
+          url: REMOTE_URL,
+          progressOp: 'test:write-objects',
+        });
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert — empty body cannot have a valid trailer; the trailer guard
+      // fires with the "too short" reason.
+      expect(caught).toBeInstanceOf(TsgitError);
+      const data = (caught as TsgitError).data as { code: string; reason?: string };
+      expect(data.code).toBe('INVALID_PACK_HEADER');
+      expect(data.reason).toContain('too short');
+      // No update events whatsoever (the drain loop never runs).
+      const allUpdates = events.filter((e) => e.kind === 'update');
+      expect(allUpdates).toHaveLength(0);
+    });
+
     it('Given a successful fetchPack, When run, Then start fires before end with the configured op', async () => {
       // Arrange
       const { reporter, events } = recordingProgress();

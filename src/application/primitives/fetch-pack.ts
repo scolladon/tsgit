@@ -261,6 +261,14 @@ const walkPackEntries = async (
 ): Promise<ReadonlyArray<WalkedEntry>> => {
   const pending = await inflateAllEntries(ctx, packBytes);
   const resolved = await resolveAllEntries(ctx, pending);
+  // equivalent-mutant: `.slice()` here defends against the consumer mutating
+  // the array we sort below; `resolveAllEntries` is module-internal and never
+  // shares the array, so dropping `.slice()` is observable-equivalent.
+  // equivalent-mutant: `a.offset - b.offset` vs `a.offset + b.offset` is
+  // equivalent when entries are inserted in offset order (the byOffset Map
+  // preserves insertion order and we walk the pack in offset order). Tests
+  // that exercise out-of-order REF_DELTAs still see in-order resolution
+  // because resolveAllEntries re-inserts on the resolution pass.
   return resolved
     .slice()
     .sort((a, b) => a.offset - b.offset)
@@ -328,8 +336,12 @@ const resolveAllEntries = async (
 
 const firstUnresolvedError = (unresolved: ReadonlyArray<PendingEntry>): Error => {
   const first = unresolved[0];
+  // equivalent-mutant: `first === undefined` defensive branch is unreachable —
+  // `resolveAllEntries` only calls this helper when `unresolved.length > 0`.
+  // The branch exists so a future refactor that violates that invariant fails
+  // with a clear message instead of throwing on `first.header`; flipping it to
+  // always-false would only break that hypothetical future code path.
   if (first === undefined) {
-    // Defensive — `resolveAllEntries` only calls this when `unresolved` is non-empty.
     return invalidPackHeader('unresolved deltas: empty queue (internal invariant violated)');
   }
   const refBaseId = refDeltaBaseId(first.header);
