@@ -229,9 +229,8 @@ acceptance hint so the next planner can scope it without re-deriving context.
 
 Surface exists today; stub bodies need real loops. Highest user-visible value.
 
-- [ ] **12.1** `clone`: smart-HTTP pack fetch + write-objects loop.
-      _Accept when:_ `repo.clone({ url })` against a real `git-upload-pack` endpoint produces a working repo whose `git log` matches the remote's HEAD line.
-      _Touches:_ `application/commands/clone.ts`, new `application/primitives/fetch-pack.ts`, progress site `clone:write-objects`.
+- [x] **12.1** `clone`: smart-HTTP pack fetch + write-objects loop.
+      _Accepted:_ `repo.clone({ url })` against a real `git-upload-pack` endpoint produces a working repo whose `git log` matches the remote's HEAD line. End-to-end integration test against a local `git-http-backend` is green (`test/integration/network/clone-http-backend.test.ts`). Shallow / `depth: N` deferred to 12.2 per [ADR-008](adr/008-clone-defer-shallow.md). Streaming the pack to a temp file (instead of in-memory buffer) deferred per [ADR-007](adr/007-clone-resume-semantics.md). Smart-HTTP v2 deferred per [ADR-005](adr/005-clone-protocol-v1.md).
 - [ ] **12.2** `fetch`: ls-refs + want/have negotiation + pack write.
       _Accept when:_ shallow + non-shallow fetch updates `refs/remotes/<remote>/*` and writes received objects.
       _Touches:_ `fetch.ts`, shared `fetch-pack.ts`, progress site `fetch:write-objects`.
