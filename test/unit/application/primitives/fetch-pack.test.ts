@@ -1291,14 +1291,12 @@ describe('fetchPack', () => {
       expect(numericUpdates[0]?.current).toBe(stretched.length);
     });
 
-    it('Given an empty pack body, When fetchPack runs, Then no flush tick fires (total === 0 short-circuits)', async () => {
+    it('Given an empty pack body, When fetchPack runs, Then returns a synthetic empty result (no error, no update tick)', async () => {
       // Arrange — server returns NAK + no sideband frames (zero pack bytes).
-      // The post-loop flush guard `total > 0 && total !== lastTick` must NOT
-      // emit when total === 0. Pins both halves of the AND: a `total >= 0`
-      // mutant would fire a 0-value flush, and a `||` mutant would still fire
-      // (total !== lastTick is false; total > 0 is false). The assertion
-      // counts ALL update events — not just current > 0 — so a flush firing
-      // with current=0 still trips the test.
+      // Phase 12.2: this is a legitimate protocol state when the client's
+      // `have` set already covers every wanted oid (e.g., re-fetching a
+      // fully up-to-date remote). fetchPack returns objectCount=0 with empty
+      // path strings and emits NO progress tick.
       const { reporter, events } = recordingProgress();
       const ctx = withProgress(createMemoryContext(), reporter);
       const dummyId = (await computeBlobId(ctx, ENCODER.encode('empty body\n'))) as ObjectId;
@@ -1306,25 +1304,19 @@ describe('fetchPack', () => {
       const { transport } = captureRequests(body);
 
       // Act
-      let caught: unknown;
-      try {
-        await fetchPack(ctx, transport, {
-          wants: [dummyId],
-          haves: [],
-          capabilities: ['side-band-64k'],
-          url: REMOTE_URL,
-          progressOp: 'test:write-objects',
-        });
-      } catch (err) {
-        caught = err;
-      }
+      const sut = await fetchPack(ctx, transport, {
+        wants: [dummyId],
+        haves: [],
+        capabilities: ['side-band-64k'],
+        url: REMOTE_URL,
+        progressOp: 'test:write-objects',
+      });
 
-      // Assert — empty body cannot have a valid trailer; the trailer guard
-      // fires with the "too short" reason.
-      expect(caught).toBeInstanceOf(TsgitError);
-      const data = (caught as TsgitError).data as { code: string; reason?: string };
-      expect(data.code).toBe('INVALID_PACK_HEADER');
-      expect(data.reason).toContain('too short');
+      // Assert — synthetic empty result.
+      expect(sut.objectCount).toBe(0);
+      expect(sut.packSha).toBe('');
+      expect(sut.packPath).toBe('');
+      expect(sut.idxPath).toBe('');
       // No update events whatsoever (the drain loop never runs).
       const allUpdates = events.filter((e) => e.kind === 'update');
       expect(allUpdates).toHaveLength(0);

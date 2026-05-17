@@ -99,6 +99,20 @@ export const fetchPack = async (
   ctx.progress.start(input.progressOp);
   try {
     const download = await downloadPack(ctx, transport, input);
+    // git-upload-pack returns a zero-byte body when the client's `have` set
+    // already covers every wanted oid. This is a legitimate protocol state
+    // (the server has nothing to send), not an error. Surface it as an
+    // empty result so the caller can advance refs and return cleanly.
+    if (download.packBytes.length === 0) {
+      return {
+        packPath: '',
+        idxPath: '',
+        objectCount: 0,
+        packSha: '',
+        shallow: download.shallow,
+        unshallow: download.unshallow,
+      };
+    }
     const packSha = await verifyPackTrailer(download.packBytes, ctx);
     const entries = await walkPackEntries(ctx, download.packBytes);
     const idxBytes = await buildIdx(ctx, entries, packSha);
