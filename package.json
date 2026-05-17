@@ -4,6 +4,23 @@
   "description": "Lightning-fast git, pure TypeScript, everywhere.",
   "type": "module",
   "license": "MIT",
+  "author": "Sébastien Colladon",
+  "homepage": "https://github.com/scolladon/tsgit#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/scolladon/tsgit.git"
+  },
+  "bugs": {
+    "url": "https://github.com/scolladon/tsgit/issues"
+  },
+  "keywords": [
+    "git",
+    "typescript",
+    "nodejs",
+    "browser",
+    "opfs",
+    "zero-dependency"
+  ],
   "engines": {
     "node": ">=22.22.1"
   },
