@@ -4,6 +4,7 @@ import * as primitives from '../../../../src/application/primitives/index.js';
 describe('primitives barrel', () => {
   it('Given the barrel, When imported, Then all primitives are exposed as functions', () => {
     const names = [
+      'applyChangeset',
       'buildPack',
       'computeChangeset',
       'createCommit',
@@ -33,6 +34,7 @@ describe('primitives barrel', () => {
 
   it('Given the barrel, When inspecting keys, Then only expected public surface is exposed', () => {
     const expected = new Set([
+      'applyChangeset',
       'buildPack',
       'computeChangeset',
       'createCommit',

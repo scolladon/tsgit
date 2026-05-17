@@ -1,3 +1,5 @@
+export type { ApplyChangesetOpts, ApplyChangesetResult } from './apply-changeset.js';
+export { applyChangeset } from './apply-changeset.js';
 export type { BuildPackInput, BuildPackResult } from './build-pack.js';
 export { buildPack } from './build-pack.js';
 export type { Changeset, ChangesetEntry, ChangesetStats } from './compute-changeset.js';
