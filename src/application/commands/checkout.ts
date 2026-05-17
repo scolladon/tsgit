@@ -72,14 +72,16 @@ const switchBranch = async (ctx: Context, opts: CheckoutSwitchOptions): Promise<
     force: opts.force ?? false,
   });
 
-  // Commit new index
+  // Commit new index — release is idempotent and becomes a no-op after a
+  // successful commit (per acquireIndexLock's contract), but pairing it with
+  // a `finally` removes the latent leak surface if a throw lands between
+  // acquire and commit.
   if (materializeResult.written > 0 || materializeResult.deleted > 0) {
     const lock = await acquireIndexLock(ctx);
     try {
       await lock.commit(materializeResult.newIndexEntries);
-    } catch (err) {
+    } finally {
       await lock.release();
-      throw err;
     }
   }
 
@@ -146,9 +148,8 @@ const pathRestore = async (ctx: Context, opts: CheckoutPathsOptions): Promise<Ch
     const lock = await acquireIndexLock(ctx);
     try {
       await lock.commit(materializeResult.newIndexEntries);
-    } catch (err) {
+    } finally {
       await lock.release();
-      throw err;
     }
   }
 

@@ -227,6 +227,48 @@ describe('applyChangeset', () => {
     }
   });
 
+  it('Given a tracked-file read fails with PERMISSION_DENIED, When applyChangeset runs without force, Then re-throws instead of silently overwriting', async () => {
+    // Arrange
+    const ctx = await buildSeededContext();
+    const id = await writeBlob(ctx, new TextEncoder().encode('original'));
+    await ctx.fs.write(`${WORKDIR}/secret.txt`, new TextEncoder().encode('original'));
+    const sut = applyChangeset;
+    const wrappedCtx = {
+      ...ctx,
+      fs: {
+        ...ctx.fs,
+        read: async (p: string): Promise<Uint8Array> => {
+          if (p === `${WORKDIR}/secret.txt`) {
+            throw new TsgitError({ code: 'PERMISSION_DENIED', path: p });
+          }
+          return ctx.fs.read(p);
+        },
+      },
+    };
+
+    // Act + Assert
+    try {
+      await sut(wrappedCtx, {
+        changeset: makeChangeset([
+          {
+            kind: 'update',
+            path: 'secret.txt' as FilePath,
+            mode: FILE_MODE.REGULAR,
+            id,
+            previousId: id,
+            previousMode: FILE_MODE.REGULAR,
+          },
+        ]),
+        force: false,
+        workdir: WORKDIR,
+      });
+      throw new Error('expected throw');
+    } catch (err) {
+      expect(err).toBeInstanceOf(TsgitError);
+      expect((err as TsgitError).data.code).toBe('PERMISSION_DENIED');
+    }
+  });
+
   it('Given a noop entry, When applyChangeset runs, Then leaves the working tree unchanged and does not include the entry in writtenEntries', async () => {
     // Arrange
     const ctx = await buildSeededContext();

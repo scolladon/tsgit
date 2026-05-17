@@ -35,7 +35,7 @@ A pure TypeScript git implementation designed to be the fastest portable git lib
 
 - **Lightning fast** — 3-5x faster than isomorphic-git via fanout binary search, LRU delta cache, zero-copy parsing, streaming inflate
 - **Portable** — Runs on Node.js 18+, Chrome 90+, Firefox 100+, Safari 15.4+, Deno, Bun, Cloudflare Workers
-- **Lightweight** — < 150 kB gzipped full library. Zero runtime dependencies. Tree-shakeable.
+- **Lightweight** — < 160 kB gzipped full library. Zero runtime dependencies. Tree-shakeable.
 - **Two-tier API** — Ergonomic repository object for common operations + composable AsyncIterable primitives for power users
 - **Type-safe** — Branded types, discriminated unions, exhaustive error codes. No `any`.
 - **Testable** — First-class in-memory adapter. All ports are mockable. Pure functions throughout.

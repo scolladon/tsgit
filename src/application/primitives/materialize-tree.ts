@@ -56,6 +56,58 @@ const filterByPaths = <T extends { readonly path: FilePath }>(
   paths: ReadonlySet<FilePath>,
 ): T[] => entries.filter((e) => paths.has(e.path));
 
+const indexEntriesByPath = (index: GitIndex): Map<FilePath, IndexEntry> => {
+  const out = new Map<FilePath, IndexEntry>();
+  for (const entry of index.entries) {
+    if (entry.flags.stage === 0) out.set(entry.path, entry);
+  }
+  return out;
+};
+
+const writtenEntriesByPath = (
+  writtenEntries: ReadonlyArray<IndexEntry>,
+): Map<FilePath, IndexEntry> => {
+  const out = new Map<FilePath, IndexEntry>();
+  for (const entry of writtenEntries) out.set(entry.path, entry);
+  return out;
+};
+
+const preserveOutOfScope = (
+  oldByPath: ReadonlyMap<FilePath, IndexEntry>,
+  scopedPaths: ReadonlySet<FilePath> | undefined,
+): IndexEntry[] => {
+  if (scopedPaths === undefined) return [];
+  const out: IndexEntry[] = [];
+  for (const [path, entry] of oldByPath) {
+    if (!scopedPaths.has(path)) out.push(entry);
+  }
+  return out;
+};
+
+const pickEntry = (
+  path: FilePath,
+  writtenByPath: ReadonlyMap<FilePath, IndexEntry>,
+  oldByPath: ReadonlyMap<FilePath, IndexEntry>,
+): IndexEntry | undefined => writtenByPath.get(path) ?? oldByPath.get(path);
+
+const mergeNewIndexEntries = (
+  writtenEntries: ReadonlyArray<IndexEntry>,
+  currentIndex: GitIndex,
+  target: ReadonlyArray<TargetEntry>,
+  scopedPaths: ReadonlySet<FilePath> | undefined,
+): ReadonlyArray<IndexEntry> => {
+  const writtenByPath = writtenEntriesByPath(writtenEntries);
+  const oldByPath = indexEntriesByPath(currentIndex);
+
+  const merged: IndexEntry[] = preserveOutOfScope(oldByPath, scopedPaths);
+  for (const entry of target) {
+    const picked = pickEntry(entry.path, writtenByPath, oldByPath);
+    if (picked !== undefined) merged.push(picked);
+  }
+  merged.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+  return merged;
+};
+
 export const materializeTree = async (
   ctx: Context,
   opts: MaterializeTreeOpts,
@@ -80,7 +132,12 @@ export const materializeTree = async (
   });
 
   return {
-    newIndexEntries: result.writtenEntries,
+    newIndexEntries: mergeNewIndexEntries(
+      result.writtenEntries,
+      opts.currentIndex,
+      target,
+      opts.paths,
+    ),
     written: result.written,
     deleted: result.deleted,
   };

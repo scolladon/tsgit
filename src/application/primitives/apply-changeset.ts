@@ -14,6 +14,7 @@
  * see ADR-018.
  */
 import { checkoutOverwriteDirty } from '../../domain/commands/error.js';
+import { TsgitError } from '../../domain/error.js';
 import type { IndexEntry } from '../../domain/git-index/index.js';
 import { FILE_MODE, type FileMode, type FilePath } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
@@ -45,12 +46,14 @@ const blobMatches = async (ctx: Context, absPath: string, expectedId: string): P
   let bytes: Uint8Array;
   try {
     bytes = await ctx.fs.read(absPath);
-  } catch {
-    // File missing or unreadable — for a `delete`/`update` target this is
-    // ambiguous (already deleted? race?). Treat as non-dirty; the apply
-    // step will hit the same FS state and either succeed (rm of missing
-    // file) or fail with an actionable error.
-    return true;
+  } catch (err) {
+    // FILE_NOT_FOUND on a `delete`/`update` target means the file is already
+    // gone — treat as non-dirty so the apply step proceeds as a no-op.
+    if (err instanceof TsgitError && err.data.code === 'FILE_NOT_FOUND') return true;
+    // PERMISSION_DENIED and other read failures are NOT silently overwritten —
+    // re-throw so the caller surfaces the underlying error instead of
+    // clobbering an unreadable file.
+    throw err;
   }
   // Compute the loose-object content hash with the `blob <size>\0` header
   // so it matches what git stored.
