@@ -95,6 +95,70 @@ describe('checkout', () => {
     expect(sut.detached).toBe(true);
     expect(sut.id).toBe(commitId);
   });
+
+  it('Given two commits with diverging file content, When checkout to the older commit, Then working tree restores the older content', async () => {
+    // Arrange
+    const ctx = createMemoryContext();
+    await init(ctx);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/foo.txt`, 'v1');
+    await add(ctx, ['foo.txt']);
+    const c1 = await commit(ctx, { message: 'v1', author });
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/foo.txt`, 'v2');
+    await add(ctx, ['foo.txt']);
+    await commit(ctx, { message: 'v2', author });
+
+    // Act — checkout the first commit
+    const sut = await checkout(ctx, { target: c1.id, force: true });
+
+    // Assert — working tree now matches v1, and changedPaths reflects the update
+    expect(sut.detached).toBe(true);
+    expect(sut.changedPaths).toBeGreaterThanOrEqual(1);
+    const bytes = await ctx.fs.read(`${ctx.layout.workDir}/foo.txt`);
+    expect(new TextDecoder().decode(bytes)).toBe('v1');
+  });
+
+  it('Given both target and paths are provided, When checkout, Then throws INVALID_OPTION', async () => {
+    // Arrange
+    const { ctx } = await seedWithBranches();
+
+    // Act + Assert
+    try {
+      await checkout(ctx, {
+        target: 'main',
+        paths: ['a.txt'],
+      } as unknown as Parameters<typeof checkout>[1]);
+      throw new Error('expected throw');
+    } catch (err) {
+      expect(err).toBeInstanceOf(TsgitError);
+      expect((err as TsgitError).data.code).toBe('INVALID_OPTION');
+    }
+  });
+
+  it('Given neither target nor paths, When checkout, Then throws INVALID_OPTION', async () => {
+    // Arrange
+    const { ctx } = await seedWithBranches();
+
+    // Act + Assert
+    try {
+      await checkout(ctx, {} as unknown as Parameters<typeof checkout>[1]);
+      throw new Error('expected throw');
+    } catch (err) {
+      expect((err as TsgitError).data.code).toBe('INVALID_OPTION');
+    }
+  });
+
+  it('Given paths=[] (empty array), When checkout in paths mode, Then throws INVALID_OPTION', async () => {
+    // Arrange
+    const { ctx } = await seedWithBranches();
+
+    // Act + Assert
+    try {
+      await checkout(ctx, { paths: [] });
+      throw new Error('expected throw');
+    } catch (err) {
+      expect((err as TsgitError).data.code).toBe('INVALID_OPTION');
+    }
+  });
 });
 
 import { recordingProgress, withProgress } from './fixtures.js';
