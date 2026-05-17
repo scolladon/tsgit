@@ -288,7 +288,11 @@
     "Gitea",
     "Codeberg",
     "toplevel",
-    "rebuilder"
+    "rebuilder",
+    "Sébastien",
+    "Colladon",
+    "treemap",
+    "arethetypeswrong"
   ],
   "ignorePaths": [
     "node_modules",
