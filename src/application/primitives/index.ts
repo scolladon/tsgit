@@ -1,3 +1,5 @@
+export type { BuildPackInput, BuildPackResult } from './build-pack.js';
+export { buildPack } from './build-pack.js';
 export { createCommit } from './create-commit.js';
 export { diffTrees } from './diff-trees.js';
 export type { FetchPackInput, FetchPackResult } from './fetch-pack.js';
