@@ -10,6 +10,8 @@ export type { EnumeratePushObjectsInput } from './enumerate-push-objects.js';
 export { enumeratePushObjects } from './enumerate-push-objects.js';
 export type { FetchPackInput, FetchPackResult } from './fetch-pack.js';
 export { fetchPack } from './fetch-pack.js';
+export type { MaterializeTreeOpts, MaterializeTreeResult } from './materialize-tree.js';
+export { materializeTree } from './materialize-tree.js';
 export { mergeBase } from './merge-base.js';
 export { getRepoRoot } from './path-layout.js';
 export { readBlob } from './read-blob.js';
