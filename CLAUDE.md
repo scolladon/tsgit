@@ -81,11 +81,15 @@ npm run build         # Compile to dist/
 
 ## Development Workflow (MANDATORY)
 
-Every feature follows this sequence. No exceptions. No skipping steps.
+Every feature follows this sequence. No exceptions. No skipping steps. When the user says **"apply the workflow"** (or any equivalent — "do the workflow", "follow our process", "the usual flow"), run the 8 steps below **in order**, top to bottom, without abbreviation.
 
-### 1. Design (`docs/design/`)
+### 1. Branch
 
-Before any code, create a design document in `docs/design/`. The design covers:
+Create a fresh branch off `main`, named with a conventional-commit type prefix: `feat/<topic>`, `fix/<topic>`, `ci/<topic>`, `chore/<topic>`, `docs/<topic>`. Never commit directly to `main`.
+
+### 2. Design (`docs/design/<topic>.md`)
+
+Write the first draft, then **self-review three times**, fixing every gap each pass before moving on. The design covers:
 - TypeScript types and interfaces
 - Binary/wire format details (if applicable)
 - Function signatures and contracts
@@ -93,53 +97,59 @@ Before any code, create a design document in `docs/design/`. The design covers:
 - Testing strategy (unit, property-based, interop)
 - Key design decisions with rationale
 
-### 2. ADR (`docs/adr/`) — when choosing between alternatives
+Commit when stable: `docs(design): <topic>`.
 
-If the design requires choosing between multiple valid approaches, create an ADR **before** deciding:
+### 3. ADR (`docs/adr/NNN-<title>.md`) — for every choice made with the user
+
+Whenever a decision was reached in conversation with the user — naming, scoping, library selection, trade-off, anything they weighed in on — capture it as an ADR **before** moving on. This rule is stronger than "when choosing between alternatives": if the user's input shaped the choice, an ADR records it so the rationale survives the conversation. Mechanics:
 - Use the template at `docs/adr/000-template.md`
 - Number sequentially: `docs/adr/NNN-title.md`
-- Include the current main SHA in the Status section: `Accepted (at <sha>)`
-- Document context, decision, and consequences (positive, negative, neutral)
+- Status: `Accepted (at <main-sha>)`
+- Document context, decision, consequences (positive, negative, neutral), and the alternatives considered.
 
-### 3. Plan (`docs/plan/`)
+Commit: `docs(adr): NNN <title>`.
 
-Create an implementation plan that breaks the design into TDD steps:
+### 4. Plan (`docs/plan/<topic>.md`)
+
+Derive the plan from the design and ADRs. **Self-review three times**, fixing every issue each pass. Plan contents:
 - Ordered list of files to create/modify
 - Each step: what to test first, what to implement, what to verify
 - Dependencies between steps
 
-### 4. Implement (TDD)
+Commit: `docs(plan): <topic>`.
 
-Follow the plan step by step:
-- **Red**: Write the test first. It must fail.
-- **Green**: Write minimal code to pass the test.
-- **Refactor**: Clean up while keeping tests green.
+### 5. Implement (TDD, agent teams)
+
+Follow the plan step by step. Use parallel agent teams (typescript-reviewer, test-review, security-reviewer, planner, refactor-cleaner, etc.) where it accelerates the work or improves quality. Write **atomic, easy-to-review commits** — one concept per commit, conventional-commit subjects.
+
+For each unit of work:
+- **Red**: write the test first; it must fail.
+- **Green**: write minimal code to pass.
+- **Refactor**: clean up while keeping tests green.
 - Run `npm run validate` before committing.
-- **Never commit directly to main.** Always use a feature branch or worktree. Run mutation testing before merging to main.
 
-### 5. Branch Finalization (before merge)
+### 6. Review the implementation three times
 
-Run all of these before merging to main:
-1. `npm run validate` — full quality gate
-2. Mutation testing (`stryker run`) — fix survivors, accept only provably equivalent mutants
-3. Run in parallel: code review, security review, performance review, test review agents
-4. Update docs: README, CONTRIBUTING, design docs if changed
-5. Commit, squash-and-merge to main
-6. Cleanup: delete feature branch and worktree (`git worktree remove`, `git branch -D`)
+After implementation, run **three review passes** on the diff — code quality, performance, security, tests — fixing every finding each pass. Prefer the parallel-agent pattern (code-reviewer + security-reviewer + test-review + perf review in parallel), the same way the Phase 11 launch finalization did. The three passes ensure findings introduced by an earlier round of fixes get caught too.
 
-### 6. Track progress
+### 7. Engineering harness green + mutation testing
 
-Update `docs/BACKLOG.md` after each completed item:
-- `[ ]` → `[~]` when starting
-- `[~]` → `[x]` when done
+- `npm run validate` — every check passes (lint, types, dead-code, duplicates, filesystem, architecture, spelling, deps, security, size, exports, 100% coverage on lines/branches/functions/statements, integration tests).
+- `stryker run` — kill every killable mutant. Provably-equivalent mutants are accepted only when documented inline with a `// equivalent-mutant: <why>` comment.
+
+### 8. Docs refresh, push, open PR
+
+Update `README.md`, `RUNBOOK.md`, `CONTRIBUTING.md`, `DESIGN.md`, and any phase design docs that the implementation invalidated. Flip `docs/BACKLOG.md` entries (`[~]` → `[x]`). Push the branch, open a PR with a thorough body (summary + test plan), and let CI exercise the full pipeline. Squash-merge on green. Cleanup: `git worktree remove`, `git branch -D`.
 
 ### Workflow summary
 
 ```
-BACKLOG.md → design/ → (adr/ if needed) → plan/ → implement (TDD) → finalize branch → BACKLOG.md ✓
+branch → design ×3 → adr (every user-made choice) → plan ×3 →
+implement (TDD, agent teams, atomic commits) → review ×3 →
+harness green + kill mutants → docs refresh + push + PR
 ```
 
-**Never skip design. Never code without a plan. Never choose without an ADR.**
+**Never skip design. Never code without a plan. Never decide with the user without an ADR. Never push without three review passes.**
 
 ## Docs
 
