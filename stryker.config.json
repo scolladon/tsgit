@@ -6,7 +6,8 @@
   "tsconfigFile": "tsconfig.json",
   "mutate": ["src/**/*.ts", "!src/**/index.ts", "!src/**/*.d.ts", "!src/adapters/browser/**/*.ts"],
   "vitest": {
-    "configFile": "vitest.config.ts"
+    "configFile": "vitest.config.ts",
+    "dir": "test/unit"
   },
   "coverageAnalysis": "perTest",
   "reporters": ["clear-text", "progress", "html", "json"],

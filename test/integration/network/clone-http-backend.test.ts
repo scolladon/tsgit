@@ -50,8 +50,14 @@ const FIXTURE_AVAILABLE = ((): boolean => {
   }
 })();
 
-const SKIP_REASON: string | false =
-  GIT_HTTP_BACKEND === undefined
+// Stryker copies files into `.stryker-tmp/sandbox-XXX/` and re-runs the suite
+// from there. The spawned `git-http-backend` CGI does not work reliably across
+// the sandbox boundary; mutation kills are carried by the unit tests anyway.
+const RUNNING_UNDER_STRYKER = process.cwd().includes('.stryker-tmp');
+
+const SKIP_REASON: string | false = RUNNING_UNDER_STRYKER
+  ? 'integration suite skipped under Stryker (mutation kills live in unit tests)'
+  : GIT_HTTP_BACKEND === undefined
     ? 'git-http-backend not available — run scripts/regenerate-clone-fixtures.sh first'
     : !FIXTURE_AVAILABLE
       ? 'fixture missing — run scripts/regenerate-clone-fixtures.sh'
