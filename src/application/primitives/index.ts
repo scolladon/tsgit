@@ -9,6 +9,7 @@ export { readIndex } from './read-index.js';
 export { readObject } from './read-object.js';
 export { readTree } from './read-tree.js';
 export { resolveRef } from './resolve-ref.js';
+export { readShallow, updateShallow } from './shallow-file.js';
 export type * from './types.js';
 export { updateRef } from './update-ref.js';
 export { walkCommits } from './walk-commits.js';
