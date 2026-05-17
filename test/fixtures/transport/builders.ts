@@ -53,6 +53,10 @@ export interface BuiltUploadPackResponse {
   readonly packBytes: Uint8Array;
   readonly sideBand: boolean;
   readonly progressLines?: ReadonlyArray<string>;
+  /** Phase 12.2: oids emitted as `shallow <oid>` lines before the ACK/NAK block. */
+  readonly shallow?: ReadonlyArray<string>;
+  /** Phase 12.2: oids emitted as `unshallow <oid>` lines before the ACK/NAK block. */
+  readonly unshallow?: ReadonlyArray<string>;
 }
 
 const sideBandPayload = (channel: number, body: Uint8Array): Uint8Array => {
@@ -66,10 +70,17 @@ const ackText = (a: { id: string; status: 'ack' | 'continue' | 'common' | 'ready
   a.status === 'ack' ? `ACK ${a.id}\n` : `ACK ${a.id} ${a.status}\n`;
 
 /**
- * Build a single-round clone upload-pack response: optional ACK lines,
- * NAK, then a sideband-1 wrapper around `packBytes`, then flush.
+ * Build a single-round clone/fetch upload-pack response: optional shallow
+ * block (shallow/unshallow + flush — Phase 12.2), optional ACK lines, NAK,
+ * then a sideband-1 wrapper around `packBytes`, then flush.
  */
 export const buildUploadPackResponseBody = (opts: BuiltUploadPackResponse): Uint8Array => {
+  const shallowLines = (opts.shallow ?? []).map((oid) => bytesOf(`shallow ${oid}\n`));
+  const unshallowLines = (opts.unshallow ?? []).map((oid) => bytesOf(`unshallow ${oid}\n`));
+  const shallowSection =
+    shallowLines.length + unshallowLines.length > 0
+      ? encodePktStream([...shallowLines, ...unshallowLines])
+      : new Uint8Array(0);
   const payloads: Uint8Array[] = [];
   for (const a of opts.acks ?? []) payloads.push(bytesOf(ackText(a)));
   payloads.push(bytesOf('NAK\n'));
@@ -85,7 +96,8 @@ export const buildUploadPackResponseBody = (opts: BuiltUploadPackResponse): Uint
     // it fits, else wrap in encodePktLine pieces.
     if (opts.packBytes.byteLength > 0) payloads.push(opts.packBytes);
   }
-  return encodePktStream(payloads);
+  const tail = encodePktStream(payloads);
+  return concat(shallowSection, tail);
 };
 
 export interface BuiltReceivePackResponse {

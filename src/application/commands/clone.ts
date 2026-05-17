@@ -1,10 +1,10 @@
-import { unsupportedOperation } from '../../domain/error.js';
 import { remoteAdvertisesNoRefs, targetDirectoryNotEmpty } from '../../domain/index.js';
 import type { ObjectId, RefName } from '../../domain/objects/index.js';
 import type { FilePath } from '../../domain/objects/object-id.js';
 import type { Advertisement } from '../../domain/protocol/index.js';
 import type { Context } from '../../ports/context.js';
 import { fetchPack } from '../primitives/fetch-pack.js';
+import { updateShallow } from '../primitives/shallow-file.js';
 import { bootstrapRepository } from './internal/bootstrap.js';
 import { withDefaults } from './internal/network-pipeline.js';
 import {
@@ -19,9 +19,8 @@ export interface CloneOptions {
   readonly bare?: boolean;
   readonly initialBranch?: string;
   /**
-   * Shallow clone depth. Accepted on the type for forward compatibility but
-   * NOT honored in Phase 12.1 — setting it throws `UNSUPPORTED_OPERATION`.
-   * Shallow handling lands with Phase 12.2 fetch (see ADR-008).
+   * Shallow clone depth. When set, sends `deepen N` and persists the
+   * resulting shallow boundaries to `.git/shallow`. Phase 12.2 (see ADR-009).
    */
   readonly depth?: number;
   /** DNS resolver injected by the caller; required to enforce SSRF guards. */
@@ -48,9 +47,8 @@ export interface CloneResult {
  *
  * Working-tree materialization is Phase 13.1 — out of scope here.
  *
- * Throws `TARGET_DIRECTORY_NOT_EMPTY` if `gitDir` already exists,
- * `REMOTE_ADVERTISES_NO_REFS` when discovery returns no refs, and
- * `UNSUPPORTED_OPERATION` when `depth: N` is set (ADR-008).
+ * Throws `TARGET_DIRECTORY_NOT_EMPTY` if `gitDir` already exists and
+ * `REMOTE_ADVERTISES_NO_REFS` when discovery returns no refs.
  */
 const CLONE_DISCOVER_OP = 'clone:discover';
 const CLONE_WRITE_OBJECTS_OP = 'clone:write-objects';
@@ -60,12 +58,6 @@ export const clone = async (ctx: Context, opts: CloneOptions): Promise<CloneResu
     throw targetDirectoryNotEmpty(ctx.layout.workDir as FilePath);
   }
   if (opts.url === '') throw remoteAdvertisesNoRefs();
-  if (opts.depth !== undefined) {
-    throw unsupportedOperation(
-      'clone-shallow',
-      'depth: N is supported in Phase 12.2 (fetch); see ADR-008',
-    );
-  }
   ctx.progress.start(CLONE_DISCOVER_OP);
   try {
     // Defense-in-depth URL validation. Production callers go through
@@ -117,13 +109,23 @@ const fetchAndPropagate = async (
   if (advertisement.refs.length === 0) throw remoteAdvertisesNoRefs();
   const capabilities = selectFetchCapabilities(advertisement.capabilities);
   const wants = uniqueRefOids(advertisement.refs);
-  await fetchPack(ctx, transport, {
+  const packResult = await fetchPack(ctx, transport, {
     wants,
     haves: [],
     capabilities,
     url: opts.url,
     progressOp: CLONE_WRITE_OBJECTS_OP,
+    ...(opts.depth !== undefined ? { depth: opts.depth } : {}),
   });
+  if (packResult.shallow.length > 0) {
+    // Clone never sees `unshallow` (the local repo is empty until now), but
+    // updateShallow handles a populated `unshallow` correctly — pass the
+    // packResult array verbatim instead of dropping it.
+    await updateShallow(ctx, {
+      shallow: packResult.shallow,
+      unshallow: packResult.unshallow,
+    });
+  }
   const fetchedRefs = await writeFetchedRefs(ctx, advertisement);
   const head = await applyRemoteHead(ctx, advertisement);
   return { path: gitDir, head, fetchedRefs };

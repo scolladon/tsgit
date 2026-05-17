@@ -23,6 +23,8 @@ interface CloneFixtureOptions {
   readonly head: string; // ref name the HEAD symref points at (or oid for detached)
   readonly capabilities: ReadonlyArray<string>;
   readonly packBytes: Uint8Array;
+  /** Shallow oids emitted before NAK + pack. Phase 12.2; ADR-009. */
+  readonly shallow?: ReadonlyArray<string>;
 }
 
 const buildCloneRemote = (opts: CloneFixtureOptions): HttpTransport => {
@@ -34,6 +36,7 @@ const buildCloneRemote = (opts: CloneFixtureOptions): HttpTransport => {
   const packResponseBody = buildUploadPackResponseBody({
     packBytes: opts.packBytes,
     sideBand: true,
+    shallow: opts.shallow ?? [],
   });
   return {
     request: async (req: HttpRequest): Promise<HttpResponse> => {
@@ -70,54 +73,28 @@ const buildPackFromSingleBlob = async (
 };
 
 describe('clone', () => {
-  it('Given depth: 1, When clone, Then throws UNSUPPORTED_OPERATION naming Phase 12.2', async () => {
-    // Arrange
+  it('Given depth: 1 and a server emitting a shallow block, When clone, Then writes .git/shallow with the boundary oid', async () => {
+    // Arrange — Phase 12.2 ADR-009 reopens depth on clone. The shallow
+    // section is wrapped into the upload-pack response before the NAK.
     const ctx = createMemoryContext();
+    const { packBytes, blobId } = await buildPackFromSingleBlob(ctx, 'shallow blob\n');
+    const shallowOid = 'a'.repeat(40);
+    const transport = buildCloneRemote({
+      capabilities: ['side-band-64k', 'ofs-delta', 'symref=HEAD:refs/heads/main'],
+      refs: [{ name: 'refs/heads/main', id: blobId }],
+      head: 'refs/heads/main',
+      packBytes,
+      shallow: [shallowOid],
+    });
+    const networkCtx = withTransport(ctx, transport);
 
     // Act
-    let caught: unknown;
-    try {
-      await clone(ctx, { url: REMOTE_URL, depth: 1 });
-    } catch (err) {
-      caught = err;
-    }
+    const sut = await clone(networkCtx, { url: REMOTE_URL, depth: 1 });
 
     // Assert
-    expect(caught).toBeInstanceOf(TsgitError);
-    const data = (caught as TsgitError).data as {
-      readonly code: string;
-      readonly operation?: string;
-      readonly reason?: string;
-    };
-    expect(data.code).toBe('UNSUPPORTED_OPERATION');
-    expect(data.operation).toBe('clone-shallow');
-    expect(data.reason).toContain('depth');
-    expect(data.reason).toContain('12.2');
-  });
-
-  it('Given depth: 0, When clone, Then throws UNSUPPORTED_OPERATION with the full reason', async () => {
-    // Arrange
-    const ctx = createMemoryContext();
-
-    // Act
-    let caught: unknown;
-    try {
-      await clone(ctx, { url: REMOTE_URL, depth: 0 });
-    } catch (err) {
-      caught = err;
-    }
-
-    // Assert
-    expect(caught).toBeInstanceOf(TsgitError);
-    const data = (caught as TsgitError).data as {
-      readonly code: string;
-      readonly operation?: string;
-      readonly reason?: string;
-    };
-    expect(data.code).toBe('UNSUPPORTED_OPERATION');
-    expect(data.operation).toBe('clone-shallow');
-    expect(data.reason).toContain('depth');
-    expect(data.reason).toContain('12.2');
+    expect(sut.head).toBe('refs/heads/main');
+    const shallowFile = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/shallow`);
+    expect(shallowFile).toBe(`${shallowOid}\n`);
   });
 
   it('Given an existing .git, When clone, Then throws TARGET_DIRECTORY_NOT_EMPTY pointing at workDir', async () => {
