@@ -324,7 +324,12 @@
     "demuxing",
     "receivepack",
     "Fastforwards",
-    "Jcounting"
+    "Jcounting",
+    "tmpdirs",
+    "mkdtemps",
+    "greppable",
+    "initialised",
+    "normalising"
   ],
   "ignorePaths": [
     "node_modules",

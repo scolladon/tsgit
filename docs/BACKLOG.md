@@ -2,7 +2,7 @@
 
 Track: `[ ]` todo, `[~]` in progress, `[x]` done, `[-]` skipped
 
-**Progress:** Phases 0–11 complete. `@scolladon/tsgit@1.0.0` published on npm with sigstore provenance (trusted-publisher OIDC). Phase 12.1 (clone smart-HTTP pack fetch) and 12.2 (fetch + shallow + prune) shipped. Phase 12.3 (push) and Phase 12.4 (clone bench) are next.
+**Progress:** Phases 0–11 complete. `@scolladon/tsgit@1.0.0` published on npm with sigstore provenance (trusted-publisher OIDC). Phase 12.1 (clone smart-HTTP pack fetch), 12.2 (fetch + shallow + prune), 12.3 (push) and 12.4 (clone bench) shipped. Phase 13.x (working-tree fidelity) is next.
 
 ---
 
@@ -235,8 +235,8 @@ Surface exists today; stub bodies need real loops. Highest user-visible value.
       _Accepted:_ shallow + non-shallow fetch updates `refs/remotes/<remote>/*` and writes received objects. End-to-end integration tests against a local `git-http-backend` for both the non-shallow path and the `depth: 1` shallow path (`test/integration/network/fetch-http-backend.test.ts`, `test/integration/network/fetch-shallow-http-backend.test.ts`). `clone({ url, depth })` reopens via the same `fetchPack` extension. ADRs [009](adr/009-fetch-shallow-where.md), [010](adr/010-fetch-haves-strategy.md), [011](adr/011-fetch-ref-update-tx.md), [012](adr/012-fetch-prune-semantics.md) capture the four design choices.
 - [x] **12.3** `push`: pack send via `git-receive-pack`.
       _Accepted:_ `repo.push({ remote, refspecs })` advances the remote ref and uploads only the missing objects via a real receive-pack negotiation. End-to-end integration test against a local `git-http-backend` (`test/integration/network/push-http-backend.test.ts`) exercises both the create-then-push happy path and the up-to-date no-op path. Force-with-lease (`'auto'` and explicit oid) and delete refspecs are supported. ADRs [013](adr/013-push-pack-encoding.md), [014](adr/014-push-refspec-scope.md), [015](adr/015-push-force-with-lease.md), [016](adr/016-push-atomic-tx.md) capture the four design choices.
-- [ ] **12.4** Bench: `clone:small-repo` scenario.
-      _Accept when:_ wired into `test/bench/` and the markdown summary, comparing tsgit vs isomorphic-git clone time against a fixed local `git-http-backend` fixture.
+- [x] **12.4** Bench: `clone:small-repo` scenario.
+      _Accepted:_ `test/bench/clone-small-repo.bench.ts` boots a shared `git-http-backend` CGI once per `describe`, then runs full-clone iterations against the committed `test/fixtures/clone-source/source.git` fixture for both tsgit (`openRepository → repo.clone → repo.dispose`) and isomorphic-git (`git.clone(..., { singleBranch: true })`). The new row flows into `reports/benchmarks/summary.md` via the existing `scripts/bench-summarize.ts` with no script changes. CGI lifecycle captured in [ADR-017](adr/017-bench-cgi-server-lifecycle.md). The shared helper at `test/bench/support/http-backend-server.ts` is also imported by `test/integration/network/clone-http-backend.test.ts` — eliminating the previously duplicated CGI plumbing.
 
 ### Phase 13 — Working-tree fidelity (v1.x minor)
 
