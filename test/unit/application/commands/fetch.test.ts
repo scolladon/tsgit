@@ -1,77 +1,593 @@
+/**
+ * Phase 12.2 — fetch command. Real pack-driven body.
+ *
+ * Tests cover:
+ *  - REMOTE_NOT_CONFIGURED + REMOTE_ADVERTISES_NO_REFS guards.
+ *  - Happy fetch (no shallow): pack written, refs/remotes/<remote>/* updated.
+ *  - haves derivation (the request body carries `have <oid>` lines).
+ *  - prune semantics (refs/remotes/<remote>/<branch> deletion).
+ *  - shallow fetch (.git/shallow is written, result carries the oid).
+ *  - Local refs (refs/heads/*, refs/tags/*) never touched.
+ *  - Progress (fetch:negotiate + fetch:write-objects).
+ */
 import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { fetch } from '../../../../src/application/commands/fetch.js';
+import { readShallow } from '../../../../src/application/primitives/shallow-file.js';
 import { TsgitError } from '../../../../src/domain/index.js';
-import { seedRepo } from './fixtures.js';
+import type { ObjectId, RefName } from '../../../../src/domain/objects/index.js';
+import { encodePktStream } from '../../../../src/domain/protocol/pkt-line.js';
+import type {
+  HttpRequest,
+  HttpResponse,
+  HttpTransport,
+} from '../../../../src/ports/http-transport.js';
+import { buildSyntheticPack } from '../primitives/pack-fixture.js';
+import { recordingProgress, seedRepo, withProgress } from './fixtures.js';
+
+const ENCODER = new TextEncoder();
+
+const FAKE_OID = (label: string): ObjectId =>
+  label.padEnd(40, label[0] ?? '0').slice(0, 40) as ObjectId;
+
+interface RemoteRef {
+  readonly name: string;
+  readonly id: ObjectId;
+}
+
+interface FakeRemoteOpts {
+  readonly url: string;
+  readonly advertisedRefs: ReadonlyArray<RemoteRef>;
+  readonly advertisedCaps?: ReadonlyArray<string>;
+  readonly packBytes: Uint8Array;
+  /** Shallow / unshallow oids the server should emit before the NAK + pack. */
+  readonly shallow?: ReadonlyArray<string>;
+  readonly unshallow?: ReadonlyArray<string>;
+}
+
+const buildAdvertisementBytes = (
+  refs: ReadonlyArray<RemoteRef>,
+  caps: ReadonlyArray<string>,
+): Uint8Array => {
+  // smart-HTTP v1 advertisement layout:
+  //   <pkt># service=git-upload-pack\n>
+  //   <flush>
+  //   <pkt>oid name\0caps\n>
+  //   <pkt>oid name\n> ...
+  //   <flush>
+  // Two encodePktStream calls produce the two flushes.
+  const header = encodePktStream([ENCODER.encode('# service=git-upload-pack\n')]);
+  const refLines: Uint8Array[] = [];
+  refs.forEach((r, idx) => {
+    if (idx === 0) {
+      refLines.push(ENCODER.encode(`${r.id} ${r.name}\0${caps.join(' ')}\n`));
+    } else {
+      refLines.push(ENCODER.encode(`${r.id} ${r.name}\n`));
+    }
+  });
+  const refsBody = encodePktStream(refLines);
+  const out = new Uint8Array(header.length + refsBody.length);
+  out.set(header, 0);
+  out.set(refsBody, header.length);
+  return out;
+};
+
+const buildPackBody = (
+  packBytes: Uint8Array,
+  shallow: ReadonlyArray<string>,
+  unshallow: ReadonlyArray<string>,
+): Uint8Array => {
+  const shallowFrames = shallow.map((oid) => ENCODER.encode(`shallow ${oid}\n`));
+  const unshallowFrames = unshallow.map((oid) => ENCODER.encode(`unshallow ${oid}\n`));
+  const shallowSection =
+    shallowFrames.length + unshallowFrames.length > 0
+      ? encodePktStream([...shallowFrames, ...unshallowFrames])
+      : new Uint8Array(0);
+  const channel1 = new Uint8Array(packBytes.length + 1);
+  channel1[0] = 0x01;
+  channel1.set(packBytes, 1);
+  const rest = encodePktStream([ENCODER.encode('NAK\n'), channel1]);
+  const out = new Uint8Array(shallowSection.length + rest.length);
+  out.set(shallowSection, 0);
+  out.set(rest, shallowSection.length);
+  return out;
+};
+
+const fakeRemote = (
+  opts: FakeRemoteOpts,
+): { transport: HttpTransport; requests: HttpRequest[] } => {
+  const requests: HttpRequest[] = [];
+  const advertisement = buildAdvertisementBytes(
+    opts.advertisedRefs,
+    opts.advertisedCaps ?? ['side-band-64k', 'ofs-delta'],
+  );
+  const packResponse = buildPackBody(opts.packBytes, opts.shallow ?? [], opts.unshallow ?? []);
+  const transport: HttpTransport = {
+    request: async (req: HttpRequest): Promise<HttpResponse> => {
+      requests.push(req);
+      const body = req.url.includes('info/refs') ? advertisement : packResponse;
+      return {
+        statusCode: 200,
+        headers: {},
+        body: new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(body.slice());
+            controller.close();
+          },
+        }),
+      };
+    },
+  };
+  return { transport, requests };
+};
+
+const writeOriginConfig = async (ctx: ReturnType<typeof createMemoryContext>): Promise<void> => {
+  await ctx.fs.writeUtf8(
+    `${ctx.layout.gitDir}/config`,
+    '[remote "origin"]\n  url = https://example.com/r.git\n',
+  );
+};
+
+const buildOneBlobPack = async (
+  ctx: ReturnType<typeof createMemoryContext>,
+  content: string,
+): Promise<{ packBytes: Uint8Array; blobId: ObjectId }> => {
+  const built = await buildSyntheticPack(ctx, [
+    { kind: 'base', type: 'blob', content: ENCODER.encode(content) },
+  ]);
+  return { packBytes: built.packBytes, blobId: built.ids[0] as ObjectId };
+};
 
 describe('fetch', () => {
-  it('Given no remote configured, When fetch, Then throws REMOTE_NOT_CONFIGURED', async () => {
-    // Arrange
-    const ctx = createMemoryContext();
-    await seedRepo(ctx, {});
+  describe('config + advertisement guards', () => {
+    it('Given no remote configured, When fetch, Then throws REMOTE_NOT_CONFIGURED', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await seedRepo(ctx, {});
 
-    // Act
-    let caught: unknown;
-    try {
-      await fetch(ctx);
-    } catch (err) {
-      caught = err;
-    }
+      // Act
+      let caught: unknown;
+      try {
+        await fetch(ctx);
+      } catch (err) {
+        caught = err;
+      }
 
-    // Assert
-    expect(caught).toBeInstanceOf(TsgitError);
-    expect((caught as TsgitError).data.code).toBe('REMOTE_NOT_CONFIGURED');
+      // Assert
+      expect(caught).toBeInstanceOf(TsgitError);
+      expect((caught as TsgitError).data.code).toBe('REMOTE_NOT_CONFIGURED');
+    });
+
+    it('Given an advertisement with zero refs, When fetch, Then throws REMOTE_ADVERTISES_NO_REFS', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await seedRepo(ctx, {});
+      await writeOriginConfig(ctx);
+      const { packBytes } = await buildOneBlobPack(ctx, 'noop\n');
+      const { transport } = fakeRemote({
+        url: 'https://example.com/r.git',
+        advertisedRefs: [],
+        packBytes,
+      });
+
+      // Act
+      let caught: unknown;
+      try {
+        await fetch({ ...ctx, transport }, { remote: 'origin' });
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert
+      expect(caught).toBeInstanceOf(TsgitError);
+      expect((caught as TsgitError).data.code).toBe('REMOTE_ADVERTISES_NO_REFS');
+    });
   });
 
-  it('Given an origin remote, When fetch, Then returns the resolved url', async () => {
-    // Arrange
-    const ctx = createMemoryContext();
-    await seedRepo(ctx, {});
-    await ctx.fs.writeUtf8(
-      `${ctx.layout.gitDir}/config`,
-      '[remote "origin"]\n  url = https://example.com/r.git\n',
-    );
+  describe('happy path', () => {
+    it('Given an origin advertising one branch, When fetch, Then result holds the resolved remote + url', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await seedRepo(ctx, {});
+      await writeOriginConfig(ctx);
+      const { packBytes, blobId } = await buildOneBlobPack(ctx, 'hello fetch\n');
+      const { transport } = fakeRemote({
+        url: 'https://example.com/r.git',
+        advertisedRefs: [{ name: 'refs/heads/main', id: blobId }],
+        packBytes,
+      });
 
-    // Act
-    const sut = await fetch(ctx);
+      // Act
+      const sut = await fetch({ ...ctx, transport });
 
-    // Assert
-    expect(sut.remote).toBe('origin');
-    expect(sut.url).toBe('https://example.com/r.git');
+      // Assert
+      expect(sut.remote).toBe('origin');
+      expect(sut.url).toBe('https://example.com/r.git');
+    });
+
+    it('Given an advertised branch ref, When fetch, Then refs/remotes/origin/<branch> is written with the new oid', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await seedRepo(ctx, {});
+      await writeOriginConfig(ctx);
+      const { packBytes, blobId } = await buildOneBlobPack(ctx, 'advance\n');
+      const { transport } = fakeRemote({
+        url: 'https://example.com/r.git',
+        advertisedRefs: [{ name: 'refs/heads/main', id: blobId }],
+        packBytes,
+      });
+
+      // Act
+      const sut = await fetch({ ...ctx, transport });
+
+      // Assert
+      const updated = sut.updatedRefs.find((r) => r.name === 'refs/remotes/origin/main');
+      expect(updated).toBeDefined();
+      expect(updated?.newId).toBe(blobId);
+      const onDisk = (
+        await ctx.fs.readUtf8(`${ctx.layout.gitDir}/refs/remotes/origin/main`)
+      ).trim();
+      expect(onDisk).toBe(blobId);
+    });
+
+    it('Given an advertised tag, When fetch, Then refs/tags/<tag> is written', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await seedRepo(ctx, {});
+      await writeOriginConfig(ctx);
+      const { packBytes, blobId } = await buildOneBlobPack(ctx, 'tag\n');
+      const { transport } = fakeRemote({
+        url: 'https://example.com/r.git',
+        advertisedRefs: [
+          { name: 'refs/heads/main', id: blobId },
+          { name: 'refs/tags/v1', id: blobId },
+        ],
+        packBytes,
+      });
+
+      // Act
+      const sut = await fetch({ ...ctx, transport });
+
+      // Assert
+      const tagWritten = sut.updatedRefs.find((r) => r.name === 'refs/tags/v1');
+      expect(tagWritten).toBeDefined();
+      const onDisk = (await ctx.fs.readUtf8(`${ctx.layout.gitDir}/refs/tags/v1`)).trim();
+      expect(onDisk).toBe(blobId);
+    });
+
+    it('Given a pre-existing remote-tracking ref, When fetch advances it, Then oldId in updatedRefs matches the prior on-disk oid', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      const oldOid = FAKE_OID('a');
+      await seedRepo(ctx, { refs: { 'refs/remotes/origin/main': oldOid } });
+      await writeOriginConfig(ctx);
+      const { packBytes, blobId } = await buildOneBlobPack(ctx, 'fast-forward\n');
+      const { transport } = fakeRemote({
+        url: 'https://example.com/r.git',
+        advertisedRefs: [{ name: 'refs/heads/main', id: blobId }],
+        packBytes,
+      });
+
+      // Act
+      const sut = await fetch({ ...ctx, transport });
+
+      // Assert
+      const updated = sut.updatedRefs.find((r) => r.name === 'refs/remotes/origin/main');
+      expect(updated?.oldId).toBe(oldOid);
+      expect(updated?.newId).toBe(blobId);
+    });
   });
-});
 
-import { recordingProgress, withProgress } from './fixtures.js';
+  describe('haves derivation (ADR-010)', () => {
+    it('Given remote-tracking refs already on disk, When fetch, Then the upload-pack request body carries `have` lines for those tips', async () => {
+      // Arrange — seed an existing remote-tracking ref pointing at a fake
+      // commit; fetch should mention it as a `have` line in the request body.
+      const ctx = createMemoryContext();
+      const oldOid = FAKE_OID('b');
+      await seedRepo(ctx, {
+        refs: { 'refs/remotes/origin/main': oldOid },
+      });
+      await writeOriginConfig(ctx);
+      const { packBytes, blobId } = await buildOneBlobPack(ctx, 'haves\n');
+      const { transport, requests } = fakeRemote({
+        url: 'https://example.com/r.git',
+        advertisedRefs: [{ name: 'refs/heads/main', id: blobId }],
+        packBytes,
+      });
 
-describe('fetch — progress reporting', () => {
-  it("Given a successful fetch, When run, Then start/end pair fires with op === 'fetch:negotiate'", async () => {
-    const ctx = createMemoryContext();
-    await seedRepo(ctx, {});
-    await ctx.fs.writeUtf8(
-      `${ctx.layout.gitDir}/config`,
-      '[remote "origin"]\n  url = https://example.com/r.git\n',
-    );
-    const { reporter, events } = recordingProgress();
+      // Act — ignore-missing semantics on walkCommits skip the missing parent
+      // object. We're only asserting on the request body shape.
+      await fetch({ ...ctx, transport });
 
-    await fetch(withProgress(ctx, reporter));
+      // Assert — second request is the POST to git-upload-pack.
+      const postReq = requests.find((r) => r.method === 'POST');
+      expect(postReq).toBeDefined();
+      const decoded = new TextDecoder().decode(postReq?.body);
+      expect(decoded).toContain(`have ${oldOid}`);
+    });
 
-    expect(events[0]).toEqual({ kind: 'start', op: 'fetch:negotiate' });
-    expect(events[events.length - 1]).toEqual({ kind: 'end', op: 'fetch:negotiate' });
+    it('Given no remote-tracking refs (first fetch), When fetch, Then the request body has no `have` lines', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await seedRepo(ctx, {});
+      await writeOriginConfig(ctx);
+      const { packBytes, blobId } = await buildOneBlobPack(ctx, 'first fetch\n');
+      const { transport, requests } = fakeRemote({
+        url: 'https://example.com/r.git',
+        advertisedRefs: [{ name: 'refs/heads/main', id: blobId }],
+        packBytes,
+      });
+
+      // Act
+      await fetch({ ...ctx, transport });
+
+      // Assert
+      const postReq = requests.find((r) => r.method === 'POST');
+      const decoded = new TextDecoder().decode(postReq?.body);
+      expect(decoded).not.toContain('have ');
+    });
   });
 
-  it('Given a failing fetch (no remote), When run, Then end still fires after start', async () => {
-    const ctx = createMemoryContext();
-    await seedRepo(ctx, {});
-    const { reporter, events } = recordingProgress();
+  describe('prune (ADR-012)', () => {
+    it('Given prune=true and a stale remote-tracking ref, When fetch, Then the stale ref is deleted and listed in prunedRefs', async () => {
+      // Arrange — stale `feature-x` ref the server no longer advertises.
+      const ctx = createMemoryContext();
+      const stale = FAKE_OID('c');
+      await seedRepo(ctx, {
+        refs: {
+          'refs/remotes/origin/main': FAKE_OID('a'),
+          'refs/remotes/origin/feature-x': stale,
+        },
+      });
+      await writeOriginConfig(ctx);
+      const { packBytes, blobId } = await buildOneBlobPack(ctx, 'prune\n');
+      const { transport } = fakeRemote({
+        url: 'https://example.com/r.git',
+        advertisedRefs: [{ name: 'refs/heads/main', id: blobId }],
+        packBytes,
+      });
 
-    try {
-      await fetch(withProgress(ctx, reporter));
-    } catch {
-      // expected
-    }
+      // Act
+      const sut = await fetch({ ...ctx, transport }, { prune: true });
 
-    const startCount = events.filter((e) => e.kind === 'start').length;
-    const endCount = events.filter((e) => e.kind === 'end').length;
-    expect(endCount).toBe(startCount);
+      // Assert
+      expect(sut.prunedRefs).toContain('refs/remotes/origin/feature-x' as RefName);
+      expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/remotes/origin/feature-x`)).toBe(false);
+    });
+
+    it('Given prune=false, When fetch, Then stale remote-tracking refs are preserved', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await seedRepo(ctx, {
+        refs: {
+          'refs/remotes/origin/main': FAKE_OID('a'),
+          'refs/remotes/origin/feature-x': FAKE_OID('c'),
+        },
+      });
+      await writeOriginConfig(ctx);
+      const { packBytes, blobId } = await buildOneBlobPack(ctx, 'no prune\n');
+      const { transport } = fakeRemote({
+        url: 'https://example.com/r.git',
+        advertisedRefs: [{ name: 'refs/heads/main', id: blobId }],
+        packBytes,
+      });
+
+      // Act
+      const sut = await fetch({ ...ctx, transport });
+
+      // Assert
+      expect(sut.prunedRefs).toEqual([]);
+      expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/remotes/origin/feature-x`)).toBe(true);
+    });
+
+    it('Given prune=true, When the server advertises every local remote-tracking ref, Then prunedRefs is empty', async () => {
+      // Arrange — boundary: nothing to prune.
+      const ctx = createMemoryContext();
+      await seedRepo(ctx, {
+        refs: { 'refs/remotes/origin/main': FAKE_OID('a') },
+      });
+      await writeOriginConfig(ctx);
+      const { packBytes, blobId } = await buildOneBlobPack(ctx, 'no-op prune\n');
+      const { transport } = fakeRemote({
+        url: 'https://example.com/r.git',
+        advertisedRefs: [{ name: 'refs/heads/main', id: blobId }],
+        packBytes,
+      });
+
+      // Act
+      const sut = await fetch({ ...ctx, transport }, { prune: true });
+
+      // Assert
+      expect(sut.prunedRefs).toEqual([]);
+    });
+
+    it('Given prune=true with stale refs, When fetch, Then local branches and local tags are NEVER deleted', async () => {
+      // Arrange — local refs that are NOT under refs/remotes/origin/.
+      const ctx = createMemoryContext();
+      const localHead = FAKE_OID('d');
+      await seedRepo(ctx, {
+        refs: {
+          'refs/heads/main': localHead,
+          'refs/tags/v0': localHead,
+          'refs/remotes/origin/feature-x': FAKE_OID('c'),
+        },
+      });
+      await writeOriginConfig(ctx);
+      const { packBytes, blobId } = await buildOneBlobPack(ctx, 'safe locals\n');
+      const { transport } = fakeRemote({
+        url: 'https://example.com/r.git',
+        advertisedRefs: [{ name: 'refs/heads/main', id: blobId }],
+        packBytes,
+      });
+
+      // Act
+      await fetch({ ...ctx, transport }, { prune: true });
+
+      // Assert — local refs untouched by prune.
+      expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/heads/main`)).toBe(true);
+      expect((await ctx.fs.readUtf8(`${ctx.layout.gitDir}/refs/heads/main`)).trim()).toBe(
+        localHead,
+      );
+      expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/tags/v0`)).toBe(true);
+    });
+  });
+
+  describe('shallow fetch (ADR-009)', () => {
+    it('Given depth=1 and a server emitting shallow <oid>, When fetch, Then .git/shallow is written with that oid and result.shallow contains it', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await seedRepo(ctx, {});
+      await writeOriginConfig(ctx);
+      const { packBytes, blobId } = await buildOneBlobPack(ctx, 'shallow\n');
+      const shallowOid = 'a'.repeat(40);
+      const { transport } = fakeRemote({
+        url: 'https://example.com/r.git',
+        advertisedRefs: [{ name: 'refs/heads/main', id: blobId }],
+        packBytes,
+        shallow: [shallowOid],
+      });
+
+      // Act
+      const sut = await fetch({ ...ctx, transport }, { depth: 1 });
+
+      // Assert
+      expect(sut.shallow).toEqual([shallowOid]);
+      const onDisk = await readShallow({ ...ctx, transport });
+      expect(onDisk.has(shallowOid as ObjectId)).toBe(true);
+    });
+
+    it('Given depth=1 and the server ignores deepen, When fetch, Then .git/shallow is NOT created', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await seedRepo(ctx, {});
+      await writeOriginConfig(ctx);
+      const { packBytes, blobId } = await buildOneBlobPack(ctx, 'no shallow\n');
+      const { transport } = fakeRemote({
+        url: 'https://example.com/r.git',
+        advertisedRefs: [{ name: 'refs/heads/main', id: blobId }],
+        packBytes,
+      });
+
+      // Act
+      const sut = await fetch({ ...ctx, transport }, { depth: 1 });
+
+      // Assert
+      expect(sut.shallow).toEqual([]);
+      expect(await ctx.fs.exists(`${ctx.layout.gitDir}/shallow`)).toBe(false);
+    });
+
+    it('Given depth set and an unshallow response, When fetch, Then result.unshallow holds the oid', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await seedRepo(ctx, {});
+      await writeOriginConfig(ctx);
+      const { packBytes, blobId } = await buildOneBlobPack(ctx, 'unshallow\n');
+      const unshallowOid = 'b'.repeat(40);
+      const { transport } = fakeRemote({
+        url: 'https://example.com/r.git',
+        advertisedRefs: [{ name: 'refs/heads/main', id: blobId }],
+        packBytes,
+        unshallow: [unshallowOid],
+      });
+
+      // Act
+      const sut = await fetch({ ...ctx, transport }, { depth: 3 });
+
+      // Assert
+      expect(sut.unshallow).toEqual([unshallowOid]);
+    });
+  });
+
+  describe('local-refs safety (ADR-011 §3.8)', () => {
+    it('Given local refs/heads/* + refs/tags/*, When fetch runs, Then both are left untouched', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      const localOid = FAKE_OID('e');
+      await seedRepo(ctx, {
+        refs: {
+          'refs/heads/main': localOid,
+          'refs/tags/v0': localOid,
+        },
+      });
+      await writeOriginConfig(ctx);
+      const { packBytes, blobId } = await buildOneBlobPack(ctx, 'safety\n');
+      const { transport } = fakeRemote({
+        url: 'https://example.com/r.git',
+        advertisedRefs: [{ name: 'refs/heads/main', id: blobId }],
+        packBytes,
+      });
+
+      // Act
+      await fetch({ ...ctx, transport });
+
+      // Assert
+      expect((await ctx.fs.readUtf8(`${ctx.layout.gitDir}/refs/heads/main`)).trim()).toBe(localOid);
+      expect((await ctx.fs.readUtf8(`${ctx.layout.gitDir}/refs/tags/v0`)).trim()).toBe(localOid);
+    });
+  });
+
+  describe('progress reporting', () => {
+    it('Given a successful fetch, When run, Then a fetch:negotiate start/end pair fires', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await seedRepo(ctx, {});
+      await writeOriginConfig(ctx);
+      const { packBytes, blobId } = await buildOneBlobPack(ctx, 'progress\n');
+      const { transport } = fakeRemote({
+        url: 'https://example.com/r.git',
+        advertisedRefs: [{ name: 'refs/heads/main', id: blobId }],
+        packBytes,
+      });
+      const { reporter, events } = recordingProgress();
+
+      // Act
+      await fetch(withProgress({ ...ctx, transport }, reporter));
+
+      // Assert
+      const negotiate = events.filter((e) => e.op === 'fetch:negotiate');
+      expect(negotiate.some((e) => e.kind === 'start')).toBe(true);
+      expect(negotiate.some((e) => e.kind === 'end')).toBe(true);
+    });
+
+    it('Given a successful fetch, When run, Then a fetch:write-objects start/end pair fires', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await seedRepo(ctx, {});
+      await writeOriginConfig(ctx);
+      const { packBytes, blobId } = await buildOneBlobPack(ctx, 'write-objects\n');
+      const { transport } = fakeRemote({
+        url: 'https://example.com/r.git',
+        advertisedRefs: [{ name: 'refs/heads/main', id: blobId }],
+        packBytes,
+      });
+      const { reporter, events } = recordingProgress();
+
+      // Act
+      await fetch(withProgress({ ...ctx, transport }, reporter));
+
+      // Assert
+      const writeObjects = events.filter((e) => e.op === 'fetch:write-objects');
+      expect(writeObjects.some((e) => e.kind === 'start')).toBe(true);
+      expect(writeObjects.some((e) => e.kind === 'end')).toBe(true);
+    });
+
+    it('Given a failing fetch (no remote), When run, Then end still fires after start', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await seedRepo(ctx, {});
+      const { reporter, events } = recordingProgress();
+
+      // Act
+      try {
+        await fetch(withProgress(ctx, reporter));
+      } catch {
+        // expected
+      }
+
+      // Assert
+      const startCount = events.filter((e) => e.kind === 'start').length;
+      const endCount = events.filter((e) => e.kind === 'end').length;
+      expect(endCount).toBe(startCount);
+    });
   });
 });
