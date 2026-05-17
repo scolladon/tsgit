@@ -29,6 +29,7 @@ A pure TypeScript git implementation designed to be the fastest portable git lib
 | 12.2 | Fetch — ls-refs + want/have negotiation + shallow + prune | ✅ |
 | 12.3 | Push — receive-pack negotiation + pack send + force-with-lease | ✅ |
 | 12.4 | Bench — `clone:small-repo` vs isomorphic-git over `git-http-backend` | ✅ |
+| 13.1 | Working-tree materialisation — `checkout` writes / deletes / chmods files; index + HEAD updated atomically per file | ✅ |
 
 ## Features
 
@@ -111,10 +112,13 @@ console.log(result.head); // refs/heads/main
 console.log(result.fetchedRefs.length); // total refs propagated
 ```
 
-Working-tree materialization (`checkout`) lands in Phase 13.1 — Phase 12.1
-gives you a valid `.git` directory whose `git log` matches the remote's HEAD
-line. See `test/integration/network/clone-http-backend.test.ts` for an
-end-to-end example against a local `git-http-backend`.
+Phase 12.1 gives you a valid `.git` directory whose `git log` matches the
+remote's HEAD line. To materialise the working tree, run
+`repo.checkout({ target: result.head })` immediately after — Phase 13.1
+writes every blob, sets the executable bit, follows symlinks, and commits a
+matching `.git/index` atomically. See
+`test/integration/network/clone-http-backend.test.ts` for an end-to-end
+example against a local `git-http-backend`.
 
 ### Push
 
