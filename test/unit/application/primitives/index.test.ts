@@ -5,6 +5,7 @@ describe('primitives barrel', () => {
   it('Given the barrel, When imported, Then all primitives are exposed as functions', () => {
     const names = [
       'applyChangeset',
+      'buildIndexFromTree',
       'buildPack',
       'computeChangeset',
       'createCommit',
@@ -20,6 +21,7 @@ describe('primitives barrel', () => {
       'readShallow',
       'readTree',
       'resolveRef',
+      'synthesizeTreeFromIndex',
       'updateRef',
       'updateShallow',
       'walkCommits',
@@ -36,6 +38,7 @@ describe('primitives barrel', () => {
   it('Given the barrel, When inspecting keys, Then only expected public surface is exposed', () => {
     const expected = new Set([
       'applyChangeset',
+      'buildIndexFromTree',
       'buildPack',
       'computeChangeset',
       'createCommit',
@@ -51,6 +54,7 @@ describe('primitives barrel', () => {
       'readShallow',
       'readTree',
       'resolveRef',
+      'synthesizeTreeFromIndex',
       'updateRef',
       'updateShallow',
       'walkCommits',
