@@ -6,7 +6,15 @@ import { checkout } from '../../../../src/application/commands/checkout.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
 import { merge } from '../../../../src/application/commands/merge.js';
-import type { AuthorIdentity } from '../../../../src/domain/objects/index.js';
+import { readBlob } from '../../../../src/application/primitives/read-blob.js';
+import { readObject } from '../../../../src/application/primitives/read-object.js';
+import { resolveRef } from '../../../../src/application/primitives/resolve-ref.js';
+import type {
+  AuthorIdentity,
+  ObjectId,
+  RefName,
+  Tree,
+} from '../../../../src/domain/objects/index.js';
 
 const author: AuthorIdentity = {
   name: 'Ada',
@@ -82,6 +90,116 @@ describe('merge', () => {
     if (sut.kind === 'merge') {
       expect(sut.parents).toHaveLength(2);
     }
+  });
+
+  it('Given diverged histories with non-conflicting paths, When merge, Then commit tree contains both sides files (no add required)', async () => {
+    // Arrange — base has a.txt. Feature adds b.txt. Main adds c.txt.
+    // After merging feature into main, the merge commit's tree must
+    // contain BOTH b.txt AND c.txt (clean three-way merge result),
+    // NOT just main's tree.
+    const ctx = createMemoryContext();
+    await init(ctx);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
+    await add(ctx, ['a.txt']);
+    await commit(ctx, { message: 'base', author });
+    await branch(ctx, { kind: 'create', name: 'feature' });
+    await checkout(ctx, { target: 'feature' });
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.txt`, 'b');
+    await add(ctx, ['b.txt']);
+    await commit(ctx, { message: 'on-feature', author });
+    await checkout(ctx, { target: 'main' });
+    // Note: checkout to main reverts the working tree, so b.txt is gone here.
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/c.txt`, 'c');
+    await add(ctx, ['c.txt']);
+    await commit(ctx, { message: 'on-main', author });
+
+    // Act
+    const sut = await merge(ctx, { target: 'feature', author });
+
+    // Assert — the merge commit's tree contains a.txt + b.txt + c.txt.
+    expect(sut.kind).toBe('merge');
+    if (sut.kind !== 'merge') throw new Error('expected merge kind');
+    const mergeCommit = await readObject(ctx, sut.id);
+    if (mergeCommit.type !== 'commit') throw new Error('not a commit');
+    const mergedTree = (await readObject(ctx, mergeCommit.data.tree)) as Tree;
+    const names = mergedTree.entries.map((e) => e.name).sort();
+    expect(names).toEqual(['a.txt', 'b.txt', 'c.txt']);
+  });
+
+  it('Given a non-overlapping content change to the same file on each side, When merge, Then merged content combines both edits', async () => {
+    // Arrange — base file has 3 lines. Each side modifies a different line.
+    // Phase 5's mergeContent should produce a clean merge with both edits.
+    const ctx = createMemoryContext();
+    await init(ctx);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'line1\nline2\nline3\n');
+    await add(ctx, ['file.txt']);
+    await commit(ctx, { message: 'base', author });
+    await branch(ctx, { kind: 'create', name: 'feature' });
+    await checkout(ctx, { target: 'feature' });
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'line1\nline2\nFEATURE\n');
+    await add(ctx, ['file.txt']);
+    await commit(ctx, { message: 'on-feature', author });
+    await checkout(ctx, { target: 'main' });
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'MAIN\nline2\nline3\n');
+    await add(ctx, ['file.txt']);
+    await commit(ctx, { message: 'on-main', author });
+
+    // Act
+    const sut = await merge(ctx, { target: 'feature', author });
+
+    // Assert — merged content combines both line edits.
+    expect(sut.kind).toBe('merge');
+    if (sut.kind !== 'merge') throw new Error('expected merge kind');
+    const mergeCommit = await readObject(ctx, sut.id);
+    if (mergeCommit.type !== 'commit') throw new Error('not a commit');
+    const mergedTree = (await readObject(ctx, mergeCommit.data.tree)) as Tree;
+    const fileEntry = mergedTree.entries.find((e) => e.name === 'file.txt');
+    expect(fileEntry).toBeDefined();
+    const blob = await readBlob(ctx, fileEntry?.id as ObjectId);
+    const content = new TextDecoder().decode(blob.content);
+    expect(content).toBe('MAIN\nline2\nFEATURE\n');
+  });
+
+  it('Given conflicting modifications to the same file, When merge, Then throws MERGE_HAS_CONFLICTS with the conflicting path', async () => {
+    // Arrange — same file, divergent content on the same lines.
+    const ctx = createMemoryContext();
+    await init(ctx);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'shared\n');
+    await add(ctx, ['file.txt']);
+    await commit(ctx, { message: 'base', author });
+    await branch(ctx, { kind: 'create', name: 'feature' });
+    await checkout(ctx, { target: 'feature' });
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'FEATURE-CHANGE\n');
+    await add(ctx, ['file.txt']);
+    await commit(ctx, { message: 'on-feature', author });
+    await checkout(ctx, { target: 'main' });
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'MAIN-CHANGE\n');
+    await add(ctx, ['file.txt']);
+    await commit(ctx, { message: 'on-main', author });
+
+    // Act
+    let caught: unknown;
+    try {
+      await merge(ctx, { target: 'feature', author });
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert — error code + path + count.
+    const data = (
+      caught as {
+        data?: { code?: string; count?: number; paths?: ReadonlyArray<string> };
+      }
+    )?.data;
+    expect(data?.code).toBe('MERGE_HAS_CONFLICTS');
+    expect(data?.count).toBe(1);
+    expect(data?.paths).toEqual(['file.txt']);
+
+    // Also confirm HEAD did NOT advance (the conflicting merge must not commit).
+    const main = await resolveRef(ctx, 'refs/heads/main' as RefName);
+    const mainCommit = await readObject(ctx, main);
+    if (mainCommit.type !== 'commit') throw new Error('not a commit');
+    expect(mainCommit.data.message).toBe('on-main'); // still pre-merge tip
   });
 
   it('Given diverged histories + fastForwardOnly=true, When merge, Then throws NON_FAST_FORWARD', async () => {
