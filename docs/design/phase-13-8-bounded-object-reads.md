@@ -313,7 +313,7 @@ constant.
   doesn't apply uniformly to every code path that produces
   bytes. Explicit non-goal answers the question once.
 - §4.4 added — peak memory under parallelisation is the
-  immediate question after "why parallelise"; pre-empt it.
+  immediate question after "why parallelise"; answer it inline.
 
 ### Pass 2 → Pass 3
 
