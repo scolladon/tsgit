@@ -45,10 +45,17 @@ export function arbStatData(): fc.Arbitrary<StatData> {
 
 const PATH_CHARS = 'abcdefghijklmnopqrstuvwxyz0123456789-_.'.split('');
 
+// Phase 13.7: `parseIndex` rejects paths equal to `.` or `..` (and other
+// unsafe forms). The generator filters those out so round-trip tests
+// exercise only paths the parser will accept.
+const UNSAFE_PATHS: ReadonlySet<string> = new Set(['.', '..']);
+
 export function arbFilePath(): fc.Arbitrary<ReturnType<typeof FilePath.from>> {
   return fc
     .array(fc.constantFrom(...PATH_CHARS), { minLength: 1, maxLength: 30 })
-    .map((chars: ReadonlyArray<string>) => FilePath.from(chars.join('')));
+    .map((chars: ReadonlyArray<string>) => chars.join(''))
+    .filter((s: string) => !UNSAFE_PATHS.has(s))
+    .map((s: string) => FilePath.from(s));
 }
 
 export function arbIndexEntry(): fc.Arbitrary<IndexEntry> {
