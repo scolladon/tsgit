@@ -114,7 +114,10 @@ export const merge = async (ctx: Context, opts: MergeOptions): Promise<MergeResu
 
 const MERGE_WRITE_FILES_OP = 'merge:write-files';
 
-const UNSUPPORTED_CONFLICT_TYPES: ReadonlySet<ConflictType> = new Set(['rename-rename', 'gitlink']);
+export const UNSUPPORTED_CONFLICT_TYPES: ReadonlySet<ConflictType> = new Set([
+  'rename-rename',
+  'gitlink',
+]);
 
 const mergeCommit = async (
   ctx: Context,
@@ -364,7 +367,14 @@ const persistConflictState = async (
   };
 };
 
-const rejectUnsupportedConflicts = (conflicts: ReadonlyArray<MergeConflict>): void => {
+/**
+ * Reject conflict types that v1 cannot persist as resolvable merge state
+ * (`rename-rename`, `gitlink`). Fires BEFORE `acquireIndexLock` in the
+ * caller so an unsupported conflict surfaces atomically — no stale
+ * `index.lock`, no working-tree pollution, no MERGE_HEAD on disk.
+ * Exported for direct unit testing.
+ */
+export const rejectUnsupportedConflicts = (conflicts: ReadonlyArray<MergeConflict>): void => {
   for (const conflict of conflicts) {
     if (UNSUPPORTED_CONFLICT_TYPES.has(conflict.type)) {
       throw unsupportedOperation(
@@ -375,16 +385,49 @@ const rejectUnsupportedConflicts = (conflicts: ReadonlyArray<MergeConflict>): vo
   }
 };
 
+// Hard cap on concurrent path writes during a conflicting merge. Without it
+// large merges (thousands of paths) blow past the default `ulimit -n`
+// (256 on macOS, 1024 on most Linux) and surface as EMFILE.
+const MAX_CONCURRENT_PATH_WRITES = 32;
+
 const writeConflictingWorkingTree = async (
   ctx: Context,
   outcomes: ReadonlyArray<MergeOutcome>,
   conflicts: ReadonlyArray<MergeConflict>,
 ): Promise<void> => {
-  // Parallelise both batches — outcomes and conflicts are independent
-  // path writes, and the project pattern for merge-tree I/O is
-  // Promise.all (see flattenTree, writeNestedTree, buildContentMerger).
-  await Promise.all(outcomes.map((outcome) => writeOutcomeToTree(ctx, outcome)));
-  await Promise.all(conflicts.map((conflict) => writeConflictToTree(ctx, conflict)));
+  // Bounded parallelism — independent path writes overlap, but the pool
+  // caps in-flight at MAX_CONCURRENT_PATH_WRITES so a 10k-path merge
+  // doesn't exhaust file descriptors.
+  await runBounded(outcomes, MAX_CONCURRENT_PATH_WRITES, (outcome) =>
+    writeOutcomeToTree(ctx, outcome),
+  );
+  await runBounded(conflicts, MAX_CONCURRENT_PATH_WRITES, (conflict) =>
+    writeConflictToTree(ctx, conflict),
+  );
+};
+
+/**
+ * Run `fn` over `items` with at most `limit` in-flight at once. Promise
+ * rejection propagates upward (matches `Promise.all` semantics); in-flight
+ * tasks are not cancelled.
+ */
+const runBounded = async <T>(
+  items: ReadonlyArray<T>,
+  limit: number,
+  fn: (item: T) => Promise<void>,
+): Promise<void> => {
+  let cursor = 0;
+  const workers: Promise<void>[] = [];
+  const worker = async (): Promise<void> => {
+    while (cursor < items.length) {
+      const next = items[cursor++];
+      if (next === undefined) break;
+      await fn(next);
+    }
+  };
+  const concurrency = Math.min(limit, items.length);
+  for (let i = 0; i < concurrency; i++) workers.push(worker());
+  await Promise.all(workers);
 };
 
 const writeOutcomeToTree = async (ctx: Context, outcome: MergeOutcome): Promise<void> => {
@@ -518,11 +561,18 @@ const buildConflictIndexEntries = (
   }
 
   const stageConflicts = conflictsToIndexEntries(conflicts, zeroStat);
-  // `serializeIndex` sorts authoritatively when the index is written,
-  // so a third pass here would be redundant. Pass the concatenation
-  // through as-is — both sub-arrays are already individually sorted
-  // (stage-0 by outcome order; stage-1/2/3 by conflictsToIndexEntries).
-  return [...stage0, ...stageConflicts];
+  // serializeIndex sorts by path only (V8's sort is stable so the
+  // upstream stage ordering survives) but the canonical git index
+  // requires (path, stage) order. Sort explicitly here to make the
+  // invariant load-bearing on our own code rather than V8's
+  // stable-sort guarantee.
+  const combined = [...stage0, ...stageConflicts];
+  combined.sort((a, b) => {
+    if (a.path < b.path) return -1;
+    if (a.path > b.path) return 1;
+    return a.flags.stage - b.flags.stage;
+  });
+  return combined;
 };
 
 const resolveMergeAuthor = async (ctx: Context, opts: MergeOptions): Promise<AuthorIdentity> => {

@@ -513,24 +513,63 @@ describe('merge — Phase 13.4b conflict persistence', () => {
     expect(data?.count).toBe(1);
   });
 
-  it('Given a rename-rename or gitlink conflict type, When merge is called, Then throws UNSUPPORTED_OPERATION before any disk write', async () => {
-    // Arrange — directly invoke the conflict-handling branch by seeding
-    // an `add-add` divergence on the same path. We cannot easily produce
-    // rename-rename / gitlink via the normal flow, so this test
-    // documents the GUARD shape via a unit-level wrapper: confirm the
-    // UNSUPPORTED_CONFLICT_TYPES set rejects upfront via a small
-    // synthetic check. Here we assert via a real conflict path that the
-    // rejection branch is reachable; full coverage of rename-rename /
-    // gitlink belongs to v2 when those conflict types are detected by
-    // mergeTrees.
-    const ctx = createMemoryContext();
-    await setupConflictingMerge(ctx);
-    // No-op assertion (the supported `content` case shipped earlier).
-    // The negative-path of the guard surfaces when a future
-    // `mergeTrees` emits a rename-rename / gitlink conflict and the
-    // rejection MUST fire BEFORE acquireIndexLock — proven by the
-    // file-order spy test in the mutation suite.
-    expect(true).toBe(true);
+  describe('rejectUnsupportedConflicts (direct)', () => {
+    it.each([
+      'rename-rename',
+      'gitlink',
+    ] as const)('Given a %s MergeConflict, When rejectUnsupportedConflicts is called, Then throws UNSUPPORTED_OPERATION with operation=merge', async (conflictType) => {
+      // Arrange
+      const { rejectUnsupportedConflicts } = await import(
+        '../../../../src/application/commands/merge.js'
+      );
+      const conflict = {
+        type: conflictType,
+        path: 'sub/path.txt' as never,
+      } as never;
+
+      // Act
+      let caught: unknown;
+      try {
+        rejectUnsupportedConflicts([conflict]);
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert
+      const data = (caught as { data?: { code?: string; operation?: string; reason?: string } })
+        ?.data;
+      expect(data?.code).toBe('UNSUPPORTED_OPERATION');
+      expect(data?.operation).toBe('merge');
+      expect(data?.reason).toContain(conflictType);
+      expect(data?.reason).toContain('sub/path.txt');
+    });
+
+    it.each([
+      'content',
+      'add-add',
+      'modify-delete',
+      'type-change',
+      'binary',
+    ] as const)('Given a %s MergeConflict, When rejectUnsupportedConflicts is called, Then does not throw (supported type)', async (conflictType) => {
+      // Arrange
+      const { rejectUnsupportedConflicts } = await import(
+        '../../../../src/application/commands/merge.js'
+      );
+      const conflict = { type: conflictType, path: 'x.txt' as never } as never;
+
+      // Act / Assert — no throw.
+      expect(() => rejectUnsupportedConflicts([conflict])).not.toThrow();
+    });
+
+    it('Given an empty conflicts array, When rejectUnsupportedConflicts is called, Then does not throw', async () => {
+      // Arrange
+      const { rejectUnsupportedConflicts } = await import(
+        '../../../../src/application/commands/merge.js'
+      );
+
+      // Act / Assert
+      expect(() => rejectUnsupportedConflicts([])).not.toThrow();
+    });
   });
 
   it('Given a partially-resolved index (one path stage-0, another stage-1/2/3), When commit runs, Then throws MERGE_HAS_CONFLICTS reporting only the still-unmerged path', async () => {

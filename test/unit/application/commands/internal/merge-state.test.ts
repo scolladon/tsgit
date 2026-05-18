@@ -129,6 +129,29 @@ describe('merge-state', () => {
       // Assert
       expect(sut).toBeUndefined();
     });
+
+    it('Given a malformed (non-hex) MERGE_HEAD, When readMergeHead is called, Then throws INVALID_OBJECT_ID with the offending value', async () => {
+      // Arrange — a corrupt MERGE_HEAD (e.g., from a mid-write crash)
+      // must NOT silently produce a malformed second parent. The
+      // validation gate ensures `commit` cannot build a corrupt commit
+      // object from poisoned state.
+      const ctx = createMemoryContext();
+      await init(ctx);
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/MERGE_HEAD`, 'not-a-hex-oid\n');
+
+      // Act
+      let caught: unknown;
+      try {
+        await readMergeHead(ctx);
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert
+      const data = (caught as { data?: { code?: string; value?: string } })?.data;
+      expect(data?.code).toBe('INVALID_OBJECT_ID');
+      expect(data?.value).toBe('not-a-hex-oid');
+    });
   });
 
   describe('readMergeMsg', () => {
