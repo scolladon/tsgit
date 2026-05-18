@@ -105,17 +105,7 @@ const switchBranch = async (ctx: Context, opts: CheckoutSwitchOptions): Promise<
   };
 };
 
-const resolvePathSource = async (
-  ctx: Context,
-  source: 'index' | 'HEAD' | ObjectId,
-): Promise<ObjectId> => {
-  if (source === 'index') {
-    // Synthesise a tree from the stage-0 index entries — this honours
-    // divergence between HEAD's committed tree and the staged content
-    // (the result of `add` / `rm` since the last commit).
-    const index = await readIndex(ctx);
-    return synthesizeTreeFromIndex(ctx, index);
-  }
+const resolvePathSource = async (ctx: Context, source: 'HEAD' | ObjectId): Promise<ObjectId> => {
   if (source === 'HEAD') {
     const head = await resolveRef(ctx, 'HEAD' as RefName);
     const headTree = await readTree(ctx, head);
@@ -130,19 +120,20 @@ const pathRestore = async (ctx: Context, opts: CheckoutPathsOptions): Promise<Ch
     throw invalidOption('paths', 'must not be empty');
   }
   const source = opts.source ?? 'index';
-  const targetTree = await resolvePathSource(ctx, source);
   const pathSet = new Set(opts.paths.map((p) => p as FilePath));
 
   // Two branches by source:
-  // - 'index' (default): no index commit, no lock needed. Restore the working
-  //   tree from the index snapshot; if a concurrent writer mutates the index
-  //   mid-flight, the operation acts on the snapshot we read — well-defined.
-  // - 'HEAD' | ObjectId: commits the index. Lock-first ordering applies, same
-  //   as Phase 13.2/13.3 reset paths.
+  // - 'index' (default): no index commit, no lock needed. Read the index
+  //   ONCE and share the snapshot between the tree synthesis and the
+  //   subsequent diff — otherwise a concurrent writer between the two
+  //   reads could leave the target tree and the current-index base
+  //   pointing at different snapshots.
+  // - 'HEAD' | ObjectId: commits the index. Lock-first ordering applies,
+  //   same as Phase 13.2/13.3 reset paths.
   const materializeResult =
     source === 'index'
-      ? await materializePathRestoreLockless(ctx, targetTree, pathSet)
-      : await materializePathRestoreLocked(ctx, targetTree, pathSet);
+      ? await materializePathRestoreLockless(ctx, pathSet)
+      : await materializePathRestoreLocked(ctx, await resolvePathSource(ctx, source), pathSet);
 
   // HEAD unchanged. Resolve current HEAD for the result.
   const head = await resolveRef(ctx, 'HEAD' as RefName);
@@ -156,10 +147,13 @@ const pathRestore = async (ctx: Context, opts: CheckoutPathsOptions): Promise<Ch
 
 const materializePathRestoreLockless = async (
   ctx: Context,
-  targetTree: ObjectId,
   pathSet: ReadonlySet<FilePath>,
 ): Promise<Awaited<ReturnType<typeof materializeTree>>> => {
+  // Read the index ONCE and pass the same snapshot to both synthesis
+  // and the diff. A concurrent `git add` between two reads would
+  // otherwise produce a mismatch between target-tree and current-index.
   const currentIndex = await readIndex(ctx);
+  const targetTree = await synthesizeTreeFromIndex(ctx, currentIndex);
   return materializeTree(ctx, {
     targetTree,
     currentIndex,

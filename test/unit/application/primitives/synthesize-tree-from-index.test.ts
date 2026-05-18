@@ -97,7 +97,10 @@ describe('synthesizeTreeFromIndex', () => {
     const rootId = await sut(ctx, index);
 
     // Assert — walk the structure: root → { a.txt, dir }; dir → { b.txt, sub }; sub → { c.txt }.
+    // Length assertions at every level pin against a mutation that would leak
+    // an entry into both the files-at-level list AND the subdir map.
     const root = (await readObject(ctx, rootId)) as Tree;
+    expect(root.entries).toHaveLength(2);
     const aEntry = root.entries.find((e) => e.name === 'a.txt');
     const dirEntry = root.entries.find((e) => e.name === 'dir');
     expect(aEntry?.id).toBe(idA);
@@ -105,6 +108,7 @@ describe('synthesizeTreeFromIndex', () => {
     expect(dirEntry?.mode).toBe(FILE_MODE.DIRECTORY);
 
     const dirTree = (await readObject(ctx, dirEntry?.id as ObjectId)) as Tree;
+    expect(dirTree.entries).toHaveLength(2);
     const bEntry = dirTree.entries.find((e) => e.name === 'b.txt');
     const subEntry = dirTree.entries.find((e) => e.name === 'sub');
     expect(bEntry?.id).toBe(idB);
@@ -135,10 +139,11 @@ describe('synthesizeTreeFromIndex', () => {
     // Act
     const treeId = await sut(ctx, index);
 
-    // Assert — only a.txt appears.
+    // Assert — only a.txt appears. Asserting the full name list (rather than
+    // just length) pins what was filtered: a mutation that allows stage-2
+    // entries through would surface `conflict.txt` in the output.
     const tree = (await readObject(ctx, treeId)) as Tree;
-    expect(tree.entries).toHaveLength(1);
-    expect(tree.entries[0]?.name).toBe('a.txt');
+    expect(tree.entries.map((e) => e.name)).toEqual(['a.txt']);
   });
 
   it("Given an index round-tripped from a known commit, When synthesise, Then returns the commit's tree id", async () => {
@@ -198,7 +203,106 @@ describe('synthesizeTreeFromIndex', () => {
     expect(names).toEqual(['a.ts', 'b.ts', 'c.ts']);
   });
 
-  it('Given an index entry with executable mode, When synthesise, Then the executable mode is preserved', async () => {
+  it('Given a round-trip with three root siblings, When synthesise, Then ordering matches the canonical tree', async () => {
+    // Arrange — three root-level siblings; if the synthesis emits them in a
+    // permuted order, the resulting tree SHA would diverge from the canonical
+    // one. A mutation that reverses the entries list would surface here.
+    const ctx = await buildSeededContext();
+    const idA = await writeBlob(ctx, 'A');
+    const idM = await writeBlob(ctx, 'M');
+    const idZ = await writeBlob(ctx, 'Z');
+    const expectedRootId = await writeTree(ctx, [
+      { name: 'a.txt' as FilePath, id: idA, mode: FILE_MODE.REGULAR },
+      { name: 'm.txt' as FilePath, id: idM, mode: FILE_MODE.REGULAR },
+      { name: 'z.txt' as FilePath, id: idZ, mode: FILE_MODE.REGULAR },
+    ]);
+    const index: GitIndex = {
+      ...EMPTY_INDEX,
+      entries: [
+        makeIndexEntry('a.txt', idA),
+        makeIndexEntry('m.txt', idM),
+        makeIndexEntry('z.txt', idZ),
+      ],
+    };
+    const sut = synthesizeTreeFromIndex;
+
+    // Act
+    const synthesised = await sut(ctx, index);
+
+    // Assert
+    expect(synthesised).toBe(expectedRootId);
+  });
+
+  it('Given an index entry whose path contains a `..` segment, When synthesise, Then throws INVALID_INDEX_ENTRY (defensive path validation)', async () => {
+    // Arrange
+    const ctx = await buildSeededContext();
+    const blobId = await writeBlob(ctx, 'malicious');
+    const index: GitIndex = {
+      ...EMPTY_INDEX,
+      entries: [makeIndexEntry('../etc/passwd', blobId)],
+    };
+    const sut = synthesizeTreeFromIndex;
+
+    // Act
+    let caught: unknown;
+    try {
+      await sut(ctx, index);
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert
+    expect((caught as { data?: { code?: string } })?.data?.code).toBe('INVALID_INDEX_ENTRY');
+  });
+
+  it('Given an index entry with a leading-slash absolute path, When synthesise, Then throws INVALID_INDEX_ENTRY', async () => {
+    // Arrange
+    const ctx = await buildSeededContext();
+    const blobId = await writeBlob(ctx, 'absolute');
+    const index: GitIndex = {
+      ...EMPTY_INDEX,
+      entries: [makeIndexEntry('/etc/passwd', blobId)],
+    };
+    const sut = synthesizeTreeFromIndex;
+
+    // Act
+    let caught: unknown;
+    try {
+      await sut(ctx, index);
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert
+    expect((caught as { data?: { code?: string } })?.data?.code).toBe('INVALID_INDEX_ENTRY');
+  });
+
+  it('Given an index path with depth exceeding MAX_TREE_DEPTH, When synthesise, Then throws TREE_DEPTH_EXCEEDED', async () => {
+    // Arrange — a path with 4097 segments triggers the depth cap (4096).
+    const ctx = await buildSeededContext();
+    const blobId = await writeBlob(ctx, 'deep');
+    const segments = Array.from({ length: 4097 }, (_, i) => `d${i}`);
+    segments.push('leaf.txt');
+    const deepPath = segments.join('/');
+    const index: GitIndex = {
+      ...EMPTY_INDEX,
+      entries: [makeIndexEntry(deepPath, blobId)],
+    };
+    const sut = synthesizeTreeFromIndex;
+
+    // Act
+    let caught: unknown;
+    try {
+      await sut(ctx, index);
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert
+    expect((caught as { data?: { code?: string } })?.data?.code).toBe('TREE_DEPTH_EXCEEDED');
+  });
+
+  it('Given an index entry with an executable mode, When synthesise, Then the executable mode is preserved', async () => {
     // Arrange
     const ctx = await buildSeededContext();
     const blobId = await writeBlob(ctx, '#!/bin/sh');
