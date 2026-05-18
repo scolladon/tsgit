@@ -61,31 +61,31 @@ const switchBranch = async (ctx: Context, opts: CheckoutSwitchOptions): Promise<
     oid = await resolveRef(ctx, branchRef);
   }
 
-  // Read target tree
+  // Read target tree — git objects are content-addressed and immutable, so
+  // this can happen outside the index lock without risk.
   const target = await readTree(ctx, oid);
-  const currentIndex = await readIndex(ctx);
 
-  // Materialize working tree
-  const materializeResult = await materializeTree(ctx, {
-    targetTree: target.id,
-    currentIndex,
-    force: opts.force ?? false,
-  });
-
-  // Commit new index — release is idempotent and becomes a no-op after a
-  // successful commit (per acquireIndexLock's contract), but pairing it with
-  // a `finally` removes the latent leak surface if a throw lands between
-  // acquire and commit.
-  if (materializeResult.written > 0 || materializeResult.deleted > 0) {
-    const lock = await acquireIndexLock(ctx);
-    try {
+  // Acquire the index lock BEFORE reading the index. Wrapping the entire
+  // read-materialise-commit sequence in the lock closes the TOCTOU window
+  // where a concurrent index writer could otherwise stale the donor map
+  // between readIndex and lock.commit. Matches the Phase 13.2 / 13.3 pattern.
+  const lock = await acquireIndexLock(ctx);
+  let materializeResult: Awaited<ReturnType<typeof materializeTree>>;
+  try {
+    const currentIndex = await readIndex(ctx);
+    materializeResult = await materializeTree(ctx, {
+      targetTree: target.id,
+      currentIndex,
+      force: opts.force ?? false,
+    });
+    if (materializeResult.written > 0 || materializeResult.deleted > 0) {
       await lock.commit(materializeResult.newIndexEntries);
-    } finally {
-      await lock.release();
     }
+  } finally {
+    await lock.release();
   }
 
-  // Move HEAD
+  // Move HEAD — outside the index lock (HEAD writes are atomic on their own).
   if (detached) {
     await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, `${oid}\n`);
     return {
@@ -131,27 +131,18 @@ const pathRestore = async (ctx: Context, opts: CheckoutPathsOptions): Promise<Ch
   }
   const source = opts.source ?? 'index';
   const targetTree = await resolvePathSource(ctx, source);
-  const currentIndex = await readIndex(ctx);
   const pathSet = new Set(opts.paths.map((p) => p as FilePath));
 
-  const materializeResult = await materializeTree(ctx, {
-    targetTree,
-    currentIndex,
-    force: true,
-    paths: pathSet,
-  });
-
-  // Path-restore only commits the index when the source diverged from the
-  // current index. When source === 'index', the index is the authoritative
-  // truth and we don't rewrite it.
-  if (source !== 'index' && (materializeResult.written > 0 || materializeResult.deleted > 0)) {
-    const lock = await acquireIndexLock(ctx);
-    try {
-      await lock.commit(materializeResult.newIndexEntries);
-    } finally {
-      await lock.release();
-    }
-  }
+  // Two branches by source:
+  // - 'index' (default): no index commit, no lock needed. Restore the working
+  //   tree from the index snapshot; if a concurrent writer mutates the index
+  //   mid-flight, the operation acts on the snapshot we read — well-defined.
+  // - 'HEAD' | ObjectId: commits the index. Lock-first ordering applies, same
+  //   as Phase 13.2/13.3 reset paths.
+  const materializeResult =
+    source === 'index'
+      ? await materializePathRestoreUnderIndex(ctx, targetTree, pathSet)
+      : await materializePathRestoreUnderLock(ctx, targetTree, pathSet);
 
   // HEAD unchanged. Resolve current HEAD for the result.
   const head = await resolveRef(ctx, 'HEAD' as RefName);
@@ -161,6 +152,43 @@ const pathRestore = async (ctx: Context, opts: CheckoutPathsOptions): Promise<Ch
     detached: false,
     changedPaths: materializeResult.written + materializeResult.deleted,
   };
+};
+
+const materializePathRestoreUnderIndex = async (
+  ctx: Context,
+  targetTree: ObjectId,
+  pathSet: ReadonlySet<FilePath>,
+): Promise<Awaited<ReturnType<typeof materializeTree>>> => {
+  const currentIndex = await readIndex(ctx);
+  return materializeTree(ctx, {
+    targetTree,
+    currentIndex,
+    force: true,
+    paths: pathSet,
+  });
+};
+
+const materializePathRestoreUnderLock = async (
+  ctx: Context,
+  targetTree: ObjectId,
+  pathSet: ReadonlySet<FilePath>,
+): Promise<Awaited<ReturnType<typeof materializeTree>>> => {
+  const lock = await acquireIndexLock(ctx);
+  try {
+    const currentIndex = await readIndex(ctx);
+    const result = await materializeTree(ctx, {
+      targetTree,
+      currentIndex,
+      force: true,
+      paths: pathSet,
+    });
+    if (result.written > 0 || result.deleted > 0) {
+      await lock.commit(result.newIndexEntries);
+    }
+    return result;
+  } finally {
+    await lock.release();
+  }
 };
 
 export const checkout = async (ctx: Context, opts: CheckoutOptions): Promise<CheckoutResult> => {
