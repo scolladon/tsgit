@@ -56,11 +56,14 @@ each pipeline branch:
    the inflate (compressed size doesn't tell us anything useful),
    but we DO avoid the parser pass.
 2. **Pack base entries** — inside `collectDeltaChain`'s
-   `isBase(header)` branch, we check `header.length > maxBytes`
-   BEFORE the `streamInflate` call. This is the cheapest possible
-   point: we pay the entry header parse (already required for
-   chain traversal) and reject before any inflate happens. For
-   adversarial 100 MiB-base scenarios, the inflate is bypassed.
+   `isBase(header)` branch, we check `header.size > maxBytes`
+   BEFORE the `streamInflate` call (where `header.size` is the
+   declared inflated payload size from the entry's varint
+   header). This is the cheapest possible point: we pay the
+   entry header parse (already required for chain traversal)
+   and reject before any inflate happens. For adversarial 100
+   MiB-base scenarios, the inflate is bypassed. The cap fires
+   at any depth in the chain — see Decision §2 below.
 3. **Pack delta entries — pre-apply on the outermost delta's
    varint, plus post-apply on `current`.** When `collectDeltaChain`
    reads the FIRST (outermost) delta in the chain, we call
@@ -113,18 +116,9 @@ layer stays policy-free.
 
 ### Negative
 
-- **Three enforcement sites, not one.** A future reader has to
+- **Four enforcement sites, not one.** A future reader has to
   understand why. This ADR documents the rationale; the source
   comments back-reference §3 of the design doc.
-- **Delta entries pay the apply cost even when oversized.** We
-  could in principle read the top delta's target-size varint and
-  reject earlier. We don't, because the simpler implementation
-  has acceptable cost in practice — see Alternatives.
-- **REF_DELTA bases bypass the cap when reached transitively.**
-  This is the intended scope (cap = "the caller-visible object's
-  size") but it does mean a chain of 200 MiB bases can still
-  appear in memory during a 1 MiB target's resolution. The
-  `deltaCache` caps cumulative residency through its byte budget.
 
 ### Neutral
 
