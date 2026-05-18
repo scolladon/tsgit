@@ -20,7 +20,7 @@ import {
 } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
 import { applyChangeset } from './apply-changeset.js';
-import { computeChangeset } from './compute-changeset.js';
+import { type Changeset, computeChangeset } from './compute-changeset.js';
 import { walkTree } from './walk-tree.js';
 
 export interface MaterializeTreeOpts {
@@ -28,6 +28,16 @@ export interface MaterializeTreeOpts {
   readonly currentIndex: GitIndex;
   readonly force?: boolean;
   readonly paths?: ReadonlySet<FilePath>;
+  /**
+   * When true, every target-tree path is written to the working tree
+   * unconditionally — even paths the index→target diff classified as `noop`
+   * (same `id` AND `mode`). Required by `reset --hard`, where the working
+   * tree may diverge from the index (uncommitted local modifications); the
+   * standard index→target diff cannot see that drift, so noops would skip
+   * paths the caller wants overwritten. Default `false` keeps the Phase
+   * 13.1 checkout behaviour: clean files are never spuriously rewritten.
+   */
+  readonly forceRewriteAll?: boolean;
 }
 
 export interface MaterializeTreeResult {
@@ -108,6 +118,24 @@ const mergeNewIndexEntries = (
   return merged;
 };
 
+const upgradeNoopsToUpdates = (changeset: Changeset): Changeset => {
+  let upgraded = 0;
+  const entries = changeset.entries.map((entry) => {
+    if (entry.kind !== 'noop') return entry;
+    upgraded += 1;
+    return { ...entry, kind: 'update' as const };
+  });
+  if (upgraded === 0) return changeset;
+  return {
+    entries,
+    stats: {
+      ...changeset.stats,
+      update: changeset.stats.update + upgraded,
+      noop: changeset.stats.noop - upgraded,
+    },
+  };
+};
+
 export const materializeTree = async (
   ctx: Context,
   opts: MaterializeTreeOpts,
@@ -123,7 +151,9 @@ export const materializeTree = async (
           entries: filterByPaths(opts.currentIndex.entries, opts.paths),
         } satisfies GitIndex);
 
-  const changeset = computeChangeset(indexForDiff, target);
+  const rawChangeset = computeChangeset(indexForDiff, target);
+  const changeset =
+    opts.forceRewriteAll === true ? upgradeNoopsToUpdates(rawChangeset) : rawChangeset;
 
   const result = await applyChangeset(ctx, {
     changeset,

@@ -82,6 +82,69 @@ describe('materializeTree', () => {
     expect(await ctx.fs.exists(`${ctx.layout.workDir}/old.txt`)).toBe(false);
   });
 
+  it('Given a noop entry (index matches target) AND forceRewriteAll, When materializeTree runs, Then the path is rewritten anyway', async () => {
+    // Arrange — seed index with the same id+mode the target tree has. The
+    // index→target diff would normally classify this as `noop` and skip the
+    // write. With `forceRewriteAll: true`, the path must be rewritten
+    // unconditionally — the hard-reset use case where the working tree may
+    // have diverged from the index.
+    const ctx = await buildSeededContext();
+    const blobId = await writeBlob(ctx, 'committed');
+    const treeId = await writeTree(ctx, [
+      { name: 'a.txt' as FilePath, id: blobId, mode: FILE_MODE.REGULAR },
+    ]);
+    const indexWithMatch: GitIndex = {
+      ...EMPTY_INDEX,
+      entries: [makeIndexEntry('a.txt', blobId)],
+    };
+    // Simulate a locally-modified file: index says 'committed', disk says 'dirty'.
+    await ctx.fs.write(`${ctx.layout.workDir}/a.txt`, new TextEncoder().encode('dirty'));
+    const sut = materializeTree;
+
+    // Act
+    const result = await sut(ctx, {
+      targetTree: treeId,
+      currentIndex: indexWithMatch,
+      force: true,
+      forceRewriteAll: true,
+    });
+
+    // Assert — `written` includes the upgraded noop, and the file content
+    // reverts to the committed blob.
+    expect(result.written).toBe(1);
+    const onDisk = new TextDecoder().decode(await ctx.fs.read(`${ctx.layout.workDir}/a.txt`));
+    expect(onDisk).toBe('committed');
+  });
+
+  it('Given a noop entry without forceRewriteAll, When materializeTree runs, Then the path is left alone', async () => {
+    // Arrange — same setup, but `forceRewriteAll` omitted. Default behaviour
+    // must preserve Phase 13.1's checkout semantics: clean (per the index)
+    // files are never spuriously rewritten.
+    const ctx = await buildSeededContext();
+    const blobId = await writeBlob(ctx, 'committed');
+    const treeId = await writeTree(ctx, [
+      { name: 'a.txt' as FilePath, id: blobId, mode: FILE_MODE.REGULAR },
+    ]);
+    const indexWithMatch: GitIndex = {
+      ...EMPTY_INDEX,
+      entries: [makeIndexEntry('a.txt', blobId)],
+    };
+    await ctx.fs.write(`${ctx.layout.workDir}/a.txt`, new TextEncoder().encode('dirty'));
+    const sut = materializeTree;
+
+    // Act
+    const result = await sut(ctx, {
+      targetTree: treeId,
+      currentIndex: indexWithMatch,
+      force: true,
+    });
+
+    // Assert — no writes (noop preserved), file stays dirty.
+    expect(result.written).toBe(0);
+    const onDisk = new TextDecoder().decode(await ctx.fs.read(`${ctx.layout.workDir}/a.txt`));
+    expect(onDisk).toBe('dirty');
+  });
+
   it('Given paths filter, When materializeTree runs, Then only the filtered path is affected', async () => {
     // Arrange
     const ctx = await buildSeededContext();

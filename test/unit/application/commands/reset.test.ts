@@ -56,6 +56,106 @@ describe('reset', () => {
     expect(sut.id).toBe(c1);
   });
 
+  it('Given a hard reset to parent, When reset, Then both index and working tree match parent tree', async () => {
+    // Arrange — commit-2 adds b.txt. Hard-resetting to c1 must drop b.txt from
+    // BOTH the working tree AND the index, while leaving a.txt at c1's content.
+    const { ctx, c1 } = await seedTwoCommits();
+
+    // Act
+    const sut = await reset(ctx, { mode: 'hard', target: c1 });
+
+    // Assert — index
+    expect(sut.mode).toBe('hard');
+    expect(sut.id).toBe(c1);
+    const index = await readIndex(ctx);
+    const paths = index.entries.filter((e) => e.flags.stage === 0).map((e) => e.path);
+    expect(paths).toEqual(['a.txt']);
+
+    // Assert — working tree
+    expect(await ctx.fs.exists(`${ctx.layout.workDir}/b.txt`)).toBe(false);
+    expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/a.txt`)).toBe('a');
+  });
+
+  it('Given a hard reset over a locally-modified file, When reset, Then the file is overwritten (force: true wired)', async () => {
+    // Arrange — modify a.txt without staging, then hard-reset to current HEAD.
+    // Without force=true, the dirty-tree guard would throw
+    // CHECKOUT_OVERWRITE_DIRTY. Hard reset must always overwrite.
+    const { ctx, c2 } = await seedTwoCommits();
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'LOCALLY MODIFIED');
+
+    // Act
+    await reset(ctx, { mode: 'hard', target: c2 });
+
+    // Assert — the file content reverts to the committed version.
+    expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/a.txt`)).toBe('a');
+  });
+
+  it('Given a hard reset to current HEAD, When reset, Then a clean tree is preserved (no spurious rewrites)', async () => {
+    // Arrange
+    const { ctx, c2 } = await seedTwoCommits();
+
+    // Act
+    await reset(ctx, { mode: 'hard', target: c2 });
+
+    // Assert — both files still on disk with their committed content; index
+    // still has both entries.
+    expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/a.txt`)).toBe('a');
+    expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/b.txt`)).toBe('b');
+    const index = await readIndex(ctx);
+    const paths = index.entries.filter((e) => e.flags.stage === 0).map((e) => e.path);
+    expect(paths).toEqual(['a.txt', 'b.txt']);
+  });
+
+  it('Given a corrupted index that makes readIndex throw mid-hard-reset, When reset, Then the lock is released so a follow-up reset can succeed', async () => {
+    // Arrange — seed two commits, then truncate `.git/index` so the next
+    // readIndex throws. After the failing reset, the lock must be released.
+    const { ctx, c1 } = await seedTwoCommits();
+    const indexPath = `${ctx.layout.gitDir}/index`;
+    await ctx.fs.write(indexPath, new Uint8Array([0x00, 0x00, 0x00, 0x00]));
+
+    // Act — first reset must fail.
+    let firstError: unknown;
+    try {
+      await reset(ctx, { mode: 'hard', target: c1 });
+    } catch (err) {
+      firstError = err;
+    }
+    expect(firstError).toBeDefined();
+
+    // Repair the index so the follow-up read succeeds; the second reset must
+    // NOT throw RESOURCE_LOCKED, proving the first attempt's lock was released.
+    await ctx.fs.rm(indexPath);
+    await reset(ctx, { mode: 'hard', target: c1 });
+
+    // Assert
+    const stillLocked = await ctx.fs.exists(`${indexPath}.lock`);
+    expect(stillLocked).toBe(false);
+  });
+
+  it('Given a hard reset target that resolves to a non-commit object, When reset, Then throws UNEXPECTED_OBJECT_TYPE expected=commit', async () => {
+    // Arrange — pass a blob oid as target.
+    const { ctx } = await seedTwoCommits();
+    const { writeObject } = await import('../../../../src/application/primitives/write-object.js');
+    const blobId = await writeObject(ctx, {
+      type: 'blob',
+      content: new TextEncoder().encode('not-a-commit'),
+      id: '' as ObjectId,
+    });
+
+    // Act
+    let caught: unknown;
+    try {
+      await reset(ctx, { mode: 'hard', target: blobId });
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert
+    const data = (caught as { data?: { code?: string; expected?: string } })?.data;
+    expect(data?.code).toBe('UNEXPECTED_OBJECT_TYPE');
+    expect(data?.expected).toBe('commit');
+  });
+
   it('Given an unresolvable target, When reset, Then throws REVPARSE_UNRESOLVED', async () => {
     const { ctx } = await seedTwoCommits();
     let caught: unknown;

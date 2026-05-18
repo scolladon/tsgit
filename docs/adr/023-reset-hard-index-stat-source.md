@@ -46,9 +46,25 @@ const result = await materializeTree(ctx, {
   targetTree: commit.data.tree,
   currentIndex,
   force: true,
+  forceRewriteAll: true,
 });
 await lock.commit(result.newIndexEntries);
 ```
+
+### `forceRewriteAll`
+
+A second flag we add to `MaterializeTreeOpts` in this phase.
+`materializeTree`'s diff is `currentIndex → targetTree`, so a path
+whose index already matches the target is classified `noop` and
+the working-tree write is skipped. That's correct for checkout
+(Phase 13.1), where we assume the working tree mirrors the index.
+For `reset --hard`, the working tree may have **uncommitted local
+modifications** the user is asking us to discard — but the index
+still records the committed `id`, so the path looks like a noop.
+`forceRewriteAll: true` converts every noop into an update inside
+`materializeTree`, ensuring every target-tree path is written
+regardless of what the index claims. The flag is opt-in; existing
+checkout call sites retain their semantics.
 
 `result.newIndexEntries` already has:
 
