@@ -20,25 +20,29 @@ import { invalidIndexEntry } from './error.js';
  * Callers that try to localise the failure inside an index file should
  * treat this value as "no offset available".
  */
-export const NO_PARSER_OFFSET = -1;
+export const NO_PARSER_OFFSET = -1 as const;
 
 const UNSAFE_SEGMENTS: ReadonlySet<string> = new Set(['', '.', '..']);
 
-// Bidirectional / isolate Unicode controls. Allowing these in index paths
-// is a known social-engineering vector: U+202E (right-to-left override)
-// can disguise `evil.exe` as `exe.libtrust` in terminal output and log
-// lines. Reject them at parse time so the library never produces a
-// FilePath value containing them.
+// Bidirectional / isolate Unicode controls per Unicode TR9 + RFC 9839.
+// Allowing these in index paths is a known social-engineering vector:
+// U+202E (right-to-left override) can disguise `evil.exe` as
+// `exe.libtrust` in terminal output and log lines. Reject them at
+// parse time so the library never produces a FilePath value containing
+// them.
 const BIDI_CONTROLS: ReadonlySet<number> = new Set([
-  0x202a,
-  0x202b,
-  0x202c,
-  0x202d,
-  0x202e, // LRE/RLE/PDF/LRO/RLO
-  0x2066,
-  0x2067,
-  0x2068,
-  0x2069, // LRI/RLI/FSI/PDI
+  0x061c, // ALM (Arabic Letter Mark)
+  0x200e, // LRM (Left-to-Right Mark)
+  0x200f, // RLM (Right-to-Left Mark)
+  0x202a, // LRE
+  0x202b, // RLE
+  0x202c, // PDF
+  0x202d, // LRO
+  0x202e, // RLO
+  0x2066, // LRI
+  0x2067, // RLI
+  0x2068, // FSI
+  0x2069, // PDI
 ]);
 
 const reasonFor = (segment: string): string => {
@@ -47,20 +51,16 @@ const reasonFor = (segment: string): string => {
   return "'..' segment rejected";
 };
 
-const findUnsafeChar = (
-  path: string,
-): { readonly index: number; readonly reason: string } | undefined => {
+const isControlChar = (code: number): boolean => code < 0x20 || (code >= 0x7f && code <= 0x9f);
+
+const unsafeReason = (path: string): string | undefined => {
   for (let i = 0; i < path.length; i += 1) {
     const code = path.charCodeAt(i);
     // 0x00 is filtered upstream by the NUL terminator scan; we re-assert
     // for callers that bypass parseIndex.
-    if (code === 0x5c /* '\' */) return { index: i, reason: 'backslash rejected' };
-    if (code < 0x20 || code === 0x7f) {
-      return { index: i, reason: 'control character rejected' };
-    }
-    if (BIDI_CONTROLS.has(code)) {
-      return { index: i, reason: 'bidi control character rejected' };
-    }
+    if (code === 0x5c /* '\' */) return 'backslash rejected';
+    if (isControlChar(code)) return 'control character rejected';
+    if (BIDI_CONTROLS.has(code)) return 'bidi control character rejected';
   }
   return undefined;
 };
@@ -91,9 +91,9 @@ export const validateIndexPath = (path: string, offset: number): void => {
   if (path.startsWith('/')) {
     throw invalidIndexEntry(offset, 'absolute path rejected');
   }
-  const unsafeChar = findUnsafeChar(path);
-  if (unsafeChar !== undefined) {
-    throw invalidIndexEntry(offset, unsafeChar.reason);
+  const reason = unsafeReason(path);
+  if (reason !== undefined) {
+    throw invalidIndexEntry(offset, reason);
   }
   for (const segment of path.split('/')) {
     if (UNSAFE_SEGMENTS.has(segment)) {

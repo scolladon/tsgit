@@ -4,6 +4,7 @@ import { synthesizeTreeFromIndex } from '../../../../src/application/primitives/
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { writeTree } from '../../../../src/application/primitives/write-tree.js';
 import type { GitIndex, IndexEntry } from '../../../../src/domain/git-index/index.js';
+import { NO_PARSER_OFFSET } from '../../../../src/domain/git-index/path-validator.js';
 import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
 import type { FileMode, FilePath, ObjectId, Tree } from '../../../../src/domain/objects/index.js';
 import { buildSeededContext } from './fixtures.js';
@@ -262,11 +263,13 @@ describe('synthesizeTreeFromIndex', () => {
 
     // Assert — code + reason + the NO_PARSER_OFFSET sentinel (proves the
     // primitive uses the documented sentinel rather than misleadingly
-    // claiming the failure was at byte 0 of some index file).
+    // claiming the failure was at byte 0 of some index file). Importing
+    // the symbol (not the literal -1) catches a mutation that flips the
+    // sentinel value at the definition site.
     const data = (caught as { data?: { code?: string; reason?: string; offset?: number } })?.data;
     expect(data?.code).toBe('INVALID_INDEX_ENTRY');
     expect(data?.reason).toBe("'..' segment rejected");
-    expect(data?.offset).toBe(-1);
+    expect(data?.offset).toBe(NO_PARSER_OFFSET);
   });
 
   it('Given an index path with depth exceeding MAX_TREE_DEPTH, When synthesise, Then throws TREE_DEPTH_EXCEEDED', async () => {

@@ -741,17 +741,22 @@ describe('parseIndex', () => {
     });
   });
 
-  it('Given a SECOND-position unsafe entry, When parseIndex runs, Then offset points to the second entry (not the first)', () => {
+  it('Given a SECOND-position unsafe entry, When parseIndex runs, Then offset points to the exact second entry start', () => {
     // Arrange — first entry safe, second entry has '..'. The thrown
-    // offset must be the second entry's start, NOT a hardcoded 12. Pins
-    // `entryStart` threading against a mutation that replaces it with a
-    // literal first-entry offset.
+    // offset must be the second entry's start (exactly 84, derived
+    // below). Pins `entryStart` threading against any mutation that
+    // replaces it with a different integer.
     const SHA_A = '0123456789abcdef0123456789abcdef01234567';
     const SHA_B = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
     const bytes = buildTestIndex([
       { path: 'safe.txt', sha: SHA_A },
       { path: '../etc/passwd', sha: SHA_B },
     ]);
+
+    // First entry: 62 header + 8 name ('safe.txt') + 1 NUL = 71;
+    // padded up to multiple of 8 = 72. Header is 12 → second entry
+    // starts at 84.
+    const SECOND_ENTRY_OFFSET = 12 + 72;
 
     // Act
     let caught: unknown;
@@ -761,16 +766,13 @@ describe('parseIndex', () => {
       caught = err;
     }
 
-    // Assert — second entry starts at 12 + length(first padded entry).
-    // The first 'safe.txt' entry occupies 72 bytes (62 header + 8 name + NUL/pad to 8).
-    const data = (caught as TsgitError).data as {
-      code: string;
-      offset: number;
-      reason: string;
-    };
-    expect(data.code).toBe('INVALID_INDEX_ENTRY');
-    expect(data.reason).toBe("'..' segment rejected");
-    expect(data.offset).toBeGreaterThan(12); // proves it's not the first entry
+    // Assert — exact offset is the only assertion that survives
+    // mutation tests on the `entryStart` argument threading.
+    expect((caught as TsgitError).data).toEqual({
+      code: 'INVALID_INDEX_ENTRY',
+      offset: SECOND_ENTRY_OFFSET,
+      reason: "'..' segment rejected",
+    });
   });
 
   it('Given an entry whose path contains a backslash, When parseIndex runs, Then throws INVALID_INDEX_ENTRY (Windows separator rejected)', () => {
@@ -795,7 +797,7 @@ describe('parseIndex', () => {
     });
   });
 
-  it('Given an entry whose path contains a control character, When parseIndex runs, Then throws INVALID_INDEX_ENTRY', () => {
+  it('Given an entry whose path contains a TAB (C0 control 0x09), When parseIndex runs, Then throws INVALID_INDEX_ENTRY', () => {
     // Arrange — tab (0x09) is a C0 control. Most filesystems accept it,
     // but it can corrupt line-oriented log output and is rejected
     // defensively.
@@ -816,6 +818,67 @@ describe('parseIndex', () => {
       offset: 12,
       reason: 'control character rejected',
     });
+  });
+
+  it('Given an entry whose path contains DEL (0x7F), When parseIndex runs, Then throws INVALID_INDEX_ENTRY', () => {
+    // Arrange — 0x7F is the boundary between C0 controls and printable
+    // ASCII. Pinning it explicitly kills a mutation that drops the
+    // `code === 0x7f` branch from the control-char check.
+    const SHA_A = '0123456789abcdef0123456789abcdef01234567';
+    const bytes = buildTestIndex([{ path: 'foo\x7fbar', sha: SHA_A }]);
+
+    // Act
+    let caught: unknown;
+    try {
+      parseIndex(bytes);
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert
+    expect((caught as TsgitError).data).toEqual({
+      code: 'INVALID_INDEX_ENTRY',
+      offset: 12,
+      reason: 'control character rejected',
+    });
+  });
+
+  it('Given an entry whose path contains a C1 control (0x85, NEL), When parseIndex runs, Then throws INVALID_INDEX_ENTRY', () => {
+    // Arrange — NEL (Next Line, U+0085) is in the C1 range (0x80-0x9F).
+    // C1 controls are rejected for the same reason as C0; pins the
+    // extended range against a mutation narrowing the check to C0 only.
+    const SHA_A = '0123456789abcdef0123456789abcdef01234567';
+    const bytes = buildTestIndex([{ path: 'foo\x85bar', sha: SHA_A }]);
+
+    // Act
+    let caught: unknown;
+    try {
+      parseIndex(bytes);
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert
+    expect((caught as TsgitError).data).toEqual({
+      code: 'INVALID_INDEX_ENTRY',
+      offset: 12,
+      reason: 'control character rejected',
+    });
+  });
+
+  it('Given a safe path containing only printable ASCII (including space), When parseIndex runs, Then succeeds', () => {
+    // Arrange — positive case pins the lower boundary 0x20 (space): a
+    // mutation flipping `code < 0x20` to `code <= 0x20` would reject
+    // space and surface here.
+    const SHA_A = '0123456789abcdef0123456789abcdef01234567';
+    const bytes = buildTestIndex([{ path: 'foo bar.txt', sha: SHA_A }]);
+
+    // Act
+    const result = parseIndex(bytes);
+
+    // Assert
+    expect(result.entries).toHaveLength(1);
+    expect(result.entries[0]?.path).toBe('foo bar.txt');
   });
 
   it('Given an entry whose path contains a BIDI override (U+202E), When parseIndex runs, Then throws INVALID_INDEX_ENTRY', () => {
