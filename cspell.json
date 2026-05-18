@@ -349,7 +349,10 @@
     "recognisable",
     "harmonised",
     "synthesises",
-    "synthesised"
+    "synthesised",
+    "normalisation",
+    "canonicalise",
+    "localise"
   ],
   "ignorePaths": [
     "node_modules",

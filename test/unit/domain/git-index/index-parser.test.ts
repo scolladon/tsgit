@@ -651,4 +651,98 @@ describe('parseIndex', () => {
       });
     }
   });
+
+  it('Given an entry whose path starts with a leading `/`, When parseIndex runs, Then throws INVALID_INDEX_ENTRY (absolute path rejected)', () => {
+    // Arrange — `/etc/passwd` is an absolute path; index entries must be
+    // workdir-relative. Defensive guard added in Phase 13.7.
+    const SHA_A = '0123456789abcdef0123456789abcdef01234567';
+    const bytes = buildTestIndex([{ path: '/etc/passwd', sha: SHA_A }]);
+
+    // Act
+    let caught: unknown;
+    try {
+      parseIndex(bytes);
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert
+    const data = (caught as TsgitError).data;
+    expect(data.code).toBe('INVALID_INDEX_ENTRY');
+    expect((data as { reason?: string }).reason).toContain('absolute paths rejected');
+  });
+
+  it('Given an entry whose path contains a `..` segment, When parseIndex runs, Then throws INVALID_INDEX_ENTRY (traversal rejected)', () => {
+    // Arrange
+    const SHA_A = '0123456789abcdef0123456789abcdef01234567';
+    const bytes = buildTestIndex([{ path: 'foo/../bar', sha: SHA_A }]);
+
+    // Act
+    let caught: unknown;
+    try {
+      parseIndex(bytes);
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert
+    const data = (caught as TsgitError).data;
+    expect(data.code).toBe('INVALID_INDEX_ENTRY');
+    expect((data as { reason?: string }).reason).toContain("'..' segment rejected");
+  });
+
+  it('Given an entry whose path is just `..`, When parseIndex runs, Then throws INVALID_INDEX_ENTRY', () => {
+    // Arrange — bare `..` reference at root level.
+    const SHA_A = '0123456789abcdef0123456789abcdef01234567';
+    const bytes = buildTestIndex([{ path: '..', sha: SHA_A }]);
+
+    // Act
+    let caught: unknown;
+    try {
+      parseIndex(bytes);
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert
+    expect((caught as TsgitError).data.code).toBe('INVALID_INDEX_ENTRY');
+  });
+
+  it('Given an entry whose path contains a `.` segment, When parseIndex runs, Then throws INVALID_INDEX_ENTRY (current-dir rejected)', () => {
+    // Arrange
+    const SHA_A = '0123456789abcdef0123456789abcdef01234567';
+    const bytes = buildTestIndex([{ path: 'foo/./bar', sha: SHA_A }]);
+
+    // Act
+    let caught: unknown;
+    try {
+      parseIndex(bytes);
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert
+    const data = (caught as TsgitError).data;
+    expect(data.code).toBe('INVALID_INDEX_ENTRY');
+    expect((data as { reason?: string }).reason).toContain("'.' segment rejected");
+  });
+
+  it('Given an entry whose path contains an empty segment (`foo//bar`), When parseIndex runs, Then throws INVALID_INDEX_ENTRY', () => {
+    // Arrange — double slash produces an empty segment between the two parts.
+    const SHA_A = '0123456789abcdef0123456789abcdef01234567';
+    const bytes = buildTestIndex([{ path: 'foo//bar', sha: SHA_A }]);
+
+    // Act
+    let caught: unknown;
+    try {
+      parseIndex(bytes);
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert
+    const data = (caught as TsgitError).data;
+    expect(data.code).toBe('INVALID_INDEX_ENTRY');
+    expect((data as { reason?: string }).reason).toContain('empty segment rejected');
+  });
 });

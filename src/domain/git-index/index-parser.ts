@@ -3,6 +3,7 @@ import type { FileMode, FilePath, ObjectId } from '../objects/index.js';
 import { FilePath as FilePathFactory, normalizeFileMode } from '../objects/index.js';
 import { invalidIndexEntry, invalidIndexHeader } from './error.js';
 import type { GitIndex, IndexEntry, IndexEntryFlags, IndexExtension } from './index-entry.js';
+import { validateIndexPath } from './path-validator.js';
 
 const DIRC_SIGNATURE = 0x44495243;
 const INDEX_HEADER_SIZE = 12;
@@ -68,6 +69,7 @@ export function parseIndex(bytes: Uint8Array): GitIndex {
     const nameLength = flagsRaw & 0xfff;
     const pathEnd = nameLength === 0xfff ? nulEnd : offset + nameLength;
     const path = decode(bytes.subarray(offset, pathEnd));
+    validateIndexPath(path, entryStart);
 
     offset = nulEnd + 1;
 

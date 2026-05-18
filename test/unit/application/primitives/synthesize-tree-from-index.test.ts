@@ -233,49 +233,9 @@ describe('synthesizeTreeFromIndex', () => {
     expect(synthesised).toBe(expectedRootId);
   });
 
-  it('Given an index entry whose path contains a `..` segment, When synthesise, Then throws INVALID_INDEX_ENTRY (defensive path validation)', async () => {
-    // Arrange
-    const ctx = await buildSeededContext();
-    const blobId = await writeBlob(ctx, 'malicious');
-    const index: GitIndex = {
-      ...EMPTY_INDEX,
-      entries: [makeIndexEntry('../etc/passwd', blobId)],
-    };
-    const sut = synthesizeTreeFromIndex;
-
-    // Act
-    let caught: unknown;
-    try {
-      await sut(ctx, index.entries);
-    } catch (err) {
-      caught = err;
-    }
-
-    // Assert
-    expect((caught as { data?: { code?: string } })?.data?.code).toBe('INVALID_INDEX_ENTRY');
-  });
-
-  it('Given an index entry with a leading-slash absolute path, When synthesise, Then throws INVALID_INDEX_ENTRY', async () => {
-    // Arrange
-    const ctx = await buildSeededContext();
-    const blobId = await writeBlob(ctx, 'absolute');
-    const index: GitIndex = {
-      ...EMPTY_INDEX,
-      entries: [makeIndexEntry('/etc/passwd', blobId)],
-    };
-    const sut = synthesizeTreeFromIndex;
-
-    // Act
-    let caught: unknown;
-    try {
-      await sut(ctx, index.entries);
-    } catch (err) {
-      caught = err;
-    }
-
-    // Assert
-    expect((caught as { data?: { code?: string } })?.data?.code).toBe('INVALID_INDEX_ENTRY');
-  });
+  // Phase 13.7 hoisted unsafe-path rejection (`..`, `.`, empty segments,
+  // leading-slash) into `parseIndex` itself; see
+  // `test/unit/domain/git-index/index-parser.test.ts` for those cases.
 
   it('Given an index path with depth exceeding MAX_TREE_DEPTH, When synthesise, Then throws TREE_DEPTH_EXCEEDED', async () => {
     // Arrange — a path with 4097 segments triggers the depth cap (4096).
