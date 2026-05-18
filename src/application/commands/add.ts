@@ -1,5 +1,5 @@
 import { invalidOption, workingTreeFileTooLarge } from '../../domain/commands/error.js';
-import { TsgitError } from '../../domain/error.js';
+import { operationAborted, TsgitError } from '../../domain/error.js';
 import type { IndexEntry } from '../../domain/git-index/index.js';
 import { emptyPathspec, pathspecNoMatch } from '../../domain/index.js';
 import type { FileMode, ObjectId } from '../../domain/objects/index.js';
@@ -201,20 +201,45 @@ const stageFromStat = async (
   path: FilePath,
   stat: Awaited<ReturnType<Context['fs']['lstat']>>,
 ): Promise<IndexEntry> => {
-  const mode: FileMode = stat.isSymbolicLink
+  // Re-lstat under the index lock to close the walk→stage TOCTOU window:
+  // an attacker swapping a regular file for a symlink (or vice versa)
+  // between the walk's lstat and our read would otherwise re-route the
+  // read through `ctx.fs.read` (which follows symlinks) or break the
+  // mode classification. If the type flipped, abort the whole add.
+  const fresh = await ctx.fs.lstat(`${ctx.layout.workDir}/${path}`);
+  if (fresh.isSymbolicLink !== stat.isSymbolicLink) {
+    throw operationAborted();
+  }
+  const mode: FileMode = fresh.isSymbolicLink
     ? '120000'
-    : (stat.mode & 0o111) !== 0
+    : (fresh.mode & 0o111) !== 0
       ? '100755'
       : '100644';
-  const bytes = stat.isSymbolicLink
-    ? new TextEncoder().encode(await ctx.fs.readlink(`${ctx.layout.workDir}/${path}`))
-    : await readFile(ctx, path);
+  const bytes = await readContent(ctx, path, fresh);
   const id = (await writeObject(ctx, {
     type: 'blob',
     id: '' as ObjectId,
     content: bytes,
   })) as ObjectId;
-  return makeEntry(stat, mode, id, path);
+  return makeEntry(fresh, mode, id, path);
+};
+
+const readContent = async (
+  ctx: Context,
+  path: FilePath,
+  stat: Awaited<ReturnType<Context['fs']['lstat']>>,
+): Promise<Uint8Array> => {
+  if (stat.isSymbolicLink) {
+    const bytes = new TextEncoder().encode(await ctx.fs.readlink(`${ctx.layout.workDir}/${path}`));
+    // Defence against an FS adapter that mis-reports symlink target length:
+    // lstat reports the target byte length as `stat.size`, but a hostile
+    // adapter could return an arbitrarily long string from readlink.
+    if (bytes.byteLength > MAX_WORKING_TREE_BLOB_BYTES) {
+      throw workingTreeFileTooLarge(path, bytes.byteLength, MAX_WORKING_TREE_BLOB_BYTES);
+    }
+    return bytes;
+  }
+  return readFile(ctx, path);
 };
 
 const makeEntry = (

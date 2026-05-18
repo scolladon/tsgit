@@ -325,13 +325,121 @@ describe('add', () => {
     expect(sut.added).toEqual(['a.txt']);
   });
 
-  it('Given a rebase in progress (.git/REBASE_HEAD) and all: true, When add, Then throws OPERATION_IN_PROGRESS', async () => {
+  it('Given a rebase in progress (.git/REBASE_HEAD) and all: true, When add, Then throws OPERATION_IN_PROGRESS with operation=rebase', async () => {
     // Arrange
     const ctx = await seedFreshRepo({ 'a.txt': 'a' });
     await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/REBASE_HEAD`, 'oid\n');
 
     // Act
-    await expectError(() => add(ctx, [], { all: true }), 'OPERATION_IN_PROGRESS');
+    const err = await expectError(() => add(ctx, [], { all: true }), 'OPERATION_IN_PROGRESS');
+
+    // Assert — payload pin so the operation identifier is mutation-protected.
+    expect((err.data as { operation: string }).operation).toBe('rebase');
+  });
+
+  it('Given a stat type that flips between walk and stage (regular -> symlink), When add({ all: true }), Then throws OPERATION_ABORTED and no index commit', async () => {
+    // Arrange — first lstat call (in the walk) reports a regular file;
+    // the second (re-lstat inside stageFromStat) reports a symlink. This
+    // simulates an attacker swapping the inode between walk and stage.
+    const ctx = await seedFreshRepo({ 'a.txt': 'a' });
+    const baseLstat = ctx.fs.lstat;
+    let lstatCalls = 0;
+    const racingFs = new Proxy(ctx.fs, {
+      get(target, prop, receiver) {
+        if (prop === 'lstat') {
+          return async (path: string) => {
+            const real = await baseLstat(path);
+            if (path.endsWith('/a.txt')) {
+              lstatCalls += 1;
+              if (lstatCalls === 2) {
+                return { ...real, isSymbolicLink: true, isFile: false };
+              }
+            }
+            return real;
+          };
+        }
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+    const racingCtx = { ...ctx, fs: racingFs };
+    const before = (await readIndex(ctx).catch(() => ({ entries: [] }))).entries.length;
+
+    // Act
+    await expectError(() => add(racingCtx, [], { all: true }), 'OPERATION_ABORTED');
+
+    // Assert — no partial commit landed.
+    const after = (await readIndex(ctx).catch(() => ({ entries: [] }))).entries.length;
+    expect(after).toBe(before);
+  });
+
+  it('Given a hostile readlink that returns more than MAX_WORKING_TREE_BLOB_BYTES, When add({ all: true }), Then throws WORKING_TREE_FILE_TOO_LARGE', async () => {
+    // Arrange — symlink target reported by lstat is small (under cap) but
+    // readlink returns an oversize payload. Defends against a mis-behaving
+    // FS adapter that lies about target length.
+    const ctx = await seedFreshRepo({});
+    await ctx.fs.symlink('short-target', `${ctx.layout.workDir}/link`);
+    const baseReadlink = ctx.fs.readlink;
+    const hostileFs = new Proxy(ctx.fs, {
+      get(target, prop, receiver) {
+        if (prop === 'readlink') {
+          return async (path: string) => {
+            const real = await baseReadlink(path);
+            if (path.endsWith('/link')) {
+              return 'x'.repeat(MAX_WORKING_TREE_BLOB_BYTES + 1);
+            }
+            return real;
+          };
+        }
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+    const hostileCtx = { ...ctx, fs: hostileFs };
+
+    // Act
+    const err = await expectError(
+      () => add(hostileCtx, [], { all: true }),
+      'WORKING_TREE_FILE_TOO_LARGE',
+    );
+
+    // Assert
+    const data = err.data as { path: string; size: number; limit: number };
+    expect(data.path).toBe('link');
+    expect(data.size).toBe(MAX_WORKING_TREE_BLOB_BYTES + 1);
+    expect(data.limit).toBe(MAX_WORKING_TREE_BLOB_BYTES);
+  });
+
+  it('Given a plain regular file literally named .git inside a subdirectory, When add({ all: true }), Then the subdirectory siblings ARE staged (no embedded-marker on a non-dir / non-file-pointer)', async () => {
+    // Arrange — historical bug: `entries.some(.name === '.git')` would
+    // collapse a parent directory even when `.git` was not actually a
+    // dir or worktree-pointer. The fix requires `.git` to be a directory
+    // OR a regular file (worktree gitdir pointer). A symlink named `.git`
+    // is NOT a marker — see the helper test below.
+    const ctx = await seedFreshRepo({
+      'sub/normal.txt': 'x',
+      'sub/.git': 'gitdir: /elsewhere',
+    });
+
+    // Act — the `.git` file IS treated as a worktree pointer (file branch
+    // of the marker check), so the whole `sub/` is skipped.
+    await add(ctx, [], { all: true });
+
+    // Assert
+    const idx = await readIndex(ctx);
+    expect(idx.entries.map((e) => e.path)).toEqual([]);
+  });
+
+  it('Given a symlink named .git in a subdirectory, When add({ all: true }), Then the symlink is filtered but siblings are still staged (symlinks are NOT embedded markers)', async () => {
+    // Arrange — defense against an attacker planting a `.git` symlink to
+    // hide siblings from being staged.
+    const ctx = await seedFreshRepo({ 'sub/keep.txt': 'k' });
+    await ctx.fs.symlink('/elsewhere', `${ctx.layout.workDir}/sub/.git`);
+
+    // Act
+    await add(ctx, [], { all: true });
+
+    // Assert — sibling staged; `.git` symlink filtered by name check.
+    const idx = await readIndex(ctx);
+    expect(idx.entries.map((e) => e.path).sort()).toEqual(['sub/keep.txt']);
   });
 
   it('Given a custom ignore predicate that excludes node_modules, When addAll is called directly, Then those paths are skipped', async () => {

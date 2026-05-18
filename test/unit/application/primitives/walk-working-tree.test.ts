@@ -147,23 +147,94 @@ describe('walkWorkingTree', () => {
     await expectError(() => collect(walkWorkingTree(ctx)), 'OPERATION_ABORTED');
   });
 
-  it('Given depth above maxDepth, When walked, Then throws TREE_DEPTH_EXCEEDED', async () => {
-    // Arrange
+  it('Given the signal aborts AFTER the first yield, When walked further, Then throws OPERATION_ABORTED (in-loop check)', async () => {
+    // Arrange — controller stays live until we consume one entry.
+    const controller = new AbortController();
+    const ctx = await seedFs({ 'a.txt': '1', 'b.txt': '2' }, { signal: controller.signal });
+
+    // Act
+    let caught: unknown;
+    try {
+      for await (const _entry of walkWorkingTree(ctx)) {
+        controller.abort();
+      }
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert — the abort fires in the iteration's signal check on the
+    // SECOND entry, proving the guard is per-entry (not hoisted before
+    // the loop).
+    expect(caught).toBeInstanceOf(TsgitError);
+    expect((caught as TsgitError).data.code).toBe('OPERATION_ABORTED');
+  });
+
+  it('Given a regular file literally named .git (not a directory), When walked, Then it is skipped but its siblings are yielded', async () => {
+    // Arrange — a `.git` REGULAR FILE inside a subdir means git-worktree
+    // pointer (treated as embedded). A `.git` regular file at the root
+    // is the host's worktree pointer — also treated as a marker. Either
+    // way, the file is filtered. This test ensures a stray `.git` plain
+    // file at the root does NOT collapse siblings.
+    const ctx = await seedFs({ 'a.txt': '1', '.git': 'gitdir: /elsewhere' });
+
+    // Act
+    const sut = await collect(walkWorkingTree(ctx));
+
+    // Assert — `.git` skipped, sibling yielded.
+    expect(sut).toEqual(['a.txt']);
+  });
+
+  it('Given depth above maxDepth, When walked, Then throws TREE_DEPTH_EXCEEDED carrying the offending depth', async () => {
+    // Arrange — depth 3 hierarchy with cap at 2.
     const ctx = await seedFs({ 'a/b/c/d.txt': 'x' });
 
     // Act
-    await expectError(() => collect(walkWorkingTree(ctx, { maxDepth: 2 })), 'TREE_DEPTH_EXCEEDED');
+    const err = await expectError(
+      () => collect(walkWorkingTree(ctx, { maxDepth: 2 })),
+      'TREE_DEPTH_EXCEEDED',
+    );
+
+    // Assert — payload pin: depth that tripped the guard.
+    expect((err.data as { depth: number }).depth).toBe(3);
   });
 
-  it('Given entries above maxEntries, When walked, Then throws TREE_ENTRY_LIMIT_EXCEEDED', async () => {
+  it('Given depth exactly at maxDepth, When walked, Then yields without throwing (boundary)', async () => {
+    // Arrange — depth 2 hierarchy, maxDepth 2. Kills off-by-one mutants
+    // on the depth guard (`>` vs `>=`).
+    const ctx = await seedFs({ 'a/b/c.txt': 'x' });
+
+    // Act
+    const sut = await collect(walkWorkingTree(ctx, { maxDepth: 2 }));
+
+    // Assert
+    expect(sut).toEqual(['a/b/c.txt']);
+  });
+
+  it('Given entries above maxEntries, When walked, Then throws TREE_ENTRY_LIMIT_EXCEEDED carrying count and limit', async () => {
     // Arrange
     const ctx = await seedFs({ 'a.txt': '1', 'b.txt': '2', 'c.txt': '3' });
 
     // Act
-    await expectError(
+    const err = await expectError(
       () => collect(walkWorkingTree(ctx, { maxEntries: 2 })),
       'TREE_ENTRY_LIMIT_EXCEEDED',
     );
+
+    // Assert — payload pin: 3rd entry over the limit of 2.
+    const data = err.data as { count: number; limit: number };
+    expect(data.count).toBe(3);
+    expect(data.limit).toBe(2);
+  });
+
+  it('Given entries exactly at maxEntries, When walked, Then yields all (boundary)', async () => {
+    // Arrange — 2 entries, cap 2. Kills off-by-one mutants on the entry guard.
+    const ctx = await seedFs({ 'a.txt': '1', 'b.txt': '2' });
+
+    // Act
+    const sut = await collect(walkWorkingTree(ctx, { maxEntries: 2 }));
+
+    // Assert
+    expect(sut.sort()).toEqual(['a.txt', 'b.txt']);
   });
 
   it('Given a hostile readdir that returns a `..` segment, When walked, Then throws PATHSPEC_OUTSIDE_REPO', async () => {

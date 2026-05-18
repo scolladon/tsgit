@@ -57,9 +57,12 @@ async function* walkInternal(
 ): AsyncIterable<WalkWorkingTreeEntry> {
   if (depth > config.maxDepth) throw treeDepthExceeded(depth);
   const entries = await config.ctx.fs.readdir(directoryPath(config, prefix));
-  // Embedded-repo gate: a non-root directory containing a `.git` entry
-  // is treated as an embedded clone and yields nothing.
-  if (!isRoot && entries.some((e) => isForbiddenGitComponent(e.name))) return;
+  // Embedded-repo gate: a non-root directory containing a `.git`
+  // DIRECTORY (or a `.git` regular file pointing at a worktree gitdir)
+  // is treated as an embedded clone and yields nothing. A spurious
+  // file literally named `.git` is filtered by `isForbiddenGitComponent`
+  // below but must NOT collapse the parent directory.
+  if (!isRoot && entries.some(isEmbeddedGitMarker)) return;
   for (const entry of entries) {
     if (config.ctx.signal?.aborted) throw operationAborted();
     if (isForbiddenGitComponent(entry.name)) continue;
@@ -100,3 +103,18 @@ const directoryPath = (config: WalkConfig, prefix: string): string =>
 
 const joinPath = (prefix: string, name: string): FilePath =>
   (prefix === '' ? name : `${prefix}/${name}`) as FilePath;
+
+const isEmbeddedGitMarker = (entry: {
+  readonly name: string;
+  readonly isFile: boolean;
+  readonly isDirectory: boolean;
+  readonly isSymbolicLink: boolean;
+}): boolean => {
+  if (!isForbiddenGitComponent(entry.name)) return false;
+  // A `.git` directory marks an embedded clone. A `.git` regular file is
+  // git's worktree-pointer (`gitdir: /path/to/.git/worktrees/...`) — also
+  // an embedded checkout. Symlinks are NOT treated as markers because the
+  // walker never follows symlinks; treating a stray `.git` symlink as a
+  // marker would let an attacker silently hide siblings.
+  return entry.isDirectory || (entry.isFile && !entry.isSymbolicLink);
+};
