@@ -109,9 +109,10 @@ const resolvePathSource = async (
   source: 'index' | 'HEAD' | ObjectId,
 ): Promise<ObjectId> => {
   if (source === 'index') {
-    // For source==='index', we use HEAD's tree (the path-restore from index
-    // is implemented by walking HEAD's tree, which matches stage-0 entries).
-    // A future Phase will rebuild the synthetic tree from the index directly.
+    // Placeholder for source === 'index': resolve to HEAD's tree. The two
+    // are equivalent only when the index has not diverged from HEAD via
+    // `add` / `rm`. See `docs/BACKLOG.md` §13.6 — rebuild the synthetic
+    // tree from the index entries directly.
     const head = await resolveRef(ctx, 'HEAD' as RefName);
     const headTree = await readTree(ctx, head);
     return headTree.id;
@@ -141,8 +142,8 @@ const pathRestore = async (ctx: Context, opts: CheckoutPathsOptions): Promise<Ch
   //   as Phase 13.2/13.3 reset paths.
   const materializeResult =
     source === 'index'
-      ? await materializePathRestoreUnderIndex(ctx, targetTree, pathSet)
-      : await materializePathRestoreUnderLock(ctx, targetTree, pathSet);
+      ? await materializePathRestoreLockless(ctx, targetTree, pathSet)
+      : await materializePathRestoreLocked(ctx, targetTree, pathSet);
 
   // HEAD unchanged. Resolve current HEAD for the result.
   const head = await resolveRef(ctx, 'HEAD' as RefName);
@@ -154,7 +155,7 @@ const pathRestore = async (ctx: Context, opts: CheckoutPathsOptions): Promise<Ch
   };
 };
 
-const materializePathRestoreUnderIndex = async (
+const materializePathRestoreLockless = async (
   ctx: Context,
   targetTree: ObjectId,
   pathSet: ReadonlySet<FilePath>,
@@ -168,7 +169,7 @@ const materializePathRestoreUnderIndex = async (
   });
 };
 
-const materializePathRestoreUnderLock = async (
+const materializePathRestoreLocked = async (
   ctx: Context,
   targetTree: ObjectId,
   pathSet: ReadonlySet<FilePath>,

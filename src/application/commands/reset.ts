@@ -118,7 +118,13 @@ const hardResetFromCommit = async (ctx: Context, commitId: ObjectId): Promise<vo
       // flag, dirty noop'd paths would survive the reset.
       forceRewriteAll: true,
     });
-    await lock.commit(result.newIndexEntries);
+    // Skip the commit when there is genuinely nothing to write — matches
+    // checkout's no-op skip. With `forceRewriteAll: true`, this only fires
+    // in the degenerate case (empty target tree against an empty index);
+    // otherwise every target-tree path becomes an upgraded update.
+    if (result.written > 0 || result.deleted > 0) {
+      await lock.commit(result.newIndexEntries);
+    }
   } finally {
     await lock.release();
   }
