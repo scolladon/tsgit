@@ -29,6 +29,13 @@ been rewritten, so donor stats would be stale.
 
 ## 2. Surface
 
+> **Update during implementation:** the work is _almost_ wiring-only. A
+> small primitive surface addition was needed: a new `forceRewriteAll`
+> option on `materializeTree` (see §3.1 step 5 and ADR-023). Without it,
+> a locally-modified working-tree file whose index still records the
+> committed `id` would survive `reset --hard` — `materializeTree`'s
+> index→target diff classifies it `noop` and skips the write.
+
 ### 2.1 Existing (preserved)
 
 ```ts
@@ -72,12 +79,20 @@ Phase 13.3 is wiring only. The existing primitives compose cleanly.
    the reset --mixed reviews).
 5. **Inside the lock:**
    - `readIndex(ctx)` — the donor side of the diff.
-   - `materializeTree(ctx, { targetTree, currentIndex, force: true })`
-     — writes / deletes / chmods every file. `force: true` is
-     mandatory: hard reset is the explicit-overwrite operation, and
-     the dirty-tree guard would refuse to clobber local changes the
-     user is asking us to discard. Returns
-     `{ newIndexEntries, written, deleted }`.
+   - `materializeTree(ctx, { targetTree, currentIndex, force: true, forceRewriteAll: true })`
+     — writes / deletes / chmods every file. Both flags are
+     mandatory:
+     - `force: true` skips the dirty-tree guard. Hard reset is the
+       explicit-overwrite operation; the guard would refuse to
+       clobber local changes the user is asking us to discard.
+     - `forceRewriteAll: true` upgrades every `noop` classification
+       to `update` so the working-tree write happens even when the
+       index says the path already matches the target. The
+       index→target diff cannot see uncommitted local modifications
+       (the index records the committed `id`); without this flag
+       those paths would skip the write. See ADR-023's
+       `forceRewriteAll` section.
+   - Returns `{ newIndexEntries, written, deleted }`.
    - `lock.commit(newIndexEntries)` — atomic temp-write + rename
      over `.git/index`.
 6. **Release the lock in `finally`** — idempotent post-commit per

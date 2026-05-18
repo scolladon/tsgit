@@ -10,6 +10,21 @@
  * Returns the new IndexEntry list for the caller to commit, plus
  * written/deleted counts. The primitive does NOT commit the index — the
  * caller decides (see design §3.2 + ADR-020).
+ *
+ * ## Stat-source contract for `newIndexEntries` (load-bearing for ADR-023)
+ *
+ * - **Paths that were written/added** (`add` or `update` changeset entries):
+ *   the IndexEntry carries **post-write `lstat`-derived stat fields**
+ *   (ctime/mtime/dev/ino/uid/gid/fileSize). These reflect the file we just
+ *   wrote, so the next `status` runs the fast `isStatClean` path.
+ * - **Paths whose changeset classification was `noop`** (skipped — index
+ *   already matched target by `id + mode`): the IndexEntry is the caller's
+ *   `currentIndex` entry verbatim. Donor stats survive across the call.
+ * - `reset --hard` therefore MUST set `forceRewriteAll: true` so every noop
+ *   upgrades to update and the post-write stats land in the output. Without
+ *   that, a locally-modified working-tree file that the index still records
+ *   as clean would survive the reset, AND the donor stats would be stale
+ *   relative to the actual disk state.
  */
 import type { GitIndex, IndexEntry } from '../../domain/git-index/index.js';
 import {

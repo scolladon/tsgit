@@ -94,9 +94,13 @@ const hardResetFromCommit = async (ctx: Context, commitId: ObjectId): Promise<vo
   if (commit.type !== 'commit') {
     throw unexpectedObjectType('commit', commit.type, commitId);
   }
-  // Same lock-first ordering as the mixed path. The lock wraps the
-  // working-tree materialise too, so a concurrent index writer is serialised
-  // for the entire hard-reset transaction.
+  // Same lock-first ordering as the mixed path (Phase 13.2). The lock wraps
+  // the working-tree materialise too, so a concurrent index writer is
+  // serialised for the entire hard-reset transaction. This intentionally
+  // diverges from Phase 13.1 checkout's lock-around-commit-only pattern,
+  // which has a known TOCTOU window between `readIndex` and `acquireIndexLock`.
+  // Tightening checkout's lock pattern is captured as a follow-up in
+  // `docs/BACKLOG.md` §13.5.
   //
   // The index commit uses materializeTree's `newIndexEntries` (post-write
   // lstat-derived stats), not buildIndexFromTree's donor stats — donor stats

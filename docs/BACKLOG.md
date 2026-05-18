@@ -250,6 +250,8 @@ tree is the visible gap.
 - [ ] **13.3** `reset --hard`: invoke 13.1's materialize routine.
 - [ ] **13.4** Three-way tree merge in `merge`: walk HEAD ∩ THEIRS ∩ BASE, apply per-path resolution, write conflict markers (already implemented for content; tree-walk is the missing piece).
       _Accept when:_ a clean merge produces the correct merge commit's tree without re-running `add`; a conflicting merge writes `<<<<<<<` markers and leaves index in unmerged state.
+- [ ] **13.5** Tighten `checkout` to lock-first ordering. Phase 13.1's `checkout` runs `readIndex` BEFORE `acquireIndexLock`, leaving a known TOCTOU window — a concurrent index writer can mutate the donor stat fields between read and commit. Phase 13.2 (reset --mixed) and Phase 13.3 (reset --hard) adopt the safer lock-around-everything pattern; checkout should converge.
+      _Accept when:_ `checkout` acquires the index lock BEFORE reading the index, matching `hardResetFromCommit`/`rebuildIndexFromCommit`. Add a pre-locked-index test asserting `RESOURCE_LOCKED`, mirroring Phase 13.3's test for the same behaviour.
 
 ### Phase 14 — Glob & pathspec (v1.x patch)
 
