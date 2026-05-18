@@ -13,6 +13,8 @@
     "initialiser",
     "dotgit",
     "excludesfile",
+    "fifos",
+    "normalise",
     "killable",
     "realises",
     "USERPROFILE",

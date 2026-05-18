@@ -72,9 +72,10 @@ await repo.add([], { all: true });
 
 `all: true` requires an empty pathspec (mixing the two would be
 ambiguous); pass paths the literal way or `all: true` — not both. The
-host `.git` directory and embedded clones are skipped. `.gitignore`
-evaluation lands in Phase 14.3; until then every non-`.git` path is
-fair game.
+host `.git` directory and embedded clones are skipped. Phase 14.3
+honours `.gitignore`, `.git/info/exclude`, nested `.gitignore`, and
+`core.excludesFile` (from git config; `~`-expanded against the
+runtime home directory).
 
 ### `git.commit` → `repo.commit`
 

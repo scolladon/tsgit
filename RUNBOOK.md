@@ -325,10 +325,29 @@ new `walkWorkingTree` primitive. Operator-visible behaviours:
   `WORKING_TREE_FILE_TOO_LARGE` carrying the offending path, size,
   and limit. No partial commit lands — the `.git/index` is byte-
   identical to the pre-call state.
-- **`.gitignore` not yet honoured** — Phase 14.3 will plug the real
-  ignore evaluator. Until then, build artefacts under `dist/`,
-  `node_modules/`, etc. WILL be staged. Filter via literal-path mode
-  if needed.
+- **`.gitignore` honoured (Phase 14.3):** four sources are composed
+  in evaluation order — `core.excludesFile` (from git config) →
+  `.git/info/exclude` → repo-root `.gitignore` → nested
+  `.gitignore` files. Last-matching rule wins. `~`-expansion uses
+  `ctx.layout.homeDir` (the node shim populates it from
+  `os.homedir()`; memory adapter accepts an `homeDir?` option;
+  browser leaves it `undefined`). Ignored directories are pruned at
+  walk-time — no `lstat` on entries inside them.
+- **`status` emits untracked entries** — a non-indexed,
+  non-ignored working-tree file now shows up as
+  `{ kind: 'untracked', path }`. `clean` is `false` whenever any
+  untracked file is present.
+- **Tracked-but-ignored stays tracked.** Once a path is in the
+  index, no ignore rule un-tracks it (Git's invariant). To stop
+  tracking an ignored file, use `repo.rm` explicitly.
+- **`.gitignore` size cap:** 1 MiB (`MAX_GITIGNORE_BYTES`). Files
+  above the cap throw `GITIGNORE_FILE_TOO_LARGE` — the error
+  payload's `path` is the basename only so absolute home-directory
+  paths don't leak.
+- **Non-regular ignore sources:** symlinks, directories, fifos,
+  block devices, and other special files pointed at by
+  `core.excludesFile` are silently skipped. Defends against
+  configurations like `excludesFile = /dev/zero`.
 - **Atomicity** — the `.git/index.lock` is acquired before the walk,
   released after either a successful single-shot commit OR a thrown
   error. Concurrent processes hitting the index see either the old
