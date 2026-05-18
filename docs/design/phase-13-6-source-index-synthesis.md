@@ -97,23 +97,27 @@ correctness check.
 
 ### 3.5 Wire-up in checkout
 
-In `src/application/commands/checkout.ts:resolvePathSource`:
+The implementation split into two helpers (post-pass-1 review):
+
+- `resolvePathSource` (now `'HEAD' | ObjectId` only — the `'index'`
+  branch was hoisted out).
+- `materializePathRestoreLockless` (for `source: 'index'`) — reads
+  the index ONCE and feeds the same snapshot to both
+  `synthesizeTreeFromIndex` and `materializeTree`. Closes the
+  TOCTOU window where a concurrent `git add` between two reads
+  could mismatch the target tree and the current-index base.
+- `materializePathRestoreLocked` (for `source: 'HEAD' | ObjectId`)
+  — same lock-first ordering as Phase 13.2/13.3.
 
 ```ts
-if (source === 'index') {
-  const index = await readIndex(ctx);
-  return synthesizeTreeFromIndex(ctx, index);
-}
+const materializePathRestoreLockless = async (ctx, pathSet) => {
+  const currentIndex = await readIndex(ctx);
+  const targetTree = await synthesizeTreeFromIndex(ctx, currentIndex.entries);
+  return materializeTree(ctx, {
+    targetTree, currentIndex, force: true, forceRewriteAll: true, paths: pathSet,
+  });
+};
 ```
-
-Replaces the previous HEAD-tree fallback. The
-`materializePathRestoreLockless` helper continues to read the
-index a SECOND time (via materializeTree's internal index access)
-— acceptable because path-restore-from-index is the lock-free
-path and we explicitly accept "act on the snapshot we read"
-semantics (Phase 13.5 design §3.2). For consistency we could
-plumb the already-read index through; deferred as a YAGNI
-optimisation.
 
 ## 4. Module layout
 
@@ -165,9 +169,14 @@ and the touched line in `checkout.ts`. Target: 0 new survivors
 - Conflict-stage trees (we never emit stage-1/2/3 entries in the
   synthesised tree; merge conflicts that produce unmerged
   stages survive their own resolution flow).
-- Performance optimisation: passing the already-read index from
-  `pathRestore` down to `synthesizeTreeFromIndex` to skip a
-  second `readIndex`. Negligible cost; deferred.
+
+> **Update during implementation:** the "share the read-index
+> snapshot between synthesis and diff" optimisation was originally
+> deferred here as YAGNI. Pass-1 review surfaced it as a TOCTOU
+> hazard: a concurrent `git add` between two reads would leave
+> the target tree and the current-index base pointing at
+> different snapshots. The fix was hoisted into the design as
+> §3.5 — single `readIndex` feeds both.
 
 ## 7. Open questions
 

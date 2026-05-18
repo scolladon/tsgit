@@ -29,7 +29,7 @@
  *   the primitive stays safe even if a parser path admits unsafe data.
  */
 import { invalidIndexEntry } from '../../domain/git-index/error.js';
-import type { GitIndex } from '../../domain/git-index/index.js';
+import type { IndexEntry } from '../../domain/git-index/index.js';
 import { treeDepthExceeded } from '../../domain/objects/error.js';
 import {
   FILE_MODE,
@@ -70,9 +70,9 @@ const assertSafePath = (path: string): void => {
   }
 };
 
-const stage0Entries = (index: GitIndex): PendingEntry[] => {
+const stage0Entries = (entries: ReadonlyArray<IndexEntry>): PendingEntry[] => {
   const out: PendingEntry[] = [];
-  for (const entry of index.entries) {
+  for (const entry of entries) {
     if (entry.flags.stage !== 0) continue;
     assertSafePath(entry.path);
     out.push({ path: entry.path, id: entry.id, mode: entry.mode });
@@ -119,5 +119,12 @@ const synthesizeLevel = async (
   return writeTree(ctx, treeEntries);
 };
 
-export const synthesizeTreeFromIndex = async (ctx: Context, index: GitIndex): Promise<ObjectId> =>
-  synthesizeLevel(ctx, stage0Entries(index), 0);
+/**
+ * Public entry: pass the `entries` array directly (typically
+ * `index.entries`, but callers holding a filtered list may supply it
+ * without wrapping in a fake `GitIndex`).
+ */
+export const synthesizeTreeFromIndex = async (
+  ctx: Context,
+  entries: ReadonlyArray<IndexEntry>,
+): Promise<ObjectId> => synthesizeLevel(ctx, stage0Entries(entries), 0);

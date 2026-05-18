@@ -246,6 +246,13 @@ describe('checkout', () => {
     // should overwrite this with the STAGED 'v2'.
     await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'v3-dirty');
 
+    // Capture HEAD's tree before the act so we can prove the synthesised
+    // tree pointed at the STAGED blob, not HEAD's blob (the bug we fixed).
+    const { readIndex } = await import('../../../../src/application/primitives/read-index.js');
+    const stagedIndex = await readIndex(ctx);
+    const stagedBlobId = stagedIndex.entries.find((e) => e.path === 'a.txt')?.id;
+    expect(stagedBlobId).toBeDefined();
+
     // Act — default source is 'index'.
     const sut = await checkout(ctx, { paths: ['a.txt'] });
 
@@ -253,6 +260,22 @@ describe('checkout', () => {
     expect(sut.changedPaths).toBe(1);
     const onDisk = await ctx.fs.readUtf8(`${ctx.layout.workDir}/a.txt`);
     expect(onDisk).toBe('v2');
+
+    // Stronger assertion: prove the synthesised tree's a.txt entry has the
+    // STAGED blob's id. Without this, the test could pass spuriously if
+    // synthesis silently returned HEAD's tree and forceRewriteAll lucked
+    // into rewriting the file from a different source.
+    const { synthesizeTreeFromIndex } = await import(
+      '../../../../src/application/primitives/synthesize-tree-from-index.js'
+    );
+    const synthesisedRoot = await synthesizeTreeFromIndex(ctx, stagedIndex.entries);
+    const { readObject } = await import('../../../../src/application/primitives/read-object.js');
+    const root = (await readObject(ctx, synthesisedRoot)) as {
+      readonly type: string;
+      readonly entries: ReadonlyArray<{ readonly name: string; readonly id: string }>;
+    };
+    const synthesisedAEntry = root.entries.find((e) => e.name === 'a.txt');
+    expect(synthesisedAEntry?.id).toBe(stagedBlobId);
   });
 
   it('Given an index.lock already on disk, When path-restore from the default (index) source, Then succeeds without disturbing the pre-existing lock', async () => {

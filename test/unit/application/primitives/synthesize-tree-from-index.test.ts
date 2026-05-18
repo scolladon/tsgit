@@ -49,7 +49,7 @@ describe('synthesizeTreeFromIndex', () => {
     const sut = synthesizeTreeFromIndex;
 
     // Act
-    const result = await sut(ctx, EMPTY_INDEX);
+    const result = await sut(ctx, EMPTY_INDEX.entries);
 
     // Assert
     expect(result).toBe(emptyTreeId);
@@ -66,7 +66,7 @@ describe('synthesizeTreeFromIndex', () => {
     const sut = synthesizeTreeFromIndex;
 
     // Act
-    const treeId = await sut(ctx, index);
+    const treeId = await sut(ctx, index.entries);
 
     // Assert — read the tree back and verify its single entry.
     const tree = (await readObject(ctx, treeId)) as Tree;
@@ -94,7 +94,7 @@ describe('synthesizeTreeFromIndex', () => {
     const sut = synthesizeTreeFromIndex;
 
     // Act
-    const rootId = await sut(ctx, index);
+    const rootId = await sut(ctx, index.entries);
 
     // Assert — walk the structure: root → { a.txt, dir }; dir → { b.txt, sub }; sub → { c.txt }.
     // Length assertions at every level pin against a mutation that would leak
@@ -137,7 +137,7 @@ describe('synthesizeTreeFromIndex', () => {
     const sut = synthesizeTreeFromIndex;
 
     // Act
-    const treeId = await sut(ctx, index);
+    const treeId = await sut(ctx, index.entries);
 
     // Assert — only a.txt appears. Asserting the full name list (rather than
     // just length) pins what was filtered: a mutation that allows stage-2
@@ -169,7 +169,7 @@ describe('synthesizeTreeFromIndex', () => {
     const sut = synthesizeTreeFromIndex;
 
     // Act
-    const synthesised = await sut(ctx, index);
+    const synthesised = await sut(ctx, index.entries);
 
     // Assert — IDENTITY: synthesis matches the canonical tree byte-for-byte.
     expect(synthesised).toBe(expectedRootId);
@@ -192,7 +192,7 @@ describe('synthesizeTreeFromIndex', () => {
     const sut = synthesizeTreeFromIndex;
 
     // Act
-    const rootId = await sut(ctx, index);
+    const rootId = await sut(ctx, index.entries);
 
     // Assert
     const root = (await readObject(ctx, rootId)) as Tree;
@@ -227,7 +227,7 @@ describe('synthesizeTreeFromIndex', () => {
     const sut = synthesizeTreeFromIndex;
 
     // Act
-    const synthesised = await sut(ctx, index);
+    const synthesised = await sut(ctx, index.entries);
 
     // Assert
     expect(synthesised).toBe(expectedRootId);
@@ -246,7 +246,7 @@ describe('synthesizeTreeFromIndex', () => {
     // Act
     let caught: unknown;
     try {
-      await sut(ctx, index);
+      await sut(ctx, index.entries);
     } catch (err) {
       caught = err;
     }
@@ -268,7 +268,7 @@ describe('synthesizeTreeFromIndex', () => {
     // Act
     let caught: unknown;
     try {
-      await sut(ctx, index);
+      await sut(ctx, index.entries);
     } catch (err) {
       caught = err;
     }
@@ -293,7 +293,7 @@ describe('synthesizeTreeFromIndex', () => {
     // Act
     let caught: unknown;
     try {
-      await sut(ctx, index);
+      await sut(ctx, index.entries);
     } catch (err) {
       caught = err;
     }
@@ -313,7 +313,7 @@ describe('synthesizeTreeFromIndex', () => {
     const sut = synthesizeTreeFromIndex;
 
     // Act
-    const treeId = await sut(ctx, index);
+    const treeId = await sut(ctx, index.entries);
 
     // Assert
     const tree = (await readObject(ctx, treeId)) as Tree;

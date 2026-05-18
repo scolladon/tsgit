@@ -153,7 +153,7 @@ const materializePathRestoreLockless = async (
   // and the diff. A concurrent `git add` between two reads would
   // otherwise produce a mismatch between target-tree and current-index.
   const currentIndex = await readIndex(ctx);
-  const targetTree = await synthesizeTreeFromIndex(ctx, currentIndex);
+  const targetTree = await synthesizeTreeFromIndex(ctx, currentIndex.entries);
   return materializeTree(ctx, {
     targetTree,
     currentIndex,
@@ -180,7 +180,10 @@ const materializePathRestoreLocked = async (
       targetTree,
       currentIndex,
       force: true,
-      // See materializePathRestoreLockless for the rationale.
+      // Path-restore from `HEAD` / ObjectId is the explicit
+      // "give me this version" operation — canonical git always writes
+      // the source content even when the index already records it (so
+      // a locally-modified file gets reverted reliably).
       forceRewriteAll: true,
       paths: pathSet,
     });
