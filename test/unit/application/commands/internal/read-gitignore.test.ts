@@ -185,6 +185,33 @@ describe('readGlobalExcludes', () => {
     expect(sut).toBeUndefined();
   });
 
+  it('Given a non-FILE_NOT_FOUND error from lstat, When read, Then the error propagates (kills mutants that widen the FILE_NOT_FOUND swallow)', async () => {
+    // Arrange — wrap lstat to throw a non-TsgitError, which must not
+    // be silenced by the FILE_NOT_FOUND check.
+    const ctx = await seed();
+    const hostileFs = new Proxy(ctx.fs, {
+      get(target, prop, receiver) {
+        if (prop === 'lstat') {
+          return async () => {
+            throw new Error('unexpected I/O failure');
+          };
+        }
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+    const hostileCtx = { ...ctx, fs: hostileFs };
+
+    // Act / Assert
+    let caught: unknown;
+    try {
+      await readGitignore(hostileCtx, '');
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).message).toBe('unexpected I/O failure');
+  });
+
   it('Given core.excludesFile = directory (non-regular file), When read, Then returns undefined (defends against /dev/zero and friends)', async () => {
     // Arrange — config points at the workDir itself, which IS a directory.
     const ctx = await seed();

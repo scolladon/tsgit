@@ -136,6 +136,53 @@ describe('buildRepoIgnorePredicate', () => {
     expect(await sut('build' as FilePath, false)).toBe(false);
   });
 
+  it('Given a deeply-nested path with a 3-level ancestor chain, When the predicate descends, Then ancestors are computed with `/` separators (kills the "" mutant on joinPath)', async () => {
+    // Arrange — `a/b/.gitignore` with `*.tmp` should match `a/b/foo.tmp`.
+    // The predicate walks ancestors `["a", "a/b"]`; if the separator were
+    // mutated to "" the ancestor would be `"ab"` and the nested rule
+    // would never load.
+    const ctx = await seed();
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a/b/.gitignore`, '*.tmp\n');
+    const sut = await buildRepoIgnorePredicate(ctx);
+
+    // Act
+    const ignored = await sut('a/b/foo.tmp' as FilePath, false);
+
+    // Assert
+    expect(ignored).toBe(true);
+  });
+
+  it('Given two sibling paths under the same ancestor, When the predicate is invoked for both, Then the nested ruleset is loaded ONCE (no duplicate stack pushes)', async () => {
+    // Arrange — `sub/.gitignore` with `*.tmp`. Calling the predicate twice
+    // for sibling files in `sub/` must NOT re-push the nested level
+    // (a `stackedDirs.has(ancestor) → false` mutant would re-load and
+    // potentially shadow a future negation under the same basedir).
+    const ctx = await seed();
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/sub/.gitignore`, '*.tmp\n');
+    const baseReadUtf8 = ctx.fs.readUtf8;
+    let nestedReads = 0;
+    const countingFs = new Proxy(ctx.fs, {
+      get(target, prop, receiver) {
+        if (prop === 'readUtf8') {
+          return async (p: string) => {
+            if (p.endsWith('/sub/.gitignore')) nestedReads += 1;
+            return baseReadUtf8(p);
+          };
+        }
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+    const ctxWithSpy = { ...ctx, fs: countingFs };
+    const sut = await buildRepoIgnorePredicate(ctxWithSpy);
+
+    // Act
+    await sut('sub/foo.tmp' as FilePath, false);
+    await sut('sub/bar.tmp' as FilePath, false);
+
+    // Assert — single load.
+    expect(nestedReads).toBe(1);
+  });
+
   it('Given an info/exclude rule, When called for the matching path, Then returns true', async () => {
     // Arrange
     const ctx = await seed();

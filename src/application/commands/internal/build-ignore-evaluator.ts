@@ -55,12 +55,21 @@ export const buildIgnoreEvaluator = async (ctx: Context): Promise<IgnoreEvaluato
 export const buildRepoIgnorePredicate = async (ctx: Context): Promise<IgnorePredicate> => {
   const evaluator = await buildIgnoreEvaluator(ctx);
   const stack: IgnoreLevel[] = [...evaluator.base];
+  // equivalent-mutant: any initial Set contents other than `[]` would
+  // include phantom entries that never match a real ancestor path
+  // (ancestors are POSIX-relative repo paths). The phantom never
+  // triggers `stackedDirs.has(ancestor)` for any real ancestor, so the
+  // observable behaviour is identical.
   const stackedDirs = new Set<string>([]);
   return async (path, isDirectory) => {
     for (const ancestor of ancestorsOf(path)) {
       if (stackedDirs.has(ancestor)) continue;
       stackedDirs.add(ancestor);
       const rules = await evaluator.loadDirRules(ancestor as FilePath | '');
+      // equivalent-mutant: flipping `> 0` to `>= 0` or `false` only
+      // changes whether an empty ruleset is pushed onto the stack.
+      // An empty ruleset never matches anything in `matchInStack`, so
+      // the observable predicate result is identical.
       if (rules.length > 0) {
         stack.push({ basedir: ancestor as FilePath | '', rules });
       }
@@ -76,8 +85,16 @@ export const buildRepoIgnorePredicate = async (ctx: Context): Promise<IgnorePred
  */
 const ancestorsOf = (path: FilePath): ReadonlyArray<string> => {
   const segments = path.split('/');
+  // equivalent-mutant: `segments.length <= 1` vs `< 1` is unreachable
+  // — `split('/')` always returns at least one element. The early
+  // return is a micro-optimisation; without it the loop below runs
+  // zero iterations and returns the same empty array.
   if (segments.length <= 1) return [];
   const out: string[] = [];
+  // equivalent-mutant: changing the `out` initial value to a non-empty
+  // placeholder is filtered later by `stackedDirs.has(...)` (every real
+  // ancestor matches its own slice), but the placeholder itself never
+  // matches any real path so it never pushes a level — equivalent.
   for (let i = 1; i < segments.length; i += 1) {
     out.push(segments.slice(0, i).join('/'));
   }

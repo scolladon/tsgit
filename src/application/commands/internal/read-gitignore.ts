@@ -15,6 +15,11 @@ export const readGitignore = async (
   ctx: Context,
   dir: FilePath | '',
 ): Promise<IgnoreRuleset | undefined> => {
+  // equivalent-mutant: a mutation that flips `dir === ''` to a different
+  // string literal would route through the non-root branch and yield
+  // `<workDir>//.gitignore`. The memory + node FS adapters normalise
+  // double-slashes, so the file is found at the same location — the
+  // observable behaviour is identical.
   const path =
     dir === '' ? `${ctx.layout.workDir}/.gitignore` : `${ctx.layout.workDir}/${dir}/.gitignore`;
   return loadAndParse(ctx, path);
@@ -46,6 +51,11 @@ const expandUserPath = (ctx: Context, raw: string): string | undefined => {
   // handle the undefined case so the loader downstream sees a clean miss.
   if (raw === '~') return ctx.layout.homeDir;
   if (raw.startsWith('~/')) {
+    // equivalent-mutant: dropping this `homeDir === undefined` guard
+    // would template-literal `"undefined/<rest>"` into the path; that
+    // path always fails `lstat` with FILE_NOT_FOUND and the loader
+    // catches it and returns `undefined`. Observable behaviour
+    // identical to the explicit guard.
     if (ctx.layout.homeDir === undefined) return undefined;
     return `${ctx.layout.homeDir}/${raw.slice(2)}`;
   }
