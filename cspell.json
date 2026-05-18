@@ -342,7 +342,12 @@
     "synthesise",
     "harmonise",
     "serialised",
-    "finalisation"
+    "finalisation",
+    "serialisation",
+    "serialises",
+    "serialising",
+    "recognisable",
+    "harmonised"
   ],
   "ignorePaths": [
     "node_modules",
