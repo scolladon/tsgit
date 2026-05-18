@@ -126,6 +126,7 @@ export interface Repository {
     readonly updateRef: BindCtx<typeof primitives.updateRef>;
     readonly walkCommits: BindCtx<typeof primitives.walkCommits>;
     readonly walkTree: BindCtx<typeof primitives.walkTree>;
+    readonly walkWorkingTree: BindCtx<typeof primitives.walkWorkingTree>;
     readonly writeObject: BindCtx<typeof primitives.writeObject>;
     readonly writeSymbolicRef: BindCtx<typeof primitives.writeSymbolicRef>;
     readonly writeTree: BindCtx<typeof primitives.writeTree>;
@@ -340,6 +341,10 @@ export const openRepository = async (
         guard();
         return primitives.walkTree(ctx, treeIdOrObject, options);
       }) as Repository['primitives']['walkTree'],
+      walkWorkingTree: ((options) => {
+        guard();
+        return primitives.walkWorkingTree(ctx, options);
+      }) as Repository['primitives']['walkWorkingTree'],
       writeObject: ((object) => {
         guard();
         return primitives.writeObject(ctx, object);
