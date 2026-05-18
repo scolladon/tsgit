@@ -51,13 +51,17 @@ describe('add', () => {
     await expectError(() => add(ctx, ['nonexistent.txt']), 'PATHSPEC_NO_MATCH');
   });
 
-  it('Given a bare repo (core.bare=true), When add, Then throws BARE_REPOSITORY', async () => {
+  it('Given a bare repo (core.bare=true), When add, Then throws BARE_REPOSITORY with operation="add"', async () => {
     // Arrange
     const ctx = await seedFreshRepo();
     await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n  bare = true\n');
 
     // Act
-    await expectError(() => add(ctx, ['x']), 'BARE_REPOSITORY');
+    const err = await expectError(() => add(ctx, ['x']), 'BARE_REPOSITORY');
+
+    // Assert — pin the operation literal so a StringLiteral mutant on
+    // `assertNotBare(ctx, 'add')` would change the payload.
+    expect((err.data as { operation: string }).operation).toBe('add');
   });
 
   it('Given a non-repo ctx, When add, Then throws NOT_A_REPOSITORY', async () => {
@@ -157,6 +161,27 @@ describe('add', () => {
     expect(sut).toEqual({ added: [], modified: [], removed: [] });
   });
 
+  it('Given a single staged file via add({ all: true }), When the index is read back, Then ctimeSeconds, mtimeSeconds, and flags reflect the lstat values', async () => {
+    // Arrange
+    const ctx = await seedFreshRepo({ 'pin.txt': 'p' });
+    const stat = await ctx.fs.lstat(`${ctx.layout.workDir}/pin.txt`);
+
+    // Act
+    await add(ctx, [], { all: true });
+
+    // Assert — pins Math.floor(ctimeMs/1000) and the BooleanLiteral flag
+    // values so `* 1000` and `assumeValid: true` / `extended: true`
+    // mutants are killed.
+    const idx = await readIndex(ctx);
+    const entry = idx.entries.find((e) => e.path === 'pin.txt');
+    expect(entry).toBeDefined();
+    expect(entry?.ctimeSeconds).toBe(Math.floor(stat.ctimeMs / 1000));
+    expect(entry?.mtimeSeconds).toBe(Math.floor(stat.mtimeMs / 1000));
+    expect(entry?.flags.assumeValid).toBe(false);
+    expect(entry?.flags.extended).toBe(false);
+    expect(entry?.flags.stage).toBe(0);
+  });
+
   it('Given two untracked files and all: true, When add, Then both appear in added (sorted) and the index has them', async () => {
     // Arrange
     const ctx = await seedFreshRepo({ 'b.txt': 'b', 'a.txt': 'a' });
@@ -182,6 +207,28 @@ describe('add', () => {
     // Assert
     expect(sut.modified).toEqual(['a.txt']);
     expect(sut.added).toEqual([]);
+  });
+
+  it('Given an unsorted walk that yields two new + one modified + one removed, When add({ all: true }), Then EACH of added/modified/removed is independently sorted', async () => {
+    // Arrange — pre-stage z.txt + b.txt; modify z, delete b, add a + c.
+    // The mutation tests need each `.sort()` call pinned to its OWN array.
+    const ctx = await seedFreshRepo({ 'z.txt': 'z', 'b.txt': 'b' });
+    await add(ctx, [], { all: true });
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/z.txt`, 'z-changed');
+    await ctx.fs.rm(`${ctx.layout.workDir}/b.txt`);
+    // Add two new files; their alphabetical order is c < a so unsorted
+    // would be ['c', 'a']. Sorted MUST be ['a', 'c'].
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/c.txt`, 'c');
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
+
+    // Act
+    const sut = await add(ctx, [], { all: true });
+
+    // Assert — each array sorted INDEPENDENTLY. A mutant that sorts the
+    // wrong array (added.sort → modified.sort, etc.) breaks one of these.
+    expect(sut.added).toEqual(['a.txt', 'c.txt']);
+    expect(sut.modified).toEqual(['z.txt']);
+    expect(sut.removed).toEqual(['b.txt']);
   });
 
   it('Given a tracked file deleted from disk and all: true, When add, Then removed contains it and the index entry drops', async () => {
@@ -413,6 +460,44 @@ describe('add', () => {
     await expectError(() => add(racingCtx, [], { all: true }), 'OPERATION_ABORTED');
   });
 
+  it('Given ONLY isSymbolicLink flips between walk and stage (isFile and isDirectory unchanged), When add({ all: true }), Then throws OPERATION_ABORTED — kills `||` → `&&` mutants on the type-flip guard', async () => {
+    // Arrange — flip exactly ONE axis. With `||` → `&&` the whole guard
+    // would only fire if all three differ, so single-axis flips would
+    // sneak through. This test pins isSymbolicLink-only.
+    const ctx = await seedFreshRepo({ 'a.txt': 'a' });
+    const racingCtx = {
+      ...ctx,
+      fs: racingLstatFs(ctx, '/a.txt', { isSymbolicLink: true }),
+    };
+
+    // Act
+    await expectError(() => add(racingCtx, [], { all: true }), 'OPERATION_ABORTED');
+  });
+
+  it('Given ONLY isDirectory flips between walk and stage, When add({ all: true }), Then throws OPERATION_ABORTED', async () => {
+    // Arrange
+    const ctx = await seedFreshRepo({ 'a.txt': 'a' });
+    const racingCtx = {
+      ...ctx,
+      fs: racingLstatFs(ctx, '/a.txt', { isDirectory: true }),
+    };
+
+    // Act
+    await expectError(() => add(racingCtx, [], { all: true }), 'OPERATION_ABORTED');
+  });
+
+  it('Given ONLY isFile flips between walk and stage, When add({ all: true }), Then throws OPERATION_ABORTED', async () => {
+    // Arrange
+    const ctx = await seedFreshRepo({ 'a.txt': 'a' });
+    const racingCtx = {
+      ...ctx,
+      fs: racingLstatFs(ctx, '/a.txt', { isFile: false }),
+    };
+
+    // Act
+    await expectError(() => add(racingCtx, [], { all: true }), 'OPERATION_ABORTED');
+  });
+
   it('Given a file that grows past MAX_WORKING_TREE_BLOB_BYTES between walk and re-lstat, When add({ all: true }), Then throws WORKING_TREE_FILE_TOO_LARGE (post-re-lstat guard fires)', async () => {
     // Arrange — walk-time stat reports a small file; re-lstat reports the
     // oversize value. The pre-filter (walk-time) skips; the authoritative
@@ -434,6 +519,51 @@ describe('add', () => {
     expect(data.path).toBe('a.txt');
     expect(data.size).toBe(MAX_WORKING_TREE_BLOB_BYTES + 1);
     expect(data.limit).toBe(MAX_WORKING_TREE_BLOB_BYTES);
+  });
+
+  it('Given a file of exactly MAX_WORKING_TREE_BLOB_BYTES bytes (boundary), When add({ all: true }), Then accepts without throwing — kills the `>` → `>=` mutants on both pre-filter and authoritative caps', async () => {
+    // Arrange — lstat reports size exactly at the cap. Both the
+    // walk-time pre-filter (`stat.size > cap`) and the re-lstat
+    // authoritative check (`fresh.size > cap`) must accept this.
+    const ctx = await seedFreshRepo({ 'a.txt': 'tiny' });
+    const baseLstat = ctx.fs.lstat;
+    const cappedFs = new Proxy(ctx.fs, {
+      get(target, prop, receiver) {
+        if (prop === 'lstat') {
+          return async (path: string) => {
+            const real = await baseLstat(path);
+            if (path.endsWith('/a.txt')) {
+              return { ...real, size: MAX_WORKING_TREE_BLOB_BYTES };
+            }
+            return real;
+          };
+        }
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+    const cappedCtx = { ...ctx, fs: cappedFs };
+
+    // Act
+    const sut = await add(cappedCtx, [], { all: true });
+
+    // Assert
+    expect(sut.added).toEqual(['a.txt']);
+  });
+
+  it('Given a symlink target of exactly MAX_WORKING_TREE_BLOB_BYTES bytes (boundary), When add({ all: true }), Then accepts — kills the `>` → `>=` mutant on the readlink-cap', async () => {
+    // Arrange — symlink target byte length exactly at the cap. Memory FS
+    // backs symlinks with the target string verbatim; readlink returns it
+    // unchanged. lstat.size reports the target length, so the pre-filter
+    // doesn't fire; the post-encode check in readContent must allow it.
+    const ctx = await seedFreshRepo({});
+    const target = 'x'.repeat(MAX_WORKING_TREE_BLOB_BYTES);
+    await ctx.fs.symlink(target, `${ctx.layout.workDir}/link`);
+
+    // Act
+    const sut = await add(ctx, [], { all: true });
+
+    // Assert
+    expect(sut.added).toEqual(['link']);
   });
 
   it('Given a hostile readlink that returns more than MAX_WORKING_TREE_BLOB_BYTES, When add({ all: true }), Then throws WORKING_TREE_FILE_TOO_LARGE', async () => {

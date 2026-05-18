@@ -264,6 +264,70 @@ describe('walkWorkingTree', () => {
     await expectError(() => collect(walkWorkingTree(hostileCtx)), 'PATHSPEC_OUTSIDE_REPO');
   });
 
+  it('Given a hostile readdir that yields a non-file / non-dir / non-symlink entry (e.g. block device), When walked, Then it is silently skipped', async () => {
+    // Arrange — kills the `if (!entry.isFile && !entry.isSymbolicLink)`
+    // mutant that drops the early return: without the return, lstat would
+    // be called on a non-existent leaf and yield bogus data.
+    const ctx = await seedFs({ 'a.txt': '1' });
+    const baseReaddir = ctx.fs.readdir;
+    const hostileFs = new Proxy(ctx.fs, {
+      get(target, prop, receiver) {
+        if (prop === 'readdir') {
+          return async (path: string) => {
+            const real = await baseReaddir(path);
+            if (path === ctx.layout.workDir) {
+              return [
+                ...real,
+                { name: 'phantom', isFile: false, isDirectory: false, isSymbolicLink: false },
+              ];
+            }
+            return real;
+          };
+        }
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+    const hostileCtx = { ...ctx, fs: hostileFs };
+
+    // Act
+    const sut = await collect(walkWorkingTree(hostileCtx));
+
+    // Assert — phantom skipped; real file yielded.
+    expect(sut).toEqual(['a.txt']);
+  });
+
+  it('Given a hostile readdir that yields a `.git` entry with only `isDirectory=true` (no isFile), When walked at a nested dir, Then the directory is treated as embedded and skipped', async () => {
+    // Arrange — covers the `entry.isDirectory` branch of isEmbeddedGitMarker
+    // alone (no isFile flag) so a mutant that drops the isDirectory check
+    // is killed.
+    const ctx = await seedFs({ 'sub/sibling.txt': 's' });
+    const baseReaddir = ctx.fs.readdir;
+    const hostileFs = new Proxy(ctx.fs, {
+      get(target, prop, receiver) {
+        if (prop === 'readdir') {
+          return async (path: string) => {
+            const real = await baseReaddir(path);
+            if (path.endsWith('/sub')) {
+              return [
+                ...real,
+                { name: '.git', isFile: false, isDirectory: true, isSymbolicLink: false },
+              ];
+            }
+            return real;
+          };
+        }
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+    const hostileCtx = { ...ctx, fs: hostileFs };
+
+    // Act
+    const sut = await collect(walkWorkingTree(hostileCtx));
+
+    // Assert
+    expect(sut).toEqual([]);
+  });
+
   it('Given an embedded repo at the top level (workDir IS a repo), When walked, Then only .git is skipped (workDir is not embedded)', async () => {
     // Arrange — distinguish "I am a repo" from "I contain an embedded repo".
     // The workDir has its own .git (we're scanning the host repo), so the
