@@ -98,6 +98,14 @@ const readExistingEntries = async (ctx: Context): Promise<ReadonlyMap<FilePath, 
 const stageOne = async (ctx: Context, path: FilePath): Promise<IndexEntry | 'missing'> => {
   const stat = await ctx.fs.lstat(`${ctx.layout.workDir}/${path}`).catch(() => undefined);
   if (stat === undefined) return 'missing';
+  return stageFromStat(ctx, path, stat);
+};
+
+const stageFromStat = async (
+  ctx: Context,
+  path: FilePath,
+  stat: Awaited<ReturnType<Context['fs']['lstat']>>,
+): Promise<IndexEntry> => {
   const mode: FileMode = stat.isSymbolicLink
     ? '120000'
     : (stat.mode & 0o111) !== 0
