@@ -27,6 +27,7 @@ export type * from './types.js';
 export { updateRef } from './update-ref.js';
 export { walkCommits } from './walk-commits.js';
 export { walkTree } from './walk-tree.js';
+export { walkWorkingTree } from './walk-working-tree.js';
 export { writeObject } from './write-object.js';
 export { writeSymbolicRef } from './write-symbolic-ref.js';
 export { writeTree } from './write-tree.js';

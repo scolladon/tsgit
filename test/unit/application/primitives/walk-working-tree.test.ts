@@ -1,0 +1,209 @@
+import { describe, expect, it } from 'vitest';
+import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
+import { walkWorkingTree } from '../../../../src/application/primitives/walk-working-tree.js';
+import { TsgitError } from '../../../../src/domain/error.js';
+import type { Context } from '../../../../src/ports/context.js';
+
+const seedFs = async (
+  workingTree: Readonly<Record<string, string>>,
+  options?: { signal?: AbortSignal },
+): Promise<Context> => {
+  const ctx =
+    options?.signal === undefined
+      ? createMemoryContext()
+      : createMemoryContext({ signal: options.signal });
+  for (const [path, content] of Object.entries(workingTree)) {
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/${path}`, content);
+  }
+  return ctx;
+};
+
+const collect = async (it: AsyncIterable<{ readonly path: string }>): Promise<string[]> => {
+  const out: string[] = [];
+  for await (const entry of it) out.push(entry.path);
+  return out;
+};
+
+const expectError = async (fn: () => Promise<unknown>, code: string): Promise<TsgitError> => {
+  let caught: unknown;
+  try {
+    await fn();
+  } catch (err) {
+    caught = err;
+  }
+  expect(caught).toBeInstanceOf(TsgitError);
+  expect((caught as TsgitError).data.code).toBe(code);
+  return caught as TsgitError;
+};
+
+describe('walkWorkingTree', () => {
+  it('Given an empty working tree, When walked, Then yields nothing', async () => {
+    // Arrange
+    const ctx = await seedFs({});
+
+    // Act
+    const sut = await collect(walkWorkingTree(ctx));
+
+    // Assert
+    expect(sut).toEqual([]);
+  });
+
+  it('Given two files at the root, When walked, Then yields both', async () => {
+    // Arrange
+    const ctx = await seedFs({ 'a.txt': '1', 'b.txt': '2' });
+
+    // Act
+    const sut = await collect(walkWorkingTree(ctx));
+
+    // Assert
+    expect(sut.sort()).toEqual(['a.txt', 'b.txt']);
+  });
+
+  it('Given nested directories, When walked, Then DFS yields every leaf', async () => {
+    // Arrange
+    const ctx = await seedFs({
+      'a/b/c.txt': 'x',
+      'a/d.txt': 'y',
+      'e.txt': 'z',
+    });
+
+    // Act
+    const sut = await collect(walkWorkingTree(ctx));
+
+    // Assert
+    expect(sut.sort()).toEqual(['a/b/c.txt', 'a/d.txt', 'e.txt']);
+  });
+
+  it('Given a .git directory at the root, When walked, Then it is skipped', async () => {
+    // Arrange
+    const ctx = await seedFs({ 'a.txt': '1' });
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.git/HEAD`, 'ref: refs/heads/main\n');
+
+    // Act
+    const sut = await collect(walkWorkingTree(ctx));
+
+    // Assert
+    expect(sut).toEqual(['a.txt']);
+  });
+
+  it('Given a nested .git directory (embedded repo), When walked, Then the whole directory is skipped', async () => {
+    // Arrange — vendor/lib looks like an embedded git repo.
+    const ctx = await seedFs({
+      'a.txt': '1',
+      'vendor/lib/.git/HEAD': 'ref: refs/heads/main',
+      'vendor/lib/src/x.ts': 'x',
+    });
+
+    // Act
+    const sut = await collect(walkWorkingTree(ctx));
+
+    // Assert — only the top-level file is yielded; nothing under vendor/lib.
+    expect(sut).toEqual(['a.txt']);
+  });
+
+  it('Given a .GIT directory (uppercase), When walked, Then it is skipped (case-insensitive)', async () => {
+    // Arrange
+    const ctx = await seedFs({ 'a.txt': '1', '.GIT/HEAD': 'x' });
+
+    // Act
+    const sut = await collect(walkWorkingTree(ctx));
+
+    // Assert
+    expect(sut).toEqual(['a.txt']);
+  });
+
+  it('Given a `.git ` (trailing space) directory, When walked, Then it is skipped (NTFS hardening)', async () => {
+    // Arrange
+    const ctx = await seedFs({ 'a.txt': '1', '.git /HEAD': 'x' });
+
+    // Act
+    const sut = await collect(walkWorkingTree(ctx));
+
+    // Assert
+    expect(sut).toEqual(['a.txt']);
+  });
+
+  it('Given a symlink leaf, When walked, Then yields with isSymbolicLink=true', async () => {
+    // Arrange
+    const ctx = await seedFs({ 'a.txt': '1' });
+    await ctx.fs.symlink('a.txt', `${ctx.layout.workDir}/link`);
+
+    // Act
+    const entries: Array<{ path: string; stat: { isSymbolicLink: boolean } }> = [];
+    for await (const e of walkWorkingTree(ctx)) entries.push({ path: e.path, stat: e.stat });
+    const sut = entries.find((e) => e.path === 'link');
+
+    // Assert
+    expect(sut?.stat.isSymbolicLink).toBe(true);
+  });
+
+  it('Given a pre-aborted ctx.signal, When walked, Then throws OPERATION_ABORTED', async () => {
+    // Arrange
+    const controller = new AbortController();
+    controller.abort();
+    const ctx = await seedFs({ 'a.txt': '1' }, { signal: controller.signal });
+
+    // Act
+    await expectError(() => collect(walkWorkingTree(ctx)), 'OPERATION_ABORTED');
+  });
+
+  it('Given depth above maxDepth, When walked, Then throws TREE_DEPTH_EXCEEDED', async () => {
+    // Arrange
+    const ctx = await seedFs({ 'a/b/c/d.txt': 'x' });
+
+    // Act
+    await expectError(() => collect(walkWorkingTree(ctx, { maxDepth: 2 })), 'TREE_DEPTH_EXCEEDED');
+  });
+
+  it('Given entries above maxEntries, When walked, Then throws TREE_ENTRY_LIMIT_EXCEEDED', async () => {
+    // Arrange
+    const ctx = await seedFs({ 'a.txt': '1', 'b.txt': '2', 'c.txt': '3' });
+
+    // Act
+    await expectError(
+      () => collect(walkWorkingTree(ctx, { maxEntries: 2 })),
+      'TREE_ENTRY_LIMIT_EXCEEDED',
+    );
+  });
+
+  it('Given a hostile readdir that returns a `..` segment, When walked, Then throws PATHSPEC_OUTSIDE_REPO', async () => {
+    // Arrange — wrap fs.readdir to inject a `..` entry once.
+    const ctx = await seedFs({});
+    const baseReaddir = ctx.fs.readdir;
+    const hostileFs = new Proxy(ctx.fs, {
+      get(target, prop, receiver) {
+        if (prop === 'readdir') {
+          return async (path: string) => {
+            const real = await baseReaddir(path);
+            if (path === ctx.layout.workDir) {
+              return [
+                ...real,
+                { name: '..', isFile: true, isDirectory: false, isSymbolicLink: false },
+              ];
+            }
+            return real;
+          };
+        }
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+    const hostileCtx = { ...ctx, fs: hostileFs };
+
+    // Act
+    await expectError(() => collect(walkWorkingTree(hostileCtx)), 'PATHSPEC_OUTSIDE_REPO');
+  });
+
+  it('Given an embedded repo at the top level (workDir IS a repo), When walked, Then only .git is skipped (workDir is not embedded)', async () => {
+    // Arrange — distinguish "I am a repo" from "I contain an embedded repo".
+    // The workDir has its own .git (we're scanning the host repo), so the
+    // pre-scan must NOT treat the host repo's own .git as an embedded marker.
+    const ctx = await seedFs({ 'a.txt': '1', 'b/c.txt': 'x' });
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.git/HEAD`, 'ref: refs/heads/main\n');
+
+    // Act
+    const sut = await collect(walkWorkingTree(ctx));
+
+    // Assert — yielded normal entries; .git skipped; b/c.txt yielded.
+    expect(sut.sort()).toEqual(['a.txt', 'b/c.txt']);
+  });
+});

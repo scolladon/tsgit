@@ -60,7 +60,7 @@ const rejectComponent = (component: string, original: string): void => {
   }
 };
 
-const isForbiddenGitComponent = (component: string): boolean => {
+export const isForbiddenGitComponent = (component: string): boolean => {
   const lowered = component.toLowerCase();
   if (GIT_FORBIDDEN.has(lowered)) return true;
   // NTFS strips trailing spaces/dots — treat any `.git` followed only by

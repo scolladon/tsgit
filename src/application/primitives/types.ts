@@ -11,6 +11,7 @@ import type {
   ObjectId,
   Tree,
 } from '../../domain/objects/index.js';
+import type { FileStat } from '../../ports/file-system.js';
 
 /** Max symbolic-ref dereferences resolveRef will follow. */
 export const MAX_SYMBOLIC_REF_DEPTH = 5;
@@ -92,6 +93,16 @@ export interface WalkTreeEntry {
 
 export interface WalkTreeOptions {
   readonly recursive?: boolean;
+  readonly maxDepth?: number;
+  readonly maxEntries?: number;
+}
+
+export interface WalkWorkingTreeEntry {
+  readonly path: FilePath;
+  readonly stat: FileStat;
+}
+
+export interface WalkWorkingTreeOptions {
   readonly maxDepth?: number;
   readonly maxEntries?: number;
 }
