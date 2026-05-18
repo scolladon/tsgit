@@ -65,6 +65,7 @@ export interface RepositoryLayoutInput {
   readonly workDir: string;
   readonly gitDir: string;
   readonly bare: boolean;
+  readonly homeDir?: string;
 }
 
 /**

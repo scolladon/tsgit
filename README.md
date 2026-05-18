@@ -147,10 +147,22 @@ with the link target as blob content. Files larger than
 `MAX_WORKING_TREE_BLOB_BYTES` (256 MiB) reject with
 `WORKING_TREE_FILE_TOO_LARGE` and no partial index commit.
 
-**v1.x patch followup:** `.gitignore` evaluation is Phase 14.3 — until
-then, `add --all` stages every non-`.git` path. Filter manually with the
-literal-path mode if your tree has build artefacts you don't want
-staged.
+Phase 14.3 wires `.gitignore` evaluation across `add --all` AND `status`:
+
+- **Sources (last match wins):** `core.excludesFile` (from git config,
+  `~`-expanded against `ctx.layout.homeDir`) → `.git/info/exclude` →
+  repo-root `.gitignore` → nested `.gitignore` per directory.
+- **Walk-time pruning:** ignored directories are skipped without
+  lstat-ing their contents — big perf win on `node_modules`, `dist`,
+  etc.
+- **Tracked-but-ignored stays tracked:** a path already in the index
+  is preserved across re-adds even if a new ignore rule would match
+  it (or its parent directory). Git's invariant.
+- **`status` emits `'untracked'`:** non-ignored working-tree files
+  not in the index now appear as `{ kind: 'untracked', path }` and
+  `status.clean` reflects them.
+- **`.gitignore` size cap:** 1 MiB per file (`MAX_GITIGNORE_BYTES`).
+  Reject with `GITIGNORE_FILE_TOO_LARGE`.
 
 ### Push
 

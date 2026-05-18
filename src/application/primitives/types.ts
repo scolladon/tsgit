@@ -39,6 +39,13 @@ export const MAX_COMMIT_MESSAGE_BYTES = 16 * 1024 * 1024;
  */
 export const MAX_WORKING_TREE_BLOB_BYTES = 256 * 1024 * 1024;
 
+/**
+ * Per-file cap on `.gitignore`, `.git/info/exclude`, and the global
+ * excludesFile. 1 MiB leaves a 20× margin over real-world max-size
+ * gitignore corpora. Phase 14.3. See `docs/adr/036-gitignore-bounded-read.md`.
+ */
+export const MAX_GITIGNORE_BYTES = 1 * 1024 * 1024;
+
 export interface ReadObjectOptions {
   readonly verifyHash?: boolean;
   /**
@@ -102,9 +109,21 @@ export interface WalkWorkingTreeEntry {
   readonly stat: FileStat;
 }
 
+export type WalkIgnorePredicate = (
+  path: FilePath,
+  isDirectory: boolean,
+) => boolean | Promise<boolean>;
+
 export interface WalkWorkingTreeOptions {
   readonly maxDepth?: number;
   readonly maxEntries?: number;
+  /**
+   * Phase 14.3 predicate. Invoked on every directory BEFORE descent
+   * (returning `true` prunes the entire subtree, skipping its `lstat`
+   * cost) and on every leaf BEFORE yielding (returning `true` drops
+   * the leaf). May be sync or async. See ADR-035.
+   */
+  readonly ignore?: WalkIgnorePredicate;
 }
 
 export interface CreateCommitInput {

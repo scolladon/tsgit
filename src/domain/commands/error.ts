@@ -64,6 +64,12 @@ export type CommandError =
       readonly path: FilePath;
       readonly size: number;
       readonly limit: number;
+    }
+  | {
+      readonly code: 'GITIGNORE_FILE_TOO_LARGE';
+      readonly path: FilePath;
+      readonly size: number;
+      readonly limit: number;
     };
 
 const sanitizeForDisplay = (s: string): string => {
@@ -206,3 +212,6 @@ export const adapterUnavailable = (
 
 export const workingTreeFileTooLarge = (path: FilePath, size: number, limit: number): TsgitError =>
   new TsgitError({ code: 'WORKING_TREE_FILE_TOO_LARGE', path, size, limit });
+
+export const gitignoreFileTooLarge = (path: FilePath, size: number, limit: number): TsgitError =>
+  new TsgitError({ code: 'GITIGNORE_FILE_TOO_LARGE', path, size, limit });

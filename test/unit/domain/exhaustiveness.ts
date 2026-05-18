@@ -109,6 +109,7 @@ export function assertExhaustiveSwitch(data: TsgitErrorData): void {
     case 'TOO_MANY_ADVERTISED_REFS':
     case 'OBJECT_TOO_LARGE':
     case 'WORKING_TREE_FILE_TOO_LARGE':
+    case 'GITIGNORE_FILE_TOO_LARGE':
       return;
     default: {
       const _exhaustive: never = data;

@@ -328,6 +328,75 @@ describe('walkWorkingTree', () => {
     expect(sut).toEqual([]);
   });
 
+  it('Given an ignore predicate that drops one leaf, When walked, Then only the other leaf is yielded', async () => {
+    // Arrange
+    const ctx = await seedFs({ 'a.txt': '1', 'b.txt': '2' });
+    const ignore = (path: string) => path === 'a.txt';
+
+    // Act
+    const sut = await collect(walkWorkingTree(ctx, { ignore }));
+
+    // Assert
+    expect(sut).toEqual(['b.txt']);
+  });
+
+  it('Given an ignore predicate that prunes a directory, When walked, Then NO leaf under it is yielded AND no lstat is invoked for those leaves', async () => {
+    // Arrange — count lstats inside the pruned subtree.
+    const ctx = await seedFs({
+      'kept.txt': 'k',
+      'pruned/a.txt': 'a',
+      'pruned/sub/b.txt': 'b',
+    });
+    const baseLstat = ctx.fs.lstat;
+    let lstatsInsidePruned = 0;
+    const trackingFs = new Proxy(ctx.fs, {
+      get(target, prop, receiver) {
+        if (prop === 'lstat') {
+          return async (p: string) => {
+            if (p.includes('/pruned/')) lstatsInsidePruned += 1;
+            return baseLstat(p);
+          };
+        }
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+    const trackingCtx = { ...ctx, fs: trackingFs };
+    const ignore = (_path: string, isDir: boolean) => isDir; // prune the only directory
+
+    // Act
+    const sut = await collect(walkWorkingTree(trackingCtx, { ignore }));
+
+    // Assert — only the root file yielded; no descent into `pruned/`.
+    expect(sut).toEqual(['kept.txt']);
+    expect(lstatsInsidePruned).toBe(0);
+  });
+
+  it('Given an async ignore predicate, When walked, Then the walker awaits it', async () => {
+    // Arrange
+    const ctx = await seedFs({ 'sync.txt': '1', 'asyncfile.txt': '2' });
+    const ignore = async (path: string) => {
+      await Promise.resolve();
+      return path.startsWith('async');
+    };
+
+    // Act
+    const sut = await collect(walkWorkingTree(ctx, { ignore }));
+
+    // Assert
+    expect(sut).toEqual(['sync.txt']);
+  });
+
+  it('Given no ignore option, When walked, Then behaviour is unchanged from §14.1 (regression pin)', async () => {
+    // Arrange
+    const ctx = await seedFs({ 'a.txt': '1', 'b.txt': '2' });
+
+    // Act
+    const sut = await collect(walkWorkingTree(ctx));
+
+    // Assert — both yielded; no filtering.
+    expect(sut.sort()).toEqual(['a.txt', 'b.txt']);
+  });
+
   it('Given an embedded repo at the top level (workDir IS a repo), When walked, Then only .git is skipped (workDir is not embedded)', async () => {
     // Arrange — distinguish "I am a repo" from "I contain an embedded repo".
     // The workDir has its own .git (we're scanning the host repo), so the

@@ -9,7 +9,8 @@ import { readIndex } from '../primitives/read-index.js';
 import { MAX_WORKING_TREE_BLOB_BYTES, type WalkWorkingTreeEntry } from '../primitives/types.js';
 import { walkWorkingTree } from '../primitives/walk-working-tree.js';
 import { writeObject } from '../primitives/write-object.js';
-import { defaultIgnorePredicate, type IgnorePredicate } from './internal/add-ignore.js';
+import type { IgnorePredicate } from './internal/add-ignore.js';
+import { buildRepoIgnorePredicate } from './internal/build-ignore-evaluator.js';
 import { acquireIndexLock } from './internal/index-update.js';
 import {
   assertNoPendingOperation,
@@ -107,8 +108,9 @@ const addLiteral = async (
 export const addAll = async (
   ctx: Context,
   opts: AddOptions,
-  ignore: IgnorePredicate = defaultIgnorePredicate,
+  ignoreOverride?: IgnorePredicate,
 ): Promise<AddResult> => {
+  const ignore = ignoreOverride ?? (await buildRepoIgnorePredicate(ctx));
   const lock = await acquireIndexLock(
     ctx,
     opts.breakStaleLockMs !== undefined ? { breakStaleLockMs: opts.breakStaleLockMs } : {},
@@ -121,18 +123,26 @@ export const addAll = async (
     const modified: FilePath[] = [];
     const removed: FilePath[] = [];
 
-    for await (const walkEntry of walkWorkingTree(ctx)) {
-      const result = await processWalkEntry(ctx, walkEntry, existing, ignore, seen);
+    // Walk-time pruning: the walker calls `ignore` on every directory
+    // (skipping ignored subtrees) and every leaf. By the time we see a
+    // leaf here, the ignore filter has already passed.
+    for await (const walkEntry of walkWorkingTree(ctx, { ignore })) {
+      const result = await processWalkEntry(ctx, walkEntry, existing, seen);
       if (result === undefined) continue;
       newEntries.set(result.path, result.entry);
       if (result.kind === 'added') added.push(result.path);
       else if (result.kind === 'modified') modified.push(result.path);
     }
     for (const [path] of existing) {
-      if (!seen.has(path)) {
-        newEntries.delete(path);
-        removed.push(path);
-      }
+      if (seen.has(path)) continue;
+      // Tracked-but-ignored invariant: a tracked file living under a
+      // pruned subtree (directory-level ignore) must NOT be marked
+      // removed just because the walker skipped it. Re-check the leaf
+      // AND every ancestor directory; if any is ignored, preserve the
+      // index entry. Git's invariant: ignore rules don't auto-untrack.
+      if (await isPathOrAncestorIgnored(path, ignore)) continue;
+      newEntries.delete(path);
+      removed.push(path);
     }
     added.sort();
     modified.sort();
@@ -150,18 +160,37 @@ interface WalkOutcome {
   readonly entry: IndexEntry;
 }
 
+/**
+ * True if `path` or any ancestor directory is reported ignored by the
+ * predicate. Git's directory-level ignore rules (`build/`) match the
+ * directory entry, NOT the files under it; the walker handles this by
+ * pruning at descent, but the post-walk re-check must mirror it.
+ */
+const isPathOrAncestorIgnored = async (
+  path: FilePath,
+  ignore: IgnorePredicate,
+): Promise<boolean> => {
+  if (await ignore(path, false)) return true;
+  const segments = path.split('/');
+  for (let i = 1; i < segments.length; i += 1) {
+    const ancestor = segments.slice(0, i).join('/') as FilePath;
+    if (await ignore(ancestor, true)) return true;
+  }
+  return false;
+};
+
 const processWalkEntry = async (
   ctx: Context,
   walkEntry: WalkWorkingTreeEntry,
   existing: ReadonlyMap<FilePath, IndexEntry>,
-  ignore: IgnorePredicate,
   seen: Set<FilePath>,
 ): Promise<WalkOutcome | undefined> => {
   const { path, stat } = walkEntry;
-  // Mark presence BEFORE the ignore filter so §14.3's tracked-but-ignored
-  // files are not dropped via the not-seen → removed path.
+  // Mark presence BEFORE any further filter so the post-walk
+  // "missing from disk → removed" pass is exact. Ignore filtering
+  // already happened at walk-time in §14.3; this function only sees
+  // leaves the walker chose to yield.
   seen.add(path);
-  if (ignore(path, stat.isDirectory)) return undefined;
   // Pre-filter using the walk-time stat as an early reject; the authoritative
   // size check fires inside stageFromStat against the re-lstat'd value so a
   // grow-between-walk-and-stage race can't bypass the cap.

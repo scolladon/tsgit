@@ -1,6 +1,11 @@
+import { homedir } from 'node:os';
 import * as nodePath from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { createNodeContext } from '../../../../src/adapters/node/node-adapter.js';
+import {
+  buildLayout,
+  createNodeContext,
+  resolveHomeDir,
+} from '../../../../src/adapters/node/node-adapter.js';
 import { NodeCompressor } from '../../../../src/adapters/node/node-compressor.js';
 import { NodeFileSystem } from '../../../../src/adapters/node/node-file-system.js';
 import { NodeHashService } from '../../../../src/adapters/node/node-hash-service.js';
@@ -31,6 +36,21 @@ describe('createNodeContext', () => {
 
     // Assert
     expect(sut.layout.gitDir).toBe(nodePath.resolve(gitDir));
+  });
+
+  it('Given a runtime with a non-empty home directory, When creating context, Then layout.homeDir matches os.homedir()', () => {
+    // Arrange
+    const expected = homedir();
+
+    // Act
+    const sut = createNodeContext({ workDir: '/tmp/tsgit-home' });
+
+    // Assert — when the runtime provides a home dir, the layout surfaces it.
+    if (expected === '') {
+      expect(sut.layout.homeDir).toBeUndefined();
+    } else {
+      expect(sut.layout.homeDir).toBe(expected);
+    }
   });
 
   it('Given bare=true, When creating context, Then config.bare is true', () => {
@@ -143,5 +163,31 @@ describe('createNodeContext', () => {
     const data = (caught as TsgitError).data;
     expect(data.code).toBe('NETWORK_ERROR');
     expect(data.code === 'NETWORK_ERROR' && data.reason).toContain('HTTPS required');
+  });
+});
+
+describe('resolveHomeDir', () => {
+  it('Given an empty string, When resolved, Then returns undefined', () => {
+    expect(resolveHomeDir('')).toBeUndefined();
+  });
+
+  it('Given a non-empty path, When resolved, Then returns the path verbatim', () => {
+    expect(resolveHomeDir('/home/me')).toBe('/home/me');
+  });
+});
+
+describe('buildLayout', () => {
+  it('Given homeDir=undefined, When built, Then layout has no homeDir key', () => {
+    const sut = buildLayout('/wt', '/wt/.git', false, undefined);
+
+    expect(sut).toEqual({ workDir: '/wt', gitDir: '/wt/.git', bare: false });
+    expect('homeDir' in sut).toBe(false);
+  });
+
+  it('Given homeDir set, When built, Then layout.homeDir matches', () => {
+    const sut = buildLayout('/wt', '/wt/.git', true, '/home/me');
+
+    expect(sut.homeDir).toBe('/home/me');
+    expect(sut.bare).toBe(true);
   });
 });

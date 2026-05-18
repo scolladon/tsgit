@@ -294,6 +294,8 @@ function extractDetail(data: TsgitErrorData): string {
       return `adapter unavailable for runtime ${data.runtime}: ${data.reason}`;
     case 'WORKING_TREE_FILE_TOO_LARGE':
       return `working-tree file too large: ${basename(data.path)} size=${data.size} limit=${data.limit}`;
+    case 'GITIGNORE_FILE_TOO_LARGE':
+      return `.gitignore too large: ${basename(data.path)} size=${data.size} limit=${data.limit}`;
     default: {
       const _exhaustive: never = data;
       return String(_exhaustive);

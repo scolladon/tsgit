@@ -16,6 +16,8 @@ export interface MemoryAdapterOptions {
   readonly signal?: AbortSignal;
   readonly deltaCacheMaxBytes?: number;
   readonly deltaCacheMaxEntries?: number;
+  /** Optional home directory exposed via `ctx.layout.homeDir` (default: undefined). */
+  readonly homeDir?: string;
 }
 
 const DEFAULT_WORK_DIR = '/repo';
@@ -31,11 +33,15 @@ export function createMemoryContext(options: MemoryAdapterOptions = {}): Context
   const hash = new MemoryHashService(algorithm);
   const compressor = new MemoryCompressor();
   const transport = new MemoryHttpTransport();
-  const layout: RepositoryLayout = {
-    workDir: DEFAULT_WORK_DIR,
-    gitDir: DEFAULT_GIT_DIR,
-    bare: false,
-  };
+  const layout: RepositoryLayout =
+    options.homeDir === undefined
+      ? { workDir: DEFAULT_WORK_DIR, gitDir: DEFAULT_GIT_DIR, bare: false }
+      : {
+          workDir: DEFAULT_WORK_DIR,
+          gitDir: DEFAULT_GIT_DIR,
+          bare: false,
+          homeDir: options.homeDir,
+        };
   const hashConfig = algorithm === 'sha256' ? SHA256_CONFIG : SHA1_CONFIG;
   const deltaCache = createLruCache<Uint8Array>(
     options.deltaCacheMaxBytes ?? DEFAULT_DELTA_CACHE_BYTES,

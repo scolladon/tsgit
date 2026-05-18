@@ -7,7 +7,7 @@ import {
   validateWorkingTreePath,
 } from '../../domain/working-tree-path.js';
 import type { Context } from '../../ports/context.js';
-import type { WalkWorkingTreeEntry, WalkWorkingTreeOptions } from './types.js';
+import type { WalkIgnorePredicate, WalkWorkingTreeEntry, WalkWorkingTreeOptions } from './types.js';
 
 const DEFAULT_MAX_DEPTH = 4096;
 
@@ -15,6 +15,7 @@ interface WalkConfig {
   readonly ctx: Context;
   readonly maxDepth: number;
   readonly maxEntries: number;
+  readonly ignore: WalkIgnorePredicate | undefined;
 }
 
 interface Counter {
@@ -43,6 +44,7 @@ export async function* walkWorkingTree(
     ctx,
     maxDepth: options?.maxDepth ?? DEFAULT_MAX_DEPTH,
     maxEntries: options?.maxEntries ?? MAX_FLAT_TREE_ENTRIES,
+    ignore: options?.ignore,
   };
   const counter: Counter = { value: 0 };
   yield* walkInternal(config, counter, '', 0, /* isRoot */ true);
@@ -86,10 +88,12 @@ async function* visitEntry(
   // Defence-in-depth: a malicious adapter could return `..` etc.
   validateWorkingTreePath(path);
   if (entry.isDirectory && !entry.isSymbolicLink) {
+    if (config.ignore !== undefined && (await config.ignore(path, true))) return;
     yield* walkInternal(config, counter, path, depth + 1, /* isRoot */ false);
     return;
   }
   if (!entry.isFile && !entry.isSymbolicLink) return;
+  if (config.ignore !== undefined && (await config.ignore(path, false))) return;
   counter.value += 1;
   if (counter.value > config.maxEntries) {
     throw treeEntryLimitExceeded(counter.value, config.maxEntries);
