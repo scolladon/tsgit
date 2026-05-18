@@ -166,8 +166,20 @@ describe('domain commands error — factory data', () => {
     });
   });
 
-  it('mergeHasConflicts', () => {
-    expect(mergeHasConflicts(3).data).toEqual({ code: 'MERGE_HAS_CONFLICTS', count: 3 });
+  it('mergeHasConflicts (default paths)', () => {
+    expect(mergeHasConflicts(3).data).toEqual({
+      code: 'MERGE_HAS_CONFLICTS',
+      count: 3,
+      paths: [],
+    });
+  });
+
+  it('mergeHasConflicts (explicit paths)', () => {
+    expect(mergeHasConflicts(2, ['a.txt' as FilePath, 'b.txt' as FilePath]).data).toEqual({
+      code: 'MERGE_HAS_CONFLICTS',
+      count: 2,
+      paths: ['a.txt', 'b.txt'],
+    });
   });
 
   it('checkoutOverwriteDirty', () => {
@@ -353,7 +365,7 @@ describe('domain commands error — extractDetail message formatting', () => {
       'PUSH_REJECTED: push rejected for refs/heads/main: declined',
     ],
     [
-      { code: 'MERGE_HAS_CONFLICTS', count: 3 },
+      { code: 'MERGE_HAS_CONFLICTS', count: 3, paths: [] },
       'MERGE_HAS_CONFLICTS: merge has unresolved conflicts: 3 files',
     ],
     [

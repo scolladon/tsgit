@@ -32,7 +32,11 @@ export type CommandError =
       readonly reason: string;
       readonly reportStatus: ReportStatus;
     }
-  | { readonly code: 'MERGE_HAS_CONFLICTS'; readonly count: number }
+  | {
+      readonly code: 'MERGE_HAS_CONFLICTS';
+      readonly count: number;
+      readonly paths: ReadonlyArray<FilePath>;
+    }
   | { readonly code: 'CHECKOUT_OVERWRITE_DIRTY'; readonly paths: ReadonlyArray<FilePath> }
   | {
       readonly code: 'REVPARSE_AMBIGUOUS';
@@ -132,8 +136,8 @@ export const pushRejected = (
   reportStatus: ReportStatus,
 ): TsgitError => new TsgitError({ code: 'PUSH_REJECTED', ref, reason, reportStatus });
 
-export const mergeHasConflicts = (count: number): TsgitError =>
-  new TsgitError({ code: 'MERGE_HAS_CONFLICTS', count });
+export const mergeHasConflicts = (count: number, paths: ReadonlyArray<FilePath> = []): TsgitError =>
+  new TsgitError({ code: 'MERGE_HAS_CONFLICTS', count, paths });
 
 export const checkoutOverwriteDirty = (paths: ReadonlyArray<FilePath>): TsgitError =>
   new TsgitError({ code: 'CHECKOUT_OVERWRITE_DIRTY', paths });
