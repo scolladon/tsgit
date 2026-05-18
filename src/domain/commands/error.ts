@@ -32,7 +32,12 @@ export type CommandError =
       readonly reason: string;
       readonly reportStatus: ReportStatus;
     }
-  | { readonly code: 'MERGE_HAS_CONFLICTS'; readonly count: number }
+  | {
+      readonly code: 'MERGE_HAS_CONFLICTS';
+      readonly count: number;
+      readonly paths: ReadonlyArray<FilePath>;
+      readonly truncated?: boolean;
+    }
   | { readonly code: 'CHECKOUT_OVERWRITE_DIRTY'; readonly paths: ReadonlyArray<FilePath> }
   | {
       readonly code: 'REVPARSE_AMBIGUOUS';
@@ -132,8 +137,28 @@ export const pushRejected = (
   reportStatus: ReportStatus,
 ): TsgitError => new TsgitError({ code: 'PUSH_REJECTED', ref, reason, reportStatus });
 
-export const mergeHasConflicts = (count: number): TsgitError =>
-  new TsgitError({ code: 'MERGE_HAS_CONFLICTS', count });
+/**
+ * Cap the number of paths embedded in `MERGE_HAS_CONFLICTS.data.paths`.
+ * `mergeTrees` bounds the union of paths at `MAX_FLAT_TREE_ENTRIES`
+ * (1,000,000), so an uncapped error payload could allocate tens of
+ * megabytes inside a thrown error — amplified when callers log or
+ * serialise the error. We truncate to the first N paths and set
+ * `truncated: true` so observers can detect the elision.
+ */
+export const MAX_CONFLICT_PATHS_IN_ERROR = 100;
+
+export const mergeHasConflicts = (
+  count: number,
+  paths: ReadonlyArray<FilePath> = [],
+): TsgitError => {
+  const truncated = paths.length > MAX_CONFLICT_PATHS_IN_ERROR;
+  const cappedPaths = truncated ? paths.slice(0, MAX_CONFLICT_PATHS_IN_ERROR) : paths;
+  return new TsgitError(
+    truncated
+      ? { code: 'MERGE_HAS_CONFLICTS', count, paths: cappedPaths, truncated: true }
+      : { code: 'MERGE_HAS_CONFLICTS', count, paths: cappedPaths },
+  );
+};
 
 export const checkoutOverwriteDirty = (paths: ReadonlyArray<FilePath>): TsgitError =>
   new TsgitError({ code: 'CHECKOUT_OVERWRITE_DIRTY', paths });
