@@ -295,15 +295,20 @@ describe('buildIndexFromTree', () => {
     expect(result.every((e) => e.mode !== FILE_MODE.DIRECTORY)).toBe(true);
   });
 
-  it('Given a tree whose walkTree order differs from sorted, When buildIndexFromTree runs, Then output is sorted by path', async () => {
-    // Arrange — TreeEntry names that, when walked, may not be in byte-sorted order
+  it('Given a flat tree, When buildIndexFromTree runs, Then the returned entries are byte-sorted by path', async () => {
+    // Arrange — `writeTree` routes through `serializeTreeContent` →
+    // `sortTreeEntries`, so the wire bytes are always canonically ordered.
+    // This test asserts the OUTPUT invariant (byte-sorted index entries)
+    // rather than the SORT invocation — the defensive sort in the primitive
+    // exists precisely to keep the output invariant if a future caller
+    // bypasses the canonical writers.
     const ctx = await buildSeededContext();
     const blobA = await writeBlob(ctx, 'A');
     const blobB = await writeBlob(ctx, 'B');
     const blobC = await writeBlob(ctx, 'C');
     const treeId = await writeTree(ctx, [
-      { name: 'a.txt' as FilePath, id: blobA, mode: FILE_MODE.REGULAR },
       { name: 'b.txt' as FilePath, id: blobB, mode: FILE_MODE.REGULAR },
+      { name: 'a.txt' as FilePath, id: blobA, mode: FILE_MODE.REGULAR },
       { name: 'c.txt' as FilePath, id: blobC, mode: FILE_MODE.REGULAR },
     ]);
     const sut = buildIndexFromTree;
