@@ -89,7 +89,7 @@ Create a fresh branch off `main`, named with a conventional-commit type prefix: 
 
 ### 2. Design (`docs/design/<topic>.md`)
 
-Write the first draft, then **self-review three times**, fixing every gap each pass before moving on. The design covers:
+Write the first draft, then **self-review until convergence, max three times**, fixing every gap each pass. Stop as soon as a pass produces no changes (converged) — don't burn extra passes just to hit the cap. The design covers:
 - TypeScript types and interfaces
 - Binary/wire format details (if applicable)
 - Function signatures and contracts
@@ -111,7 +111,7 @@ Commit: `docs(adr): NNN <title>`.
 
 ### 4. Plan (`docs/plan/<topic>.md`)
 
-Derive the plan from the design and ADRs. **Self-review three times**, fixing every issue each pass. Plan contents:
+Derive the plan from the design and ADRs. **Self-review until convergence, max three times**, fixing every issue each pass. Stop as soon as a pass yields no changes. Plan contents:
 - Ordered list of files to create/modify
 - Each step: what to test first, what to implement, what to verify
 - Dependencies between steps
@@ -144,10 +144,12 @@ Update `README.md`, `RUNBOOK.md`, `CONTRIBUTING.md`, `DESIGN.md`, and any phase 
 ### Workflow summary
 
 ```
-branch → design ×3 → adr (every user-made choice) → plan ×3 →
-implement (TDD, agent teams, atomic commits) → review ×3 →
-harness green + kill mutants → docs refresh + push + PR
+branch → design (until convergence, max ×3) → adr (every user-made choice) →
+plan (until convergence, max ×3) → implement (TDD, agent teams, atomic commits) →
+review ×3 → harness green + kill mutants → docs refresh + push + PR
 ```
+
+Design and plan: stop the moment a review pass produces no changes — convergence wins; the `×3` is a ceiling, not a quota. Implementation review keeps the fixed three-pass cadence because each pass can introduce new findings that need re-review.
 
 **Never skip design. Never code without a plan. Never decide with the user without an ADR. Never push without three review passes.**
 
