@@ -64,7 +64,7 @@ describe('readGitignore', () => {
     expect(sut?.[0]?.pattern).toBe('*.tmp');
   });
 
-  it('Given a .gitignore over MAX_GITIGNORE_BYTES, When read, Then throws GITIGNORE_FILE_TOO_LARGE with path/size/limit', async () => {
+  it('Given a .gitignore over MAX_GITIGNORE_BYTES, When read, Then throws GITIGNORE_FILE_TOO_LARGE with sanitized basename path + size + limit', async () => {
     // Arrange — generate content one byte over the cap.
     const ctx = await seed();
     const content = 'x'.repeat(MAX_GITIGNORE_BYTES + 1);
@@ -73,9 +73,10 @@ describe('readGitignore', () => {
     // Act
     const err = await expectError(() => readGitignore(ctx, ''), 'GITIGNORE_FILE_TOO_LARGE');
 
-    // Assert
+    // Assert — error payload's path is the basename so the absolute
+    // home-dir path doesn't leak into error logs.
     const data = err.data as { path: string; size: number; limit: number };
-    expect(data.path).toBe(`${ctx.layout.workDir}/.gitignore`);
+    expect(data.path).toBe('.gitignore');
     expect(data.size).toBe(MAX_GITIGNORE_BYTES + 1);
     expect(data.limit).toBe(MAX_GITIGNORE_BYTES);
   });
@@ -167,6 +168,47 @@ describe('readGlobalExcludes', () => {
 
     // Assert
     expect(sut).toBeUndefined();
+  });
+
+  it('Given core.excludesFile = "~" alone and homeDir is undefined, When read, Then returns undefined (silent miss — symmetric with the `~/...` case)', async () => {
+    // Arrange — covers the bare-`~` branch of expandUserPath when no
+    // homeDir is configured. The branch must NOT return `undefined as
+    // string` downstream — verify by asserting the loader silently
+    // misses without throwing.
+    const ctx = await seed();
+    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n  excludesFile = ~\n');
+
+    // Act
+    const sut = await readGlobalExcludes(ctx);
+
+    // Assert
+    expect(sut).toBeUndefined();
+  });
+
+  it('Given core.excludesFile = directory (non-regular file), When read, Then returns undefined (defends against /dev/zero and friends)', async () => {
+    // Arrange — config points at the workDir itself, which IS a directory.
+    const ctx = await seed();
+    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, `[core]\n  excludesFile = ${'/repo'}\n`);
+
+    // Act
+    const sut = await readGlobalExcludes(ctx);
+
+    // Assert
+    expect(sut).toBeUndefined();
+  });
+
+  it('Given the error payload from oversize .gitignore, When read, Then path is sanitized to basename (does not leak home-dir layout)', async () => {
+    // Arrange — write an oversize file at a sub-path; capture the error
+    // and assert the path field is the basename.
+    const ctx = await seed();
+    const content = 'x'.repeat(MAX_GITIGNORE_BYTES + 1);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitignore`, content);
+
+    // Act
+    const err = await expectError(() => readGitignore(ctx, ''), 'GITIGNORE_FILE_TOO_LARGE');
+
+    // Assert
+    expect((err.data as { path: string }).path).toBe('.gitignore');
   });
 
   it('Given core.excludesFile = "~" alone and homeDir is set, When read, Then resolves to the home directory itself', async () => {

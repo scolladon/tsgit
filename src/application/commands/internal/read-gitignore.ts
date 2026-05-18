@@ -42,9 +42,9 @@ export const readGlobalExcludes = async (ctx: Context): Promise<IgnoreRuleset | 
 };
 
 const expandUserPath = (ctx: Context, raw: string): string | undefined => {
-  if (raw === '~') {
-    return ctx.layout.homeDir;
-  }
+  // Bare "~" — return homeDir or undefined if not set. Both branches must
+  // handle the undefined case so the loader downstream sees a clean miss.
+  if (raw === '~') return ctx.layout.homeDir;
   if (raw.startsWith('~/')) {
     if (ctx.layout.homeDir === undefined) return undefined;
     return `${ctx.layout.homeDir}/${raw.slice(2)}`;
@@ -60,9 +60,28 @@ const loadAndParse = async (ctx: Context, path: string): Promise<IgnoreRuleset |
     if (err instanceof TsgitError && err.data.code === 'FILE_NOT_FOUND') return undefined;
     throw err;
   }
+  // Reject non-regular files. Defends against `core.excludesFile` (or
+  // any other source) pointing at `/dev/zero`, a directory, a fifo, a
+  // block device, or a symlink whose target would be followed by
+  // `readUtf8`. Matches Git's behaviour of skipping non-regular ignore
+  // sources rather than amplifying the I/O surface.
+  if (!stat.isFile || stat.isSymbolicLink) return undefined;
   if (stat.size > MAX_GITIGNORE_BYTES) {
-    throw gitignoreFileTooLarge(path as FilePath, stat.size, MAX_GITIGNORE_BYTES);
+    throw gitignoreFileTooLarge(sanitizedErrorPath(path), stat.size, MAX_GITIGNORE_BYTES);
   }
   const text = await ctx.fs.readUtf8(path);
   return parseGitignore(text);
+};
+
+/**
+ * Strip the directory prefix from a path before embedding it in an
+ * error payload. For `core.excludesFile` (which can resolve to an
+ * arbitrary absolute path outside the repo), this keeps the error
+ * from leaking the user's home-directory layout to upstream observers.
+ * Callers wanting full diagnostic context already see `basename(path)`
+ * via `extractDetail`, which produces the same result.
+ */
+const sanitizedErrorPath = (path: string): FilePath => {
+  const slash = path.lastIndexOf('/');
+  return (slash === -1 ? path : path.slice(slash + 1)) as FilePath;
 };

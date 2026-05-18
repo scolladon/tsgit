@@ -702,6 +702,28 @@ describe('add', () => {
     expect([...sut.added].sort()).toEqual(['.gitignore', 'sub/.gitignore', 'sub/keep.log']);
   });
 
+  it('Given a tracked file under a directory the .gitignore would now exclude, When add({ all: true }), Then the index entry is preserved (Git invariant: ignored ancestor does not auto-untrack)', async () => {
+    // Arrange — first stage `vendor/foo.ts`; then add a rule that
+    // ignores the whole `vendor/` directory; re-run `add --all`.
+    // The post-walk re-check must consult ancestor directories (not
+    // just the leaf) — Git's `vendor/` rule matches the directory entry,
+    // NOT the files under it. Without the ancestor check, the tracked
+    // file would be classified as `removed`.
+    const ctx = await seedFreshRepo({ 'vendor/foo.ts': 'export {};' });
+    await add(ctx, ['vendor/foo.ts']);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitignore`, 'vendor/\n');
+
+    // Act
+    const sut = await add(ctx, [], { all: true });
+
+    // Assert — .gitignore is newly added; vendor/foo.ts stays in
+    // index, NOT in removed.
+    expect(sut.added).toEqual(['.gitignore']);
+    expect(sut.removed).toEqual([]);
+    const idx = await readIndex(ctx);
+    expect(idx.entries.map((e) => e.path).sort()).toEqual(['.gitignore', 'vendor/foo.ts']);
+  });
+
   it('Given a tracked file that an ignore rule WOULD ignore, When add({ all: true }), Then the index entry is preserved (Git invariant: tracked beats ignored)', async () => {
     // Arrange — first stage `secret.bin` literally; then add a rule that
     // would ignore it; re-run `add --all`. The entry must stay.

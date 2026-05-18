@@ -24,7 +24,7 @@ describe('buildIgnoreEvaluator', () => {
     expect(sut.base).toEqual([]);
   });
 
-  it('Given root .gitignore + info/exclude + global, When built, Then base contains all three in order', async () => {
+  it('Given root .gitignore + info/exclude + global, When built, Then base contains all three in order with basedir="" for each', async () => {
     // Arrange
     const ctx = await seed('/repo/home');
     await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitignore`, '*.log\n');
@@ -35,14 +35,19 @@ describe('buildIgnoreEvaluator', () => {
     // Act
     const sut = await buildIgnoreEvaluator(ctx);
 
-    // Assert — order is global → info → root.
+    // Assert — order is global → info → root. Each base level anchors
+    // at the repo root (basedir === ''), so a mutant changing the
+    // basedir assignment is killed.
     expect(sut.base).toHaveLength(3);
+    expect(sut.base[0]?.basedir).toBe('');
+    expect(sut.base[1]?.basedir).toBe('');
+    expect(sut.base[2]?.basedir).toBe('');
     expect(sut.base[0]?.rules[0]?.pattern).toBe('*.swp');
     expect(sut.base[1]?.rules[0]?.pattern).toBe('*.tmp');
     expect(sut.base[2]?.rules[0]?.pattern).toBe('*.log');
   });
 
-  it('Given the evaluator, When loadDirRules is invoked for the same directory twice, Then the second call returns the cached ruleset (no second read)', async () => {
+  it('Given the evaluator, When loadDirRules is invoked for the same directory twice, Then the second call returns the cached ruleset (same value, no second read)', async () => {
     // Arrange
     const ctx = await seed();
     await ctx.fs.writeUtf8(`${ctx.layout.workDir}/sub/.gitignore`, '*.tmp\n');
@@ -63,11 +68,16 @@ describe('buildIgnoreEvaluator', () => {
     const ev = await buildIgnoreEvaluator(evalCtx);
 
     // Act
-    await ev.loadDirRules('sub' as FilePath);
-    await ev.loadDirRules('sub' as FilePath);
+    const first = await ev.loadDirRules('sub' as FilePath);
+    const second = await ev.loadDirRules('sub' as FilePath);
 
-    // Assert — only one read on the .gitignore.
+    // Assert — only one read on the .gitignore AND both calls return
+    // the same parsed ruleset (a mutant that returned an empty array
+    // on the second call would have `calls === 1` but `second !== first`).
     expect(calls).toBe(1);
+    expect(second).toBe(first);
+    expect(second).toHaveLength(1);
+    expect(second[0]?.pattern).toBe('*.tmp');
   });
 });
 

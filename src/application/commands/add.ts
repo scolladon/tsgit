@@ -135,11 +135,12 @@ export const addAll = async (
     }
     for (const [path] of existing) {
       if (seen.has(path)) continue;
-      // Tracked-but-ignored: if a tracked file lives under a pruned
-      // subtree (or is ignored at the leaf), the walker never reached
-      // it. Re-check the predicate so we don't spuriously drop the
+      // Tracked-but-ignored invariant: a tracked file living under a
+      // pruned subtree (directory-level ignore) must NOT be marked
+      // removed just because the walker skipped it. Re-check the leaf
+      // AND every ancestor directory; if any is ignored, preserve the
       // index entry. Git's invariant: ignore rules don't auto-untrack.
-      if (await ignore(path, false)) continue;
+      if (await isPathOrAncestorIgnored(path, ignore)) continue;
       newEntries.delete(path);
       removed.push(path);
     }
@@ -158,6 +159,25 @@ interface WalkOutcome {
   readonly path: FilePath;
   readonly entry: IndexEntry;
 }
+
+/**
+ * True if `path` or any ancestor directory is reported ignored by the
+ * predicate. Git's directory-level ignore rules (`build/`) match the
+ * directory entry, NOT the files under it; the walker handles this by
+ * pruning at descent, but the post-walk re-check must mirror it.
+ */
+const isPathOrAncestorIgnored = async (
+  path: FilePath,
+  ignore: IgnorePredicate,
+): Promise<boolean> => {
+  if (await ignore(path, false)) return true;
+  const segments = path.split('/');
+  for (let i = 1; i < segments.length; i += 1) {
+    const ancestor = segments.slice(0, i).join('/') as FilePath;
+    if (await ignore(ancestor, true)) return true;
+  }
+  return false;
+};
 
 const processWalkEntry = async (
   ctx: Context,

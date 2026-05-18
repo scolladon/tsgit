@@ -14,6 +14,20 @@ describe('matchInStack', () => {
     expect(matchInStack([], path('foo.log'), false)).toBe('unset');
   });
 
+  it('Given a multi-level stack where NO level matches, When matched, Then returns "unset" (kills initialiser mutants)', () => {
+    // Arrange — two levels, each with a rule that does NOT match the
+    // query path. A mutant changing the initial `result = "unset"` to
+    // `"ignored"` would survive single-level tests because every level
+    // could return "unset" without changing the result.
+    const stack = [level('', '*.tmp'), level('sub', '*.cache')];
+
+    // Act
+    const sut = matchInStack(stack, path('keep.ts'), false);
+
+    // Assert
+    expect(sut).toBe('unset');
+  });
+
   it('Given a single root level with `*.log`, When matched against `foo.log`, Then returns "ignored"', () => {
     const stack = [level('', '*.log')];
 
