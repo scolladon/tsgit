@@ -67,8 +67,10 @@ describe('add', () => {
     // Arrange — MERGE_HEAD presence used to block `add`. Phase 13.4b
     // changed the contract: `add` must allow staging resolved files
     // during a conflicted merge. Other pending markers still block.
+    // The marker file content is a valid 40-hex ObjectId (matches the
+    // factory's validation contract).
     const ctx = await seedFreshRepo({ 'a.txt': 'a' });
-    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/MERGE_HEAD`, 'oid\n');
+    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/MERGE_HEAD`, `${'a'.repeat(40)}\n`);
 
     // Act
     const sut = await add(ctx, ['a.txt']);
@@ -77,14 +79,29 @@ describe('add', () => {
     expect(sut.added).toEqual(['a.txt']);
   });
 
-  it('Given .git/REBASE_HEAD exists, When add runs, Then throws OPERATION_IN_PROGRESS (rebase still blocks)', async () => {
-    // Arrange — only `merge` is excepted from the pending-operation
-    // check. Other markers must still block.
+  it.each([
+    ['REBASE_HEAD', 'rebase'],
+    ['CHERRY_PICK_HEAD', 'cherry-pick'],
+    ['REVERT_HEAD', 'revert'],
+  ])('Given .git/%s exists, When add runs, Then throws OPERATION_IN_PROGRESS with operation=%s (only merge is excepted)', async (markerFile, expectedOp) => {
+    // Arrange — exactly one non-merge marker present. Only `merge` is
+    // excepted from the pending-operation check; others must still
+    // block. Kills the mutant that widens `except: 'merge'` to
+    // `except: 'rebase'` (etc.) — a wider exception would let one of
+    // these calls succeed.
     const ctx = await seedFreshRepo({ 'a.txt': 'a' });
-    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/REBASE_HEAD`, 'oid\n');
+    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/${markerFile}`, 'oid\n');
 
     // Act
-    await expectError(() => add(ctx, ['a.txt']), 'OPERATION_IN_PROGRESS');
+    let caught: unknown;
+    try {
+      await add(ctx, ['a.txt']);
+    } catch (err) {
+      caught = err;
+    }
+    const data = (caught as { data?: { code?: string; operation?: string } })?.data;
+    expect(data?.code).toBe('OPERATION_IN_PROGRESS');
+    expect(data?.operation).toBe(expectedOp);
   });
 
   it('Given an existing index entry + modified working file, When add, Then result.modified contains it', async () => {

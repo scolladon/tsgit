@@ -65,6 +65,11 @@ export const commit = async (ctx: Context, opts: CommitOptions): Promise<CommitR
   const parentId = head.kind === 'symbolic' ? await tryResolve(ctx, head.target) : head.id;
   const parents = buildParents(parentId, mergeHead);
   if (!opts.allowEmpty && parentId !== undefined && mergeHead === undefined) {
+    // Tree-equality guard intentionally skipped during a merge resolution
+    // (mergeHead !== undefined). A merge commit with a tree identical to
+    // HEAD's IS the canonical "user accepted all ours" outcome — it is a
+    // genuine two-parent commit even when the tree didn't change. Refusing
+    // it here would force users into noisy --allow-empty for a normal flow.
     const parentTree = await getParentTree(ctx, parentId);
     if (parentTree === treeId) throw nothingToCommit();
   }

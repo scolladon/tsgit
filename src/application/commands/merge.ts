@@ -349,9 +349,11 @@ const persistConflictState = async (
     await writeMergeMsg(ctx, message);
     const indexEntries = buildConflictIndexEntries(result.outcomes, result.conflicts);
     await lock.commit(indexEntries);
-  } catch (err) {
+  } finally {
+    // Always release the lock — `commit` flips the lock to a no-op state
+    // on success, so this is safe regardless of which path completed.
+    // Matches the `try/finally` pattern in `add.ts` and `checkout.ts`.
     await lock.release();
-    throw err;
   }
 
   return {
@@ -378,26 +380,35 @@ const writeConflictingWorkingTree = async (
   outcomes: ReadonlyArray<MergeOutcome>,
   conflicts: ReadonlyArray<MergeConflict>,
 ): Promise<void> => {
-  // Clean outcomes (the merged tree side) — write each leaf to the working
-  // tree so the user sees the auto-merged state for non-conflicting paths.
-  for (const outcome of outcomes) {
-    if (outcome.status === 'unchanged' || outcome.status === 'resolved-known') {
-      const blob = await readBlob(ctx, outcome.id);
-      await writeWorkingTreeFile(ctx, outcome.path, blob.content);
-    } else if (outcome.status === 'resolved-merged') {
-      await writeWorkingTreeFile(ctx, outcome.path, outcome.bytes);
-    } else if (outcome.status === 'resolved-deleted') {
-      await removeWorkingTreeFile(ctx, outcome.path);
-    }
-  }
+  // Parallelise both batches — outcomes and conflicts are independent
+  // path writes, and the project pattern for merge-tree I/O is
+  // Promise.all (see flattenTree, writeNestedTree, buildContentMerger).
+  await Promise.all(outcomes.map((outcome) => writeOutcomeToTree(ctx, outcome)));
+  await Promise.all(conflicts.map((conflict) => writeConflictToTree(ctx, conflict)));
+};
 
-  // Conflict outcomes — write marker bytes (or surviving side's content
-  // for non-content conflicts).
-  for (const conflict of conflicts) {
-    const bytes = await materialiseConflictBytes(ctx, conflict);
-    if (bytes !== undefined) {
-      await writeWorkingTreeFile(ctx, conflict.path, bytes);
-    }
+const writeOutcomeToTree = async (ctx: Context, outcome: MergeOutcome): Promise<void> => {
+  if (outcome.status === 'unchanged' || outcome.status === 'resolved-known') {
+    // Cap with MAX_CONFLICT_OUTPUT_BYTES so a hostile clean-tree blob
+    // cannot OOM the merge consumer during a conflicting merge.
+    const blob = await readBlob(ctx, outcome.id, { maxBytes: MAX_CONFLICT_OUTPUT_BYTES });
+    await writeWorkingTreeFile(ctx, outcome.path, blob.content);
+    return;
+  }
+  if (outcome.status === 'resolved-merged') {
+    await writeWorkingTreeFile(ctx, outcome.path, outcome.bytes);
+    return;
+  }
+  if (outcome.status === 'resolved-deleted') {
+    await removeWorkingTreeFile(ctx, outcome.path);
+  }
+  // 'conflict' outcomes are handled by the parallel conflicts batch.
+};
+
+const writeConflictToTree = async (ctx: Context, conflict: MergeConflict): Promise<void> => {
+  const bytes = await materialiseConflictBytes(ctx, conflict);
+  if (bytes !== undefined) {
+    await writeWorkingTreeFile(ctx, conflict.path, bytes);
   }
 };
 
@@ -507,13 +518,11 @@ const buildConflictIndexEntries = (
   }
 
   const stageConflicts = conflictsToIndexEntries(conflicts, zeroStat);
-  const combined = [...stage0, ...stageConflicts];
-  combined.sort((a, b) => {
-    if (a.path < b.path) return -1;
-    if (a.path > b.path) return 1;
-    return a.flags.stage - b.flags.stage;
-  });
-  return combined;
+  // `serializeIndex` sorts authoritatively when the index is written,
+  // so a third pass here would be redundant. Pass the concatenation
+  // through as-is — both sub-arrays are already individually sorted
+  // (stage-0 by outcome order; stage-1/2/3 by conflictsToIndexEntries).
+  return [...stage0, ...stageConflicts];
 };
 
 const resolveMergeAuthor = async (ctx: Context, opts: MergeOptions): Promise<AuthorIdentity> => {

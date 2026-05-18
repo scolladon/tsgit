@@ -10,7 +10,9 @@
  * `assertNoPendingOperation`. See `docs/adr/027-merge-conflict-write-order.md`
  * for the load-bearing write order.
  */
+
 import type { ObjectId } from '../../../domain/objects/index.js';
+import { ObjectId as ObjectIdFactory } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
 
 const mergeHeadPath = (ctx: Context): string => `${ctx.layout.gitDir}/MERGE_HEAD`;
@@ -42,7 +44,11 @@ export const readMergeHead = async (ctx: Context): Promise<ObjectId | undefined>
   if (!(await ctx.fs.exists(path))) return undefined;
   const content = await ctx.fs.readUtf8(path);
   const trimmed = content.trim();
-  return trimmed.length === 0 ? undefined : (trimmed as ObjectId);
+  if (trimmed.length === 0) return undefined;
+  // Validate via the ObjectId factory — a corrupt MERGE_HEAD (mid-write
+  // crash) would otherwise produce a malformed second parent on the
+  // resolving commit. Factory throws INVALID_OBJECT_ID for non-40-hex.
+  return ObjectIdFactory.from(trimmed);
 };
 
 /**
