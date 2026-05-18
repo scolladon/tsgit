@@ -182,6 +182,40 @@ describe('domain commands error — factory data', () => {
     });
   });
 
+  it('mergeHasConflicts truncates the paths array when over the cap', () => {
+    // Arrange — 150 fake paths exceeds MAX_CONFLICT_PATHS_IN_ERROR (100).
+    const paths = Array.from({ length: 150 }, (_, i) => `f${i}.txt` as FilePath);
+
+    // Act
+    const err = mergeHasConflicts(150, paths);
+    const data = err.data as {
+      readonly code: string;
+      readonly count: number;
+      readonly paths: ReadonlyArray<string>;
+      readonly truncated?: boolean;
+    };
+
+    // Assert — count reflects the full conflict total; paths is capped; the
+    // truncated flag fires so observers know the elision happened.
+    expect(data.count).toBe(150);
+    expect(data.paths).toHaveLength(100);
+    expect(data.paths[0]).toBe('f0.txt');
+    expect(data.paths[99]).toBe('f99.txt');
+    expect(data.truncated).toBe(true);
+  });
+
+  it('mergeHasConflicts does NOT set truncated when paths fit under the cap', () => {
+    // Arrange
+    const paths = Array.from({ length: 5 }, (_, i) => `f${i}.txt` as FilePath);
+
+    // Act
+    const err = mergeHasConflicts(5, paths);
+    const data = err.data as { readonly truncated?: boolean };
+
+    // Assert — truncated field absent (not just false) when no elision happened.
+    expect(data.truncated).toBeUndefined();
+  });
+
   it('checkoutOverwriteDirty', () => {
     expect(checkoutOverwriteDirty(['a' as FilePath]).data).toEqual({
       code: 'CHECKOUT_OVERWRITE_DIRTY',

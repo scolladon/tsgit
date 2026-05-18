@@ -53,14 +53,29 @@ ignore conflicts).
      `MERGE_CONFLICTS_NOT_RESOLVED` with the conflict paths.
    - If clean: convert outcomes to a flat
      `{ path, id, mode }[]` (writing resolved-merged bytes as new
-     blobs first), then synthesise the merged tree via
-     `synthesizeTreeFromIndex`.
+     blobs first), then synthesise the merged tree via a local
+     `writeNestedTree` helper. (Originally proposed reusing
+     `synthesizeTreeFromIndex` — the post-pass-3 retraction in §7
+     explains why this changed: the synth primitive runs path
+     validation per entry, and our outcomes come from a parsed
+     `FlatTree` whose paths are already validated.)
 4. Create the merge commit with the merged tree id and update HEAD.
 
-### 3.2 `MERGE_CONFLICTS_NOT_RESOLVED`
+### 3.2 `MERGE_HAS_CONFLICTS`
 
-New error code. `data.code === 'MERGE_CONFLICTS_NOT_RESOLVED'`,
-plus `data.paths: ReadonlyArray<FilePath>` listing the conflicting
+Reuse the existing `MERGE_HAS_CONFLICTS` error code (rather than
+add a new `MERGE_CONFLICTS_NOT_RESOLVED`) and extend its `data`
+shape with `paths: ReadonlyArray<FilePath>` + an optional
+`truncated: boolean`. Pass-3 security flagged the unbounded
+allocation when up to 1M paths could end up in the error payload;
+the factory caps the list at `MAX_CONFLICT_PATHS_IN_ERROR = 100`
+and surfaces `truncated: true` so observers can detect elision.
+
+(The earlier draft of this section proposed a new
+`MERGE_CONFLICTS_NOT_RESOLVED` code. We reuse the existing
+`MERGE_HAS_CONFLICTS` to keep the public error union tighter; the
+additive `paths`/`truncated` fields are non-breaking. The
+`data.paths` and `data.count` fields list the conflicting
 paths. Future Phase 13.4b will replace this throw with the full
 conflict-resolution machinery (markers, stage 1/2/3, merge state).
 

@@ -8,7 +8,7 @@ import {
   mergeTrees,
 } from '../../domain/merge/index.js';
 import type { CommitData } from '../../domain/objects/commit.js';
-import { unexpectedObjectType } from '../../domain/objects/error.js';
+import { treeDepthExceeded, unexpectedObjectType } from '../../domain/objects/error.js';
 import {
   type AuthorIdentity,
   FILE_MODE,
@@ -223,18 +223,33 @@ const partitionByPrefix = (leaves: ReadonlyArray<LeafRecord>): PartitionedLeaves
   return { files, subdirs };
 };
 
+const MAX_MERGE_TREE_DEPTH = 4096;
+
 const writeNestedTree = async (
   ctx: Context,
   leaves: ReadonlyArray<LeafRecord>,
+  depth = 0,
 ): Promise<ObjectId> => {
+  // Depth cap matches `synthesizeTreeFromIndex`'s contract — an adversarial
+  // commit with pathologically deep paths would otherwise exhaust the JS
+  // call stack before any async tick yielded. The cap fires upstream too:
+  // walkTree (via flattenTree) caps at MAX_FLAT_TREE_ENTRIES depth, but
+  // re-asserting here keeps the primitive safe under future composers.
+  if (depth > MAX_MERGE_TREE_DEPTH) throw treeDepthExceeded(depth);
   const { files, subdirs } = partitionByPrefix(leaves);
   // Resolve sub-trees in parallel — each branch is independent of the
   // others, so awaiting them serially would needlessly stretch the
   // merge wall time when a target tree has many top-level dirs.
+  // equivalent-mutant: swapping Promise.all for a serial for-await loop
+  // produces the same output (the merge is deterministic and order-
+  // independent at the tree-content level). The parallelisation is a
+  // performance optimisation; a unit-level mutation test cannot
+  // distinguish parallel from serial without timing or call-order
+  // instrumentation, so we accept the mutant as documented.
   const subdirEntries = await Promise.all(
     Array.from(subdirs, async ([prefix, subLeaves]) => ({
       name: prefix as FilePath,
-      id: await writeNestedTree(ctx, subLeaves),
+      id: await writeNestedTree(ctx, subLeaves, depth + 1),
       mode: FILE_MODE.DIRECTORY,
     })),
   );
