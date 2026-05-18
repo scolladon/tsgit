@@ -86,6 +86,11 @@ const rebuildIndexFromCommit = async (ctx: Context, commitId: ObjectId): Promise
 
 const resolveTarget = async (ctx: Context, target: string): Promise<ObjectId> => {
   if (/^[0-9a-f]{40}$/.test(target)) return target as ObjectId;
+  // equivalent-mutant: the `target === 'HEAD'` short-circuit is an
+  // optimisation — the else branch's first candidate is also `'HEAD' as
+  // RefName`, which `resolveRef` resolves to the same commit. Removing or
+  // emptying the literal routes the call through the else branch, which
+  // succeeds on the first try, producing the same observable result.
   const candidates: ReadonlyArray<RefName | 'HEAD'> =
     target === 'HEAD'
       ? ['HEAD']

@@ -85,6 +85,14 @@ const projectLeaf = (leaf: TargetLeaf, donors: ReadonlyMap<FilePath, IndexEntry>
   };
 };
 
+// equivalent-mutant: every mutation of this comparator (`a.path <= b.path`,
+// `a.path >= b.path`, returning `true`/`false` from a ternary branch) is
+// equivalent to the original under the current call graph — `walkTree` of a
+// git-canonical tree emits leaves already in byte-sorted order, so the sort
+// receives sorted input and returns the same array regardless of the
+// comparator's behaviour. The sort + comparator stay as defensive layers for
+// future callers that bypass the canonical writers (see `buildIndexFromTree`'s
+// sort comment).
 const byPath = (a: IndexEntry, b: IndexEntry): number =>
   a.path < b.path ? -1 : a.path > b.path ? 1 : 0;
 
@@ -103,6 +111,9 @@ export const buildIndexFromTree = async (
   // emits non-canonical wire data would otherwise produce an unsorted index
   // entry list. The git index format requires byte-sorted entries, and
   // in-memory consumers (diff helpers, materialise) trust this ordering.
+  // equivalent-mutant: with every canonical writer in this codebase, removing
+  // this sort is a no-op (see `byPath`'s comment above) — the defensive
+  // layer earns its keep only for hypothetical non-canonical inputs.
   entries.sort(byPath);
   return entries;
 };

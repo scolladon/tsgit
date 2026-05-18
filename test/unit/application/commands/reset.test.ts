@@ -95,6 +95,53 @@ describe('reset', () => {
     expect(paths).toEqual(['a.txt', 'b.txt']);
   });
 
+  it('Given a 41-hex target (boundary check on the oid regex), When reset, Then treated as a ref (REVPARSE_UNRESOLVED), not as an oid', async () => {
+    // Arrange — 41 chars of `a` is hex but the wrong length. The /^[0-9a-f]{40}$/
+    // anchors must reject it; a mutation that drops `^` or `$` would let a
+    // 40-char substring match and route the string into the readObject path.
+    const { ctx } = await seedTwoCommits();
+
+    // Act
+    let caught: unknown;
+    try {
+      await reset(ctx, { mode: 'soft', target: 'a'.repeat(41) });
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert
+    expect((caught as { data?: { code?: string } })?.data?.code).toBe('REVPARSE_UNRESOLVED');
+  });
+
+  it('Given a corrupted index that makes readIndex throw mid-reset, When reset, Then the lock is released so a follow-up reset can succeed', async () => {
+    // Arrange — seed two commits, then truncate `.git/index` to a header-only
+    // stub so the NEXT readIndex throws. After the failing reset, the lock
+    // file must be cleaned up by the `finally` block; otherwise the follow-up
+    // acquire would surface as RESOURCE_LOCKED instead of recovering.
+    const { ctx, c1 } = await seedTwoCommits();
+    const indexPath = `${ctx.layout.gitDir}/index`;
+    await ctx.fs.write(indexPath, new Uint8Array([0x00, 0x00, 0x00, 0x00])); // invalid header
+
+    // Act — first reset must fail.
+    let firstError: unknown;
+    try {
+      await reset(ctx, { mode: 'mixed', target: c1 });
+    } catch (err) {
+      firstError = err;
+    }
+    expect(firstError).toBeDefined();
+
+    // Repair the index so the follow-up read succeeds, then re-attempt: the
+    // follow-up reset must NOT throw RESOURCE_LOCKED — meaning the lock from
+    // the first attempt was correctly released in the `finally`.
+    await ctx.fs.rm(indexPath);
+    await reset(ctx, { mode: 'mixed', target: c1 });
+
+    // Assert — if we got here, the second reset succeeded; no stale lock.
+    const stillLocked = await ctx.fs.exists(`${indexPath}.lock`);
+    expect(stillLocked).toBe(false);
+  });
+
   it('Given a mixed reset target that resolves to a non-commit object, When reset, Then throws UNEXPECTED_OBJECT_TYPE expected=commit', async () => {
     // Arrange — write a standalone blob and pass its oid as `target`. The mixed
     // path will resolve it to a non-commit object and must reject.
@@ -188,21 +235,30 @@ describe('reset', () => {
     expect(entry?.fileSize).toBe(0);
   });
 
-  it('Given a mixed reset on a bare repo, When reset, Then succeeds (no BARE_REPOSITORY)', async () => {
-    // Arrange — bare repo with two commits via a workdir-less ctx.
-    // We reuse the seedTwoCommits helper then flip bare to true at config time.
-    const { ctx, c1 } = await seedTwoCommits();
+  it('Given a mixed reset on a bare repo, When reset, Then does NOT throw BARE_REPOSITORY', async () => {
+    // Arrange — fresh ctx with bare=true seeded BEFORE the first readConfig
+    // call (readConfig is per-context cached; overwriting config after a read
+    // wouldn't update the cache, so a fresh ctx is the only way to exercise
+    // the bare-config branch).
+    const ctx = createMemoryContext();
+    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
     await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n  bare = true\n');
 
-    // Act
-    const sut = await reset(ctx, { mode: 'mixed', target: c1 });
+    // Act — mixed reset must skip the assertNotBare guard. The resolve step
+    // will fail later (no commits seeded), but the failure code must not be
+    // BARE_REPOSITORY — that would prove the bare guard fired for mixed.
+    let caught: unknown;
+    try {
+      await reset(ctx, { mode: 'mixed', target: 'HEAD' });
+    } catch (err) {
+      caught = err;
+    }
 
     // Assert
-    expect(sut.mode).toBe('mixed');
-    expect(sut.id).toBe(c1);
+    expect((caught as { data?: { code?: string } })?.data?.code).not.toBe('BARE_REPOSITORY');
   });
 
-  it('Given hard mode on a bare repo, When reset, Then throws BARE_REPOSITORY', async () => {
+  it('Given hard mode on a bare repo, When reset, Then throws BARE_REPOSITORY with operation=reset --hard', async () => {
     // Arrange — fresh ctx with bare config seeded BEFORE any read.
     const ctx = createMemoryContext();
     await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
@@ -216,7 +272,10 @@ describe('reset', () => {
       caught = err;
     }
 
-    // Assert
-    expect((caught as { data?: { code?: string } })?.data?.code).toBe('BARE_REPOSITORY');
+    // Assert — pin both the code AND the operation string so a mutant that
+    // empties the 'reset --hard' literal is killed.
+    const data = (caught as { data?: { code?: string; operation?: string } })?.data;
+    expect(data?.code).toBe('BARE_REPOSITORY');
+    expect(data?.operation).toBe('reset --hard');
   });
 });
