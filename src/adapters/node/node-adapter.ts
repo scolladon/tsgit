@@ -1,3 +1,4 @@
+import { homedir } from 'node:os';
 import * as nodePath from 'node:path';
 import { SHA1_CONFIG } from '../../domain/objects/hash-config.js';
 import { createLruCache } from '../../domain/storage/lru-cache.js';
@@ -33,11 +34,11 @@ export function createNodeContext(options: NodeAdapterOptions): Context {
   const transport = new NodeHttpTransport({
     allowInsecureHttp: options.allowInsecureHttp ?? false,
   });
-  const layout: RepositoryLayout = {
-    workDir,
-    gitDir,
-    bare: options.bare ?? false,
-  };
+  const resolvedHomeDir = safeHomedir();
+  const layout: RepositoryLayout =
+    resolvedHomeDir === undefined
+      ? { workDir, gitDir, bare: options.bare ?? false }
+      : { workDir, gitDir, bare: options.bare ?? false, homeDir: resolvedHomeDir };
   const deltaCache = createLruCache<Uint8Array>(
     options.deltaCacheMaxBytes ?? DEFAULT_DELTA_CACHE_BYTES,
     options.deltaCacheMaxEntries ?? DEFAULT_DELTA_CACHE_ENTRIES,
@@ -56,3 +57,14 @@ export function createNodeContext(options: NodeAdapterOptions): Context {
     ? createContext({ ...parts, signal: options.signal })
     : createContext(parts);
 }
+
+const safeHomedir = (): string | undefined => {
+  try {
+    const dir = homedir();
+    return dir === '' ? undefined : dir;
+  } catch {
+    // Node returns '' or throws on systems without a home concept (e.g.
+    // sandboxed CI runners). Treat as "no home" rather than propagating.
+    return undefined;
+  }
+};

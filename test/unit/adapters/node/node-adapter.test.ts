@@ -1,3 +1,4 @@
+import { homedir } from 'node:os';
 import * as nodePath from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../../../src/adapters/node/node-adapter.js';
@@ -31,6 +32,21 @@ describe('createNodeContext', () => {
 
     // Assert
     expect(sut.layout.gitDir).toBe(nodePath.resolve(gitDir));
+  });
+
+  it('Given a runtime with a non-empty home directory, When creating context, Then layout.homeDir matches os.homedir()', () => {
+    // Arrange
+    const expected = homedir();
+
+    // Act
+    const sut = createNodeContext({ workDir: '/tmp/tsgit-home' });
+
+    // Assert — when the runtime provides a home dir, the layout surfaces it.
+    if (expected === '') {
+      expect(sut.layout.homeDir).toBeUndefined();
+    } else {
+      expect(sut.layout.homeDir).toBe(expected);
+    }
   });
 
   it('Given bare=true, When creating context, Then config.bare is true', () => {

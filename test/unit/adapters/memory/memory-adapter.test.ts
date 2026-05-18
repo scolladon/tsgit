@@ -12,6 +12,22 @@ describe('createMemoryContext', () => {
     expect(sut.layout.bare).toBe(false);
   });
 
+  it('Given default options, When reading layout.homeDir, Then it is undefined', () => {
+    // Arrange / Act
+    const sut = createMemoryContext();
+
+    // Assert
+    expect(sut.layout.homeDir).toBeUndefined();
+  });
+
+  it('Given homeDir option, When reading layout.homeDir, Then it equals the option', () => {
+    // Arrange / Act
+    const sut = createMemoryContext({ homeDir: '/home/me' });
+
+    // Assert
+    expect(sut.layout.homeDir).toBe('/home/me');
+  });
+
   it('Given default options, When reading hash algorithm, Then is sha1', () => {
     // Arrange / Act
     const sut = createMemoryContext();

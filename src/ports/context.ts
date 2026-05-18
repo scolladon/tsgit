@@ -20,6 +20,14 @@ export interface RepositoryLayout {
   readonly gitDir: string;
   /** Whether this is a bare repository. */
   readonly bare: boolean;
+  /**
+   * Home directory for `~`-expansion in config-driven paths (e.g.
+   * `core.excludesFile = ~/.config/git/ignore`). Populated by the node
+   * shim from `os.homedir()`; memory adapter accepts an option; browser
+   * leaves it `undefined`. When `undefined`, loaders that need home
+   * expansion treat the source as missing. Phase 14.3.
+   */
+  readonly homeDir?: string;
 }
 
 /**
