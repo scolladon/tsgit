@@ -3,7 +3,7 @@ export { crc32 } from './crc32.js';
 
 // Delta
 export type { CopyInstruction, DeltaInstruction, DeltaParsed, InsertInstruction } from './delta.js';
-export { applyDelta, parseDelta } from './delta.js';
+export { applyDelta, parseDelta, readDeltaTargetSize } from './delta.js';
 
 // Errors
 export type { StorageError } from './error.js';

@@ -47,31 +47,48 @@ The cap fires in three places, chosen for the bounded shape of
 each pipeline branch:
 
 1. **Loose objects** — after `compressor.inflate` returns and
-   before `parseObject` is called. We check the inflated buffer
-   length (a tight upper bound on the payload + a small header)
-   against `maxBytes`. If over: throw. This is "B+inflate" in the
-   taxonomy: we cannot avoid the inflate (compressed size doesn't
-   tell us anything useful), but we DO avoid the parser pass.
+   before `parseObject` is called. We measure the **actual
+   content byte count** (`inflated.length - contentOffset`), NOT
+   the declared header size. The declared size is attacker-
+   controllable; the actual buffer length is what zlib already
+   materialised in memory, which is the quantity the cap exists
+   to bound. This is "B+inflate" in the taxonomy: we cannot avoid
+   the inflate (compressed size doesn't tell us anything useful),
+   but we DO avoid the parser pass.
 2. **Pack base entries** — inside `collectDeltaChain`'s
    `isBase(header)` branch, we check `header.length > maxBytes`
    BEFORE the `streamInflate` call. This is the cheapest possible
    point: we pay the entry header parse (already required for
    chain traversal) and reject before any inflate happens. For
    adversarial 100 MiB-base scenarios, the inflate is bypassed.
-3. **Pack delta entries** — POST-`applyDelta`, inside
-   `resolvePackChain`'s bottom-up loop. After the final `current`
-   payload is materialised but BEFORE `prependHeader` doubles the
-   allocation. We check `current.length > maxBytes` once at the
-   end. We do NOT attempt to pre-read the target-size varint
-   inside the delta instructions to short-circuit earlier — see
-   "Alternatives considered".
-4. **REF_DELTA base recursion** — `resolveBaseForRefDelta` keeps
-   passing `false` for `verifyHash`, but it currently does NOT
-   plumb `maxBytes`. We deliberately omit propagation: the base
-   of a REF_DELTA is a different object, the cap applies to the
-   caller's target, not to intermediate dependencies. A 200 MiB
-   base that resolves a 1 MiB target is allowed when the cap is
-   set for the target.
+3. **Pack delta entries — pre-apply on the outermost delta's
+   varint, plus post-apply on `current`.** When `collectDeltaChain`
+   reads the FIRST (outermost) delta in the chain, we call
+   `readDeltaTargetSize(instructions)` to read just the two
+   leading varints — cheap (~10 bytes) and bypasses BOTH the
+   delta-apply loop AND the final `new Uint8Array(targetSize)`
+   allocation that the cap exists to prevent. Post-apply check on
+   `current.length` is retained as defence-in-depth in case the
+   declared varint and actual produced size disagree. The
+   defensive double-check is cheap (one comparison) and protects
+   against malformed deltas whose declared target size
+   underestimates the actual output.
+4. **REF_DELTA base recursion — `resolveBaseForRefDelta` PLUMBS
+   `maxBytes`.** Pass-1 security review flagged the original
+   "target-only" semantics as a hole: a hostile REF_DELTA whose
+   base is a 4 GiB object would inflate the base fully before
+   any cap fired (the post-apply check sees only the combined
+   result, not the raw base). We now thread `maxBytes` into both
+   `resolveBaseForRefDelta`'s recursive `resolveObject` call AND
+   the cache-hit branch. The cap applies to every object
+   materialised during target resolution.
+5. **LRU cache hits — re-enforce the cap.** A previous uncapped
+   call may have admitted an oversized object into
+   `ctx.deltaCache`; a later capped call returns it from cache
+   without going through the read pipeline. `enforceCachedCap`
+   measures content bytes (`length - (nulIdx + 1)`) before
+   returning bytes from `resolveBaseForRefDelta`'s cache-hit
+   branch. Pass-1 security review HIGH-2.
 
 We do NOT cap inside `parseObject` (rejection A). The domain
 layer stays policy-free.
@@ -125,21 +142,30 @@ layer stays policy-free.
   the parser signature pollutes domain code with application
   concerns.
 - **Cap by inspecting the delta target-size varint pre-apply.**
-  Rejected for now. Delta chains are bounded at
-  `MAX_DELTA_CHAIN_DEPTH = 50`, base sizes are typically modest,
-  and the apply loop is in-place. The wins are marginal; the
-  varint-parse code path adds a new failure mode (corrupted
-  varint) for negligible benefit.
+  Accepted after pass-1 perf review. Pass-1 perf reviewer
+  pointed out that `applyDelta` already parses the same varint
+  to size its result allocation — so there's no NEW failure
+  mode (a corrupted varint surfaces the same `INVALID_DELTA`
+  with or without the pre-check), and the pre-check skips the
+  entire apply loop plus the `new Uint8Array(targetSize)`
+  allocation that the cap exists to prevent. Cost: ~10 bytes
+  of varint scan via `readDeltaTargetSize`. Net win for
+  adversarial inputs.
 - **Cap at the LRU `deltaCache` boundary.** Rejected.
   `deltaCache` already enforces a byte budget; capping at the
   cache layer would conflate per-call limits with the cache's
   cross-call budget.
 - **Propagate `maxBytes` into `resolveBaseForRefDelta`.**
-  Considered. The semantic question is "does the cap apply to
-  the target, or to every object reached during target
-  resolution?" We picked target-only. If a future security
-  review wants tighter limits on transitive base reads, the
-  recursion is the right place to plumb it.
+  Accepted after pass-1 security review. The semantic question
+  is "does the cap apply to the target, or to every object
+  reached during target resolution?" Original choice was
+  target-only, with the rationale that a REF_DELTA's base is a
+  different object. Pass-1 security review demonstrated that a
+  large unbounded base still allocates fully in memory before
+  the post-apply check fires — the cap stops protecting against
+  the threat it exists to address. We now plumb `maxBytes`
+  through the recursion. The cap applies to every object
+  materialised during target resolution.
 - **Reject by file size before inflate for loose objects (read
   compressed size, multiply by a conservative ratio).** Rejected.
   zlib's compression ratio is unbounded; a 1 KB compressed file

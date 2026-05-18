@@ -342,6 +342,7 @@
     "parallelising",
     "Deltified",
     "BIDI",
+    "varints",
     "optimisation",
     "desyncs",
     "lstats",

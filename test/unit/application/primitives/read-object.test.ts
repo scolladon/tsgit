@@ -111,7 +111,7 @@ describe('readObject', () => {
       expect((sut as Blob).content).toHaveLength(1024);
     });
 
-    it('Given maxBytes=0 on a non-empty loose blob, When readObject is called, Then throws OBJECT_TOO_LARGE', async () => {
+    it('Given maxBytes=0 on a non-empty loose blob, When readObject is called, Then throws OBJECT_TOO_LARGE with id, actualSize=1, limit=0', async () => {
       // Arrange
       const blob: Blob = { type: 'blob', content: new Uint8Array([1]), id: '' as ObjectId };
       const ctx = await buildSeededContext({ objects: [blob] });
@@ -122,7 +122,48 @@ describe('readObject', () => {
         await readObject(ctx, id, { maxBytes: 0 });
         expect.unreachable();
       } catch (error) {
-        expect((error as TsgitError).data.code).toBe('OBJECT_TOO_LARGE');
+        const data = (error as TsgitError).data;
+        expect(data.code).toBe('OBJECT_TOO_LARGE');
+        if (data.code !== 'OBJECT_TOO_LARGE') {
+          expect.fail(`expected OBJECT_TOO_LARGE, got ${data.code}`);
+        }
+        expect(data.id).toBe(id);
+        expect(data.actualSize).toBe(1);
+        expect(data.limit).toBe(0);
+      }
+    });
+
+    it('Given a loose blob whose declared header size differs from its actual content length, When readObject is called with maxBytes, Then the cap measures ACTUAL content bytes (mutation hardening for ADR-024 §3.1)', async () => {
+      // Arrange — forge a loose object whose <type> <size>\0 header lies
+      // about its payload size. The cap MUST measure the inflated body's
+      // actual length, not the declared header value — otherwise an
+      // adversary can declare 1 byte and ship 10 GiB without tripping the
+      // cap.
+      const ctx = await buildSeededContext();
+      const fakeId = 'a'.repeat(40) as ObjectId;
+      const { computeLooseObjectPath } = await import(
+        '../../../../src/domain/storage/loose-path.js'
+      );
+      const forged = new TextEncoder().encode('blob 1\0YYYYYYYY'); // declares 1, actual 8 bytes
+      const compressed = await ctx.compressor.deflate(forged);
+      await ctx.fs.write(
+        `${ctx.layout.gitDir}/objects/${computeLooseObjectPath(fakeId)}`,
+        compressed,
+      );
+
+      // Act / Assert — cap is 4. Declared size (1) ≤ 4 would pass a
+      // declared-size cap; actual content is 8 > 4 → must reject.
+      try {
+        await readObject(ctx, fakeId, { maxBytes: 4, verifyHash: false });
+        expect.unreachable();
+      } catch (error) {
+        const data = (error as TsgitError).data;
+        expect(data.code).toBe('OBJECT_TOO_LARGE');
+        if (data.code !== 'OBJECT_TOO_LARGE') {
+          expect.fail(`expected OBJECT_TOO_LARGE, got ${data.code}`);
+        }
+        expect(data.actualSize).toBe(8);
+        expect(data.limit).toBe(4);
       }
     });
   });

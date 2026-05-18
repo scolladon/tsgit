@@ -157,11 +157,10 @@ const buildContentMerger =
     // Parallel-capped fetch (ADR-025). Each blob is bounded by
     // MAX_CONFLICT_OUTPUT_BYTES (ADR-024 §3); a hostile adversarial input
     // is rejected upfront via OBJECT_TOO_LARGE without ever reaching
-    // `mergeContent`'s line-diff path.
-    // equivalent-mutant: swapping Promise.all for a serial for-await loop
-    // yields the same merge output — mergeContent is pure in its inputs.
-    // The parallelisation is a wall-time optimisation that mutation testing
-    // cannot distinguish without timing instrumentation; ADR-025 accepts it.
+    // `mergeContent`'s line-diff path. The Promise.all parallelism is
+    // exercised by the "issue concurrently" test in merge.test.ts —
+    // mutating it to a serial loop would drop maxInFlight to 1 and the
+    // test would fail.
     const [ours, theirs, base] = await Promise.all([
       readBlob(ctx, mergeCtx.ourId, { maxBytes: MAX_CONFLICT_OUTPUT_BYTES }),
       readBlob(ctx, mergeCtx.theirId, { maxBytes: MAX_CONFLICT_OUTPUT_BYTES }),
