@@ -34,11 +34,7 @@ export function createNodeContext(options: NodeAdapterOptions): Context {
   const transport = new NodeHttpTransport({
     allowInsecureHttp: options.allowInsecureHttp ?? false,
   });
-  const resolvedHomeDir = safeHomedir();
-  const layout: RepositoryLayout =
-    resolvedHomeDir === undefined
-      ? { workDir, gitDir, bare: options.bare ?? false }
-      : { workDir, gitDir, bare: options.bare ?? false, homeDir: resolvedHomeDir };
+  const layout = buildLayout(workDir, gitDir, options.bare ?? false, safeHomedir());
   const deltaCache = createLruCache<Uint8Array>(
     options.deltaCacheMaxBytes ?? DEFAULT_DELTA_CACHE_BYTES,
     options.deltaCacheMaxEntries ?? DEFAULT_DELTA_CACHE_ENTRIES,
@@ -58,13 +54,27 @@ export function createNodeContext(options: NodeAdapterOptions): Context {
     : createContext(parts);
 }
 
-const safeHomedir = (): string | undefined => {
-  try {
-    const dir = homedir();
-    return dir === '' ? undefined : dir;
-  } catch {
-    // Node returns '' or throws on systems without a home concept (e.g.
-    // sandboxed CI runners). Treat as "no home" rather than propagating.
-    return undefined;
-  }
-};
+/**
+ * Normalize the raw home-dir value: empty string → undefined, otherwise
+ * passthrough. Extracted as a pure helper so the empty-string branch is
+ * unit-testable without mocking `os.homedir()`. Phase 14.3.
+ *
+ * @internal — exported for tests only.
+ */
+export const resolveHomeDir = (raw: string): string | undefined => (raw === '' ? undefined : raw);
+
+/**
+ * Pure layout builder — splits the optional `homeDir` field so the
+ * `exactOptionalPropertyTypes` branch is unit-testable. Phase 14.3.
+ *
+ * @internal — exported for tests only.
+ */
+export const buildLayout = (
+  workDir: string,
+  gitDir: string,
+  bare: boolean,
+  homeDir: string | undefined,
+): RepositoryLayout =>
+  homeDir === undefined ? { workDir, gitDir, bare } : { workDir, gitDir, bare, homeDir };
+
+const safeHomedir = (): string | undefined => resolveHomeDir(homedir());

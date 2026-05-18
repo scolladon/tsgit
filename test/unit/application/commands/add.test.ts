@@ -550,11 +550,15 @@ describe('add', () => {
     expect(sut.added).toEqual(['a.txt']);
   });
 
-  it('Given a symlink target of exactly MAX_WORKING_TREE_BLOB_BYTES bytes (boundary), When add({ all: true }), Then accepts — kills the `>` → `>=` mutant on the readlink-cap', async () => {
+  it('Given a symlink target of exactly MAX_WORKING_TREE_BLOB_BYTES bytes (boundary), When add({ all: true }), Then accepts — kills the `>` → `>=` mutant on the readlink-cap', {
+    timeout: 30_000,
+  }, async () => {
     // Arrange — symlink target byte length exactly at the cap. Memory FS
     // backs symlinks with the target string verbatim; readlink returns it
     // unchanged. lstat.size reports the target length, so the pre-filter
     // doesn't fire; the post-encode check in readContent must allow it.
+    // Allocating + hashing 256 MiB is slow under contention; bump the
+    // timeout so this boundary check has room to complete.
     const ctx = await seedFreshRepo({});
     const target = 'x'.repeat(MAX_WORKING_TREE_BLOB_BYTES);
     await ctx.fs.symlink(target, `${ctx.layout.workDir}/link`);
