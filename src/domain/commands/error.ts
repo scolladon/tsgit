@@ -58,6 +58,12 @@ export type CommandError =
       readonly code: 'ADAPTER_UNAVAILABLE';
       readonly runtime: 'node' | 'browser' | 'memory';
       readonly reason: string;
+    }
+  | {
+      readonly code: 'WORKING_TREE_FILE_TOO_LARGE';
+      readonly path: FilePath;
+      readonly size: number;
+      readonly limit: number;
     };
 
 const sanitizeForDisplay = (s: string): string => {
@@ -197,3 +203,6 @@ export const adapterUnavailable = (
     runtime,
     reason: sanitizeForDisplay(reason),
   });
+
+export const workingTreeFileTooLarge = (path: FilePath, size: number, limit: number): TsgitError =>
+  new TsgitError({ code: 'WORKING_TREE_FILE_TOO_LARGE', path, size, limit });

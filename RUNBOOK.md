@@ -306,3 +306,30 @@ npm run test:mutation  # Uses cached results from reports/stryker-incremental.js
 ```bash
 npm run test:coverage  # See uncovered lines in coverage/index.html
 ```
+
+## Operating `repo.add({ all: true })` (Phase 14.1)
+
+Bulk-mode `add` walks every file under the working directory via the
+new `walkWorkingTree` primitive. Operator-visible behaviours:
+
+- **`.git` skipped** — both the host repository's own `.git` and any
+  embedded `.git` (nested clone / worktree pointer). Embedded
+  directories yield nothing, so a nested repo never produces a
+  `160000` gitlink. This matches Git's default; v1 has no submodule
+  support, so a deliberate gitlink would not be honoured.
+- **Symlinks staged as `120000`** — the link target string is the
+  blob content (POSIX semantics). The walker uses `lstat`, never
+  `stat`, so symlinks are never followed.
+- **256 MiB per-file cap** — files whose `lstat.size` exceeds
+  `MAX_WORKING_TREE_BLOB_BYTES` (256 MiB) cause the call to throw
+  `WORKING_TREE_FILE_TOO_LARGE` carrying the offending path, size,
+  and limit. No partial commit lands — the `.git/index` is byte-
+  identical to the pre-call state.
+- **`.gitignore` not yet honoured** — Phase 14.3 will plug the real
+  ignore evaluator. Until then, build artefacts under `dist/`,
+  `node_modules/`, etc. WILL be staged. Filter via literal-path mode
+  if needed.
+- **Atomicity** — the `.git/index.lock` is acquired before the walk,
+  released after either a successful single-shot commit OR a thrown
+  error. Concurrent processes hitting the index see either the old
+  or new state, never a partial blend.

@@ -33,6 +33,7 @@ import {
   tooManyRedirects,
   unsupportedScheme,
   workingTreeDirty,
+  workingTreeFileTooLarge,
 } from '../../../../src/domain/commands/error.js';
 import { TsgitError } from '../../../../src/domain/error.js';
 import { type FilePath, ObjectId, type RefName } from '../../../../src/domain/objects/object-id.js';
@@ -284,6 +285,15 @@ describe('domain commands error — factory data', () => {
     expect(repositoryDisposed().data).toEqual({ code: 'REPOSITORY_DISPOSED' });
   });
 
+  it('Given a path, size, and limit, When workingTreeFileTooLarge, Then data carries every field verbatim', () => {
+    expect(workingTreeFileTooLarge('big.bin' as FilePath, 300, 256).data).toEqual({
+      code: 'WORKING_TREE_FILE_TOO_LARGE',
+      path: 'big.bin',
+      size: 300,
+      limit: 256,
+    });
+  });
+
   it('Given runtime and reason, When adapterUnavailable, Then data carries verbatim runtime and sanitized reason', () => {
     expect(adapterUnavailable('node', 'process.versions missing').data).toEqual({
       code: 'ADAPTER_UNAVAILABLE',
@@ -450,6 +460,15 @@ describe('domain commands error — extractDetail message formatting', () => {
     [
       { code: 'ADAPTER_UNAVAILABLE', runtime: 'memory', reason: 'k' },
       'ADAPTER_UNAVAILABLE: adapter unavailable for runtime memory: k',
+    ],
+    [
+      {
+        code: 'WORKING_TREE_FILE_TOO_LARGE',
+        path: '/repo/big.bin' as FilePath,
+        size: 300,
+        limit: 256,
+      },
+      'WORKING_TREE_FILE_TOO_LARGE: working-tree file too large: big.bin size=300 limit=256',
     ],
   ];
 

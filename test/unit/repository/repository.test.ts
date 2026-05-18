@@ -93,6 +93,7 @@ describe('openRepository — Repository binding integrity', () => {
         'updateRef',
         'walkCommits',
         'walkTree',
+        'walkWorkingTree',
         'writeObject',
         'writeSymbolicRef',
         'writeTree',

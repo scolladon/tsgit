@@ -11,6 +11,7 @@ import type {
   ObjectId,
   Tree,
 } from '../../domain/objects/index.js';
+import type { FileStat } from '../../ports/file-system.js';
 
 /** Max symbolic-ref dereferences resolveRef will follow. */
 export const MAX_SYMBOLIC_REF_DEPTH = 5;
@@ -29,6 +30,14 @@ export const MAX_INDEX_BYTES = 256 * 1024 * 1024;
 
 /** Max commit message byte length createCommit will accept. */
 export const MAX_COMMIT_MESSAGE_BYTES = 16 * 1024 * 1024;
+
+/**
+ * Per-file size cap enforced by `add --all` before reading working-tree
+ * bytes into memory. Mirrors `MAX_CONFLICT_OUTPUT_BYTES` (256 MiB) so the
+ * write-side memory ceiling matches the read-side ceiling. Phase 14.1.
+ * See `docs/adr/032-add-all-large-file-guard.md`.
+ */
+export const MAX_WORKING_TREE_BLOB_BYTES = 256 * 1024 * 1024;
 
 export interface ReadObjectOptions {
   readonly verifyHash?: boolean;
@@ -84,6 +93,16 @@ export interface WalkTreeEntry {
 
 export interface WalkTreeOptions {
   readonly recursive?: boolean;
+  readonly maxDepth?: number;
+  readonly maxEntries?: number;
+}
+
+export interface WalkWorkingTreeEntry {
+  readonly path: FilePath;
+  readonly stat: FileStat;
+}
+
+export interface WalkWorkingTreeOptions {
   readonly maxDepth?: number;
   readonly maxEntries?: number;
 }

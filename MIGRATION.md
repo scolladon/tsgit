@@ -61,9 +61,20 @@ await repo.clone({ url: 'https://github.com/owner/repo' });
 // isomorphic-git
 await git.add({ fs, dir: '.', filepath: 'README.md' });
 
-// tsgit
+// tsgit — literal paths
 await repo.add(['README.md']);   // also accepts ReadonlyArray<string>
+
+// tsgit — bulk mode (Phase 14.1): walk the working tree and stage
+// every modified/new tracked file plus every untracked non-ignored
+// file. Drops tracked paths that disappeared from disk.
+await repo.add([], { all: true });
 ```
+
+`all: true` requires an empty pathspec (mixing the two would be
+ambiguous); pass paths the literal way or `all: true` — not both. The
+host `.git` directory and embedded clones are skipped. `.gitignore`
+evaluation lands in Phase 14.3; until then every non-`.git` path is
+fair game.
 
 ### `git.commit` → `repo.commit`
 

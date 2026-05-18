@@ -124,6 +124,34 @@ matching `.git/index` atomically. See
 `test/integration/network/clone-http-backend.test.ts` for an end-to-end
 example against a local `git-http-backend`.
 
+### Staging files
+
+```typescript
+// Literal paths.
+await repo.add(['src/foo.ts', 'src/bar.ts']);
+
+// Bulk mode — walk the working tree, stage every modified/new file plus
+// every untracked file that isn't ignored, drop tracked files missing
+// from disk. `paths` MUST be empty when `all: true`.
+const result = await repo.add([], { all: true });
+console.log(result.added);    // new staged paths (sorted)
+console.log(result.modified); // changed paths (sorted)
+console.log(result.removed);  // tracked paths gone from disk (sorted)
+```
+
+Phase 14.1 ships bulk-mode `add --all` walking via the new
+`walkWorkingTree` primitive. The host repository's `.git` is skipped, and
+embedded clones (directories containing a `.git` child) are not
+auto-staged — matches Git's default. Symlinks stage as mode `120000`
+with the link target as blob content. Files larger than
+`MAX_WORKING_TREE_BLOB_BYTES` (256 MiB) reject with
+`WORKING_TREE_FILE_TOO_LARGE` and no partial index commit.
+
+**v1.x patch followup:** `.gitignore` evaluation is Phase 14.3 — until
+then, `add --all` stages every non-`.git` path. Filter manually with the
+literal-path mode if your tree has build artefacts you don't want
+staged.
+
 ### Push
 
 ```typescript
