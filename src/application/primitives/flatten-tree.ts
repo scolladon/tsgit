@@ -2,10 +2,12 @@
  * Flatten a nested `Tree` object into the `FlatTree` shape that the
  * Phase 5 `mergeTrees` domain primitive consumes.
  *
- * Used by Phase 13.4a's clean-merge tree walk in `merge.ts` to drive the
- * three-way merge over `(base, ours, theirs)`. Each call walks one of
- * the three trees and returns a `Map<FilePath, { id, mode }>` keyed by
- * the canonical leaf path (with `/` separators).
+ * @internal Currently consumed only by `merge.ts`'s clean-merge tree
+ * walk. Not exported from the primitives barrel — the function exists
+ * to bridge `walkTree`'s iterator into the `FlatTree` Map that
+ * `mergeTrees` expects, and the merge command is the only user with
+ * that need today. Promote to the public surface if a second caller
+ * appears.
  *
  * Pure with respect to the working tree — only reads git objects via
  * `walkTree`.

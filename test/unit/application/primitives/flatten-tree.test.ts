@@ -92,6 +92,30 @@ describe('flattenTree', () => {
     expect(result.entries.get('link' as FilePath)?.mode).toBe(FILE_MODE.SYMLINK);
   });
 
+  it('Given a tree nested two levels deep, When flattenTree runs, Then leaves are keyed by full slash-joined path', async () => {
+    // Arrange — root → dir/ → sub/ → leaf.txt. Pins the slash separator
+    // at every recursion depth, including the second nested level.
+    const ctx = await buildSeededContext();
+    const blobId = await writeBlob(ctx, 'deep');
+    const subTreeId = await writeTree(ctx, [
+      { name: 'leaf.txt' as FilePath, id: blobId, mode: FILE_MODE.REGULAR },
+    ]);
+    const dirTreeId = await writeTree(ctx, [
+      { name: 'sub' as FilePath, id: subTreeId, mode: FILE_MODE.DIRECTORY },
+    ]);
+    const rootId = await writeTree(ctx, [
+      { name: 'dir' as FilePath, id: dirTreeId, mode: FILE_MODE.DIRECTORY },
+    ]);
+    const sut = flattenTree;
+
+    // Act
+    const result = await sut(ctx, rootId);
+
+    // Assert — only one leaf, with the full 2-level path.
+    expect(result.entries.size).toBe(1);
+    expect(result.entries.get('dir/sub/leaf.txt' as FilePath)?.id).toBe(blobId);
+  });
+
   it('Given a tree containing a gitlink, When flattenTree runs, Then the gitlink entry is preserved (mode = GITLINK)', async () => {
     // Arrange — gitlink at a leaf records the submodule commit oid.
     // mergeTrees treats gitlinks specially (any divergence is a conflict),

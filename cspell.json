@@ -355,7 +355,8 @@
     "localise",
     "synthesisers",
     "defence",
-    "libtrust"
+    "libtrust",
+    "parallelisation"
   ],
   "ignorePaths": [
     "node_modules",

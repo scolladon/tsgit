@@ -200,6 +200,129 @@ describe('merge', () => {
     const mainCommit = await readObject(ctx, main);
     if (mainCommit.type !== 'commit') throw new Error('not a commit');
     expect(mainCommit.data.message).toBe('on-main'); // still pre-merge tip
+    expect(mainCommit.data.parents).toHaveLength(1); // not a merge commit
+  });
+
+  it('Given a merge where one side deletes a file the other unchanged, When merge, Then the merged tree omits the deleted file', async () => {
+    // Arrange — base has a.txt + b.txt. Feature deletes a.txt. Main is
+    // unchanged. The merge result should have b.txt only — exercising
+    // the resolved-deleted branch of collectLeaves.
+    const ctx = createMemoryContext();
+    await init(ctx);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.txt`, 'b');
+    await add(ctx, ['a.txt', 'b.txt']);
+    await commit(ctx, { message: 'base', author });
+    await branch(ctx, { kind: 'create', name: 'feature' });
+    await checkout(ctx, { target: 'feature' });
+    // Remove a.txt by re-staging an empty list — use rm command surface.
+    const { rm } = await import('../../../../src/application/commands/rm.js');
+    await rm(ctx, ['a.txt']);
+    await commit(ctx, { message: 'feature-delete', author });
+    await checkout(ctx, { target: 'main' });
+    // Advance main without touching a.txt or b.txt so they're force-unchanged.
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/c.txt`, 'c');
+    await add(ctx, ['c.txt']);
+    await commit(ctx, { message: 'on-main', author });
+
+    // Act
+    const sut = await merge(ctx, { target: 'feature', author });
+
+    // Assert — merged tree has b.txt (unchanged) + c.txt (added on main),
+    // but a.txt is GONE (resolved-deleted on feature's side).
+    expect(sut.kind).toBe('merge');
+    if (sut.kind !== 'merge') throw new Error('expected merge kind');
+    const mergeCommit = await readObject(ctx, sut.id);
+    if (mergeCommit.type !== 'commit') throw new Error('not a commit');
+    const mergedTree = (await readObject(ctx, mergeCommit.data.tree)) as Tree;
+    const names = mergedTree.entries.map((e) => e.name).sort();
+    expect(names).toEqual(['b.txt', 'c.txt']);
+  });
+
+  it('Given a clean merge with nested subdirectory paths, When merge, Then writeNestedTree produces correct nested trees', async () => {
+    // Arrange — both sides add files under `src/<dir>/...`. Exercises
+    // writeNestedTree's nested-directory branch + Promise.all parallel
+    // sub-tree resolution.
+    const ctx = createMemoryContext();
+    await init(ctx);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/src/base.ts`, 'base');
+    await add(ctx, ['src/base.ts']);
+    await commit(ctx, { message: 'base', author });
+    await branch(ctx, { kind: 'create', name: 'feature' });
+    await checkout(ctx, { target: 'feature' });
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/src/feature/a.ts`, 'a');
+    await add(ctx, ['src/feature/a.ts']);
+    await commit(ctx, { message: 'on-feature', author });
+    await checkout(ctx, { target: 'main' });
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/src/main/b.ts`, 'b');
+    await add(ctx, ['src/main/b.ts']);
+    await commit(ctx, { message: 'on-main', author });
+
+    // Act
+    const sut = await merge(ctx, { target: 'feature', author });
+
+    // Assert — merged root has 'src', src has feature/ + main/ + base.ts.
+    expect(sut.kind).toBe('merge');
+    if (sut.kind !== 'merge') throw new Error('expected merge kind');
+    const mergeCommit = await readObject(ctx, sut.id);
+    if (mergeCommit.type !== 'commit') throw new Error('not a commit');
+    const root = (await readObject(ctx, mergeCommit.data.tree)) as Tree;
+    expect(root.entries.map((e) => e.name)).toEqual(['src']);
+    const srcEntry = root.entries[0];
+    if (srcEntry === undefined) throw new Error('expected src entry');
+    const src = (await readObject(ctx, srcEntry.id)) as Tree;
+    const srcNames = src.entries.map((e) => e.name).sort();
+    expect(srcNames).toEqual(['base.ts', 'feature', 'main']);
+  });
+
+  it('Given unrelated histories (no merge base), When merge, Then content merger receives base=undefined for add-add paths', async () => {
+    // Arrange — create two unrelated commit trees by writing root commits
+    // in fresh-init repos and then crafting refs that share no ancestor.
+    // We seed feature as an unrelated root commit using updateRef directly.
+    const ctx = createMemoryContext();
+    await init(ctx);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'main\n');
+    await add(ctx, ['file.txt']);
+    await commit(ctx, { message: 'main-root', author });
+
+    // Build an unrelated commit chain by writing a fresh blob+tree+commit
+    // with no parents.
+    const { writeObject } = await import('../../../../src/application/primitives/write-object.js');
+    const { writeTree } = await import('../../../../src/application/primitives/write-tree.js');
+    const { createCommit } = await import(
+      '../../../../src/application/primitives/create-commit.js'
+    );
+    const { updateRef } = await import('../../../../src/application/primitives/update-ref.js');
+    const { FILE_MODE } = await import('../../../../src/domain/objects/file-mode.js');
+    const otherBlobId = await writeObject(ctx, {
+      type: 'blob',
+      content: new TextEncoder().encode('other\n'),
+      id: '' as ObjectId,
+    });
+    const otherTreeId = await writeTree(ctx, [
+      { name: 'other.txt' as never, id: otherBlobId, mode: FILE_MODE.REGULAR },
+    ]);
+    const otherCommitId = await createCommit(ctx, {
+      tree: otherTreeId,
+      parents: [],
+      author,
+      committer: author,
+      message: 'unrelated-root',
+      extraHeaders: [],
+    });
+    await updateRef(ctx, 'refs/heads/unrelated' as RefName, otherCommitId, {});
+
+    // Act
+    const sut = await merge(ctx, { target: 'unrelated', author });
+
+    // Assert — merge succeeds; merged tree contains both files.
+    expect(sut.kind).toBe('merge');
+    if (sut.kind !== 'merge') throw new Error('expected merge kind');
+    const mergeCommit = await readObject(ctx, sut.id);
+    if (mergeCommit.type !== 'commit') throw new Error('not a commit');
+    const mergedTree = (await readObject(ctx, mergeCommit.data.tree)) as Tree;
+    const names = mergedTree.entries.map((e) => e.name).sort();
+    expect(names).toEqual(['file.txt', 'other.txt']);
   });
 
   it('Given diverged histories + fastForwardOnly=true, When merge, Then throws NON_FAST_FORWARD', async () => {

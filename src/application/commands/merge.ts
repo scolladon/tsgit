@@ -174,6 +174,9 @@ const collectLeaves = async (
   for (const outcome of outcomes) {
     if (outcome.status === 'resolved-deleted' || outcome.status === 'conflict') continue;
     if (outcome.status === 'resolved-merged') {
+      // The empty-string `id` is a sentinel — `writeObject` computes the
+      // real ObjectId from the content and returns it. The cast lets us
+      // construct the typed input without circular dependence on the hash.
       const id = await writeObject(ctx, {
         type: 'blob',
         content: outcome.bytes,
@@ -196,10 +199,12 @@ const synthesiseMergedTree = async (
   return writeNestedTree(ctx, leaves);
 };
 
-const writeNestedTree = async (
-  ctx: Context,
-  leaves: ReadonlyArray<LeafRecord>,
-): Promise<ObjectId> => {
+interface PartitionedLeaves {
+  readonly files: ReadonlyArray<LeafRecord>;
+  readonly subdirs: ReadonlyMap<string, ReadonlyArray<LeafRecord>>;
+}
+
+const partitionByPrefix = (leaves: ReadonlyArray<LeafRecord>): PartitionedLeaves => {
   const files: LeafRecord[] = [];
   const subdirs = new Map<string, LeafRecord[]>();
   for (const leaf of leaves) {
@@ -215,12 +220,26 @@ const writeNestedTree = async (
     if (bucket === undefined) subdirs.set(prefix, [sub]);
     else bucket.push(sub);
   }
-  const treeEntries = files.map((f) => ({ name: f.path, id: f.id, mode: f.mode }));
-  for (const [prefix, subLeaves] of subdirs) {
-    const subId = await writeNestedTree(ctx, subLeaves);
-    treeEntries.push({ name: prefix as FilePath, id: subId, mode: FILE_MODE.DIRECTORY });
-  }
-  return writeTree(ctx, treeEntries);
+  return { files, subdirs };
+};
+
+const writeNestedTree = async (
+  ctx: Context,
+  leaves: ReadonlyArray<LeafRecord>,
+): Promise<ObjectId> => {
+  const { files, subdirs } = partitionByPrefix(leaves);
+  // Resolve sub-trees in parallel — each branch is independent of the
+  // others, so awaiting them serially would needlessly stretch the
+  // merge wall time when a target tree has many top-level dirs.
+  const subdirEntries = await Promise.all(
+    Array.from(subdirs, async ([prefix, subLeaves]) => ({
+      name: prefix as FilePath,
+      id: await writeNestedTree(ctx, subLeaves),
+      mode: FILE_MODE.DIRECTORY,
+    })),
+  );
+  const fileEntries = files.map((f) => ({ name: f.path, id: f.id, mode: f.mode }));
+  return writeTree(ctx, [...fileEntries, ...subdirEntries]);
 };
 
 const resolveMergeAuthor = async (ctx: Context, opts: MergeOptions): Promise<AuthorIdentity> => {
