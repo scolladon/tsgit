@@ -5,8 +5,8 @@ import type { Context } from '../../../ports/context.js';
  * Subset of `.git/config` that v1 commands consume. Only fields actually used by
  * commands are typed — the parser ignores everything else (lenient, like git itself).
  */
-interface ParsedConfig {
-  readonly core?: { readonly bare?: boolean };
+export interface ParsedConfig {
+  readonly core?: { readonly bare?: boolean; readonly excludesFile?: string };
   readonly user?: { readonly name: string; readonly email: string };
   readonly remote?: ReadonlyMap<
     string,
@@ -169,11 +169,20 @@ const assembleParsed = (sections: ReadonlyArray<MutableSection>): ParsedConfig =
   return finalize(acc);
 };
 
-const mergeCore = (acc: { core?: { bare?: boolean } }, sec: MutableSection): void => {
+const mergeCore = (
+  acc: { core?: { bare?: boolean; excludesFile?: string } },
+  sec: MutableSection,
+): void => {
   for (const { key, value } of sec.entries) {
-    if (key === 'bare') {
+    // Git config keys are case-insensitive; the parser preserves casing,
+    // so we lowercase here for comparison.
+    const lowered = key.toLowerCase();
+    if (lowered === 'bare') {
       acc.core ??= {};
       acc.core = { ...acc.core, bare: parseGitBoolean(value) };
+    } else if (lowered === 'excludesfile') {
+      acc.core ??= {};
+      acc.core = { ...acc.core, excludesFile: value };
     }
   }
 };
@@ -228,18 +237,23 @@ const mergeBranch = (
 };
 
 const finalize = (acc: {
-  core?: { bare?: boolean };
+  core?: { bare?: boolean; excludesFile?: string };
   user?: { name?: string; email?: string };
   remote?: Map<string, { url?: string; fetch?: string[] }>;
   branch?: Map<string, { remote?: string; merge?: string }>;
 }): ParsedConfig => {
   const out: {
-    core?: { bare?: boolean };
+    core?: { bare?: boolean; excludesFile?: string };
     user?: { name: string; email: string };
     remote?: ReadonlyMap<string, { url?: string; fetch?: ReadonlyArray<string> }>;
     branch?: ReadonlyMap<string, { remote?: string; merge?: string }>;
   } = {};
-  if (acc.core?.bare !== undefined) out.core = { bare: acc.core.bare };
+  if (acc.core?.bare !== undefined || acc.core?.excludesFile !== undefined) {
+    out.core = {
+      ...(acc.core?.bare !== undefined ? { bare: acc.core.bare } : {}),
+      ...(acc.core?.excludesFile !== undefined ? { excludesFile: acc.core.excludesFile } : {}),
+    };
+  }
   if (acc.user?.name !== undefined && acc.user?.email !== undefined) {
     out.user = { name: acc.user.name, email: acc.user.email };
   }
