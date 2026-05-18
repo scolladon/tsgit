@@ -665,6 +665,68 @@ describe('add', () => {
     expect(after).toBe(before);
   });
 
+  it('Given a repo-root .gitignore with `node_modules`, When add({ all: true }), Then node_modules/* is not staged (directory pruned at walk-time)', async () => {
+    // Arrange
+    const ctx = await seedFreshRepo({
+      'a.txt': 'a',
+      'node_modules/foo/index.js': 'x',
+      'node_modules/bar/index.js': 'y',
+    });
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitignore`, 'node_modules/\n');
+
+    // Act
+    const sut = await add(ctx, [], { all: true });
+
+    // Assert — only the staged file is added; .gitignore itself ALSO gets staged.
+    expect([...sut.added].sort()).toEqual(['.gitignore', 'a.txt']);
+  });
+
+  it('Given a nested .gitignore with negation, When add({ all: true }), Then negation takes effect under that subtree only', async () => {
+    // Arrange
+    const ctx = await seedFreshRepo({
+      'a.log': 'x', // matched by root *.log → ignored
+      'sub/keep.log': 'k', // re-included by nested !keep.log → staged
+      'sub/other.log': 'o', // still matched by root *.log → ignored
+    });
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitignore`, '*.log\n');
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/sub/.gitignore`, '!keep.log\n');
+
+    // Act
+    const sut = await add(ctx, [], { all: true });
+
+    // Assert
+    expect([...sut.added].sort()).toEqual(['.gitignore', 'sub/.gitignore', 'sub/keep.log']);
+  });
+
+  it('Given a tracked file that an ignore rule WOULD ignore, When add({ all: true }), Then the index entry is preserved (Git invariant: tracked beats ignored)', async () => {
+    // Arrange — first stage `secret.bin` literally; then add a rule that
+    // would ignore it; re-run `add --all`. The entry must stay.
+    const ctx = await seedFreshRepo({ 'secret.bin': 'sensitive' });
+    await add(ctx, ['secret.bin']);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitignore`, 'secret.bin\n');
+
+    // Act
+    const sut = await add(ctx, [], { all: true });
+
+    // Assert — .gitignore is newly added; secret.bin stays in index, not in removed.
+    expect(sut.added).toEqual(['.gitignore']);
+    expect(sut.removed).toEqual([]);
+    const idx = await readIndex(ctx);
+    expect(idx.entries.map((e) => e.path).sort()).toEqual(['.gitignore', 'secret.bin']);
+  });
+
+  it('Given a .git/info/exclude rule, When add({ all: true }), Then matched paths are not staged', async () => {
+    // Arrange
+    const ctx = await seedFreshRepo({ 'a.txt': 'a', 'secret.bin': 'x' });
+    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/info/exclude`, 'secret.bin\n');
+
+    // Act
+    const sut = await add(ctx, [], { all: true });
+
+    // Assert
+    expect(sut.added).toEqual(['a.txt']);
+  });
+
   it('Given the index file is present but corrupted, When add, Then the error propagates (no silent reset)', async () => {
     // Arrange — corrupt the index so readIndex throws an INVALID_INDEX_HEADER /
     // INVALID_INDEX_ENTRY. add() falls back to "no entries" only for these documented codes.
