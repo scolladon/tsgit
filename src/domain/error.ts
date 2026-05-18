@@ -170,6 +170,8 @@ function extractDetail(data: TsgitErrorData): string {
       return `tree depth exceeded: ${data.depth}`;
     case 'TREE_ENTRY_LIMIT_EXCEEDED':
       return `tree entry limit exceeded: count=${data.count} limit=${data.limit}`;
+    case 'OBJECT_TOO_LARGE':
+      return `object too large: id=${data.id} size=${data.actualSize} limit=${data.limit}`;
     case 'DELTA_CHAIN_TOO_DEEP':
       return `delta chain too deep: ${data.depth}`;
     case 'REF_NOT_FOUND':

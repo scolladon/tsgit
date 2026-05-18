@@ -39,6 +39,12 @@ export type DomainObjectError =
       readonly code: 'TREE_ENTRY_LIMIT_EXCEEDED';
       readonly count: number;
       readonly limit: number;
+    }
+  | {
+      readonly code: 'OBJECT_TOO_LARGE';
+      readonly id: ObjectId;
+      readonly actualSize: number;
+      readonly limit: number;
     };
 
 export const invalidObjectId = (value: string): TsgitError =>
@@ -82,3 +88,6 @@ export const treeDepthExceeded = (depth: number): TsgitError =>
 
 export const treeEntryLimitExceeded = (count: number, limit: number): TsgitError =>
   new TsgitError({ code: 'TREE_ENTRY_LIMIT_EXCEEDED', count, limit });
+
+export const objectTooLarge = (id: ObjectId, actualSize: number, limit: number): TsgitError =>
+  new TsgitError({ code: 'OBJECT_TOO_LARGE', id, actualSize, limit });
