@@ -160,13 +160,15 @@ describe('checkout', () => {
     }
   });
 
-  it('Given an index.lock already on disk, When switch checkout, Then throws RESOURCE_LOCKED before reading the index (lock-first ordering)', async () => {
-    // Arrange — pre-acquire the index lock manually, simulating a concurrent
-    // writer. If the lock acquire ever moves AFTER readIndex (regression
-    // to the pre-13.5 TOCTOU window), this test would surface a different
-    // error or succeed silently with stale donor stats.
+  it('Given an index.lock already on disk AND a corrupted .git/index, When switch checkout, Then throws RESOURCE_LOCKED (lock acquired BEFORE readIndex)', async () => {
+    // Arrange — pre-acquire the index lock AND corrupt the index file.
+    // The corrupted index would make readIndex throw an INVALID_INDEX_HEADER
+    // error if the code ever runs readIndex before acquireIndexLock.
+    // Discriminating between the two error codes pins the lock-first ordering.
     const { ctx } = await seedWithBranches();
     const lockPath = `${ctx.layout.gitDir}/index.lock`;
+    const indexPath = `${ctx.layout.gitDir}/index`;
+    await ctx.fs.write(indexPath, new Uint8Array([0x00, 0x00, 0x00, 0x00]));
     await ctx.fs.writeExclusive(lockPath, new Uint8Array());
 
     // Act
@@ -177,16 +179,16 @@ describe('checkout', () => {
       caught = err;
     }
 
-    // Assert
+    // Assert — RESOURCE_LOCKED proves the lock acquire ran first; an
+    // INVALID_INDEX_HEADER (or similar parse error) would prove readIndex
+    // ran first.
     const data = (caught as { data?: { code?: string; resource?: string } })?.data;
     expect(data?.code).toBe('RESOURCE_LOCKED');
     expect(data?.resource).toBe('index');
   });
 
   it('Given an index.lock already on disk, When path-restore from HEAD, Then throws RESOURCE_LOCKED (lock-first ordering for non-index source)', async () => {
-    // Arrange — same fixture as above, but exercise path-restore with
-    // source: 'HEAD'. The non-index source path commits the index, so
-    // lock-first applies just as it does for switch.
+    // Arrange
     const { ctx } = await seedWithBranches();
     const lockPath = `${ctx.layout.gitDir}/index.lock`;
     await ctx.fs.writeExclusive(lockPath, new Uint8Array());
@@ -205,18 +207,49 @@ describe('checkout', () => {
     expect(data?.resource).toBe('index');
   });
 
-  it('Given an index.lock already on disk, When path-restore from the default (index) source, Then succeeds (no lock acquired)', async () => {
-    // Arrange — pre-existing lock, but path-restore from `source: 'index'`
-    // (the default) never commits the index, so we must NOT acquire the
-    // lock. A regression to always-acquire would surface as RESOURCE_LOCKED
-    // here and break the most common path-restore use case.
-    const { ctx } = await seedWithBranches();
+  it('Given an index.lock already on disk, When path-restore from an explicit ObjectId source, Then throws RESOURCE_LOCKED (lock-first for the ObjectId branch)', async () => {
+    // Arrange — exercise the third branch of the source discriminator
+    // (`ObjectId`). Without this test, a regression that routes the
+    // ObjectId branch to UnderIndex would survive.
+    const { ctx, commitId } = await seedWithBranches();
     const lockPath = `${ctx.layout.gitDir}/index.lock`;
     await ctx.fs.writeExclusive(lockPath, new Uint8Array());
 
-    // Act + Assert — must not throw.
+    // Act
+    let caught: unknown;
+    try {
+      await checkout(ctx, { paths: ['a.txt'], source: commitId });
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert
+    const data = (caught as { data?: { code?: string; resource?: string } })?.data;
+    expect(data?.code).toBe('RESOURCE_LOCKED');
+    expect(data?.resource).toBe('index');
+  });
+
+  it('Given an index.lock already on disk, When path-restore from the default (index) source, Then succeeds without disturbing the pre-existing lock', async () => {
+    // Arrange — pre-existing lock with a recognisable sentinel. Path-restore
+    // from `source: 'index'` (the default) never commits, so we must NOT
+    // acquire the lock. Assertion is stronger than "no throw": we verify
+    // the lock file STILL exists with its original byte (proving we didn't
+    // even touch it via an acquire/release round-trip — a regression to
+    // always-acquire would briefly grab and then release the lock,
+    // potentially overwriting our sentinel via writeExclusive's behaviour).
+    const { ctx } = await seedWithBranches();
+    const lockPath = `${ctx.layout.gitDir}/index.lock`;
+    const sentinel = new Uint8Array([0x53, 0x45, 0x4e, 0x54]); // "SENT"
+    await ctx.fs.writeExclusive(lockPath, sentinel);
+
+    // Act
     const sut = await checkout(ctx, { paths: ['a.txt'] });
-    expect(sut.changedPaths).toBeGreaterThanOrEqual(0);
+
+    // Assert — operation succeeds, exact changedPaths count, lock intact.
+    expect(sut.changedPaths).toBe(0); // a.txt already matches HEAD's tree
+    expect(await ctx.fs.exists(lockPath)).toBe(true);
+    const lockBytes = await ctx.fs.read(lockPath);
+    expect(Array.from(lockBytes)).toEqual([0x53, 0x45, 0x4e, 0x54]);
   });
 });
 

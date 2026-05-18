@@ -345,7 +345,8 @@
     "finalisation",
     "serialisation",
     "serialises",
-    "serialising"
+    "serialising",
+    "recognisable"
   ],
   "ignorePaths": [
     "node_modules",

@@ -253,6 +253,8 @@ tree is the visible gap.
       _Accept when:_ a clean merge produces the correct merge commit's tree without re-running `add`; a conflicting merge writes `<<<<<<<` markers and leaves index in unmerged state.
 - [ ] **13.5** Tighten `checkout` to lock-first ordering. Phase 13.1's `checkout` runs `readIndex` BEFORE `acquireIndexLock`, leaving a known TOCTOU window — a concurrent index writer can mutate the donor stat fields between read and commit. Phase 13.2 (reset --mixed) and Phase 13.3 (reset --hard) adopt the safer lock-around-everything pattern; checkout should converge.
       _Accept when:_ `checkout` acquires the index lock BEFORE reading the index, matching `hardResetFromCommit`/`rebuildIndexFromCommit`. Add a pre-locked-index test asserting `RESOURCE_LOCKED`, mirroring Phase 13.3's test for the same behaviour.
+- [ ] **13.6** Path-restore from index — synthesise tree from index directly. `resolvePathSource(ctx, 'index')` in `src/application/commands/checkout.ts` is currently a placeholder that resolves HEAD's tree, making `checkout({ paths, source: 'index' })` and `checkout({ paths, source: 'HEAD' })` byte-equivalent. The semantic contract calls for restoring from the index entries (which may have diverged from HEAD via `add` / `rm`). Build a synthetic tree from stage-0 index entries instead.
+      _Accept when:_ `repo.checkout({ paths, source: 'index' })` restores from staged content, not HEAD's content. Test: stage a divergent version of a path then run path-restore with source: 'index' — disk content matches the staged version, not HEAD's.
 
 ### Phase 14 — Glob & pathspec (v1.x patch)
 
