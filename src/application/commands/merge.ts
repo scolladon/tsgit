@@ -3,6 +3,7 @@ import { unsupportedOperation } from '../../domain/index.js';
 import {
   type ContentMergeResult,
   type ContentMerger,
+  MAX_CONFLICT_OUTPUT_BYTES,
   type MergeOutcome,
   mergeContent,
   mergeTrees,
@@ -153,11 +154,22 @@ const computeMergedTree = async (
 const buildContentMerger =
   (ctx: Context): ContentMerger =>
   async (mergeCtx, _baseStub, _oursStub, _theirsStub): Promise<ContentMergeResult> => {
-    const oursBytes = (await readBlob(ctx, mergeCtx.ourId)).content;
-    const theirsBytes = (await readBlob(ctx, mergeCtx.theirId)).content;
-    const baseBytes =
-      mergeCtx.baseId !== undefined ? (await readBlob(ctx, mergeCtx.baseId)).content : undefined;
-    return mergeContent(baseBytes, oursBytes, theirsBytes);
+    // Parallel-capped fetch (ADR-025). Each blob is bounded by
+    // MAX_CONFLICT_OUTPUT_BYTES (ADR-024 §3); a hostile adversarial input
+    // is rejected upfront via OBJECT_TOO_LARGE without ever reaching
+    // `mergeContent`'s line-diff path.
+    // equivalent-mutant: swapping Promise.all for a serial for-await loop
+    // yields the same merge output — mergeContent is pure in its inputs.
+    // The parallelisation is a wall-time optimisation that mutation testing
+    // cannot distinguish without timing instrumentation; ADR-025 accepts it.
+    const [ours, theirs, base] = await Promise.all([
+      readBlob(ctx, mergeCtx.ourId, { maxBytes: MAX_CONFLICT_OUTPUT_BYTES }),
+      readBlob(ctx, mergeCtx.theirId, { maxBytes: MAX_CONFLICT_OUTPUT_BYTES }),
+      mergeCtx.baseId !== undefined
+        ? readBlob(ctx, mergeCtx.baseId, { maxBytes: MAX_CONFLICT_OUTPUT_BYTES })
+        : Promise.resolve(undefined),
+    ]);
+    return mergeContent(base?.content, ours.content, theirs.content);
   };
 
 interface LeafRecord {
