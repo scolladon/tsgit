@@ -232,6 +232,57 @@ describe('status — progress reporting', () => {
     expect(endIndex).toBeGreaterThan(lastUpdateIndex);
   });
 
+  it('Given an untracked working-tree file, When status, Then workingTreeChanges contains a `untracked` ChangeEntry and clean=false', async () => {
+    // Arrange — committed a.txt; add an untracked b.txt.
+    const ctx = await seedClean();
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.txt`, 'new');
+
+    // Act
+    const sut = await status(ctx);
+
+    // Assert
+    expect(sut.clean).toBe(false);
+    expect(sut.workingTreeChanges).toContainEqual({ kind: 'untracked', path: 'b.txt' });
+  });
+
+  it('Given an untracked file matched by .gitignore, When status, Then it is NOT in workingTreeChanges and clean=true (only-ignored-untracked)', async () => {
+    // Arrange
+    const ctx = await seedClean();
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitignore`, 'build.log\n');
+    // The .gitignore itself is untracked — also matches no rule, so it WOULD
+    // appear. Add a rule that also ignores .gitignore so we test the
+    // "only ignored untracked files" path cleanly.
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitignore`, 'build.log\n.gitignore\n');
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/build.log`, 'log');
+
+    // Act
+    const sut = await status(ctx);
+
+    // Assert
+    expect(sut.workingTreeChanges).toEqual([]);
+    expect(sut.clean).toBe(true);
+  });
+
+  it('Given a tracked-but-ignored file, When status, Then it appears as modified/clean (NOT untracked) — tracked beats ignored', async () => {
+    // Arrange — stage `secret.bin`, then add a rule that would ignore it,
+    // then modify it.
+    const ctx = await seedClean();
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/secret.bin`, 'sensitive');
+    await add(ctx, ['secret.bin']);
+    await commit(ctx, { message: 'add secret', author });
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitignore`, 'secret.bin\n.gitignore\n');
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/secret.bin`, 'changed');
+
+    // Act
+    const sut = await status(ctx);
+
+    // Assert — secret.bin is detected as modified (Pass 1 covers tracked
+    // entries regardless of ignore status). NOT emitted as 'untracked'.
+    const kinds = sut.workingTreeChanges.map((c) => `${c.kind}:${c.path}`);
+    expect(kinds).toContain('modified:secret.bin');
+    expect(kinds).not.toContain('untracked:secret.bin');
+  });
+
   it('Given a failure during scan, When status rejects, Then end still fires (try/finally on failure)', async () => {
     // Arrange — break readHeadRaw by removing HEAD after init.
     const ctx = createMemoryContext();

@@ -3,6 +3,8 @@ import type { ObjectId, RefName } from '../../domain/objects/index.js';
 import type { FilePath } from '../../domain/objects/object-id.js';
 import type { Context } from '../../ports/context.js';
 import { readIndex } from '../primitives/read-index.js';
+import { walkWorkingTree } from '../primitives/walk-working-tree.js';
+import { buildRepoIgnorePredicate } from './internal/build-ignore-evaluator.js';
 import { createGranularityTracker } from './internal/progress-tracker.js';
 import { assertRepository, readHeadRaw } from './internal/repo-state.js';
 import { readFile, validatePath } from './internal/working-tree.js';
@@ -48,7 +50,7 @@ export const status = async (ctx: Context): Promise<StatusResult> => {
   ctx.progress.start(STATUS_SCAN_OP);
   try {
     const tracker = createGranularityTracker(ctx.progress, STATUS_SCAN_OP, STATUS_SCAN_GRANULARITY);
-    // Independent file checks — fan out so I/O overlaps. Order is preserved by Map insertion + Promise.all.
+    // Pass 1: index entries vs. working tree.
     const settled = await Promise.all(
       Array.from(indexByPath).map(async ([path, entry]) => {
         const result = await classifyEntry(ctx, path, entry);
@@ -56,9 +58,19 @@ export const status = async (ctx: Context): Promise<StatusResult> => {
         return result;
       }),
     );
-    // status:scan reports indeterminate progress (total undefined per design §6.2),
-    // so no final-flush — only bucket-crossing updates fire.
-    const workingTreeChanges = settled.filter((c): c is ChangeEntry => c !== undefined);
+    const indexChecks = settled.filter((c): c is ChangeEntry => c !== undefined);
+    // Pass 2: untracked file enumeration. Walk the working tree (with
+    // gitignore filtering); anything not in the index is untracked.
+    // Tracked-but-ignored entries stay in indexByPath; they're handled
+    // by Pass 1 above, so the ignore filter here only affects untracked
+    // emission (Git's "ignored-tracked stays tracked" invariant).
+    const ignore = await buildRepoIgnorePredicate(ctx);
+    const untracked: ChangeEntry[] = [];
+    for await (const { path } of walkWorkingTree(ctx, { ignore })) {
+      if (!indexByPath.has(path)) untracked.push({ kind: 'untracked', path });
+    }
+    untracked.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+    const workingTreeChanges = [...indexChecks, ...untracked];
     const clean = workingTreeChanges.length === 0;
     return {
       branch,
