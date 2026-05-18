@@ -354,7 +354,8 @@
     "canonicalise",
     "localise",
     "synthesisers",
-    "defence"
+    "defence",
+    "libtrust"
   ],
   "ignorePaths": [
     "node_modules",

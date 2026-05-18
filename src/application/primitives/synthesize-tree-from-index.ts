@@ -37,7 +37,7 @@
  */
 
 import type { IndexEntry } from '../../domain/git-index/index.js';
-import { validateIndexPath } from '../../domain/git-index/path-validator.js';
+import { NO_PARSER_OFFSET, validateIndexPath } from '../../domain/git-index/path-validator.js';
 import { treeDepthExceeded } from '../../domain/objects/error.js';
 import {
   FILE_MODE,
@@ -80,8 +80,10 @@ const stage0Entries = (entries: ReadonlyArray<IndexEntry>): PendingEntry[] => {
     // this on every entry it constructs, so this is a no-op for
     // parser-sourced indices. Callers constructing IndexEntry records
     // outside the parser (test fixtures, future in-memory builders)
-    // benefit from the second check.
-    validateIndexPath(entry.path, 0);
+    // benefit from the second check. We pass NO_PARSER_OFFSET because
+    // these entries did not come from a parsed byte buffer — see
+    // `path-validator.ts` for the contract.
+    validateIndexPath(entry.path, NO_PARSER_OFFSET);
     assertDepthBounded(entry.path);
     out.push({ path: entry.path, id: entry.id, mode: entry.mode });
   }

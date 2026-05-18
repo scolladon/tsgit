@@ -260,10 +260,13 @@ describe('synthesizeTreeFromIndex', () => {
       caught = err;
     }
 
-    // Assert
-    const data = (caught as { data?: { code?: string; reason?: string } })?.data;
+    // Assert — code + reason + the NO_PARSER_OFFSET sentinel (proves the
+    // primitive uses the documented sentinel rather than misleadingly
+    // claiming the failure was at byte 0 of some index file).
+    const data = (caught as { data?: { code?: string; reason?: string; offset?: number } })?.data;
     expect(data?.code).toBe('INVALID_INDEX_ENTRY');
     expect(data?.reason).toBe("'..' segment rejected");
+    expect(data?.offset).toBe(-1);
   });
 
   it('Given an index path with depth exceeding MAX_TREE_DEPTH, When synthesise, Then throws TREE_DEPTH_EXCEEDED', async () => {

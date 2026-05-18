@@ -741,6 +741,105 @@ describe('parseIndex', () => {
     });
   });
 
+  it('Given a SECOND-position unsafe entry, When parseIndex runs, Then offset points to the second entry (not the first)', () => {
+    // Arrange — first entry safe, second entry has '..'. The thrown
+    // offset must be the second entry's start, NOT a hardcoded 12. Pins
+    // `entryStart` threading against a mutation that replaces it with a
+    // literal first-entry offset.
+    const SHA_A = '0123456789abcdef0123456789abcdef01234567';
+    const SHA_B = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+    const bytes = buildTestIndex([
+      { path: 'safe.txt', sha: SHA_A },
+      { path: '../etc/passwd', sha: SHA_B },
+    ]);
+
+    // Act
+    let caught: unknown;
+    try {
+      parseIndex(bytes);
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert — second entry starts at 12 + length(first padded entry).
+    // The first 'safe.txt' entry occupies 72 bytes (62 header + 8 name + NUL/pad to 8).
+    const data = (caught as TsgitError).data as {
+      code: string;
+      offset: number;
+      reason: string;
+    };
+    expect(data.code).toBe('INVALID_INDEX_ENTRY');
+    expect(data.reason).toBe("'..' segment rejected");
+    expect(data.offset).toBeGreaterThan(12); // proves it's not the first entry
+  });
+
+  it('Given an entry whose path contains a backslash, When parseIndex runs, Then throws INVALID_INDEX_ENTRY (Windows separator rejected)', () => {
+    // Arrange — `..\\bar` would slip past the slash-segment check on
+    // POSIX but resolve to a traversal on Windows.
+    const SHA_A = '0123456789abcdef0123456789abcdef01234567';
+    const bytes = buildTestIndex([{ path: 'foo\\..\\bar', sha: SHA_A }]);
+
+    // Act
+    let caught: unknown;
+    try {
+      parseIndex(bytes);
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert
+    expect((caught as TsgitError).data).toEqual({
+      code: 'INVALID_INDEX_ENTRY',
+      offset: 12,
+      reason: 'backslash rejected',
+    });
+  });
+
+  it('Given an entry whose path contains a control character, When parseIndex runs, Then throws INVALID_INDEX_ENTRY', () => {
+    // Arrange — tab (0x09) is a C0 control. Most filesystems accept it,
+    // but it can corrupt line-oriented log output and is rejected
+    // defensively.
+    const SHA_A = '0123456789abcdef0123456789abcdef01234567';
+    const bytes = buildTestIndex([{ path: 'foo\tbar', sha: SHA_A }]);
+
+    // Act
+    let caught: unknown;
+    try {
+      parseIndex(bytes);
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert
+    expect((caught as TsgitError).data).toEqual({
+      code: 'INVALID_INDEX_ENTRY',
+      offset: 12,
+      reason: 'control character rejected',
+    });
+  });
+
+  it('Given an entry whose path contains a BIDI override (U+202E), When parseIndex runs, Then throws INVALID_INDEX_ENTRY', () => {
+    // Arrange — RTL override can visually disguise filenames in terminals
+    // and log lines (e.g., `evil.exe` rendered as `exe.libtrust`).
+    const SHA_A = '0123456789abcdef0123456789abcdef01234567';
+    const bytes = buildTestIndex([{ path: `evil‮gnp.exe`, sha: SHA_A }]);
+
+    // Act
+    let caught: unknown;
+    try {
+      parseIndex(bytes);
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert
+    expect((caught as TsgitError).data).toEqual({
+      code: 'INVALID_INDEX_ENTRY',
+      offset: 12,
+      reason: 'bidi control character rejected',
+    });
+  });
+
   it('Given an entry whose path contains an empty segment (`foo//bar`), When parseIndex runs, Then throws INVALID_INDEX_ENTRY', () => {
     // Arrange — double slash produces an empty segment between the two parts.
     const SHA_A = '0123456789abcdef0123456789abcdef01234567';
