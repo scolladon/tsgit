@@ -67,13 +67,17 @@ const rebuildIndexFromCommit = async (ctx: Context, commitId: ObjectId): Promise
   if (commit.type !== 'commit') {
     throw unexpectedObjectType('commit', commit.type, commitId);
   }
-  const currentIndex = await readIndex(ctx);
-  const newEntries = await buildIndexFromTree(ctx, {
-    targetTree: commit.data.tree,
-    currentIndex,
-  });
+  // Acquire the index lock BEFORE reading the index. A concurrent writer
+  // (another reset, add, rm…) between read and commit would otherwise let
+  // the donor map go stale, producing a result that reflects neither the
+  // pre- nor the post-reset state.
   const lock = await acquireIndexLock(ctx);
   try {
+    const currentIndex = await readIndex(ctx);
+    const newEntries = await buildIndexFromTree(ctx, {
+      targetTree: commit.data.tree,
+      currentIndex,
+    });
     await lock.commit(newEntries);
   } finally {
     await lock.release();

@@ -5,7 +5,7 @@ import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
 import { reset } from '../../../../src/application/commands/reset.js';
 import { readIndex } from '../../../../src/application/primitives/read-index.js';
-import type { AuthorIdentity } from '../../../../src/domain/objects/index.js';
+import type { AuthorIdentity, ObjectId } from '../../../../src/domain/objects/index.js';
 
 const author: AuthorIdentity = {
   name: 'Ada',
@@ -68,15 +68,56 @@ describe('reset', () => {
   });
 
   it('Given target as a branch name, When reset, Then resolves via refs/heads/<name>', async () => {
-    const { ctx, c1 } = await seedTwoCommits();
+    const { ctx, c2 } = await seedTwoCommits();
     const sut = await reset(ctx, { mode: 'soft', target: 'main' });
-    expect(sut.id).not.toBe(c1); // main currently points at c2
+    // Pin to the exact resolved oid so a mutation to the candidate list (e.g.
+    // dropping the `refs/heads/${target}` prefix) is caught.
+    expect(sut.id).toBe(c2);
   });
 
   it('Given target as HEAD, When reset, Then no-op (HEAD already points there)', async () => {
     const { ctx, c2 } = await seedTwoCommits();
     const sut = await reset(ctx, { mode: 'soft', target: 'HEAD' });
     expect(sut.id).toBe(c2);
+  });
+
+  it('Given a soft reset to parent, When reset, Then index is NOT rebuilt (b.txt still staged)', async () => {
+    // Arrange — soft mode must not call rebuildIndexFromCommit. After resetting
+    // soft to c1, the index must still reflect the c2 state (a.txt + b.txt).
+    const { ctx, c1 } = await seedTwoCommits();
+
+    // Act
+    await reset(ctx, { mode: 'soft', target: c1 });
+
+    // Assert
+    const index = await readIndex(ctx);
+    const paths = index.entries.filter((e) => e.flags.stage === 0).map((e) => e.path);
+    expect(paths).toEqual(['a.txt', 'b.txt']);
+  });
+
+  it('Given a mixed reset target that resolves to a non-commit object, When reset, Then throws UNEXPECTED_OBJECT_TYPE expected=commit', async () => {
+    // Arrange — write a standalone blob and pass its oid as `target`. The mixed
+    // path will resolve it to a non-commit object and must reject.
+    const { ctx } = await seedTwoCommits();
+    const { writeObject } = await import('../../../../src/application/primitives/write-object.js');
+    const blobId = await writeObject(ctx, {
+      type: 'blob',
+      content: new TextEncoder().encode('not-a-commit'),
+      id: '' as ObjectId,
+    });
+
+    // Act
+    let caught: unknown;
+    try {
+      await reset(ctx, { mode: 'mixed', target: blobId });
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert
+    const data = (caught as { data?: { code?: string; expected?: string } })?.data;
+    expect(data?.code).toBe('UNEXPECTED_OBJECT_TYPE');
+    expect(data?.expected).toBe('commit');
   });
 
   it('Given a mixed reset to parent, When reset, Then index equals parent tree (later-commit entry dropped)', async () => {

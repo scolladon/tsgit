@@ -101,17 +101,20 @@ describe('buildIndexFromTree', () => {
       { name: 'a.txt' as FilePath, id: blobId, mode: FILE_MODE.REGULAR },
     ];
     const treeId = await writeTree(ctx, treeEntries);
-    const donor = makeIndexEntry('a.txt', blobId, FILE_MODE.REGULAR, {
-      ctimeSeconds: 1_700_000_000,
-      ctimeNanoseconds: 123_456_789,
-      mtimeSeconds: 1_700_000_100,
-      mtimeNanoseconds: 987_654_321,
-      dev: 42,
-      ino: 99,
-      uid: 1000,
-      gid: 1000,
-      fileSize: 5,
-    });
+    const donor: IndexEntry = {
+      ...makeIndexEntry('a.txt', blobId, FILE_MODE.REGULAR, {
+        ctimeSeconds: 1_700_000_000,
+        ctimeNanoseconds: 123_456_789,
+        mtimeSeconds: 1_700_000_100,
+        mtimeNanoseconds: 987_654_321,
+        dev: 42,
+        ino: 99,
+        uid: 1000,
+        gid: 1000,
+        fileSize: 5,
+      }),
+      flags: { assumeValid: true, extended: true, stage: 0 },
+    };
     const sut = buildIndexFromTree;
 
     // Act
@@ -120,7 +123,8 @@ describe('buildIndexFromTree', () => {
       currentIndex: { ...EMPTY_INDEX, entries: [donor] },
     });
 
-    // Assert — stat cache cloned byte-for-byte
+    // Assert — stat cache cloned byte-for-byte AND flags spread preserves donor's
+    // assumeValid/extended (stage is force-set to 0 regardless).
     expect(result).toHaveLength(1);
     const entry = result[0];
     expect(entry?.ctimeSeconds).toBe(1_700_000_000);
@@ -132,7 +136,35 @@ describe('buildIndexFromTree', () => {
     expect(entry?.uid).toBe(1000);
     expect(entry?.gid).toBe(1000);
     expect(entry?.fileSize).toBe(5);
+    expect(entry?.flags.assumeValid).toBe(true);
+    expect(entry?.flags.extended).toBe(true);
     expect(entry?.flags.stage).toBe(0);
+  });
+
+  it('Given both stage-0 and stage-1 donors for the same path, When buildIndexFromTree runs, Then the stage-0 entry wins', async () => {
+    // Arrange — post-merge index can carry both an unmerged entry (stage 1/2/3)
+    // and a stage-0 entry at the same path. Only the stage-0 entry's stat cache
+    // should donate; the stage-N entry must never become a stat-cache donor.
+    const ctx = await buildSeededContext();
+    const blobId = await writeBlob(ctx, 'hello');
+    const treeId = await writeTree(ctx, [
+      { name: 'a.txt' as FilePath, id: blobId, mode: FILE_MODE.REGULAR },
+    ]);
+    const unmerged = makeIndexEntry('a.txt', blobId, FILE_MODE.REGULAR, { mtimeSeconds: 999 }, 1);
+    const stageZero = makeIndexEntry('a.txt', blobId, FILE_MODE.REGULAR, { mtimeSeconds: 42 });
+    const sut = buildIndexFromTree;
+
+    // Act — order the entries so the stage-1 entry is iterated last; a mutant
+    // that drops the `stage !== 0` guard would let it overwrite the stage-0
+    // donor in the map and we would see mtime=999 instead of 42.
+    const result = await sut(ctx, {
+      targetTree: treeId,
+      currentIndex: { ...EMPTY_INDEX, entries: [stageZero, unmerged] },
+    });
+
+    // Assert
+    expect(result).toHaveLength(1);
+    expect(result[0]?.mtimeSeconds).toBe(42);
   });
 
   it('Given a donor with same id but different mode, When buildIndexFromTree runs, Then no donor match (zero stats)', async () => {

@@ -76,16 +76,14 @@ const projectLeaf = (leaf: TargetLeaf, donors: ReadonlyMap<FilePath, IndexEntry>
   };
 };
 
-const byPath = (a: IndexEntry, b: IndexEntry): number =>
-  a.path < b.path ? -1 : a.path > b.path ? 1 : 0;
-
 export const buildIndexFromTree = async (
   ctx: Context,
   opts: BuildIndexFromTreeOpts,
 ): Promise<ReadonlyArray<IndexEntry>> => {
   const donors = donorByPath(opts.currentIndex);
   const leaves = await collectLeaves(ctx, opts.targetTree);
-  const entries = leaves.map((leaf) => projectLeaf(leaf, donors));
-  entries.sort(byPath);
-  return entries;
+  // walkTree consumes git-canonical trees (sorted with trailing `/` for
+  // subtrees), which makes its depth-first leaf emission byte-sorted by
+  // construction — no explicit re-sort needed.
+  return leaves.map((leaf) => projectLeaf(leaf, donors));
 };
