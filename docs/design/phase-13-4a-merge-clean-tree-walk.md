@@ -148,3 +148,26 @@ test/unit/application/
   `mergeTrees` already treats gitlinks specially (conflict on
   divergence), and our flattenTree needs to preserve the mode so
   the upstream check fires.
+
+### Pass 3 → Pass 4 (final pass)
+
+- Decided to **extend** `MERGE_HAS_CONFLICTS` with a `paths` field
+  rather than add a separate `MERGE_CONFLICTS_NOT_RESOLVED` code.
+  Reusing the existing code keeps the public surface tighter; the
+  additive field is non-breaking (existing consumers that only read
+  `count` keep working). The factory takes `paths` as an optional
+  argument defaulting to `[]` so existing call sites compile
+  unchanged.
+- §3.1 step "build a content-merger closure" clarified: the closure
+  reads ALL three blobs (ours, theirs, base if defined) and calls
+  `mergeContent(base, ours, theirs)`. The stub `Uint8Array(0)`s
+  that Phase 5's `mergeTrees` passes into the merger callback are
+  discarded — Phase 5 documents that as the integration contract
+  (`three-way-tree.ts:160` "Phase 5 has no blob bytes — Phase 7
+  supplies real content via its closure").
+- §3.1 step 3 (synthesise) — uses a local `writeNestedTree` helper
+  built from `LeafRecord`s rather than reusing
+  `synthesizeTreeFromIndex`. The synth primitive runs path
+  validation per entry; the merge outcomes come from a parsed
+  `FlatTree` whose paths are already validated. Avoiding the
+  double-validation is YAGNI-correct.
