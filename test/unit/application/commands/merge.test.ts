@@ -371,6 +371,99 @@ describe('merge', () => {
 
 import { recordingProgress, withProgress } from './fixtures.js';
 
+describe('merge — bounded blob reads (Phase 13.8)', () => {
+  it('Given a conflicting merge, When the merger runs, Then ours/theirs/base blob reads OVERLAP at the content-merger phase (parallelism)', async () => {
+    // Arrange — set up a conflicting merge so the three blob reads
+    // (ours/theirs/base) all happen inside `buildContentMerger`. Pre-
+    // compute the three loose-object paths for the conflicting `file.txt`
+    // blob on each side; scope the in-flight counter to ONLY those three
+    // paths so the earlier `flattenTree` parallel walks (3 tree reads in
+    // parallel) don't taint the assertion. A serial mutation of
+    // `Promise.all` inside `buildContentMerger` would drop the conflict-
+    // blob in-flight count to 1.
+    const ctx = createMemoryContext();
+    await init(ctx);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'base\n');
+    await add(ctx, ['file.txt']);
+    await commit(ctx, { message: 'base', author });
+    await branch(ctx, { kind: 'create', name: 'feature' });
+    await checkout(ctx, { target: 'feature' });
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'FEATURE\n');
+    await add(ctx, ['file.txt']);
+    await commit(ctx, { message: 'on-feature', author });
+    await checkout(ctx, { target: 'main' });
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'MAIN\n');
+    await add(ctx, ['file.txt']);
+    await commit(ctx, { message: 'on-main', author });
+
+    // Compute the three blob ids (base/feature/main) then derive their
+    // loose-object paths. Only reads to these specific paths bump the
+    // counter — flattenTree's tree reads are excluded.
+    const { computeLooseObjectPath } = await import('../../../../src/domain/storage/loose-path.js');
+    const blobIds = new Set<string>();
+    const collectBlob = async (branchName: string): Promise<void> => {
+      const tip = await resolveRef(ctx, `refs/heads/${branchName}` as RefName);
+      const commitObj = await readObject(ctx, tip);
+      if (commitObj.type !== 'commit') throw new Error('not a commit');
+      const tree = (await readObject(ctx, commitObj.data.tree)) as Tree;
+      const entry = tree.entries.find((e) => e.name === 'file.txt');
+      if (entry !== undefined) blobIds.add(entry.id);
+    };
+    await collectBlob('main');
+    await collectBlob('feature');
+    // Walk main's parent to grab the base blob id.
+    const mainTip = await resolveRef(ctx, 'refs/heads/main' as RefName);
+    const mainCommit = await readObject(ctx, mainTip);
+    if (mainCommit.type !== 'commit') throw new Error('not a commit');
+    const baseCommitId = mainCommit.data.parents[0];
+    if (baseCommitId !== undefined) {
+      const baseCommit = await readObject(ctx, baseCommitId);
+      if (baseCommit.type === 'commit') {
+        const baseTree = (await readObject(ctx, baseCommit.data.tree)) as Tree;
+        const baseEntry = baseTree.entries.find((e) => e.name === 'file.txt');
+        if (baseEntry !== undefined) blobIds.add(baseEntry.id);
+      }
+    }
+    const objectsDir = `${ctx.layout.gitDir}/objects/`;
+    const conflictBlobPaths = new Set(
+      [...blobIds].map((id) => `${objectsDir}${computeLooseObjectPath(id as ObjectId)}`),
+    );
+
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const originalRead = ctx.fs.read.bind(ctx.fs);
+    const originalExists = ctx.fs.exists.bind(ctx.fs);
+    const trackConflictBlobOp = async <T>(path: string, op: () => Promise<T>): Promise<T> => {
+      if (!conflictBlobPaths.has(path)) return op();
+      inFlight += 1;
+      if (inFlight > maxInFlight) maxInFlight = inFlight;
+      try {
+        await Promise.resolve();
+        return await op();
+      } finally {
+        inFlight -= 1;
+      }
+    };
+    (ctx.fs as { read: typeof originalRead }).read = (path: string) =>
+      trackConflictBlobOp(path, () => originalRead(path));
+    (ctx.fs as { exists: typeof originalExists }).exists = (path: string) =>
+      trackConflictBlobOp(path, () => originalExists(path));
+
+    // Act — conflicting merge invokes contentMerger which reads the
+    // three blobs via Promise.all. Throws MERGE_HAS_CONFLICTS after.
+    try {
+      await merge(ctx, { target: 'feature', author });
+    } catch {
+      // expected MERGE_HAS_CONFLICTS — irrelevant to the assertion.
+    }
+
+    // Assert — at some moment ≥ 2 CONFLICT-BLOB reads were in flight
+    // simultaneously. A sequential merger over the three blob ids would
+    // never observe inFlight ≥ 2 for THIS scoped set.
+    expect(maxInFlight).toBeGreaterThanOrEqual(2);
+  });
+});
+
 describe('merge — progress reporting', () => {
   it('Given an up-to-date merge, When run, Then NO progress events fire (early return before start)', async () => {
     const ctx = createMemoryContext();

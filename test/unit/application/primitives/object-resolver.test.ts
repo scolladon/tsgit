@@ -176,6 +176,143 @@ describe('object-resolver', () => {
     expect(result.type).toBe(kind);
   });
 
+  describe('Phase 13.8 — bounded-size cap', () => {
+    it('Given a cached REF_DELTA base at the exact maxBytes boundary, When resolveObject is called, Then accepts (cache-cap inclusive boundary)', async () => {
+      // Arrange — cache contains a 5-byte payload, cap=5. Boundary kill
+      // for the `actualSize > maxBytes` mutant: with `>=` it would
+      // wrongly reject; with `>` it accepts.
+      const ctx = await buildSeededContext();
+      const baseContent = new TextEncoder().encode('abcde'); // 5 bytes
+      const [baseId] = await writeSyntheticPack(ctx, 'cap-cache-eq-base', [
+        { kind: 'base', type: 'blob', content: baseContent },
+      ]);
+      const [deltaId] = await writeSyntheticPack(ctx, 'cap-cache-eq-delta', [
+        {
+          kind: 'ref-delta',
+          baseId: baseId!,
+          baseUncompressed: baseContent,
+          targetContent: new TextEncoder().encode('xy'),
+        },
+      ]);
+      const registry = createPackRegistry(ctx);
+      // Prime the cache with the base.
+      await resolveObject(ctx, registry, baseId as ObjectId, false);
+
+      // Act — exact boundary cap=5, base size=5 → accept.
+      const sut = await resolveObject(ctx, registry, deltaId as ObjectId, false, 5);
+
+      // Assert
+      expect(sut.type).toBe('blob');
+    });
+
+    it('Given a REF_DELTA whose base is in the LRU cache and exceeds maxBytes, When resolveObject is called, Then throws OBJECT_TOO_LARGE from enforceCachedCap', async () => {
+      // Arrange — prime the deltaCache with a base larger than the cap,
+      // then issue a capped REF_DELTA read whose base resolves via the
+      // cache hit. The enforceCachedCap path must fire and reject; without
+      // it, an oversized object admitted by an earlier uncapped read
+      // would silently bypass the cap on subsequent capped reads.
+      const ctx = await buildSeededContext();
+      const baseContent = new TextEncoder().encode('cached-base-bytes');
+      // Build a synthetic pack with the base so we have a real ObjectId.
+      const [baseId] = await writeSyntheticPack(ctx, 'cap-cache-base', [
+        { kind: 'base', type: 'blob', content: baseContent },
+      ]);
+      const [deltaId] = await writeSyntheticPack(ctx, 'cap-cache-delta', [
+        {
+          kind: 'ref-delta',
+          baseId: baseId!,
+          baseUncompressed: baseContent,
+          targetContent: new TextEncoder().encode('xx'),
+        },
+      ]);
+      const registry = createPackRegistry(ctx);
+      // Prime the cache: an uncapped read admits the base.
+      await resolveObject(ctx, registry, baseId as ObjectId, false);
+      expect(ctx.deltaCache.get(baseId as ObjectId)).toBeDefined();
+
+      // Act — capped REF_DELTA read; base resolves via cache hit.
+      try {
+        await resolveObject(ctx, registry, deltaId as ObjectId, false, 4);
+        expect.unreachable();
+      } catch (error) {
+        const data = (error as TsgitError).data;
+        // Assert — must be OBJECT_TOO_LARGE, NOT some downstream code
+        // like OBJECT_NOT_FOUND that would indicate a different bypass.
+        expect(data.code).toBe('OBJECT_TOO_LARGE');
+        if (data.code !== 'OBJECT_TOO_LARGE') {
+          expect.fail(`expected OBJECT_TOO_LARGE, got ${data.code}`);
+        }
+        expect(data.id).toBe(baseId);
+        expect(data.actualSize).toBe(baseContent.length);
+        expect(data.limit).toBe(4);
+      }
+    });
+
+    it('Given a synthetic pack with an OFS_DELTA chain whose BASE exceeds maxBytes, When resolveObject is called, Then throws OBJECT_TOO_LARGE on the base (intermediate-base cap, not target-only)', async () => {
+      // Arrange — base of 9 bytes + ofs-delta whose target is 2 bytes.
+      // With maxBytes=4: the pre-apply check on the delta's target (2)
+      // PASSES, but the base entry's declared size (9) exceeds the cap.
+      // Without the fix (depth-gated enforcePackBaseCap), the base would
+      // inflate into memory; the cap protects against this.
+      const ctx = await buildSeededContext();
+      const baseContent = new TextEncoder().encode('123456789');
+      const targetContent = new TextEncoder().encode('xy');
+      const ids = await writeSyntheticPack(ctx, 'cap-ofs-base-bypass', [
+        { kind: 'base', type: 'blob', content: baseContent },
+        { kind: 'ofs-delta', baseIndex: 0, targetContent },
+      ]);
+      const deltaId = ids[1] as ObjectId;
+      const registry = createPackRegistry(ctx);
+
+      // Act / Assert — cap rejects on the base, not the target.
+      try {
+        await resolveObject(ctx, registry, deltaId, false, 4);
+        expect.unreachable();
+      } catch (error) {
+        const data = (error as TsgitError).data;
+        expect(data.code).toBe('OBJECT_TOO_LARGE');
+        if (data.code !== 'OBJECT_TOO_LARGE') {
+          expect.fail(`expected OBJECT_TOO_LARGE, got ${data.code}`);
+        }
+        // `actualSize=9` proves the cap fired on the BASE's declared size
+        // (9 bytes) and not on the delta's target (2 bytes).
+        expect(data.actualSize).toBe(9);
+        expect(data.limit).toBe(4);
+      }
+    });
+
+    it('Given a delta whose declared target-size varint exceeds maxBytes, When resolveObject is called, Then throws OBJECT_TOO_LARGE pre-apply (varint peek, not post-apply)', async () => {
+      // Arrange — base 2 bytes, delta target 8 bytes, cap 4. The pre-
+      // apply varint check reads targetSize=8 from the delta's leading
+      // varints and rejects BEFORE the apply loop runs. Killing the
+      // mutant that removes the pre-apply check leaves the post-apply
+      // check still firing (with current.length=8 instead of declared 8).
+      const ctx = await buildSeededContext();
+      const baseContent = new TextEncoder().encode('ab');
+      const targetContent = new TextEncoder().encode('abcdefgh');
+      const ids = await writeSyntheticPack(ctx, 'cap-pre-apply', [
+        { kind: 'base', type: 'blob', content: baseContent },
+        { kind: 'ofs-delta', baseIndex: 0, targetContent },
+      ]);
+      const deltaId = ids[1] as ObjectId;
+      const registry = createPackRegistry(ctx);
+
+      // Act / Assert
+      try {
+        await resolveObject(ctx, registry, deltaId, false, 4);
+        expect.unreachable();
+      } catch (error) {
+        const data = (error as TsgitError).data;
+        expect(data.code).toBe('OBJECT_TOO_LARGE');
+        if (data.code !== 'OBJECT_TOO_LARGE') {
+          expect.fail(`expected OBJECT_TOO_LARGE, got ${data.code}`);
+        }
+        expect(data.actualSize).toBe(8);
+        expect(data.limit).toBe(4);
+      }
+    });
+  });
+
   it('Given a pack-resolved target, When resolveObject is called, Then the reconstructed bytes land in the delta cache', async () => {
     // Arrange
     const ctx = await buildSeededContext();

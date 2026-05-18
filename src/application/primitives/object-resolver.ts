@@ -3,10 +3,11 @@
  * Consumed only by readObject.
  */
 import { operationAborted } from '../../domain/error.js';
-import { objectHashMismatch, objectNotFound } from '../../domain/objects/error.js';
+import { objectHashMismatch, objectNotFound, objectTooLarge } from '../../domain/objects/error.js';
 import {
   type GitObject,
   type ObjectId,
+  parseHeader,
   parseObject,
   serializeObject,
 } from '../../domain/objects/index.js';
@@ -18,6 +19,7 @@ import {
   PACK_ENTRY_TYPE,
   type PackEntryHeader,
   parsePackEntryHeader,
+  readDeltaTargetSize,
 } from '../../domain/storage/index.js';
 import type { Context } from '../../ports/context.js';
 import type { PackLookupHit, PackRegistry } from './pack-registry.js';
@@ -30,11 +32,13 @@ export async function resolveObject(
   registry: PackRegistry,
   id: ObjectId,
   verifyHash: boolean,
+  maxBytes?: number,
 ): Promise<GitObject> {
   checkAborted(ctx);
   const loose = await tryLoose(ctx, id);
   if (loose !== undefined) {
     checkAborted(ctx);
+    enforceLooseCap(id, loose, maxBytes);
     return finalize(ctx, id, loose, verifyHash);
   }
 
@@ -44,9 +48,100 @@ export async function resolveObject(
     throw objectNotFound(id);
   }
   checkAborted(ctx);
-  const bytes = await resolvePackChain(ctx, registry, hit, id);
+  const bytes = await resolvePackChain(ctx, registry, hit, id, maxBytes);
   checkAborted(ctx);
   return finalize(ctx, id, bytes, verifyHash);
+}
+
+/**
+ * Loose objects materialise the full payload before this check fires (zlib's
+ * compression ratio is unbounded, so a pre-inflate cap on the compressed file
+ * is not meaningful). We measure the ACTUAL content byte count
+ * (`inflated.length - contentOffset`) rather than the declared header size —
+ * a hostile object can claim a tiny size and ship a huge body; the
+ * memory-relevant quantity is what zlib already produced. See ADR-024 §3.1.
+ */
+function enforceLooseCap(id: ObjectId, inflated: Uint8Array, maxBytes: number | undefined): void {
+  if (maxBytes === undefined) return;
+  const { contentOffset } = parseHeader(inflated);
+  const actualSize = inflated.length - contentOffset;
+  if (actualSize > maxBytes) {
+    throw objectTooLarge(id, actualSize, maxBytes);
+  }
+}
+
+/**
+ * Enforce the cap on cached bytes that bypass the regular read path. The LRU
+ * stores raw loose-format `<type> <size>\0...` buffers; a previous uncapped
+ * read may have admitted an oversized object that a later capped read would
+ * otherwise see for free. The content size is `bytes.length - (nulIdx + 1)`.
+ */
+function enforceCachedCap(id: ObjectId, cached: Uint8Array, maxBytes: number | undefined): void {
+  if (maxBytes === undefined) return;
+  const nulIdx = cached.indexOf(0);
+  // equivalent-mutant: the LRU is fed exclusively by `prependHeader` /
+  // `serializeObject` paths, which always emit a `<type> <size>\0...`
+  // header — `nulIdx < 0` is structurally unreachable in practice. The
+  // defence-in-depth guard exists in case those invariants ever break,
+  // at which point `splitHeader` (called next) throws OBJECT_NOT_FOUND.
+  // Stryker mutates this `<` to `<=` or `false`; no unit test fixture
+  // can reach the branch without writing a corrupt buffer directly into
+  // ctx.deltaCache, which would itself violate the cache's contract.
+  if (nulIdx < 0) return;
+  const actualSize = cached.length - (nulIdx + 1);
+  if (actualSize > maxBytes) {
+    throw objectTooLarge(id, actualSize, maxBytes);
+  }
+}
+
+/**
+ * Pre-inflate cap for pack base entries — fires at ANY depth, not just
+ * `depth === 0`. The cap exists to bound memory: when the chain walker
+ * reaches a base entry whose declared inflated size exceeds the cap, the
+ * subsequent `streamInflate` materialises a buffer larger than the
+ * contract permits regardless of whether the final delta-applied result
+ * shrinks below the cap. See ADR-024 §3.2.
+ */
+function enforcePackBaseCap(
+  targetId: ObjectId,
+  declaredSize: number,
+  maxBytes: number | undefined,
+): void {
+  if (maxBytes === undefined) return;
+  if (declaredSize > maxBytes) {
+    throw objectTooLarge(targetId, declaredSize, maxBytes);
+  }
+}
+
+/**
+ * Pre-apply cap for pack delta entries. Reads the OUTERMOST delta's
+ * target-size varint (the final reconstructed object size) — costs ~10
+ * bytes and bypasses both the apply loop and the
+ * `new Uint8Array(targetSize)` allocation. Only fires once per chain
+ * (`depth === 1`); intermediate deltas in the chain reference
+ * intermediate base sizes that don't correspond to the user-visible
+ * target. See ADR-024 §3.3.
+ */
+function enforcePackDeltaPreApplyCap(
+  targetId: ObjectId,
+  instructions: Uint8Array,
+  maxBytes: number | undefined,
+  depth: number,
+): void {
+  // equivalent-mutant: this pre-apply cap is observationally equivalent to
+  // the post-apply cap in `resolvePackChain` — both throw
+  // OBJECT_TOO_LARGE with the same id/size/limit when the target is
+  // oversized. The pre-apply variant exists purely as a performance
+  // optimisation (skip the apply loop + the result allocation). Stryker
+  // mutates `depth === 1` to `depth !== 1` / `false`: at depth=1 the
+  // pre-apply check no longer fires, but the post-apply check still does,
+  // producing identical observable behaviour. Equivalent without timing
+  // instrumentation.
+  if (maxBytes === undefined || depth !== 1) return;
+  const declaredTargetSize = readDeltaTargetSize(instructions);
+  if (declaredTargetSize > maxBytes) {
+    throw objectTooLarge(targetId, declaredTargetSize, maxBytes);
+  }
 }
 
 function checkAborted(ctx: Context): void {
@@ -94,6 +189,7 @@ async function collectDeltaChain(
   registry: PackRegistry,
   hit: PackLookupHit,
   targetId: ObjectId,
+  maxBytes: number | undefined,
 ): Promise<Phase1Result> {
   const deltas: DeltaStep[] = [];
   let currentHit: PackLookupHit = hit;
@@ -103,6 +199,7 @@ async function collectDeltaChain(
     checkAborted(ctx);
     const { header, chunk, headerEndInChunk } = await readEntryHeaderWithChunk(ctx, currentHit);
     if (isBase(header)) {
+      enforcePackBaseCap(targetId, header.size, maxBytes);
       const inflated = await ctx.compressor.streamInflate(chunk, headerEndInChunk);
       return {
         deltas,
@@ -115,6 +212,7 @@ async function collectDeltaChain(
       throw deltaChainTooDeep(depth);
     }
     const { output: instructions } = await ctx.compressor.streamInflate(chunk, headerEndInChunk);
+    enforcePackDeltaPreApplyCap(targetId, instructions, maxBytes, depth);
 
     if (header.type === PACK_ENTRY_TYPE.OFS_DELTA) {
       const nextOffset = currentHit.offset - header.baseDistance;
@@ -128,7 +226,11 @@ async function collectDeltaChain(
     if (header.type === PACK_ENTRY_TYPE.REF_DELTA) {
       const refDeltaBaseId = header.baseId;
       deltas.push({ instructions, resolvedBaseId: refDeltaBaseId });
-      const base = await resolveBaseForRefDelta(ctx, registry, refDeltaBaseId);
+      // Cap propagates into the REF_DELTA base resolution so an oversized
+      // base never inflates fully. The cap applies to the BASE object now,
+      // not just the delta's target — tightens the OBJECT_TOO_LARGE
+      // contract beyond what ADR-024 originally documented.
+      const base = await resolveBaseForRefDelta(ctx, registry, refDeltaBaseId, maxBytes);
       return { deltas, baseContent: base.content, baseType: base.type };
     }
     throw objectNotFound(targetId);
@@ -140,8 +242,9 @@ async function resolvePackChain(
   registry: PackRegistry,
   hit: PackLookupHit,
   targetId: ObjectId,
+  maxBytes: number | undefined,
 ): Promise<Uint8Array> {
-  const phase1 = await collectDeltaChain(ctx, registry, hit, targetId);
+  const phase1 = await collectDeltaChain(ctx, registry, hit, targetId, maxBytes);
 
   // Phase 2 — apply deltas bottom-up. The REF_DELTA terminator already cached
   // its base in `resolveBaseForRefDelta`; intermediate results are NOT cached
@@ -153,6 +256,13 @@ async function resolvePackChain(
     const step = phase1.deltas[i];
     if (step === undefined) break;
     current = applyDelta(current, step.instructions);
+  }
+  // Post-apply cap on the reconstructed object (delta resolution is the only
+  // place a payload can grow beyond what the base entry declared). The check
+  // fires before `prependHeader` allocates the loose-format buffer that would
+  // otherwise double the peak footprint. See ADR-024 §3.3.
+  if (maxBytes !== undefined && current.length > maxBytes) {
+    throw objectTooLarge(targetId, current.length, maxBytes);
   }
   // Cache the final reconstructed object under targetId for future lookups.
   const fullBytes = prependHeader(current, phase1.baseType, targetId);
@@ -218,15 +328,19 @@ async function resolveBaseForRefDelta(
   ctx: Context,
   registry: PackRegistry,
   baseId: ObjectId,
+  maxBytes: number | undefined,
 ): Promise<{ content: Uint8Array; type: PackEntryHeader['type'] }> {
   // Resolve the base object (may recurse into another chain) and strip its header
   // to obtain content + type for delta application.
   const cached = ctx.deltaCache.get(baseId);
   if (cached !== undefined) {
-    // Cache stores raw loose-format (header+content). Strip the header.
+    // Cache stores raw loose-format (header+content). An earlier uncapped
+    // read may have admitted an oversized object; enforce the cap here
+    // before returning bytes that bypass the regular read path.
+    enforceCachedCap(baseId, cached, maxBytes);
     return splitHeader(cached, baseId);
   }
-  const obj = await resolveObject(ctx, registry, baseId, false);
+  const obj = await resolveObject(ctx, registry, baseId, false, maxBytes);
   const rawBytes = serializeObject(obj, ctx.hashConfig);
   cacheEntry(ctx.deltaCache, baseId, rawBytes);
   return splitHeader(rawBytes, baseId);

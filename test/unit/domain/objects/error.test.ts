@@ -8,6 +8,7 @@ import {
   invalidObjectId,
   invalidTag,
   invalidTreeEntry,
+  objectTooLarge,
   type TsgitError,
   treeCycleDetected,
   treeDepthExceeded,
@@ -113,6 +114,32 @@ describe('error', () => {
 
       // Assert
       expect(sut.data).toEqual({ code: 'TREE_DEPTH_EXCEEDED', depth: 42 });
+    });
+
+    it('Given objectTooLarge(id, actualSize, limit), When checking error.data, Then code, id, actualSize, limit are set', () => {
+      // Arrange & Act
+      const id = 'b'.repeat(40) as ObjectId;
+      const sut = objectTooLarge(id, 200, 100);
+
+      // Assert
+      expect(sut.data).toEqual({
+        code: 'OBJECT_TOO_LARGE',
+        id,
+        actualSize: 200,
+        limit: 100,
+      });
+    });
+
+    it('Given an OBJECT_TOO_LARGE error, When reading .message, Then contains id, size, and limit', () => {
+      // Arrange & Act
+      const id = 'c'.repeat(40) as ObjectId;
+      const sut = objectTooLarge(id, 999, 100);
+
+      // Assert
+      expect(sut.message).toContain('object too large');
+      expect(sut.message).toContain(id);
+      expect(sut.message).toContain('size=999');
+      expect(sut.message).toContain('limit=100');
     });
   });
 

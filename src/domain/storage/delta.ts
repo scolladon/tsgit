@@ -174,6 +174,21 @@ function applyInsert(
   return { nextPos: pos + cmd, nextResultPos: resultPos + cmd };
 }
 
+/**
+ * Read only the target-size varint from a delta instruction stream. Cheap
+ * upper-bound peek used by `resolveObject({ maxBytes })` to reject oversized
+ * delta-resolved objects BEFORE the apply loop runs and BEFORE the result
+ * `Uint8Array(targetLength)` is allocated.
+ *
+ * Throws `INVALID_DELTA` on a truncated or malformed varint — the same error
+ * `applyDelta` would surface a moment later. No new failure mode.
+ */
+export function readDeltaTargetSize(delta: Uint8Array): number {
+  const { nextOffset: o1 } = readVariableLengthInt(delta, 0);
+  const { value: targetLength } = readVariableLengthInt(delta, o1);
+  return targetLength;
+}
+
 export function applyDelta(base: Uint8Array, delta: Uint8Array): Uint8Array {
   const { value: sourceLength, nextOffset: o1 } = readVariableLengthInt(delta, 0);
   const { value: targetLength, nextOffset: o2 } = readVariableLengthInt(delta, o1);

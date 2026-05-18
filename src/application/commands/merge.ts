@@ -3,6 +3,7 @@ import { unsupportedOperation } from '../../domain/index.js';
 import {
   type ContentMergeResult,
   type ContentMerger,
+  MAX_CONFLICT_OUTPUT_BYTES,
   type MergeOutcome,
   mergeContent,
   mergeTrees,
@@ -153,11 +154,34 @@ const computeMergedTree = async (
 const buildContentMerger =
   (ctx: Context): ContentMerger =>
   async (mergeCtx, _baseStub, _oursStub, _theirsStub): Promise<ContentMergeResult> => {
-    const oursBytes = (await readBlob(ctx, mergeCtx.ourId)).content;
-    const theirsBytes = (await readBlob(ctx, mergeCtx.theirId)).content;
-    const baseBytes =
-      mergeCtx.baseId !== undefined ? (await readBlob(ctx, mergeCtx.baseId)).content : undefined;
-    return mergeContent(baseBytes, oursBytes, theirsBytes);
+    // Parallel-capped fetch (ADR-025). Each blob is bounded by
+    // MAX_CONFLICT_OUTPUT_BYTES (ADR-024 §3); a hostile adversarial input
+    // is rejected upfront via OBJECT_TOO_LARGE without ever reaching
+    // `mergeContent`'s line-diff path. The Promise.all parallelism is
+    // exercised by the "issue concurrently" test in merge.test.ts —
+    // mutating it to a serial loop would drop maxInFlight to 1 and the
+    // test would fail.
+    //
+    // equivalent-mutant: Stryker mutates `{ maxBytes: MAX_CONFLICT_OUTPUT_BYTES }`
+    // to `{}` at the three call sites below — observationally equivalent
+    // in the test suite because no fixture allocates a real
+    // MAX_CONFLICT_OUTPUT_BYTES (256 MiB) blob to trigger the cap at this
+    // integration boundary. The cap mechanics themselves are fully
+    // covered by direct unit tests on readObject / readBlob
+    // (test/unit/application/primitives/read-object.test.ts and
+    // read-blob.test.ts) at every cap site (loose, pack-base,
+    // pre-apply-delta, cached). The integration line is mechanical
+    // wiring; allocating a 256 MiB fixture to kill these three mutants
+    // would cost ~1 GiB peak RSS per CI run for ~zero additional
+    // assurance.
+    const [ours, theirs, base] = await Promise.all([
+      readBlob(ctx, mergeCtx.ourId, { maxBytes: MAX_CONFLICT_OUTPUT_BYTES }),
+      readBlob(ctx, mergeCtx.theirId, { maxBytes: MAX_CONFLICT_OUTPUT_BYTES }),
+      mergeCtx.baseId !== undefined
+        ? readBlob(ctx, mergeCtx.baseId, { maxBytes: MAX_CONFLICT_OUTPUT_BYTES })
+        : Promise.resolve(undefined),
+    ]);
+    return mergeContent(base?.content, ours.content, theirs.content);
   };
 
 interface LeafRecord {

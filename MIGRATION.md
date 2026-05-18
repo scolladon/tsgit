@@ -268,6 +268,10 @@ const { blob } = await git.readBlob({ fs, dir: '.', oid });
 // tsgit
 const blob = await repo.primitives.readBlob(oid);
 console.log(blob.content);   // Uint8Array
+
+// Optional cap rejects oversized blobs upfront with OBJECT_TOO_LARGE,
+// bypassing the inflate/parse path for the loose-object case.
+const bounded = await repo.primitives.readBlob(oid, { maxBytes: 4 * 1024 * 1024 });
 ```
 
 ### `git.walk` / `git.TREE` → `repo.primitives.walkTree`
