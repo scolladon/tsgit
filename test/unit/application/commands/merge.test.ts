@@ -239,10 +239,12 @@ describe('merge', () => {
     expect(names).toEqual(['b.txt', 'c.txt']);
   });
 
-  it('Given a clean merge with nested subdirectory paths, When merge, Then writeNestedTree produces correct nested trees', async () => {
-    // Arrange — both sides add files under `src/<dir>/...`. Exercises
-    // writeNestedTree's nested-directory branch + Promise.all parallel
-    // sub-tree resolution.
+  it('Given a clean merge with multiple top-level subdirectories on each side, When merge, Then writeNestedTree resolves all subdirs in parallel and produces correct nested trees', async () => {
+    // Arrange — feature and main each add files under DIFFERENT top-level
+    // directories. The merged root must have >= 2 top-level subdirs so
+    // the root-level Promise.all over `subdirs` is genuinely exercised
+    // with multi-element parallelism (a mutation swapping Promise.all
+    // for a serial for-await loop would survive single-subdir test).
     const ctx = createMemoryContext();
     await init(ctx);
     await ctx.fs.writeUtf8(`${ctx.layout.workDir}/src/base.ts`, 'base');
@@ -251,42 +253,53 @@ describe('merge', () => {
     await branch(ctx, { kind: 'create', name: 'feature' });
     await checkout(ctx, { target: 'feature' });
     await ctx.fs.writeUtf8(`${ctx.layout.workDir}/src/feature/a.ts`, 'a');
-    await add(ctx, ['src/feature/a.ts']);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/lib/x.ts`, 'x');
+    await add(ctx, ['src/feature/a.ts', 'lib/x.ts']);
     await commit(ctx, { message: 'on-feature', author });
     await checkout(ctx, { target: 'main' });
     await ctx.fs.writeUtf8(`${ctx.layout.workDir}/src/main/b.ts`, 'b');
-    await add(ctx, ['src/main/b.ts']);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/pkg/y.ts`, 'y');
+    await add(ctx, ['src/main/b.ts', 'pkg/y.ts']);
     await commit(ctx, { message: 'on-main', author });
 
     // Act
     const sut = await merge(ctx, { target: 'feature', author });
 
-    // Assert — merged root has 'src', src has feature/ + main/ + base.ts.
+    // Assert — merged root has THREE top-level subdirs: src, lib, pkg.
     expect(sut.kind).toBe('merge');
     if (sut.kind !== 'merge') throw new Error('expected merge kind');
     const mergeCommit = await readObject(ctx, sut.id);
     if (mergeCommit.type !== 'commit') throw new Error('not a commit');
     const root = (await readObject(ctx, mergeCommit.data.tree)) as Tree;
-    expect(root.entries.map((e) => e.name)).toEqual(['src']);
-    const srcEntry = root.entries[0];
+    const rootNames = root.entries.map((e) => e.name).sort();
+    expect(rootNames).toEqual(['lib', 'pkg', 'src']);
+    // And src/ has feature/ + main/ + base.ts — nested depth-2 parallelism.
+    const srcEntry = root.entries.find((e) => e.name === 'src');
     if (srcEntry === undefined) throw new Error('expected src entry');
     const src = (await readObject(ctx, srcEntry.id)) as Tree;
     const srcNames = src.entries.map((e) => e.name).sort();
     expect(srcNames).toEqual(['base.ts', 'feature', 'main']);
   });
 
-  it('Given unrelated histories (no merge base), When merge, Then content merger receives base=undefined for add-add paths', async () => {
-    // Arrange — create two unrelated commit trees by writing root commits
-    // in fresh-init repos and then crafting refs that share no ancestor.
-    // We seed feature as an unrelated root commit using updateRef directly.
+  it('Given unrelated histories sharing a path with divergent content, When merge, Then add-add conflict surfaces (proves baseFlat is undefined, not silently substituted)', async () => {
+    // Arrange — both unrelated roots write `shared.txt` with DIFFERENT
+    // content. With `baseFlat = undefined` (the correct behaviour for
+    // unrelated histories), `mergeTrees` falls into `resolveAddAdd`
+    // which fires `add-add` conflict for divergent entries — exactly
+    // what we want to assert.
+    //
+    // If a mutation substituted ourTree (or theirTree) as a stand-in for
+    // baseFlat, the path would match the substituted "base" on one side,
+    // resolve via the `oneSideAbsent / unchanged` path, and produce a
+    // silent clean merge. So asserting the conflict throw discriminates
+    // the `undefined` branch from any "silent substitution" mutation.
     const ctx = createMemoryContext();
     await init(ctx);
-    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'main\n');
-    await add(ctx, ['file.txt']);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/shared.txt`, 'main-version\n');
+    await add(ctx, ['shared.txt']);
     await commit(ctx, { message: 'main-root', author });
 
-    // Build an unrelated commit chain by writing a fresh blob+tree+commit
-    // with no parents.
+    // Build an unrelated commit chain with a divergent shared.txt.
     const { writeObject } = await import('../../../../src/application/primitives/write-object.js');
     const { writeTree } = await import('../../../../src/application/primitives/write-tree.js');
     const { createCommit } = await import(
@@ -296,11 +309,11 @@ describe('merge', () => {
     const { FILE_MODE } = await import('../../../../src/domain/objects/file-mode.js');
     const otherBlobId = await writeObject(ctx, {
       type: 'blob',
-      content: new TextEncoder().encode('other\n'),
+      content: new TextEncoder().encode('unrelated-version\n'),
       id: '' as ObjectId,
     });
     const otherTreeId = await writeTree(ctx, [
-      { name: 'other.txt' as never, id: otherBlobId, mode: FILE_MODE.REGULAR },
+      { name: 'shared.txt' as never, id: otherBlobId, mode: FILE_MODE.REGULAR },
     ]);
     const otherCommitId = await createCommit(ctx, {
       tree: otherTreeId,
@@ -313,16 +326,17 @@ describe('merge', () => {
     await updateRef(ctx, 'refs/heads/unrelated' as RefName, otherCommitId, {});
 
     // Act
-    const sut = await merge(ctx, { target: 'unrelated', author });
+    let caught: unknown;
+    try {
+      await merge(ctx, { target: 'unrelated', author });
+    } catch (err) {
+      caught = err;
+    }
 
-    // Assert — merge succeeds; merged tree contains both files.
-    expect(sut.kind).toBe('merge');
-    if (sut.kind !== 'merge') throw new Error('expected merge kind');
-    const mergeCommit = await readObject(ctx, sut.id);
-    if (mergeCommit.type !== 'commit') throw new Error('not a commit');
-    const mergedTree = (await readObject(ctx, mergeCommit.data.tree)) as Tree;
-    const names = mergedTree.entries.map((e) => e.name).sort();
-    expect(names).toEqual(['file.txt', 'other.txt']);
+    // Assert — add-add conflict for shared.txt.
+    const data = (caught as { data?: { code?: string; paths?: ReadonlyArray<string> } })?.data;
+    expect(data?.code).toBe('MERGE_HAS_CONFLICTS');
+    expect(data?.paths).toEqual(['shared.txt']);
   });
 
   it('Given diverged histories + fastForwardOnly=true, When merge, Then throws NON_FAST_FORWARD', async () => {
