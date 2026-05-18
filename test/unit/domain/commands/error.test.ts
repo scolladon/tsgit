@@ -11,6 +11,7 @@ import {
   checkoutOverwriteDirty,
   emptyCommitMessage,
   emptyPathspec,
+  gitignoreFileTooLarge,
   invalidOption,
   invalidUrl,
   maxRefspecsExceeded,
@@ -294,6 +295,15 @@ describe('domain commands error — factory data', () => {
     });
   });
 
+  it('Given a path, size, and limit, When gitignoreFileTooLarge, Then data carries every field verbatim', () => {
+    expect(gitignoreFileTooLarge('.gitignore' as FilePath, 2_000_000, 1_048_576).data).toEqual({
+      code: 'GITIGNORE_FILE_TOO_LARGE',
+      path: '.gitignore',
+      size: 2_000_000,
+      limit: 1_048_576,
+    });
+  });
+
   it('Given runtime and reason, When adapterUnavailable, Then data carries verbatim runtime and sanitized reason', () => {
     expect(adapterUnavailable('node', 'process.versions missing').data).toEqual({
       code: 'ADAPTER_UNAVAILABLE',
@@ -469,6 +479,15 @@ describe('domain commands error — extractDetail message formatting', () => {
         limit: 256,
       },
       'WORKING_TREE_FILE_TOO_LARGE: working-tree file too large: big.bin size=300 limit=256',
+    ],
+    [
+      {
+        code: 'GITIGNORE_FILE_TOO_LARGE',
+        path: '/repo/.gitignore' as FilePath,
+        size: 2_000_000,
+        limit: 1_048_576,
+      },
+      'GITIGNORE_FILE_TOO_LARGE: .gitignore too large: .gitignore size=2000000 limit=1048576',
     ],
   ];
 
