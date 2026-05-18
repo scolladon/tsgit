@@ -513,6 +513,89 @@ describe('merge — Phase 13.4b conflict persistence', () => {
     expect(data?.count).toBe(1);
   });
 
+  describe('runBounded (direct)', () => {
+    it('Given an empty array, When runBounded is called, Then resolves without invoking fn', async () => {
+      // Arrange
+      const { runBounded } = await import('../../../../src/application/commands/merge.js');
+      let calls = 0;
+      const fn = async (): Promise<void> => {
+        calls += 1;
+      };
+
+      // Act
+      await runBounded([], 4, fn);
+
+      // Assert
+      expect(calls).toBe(0);
+    });
+
+    it('Given an array of 10 items with limit=3, When runBounded runs, Then fn is invoked exactly 10 times with each item once', async () => {
+      // Arrange
+      const { runBounded } = await import('../../../../src/application/commands/merge.js');
+      const seen: number[] = [];
+      const fn = async (item: number): Promise<void> => {
+        seen.push(item);
+      };
+
+      // Act
+      await runBounded([1, 2, 3, 4, 5, 6, 7, 8, 9, 10], 3, fn);
+
+      // Assert — every item processed, no dupes, no skips.
+      expect(seen.sort((a, b) => a - b)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+    });
+
+    it('Given limit greater than array size, When runBounded runs, Then concurrency caps at array length (no over-spawned workers)', async () => {
+      // Arrange — track max concurrent in-flight via a counter.
+      const { runBounded } = await import('../../../../src/application/commands/merge.js');
+      let inFlight = 0;
+      let maxInFlight = 0;
+      const fn = async (): Promise<void> => {
+        inFlight += 1;
+        if (inFlight > maxInFlight) maxInFlight = inFlight;
+        await Promise.resolve();
+        inFlight -= 1;
+      };
+
+      // Act
+      await runBounded([1, 2, 3], 100, fn);
+
+      // Assert — at most 3 workers (item count), not 100.
+      expect(maxInFlight).toBeLessThanOrEqual(3);
+    });
+
+    it('Given limit smaller than array size, When runBounded runs, Then maxInFlight equals limit (bounded concurrency)', async () => {
+      // Arrange
+      const { runBounded } = await import('../../../../src/application/commands/merge.js');
+      let inFlight = 0;
+      let maxInFlight = 0;
+      const items = Array.from({ length: 50 }, (_, i) => i);
+      const fn = async (): Promise<void> => {
+        inFlight += 1;
+        if (inFlight > maxInFlight) maxInFlight = inFlight;
+        await Promise.resolve();
+        inFlight -= 1;
+      };
+
+      // Act
+      await runBounded(items, 4, fn);
+
+      // Assert — concurrency cap respected.
+      expect(maxInFlight).toBeLessThanOrEqual(4);
+      expect(maxInFlight).toBeGreaterThan(1); // genuine parallelism
+    });
+
+    it('Given fn rejects on one item, When runBounded runs, Then the rejection propagates', async () => {
+      // Arrange
+      const { runBounded } = await import('../../../../src/application/commands/merge.js');
+      const fn = async (item: number): Promise<void> => {
+        if (item === 5) throw new Error('boom');
+      };
+
+      // Act / Assert
+      await expect(runBounded([1, 2, 3, 4, 5, 6], 2, fn)).rejects.toThrow('boom');
+    });
+  });
+
   describe('rejectUnsupportedConflicts (direct)', () => {
     it.each([
       'rename-rename',

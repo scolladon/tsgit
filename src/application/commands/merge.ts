@@ -409,9 +409,9 @@ const writeConflictingWorkingTree = async (
 /**
  * Run `fn` over `items` with at most `limit` in-flight at once. Promise
  * rejection propagates upward (matches `Promise.all` semantics); in-flight
- * tasks are not cancelled.
+ * tasks are not cancelled. Exported for direct unit testing.
  */
-const runBounded = async <T>(
+export const runBounded = async <T>(
   items: ReadonlyArray<T>,
   limit: number,
   fn: (item: T) => Promise<void>,
