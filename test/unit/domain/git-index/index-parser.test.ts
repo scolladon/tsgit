@@ -652,7 +652,7 @@ describe('parseIndex', () => {
     }
   });
 
-  it('Given an entry whose path starts with a leading `/`, When parseIndex runs, Then throws INVALID_INDEX_ENTRY (absolute path rejected)', () => {
+  it('Given an entry whose path starts with a leading `/`, When parseIndex runs, Then throws INVALID_INDEX_ENTRY (absolute path rejected) with offset', () => {
     // Arrange — `/etc/passwd` is an absolute path; index entries must be
     // workdir-relative. Defensive guard added in Phase 13.7.
     const SHA_A = '0123456789abcdef0123456789abcdef01234567';
@@ -666,13 +666,16 @@ describe('parseIndex', () => {
       caught = err;
     }
 
-    // Assert
-    const data = (caught as TsgitError).data;
-    expect(data.code).toBe('INVALID_INDEX_ENTRY');
-    expect((data as { reason?: string }).reason).toContain('absolute paths rejected');
+    // Assert — code, reason AND offset all pinned (offset proves the
+    // entry-start byte was correctly threaded into the error).
+    expect((caught as TsgitError).data).toEqual({
+      code: 'INVALID_INDEX_ENTRY',
+      offset: 12,
+      reason: 'absolute path rejected',
+    });
   });
 
-  it('Given an entry whose path contains a `..` segment, When parseIndex runs, Then throws INVALID_INDEX_ENTRY (traversal rejected)', () => {
+  it('Given an entry whose path contains a `..` segment, When parseIndex runs, Then throws INVALID_INDEX_ENTRY (traversal rejected) with offset', () => {
     // Arrange
     const SHA_A = '0123456789abcdef0123456789abcdef01234567';
     const bytes = buildTestIndex([{ path: 'foo/../bar', sha: SHA_A }]);
@@ -686,13 +689,18 @@ describe('parseIndex', () => {
     }
 
     // Assert
-    const data = (caught as TsgitError).data;
-    expect(data.code).toBe('INVALID_INDEX_ENTRY');
-    expect((data as { reason?: string }).reason).toContain("'..' segment rejected");
+    expect((caught as TsgitError).data).toEqual({
+      code: 'INVALID_INDEX_ENTRY',
+      offset: 12,
+      reason: "'..' segment rejected",
+    });
   });
 
-  it('Given an entry whose path is just `..`, When parseIndex runs, Then throws INVALID_INDEX_ENTRY', () => {
-    // Arrange — bare `..` reference at root level.
+  it('Given an entry whose path is just `..`, When parseIndex runs, Then throws INVALID_INDEX_ENTRY with reason `..` segment rejected', () => {
+    // Arrange — bare `..` reference at root level. Pinning the reason
+    // string ensures a mutation that flips the `..` set member would be
+    // killed (otherwise the bare-`..` case could surface as a different
+    // unsafe-segment reason and still match the generic code).
     const SHA_A = '0123456789abcdef0123456789abcdef01234567';
     const bytes = buildTestIndex([{ path: '..', sha: SHA_A }]);
 
@@ -705,7 +713,11 @@ describe('parseIndex', () => {
     }
 
     // Assert
-    expect((caught as TsgitError).data.code).toBe('INVALID_INDEX_ENTRY');
+    expect((caught as TsgitError).data).toEqual({
+      code: 'INVALID_INDEX_ENTRY',
+      offset: 12,
+      reason: "'..' segment rejected",
+    });
   });
 
   it('Given an entry whose path contains a `.` segment, When parseIndex runs, Then throws INVALID_INDEX_ENTRY (current-dir rejected)', () => {
@@ -722,9 +734,11 @@ describe('parseIndex', () => {
     }
 
     // Assert
-    const data = (caught as TsgitError).data;
-    expect(data.code).toBe('INVALID_INDEX_ENTRY');
-    expect((data as { reason?: string }).reason).toContain("'.' segment rejected");
+    expect((caught as TsgitError).data).toEqual({
+      code: 'INVALID_INDEX_ENTRY',
+      offset: 12,
+      reason: "'.' segment rejected",
+    });
   });
 
   it('Given an entry whose path contains an empty segment (`foo//bar`), When parseIndex runs, Then throws INVALID_INDEX_ENTRY', () => {
@@ -741,8 +755,10 @@ describe('parseIndex', () => {
     }
 
     // Assert
-    const data = (caught as TsgitError).data;
-    expect(data.code).toBe('INVALID_INDEX_ENTRY');
-    expect((data as { reason?: string }).reason).toContain('empty segment rejected');
+    expect((caught as TsgitError).data).toEqual({
+      code: 'INVALID_INDEX_ENTRY',
+      offset: 12,
+      reason: 'empty segment rejected',
+    });
   });
 });

@@ -20,10 +20,13 @@
  *
  * - **Path validation**: Phase 13.7 hoisted segment-level validation into
  *   `parseIndex` (`src/domain/git-index/path-validator.ts`). Every
- *   `IndexEntry` reaching this primitive through the canonical parser
+ *   `IndexEntry` reaching this primitive THROUGH THE CANONICAL PARSER
  *   carries a `FilePath` value already free of `..`, `.`, empty segments,
- *   and leading-slash absolute paths. The primitive trusts that
- *   invariant.
+ *   and leading-slash absolute paths. However, the primitive is also
+ *   reachable from callers that construct `IndexEntry` records outside
+ *   the parser (test fixtures, in-memory adapters, future synthesisers).
+ *   Defence-in-depth: every entry is re-validated here so the primitive
+ *   stays safe even when the parser-trusted path is bypassed.
  * - **Depth cap**: synthesis bounds recursion at `MAX_TREE_DEPTH` (4096,
  *   matching git's canonical limit). The cap is enforced at the input
  *   boundary by counting slashes — by the time recursion would catch a
@@ -34,6 +37,7 @@
  */
 
 import type { IndexEntry } from '../../domain/git-index/index.js';
+import { validateIndexPath } from '../../domain/git-index/path-validator.js';
 import { treeDepthExceeded } from '../../domain/objects/error.js';
 import {
   FILE_MODE,
@@ -72,6 +76,12 @@ const stage0Entries = (entries: ReadonlyArray<IndexEntry>): PendingEntry[] => {
   const out: PendingEntry[] = [];
   for (const entry of entries) {
     if (entry.flags.stage !== 0) continue;
+    // Defence-in-depth: re-validate paths. `parseIndex` already calls
+    // this on every entry it constructs, so this is a no-op for
+    // parser-sourced indices. Callers constructing IndexEntry records
+    // outside the parser (test fixtures, future in-memory builders)
+    // benefit from the second check.
+    validateIndexPath(entry.path, 0);
     assertDepthBounded(entry.path);
     out.push({ path: entry.path, id: entry.id, mode: entry.mode });
   }

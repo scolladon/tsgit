@@ -352,7 +352,9 @@
     "synthesised",
     "normalisation",
     "canonicalise",
-    "localise"
+    "localise",
+    "synthesisers",
+    "defence"
   ],
   "ignorePaths": [
     "node_modules",

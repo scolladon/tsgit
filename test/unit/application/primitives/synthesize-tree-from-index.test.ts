@@ -235,7 +235,36 @@ describe('synthesizeTreeFromIndex', () => {
 
   // Phase 13.7 hoisted unsafe-path rejection (`..`, `.`, empty segments,
   // leading-slash) into `parseIndex` itself; see
-  // `test/unit/domain/git-index/index-parser.test.ts` for those cases.
+  // `test/unit/domain/git-index/index-parser.test.ts` for the full grid
+  // of cases. One defence-in-depth case stays HERE to prove the
+  // primitive ALSO rejects unsafe paths when callers construct
+  // IndexEntry records outside the parser (test fixtures, in-memory
+  // builders, future synthesisers).
+
+  it('Given an IndexEntry constructed outside parseIndex with a `..` path, When synthesise, Then still throws INVALID_INDEX_ENTRY (defence-in-depth)', async () => {
+    // Arrange — bypass parseIndex by building the entry directly via the
+    // test helper. The primitive must re-validate.
+    const ctx = await buildSeededContext();
+    const blobId = await writeBlob(ctx, 'malicious');
+    const index: GitIndex = {
+      ...EMPTY_INDEX,
+      entries: [makeIndexEntry('../etc/passwd', blobId)],
+    };
+    const sut = synthesizeTreeFromIndex;
+
+    // Act
+    let caught: unknown;
+    try {
+      await sut(ctx, index.entries);
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert
+    const data = (caught as { data?: { code?: string; reason?: string } })?.data;
+    expect(data?.code).toBe('INVALID_INDEX_ENTRY');
+    expect(data?.reason).toBe("'..' segment rejected");
+  });
 
   it('Given an index path with depth exceeding MAX_TREE_DEPTH, When synthesise, Then throws TREE_DEPTH_EXCEEDED', async () => {
     // Arrange — a path with 4097 segments triggers the depth cap (4096).
