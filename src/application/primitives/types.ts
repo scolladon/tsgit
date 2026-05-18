@@ -109,9 +109,21 @@ export interface WalkWorkingTreeEntry {
   readonly stat: FileStat;
 }
 
+export type WalkIgnorePredicate = (
+  path: FilePath,
+  isDirectory: boolean,
+) => boolean | Promise<boolean>;
+
 export interface WalkWorkingTreeOptions {
   readonly maxDepth?: number;
   readonly maxEntries?: number;
+  /**
+   * Phase 14.3 predicate. Invoked on every directory BEFORE descent
+   * (returning `true` prunes the entire subtree, skipping its `lstat`
+   * cost) and on every leaf BEFORE yielding (returning `true` drops
+   * the leaf). May be sync or async. See ADR-035.
+   */
+  readonly ignore?: WalkIgnorePredicate;
 }
 
 export interface CreateCommitInput {
