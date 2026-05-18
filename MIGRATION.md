@@ -144,6 +144,24 @@ HEAD — atomic per file (matches canonical git, see ADR-018). Without
 `force: true`, the checkout refuses to overwrite a dirty working-tree
 file or to clobber an untracked path with `CHECKOUT_OVERWRITE_DIRTY`.
 
+### `git.resetIndex` / `git.checkout({ noUpdateHead })` → `repo.reset({ mode: 'mixed' })`
+
+```typescript
+// isomorphic-git — manual index rebuild
+await git.resetIndex({ fs, dir: '.', filepath: 'src/foo.ts' });
+
+// tsgit
+await repo.reset({ mode: 'mixed', target: 'HEAD~1' });
+```
+
+Phase 13.2 makes `mode: 'mixed'` rebuild `.git/index` from the target
+commit's tree — atomically, under the same lock that commits it.
+Stat-cache fields survive for paths whose `id + mode` match the prior
+index (the "stat-cache donor" strategy — ADR-021), so `repo.status()`
+stays fast on the next call. Working tree is untouched. Pathspec
+scoping (`reset --mixed -- <pathspec>`) is deferred to Phase 14.2
+(ADR-022).
+
 ### `git.tag` / `git.listTags` → `repo.tag`
 
 ```typescript
