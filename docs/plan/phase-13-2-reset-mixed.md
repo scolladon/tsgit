@@ -162,7 +162,7 @@ public history.
 
 - Added "stage > 0 donor → ignored" to step 1 risk gates and tests.
   Mutation testing on Phase 13.1 surfaced exactly this kind of
-  guard as a high-survival mutant; pre-empt it here.
+  guard as a high-survival mutant; cover it explicitly here.
 - Added "no DIRECTORY rows" to step 1 risk gates. The existing
   `walkTree` already filters internally, but our `buildIndexFromTree`
   should not depend on that — an explicit per-entry mode check

@@ -337,7 +337,9 @@
     "materialises",
     "materialisation",
     "optimisation",
-    "desyncs"
+    "desyncs",
+    "lstats",
+    "synthesise"
   ],
   "ignorePaths": [
     "node_modules",
