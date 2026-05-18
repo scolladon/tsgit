@@ -6,6 +6,7 @@ import { materializeTree } from '../primitives/materialize-tree.js';
 import { readIndex } from '../primitives/read-index.js';
 import { readTree } from '../primitives/read-tree.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
+import { synthesizeTreeFromIndex } from '../primitives/synthesize-tree-from-index.js';
 import { writeSymbolicRef } from '../primitives/write-symbolic-ref.js';
 import { acquireIndexLock } from './internal/index-update.js';
 import {
@@ -109,13 +110,11 @@ const resolvePathSource = async (
   source: 'index' | 'HEAD' | ObjectId,
 ): Promise<ObjectId> => {
   if (source === 'index') {
-    // Placeholder for source === 'index': resolve to HEAD's tree. The two
-    // are equivalent only when the index has not diverged from HEAD via
-    // `add` / `rm`. See `docs/BACKLOG.md` §13.6 — rebuild the synthetic
-    // tree from the index entries directly.
-    const head = await resolveRef(ctx, 'HEAD' as RefName);
-    const headTree = await readTree(ctx, head);
-    return headTree.id;
+    // Synthesise a tree from the stage-0 index entries — this honours
+    // divergence between HEAD's committed tree and the staged content
+    // (the result of `add` / `rm` since the last commit).
+    const index = await readIndex(ctx);
+    return synthesizeTreeFromIndex(ctx, index);
   }
   if (source === 'HEAD') {
     const head = await resolveRef(ctx, 'HEAD' as RefName);
@@ -165,6 +164,12 @@ const materializePathRestoreLockless = async (
     targetTree,
     currentIndex,
     force: true,
+    // Path-restore is the explicit "give me this version" operation —
+    // canonical git always writes the source content even when the index
+    // already matches it. For `source: 'index'` the target tree is
+    // synthesised FROM the index, so without this flag every entry would
+    // be classified `noop` and nothing would be written.
+    forceRewriteAll: true,
     paths: pathSet,
   });
 };
@@ -181,6 +186,8 @@ const materializePathRestoreLocked = async (
       targetTree,
       currentIndex,
       force: true,
+      // See materializePathRestoreLockless for the rationale.
+      forceRewriteAll: true,
       paths: pathSet,
     });
     if (result.written > 0 || result.deleted > 0) {

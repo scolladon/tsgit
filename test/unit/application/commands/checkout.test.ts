@@ -229,6 +229,32 @@ describe('checkout', () => {
     expect(data?.resource).toBe('index');
   });
 
+  it('Given a divergent index (file staged after commit), When path-restore from source: index, Then disk content matches the staged version (not HEAD)', async () => {
+    // Arrange — commit 'v1', then overwrite + stage 'v2' without committing.
+    // The index now records 'v2' while HEAD's tree records 'v1'. Path-restore
+    // from `source: 'index'` must produce the STAGED 'v2', not HEAD's 'v1'.
+    // This is the BACKLOG §13.6 acceptance test.
+    const ctx = createMemoryContext();
+    await init(ctx);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'v1');
+    await add(ctx, ['a.txt']);
+    await commit(ctx, { message: 'commit v1', author });
+
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'v2');
+    await add(ctx, ['a.txt']);
+    // Locally modify the working tree to a third version — the path-restore
+    // should overwrite this with the STAGED 'v2'.
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'v3-dirty');
+
+    // Act — default source is 'index'.
+    const sut = await checkout(ctx, { paths: ['a.txt'] });
+
+    // Assert — file content reverts to the staged 'v2'.
+    expect(sut.changedPaths).toBe(1);
+    const onDisk = await ctx.fs.readUtf8(`${ctx.layout.workDir}/a.txt`);
+    expect(onDisk).toBe('v2');
+  });
+
   it('Given an index.lock already on disk, When path-restore from the default (index) source, Then succeeds without disturbing the pre-existing lock', async () => {
     // Arrange — pre-existing lock with a recognisable sentinel. Path-restore
     // from `source: 'index'` (the default) never commits, so we must NOT
@@ -245,8 +271,10 @@ describe('checkout', () => {
     // Act
     const sut = await checkout(ctx, { paths: ['a.txt'] });
 
-    // Assert — operation succeeds, exact changedPaths count, lock intact.
-    expect(sut.changedPaths).toBe(0); // a.txt already matches HEAD's tree
+    // Assert — operation succeeds (1 path rewritten because path-restore now
+    // unconditionally writes the source content, matching canonical git);
+    // lock is intact (no acquire/release round-trip for the lockless branch).
+    expect(sut.changedPaths).toBe(1);
     expect(await ctx.fs.exists(lockPath)).toBe(true);
     const lockBytes = await ctx.fs.read(lockPath);
     expect(Array.from(lockBytes)).toEqual([0x53, 0x45, 0x4e, 0x54]);

@@ -347,7 +347,9 @@
     "serialises",
     "serialising",
     "recognisable",
-    "harmonised"
+    "harmonised",
+    "synthesises",
+    "synthesised"
   ],
   "ignorePaths": [
     "node_modules",

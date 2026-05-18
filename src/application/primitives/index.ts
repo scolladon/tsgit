@@ -1,5 +1,7 @@
 export type { ApplyChangesetOpts, ApplyChangesetResult } from './apply-changeset.js';
 export { applyChangeset } from './apply-changeset.js';
+export type { BuildIndexFromTreeOpts } from './build-index-from-tree.js';
+export { buildIndexFromTree } from './build-index-from-tree.js';
 export type { BuildPackInput, BuildPackResult } from './build-pack.js';
 export { buildPack } from './build-pack.js';
 export type { Changeset, ChangesetEntry, ChangesetStats } from './compute-changeset.js';
@@ -20,6 +22,7 @@ export { readObject } from './read-object.js';
 export { readTree } from './read-tree.js';
 export { resolveRef } from './resolve-ref.js';
 export { readShallow, updateShallow } from './shallow-file.js';
+export { synthesizeTreeFromIndex } from './synthesize-tree-from-index.js';
 export type * from './types.js';
 export { updateRef } from './update-ref.js';
 export { walkCommits } from './walk-commits.js';
