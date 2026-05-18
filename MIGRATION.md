@@ -250,14 +250,29 @@ await git.merge({
 });
 
 // tsgit
-await repo.merge({
-  theirs: 'refs/heads/feature',
+const result = await repo.merge({
+  target: 'feature',
   author: { name: 'A', email: 'a@b', timestamp: …, timezoneOffset: '+0000' },
 });
+switch (result.kind) {
+  case 'up-to-date': /* HEAD already contains target */ break;
+  case 'fast-forward': /* branch advanced */ break;
+  case 'merge': /* merge commit created — result.id, result.parents */ break;
+  case 'conflict':
+    // Working tree has <<<<<<< markers; index has stage-1/2/3 entries;
+    // .git/MERGE_HEAD / MERGE_MSG / ORIG_HEAD are written. Resolve
+    // each path, then `repo.add(paths)` + `repo.commit({ message })`.
+    break;
+}
 ```
 
-v1 `repo.merge` records the merge commit using HEAD's tree (3-way tree
-walk lands in v1.x); conflict detection is fully wired today.
+Conflict handling is fully wired (Phase 13.4a + 13.4b). Conflicting
+merges return `{ kind: 'conflict', conflicts, mergeHead, origHead }`
+rather than throwing — callers that handled the `MERGE_HAS_CONFLICTS`
+error code in pre-1.x builds should switch to the discriminated
+result. `commit` honours `.git/MERGE_HEAD` automatically: when
+present, the resulting commit has two parents and the merge-state
+files are cleared.
 
 ### `git.readBlob` → `repo.primitives.readBlob`
 

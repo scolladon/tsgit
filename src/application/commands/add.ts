@@ -49,7 +49,10 @@ export const add = async (
 ): Promise<AddResult> => {
   await assertRepository(ctx);
   await assertNotBare(ctx, 'add');
-  await assertNoPendingOperation(ctx);
+  // Allow `add` during a conflicted merge — staging resolved files IS the
+  // path forward. Other pending operations (rebase / cherry-pick / revert)
+  // still block.
+  await assertNoPendingOperation(ctx, { except: 'merge' });
   if (paths.length === 0) throw emptyPathspec();
   const validated = paths.map(validatePath);
   const lock = await acquireIndexLock(

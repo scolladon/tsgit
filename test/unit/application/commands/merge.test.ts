@@ -160,13 +160,13 @@ describe('merge', () => {
     expect(content).toBe('MAIN\nline2\nFEATURE\n');
   });
 
-  it('Given conflicting modifications to the same file, When merge, Then throws MERGE_HAS_CONFLICTS with the conflicting path', async () => {
+  it('Given conflicting modifications to the same file, When merge runs, Then returns kind=conflict with the conflicting path and HEAD does NOT advance', async () => {
     // Arrange — same file, divergent content on the same lines.
     const ctx = createMemoryContext();
     await init(ctx);
     await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'shared\n');
     await add(ctx, ['file.txt']);
-    await commit(ctx, { message: 'base', author });
+    const baseCommit = await commit(ctx, { message: 'base', author });
     await branch(ctx, { kind: 'create', name: 'feature' });
     await checkout(ctx, { target: 'feature' });
     await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'FEATURE-CHANGE\n');
@@ -175,32 +175,26 @@ describe('merge', () => {
     await checkout(ctx, { target: 'main' });
     await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'MAIN-CHANGE\n');
     await add(ctx, ['file.txt']);
-    await commit(ctx, { message: 'on-main', author });
+    const mainTip = await commit(ctx, { message: 'on-main', author });
 
     // Act
-    let caught: unknown;
-    try {
-      await merge(ctx, { target: 'feature', author });
-    } catch (err) {
-      caught = err;
-    }
+    const sut = await merge(ctx, { target: 'feature', author });
 
-    // Assert — error code + path + count.
-    const data = (
-      caught as {
-        data?: { code?: string; count?: number; paths?: ReadonlyArray<string> };
-      }
-    )?.data;
-    expect(data?.code).toBe('MERGE_HAS_CONFLICTS');
-    expect(data?.count).toBe(1);
-    expect(data?.paths).toEqual(['file.txt']);
+    // Assert — kind='conflict' with path + type + heads.
+    expect(sut.kind).toBe('conflict');
+    if (sut.kind !== 'conflict') throw new Error('expected conflict kind');
+    expect(sut.conflicts).toHaveLength(1);
+    expect(sut.conflicts[0]?.path).toBe('file.txt');
+    expect(sut.conflicts[0]?.type).toBe('content');
+    expect(sut.origHead).toBe(mainTip.id);
+    expect(sut.mergeHead).not.toBe(baseCommit.id); // points at the feature tip
 
     // Also confirm HEAD did NOT advance (the conflicting merge must not commit).
     const main = await resolveRef(ctx, 'refs/heads/main' as RefName);
-    const mainCommit = await readObject(ctx, main);
-    if (mainCommit.type !== 'commit') throw new Error('not a commit');
-    expect(mainCommit.data.message).toBe('on-main'); // still pre-merge tip
-    expect(mainCommit.data.parents).toHaveLength(1); // not a merge commit
+    const mainHeadCommit = await readObject(ctx, main);
+    if (mainHeadCommit.type !== 'commit') throw new Error('not a commit');
+    expect(mainHeadCommit.data.message).toBe('on-main'); // still pre-merge tip
+    expect(mainHeadCommit.data.parents).toHaveLength(1); // not a merge commit
   });
 
   it('Given a merge where one side deletes a file the other unchanged, When merge, Then the merged tree omits the deleted file', async () => {
@@ -326,17 +320,14 @@ describe('merge', () => {
     await updateRef(ctx, 'refs/heads/unrelated' as RefName, otherCommitId, {});
 
     // Act
-    let caught: unknown;
-    try {
-      await merge(ctx, { target: 'unrelated', author });
-    } catch (err) {
-      caught = err;
-    }
+    const sut = await merge(ctx, { target: 'unrelated', author });
 
-    // Assert — add-add conflict for shared.txt.
-    const data = (caught as { data?: { code?: string; paths?: ReadonlyArray<string> } })?.data;
-    expect(data?.code).toBe('MERGE_HAS_CONFLICTS');
-    expect(data?.paths).toEqual(['shared.txt']);
+    // Assert — kind='conflict' with add-add for shared.txt.
+    expect(sut.kind).toBe('conflict');
+    if (sut.kind !== 'conflict') throw new Error('expected conflict kind');
+    expect(sut.conflicts).toHaveLength(1);
+    expect(sut.conflicts[0]?.path).toBe('shared.txt');
+    expect(sut.conflicts[0]?.type).toBe('add-add');
   });
 
   it('Given diverged histories + fastForwardOnly=true, When merge, Then throws NON_FAST_FORWARD', async () => {
@@ -366,6 +357,386 @@ describe('merge', () => {
 
     // Assert
     expect((caught as { data?: { code?: string } })?.data?.code).toBe('NON_FAST_FORWARD');
+  });
+});
+
+describe('merge — Phase 13.4b conflict persistence', () => {
+  const setupConflictingMerge = async (
+    ctx: ReturnType<typeof createMemoryContext>,
+  ): Promise<{ readonly preMergeMain: ObjectId; readonly featureTip: ObjectId }> => {
+    await init(ctx);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'base\n');
+    await add(ctx, ['file.txt']);
+    await commit(ctx, { message: 'base', author });
+    await branch(ctx, { kind: 'create', name: 'feature' });
+    await checkout(ctx, { target: 'feature' });
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'FEATURE\n');
+    await add(ctx, ['file.txt']);
+    const featureTip = await commit(ctx, { message: 'on-feature', author });
+    await checkout(ctx, { target: 'main' });
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'MAIN\n');
+    await add(ctx, ['file.txt']);
+    const mainTip = await commit(ctx, { message: 'on-main', author });
+    return { preMergeMain: mainTip.id, featureTip: featureTip.id };
+  };
+
+  it('Given a content conflict, When merge runs, Then the working-tree file contains the <<<<<<< / ======= / >>>>>>> marker block', async () => {
+    // Arrange
+    const ctx = createMemoryContext();
+    await setupConflictingMerge(ctx);
+
+    // Act
+    await merge(ctx, { target: 'feature', author });
+
+    // Assert
+    const sut = await ctx.fs.readUtf8(`${ctx.layout.workDir}/file.txt`);
+    expect(sut).toContain('<<<<<<<');
+    expect(sut).toContain('=======');
+    expect(sut).toContain('>>>>>>>');
+    expect(sut).toContain('MAIN');
+    expect(sut).toContain('FEATURE');
+  });
+
+  it('Given a content conflict, When merge runs, Then .git/MERGE_HEAD records the target tip id', async () => {
+    // Arrange
+    const ctx = createMemoryContext();
+    const { featureTip } = await setupConflictingMerge(ctx);
+
+    // Act
+    await merge(ctx, { target: 'feature', author });
+
+    // Assert — exact content (id + LF), kills mutants that drop LF or
+    // record the wrong id.
+    const sut = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/MERGE_HEAD`);
+    expect(sut).toBe(`${featureTip}\n`);
+  });
+
+  it('Given a content conflict, When merge runs, Then .git/ORIG_HEAD records the pre-merge HEAD id', async () => {
+    // Arrange
+    const ctx = createMemoryContext();
+    const { preMergeMain } = await setupConflictingMerge(ctx);
+
+    // Act
+    await merge(ctx, { target: 'feature', author });
+
+    // Assert
+    const sut = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/ORIG_HEAD`);
+    expect(sut).toBe(`${preMergeMain}\n`);
+  });
+
+  it('Given a content conflict, When merge runs with a message, Then .git/MERGE_MSG records the message', async () => {
+    // Arrange
+    const ctx = createMemoryContext();
+    await setupConflictingMerge(ctx);
+
+    // Act
+    await merge(ctx, { target: 'feature', author, message: 'Merge feature into main' });
+
+    // Assert
+    const sut = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/MERGE_MSG`);
+    expect(sut).toBe('Merge feature into main');
+  });
+
+  it('Given a content conflict, When merge runs, Then the index has stage-1, stage-2, and stage-3 entries for the conflicting path', async () => {
+    // Arrange
+    const ctx = createMemoryContext();
+    await setupConflictingMerge(ctx);
+
+    // Act
+    await merge(ctx, { target: 'feature', author });
+
+    // Assert
+    const { readIndex } = await import('../../../../src/application/primitives/read-index.js');
+    const sut = await readIndex(ctx);
+    const fileEntries = sut.entries.filter((e) => e.path === 'file.txt');
+    const stages = fileEntries.map((e) => e.flags.stage).sort();
+    expect(stages).toEqual([1, 2, 3]);
+  });
+
+  it('Given a resolved content conflict, When add + commit run, Then a merge commit is created with two parents (origHead + mergeHead)', async () => {
+    // Arrange — merge produces conflict; user resolves by overwriting the
+    // file and running add + commit. The resulting commit must have
+    // parents=[preMergeMain, featureTip].
+    const ctx = createMemoryContext();
+    const { preMergeMain, featureTip } = await setupConflictingMerge(ctx);
+    await merge(ctx, { target: 'feature', author });
+
+    // Act — manual resolution.
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'RESOLVED\n');
+    await add(ctx, ['file.txt']);
+    const sut = await commit(ctx, { message: 'resolved merge', author });
+
+    // Assert — two parents in the right order.
+    expect(sut.parents).toEqual([preMergeMain, featureTip]);
+
+    // Verify the merge-state markers were cleared (recovery aid ORIG_HEAD
+    // remains; MERGE_HEAD and MERGE_MSG are gone).
+    expect(await ctx.fs.exists(`${ctx.layout.gitDir}/MERGE_HEAD`)).toBe(false);
+    expect(await ctx.fs.exists(`${ctx.layout.gitDir}/MERGE_MSG`)).toBe(false);
+    expect(await ctx.fs.exists(`${ctx.layout.gitDir}/ORIG_HEAD`)).toBe(true);
+  });
+
+  it('Given a conflicting merge already in progress, When merge is called again, Then throws OPERATION_IN_PROGRESS', async () => {
+    // Arrange
+    const ctx = createMemoryContext();
+    await setupConflictingMerge(ctx);
+    await merge(ctx, { target: 'feature', author });
+
+    // Act / Assert
+    let caught: unknown;
+    try {
+      await merge(ctx, { target: 'feature', author });
+    } catch (err) {
+      caught = err;
+    }
+    const data = (caught as { data?: { code?: string; operation?: string } })?.data;
+    expect(data?.code).toBe('OPERATION_IN_PROGRESS');
+    expect(data?.operation).toBe('merge');
+  });
+
+  it('Given an unmerged index, When commit runs without resolving, Then throws MERGE_HAS_CONFLICTS', async () => {
+    // Arrange
+    const ctx = createMemoryContext();
+    await setupConflictingMerge(ctx);
+    await merge(ctx, { target: 'feature', author });
+
+    // Act / Assert — user tries to commit BEFORE running `add` on the
+    // resolved file; the unmerged stage-1/2/3 entries remain.
+    let caught: unknown;
+    try {
+      await commit(ctx, { message: 'cannot commit', author });
+    } catch (err) {
+      caught = err;
+    }
+    const data = (caught as { data?: { code?: string; count?: number } })?.data;
+    expect(data?.code).toBe('MERGE_HAS_CONFLICTS');
+    expect(data?.count).toBe(1);
+  });
+
+  describe('runBounded (direct)', () => {
+    it('Given an empty array, When runBounded is called, Then resolves without invoking fn', async () => {
+      // Arrange
+      const { runBounded } = await import('../../../../src/application/commands/merge.js');
+      let calls = 0;
+      const fn = async (): Promise<void> => {
+        calls += 1;
+      };
+
+      // Act
+      await runBounded([], 4, fn);
+
+      // Assert
+      expect(calls).toBe(0);
+    });
+
+    it('Given an array of 10 items with limit=3, When runBounded runs, Then fn is invoked exactly 10 times with each item once', async () => {
+      // Arrange
+      const { runBounded } = await import('../../../../src/application/commands/merge.js');
+      const seen: number[] = [];
+      const fn = async (item: number): Promise<void> => {
+        seen.push(item);
+      };
+
+      // Act
+      await runBounded([1, 2, 3, 4, 5, 6, 7, 8, 9, 10], 3, fn);
+
+      // Assert — every item processed, no dupes, no skips.
+      expect(seen.sort((a, b) => a - b)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+    });
+
+    it('Given limit greater than array size, When runBounded runs, Then concurrency caps at array length (no over-spawned workers)', async () => {
+      // Arrange — track max concurrent in-flight via a counter.
+      const { runBounded } = await import('../../../../src/application/commands/merge.js');
+      let inFlight = 0;
+      let maxInFlight = 0;
+      const fn = async (): Promise<void> => {
+        inFlight += 1;
+        if (inFlight > maxInFlight) maxInFlight = inFlight;
+        await Promise.resolve();
+        inFlight -= 1;
+      };
+
+      // Act
+      await runBounded([1, 2, 3], 100, fn);
+
+      // Assert — at most 3 workers (item count), not 100.
+      expect(maxInFlight).toBeLessThanOrEqual(3);
+    });
+
+    it('Given limit smaller than array size, When runBounded runs, Then maxInFlight equals limit (bounded concurrency)', async () => {
+      // Arrange
+      const { runBounded } = await import('../../../../src/application/commands/merge.js');
+      let inFlight = 0;
+      let maxInFlight = 0;
+      const items = Array.from({ length: 50 }, (_, i) => i);
+      const fn = async (): Promise<void> => {
+        inFlight += 1;
+        if (inFlight > maxInFlight) maxInFlight = inFlight;
+        await Promise.resolve();
+        inFlight -= 1;
+      };
+
+      // Act
+      await runBounded(items, 4, fn);
+
+      // Assert — concurrency cap respected.
+      expect(maxInFlight).toBeLessThanOrEqual(4);
+      expect(maxInFlight).toBeGreaterThan(1); // genuine parallelism
+    });
+
+    it('Given fn rejects on one item, When runBounded runs, Then the rejection propagates', async () => {
+      // Arrange
+      const { runBounded } = await import('../../../../src/application/commands/merge.js');
+      const fn = async (item: number): Promise<void> => {
+        if (item === 5) throw new Error('boom');
+      };
+
+      // Act / Assert
+      await expect(runBounded([1, 2, 3, 4, 5, 6], 2, fn)).rejects.toThrow('boom');
+    });
+  });
+
+  describe('rejectUnsupportedConflicts (direct)', () => {
+    it.each([
+      'rename-rename',
+      'gitlink',
+    ] as const)('Given a %s MergeConflict, When rejectUnsupportedConflicts is called, Then throws UNSUPPORTED_OPERATION with operation=merge', async (conflictType) => {
+      // Arrange
+      const { rejectUnsupportedConflicts } = await import(
+        '../../../../src/application/commands/merge.js'
+      );
+      const conflict = {
+        type: conflictType,
+        path: 'sub/path.txt' as never,
+      } as never;
+
+      // Act
+      let caught: unknown;
+      try {
+        rejectUnsupportedConflicts([conflict]);
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert
+      const data = (caught as { data?: { code?: string; operation?: string; reason?: string } })
+        ?.data;
+      expect(data?.code).toBe('UNSUPPORTED_OPERATION');
+      expect(data?.operation).toBe('merge');
+      expect(data?.reason).toContain(conflictType);
+      expect(data?.reason).toContain('sub/path.txt');
+    });
+
+    it.each([
+      'content',
+      'add-add',
+      'modify-delete',
+      'type-change',
+      'binary',
+    ] as const)('Given a %s MergeConflict, When rejectUnsupportedConflicts is called, Then does not throw (supported type)', async (conflictType) => {
+      // Arrange
+      const { rejectUnsupportedConflicts } = await import(
+        '../../../../src/application/commands/merge.js'
+      );
+      const conflict = { type: conflictType, path: 'x.txt' as never } as never;
+
+      // Act / Assert — no throw.
+      expect(() => rejectUnsupportedConflicts([conflict])).not.toThrow();
+    });
+
+    it('Given an empty conflicts array, When rejectUnsupportedConflicts is called, Then does not throw', async () => {
+      // Arrange
+      const { rejectUnsupportedConflicts } = await import(
+        '../../../../src/application/commands/merge.js'
+      );
+
+      // Act / Assert
+      expect(() => rejectUnsupportedConflicts([])).not.toThrow();
+    });
+  });
+
+  it('Given a partially-resolved index (one path stage-0, another stage-1/2/3), When commit runs, Then throws MERGE_HAS_CONFLICTS reporting only the still-unmerged path', async () => {
+    // Arrange — start from a multi-conflict setup, resolve ONE path, then
+    // attempt to commit. Only the unresolved path should appear in the
+    // error's `paths`. Kills `!==` → `===` mutations on
+    // rejectUnmergedIndex's stage check, and confirms the set deduplicates
+    // stage-1/2/3 entries to a single path.
+    const ctx = createMemoryContext();
+    await init(ctx);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file-a.txt`, 'base-a\n');
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file-b.txt`, 'base-b\n');
+    await add(ctx, ['file-a.txt', 'file-b.txt']);
+    await commit(ctx, { message: 'base', author });
+    await branch(ctx, { kind: 'create', name: 'feature' });
+    await checkout(ctx, { target: 'feature' });
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file-a.txt`, 'FEAT-A\n');
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file-b.txt`, 'FEAT-B\n');
+    await add(ctx, ['file-a.txt', 'file-b.txt']);
+    await commit(ctx, { message: 'on-feature', author });
+    await checkout(ctx, { target: 'main' });
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file-a.txt`, 'MAIN-A\n');
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file-b.txt`, 'MAIN-B\n');
+    await add(ctx, ['file-a.txt', 'file-b.txt']);
+    await commit(ctx, { message: 'on-main', author });
+    await merge(ctx, { target: 'feature', author });
+
+    // Resolve only file-a (move stage-1/2/3 to stage-0); leave file-b
+    // unmerged.
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file-a.txt`, 'resolved-a\n');
+    await add(ctx, ['file-a.txt']);
+
+    // Act / Assert
+    let caught: unknown;
+    try {
+      await commit(ctx, { message: 'partial', author });
+    } catch (err) {
+      caught = err;
+    }
+    const data = (
+      caught as { data?: { code?: string; count?: number; paths?: ReadonlyArray<string> } }
+    )?.data;
+    expect(data?.code).toBe('MERGE_HAS_CONFLICTS');
+    expect(data?.count).toBe(1);
+    expect(data?.paths).toEqual(['file-b.txt']);
+  });
+
+  it('Given a resolved conflict with no MERGE_MSG draft, When commit runs with empty message, Then throws EMPTY_COMMIT_MESSAGE (the empty user message + no draft branch)', async () => {
+    // Arrange — set up a conflict, resolve it, manually delete
+    // MERGE_MSG to exercise the (c) branch of resolveCommitMessage
+    // (empty user message + no MERGE_MSG → sanitizeMessage rejects).
+    const ctx = createMemoryContext();
+    await setupConflictingMerge(ctx);
+    await merge(ctx, { target: 'feature', author });
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'RESOLVED\n');
+    await add(ctx, ['file.txt']);
+    await ctx.fs.rm(`${ctx.layout.gitDir}/MERGE_MSG`);
+
+    // Act / Assert
+    let caught: unknown;
+    try {
+      await commit(ctx, { message: '', author });
+    } catch (err) {
+      caught = err;
+    }
+    expect((caught as { data?: { code?: string } })?.data?.code).toBe('EMPTY_COMMIT_MESSAGE');
+  });
+
+  it('Given a resolved conflict and an empty commit message, When commit runs, Then the MERGE_MSG draft is used as the commit message', async () => {
+    // Arrange
+    const ctx = createMemoryContext();
+    await setupConflictingMerge(ctx);
+    await merge(ctx, { target: 'feature', author, message: 'Merge feature' });
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'RESOLVED\n');
+    await add(ctx, ['file.txt']);
+
+    // Act — empty user message; commit should fall back to MERGE_MSG.
+    const sut = await commit(ctx, { message: '', author });
+
+    // Assert
+    const { readObject } = await import('../../../../src/application/primitives/read-object.js');
+    const commitObj = await readObject(ctx, sut.id);
+    if (commitObj.type !== 'commit') throw new Error('not a commit');
+    expect(commitObj.data.message).toBe('Merge feature');
   });
 });
 

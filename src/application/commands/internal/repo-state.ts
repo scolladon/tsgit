@@ -74,16 +74,28 @@ const PENDING_MARKERS: ReadonlyArray<{
   { file: 'REBASE_HEAD', operation: 'rebase' },
 ];
 
+type PendingOperation = 'merge' | 'rebase' | 'cherry-pick' | 'revert';
+
 /**
  * Reject mutations when an in-progress operation has left a marker file behind.
  * Catches the four standard markers; first match in PENDING_MARKERS order wins
  * (MERGE_HEAD beats the rest), but the existence checks fan out in parallel.
+ *
+ * Pass `except` to skip a specific marker — used by `commit` to allow the
+ * resolving commit of a conflicted merge (where MERGE_HEAD is expected to
+ * exist and the command's purpose is to clear it).
  */
-export const assertNoPendingOperation = async (ctx: Context): Promise<void> => {
+export const assertNoPendingOperation = async (
+  ctx: Context,
+  options: { readonly except?: PendingOperation } = {},
+): Promise<void> => {
   const flags = await Promise.all(
     PENDING_MARKERS.map((m) => ctx.fs.exists(`${ctx.layout.gitDir}/${m.file}`)),
   );
   for (let i = 0; i < PENDING_MARKERS.length; i += 1) {
-    if (flags[i] === true) throw operationInProgress(PENDING_MARKERS[i]?.operation as never);
+    const marker = PENDING_MARKERS[i];
+    if (marker === undefined) continue;
+    if (options.except === marker.operation) continue;
+    if (flags[i] === true) throw operationInProgress(marker.operation);
   }
 };

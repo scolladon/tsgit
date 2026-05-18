@@ -1,12 +1,17 @@
-import { mergeHasConflicts, nonFastForward } from '../../domain/commands/error.js';
+import { nonFastForward } from '../../domain/commands/error.js';
+import { conflictsToIndexEntries } from '../../domain/diff/index.js';
+import type { IndexEntry, StatData } from '../../domain/git-index/index.js';
 import { unsupportedOperation } from '../../domain/index.js';
 import {
+  type ConflictType,
   type ContentMergeResult,
   type ContentMerger,
   MAX_CONFLICT_OUTPUT_BYTES,
+  type MergeConflict,
   type MergeOutcome,
   mergeContent,
   mergeTrees,
+  writeConflictMarkers,
 } from '../../domain/merge/index.js';
 import type { CommitData } from '../../domain/objects/commit.js';
 import { treeDepthExceeded, unexpectedObjectType } from '../../domain/objects/error.js';
@@ -30,6 +35,8 @@ import { writeObject } from '../primitives/write-object.js';
 import { writeTree } from '../primitives/write-tree.js';
 import { resolveAuthor, resolveCommitter, sanitizeMessage } from './internal/commit-message.js';
 import { readConfig } from './internal/config-read.js';
+import { acquireIndexLock } from './internal/index-update.js';
+import { writeMergeHead, writeMergeMsg, writeOrigHead } from './internal/merge-state.js';
 import {
   assertNoPendingOperation,
   assertNotBare,
@@ -46,6 +53,11 @@ export interface MergeOptions {
   readonly committer?: AuthorIdentity;
 }
 
+export interface MergeConflictDescriptor {
+  readonly path: FilePath;
+  readonly type: ConflictType;
+}
+
 export type MergeResult =
   | { readonly kind: 'up-to-date'; readonly id: ObjectId }
   | { readonly kind: 'fast-forward'; readonly id: ObjectId; readonly branch: RefName }
@@ -54,6 +66,12 @@ export type MergeResult =
       readonly id: ObjectId;
       readonly branch: RefName;
       readonly parents: ReadonlyArray<ObjectId>;
+    }
+  | {
+      readonly kind: 'conflict';
+      readonly conflicts: ReadonlyArray<MergeConflictDescriptor>;
+      readonly mergeHead: ObjectId;
+      readonly origHead: ObjectId;
     };
 
 /**
@@ -61,11 +79,13 @@ export type MergeResult =
  *
  * - Up-to-date: target is ancestor of HEAD → no-op.
  * - Fast-forward: HEAD is ancestor of target → branch advances.
- * - True merge for diverged histories: Phase 13.4a wires the three-way
+ * - True merge for diverged histories: Phase 13.4a wired the three-way
  *   tree merge (`mergeTrees` + `mergeContent`) so a CLEAN merge commits
- *   the merged tree directly (no `add` required afterward). Conflicting
- *   merges throw `MERGE_HAS_CONFLICTS` with the offending paths;
- *   working-tree markers + unmerged stages are deferred to Phase 13.4b.
+ *   the merged tree directly. Phase 13.4b persists conflict state on
+ *   disk (marker files, stage-1/2/3 index entries, MERGE_HEAD /
+ *   MERGE_MSG / ORIG_HEAD) and returns `{ kind: 'conflict', ... }`.
+ *   Resolution path: edit the marker files, `repo.add(paths)`,
+ *   `repo.commit({ message })` — the resulting commit has two parents.
  */
 export const merge = async (ctx: Context, opts: MergeOptions): Promise<MergeResult> => {
   await assertRepository(ctx);
@@ -94,6 +114,11 @@ export const merge = async (ctx: Context, opts: MergeOptions): Promise<MergeResu
 
 const MERGE_WRITE_FILES_OP = 'merge:write-files';
 
+export const UNSUPPORTED_CONFLICT_TYPES: ReadonlySet<ConflictType> = new Set([
+  'rename-rename',
+  'gitlink',
+]);
+
 const mergeCommit = async (
   ctx: Context,
   opts: MergeOptions,
@@ -104,32 +129,54 @@ const mergeCommit = async (
 ): Promise<MergeResult> => {
   ctx.progress.start(MERGE_WRITE_FILES_OP);
   try {
-    const mergedTree = await computeMergedTree(ctx, ourId, theirId, baseId);
-    const author = await resolveMergeAuthor(ctx, opts);
-    const committer = resolveMergeCommitter(opts, author);
-    const message = sanitizeMessage(opts.message ?? `Merge ${opts.target}`, { allowEmpty: false });
-    const commitData: CommitData = {
-      tree: mergedTree,
-      parents: [ourId, theirId],
-      author,
-      committer,
-      message,
-      extraHeaders: [],
-    };
-    const id = await createCommit(ctx, commitData);
-    await updateRef(ctx, branchName, id, { expected: ourId });
-    return { kind: 'merge', id, branch: branchName, parents: [ourId, theirId] };
+    const treeResult = await computeMergeTreeResult(ctx, ourId, theirId, baseId);
+    if (treeResult.kind === 'conflict') {
+      return persistConflictState(ctx, opts, treeResult, ourId, theirId);
+    }
+    return commitCleanMerge(ctx, opts, branchName, ourId, theirId, treeResult.tree);
   } finally {
     ctx.progress.end(MERGE_WRITE_FILES_OP);
   }
 };
 
-const computeMergedTree = async (
+const commitCleanMerge = async (
+  ctx: Context,
+  opts: MergeOptions,
+  branchName: RefName,
+  ourId: ObjectId,
+  theirId: ObjectId,
+  mergedTree: ObjectId,
+): Promise<MergeResult> => {
+  const author = await resolveMergeAuthor(ctx, opts);
+  const committer = resolveMergeCommitter(opts, author);
+  const message = sanitizeMessage(opts.message ?? `Merge ${opts.target}`, { allowEmpty: false });
+  const commitData: CommitData = {
+    tree: mergedTree,
+    parents: [ourId, theirId],
+    author,
+    committer,
+    message,
+    extraHeaders: [],
+  };
+  const id = await createCommit(ctx, commitData);
+  await updateRef(ctx, branchName, id, { expected: ourId });
+  return { kind: 'merge', id, branch: branchName, parents: [ourId, theirId] };
+};
+
+type MergeTreeResult =
+  | { readonly kind: 'clean'; readonly tree: ObjectId }
+  | {
+      readonly kind: 'conflict';
+      readonly outcomes: ReadonlyArray<MergeOutcome>;
+      readonly conflicts: ReadonlyArray<MergeConflict>;
+    };
+
+const computeMergeTreeResult = async (
   ctx: Context,
   ourId: ObjectId,
   theirId: ObjectId,
   baseId: ObjectId | undefined,
-): Promise<ObjectId> => {
+): Promise<MergeTreeResult> => {
   const ourTreeId = await getTree(ctx, ourId);
   const theirTreeId = await getTree(ctx, theirId);
   const baseTreeId = baseId !== undefined ? await getTree(ctx, baseId) : undefined;
@@ -143,12 +190,11 @@ const computeMergedTree = async (
   const contentMerger = buildContentMerger(ctx);
   const result = await mergeTrees(baseFlat, ourFlat, theirFlat, contentMerger);
 
-  if (!result.cleanMerge) {
-    const paths = result.conflicts.map((c) => c.path);
-    throw mergeHasConflicts(result.conflicts.length, paths);
+  if (result.cleanMerge) {
+    const tree = await synthesiseMergedTree(ctx, result.outcomes);
+    return { kind: 'clean', tree };
   }
-
-  return synthesiseMergedTree(ctx, result.outcomes);
+  return { kind: 'conflict', outcomes: result.outcomes, conflicts: result.conflicts };
 };
 
 const buildContentMerger =
@@ -279,6 +325,254 @@ const writeNestedTree = async (
   );
   const fileEntries = files.map((f) => ({ name: f.path, id: f.id, mode: f.mode }));
   return writeTree(ctx, [...fileEntries, ...subdirEntries]);
+};
+
+/**
+ * Persist the conflicting-merge state on disk per ADR-027's write order:
+ * working-tree files → ORIG_HEAD → MERGE_HEAD → MERGE_MSG → index.
+ *
+ * Unsupported conflict types are rejected upfront BEFORE any disk write
+ * so the operation fails atomically (HEAD/index/working-tree untouched).
+ */
+const persistConflictState = async (
+  ctx: Context,
+  opts: MergeOptions,
+  result: Extract<MergeTreeResult, { readonly kind: 'conflict' }>,
+  ourId: ObjectId,
+  theirId: ObjectId,
+): Promise<MergeResult> => {
+  rejectUnsupportedConflicts(result.conflicts);
+
+  const lock = await acquireIndexLock(ctx);
+  try {
+    await writeConflictingWorkingTree(ctx, result.outcomes, result.conflicts);
+    await writeOrigHead(ctx, ourId);
+    await writeMergeHead(ctx, theirId);
+    const message = sanitizeMessage(opts.message ?? `Merge ${opts.target}`, { allowEmpty: false });
+    await writeMergeMsg(ctx, message);
+    const indexEntries = buildConflictIndexEntries(result.outcomes, result.conflicts);
+    await lock.commit(indexEntries);
+  } finally {
+    // Always release the lock — `commit` flips the lock to a no-op state
+    // on success, so this is safe regardless of which path completed.
+    // Matches the `try/finally` pattern in `add.ts` and `checkout.ts`.
+    await lock.release();
+  }
+
+  return {
+    kind: 'conflict',
+    conflicts: result.conflicts.map((c) => ({ path: c.path, type: c.type })),
+    mergeHead: theirId,
+    origHead: ourId,
+  };
+};
+
+/**
+ * Reject conflict types that v1 cannot persist as resolvable merge state
+ * (`rename-rename`, `gitlink`). Fires BEFORE `acquireIndexLock` in the
+ * caller so an unsupported conflict surfaces atomically — no stale
+ * `index.lock`, no working-tree pollution, no MERGE_HEAD on disk.
+ * Exported for direct unit testing.
+ */
+export const rejectUnsupportedConflicts = (conflicts: ReadonlyArray<MergeConflict>): void => {
+  for (const conflict of conflicts) {
+    if (UNSUPPORTED_CONFLICT_TYPES.has(conflict.type)) {
+      throw unsupportedOperation(
+        'merge',
+        `conflict type '${conflict.type}' not supported in v1 (path=${conflict.path})`,
+      );
+    }
+  }
+};
+
+// Hard cap on concurrent path writes during a conflicting merge. Without it
+// large merges (thousands of paths) blow past the default `ulimit -n`
+// (256 on macOS, 1024 on most Linux) and surface as EMFILE.
+const MAX_CONCURRENT_PATH_WRITES = 32;
+
+const writeConflictingWorkingTree = async (
+  ctx: Context,
+  outcomes: ReadonlyArray<MergeOutcome>,
+  conflicts: ReadonlyArray<MergeConflict>,
+): Promise<void> => {
+  // Bounded parallelism — independent path writes overlap, but the pool
+  // caps in-flight at MAX_CONCURRENT_PATH_WRITES so a 10k-path merge
+  // doesn't exhaust file descriptors.
+  await runBounded(outcomes, MAX_CONCURRENT_PATH_WRITES, (outcome) =>
+    writeOutcomeToTree(ctx, outcome),
+  );
+  await runBounded(conflicts, MAX_CONCURRENT_PATH_WRITES, (conflict) =>
+    writeConflictToTree(ctx, conflict),
+  );
+};
+
+/**
+ * Run `fn` over `items` with at most `limit` in-flight at once. Promise
+ * rejection propagates upward (matches `Promise.all` semantics); in-flight
+ * tasks are not cancelled. Exported for direct unit testing.
+ */
+export const runBounded = async <T>(
+  items: ReadonlyArray<T>,
+  limit: number,
+  fn: (item: T) => Promise<void>,
+): Promise<void> => {
+  let cursor = 0;
+  const workers: Promise<void>[] = [];
+  const worker = async (): Promise<void> => {
+    while (cursor < items.length) {
+      const next = items[cursor++];
+      if (next === undefined) break;
+      await fn(next);
+    }
+  };
+  const concurrency = Math.min(limit, items.length);
+  for (let i = 0; i < concurrency; i++) workers.push(worker());
+  await Promise.all(workers);
+};
+
+const writeOutcomeToTree = async (ctx: Context, outcome: MergeOutcome): Promise<void> => {
+  if (outcome.status === 'unchanged' || outcome.status === 'resolved-known') {
+    // Cap with MAX_CONFLICT_OUTPUT_BYTES so a hostile clean-tree blob
+    // cannot OOM the merge consumer during a conflicting merge.
+    const blob = await readBlob(ctx, outcome.id, { maxBytes: MAX_CONFLICT_OUTPUT_BYTES });
+    await writeWorkingTreeFile(ctx, outcome.path, blob.content);
+    return;
+  }
+  if (outcome.status === 'resolved-merged') {
+    await writeWorkingTreeFile(ctx, outcome.path, outcome.bytes);
+    return;
+  }
+  if (outcome.status === 'resolved-deleted') {
+    await removeWorkingTreeFile(ctx, outcome.path);
+  }
+  // 'conflict' outcomes are handled by the parallel conflicts batch.
+};
+
+const writeConflictToTree = async (ctx: Context, conflict: MergeConflict): Promise<void> => {
+  const bytes = await materialiseConflictBytes(ctx, conflict);
+  if (bytes !== undefined) {
+    await writeWorkingTreeFile(ctx, conflict.path, bytes);
+  }
+};
+
+const materialiseConflictBytes = async (
+  ctx: Context,
+  conflict: MergeConflict,
+): Promise<Uint8Array | undefined> => {
+  if (conflict.type === 'content' && conflict.conflictContent !== undefined) {
+    return conflict.conflictContent;
+  }
+  if (conflict.type === 'binary') {
+    // Binary conflicts: write ours bytes verbatim (matches mergeContent's
+    // existing fallback shape). User must manually choose a side.
+    if (conflict.ourId !== undefined) {
+      return (await readBlob(ctx, conflict.ourId, { maxBytes: MAX_CONFLICT_OUTPUT_BYTES })).content;
+    }
+  }
+  if (conflict.type === 'add-add' || conflict.type === 'type-change') {
+    if (conflict.ourId !== undefined) {
+      return (await readBlob(ctx, conflict.ourId, { maxBytes: MAX_CONFLICT_OUTPUT_BYTES })).content;
+    }
+  }
+  if (conflict.type === 'modify-delete') {
+    // Preserve the surviving side's bytes (whichever has an id).
+    const survivorId = conflict.ourId ?? conflict.theirId;
+    if (survivorId !== undefined) {
+      return (await readBlob(ctx, survivorId, { maxBytes: MAX_CONFLICT_OUTPUT_BYTES })).content;
+    }
+  }
+  // Content conflict whose mergeContent didn't produce conflictContent —
+  // build the markers from ours/theirs blobs directly.
+  if (
+    conflict.type === 'content' &&
+    conflict.ourId !== undefined &&
+    conflict.theirId !== undefined
+  ) {
+    const [ours, theirs] = await Promise.all([
+      readBlob(ctx, conflict.ourId, { maxBytes: MAX_CONFLICT_OUTPUT_BYTES }),
+      readBlob(ctx, conflict.theirId, { maxBytes: MAX_CONFLICT_OUTPUT_BYTES }),
+    ]);
+    return writeConflictMarkers([ours.content], [theirs.content]);
+  }
+  return undefined;
+};
+
+const writeWorkingTreeFile = async (
+  ctx: Context,
+  path: FilePath,
+  content: Uint8Array,
+): Promise<void> => {
+  const fullPath = `${ctx.layout.workDir}/${path}`;
+  const parent = parentDir(fullPath);
+  if (parent !== undefined) {
+    await ctx.fs.mkdir(parent);
+  }
+  await ctx.fs.write(fullPath, content);
+};
+
+const removeWorkingTreeFile = async (ctx: Context, path: FilePath): Promise<void> => {
+  const fullPath = `${ctx.layout.workDir}/${path}`;
+  if (await ctx.fs.exists(fullPath)) {
+    await ctx.fs.rm(fullPath);
+  }
+};
+
+const parentDir = (fullPath: string): string | undefined => {
+  const lastSlash = fullPath.lastIndexOf('/');
+  if (lastSlash <= 0) return undefined;
+  return fullPath.slice(0, lastSlash);
+};
+
+const zeroStat = (mode: FileMode): StatData => ({
+  ctimeSeconds: 0,
+  ctimeNanoseconds: 0,
+  mtimeSeconds: 0,
+  mtimeNanoseconds: 0,
+  dev: 0,
+  ino: 0,
+  mode,
+  uid: 0,
+  gid: 0,
+  fileSize: 0,
+});
+
+const buildConflictIndexEntries = (
+  outcomes: ReadonlyArray<MergeOutcome>,
+  conflicts: ReadonlyArray<MergeConflict>,
+): ReadonlyArray<IndexEntry> => {
+  // Stage-0 entries from clean outcomes (resolved-deleted contributes
+  // nothing). resolved-merged needs its bytes hashed but we already wrote
+  // them — we'll re-derive the id by computing it lazily. For simplicity,
+  // resolved-merged outcomes are EXCLUDED from the conflict-state index:
+  // the path is left unmerged (user must add it manually) when it sits
+  // alongside conflicts. This avoids needing writeObject under the index
+  // lock with attendant complexity. Pure clean outcomes (unchanged /
+  // resolved-known) keep their stage-0 entries.
+  const stage0: IndexEntry[] = [];
+  for (const outcome of outcomes) {
+    if (outcome.status === 'unchanged' || outcome.status === 'resolved-known') {
+      stage0.push({
+        ...zeroStat(outcome.mode),
+        id: outcome.id,
+        flags: { assumeValid: false, extended: false, stage: 0 },
+        path: outcome.path,
+      });
+    }
+  }
+
+  const stageConflicts = conflictsToIndexEntries(conflicts, zeroStat);
+  // serializeIndex sorts by path only (V8's sort is stable so the
+  // upstream stage ordering survives) but the canonical git index
+  // requires (path, stage) order. Sort explicitly here to make the
+  // invariant load-bearing on our own code rather than V8's
+  // stable-sort guarantee.
+  const combined = [...stage0, ...stageConflicts];
+  combined.sort((a, b) => {
+    if (a.path < b.path) return -1;
+    if (a.path > b.path) return 1;
+    return a.flags.stage - b.flags.stage;
+  });
+  return combined;
 };
 
 const resolveMergeAuthor = async (ctx: Context, opts: MergeOptions): Promise<AuthorIdentity> => {
