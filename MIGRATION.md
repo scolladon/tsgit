@@ -162,6 +162,26 @@ stays fast on the next call. Working tree is untouched. Pathspec
 scoping (`reset --mixed -- <pathspec>`) is deferred to Phase 14.2
 (ADR-022).
 
+### `git.checkout({ force: true, ref })` for full reset → `repo.reset({ mode: 'hard' })`
+
+```typescript
+// isomorphic-git — `force: true` checkout to discard local mods
+await git.checkout({ fs, dir: '.', ref: 'HEAD', force: true });
+
+// tsgit
+await repo.reset({ mode: 'hard', target: 'HEAD' });
+```
+
+Phase 13.3 makes `mode: 'hard'` rewrite both the working tree and
+`.git/index` to match the target commit's tree — atomically, under
+the same `acquireIndexLock` that wraps `readIndex → materializeTree →
+commit`. Locally-modified files are force-overwritten, untracked
+files outside the target tree are left alone, bare repos still
+reject the operation upfront. The new index entries carry
+post-write `lstat`-derived stat fields (not donor stats, which would
+be stale for files we just rewrote — see ADR-023). Pathspec scoping
+deferred to Phase 14.2.
+
 ### `git.tag` / `git.listTags` → `repo.tag`
 
 ```typescript

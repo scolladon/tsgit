@@ -31,6 +31,7 @@ A pure TypeScript git implementation designed to be the fastest portable git lib
 | 12.4 | Bench — `clone:small-repo` vs isomorphic-git over `git-http-backend` | ✅ |
 | 13.1 | Working-tree materialisation — `checkout` writes / deletes / chmods files; index + HEAD updated atomically per file | ✅ |
 | 13.2 | `reset --mixed` rebuilds `.git/index` from the target commit's tree under `index.lock`; stat-cache preserved for unchanged paths | ✅ |
+| 13.3 | `reset --hard` materialises both index and working tree to match the target commit's tree; force-rewrites locally-modified files | ✅ |
 
 ## Features
 

@@ -10,6 +10,21 @@
  * Returns the new IndexEntry list for the caller to commit, plus
  * written/deleted counts. The primitive does NOT commit the index — the
  * caller decides (see design §3.2 + ADR-020).
+ *
+ * ## Stat-source contract for `newIndexEntries` (load-bearing for ADR-023)
+ *
+ * - **Paths that were written/added** (`add` or `update` changeset entries):
+ *   the IndexEntry carries **post-write `lstat`-derived stat fields**
+ *   (ctime/mtime/dev/ino/uid/gid/fileSize). These reflect the file we just
+ *   wrote, so the next `status` runs the fast `isStatClean` path.
+ * - **Paths whose changeset classification was `noop`** (skipped — index
+ *   already matched target by `id + mode`): the IndexEntry is the caller's
+ *   `currentIndex` entry verbatim. Donor stats survive across the call.
+ * - `reset --hard` therefore MUST set `forceRewriteAll: true` so every noop
+ *   upgrades to update and the post-write stats land in the output. Without
+ *   that, a locally-modified working-tree file that the index still records
+ *   as clean would survive the reset, AND the donor stats would be stale
+ *   relative to the actual disk state.
  */
 import type { GitIndex, IndexEntry } from '../../domain/git-index/index.js';
 import {
@@ -20,7 +35,12 @@ import {
 } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
 import { applyChangeset } from './apply-changeset.js';
-import { computeChangeset } from './compute-changeset.js';
+import {
+  type Changeset,
+  type ChangesetEntry,
+  type ChangesetStats,
+  computeChangeset,
+} from './compute-changeset.js';
 import { walkTree } from './walk-tree.js';
 
 export interface MaterializeTreeOpts {
@@ -28,6 +48,16 @@ export interface MaterializeTreeOpts {
   readonly currentIndex: GitIndex;
   readonly force?: boolean;
   readonly paths?: ReadonlySet<FilePath>;
+  /**
+   * When true, every target-tree path is written to the working tree
+   * unconditionally — even paths the index→target diff classified as `noop`
+   * (same `id` AND `mode`). Required by `reset --hard`, where the working
+   * tree may diverge from the index (uncommitted local modifications); the
+   * standard index→target diff cannot see that drift, so noops would skip
+   * paths the caller wants overwritten. Default `false` keeps the Phase
+   * 13.1 checkout behaviour: clean files are never spuriously rewritten.
+   */
+  readonly forceRewriteAll?: boolean;
 }
 
 export interface MaterializeTreeResult {
@@ -108,6 +138,23 @@ const mergeNewIndexEntries = (
   return merged;
 };
 
+const tallyStats = (entries: ReadonlyArray<ChangesetEntry>): ChangesetStats => {
+  const stats = { add: 0, update: 0, delete: 0, noop: 0 };
+  for (const entry of entries) stats[entry.kind] += 1;
+  return stats;
+};
+
+const upgradeNoopsToUpdates = (changeset: Changeset): Changeset => {
+  const entries = changeset.entries.map((entry) =>
+    entry.kind === 'noop' ? { ...entry, kind: 'update' as const } : entry,
+  );
+  // Re-tally stats from the mutated entry list rather than doing per-entry
+  // arithmetic on the prior stats. Equivalent result, simpler mutation surface,
+  // and `applyChangeset`'s progress denominator (`stats.add + update + delete`)
+  // now stays consistent with the entry list it iterates.
+  return { entries, stats: tallyStats(entries) };
+};
+
 export const materializeTree = async (
   ctx: Context,
   opts: MaterializeTreeOpts,
@@ -123,7 +170,9 @@ export const materializeTree = async (
           entries: filterByPaths(opts.currentIndex.entries, opts.paths),
         } satisfies GitIndex);
 
-  const changeset = computeChangeset(indexForDiff, target);
+  const rawChangeset = computeChangeset(indexForDiff, target);
+  const changeset =
+    opts.forceRewriteAll === true ? upgradeNoopsToUpdates(rawChangeset) : rawChangeset;
 
   const result = await applyChangeset(ctx, {
     changeset,
