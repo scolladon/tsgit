@@ -30,6 +30,14 @@ export const MAX_INDEX_BYTES = 256 * 1024 * 1024;
 /** Max commit message byte length createCommit will accept. */
 export const MAX_COMMIT_MESSAGE_BYTES = 16 * 1024 * 1024;
 
+/**
+ * Per-file size cap enforced by `add --all` before reading working-tree
+ * bytes into memory. Mirrors `MAX_CONFLICT_OUTPUT_BYTES` (256 MiB) so the
+ * write-side memory ceiling matches the read-side ceiling. Phase 14.1.
+ * See `docs/adr/032-add-all-large-file-guard.md`.
+ */
+export const MAX_WORKING_TREE_BLOB_BYTES = 256 * 1024 * 1024;
+
 export interface ReadObjectOptions {
   readonly verifyHash?: boolean;
   /**
