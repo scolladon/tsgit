@@ -161,6 +161,19 @@ const buildContentMerger =
     // exercised by the "issue concurrently" test in merge.test.ts —
     // mutating it to a serial loop would drop maxInFlight to 1 and the
     // test would fail.
+    //
+    // equivalent-mutant: Stryker mutates `{ maxBytes: MAX_CONFLICT_OUTPUT_BYTES }`
+    // to `{}` at the three call sites below — observationally equivalent
+    // in the test suite because no fixture allocates a real
+    // MAX_CONFLICT_OUTPUT_BYTES (256 MiB) blob to trigger the cap at this
+    // integration boundary. The cap mechanics themselves are fully
+    // covered by direct unit tests on readObject / readBlob
+    // (test/unit/application/primitives/read-object.test.ts and
+    // read-blob.test.ts) at every cap site (loose, pack-base,
+    // pre-apply-delta, cached). The integration line is mechanical
+    // wiring; allocating a 256 MiB fixture to kill these three mutants
+    // would cost ~1 GiB peak RSS per CI run for ~zero additional
+    // assurance.
     const [ours, theirs, base] = await Promise.all([
       readBlob(ctx, mergeCtx.ourId, { maxBytes: MAX_CONFLICT_OUTPUT_BYTES }),
       readBlob(ctx, mergeCtx.theirId, { maxBytes: MAX_CONFLICT_OUTPUT_BYTES }),

@@ -79,7 +79,15 @@ function enforceLooseCap(id: ObjectId, inflated: Uint8Array, maxBytes: number | 
 function enforceCachedCap(id: ObjectId, cached: Uint8Array, maxBytes: number | undefined): void {
   if (maxBytes === undefined) return;
   const nulIdx = cached.indexOf(0);
-  if (nulIdx < 0) return; // splitHeader will reject; size check is moot.
+  // equivalent-mutant: the LRU is fed exclusively by `prependHeader` /
+  // `serializeObject` paths, which always emit a `<type> <size>\0...`
+  // header — `nulIdx < 0` is structurally unreachable in practice. The
+  // defence-in-depth guard exists in case those invariants ever break,
+  // at which point `splitHeader` (called next) throws OBJECT_NOT_FOUND.
+  // Stryker mutates this `<` to `<=` or `false`; no unit test fixture
+  // can reach the branch without writing a corrupt buffer directly into
+  // ctx.deltaCache, which would itself violate the cache's contract.
+  if (nulIdx < 0) return;
   const actualSize = cached.length - (nulIdx + 1);
   if (actualSize > maxBytes) {
     throw objectTooLarge(id, actualSize, maxBytes);
@@ -120,6 +128,15 @@ function enforcePackDeltaPreApplyCap(
   maxBytes: number | undefined,
   depth: number,
 ): void {
+  // equivalent-mutant: this pre-apply cap is observationally equivalent to
+  // the post-apply cap in `resolvePackChain` — both throw
+  // OBJECT_TOO_LARGE with the same id/size/limit when the target is
+  // oversized. The pre-apply variant exists purely as a performance
+  // optimisation (skip the apply loop + the result allocation). Stryker
+  // mutates `depth === 1` to `depth !== 1` / `false`: at depth=1 the
+  // pre-apply check no longer fires, but the post-apply check still does,
+  // producing identical observable behaviour. Equivalent without timing
+  // instrumentation.
   if (maxBytes === undefined || depth !== 1) return;
   const declaredTargetSize = readDeltaTargetSize(instructions);
   if (declaredTargetSize > maxBytes) {

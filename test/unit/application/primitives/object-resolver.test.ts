@@ -177,6 +177,34 @@ describe('object-resolver', () => {
   });
 
   describe('Phase 13.8 — bounded-size cap', () => {
+    it('Given a cached REF_DELTA base at the exact maxBytes boundary, When resolveObject is called, Then accepts (cache-cap inclusive boundary)', async () => {
+      // Arrange — cache contains a 5-byte payload, cap=5. Boundary kill
+      // for the `actualSize > maxBytes` mutant: with `>=` it would
+      // wrongly reject; with `>` it accepts.
+      const ctx = await buildSeededContext();
+      const baseContent = new TextEncoder().encode('abcde'); // 5 bytes
+      const [baseId] = await writeSyntheticPack(ctx, 'cap-cache-eq-base', [
+        { kind: 'base', type: 'blob', content: baseContent },
+      ]);
+      const [deltaId] = await writeSyntheticPack(ctx, 'cap-cache-eq-delta', [
+        {
+          kind: 'ref-delta',
+          baseId: baseId!,
+          baseUncompressed: baseContent,
+          targetContent: new TextEncoder().encode('xy'),
+        },
+      ]);
+      const registry = createPackRegistry(ctx);
+      // Prime the cache with the base.
+      await resolveObject(ctx, registry, baseId as ObjectId, false);
+
+      // Act — exact boundary cap=5, base size=5 → accept.
+      const sut = await resolveObject(ctx, registry, deltaId as ObjectId, false, 5);
+
+      // Assert
+      expect(sut.type).toBe('blob');
+    });
+
     it('Given a REF_DELTA whose base is in the LRU cache and exceeds maxBytes, When resolveObject is called, Then throws OBJECT_TOO_LARGE from enforceCachedCap', async () => {
       // Arrange — prime the deltaCache with a base larger than the cap,
       // then issue a capped REF_DELTA read whose base resolves via the
