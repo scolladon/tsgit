@@ -4,6 +4,7 @@ import { synthesizeTreeFromIndex } from '../../../../src/application/primitives/
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { writeTree } from '../../../../src/application/primitives/write-tree.js';
 import type { GitIndex, IndexEntry } from '../../../../src/domain/git-index/index.js';
+import { NO_PARSER_OFFSET } from '../../../../src/domain/git-index/path-validator.js';
 import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
 import type { FileMode, FilePath, ObjectId, Tree } from '../../../../src/domain/objects/index.js';
 import { buildSeededContext } from './fixtures.js';
@@ -233,8 +234,17 @@ describe('synthesizeTreeFromIndex', () => {
     expect(synthesised).toBe(expectedRootId);
   });
 
-  it('Given an index entry whose path contains a `..` segment, When synthesise, Then throws INVALID_INDEX_ENTRY (defensive path validation)', async () => {
-    // Arrange
+  // Phase 13.7 hoisted unsafe-path rejection (`..`, `.`, empty segments,
+  // leading-slash) into `parseIndex` itself; see
+  // `test/unit/domain/git-index/index-parser.test.ts` for the full grid
+  // of cases. One defence-in-depth case stays HERE to prove the
+  // primitive ALSO rejects unsafe paths when callers construct
+  // IndexEntry records outside the parser (test fixtures, in-memory
+  // builders, future synthesisers).
+
+  it('Given an IndexEntry constructed outside parseIndex with a `..` path, When synthesise, Then still throws INVALID_INDEX_ENTRY (defence-in-depth)', async () => {
+    // Arrange — bypass parseIndex by building the entry directly via the
+    // test helper. The primitive must re-validate.
     const ctx = await buildSeededContext();
     const blobId = await writeBlob(ctx, 'malicious');
     const index: GitIndex = {
@@ -251,30 +261,15 @@ describe('synthesizeTreeFromIndex', () => {
       caught = err;
     }
 
-    // Assert
-    expect((caught as { data?: { code?: string } })?.data?.code).toBe('INVALID_INDEX_ENTRY');
-  });
-
-  it('Given an index entry with a leading-slash absolute path, When synthesise, Then throws INVALID_INDEX_ENTRY', async () => {
-    // Arrange
-    const ctx = await buildSeededContext();
-    const blobId = await writeBlob(ctx, 'absolute');
-    const index: GitIndex = {
-      ...EMPTY_INDEX,
-      entries: [makeIndexEntry('/etc/passwd', blobId)],
-    };
-    const sut = synthesizeTreeFromIndex;
-
-    // Act
-    let caught: unknown;
-    try {
-      await sut(ctx, index.entries);
-    } catch (err) {
-      caught = err;
-    }
-
-    // Assert
-    expect((caught as { data?: { code?: string } })?.data?.code).toBe('INVALID_INDEX_ENTRY');
+    // Assert — code + reason + the NO_PARSER_OFFSET sentinel (proves the
+    // primitive uses the documented sentinel rather than misleadingly
+    // claiming the failure was at byte 0 of some index file). Importing
+    // the symbol (not the literal -1) catches a mutation that flips the
+    // sentinel value at the definition site.
+    const data = (caught as { data?: { code?: string; reason?: string; offset?: number } })?.data;
+    expect(data?.code).toBe('INVALID_INDEX_ENTRY');
+    expect(data?.reason).toBe("'..' segment rejected");
+    expect(data?.offset).toBe(NO_PARSER_OFFSET);
   });
 
   it('Given an index path with depth exceeding MAX_TREE_DEPTH, When synthesise, Then throws TREE_DEPTH_EXCEEDED', async () => {

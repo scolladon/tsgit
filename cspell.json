@@ -349,7 +349,13 @@
     "recognisable",
     "harmonised",
     "synthesises",
-    "synthesised"
+    "synthesised",
+    "normalisation",
+    "canonicalise",
+    "localise",
+    "synthesisers",
+    "defence",
+    "libtrust"
   ],
   "ignorePaths": [
     "node_modules",
