@@ -20,7 +20,12 @@ import {
 } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
 import { applyChangeset } from './apply-changeset.js';
-import { type Changeset, computeChangeset } from './compute-changeset.js';
+import {
+  type Changeset,
+  type ChangesetEntry,
+  type ChangesetStats,
+  computeChangeset,
+} from './compute-changeset.js';
 import { walkTree } from './walk-tree.js';
 
 export interface MaterializeTreeOpts {
@@ -118,22 +123,21 @@ const mergeNewIndexEntries = (
   return merged;
 };
 
+const tallyStats = (entries: ReadonlyArray<ChangesetEntry>): ChangesetStats => {
+  const stats = { add: 0, update: 0, delete: 0, noop: 0 };
+  for (const entry of entries) stats[entry.kind] += 1;
+  return stats;
+};
+
 const upgradeNoopsToUpdates = (changeset: Changeset): Changeset => {
-  let upgraded = 0;
-  const entries = changeset.entries.map((entry) => {
-    if (entry.kind !== 'noop') return entry;
-    upgraded += 1;
-    return { ...entry, kind: 'update' as const };
-  });
-  if (upgraded === 0) return changeset;
-  return {
-    entries,
-    stats: {
-      ...changeset.stats,
-      update: changeset.stats.update + upgraded,
-      noop: changeset.stats.noop - upgraded,
-    },
-  };
+  const entries = changeset.entries.map((entry) =>
+    entry.kind === 'noop' ? { ...entry, kind: 'update' as const } : entry,
+  );
+  // Re-tally stats from the mutated entry list rather than doing per-entry
+  // arithmetic on the prior stats. Equivalent result, simpler mutation surface,
+  // and `applyChangeset`'s progress denominator (`stats.add + update + delete`)
+  // now stays consistent with the entry list it iterates.
+  return { entries, stats: tallyStats(entries) };
 };
 
 export const materializeTree = async (

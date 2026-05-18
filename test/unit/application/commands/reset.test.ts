@@ -132,6 +132,29 @@ describe('reset', () => {
     expect(stillLocked).toBe(false);
   });
 
+  it('Given an index.lock already on disk, When hard reset, Then throws RESOURCE_LOCKED before reading the index (lock-first ordering)', async () => {
+    // Arrange — pre-acquire the index lock manually, simulating a concurrent
+    // writer. If the lock acquire ever moves AFTER readIndex (regression
+    // toward the pre-Phase-13.2 TOCTOU), this test would not see
+    // RESOURCE_LOCKED — instead the corrupted-readIndex code path would surface.
+    const { ctx, c1 } = await seedTwoCommits();
+    const lockPath = `${ctx.layout.gitDir}/index.lock`;
+    await ctx.fs.writeExclusive(lockPath, new Uint8Array());
+
+    // Act
+    let caught: unknown;
+    try {
+      await reset(ctx, { mode: 'hard', target: c1 });
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert
+    const data = (caught as { data?: { code?: string; resource?: string } })?.data;
+    expect(data?.code).toBe('RESOURCE_LOCKED');
+    expect(data?.resource).toBe('index');
+  });
+
   it('Given a hard reset target that resolves to a non-commit object, When reset, Then throws UNEXPECTED_OBJECT_TYPE expected=commit', async () => {
     // Arrange — pass a blob oid as target.
     const { ctx } = await seedTwoCommits();
