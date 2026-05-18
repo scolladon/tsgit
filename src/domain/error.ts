@@ -292,6 +292,8 @@ function extractDetail(data: TsgitErrorData): string {
       return 'repository has been disposed; create a new one with openRepository()';
     case 'ADAPTER_UNAVAILABLE':
       return `adapter unavailable for runtime ${data.runtime}: ${data.reason}`;
+    case 'WORKING_TREE_FILE_TOO_LARGE':
+      return `working-tree file too large: ${basename(data.path)} size=${data.size} limit=${data.limit}`;
     default: {
       const _exhaustive: never = data;
       return String(_exhaustive);
