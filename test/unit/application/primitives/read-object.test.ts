@@ -4,6 +4,7 @@ import type { TsgitError } from '../../../../src/domain/error.js';
 import type { Blob, ObjectId } from '../../../../src/domain/objects/index.js';
 import { serializeObject } from '../../../../src/domain/objects/index.js';
 import { buildSeededContext } from './fixtures.js';
+import { writeSyntheticPack } from './pack-fixture.js';
 
 describe('readObject', () => {
   it('Given a seeded blob, When readObject is called, Then returns the Blob', async () => {
@@ -56,6 +57,159 @@ describe('readObject', () => {
 
     const sut = await readObject(ctx, fakeId, { verifyHash: false });
     expect(sut.type).toBe('blob');
+  });
+
+  describe('maxBytes — loose objects', () => {
+    it('Given a loose blob exactly at the cap, When readObject is called with maxBytes=size, Then returns the Blob (inclusive boundary)', async () => {
+      // Arrange — 8-byte blob, cap = 8.
+      const content = new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]);
+      const blob: Blob = { type: 'blob', content, id: '' as ObjectId };
+      const ctx = await buildSeededContext({ objects: [blob] });
+      const id = (await ctx.hash.hashHex(serializeObject(blob, ctx.hashConfig))) as ObjectId;
+
+      // Act
+      const sut = await readObject(ctx, id, { maxBytes: 8 });
+
+      // Assert
+      expect(sut.type).toBe('blob');
+      expect((sut as Blob).content).toEqual(content);
+    });
+
+    it('Given a loose blob one byte over the cap, When readObject is called, Then throws OBJECT_TOO_LARGE with id, actualSize=9, limit=8', async () => {
+      // Arrange
+      const content = new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8, 9]);
+      const blob: Blob = { type: 'blob', content, id: '' as ObjectId };
+      const ctx = await buildSeededContext({ objects: [blob] });
+      const id = (await ctx.hash.hashHex(serializeObject(blob, ctx.hashConfig))) as ObjectId;
+
+      // Act / Assert
+      try {
+        await readObject(ctx, id, { maxBytes: 8 });
+        expect.unreachable();
+      } catch (error) {
+        const data = (error as TsgitError).data;
+        expect(data.code).toBe('OBJECT_TOO_LARGE');
+        if (data.code === 'OBJECT_TOO_LARGE') {
+          expect(data.id).toBe(id);
+          expect(data.actualSize).toBe(9);
+          expect(data.limit).toBe(8);
+        }
+      }
+    });
+
+    it('Given maxBytes undefined, When readObject is called, Then no cap applies (regression for default)', async () => {
+      // Arrange — large-ish loose blob, no cap.
+      const content = new Uint8Array(1024);
+      const blob: Blob = { type: 'blob', content, id: '' as ObjectId };
+      const ctx = await buildSeededContext({ objects: [blob] });
+      const id = (await ctx.hash.hashHex(serializeObject(blob, ctx.hashConfig))) as ObjectId;
+
+      // Act
+      const sut = await readObject(ctx, id);
+
+      // Assert
+      expect((sut as Blob).content).toHaveLength(1024);
+    });
+
+    it('Given maxBytes=0 on a non-empty loose blob, When readObject is called, Then throws OBJECT_TOO_LARGE', async () => {
+      // Arrange
+      const blob: Blob = { type: 'blob', content: new Uint8Array([1]), id: '' as ObjectId };
+      const ctx = await buildSeededContext({ objects: [blob] });
+      const id = (await ctx.hash.hashHex(serializeObject(blob, ctx.hashConfig))) as ObjectId;
+
+      // Act / Assert
+      try {
+        await readObject(ctx, id, { maxBytes: 0 });
+        expect.unreachable();
+      } catch (error) {
+        expect((error as TsgitError).data.code).toBe('OBJECT_TOO_LARGE');
+      }
+    });
+  });
+
+  describe('maxBytes — pack base entries', () => {
+    it('Given a packed blob base entry at the cap, When readObject is called with maxBytes=size, Then returns the Blob', async () => {
+      // Arrange — 8-byte pack base entry.
+      const content = new TextEncoder().encode('abcdefgh');
+      const ctx = await buildSeededContext();
+      const [id] = await writeSyntheticPack(ctx, 'cap-boundary', [
+        { kind: 'base', type: 'blob', content },
+      ]);
+
+      // Act
+      const sut = await readObject(ctx, id as ObjectId, { maxBytes: 8 });
+
+      // Assert
+      expect(sut.type).toBe('blob');
+      expect((sut as Blob).content).toEqual(content);
+    });
+
+    it('Given a packed blob base entry one byte over the cap, When readObject is called, Then throws OBJECT_TOO_LARGE pre-inflate', async () => {
+      // Arrange
+      const content = new TextEncoder().encode('abcdefghi'); // 9 bytes
+      const ctx = await buildSeededContext();
+      const [id] = await writeSyntheticPack(ctx, 'cap-over', [
+        { kind: 'base', type: 'blob', content },
+      ]);
+
+      // Act / Assert
+      try {
+        await readObject(ctx, id as ObjectId, { maxBytes: 8 });
+        expect.unreachable();
+      } catch (error) {
+        const data = (error as TsgitError).data;
+        expect(data.code).toBe('OBJECT_TOO_LARGE');
+        if (data.code === 'OBJECT_TOO_LARGE') {
+          expect(data.actualSize).toBe(9);
+          expect(data.limit).toBe(8);
+        }
+      }
+    });
+  });
+
+  describe('maxBytes — pack delta-resolved entries', () => {
+    it('Given a delta-resolved blob whose reconstructed size exceeds the cap, When readObject is called, Then throws OBJECT_TOO_LARGE post-apply', async () => {
+      // Arrange — base of 4 bytes, delta reconstructs a 9-byte target.
+      const baseContent = new TextEncoder().encode('abcd');
+      const targetContent = new TextEncoder().encode('abcdefghi');
+      const ctx = await buildSeededContext();
+      const ids = await writeSyntheticPack(ctx, 'cap-delta', [
+        { kind: 'base', type: 'blob', content: baseContent },
+        { kind: 'ofs-delta', baseIndex: 0, targetContent },
+      ]);
+      const deltaId = ids[1] as ObjectId;
+
+      // Act / Assert
+      try {
+        await readObject(ctx, deltaId, { maxBytes: 8 });
+        expect.unreachable();
+      } catch (error) {
+        const data = (error as TsgitError).data;
+        expect(data.code).toBe('OBJECT_TOO_LARGE');
+        if (data.code === 'OBJECT_TOO_LARGE') {
+          expect(data.actualSize).toBe(9);
+          expect(data.limit).toBe(8);
+        }
+      }
+    });
+
+    it('Given a delta-resolved blob whose reconstructed size equals the cap, When readObject is called, Then returns the Blob (boundary)', async () => {
+      // Arrange — target is 8 bytes, cap is 8.
+      const baseContent = new TextEncoder().encode('abcd');
+      const targetContent = new TextEncoder().encode('abcdefgh');
+      const ctx = await buildSeededContext();
+      const ids = await writeSyntheticPack(ctx, 'cap-delta-eq', [
+        { kind: 'base', type: 'blob', content: baseContent },
+        { kind: 'ofs-delta', baseIndex: 0, targetContent },
+      ]);
+      const deltaId = ids[1] as ObjectId;
+
+      // Act
+      const sut = await readObject(ctx, deltaId, { maxBytes: 8 });
+
+      // Assert
+      expect((sut as Blob).content).toEqual(targetContent);
+    });
   });
 
   it('Given two readObject calls on the same context, When readObject is called twice, Then the pack registry is cached (readdir runs at most once)', async () => {

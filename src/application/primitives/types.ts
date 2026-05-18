@@ -32,6 +32,16 @@ export const MAX_COMMIT_MESSAGE_BYTES = 16 * 1024 * 1024;
 
 export interface ReadObjectOptions {
   readonly verifyHash?: boolean;
+  /**
+   * Reject objects whose serialised payload exceeds this byte count, before
+   * inflating the full content into memory. Counts the raw object content
+   * (post-inflate, pre-loose-header). When unset, no cap applies.
+   *
+   * Used by `merge`'s content merger to bound peak memory when an adversarial
+   * remote ships pathologically large blobs. See `docs/design/phase-13-8-
+   * bounded-object-reads.md`.
+   */
+  readonly maxBytes?: number;
 }
 
 export interface ResolveRefOptions {

@@ -3,10 +3,11 @@
  * Consumed only by readObject.
  */
 import { operationAborted } from '../../domain/error.js';
-import { objectHashMismatch, objectNotFound } from '../../domain/objects/error.js';
+import { objectHashMismatch, objectNotFound, objectTooLarge } from '../../domain/objects/error.js';
 import {
   type GitObject,
   type ObjectId,
+  parseHeader,
   parseObject,
   serializeObject,
 } from '../../domain/objects/index.js';
@@ -30,11 +31,13 @@ export async function resolveObject(
   registry: PackRegistry,
   id: ObjectId,
   verifyHash: boolean,
+  maxBytes?: number,
 ): Promise<GitObject> {
   checkAborted(ctx);
   const loose = await tryLoose(ctx, id);
   if (loose !== undefined) {
     checkAborted(ctx);
+    enforceLooseCap(id, loose, maxBytes);
     return finalize(ctx, id, loose, verifyHash);
   }
 
@@ -44,9 +47,42 @@ export async function resolveObject(
     throw objectNotFound(id);
   }
   checkAborted(ctx);
-  const bytes = await resolvePackChain(ctx, registry, hit, id);
+  const bytes = await resolvePackChain(ctx, registry, hit, id, maxBytes);
   checkAborted(ctx);
   return finalize(ctx, id, bytes, verifyHash);
+}
+
+/**
+ * Loose objects materialise the full payload before this check fires (zlib's
+ * compression ratio is unbounded, so a pre-inflate cap on the compressed file
+ * is not meaningful). We inspect the `<type> <size>\0...` header to read the
+ * declared payload size — cheaper than `parseObject`, which would also try to
+ * decode the body. See ADR-024 §1 (loose-object cap location).
+ */
+function enforceLooseCap(id: ObjectId, inflated: Uint8Array, maxBytes: number | undefined): void {
+  if (maxBytes === undefined) return;
+  const { size } = parseHeader(inflated);
+  if (size > maxBytes) {
+    throw objectTooLarge(id, size, maxBytes);
+  }
+}
+
+/**
+ * Pre-inflate cap for pack base entries. The pack-entry header carries the
+ * declared payload size, so a hostile base never reaches `streamInflate`.
+ * Fires only at `depth === 0` (the target itself is a base) — intermediate
+ * REF_DELTA bases reached via recursion are NOT capped. See ADR-024 §3.2.
+ */
+function enforcePackBaseCap(
+  targetId: ObjectId,
+  declaredSize: number,
+  maxBytes: number | undefined,
+  depth: number,
+): void {
+  if (maxBytes === undefined || depth !== 0) return;
+  if (declaredSize > maxBytes) {
+    throw objectTooLarge(targetId, declaredSize, maxBytes);
+  }
 }
 
 function checkAborted(ctx: Context): void {
@@ -94,6 +130,7 @@ async function collectDeltaChain(
   registry: PackRegistry,
   hit: PackLookupHit,
   targetId: ObjectId,
+  maxBytes: number | undefined,
 ): Promise<Phase1Result> {
   const deltas: DeltaStep[] = [];
   let currentHit: PackLookupHit = hit;
@@ -103,6 +140,7 @@ async function collectDeltaChain(
     checkAborted(ctx);
     const { header, chunk, headerEndInChunk } = await readEntryHeaderWithChunk(ctx, currentHit);
     if (isBase(header)) {
+      enforcePackBaseCap(targetId, header.size, maxBytes, depth);
       const inflated = await ctx.compressor.streamInflate(chunk, headerEndInChunk);
       return {
         deltas,
@@ -140,8 +178,9 @@ async function resolvePackChain(
   registry: PackRegistry,
   hit: PackLookupHit,
   targetId: ObjectId,
+  maxBytes: number | undefined,
 ): Promise<Uint8Array> {
-  const phase1 = await collectDeltaChain(ctx, registry, hit, targetId);
+  const phase1 = await collectDeltaChain(ctx, registry, hit, targetId, maxBytes);
 
   // Phase 2 — apply deltas bottom-up. The REF_DELTA terminator already cached
   // its base in `resolveBaseForRefDelta`; intermediate results are NOT cached
@@ -153,6 +192,13 @@ async function resolvePackChain(
     const step = phase1.deltas[i];
     if (step === undefined) break;
     current = applyDelta(current, step.instructions);
+  }
+  // Post-apply cap on the reconstructed object (delta resolution is the only
+  // place a payload can grow beyond what the base entry declared). The check
+  // fires before `prependHeader` allocates the loose-format buffer that would
+  // otherwise double the peak footprint. See ADR-024 §3.3.
+  if (maxBytes !== undefined && current.length > maxBytes) {
+    throw objectTooLarge(targetId, current.length, maxBytes);
   }
   // Cache the final reconstructed object under targetId for future lookups.
   const fullBytes = prependHeader(current, phase1.baseType, targetId);

@@ -96,4 +96,38 @@ describe('readBlob', () => {
     const sut = await readBlob(ctx, id, { verifyHash: false });
     expect(sut.type).toBe('blob');
   });
+
+  it('Given options.maxBytes within bounds, When readBlob is called, Then returns the Blob (passthrough)', async () => {
+    const ctx = await buildSeededContext();
+    const blob: Blob = {
+      type: 'blob',
+      content: new Uint8Array([1, 2, 3, 4]),
+      id: '' as ObjectId,
+    };
+    const id = await writeObject(ctx, blob);
+    const sut = await readBlob(ctx, id, { maxBytes: 4 });
+    expect(sut.content).toEqual(new Uint8Array([1, 2, 3, 4]));
+  });
+
+  it('Given options.maxBytes below the blob size, When readBlob is called, Then throws OBJECT_TOO_LARGE (passthrough)', async () => {
+    const ctx = await buildSeededContext();
+    const blob: Blob = {
+      type: 'blob',
+      content: new Uint8Array([1, 2, 3, 4, 5]),
+      id: '' as ObjectId,
+    };
+    const id = await writeObject(ctx, blob);
+    try {
+      await readBlob(ctx, id, { maxBytes: 4 });
+      expect.unreachable();
+    } catch (error) {
+      const data = (error as TsgitError).data;
+      expect(data.code).toBe('OBJECT_TOO_LARGE');
+      if (data.code === 'OBJECT_TOO_LARGE') {
+        expect(data.id).toBe(id);
+        expect(data.actualSize).toBe(5);
+        expect(data.limit).toBe(4);
+      }
+    }
+  });
 });

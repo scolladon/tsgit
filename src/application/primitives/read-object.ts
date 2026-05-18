@@ -26,5 +26,5 @@ export async function readObject(
   options?: ReadObjectOptions,
 ): Promise<GitObject> {
   const verifyHash = options?.verifyHash ?? true;
-  return resolveObject(ctx, getPackRegistry(ctx), id, verifyHash);
+  return resolveObject(ctx, getPackRegistry(ctx), id, verifyHash, options?.maxBytes);
 }
