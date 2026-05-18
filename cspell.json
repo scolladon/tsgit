@@ -343,6 +343,8 @@
     "Deltified",
     "BIDI",
     "varints",
+    "minimises",
+    "materialise",
     "optimisation",
     "desyncs",
     "lstats",

@@ -1,7 +1,8 @@
+import { mergeHasConflicts } from '../../domain/commands/error.js';
 import type { IndexEntry } from '../../domain/git-index/index.js';
 import { nothingToCommit } from '../../domain/index.js';
 import type { CommitData } from '../../domain/objects/commit.js';
-import type { AuthorIdentity, ObjectId, TreeEntry } from '../../domain/objects/index.js';
+import type { AuthorIdentity, FilePath, ObjectId, TreeEntry } from '../../domain/objects/index.js';
 import { ObjectId as ObjectIdFactory } from '../../domain/objects/index.js';
 import type { RefName } from '../../domain/objects/object-id.js';
 import type { Context } from '../../ports/context.js';
@@ -13,6 +14,7 @@ import { updateRef } from '../primitives/update-ref.js';
 import { writeTree } from '../primitives/write-tree.js';
 import { resolveAuthor, resolveCommitter, sanitizeMessage } from './internal/commit-message.js';
 import { readConfig } from './internal/config-read.js';
+import { clearMergeState, readMergeHead, readMergeMsg } from './internal/merge-state.js';
 import {
   assertNoPendingOperation,
   assertNotBare,
@@ -47,18 +49,22 @@ export interface CommitResult {
 export const commit = async (ctx: Context, opts: CommitOptions): Promise<CommitResult> => {
   await assertRepository(ctx);
   await assertNotBare(ctx, 'commit');
-  await assertNoPendingOperation(ctx);
-  const message = sanitizeMessage(opts.message, { allowEmpty: opts.allowEmptyMessage ?? false });
+  // Resolving the conflicted merge IS the legitimate way to clear MERGE_HEAD —
+  // skip the 'merge' marker check. All other in-progress operations still block.
+  const mergeHead = await readMergeHead(ctx);
+  await assertNoPendingOperation(ctx, mergeHead !== undefined ? { except: 'merge' } : {});
+  const message = await resolveCommitMessage(ctx, opts, mergeHead);
   const config = await readConfig(ctx);
   const configUser = toAuthor(config.user);
   const author = resolveAuthor(buildResolverInput(opts.author, configUser));
   const committer = resolveCommitter(buildCommitterInput(opts.committer, author, configUser));
   const index = await readIndex(ctx);
+  rejectUnmergedIndex(index.entries);
   const treeId = await buildTreeFromIndex(ctx, index.entries);
   const head = await readHeadRaw(ctx);
   const parentId = head.kind === 'symbolic' ? await tryResolve(ctx, head.target) : head.id;
-  const parents = parentId !== undefined ? [parentId] : [];
-  if (!opts.allowEmpty && parentId !== undefined) {
+  const parents = buildParents(parentId, mergeHead);
+  if (!opts.allowEmpty && parentId !== undefined && mergeHead === undefined) {
     const parentTree = await getParentTree(ctx, parentId);
     if (parentTree === treeId) throw nothingToCommit();
   }
@@ -77,7 +83,45 @@ export const commit = async (ctx: Context, opts: CommitOptions): Promise<CommitR
   } else {
     await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, `${id}\n`);
   }
+  if (mergeHead !== undefined) {
+    await clearMergeState(ctx);
+  }
   return { id, tree: treeId, branch, parents };
+};
+
+const resolveCommitMessage = async (
+  ctx: Context,
+  opts: CommitOptions,
+  mergeHead: ObjectId | undefined,
+): Promise<string> => {
+  if (opts.message.length > 0 || mergeHead === undefined) {
+    return sanitizeMessage(opts.message, { allowEmpty: opts.allowEmptyMessage ?? false });
+  }
+  // Resolving a merge with an empty user message — fall back to MERGE_MSG.
+  const draft = await readMergeMsg(ctx);
+  return sanitizeMessage(draft ?? '', { allowEmpty: opts.allowEmptyMessage ?? false });
+};
+
+const buildParents = (
+  parentId: ObjectId | undefined,
+  mergeHead: ObjectId | undefined,
+): ReadonlyArray<ObjectId> => {
+  const parents: ObjectId[] = [];
+  if (parentId !== undefined) parents.push(parentId);
+  if (mergeHead !== undefined) parents.push(mergeHead);
+  return parents;
+};
+
+const rejectUnmergedIndex = (entries: ReadonlyArray<IndexEntry>): void => {
+  const unmergedPaths = new Set<FilePath>();
+  for (const entry of entries) {
+    if (entry.flags.stage !== 0) {
+      unmergedPaths.add(entry.path);
+    }
+  }
+  if (unmergedPaths.size > 0) {
+    throw mergeHasConflicts(unmergedPaths.size, [...unmergedPaths]);
+  }
 };
 
 const toAuthor = (

@@ -63,10 +63,25 @@ describe('add', () => {
     await expectError(() => add(ctx, ['x']), 'NOT_A_REPOSITORY');
   });
 
-  it('Given .git/MERGE_HEAD exists, When add, Then throws OPERATION_IN_PROGRESS', async () => {
-    // Arrange
+  it('Given .git/MERGE_HEAD exists, When add runs, Then succeeds (resolving a conflicted merge is the legitimate path forward — Phase 13.4b)', async () => {
+    // Arrange — MERGE_HEAD presence used to block `add`. Phase 13.4b
+    // changed the contract: `add` must allow staging resolved files
+    // during a conflicted merge. Other pending markers still block.
     const ctx = await seedFreshRepo({ 'a.txt': 'a' });
     await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/MERGE_HEAD`, 'oid\n');
+
+    // Act
+    const sut = await add(ctx, ['a.txt']);
+
+    // Assert
+    expect(sut.added).toEqual(['a.txt']);
+  });
+
+  it('Given .git/REBASE_HEAD exists, When add runs, Then throws OPERATION_IN_PROGRESS (rebase still blocks)', async () => {
+    // Arrange — only `merge` is excepted from the pending-operation
+    // check. Other markers must still block.
+    const ctx = await seedFreshRepo({ 'a.txt': 'a' });
+    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/REBASE_HEAD`, 'oid\n');
 
     // Act
     await expectError(() => add(ctx, ['a.txt']), 'OPERATION_IN_PROGRESS');
