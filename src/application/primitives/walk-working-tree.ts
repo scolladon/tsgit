@@ -2,8 +2,11 @@ import { MAX_FLAT_TREE_ENTRIES } from '../../domain/diff/index.js';
 import { operationAborted } from '../../domain/error.js';
 import { treeDepthExceeded, treeEntryLimitExceeded } from '../../domain/objects/error.js';
 import type { FilePath } from '../../domain/objects/object-id.js';
+import {
+  isForbiddenGitComponent,
+  validateWorkingTreePath,
+} from '../../domain/working-tree-path.js';
 import type { Context } from '../../ports/context.js';
-import { isForbiddenGitComponent, validatePath } from '../commands/internal/working-tree.js';
 import type { WalkWorkingTreeEntry, WalkWorkingTreeOptions } from './types.js';
 
 const DEFAULT_MAX_DEPTH = 4096;
@@ -78,7 +81,7 @@ async function* visitEntry(
 ): AsyncIterable<WalkWorkingTreeEntry> {
   const path = joinPath(prefix, entry.name);
   // Defence-in-depth: a malicious adapter could return `..` etc.
-  validatePath(path);
+  validateWorkingTreePath(path);
   if (entry.isDirectory && !entry.isSymbolicLink) {
     yield* walkInternal(config, counter, path, depth + 1, /* isRoot */ false);
     return;
