@@ -87,18 +87,19 @@ function enforceCachedCap(id: ObjectId, cached: Uint8Array, maxBytes: number | u
 }
 
 /**
- * Pre-inflate cap for pack base entries. The pack-entry header carries the
- * declared payload size, so a hostile base never reaches `streamInflate`.
- * Fires only at `depth === 0` (the target itself is a base) — intermediate
- * REF_DELTA bases reached via recursion are NOT capped. See ADR-024 §3.2.
+ * Pre-inflate cap for pack base entries — fires at ANY depth, not just
+ * `depth === 0`. The cap exists to bound memory: when the chain walker
+ * reaches a base entry whose declared inflated size exceeds the cap, the
+ * subsequent `streamInflate` materialises a buffer larger than the
+ * contract permits regardless of whether the final delta-applied result
+ * shrinks below the cap. See ADR-024 §3.2.
  */
 function enforcePackBaseCap(
   targetId: ObjectId,
   declaredSize: number,
   maxBytes: number | undefined,
-  depth: number,
 ): void {
-  if (maxBytes === undefined || depth !== 0) return;
+  if (maxBytes === undefined) return;
   if (declaredSize > maxBytes) {
     throw objectTooLarge(targetId, declaredSize, maxBytes);
   }
@@ -181,7 +182,7 @@ async function collectDeltaChain(
     checkAborted(ctx);
     const { header, chunk, headerEndInChunk } = await readEntryHeaderWithChunk(ctx, currentHit);
     if (isBase(header)) {
-      enforcePackBaseCap(targetId, header.size, maxBytes, depth);
+      enforcePackBaseCap(targetId, header.size, maxBytes);
       const inflated = await ctx.compressor.streamInflate(chunk, headerEndInChunk);
       return {
         deltas,

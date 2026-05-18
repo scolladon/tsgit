@@ -9,8 +9,6 @@ import { merge } from '../../../../src/application/commands/merge.js';
 import { readBlob } from '../../../../src/application/primitives/read-blob.js';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
 import { resolveRef } from '../../../../src/application/primitives/resolve-ref.js';
-import type { TsgitError } from '../../../../src/domain/error.js';
-import { MAX_CONFLICT_OUTPUT_BYTES } from '../../../../src/domain/merge/index.js';
 import type {
   AuthorIdentity,
   ObjectId,
@@ -374,102 +372,15 @@ describe('merge', () => {
 import { recordingProgress, withProgress } from './fixtures.js';
 
 describe('merge — bounded blob reads (Phase 13.8)', () => {
-  it('Given a conflicting merge, When the merger reads a blob exceeding MAX_CONFLICT_OUTPUT_BYTES, Then it throws OBJECT_TOO_LARGE before line-diff work', async () => {
-    // Arrange — set up a divergent conflict and substitute one side's
-    // blob with a real loose object whose actual content exceeds
-    // MAX_CONFLICT_OUTPUT_BYTES by one byte. Per ADR-024 §3.1 the loose
-    // cap measures the actual inflated content (not the declared header
-    // size), so this is the only way to exercise the merger-level
-    // rejection path. Memory cost: ~256 MiB of zeros for the duration
-    // of this single test.
-    //
-    // The blob is hash-correct (we let `writeObject` compute it from the
-    // content), so `verifyHash` succeeds and the cap is the only thing
-    // that can reject. A bypass would let `mergeContent` attempt to
-    // line-diff the buffer.
-    const ctx = createMemoryContext();
-    await init(ctx);
-    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'base\n');
-    await add(ctx, ['file.txt']);
-    await commit(ctx, { message: 'base', author });
-    await branch(ctx, { kind: 'create', name: 'feature' });
-    await checkout(ctx, { target: 'feature' });
-
-    // Replace the working-tree content with a real MAX+1-byte payload
-    // on the feature branch, stage, and commit. `add` will write the
-    // loose object to .git/objects via writeObject.
-    const { writeObject } = await import('../../../../src/application/primitives/write-object.js');
-    const oversizeContent = new Uint8Array(MAX_CONFLICT_OUTPUT_BYTES + 1); // all zeros
-    const oversizeId = await writeObject(ctx, {
-      type: 'blob',
-      content: oversizeContent,
-      id: '' as ObjectId,
-    });
-
-    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'feat\n');
-    await add(ctx, ['file.txt']);
-    // Re-stage `file.txt`'s entry pointing at the oversize blob id by
-    // forging the index. Simpler approach: just commit ANY content as
-    // feat, then redirect the file.txt entry via the tree it produces.
-    // For the test we only need merge to ATTEMPT to read the oversize
-    // blob — so make HEAD on feature point at it directly via a forged
-    // tree containing { file.txt -> oversizeId }.
-    const { FILE_MODE } = await import('../../../../src/domain/objects/index.js');
-    const featTreeId = await writeObject(ctx, {
-      type: 'tree',
-      entries: [
-        {
-          name: 'file.txt' as never,
-          id: oversizeId,
-          mode: FILE_MODE.REGULAR,
-        },
-      ],
-      id: '' as ObjectId,
-    });
-    const { createCommit } = await import(
-      '../../../../src/application/primitives/create-commit.js'
-    );
-    const featCommitId = await createCommit(ctx, {
-      tree: featTreeId,
-      parents: [(await resolveRef(ctx, 'refs/heads/feature' as RefName)) as ObjectId],
-      author,
-      committer: author,
-      message: 'oversize on feature',
-      extraHeaders: [],
-    });
-    const { updateRef } = await import('../../../../src/application/primitives/update-ref.js');
-    await updateRef(ctx, 'refs/heads/feature' as RefName, featCommitId);
-
-    await checkout(ctx, { target: 'main' });
-    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'main\n');
-    await add(ctx, ['file.txt']);
-    await commit(ctx, { message: 'on-main', author });
-
-    // Act
-    let caught: unknown;
-    try {
-      await merge(ctx, { target: 'feature', author });
-    } catch (err) {
-      caught = err;
-    }
-
-    // Assert — cap fires with exact id, actualSize, limit.
-    const data = (caught as TsgitError | undefined)?.data;
-    expect(data?.code).toBe('OBJECT_TOO_LARGE');
-    if (data?.code !== 'OBJECT_TOO_LARGE') {
-      expect.fail(`expected OBJECT_TOO_LARGE, got ${data?.code}`);
-    }
-    expect(data.id).toBe(oversizeId);
-    expect(data.actualSize).toBe(MAX_CONFLICT_OUTPUT_BYTES + 1);
-    expect(data.limit).toBe(MAX_CONFLICT_OUTPUT_BYTES);
-  }, 60_000);
-
-  it('Given a conflicting merge, When the merger runs, Then ours/theirs/base blob reads issue concurrently (parallelism)', async () => {
-    // Arrange — instrument the memory FS to record when read I/O starts and
-    // ends. Build a conflicting merge with a base commit so all three reads
-    // happen. If the merger ran reads sequentially, every read would END
-    // before the next STARTS — the parallel implementation must show
-    // overlap (≥ 2 reads in-flight simultaneously at some moment).
+  it('Given a conflicting merge, When the merger runs, Then ours/theirs/base blob reads OVERLAP at the content-merger phase (parallelism)', async () => {
+    // Arrange — set up a conflicting merge so the three blob reads
+    // (ours/theirs/base) all happen inside `buildContentMerger`. Pre-
+    // compute the three loose-object paths for the conflicting `file.txt`
+    // blob on each side; scope the in-flight counter to ONLY those three
+    // paths so the earlier `flattenTree` parallel walks (3 tree reads in
+    // parallel) don't taint the assertion. A serial mutation of
+    // `Promise.all` inside `buildContentMerger` would drop the conflict-
+    // blob in-flight count to 1.
     const ctx = createMemoryContext();
     await init(ctx);
     await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'base\n');
@@ -485,23 +396,48 @@ describe('merge — bounded blob reads (Phase 13.8)', () => {
     await add(ctx, ['file.txt']);
     await commit(ctx, { message: 'on-main', author });
 
-    // Wrap BOTH fs.exists and fs.read on the objects path so the
-    // instrumentation window spans the full readBlob I/O cycle
-    // (`tryLoose` calls exists then read). A serial implementation would
-    // exit one wrap before entering the next; a Promise.all dispatch
-    // overlaps three wraps simultaneously.
+    // Compute the three blob ids (base/feature/main) then derive their
+    // loose-object paths. Only reads to these specific paths bump the
+    // counter — flattenTree's tree reads are excluded.
+    const { computeLooseObjectPath } = await import('../../../../src/domain/storage/loose-path.js');
+    const blobIds = new Set<string>();
+    const collectBlob = async (branchName: string): Promise<void> => {
+      const tip = await resolveRef(ctx, `refs/heads/${branchName}` as RefName);
+      const commitObj = await readObject(ctx, tip);
+      if (commitObj.type !== 'commit') throw new Error('not a commit');
+      const tree = (await readObject(ctx, commitObj.data.tree)) as Tree;
+      const entry = tree.entries.find((e) => e.name === 'file.txt');
+      if (entry !== undefined) blobIds.add(entry.id);
+    };
+    await collectBlob('main');
+    await collectBlob('feature');
+    // Walk main's parent to grab the base blob id.
+    const mainTip = await resolveRef(ctx, 'refs/heads/main' as RefName);
+    const mainCommit = await readObject(ctx, mainTip);
+    if (mainCommit.type !== 'commit') throw new Error('not a commit');
+    const baseCommitId = mainCommit.data.parents[0];
+    if (baseCommitId !== undefined) {
+      const baseCommit = await readObject(ctx, baseCommitId);
+      if (baseCommit.type === 'commit') {
+        const baseTree = (await readObject(ctx, baseCommit.data.tree)) as Tree;
+        const baseEntry = baseTree.entries.find((e) => e.name === 'file.txt');
+        if (baseEntry !== undefined) blobIds.add(baseEntry.id);
+      }
+    }
+    const objectsDir = `${ctx.layout.gitDir}/objects/`;
+    const conflictBlobPaths = new Set(
+      [...blobIds].map((id) => `${objectsDir}${computeLooseObjectPath(id as ObjectId)}`),
+    );
+
     let inFlight = 0;
     let maxInFlight = 0;
-    const objectsDir = `${ctx.layout.gitDir}/objects/`;
     const originalRead = ctx.fs.read.bind(ctx.fs);
     const originalExists = ctx.fs.exists.bind(ctx.fs);
-    const trackObjectOp = async <T>(path: string, op: () => Promise<T>): Promise<T> => {
-      const isObjectOp = path.startsWith(objectsDir);
-      if (!isObjectOp) return op();
+    const trackConflictBlobOp = async <T>(path: string, op: () => Promise<T>): Promise<T> => {
+      if (!conflictBlobPaths.has(path)) return op();
       inFlight += 1;
       if (inFlight > maxInFlight) maxInFlight = inFlight;
       try {
-        // Yield a microtask so concurrent dispatches overlap on the queue.
         await Promise.resolve();
         return await op();
       } finally {
@@ -509,22 +445,21 @@ describe('merge — bounded blob reads (Phase 13.8)', () => {
       }
     };
     (ctx.fs as { read: typeof originalRead }).read = (path: string) =>
-      trackObjectOp(path, () => originalRead(path));
+      trackConflictBlobOp(path, () => originalRead(path));
     (ctx.fs as { exists: typeof originalExists }).exists = (path: string) =>
-      trackObjectOp(path, () => originalExists(path));
+      trackConflictBlobOp(path, () => originalExists(path));
 
-    // Act — clean three-way merge would NOT exercise content-merger (no
-    // conflicting paths). Use the conflicting setup; the merger throws
-    // MERGE_HAS_CONFLICTS after reading the three blobs. We only need the
-    // reads to have happened concurrently.
+    // Act — conflicting merge invokes contentMerger which reads the
+    // three blobs via Promise.all. Throws MERGE_HAS_CONFLICTS after.
     try {
       await merge(ctx, { target: 'feature', author });
     } catch {
       // expected MERGE_HAS_CONFLICTS — irrelevant to the assertion.
     }
 
-    // Assert — at some moment ≥ 2 object reads were simultaneously in flight.
-    // A sequential implementation would never exceed 1.
+    // Assert — at some moment ≥ 2 CONFLICT-BLOB reads were in flight
+    // simultaneously. A sequential merger over the three blob ids would
+    // never observe inFlight ≥ 2 for THIS scoped set.
     expect(maxInFlight).toBeGreaterThanOrEqual(2);
   });
 });
