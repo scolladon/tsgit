@@ -337,39 +337,100 @@ describe('add', () => {
     expect((err.data as { operation: string }).operation).toBe('rebase');
   });
 
-  it('Given a stat type that flips between walk and stage (regular -> symlink), When add({ all: true }), Then throws OPERATION_ABORTED and no index commit', async () => {
-    // Arrange — first lstat call (in the walk) reports a regular file;
-    // the second (re-lstat inside stageFromStat) reports a symlink. This
-    // simulates an attacker swapping the inode between walk and stage.
-    const ctx = await seedFreshRepo({ 'a.txt': 'a' });
+  const racingLstatFs = (
+    ctx: Awaited<ReturnType<typeof seedFreshRepo>>,
+    targetSuffix: string,
+    flipTo: Partial<Awaited<ReturnType<typeof ctx.fs.lstat>>>,
+  ) => {
+    // Boolean flag (not a positional counter) so extra lstat calls on
+    // OTHER paths don't desynchronise the swap point. The first lstat
+    // for `targetSuffix` returns the real stat; every subsequent lstat
+    // for it returns the flipped stat.
     const baseLstat = ctx.fs.lstat;
-    let lstatCalls = 0;
-    const racingFs = new Proxy(ctx.fs, {
+    let firstSeen = false;
+    return new Proxy(ctx.fs, {
       get(target, prop, receiver) {
         if (prop === 'lstat') {
           return async (path: string) => {
             const real = await baseLstat(path);
-            if (path.endsWith('/a.txt')) {
-              lstatCalls += 1;
-              if (lstatCalls === 2) {
-                return { ...real, isSymbolicLink: true, isFile: false };
-              }
+            if (!path.endsWith(targetSuffix)) return real;
+            if (!firstSeen) {
+              firstSeen = true;
+              return real;
             }
-            return real;
+            return { ...real, ...flipTo };
           };
         }
         return Reflect.get(target, prop, receiver);
       },
     });
-    const racingCtx = { ...ctx, fs: racingFs };
+  };
+
+  it('Given a stat type that flips between walk and stage (regular -> symlink), When add({ all: true }), Then throws OPERATION_ABORTED and no index commit', async () => {
+    // Arrange
+    const ctx = await seedFreshRepo({ 'a.txt': 'a' });
+    const racingCtx = {
+      ...ctx,
+      fs: racingLstatFs(ctx, '/a.txt', { isSymbolicLink: true, isFile: false }),
+    };
     const before = (await readIndex(ctx).catch(() => ({ entries: [] }))).entries.length;
 
     // Act
     await expectError(() => add(racingCtx, [], { all: true }), 'OPERATION_ABORTED');
 
-    // Assert — no partial commit landed.
+    // Assert
     const after = (await readIndex(ctx).catch(() => ({ entries: [] }))).entries.length;
     expect(after).toBe(before);
+  });
+
+  it('Given a stat type that flips between walk and stage (symlink -> regular), When add({ all: true }), Then throws OPERATION_ABORTED', async () => {
+    // Arrange — walk sees a symlink leaf; re-lstat sees a regular file.
+    // Kills the mutant that swaps `!==` for `===` in the type-flip guard.
+    const ctx = await seedFreshRepo({});
+    await ctx.fs.symlink('target', `${ctx.layout.workDir}/link`);
+    const racingCtx = {
+      ...ctx,
+      fs: racingLstatFs(ctx, '/link', { isSymbolicLink: false, isFile: true }),
+    };
+
+    // Act
+    await expectError(() => add(racingCtx, [], { all: true }), 'OPERATION_ABORTED');
+  });
+
+  it('Given a stat type that flips file -> directory between walk and stage, When add({ all: true }), Then throws OPERATION_ABORTED', async () => {
+    // Arrange — extends the type-flip guard to the isDirectory axis so a
+    // mutant that drops the isDirectory check is killed.
+    const ctx = await seedFreshRepo({ 'a.txt': 'a' });
+    const racingCtx = {
+      ...ctx,
+      fs: racingLstatFs(ctx, '/a.txt', { isFile: false, isDirectory: true }),
+    };
+
+    // Act
+    await expectError(() => add(racingCtx, [], { all: true }), 'OPERATION_ABORTED');
+  });
+
+  it('Given a file that grows past MAX_WORKING_TREE_BLOB_BYTES between walk and re-lstat, When add({ all: true }), Then throws WORKING_TREE_FILE_TOO_LARGE (post-re-lstat guard fires)', async () => {
+    // Arrange — walk-time stat reports a small file; re-lstat reports the
+    // oversize value. The pre-filter (walk-time) skips; the authoritative
+    // post-re-lstat guard must catch it.
+    const ctx = await seedFreshRepo({ 'a.txt': 'a' });
+    const racingCtx = {
+      ...ctx,
+      fs: racingLstatFs(ctx, '/a.txt', { size: MAX_WORKING_TREE_BLOB_BYTES + 1 }),
+    };
+
+    // Act
+    const err = await expectError(
+      () => add(racingCtx, [], { all: true }),
+      'WORKING_TREE_FILE_TOO_LARGE',
+    );
+
+    // Assert — payload pins fresh size, not the stale walk-time size.
+    const data = err.data as { path: string; size: number; limit: number };
+    expect(data.path).toBe('a.txt');
+    expect(data.size).toBe(MAX_WORKING_TREE_BLOB_BYTES + 1);
+    expect(data.limit).toBe(MAX_WORKING_TREE_BLOB_BYTES);
   });
 
   it('Given a hostile readlink that returns more than MAX_WORKING_TREE_BLOB_BYTES, When add({ all: true }), Then throws WORKING_TREE_FILE_TOO_LARGE', async () => {
@@ -408,22 +469,18 @@ describe('add', () => {
     expect(data.limit).toBe(MAX_WORKING_TREE_BLOB_BYTES);
   });
 
-  it('Given a plain regular file literally named .git inside a subdirectory, When add({ all: true }), Then the subdirectory siblings ARE staged (no embedded-marker on a non-dir / non-file-pointer)', async () => {
-    // Arrange — historical bug: `entries.some(.name === '.git')` would
-    // collapse a parent directory even when `.git` was not actually a
-    // dir or worktree-pointer. The fix requires `.git` to be a directory
-    // OR a regular file (worktree gitdir pointer). A symlink named `.git`
-    // is NOT a marker — see the helper test below.
+  it('Given a plain regular file literally named .git inside a subdirectory (worktree pointer), When add({ all: true }), Then the whole subdirectory is skipped', async () => {
+    // Arrange — `.git` regular file is git's worktree gitdir pointer
+    // (`gitdir: /path/...`). Treated as an embedded-repo marker.
     const ctx = await seedFreshRepo({
       'sub/normal.txt': 'x',
       'sub/.git': 'gitdir: /elsewhere',
     });
 
-    // Act — the `.git` file IS treated as a worktree pointer (file branch
-    // of the marker check), so the whole `sub/` is skipped.
+    // Act
     await add(ctx, [], { all: true });
 
-    // Assert
+    // Assert — siblings inside `sub/` are not staged.
     const idx = await readIndex(ctx);
     expect(idx.entries.map((e) => e.path)).toEqual([]);
   });

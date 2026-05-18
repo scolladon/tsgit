@@ -121,8 +121,8 @@ export const addAll = async (
     const modified: FilePath[] = [];
     const removed: FilePath[] = [];
 
-    for await (const entry of walkWorkingTree(ctx)) {
-      const result = await processWalkEntry(ctx, entry, existing, ignore, seen);
+    for await (const walkEntry of walkWorkingTree(ctx)) {
+      const result = await processWalkEntry(ctx, walkEntry, existing, ignore, seen);
       if (result === undefined) continue;
       newEntries.set(result.path, result.entry);
       if (result.kind === 'added') added.push(result.path);
@@ -162,6 +162,9 @@ const processWalkEntry = async (
   // files are not dropped via the not-seen → removed path.
   seen.add(path);
   if (ignore(path, stat.isDirectory)) return undefined;
+  // Pre-filter using the walk-time stat as an early reject; the authoritative
+  // size check fires inside stageFromStat against the re-lstat'd value so a
+  // grow-between-walk-and-stage race can't bypass the cap.
   if (stat.size > MAX_WORKING_TREE_BLOB_BYTES) {
     throw workingTreeFileTooLarge(path, stat.size, MAX_WORKING_TREE_BLOB_BYTES);
   }
@@ -202,13 +205,23 @@ const stageFromStat = async (
   stat: Awaited<ReturnType<Context['fs']['lstat']>>,
 ): Promise<IndexEntry> => {
   // Re-lstat under the index lock to close the walk→stage TOCTOU window:
-  // an attacker swapping a regular file for a symlink (or vice versa)
+  // an attacker swapping the inode (regular ↔ symlink, file ↔ directory)
   // between the walk's lstat and our read would otherwise re-route the
-  // read through `ctx.fs.read` (which follows symlinks) or break the
-  // mode classification. If the type flipped, abort the whole add.
+  // read through `ctx.fs.read` (which follows symlinks), break the mode
+  // classification, or trip an opaque adapter error. Abort the whole add
+  // on any type flip.
   const fresh = await ctx.fs.lstat(`${ctx.layout.workDir}/${path}`);
-  if (fresh.isSymbolicLink !== stat.isSymbolicLink) {
+  if (
+    fresh.isSymbolicLink !== stat.isSymbolicLink ||
+    fresh.isDirectory !== stat.isDirectory ||
+    fresh.isFile !== stat.isFile
+  ) {
     throw operationAborted();
+  }
+  // Authoritative size cap — uses the fresh stat so a grow-between-walk-and-
+  // stage race cannot smuggle an oversize blob past the pre-filter.
+  if (fresh.size > MAX_WORKING_TREE_BLOB_BYTES) {
+    throw workingTreeFileTooLarge(path, fresh.size, MAX_WORKING_TREE_BLOB_BYTES);
   }
   const mode: FileMode = fresh.isSymbolicLink
     ? '120000'
