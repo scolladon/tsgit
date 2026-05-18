@@ -132,11 +132,17 @@ await git.checkout({ fs, dir: '.', ref: 'main' });
 
 // tsgit
 await repo.checkout({ target: 'main' });
+
+// Path-restore (Phase 13.1):
+await repo.checkout({ paths: ['src/foo.ts'] });                // from index
+await repo.checkout({ paths: ['src/foo.ts'], source: 'HEAD' }); // from HEAD's tree
 ```
 
-`tsgit`'s v1 checkout only moves `HEAD`; working-tree materialization
-lands in v1.x. The semantics that DO ship are documented in the result
-shape returned to the caller.
+Phase 13.1 wires the full working-tree materialisation: switching branches
+writes / deletes / chmods every file, commits a new `.git/index`, and moves
+HEAD — atomic per file (matches canonical git, see ADR-018). Without
+`force: true`, the checkout refuses to overwrite a dirty working-tree
+file or to clobber an untracked path with `CHECKOUT_OVERWRITE_DIRTY`.
 
 ### `git.tag` / `git.listTags` → `repo.tag`
 

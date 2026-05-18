@@ -329,7 +329,15 @@
     "mkdtemps",
     "greppable",
     "initialised",
-    "normalising"
+    "normalising",
+    "chmods",
+    "recognised",
+    "treeish",
+    "materialise",
+    "materialises",
+    "materialisation",
+    "optimisation",
+    "desyncs"
   ],
   "ignorePaths": [
     "node_modules",

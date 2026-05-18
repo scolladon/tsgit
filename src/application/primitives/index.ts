@@ -1,11 +1,17 @@
+export type { ApplyChangesetOpts, ApplyChangesetResult } from './apply-changeset.js';
+export { applyChangeset } from './apply-changeset.js';
 export type { BuildPackInput, BuildPackResult } from './build-pack.js';
 export { buildPack } from './build-pack.js';
+export type { Changeset, ChangesetEntry, ChangesetStats } from './compute-changeset.js';
+export { computeChangeset } from './compute-changeset.js';
 export { createCommit } from './create-commit.js';
 export { diffTrees } from './diff-trees.js';
 export type { EnumeratePushObjectsInput } from './enumerate-push-objects.js';
 export { enumeratePushObjects } from './enumerate-push-objects.js';
 export type { FetchPackInput, FetchPackResult } from './fetch-pack.js';
 export { fetchPack } from './fetch-pack.js';
+export type { MaterializeTreeOpts, MaterializeTreeResult } from './materialize-tree.js';
+export { materializeTree } from './materialize-tree.js';
 export { mergeBase } from './merge-base.js';
 export { getRepoRoot } from './path-layout.js';
 export { readBlob } from './read-blob.js';
