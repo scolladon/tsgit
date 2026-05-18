@@ -309,6 +309,9 @@ describe('add', () => {
     expect(data.path).toBe('big.bin');
     expect(data.size).toBe(MAX_WORKING_TREE_BLOB_BYTES + 1);
     expect(data.limit).toBe(MAX_WORKING_TREE_BLOB_BYTES);
+    // ctx and hostileCtx share the same backing memory FS — reading the
+    // index through `ctx` reflects exactly what `add(hostileCtx, …)` did
+    // (or didn't) commit. Confirms the failed call left no partial write.
     const after = (await readIndex(ctx)).entries.length;
     expect(after).toBe(before);
   });
