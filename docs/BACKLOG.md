@@ -285,7 +285,7 @@ tree is the visible gap.
       - [x] **14.5.10** Add `case 'EISDIR': return permissionDenied(path)` to `mapErrno` so Windows symlink-to-directory failures take a single hop instead of `EISDIR → UNSUPPORTED_OPERATION → isWindowsSymlinkRefusal → PERMISSION_DENIED`. (Security review LOW-1.)
       - [x] **14.5.11** Drop the always-`true` `isSymlinkLeaf` argument at the only `isWindowsSymlinkRefusal` call site (or thread the real lstat result through). The current signature reads as if it carries information it does not. (Security review LOW-2.)
       - [x] **14.5.12** Distinguish `ENOTEMPTY` from `ENOTDIR` in `mapErrno` (currently both map to `NOT_A_DIRECTORY`). Add a new error code or comment the deliberate coalescing. (Security review LOW-3.)
-      - [x] **14.5.13** Strip a leading `\\?\` extended-length prefix inside Windows `normalizeForCompare` (or document the limitation). Today device-namespace paths can spuriously deny in `lstat`/`creation` modes. (Security review LOW-4.)
+      - [ ] **14.5.13** Strip a leading `\\?\` extended-length prefix inside Windows `normalizeForCompare` (or document the limitation). Today device-namespace paths can spuriously deny in `lstat`/`creation` modes. (Security review LOW-4.) _Reverted in the §14.5 bundle — broke 37 contract tests on Windows CI; needs a follow-up to debug whether the strip is the proximate cause and reintroduce it correctly._
       - [x] **14.5.14** DI-level coverage of `openWithNoFollow(path, 'write')` against a Windows-mocked symlink — today the `'write'` flag-selection arm is only exercised via the POSIX-only locked-directory integration test. (Test review HIGH-2.)
 
 ### Phase 15 — Bench + observability follow-ups (v1.x patch)
