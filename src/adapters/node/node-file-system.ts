@@ -40,14 +40,14 @@ export function isErrnoException(err: unknown): err is NodeJS.ErrnoException {
  *
  * @internal
  */
-export function isWindowsSymlinkRefusal(
-  err: unknown,
-  isSymlinkLeaf: boolean,
-  policy: PathPolicy = nativePolicy,
-): boolean {
+export function isWindowsSymlinkRefusal(err: unknown, policy: PathPolicy = nativePolicy): boolean {
   // The discriminator only fires on case-insensitive (Windows) platforms.
   // POSIX symlink refusal flows through `mapErrno` directly via `ELOOP`.
-  if (!policy.caseInsensitive || !isSymlinkLeaf) return false;
+  // The previous `isSymlinkLeaf` parameter was always passed `true` at
+  // the single call site — its presence implied the function was
+  // stateful with respect to a real lstat result when it was not.
+  // Dropped per §14.5.11.
+  if (!policy.caseInsensitive) return false;
   if (!(err instanceof TsgitError)) return false;
   return err.data.code === 'PERMISSION_DENIED' || err.data.code === 'UNSUPPORTED_OPERATION';
 }
@@ -453,7 +453,7 @@ export class NodeFileSystem implements FileSystem {
       // isSymlinkLeaf and open), the discriminator rewraps any EACCES /
       // UNSUPPORTED_OPERATION into PERMISSION_DENIED so callers get a
       // single cross-platform code for symlink refusal.
-      if (isWindowsSymlinkRefusal(err, true, this.pathPolicy)) {
+      if (isWindowsSymlinkRefusal(err, this.pathPolicy)) {
         throw permissionDenied(path);
       }
       throw err;
