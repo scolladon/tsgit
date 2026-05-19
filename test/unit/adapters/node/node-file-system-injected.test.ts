@@ -279,20 +279,27 @@ describe('NodeFileSystem — non-errno fault propagation (DI)', () => {
 });
 
 describe('NodeFileSystem — 8.3 short-name parent reconciliation (DI)', () => {
-  it('Given realpath flips between short and long forms across calls, When write goes through creation containment, Then it does NOT throw PERMISSION_DENIED', async () => {
+  it('Given realpath flips between short and long forms across calls, When write goes through creation containment, Then it succeeds (canonical-root containment passes)', async () => {
     // Arrange — simulates the GHA Windows runner: realpath of the rootDir
-    // returns the long-name form, but the walk-up inside
-    // realpathNearestExisting may receive a different form. Containment
-    // must canonicalise both sides.
+    // returns the long-name form, while realpath of the leaf parent (the
+    // same short string but called from the realpathNearestExisting walk)
+    // returns the short form back. Containment must canonicalise both
+    // sides and accept either spelling.
     const shortRoot = 'C:\\Users\\RUNNER~1\\Temp\\tsgit-AbCd';
     const longRoot = 'C:\\Users\\runneradmin\\Temp\\tsgit-AbCd';
     const childShort = 'C:\\Users\\RUNNER~1\\Temp\\tsgit-AbCd\\a.bin';
+    let realpathHits = 0;
 
     const fsOps = fakeFsOps({
       realpath: vi.fn().mockImplementation(async (input: string) => {
-        if (input === shortRoot) return longRoot;
-        if (input === 'C:\\Users\\RUNNER~1\\Temp\\tsgit-AbCd') return shortRoot;
-        throw enoent();
+        if (input !== shortRoot) throw enoent();
+        realpathHits += 1;
+        // First call: getCanonicalRoot → long-name canonical form.
+        // Second call: realpathNearestExisting walks up from the leaf and
+        // calls realpath on the parent again. Windows is documented to
+        // return either form depending on the API path; simulate the
+        // "didn't expand this time" outcome by returning the short form.
+        return realpathHits === 1 ? longRoot : shortRoot;
       }),
       lstat: vi.fn().mockRejectedValue(enoent()),
     });
@@ -306,13 +313,47 @@ describe('NodeFileSystem — 8.3 short-name parent reconciliation (DI)', () => {
       caught = err;
     }
 
-    // Assert — the write must succeed; an unconditional pin kills mutants
-    // that would let the call skip containment entirely (the previous
-    // `if (caught instanceof TsgitError)` guard left the assertion block
-    // unreached on the happy path).
+    // Assert — write succeeds despite the short↔long flip; both realpath
+    // call sites fired (canonical-root + walk-up); writeFile + mkdir
+    // observed so the path actually reached the fs.
     expect(caught).toBeUndefined();
+    expect(realpathHits).toBeGreaterThanOrEqual(2);
     expect(fsOps.writeFile).toHaveBeenCalledTimes(1);
     expect(fsOps.mkdir).toHaveBeenCalled();
+  });
+
+  it('Given a read on a path that resolves outside rootDir, When the canonical roots both reject it, Then PERMISSION_DENIED is thrown (containment is load-bearing)', async () => {
+    // Arrange — sibling negative case to the happy-path test above. Uses
+    // `read` so the pre-realpath `check(resolved)` arm of resolveForMode
+    // fires (creation mode would surface FILE_NOT_FOUND first because the
+    // walk-up segments don't exist in the mock — equally valid security
+    // behaviour, but it would muddy what this test is pinning).
+    const shortRoot = 'C:\\Users\\RUNNER~1\\Temp\\tsgit-AbCd';
+    const longRoot = 'C:\\Users\\runneradmin\\Temp\\tsgit-AbCd';
+    const outsidePath = 'C:\\elsewhere\\evil.bin';
+
+    const fsOps = fakeFsOps({
+      realpath: vi.fn().mockImplementation(async (input: string) => {
+        if (input === shortRoot) return longRoot;
+        return input;
+      }),
+    });
+    const sut = new NodeFileSystem(shortRoot, windowsPolicy, fsOps);
+
+    // Act
+    let caught: unknown;
+    try {
+      await sut.read(outsidePath);
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert — containment refuses the out-of-tree absolute path BEFORE
+    // any I/O reaches `readFile`. If a mutation silently disabled
+    // checkContainment, this would surface a different error (or none).
+    expect(caught).toBeInstanceOf(TsgitError);
+    expect((caught as TsgitError).data.code).toBe('PERMISSION_DENIED');
+    expect(fsOps.readFile).not.toHaveBeenCalled();
   });
 });
 
@@ -637,5 +678,130 @@ describe('NodeFileSystem.readlink + chmod + symlink (DI)', () => {
     // Assert
     expect(mkdir).toHaveBeenCalledWith('/root/sub', { recursive: true });
     expect(symlink).toHaveBeenCalledWith(target, link);
+  });
+});
+
+describe('NodeFileSystem.openWithNoFollow — handle wrapper semantics (DI)', () => {
+  const makeHandleFake = () => {
+    const close = vi.fn().mockResolvedValue(undefined);
+    const read = vi.fn().mockResolvedValue({ bytesRead: 0, buffer: Buffer.alloc(0) });
+    const statHandle = vi.fn().mockResolvedValue({
+      ctimeMs: BigInt(1),
+      mtimeMs: BigInt(2),
+      dev: BigInt(3),
+      ino: BigInt(4),
+      mode: BigInt(0o100644),
+      uid: BigInt(0),
+      gid: BigInt(0),
+      size: BigInt(0),
+      ctimeNs: BigInt(11),
+      mtimeNs: BigInt(22),
+      isFile: () => true,
+      isDirectory: () => false,
+      isSymbolicLink: () => false,
+    });
+    return { handle: { close, read, stat: statHandle }, close, read, statHandle };
+  };
+
+  it('Given a wrapped FileHandle, When close is called twice, Then the underlying close runs exactly once (closed-flag idempotency)', async () => {
+    // Arrange
+    const rootDir = '/root';
+    const { handle, close } = makeHandleFake();
+    const fsOps = fakeFsOps({
+      realpath: vi.fn().mockImplementation(async (input: string) => input),
+      lstat: vi.fn().mockResolvedValue({ isSymbolicLink: () => false }),
+      open: vi.fn().mockResolvedValue(handle),
+    });
+    const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+
+    // Act
+    const wrapped = await sut.openWithNoFollow('/root/file.bin', 'read');
+    await wrapped.close();
+    await wrapped.close();
+
+    // Assert — kills BooleanLiteral / ConditionalExpression / BlockStatement
+    // mutants on the `closed` guard in wrapNodeHandle.close (lines 176, 187,
+    // 188 of node-file-system.ts).
+    expect(close).toHaveBeenCalledTimes(1);
+  });
+
+  it('Given a wrapped FileHandle, When stat is called, Then the underlying call uses { bigint: true } and the ns fields survive', async () => {
+    // Arrange
+    const rootDir = '/root';
+    const { handle, statHandle } = makeHandleFake();
+    const fsOps = fakeFsOps({
+      realpath: vi.fn().mockImplementation(async (input: string) => input),
+      lstat: vi.fn().mockResolvedValue({ isSymbolicLink: () => false }),
+      open: vi.fn().mockResolvedValue(handle),
+    });
+    const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+    const wrapped = await sut.openWithNoFollow('/root/file.bin', 'read');
+
+    // Act
+    const stat = await wrapped.stat();
+    await wrapped.close();
+
+    // Assert — kills ObjectLiteral / BooleanLiteral mutants on
+    // `{ bigint: true }` (line 185). If the flag is dropped, ctimeNs is
+    // not populated; if it flips to false, the underlying fake is no
+    // longer called with the expected shape.
+    expect(statHandle).toHaveBeenCalledWith({ bigint: true });
+    expect(stat.ctimeNs).toBe(BigInt(11));
+    expect(stat.mtimeNs).toBe(BigInt(22));
+  });
+});
+
+describe('NodeFileSystem — TsgitError rethrow defence (DI)', () => {
+  it('Given realpath synthesises a TsgitError, When exists is called, Then exists rethrows it unchanged (no re-wrap via mapErrno)', async () => {
+    // Arrange — exercises the defensive `if (err instanceof TsgitError)
+    // throw err` branch in `exists`'s catch. The mutant `if (false) throw
+    // err` would either funnel into mapErrno (errno path) or fall through
+    // to the final `throw err`. Both paths re-emit a TsgitError so the
+    // observable behaviour can drift. Pinning the *exact* same instance
+    // identity kills the early-return mutant.
+    const rootDir = '/root';
+    const sentinel = new TsgitError({ code: 'OPERATION_ABORTED' });
+    const fsOps = fakeFsOps({
+      realpath: vi.fn().mockImplementation(async (input: string) => {
+        if (input === rootDir) return rootDir;
+        throw sentinel;
+      }),
+    });
+    const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+
+    // Act
+    let caught: unknown;
+    try {
+      await sut.exists('/root/probe.txt');
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert — same instance round-trips back (defensive branch fired).
+    expect(caught).toBe(sentinel);
+  });
+
+  it('Given realpath synthesises a TsgitError, When read is called, Then checkContainment rethrows it unchanged', async () => {
+    // Arrange — same logic for `checkContainment`'s catch block (line 551).
+    const rootDir = '/root';
+    const sentinel = new TsgitError({ code: 'OPERATION_ABORTED' });
+    const fsOps = fakeFsOps({
+      realpath: vi.fn().mockImplementation(async (input: string) => {
+        if (input === rootDir) return rootDir;
+        throw sentinel;
+      }),
+    });
+    const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+
+    // Act
+    let caught: unknown;
+    try {
+      await sut.read('/root/probe.txt');
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert
+    expect(caught).toBe(sentinel);
   });
 });

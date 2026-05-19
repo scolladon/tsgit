@@ -40,7 +40,16 @@ export interface PathPolicy {
   normalizeForCompare(path: string): string;
 }
 
-const narrowSep = (sep: string): '\\' | '/' => {
+/**
+ * Narrows `nodePath.{posix,win32}.sep` (typed as `string` in `@types/node`)
+ * to the literal union the `PathPolicy` interface declares, without an
+ * `as` escape. Throws on any other value so a future export of
+ * `makePolicy` (BACKLOG §14.5.7) cannot silently accept an unknown
+ * separator.
+ *
+ * @internal — exported only so the throw arm can be unit-tested.
+ */
+export const narrowSep = (sep: string): '\\' | '/' => {
   if (sep !== '\\' && sep !== '/') {
     throw new Error(`PathPolicy: unsupported separator ${JSON.stringify(sep)}`);
   }

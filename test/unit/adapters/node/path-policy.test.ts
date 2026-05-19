@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  narrowSep,
   nativePolicy,
   posixPolicy,
   selectNativePolicy,
@@ -32,14 +33,63 @@ describe('selectNativePolicy', () => {
     expect(sut).toBe(posixPolicy);
   });
 
-  it('Given an unrecognised platform string, When selectNativePolicy is called, Then it falls back to posixPolicy', () => {
+  it('Given a non-win32 platform, When selectNativePolicy is called, Then it falls back to posixPolicy', () => {
     // Arrange & Act — guards the default arm of the ternary against a
     // ConditionalExpression mutant that would flip the fallback to
     // windowsPolicy. Any non-"win32" platform must yield posixPolicy.
-    const sut = selectNativePolicy('freebsd' as NodeJS.Platform);
+    // `freebsd` is a valid `NodeJS.Platform` member, so no cast is needed.
+    const sut = selectNativePolicy('freebsd');
 
     // Assert
     expect(sut).toBe(posixPolicy);
+  });
+});
+
+describe('narrowSep', () => {
+  it('Given the POSIX separator, When narrowed, Then returns it unchanged', () => {
+    // Act
+    const sut = narrowSep('/');
+
+    // Assert
+    expect(sut).toBe('/');
+  });
+
+  it('Given the Windows separator, When narrowed, Then returns it unchanged', () => {
+    // Act
+    const sut = narrowSep('\\');
+
+    // Assert
+    expect(sut).toBe('\\');
+  });
+
+  it('Given an unsupported separator, When narrowed, Then throws with the offending value quoted', () => {
+    // Arrange & Act
+    let caught: unknown;
+    try {
+      narrowSep(':');
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert — the throw arm must fire for any non-`/`-non-`\\` input.
+    // Pins the guard against StringLiteral / ConditionalExpression mutants
+    // that would weaken or remove either side of the test.
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).message).toBe('PathPolicy: unsupported separator ":"');
+  });
+
+  it('Given the empty string, When narrowed, Then throws (defensive against a future API regression)', () => {
+    // Arrange & Act
+    let caught: unknown;
+    try {
+      narrowSep('');
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).message).toBe('PathPolicy: unsupported separator ""');
   });
 });
 
