@@ -573,6 +573,14 @@ describe('NodeFileSystem', () => {
         expect(sut.data.code).toBe('PERMISSION_DENIED');
       });
 
+      it('Given ELOOP, When mapping, Then returns PERMISSION_DENIED (symlink-refusal contract)', () => {
+        // Act
+        const sut = mapErrno(makeErrnoError('ELOOP'), '/looping');
+
+        // Assert
+        expect(sut.data.code).toBe('PERMISSION_DENIED');
+      });
+
       it('Given an unknown errno code, When mapping, Then returns UNSUPPORTED_OPERATION with operation="filesystem" and the code as reason', () => {
         // Act
         const sut = mapErrno(makeErrnoError('EOTHER'), '/weird');

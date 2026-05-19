@@ -59,6 +59,10 @@ export function mapErrno(err: NodeJS.ErrnoException, path: string): TsgitError {
     case 'EACCES':
     case 'EPERM':
       return permissionDenied(path);
+    case 'ELOOP':
+      // POSIX errno for symlink-loop / O_NOFOLLOW refusal; Windows surfaces other
+      // errnos handled by the `openWithNoFollow` discriminator (ADR-043).
+      return permissionDenied(path);
     default:
       return unsupportedOperation('filesystem', err.code ?? 'UNKNOWN');
   }
@@ -383,22 +387,10 @@ export class NodeFileSystem implements FileSystem {
   openWithNoFollow = async (path: string, mode: 'read' | 'write'): Promise<FileHandle> => {
     const real = await this.checkContainment(path, 'lstat');
     const flag = mode === 'write' ? fs.constants.O_WRONLY : fs.constants.O_RDONLY;
-    const handle = await runFs(
-      () => fsPromises.open(real, flag | fs.constants.O_NOFOLLOW),
-      path,
-    ).catch((err: unknown) => {
-      // ELOOP is the POSIX errno surfaced when O_NOFOLLOW refuses a symlink leaf.
-      // mapErrno funnels it to UNSUPPORTED_OPERATION; rewrap as PERMISSION_DENIED to
-      // give callers a single signal across adapters.
-      if (
-        err instanceof TsgitError &&
-        err.data.code === 'UNSUPPORTED_OPERATION' &&
-        err.data.reason === 'ELOOP'
-      ) {
-        throw permissionDenied(path);
-      }
-      throw err;
-    });
+    // ELOOP now flows through `mapErrno` (ADR-043) so the POSIX path needs no
+    // call-site rewrap. The Windows discriminator is added in Phase 14.4 §3.3
+    // — separate commit.
+    const handle = await runFs(() => fsPromises.open(real, flag | fs.constants.O_NOFOLLOW), path);
     return wrapNodeHandle(handle);
   };
 
