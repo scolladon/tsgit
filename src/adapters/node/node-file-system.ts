@@ -10,6 +10,7 @@ import {
   unsupportedOperation,
 } from '../../domain/index.js';
 import type { DirEntry, FileHandle, FileStat, FileSystem } from '../../ports/file-system.js';
+import { isWindows, type PlatformPredicate } from './platform.js';
 
 type ContainmentMode = 'read' | 'lstat' | 'creation';
 
@@ -21,6 +22,28 @@ export function toAbsolute(path: string, rootDir: string): string {
 /** @internal */
 export function isErrnoException(err: unknown): err is NodeJS.ErrnoException {
   return err instanceof Error && 'code' in err;
+}
+
+/**
+ * True iff `child === parent` (after case-folding on Windows) or `child` is
+ * strictly inside `parent`. Defends `NodeFileSystem.checkContainment` against
+ * (a) drive-letter casing differences on Windows and (b) the prefix-only
+ * false-positive (parent='/tmp/foo', child='/tmp/foobar'). Phase 14.4.
+ *
+ * @internal
+ */
+export function pathContains(
+  parent: string,
+  child: string,
+  isWindowsFn: PlatformPredicate = isWindows,
+): boolean {
+  const windows = isWindowsFn();
+  const normalize = (path: string): string => (windows ? path.toLowerCase() : path);
+  const sep = windows ? '\\' : '/';
+  const p = normalize(parent);
+  const c = normalize(child);
+  if (c === p) return true;
+  return c.startsWith(p + sep);
 }
 
 /** @internal */

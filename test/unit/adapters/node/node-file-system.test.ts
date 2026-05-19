@@ -8,6 +8,7 @@ import {
   mapErrno,
   mapStat,
   NodeFileSystem,
+  pathContains,
   realpathNearestExisting,
   runFs,
   toAbsolute,
@@ -909,6 +910,102 @@ describe('NodeFileSystem', () => {
         // Cleanup
         await fsPromises.rm(tempRoot, { recursive: true, force: true });
       });
+    });
+  });
+
+  describe('pathContains', () => {
+    const posix = (): boolean => false;
+    const windows = (): boolean => true;
+
+    it('Given parent === child, When pathContains, Then returns true', () => {
+      // Arrange
+      const sut = pathContains;
+
+      // Act
+      const result = sut('/tmp/foo', '/tmp/foo', posix);
+
+      // Assert
+      expect(result).toBe(true);
+    });
+
+    it('Given child strictly inside parent (POSIX), When pathContains, Then returns true', () => {
+      // Arrange
+      const sut = pathContains;
+
+      // Act
+      const result = sut('/tmp/foo', '/tmp/foo/bar/baz.bin', posix);
+
+      // Assert
+      expect(result).toBe(true);
+    });
+
+    it('Given child outside parent, When pathContains, Then returns false', () => {
+      // Arrange
+      const sut = pathContains;
+
+      // Act
+      const result = sut('/tmp/foo', '/etc/passwd', posix);
+
+      // Assert
+      expect(result).toBe(false);
+    });
+
+    it("Given prefix-only match (parent='/tmp/foo', child='/tmp/foobar'), Then returns false (kills missing-separator mutant)", () => {
+      // Arrange
+      const sut = pathContains;
+
+      // Act
+      const result = sut('/tmp/foo', '/tmp/foobar', posix);
+
+      // Assert
+      expect(result).toBe(false);
+    });
+
+    it('Given Windows host and case-different drive letters but same path, Then returns true', () => {
+      // Arrange
+      const sut = pathContains;
+      const parent = 'C:\\Users\\Foo';
+      const child = 'c:\\users\\foo\\bar.bin';
+
+      // Act
+      const result = sut(parent, child, windows);
+
+      // Assert
+      expect(result).toBe(true);
+    });
+
+    it('Given Windows host and child equal to parent in different case, Then returns true (identity arm)', () => {
+      // Arrange
+      const sut = pathContains;
+
+      // Act
+      const result = sut('C:\\Users\\Foo', 'c:\\users\\FOO', windows);
+
+      // Assert
+      expect(result).toBe(true);
+    });
+
+    it('Given POSIX host and same path with different case, Then returns false (case-sensitive)', () => {
+      // Arrange
+      const sut = pathContains;
+
+      // Act
+      const result = sut('/Users/Foo', '/users/foo/bar', posix);
+
+      // Assert
+      expect(result).toBe(false);
+    });
+
+    it('Given the default predicate (no isWindowsFn), When parent === child on the host platform, Then returns true', () => {
+      // Arrange — exercises the `isWindowsFn = isWindows` default binding.
+      const sut = pathContains;
+      const path = nodePath.resolve('/some/dir');
+
+      // Act
+      const result = sut(path, path);
+
+      // Assert
+      expect(result).toBe(true);
     });
   });
 });
