@@ -1,5 +1,11 @@
 import { branchNotFound, invalidOption } from '../../domain/commands/error.js';
-import type { FilePath, ObjectId, RefName } from '../../domain/objects/index.js';
+import {
+  FILE_MODE,
+  type FilePath,
+  type ObjectId,
+  type RefName,
+} from '../../domain/objects/index.js';
+import { matchesPathspec } from '../../domain/pathspec/index.js';
 import { validateRefName } from '../../domain/refs/index.js';
 import type { Context } from '../../ports/context.js';
 import { materializeTree } from '../primitives/materialize-tree.js';
@@ -7,6 +13,7 @@ import { readIndex } from '../primitives/read-index.js';
 import { readTree } from '../primitives/read-tree.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
 import { synthesizeTreeFromIndex } from '../primitives/synthesize-tree-from-index.js';
+import { walkTree } from '../primitives/walk-tree.js';
 import { writeSymbolicRef } from '../primitives/write-symbolic-ref.js';
 import { acquireIndexLock } from './internal/index-update.js';
 import {
@@ -14,6 +21,7 @@ import {
   assertNotBare,
   assertRepository,
 } from './internal/repo-state.js';
+import { enforceLiteralMustMatch, resolvePathspec } from './internal/resolve-pathspec.js';
 
 export interface CheckoutSwitchOptions {
   readonly target: string;
@@ -120,7 +128,24 @@ const pathRestore = async (ctx: Context, opts: CheckoutPathsOptions): Promise<Ch
     throw invalidOption('paths', 'must not be empty');
   }
   const source = opts.source ?? 'index';
-  const pathSet = new Set(opts.paths.map((p) => p as FilePath));
+  const { matcher, literalMustMatch } = resolvePathspec(opts.paths);
+
+  // Enumerate the source's flat path universe so globs (`*.ts`,
+  // `src/**`) can be expanded into a concrete `pathSet` for the
+  // existing materialise primitives. For `source: 'index'` this reads
+  // the index once here; the materialise call below reads it again
+  // (snapshot diff is benign — no commit happens on the lockless
+  // path). For `source: 'HEAD'` or an ObjectId, walk the tree once.
+  const universe: ReadonlyArray<FilePath> = await enumerateSourcePaths(ctx, source);
+  const matched = universe.filter((p) => matchesPathspec(matcher, p, false));
+  enforceLiteralMustMatch(literalMustMatch, matched);
+  const pathSet = new Set<FilePath>(matched);
+
+  // Glob with zero matches → no-op (literals already threw above).
+  if (pathSet.size === 0) {
+    const head = await resolveRef(ctx, 'HEAD' as RefName);
+    return { branch: undefined, id: head, detached: false, changedPaths: 0 };
+  }
 
   // Two branches by source:
   // - 'index' (default): no index commit, no lock needed. Read the index
@@ -194,6 +219,27 @@ const materializePathRestoreLocked = async (
   } finally {
     await lock.release();
   }
+};
+
+// Enumerate the flat path universe of the path-restore source so the
+// pathspec matcher can be expanded into a concrete `Set<FilePath>`.
+// For `'index'`, returns every index entry's path. For `'HEAD'` or an
+// ObjectId, walks the tree and returns every non-directory entry's
+// path.
+const enumerateSourcePaths = async (
+  ctx: Context,
+  source: 'index' | 'HEAD' | ObjectId,
+): Promise<ReadonlyArray<FilePath>> => {
+  if (source === 'index') {
+    const index = await readIndex(ctx);
+    return index.entries.map((e) => e.path);
+  }
+  const treeId = await resolvePathSource(ctx, source);
+  const paths: FilePath[] = [];
+  for await (const entry of walkTree(ctx, treeId)) {
+    if (entry.mode !== FILE_MODE.DIRECTORY) paths.push(entry.path);
+  }
+  return paths;
 };
 
 export const checkout = async (ctx: Context, opts: CheckoutOptions): Promise<CheckoutResult> => {
