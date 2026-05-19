@@ -1,3 +1,5 @@
+import * as nodePath from 'node:path';
+
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { TsgitError } from '../../../src/domain/index.js';
 import type { FileSystem } from '../../../src/ports/file-system.js';
@@ -82,7 +84,7 @@ export function fileSystemContractTests(createSut: () => Promise<FileSystemContr
 
     it('Given written file, When reading, Then returns same bytes', async () => {
       // Arrange
-      const path = `${env.rootDir}/file.bin`;
+      const path = nodePath.join(env.rootDir, 'file.bin');
       const data = new Uint8Array([1, 2, 3, 4, 5]);
 
       // Act
@@ -95,7 +97,7 @@ export function fileSystemContractTests(createSut: () => Promise<FileSystemContr
 
     it('Given written UTF-8 file, When readUtf8, Then returns same string', async () => {
       // Arrange
-      const path = `${env.rootDir}/file.txt`;
+      const path = nodePath.join(env.rootDir, 'file.txt');
       const content = 'hello world';
 
       // Act
@@ -108,7 +110,7 @@ export function fileSystemContractTests(createSut: () => Promise<FileSystemContr
 
     it('Given non-existent path, When read, Then throws FILE_NOT_FOUND', async () => {
       // Arrange
-      const path = `${env.rootDir}/missing.bin`;
+      const path = nodePath.join(env.rootDir, 'missing.bin');
 
       // Act
       try {
@@ -122,7 +124,7 @@ export function fileSystemContractTests(createSut: () => Promise<FileSystemContr
 
     it('Given non-existent path, When stat, Then throws FILE_NOT_FOUND', async () => {
       // Arrange
-      const path = `${env.rootDir}/missing.bin`;
+      const path = nodePath.join(env.rootDir, 'missing.bin');
 
       // Act
       try {
@@ -136,7 +138,7 @@ export function fileSystemContractTests(createSut: () => Promise<FileSystemContr
 
     it('Given non-existent path, When exists, Then returns false', async () => {
       // Arrange
-      const path = `${env.rootDir}/missing.bin`;
+      const path = nodePath.join(env.rootDir, 'missing.bin');
 
       // Act
       const result = await env.fs.exists(path);
@@ -158,7 +160,7 @@ export function fileSystemContractTests(createSut: () => Promise<FileSystemContr
 
     it('Given written file, When stat, Then size matches data length', async () => {
       // Arrange
-      const path = `${env.rootDir}/sized.bin`;
+      const path = nodePath.join(env.rootDir, 'sized.bin');
       const data = new Uint8Array([1, 2, 3, 4, 5, 6, 7]);
 
       // Act
@@ -171,7 +173,7 @@ export function fileSystemContractTests(createSut: () => Promise<FileSystemContr
 
     it('Given written file, When stat, Then isFile is true', async () => {
       // Arrange
-      const path = `${env.rootDir}/file.bin`;
+      const path = nodePath.join(env.rootDir, 'file.bin');
       await env.fs.write(path, new Uint8Array([1]));
 
       // Act
@@ -183,7 +185,7 @@ export function fileSystemContractTests(createSut: () => Promise<FileSystemContr
 
     it('Given directory, When stat, Then isDirectory is true', async () => {
       // Arrange
-      const path = `${env.rootDir}/subdir`;
+      const path = nodePath.join(env.rootDir, 'subdir');
       await env.fs.mkdir(path);
 
       // Act
@@ -195,7 +197,7 @@ export function fileSystemContractTests(createSut: () => Promise<FileSystemContr
 
     it('Given nested path, When write, Then creates parent directories', async () => {
       // Arrange
-      const path = `${env.rootDir}/a/b/c.txt`;
+      const path = nodePath.join(env.rootDir, 'a', 'b', 'c.txt');
       const data = new Uint8Array([42]);
 
       // Act
@@ -208,7 +210,7 @@ export function fileSystemContractTests(createSut: () => Promise<FileSystemContr
 
     it('Given existing file, When write, Then overwrites', async () => {
       // Arrange
-      const path = `${env.rootDir}/overwrite.bin`;
+      const path = nodePath.join(env.rootDir, 'overwrite.bin');
       await env.fs.write(path, new Uint8Array([1, 2, 3]));
 
       // Act
@@ -221,7 +223,7 @@ export function fileSystemContractTests(createSut: () => Promise<FileSystemContr
 
     it('Given empty Uint8Array, When write then read, Then returns empty array', async () => {
       // Arrange
-      const path = `${env.rootDir}/empty.bin`;
+      const path = nodePath.join(env.rootDir, 'empty.bin');
 
       // Act
       await env.fs.write(path, new Uint8Array());
@@ -233,7 +235,7 @@ export function fileSystemContractTests(createSut: () => Promise<FileSystemContr
 
     it('Given file, When rm, Then file no longer exists', async () => {
       // Arrange
-      const path = `${env.rootDir}/to-remove.bin`;
+      const path = nodePath.join(env.rootDir, 'to-remove.bin');
       await env.fs.write(path, new Uint8Array([1]));
 
       // Act
@@ -246,7 +248,7 @@ export function fileSystemContractTests(createSut: () => Promise<FileSystemContr
 
     it('Given non-existent path, When rm, Then throws FILE_NOT_FOUND', async () => {
       // Arrange
-      const path = `${env.rootDir}/nope.bin`;
+      const path = nodePath.join(env.rootDir, 'nope.bin');
 
       // Act
       try {
@@ -260,8 +262,8 @@ export function fileSystemContractTests(createSut: () => Promise<FileSystemContr
 
     it('Given file, When rename, Then old path gone, new path exists with same data', async () => {
       // Arrange
-      const src = `${env.rootDir}/src.bin`;
-      const dst = `${env.rootDir}/dst.bin`;
+      const src = nodePath.join(env.rootDir, 'src.bin');
+      const dst = nodePath.join(env.rootDir, 'dst.bin');
       const data = new Uint8Array([1, 2, 3]);
       await env.fs.write(src, data);
 
@@ -276,8 +278,8 @@ export function fileSystemContractTests(createSut: () => Promise<FileSystemContr
 
     it('Given rename to existing file, When rename, Then atomically replaces target', async () => {
       // Arrange
-      const src = `${env.rootDir}/src.bin`;
-      const dst = `${env.rootDir}/dst.bin`;
+      const src = nodePath.join(env.rootDir, 'src.bin');
+      const dst = nodePath.join(env.rootDir, 'dst.bin');
       const srcData = new Uint8Array([1, 2, 3]);
       await env.fs.write(src, srcData);
       await env.fs.write(dst, new Uint8Array([9, 9, 9]));
@@ -306,7 +308,7 @@ export function fileSystemContractTests(createSut: () => Promise<FileSystemContr
 
     it('Given non-existent path, When writeExclusive, Then creates file', async () => {
       // Arrange
-      const path = `${env.rootDir}/new-exclusive.bin`;
+      const path = nodePath.join(env.rootDir, 'new-exclusive.bin');
       const data = new Uint8Array([1, 2, 3]);
 
       // Act
@@ -318,7 +320,7 @@ export function fileSystemContractTests(createSut: () => Promise<FileSystemContr
 
     it('Given file with known content, When readSlice(0, 3), Then returns first 3 bytes', async () => {
       // Arrange
-      const path = `${env.rootDir}/slice.bin`;
+      const path = nodePath.join(env.rootDir, 'slice.bin');
       await env.fs.write(path, new Uint8Array([10, 20, 30, 40, 50]));
 
       // Act
@@ -330,7 +332,7 @@ export function fileSystemContractTests(createSut: () => Promise<FileSystemContr
 
     it('Given file with known content, When readSlice(5, 3), Then returns bytes at offset 5', async () => {
       // Arrange
-      const path = `${env.rootDir}/slice.bin`;
+      const path = nodePath.join(env.rootDir, 'slice.bin');
       await env.fs.write(path, new Uint8Array([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]));
 
       // Act
@@ -342,7 +344,7 @@ export function fileSystemContractTests(createSut: () => Promise<FileSystemContr
 
     it('Given readSlice with offset beyond EOF, When reading, Then returns empty array', async () => {
       // Arrange
-      const path = `${env.rootDir}/slice.bin`;
+      const path = nodePath.join(env.rootDir, 'slice.bin');
       await env.fs.write(path, new Uint8Array(10));
 
       // Act
@@ -354,7 +356,7 @@ export function fileSystemContractTests(createSut: () => Promise<FileSystemContr
 
     it('Given readSlice with negative offset, When reading, Then throws PERMISSION_DENIED', async () => {
       // Arrange
-      const path = `${env.rootDir}/slice.bin`;
+      const path = nodePath.join(env.rootDir, 'slice.bin');
       await env.fs.write(path, new Uint8Array([1, 2, 3]));
 
       // Act
@@ -369,7 +371,7 @@ export function fileSystemContractTests(createSut: () => Promise<FileSystemContr
 
     it('Given non-existent file, When readSlice, Then throws FILE_NOT_FOUND', async () => {
       // Arrange
-      const path = `${env.rootDir}/missing.bin`;
+      const path = nodePath.join(env.rootDir, 'missing.bin');
 
       // Act
       try {
@@ -383,11 +385,11 @@ export function fileSystemContractTests(createSut: () => Promise<FileSystemContr
 
     it('Given directory with files, When readdir, Then returns entries with correct names and isFile flags', async () => {
       // Arrange
-      const dir = `${env.rootDir}/listing`;
+      const dir = nodePath.join(env.rootDir, 'listing');
       await env.fs.mkdir(dir);
-      await env.fs.write(`${dir}/a.txt`, new Uint8Array([1]));
-      await env.fs.write(`${dir}/b.txt`, new Uint8Array([2]));
-      await env.fs.write(`${dir}/c.txt`, new Uint8Array([3]));
+      await env.fs.write(nodePath.join(dir, 'a.txt'), new Uint8Array([1]));
+      await env.fs.write(nodePath.join(dir, 'b.txt'), new Uint8Array([2]));
+      await env.fs.write(nodePath.join(dir, 'c.txt'), new Uint8Array([3]));
 
       // Act
       const entries = await env.fs.readdir(dir);
@@ -404,7 +406,7 @@ export function fileSystemContractTests(createSut: () => Promise<FileSystemContr
 
     it("Given freshly-mkdir'd empty subdirectory, When readdir, Then returns empty array", async () => {
       // Arrange
-      const dir = `${env.rootDir}/empty-dir`;
+      const dir = nodePath.join(env.rootDir, 'empty-dir');
       await env.fs.mkdir(dir);
 
       // Act
@@ -416,7 +418,7 @@ export function fileSystemContractTests(createSut: () => Promise<FileSystemContr
 
     it('Given non-directory path, When readdir, Then throws NOT_A_DIRECTORY', async () => {
       // Arrange
-      const path = `${env.rootDir}/not-a-dir.txt`;
+      const path = nodePath.join(env.rootDir, 'not-a-dir.txt');
       await env.fs.write(path, new Uint8Array([1]));
 
       // Act
@@ -431,7 +433,7 @@ export function fileSystemContractTests(createSut: () => Promise<FileSystemContr
 
     it('Given file of 10 bytes, When readSlice(8, 5), Then returns 2 bytes', async () => {
       // Arrange
-      const path = `${env.rootDir}/slice.bin`;
+      const path = nodePath.join(env.rootDir, 'slice.bin');
       await env.fs.write(path, new Uint8Array([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]));
 
       // Act
@@ -443,7 +445,7 @@ export function fileSystemContractTests(createSut: () => Promise<FileSystemContr
 
     it('Given readSlice with negative length, When reading, Then throws PERMISSION_DENIED', async () => {
       // Arrange
-      const path = `${env.rootDir}/slice.bin`;
+      const path = nodePath.join(env.rootDir, 'slice.bin');
       await env.fs.write(path, new Uint8Array([1, 2, 3]));
 
       // Act
@@ -458,7 +460,7 @@ export function fileSystemContractTests(createSut: () => Promise<FileSystemContr
 
     it('Given readSlice(0, 0), When reading, Then returns empty array', async () => {
       // Arrange
-      const path = `${env.rootDir}/slice.bin`;
+      const path = nodePath.join(env.rootDir, 'slice.bin');
       await env.fs.write(path, new Uint8Array([1, 2, 3]));
 
       // Act
@@ -470,7 +472,7 @@ export function fileSystemContractTests(createSut: () => Promise<FileSystemContr
 
     it('Given mkdir on existing file path, When mkdir, Then throws FILE_EXISTS or NOT_A_DIRECTORY', async () => {
       // Arrange
-      const path = `${env.rootDir}/file.txt`;
+      const path = nodePath.join(env.rootDir, 'file.txt');
       await env.fs.write(path, new Uint8Array([1]));
 
       // Act
@@ -491,8 +493,8 @@ export function fileSystemContractTests(createSut: () => Promise<FileSystemContr
 
     it('Given symlink, When lstat, Then isSymbolicLink is true', async () => {
       // Arrange
-      const target = `${env.rootDir}/target.txt`;
-      const link = `${env.rootDir}/link.txt`;
+      const target = nodePath.join(env.rootDir, 'target.txt');
+      const link = nodePath.join(env.rootDir, 'link.txt');
       await env.fs.write(target, new Uint8Array([1]));
       await env.fs.symlink(target, link);
 
@@ -505,8 +507,8 @@ export function fileSystemContractTests(createSut: () => Promise<FileSystemContr
 
     it('Given symlink, When stat, Then follows symlink (returns target stat)', async () => {
       // Arrange
-      const target = `${env.rootDir}/target.txt`;
-      const link = `${env.rootDir}/link.txt`;
+      const target = nodePath.join(env.rootDir, 'target.txt');
+      const link = nodePath.join(env.rootDir, 'link.txt');
       await env.fs.write(target, new Uint8Array([1, 2, 3]));
       await env.fs.symlink(target, link);
 
@@ -521,7 +523,7 @@ export function fileSystemContractTests(createSut: () => Promise<FileSystemContr
 
     it('Given nested path, When writeUtf8, Then creates parent directories', async () => {
       // Arrange
-      const path = `${env.rootDir}/x/y/z.txt`;
+      const path = nodePath.join(env.rootDir, 'x', 'y', 'z.txt');
 
       // Act
       await env.fs.writeUtf8(path, 'nested');
@@ -532,9 +534,9 @@ export function fileSystemContractTests(createSut: () => Promise<FileSystemContr
 
     it('Given non-empty directory, When rm, Then throws a TsgitError', async () => {
       // Arrange
-      const dir = `${env.rootDir}/non-empty`;
+      const dir = nodePath.join(env.rootDir, 'non-empty');
       await env.fs.mkdir(dir);
-      await env.fs.write(`${dir}/inside.txt`, new Uint8Array([1]));
+      await env.fs.write(nodePath.join(dir, 'inside.txt'), new Uint8Array([1]));
 
       // Act
       let caught: unknown;
@@ -552,7 +554,7 @@ export function fileSystemContractTests(createSut: () => Promise<FileSystemContr
 
     it('Given symlink(target=escape, path=in-root), Then SUCCEEDS (port does not validate target)', async () => {
       // Arrange
-      const link = `${env.rootDir}/escaping-link`;
+      const link = nodePath.join(env.rootDir, 'escaping-link');
 
       // Act
       await env.fs.symlink('../../../escape', link);
@@ -564,7 +566,7 @@ export function fileSystemContractTests(createSut: () => Promise<FileSystemContr
 
     it('Given empty directory, When rmRecursive, Then directory is removed', async () => {
       // Arrange
-      const dir = `${env.rootDir}/rm-empty`;
+      const dir = nodePath.join(env.rootDir, 'rm-empty');
       await env.fs.mkdir(dir);
 
       // Act
@@ -576,7 +578,7 @@ export function fileSystemContractTests(createSut: () => Promise<FileSystemContr
 
     it('Given missing path, When rmRecursive, Then resolves without error (idempotent)', async () => {
       // Arrange
-      const path = `${env.rootDir}/never-existed`;
+      const path = nodePath.join(env.rootDir, 'never-existed');
 
       // Act + Assert — must not throw.
       await env.fs.rmRecursive(path);
@@ -585,24 +587,24 @@ export function fileSystemContractTests(createSut: () => Promise<FileSystemContr
 
     it('Given nested tree, When rmRecursive at root, Then everything under it is removed', async () => {
       // Arrange
-      const root = `${env.rootDir}/rm-tree`;
-      await env.fs.write(`${root}/a/b/c.txt`, new Uint8Array([1]));
-      await env.fs.write(`${root}/a/d.txt`, new Uint8Array([2]));
-      await env.fs.write(`${root}/e.txt`, new Uint8Array([3]));
+      const root = nodePath.join(env.rootDir, 'rm-tree');
+      await env.fs.write(nodePath.join(root, 'a', 'b', 'c.txt'), new Uint8Array([1]));
+      await env.fs.write(nodePath.join(root, 'a', 'd.txt'), new Uint8Array([2]));
+      await env.fs.write(nodePath.join(root, 'e.txt'), new Uint8Array([3]));
 
       // Act
       await env.fs.rmRecursive(root);
 
       // Assert
       expect(await env.fs.exists(root)).toBe(false);
-      expect(await env.fs.exists(`${root}/a/b/c.txt`)).toBe(false);
-      expect(await env.fs.exists(`${root}/a/d.txt`)).toBe(false);
-      expect(await env.fs.exists(`${root}/e.txt`)).toBe(false);
+      expect(await env.fs.exists(nodePath.join(root, 'a', 'b', 'c.txt'))).toBe(false);
+      expect(await env.fs.exists(nodePath.join(root, 'a', 'd.txt'))).toBe(false);
+      expect(await env.fs.exists(nodePath.join(root, 'e.txt'))).toBe(false);
     });
 
     it('Given single file, When rmRecursive, Then file is removed', async () => {
       // Arrange
-      const path = `${env.rootDir}/lone.txt`;
+      const path = nodePath.join(env.rootDir, 'lone.txt');
       await env.fs.write(path, new Uint8Array([7]));
 
       // Act
@@ -614,7 +616,7 @@ export function fileSystemContractTests(createSut: () => Promise<FileSystemContr
 
     it('Given regular file, When openWithNoFollow(read), Then can read its bytes', async () => {
       // Arrange
-      const path = `${env.rootDir}/nofollow-read.bin`;
+      const path = nodePath.join(env.rootDir, 'nofollow-read.bin');
       await env.fs.write(path, new Uint8Array([1, 2, 3, 4, 5]));
 
       // Act
@@ -633,7 +635,7 @@ export function fileSystemContractTests(createSut: () => Promise<FileSystemContr
 
     it('Given opened FileHandle, When stat is called, Then returns size matching file', async () => {
       // Arrange
-      const path = `${env.rootDir}/nofollow-stat.bin`;
+      const path = nodePath.join(env.rootDir, 'nofollow-stat.bin');
       await env.fs.write(path, new Uint8Array([1, 2, 3]));
       const handle = await env.fs.openWithNoFollow(path, 'read');
 
@@ -651,7 +653,7 @@ export function fileSystemContractTests(createSut: () => Promise<FileSystemContr
 
     it('Given opened FileHandle in write mode, When write is called, Then file content is updated', async () => {
       // Arrange
-      const path = `${env.rootDir}/nofollow-write.bin`;
+      const path = nodePath.join(env.rootDir, 'nofollow-write.bin');
       await env.fs.write(path, new Uint8Array([0, 0, 0]));
       const handle = await env.fs.openWithNoFollow(path, 'write');
 
@@ -669,7 +671,7 @@ export function fileSystemContractTests(createSut: () => Promise<FileSystemContr
 
     it('Given non-existent path, When openWithNoFollow(read), Then throws FILE_NOT_FOUND', async () => {
       // Arrange
-      const path = `${env.rootDir}/missing-nofollow.bin`;
+      const path = nodePath.join(env.rootDir, 'missing-nofollow.bin');
 
       // Act
       try {
@@ -683,7 +685,7 @@ export function fileSystemContractTests(createSut: () => Promise<FileSystemContr
 
     it('Given closed FileHandle, When close is called again, Then resolves (idempotent)', async () => {
       // Arrange
-      const path = `${env.rootDir}/nofollow-close.bin`;
+      const path = nodePath.join(env.rootDir, 'nofollow-close.bin');
       await env.fs.write(path, new Uint8Array([1]));
       const handle = await env.fs.openWithNoFollow(path, 'read');
 
