@@ -22,6 +22,28 @@
 
 import * as nodePath from 'node:path';
 
+/**
+ * The minimal `nodePath`-shaped surface that `makePolicy` consumes.
+ * Replaces the previous `typeof nodePath.posix` parameter, which
+ * confused intent (it admitted both `posix` and `win32`) and exposed
+ * every member of the namespace instead of just the ones used.
+ * TypeScript cannot block the host `nodePath` namespace from
+ * satisfying this structurally; `makePolicy` stays module-private and
+ * the only public entry points are the `posixPolicy` / `windowsPolicy`
+ * constants. (§14.5.7)
+ *
+ * @internal
+ */
+interface PathPolicySource {
+  readonly sep: string;
+  isAbsolute(path: string): boolean;
+  resolve(...parts: string[]): string;
+  join(...parts: string[]): string;
+  dirname(path: string): string;
+  basename(path: string): string;
+  parse(path: string): { readonly root: string };
+}
+
 export interface PathPolicy {
   readonly sep: '\\' | '/';
   readonly caseInsensitive: boolean;
@@ -56,7 +78,7 @@ export const narrowSep = (sep: string): '\\' | '/' => {
   return sep;
 };
 
-const makePolicy = (impl: typeof nodePath.posix, caseInsensitive: boolean): PathPolicy => ({
+const makePolicy = (impl: PathPolicySource, caseInsensitive: boolean): PathPolicy => ({
   sep: narrowSep(impl.sep),
   caseInsensitive,
   isAbsolute: (path: string) => impl.isAbsolute(path),
