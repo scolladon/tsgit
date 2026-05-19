@@ -65,7 +65,7 @@ unique.
   this job already gates the merge queue; the Windows cell becomes the
   longest-tail step. Acceptable — Phase 11.2 backlog called this out.
 - Windows runners are sometimes flaky on GitHub Actions (image
-  refreshes, slow networks, mscv runtime updates). We accept a small
+  refreshes, slow networks, MSVC runtime updates). We accept a small
   flake rate; transient failures can be re-run via the "Re-run failed
   jobs" UI.
 

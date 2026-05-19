@@ -10,7 +10,8 @@ import {
   unsupportedOperation,
 } from '../../domain/index.js';
 import type { DirEntry, FileHandle, FileStat, FileSystem } from '../../ports/file-system.js';
-import { isWindows, type PlatformPredicate } from './platform.js';
+import type { PlatformPredicate } from './platform.js';
+import { isWindows } from './platform.js';
 
 type ContainmentMode = 'read' | 'lstat' | 'creation';
 

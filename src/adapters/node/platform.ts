@@ -7,7 +7,8 @@
  * ESM module-bindings are not interceptable via `vi.spyOn` — dependency
  * injection is the simplest pattern that works.
  *
- * @internal — not re-exported from `src/adapters/node/index.ts`.
+ * Not re-exported from `src/adapters/node/index.ts` (callers use the
+ * default `NodeFileSystem` constructor; the injection is for tests only).
  */
 
 export type PlatformPredicate = () => boolean;

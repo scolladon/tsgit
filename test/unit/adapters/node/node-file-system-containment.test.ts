@@ -150,6 +150,33 @@ describe('NodeFileSystem — openWithNoFollow windows symlink refusal', () => {
     expect((caught as InstanceType<typeof TsgitError>).data.code).toBe('PERMISSION_DENIED');
   });
 
+  it('Given Windows host, When lstat itself throws (TOCTOU race), Then isSymlinkLeaf returns false and the open error surfaces unchanged', async () => {
+    // Arrange — lstat rejects (file was deleted between checkContainment's
+    // resolveForMode and isSymlinkLeaf). isSymlinkLeaf catches and returns
+    // false; the post-open error then surfaces as a regular permissionDenied
+    // from mapErrno's EACCES arm (NOT absorbed by the windows discriminator).
+    const root = '/canonical/win-lstat-race';
+    const file = '/canonical/win-lstat-race/race';
+    mocks.realpath.mockImplementation(async (input: string) => input);
+    mocks.lstat.mockImplementation(async () => {
+      throw enoent();
+    });
+    mocks.open.mockImplementation(async () => {
+      throw eacces();
+    });
+    const sut = new NodeFileSystem(root, () => true);
+
+    // Act + Assert
+    let caught: unknown;
+    try {
+      await sut.openWithNoFollow(file, 'read');
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(TsgitError);
+    expect((caught as InstanceType<typeof TsgitError>).data.code).toBe('PERMISSION_DENIED');
+  });
+
   it('Given POSIX host, symlink leaf, When open rejects with ELOOP, Then openWithNoFollow throws PERMISSION_DENIED (via mapErrno)', async () => {
     // Arrange
     const root = '/canonical/posix-symlink';
