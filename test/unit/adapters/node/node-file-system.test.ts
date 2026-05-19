@@ -795,34 +795,13 @@ describe('NodeFileSystem', () => {
         await fsPromises.rm(tempRoot, { recursive: true, force: true });
       });
 
-      it.skipIf(process.platform === 'win32')(
-        'Given realpath rejecting with non-ENOENT errno, When resolving, Then the error is rethrown',
-        async () => {
-          // Arrange — spy on realpath via a proxy invocation is awkward in ESM, so we rely on
-          // intentionally forcing ENOTDIR by putting a file mid-path.
-          const tempRoot = await fsPromises.mkdtemp(nodePath.join(os.tmpdir(), 'tsgit-rne-err-'));
-          const real = await fsPromises.realpath(tempRoot);
-          const blocker = nodePath.join(real, 'block');
-          await fsPromises.writeFile(blocker, '');
-          const impossible = nodePath.join(blocker, 'child', 'leaf.txt');
-
-          // Act
-          let caught: unknown;
-          try {
-            await realpathNearestExisting(impossible);
-          } catch (err) {
-            caught = err;
-          }
-
-          // Assert — ENOTDIR should be rethrown untouched (it's an errno, but not ENOENT)
-          expect(caught).toBeInstanceOf(Error);
-          expect(isErrnoException(caught)).toBe(true);
-          expect((caught as NodeJS.ErrnoException).code).toBe('ENOTDIR');
-
-          // Cleanup
-          await fsPromises.rm(tempRoot, { recursive: true, force: true });
-        },
-      );
+      // The non-ENOENT-rethrow tests for realpathNearestExisting / exists /
+      // resolveForCreation live in `node-file-system-containment.test.ts`:
+      // they use `vi.mock('node:fs/promises')` to control the realpath/lstat
+      // errno surface, which makes them cross-platform (POSIX hosts produce
+      // ENOTDIR for "file used as directory"; Windows produces ENOENT or
+      // EINVAL — the test is about how `realpathNearestExisting` rethrows
+      // arbitrary errno-bearing rejections, not about which errno).
     });
 
     describe('mapStat', () => {
@@ -865,94 +844,10 @@ describe('NodeFileSystem', () => {
       });
     });
 
-    describe.skipIf(process.platform === 'win32')(
-      'NodeFileSystem.exists — non-ENOENT and escape branches',
-      () => {
-        it('Given realpath throwing non-ENOENT errno, When exists, Then throws mapped TsgitError', async () => {
-          // Arrange — a file segment used as a directory triggers ENOTDIR
-          const tempRoot = await fsPromises.mkdtemp(nodePath.join(os.tmpdir(), 'tsgit-exists-'));
-          const rootDir = await fsPromises.realpath(tempRoot);
-          const blocker = nodePath.join(rootDir, 'block');
-          await fsPromises.writeFile(blocker, '');
-          const sut = new NodeFileSystem(rootDir);
-
-          // Act
-          let caught: unknown;
-          try {
-            await sut.exists(nodePath.join('block', 'child.txt'));
-          } catch (err) {
-            caught = err;
-          }
-
-          // Assert
-          expect(caught).toBeInstanceOf(TsgitError);
-          expect((caught as TsgitError).data.code).toBe('NOT_A_DIRECTORY');
-
-          // Cleanup
-          await fsPromises.rm(tempRoot, { recursive: true, force: true });
-        });
-
-        it('Given in-root symlink whose realpath target lies outside rootDir, When exists, Then throws PERMISSION_DENIED', async () => {
-          // Arrange
-          const tempRoot = await fsPromises.mkdtemp(
-            nodePath.join(os.tmpdir(), 'tsgit-exists-esc-'),
-          );
-          const rootDir = await fsPromises.realpath(tempRoot);
-          const siblingDir = `${rootDir}-outside`;
-          await fsPromises.mkdir(siblingDir, { recursive: true });
-          const escapeTarget = nodePath.join(siblingDir, 'secret.txt');
-          await fsPromises.writeFile(escapeTarget, 'outside');
-          const link = nodePath.join(rootDir, 'escape-link');
-          await fsPromises.symlink(escapeTarget, link);
-          const sut = new NodeFileSystem(rootDir);
-
-          // Act
-          let caught: unknown;
-          try {
-            await sut.exists(link);
-          } catch (err) {
-            caught = err;
-          }
-
-          // Assert
-          expect(caught).toBeInstanceOf(TsgitError);
-          expect((caught as TsgitError).data.code).toBe('PERMISSION_DENIED');
-
-          // Cleanup
-          await fsPromises.rm(tempRoot, { recursive: true, force: true });
-          await fsPromises.rm(siblingDir, { recursive: true, force: true });
-        });
-      },
-    );
-
-    describe.skipIf(process.platform === 'win32')(
-      'resolveForCreation — non-ENOENT errno on leaf lstat',
-      () => {
-        it('Given creation path whose leaf parent is a file, When writing, Then throws NOT_A_DIRECTORY', async () => {
-          // Arrange — /root/block is a file; writing '/root/block/leaf.txt' triggers ENOTDIR on lstat
-          const tempRoot = await fsPromises.mkdtemp(nodePath.join(os.tmpdir(), 'tsgit-creation-'));
-          const rootDir = await fsPromises.realpath(tempRoot);
-          const blocker = nodePath.join(rootDir, 'block');
-          await fsPromises.writeFile(blocker, '');
-          const sut = new NodeFileSystem(rootDir);
-
-          // Act
-          let caught: unknown;
-          try {
-            await sut.write(nodePath.join(rootDir, 'block', 'leaf.txt'), new Uint8Array([1]));
-          } catch (err) {
-            caught = err;
-          }
-
-          // Assert
-          expect(caught).toBeInstanceOf(TsgitError);
-          expect((caught as TsgitError).data.code).toBe('NOT_A_DIRECTORY');
-
-          // Cleanup
-          await fsPromises.rm(tempRoot, { recursive: true, force: true });
-        });
-      },
-    );
+    // `NodeFileSystem.exists` non-ENOENT and escape-branch tests +
+    // `resolveForCreation` non-ENOENT-on-leaf-lstat tests both moved to
+    // `node-file-system-containment.test.ts` where vi.mock controls the
+    // errno surface — see comment above.
   });
 
   describe('isWindowsSymlinkRefusal', () => {

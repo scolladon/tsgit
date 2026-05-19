@@ -24,7 +24,9 @@ vi.mock('node:fs/promises', async () => {
   return { ...actual, realpath: mocks.realpath, open: mocks.open, lstat: mocks.lstat };
 });
 
-const { NodeFileSystem } = await import('../../../../src/adapters/node/node-file-system.js');
+const { NodeFileSystem, realpathNearestExisting } = await import(
+  '../../../../src/adapters/node/node-file-system.js'
+);
 const { posixPolicy, windowsPolicy } = await import('../../../../src/adapters/node/path-policy.js');
 const { TsgitError } = await import('../../../../src/domain/index.js');
 
@@ -486,5 +488,139 @@ describe('NodeFileSystem — windows-mocked containment', () => {
     }
     expect(caught).toBeInstanceOf(TsgitError);
     expect((caught as InstanceType<typeof TsgitError>).data.code).toBe('PERMISSION_DENIED');
+  });
+});
+
+describe('realpathNearestExisting — non-ENOENT errno rethrow', () => {
+  it('Given the deepest realpath rejects with a non-ENOENT errno (ENOTDIR), When resolving, Then the original errno propagates untouched (not swallowed as ENOENT)', async () => {
+    // Arrange — simulate the POSIX "file used as directory" path: the
+    // intermediate realpath against the file-as-dir resolves to ENOTDIR.
+    // The function MUST rethrow the errno rather than continue walking.
+    const target = '/root/block/child/leaf.txt';
+    mocks.realpath.mockImplementation(async () => {
+      throw Object.assign(new Error('not a directory'), { code: 'ENOTDIR' });
+    });
+
+    // Act
+    let caught: unknown;
+    try {
+      await realpathNearestExisting(target, posixPolicy);
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as NodeJS.ErrnoException).code).toBe('ENOTDIR');
+  });
+});
+
+describe('NodeFileSystem.exists — non-ENOENT errno from realpath', () => {
+  it('Given realpath rejects with a non-ENOENT errno (ENOTDIR), When exists is called, Then throws the mapped TsgitError (NOT_A_DIRECTORY)', async () => {
+    // Arrange
+    const rootDir = '/root';
+    mocks.realpath.mockImplementation(async (input: string) => {
+      if (input === rootDir) return rootDir;
+      throw Object.assign(new Error('not a directory'), { code: 'ENOTDIR' });
+    });
+    const sut = new NodeFileSystem(rootDir, posixPolicy);
+
+    // Act
+    let caught: unknown;
+    try {
+      await sut.exists('/root/block/child.txt');
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert
+    expect(caught).toBeInstanceOf(TsgitError);
+    expect((caught as InstanceType<typeof TsgitError>).data.code).toBe('NOT_A_DIRECTORY');
+  });
+
+  it('Given in-root path whose realpath resolves outside the canonical root, When exists is called, Then throws PERMISSION_DENIED (escape branch)', async () => {
+    // Arrange — simulates an in-root symlink whose target lies outside
+    // the rootDir. realpath of the link returns the outside target;
+    // pathContains rejects.
+    const rootDir = '/root';
+    const outside = '/elsewhere/secret.txt';
+    mocks.realpath.mockImplementation(async (input: string) => {
+      if (input === rootDir) return rootDir;
+      return outside;
+    });
+    const sut = new NodeFileSystem(rootDir, posixPolicy);
+
+    // Act
+    let caught: unknown;
+    try {
+      await sut.exists('/root/escape-link');
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert
+    expect(caught).toBeInstanceOf(TsgitError);
+    expect((caught as InstanceType<typeof TsgitError>).data.code).toBe('PERMISSION_DENIED');
+  });
+});
+
+describe('resolveForCreation — non-ENOENT errno on leaf lstat', () => {
+  it('Given the leaf parent lstat throws ENOTDIR (file used as directory), When write is called, Then throws NOT_A_DIRECTORY', async () => {
+    // Arrange — the creation target is `/root/block/leaf.txt` where
+    // `block` is a file. realpathNearestExisting walks up to `block`,
+    // returns it as the canonical real path, then the lstat on the leaf
+    // throws ENOTDIR. That non-ENOENT errno must surface as
+    // NOT_A_DIRECTORY (interpretCreationLstat funnels it through
+    // mapErrno rather than silently swallowing).
+    const rootDir = '/root';
+    const blocker = '/root/block';
+    const leaf = '/root/block/leaf.txt';
+    mocks.realpath.mockImplementation(async (input: string) => {
+      if (input === rootDir) return rootDir;
+      if (input === blocker) return blocker;
+      throw enoent();
+    });
+    mocks.lstat.mockImplementation(async () => {
+      throw Object.assign(new Error('not a directory'), { code: 'ENOTDIR' });
+    });
+    const sut = new NodeFileSystem(rootDir, posixPolicy);
+
+    // Act
+    let caught: unknown;
+    try {
+      await sut.write(leaf, new Uint8Array([1]));
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert
+    expect(caught).toBeInstanceOf(TsgitError);
+    expect((caught as InstanceType<typeof TsgitError>).data.code).toBe('NOT_A_DIRECTORY');
+  });
+});
+
+describe('NodeFileSystem.checkContainment — non-ENOENT errno from realpath', () => {
+  it('Given read with a realpath that rejects with ENOTDIR, When called, Then throws NOT_A_DIRECTORY (mapErrno branch in checkContainment catch)', async () => {
+    // Arrange — exercises `checkContainment`'s catch block when realpath
+    // throws a non-ENOENT errno. `read` (not `exists`) flows through
+    // checkContainment's catch, distinct from `exists`'s own catch.
+    const rootDir = '/root';
+    mocks.realpath.mockImplementation(async (input: string) => {
+      if (input === rootDir) return rootDir;
+      throw Object.assign(new Error('not a directory'), { code: 'ENOTDIR' });
+    });
+    const sut = new NodeFileSystem(rootDir, posixPolicy);
+
+    // Act
+    let caught: unknown;
+    try {
+      await sut.read('/root/block/child.txt');
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert
+    expect(caught).toBeInstanceOf(TsgitError);
+    expect((caught as InstanceType<typeof TsgitError>).data.code).toBe('NOT_A_DIRECTORY');
   });
 });

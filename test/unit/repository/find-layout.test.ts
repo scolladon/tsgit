@@ -1,47 +1,39 @@
 import { describe, expect, it } from 'vitest';
-
 import { MemoryFileSystem } from '../../../src/adapters/memory/memory-file-system.js';
+import { posixPolicy } from '../../../src/adapters/node/path-policy.js';
 import { findLayout } from '../../../src/repository/find-layout.js';
 
-// The `cwd contains .git` and `walks up` tests use POSIX-shaped paths
-// (`/repo`) with the in-memory FS. On Windows hosts `nodePath.resolve('/repo')`
-// prepends the current drive (e.g., `C:\repo`), which the POSIX-only
-// `MemoryFileSystem` cannot match against its stored `/repo`. The
-// production `findLayout` works correctly with real Windows paths on the
-// Node adapter — only these in-memory unit tests cannot run on Windows.
-const isWindowsHost = process.platform === 'win32';
+// All tests use POSIX paths with the in-memory FS (which is POSIX-only by
+// design) and inject `posixPolicy` so the walk stays POSIX-rooted on any
+// host. The production `findLayout` uses `nativePolicy` (host-matching)
+// when invoked without a policy argument — covered by the integration
+// tests in the cross-platform suite.
 
 describe('findLayout', () => {
-  it.skipIf(isWindowsHost)(
-    'Given cwd contains a .git directory, When findLayout runs, Then returns layout with cwd as workDir',
-    async () => {
-      const fs = new MemoryFileSystem({ rootDir: '/repo' });
-      await fs.mkdir('/repo/.git');
+  it('Given cwd contains a .git directory, When findLayout runs, Then returns layout with cwd as workDir', async () => {
+    const fs = new MemoryFileSystem({ rootDir: '/repo' });
+    await fs.mkdir('/repo/.git');
 
-      const sut = await findLayout(fs, '/repo');
+    const sut = await findLayout(fs, '/repo', posixPolicy);
 
-      expect(sut).toEqual({ workDir: '/repo', gitDir: '/repo/.git', bare: false });
-    },
-  );
+    expect(sut).toEqual({ workDir: '/repo', gitDir: '/repo/.git', bare: false });
+  });
 
-  it.skipIf(isWindowsHost)(
-    'Given cwd is a sub-directory of a repo, When findLayout runs, Then walks up to find .git',
-    async () => {
-      const fs = new MemoryFileSystem({ rootDir: '/repo' });
-      await fs.mkdir('/repo/.git');
-      await fs.mkdir('/repo/sub/dir');
+  it('Given cwd is a sub-directory of a repo, When findLayout runs, Then walks up to find .git', async () => {
+    const fs = new MemoryFileSystem({ rootDir: '/repo' });
+    await fs.mkdir('/repo/.git');
+    await fs.mkdir('/repo/sub/dir');
 
-      const sut = await findLayout(fs, '/repo/sub/dir');
+    const sut = await findLayout(fs, '/repo/sub/dir', posixPolicy);
 
-      expect(sut).toEqual({ workDir: '/repo', gitDir: '/repo/.git', bare: false });
-    },
-  );
+    expect(sut).toEqual({ workDir: '/repo', gitDir: '/repo/.git', bare: false });
+  });
 
   it('Given no .git anywhere up the tree, When findLayout runs, Then returns undefined', async () => {
     const fs = new MemoryFileSystem({ rootDir: '/repo' });
     await fs.mkdir('/repo/lonely');
 
-    const sut = await findLayout(fs, '/repo/lonely');
+    const sut = await findLayout(fs, '/repo/lonely', posixPolicy);
 
     expect(sut).toBeUndefined();
   });
@@ -56,7 +48,7 @@ describe('findLayout', () => {
       },
     } as unknown as Parameters<typeof findLayout>[0];
 
-    const sut = await findLayout(fs, '/repo');
+    const sut = await findLayout(fs, '/repo', posixPolicy);
 
     expect(sut).toBeUndefined();
   });
@@ -66,7 +58,7 @@ describe('findLayout', () => {
     // Write .git as a regular file so exists=true but isDirectory=false.
     await fs.writeUtf8('/repo/.git', 'gitdir: /elsewhere');
 
-    const sut = await findLayout(fs, '/repo');
+    const sut = await findLayout(fs, '/repo', posixPolicy);
 
     // If `if (found)` is mutated to `if (true)`, the same isDirectory check
     // gates the return — so this mutant survives. Document as equivalent.
@@ -81,7 +73,7 @@ describe('findLayout', () => {
     // .git is a file (e.g., a worktree gitlink stub) at /repo/.git
     await fs.writeUtf8('/repo/.git', 'gitdir: /elsewhere');
 
-    const sut = await findLayout(fs, '/repo');
+    const sut = await findLayout(fs, '/repo', posixPolicy);
 
     // The walk continues past a non-directory .git.
     expect(sut).toBeUndefined();
