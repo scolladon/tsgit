@@ -413,9 +413,12 @@ export class NodeFileSystem implements FileSystem {
     let real: string;
     try {
       real = await this.checkContainment(path, 'lstat');
-      // Verify the leaf exists; checkContainment(lstat) realpaths only the parent.
-      // A missing leaf surfaces as FILE_NOT_FOUND, which we swallow for idempotency.
-      await this.lstat(real);
+      // Verify the leaf exists. Call `fsOps.lstat` directly — `real` is
+      // already a contained, canonical-prefix path; re-entering the
+      // public `lstat` method would re-run checkContainment for no
+      // benefit. ENOENT surfaces as FILE_NOT_FOUND via runFs, which we
+      // swallow for idempotency.
+      await runFs(() => this.fsOps.lstat(real), path);
     } catch (err) {
       if (err instanceof TsgitError && err.data.code === 'FILE_NOT_FOUND') return;
       throw err;

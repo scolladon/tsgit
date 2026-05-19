@@ -900,4 +900,34 @@ describe('NodeFileSystem.rmRecursive — option-shape pin (DI)', () => {
     // would fail this match.
     expect(fsOps.rm).toHaveBeenCalledWith(target, { force: true });
   });
+
+  it('Given rmRecursive existence probe, When the leaf is verified, Then the inner lstat does NOT re-enter checkContainment (no third realpath(rootDir) call)', async () => {
+    // Arrange — pins §14.5.5: the existence probe was calling
+    // `this.lstat(real)` which re-entered checkContainment and produced
+    // an extra `realpath(dirname)` (= rootDir for a top-level target)
+    // round-trip. After the fix, the probe calls
+    // `runFs(() => this.fsOps.lstat(real), path)` directly.
+    //
+    // Pre-fix call count for realpath(rootDir): 3
+    //   - getCanonicalRoot
+    //   - resolveForMode('lstat') dirname
+    //   - this.lstat(real) → resolveForMode('lstat') dirname (re-entry)
+    // Post-fix count: 2 (the re-entry is gone).
+    const rootDir = '/root';
+    const target = '/root/file.txt';
+    const realpathSpy = vi.fn().mockImplementation(async (input: string) => input);
+    const fsOps = fakeFsOps({
+      realpath: realpathSpy,
+      lstat: vi.fn().mockResolvedValue(fileStat),
+      rm: vi.fn().mockResolvedValue(undefined),
+    });
+    const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+
+    // Act
+    await sut.rmRecursive(target);
+
+    // Assert
+    const rootCalls = realpathSpy.mock.calls.filter(([arg]: readonly unknown[]) => arg === rootDir);
+    expect(rootCalls.length).toBe(2);
+  });
 });
