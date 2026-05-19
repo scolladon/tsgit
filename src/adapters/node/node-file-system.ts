@@ -25,14 +25,15 @@ const REMOVE_TREE_CONCURRENCY = 8;
  * parallel; the next item runs as each in-flight call resolves.
  *
  * Error semantics: `Promise.all` short-circuits the returned promise on
- * the first rejection, but the surviving workers keep running until they
- * exhaust the queue — JavaScript can't cancel a running async function.
- * Callers see the first rejection and may observe additional `fn` calls
- * that started before the rejection landed. A second concurrent
- * rejection is silently swallowed by `Promise.all` (only the first is
- * surfaced). The current single caller (`removeTree`) is fine with both
- * properties; any future caller that needs strict bail-on-error must
- * thread an `AbortSignal` of its own.
+ * the first rejection, but JavaScript can't cancel a running async
+ * function — surviving workers continue running their current item AND
+ * keep picking new items off the shared queue until it is exhausted.
+ * So callers observing the rejected `mapConcurrent` should expect
+ * additional `fn` invocations after the rejection lands. A second
+ * concurrent rejection is silently swallowed by `Promise.all` (only the
+ * first is surfaced). The current single caller (`removeTree`) is fine
+ * with both properties; any future caller that needs strict
+ * bail-on-error must thread an `AbortSignal` of its own.
  *
  * @internal
  */
@@ -364,20 +365,27 @@ export class NodeFileSystem implements FileSystem {
   }
 
   /**
-   * Awaits the canonical-root promise (resolving any pending realpath)
-   * and returns the cached normalised form. The cache is populated by
-   * the promise's success arm and cleared on rejection, so a successful
-   * `await` guarantees the field is set. The `undefined` branch is an
-   * invariant guard; a future refactor that breaks the post-`await`
-   * invariant surfaces here instead of silently falling back to a
-   * per-call `normalizeForCompare`.
+   * Returns the cached normalised canonical root. Caller must have
+   * `await this.getCanonicalRoot()` immediately prior — the cache is
+   * populated by the promise's success arm and cleared on rejection, so
+   * a successful `await` guarantees the field is set. The `undefined`
+   * branch is an invariant guard; a future refactor that breaks the
+   * post-`await` invariant surfaces here instead of silently using a
+   * slow per-call `normalizeForCompare`.
+   *
+   * Kept synchronous (vs `async` + `await this.getCanonicalRoot()`
+   * inside) so the hot path doesn't pay an extra microtask suspension
+   * per containment check on a settled promise.
+   *
+   * equivalent-mutant: the `undefined`/throw arm is an invariant guard
+   * that no test can reach without breaking the post-await invariant,
+   * so mutants on the literal throw / message survive — acceptable.
    */
-  private async getNormalizedCanonicalRoot(): Promise<string> {
-    await this.getCanonicalRoot();
+  private getResolvedNormalizedCanonicalRoot(): string {
     const value = this.normalizedCanonicalRoot;
     if (value === undefined) {
       throw new Error(
-        'NodeFileSystem invariant: normalised canonical root unset after getCanonicalRoot resolved',
+        'NodeFileSystem invariant: normalised canonical root unset; getCanonicalRoot must be awaited first',
       );
     }
     return value;
@@ -460,8 +468,9 @@ export class NodeFileSystem implements FileSystem {
   exists = async (path: string): Promise<boolean> => {
     const abs = toAbsolute(path, this.rootDir, this.pathPolicy);
     const resolved = containsRelativeSegment(abs) ? this.pathPolicy.resolve(abs) : abs;
+    await this.getCanonicalRoot();
     const normalizedRoot = this.getNormalizedRootDir();
-    const normalizedCanonical = await this.getNormalizedCanonicalRoot();
+    const normalizedCanonical = this.getResolvedNormalizedCanonicalRoot();
     try {
       // Post-realpath check is the security gate against symlink escapes
       // and 8.3 short-name aliasing.
@@ -559,8 +568,9 @@ export class NodeFileSystem implements FileSystem {
       // — never the link entry, which doesn't exist yet.
       const lexical = this.pathPolicy.resolve(target);
       const resolvedTarget = await realpathNearestExisting(lexical, this.pathPolicy, this.fsOps);
+      await this.getCanonicalRoot();
       const normalizedRoot = this.getNormalizedRootDir();
-      const normalizedCanonical = await this.getNormalizedCanonicalRoot();
+      const normalizedCanonical = this.getResolvedNormalizedCanonicalRoot();
       if (
         !pathContainsNormalized(normalizedRoot, resolvedTarget, this.pathPolicy) &&
         !pathContainsNormalized(normalizedCanonical, resolvedTarget, this.pathPolicy)
@@ -753,8 +763,9 @@ export class NodeFileSystem implements FileSystem {
     // normalised forms as instance fields so the case-fold allocation on
     // the hot path runs once per parent rather than once per containment
     // check.
+    await this.getCanonicalRoot();
     const normalizedRoot = this.getNormalizedRootDir();
-    const normalizedCanonical = await this.getNormalizedCanonicalRoot();
+    const normalizedCanonical = this.getResolvedNormalizedCanonicalRoot();
     const check = (abs: string): void => {
       if (
         !pathContainsNormalized(normalizedRoot, abs, this.pathPolicy) &&

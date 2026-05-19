@@ -140,12 +140,18 @@ describe('NodeFileSystem — resolveForCreation parent-realpath LRU (DI)', () =>
     await sut.rmRecursive('/root/sub/a.bin');
     await sut.write('/root/sub/b.bin', new Uint8Array([2]));
 
-    // Assert — after rmRecursive cleared the cache, the second write re-realpaths the parent.
+    // Assert — `/root/sub` realpath count after the full sequence:
+    //   1 from the first write (cache miss → set)
+    //   1 from rmRecursive's lstat-mode containment (realpath(dirname))
+    //   1 from the second write (cache was cleared by rmRecursive → miss)
+    // Total: 3. Pinning the count kills mutants that would skip
+    // invalidation (afterCount stays at 2) or invalidate too eagerly
+    // (afterCount jumps to 4).
     const afterCount = realpathSpy.mock.calls.filter(
       ([arg]: readonly unknown[]) => arg === '/root/sub',
     ).length;
     expect(beforeRmCount).toBe(1);
-    expect(afterCount).toBeGreaterThan(beforeRmCount);
+    expect(afterCount).toBe(3);
   });
 });
 
@@ -526,10 +532,11 @@ describe('NodeFileSystem — 8.3 short-name parent reconciliation (DI)', () => {
     }
 
     // Assert — write succeeds despite the short↔long flip; both realpath
-    // call sites fired (canonical-root + walk-up); writeFile + mkdir
-    // observed so the path actually reached the fs.
+    // call sites fire exactly once (canonical-root + walk-up). Pinning
+    // the count to 2 kills mutants that would skip or duplicate one of
+    // the two sites.
     expect(caught).toBeUndefined();
-    expect(realpathHits).toBeGreaterThanOrEqual(2);
+    expect(realpathHits).toBe(2);
     expect(fsOps.writeFile).toHaveBeenCalledTimes(1);
     expect(fsOps.mkdir).toHaveBeenCalled();
   });
