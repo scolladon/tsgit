@@ -20,7 +20,7 @@ export interface CloneOptions {
   readonly initialBranch?: string;
   /**
    * Shallow clone depth. When set, sends `deepen N` and persists the
-   * resulting shallow boundaries to `.git/shallow`. Phase 12.2 (see ADR-009).
+   * resulting shallow boundaries to `.git/shallow`.
    */
   readonly depth?: number;
   /** DNS resolver injected by the caller; required to enforce SSRF guards. */
@@ -45,7 +45,7 @@ export interface CloneResult {
  * `refs/remotes/origin/<branch>`, tags under `refs/tags/<tag>`), and
  * points `HEAD` at the remote's HEAD line.
  *
- * Working-tree materialization is Phase 13.1 — out of scope here.
+ * Working-tree materialization is.1 — out of scope here.
  *
  * Throws `TARGET_DIRECTORY_NOT_EMPTY` if `gitDir` already exists and
  * `REMOTE_ADVERTISES_NO_REFS` when discovery returns no refs.
@@ -101,7 +101,7 @@ const fetchAndPropagate = async (
   // withDefaults composes withRetry around ctx.transport. We omit `logger`
   // here because the transport-tier Logger shape (event-based) differs from
   // the ports Logger shape on ctx.logger (level-based). Hooking the two up
-  // is wiring work better suited to a dedicated adapter in Phase 12.x.
+  // is wiring work better suited to a dedicated adapter in.x.
   const transport = withDefaults(ctx, {
     ...(ctx.config?.auth !== undefined ? { auth: ctx.config.auth } : {}),
   });
@@ -167,7 +167,7 @@ const writeFetchedRefs = async (
       continue;
     }
     // Other namespaces (refs/notes/*, refs/pull/*, …) are skipped per the
-    // ref-layout policy in design §3.7.
+    // ref-layout policy in design
     ctx.logger?.debug?.('clone: skipping unsupported ref namespace', { name: ref.name });
   }
   return written;

@@ -74,7 +74,7 @@ describe('walkWorkingTree', () => {
     expect(sut.sort()).toEqual(['a/b/c.txt', 'a/d.txt', 'e.txt']);
   });
 
-  it('Given a .git directory at the root, When walked, Then it is skipped', async () => {
+  it('Given a.git directory at the root, When walked, Then it is skipped', async () => {
     // Arrange
     const ctx = await seedFs({ 'a.txt': '1' });
     await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.git/HEAD`, 'ref: refs/heads/main\n');
@@ -86,7 +86,7 @@ describe('walkWorkingTree', () => {
     expect(sut).toEqual(['a.txt']);
   });
 
-  it('Given a nested .git directory (embedded repo), When walked, Then the whole directory is skipped', async () => {
+  it('Given a nested.git directory (embedded repo), When walked, Then the whole directory is skipped', async () => {
     // Arrange — vendor/lib looks like an embedded git repo.
     const ctx = await seedFs({
       'a.txt': '1',
@@ -101,7 +101,7 @@ describe('walkWorkingTree', () => {
     expect(sut).toEqual(['a.txt']);
   });
 
-  it('Given a .GIT directory (uppercase), When walked, Then it is skipped (case-insensitive)', async () => {
+  it('Given a.GIT directory (uppercase), When walked, Then it is skipped (case-insensitive)', async () => {
     // Arrange
     const ctx = await seedFs({ 'a.txt': '1', '.GIT/HEAD': 'x' });
 
@@ -169,7 +169,7 @@ describe('walkWorkingTree', () => {
     expect((caught as TsgitError).data.code).toBe('OPERATION_ABORTED');
   });
 
-  it('Given a regular file literally named .git (not a directory), When walked, Then it is skipped but its siblings are yielded', async () => {
+  it('Given a regular file literally named.git (not a directory), When walked, Then it is skipped but its siblings are yielded', async () => {
     // Arrange — a `.git` REGULAR FILE inside a subdir means git-worktree
     // pointer (treated as embedded). A `.git` regular file at the root
     // is the host's worktree pointer — also treated as a marker. Either
@@ -386,7 +386,7 @@ describe('walkWorkingTree', () => {
     expect(sut).toEqual(['sync.txt']);
   });
 
-  it('Given no ignore option, When walked, Then behaviour is unchanged from §14.1 (regression pin)', async () => {
+  it('Given no ignore option, When walked, Then behaviour is unchanged from (regression pin)', async () => {
     // Arrange
     const ctx = await seedFs({ 'a.txt': '1', 'b.txt': '2' });
 
@@ -397,17 +397,17 @@ describe('walkWorkingTree', () => {
     expect(sut.sort()).toEqual(['a.txt', 'b.txt']);
   });
 
-  it('Given an embedded repo at the top level (workDir IS a repo), When walked, Then only .git is skipped (workDir is not embedded)', async () => {
+  it('Given an embedded repo at the top level (workDir IS a repo), When walked, Then only.git is skipped (workDir is not embedded)', async () => {
     // Arrange — distinguish "I am a repo" from "I contain an embedded repo".
-    // The workDir has its own .git (we're scanning the host repo), so the
-    // pre-scan must NOT treat the host repo's own .git as an embedded marker.
+    // The workDir has its own.git (we're scanning the host repo), so the
+    // pre-scan must NOT treat the host repo's own.git as an embedded marker.
     const ctx = await seedFs({ 'a.txt': '1', 'b/c.txt': 'x' });
     await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.git/HEAD`, 'ref: refs/heads/main\n');
 
     // Act
     const sut = await collect(walkWorkingTree(ctx));
 
-    // Assert — yielded normal entries; .git skipped; b/c.txt yielded.
+    // Assert — yielded normal entries;.git skipped; b/c.txt yielded.
     expect(sut.sort()).toEqual(['a.txt', 'b/c.txt']);
   });
 });

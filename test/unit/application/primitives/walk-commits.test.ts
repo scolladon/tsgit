@@ -394,7 +394,7 @@ describe('walkCommits', () => {
     }
   });
 
-  describe('shallow boundary (Phase 12.2)', () => {
+  describe('shallow boundary', () => {
     it('Given options.shallow is undefined, When walking a chain, Then yields every commit (regression guard)', async () => {
       // Arrange
       const ctx = await buildSeededContext();

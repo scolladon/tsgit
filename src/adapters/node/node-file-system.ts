@@ -37,7 +37,7 @@ export function isErrnoException(err: unknown): err is NodeJS.ErrnoException {
  * disambiguate without knowing whether the leaf is a symlink. This helper
  * accepts the pre-open `lstat` result and the post-open error, and
  * returns true iff the error should be rewrapped to `PERMISSION_DENIED`
- * for cross-platform symlink-refusal parity (ADR-043).
+ * for cross-platform symlink-refusal parity.
  *
  * @internal
  */
@@ -53,7 +53,7 @@ export function isWindowsSymlinkRefusal(err: unknown, policy: PathPolicy = nativ
  * True iff `child === parent` (after case-folding on Windows) or `child` is
  * strictly inside `parent`. Defends `NodeFileSystem.checkContainment` against
  * (a) drive-letter casing differences on Windows and (b) the prefix-only
- * false-positive (parent='/tmp/foo', child='/tmp/foobar'). Phase 14.4.
+ * false-positive (parent='/tmp/foo', child='/tmp/foobar').
  *
  * @internal
  */
@@ -87,7 +87,7 @@ export function mapErrno(err: NodeJS.ErrnoException, path: string): TsgitError {
       return permissionDenied(path);
     case 'ELOOP':
       // POSIX errno for symlink-loop / O_NOFOLLOW refusal; Windows surfaces other
-      // errnos handled by the `openWithNoFollow` discriminator (ADR-043).
+      // errnos handled by the `openWithNoFollow` discriminator.
       return permissionDenied(path);
     case 'EISDIR':
       // POSIX errno for "is a directory" — surfaces from open(dir, write-flag).
@@ -240,7 +240,7 @@ export class NodeFileSystem implements FileSystem {
   /**
    * Lazy long-name canonicalisation of `rootDir` for containment checks.
    * Promise so concurrent first calls share one `realpath`; cleared on
-   * rejection so a transient ENOENT can be retried. See ADR-042.
+   * rejection so a transient ENOENT can be retried.
    */
   private canonicalRootPromise: Promise<string> | undefined = undefined;
 
@@ -326,7 +326,7 @@ export class NodeFileSystem implements FileSystem {
     const canonicalRoot = await this.getCanonicalRoot();
     try {
       // Post-realpath check is the security gate against symlink escapes
-      // and 8.3 short-name aliasing. Phase 14.4.
+      // and 8.3 short-name aliasing.
       const real = await this.fsOps.realpath(resolved);
       if (!pathContains(canonicalRoot, real, this.pathPolicy)) {
         throw permissionDenied(path);
@@ -436,7 +436,7 @@ export class NodeFileSystem implements FileSystem {
     // (Node forwards the flag but CreateFile has no equivalent), so the
     // kernel follows the symlink and opens the target. We must refuse
     // upfront when the leaf IS a symlink. ELOOP flows through `mapErrno` to
-    // PERMISSION_DENIED on POSIX (ADR-043); Windows needs the proactive
+    // PERMISSION_DENIED on POSIX; Windows needs the proactive
     // refusal + the discriminator (for errno-bearing failures like EACCES
     // on a symlink target inside an inaccessible parent).
     if (this.pathPolicy.caseInsensitive && (await this.isSymlinkLeaf(real))) {
@@ -466,7 +466,7 @@ export class NodeFileSystem implements FileSystem {
     // runner the body is unreachable, so mutating returns/catch produces
     // no observable effect. Windows-mocked tests in
     // `node-file-system-injected.test.ts` (via `windowsPolicy` injected
-    // through the `PathPolicy` + `FsOperations` DI seam — ADR-046/047)
+    // through the `PathPolicy` + `FsOperations` DI seam)
     // cover both arms.
     try {
       const stat = await this.fsOps.lstat(real);

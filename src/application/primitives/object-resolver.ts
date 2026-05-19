@@ -59,7 +59,7 @@ export async function resolveObject(
  * is not meaningful). We measure the ACTUAL content byte count
  * (`inflated.length - contentOffset`) rather than the declared header size —
  * a hostile object can claim a tiny size and ship a huge body; the
- * memory-relevant quantity is what zlib already produced. See ADR-024 §3.1.
+ * memory-relevant quantity is what zlib already produced.
  */
 function enforceLooseCap(id: ObjectId, inflated: Uint8Array, maxBytes: number | undefined): void {
   if (maxBytes === undefined) return;
@@ -100,7 +100,7 @@ function enforceCachedCap(id: ObjectId, cached: Uint8Array, maxBytes: number | u
  * reaches a base entry whose declared inflated size exceeds the cap, the
  * subsequent `streamInflate` materialises a buffer larger than the
  * contract permits regardless of whether the final delta-applied result
- * shrinks below the cap. See ADR-024 §3.2.
+ * shrinks below the cap.
  */
 function enforcePackBaseCap(
   targetId: ObjectId,
@@ -120,7 +120,7 @@ function enforcePackBaseCap(
  * `new Uint8Array(targetSize)` allocation. Only fires once per chain
  * (`depth === 1`); intermediate deltas in the chain reference
  * intermediate base sizes that don't correspond to the user-visible
- * target. See ADR-024 §3.3.
+ * target.
  */
 function enforcePackDeltaPreApplyCap(
   targetId: ObjectId,
@@ -229,7 +229,7 @@ async function collectDeltaChain(
       // Cap propagates into the REF_DELTA base resolution so an oversized
       // base never inflates fully. The cap applies to the BASE object now,
       // not just the delta's target — tightens the OBJECT_TOO_LARGE
-      // contract beyond what ADR-024 originally documented.
+      // contract beyond what originally documented.
       const base = await resolveBaseForRefDelta(ctx, registry, refDeltaBaseId, maxBytes);
       return { deltas, baseContent: base.content, baseType: base.type };
     }
@@ -246,7 +246,7 @@ async function resolvePackChain(
 ): Promise<Uint8Array> {
   const phase1 = await collectDeltaChain(ctx, registry, hit, targetId, maxBytes);
 
-  // Phase 2 — apply deltas bottom-up. The REF_DELTA terminator already cached
+  // apply deltas bottom-up. The REF_DELTA terminator already cached
   // its base in `resolveBaseForRefDelta`; intermediate results are NOT cached
   // here because their ObjectId is unknown (mid-chain intermediates do not
   // correspond to step.resolvedBaseId — that id refers to the base, not the
@@ -260,7 +260,7 @@ async function resolvePackChain(
   // Post-apply cap on the reconstructed object (delta resolution is the only
   // place a payload can grow beyond what the base entry declared). The check
   // fires before `prependHeader` allocates the loose-format buffer that would
-  // otherwise double the peak footprint. See ADR-024 §3.3.
+  // otherwise double the peak footprint.
   if (maxBytes !== undefined && current.length > maxBytes) {
     throw objectTooLarge(targetId, current.length, maxBytes);
   }

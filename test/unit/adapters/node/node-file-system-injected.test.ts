@@ -1,5 +1,5 @@
 /**
- * Dependency-injection tests for `NodeFileSystem`. Phase 14.4.
+ * Dependency-injection tests for `NodeFileSystem`.
  *
  * All tests here inject a fake `FsOperations` directly into the
  * `NodeFileSystem` constructor (third parameter). NO `vi.mock` — the
@@ -312,7 +312,7 @@ describe('NodeFileSystem — non-errno fault propagation (DI)', () => {
 
   it('Given `openWithNoFollow` on a Windows symlink leaf, When lstat rejects with a non-ENOENT errno (EACCES), Then the error rethrows (not silently swallowed)', async () => {
     // Arrange — lstat rejection with EACCES surfaces; only ENOENT is
-    // safe to absorb (TOCTOU race), per ADR-043 review.
+    // safe to absorb (TOCTOU race), review.
     const root = 'C:\\canonical\\win-lstat-eacces';
     const file = 'C:\\canonical\\win-lstat-eacces\\leaf';
     const fsOps = fakeFsOps({
@@ -643,9 +643,9 @@ describe('NodeFileSystem.checkContainment — non-ENOENT errno from realpath (DI
 });
 
 describe('resolveForMode — lstat mode pre-realpath check (DI)', () => {
-  it('Given lstat called against an absolute out-of-tree path, When checkContainment runs, Then PERMISSION_DENIED fires BEFORE realpath(dirname) (§14.5.6)', async () => {
+  it('Given lstat called against an absolute out-of-tree path, When checkContainment runs, Then PERMISSION_DENIED fires BEFORE realpath(dirname)', async () => {
     // Arrange — the lstat mode used to issue realpath(dirname) BEFORE
-    // any containment check. After §14.5.6 it mirrors read mode: the
+    // any containment check. After it mirrors read mode: the
     // pre-realpath `check(resolved)` arm fires and throws permissionDenied
     // before any I/O on the leaf's parent. We pin the absence of the
     // leaf-parent realpath call as the regression signal.
@@ -936,16 +936,16 @@ describe('NodeFileSystem.rmRecursive — option-shape pin (DI)', () => {
   });
 
   it('Given rmRecursive existence probe, When the leaf is verified, Then the inner lstat does NOT re-enter checkContainment (no third realpath(rootDir) call)', async () => {
-    // Arrange — pins §14.5.5: the existence probe was calling
+    // Arrange — pins: the existence probe was calling
     // `this.lstat(real)` which re-entered checkContainment and produced
     // an extra `realpath(dirname)` (= rootDir for a top-level target)
     // round-trip. After the fix, the probe calls
     // `runFs(() => this.fsOps.lstat(real), path)` directly.
     //
     // Pre-fix call count for realpath(rootDir): 3
-    //   - getCanonicalRoot
-    //   - resolveForMode('lstat') dirname
-    //   - this.lstat(real) → resolveForMode('lstat') dirname (re-entry)
+    //  - getCanonicalRoot
+    //  - resolveForMode('lstat') dirname
+    //  - this.lstat(real) → resolveForMode('lstat') dirname (re-entry)
     // Post-fix count: 2 (the re-entry is gone).
     const rootDir = '/root';
     const target = '/root/file.txt';

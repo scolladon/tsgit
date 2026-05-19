@@ -133,7 +133,7 @@ describe('readObject', () => {
       }
     });
 
-    it('Given a loose blob whose declared header size differs from its actual content length, When readObject is called with maxBytes, Then the cap measures ACTUAL content bytes (mutation hardening for ADR-024 §3.1)', async () => {
+    it('Given a loose blob whose declared header size differs from its actual content length, When readObject is called with maxBytes, Then the cap measures ACTUAL content bytes (mutation hardening for)', async () => {
       // Arrange — forge a loose object whose <type> <size>\0 header lies
       // about its payload size. The cap MUST measure the inflated body's
       // actual length, not the declared header value — otherwise an

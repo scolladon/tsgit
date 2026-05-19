@@ -79,13 +79,13 @@ export type MergeResult =
  *
  * - Up-to-date: target is ancestor of HEAD → no-op.
  * - Fast-forward: HEAD is ancestor of target → branch advances.
- * - True merge for diverged histories: Phase 13.4a wired the three-way
- *   tree merge (`mergeTrees` + `mergeContent`) so a CLEAN merge commits
- *   the merged tree directly. Phase 13.4b persists conflict state on
- *   disk (marker files, stage-1/2/3 index entries, MERGE_HEAD /
- *   MERGE_MSG / ORIG_HEAD) and returns `{ kind: 'conflict', ... }`.
- *   Resolution path: edit the marker files, `repo.add(paths)`,
- *   `repo.commit({ message })` — the resulting commit has two parents.
+ * - True merge for diverged histories:.4a wired the three-way
+ *  tree merge (`mergeTrees` + `mergeContent`) so a CLEAN merge commits
+ *  the merged tree directly.4b persists conflict state on
+ *  disk (marker files, stage-1/2/3 index entries, MERGE_HEAD /
+ *  MERGE_MSG / ORIG_HEAD) and returns `{ kind: 'conflict',... }`.
+ *  Resolution path: edit the marker files, `repo.add(paths)`,
+ *  `repo.commit({ message })` — the resulting commit has two parents.
  */
 export const merge = async (ctx: Context, opts: MergeOptions): Promise<MergeResult> => {
   await assertRepository(ctx);
@@ -200,8 +200,8 @@ const computeMergeTreeResult = async (
 const buildContentMerger =
   (ctx: Context): ContentMerger =>
   async (mergeCtx, _baseStub, _oursStub, _theirsStub): Promise<ContentMergeResult> => {
-    // Parallel-capped fetch (ADR-025). Each blob is bounded by
-    // MAX_CONFLICT_OUTPUT_BYTES (ADR-024 §3); a hostile adversarial input
+    // Parallel-capped fetch. Each blob is bounded by
+    // MAX_CONFLICT_OUTPUT_BYTES; a hostile adversarial input
     // is rejected upfront via OBJECT_TOO_LARGE without ever reaching
     // `mergeContent`'s line-diff path. The Promise.all parallelism is
     // exercised by the "issue concurrently" test in merge.test.ts —
@@ -328,7 +328,7 @@ const writeNestedTree = async (
 };
 
 /**
- * Persist the conflicting-merge state on disk per ADR-027's write order:
+ * Persist the conflicting-merge state on disk's write order:
  * working-tree files → ORIG_HEAD → MERGE_HEAD → MERGE_MSG → index.
  *
  * Unsupported conflict types are rejected upfront BEFORE any disk write

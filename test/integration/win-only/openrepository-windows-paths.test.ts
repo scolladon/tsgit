@@ -4,7 +4,7 @@
  * Windows runner via the `win-integration` Vitest project. No `skipIf`
  * needed: the folder + matrix cell dictate platform.
  *
- * Phase 10's review pass discovered that the original `isAbsolutePath`
+ * review pass discovered that the original `isAbsolutePath`
  * rejected Windows drive-letter paths (`C:\…`) because it only accepted
  * POSIX `/`-rooted paths. The fix added drive-letter and UNC support;
  * this test asserts the fix holds on a real Windows runner.

@@ -640,7 +640,7 @@ describe('NodeFileSystem', () => {
       });
 
       it('Given the root path itself, When resolving, Then returns the realpath of root (empty-segments branch)', async () => {
-        // Act — '/' split yields no segments, exercising the `segments.length > 0 ? ... : root` false branch
+        // Act — '/' split yields no segments, exercising the `segments.length > 0 ?... : root` false branch
         const sut = await realpathNearestExisting('/');
 
         // Assert
@@ -673,7 +673,7 @@ describe('NodeFileSystem', () => {
 
       // The non-ENOENT-rethrow tests for realpathNearestExisting / exists /
       // resolveForCreation live in `node-file-system-injected.test.ts`:
-      // they pass a per-instance `FsOperations` fake (ADR-047) to control
+      // they pass a per-instance `FsOperations` fake to control
       // the realpath/lstat errno surface, which makes them cross-platform
       // (POSIX hosts produce ENOTDIR for "file used as directory"; Windows
       // produces ENOENT or EINVAL — the test is about how
@@ -724,7 +724,7 @@ describe('NodeFileSystem', () => {
     // `NodeFileSystem.exists` non-ENOENT and escape-branch tests +
     // `resolveForCreation` non-ENOENT-on-leaf-lstat tests both moved to
     // `node-file-system-injected.test.ts` where per-instance `FsOperations`
-    // fakes (ADR-047) control the errno surface — see comment above.
+    // fakes control the errno surface — see comment above.
   });
 
   describe('isWindowsSymlinkRefusal', () => {

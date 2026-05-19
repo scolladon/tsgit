@@ -127,7 +127,7 @@ function computeMyersTrace(
 
   const iterationBudget = maxD * MAX_DIFF_ITERATION_FACTOR;
   let iterations = 0;
-  // Iteration budget per design §7.2 bounds total CPU. The MAX_DIFF_LINES pre-check above
+  // Iteration budget bounds total CPU. The MAX_DIFF_LINES pre-check above
   // bounds M+N, which transitively caps D (edit distance ≤ M+N ≤ MAX_DIFF_LINES) and
   // trace memory (snapshots × v-array size). Together they subsume the design's
   // MAX_DIFF_EDIT_DISTANCE constant, which remains exported for documentation.

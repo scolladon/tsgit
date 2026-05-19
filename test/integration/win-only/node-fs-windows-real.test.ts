@@ -2,7 +2,7 @@
  * Real-Windows integration tests for `NodeFileSystem`. Lives in
  * `test/integration/win-only/` — scheduled by CI only on the Windows
  * runner via the `win-integration` Vitest project. No `skipIf` needed:
- * the folder + matrix cell dictate platform. Phase 14.4.
+ * the folder + matrix cell dictate platform.
  */
 import * as fsPromises from 'node:fs/promises';
 import * as os from 'node:os';

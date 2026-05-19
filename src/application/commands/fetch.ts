@@ -1,20 +1,20 @@
 /**
- * Phase 12.2 — `fetch` command. Real upload-pack-driven body.
+ * `fetch` command. Real upload-pack-driven body.
  *
  * Flow (see `docs/design/phase-12-2-fetch.md`):
- *   1. Resolve the remote name → URL via `.git/config`.
- *   2. Discover refs over smart-HTTP v1 (`info/refs?service=git-upload-pack`).
- *   3. Derive `haves` from the local commit graph reachable from
- *      `refs/remotes/<remote>/*` (capped at MAX_HAVES — ADR-010).
- *   4. POST `git-upload-pack` with `want` + `have` + `deepen` (when depth set)
- *      via the shared `fetchPack` primitive.
- *   5. If the server emitted shallow / unshallow lines, persist `.git/shallow`.
- *   6. Write each advertised ref to `refs/remotes/<remote>/<branch>` or
- *      `refs/tags/<tag>` atomically (ADR-011).
- *   7. If `prune: true`, delete `refs/remotes/<remote>/<branch>` refs the
- *      server no longer advertises (ADR-012). Local refs are never touched.
+ *  1. Resolve the remote name → URL via `.git/config`.
+ *  2. Discover refs over smart-HTTP v1 (`info/refs?service=git-upload-pack`).
+ *  3. Derive `haves` from the local commit graph reachable from
+ *  `refs/remotes/<remote>/*` (capped at MAX_HAVES).
+ *  4. POST `git-upload-pack` with `want` + `have` + `deepen` (when depth set)
+ *  via the shared `fetchPack` primitive.
+ *  5. If the server emitted shallow / unshallow lines, persist `.git/shallow`.
+ *  6. Write each advertised ref to `refs/remotes/<remote>/<branch>` or
+ *  `refs/tags/<tag>` atomically.
+ *  7. If `prune: true`, delete `refs/remotes/<remote>/<branch>` refs the
+ *  server no longer advertises. Local refs are never touched.
  *
- * Working-tree materialization is Phase 13.1; out of scope.
+ * Working-tree materialization is.1; out of scope.
  */
 import { TsgitError } from '../../domain/error.js';
 import { remoteAdvertisesNoRefs, remoteNotConfigured } from '../../domain/index.js';
@@ -135,14 +135,14 @@ const resolveRemoteUrl = async (ctx: Context, remoteName: string): Promise<strin
 };
 
 /**
- * Collect haves from the local object graph (ADR-010). Strategy:
+ * Collect haves from the local object graph. Strategy:
  *
- *   1. Read every loose ref tip under `refs/remotes/<remote>/` and
- *      `refs/tags/`. These tips ARE the first-class haves — the server uses
- *      them to filter the pack without needing their ancestors.
- *   2. Walk the commit graph from those tips (ignoring missing objects) and
- *      append the reachable commits in BFS order until `MAX_HAVES` is
- *      reached.
+ *  1. Read every loose ref tip under `refs/remotes/<remote>/` and
+ *  `refs/tags/`. These tips ARE the first-class haves — the server uses
+ *  them to filter the pack without needing their ancestors.
+ *  2. Walk the commit graph from those tips (ignoring missing objects) and
+ *  append the reachable commits in BFS order until `MAX_HAVES` is
+ *  reached.
  *
  * A tip whose object is missing locally still gets sent as a have — the
  * server may ignore it, but if it happens to be the cut-point we want, this
@@ -301,7 +301,7 @@ const readExistingRef = async (ctx: Context, name: RefName): Promise<ObjectId | 
 /**
  * Delete any `refs/remotes/<remote>/<branch>` ref whose `<branch>` is not
  * present in the advertisement's `refs/heads/*` set. Local refs
- * (`refs/heads/*`, `refs/tags/*`) are NEVER deleted. See ADR-012.
+ * (`refs/heads/*`, `refs/tags/*`) are NEVER deleted.
  */
 const prune = async (
   ctx: Context,
@@ -353,7 +353,7 @@ const deleteUnadvertised = async (
     }
     const refName = composed as RefName;
     // `updateRef(..., { delete: true })` throws `UNSUPPORTED_OPERATION` when
-    // the ref is packed-only (packed-refs rewrite is Phase 9 follow-up).
+    // the ref is packed-only (packed-refs rewrite is follow-up).
     // The loose-walk path can only reach loose refs, so under normal usage
     // we never hit this. We still guard defensively in case a packed-only
     // ref happens to live at the same path as a directory entry on a
@@ -363,7 +363,7 @@ const deleteUnadvertised = async (
     } catch (err) {
       if (isPackedRefDeleteError(err)) {
         // Skip packed-only refs rather than crashing the whole fetch.
-        // Documented in ADR-012's Neutral consequences.
+        // Documented in's Neutral consequences.
         ctx.logger?.warn?.('fetch.prune: skipping packed-only ref', { name: refName });
         continue;
       }

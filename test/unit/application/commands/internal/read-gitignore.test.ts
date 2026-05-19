@@ -31,13 +31,13 @@ const expectError = async (fn: () => Promise<unknown>, code: string): Promise<Ts
 };
 
 describe('readGitignore', () => {
-  it('Given no .gitignore at root, When read, Then returns undefined', async () => {
+  it('Given no.gitignore at root, When read, Then returns undefined', async () => {
     const ctx = await seed();
 
     expect(await readGitignore(ctx, '')).toBeUndefined();
   });
 
-  it('Given a present .gitignore at root, When read, Then returns the parsed rules', async () => {
+  it('Given a present.gitignore at root, When read, Then returns the parsed rules', async () => {
     // Arrange
     const ctx = await seed();
     await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitignore`, '*.log\n!keep.log\n');
@@ -64,7 +64,7 @@ describe('readGitignore', () => {
     expect(sut?.[0]?.pattern).toBe('*.tmp');
   });
 
-  it('Given a .gitignore over MAX_GITIGNORE_BYTES, When read, Then throws GITIGNORE_FILE_TOO_LARGE with sanitized basename path + size + limit', async () => {
+  it('Given a.gitignore over MAX_GITIGNORE_BYTES, When read, Then throws GITIGNORE_FILE_TOO_LARGE with sanitized basename path + size + limit', async () => {
     // Arrange — generate content one byte over the cap.
     const ctx = await seed();
     const content = 'x'.repeat(MAX_GITIGNORE_BYTES + 1);
@@ -81,7 +81,7 @@ describe('readGitignore', () => {
     expect(data.limit).toBe(MAX_GITIGNORE_BYTES);
   });
 
-  it('Given a .gitignore of exactly MAX_GITIGNORE_BYTES bytes (boundary), When read, Then accepts', async () => {
+  it('Given a.gitignore of exactly MAX_GITIGNORE_BYTES bytes (boundary), When read, Then accepts', async () => {
     // Arrange
     const ctx = await seed();
     const content = 'x'.repeat(MAX_GITIGNORE_BYTES);
@@ -96,13 +96,13 @@ describe('readGitignore', () => {
 });
 
 describe('readInfoExclude', () => {
-  it('Given no .git/info/exclude, When read, Then returns undefined', async () => {
+  it('Given no.git/info/exclude, When read, Then returns undefined', async () => {
     const ctx = await seed();
 
     expect(await readInfoExclude(ctx)).toBeUndefined();
   });
 
-  it('Given a present .git/info/exclude, When read, Then returns the parsed rules', async () => {
+  it('Given a present.git/info/exclude, When read, Then returns the parsed rules', async () => {
     // Arrange
     const ctx = await seed();
     await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/info/exclude`, 'secret.txt\n');
@@ -158,7 +158,7 @@ describe('readGlobalExcludes', () => {
     expect(sut?.[0]?.pattern).toBe('*.bak');
   });
 
-  it('Given core.excludesFile starting with `~/` but homeDir is undefined, When read, Then returns undefined (silent miss per ADR-034)', async () => {
+  it('Given core.excludesFile starting with `~/` but homeDir is undefined, When read, Then returns undefined (silent miss)', async () => {
     // Arrange
     const ctx = await seed();
     await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n  excludesFile = ~/ignore\n');
@@ -224,7 +224,7 @@ describe('readGlobalExcludes', () => {
     expect(sut).toBeUndefined();
   });
 
-  it('Given the error payload from oversize .gitignore, When read, Then path is sanitized to basename (does not leak home-dir layout)', async () => {
+  it('Given the error payload from oversize.gitignore, When read, Then path is sanitized to basename (does not leak home-dir layout)', async () => {
     // Arrange — write an oversize file at a sub-path; capture the error
     // and assert the path field is the basename.
     const ctx = await seed();

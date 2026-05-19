@@ -69,8 +69,8 @@ describe('add', () => {
     await expectError(() => add(ctx, ['x']), 'NOT_A_REPOSITORY');
   });
 
-  it('Given .git/MERGE_HEAD exists, When add runs, Then succeeds (resolving a conflicted merge is the legitimate path forward — Phase 13.4b)', async () => {
-    // Arrange — MERGE_HEAD presence used to block `add`. Phase 13.4b
+  it('Given.git/MERGE_HEAD exists, When add runs, Then succeeds (resolving a conflicted merge is the legitimate path forward.4b)', async () => {
+    // Arrange — MERGE_HEAD presence used to block `add`.4b
     // changed the contract: `add` must allow staging resolved files
     // during a conflicted merge. Other pending markers still block.
     // The marker file content is a valid 40-hex ObjectId (matches the
@@ -288,9 +288,9 @@ describe('add', () => {
     expect(entry?.mode).toBe('100755');
   });
 
-  it('Given a .git directory at the root and all: true, When add, Then .git contents are not staged', async () => {
-    // Arrange — seedRepo already wrote .git/HEAD via the fixture. Add a stray
-    // .git/config to make sure no .git path leaks into the index.
+  it('Given a.git directory at the root and all: true, When add, Then.git contents are not staged', async () => {
+    // Arrange — seedRepo already wrote.git/HEAD via the fixture. Add a stray
+    // .git/config to make sure no.git path leaks into the index.
     const ctx = await seedFreshRepo({ 'a.txt': 'a' });
     await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n');
 
@@ -303,7 +303,7 @@ describe('add', () => {
     expect(dotgit).toEqual([]);
   });
 
-  it('Given an embedded .git subdirectory (nested repo) and all: true, When add, Then nothing under it is staged and no 160000 entry is created', async () => {
+  it('Given an embedded.git subdirectory (nested repo) and all: true, When add, Then nothing under it is staged and no 160000 entry is created', async () => {
     // Arrange
     const ctx = await seedFreshRepo({
       'a.txt': 'a',
@@ -606,7 +606,7 @@ describe('add', () => {
     expect(data.limit).toBe(MAX_WORKING_TREE_BLOB_BYTES);
   });
 
-  it('Given a plain regular file literally named .git inside a subdirectory (worktree pointer), When add({ all: true }), Then the whole subdirectory is skipped', async () => {
+  it('Given a plain regular file literally named.git inside a subdirectory (worktree pointer), When add({ all: true }), Then the whole subdirectory is skipped', async () => {
     // Arrange — `.git` regular file is git's worktree gitdir pointer
     // (`gitdir: /path/...`). Treated as an embedded-repo marker.
     const ctx = await seedFreshRepo({
@@ -622,7 +622,7 @@ describe('add', () => {
     expect(idx.entries.map((e) => e.path)).toEqual([]);
   });
 
-  it('Given a symlink named .git in a subdirectory, When add({ all: true }), Then the symlink is filtered but siblings are still staged (symlinks are NOT embedded markers)', async () => {
+  it('Given a symlink named.git in a subdirectory, When add({ all: true }), Then the symlink is filtered but siblings are still staged (symlinks are NOT embedded markers)', async () => {
     // Arrange — defense against an attacker planting a `.git` symlink to
     // hide siblings from being staged.
     const ctx = await seedFreshRepo({ 'sub/keep.txt': 'k' });
@@ -669,7 +669,7 @@ describe('add', () => {
     expect(after).toBe(before);
   });
 
-  it('Given a repo-root .gitignore with `node_modules`, When add({ all: true }), Then node_modules/* is not staged (directory pruned at walk-time)', async () => {
+  it('Given a repo-root.gitignore with `node_modules`, When add({ all: true }), Then node_modules/* is not staged (directory pruned at walk-time)', async () => {
     // Arrange
     const ctx = await seedFreshRepo({
       'a.txt': 'a',
@@ -681,11 +681,11 @@ describe('add', () => {
     // Act
     const sut = await add(ctx, [], { all: true });
 
-    // Assert — only the staged file is added; .gitignore itself ALSO gets staged.
+    // Assert — only the staged file is added;.gitignore itself ALSO gets staged.
     expect([...sut.added].sort()).toEqual(['.gitignore', 'a.txt']);
   });
 
-  it('Given a nested .gitignore with negation, When add({ all: true }), Then negation takes effect under that subtree only', async () => {
+  it('Given a nested.gitignore with negation, When add({ all: true }), Then negation takes effect under that subtree only', async () => {
     // Arrange
     const ctx = await seedFreshRepo({
       'a.log': 'x', // matched by root *.log → ignored
@@ -702,7 +702,7 @@ describe('add', () => {
     expect([...sut.added].sort()).toEqual(['.gitignore', 'sub/.gitignore', 'sub/keep.log']);
   });
 
-  it('Given a tracked file under a directory the .gitignore would now exclude, When add({ all: true }), Then the index entry is preserved (Git invariant: ignored ancestor does not auto-untrack)', async () => {
+  it('Given a tracked file under a directory the.gitignore would now exclude, When add({ all: true }), Then the index entry is preserved (Git invariant: ignored ancestor does not auto-untrack)', async () => {
     // Arrange — first stage `vendor/foo.ts`; then add a rule that
     // ignores the whole `vendor/` directory; re-run `add --all`.
     // The post-walk re-check must consult ancestor directories (not
@@ -716,7 +716,7 @@ describe('add', () => {
     // Act
     const sut = await add(ctx, [], { all: true });
 
-    // Assert — .gitignore is newly added; vendor/foo.ts stays in
+    // Assert —.gitignore is newly added; vendor/foo.ts stays in
     // index, NOT in removed.
     expect(sut.added).toEqual(['.gitignore']);
     expect(sut.removed).toEqual([]);
@@ -734,14 +734,14 @@ describe('add', () => {
     // Act
     const sut = await add(ctx, [], { all: true });
 
-    // Assert — .gitignore is newly added; secret.bin stays in index, not in removed.
+    // Assert —.gitignore is newly added; secret.bin stays in index, not in removed.
     expect(sut.added).toEqual(['.gitignore']);
     expect(sut.removed).toEqual([]);
     const idx = await readIndex(ctx);
     expect(idx.entries.map((e) => e.path).sort()).toEqual(['.gitignore', 'secret.bin']);
   });
 
-  it('Given a .git/info/exclude rule, When add({ all: true }), Then matched paths are not staged', async () => {
+  it('Given a.git/info/exclude rule, When add({ all: true }), Then matched paths are not staged', async () => {
     // Arrange
     const ctx = await seedFreshRepo({ 'a.txt': 'a', 'secret.bin': 'x' });
     await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/info/exclude`, 'secret.bin\n');
@@ -824,7 +824,7 @@ describe('add', () => {
     expect([...sut.added].sort()).toEqual(['src/a.ts', 'src/b.ts']);
   });
 
-  it('Given a glob and a repo-root .gitignore, When add, Then ignored matches are NOT staged', async () => {
+  it('Given a glob and a repo-root.gitignore, When add, Then ignored matches are NOT staged', async () => {
     // Arrange
     const ctx = await seedFreshRepo({
       'a.ts': 'a',

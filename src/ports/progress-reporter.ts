@@ -1,6 +1,6 @@
 /**
  * Progress reporter shape consumed by long-running commands. The facade
- * (Phase 10) accepts a user-supplied implementation via
+ *  accepts a user-supplied implementation via
  * `OpenRepositoryOptions.progress` and plumbs it onto `Context.progress`.
  *
  * Reporters are synchronous and fire-and-forget. The facade wraps every call

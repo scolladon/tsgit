@@ -1,14 +1,14 @@
 /**
  * Project a target tree onto a fresh stage-0 IndexEntry list, preserving
  * stat-cache fields from the prior index where the path's `id` AND `mode`
- * both match (the "stat-cache donor" strategy — ADR-021).
+ * both match (the "stat-cache donor" strategy).
  *
  * Pure with respect to the working tree: this primitive never calls
  * `fs.lstat`, `fs.read`, or any working-tree-side API. It only reads git
  * objects via `walkTree` → `readObject` for nested trees.
  *
- * Used by `reset --mixed` (Phase 13.2) to rebuild the index from a target
- * commit's tree. Will be re-used by `reset --hard` (Phase 13.3) composed
+ * Used by `reset --mixed` to rebuild the index from a target
+ * commit's tree. Will be re-used by `reset --hard` composed
  * with `materializeTree` to also write the working tree.
  *
  * ## Preconditions

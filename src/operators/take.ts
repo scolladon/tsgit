@@ -8,7 +8,7 @@ export function take<T>(count: number): (source: AsyncIterable<T>) => AsyncItera
     for await (const value of source) {
       yield value;
       yielded += 1;
-      // Stryker disable next-line all -- equivalent mutant: `>= count` ↔ `> count - 1` for integer count (design §7.6)
+      // Stryker disable next-line all -- equivalent mutant: `>= count` ↔ `> count - 1` for integer count
       if (yielded >= count) return;
     }
   };

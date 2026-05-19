@@ -23,7 +23,7 @@ interface CloneFixtureOptions {
   readonly head: string; // ref name the HEAD symref points at (or oid for detached)
   readonly capabilities: ReadonlyArray<string>;
   readonly packBytes: Uint8Array;
-  /** Shallow oids emitted before NAK + pack. Phase 12.2; ADR-009. */
+  /** Shallow oids emitted before NAK + pack. */
   readonly shallow?: ReadonlyArray<string>;
 }
 
@@ -73,8 +73,8 @@ const buildPackFromSingleBlob = async (
 };
 
 describe('clone', () => {
-  it('Given depth: 1 and a server emitting a shallow block, When clone, Then writes .git/shallow with the boundary oid', async () => {
-    // Arrange — Phase 12.2 ADR-009 reopens depth on clone. The shallow
+  it('Given depth: 1 and a server emitting a shallow block, When clone, Then writes.git/shallow with the boundary oid', async () => {
+    // Arrange reopens depth on clone. The shallow
     // section is wrapped into the upload-pack response before the NAK.
     const ctx = createMemoryContext();
     const { packBytes, blobId } = await buildPackFromSingleBlob(ctx, 'shallow blob\n');
@@ -97,7 +97,7 @@ describe('clone', () => {
     expect(shallowFile).toBe(`${shallowOid}\n`);
   });
 
-  it('Given an existing .git, When clone, Then throws TARGET_DIRECTORY_NOT_EMPTY pointing at workDir', async () => {
+  it('Given an existing.git, When clone, Then throws TARGET_DIRECTORY_NOT_EMPTY pointing at workDir', async () => {
     // Arrange
     const ctx = createMemoryContext();
     await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
@@ -132,7 +132,7 @@ describe('clone', () => {
     // Assert
     expect(caught).toBeInstanceOf(TsgitError);
     expect((caught as TsgitError).data.code).toBe('REMOTE_ADVERTISES_NO_REFS');
-    // Side-channel: the .git dir must NOT have been created — the empty-url
+    // Side-channel: the.git dir must NOT have been created — the empty-url
     // guard fires before bootstrap. Asserting this pins the order of the two
     // guards at the top of clone() against any reordering mutant.
     expect(await ctx.fs.exists(`${ctx.layout.gitDir}/HEAD`)).toBe(false);
@@ -241,11 +241,11 @@ describe('clone', () => {
     // Assert
     expect(sut.head).toBeUndefined();
     const headFile = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/HEAD`);
-    // Direct OID (no `ref: ...` prefix).
+    // Direct OID (no `ref:...` prefix).
     expect(headFile.trim()).toBe(blobId);
   });
 
-  it('Given the bootstrap completed and fetchPack throws, When clone, Then rolls back the .git skeleton', async () => {
+  it('Given the bootstrap completed and fetchPack throws, When clone, Then rolls back the.git skeleton', async () => {
     // Arrange — server returns a corrupted trailer so fetch-pack throws.
     const ctx = createMemoryContext();
     const { packBytes, blobId } = await buildPackFromSingleBlob(ctx, 'rollback me\n');

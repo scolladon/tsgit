@@ -425,7 +425,7 @@ describe('MemoryFileSystem', () => {
       // Arrange — POSIX SYMLOOP_MAX = 40. Kills the mutant that relaxes `>=` to `>`.
       const sut = new MemoryFileSystem({ rootDir: '/repo' });
       await sut.write('/repo/target.txt', new Uint8Array([1]));
-      // link0 -> link1 -> ... -> link39 -> target.txt (40 symlink hops total).
+      // link0 -> link1 ->... -> link39 -> target.txt (40 symlink hops total).
       await sut.symlink('/repo/target.txt', '/repo/link39');
       for (let i = 38; i >= 0; i--) {
         await sut.symlink(`/repo/link${i + 1}`, `/repo/link${i}`);
@@ -567,7 +567,7 @@ describe('MemoryFileSystem', () => {
     });
   });
 
-  describe('writeExclusive Phase 7 §14.17 contract', () => {
+  describe('writeExclusive contract', () => {
     it('Given a path whose parent directory does not exist, When writeExclusive is called, Then parent is auto-created and write succeeds', async () => {
       // Arrange
       const sut = new MemoryFileSystem({ rootDir: '/repo' });

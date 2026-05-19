@@ -45,7 +45,7 @@ export function arbStatData(): fc.Arbitrary<StatData> {
 
 const PATH_CHARS = 'abcdefghijklmnopqrstuvwxyz0123456789-_.'.split('');
 
-// Phase 13.7: `parseIndex` rejects paths equal to `.` or `..` (and other
+// `parseIndex` rejects paths equal to `.` or `..` (and other
 // unsafe forms). The generator filters those out so round-trip tests
 // exercise only paths the parser will accept.
 const UNSAFE_PATHS: ReadonlySet<string> = new Set(['.', '..']);

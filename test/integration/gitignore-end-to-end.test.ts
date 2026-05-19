@@ -1,6 +1,6 @@
 /**
  * Integration — `.gitignore` evaluation across `add --all` + `status`
- * (Phase 14.3). Exercises the four ignore sources, nested rules with
+ * . Exercises the four ignore sources, nested rules with
  * negation, and the tracked-beats-ignored invariant end-to-end through
  * the memory adapter.
  */
@@ -33,10 +33,10 @@ describe('integration — gitignore end-to-end', () => {
     // Per-clone excludes.
     await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/info/exclude`, 'private/\n');
 
-    // Repo-root .gitignore.
+    // Repo-root.gitignore.
     await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitignore`, '*.log\n*.swp\nnode_modules/\n');
 
-    // Nested .gitignore with a negation.
+    // Nested.gitignore with a negation.
     await ctx.fs.writeUtf8(`${ctx.layout.workDir}/src/.gitignore`, '!keep.log\n');
 
     // Working-tree files exercising each branch.
@@ -51,14 +51,14 @@ describe('integration — gitignore end-to-end', () => {
     const addResult = await add(ctx, [], { all: true });
 
     // Assert — only non-ignored paths are staged. Matrix:
-    //   - .gitignore           staged
-    //   - README.md            staged
-    //   - src/.gitignore       staged
-    //   - src/app.ts           staged
-    //   - src/keep.log         staged (negation under src/)
-    //   - src/debug.log        IGNORED (root *.log)
-    //   - node_modules/foo/x.js IGNORED (root node_modules/)
-    //   - private/secret.txt   IGNORED (info/exclude)
+    //  -.gitignore staged
+    //  - README.md staged
+    //  - src/.gitignore staged
+    //  - src/app.ts staged
+    //  - src/keep.log staged (negation under src/)
+    //  - src/debug.log IGNORED (root *.log)
+    //  - node_modules/foo/x.js IGNORED (root node_modules/)
+    //  - private/secret.txt IGNORED (info/exclude)
     expect([...addResult.added].sort()).toEqual([
       '.gitignore',
       'README.md',
@@ -67,7 +67,7 @@ describe('integration — gitignore end-to-end', () => {
       'src/keep.log',
     ]);
 
-    // Commit + clean status: only the .gitignore files + content above are tracked.
+    // Commit + clean status: only the.gitignore files + content above are tracked.
     await commit(ctx, { message: 'initial', author });
     const cleanStatus = await status(ctx);
     expect(cleanStatus.workingTreeChanges).toEqual([]);

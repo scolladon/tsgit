@@ -25,7 +25,7 @@ export type AdapterError =
   | { readonly code: 'HTTP_ERROR'; readonly statusCode: number; readonly reason: string }
   | { readonly code: 'NETWORK_ERROR'; readonly reason: string };
 
-/** Cross-cutting application-tier codes raised by Phase 7 primitives (not adapters). */
+/** Cross-cutting application-tier codes raised by primitives (not adapters). */
 export type ApplicationError =
   | { readonly code: 'INVALID_WALK_INPUT'; readonly reason: string }
   | { readonly code: 'OPERATION_ABORTED' }

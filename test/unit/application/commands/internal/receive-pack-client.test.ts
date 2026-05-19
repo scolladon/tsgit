@@ -1,5 +1,5 @@
 /**
- * Unit tests for the receive-pack client helpers (Phase 12.3).
+ * Unit tests for the receive-pack client helpers.
  *
  * Mirrors the upload-pack-client.test.ts contract:
  *  - discoverReceivePackRefs makes the right HTTP request.

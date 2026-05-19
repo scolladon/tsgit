@@ -4,7 +4,7 @@
  * impure write side lives in `apply-changeset.ts`.
  *
  * Stage-0 entries only — unmerged stages are invisible to checkout (Phase
- * 13.1 design §3.1 step 5).
+ * 13.1 design step 5).
  */
 import type { GitIndex } from '../../domain/git-index/index.js';
 import type { FileMode, FilePath, ObjectId } from '../../domain/objects/index.js';

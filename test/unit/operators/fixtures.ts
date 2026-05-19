@@ -3,7 +3,7 @@
  *
  * Every fixture is a small async generator paired with a closure variable that
  * exposes the tracked state to the caller. Keep each fixture compact and
- * self-documenting — they are the verification scaffold for §7.5 cleanup tests.
+ * self-documenting — they are the verification scaffold for cleanup tests.
  */
 
 export interface TrackedRange {

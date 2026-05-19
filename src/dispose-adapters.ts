@@ -16,17 +16,17 @@ const DISPOSABLE_PORT_KEYS: ReadonlyArray<DisposablePortKey> = [
 
 /**
  * Best-effort cleanup for adapters that opted in via a duck-typed `dispose?()` method.
- * Phase 10 §8.2 — invoked from `repo.dispose()` AFTER `ctx.signal` is aborted and one
+ * Invoked from `repo.dispose()` AFTER `ctx.signal` is aborted and one
  * macrotask boundary has elapsed.
  *
  * Contract:
  * - All four adapter slots (`fs`, `transport`, `compressor`, `hash`) are probed in
- *   parallel via `Promise.all`. No port can preempt another.
+ *  parallel via `Promise.all`. No port can preempt another.
  * - A port that throws is logged via `ctx.logger?.warn?.(...)` (when present) and
- *   swallowed. Disposal is best-effort; a downstream caller cannot recover the
- *   underlying error.
+ *  swallowed. Disposal is best-effort; a downstream caller cannot recover the
+ *  underlying error.
  * - Ports without a `dispose` function are skipped silently — duck typing means
- *   only opted-in adapters incur teardown work.
+ *  only opted-in adapters incur teardown work.
  */
 export const disposeAdapters = async (ctx: Context): Promise<void> => {
   await Promise.all(DISPOSABLE_PORT_KEYS.map((key) => disposePort(ctx, key)));

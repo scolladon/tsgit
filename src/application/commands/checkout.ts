@@ -77,7 +77,7 @@ const switchBranch = async (ctx: Context, opts: CheckoutSwitchOptions): Promise<
   // Acquire the index lock BEFORE reading the index. Wrapping the entire
   // read-materialise-commit sequence in the lock closes the TOCTOU window
   // where a concurrent index writer could otherwise stale the donor map
-  // between readIndex and lock.commit. Matches the Phase 13.2 / 13.3 pattern.
+  // between readIndex and lock.commit. Matches the prior / 13.3 pattern.
   const lock = await acquireIndexLock(ctx);
   let materializeResult: Awaited<ReturnType<typeof materializeTree>>;
   try {
@@ -149,12 +149,12 @@ const pathRestore = async (ctx: Context, opts: CheckoutPathsOptions): Promise<Ch
 
   // Two branches by source:
   // - 'index' (default): no index commit, no lock needed. Read the index
-  //   ONCE and share the snapshot between the tree synthesis and the
-  //   subsequent diff — otherwise a concurrent writer between the two
-  //   reads could leave the target tree and the current-index base
-  //   pointing at different snapshots.
+  //  ONCE and share the snapshot between the tree synthesis and the
+  //  subsequent diff — otherwise a concurrent writer between the two
+  //  reads could leave the target tree and the current-index base
+  //  pointing at different snapshots.
   // - 'HEAD' | ObjectId: commits the index. Lock-first ordering applies,
-  //   same as Phase 13.2/13.3 reset paths.
+  //  same as.2/13.3 reset paths.
   const materializeResult =
     source === 'index'
       ? await materializePathRestoreLockless(ctx, pathSet)

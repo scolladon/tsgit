@@ -3,11 +3,11 @@
  *
  * Unlike unit tests (which test single modules in isolation), these tests exercise
  * end-to-end flows that compose the real port + real domain code. As application-layer
- * primitives (Phase 7) arrive, this suite will grow to cover full read/write flows
+ * primitives arrive, this suite will grow to cover full read/write flows
  * against real git repositories.
  *
- * Current scope: prove that Phase 4 adapters correctly roundtrip the bytes produced
- * and consumed by Phase 1-3 domain serializers/parsers.
+ * Current scope: prove that adapters correctly roundtrip the bytes produced
+ * and consumed by-3 domain serializers/parsers.
  */
 import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../src/adapters/memory/memory-adapter.js';

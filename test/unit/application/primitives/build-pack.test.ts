@@ -1,11 +1,11 @@
 /**
- * Unit tests for the Phase 12.3 `buildPack` non-delta packfile assembler.
+ * Unit tests for the prior `buildPack` non-delta packfile assembler.
  *
  * Coverage:
  *  - empty oid list → 32-byte minimal pack (header + trailer)
- *  - single blob   → header + 1 entry + trailer; parsePackHeader sees count=1
- *  - mixed types   → entries round-trip through parsePackEntryHeader
- *  - trailer       → SHA over the body bytes, byte-equal
+ *  - single blob → header + 1 entry + trailer; parsePackHeader sees count=1
+ *  - mixed types → entries round-trip through parsePackEntryHeader
+ *  - trailer → SHA over the body bytes, byte-equal
  */
 import { describe, expect, it } from 'vitest';
 import { buildPack } from '../../../../src/application/primitives/build-pack.js';

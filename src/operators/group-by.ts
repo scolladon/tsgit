@@ -11,13 +11,13 @@ export function groupBy<T, K>(
     const result = new Map<K, T[]>();
     let count = 0;
     for await (const value of source) {
-      // Stryker disable next-line all -- equivalent mutant: `>= limit` ↔ `> limit - 1` for integer limit (design §7.6)
+      // Stryker disable next-line all -- equivalent mutant: `>= limit` ↔ `> limit - 1` for integer limit
       if (count >= limit) {
         throw new RangeError(`groupBy: exceeded limit of ${limit} items`);
       }
       const key = await keyFn(value);
       const bucket = result.get(key);
-      // Stryker disable next-line all -- equivalent mutant: `if (bucket)` ↔ `if (bucket !== undefined)` (Map.get returns T[] | undefined; T[] is always truthy — design §7.6)
+      // Stryker disable next-line all -- equivalent mutant: `if (bucket)` ↔ `if (bucket !== undefined)` (Map.get returns T[] | undefined; T[] is always truthy)
       if (bucket) {
         bucket.push(value);
       } else {

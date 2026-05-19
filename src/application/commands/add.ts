@@ -43,11 +43,11 @@ export interface AddResult {
  * Stage paths in the index. Two modes:
  *
  * - **Literal-path mode** (`paths` non-empty, `all` falsy): every path is
- *   validated, read, hashed, and staged. Missing paths reject the whole call.
+ *  validated, read, hashed, and staged. Missing paths reject the whole call.
  * - **Bulk mode** (`paths` empty, `all === true`): walk the working tree,
- *   stage every modified/new tracked file plus every untracked, non-ignored
- *   file. Files missing from disk but present in the prior index land in
- *   `removed`. `.git` and embedded repositories are skipped.
+ *  stage every modified/new tracked file plus every untracked, non-ignored
+ *  file. Files missing from disk but present in the prior index land in
+ *  `removed`. `.git` and embedded repositories are skipped.
  *
  * Both modes acquire `.git/index.lock` once, read the existing index under
  * the lock, and commit a single replacement — no partial writes.
@@ -75,7 +75,7 @@ export const add = async (
 
 // Branch on the resolved pathspec: pure literals that each name an
 // existing file route through the byte-identical per-path stage flow
-// from §14.1; anything else (globs, literal directories, negations)
+// from; anything else (globs, literal directories, negations)
 // walks the working tree and filters with the matcher.
 const dispatchPathspec = async (
   ctx: Context,
@@ -264,7 +264,7 @@ const processWalkEntry = async (
   const { path, stat } = walkEntry;
   // Mark presence BEFORE any further filter so the post-walk
   // "missing from disk → removed" pass is exact. Ignore filtering
-  // already happened at walk-time in §14.3; this function only sees
+  // already happened at walk-time in; this function only sees
   // leaves the walker chose to yield.
   seen.add(path);
   // Pre-filter using the walk-time stat as an early reject; the authoritative

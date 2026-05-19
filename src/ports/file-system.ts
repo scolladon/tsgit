@@ -63,16 +63,16 @@ export interface FileSystem {
   /**
    * Write bytes to file. Fails with FILE_EXISTS if the file already exists (exclusive create).
    *
-   * Contract obligations (Phase 7 §14.17):
+   * Contract obligations:
    * - **Parent-directory creation:** the adapter MUST ensure parent directories exist before the
-   *   exclusive write. Equivalent to `mkdir -p dirname(path)` before `open(path, O_EXCL)`. If the
-   *   parent is removed between the implicit mkdir and the open (e.g. concurrent `git gc` prunes
-   *   the fanout), the adapter retries once: re-create the parent, re-attempt the open. On a second
-   *   ENOENT the error propagates as FILE_NOT_FOUND.
+   *  exclusive write. Equivalent to `mkdir -p dirname(path)` before `open(path, O_EXCL)`. If the
+   *  parent is removed between the implicit mkdir and the open (e.g. concurrent `git gc` prunes
+   *  the fanout), the adapter retries once: re-create the parent, re-attempt the open. On a second
+   *  ENOENT the error propagates as FILE_NOT_FOUND.
    * - **Symlink-safe ancestor check:** the adapter MUST reject writes where any ancestor directory
-   *   of `path` is a symbolic link whose resolved target is outside the containment root. This
-   *   closes the attack where an attacker replaces `objects/xx/` with a symlink pointing elsewhere.
-   *   Implementation: lstat-walk the ancestor chain, or use `openat`-style relative opens.
+   *  of `path` is a symbolic link whose resolved target is outside the containment root. This
+   *  closes the attack where an attacker replaces `objects/xx/` with a symlink pointing elsewhere.
+   *  Implementation: lstat-walk the ancestor chain, or use `openat`-style relative opens.
    */
   readonly writeExclusive: (path: string, data: Uint8Array) => Promise<void>;
 
@@ -133,7 +133,7 @@ export interface FileSystem {
    * - Node: `fs.open(path, O_NOFOLLOW | (mode === 'write' ? O_WRONLY : O_RDONLY))`.
    * - Memory: rejects with `PERMISSION_DENIED` when the leaf is a memory symlink entry.
    * - Browser OPFS: throws `UNSUPPORTED_OPERATION` (OPFS has no symlinks; callers can
-   *   fall back to a plain `read`/`write` because the no-follow guarantee holds vacuously).
+   *  fall back to a plain `read`/`write` because the no-follow guarantee holds vacuously).
    *
    * Throws `FILE_NOT_FOUND` if the leaf does not exist (in `read` mode).
    * Throws `PERMISSION_DENIED` if the leaf is a symlink.

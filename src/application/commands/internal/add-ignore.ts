@@ -3,7 +3,7 @@ import type { FilePath } from '../../../domain/objects/object-id.js';
 /**
  * Per-path ignore predicate. Returns `true` to skip the path.
  *
- * Phase 14.1 used a synchronous predicate; Phase 14.3 widens the return
+ * used a synchronous predicate.3 widens the return
  * type to `boolean | Promise<boolean>` so the real `.gitignore`
  * evaluator can perform lazy nested-rule I/O during the walk. Sync
  * callers (test injections, hand-rolled filters) still satisfy the
@@ -11,6 +11,6 @@ import type { FilePath } from '../../../domain/objects/object-id.js';
  *
  * The predicate is consulted by `walkWorkingTree` on directories BEFORE
  * descent (to prune subtrees) and on leaves BEFORE yielding.
- * See ADR-035 (walk pruning) and ADR-029 (the §14.1 stub origin).
+ * See and.
  */
 export type IgnorePredicate = (path: FilePath, isDirectory: boolean) => boolean | Promise<boolean>;

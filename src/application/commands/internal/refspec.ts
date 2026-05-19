@@ -1,14 +1,14 @@
 /**
- * Refspec parser — v1 subset (per ADR-014).
+ * Refspec parser — v1 subset.
  *
  * Accepted forms (everything else throws `REFSPEC_INVALID`):
  *
- *   <src>:<dst>                   standard push
- *   +<src>:<dst>                  force push
- *   :<dst>                        delete remote dst
- *   <branch>                      shorthand for refs/heads/<branch>:refs/heads/<branch>
- *   +<branch>                     force shorthand
- *   HEAD                          source-side symbolic; resolver expands
+ *  <src>:<dst> standard push
+ *  +<src>:<dst> force push
+ *  :<dst> delete remote dst
+ *  <branch> shorthand for refs/heads/<branch>:refs/heads/<branch>
+ *  +<branch> force shorthand
+ *  HEAD source-side symbolic; resolver expands
  *
  * Short-form (no slash) inputs are expanded to `refs/heads/<name>` on
  * BOTH sides of the colon. Tag refspecs must be fully-qualified

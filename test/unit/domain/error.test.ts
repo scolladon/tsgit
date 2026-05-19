@@ -131,7 +131,7 @@ describe('domain error — AdapterError', () => {
       expect(sut.name).toBe('TsgitError');
     });
 
-    it('Given an adapter TsgitError, When accessing .message, Then contains the error code', () => {
+    it('Given an adapter TsgitError, When accessing.message, Then contains the error code', () => {
       // Arrange & Act
       const sut = fileNotFound('/x');
 
@@ -210,7 +210,7 @@ describe('domain error — AdapterError', () => {
       // Arrange & Act
       const sut = compressFailed('zlib deflateSync failed');
 
-      // Assert — `decompression failed: ...` is a distinct case; the message must not fall through to it.
+      // Assert — `decompression failed:...` is a distinct case; the message must not fall through to it.
       expect(sut.message).toContain('COMPRESS_FAILED: compression failed: zlib deflateSync failed');
       expect(sut.message).not.toContain('decompression failed');
     });
@@ -363,7 +363,7 @@ describe('domain error — AdapterError', () => {
     });
   });
 
-  describe('Phase 9 ApplicationError additions', () => {
+  describe('ApplicationError variants', () => {
     it('Given RESOURCE_LOCKED, When TsgitError.message is read, Then it equals the documented format', () => {
       // Arrange & Act
       const sut = new TsgitErrorClass({

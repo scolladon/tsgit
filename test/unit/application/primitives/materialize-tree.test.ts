@@ -152,7 +152,7 @@ describe('materializeTree', () => {
 
   it('Given a noop entry without forceRewriteAll, When materializeTree runs, Then the path is left alone', async () => {
     // Arrange — same setup, but `forceRewriteAll` omitted. Default behaviour
-    // must preserve Phase 13.1's checkout semantics: clean (per the index)
+    // must preserve checkout semantics: clean (per the index)
     // files are never spuriously rewritten.
     const ctx = await buildSeededContext();
     const blobId = await writeBlob(ctx, 'committed');

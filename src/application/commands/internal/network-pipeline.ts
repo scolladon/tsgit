@@ -30,7 +30,7 @@ interface NetworkOpts {
  * The logger is wrapped in a sanitizer ONCE so all middleware diagnostic events
  * pass through the same scrubber.
  *
- * Phase 10's facade is responsible for freezing `ctx.config`; this composer
+ * facade is responsible for freezing `ctx.config`; this composer
  * does NOT mutate caller-owned objects. Callers depending on the freeze
  * invariant must construct their `ctx` with a frozen config.
  */

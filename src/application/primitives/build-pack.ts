@@ -1,5 +1,5 @@
 /**
- * Phase 12.3 — non-delta packfile assembler (ADR-013).
+ * non-delta packfile assembler.
  *
  * `buildPack` produces a v2 packfile containing every given oid as a base
  * entry (type 1-4). Each entry's content is the canonical loose-format

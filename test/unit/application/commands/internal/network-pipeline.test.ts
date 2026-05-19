@@ -152,7 +152,7 @@ describe('internal/network-pipeline', () => {
 
   describe('withDefaults', () => {
     it('Given ctx.config not frozen, When withDefaults is called, Then ctx.config is left UNCHANGED (no side-effect mutation of caller-owned objects)', () => {
-      // Arrange — the design moved freeze responsibility to Phase 10's facade.
+      // Arrange — the design moved freeze responsibility to's facade.
       // withDefaults must not mutate caller-owned objects.
       const ctx = createMemoryContext();
       const wasFrozen = Object.isFrozen(ctx.config);

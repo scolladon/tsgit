@@ -1,5 +1,5 @@
 /**
- * Phase 7 primitive option shapes, walker value types, and shared constants.
+ * Primitive option shapes, walker value types, and shared constants.
  * Defined in one location to avoid circular imports between primitive modules.
  */
 import type { RenameDetectOptions, TreeDiff } from '../../domain/diff/index.js';
@@ -25,7 +25,7 @@ export const MAX_WALK_SEEDS = 1024;
 /** Hard cap on walkCommits' pending queue size to prevent unbounded heap growth. */
 export const MAX_WALK_QUEUE_SIZE = MAX_WALK_SEEDS * 64;
 
-/** Max .git/index file size readIndex will accept. */
+/** Max.git/index file size readIndex will accept. */
 export const MAX_INDEX_BYTES = 256 * 1024 * 1024;
 
 /** Max commit message byte length createCommit will accept. */
@@ -34,7 +34,7 @@ export const MAX_COMMIT_MESSAGE_BYTES = 16 * 1024 * 1024;
 /**
  * Per-file size cap enforced by `add --all` before reading working-tree
  * bytes into memory. Mirrors `MAX_CONFLICT_OUTPUT_BYTES` (256 MiB) so the
- * write-side memory ceiling matches the read-side ceiling. Phase 14.1.
+ * write-side memory ceiling matches the read-side ceiling.
  * See `docs/adr/032-add-all-large-file-guard.md`.
  */
 export const MAX_WORKING_TREE_BLOB_BYTES = 256 * 1024 * 1024;
@@ -42,7 +42,7 @@ export const MAX_WORKING_TREE_BLOB_BYTES = 256 * 1024 * 1024;
 /**
  * Per-file cap on `.gitignore`, `.git/info/exclude`, and the global
  * excludesFile. 1 MiB leaves a 20× margin over real-world max-size
- * gitignore corpora. Phase 14.3. See `docs/adr/036-gitignore-bounded-read.md`.
+ * gitignore corpora. See `docs/adr/036-gitignore-bounded-read.md`.
  */
 export const MAX_GITIGNORE_BYTES = 1 * 1024 * 1024;
 
@@ -79,17 +79,17 @@ export interface WalkCommitsOptions {
   readonly verifyHash?: boolean;
   /**
    * Commits whose parents must NOT be enqueued. Used for shallow boundaries
-   * (Phase 12.2). The commit itself is still yielded — only its parents are
+   * . The commit itself is still yielded — only its parents are
    * skipped. Callers that want to also skip the boundary commit pass it in
    * `until`.
    */
   readonly shallow?: ReadonlySet<ObjectId>;
 }
 
-/** Maximum `have` lines a single-round fetch will send. See ADR-010. */
+/** Maximum `have` lines a single-round fetch will send. */
 export const MAX_HAVES = 256;
 
-/** Hard cap on objects enumerated for a single push. See Phase 12.3 design §3.2. */
+/** Hard cap on objects enumerated for a single push. design */
 export const MAX_PUSH_OBJECTS = 1_000_000;
 
 export interface WalkTreeEntry {
@@ -118,10 +118,10 @@ export interface WalkWorkingTreeOptions {
   readonly maxDepth?: number;
   readonly maxEntries?: number;
   /**
-   * Phase 14.3 predicate. Invoked on every directory BEFORE descent
+   * predicate. Invoked on every directory BEFORE descent
    * (returning `true` prunes the entire subtree, skipping its `lstat`
    * cost) and on every leaf BEFORE yielding (returning `true` drops
-   * the leaf). May be sync or async. See ADR-035.
+   * the leaf). May be sync or async.
    */
   readonly ignore?: WalkIgnorePredicate;
 }

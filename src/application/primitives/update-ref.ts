@@ -40,7 +40,7 @@ export async function updateRef(
     if (packed.kind === 'direct') {
       throw unsupportedOperation(
         'delete-packed-ref',
-        'deleting packed-only refs requires packed-refs rewrite (Phase 9)',
+        'deleting packed-only refs requires packed-refs rewrite',
       );
     }
     // Neither loose nor packed — surface a clear error instead of silently

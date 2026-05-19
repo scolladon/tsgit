@@ -9,14 +9,14 @@ import type { Logger } from './logger.js';
 import type { ProgressReporter } from './progress-reporter.js';
 
 /**
- * Repository physical layout — where the working tree and .git directory live.
- * Renamed in Phase 10 from the previous `RepositoryConfig` (port-tier) to free that
+ * Repository physical layout — where the working tree and.git directory live.
+ * Renamed in from the previous `RepositoryConfig` (port-tier) to free that
  * name for the facade-tier `RepositoryConfig` shape (auth/parallelism/etc.).
  */
 export interface RepositoryLayout {
   /** Absolute path to the repository root (working tree). */
   readonly workDir: string;
-  /** Absolute path to the .git directory (usually `${workDir}/.git`, but may differ for bare repos or worktrees). */
+  /** Absolute path to the.git directory (usually `${workDir}/.git`, but may differ for bare repos or worktrees). */
   readonly gitDir: string;
   /** Whether this is a bare repository. */
   readonly bare: boolean;
@@ -25,13 +25,13 @@ export interface RepositoryLayout {
    * `core.excludesFile = ~/.config/git/ignore`). Populated by the node
    * shim from `os.homedir()`; memory adapter accepts an option; browser
    * leaves it `undefined`. When `undefined`, loaders that need home
-   * expansion treat the source as missing. Phase 14.3.
+   * expansion treat the source as missing.
    */
   readonly homeDir?: string;
 }
 
 /**
- * Author / committer identity — Phase 9 §4.7 shape.
+ * Author / committer identity shape.
  */
 export interface AuthorIdentity {
   readonly name: string;
@@ -46,7 +46,7 @@ export type AuthStrategy =
   | { readonly type: 'basic'; readonly username: string; readonly password: string };
 
 /**
- * Facade-tier configuration. Phase 10 introduces this shape; it carries the
+ * Facade-tier configuration. introduces this shape; it carries the
  * auth/parallelism/SSRF/network options the facade plumbs into network-pipeline.
  * All fields are optional — primitives and commands consult only the keys they need.
  */

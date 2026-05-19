@@ -6,7 +6,7 @@ import { sanitize } from '../domain/commands/error.js';
  * `Logger` in `transport/types.ts`, which is event-based and HTTP-shaped.
  *
  * The facade wraps user-supplied loggers with sanitization at construction time
- * (see Phase 10 design §8.5). Implementations should be tolerant of high call
+ * . Implementations should be tolerant of high call
  * frequency and MUST NOT throw — a throwing logger crashes nothing.
  */
 export interface Logger {
@@ -21,8 +21,8 @@ export const noopLogger: Logger = Object.freeze({});
 
 /**
  * Wrap a user-supplied logger so every `message` + every string value in the
- * `context` object passes through `sanitize()` (Phase 9 §4.7) before reaching
- * the sink. Per design §8.5 the facade applies this at construction time so no
+ * `context` object passes through `sanitize()` before reaching
+ * the sink. the facade applies this at construction time so no
  * downstream caller ever feeds raw control bytes to a user-controlled sink.
  *
  * Methods that the user did not supply are absent on the wrapper (preserves

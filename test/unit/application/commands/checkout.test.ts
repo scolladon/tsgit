@@ -160,7 +160,7 @@ describe('checkout', () => {
     }
   });
 
-  it('Given an index.lock already on disk AND a corrupted .git/index, When switch checkout, Then throws RESOURCE_LOCKED (lock acquired BEFORE readIndex)', async () => {
+  it('Given an index.lock already on disk AND a corrupted.git/index, When switch checkout, Then throws RESOURCE_LOCKED (lock acquired BEFORE readIndex)', async () => {
     // Arrange — pre-acquire the index lock AND corrupt the index file.
     // The corrupted index would make readIndex throw an INVALID_INDEX_HEADER
     // error if the code ever runs readIndex before acquireIndexLock.
@@ -233,7 +233,7 @@ describe('checkout', () => {
     // Arrange — commit 'v1', then overwrite + stage 'v2' without committing.
     // The index now records 'v2' while HEAD's tree records 'v1'. Path-restore
     // from `source: 'index'` must produce the STAGED 'v2', not HEAD's 'v1'.
-    // This is the BACKLOG §13.6 acceptance test.
+    // This is the acceptance test.
     const ctx = createMemoryContext();
     await init(ctx);
     await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'v1');

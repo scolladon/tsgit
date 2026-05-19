@@ -8,8 +8,6 @@
  * are platform-bound by design. The adapter's `removeTree` errno
  * propagation behaviour is covered cross-platform in
  * `test/unit/adapters/node/node-file-system-injected.test.ts`.
- *
- * Phase 14.4.
  */
 import * as fsPromises from 'node:fs/promises';
 import * as os from 'node:os';
@@ -73,11 +71,11 @@ describe('NodeFileSystem — POSIX-locked filesystem semantics', () => {
     expect((caught as TsgitError).data.code).toBe('PERMISSION_DENIED');
   });
 
-  it('Given openWithNoFollow on a directory (EISDIR), When opening in write mode, Then propagates as PERMISSION_DENIED (§14.5.10)', async () => {
-    // Arrange — open a directory in write mode triggers EISDIR. After
-    // §14.5.10 it maps to PERMISSION_DENIED through the dedicated
-    // mapErrno arm, instead of falling through to the default
-    // UNSUPPORTED_OPERATION + Windows-only rewrap chain.
+  it('Given openWithNoFollow on a directory (EISDIR), When opening in write mode, Then propagates as PERMISSION_DENIED', async () => {
+    // Arrange — open a directory in write mode triggers EISDIR. The
+    // dedicated mapErrno arm surfaces PERMISSION_DENIED on both POSIX
+    // and Windows; without it POSIX would see UNSUPPORTED_OPERATION
+    // because the Windows-only discriminator rewrap never fires.
     const sut = env.fs;
     const dir = nodePath.join(env.rootDir, 'just-a-dir');
     await fsPromises.mkdir(dir);

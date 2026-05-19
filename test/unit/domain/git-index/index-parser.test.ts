@@ -654,7 +654,7 @@ describe('parseIndex', () => {
 
   it('Given an entry whose path starts with a leading `/`, When parseIndex runs, Then throws INVALID_INDEX_ENTRY (absolute path rejected) with offset', () => {
     // Arrange — `/etc/passwd` is an absolute path; index entries must be
-    // workdir-relative. Defensive guard added in Phase 13.7.
+    // workdir-relative. Defensive guard added in
     const SHA_A = '0123456789abcdef0123456789abcdef01234567';
     const bytes = buildTestIndex([{ path: '/etc/passwd', sha: SHA_A }]);
 

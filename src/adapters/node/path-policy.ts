@@ -1,5 +1,5 @@
 /**
- * Path-policy abstraction. Phase 14.4.
+ * Path-policy abstraction.
  *
  * Encapsulates every platform-aware path operation the Node adapter needs.
  * Production code uses `nativePolicy` (host-matching). Tests inject
@@ -10,14 +10,14 @@
  * Design notes:
  * - `sep` is the platform separator string, used for prefix containment.
  * - `caseInsensitive` drives `normalizeForCompare`; Windows + macOS HFS+
- *   could share this in theory, but tsgit treats macOS as case-sensitive
- *   per Git's `core.ignorecase` default and POSIX convention.
+ *  could share this in theory, but tsgit treats macOS as case-sensitive
+ *  per Git's `core.ignorecase` default and POSIX convention.
  * - `rootOf` returns the volume/drive prefix produced by `path.parse`.
- *   Examples: `/` on POSIX, `'C:\\'` on Windows, `'\\\\server\\share\\'`
- *   for UNC paths.
+ *  Examples: `/` on POSIX, `'C:\\'` on Windows, `'\\\\server\\share\\'`
+ *  for UNC paths.
  * - The interface is *only* the subset NodeFileSystem actually needs; we
- *   intentionally do not expose all of `nodePath`'s surface so callers
- *   can't smuggle host-bound calls back in.
+ *  intentionally do not expose all of `nodePath`'s surface so callers
+ *  can't smuggle host-bound calls back in.
  */
 
 import * as nodePath from 'node:path';

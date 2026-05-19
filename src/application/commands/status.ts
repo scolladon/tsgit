@@ -30,10 +30,10 @@ const STATUS_SCAN_GRANULARITY = 100;
 /**
  * Summarize the state of the working tree relative to the index, and the
  * branch HEAD points at. Working-tree-vs-HEAD diff (Git's "staged" column)
- * is approximated via index-vs-working-tree comparisons until Phase 11
+ * is approximated via index-vs-working-tree comparisons until
  * adds the stat-cache fast path.
  *
- * Progress reporting (Phase 10 §6.2): emits `status:scan` start before the
+ * Progress reporting: emits `status:scan` start before the
  * fan-out, updates at every 100 lstat completions, and end in a finally
  * block so the consumer always pairs start with end. `total` is undefined
  * — design choice that prevents revealing repository size to non-trusted

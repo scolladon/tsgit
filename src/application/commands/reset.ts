@@ -32,16 +32,16 @@ export interface ResetResult {
 /**
  * Reset HEAD (and optionally index/working tree) to `target`.
  *
- * - `soft`:  HEAD only.
+ * - `soft`: HEAD only.
  * - `mixed`: HEAD + rebuild the index from the target commit's tree
- *            (stat-cache donor strategy preserves cache for unchanged paths —
- *            ADR-021). Working tree is NOT touched.
- * - `hard`:  HEAD + index + working tree — materialise the target tree onto
- *            the working tree with `force: true`, then commit the post-write
- *            index entries (ADR-023). Bare repos are rejected upfront.
+ *  (stat-cache donor strategy preserves cache for unchanged paths —
+ * ). Working tree is NOT touched.
+ * - `hard`: HEAD + index + working tree — materialise the target tree onto
+ *  the working tree with `force: true`, then commit the post-write
+ *  index entries. Bare repos are rejected upfront.
  *
  * Ordering: working tree → index → HEAD. The index lock wraps both the
- * working-tree write AND the index commit, matching Phase 13.2's tightened
+ * working-tree write AND the index commit, matching tightened
  * pattern. A crash between the index commit and HEAD update leaves the index
  * ahead of HEAD — same recoverable hazard as canonical git.
  */
@@ -94,17 +94,17 @@ const hardResetFromCommit = async (ctx: Context, commitId: ObjectId): Promise<vo
   if (commit.type !== 'commit') {
     throw unexpectedObjectType('commit', commit.type, commitId);
   }
-  // Same lock-first ordering as the mixed path (Phase 13.2). The lock wraps
+  // Same lock-first ordering as the mixed path. The lock wraps
   // the working-tree materialise too, so a concurrent index writer is
   // serialised for the entire hard-reset transaction. This intentionally
-  // diverges from Phase 13.1 checkout's lock-around-commit-only pattern,
+  // diverges from.1 checkout's lock-around-commit-only pattern,
   // which has a known TOCTOU window between `readIndex` and `acquireIndexLock`.
   // Tightening checkout's lock pattern is captured as a follow-up in
-  // `docs/BACKLOG.md` §13.5.
+  // `the backlog`
   //
   // The index commit uses materializeTree's `newIndexEntries` (post-write
   // lstat-derived stats), not buildIndexFromTree's donor stats — donor stats
-  // would be stale for files we just rewrote. See ADR-023.
+  // would be stale for files we just rewrote.
   const lock = await acquireIndexLock(ctx);
   try {
     const currentIndex = await readIndex(ctx);

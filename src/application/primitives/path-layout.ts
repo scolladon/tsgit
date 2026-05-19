@@ -9,7 +9,7 @@ import type { Context } from '../../ports/context.js';
 
 /**
  * Repository working-tree root. Returns the workDir from the current context;
- * facade-tier code (Phase 10) is responsible for discovery / realpath pinning
+ * facade-tier code is responsible for discovery / realpath pinning
  * at construction time. Primitives consume the already-resolved path.
  */
 export const getRepoRoot = (ctx: Context): FilePath => ctx.layout.workDir as FilePath;

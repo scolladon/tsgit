@@ -4,7 +4,7 @@ import type { FileSystem } from '../ports/file-system.js';
 
 /**
  * Wrap a user-supplied FileSystem so every path-taking method asserts that
- * the path is contained within `cwd`. Phase 9 commands ALREADY validate
+ * the path is contained within `cwd`. commands ALREADY validate
  * cwd-relative paths via `validatePath` before computing absolute paths;
  * this wrapper is defense-in-depth for adapters whose own implementation
  * (e.g., a buggy `realpath`) might lie about resolution.
@@ -14,7 +14,7 @@ import type { FileSystem } from '../ports/file-system.js';
  * Threat model: only protects path-naming surface (which path strings the
  * adapter sees). A malicious FS can still return adversarial **content** for
  * `read`/`readUtf8`; that level of trust is delegated to the caller's choice
- * of FS implementation (Phase 10 design §5.2.1).
+ * of FS implementation.
  */
 export const wrapFsValidator = (fs: FileSystem, cwd: string): FileSystem => {
   const guard = (path: string): void => {

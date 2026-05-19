@@ -1,5 +1,5 @@
 /**
- * Shared test fixtures for Phase 7 primitives — per design §11.2.
+ * Shared test fixtures for primitives —.
  */
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import type { GitIndex } from '../../../../src/domain/git-index/index-entry.js';
@@ -160,14 +160,14 @@ export function instrumentedContext(base: Context): InstrumentedContext {
 }
 
 /**
- * Serialize a GitIndex through Phase 3's serializeIndex, producing bytes
- * suitable for `ctx.fs.write('.git/index', ...)`. Phase 7 readIndex tests
- * use this to round-trip without needing a Phase 9 writeIndex primitive.
+ * Serialize a GitIndex through's serializeIndex, producing bytes
+ * suitable for `ctx.fs.write('.git/index',...)`. readIndex tests
+ * use this to round-trip without needing a writeIndex primitive.
  */
 /**
  * Serialize a GitIndex with a trailing SHA1 checksum so that parseIndex
- * accepts the round-trip. Phase 3's `serializeIndex` omits the trailer;
- * this fixture adds it for Phase 7 readIndex tests.
+ * accepts the round-trip.'s `serializeIndex` omits the trailer;
+ * this fixture adds it for readIndex tests.
  */
 export async function serializeIndexFixtureAsync(
   index: GitIndex,

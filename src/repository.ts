@@ -27,7 +27,7 @@ type BindCtx<F> = F extends (ctx: Context, ...rest: infer A) => infer R ? (...ar
  * User-facing options passed to `openRepository`. Subset of the design's
  * `OpenRepositoryOptions` that this Step 3 implementation honors. Every field
  * is optional; the facade fills sensible defaults. Field-level validation runs
- * eagerly before the Repository is returned (Phase 10 §8.1).
+ * eagerly before the Repository is returned.
  */
 export interface OpenRepositoryOptions {
   /** Working directory. Default: `process.cwd()` on Node, `'/'` on browser/memory. */
@@ -54,7 +54,7 @@ export interface OpenRepositoryOptions {
 }
 
 /**
- * Caller-supplied physical layout for the in-construction Context. Phase 10's
+ * Caller-supplied physical layout for the in-construction Context.'s
  * design defers full layout discovery (walk up from cwd until `.git` is found)
  * to a follow-up; for this iteration the caller must provide the resolved
  * layout explicitly (the runtime shims do this in Step 5).
@@ -112,7 +112,7 @@ export interface Repository {
   readonly status: BindCtx<typeof commands.status>;
   readonly tag: BindCtx<typeof commands.tag>;
 
-  // Tier-2 primitives (15) — bound under .primitives.* to keep the top-level
+  // Tier-2 primitives (15) — bound under.primitives.* to keep the top-level
   // surface focused on user-facing commands.
   readonly primitives: {
     readonly createCommit: BindCtx<typeof primitives.createCommit>;

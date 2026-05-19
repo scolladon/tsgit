@@ -1,5 +1,5 @@
 /**
- * Phase 12.1 — pack-fetch primitive. Shared between clone (12.1) and the
+ * pack-fetch primitive. Shared between clone (12.1) and the
  * forthcoming fetch (12.2) / push (12.3) commands.
  *
  * Performs the `git-upload-pack` POST, drains the side-banded response into
@@ -42,7 +42,7 @@ const SIDE_BAND_CAPS: ReadonlySet<string> = new Set(['side-band-64k', 'side-band
 const PROGRESS_TICK_BYTES = 65_536;
 /**
  * Default cap on the pack body size, applied when `ctx.config?.maxResponseBytes`
- * is not set. Matches the bound documented in ADR-007 (Resume Semantics).
+ * is not set. Matches the bound documented in.
  */
 const DEFAULT_MAX_RESPONSE_BYTES = 512 * 1024 * 1024;
 /**
@@ -69,7 +69,7 @@ export interface FetchPackInput {
   /**
    * Shallow clone depth. When set, sends `deepen N` and consumes the
    * accompanying `shallow <oid>` / `unshallow <oid>` response block.
-   * Phase 12.2; see ADR-009.
+   *
    */
   readonly depth?: number;
 }

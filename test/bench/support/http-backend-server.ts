@@ -2,8 +2,8 @@
  * Reusable `git-http-backend` CGI server lifecycle.
  *
  * Boots an `http.Server` bound to 127.0.0.1 on an ephemeral port that
- * spawns `git-http-backend` per request (RFC 3875 CGI). Both the Phase 12.1
- * integration suite and the Phase 12.4 bench import the helper so the
+ * spawns `git-http-backend` per request (RFC 3875 CGI). Both the
+ * integration suite and the prior bench import the helper so the
  * CGI plumbing lives in exactly one place.
  *
  * The handler is lifted verbatim from the original integration test,
@@ -37,7 +37,7 @@ export const findGitHttpBackend = (): string | undefined => {
 };
 
 const findHeaderSeparator = (buf: Buffer): number => {
-  // Accept both LF LF and CRLF CRLF separators per RFC 3875 §6.3.
+  // Accept both LF LF and CRLF CRLF separators per RFC 3875
   for (let i = 0; i < buf.length - 1; i += 1) {
     if (buf[i] === 0x0a && buf[i + 1] === 0x0a) return i;
     if (
