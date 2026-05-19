@@ -15,6 +15,29 @@ export default defineConfig({
         test: {
           name: 'integration',
           include: ['test/integration/**/*.test.ts'],
+          exclude: [
+            // Folder-segregated platform-specific integration suites run in
+            // their own CI jobs (posix-integration + win-integration).
+            'test/integration/posix-only/**',
+            'test/integration/win-only/**',
+            // Also exclude node_modules (default) — restated when overriding
+            // the default `exclude` array.
+            '**/node_modules/**',
+          ],
+        },
+      },
+      {
+        extends: true,
+        test: {
+          name: 'posix-integration',
+          include: ['test/integration/posix-only/**/*.test.ts'],
+        },
+      },
+      {
+        extends: true,
+        test: {
+          name: 'win-integration',
+          include: ['test/integration/win-only/**/*.test.ts'],
         },
       },
     ],

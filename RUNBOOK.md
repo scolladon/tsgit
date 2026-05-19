@@ -66,12 +66,22 @@ Commit message (via commitlint):
 ### Pipeline Stages
 
 1. **Static Analysis** — biome, tsc, knip, jscpd, ls-lint, npm outdated (parallel)
-2. **Unit Tests** — Matrix: Ubuntu/macOS/Windows × Node 20/22/24
-3. **Mutation Testing** — Stryker (0 survivors target)
-4. **Integration Tests** — Real git repos, canonical git interop
-5. **E2E Tests** — Playwright: Chrome, Firefox, Safari
+2. **Unit Tests** — Matrix: Ubuntu/macOS/Windows × Node 22/24 (Windows re-added in Phase 14.4)
+3. **Mutation Testing** — Stryker incremental on PRs, Linux-only (ADR-044)
+4. **Integration Tests** — Linux-only; `git-http-backend` CGI is POSIX (clone/fetch/push end-to-end)
+5. **E2E Tests** — Playwright: Chrome, Firefox, Safari (Linux runner)
 6. **Performance** — vitest bench + bundle size checks
 7. **MegaLinter** — Comprehensive linting (parallel with all stages)
+
+#### Windows-runner notes
+
+The `windows-latest` cell exercises `NodeFileSystem` against real 8.3
+short-name parents (mkdtemp under `C:\Users\RUNNER~1\Temp\…`). Test
+files under `test/unit/adapters/node/*windows*.test.ts` use
+`describe.skipIf(process.platform !== 'win32')` so they no-op on POSIX
+dev shells. Wall time is ~2-3× Linux; expect ~12-15 min for the
+unit-tests job. Mutation testing stays on Linux (per ADR-044 cost
+analysis); per-OS mutation tracking is backlogged under §15.4.
 
 ### Release Process
 

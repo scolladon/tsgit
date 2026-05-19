@@ -34,6 +34,7 @@ A pure TypeScript git implementation designed to be the fastest portable git lib
 | 13.3 | `reset --hard` materialises both index and working tree to match the target commit's tree; force-rewrites locally-modified files | ✅ |
 | 13.5 | `checkout` acquires `index.lock` before reading the index — closes a known TOCTOU window; path-restore from `'index'` stays lock-free | ✅ |
 | 13.6 | `checkout({ paths, source: 'index' })` synthesises a tree from staged entries — restores from index content, honouring divergence from HEAD | ✅ |
+| 14.4 | Full Windows support — 8.3 short-name reconciliation in `NodeFileSystem.checkContainment`, `ELOOP`/`EACCES` errno parity, `windows-latest` re-added to the unit-test matrix | ✅ |
 
 ## Features
 

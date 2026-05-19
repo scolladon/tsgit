@@ -114,12 +114,7 @@ jobs:
       matrix:
         # Node 20 dropped: cspell@10 + lint-staged@17 require >=22.18 /
         # >=22.22.1; the engines floor matches.
-        # windows-latest excluded for now — NodeFileSystem path handling
-        # (realpath 8.3 short names, mixed separator inputs from test
-        # fixtures) needs a separate sprint, tracked under post-v1
-        # backlog 14.x. The wrap-fs-validator fix that shipped here is
-        # necessary but not sufficient.
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest]
         node: [22, 24]
     runs-on: ${{ matrix.os }}
     steps:
@@ -127,7 +122,14 @@ jobs:
       - uses: ./.github/actions/setup
         with:
           node-version: ${{ matrix.node }}
-      - run: npm run test:coverage
+      # Coverage threshold (100%) is enforced on the Linux gate cell only.
+      # Other matrix cells run plain `test:unit` (cross-platform — no
+      # platform skipIfs after Phase 14.4's PathPolicy + FsOperations DI
+      # refactor).
+      - if: matrix.os == 'ubuntu-latest'
+        run: npm run test:coverage
+      - if: matrix.os != 'ubuntu-latest'
+        run: npm run test:unit
       # Upload regardless of pass/fail so a threshold breach can be diagnosed
       # from the artifact instead of just the failed step. Per-matrix cell
       # naming avoids `actions/upload-artifact@v4` rejecting duplicate names.
@@ -171,6 +173,41 @@ jobs:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup
       - run: npm run test:integration
+
+  # ──────────────────────────────────────────────
+  # Stage 5b: POSIX-only integration tests
+  # Real-fs POSIX semantics (chmod mode bits, ELOOP/EISDIR errnos,
+  # symlink permissions). The adapter's response to these errnos is
+  # exercised cross-platform in test/unit/ via FsOperations DI; this
+  # job covers the real OS→adapter wiring. Phase 14.4.
+  # ──────────────────────────────────────────────
+
+  posix-integration:
+    needs: [unit-tests]
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      - run: npm run test:posix-integration
+
+  # ──────────────────────────────────────────────
+  # Stage 5c: Windows-only integration tests
+  # Real-fs Windows semantics (8.3 short-name reconciliation, real
+  # mkdtemp paths, openRepository drive-letter acceptance, real Windows
+  # symlinks). Phase 14.4.
+  # ──────────────────────────────────────────────
+
+  win-integration:
+    needs: [unit-tests]
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      - run: npm run test:win-integration
 
   # ──────────────────────────────────────────────
   # Stage 6: E2E / Playwright

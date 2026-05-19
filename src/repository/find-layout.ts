@@ -1,5 +1,4 @@
-import * as nodePath from 'node:path';
-
+import { nativePolicy, type PathPolicy } from '../adapters/node/path-policy.js';
 import type { FileSystem } from '../ports/file-system.js';
 import type { RepositoryLayoutInput } from '../repository.js';
 
@@ -11,17 +10,20 @@ import type { RepositoryLayoutInput } from '../repository.js';
  * root — callers can choose to default to a fresh repo at `cwd` (init/clone
  * paths) or surface NOT_A_REPOSITORY (most other commands).
  *
- * The walk uses POSIX `nodePath.dirname` semantics; on Windows it traverses
- * up the drive root identically. Cross-platform safe because both Node and
- * the in-memory FS treat `/` as the boundary.
+ * Accepts a `pathPolicy` so the walk's `resolve` / `dirname` / `join`
+ * semantics match the input form. Production code uses `nativePolicy`
+ * (host-matching). Tests that pair a POSIX-only adapter (e.g. the
+ * in-memory FS) with POSIX-shaped paths can inject `posixPolicy` to keep
+ * the walk POSIX-rooted on any host.
  */
 export const findLayout = async (
   fs: FileSystem,
   cwd: string,
+  pathPolicy: PathPolicy = nativePolicy,
 ): Promise<RepositoryLayoutInput | undefined> => {
-  let current = nodePath.resolve(cwd);
+  let current = pathPolicy.resolve(cwd);
   while (true) {
-    const candidate = `${current}/.git`;
+    const candidate = pathPolicy.join(current, '.git');
     // Single stat call — exists() + stat() were redundant since both can
     // throw on path-confined adapters (MemoryFileSystem rejects paths
     // outside rootDir with PERMISSION_DENIED). Any throw OR a non-directory
@@ -32,7 +34,7 @@ export const findLayout = async (
     if (stat?.isDirectory === true) {
       return { workDir: current, gitDir: candidate, bare: false };
     }
-    const parent = nodePath.dirname(current);
+    const parent = pathPolicy.dirname(current);
     if (parent === current) return undefined; // reached filesystem root
     current = parent;
   }
