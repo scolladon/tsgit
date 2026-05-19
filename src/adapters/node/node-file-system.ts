@@ -32,6 +32,19 @@ export function isErrnoException(err: unknown): err is NodeJS.ErrnoException {
 }
 
 /**
+ * Cheap probe: returns true iff the path contains a `.` or `..` *as a
+ * complete segment* (delimited by separators or the path bounds), meaning
+ * `policy.resolve` would normalise it. False for clean absolute paths —
+ * letting the caller skip a no-op `resolve` on the hot path.
+ *
+ * @internal
+ */
+const RELATIVE_SEGMENT_RE = /(?:^|[/\\])\.\.?(?:[/\\]|$)/;
+export function containsRelativeSegment(p: string): boolean {
+  return RELATIVE_SEGMENT_RE.test(p);
+}
+
+/**
  * On Windows, `O_NOFOLLOW` against a symlink leaf surfaces as `EACCES`,
  * `EPERM`, or `EISDIR` depending on the link target — `mapErrno` cannot
  * disambiguate without knowing whether the leaf is a symlink. This helper
@@ -540,7 +553,14 @@ export class NodeFileSystem implements FileSystem {
   }
 
   private async checkContainment(path: string, mode: ContainmentMode): Promise<string> {
-    const resolved = this.pathPolicy.resolve(toAbsolute(path, this.rootDir, this.pathPolicy));
+    const abs = toAbsolute(path, this.rootDir, this.pathPolicy);
+    // `policy.resolve` is the only thing that normalises embedded `..` and
+    // `.` segments, but it also touches `process.cwd()` and re-walks the
+    // string even when the input is already a clean absolute path. The
+    // overwhelming majority of inputs on the hot path (status, add --all,
+    // read/write of a known absolute path) have no relative segments — skip
+    // the call when a cheap string probe says so.
+    const resolved = containsRelativeSegment(abs) ? this.pathPolicy.resolve(abs) : abs;
     const canonicalRoot = await this.getCanonicalRoot();
     // Containment passes if `abs` is inside EITHER the raw rootDir (which
     // matches user-supplied paths with the same short-name form as the
