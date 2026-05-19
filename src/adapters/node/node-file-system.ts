@@ -762,6 +762,16 @@ export class NodeFileSystem implements FileSystem {
         !pathContainsNormalized(normalizedRoot, abs, this.pathPolicy) &&
         !pathContainsNormalized(normalizedCanonical, abs, this.pathPolicy)
       ) {
+        // eslint-disable-next-line no-console
+        console.error('[DEBUG checkContainment]', {
+          path,
+          abs,
+          normalizedRoot,
+          normalizedCanonical,
+          rootDir: this.rootDir,
+          sep: this.pathPolicy.sep,
+          caseInsensitive: this.pathPolicy.caseInsensitive,
+        });
         throw permissionDenied(path);
       }
     };
