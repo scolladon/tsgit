@@ -18,6 +18,37 @@ import { nativePolicy } from './path-policy.js';
 
 type ContainmentMode = 'read' | 'lstat' | 'creation';
 
+const REMOVE_TREE_CONCURRENCY = 8;
+
+/**
+ * Bounded-concurrency map. Issues up to `limit` `fn(item)` calls in
+ * parallel; the next item runs as each in-flight call resolves. Bails on
+ * the first rejection (matching the serial-loop semantics of an awaited
+ * `for…of` — any thrown error aborts the rest of the iteration).
+ *
+ * @internal
+ */
+export async function mapConcurrent<T>(
+  items: readonly T[],
+  limit: number,
+  fn: (item: T) => Promise<void>,
+): Promise<void> {
+  if (items.length === 0) return;
+  let next = 0;
+  const workerCount = Math.min(limit, items.length);
+  const workers = Array.from({ length: workerCount }, async () => {
+    while (true) {
+      const i = next;
+      next += 1;
+      if (i >= items.length) return;
+      const item = items[i];
+      if (item === undefined) return;
+      await fn(item);
+    }
+  });
+  await Promise.all(workers);
+}
+
 /** @internal */
 export function toAbsolute(
   path: string,
@@ -578,10 +609,9 @@ export class NodeFileSystem implements FileSystem {
       () => this.fsOps.readdir(real, { withFileTypes: true }),
       originalPath,
     );
-    for (const entry of entries) {
-      const child = this.pathPolicy.join(real, entry.name);
-      await this.removeTree(child, originalPath);
-    }
+    await mapConcurrent(entries, REMOVE_TREE_CONCURRENCY, (entry) =>
+      this.removeTree(this.pathPolicy.join(real, entry.name), originalPath),
+    );
     await runFs(() => this.fsOps.rmdir(real), originalPath);
   }
 

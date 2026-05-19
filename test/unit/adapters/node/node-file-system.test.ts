@@ -1,12 +1,13 @@
 import * as fsPromises from 'node:fs/promises';
 import * as os from 'node:os';
 import * as nodePath from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   containsRelativeSegment,
   interpretCreationLstat,
   isErrnoException,
   isWindowsSymlinkRefusal,
+  mapConcurrent,
   mapErrno,
   mapStat,
   NodeFileSystem,
@@ -371,6 +372,64 @@ describe('NodeFileSystem', () => {
 
         // Assert
         expect(sut).toBe('/already/absolute.txt');
+      });
+    });
+
+    describe('mapConcurrent', () => {
+      it('Given an empty input, When mapped, Then fn is never called', async () => {
+        const fn = vi.fn(async () => undefined);
+
+        await mapConcurrent([], 8, fn);
+
+        expect(fn).not.toHaveBeenCalled();
+      });
+
+      it('Given N items with limit P, When mapped, Then no more than P calls are in flight at any time', async () => {
+        // Arrange — hold each fn call until released. Track max
+        // concurrent in-flight.
+        const items = Array.from({ length: 12 }, (_, i) => i);
+        const releases: Array<() => void> = [];
+        let inFlight = 0;
+        let maxInFlight = 0;
+        const fn = vi.fn(async () => {
+          inFlight += 1;
+          maxInFlight = Math.max(maxInFlight, inFlight);
+          await new Promise<void>((resolve) => releases.push(resolve));
+          inFlight -= 1;
+        });
+
+        // Act
+        const run = mapConcurrent(items, 4, fn);
+        // Release in order; the bounded-concurrency cap means only 4
+        // calls are blocked at any time.
+        await new Promise((r) => setTimeout(r, 0));
+        while (releases.length > 0) {
+          const release = releases.shift();
+          release?.();
+          await new Promise((r) => setTimeout(r, 0));
+        }
+        await run;
+
+        // Assert
+        expect(fn).toHaveBeenCalledTimes(12);
+        expect(maxInFlight).toBe(4);
+      });
+
+      it('Given a worker that throws, When mapped, Then the rejection propagates and pending items still resolve', async () => {
+        // Arrange
+        const fn = vi.fn(async (item: number) => {
+          if (item === 2) throw new Error('boom');
+        });
+
+        // Act + Assert
+        let caught: unknown;
+        try {
+          await mapConcurrent([0, 1, 2, 3], 2, fn);
+        } catch (err) {
+          caught = err;
+        }
+        expect(caught).toBeInstanceOf(Error);
+        expect((caught as Error).message).toBe('boom');
       });
     });
 
