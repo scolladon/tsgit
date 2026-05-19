@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 import {
   interpretCreationLstat,
   isErrnoException,
+  isWindowsSymlinkRefusal,
   mapErrno,
   mapStat,
   NodeFileSystem,
@@ -918,6 +919,86 @@ describe('NodeFileSystem', () => {
         // Cleanup
         await fsPromises.rm(tempRoot, { recursive: true, force: true });
       });
+    });
+  });
+
+  describe('isWindowsSymlinkRefusal', () => {
+    const posix = (): boolean => false;
+    const windows = (): boolean => true;
+
+    it('Given POSIX host, When the predicate is called, Then returns false regardless of the leaf type', () => {
+      // Arrange
+      const sut = isWindowsSymlinkRefusal;
+      const err = new TsgitError({ code: 'PERMISSION_DENIED', path: 'p' as never });
+
+      // Act
+      const result = sut(err, true, posix);
+
+      // Assert
+      expect(result).toBe(false);
+    });
+
+    it('Given Windows host and a non-symlink leaf, Then returns false (real EACCES must surface)', () => {
+      // Arrange
+      const sut = isWindowsSymlinkRefusal;
+      const err = new TsgitError({ code: 'PERMISSION_DENIED', path: 'p' as never });
+
+      // Act
+      const result = sut(err, false, windows);
+
+      // Assert
+      expect(result).toBe(false);
+    });
+
+    it('Given Windows host, symlink leaf, and a PERMISSION_DENIED error, Then returns true', () => {
+      // Arrange
+      const sut = isWindowsSymlinkRefusal;
+      const err = new TsgitError({ code: 'PERMISSION_DENIED', path: 'p' as never });
+
+      // Act
+      const result = sut(err, true, windows);
+
+      // Assert
+      expect(result).toBe(true);
+    });
+
+    it('Given Windows host, symlink leaf, and an UNSUPPORTED_OPERATION error, Then returns true', () => {
+      // Arrange
+      const sut = isWindowsSymlinkRefusal;
+      const err = new TsgitError({
+        code: 'UNSUPPORTED_OPERATION',
+        operation: 'filesystem',
+        reason: 'EISDIR',
+      });
+
+      // Act
+      const result = sut(err, true, windows);
+
+      // Assert
+      expect(result).toBe(true);
+    });
+
+    it('Given Windows host, symlink leaf, and a non-TsgitError, Then returns false', () => {
+      // Arrange
+      const sut = isWindowsSymlinkRefusal;
+
+      // Act
+      const result = sut(new Error('raw'), true, windows);
+
+      // Assert
+      expect(result).toBe(false);
+    });
+
+    it('Given Windows host, symlink leaf, and a TsgitError of unrelated kind, Then returns false', () => {
+      // Arrange
+      const sut = isWindowsSymlinkRefusal;
+      const err = new TsgitError({ code: 'FILE_NOT_FOUND', path: 'p' as never });
+
+      // Act
+      const result = sut(err, true, windows);
+
+      // Assert
+      expect(result).toBe(false);
     });
   });
 

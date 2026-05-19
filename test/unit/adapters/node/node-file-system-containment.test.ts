@@ -15,11 +15,13 @@ import { describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
   realpath: vi.fn<(path: string) => Promise<string>>(),
+  open: vi.fn<(path: string, flags: number) => Promise<unknown>>(),
+  lstat: vi.fn<(path: string) => Promise<{ isSymbolicLink: () => boolean }>>(),
 }));
 
 vi.mock('node:fs/promises', async () => {
   const actual = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises');
-  return { ...actual, realpath: mocks.realpath };
+  return { ...actual, realpath: mocks.realpath, open: mocks.open, lstat: mocks.lstat };
 });
 
 const { NodeFileSystem } = await import('../../../../src/adapters/node/node-file-system.js');
@@ -95,6 +97,79 @@ describe('NodeFileSystem — canonical-root cache', () => {
       ([arg]: readonly unknown[]) => arg === rootDir,
     );
     expect(rootCalls.length).toBe(2);
+  });
+});
+
+describe('NodeFileSystem — openWithNoFollow windows symlink refusal', () => {
+  const eacces = (): NodeJS.ErrnoException =>
+    Object.assign(new Error('access'), { code: 'EACCES' });
+
+  it('Given Windows host, symlink leaf, When open rejects with EACCES, Then openWithNoFollow throws PERMISSION_DENIED', async () => {
+    // Arrange
+    const root = '/canonical/win-symlink';
+    const link = '/canonical/win-symlink/link';
+    mocks.realpath.mockImplementation(async (input: string) => input);
+    mocks.lstat.mockImplementation(async () => ({ isSymbolicLink: () => true }));
+    mocks.open.mockImplementation(async () => {
+      throw eacces();
+    });
+    const sut = new NodeFileSystem(root, () => true);
+
+    // Act + Assert
+    let caught: unknown;
+    try {
+      await sut.openWithNoFollow(link, 'read');
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(TsgitError);
+    expect((caught as InstanceType<typeof TsgitError>).data.code).toBe('PERMISSION_DENIED');
+  });
+
+  it('Given Windows host, regular file (no symlink), When open rejects with EACCES, Then PERMISSION_DENIED is still thrown but from mapErrno (not the rewrap)', async () => {
+    // Arrange — a real EACCES on a regular file should still surface as
+    // PERMISSION_DENIED via mapErrno's EACCES arm. The discriminator must NOT
+    // absorb this case (it's tested here just to confirm the contract).
+    const root = '/canonical/win-regular';
+    const file = '/canonical/win-regular/locked';
+    mocks.realpath.mockImplementation(async (input: string) => input);
+    mocks.lstat.mockImplementation(async () => ({ isSymbolicLink: () => false }));
+    mocks.open.mockImplementation(async () => {
+      throw eacces();
+    });
+    const sut = new NodeFileSystem(root, () => true);
+
+    // Act + Assert
+    let caught: unknown;
+    try {
+      await sut.openWithNoFollow(file, 'read');
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(TsgitError);
+    expect((caught as InstanceType<typeof TsgitError>).data.code).toBe('PERMISSION_DENIED');
+  });
+
+  it('Given POSIX host, symlink leaf, When open rejects with ELOOP, Then openWithNoFollow throws PERMISSION_DENIED (via mapErrno)', async () => {
+    // Arrange
+    const root = '/canonical/posix-symlink';
+    const link = '/canonical/posix-symlink/link';
+    mocks.realpath.mockImplementation(async (input: string) => input);
+    mocks.lstat.mockImplementation(async () => ({ isSymbolicLink: () => true }));
+    mocks.open.mockImplementation(async () => {
+      throw Object.assign(new Error('symlink loop'), { code: 'ELOOP' });
+    });
+    const sut = new NodeFileSystem(root, () => false);
+
+    // Act + Assert
+    let caught: unknown;
+    try {
+      await sut.openWithNoFollow(link, 'read');
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(TsgitError);
+    expect((caught as InstanceType<typeof TsgitError>).data.code).toBe('PERMISSION_DENIED');
   });
 });
 

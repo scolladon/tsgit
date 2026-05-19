@@ -25,6 +25,26 @@ export function isErrnoException(err: unknown): err is NodeJS.ErrnoException {
 }
 
 /**
+ * On Windows, `O_NOFOLLOW` against a symlink leaf surfaces as `EACCES`,
+ * `EPERM`, or `EISDIR` depending on the link target — `mapErrno` cannot
+ * disambiguate without knowing whether the leaf is a symlink. This helper
+ * accepts the pre-open `lstat` result and the post-open error, and
+ * returns true iff the error should be rewrapped to `PERMISSION_DENIED`
+ * for cross-platform symlink-refusal parity (ADR-043).
+ *
+ * @internal
+ */
+export function isWindowsSymlinkRefusal(
+  err: unknown,
+  isSymlinkLeaf: boolean,
+  isWindowsFn: PlatformPredicate = isWindows,
+): boolean {
+  if (!isWindowsFn() || !isSymlinkLeaf) return false;
+  if (!(err instanceof TsgitError)) return false;
+  return err.data.code === 'PERMISSION_DENIED' || err.data.code === 'UNSUPPORTED_OPERATION';
+}
+
+/**
  * True iff `child === parent` (after case-folding on Windows) or `child` is
  * strictly inside `parent`. Defends `NodeFileSystem.checkContainment` against
  * (a) drive-letter casing differences on Windows and (b) the prefix-only
@@ -386,13 +406,34 @@ export class NodeFileSystem implements FileSystem {
 
   openWithNoFollow = async (path: string, mode: 'read' | 'write'): Promise<FileHandle> => {
     const real = await this.checkContainment(path, 'lstat');
+    // ELOOP flows through `mapErrno` to PERMISSION_DENIED (ADR-043). On
+    // Windows, the symlink-refusal errno is sometimes EACCES/EPERM/EISDIR
+    // (no clean signal in `mapErrno`); pre-lstat the leaf so the post-open
+    // rewrap can be gated on "is the leaf actually a symlink" — a real
+    // EACCES on a regular file MUST surface unchanged.
+    const isSymlinkLeaf = this.isWindowsFn() ? await this.isSymlinkLeaf(real) : false;
+
     const flag = mode === 'write' ? fs.constants.O_WRONLY : fs.constants.O_RDONLY;
-    // ELOOP now flows through `mapErrno` (ADR-043) so the POSIX path needs no
-    // call-site rewrap. The Windows discriminator is added in Phase 14.4 §3.3
-    // — separate commit.
-    const handle = await runFs(() => fsPromises.open(real, flag | fs.constants.O_NOFOLLOW), path);
+    const handle = await runFs(
+      () => fsPromises.open(real, flag | fs.constants.O_NOFOLLOW),
+      path,
+    ).catch((err: unknown) => {
+      if (isWindowsSymlinkRefusal(err, isSymlinkLeaf, this.isWindowsFn)) {
+        throw permissionDenied(path);
+      }
+      throw err;
+    });
     return wrapNodeHandle(handle);
   };
+
+  private async isSymlinkLeaf(real: string): Promise<boolean> {
+    try {
+      const stat = await fsPromises.lstat(real);
+      return stat.isSymbolicLink();
+    } catch {
+      return false;
+    }
+  }
 
   private async removeTree(real: string, originalPath: string): Promise<void> {
     // Caller (rmRecursive) verified the leaf exists; on TOCTOU mid-walk a missing child
