@@ -961,11 +961,12 @@ describe('NodeFileSystem', () => {
       expect(result).toBe(false);
     });
 
-    it('Given Windows host and case-different drive letters but same path, Then returns true', () => {
-      // Arrange
+    it('Given Windows host and case-different prefix paths, Then returns true (case-insensitive prefix)', () => {
+      // Arrange — POSIX-shaped paths so the host's nodePath.sep is consistent;
+      // the test exercises case-folding, not separator handling.
       const sut = pathContains;
-      const parent = 'C:\\Users\\Foo';
-      const child = 'c:\\users\\foo\\bar.bin';
+      const parent = '/Users/Foo';
+      const child = '/users/foo/bar.bin';
 
       // Act
       const result = sut(parent, child, windows);
@@ -979,7 +980,7 @@ describe('NodeFileSystem', () => {
       const sut = pathContains;
 
       // Act
-      const result = sut('C:\\Users\\Foo', 'c:\\users\\FOO', windows);
+      const result = sut('/Users/Foo', '/users/FOO', windows);
 
       // Assert
       expect(result).toBe(true);

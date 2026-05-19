@@ -37,13 +37,11 @@ export function pathContains(
   child: string,
   isWindowsFn: PlatformPredicate = isWindows,
 ): boolean {
-  const windows = isWindowsFn();
-  const normalize = (path: string): string => (windows ? path.toLowerCase() : path);
-  const sep = windows ? '\\' : '/';
+  const normalize = (path: string): string => (isWindowsFn() ? path.toLowerCase() : path);
   const p = normalize(parent);
   const c = normalize(child);
   if (c === p) return true;
-  return c.startsWith(p + sep);
+  return c.startsWith(p + nodePath.sep);
 }
 
 /** @internal */
@@ -202,8 +200,28 @@ export function mapStat(s: {
 export class NodeFileSystem implements FileSystem {
   private readonly rootDir: string;
 
-  constructor(rootDir: string) {
+  constructor(rootDir: string, isWindowsFn: PlatformPredicate = isWindows) {
     this.rootDir = rootDir;
+    this.isWindowsFn = isWindowsFn;
+  }
+
+  /**
+   * Lazy long-name canonicalisation of `rootDir` for containment checks.
+   * Promise so concurrent first calls share one `realpath`; cleared on
+   * rejection so a transient ENOENT can be retried. See ADR-042.
+   */
+  private canonicalRootPromise: Promise<string> | undefined = undefined;
+
+  private readonly isWindowsFn: PlatformPredicate;
+
+  private async getCanonicalRoot(): Promise<string> {
+    if (this.canonicalRootPromise === undefined) {
+      this.canonicalRootPromise = fsPromises.realpath(this.rootDir).catch((err: unknown) => {
+        this.canonicalRootPromise = undefined;
+        throw err;
+      });
+    }
+    return this.canonicalRootPromise;
   }
 
   read = async (path: string): Promise<Uint8Array> => {
@@ -264,14 +282,19 @@ export class NodeFileSystem implements FileSystem {
   };
 
   exists = async (path: string): Promise<boolean> => {
-    const absolute = toAbsolute(path, this.rootDir);
-    const resolved = nodePath.resolve(absolute);
-    if (resolved !== this.rootDir && !resolved.startsWith(this.rootDir + nodePath.sep)) {
+    const resolved = nodePath.resolve(toAbsolute(path, this.rootDir));
+    // Pre-resolve check against the raw rootDir catches obvious traversal
+    // (e.g., `../outside`) before touching the disk. Case-folded on
+    // Windows via `pathContains`. The post-resolve check against the
+    // canonical root is the security gate for symlink and short-name
+    // escapes (Phase 14.4).
+    if (!pathContains(this.rootDir, resolved, this.isWindowsFn)) {
       throw permissionDenied(path);
     }
+    const canonicalRoot = await this.getCanonicalRoot();
     try {
       const real = await fsPromises.realpath(resolved);
-      if (real !== this.rootDir && !real.startsWith(this.rootDir + nodePath.sep)) {
+      if (!pathContains(canonicalRoot, real, this.isWindowsFn)) {
         throw permissionDenied(path);
       }
       return true;
@@ -434,8 +457,9 @@ export class NodeFileSystem implements FileSystem {
 
   private async checkContainment(path: string, mode: ContainmentMode): Promise<string> {
     const resolved = nodePath.resolve(toAbsolute(path, this.rootDir));
+    const canonicalRoot = await this.getCanonicalRoot();
     const check = (abs: string): void => {
-      if (abs !== this.rootDir && !abs.startsWith(this.rootDir + nodePath.sep)) {
+      if (!pathContains(canonicalRoot, abs, this.isWindowsFn)) {
         throw permissionDenied(path);
       }
     };
