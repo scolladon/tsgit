@@ -5,20 +5,13 @@
  * `node-file-system.test.ts` needs the real module for the cross-adapter
  * contract suite. Phase 14.4.
  *
- * Tests use POSIX-shaped paths even when simulating Windows behaviour:
- * Node's `path.resolve` is host-dependent, and POSIX hosts mangle backslash
- * inputs. The semantics we prove (case-folded containment, canonical-root
- * substitution, prefix-only guard) are platform-independent — only the
- * `isWindowsFn` injection differs.
- *
- * Skipped on Windows hosts (`describe.skipIf`): the POSIX-shaped paths used
- * in the mocks don't survive Windows' `nodePath.resolve` (which prepends a
- * drive letter). The real-Windows coverage lives in
- * `node-file-system-windows.test.ts`.
+ * Cross-platform: these tests inject `windowsPolicy` / `posixPolicy` AND
+ * use platform-explicit path literals (Windows drive-letter paths for
+ * windowsPolicy, POSIX-rooted paths for posixPolicy). The mocks dictate
+ * what `realpath` / `open` / `lstat` return, so the actual host fs is
+ * never touched. They run identically on Linux, macOS, and Windows.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-
-const isWindowsHost = process.platform === 'win32';
 
 const mocks = vi.hoisted(() => ({
   realpath: vi.fn<(path: string) => Promise<string>>(),
@@ -47,7 +40,7 @@ beforeEach(() => {
   mocks.lstat.mockReset();
 });
 
-describe.skipIf(isWindowsHost)('NodeFileSystem — canonical-root cache', () => {
+describe('NodeFileSystem — canonical-root cache', () => {
   it('Given two sequential `exists` calls, When the second runs, Then realpath(rootDir) is invoked at most once for the root', async () => {
     // Arrange
     const rootDir = 'C:\\canonical\\root';
@@ -117,7 +110,7 @@ describe.skipIf(isWindowsHost)('NodeFileSystem — canonical-root cache', () => 
   });
 });
 
-describe.skipIf(isWindowsHost)('NodeFileSystem — openWithNoFollow windows symlink refusal', () => {
+describe('NodeFileSystem — openWithNoFollow windows symlink refusal', () => {
   const eacces = (): NodeJS.ErrnoException =>
     Object.assign(new Error('access'), { code: 'EACCES' });
 
@@ -217,7 +210,7 @@ describe.skipIf(isWindowsHost)('NodeFileSystem — openWithNoFollow windows syml
   });
 });
 
-describe.skipIf(isWindowsHost)('NodeFileSystem — non-errno fault propagation', () => {
+describe('NodeFileSystem — non-errno fault propagation', () => {
   it('Given `exists` and a realpath that rejects with a non-errno value, When called, Then the original value rethrows unchanged', async () => {
     // Arrange — realpath rejects with a non-Error (e.g., a string) so
     // isErrnoException returns false. The defensive rethrow keeps the
@@ -282,95 +275,92 @@ describe.skipIf(isWindowsHost)('NodeFileSystem — non-errno fault propagation',
   });
 });
 
-describe.skipIf(isWindowsHost)(
-  'NodeFileSystem — 8.3 short-name parent reconciliation (the real-runner failure repro)',
-  () => {
-    it('Given realpath flips between short and long forms across calls, When write goes through creation containment, Then it does NOT throw PERMISSION_DENIED', async () => {
-      // Arrange — repro of the actual GHA failure: realpath on the rootDir
-      // returns the long-name form, but realpath on the parent dir (called
-      // from realpathNearestExisting's walk-up) returns the SHORT form.
-      // This is the "flip" the BACKLOG calls out — Windows realpath is not
-      // deterministic when the path itself was created via a short-name parent.
-      const shortRoot = 'C:\\Users\\RUNNER~1\\Temp\\tsgit-AbCd';
-      const longRoot = 'C:\\Users\\runneradmin\\Temp\\tsgit-AbCd';
-      const childShort = 'C:\\Users\\RUNNER~1\\Temp\\tsgit-AbCd\\a.bin';
+describe('NodeFileSystem — 8.3 short-name parent reconciliation (the real-runner failure repro)', () => {
+  it('Given realpath flips between short and long forms across calls, When write goes through creation containment, Then it does NOT throw PERMISSION_DENIED', async () => {
+    // Arrange — repro of the actual GHA failure: realpath on the rootDir
+    // returns the long-name form, but realpath on the parent dir (called
+    // from realpathNearestExisting's walk-up) returns the SHORT form.
+    // This is the "flip" the BACKLOG calls out — Windows realpath is not
+    // deterministic when the path itself was created via a short-name parent.
+    const shortRoot = 'C:\\Users\\RUNNER~1\\Temp\\tsgit-AbCd';
+    const longRoot = 'C:\\Users\\runneradmin\\Temp\\tsgit-AbCd';
+    const childShort = 'C:\\Users\\RUNNER~1\\Temp\\tsgit-AbCd\\a.bin';
 
-      mocks.realpath.mockImplementation(async (input: string) => {
-        // rootDir canonicalisation → long form.
-        if (input === shortRoot) return longRoot;
-        // walk-up in realpathNearestExisting calls realpath on the parent.
-        // Simulate the flip: returns the SHORT form (different from rootDir's call!).
-        // This is what fails containment on the real runner.
-        if (input === 'C:\\Users\\RUNNER~1\\Temp\\tsgit-AbCd') return shortRoot;
-        // Leaf doesn't exist yet (write target) — realpath ENOENT.
-        throw enoent();
-      });
-      mocks.lstat.mockImplementation(async () => {
-        throw enoent();
-      });
-
-      const sut = new NodeFileSystem(shortRoot, windowsPolicy);
-
-      // Act
-      let caught: unknown;
-      try {
-        await sut.write(childShort, new Uint8Array([1, 2, 3]));
-      } catch (err) {
-        caught = err;
-      }
-
-      // Assert — must NOT be PERMISSION_DENIED. The containment check should
-      // canonicalise both sides via the cached long-form root and accept the
-      // child even if realpath drift returns the short form mid-walk.
-      if (caught instanceof TsgitError) {
-        expect(caught.data.code).not.toBe('PERMISSION_DENIED');
-      }
+    mocks.realpath.mockImplementation(async (input: string) => {
+      // rootDir canonicalisation → long form.
+      if (input === shortRoot) return longRoot;
+      // walk-up in realpathNearestExisting calls realpath on the parent.
+      // Simulate the flip: returns the SHORT form (different from rootDir's call!).
+      // This is what fails containment on the real runner.
+      if (input === 'C:\\Users\\RUNNER~1\\Temp\\tsgit-AbCd') return shortRoot;
+      // Leaf doesn't exist yet (write target) — realpath ENOENT.
+      throw enoent();
+    });
+    mocks.lstat.mockImplementation(async () => {
+      throw enoent();
     });
 
-    it('Given realpath returns the long form consistently, When write goes through creation containment, Then it does NOT throw PERMISSION_DENIED', async () => {
-      // Arrange — reproduces the GHA `windows-latest` failure path:
-      //   rootDir = `C:\\Users\\RUNNER~1\\Temp\\tsgit-AbCd`
-      //   realpath(rootDir) = `C:\\Users\\runneradmin\\Temp\\tsgit-AbCd`
-      //   user writes `C:\\Users\\RUNNER~1\\Temp\\tsgit-AbCd\\a.bin`
-      //   write → checkContainment('creation') → resolveForCreation → realpathNearestExisting
-      //   walks up until parent resolves; returns long-name path. check(real) MUST pass.
-      const shortRoot = 'C:\\Users\\RUNNER~1\\Temp\\tsgit-AbCd';
-      const longRoot = 'C:\\Users\\runneradmin\\Temp\\tsgit-AbCd';
-      const childShort = 'C:\\Users\\RUNNER~1\\Temp\\tsgit-AbCd\\a.bin';
+    const sut = new NodeFileSystem(shortRoot, windowsPolicy);
 
-      mocks.realpath.mockImplementation(async (input: string) => {
-        if (input === shortRoot) return longRoot;
-        if (input === childShort) {
-          // Leaf doesn't exist yet (it's a write target) — realpath ENOENT.
-          throw enoent();
-        }
+    // Act
+    let caught: unknown;
+    try {
+      await sut.write(childShort, new Uint8Array([1, 2, 3]));
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert — must NOT be PERMISSION_DENIED. The containment check should
+    // canonicalise both sides via the cached long-form root and accept the
+    // child even if realpath drift returns the short form mid-walk.
+    if (caught instanceof TsgitError) {
+      expect(caught.data.code).not.toBe('PERMISSION_DENIED');
+    }
+  });
+
+  it('Given realpath returns the long form consistently, When write goes through creation containment, Then it does NOT throw PERMISSION_DENIED', async () => {
+    // Arrange — reproduces the GHA `windows-latest` failure path:
+    //   rootDir = `C:\\Users\\RUNNER~1\\Temp\\tsgit-AbCd`
+    //   realpath(rootDir) = `C:\\Users\\runneradmin\\Temp\\tsgit-AbCd`
+    //   user writes `C:\\Users\\RUNNER~1\\Temp\\tsgit-AbCd\\a.bin`
+    //   write → checkContainment('creation') → resolveForCreation → realpathNearestExisting
+    //   walks up until parent resolves; returns long-name path. check(real) MUST pass.
+    const shortRoot = 'C:\\Users\\RUNNER~1\\Temp\\tsgit-AbCd';
+    const longRoot = 'C:\\Users\\runneradmin\\Temp\\tsgit-AbCd';
+    const childShort = 'C:\\Users\\RUNNER~1\\Temp\\tsgit-AbCd\\a.bin';
+
+    mocks.realpath.mockImplementation(async (input: string) => {
+      if (input === shortRoot) return longRoot;
+      if (input === childShort) {
+        // Leaf doesn't exist yet (it's a write target) — realpath ENOENT.
         throw enoent();
-      });
-      mocks.lstat.mockImplementation(async () => {
-        // resolveForCreation's lstat on the leaf: ENOENT (leaf is the to-be-created).
-        throw enoent();
-      });
-
-      const sut = new NodeFileSystem(shortRoot, windowsPolicy);
-
-      // Act
-      let caught: unknown;
-      try {
-        await sut.write(childShort, new Uint8Array([1, 2, 3]));
-      } catch (err) {
-        caught = err;
       }
-
-      // Assert — anything non-PERMISSION_DENIED is acceptable (the mock will throw
-      // ENOENT or similar on the actual writeFile; we're testing containment alone).
-      if (caught instanceof TsgitError) {
-        expect(caught.data.code).not.toBe('PERMISSION_DENIED');
-      }
+      throw enoent();
     });
-  },
-);
+    mocks.lstat.mockImplementation(async () => {
+      // resolveForCreation's lstat on the leaf: ENOENT (leaf is the to-be-created).
+      throw enoent();
+    });
 
-describe.skipIf(isWindowsHost)('NodeFileSystem — windows-mocked containment', () => {
+    const sut = new NodeFileSystem(shortRoot, windowsPolicy);
+
+    // Act
+    let caught: unknown;
+    try {
+      await sut.write(childShort, new Uint8Array([1, 2, 3]));
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert — anything non-PERMISSION_DENIED is acceptable (the mock will throw
+    // ENOENT or similar on the actual writeFile; we're testing containment alone).
+    if (caught instanceof TsgitError) {
+      expect(caught.data.code).not.toBe('PERMISSION_DENIED');
+    }
+  });
+});
+
+describe('NodeFileSystem — windows-mocked containment', () => {
   it('Given canonical-root realpath returns a long-name form, When `exists` runs against a short-name child, Then `exists` returns true (8.3 reconciliation)', async () => {
     // Arrange — POSIX-shaped paths to keep the host's `path.resolve` sane;
     // the case-fold/canonical-substitution semantic is what we're proving.
