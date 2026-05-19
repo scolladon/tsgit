@@ -134,6 +134,7 @@
     "ETIMEDOUT",
     "ENOTFOUND",
     "EACCES",
+    "eacces",
     "EPERM",
     "ELOOP",
     "EMFILE",

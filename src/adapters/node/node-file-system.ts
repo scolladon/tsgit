@@ -117,33 +117,33 @@ export async function runFs<T>(op: () => Promise<T>, path: string): Promise<T> {
  * @internal
  */
 export async function realpathNearestExisting(absolute: string): Promise<string> {
-  // equivalent-mutant: dropping `.filter(Boolean)` (MethodExpression) keeps extra empty segments
-  // which only widen candidates with leading/internal `//`. POSIX realpath normalizes these to a
-  // single `/`, so every candidate resolves identically to the filtered form.
-  const segments = absolute.split(nodePath.sep).filter(Boolean);
-  // equivalent-mutant: relaxing `i > 0` to `i >= 0` adds one more iteration where candidate = '/'.
-  // That iteration reproduces the fallback branch below (join(realpath('/'), segments.join(sep))),
-  // so the returned value is identical when no prefix resolves.
+  // Use `nodePath.parse` so the root is platform-correct: `/` on POSIX,
+  // `C:\` (or UNC equivalent) on Windows. Previously this function
+  // concatenated `nodePath.sep + segments.join(sep)` which produced
+  // invalid paths like `\C:\Users\…` on Windows.
+  const root = nodePath.parse(absolute).root;
+  const tail = absolute.slice(root.length);
+  const segments = tail.split(nodePath.sep).filter(Boolean);
   for (let i = segments.length; i > 0; i--) {
-    const candidate = nodePath.sep + segments.slice(0, i).join(nodePath.sep);
+    const candidate = root + segments.slice(0, i).join(nodePath.sep);
     try {
       const real = await fsPromises.realpath(candidate);
-      const tail = segments.slice(i).join(nodePath.sep);
-      // equivalent-mutant: relaxing `tail.length > 0` to `tail.length >= 0` (or to `true`) keeps
-      // the join branch, and `nodePath.join(real, '')` returns `real` — so both branches yield
-      // the same path when the tail is empty.
-      return tail.length > 0 ? nodePath.join(real, tail) : real;
+      const remaining = segments.slice(i).join(nodePath.sep);
+      // equivalent-mutant: relaxing `remaining.length > 0` to `>= 0` keeps the
+      // join branch, and `nodePath.join(real, '')` returns `real` — so both
+      // branches yield the same path when the remaining tail is empty.
+      return remaining.length > 0 ? nodePath.join(real, remaining) : real;
     } catch (err) {
       if (isErrnoException(err) && err.code === 'ENOENT') continue;
       throw err;
     }
   }
-  // All segments were non-existent; anchor at the (always-resolvable) filesystem root.
-  const root = await fsPromises.realpath(nodePath.sep);
-  // equivalent-mutant: relaxing `segments.length > 0` to `>=0` (or forcing the condition to
-  // `true`) keeps the join branch — and `nodePath.join(root, '')` returns `root`, so the empty
-  // segments case still returns the same value as the explicit `: root` arm.
-  return segments.length > 0 ? nodePath.join(root, segments.join(nodePath.sep)) : root;
+  // All segments were non-existent; anchor at the (always-resolvable) root.
+  const realRoot = await fsPromises.realpath(root);
+  // equivalent-mutant: relaxing `segments.length > 0` to `>= 0` keeps the join
+  // branch — and `nodePath.join(realRoot, '')` returns `realRoot`, so the empty
+  // segments case still returns the same value as the explicit `: realRoot` arm.
+  return segments.length > 0 ? nodePath.join(realRoot, segments.join(nodePath.sep)) : realRoot;
 }
 
 /**

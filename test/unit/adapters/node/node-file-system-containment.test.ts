@@ -10,8 +10,15 @@
  * inputs. The semantics we prove (case-folded containment, canonical-root
  * substitution, prefix-only guard) are platform-independent — only the
  * `isWindowsFn` injection differs.
+ *
+ * Skipped on Windows hosts (`describe.skipIf`): the POSIX-shaped paths used
+ * in the mocks don't survive Windows' `nodePath.resolve` (which prepends a
+ * drive letter). The real-Windows coverage lives in
+ * `node-file-system-windows.test.ts`.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+const isWindowsHost = process.platform === 'win32';
 
 const mocks = vi.hoisted(() => ({
   realpath: vi.fn<(path: string) => Promise<string>>(),
@@ -39,7 +46,7 @@ beforeEach(() => {
   mocks.lstat.mockReset();
 });
 
-describe('NodeFileSystem — canonical-root cache', () => {
+describe.skipIf(isWindowsHost)('NodeFileSystem — canonical-root cache', () => {
   it('Given two sequential `exists` calls, When the second runs, Then realpath(rootDir) is invoked at most once for the root', async () => {
     // Arrange
     const rootDir = '/canonical/root';
@@ -109,7 +116,7 @@ describe('NodeFileSystem — canonical-root cache', () => {
   });
 });
 
-describe('NodeFileSystem — openWithNoFollow windows symlink refusal', () => {
+describe.skipIf(isWindowsHost)('NodeFileSystem — openWithNoFollow windows symlink refusal', () => {
   const eacces = (): NodeJS.ErrnoException =>
     Object.assign(new Error('access'), { code: 'EACCES' });
 
@@ -209,7 +216,7 @@ describe('NodeFileSystem — openWithNoFollow windows symlink refusal', () => {
   });
 });
 
-describe('NodeFileSystem — non-errno fault propagation', () => {
+describe.skipIf(isWindowsHost)('NodeFileSystem — non-errno fault propagation', () => {
   it('Given `exists` and a realpath that rejects with a non-errno value, When called, Then the original value rethrows unchanged', async () => {
     // Arrange — realpath rejects with a non-Error (e.g., a string) so
     // isErrnoException returns false. The defensive rethrow keeps the
@@ -253,8 +260,8 @@ describe('NodeFileSystem — non-errno fault propagation', () => {
   it('Given `openWithNoFollow` on a Windows symlink leaf, When lstat rejects with a non-ENOENT errno (EACCES), Then the error rethrows (not silently swallowed)', async () => {
     // Arrange — lstat rejection with EACCES surfaces; only ENOENT is
     // safe to absorb (TOCTOU race), per ADR-043 review.
-    const root = '/canonical/win-lstat-eaccess';
-    const file = '/canonical/win-lstat-eaccess/leaf';
+    const root = '/canonical/win-lstat-eacces';
+    const file = '/canonical/win-lstat-eacces/leaf';
     mocks.realpath.mockImplementation(async (input: string) => input);
     mocks.lstat.mockImplementation(async () => {
       throw Object.assign(new Error('access'), { code: 'EACCES' });
@@ -274,7 +281,7 @@ describe('NodeFileSystem — non-errno fault propagation', () => {
   });
 });
 
-describe('NodeFileSystem — windows-mocked containment', () => {
+describe.skipIf(isWindowsHost)('NodeFileSystem — windows-mocked containment', () => {
   it('Given canonical-root realpath returns a long-name form, When `exists` runs against a short-name child, Then `exists` returns true (8.3 reconciliation)', async () => {
     // Arrange — POSIX-shaped paths to keep the host's `path.resolve` sane;
     // the case-fold/canonical-substitution semantic is what we're proving.

@@ -3,25 +3,39 @@ import { describe, expect, it } from 'vitest';
 import { MemoryFileSystem } from '../../../src/adapters/memory/memory-file-system.js';
 import { findLayout } from '../../../src/repository/find-layout.js';
 
+// The `cwd contains .git` and `walks up` tests use POSIX-shaped paths
+// (`/repo`) with the in-memory FS. On Windows hosts `nodePath.resolve('/repo')`
+// prepends the current drive (e.g., `C:\repo`), which the POSIX-only
+// `MemoryFileSystem` cannot match against its stored `/repo`. The
+// production `findLayout` works correctly with real Windows paths on the
+// Node adapter — only these in-memory unit tests cannot run on Windows.
+const isWindowsHost = process.platform === 'win32';
+
 describe('findLayout', () => {
-  it('Given cwd contains a .git directory, When findLayout runs, Then returns layout with cwd as workDir', async () => {
-    const fs = new MemoryFileSystem({ rootDir: '/repo' });
-    await fs.mkdir('/repo/.git');
+  it.skipIf(isWindowsHost)(
+    'Given cwd contains a .git directory, When findLayout runs, Then returns layout with cwd as workDir',
+    async () => {
+      const fs = new MemoryFileSystem({ rootDir: '/repo' });
+      await fs.mkdir('/repo/.git');
 
-    const sut = await findLayout(fs, '/repo');
+      const sut = await findLayout(fs, '/repo');
 
-    expect(sut).toEqual({ workDir: '/repo', gitDir: '/repo/.git', bare: false });
-  });
+      expect(sut).toEqual({ workDir: '/repo', gitDir: '/repo/.git', bare: false });
+    },
+  );
 
-  it('Given cwd is a sub-directory of a repo, When findLayout runs, Then walks up to find .git', async () => {
-    const fs = new MemoryFileSystem({ rootDir: '/repo' });
-    await fs.mkdir('/repo/.git');
-    await fs.mkdir('/repo/sub/dir');
+  it.skipIf(isWindowsHost)(
+    'Given cwd is a sub-directory of a repo, When findLayout runs, Then walks up to find .git',
+    async () => {
+      const fs = new MemoryFileSystem({ rootDir: '/repo' });
+      await fs.mkdir('/repo/.git');
+      await fs.mkdir('/repo/sub/dir');
 
-    const sut = await findLayout(fs, '/repo/sub/dir');
+      const sut = await findLayout(fs, '/repo/sub/dir');
 
-    expect(sut).toEqual({ workDir: '/repo', gitDir: '/repo/.git', bare: false });
-  });
+      expect(sut).toEqual({ workDir: '/repo', gitDir: '/repo/.git', bare: false });
+    },
+  );
 
   it('Given no .git anywhere up the tree, When findLayout runs, Then returns undefined', async () => {
     const fs = new MemoryFileSystem({ rootDir: '/repo' });
