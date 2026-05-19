@@ -116,6 +116,10 @@ describe('posixPolicy', () => {
     expect(posixPolicy.normalizeForCompare('/Users/Foo')).toBe('/Users/Foo');
   });
 
+  it('Given a path that looks like a Windows extended-length prefix, When normalizeForCompare runs on POSIX, Then the prefix is preserved (POSIX is identity)', () => {
+    expect(posixPolicy.normalizeForCompare('\\\\?\\C:\\Users\\Foo')).toBe('\\\\?\\C:\\Users\\Foo');
+  });
+
   it('Given an absolute POSIX path, When rootOf is called, Then returns "/"', () => {
     expect(posixPolicy.rootOf('/foo/bar')).toBe('/');
   });
@@ -132,6 +136,22 @@ describe('windowsPolicy', () => {
 
   it('Given mixed-case input, When normalizeForCompare runs, Then returns lowercased string', () => {
     expect(windowsPolicy.normalizeForCompare('C:\\Users\\Foo')).toBe('c:\\users\\foo');
+  });
+
+  it('Given an extended-length `\\\\?\\` drive path, When normalizeForCompare runs, Then the prefix is stripped before lowercasing', () => {
+    expect(windowsPolicy.normalizeForCompare('\\\\?\\C:\\Users\\Foo')).toBe('c:\\users\\foo');
+  });
+
+  it('Given an extended-length UNC `\\\\?\\UNC\\` path, When normalizeForCompare runs, Then the UNC prefix collapses to `\\\\server\\share\\…`', () => {
+    expect(windowsPolicy.normalizeForCompare('\\\\?\\UNC\\server\\share\\file.bin')).toBe(
+      '\\\\server\\share\\file.bin',
+    );
+  });
+
+  it('Given a plain UNC path (no extended-length prefix), When normalizeForCompare runs, Then it lowercases without stripping anything', () => {
+    expect(windowsPolicy.normalizeForCompare('\\\\Server\\Share\\file.bin')).toBe(
+      '\\\\server\\share\\file.bin',
+    );
   });
 
   it('Given a Windows drive-letter path, When rootOf is called, Then returns the drive prefix with trailing separator', () => {
