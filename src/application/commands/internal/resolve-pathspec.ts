@@ -9,11 +9,14 @@ import { validatePath } from './working-tree.js';
 
 // Pathspec patterns are compiled to RegExp. Globs containing many `**`
 // tokens or thousands of `*` characters yield regexes whose worst-case
-// matching cost grows quadratically. Cap raw pattern length AND the
-// number of `**` tokens per pattern to keep compilation + matching
-// linear in the path length.
+// matching cost grows quadratically. Cap raw pattern byte length AND
+// the number of `**` tokens per pattern to keep compilation + matching
+// linear in the path length. The byte cap measures UTF-8 encoded
+// bytes (not UTF-16 code units) so non-ASCII patterns are bounded by
+// their on-the-wire size.
 const MAX_PATHSPEC_PATTERN_BYTES = 256;
 const MAX_DOUBLE_STAR_PER_PATTERN = 4;
+const PATTERN_ENCODER = new TextEncoder();
 
 export interface ResolvedPathspec {
   /** The compiled matcher, ready for `matchesPathspec`. */
@@ -45,7 +48,7 @@ export const resolvePathspec = (patterns: ReadonlyArray<string>): ResolvedPathsp
 };
 
 const enforcePatternBudget = (pattern: string): void => {
-  if (pattern.length > MAX_PATHSPEC_PATTERN_BYTES) {
+  if (PATTERN_ENCODER.encode(pattern).byteLength > MAX_PATHSPEC_PATTERN_BYTES) {
     throw invalidOption('paths', `pattern exceeds max length ${MAX_PATHSPEC_PATTERN_BYTES} bytes`);
   }
   if (countDoubleStars(pattern) > MAX_DOUBLE_STAR_PER_PATTERN) {

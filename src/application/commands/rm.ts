@@ -6,20 +6,19 @@ import { matchesPathspec } from '../../domain/pathspec/index.js';
 import type { Context } from '../../ports/context.js';
 import { readIndex } from '../primitives/read-index.js';
 import { acquireIndexLock } from './internal/index-update.js';
+import {
+  assertNoPendingOperation,
+  assertNotBare,
+  assertRepository,
+} from './internal/repo-state.js';
 import { enforceLiteralMustMatch, resolvePathspec } from './internal/resolve-pathspec.js';
+import { removeFile } from './internal/working-tree.js';
 
 const INDEX_MISSING_CODES = new Set([
   'FILE_NOT_FOUND',
   'INVALID_INDEX_HEADER',
   'INVALID_INDEX_ENTRY',
 ]);
-
-import {
-  assertNoPendingOperation,
-  assertNotBare,
-  assertRepository,
-} from './internal/repo-state.js';
-import { removeFile } from './internal/working-tree.js';
 
 export interface RmOptions {
   readonly cached?: boolean;
