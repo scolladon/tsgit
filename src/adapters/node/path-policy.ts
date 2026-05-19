@@ -76,23 +76,6 @@ export const narrowSep = (sep: string): '\\' | '/' => {
   return sep;
 };
 
-/**
- * Strip Windows extended-length prefixes (`\\?\C:\…`) and UNC variants
- * (`\\?\UNC\server\share\…`) so containment comparisons see a single
- * canonical form. POSIX paths pass through unchanged.
- *
- * Without this strip a path supplied as `\\?\C:\Users\Foo` compared
- * against `C:\Users` would fail the prefix check spuriously — the same
- * disk location is reachable via either spelling.
- *
- * @internal
- */
-const stripWinExtendedPrefix = (p: string): string => {
-  if (p.startsWith('\\\\?\\UNC\\')) return `\\\\${p.slice(8)}`;
-  if (p.startsWith('\\\\?\\')) return p.slice(4);
-  return p;
-};
-
 const makePolicy = (impl: PathPolicySource, caseInsensitive: boolean): PathPolicy => ({
   sep: narrowSep(impl.sep),
   caseInsensitive,
@@ -102,8 +85,7 @@ const makePolicy = (impl: PathPolicySource, caseInsensitive: boolean): PathPolic
   dirname: (path: string) => impl.dirname(path),
   basename: (path: string) => impl.basename(path),
   rootOf: (path: string) => impl.parse(path).root,
-  normalizeForCompare: (path: string) =>
-    caseInsensitive ? stripWinExtendedPrefix(path).toLowerCase() : path,
+  normalizeForCompare: (path: string) => (caseInsensitive ? path.toLowerCase() : path),
 });
 
 export const posixPolicy: PathPolicy = makePolicy(nodePath.posix, false);
