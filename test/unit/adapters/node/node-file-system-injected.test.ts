@@ -190,6 +190,62 @@ describe('NodeFileSystem — openWithNoFollow Windows symlink refusal (DI)', () 
     expect((caught as InstanceType<typeof TsgitError>).data.code).toBe('PERMISSION_DENIED');
   });
 
+  it('Given Windows host, When lstat throws ENOENT (TOCTOU) and open succeeds, Then openWithNoFollow returns the handle (isSymlinkLeaf ENOENT must return false, NOT true)', async () => {
+    // Arrange — distinguishes the `isSymlinkLeaf` ENOENT-return mutant.
+    // Mutating `return false` to `return true` would cause the upfront
+    // line 435 check to throw `permissionDenied` before open runs. With
+    // open succeeding, only the unmutated path returns a usable handle.
+    const root = 'C:\\canonical\\win-lstat-race-open-ok';
+    const file = 'C:\\canonical\\win-lstat-race-open-ok\\survivor';
+    const fakeHandle = { close: vi.fn().mockResolvedValue(undefined) };
+    const fsOps = fakeFsOps({
+      realpath: vi.fn().mockImplementation(async (input: string) => input),
+      lstat: vi.fn().mockRejectedValue(enoent()),
+      open: vi.fn().mockResolvedValue(fakeHandle),
+    });
+    const sut = new NodeFileSystem(root, windowsPolicy, fsOps);
+
+    // Act
+    const handle = await sut.openWithNoFollow(file, 'read');
+    await handle.close();
+
+    // Assert — open was reached and a handle was returned. A mutant that
+    // flipped `return false` to `return true` in isSymlinkLeaf's ENOENT
+    // arm would have thrown `permissionDenied` upfront.
+    expect(fsOps.open).toHaveBeenCalledTimes(1);
+    expect(fakeHandle.close).toHaveBeenCalledTimes(1);
+  });
+
+  it('Given Windows host, regular file, When open rejects with EISDIR (mapErrno → UNSUPPORTED_OPERATION), Then the catch-block discriminator rewraps to PERMISSION_DENIED', async () => {
+    // Arrange — distinguishes the `isWindowsSymlinkRefusal` rewrap path.
+    // With the unmutated discriminator, an UNSUPPORTED_OPERATION
+    // mapped error gets rewrapped to PERMISSION_DENIED. A mutation that
+    // skips the rewrap (`if (false)`, emptied block, hard-coded
+    // `isSymlinkLeaf=false`) would surface UNSUPPORTED_OPERATION instead.
+    const eisdir = (): NodeJS.ErrnoException =>
+      Object.assign(new Error('is a directory'), { code: 'EISDIR' });
+    const root = 'C:\\canonical\\win-rewrap';
+    const file = 'C:\\canonical\\win-rewrap\\target';
+    const fsOps = fakeFsOps({
+      realpath: vi.fn().mockImplementation(async (input: string) => input),
+      lstat: vi.fn().mockResolvedValue({ isSymbolicLink: () => false }),
+      open: vi.fn().mockRejectedValue(eisdir()),
+    });
+    const sut = new NodeFileSystem(root, windowsPolicy, fsOps);
+
+    // Act
+    let caught: unknown;
+    try {
+      await sut.openWithNoFollow(file, 'read');
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert
+    expect(caught).toBeInstanceOf(TsgitError);
+    expect((caught as InstanceType<typeof TsgitError>).data.code).toBe('PERMISSION_DENIED');
+  });
+
   it('Given POSIX host, symlink leaf, When open rejects with ELOOP, Then openWithNoFollow throws PERMISSION_DENIED (via mapErrno)', async () => {
     // Arrange
     const root = '/canonical/posix-symlink';
@@ -803,5 +859,45 @@ describe('NodeFileSystem — TsgitError rethrow defence (DI)', () => {
 
     // Assert
     expect(caught).toBe(sentinel);
+  });
+});
+
+describe('NodeFileSystem.rmRecursive — option-shape pin (DI)', () => {
+  const fileStat = {
+    ctimeMs: BigInt(0),
+    mtimeMs: BigInt(0),
+    dev: BigInt(0),
+    ino: BigInt(0),
+    mode: BigInt(0o100644),
+    uid: BigInt(0),
+    gid: BigInt(0),
+    size: BigInt(0),
+    isFile: () => true,
+    isDirectory: () => false,
+    isSymbolicLink: () => false,
+  };
+
+  it('Given rmRecursive on a single regular file, When the leaf is removed, Then `fs.rm` is called with `{ force: true }` (TOCTOU mid-walk tolerance)', async () => {
+    // Arrange — pins the `{ force: true }` option on rmRecursive's leaf
+    // removal (node-file-system.ts:482). The flag matters because Node's
+    // `fs.rm` would otherwise throw ENOENT on a mid-walk TOCTOU delete;
+    // the option-shape assertion catches BooleanLiteral/ObjectLiteral
+    // mutants that strip or flip the flag.
+    const rootDir = '/root';
+    const target = '/root/file.txt';
+    const fsOps = fakeFsOps({
+      realpath: vi.fn().mockImplementation(async (input: string) => input),
+      lstat: vi.fn().mockResolvedValue(fileStat),
+      rm: vi.fn().mockResolvedValue(undefined),
+    });
+    const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+
+    // Act
+    await sut.rmRecursive(target);
+
+    // Assert — Node's fs.rm receives the exact option object the source
+    // emits. A mutant that strips the `force` key, or flips it to false,
+    // would fail this match.
+    expect(fsOps.rm).toHaveBeenCalledWith(target, { force: true });
   });
 });
