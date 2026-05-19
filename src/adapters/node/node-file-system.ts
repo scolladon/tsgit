@@ -75,10 +75,26 @@ export function pathContains(
   child: string,
   policy: PathPolicy = nativePolicy,
 ): boolean {
-  const p = policy.normalizeForCompare(parent);
+  return pathContainsNormalized(policy.normalizeForCompare(parent), child, policy);
+}
+
+/**
+ * Same predicate as `pathContains`, but the caller has already normalised
+ * `parent` once and is willing to keep that result. Saves the per-call
+ * `policy.normalizeForCompare(parent)` allocation when `parent` is a value
+ * the caller holds constant — typically the adapter's `rootDir` /
+ * `canonicalRoot` on the containment hot path.
+ *
+ * @internal
+ */
+export function pathContainsNormalized(
+  normalizedParent: string,
+  child: string,
+  policy: PathPolicy = nativePolicy,
+): boolean {
   const c = policy.normalizeForCompare(child);
-  if (c === p) return true;
-  return c.startsWith(p + policy.sep);
+  if (c === normalizedParent) return true;
+  return c.startsWith(normalizedParent + policy.sep);
 }
 
 /** @internal */
@@ -257,6 +273,23 @@ export class NodeFileSystem implements FileSystem {
    */
   private canonicalRootPromise: Promise<string> | undefined = undefined;
 
+  /**
+   * Memoised result of `pathPolicy.normalizeForCompare(rootDir)`. The
+   * rootDir is `readonly` for the adapter's lifetime, so a single
+   * normalisation is amortised across every containment check.
+   */
+  private normalizedRootDir: string | undefined = undefined;
+
+  /**
+   * Memoised result of `pathPolicy.normalizeForCompare(canonicalRoot)`.
+   * Tracked alongside the canonical-root promise: when the promise
+   * resolves we cache the normalised form once. The promise's
+   * rejection-clears-cache rule means a transient ENOENT also clears
+   * this field (so the next call re-normalises against the retried
+   * canonical root).
+   */
+  private normalizedCanonicalRoot: string | undefined = undefined;
+
   constructor(
     rootDir: string,
     pathPolicy: PathPolicy = nativePolicy,
@@ -267,12 +300,26 @@ export class NodeFileSystem implements FileSystem {
     this.fsOps = fsOps;
   }
 
+  private getNormalizedRootDir(): string {
+    if (this.normalizedRootDir === undefined) {
+      this.normalizedRootDir = this.pathPolicy.normalizeForCompare(this.rootDir);
+    }
+    return this.normalizedRootDir;
+  }
+
   private async getCanonicalRoot(): Promise<string> {
     if (this.canonicalRootPromise === undefined) {
-      this.canonicalRootPromise = this.fsOps.realpath(this.rootDir).catch((err: unknown) => {
-        this.canonicalRootPromise = undefined;
-        throw err;
-      });
+      this.canonicalRootPromise = this.fsOps
+        .realpath(this.rootDir)
+        .then((canonical) => {
+          this.normalizedCanonicalRoot = this.pathPolicy.normalizeForCompare(canonical);
+          return canonical;
+        })
+        .catch((err: unknown) => {
+          this.canonicalRootPromise = undefined;
+          this.normalizedCanonicalRoot = undefined;
+          throw err;
+        });
     }
     return this.canonicalRootPromise;
   }
@@ -335,13 +382,17 @@ export class NodeFileSystem implements FileSystem {
   };
 
   exists = async (path: string): Promise<boolean> => {
-    const resolved = this.pathPolicy.resolve(toAbsolute(path, this.rootDir, this.pathPolicy));
+    const abs = toAbsolute(path, this.rootDir, this.pathPolicy);
+    const resolved = containsRelativeSegment(abs) ? this.pathPolicy.resolve(abs) : abs;
     const canonicalRoot = await this.getCanonicalRoot();
+    const normalizedRoot = this.getNormalizedRootDir();
+    const normalizedCanonical =
+      this.normalizedCanonicalRoot ?? this.pathPolicy.normalizeForCompare(canonicalRoot);
     try {
       // Post-realpath check is the security gate against symlink escapes
       // and 8.3 short-name aliasing.
       const real = await this.fsOps.realpath(resolved);
-      if (!pathContains(canonicalRoot, real, this.pathPolicy)) {
+      if (!pathContainsNormalized(normalizedCanonical, real, this.pathPolicy)) {
         throw permissionDenied(path);
       }
       return true;
@@ -354,8 +405,8 @@ export class NodeFileSystem implements FileSystem {
         // callers can pass paths in either form when rootDir's parent is
         // 8.3-shortened on Windows.
         if (
-          !pathContains(this.rootDir, resolved, this.pathPolicy) &&
-          !pathContains(canonicalRoot, resolved, this.pathPolicy)
+          !pathContainsNormalized(normalizedRoot, resolved, this.pathPolicy) &&
+          !pathContainsNormalized(normalizedCanonical, resolved, this.pathPolicy)
         ) {
           throw permissionDenied(path);
         }
@@ -568,10 +619,18 @@ export class NodeFileSystem implements FileSystem {
     // produced by `realpath` after short-name expansion). Without the
     // OR, a Windows user passing a short-name input would hit the pre-resolve
     // check against the canonical long-name root and fail spuriously.
+    //
+    // Both parents are constant for the call's lifetime; we hold their
+    // normalised forms as instance fields so the case-fold allocation on
+    // the hot path runs once per parent rather than once per containment
+    // check.
+    const normalizedRoot = this.getNormalizedRootDir();
+    const normalizedCanonical =
+      this.normalizedCanonicalRoot ?? this.pathPolicy.normalizeForCompare(canonicalRoot);
     const check = (abs: string): void => {
       if (
-        !pathContains(this.rootDir, abs, this.pathPolicy) &&
-        !pathContains(canonicalRoot, abs, this.pathPolicy)
+        !pathContainsNormalized(normalizedRoot, abs, this.pathPolicy) &&
+        !pathContainsNormalized(normalizedCanonical, abs, this.pathPolicy)
       ) {
         throw permissionDenied(path);
       }

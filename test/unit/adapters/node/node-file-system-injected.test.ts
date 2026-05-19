@@ -54,6 +54,37 @@ const fakeFsOps = (overrides: Partial<FsOperations> = {}): FsOperations =>
     ...overrides,
   }) as unknown as FsOperations;
 
+describe('NodeFileSystem — normalised-root cache (DI)', () => {
+  it('Given many containment-checking calls, When fired in sequence, Then policy.normalizeForCompare runs at most once per constant parent', async () => {
+    // Arrange — wrap the policy's normalizeForCompare in a spy. The cache
+    // memoises the rootDir + canonical-root forms across all calls, so
+    // across N exists() invocations the parents normalise exactly twice
+    // (rootDir + canonicalRoot), regardless of N.
+    const rootDir = 'C:\\Canonical\\Root';
+    const normalizeSpy = vi.fn((p: string) => p.toLowerCase());
+    const spyPolicy = { ...windowsPolicy, normalizeForCompare: normalizeSpy };
+    const fsOps = fakeFsOps({
+      realpath: vi.fn().mockImplementation(async (input: string) => input),
+    });
+    const sut = new NodeFileSystem(rootDir, spyPolicy, fsOps);
+
+    // Act — 10 exists() calls; each one normalises only the child.
+    for (let i = 0; i < 10; i++) {
+      await sut.exists(`${rootDir}\\file-${i}.bin`);
+    }
+
+    // Assert — calls split into two groups:
+    //   - Constant parents (rootDir + canonicalRoot) normalised exactly 2 times.
+    //   - Each child path normalised by both the post-realpath check and
+    //     (for the ENOENT-free happy path) once more. Tolerate ≤ 3 calls per
+    //     child but pin the parent count strictly.
+    const parentCalls = normalizeSpy.mock.calls.filter(
+      ([arg]: readonly unknown[]) => arg === rootDir,
+    );
+    expect(parentCalls.length).toBe(2);
+  });
+});
+
 describe('NodeFileSystem — canonical-root cache (DI)', () => {
   it('Given two sequential `exists` calls, When the second runs, Then realpath(rootDir) is invoked at most once for the root', async () => {
     // Arrange
