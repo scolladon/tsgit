@@ -176,6 +176,8 @@
     "test": "wireit",
     "test:unit": "wireit",
     "test:integration": "wireit",
+    "test:posix-integration": "wireit",
+    "test:win-integration": "wireit",
     "test:e2e": "wireit",
     "test:coverage": "wireit",
     "test:mutation": "wireit",
@@ -309,6 +311,30 @@
       "files": [
         "src/**/*.ts",
         "test/integration/**/*.ts",
+        "vitest.config.ts"
+      ],
+      "output": []
+    },
+    "test:posix-integration": {
+      "command": "vitest run --project posix-integration",
+      "dependencies": [
+        "check:types"
+      ],
+      "files": [
+        "src/**/*.ts",
+        "test/integration/posix-only/**/*.ts",
+        "vitest.config.ts"
+      ],
+      "output": []
+    },
+    "test:win-integration": {
+      "command": "vitest run --project win-integration",
+      "dependencies": [
+        "check:types"
+      ],
+      "files": [
+        "src/**/*.ts",
+        "test/integration/win-only/**/*.ts",
         "vitest.config.ts"
       ],
       "output": []
@@ -504,7 +530,7 @@
   "lint-staged": {
     "*.ts": [
       "biome check --write",
-      "vitest related --run"
+      "vitest related --run --project unit"
     ]
   },
   "devDependencies": {

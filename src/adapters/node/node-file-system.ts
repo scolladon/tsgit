@@ -1,5 +1,5 @@
 import * as fs from 'node:fs';
-import * as fsPromises from 'node:fs/promises';
+import type * as fsPromises from 'node:fs/promises';
 import {
   fileExists,
   fileNotFound,
@@ -9,6 +9,8 @@ import {
   unsupportedOperation,
 } from '../../domain/index.js';
 import type { DirEntry, FileHandle, FileStat, FileSystem } from '../../ports/file-system.js';
+import type { FsOperations } from './fs-operations.js';
+import { realFsOps } from './fs-operations.js';
 import type { PathPolicy } from './path-policy.js';
 import { nativePolicy } from './path-policy.js';
 
@@ -107,15 +109,10 @@ export async function runFs<T>(op: () => Promise<T>, path: string): Promise<T> {
   }
 }
 
-/**
- * Resolves `absolute` by walking up until a realpath call succeeds, then reattaches
- * any non-existent tail. The loop's final candidate is the filesystem root (`/`),
- * which always resolves, guaranteeing a return.
- * @internal
- */
 export async function realpathNearestExisting(
   absolute: string,
   policy: PathPolicy = nativePolicy,
+  fsOps: FsOperations = realFsOps,
 ): Promise<string> {
   // `policy.rootOf` returns the platform-correct root prefix: `/` on POSIX,
   // `'C:\\'` (or `'\\\\server\\share\\'`) on Windows. The previous
@@ -127,7 +124,7 @@ export async function realpathNearestExisting(
   for (let i = segments.length; i > 0; i--) {
     const candidate = root + segments.slice(0, i).join(policy.sep);
     try {
-      const real = await fsPromises.realpath(candidate);
+      const real = await fsOps.realpath(candidate);
       const remaining = segments.slice(i).join(policy.sep);
       // equivalent-mutant: relaxing `remaining.length > 0` to `>= 0` keeps the
       // join branch, and `policy.join(real, '')` returns `real` — so both
@@ -139,7 +136,7 @@ export async function realpathNearestExisting(
     }
   }
   // All segments were non-existent; anchor at the (always-resolvable) root.
-  const realRoot = await fsPromises.realpath(root);
+  const realRoot = await fsOps.realpath(root);
   // equivalent-mutant: relaxing `segments.length > 0` to `>= 0` keeps the join
   // branch — and `policy.join(realRoot, '')` returns `realRoot`, so the empty
   // segments case still returns the same value as the explicit `: realRoot` arm.
@@ -234,6 +231,8 @@ export class NodeFileSystem implements FileSystem {
 
   private readonly pathPolicy: PathPolicy;
 
+  private readonly fsOps: FsOperations;
+
   /**
    * Lazy long-name canonicalisation of `rootDir` for containment checks.
    * Promise so concurrent first calls share one `realpath`; cleared on
@@ -241,14 +240,19 @@ export class NodeFileSystem implements FileSystem {
    */
   private canonicalRootPromise: Promise<string> | undefined = undefined;
 
-  constructor(rootDir: string, pathPolicy: PathPolicy = nativePolicy) {
+  constructor(
+    rootDir: string,
+    pathPolicy: PathPolicy = nativePolicy,
+    fsOps: FsOperations = realFsOps,
+  ) {
     this.rootDir = rootDir;
     this.pathPolicy = pathPolicy;
+    this.fsOps = fsOps;
   }
 
   private async getCanonicalRoot(): Promise<string> {
     if (this.canonicalRootPromise === undefined) {
-      this.canonicalRootPromise = fsPromises.realpath(this.rootDir).catch((err: unknown) => {
+      this.canonicalRootPromise = this.fsOps.realpath(this.rootDir).catch((err: unknown) => {
         this.canonicalRootPromise = undefined;
         throw err;
       });
@@ -258,7 +262,7 @@ export class NodeFileSystem implements FileSystem {
 
   read = async (path: string): Promise<Uint8Array> => {
     const real = await this.checkContainment(path, 'read');
-    return runFs(async () => new Uint8Array(await fsPromises.readFile(real)), path);
+    return runFs(async () => new Uint8Array(await this.fsOps.readFile(real)), path);
   };
 
   readSlice = async (path: string, offset: number, length: number): Promise<Uint8Array> => {
@@ -267,7 +271,7 @@ export class NodeFileSystem implements FileSystem {
     let handle: fsPromises.FileHandle | undefined;
     try {
       return await runFs(async () => {
-        handle = await fsPromises.open(real, 'r');
+        handle = await this.fsOps.open(real, 'r');
         const buf = Buffer.alloc(length);
         const { bytesRead } = await handle.read(buf, 0, length, offset);
         return Uint8Array.from(buf.subarray(0, bytesRead));
@@ -286,30 +290,30 @@ export class NodeFileSystem implements FileSystem {
 
   readUtf8 = async (path: string): Promise<string> => {
     const real = await this.checkContainment(path, 'read');
-    return runFs(() => fsPromises.readFile(real, 'utf-8'), path);
+    return runFs(() => this.fsOps.readFile(real, 'utf-8'), path);
   };
 
   write = async (path: string, data: Uint8Array): Promise<void> => {
     const real = await this.checkContainment(path, 'creation');
     await runFs(async () => {
-      await fsPromises.mkdir(this.pathPolicy.dirname(real), { recursive: true });
-      await fsPromises.writeFile(real, data);
+      await this.fsOps.mkdir(this.pathPolicy.dirname(real), { recursive: true });
+      await this.fsOps.writeFile(real, data);
     }, path);
   };
 
   writeExclusive = async (path: string, data: Uint8Array): Promise<void> => {
     const real = await this.checkContainment(path, 'creation');
     await runFs(async () => {
-      await fsPromises.mkdir(this.pathPolicy.dirname(real), { recursive: true });
-      await fsPromises.writeFile(real, data, { flag: 'wx' });
+      await this.fsOps.mkdir(this.pathPolicy.dirname(real), { recursive: true });
+      await this.fsOps.writeFile(real, data, { flag: 'wx' });
     }, path);
   };
 
   writeUtf8 = async (path: string, content: string): Promise<void> => {
     const real = await this.checkContainment(path, 'creation');
     await runFs(async () => {
-      await fsPromises.mkdir(this.pathPolicy.dirname(real), { recursive: true });
-      await fsPromises.writeFile(real, content, 'utf-8');
+      await this.fsOps.mkdir(this.pathPolicy.dirname(real), { recursive: true });
+      await this.fsOps.writeFile(real, content, 'utf-8');
     }, path);
   };
 
@@ -319,7 +323,7 @@ export class NodeFileSystem implements FileSystem {
     try {
       // Post-realpath check is the security gate against symlink escapes
       // and 8.3 short-name aliasing. Phase 14.4.
-      const real = await fsPromises.realpath(resolved);
+      const real = await this.fsOps.realpath(resolved);
       if (!pathContains(canonicalRoot, real, this.pathPolicy)) {
         throw permissionDenied(path);
       }
@@ -347,18 +351,18 @@ export class NodeFileSystem implements FileSystem {
 
   stat = async (path: string): Promise<FileStat> => {
     const real = await this.checkContainment(path, 'read');
-    return runFs(async () => mapStat(await fsPromises.stat(real, { bigint: true })), path);
+    return runFs(async () => mapStat(await this.fsOps.stat(real, { bigint: true })), path);
   };
 
   lstat = async (path: string): Promise<FileStat> => {
     const real = await this.checkContainment(path, 'lstat');
-    return runFs(async () => mapStat(await fsPromises.lstat(real, { bigint: true })), path);
+    return runFs(async () => mapStat(await this.fsOps.lstat(real, { bigint: true })), path);
   };
 
   readdir = async (path: string): Promise<ReadonlyArray<DirEntry>> => {
     const real = await this.checkContainment(path, 'read');
     return runFs(async () => {
-      const entries = await fsPromises.readdir(real, { withFileTypes: true });
+      const entries = await this.fsOps.readdir(real, { withFileTypes: true });
       return entries.map((entry) => ({
         name: entry.name,
         isFile: entry.isFile(),
@@ -370,39 +374,39 @@ export class NodeFileSystem implements FileSystem {
 
   mkdir = async (path: string): Promise<void> => {
     const real = await this.checkContainment(path, 'creation');
-    await runFs(() => fsPromises.mkdir(real, { recursive: true }), path);
+    await runFs(() => this.fsOps.mkdir(real, { recursive: true }), path);
   };
 
   rm = async (path: string): Promise<void> => {
     const real = await this.checkContainment(path, 'read');
-    await runFs(() => fsPromises.rm(real), path);
+    await runFs(() => this.fsOps.rm(real), path);
   };
 
   rename = async (src: string, dst: string): Promise<void> => {
     const realSrc = await this.checkContainment(src, 'read');
     const realDst = await this.checkContainment(dst, 'creation');
     await runFs(async () => {
-      await fsPromises.mkdir(this.pathPolicy.dirname(realDst), { recursive: true });
-      await fsPromises.rename(realSrc, realDst);
+      await this.fsOps.mkdir(this.pathPolicy.dirname(realDst), { recursive: true });
+      await this.fsOps.rename(realSrc, realDst);
     }, src);
   };
 
   readlink = async (path: string): Promise<string> => {
     const real = await this.checkContainment(path, 'lstat');
-    return runFs(() => fsPromises.readlink(real), path);
+    return runFs(() => this.fsOps.readlink(real), path);
   };
 
   symlink = async (target: string, path: string): Promise<void> => {
     const real = await this.checkContainment(path, 'creation');
     await runFs(async () => {
-      await fsPromises.mkdir(this.pathPolicy.dirname(real), { recursive: true });
-      await fsPromises.symlink(target, real);
+      await this.fsOps.mkdir(this.pathPolicy.dirname(real), { recursive: true });
+      await this.fsOps.symlink(target, real);
     }, path);
   };
 
   chmod = async (path: string, mode: number): Promise<void> => {
     const real = await this.checkContainment(path, 'read');
-    await runFs(() => fsPromises.chmod(real, mode), path);
+    await runFs(() => this.fsOps.chmod(real, mode), path);
   };
 
   rmRecursive = async (path: string): Promise<void> => {
@@ -434,7 +438,7 @@ export class NodeFileSystem implements FileSystem {
 
     const flag = mode === 'write' ? fs.constants.O_WRONLY : fs.constants.O_RDONLY;
     const handle = await runFs(
-      () => fsPromises.open(real, flag | fs.constants.O_NOFOLLOW),
+      () => this.fsOps.open(real, flag | fs.constants.O_NOFOLLOW),
       path,
     ).catch((err: unknown) => {
       // Defensive: if a symlink slips past the upfront check (TOCTOU between
@@ -457,7 +461,7 @@ export class NodeFileSystem implements FileSystem {
     // `node-file-system-containment.test.ts` (via `windowsPolicy`) cover
     // both arms.
     try {
-      const stat = await fsPromises.lstat(real);
+      const stat = await this.fsOps.lstat(real);
       return stat.isSymbolicLink();
     } catch (err) {
       // TOCTOU: the leaf may have been removed between checkContainment's
@@ -472,21 +476,21 @@ export class NodeFileSystem implements FileSystem {
   private async removeTree(real: string, originalPath: string): Promise<void> {
     // Caller (rmRecursive) verified the leaf exists; on TOCTOU mid-walk a missing child
     // would surface as FILE_NOT_FOUND through runFs, which is acceptable behavior.
-    const leafStat = await runFs(() => fsPromises.lstat(real), originalPath);
+    const leafStat = await runFs(() => this.fsOps.lstat(real), originalPath);
     if (!leafStat.isDirectory() || leafStat.isSymbolicLink()) {
       // Symlink leaf or regular file: remove the entry itself; do NOT follow it.
-      await runFs(() => fsPromises.rm(real, { force: true }), originalPath);
+      await runFs(() => this.fsOps.rm(real, { force: true }), originalPath);
       return;
     }
     const entries = await runFs(
-      () => fsPromises.readdir(real, { withFileTypes: true }),
+      () => this.fsOps.readdir(real, { withFileTypes: true }),
       originalPath,
     );
     for (const entry of entries) {
       const child = this.pathPolicy.join(real, entry.name);
       await this.removeTree(child, originalPath);
     }
-    await runFs(() => fsPromises.rmdir(real), originalPath);
+    await runFs(() => this.fsOps.rmdir(real), originalPath);
   }
 
   private async resolveForCreation(path: string, resolved: string): Promise<string> {
@@ -496,7 +500,7 @@ export class NodeFileSystem implements FileSystem {
     const real = await realpathNearestExisting(resolved, this.pathPolicy);
     let lstatResult: { ok: true; isSymlink: boolean } | { ok: false; err: unknown };
     try {
-      const leafStat = await fsPromises.lstat(real);
+      const leafStat = await this.fsOps.lstat(real);
       lstatResult = { ok: true, isSymlink: leafStat.isSymbolicLink() };
     } catch (err) {
       lstatResult = { ok: false, err };
@@ -513,10 +517,10 @@ export class NodeFileSystem implements FileSystem {
   ): Promise<string> {
     if (mode === 'read') {
       check(resolved);
-      return fsPromises.realpath(resolved);
+      return this.fsOps.realpath(resolved);
     }
     if (mode === 'lstat') {
-      const parent = await fsPromises.realpath(this.pathPolicy.dirname(resolved));
+      const parent = await this.fsOps.realpath(this.pathPolicy.dirname(resolved));
       return this.pathPolicy.join(parent, this.pathPolicy.basename(resolved));
     }
     return this.resolveForCreation(path, resolved);

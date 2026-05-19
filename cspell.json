@@ -135,6 +135,7 @@
     "ENOTFOUND",
     "EACCES",
     "eacces",
+    "lockdown",
     "EPERM",
     "ELOOP",
     "EMFILE",

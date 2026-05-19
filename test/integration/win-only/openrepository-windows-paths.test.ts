@@ -1,10 +1,13 @@
 /**
- * Windows-specific path handling. Skipped on non-Windows runners.
+ * Real-Windows integration test for `openRepository`'s path acceptance.
+ * Lives in `test/integration/win-only/` — scheduled by CI only on the
+ * Windows runner via the `win-integration` Vitest project. No `skipIf`
+ * needed: the folder + matrix cell dictate platform.
  *
- * Phase 10's review pass discovered that the original `isAbsolutePath` rejected
- * Windows drive-letter paths (`C:\…`) because it only accepted POSIX `/`-rooted
- * paths. The fix added drive-letter and UNC support; this test asserts the fix
- * holds on a real Windows runner.
+ * Phase 10's review pass discovered that the original `isAbsolutePath`
+ * rejected Windows drive-letter paths (`C:\…`) because it only accepted
+ * POSIX `/`-rooted paths. The fix added drive-letter and UNC support;
+ * this test asserts the fix holds on a real Windows runner.
  */
 import { mkdtemp, rm } from 'node:fs/promises';
 import * as os from 'node:os';
@@ -14,7 +17,7 @@ import { describe, expect, it } from 'vitest';
 
 import { openRepository } from '../../../src/index.node.js';
 
-describe.skipIf(process.platform !== 'win32')('Windows path handling', () => {
+describe('openRepository — Windows path handling', () => {
   it('Given a drive-letter cwd produced by nodePath.resolve, When openRepository runs, Then it does NOT throw INVALID_OPTION', async () => {
     // Arrange — mkdtemp on Windows returns a `C:\Users\…\tsgit-it-xxxx` path.
     const cwd = await mkdtemp(path.join(os.tmpdir(), 'tsgit-it-'));

@@ -123,8 +123,9 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
       # Coverage threshold (100%) is enforced on the Linux gate cell only.
-      # Other matrix cells run plain `test:unit` so platform-specific
-      # `it.skipIf` skips don't fail the threshold check (Phase 14.4).
+      # Other matrix cells run plain `test:unit` (cross-platform — no
+      # platform skipIfs after Phase 14.4's PathPolicy + FsOperations DI
+      # refactor).
       - if: matrix.os == 'ubuntu-latest'
         run: npm run test:coverage
       - if: matrix.os != 'ubuntu-latest'
@@ -172,6 +173,41 @@ jobs:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup
       - run: npm run test:integration
+
+  # ──────────────────────────────────────────────
+  # Stage 5b: POSIX-only integration tests
+  # Real-fs POSIX semantics (chmod mode bits, ELOOP/EISDIR errnos,
+  # symlink permissions). The adapter's response to these errnos is
+  # exercised cross-platform in test/unit/ via FsOperations DI; this
+  # job covers the real OS→adapter wiring. Phase 14.4.
+  # ──────────────────────────────────────────────
+
+  posix-integration:
+    needs: [unit-tests]
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      - run: npm run test:posix-integration
+
+  # ──────────────────────────────────────────────
+  # Stage 5c: Windows-only integration tests
+  # Real-fs Windows semantics (8.3 short-name reconciliation, real
+  # mkdtemp paths, openRepository drive-letter acceptance, real Windows
+  # symlinks). Phase 14.4.
+  # ──────────────────────────────────────────────
+
+  win-integration:
+    needs: [unit-tests]
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      - run: npm run test:win-integration
 
   # ──────────────────────────────────────────────
   # Stage 6: E2E / Playwright

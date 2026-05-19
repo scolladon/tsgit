@@ -1,19 +1,16 @@
 /**
- * Real-Windows unit tests for `NodeFileSystem`. Skipped on non-Windows
- * hosts via `describe.skipIf`. These live under `test/unit/` (not
- * `test/integration/`) so they are scheduled on the `unit-tests` matrix
- * cell that includes `windows-latest` — the integration job is
- * Linux-only by ADR-044. Phase 14.4.
+ * Real-Windows integration tests for `NodeFileSystem`. Lives in
+ * `test/integration/win-only/` — scheduled by CI only on the Windows
+ * runner via the `win-integration` Vitest project. No `skipIf` needed:
+ * the folder + matrix cell dictate platform. Phase 14.4.
  */
 import * as fsPromises from 'node:fs/promises';
 import * as os from 'node:os';
 import * as nodePath from 'node:path';
 import { describe, expect, it } from 'vitest';
 
-import { NodeFileSystem } from '../../../../src/adapters/node/node-file-system.js';
-import { TsgitError } from '../../../../src/domain/index.js';
-
-const isWindowsHost = process.platform === 'win32';
+import { NodeFileSystem } from '../../../src/adapters/node/node-file-system.js';
+import { TsgitError } from '../../../src/domain/index.js';
 
 /**
  * Probes whether the runner can create symlinks. `fs.symlink` requires
@@ -21,7 +18,6 @@ const isWindowsHost = process.platform === 'win32';
  * image has developer-mode enabled but we don't bet the suite on it.
  */
 const canCreateSymlinks = async (): Promise<boolean> => {
-  if (!isWindowsHost) return false;
   const probeRoot = await fsPromises.mkdtemp(nodePath.join(os.tmpdir(), 'tsgit-symprobe-'));
   try {
     const target = nodePath.join(probeRoot, 'target.bin');
@@ -38,7 +34,7 @@ const canCreateSymlinks = async (): Promise<boolean> => {
   }
 };
 
-describe.skipIf(!isWindowsHost)('NodeFileSystem — Windows real-runner', () => {
+describe('NodeFileSystem — Windows real-runner', () => {
   it('Given a fresh mkdtemp working tree, When write/read round-trips, Then the canonical-root reconciliation succeeds (8.3 short-name parent)', async () => {
     // Arrange — the GHA Windows runner's TEMP path goes through `RUNNER~1`
     // which is an 8.3 short-name alias of `runneradmin`. mkdtemp gives us a
@@ -61,7 +57,7 @@ describe.skipIf(!isWindowsHost)('NodeFileSystem — Windows real-runner', () => 
   });
 });
 
-describe.skipIf(!isWindowsHost)('NodeFileSystem — Windows symlink refusal', () => {
+describe('NodeFileSystem — Windows symlink refusal', () => {
   it('Given a symlink leaf inside the working tree, When openWithNoFollow is called, Then PERMISSION_DENIED is thrown', async ({
     skip,
   }) => {
