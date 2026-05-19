@@ -421,23 +421,27 @@ export class NodeFileSystem implements FileSystem {
 
   openWithNoFollow = async (path: string, mode: 'read' | 'write'): Promise<FileHandle> => {
     const real = await this.checkContainment(path, 'lstat');
-    // ELOOP flows through `mapErrno` to PERMISSION_DENIED (ADR-043). On
-    // Windows, the symlink-refusal errno is sometimes EACCES/EPERM/EISDIR
-    // (no clean signal in `mapErrno`); pre-lstat the leaf so the post-open
-    // rewrap can be gated on "is the leaf actually a symlink" — a real
-    // EACCES on a regular file MUST surface unchanged.
-    // equivalent-mutant: flipping the `: false` arm to `: true` on the Linux
-    // mutation runner is harmless — `isWindowsSymlinkRefusal` short-circuits
-    // on `!policy.caseInsensitive` so `isSymlinkLeaf` is never read.
-    // Windows-mocked tests (`windowsPolicy`) kill the mutant.
-    const isSymlinkLeaf = this.pathPolicy.caseInsensitive ? await this.isSymlinkLeaf(real) : false;
+    // Windows: `O_NOFOLLOW` is silently ignored by the underlying Win32 API
+    // (Node forwards the flag but CreateFile has no equivalent), so the
+    // kernel follows the symlink and opens the target. We must refuse
+    // upfront when the leaf IS a symlink. ELOOP flows through `mapErrno` to
+    // PERMISSION_DENIED on POSIX (ADR-043); Windows needs the proactive
+    // refusal + the discriminator (for errno-bearing failures like EACCES
+    // on a symlink target inside an inaccessible parent).
+    if (this.pathPolicy.caseInsensitive && (await this.isSymlinkLeaf(real))) {
+      throw permissionDenied(path);
+    }
 
     const flag = mode === 'write' ? fs.constants.O_WRONLY : fs.constants.O_RDONLY;
     const handle = await runFs(
       () => fsPromises.open(real, flag | fs.constants.O_NOFOLLOW),
       path,
     ).catch((err: unknown) => {
-      if (isWindowsSymlinkRefusal(err, isSymlinkLeaf, this.pathPolicy)) {
+      // Defensive: if a symlink slips past the upfront check (TOCTOU between
+      // isSymlinkLeaf and open), the discriminator rewraps any EACCES /
+      // UNSUPPORTED_OPERATION into PERMISSION_DENIED so callers get a
+      // single cross-platform code for symlink refusal.
+      if (isWindowsSymlinkRefusal(err, true, this.pathPolicy)) {
         throw permissionDenied(path);
       }
       throw err;
@@ -446,12 +450,12 @@ export class NodeFileSystem implements FileSystem {
   };
 
   private async isSymlinkLeaf(real: string): Promise<boolean> {
-    // equivalent-mutant: this method is only called on Windows runs
-    // (`isWindowsFn() ? await this.isSymlinkLeaf(real) : false` in
-    // `openWithNoFollow`). On the Linux mutation runner the body is
-    // unreachable, so mutating `false`/`true` returns or stripping the
-    // catch arm produces no observable effect. Windows-mocked tests in
-    // `node-file-system-containment.test.ts` exercise both arms.
+    // equivalent-mutant: this method is only called when
+    // `pathPolicy.caseInsensitive` is true (Windows). On the Linux mutation
+    // runner the body is unreachable, so mutating returns/catch produces
+    // no observable effect. Windows-mocked tests in
+    // `node-file-system-containment.test.ts` (via `windowsPolicy`) cover
+    // both arms.
     try {
       const stat = await fsPromises.lstat(real);
       return stat.isSymbolicLink();
@@ -521,8 +525,17 @@ export class NodeFileSystem implements FileSystem {
   private async checkContainment(path: string, mode: ContainmentMode): Promise<string> {
     const resolved = this.pathPolicy.resolve(toAbsolute(path, this.rootDir, this.pathPolicy));
     const canonicalRoot = await this.getCanonicalRoot();
+    // Containment passes if `abs` is inside EITHER the raw rootDir (which
+    // matches user-supplied paths with the same short-name form as the
+    // constructor argument) OR the canonical rootDir (which matches paths
+    // produced by `realpath` after short-name expansion). Without the
+    // OR, a Windows user passing a short-name input would hit the pre-resolve
+    // check against the canonical long-name root and fail spuriously.
     const check = (abs: string): void => {
-      if (!pathContains(canonicalRoot, abs, this.pathPolicy)) {
+      if (
+        !pathContains(this.rootDir, abs, this.pathPolicy) &&
+        !pathContains(canonicalRoot, abs, this.pathPolicy)
+      ) {
         throw permissionDenied(path);
       }
     };

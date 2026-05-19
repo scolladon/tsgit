@@ -795,31 +795,34 @@ describe('NodeFileSystem', () => {
         await fsPromises.rm(tempRoot, { recursive: true, force: true });
       });
 
-      it('Given realpath rejecting with non-ENOENT errno, When resolving, Then the error is rethrown', async () => {
-        // Arrange — spy on realpath via a proxy invocation is awkward in ESM, so we rely on
-        // intentionally forcing ENOTDIR by putting a file mid-path.
-        const tempRoot = await fsPromises.mkdtemp(nodePath.join(os.tmpdir(), 'tsgit-rne-err-'));
-        const real = await fsPromises.realpath(tempRoot);
-        const blocker = nodePath.join(real, 'block');
-        await fsPromises.writeFile(blocker, '');
-        const impossible = nodePath.join(blocker, 'child', 'leaf.txt');
+      it.skipIf(process.platform === 'win32')(
+        'Given realpath rejecting with non-ENOENT errno, When resolving, Then the error is rethrown',
+        async () => {
+          // Arrange — spy on realpath via a proxy invocation is awkward in ESM, so we rely on
+          // intentionally forcing ENOTDIR by putting a file mid-path.
+          const tempRoot = await fsPromises.mkdtemp(nodePath.join(os.tmpdir(), 'tsgit-rne-err-'));
+          const real = await fsPromises.realpath(tempRoot);
+          const blocker = nodePath.join(real, 'block');
+          await fsPromises.writeFile(blocker, '');
+          const impossible = nodePath.join(blocker, 'child', 'leaf.txt');
 
-        // Act
-        let caught: unknown;
-        try {
-          await realpathNearestExisting(impossible);
-        } catch (err) {
-          caught = err;
-        }
+          // Act
+          let caught: unknown;
+          try {
+            await realpathNearestExisting(impossible);
+          } catch (err) {
+            caught = err;
+          }
 
-        // Assert — ENOTDIR should be rethrown untouched (it's an errno, but not ENOENT)
-        expect(caught).toBeInstanceOf(Error);
-        expect(isErrnoException(caught)).toBe(true);
-        expect((caught as NodeJS.ErrnoException).code).toBe('ENOTDIR');
+          // Assert — ENOTDIR should be rethrown untouched (it's an errno, but not ENOENT)
+          expect(caught).toBeInstanceOf(Error);
+          expect(isErrnoException(caught)).toBe(true);
+          expect((caught as NodeJS.ErrnoException).code).toBe('ENOTDIR');
 
-        // Cleanup
-        await fsPromises.rm(tempRoot, { recursive: true, force: true });
-      });
+          // Cleanup
+          await fsPromises.rm(tempRoot, { recursive: true, force: true });
+        },
+      );
     });
 
     describe('mapStat', () => {
