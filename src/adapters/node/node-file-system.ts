@@ -90,6 +90,11 @@ export function mapErrno(err: NodeJS.ErrnoException, path: string): TsgitError {
       // POSIX errno for symlink-loop / O_NOFOLLOW refusal; Windows surfaces other
       // errnos handled by the `openWithNoFollow` discriminator (ADR-043).
       return permissionDenied(path);
+    case 'EISDIR':
+      // POSIX errno for "is a directory" — surfaces from open(dir, write-flag).
+      // Map to PERMISSION_DENIED so both POSIX and Windows symlink-to-directory
+      // refusals share the same cross-platform code. (§14.5.10)
+      return permissionDenied(path);
     default:
       return unsupportedOperation('filesystem', err.code ?? 'UNKNOWN');
   }

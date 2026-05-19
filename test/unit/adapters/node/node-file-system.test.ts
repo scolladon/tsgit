@@ -448,6 +448,17 @@ describe('NodeFileSystem', () => {
         expect(sut.data.code).toBe('PERMISSION_DENIED');
       });
 
+      it('Given EISDIR, When mapping, Then returns PERMISSION_DENIED (§14.5.10 — open(dir,write) refusal, cross-platform)', () => {
+        // Act
+        const sut = mapErrno(makeErrnoError('EISDIR'), '/some-dir');
+
+        // Assert
+        expect(sut.data.code).toBe('PERMISSION_DENIED');
+        if (sut.data.code === 'PERMISSION_DENIED') {
+          expect(sut.data.path).toBe('/some-dir');
+        }
+      });
+
       it('Given an unknown errno code, When mapping, Then returns UNSUPPORTED_OPERATION with operation="filesystem" and the code as reason', () => {
         // Act
         const sut = mapErrno(makeErrnoError('EOTHER'), '/weird');

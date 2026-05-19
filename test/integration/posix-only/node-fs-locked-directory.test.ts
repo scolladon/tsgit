@@ -73,10 +73,11 @@ describe('NodeFileSystem — POSIX-locked filesystem semantics', () => {
     expect((caught as TsgitError).data.code).toBe('PERMISSION_DENIED');
   });
 
-  it('Given openWithNoFollow with non-ELOOP errno (EISDIR), When opening a directory in write mode, Then propagates as UNSUPPORTED_OPERATION', async () => {
-    // Arrange — open a directory in write mode triggers EISDIR which is NOT
-    // remapped to PERMISSION_DENIED; this exercises the catch-block
-    // re-throw branch.
+  it('Given openWithNoFollow on a directory (EISDIR), When opening in write mode, Then propagates as PERMISSION_DENIED (§14.5.10)', async () => {
+    // Arrange — open a directory in write mode triggers EISDIR. After
+    // §14.5.10 it maps to PERMISSION_DENIED through the dedicated
+    // mapErrno arm, instead of falling through to the default
+    // UNSUPPORTED_OPERATION + Windows-only rewrap chain.
     const sut = env.fs;
     const dir = nodePath.join(env.rootDir, 'just-a-dir');
     await fsPromises.mkdir(dir);
@@ -89,10 +90,8 @@ describe('NodeFileSystem — POSIX-locked filesystem semantics', () => {
       caught = err;
     }
 
-    // Assert — EISDIR maps to UNSUPPORTED_OPERATION (per mapErrno default arm).
-    // Positive assertion needed to kill mutants that would flip the default
-    // mapping to a different sibling error code.
+    // Assert
     expect(caught).toBeInstanceOf(TsgitError);
-    expect((caught as TsgitError).data.code).toBe('UNSUPPORTED_OPERATION');
+    expect((caught as TsgitError).data.code).toBe('PERMISSION_DENIED');
   });
 });
