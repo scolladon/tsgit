@@ -1,6 +1,5 @@
 import * as fs from 'node:fs';
 import * as fsPromises from 'node:fs/promises';
-import * as nodePath from 'node:path';
 import {
   fileExists,
   fileNotFound,
@@ -10,14 +9,18 @@ import {
   unsupportedOperation,
 } from '../../domain/index.js';
 import type { DirEntry, FileHandle, FileStat, FileSystem } from '../../ports/file-system.js';
-import type { PlatformPredicate } from './platform.js';
-import { isWindows } from './platform.js';
+import type { PathPolicy } from './path-policy.js';
+import { nativePolicy } from './path-policy.js';
 
 type ContainmentMode = 'read' | 'lstat' | 'creation';
 
 /** @internal */
-export function toAbsolute(path: string, rootDir: string): string {
-  return nodePath.isAbsolute(path) ? path : nodePath.join(rootDir, path);
+export function toAbsolute(
+  path: string,
+  rootDir: string,
+  policy: PathPolicy = nativePolicy,
+): string {
+  return policy.isAbsolute(path) ? path : policy.join(rootDir, path);
 }
 
 /** @internal */
@@ -38,9 +41,11 @@ export function isErrnoException(err: unknown): err is NodeJS.ErrnoException {
 export function isWindowsSymlinkRefusal(
   err: unknown,
   isSymlinkLeaf: boolean,
-  isWindowsFn: PlatformPredicate = isWindows,
+  policy: PathPolicy = nativePolicy,
 ): boolean {
-  if (!isWindowsFn() || !isSymlinkLeaf) return false;
+  // The discriminator only fires on case-insensitive (Windows) platforms.
+  // POSIX symlink refusal flows through `mapErrno` directly via `ELOOP`.
+  if (!policy.caseInsensitive || !isSymlinkLeaf) return false;
   if (!(err instanceof TsgitError)) return false;
   return err.data.code === 'PERMISSION_DENIED' || err.data.code === 'UNSUPPORTED_OPERATION';
 }
@@ -56,20 +61,12 @@ export function isWindowsSymlinkRefusal(
 export function pathContains(
   parent: string,
   child: string,
-  isWindowsFn: PlatformPredicate = isWindows,
+  policy: PathPolicy = nativePolicy,
 ): boolean {
-  // Hoist the predicate result so a single call to `isWindowsFn()` services
-  // both `normalize` invocations — `pathContains` is on the fs hot path
-  // (every read/write/stat funnels through it).
-  // equivalent-mutant: forcing `windows` to `false` on Windows hosts (or vice
-  // versa) regresses every cross-host test pair; the branch is killed by
-  // complementary tests in node-file-system-containment.test.ts.
-  const windows = isWindowsFn();
-  const normalize = (path: string): string => (windows ? path.toLowerCase() : path);
-  const p = normalize(parent);
-  const c = normalize(child);
+  const p = policy.normalizeForCompare(parent);
+  const c = policy.normalizeForCompare(child);
   if (c === p) return true;
-  return c.startsWith(p + nodePath.sep);
+  return c.startsWith(p + policy.sep);
 }
 
 /** @internal */
@@ -116,23 +113,26 @@ export async function runFs<T>(op: () => Promise<T>, path: string): Promise<T> {
  * which always resolves, guaranteeing a return.
  * @internal
  */
-export async function realpathNearestExisting(absolute: string): Promise<string> {
-  // Use `nodePath.parse` so the root is platform-correct: `/` on POSIX,
-  // `C:\` (or UNC equivalent) on Windows. Previously this function
-  // concatenated `nodePath.sep + segments.join(sep)` which produced
-  // invalid paths like `\C:\Users\…` on Windows.
-  const root = nodePath.parse(absolute).root;
+export async function realpathNearestExisting(
+  absolute: string,
+  policy: PathPolicy = nativePolicy,
+): Promise<string> {
+  // `policy.rootOf` returns the platform-correct root prefix: `/` on POSIX,
+  // `'C:\\'` (or `'\\\\server\\share\\'`) on Windows. The previous
+  // `nodePath.sep + segments.join(sep)` construction produced invalid
+  // `\C:\Users\…` paths on Windows.
+  const root = policy.rootOf(absolute);
   const tail = absolute.slice(root.length);
-  const segments = tail.split(nodePath.sep).filter(Boolean);
+  const segments = tail.split(policy.sep).filter(Boolean);
   for (let i = segments.length; i > 0; i--) {
-    const candidate = root + segments.slice(0, i).join(nodePath.sep);
+    const candidate = root + segments.slice(0, i).join(policy.sep);
     try {
       const real = await fsPromises.realpath(candidate);
-      const remaining = segments.slice(i).join(nodePath.sep);
+      const remaining = segments.slice(i).join(policy.sep);
       // equivalent-mutant: relaxing `remaining.length > 0` to `>= 0` keeps the
-      // join branch, and `nodePath.join(real, '')` returns `real` — so both
+      // join branch, and `policy.join(real, '')` returns `real` — so both
       // branches yield the same path when the remaining tail is empty.
-      return remaining.length > 0 ? nodePath.join(real, remaining) : real;
+      return remaining.length > 0 ? policy.join(real, remaining) : real;
     } catch (err) {
       if (isErrnoException(err) && err.code === 'ENOENT') continue;
       throw err;
@@ -141,9 +141,9 @@ export async function realpathNearestExisting(absolute: string): Promise<string>
   // All segments were non-existent; anchor at the (always-resolvable) root.
   const realRoot = await fsPromises.realpath(root);
   // equivalent-mutant: relaxing `segments.length > 0` to `>= 0` keeps the join
-  // branch — and `nodePath.join(realRoot, '')` returns `realRoot`, so the empty
+  // branch — and `policy.join(realRoot, '')` returns `realRoot`, so the empty
   // segments case still returns the same value as the explicit `: realRoot` arm.
-  return segments.length > 0 ? nodePath.join(realRoot, segments.join(nodePath.sep)) : realRoot;
+  return segments.length > 0 ? policy.join(realRoot, segments.join(policy.sep)) : realRoot;
 }
 
 /**
@@ -232,7 +232,7 @@ export function mapStat(s: {
 export class NodeFileSystem implements FileSystem {
   private readonly rootDir: string;
 
-  private readonly isWindowsFn: PlatformPredicate;
+  private readonly pathPolicy: PathPolicy;
 
   /**
    * Lazy long-name canonicalisation of `rootDir` for containment checks.
@@ -241,9 +241,9 @@ export class NodeFileSystem implements FileSystem {
    */
   private canonicalRootPromise: Promise<string> | undefined = undefined;
 
-  constructor(rootDir: string, isWindowsFn: PlatformPredicate = isWindows) {
+  constructor(rootDir: string, pathPolicy: PathPolicy = nativePolicy) {
     this.rootDir = rootDir;
-    this.isWindowsFn = isWindowsFn;
+    this.pathPolicy = pathPolicy;
   }
 
   private async getCanonicalRoot(): Promise<string> {
@@ -292,7 +292,7 @@ export class NodeFileSystem implements FileSystem {
   write = async (path: string, data: Uint8Array): Promise<void> => {
     const real = await this.checkContainment(path, 'creation');
     await runFs(async () => {
-      await fsPromises.mkdir(nodePath.dirname(real), { recursive: true });
+      await fsPromises.mkdir(this.pathPolicy.dirname(real), { recursive: true });
       await fsPromises.writeFile(real, data);
     }, path);
   };
@@ -300,7 +300,7 @@ export class NodeFileSystem implements FileSystem {
   writeExclusive = async (path: string, data: Uint8Array): Promise<void> => {
     const real = await this.checkContainment(path, 'creation');
     await runFs(async () => {
-      await fsPromises.mkdir(nodePath.dirname(real), { recursive: true });
+      await fsPromises.mkdir(this.pathPolicy.dirname(real), { recursive: true });
       await fsPromises.writeFile(real, data, { flag: 'wx' });
     }, path);
   };
@@ -308,19 +308,19 @@ export class NodeFileSystem implements FileSystem {
   writeUtf8 = async (path: string, content: string): Promise<void> => {
     const real = await this.checkContainment(path, 'creation');
     await runFs(async () => {
-      await fsPromises.mkdir(nodePath.dirname(real), { recursive: true });
+      await fsPromises.mkdir(this.pathPolicy.dirname(real), { recursive: true });
       await fsPromises.writeFile(real, content, 'utf-8');
     }, path);
   };
 
   exists = async (path: string): Promise<boolean> => {
-    const resolved = nodePath.resolve(toAbsolute(path, this.rootDir));
+    const resolved = this.pathPolicy.resolve(toAbsolute(path, this.rootDir, this.pathPolicy));
     const canonicalRoot = await this.getCanonicalRoot();
     try {
       // Post-realpath check is the security gate against symlink escapes
       // and 8.3 short-name aliasing. Phase 14.4.
       const real = await fsPromises.realpath(resolved);
-      if (!pathContains(canonicalRoot, real, this.isWindowsFn)) {
+      if (!pathContains(canonicalRoot, real, this.pathPolicy)) {
         throw permissionDenied(path);
       }
       return true;
@@ -333,8 +333,8 @@ export class NodeFileSystem implements FileSystem {
         // callers can pass paths in either form when rootDir's parent is
         // 8.3-shortened on Windows.
         if (
-          !pathContains(this.rootDir, resolved, this.isWindowsFn) &&
-          !pathContains(canonicalRoot, resolved, this.isWindowsFn)
+          !pathContains(this.rootDir, resolved, this.pathPolicy) &&
+          !pathContains(canonicalRoot, resolved, this.pathPolicy)
         ) {
           throw permissionDenied(path);
         }
@@ -382,7 +382,7 @@ export class NodeFileSystem implements FileSystem {
     const realSrc = await this.checkContainment(src, 'read');
     const realDst = await this.checkContainment(dst, 'creation');
     await runFs(async () => {
-      await fsPromises.mkdir(nodePath.dirname(realDst), { recursive: true });
+      await fsPromises.mkdir(this.pathPolicy.dirname(realDst), { recursive: true });
       await fsPromises.rename(realSrc, realDst);
     }, src);
   };
@@ -395,7 +395,7 @@ export class NodeFileSystem implements FileSystem {
   symlink = async (target: string, path: string): Promise<void> => {
     const real = await this.checkContainment(path, 'creation');
     await runFs(async () => {
-      await fsPromises.mkdir(nodePath.dirname(real), { recursive: true });
+      await fsPromises.mkdir(this.pathPolicy.dirname(real), { recursive: true });
       await fsPromises.symlink(target, real);
     }, path);
   };
@@ -428,16 +428,16 @@ export class NodeFileSystem implements FileSystem {
     // EACCES on a regular file MUST surface unchanged.
     // equivalent-mutant: flipping the `: false` arm to `: true` on the Linux
     // mutation runner is harmless — `isWindowsSymlinkRefusal` short-circuits
-    // on `!isWindowsFn()` so `isSymlinkLeaf` is never read. Windows-mocked
-    // tests (`() => true`) kill the mutant.
-    const isSymlinkLeaf = this.isWindowsFn() ? await this.isSymlinkLeaf(real) : false;
+    // on `!policy.caseInsensitive` so `isSymlinkLeaf` is never read.
+    // Windows-mocked tests (`windowsPolicy`) kill the mutant.
+    const isSymlinkLeaf = this.pathPolicy.caseInsensitive ? await this.isSymlinkLeaf(real) : false;
 
     const flag = mode === 'write' ? fs.constants.O_WRONLY : fs.constants.O_RDONLY;
     const handle = await runFs(
       () => fsPromises.open(real, flag | fs.constants.O_NOFOLLOW),
       path,
     ).catch((err: unknown) => {
-      if (isWindowsSymlinkRefusal(err, isSymlinkLeaf, this.isWindowsFn)) {
+      if (isWindowsSymlinkRefusal(err, isSymlinkLeaf, this.pathPolicy)) {
         throw permissionDenied(path);
       }
       throw err;
@@ -479,7 +479,7 @@ export class NodeFileSystem implements FileSystem {
       originalPath,
     );
     for (const entry of entries) {
-      const child = nodePath.join(real, entry.name);
+      const child = this.pathPolicy.join(real, entry.name);
       await this.removeTree(child, originalPath);
     }
     await runFs(() => fsPromises.rmdir(real), originalPath);
@@ -512,17 +512,17 @@ export class NodeFileSystem implements FileSystem {
       return fsPromises.realpath(resolved);
     }
     if (mode === 'lstat') {
-      const parent = await fsPromises.realpath(nodePath.dirname(resolved));
-      return nodePath.join(parent, nodePath.basename(resolved));
+      const parent = await fsPromises.realpath(this.pathPolicy.dirname(resolved));
+      return this.pathPolicy.join(parent, this.pathPolicy.basename(resolved));
     }
     return this.resolveForCreation(path, resolved);
   }
 
   private async checkContainment(path: string, mode: ContainmentMode): Promise<string> {
-    const resolved = nodePath.resolve(toAbsolute(path, this.rootDir));
+    const resolved = this.pathPolicy.resolve(toAbsolute(path, this.rootDir, this.pathPolicy));
     const canonicalRoot = await this.getCanonicalRoot();
     const check = (abs: string): void => {
-      if (!pathContains(canonicalRoot, abs, this.isWindowsFn)) {
+      if (!pathContains(canonicalRoot, abs, this.pathPolicy)) {
         throw permissionDenied(path);
       }
     };

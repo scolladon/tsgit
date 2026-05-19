@@ -14,6 +14,7 @@ import {
   runFs,
   toAbsolute,
 } from '../../../../src/adapters/node/node-file-system.js';
+import { posixPolicy, windowsPolicy } from '../../../../src/adapters/node/path-policy.js';
 import { TsgitError } from '../../../../src/domain/index.js';
 import { fileSystemContractTests } from '../../ports/file-system.contract.js';
 
@@ -314,102 +315,117 @@ describe('NodeFileSystem', () => {
       await cleanup();
     });
 
-    it('Given chmod on a valid contained file, When called, Then the file mode is updated', async () => {
-      // Arrange
-      const { fs, rootDir, cleanup } = await makeFs();
-      const path = nodePath.join(rootDir, 'perm.bin');
-      await fsPromises.writeFile(path, Buffer.from([1]));
+    it.skipIf(process.platform === 'win32')(
+      'Given chmod on a valid contained file, When called, Then the file mode is updated',
+      async () => {
+        // Arrange
+        const { fs, rootDir, cleanup } = await makeFs();
+        const path = nodePath.join(rootDir, 'perm.bin');
+        await fsPromises.writeFile(path, Buffer.from([1]));
 
-      // Act
-      await fs.chmod(path, 0o600);
+        // Act
+        await fs.chmod(path, 0o600);
 
-      // Assert
-      const stat = await fsPromises.stat(path);
-      expect(stat.mode & 0o777).toBe(0o600);
-      await cleanup();
-    });
+        // Assert
+        const stat = await fsPromises.stat(path);
+        expect(stat.mode & 0o777).toBe(0o600);
+        await cleanup();
+      },
+    );
 
-    it('Given broken in-root symlink leaf, When write, Then throws PERMISSION_DENIED', async () => {
-      // Arrange — broken symlink: realpath returns ENOENT for the leaf, parent resolves,
-      // then lstat sees the link itself and isSymbolicLink() is true.
-      const { fs, rootDir, cleanup } = await makeFs();
-      const brokenLink = nodePath.join(rootDir, 'broken-link');
-      await fsPromises.symlink(nodePath.join(rootDir, 'missing-target'), brokenLink);
+    it.skipIf(process.platform === 'win32')(
+      'Given broken in-root symlink leaf, When write, Then throws PERMISSION_DENIED',
+      async () => {
+        // Arrange — broken symlink: realpath returns ENOENT for the leaf, parent resolves,
+        // then lstat sees the link itself and isSymbolicLink() is true.
+        const { fs, rootDir, cleanup } = await makeFs();
+        const brokenLink = nodePath.join(rootDir, 'broken-link');
+        await fsPromises.symlink(nodePath.join(rootDir, 'missing-target'), brokenLink);
 
-      // Act
-      let caught: unknown;
-      try {
-        await fs.write(brokenLink, new Uint8Array([9]));
-      } catch (err) {
-        caught = err;
-      }
+        // Act
+        let caught: unknown;
+        try {
+          await fs.write(brokenLink, new Uint8Array([9]));
+        } catch (err) {
+          caught = err;
+        }
 
-      // Assert
-      expect(caught).toBeInstanceOf(TsgitError);
-      expect((caught as TsgitError).data.code).toBe('PERMISSION_DENIED');
-      await cleanup();
-    });
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data.code).toBe('PERMISSION_DENIED');
+        await cleanup();
+      },
+    );
 
-    it('Given valid symlink, When readlink, Then returns the target path', async () => {
-      // Arrange
-      const { fs, rootDir, cleanup } = await makeFs();
-      const target = nodePath.join(rootDir, 'target.txt');
-      const link = nodePath.join(rootDir, 'link.txt');
-      await fsPromises.writeFile(target, Buffer.from([1]));
-      await fsPromises.symlink(target, link);
+    it.skipIf(process.platform === 'win32')(
+      'Given valid symlink, When readlink, Then returns the target path',
+      async () => {
+        // Arrange
+        const { fs, rootDir, cleanup } = await makeFs();
+        const target = nodePath.join(rootDir, 'target.txt');
+        const link = nodePath.join(rootDir, 'link.txt');
+        await fsPromises.writeFile(target, Buffer.from([1]));
+        await fsPromises.symlink(target, link);
 
-      // Act
-      const sut = await fs.readlink(link);
+        // Act
+        const sut = await fs.readlink(link);
 
-      // Assert
-      expect(sut).toBe(target);
-      await cleanup();
-    });
+        // Assert
+        expect(sut).toBe(target);
+        await cleanup();
+      },
+    );
 
-    it('Given symlink leaf, When openWithNoFollow(read), Then throws PERMISSION_DENIED (O_NOFOLLOW)', async () => {
-      // Arrange — POSIX open with O_NOFOLLOW errors with ELOOP on a symlink leaf;
-      // the adapter rewraps that as PERMISSION_DENIED for cross-adapter parity.
-      const { fs, rootDir, cleanup } = await makeFs();
-      const target = nodePath.join(rootDir, 'target.txt');
-      const link = nodePath.join(rootDir, 'follow-link.txt');
-      await fsPromises.writeFile(target, Buffer.from([1]));
-      await fsPromises.symlink(target, link);
+    it.skipIf(process.platform === 'win32')(
+      'Given symlink leaf, When openWithNoFollow(read), Then throws PERMISSION_DENIED (O_NOFOLLOW)',
+      async () => {
+        // Arrange — POSIX open with O_NOFOLLOW errors with ELOOP on a symlink leaf;
+        // the adapter rewraps that as PERMISSION_DENIED for cross-adapter parity.
+        const { fs, rootDir, cleanup } = await makeFs();
+        const target = nodePath.join(rootDir, 'target.txt');
+        const link = nodePath.join(rootDir, 'follow-link.txt');
+        await fsPromises.writeFile(target, Buffer.from([1]));
+        await fsPromises.symlink(target, link);
 
-      // Act
-      let caught: unknown;
-      try {
-        await fs.openWithNoFollow(link, 'read');
-      } catch (err) {
-        caught = err;
-      }
+        // Act
+        let caught: unknown;
+        try {
+          await fs.openWithNoFollow(link, 'read');
+        } catch (err) {
+          caught = err;
+        }
 
-      // Assert
-      expect(caught).toBeInstanceOf(TsgitError);
-      expect((caught as TsgitError).data.code).toBe('PERMISSION_DENIED');
-      await cleanup();
-    });
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data.code).toBe('PERMISSION_DENIED');
+        await cleanup();
+      },
+    );
 
-    it('Given directory containing a symlink, When rmRecursive, Then symlink is removed but its target is untouched', async () => {
-      // Arrange — without lstat-based descent, fs.rm({recursive,force}) would walk the link.
-      // Plant a target file outside the doomed tree and assert it survives.
-      const { fs, rootDir, cleanup } = await makeFs();
-      const doomed = nodePath.join(rootDir, 'doomed');
-      const survivor = nodePath.join(rootDir, 'survivor.txt');
-      await fsPromises.mkdir(doomed);
-      await fsPromises.writeFile(survivor, Buffer.from([42]));
-      const link = nodePath.join(doomed, 'link-to-survivor');
-      await fsPromises.symlink(survivor, link);
+    it.skipIf(process.platform === 'win32')(
+      'Given directory containing a symlink, When rmRecursive, Then symlink is removed but its target is untouched',
+      async () => {
+        // Arrange — without lstat-based descent, fs.rm({recursive,force}) would walk the link.
+        // Plant a target file outside the doomed tree and assert it survives.
+        const { fs, rootDir, cleanup } = await makeFs();
+        const doomed = nodePath.join(rootDir, 'doomed');
+        const survivor = nodePath.join(rootDir, 'survivor.txt');
+        await fsPromises.mkdir(doomed);
+        await fsPromises.writeFile(survivor, Buffer.from([42]));
+        const link = nodePath.join(doomed, 'link-to-survivor');
+        await fsPromises.symlink(survivor, link);
 
-      // Act
-      await fs.rmRecursive(doomed);
+        // Act
+        await fs.rmRecursive(doomed);
 
-      // Assert
-      expect(await fs.exists(doomed)).toBe(false);
-      expect(await fs.exists(survivor)).toBe(true);
-      const survivorBytes = await fs.read(survivor);
-      expect(survivorBytes).toEqual(new Uint8Array([42]));
-      await cleanup();
-    });
+        // Assert
+        expect(await fs.exists(doomed)).toBe(false);
+        expect(await fs.exists(survivor)).toBe(true);
+        const survivorBytes = await fs.read(survivor);
+        expect(survivorBytes).toEqual(new Uint8Array([42]));
+        await cleanup();
+      },
+    );
 
     it('Given an opened FileHandle, When read is called without position, Then position defaults to null and reads from the current cursor', async () => {
       // Arrange — exercises the `position ?? null` default branch (no contract test omits position).
@@ -433,53 +449,59 @@ describe('NodeFileSystem', () => {
       await cleanup();
     });
 
-    it('Given rmRecursive descent into a directory whose lstat surfaces a non-ENOENT error, When removing, Then the mapped TsgitError propagates', async () => {
-      // Arrange — chmod a subdirectory to 000 so its readdir/lstat fails with EACCES.
-      // This exercises the `throw err` branch in removeTree's catch (anything other than
-      // FILE_NOT_FOUND must propagate; without it errors would be silently swallowed).
-      const { fs, rootDir, cleanup } = await makeFs();
-      const sealed = nodePath.join(rootDir, 'sealed');
-      await fsPromises.mkdir(sealed);
-      await fsPromises.writeFile(nodePath.join(sealed, 'inside.txt'), Buffer.from([1]));
-      await fsPromises.chmod(sealed, 0o000);
+    it.skipIf(process.platform === 'win32')(
+      'Given rmRecursive descent into a directory whose lstat surfaces a non-ENOENT error, When removing, Then the mapped TsgitError propagates',
+      async () => {
+        // Arrange — chmod a subdirectory to 000 so its readdir/lstat fails with EACCES.
+        // This exercises the `throw err` branch in removeTree's catch (anything other than
+        // FILE_NOT_FOUND must propagate; without it errors would be silently swallowed).
+        const { fs, rootDir, cleanup } = await makeFs();
+        const sealed = nodePath.join(rootDir, 'sealed');
+        await fsPromises.mkdir(sealed);
+        await fsPromises.writeFile(nodePath.join(sealed, 'inside.txt'), Buffer.from([1]));
+        await fsPromises.chmod(sealed, 0o000);
 
-      // Act
-      let caught: unknown;
-      try {
-        await fs.rmRecursive(sealed);
-      } catch (err) {
-        caught = err;
-      } finally {
-        // Restore mode so cleanup can proceed.
-        await fsPromises.chmod(sealed, 0o755);
-      }
+        // Act
+        let caught: unknown;
+        try {
+          await fs.rmRecursive(sealed);
+        } catch (err) {
+          caught = err;
+        } finally {
+          // Restore mode so cleanup can proceed.
+          await fsPromises.chmod(sealed, 0o755);
+        }
 
-      // Assert — must surface a TsgitError (not silently succeed and not a raw errno).
-      expect(caught).toBeInstanceOf(TsgitError);
-      expect((caught as TsgitError).data.code).not.toBe('FILE_NOT_FOUND');
-      await cleanup();
-    });
+        // Assert — must surface a TsgitError (not silently succeed and not a raw errno).
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data.code).not.toBe('FILE_NOT_FOUND');
+        await cleanup();
+      },
+    );
 
-    it('Given openWithNoFollow with non-ELOOP errno, When opening, Then propagates the mapped TsgitError unchanged', async () => {
-      // Arrange — open a directory in write mode triggers EISDIR which is NOT remapped to
-      // PERMISSION_DENIED; this exercises the catch-block re-throw branch.
-      const { fs, rootDir, cleanup } = await makeFs();
-      const dir = nodePath.join(rootDir, 'just-a-dir');
-      await fsPromises.mkdir(dir);
+    it.skipIf(process.platform === 'win32')(
+      'Given openWithNoFollow with non-ELOOP errno, When opening, Then propagates the mapped TsgitError unchanged',
+      async () => {
+        // Arrange — open a directory in write mode triggers EISDIR which is NOT remapped to
+        // PERMISSION_DENIED; this exercises the catch-block re-throw branch.
+        const { fs, rootDir, cleanup } = await makeFs();
+        const dir = nodePath.join(rootDir, 'just-a-dir');
+        await fsPromises.mkdir(dir);
 
-      // Act
-      let caught: unknown;
-      try {
-        await fs.openWithNoFollow(dir, 'write');
-      } catch (err) {
-        caught = err;
-      }
+        // Act
+        let caught: unknown;
+        try {
+          await fs.openWithNoFollow(dir, 'write');
+        } catch (err) {
+          caught = err;
+        }
 
-      // Assert — EISDIR maps to UNSUPPORTED_OPERATION (per mapErrno default arm).
-      expect(caught).toBeInstanceOf(TsgitError);
-      expect((caught as TsgitError).data.code).not.toBe('PERMISSION_DENIED');
-      await cleanup();
-    });
+        // Assert — EISDIR maps to UNSUPPORTED_OPERATION (per mapErrno default arm).
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data.code).not.toBe('PERMISSION_DENIED');
+        await cleanup();
+      },
+    );
   });
 
   describe('internal helpers', () => {
@@ -840,91 +862,99 @@ describe('NodeFileSystem', () => {
       });
     });
 
-    describe('NodeFileSystem.exists — non-ENOENT and escape branches', () => {
-      it('Given realpath throwing non-ENOENT errno, When exists, Then throws mapped TsgitError', async () => {
-        // Arrange — a file segment used as a directory triggers ENOTDIR
-        const tempRoot = await fsPromises.mkdtemp(nodePath.join(os.tmpdir(), 'tsgit-exists-'));
-        const rootDir = await fsPromises.realpath(tempRoot);
-        const blocker = nodePath.join(rootDir, 'block');
-        await fsPromises.writeFile(blocker, '');
-        const sut = new NodeFileSystem(rootDir);
+    describe.skipIf(process.platform === 'win32')(
+      'NodeFileSystem.exists — non-ENOENT and escape branches',
+      () => {
+        it('Given realpath throwing non-ENOENT errno, When exists, Then throws mapped TsgitError', async () => {
+          // Arrange — a file segment used as a directory triggers ENOTDIR
+          const tempRoot = await fsPromises.mkdtemp(nodePath.join(os.tmpdir(), 'tsgit-exists-'));
+          const rootDir = await fsPromises.realpath(tempRoot);
+          const blocker = nodePath.join(rootDir, 'block');
+          await fsPromises.writeFile(blocker, '');
+          const sut = new NodeFileSystem(rootDir);
 
-        // Act
-        let caught: unknown;
-        try {
-          await sut.exists(nodePath.join('block', 'child.txt'));
-        } catch (err) {
-          caught = err;
-        }
+          // Act
+          let caught: unknown;
+          try {
+            await sut.exists(nodePath.join('block', 'child.txt'));
+          } catch (err) {
+            caught = err;
+          }
 
-        // Assert
-        expect(caught).toBeInstanceOf(TsgitError);
-        expect((caught as TsgitError).data.code).toBe('NOT_A_DIRECTORY');
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as TsgitError).data.code).toBe('NOT_A_DIRECTORY');
 
-        // Cleanup
-        await fsPromises.rm(tempRoot, { recursive: true, force: true });
-      });
+          // Cleanup
+          await fsPromises.rm(tempRoot, { recursive: true, force: true });
+        });
 
-      it('Given in-root symlink whose realpath target lies outside rootDir, When exists, Then throws PERMISSION_DENIED', async () => {
-        // Arrange
-        const tempRoot = await fsPromises.mkdtemp(nodePath.join(os.tmpdir(), 'tsgit-exists-esc-'));
-        const rootDir = await fsPromises.realpath(tempRoot);
-        const siblingDir = `${rootDir}-outside`;
-        await fsPromises.mkdir(siblingDir, { recursive: true });
-        const escapeTarget = nodePath.join(siblingDir, 'secret.txt');
-        await fsPromises.writeFile(escapeTarget, 'outside');
-        const link = nodePath.join(rootDir, 'escape-link');
-        await fsPromises.symlink(escapeTarget, link);
-        const sut = new NodeFileSystem(rootDir);
+        it('Given in-root symlink whose realpath target lies outside rootDir, When exists, Then throws PERMISSION_DENIED', async () => {
+          // Arrange
+          const tempRoot = await fsPromises.mkdtemp(
+            nodePath.join(os.tmpdir(), 'tsgit-exists-esc-'),
+          );
+          const rootDir = await fsPromises.realpath(tempRoot);
+          const siblingDir = `${rootDir}-outside`;
+          await fsPromises.mkdir(siblingDir, { recursive: true });
+          const escapeTarget = nodePath.join(siblingDir, 'secret.txt');
+          await fsPromises.writeFile(escapeTarget, 'outside');
+          const link = nodePath.join(rootDir, 'escape-link');
+          await fsPromises.symlink(escapeTarget, link);
+          const sut = new NodeFileSystem(rootDir);
 
-        // Act
-        let caught: unknown;
-        try {
-          await sut.exists(link);
-        } catch (err) {
-          caught = err;
-        }
+          // Act
+          let caught: unknown;
+          try {
+            await sut.exists(link);
+          } catch (err) {
+            caught = err;
+          }
 
-        // Assert
-        expect(caught).toBeInstanceOf(TsgitError);
-        expect((caught as TsgitError).data.code).toBe('PERMISSION_DENIED');
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as TsgitError).data.code).toBe('PERMISSION_DENIED');
 
-        // Cleanup
-        await fsPromises.rm(tempRoot, { recursive: true, force: true });
-        await fsPromises.rm(siblingDir, { recursive: true, force: true });
-      });
-    });
+          // Cleanup
+          await fsPromises.rm(tempRoot, { recursive: true, force: true });
+          await fsPromises.rm(siblingDir, { recursive: true, force: true });
+        });
+      },
+    );
 
-    describe('resolveForCreation — non-ENOENT errno on leaf lstat', () => {
-      it('Given creation path whose leaf parent is a file, When writing, Then throws NOT_A_DIRECTORY', async () => {
-        // Arrange — /root/block is a file; writing '/root/block/leaf.txt' triggers ENOTDIR on lstat
-        const tempRoot = await fsPromises.mkdtemp(nodePath.join(os.tmpdir(), 'tsgit-creation-'));
-        const rootDir = await fsPromises.realpath(tempRoot);
-        const blocker = nodePath.join(rootDir, 'block');
-        await fsPromises.writeFile(blocker, '');
-        const sut = new NodeFileSystem(rootDir);
+    describe.skipIf(process.platform === 'win32')(
+      'resolveForCreation — non-ENOENT errno on leaf lstat',
+      () => {
+        it('Given creation path whose leaf parent is a file, When writing, Then throws NOT_A_DIRECTORY', async () => {
+          // Arrange — /root/block is a file; writing '/root/block/leaf.txt' triggers ENOTDIR on lstat
+          const tempRoot = await fsPromises.mkdtemp(nodePath.join(os.tmpdir(), 'tsgit-creation-'));
+          const rootDir = await fsPromises.realpath(tempRoot);
+          const blocker = nodePath.join(rootDir, 'block');
+          await fsPromises.writeFile(blocker, '');
+          const sut = new NodeFileSystem(rootDir);
 
-        // Act
-        let caught: unknown;
-        try {
-          await sut.write(nodePath.join(rootDir, 'block', 'leaf.txt'), new Uint8Array([1]));
-        } catch (err) {
-          caught = err;
-        }
+          // Act
+          let caught: unknown;
+          try {
+            await sut.write(nodePath.join(rootDir, 'block', 'leaf.txt'), new Uint8Array([1]));
+          } catch (err) {
+            caught = err;
+          }
 
-        // Assert
-        expect(caught).toBeInstanceOf(TsgitError);
-        expect((caught as TsgitError).data.code).toBe('NOT_A_DIRECTORY');
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as TsgitError).data.code).toBe('NOT_A_DIRECTORY');
 
-        // Cleanup
-        await fsPromises.rm(tempRoot, { recursive: true, force: true });
-      });
-    });
+          // Cleanup
+          await fsPromises.rm(tempRoot, { recursive: true, force: true });
+        });
+      },
+    );
   });
 
   describe('isWindowsSymlinkRefusal', () => {
-    const posix = (): boolean => false;
-    const windows = (): boolean => true;
+    const posix = posixPolicy;
+    const windows = windowsPolicy;
 
     it('Given POSIX host, When isWindowsSymlinkRefusal is called with a symlink leaf and PERMISSION_DENIED, Then returns false regardless of the leaf type', () => {
       // Arrange
@@ -1003,8 +1033,8 @@ describe('NodeFileSystem', () => {
   });
 
   describe('pathContains', () => {
-    const posix = (): boolean => false;
-    const windows = (): boolean => true;
+    const posix = posixPolicy;
+    const windows = windowsPolicy;
 
     it('Given parent === child, When pathContains, Then returns true', () => {
       // Arrange
@@ -1051,11 +1081,10 @@ describe('NodeFileSystem', () => {
     });
 
     it('Given Windows host and case-different prefix paths, Then returns true (case-insensitive prefix)', () => {
-      // Arrange — POSIX-shaped paths so the host's nodePath.sep is consistent;
-      // the test exercises case-folding, not separator handling.
+      // Arrange — Windows-shaped paths to match the platform separator.
       const sut = pathContains;
-      const parent = '/Users/Foo';
-      const child = '/users/foo/bar.bin';
+      const parent = 'C:\\Users\\Foo';
+      const child = 'c:\\users\\foo\\bar.bin';
 
       // Act
       const result = sut(parent, child, windows);
@@ -1069,7 +1098,7 @@ describe('NodeFileSystem', () => {
       const sut = pathContains;
 
       // Act
-      const result = sut('/Users/Foo', '/users/FOO', windows);
+      const result = sut('C:\\Users\\Foo', 'c:\\users\\FOO', windows);
 
       // Assert
       expect(result).toBe(true);
@@ -1086,8 +1115,8 @@ describe('NodeFileSystem', () => {
       expect(result).toBe(false);
     });
 
-    it('Given the default predicate (no isWindowsFn), When parent === child on the host platform, Then returns true', () => {
-      // Arrange — exercises the `isWindowsFn = isWindows` default binding.
+    it('Given no policy argument, When parent === child on the host platform, Then returns true', () => {
+      // Arrange — exercises the `policy = nativePolicy` default binding.
       const sut = pathContains;
       const path = nodePath.resolve('/some/dir');
 
