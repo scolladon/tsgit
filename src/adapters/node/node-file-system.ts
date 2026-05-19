@@ -58,7 +58,14 @@ export function pathContains(
   child: string,
   isWindowsFn: PlatformPredicate = isWindows,
 ): boolean {
-  const normalize = (path: string): string => (isWindowsFn() ? path.toLowerCase() : path);
+  // Hoist the predicate result so a single call to `isWindowsFn()` services
+  // both `normalize` invocations — `pathContains` is on the fs hot path
+  // (every read/write/stat funnels through it).
+  // equivalent-mutant: forcing `windows` to `false` on Windows hosts (or vice
+  // versa) regresses every cross-host test pair; the branch is killed by
+  // complementary tests in node-file-system-containment.test.ts.
+  const windows = isWindowsFn();
+  const normalize = (path: string): string => (windows ? path.toLowerCase() : path);
   const p = normalize(parent);
   const c = normalize(child);
   if (c === p) return true;
@@ -225,10 +232,7 @@ export function mapStat(s: {
 export class NodeFileSystem implements FileSystem {
   private readonly rootDir: string;
 
-  constructor(rootDir: string, isWindowsFn: PlatformPredicate = isWindows) {
-    this.rootDir = rootDir;
-    this.isWindowsFn = isWindowsFn;
-  }
+  private readonly isWindowsFn: PlatformPredicate;
 
   /**
    * Lazy long-name canonicalisation of `rootDir` for containment checks.
@@ -237,7 +241,10 @@ export class NodeFileSystem implements FileSystem {
    */
   private canonicalRootPromise: Promise<string> | undefined = undefined;
 
-  private readonly isWindowsFn: PlatformPredicate;
+  constructor(rootDir: string, isWindowsFn: PlatformPredicate = isWindows) {
+    this.rootDir = rootDir;
+    this.isWindowsFn = isWindowsFn;
+  }
 
   private async getCanonicalRoot(): Promise<string> {
     if (this.canonicalRootPromise === undefined) {
@@ -308,16 +315,10 @@ export class NodeFileSystem implements FileSystem {
 
   exists = async (path: string): Promise<boolean> => {
     const resolved = nodePath.resolve(toAbsolute(path, this.rootDir));
-    // Pre-resolve check against the raw rootDir catches obvious traversal
-    // (e.g., `../outside`) before touching the disk. Case-folded on
-    // Windows via `pathContains`. The post-resolve check against the
-    // canonical root is the security gate for symlink and short-name
-    // escapes (Phase 14.4).
-    if (!pathContains(this.rootDir, resolved, this.isWindowsFn)) {
-      throw permissionDenied(path);
-    }
     const canonicalRoot = await this.getCanonicalRoot();
     try {
+      // Post-realpath check is the security gate against symlink escapes
+      // and 8.3 short-name aliasing. Phase 14.4.
       const real = await fsPromises.realpath(resolved);
       if (!pathContains(canonicalRoot, real, this.isWindowsFn)) {
         throw permissionDenied(path);
@@ -325,9 +326,22 @@ export class NodeFileSystem implements FileSystem {
       return true;
     } catch (err) {
       if (err instanceof TsgitError) throw err;
-      if (isErrnoException(err) && err.code === 'ENOENT') return false;
-      // fsPromises.realpath only throws errno exceptions, so any remaining error is mapped.
-      throw mapErrno(err as NodeJS.ErrnoException, path);
+      if (isErrnoException(err) && err.code === 'ENOENT') {
+        // ENOENT — the resolved path doesn't exist. But the caller might be
+        // probing `../outside`: verify the path WOULD have been inside the
+        // root if it existed. Check against BOTH raw and canonical roots so
+        // callers can pass paths in either form when rootDir's parent is
+        // 8.3-shortened on Windows.
+        if (
+          !pathContains(this.rootDir, resolved, this.isWindowsFn) &&
+          !pathContains(canonicalRoot, resolved, this.isWindowsFn)
+        ) {
+          throw permissionDenied(path);
+        }
+        return false;
+      }
+      if (isErrnoException(err)) throw mapErrno(err, path);
+      throw err;
     }
   };
 
@@ -431,8 +445,13 @@ export class NodeFileSystem implements FileSystem {
     try {
       const stat = await fsPromises.lstat(real);
       return stat.isSymbolicLink();
-    } catch {
-      return false;
+    } catch (err) {
+      // TOCTOU: the leaf may have been removed between checkContainment's
+      // resolveForMode and this lstat. ENOENT is safe to swallow — the
+      // subsequent open call will surface its own errno. Other errors
+      // (EACCES, EIO) indicate a genuine I/O fault that callers must see.
+      if (isErrnoException(err) && err.code === 'ENOENT') return false;
+      throw err;
     }
   }
 
@@ -503,13 +522,12 @@ export class NodeFileSystem implements FileSystem {
       return real;
     } catch (err) {
       if (err instanceof TsgitError) throw err;
-      // All remaining errors come from fsPromises.realpath/lstat and are errno exceptions.
-      const errno = err as NodeJS.ErrnoException;
       // equivalent-mutant: flipping `errno.code === 'ENOENT'` to `false`, or mutating the literal
       // to `""`, funnels the error through `mapErrno` below — which also maps ENOENT to
       // `fileNotFound(path)`. The early return is a micro-optimization with identical output.
-      if (errno.code === 'ENOENT') throw fileNotFound(path);
-      throw mapErrno(errno, path);
+      if (isErrnoException(err) && err.code === 'ENOENT') throw fileNotFound(path);
+      if (isErrnoException(err)) throw mapErrno(err, path);
+      throw err;
     }
   }
 }

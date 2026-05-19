@@ -62,10 +62,14 @@ describe.skipIf(!isWindowsHost)('NodeFileSystem — Windows real-runner', () => 
 });
 
 describe.skipIf(!isWindowsHost)('NodeFileSystem — Windows symlink refusal', () => {
-  it('Given a symlink leaf inside the working tree, When openWithNoFollow is called, Then PERMISSION_DENIED is thrown', async () => {
+  it('Given a symlink leaf inside the working tree, When openWithNoFollow is called, Then PERMISSION_DENIED is thrown', async ({
+    skip,
+  }) => {
     const symlinksAvailable = await canCreateSymlinks();
     if (!symlinksAvailable) {
-      // Developer mode not enabled on the runner image — skip without failing.
+      // Developer mode not enabled on the runner image — Vitest's `skip` call
+      // shows the test as skipped (not silently green) so CI output is honest.
+      skip();
       return;
     }
 

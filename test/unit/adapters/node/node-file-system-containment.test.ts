@@ -11,7 +11,7 @@
  * substitution, prefix-only guard) are platform-independent — only the
  * `isWindowsFn` injection differs.
  */
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
   realpath: vi.fn<(path: string) => Promise<string>>(),
@@ -29,6 +29,15 @@ const { TsgitError } = await import('../../../../src/domain/index.js');
 
 const enoent = (msg = 'not found'): NodeJS.ErrnoException =>
   Object.assign(new Error(msg), { code: 'ENOENT' });
+
+beforeEach(() => {
+  // Reset call counts AND implementations so per-test mock setup is fully
+  // isolated — `mock.calls` accumulates otherwise, producing false positives
+  // in the cache-call-count assertions.
+  mocks.realpath.mockReset();
+  mocks.open.mockReset();
+  mocks.lstat.mockReset();
+});
 
 describe('NodeFileSystem — canonical-root cache', () => {
   it('Given two sequential `exists` calls, When the second runs, Then realpath(rootDir) is invoked at most once for the root', async () => {
@@ -197,6 +206,71 @@ describe('NodeFileSystem — openWithNoFollow windows symlink refusal', () => {
     }
     expect(caught).toBeInstanceOf(TsgitError);
     expect((caught as InstanceType<typeof TsgitError>).data.code).toBe('PERMISSION_DENIED');
+  });
+});
+
+describe('NodeFileSystem — non-errno fault propagation', () => {
+  it('Given `exists` and a realpath that rejects with a non-errno value, When called, Then the original value rethrows unchanged', async () => {
+    // Arrange — realpath rejects with a non-Error (e.g., a string) so
+    // isErrnoException returns false. The defensive rethrow keeps the
+    // semantic that only errno faults flow through mapErrno.
+    const rootDir = '/canonical/non-errno-exists';
+    mocks.realpath.mockImplementation(async (input: string) => {
+      if (input === rootDir) return rootDir;
+      throw 'not-an-error'; // eslint-disable-line @typescript-eslint/no-throw-literal
+    });
+    const sut = new NodeFileSystem(rootDir);
+
+    // Act + Assert
+    let caught: unknown;
+    try {
+      await sut.exists('/canonical/non-errno-exists/a');
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBe('not-an-error');
+  });
+
+  it('Given `read` and a realpath that rejects with a non-errno value, When called, Then the original value rethrows unchanged', async () => {
+    // Arrange — same as above but via checkContainment.
+    const rootDir = '/canonical/non-errno-read';
+    mocks.realpath.mockImplementation(async (input: string) => {
+      if (input === rootDir) return rootDir;
+      throw 'not-an-error'; // eslint-disable-line @typescript-eslint/no-throw-literal
+    });
+    const sut = new NodeFileSystem(rootDir);
+
+    // Act + Assert
+    let caught: unknown;
+    try {
+      await sut.read('/canonical/non-errno-read/a');
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBe('not-an-error');
+  });
+
+  it('Given `openWithNoFollow` on a Windows symlink leaf, When lstat rejects with a non-ENOENT errno (EACCES), Then the error rethrows (not silently swallowed)', async () => {
+    // Arrange — lstat rejection with EACCES surfaces; only ENOENT is
+    // safe to absorb (TOCTOU race), per ADR-043 review.
+    const root = '/canonical/win-lstat-eaccess';
+    const file = '/canonical/win-lstat-eaccess/leaf';
+    mocks.realpath.mockImplementation(async (input: string) => input);
+    mocks.lstat.mockImplementation(async () => {
+      throw Object.assign(new Error('access'), { code: 'EACCES' });
+    });
+    mocks.open.mockImplementation(async () => ({ close: async () => undefined }));
+    const sut = new NodeFileSystem(root, () => true);
+
+    // Act + Assert
+    let caught: unknown;
+    try {
+      await sut.openWithNoFollow(file, 'read');
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as NodeJS.ErrnoException).code).toBe('EACCES');
   });
 });
 

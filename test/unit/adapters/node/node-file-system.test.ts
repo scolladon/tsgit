@@ -926,7 +926,7 @@ describe('NodeFileSystem', () => {
     const posix = (): boolean => false;
     const windows = (): boolean => true;
 
-    it('Given POSIX host, When the predicate is called, Then returns false regardless of the leaf type', () => {
+    it('Given POSIX host, When isWindowsSymlinkRefusal is called with a symlink leaf and PERMISSION_DENIED, Then returns false regardless of the leaf type', () => {
       // Arrange
       const sut = isWindowsSymlinkRefusal;
       const err = new TsgitError({ code: 'PERMISSION_DENIED', path: 'p' as never });
@@ -938,7 +938,7 @@ describe('NodeFileSystem', () => {
       expect(result).toBe(false);
     });
 
-    it('Given Windows host and a non-symlink leaf, Then returns false (real EACCES must surface)', () => {
+    it('Given Windows host and a non-symlink leaf, When isWindowsSymlinkRefusal is called, Then returns false (real EACCES must surface)', () => {
       // Arrange
       const sut = isWindowsSymlinkRefusal;
       const err = new TsgitError({ code: 'PERMISSION_DENIED', path: 'p' as never });
@@ -950,7 +950,7 @@ describe('NodeFileSystem', () => {
       expect(result).toBe(false);
     });
 
-    it('Given Windows host, symlink leaf, and a PERMISSION_DENIED error, Then returns true', () => {
+    it('Given Windows host, symlink leaf, and a PERMISSION_DENIED error, When isWindowsSymlinkRefusal is called, Then returns true', () => {
       // Arrange
       const sut = isWindowsSymlinkRefusal;
       const err = new TsgitError({ code: 'PERMISSION_DENIED', path: 'p' as never });
@@ -962,7 +962,7 @@ describe('NodeFileSystem', () => {
       expect(result).toBe(true);
     });
 
-    it('Given Windows host, symlink leaf, and an UNSUPPORTED_OPERATION error, Then returns true', () => {
+    it('Given Windows host, symlink leaf, and an UNSUPPORTED_OPERATION error, When isWindowsSymlinkRefusal is called, Then returns true', () => {
       // Arrange
       const sut = isWindowsSymlinkRefusal;
       const err = new TsgitError({
@@ -978,7 +978,7 @@ describe('NodeFileSystem', () => {
       expect(result).toBe(true);
     });
 
-    it('Given Windows host, symlink leaf, and a non-TsgitError, Then returns false', () => {
+    it('Given Windows host, symlink leaf, and a non-TsgitError, When isWindowsSymlinkRefusal is called, Then returns false', () => {
       // Arrange
       const sut = isWindowsSymlinkRefusal;
 
@@ -989,7 +989,7 @@ describe('NodeFileSystem', () => {
       expect(result).toBe(false);
     });
 
-    it('Given Windows host, symlink leaf, and a TsgitError of unrelated kind, Then returns false', () => {
+    it('Given Windows host, symlink leaf, and a TsgitError of unrelated kind, When isWindowsSymlinkRefusal is called, Then returns false', () => {
       // Arrange
       const sut = isWindowsSymlinkRefusal;
       const err = new TsgitError({ code: 'FILE_NOT_FOUND', path: 'p' as never });
