@@ -114,12 +114,7 @@ jobs:
       matrix:
         # Node 20 dropped: cspell@10 + lint-staged@17 require >=22.18 /
         # >=22.22.1; the engines floor matches.
-        # windows-latest excluded for now — NodeFileSystem path handling
-        # (realpath 8.3 short names, mixed separator inputs from test
-        # fixtures) needs a separate sprint, tracked under post-v1
-        # backlog 14.x. The wrap-fs-validator fix that shipped here is
-        # necessary but not sufficient.
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest]
         node: [22, 24]
     runs-on: ${{ matrix.os }}
     steps:
