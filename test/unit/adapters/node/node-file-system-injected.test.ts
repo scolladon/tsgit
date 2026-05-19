@@ -109,12 +109,16 @@ describe('NodeFileSystem — resolveForCreation parent-realpath LRU (DI)', () =>
     // Act
     await sut.write('/root/new-dir/leaf.bin', new Uint8Array([1]));
 
-    // Assert — the LRU never recorded the missing parent. A subsequent
-    // write into the same (now created) tree would still call realpath
-    // because the cache was not populated.
+    // Assert — the LRU never recorded the missing parent. The second
+    // write must perform the same call sequence:
+    //   1× realpathForCreation try (parent → ENOENT)
+    //   3× realpathNearestExisting walk (leaf → ENOENT, parent → ENOENT, root → ok)
+    // Total: 4 calls. A mutant that quietly cached the ENOENT result
+    // (or that reused the prior call's resolution) would surface as a
+    // lower count here.
     realpathHits = 0;
     await sut.write('/root/new-dir/leaf.bin', new Uint8Array([2]));
-    expect(realpathHits).toBeGreaterThan(0);
+    expect(realpathHits).toBe(4);
   });
 
   it('Given a cached parent, When rmRecursive runs, Then the cache is cleared and a follow-up write re-realpaths', async () => {

@@ -415,21 +415,27 @@ describe('NodeFileSystem', () => {
         expect(maxInFlight).toBe(4);
       });
 
-      it('Given a worker that throws, When mapped, Then the rejection propagates and pending items still resolve', async () => {
-        // Arrange
+      it('Given a worker that throws, When mapped, Then the rejection propagates AND in-flight items still complete', async () => {
+        // Arrange — limit 2, four items. Worker A handles 0 then 2 (throws);
+        // worker B handles 1 then 3. Promise.all rejects after worker A
+        // throws but worker B's in-flight `fn(3)` resolves first, so we
+        // observe all 4 calls.
         const fn = vi.fn(async (item: number) => {
           if (item === 2) throw new Error('boom');
         });
 
-        // Act + Assert
+        // Act
         let caught: unknown;
         try {
           await mapConcurrent([0, 1, 2, 3], 2, fn);
         } catch (err) {
           caught = err;
         }
+
+        // Assert
         expect(caught).toBeInstanceOf(Error);
         expect((caught as Error).message).toBe('boom');
+        expect(fn).toHaveBeenCalledTimes(4);
       });
     });
 

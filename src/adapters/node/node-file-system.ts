@@ -22,9 +22,17 @@ const REMOVE_TREE_CONCURRENCY = 8;
 
 /**
  * Bounded-concurrency map. Issues up to `limit` `fn(item)` calls in
- * parallel; the next item runs as each in-flight call resolves. Bails on
- * the first rejection (matching the serial-loop semantics of an awaited
- * `for…of` — any thrown error aborts the rest of the iteration).
+ * parallel; the next item runs as each in-flight call resolves.
+ *
+ * Error semantics: `Promise.all` short-circuits the returned promise on
+ * the first rejection, but the surviving workers keep running until they
+ * exhaust the queue — JavaScript can't cancel a running async function.
+ * Callers see the first rejection and may observe additional `fn` calls
+ * that started before the rejection landed. A second concurrent
+ * rejection is silently swallowed by `Promise.all` (only the first is
+ * surfaced). The current single caller (`removeTree`) is fine with both
+ * properties; any future caller that needs strict bail-on-error must
+ * thread an `AbortSignal` of its own.
  *
  * @internal
  */
@@ -355,6 +363,26 @@ export class NodeFileSystem implements FileSystem {
     return this.normalizedRootDir;
   }
 
+  /**
+   * Awaits the canonical-root promise (resolving any pending realpath)
+   * and returns the cached normalised form. The cache is populated by
+   * the promise's success arm and cleared on rejection, so a successful
+   * `await` guarantees the field is set. The `undefined` branch is an
+   * invariant guard; a future refactor that breaks the post-`await`
+   * invariant surfaces here instead of silently falling back to a
+   * per-call `normalizeForCompare`.
+   */
+  private async getNormalizedCanonicalRoot(): Promise<string> {
+    await this.getCanonicalRoot();
+    const value = this.normalizedCanonicalRoot;
+    if (value === undefined) {
+      throw new Error(
+        'NodeFileSystem invariant: normalised canonical root unset after getCanonicalRoot resolved',
+      );
+    }
+    return value;
+  }
+
   private async getCanonicalRoot(): Promise<string> {
     if (this.canonicalRootPromise === undefined) {
       this.canonicalRootPromise = this.fsOps
@@ -432,10 +460,8 @@ export class NodeFileSystem implements FileSystem {
   exists = async (path: string): Promise<boolean> => {
     const abs = toAbsolute(path, this.rootDir, this.pathPolicy);
     const resolved = containsRelativeSegment(abs) ? this.pathPolicy.resolve(abs) : abs;
-    const canonicalRoot = await this.getCanonicalRoot();
     const normalizedRoot = this.getNormalizedRootDir();
-    const normalizedCanonical =
-      this.normalizedCanonicalRoot ?? this.pathPolicy.normalizeForCompare(canonicalRoot);
+    const normalizedCanonical = await this.getNormalizedCanonicalRoot();
     try {
       // Post-realpath check is the security gate against symlink escapes
       // and 8.3 short-name aliasing.
@@ -496,7 +522,10 @@ export class NodeFileSystem implements FileSystem {
   rm = async (path: string): Promise<void> => {
     const real = await this.checkContainment(path, 'read');
     await runFs(() => this.fsOps.rm(real), path);
-    this.creationParentCache.clear();
+    // Node's `fs.rm` without `recursive` only removes leaves — a regular
+    // file or symlink. The parent directory and its realpath are
+    // unchanged, so the creation-parent cache entry for `dirname(real)`
+    // remains valid. No invalidation needed.
   };
 
   rename = async (src: string, dst: string): Promise<void> => {
@@ -522,14 +551,19 @@ export class NodeFileSystem implements FileSystem {
     // entry's directory at OS-read time, and any follow-up `read`/`stat`
     // re-realpaths the leaf and re-checks containment.
     if (this.pathPolicy.isAbsolute(target)) {
-      const normalisedTarget = this.pathPolicy.resolve(target);
-      const canonicalRoot = await this.getCanonicalRoot();
+      // Lexical normalisation alone is insufficient: a Windows directory
+      // junction (`C:\repo\junction` → `C:\outside`) lexically passes the
+      // prefix check but the OS-resolved path lands outside rootDir.
+      // Resolve symlinks/junctions in the target's existing prefix and
+      // compare the *real* path. The resolve only ever expands the target
+      // — never the link entry, which doesn't exist yet.
+      const lexical = this.pathPolicy.resolve(target);
+      const resolvedTarget = await realpathNearestExisting(lexical, this.pathPolicy, this.fsOps);
       const normalizedRoot = this.getNormalizedRootDir();
-      const normalizedCanonical =
-        this.normalizedCanonicalRoot ?? this.pathPolicy.normalizeForCompare(canonicalRoot);
+      const normalizedCanonical = await this.getNormalizedCanonicalRoot();
       if (
-        !pathContainsNormalized(normalizedRoot, normalisedTarget, this.pathPolicy) &&
-        !pathContainsNormalized(normalizedCanonical, normalisedTarget, this.pathPolicy)
+        !pathContainsNormalized(normalizedRoot, resolvedTarget, this.pathPolicy) &&
+        !pathContainsNormalized(normalizedCanonical, resolvedTarget, this.pathPolicy)
       ) {
         throw permissionDenied(path);
       }
@@ -708,7 +742,6 @@ export class NodeFileSystem implements FileSystem {
     // read/write of a known absolute path) have no relative segments — skip
     // the call when a cheap string probe says so.
     const resolved = containsRelativeSegment(abs) ? this.pathPolicy.resolve(abs) : abs;
-    const canonicalRoot = await this.getCanonicalRoot();
     // Containment passes if `abs` is inside EITHER the raw rootDir (which
     // matches user-supplied paths with the same short-name form as the
     // constructor argument) OR the canonical rootDir (which matches paths
@@ -721,8 +754,7 @@ export class NodeFileSystem implements FileSystem {
     // the hot path runs once per parent rather than once per containment
     // check.
     const normalizedRoot = this.getNormalizedRootDir();
-    const normalizedCanonical =
-      this.normalizedCanonicalRoot ?? this.pathPolicy.normalizeForCompare(canonicalRoot);
+    const normalizedCanonical = await this.getNormalizedCanonicalRoot();
     const check = (abs: string): void => {
       if (
         !pathContainsNormalized(normalizedRoot, abs, this.pathPolicy) &&
