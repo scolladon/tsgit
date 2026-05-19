@@ -130,6 +130,12 @@ example against a local `git-http-backend`.
 // Literal paths.
 await repo.add(['src/foo.ts', 'src/bar.ts']);
 
+// Pathspec globs (Phase 14.2). Any pattern with `*`, `?`, or `**` is a
+// glob; everything else is a literal that also matches descendants.
+// `!`-prefixed entries exclude. Last-match wins.
+await repo.add(['*.ts', '!*.test.ts']);   // every .ts minus tests
+await repo.add(['src/**']);               // everything under src/
+
 // Bulk mode — walk the working tree, stage every modified/new file plus
 // every untracked file that isn't ignored, drop tracked files missing
 // from disk. `paths` MUST be empty when `all: true`.
@@ -138,6 +144,13 @@ console.log(result.added);    // new staged paths (sorted)
 console.log(result.modified); // changed paths (sorted)
 console.log(result.removed);  // tracked paths gone from disk (sorted)
 ```
+
+`repo.rm` and `repo.checkout({ paths })` accept the same pathspec
+syntax. A literal pattern that matches nothing throws
+`PATHSPEC_NO_MATCH`; a glob that matches nothing is a silent no-op
+(matches Git's behaviour). Pathspec syntax is `*`, `?`, `**`, and
+`!` negation; character classes (`[abc]`) and Git magic prefixes
+(`:(top)`, `:(literal)`) are not supported in v1.
 
 Phase 14.1 ships bulk-mode `add --all` walking via the new
 `walkWorkingTree` primitive. The host repository's `.git` is skipped, and
