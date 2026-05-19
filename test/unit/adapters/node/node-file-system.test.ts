@@ -1039,7 +1039,7 @@ describe('NodeFileSystem', () => {
       expect(result).toBe(false);
     });
 
-    it("Given prefix-only match (parent='/tmp/foo', child='/tmp/foobar'), Then returns false (kills missing-separator mutant)", () => {
+    it("Given prefix-only match (parent='/tmp/foo', child='/tmp/foobar'), When pathContains is called, Then returns false (kills missing-separator mutant)", () => {
       // Arrange
       const sut = pathContains;
 

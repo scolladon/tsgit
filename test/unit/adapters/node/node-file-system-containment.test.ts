@@ -340,6 +340,48 @@ describe('NodeFileSystem — windows-mocked containment', () => {
     expect(result).toBe(true);
   });
 
+  it('Given Windows host and a non-existent long-form child inside the canonical root, When `exists` is called, Then returns false (kills the second-operand mutant in the ENOENT containment OR)', async () => {
+    // Arrange — rootDir is the short-name form; the child is in long-name form
+    // (so it fails `pathContains(this.rootDir, ...)`) but IS inside
+    // `canonicalRoot` (so the second operand of the OR-ed ENOENT check
+    // must accept it). Realpath rejects with ENOENT on the child to force
+    // the ENOENT branch.
+    const shortRoot = '/Users/RUNNER~1/Temp/tsgit';
+    const longRoot = '/Users/runneradmin/Temp/tsgit';
+    const longChild = '/Users/runneradmin/Temp/tsgit/missing.bin';
+    mocks.realpath.mockImplementation(async (input: string) => {
+      if (input === shortRoot) return longRoot;
+      throw enoent();
+    });
+    const sut = new NodeFileSystem(shortRoot, () => true);
+
+    // Act
+    const result = await sut.exists(longChild);
+
+    // Assert — accepted via the canonicalRoot operand, not the rootDir one.
+    expect(result).toBe(false);
+  });
+
+  it('Given Windows host and a non-existent short-form child inside the raw root, When `exists` is called, Then returns false (kills the first-operand mutant in the ENOENT containment OR)', async () => {
+    // Arrange — symmetric to the test above: the child is in short-name form
+    // (passes `pathContains(this.rootDir, ...)`) but NOT in the canonical form.
+    // Either operand alone is sufficient — verifies the OR semantic.
+    const shortRoot = '/Users/RUNNER~1/Temp/tsgit';
+    const longRoot = '/Users/runneradmin/Temp/tsgit';
+    const shortChild = '/Users/RUNNER~1/Temp/tsgit/missing.bin';
+    mocks.realpath.mockImplementation(async (input: string) => {
+      if (input === shortRoot) return longRoot;
+      throw enoent();
+    });
+    const sut = new NodeFileSystem(shortRoot, () => true);
+
+    // Act
+    const result = await sut.exists(shortChild);
+
+    // Assert
+    expect(result).toBe(false);
+  });
+
   it('Given POSIX host (isWindowsFn=false), When the child path differs only in case, Then PERMISSION_DENIED is thrown (case-sensitive)', async () => {
     // Arrange
     const root = '/Users/Foo/tsgit';
