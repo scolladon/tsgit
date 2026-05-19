@@ -241,6 +241,36 @@ describe('NodeFileSystem — canonical-root cache (DI)', () => {
 });
 
 describe('NodeFileSystem — openWithNoFollow Windows symlink refusal (DI)', () => {
+  it('Given Windows host, symlink leaf, When openWithNoFollow(write) is called, Then PERMISSION_DENIED is thrown without invoking the underlying open', async () => {
+    // Arrange — the write-mode flag-selection arm of openWithNoFollow
+    // was only exercised by the POSIX-only locked-directory integration
+    // test. Cross-platform coverage via DI: the upfront symlink check
+    // (caseInsensitive + isSymlinkLeaf) fires regardless of mode and
+    // refuses the open before any flag selection happens.
+    const root = 'C:\\canonical\\win-symlink-write';
+    const link = 'C:\\canonical\\win-symlink-write\\link';
+    const openOp = vi.fn().mockResolvedValue({ close: async () => undefined });
+    const fsOps = fakeFsOps({
+      realpath: vi.fn().mockImplementation(async (input: string) => input),
+      lstat: vi.fn().mockResolvedValue({ isSymbolicLink: () => true }),
+      open: openOp,
+    });
+    const sut = new NodeFileSystem(root, windowsPolicy, fsOps);
+
+    // Act
+    let caught: unknown;
+    try {
+      await sut.openWithNoFollow(link, 'write');
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert
+    expect(caught).toBeInstanceOf(TsgitError);
+    expect((caught as InstanceType<typeof TsgitError>).data.code).toBe('PERMISSION_DENIED');
+    expect(openOp).not.toHaveBeenCalled();
+  });
+
   it('Given Windows host, symlink leaf, When open rejects with EACCES, Then openWithNoFollow throws PERMISSION_DENIED', async () => {
     // Arrange
     const root = 'C:\\canonical\\win-symlink';
