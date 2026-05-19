@@ -4,6 +4,7 @@ import type { IndexEntry } from '../../domain/git-index/index.js';
 import { emptyPathspec, pathspecNoMatch } from '../../domain/index.js';
 import type { FileMode, ObjectId } from '../../domain/objects/index.js';
 import type { FilePath } from '../../domain/objects/object-id.js';
+import { matchesPathspec, type Pathspec } from '../../domain/pathspec/index.js';
 import type { Context } from '../../ports/context.js';
 import { readIndex } from '../primitives/read-index.js';
 import { MAX_WORKING_TREE_BLOB_BYTES, type WalkWorkingTreeEntry } from '../primitives/types.js';
@@ -17,7 +18,8 @@ import {
   assertNotBare,
   assertRepository,
 } from './internal/repo-state.js';
-import { readFile, validatePath } from './internal/working-tree.js';
+import { enforceLiteralMustMatch, resolvePathspec } from './internal/resolve-pathspec.js';
+import { readFile } from './internal/working-tree.js';
 
 const INDEX_MISSING_CODES = new Set([
   'FILE_NOT_FOUND',
@@ -68,15 +70,30 @@ export const add = async (
     return addAll(ctx, opts);
   }
   if (paths.length === 0) throw emptyPathspec();
-  return addLiteral(ctx, paths, opts);
+  return dispatchPathspec(ctx, paths, opts);
 };
 
-const addLiteral = async (
+// Branch on the resolved pathspec: pure literals that each name an
+// existing file route through the byte-identical per-path stage flow
+// from §14.1; anything else (globs, literal directories, negations)
+// walks the working tree and filters with the matcher.
+const dispatchPathspec = async (
   ctx: Context,
   paths: ReadonlyArray<string>,
   opts: AddOptions,
 ): Promise<AddResult> => {
-  const validated = paths.map(validatePath);
+  const { matcher, literalMustMatch, hasGlob } = resolvePathspec(paths);
+  if (!hasGlob && (await allLiteralsAreFiles(ctx, literalMustMatch))) {
+    return addLiteralOnly(ctx, literalMustMatch, opts);
+  }
+  return addByPathspec(ctx, matcher, literalMustMatch, opts);
+};
+
+const addLiteralOnly = async (
+  ctx: Context,
+  validated: ReadonlyArray<FilePath>,
+  opts: AddOptions,
+): Promise<AddResult> => {
   const lock = await acquireIndexLock(
     ctx,
     opts.breakStaleLockMs !== undefined ? { breakStaleLockMs: opts.breakStaleLockMs } : {},
@@ -94,6 +111,65 @@ const addLiteral = async (
       if (previous === undefined) added.push(path);
       else if (previous.id !== result.id || previous.mode !== result.mode) modified.push(path);
     }
+    await lock.commit(Array.from(newEntries.values()));
+    return { added, modified, removed: [] };
+  } finally {
+    await lock.release();
+  }
+};
+
+const allLiteralsAreFiles = async (
+  ctx: Context,
+  literals: ReadonlyArray<FilePath>,
+): Promise<boolean> => {
+  if (literals.length === 0) return false;
+  for (const path of literals) {
+    const stat = await ctx.fs.lstat(`${ctx.layout.workDir}/${path}`).catch(() => undefined);
+    if (stat === undefined) return false;
+    if (stat.isDirectory && !stat.isSymbolicLink) return false;
+  }
+  return true;
+};
+
+// Walk-and-filter add: applies `.gitignore` (so build artefacts stay
+// out) and the user's pathspec on top. Directories are NOT pruned by
+// the pathspec (a pattern like `*.ts` matches leaves, not dirs); only
+// leaves are filtered by it. `.gitignore` directory pruning still
+// applies via `buildRepoIgnorePredicate`.
+const addByPathspec = async (
+  ctx: Context,
+  matcher: Pathspec,
+  literalMustMatch: ReadonlyArray<FilePath>,
+  opts: AddOptions,
+): Promise<AddResult> => {
+  const ignore = await buildRepoIgnorePredicate(ctx);
+  const combinedIgnore: IgnorePredicate = async (path, isDirectory) => {
+    if (await ignore(path, isDirectory)) return true;
+    if (isDirectory) return false;
+    return !matchesPathspec(matcher, path, false);
+  };
+  const lock = await acquireIndexLock(
+    ctx,
+    opts.breakStaleLockMs !== undefined ? { breakStaleLockMs: opts.breakStaleLockMs } : {},
+  );
+  try {
+    const existing = await readExistingEntries(ctx);
+    const newEntries = new Map<FilePath, IndexEntry>(existing);
+    const matched: FilePath[] = [];
+    const added: FilePath[] = [];
+    const modified: FilePath[] = [];
+    const seen = new Set<FilePath>();
+    for await (const walkEntry of walkWorkingTree(ctx, { ignore: combinedIgnore })) {
+      const result = await processWalkEntry(ctx, walkEntry, existing, seen);
+      if (result === undefined) continue;
+      matched.push(result.path);
+      newEntries.set(result.path, result.entry);
+      if (result.kind === 'added') added.push(result.path);
+      else if (result.kind === 'modified') modified.push(result.path);
+    }
+    enforceLiteralMustMatch(literalMustMatch, matched);
+    added.sort();
+    modified.sort();
     await lock.commit(Array.from(newEntries.values()));
     return { added, modified, removed: [] };
   } finally {

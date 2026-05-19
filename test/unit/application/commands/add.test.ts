@@ -767,4 +767,76 @@ describe('add', () => {
     // Assert — re-add succeeds with a.txt re-staged.
     expect(sut.added).toEqual(['a.txt']);
   });
+
+  it('Given a glob pathspec "*.ts", When add, Then every matching path in the working tree is staged', async () => {
+    // Arrange
+    const ctx = await seedFreshRepo({
+      'a.ts': 'a',
+      'b.ts': 'b',
+      'README.md': '# r',
+    });
+
+    // Act
+    const sut = await add(ctx, ['*.ts']);
+
+    // Assert
+    expect([...sut.added].sort()).toEqual(['a.ts', 'b.ts']);
+  });
+
+  it('Given a glob with no match, When add, Then returns added=[] without throwing', async () => {
+    // Arrange
+    const ctx = await seedFreshRepo({ 'README.md': '# r' });
+
+    // Act
+    const sut = await add(ctx, ['*.ts']);
+
+    // Assert
+    expect(sut.added).toEqual([]);
+  });
+
+  it('Given a glob + a `!`-negation, When add, Then negated paths are excluded from staging', async () => {
+    // Arrange
+    const ctx = await seedFreshRepo({
+      'a.ts': 'a',
+      'a.test.ts': 'test',
+      'b.ts': 'b',
+    });
+
+    // Act
+    const sut = await add(ctx, ['*.ts', '!*.test.ts']);
+
+    // Assert
+    expect([...sut.added].sort()).toEqual(['a.ts', 'b.ts']);
+  });
+
+  it('Given a literal directory, When add, Then every file under it is staged (literal acts as directory prefix)', async () => {
+    // Arrange
+    const ctx = await seedFreshRepo({
+      'src/a.ts': 'a',
+      'src/b.ts': 'b',
+      'other.ts': 'other',
+    });
+
+    // Act
+    const sut = await add(ctx, ['src']);
+
+    // Assert
+    expect([...sut.added].sort()).toEqual(['src/a.ts', 'src/b.ts']);
+  });
+
+  it('Given a glob and a repo-root .gitignore, When add, Then ignored matches are NOT staged', async () => {
+    // Arrange
+    const ctx = await seedFreshRepo({
+      'a.ts': 'a',
+      'dist/build.ts': 'compiled',
+    });
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitignore`, 'dist/\n');
+
+    // Act
+    const sut = await add(ctx, ['*.ts']);
+
+    // Assert — dist/build.ts is pruned via gitignore even though it
+    // matches the pathspec.
+    expect(sut.added).toEqual(['a.ts']);
+  });
 });
