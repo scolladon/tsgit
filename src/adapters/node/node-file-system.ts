@@ -524,6 +524,11 @@ export class NodeFileSystem implements FileSystem {
       return this.fsOps.realpath(resolved);
     }
     if (mode === 'lstat') {
+      // Mirror the `read` arm: fail-fast on obviously out-of-tree input
+      // BEFORE issuing the realpath I/O. Without this gate, an absolute
+      // escape path (`../../etc`) would still walk through
+      // `realpath(dirname)` before the post-check catches it. (§14.5.6)
+      check(resolved);
       const parent = await this.fsOps.realpath(this.pathPolicy.dirname(resolved));
       return this.pathPolicy.join(parent, this.pathPolicy.basename(resolved));
     }

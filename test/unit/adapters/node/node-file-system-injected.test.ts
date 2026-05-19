@@ -642,6 +642,40 @@ describe('NodeFileSystem.checkContainment — non-ENOENT errno from realpath (DI
   });
 });
 
+describe('resolveForMode — lstat mode pre-realpath check (DI)', () => {
+  it('Given lstat called against an absolute out-of-tree path, When checkContainment runs, Then PERMISSION_DENIED fires BEFORE realpath(dirname) (§14.5.6)', async () => {
+    // Arrange — the lstat mode used to issue realpath(dirname) BEFORE
+    // any containment check. After §14.5.6 it mirrors read mode: the
+    // pre-realpath `check(resolved)` arm fires and throws permissionDenied
+    // before any I/O on the leaf's parent. We pin the absence of the
+    // leaf-parent realpath call as the regression signal.
+    const rootDir = '/root';
+    const outside = '/elsewhere/leaf.bin';
+    const realpathSpy = vi.fn().mockImplementation(async (input: string) => input);
+    const fsOps = fakeFsOps({
+      realpath: realpathSpy,
+    });
+    const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+
+    // Act
+    let caught: unknown;
+    try {
+      await sut.lstat(outside);
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert — PERMISSION_DENIED + only the canonical-root realpath
+    // fired (no realpath for `/elsewhere`).
+    expect(caught).toBeInstanceOf(TsgitError);
+    expect((caught as InstanceType<typeof TsgitError>).data.code).toBe('PERMISSION_DENIED');
+    const dirnameCalls = realpathSpy.mock.calls.filter(
+      ([arg]: readonly unknown[]) => arg === '/elsewhere',
+    );
+    expect(dirnameCalls.length).toBe(0);
+  });
+});
+
 describe('resolveForCreation — non-ENOENT errno on leaf lstat (DI)', () => {
   it('Given the leaf parent lstat throws ENOTDIR (file used as directory), When write is called, Then throws NOT_A_DIRECTORY', async () => {
     // Arrange — creation target is `/root/block/leaf.txt`. The walk-up
