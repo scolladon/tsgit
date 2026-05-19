@@ -493,7 +493,7 @@ export class NodeFileSystem implements FileSystem {
     // realpathNearestExisting already resolved the existing prefix and rethrew any non-ENOENT
     // error, so lstat on `real` here can only succeed (leaf exists) or throw ENOENT (leaf is
     // the to-be-created tail). A symlink leaf is rejected to prevent writes through it.
-    const real = await realpathNearestExisting(resolved);
+    const real = await realpathNearestExisting(resolved, this.pathPolicy);
     let lstatResult: { ok: true; isSymlink: boolean } | { ok: false; err: unknown };
     try {
       const leafStat = await fsPromises.lstat(real);
