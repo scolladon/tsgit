@@ -53,21 +53,6 @@ describe('findLayout', () => {
     expect(sut).toBeUndefined();
   });
 
-  it('Given a .git directory that exists at cwd AND stat returns isDirectory=false, When findLayout runs, Then it does NOT return that layout (kills `if (found)` always-true mutant via the isDirectory branch)', async () => {
-    const fs = new MemoryFileSystem({ rootDir: '/repo' });
-    // Write .git as a regular file so exists=true but isDirectory=false.
-    await fs.writeUtf8('/repo/.git', 'gitdir: /elsewhere');
-
-    const sut = await findLayout(fs, '/repo', posixPolicy);
-
-    // If `if (found)` is mutated to `if (true)`, the same isDirectory check
-    // gates the return — so this mutant survives. Document as equivalent.
-    // The actual test that kills the mutant is: ensure when found is FALSE
-    // (parent has no .git), we DON'T return a layout — covered by the
-    // "no .git anywhere" test above.
-    expect(sut).toBeUndefined();
-  });
-
   it('Given a .git that exists but is a file (not a directory — gitlink), When findLayout runs, Then it does NOT return that layout (skips the file)', async () => {
     const fs = new MemoryFileSystem({ rootDir: '/repo' });
     // .git is a file (e.g., a worktree gitlink stub) at /repo/.git
@@ -75,7 +60,10 @@ describe('findLayout', () => {
 
     const sut = await findLayout(fs, '/repo', posixPolicy);
 
-    // The walk continues past a non-directory .git.
+    // The walk continues past a non-directory .git. This also documents
+    // an equivalent mutant: flipping `if (found)` to `if (true)` keeps
+    // the inner `isDirectory` check that gates the return, so the
+    // observable behaviour is identical.
     expect(sut).toBeUndefined();
   });
 });

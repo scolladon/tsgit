@@ -306,10 +306,13 @@ describe('NodeFileSystem — 8.3 short-name parent reconciliation (DI)', () => {
       caught = err;
     }
 
-    // Assert — must NOT be PERMISSION_DENIED.
-    if (caught instanceof TsgitError) {
-      expect(caught.data.code).not.toBe('PERMISSION_DENIED');
-    }
+    // Assert — the write must succeed; an unconditional pin kills mutants
+    // that would let the call skip containment entirely (the previous
+    // `if (caught instanceof TsgitError)` guard left the assertion block
+    // unreached on the happy path).
+    expect(caught).toBeUndefined();
+    expect(fsOps.writeFile).toHaveBeenCalledTimes(1);
+    expect(fsOps.mkdir).toHaveBeenCalled();
   });
 });
 

@@ -68,20 +68,40 @@ Commit message (via commitlint):
 1. **Static Analysis** — biome, tsc, knip, jscpd, ls-lint, npm outdated (parallel)
 2. **Unit Tests** — Matrix: Ubuntu/macOS/Windows × Node 22/24 (Windows re-added in Phase 14.4)
 3. **Mutation Testing** — Stryker incremental on PRs, Linux-only (ADR-044)
-4. **Integration Tests** — Linux-only; `git-http-backend` CGI is POSIX (clone/fetch/push end-to-end)
+4. **Integration Tests** — Three jobs split by platform contract (see below)
 5. **E2E Tests** — Playwright: Chrome, Firefox, Safari (Linux runner)
 6. **Performance** — vitest bench + bundle size checks
 7. **MegaLinter** — Comprehensive linting (parallel with all stages)
 
+#### Integration test jobs (Phase 14.4)
+
+The integration stage runs three sibling jobs, each gated by the
+platform-segregated folder structure described in
+[ADR-048](docs/adr/048-platform-segregated-test-folders.md):
+
+| Job                 | Runner(s)                       | Folder                          | What it exercises |
+|---------------------|---------------------------------|---------------------------------|-------------------|
+| `integration`       | `ubuntu-latest`                 | `test/integration/network/**`   | `git-http-backend` clone/fetch/push, end-to-end protocol scenarios. POSIX-only because the CGI stack is. |
+| `posix-integration` | `ubuntu-latest` + `macos-latest`| `test/integration/posix-only/**`| Real POSIX symlinks, real `chmod 0o600` enforcement, real `EACCES` from a locked directory parent. |
+| `win-integration`   | `windows-latest`                | `test/integration/win-only/**`  | Real 8.3 short-name parent reconciliation, real drive-letter casing, real Windows symlink-privilege handling, `openRepository` against `C:\`-prefixed paths. |
+
+The cross-platform integration project excludes the `*-only/**`
+folders so the Linux `integration` job does not double-run the
+platform-bound suites. Tests are gated by their **folder location**,
+not by `skipIf` blocks in the test body.
+
 #### Windows-runner notes
 
-The `windows-latest` cell exercises `NodeFileSystem` against real 8.3
-short-name parents (mkdtemp under `C:\Users\RUNNER~1\Temp\…`). Test
-files under `test/unit/adapters/node/*windows*.test.ts` use
-`describe.skipIf(process.platform !== 'win32')` so they no-op on POSIX
-dev shells. Wall time is ~2-3× Linux; expect ~12-15 min for the
-unit-tests job. Mutation testing stays on Linux (per ADR-044 cost
-analysis); per-OS mutation tracking is backlogged under §15.4.
+The `windows-latest` `unit-tests` cell exercises `NodeFileSystem` via
+the `PathPolicy` + `FsOperations` injection seam — every Windows
+behavioural test in `test/unit/adapters/node/node-file-system-injected.test.ts`
+runs on every OS because the simulated platform is data, not a host
+read. The `win-integration` job covers the OS → Node → adapter wiring
+that simulation cannot fake (8.3 short-name expansion through real
+`fsPromises.realpath`, NTFS reparse-point behaviour). Wall time is
+~2–3× Linux; expect ~12–15 min for the `unit-tests` job. Mutation
+testing stays on Linux (per ADR-044 cost analysis); per-OS mutation
+tracking is backlogged under §15.4.
 
 ### Release Process
 

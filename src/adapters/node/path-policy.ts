@@ -40,8 +40,15 @@ export interface PathPolicy {
   normalizeForCompare(path: string): string;
 }
 
+const narrowSep = (sep: string): '\\' | '/' => {
+  if (sep !== '\\' && sep !== '/') {
+    throw new Error(`PathPolicy: unsupported separator ${JSON.stringify(sep)}`);
+  }
+  return sep;
+};
+
 const makePolicy = (impl: typeof nodePath.posix, caseInsensitive: boolean): PathPolicy => ({
-  sep: impl.sep as '\\' | '/',
+  sep: narrowSep(impl.sep),
   caseInsensitive,
   isAbsolute: (path: string) => impl.isAbsolute(path),
   resolve: (...parts: string[]) => impl.resolve(...parts),

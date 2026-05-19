@@ -640,12 +640,13 @@ describe('NodeFileSystem', () => {
       });
 
       // The non-ENOENT-rethrow tests for realpathNearestExisting / exists /
-      // resolveForCreation live in `node-file-system-containment.test.ts`:
-      // they use `vi.mock('node:fs/promises')` to control the realpath/lstat
-      // errno surface, which makes them cross-platform (POSIX hosts produce
-      // ENOTDIR for "file used as directory"; Windows produces ENOENT or
-      // EINVAL — the test is about how `realpathNearestExisting` rethrows
-      // arbitrary errno-bearing rejections, not about which errno).
+      // resolveForCreation live in `node-file-system-injected.test.ts`:
+      // they pass a per-instance `FsOperations` fake (ADR-047) to control
+      // the realpath/lstat errno surface, which makes them cross-platform
+      // (POSIX hosts produce ENOTDIR for "file used as directory"; Windows
+      // produces ENOENT or EINVAL — the test is about how
+      // `realpathNearestExisting` rethrows arbitrary errno-bearing
+      // rejections, not about which errno).
     });
 
     describe('mapStat', () => {
@@ -690,8 +691,8 @@ describe('NodeFileSystem', () => {
 
     // `NodeFileSystem.exists` non-ENOENT and escape-branch tests +
     // `resolveForCreation` non-ENOENT-on-leaf-lstat tests both moved to
-    // `node-file-system-containment.test.ts` where vi.mock controls the
-    // errno surface — see comment above.
+    // `node-file-system-injected.test.ts` where per-instance `FsOperations`
+    // fakes (ADR-047) control the errno surface — see comment above.
   });
 
   describe('isWindowsSymlinkRefusal', () => {

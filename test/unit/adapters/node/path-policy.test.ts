@@ -31,6 +31,16 @@ describe('selectNativePolicy', () => {
     // Assert
     expect(sut).toBe(posixPolicy);
   });
+
+  it('Given an unrecognised platform string, When selectNativePolicy is called, Then it falls back to posixPolicy', () => {
+    // Arrange & Act — guards the default arm of the ternary against a
+    // ConditionalExpression mutant that would flip the fallback to
+    // windowsPolicy. Any non-"win32" platform must yield posixPolicy.
+    const sut = selectNativePolicy('freebsd' as NodeJS.Platform);
+
+    // Assert
+    expect(sut).toBe(posixPolicy);
+  });
 });
 
 describe('nativePolicy', () => {

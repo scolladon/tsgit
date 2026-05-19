@@ -496,3 +496,81 @@ complementary tests.
   A: Double realpath per call is wasteful and creates a cache-coherency
   problem the lazy-cache avoids. The rootDir is immutable for the
   adapter's lifetime by construction.
+
+## 9. Post-merge architectural changes
+
+The decisions captured in §6 (ADRs 041–045) framed the work up-front,
+but the implementation evolved further mid-PR. Three architectural
+pivots happened after the design was signed off and before merge; they
+are documented retrospectively in ADRs 046–048 and summarised here so
+future readers do not have to diff against the merged code to recover
+the rationale.
+
+### 9.1 From `platform.ts` to `PathPolicy` (ADR-046)
+
+The design's §3.2 sketched a tiny `src/adapters/node/platform.ts`
+module exporting `isWindows()` and `normalizeForCompare()` as
+spy-able helpers. The first implementation pass revealed three
+weaknesses (surface creep as more platform-aware operations joined,
+fragile `vi.spyOn` binding semantics, and two truths drift between
+production and test reads of `process.platform`). The module was
+recast as a single `PathPolicy` interface — every platform-aware
+path operation the adapter needs in one cohesive value — with
+`nativePolicy` / `posixPolicy` / `windowsPolicy` exports and a
+`selectNativePolicy(platform)` pure helper so both arms of the host
+selection ternary are unit-testable. `NodeFileSystem`'s constructor
+gained `pathPolicy: PathPolicy = nativePolicy` as an optional second
+argument. See [ADR-046](../adr/046-path-policy-abstraction.md).
+
+### 9.2 `FsOperations` DI replaces `vi.mock` (ADR-047)
+
+The original test plan kept `vi.mock('node:fs/promises', …)` for
+fault-injection cases. Once two `NodeFileSystem` instances with
+different policies needed to coexist in one test file, the module-
+scoped mock became the bottleneck. The adapter grew a third optional
+constructor param (`fsOps: FsOperations = realFsOps`) where
+`FsOperations` is `Pick<typeof fsPromises, …>` of the methods the
+adapter actually uses. Tests pass per-instance fakes via a
+`fakeFsOps` helper; the previous `node-file-system-containment.test.ts`
+file dissolved into the new `node-file-system-injected.test.ts`
+which exercises POSIX-shaped and Windows-shaped adapters in the
+same file without module-level mocks. See
+[ADR-047](../adr/047-fs-operations-dependency-injection.md).
+
+### 9.3 Platform-segregated integration folders (ADR-048)
+
+`test/unit/` (per the §4.1 plan) gained zero `describe.skipIf` blocks
+after the PathPolicy/FsOps refactor: the simulated-platform tests
+became host-agnostic and the platform-mocked cases all live in
+`test/unit/`. The real-fs cases that the §4.2 design proposed as
+inline `skipIf` blocks were instead split into
+`test/integration/posix-only/` (real symlinks, real chmod bits,
+real locked-dir EACCES) and `test/integration/win-only/` (real 8.3
+short-name reconciliation, real drive-letter handling, real
+Windows symlink privileges). Two new Vitest projects
+(`posix-integration`, `win-integration`) target those folders;
+matching CI jobs run them on the platform that can satisfy the
+assertions. Lint-staged is locked to `--project unit` so commit
+hooks stay host-agnostic. See
+[ADR-048](../adr/048-platform-segregated-test-folders.md).
+
+### 9.4 Summary of refactored layout
+
+```
+src/adapters/node/
+├─ node-file-system.ts          # consumes PathPolicy + FsOperations via DI
+├─ path-policy.ts               # ADR-046 (NEW)
+└─ fs-operations.ts             # ADR-047 (NEW)
+
+test/
+├─ unit/adapters/node/
+│  ├─ node-file-system.test.ts            # cross-platform behaviour
+│  ├─ node-file-system-injected.test.ts   # PathPolicy + FsOps DI scenarios (NEW)
+│  └─ path-policy.test.ts                 # NEW
+├─ integration/posix-only/                # ADR-048 (NEW folder)
+└─ integration/win-only/                  # ADR-048 (NEW folder)
+```
+
+The original §2 architecture diagram in this document refers to
+`src/adapters/node/node-file-system.ts` only; readers should treat
+that diagram as the starting point and §9 as the as-merged state.

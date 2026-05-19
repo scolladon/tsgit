@@ -45,11 +45,12 @@ describe('NodeFileSystem — POSIX-locked filesystem semantics', () => {
     await env.cleanup();
   });
 
-  it('Given rmRecursive descent into a directory whose lstat surfaces a non-ENOENT error (EACCES via chmod 0o000), When removing, Then the mapped TsgitError propagates', async () => {
+  it('Given rmRecursive descent into a directory whose lstat surfaces a non-ENOENT error (EACCES via chmod 0o000), When removing, Then the mapped TsgitError propagates as PERMISSION_DENIED', async () => {
     // Arrange — chmod a subdirectory to 000 so its readdir/lstat fails with EACCES.
     // This exercises the `throw err` branch in removeTree's catch (anything
     // other than FILE_NOT_FOUND must propagate; without it errors would be
     // silently swallowed).
+    const sut = env.fs;
     const sealed = nodePath.join(env.rootDir, 'sealed');
     await fsPromises.mkdir(sealed);
     await fsPromises.writeFile(nodePath.join(sealed, 'inside.txt'), Buffer.from([1]));
@@ -58,7 +59,7 @@ describe('NodeFileSystem — POSIX-locked filesystem semantics', () => {
     // Act
     let caught: unknown;
     try {
-      await env.fs.rmRecursive(sealed);
+      await sut.rmRecursive(sealed);
     } catch (err) {
       caught = err;
     } finally {
@@ -66,28 +67,32 @@ describe('NodeFileSystem — POSIX-locked filesystem semantics', () => {
       await fsPromises.chmod(sealed, 0o755);
     }
 
-    // Assert — must surface a TsgitError (not silently succeed and not a raw errno).
+    // Assert — EACCES maps to PERMISSION_DENIED (positive assertion kills
+    // StringLiteral mutants that would otherwise survive a `not.toBe(…)` check).
     expect(caught).toBeInstanceOf(TsgitError);
-    expect((caught as TsgitError).data.code).not.toBe('FILE_NOT_FOUND');
+    expect((caught as TsgitError).data.code).toBe('PERMISSION_DENIED');
   });
 
-  it('Given openWithNoFollow with non-ELOOP errno (EISDIR), When opening, Then propagates the mapped TsgitError unchanged', async () => {
+  it('Given openWithNoFollow with non-ELOOP errno (EISDIR), When opening a directory in write mode, Then propagates as UNSUPPORTED_OPERATION', async () => {
     // Arrange — open a directory in write mode triggers EISDIR which is NOT
     // remapped to PERMISSION_DENIED; this exercises the catch-block
     // re-throw branch.
+    const sut = env.fs;
     const dir = nodePath.join(env.rootDir, 'just-a-dir');
     await fsPromises.mkdir(dir);
 
     // Act
     let caught: unknown;
     try {
-      await env.fs.openWithNoFollow(dir, 'write');
+      await sut.openWithNoFollow(dir, 'write');
     } catch (err) {
       caught = err;
     }
 
     // Assert — EISDIR maps to UNSUPPORTED_OPERATION (per mapErrno default arm).
+    // Positive assertion needed to kill mutants that would flip the default
+    // mapping to a different sibling error code.
     expect(caught).toBeInstanceOf(TsgitError);
-    expect((caught as TsgitError).data.code).not.toBe('PERMISSION_DENIED');
+    expect((caught as TsgitError).data.code).toBe('UNSUPPORTED_OPERATION');
   });
 });
