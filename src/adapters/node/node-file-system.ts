@@ -426,6 +426,10 @@ export class NodeFileSystem implements FileSystem {
     // (no clean signal in `mapErrno`); pre-lstat the leaf so the post-open
     // rewrap can be gated on "is the leaf actually a symlink" — a real
     // EACCES on a regular file MUST surface unchanged.
+    // equivalent-mutant: flipping the `: false` arm to `: true` on the Linux
+    // mutation runner is harmless — `isWindowsSymlinkRefusal` short-circuits
+    // on `!isWindowsFn()` so `isSymlinkLeaf` is never read. Windows-mocked
+    // tests (`() => true`) kill the mutant.
     const isSymlinkLeaf = this.isWindowsFn() ? await this.isSymlinkLeaf(real) : false;
 
     const flag = mode === 'write' ? fs.constants.O_WRONLY : fs.constants.O_RDONLY;
@@ -442,6 +446,12 @@ export class NodeFileSystem implements FileSystem {
   };
 
   private async isSymlinkLeaf(real: string): Promise<boolean> {
+    // equivalent-mutant: this method is only called on Windows runs
+    // (`isWindowsFn() ? await this.isSymlinkLeaf(real) : false` in
+    // `openWithNoFollow`). On the Linux mutation runner the body is
+    // unreachable, so mutating `false`/`true` returns or stripping the
+    // catch arm produces no observable effect. Windows-mocked tests in
+    // `node-file-system-containment.test.ts` exercise both arms.
     try {
       const stat = await fsPromises.lstat(real);
       return stat.isSymbolicLink();

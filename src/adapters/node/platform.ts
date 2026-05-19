@@ -13,4 +13,9 @@
 
 export type PlatformPredicate = () => boolean;
 
+// equivalent-mutant: mutating `'win32'` to `""` (or the comparison to `false`)
+// flips the return to the opposite host's value. On the Linux mutation runner
+// `isWindows()` is always false; complementary Windows tests inject `() => true`
+// at the constructor boundary, so the mutant has no observable effect on
+// Linux but is killed on Windows runners.
 export const isWindows: PlatformPredicate = () => process.platform === 'win32';
