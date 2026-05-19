@@ -1,23 +1,24 @@
 import { TsgitError } from '../../domain/error.js';
 import type { IndexEntry } from '../../domain/git-index/index.js';
-import { emptyPathspec, pathspecNoMatch } from '../../domain/index.js';
+import { emptyPathspec } from '../../domain/index.js';
 import type { FilePath } from '../../domain/objects/object-id.js';
+import { matchesPathspec } from '../../domain/pathspec/index.js';
 import type { Context } from '../../ports/context.js';
 import { readIndex } from '../primitives/read-index.js';
 import { acquireIndexLock } from './internal/index-update.js';
+import {
+  assertNoPendingOperation,
+  assertNotBare,
+  assertRepository,
+} from './internal/repo-state.js';
+import { enforceLiteralMustMatch, resolvePathspec } from './internal/resolve-pathspec.js';
+import { removeFile } from './internal/working-tree.js';
 
 const INDEX_MISSING_CODES = new Set([
   'FILE_NOT_FOUND',
   'INVALID_INDEX_HEADER',
   'INVALID_INDEX_ENTRY',
 ]);
-
-import {
-  assertNoPendingOperation,
-  assertNotBare,
-  assertRepository,
-} from './internal/repo-state.js';
-import { removeFile, validatePath } from './internal/working-tree.js';
 
 export interface RmOptions {
   readonly cached?: boolean;
@@ -41,7 +42,7 @@ export const rm = async (
   await assertNotBare(ctx, 'rm');
   await assertNoPendingOperation(ctx);
   if (paths.length === 0) throw emptyPathspec();
-  const validated = paths.map(validatePath);
+  const { matcher, literalMustMatch } = resolvePathspec(paths);
   const lock = await acquireIndexLock(
     ctx,
     opts.breakStaleLockMs !== undefined ? { breakStaleLockMs: opts.breakStaleLockMs } : {},
@@ -56,11 +57,11 @@ export const rm = async (
     const byPath = new Map<FilePath, IndexEntry>();
     for (const entry of index.entries) byPath.set(entry.path, entry);
     const removed: FilePath[] = [];
-    for (const path of validated) {
-      if (!byPath.has(path)) throw pathspecNoMatch(path);
-      byPath.delete(path);
-      removed.push(path);
+    for (const [path] of byPath) {
+      if (matchesPathspec(matcher, path)) removed.push(path);
     }
+    enforceLiteralMustMatch(literalMustMatch, removed);
+    for (const path of removed) byPath.delete(path);
     if (!opts.cached) {
       for (const path of removed) {
         // FILE_NOT_FOUND is the only tolerable error: working file already gone.

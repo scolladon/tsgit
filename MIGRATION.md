@@ -77,6 +77,25 @@ honours `.gitignore`, `.git/info/exclude`, nested `.gitignore`, and
 `core.excludesFile` (from git config; `~`-expanded against the
 runtime home directory).
 
+Phase 14.2 adds pathspec globs to `add`, `rm`, and
+`checkout({ paths })`:
+
+```typescript
+// Stage every .ts except tests.
+await repo.add(['*.ts', '!*.test.ts']);
+
+// Remove every .log from the index.
+await repo.rm(['*.log']);
+
+// Restore everything under src/ from HEAD.
+await repo.checkout({ paths: ['src/**'], source: 'HEAD' });
+```
+
+A pattern containing `*`, `?`, or `**` is a glob; otherwise it is a
+literal (treated as a directory prefix). `!`-prefixed entries exclude.
+Last-match wins. Literal-no-match throws `PATHSPEC_NO_MATCH`;
+glob-no-match is a silent no-op.
+
 ### `git.commit` → `repo.commit`
 
 ```typescript

@@ -348,6 +348,28 @@ new `walkWorkingTree` primitive. Operator-visible behaviours:
   block devices, and other special files pointed at by
   `core.excludesFile` are silently skipped. Defends against
   configurations like `excludesFile = /dev/zero`.
+
+## Operating pathspec globs (Phase 14.2)
+
+`repo.add`, `repo.rm`, and `repo.checkout({ paths })` accept globs
+(`*.ts`, `src/**`) alongside literal paths. Operator-visible behaviour:
+
+- **Detection:** patterns containing `*`, `?`, or `**` are treated
+  as globs; everything else is a literal. Literals also match
+  descendants (`src` selects `src` and every file under it).
+- **Exclusion:** a `!`-prefixed pattern excludes earlier matches.
+  Last-match wins (mirrors `.gitignore`).
+- **No-match semantics:**
+  - Glob with no match → no-op, no throw.
+  - Literal with no match → `PATHSPEC_NO_MATCH` (Git-like contract).
+- **Pattern budget:** each pattern is capped at 256 UTF-8 bytes
+  AND at most 4 `**` tokens. Over either → `INVALID_OPTION` with
+  `option: 'paths'`. Bounds compiled-regex cost.
+- **Character classes (`[abc]`) and magic prefixes** are NOT
+  supported in v1.
+- **`status`** does NOT take a `paths` filter — see
+  `docs/adr/039-defer-status-pathspec.md`. Filter the returned
+  `ChangeEntry[]` client-side if needed.
 - **Atomicity** — the `.git/index.lock` is acquired before the walk,
   released after either a successful single-shot commit OR a thrown
   error. Concurrent processes hitting the index see either the old

@@ -58,6 +58,41 @@ describe('rm', () => {
     await expectError(() => rm(ctx, ['ghost.txt']), 'PATHSPEC_NO_MATCH');
   });
 
+  it('Given a glob "*.log" with two matching tracked files, When rm, Then both are removed (no PATHSPEC_NO_MATCH for globs)', async () => {
+    // Arrange
+    const ctx = await seedAndStage({ 'a.log': 'a', 'b.log': 'b', 'keep.ts': 'k' });
+
+    // Act
+    const sut = await rm(ctx, ['*.log']);
+
+    // Assert
+    expect([...sut.removed].sort()).toEqual(['a.log', 'b.log']);
+    expect(await ctx.fs.exists(`${ctx.layout.workDir}/keep.ts`)).toBe(true);
+  });
+
+  it('Given a glob "*.nope" with no matches, When rm, Then returns removed=[] without throwing', async () => {
+    // Arrange
+    const ctx = await seedAndStage({ 'a.txt': 'a' });
+
+    // Act
+    const sut = await rm(ctx, ['*.nope']);
+
+    // Assert — glob no-match is a no-op, not an error (Git semantics).
+    expect(sut.removed).toEqual([]);
+  });
+
+  it('Given a glob + a `!`-negation, When rm, Then negated paths stay in the index', async () => {
+    // Arrange
+    const ctx = await seedAndStage({ 'a.log': 'a', 'keep.log': 'k', 'b.log': 'b' });
+
+    // Act
+    const sut = await rm(ctx, ['*.log', '!keep.log']);
+
+    // Assert
+    expect([...sut.removed].sort()).toEqual(['a.log', 'b.log']);
+    expect(await ctx.fs.exists(`${ctx.layout.workDir}/keep.log`)).toBe(true);
+  });
+
   it('Given a bare repo, When rm, Then throws BARE_REPOSITORY', async () => {
     // Arrange — fresh ctx with bare=true config seeded BEFORE any read.
     const ctx = createMemoryContext();

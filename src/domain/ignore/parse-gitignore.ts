@@ -28,38 +28,7 @@ const unescapePattern = (s: string): string => {
   return s.replace(/\\(.)/g, '$1');
 };
 
-const compilePattern = (pattern: string, anchored: boolean): RegExp => {
-  // Convert glob to regex.
-  let body = '';
-  let i = 0;
-  while (i < pattern.length) {
-    const ch = pattern[i] as string;
-    if (ch === '*') {
-      if (pattern[i + 1] === '*') {
-        // `**` matches zero or more path segments; eat a trailing `/` so
-        // `**/foo` matches both `foo` and `a/b/foo`.
-        body += '.*';
-        i += 2;
-        if (pattern[i] === '/') i += 1;
-        continue;
-      }
-      // Single `*` matches anything except `/`
-      body += '[^/]*';
-      i += 1;
-      continue;
-    }
-    if (ch === '?') {
-      body += '[^/]';
-      i += 1;
-      continue;
-    }
-    body += /[.+^${}()|[\]\\]/.test(ch) ? `\\${ch}` : ch;
-    i += 1;
-  }
-  // Anchored = match from repo root; not anchored = match anywhere in path
-  const prefix = anchored ? '^' : '(^|.*/)';
-  return new RegExp(`${prefix}${body}$`);
-};
+import { compileGlob } from '../pathspec/index.js';
 
 export const parseGitignore = (text: string): IgnoreRuleset => {
   const out: IgnoreRule[] = [];
@@ -80,7 +49,7 @@ export const parseGitignore = (text: string): IgnoreRuleset => {
       ? withoutTrailingSlash.slice(1)
       : withoutTrailingSlash;
     const cleanPattern = unescapePattern(stripped);
-    const compiled = compilePattern(cleanPattern, anchored);
+    const compiled = compileGlob(cleanPattern, { anchored });
     out.push({
       pattern: unescapePattern(trimmed),
       negated,

@@ -327,6 +327,86 @@ describe('checkout — progress reporting', () => {
     expect(events[events.length - 1]).toEqual({ kind: 'end', op: 'checkout:materialize' });
   });
 
+  it('Given a glob pathspec restoring from HEAD, When checkout, Then only matching paths are restored', async () => {
+    // Arrange — stage two files + commit them, then locally modify both.
+    const ctx = createMemoryContext();
+    await init(ctx);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.ts`, 'a-original');
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.md`, 'b-original');
+    await add(ctx, ['a.ts', 'b.md']);
+    await commit(ctx, { message: 'baseline', author });
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.ts`, 'a-modified');
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.md`, 'b-modified');
+
+    // Act — restore only `*.ts`.
+    const sut = await checkout(ctx, { paths: ['*.ts'], source: 'HEAD' });
+
+    // Assert — a.ts reverts, b.md stays modified.
+    expect(sut.changedPaths).toBe(1);
+    expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/a.ts`)).toBe('a-original');
+    expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/b.md`)).toBe('b-modified');
+  });
+
+  it('Given a glob pathspec with no match, When checkout, Then changedPaths is 0 and nothing throws', async () => {
+    // Arrange
+    const ctx = createMemoryContext();
+    await init(ctx);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.ts`, 'a');
+    await add(ctx, ['a.ts']);
+    await commit(ctx, { message: 'baseline', author });
+
+    // Act
+    const sut = await checkout(ctx, { paths: ['*.nope'], source: 'HEAD' });
+
+    // Assert
+    expect(sut.changedPaths).toBe(0);
+  });
+
+  it('Given a literal pathspec with no match, When checkout, Then throws PATHSPEC_NO_MATCH', async () => {
+    // Arrange
+    const ctx = createMemoryContext();
+    await init(ctx);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.ts`, 'a');
+    await add(ctx, ['a.ts']);
+    await commit(ctx, { message: 'baseline', author });
+
+    // Act
+    let caught: unknown;
+    try {
+      await checkout(ctx, { paths: ['nope.txt'], source: 'HEAD' });
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert — pin the pattern field so a mutant that drops the
+    // missing-literal into the error payload is killed.
+    expect(caught).toBeInstanceOf(TsgitError);
+    const data = (caught as TsgitError).data;
+    expect(data.code).toBe('PATHSPEC_NO_MATCH');
+    if (data.code === 'PATHSPEC_NO_MATCH') {
+      expect(data.pattern).toBe('nope.txt');
+    }
+  });
+
+  it('Given a pathspec with glob + negation, When checkout, Then negated paths are excluded', async () => {
+    // Arrange
+    const ctx = createMemoryContext();
+    await init(ctx);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.ts`, 'a-original');
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.test.ts`, 'test-original');
+    await add(ctx, ['a.ts', 'a.test.ts']);
+    await commit(ctx, { message: 'baseline', author });
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.ts`, 'a-modified');
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.test.ts`, 'test-modified');
+
+    // Act — restore *.ts but exclude *.test.ts.
+    await checkout(ctx, { paths: ['*.ts', '!*.test.ts'], source: 'HEAD' });
+
+    // Assert
+    expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/a.ts`)).toBe('a-original');
+    expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/a.test.ts`)).toBe('test-modified');
+  });
+
   it('Given a checkout that throws (unknown branch), When run, Then end still fires', async () => {
     const ctx = await seedWithBranch();
     const { reporter, events } = recordingProgress();
