@@ -45,12 +45,26 @@ describe('compileGlob', () => {
     expect(sut.test('a/d')).toBe(false);
   });
 
-  it('Given a `?` glob, When matched, Then it matches exactly one non-`/` byte', () => {
+  it('Given a `?` glob, When matched, Then it matches exactly one non-`/` byte (not zero, not many)', () => {
     const sut = compileGlob('a?c', { anchored: true });
 
     expect(sut.test('abc')).toBe(true);
     expect(sut.test('ac')).toBe(false);
+    expect(sut.test('abbc')).toBe(false);
     expect(sut.test('a/c')).toBe(false);
+  });
+
+  it('Given a mid-pattern `**/`, When matched, Then it spans zero-or-more segments AND does NOT match within a segment (kills the `.*` regex bug)', () => {
+    const sut = compileGlob('a/**/c', { anchored: true });
+
+    expect(sut.test('a/c')).toBe(true);
+    expect(sut.test('a/b/c')).toBe(true);
+    expect(sut.test('a/b/d/c')).toBe(true);
+    // The bug case: `a/xc` is `a` followed by a single segment `xc`.
+    // The original `.*` regex compiled `^a/.*c$`, which matched this
+    // path. The corrected `(.*/)?` regex requires at least one trailing
+    // `/` between `a/` and `c`, so this must NOT match.
+    expect(sut.test('a/xc')).toBe(false);
   });
 
   it('Given a pattern with regex specials, When compiled, Then they are escaped (literal match)', () => {
@@ -73,6 +87,15 @@ describe('compileGlob', () => {
     expect(sut.test('foo')).toBe(true);
     expect(sut.test('a/foo')).toBe(true);
     expect(sut.test('a/b/foo')).toBe(true);
+  });
+
+  it('Given a non-anchored GLOB "*.ts", When matched at depth, Then matches at any segment AND rejects non-matching extensions', () => {
+    const sut = compileGlob('*.ts', { anchored: false });
+
+    expect(sut.test('a.ts')).toBe(true);
+    expect(sut.test('src/a.ts')).toBe(true);
+    expect(sut.test('src/a/b.ts')).toBe(true);
+    expect(sut.test('src/a.js')).toBe(false);
   });
 });
 

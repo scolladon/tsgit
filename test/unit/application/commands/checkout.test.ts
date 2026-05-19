@@ -378,9 +378,14 @@ describe('checkout — progress reporting', () => {
       caught = err;
     }
 
-    // Assert
+    // Assert — pin the pattern field so a mutant that drops the
+    // missing-literal into the error payload is killed.
     expect(caught).toBeInstanceOf(TsgitError);
-    expect((caught as TsgitError).data.code).toBe('PATHSPEC_NO_MATCH');
+    const data = (caught as TsgitError).data;
+    expect(data.code).toBe('PATHSPEC_NO_MATCH');
+    if (data.code === 'PATHSPEC_NO_MATCH') {
+      expect(data.pattern).toBe('nope.txt');
+    }
   });
 
   it('Given a pathspec with glob + negation, When checkout, Then negated paths are excluded', async () => {

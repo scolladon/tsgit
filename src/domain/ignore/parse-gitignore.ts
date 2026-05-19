@@ -28,7 +28,7 @@ const unescapePattern = (s: string): string => {
   return s.replace(/\\(.)/g, '$1');
 };
 
-import { compileGlob } from '../pathspec/compile-glob.js';
+import { compileGlob } from '../pathspec/index.js';
 
 export const parseGitignore = (text: string): IgnoreRuleset => {
   const out: IgnoreRule[] = [];

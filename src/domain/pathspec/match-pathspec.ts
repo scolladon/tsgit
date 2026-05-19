@@ -7,17 +7,8 @@ import type { Pathspec } from './compile-pathspec.js';
 // The last match wins. Starting state is `false` — a spec with only
 // negations matches nothing.
 //
-// `_isDir` is reserved for future expansion (pathspec rules don't
-// currently distinguish directory-only vs file matches the way
-// `.gitignore` does).
-//
 // See docs/adr/038-pathspec-exclusion.md.
-export const matchesPathspec = (
-  spec: Pathspec,
-  path: FilePath,
-  // biome-ignore lint/correctness/noUnusedFunctionParameters: reserved for future use
-  _isDir: boolean,
-): boolean => {
+export const matchesPathspec = (spec: Pathspec, path: FilePath): boolean => {
   let matched = false;
   for (const entry of spec) {
     if (entry.compiled.test(path)) {

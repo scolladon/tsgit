@@ -55,10 +55,17 @@ const consumeStar = (pattern: string, i: number): ConsumedToken => {
   if (pattern[i + 1] !== '*') {
     return { regex: '[^/]*', next: i + 1 };
   }
-  // `**` matches across path segments. Eat a trailing `/` so a `**`
-  // prefix matches both an unprefixed and a deeply-prefixed path.
   const after = i + 2;
-  return { regex: '.*', next: pattern[after] === '/' ? after + 1 : after };
+  // `**` matches across path segments. Two shapes:
+  //   - `**/` consumed-trailing form: matches zero-or-more
+  //     SEGMENT/ runs (each ending with `/`). Compiled as `(.*/)?`
+  //     so `a/**/c` matches `a/c` AND `a/b/c` but NOT `a/xc`.
+  //   - `**` alone (no trailing `/`): matches any character run
+  //     including `/`. Compiled as `.*`.
+  if (pattern[after] === '/') {
+    return { regex: '(.*/)?', next: after + 1 };
+  }
+  return { regex: '.*', next: after };
 };
 
 // True iff `pattern` contains a glob metacharacter (`*` or `?`). Used

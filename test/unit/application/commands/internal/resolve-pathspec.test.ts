@@ -64,6 +64,41 @@ describe('resolvePathspec', () => {
   it('Given a bare `"!"`, When resolved, Then the empty body throws PATHSPEC_OUTSIDE_REPO', () => {
     expectError(() => resolvePathspec(['!']), 'PATHSPEC_OUTSIDE_REPO');
   });
+
+  it('Given a pattern exceeding the per-pattern length cap, When resolved, Then throws INVALID_OPTION', () => {
+    // Arrange — components are each ≤ 255 bytes (passes the working-tree
+    // path validator) but the overall pattern is > 256 bytes (trips
+    // the pathspec-specific cap that bounds regex compilation cost).
+    const seg = 'a'.repeat(100);
+    const huge = `${seg}/${seg}/${seg}`;
+    expect(huge.length).toBeGreaterThan(256);
+
+    // Act
+    const err = expectError(() => resolvePathspec([huge]), 'INVALID_OPTION');
+
+    // Assert
+    const data = err.data as { option: string; reason: string };
+    expect(data.option).toBe('paths');
+    expect(data.reason).toMatch(/max length/i);
+  });
+
+  it('Given a pattern with more than the **-token cap, When resolved, Then throws INVALID_OPTION', () => {
+    // Arrange — `**/**/**/**/**/**` has six `**` tokens; cap is 4.
+    const pattern = '**/**/**/**/**/**';
+
+    // Act
+    const err = expectError(() => resolvePathspec([pattern]), 'INVALID_OPTION');
+
+    // Assert
+    const data = err.data as { option: string; reason: string };
+    expect(data.option).toBe('paths');
+    expect(data.reason).toMatch(/\*\*-token count/);
+  });
+
+  it('Given a pattern with exactly the **-token cap (4 tokens), When resolved, Then accepts (boundary)', () => {
+    // Kills the `>` → `>=` mutant on the **-cap.
+    expect(() => resolvePathspec(['**/**/**/**'])).not.toThrow();
+  });
 });
 
 describe('enforceLiteralMustMatch', () => {

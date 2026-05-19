@@ -6,6 +6,8 @@ import { compileGlob, containsGlob } from './compile-glob.js';
 export interface PathspecEntry {
   /** Original raw pattern (including any leading `!`), for diagnostics. */
   readonly pattern: string;
+  /** Pattern with the leading `!` (if any) stripped — the part that compiled to `compiled`. */
+  readonly body: string;
   /** True when the original pattern started with `!`. */
   readonly negated: boolean;
   /**
@@ -42,6 +44,7 @@ const compileOne = (raw: string): PathspecEntry => {
   if (isLiteral) {
     return {
       pattern: raw,
+      body,
       negated,
       isLiteral: true,
       compiled: compileGlob(body, { anchored: true, withDirSuffix: true }),
@@ -49,6 +52,7 @@ const compileOne = (raw: string): PathspecEntry => {
   }
   return {
     pattern: raw,
+    body,
     negated,
     isLiteral: false,
     compiled: compileGlob(body, { anchored: body.includes('/') }),

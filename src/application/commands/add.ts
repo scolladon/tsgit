@@ -146,7 +146,7 @@ const addByPathspec = async (
   const combinedIgnore: IgnorePredicate = async (path, isDirectory) => {
     if (await ignore(path, isDirectory)) return true;
     if (isDirectory) return false;
-    return !matchesPathspec(matcher, path, false);
+    return !matchesPathspec(matcher, path);
   };
   const lock = await acquireIndexLock(
     ctx,

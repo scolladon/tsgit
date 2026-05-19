@@ -59,7 +59,7 @@ export const rm = async (
     for (const entry of index.entries) byPath.set(entry.path, entry);
     const removed: FilePath[] = [];
     for (const [path] of byPath) {
-      if (matchesPathspec(matcher, path, false)) removed.push(path);
+      if (matchesPathspec(matcher, path)) removed.push(path);
     }
     enforceLiteralMustMatch(literalMustMatch, removed);
     for (const path of removed) byPath.delete(path);

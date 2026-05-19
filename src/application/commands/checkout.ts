@@ -137,7 +137,7 @@ const pathRestore = async (ctx: Context, opts: CheckoutPathsOptions): Promise<Ch
   // (snapshot diff is benign — no commit happens on the lockless
   // path). For `source: 'HEAD'` or an ObjectId, walk the tree once.
   const universe: ReadonlyArray<FilePath> = await enumerateSourcePaths(ctx, source);
-  const matched = universe.filter((p) => matchesPathspec(matcher, p, false));
+  const matched = universe.filter((p) => matchesPathspec(matcher, p));
   enforceLiteralMustMatch(literalMustMatch, matched);
   const pathSet = new Set<FilePath>(matched);
 
@@ -226,6 +226,12 @@ const materializePathRestoreLocked = async (
 // For `'index'`, returns every index entry's path. For `'HEAD'` or an
 // ObjectId, walks the tree and returns every non-directory entry's
 // path.
+//
+// Bounds: the `'index'` branch inherits `MAX_INDEX_BYTES` (256 MiB)
+// from `readIndex`. The tree branch inherits `MAX_FLAT_TREE_ENTRIES`
+// (1M) from `walkTree` — exceeding that throws
+// `TREE_ENTRY_LIMIT_EXCEEDED` before this function materialises the
+// full list.
 const enumerateSourcePaths = async (
   ctx: Context,
   source: 'index' | 'HEAD' | ObjectId,
