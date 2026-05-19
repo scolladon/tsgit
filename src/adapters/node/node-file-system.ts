@@ -458,8 +458,9 @@ export class NodeFileSystem implements FileSystem {
     // `pathPolicy.caseInsensitive` is true (Windows). On the Linux mutation
     // runner the body is unreachable, so mutating returns/catch produces
     // no observable effect. Windows-mocked tests in
-    // `node-file-system-containment.test.ts` (via `windowsPolicy`) cover
-    // both arms.
+    // `node-file-system-injected.test.ts` (via `windowsPolicy` injected
+    // through the `PathPolicy` + `FsOperations` DI seam — ADR-046/047)
+    // cover both arms.
     try {
       const stat = await this.fsOps.lstat(real);
       return stat.isSymbolicLink();

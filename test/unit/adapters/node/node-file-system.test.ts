@@ -485,8 +485,19 @@ describe('NodeFileSystem', () => {
     });
 
     describe('interpretCreationLstat', () => {
-      it('Given ok=true with isSymlink=false, When interpreting, Then returns (no throw)', () => {
-        expect(() => interpretCreationLstat({ ok: true, isSymlink: false }, '/x')).not.toThrow();
+      it('Given ok=true with isSymlink=false, When interpreting, Then returns without throwing', () => {
+        // Act — try/catch + `toBeUndefined` is mutation-tighter than
+        // `not.toThrow()`: a mutant that throws a different-coded error
+        // would slip past `not.toThrow()` only if it doesn't throw at all.
+        let caught: unknown;
+        try {
+          interpretCreationLstat({ ok: true, isSymlink: false }, '/x');
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeUndefined();
       });
 
       it('Given ok=true with isSymlink=true, When interpreting, Then throws PERMISSION_DENIED', () => {
@@ -502,10 +513,17 @@ describe('NodeFileSystem', () => {
         expect((caught as TsgitError).data.code).toBe('PERMISSION_DENIED');
       });
 
-      it('Given ok=false with ENOENT error, When interpreting, Then returns (leaf absent is expected)', () => {
-        expect(() =>
-          interpretCreationLstat({ ok: false, err: makeErrnoError('ENOENT') }, '/to-create'),
-        ).not.toThrow();
+      it('Given ok=false with ENOENT error, When interpreting, Then returns without throwing (leaf absent is expected)', () => {
+        // Act
+        let caught: unknown;
+        try {
+          interpretCreationLstat({ ok: false, err: makeErrnoError('ENOENT') }, '/to-create');
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeUndefined();
       });
 
       it('Given ok=false with EACCES (non-ENOENT errno), When interpreting, Then throws PERMISSION_DENIED (NOT silently swallowed)', () => {
@@ -640,12 +658,13 @@ describe('NodeFileSystem', () => {
       });
 
       // The non-ENOENT-rethrow tests for realpathNearestExisting / exists /
-      // resolveForCreation live in `node-file-system-containment.test.ts`:
-      // they use `vi.mock('node:fs/promises')` to control the realpath/lstat
-      // errno surface, which makes them cross-platform (POSIX hosts produce
-      // ENOTDIR for "file used as directory"; Windows produces ENOENT or
-      // EINVAL — the test is about how `realpathNearestExisting` rethrows
-      // arbitrary errno-bearing rejections, not about which errno).
+      // resolveForCreation live in `node-file-system-injected.test.ts`:
+      // they pass a per-instance `FsOperations` fake (ADR-047) to control
+      // the realpath/lstat errno surface, which makes them cross-platform
+      // (POSIX hosts produce ENOTDIR for "file used as directory"; Windows
+      // produces ENOENT or EINVAL — the test is about how
+      // `realpathNearestExisting` rethrows arbitrary errno-bearing
+      // rejections, not about which errno).
     });
 
     describe('mapStat', () => {
@@ -690,8 +709,8 @@ describe('NodeFileSystem', () => {
 
     // `NodeFileSystem.exists` non-ENOENT and escape-branch tests +
     // `resolveForCreation` non-ENOENT-on-leaf-lstat tests both moved to
-    // `node-file-system-containment.test.ts` where vi.mock controls the
-    // errno surface — see comment above.
+    // `node-file-system-injected.test.ts` where per-instance `FsOperations`
+    // fakes (ADR-047) control the errno surface — see comment above.
   });
 
   describe('isWindowsSymlinkRefusal', () => {

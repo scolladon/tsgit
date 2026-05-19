@@ -73,14 +73,40 @@ it('Given a commit object, When serializing, Then output matches git format', ()
 
 ```text
 test/
-├── unit/           # Isolated tests, memory adapter, fast
-│   ├── domain/     # Per-module domain tests
-│   ├── ports/      # Contract test suites (*.contract.ts — imported by adapter tests)
-│   └── adapters/   # Per-adapter tests (Memory, Node) that invoke the contract suites
-├── integration/    # Real repos, cross-adapter, canonical git interop
-├── browser/        # Playwright × Chromium/Firefox/WebKit (.spec.ts) — OPFS, SubtleCrypto, DecompressionStream
-└── bench/          # vitest bench scenarios comparing tsgit vs isomorphic-git
+├── unit/                       # Isolated tests, memory adapter, fast — cross-platform
+│   ├── domain/                 # Per-module domain tests
+│   ├── ports/                  # Contract test suites (*.contract.ts — imported by adapter tests)
+│   └── adapters/               # Per-adapter tests (Memory, Node) that invoke the contract suites
+├── integration/
+│   ├── network/                # Real repos, cross-adapter, git-http-backend interop (Linux-only)
+│   ├── posix-only/             # Real POSIX filesystem semantics (symlinks, chmod, EACCES)
+│   └── win-only/               # Real Windows filesystem semantics (8.3 short names, drive letters)
+├── browser/                    # Playwright × Chromium/Firefox/WebKit — OPFS, SubtleCrypto, DecompressionStream
+└── bench/                      # vitest bench scenarios comparing tsgit vs isomorphic-git
 ```
+
+#### Test-folder placement rule (Phase 14.4)
+
+Tests are gated by **folder**, not by `describe.skipIf(process.platform !== '…')`:
+
+- **`test/unit/`** — cross-platform. Platform-aware behaviour is exercised
+  via the `PathPolicy` ([ADR-046](docs/adr/046-path-policy-abstraction.md))
+  + `FsOperations` ([ADR-047](docs/adr/047-fs-operations-dependency-injection.md))
+  injection seam on `NodeFileSystem`. A simulated-Windows test runs on
+  every host because the platform is data, not a `process.platform`
+  read.
+- **`test/integration/posix-only/`** — real POSIX filesystem semantics
+  (real symlinks, real mode bits, real `EACCES`). CI: the
+  `posix-integration` job (`ubuntu-latest` + `macos-latest`).
+- **`test/integration/win-only/`** — real Windows filesystem semantics
+  (real 8.3 reconciliation, real drive-letter casing). CI: the
+  `win-integration` job (`windows-latest`).
+
+See [ADR-048](docs/adr/048-platform-segregated-test-folders.md) for
+the rationale. Do not use `describe.skipIf(process.platform !== '…')`
+or `it.skipIf(process.platform !== '…')` to gate platform-specific
+behaviour — put the test in the folder that matches the platform it
+needs.
 
 ### Running test subsets
 
