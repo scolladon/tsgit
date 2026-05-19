@@ -19,10 +19,12 @@ busy) status flow without a corresponding semantic win for v1.
 
 Scope is deliberately narrow:
 
-- **Glob syntax**: `*`, `?`, `**`, character classes `[abc]`,
-  inherited verbatim from the existing `parseGitignore` compiler.
-  Magic prefixes (`:(top)`, `:(literal)`, `:(glob)`, etc.) are NOT
-  supported.
+- **Glob syntax**: `*`, `?`, `**`, inherited verbatim from the existing
+  `parseGitignore` compiler. Character classes `[abc]` and magic
+  prefixes (`:(top)`, `:(literal)`, `:(glob)`, etc.) are NOT supported
+  in v1 — both deferred. The existing `parseGitignore` compiler does
+  not honour character classes either (a literal `[` in a `.gitignore`
+  is escaped through to the regex), so this preserves source parity.
 - **Auto-detection** ([ADR-037](../adr/037-pathspec-auto-detect.md)):
   a pattern containing `*`, `?`, or `[` is interpreted as a glob; any
   other string is a literal path. No explicit prefix is required.
