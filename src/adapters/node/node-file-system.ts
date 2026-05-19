@@ -515,6 +515,25 @@ export class NodeFileSystem implements FileSystem {
   };
 
   symlink = async (target: string, path: string): Promise<void> => {
+    // Absolute targets must point inside rootDir. Without this gate, a
+    // malicious tree could plant a `/etc/passwd`-style symlink that
+    // subsequent `readlink` exfiltrates. Relative targets are not
+    // validated at create time — they are resolved against the link
+    // entry's directory at OS-read time, and any follow-up `read`/`stat`
+    // re-realpaths the leaf and re-checks containment.
+    if (this.pathPolicy.isAbsolute(target)) {
+      const normalisedTarget = this.pathPolicy.resolve(target);
+      const canonicalRoot = await this.getCanonicalRoot();
+      const normalizedRoot = this.getNormalizedRootDir();
+      const normalizedCanonical =
+        this.normalizedCanonicalRoot ?? this.pathPolicy.normalizeForCompare(canonicalRoot);
+      if (
+        !pathContainsNormalized(normalizedRoot, normalisedTarget, this.pathPolicy) &&
+        !pathContainsNormalized(normalizedCanonical, normalisedTarget, this.pathPolicy)
+      ) {
+        throw permissionDenied(path);
+      }
+    }
     const real = await this.checkContainment(path, 'creation');
     await runFs(async () => {
       await this.fsOps.mkdir(this.pathPolicy.dirname(real), { recursive: true });

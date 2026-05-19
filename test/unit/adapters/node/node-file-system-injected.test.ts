@@ -891,6 +891,82 @@ describe('NodeFileSystem.readlink + chmod + symlink (DI)', () => {
     expect(mkdir).toHaveBeenCalledWith('/root/sub', { recursive: true });
     expect(symlink).toHaveBeenCalledWith(target, link);
   });
+
+  it('Given an absolute symlink target outside rootDir, When symlink is called, Then PERMISSION_DENIED is thrown and fsOps.symlink is NOT invoked', async () => {
+    // Arrange — closes the absolute-symlink-info-oracle path. A
+    // malicious tree planting /etc/passwd as a symlink target would
+    // succeed under the old code; here the absolute-target check
+    // rejects it at creation.
+    const rootDir = '/root';
+    const link = '/root/exfil-link';
+    const symlinkOp = vi.fn().mockResolvedValue(undefined);
+    const fsOps = fakeFsOps({
+      realpath: vi.fn().mockImplementation(async (input: string) => input),
+      symlink: symlinkOp,
+    });
+    const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+
+    // Act
+    let caught: unknown;
+    try {
+      await sut.symlink('/etc/passwd', link);
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert
+    expect(caught).toBeInstanceOf(TsgitError);
+    expect((caught as TsgitError).data.code).toBe('PERMISSION_DENIED');
+    expect(symlinkOp).not.toHaveBeenCalled();
+  });
+
+  it('Given an absolute target with `..` that resolves OUTSIDE rootDir, When symlink runs, Then PERMISSION_DENIED is thrown', async () => {
+    // Arrange — the absolute-target check resolves embedded `..` before
+    // comparing, so `/root/sub/../../escape` does not slip past.
+    const rootDir = '/root';
+    const link = '/root/escape-link';
+    const symlinkOp = vi.fn().mockResolvedValue(undefined);
+    const fsOps = fakeFsOps({
+      realpath: vi.fn().mockImplementation(async (input: string) => input),
+      symlink: symlinkOp,
+    });
+    const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+
+    // Act
+    let caught: unknown;
+    try {
+      await sut.symlink('/root/sub/../../escape', link);
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert
+    expect(caught).toBeInstanceOf(TsgitError);
+    expect((caught as TsgitError).data.code).toBe('PERMISSION_DENIED');
+    expect(symlinkOp).not.toHaveBeenCalled();
+  });
+
+  it('Given a relative symlink target (even one containing ..), When symlink is called, Then fsOps.symlink is invoked unchanged', async () => {
+    // Arrange — relatives are intentionally not validated at create time;
+    // resolution happens at the OS level when the link is followed, and
+    // subsequent read/stat re-checks containment.
+    const rootDir = '/root';
+    const link = '/root/relative-link';
+    const symlinkOp = vi.fn().mockResolvedValue(undefined);
+    const fsOps = fakeFsOps({
+      realpath: vi.fn().mockImplementation(async (input: string) => input),
+      mkdir: vi.fn().mockResolvedValue(undefined),
+      symlink: symlinkOp,
+      lstat: vi.fn().mockRejectedValue(enoent()),
+    });
+    const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+
+    // Act
+    await sut.symlink('../sibling.txt', link);
+
+    // Assert
+    expect(symlinkOp).toHaveBeenCalledWith('../sibling.txt', link);
+  });
 });
 
 describe('NodeFileSystem.openWithNoFollow — handle wrapper semantics (DI)', () => {
