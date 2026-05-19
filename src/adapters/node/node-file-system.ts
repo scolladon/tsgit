@@ -1,6 +1,7 @@
 import * as fs from 'node:fs';
 import type * as fsPromises from 'node:fs/promises';
 import {
+  directoryNotEmpty,
   fileExists,
   fileNotFound,
   notADirectory,
@@ -41,12 +42,8 @@ export function isErrnoException(err: unknown): err is NodeJS.ErrnoException {
  * @internal
  */
 export function isWindowsSymlinkRefusal(err: unknown, policy: PathPolicy = nativePolicy): boolean {
-  // The discriminator only fires on case-insensitive (Windows) platforms.
+  // Discriminator only fires on case-insensitive (Windows) platforms.
   // POSIX symlink refusal flows through `mapErrno` directly via `ELOOP`.
-  // The previous `isSymlinkLeaf` parameter was always passed `true` at
-  // the single call site — its presence implied the function was
-  // stateful with respect to a real lstat result when it was not.
-  // Dropped per §14.5.11.
   if (!policy.caseInsensitive) return false;
   if (!(err instanceof TsgitError)) return false;
   return err.data.code === 'PERMISSION_DENIED' || err.data.code === 'UNSUPPORTED_OPERATION';
@@ -79,10 +76,12 @@ export function mapErrno(err: NodeJS.ErrnoException, path: string): TsgitError {
     case 'EEXIST':
       return fileExists(path);
     case 'ENOTDIR':
-    case 'ENOTEMPTY':
-      // ENOTEMPTY is "directory not empty" — surface as NOT_A_DIRECTORY for cross-adapter
-      // parity with the memory adapter, which uses the same code for non-empty rm.
       return notADirectory(path);
+    case 'ENOTEMPTY':
+      // "rmdir on a non-empty directory" is semantically distinct from
+      // "the path is the wrong shape" — callers branching on the code
+      // (e.g., to decide between abort vs. force-recursive) need both.
+      return directoryNotEmpty(path);
     case 'EACCES':
     case 'EPERM':
       return permissionDenied(path);
@@ -93,7 +92,7 @@ export function mapErrno(err: NodeJS.ErrnoException, path: string): TsgitError {
     case 'EISDIR':
       // POSIX errno for "is a directory" — surfaces from open(dir, write-flag).
       // Map to PERMISSION_DENIED so both POSIX and Windows symlink-to-directory
-      // refusals share the same cross-platform code. (§14.5.10)
+      // refusals share the same cross-platform code.
       return permissionDenied(path);
     default:
       return unsupportedOperation('filesystem', err.code ?? 'UNKNOWN');
@@ -532,7 +531,7 @@ export class NodeFileSystem implements FileSystem {
       // Mirror the `read` arm: fail-fast on obviously out-of-tree input
       // BEFORE issuing the realpath I/O. Without this gate, an absolute
       // escape path (`../../etc`) would still walk through
-      // `realpath(dirname)` before the post-check catches it. (§14.5.6)
+      // `realpath(dirname)` before the post-check catches it.
       check(resolved);
       const parent = await this.fsOps.realpath(this.pathPolicy.dirname(resolved));
       return this.pathPolicy.join(parent, this.pathPolicy.basename(resolved));

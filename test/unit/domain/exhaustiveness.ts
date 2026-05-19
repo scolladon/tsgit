@@ -30,6 +30,7 @@ export function assertExhaustiveSwitch(data: TsgitErrorData): void {
     case 'FILE_NOT_FOUND':
     case 'FILE_EXISTS':
     case 'NOT_A_DIRECTORY':
+    case 'DIRECTORY_NOT_EMPTY':
     case 'PERMISSION_DENIED':
     case 'UNSUPPORTED_OPERATION':
     case 'HASH_FAILED':

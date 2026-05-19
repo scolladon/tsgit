@@ -252,7 +252,7 @@ describe('MemoryFileSystem', () => {
       expect(await sut.exists('/repo/empty-dir')).toBe(false);
     });
 
-    it('Given directory containing only a nested subdirectory, When rm parent, Then throws NOT_A_DIRECTORY', async () => {
+    it('Given directory containing only a nested subdirectory, When rm parent, Then throws DIRECTORY_NOT_EMPTY', async () => {
       // Arrange — ensures hasChildren iterates the directories set (non-empty via dir child)
       const sut = new MemoryFileSystem({ rootDir: '/repo' });
       await sut.mkdir('/repo/parent/child');
@@ -267,10 +267,10 @@ describe('MemoryFileSystem', () => {
 
       // Assert
       expect(caught).toBeInstanceOf(TsgitError);
-      expect((caught as TsgitError).data.code).toBe('NOT_A_DIRECTORY');
+      expect((caught as TsgitError).data.code).toBe('DIRECTORY_NOT_EMPTY');
     });
 
-    it('Given directory containing only a symlink, When rm parent, Then throws NOT_A_DIRECTORY', async () => {
+    it('Given directory containing only a symlink, When rm parent, Then throws DIRECTORY_NOT_EMPTY', async () => {
       // Arrange — ensures hasChildren iterates the symlinks map
       const sut = new MemoryFileSystem({ rootDir: '/repo' });
       await sut.mkdir('/repo/has-link');
@@ -286,7 +286,7 @@ describe('MemoryFileSystem', () => {
 
       // Assert
       expect(caught).toBeInstanceOf(TsgitError);
-      expect((caught as TsgitError).data.code).toBe('NOT_A_DIRECTORY');
+      expect((caught as TsgitError).data.code).toBe('DIRECTORY_NOT_EMPTY');
     });
 
     it('Given rename of non-existent src, When renaming, Then throws FILE_NOT_FOUND', async () => {

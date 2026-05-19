@@ -24,13 +24,12 @@ import * as nodePath from 'node:path';
 
 /**
  * The minimal `nodePath`-shaped surface that `makePolicy` consumes.
- * Replaces the previous `typeof nodePath.posix` parameter, which
- * confused intent (it admitted both `posix` and `win32`) and exposed
- * every member of the namespace instead of just the ones used.
- * TypeScript cannot block the host `nodePath` namespace from
- * satisfying this structurally; `makePolicy` stays module-private and
- * the only public entry points are the `posixPolicy` / `windowsPolicy`
- * constants. (§14.5.7)
+ * Replaces `typeof nodePath.posix` which admitted both `posix` and
+ * `win32` (confusing intent) and exposed every member of the namespace
+ * instead of just the ones used. TypeScript cannot block the host
+ * `nodePath` namespace from satisfying this structurally; `makePolicy`
+ * stays module-private and the only public entry points are the
+ * `posixPolicy` / `windowsPolicy` constants.
  *
  * @internal
  */
@@ -66,8 +65,7 @@ export interface PathPolicy {
  * Narrows `nodePath.{posix,win32}.sep` (typed as `string` in `@types/node`)
  * to the literal union the `PathPolicy` interface declares, without an
  * `as` escape. Throws on any other value so a future export of
- * `makePolicy` (BACKLOG §14.5.7) cannot silently accept an unknown
- * separator.
+ * `makePolicy` cannot silently accept an unknown separator.
  *
  * @internal — exported only so the throw arm can be unit-tested.
  */

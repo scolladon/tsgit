@@ -15,9 +15,8 @@ import type { RepositoryLayoutInput } from '../repository.js';
  * host-matching policy from the adapter they constructed; tests that pair
  * a POSIX-only adapter (e.g. the in-memory FS) with POSIX-shaped paths
  * inject `posixPolicy` to keep the walk POSIX-rooted on any host. The
- * previous `nativePolicy = …` default crossed the hexagonal boundary
- * (repository → adapter); per §14.5.8 the default moved to the call
- * site.
+ * default was lifted out of this module to avoid the repository layer
+ * reaching across the hexagonal boundary into an adapter.
  */
 export const findLayout = async (
   fs: FileSystem,

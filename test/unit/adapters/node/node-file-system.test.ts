@@ -448,7 +448,7 @@ describe('NodeFileSystem', () => {
         expect(sut.data.code).toBe('PERMISSION_DENIED');
       });
 
-      it('Given EISDIR, When mapping, Then returns PERMISSION_DENIED (§14.5.10 — open(dir,write) refusal, cross-platform)', () => {
+      it('Given EISDIR, When mapping, Then returns PERMISSION_DENIED (open-directory refusal, cross-platform)', () => {
         // Act
         const sut = mapErrno(makeErrnoError('EISDIR'), '/some-dir');
 
@@ -486,12 +486,15 @@ describe('NodeFileSystem', () => {
         }
       });
 
-      it('Given ENOTEMPTY, When mapping, Then returns NOT_A_DIRECTORY (cross-adapter parity)', () => {
+      it('Given ENOTEMPTY, When mapping, Then returns DIRECTORY_NOT_EMPTY (non-empty rmdir is distinct from a wrong-shape path)', () => {
         // Act
         const sut = mapErrno(makeErrnoError('ENOTEMPTY'), '/non-empty-dir');
 
         // Assert
-        expect(sut.data.code).toBe('NOT_A_DIRECTORY');
+        expect(sut.data.code).toBe('DIRECTORY_NOT_EMPTY');
+        if (sut.data.code === 'DIRECTORY_NOT_EMPTY') {
+          expect(sut.data.path).toBe('/non-empty-dir');
+        }
       });
     });
 

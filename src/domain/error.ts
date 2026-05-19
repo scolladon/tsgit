@@ -12,6 +12,7 @@ export type AdapterError =
   | { readonly code: 'FILE_NOT_FOUND'; readonly path: string }
   | { readonly code: 'FILE_EXISTS'; readonly path: string }
   | { readonly code: 'NOT_A_DIRECTORY'; readonly path: string }
+  | { readonly code: 'DIRECTORY_NOT_EMPTY'; readonly path: string }
   | { readonly code: 'PERMISSION_DENIED'; readonly path: string }
   | {
       readonly code: 'UNSUPPORTED_OPERATION';
@@ -85,6 +86,9 @@ export const fileExists = (path: string): TsgitError =>
 export const notADirectory = (path: string): TsgitError =>
   new TsgitError({ code: 'NOT_A_DIRECTORY', path });
 
+export const directoryNotEmpty = (path: string): TsgitError =>
+  new TsgitError({ code: 'DIRECTORY_NOT_EMPTY', path });
+
 export const permissionDenied = (path: string): TsgitError =>
   new TsgitError({ code: 'PERMISSION_DENIED', path });
 
@@ -136,6 +140,8 @@ function extractDetail(data: TsgitErrorData): string {
       return `file already exists: ${basename(data.path)}`;
     case 'NOT_A_DIRECTORY':
       return `not a directory: ${basename(data.path)}`;
+    case 'DIRECTORY_NOT_EMPTY':
+      return `directory not empty: ${basename(data.path)}`;
     case 'PERMISSION_DENIED':
       return `permission denied: ${basename(data.path)}`;
     case 'UNSUPPORTED_OPERATION':

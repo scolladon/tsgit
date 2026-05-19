@@ -7,6 +7,7 @@ import {
 import {
   compressFailed,
   decompressFailed,
+  directoryNotEmpty,
   fileExists,
   fileNotFound,
   hashFailed,
@@ -42,6 +43,14 @@ describe('domain error — AdapterError', () => {
 
       // Assert
       expect(sut.data).toEqual({ code: 'NOT_A_DIRECTORY', path: '/repo/file.txt' });
+    });
+
+    it("Given directoryNotEmpty('/repo/dir'), When checking data, Then code is DIRECTORY_NOT_EMPTY and path preserved", () => {
+      // Arrange & Act
+      const sut = directoryNotEmpty('/repo/dir');
+
+      // Assert
+      expect(sut.data).toEqual({ code: 'DIRECTORY_NOT_EMPTY', path: '/repo/dir' });
     });
 
     it("Given permissionDenied('/etc/shadow'), When checking data, Then code is PERMISSION_DENIED and path preserved", () => {
@@ -157,6 +166,15 @@ describe('domain error — AdapterError', () => {
 
       // Assert
       expect(sut.message).toContain('not a directory: data.txt');
+      expect(sut.message).not.toContain('/var/lib');
+    });
+
+    it('Given DIRECTORY_NOT_EMPTY with absolute path, When reading message, Then contains sanitized prefix and basename ONLY', () => {
+      // Arrange & Act
+      const sut = directoryNotEmpty('/var/lib/old-dir');
+
+      // Assert
+      expect(sut.message).toContain('directory not empty: old-dir');
       expect(sut.message).not.toContain('/var/lib');
     });
 
