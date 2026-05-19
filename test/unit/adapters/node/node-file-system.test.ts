@@ -415,6 +415,23 @@ describe('NodeFileSystem', () => {
         expect(maxInFlight).toBe(4);
       });
 
+      it('Given a sparse array (with an undefined slot), When mapped, Then the worker skips the slot and exits early', async () => {
+        // Arrange — `noUncheckedIndexedAccess` types `items[i]` as
+        // `T | undefined`, so the worker guards with `if (item ===
+        // undefined) return`. Sparse arrays are the only legal way to
+        // hit that branch with a typed input.
+        const items: ReadonlyArray<number | undefined> = [0, undefined, 2];
+        const fn = vi.fn(async () => undefined);
+
+        // Act — limit=1 so a single worker walks the array in order.
+        await mapConcurrent(items, 1, fn);
+
+        // Assert — worker hit the undefined slot at index 1 and
+        // returned without processing item index 2.
+        expect(fn).toHaveBeenCalledTimes(1);
+        expect(fn).toHaveBeenCalledWith(0);
+      });
+
       it('Given a worker that throws, When mapped, Then the rejection propagates AND in-flight items still complete', async () => {
         // Arrange — limit 2, four items. Worker A handles 0 then 2 (throws);
         // worker B handles 1 then 3. Promise.all rejects after worker A

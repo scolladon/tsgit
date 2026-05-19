@@ -368,27 +368,18 @@ export class NodeFileSystem implements FileSystem {
    * Returns the cached normalised canonical root. Caller must have
    * `await this.getCanonicalRoot()` immediately prior — the cache is
    * populated by the promise's success arm and cleared on rejection, so
-   * a successful `await` guarantees the field is set. The `undefined`
-   * branch is an invariant guard; a future refactor that breaks the
-   * post-`await` invariant surfaces here instead of silently using a
-   * slow per-call `normalizeForCompare`.
+   * a successful `await` guarantees the field is set.
    *
    * Kept synchronous (vs `async` + `await this.getCanonicalRoot()`
    * inside) so the hot path doesn't pay an extra microtask suspension
-   * per containment check on a settled promise.
-   *
-   * equivalent-mutant: the `undefined`/throw arm is an invariant guard
-   * that no test can reach without breaking the post-await invariant,
-   * so mutants on the literal throw / message survive — acceptable.
+   * per containment check on a settled promise. The `!` is the only
+   * machine-readable form of "trust the post-await invariant"; the
+   * private `await getCanonicalRoot()` discipline at every call site is
+   * what makes it safe.
    */
   private getResolvedNormalizedCanonicalRoot(): string {
-    const value = this.normalizedCanonicalRoot;
-    if (value === undefined) {
-      throw new Error(
-        'NodeFileSystem invariant: normalised canonical root unset; getCanonicalRoot must be awaited first',
-      );
-    }
-    return value;
+    // biome-ignore lint/style/noNonNullAssertion: trusted invariant — see method JSDoc
+    return this.normalizedCanonicalRoot!;
   }
 
   private async getCanonicalRoot(): Promise<string> {

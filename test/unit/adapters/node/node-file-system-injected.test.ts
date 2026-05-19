@@ -90,6 +90,78 @@ describe('NodeFileSystem — resolveForCreation parent-realpath LRU (DI)', () =>
     expect(parentCalls.length).toBe(1);
   });
 
+  it('Given a path containing `..` segments, When write fires, Then policy.resolve normalises the path before containment (containsRelativeSegment true arm)', async () => {
+    // Arrange — path with `..` triggers the `containsRelativeSegment`
+    // gate to call policy.resolve. The resolved form lands outside
+    // rootDir, so containment refuses.
+    const rootDir = '/root';
+    const fsOps = fakeFsOps({
+      realpath: vi.fn().mockImplementation(async (input: string) => input),
+    });
+    const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+
+    // Act
+    let caught: unknown;
+    try {
+      await sut.write('/root/sub/../../escape/leaf.bin', new Uint8Array([1]));
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert
+    expect(caught).toBeInstanceOf(TsgitError);
+    expect((caught as TsgitError).data.code).toBe('PERMISSION_DENIED');
+  });
+
+  it('Given a path containing `..` segments, When exists fires, Then policy.resolve normalises the path before containment (containsRelativeSegment true arm)', async () => {
+    // Arrange — same shape as the write test but for the `exists` code
+    // path, which has its own containsRelativeSegment gate.
+    const rootDir = '/root';
+    const fsOps = fakeFsOps({
+      realpath: vi.fn().mockImplementation(async (input: string) => input),
+    });
+    const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+
+    // Act
+    let caught: unknown;
+    try {
+      await sut.exists('/root/sub/../../escape/probe.bin');
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert
+    expect(caught).toBeInstanceOf(TsgitError);
+    expect((caught as TsgitError).data.code).toBe('PERMISSION_DENIED');
+  });
+
+  it('Given a write whose parent realpath throws a non-ENOENT errno, When the call fires, Then the error propagates and nothing is cached', async () => {
+    // Arrange — fsOps.realpath rejects with EACCES on the parent (e.g.,
+    // the user does not have search permission). Neither cache hit nor
+    // ENOENT fallback applies; the catch in realpathForCreation must
+    // re-throw and let runFs map it to PERMISSION_DENIED.
+    const rootDir = '/root';
+    const realpath = vi.fn().mockImplementation(async (input: string) => {
+      if (input === rootDir) return rootDir;
+      throw eacces();
+    });
+    const fsOps = fakeFsOps({ realpath });
+    const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+
+    // Act
+    let caught: unknown;
+    try {
+      await sut.write('/root/sealed/leaf.bin', new Uint8Array([1]));
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert
+    expect(caught).toBeInstanceOf(TsgitError);
+    expect((caught as TsgitError).data.code).toBe('PERMISSION_DENIED');
+    expect(fsOps.writeFile).not.toHaveBeenCalled();
+  });
+
   it('Given a write whose parent does not exist, When the call fires, Then the slow walk-up is used and nothing is cached', async () => {
     // Arrange
     const rootDir = '/root';
