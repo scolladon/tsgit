@@ -9,6 +9,7 @@ import {
   TsgitError,
   unsupportedOperation,
 } from '../../domain/index.js';
+import { createLruCache } from '../../domain/storage/lru-cache.js';
 import type { DirEntry, FileHandle, FileStat, FileSystem } from '../../ports/file-system.js';
 import type { FsOperations } from './fs-operations.js';
 import { realFsOps } from './fs-operations.js';
@@ -267,6 +268,22 @@ export class NodeFileSystem implements FileSystem {
   private readonly fsOps: FsOperations;
 
   /**
+   * Memoised realpath of an *existing* parent directory, keyed by the raw
+   * (pre-realpath) parent path. Populated on every cache-miss inside
+   * `resolveForCreation` so a clone/checkout that writes N files into the
+   * same tree pays the realpath walk-up once per parent rather than once
+   * per file.
+   *
+   * Invariants:
+   * - Only EXISTING parents are cached. ENOENT walks fall back to
+   *   `realpathNearestExisting` and are never recorded.
+   * - `rmRecursive` and `rename` clear the cache, which is correct (the
+   *   parent realpath may have changed) and cheap (the cache holds at
+   *   most a handful of small strings).
+   */
+  private readonly creationParentCache = createLruCache<string>(64 * 1024, 64);
+
+  /**
    * Lazy long-name canonicalisation of `rootDir` for containment checks.
    * Promise so concurrent first calls share one `realpath`; cleared on
    * rejection so a transient ENOENT can be retried.
@@ -448,6 +465,7 @@ export class NodeFileSystem implements FileSystem {
   rm = async (path: string): Promise<void> => {
     const real = await this.checkContainment(path, 'read');
     await runFs(() => this.fsOps.rm(real), path);
+    this.creationParentCache.clear();
   };
 
   rename = async (src: string, dst: string): Promise<void> => {
@@ -457,6 +475,7 @@ export class NodeFileSystem implements FileSystem {
       await this.fsOps.mkdir(this.pathPolicy.dirname(realDst), { recursive: true });
       await this.fsOps.rename(realSrc, realDst);
     }, src);
+    this.creationParentCache.clear();
   };
 
   readlink = async (path: string): Promise<string> => {
@@ -492,6 +511,7 @@ export class NodeFileSystem implements FileSystem {
       throw err;
     }
     await this.removeTree(real, path);
+    this.creationParentCache.clear();
   };
 
   openWithNoFollow = async (path: string, mode: 'read' | 'write'): Promise<FileHandle> => {
@@ -569,7 +589,7 @@ export class NodeFileSystem implements FileSystem {
     // realpathNearestExisting already resolved the existing prefix and rethrew any non-ENOENT
     // error, so lstat on `real` here can only succeed (leaf exists) or throw ENOENT (leaf is
     // the to-be-created tail). A symlink leaf is rejected to prevent writes through it.
-    const real = await realpathNearestExisting(resolved, this.pathPolicy, this.fsOps);
+    const real = await this.realpathForCreation(resolved);
     let lstatResult: { ok: true; isSymlink: boolean } | { ok: false; err: unknown };
     try {
       const leafStat = await this.fsOps.lstat(real);
@@ -579,6 +599,33 @@ export class NodeFileSystem implements FileSystem {
     }
     interpretCreationLstat(lstatResult, path);
     return real;
+  }
+
+  private async realpathForCreation(resolved: string): Promise<string> {
+    // Fast path: parent already cached. The leaf realpath is meaningless
+    // for creation (the leaf often doesn't exist yet), so we cache the
+    // parent only and join the basename.
+    const parent = this.pathPolicy.dirname(resolved);
+    const basename = this.pathPolicy.basename(resolved);
+    const cached = this.creationParentCache.get(parent);
+    if (cached !== undefined) {
+      return this.pathPolicy.join(cached, basename);
+    }
+    // Cache miss. Try a direct parent realpath first — when the parent
+    // exists this is a single call instead of the full walk-up.
+    try {
+      const realParent = await this.fsOps.realpath(parent);
+      this.creationParentCache.set(parent, realParent, parent.length + realParent.length);
+      return this.pathPolicy.join(realParent, basename);
+    } catch (err) {
+      if (isErrnoException(err) && err.code === 'ENOENT') {
+        // Parent doesn't exist yet — fall back to the slow walk-up.
+        // NOT cached: a half-built tree's "doesn't exist" decision must
+        // not freeze.
+        return realpathNearestExisting(resolved, this.pathPolicy, this.fsOps);
+      }
+      throw err;
+    }
   }
 
   private async resolveForMode(

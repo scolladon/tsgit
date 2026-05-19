@@ -54,6 +54,97 @@ const fakeFsOps = (overrides: Partial<FsOperations> = {}): FsOperations =>
     ...overrides,
   }) as unknown as FsOperations;
 
+describe('NodeFileSystem — resolveForCreation parent-realpath LRU (DI)', () => {
+  const fileStat = {
+    ctimeMs: BigInt(0),
+    mtimeMs: BigInt(0),
+    dev: BigInt(0),
+    ino: BigInt(0),
+    mode: BigInt(0o100644),
+    uid: BigInt(0),
+    gid: BigInt(0),
+    size: BigInt(0),
+    isFile: () => true,
+    isDirectory: () => false,
+    isSymbolicLink: () => false,
+  };
+
+  it('Given two writes into the same parent, When the second fires, Then realpath(parent) is invoked exactly once', async () => {
+    // Arrange
+    const rootDir = '/root';
+    const realpathSpy = vi.fn().mockImplementation(async (input: string) => input);
+    const fsOps = fakeFsOps({
+      realpath: realpathSpy,
+      lstat: vi.fn().mockRejectedValue(enoent()),
+    });
+    const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+
+    // Act — two writes into /root/sub
+    await sut.write('/root/sub/a.bin', new Uint8Array([1]));
+    await sut.write('/root/sub/b.bin', new Uint8Array([2]));
+
+    // Assert
+    const parentCalls = realpathSpy.mock.calls.filter(
+      ([arg]: readonly unknown[]) => arg === '/root/sub',
+    );
+    expect(parentCalls.length).toBe(1);
+  });
+
+  it('Given a write whose parent does not exist, When the call fires, Then the slow walk-up is used and nothing is cached', async () => {
+    // Arrange
+    const rootDir = '/root';
+    let realpathHits = 0;
+    const realpathSpy = vi.fn().mockImplementation(async (input: string) => {
+      realpathHits += 1;
+      if (input === rootDir) return rootDir;
+      if (input === '/root/new-dir' || input === '/root/new-dir/leaf.bin') throw enoent();
+      return input;
+    });
+    const fsOps = fakeFsOps({
+      realpath: realpathSpy,
+      lstat: vi.fn().mockRejectedValue(enoent()),
+    });
+    const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+
+    // Act
+    await sut.write('/root/new-dir/leaf.bin', new Uint8Array([1]));
+
+    // Assert — the LRU never recorded the missing parent. A subsequent
+    // write into the same (now created) tree would still call realpath
+    // because the cache was not populated.
+    realpathHits = 0;
+    await sut.write('/root/new-dir/leaf.bin', new Uint8Array([2]));
+    expect(realpathHits).toBeGreaterThan(0);
+  });
+
+  it('Given a cached parent, When rmRecursive runs, Then the cache is cleared and a follow-up write re-realpaths', async () => {
+    // Arrange
+    const rootDir = '/root';
+    const realpathSpy = vi.fn().mockImplementation(async (input: string) => input);
+    const fsOps = fakeFsOps({
+      realpath: realpathSpy,
+      lstat: vi.fn().mockResolvedValue(fileStat),
+      rm: vi.fn().mockResolvedValue(undefined),
+    });
+    const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+
+    // Act
+    await sut.write('/root/sub/a.bin', new Uint8Array([1]));
+    const beforeRmCount = realpathSpy.mock.calls.filter(
+      ([arg]: readonly unknown[]) => arg === '/root/sub',
+    ).length;
+    await sut.rmRecursive('/root/sub/a.bin');
+    await sut.write('/root/sub/b.bin', new Uint8Array([2]));
+
+    // Assert — after rmRecursive cleared the cache, the second write re-realpaths the parent.
+    const afterCount = realpathSpy.mock.calls.filter(
+      ([arg]: readonly unknown[]) => arg === '/root/sub',
+    ).length;
+    expect(beforeRmCount).toBe(1);
+    expect(afterCount).toBeGreaterThan(beforeRmCount);
+  });
+});
+
 describe('NodeFileSystem — normalised-root cache (DI)', () => {
   it('Given many containment-checking calls, When fired in sequence, Then policy.normalizeForCompare runs at most once per constant parent', async () => {
     // Arrange — wrap the policy's normalizeForCompare in a spy. The cache
