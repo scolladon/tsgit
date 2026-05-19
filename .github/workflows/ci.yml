@@ -122,7 +122,13 @@ jobs:
       - uses: ./.github/actions/setup
         with:
           node-version: ${{ matrix.node }}
-      - run: npm run test:coverage
+      # Coverage threshold (100%) is enforced on the Linux gate cell only.
+      # Other matrix cells run plain `test:unit` so platform-specific
+      # `it.skipIf` skips don't fail the threshold check (Phase 14.4).
+      - if: matrix.os == 'ubuntu-latest'
+        run: npm run test:coverage
+      - if: matrix.os != 'ubuntu-latest'
+        run: npm run test:unit
       # Upload regardless of pass/fail so a threshold breach can be diagnosed
       # from the artifact instead of just the failed step. Per-matrix cell
       # naming avoids `actions/upload-artifact@v4` rejecting duplicate names.
