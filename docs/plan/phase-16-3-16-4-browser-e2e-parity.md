@@ -31,7 +31,7 @@ No repo is re-opened per operation (see design §3.1).
   operation's return value.
 - Test body: four `test.step()`s — `init`, `add`, `commit`, `status` — each
   asserting only its slice:
-  1. `init.initialBranch === 'refs/heads/main'`.
+  1. `init.initialBranch === 'main'` (short name); `init.bare === false`.
   2. `add.added` includes `a.txt`.
   3. `commit.id` matches `/^[0-9a-f]{40}$/`; `commit.branch === 'refs/heads/main'`.
   4. `status.clean === true`; `status.branch === 'refs/heads/main'`;

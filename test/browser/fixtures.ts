@@ -42,13 +42,26 @@ export const test = base.extend<{ readyPage: Page }>({
   },
 });
 
+// The commit author shared by the seed helper and the spec scenarios. A plain
+// structured-clonable object — it is passed across the page.evaluate() boundary.
+export interface Author {
+  name: string;
+  email: string;
+  timestamp: number;
+  timezoneOffset: string;
+}
+
+export const AUTHOR: Author = {
+  name: 'Browser Test',
+  email: 'browser@tsgit.dev',
+  timestamp: 1_700_000_000,
+  timezoneOffset: '+0000',
+};
+
 interface SeedRepo {
   init: () => Promise<unknown>;
   add: (paths: ReadonlyArray<string>) => Promise<unknown>;
-  commit: (opts: {
-    message: string;
-    author: { name: string; email: string; timestamp: number; timezoneOffset: string };
-  }) => Promise<{ id: string; branch?: string }>;
+  commit: (opts: { message: string; author: Author }) => Promise<{ id: string; branch?: string }>;
   dispose: () => Promise<void>;
 }
 
@@ -58,7 +71,7 @@ interface SeedRepo {
 // helper — it runs one self-contained `page.evaluate()`, never a callback
 // smuggled across the evaluate boundary.
 export const seedRepo = (page: Page): Promise<{ commitId: string; branch: string | undefined }> =>
-  page.evaluate(async () => {
+  page.evaluate(async (author) => {
     const tsgit = (
       window as unknown as {
         __tsgit: {
@@ -76,19 +89,11 @@ export const seedRepo = (page: Page): Promise<{ commitId: string; branch: string
     try {
       await repo.init();
       await repo.add(['a.txt']);
-      const commit = await repo.commit({
-        message: 'seed commit',
-        author: {
-          name: 'Browser Test',
-          email: 'browser@tsgit.dev',
-          timestamp: 1_700_000_000,
-          timezoneOffset: '+0000',
-        },
-      });
+      const commit = await repo.commit({ message: 'seed commit', author });
       return { commitId: commit.id, branch: commit.branch };
     } finally {
       await repo.dispose();
     }
-  });
+  }, AUTHOR);
 
 export { expect } from '@playwright/test';

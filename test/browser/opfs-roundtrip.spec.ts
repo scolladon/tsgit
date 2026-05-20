@@ -7,14 +7,7 @@
  * Then each operation's result is asserted under its own step, so a failure
  *   names the exact git operation that broke instead of a trailing aggregate.
  */
-import { expect, test } from './fixtures.js';
-
-interface Author {
-  name: string;
-  email: string;
-  timestamp: number;
-  timezoneOffset: string;
-}
+import { AUTHOR, type Author, expect, test } from './fixtures.js';
 
 interface BrowserRepo {
   init: () => Promise<{ initialBranch: string; bare: boolean }>;
@@ -23,6 +16,7 @@ interface BrowserRepo {
   status: () => Promise<{
     clean: boolean;
     branch?: string;
+    detached: boolean;
     indexChanges: ReadonlyArray<unknown>;
     workingTreeChanges: ReadonlyArray<unknown>;
   }>;
@@ -32,13 +26,6 @@ interface BrowserRepo {
 interface Tsgit {
   openRepository: (opts: { rootHandle: FileSystemDirectoryHandle }) => Promise<BrowserRepo>;
 }
-
-const AUTHOR: Author = {
-  name: 'Browser Test',
-  email: 'browser@tsgit.dev',
-  timestamp: 1_700_000_000,
-  timezoneOffset: '+0000',
-};
 
 // Playwright's WebKit headless build does not expose
 // navigator.storage.getDirectory (OPFS works in production Safari but is
@@ -85,9 +72,10 @@ test.describe('OPFS round-trip', () => {
       expect(result.commit.branch).toBe('refs/heads/main');
     });
 
-    await test.step('status reports a clean tree on refs/heads/main', () => {
+    await test.step('status reports a clean, attached tree on refs/heads/main', () => {
       expect(result.status.clean).toBe(true);
       expect(result.status.branch).toBe('refs/heads/main');
+      expect(result.status.detached).toBe(false);
       expect(result.status.indexChanges).toEqual([]);
       expect(result.status.workingTreeChanges).toEqual([]);
     });

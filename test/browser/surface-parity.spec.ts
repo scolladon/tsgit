@@ -11,14 +11,7 @@
  * scenario runs in one page.evaluate() returning a per-operation result,
  * asserted under its own test.step().
  */
-import { expect, seedRepo, test } from './fixtures.js';
-
-interface Author {
-  name: string;
-  email: string;
-  timestamp: number;
-  timezoneOffset: string;
-}
+import { AUTHOR, type Author, expect, seedRepo, test } from './fixtures.js';
 
 interface LogEntry {
   id: string;
@@ -65,13 +58,6 @@ interface BrowserRepo {
 interface Tsgit {
   openRepository: (opts: { rootHandle: FileSystemDirectoryHandle }) => Promise<BrowserRepo>;
 }
-
-const AUTHOR: Author = {
-  name: 'Browser Test',
-  email: 'browser@tsgit.dev',
-  timestamp: 1_700_000_000,
-  timezoneOffset: '+0000',
-};
 
 // Playwright's WebKit headless build does not expose
 // navigator.storage.getDirectory, so every OPFS-backed scenario skips there —
@@ -153,18 +139,23 @@ test.describe('surface parity', () => {
       });
 
       await test.step('create returns refs/heads/feature', () => {
+        expect(result.created.kind).toBe('create');
         expect(result.created.name).toBe('refs/heads/feature');
         expect(result.created.id).toMatch(/^[0-9a-f]{40}$/);
       });
 
       await test.step('list shows feature beside the current main', () => {
+        expect(result.listed.kind).toBe('list');
         const main = result.listed.branches.find((info) => info.name === 'refs/heads/main');
         const feature = result.listed.branches.find((info) => info.name === 'refs/heads/feature');
+        expect(main).toBeDefined();
+        expect(feature).toBeDefined();
         expect(main?.current).toBe(true);
         expect(feature?.current).toBe(false);
       });
 
       await test.step('delete removes feature', () => {
+        expect(result.deleted.kind).toBe('delete');
         expect(result.deleted.name).toBe('refs/heads/feature');
         expect(result.remaining.branches.map((info) => info.name)).not.toContain(
           'refs/heads/feature',
@@ -246,15 +237,18 @@ test.describe('surface parity', () => {
       });
 
       await test.step('create returns refs/tags/v1', () => {
+        expect(result.created.kind).toBe('create');
         expect(result.created.name).toBe('refs/tags/v1');
         expect(result.created.id).toMatch(/^[0-9a-f]{40}$/);
       });
 
       await test.step('list shows v1', () => {
+        expect(result.listed.kind).toBe('list');
         expect(result.listed.tags.map((info) => info.name)).toContain('refs/tags/v1');
       });
 
       await test.step('delete removes v1', () => {
+        expect(result.deleted.kind).toBe('delete');
         expect(result.deleted.name).toBe('refs/tags/v1');
         expect(result.remaining.tags.map((info) => info.name)).not.toContain('refs/tags/v1');
       });
