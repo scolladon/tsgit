@@ -488,4 +488,84 @@ describe('line-diff — diffLines', () => {
       { numRuns: 30 },
     );
   });
+
+  it("Given ours line 'ab' that is a strict byte-prefix of theirs line 'abx', When diffLines called, Then the lines are treated as different (delete + insert)", () => {
+    // Arrange — last lines have no trailing LF, so 'ab' (3 bytes incl none) is a true
+    // byte-prefix of 'abx'. linesEqual must reject them on the length guard alone.
+    const ours = enc('ab');
+    const theirs = enc('abx');
+
+    // Act
+    const sut = diffLines(ours, theirs);
+
+    // Assert — different lengths → not equal → one ours-only and one theirs-only hunk
+    expect(sut.degraded).toBe(false);
+    expect(sut.hunks).toEqual([
+      { kind: 'ours-only', oursStart: 0, oursEnd: 1, theirsStart: 0, theirsEnd: 0 },
+      { kind: 'theirs-only', oursStart: 1, oursEnd: 1, theirsStart: 0, theirsEnd: 1 },
+    ]);
+  });
+
+  it('Given interleaved edits sharing a middle common line, When diffLines called, Then the shared line is preserved as its own common hunk', () => {
+    // Arrange — 'a c e' lines are common; 'b' and 'd' are replaced by 'X' and 'Y'.
+    // A correct LCS keeps 'c' common; a down-biased snake choice would collapse
+    // lines 1..3 into one large replace and lose the shared 'c'.
+    const ours = enc('a\nb\nc\nd\ne\n');
+    const theirs = enc('a\nX\nc\nY\ne\n');
+
+    // Act
+    const sut = diffLines(ours, theirs);
+
+    // Assert — the middle 'c' survives as a standalone common hunk
+    expect(sut.degraded).toBe(false);
+    expect(
+      sut.hunks.map(
+        (h) => `${h.kind} o[${h.oursStart},${h.oursEnd}) t[${h.theirsStart},${h.theirsEnd})`,
+      ),
+    ).toEqual([
+      'common o[0,1) t[0,1)',
+      'ours-only o[1,2) t[1,1)',
+      'theirs-only o[2,2) t[1,2)',
+      'common o[2,3) t[2,3)',
+      'ours-only o[3,4) t[3,3)',
+      'theirs-only o[4,4) t[3,4)',
+      'common o[4,5) t[4,5)',
+    ]);
+  });
+
+  it('Given identical multi-line inputs, When diffLines called, Then reconstruction terminates with a single common hunk (no runaway edit list)', () => {
+    // Arrange — identical inputs complete Myers at d=0; reconstructEdits then walks
+    // only the trailing diagonal. A non-terminating trailing loop would push edits
+    // unboundedly and throw before producing hunks.
+    const bytes = enc('a\nb\nc\nd\n');
+
+    // Act
+    const sut = diffLines(bytes, bytes);
+
+    // Assert
+    expect(sut.degraded).toBe(false);
+    expect(sut.hunks).toEqual([
+      { kind: 'common', oursStart: 0, oursEnd: 4, theirsStart: 0, theirsEnd: 4 },
+    ]);
+  });
+
+  it('Given disjoint inputs whose completing iteration equals the iteration budget exactly, When diffLines called, Then it completes without degrading (budget check is strictly greater-than)', () => {
+    // Arrange — M=998, N=1000 fully-disjoint lines. The Myers run completes on the
+    // iteration numbered exactly maxD * MAX_DIFF_ITERATION_FACTOR (1998 * 1000).
+    // A `>=` budget check would degrade here; the correct `>` check must not.
+    const M = 998;
+    const N = 1000;
+    const ours = enc(Array.from({ length: M }, (_, i) => `q${i}\n`).join(''));
+    const theirs = enc(Array.from({ length: N }, (_, i) => `z${i}\n`).join(''));
+
+    // Act
+    const sut = diffLines(ours, theirs);
+
+    // Assert — at-budget run still completes via real Myers (not the degraded fallback)
+    expect(sut.degraded).toBe(false);
+    expect(sut.hunks).toEqual([
+      { kind: 'ours-only', oursStart: 0, oursEnd: M, theirsStart: 0, theirsEnd: 0 },
+      { kind: 'theirs-only', oursStart: M, oursEnd: M, theirsStart: 0, theirsEnd: N },
+    ]);
+  });
 });

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   basename,
+  invalidWalkInput,
   TsgitError as TsgitErrorClass,
   type TsgitErrorData,
 } from '../../../src/domain/error.js';
@@ -265,6 +266,154 @@ describe('domain error — AdapterError', () => {
 
       // Assert
       expect(sut.message).toContain('delta chain too deep: 51');
+    });
+
+    it('Given INVALID_DIFF_INPUT, When reading message, Then equals the documented format with reason', () => {
+      // Arrange & Act
+      const sut = new TsgitErrorClass({ code: 'INVALID_DIFF_INPUT', reason: 'tree is null' });
+
+      // Assert
+      expect(sut.message).toBe('INVALID_DIFF_INPUT: invalid diff input: tree is null');
+    });
+
+    it('Given OBJECT_NOT_FOUND, When reading message, Then equals the documented format with id', () => {
+      // Arrange & Act
+      const sut = new TsgitErrorClass({
+        code: 'OBJECT_NOT_FOUND',
+        id: 'deadbeef' as never,
+      });
+
+      // Assert
+      expect(sut.message).toBe('OBJECT_NOT_FOUND: object not found: deadbeef');
+    });
+
+    it('Given OBJECT_HASH_MISMATCH, When reading message, Then equals the documented format with expected and actual', () => {
+      // Arrange & Act
+      const sut = new TsgitErrorClass({
+        code: 'OBJECT_HASH_MISMATCH',
+        expected: 'aaa' as never,
+        actual: 'bbb' as never,
+      });
+
+      // Assert
+      expect(sut.message).toBe(
+        'OBJECT_HASH_MISMATCH: object hash mismatch: expected=aaa actual=bbb',
+      );
+    });
+
+    it('Given UNEXPECTED_OBJECT_TYPE, When reading message, Then equals the documented format with expected, actual and id', () => {
+      // Arrange & Act
+      const sut = new TsgitErrorClass({
+        code: 'UNEXPECTED_OBJECT_TYPE',
+        expected: 'commit' as never,
+        actual: 'blob' as never,
+        id: 'cafe' as never,
+      });
+
+      // Assert
+      expect(sut.message).toBe(
+        'UNEXPECTED_OBJECT_TYPE: unexpected object type: expected=commit actual=blob id=cafe',
+      );
+    });
+
+    it('Given TREE_ENTRY_LIMIT_EXCEEDED, When reading message, Then equals the documented format with count and limit', () => {
+      // Arrange & Act
+      const sut = new TsgitErrorClass({
+        code: 'TREE_ENTRY_LIMIT_EXCEEDED',
+        count: 9001,
+        limit: 4096,
+      });
+
+      // Assert
+      expect(sut.message).toBe(
+        'TREE_ENTRY_LIMIT_EXCEEDED: tree entry limit exceeded: count=9001 limit=4096',
+      );
+    });
+
+    it('Given REF_NOT_FOUND, When reading message, Then equals the documented format with name', () => {
+      // Arrange & Act
+      const sut = new TsgitErrorClass({
+        code: 'REF_NOT_FOUND',
+        name: 'refs/heads/missing' as never,
+      });
+
+      // Assert
+      expect(sut.message).toBe('REF_NOT_FOUND: ref not found: refs/heads/missing');
+    });
+
+    it('Given REF_CHAIN_TOO_DEEP, When reading message, Then equals the documented format with depth and joined chain', () => {
+      // Arrange & Act
+      const sut = new TsgitErrorClass({
+        code: 'REF_CHAIN_TOO_DEEP',
+        depth: 6,
+        chain: ['HEAD', 'refs/heads/a', 'refs/heads/b'] as never,
+      });
+
+      // Assert
+      expect(sut.message).toBe(
+        'REF_CHAIN_TOO_DEEP: ref chain too deep: depth=6 chain=HEAD->refs/heads/a->refs/heads/b',
+      );
+    });
+
+    it('Given REF_CYCLE_DETECTED, When reading message, Then equals the documented format with joined chain', () => {
+      // Arrange & Act
+      const sut = new TsgitErrorClass({
+        code: 'REF_CYCLE_DETECTED',
+        chain: ['refs/heads/a', 'refs/heads/b', 'refs/heads/a'] as never,
+      });
+
+      // Assert
+      expect(sut.message).toBe(
+        'REF_CYCLE_DETECTED: ref cycle detected: refs/heads/a->refs/heads/b->refs/heads/a',
+      );
+    });
+
+    it('Given REF_LOCKED, When reading message, Then equals the documented format with name', () => {
+      // Arrange & Act
+      const sut = new TsgitErrorClass({
+        code: 'REF_LOCKED',
+        name: 'refs/heads/main' as never,
+      });
+
+      // Assert
+      expect(sut.message).toBe('REF_LOCKED: ref locked: refs/heads/main');
+    });
+
+    it('Given REF_UPDATE_CONFLICT, When reading message, Then equals the documented format with name, expected and actual', () => {
+      // Arrange & Act
+      const sut = new TsgitErrorClass({
+        code: 'REF_UPDATE_CONFLICT',
+        name: 'refs/heads/main' as never,
+        expected: 'aaa' as never,
+        actual: 'bbb' as never,
+      });
+
+      // Assert
+      expect(sut.message).toBe(
+        'REF_UPDATE_CONFLICT: ref update conflict: name=refs/heads/main expected=aaa actual=bbb',
+      );
+    });
+
+    it('Given INVALID_WALK_INPUT, When reading message, Then equals the documented format with reason', () => {
+      // Arrange & Act
+      const sut = invalidWalkInput('start commit is undefined');
+
+      // Assert
+      expect(sut.message).toBe('INVALID_WALK_INPUT: invalid walk input: start commit is undefined');
+    });
+
+    it('Given REFSPEC_INVALID, When reading message, Then equals the documented format with raw and reason', () => {
+      // Arrange & Act
+      const sut = new TsgitErrorClass({
+        code: 'REFSPEC_INVALID',
+        raw: 'bad:spec:extra',
+        reason: 'too many colons',
+      });
+
+      // Assert
+      expect(sut.message).toBe(
+        'REFSPEC_INVALID: invalid refspec "bad:spec:extra": too many colons',
+      );
     });
   });
 

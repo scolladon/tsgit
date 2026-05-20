@@ -36,6 +36,7 @@ export const validateUrl = async (raw: string, opts: UrlValidateOptions): Promis
 };
 
 const rejectControlChars = (raw: string): void => {
+  // Stryker disable next-line EqualityOperator: equivalent — at i === raw.length, charCodeAt returns NaN and NaN === 0x0a/0x0d is false, so the extra iteration is a no-op.
   for (let i = 0; i < raw.length; i += 1) {
     const code = raw.charCodeAt(i);
     if (code === 0x0a || code === 0x0d) {
