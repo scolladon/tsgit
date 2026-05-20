@@ -18,19 +18,19 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: ./.github/actions/setup
       # Restore the scaled bench fixture cache. Keyed on the generator source
       # so any shape change (the version bump included) invalidates it.
       - name: Restore scaled bench fixture cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.cache/tsgit-bench
           key: tsgit-bench-${{ hashFiles('test/bench/support/fixture-generator.ts') }}
       - name: Pre-warm the medium fixture
         run: npm run bench:fixture -- medium
       - run: npm run bench:summary
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: benchmarks
           path: reports/benchmarks/
