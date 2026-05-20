@@ -1,10 +1,85 @@
 import { describe, expect, it } from 'vitest';
 import { resolveObject } from '../../../../src/application/primitives/object-resolver.js';
-import { createPackRegistry } from '../../../../src/application/primitives/pack-registry.js';
+import {
+  createPackRegistry,
+  type PackLookupHit,
+  type PackRegistry,
+  type RegisteredPack,
+} from '../../../../src/application/primitives/pack-registry.js';
 import { TsgitError } from '../../../../src/domain/error.js';
 import type { Blob, ObjectId } from '../../../../src/domain/objects/index.js';
+import {
+  encodeOfsDistance,
+  encodePackEntryHeader,
+  PACK_ENTRY_TYPE,
+  parsePackIndex,
+  serializePackHeader,
+} from '../../../../src/domain/storage/index.js';
+import type { Context } from '../../../../src/ports/context.js';
 import { buildSeededContext } from './fixtures.js';
-import { type EntrySpec, writeSyntheticPack } from './pack-fixture.js';
+import { buildSyntheticPack, type EntrySpec, writeSyntheticPack } from './pack-fixture.js';
+
+const ENC = new TextEncoder();
+
+/**
+ * Build a single-entry packfile (header + `entryBytes` + trailer) and write it
+ * to the memory fs. Returns the on-disk pack path so a stub registry can read
+ * slices from it at a controlled offset.
+ */
+async function writeRawSingleEntryPack(
+  ctx: Context,
+  name: string,
+  entryBytes: Uint8Array,
+): Promise<string> {
+  const header = serializePackHeader(2, 1);
+  const body = new Uint8Array(header.length + entryBytes.length);
+  body.set(header, 0);
+  body.set(entryBytes, header.length);
+  const trailerHex = await ctx.hash.hashHex(body);
+  const trailer = new Uint8Array(20);
+  for (let i = 0; i < 20; i += 1) {
+    trailer[i] = Number.parseInt(trailerHex.slice(i * 2, i * 2 + 2), 16);
+  }
+  const packBytes = new Uint8Array(body.length + trailer.length);
+  packBytes.set(body, 0);
+  packBytes.set(trailer, body.length);
+  const packPath = `${ctx.layout.gitDir}/objects/pack/pack-${name}.pack`;
+  await ctx.fs.write(packPath, packBytes);
+  return packPath;
+}
+
+/**
+ * A `PackRegistry` stub that resolves a fixed id to a fixed `{ packPath, offset }`
+ * hit. `index` is a real (unrelated) `PackIndex` only to satisfy the type — the
+ * object resolver never reads it. The entry at `offset` is whatever the caller
+ * wrote into the pack file, so callers control exactly what the resolver parses.
+ */
+async function stubRegistry(
+  ctx: Context,
+  hits: ReadonlyArray<{
+    readonly id: ObjectId;
+    readonly packPath: string;
+    readonly offset: number;
+  }>,
+): Promise<PackRegistry> {
+  // A throwaway real PackIndex purely to fill the typed `index` field.
+  const filler = await buildSyntheticPack(ctx, [
+    { kind: 'base', type: 'blob', content: ENC.encode('filler') },
+  ]);
+  const fillerIndex = parsePackIndex(filler.idxBytes);
+  const lookup = async (id: ObjectId): Promise<PackLookupHit | undefined> => {
+    const match = hits.find((h) => h.id === id);
+    if (match === undefined) return undefined;
+    const pack: RegisteredPack = {
+      name: 'stub',
+      index: fillerIndex,
+      packPath: match.packPath,
+      idxPath: `${match.packPath}.idx`,
+    };
+    return { pack, offset: match.offset };
+  };
+  return { all: async () => [], lookup };
+}
 
 describe('object-resolver', () => {
   it('Given a seeded loose blob, When resolveObject is called, Then returns the parsed Blob', async () => {
@@ -579,5 +654,221 @@ describe('object-resolver', () => {
     } catch (error) {
       expect((error as TsgitError).data.code).toBe('OBJECT_NOT_FOUND');
     }
+  });
+
+  describe('enforceCachedCap guard', () => {
+    it('Given a capped REF_DELTA whose cached base buffer has no NUL and exceeds the cap, When resolveObject runs, Then throws OBJECT_NOT_FOUND (kills the nulIdx<0 conditional)', async () => {
+      // Arrange — poison the cache with a header-less buffer LARGER than the
+      // cap, then issue a capped REF_DELTA read whose base resolves via the
+      // cache hit. With the `if (nulIdx < 0) return` guard intact, the cap is
+      // skipped and `splitHeader` rejects the buffer as OBJECT_NOT_FOUND. If
+      // the conditional is forced `false`, the cap runs with `nulIdx = -1`,
+      // computes `actualSize = cached.length`, and throws OBJECT_TOO_LARGE
+      // instead — a different observable code.
+      const ctx = await buildSeededContext();
+      const baseContent = new TextEncoder().encode('cap-no-nul base');
+      // Target stays at 2 bytes so the pre-apply cap passes and the base
+      // (cache) path runs — the pre-apply cap fires on the delta target.
+      const targetContent = new TextEncoder().encode('xy');
+      const [baseId] = await writeSyntheticPack(ctx, 'cap-no-nul-base', [
+        { kind: 'base', type: 'blob', content: baseContent },
+      ]);
+      const [deltaId] = await writeSyntheticPack(ctx, 'cap-no-nul-delta', [
+        { kind: 'ref-delta', baseId: baseId!, baseUncompressed: baseContent, targetContent },
+      ]);
+      // 14-byte buffer, no NUL anywhere.
+      const bad = new TextEncoder().encode('blob 9 garbage');
+      ctx.deltaCache.set(baseId as ObjectId, bad, bad.length);
+      const registry = createPackRegistry(ctx);
+
+      // Act / Assert — cap = 4, far below the 14-byte poisoned buffer.
+      try {
+        await resolveObject(ctx, registry, deltaId as ObjectId, false, 4);
+        expect.unreachable();
+      } catch (error) {
+        const data = (error as TsgitError).data;
+        expect(data.code).toBe('OBJECT_NOT_FOUND');
+        if (data.code !== 'OBJECT_NOT_FOUND') {
+          expect.fail(`expected OBJECT_NOT_FOUND, got ${data.code}`);
+        }
+      }
+    });
+
+    it('Given a capped REF_DELTA whose cached base buffer starts with a NUL and exceeds the cap, When resolveObject runs, Then throws OBJECT_TOO_LARGE (kills the nulIdx<0 equality operator)', async () => {
+      // Arrange — cached buffer with the NUL at index 0, so `nulIdx === 0`.
+      // With `nulIdx < 0` the guard is false → the cap runs → content size
+      // `length - 1` exceeds the cap → OBJECT_TOO_LARGE. The `<=` mutant
+      // makes `0 <= 0` true → the guard returns early → `splitHeader` then
+      // throws OBJECT_NOT_FOUND, a different code.
+      const ctx = await buildSeededContext();
+      const baseContent = new TextEncoder().encode('cap-nul0 base');
+      // Target stays at 2 bytes so the pre-apply cap passes and the base
+      // (cache) path runs — the pre-apply cap fires on the delta target.
+      const targetContent = new TextEncoder().encode('xy');
+      const [baseId] = await writeSyntheticPack(ctx, 'cap-nul0-base', [
+        { kind: 'base', type: 'blob', content: baseContent },
+      ]);
+      const [deltaId] = await writeSyntheticPack(ctx, 'cap-nul0-delta', [
+        { kind: 'ref-delta', baseId: baseId!, baseUncompressed: baseContent, targetContent },
+      ]);
+      // 21 bytes: NUL at index 0, then 20 content bytes → content size 20.
+      const bad = new Uint8Array(21);
+      bad[0] = 0x00;
+      bad.fill(0x41, 1);
+      ctx.deltaCache.set(baseId as ObjectId, bad, bad.length);
+      const registry = createPackRegistry(ctx);
+
+      // Act / Assert — cap = 4, content size 20 > 4.
+      try {
+        await resolveObject(ctx, registry, deltaId as ObjectId, false, 4);
+        expect.unreachable();
+      } catch (error) {
+        const data = (error as TsgitError).data;
+        expect(data.code).toBe('OBJECT_TOO_LARGE');
+        if (data.code !== 'OBJECT_TOO_LARGE') {
+          expect.fail(`expected OBJECT_TOO_LARGE, got ${data.code}`);
+        }
+        expect(data.id).toBe(baseId);
+        expect(data.actualSize).toBe(20);
+        expect(data.limit).toBe(4);
+      }
+    });
+  });
+
+  describe('OFS_DELTA base-offset guard', () => {
+    it('Given an OFS_DELTA whose base distance points before the pack body (negative offset), When resolveObject runs, Then throws OBJECT_NOT_FOUND', async () => {
+      // Arrange — a single OFS_DELTA at offset 12 with a base distance of
+      // 100, so `nextOffset = 12 - 100 = -88`. The `if (nextOffset < 0)`
+      // guard must throw OBJECT_NOT_FOUND. Forcing the conditional `false`
+      // would carry a negative offset into the next chain hop instead.
+      const ctx = await buildSeededContext();
+      const deltaBody = await ctx.compressor.deflate(new Uint8Array([0x00, 0x00]));
+      const entry = new Uint8Array([
+        ...encodePackEntryHeader(PACK_ENTRY_TYPE.OFS_DELTA, 0),
+        ...encodeOfsDistance(100),
+        ...deltaBody,
+      ]);
+      const packPath = await writeRawSingleEntryPack(ctx, 'ofs-negative', entry);
+      const targetId = 'a'.repeat(40) as ObjectId;
+      const registry = await stubRegistry(ctx, [{ id: targetId, packPath, offset: 12 }]);
+
+      // Act / Assert
+      try {
+        await resolveObject(ctx, registry, targetId, false);
+        expect.unreachable();
+      } catch (error) {
+        const data = (error as TsgitError).data;
+        expect(data.code).toBe('OBJECT_NOT_FOUND');
+        if (data.code !== 'OBJECT_NOT_FOUND') {
+          expect.fail(`expected OBJECT_NOT_FOUND, got ${data.code}`);
+        }
+      }
+    });
+
+    it('Given an OFS_DELTA whose base distance lands exactly on offset 0, When resolveObject runs, Then the chain walks into the pack magic and throws INVALID_PACK_ENTRY (kills the nextOffset<0 equality operator)', async () => {
+      // Arrange — a single OFS_DELTA at offset 12 with base distance 12, so
+      // `nextOffset = 12 - 12 = 0`. With `nextOffset < 0` the guard is false
+      // → the walker continues to offset 0 and parses the `PACK` magic as an
+      // entry header → reserved type 5 → INVALID_PACK_ENTRY. The `<=` mutant
+      // makes `0 <= 0` true → it throws OBJECT_NOT_FOUND instead.
+      const ctx = await buildSeededContext();
+      const deltaBody = await ctx.compressor.deflate(new Uint8Array([0x00, 0x00]));
+      const entry = new Uint8Array([
+        ...encodePackEntryHeader(PACK_ENTRY_TYPE.OFS_DELTA, 0),
+        ...encodeOfsDistance(12),
+        ...deltaBody,
+      ]);
+      const packPath = await writeRawSingleEntryPack(ctx, 'ofs-zero', entry);
+      const targetId = 'a'.repeat(40) as ObjectId;
+      const registry = await stubRegistry(ctx, [{ id: targetId, packPath, offset: 12 }]);
+
+      // Act / Assert — current code reaches offset 0 and rejects the magic.
+      try {
+        await resolveObject(ctx, registry, targetId, false);
+        expect.unreachable();
+      } catch (error) {
+        const data = (error as TsgitError).data;
+        expect(data.code).toBe('INVALID_PACK_ENTRY');
+        if (data.code !== 'INVALID_PACK_ENTRY') {
+          expect.fail(`expected INVALID_PACK_ENTRY, got ${data.code}`);
+        }
+      }
+    });
+  });
+
+  it('Given a pack base entry whose declared size lies small but inflates large, When a capped resolveObject runs, Then the post-apply cap throws OBJECT_TOO_LARGE', async () => {
+    // Arrange — a base blob entry whose header declares size 1 (so the
+    // pre-inflate `enforcePackBaseCap` passes the cap of 4) while the zlib
+    // body inflates to 40 bytes. With no deltas the post-apply check in
+    // `resolvePackChain` is the only guard left; emptying its block lets the
+    // oversized object through silently.
+    const ctx = await buildSeededContext();
+    const bigContent = new TextEncoder().encode('A'.repeat(40));
+    const deflated = await ctx.compressor.deflate(bigContent);
+    const entry = new Uint8Array([
+      // Declares size 1, not 40 — the deliberate lie.
+      ...encodePackEntryHeader(PACK_ENTRY_TYPE.BLOB, 1),
+      ...deflated,
+    ]);
+    const packPath = await writeRawSingleEntryPack(ctx, 'lying-size-base', entry);
+    const targetId = 'a'.repeat(40) as ObjectId;
+    const registry = await stubRegistry(ctx, [{ id: targetId, packPath, offset: 12 }]);
+
+    // Act / Assert — cap 4, actual inflated content 40 bytes.
+    try {
+      await resolveObject(ctx, registry, targetId, false, 4);
+      expect.unreachable();
+    } catch (error) {
+      const data = (error as TsgitError).data;
+      expect(data.code).toBe('OBJECT_TOO_LARGE');
+      if (data.code !== 'OBJECT_TOO_LARGE') {
+        expect.fail(`expected OBJECT_TOO_LARGE, got ${data.code}`);
+      }
+      expect(data.actualSize).toBe(40);
+      expect(data.limit).toBe(4);
+    }
+  });
+
+  it('Given a REF_DELTA whose base id does not match the base content hash, When resolveObject runs, Then the base resolves without hash verification', async () => {
+    // Arrange — the REF_DELTA declares base id `B`, but the entry the stub
+    // registry maps `B` to holds content that hashes to something else.
+    // `resolveBaseForRefDelta` resolves the base with verifyHash=false, so
+    // the mismatch is tolerated. Flipping that argument to `true` makes the
+    // recursive `resolveObject` verify the base and throw OBJECT_HASH_MISMATCH.
+    const ctx = await buildSeededContext();
+    const baseContent = new TextEncoder().encode('mismatch base content');
+    const targetContent = new TextEncoder().encode('mismatch target content');
+    const fakeBaseId = 'b'.repeat(40) as ObjectId;
+    const targetId = 'd'.repeat(40) as ObjectId;
+    // Pack A — the base blob, reached only via the stub's fake-id mapping.
+    const basePack = await buildSyntheticPack(ctx, [
+      { kind: 'base', type: 'blob', content: baseContent },
+    ]);
+    const basePackPath = `${ctx.layout.gitDir}/objects/pack/pack-mismatch-base.pack`;
+    await ctx.fs.write(basePackPath, basePack.packBytes);
+    // The base's real id must differ from the fake id we look it up by.
+    expect(basePack.ids[0]).not.toBe(fakeBaseId);
+    // Pack B — a REF_DELTA that declares `fakeBaseId` as its base.
+    const deltaPack = await buildSyntheticPack(ctx, [
+      {
+        kind: 'ref-delta',
+        baseId: fakeBaseId,
+        baseUncompressed: baseContent,
+        targetContent,
+      },
+    ]);
+    const deltaPackPath = `${ctx.layout.gitDir}/objects/pack/pack-mismatch-delta.pack`;
+    await ctx.fs.write(deltaPackPath, deltaPack.packBytes);
+    const registry = await stubRegistry(ctx, [
+      { id: targetId, packPath: deltaPackPath, offset: 12 },
+      { id: fakeBaseId, packPath: basePackPath, offset: 12 },
+    ]);
+
+    // Act
+    const result = await resolveObject(ctx, registry, targetId, false);
+
+    // Assert — base resolved unverified; the delta reconstructs the target.
+    expect(result.type).toBe('blob');
+    expect((result as Blob).content).toEqual(targetContent);
   });
 });

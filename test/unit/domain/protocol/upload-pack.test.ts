@@ -1038,3 +1038,240 @@ describe('parseShallowResponse', () => {
     expect(result.unshallow).toEqual([]);
   });
 });
+
+describe('parseAdvertisedRefs — first-ref splitting boundaries', () => {
+  it('Given a first ref line whose payload starts with a NUL byte, When parsed, Then throws INVALID_REF_LINE (not MISSING_CAPABILITIES)', async () => {
+    // Arrange — payload `\0caps` has the NUL at index 0. The genuine guard
+    // `nul < 0` is false (nul===0), so parsing continues and the empty head
+    // fails the space check → INVALID_REF_LINE. The `nul <= 0` mutant would
+    // instead treat index-0 as "no NUL" → MISSING_CAPABILITIES.
+    const headerStream = encodePktStream([bytesOf('# service=git-upload-pack\n')]);
+    const refStream = encodePktStream([bytesOf('\0caps\n')]);
+    const body = concat(headerStream, refStream);
+
+    // Act & Assert
+    try {
+      await parseAdvertisedRefs(decodePktStream(asyncBytes([body])), 'git-upload-pack');
+      throw new Error('expected throw');
+    } catch (err) {
+      expect(err).toBeInstanceOf(TsgitError);
+      const data = (err as TsgitError).data as { code: string; line?: string };
+      expect(data.code).toBe('INVALID_REF_LINE');
+      expect(data.line).toBe('\0caps');
+    }
+  });
+
+  it('Given a first ref whose head has no space, When parsed, Then throws INVALID_REF_LINE carrying the whole ref line', async () => {
+    // Arrange — head `notasha` (NUL-terminated, no space). The genuine guard
+    // `space < 0` throws `invalidRefLine(line)` with the FULL line. The
+    // ConditionalExpression-false mutant skips the throw, slices a bogus id,
+    // and surfaces a later `invalidRefLine` carrying only `'notash'`.
+    const headerStream = encodePktStream([bytesOf('# service=git-upload-pack\n')]);
+    const refStream = encodePktStream([bytesOf('notasha\0caps\n')]);
+    const body = concat(headerStream, refStream);
+
+    // Act & Assert
+    try {
+      await parseAdvertisedRefs(decodePktStream(asyncBytes([body])), 'git-upload-pack');
+      throw new Error('expected throw');
+    } catch (err) {
+      expect(err).toBeInstanceOf(TsgitError);
+      const data = (err as TsgitError).data as { code: string; line?: string };
+      expect(data.code).toBe('INVALID_REF_LINE');
+      expect(data.line).toBe('notasha\0caps');
+    }
+  });
+
+  it('Given a first ref head starting with a space (empty id), When parsed, Then throws INVALID_REF_LINE with an empty line field', async () => {
+    // Arrange — head ` refs/heads/main` has the space at index 0. The genuine
+    // guard `space < 0` is false (space===0), so parsing continues with an
+    // empty id, and `validateOidString('')` throws `invalidRefLine('')`. The
+    // `space <= 0` mutant would throw early with the FULL line instead.
+    const headerStream = encodePktStream([bytesOf('# service=git-upload-pack\n')]);
+    const refStream = encodePktStream([bytesOf(' refs/heads/main\0caps\n')]);
+    const body = concat(headerStream, refStream);
+
+    // Act & Assert
+    try {
+      await parseAdvertisedRefs(decodePktStream(asyncBytes([body])), 'git-upload-pack');
+      throw new Error('expected throw');
+    } catch (err) {
+      expect(err).toBeInstanceOf(TsgitError);
+      const data = (err as TsgitError).data as { code: string; line?: string };
+      expect(data.code).toBe('INVALID_REF_LINE');
+      expect(data.line).toBe('');
+    }
+  });
+});
+
+describe('parseAdvertisedRefs — subsequent-ref splitting boundaries', () => {
+  it('Given a subsequent ref line with no space, When parsed, Then throws INVALID_REF_LINE carrying the whole ref line', async () => {
+    // Arrange — the trailing `${OID2}\n` ref has no space. The genuine guard
+    // `space < 0` throws `invalidRefLine(line)` with the full 40-hex line; the
+    // ConditionalExpression-false mutant skips it and surfaces a 39-hex slice.
+    const body = buildDiscoveryBody({
+      service: 'git-upload-pack',
+      capabilities: ['caps'],
+      refs: [{ name: 'refs/heads/main', id: OID1 }],
+    });
+    const extraStream = encodePktStream([bytesOf(`${OID2}\n`)]);
+    const fullBody = concat(body.subarray(0, body.byteLength - 4), extraStream);
+
+    // Act & Assert
+    try {
+      await parseAdvertisedRefs(decodePktStream(asyncBytes([fullBody])), 'git-upload-pack');
+      throw new Error('expected throw');
+    } catch (err) {
+      expect(err).toBeInstanceOf(TsgitError);
+      const data = (err as TsgitError).data as { code: string; line?: string };
+      expect(data.code).toBe('INVALID_REF_LINE');
+      expect(data.line).toBe(OID2);
+    }
+  });
+
+  it('Given a subsequent ref line starting with a space (empty id), When parsed, Then throws INVALID_REF_LINE with an empty line field', async () => {
+    // Arrange — the trailing ref ` refs/heads/dev` starts with a space. The
+    // genuine guard `space < 0` is false (space===0); parsing continues with an
+    // empty id and `validateOidString('')` throws `invalidRefLine('')`. The
+    // `space <= 0` mutant throws early carrying the full line.
+    const body = buildDiscoveryBody({
+      service: 'git-upload-pack',
+      capabilities: ['caps'],
+      refs: [{ name: 'refs/heads/main', id: OID1 }],
+    });
+    const extraStream = encodePktStream([bytesOf(' refs/heads/dev\n')]);
+    const fullBody = concat(body.subarray(0, body.byteLength - 4), extraStream);
+
+    // Act & Assert
+    try {
+      await parseAdvertisedRefs(decodePktStream(asyncBytes([fullBody])), 'git-upload-pack');
+      throw new Error('expected throw');
+    } catch (err) {
+      expect(err).toBeInstanceOf(TsgitError);
+      const data = (err as TsgitError).data as { code: string; line?: string };
+      expect(data.code).toBe('INVALID_REF_LINE');
+      expect(data.line).toBe('');
+    }
+  });
+});
+
+describe('parseAdvertisedRefs — symref capability lookup', () => {
+  it('Given a non-symref capability before the symref one, When parsed, Then HEAD resolves via the symref-prefixed capability', async () => {
+    // Arrange — the symref cap is NOT first. The genuine `startsWith('symref=HEAD:')`
+    // filter skips `multi_ack_detailed` and picks the real symref. A mutant that
+    // empties the literal turns `startsWith('')` into always-true, picking the
+    // first (wrong) capability and failing to resolve HEAD.
+    const body = buildDiscoveryBody({
+      service: 'git-upload-pack',
+      capabilities: ['multi_ack_detailed', 'symref=HEAD:refs/heads/main'],
+      refs: [{ name: 'refs/heads/main', id: OID1 }],
+    });
+
+    // Act
+    const sut = await parseAdvertisedRefs(decodePktStream(asyncBytes([body])), 'git-upload-pack');
+
+    // Assert
+    expect(sut.head?.name).toBe('HEAD');
+    expect(sut.head?.id).toBe(OID1);
+  });
+});
+
+describe('parseAdvertisedRefs — missing service header carries empty actual', () => {
+  it('Given an empty stream, When parsed, Then throws MISSING_SERVICE_HEADER with actual === ""', async () => {
+    // Arrange — empty source: `consumeServiceHeader` throws before any text is
+    // decoded, so the `actual` field is the literal empty string. A mutant
+    // replacing that literal would surface a non-empty `actual`.
+    const empty: AsyncIterable<Uint8Array> = (async function* () {
+      // yield nothing
+    })();
+
+    // Act & Assert
+    try {
+      await parseAdvertisedRefs(decodePktStream(empty), 'git-upload-pack');
+      throw new Error('expected throw');
+    } catch (err) {
+      expect(err).toBeInstanceOf(TsgitError);
+      const data = (err as TsgitError).data as { code: string; actual?: string };
+      expect(data.code).toBe('MISSING_SERVICE_HEADER');
+      expect(data.actual).toBe('');
+    }
+  });
+});
+
+describe('parseAdvertisedRefs — iterator cleanup on error', () => {
+  it('Given a parse error, When parseAdvertisedRefs rejects, Then the source iterator return() is invoked', async () => {
+    // Arrange — a hand-rolled async iterable whose `return` flips a flag. The
+    // service header is malformed (a ref line, not `# service=`), so parsing
+    // throws and the `finally` block must call `iter.return`. The
+    // BlockStatement mutant that empties the `finally` body would skip it.
+    let returned = false;
+    const source: AsyncIterable<PktLine> = {
+      [Symbol.asyncIterator]() {
+        let emitted = false;
+        return {
+          next(): Promise<IteratorResult<PktLine>> {
+            if (emitted) return Promise.resolve({ done: true, value: undefined });
+            emitted = true;
+            return Promise.resolve({
+              done: false,
+              value: { kind: 'data', payload: bytesOf(`${OID1} refs/heads/main\0caps\n`) },
+            });
+          },
+          return(): Promise<IteratorResult<PktLine>> {
+            returned = true;
+            return Promise.resolve({ done: true, value: undefined });
+          },
+        };
+      },
+    };
+
+    // Act
+    let caught: unknown;
+    try {
+      await parseAdvertisedRefs(source, 'git-upload-pack');
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert
+    expect(caught).toBeInstanceOf(TsgitError);
+    expect(returned).toBe(true);
+  });
+});
+
+describe('parseUploadPackResponse — buffered non-data first packet', () => {
+  it('Given a flush followed by raw pack data, When parsed (sideBand:false), Then the flush is buffered so packBody yields nothing', async () => {
+    // Arrange — `splitMeta` returns at the leading flush with `buffered:[flush]`.
+    // `replay` re-emits that flush ahead of the iterator, so `rawPackBytes`
+    // stops on it and the data packet after is never surfaced. The
+    // ArrayDeclaration mutant (`buffered: []`) would drop the flush and let the
+    // trailing data leak into packBody.
+    const leaked = new Uint8Array([9, 9, 9]);
+    const source = asyncOf<PktLine>([{ kind: 'flush' }, { kind: 'data', payload: leaked }]);
+
+    // Act
+    const result = await parseUploadPackResponse(source, { sideBand: false });
+    const collected = await collect(result.packBody);
+
+    // Assert — the buffered flush terminates the pack body before the data.
+    expect(collected).toEqual([]);
+  });
+
+  it('Given a shallow line as the first packet with expectShallow falsy, When parsed, Then it is NOT consumed as a shallow update', async () => {
+    // Arrange — `expectShallow` is unset, so `parseShallowResponse` must be
+    // skipped entirely. The `ConditionalExpression -> true` mutant would force
+    // the shallow parser on, consuming the `shallow <oid>` line into
+    // `result.shallow` instead of leaving it for `splitMeta`/packBody.
+    const source = asyncOf<PktLine>([
+      { kind: 'data', payload: bytesOf(`shallow ${OID1}\n`) },
+      { kind: 'flush' },
+    ]);
+
+    // Act
+    const result = await parseUploadPackResponse(source, { sideBand: false });
+
+    // Assert — no shallow updates surfaced; the line stays out of the shallow block.
+    expect(result.shallow).toEqual([]);
+    expect(result.unshallow).toEqual([]);
+  });
+});

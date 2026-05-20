@@ -142,4 +142,120 @@ describe('tag', () => {
     if (sut.kind !== 'list') throw new Error('expected list');
     expect(sut.tags).toEqual([]);
   });
+
+  it('Given a subdirectory inside refs/tags, When tag list, Then non-file entries are skipped', async () => {
+    // Arrange — a file tag plus a directory entry sharing the refs/tags namespace
+    const { ctx } = await seedWithCommit();
+    await tag(ctx, { kind: 'create', name: 'v1.0' });
+    await ctx.fs.mkdir(`${ctx.layout.gitDir}/refs/tags/group`);
+
+    // Act — must not throw: the directory entry is filtered out before resolveRef
+    const sut = await tag(ctx, { kind: 'list' });
+
+    // Assert — only the file tag is listed; the directory is not resolved as a ref
+    if (sut.kind !== 'list') throw new Error('expected list');
+    expect(sut.tags.map((t) => t.name)).toEqual(['refs/tags/v1.0']);
+  });
+
+  it('Given three tags created out of order, When tag list, Then returns them in strict ascending order', async () => {
+    // Arrange — insertion order v3, v1, v2 so readdir yields an unsorted array
+    const { ctx } = await seedWithCommit();
+    await tag(ctx, { kind: 'create', name: 'v3.0' });
+    await tag(ctx, { kind: 'create', name: 'v1.0' });
+    await tag(ctx, { kind: 'create', name: 'v2.0' });
+
+    // Act
+    const sut = await tag(ctx, { kind: 'list' });
+
+    // Assert — comparator must order ascending; an always-(-1)/always-(1) comparator
+    // would leave [v3,v1,v2] or reverse it to [v2,v1,v3], neither matching this.
+    if (sut.kind !== 'list') throw new Error('expected list');
+    expect(sut.tags.map((t) => t.name)).toEqual([
+      'refs/tags/v1.0',
+      'refs/tags/v2.0',
+      'refs/tags/v3.0',
+    ]);
+  });
+
+  it('Given a target ending in 40 hex but prefixed by a non-hex char, When tag create, Then treated as a ref name and throws REF_NOT_FOUND', async () => {
+    // Arrange — 'z' + 40 hex: NOT a full-oid (anchored regex requires ^), so it
+    // must be resolved as a ref name and fail because no such ref exists.
+    const { ctx } = await seedWithCommit();
+    const target = `z${'a'.repeat(40)}`;
+
+    // Act
+    let caught: unknown;
+    try {
+      await tag(ctx, { kind: 'create', name: 'pin', target });
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert
+    expect(caught).toBeInstanceOf(TsgitError);
+    expect((caught as TsgitError).data.code).toBe('REF_NOT_FOUND');
+  });
+
+  it('Given a target starting with 40 hex but with a trailing extra char, When tag create, Then treated as a ref name and throws REF_NOT_FOUND', async () => {
+    // Arrange — 40 hex + 'z': NOT a full-oid (anchored regex requires $), so it
+    // must be resolved as a ref name and fail because no such ref exists.
+    const { ctx } = await seedWithCommit();
+    const target = `${'a'.repeat(40)}z`;
+
+    // Act
+    let caught: unknown;
+    try {
+      await tag(ctx, { kind: 'create', name: 'pin', target });
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert
+    expect(caught).toBeInstanceOf(TsgitError);
+    expect((caught as TsgitError).data.code).toBe('REF_NOT_FOUND');
+  });
+
+  it('Given updateRef throws a non-conflict TsgitError, When tag create, Then that error propagates unchanged (not converted to TAG_EXISTS)', async () => {
+    // Arrange — a stale lock file makes the exclusive ref write throw REF_LOCKED.
+    const { ctx } = await seedWithCommit();
+    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/tags/locked.lock`, 'stale');
+
+    // Act
+    let caught: unknown;
+    try {
+      await tag(ctx, { kind: 'create', name: 'locked' });
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert — only REF_UPDATE_CONFLICT becomes TAG_EXISTS; REF_LOCKED is rethrown verbatim.
+    expect(caught).toBeInstanceOf(TsgitError);
+    expect((caught as TsgitError).data.code).toBe('REF_LOCKED');
+  });
+
+  it('Given updateRef throws a non-TsgitError, When tag create, Then that error propagates unchanged', async () => {
+    // Arrange — wrap fs so the ref rename throws a plain Error inside updateRef.
+    const { ctx } = await seedWithCommit();
+    const renameFailure = new Error('rename exploded');
+    const failingCtx = {
+      ...ctx,
+      fs: {
+        ...ctx.fs,
+        rename: async (): Promise<void> => {
+          throw renameFailure;
+        },
+      },
+    };
+
+    // Act
+    let caught: unknown;
+    try {
+      await tag(failingCtx, { kind: 'create', name: 'v9.9' });
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert — the plain Error is rethrown as-is, never dereferenced for `.data.code`.
+    expect(caught).toBe(renameFailure);
+  });
 });

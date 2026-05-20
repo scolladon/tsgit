@@ -60,6 +60,103 @@ describe('status', () => {
     // Assert
     expect(sut.workingTreeChanges).toContainEqual({ kind: 'deleted', path: 'a.txt' });
   });
+
+  it('Given a symbolic HEAD, When status, Then detached=false and branch is set', async () => {
+    // Arrange — seedClean leaves HEAD as `ref: refs/heads/main`.
+    const ctx = await seedClean();
+
+    // Act
+    const sut = await status(ctx);
+
+    // Assert — kills L46 `head.kind === 'direct'` -> `false` (would force
+    // detached=false anyway, but `=== ` -> `!== ` would flip this to true).
+    expect(sut.detached).toBe(false);
+    expect(sut.branch).toBe('refs/heads/main');
+  });
+
+  it('Given a detached HEAD pointing at a commit oid, When status, Then detached=true and branch is undefined', async () => {
+    // Arrange — commit on main, then rewrite HEAD to the bare commit oid.
+    const ctx = await seedClean();
+    const head = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/HEAD`);
+    const ref = head.replace('ref: ', '').trim();
+    const oid = (await ctx.fs.readUtf8(`${ctx.layout.gitDir}/${ref}`)).trim();
+    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, `${oid}\n`);
+
+    // Act
+    const sut = await status(ctx);
+
+    // Assert — kills L46 EqualityOperator `=== ` -> `!== ` (would make this
+    // false) and ConditionalExpression `-> false` (would make this false).
+    expect(sut.detached).toBe(true);
+    expect(sut.branch).toBeUndefined();
+  });
+
+  it('Given three untracked files added out of order, When status, Then they are sorted ascending by path', async () => {
+    // Arrange — write in a deliberately non-sorted, non-reversed order so a
+    // dropped `.sort()` (MethodExpression mutant) yields the insertion order
+    // `['u3','u1','u2']`, which differs from both ascending and descending.
+    // u*.txt names avoid colliding with the tracked `a.txt` from seedClean.
+    const ctx = await seedClean();
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/u3.txt`, '3');
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/u1.txt`, '1');
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/u2.txt`, '2');
+
+    // Act
+    const sut = await status(ctx);
+
+    // Assert — kills L72 `untracked.sort(...)` -> `untracked` (no sort) and
+    // ConditionalExpression `-> true`/`-> false` + UnaryOperator `-1` -> `+1`
+    // on the comparator, all of which break this exact ascending order.
+    const untrackedPaths = sut.workingTreeChanges
+      .filter((c) => c.kind === 'untracked')
+      .map((c) => c.path);
+    expect(untrackedPaths).toEqual(['u1.txt', 'u2.txt', 'u3.txt']);
+  });
+
+  it('Given untracked files added in descending order, When status, Then they are sorted ascending', async () => {
+    // Arrange — pure descending insertion: a dropped sort or a `false`/`-1->+1`
+    // comparator mutant would leave `['u3','u2','u1']`; a `>=` comparator
+    // mutant would also leave `['u3','u2','u1']`.
+    const ctx = await seedClean();
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/u3.txt`, '3');
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/u2.txt`, '2');
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/u1.txt`, '1');
+
+    // Act
+    const sut = await status(ctx);
+
+    // Assert — kills the comparator's EqualityOperator `< ` -> `>= ` mutant.
+    const untrackedPaths = sut.workingTreeChanges
+      .filter((c) => c.kind === 'untracked')
+      .map((c) => c.path);
+    expect(untrackedPaths).toEqual(['u1.txt', 'u2.txt', 'u3.txt']);
+  });
+
+  it('Given a tracked file whose read throws during scan, When status, Then it is reported as modified', async () => {
+    // Arrange — a.txt is staged/committed clean. Wrap ctx.fs.read so reading
+    // a.txt throws: lstat still succeeds, so classifyEntry reaches isModified,
+    // whose catch must report the file as modified.
+    const ctx = await seedClean();
+    const workFile = `${ctx.layout.workDir}/a.txt`;
+    const failingReadCtx = {
+      ...ctx,
+      fs: {
+        ...ctx.fs,
+        read: async (path: string) => {
+          if (path === workFile) throw new Error('simulated read failure');
+          return ctx.fs.read(path);
+        },
+      },
+    };
+
+    // Act
+    const sut = await status(failingReadCtx);
+
+    // Assert — kills L111 BooleanLiteral `return true` -> `return false`
+    // (which would drop a.txt from the changes entirely).
+    expect(sut.workingTreeChanges).toContainEqual({ kind: 'modified', path: 'a.txt' });
+    expect(sut.clean).toBe(false);
+  });
 });
 
 // Progress reporting. Mutation-resistant: every assertion uses

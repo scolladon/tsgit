@@ -148,6 +148,7 @@ const downloadPack = async (
     // `{ depth: input.depth }` unconditionally is observable-equivalent.
     // `buildUploadPackRequest` treats `depth: undefined` identically to no
     // `depth` field — no `deepen N\n` line is emitted in either case.
+    // Stryker disable next-line ConditionalExpression: equivalent — `buildUploadPackRequest` treats `depth: undefined` like an absent field, so spreading unconditionally emits no `deepen` line.
     ...(input.depth !== undefined ? { depth: input.depth } : {}),
   });
   const uploadUrl = buildUploadPackUrl(input.url);
@@ -174,6 +175,7 @@ const downloadPack = async (
     // server. Sanitizing at the boundary leaves no untrusted byte on the
     // reporter call surface.
     onProgress: (text) => ctx.progress.update(input.progressOp, 0, undefined, sanitize(text)),
+    // Stryker disable next-line ConditionalExpression: equivalent — `parseUploadPackResponse` treats `expectShallow: true` identically on a non-shallow stream (the NAK pkt is pushed back and processed as the non-shallow path).
     expectShallow: input.depth !== undefined,
   });
   const packBytes = await drainPackBodyBounded(ctx, input, parsed.packBody);
@@ -200,7 +202,10 @@ const drainPackBodyBounded = async (
       lastTick = total;
     }
   }
-  if (total > 0 && total !== lastTick) {
+  // Stryker disable next-line ConditionalExpression: equivalent — when `total === 0` no chunk was consumed so `lastTick` is also 0, making `tailUnticked` false; forcing `sawProgress` true cannot change the AND result.
+  const sawProgress = total !== 0;
+  const tailUnticked = total !== lastTick;
+  if (sawProgress && tailUnticked) {
     ctx.progress.update(input.progressOp, total);
   }
   const out = new Uint8Array(total);
@@ -281,18 +286,17 @@ const walkPackEntries = async (
 ): Promise<ReadonlyArray<WalkedEntry>> => {
   const pending = await inflateAllEntries(ctx, packBytes);
   const resolved = await resolveAllEntries(ctx, pending);
-  // equivalent-mutant: `.slice()` here defends against the consumer mutating
-  // the array we sort below; `resolveAllEntries` is module-internal and never
-  // shares the array, so dropping `.slice()` is observable-equivalent.
-  // equivalent-mutant: `a.offset - b.offset` vs `a.offset + b.offset` is
-  // equivalent when entries are inserted in offset order (the byOffset Map
-  // preserves insertion order and we walk the pack in offset order). Tests
-  // that exercise out-of-order REF_DELTAs still see in-order resolution
-  // because resolveAllEntries re-inserts on the resolution pass.
-  return resolved
-    .slice()
-    .sort((a, b) => a.offset - b.offset)
-    .map((r) => ({ id: r.id, crc32: r.crc32, offset: r.offset }));
+  // The sort below only orders the WalkedEntry array; nothing observable
+  // depends on that order — `objectCount` reads `.length`, and `buildIdx`
+  // feeds `serializePackIndex`, which re-sorts entries by SHA before writing.
+  // Stryker disable next-line MethodExpression: equivalent — `resolveAllEntries` is module-internal and never shares the array, so the defensive `.slice()` copy cannot change behaviour.
+  return (
+    resolved
+      .slice()
+      // Stryker disable next-line ArithmeticOperator: equivalent — the WalkedEntry order is unobservable (objectCount uses `.length`; serializePackIndex re-sorts by SHA), so a broken comparator changes nothing downstream.
+      .sort((a, b) => a.offset - b.offset)
+      .map((r) => ({ id: r.id, crc32: r.crc32, offset: r.offset }))
+  );
 };
 
 const inflateAllEntries = async (
@@ -315,6 +319,12 @@ const inflateAllEntries = async (
     const entryHeader = parsePackEntryHeader(packBytes, offset, ctx.hashConfig);
     const inflate = await ctx.compressor.streamInflate(packBytes, entryHeader.dataOffset);
     const entryEnd = entryHeader.dataOffset + inflate.bytesConsumed;
+    // Defence-in-depth guard. `verifyPackTrailer` already ran, so the final
+    // `digestLength` bytes are fixed as `sha(body)`; `streamInflate` reports
+    // the minimal valid zlib-stream length. An entry whose stream consumed
+    // bytes past `trailerStart` would require those SHA bytes to also be a
+    // valid zlib continuation — unreachable for any verifiable pack.
+    // Stryker disable next-line ConditionalExpression,BlockStatement,StringLiteral: equivalent — `entryEnd > trailerStart` is unreachable once `verifyPackTrailer` accepted the trailer; the throw cannot fire.
     if (entryEnd > trailerStart) {
       throw invalidPackHeader('entry extends past pack trailer');
     }
@@ -362,6 +372,7 @@ const firstUnresolvedError = (unresolved: ReadonlyArray<PendingEntry>): Error =>
   // with a clear message instead of throwing on `first.header`; flipping it to
   // always-false would only break that hypothetical future code path.
   if (first === undefined) {
+    // Stryker disable next-line StringLiteral: equivalent — this branch is unreachable; `resolveAllEntries` only calls `firstUnresolvedError` with a non-empty `next` queue, so `first` is always defined.
     return invalidPackHeader('unresolved deltas: empty queue (internal invariant violated)');
   }
   const refBaseId = refDeltaBaseId(first.header);

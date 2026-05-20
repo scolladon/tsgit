@@ -66,6 +66,35 @@ const collect = async (iter: AsyncIterable<ObjectId>): Promise<ObjectId[]> => {
   return out;
 };
 
+const AUTHOR = {
+  name: 'A',
+  email: 'a@a',
+  timestamp: 0,
+  timezoneOffset: '+0000',
+} as const;
+
+/** Write a commit pointing at an already-seeded tree (lets two commits share a tree). */
+const writeCommitForTree = async (
+  ctx: Context,
+  treeId: ObjectId,
+  parent: ObjectId | undefined,
+  message: string,
+): Promise<ObjectId> => {
+  const commit: Commit = {
+    type: 'commit',
+    id: '' as ObjectId,
+    data: {
+      tree: treeId,
+      parents: parent === undefined ? [] : [parent],
+      author: AUTHOR,
+      committer: AUTHOR,
+      message,
+      extraHeaders: [],
+    },
+  };
+  return writeObject(ctx, commit);
+};
+
 describe('enumeratePushObjects', () => {
   it('Given empty haves and a single-commit want, When enumerated, Then yields commit + tree + blob (deduped)', async () => {
     // Arrange
@@ -233,5 +262,160 @@ describe('enumeratePushObjects', () => {
     expect(sut).toContain(tip.commitId);
     expect(sut).toContain(tip.treeId);
     expect(sut).toContain(tip.blobId);
+  });
+
+  it('Given two commits sharing the same tree, When enumerated, Then the shared tree and blob are yielded exactly once', async () => {
+    // Arrange — kills the dedup `state.emitted.has(id)` mutants in `tryEmit`:
+    // under `if (false)` / `return true`, the shared tree (and blob) would be
+    // yielded a second time when the parent commit is walked.
+    const ctx = await buildSeededContext();
+    const blob: Blob = {
+      type: 'blob',
+      content: new TextEncoder().encode('shared'),
+      id: '' as ObjectId,
+    };
+    const blobId = await writeObject(ctx, blob);
+    const treeId = await writeTree(ctx, [
+      { name: 'README.md', mode: '100644' as FileMode, id: blobId },
+    ]);
+    // Parent and child point at the SAME tree (an empty/no-op commit).
+    const parentId = await writeCommitForTree(ctx, treeId, undefined, 'gen-1');
+    const childId = await writeCommitForTree(ctx, treeId, parentId, 'gen-2');
+
+    // Act
+    const sut = await collect(enumeratePushObjects(ctx, { wants: [childId], haves: [] }));
+
+    // Assert — both commits yielded, tree and blob each appear exactly once.
+    expect(sut).toContain(parentId);
+    expect(sut).toContain(childId);
+    expect(sut.filter((id) => id === treeId)).toHaveLength(1);
+    expect(sut.filter((id) => id === blobId)).toHaveLength(1);
+  });
+
+  it('Given a want commit with a missing parent, When enumerated, Then the tip closure is yielded and the missing parent is skipped', async () => {
+    // Arrange — kills the `ignoreMissing: true` BooleanLiteral mutant: under
+    // `ignoreMissing: false`, walkCommits would throw OBJECT_NOT_FOUND on the
+    // fabricated (never-written) parent oid instead of skipping it.
+    const ctx = await buildSeededContext();
+    const blob: Blob = {
+      type: 'blob',
+      content: new TextEncoder().encode('orphan'),
+      id: '' as ObjectId,
+    };
+    const blobId = await writeObject(ctx, blob);
+    const treeId = await writeTree(ctx, [
+      { name: 'README.md', mode: '100644' as FileMode, id: blobId },
+    ]);
+    const missingParent = 'e'.repeat(40) as ObjectId;
+    const tipId = await writeCommitForTree(ctx, treeId, missingParent, 'tip');
+
+    // Act
+    const sut = await collect(enumeratePushObjects(ctx, { wants: [tipId], haves: [] }));
+
+    // Assert — closure resolved despite the missing parent.
+    expect(sut).toContain(tipId);
+    expect(sut).toContain(treeId);
+    expect(sut).toContain(blobId);
+    expect(sut).not.toContain(missingParent);
+  });
+
+  it('Given maxObjects one below the closure size, When enumerated, Then throws PACK_TOO_LARGE exactly at the boundary', async () => {
+    // Arrange — closure is exactly 3 objects (commit + tree + blob). With
+    // maxObjects=2 the cap must trip on the 3rd `tryEmit`. Kills:
+    //  - L53 `>=` -> `>`: under `>`, size-2 add of the 3rd object is allowed.
+    //  - L90/L91/L94 condition -> `true`: skipping a `tryEmit` call drops the
+    //    cap increment so the throw never fires.
+    const ctx = await buildSeededContext();
+    const tip = await seedCommit(ctx, undefined, 'boundary');
+
+    // Act
+    let caught: unknown;
+    try {
+      await collect(enumeratePushObjects(ctx, { wants: [tip.commitId], haves: [], maxObjects: 2 }));
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert — throws with the exact overflow count.
+    expect(caught).toBeInstanceOf(TsgitError);
+    const data = (caught as TsgitError).data as {
+      code: string;
+      limit: number;
+      objectCount: number;
+    };
+    expect(data.code).toBe('PACK_TOO_LARGE');
+    expect(data.limit).toBe(2);
+    expect(data.objectCount).toBe(3);
+  });
+
+  it('Given a commit whose tree contains a subdirectory, When enumerated, Then the nested blob is yielded (recursive walk)', async () => {
+    // Arrange — kills the `recursive: true` BooleanLiteral mutant: under
+    // `recursive: false`, walkTree would not descend into the subtree and the
+    // nested blob would be missing from the push closure.
+    const ctx = await buildSeededContext();
+    const nestedBlob: Blob = {
+      type: 'blob',
+      content: new TextEncoder().encode('nested'),
+      id: '' as ObjectId,
+    };
+    const nestedBlobId = await writeObject(ctx, nestedBlob);
+    const subTreeId = await writeTree(ctx, [
+      { name: 'deep.txt', mode: '100644' as FileMode, id: nestedBlobId },
+    ]);
+    const rootTreeId = await writeTree(ctx, [
+      { name: 'sub', mode: '40000' as FileMode, id: subTreeId },
+    ]);
+    const commitId = await writeCommitForTree(ctx, rootTreeId, undefined, 'with subdir');
+
+    // Act
+    const sut = await collect(enumeratePushObjects(ctx, { wants: [commitId], haves: [] }));
+
+    // Assert — both the subtree and its nested blob are in the closure.
+    expect(sut).toContain(subTreeId);
+    expect(sut).toContain(nestedBlobId);
+  });
+
+  it('Given a tag chain deeper than the unwrap cap, When enumerated, Then the unwrap stops at the cap and the deepest tag is not recorded', async () => {
+    // Arrange — build a chain of 17 annotated tags (tag1 -> ... -> tag17 ->
+    // commit). The cap is 16: only 16 tags are unwrapped and the commit is
+    // never reached as a walk seed. Kills:
+    //  - L131 `i < 16` -> `i <= 16`: would record a 17th tag and reach commit.
+    //  - L131 `i += 1` -> `i -= 1`: would loop until the chain ends naturally,
+    //    recording all 17 tags and reaching the commit.
+    const ctx = await buildSeededContext();
+    const tip = await seedCommit(ctx, undefined, 'deep-tagged');
+    let target: ObjectId = tip.commitId;
+    let targetType: 'commit' | 'tag' = 'commit';
+    const tagIds: ObjectId[] = [];
+    for (let depth = 1; depth <= 17; depth += 1) {
+      const tag = {
+        type: 'tag' as const,
+        id: '' as ObjectId,
+        data: {
+          object: target,
+          objectType: targetType,
+          tagName: `v${depth}`,
+          tagger: AUTHOR,
+          message: `tag-${depth}\n`,
+          extraHeaders: [],
+        },
+      };
+      const tagId = await writeObject(ctx, tag);
+      tagIds.push(tagId);
+      target = tagId;
+      targetType = 'tag';
+    }
+    const outermostTag = tagIds[16] as ObjectId;
+    const deepestTag = tagIds[0] as ObjectId;
+
+    // Act — push the outermost tag (17 deep).
+    const sut = await collect(enumeratePushObjects(ctx, { wants: [outermostTag], haves: [] }));
+
+    // Assert — exactly 16 tags recorded; deepest tag, commit and blob excluded.
+    expect(sut).toContain(outermostTag);
+    expect(sut).not.toContain(deepestTag);
+    expect(sut).not.toContain(tip.commitId);
+    expect(sut).not.toContain(tip.blobId);
+    expect(sut).toHaveLength(16);
   });
 });

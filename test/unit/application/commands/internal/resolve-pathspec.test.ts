@@ -99,7 +99,39 @@ describe('resolvePathspec', () => {
     // Kills the `>` → `>=` mutant on the **-cap.
     expect(() => resolvePathspec(['**/**/**/**'])).not.toThrow();
   });
+
+  it('Given a non-negated single-char pattern, When resolved, Then it does NOT throw (the `!`-strip slices only when `raw.startsWith("!")`)', () => {
+    // Kills L40 StringLiteral `'!'` → `""`: with `startsWith("")` always
+    // true, `body` would become `'x'.slice(1)` === `''`, which the
+    // working-tree validator rejects with PATHSPEC_OUTSIDE_REPO.
+    expect(() => resolvePathspec(['x'])).not.toThrow();
+  });
+
+  it('Given a pattern exactly at the byte cap (256 bytes), When resolved, Then it does NOT throw (boundary)', () => {
+    // Arrange — 127 + 1 (`/`) + 128 = exactly 256 UTF-8 bytes; each
+    // component is ≤ 255 bytes so the working-tree validator passes.
+    const pattern = `${'a'.repeat(127)}/${'a'.repeat(128)}`;
+    expect(PATTERN_BYTE_LENGTH(pattern)).toBe(256);
+
+    // Act / Assert — kills L51 EqualityOperator `>` → `>=`.
+    expect(() => resolvePathspec([pattern])).not.toThrow();
+  });
+
+  it('Given ten consecutive `*`, When resolved, Then it throws INVALID_OPTION (counts 5 `**` pairs, over the cap)', () => {
+    // Kills L66 cond1 `===`→`!==` and cond2 `===`→`!==`: both `!==`
+    // mutants undercount `**********` to ≤ 4, so they would NOT throw.
+    const err = expectError(() => resolvePathspec(['**********']), 'INVALID_OPTION');
+    expect((err.data as { reason: string }).reason).toMatch(/\*\*-token count/);
+  });
+
+  it('Given a pattern of isolated single `*` separated by literals, When resolved, Then it does NOT throw (zero `**` pairs)', () => {
+    // Kills L66 cond1 `===`→`true` and cond2 `===`→`true`: forcing
+    // either operand true makes `a*a*a*a*a*` count 5 pairs and throw.
+    expect(() => resolvePathspec(['a*a*a*a*a*'])).not.toThrow();
+  });
 });
+
+const PATTERN_BYTE_LENGTH = (s: string): number => new TextEncoder().encode(s).byteLength;
 
 describe('enforceLiteralMustMatch', () => {
   it('Given a literal that appears verbatim in matched, When checked, Then no throw', () => {

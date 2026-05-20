@@ -192,4 +192,38 @@ describe('buildRepoIgnorePredicate', () => {
     // Act / Assert
     expect(await sut('secret.txt' as FilePath, false)).toBe(true);
   });
+
+  it('Given a path whose own directory-named segment is NOT an ancestor, When the predicate runs, Then `.gitignore` files are read only for true ancestor directories (kills `i < length` → `i <= length`)', async () => {
+    // Arrange — for path `a/foo.txt` the only ancestor is `a`. A mutant
+    // that iterates `i <= segments.length` would also treat `a/foo.txt`
+    // itself as an ancestor and read `a/foo.txt/.gitignore`.
+    const ctx = await seed();
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a/.gitignore`, '*.x\n');
+    const baseReadUtf8 = ctx.fs.readUtf8;
+    const readGitignorePaths: string[] = [];
+    const spyFs = new Proxy(ctx.fs, {
+      get(target, prop, receiver) {
+        if (prop === 'readUtf8') {
+          return async (p: string) => {
+            if (p.endsWith('/.gitignore')) readGitignorePaths.push(p);
+            return baseReadUtf8(p);
+          };
+        }
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+    const sut = await buildRepoIgnorePredicate({ ...ctx, fs: spyFs });
+
+    // Act
+    await sut('a/foo.txt' as FilePath, false);
+
+    // Assert — exactly one nested `.gitignore` read (`a/.gitignore`);
+    // never `a/foo.txt/.gitignore`.
+    const nested = readGitignorePaths.filter(
+      (p) => !p.endsWith(`${ctx.layout.workDir}/.gitignore`),
+    );
+    expect(nested).toHaveLength(1);
+    expect(nested[0]?.endsWith('/a/.gitignore')).toBe(true);
+    expect(readGitignorePaths.some((p) => p.includes('foo.txt'))).toBe(false);
+  });
 });

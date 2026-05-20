@@ -79,14 +79,11 @@ function enforceLooseCap(id: ObjectId, inflated: Uint8Array, maxBytes: number | 
 function enforceCachedCap(id: ObjectId, cached: Uint8Array, maxBytes: number | undefined): void {
   if (maxBytes === undefined) return;
   const nulIdx = cached.indexOf(0);
-  // equivalent-mutant: the LRU is fed exclusively by `prependHeader` /
-  // `serializeObject` paths, which always emit a `<type> <size>\0...`
-  // header — `nulIdx < 0` is structurally unreachable in practice. The
-  // defence-in-depth guard exists in case those invariants ever break,
-  // at which point `splitHeader` (called next) throws OBJECT_NOT_FOUND.
-  // Stryker mutates this `<` to `<=` or `false`; no unit test fixture
-  // can reach the branch without writing a corrupt buffer directly into
-  // ctx.deltaCache, which would itself violate the cache's contract.
+  // Defence-in-depth: a header-less cached buffer has no measurable content
+  // size, so skip the cap and let `splitHeader` reject it downstream as
+  // OBJECT_NOT_FOUND. The well-formed paths (`prependHeader` /
+  // `serializeObject`) always emit a `<type> <size>\0...` header, but a
+  // poisoned cache entry exercises this branch.
   if (nulIdx < 0) return;
   const actualSize = cached.length - (nulIdx + 1);
   if (actualSize > maxBytes) {
@@ -122,23 +119,23 @@ function enforcePackBaseCap(
  * intermediate base sizes that don't correspond to the user-visible
  * target.
  */
+// Stryker disable next-line BlockStatement: equivalent — emptying the body removes only the pre-apply optimisation; the post-apply cap in `resolvePackChain` still raises the identical OBJECT_TOO_LARGE.
 function enforcePackDeltaPreApplyCap(
   targetId: ObjectId,
   instructions: Uint8Array,
   maxBytes: number | undefined,
   depth: number,
 ): void {
-  // equivalent-mutant: this pre-apply cap is observationally equivalent to
-  // the post-apply cap in `resolvePackChain` — both throw
-  // OBJECT_TOO_LARGE with the same id/size/limit when the target is
-  // oversized. The pre-apply variant exists purely as a performance
-  // optimisation (skip the apply loop + the result allocation). Stryker
-  // mutates `depth === 1` to `depth !== 1` / `false`: at depth=1 the
-  // pre-apply check no longer fires, but the post-apply check still does,
-  // producing identical observable behaviour. Equivalent without timing
-  // instrumentation.
-  if (maxBytes === undefined || depth !== 1) return;
+  // This pre-apply cap is observationally equivalent to the post-apply cap
+  // in `resolvePackChain` — both throw OBJECT_TOO_LARGE with the same
+  // id/size/limit when the target is oversized. The pre-apply variant
+  // exists purely as a performance optimisation (skip the apply loop + the
+  // result allocation).
+  if (maxBytes === undefined) return;
+  // Stryker disable next-line EqualityOperator,ConditionalExpression: equivalent — skipping the pre-apply cap leaves the post-apply cap in `resolvePackChain` to throw the identical OBJECT_TOO_LARGE; only timing differs.
+  if (depth !== 1) return;
   const declaredTargetSize = readDeltaTargetSize(instructions);
+  // Stryker disable next-line BlockStatement: equivalent — emptying the throw block defers to the post-apply cap, which raises the same OBJECT_TOO_LARGE.
   if (declaredTargetSize > maxBytes) {
     throw objectTooLarge(targetId, declaredTargetSize, maxBytes);
   }
@@ -357,10 +354,12 @@ function splitHeader(
   // always produce `<type> <size>\0...`. If those invariants ever break, treat it
   // as a missing object rather than silently mis-typing.
   const nulIdx = bytes.indexOf(0);
+  // Stryker disable next-line EqualityOperator: equivalent — at the only differing input (`nulIdx === 0`) the fall-through path finds no space (`space === -1`) and throws the identical OBJECT_NOT_FOUND.
   if (nulIdx < 0) {
     throw objectNotFound(sourceId);
   }
   const space = bytes.subarray(0, nulIdx).indexOf(0x20);
+  // Stryker disable next-line EqualityOperator: equivalent — at the only differing input (`space === 0`) the fall-through path decodes an empty type name and `typeNameToPackType` throws the identical OBJECT_NOT_FOUND.
   if (space < 0) {
     throw objectNotFound(sourceId);
   }

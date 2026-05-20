@@ -379,6 +379,8 @@ const splitMeta = async (iter: AsyncIterator<PktLine>): Promise<ResponseSplit> =
   // stale entry that GC reclaims when the iterator is unreferenced (the
   // never-delete mutant). The next splitMeta call gets a fresh iterator
   // identity, so the stale entry is unreachable.
+  // Stryker disable next-line ConditionalExpression: equivalent — always-delete hits a no-op WeakMap.delete on an absent key; never-delete leaves a stale entry on an iterator no other splitMeta call can reach.
+  // Stryker disable next-line EqualityOperator: equivalent — inverting the guard only swaps a no-op delete for a never-read stale entry; the WeakMap is keyed per-iterator and read once.
   if (first !== undefined) pushbackBuffer.delete(iter);
   let pkt: IteratorResult<PktLine> =
     first !== undefined ? { done: false, value: first } : await iter.next();

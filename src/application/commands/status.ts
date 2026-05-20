@@ -69,7 +69,7 @@ export const status = async (ctx: Context): Promise<StatusResult> => {
     for await (const { path } of walkWorkingTree(ctx, { ignore })) {
       if (!indexByPath.has(path)) untracked.push({ kind: 'untracked', path });
     }
-    untracked.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+    untracked.sort(byPathAscending);
     const workingTreeChanges = [...indexChecks, ...untracked];
     const clean = workingTreeChanges.length === 0;
     return {
@@ -83,6 +83,13 @@ export const status = async (ctx: Context): Promise<StatusResult> => {
     ctx.progress.end(STATUS_SCAN_OP);
   }
 };
+
+/**
+ * Ascending byte-order comparator for untracked entries. A filesystem walk
+ * yields each path exactly once, so `a.path === b.path` is unreachable here —
+ * the comparator is intentionally two-way (no equal-path branch).
+ */
+const byPathAscending = (a: ChangeEntry, b: ChangeEntry): number => (a.path < b.path ? -1 : 1);
 
 const classifyEntry = async (
   ctx: Context,
