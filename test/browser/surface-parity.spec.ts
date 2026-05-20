@@ -104,15 +104,14 @@ test.describe('surface parity', () => {
       });
 
       await test.step('log returns both commits newest-first', () => {
-        expect(entries).toHaveLength(2);
-        expect(entries[0]?.message).toBe('second commit');
-        expect(entries[1]?.message).toBe('seed commit');
+        expect(entries.map((entry) => entry.message)).toEqual(['second commit', 'seed commit']);
       });
 
       await test.step('the newer commit links the older as its only parent', () => {
-        expect(entries[1]?.id).toBe(seed.commitId);
-        expect(entries[0]?.parents).toEqual([seed.commitId]);
-        expect(entries[1]?.parents).toEqual([]);
+        expect(entries).toMatchObject([
+          { parents: [seed.commitId] },
+          { id: seed.commitId, parents: [] },
+        ]);
       });
     });
   });
@@ -146,17 +145,18 @@ test.describe('surface parity', () => {
 
       await test.step('list shows feature beside the current main', () => {
         expect(result.listed.kind).toBe('list');
-        const main = result.listed.branches.find((info) => info.name === 'refs/heads/main');
-        const feature = result.listed.branches.find((info) => info.name === 'refs/heads/feature');
-        expect(main).toBeDefined();
-        expect(feature).toBeDefined();
-        expect(main?.current).toBe(true);
-        expect(feature?.current).toBe(false);
+        expect(result.listed.branches).toContainEqual(
+          expect.objectContaining({ name: 'refs/heads/main', current: true }),
+        );
+        expect(result.listed.branches).toContainEqual(
+          expect.objectContaining({ name: 'refs/heads/feature', current: false }),
+        );
       });
 
       await test.step('delete removes feature', () => {
         expect(result.deleted.kind).toBe('delete');
         expect(result.deleted.name).toBe('refs/heads/feature');
+        expect(result.remaining.kind).toBe('list');
         expect(result.remaining.branches.map((info) => info.name)).not.toContain(
           'refs/heads/feature',
         );
@@ -184,6 +184,8 @@ test.describe('surface parity', () => {
           return file.text();
         };
 
+        // Inline seed (not seedRepo): a.txt must carry a known "v1" here so it
+        // can diverge to "v2" on the feature branch and prove checkout swaps it.
         await writeA('v1\n');
         const repo = await tsgit.openRepository({ rootHandle });
         try {
@@ -250,6 +252,7 @@ test.describe('surface parity', () => {
       await test.step('delete removes v1', () => {
         expect(result.deleted.kind).toBe('delete');
         expect(result.deleted.name).toBe('refs/tags/v1');
+        expect(result.remaining.kind).toBe('list');
         expect(result.remaining.tags.map((info) => info.name)).not.toContain('refs/tags/v1');
       });
     });

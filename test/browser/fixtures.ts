@@ -69,7 +69,9 @@ interface SeedRepo {
 // one commit (`seed commit`). Returns the new commit id and branch so callers
 // can chain further operations or assert against the baseline. A Node-side
 // helper — it runs one self-contained `page.evaluate()`, never a callback
-// smuggled across the evaluate boundary.
+// smuggled across the evaluate boundary. The repo is disposed before the
+// helper returns; callers re-open the same root in a later `evaluate()` —
+// OPFS persists for the page's lifetime, so the seeded `.git` is still there.
 export const seedRepo = (page: Page): Promise<{ commitId: string; branch: string | undefined }> =>
   page.evaluate(async (author) => {
     const tsgit = (
