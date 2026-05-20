@@ -184,6 +184,7 @@
     "test:mutation:incremental": "wireit",
     "test:bench": "wireit",
     "bench:summary": "wireit",
+    "bench:fixture": "node --experimental-strip-types scripts/gen-bench-fixture.ts",
     "docs": "wireit",
     "docs:check": "wireit",
     "verify:tarball": "wireit",
