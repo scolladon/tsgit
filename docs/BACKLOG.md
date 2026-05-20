@@ -92,7 +92,7 @@ Design: `docs/design/ports-and-adapters.md`
 Tree comparison and three-way merge.
 
 - [x] **5.1** Tree diff algorithm (`diffTrees`, two-pointer walk + rename detection)
-- [~] **5.2** Working tree diff (filesystem vs index) — deferred to Phase 7 `status`; domain building block (`diffIndexAgainstTree`) delivered
+- [x] **5.2** Working tree diff (filesystem vs index) — domain building block `diffIndexAgainstTree` delivered in Phase 5; the filesystem-vs-index comparison itself shipped in the `status` command (`classifyEntry` lstat + content-hash compare, plus untracked-file enumeration)
 - [x] **5.3** Index diff (`diffIndexAgainstTree` + `groupUnmergedEntries` + `conflictsToIndexEntries`)
 - [x] **5.4** Three-way merge engine (`mergeTrees` async + `mergeContent` + `writeConflictMarkers`)
 - [x] **5.5** Conflict detection and representation (MergeConflict + 7 ConflictType variants)
@@ -190,7 +190,7 @@ Design: `docs/design/repository-facade.md`
 ## Phase 11: Polish & Launch
 
 - [x] **11.1** Benchmark suite (log, readBlob, status vs isomorphic-git; clone deferred to v1.x)
-- [~] **11.2** Cross-platform E2E tests (Ubuntu, macOS, Windows × Node 20/22/24) — matrix expanded, integration suite landed; per-OS mutation gap still open
+- [~] **11.2** Cross-platform E2E tests (Ubuntu, macOS, Windows × Node 20/22/24) — matrix expanded, integration suite landed; per-OS mutation gap still open (CI runs the `mutation` job on `ubuntu-latest` only — tracked as **15.4**)
 - [x] **11.3** Browser E2E tests (Chromium, Firefox, WebKit via Playwright) — OPFS round-trip, SubtleCrypto SHA-1 parity, DecompressionStream
 - [x] **11.4** TypeDoc API documentation
 - [x] **11.5** npm publish dry run, verify with arethetypeswrong
@@ -249,8 +249,8 @@ tree is the visible gap.
       _Accepted:_ `repo.reset({ mode: 'mixed', target })` now rebuilds `.git/index` from the target commit's tree under the same `acquireIndexLock` that commits it — closing the TOCTOU window where a concurrent writer could otherwise make the donor map stale. The new `buildIndexFromTree` primitive in `src/application/primitives/` projects the target tree to a stage-0 IndexEntry list and preserves stat-cache fields for paths whose `id + mode` survive (the "stat-cache donor" strategy — [ADR-021](adr/021-reset-mixed-stat-cache-donor.md)). Pathspec scoping (`reset --mixed -- <pathspec>`) is deferred to Phase 14.2 — [ADR-022](adr/022-reset-mixed-pathspec-scope.md). Working tree is never touched; bare repos accept `reset --mixed`. Mutation-hardened: every surviving mutant is documented inline as `// equivalent-mutant`.
 - [x] **13.3** `reset --hard`: invoke 13.1's materialize routine.
       _Accepted:_ `repo.reset({ mode: 'hard', target })` now atomically rewrites the working tree AND `.git/index` to match the target commit's tree. Composition only — wires Phase 13.1's `materializeTree` (working-tree materialise) with Phase 13.2's lock-first ordering (acquireIndexLock wraps readIndex + materializeTree + commit). Bare repos still reject `reset --hard` upfront. The index commit uses materializeTree's post-write lstat-derived stats per [ADR-023](adr/023-reset-hard-index-stat-source.md). A small primitive surface addition (`forceRewriteAll` option on materializeTree) is required so locally-modified files whose index still records the committed `id` are overwritten rather than skipped as noops. Mutation-hardened: stats-tally arithmetic verified via progress-event capture. Pathspec scoping deferred to Phase 14.2.
-- [~] **13.4** Three-way tree merge in `merge`: walk HEAD ∩ THEIRS ∩ BASE, apply per-path resolution, write conflict markers (already implemented for content; tree-walk is the missing piece).
-      _Status:_ §13.4a shipped (clean-merge tree walk wires `mergeTrees`, merge commit reflects the merged tree, conflicting merges throw `MERGE_HAS_CONFLICTS` with conflict paths). Conflict resolution machinery — working-tree markers, unmerged stage-1/2/3 index, `.git/MERGE_HEAD`/`MERGE_MSG`/`ORIG_HEAD` — captured as §13.4b.
+- [x] **13.4** Three-way tree merge in `merge`: walk HEAD ∩ THEIRS ∩ BASE, apply per-path resolution, write conflict markers.
+      _Accepted:_ shipped in two slices — **13.4a** (clean-merge tree walk wires `mergeTrees`, merge commit reflects the merged tree, conflicting merges throw `MERGE_HAS_CONFLICTS` with conflict paths) and **13.4b** (conflict-resolution machinery — working-tree markers, unmerged stage-1/2/3 index, `.git/MERGE_HEAD`/`MERGE_MSG`/`ORIG_HEAD`; see the dedicated **13.4b** entry below). Both complete.
 - [x] **13.5** Tighten `checkout` to lock-first ordering.
       _Accepted:_ `repo.checkout({ target })` and `repo.checkout({ paths, source: 'HEAD' | <ObjectId> })` now acquire `index.lock` BEFORE `readIndex`, closing the TOCTOU window where a concurrent index writer could otherwise stale the donor stat fields between read and commit. Path-restore from the default `source: 'index'` stays lock-free by design (no index write happens; the operation acts on the index snapshot we read — well-defined). Two new private helpers (`materializePathRestoreLockless` / `materializePathRestoreLocked`) name the actual semantic axis. Also harmonised the no-op commit skip across `checkout` / `reset --hard` / `reset --mixed`. 4 new tests pin the lock-first ordering (including a corrupted-index discriminator that proves the lock acquires BEFORE readIndex, and an ObjectId-source branch coverage). Mutation score on `checkout.ts` improved from 42.86% (main) to 50.56% — no new survivors introduced.
 - [x] **13.6** Path-restore from index — synthesise tree from index directly.
