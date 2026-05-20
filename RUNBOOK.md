@@ -34,6 +34,8 @@ npm install
 | `npm run test:coverage` | Tests with 100% coverage enforcement |
 | `npm run test:mutation` | Mutation testing — incremental (Stryker) |
 | `npm run test:bench` | Performance benchmarks |
+| `npm run bench:fixture -- <medium\|large>` | Generate + cache a scaled bench fixture |
+| `npm run profile` | V8 CPU profiles for log / status / pack-read |
 | `npm run check:architecture` | Hexagonal dependency rules (dependency-cruiser) |
 | `npm run check:spelling` | Spell checking (cspell) |
 | `npm run check:size` | Bundle size budget (size-limit) |
@@ -61,16 +63,33 @@ Pre-commit (via husky + lint-staged):
 Commit message (via commitlint):
 - Must follow conventional commits: `feat:`, `fix:`, `refactor:`, etc.
 
+### Benchmarking
+
+`npm run test:bench` runs every scenario in `test/bench/`. The small
+scenarios build their fixtures inline; the **scaled** scenarios
+(`*-scale.bench.ts`) read a cached fixture instead.
+
+- **Pre-warm the cache first:** `npm run bench:fixture -- medium` builds a
+  5k-commit / 20k-blob repo under `~/.cache/tsgit-bench` (one-time, ~5 s;
+  later runs are cache hits). The scaled benches `skipIf` the fixture is
+  absent, so a cold run without `git` on `PATH` skips cleanly.
+- **Large fixture:** set `TSGIT_BENCH_LARGE=1` to point the scaled benches at
+  the 50k-commit / 200k-blob repo (`npm run bench:fixture -- large` first).
+  Opt-in only — it never runs in CI.
+- **Profiling:** `npm run profile` captures V8 CPU profiles for the `log`,
+  `status`, and `pack-read` hot paths against the medium fixture, writing
+  digests to `reports/profiles/` (git-ignored).
+
 ## CI/CD
 
 ### Pipeline Stages
 
 1. **Static Analysis** — biome, tsc, knip, jscpd, ls-lint, npm outdated (parallel)
 2. **Unit Tests** — Matrix: Ubuntu/macOS/Windows × Node 22/24 (Windows re-added in Phase 14.4)
-3. **Mutation Testing** — Stryker incremental on PRs, Linux-only (ADR-044)
+3. **Mutation Testing** — Stryker incremental on PRs (Linux, ADR-044); macOS + Windows nightly via `mutation-os.yml` (ADR-055)
 4. **Integration Tests** — Three jobs split by platform contract (see below)
 5. **E2E Tests** — Playwright: Chrome, Firefox, Safari (Linux runner)
-6. **Performance** — vitest bench + bundle size checks
+6. **Performance** — vitest bench (PR base-vs-PR compare + main-push snapshot to the `gh-pages` data branch) + bundle size checks
 7. **MegaLinter** — Comprehensive linting (parallel with all stages)
 
 #### Integration test jobs (Phase 14.4)
@@ -99,9 +118,9 @@ runs on every OS because the simulated platform is data, not a host
 read. The `win-integration` job covers the OS → Node → adapter wiring
 that simulation cannot fake (8.3 short-name expansion through real
 `fsPromises.realpath`, NTFS reparse-point behaviour). Wall time is
-~2–3× Linux; expect ~12–15 min for the `unit-tests` job. Mutation
-testing stays on Linux (per ADR-044 cost analysis); per-OS mutation
-tracking is backlogged under §15.4.
+~2–3× Linux; expect ~12–15 min for the `unit-tests` job. Per-PR
+mutation stays on Linux (per ADR-044 cost analysis); per-OS mutation on
+macOS + Windows runs nightly via the `mutation-os.yml` workflow (ADR-055).
 
 ### Release Process
 
