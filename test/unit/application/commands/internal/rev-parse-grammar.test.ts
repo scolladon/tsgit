@@ -23,6 +23,21 @@ describe('internal/rev-parse-grammar', () => {
       expectError(() => parseExpression(''), 'REVPARSE_UNRESOLVED');
     });
 
+    it('Given a non-empty string, When parseExpression, Then the empty-string guard does not reject it and it parses as a ref-or-hex', () => {
+      // Arrange — kills the StringLiteral mutant on the `raw === ''` guard:
+      // if `''` were replaced by any non-empty literal, that literal would be
+      // wrongly rejected as REVPARSE_UNRESOLVED instead of parsed as a ref.
+      // Act
+      const sut = parseExpression('Stryker was here!');
+
+      // Assert
+      expect(sut).toEqual({
+        kind: 'ref-or-hex',
+        base: 'Stryker was here!',
+        operations: [],
+      } satisfies RevExpression);
+    });
+
     it("Given 'HEAD', When parseExpression, Then returns kind=ref base=HEAD with no operations", () => {
       // Act
       const sut = parseExpression('HEAD');

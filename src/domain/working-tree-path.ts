@@ -26,6 +26,7 @@ const GIT_FORBIDDEN: ReadonlySet<string> = new Set(['.git']);
  * - Length caps: total path ≤ 4096 bytes; each component ≤ 255 bytes.
  */
 export const validateWorkingTreePath = (input: string): FilePath => {
+  // Stryker disable next-line ConditionalExpression: equivalent — when this fast-path guard is removed (`if (false)`), the empty string still splits to `['']`, whose empty component is rejected by `rejectComponent` with the identical `pathspecOutsideRepo('')` error.
   if (input === '') reject(input);
   if (byteLength(input) > MAX_PATH_BYTES) reject(input);
   // Stryker disable next-line ConditionalExpression,MethodExpression: equivalent — a leading or trailing `/` always produces an empty path component, which `rejectComponent` rejects regardless; this guard only changes which line throws, not the accept/reject verdict or the error data.

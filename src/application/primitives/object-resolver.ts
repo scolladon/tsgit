@@ -119,12 +119,12 @@ function enforcePackBaseCap(
  * intermediate base sizes that don't correspond to the user-visible
  * target.
  */
-// Stryker disable next-line BlockStatement: equivalent — emptying the body removes only the pre-apply optimisation; the post-apply cap in `resolvePackChain` still raises the identical OBJECT_TOO_LARGE.
 function enforcePackDeltaPreApplyCap(
   targetId: ObjectId,
   instructions: Uint8Array,
   maxBytes: number | undefined,
   depth: number,
+  // Stryker disable next-line BlockStatement: equivalent — emptying the body removes only the pre-apply optimisation; `applyDelta` always produces exactly `targetLength` bytes, so the post-apply cap in `resolvePackChain` raises an OBJECT_TOO_LARGE with the identical id/size/limit.
 ): void {
   // This pre-apply cap is observationally equivalent to the post-apply cap
   // in `resolvePackChain` — both throw OBJECT_TOO_LARGE with the same

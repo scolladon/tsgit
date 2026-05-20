@@ -564,6 +564,118 @@ describe('checkout — mutation hardening', () => {
     expect(idx.entries.some((e) => e.path === 'extra.txt')).toBe(true);
   });
 
+  it('Given detach:true onto a ref name with a 40-hex PREFIX, When checkout, Then resolveSwitchOid resolves it via resolveRef (L55 `^...{40}$` rejects the 41-char target — kills the `$`-anchor drop)', async () => {
+    // Arrange — a loose ref whose NAME is `<40 hex>z` (41 chars). The L55
+    // regex `/^[0-9a-f]{40}$/` must NOT match (length 41 + trailing `z`), so
+    // resolveSwitchOid resolves it via resolveRef into the real commit oid.
+    // Dropping the `$` anchor (`/^[0-9a-f]{40}/`) matches the 40-hex PREFIX,
+    // making resolveSwitchOid return the raw ref name as the oid — `sut.id`
+    // would then be the ref text, not the resolved commit.
+    const ctx = createMemoryContext();
+    await init(ctx);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
+    await add(ctx, ['a.txt']);
+    const c = await commit(ctx, { message: 'first', author });
+    const hexPrefixRef = `${'a'.repeat(40)}z`; // 40 hex chars + non-hex `z`
+    // Write the loose ref directly (resolveRef joins the name onto gitDir).
+    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/${hexPrefixRef}`, `${c.id}\n`);
+
+    // Act — detach:true forces the detached branch; target is the hex-prefix ref.
+    const sut = await checkout(ctx, { target: hexPrefixRef, detach: true });
+
+    // Assert — id is the RESOLVED commit oid, never the raw ref text.
+    expect(sut.detached).toBe(true);
+    expect(sut.id).toBe(c.id);
+    expect(sut.id).not.toBe(hexPrefixRef);
+    const head = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/HEAD`);
+    expect(head).toBe(`${c.id}\n`);
+  });
+
+  it('Given detach:true onto a ref name with a 40-hex SUFFIX, When checkout, Then resolveSwitchOid resolves it via resolveRef (L55 `^...{40}$` rejects the slashed target — kills the `^`-anchor drop)', async () => {
+    // Arrange — a branch literally named with 40 hex characters, so its full
+    // ref path `refs/heads/<40 hex>` ENDS with a 40-hex run. The L55 regex
+    // `/^[0-9a-f]{40}$/` must NOT match (the `refs/heads/` prefix breaks the
+    // `^` anchor), so resolveSwitchOid resolves it via resolveRef. Dropping
+    // the `^` anchor (`/[0-9a-f]{40}$/`) matches the 40-hex SUFFIX, making
+    // resolveSwitchOid return the raw `refs/heads/<40 hex>` text as the oid.
+    const ctx = createMemoryContext();
+    await init(ctx);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
+    await add(ctx, ['a.txt']);
+    const c = await commit(ctx, { message: 'first', author });
+    const hexBranch = 'b'.repeat(40); // branch name = 40 hex chars
+    await branch(ctx, { kind: 'create', name: hexBranch });
+    const fullRefPath = `refs/heads/${hexBranch}`;
+
+    // Act — target is the full ref path ending in a 40-hex run.
+    const sut = await checkout(ctx, { target: fullRefPath, detach: true });
+
+    // Assert — id is the RESOLVED commit oid, never the raw ref path text.
+    expect(sut.detached).toBe(true);
+    expect(sut.id).toBe(c.id);
+    expect(sut.id).not.toBe(fullRefPath);
+    const head = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/HEAD`);
+    expect(head).toBe(`${c.id}\n`);
+  });
+
+  it('Given a non-detached switch that both writes and deletes files, When checkout, Then changedPaths is written + deleted (L115 sum)', async () => {
+    // Arrange — main ends on a commit with only `b.txt`; `feature` sits on a
+    // commit with only `a.txt`. Switching main→feature WRITES `a.txt` and
+    // DELETES `b.txt`: written===1, deleted===1. The non-detached return at
+    // L115 sums them — an ArithmeticOperator `+`→`-` mutant would yield 0.
+    const ctx = createMemoryContext();
+    await init(ctx);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a-content');
+    await add(ctx, ['a.txt']);
+    await commit(ctx, { message: 'a-only', author });
+    await branch(ctx, { kind: 'create', name: 'feature' });
+    // Advance main: drop a.txt, add b.txt.
+    const { rm } = await import('../../../../src/application/commands/rm.js');
+    await rm(ctx, ['a.txt']);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.txt`, 'b-content');
+    await add(ctx, ['b.txt']);
+    await commit(ctx, { message: 'b-only', author });
+
+    // Act — non-detached switch back to feature (writes a.txt, deletes b.txt).
+    const sut = await checkout(ctx, { target: 'feature', force: true });
+
+    // Assert — symref branch (non-detached) and the exact sum 1 + 1 = 2.
+    expect(sut.detached).toBe(false);
+    expect(sut.branch).toBe('refs/heads/feature');
+    expect(sut.changedPaths).toBe(2);
+    expect(await ctx.fs.exists(`${ctx.layout.workDir}/a.txt`)).toBe(true);
+    expect(await ctx.fs.exists(`${ctx.layout.workDir}/b.txt`)).toBe(false);
+  });
+
+  it('Given a locked path-restore whose index read fails, When checkout, Then the index lock is released by the finally block (L226)', async () => {
+    // Arrange — path-restore from HEAD takes the LOCKED branch:
+    // acquireIndexLock creates `index.lock`, then readIndex runs inside the
+    // try. Corrupt the index so readIndex throws AFTER the lock is held but
+    // BEFORE lock.commit() — only the L226 `finally { await lock.release() }`
+    // can then remove the lock. A BlockStatement→`{}` mutant on that finally
+    // would leak `index.lock` on disk.
+    const ctx = createMemoryContext();
+    await init(ctx);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
+    await add(ctx, ['a.txt']);
+    await commit(ctx, { message: 'baseline', author });
+    // Corrupt the on-disk index: a 4-byte header readIndex rejects.
+    await ctx.fs.write(`${ctx.layout.gitDir}/index`, new Uint8Array([0x00, 0x00, 0x00, 0x00]));
+    const lockPath = `${ctx.layout.gitDir}/index.lock`;
+
+    // Act — must throw (corrupt index), and the lock must be released.
+    let caught: unknown;
+    try {
+      await checkout(ctx, { paths: ['a.txt'], source: 'HEAD' });
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert — the parse error surfaced AND the lock file is gone (released).
+    expect(caught).toBeInstanceOf(TsgitError);
+    expect(await ctx.fs.exists(lockPath)).toBe(false);
+  });
+
   it('Given empty paths array, When checkout, Then the error names the paths option and the empty reason', async () => {
     // Arrange — pins the L128 string literals 'paths' and 'must not be empty'.
     const { ctx } = await seedWithBranches();

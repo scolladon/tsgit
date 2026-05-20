@@ -218,6 +218,23 @@ describe('domain commands error — factory data', () => {
     expect(data.truncated).toBeUndefined();
   });
 
+  it('mergeHasConflicts keeps all paths and omits truncated at exactly the cap', () => {
+    // Arrange — exactly MAX_CONFLICT_PATHS_IN_ERROR (100) paths: the boundary
+    // where `paths.length > cap` is false and `>= cap` would be true.
+    const paths = Array.from({ length: 100 }, (_, i) => `f${i}.txt` as FilePath);
+
+    // Act
+    const err = mergeHasConflicts(100, paths);
+    const data = err.data as {
+      readonly paths: ReadonlyArray<string>;
+      readonly truncated?: boolean;
+    };
+
+    // Assert — no elision: every path retained, truncated field absent.
+    expect(data.paths).toHaveLength(100);
+    expect(data.truncated).toBeUndefined();
+  });
+
   it('checkoutOverwriteDirty', () => {
     expect(checkoutOverwriteDirty(['a' as FilePath]).data).toEqual({
       code: 'CHECKOUT_OVERWRITE_DIRTY',
@@ -340,6 +357,16 @@ describe('sanitize helper', () => {
 
   it('Given a high-byte non-ASCII character, When sanitize, Then escapes', () => {
     expect(sanitize('ab')).toBe('a\\x80b');
+  });
+
+  it('Given a tilde (0x7e, the printable-range upper bound), When sanitize, Then keeps it verbatim', () => {
+    // 0x7e is the inclusive upper bound of the printable ASCII range; it must
+    // be preserved, not escaped.
+    expect(sanitize('a~b')).toBe('a~b');
+  });
+
+  it('Given DEL (0x7f, just past the printable upper bound), When sanitize, Then escapes it', () => {
+    expect(sanitize('ab')).toBe('a\\x7Fb');
   });
 });
 

@@ -269,9 +269,9 @@ const finalize = (acc: {
   if (acc.user?.name !== undefined && acc.user?.email !== undefined) {
     out.user = { name: acc.user.name, email: acc.user.email };
   }
-  // Stryker disable next-line EqualityOperator: equivalent — `acc.remote` is only ever assigned after a `Map.set`, so when defined its size is always >= 1; `> 0` and `>= 0` never differ.
+  // Stryker disable next-line EqualityOperator,ConditionalExpression: equivalent — `acc.remote` is only ever assigned after a `Map.set`, so when defined its size is always >= 1; `> 0`, `>= 0` and a constant `true` never differ.
   if (acc.remote !== undefined && acc.remote.size > 0) out.remote = acc.remote;
-  // Stryker disable next-line EqualityOperator: equivalent — `acc.branch` is only ever assigned after a `Map.set`, so when defined its size is always >= 1; `> 0` and `>= 0` never differ.
+  // Stryker disable next-line EqualityOperator,ConditionalExpression: equivalent — `acc.branch` is only ever assigned after a `Map.set`, so when defined its size is always >= 1; `> 0`, `>= 0` and a constant `true` never differ.
   if (acc.branch !== undefined && acc.branch.size > 0) out.branch = acc.branch;
   return out;
 };

@@ -14,11 +14,11 @@ import {
 import { enforceLiteralMustMatch, resolvePathspec } from './internal/resolve-pathspec.js';
 import { removeFile } from './internal/working-tree.js';
 
-const INDEX_MISSING_CODES = new Set([
-  'FILE_NOT_FOUND',
-  'INVALID_INDEX_HEADER',
-  'INVALID_INDEX_ENTRY',
-]);
+// A predicate (not a static Set) so Stryker attributes per-test coverage to
+// each literal — a module-level `new Set([...])` initializer runs before any
+// test, leaving its string mutants unattributed under `coverageAnalysis`.
+const isIndexMissingCode = (code: string): boolean =>
+  code === 'FILE_NOT_FOUND' || code === 'INVALID_INDEX_HEADER' || code === 'INVALID_INDEX_ENTRY';
 
 export interface RmOptions {
   readonly cached?: boolean;
@@ -49,7 +49,7 @@ export const rm = async (
   );
   try {
     const index = await readIndex(ctx).catch((err: unknown) => {
-      if (err instanceof TsgitError && INDEX_MISSING_CODES.has(err.data.code)) {
+      if (err instanceof TsgitError && isIndexMissingCode(err.data.code)) {
         return { entries: [] as ReadonlyArray<IndexEntry> };
       }
       throw err;

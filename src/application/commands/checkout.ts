@@ -169,6 +169,7 @@ const pathRestore = async (ctx: Context, opts: CheckoutPathsOptions): Promise<Ch
     branch: undefined,
     id: head,
     detached: false,
+    // Stryker disable next-line ArithmeticOperator: equivalent — path-restore always passes `paths: pathSet` to materializeTree, and every `pathSet` member is drawn from the source's own path universe, so the index→target diff can only classify entries as add/update/noop — never delete. `materializeResult.deleted` is therefore always 0, making `written + deleted` and `written - deleted` indistinguishable.
     changedPaths: materializeResult.written + materializeResult.deleted,
   };
 };

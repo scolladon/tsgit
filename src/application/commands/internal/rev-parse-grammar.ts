@@ -50,6 +50,7 @@ const fail = (raw: string): never => {
 };
 
 export const parseExpression = (raw: string): RevExpression => {
+  // Stryker disable next-line ConditionalExpression: equivalent — when this guard is removed, '' still fails identically: parseRefOrHex's `base === ''` guard throws revparseUnresolved('') for the same input.
   if (raw === '') fail(raw);
   if (raw.startsWith(':')) return parseIndexStage(raw);
   if (raw.includes('@{')) fail(raw); // reflog navigation — not supported in v1.
@@ -64,7 +65,8 @@ const parseIndexStage = (raw: string): RevExpression => {
   const stage = Number(stageStr);
   // `INDEX_STAGE_PATTERN` captures a single digit, so `stage` is always 0..9 — only the upper bound can be exceeded.
   if (stage > 3) fail(raw);
-  if (path === '') fail(raw);
+  // The `(.+)` capture in `INDEX_STAGE_PATTERN` guarantees `path` is non-empty,
+  // so no empty-path guard is needed here.
   return { kind: 'index-stage', stage: stage as 0 | 1 | 2 | 3, path };
 };
 
@@ -125,6 +127,7 @@ const parseCaret = (
 ): { readonly op: RevOperation; readonly next: number } => {
   if (raw[i + 1] === '{') {
     const closeIdx = raw.indexOf('}', i + 2);
+    // Stryker disable next-line ConditionalExpression,UnaryOperator: equivalent — when `closeIdx === -1` this guard is bypassed, `targetStr` becomes `raw.slice(i + 2, -1)` and `next` becomes 0; either the slice is not a valid peel target (fails at L130) or parseOperations re-enters at index 0 where the non-empty base's first char is neither `~` nor `^` (fails in the else branch). Both paths throw revparseUnresolved(raw) with identical `raw`.
     if (closeIdx === -1) fail(raw);
     const targetStr = raw.slice(i + 2, closeIdx);
     if (!VALID_PEEL_TARGETS.has(targetStr)) fail(raw);

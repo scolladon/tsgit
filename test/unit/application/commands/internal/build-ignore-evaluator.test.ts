@@ -193,20 +193,23 @@ describe('buildRepoIgnorePredicate', () => {
     expect(await sut('secret.txt' as FilePath, false)).toBe(true);
   });
 
-  it('Given a path whose own directory-named segment is NOT an ancestor, When the predicate runs, Then `.gitignore` files are read only for true ancestor directories (kills `i < length` → `i <= length`)', async () => {
+  it('Given a path whose own directory-named segment is NOT an ancestor, When the predicate runs, Then `.gitignore` files are looked up only for true ancestor directories (kills `i < length` → `i <= length`)', async () => {
     // Arrange — for path `a/foo.txt` the only ancestor is `a`. A mutant
     // that iterates `i <= segments.length` would also treat `a/foo.txt`
-    // itself as an ancestor and read `a/foo.txt/.gitignore`.
+    // itself as an ancestor and look up `a/foo.txt/.gitignore`. The
+    // lookup begins with `lstat` (and stops there when the file is
+    // missing, so it never reaches `readUtf8`) — the spy must therefore
+    // observe `lstat`, not `readUtf8`.
     const ctx = await seed();
     await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a/.gitignore`, '*.x\n');
-    const baseReadUtf8 = ctx.fs.readUtf8;
-    const readGitignorePaths: string[] = [];
+    const baseLstat = ctx.fs.lstat.bind(ctx.fs);
+    const lstatGitignorePaths: string[] = [];
     const spyFs = new Proxy(ctx.fs, {
       get(target, prop, receiver) {
-        if (prop === 'readUtf8') {
+        if (prop === 'lstat') {
           return async (p: string) => {
-            if (p.endsWith('/.gitignore')) readGitignorePaths.push(p);
-            return baseReadUtf8(p);
+            if (p.endsWith('/.gitignore')) lstatGitignorePaths.push(p);
+            return baseLstat(p);
           };
         }
         return Reflect.get(target, prop, receiver);
@@ -217,13 +220,14 @@ describe('buildRepoIgnorePredicate', () => {
     // Act
     await sut('a/foo.txt' as FilePath, false);
 
-    // Assert — exactly one nested `.gitignore` read (`a/.gitignore`);
-    // never `a/foo.txt/.gitignore`.
-    const nested = readGitignorePaths.filter(
+    // Assert — exactly one nested `.gitignore` lookup (`a/.gitignore`);
+    // never `a/foo.txt/.gitignore`. The `i <= length` mutant would add
+    // a lookup for the path itself.
+    const nested = lstatGitignorePaths.filter(
       (p) => !p.endsWith(`${ctx.layout.workDir}/.gitignore`),
     );
     expect(nested).toHaveLength(1);
     expect(nested[0]?.endsWith('/a/.gitignore')).toBe(true);
-    expect(readGitignorePaths.some((p) => p.includes('foo.txt'))).toBe(false);
+    expect(lstatGitignorePaths.some((p) => p.includes('foo.txt'))).toBe(false);
   });
 });

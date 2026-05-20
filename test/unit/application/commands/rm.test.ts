@@ -287,13 +287,32 @@ describe('rm', () => {
     // Arrange
     const ctx = await seedAndStage({ 'a.txt': 'a', 'b.txt': 'b' });
 
-    // Act — first rm acquires and must release the lock in its finally block.
+    // Act — first rm acquires the lock; commit() consumes it.
     await rm(ctx, ['a.txt']);
     // A second rm would throw RESOURCE_LOCKED if the lock were not released.
     const sut = await rm(ctx, ['b.txt']);
 
-    // Assert — kills L76 BlockStatement `-> {}` (skipping lock.release()).
+    // Assert — the lock file is gone after a successful rm.
     expect(sut.removed).toEqual(['b.txt']);
     expect(await ctx.fs.exists(`${ctx.layout.gitDir}/index.lock`)).toBe(false);
+  });
+
+  it('Given a rm that throws PATHSPEC_NO_MATCH before commit, When it rejects, Then the finally block still releases the lock', async () => {
+    // Arrange — `commit()` consumes the lock on the happy path, so a successful
+    // rm cannot prove the `finally` release runs. Force a failure AFTER the
+    // lock is acquired but BEFORE commit: an unmatched literal makes
+    // enforceLiteralMustMatch throw, leaving the lock un-consumed. Only the
+    // `finally` block can drop it.
+    const ctx = await seedAndStage({ 'a.txt': 'a', 'b.txt': 'b' });
+
+    // Act — first rm acquires the lock then rejects pre-commit.
+    await expectError(() => rm(ctx, ['ghost.txt']), 'PATHSPEC_NO_MATCH');
+
+    // Assert — the lock was released by `finally`; the file is gone and a
+    // follow-up rm succeeds instead of throwing RESOURCE_LOCKED. Kills L76
+    // BlockStatement `-> {}` (an empty `finally` leaks the un-committed lock).
+    expect(await ctx.fs.exists(`${ctx.layout.gitDir}/index.lock`)).toBe(false);
+    const sut = await rm(ctx, ['b.txt']);
+    expect(sut.removed).toEqual(['b.txt']);
   });
 });

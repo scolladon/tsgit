@@ -1333,14 +1333,23 @@ describe('fetch', () => {
   });
 
   describe('advertised ref already at the local oid', () => {
-    it('Given a remote-tracking ref already at the advertised oid, When fetch, Then updatedRefs surfaces it with oldId === newId and no rewrite', async () => {
-      // Arrange — kills the L241 `if (oldId === ref.id)` BlockStatement
-      // mutant. With `{}`, the no-op branch would not push the entry and
-      // would fall through to updateRef + a second push.
+    it('Given a remote-tracking ref already at the advertised oid, When fetch, Then updatedRefs surfaces it with oldId === newId and updateRef is never invoked', async () => {
+      // Arrange — kills the `if (oldId === ref.id)` BlockStatement mutant.
+      // With `{}`, the no-op branch loses its `continue`, so execution falls
+      // through to `updateRef`, which atomic-writes a `<ref>.lock` file. The
+      // happy no-op path performs NO write to that ref at all.
       const ctx = createMemoryContext();
       const { packBytes, blobId } = await buildOneBlobPack(ctx, 'already-at\n');
       await seedRepo(ctx, { refs: { 'refs/remotes/origin/main': blobId } });
       await writeOriginConfig(ctx);
+      const refLockWrites: string[] = [];
+      const fsRecordingWrites: typeof ctx.fs = {
+        ...ctx.fs,
+        writeExclusive: async (path: string, data: Uint8Array) => {
+          if (path.includes('refs/remotes/origin/main')) refLockWrites.push(path);
+          return ctx.fs.writeExclusive(path, data);
+        },
+      };
       const { transport } = fakeRemote({
         url: 'https://example.com/r.git',
         advertisedRefs: [{ name: 'refs/heads/main', id: blobId }],
@@ -1348,13 +1357,14 @@ describe('fetch', () => {
       });
 
       // Act
-      const sut = await fetch({ ...ctx, transport });
+      const sut = await fetch({ ...ctx, transport, fs: fsRecordingWrites });
 
-      // Assert — exactly one entry, oldId === newId (the no-op push branch).
+      // Assert — exactly one entry, oldId === newId, and no ref rewrite.
       const entries = sut.updatedRefs.filter((r) => r.name === 'refs/remotes/origin/main');
       expect(entries).toHaveLength(1);
       expect(entries[0]?.oldId).toBe(blobId);
       expect(entries[0]?.newId).toBe(blobId);
+      expect(refLockWrites).toEqual([]);
     });
   });
 
@@ -1424,12 +1434,13 @@ describe('fetch', () => {
       expect(unsafeWarn?.context).toEqual({ name: 'refs/remotes/origin/..' });
     });
 
-    it('Given a prune walk reaching a packed-only ref, When fetch, Then updateRef raises UNSUPPORTED_OPERATION and the ref is skipped with a warn', async () => {
-      // Arrange — kills the L363-L367 catch-block mutants and the L379
-      // EqualityOperator/StringLiteral mutants. A phantom readdir entry names
-      // a ref that exists ONLY in packed-refs (no loose file); updateRef's
-      // delete path then throws UNSUPPORTED_OPERATION/delete-packed-ref,
-      // which isPackedRefDeleteError must recognise so the loop continues.
+    it('Given a prune walk reaching a packed-only ref, When fetch, Then updateRef raises UNSUPPORTED_OPERATION and the ref is skipped with a warn naming the ref', async () => {
+      // Arrange — kills the catch-block mutants, the isPackedRefDeleteError
+      // checks, and the warn-call `{ name: refName }` ObjectLiteral mutant.
+      // A phantom readdir entry names a ref that exists ONLY in packed-refs
+      // (no loose file); updateRef's delete path then throws
+      // UNSUPPORTED_OPERATION/delete-packed-ref, which isPackedRefDeleteError
+      // must recognise so the loop continues.
       const ctx = createMemoryContext();
       await seedRepo(ctx, { refs: { 'refs/remotes/origin/main': FAKE_OID('a') } });
       const packedOnly = 'c'.repeat(40);
@@ -1445,10 +1456,13 @@ describe('fetch', () => {
         packBytes,
       });
       const remoteDir = `${ctx.layout.gitDir}/refs/remotes/origin`;
-      const warnings: string[] = [];
+      const warnings: Array<{
+        message: string;
+        context: Readonly<Record<string, unknown>> | undefined;
+      }> = [];
       const logger = {
-        warn: (message: string): void => {
-          warnings.push(message);
+        warn: (message: string, context?: Readonly<Record<string, unknown>>): void => {
+          warnings.push({ message, context });
         },
       };
       const fsWithPhantom = withPhantomDirEntry(ctx, remoteDir, 'ghost');
@@ -1458,7 +1472,11 @@ describe('fetch', () => {
 
       // Assert — packed-only ref skipped, not crashed, and not listed as pruned.
       expect(sut.prunedRefs).toEqual([]);
-      expect(warnings).toContain('fetch.prune: skipping packed-only ref');
+      const packedWarn = warnings.find(
+        (w) => w.message === 'fetch.prune: skipping packed-only ref',
+      );
+      expect(packedWarn).toBeDefined();
+      expect(packedWarn?.context).toEqual({ name: 'refs/remotes/origin/ghost' });
     });
 
     it('Given a prune walk where updateRef throws a non-packed TsgitError, When fetch, Then the error is rethrown', async () => {

@@ -80,6 +80,7 @@ const resolveExcluding = async (
 ): Promise<ReadonlyArray<ObjectId>> => {
   const out: ObjectId[] = [];
   for (const r of refs) {
+    // Stryker disable next-line Regex: equivalent — dropping either anchor only lets a non-40-char string match, but the whole string `r` is then pushed verbatim into the `until` set; `walkCommits` only does `until.has(id)` against real 40-char oids, so a malformed-length entry can never collide. The `resolveRef` fallback merely throws-and-skips the same string, leaving `out` identical either way.
     if (/^[0-9a-f]{40}$/.test(r)) {
       out.push(r as ObjectId);
       continue;

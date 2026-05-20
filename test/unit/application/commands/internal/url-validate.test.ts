@@ -538,6 +538,56 @@ describe('internal/url-validate', () => {
     });
   });
 
+  describe('IPv4 block-range LHS operands (kill ConditionalExpression a-octet checks)', () => {
+    it('Given DNS resolves to 8.64.0.1 (a!==100 but b in CGNAT 64..127), When validateUrl, Then succeeds', async () => {
+      // Arrange — forcing `a === 100` to `true` would block this; the `a` operand must hold.
+      // Act
+      const sut = await validateUrl(
+        'https://example.com/x',
+        opts({ resolver: fixedResolver('8.64.0.1') }),
+      );
+
+      // Assert
+      expect(sut.pinnedAddress).toBe('8.64.0.1');
+    });
+
+    it('Given DNS resolves to 8.254.0.1 (a!==169 but b===254), When validateUrl, Then succeeds', async () => {
+      // Arrange — forcing `a === 169` to `true` would block this; the `a` operand must hold.
+      // Act
+      const sut = await validateUrl(
+        'https://example.com/x',
+        opts({ resolver: fixedResolver('8.254.0.1') }),
+      );
+
+      // Assert
+      expect(sut.pinnedAddress).toBe('8.254.0.1');
+    });
+
+    it('Given DNS resolves to 8.16.0.1 (a!==172 but b in 16..31), When validateUrl, Then succeeds', async () => {
+      // Arrange — forcing `a === 172` to `true` would block this; the `a` operand must hold.
+      // Act
+      const sut = await validateUrl(
+        'https://example.com/x',
+        opts({ resolver: fixedResolver('8.16.0.1') }),
+      );
+
+      // Assert
+      expect(sut.pinnedAddress).toBe('8.16.0.1');
+    });
+  });
+
+  describe('IPv6 hex-mapped multi-digit low group (kill Regex L120 second {1,4})', () => {
+    it('Given DNS resolves to ::ffff:7f00:aa (hex form of 127.0.0.170, 2-digit low group), When validateUrl, Then throws BLOCKED_HOST', async () => {
+      // Arrange — the low group `aa` has 2 hex digits; shrinking `{1,4}` to `{1}`
+      // would make the regex miss it, letting the loopback address bypass the guard.
+      // Act + Assert
+      await expectError(
+        validateUrl('https://example.com/x', opts({ resolver: fixedResolver('::ffff:7f00:aa') })),
+        'BLOCKED_HOST',
+      );
+    });
+  });
+
   describe('IPv6 hex-mapped regex anchors (kill Regex L119)', () => {
     it('Given DNS resolves to g::ffff:7f00:1 (junk prefix), When validateUrl, Then succeeds (leading ^ anchor must reject the prefix)', async () => {
       // Arrange — without `^` the mutant matches the embedded `::ffff:7f00:1` (127.0.0.1).

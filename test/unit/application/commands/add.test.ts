@@ -1173,6 +1173,30 @@ describe('add', () => {
     expect(idx.entries.map((e) => e.path)).toEqual([]);
   });
 
+  it('Given a tracked nested file deleted from disk with no ancestor ignored, When add({ all: true }), Then the ancestor loop completes and the file is removed', async () => {
+    // Arrange — stage `dir/gone.txt`, delete it, then re-run addAll with a
+    // never-ignore predicate. The post-walk loop finds `dir/gone.txt` unseen
+    // and calls isPathOrAncestorIgnored: the leaf check is false and the
+    // ancestor `dir` is NOT ignored, so the `for` loop must run a full
+    // iteration WITHOUT returning, then advance and terminate normally.
+    //   - Kills L251 AssignmentOperator `i += 1` -> `i -= 1`: with `-=` the
+    //     index walks 1, 0, -1, ... and the loop never terminates (hang).
+    //   - Kills L253 ConditionalExpression `-> true`: a constant-true guard
+    //     would treat `dir` as ignored and wrongly preserve the index entry.
+    const ctx = await seedFreshRepo({ 'dir/gone.txt': 'g' });
+    await add(ctx, ['dir/gone.txt']);
+    await ctx.fs.rm(`${ctx.layout.workDir}/dir/gone.txt`);
+    const neverIgnore = async () => false;
+
+    // Act
+    const sut = await addAllInternal(ctx, {}, neverIgnore);
+
+    // Assert — no ancestor is ignored, so the deleted file is removed.
+    expect(sut.removed).toEqual(['dir/gone.txt']);
+    const idx = await readIndex(ctx);
+    expect(idx.entries.map((e) => e.path)).toEqual([]);
+  });
+
   it('Given a walk-time stat over the cap but a small re-lstat, When add({ all: true }), Then throws WORKING_TREE_FILE_TOO_LARGE (pre-filter guard fires)', async () => {
     // Arrange — the walk-time lstat reports oversize; the re-lstat under
     // the lock reports the real (small) size. Only the L273 pre-filter in

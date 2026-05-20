@@ -89,6 +89,7 @@ export const status = async (ctx: Context): Promise<StatusResult> => {
  * yields each path exactly once, so `a.path === b.path` is unreachable here —
  * the comparator is intentionally two-way (no equal-path branch).
  */
+// Stryker disable next-line EqualityOperator: equivalent — `untracked` is built solely from `walkWorkingTree`, which yields each filesystem path exactly once, so `a.path` and `b.path` are never equal during this sort. For two distinct paths `a.path < b.path` and `a.path <= b.path` always agree, so the mutated comparator produces an identical ordering.
 const byPathAscending = (a: ChangeEntry, b: ChangeEntry): number => (a.path < b.path ? -1 : 1);
 
 const classifyEntry = async (

@@ -31,7 +31,7 @@ async function resolveDirectChain(
   let current: RefName = initial as RefName;
   let depth = 0;
   for (;;) {
-    // Stryker disable next-line StringLiteral: equivalent — validateRefName('HEAD') is a no-op (HEAD is a valid ref name), so skipping it for HEAD via `!== 'HEAD'` vs `!== ''` produces identical behavior.
+    // Stryker disable next-line StringLiteral,ConditionalExpression: equivalent — validateRefName('HEAD') is a no-op (HEAD is a valid ref name and its return value is discarded), so whether the guard skips it for HEAD or always runs it, behaviour is identical.
     if (current !== 'HEAD') {
       validateRefName(current);
     }

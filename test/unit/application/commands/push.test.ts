@@ -372,11 +372,21 @@ describe('push — server responses', () => {
       caught = err;
     }
 
-    // Assert
+    // Assert — code, statusCode AND the exact reason string. The L319
+    // StringLiteral mutant empties `git-receive-pack returned ${statusCode}`
+    // to `''`, so we pin the reason and the rendered message verbatim.
     expect(caught).toBeInstanceOf(TsgitError);
-    const data = (caught as TsgitError).data as { code: string; statusCode: number };
+    const data = (caught as TsgitError).data as {
+      code: string;
+      statusCode: number;
+      reason: string;
+    };
     expect(data.code).toBe('HTTP_ERROR');
     expect(data.statusCode).toBe(503);
+    expect(data.reason).toBe('git-receive-pack returned 503');
+    expect((caught as TsgitError).message).toBe(
+      'HTTP_ERROR: HTTP 503: git-receive-pack returned 503',
+    );
   });
 
   it('Given the server returns `ng <ref> <reason>`, When push runs, Then the ref is reported as rejected with reason', async () => {
@@ -1026,9 +1036,11 @@ describe('push — auth, signal, headers', () => {
     expect(post?.signal).toBe(signal);
   });
 
-  it('Given no ctx.signal, When push runs, Then the receive-pack POST has no signal', async () => {
-    // Arrange — kills the spread mutant the other way: with no signal the
-    // POST must omit it entirely.
+  it('Given no ctx.signal, When push runs, Then the receive-pack POST omits the signal key entirely', async () => {
+    // Arrange — kills the L316 ConditionalExpression mutant: forcing the
+    // `ctx.signal !== undefined` ternary to `true` spreads `{ signal: undefined }`
+    // into the request, adding a `signal` KEY with value `undefined`. Asserting
+    // value-undefined alone passes either way, so we assert the key is ABSENT.
     const ctx = createMemoryContext();
     const parent = await seedCommit(ctx, [], 'p');
     const tip = await seedCommit(ctx, [parent.id], 't');
@@ -1043,10 +1055,10 @@ describe('push — auth, signal, headers', () => {
     // Act
     await push({ ...ctx, transport });
 
-    // Assert
+    // Assert — no `signal` own-property at all on the POST request object.
     const post = requests.find((r) => r.method === 'POST');
     expect(post).toBeDefined();
-    expect(post?.signal).toBeUndefined();
+    expect(post).not.toHaveProperty('signal');
   });
 
   it('Given a successful push, When run, Then the receive-pack POST carries the git content-type and accept headers', async () => {

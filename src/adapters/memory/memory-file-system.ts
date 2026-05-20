@@ -408,9 +408,7 @@ export class MemoryFileSystem implements FileSystem {
       if (key.startsWith(prefix)) return true;
     }
     for (const key of this.directories) {
-      // equivalent-mutant: flipping the left side of `&&` to `true` is a no-op — when
-      // `key === dirPath`, `key.startsWith(`${dirPath}/`)` is necessarily false because a
-      // string never starts with a strict superstring of itself.
+      // Stryker disable next-line ConditionalExpression: equivalent — replacing `key !== dirPath` with `true` is a no-op: when `key === dirPath`, `key.startsWith(`${dirPath}/`)` is necessarily false (a string never starts with a strict superstring of itself), so `true && startsWith` collapses to the same result as `key !== dirPath && startsWith`.
       if (key !== dirPath && key.startsWith(prefix)) return true;
     }
     return false;

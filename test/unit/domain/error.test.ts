@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   basename,
   invalidWalkInput,
+  operationAborted,
   TsgitError as TsgitErrorClass,
   type TsgitErrorData,
 } from '../../../src/domain/error.js';
@@ -233,12 +234,20 @@ describe('domain error — AdapterError', () => {
       expect(sut.message).toContain('Internal Server Error');
     });
 
-    it('Given NETWORK_ERROR, When reading message, Then contains reason', () => {
+    it('Given NETWORK_ERROR, When reading message, Then equals the documented format with reason', () => {
       // Arrange & Act
       const sut = networkError('DNS resolution failed');
 
       // Assert
-      expect(sut.message).toContain('DNS resolution failed');
+      expect(sut.message).toBe('NETWORK_ERROR: network error: DNS resolution failed');
+    });
+
+    it('Given OPERATION_ABORTED, When reading message, Then equals the documented constant format', () => {
+      // Arrange & Act
+      const sut = operationAborted();
+
+      // Assert
+      expect(sut.message).toBe('OPERATION_ABORTED: operation aborted');
     });
 
     it('Given TREE_CYCLE_DETECTED, When reading message, Then contains id', () => {

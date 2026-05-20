@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { add } from '../../../../src/application/commands/add.js';
-import { branch } from '../../../../src/application/commands/branch.js';
+import { branch, compareRefName } from '../../../../src/application/commands/branch.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
 import { TsgitError } from '../../../../src/domain/index.js';
-import type { AuthorIdentity } from '../../../../src/domain/objects/index.js';
+import type { AuthorIdentity, RefName } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
 
 const author: AuthorIdentity = {
@@ -241,20 +241,27 @@ describe('branch', () => {
   });
 
   it('Given branches created out of order, When branch list, Then branches are sorted ascending by name', async () => {
-    // Arrange — exercises the `branches.sort` comparator (NoCoverage line).
+    // Arrange — readdir yields entries by name, so the comparator's input is
+    // already ['main','xray','beta'] in name order? No: memory-fs readdir
+    // returns insertion order. Seeding xray then beta after the default `main`
+    // gives walk order [main, xray, beta] — distinct from BOTH the sorted
+    // result [beta, main, xray] AND its reverse [xray, main, beta]. A
+    // comparator mutated to a constant -1 (reverse) or 1 (identity) therefore
+    // produces a provably wrong order, killing both ConditionalExpression
+    // mutants on the comparator.
     const { ctx } = await seedWithCommit();
-    await branch(ctx, { kind: 'create', name: 'zeta' });
-    await branch(ctx, { kind: 'create', name: 'alpha' });
+    await branch(ctx, { kind: 'create', name: 'xray' });
+    await branch(ctx, { kind: 'create', name: 'beta' });
 
     // Act
     const sut = await branch(ctx, { kind: 'list' });
 
-    // Assert — alpha < main < zeta; insertion order was zeta, main, alpha.
+    // Assert — ascending: beta < main < xray.
     if (sut.kind !== 'list') throw new Error('expected list');
     expect(sut.branches.map((b) => b.name)).toEqual([
-      'refs/heads/alpha',
+      'refs/heads/beta',
       'refs/heads/main',
-      'refs/heads/zeta',
+      'refs/heads/xray',
     ]);
   });
 
@@ -381,6 +388,45 @@ describe('branch', () => {
       () => branch(ctx, { kind: 'create', name: 'pin', startPoint: `f${commitId}` }),
       'BRANCH_NOT_FOUND',
     );
+  });
+
+  it('Given a left name lexically before the right, When compareRefName, Then it returns exactly -1', () => {
+    // Arrange — `left < right` holds; kills `< -> >=` (would give 1) and the
+    // `if (lower)` ConditionalExpression `-> false` (would fall through to 0).
+    const left = 'refs/heads/alpha' as RefName;
+    const right = 'refs/heads/beta' as RefName;
+
+    // Act
+    const sut = compareRefName(left, right);
+
+    // Assert
+    expect(sut).toBe(-1);
+  });
+
+  it('Given a left name lexically after the right, When compareRefName, Then it returns exactly 1', () => {
+    // Arrange — `left > right` holds; kills `> -> <=` (would give 0) and the
+    // `if (higher)` ConditionalExpression `-> false` (would fall through to 0).
+    const left = 'refs/heads/zeta' as RefName;
+    const right = 'refs/heads/main' as RefName;
+
+    // Act
+    const sut = compareRefName(left, right);
+
+    // Assert
+    expect(sut).toBe(1);
+  });
+
+  it('Given two equal ref names, When compareRefName, Then it returns exactly 0', () => {
+    // Arrange — the equal case `listBranches` cannot reach (unique dir
+    // entries). Kills `< -> <=` (would give -1) and `> -> >=` (would give 1),
+    // plus the `if` ConditionalExpression `-> true` mutants.
+    const name = 'refs/heads/main' as RefName;
+
+    // Act
+    const sut = compareRefName(name, name);
+
+    // Assert
+    expect(sut).toBe(0);
   });
 
   it('Given a branch literally named HEAD pointing elsewhere, When branch create with default startPoint, Then it resolves the HEAD symref not refs/heads/HEAD', async () => {

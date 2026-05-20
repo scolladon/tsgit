@@ -253,8 +253,11 @@ const sendUpdates = async (
   remoteName: string,
 ): Promise<ReadonlyArray<PushedRef>> => {
   const wants = movers.filter((m) => !m.parsed.isDelete).map((m) => m.localOid);
-  // Stryker disable next-line MethodExpression: equivalent — dropping `.filter` keeps ZERO_OID in `haves`, but ZERO_OID is used only as a `walkCommits` `until` boundary under `ignoreMissing`, where a non-existent oid prunes nothing — identical walk output.
-  const haves = adv.refs.map((r) => r.id).filter((id) => id !== ZERO_OID);
+  // ZERO_OID-advertised refs (ref-creation sentinels) are kept verbatim in
+  // `haves`: they only ever land in `walkCommits`'s `until` set, which does
+  // pure membership checks and can never match a real commit oid — so an
+  // explicit `id !== ZERO_OID` filter would be a provable no-op.
+  const haves = adv.refs.map((r) => r.id);
   const oids = await collectObjects(ctx, wants, haves);
   const pack = await buildPack(ctx, { oids });
   const capabilities = selectPushCapabilities(adv.capabilities);

@@ -92,6 +92,7 @@ export const assertNoPendingOperation = async (
   const flags = await Promise.all(
     PENDING_MARKERS.map((m) => ctx.fs.exists(`${ctx.layout.gitDir}/${m.file}`)),
   );
+  // Stryker disable next-line EqualityOperator: equivalent — relaxing the bound to `i <= length` adds one iteration at `i === PENDING_MARKERS.length`, where `PENDING_MARKERS[i]` is `undefined`; the `marker === undefined` guard below immediately `continue`s, so no extra check or throw occurs.
   for (let i = 0; i < PENDING_MARKERS.length; i += 1) {
     const marker = PENDING_MARKERS[i];
     if (marker === undefined) continue;

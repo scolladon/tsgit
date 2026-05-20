@@ -595,6 +595,63 @@ describe('mergeContent', () => {
     assertConflict(sut, 'content');
   });
 
+  it('Given ours equal to base and a cap-exceeding theirs, When mergeContent called, Then the ours-unchanged fast path returns clean theirs (not the degraded conflict)', () => {
+    // Arrange — ours === base (empty); theirs has 50_001 lines so diffLines(base, theirs)
+    // degrades (M+N > 50_000). The `bytesEqual(ours, base)` fast path must short-circuit
+    // to clean; skipping it falls through to the degraded slow path → whole-file conflict.
+    const base = new Uint8Array(0);
+    const ours = new Uint8Array(0);
+    const theirsText = Array.from({ length: 50_001 }, (_, i) => `line${i}\n`).join('');
+    const theirs = enc(theirsText);
+
+    // Act
+    const sut = mergeContent(base, ours, theirs);
+
+    // Assert — clean, byte-identical to theirs (slow path would yield status 'conflict')
+    expect(sut.status).toBe('clean');
+    if (sut.status === 'clean') {
+      expect(decoder.decode(sut.bytes)).toBe(theirsText);
+    }
+  });
+
+  it('Given theirs equal to base and a cap-exceeding ours, When mergeContent called, Then the theirs-unchanged fast path returns clean ours (not the degraded conflict)', () => {
+    // Arrange — theirs === base (empty); ours has 50_001 lines so diffLines(base, ours)
+    // degrades. The `bytesEqual(theirs, base)` fast path must short-circuit to clean;
+    // skipping it falls through to the degraded slow path → whole-file conflict.
+    const base = new Uint8Array(0);
+    const theirs = new Uint8Array(0);
+    const oursText = Array.from({ length: 50_001 }, (_, i) => `line${i}\n`).join('');
+    const ours = enc(oursText);
+
+    // Act
+    const sut = mergeContent(base, ours, theirs);
+
+    // Assert — clean, byte-identical to ours (slow path would yield status 'conflict')
+    expect(sut.status).toBe('clean');
+    if (sut.status === 'clean') {
+      expect(decoder.decode(sut.bytes)).toBe(oursText);
+    }
+  });
+
+  it('Given ours equal to theirs (both cap-exceeding, base differs), When mergeContent called, Then the ours-equals-theirs fast path returns clean ours (not the degraded conflict)', () => {
+    // Arrange — ours === theirs, both 50_001 lines; base empty so both side diffs degrade.
+    // The `bytesEqual(ours, theirs)` fast path must short-circuit to clean; skipping it
+    // falls through to the degraded slow path → whole-file conflict.
+    const base = new Uint8Array(0);
+    const sideText = Array.from({ length: 50_001 }, (_, i) => `line${i}\n`).join('');
+    const ours = enc(sideText);
+    const theirs = enc(sideText);
+
+    // Act
+    const sut = mergeContent(base, ours, theirs);
+
+    // Assert — clean, byte-identical to ours (slow path would yield status 'conflict')
+    expect(sut.status).toBe('clean');
+    if (sut.status === 'clean') {
+      expect(decoder.decode(sut.bytes)).toBe(sideText);
+    }
+  });
+
   it('Property: mergeContent(base, base, base) always clean for non-binary text', () => {
     // Arrange — generate text-only bytes (no NUL, bounded lines) to avoid binary detection
     const textByte = fc.integer({ min: 1, max: 127 });

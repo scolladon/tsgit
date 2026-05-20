@@ -86,8 +86,13 @@ interface MyersResult {
   readonly totalD: number;
 }
 
+// The classic Myers `k !== d` upper-edge guard is omitted: at k===d, v[k+1+offset]
+// is the unwritten d+1 diagonal — 0 in the forward pass, undefined in a 2d+1-long
+// reconstruction snapshot. Since v[k-1+offset]! is always a non-negative x-coordinate,
+// `x < 0` / `x < undefined` is already false, so the comparison alone yields the
+// guard's result without the redundant `k !== d &&`.
 function chooseDown(v: ReadonlyArray<number>, offset: number, d: number, k: number): boolean {
-  return k === -d || (k !== d && v[k - 1 + offset]! < v[k + 1 + offset]!);
+  return k === -d || v[k - 1 + offset]! < v[k + 1 + offset]!;
 }
 
 function advanceSnake(
@@ -182,14 +187,13 @@ function reconstructEdits(
     if (x === prevX) y--;
     else x--;
   }
-  // The trailing run walks the d=0 Myers snake, a diagonal from the origin, so x === y holds throughout.
-  // Stryker disable next-line LogicalOperator,EqualityOperator: equivalent — x === y here, so x>0&&y>0, x>0||y>0, x>=0&&y>0 and x>0&&y>=0 all gate identically
-  while (x > 0 && y > 0) {
+  // The trailing run walks the d=0 Myers snake, a diagonal from the origin, so
+  // x === y holds throughout. The y > 0 guard and the y decrement are therefore
+  // redundant (y is never read after this loop) and are omitted — this keeps the
+  // remaining mutants on the loop line fully killable.
+  while (x > 0) {
     edits.push('equal');
-    // Stryker disable next-line UpdateOperator: equivalent — x === y on entry, so x++/y-- exits after the same count of pushes as x--/y--, yielding an identical edit script
     x--;
-    // Stryker disable next-line UpdateOperator: equivalent — x === y on entry, so y++/x-- exits after the same count of pushes as y--/x--, yielding an identical edit script
-    y--;
   }
   edits.reverse();
   return edits;
@@ -204,8 +208,10 @@ function buildHunks(edits: ReadonlyArray<Edit>): ReadonlyArray<LineHunk> {
     const kind = edits[i]!;
     const startOurs = oursCursor;
     const startTheirs = theirsCursor;
-    // Stryker disable next-line EqualityOperator: equivalent — at i===edits.length, edits[i] is undefined and undefined === kind is false, so the loop exits identically
-    while (i < edits.length && edits[i] === kind) {
+    // The `i < edits.length` bound is omitted: kind is always a defined Edit, and
+    // edits[i] past the end is undefined, so `undefined === kind` is false and the
+    // loop exits at the same point — keeping every mutant on this line killable.
+    while (edits[i] === kind) {
       if (kind === 'equal') {
         oursCursor++;
         theirsCursor++;

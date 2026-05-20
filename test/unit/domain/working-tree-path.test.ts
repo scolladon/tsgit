@@ -23,10 +23,15 @@ describe('validateWorkingTreePath', () => {
   });
 
   it('Given an empty input, When validated, Then rejects with PATHSPEC_OUTSIDE_REPO carrying the empty input', () => {
-    // Kills StringLiteral mutant (`input === 'Stryker was here!'`) AND
-    // ConditionalExpression mutant (`if (false)`) on the empty-input guard.
     const err = expectReject('');
     expect((err.data as { path: string }).path).toBe('');
+  });
+
+  it('Given a path containing spaces, When validated, Then accepts it as a valid relative path', () => {
+    // Kills the StringLiteral mutant on the empty-input guard
+    // (`input === ''` -> `input === 'Stryker was here!'`): that string is a
+    // legal relative path, so the mutated guard would wrongly reject it.
+    expect(validateWorkingTreePath('Stryker was here!')).toBe('Stryker was here!');
   });
 
   it('Given a path that exceeds 4096 bytes, When validated, Then rejects', () => {

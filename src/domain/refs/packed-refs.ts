@@ -81,6 +81,7 @@ export function serializePackedRefs(refs: PackedRefs): string {
   }
 
   const sorted = [...refs.entries].sort((a, b) =>
+    // Stryker disable next-line ConditionalExpression,EqualityOperator: equivalent — V8's stable sort only moves an element when the comparator returns < 0; the second ternary only ever yields 1 or 0, so its condition (>, >=, <=, true, false) never changes any final position
     (a.name as string) < (b.name as string) ? -1 : (a.name as string) > (b.name as string) ? 1 : 0,
   );
 

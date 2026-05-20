@@ -290,13 +290,10 @@ const walkPackEntries = async (
   // depends on that order — `objectCount` reads `.length`, and `buildIdx`
   // feeds `serializePackIndex`, which re-sorts entries by SHA before writing.
   // Stryker disable next-line MethodExpression: equivalent — `resolveAllEntries` is module-internal and never shares the array, so the defensive `.slice()` copy cannot change behaviour.
-  return (
-    resolved
-      .slice()
-      // Stryker disable next-line ArithmeticOperator: equivalent — the WalkedEntry order is unobservable (objectCount uses `.length`; serializePackIndex re-sorts by SHA), so a broken comparator changes nothing downstream.
-      .sort((a, b) => a.offset - b.offset)
-      .map((r) => ({ id: r.id, crc32: r.crc32, offset: r.offset }))
-  );
+  const copied = resolved.slice();
+  // Stryker disable next-line ArithmeticOperator: equivalent — the WalkedEntry order is unobservable (objectCount uses `.length`; serializePackIndex re-sorts by SHA), so a broken comparator changes nothing downstream.
+  const ordered = copied.sort((a, b) => a.offset - b.offset);
+  return ordered.map((r) => ({ id: r.id, crc32: r.crc32, offset: r.offset }));
 };
 
 const inflateAllEntries = async (
@@ -324,8 +321,9 @@ const inflateAllEntries = async (
     // the minimal valid zlib-stream length. An entry whose stream consumed
     // bytes past `trailerStart` would require those SHA bytes to also be a
     // valid zlib continuation — unreachable for any verifiable pack.
-    // Stryker disable next-line ConditionalExpression,BlockStatement,StringLiteral: equivalent — `entryEnd > trailerStart` is unreachable once `verifyPackTrailer` accepted the trailer; the throw cannot fire.
+    // Stryker disable next-line ConditionalExpression,BlockStatement: equivalent — `entryEnd > trailerStart` is unreachable once `verifyPackTrailer` accepted the trailer; the throw cannot fire.
     if (entryEnd > trailerStart) {
+      // Stryker disable next-line StringLiteral: equivalent — the guarded throw is unreachable (see above), so its message is never observed.
       throw invalidPackHeader('entry extends past pack trailer');
     }
     const entryCrc = crc32(packBytes.subarray(offset, entryEnd));

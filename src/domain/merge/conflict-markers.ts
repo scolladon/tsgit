@@ -16,7 +16,9 @@ type LabelSide = 'ours' | 'base' | 'theirs';
 
 function isControlCode(code: number): boolean {
   // C0 controls U+0000–U+001F, plus DEL and C1 controls U+007F–U+009F.
-  return (code >= 0x00 && code <= 0x1f) || (code >= 0x7f && code <= 0x9f);
+  // `code` comes from charCodeAt so it is always >= 0 (or NaN, for which every
+  // comparison is false) — the lower `>= 0x00` bound is redundant and omitted.
+  return code <= 0x1f || (code >= 0x7f && code <= 0x9f);
 }
 
 function isBidiOrInvisible(code: number): boolean {

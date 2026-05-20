@@ -491,6 +491,32 @@ describe('walkCommits', () => {
       expect(yielded).toEqual([]);
       expect((caught as TsgitError).data.code).toBe('OPERATION_ABORTED');
     });
+
+    it('Given a signal whose aborted flag is truthy but not strictly true, When walkCommits is iterated, Then the loop-head guard alone throws OPERATION_ABORTED', async () => {
+      // Arrange — `readObject`'s abort check is strict (`aborted === true`)
+      // while the loop-head guard at line 42 is a truthiness test. A signal
+      // with `aborted: 1` is truthy-but-not-`true`, so `readObject` never
+      // aborts and the loop-head guard is the ONLY abort path. A `false`
+      // mutant of that guard lets the walk run to completion silently.
+      const ctx = await buildSeededContext();
+      const [id] = await linearChain(ctx, 1);
+      const truthySignal = { aborted: 1 } as unknown as AbortSignal;
+      const aborted = { ...ctx, signal: truthySignal };
+
+      // Act & Assert
+      const yielded: ObjectId[] = [];
+      let caught: unknown;
+      try {
+        for await (const c of walkCommits(aborted, { from: [id as ObjectId] })) {
+          yielded.push(c.id);
+        }
+        expect.unreachable();
+      } catch (error) {
+        caught = error;
+      }
+      expect(yielded).toEqual([]);
+      expect((caught as TsgitError).data.code).toBe('OPERATION_ABORTED');
+    });
   });
 
   describe('shallow boundary', () => {

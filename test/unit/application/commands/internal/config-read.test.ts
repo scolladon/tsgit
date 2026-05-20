@@ -680,6 +680,34 @@ describe('internal/config-read', () => {
     expect('branch' in sut).toBe(false);
   });
 
+  it('Given a section header with whitespace inside the brackets (`[ core ]`), When readConfig, Then the inner name is trimmed and the section is recognized', async () => {
+    // Arrange — `slice(1, -1)` yields ` core `; only the `.trim()` makes it
+    // equal `core`. Dropping `.trim()` leaves the section named ` core `,
+    // which assembleParsed never matches, so `bare` would be lost.
+    const ctx = createMemoryContext();
+    await seed(ctx, '[ core ]\n  bare = true\n');
+
+    // Act
+    const sut = await readConfig(ctx);
+
+    // Assert
+    expect(sut.core?.bare).toBe(true);
+  });
+
+  it('Given a `[foo "bar"]` section (subsectioned, not branch) carrying remote/merge keys, When readConfig, Then it is NOT parsed as `[branch]`', async () => {
+    // Arrange — `[foo "bar"]` has a subsection but section name `foo`.
+    // Forcing the `sec.section === 'branch'` operand to `true` would make
+    // any subsectioned section populate `branch`.
+    const ctx = createMemoryContext();
+    await seed(ctx, '[foo "bar"]\n  remote = origin\n  merge = refs/heads/x\n');
+
+    // Act
+    const sut = await readConfig(ctx);
+
+    // Assert — branch must stay absent; the `foo` section is unknown.
+    expect(sut.branch).toBeUndefined();
+  });
+
   it('Given `bare = on` (truthy alias), When readConfig, Then parsed.core.bare is true', async () => {
     // Arrange — `on`/`1` are git truthy aliases.
     const ctx = createMemoryContext();

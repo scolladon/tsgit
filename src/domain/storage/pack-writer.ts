@@ -115,6 +115,7 @@ export function serializePackIndex(
     fanout[i] = cumulative;
   }
   const fanoutOffset = headerSize;
+  // Stryker disable next-line EqualityOperator: equivalent — relaxing the bound to `i <= 256` adds one write at byte offset `fanoutOffset + 1024`, the start of the SHA table region; `fanout[256]` is `undefined` → coerced to 0, and those 4 bytes are unconditionally overwritten afterwards (by the SHA-table loop when n>=1, or by the trailing pack checksum when n===0), so the emitted index is byte-identical.
   for (let i = 0; i < 256; i++) {
     view.setUint32(fanoutOffset + i * 4, fanout[i]!);
   }

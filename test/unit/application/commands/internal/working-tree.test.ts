@@ -340,6 +340,61 @@ describe('internal/working-tree', () => {
       expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/${path}`)).toBe('');
     });
 
+    it('Given a successful no-follow write, When materializeFile, Then the file handle is closed in the finally block', async () => {
+      // Arrange — wrap the memory adapter's real handle so `write` still
+      // lands the bytes, but `close` is a spy. The L66 `finally` block
+      // (`await handle?.close()`) must run on the happy path; a BlockStatement
+      // mutant emptying that finally to `{}` would leak the descriptor.
+      const base = createMemoryContext();
+      const close = vi.fn<() => Promise<void>>(() => Promise.resolve());
+      const fs: FileSystem = {
+        ...base.fs,
+        openWithNoFollow: async (path: string, mode: 'read' | 'write'): Promise<FileHandle> => {
+          const real = await base.fs.openWithNoFollow(path, mode);
+          return { ...real, close };
+        },
+      };
+      const ctx: Context = { ...base, fs };
+      const path = 'src/closed.txt' as FilePath;
+
+      // Act
+      await materializeFile(ctx, path, new TextEncoder().encode('handle-content'), '100644');
+
+      // Assert — close ran exactly once AND the write still succeeded.
+      expect(close).toHaveBeenCalledTimes(1);
+      expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/${path}`)).toBe('handle-content');
+    });
+
+    it('Given the no-follow write itself throws, When materializeFile, Then the handle is still closed before the error propagates', async () => {
+      // Arrange — `handle.write` rejects, so the finally block is the only
+      // place `close` can run. A BlockStatement→`{}` mutant on the L66
+      // finally would skip `close` entirely on the error path.
+      const base = createMemoryContext();
+      const close = vi.fn<() => Promise<void>>(() => Promise.resolve());
+      const writeError = new Error('write blew up');
+      const fs: FileSystem = {
+        ...base.fs,
+        openWithNoFollow: async (path: string, mode: 'read' | 'write'): Promise<FileHandle> => {
+          const real = await base.fs.openWithNoFollow(path, mode);
+          return { ...real, write: () => Promise.reject(writeError), close };
+        },
+      };
+      const ctx: Context = { ...base, fs };
+      const path = 'src/error-then-close.txt' as FilePath;
+
+      // Act
+      let caught: unknown;
+      try {
+        await materializeFile(ctx, path, new TextEncoder().encode('x'), '100644');
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert — the original error propagated AND the handle was closed.
+      expect(caught).toBe(writeError);
+      expect(close).toHaveBeenCalledTimes(1);
+    });
+
     it("Given a path containing '.git', When materializeFile, Then throws PATHSPEC_OUTSIDE_REPO before any I/O", async () => {
       // Arrange
       const ctx = createMemoryContext();

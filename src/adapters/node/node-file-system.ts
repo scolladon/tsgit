@@ -42,6 +42,7 @@ export async function mapConcurrent<T>(
   limit: number,
   fn: (item: T) => Promise<void>,
 ): Promise<void> {
+  // Stryker disable next-line ConditionalExpression: equivalent — removing this fast-path guard (`if (false)`) is a no-op for an empty `items`: `workerCount` becomes `Math.min(limit, 0) === 0`, so zero workers spawn and `Promise.all([])` resolves immediately, exactly like the early return.
   if (items.length === 0) return;
   let next = 0;
   const workerCount = Math.min(limit, items.length);
