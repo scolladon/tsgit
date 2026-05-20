@@ -2,6 +2,12 @@ import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
   test: {
+    // Boundary tests exercise genuinely large limits (1M tree entries,
+    // multi-megabyte caps, million-iteration diff budgets). They finish in a
+    // few seconds normally, but Stryker's per-statement coverage
+    // instrumentation amplifies tight-loop cost far past the 5s default — so
+    // the suite uses a generous ceiling rather than spuriously timing out.
+    testTimeout: 120_000,
     projects: [
       {
         extends: true,
