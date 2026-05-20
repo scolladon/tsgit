@@ -1,7 +1,7 @@
 # Plan — Phase 16.3 / 16.4 browser E2E parity
 
 Derived from `docs/design/phase-16-3-16-4-browser-e2e-parity.md`.
-One branch (`test/browser-e2e-parity`), one worktree, three implementation
+One branch (`test/browser-e2e-parity`), one worktree, two implementation
 slices. Test-only change — no `src/` touched.
 
 The suite is verified by running it: `npm run test:e2e` (builds `dist/`
@@ -16,71 +16,68 @@ change touches no `src/`, so a single `npm run build` (or one
 `npm run test:e2e`, which builds via wireit) makes `dist/` current for the
 whole branch; per-slice `npx playwright test <file>` runs then reuse it.
 
-## Slice 1 — `seedRepo` helper (`test/browser/fixtures.ts`)
+Each scenario runs in **one** `page.evaluate()` that returns a result keyed
+by operation; the test body asserts each slice under its own `test.step()`.
+No repo is re-opened per operation (see design §3.1).
 
-**Why first:** Slice 3 depends on it.
-
-- Add `seedRepo(page: Page): Promise<{ commitId: string; branch: string }>`.
-- One self-contained `page.evaluate()`: get the OPFS root, write
-  `a.txt = "hello browser\n"`, `openRepository({ rootHandle })`, then
-  `init` → `add(['a.txt'])` → `commit({ message, author })`, dispose in a
-  `finally`, return `{ commitId, branch }`.
-- Reuse the author shape already in `opfs-roundtrip.spec.ts`
-  (`{ name, email, timestamp, timezoneOffset: '+0000' }`).
-
-**Verify:** `npm run check:types` clean. A lone unused helper is not an
-atomic commit, so `seedRepo` ships in the Slice 3 commit alongside its
-first caller.
-
-_Commit:_ folded into Slice 3.
-
-## Slice 2 — Split `opfs-roundtrip.spec.ts` into per-step assertions (16.4)
+## Slice 1 — Split `opfs-roundtrip.spec.ts` into per-operation assertions (16.4)
 
 **File:** `test/browser/opfs-roundtrip.spec.ts` (rewrite).
 
 - Keep the `test.describe('OPFS round-trip')` + `test.skip(webkit)` guard.
-- Arrange (plain `evaluate`, not a step): write `a.txt`.
-- Four `test.step()` blocks, each one `evaluate()` that re-opens the repo,
-  runs one operation, returns its result, disposes:
-  1. `init` — assert `initialBranch === 'refs/heads/main'`.
-  2. `add` — assert `added` includes `a.txt`.
-  3. `commit` — assert `id` matches `/^[0-9a-f]{40}$/`, `branch ===
-     'refs/heads/main'`.
-  4. `status` — assert `clean === true`, `branch === 'refs/heads/main'`,
-     `indexChanges` and `workingTreeChanges` both empty.
+- One `evaluate()`: get the OPFS root, write `a.txt`, open the repo, run
+  `init` → `add(['a.txt'])` → `commit({ message, author })` → `status()`,
+  dispose in a `finally`, return `{ init, add, commit, status }` with each
+  operation's return value.
+- Test body: four `test.step()`s — `init`, `add`, `commit`, `status` — each
+  asserting only its slice:
+  1. `init.initialBranch === 'refs/heads/main'`.
+  2. `add.added` includes `a.txt`.
+  3. `commit.id` matches `/^[0-9a-f]{40}$/`; `commit.branch === 'refs/heads/main'`.
+  4. `status.clean === true`; `status.branch === 'refs/heads/main'`;
+     `status.indexChanges` and `status.workingTreeChanges` both `[]`.
 - Self-declare the `window.__tsgit` typings the rewritten file needs.
-- Apply mutation-resistant assertions: assert concrete data, not booleans
-  alone (e.g. the commit id regex, the exact branch ref string).
+- Mutation-resistant assertions: concrete data, not booleans alone (the
+  commit-id regex, the exact `refs/heads/main` string, empty-array equality).
 
 **Verify:** `npx playwright test opfs-roundtrip` — passes on chromium +
-firefox, skips on webkit; intentionally break one step locally to confirm
-the failure message names that step, then revert.
+firefox, skips on webkit.
 
-_Commit:_ `test(browser): split opfs round-trip into per-step assertions`.
+_Commit:_ `test(browser): split opfs round-trip into per-operation steps`.
 
-## Slice 3 — `surface-parity.spec.ts` for log / branch / checkout / tag (16.3)
+## Slice 2 — `surface-parity.spec.ts` + `seedRepo` helper (16.3)
 
-**File:** `test/browser/surface-parity.spec.ts` (new) + `fixtures.ts`
-(Slice 1's `seedRepo`).
+**Files:** `test/browser/fixtures.ts` (add `seedRepo`),
+`test/browser/surface-parity.spec.ts` (new). `seedRepo` ships in this commit
+alongside its first caller (a lone unused helper is not an atomic commit).
 
-Four `test.describe` blocks, each with the `test.skip(webkit)` OPFS guard
-and self-declared `window.__tsgit` typings:
+`seedRepo(page): Promise<{ commitId: string; branch: string }>` — one
+self-contained `page.evaluate()`: get the OPFS root, write
+`a.txt = "hello browser\n"`, `openRepository`, `init` → `add(['a.txt'])` →
+`commit`, dispose in a `finally`, return `{ commitId, branch }`. Reuse the
+author shape from `opfs-roundtrip.spec.ts`.
 
-1. **`log`** — `seedRepo(page)`; second `evaluate` writes a distinct
-   `b.txt`, `add`+`commit`s it; third `evaluate` calls `log()`. Assert two
-   entries, reverse-chronological order, messages match, newest `parents`
-   contains the older `id`.
-2. **`branch`** — `seedRepo(page)`; three `test.step`s — `create` (assert
-   returned ref `refs/heads/feature`), `list` (assert `feature` present with
-   `current: false`, `main` with `current: true`), `delete` + re-`list`
-   (assert `feature` gone).
-3. **`checkout`** — inline seed (`a.txt = "v1"`, init/add/commit); create
-   `feature`, checkout it, overwrite `a.txt = "v2"`, add+commit; `test.step`
-   checkout `main` → read `a.txt`, assert `"v1"`; `test.step` checkout
-   `feature` → read `a.txt`, assert `"v2"`.
-4. **`tag`** — `seedRepo(page)`; three `test.step`s — `create` (assert
-   `refs/tags/v1`), `list` (assert present), `delete` + re-`list` (assert
-   gone).
+`surface-parity.spec.ts` — four `test.describe` blocks, each with the
+`test.skip(webkit)` guard and self-declared `window.__tsgit` typings; each
+scenario does one `evaluate()` returning a keyed result, asserted per
+operation under `test.step()`:
+
+1. **`log`** — `seedRepo(page)`; second `evaluate` writes a distinct `b.txt`
+   and `add`+`commit`s it; third `evaluate` re-opens and calls `log()`.
+   `test.step`s assert: two entries, reverse-chronological order, messages
+   match, newest `parents` contains the older `id`.
+2. **`branch`** — `seedRepo(page)`; one `evaluate` re-opens and runs
+   `create` → `list` → `delete` → `list`. `test.step`s assert: created ref
+   `refs/heads/feature`; first list has `feature` (`current: false`) +
+   `main` (`current: true`); delete returns `feature`; second list omits it.
+3. **`checkout`** — one `evaluate`: seed `a.txt = "v1"` (init/add/commit),
+   create `feature`, checkout it, overwrite `a.txt = "v2"`, add+commit,
+   checkout `main` + read `a.txt`, checkout `feature` + read `a.txt`; return
+   `{ onMain, onFeature }`. `test.step`s assert `onMain === "v1"`,
+   `onFeature === "v2"`.
+4. **`tag`** — `seedRepo(page)`; one `evaluate` re-opens and runs `create`
+   → `list` → `delete` → `list`. `test.step`s assert: created ref
+   `refs/tags/v1`; first list has it; delete returns it; second list omits.
 
 **Verify:** `npx playwright test surface-parity` — passes on chromium +
 firefox, skips on webkit.
@@ -104,8 +101,8 @@ _Commit:_ `test(browser): cover log/branch/checkout/tag against opfs`.
 
 | File | Action |
 |------|--------|
+| `test/browser/opfs-roundtrip.spec.ts` | rewrite — per-operation steps |
 | `test/browser/fixtures.ts` | add `seedRepo` |
-| `test/browser/opfs-roundtrip.spec.ts` | rewrite — per-step |
 | `test/browser/surface-parity.spec.ts` | new |
 | `docs/BACKLOG.md` | flip 16.3 / 16.4 |
 | `RUNBOOK.md` | refresh browser-test note if needed |

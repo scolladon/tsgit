@@ -33,10 +33,13 @@ it does not say whether `init`, `add`, `commit`, or `status` was at fault.
 - **The `evaluate` boundary.** Browser test code runs inside
   `page.evaluate()`. Only structured-clonable values cross the Node↔browser
   boundary; the `repo` object returned by `openRepository` holds functions and
-  cannot be returned from one `evaluate()` and reused in the next.
+  cannot be returned from one `evaluate()` and reused in the next. Playwright
+  serializes an `evaluate` callback to source, so each callback must be
+  self-contained — no closing over Node-side imports or helpers.
 - **OPFS persists within a page.** OPFS is origin-scoped and survives across
   `evaluate()` calls on the same page. The `resetOpfs` fixture wipes it once
-  before each test, so steps within a test share a single evolving OPFS root.
+  before each test, so successive `evaluate()`s within a test share a single
+  evolving OPFS root.
 - **WebKit gap.** Playwright's headless WebKit does not expose
   `navigator.storage.getDirectory`. Every OPFS-dependent test skips on
   `webkit` (existing pattern — `opfs-roundtrip.spec.ts`, `hash-interop.spec.ts`).
@@ -46,59 +49,65 @@ it does not say whether `init`, `add`, `commit`, or `status` was at fault.
 
 ## 3. Design
 
-### 3.1 Per-step pattern (16.4)
+### 3.1 Per-operation assertions (16.4)
 
-Each git operation becomes one Playwright `test.step()` wrapping one
-`page.evaluate()`. The evaluate re-opens the repo
-(`openRepository({ rootHandle })`), performs **one** operation, returns that
-operation's structured result, and disposes the repo in a `finally`. The test
-body asserts the step's result before the next step runs.
+The round-trip scenario runs in **one** `page.evaluate()` that performs every
+operation and returns a result object keyed by operation —
+`{ init, add, commit, status }`, each holding that operation's own return
+value. The test body then asserts each slice under its own Playwright
+`test.step()`, so the report and trace name the operation.
 
-`opfs-roundtrip.spec.ts` is rewritten to four steps:
+`opfs-roundtrip.spec.ts` is rewritten so the body reads:
 
-| Step | Operation | Asserted |
-|------|-----------|----------|
-| `init` | `repo.init()` | `InitResult.initialBranch === 'refs/heads/main'` |
-| `add` | `repo.add(['a.txt'])` | `AddResult.added` contains `a.txt` |
-| `commit` | `repo.commit({ message, author })` | `id` is 40-hex; `branch === 'refs/heads/main'` |
-| `status` | `repo.status()` | `clean === true`; `branch === 'refs/heads/main'`; no index/working-tree changes |
+| `test.step` | Asserts on the result slice |
+|-------------|-----------------------------|
+| `init` | `init.initialBranch === 'refs/heads/main'` |
+| `add` | `add.added` contains `a.txt` |
+| `commit` | `commit.id` is 40-hex; `commit.branch === 'refs/heads/main'` |
+| `status` | `status.clean === true`; `status.branch === 'refs/heads/main'`; `indexChanges` and `workingTreeChanges` both empty |
 
-The working file `a.txt` is written as plain Arrange (one `evaluate`, not a
-step) before the steps, since it is harness setup, not a git operation.
+Why one `evaluate()` returning a keyed result, rather than one `evaluate()`
+per operation:
 
-Why re-open the repo per step rather than thread one instance through:
-
-- A function-valued `repo` cannot survive the `evaluate` boundary — re-opening
-  is *required*, not a stylistic choice.
-- Each command in the repo facade reads and writes its `.git` state from the
-  filesystem (there is no correctness-bearing in-memory index shared across
-  commands), so re-opening is behaviour-equivalent to one long-lived session
-  **and** additionally proves cross-session persistence: every step reads the
-  `.git` bytes the previous step flushed to OPFS.
-- Playwright stops a test at the first failed `expect`, so a broken `init`
-  does not cascade into misleading `add`/`commit` noise — the report names the
-  failing step.
+- The `repo` object cannot cross the `evaluate` boundary, so a
+  per-operation split would have to **re-open the repo inside every step** —
+  multiplying the `openRepository`/`try`/`finally dispose` boilerplate ~20×
+  across the two new spec files. One `evaluate()` per scenario keeps that
+  boilerplate to a single occurrence, matching the existing three spec files.
+- The literal ask of 16.4 is *per-step **assertions*** for sharper failure
+  messages. A keyed result delivers exactly that: `init` and `commit` are
+  asserted independently, each under a named `test.step`. The current code's
+  single trailing `expect(clean).toBe(true)` is what loses the attribution —
+  not the single `evaluate()`.
+- Failure attribution is preserved both ways: if an operation **throws**, the
+  `evaluate()` rejects with that operation's own typed `TsgitError`
+  (e.g. `NOTHING_TO_COMMIT`) — already a sharp message; if an operation
+  **returns a wrong value**, the matching `test.step` is the one that fails.
 
 ### 3.2 Surface-parity scenarios (16.3)
 
 A new `surface-parity.spec.ts` adds four `test.describe` blocks, one per
-command, each guarded by the `webkit` OPFS skip:
+command, each guarded by the `webkit` OPFS skip. Each test seeds its baseline,
+then runs the command(s) under test in a single `evaluate()` returning a keyed
+result, asserted per-operation under `test.step()`:
 
-- **`log`** — seed one commit, then write a *distinct* second file and
-  `add`+`commit` again (a changed tree, else `commit` throws
-  `NOTHING_TO_COMMIT`); call `log()` and assert two entries in
-  reverse-chronological (first-parent) order, that messages match, and that
-  the newest entry's `parents` contains the older id.
-- **`branch`** — seed one commit, then a `create` → `list` → `delete`
-  sequence as three `test.step`s: create returns the new ref; list shows it
-  with `current: false` alongside `refs/heads/main` as `current: true`;
-  delete removes it and a follow-up list no longer contains it.
-- **`checkout`** — seed `a.txt = "v1"` on `main`; create branch `feature`,
-  checkout `feature`, overwrite `a.txt = "v2"`, add+commit; checkout `main`
-  and assert the working file reads `v1`; checkout `feature` and assert `v2`.
-  Each checkout + read is its own step.
-- **`tag`** — seed one commit, then `create` → `list` → `delete` as three
-  steps, mirroring the `branch` flow against `refs/tags/`.
+- **`log`** — `seedRepo` (one commit); a second `evaluate` writes a distinct
+  `b.txt` and `add`+`commit`s it (a changed tree, else `commit` throws
+  `NOTHING_TO_COMMIT`); a third `evaluate` calls `log()`. Assert two entries
+  in reverse-chronological (first-parent) order, messages match, and the
+  newest entry's `parents` contains the older `id`.
+- **`branch`** — `seedRepo`; one `evaluate` runs `create` → `list` →
+  `delete` → `list`, returning all four results. `test.step`s assert: create
+  returns `refs/heads/feature`; the first list has `feature` (`current:
+  false`) beside `main` (`current: true`); delete returns `feature`; the
+  second list no longer contains it.
+- **`checkout`** — one `evaluate`: seed `a.txt = "v1"` (init/add/commit);
+  create `feature`, checkout it, overwrite `a.txt = "v2"`, add+commit;
+  checkout `main` and read `a.txt`; checkout `feature` and read `a.txt`.
+  Returns `{ onMain, onFeature }`. `test.step`s assert `onMain === "v1"` and
+  `onFeature === "v2"` — proving checkout materializes each branch's tree.
+- **`tag`** — `seedRepo`; one `evaluate` runs `create` → `list` → `delete`
+  → `list`, mirroring the `branch` flow against `refs/tags/`.
 
 ### 3.3 Shared seeding helper — `fixtures.ts`
 
@@ -106,18 +115,16 @@ command, each guarded by the `webkit` OPFS skip:
 existing `waitForTsgitReady` / `resetOpfs`. It runs a single self-contained
 `page.evaluate()` that writes `a.txt`, opens the repo, runs
 `init`→`add`→`commit`, disposes, and returns `{ commitId, branch }`. The
-`log`, `branch`, and `tag` scenarios call it for their common prerequisite;
-`checkout` seeds inline because it needs a specific file content (`v1`).
+`log`, `branch`, and `tag` scenarios call it for their common one-commit
+baseline; `checkout` seeds inline because it needs specific file content
+(`v1`). `seedRepo` is a *Node-side* function (it calls `page.evaluate`), so
+it composes cleanly — it is not a callback shared *into* an `evaluate`.
 
-`seedRepo` is the only shared helper: it is a *Node-side* function (it calls
-`page.evaluate`), so it serializes cleanly. No helper is shared *into* an
-`evaluate` callback — Playwright serializes callbacks to source, so a callback
-must be self-contained. Each spec therefore self-declares the
-`window.__tsgit` typings it uses, matching the existing three spec files
-(`opfs-roundtrip`, `hash-interop`, `decompression-stream` already each declare
-their own). Keeping that pattern avoids coupling some specs to `fixtures.ts`
-type exports while leaving others independent; the ~15 lines of repeated
-interface declarations are accepted for a consistent, decoupled suite.
+Each spec self-declares the `window.__tsgit` typings it uses, matching the
+existing three spec files (each already declares its own). Keeping that
+pattern avoids coupling some specs to `fixtures.ts` type exports while
+leaving others independent; the small repetition of interface declarations
+is accepted for a consistent, decoupled suite.
 
 ## 4. Out of scope
 
@@ -137,20 +144,24 @@ interface declarations are accepted for a consistent, decoupled suite.
 - `npm run test:e2e` builds `dist/` first (wireit `dependencies: ["build"]`),
   then runs Playwright; the harness `index.html` imports the built bundle.
 - No `src/` change — `npm run validate` is exercised only by `check:spelling`
-  (docs), `check:filesystem` (new kebab-case spec), and the new test files
-  under `test/browser/`. Mutation testing has no changed `src/` surface.
+  (docs), `check:filesystem` (the new kebab-case spec), and the new test
+  files under `test/browser/`. Mutation testing has no changed `src/` surface.
 
 ## 6. Key design decisions
 
-- **Per-step = `test.step()` + one `evaluate()` per step, repo re-opened.**
-  Re-opening is mandatory (functions cannot cross the boundary) and is
-  behaviour-equivalent to a long-lived session while adding persistence
-  coverage. Rejected: a single `evaluate()` returning a step-result record —
-  it would keep failures inside one opaque Playwright assertion and miss the
-  trace-viewer step timeline.
+- **One `evaluate()` per scenario, keyed result, `test.step`-wrapped
+  assertions.** Delivers 16.4's per-step assertions and the trace-step
+  timeline without re-opening the repo per operation — which would multiply
+  the open/dispose boilerplate ~20× and contradict the existing suite's
+  one-`evaluate`-per-scenario shape. Rejected: re-open-per-step, for that
+  duplication cost; rejected: a single trailing aggregate assertion (the
+  status quo), for the opaque failure message it produces.
 - **One `surface-parity.spec.ts`, four `describe` blocks** — the four
   commands are one cohesive "ref & history surface" scenario; one file keeps
   the suite at four spec files. Rejected: four `log/branch/checkout/tag.spec
   .ts` files — finer-grained than the existing capability-named layout.
+- **`seedRepo` is the only shared helper, and only Node-side** — it removes
+  the one-commit seeding duplication across `log`/`branch`/`tag` without
+  smuggling a callback across the `evaluate` boundary.
 - **Self-declared window typings per spec** — matches all three existing
   spec files; avoids partial coupling to `fixtures.ts` type exports.
