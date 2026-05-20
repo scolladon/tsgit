@@ -1,10 +1,94 @@
 import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { revParse } from '../../../../src/application/commands/rev-parse.js';
+import { writeObject } from '../../../../src/application/primitives/write-object.js';
+import type { GitIndex, IndexEntry } from '../../../../src/domain/git-index/index.js';
+import { serializeIndex } from '../../../../src/domain/git-index/index.js';
 import { TsgitError } from '../../../../src/domain/index.js';
+import { hexToBytes } from '../../../../src/domain/objects/encoding.js';
+import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
+import type { CommitData, ObjectId } from '../../../../src/domain/objects/index.js';
+import type { FilePath } from '../../../../src/domain/objects/object-id.js';
+import type { Context } from '../../../../src/ports/context.js';
 import { seedRepo } from './fixtures.js';
 
 const TREE_OID = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
+
+const AUTHOR = {
+  name: 'Test',
+  email: 'test@example.com',
+  timestamp: 1_700_000_000,
+  timezoneOffset: '+0000',
+} as const;
+
+const writeBlob = (ctx: Context, text: string): Promise<ObjectId> =>
+  writeObject(ctx, {
+    type: 'blob',
+    id: '' as ObjectId,
+    content: new TextEncoder().encode(text),
+  });
+
+const writeCommit = (
+  ctx: Context,
+  tree: ObjectId,
+  parents: ReadonlyArray<ObjectId>,
+): Promise<ObjectId> => {
+  const data: CommitData = {
+    tree,
+    parents: [...parents],
+    author: AUTHOR,
+    committer: AUTHOR,
+    message: 'c',
+    extraHeaders: [],
+  };
+  return writeObject(ctx, { type: 'commit', id: '' as ObjectId, data });
+};
+
+const writeTag = (
+  ctx: Context,
+  target: ObjectId,
+  targetType: 'commit' | 'tag',
+): Promise<ObjectId> =>
+  writeObject(ctx, {
+    type: 'tag',
+    id: '' as ObjectId,
+    data: {
+      object: target,
+      objectType: targetType,
+      tagName: 'v1',
+      message: 'tag',
+      extraHeaders: [],
+    },
+  });
+
+/** Write a fully-framed `.git/index` (body + hash trailer) with the given entries. */
+const writeIndexFile = async (
+  ctx: Context,
+  entries: ReadonlyArray<{ path: string; id: ObjectId; stage: 0 | 1 | 2 | 3 }>,
+): Promise<void> => {
+  const fullEntries: IndexEntry[] = entries.map((e) => ({
+    ctimeSeconds: 0,
+    ctimeNanoseconds: 0,
+    mtimeSeconds: 0,
+    mtimeNanoseconds: 0,
+    dev: 0,
+    ino: 0,
+    mode: FILE_MODE.REGULAR,
+    uid: 0,
+    gid: 0,
+    fileSize: 0,
+    id: e.id,
+    flags: { assumeValid: false, extended: false, stage: e.stage },
+    path: e.path as FilePath,
+  }));
+  const index: GitIndex = { version: 2, entries: fullEntries, extensions: [] };
+  const body = serializeIndex(index);
+  const trailer = hexToBytes(await ctx.hash.hashHex(body));
+  const framed = new Uint8Array(body.length + trailer.length);
+  framed.set(body);
+  framed.set(trailer, body.length);
+  await ctx.fs.write(`${ctx.layout.gitDir}/index`, framed);
+};
 
 describe('revParse', () => {
   it('Given a non-repo ctx, When revParse(HEAD), Then throws NOT_A_REPOSITORY', async () => {
@@ -53,6 +137,42 @@ describe('revParse', () => {
     expect(sut).toBe(oid);
   });
 
+  it('Given a 41-char string of 40 hex plus a trailing extra char, When revParse, Then the hex regex rejects it (anchored end)', async () => {
+    // Arrange — kills Regex `$`-drop: without `$`, /^[0-9a-f]{40}/ would match
+    // the leading 40 hex and route into ObjectId.from (INVALID_OBJECT_ID).
+    const ctx = createMemoryContext();
+    await seedRepo(ctx, {});
+
+    // Act
+    let caught: unknown;
+    try {
+      await revParse(ctx, `${'0'.repeat(40)}a`);
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert — anchored regex misses, so it is treated as a ref name.
+    expect((caught as TsgitError).data.code).toBe('OBJECT_NOT_FOUND');
+  });
+
+  it('Given a 41-char string of a non-hex char plus 40 hex, When revParse, Then the hex regex rejects it (anchored start)', async () => {
+    // Arrange — kills Regex `^`-drop: without `^`, /[0-9a-f]{40}$/ would match
+    // the trailing 40 hex and route into ObjectId.from (INVALID_OBJECT_ID).
+    const ctx = createMemoryContext();
+    await seedRepo(ctx, {});
+
+    // Act
+    let caught: unknown;
+    try {
+      await revParse(ctx, `g${'0'.repeat(40)}`);
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert — anchored regex misses, so it is treated as a ref name.
+    expect((caught as TsgitError).data.code).toBe('OBJECT_NOT_FOUND');
+  });
+
   it('Given a malformed expression, When revParse, Then throws REVPARSE_UNRESOLVED', async () => {
     // Arrange
     const ctx = createMemoryContext();
@@ -69,5 +189,388 @@ describe('revParse', () => {
     // Assert
     expect(caught).toBeInstanceOf(TsgitError);
     expect((caught as TsgitError).data.code).toBe('REVPARSE_UNRESOLVED');
+  });
+
+  it('Given a base resolvable only via refs/tags/, When revParse, Then the tags candidate resolves it', async () => {
+    // Arrange — kills the ArrayDeclaration mutant: an empty candidate list
+    // would never try `refs/tags/release`.
+    const ctx = createMemoryContext();
+    const commit = await writeCommit(ctx, TREE_OID as ObjectId, []);
+    await seedRepo(ctx, { refs: { 'refs/tags/release': commit } });
+
+    // Act
+    const sut = await revParse(ctx, 'release');
+
+    // Assert
+    expect(sut).toBe(commit);
+  });
+
+  it('Given a base resolvable only via refs/remotes/, When revParse, Then the remotes candidate resolves it', async () => {
+    // Arrange
+    const ctx = createMemoryContext();
+    const commit = await writeCommit(ctx, TREE_OID as ObjectId, []);
+    await seedRepo(ctx, { refs: { 'refs/remotes/origin/main': commit } });
+
+    // Act
+    const sut = await revParse(ctx, 'origin/main');
+
+    // Assert
+    expect(sut).toBe(commit);
+  });
+
+  it('Given a fully-qualified ref name, When revParse, Then the verbatim candidate resolves it', async () => {
+    // Arrange — exercises the first (verbatim `base`) candidate slot.
+    const ctx = createMemoryContext();
+    const commit = await writeCommit(ctx, TREE_OID as ObjectId, []);
+    await seedRepo(ctx, { refs: { 'refs/heads/feature': commit } });
+
+    // Act
+    const sut = await revParse(ctx, 'refs/heads/feature');
+
+    // Assert
+    expect(sut).toBe(commit);
+  });
+
+  it('Given an unresolvable base, When revParse, Then throws OBJECT_NOT_FOUND with that base as id', async () => {
+    // Arrange — every candidate fails; the final throw must carry the base.
+    const ctx = createMemoryContext();
+    await seedRepo(ctx, {});
+
+    // Act
+    let caught: unknown;
+    try {
+      await revParse(ctx, 'no-such-thing');
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert
+    const data = (caught as TsgitError).data as { code: string; id: string };
+    expect(data.code).toBe('OBJECT_NOT_FOUND');
+    expect(data.id).toBe('no-such-thing');
+  });
+
+  it('Given HEAD with one parent op, When revParse(HEAD^), Then returns the first parent', async () => {
+    // Arrange — exercises the operations loop and getNthParent (n-1 indexing).
+    const ctx = createMemoryContext();
+    const parent = await writeCommit(ctx, TREE_OID as ObjectId, []);
+    const child = await writeCommit(ctx, TREE_OID as ObjectId, [parent]);
+    await seedRepo(ctx, { refs: { 'refs/heads/main': child } });
+
+    // Act
+    const sut = await revParse(ctx, 'HEAD^');
+
+    // Assert
+    expect(sut).toBe(parent);
+  });
+
+  it('Given a merge commit with two parents, When revParse(HEAD^2), Then returns the second parent', async () => {
+    // Arrange — kills the `n - 1` ArithmeticOperator mutant: `n + 1` would
+    // index parents[3] (undefined) for ^2.
+    const ctx = createMemoryContext();
+    const p1 = await writeCommit(ctx, TREE_OID as ObjectId, []);
+    const p2 = await writeCommit(ctx, TREE_OID as ObjectId, [p1]);
+    const merge = await writeCommit(ctx, TREE_OID as ObjectId, [p1, p2]);
+    await seedRepo(ctx, { refs: { 'refs/heads/main': merge } });
+
+    // Act
+    const sut = await revParse(ctx, 'HEAD^2');
+
+    // Assert
+    expect(sut).toBe(p2);
+  });
+
+  it('Given a merge commit, When revParse(HEAD^1), Then returns the first parent (not the second)', async () => {
+    // Arrange — pins `n - 1` so `^1` selects parents[0].
+    const ctx = createMemoryContext();
+    const p1 = await writeCommit(ctx, TREE_OID as ObjectId, []);
+    const p2 = await writeCommit(ctx, TREE_OID as ObjectId, [p1]);
+    const merge = await writeCommit(ctx, TREE_OID as ObjectId, [p1, p2]);
+    await seedRepo(ctx, { refs: { 'refs/heads/main': merge } });
+
+    // Act
+    const sut = await revParse(ctx, 'HEAD^1');
+
+    // Assert
+    expect(sut).toBe(p1);
+  });
+
+  it('Given a non-commit object, When revParse(<blob>^), Then throws OBJECT_NOT_FOUND on the blob id', async () => {
+    // Arrange — kills the `obj.type !== 'commit'` guard in getNthParent.
+    const ctx = createMemoryContext();
+    await seedRepo(ctx, {});
+    const blob = await writeBlob(ctx, 'plain');
+
+    // Act
+    let caught: unknown;
+    try {
+      await revParse(ctx, `${blob}^`);
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert
+    const data = (caught as TsgitError).data as { code: string; id: string };
+    expect(data.code).toBe('OBJECT_NOT_FOUND');
+    expect(data.id).toBe(blob);
+  });
+
+  it('Given a root commit, When revParse(HEAD^), Then throws OBJECT_NOT_FOUND (no first parent)', async () => {
+    // Arrange — kills the `parent === undefined` guard in getNthParent.
+    const ctx = createMemoryContext();
+    const root = await writeCommit(ctx, TREE_OID as ObjectId, []);
+    await seedRepo(ctx, { refs: { 'refs/heads/main': root } });
+
+    // Act
+    let caught: unknown;
+    try {
+      await revParse(ctx, 'HEAD^');
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert
+    const data = (caught as TsgitError).data as { code: string; id: string };
+    expect(data.code).toBe('OBJECT_NOT_FOUND');
+    expect(data.id).toBe(root);
+  });
+
+  it('Given a three-commit chain, When revParse(HEAD~2), Then walks first-parent twice to the grandparent', async () => {
+    // Arrange — kills the ancestor loop `i < op.n` / `i += 1` mutants:
+    // ~2 must land exactly on the grandparent, not the parent or root-fail.
+    const ctx = createMemoryContext();
+    const gp = await writeCommit(ctx, TREE_OID as ObjectId, []);
+    const parent = await writeCommit(ctx, TREE_OID as ObjectId, [gp]);
+    const head = await writeCommit(ctx, TREE_OID as ObjectId, [parent]);
+    await seedRepo(ctx, { refs: { 'refs/heads/main': head } });
+
+    // Act
+    const sut = await revParse(ctx, 'HEAD~2');
+
+    // Assert
+    expect(sut).toBe(gp);
+  });
+
+  it('Given a two-commit chain, When revParse(HEAD~1), Then walks first-parent once to the parent', async () => {
+    // Arrange — pins the ancestor loop lower bound: ~1 runs exactly one step.
+    const ctx = createMemoryContext();
+    const parent = await writeCommit(ctx, TREE_OID as ObjectId, []);
+    const head = await writeCommit(ctx, TREE_OID as ObjectId, [parent]);
+    await seedRepo(ctx, { refs: { 'refs/heads/main': head } });
+
+    // Act
+    const sut = await revParse(ctx, 'HEAD~1');
+
+    // Assert
+    expect(sut).toBe(parent);
+  });
+
+  it('Given HEAD~0, When revParse, Then the ancestor loop runs zero times and returns HEAD itself', async () => {
+    // Arrange — kills the ancestor loop upper-bound mutants (`i <= op.n` would
+    // run one iteration for n=0 and fail on the root commit).
+    const ctx = createMemoryContext();
+    const head = await writeCommit(ctx, TREE_OID as ObjectId, []);
+    await seedRepo(ctx, { refs: { 'refs/heads/main': head } });
+
+    // Act
+    const sut = await revParse(ctx, 'HEAD~0');
+
+    // Assert
+    expect(sut).toBe(head);
+  });
+
+  it('Given a commit, When revParse(HEAD^{tree}), Then peels the commit to its tree', async () => {
+    // Arrange — kills the `target === 'tree' && obj.type === 'commit'` branch.
+    const ctx = createMemoryContext();
+    const tree = await writeObject(ctx, { type: 'tree', id: '' as ObjectId, entries: [] });
+    const commit = await writeCommit(ctx, tree, []);
+    await seedRepo(ctx, { refs: { 'refs/heads/main': commit } });
+
+    // Act
+    const sut = await revParse(ctx, 'HEAD^{tree}');
+
+    // Assert
+    expect(sut).toBe(tree);
+  });
+
+  it('Given a commit, When revParse(HEAD^{commit}), Then the peel target matches immediately and returns the commit', async () => {
+    // Arrange — kills the `obj.type === target` match in peel.
+    const ctx = createMemoryContext();
+    const commit = await writeCommit(ctx, TREE_OID as ObjectId, []);
+    await seedRepo(ctx, { refs: { 'refs/heads/main': commit } });
+
+    // Act
+    const sut = await revParse(ctx, 'HEAD^{commit}');
+
+    // Assert
+    expect(sut).toBe(commit);
+  });
+
+  it('Given a tag pointing at a commit, When revParse(<tag>^{commit}), Then peels through the tag to the commit', async () => {
+    // Arrange — kills the `obj.type === 'tag'` follow-through branch.
+    const ctx = createMemoryContext();
+    const commit = await writeCommit(ctx, TREE_OID as ObjectId, []);
+    const tag = await writeTag(ctx, commit, 'commit');
+    await seedRepo(ctx, { refs: { 'refs/heads/main': commit, 'refs/tags/v1': tag } });
+
+    // Act
+    const sut = await revParse(ctx, 'v1^{commit}');
+
+    // Assert
+    expect(sut).toBe(commit);
+  });
+
+  it('Given nested tags peeling to a commit, When revParse, Then the peel loop iterates within its five-step budget', async () => {
+    // Arrange — three stacked tags + commit = four reads; kills the `i < 5`
+    // loop-bound mutants that would either stop short or never iterate.
+    const ctx = createMemoryContext();
+    const commit = await writeCommit(ctx, TREE_OID as ObjectId, []);
+    const t1 = await writeTag(ctx, commit, 'commit');
+    const t2 = await writeTag(ctx, t1, 'tag');
+    const t3 = await writeTag(ctx, t2, 'tag');
+    await seedRepo(ctx, { refs: { 'refs/heads/main': commit, 'refs/tags/v1': t3 } });
+
+    // Act
+    const sut = await revParse(ctx, 'v1^{commit}');
+
+    // Assert
+    expect(sut).toBe(commit);
+  });
+
+  it('Given a blob, When revParse(<blob>^{commit}), Then peel rejects with OBJECT_NOT_FOUND', async () => {
+    // Arrange — exercises the `throw objectNotFound(current)` fallthrough in peel.
+    const ctx = createMemoryContext();
+    await seedRepo(ctx, {});
+    const blob = await writeBlob(ctx, 'data');
+
+    // Act
+    let caught: unknown;
+    try {
+      await revParse(ctx, `${blob}^{commit}`);
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert
+    const data = (caught as TsgitError).data as { code: string; id: string };
+    expect(data.code).toBe('OBJECT_NOT_FOUND');
+    expect(data.id).toBe(blob);
+  });
+
+  it('Given a commit, When revParse(HEAD^{blob}), Then peel cannot reach a blob and rejects with OBJECT_NOT_FOUND', async () => {
+    // Arrange — a commit is not a blob and `target !== 'tree'`, so peel hits
+    // the throw; pins the `target === 'tree'` guard's false branch.
+    const ctx = createMemoryContext();
+    const commit = await writeCommit(ctx, TREE_OID as ObjectId, []);
+    await seedRepo(ctx, { refs: { 'refs/heads/main': commit } });
+
+    // Act
+    let caught: unknown;
+    try {
+      await revParse(ctx, 'HEAD^{blob}');
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert
+    const data = (caught as TsgitError).data as { code: string; id: string };
+    expect(data.code).toBe('OBJECT_NOT_FOUND');
+    expect(data.id).toBe(commit);
+  });
+
+  it('Given an index entry at stage 0 for a path, When revParse(:0:<path>), Then returns that entry id', async () => {
+    // Arrange — exercises resolveIndexStage's loop and happy-path return.
+    const ctx = createMemoryContext();
+    await seedRepo(ctx, {});
+    const blob = await writeBlob(ctx, 'content');
+    await writeIndexFile(ctx, [{ path: 'a.txt', id: blob, stage: 0 }]);
+
+    // Act
+    const sut = await revParse(ctx, ':0:a.txt');
+
+    // Assert
+    expect(sut).toBe(blob);
+  });
+
+  it('Given an entry whose path matches but whose stage differs, When revParse(:0:<path>), Then the stage operand of the guard rejects it', async () => {
+    // Arrange — kills the `entry.flags.stage === expr.stage` operand and the
+    // `||` logical mutant: path matches, stage does not.
+    const ctx = createMemoryContext();
+    await seedRepo(ctx, {});
+    const blob = await writeBlob(ctx, 'ours');
+    await writeIndexFile(ctx, [{ path: 'a.txt', id: blob, stage: 2 }]);
+
+    // Act
+    let caught: unknown;
+    try {
+      await revParse(ctx, ':0:a.txt');
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert
+    const data = (caught as TsgitError).data as { code: string; id: string };
+    expect(data.code).toBe('OBJECT_NOT_FOUND');
+    expect(data.id).toBe('0:a.txt');
+  });
+
+  it('Given an entry whose stage matches but whose path differs, When revParse(:0:<path>), Then the path operand of the guard rejects it', async () => {
+    // Arrange — kills the `entry.path === expr.path` operand: stage matches,
+    // path does not.
+    const ctx = createMemoryContext();
+    await seedRepo(ctx, {});
+    const blob = await writeBlob(ctx, 'other');
+    await writeIndexFile(ctx, [{ path: 'other.txt', id: blob, stage: 0 }]);
+
+    // Act
+    let caught: unknown;
+    try {
+      await revParse(ctx, ':0:a.txt');
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert
+    const data = (caught as TsgitError).data as { code: string; id: string };
+    expect(data.code).toBe('OBJECT_NOT_FOUND');
+    expect(data.id).toBe('0:a.txt');
+  });
+
+  it('Given two same-path entries at stages 2 and 3, When revParse(:3:<path>), Then returns exactly the stage-3 entry', async () => {
+    // Arrange — both operands must hold simultaneously; the matching entry is
+    // not the first in the index, exercising the loop past entry one.
+    const ctx = createMemoryContext();
+    await seedRepo(ctx, {});
+    const ours = await writeBlob(ctx, 'ours');
+    const theirs = await writeBlob(ctx, 'theirs');
+    await writeIndexFile(ctx, [
+      { path: 'conflict.txt', id: ours, stage: 2 },
+      { path: 'conflict.txt', id: theirs, stage: 3 },
+    ]);
+
+    // Act
+    const sut = await revParse(ctx, ':3:conflict.txt');
+
+    // Assert
+    expect(sut).toBe(theirs);
+  });
+
+  it('Given an empty index, When revParse(:0:<path>), Then throws OBJECT_NOT_FOUND for stage:path', async () => {
+    // Arrange — no entries: the loop body never runs and the throw fires.
+    const ctx = createMemoryContext();
+    await seedRepo(ctx, {});
+
+    // Act
+    let caught: unknown;
+    try {
+      await revParse(ctx, ':0:missing.txt');
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert
+    const data = (caught as TsgitError).data as { code: string; id: string };
+    expect(data.code).toBe('OBJECT_NOT_FOUND');
+    expect(data.id).toBe('0:missing.txt');
   });
 });

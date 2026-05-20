@@ -5,6 +5,7 @@ import {
   applyDelta,
   MAX_DELTA_CHAIN_DEPTH,
   parseDelta,
+  readDeltaTargetSize,
 } from '../../../../src/domain/storage/delta.js';
 import { buildDelta } from './arbitraries.js';
 
@@ -661,6 +662,161 @@ describe('delta', () => {
           expect(sut.length).toBe(insert.length);
         }),
       );
+    });
+  });
+
+  describe('readVariableLengthInt boundary — second varint at exact EOF', () => {
+    it('Given a delta whose second varint starts exactly at bytes.length, When reading target size, Then throws INVALID_DELTA (truncated)', () => {
+      // Arrange — single byte: first varint consumes it (o1=1), second varint starts at offset 1 === length 1
+      const delta = new Uint8Array([0x00]);
+
+      // Act & Assert
+      try {
+        readDeltaTargetSize(delta);
+        expect.fail('Should have thrown');
+      } catch (e) {
+        const err = e as TsgitError;
+        expect(err.data).toEqual({
+          code: 'INVALID_DELTA',
+          reason: 'truncated variable-length integer',
+        });
+      }
+    });
+
+    it('Given a delta with a varint continuation byte then exact EOF, When reading target size, Then throws INVALID_DELTA (truncated mid-loop)', () => {
+      // Arrange — byte0=0x05 (first varint, no continuation), then 0x80,0x80: second varint continues then hits EOF at pos===length
+      const delta = new Uint8Array([0x05, 0x80, 0x80]);
+
+      // Act & Assert
+      try {
+        readDeltaTargetSize(delta);
+        expect.fail('Should have thrown');
+      } catch (e) {
+        const err = e as TsgitError;
+        expect(err.data).toEqual({
+          code: 'INVALID_DELTA',
+          reason: 'truncated variable-length integer',
+        });
+      }
+    });
+
+    it('Given a well-formed delta, When reading target size, Then returns the encoded target length', () => {
+      // Arrange — sourceLength=10, targetLength=300, one COPY (irrelevant to the peek)
+      const delta = buildDelta(10, 300, [{ type: 'copy', offset: 0, size: 10 }]);
+
+      // Act
+      const sut = readDeltaTargetSize(delta);
+
+      // Assert
+      expect(sut).toBe(300);
+    });
+  });
+
+  describe('readVariableLengthInt — MAX_VARINT_BYTES boundary', () => {
+    it('Given a varint with exactly 5 continuation bytes (no terminator), When applying, Then throws too-long before reading a 6th byte', () => {
+      // Arrange — 5 bytes all with continuation bit: the 5th byte's continuation must trip the length guard,
+      // NOT fall through to a truncation read of a 6th byte.
+      const delta = new Uint8Array([0x80, 0x80, 0x80, 0x80, 0x80]);
+
+      // Act & Assert
+      try {
+        applyDelta(new Uint8Array(0), delta);
+        expect.fail('Should have thrown');
+      } catch (e) {
+        const err = e as TsgitError;
+        expect(err.data).toEqual({
+          code: 'INVALID_DELTA',
+          reason: 'variable-length integer too long',
+        });
+      }
+    });
+  });
+
+  describe('countCopyFieldBytes — per-bit field accounting', () => {
+    const bits: ReadonlyArray<{ bit: number; label: string }> = [
+      { bit: 0x01, label: 'offset byte 0' },
+      { bit: 0x02, label: 'offset byte 1' },
+      { bit: 0x04, label: 'offset byte 2' },
+      { bit: 0x08, label: 'offset byte 3' },
+      { bit: 0x10, label: 'size byte 0' },
+      { bit: 0x20, label: 'size byte 1' },
+      { bit: 0x40, label: 'size byte 2' },
+    ];
+
+    for (const { bit, label } of bits) {
+      it(`Given a COPY cmd with only ${label} flagged but zero field bytes, When applying, Then throws COPY-truncated`, () => {
+        // Arrange — sourceLength=0, targetLength=1, COPY cmd with exactly one field bit and NO field byte.
+        // countCopyFieldBytes must report 1; any miscount skips the truncation guard.
+        const delta = new Uint8Array([0x00, 0x01, 0x80 | bit]);
+
+        // Act & Assert
+        try {
+          applyDelta(new Uint8Array(0), delta);
+          expect.fail('Should have thrown');
+        } catch (e) {
+          const err = e as TsgitError;
+          expect(err.data).toEqual({
+            code: 'INVALID_DELTA',
+            reason: 'COPY instruction truncated: needs 1 bytes at position 3',
+          });
+        }
+      });
+    }
+  });
+
+  describe('validateDeltaHeader — target length at exact maximum', () => {
+    it('Given a delta with targetLength exactly at the 2GB maximum, When applying, Then it is accepted (no exceeds-maximum error)', () => {
+      // Arrange — sourceLength=0, targetLength = 2*1024*1024*1024, no instructions.
+      // Boundary: `>` accepts === MAX; `>=` would wrongly reject it.
+      const maxTarget = 2 * 1024 * 1024 * 1024;
+      const delta = buildDelta(0, maxTarget, []);
+
+      // Act & Assert — the header passes; the apply loop then fails on underfill, NOT on the size cap.
+      try {
+        applyDelta(new Uint8Array(0), delta);
+        expect.fail('Should have thrown');
+      } catch (e) {
+        const err = e as TsgitError;
+        expect(err.data).toEqual({
+          code: 'INVALID_DELTA',
+          reason: `underfill: produced 0 bytes but target length is ${maxTarget}`,
+        });
+      }
+    });
+  });
+
+  describe('applyDelta — empty delta vs early-return removal', () => {
+    it('Given a non-empty delta (sourceLength=0, targetLength>0), When applying, Then it is NOT short-circuited to an empty result', () => {
+      // Arrange — would-be early-return condition operands: source=0 but target≠0 and instructions present.
+      const insertData = new TextEncoder().encode('inserted');
+      const delta = buildDelta(0, insertData.length, [{ type: 'insert', data: insertData }]);
+
+      // Act
+      const sut = applyDelta(new Uint8Array(0), delta);
+
+      // Assert
+      expect(new TextDecoder().decode(sut)).toBe('inserted');
+      expect(sut.length).toBe(8);
+    });
+  });
+
+  describe('parseDelta — truncated INSERT available-byte count', () => {
+    it('Given an INSERT claiming more bytes than remain, When parsing, Then the error reports the exact available count', () => {
+      // Arrange — sourceLength=0, targetLength=10, INSERT N=10, only 3 data bytes follow.
+      // Available = delta.length(6) - pos(3) = 3.
+      const delta = new Uint8Array([0, 10, 10, 0xaa, 0xbb, 0xcc]);
+
+      // Act & Assert
+      try {
+        parseDelta(delta);
+        expect.fail('Should have thrown');
+      } catch (e) {
+        const err = e as TsgitError;
+        expect(err.data).toEqual({
+          code: 'INVALID_DELTA',
+          reason: 'INSERT data truncated: needs 10 bytes at position 3, only 3 available',
+        });
+      }
     });
   });
 

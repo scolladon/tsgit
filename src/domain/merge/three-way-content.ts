@@ -11,6 +11,7 @@ interface ChangeRange {
 
 function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
   if (a.length !== b.length) return false;
+  // Stryker disable next-line EqualityOperator: equivalent — lengths are equal here, so at i===a.length both a[i] and b[i] are undefined and undefined !== undefined is false
   for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
   return true;
 }
@@ -90,13 +91,16 @@ interface MergedPlan {
   readonly changes: ReadonlyArray<ChangeRange>;
 }
 
+// Changes on a single side come from runs separated by common hunks, so they
+// have strictly ordered, non-overlapping (and distinct) [baseStart, baseEnd)
+// ranges. A twin therefore shares its exact range with exactly one opposite-side
+// change, which means an already-consumed candidate can neither twin nor overlap
+// any other target — no consumed-set filtering is needed here.
 function findIdenticalTwin(
   target: ChangeRange,
   candidates: ReadonlyArray<ChangeRange>,
-  consumed: ReadonlySet<ChangeRange>,
 ): ChangeRange | undefined {
   for (const candidate of candidates) {
-    if (consumed.has(candidate)) continue;
     if (
       candidate.baseStart === target.baseStart &&
       candidate.baseEnd === target.baseEnd &&
@@ -108,13 +112,8 @@ function findIdenticalTwin(
   return undefined;
 }
 
-function collidesWithUnconsumed(
-  target: ChangeRange,
-  candidates: ReadonlyArray<ChangeRange>,
-  consumed: ReadonlySet<ChangeRange>,
-): boolean {
+function collidesWithAny(target: ChangeRange, candidates: ReadonlyArray<ChangeRange>): boolean {
   for (const candidate of candidates) {
-    if (consumed.has(candidate)) continue;
     if (rangesOverlap(target, candidate)) return true;
   }
   return false;
@@ -128,13 +127,13 @@ function mergePlans(
   const consumedTheirs = new Set<ChangeRange>();
 
   for (const oc of oursChanges) {
-    const twin = findIdenticalTwin(oc, theirsChanges, consumedTheirs);
+    const twin = findIdenticalTwin(oc, theirsChanges);
     if (twin !== undefined) {
       consumedTheirs.add(twin);
       out.push(oc);
       continue;
     }
-    if (collidesWithUnconsumed(oc, theirsChanges, consumedTheirs)) return undefined;
+    if (collidesWithAny(oc, theirsChanges)) return undefined;
     out.push(oc);
   }
   for (const tc of theirsChanges) {

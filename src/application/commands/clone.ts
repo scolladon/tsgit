@@ -69,7 +69,9 @@ export const clone = async (ctx: Context, opts: CloneOptions): Promise<CloneResu
     if (opts.resolver !== undefined) {
       await validateUrl(opts.url, {
         resolver: opts.resolver,
+        // Stryker disable next-line ConditionalExpression: equivalent — always-true ternary spreads `{ allowInsecure: opts.allowInsecure }`; validateUrl reads `opts.allowInsecure ?? false`, so `undefined`/`false` both yield the same `false` as the empty spread.
         ...(opts.allowInsecure !== undefined ? { allowInsecure: opts.allowInsecure } : {}),
+        // Stryker disable next-line ConditionalExpression: equivalent — always-true ternary spreads `{ allowPrivateNetworks: opts.allowPrivateNetworks }`; validateUrl reads `opts.allowPrivateNetworks ?? false`, so `undefined`/`false` both yield the same `false` as the empty spread.
         ...(opts.allowPrivateNetworks !== undefined
           ? { allowPrivateNetworks: opts.allowPrivateNetworks }
           : {}),
@@ -115,17 +117,10 @@ const fetchAndPropagate = async (
     capabilities,
     url: opts.url,
     progressOp: CLONE_WRITE_OBJECTS_OP,
-    // equivalent-mutant: spreading `{ depth: opts.depth }` unconditionally
-    // is observable-equivalent. `fetchPack` ignores `depth: undefined`
-    // (its gate is `input.depth !== undefined`), so the ternary's `else`
-    // branch and the unconditional spread produce identical request bodies.
+    // Stryker disable next-line ConditionalExpression: equivalent — always-true ternary spreads `{ depth: opts.depth }`; `fetchPack` gates on `input.depth !== undefined`, so `depth: undefined` and the empty spread produce identical request bodies.
     ...(opts.depth !== undefined ? { depth: opts.depth } : {}),
   });
-  // equivalent-mutant: replacing `> 0` with `>= 0` is observable-equivalent
-  // when `packResult.shallow.length === 0` because `updateShallow` with two
-  // empty arrays short-circuits to `deleteIfPresent` on a freshly
-  // bootstrapped `.git` (no shallow file exists). The non-equivalent half
-  // (`< 0`) is killed by `clone.test.ts`'s depth:1 shallow-success test.
+  // Stryker disable next-line EqualityOperator,ConditionalExpression: equivalent — with `shallow.length === 0`, `updateShallow` receives two empty arrays and short-circuits to `deleteIfPresent` on a freshly bootstrapped `.git` (no shallow file exists), so `>= 0`/always-true are indistinguishable from `> 0`. The killable `< 0`/always-false half is covered by the depth:1 shallow-success test.
   if (packResult.shallow.length > 0) {
     // Clone never sees `unshallow` (the local repo is empty until now), but
     // updateShallow handles a populated `unshallow` correctly — pass the

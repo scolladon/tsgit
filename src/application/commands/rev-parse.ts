@@ -34,16 +34,14 @@ const evaluate = async (ctx: Context, expr: RevExpression): Promise<ObjectId> =>
 
 const resolveBase = async (ctx: Context, base: string): Promise<ObjectId> => {
   if (/^[0-9a-f]{40}$/.test(base)) return ObjectIdFactory.from(base);
-  // Try as a ref name; resolveRef accepts HEAD literal too.
-  const candidates: ReadonlyArray<RefName | 'HEAD'> =
-    base === 'HEAD'
-      ? ['HEAD']
-      : [
-          base as RefName,
-          `refs/heads/${base}` as RefName,
-          `refs/tags/${base}` as RefName,
-          `refs/remotes/${base}` as RefName,
-        ];
+  // Try as a ref name; the verbatim candidate also covers the HEAD literal,
+  // which resolveRef accepts directly.
+  const candidates: ReadonlyArray<RefName | 'HEAD'> = [
+    base as RefName,
+    `refs/heads/${base}` as RefName,
+    `refs/tags/${base}` as RefName,
+    `refs/remotes/${base}` as RefName,
+  ];
   for (const candidate of candidates) {
     try {
       return await resolveRef(ctx, candidate);

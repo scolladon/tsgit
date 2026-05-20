@@ -13,7 +13,7 @@ import {
   buildUploadPackResponseBody,
 } from '../../../fixtures/transport/builders.js';
 import { buildSyntheticPack, type EntrySpec } from '../primitives/pack-fixture.js';
-import { recordingProgress, withProgress } from './fixtures.js';
+import { recordedTransport, recordingProgress, withProgress } from './fixtures.js';
 
 const REMOTE_URL = 'https://remote.example/r.git';
 const ENCODER = new TextEncoder();
@@ -271,6 +271,251 @@ describe('clone', () => {
     expect(caught).toBeInstanceOf(TsgitError);
     const gitDirExists = await ctx.fs.exists(`${ctx.layout.gitDir}/HEAD`);
     expect(gitDirExists).toBe(false);
+  });
+
+  it('Given a resolver that resolves to a blocked address, When clone, Then validateUrl runs and throws BLOCKED_HOST', async () => {
+    // Arrange — a resolver pointing the URL host at a loopback address. The
+    // in-clone validateUrl path only runs when `opts.resolver` is supplied.
+    const ctx = createMemoryContext();
+    const { packBytes, blobId } = await buildPackFromSingleBlob(ctx, 'ssrf\n');
+    const transport = buildCloneRemote({
+      capabilities: ['side-band-64k', 'symref=HEAD:refs/heads/main'],
+      refs: [{ name: 'refs/heads/main', id: blobId }],
+      head: 'refs/heads/main',
+      packBytes,
+    });
+    const networkCtx = withTransport(ctx, transport);
+    const resolver = async (): Promise<ReadonlyArray<string>> => ['127.0.0.1'];
+
+    // Act
+    let caught: unknown;
+    try {
+      await clone(networkCtx, { url: REMOTE_URL, resolver });
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert — if the resolver branch body were skipped, clone would succeed.
+    expect(caught).toBeInstanceOf(TsgitError);
+    expect((caught as TsgitError).data.code).toBe('BLOCKED_HOST');
+  });
+
+  it('Given a resolver and a public address, When clone, Then validateUrl passes and the clone completes', async () => {
+    // Arrange
+    const ctx = createMemoryContext();
+    const { packBytes, blobId } = await buildPackFromSingleBlob(ctx, 'resolver ok\n');
+    const transport = buildCloneRemote({
+      capabilities: ['side-band-64k', 'symref=HEAD:refs/heads/main'],
+      refs: [{ name: 'refs/heads/main', id: blobId }],
+      head: 'refs/heads/main',
+      packBytes,
+    });
+    const networkCtx = withTransport(ctx, transport);
+    const resolver = async (): Promise<ReadonlyArray<string>> => ['93.184.216.34'];
+
+    // Act
+    const sut = await clone(networkCtx, { url: REMOTE_URL, resolver });
+
+    // Assert
+    expect(sut.head).toBe('refs/heads/main');
+  });
+
+  it('Given no bare option, When clone, Then the written config records bare = false', async () => {
+    // Arrange
+    const ctx = createMemoryContext();
+    const { packBytes, blobId } = await buildPackFromSingleBlob(ctx, 'bare default\n');
+    const transport = buildCloneRemote({
+      capabilities: ['side-band-64k', 'symref=HEAD:refs/heads/main'],
+      refs: [{ name: 'refs/heads/main', id: blobId }],
+      head: 'refs/heads/main',
+      packBytes,
+    });
+    const networkCtx = withTransport(ctx, transport);
+
+    // Act
+    await clone(networkCtx, { url: REMOTE_URL });
+
+    // Assert — `bare: opts.bare ?? false` must default to false.
+    const config = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
+    expect(config).toContain('bare = false');
+  });
+
+  it('Given ctx.config.auth, When clone, Then every transport request carries the Authorization header', async () => {
+    // Arrange — wrap the cloning transport so requests are captured. withDefaults
+    // composes withAuth around ctx.transport using ctx.config.auth.
+    const ctx = createMemoryContext();
+    const { packBytes, blobId } = await buildPackFromSingleBlob(ctx, 'authed\n');
+    const remote = buildCloneRemote({
+      capabilities: ['side-band-64k', 'symref=HEAD:refs/heads/main'],
+      refs: [{ name: 'refs/heads/main', id: blobId }],
+      head: 'refs/heads/main',
+      packBytes,
+    });
+    const { transport, requests } = recordedTransport(remote);
+    const networkCtx: Context = {
+      ...withTransport(ctx, transport),
+      config: { auth: { type: 'bearer', token: 'secret-token' } },
+    };
+
+    // Act
+    await clone(networkCtx, { url: REMOTE_URL });
+
+    // Assert — every recorded request must carry the bearer header.
+    expect(requests.length).toBeGreaterThan(0);
+    for (const req of requests) {
+      expect(req.headers.authorization).toBe('Bearer secret-token');
+    }
+  });
+
+  it('Given no ctx.config.auth, When clone, Then transport requests carry no Authorization header', async () => {
+    // Arrange — without config.auth, withDefaults must not compose withAuth.
+    const ctx = createMemoryContext();
+    const { packBytes, blobId } = await buildPackFromSingleBlob(ctx, 'no auth\n');
+    const remote = buildCloneRemote({
+      capabilities: ['side-band-64k', 'symref=HEAD:refs/heads/main'],
+      refs: [{ name: 'refs/heads/main', id: blobId }],
+      head: 'refs/heads/main',
+      packBytes,
+    });
+    const { transport, requests } = recordedTransport(remote);
+    const networkCtx = withTransport(ctx, transport);
+
+    // Act
+    await clone(networkCtx, { url: REMOTE_URL });
+
+    // Assert
+    expect(requests.length).toBeGreaterThan(0);
+    for (const req of requests) {
+      expect(req.headers.authorization).toBeUndefined();
+    }
+  });
+
+  it('Given a discovery with a tag ref, When clone, Then writes refs/tags/<tag> and not under refs/remotes', async () => {
+    // Arrange
+    const ctx = createMemoryContext();
+    const { packBytes, blobId } = await buildPackFromSingleBlob(ctx, 'tagged\n');
+    const transport = buildCloneRemote({
+      capabilities: ['side-band-64k', 'symref=HEAD:refs/heads/main'],
+      refs: [
+        { name: 'refs/heads/main', id: blobId },
+        { name: 'refs/tags/v1.0', id: blobId },
+      ],
+      head: 'refs/heads/main',
+      packBytes,
+    });
+    const networkCtx = withTransport(ctx, transport);
+
+    // Act
+    const sut = await clone(networkCtx, { url: REMOTE_URL });
+
+    // Assert — tag goes verbatim under refs/tags, never remapped to refs/remotes.
+    const names = sut.fetchedRefs.map((r) => r.name);
+    expect(names).toContain('refs/tags/v1.0');
+    expect(names).not.toContain('refs/remotes/origin/v1.0');
+    const tagRef = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/refs/tags/v1.0`);
+    expect(tagRef.trim()).toBe(blobId);
+    expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/remotes/origin/v1.0`)).toBe(false);
+  });
+
+  it('Given a discovery with a HEAD ref entry, When clone, Then the HEAD ref is skipped silently and not written', async () => {
+    // Arrange — the advertisement explicitly carries a `HEAD` ref alongside a branch.
+    const ctx = createMemoryContext();
+    const { packBytes, blobId } = await buildPackFromSingleBlob(ctx, 'head skip\n');
+    const transport = buildCloneRemote({
+      capabilities: ['side-band-64k', 'symref=HEAD:refs/heads/main'],
+      refs: [
+        { name: 'HEAD', id: blobId },
+        { name: 'refs/heads/main', id: blobId },
+      ],
+      head: 'refs/heads/main',
+      packBytes,
+    });
+    const debugCalls: Array<{ message: string; context?: Readonly<Record<string, unknown>> }> = [];
+    const networkCtx: Context = {
+      ...withTransport(ctx, transport),
+      logger: {
+        debug: (message, context) => {
+          debugCalls.push(context !== undefined ? { message, context } : { message });
+        },
+      },
+    };
+
+    // Act
+    const sut = await clone(networkCtx, { url: REMOTE_URL });
+
+    // Assert — the literal `HEAD` ref must be skipped (not remapped/written).
+    const names = sut.fetchedRefs.map((r) => r.name);
+    expect(names).not.toContain('HEAD');
+    expect(names).not.toContain('refs/remotes/origin/HEAD');
+    expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/remotes/origin/HEAD`)).toBe(false);
+    // The genuine branch is still written — proves the skip is HEAD-specific.
+    expect(names).toContain('refs/remotes/origin/main');
+    // The `=== 'HEAD'` guard must skip BEFORE the unsupported-namespace log:
+    // a `=== ''` mutant would let HEAD fall through to the debug log.
+    expect(debugCalls.map((c) => c.context?.name)).not.toContain('HEAD');
+  });
+
+  it('Given a branch that is not the HEAD-tracked branch, When clone, Then no local refs/heads/<branch> is written for it', async () => {
+    // Arrange — HEAD tracks `main`; `dev` is advertised but not HEAD-tracked.
+    const ctx = createMemoryContext();
+    const { packBytes, blobId } = await buildPackFromSingleBlob(ctx, 'non-head branch\n');
+    const transport = buildCloneRemote({
+      capabilities: ['side-band-64k', 'symref=HEAD:refs/heads/main'],
+      refs: [
+        { name: 'refs/heads/main', id: blobId },
+        { name: 'refs/heads/dev', id: blobId },
+      ],
+      head: 'refs/heads/main',
+      packBytes,
+    });
+    const networkCtx = withTransport(ctx, transport);
+
+    // Act
+    const sut = await clone(networkCtx, { url: REMOTE_URL });
+
+    // Assert — only the HEAD-tracked branch gets a local refs/heads entry.
+    const names = sut.fetchedRefs.map((r) => r.name);
+    expect(names).toContain('refs/heads/main');
+    expect(names).not.toContain('refs/heads/dev');
+    expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/heads/dev`)).toBe(false);
+    // Both branches still get their remote-tracking ref.
+    expect(names).toContain('refs/remotes/origin/dev');
+  });
+
+  it('Given a ref in an unsupported namespace and a debug logger, When clone, Then the ref is logged and skipped', async () => {
+    // Arrange — `refs/notes/*` is outside the heads/tags layout policy.
+    const ctx = createMemoryContext();
+    const { packBytes, blobId } = await buildPackFromSingleBlob(ctx, 'notes ns\n');
+    const transport = buildCloneRemote({
+      capabilities: ['side-band-64k', 'symref=HEAD:refs/heads/main'],
+      refs: [
+        { name: 'refs/heads/main', id: blobId },
+        { name: 'refs/notes/commits', id: blobId },
+      ],
+      head: 'refs/heads/main',
+      packBytes,
+    });
+    const debugCalls: Array<{ message: string; context?: Readonly<Record<string, unknown>> }> = [];
+    const networkCtx: Context = {
+      ...withTransport(ctx, transport),
+      logger: {
+        debug: (message, context) => {
+          debugCalls.push(context !== undefined ? { message, context } : { message });
+        },
+      },
+    };
+
+    // Act
+    const sut = await clone(networkCtx, { url: REMOTE_URL });
+
+    // Assert — the unsupported ref is not written, and the skip is logged.
+    const names = sut.fetchedRefs.map((r) => r.name);
+    expect(names).not.toContain('refs/notes/commits');
+    expect(names).not.toContain('refs/remotes/origin/commits');
+    expect(debugCalls).toContainEqual({
+      message: 'clone: skipping unsupported ref namespace',
+      context: { name: 'refs/notes/commits' },
+    });
   });
 });
 

@@ -195,10 +195,6 @@ export function applyDelta(base: Uint8Array, delta: Uint8Array): Uint8Array {
 
   validateDeltaHeader(base, sourceLength, targetLength);
 
-  if (sourceLength === 0 && targetLength === 0 && o2 === delta.length) {
-    return new Uint8Array(0);
-  }
-
   const result = new Uint8Array(targetLength);
   let resultPos = 0;
   let pos = o2;
