@@ -61,7 +61,7 @@ value. The test body then asserts each slice under its own Playwright
 
 | `test.step` | Asserts on the result slice |
 |-------------|-----------------------------|
-| `init` | `init.initialBranch === 'refs/heads/main'` |
+| `init` | `init.initialBranch === 'main'` (short name); `init.bare === false` |
 | `add` | `add.added` contains `a.txt` |
 | `commit` | `commit.id` is 40-hex; `commit.branch === 'refs/heads/main'` |
 | `status` | `status.clean === true`; `status.branch === 'refs/heads/main'`; `indexChanges` and `workingTreeChanges` both empty |
