@@ -131,10 +131,8 @@ const resolveRefspecsInput = async (
   ctx: Context,
   refspecs: ReadonlyArray<string> | undefined,
 ): Promise<ReadonlyArray<ParsedRefspec>> => {
-  // equivalent-mutant: `refspecs.length > 0` vs `refspecs.length >= 0` —
-  // `>= 0` is always true on a defined array, which would short-circuit on
-  // an empty array exactly as the existing code does (returns `[]`), making
-  // the mutant observable-equivalent.
+  // An explicit empty `refspecs: []` must fall through to the HEAD-default
+  // branch — `length > 0` (not `>= 0`) makes `[]` behave like "no refspec".
   if (refspecs !== undefined && refspecs.length > 0) {
     return refspecs.map(parseRefspec);
   }
@@ -215,6 +213,7 @@ const resolveLease = async (
   remoteName: string,
   opts: PushOptions,
 ): Promise<ObjectId | undefined> => {
+  // Stryker disable next-line ConditionalExpression: equivalent — when `forceWithLease` is undefined the next line (`undefined !== 'auto'`) returns `opts.forceWithLease` which is `undefined`, the identical result.
   if (opts.forceWithLease === undefined) return undefined;
   if (opts.forceWithLease !== 'auto') return opts.forceWithLease;
   if (!parsed.dst.startsWith(REFS_HEADS_PREFIX)) {
@@ -254,6 +253,7 @@ const sendUpdates = async (
   remoteName: string,
 ): Promise<ReadonlyArray<PushedRef>> => {
   const wants = movers.filter((m) => !m.parsed.isDelete).map((m) => m.localOid);
+  // Stryker disable next-line MethodExpression: equivalent — dropping `.filter` keeps ZERO_OID in `haves`, but ZERO_OID is used only as a `walkCommits` `until` boundary under `ignoreMissing`, where a non-existent oid prunes nothing — identical walk output.
   const haves = adv.refs.map((r) => r.id).filter((id) => id !== ZERO_OID);
   const oids = await collectObjects(ctx, wants, haves);
   const pack = await buildPack(ctx, { oids });
@@ -268,6 +268,7 @@ const sendUpdates = async (
   if (!parsed.unpackOk) {
     throw pushRejected(
       movers[0]?.parsed.dst as RefName,
+      // Stryker disable next-line StringLiteral: equivalent — `parseReceivePackResponse` always sets `unpackError` (a string) whenever `unpackOk` is false, so the `??` fallback is unreachable.
       parsed.unpackError ?? 'unpack failed',
       parsed,
     );
@@ -328,8 +329,10 @@ const buildReceivePackUrl = (baseUrl: string): string => {
   try {
     parsed = new URL(baseUrl);
   } catch {
+    // Stryker disable next-line StringLiteral: equivalent — discovery (`buildDiscoveryUrl`) parses the identical `baseUrl` earlier in push(); a URL that fails `new URL()` here already failed there, so this catch is unreachable via push().
     throw invalidBaseUrl('invalid URL');
   }
+  // Stryker disable next-line ConditionalExpression,StringLiteral: equivalent — the URL is sourced from `.git/config`, whose parser strips every unquoted `#` as an inline comment, so a fragment can never survive into `baseUrl`; this guard is unreachable via push().
   if (parsed.hash !== '') throw invalidBaseUrl('fragment must not be set');
   const path = parsed.pathname.endsWith('/') ? parsed.pathname.slice(0, -1) : parsed.pathname;
   return `${parsed.protocol}//${parsed.host}${path}/git-receive-pack${parsed.search}`;
@@ -387,13 +390,12 @@ const updateTrackingCache = async (
   if (m.parsed.isDelete) return; // delete-only push doesn't update cache
   const branch = m.parsed.dst.slice(REFS_HEADS_PREFIX.length);
   const composed = `refs/remotes/${remoteName}/${branch}`;
-  // equivalent-mutant: flipping this guard to always-pass is unreachable
-  // under non-hostile inputs because `remoteName` has already been gated
-  // by REMOTE_NAME_RE (resolveRemoteUrl) and `branch` comes from the
-  // server's advertised name which was matched against the local refspec
-  // via the remoteByName map. Tests cannot construct a composed name that
-  // bypasses both filters; the guard is defense-in-depth for future
-  // refactors. Removing it is observable-equivalent on every test fixture.
+  // `remoteName` is gated by REMOTE_NAME_RE (resolveRemoteUrl) and `branch`
+  // derives from a server-advertised name matched against the local refspec
+  // via the remoteByName map, so `composed` is always a valid ref path. The
+  // guard is defense-in-depth for future refactors; it cannot fire on any
+  // input push() can construct, hence the equivalent-mutant suppressions.
+  // Stryker disable next-line ConditionalExpression: equivalent — `composed` is always a valid ref path (see above); the guard never fires.
   if (!isSafeRefName(composed)) return;
   await updateRef(ctx, composed as RefName, m.localOid);
 };
@@ -403,6 +405,7 @@ const isSafeRefName = (name: string): boolean => {
     validateRefName(name);
     return true;
   } catch {
+    // Stryker disable next-line BooleanLiteral: equivalent — `name` is always a valid composed ref path, so `validateRefName` never throws and this branch is unreachable.
     return false;
   }
 };

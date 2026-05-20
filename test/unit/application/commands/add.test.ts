@@ -12,6 +12,30 @@ const seedFreshRepo = async (workingTree: Readonly<Record<string, string>> = {})
   return ctx;
 };
 
+// Seed a repo with a pre-existing `index.lock` whose mtime is reported far
+// in the past, so any `breakStaleLockMs` value larger than 0 treats it as
+// stale and breaks it. The lstat override only rewrites the lock's mtime;
+// every other path keeps its real stat.
+const staleLockCtx = async (workingTree: Readonly<Record<string, string>>) => {
+  const ctx = await seedFreshRepo(workingTree);
+  const lockPath = `${ctx.layout.gitDir}/index.lock`;
+  await ctx.fs.write(lockPath, new Uint8Array());
+  const baseLstat = ctx.fs.lstat;
+  const fs = new Proxy(ctx.fs, {
+    get(target, prop, receiver) {
+      if (prop === 'lstat') {
+        return async (path: string) => {
+          const real = await baseLstat(path);
+          if (path === lockPath) return { ...real, mtimeMs: 0 };
+          return real;
+        };
+      }
+      return Reflect.get(target, prop, receiver);
+    },
+  });
+  return { ...ctx, fs };
+};
+
 const expectError = async (fn: () => Promise<unknown>, code: string): Promise<TsgitError> => {
   let caught: unknown;
   try {
@@ -838,5 +862,491 @@ describe('add', () => {
     // Assert — dist/build.ts is pruned via gitignore even though it
     // matches the pathspec.
     expect(sut.added).toEqual(['a.ts']);
+  });
+
+  it('Given a literal path that .gitignore would exclude, When add, Then it is staged anyway (literal-path mode bypasses ignore)', async () => {
+    // Arrange — `ignored.txt` is a pure literal that names an existing
+    // file, so dispatchPathspec routes through addLiteralOnly which does
+    // NOT consult .gitignore. Kills L86 (`!hasGlob &&` guard + block) and
+    // L148 routing: a mutant that always falls through to addByPathspec
+    // would let the ignore predicate filter `ignored.txt` out.
+    const ctx = await seedFreshRepo({ 'ignored.txt': 'secret' });
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitignore`, 'ignored.txt\n');
+
+    // Act
+    const sut = await add(ctx, ['ignored.txt']);
+
+    // Assert
+    expect(sut.added).toEqual(['ignored.txt']);
+    const idx = await readIndex(ctx);
+    expect(idx.entries.map((e) => e.path)).toEqual(['ignored.txt']);
+  });
+
+  it('Given a missing literal and a gitignored existing literal, When add, Then PATHSPEC_NO_MATCH names the gitignored literal (routes through addByPathspec)', async () => {
+    // Arrange — `keep.txt` exists but is gitignored; `gone.txt` is absent.
+    // Real code: allLiteralsAreFiles sees `gone.txt` undefined -> returns
+    // false -> addByPathspec -> walk applies .gitignore -> nothing matched
+    // -> enforceLiteralMustMatch throws for the FIRST literal `keep.txt`.
+    // Mutant on L128 (`stat === undefined` -> true) would treat the
+    // missing path as a file -> addLiteralOnly -> throws for `gone.txt`.
+    const ctx = await seedFreshRepo({ 'keep.txt': 'k' });
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitignore`, 'keep.txt\n');
+
+    // Act
+    const err = await expectError(() => add(ctx, ['keep.txt', 'gone.txt']), 'PATHSPEC_NO_MATCH');
+
+    // Assert — the unmatched pattern is the gitignored literal, proving
+    // the call routed through addByPathspec, not addLiteralOnly.
+    expect((err.data as { pattern: string }).pattern).toBe('keep.txt');
+  });
+
+  it('Given a literal symlink path, When add, Then it stages via literal-path mode as mode 120000', async () => {
+    // Arrange — a symlink literal: allLiteralsAreFiles must NOT reject it
+    // (`stat.isDirectory && !stat.isSymbolicLink` is false for a symlink).
+    // Kills the L129 `&&`->`||` and `!isSymbolicLink`->`true` mutants: a
+    // mutant rejecting the symlink routes through addByPathspec instead,
+    // but the symlink still stages, so we pin mode + literal-mode result.
+    const ctx = await seedFreshRepo({ 'a.txt': 'a' });
+    await ctx.fs.symlink('a.txt', `${ctx.layout.workDir}/link`);
+
+    // Act
+    const sut = await add(ctx, ['link']);
+
+    // Assert
+    expect(sut.added).toEqual(['link']);
+    const idx = await readIndex(ctx);
+    expect(idx.entries.find((e) => e.path === 'link')?.mode).toBe('120000');
+  });
+
+  it('Given a negation-only pathspec on an aborted ctx, When add, Then throws OPERATION_ABORTED (routes through addByPathspec walk)', async () => {
+    // Arrange — `['!a.txt']` compiles to a negation-only matcher: no
+    // positive literal, no glob, so literalMustMatch is empty and hasGlob
+    // is false. allLiteralsAreFiles([]) MUST return false so dispatch
+    // routes to addByPathspec, whose walk honours ctx.signal. Mutants on
+    // L125 (`literals.length === 0` guard, `=== / !==`, `return false`)
+    // would make it return true -> addLiteralOnly([]) -> empty loop ->
+    // no walk -> no abort -> succeeds.
+    const ctx = await seedFreshRepo({ 'a.txt': 'a' });
+    const controller = new AbortController();
+    controller.abort();
+    const abortedCtx = { ...ctx, signal: controller.signal };
+
+    // Act + Assert
+    await expectError(() => add(abortedCtx, ['!a.txt']), 'OPERATION_ABORTED');
+  });
+
+  it('Given a literal exec-bit-only change, When add, Then result.modified contains it (literal-path mode mode-diff branch)', async () => {
+    // Arrange — stage `a.sh` literally, then flip ONLY the exec bit so the
+    // blob id is unchanged and only the mode differs. Kills the L112
+    // `previous.mode !== result.mode` operand of the OR: a mutant dropping
+    // it would classify the unchanged-id file as not-modified.
+    const ctx = await seedFreshRepo({ 'a.sh': '#!/bin/sh\n' });
+    await add(ctx, ['a.sh']);
+    const baseLstat = ctx.fs.lstat;
+    const execFs = new Proxy(ctx.fs, {
+      get(target, prop, receiver) {
+        if (prop === 'lstat') {
+          return async (path: string) => {
+            const real = await baseLstat(path);
+            if (path.endsWith('/a.sh')) return { ...real, mode: real.mode | 0o111 };
+            return real;
+          };
+        }
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+    const execCtx = { ...ctx, fs: execFs };
+
+    // Act
+    const sut = await add(execCtx, ['a.sh']);
+
+    // Assert
+    expect(sut.modified).toEqual(['a.sh']);
+    expect(sut.added).toEqual([]);
+  });
+
+  it('Given a regular non-executable file, When add({ all: true }), Then mode 100644 is recorded (kills exec-bit guard -> true)', async () => {
+    // Arrange — memory FS reports mode 0o100644 (no exec bit). Pins the
+    // `(fresh.mode & 0o111) !== 0` guard: a mutant forcing it true would
+    // record 100755.
+    const ctx = await seedFreshRepo({ 'plain.txt': 'p' });
+
+    // Act
+    await add(ctx, [], { all: true });
+
+    // Assert
+    const idx = await readIndex(ctx);
+    expect(idx.entries.find((e) => e.path === 'plain.txt')?.mode).toBe('100644');
+  });
+
+  it('Given a glob that re-adds a modified tracked file, When add, Then result.modified contains it (addByPathspec modified branch)', async () => {
+    // Arrange — stage via glob, then modify, then re-add via glob. Covers
+    // L168 `result.kind === 'modified'` inside addByPathspec.
+    const ctx = await seedFreshRepo({ 'a.ts': 'a' });
+    await add(ctx, ['*.ts']);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.ts`, 'a-changed');
+
+    // Act
+    const sut = await add(ctx, ['*.ts']);
+
+    // Assert
+    expect(sut.modified).toEqual(['a.ts']);
+    expect(sut.added).toEqual([]);
+  });
+
+  it('Given a glob yielding unsorted new + modified files, When add, Then added and modified are each independently sorted', async () => {
+    // Arrange — seed in reverse-alpha order so the walk yields unsorted.
+    // First stage z/y via glob, then modify both and add two new files
+    // (also reverse-alpha). Kills L171/L172 MethodExpression mutants that
+    // drop `added.sort()` / `modified.sort()` in addByPathspec.
+    const ctx = await seedFreshRepo({ 'z.ts': 'z', 'y.ts': 'y' });
+    await add(ctx, ['*.ts']);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/z.ts`, 'z2');
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/y.ts`, 'y2');
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/d.ts`, 'd');
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/c.ts`, 'c');
+
+    // Act
+    const sut = await add(ctx, ['*.ts']);
+
+    // Assert
+    expect(sut.added).toEqual(['c.ts', 'd.ts']);
+    expect(sut.modified).toEqual(['y.ts', 'z.ts']);
+  });
+
+  it('Given a glob matching files in a subdirectory, When add({ "**/*.ts" }), Then they are staged (directory is not pruned by the pathspec)', async () => {
+    // Arrange — `src/` is a directory; combinedIgnore must return false for
+    // directories (L148 `if (isDirectory) return false`) so the walker
+    // descends into it. A mutant turning that into a fallthrough would
+    // run `!matchesPathspec(matcher, 'src')` -> prune `src/`.
+    const ctx = await seedFreshRepo({ 'src/a.ts': 'a', 'src/b.ts': 'b' });
+
+    // Act
+    const sut = await add(ctx, ['**/*.ts']);
+
+    // Assert
+    expect([...sut.added].sort()).toEqual(['src/a.ts', 'src/b.ts']);
+  });
+
+  it('Given multiple unsorted modified and removed files, When add({ all: true }), Then modified and removed are each independently sorted', async () => {
+    // Arrange — pre-stage in reverse-alpha order; modify two, delete two.
+    // Kills L224/L225 MethodExpression mutants that drop `modified.sort()`
+    // / `removed.sort()` in addAll.
+    const ctx = await seedFreshRepo({
+      'z.txt': 'z',
+      'y.txt': 'y',
+      'q.txt': 'q',
+      'p.txt': 'p',
+    });
+    await add(ctx, [], { all: true });
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/z.txt`, 'z2');
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/y.txt`, 'y2');
+    await ctx.fs.rm(`${ctx.layout.workDir}/q.txt`);
+    await ctx.fs.rm(`${ctx.layout.workDir}/p.txt`);
+
+    // Act
+    const sut = await add(ctx, [], { all: true });
+
+    // Assert
+    expect(sut.modified).toEqual(['y.txt', 'z.txt']);
+    expect(sut.removed).toEqual(['p.txt', 'q.txt']);
+  });
+
+  it('Given an addAll exec-bit-only change, When add({ all: true }), Then result.modified contains it (processWalkEntry mode-diff branch)', async () => {
+    // Arrange — stage `a.sh` via addAll, then flip ONLY the exec bit so
+    // the blob id is identical and only the mode changes. Kills the L279
+    // `previous.mode !== entry.mode` operand of the OR in processWalkEntry.
+    const ctx = await seedFreshRepo({ 'a.sh': '#!/bin/sh\n' });
+    await add(ctx, [], { all: true });
+    const baseLstat = ctx.fs.lstat;
+    let firstSeen = false;
+    const execFs = new Proxy(ctx.fs, {
+      get(target, prop, receiver) {
+        if (prop === 'lstat') {
+          return async (path: string) => {
+            const real = await baseLstat(path);
+            if (!path.endsWith('/a.sh')) return real;
+            // First lstat is the walk-time stat (keep real so the pre-stage
+            // mode is plain); from the re-lstat onward report the exec bit.
+            if (!firstSeen) {
+              firstSeen = true;
+              return real;
+            }
+            return { ...real, mode: real.mode | 0o111 };
+          };
+        }
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+    const execCtx = { ...ctx, fs: execFs };
+
+    // Act
+    const sut = await add(execCtx, [], { all: true });
+
+    // Assert
+    expect(sut.modified).toEqual(['a.sh']);
+    expect(sut.added).toEqual([]);
+  });
+
+  it('Given a tracked file whose ancestor directory is ignored, When add({ all: true }), Then the entry is preserved via the ancestor walk', async () => {
+    // Arrange — stage `vendor/foo.ts`, then re-run addAll with a custom
+    // ignore predicate that ignores ONLY the `vendor` directory entry
+    // (isDirectory === true) and never the leaf. isPathOrAncestorIgnored
+    // must skip the leaf check (L249 -> false) and find the ancestor in
+    // the loop (L251 increment, L253 hit). A mutant on the loop or the
+    // ancestor check would mark `vendor/foo.ts` as removed.
+    const ctx = await seedFreshRepo({ 'vendor/foo.ts': 'export {};' });
+    await add(ctx, ['vendor/foo.ts']);
+    const ancestorIgnore = async (path: string, isDirectory: boolean) =>
+      isDirectory && path === 'vendor';
+
+    // Act
+    const sut = await addAllInternal(ctx, {}, ancestorIgnore);
+
+    // Assert — the leaf is filtered from the walk but its ancestor is
+    // ignored, so the tracked entry is preserved, NOT removed.
+    expect(sut.removed).toEqual([]);
+    const idx = await readIndex(ctx);
+    expect(idx.entries.map((e) => e.path)).toEqual(['vendor/foo.ts']);
+  });
+
+  it('Given a tracked file whose leaf is reported ignored for files only, When add({ all: true }), Then the entry is preserved (L249 passes isDirectory=false)', async () => {
+    // Arrange — stage `keep.bin`, then re-run addAll with a predicate that
+    // ignores the leaf path ONLY when queried with isDirectory === false.
+    // Kills L249 BooleanLiteral (`ignore(path, false)` -> `ignore(path,
+    // true)`): the mutant would query with `true`, miss the ignore, and
+    // mark the tracked file as removed.
+    const ctx = await seedFreshRepo({ 'keep.bin': 'k' });
+    await add(ctx, ['keep.bin']);
+    const leafFileIgnore = async (path: string, isDirectory: boolean) =>
+      !isDirectory && path === 'keep.bin';
+
+    // Act
+    const sut = await addAllInternal(ctx, {}, leafFileIgnore);
+
+    // Assert
+    expect(sut.removed).toEqual([]);
+    const idx = await readIndex(ctx);
+    expect(idx.entries.map((e) => e.path)).toEqual(['keep.bin']);
+  });
+
+  it('Given a tracked nested file and a predicate ignoring only the deepest ancestor directory, When add({ all: true }), Then the entry is preserved (ancestor loop visits proper sub-prefixes)', async () => {
+    // Arrange — `a/b/c.txt`: ancestors are `a` and `a/b`. The predicate
+    // ignores ONLY `a/b` (a directory, NOT the leaf `a/b/c.txt`). The loop
+    // must visit `a/b` (i in [1, segments.length)). Kills the L251
+    // EqualityOperator `<` -> `<=` mutant (which would also pass the full
+    // path as a directory) only in combination, but mainly proves the
+    // loop's proper-prefix range is exercised.
+    const ctx = await seedFreshRepo({ 'a/b/c.txt': 'c' });
+    await add(ctx, ['a/b/c.txt']);
+    const deepIgnore = async (path: string, isDirectory: boolean) => isDirectory && path === 'a/b';
+
+    // Act
+    const sut = await addAllInternal(ctx, {}, deepIgnore);
+
+    // Assert
+    expect(sut.removed).toEqual([]);
+    const idx = await readIndex(ctx);
+    expect(idx.entries.map((e) => e.path)).toEqual(['a/b/c.txt']);
+  });
+
+  it('Given a tracked file deleted from disk and a predicate that ignores only the leaf-as-directory, When add({ all: true }), Then it is still marked removed (ancestor loop excludes the leaf itself)', async () => {
+    // Arrange — stage `gone.txt`, delete it, then re-run addAll with a
+    // predicate that returns true ONLY for `ignore('gone.txt', true)` —
+    // i.e. the leaf path queried as a directory. The L251 loop runs over
+    // proper-prefix ancestors `[1, segments.length)`; for a single-segment
+    // path there are none, so isPathOrAncestorIgnored returns false and
+    // the file is removed. A `<` -> `<=` mutant would additionally query
+    // `ignore('gone.txt', true)` -> true -> wrongly preserve the entry.
+    const ctx = await seedFreshRepo({ 'gone.txt': 'g' });
+    await add(ctx, ['gone.txt']);
+    await ctx.fs.rm(`${ctx.layout.workDir}/gone.txt`);
+    const leafAsDirIgnore = async (path: string, isDirectory: boolean) =>
+      isDirectory && path === 'gone.txt';
+
+    // Act
+    const sut = await addAllInternal(ctx, {}, leafAsDirIgnore);
+
+    // Assert — the leaf is NOT consulted as a directory, so it is removed.
+    expect(sut.removed).toEqual(['gone.txt']);
+    const idx = await readIndex(ctx);
+    expect(idx.entries.map((e) => e.path)).toEqual([]);
+  });
+
+  it('Given a walk-time stat over the cap but a small re-lstat, When add({ all: true }), Then throws WORKING_TREE_FILE_TOO_LARGE (pre-filter guard fires)', async () => {
+    // Arrange — the walk-time lstat reports oversize; the re-lstat under
+    // the lock reports the real (small) size. Only the L273 pre-filter in
+    // processWalkEntry can catch this — the authoritative L328 check sees
+    // a small file. Kills the L273 ConditionalExpression / BlockStatement.
+    const ctx = await seedFreshRepo({ 'a.txt': 'a' });
+    const baseLstat = ctx.fs.lstat;
+    let firstSeen = false;
+    const growThenShrinkFs = new Proxy(ctx.fs, {
+      get(target, prop, receiver) {
+        if (prop === 'lstat') {
+          return async (path: string) => {
+            const real = await baseLstat(path);
+            if (!path.endsWith('/a.txt')) return real;
+            // First lstat (walk-time) is oversize; the re-lstat is real.
+            if (!firstSeen) {
+              firstSeen = true;
+              return { ...real, size: MAX_WORKING_TREE_BLOB_BYTES + 1 };
+            }
+            return real;
+          };
+        }
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+    const racingCtx = { ...ctx, fs: growThenShrinkFs };
+
+    // Act
+    const err = await expectError(
+      () => add(racingCtx, [], { all: true }),
+      'WORKING_TREE_FILE_TOO_LARGE',
+    );
+
+    // Assert — payload pins the walk-time (pre-filter) size.
+    const data = err.data as { path: string; size: number; limit: number };
+    expect(data.path).toBe('a.txt');
+    expect(data.size).toBe(MAX_WORKING_TREE_BLOB_BYTES + 1);
+    expect(data.limit).toBe(MAX_WORKING_TREE_BLOB_BYTES);
+  });
+
+  it('Given a readIndex failure with a non-missing error code, When add, Then the error propagates (not absorbed as "no entries")', async () => {
+    // Arrange — seed a repo, then wrap fs.read so reading the index throws
+    // a TsgitError whose code is NOT in INDEX_MISSING_CODES. Kills the
+    // L294 ConditionalExpression `&&` guard: a mutant forcing it true
+    // would swallow this and return an empty map instead of rethrowing.
+    const ctx = await seedFreshRepo({ 'a.txt': 'a' });
+    await add(ctx, ['a.txt']);
+    const baseRead = ctx.fs.read;
+    const failingFs = new Proxy(ctx.fs, {
+      get(target, prop, receiver) {
+        if (prop === 'read') {
+          return async (path: string) => {
+            if (path.endsWith('/index')) {
+              throw new TsgitError({ code: 'PERMISSION_DENIED', path });
+            }
+            return baseRead(path);
+          };
+        }
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+    const failingCtx = { ...ctx, fs: failingFs };
+
+    // Act + Assert — PERMISSION_DENIED is not a missing-index code, so it
+    // surfaces instead of being absorbed.
+    await expectError(() => add(failingCtx, ['a.txt']), 'PERMISSION_DENIED');
+  });
+
+  it('Given a stale index.lock and breakStaleLockMs in literal-path mode, When add, Then the stale lock is broken and the file is staged', async () => {
+    // Arrange — pre-create index.lock and report a far-past mtime so the
+    // lock is stale. The `{ breakStaleLockMs }` option object on L99 must
+    // reach acquireIndexLock; a `{}` mutant would drop it and throw
+    // RESOURCE_LOCKED.
+    const ctx = await staleLockCtx({ 'a.txt': 'a' });
+
+    // Act
+    const sut = await add(ctx, ['a.txt'], { breakStaleLockMs: 1 });
+
+    // Assert
+    expect(sut.added).toEqual(['a.txt']);
+  });
+
+  it('Given a stale index.lock and breakStaleLockMs in glob (pathspec) mode, When add, Then the stale lock is broken and matches are staged', async () => {
+    // Arrange — glob routes through addByPathspec; the `{ breakStaleLockMs }`
+    // object on L153 must reach acquireIndexLock.
+    const ctx = await staleLockCtx({ 'a.ts': 'a' });
+
+    // Act
+    const sut = await add(ctx, ['*.ts'], { breakStaleLockMs: 1 });
+
+    // Assert
+    expect(sut.added).toEqual(['a.ts']);
+  });
+
+  it('Given a stale index.lock and breakStaleLockMs in bulk mode, When add({ all: true }), Then the stale lock is broken and files are staged', async () => {
+    // Arrange — bulk mode routes through addAll; the `{ breakStaleLockMs }`
+    // object on L192 must reach acquireIndexLock.
+    const ctx = await staleLockCtx({ 'a.txt': 'a' });
+
+    // Act
+    const sut = await add(ctx, [], { all: true, breakStaleLockMs: 1 });
+
+    // Assert
+    expect(sut.added).toEqual(['a.txt']);
+  });
+
+  it('Given a literal stage that fails mid-flight, When a second add runs, Then it succeeds (the finally block released the lock)', async () => {
+    // Arrange — `a.txt` passes allLiteralsAreFiles (its first lstat) but
+    // its second lstat (inside stageOne) throws, so stageOne returns
+    // 'missing' and addLiteralOnly throws PATHSPEC_NO_MATCH. The L116
+    // `finally { lock.release() }` must drop index.lock; without it the
+    // next add would throw RESOURCE_LOCKED.
+    const ctx = await seedFreshRepo({ 'a.txt': 'a' });
+    const baseLstat = ctx.fs.lstat;
+    let aSeen = false;
+    const flakyFs = new Proxy(ctx.fs, {
+      get(target, prop, receiver) {
+        if (prop === 'lstat') {
+          return async (path: string) => {
+            const real = await baseLstat(path);
+            if (!path.endsWith('/a.txt')) return real;
+            if (!aSeen) {
+              aSeen = true;
+              return real;
+            }
+            throw new TsgitError({ code: 'FILE_NOT_FOUND', path });
+          };
+        }
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+    const flakyCtx = { ...ctx, fs: flakyFs };
+    await expectError(() => add(flakyCtx, ['a.txt']), 'PATHSPEC_NO_MATCH');
+
+    // Act — second add on the unmodified ctx must not hit a leaked lock.
+    const sut = await add(ctx, ['a.txt']);
+
+    // Assert
+    expect(sut.added).toEqual(['a.txt']);
+  });
+
+  it('Given a glob-mode stage that throws on an oversize file, When a second add runs, Then it succeeds (addByPathspec finally released the lock)', async () => {
+    // Arrange — glob routes through addByPathspec; an oversize re-lstat
+    // makes stageFromStat throw WORKING_TREE_FILE_TOO_LARGE while the lock
+    // is held. The L175 `finally { lock.release() }` must drop index.lock.
+    const ctx = await seedFreshRepo({ 'a.ts': 'a' });
+    const racingCtx = {
+      ...ctx,
+      fs: racingLstatFs(ctx, '/a.ts', { size: MAX_WORKING_TREE_BLOB_BYTES + 1 }),
+    };
+    await expectError(() => add(racingCtx, ['*.ts']), 'WORKING_TREE_FILE_TOO_LARGE');
+
+    // Act — second add on the unmodified ctx must not hit a leaked lock.
+    const sut = await add(ctx, ['*.ts']);
+
+    // Assert
+    expect(sut.added).toEqual(['a.ts']);
+  });
+
+  it('Given a bulk-mode stage that throws on an oversize file, When a second add runs, Then it succeeds (addAll finally released the lock)', async () => {
+    // Arrange — bulk mode routes through addAll; an oversize re-lstat makes
+    // stageFromStat throw while the lock is held. The L228
+    // `finally { lock.release() }` must drop index.lock.
+    const ctx = await seedFreshRepo({ 'a.txt': 'a' });
+    const racingCtx = {
+      ...ctx,
+      fs: racingLstatFs(ctx, '/a.txt', { size: MAX_WORKING_TREE_BLOB_BYTES + 1 }),
+    };
+    await expectError(() => add(racingCtx, [], { all: true }), 'WORKING_TREE_FILE_TOO_LARGE');
+
+    // Act — second add on the unmodified ctx must not hit a leaked lock.
+    const sut = await add(ctx, ['a.txt']);
+
+    // Assert
+    expect(sut.added).toEqual(['a.txt']);
   });
 });

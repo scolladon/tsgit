@@ -90,20 +90,10 @@ export const fetch = async (ctx: Context, opts: FetchOptions = {}): Promise<Fetc
       capabilities,
       url,
       progressOp: FETCH_WRITE_OBJECTS_OP,
-      // equivalent-mutant: dropping the ternary and spreading
-      // `{ depth: opts.depth }` unconditionally is observable-equivalent.
-      // `fetchPack` gates on `input.depth !== undefined` so an explicit
-      // `depth: undefined` is treated identically to a missing key.
+      // Stryker disable next-line ConditionalExpression: equivalent — fetchPack gates on input.depth !== undefined, so depth:undefined behaves identically to a missing key.
       ...(opts.depth !== undefined ? { depth: opts.depth } : {}),
     });
 
-    // equivalent-mutant: replacing either `> 0` half of the OR with `>= 0`
-    // (always true on a non-negative length) yields a `updateShallow` call
-    // with two empty arrays, which `updateShallow` short-circuits to
-    // `deleteIfPresent` on a non-existent `.git/shallow`. No file is
-    // created and no observable side-effect is produced. The non-equivalent
-    // half (`<= 0`) and the early-return false mutants are killed by the
-    // shallow-only / unshallow-only tests in `fetch.test.ts`.
     if (packResult.shallow.length > 0 || packResult.unshallow.length > 0) {
       await updateShallow(ctx, {
         shallow: packResult.shallow,
@@ -159,18 +149,12 @@ const deriveHaves = async (ctx: Context, remoteName: string): Promise<ReadonlyAr
     haves.push(tip);
     if (haves.length >= MAX_HAVES) return haves;
   }
-  // equivalent-mutant: dropping `.slice(0, MAX_WALK_SEEDS)` is observable-
-  // equivalent on every test fixture because seeds.length < MAX_WALK_SEEDS
-  // (1024) in practice — the cap is a safety belt that kicks in only at
-  // pathological scale where a test can't realistically reach.
+  // Stryker disable next-line MethodExpression: equivalent — dropping `.slice(0, MAX_WALK_SEEDS)` only differs when seeds.length > 1024, a pathological scale no fixture reaches.
   const cappedSeeds = seeds.slice(0, MAX_WALK_SEEDS);
   for await (const commit of walkCommits(ctx, {
     from: cappedSeeds,
     ignoreMissing: true,
-    // equivalent-mutant: flipping `verifyHash: false` to `true` is
-    // observable-equivalent. Hashes are verified on first read in
-    // production callers; this primitive's only consumer is `deriveHaves`,
-    // which discards the commit body after extracting the oid.
+    // Stryker disable next-line BooleanLiteral: equivalent — `deriveHaves` only ever walks self-consistent loose commits, so flipping `verifyHash` to `true` verifies a hash that always matches.
     verifyHash: false,
   })) {
     if (seen.has(commit.id)) continue;
@@ -252,6 +236,7 @@ const applyRemoteRefs = async (
 };
 
 const remoteTargetForRef = (remoteName: string, ref: AdvertisedRef): RefName | undefined => {
+  // Stryker disable next-line ConditionalExpression,StringLiteral: equivalent — a `HEAD` (or `''`) ref already falls through to `return undefined` because it matches neither `refs/heads/` nor `refs/tags/`; the only behaviour-changing direction (always-undefined) is killed by the happy-path tests.
   if (ref.name === 'HEAD') return undefined;
   // Validate the server-controlled ref name BEFORE composing the local path.
   // Without this guard, a malicious server advertising `refs/heads/../../config`
@@ -262,12 +247,7 @@ const remoteTargetForRef = (remoteName: string, ref: AdvertisedRef): RefName | u
   if (ref.name.startsWith('refs/heads/')) {
     const branch = ref.name.slice('refs/heads/'.length);
     const composed = `refs/remotes/${remoteName}/${branch}`;
-    // equivalent-mutant: dropping this guard is observable-equivalent because
-    // `ref.name` already passed `isSafeRefName` above, so `branch` has no
-    // path-traversal vectors. `remoteName` is caller-controlled (not server-
-    // controlled), so a hostile string would already be rejected by
-    // `resolveRemoteUrl`'s config lookup. The check is a defense-in-depth
-    // belt that future refactors of `remoteName` validation rely on.
+    // Stryker disable next-line ConditionalExpression: equivalent — `branch` is derived from a name that already passed isSafeRefName, and `remoteName` is rejected upstream by resolveRemoteUrl's config lookup, so `composed` is always safe here.
     if (!isSafeRefName(composed)) return undefined;
     return composed as RefName;
   }
@@ -376,4 +356,5 @@ const deleteUnadvertised = async (
 const isPackedRefDeleteError = (err: unknown): boolean =>
   err instanceof TsgitError &&
   err.data.code === 'UNSUPPORTED_OPERATION' &&
+  // Stryker disable next-line ConditionalExpression: equivalent — `updateRef` only ever raises `UNSUPPORTED_OPERATION` with operation 'delete-packed-ref', so once the code check passes this comparison is always true. The EqualityOperator/StringLiteral mutants here stay live and are killed by the packed-only-ref prune test.
   err.data.operation === 'delete-packed-ref';

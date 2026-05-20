@@ -4,6 +4,7 @@ import {
   __resetConfigCacheForTests,
   readConfig,
 } from '../../../../../src/application/commands/internal/config-read.js';
+import { TsgitError } from '../../../../../src/domain/error.js';
 import type { Context } from '../../../../../src/ports/context.js';
 
 const seed = async (ctx: Context, content: string): Promise<void> => {
@@ -334,5 +335,372 @@ describe('internal/config-read', () => {
     await seed(ctx, '[remote "origin"]\n  url = "https://example.com/r#frag.git"\n');
     const sut = await readConfig(ctx);
     expect(sut.remote?.get('origin')?.url).toContain('#frag');
+  });
+
+  it('Given a cached config and an explicit cache reset on the same context, When readConfig is called again, Then the file is re-read', async () => {
+    // Arrange
+    const ctx = createMemoryContext();
+    await seed(ctx, '[core]\n  bare = true\n');
+    const spy = vi.spyOn(ctx.fs, 'readUtf8');
+
+    // Act
+    await readConfig(ctx);
+    __resetConfigCacheForTests();
+    await readConfig(ctx);
+
+    // Assert — reset replaces the WeakMap, so the second call misses the cache.
+    expect(spy).toHaveBeenCalledTimes(2);
+  });
+
+  it('Given fs.readUtf8 rejects with a non-TsgitError, When readConfig, Then the error is rethrown', async () => {
+    // Arrange
+    const ctx = createMemoryContext();
+    const boom = new Error('disk on fire');
+    vi.spyOn(ctx.fs, 'readUtf8').mockRejectedValue(boom);
+
+    // Act
+    let caught: unknown;
+    try {
+      await readConfig(ctx);
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert
+    expect(caught).toBe(boom);
+  });
+
+  it('Given fs.readUtf8 rejects with a TsgitError that is not FILE_NOT_FOUND, When readConfig, Then the error is rethrown', async () => {
+    // Arrange
+    const ctx = createMemoryContext();
+    const denied = new TsgitError({ code: 'PERMISSION_DENIED', path: '/x/config' });
+    vi.spyOn(ctx.fs, 'readUtf8').mockRejectedValue(denied);
+
+    // Act
+    let caught: unknown;
+    try {
+      await readConfig(ctx);
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert — only FILE_NOT_FOUND is swallowed; other codes propagate.
+    expect(caught).toBeInstanceOf(TsgitError);
+    expect((caught as TsgitError).data).toEqual({ code: 'PERMISSION_DENIED', path: '/x/config' });
+  });
+
+  it('Given a section header line preceded by leading whitespace, When readConfig, Then the header is recognized after trimming', async () => {
+    // Arrange — stripInlineComment(line) must be trimmed before header parsing.
+    const ctx = createMemoryContext();
+    await seed(ctx, '  [core]\n  bare = true\n');
+
+    // Act
+    const sut = await readConfig(ctx);
+
+    // Assert
+    expect(sut.core?.bare).toBe(true);
+  });
+
+  it('Given a continuation line with no leading whitespace but internal spaces, When readConfig, Then only leading whitespace would be stripped (internal spaces kept)', async () => {
+    // Arrange — continuation join uses /^\s+/, so internal spaces survive.
+    const ctx = createMemoryContext();
+    await seed(ctx, '[remote "origin"]\n  url = ab\\\ncd ef.git\n');
+
+    // Act
+    const sut = await readConfig(ctx);
+
+    // Assert
+    expect(sut.remote?.get('origin')?.url).toBe('abcd ef.git');
+  });
+
+  it('Given a config whose final line ends with a backslash continuation, When readConfig, Then the leftover pending content is still flushed', async () => {
+    // Arrange — no trailing newline; the last physical line ends with `\`.
+    const ctx = createMemoryContext();
+    await seed(ctx, '[core]\n  bare = true\\');
+
+    // Act
+    const sut = await readConfig(ctx);
+
+    // Assert — pending must be pushed at EOF or `bare` is lost.
+    expect(sut.core?.bare).toBe(true);
+  });
+
+  it('Given a `;` inline comment after a value, When readConfig, Then the comment is stripped from the value', async () => {
+    // Arrange — indexOfUnquoted must search for `;` as well as `#`.
+    const ctx = createMemoryContext();
+    await seed(ctx, '[core]\n  bare = true ; trailing semicolon comment\n');
+
+    // Act
+    const sut = await readConfig(ctx);
+
+    // Assert
+    expect(sut.core?.bare).toBe(true);
+  });
+
+  it('Given a value with both `#` and `;` inline comments, When readConfig, Then the value is cut at the earliest comment marker', async () => {
+    // Arrange — `#` appears before `;`; Math.min picks the `#` position.
+    const ctx = createMemoryContext();
+    await seed(ctx, '[core]\n  bare = true # hash ; semi\n');
+
+    // Act
+    const sut = await readConfig(ctx);
+
+    // Assert — cutting at `;` instead would leave `true # hash` (unparseable → false).
+    expect(sut.core?.bare).toBe(true);
+  });
+
+  it('Given a header missing `[` but ending with `]`, When readConfig, Then it is rejected', async () => {
+    // Arrange — `.core]` ends with `]`; only the missing `[` should reject it.
+    const ctx = createMemoryContext();
+    await seed(ctx, '.core]\n  bare = true\n');
+
+    // Act
+    const sut = await readConfig(ctx);
+
+    // Assert
+    expect(sut.core).toBeUndefined();
+  });
+
+  it('Given a header starting with `[` but missing `]`, When readConfig, Then it is rejected', async () => {
+    // Arrange — `[core.` starts with `[`; only the missing `]` should reject it.
+    const ctx = createMemoryContext();
+    await seed(ctx, '[core.\n  bare = true\n');
+
+    // Act
+    const sut = await readConfig(ctx);
+
+    // Assert
+    expect(sut.core).toBeUndefined();
+  });
+
+  it('Given a header with neither bracket where one is required, When readConfig, Then it is rejected (both brackets needed)', async () => {
+    // Arrange — `[core)` has `[` but `)` not `]`; the `||` guard must reject it.
+    const ctx = createMemoryContext();
+    await seed(ctx, '[core)\n  bare = true\n');
+
+    // Act
+    const sut = await readConfig(ctx);
+
+    // Assert
+    expect(sut.core).toBeUndefined();
+  });
+
+  it('Given a `[remote "..."]` header with an unterminated subsection quote, When readConfig, Then the section is rejected', async () => {
+    // Arrange — only one `"`: lastQuote === quoteAt, so the header is malformed.
+    const ctx = createMemoryContext();
+    await seed(ctx, '[remote "origin]\n  url = https://example.com/r.git\n');
+
+    // Act
+    const sut = await readConfig(ctx);
+
+    // Assert
+    expect(sut.remote).toBeUndefined();
+  });
+
+  it('Given a `[core]` body line that contains no `=`, When readConfig, Then the line is ignored entirely', async () => {
+    // Arrange — `bareX` has no `=`; parseKeyValue must reject it outright.
+    const ctx = createMemoryContext();
+    await seed(ctx, '[core]\n  bareX\n');
+
+    // Act
+    const sut = await readConfig(ctx);
+
+    // Assert — accepting it would synthesize a `bare` key and define `core`.
+    expect(sut.core).toBeUndefined();
+  });
+
+  it('Given a `[core "sub"]` section before a plain `[core]`, When readConfig, Then the subsectioned core is ignored', async () => {
+    // Arrange — core with a subsection must NOT be treated as `[core]`.
+    const ctx = createMemoryContext();
+    await seed(ctx, '[core]\n  bare = false\n[core "weird"]\n  bare = true\n');
+
+    // Act
+    const sut = await readConfig(ctx);
+
+    // Assert — `[core "weird"]` is ignored, so `bare` stays false.
+    expect(sut.core?.bare).toBe(false);
+  });
+
+  it('Given a non-user section without a subsection carrying name/email keys, When readConfig, Then it is not parsed as `[user]`', async () => {
+    // Arrange — `[foo]` must not satisfy the `[user]` branch.
+    const ctx = createMemoryContext();
+    await seed(ctx, '[foo]\n  name = X\n  email = e@x.com\n');
+
+    // Act
+    const sut = await readConfig(ctx);
+
+    // Assert
+    expect(sut.user).toBeUndefined();
+  });
+
+  it('Given a `[user "sub"]` section with name and email, When readConfig, Then the subsectioned user is ignored', async () => {
+    // Arrange — user with a subsection must NOT be treated as `[user]`.
+    const ctx = createMemoryContext();
+    await seed(ctx, '[user "sub"]\n  name = X\n  email = e@x.com\n');
+
+    // Act
+    const sut = await readConfig(ctx);
+
+    // Assert
+    expect(sut.user).toBeUndefined();
+  });
+
+  it('Given a non-branch subsectionless section with branch-like keys, When readConfig, Then it is not parsed as `[branch]`', async () => {
+    // Arrange — `[foo]` must not satisfy the `[branch]` branch.
+    const ctx = createMemoryContext();
+    await seed(ctx, '[foo]\n  remote = origin\n');
+
+    // Act
+    const sut = await readConfig(ctx);
+
+    // Assert
+    expect(sut.branch).toBeUndefined();
+  });
+
+  it('Given a `[user]` section with name and an unrecognized key, When readConfig, Then the unrecognized key is not treated as email', async () => {
+    // Arrange — only the literal key `email` may populate user.email.
+    const ctx = createMemoryContext();
+    await seed(ctx, '[user]\n  name = N\n  bogus = B\n');
+
+    // Act
+    const sut = await readConfig(ctx);
+
+    // Assert — user needs both name AND email; `bogus` must not stand in for email.
+    expect(sut.user).toBeUndefined();
+  });
+
+  it('Given a `[remote]` section with url and an unrecognized key, When readConfig, Then the unrecognized key is not treated as fetch', async () => {
+    // Arrange — only the literal key `fetch` may append to remote.fetch.
+    const ctx = createMemoryContext();
+    await seed(ctx, '[remote "o"]\n  url = u\n  bogus = B\n');
+
+    // Act
+    const sut = await readConfig(ctx);
+
+    // Assert
+    expect(sut.remote?.get('o')?.fetch).toBeUndefined();
+  });
+
+  it('Given a `[remote]` section with a url but no fetch lines, When readConfig, Then fetch stays absent (not an empty array)', async () => {
+    // Arrange — finalize must not synthesize an empty fetch array.
+    const ctx = createMemoryContext();
+    await seed(ctx, '[remote "o"]\n  url = u\n');
+
+    // Act
+    const sut = await readConfig(ctx);
+
+    // Assert
+    expect(sut.remote?.get('o')?.fetch).toBeUndefined();
+  });
+
+  it('Given two `[branch "main"]` sections each setting a different single key, When readConfig, Then both keys accumulate', async () => {
+    // Arrange — the second section must merge onto the first, not replace it.
+    const ctx = createMemoryContext();
+    await seed(ctx, '[branch "main"]\n  remote = a\n[branch "main"]\n  merge = m\n');
+
+    // Act
+    const sut = await readConfig(ctx);
+
+    // Assert — `remote` from the first section must survive the second merge.
+    expect(sut.branch?.get('main')?.remote).toBe('a');
+    expect(sut.branch?.get('main')?.merge).toBe('m');
+  });
+
+  it('Given a `[branch]` section with remote and an unrecognized key, When readConfig, Then the unrecognized key is not treated as merge', async () => {
+    // Arrange — only the literal key `merge` may populate branch.merge.
+    const ctx = createMemoryContext();
+    await seed(ctx, '[branch "main"]\n  remote = origin\n  bogus = B\n');
+
+    // Act
+    const sut = await readConfig(ctx);
+
+    // Assert
+    expect(sut.branch?.get('main')?.merge).toBeUndefined();
+  });
+
+  it('Given a config with no `[core]` section, When readConfig, Then `core` is absent from the result', async () => {
+    // Arrange
+    const ctx = createMemoryContext();
+    await seed(ctx, '[user]\n  name = N\n  email = e@x.com\n');
+
+    // Act
+    const sut = await readConfig(ctx);
+
+    // Assert — `core` key must not be present at all.
+    expect('core' in sut).toBe(false);
+  });
+
+  it('Given a `[core]` section with only excludesFile, When readConfig, Then `bare` is absent from core', async () => {
+    // Arrange
+    const ctx = createMemoryContext();
+    await seed(ctx, '[core]\n  excludesfile = /etc/gitignore\n');
+
+    // Act
+    const sut = await readConfig(ctx);
+
+    // Assert — no `bare` key when bare was never configured.
+    expect(sut.core?.excludesFile).toBe('/etc/gitignore');
+    expect('bare' in (sut.core ?? {})).toBe(false);
+  });
+
+  it('Given a `[core]` section with only bare, When readConfig, Then `excludesFile` is absent from core', async () => {
+    // Arrange
+    const ctx = createMemoryContext();
+    await seed(ctx, '[core]\n  bare = true\n');
+
+    // Act
+    const sut = await readConfig(ctx);
+
+    // Assert — no `excludesFile` key when it was never configured.
+    expect(sut.core?.bare).toBe(true);
+    expect('excludesFile' in (sut.core ?? {})).toBe(false);
+  });
+
+  it('Given a config with no `[remote]` section, When readConfig, Then `remote` is absent from the result', async () => {
+    // Arrange
+    const ctx = createMemoryContext();
+    await seed(ctx, '[core]\n  bare = true\n');
+
+    // Act
+    const sut = await readConfig(ctx);
+
+    // Assert
+    expect('remote' in sut).toBe(false);
+  });
+
+  it('Given a config with no `[branch]` section, When readConfig, Then `branch` is absent from the result', async () => {
+    // Arrange
+    const ctx = createMemoryContext();
+    await seed(ctx, '[core]\n  bare = true\n');
+
+    // Act
+    const sut = await readConfig(ctx);
+
+    // Assert
+    expect('branch' in sut).toBe(false);
+  });
+
+  it('Given `bare = on` (truthy alias), When readConfig, Then parsed.core.bare is true', async () => {
+    // Arrange — `on`/`1` are git truthy aliases.
+    const ctx = createMemoryContext();
+    await seed(ctx, '[core]\n  bare = on\n');
+
+    // Act
+    const sut = await readConfig(ctx);
+
+    // Assert
+    expect(sut.core?.bare).toBe(true);
+  });
+
+  it('Given `bare = off` (explicit false alias), When readConfig, Then parsed.core.bare is false', async () => {
+    // Arrange — `off`/`0` are git falsy aliases; not truthy.
+    const ctx = createMemoryContext();
+    await seed(ctx, '[core]\n  bare = off\n');
+
+    // Act
+    const sut = await readConfig(ctx);
+
+    // Assert
+    expect(sut.core?.bare).toBe(false);
   });
 });

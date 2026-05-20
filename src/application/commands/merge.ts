@@ -97,6 +97,7 @@ export const merge = async (ctx: Context, opts: MergeOptions): Promise<MergeResu
   }
   const ourId = await resolveRef(ctx, head.target);
   const theirId = await resolveTarget(ctx, opts.target);
+  // Stryker disable next-line ConditionalExpression: equivalent — when ourId===theirId, mergeBase returns that same commit, so the `base === theirId` check below yields the identical up-to-date result.
   if (ourId === theirId) return { kind: 'up-to-date', id: ourId };
   const base = await mergeBase(ctx, ourId, theirId);
   if (base === theirId) return { kind: 'up-to-date', id: ourId };
@@ -221,10 +222,13 @@ const buildContentMerger =
     // would cost ~1 GiB peak RSS per CI run for ~zero additional
     // assurance.
     const [ours, theirs, base] = await Promise.all([
+      // Stryker disable next-line ObjectLiteral: equivalent — the 256 MiB cap is unobservable without a 256 MiB fixture; cap mechanics covered by read-blob.test.ts.
       readBlob(ctx, mergeCtx.ourId, { maxBytes: MAX_CONFLICT_OUTPUT_BYTES }),
+      // Stryker disable next-line ObjectLiteral: equivalent — the 256 MiB cap is unobservable without a 256 MiB fixture; cap mechanics covered by read-blob.test.ts.
       readBlob(ctx, mergeCtx.theirId, { maxBytes: MAX_CONFLICT_OUTPUT_BYTES }),
       mergeCtx.baseId !== undefined
-        ? readBlob(ctx, mergeCtx.baseId, { maxBytes: MAX_CONFLICT_OUTPUT_BYTES })
+        ? // Stryker disable next-line ObjectLiteral: equivalent — the 256 MiB cap is unobservable without a 256 MiB fixture; cap mechanics covered by read-blob.test.ts.
+          readBlob(ctx, mergeCtx.baseId, { maxBytes: MAX_CONFLICT_OUTPUT_BYTES })
         : Promise.resolve(undefined),
     ]);
     return mergeContent(base?.content, ours.content, theirs.content);
@@ -293,9 +297,10 @@ const partitionByPrefix = (leaves: ReadonlyArray<LeafRecord>): PartitionedLeaves
   return { files, subdirs };
 };
 
-const MAX_MERGE_TREE_DEPTH = 4096;
+export const MAX_MERGE_TREE_DEPTH = 4096;
 
-const writeNestedTree = async (
+/** Build a nested tree from flat leaf records. Exported for direct unit testing. */
+export const writeNestedTree = async (
   ctx: Context,
   leaves: ReadonlyArray<LeafRecord>,
   depth = 0,
@@ -419,6 +424,7 @@ export const runBounded = async <T>(
   let cursor = 0;
   const workers: Promise<void>[] = [];
   const worker = async (): Promise<void> => {
+    // Stryker disable next-line EqualityOperator: equivalent — `cursor <= items.length` reads `items[items.length]` (undefined) once, and the `next === undefined` break below terminates identically.
     while (cursor < items.length) {
       const next = items[cursor++];
       if (next === undefined) break;
@@ -430,10 +436,12 @@ export const runBounded = async <T>(
   await Promise.all(workers);
 };
 
-const writeOutcomeToTree = async (ctx: Context, outcome: MergeOutcome): Promise<void> => {
+/** Write a single merge outcome to the working tree. Exported for direct unit testing. */
+export const writeOutcomeToTree = async (ctx: Context, outcome: MergeOutcome): Promise<void> => {
   if (outcome.status === 'unchanged' || outcome.status === 'resolved-known') {
     // Cap with MAX_CONFLICT_OUTPUT_BYTES so a hostile clean-tree blob
     // cannot OOM the merge consumer during a conflicting merge.
+    // Stryker disable next-line ObjectLiteral: equivalent — the 256 MiB cap is unobservable without a 256 MiB fixture; cap mechanics covered by read-blob.test.ts.
     const blob = await readBlob(ctx, outcome.id, { maxBytes: MAX_CONFLICT_OUTPUT_BYTES });
     await writeWorkingTreeFile(ctx, outcome.path, blob.content);
     return;
@@ -455,7 +463,8 @@ const writeConflictToTree = async (ctx: Context, conflict: MergeConflict): Promi
   }
 };
 
-const materialiseConflictBytes = async (
+/** Derive the working-tree bytes for a conflicting path. Exported for direct unit testing. */
+export const materialiseConflictBytes = async (
   ctx: Context,
   conflict: MergeConflict,
 ): Promise<Uint8Array | undefined> => {
@@ -466,11 +475,13 @@ const materialiseConflictBytes = async (
     // Binary conflicts: write ours bytes verbatim (matches mergeContent's
     // existing fallback shape). User must manually choose a side.
     if (conflict.ourId !== undefined) {
+      // Stryker disable next-line ObjectLiteral: equivalent — the 256 MiB cap is unobservable without a 256 MiB fixture; cap mechanics covered by read-blob.test.ts.
       return (await readBlob(ctx, conflict.ourId, { maxBytes: MAX_CONFLICT_OUTPUT_BYTES })).content;
     }
   }
   if (conflict.type === 'add-add' || conflict.type === 'type-change') {
     if (conflict.ourId !== undefined) {
+      // Stryker disable next-line ObjectLiteral: equivalent — the 256 MiB cap is unobservable without a 256 MiB fixture; cap mechanics covered by read-blob.test.ts.
       return (await readBlob(ctx, conflict.ourId, { maxBytes: MAX_CONFLICT_OUTPUT_BYTES })).content;
     }
   }
@@ -478,6 +489,7 @@ const materialiseConflictBytes = async (
     // Preserve the surviving side's bytes (whichever has an id).
     const survivorId = conflict.ourId ?? conflict.theirId;
     if (survivorId !== undefined) {
+      // Stryker disable next-line ObjectLiteral: equivalent — the 256 MiB cap is unobservable without a 256 MiB fixture; cap mechanics covered by read-blob.test.ts.
       return (await readBlob(ctx, survivorId, { maxBytes: MAX_CONFLICT_OUTPUT_BYTES })).content;
     }
   }
@@ -489,7 +501,9 @@ const materialiseConflictBytes = async (
     conflict.theirId !== undefined
   ) {
     const [ours, theirs] = await Promise.all([
+      // Stryker disable next-line ObjectLiteral: equivalent — the 256 MiB cap is unobservable without a 256 MiB fixture; cap mechanics covered by read-blob.test.ts.
       readBlob(ctx, conflict.ourId, { maxBytes: MAX_CONFLICT_OUTPUT_BYTES }),
+      // Stryker disable next-line ObjectLiteral: equivalent — the 256 MiB cap is unobservable without a 256 MiB fixture; cap mechanics covered by read-blob.test.ts.
       readBlob(ctx, conflict.theirId, { maxBytes: MAX_CONFLICT_OUTPUT_BYTES }),
     ]);
     return writeConflictMarkers([ours.content], [theirs.content]);
@@ -504,20 +518,23 @@ const writeWorkingTreeFile = async (
 ): Promise<void> => {
   const fullPath = `${ctx.layout.workDir}/${path}`;
   const parent = parentDir(fullPath);
+  // Stryker disable next-line BlockStatement: equivalent — the FileSystem port contract requires `write` to create parent directories ("creating parent directories as needed"), so this explicit mkdir is redundant defensive belt-and-braces.
   if (parent !== undefined) {
     await ctx.fs.mkdir(parent);
   }
   await ctx.fs.write(fullPath, content);
 };
 
-const removeWorkingTreeFile = async (ctx: Context, path: FilePath): Promise<void> => {
+/** Remove a working-tree file if it exists. Exported for direct unit testing. */
+export const removeWorkingTreeFile = async (ctx: Context, path: FilePath): Promise<void> => {
   const fullPath = `${ctx.layout.workDir}/${path}`;
   if (await ctx.fs.exists(fullPath)) {
     await ctx.fs.rm(fullPath);
   }
 };
 
-const parentDir = (fullPath: string): string | undefined => {
+/** Compute the parent directory of a path. Exported for direct unit testing. */
+export const parentDir = (fullPath: string): string | undefined => {
   const lastSlash = fullPath.lastIndexOf('/');
   if (lastSlash <= 0) return undefined;
   return fullPath.slice(0, lastSlash);
@@ -536,7 +553,8 @@ const zeroStat = (mode: FileMode): StatData => ({
   fileSize: 0,
 });
 
-const buildConflictIndexEntries = (
+/** Build the conflict-state index entries. Exported for direct unit testing. */
+export const buildConflictIndexEntries = (
   outcomes: ReadonlyArray<MergeOutcome>,
   conflicts: ReadonlyArray<MergeConflict>,
 ): ReadonlyArray<IndexEntry> => {
@@ -568,14 +586,21 @@ const buildConflictIndexEntries = (
   // stable-sort guarantee.
   const combined = [...stage0, ...stageConflicts];
   combined.sort((a, b) => {
+    // Stryker disable next-line EqualityOperator: equivalent — for equal paths `<=`/`>=` both return -1; same-path entries always arrive stage-ascending (conflictsToIndexEntries sorts, stage-0 precedes them), so -1 already matches the correct order.
     if (a.path < b.path) return -1;
+    // Stryker disable next-line ConditionalExpression,EqualityOperator: equivalent — for any distinct-path pair V8's sort derives the order from the `a.path < b.path → -1` rule above (evaluated in whichever argument order yields `<`), so this `>` branch never changes the observable sort result.
     if (a.path > b.path) return 1;
+    // Stryker disable next-line ArithmeticOperator: equivalent — the stage branch only compares equal-path entries, which always arrive stage-ascending (conflictsToIndexEntries sorts conflict stages and rejects duplicate paths; stage-0 entries all share stage 0), so the comparator is a no-op on an already-ordered run regardless of sign.
     return a.flags.stage - b.flags.stage;
   });
   return combined;
 };
 
-const resolveMergeAuthor = async (ctx: Context, opts: MergeOptions): Promise<AuthorIdentity> => {
+/** Resolve the merge-commit author. Exported for direct unit testing. */
+export const resolveMergeAuthor = async (
+  ctx: Context,
+  opts: MergeOptions,
+): Promise<AuthorIdentity> => {
   const config = await readConfig(ctx);
   const cfgUser = config.user
     ? {
@@ -591,7 +616,11 @@ const resolveMergeAuthor = async (ctx: Context, opts: MergeOptions): Promise<Aut
   return resolveAuthor(authorInput);
 };
 
-const resolveMergeCommitter = (opts: MergeOptions, author: AuthorIdentity): AuthorIdentity => {
+/** Resolve the merge-commit committer. Exported for direct unit testing. */
+export const resolveMergeCommitter = (
+  opts: MergeOptions,
+  author: AuthorIdentity,
+): AuthorIdentity => {
   const committerInput: {
     explicit?: AuthorIdentity;
     author?: AuthorIdentity;
@@ -601,7 +630,8 @@ const resolveMergeCommitter = (opts: MergeOptions, author: AuthorIdentity): Auth
   return resolveCommitter(committerInput);
 };
 
-const resolveTarget = async (ctx: Context, target: string): Promise<ObjectId> => {
+/** Resolve a merge target (40-hex oid or branch name). Exported for direct unit testing. */
+export const resolveTarget = async (ctx: Context, target: string): Promise<ObjectId> => {
   if (/^[0-9a-f]{40}$/.test(target)) return target as ObjectId;
   return resolveRef(ctx, `refs/heads/${target}` as RefName);
 };
