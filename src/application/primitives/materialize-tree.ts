@@ -134,6 +134,7 @@ const mergeNewIndexEntries = (
     const picked = pickEntry(entry.path, writtenByPath, oldByPath);
     if (picked !== undefined) merged.push(picked);
   }
+  // Stryker disable next-line EqualityOperator: equivalent — merged paths are unique (Map keys + disjoint scoped/target sets), so `<` vs `<=` and `>` vs `>=` only differ on equal paths, which never occur here.
   merged.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
   return merged;
 };

@@ -272,12 +272,15 @@ describe('synthesizeTreeFromIndex', () => {
     expect(data?.offset).toBe(NO_PARSER_OFFSET);
   });
 
-  it('Given an index path with depth exceeding MAX_TREE_DEPTH, When synthesise, Then throws TREE_DEPTH_EXCEEDED', async () => {
-    // Arrange — a path with 4097 segments triggers the depth cap (4096).
+  it('Given an index path with depth exceeding MAX_TREE_DEPTH, When synthesise, Then throws TREE_DEPTH_EXCEEDED carrying the exact slash count', async () => {
+    // Arrange — a path with 4098 segments has 4097 slashes, one over the
+    // cap (4096). The error's `depth` is the slash count: asserting its
+    // exact value pins the slash-counting loop. A mutation that empties
+    // the loop body, flips `+= 1` to `-= 1`, or counts non-slash chars
+    // would produce a different `depth` (or skip the throw entirely).
     const ctx = await buildSeededContext();
     const blobId = await writeBlob(ctx, 'deep');
-    const segments = Array.from({ length: 4097 }, (_, i) => `d${i}`);
-    segments.push('leaf.txt');
+    const segments = Array.from({ length: 4098 }, (_, i) => `d${i}`);
     const deepPath = segments.join('/');
     const index: GitIndex = {
       ...EMPTY_INDEX,
@@ -293,8 +296,46 @@ describe('synthesizeTreeFromIndex', () => {
       caught = err;
     }
 
-    // Assert
-    expect((caught as { data?: { code?: string } })?.data?.code).toBe('TREE_DEPTH_EXCEEDED');
+    // Assert — code AND the exact slash count (4097).
+    const data = (caught as { data?: { code?: string; depth?: number } })?.data;
+    expect(data?.code).toBe('TREE_DEPTH_EXCEEDED');
+    expect(data?.depth).toBe(4097);
+  });
+
+  it('Given an index path with exactly MAX_TREE_DEPTH slashes, When synthesise, Then the depth cap does NOT reject it (boundary)', async () => {
+    // Arrange — 4097 segments => exactly 4096 slashes, which equals the
+    // cap. The guard is `slashCount > MAX_TREE_DEPTH`, so 4096 must NOT
+    // raise TREE_DEPTH_EXCEEDED. This pins `>` against `>=` (which would
+    // reject this path with a TREE_DEPTH_EXCEEDED carrying depth 4096)
+    // and against `<` (which rejects every shallower path too).
+    //
+    // Synthesis itself recurses 4096 frames deep and overflows the JS
+    // call stack with a plain RangeError — exactly the behaviour the
+    // module doc predicts (the cap is enforced at the input boundary
+    // because the stack overflows before recursion could re-check it).
+    // We therefore assert the *kind* of failure: NOT a tsgit depth
+    // error, proving `assertDepthBounded` accepted the boundary path.
+    const ctx = await buildSeededContext();
+    const blobId = await writeBlob(ctx, 'edge');
+    const segments = Array.from({ length: 4097 }, (_, i) => `d${i}`);
+    const boundaryPath = segments.join('/');
+    const index: GitIndex = {
+      ...EMPTY_INDEX,
+      entries: [makeIndexEntry(boundaryPath, blobId)],
+    };
+    const sut = synthesizeTreeFromIndex;
+
+    // Act
+    let caught: unknown;
+    try {
+      await sut(ctx, index.entries);
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert — the boundary path is NOT rejected by the depth cap.
+    const data = (caught as { data?: { code?: string } })?.data;
+    expect(data?.code).not.toBe('TREE_DEPTH_EXCEEDED');
   });
 
   it('Given an index entry with an executable mode, When synthesise, Then the executable mode is preserved', async () => {

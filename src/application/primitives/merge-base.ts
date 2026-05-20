@@ -7,12 +7,12 @@ const advanceFrontier = async (
   frontier: ObjectId[],
   visited: Set<ObjectId>,
 ): Promise<boolean> => {
-  if (frontier.length === 0) return false;
   const next: ObjectId[] = [];
   for (const id of frontier) {
     const obj = await readObject(ctx, id);
     if (obj.type !== 'commit') continue;
     for (const parent of obj.data.parents) {
+      // Stryker disable next-line ConditionalExpression: equivalent — `visited` (a Set) is the sole source of truth for the intersection; `add` is idempotent, so skipping the guard only re-pushes frontier duplicates (extra reads) without changing any visited set or result.
       if (!visited.has(parent)) {
         visited.add(parent);
         next.push(parent);
@@ -54,11 +54,10 @@ export const mergeBase = async (
   const frontierA: ObjectId[] = [a];
   const frontierB: ObjectId[] = [b];
 
-  // Check seed overlap before walking.
-  const seedHit = intersection(visitedA, visitedB);
-  if (seedHit.length > 0) return [...seedHit].sort()[0];
-
-  while (frontierA.length > 0 || frontierB.length > 0) {
+  // Seeds {a} and {b} cannot overlap once `a !== b`, so the only seed-overlap
+  // case is the `a === b` shortcut above — no pre-walk intersection needed.
+  // The loop's sole exit is the both-frontiers-exhausted break below.
+  while (true) {
     const stepA = await advanceFrontier(ctx, frontierA, visitedA);
     const stepB = await advanceFrontier(ctx, frontierB, visitedB);
     const hit = intersection(visitedA, visitedB);
