@@ -291,7 +291,7 @@ const walkPackEntries = async (
   // feeds `serializePackIndex`, which re-sorts entries by SHA before writing.
   // Stryker disable next-line MethodExpression: equivalent — `resolveAllEntries` is module-internal and never shares the array, so the defensive `.slice()` copy cannot change behaviour.
   const copied = resolved.slice();
-  // Stryker disable next-line ArithmeticOperator: equivalent — the WalkedEntry order is unobservable (objectCount uses `.length`; serializePackIndex re-sorts by SHA), so a broken comparator changes nothing downstream.
+  // Stryker disable next-line ArithmeticOperator,MethodExpression: equivalent — the WalkedEntry order is unobservable (objectCount uses `.length`; serializePackIndex re-sorts by SHA), so a broken comparator — or dropping the `.sort()` entirely — changes nothing downstream.
   const ordered = copied.sort((a, b) => a.offset - b.offset);
   return ordered.map((r) => ({ id: r.id, crc32: r.crc32, offset: r.offset }));
 };

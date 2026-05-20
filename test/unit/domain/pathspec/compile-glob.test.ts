@@ -100,6 +100,20 @@ describe('compileGlob', () => {
     expect(sut.test('a/b/foo')).toBe(true);
   });
 
+  it('Given an unanchored literal "bar", When matched against "foobar", Then it does NOT match (the (^|.*/) prefix forbids a mid-segment match)', () => {
+    // Arrange — unanchored compiles with the `(^|.*/)` boundary prefix so the
+    // pattern matches a whole leading segment, never a substring inside one.
+    // A mutant replacing that prefix with `''` yields `bar$`, which matches
+    // `foobar`; this assertion fails under that mutant.
+    const sut = compileGlob('bar', { anchored: false });
+
+    // Act / Assert
+    expect(sut.test('foobar')).toBe(false);
+    // Balance: the legitimate segment matches must still hold.
+    expect(sut.test('bar')).toBe(true);
+    expect(sut.test('x/bar')).toBe(true);
+  });
+
   it('Given a non-anchored GLOB "*.ts", When matched at depth, Then matches at any segment AND rejects non-matching extensions', () => {
     const sut = compileGlob('*.ts', { anchored: false });
 

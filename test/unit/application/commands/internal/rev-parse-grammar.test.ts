@@ -300,5 +300,21 @@ describe('internal/rev-parse-grammar', () => {
         operations: [{ kind: 'parent', n: 23 }],
       } satisfies RevExpression);
     });
+
+    it("Given 'HEAD~2z' (a digit then a letter after '~'), When parseExpression, Then throws REVPARSE_UNRESOLVED", () => {
+      // Arrange / Act / Assert
+      // `isDigit` must reject 'z' (0x7a): the digit-consuming loop stops after
+      // '2', leaving the cursor on 'z', which is neither '~' nor '^' — the
+      // else branch fails. A mutant that over-accepts non-digits would pull
+      // 'z' into the number and the parse would succeed instead of throwing.
+      expectError(() => parseExpression('HEAD~2z'), 'REVPARSE_UNRESOLVED');
+    });
+
+    it("Given 'HEAD^3z' (a digit then a letter after '^'), When parseExpression, Then throws REVPARSE_UNRESOLVED", () => {
+      // Arrange / Act / Assert
+      // Same guard for `parseCaret`'s digit loop: 'z' must not count as a
+      // digit, so the cursor lands on 'z' and the else branch fails.
+      expectError(() => parseExpression('HEAD^3z'), 'REVPARSE_UNRESOLVED');
+    });
   });
 });

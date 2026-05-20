@@ -45,6 +45,20 @@ describe('internal/url-validate', () => {
       await expectError(validateUrl('http://example.com/x', opts()), 'UNSUPPORTED_SCHEME');
     });
 
+    it('Given http URL with allowInsecure NOT set, When validateUrl, Then throws UNSUPPORTED_SCHEME with scheme=http', async () => {
+      // Arrange / Act — `allowInsecure` defaults to false, so `http:` must be
+      // rejected. The scheme-gate `proto === 'http:' && allowInsecure` must
+      // hold: a mutant forcing it true would let `http:` pass.
+      const err = await expectError(
+        validateUrl('http://example.com/x', opts()),
+        'UNSUPPORTED_SCHEME',
+      );
+
+      // Assert — the rejected scheme is reported as the bare value `http`.
+      const data = err.data as { readonly code: string; readonly scheme?: string };
+      expect(data.scheme).toBe('http');
+    });
+
     it('Given http URL with allowInsecure=true, When validateUrl, Then returns ValidatedUrl', async () => {
       // Act
       const sut = await validateUrl('http://example.com/x', opts({ allowInsecure: true }));

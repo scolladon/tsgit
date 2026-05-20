@@ -114,7 +114,7 @@ const parseTilde = (
   i: number,
 ): { readonly op: RevOperation; readonly next: number } => {
   let j = i + 1;
-  // Stryker disable next-line EqualityOperator: equivalent — at j === raw.length, charCodeAt returns NaN, isDigit(NaN) is false, so one extra iteration changes nothing.
+  // Stryker disable next-line EqualityOperator,ConditionalExpression: equivalent — at j === raw.length, charCodeAt returns NaN, isDigit(NaN) is false, so the `isDigit` operand terminates the loop whether or not the `j < raw.length` bound holds.
   while (j < raw.length && isDigit(raw.charCodeAt(j))) j += 1;
   if (j === i + 1) fail(raw); // no digits after `~`
   const n = Number(raw.slice(i + 1, j));
@@ -137,7 +137,7 @@ const parseCaret = (
     };
   }
   let j = i + 1;
-  // Stryker disable next-line EqualityOperator: equivalent — at j === raw.length, charCodeAt returns NaN, isDigit(NaN) is false, so one extra iteration changes nothing.
+  // Stryker disable next-line EqualityOperator,ConditionalExpression: equivalent — at j === raw.length, charCodeAt returns NaN, isDigit(NaN) is false, so the `isDigit` operand terminates the loop whether or not the `j < raw.length` bound holds.
   while (j < raw.length && isDigit(raw.charCodeAt(j))) j += 1;
   const digitsStr = raw.slice(i + 1, j);
   const n = digitsStr === '' ? 1 : Number(digitsStr);

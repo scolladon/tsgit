@@ -100,6 +100,22 @@ describe('parseGitignore', () => {
     expect(sut[0]?.pattern).toBe('foo');
   });
 
+  it('Given "foo " (one unescaped trailing space), When parsed, Then the trailing space is stripped', () => {
+    // Arrange — `foo` followed by exactly one space, no backslash. The
+    // backslash-escape guard inside the trim loop must NOT break here:
+    // charCodeAt(end-2) is 'o' (0x6f), not '\' (0x5c), so the loop must
+    // proceed and strip the space. A mutant that forces an immediate
+    // `break` leaves the pattern as `foo ` instead of `foo`.
+    const input = 'foo ';
+
+    // Act
+    const sut = parseGitignore(input);
+
+    // Assert
+    expect(sut).toHaveLength(1);
+    expect(sut[0]?.pattern).toBe('foo');
+  });
+
   it('Given a line with escaped trailing space, When parsed, Then escaped space is preserved', () => {
     // Arrange
     const input = 'foo\\ \n';

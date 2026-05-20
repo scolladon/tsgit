@@ -195,6 +195,36 @@ describe('clone', () => {
     }
   });
 
+  it('Given a discovery with a non-HEAD branch, When clone, Then no local refs/heads/<branch> is written for it', async () => {
+    // Arrange — HEAD tracks `main`; `feature` is advertised but is not the
+    // HEAD branch, so only its remote-tracking ref must be written locally.
+    const ctx = createMemoryContext();
+    const { packBytes, blobId } = await buildPackFromSingleBlob(ctx, 'head-branch only\n');
+    const transport = buildCloneRemote({
+      capabilities: ['side-band-64k', 'ofs-delta', 'symref=HEAD:refs/heads/main'],
+      refs: [
+        { name: 'refs/heads/main', id: blobId },
+        { name: 'refs/heads/feature', id: blobId },
+      ],
+      head: 'refs/heads/main',
+      packBytes,
+    });
+    const networkCtx = withTransport(ctx, transport);
+
+    // Act
+    const sut = await clone(networkCtx, { url: REMOTE_URL });
+
+    // Assert — the local branch ref is created ONLY for the HEAD branch.
+    // The `branch === headBranch` gate must hold: a mutant forcing it true
+    // would write `refs/heads/feature` for the non-HEAD branch.
+    const names = sut.fetchedRefs.map((r) => r.name);
+    expect(names).toContain('refs/heads/main');
+    expect(names).not.toContain('refs/heads/feature');
+    expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/heads/feature`)).toBe(false);
+    expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/heads/main`)).toBe(true);
+    expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/remotes/origin/feature`)).toBe(true);
+  });
+
   it('Given a discovery with no refs, When clone, Then throws REMOTE_ADVERTISES_NO_REFS', async () => {
     // Arrange
     const ctx = createMemoryContext();

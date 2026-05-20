@@ -161,6 +161,40 @@ describe('add', () => {
     expect(sut.modified).toEqual([]);
   });
 
+  it('Given a glob pathspec matching an already-staged unchanged file, When add, Then result.modified does NOT contain it', async () => {
+    // Arrange — stage a.txt, then re-add via the glob `*.txt`. A glob routes
+    // through the walk-and-filter path (addByPathspec); the walk yields the
+    // unchanged file with kind 'unchanged'. The `result.kind === 'modified'`
+    // guard must reject it — a mutant forcing that guard true would wrongly
+    // push the unchanged path into `modified`.
+    const ctx = await seedFreshRepo({ 'a.txt': 'a' });
+    await add(ctx, ['a.txt']);
+
+    // Act
+    const sut = await add(ctx, ['*.txt']);
+
+    // Assert
+    expect(sut.modified).toEqual([]);
+    expect(sut.added).toEqual([]);
+  });
+
+  it('Given a single regular file, When add, Then the index entry flags have extended=false and assumeValid=false', async () => {
+    // Arrange
+    const ctx = await seedFreshRepo({ 'plain.txt': 'content' });
+
+    // Act
+    await add(ctx, ['plain.txt']);
+
+    // Assert — `makeEntry` builds flags as
+    // `{ assumeValid: false, extended: false, stage: 0 }`; a BooleanLiteral
+    // mutant flipping `extended` to true would surface here.
+    const idx = await readIndex(ctx);
+    const entry = idx.entries.find((e) => e.path === 'plain.txt');
+    expect(entry).toBeDefined();
+    expect(entry?.flags.extended).toBe(false);
+    expect(entry?.flags.assumeValid).toBe(false);
+  });
+
   it('Given all: true with non-empty pathspec, When add, Then throws INVALID_OPTION with option=all', async () => {
     // Arrange
     const ctx = await seedFreshRepo({ 'a.txt': 'a' });

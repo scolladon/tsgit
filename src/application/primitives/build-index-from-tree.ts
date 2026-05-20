@@ -92,8 +92,8 @@ const projectLeaf = (leaf: TargetLeaf, donors: ReadonlyMap<FilePath, IndexEntry>
 // byte-sorted order and the sort is a guaranteed no-op. There is no public-API
 // path that can deliver unsorted leaves, hence every mutation of this
 // comparator is provably equivalent.
-// Stryker disable next-line ConditionalExpression,EqualityOperator,UnaryOperator: equivalent — every caller feeds byte-sorted leaves (walkTree of an on-disk, canonically-serialized tree), so the comparator's result never reorders the array regardless of how it is mutated.
 const byPath = (a: IndexEntry, b: IndexEntry): number =>
+  // Stryker disable next-line ConditionalExpression,EqualityOperator,UnaryOperator: equivalent — every caller feeds byte-sorted leaves (walkTree of an on-disk, canonically-serialized tree), so the comparator's result never reorders the array regardless of how it is mutated.
   a.path < b.path ? -1 : a.path > b.path ? 1 : 0;
 
 export const buildIndexFromTree = async (
