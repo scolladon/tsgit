@@ -90,10 +90,9 @@ describe('NodeFileSystem — resolveForCreation parent-realpath LRU (DI)', () =>
     expect(parentCalls.length).toBe(1);
   });
 
-  it('Given a path containing `..` segments, When write fires, Then policy.resolve normalises the path before containment (containsRelativeSegment true arm)', async () => {
-    // Arrange — path with `..` triggers the `containsRelativeSegment`
-    // gate to call policy.resolve. The resolved form lands outside
-    // rootDir, so containment refuses.
+  it('Given a write path with `..` segments that escape rootDir, When write fires, Then containment refuses with PERMISSION_DENIED', async () => {
+    // Arrange — policy.resolve collapses the `..` segments; the resolved
+    // form lands outside rootDir, so containment refuses.
     const rootDir = '/root';
     const fsOps = fakeFsOps({
       realpath: vi.fn().mockImplementation(async (input: string) => input),
@@ -113,9 +112,9 @@ describe('NodeFileSystem — resolveForCreation parent-realpath LRU (DI)', () =>
     expect((caught as TsgitError).data.code).toBe('PERMISSION_DENIED');
   });
 
-  it('Given a path containing `..` segments, When exists fires, Then policy.resolve normalises the path before containment (containsRelativeSegment true arm)', async () => {
-    // Arrange — same shape as the write test but for the `exists` code
-    // path, which has its own containsRelativeSegment gate.
+  it('Given an exists path with `..` segments that escape rootDir, When exists fires, Then containment refuses with PERMISSION_DENIED', async () => {
+    // Arrange — same shape as the write test but exercising the `exists`
+    // code path's own containment check.
     const rootDir = '/root';
     const fsOps = fakeFsOps({
       realpath: vi.fn().mockImplementation(async (input: string) => input),

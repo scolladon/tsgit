@@ -3,7 +3,6 @@ import * as os from 'node:os';
 import * as nodePath from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import {
-  containsRelativeSegment,
   interpretCreationLstat,
   isErrnoException,
   isWindowsSymlinkRefusal,
@@ -453,50 +452,6 @@ describe('NodeFileSystem', () => {
         expect(caught).toBeInstanceOf(Error);
         expect((caught as Error).message).toBe('boom');
         expect(fn).toHaveBeenCalledTimes(4);
-      });
-    });
-
-    describe('containsRelativeSegment', () => {
-      it('Given a clean POSIX absolute path, When probed, Then returns false', () => {
-        const sut = containsRelativeSegment('/root/sub/file.bin');
-
-        expect(sut).toBe(false);
-      });
-
-      it('Given a clean Windows absolute path, When probed, Then returns false', () => {
-        const sut = containsRelativeSegment('C:\\Users\\runneradmin\\file.bin');
-
-        expect(sut).toBe(false);
-      });
-
-      it('Given a dotfile in the path, When probed, Then returns false (the dot is part of a filename, not a segment)', () => {
-        const sut = containsRelativeSegment('/root/.git/HEAD');
-
-        expect(sut).toBe(false);
-      });
-
-      it('Given a `..` segment, When probed, Then returns true', () => {
-        const sut = containsRelativeSegment('/root/sub/../escape');
-
-        expect(sut).toBe(true);
-      });
-
-      it('Given a `.` segment, When probed, Then returns true', () => {
-        const sut = containsRelativeSegment('/root/./redundant');
-
-        expect(sut).toBe(true);
-      });
-
-      it('Given a trailing `..`, When probed, Then returns true', () => {
-        const sut = containsRelativeSegment('/root/sub/..');
-
-        expect(sut).toBe(true);
-      });
-
-      it('Given a Windows path with `..` segments, When probed, Then returns true', () => {
-        const sut = containsRelativeSegment('C:\\Users\\sub\\..\\escape');
-
-        expect(sut).toBe(true);
       });
     });
 
