@@ -6,10 +6,10 @@
  * When log / branch / checkout / tag run through the repo facade,
  * Then each command behaves against the browser adapters as it does on Node.
  *
- * Closes the Phase 11 test-review gap: these four commands were unit-tested
- * on the Node adapter but never exercised in a real browser engine. Each
- * scenario runs in one page.evaluate() returning a per-operation result,
- * asserted under its own test.step().
+ * These four commands are unit-tested on the Node adapter but were never
+ * exercised in a real browser engine. Each scenario seeds its state, then
+ * runs the command(s) under test in a page.evaluate() that returns a
+ * per-operation result, asserted under its own test.step().
  */
 import { AUTHOR, type Author, expect, seedRepo, test } from './fixtures.js';
 

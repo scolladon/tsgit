@@ -58,6 +58,8 @@ export const AUTHOR: Author = {
   timezoneOffset: '+0000',
 };
 
+// Minimal repo shape used only inside seedRepo's evaluate callback — a local
+// typing aid, not a shared contract; the real facade lives in src/.
 interface SeedRepo {
   init: () => Promise<unknown>;
   add: (paths: ReadonlyArray<string>) => Promise<unknown>;
