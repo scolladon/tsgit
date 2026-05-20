@@ -92,6 +92,10 @@ scenarios build their fixtures inline; the **scaled** scenarios
 6. **Performance** — vitest bench (PR base-vs-PR compare + main-push snapshot to the `gh-pages` data branch) + bundle size checks
 7. **MegaLinter** — Comprehensive linting (parallel with all stages)
 
+Action references float on major-version tags (`@v4`); Dependabot bumps them
+weekly as a single grouped PR (`.github/dependabot.yml`). SHA pinning was
+considered and rejected — see ADR-057.
+
 #### Integration test jobs (Phase 14.4)
 
 The integration stage runs three sibling jobs, each gated by the
