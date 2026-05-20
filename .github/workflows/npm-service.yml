@@ -23,7 +23,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       # Node 24 ships npm 11.x bundled, which has the trusted-publisher OIDC
       # handshake fix. Node 22's bundled npm 10.9.x signs provenance OK but
@@ -33,7 +33,7 @@ jobs:
       # bundled npm (MODULE_NOT_FOUND promise-retry) because the toolcache
       # install isn't atomically replaceable — Node 24 sidesteps the whole
       # dance.
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
