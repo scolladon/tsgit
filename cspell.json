@@ -412,7 +412,11 @@
     "synthesisers",
     "defence",
     "libtrust",
-    "parallelisation"
+    "parallelisation",
+    "xorshift",
+    "PRNG",
+    "unbuildable",
+    "repack"
   ],
   "ignorePaths": [
     "node_modules",

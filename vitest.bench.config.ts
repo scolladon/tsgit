@@ -6,8 +6,9 @@ export default defineConfig({
       include: ['test/bench/**/*.bench.ts'],
       outputJson: 'reports/benchmarks/raw.json',
     },
-    // Benchmarks own the timeout; isomorphic-git's first call against a fresh
-    // repo can hit a few hundred ms on cold cache.
-    testTimeout: 60_000,
+    // Benchmarks own the timeout. The scaled scenarios walk 20k-file /
+    // 5k-commit fixtures — isomorphic-git's `statusMatrix` over that tree is
+    // slow enough to need generous headroom over a CI run.
+    testTimeout: 120_000,
   },
 });

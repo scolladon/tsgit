@@ -1,0 +1,39 @@
+name: Nightly per-OS mutation
+
+# Per-OS mutation testing on macOS + Windows. Runs nightly rather than
+# per-PR — a per-PR 3-OS matrix would triple the slowest gating stage for a
+# slow-moving signal. The per-PR `mutation` job in ci.yml stays Linux-only.
+# See docs/adr/055-per-os-mutation-nightly.md.
+
+on:
+  schedule:
+    # 05:42 UTC — offset from the nightly benchmark job (03:14) so the two
+    # heavy scheduled jobs do not contend for the runner pool.
+    - cron: '42 5 * * *'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mutation-os-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  mutation:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      - run: npm run test:mutation
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mutation-report-${{ matrix.os }}
+          path: reports/mutation/
+          retention-days: 14

@@ -190,7 +190,7 @@ Design: `docs/design/repository-facade.md`
 ## Phase 11: Polish & Launch
 
 - [x] **11.1** Benchmark suite (log, readBlob, status vs isomorphic-git; clone deferred to v1.x)
-- [~] **11.2** Cross-platform E2E tests (Ubuntu, macOS, Windows × Node 20/22/24) — matrix expanded, integration suite landed; per-OS mutation gap still open (CI runs the `mutation` job on `ubuntu-latest` only — tracked as **15.4**)
+- [x] **11.2** Cross-platform E2E tests (Ubuntu, macOS, Windows × Node 20/22/24) — matrix expanded, integration suite landed; the per-OS mutation gap is closed by **15.4** (`mutation-os.yml` runs Stryker on macOS + Windows nightly)
 - [x] **11.3** Browser E2E tests (Chromium, Firefox, WebKit via Playwright) — OPFS round-trip, SubtleCrypto SHA-1 parity, DecompressionStream
 - [x] **11.4** TypeDoc API documentation
 - [x] **11.5** npm publish dry run, verify with arethetypeswrong
@@ -289,12 +289,20 @@ tree is the visible gap.
 
 ### Phase 15 — Bench + observability follow-ups (v1.x patch)
 
-- [ ] **15.1** "Medium" bench fixture: 5k commits / 20k blobs / ~50 MB (clone of the tsgit repo snapshot, cached in `~/.cache/tsgit-bench`).
-- [ ] **15.2** "Large" bench fixture: 50k commits / 200k blobs / ~500 MB.
-- [ ] **15.3** `node --prof` profiling captures for the three hot paths (log, status, pack-read).
-- [ ] **15.4** Per-OS mutation testing on macOS + Windows (closes Phase 11.2 `[~]`).
-- [ ] **15.5** Bench DSL convention: adapt vitest `bench` call sites to a thin wrapper that enforces Given/When/Then + `sut` naming (review deferral).
-- [ ] **15.6** Re-enable the `benchmark-snapshot` ci.yml job. Needs a node script that converts `reports/benchmarks/raw.json` (vitest schema) into `[{name,value,unit}]` for `benchmark-action/github-action-benchmark@v1`'s `customSmallerIsBetter` tool. Disabled after the `tool: vitest` value was rejected by the action (it only accepts cargo/go/benchmarkjs/.../customSmaller|BiggerIsBetter).
+Design: `docs/design/phase-15-bench-observability.md`. ADRs: [054](adr/054-bench-fixture-generation-caching.md) (fixture generation), [055](adr/055-per-os-mutation-nightly.md) (per-OS mutation cadence), [056](adr/056-benchmark-snapshot-converter-schema.md) (snapshot converter).
+
+- [x] **15.1** "Medium" bench fixture: 5k commits / 20k blobs / ~50 MB, cached in `~/.cache/tsgit-bench`.
+      _Accepted:_ `test/bench/support/fixture-generator.ts` builds the repo via `git fast-import` — non-bare, working tree + index materialised, `repack -ad`, deterministic seeded-PRNG blob content — into a version-keyed cache. `npm run bench:fixture -- medium` pre-warms it; the nightly `bench.yml` restores the cache via `actions/cache`. Three scaled scenarios (`log-scale`, `status-scale`, `pack-read-scale`) run against it.
+- [x] **15.2** "Large" bench fixture: 50k commits / 200k blobs / ~500 MB.
+      _Accepted:_ same generator, `LARGE_FIXTURE` spec; opt-in via `TSGIT_BENCH_LARGE=1` — never wired into always-on CI (ADR-054).
+- [x] **15.3** `node --prof` profiling captures for the three hot paths (log, status, pack-read).
+      _Accepted:_ `npm run profile` (`scripts/profile.ts`) spawns `node --prof` children against the cached medium fixture, post-processes with `--prof-process`, and writes digests to the git-ignored `reports/profiles/`.
+- [x] **15.4** Per-OS mutation testing on macOS + Windows (closes Phase 11.2 `[~]`).
+      _Accepted:_ new `.github/workflows/mutation-os.yml` runs full Stryker on `macos-latest` + `windows-latest` nightly (ADR-055); per-PR mutation stays Linux-only.
+- [x] **15.5** Bench DSL convention: a thin wrapper enforcing Given/When/Then + `sut` naming.
+      _Accepted:_ `test/bench/support/bench-dsl.ts` `benchScenario` wraps vitest `describe`/`bench`; the four existing bench files migrated. Bench names (`tsgit` / `isomorphic-git`) stay stable so the summary, compare, and snapshot tooling keep keying on them.
+- [x] **15.6** Re-enable the `benchmark-snapshot` ci.yml job.
+      _Accepted:_ `scripts/bench-to-snapshot.ts` converts `reports/benchmarks/raw.json` to the `customSmallerIsBetter` `[{name,unit,value}]` schema (median-ms metric, `<group> > <bench>` naming — ADR-056); the re-enabled `benchmark-snapshot` job feeds `github-action-benchmark@v1` on pushes to `main`. Also fixed the pre-existing `benchmark-compare` extractor key-collision (bare bench name collapsed all scenarios).
 
 ### Phase 16 — Supply-chain & ops hardening (v1.x patch)
 

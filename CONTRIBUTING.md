@@ -125,7 +125,13 @@ npx playwright install --with-deps chromium             # first-time setup
 # Benchmarks
 npm run test:bench                                      # raw JSON in reports/benchmarks/
 npm run bench:summary                                   # markdown summary
+npm run bench:fixture -- medium                         # pre-warm the scaled-bench fixture
 ```
+
+Bench scenarios are declared with the `benchScenario` wrapper
+(`test/bench/support/bench-dsl.ts`) so they read with the same
+Given/When/Then discipline as unit tests. Scaled scenarios
+(`*-scale.bench.ts`) run against a cached fixture — see RUNBOOK.md.
 
 ### Contract Test Pattern
 

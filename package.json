@@ -184,6 +184,8 @@
     "test:mutation:incremental": "wireit",
     "test:bench": "wireit",
     "bench:summary": "wireit",
+    "bench:fixture": "node --experimental-strip-types scripts/gen-bench-fixture.ts",
+    "profile": "npm run build && node --experimental-strip-types scripts/profile.ts",
     "docs": "wireit",
     "docs:check": "wireit",
     "verify:tarball": "wireit",
@@ -529,7 +531,7 @@
   },
   "lint-staged": {
     "*.ts": [
-      "biome check --write",
+      "biome check --write --no-errors-on-unmatched",
       "vitest related --run --project unit"
     ]
   },

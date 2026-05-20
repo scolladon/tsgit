@@ -234,14 +234,43 @@ jobs:
 
   # ──────────────────────────────────────────────
   # Stage 7: Performance
-  #   PRs: compare base vs PR on same runner
-  #   (benchmark-snapshot disabled: github-action-benchmark@v1 does not
-  #   accept the vitest output shape; tracked under post-v1 backlog 15.x
-  #   — needs a small node script that converts reports/benchmarks/raw.json
-  #   to the customSmallerIsBetter [{name,value,unit}] schema before the
-  #   action can push to gh-pages. Nightly bench.yml + benchmark-compare
-  #   below still cover the PR-regression and trend-tracking needs.)
+  #   PRs: benchmark-compare diffs base vs PR on the same runner.
+  #   Pushes to main: benchmark-snapshot converts the vitest output via
+  #   scripts/bench-to-snapshot.ts and feeds github-action-benchmark for
+  #   trend tracking + regression alerts. Its data lives on a dedicated
+  #   `gh-pages` data branch; the served Pages site (gh-pages.yml) uses the
+  #   Actions artifact model and is unaffected.
   # ──────────────────────────────────────────────
+
+  benchmark-snapshot:
+    if: github.event_name == 'push'
+    needs: [unit-tests]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      - name: Restore scaled bench fixture cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/tsgit-bench
+          key: tsgit-bench-${{ hashFiles('test/bench/support/fixture-generator.ts') }}
+      - run: npm run test:bench
+      - run: node --experimental-strip-types scripts/bench-to-snapshot.ts
+      - name: Publish benchmark snapshot
+        uses: benchmark-action/github-action-benchmark@v1
+        with:
+          name: tsgit benchmarks
+          tool: customSmallerIsBetter
+          output-file-path: reports/benchmarks/snapshot.json
+          github-token: ${{ github.token }}
+          auto-push: true
+          gh-pages-branch: gh-pages
+          benchmark-data-dir-path: dev/bench
+          alert-threshold: '150%'
+          comment-on-alert: true
+          fail-on-alert: false
 
   benchmark-compare:
     if: github.event_name == 'pull_request'
@@ -298,7 +327,11 @@ jobs:
                 const benches = group?.benchmarks || [];
                 for (const b of Array.isArray(benches) ? benches : []) {
                   if (b.name && b.hz != null) {
-                    results[b.name] = { hz: b.hz, mean: b.mean, p99: b.p99 };
+                    // Key on `<group> > <bench>` — every scenario registers a
+                    // bench literally named `tsgit` / `isomorphic-git`, so a
+                    // bare-name key collapses all scenarios onto two entries.
+                    const key = group.fullName ? `${group.fullName} > ${b.name}` : b.name;
+                    results[key] = { hz: b.hz, mean: b.mean, p99: b.p99 };
                   }
                 }
               }
