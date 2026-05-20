@@ -627,7 +627,7 @@ describe('mergeTrees — caps', () => {
     expect(result.outcomes).toHaveLength(3);
   });
 
-  it('Given union exceeds MAX_FLAT_TREE_ENTRIES, When mergeTrees called, Then throws INVALID_MERGE_TREE', async () => {
+  it('Given union exceeds MAX_FLAT_TREE_ENTRIES, When mergeTrees called, Then throws INVALID_MERGE_TREE with the exact union-overflow reason', async () => {
     // Arrange — two disjoint fakes whose fabricated union exceeds the cap.
     const half = Math.floor(MAX_FLAT_TREE_ENTRIES / 2) + 1;
     const ours: FlatTree = { entries: fakeMap(half, () => singleKey('a', half)) };
@@ -640,8 +640,30 @@ describe('mergeTrees — caps', () => {
       thrown = e;
     }
 
-    // Assert
-    expect((thrown as { data: { code: string } }).data.code).toBe('INVALID_MERGE_TREE');
+    // Assert — exact reason kills the L49 empty-string StringLiteral mutant
+    expect((thrown as { data: { code: string; reason: string } }).data.code).toBe(
+      'INVALID_MERGE_TREE',
+    );
+    expect((thrown as { data: { reason: string } }).data.reason).toBe(
+      'union FlatTree exceeds MAX_FLAT_TREE_ENTRIES',
+    );
+  });
+
+  it('Given a union of exactly MAX_FLAT_TREE_ENTRIES paths, When mergeTrees called, Then succeeds (buildUnionPaths uses > not >=)', async () => {
+    // Arrange — a single fake whose per-input size is exactly at cap (so
+    // enforcePerInputCap passes) and whose keys() yields exactly cap distinct
+    // paths, making the union set size === cap. Kills the L48 `>` → `>=`
+    // EqualityOperator mutant, which would throw at this exact boundary.
+    const ours: FlatTree = {
+      entries: fakeMap(MAX_FLAT_TREE_ENTRIES, () => singleKey('x', MAX_FLAT_TREE_ENTRIES)),
+    };
+
+    // Act
+    const result = await mergeTrees(undefined, ours, undefined, noopMerger);
+
+    // Assert — no throw; every path resolved
+    expect(result.cleanMerge).toBe(true);
+    expect(result.outcomes).toHaveLength(MAX_FLAT_TREE_ENTRIES);
   });
 });
 

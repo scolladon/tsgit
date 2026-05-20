@@ -47,6 +47,19 @@ describe('compilePathspec', () => {
     expect(sut[0]?.compiled.test('src/foo')).toBe(true);
   });
 
+  it('Given a bare literal "lib", When compiled, Then the regex matches the directory AND every descendant (withDirSuffix is enabled)', () => {
+    // Arrange — a literal pathspec compiles with `withDirSuffix: true`, so the
+    // regex must cover descendants. If the flag were `false` the regex would be
+    // `^lib$` and reject everything below `lib`.
+    const sut = compilePathspec(['lib']);
+
+    // Act / Assert
+    expect(sut[0]?.compiled.test('lib')).toBe(true);
+    expect(sut[0]?.compiled.test('lib/a.ts')).toBe(true);
+    expect(sut[0]?.compiled.test('lib/nested/deep.ts')).toBe(true);
+    expect(sut[0]?.compiled.test('libs')).toBe(false);
+  });
+
   it('Given a "!"-prefixed glob "!*.test.ts", When compiled, Then negated=true with glob semantics', () => {
     const sut = compilePathspec(['!*.test.ts']);
 

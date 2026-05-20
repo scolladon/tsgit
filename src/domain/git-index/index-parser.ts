@@ -110,6 +110,7 @@ function parseFlags(raw: number, offset: number): IndexEntryFlags {
 }
 
 function findNul(bytes: Uint8Array, fromIndex: number): number {
+  // Stryker disable next-line EqualityOperator: equivalent — at i === bytes.length the extra iteration reads bytes[length] which is undefined; `undefined === 0` is false so no NUL is matched and the function still returns -1.
   for (let i = fromIndex; i < bytes.length; i++) {
     if (bytes[i] === 0) return i;
   }

@@ -1,8 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import { createPackRegistry } from '../../../../src/application/primitives/pack-registry.js';
+import { REASON_PACK_IDX_EXCEEDS_MAX } from '../../../../src/application/primitives/validators.js';
 import type { ObjectId } from '../../../../src/domain/objects/index.js';
-import type { FileStat } from '../../../../src/ports/file-system.js';
+import type { DirEntry, FileStat } from '../../../../src/ports/file-system.js';
 import { buildSeededContext } from './fixtures.js';
+
+const dirEntry = (name: string): DirEntry => ({
+  name,
+  isFile: true,
+  isDirectory: false,
+  isSymbolicLink: false,
+});
 
 function makeStat(): FileStat {
   return {
@@ -36,26 +44,31 @@ describe('pack-registry', () => {
   });
 
   it.each([
-    ['slash', 'pack/escape.idx'],
-    ['backslash', 'pack\\escape.idx'],
-    ['dot-dot', 'pack..idx'],
-  ])('Given a readdir entry whose name contains a %s, When all() is called, Then read is never issued for the unsafe path', async (_label, badName) => {
-    // Under correct isSafePackName, only the good entry reaches fs.read.
-    // Under a mutated predicate that lets the bad name through, fs.read gets
-    // called with the unsafe path — that's what this test asserts on.
+    ['slash (no dot-dot, no backslash)', 'pac/k.idx'],
+    ['backslash (no dot-dot, no slash)', 'pac\\k.idx'],
+    ['dot-dot (no slash, no backslash)', 'pa..k.idx'],
+  ])('Given a readdir entry whose name contains a %s, When all() is called, Then loadPack is never reached for the unsafe path', async (_label, badName) => {
+    // Each bad name carries exactly ONE of the three forbidden substrings so a
+    // per-operand mutation of `isSafePackName` (`&&` -> `||`, or any operand
+    // forced true) lets that specific name through. loadPack's first op is
+    // `fs.stat`; tracking stat calls reveals whether the unsafe entry was
+    // accepted. The good entry stat is allowed; the bad path must never appear.
     const ctx = await buildSeededContext();
-    const readsSeen: string[] = [];
+    const statsSeen: string[] = [];
     const wrapped = {
       ...ctx,
       fs: {
         ...ctx.fs,
         exists: async () => true,
-        readdir: async () => [
-          { name: badName, isFile: true, isDirectory: false, isSymbolicLink: false },
-          { name: 'pack-good.idx', isFile: true, isDirectory: false, isSymbolicLink: false },
+        readdir: async (): Promise<ReadonlyArray<DirEntry>> => [
+          dirEntry(badName),
+          dirEntry('pack-good.idx'),
         ],
-        read: async (path: string) => {
-          readsSeen.push(path);
+        stat: async (path: string): Promise<FileStat> => {
+          statsSeen.push(path);
+          return makeStat();
+        },
+        read: async (): Promise<Uint8Array> => {
           throw new Error('parse fail — intentional');
         },
       },
@@ -67,7 +80,9 @@ describe('pack-registry', () => {
     } catch {
       // parsePackIndex will throw on our fake bytes; that's expected.
     }
-    expect(readsSeen.some((p) => p.includes(badName))).toBe(false);
+    // Good entry is statted; the unsafe one must have been filtered out.
+    expect(statsSeen.some((p) => p.includes('pack-good'))).toBe(true);
+    expect(statsSeen.some((p) => p.includes(badName))).toBe(false);
   });
 
   it('Given an .idx file whose stat reports > MAX_PACK_IDX_BYTES, When all() is called, Then throws INVALID_PACK_INDEX without issuing a read', async () => {
@@ -102,7 +117,12 @@ describe('pack-registry', () => {
       caught = error;
     }
     expect(caught).toBeDefined();
-    expect((caught as { data?: { code?: string } }).data?.code).toBe('INVALID_PACK_INDEX');
+    const data = (caught as { data?: { code?: string; reason?: string } }).data;
+    expect(data?.code).toBe('INVALID_PACK_INDEX');
+    // Assert the SPECIFIC reason: `parsePackIndex` on real bytes would also
+    // throw INVALID_PACK_INDEX (bad magic), so the code alone does not pin the
+    // pre-read size guard. The reason does.
+    expect(data?.reason).toBe(REASON_PACK_IDX_EXCEEDS_MAX);
     expect(reads).toEqual([]);
   });
 
@@ -132,6 +152,12 @@ describe('pack-registry', () => {
     } catch (error) {
       caught = error;
     }
-    expect((caught as { data?: { code?: string } }).data?.code).toBe('INVALID_PACK_INDEX');
+    const data = (caught as { data?: { code?: string; reason?: string } }).data;
+    expect(data?.code).toBe('INVALID_PACK_INDEX');
+    // Kills the L46 `ConditionalExpression -> false` and `BlockStatement -> {}`
+    // mutants: without the post-read length check, the oversized zero-filled
+    // buffer reaches `parsePackIndex`, which throws INVALID_PACK_INDEX with a
+    // DIFFERENT reason (bad magic). Pinning the exact reason kills both.
+    expect(data?.reason).toBe(REASON_PACK_IDX_EXCEEDS_MAX);
   });
 });

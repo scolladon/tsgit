@@ -54,6 +54,16 @@ describe('validateOptions — opts.cwd', () => {
   it("Given opts.cwd = '/abs/path' (absolute), When validateOptions runs, Then it does not throw", () => {
     expect(() => validateOptions({ cwd: '/abs/path' })).not.toThrow();
   });
+
+  it('Given opts.cwd is a Windows UNC path, When validateOptions runs, Then it does not throw (UNC prefix is checked at the START)', () => {
+    // Arrange — a UNC root `\\server\share` is absolute. The guard inspects the
+    // *start* of the value for the `\\` prefix; this path starts with `\\` but
+    // does NOT end with it, so a startsWith→endsWith mutation would reject it.
+    const cwd = '\\\\server\\share';
+
+    // Act / Assert
+    expect(() => validateOptions({ cwd })).not.toThrow();
+  });
 });
 
 describe('validateOptions — opts.config.parallelism', () => {

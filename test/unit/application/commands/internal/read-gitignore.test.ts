@@ -251,6 +251,53 @@ describe('readGlobalExcludes', () => {
     expect(sut).toHaveLength(1);
   });
 
+  it('Given lstat throws a TsgitError with a non-FILE_NOT_FOUND code, When read, Then the error propagates (the swallow is FILE_NOT_FOUND-specific)', async () => {
+    // Arrange — lstat throws a TsgitError whose code is NOT
+    // FILE_NOT_FOUND. The loader's catch must only swallow
+    // FILE_NOT_FOUND; the `err.data.code === 'FILE_NOT_FOUND'` check
+    // mutated to `true` would silence this error and return undefined.
+    const ctx = await seed();
+    const permError = new TsgitError({ code: 'PERMISSION_DENIED', path: '/repo/.gitignore' });
+    const hostileFs = new Proxy(ctx.fs, {
+      get(target, prop, receiver) {
+        if (prop === 'lstat') {
+          return async () => {
+            throw permError;
+          };
+        }
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+    const hostileCtx = { ...ctx, fs: hostileFs };
+
+    // Act
+    let caught: unknown;
+    try {
+      await readGitignore(hostileCtx, '');
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert — the PERMISSION_DENIED error escaped instead of being swallowed.
+    expect(caught).toBeInstanceOf(TsgitError);
+    expect((caught as TsgitError).data.code).toBe('PERMISSION_DENIED');
+  });
+
+  it('Given a present root .gitignore, When read with dir="" , Then it is loaded from `<workDir>/.gitignore` verbatim', async () => {
+    // Arrange — pins the literal `/.gitignore` template segment of the
+    // root-branch path. A StringLiteral mutant replacing the template
+    // would point the loader at a bogus path and yield undefined.
+    const ctx = await seed();
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitignore`, 'build/\n');
+
+    // Act
+    const sut = await readGitignore(ctx, '');
+
+    // Assert — content proves the exact `<workDir>/.gitignore` path.
+    expect(sut).toHaveLength(1);
+    expect(sut?.[0]?.pattern).toBe('build/');
+  });
+
   it('Given core.excludesFile set with EXCLUDESFILE key casing, When read, Then still picks it up (case-insensitive config keys)', async () => {
     // Arrange — git config keys are case-insensitive.
     const ctx = await seed();

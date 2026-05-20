@@ -295,4 +295,60 @@ describe('openRepository — ctx fields', () => {
 
     expect(sut.ctx.progress).toBe(reporter);
   });
+
+  it('Given an opts.logger, When openRepository runs, Then ctx.logger is present (sanitizer-wrapped) — kills the empty-object spread mutant', async () => {
+    // The `{ logger: sanitizedLogger }` literal carries the logger into ctx;
+    // a `{}` mutant would drop it entirely.
+    const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const sut = await openRepository({ cwd: '/repo', logger }, makeFallback());
+
+    expect(sut.ctx.logger).toBeDefined();
+  });
+
+  it('Given opts.logger is omitted, When openRepository runs, Then ctx.logger is undefined', async () => {
+    const sut = await openRepository({ cwd: '/repo' }, makeFallback());
+
+    expect(sut.ctx.logger).toBeUndefined();
+  });
+});
+
+describe('openRepository — dispose macrotask scheduler', () => {
+  it('Given setImmediate is available, When dispose runs, Then setImmediate is used and setTimeout(_, 0) is NOT used for the macrotask boundary', async () => {
+    // Arrange — spy on both schedulers; the real branch must pick setImmediate.
+    const immediateSpy = vi.spyOn(globalThis, 'setImmediate');
+    const timeoutSpy = vi.spyOn(globalThis, 'setTimeout');
+    const sut = await open();
+
+    // Act
+    await sut.dispose();
+
+    // Assert — setImmediate scheduled at least once; setTimeout never called with delay 0.
+    expect(immediateSpy).toHaveBeenCalled();
+    const zeroDelayCalls = timeoutSpy.mock.calls.filter(([, delay]) => delay === 0);
+    expect(zeroDelayCalls).toHaveLength(0);
+
+    immediateSpy.mockRestore();
+    timeoutSpy.mockRestore();
+  });
+
+  it('Given setImmediate is unavailable, When dispose runs, Then it still resolves via the setTimeout(0) fallback', async () => {
+    // Arrange — remove setImmediate so the runtime-detection branch must fall
+    // back to setTimeout. A mutant that unconditionally calls setImmediate would
+    // throw (setImmediate is undefined) and dispose would reject.
+    const sut = await open();
+    vi.stubGlobal('setImmediate', undefined);
+
+    // Act
+    let caught: unknown;
+    try {
+      await sut.dispose();
+    } catch (err) {
+      caught = err;
+    } finally {
+      vi.unstubAllGlobals();
+    }
+
+    // Assert — fallback path completed cleanly.
+    expect(caught).toBeUndefined();
+  });
 });

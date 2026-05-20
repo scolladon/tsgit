@@ -159,6 +159,51 @@ describe('internal/repo-state', () => {
       }
     });
 
+    it('Given readUtf8 rejects with a non-TsgitError, When readHeadRaw, Then the original error is rethrown unchanged (not mapped to REF_NOT_FOUND)', async () => {
+      // Arrange — the guard is `err instanceof TsgitError && ...`; a plain
+      // Error must fail the first operand and be rethrown verbatim.
+      const ctx = createMemoryContext();
+      const original = new Error('disk exploded');
+      const ctxStub: Context = {
+        ...ctx,
+        fs: { ...ctx.fs, readUtf8: async () => Promise.reject(original) },
+      };
+
+      // Act
+      let caught: unknown;
+      try {
+        await readHeadRaw(ctxStub);
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert
+      expect(caught).toBe(original);
+    });
+
+    it('Given readUtf8 rejects with a TsgitError whose code is not FILE_NOT_FOUND, When readHeadRaw, Then that error is rethrown unchanged (not mapped to REF_NOT_FOUND)', async () => {
+      // Arrange — the guard's second operand is `err.data.code === 'FILE_NOT_FOUND'`;
+      // a different code must fail it so the error passes through untouched.
+      const ctx = createMemoryContext();
+      const original = new TsgitError({ code: 'PERMISSION_DENIED', path: '/repo/.git/HEAD' });
+      const ctxStub: Context = {
+        ...ctx,
+        fs: { ...ctx.fs, readUtf8: async () => Promise.reject(original) },
+      };
+
+      // Act
+      let caught: unknown;
+      try {
+        await readHeadRaw(ctxStub);
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert
+      expect(caught).toBe(original);
+      expect((caught as TsgitError).data.code).toBe('PERMISSION_DENIED');
+    });
+
     it('Given missing HEAD, When readHeadRaw, Then throws REF_NOT_FOUND', async () => {
       // Arrange
       const ctx = createMemoryContext();

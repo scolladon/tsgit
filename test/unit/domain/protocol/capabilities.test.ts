@@ -146,6 +146,35 @@ describe('negotiateCapabilities', () => {
     // Assert
     expect(sut).toEqual([]);
   });
+
+  it('Given boolean tokens (no "=") that differ only by their last character, When negotiated, Then no match (whole token is the key)', () => {
+    // Arrange — `keyOf` returns the whole token when there is no "=". A
+    // mutant that always slices (`token.slice(0, eq)` with eq=-1) would drop
+    // the last char of each, collapsing 'agentX' and 'agentY' to the same key.
+    const server = ['agentX'];
+    const client = ['agentY'];
+
+    // Act
+    const sut = negotiateCapabilities(server, client);
+
+    // Assert
+    expect(sut).toEqual([]);
+  });
+
+  it('Given two tokens that each start with "=", When negotiated, Then their key is the empty string and they match', () => {
+    // Arrange — for a token starting with "=", `indexOf('=')` is 0 and the
+    // guard `eq < 0` is false, so `keyOf` returns `token.slice(0, 0)` === ''.
+    // An `eq <= 0` mutant would instead return the whole token, so the two
+    // distinct tokens would no longer share a key.
+    const server = ['=foo'];
+    const client = ['=bar'];
+
+    // Act
+    const sut = negotiateCapabilities(server, client);
+
+    // Assert — both keys are '' so the server token is selected.
+    expect(sut).toEqual(['=foo']);
+  });
 });
 
 describe('AGENT constant shape', () => {

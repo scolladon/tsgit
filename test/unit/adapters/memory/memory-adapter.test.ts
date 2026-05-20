@@ -28,6 +28,14 @@ describe('createMemoryContext', () => {
     expect(sut.layout.homeDir).toBe('/home/me');
   });
 
+  it('Given homeDir option, When reading layout.bare, Then it stays false', () => {
+    // Arrange / Act — the homeDir branch builds the layout independently; bare must remain false.
+    const sut = createMemoryContext({ homeDir: '/home/me' });
+
+    // Assert
+    expect(sut.layout.bare).toBe(false);
+  });
+
   it('Given default options, When reading hash algorithm, Then is sha1', () => {
     // Arrange / Act
     const sut = createMemoryContext();

@@ -4,10 +4,22 @@ import type { GitIndex, IndexEntry } from './index-entry.js';
 const DIRC_SIGNATURE = 0x44495243;
 const ENTRY_HEADER_SIZE = 62;
 
+/**
+ * Lexicographic comparator for index entries. Git stores entries
+ * byte-sorted by path; this returns the standard `-1 / 0 / +1` triple so
+ * `Array.prototype.sort` produces ascending path order and leaves
+ * equal-path entries in their original (stable) order.
+ */
+export function compareEntryPath(a: IndexEntry, b: IndexEntry): number {
+  const left = a.path as string;
+  const right = b.path as string;
+  if (left < right) return -1;
+  if (left > right) return 1;
+  return 0;
+}
+
 export function serializeIndex(index: GitIndex): Uint8Array {
-  const sortedEntries = [...index.entries].sort((a, b) =>
-    (a.path as string) < (b.path as string) ? -1 : (a.path as string) > (b.path as string) ? 1 : 0,
-  );
+  const sortedEntries = [...index.entries].sort(compareEntryPath);
 
   const entryMetas = sortedEntries.map((entry) => {
     const pathBytes = encode(entry.path as string);

@@ -20,6 +20,7 @@ export const readGitignore = async (
   // `<workDir>//.gitignore`. The memory + node FS adapters normalise
   // double-slashes, so the file is found at the same location — the
   // observable behaviour is identical.
+  // Stryker disable next-line ConditionalExpression: equivalent — the false branch yields `${workDir}//.gitignore`; node + memory FS path normalisation collapse the empty segment, so the file resolves to the identical location.
   const path =
     dir === '' ? `${ctx.layout.workDir}/.gitignore` : `${ctx.layout.workDir}/${dir}/.gitignore`;
   return loadAndParse(ctx, path);
@@ -56,6 +57,7 @@ const expandUserPath = (ctx: Context, raw: string): string | undefined => {
     // path always fails `lstat` with FILE_NOT_FOUND and the loader
     // catches it and returns `undefined`. Observable behaviour
     // identical to the explicit guard.
+    // Stryker disable next-line ConditionalExpression: equivalent — dropping the guard templates `"undefined/<rest>"`; that path always fails `lstat` with FILE_NOT_FOUND and the loader catches it and returns `undefined`, identical to the explicit guard.
     if (ctx.layout.homeDir === undefined) return undefined;
     return `${ctx.layout.homeDir}/${raw.slice(2)}`;
   }

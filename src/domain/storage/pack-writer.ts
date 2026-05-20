@@ -109,6 +109,7 @@ export function serializePackIndex(
   }
   const fanout = new Uint32Array(256);
   let cumulative = 0;
+  // Stryker disable next-line EqualityOperator: equivalent — at i=256 bucketCounts[256] is undefined (Uint32Array len 256) so cumulative becomes NaN and fanout[256]=NaN is an out-of-bounds no-op; fanout[0..255] are already final, so no observable change.
   for (let i = 0; i < 256; i++) {
     cumulative += bucketCounts[i]!;
     fanout[i] = cumulative;

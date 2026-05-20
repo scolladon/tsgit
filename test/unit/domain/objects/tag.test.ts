@@ -456,7 +456,7 @@ describe('tag', () => {
       expect(sut).not.toContain('tagger');
     });
 
-    it('Given a tag with newline in tagName, When serializing, Then throws INVALID_TAG', () => {
+    it('Given a tag with newline in tagName, When serializing, Then throws INVALID_TAG with the exact invalid-tag-name reason', () => {
       // Arrange
       const tag: Tag = {
         type: 'tag',
@@ -470,12 +470,103 @@ describe('tag', () => {
         },
       };
 
-      // Act & Assert
-      expect(() => serializeTagContent(tag)).toThrow(
-        expect.objectContaining({
-          data: expect.objectContaining({ code: 'INVALID_TAG' }),
-        }),
-      );
+      // Act
+      let thrown: unknown;
+      try {
+        serializeTagContent(tag);
+      } catch (e) {
+        thrown = e;
+      }
+
+      // Assert — exact reason kills the L125 empty-template StringLiteral mutant
+      expect(thrown).toBeInstanceOf(TsgitError);
+      expect((thrown as TsgitError).data).toEqual({
+        code: 'INVALID_TAG',
+        reason: 'invalid tag name: v1.0\ninjected',
+      });
+    });
+
+    it('Given a tag with an empty tagName, When serializing, Then throws INVALID_TAG with invalid tag name reason', () => {
+      // Arrange — kills the L124 `=== ''` StringLiteral mutant: under the mutant
+      // an empty tagName no longer matches the guard and serialization succeeds.
+      const tag: Tag = {
+        type: 'tag',
+        id: DUMMY_ID,
+        data: {
+          object: OBJ_ID,
+          objectType: 'commit',
+          tagName: '',
+          message: 'msg',
+          extraHeaders: [],
+        },
+      };
+
+      // Act
+      let thrown: unknown;
+      try {
+        serializeTagContent(tag);
+      } catch (e) {
+        thrown = e;
+      }
+
+      // Assert
+      expect(thrown).toBeInstanceOf(TsgitError);
+      expect((thrown as TsgitError).data).toEqual({
+        code: 'INVALID_TAG',
+        reason: 'invalid tag name: ',
+      });
+    });
+
+    it('Given a tag with a NUL byte in tagName, When serializing, Then throws INVALID_TAG with invalid tag name reason', () => {
+      // Arrange — isolates the `includes('\0')` operand of the L124 guard.
+      const tag: Tag = {
+        type: 'tag',
+        id: DUMMY_ID,
+        data: {
+          object: OBJ_ID,
+          objectType: 'commit',
+          tagName: 'v1\0bad',
+          message: 'msg',
+          extraHeaders: [],
+        },
+      };
+
+      // Act
+      let thrown: unknown;
+      try {
+        serializeTagContent(tag);
+      } catch (e) {
+        thrown = e;
+      }
+
+      // Assert
+      expect(thrown).toBeInstanceOf(TsgitError);
+      expect((thrown as TsgitError).data).toEqual({
+        code: 'INVALID_TAG',
+        reason: 'invalid tag name: v1\0bad',
+      });
+    });
+
+    it('Given a tag with a valid non-empty tagName, When serializing, Then it does NOT throw (guard does not over-trigger)', () => {
+      // Arrange — kills the L124 ConditionalExpression `true` direction and pins
+      // the `=== "Stryker was here!"` StringLiteral mutant: a normal name must pass.
+      const tag: Tag = {
+        type: 'tag',
+        id: DUMMY_ID,
+        data: {
+          object: OBJ_ID,
+          objectType: 'commit',
+          tagName: 'release-1',
+          message: 'msg',
+          extraHeaders: [],
+        },
+      };
+
+      // Act
+      const sut = new TextDecoder().decode(serializeTagContent(tag));
+
+      // Assert
+      expect(sut).toContain('tag release-1\n');
     });
 
     it('Given a tag with extraHeaders, When serializing, Then extra headers appear with continuation lines', () => {

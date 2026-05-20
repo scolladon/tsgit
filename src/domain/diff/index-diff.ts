@@ -190,7 +190,9 @@ export function conflictsToIndexEntries(
   }
   entries.sort((a, b) => {
     const pathCmp = comparePaths(a.path, b.path);
+    // Stryker disable next-line ConditionalExpression: equivalent — same-path entries only ever come from one conflict (duplicate paths are rejected above) and are pushed in ascending stage order 1→2→3; with `true` the comparator returns 0 for them and V8's spec-stable sort preserves that already-ascending insertion order, yielding identical output.
     if (pathCmp !== 0) return pathCmp;
+    // Stryker disable next-line ArithmeticOperator: equivalent — same-path runs are always pushed pre-sorted ascending by stage (conflictStageEmissions emits 1→2→3, duplicate paths rejected above), so the comparator never has to reorder them; `+` and `-` both leave the already-ascending run in place.
     return a.flags.stage - b.flags.stage;
   });
   return entries;

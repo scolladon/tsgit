@@ -280,6 +280,108 @@ describe('shallow-file', () => {
       expect((caught as TsgitError).data.code).toBe('PERMISSION_DENIED');
     });
 
+    it('Given fs.rename fails during atomicWrite, When updateShallow runs, Then the rename error propagates after a best-effort lock cleanup', async () => {
+      // Arrange — kills the L96 outer-catch `BlockStatement -> {}` (emptying it
+      // would swallow the rename failure) and the L100 `BlockStatement -> {}`
+      // (removing the `rm` call would skip lock cleanup). `rm` succeeds here so
+      // the inner catch is not exercised.
+      const ctx = createMemoryContext();
+      await ctx.fs.mkdir(ctx.layout.gitDir);
+      const rmCalls: string[] = [];
+      const failingRename = {
+        ...ctx,
+        fs: {
+          ...ctx.fs,
+          rename: async (): Promise<void> => {
+            throw new TsgitError({ code: 'PERMISSION_DENIED', path: 'shallow' });
+          },
+          rm: async (p: string): Promise<void> => {
+            rmCalls.push(p);
+          },
+        },
+      };
+
+      // Act
+      let caught: unknown;
+      try {
+        await updateShallow(failingRename, { shallow: [OID_A], unshallow: [] });
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert — the rename error surfaces; the lock was cleaned up.
+      expect(caught).toBeInstanceOf(TsgitError);
+      expect((caught as TsgitError).data.code).toBe('PERMISSION_DENIED');
+      expect(rmCalls).toEqual([`${ctx.layout.gitDir}/shallow.lock`]);
+    });
+
+    it('Given fs.rename fails and the lock cleanup rm throws a non-FILE_NOT_FOUND error, When updateShallow runs, Then the rm error propagates', async () => {
+      // Arrange — kills L102 `BlockStatement -> {}` (swallowing rmErr would let
+      // the rename error through instead), L103 `ConditionalExpression -> false`
+      // (never re-throwing rmErr) and the `BooleanLiteral` mutant that drops the
+      // `!` (would make `isFileNotFound` false → no throw). The inner rm error
+      // is FILE_EXISTS — distinct from the rename error's PERMISSION_DENIED.
+      const ctx = createMemoryContext();
+      await ctx.fs.mkdir(ctx.layout.gitDir);
+      const failing = {
+        ...ctx,
+        fs: {
+          ...ctx.fs,
+          rename: async (): Promise<void> => {
+            throw new TsgitError({ code: 'PERMISSION_DENIED', path: 'shallow' });
+          },
+          rm: async (): Promise<void> => {
+            throw new TsgitError({ code: 'FILE_EXISTS', path: 'shallow.lock' });
+          },
+        },
+      };
+
+      // Act
+      let caught: unknown;
+      try {
+        await updateShallow(failing, { shallow: [OID_A], unshallow: [] });
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert — the rm error wins because it is not FILE_NOT_FOUND.
+      expect(caught).toBeInstanceOf(TsgitError);
+      expect((caught as TsgitError).data.code).toBe('FILE_EXISTS');
+    });
+
+    it('Given fs.rename fails and the lock cleanup rm throws FILE_NOT_FOUND, When updateShallow runs, Then the original rename error propagates', async () => {
+      // Arrange — kills the L103 `ConditionalExpression -> true` mutant (which
+      // would always re-throw rmErr — here the FILE_NOT_FOUND rm error — instead
+      // of the rename error) and the `BooleanLiteral` mutant. A FILE_NOT_FOUND
+      // on rm is tolerated, so the rename error must surface.
+      const ctx = createMemoryContext();
+      await ctx.fs.mkdir(ctx.layout.gitDir);
+      const failing = {
+        ...ctx,
+        fs: {
+          ...ctx.fs,
+          rename: async (): Promise<void> => {
+            throw new TsgitError({ code: 'PERMISSION_DENIED', path: 'shallow' });
+          },
+          rm: async (): Promise<void> => {
+            throw new TsgitError({ code: 'FILE_NOT_FOUND', path: 'shallow.lock' });
+          },
+        },
+      };
+
+      // Act
+      let caught: unknown;
+      try {
+        await updateShallow(failing, { shallow: [OID_A], unshallow: [] });
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert — FILE_NOT_FOUND on rm is swallowed; the rename error surfaces.
+      expect(caught).toBeInstanceOf(TsgitError);
+      expect((caught as TsgitError).data.code).toBe('PERMISSION_DENIED');
+    });
+
     it('Given shallow that re-adds an existing oid, When updateShallow runs, Then no duplicate (Set semantics)', async () => {
       // Arrange
       const ctx = createMemoryContext();

@@ -9,6 +9,7 @@ import {
   exceedsMaxTreeEntries,
   exceedsMaxWalkSeeds,
   hasDeclaredId,
+  hasHeaderInjectionChars,
   isContainedRefSegment,
   isEmptyFrom,
   isGitlink,
@@ -235,6 +236,51 @@ describe('isInvalidExtraHeaderKey', () => {
   });
   it('Given a key with a tab, Then returns true', () => {
     expect(isInvalidExtraHeaderKey('a\tb')).toBe(true);
+  });
+});
+
+describe('hasHeaderInjectionChars', () => {
+  it('Given a clean value, When hasHeaderInjectionChars, Then returns false', () => {
+    // Arrange & Act
+    const sut = hasHeaderInjectionChars('a clean header value');
+
+    // Assert
+    expect(sut).toBe(false);
+  });
+
+  it('Given a value containing NUL, When hasHeaderInjectionChars, Then returns true', () => {
+    expect(hasHeaderInjectionChars('a\0b')).toBe(true);
+  });
+
+  it('Given a value containing CR, When hasHeaderInjectionChars, Then returns true', () => {
+    expect(hasHeaderInjectionChars('a\rb')).toBe(true);
+  });
+
+  it('Given a value containing a double LF, When hasHeaderInjectionChars, Then returns true', () => {
+    expect(hasHeaderInjectionChars('a\n\nb')).toBe(true);
+  });
+
+  it('Given a value with a LEADING LF only (no trailing LF), When hasHeaderInjectionChars, Then returns true', () => {
+    // Isolates the `value.startsWith(\'\\n\')` operand: trailing is false here,
+    // so an `&&` mutant or a dropped startsWith operand would return false.
+    const sut = hasHeaderInjectionChars('\nabc');
+
+    expect(sut).toBe(true);
+  });
+
+  it('Given a value with a TRAILING LF only (no leading LF), When hasHeaderInjectionChars, Then returns true', () => {
+    // Isolates the `value.endsWith(\'\\n\')` operand: leading is false here,
+    // so an `&&` mutant or a dropped endsWith operand would return false.
+    const sut = hasHeaderInjectionChars('abc\n');
+
+    expect(sut).toBe(true);
+  });
+
+  it('Given a value with an INTERIOR single LF only, When hasHeaderInjectionChars, Then returns false', () => {
+    // No NUL/CR, no `\n\n`, not leading/trailing — every guard must be false.
+    const sut = hasHeaderInjectionChars('a\nb');
+
+    expect(sut).toBe(false);
   });
 });
 

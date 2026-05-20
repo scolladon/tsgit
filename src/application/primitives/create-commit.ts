@@ -56,6 +56,7 @@ export async function createCommit(ctx: Context, input: CreateCommitInput): Prom
       author: input.author,
       committer: input.committer,
       message: input.message,
+      // Stryker disable next-line ConditionalExpression: equivalent — when gpgSignature is undefined, spreading `{ gpgSignature: undefined }` vs `{}` is invisible to serializeCommitContent (it skips undefined gpgsig), so the written object id is identical
       ...(input.gpgSignature !== undefined ? { gpgSignature: input.gpgSignature } : {}),
       extraHeaders: input.extraHeaders ?? [],
     },

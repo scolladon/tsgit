@@ -10,6 +10,7 @@ export function primaryPath(change: DiffChange): FilePath {
       return change.oldPath;
     case 'rename':
       return change.newPath;
+    // Stryker disable next-line ConditionalExpression: equivalent — empty 'modify' case falls through to 'type-change', which also returns change.path
     case 'modify':
       return change.path;
     case 'type-change':

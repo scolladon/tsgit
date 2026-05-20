@@ -40,6 +40,25 @@ function arbUniqueEntries(maxLen: number): fc.Arbitrary<TestIndexEntry[]> {
     .map(dedupeEntries);
 }
 
+const IDX_HEADER_SIZE = 8;
+const IDX_FANOUT_SIZE = 1024;
+const IDX_MIN_SIZE = IDX_HEADER_SIZE + IDX_FANOUT_SIZE; // 1032
+
+// Builds a structurally-valid index of `byteLength` total bytes whose 256
+// fanout slots are all set to `fanoutValue` (a constant fanout is monotonic).
+// Lets a test control `bytes.length` and `objectCount` independently of the
+// SHA/offset tables — needed to probe the size-guard boundary mutants.
+function buildRawIndex(byteLength: number, fanoutValue: number): Uint8Array {
+  const bytes = new Uint8Array(byteLength);
+  const view = new DataView(bytes.buffer);
+  view.setUint32(0, 0xff744f63);
+  view.setUint32(4, 2);
+  for (let i = 0; i < 256; i++) {
+    view.setUint32(IDX_HEADER_SIZE + i * 4, fanoutValue);
+  }
+  return bytes;
+}
+
 describe('pack-index', () => {
   describe('parsePackIndex', () => {
     it('Given a valid .idx v2 with 0 objects, When parsing, Then objectCount=0', () => {
@@ -566,6 +585,158 @@ describe('pack-index', () => {
 
       // Assert
       expect(sut).toHaveLength(2);
+    });
+  });
+
+  describe('parsePackIndex — size-guard boundary mutants', () => {
+    it('Given a file of exactly minSize (1032) bytes, When parsing, Then the header/fanout guard does not fire — the later truncation guard reports the expected size instead', () => {
+      // Arrange — exactly header(8)+fanout(1024) bytes, objectCount 0. The
+      // `bytes.length < minSize` guard must be a strict `<`: at length === 1032
+      // it must pass and let the second guard report `expected at least 1072`.
+      // A `<=` mutant would short-circuit here with the 'header and fanout'
+      // reason instead.
+      const sut = buildRawIndex(IDX_MIN_SIZE, 0);
+
+      // Act & Assert
+      try {
+        parsePackIndex(sut);
+        expect.fail('Should have thrown');
+      } catch (e) {
+        const err = e as TsgitError;
+        expect(err.data).toEqual(
+          expect.objectContaining({
+            code: 'INVALID_PACK_INDEX',
+            reason: expect.stringContaining('expected at least 1072'),
+          }),
+        );
+        expect((err.data as { reason: string }).reason).not.toContain('header and fanout');
+      }
+    });
+
+    it('Given a magic value whose hex is shorter than 8 chars, When parsing, Then the reason zero-pads it to 8 digits', () => {
+      // Arrange — magic 0x00744f63 hexes to '744f63' (6 chars); the padStart
+      // pad char must be '0'. A `padStart(8, "")` mutant would leave it
+      // unpadded ('0x744f63'), so we assert the fully padded form.
+      const sut = buildRawIndex(IDX_MIN_SIZE + 40, 0);
+      const view = new DataView(sut.buffer, sut.byteOffset, sut.byteLength);
+      view.setUint32(0, 0x00744f63);
+
+      // Act & Assert
+      try {
+        parsePackIndex(sut);
+        expect.fail('Should have thrown');
+      } catch (e) {
+        const err = e as TsgitError;
+        expect((err.data as { reason: string }).reason).toContain('got 0x00744f63');
+      }
+    });
+
+    it('Given a fanout that is monotonic across all 256 slots, When parsing, Then the monotonicity loop stops at index 255 and never inspects index 256', () => {
+      // Arrange — all 256 fanout slots equal 5, so objectCount is 5 and the
+      // word just past the fanout (offset 1032, here trailer zeros) is 0.
+      // The loop bound must be `i < 256`: an `i <= 256` mutant would read that
+      // 0 word and report a spurious 'non-monotonic fanout at index 256'
+      // (0 < prev=5). The correct code instead reaches the truncation guard.
+      const sut = buildRawIndex(IDX_MIN_SIZE + 40, 5);
+
+      // Act & Assert
+      try {
+        parsePackIndex(sut);
+        expect.fail('Should have thrown');
+      } catch (e) {
+        const err = e as TsgitError;
+        expect((err.data as { reason: string }).reason).toContain('truncated');
+        expect((err.data as { reason: string }).reason).not.toContain('non-monotonic');
+      }
+    });
+  });
+
+  describe('readOffset — large-offset arithmetic mutants', () => {
+    it('Given a large offset whose entry sits one slot past the table, When looking up, Then trailerOffset (length - 40) rejects it as out of range', () => {
+      // Arrange — 1 entry, 1 large-offset slot. trailerOffset === 1068.
+      // Corrupt the small offset to largeIdx=1 → largeOffset === 1068, so
+      // largeOffset + 8 === 1076 > 1068 must throw. The `length - 40` arithmetic
+      // is load-bearing: a `length + 40` mutant raises trailerOffset to 1148
+      // and the guard would wrongly pass.
+      const entries: TestIndexEntry[] = [makeEntry('aa' + '00'.repeat(19), 0x80000001)];
+      const idx = parsePackIndex(buildTestIndex(entries));
+      idx._view.setUint32(idx.smallOffsetsTableOffset, 0x80000000 | 1);
+
+      // Act & Assert
+      try {
+        lookupPackIndex(idx, ('aa' + '00'.repeat(19)) as ObjectId);
+        expect.fail('Should have thrown');
+      } catch (e) {
+        const err = e as TsgitError;
+        expect(err.data).toEqual(
+          expect.objectContaining({
+            code: 'INVALID_PACK_INDEX',
+            reason: expect.stringContaining('out of range'),
+          }),
+        );
+      }
+    });
+
+    it('Given a large offset entry exactly at the trailer boundary, When looking up, Then the `largeOffset + 8` bound check rejects it', () => {
+      // Arrange — corrupt small offset to largeIdx=1 so largeOffset === 1068
+      // and trailerOffset === 1068. The guard `largeOffset + 8 > trailerOffset`
+      // (1076 > 1068) must throw; a `largeOffset - 8` mutant computes
+      // 1060 > 1068 (false) and would wrongly proceed.
+      const entries: TestIndexEntry[] = [makeEntry('bb' + '00'.repeat(19), 0x80000001)];
+      const idx = parsePackIndex(buildTestIndex(entries));
+      idx._view.setUint32(idx.smallOffsetsTableOffset, 0x80000000 | 1);
+
+      // Act & Assert
+      try {
+        lookupPackIndex(idx, ('bb' + '00'.repeat(19)) as ObjectId);
+        expect.fail('Should have thrown');
+      } catch (e) {
+        const err = e as TsgitError;
+        expect(err.data).toEqual(
+          expect.objectContaining({
+            code: 'INVALID_PACK_INDEX',
+            reason: expect.stringContaining('out of range'),
+          }),
+        );
+      }
+    });
+
+    it('Given a large offset whose high word is exactly 0x1fffff, When looking up, Then it is accepted (not rejected)', () => {
+      // Arrange — high word === 0x1fffff is the largest still-safe value. The
+      // guard must be a strict `high > 0x1fffff`: a `>=` mutant would reject
+      // this valid offset.
+      const entries: TestIndexEntry[] = [makeEntry('cc' + '00'.repeat(19), 0x80000001)];
+      const idx = parsePackIndex(buildTestIndex(entries));
+      idx._view.setUint32(idx.largeOffsetsTableOffset, 0x1fffff);
+      idx._view.setUint32(idx.largeOffsetsTableOffset + 4, 7);
+
+      // Act
+      const sut = lookupPackIndex(idx, ('cc' + '00'.repeat(19)) as ObjectId);
+
+      // Assert
+      expect(sut).toBe(0x1fffff * 0x100000000 + 7);
+    });
+  });
+
+  describe('fanout `lo` lower bound — optimization-only mutants', () => {
+    it('Given a non-zero first byte whose predecessor fanout is non-zero, When looking up, Then the result matches a from-zero search', () => {
+      // The `firstByte === 0 ? 0 : readFanout(firstByte - 1)` ternary only
+      // narrows the binary-search window; the search over [0, hi) finds the
+      // same entry. This regression test pins that the optimized `lo` and a
+      // from-zero search agree, documenting why the ConditionalExpression
+      // mutant (`lo` forced to 0) is observably equivalent.
+      const entries: TestIndexEntry[] = [
+        makeEntry('11' + '00'.repeat(19), 10),
+        makeEntry('22' + '00'.repeat(19), 20),
+        makeEntry('33' + '00'.repeat(19), 30),
+      ];
+      const idx = parsePackIndex(buildTestIndex(entries));
+
+      // Act
+      const sut = lookupPackIndex(idx, ('33' + '00'.repeat(19)) as ObjectId);
+
+      // Assert
+      expect(sut).toBe(30);
     });
   });
 

@@ -146,6 +146,7 @@ function validateEntryType(type: number, offset: number): void {
   if (type === 5) {
     throw invalidPackEntry(offset, 'reserved type 5');
   }
+  // Stryker disable next-line ConditionalExpression: equivalent — `type` is `(firstByte >> 4) & 0x07`, a 3-bit value bounded to 0..7, so the `type > 7` operand can never be true; replacing it with `false` cannot change behaviour.
   if (type < 1 || type > 7) {
     throw invalidPackEntry(offset, `unknown type ${type}`);
   }

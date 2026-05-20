@@ -54,6 +54,7 @@ const reasonFor = (segment: string): string => {
 const isControlChar = (code: number): boolean => code < 0x20 || (code >= 0x7f && code <= 0x9f);
 
 const unsafeReason = (path: string): string | undefined => {
+  // Stryker disable next-line EqualityOperator: equivalent — `i <= path.length` adds one iteration where charCodeAt returns NaN, which fails every check (NaN comparisons are always false), so behavior is unchanged.
   for (let i = 0; i < path.length; i += 1) {
     const code = path.charCodeAt(i);
     // 0x00 is filtered upstream by the NUL terminator scan; we re-assert

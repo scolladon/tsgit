@@ -236,6 +236,48 @@ describe('lru-cache', () => {
       expect(sut.get('big')).toBeUndefined();
     });
 
+    it('Given cache(50) holding a(30), When setting an over-cap 200-byte entry, Then the existing entry is left untouched (set is a pure no-op)', () => {
+      // Arrange — kills the L92 `byteSize > maxSizeBytes` ConditionalExpression
+      // `false` mutant AND the L92 `{ return; }` BlockStatement `{}` mutant:
+      // without the early return, the over-cap entry is inserted and the
+      // subsequent evict() walk also evicts the pre-existing 'a'.
+      const sut = createLruCache<string>(50);
+      sut.set('a', 'A', 30);
+
+      // Act
+      sut.set('big', 'large-value', 200);
+
+      // Assert — 'a' survives; the over-cap set changed nothing.
+      expect(sut.get('a')).toBe('A');
+      expect(sut.currentSize).toBe(30);
+      expect(sut.entryCount).toBe(1);
+      expect(sut.get('big')).toBeUndefined();
+    });
+
+    it('Given a cache where the sole head node is removed twice via delete then refilled, When two entries force eviction, Then currentSize reflects only live entries', () => {
+      // Arrange — exercises removeNode on a head node (node.prev === null) so
+      // the L32 else-branch `head = node.next` matters. Without it, `head`
+      // stays a dead node, a later addToHead wires a live node's `.next` to
+      // the dead node, and a subsequent removeNode skips the tail update —
+      // leaving a dead node as `tail`. evict() then decrements currentSize by
+      // the dead node's stale byteSize (60 instead of the correct 60-only-live).
+      const sut = createLruCache<string>(100);
+      sut.set('a', 'A', 10);
+      sut.delete('a'); // removeNode on sole head node
+      sut.set('b', 'B', 10);
+      sut.delete('b'); // removeNode on sole head node again
+
+      // Act — two 60-byte entries: total 120 > 100 forces one eviction.
+      sut.set('c', 'C', 60);
+      sut.set('d', 'D', 60);
+
+      // Assert — exactly one live entry of 60 bytes remains.
+      expect(sut.entryCount).toBe(1);
+      expect(sut.currentSize).toBe(60);
+      expect(sut.get('d')).toBe('D');
+      expect(sut.get('c')).toBeUndefined();
+    });
+
     it('Given set with byteSize=0, When calling, Then throws Error with message indicating byteSize must be positive', () => {
       // Arrange
       const sut = createLruCache<string>(100);

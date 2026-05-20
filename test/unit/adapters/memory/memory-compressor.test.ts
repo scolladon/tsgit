@@ -102,6 +102,46 @@ describe('MemoryCompressor', () => {
       }
     });
 
+    it('Given streamInflate input exactly at the safety cap with a valid prefix, When called, Then it inflates without hitting the cap', async () => {
+      // Arrange — a 64KiB buffer (length === cap, not above it) whose first
+      // bytes are a real deflate stream; the cap guard uses `>`, so an
+      // exactly-cap input must NOT throw. A `>=` mutant would reject it.
+      const sut = new MemoryCompressor();
+      const payload = await sut.deflate(new Uint8Array([7, 8, 9]));
+      const buffer = new Uint8Array(64 * 1024);
+      buffer.set(payload, 0);
+
+      // Act
+      const result = await sut.streamInflate(buffer, 0);
+
+      // Assert
+      expect(Array.from(result.output)).toEqual([7, 8, 9]);
+      expect(result.bytesConsumed).toBe(payload.length);
+    });
+
+    it('Given bytes that never form a valid zlib stream within the cap, When streamInflate, Then throws DECOMPRESS_FAILED with the no-valid-stream reason', async () => {
+      // Arrange — small all-zero input: no prefix decompresses cleanly, so the
+      // loop exhausts and the terminal throw fires with its exact message.
+      const sut = new MemoryCompressor();
+      const garbage = new Uint8Array([0, 0, 0, 0]);
+
+      // Act
+      let caught: unknown;
+      try {
+        await sut.streamInflate(garbage, 0);
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert
+      expect(caught).toBeInstanceOf(TsgitError);
+      const data = (caught as TsgitError).data;
+      expect(data.code).toBe('DECOMPRESS_FAILED');
+      if (data.code === 'DECOMPRESS_FAILED') {
+        expect(data.reason).toBe('no valid zlib stream at offset');
+      }
+    });
+
     it('Given non-Error thrown during deflate, When failing, Then reason falls back to String(err)', async () => {
       // Arrange — throw a non-Error (string) to exercise describeError's else branch via deflate.
       const sut = new MemoryCompressor();

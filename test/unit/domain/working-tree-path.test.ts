@@ -36,6 +36,17 @@ describe('validateWorkingTreePath', () => {
     expect((err.data as { path: string }).path).toBe(input);
   });
 
+  it('Given a path exceeding 4096 bytes but with every component legal, When validated, Then rejects on the total-byte cap', () => {
+    // Kills the L30 `if (byteLength(input) > MAX_PATH_BYTES)` -> `if (false)`
+    // mutant. Each component is 200 bytes (≤ 255) so the per-component guard
+    // never fires; only the total-byte cap can reject this input.
+    const segment = 'a'.repeat(200);
+    const input = Array.from({ length: 25 }, () => segment).join('/');
+    expect(input.length).toBeGreaterThan(4096);
+    const err = expectReject(input);
+    expect((err.data as { path: string }).path).toBe(input);
+  });
+
   it('Given a path of exactly 4096 bytes (composed of legal components), When validated, Then accepts (boundary)', () => {
     // Kills the `>` → `>=` mutant on the path-byte guard.
     // 16 segments × 254 chars + 15 slashes = 4079. Add '/' + 16 chars

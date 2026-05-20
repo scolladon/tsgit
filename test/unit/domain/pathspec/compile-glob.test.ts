@@ -10,6 +10,17 @@ describe('compileGlob', () => {
     expect(sut.test('other')).toBe(false);
   });
 
+  it('Given anchored=true, When matched against a path that merely ends with the pattern, Then it does NOT match (the `^` anchor is present)', () => {
+    // Arrange — without the leading `^` the regex would be `src$`, which matches
+    // any string ending in `src`. The anchor must reject a prefixed path.
+    const sut = compileGlob('src', { anchored: true });
+
+    // Act / Assert
+    expect(sut.test('vendorsrc')).toBe(false);
+    expect(sut.test('a/src')).toBe(false);
+    expect(sut.test('src')).toBe(true);
+  });
+
   it('Given a literal "src" with anchored=true AND withDirSuffix=true, When compiled, Then matches the path AND any descendant', () => {
     const sut = compileGlob('src', { anchored: true, withDirSuffix: true });
 

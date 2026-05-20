@@ -46,10 +46,7 @@ export const readShallow = async (ctx: Context): Promise<ReadonlySet<ObjectId>> 
   const out = new Set<ObjectId>();
   for (const line of raw.split('\n')) {
     const trimmed = line.trim();
-    // equivalent-mutant: dropping `if (trimmed.length === 0) continue` is
-    // observable-equivalent — the next guard `!isShallowOid(trimmed)` catches
-    // empty strings because `SHA_ANY_RE` requires 40 hex chars. Kept as a
-    // micro-optimization that skips the regex test for blank lines.
+    // Stryker disable next-line ConditionalExpression: equivalent — dropping this guard is observable-equivalent; the next guard `!isShallowOid(trimmed)` rejects the empty string anyway since `SHA_ANY_RE` requires 40 hex chars. Kept as a micro-optimization skipping the regex test for blank lines.
     if (trimmed.length === 0) continue;
     if (!isShallowOid(trimmed)) continue;
     out.add(OID.from(trimmed));

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createCommit } from '../../../../src/application/primitives/create-commit.js';
+import { MAX_WALK_QUEUE_SIZE } from '../../../../src/application/primitives/types.js';
 import { walkCommits } from '../../../../src/application/primitives/walk-commits.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { TsgitError } from '../../../../src/domain/error.js';
@@ -392,6 +393,104 @@ describe('walkCommits', () => {
       expect(error).not.toBeInstanceOf(TsgitError);
       expect((error as Error).message).toBe('io boom');
     }
+  });
+
+  describe('queue-overflow guard', () => {
+    it('Given a seed commit with MAX_WALK_QUEUE_SIZE+1 distinct parents, When walking, Then throws INVALID_WALK_INPUT with the queue-overflow reason', async () => {
+      // Arrange — one commit whose parents would push the queue past its bound.
+      // The guard `state.queue.length >= MAX_WALK_QUEUE_SIZE` must fire on the
+      // (MAX+1)-th push: a `> ` mutant or a `false` mutant lets all parents
+      // enqueue, after which the walk dequeues a fake parent and surfaces
+      // OBJECT_NOT_FOUND instead — a different, killable outcome.
+      const ctx = await buildSeededContext();
+      const tree: Tree = { type: 'tree', entries: [], id: '' as ObjectId };
+      const treeId = await writeObject(ctx, tree);
+      const parents = Array.from(
+        { length: MAX_WALK_QUEUE_SIZE + 1 },
+        (_, i) => i.toString(16).padStart(40, '0') as ObjectId,
+      );
+      const seed = await createCommit(ctx, {
+        tree: treeId,
+        parents,
+        author: AUTHOR,
+        committer: AUTHOR,
+        message: 'octopus',
+      });
+
+      // Act & Assert
+      let caught: unknown;
+      try {
+        for await (const _ of walkCommits(ctx, { from: [seed] })) void _;
+        expect.unreachable();
+      } catch (error) {
+        caught = error;
+      }
+      expect(caught).toBeInstanceOf(TsgitError);
+      expect((caught as TsgitError).data.code).toBe('INVALID_WALK_INPUT');
+      expect((caught as TsgitError).data).toEqual(
+        expect.objectContaining({ reason: expect.stringContaining('queue') }),
+      );
+    });
+
+    it('Given a seed whose MAX_WALK_QUEUE_SIZE+1 parents are all an already-visited oid, When walking, Then the dedup guard skips them all and the walk completes without overflow', async () => {
+      // Arrange — walk from [v, H] where H lists the SAME visited oid `v`
+      // MAX+1 times. The `visited.has(parent) || ...` pre-filter in
+      // enqueueParents must skip every duplicate so the queue never grows.
+      // Any mutant that weakens that guard (`||`→`&&`, or the whole condition
+      // forced to `false`) lets all MAX+1 copies enqueue and trips the
+      // overflow guard — observably different from this clean completion.
+      const ctx = await buildSeededContext();
+      const tree: Tree = { type: 'tree', entries: [], id: '' as ObjectId };
+      const treeId = await writeObject(ctx, tree);
+      const v = await createCommit(ctx, {
+        tree: treeId,
+        parents: [],
+        author: AUTHOR,
+        committer: AUTHOR,
+        message: 'visited-root',
+      });
+      const head = await createCommit(ctx, {
+        tree: treeId,
+        parents: Array.from({ length: MAX_WALK_QUEUE_SIZE + 1 }, () => v),
+        author: { ...AUTHOR, timestamp: AUTHOR.timestamp + 1 },
+        committer: { ...AUTHOR, timestamp: AUTHOR.timestamp + 1 },
+        message: 'head-with-duplicate-parents',
+      });
+
+      // Act
+      const commits = await collect(walkCommits(ctx, { from: [v, head] }));
+
+      // Assert — exactly v and head, each once; no overflow throw.
+      const ids = commits.map((c) => c.id).sort();
+      expect(ids).toEqual([v, head].sort());
+    });
+  });
+
+  describe('abort guard inside the walk loop', () => {
+    it('Given a signal already aborted before iteration, When walkCommits is iterated, Then yields zero commits and throws OPERATION_ABORTED', async () => {
+      // Arrange — the loop-head `if (ctx.signal?.aborted) throw` must fire on
+      // the very first iteration. A `false` mutant of that condition lets the
+      // walk yield the seed commit; asserting zero yields kills it.
+      const ctx = await buildSeededContext();
+      const [id] = await linearChain(ctx, 1);
+      const controller = new AbortController();
+      controller.abort();
+      const aborted = { ...ctx, signal: controller.signal };
+
+      // Act & Assert
+      const yielded: ObjectId[] = [];
+      let caught: unknown;
+      try {
+        for await (const c of walkCommits(aborted, { from: [id as ObjectId] })) {
+          yielded.push(c.id);
+        }
+        expect.unreachable();
+      } catch (error) {
+        caught = error;
+      }
+      expect(yielded).toEqual([]);
+      expect((caught as TsgitError).data.code).toBe('OPERATION_ABORTED');
+    });
   });
 
   describe('shallow boundary', () => {

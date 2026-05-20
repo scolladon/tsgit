@@ -121,6 +121,106 @@ describe('NodeCompressor', () => {
       expect((caught as TsgitError).data.code).toBe('DECOMPRESS_FAILED');
     });
 
+    it('Given a streamInflate roundtrip whose output equals the cap EXACTLY, When streamInflate runs, Then it succeeds (boundary is strictly greater-than, not >=)', async () => {
+      // Arrange — payload length === cap: `total > cap` stays false at the boundary,
+      // whereas a `total >= cap` mutant would reject this legitimate input.
+      const sut = new NodeCompressor({ maxInflatedBytes: 20 });
+      const payload = new TextEncoder().encode('aaaaaaaaaaaaaaaaaaaa'); // exactly 20 bytes
+      const deflated = await sut.deflate(payload);
+
+      // Act
+      const result = await sut.streamInflate(deflated, 0);
+
+      // Assert
+      expect(result.output).toEqual(payload);
+    });
+
+    it('Given a createInflateStream roundtrip whose output equals the cap EXACTLY, When piped, Then it succeeds (boundary is strictly greater-than, not >=)', async () => {
+      // Arrange — same boundary probe for the TransformStream path's `total > cap` guard.
+      const sut = new NodeCompressor({ maxInflatedBytes: 20 });
+      const payload = new TextEncoder().encode('aaaaaaaaaaaaaaaaaaaa'); // exactly 20 bytes
+      const deflated = await sut.deflate(payload);
+      const source = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(deflated);
+          controller.close();
+        },
+      });
+      const chunks: Uint8Array[] = [];
+      const sink = new WritableStream<Uint8Array>({
+        write(chunk) {
+          chunks.push(chunk);
+        },
+      });
+
+      // Act
+      await source.pipeThrough(sut.createInflateStream()).pipeTo(sink);
+
+      // Assert
+      const total = chunks.reduce((acc, c) => acc + c.length, 0);
+      expect(total).toBe(20);
+    });
+
+    it('Given the streamInflate cap rejection, When triggered, Then the error message is exactly "inflated output exceeds safety cap"', async () => {
+      // Arrange — pins the StringLiteral on the reject() message.
+      const sut = new NodeCompressor({ maxInflatedBytes: 4 });
+      const payload = new TextEncoder().encode('aaaaaaaaaaaaaaaaaaaa');
+      const deflated = await sut.deflate(payload);
+
+      // Act
+      let caught: unknown;
+      try {
+        await sut.streamInflate(deflated, 0);
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert
+      expect((caught as TsgitError).message).toContain('inflated output exceeds safety cap');
+    });
+
+    it('Given the createInflateStream cap rejection, When triggered, Then the error message is exactly "inflated output exceeds safety cap"', async () => {
+      // Arrange — pins the StringLiteral on the controller.error() message.
+      const sut = new NodeCompressor({ maxInflatedBytes: 4 });
+      const payload = new TextEncoder().encode('aaaaaaaaaaaaaaaaaaaa');
+      const deflated = await sut.deflate(payload);
+      const source = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(deflated);
+          controller.close();
+        },
+      });
+      const sink = new WritableStream<Uint8Array>();
+
+      // Act
+      let caught: unknown;
+      try {
+        await source.pipeThrough(sut.createInflateStream()).pipeTo(sink);
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert
+      expect((caught as TsgitError).message).toContain('inflated output exceeds safety cap');
+    });
+
+    it('Given a large payload that inflates across multiple data chunks, When streamInflate runs, Then all chunks are concatenated in order (offset advances forward)', async () => {
+      // Arrange — 256 KiB exceeds Node's inflate chunk buffer, forcing several
+      // 'data' events. concatUint8 must advance `offset` forward; a `-=` mutant
+      // would compute a negative offset and make out.set() throw RangeError.
+      const sut = new NodeCompressor();
+      const size = 256 * 1024;
+      const payload = new Uint8Array(size);
+      for (let i = 0; i < size; i += 1) payload[i] = i & 0xff;
+      const deflated = await sut.deflate(payload);
+
+      // Act
+      const result = await sut.streamInflate(deflated, 0);
+
+      // Assert — exact byte-for-byte recovery proves forward concatenation.
+      expect(result.output).toEqual(payload);
+    });
+
     it('Given oversized payload to inflate(), When inflate runs, Then throws DECOMPRESS_FAILED (Node maxOutputLength enforced)', async () => {
       // Kills the mutant where the inflate() maxOutputLength option is removed.
       const sut = new NodeCompressor({ maxInflatedBytes: 4 });

@@ -121,6 +121,22 @@ describe('writeObject', () => {
     }
   });
 
+  it('Given a blob, When writeObject is called, Then the objects sub-directory is the 2-char id prefix (not the full id)', async () => {
+    // Kills the MethodExpression mutant on `computed.slice(0, 2)`: dropping the
+    // slice makes `prefix` the full 40-char id, so mkdir creates
+    // `objects/<40-char-id>` instead of `objects/<2-char-prefix>`.
+    // Arrange
+    const ctx = await buildSeededContext();
+    const blob: Blob = { type: 'blob', content: new Uint8Array([77]), id: '' as ObjectId };
+
+    // Act
+    const id = await writeObject(ctx, blob);
+
+    // Assert — the 2-char prefix directory exists; the full-id directory does not.
+    expect(await ctx.fs.exists(`/repo/.git/objects/${id.slice(0, 2)}`)).toBe(true);
+    expect(await ctx.fs.exists(`/repo/.git/objects/${id}`)).toBe(false);
+  });
+
   it('Given the signal aborts between serialize and writeExclusive, When writeObject is called, Then throws OPERATION_ABORTED (not silently writes)', async () => {
     // Kills the second `ctx.signal?.aborted` check at line 19.
     const ctx = await buildSeededContext();

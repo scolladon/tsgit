@@ -112,8 +112,7 @@ export const computeChangeset = (
   for (const path of [...allPaths].sort()) {
     const entry = classify(path, indexByPath.get(path), targetByPath.get(path));
     entries.push(entry);
-    if (entry.kind === 'delete') stats.delete += 1;
-    else stats[entry.kind] += 1;
+    stats[entry.kind] += 1;
   }
 
   return { entries, stats };

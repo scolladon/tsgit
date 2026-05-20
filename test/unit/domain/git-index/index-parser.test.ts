@@ -923,4 +923,120 @@ describe('parseIndex', () => {
       reason: 'empty segment rejected',
     });
   });
+
+  it('Given a 12-byte buffer that is a valid header but has no room for entries/checksum, When parsing, Then throws with the entry-capacity reason (NOT truncated header)', () => {
+    // Arrange — exactly INDEX_HEADER_SIZE bytes: the `bytes.length <
+    // INDEX_HEADER_SIZE` guard must be FALSE here (12 < 12 is false), so
+    // parsing proceeds to the entry-count guard. The `<=` mutant would
+    // make 12 <= 12 true and surface "truncated header" instead.
+    const buf = new Uint8Array(12);
+    const view = new DataView(buf.buffer);
+    view.setUint32(0, 0x44495243);
+    view.setUint32(4, 2);
+    view.setUint32(8, 1);
+
+    // Act
+    let caught: unknown;
+    try {
+      parseIndex(buf);
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert — reason proves the truncated-header guard did NOT fire.
+    expect((caught as TsgitError).data).toEqual({
+      code: 'INVALID_INDEX_HEADER',
+      reason: 'entry count 1 exceeds file capacity',
+    });
+  });
+
+  it('Given an entry whose header ends exactly at the checksum boundary (offset+62 === len-20), When parsing, Then the per-entry truncation guard does NOT fire', () => {
+    // Arrange — buffer is 94 bytes: 12 header + 62 entry header + 0 path
+    // room + 20 checksum. At entryStart=12: offset+62 (74) equals
+    // bytes.length-20 (74). Original `>` keeps the guard quiet (74 > 74
+    // is false) so parsing proceeds and later fails on the empty path
+    // with "empty segment rejected". The `>=` mutant fires the guard
+    // (74 >= 74) and throws "truncated entry" instead.
+    const buf = new Uint8Array(94);
+    const view = new DataView(buf.buffer);
+    view.setUint32(0, 0x44495243);
+    view.setUint32(4, 2);
+    view.setUint32(8, 1);
+    view.setUint32(12 + 24, 0o100644);
+
+    // Act
+    let caught: unknown;
+    try {
+      parseIndex(buf);
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert — the empty-segment reason proves the truncation guard
+    // stayed quiet; "truncated entry" would mean the `>=` mutant won.
+    expect((caught as TsgitError).data).toEqual({
+      code: 'INVALID_INDEX_ENTRY',
+      offset: 12,
+      reason: 'empty segment rejected',
+    });
+  });
+
+  it('Given an entry whose nameLength field is shorter than its NUL-delimited bytes, When parsing, Then path is truncated to nameLength (NOT read up to the NUL)', () => {
+    // Arrange — path bytes are 'abcdefgh' (8 bytes) but the flags
+    // nameLength field is deliberately 3. The parser must slice the
+    // path at offset+nameLength → 'abc'. The ConditionalExpression-true
+    // mutant ignores nameLength and slices up to the NUL → 'abcdefgh'.
+    const fullPath = 'abcdefgh';
+    const pathBytes = new TextEncoder().encode(fullPath);
+    const entryLength = 62 + pathBytes.length;
+    const paddedLength = (entryLength + 8) & ~7;
+    const total = 12 + paddedLength + CHECKSUM_SIZE;
+    const buf = new Uint8Array(total);
+    const view = new DataView(buf.buffer);
+    view.setUint32(0, 0x44495243);
+    view.setUint32(4, 2);
+    view.setUint32(8, 1);
+    view.setUint32(12 + 24, 0o100644);
+    buf.set(hexToBytes(SHA_A), 12 + 40);
+    // nameLength field = 3 (smaller than the 8 actual path bytes)
+    view.setUint16(12 + 60, 3);
+    buf.set(pathBytes, 12 + 62);
+
+    // Act
+    const sut = parseIndex(buf);
+
+    // Assert — exactly the first 3 bytes, proving nameLength was used.
+    expect(sut.entries[0]?.path).toBe('abc');
+  });
+
+  it('Given a mandatory extension whose signature contains a non-printable byte, When parsing, Then the reason replaces it with `?` (NOT an empty string)', () => {
+    // Arrange — signature 'a\x01cd': first char 'a' (0x61) marks it
+    // mandatory; the 0x02-range control byte is non-printable. The
+    // `replace(..., '?')` call must substitute it with '?'. The
+    // StringLiteral mutant (replacement → '') would delete the byte.
+    const sigBytes = new Uint8Array([0x61, 0x01, 0x63, 0x64]); // a␁cd
+    const total = 12 + 8 + 1 + CHECKSUM_SIZE;
+    const buf = new Uint8Array(total);
+    const view = new DataView(buf.buffer);
+    view.setUint32(0, 0x44495243);
+    view.setUint32(4, 2);
+    view.setUint32(8, 0);
+    buf.set(sigBytes, 12);
+    view.setUint32(16, 1);
+
+    // Act
+    let caught: unknown;
+    try {
+      parseIndex(buf);
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert — the '?' substitution is pinned exactly.
+    expect((caught as TsgitError).data).toEqual({
+      code: 'INVALID_INDEX_ENTRY',
+      offset: 12,
+      reason: "mandatory extension 'a?cd' not supported",
+    });
+  });
 });

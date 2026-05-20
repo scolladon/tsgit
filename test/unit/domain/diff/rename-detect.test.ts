@@ -220,6 +220,25 @@ describe('detectRenames', () => {
     ]);
   });
 
+  it('Given maxSameIdDeletes=0 and a single delete with a matching add, When detectRenames called, Then the id is pruned and no rename is folded', () => {
+    // Kills the `list.length <= maxSameIdDeletes` ConditionalExpression `true`
+    // mutant: under `true` every key is kept, so the lone delete survives the
+    // prune and folds with the add into a rename. The real predicate
+    // `1 <= 0 === false` prunes the key, leaving add+delete unfolded.
+    // Arrange
+    const sut = diff([deleteChange('old.txt', ID_A), addChange('new.txt', ID_A)]);
+
+    // Act
+    const result = detectRenames(sut, { maxSameIdDeletes: 0 });
+
+    // Assert — no rename; the pair stays as separate add + delete.
+    expect(result.changes.some((c) => c.type === 'rename')).toBe(false);
+    expect(result.changes).toEqual([
+      { type: 'add', newPath: 'new.txt', newId: ID_A, newMode: FILE_MODE.REGULAR },
+      { type: 'delete', oldPath: 'old.txt', oldId: ID_A, oldMode: FILE_MODE.REGULAR },
+    ]);
+  });
+
   it('Property: detectRenames(detectRenames(d)) deep-equals detectRenames(d) (idempotence)', () => {
     // Arrange
     const sut = diff([

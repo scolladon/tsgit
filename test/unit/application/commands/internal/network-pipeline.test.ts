@@ -132,6 +132,46 @@ describe('internal/network-pipeline', () => {
       expect(recorded.headers['x-foo']).toBe('bar');
     });
 
+    it('Given an event with SPACE (0x20) in URL, When logged, Then SPACE is preserved verbatim', () => {
+      // Arrange — 0x20 is the lower bound of the printable range; the guard is
+      // `code < 0x20`, so SPACE must pass through. A `<= 0x20` mutant would
+      // escape it to \x20.
+      const sut = wrapLoggerSanitizer(inner.logger);
+
+      // Act
+      sut.log({
+        kind: 'request',
+        method: 'GET',
+        url: 'a b',
+        headers: {},
+        bodyBytes: 0,
+      });
+
+      // Assert
+      const recorded = inner.events[0] as { url: string };
+      expect(recorded.url).toBe('a b');
+    });
+
+    it('Given an event with TILDE (0x7E) in URL, When logged, Then TILDE is preserved verbatim', () => {
+      // Arrange — 0x7E is the upper bound of the printable range; the guard is
+      // `code > 0x7e`, so TILDE must pass through. A `>= 0x7e` mutant would
+      // escape it to \x7E.
+      const sut = wrapLoggerSanitizer(inner.logger);
+
+      // Act
+      sut.log({
+        kind: 'request',
+        method: 'GET',
+        url: 'a~b',
+        headers: {},
+        bodyBytes: 0,
+      });
+
+      // Assert
+      const recorded = inner.events[0] as { url: string };
+      expect(recorded.url).toBe('a~b');
+    });
+
     it('Given an error event with control bytes in errorMessage, When logged, Then bytes are escaped', () => {
       // Arrange
       const sut = wrapLoggerSanitizer(inner.logger);

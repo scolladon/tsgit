@@ -146,6 +146,26 @@ describe('parseLooseRef', () => {
       expect((e as TsgitError).data.code).toBe('INVALID_OBJECT_ID');
     }
   });
+
+  it('Given a symbolic ref with an embedded newline and NO trailing newline, When parsing, Then the embedded newline is preserved and rejected', () => {
+    // Arrange — only the *trailing* CR/LF run must be stripped (the `$` anchor).
+    // An embedded `\n` here keeps the target invalid; if the anchor were dropped
+    // the first-found `\n` would be erased, joining the segments into a valid name.
+    const content = 'ref: refs/heads/main\nrefs/heads/other';
+
+    // Act & Assert
+    try {
+      parseLooseRef(content);
+      expect.fail('should have thrown');
+    } catch (e) {
+      expect(e).toBeInstanceOf(TsgitError);
+      expect((e as TsgitError).data.code).toBe('INVALID_REF');
+      expect((e as TsgitError).data).toHaveProperty(
+        'reason',
+        'ref name contains forbidden character',
+      );
+    }
+  });
 });
 
 describe('serializeDirectRef', () => {

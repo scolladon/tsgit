@@ -123,6 +123,27 @@ describe('parseRefspec — errors', () => {
     assertRefspecInvalid(() => parseRefspec(''), 'must not be empty', '');
   });
 
+  it('Given empty input, When parsed, Then the reason is EXACTLY the empty-refspec message (not the after-force-prefix variant)', () => {
+    // Arrange — the empty-input guard fires on line 47 before the
+    // force-prefix logic. Pinning the EXACT reason kills three same-line
+    // mutants: the ConditionalExpression→false and BlockStatement→{}
+    // mutants both fall through to the "after force prefix" guard, and
+    // the StringLiteral mutant replaces the message wholesale.
+    let caught: unknown;
+    try {
+      parseRefspec('');
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert
+    expect(caught).toBeInstanceOf(TsgitError);
+    const data = (caught as TsgitError).data as { code: string; raw: string; reason: string };
+    expect(data.code).toBe('REFSPEC_INVALID');
+    expect(data.raw).toBe('');
+    expect(data.reason).toBe('refspec must not be empty');
+  });
+
   it('Given a bare "+" (force prefix only), When parsed, Then throws REFSPEC_INVALID', () => {
     assertRefspecInvalid(() => parseRefspec('+'), 'after force prefix', '+');
   });

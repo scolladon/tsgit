@@ -87,6 +87,7 @@ export const parseRefspec = (raw: string): ParsedRefspec => {
 
 const countOccurrences = (s: string, ch: string): number => {
   let count = 0;
+  // Stryker disable next-line EqualityOperator: equivalent — at i === s.length the extra iteration reads s[length] which is undefined; `undefined === ch` is false so the count is never incremented.
   for (let i = 0; i < s.length; i += 1) {
     if (s[i] === ch) count += 1;
   }

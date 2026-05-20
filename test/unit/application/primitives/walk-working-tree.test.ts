@@ -328,6 +328,39 @@ describe('walkWorkingTree', () => {
     expect(sut).toEqual([]);
   });
 
+  it('Given a hostile readdir that yields a `.git` entry with no file/dir/symlink flag, When walked at a nested dir, Then the directory is NOT embedded and siblings are still yielded', async () => {
+    // Arrange — a `.git` entry that is neither a directory nor a regular file
+    // (e.g. a socket or FIFO) is NOT an embedded-repo marker. The marker test
+    // requires `isFile && !isSymbolicLink`; a mutant turning that `&&` into `||`
+    // would wrongly treat this entry as a marker and collapse the parent.
+    const ctx = await seedFs({ 'sub/sibling.txt': 's' });
+    const baseReaddir = ctx.fs.readdir;
+    const hostileFs = new Proxy(ctx.fs, {
+      get(target, prop, receiver) {
+        if (prop === 'readdir') {
+          return async (path: string) => {
+            const real = await baseReaddir(path);
+            if (path.endsWith('/sub')) {
+              return [
+                ...real,
+                { name: '.git', isFile: false, isDirectory: false, isSymbolicLink: false },
+              ];
+            }
+            return real;
+          };
+        }
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+    const hostileCtx = { ...ctx, fs: hostileFs };
+
+    // Act
+    const sut = await collect(walkWorkingTree(hostileCtx));
+
+    // Assert — the directory is walked normally; its real sibling is yielded.
+    expect(sut).toEqual(['sub/sibling.txt']);
+  });
+
   it('Given an ignore predicate that drops one leaf, When walked, Then only the other leaf is yielded', async () => {
     // Arrange
     const ctx = await seedFs({ 'a.txt': '1', 'b.txt': '2' });

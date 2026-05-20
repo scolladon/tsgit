@@ -16,7 +16,7 @@ import {
 import type { Context } from '../../ports/context.js';
 import { readObject } from './read-object.js';
 import type { WalkTreeEntry, WalkTreeOptions } from './types.js';
-import { exceedsMaxTreeDepth, exceedsMaxTreeEntries, isGitlink } from './validators.js';
+import { exceedsMaxTreeDepth, exceedsMaxTreeEntries } from './validators.js';
 
 interface WalkConfig {
   readonly ctx: Context;
@@ -77,7 +77,8 @@ async function* walkInternal(
 
 function shouldRecurse(recursive: boolean, mode: string): boolean {
   if (!recursive) return false;
-  if (isGitlink(mode)) return false;
+  // A gitlink (mode 160000) is never a directory (mode 40000), so isDirectory
+  // alone already rejects it — no explicit isGitlink guard needed.
   return isDirectory(mode as FileMode);
 }
 

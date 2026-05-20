@@ -95,6 +95,31 @@ describe('pack-entry', () => {
       }
     });
 
+    it('Given wrong magic that is a small value (fewer than 8 hex digits), When parsing, Then the reason zero-pads it to 8 digits', () => {
+      // Arrange — magic 0x0000004b: `toString(16)` is "4b" (2 chars), so
+      // `padStart(8, '0')` must produce "0000004b". The StringLiteral
+      // mutant replacing the '0' pad char with '' would leave it "4b".
+      const sut = new Uint8Array(12);
+      const view = new DataView(sut.buffer);
+      view.setUint32(0, 0x0000004b);
+      view.setUint32(4, 2);
+      view.setUint32(8, 1);
+
+      // Act
+      let caught: unknown;
+      try {
+        parsePackHeader(sut);
+      } catch (e) {
+        caught = e;
+      }
+
+      // Assert — exact reason pins the zero-padding.
+      expect((caught as TsgitError).data).toEqual({
+        code: 'INVALID_PACK_HEADER',
+        reason: 'invalid magic: expected 0x5041434b, got 0x0000004b',
+      });
+    });
+
     it('Given version=2 objectCount=100, When serializing then parsing, Then roundtrips', () => {
       // Arrange
       const serialized = serializePackHeader(2, 100);
@@ -321,6 +346,21 @@ describe('pack-entry', () => {
       }
     });
 
+    it('Given an OFS_DELTA distance with exactly 4 continuation bytes (the maximum), When parsing, Then it is accepted', () => {
+      // Arrange — type=6/OFS_DELTA (0x60), then 4 distance bytes with the
+      // continuation bit set and a terminating byte: the while loop
+      // counts exactly 4 continuations. `continuationCount > 4` keeps 4
+      // valid; the `>=` mutant would reject the maximum-length encoding.
+      const sut = new Uint8Array([0x60, 0x80, 0x80, 0x80, 0x80, 0x00]);
+
+      // Act — must NOT throw.
+      const result = parsePackEntryHeader(sut, 0, SHA1_CONFIG);
+
+      // Assert — OFS_DELTA decoded; the 4-continuation distance stayed in bounds.
+      expect(result.type).toBe(PACK_ENTRY_TYPE.OFS_DELTA);
+      expect(result.dataOffset).toBe(6);
+    });
+
     it('Given offset past end of bytes, When parsing, Then throws INVALID_PACK_ENTRY', () => {
       // Arrange
       const sut = new Uint8Array([0x30]);
@@ -376,6 +416,21 @@ describe('pack-entry', () => {
           }),
         );
       }
+    });
+
+    it('Given a size encoding with exactly 5 continuation bytes (the maximum), When parsing, Then it is accepted', () => {
+      // Arrange — type=1/COMMIT first byte with continuation set, then 4
+      // more continuation bytes and a terminating byte: the while loop
+      // counts exactly 5 extension bytes. `extensionBytes > 5` keeps 5
+      // valid; the `>=` mutant would reject the maximum-length encoding.
+      const sut = new Uint8Array([0b1_001_0000, 0x80, 0x80, 0x80, 0x80, 0x00]);
+
+      // Act — must NOT throw.
+      const result = parsePackEntryHeader(sut, 0, SHA1_CONFIG);
+
+      // Assert — header decoded; the 5-byte encoding stayed within bounds.
+      expect(result.type).toBe(PACK_ENTRY_TYPE.COMMIT);
+      expect(result.dataOffset).toBe(6);
     });
 
     it('Given type=0 (invalid), When parsing, Then throws INVALID_PACK_ENTRY', () => {

@@ -58,9 +58,7 @@ export class NodeHttpTransport implements HttpTransport {
         method: req.method,
         headers: { ...req.headers },
       };
-      // equivalent-mutant: forcing this conditional to `true` assigns `signal = undefined` when
-      // the caller did not provide one. Node's http honors only defined AbortSignal values, so
-      // an explicit `undefined` assignment is indistinguishable from skipping the assignment.
+      // Stryker disable next-line ConditionalExpression: equivalent — forcing this to `true` assigns `requestOptions.signal = undefined` when no signal was given, which Node's http treats identically to never setting the property.
       if (req.signal !== undefined) {
         requestOptions.signal = req.signal;
       }
