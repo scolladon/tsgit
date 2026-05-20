@@ -116,6 +116,12 @@ describe('posixPolicy', () => {
     expect(posixPolicy.normalizeForCompare('/Users/Foo')).toBe('/Users/Foo');
   });
 
+  it('Given an input shaped like a Windows extended-length path, When normalizeForCompare runs, Then it is returned verbatim (POSIX never strips)', () => {
+    // Pins the `caseInsensitive` guard: a ConditionalExpression mutant that
+    // routed POSIX through the strip would mangle this otherwise-opaque input.
+    expect(posixPolicy.normalizeForCompare('\\\\?\\C:\\X')).toBe('\\\\?\\C:\\X');
+  });
+
   it('Given an absolute POSIX path, When rootOf is called, Then returns "/"', () => {
     expect(posixPolicy.rootOf('/foo/bar')).toBe('/');
   });
@@ -132,6 +138,21 @@ describe('windowsPolicy', () => {
 
   it('Given mixed-case input, When normalizeForCompare runs, Then returns lowercased string', () => {
     expect(windowsPolicy.normalizeForCompare('C:\\Users\\Foo')).toBe('c:\\users\\foo');
+  });
+
+  it('Given a drive path with no extended-length prefix, When normalizeForCompare runs, Then no characters are stripped', () => {
+    // Guards the `return p` fall-through arm of stripWinExtendedPrefix.
+    expect(windowsPolicy.normalizeForCompare('D:\\proj\\src')).toBe('d:\\proj\\src');
+  });
+
+  it('Given a \\\\?\\ extended-length drive path, When normalizeForCompare runs, Then the prefix is stripped before case-folding', () => {
+    expect(windowsPolicy.normalizeForCompare('\\\\?\\C:\\Users\\Foo')).toBe('c:\\users\\foo');
+  });
+
+  it('Given a \\\\?\\UNC\\ extended-length path, When normalizeForCompare runs, Then it collapses to the plain UNC form', () => {
+    expect(windowsPolicy.normalizeForCompare('\\\\?\\UNC\\Server\\Share\\file.bin')).toBe(
+      '\\\\server\\share\\file.bin',
+    );
   });
 
   it('Given a Windows drive-letter path, When rootOf is called, Then returns the drive prefix with trailing separator', () => {
