@@ -306,8 +306,9 @@ Design: `docs/design/phase-15-bench-observability.md`. ADRs: [054](adr/054-bench
 
 ### Phase 16 — Supply-chain & ops hardening (v1.x patch)
 
-- [ ] **16.1** Pin every third-party GitHub Action `uses:` to a 40-char commit SHA (Phase 11 security review MEDIUM).
-- [ ] **16.2** Dependabot config covers action SHAs (group with `update-strategy: lockfile-only`).
+- **16.1** Pin third-party GitHub Actions to commit SHAs — **abandoned** (see [Abandoned work](#abandoned-work)).
+- [x] **16.2** Dependabot keeps GitHub Actions current, grouped into one PR.
+      _Accepted:_ the existing `github-actions` ecosystem entry in `.github/dependabot.yml` gained a `groups` block (`patterns: ["*"]`) so every weekly action bump lands as a single PR, plus `open-pull-requests-limit` / `reviewers` for parity with the `npm` entry. The backlog's `update-strategy: lockfile-only` wording was an npm-only option — `groups` is the correct mechanism. Workflows stay on floating major tags; SHA pinning was abandoned (ADR-057). Design: `docs/design/phase-16-1-16-2-action-updates.md`.
 - [ ] **16.3** Browser E2E surface parity: extend `test/browser/` to cover `log`, `branch`, `checkout`, `tag` against OPFS (Phase 11 test-review gap).
 - [ ] **16.4** Split the OPFS round-trip mega-scenario into per-step assertions for sharper failure messages.
 
@@ -334,6 +335,7 @@ because the *decision* is final — they are NOT queued. Each links the
 ADR that records why.
 
 - [x] **14.5.3** Gate `policy.resolve()` in `checkContainment` to skip a "no-op" resolve on clean absolute inputs. Implemented in the §14.5 bundle, then abandoned: `policy.resolve` also normalises foreign separators (a `/` in a Windows path) — a contract ADR-045 requires the adapter to honour — and no cheap caller-side probe can safely mirror Node's full `path.resolve` normalisation surface. The cost the optimization chased (a `process.cwd()` hit) does not even occur for absolute inputs. See [ADR-053](adr/053-abandon-skip-resolve-optimization.md).
+- [x] **16.1** Pin every third-party GitHub Action `uses:` to a 40-char commit SHA. Prototyped, then abandoned: SHA refs are verbose and opaque, and each action patch release would need its own Dependabot bump — high maintenance for marginal value on a small repo whose actions are all well-known publishers. Workflows stay on floating major tags; **16.2** keeps them current via a grouped Dependabot entry. See [ADR-057](adr/057-action-sha-pinning.md).
 
 ---
 

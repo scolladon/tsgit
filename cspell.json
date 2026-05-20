@@ -416,7 +416,8 @@
     "xorshift",
     "PRNG",
     "unbuildable",
-    "repack"
+    "repack",
+    "peaceiris"
   ],
   "ignorePaths": [
     "node_modules",

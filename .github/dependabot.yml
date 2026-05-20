@@ -28,5 +28,12 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    open-pull-requests-limit: 10
+    reviewers:
+      - scolladon
     labels:
       - ci
+    groups:
+      github-actions:
+        patterns:
+          - "*"
