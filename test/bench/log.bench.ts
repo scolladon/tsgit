@@ -5,29 +5,33 @@
 import * as fs from 'node:fs';
 
 import * as git from 'isomorphic-git';
-import { afterAll, bench, describe } from 'vitest';
+import { afterAll } from 'vitest';
 
 import { openRepository } from '../../src/index.node.js';
-import { type BenchRepo, setupSmallRepo } from './fixtures.js';
+import { setupSmallRepo } from './fixtures.js';
+import { benchScenario } from './support/bench-dsl.js';
 
 const COMMITS = 50;
-let fixture: BenchRepo;
-let repo: Awaited<ReturnType<typeof openRepository>>;
 
-describe('log:walk-50-commits', async () => {
-  fixture = await setupSmallRepo({ commits: COMMITS });
-  repo = await openRepository({ cwd: fixture.cwd });
+benchScenario(
+  `Given a ${COMMITS}-commit repo`,
+  'When log() walks every commit, Then compare tsgit against isomorphic-git',
+  async () => {
+    const fixture = await setupSmallRepo({ commits: COMMITS });
+    const repo = await openRepository({ cwd: fixture.cwd });
+    afterAll(async () => {
+      await repo.dispose();
+      await fixture.cleanup();
+    });
 
-  bench('tsgit', async () => {
-    await repo.log();
-  });
-
-  bench('isomorphic-git', async () => {
-    await git.log({ fs, dir: fixture.cwd, depth: COMMITS });
-  });
-
-  afterAll(async () => {
-    await repo.dispose();
-    await fixture.cleanup();
-  });
-});
+    const sut = async (): Promise<void> => {
+      await repo.log();
+    };
+    return {
+      sut,
+      baseline: async (): Promise<void> => {
+        await git.log({ fs, dir: fixture.cwd, depth: COMMITS });
+      },
+    };
+  },
+);
