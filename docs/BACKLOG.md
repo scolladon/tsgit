@@ -309,8 +309,10 @@ Design: `docs/design/phase-15-bench-observability.md`. ADRs: [054](adr/054-bench
 - **16.1** Pin third-party GitHub Actions to commit SHAs — **abandoned** (see [Abandoned work](#abandoned-work)).
 - [x] **16.2** Dependabot keeps GitHub Actions current, grouped into one PR.
       _Accepted:_ the existing `github-actions` ecosystem entry in `.github/dependabot.yml` gained a `groups` block (`patterns: ["*"]`) so every weekly action bump lands as a single PR, plus `open-pull-requests-limit` / `reviewers` for parity with the `npm` entry. The backlog's `update-strategy: lockfile-only` wording was an npm-only option — `groups` is the correct mechanism. Workflows stay on floating major tags; SHA pinning was abandoned (ADR-057). Design: `docs/design/phase-16-1-16-2-action-updates.md`.
-- [ ] **16.3** Browser E2E surface parity: extend `test/browser/` to cover `log`, `branch`, `checkout`, `tag` against OPFS (Phase 11 test-review gap).
-- [ ] **16.4** Split the OPFS round-trip mega-scenario into per-step assertions for sharper failure messages.
+- [x] **16.3** Browser E2E surface parity: extend `test/browser/` to cover `log`, `branch`, `checkout`, `tag` against OPFS (Phase 11 test-review gap).
+      _Accepted:_ new `test/browser/surface-parity.spec.ts` exercises `log` (newest-first order + parent linkage), `branch` and `tag` (create→list→delete lifecycle), and `checkout` (working-tree divergence across branches) against the OPFS adapter in a real browser. A shared `seedRepo` fixture seeds the one-commit baseline. OPFS scenarios skip on Playwright WebKit (engine gap). Design: `docs/design/phase-16-3-16-4-browser-e2e-parity.md`.
+- [x] **16.4** Split the OPFS round-trip mega-scenario into per-step assertions for sharper failure messages.
+      _Accepted:_ `test/browser/opfs-roundtrip.spec.ts` now runs init→add→commit→status in one `page.evaluate()` returning a per-operation result, asserted under four `test.step()` blocks — a failure names the exact git operation instead of a trailing aggregate. Added a `status.detached` parity assertion.
 
 ### v2.0 — Larger semantic surface
 

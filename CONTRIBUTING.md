@@ -81,7 +81,7 @@ test/
 │   ├── network/                # Real repos, cross-adapter, git-http-backend interop (Linux-only)
 │   ├── posix-only/             # Real POSIX filesystem semantics (symlinks, chmod, EACCES)
 │   └── win-only/               # Real Windows filesystem semantics (8.3 short names, drive letters)
-├── browser/                    # Playwright × Chromium/Firefox/WebKit — OPFS, SubtleCrypto, DecompressionStream
+├── browser/                    # Playwright × Chromium/Firefox/WebKit — OPFS round-trip, SubtleCrypto, DecompressionStream, command surface (log/branch/checkout/tag)
 └── bench/                      # vitest bench scenarios comparing tsgit vs isomorphic-git
 ```
 
