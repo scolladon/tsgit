@@ -1,5 +1,5 @@
 /**
- * Path-policy abstraction. Phase 14.4.
+ * Path-policy abstraction.
  *
  * Encapsulates every platform-aware path operation the Node adapter needs.
  * Production code uses `nativePolicy` (host-matching). Tests inject
@@ -10,17 +10,38 @@
  * Design notes:
  * - `sep` is the platform separator string, used for prefix containment.
  * - `caseInsensitive` drives `normalizeForCompare`; Windows + macOS HFS+
- *   could share this in theory, but tsgit treats macOS as case-sensitive
- *   per Git's `core.ignorecase` default and POSIX convention.
+ *  could share this in theory, but tsgit treats macOS as case-sensitive
+ *  per Git's `core.ignorecase` default and POSIX convention.
  * - `rootOf` returns the volume/drive prefix produced by `path.parse`.
- *   Examples: `/` on POSIX, `'C:\\'` on Windows, `'\\\\server\\share\\'`
- *   for UNC paths.
+ *  Examples: `/` on POSIX, `'C:\\'` on Windows, `'\\\\server\\share\\'`
+ *  for UNC paths.
  * - The interface is *only* the subset NodeFileSystem actually needs; we
- *   intentionally do not expose all of `nodePath`'s surface so callers
- *   can't smuggle host-bound calls back in.
+ *  intentionally do not expose all of `nodePath`'s surface so callers
+ *  can't smuggle host-bound calls back in.
  */
 
 import * as nodePath from 'node:path';
+
+/**
+ * The minimal `nodePath`-shaped surface that `makePolicy` consumes.
+ * Replaces `typeof nodePath.posix` which admitted both `posix` and
+ * `win32` (confusing intent) and exposed every member of the namespace
+ * instead of just the ones used. TypeScript cannot block the host
+ * `nodePath` namespace from satisfying this structurally; `makePolicy`
+ * stays module-private and the only public entry points are the
+ * `posixPolicy` / `windowsPolicy` constants.
+ *
+ * @internal
+ */
+interface PathPolicySource {
+  readonly sep: string;
+  isAbsolute(path: string): boolean;
+  resolve(...parts: string[]): string;
+  join(...parts: string[]): string;
+  dirname(path: string): string;
+  basename(path: string): string;
+  parse(path: string): { readonly root: string };
+}
 
 export interface PathPolicy {
   readonly sep: '\\' | '/';
@@ -44,8 +65,7 @@ export interface PathPolicy {
  * Narrows `nodePath.{posix,win32}.sep` (typed as `string` in `@types/node`)
  * to the literal union the `PathPolicy` interface declares, without an
  * `as` escape. Throws on any other value so a future export of
- * `makePolicy` (BACKLOG §14.5.7) cannot silently accept an unknown
- * separator.
+ * `makePolicy` cannot silently accept an unknown separator.
  *
  * @internal — exported only so the throw arm can be unit-tested.
  */
@@ -56,7 +76,7 @@ export const narrowSep = (sep: string): '\\' | '/' => {
   return sep;
 };
 
-const makePolicy = (impl: typeof nodePath.posix, caseInsensitive: boolean): PathPolicy => ({
+const makePolicy = (impl: PathPolicySource, caseInsensitive: boolean): PathPolicy => ({
   sep: narrowSep(impl.sep),
   caseInsensitive,
   isAbsolute: (path: string) => impl.isAbsolute(path),

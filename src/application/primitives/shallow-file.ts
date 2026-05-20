@@ -1,7 +1,7 @@
 /**
  * `.git/shallow` reader and writer.
  *
- * Phase 12.2: when the server emits `shallow <oid>` / `unshallow <oid>`
+ * when the server emits `shallow <oid>` / `unshallow <oid>`
  * pkt-lines in response to a `deepen <N>` request, the client persists the
  * resulting cut-point set under `.git/shallow`. A subsequent `walkCommits`
  * with `shallow: <readShallow result>` terminates parent traversal at every

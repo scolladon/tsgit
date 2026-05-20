@@ -1,6 +1,4 @@
-/**
- * Unit tests for the Phase 12.3 refspec parser (ADR-014 v1 subset).
- */
+/** Unit tests for the refspec parser (v1 subset). */
 import { describe, expect, it } from 'vitest';
 
 import { parseRefspec } from '../../../../../src/application/commands/internal/refspec.js';

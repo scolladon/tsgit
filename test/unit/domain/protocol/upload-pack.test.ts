@@ -959,7 +959,7 @@ describe('parseShallowResponse', () => {
     expect(collected.reduce((n, c) => n + c.byteLength, 0)).toBe(packBytes.byteLength);
   });
 
-  it('Given expectShallow unset (Phase 12.1 regression), When parsed, Then shallow/unshallow are empty and behavior is unchanged', async () => {
+  it('Given expectShallow unset, When parsed, Then shallow/unshallow are empty and behavior is unchanged', async () => {
     // Arrange
     const source = asyncOf<PktLine>([dataPkt('NAK\n'), { kind: 'flush' }]);
 

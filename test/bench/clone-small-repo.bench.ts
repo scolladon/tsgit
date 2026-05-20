@@ -6,12 +6,12 @@
  * is apples-to-apples.
  *
  * Lifecycle (see docs/adr/017-bench-cgi-server-lifecycle.md):
- *   - The `http.Server` is booted once in the describe body (matches the
- *     pattern already in use in status/log/read-blob benches) and closed
- *     in `afterAll`. Per-iter server boot would dominate the measurement.
- *   - Each iter mkdtemps a fresh target dir; tmpdirs are collected and
- *     rm'd in bulk via `afterAll` so cleanup time does not enter the
- *     sampled distribution.
+ *  - The `http.Server` is booted once in the describe body (matches the
+ *  pattern already in use in status/log/read-blob benches) and closed
+ *  in `afterAll`. Per-iter server boot would dominate the measurement.
+ *  - Each iter mkdtemps a fresh target dir; tmpdirs are collected and
+ *  rm'd in bulk via `afterAll` so cleanup time does not enter the
+ *  sampled distribution.
  *
  * Skip semantics: same gates as the integration test — Stryker sandbox,
  * missing `git-http-backend`, and missing fixture all skip the suite.
@@ -51,7 +51,7 @@ const SKIP = RUNNING_UNDER_STRYKER || !GIT_HTTP_BACKEND_AVAILABLE || !FIXTURE_AV
 describe.skipIf(SKIP)('clone:small-repo', async () => {
   // Belt-and-suspenders: vitest evaluates the describe callback to enumerate
   // tests even when `skipIf` is true, so without this early return we would
-  // boot a CGI server on every skipped run. (Reviewed: Phase 12.4 pass 1.)
+  // boot a CGI server on every skipped run. (Reviewed:.4 pass 1.)
   if (SKIP) return;
   const server = await startGitHttpBackend({ projectRoot: FIXTURE_DIR });
   const url = `http://127.0.0.1:${server.port}/source.git`;

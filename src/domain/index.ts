@@ -4,6 +4,7 @@ export type { AdapterError, ApplicationError, TsgitErrorData } from './error.js'
 export {
   compressFailed,
   decompressFailed,
+  directoryNotEmpty,
   fileExists,
   fileNotFound,
   hashFailed,

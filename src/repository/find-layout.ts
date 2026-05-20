@@ -1,4 +1,4 @@
-import { nativePolicy, type PathPolicy } from '../adapters/node/path-policy.js';
+import type { PathPolicy } from '../adapters/node/path-policy.js';
 import type { FileSystem } from '../ports/file-system.js';
 import type { RepositoryLayoutInput } from '../repository.js';
 
@@ -10,16 +10,18 @@ import type { RepositoryLayoutInput } from '../repository.js';
  * root — callers can choose to default to a fresh repo at `cwd` (init/clone
  * paths) or surface NOT_A_REPOSITORY (most other commands).
  *
- * Accepts a `pathPolicy` so the walk's `resolve` / `dirname` / `join`
- * semantics match the input form. Production code uses `nativePolicy`
- * (host-matching). Tests that pair a POSIX-only adapter (e.g. the
- * in-memory FS) with POSIX-shaped paths can inject `posixPolicy` to keep
- * the walk POSIX-rooted on any host.
+ * `pathPolicy` is required so the walk's `resolve` / `dirname` / `join`
+ * semantics match the input form. Callers in production code source the
+ * host-matching policy from the adapter they constructed; tests that pair
+ * a POSIX-only adapter (e.g. the in-memory FS) with POSIX-shaped paths
+ * inject `posixPolicy` to keep the walk POSIX-rooted on any host. The
+ * default was lifted out of this module to avoid the repository layer
+ * reaching across the hexagonal boundary into an adapter.
  */
 export const findLayout = async (
   fs: FileSystem,
   cwd: string,
-  pathPolicy: PathPolicy = nativePolicy,
+  pathPolicy: PathPolicy,
 ): Promise<RepositoryLayoutInput | undefined> => {
   let current = pathPolicy.resolve(cwd);
   while (true) {

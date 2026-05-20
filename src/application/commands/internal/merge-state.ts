@@ -1,5 +1,5 @@
 /**
- * Persisted merge-state writers for Phase 13.4b.
+ * Persisted merge-state writers for.4b.
  *
  * `.git/MERGE_HEAD`, `.git/MERGE_MSG`, `.git/ORIG_HEAD` are the canonical
  * git markers that record "a merge is in progress". `merge` writes them

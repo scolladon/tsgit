@@ -1,9 +1,9 @@
 /**
  * Smart-HTTP refs discovery, parameterised by service.
  *
- * Phase 12.1/12.2 introduced `discoverRefs` for `git-upload-pack` only.
- * Phase 12.3 (push) needs the same wire protocol against `git-receive-pack`:
- * identical pkt-line advertisement format, identical parser, only the URL
+ * `discoverRefs` originally targeted `git-upload-pack` only. Push uses
+ * the same wire protocol against `git-receive-pack` — identical
+ * pkt-line advertisement format, identical parser; only the URL
  * `service=` query and the `accept` header differ.
  *
  * This module owns the parameterised call. The legacy

@@ -16,15 +16,15 @@ const PARALLELISM_MAX = 32;
 const MAX_RESPONSE_BYTES_MIN = 1024;
 
 /**
- * Eager option validation per Phase 10 §8.1. Throws `INVALID_OPTION` (with
+ * Eager option validation. Throws `INVALID_OPTION` (with
  * sanitized reason) on the first violation; never coalesces — the caller
  * fixes one issue at a time.
  *
  * Mutation-resistance directives:
  * - Boundaries are tested in isolated triples (low-1 / low / high / high+1)
- *   so the comparison operators (`<` vs `<=`) cannot be silently mutated.
+ *  so the comparison operators (`<` vs `<=`) cannot be silently mutated.
  * - Each guard is a separate `if` so the StatementRemoval mutator on one
- *   guard fails its dedicated test rather than passing through another.
+ *  guard fails its dedicated test rather than passing through another.
  */
 export const validateOptions = (opts: ValidatableOptions): void => {
   if (opts.cwd !== undefined && !isAbsolutePath(opts.cwd)) {

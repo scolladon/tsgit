@@ -228,7 +228,7 @@ const buildSingleBlobPack = async (
 
 describe('fetchPack', () => {
   describe('happy path', () => {
-    it('Given a single-blob side-band-1 pack, When fetchPack runs, Then writes pack-<sha>.pack and .idx', async () => {
+    it('Given a single-blob side-band-1 pack, When fetchPack runs, Then writes pack-<sha>.pack and.idx', async () => {
       // Arrange
       const ctx = createMemoryContext();
       await ctx.fs.mkdir(`${ctx.layout.gitDir}/objects/pack`);
@@ -268,7 +268,7 @@ describe('fetchPack', () => {
   });
 
   describe('delta resolution', () => {
-    it('Given a base + OFS_DELTA pack, When fetchPack runs, Then both ids appear in the .idx', async () => {
+    it('Given a base + OFS_DELTA pack, When fetchPack runs, Then both ids appear in the.idx', async () => {
       // Arrange
       const ctx = createMemoryContext();
       const baseContent = ENCODER.encode('base content\n');
@@ -737,7 +737,7 @@ describe('fetchPack', () => {
       expect(data.reason).toContain('trailer');
     });
 
-    it('Given an empty pack (0 objects), When fetchPack runs, Then writes a valid .pack + .idx', async () => {
+    it('Given an empty pack (0 objects), When fetchPack runs, Then writes a valid.pack +.idx', async () => {
       // Arrange — assemble a 12-byte header with objectCount=0 + 20-byte trailer.
       const ctx = createMemoryContext();
       const dummyId = (await computeBlobId(ctx, ENCODER.encode('dummy\n'))) as ObjectId;
@@ -1071,7 +1071,7 @@ describe('fetchPack', () => {
         progressOp: 'test:write-objects',
       });
 
-      // Assert — verifies the post-drain concat (off += ...) is correct.
+      // Assert — verifies the post-drain concat (off +=...) is correct.
       const written = await ctx.fs.read(sut.packPath);
       expect(written).toEqual(packBytes);
       expect(sut.objectCount).toBe(1);
@@ -1201,10 +1201,10 @@ describe('fetchPack', () => {
 
     it('Given chunks that hit the 65 536-byte tick boundary exactly, When fetchPack runs, Then ticks fire at the threshold (kills >= vs >)', async () => {
       // Arrange — three 32_768-byte chunks. Cumulative:
-      //   chunk1 → 32_768  (no tick, diff < 65_536)
-      //   chunk2 → 65_536  (TICK with `>=`, no tick with `>`)
-      //   chunk3 → 98_304  (no tick with `>=`, TICK with `>`)
-      //   flush  → fires only if total !== lastTick.
+      //  chunk1 → 32_768 (no tick, diff < 65_536)
+      //  chunk2 → 65_536 (TICK with `>=`, no tick with `>`)
+      //  chunk3 → 98_304 (no tick with `>=`, TICK with `>`)
+      //  flush → fires only if total !== lastTick.
       // Original: 1 mid + 1 flush = 2 updates.
       // `>` mutant: 1 mid (at 98_304) + 0 flush = 1 update.
       // The count differs ⇒ the `>` mutant dies.
@@ -1293,7 +1293,7 @@ describe('fetchPack', () => {
 
     it('Given an empty pack body, When fetchPack runs, Then returns a synthetic empty result (no error, no update tick)', async () => {
       // Arrange — server returns NAK + no sideband frames (zero pack bytes).
-      // Phase 12.2: this is a legitimate protocol state when the client's
+      // this is a legitimate protocol state when the client's
       // `have` set already covers every wanted oid (e.g., re-fetching a
       // fully up-to-date remote). fetchPack returns objectCount=0 with empty
       // path strings and emits NO progress tick.
@@ -1406,9 +1406,9 @@ describe('fetchPack', () => {
     });
   });
 
-  describe('depth + shallow (Phase 12.2)', () => {
+  describe('depth + shallow', () => {
     it('Given depth unset, When fetchPack runs, Then request body has no `deepen` and shallow/unshallow are empty', async () => {
-      // Arrange — regression guard for the Phase 12.1 path.
+      // Arrange — regression guard for the prior path.
       const ctx = createMemoryContext();
       const { packBytes, blobId } = await buildSingleBlobPack(ctx, 'no depth\n');
       const body = buildUploadPackResponseBody({ packBytes, sideBand: true });

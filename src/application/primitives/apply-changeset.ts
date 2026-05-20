@@ -2,16 +2,16 @@
  * Apply a Changeset to the working tree + return new IndexEntry records.
  *
  * Lifecycle:
- *   1. Dirty-tree guard (unless `force`): hash any working-tree file that
- *      `update`/`delete` would touch and compare against the changeset's
- *      `previousId`. Untracked paths that `add` would clobber are also
- *      flagged. Collected paths surface as CHECKOUT_OVERWRITE_DIRTY.
- *   2. Apply each non-noop entry — `delete` then `add`/`update` per path,
- *      with per-file progress ticks.
- *   3. Build new stage-0 IndexEntry records from the post-write lstat.
+ *  1. Dirty-tree guard (unless `force`): hash any working-tree file that
+ *  `update`/`delete` would touch and compare against the changeset's
+ *  `previousId`. Untracked paths that `add` would clobber are also
+ *  flagged. Collected paths surface as CHECKOUT_OVERWRITE_DIRTY.
+ *  2. Apply each non-noop entry — `delete` then `add`/`update` per path,
+ *  with per-file progress ticks.
+ *  3. Build new stage-0 IndexEntry records from the post-write lstat.
  *
  * Atomicity: per-file (matches canonical git). No cross-file rollback —
- * see ADR-018.
+ * see.
  */
 import { checkoutOverwriteDirty } from '../../domain/commands/error.js';
 import { TsgitError } from '../../domain/error.js';

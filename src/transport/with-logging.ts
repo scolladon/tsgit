@@ -38,7 +38,7 @@ const safeLog = (logger: Logger, event: LogEvent): void => {
   try {
     logger.log(event);
   } catch {
-    // swallow per design §5.3
+    // swallow
   }
 };
 

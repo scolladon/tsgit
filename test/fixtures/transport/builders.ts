@@ -53,9 +53,9 @@ export interface BuiltUploadPackResponse {
   readonly packBytes: Uint8Array;
   readonly sideBand: boolean;
   readonly progressLines?: ReadonlyArray<string>;
-  /** Phase 12.2: oids emitted as `shallow <oid>` lines before the ACK/NAK block. */
+  /** oids emitted as `shallow <oid>` lines before the ACK/NAK block. */
   readonly shallow?: ReadonlyArray<string>;
-  /** Phase 12.2: oids emitted as `unshallow <oid>` lines before the ACK/NAK block. */
+  /** oids emitted as `unshallow <oid>` lines before the ACK/NAK block. */
   readonly unshallow?: ReadonlyArray<string>;
 }
 
@@ -71,7 +71,7 @@ const ackText = (a: { id: string; status: 'ack' | 'continue' | 'common' | 'ready
 
 /**
  * Build a single-round clone/fetch upload-pack response: optional shallow
- * block (shallow/unshallow + flush — Phase 12.2), optional ACK lines, NAK,
+ * block (shallow/unshallow + flush), optional ACK lines, NAK,
  * then a sideband-1 wrapper around `packBytes`, then flush.
  */
 export const buildUploadPackResponseBody = (opts: BuiltUploadPackResponse): Uint8Array => {

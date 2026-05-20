@@ -156,9 +156,10 @@ async function resolveContentMerge(
     ourMode: our.mode,
     theirMode: their.mode,
   };
-  // Phase 5 has no blob bytes — Phase 7 supplies real content via its closure,
-  // using ctx.baseId/ourId/theirId to read blobs. These placeholders are never
-  // used by a well-behaved Phase 7 callback.
+  // The domain tree-merge has no blob bytes on hand; the ContentMerger
+  // supplies real content via its closure, using
+  // ctx.baseId/ourId/theirId to read blobs. These placeholders are never
+  // used by a well-behaved callback.
   const result = await contentMerger(ctx, undefined, new Uint8Array(0), new Uint8Array(0));
   if (result.status === 'clean') {
     if (result.bytes.length > MAX_CONFLICT_OUTPUT_BYTES) {

@@ -1,4 +1,5 @@
 import {
+  directoryNotEmpty,
   fileExists,
   fileNotFound,
   notADirectory,
@@ -189,7 +190,10 @@ export class MemoryFileSystem implements FileSystem {
     }
     if (this.directories.has(normalized)) {
       if (this.hasChildren(normalized)) {
-        throw notADirectory(path);
+        // Mirrors mapErrno's ENOTEMPTY arm on the Node adapter — same
+        // condition, same code, so cross-adapter callers can branch on
+        // a single discriminator.
+        throw directoryNotEmpty(path);
       }
       this.directories.delete(normalized);
       this.times.delete(normalized);

@@ -1,5 +1,5 @@
 /**
- * Integration test — `add({ all: true })` (Phase 14.1).
+ * Integration test — `add({ all: true })`.
  *
  * Walks the working tree end-to-end through the memory adapter, validating
  * that the entries surfaced by the bulk-mode dispatcher match the on-disk

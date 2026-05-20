@@ -176,7 +176,7 @@ describe('object-resolver', () => {
     expect(result.type).toBe(kind);
   });
 
-  describe('Phase 13.8 — bounded-size cap', () => {
+  describe('bounded-size cap', () => {
     it('Given a cached REF_DELTA base at the exact maxBytes boundary, When resolveObject is called, Then accepts (cache-cap inclusive boundary)', async () => {
       // Arrange — cache contains a 5-byte payload, cap=5. Boundary kill
       // for the `actualSize > maxBytes` mutant: with `>=` it would

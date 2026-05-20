@@ -1,11 +1,12 @@
 import * as fsPromises from 'node:fs/promises';
 import * as os from 'node:os';
 import * as nodePath from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   interpretCreationLstat,
   isErrnoException,
   isWindowsSymlinkRefusal,
+  mapConcurrent,
   mapErrno,
   mapStat,
   NodeFileSystem,
@@ -373,6 +374,87 @@ describe('NodeFileSystem', () => {
       });
     });
 
+    describe('mapConcurrent', () => {
+      it('Given an empty input, When mapped, Then fn is never called', async () => {
+        const fn = vi.fn(async () => undefined);
+
+        await mapConcurrent([], 8, fn);
+
+        expect(fn).not.toHaveBeenCalled();
+      });
+
+      it('Given N items with limit P, When mapped, Then no more than P calls are in flight at any time', async () => {
+        // Arrange — hold each fn call until released. Track max
+        // concurrent in-flight.
+        const items = Array.from({ length: 12 }, (_, i) => i);
+        const releases: Array<() => void> = [];
+        let inFlight = 0;
+        let maxInFlight = 0;
+        const fn = vi.fn(async () => {
+          inFlight += 1;
+          maxInFlight = Math.max(maxInFlight, inFlight);
+          await new Promise<void>((resolve) => releases.push(resolve));
+          inFlight -= 1;
+        });
+
+        // Act
+        const run = mapConcurrent(items, 4, fn);
+        // Release in order; the bounded-concurrency cap means only 4
+        // calls are blocked at any time.
+        await new Promise((r) => setTimeout(r, 0));
+        while (releases.length > 0) {
+          const release = releases.shift();
+          release?.();
+          await new Promise((r) => setTimeout(r, 0));
+        }
+        await run;
+
+        // Assert
+        expect(fn).toHaveBeenCalledTimes(12);
+        expect(maxInFlight).toBe(4);
+      });
+
+      it('Given a sparse array (with an undefined slot), When mapped, Then the worker skips the slot and exits early', async () => {
+        // Arrange — `noUncheckedIndexedAccess` types `items[i]` as
+        // `T | undefined`, so the worker guards with `if (item ===
+        // undefined) return`. Sparse arrays are the only legal way to
+        // hit that branch with a typed input.
+        const items: ReadonlyArray<number | undefined> = [0, undefined, 2];
+        const fn = vi.fn(async () => undefined);
+
+        // Act — limit=1 so a single worker walks the array in order.
+        await mapConcurrent(items, 1, fn);
+
+        // Assert — worker hit the undefined slot at index 1 and
+        // returned without processing item index 2.
+        expect(fn).toHaveBeenCalledTimes(1);
+        expect(fn).toHaveBeenCalledWith(0);
+      });
+
+      it('Given a worker that throws, When mapped, Then the rejection propagates AND in-flight items still complete', async () => {
+        // Arrange — limit 2, four items. Worker A handles 0 then 2 (throws);
+        // worker B handles 1 then 3. Promise.all rejects after worker A
+        // throws but worker B's in-flight `fn(3)` resolves first, so we
+        // observe all 4 calls.
+        const fn = vi.fn(async (item: number) => {
+          if (item === 2) throw new Error('boom');
+        });
+
+        // Act
+        let caught: unknown;
+        try {
+          await mapConcurrent([0, 1, 2, 3], 2, fn);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(Error);
+        expect((caught as Error).message).toBe('boom');
+        expect(fn).toHaveBeenCalledTimes(4);
+      });
+    });
+
     describe('isErrnoException', () => {
       it('Given a generic Error without code, When checking, Then returns false', () => {
         // Act
@@ -448,6 +530,17 @@ describe('NodeFileSystem', () => {
         expect(sut.data.code).toBe('PERMISSION_DENIED');
       });
 
+      it('Given EISDIR, When mapping, Then returns PERMISSION_DENIED (open-directory refusal, cross-platform)', () => {
+        // Act
+        const sut = mapErrno(makeErrnoError('EISDIR'), '/some-dir');
+
+        // Assert
+        expect(sut.data.code).toBe('PERMISSION_DENIED');
+        if (sut.data.code === 'PERMISSION_DENIED') {
+          expect(sut.data.path).toBe('/some-dir');
+        }
+      });
+
       it('Given an unknown errno code, When mapping, Then returns UNSUPPORTED_OPERATION with operation="filesystem" and the code as reason', () => {
         // Act
         const sut = mapErrno(makeErrnoError('EOTHER'), '/weird');
@@ -475,12 +568,15 @@ describe('NodeFileSystem', () => {
         }
       });
 
-      it('Given ENOTEMPTY, When mapping, Then returns NOT_A_DIRECTORY (cross-adapter parity)', () => {
+      it('Given ENOTEMPTY, When mapping, Then returns DIRECTORY_NOT_EMPTY (non-empty rmdir is distinct from a wrong-shape path)', () => {
         // Act
         const sut = mapErrno(makeErrnoError('ENOTEMPTY'), '/non-empty-dir');
 
         // Assert
-        expect(sut.data.code).toBe('NOT_A_DIRECTORY');
+        expect(sut.data.code).toBe('DIRECTORY_NOT_EMPTY');
+        if (sut.data.code === 'DIRECTORY_NOT_EMPTY') {
+          expect(sut.data.path).toBe('/non-empty-dir');
+        }
       });
     });
 
@@ -626,7 +722,7 @@ describe('NodeFileSystem', () => {
       });
 
       it('Given the root path itself, When resolving, Then returns the realpath of root (empty-segments branch)', async () => {
-        // Act — '/' split yields no segments, exercising the `segments.length > 0 ? ... : root` false branch
+        // Act — '/' split yields no segments, exercising the `segments.length > 0 ?... : root` false branch
         const sut = await realpathNearestExisting('/');
 
         // Assert
@@ -659,7 +755,7 @@ describe('NodeFileSystem', () => {
 
       // The non-ENOENT-rethrow tests for realpathNearestExisting / exists /
       // resolveForCreation live in `node-file-system-injected.test.ts`:
-      // they pass a per-instance `FsOperations` fake (ADR-047) to control
+      // they pass a per-instance `FsOperations` fake to control
       // the realpath/lstat errno surface, which makes them cross-platform
       // (POSIX hosts produce ENOTDIR for "file used as directory"; Windows
       // produces ENOENT or EINVAL — the test is about how
@@ -710,50 +806,38 @@ describe('NodeFileSystem', () => {
     // `NodeFileSystem.exists` non-ENOENT and escape-branch tests +
     // `resolveForCreation` non-ENOENT-on-leaf-lstat tests both moved to
     // `node-file-system-injected.test.ts` where per-instance `FsOperations`
-    // fakes (ADR-047) control the errno surface — see comment above.
+    // fakes control the errno surface — see comment above.
   });
 
   describe('isWindowsSymlinkRefusal', () => {
     const posix = posixPolicy;
     const windows = windowsPolicy;
 
-    it('Given POSIX host, When isWindowsSymlinkRefusal is called with a symlink leaf and PERMISSION_DENIED, Then returns false regardless of the leaf type', () => {
+    it('Given POSIX host, When isWindowsSymlinkRefusal is called with a PERMISSION_DENIED error, Then returns false (POSIX never uses the discriminator)', () => {
       // Arrange
       const sut = isWindowsSymlinkRefusal;
       const err = new TsgitError({ code: 'PERMISSION_DENIED', path: 'p' as never });
 
       // Act
-      const result = sut(err, true, posix);
+      const result = sut(err, posix);
 
       // Assert
       expect(result).toBe(false);
     });
 
-    it('Given Windows host and a non-symlink leaf, When isWindowsSymlinkRefusal is called, Then returns false (real EACCES must surface)', () => {
+    it('Given Windows host and a PERMISSION_DENIED error, When isWindowsSymlinkRefusal is called, Then returns true', () => {
       // Arrange
       const sut = isWindowsSymlinkRefusal;
       const err = new TsgitError({ code: 'PERMISSION_DENIED', path: 'p' as never });
 
       // Act
-      const result = sut(err, false, windows);
-
-      // Assert
-      expect(result).toBe(false);
-    });
-
-    it('Given Windows host, symlink leaf, and a PERMISSION_DENIED error, When isWindowsSymlinkRefusal is called, Then returns true', () => {
-      // Arrange
-      const sut = isWindowsSymlinkRefusal;
-      const err = new TsgitError({ code: 'PERMISSION_DENIED', path: 'p' as never });
-
-      // Act
-      const result = sut(err, true, windows);
+      const result = sut(err, windows);
 
       // Assert
       expect(result).toBe(true);
     });
 
-    it('Given Windows host, symlink leaf, and an UNSUPPORTED_OPERATION error, When isWindowsSymlinkRefusal is called, Then returns true', () => {
+    it('Given Windows host and an UNSUPPORTED_OPERATION error, When isWindowsSymlinkRefusal is called, Then returns true', () => {
       // Arrange
       const sut = isWindowsSymlinkRefusal;
       const err = new TsgitError({
@@ -763,30 +847,30 @@ describe('NodeFileSystem', () => {
       });
 
       // Act
-      const result = sut(err, true, windows);
+      const result = sut(err, windows);
 
       // Assert
       expect(result).toBe(true);
     });
 
-    it('Given Windows host, symlink leaf, and a non-TsgitError, When isWindowsSymlinkRefusal is called, Then returns false', () => {
+    it('Given Windows host and a non-TsgitError, When isWindowsSymlinkRefusal is called, Then returns false', () => {
       // Arrange
       const sut = isWindowsSymlinkRefusal;
 
       // Act
-      const result = sut(new Error('raw'), true, windows);
+      const result = sut(new Error('raw'), windows);
 
       // Assert
       expect(result).toBe(false);
     });
 
-    it('Given Windows host, symlink leaf, and a TsgitError of unrelated kind, When isWindowsSymlinkRefusal is called, Then returns false', () => {
+    it('Given Windows host and a TsgitError of unrelated kind, When isWindowsSymlinkRefusal is called, Then returns false', () => {
       // Arrange
       const sut = isWindowsSymlinkRefusal;
       const err = new TsgitError({ code: 'FILE_NOT_FOUND', path: 'p' as never });
 
       // Act
-      const result = sut(err, true, windows);
+      const result = sut(err, windows);
 
       // Assert
       expect(result).toBe(false);

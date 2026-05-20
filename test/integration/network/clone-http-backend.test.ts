@@ -1,17 +1,17 @@
 /**
  * End-to-end clone against a local `git-http-backend` running over Node's
- * built-in http server. Verifies that the Phase 12.1 acceptance bullet from
- * docs/BACKLOG.md §12.1 holds:
+ * built-in http server. Verifies that the prior acceptance bullet from
+ * holds:
  *
- *   repo.clone({ url }) against a real git-upload-pack endpoint produces a
- *   working repo whose `git log` matches the remote's HEAD line.
+ *  repo.clone({ url }) against a real git-upload-pack endpoint produces a
+ *  working repo whose `git log` matches the remote's HEAD line.
  *
  * The fixture under test/fixtures/clone-source/source.git is built once by
  * scripts/regenerate-clone-fixtures.sh and committed.
  *
  * The suite is gated on `git --version` being available + a discoverable
  * `git-http-backend` binary under `git --exec-path`. CI runners (Ubuntu,
- * macOS) have both pre-installed. Windows is out of scope (Phase 14.4).
+ * macOS) have both pre-installed. Windows is out of scope.
  */
 import { accessSync } from 'node:fs';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';

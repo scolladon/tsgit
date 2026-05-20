@@ -1,16 +1,16 @@
 /**
- * Phase 12.3 — `push` command. Real receive-pack-driven body.
+ * `push` command. Real receive-pack-driven body.
  *
  * Flow (see `docs/design/phase-12-3-push.md`):
- *   1. Resolve remote name → URL via `.git/config`.
- *   2. Parse refspecs (default = current branch).
- *   3. Discover refs over smart-HTTP v1 (`info/refs?service=git-receive-pack`).
- *   4. Resolve every refspec → local oid + server oid + lease.
- *   5. Apply force-with-lease / non-fast-forward guards.
- *   6. Enumerate the object closure missing on the remote (non-delete refspecs).
- *   7. Build the pack (non-delta, ADR-013).
- *   8. POST `git-receive-pack` with ref-updates + pack body.
- *   9. Parse `report-status` (side-band demuxed when advertised).
+ *  1. Resolve remote name → URL via `.git/config`.
+ *  2. Parse refspecs (default = current branch).
+ *  3. Discover refs over smart-HTTP v1 (`info/refs?service=git-receive-pack`).
+ *  4. Resolve every refspec → local oid + server oid + lease.
+ *  5. Apply force-with-lease / non-fast-forward guards.
+ *  6. Enumerate the object closure missing on the remote (non-delete refspecs).
+ *  7. Build the pack (non-delta,).
+ *  8. POST `git-receive-pack` with ref-updates + pack body.
+ *  9. Parse `report-status` (side-band demuxed when advertised).
  *  10. Update local `refs/remotes/<remote>/*` cache for accepted refs.
  */
 import {

@@ -6,8 +6,6 @@
  * (Windows `fs.chmod` only honours the read-only bit) so this is
  * fundamentally platform-bound — it lives in `posix-only/` rather than
  * being a `skipIf` in the unit suite.
- *
- * Phase 14.4.
  */
 import * as fsPromises from 'node:fs/promises';
 import * as os from 'node:os';

@@ -2,7 +2,7 @@
  * Shared fixture builders for tier-1 command tests (Step 5 onward). Test-only
  * helpers — never shipped.
  *
- * These wrap Phase 7's lower-level `buildSeededContext` (in primitives/fixtures)
+ * These wrap's lower-level `buildSeededContext` (in primitives/fixtures)
  * with an ergonomic `RepoSeed` shape that maps closer to "what a real repo
  * looks like" than to the internal object/ref/index shapes.
  */

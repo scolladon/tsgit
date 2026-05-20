@@ -62,7 +62,7 @@ describe('status', () => {
   });
 });
 
-// Progress reporting (Phase 10 §6.2). Mutation-resistant: every assertion uses
+// Progress reporting. Mutation-resistant: every assertion uses
 // `.toBe(<exact string>)` for op names so StringLiteral mutants are killed; the
 // granularity boundary is exercised at 99 / 100 / 101 entries to kill operator
 // mutants on the comparison.
@@ -196,7 +196,7 @@ describe('status — progress reporting', () => {
     await status(replaceProgress(ctx, reporter));
 
     // Assert — bucket crossing at 100 (Math.floor(100/100)=1>0). Last 1 entry doesn't cross
-    // a new bucket; total is undefined per design §6.2 so no final-flush rule applies.
+    // a new bucket; total is undefined so no final-flush rule applies.
     const updates = events
       .filter((e): e is Extract<Event, { kind: 'update' }> => e.kind === 'update')
       .map((e) => e.current);
@@ -245,12 +245,12 @@ describe('status — progress reporting', () => {
     expect(sut.workingTreeChanges).toContainEqual({ kind: 'untracked', path: 'b.txt' });
   });
 
-  it('Given an untracked file matched by .gitignore, When status, Then it is NOT in workingTreeChanges and clean=true (only-ignored-untracked)', async () => {
+  it('Given an untracked file matched by.gitignore, When status, Then it is NOT in workingTreeChanges and clean=true (only-ignored-untracked)', async () => {
     // Arrange
     const ctx = await seedClean();
     await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitignore`, 'build.log\n');
-    // The .gitignore itself is untracked — also matches no rule, so it WOULD
-    // appear. Add a rule that also ignores .gitignore so we test the
+    // The.gitignore itself is untracked — also matches no rule, so it WOULD
+    // appear. Add a rule that also ignores.gitignore so we test the
     // "only ignored untracked files" path cleanly.
     await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitignore`, 'build.log\n.gitignore\n');
     await ctx.fs.writeUtf8(`${ctx.layout.workDir}/build.log`, 'log');

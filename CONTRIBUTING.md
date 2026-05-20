@@ -192,6 +192,7 @@ Examples:
 - **Small functions** — Single responsibility. Early returns over nesting.
 - **No `any`** — biome enforces `noExplicitAny`. Use `unknown` + type narrowing.
 - **Kebab-case files** — Enforced by ls-lint. All `.ts` files in `src/` and `test/` are kebab-case.
+- **No tracking refs in code or tests** — Don't write `Phase 14.5`, `§14.5.10`, `ADR-046`, or `BACKLOG`-pointer comments inside source files or test titles. Git history records when and why a change happened; references in code duplicate that and rot when the tracking scheme changes. Tracking refs are fine in commit messages, design docs (`docs/design/`), plans (`docs/plan/`), ADRs (`docs/adr/`), and `BACKLOG.md` itself — those documents are the tracking surface.
 
 ## Architecture Rules
 

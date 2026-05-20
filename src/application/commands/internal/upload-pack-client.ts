@@ -1,15 +1,15 @@
 /**
  * Smart-HTTP upload-pack client helpers shared by `clone` and `fetch`.
  *
- * Each helper is a thin composition of Phase 8 protocol primitives:
+ * Each helper is a thin composition of protocol primitives:
  * - `discoverRefs` — service-bound wrapper around the parameterised
- *   `discoverRefsForService` in `refs-discovery.ts` (binds
- *   `'git-upload-pack'`).
+ *  `discoverRefsForService` in `refs-discovery.ts` (binds
+ *  `'git-upload-pack'`).
  * - `selectFetchCapabilities` — intersect the server's advertised capability
- *   set with the tsgit-supported v1 subset (no multi_ack_detailed, no
- *   thin-pack, no no-progress; always append `agent=tsgit/<ver>`).
+ *  set with the tsgit-supported v1 subset (no multi_ack_detailed, no
+ *  thin-pack, no no-progress; always append `agent=tsgit/<ver>`).
  * - `uniqueRefOids` — strip duplicates from the advertisement's ref oids so
- *   the upload-pack request body's `want` lines are deduplicated.
+ *  the upload-pack request body's `want` lines are deduplicated.
  *
  * Push (12.3) reuses the parameterised `discoverRefsForService` directly via
  * `receive-pack-client.ts`.
@@ -32,8 +32,8 @@ export const discoverRefs = async (
 ): Promise<Advertisement> => discoverRefsForService(ctx, transport, url, 'git-upload-pack');
 
 /**
- * Drop client capabilities Phase 12.x cannot honor end-to-end (see Phase 12.1
- * design §3.6): no negotiation rounds (`multi_ack_detailed`), no thin-pack
+ * Drop client capabilities.x cannot honor end-to-end (see
+ * design): no negotiation rounds (`multi_ack_detailed`), no thin-pack
  * repair, no `no-progress` (we want channel-2 text for the reporter). Always
  * append the agent string — the server does not need to advertise it for the
  * client to send it.

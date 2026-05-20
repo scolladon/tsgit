@@ -21,7 +21,7 @@ export interface InitResult {
  *
  * For non-bare repos, the gitDir is `<workDir>/.git`. For bare, gitDir IS the
  * working dir — callers must construct a Context with `bare: true` for that
- * shape (Phase 10 facade will derive this automatically).
+ * shape.
  */
 export const init = async (ctx: Context, opts: InitOptions = {}): Promise<InitResult> => {
   const initialBranch = opts.initialBranch ?? 'main';

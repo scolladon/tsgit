@@ -1,5 +1,5 @@
 /**
- * Phase 12.3 — push closure walker.
+ * push closure walker.
  *
  * Enumerates every object the remote does NOT have so the caller can
  * stream them into `buildPack`. Walks commits from `wants` with `haves`
@@ -10,7 +10,7 @@
  *
  * Annotated tags pushed via a refspec must appear in the stream too —
  * `readObject` is called on each want; if the result is a Tag, the tag
- * oid is yielded and the chain is followed (tag → tag → ... → commit)
+ * oid is yielded and the chain is followed (tag → tag →... → commit)
  * before handing the resolved commit oid to `walkCommits`.
  *
  * Gitlink entries in a tree (submodules) are NOT included: the oid
@@ -113,7 +113,7 @@ export async function* enumeratePushObjects(
 }
 
 /**
- * Follow a tag chain (annotated tag → annotated tag → ... → commit)
+ * Follow a tag chain (annotated tag → annotated tag →... → commit)
  * yielding each tag oid through `recordTag`. Returns the terminal
  * commit oid for the caller to use as a commit-walk seed. Non-tag
  * oids pass through untouched.

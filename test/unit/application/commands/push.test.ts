@@ -1,5 +1,5 @@
 /**
- * Phase 12.3 — push command. Real receive-pack-driven body.
+ * push command. Real receive-pack-driven body.
  *
  * Tests cover:
  *  - REMOTE_NOT_CONFIGURED guard.

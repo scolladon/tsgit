@@ -7,6 +7,7 @@ import {
 import {
   compressFailed,
   decompressFailed,
+  directoryNotEmpty,
   fileExists,
   fileNotFound,
   hashFailed,
@@ -42,6 +43,14 @@ describe('domain error — AdapterError', () => {
 
       // Assert
       expect(sut.data).toEqual({ code: 'NOT_A_DIRECTORY', path: '/repo/file.txt' });
+    });
+
+    it("Given directoryNotEmpty('/repo/dir'), When checking data, Then code is DIRECTORY_NOT_EMPTY and path preserved", () => {
+      // Arrange & Act
+      const sut = directoryNotEmpty('/repo/dir');
+
+      // Assert
+      expect(sut.data).toEqual({ code: 'DIRECTORY_NOT_EMPTY', path: '/repo/dir' });
     });
 
     it("Given permissionDenied('/etc/shadow'), When checking data, Then code is PERMISSION_DENIED and path preserved", () => {
@@ -122,7 +131,7 @@ describe('domain error — AdapterError', () => {
       expect(sut.name).toBe('TsgitError');
     });
 
-    it('Given an adapter TsgitError, When accessing .message, Then contains the error code', () => {
+    it('Given an adapter TsgitError, When accessing.message, Then contains the error code', () => {
       // Arrange & Act
       const sut = fileNotFound('/x');
 
@@ -160,6 +169,15 @@ describe('domain error — AdapterError', () => {
       expect(sut.message).not.toContain('/var/lib');
     });
 
+    it('Given DIRECTORY_NOT_EMPTY with absolute path, When reading message, Then contains sanitized prefix and basename ONLY', () => {
+      // Arrange & Act
+      const sut = directoryNotEmpty('/var/lib/old-dir');
+
+      // Assert
+      expect(sut.message).toContain('directory not empty: old-dir');
+      expect(sut.message).not.toContain('/var/lib');
+    });
+
     it('Given PERMISSION_DENIED with absolute path, When reading message, Then contains sanitized prefix and basename ONLY', () => {
       // Arrange & Act
       const sut = permissionDenied('/private/keys/secret.pem');
@@ -192,7 +210,7 @@ describe('domain error — AdapterError', () => {
       // Arrange & Act
       const sut = compressFailed('zlib deflateSync failed');
 
-      // Assert — `decompression failed: ...` is a distinct case; the message must not fall through to it.
+      // Assert — `decompression failed:...` is a distinct case; the message must not fall through to it.
       expect(sut.message).toContain('COMPRESS_FAILED: compression failed: zlib deflateSync failed');
       expect(sut.message).not.toContain('decompression failed');
     });
@@ -345,7 +363,7 @@ describe('domain error — AdapterError', () => {
     });
   });
 
-  describe('Phase 9 ApplicationError additions', () => {
+  describe('ApplicationError variants', () => {
     it('Given RESOURCE_LOCKED, When TsgitError.message is read, Then it equals the documented format', () => {
       // Arrange & Act
       const sut = new TsgitErrorClass({

@@ -57,7 +57,7 @@ export function createNodeContext(options: NodeAdapterOptions): Context {
 /**
  * Normalize the raw home-dir value: empty string → undefined, otherwise
  * passthrough. Extracted as a pure helper so the empty-string branch is
- * unit-testable without mocking `os.homedir()`. Phase 14.3.
+ * unit-testable without mocking `os.homedir()`.
  *
  * @internal — exported for tests only.
  */
@@ -65,7 +65,7 @@ export const resolveHomeDir = (raw: string): string | undefined => (raw === '' ?
 
 /**
  * Pure layout builder — splits the optional `homeDir` field so the
- * `exactOptionalPropertyTypes` branch is unit-testable. Phase 14.3.
+ * `exactOptionalPropertyTypes` branch is unit-testable.
  *
  * @internal — exported for tests only.
  */

@@ -34,7 +34,7 @@ export const readInfoExclude = async (ctx: Context): Promise<IgnoreRuleset | und
  * the repo's config. Returns `undefined` when:
  * - the config key is unset,
  * - the path starts with `~/` but `ctx.layout.homeDir` is undefined
- *   (silent miss; see ADR-034),
+ *  (silent miss),
  * - or the file does not exist.
  */
 export const readGlobalExcludes = async (ctx: Context): Promise<IgnoreRuleset | undefined> => {

@@ -1,7 +1,7 @@
 /**
  * Path-segment safety check for git index entries.
  *
- * Called from `parseIndex` (Phase 13.7) before constructing the branded
+ * Called from `parseIndex` before constructing the branded
  * `FilePath`. Downstream consumers can then trust that any `FilePath`
  * value obtained from a parsed `GitIndex` is free of `..`, `.`, empty
  * segments, and leading-slash absolute paths.
@@ -76,10 +76,10 @@ const unsafeReason = (path: string): string | undefined => {
  * - Leading `/` (absolute path).
  * - `..`, `.`, or empty segments.
  * - Backslash (`\`) anywhere — Windows separator that would otherwise
- *   produce post-normalisation `..` traversals that the segment check
- *   misses.
+ *  produce post-normalisation `..` traversals that the segment check
+ *  misses.
  * - C0/C1 control characters and BIDI / isolate Unicode controls —
- *   defends against terminal-rendering attacks (U+202E etc.).
+ *  defends against terminal-rendering attacks (U+202E etc.).
  *
  * The error `reason` deliberately does NOT echo the offending path
  * verbatim. Index entries can carry attacker-supplied paths up to

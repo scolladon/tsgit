@@ -12,7 +12,7 @@ const safeInvoke = (cb: ((text: string) => void) | undefined, text: string): voi
   try {
     cb(text);
   } catch {
-    // swallow callback errors per design §4.4
+    // swallow callback errors
   }
 };
 

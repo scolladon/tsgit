@@ -3,7 +3,7 @@ import type { TsgitErrorData } from '../../../src/domain/error.js';
 /**
  * Shared exhaustiveness gate. Every domain submodule's error.test.ts asserts
  * that ALL TsgitErrorData variants are matchable via a single switch — kept in
- * one place so widening the union (e.g., Phase 9 / Phase 10) only requires
+ * one place so widening the union (e.g., /) only requires
  * editing this file.
  *
  * The function does not return a useful value at runtime; the type-level
@@ -30,6 +30,7 @@ export function assertExhaustiveSwitch(data: TsgitErrorData): void {
     case 'FILE_NOT_FOUND':
     case 'FILE_EXISTS':
     case 'NOT_A_DIRECTORY':
+    case 'DIRECTORY_NOT_EMPTY':
     case 'PERMISSION_DENIED':
     case 'UNSUPPORTED_OPERATION':
     case 'HASH_FAILED':

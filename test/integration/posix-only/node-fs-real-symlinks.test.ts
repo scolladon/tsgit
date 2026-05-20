@@ -5,8 +5,6 @@
  * assertions impossible to verify on the Windows runner. The adapter's
  * Windows symlink discriminator is covered by mocked DI tests in
  * `test/unit/adapters/node/node-file-system-injected.test.ts`.
- *
- * Phase 14.4.
  */
 import * as fsPromises from 'node:fs/promises';
 import * as os from 'node:os';

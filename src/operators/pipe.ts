@@ -62,6 +62,6 @@ export function pipe<A, B, C, D, E, F, G, H, I, J>(
   ij: UnaryFn<I, J>,
 ): J;
 export function pipe(initial: unknown, ...fns: ReadonlyArray<UnaryFn<unknown, unknown>>): unknown {
-  // Stryker disable next-line all -- equivalent mutant: Array.prototype.reduce ↔ for-of loop variants produce identical observable behavior (design §7.6)
+  // Stryker disable next-line all -- equivalent mutant: Array.prototype.reduce ↔ for-of loop variants produce identical observable behavior
   return fns.reduce((acc, fn) => fn(acc), initial);
 }

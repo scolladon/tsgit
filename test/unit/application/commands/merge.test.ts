@@ -128,7 +128,7 @@ describe('merge', () => {
 
   it('Given a non-overlapping content change to the same file on each side, When merge, Then merged content combines both edits', async () => {
     // Arrange — base file has 3 lines. Each side modifies a different line.
-    // Phase 5's mergeContent should produce a clean merge with both edits.
+    // mergeContent should produce a clean merge with both edits.
     const ctx = createMemoryContext();
     await init(ctx);
     await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'line1\nline2\nline3\n');
@@ -360,7 +360,7 @@ describe('merge', () => {
   });
 });
 
-describe('merge — Phase 13.4b conflict persistence', () => {
+describe('merge.4b conflict persistence', () => {
   const setupConflictingMerge = async (
     ctx: ReturnType<typeof createMemoryContext>,
   ): Promise<{ readonly preMergeMain: ObjectId; readonly featureTip: ObjectId }> => {
@@ -397,7 +397,7 @@ describe('merge — Phase 13.4b conflict persistence', () => {
     expect(sut).toContain('FEATURE');
   });
 
-  it('Given a content conflict, When merge runs, Then .git/MERGE_HEAD records the target tip id', async () => {
+  it('Given a content conflict, When merge runs, Then.git/MERGE_HEAD records the target tip id', async () => {
     // Arrange
     const ctx = createMemoryContext();
     const { featureTip } = await setupConflictingMerge(ctx);
@@ -411,7 +411,7 @@ describe('merge — Phase 13.4b conflict persistence', () => {
     expect(sut).toBe(`${featureTip}\n`);
   });
 
-  it('Given a content conflict, When merge runs, Then .git/ORIG_HEAD records the pre-merge HEAD id', async () => {
+  it('Given a content conflict, When merge runs, Then.git/ORIG_HEAD records the pre-merge HEAD id', async () => {
     // Arrange
     const ctx = createMemoryContext();
     const { preMergeMain } = await setupConflictingMerge(ctx);
@@ -424,7 +424,7 @@ describe('merge — Phase 13.4b conflict persistence', () => {
     expect(sut).toBe(`${preMergeMain}\n`);
   });
 
-  it('Given a content conflict, When merge runs with a message, Then .git/MERGE_MSG records the message', async () => {
+  it('Given a content conflict, When merge runs with a message, Then.git/MERGE_MSG records the message', async () => {
     // Arrange
     const ctx = createMemoryContext();
     await setupConflictingMerge(ctx);
@@ -742,7 +742,7 @@ describe('merge — Phase 13.4b conflict persistence', () => {
 
 import { recordingProgress, withProgress } from './fixtures.js';
 
-describe('merge — bounded blob reads (Phase 13.8)', () => {
+describe('merge — bounded blob reads', () => {
   it('Given a conflicting merge, When the merger runs, Then ours/theirs/base blob reads OVERLAP at the content-merger phase (parallelism)', async () => {
     // Arrange — set up a conflicting merge so the three blob reads
     // (ours/theirs/base) all happen inside `buildContentMerger`. Pre-

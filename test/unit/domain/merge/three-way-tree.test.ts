@@ -645,7 +645,7 @@ describe('mergeTrees — caps', () => {
   });
 });
 
-describe('mergeTrees — mode handling (§8.2)', () => {
+describe('mergeTrees — mode handling', () => {
   it('Given modify-modify with our.mode === their.mode but both differ from base, When mergeTrees called, Then uses common new mode', async () => {
     // Arrange
     const base = tree([['p', entry(ID_A, FILE_MODE.REGULAR)]]);

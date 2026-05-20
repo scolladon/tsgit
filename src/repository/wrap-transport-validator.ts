@@ -3,8 +3,8 @@ import type { RepositoryConfig } from '../ports/context.js';
 import type { HttpRequest, HttpResponse, HttpTransport } from '../ports/http-transport.js';
 
 /**
- * Wrap a user-supplied HttpTransport so every request URL passes the Phase 9
- * §4.8 SSRF guard before reaching the adapter. Defense-in-depth: Phase 8's
+ * Wrap a user-supplied HttpTransport so every request URL passes the
+ * SSRF guard before reaching the adapter. Defense-in-depth: the transport
  * `withDefaults` middleware already validates URLs at command sites, but a
  * user-supplied transport bypassing that pipeline (e.g., a hand-rolled
  * subclass that takes a raw URL) would slip past without this wrapper.
@@ -14,7 +14,7 @@ import type { HttpRequest, HttpResponse, HttpTransport } from '../ports/http-tra
  * Validation rules consulted from `config`:
  * - `allowInsecure` (default false): http:// is rejected unless true.
  * - `allowPrivateNetworks` (default false): RFC1918 / loopback / link-local
- *   addresses are rejected unless true.
+ *  addresses are rejected unless true.
  * - `dnsResolver`: pluggable; defaults to a built-in fail-closed resolver.
  *
  * Note: when `config` is undefined, the wrapper applies the most restrictive

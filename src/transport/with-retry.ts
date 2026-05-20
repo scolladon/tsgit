@@ -56,7 +56,7 @@ const tryCancelBody = (body: ReadableStream<Uint8Array> | undefined): void => {
   if (!body) return;
   try {
     body.cancel().catch(() => {
-      /* swallow per design §5.1 */
+      /* swallow */
     });
   } catch {
     // swallow synchronous throw too

@@ -1,10 +1,10 @@
 /**
  * End-to-end shallow clone against a local `git-http-backend` running over
- * Node's built-in http server. Verifies that the Phase 12.2 acceptance bullet
- * from docs/BACKLOG.md §12.2 holds:
+ * Node's built-in http server. Verifies that the prior acceptance bullet
+ * holds:
  *
- *   shallow + non-shallow fetch updates refs/remotes/<remote>/* and writes
- *   received objects.
+ *  shallow + non-shallow fetch updates refs/remotes/<remote>/* and writes
+ *  received objects.
  *
  * This sibling of `clone-http-backend.test.ts` exercises the shallow path:
  * `clone({ url, depth: 1 })` against the 5-commit fixture must leave a valid
@@ -180,7 +180,7 @@ describe.skipIf(SKIP_REASON !== false)(
       });
     });
 
-    it('Given a local git-http-backend, When clone with depth:1 runs, Then .git/shallow exists and walkCommits stops at the boundary', async () => {
+    it('Given a local git-http-backend, When clone with depth:1 runs, Then.git/shallow exists and walkCommits stops at the boundary', async () => {
       // Arrange
       workDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-shallow-it-'));
       const url = `http://127.0.0.1:${port}/source.git`;
@@ -206,7 +206,7 @@ describe.skipIf(SKIP_REASON !== false)(
       // Assert — clone result
       expect(result.head).toBe('refs/heads/main');
 
-      // Assert — .git/shallow contains exactly the HEAD oid
+      // Assert —.git/shallow contains exactly the HEAD oid
       const expectedHead = (await readFile(HEAD_OID_FILE, 'utf8')).trim() as ObjectId;
       const shallowPath = path.join(repo.ctx.layout.gitDir, 'shallow');
       const shallowContent = (await readFile(shallowPath, 'utf8')).trim();

@@ -167,7 +167,7 @@ describe('consoleProgress — op sanitization', () => {
 
     // Act — op should never contain control bytes in normal usage; the
     // facade defends defensively against a programming bug that wires a
-    // sideband-derived string into the op slot (design §6.1).
+    // sideband-derived string into the op slot.
     sut.start('evil\x07op');
 
     // Assert

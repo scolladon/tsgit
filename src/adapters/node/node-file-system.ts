@@ -1,6 +1,7 @@
 import * as fs from 'node:fs';
 import type * as fsPromises from 'node:fs/promises';
 import {
+  directoryNotEmpty,
   fileExists,
   fileNotFound,
   notADirectory,
@@ -8,6 +9,7 @@ import {
   TsgitError,
   unsupportedOperation,
 } from '../../domain/index.js';
+import { createLruCache } from '../../domain/storage/lru-cache.js';
 import type { DirEntry, FileHandle, FileStat, FileSystem } from '../../ports/file-system.js';
 import type { FsOperations } from './fs-operations.js';
 import { realFsOps } from './fs-operations.js';
@@ -15,6 +17,46 @@ import type { PathPolicy } from './path-policy.js';
 import { nativePolicy } from './path-policy.js';
 
 type ContainmentMode = 'read' | 'lstat' | 'creation';
+
+const REMOVE_TREE_CONCURRENCY = 8;
+
+/**
+ * Bounded-concurrency map. Issues up to `limit` `fn(item)` calls in
+ * parallel; the next item runs as each in-flight call resolves.
+ *
+ * Error semantics: `Promise.all` short-circuits the returned promise on
+ * the first rejection, but JavaScript can't cancel a running async
+ * function — surviving workers continue running their current item AND
+ * keep picking new items off the shared queue until it is exhausted.
+ * So callers observing the rejected `mapConcurrent` should expect
+ * additional `fn` invocations after the rejection lands. A second
+ * concurrent rejection is silently swallowed by `Promise.all` (only the
+ * first is surfaced). The current single caller (`removeTree`) is fine
+ * with both properties; any future caller that needs strict
+ * bail-on-error must thread an `AbortSignal` of its own.
+ *
+ * @internal
+ */
+export async function mapConcurrent<T>(
+  items: readonly T[],
+  limit: number,
+  fn: (item: T) => Promise<void>,
+): Promise<void> {
+  if (items.length === 0) return;
+  let next = 0;
+  const workerCount = Math.min(limit, items.length);
+  const workers = Array.from({ length: workerCount }, async () => {
+    while (true) {
+      const i = next;
+      next += 1;
+      if (i >= items.length) return;
+      const item = items[i];
+      if (item === undefined) return;
+      await fn(item);
+    }
+  });
+  await Promise.all(workers);
+}
 
 /** @internal */
 export function toAbsolute(
@@ -36,18 +78,14 @@ export function isErrnoException(err: unknown): err is NodeJS.ErrnoException {
  * disambiguate without knowing whether the leaf is a symlink. This helper
  * accepts the pre-open `lstat` result and the post-open error, and
  * returns true iff the error should be rewrapped to `PERMISSION_DENIED`
- * for cross-platform symlink-refusal parity (ADR-043).
+ * for cross-platform symlink-refusal parity.
  *
  * @internal
  */
-export function isWindowsSymlinkRefusal(
-  err: unknown,
-  isSymlinkLeaf: boolean,
-  policy: PathPolicy = nativePolicy,
-): boolean {
-  // The discriminator only fires on case-insensitive (Windows) platforms.
+export function isWindowsSymlinkRefusal(err: unknown, policy: PathPolicy = nativePolicy): boolean {
+  // Discriminator only fires on case-insensitive (Windows) platforms.
   // POSIX symlink refusal flows through `mapErrno` directly via `ELOOP`.
-  if (!policy.caseInsensitive || !isSymlinkLeaf) return false;
+  if (!policy.caseInsensitive) return false;
   if (!(err instanceof TsgitError)) return false;
   return err.data.code === 'PERMISSION_DENIED' || err.data.code === 'UNSUPPORTED_OPERATION';
 }
@@ -56,7 +94,7 @@ export function isWindowsSymlinkRefusal(
  * True iff `child === parent` (after case-folding on Windows) or `child` is
  * strictly inside `parent`. Defends `NodeFileSystem.checkContainment` against
  * (a) drive-letter casing differences on Windows and (b) the prefix-only
- * false-positive (parent='/tmp/foo', child='/tmp/foobar'). Phase 14.4.
+ * false-positive (parent='/tmp/foo', child='/tmp/foobar').
  *
  * @internal
  */
@@ -65,10 +103,26 @@ export function pathContains(
   child: string,
   policy: PathPolicy = nativePolicy,
 ): boolean {
-  const p = policy.normalizeForCompare(parent);
+  return pathContainsNormalized(policy.normalizeForCompare(parent), child, policy);
+}
+
+/**
+ * Same predicate as `pathContains`, but the caller has already normalised
+ * `parent` once and is willing to keep that result. Saves the per-call
+ * `policy.normalizeForCompare(parent)` allocation when `parent` is a value
+ * the caller holds constant — typically the adapter's `rootDir` /
+ * `canonicalRoot` on the containment hot path.
+ *
+ * @internal
+ */
+export function pathContainsNormalized(
+  normalizedParent: string,
+  child: string,
+  policy: PathPolicy = nativePolicy,
+): boolean {
   const c = policy.normalizeForCompare(child);
-  if (c === p) return true;
-  return c.startsWith(p + policy.sep);
+  if (c === normalizedParent) return true;
+  return c.startsWith(normalizedParent + policy.sep);
 }
 
 /** @internal */
@@ -79,16 +133,23 @@ export function mapErrno(err: NodeJS.ErrnoException, path: string): TsgitError {
     case 'EEXIST':
       return fileExists(path);
     case 'ENOTDIR':
-    case 'ENOTEMPTY':
-      // ENOTEMPTY is "directory not empty" — surface as NOT_A_DIRECTORY for cross-adapter
-      // parity with the memory adapter, which uses the same code for non-empty rm.
       return notADirectory(path);
+    case 'ENOTEMPTY':
+      // "rmdir on a non-empty directory" is semantically distinct from
+      // "the path is the wrong shape" — callers branching on the code
+      // (e.g., to decide between abort vs. force-recursive) need both.
+      return directoryNotEmpty(path);
     case 'EACCES':
     case 'EPERM':
       return permissionDenied(path);
     case 'ELOOP':
       // POSIX errno for symlink-loop / O_NOFOLLOW refusal; Windows surfaces other
-      // errnos handled by the `openWithNoFollow` discriminator (ADR-043).
+      // errnos handled by the `openWithNoFollow` discriminator.
+      return permissionDenied(path);
+    case 'EISDIR':
+      // POSIX errno for "is a directory" — surfaces from open(dir, write-flag).
+      // Map to PERMISSION_DENIED so both POSIX and Windows symlink-to-directory
+      // refusals share the same cross-platform code.
       return permissionDenied(path);
     default:
       return unsupportedOperation('filesystem', err.code ?? 'UNKNOWN');
@@ -234,11 +295,44 @@ export class NodeFileSystem implements FileSystem {
   private readonly fsOps: FsOperations;
 
   /**
+   * Memoised realpath of an *existing* parent directory, keyed by the raw
+   * (pre-realpath) parent path. Populated on every cache-miss inside
+   * `resolveForCreation` so a clone/checkout that writes N files into the
+   * same tree pays the realpath walk-up once per parent rather than once
+   * per file.
+   *
+   * Invariants:
+   * - Only EXISTING parents are cached. ENOENT walks fall back to
+   *   `realpathNearestExisting` and are never recorded.
+   * - `rmRecursive` and `rename` clear the cache, which is correct (the
+   *   parent realpath may have changed) and cheap (the cache holds at
+   *   most a handful of small strings).
+   */
+  private readonly creationParentCache = createLruCache<string>(64 * 1024, 64);
+
+  /**
    * Lazy long-name canonicalisation of `rootDir` for containment checks.
    * Promise so concurrent first calls share one `realpath`; cleared on
-   * rejection so a transient ENOENT can be retried. See ADR-042.
+   * rejection so a transient ENOENT can be retried.
    */
   private canonicalRootPromise: Promise<string> | undefined = undefined;
+
+  /**
+   * Memoised result of `pathPolicy.normalizeForCompare(rootDir)`. The
+   * rootDir is `readonly` for the adapter's lifetime, so a single
+   * normalisation is amortised across every containment check.
+   */
+  private normalizedRootDir: string | undefined = undefined;
+
+  /**
+   * Memoised result of `pathPolicy.normalizeForCompare(canonicalRoot)`.
+   * Tracked alongside the canonical-root promise: when the promise
+   * resolves we cache the normalised form once. The promise's
+   * rejection-clears-cache rule means a transient ENOENT also clears
+   * this field (so the next call re-normalises against the retried
+   * canonical root).
+   */
+  private normalizedCanonicalRoot: string | undefined = undefined;
 
   constructor(
     rootDir: string,
@@ -250,12 +344,44 @@ export class NodeFileSystem implements FileSystem {
     this.fsOps = fsOps;
   }
 
+  private getNormalizedRootDir(): string {
+    if (this.normalizedRootDir === undefined) {
+      this.normalizedRootDir = this.pathPolicy.normalizeForCompare(this.rootDir);
+    }
+    return this.normalizedRootDir;
+  }
+
+  /**
+   * Returns the cached normalised canonical root. Caller must have
+   * `await this.getCanonicalRoot()` immediately prior — the cache is
+   * populated by the promise's success arm and cleared on rejection, so
+   * a successful `await` guarantees the field is set.
+   *
+   * Kept synchronous (vs `async` + `await this.getCanonicalRoot()`
+   * inside) so the hot path doesn't pay an extra microtask suspension
+   * per containment check on a settled promise. The `!` is the only
+   * machine-readable form of "trust the post-await invariant"; the
+   * private `await getCanonicalRoot()` discipline at every call site is
+   * what makes it safe.
+   */
+  private getResolvedNormalizedCanonicalRoot(): string {
+    // biome-ignore lint/style/noNonNullAssertion: trusted invariant — see method JSDoc
+    return this.normalizedCanonicalRoot!;
+  }
+
   private async getCanonicalRoot(): Promise<string> {
     if (this.canonicalRootPromise === undefined) {
-      this.canonicalRootPromise = this.fsOps.realpath(this.rootDir).catch((err: unknown) => {
-        this.canonicalRootPromise = undefined;
-        throw err;
-      });
+      this.canonicalRootPromise = this.fsOps
+        .realpath(this.rootDir)
+        .then((canonical) => {
+          this.normalizedCanonicalRoot = this.pathPolicy.normalizeForCompare(canonical);
+          return canonical;
+        })
+        .catch((err: unknown) => {
+          this.canonicalRootPromise = undefined;
+          this.normalizedCanonicalRoot = undefined;
+          throw err;
+        });
     }
     return this.canonicalRootPromise;
   }
@@ -319,12 +445,14 @@ export class NodeFileSystem implements FileSystem {
 
   exists = async (path: string): Promise<boolean> => {
     const resolved = this.pathPolicy.resolve(toAbsolute(path, this.rootDir, this.pathPolicy));
-    const canonicalRoot = await this.getCanonicalRoot();
+    await this.getCanonicalRoot();
+    const normalizedRoot = this.getNormalizedRootDir();
+    const normalizedCanonical = this.getResolvedNormalizedCanonicalRoot();
     try {
       // Post-realpath check is the security gate against symlink escapes
-      // and 8.3 short-name aliasing. Phase 14.4.
+      // and 8.3 short-name aliasing.
       const real = await this.fsOps.realpath(resolved);
-      if (!pathContains(canonicalRoot, real, this.pathPolicy)) {
+      if (!pathContainsNormalized(normalizedCanonical, real, this.pathPolicy)) {
         throw permissionDenied(path);
       }
       return true;
@@ -337,8 +465,8 @@ export class NodeFileSystem implements FileSystem {
         // callers can pass paths in either form when rootDir's parent is
         // 8.3-shortened on Windows.
         if (
-          !pathContains(this.rootDir, resolved, this.pathPolicy) &&
-          !pathContains(canonicalRoot, resolved, this.pathPolicy)
+          !pathContainsNormalized(normalizedRoot, resolved, this.pathPolicy) &&
+          !pathContainsNormalized(normalizedCanonical, resolved, this.pathPolicy)
         ) {
           throw permissionDenied(path);
         }
@@ -380,6 +508,10 @@ export class NodeFileSystem implements FileSystem {
   rm = async (path: string): Promise<void> => {
     const real = await this.checkContainment(path, 'read');
     await runFs(() => this.fsOps.rm(real), path);
+    // Node's `fs.rm` without `recursive` only removes leaves — a regular
+    // file or symlink. The parent directory and its realpath are
+    // unchanged, so the creation-parent cache entry for `dirname(real)`
+    // remains valid. No invalidation needed.
   };
 
   rename = async (src: string, dst: string): Promise<void> => {
@@ -389,6 +521,7 @@ export class NodeFileSystem implements FileSystem {
       await this.fsOps.mkdir(this.pathPolicy.dirname(realDst), { recursive: true });
       await this.fsOps.rename(realSrc, realDst);
     }, src);
+    this.creationParentCache.clear();
   };
 
   readlink = async (path: string): Promise<string> => {
@@ -397,6 +530,31 @@ export class NodeFileSystem implements FileSystem {
   };
 
   symlink = async (target: string, path: string): Promise<void> => {
+    // Absolute targets must point inside rootDir. Without this gate, a
+    // malicious tree could plant a `/etc/passwd`-style symlink that
+    // subsequent `readlink` exfiltrates. Relative targets are not
+    // validated at create time — they are resolved against the link
+    // entry's directory at OS-read time, and any follow-up `read`/`stat`
+    // re-realpaths the leaf and re-checks containment.
+    if (this.pathPolicy.isAbsolute(target)) {
+      // Lexical normalisation alone is insufficient: a Windows directory
+      // junction (`C:\repo\junction` → `C:\outside`) lexically passes the
+      // prefix check but the OS-resolved path lands outside rootDir.
+      // Resolve symlinks/junctions in the target's existing prefix and
+      // compare the *real* path. The resolve only ever expands the target
+      // — never the link entry, which doesn't exist yet.
+      const lexical = this.pathPolicy.resolve(target);
+      const resolvedTarget = await realpathNearestExisting(lexical, this.pathPolicy, this.fsOps);
+      await this.getCanonicalRoot();
+      const normalizedRoot = this.getNormalizedRootDir();
+      const normalizedCanonical = this.getResolvedNormalizedCanonicalRoot();
+      if (
+        !pathContainsNormalized(normalizedRoot, resolvedTarget, this.pathPolicy) &&
+        !pathContainsNormalized(normalizedCanonical, resolvedTarget, this.pathPolicy)
+      ) {
+        throw permissionDenied(path);
+      }
+    }
     const real = await this.checkContainment(path, 'creation');
     await runFs(async () => {
       await this.fsOps.mkdir(this.pathPolicy.dirname(real), { recursive: true });
@@ -413,14 +571,18 @@ export class NodeFileSystem implements FileSystem {
     let real: string;
     try {
       real = await this.checkContainment(path, 'lstat');
-      // Verify the leaf exists; checkContainment(lstat) realpaths only the parent.
-      // A missing leaf surfaces as FILE_NOT_FOUND, which we swallow for idempotency.
-      await this.lstat(real);
+      // Verify the leaf exists. Call `fsOps.lstat` directly — `real` is
+      // already a contained, canonical-prefix path; re-entering the
+      // public `lstat` method would re-run checkContainment for no
+      // benefit. ENOENT surfaces as FILE_NOT_FOUND via runFs, which we
+      // swallow for idempotency.
+      await runFs(() => this.fsOps.lstat(real), path);
     } catch (err) {
       if (err instanceof TsgitError && err.data.code === 'FILE_NOT_FOUND') return;
       throw err;
     }
     await this.removeTree(real, path);
+    this.creationParentCache.clear();
   };
 
   openWithNoFollow = async (path: string, mode: 'read' | 'write'): Promise<FileHandle> => {
@@ -429,7 +591,7 @@ export class NodeFileSystem implements FileSystem {
     // (Node forwards the flag but CreateFile has no equivalent), so the
     // kernel follows the symlink and opens the target. We must refuse
     // upfront when the leaf IS a symlink. ELOOP flows through `mapErrno` to
-    // PERMISSION_DENIED on POSIX (ADR-043); Windows needs the proactive
+    // PERMISSION_DENIED on POSIX; Windows needs the proactive
     // refusal + the discriminator (for errno-bearing failures like EACCES
     // on a symlink target inside an inaccessible parent).
     if (this.pathPolicy.caseInsensitive && (await this.isSymlinkLeaf(real))) {
@@ -445,7 +607,7 @@ export class NodeFileSystem implements FileSystem {
       // isSymlinkLeaf and open), the discriminator rewraps any EACCES /
       // UNSUPPORTED_OPERATION into PERMISSION_DENIED so callers get a
       // single cross-platform code for symlink refusal.
-      if (isWindowsSymlinkRefusal(err, true, this.pathPolicy)) {
+      if (isWindowsSymlinkRefusal(err, this.pathPolicy)) {
         throw permissionDenied(path);
       }
       throw err;
@@ -459,7 +621,7 @@ export class NodeFileSystem implements FileSystem {
     // runner the body is unreachable, so mutating returns/catch produces
     // no observable effect. Windows-mocked tests in
     // `node-file-system-injected.test.ts` (via `windowsPolicy` injected
-    // through the `PathPolicy` + `FsOperations` DI seam — ADR-046/047)
+    // through the `PathPolicy` + `FsOperations` DI seam)
     // cover both arms.
     try {
       const stat = await this.fsOps.lstat(real);
@@ -487,10 +649,9 @@ export class NodeFileSystem implements FileSystem {
       () => this.fsOps.readdir(real, { withFileTypes: true }),
       originalPath,
     );
-    for (const entry of entries) {
-      const child = this.pathPolicy.join(real, entry.name);
-      await this.removeTree(child, originalPath);
-    }
+    await mapConcurrent(entries, REMOVE_TREE_CONCURRENCY, (entry) =>
+      this.removeTree(this.pathPolicy.join(real, entry.name), originalPath),
+    );
     await runFs(() => this.fsOps.rmdir(real), originalPath);
   }
 
@@ -498,7 +659,7 @@ export class NodeFileSystem implements FileSystem {
     // realpathNearestExisting already resolved the existing prefix and rethrew any non-ENOENT
     // error, so lstat on `real` here can only succeed (leaf exists) or throw ENOENT (leaf is
     // the to-be-created tail). A symlink leaf is rejected to prevent writes through it.
-    const real = await realpathNearestExisting(resolved, this.pathPolicy, this.fsOps);
+    const real = await this.realpathForCreation(resolved);
     let lstatResult: { ok: true; isSymlink: boolean } | { ok: false; err: unknown };
     try {
       const leafStat = await this.fsOps.lstat(real);
@@ -508,6 +669,33 @@ export class NodeFileSystem implements FileSystem {
     }
     interpretCreationLstat(lstatResult, path);
     return real;
+  }
+
+  private async realpathForCreation(resolved: string): Promise<string> {
+    // Fast path: parent already cached. The leaf realpath is meaningless
+    // for creation (the leaf often doesn't exist yet), so we cache the
+    // parent only and join the basename.
+    const parent = this.pathPolicy.dirname(resolved);
+    const basename = this.pathPolicy.basename(resolved);
+    const cached = this.creationParentCache.get(parent);
+    if (cached !== undefined) {
+      return this.pathPolicy.join(cached, basename);
+    }
+    // Cache miss. Try a direct parent realpath first — when the parent
+    // exists this is a single call instead of the full walk-up.
+    try {
+      const realParent = await this.fsOps.realpath(parent);
+      this.creationParentCache.set(parent, realParent, parent.length + realParent.length);
+      return this.pathPolicy.join(realParent, basename);
+    } catch (err) {
+      if (isErrnoException(err) && err.code === 'ENOENT') {
+        // Parent doesn't exist yet — fall back to the slow walk-up.
+        // NOT cached: a half-built tree's "doesn't exist" decision must
+        // not freeze.
+        return realpathNearestExisting(resolved, this.pathPolicy, this.fsOps);
+      }
+      throw err;
+    }
   }
 
   private async resolveForMode(
@@ -521,6 +709,11 @@ export class NodeFileSystem implements FileSystem {
       return this.fsOps.realpath(resolved);
     }
     if (mode === 'lstat') {
+      // Mirror the `read` arm: fail-fast on obviously out-of-tree input
+      // BEFORE issuing the realpath I/O. Without this gate, an absolute
+      // escape path (`../../etc`) would still walk through
+      // `realpath(dirname)` before the post-check catches it.
+      check(resolved);
       const parent = await this.fsOps.realpath(this.pathPolicy.dirname(resolved));
       return this.pathPolicy.join(parent, this.pathPolicy.basename(resolved));
     }
@@ -528,18 +721,30 @@ export class NodeFileSystem implements FileSystem {
   }
 
   private async checkContainment(path: string, mode: ContainmentMode): Promise<string> {
+    // `policy.resolve` normalises embedded `..`/`.` segments AND foreign
+    // separators (a `/` on Windows). The adapter is contractually allowed
+    // to receive mixed-separator input; resolving here produces a
+    // platform-native form so the containment prefix-check compares
+    // like-for-like.
     const resolved = this.pathPolicy.resolve(toAbsolute(path, this.rootDir, this.pathPolicy));
-    const canonicalRoot = await this.getCanonicalRoot();
     // Containment passes if `abs` is inside EITHER the raw rootDir (which
     // matches user-supplied paths with the same short-name form as the
     // constructor argument) OR the canonical rootDir (which matches paths
     // produced by `realpath` after short-name expansion). Without the
     // OR, a Windows user passing a short-name input would hit the pre-resolve
     // check against the canonical long-name root and fail spuriously.
+    //
+    // Both parents are constant for the call's lifetime; we hold their
+    // normalised forms as instance fields so the case-fold allocation on
+    // the hot path runs once per parent rather than once per containment
+    // check.
+    await this.getCanonicalRoot();
+    const normalizedRoot = this.getNormalizedRootDir();
+    const normalizedCanonical = this.getResolvedNormalizedCanonicalRoot();
     const check = (abs: string): void => {
       if (
-        !pathContains(this.rootDir, abs, this.pathPolicy) &&
-        !pathContains(canonicalRoot, abs, this.pathPolicy)
+        !pathContainsNormalized(normalizedRoot, abs, this.pathPolicy) &&
+        !pathContainsNormalized(normalizedCanonical, abs, this.pathPolicy)
       ) {
         throw permissionDenied(path);
       }

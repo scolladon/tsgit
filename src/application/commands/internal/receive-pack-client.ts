@@ -1,13 +1,13 @@
 /**
- * Smart-HTTP receive-pack client helpers, used by `push` (Phase 12.3).
+ * Smart-HTTP receive-pack client helpers, used by `push`.
  *
  * Symmetric to `upload-pack-client.ts`:
  * - `discoverReceivePackRefs` — service-bound wrapper around
- *   `discoverRefsForService(..., 'git-receive-pack')`.
+ *  `discoverRefsForService(..., 'git-receive-pack')`.
  * - `selectPushCapabilities` — intersect the server's advertised
- *   capability set with the tsgit-supported v1 subset (per ADR-013, ADR-016):
- *   `report-status`, `side-band-64k`, `ofs-delta`, `atomic`, `delete-refs`,
- *   plus the appended `agent` slot.
+ *  capability set with the tsgit-supported v1 subset:
+ *  `report-status`, `side-band-64k`, `ofs-delta`, `atomic`, `delete-refs`,
+ *  plus the appended `agent` slot.
  */
 import type { Advertisement } from '../../../domain/protocol/index.js';
 import {
@@ -30,7 +30,7 @@ export const discoverReceivePackRefs = async (
  * to advertise it for us to send our own. Any server-advertised `agent=...`
  * is dropped by the dedup filter so it does not leak into our request.
  *
- * Phase 12.3 emits non-delta packs (ADR-013) so we never advertise
+ * emits non-delta packs so we never advertise
  * `thin-pack`; it is absent from `CLIENT_CAPABILITIES_PUSH` already, so the
  * intersect step naturally drops it from any server-side advertisement.
  */

@@ -1,5 +1,5 @@
 /**
- * Phase 12.2 — fetch command. Real pack-driven body.
+ * fetch command. Real pack-driven body.
  *
  * Tests cover:
  *  - REMOTE_NOT_CONFIGURED + REMOTE_ADVERTISES_NO_REFS guards.
@@ -50,11 +50,11 @@ const buildAdvertisementBytes = (
   caps: ReadonlyArray<string>,
 ): Uint8Array => {
   // smart-HTTP v1 advertisement layout:
-  //   <pkt># service=git-upload-pack\n>
-  //   <flush>
-  //   <pkt>oid name\0caps\n>
-  //   <pkt>oid name\n> ...
-  //   <flush>
+  //  <pkt># service=git-upload-pack\n>
+  //  <flush>
+  //  <pkt>oid name\0caps\n>
+  //  <pkt>oid name\n>...
+  //  <flush>
   // Two encodePktStream calls produce the two flushes.
   const header = encodePktStream([ENCODER.encode('# service=git-upload-pack\n')]);
   const refLines: Uint8Array[] = [];
@@ -278,7 +278,7 @@ describe('fetch', () => {
     });
   });
 
-  describe('haves derivation (ADR-010)', () => {
+  describe('haves derivation', () => {
     it('Given remote-tracking refs already on disk, When fetch, Then the upload-pack request body carries `have` lines for those tips', async () => {
       // Arrange — seed an existing remote-tracking ref pointing at a fake
       // commit; fetch should mention it as a `have` line in the request body.
@@ -416,7 +416,7 @@ describe('fetch', () => {
     });
   });
 
-  describe('prune (ADR-012)', () => {
+  describe('prune', () => {
     it('Given prune=true and a stale remote-tracking ref, When fetch, Then the stale ref is deleted and listed in prunedRefs', async () => {
       // Arrange — stale `feature-x` ref the server no longer advertises.
       const ctx = createMemoryContext();
@@ -578,8 +578,8 @@ describe('fetch', () => {
   });
 
   describe('shallow file write triggers (mutation kills for the OR clause)', () => {
-    it('Given a server returning unshallow ONLY, When fetch, Then .git/shallow is written', async () => {
-      // Arrange — kills the `unshallow.length > 0 ? false : ...` mutant.
+    it('Given a server returning unshallow ONLY, When fetch, Then.git/shallow is written', async () => {
+      // Arrange — kills the `unshallow.length > 0 ? false :...` mutant.
       // The `unshallow > 0` half of the OR must independently trigger
       // updateShallow.
       const ctx = createMemoryContext();
@@ -608,13 +608,13 @@ describe('fetch', () => {
       expect(remaining).toBe('b'.repeat(40));
     });
 
-    it('Given pre-existing .git/shallow and a fetch with NO shallow/unshallow lines, When fetch, Then .git/shallow is preserved (no spurious rewrite)', async () => {
+    it('Given pre-existing.git/shallow and a fetch with NO shallow/unshallow lines, When fetch, Then.git/shallow is preserved (no spurious rewrite)', async () => {
       // Arrange — kills the `shallow.length > 0 || unshallow.length > 0` →
       // always-true mutant. With always-true, updateShallow would re-process
       // (re-read + re-write) the file even when the server said nothing.
       // We assert that the file's content is preserved verbatim — any
       // mutant that triggers a re-write would still produce the same content
-      // here (Set semantics), so we ALSO assert .git/shallow.lock is NOT
+      // here (Set semantics), so we ALSO assert.git/shallow.lock is NOT
       // created (a mutant rewrite would create + rename the lockfile).
       const ctx = createMemoryContext();
       await seedRepo(ctx, {});
@@ -765,11 +765,11 @@ describe('fetch', () => {
 
     it('Given a nested refs/remotes/origin/feature/x ref, When fetch, Then its oid is included as a have (recursive directory walk)', async () => {
       // Arrange — kills two mutants:
-      //   (a) `if (entry.isDirectory)` → false: the nested directory
-      //       wouldn't be recursed into.
-      //   (b) the prefix-composition strip mutants — the nested ref needs
-      //       both the directory recursion AND the path concatenation to
-      //       surface.
+      //  (a) `if (entry.isDirectory)` → false: the nested directory
+      //  wouldn't be recursed into.
+      //  (b) the prefix-composition strip mutants — the nested ref needs
+      //  both the directory recursion AND the path concatenation to
+      //  surface.
       const ctx = createMemoryContext();
       const nestedOid = 'c'.repeat(40);
       await seedRepo(ctx, {
@@ -872,7 +872,7 @@ describe('fetch', () => {
       expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/remotes/origin/feature/x`)).toBe(false);
     });
 
-    it('Given a tag whose slice(11) matches a local remote-tracking ref, When prune=true fetch runs, Then the local ref IS pruned (kills the .filter drop mutant)', async () => {
+    it('Given a tag whose slice(11) matches a local remote-tracking ref, When prune=true fetch runs, Then the local ref IS pruned (kills the.filter drop mutant)', async () => {
       // Arrange — kills the L312 MethodExpression mutant that drops the
       // `.filter((r) => r.name.startsWith('refs/heads/'))` call but keeps
       // the `.map((r) => r.name.slice('refs/heads/'.length))`. Without the
@@ -906,7 +906,7 @@ describe('fetch', () => {
       expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/remotes/origin/reserved`)).toBe(false);
     });
 
-    it('Given prune=true and a tag advertisement, When fetch, Then prune builds the branch set from heads only (kills the .filter mutant)', async () => {
+    it('Given prune=true and a tag advertisement, When fetch, Then prune builds the branch set from heads only (kills the.filter mutant)', async () => {
       // Arrange — pins the `advertisement.refs.filter(...).map(...)` chain.
       // With the filter dropped, advertisedBranches would include AdvertisedRef
       // objects (not strings), advertised.has(branch) would never match, and
@@ -964,8 +964,8 @@ describe('fetch', () => {
     });
   });
 
-  describe('shallow fetch (ADR-009)', () => {
-    it('Given depth=1 and a server emitting shallow <oid>, When fetch, Then .git/shallow is written with that oid and result.shallow contains it', async () => {
+  describe('shallow fetch', () => {
+    it('Given depth=1 and a server emitting shallow <oid>, When fetch, Then.git/shallow is written with that oid and result.shallow contains it', async () => {
       // Arrange
       const ctx = createMemoryContext();
       await seedRepo(ctx, {});
@@ -988,7 +988,7 @@ describe('fetch', () => {
       expect(onDisk.has(shallowOid as ObjectId)).toBe(true);
     });
 
-    it('Given depth=1 and the server ignores deepen, When fetch, Then .git/shallow is NOT created', async () => {
+    it('Given depth=1 and the server ignores deepen, When fetch, Then.git/shallow is NOT created', async () => {
       // Arrange
       const ctx = createMemoryContext();
       await seedRepo(ctx, {});
@@ -1030,7 +1030,7 @@ describe('fetch', () => {
     });
   });
 
-  describe('local-refs safety (ADR-011 §3.8)', () => {
+  describe('local-refs safety', () => {
     it('Given local refs/heads/* + refs/tags/*, When fetch runs, Then both are left untouched', async () => {
       // Arrange
       const ctx = createMemoryContext();

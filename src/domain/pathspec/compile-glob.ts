@@ -1,14 +1,14 @@
 // Glob-to-regex compiler shared between `parseGitignore` (.gitignore
-// rules) and `compilePathspec` (Phase 14.2). Supports `*`, `?`, and
+// rules) and `compilePathspec`. Supports `*`, `?`, and
 // `**`:
 //
 // - `*` matches any byte run except `/` — i.e. one path segment.
 // - `**` matches any byte run including `/` — any number of segments.
-//   When followed by `/`, the `/` is absorbed so a leading `**` plus
-//   slash matches both an unprefixed and a deeply-prefixed path.
+//  When followed by `/`, the `/` is absorbed so a leading `**` plus
+//  slash matches both an unprefixed and a deeply-prefixed path.
 // - `?` matches exactly one non-`/` byte.
 //
-// Regex specials (`. + ^ $ { } ( ) | [ ] \`) inside the pattern are
+// Regex specials (`. + ^ $ { } | [ ] \`) inside the pattern are
 // escaped verbatim. Character classes `[abc]` are NOT supported in v1.
 //
 // See docs/adr/040-extracted-compile-glob.md.
@@ -57,11 +57,11 @@ const consumeStar = (pattern: string, i: number): ConsumedToken => {
   }
   const after = i + 2;
   // `**` matches across path segments. Two shapes:
-  //   - `**/` consumed-trailing form: matches zero-or-more
-  //     SEGMENT/ runs (each ending with `/`). Compiled as `(.*/)?`
-  //     so `a/**/c` matches `a/c` AND `a/b/c` but NOT `a/xc`.
-  //   - `**` alone (no trailing `/`): matches any character run
-  //     including `/`. Compiled as `.*`.
+  //  - `**/` consumed-trailing form: matches zero-or-more
+  //  SEGMENT/ runs (each ending with `/`). Compiled as `(.*/)?`
+  //  so `a/**/c` matches `a/c` AND `a/b/c` but NOT `a/xc`.
+  //  - `**` alone (no trailing `/`): matches any character run
+  //  including `/`. Compiled as `.*`.
   if (pattern[after] === '/') {
     return { regex: '(.*/)?', next: after + 1 };
   }

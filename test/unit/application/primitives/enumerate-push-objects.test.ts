@@ -1,5 +1,5 @@
 /**
- * Unit tests for the Phase 12.3 `enumeratePushObjects` walker.
+ * Unit tests for the prior `enumeratePushObjects` walker.
  *
  * Coverage:
  *  - empty haves + single want → full closure (commit + tree + blob)

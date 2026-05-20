@@ -1,6 +1,6 @@
 /**
  * Flatten a nested `Tree` object into the `FlatTree` shape that the
- * Phase 5 `mergeTrees` domain primitive consumes.
+ * `mergeTrees` domain primitive consumes.
  *
  * @internal Currently consumed only by `merge.ts`'s clean-merge tree
  * walk. Not exported from the primitives barrel — the function exists

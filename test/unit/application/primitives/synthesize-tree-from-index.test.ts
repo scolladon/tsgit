@@ -124,7 +124,7 @@ describe('synthesizeTreeFromIndex', () => {
   it('Given an index with stage-2 (unmerged) entries, When synthesise, Then the unmerged entries are filtered out', async () => {
     // Arrange — only stage-0 entries should reach the tree; stage-2 means
     // "unresolved merge" and is invisible to the synthesis (consistent with
-    // Phase 13.1's computeChangeset + Phase 13.2's buildIndexFromTree).
+    // computeChangeset + buildIndexFromTree).
     const ctx = await buildSeededContext();
     const stagedId = await writeBlob(ctx, 'staged');
     const unmergedId = await writeBlob(ctx, 'theirs-version');
@@ -234,7 +234,7 @@ describe('synthesizeTreeFromIndex', () => {
     expect(synthesised).toBe(expectedRootId);
   });
 
-  // Phase 13.7 hoisted unsafe-path rejection (`..`, `.`, empty segments,
+  // hoisted unsafe-path rejection (`..`, `.`, empty segments,
   // leading-slash) into `parseIndex` itself; see
   // `test/unit/domain/git-index/index-parser.test.ts` for the full grid
   // of cases. One defence-in-depth case stays HERE to prove the
