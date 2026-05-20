@@ -76,6 +76,34 @@ export const narrowSep = (sep: string): '\\' | '/' => {
   return sep;
 };
 
+/** Win32 extended-length (`\\?\`) and its UNC variant, plus the plain UNC root. */
+const WIN_EXTENDED_PREFIX = '\\\\?\\';
+const WIN_EXTENDED_UNC_PREFIX = '\\\\?\\UNC\\';
+const WIN_UNC_ROOT = '\\\\';
+
+/**
+ * Collapses a Windows extended-length path to its plain form:
+ * `\\?\C:\…` → `C:\…`, `\\?\UNC\server\share\…` → `\\server\share\…`.
+ *
+ * Without this, a `realpath` result carrying the prefix would fail the
+ * prefix test in `pathContains` against an otherwise-identical plain sibling
+ * — a spurious out-of-tree denial. The UNC arm must precede the bare arm:
+ * `\\?\` is itself a prefix of `\\?\UNC\`.
+ *
+ * The `UNC` token is matched case-sensitively by design: this helper only
+ * ever receives `realpath` output, and Win32 `GetFinalPathNameByHandle`
+ * (behind Node's `fs.realpath`) always emits the token uppercase.
+ */
+const stripWinExtendedPrefix = (p: string): string => {
+  if (p.startsWith(WIN_EXTENDED_UNC_PREFIX)) {
+    return WIN_UNC_ROOT + p.slice(WIN_EXTENDED_UNC_PREFIX.length);
+  }
+  if (p.startsWith(WIN_EXTENDED_PREFIX)) {
+    return p.slice(WIN_EXTENDED_PREFIX.length);
+  }
+  return p;
+};
+
 const makePolicy = (impl: PathPolicySource, caseInsensitive: boolean): PathPolicy => ({
   sep: narrowSep(impl.sep),
   caseInsensitive,
@@ -85,7 +113,8 @@ const makePolicy = (impl: PathPolicySource, caseInsensitive: boolean): PathPolic
   dirname: (path: string) => impl.dirname(path),
   basename: (path: string) => impl.basename(path),
   rootOf: (path: string) => impl.parse(path).root,
-  normalizeForCompare: (path: string) => (caseInsensitive ? path.toLowerCase() : path),
+  normalizeForCompare: (path: string) =>
+    caseInsensitive ? stripWinExtendedPrefix(path).toLowerCase() : path,
 });
 
 export const posixPolicy: PathPolicy = makePolicy(nodePath.posix, false);
