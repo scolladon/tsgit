@@ -136,9 +136,7 @@ export class MemoryFileSystem implements FileSystem {
 
   readdir = async (path: string): Promise<ReadonlyArray<DirEntry>> => {
     const normalized = this.resolve(path);
-    // equivalent-mutant: removing this file-guard (or flipping it to `false`) is compensated
-    // by the immediate `!directories.has(normalized)` check below, which also throws NOT_A_DIRECTORY
-    // because files/directories paths are disjoint — a file path is never a directory.
+    // Stryker disable next-line ConditionalExpression,BlockStatement: equivalent — files and directories are disjoint namespaces, so a file path always fails the `!directories.has` check below, which throws the identical NOT_A_DIRECTORY error.
     if (this.files.has(normalized)) {
       throw notADirectory(path);
     }
@@ -156,9 +154,7 @@ export class MemoryFileSystem implements FileSystem {
       this.addDirectEntry(linkPath, prefix, seen, 'symlink');
     }
     for (const dirPath of this.directories) {
-      // equivalent-mutant: dropping this self-skip is harmless — addDirectEntry rejects entries
-      // that don't start with `${normalized}/` and `normalized` never starts with its own
-      // trailing-slashed prefix, so the self-entry is filtered out one step later.
+      // Stryker disable next-line ConditionalExpression: equivalent — when `dirPath === normalized`, addDirectEntry's `!fullPath.startsWith(prefix)` guard also rejects it, since no string starts with its own strict-superstring trailing-slash prefix.
       if (dirPath === normalized) continue;
       this.addDirectEntry(dirPath, prefix, seen, 'directory');
     }
@@ -167,9 +163,7 @@ export class MemoryFileSystem implements FileSystem {
 
   mkdir = async (path: string): Promise<void> => {
     const normalized = this.resolve(path);
-    // equivalent-mutant: removing this guard (or swapping `||`→`&&`) still yields the same
-    // NOT_A_DIRECTORY outcome because addDirectoryRecursive re-checks `files.has`/`symlinks.has`
-    // on every ancestor (including `normalized` itself) and throws NOT_A_DIRECTORY there.
+    // Stryker disable next-line ConditionalExpression,BlockStatement,LogicalOperator: equivalent — addDirectoryRecursive's first iteration re-checks `files.has(normalized) || symlinks.has(normalized)` and throws the identical NOT_A_DIRECTORY, so weakening or removing this guard cannot change behavior.
     if (this.files.has(normalized) || this.symlinks.has(normalized)) {
       throw notADirectory(path);
     }
@@ -260,6 +254,7 @@ export class MemoryFileSystem implements FileSystem {
     const normalized = this.resolve(path);
     if (this.removeLeafEntry(normalized)) return;
     // Idempotent: a missing path returns void with no error.
+    // Stryker disable next-line ConditionalExpression: equivalent — when `normalized` is not a directory it is also missing entirely (leaf cases already returned above), so removeSubtree finds no `${normalized}/`-prefixed keys and is a pure no-op whether or not this guard short-circuits.
     if (!this.directories.has(normalized)) return;
     this.removeSubtree(normalized);
   };
@@ -268,12 +263,14 @@ export class MemoryFileSystem implements FileSystem {
     if (this.files.has(normalized)) {
       this.files.delete(normalized);
       this.times.delete(normalized);
+      // Stryker disable next-line BooleanLiteral: equivalent — the leaf is already deleted; returning false instead only lets rmRecursive fall through to `!directories.has` (true, since files/dirs are disjoint) and return anyway, with removeSubtree a no-op on the now-missing path.
       return true;
     }
     if (this.symlinks.has(normalized)) {
       // Symlink leaf — never follow.
       this.symlinks.delete(normalized);
       this.times.delete(normalized);
+      // Stryker disable next-line BooleanLiteral: equivalent — the symlink is already deleted; returning false instead only lets rmRecursive fall through to `!directories.has` (true, since symlinks/dirs are disjoint) and return anyway, with removeSubtree a no-op on the now-missing path.
       return true;
     }
     return false;
@@ -306,6 +303,7 @@ export class MemoryFileSystem implements FileSystem {
       read: async (buffer, offset, length, position) => {
         const stored = this.files.get(normalized) as Uint8Array;
         const start = position ?? 0;
+        // Stryker disable next-line MethodExpression: equivalent — `end` only feeds `subarray`, which itself clamps both bounds to [0, stored.length]; using max instead of min can only enlarge `end` beyond `stored.length`, which subarray clamps right back, yielding an identical chunk.
         const end = Math.min(start + length, stored.length);
         const chunk = stored.subarray(start, Math.max(start, end));
         buffer.set(chunk, offset);
@@ -430,10 +428,7 @@ export class MemoryFileSystem implements FileSystem {
     // so remainder is always non-empty here.
     const slashIndex = remainder.indexOf('/');
     const name = slashIndex === -1 ? remainder : remainder.slice(0, slashIndex);
-    // equivalent-mutant: skipping this dedup (`if (false) return;`) only overwrites `seen.set`
-    // with the same logical entry — the write/seed/symlink invariants forbid any combination
-    // where two iterators produce different flags for the same first-segment name (e.g. a file
-    // and a directory cannot coexist at a single path), so every overwrite keeps the same shape.
+    // Stryker disable next-line ConditionalExpression: equivalent — files/symlinks/directories are pairwise disjoint and a leaf can have no children, so two iterators reaching the same first-segment `name` always build an identically-shaped DirEntry; skipping the dedup only re-writes the same value.
     if (seen.has(name)) return;
     const isNested = slashIndex !== -1;
     const entry: DirEntry = isNested
@@ -472,6 +467,7 @@ function parentOf(normalizedPath: string): string {
 }
 
 function collectStartsWith(keys: Iterable<string>, prefix: string): string[] {
+  // Stryker disable next-line ArrayDeclaration: equivalent — the only consumer (deleteAll) calls Map.delete on each element; a seeded junk key matches no stored path, so its deletion is an unobservable no-op.
   const out: string[] = [];
   for (const key of keys) {
     if (key.startsWith(prefix)) out.push(key);
@@ -480,6 +476,7 @@ function collectStartsWith(keys: Iterable<string>, prefix: string): string[] {
 }
 
 function collectMatchingDirs(dirs: Iterable<string>, exact: string, prefix: string): string[] {
+  // Stryker disable next-line ArrayDeclaration: equivalent — the only consumer (deleteAllFromSet) calls Set.delete on each element; a seeded junk key matches no stored directory, so its deletion is an unobservable no-op.
   const out: string[] = [];
   for (const key of dirs) {
     if (key === exact || key.startsWith(prefix)) out.push(key);

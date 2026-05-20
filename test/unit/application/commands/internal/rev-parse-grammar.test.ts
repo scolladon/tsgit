@@ -207,5 +207,83 @@ describe('internal/rev-parse-grammar', () => {
       const sut = parseExpression('HEAD<garbage');
       expect((sut as { base: string }).base).toBe('HEAD<garbage');
     });
+
+    it("Given 'abc^' (short hex base followed by an operator), When parseExpression, Then accepted as ref-or-hex with operations", () => {
+      // Arrange / Act
+      // A short hex base only fails when it stands alone (opStart === -1).
+      // With an operator chain it is a valid ref-or-hex expression.
+      const sut = parseExpression('abc^');
+
+      // Assert
+      expect(sut).toEqual({
+        kind: 'ref-or-hex',
+        base: 'abc',
+        operations: [{ kind: 'parent', n: 1 }],
+      } satisfies RevExpression);
+    });
+
+    it("Given 'HEAD^x' (non-operator char inside the operation chain), When parseExpression, Then throws REVPARSE_UNRESOLVED", () => {
+      // Arrange / Act / Assert
+      // After parsing `^`, the cursor lands on `x`, which is neither `~` nor `^`.
+      expectError(() => parseExpression('HEAD^x'), 'REVPARSE_UNRESOLVED');
+    });
+
+    it("Given '^1' (empty base before an operator), When parseExpression, Then throws REVPARSE_UNRESOLVED", () => {
+      // Arrange / Act / Assert
+      expectError(() => parseExpression('^1'), 'REVPARSE_UNRESOLVED');
+    });
+
+    it("Given ':5:f.txt' (single-digit out-of-range stage), When parseExpression, Then throws REVPARSE_UNRESOLVED", () => {
+      // Arrange / Act / Assert
+      expectError(() => parseExpression(':5:f.txt'), 'REVPARSE_UNRESOLVED');
+    });
+
+    it("Given 'HEAD^{tag}^{tree}' (chained peels), When parseExpression, Then operations=[peel tag, peel tree]", () => {
+      // Arrange / Act
+      // The second `^{` must scan for its own `}` starting after `i + 2`, not
+      // before — otherwise it would latch onto the first peel's closing brace.
+      const sut = parseExpression('HEAD^{tag}^{tree}');
+
+      // Assert
+      expect(sut).toEqual({
+        kind: 'ref-or-hex',
+        base: 'HEAD',
+        operations: [
+          { kind: 'peel', target: 'tag' },
+          { kind: 'peel', target: 'tree' },
+        ],
+      } satisfies RevExpression);
+    });
+
+    it("Given 'HEAD~:' (a ':' (0x3A) right after '~'), When parseExpression, Then throws REVPARSE_UNRESOLVED", () => {
+      // Arrange / Act / Assert
+      // ':' has char code 0x3A, just past the digit range — it must not count
+      // as a digit, leaving `~` with no number and triggering the failure.
+      expectError(() => parseExpression('HEAD~:'), 'REVPARSE_UNRESOLVED');
+    });
+
+    it("Given 'HEAD~123' (multi-digit ancestor), When parseExpression, Then ancestor n=123", () => {
+      // Arrange / Act
+      const sut = parseExpression('HEAD~123');
+
+      // Assert
+      expect(sut).toEqual({
+        kind: 'ref-or-hex',
+        base: 'HEAD',
+        operations: [{ kind: 'ancestor', n: 123 }],
+      } satisfies RevExpression);
+    });
+
+    it("Given 'HEAD^23' (multi-digit parent), When parseExpression, Then parent n=23", () => {
+      // Arrange / Act
+      const sut = parseExpression('HEAD^23');
+
+      // Assert
+      expect(sut).toEqual({
+        kind: 'ref-or-hex',
+        base: 'HEAD',
+        operations: [{ kind: 'parent', n: 23 }],
+      } satisfies RevExpression);
+    });
   });
 });

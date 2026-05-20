@@ -32,6 +32,7 @@ export const log = async (
 ): Promise<ReadonlyArray<LogEntry>> => {
   await assertRepository(ctx);
   const startId = await resolveStart(ctx, opts.from ?? 'HEAD');
+  // Stryker disable next-line ArrayDeclaration: equivalent — any unresolvable seed (e.g. "Stryker was here") is caught and skipped by resolveExcluding, yielding the same empty exclusion list as [].
   const exclude = await resolveExcluding(ctx, opts.excluding ?? []);
   const before = opts.before;
   const out: LogEntry[] = [];
@@ -60,8 +61,8 @@ export const log = async (
 
 const resolveStart = async (ctx: Context, from: string): Promise<ObjectId> => {
   if (/^[0-9a-f]{40}$/.test(from)) return from as ObjectId;
-  if (from === 'HEAD') return resolveRef(ctx, 'HEAD');
-  // Try the literal name first (already-prefixed full ref), then refs/heads/<name>.
+  // Try the literal name first (already-prefixed full ref or `HEAD`), then
+  // refs/heads/<name>, then refs/tags/<name>.
   const candidates = [from, `refs/heads/${from}`, `refs/tags/${from}`];
   for (const candidate of candidates) {
     try {

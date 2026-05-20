@@ -662,5 +662,108 @@ describe('MemoryFileSystem', () => {
       const result = await sut.read('/repo/seed.bin');
       expect(result).toEqual(new Uint8Array([1, 2, 3]));
     });
+
+    it('Given an opened FileHandle, When write then the input buffer is mutated, Then stored bytes are unchanged', async () => {
+      // Arrange — kills the `data.slice()` -> `data` mutant in makeMemoryHandle's write:
+      // the handle must defensively copy the caller's buffer.
+      const sut = new MemoryFileSystem({ rootDir: '/repo' });
+      await sut.write('/repo/seed.bin', new Uint8Array([0]));
+      const handle = await sut.openWithNoFollow('/repo/seed.bin', 'write');
+      const input = new Uint8Array([1, 2, 3]);
+
+      // Act
+      try {
+        await handle.write(input);
+      } finally {
+        await handle.close();
+      }
+      input[0] = 99;
+      const result = await sut.read('/repo/seed.bin');
+
+      // Assert — if the handle stored the buffer by reference, result[0] would be 99.
+      expect(result).toEqual(new Uint8Array([1, 2, 3]));
+    });
+  });
+
+  describe('rmRecursive subtree boundaries', () => {
+    it('Given a sibling file outside the target subtree, When rmRecursive on the subtree, Then the sibling file survives', async () => {
+      // Arrange — kills the `${normalized}/` -> `` empty-prefix mutant in removeSubtree
+      // (empty prefix makes collectStartsWith match every file) and the collectStartsWith
+      // ConditionalExpression -> true mutant.
+      const sut = new MemoryFileSystem({ rootDir: '/repo' });
+      await sut.write('/repo/subtree/inner.txt', new Uint8Array([1]));
+      await sut.write('/repo/sibling.txt', new Uint8Array([2]));
+
+      // Act
+      await sut.rmRecursive('/repo/subtree');
+
+      // Assert — only the targeted subtree is gone; the unrelated sibling remains.
+      expect(await sut.exists('/repo/subtree/inner.txt')).toBe(false);
+      expect(await sut.exists('/repo/sibling.txt')).toBe(true);
+      expect(await sut.read('/repo/sibling.txt')).toEqual(new Uint8Array([2]));
+    });
+
+    it('Given a sibling symlink outside the target subtree, When rmRecursive on the subtree, Then the sibling symlink survives', async () => {
+      // Arrange — kills the collectStartsWith ConditionalExpression -> true mutant on the
+      // symlinks pass: a true predicate would collect (and delete) every symlink.
+      const sut = new MemoryFileSystem({ rootDir: '/repo' });
+      await sut.write('/repo/subtree/inner.txt', new Uint8Array([1]));
+      await sut.write('/repo/target.txt', new Uint8Array([2]));
+      await sut.symlink('/repo/target.txt', '/repo/sibling-link');
+
+      // Act
+      await sut.rmRecursive('/repo/subtree');
+
+      // Assert
+      expect(await sut.exists('/repo/subtree/inner.txt')).toBe(false);
+      expect(await sut.exists('/repo/sibling-link')).toBe(true);
+    });
+
+    it('Given a sibling directory outside the target subtree, When rmRecursive on the subtree, Then the sibling directory survives', async () => {
+      // Arrange — kills the collectMatchingDirs ConditionalExpression -> true mutant
+      // (would collect every directory, including unrelated ones).
+      const sut = new MemoryFileSystem({ rootDir: '/repo' });
+      await sut.write('/repo/subtree/inner.txt', new Uint8Array([1]));
+      await sut.mkdir('/repo/sibling-dir');
+
+      // Act
+      await sut.rmRecursive('/repo/subtree');
+
+      // Assert — the sibling directory must remain after the unrelated subtree is removed.
+      expect(await sut.exists('/repo/subtree')).toBe(false);
+      expect(await sut.exists('/repo/sibling-dir')).toBe(true);
+    });
+
+    it('Given a nested subdirectory inside the target subtree, When rmRecursive, Then the nested subdirectory is removed', async () => {
+      // Arrange — kills the collectMatchingDirs `key.startsWith(prefix)` -> `key.endsWith(prefix)`
+      // mutant: a nested dir path does not END with `${normalized}/`, so endsWith would skip it.
+      const sut = new MemoryFileSystem({ rootDir: '/repo' });
+      await sut.mkdir('/repo/subtree/nested');
+
+      // Act
+      await sut.rmRecursive('/repo/subtree');
+
+      // Assert — the nested directory must be collected and deleted, not left behind.
+      expect(await sut.exists('/repo/subtree')).toBe(false);
+      expect(await sut.exists('/repo/subtree/nested')).toBe(false);
+    });
+  });
+
+  describe('hasChildren directory scanning', () => {
+    it('Given an empty directory while an unrelated directory also exists, When rm, Then the empty directory is removed', async () => {
+      // Arrange — kills the hasChildren directories-loop ConditionalExpression -> true mutant:
+      // a `true` predicate reports children whenever the directory set is non-empty (it always
+      // contains rootDir plus the unrelated dir), so rm would wrongly throw DIRECTORY_NOT_EMPTY.
+      const sut = new MemoryFileSystem({ rootDir: '/repo' });
+      await sut.mkdir('/repo/empty-dir');
+      await sut.mkdir('/repo/unrelated-dir');
+
+      // Act
+      await sut.rm('/repo/empty-dir');
+
+      // Assert — removal succeeds; the unrelated directory is untouched.
+      expect(await sut.exists('/repo/empty-dir')).toBe(false);
+      expect(await sut.exists('/repo/unrelated-dir')).toBe(true);
+    });
   });
 });

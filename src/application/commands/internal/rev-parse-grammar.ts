@@ -62,7 +62,8 @@ const parseIndexStage = (raw: string): RevExpression => {
   const stageStr = (match as RegExpMatchArray)[1] as string;
   const path = (match as RegExpMatchArray)[2] as string;
   const stage = Number(stageStr);
-  if (stage < 0 || stage > 3) fail(raw);
+  // `INDEX_STAGE_PATTERN` captures a single digit, so `stage` is always 0..9 — only the upper bound can be exceeded.
+  if (stage > 3) fail(raw);
   if (path === '') fail(raw);
   return { kind: 'index-stage', stage: stage as 0 | 1 | 2 | 3, path };
 };
@@ -78,6 +79,7 @@ const parseRefOrHex = (raw: string): RevExpression => {
 
 /** Returns the index of the first `~` or `^` that begins an operator chain, or -1. */
 const findOperatorStart = (raw: string): number => {
+  // Stryker disable next-line EqualityOperator: equivalent — raw[raw.length] is undefined, which equals neither '~' nor '^', so one extra harmless iteration changes nothing.
   for (let i = 0; i < raw.length; i += 1) {
     const ch = raw[i];
     if (ch === '~' || ch === '^') return i;
@@ -110,6 +112,7 @@ const parseTilde = (
   i: number,
 ): { readonly op: RevOperation; readonly next: number } => {
   let j = i + 1;
+  // Stryker disable next-line EqualityOperator: equivalent — at j === raw.length, charCodeAt returns NaN, isDigit(NaN) is false, so one extra iteration changes nothing.
   while (j < raw.length && isDigit(raw.charCodeAt(j))) j += 1;
   if (j === i + 1) fail(raw); // no digits after `~`
   const n = Number(raw.slice(i + 1, j));
@@ -131,6 +134,7 @@ const parseCaret = (
     };
   }
   let j = i + 1;
+  // Stryker disable next-line EqualityOperator: equivalent — at j === raw.length, charCodeAt returns NaN, isDigit(NaN) is false, so one extra iteration changes nothing.
   while (j < raw.length && isDigit(raw.charCodeAt(j))) j += 1;
   const digitsStr = raw.slice(i + 1, j);
   const n = digitsStr === '' ? 1 : Number(digitsStr);
