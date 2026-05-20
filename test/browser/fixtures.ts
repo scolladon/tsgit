@@ -43,7 +43,7 @@ export const test = base.extend<{ readyPage: Page }>({
 });
 
 // The commit author shared by the seed helper and the spec scenarios. A plain
-// structured-clonable object — it is passed across the page.evaluate() boundary.
+// structured-cloneable object — it is passed across the page.evaluate() boundary.
 export interface Author {
   name: string;
   email: string;

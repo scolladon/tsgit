@@ -31,7 +31,7 @@ it does not say whether `init`, `add`, `commit`, or `status` was at fault.
 ## 2. Constraints
 
 - **The `evaluate` boundary.** Browser test code runs inside
-  `page.evaluate()`. Only structured-clonable values cross the Node↔browser
+  `page.evaluate()`. Only structured-cloneable values cross the Node↔browser
   boundary; the `repo` object returned by `openRepository` holds functions and
   cannot be returned from one `evaluate()` and reused in the next. Playwright
   serializes an `evaluate` callback to source, so each callback must be
