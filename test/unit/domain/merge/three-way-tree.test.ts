@@ -647,7 +647,8 @@ describe('mergeTrees — caps', () => {
     expect((thrown as { data: { reason: string } }).data.reason).toBe(
       'union FlatTree exceeds MAX_FLAT_TREE_ENTRIES',
     );
-  });
+    // 1M-key union fixture — generous timeout for Stryker's instrumented run.
+  }, 60_000);
 
   it('Given a union of exactly MAX_FLAT_TREE_ENTRIES paths, When mergeTrees called, Then succeeds (buildUnionPaths uses > not >=)', async () => {
     // Arrange — a single fake whose per-input size is exactly at cap (so
@@ -664,7 +665,8 @@ describe('mergeTrees — caps', () => {
     // Assert — no throw; every path resolved
     expect(result.cleanMerge).toBe(true);
     expect(result.outcomes).toHaveLength(MAX_FLAT_TREE_ENTRIES);
-  });
+    // 1M-key union fixture — generous timeout for Stryker's instrumented run.
+  }, 60_000);
 });
 
 describe('mergeTrees — mode handling', () => {
