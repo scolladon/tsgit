@@ -256,7 +256,6 @@ jobs:
         with:
           path: ~/.cache/tsgit-bench
           key: tsgit-bench-${{ hashFiles('test/bench/support/fixture-generator.ts') }}
-      - run: npm run build
       - run: npm run test:bench
       - run: node --experimental-strip-types scripts/bench-to-snapshot.ts
       - name: Publish benchmark snapshot
@@ -328,7 +327,11 @@ jobs:
                 const benches = group?.benchmarks || [];
                 for (const b of Array.isArray(benches) ? benches : []) {
                   if (b.name && b.hz != null) {
-                    results[b.name] = { hz: b.hz, mean: b.mean, p99: b.p99 };
+                    // Key on `<group> > <bench>` — every scenario registers a
+                    // bench literally named `tsgit` / `isomorphic-git`, so a
+                    // bare-name key collapses all scenarios onto two entries.
+                    const key = group.fullName ? `${group.fullName} > ${b.name}` : b.name;
+                    results[key] = { hz: b.hz, mean: b.mean, p99: b.p99 };
                   }
                 }
               }

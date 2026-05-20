@@ -1,5 +1,5 @@
 /**
- * Shared glue for the scaled bench scenarios (Phase 15.1 / 15.2).
+ * Shared glue for the scaled bench scenarios.
  *
  * Resolves the medium (default) or large (`TSGIT_BENCH_LARGE`) fixture once
  * per bench file and registers a `benchScenario` that skips cleanly when the

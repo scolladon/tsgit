@@ -4,8 +4,8 @@
  * `customSmallerIsBetter` schema `benchmark-action/github-action-benchmark@v1`
  * consumes, written to reports/benchmarks/snapshot.json.
  *
- * See docs/adr/056-benchmark-snapshot-converter-schema.md — median-ms metric,
- * `<group> > <bench>` naming. This module declares its own minimal view of
+ * The tracked metric is median runtime in ms (smaller is better) and entries
+ * are named `<group> > <bench>`. This module declares its own minimal view of
  * the raw.json schema rather than sharing types with bench-summarize.ts.
  */
 import { readFile, writeFile } from 'node:fs/promises';
@@ -42,21 +42,16 @@ interface SnapshotEntry {
  * the median runtime (fallback: mean) in ms — smaller is better, matching
  * `customSmallerIsBetter`.
  */
-export const toSnapshotEntries = (raw: RawReport): SnapshotEntry[] => {
-  const entries: SnapshotEntry[] = [];
-  for (const file of raw.files) {
-    for (const group of file.groups) {
-      for (const bench of group.benchmarks) {
-        entries.push({
-          name: `${group.fullName} > ${bench.name}`,
-          unit: 'ms',
-          value: bench.median ?? bench.mean,
-        });
-      }
-    }
-  }
-  return entries;
-};
+export const toSnapshotEntries = (raw: RawReport): SnapshotEntry[] =>
+  raw.files.flatMap((file) =>
+    file.groups.flatMap((group) =>
+      group.benchmarks.map((bench) => ({
+        name: `${group.fullName} > ${bench.name}`,
+        unit: 'ms' as const,
+        value: bench.median ?? bench.mean,
+      })),
+    ),
+  );
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const RAW = path.join(ROOT, 'reports', 'benchmarks', 'raw.json');

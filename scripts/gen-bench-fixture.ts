@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Pre-warm a scaled benchmark fixture cache (Phase 15.1 / 15.2).
+ * Pre-warm a scaled benchmark fixture cache.
  *
  *   npm run bench:fixture -- medium
  *   npm run bench:fixture -- large

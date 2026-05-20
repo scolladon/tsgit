@@ -1,12 +1,12 @@
 /**
- * Deterministic scaled-fixture generator (Phase 15.1 / 15.2).
+ * Deterministic scaled-fixture generator.
  *
  * Builds a medium (5k commits / 20k blobs / ~50 MB) or large (50k / 200k /
  * ~500 MB) git repository via `git fast-import` and caches it under
  * `~/.cache/tsgit-bench`. Generation runs once; later calls are cache hits.
- *
- * See docs/adr/054-bench-fixture-generation-caching.md for the rationale
- * (fast-import speed, version-keyed cache, seeded-PRNG content, non-bare repo).
+ * fast-import is used for speed, a version-keyed cache for reuse, seeded-PRNG
+ * blob content so the pack is representative, and a non-bare repo so `status`
+ * benchmarks have a real working tree to scan.
  */
 import { execFile, spawn } from 'node:child_process';
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
@@ -160,9 +160,17 @@ const generateInto = async (repoDir: string, spec: FixtureSpec): Promise<Fixture
       code === 0 ? resolve() : reject(new Error(`git fast-import exited with ${code}`)),
     );
   });
-  await streamFastImport(stdin, spec);
-  stdin.end();
-  await finished;
+  try {
+    await streamFastImport(stdin, spec);
+    stdin.end();
+    await finished;
+  } catch (err) {
+    // If a write failed (EPIPE from a crashed importer), `finished` would
+    // reject too — observe it so the rejection is never unhandled.
+    stdin.destroy();
+    await finished.catch(() => undefined);
+    throw err;
+  }
 
   await runGit(repoDir, ['checkout', '-f', 'main']);
   await runGit(repoDir, ['repack', '-ad', '--quiet']);

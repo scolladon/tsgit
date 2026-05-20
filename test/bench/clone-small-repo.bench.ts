@@ -5,7 +5,7 @@
  * fixture (`test/fixtures/clone-source/source.git`) so the comparison
  * is apples-to-apples.
  *
- * Lifecycle (see docs/adr/017-bench-cgi-server-lifecycle.md):
+ * Lifecycle:
  *  - The `http.Server` is booted once in the scenario body and closed in
  *  `afterAll`. Per-iter server boot would dominate the measurement.
  *  - Each iter mkdtemps a fresh target dir; tmpdirs are collected and

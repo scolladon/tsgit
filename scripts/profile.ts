@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * V8 CPU profiling captures for the three hot paths (Phase 15.3).
+ * V8 CPU profiling captures for the three hot paths.
  *
  *   npm run profile        # builds dist/, then profiles log / status / pack-read
  *
