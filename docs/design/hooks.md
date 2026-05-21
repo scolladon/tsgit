@@ -1,6 +1,6 @@
 # Git Hooks — Design (Phase 17.2)
 
-> Status: Draft. Backlog item **17.2** — "Hooks (`pre-commit`, `commit-msg`,
+> Status: Implemented (v2.0). Backlog item **17.2** — "Hooks (`pre-commit`, `commit-msg`,
 > `pre-push` invocation contract; opt-in for the security model)". ADRs
 > 065–068.
 
@@ -323,16 +323,20 @@ to verify when nothing moves.
 
 ### 8.1 Node — `src/adapters/node/node-hook-runner.ts`
 
-`NodeHookRunner implements HookRunner`, stateless:
+`NodeHookRunner implements HookRunner`. Its `spawn` / `stat` dependencies are
+constructor-injected (`HookRunnerOps`, defaulting to the Node builtins) so unit
+tests exercise every branch against a fake child — the `FsOperations` pattern of
+[ADR-047](../adr/047-fs-operations-dependency-injection.md). Per invocation:
 
-1. **Resolve & probe.** `scriptPath = nodePath.join(hooksDir, name)`. `lstat`
-   it. `ENOENT` or not a regular file → `{ kind: 'skipped' }`. On POSIX, a
-   regular file with no executable bit (`(mode & 0o111) === 0`) → `skipped`
-   (git's rule). On Windows there is no executable bit — a regular file is
-   considered runnable ([ADR-068](../adr/068-windows-hook-execution.md)).
-2. **Spawn.** `child_process.spawn(scriptPath, [...args], { cwd: workDir, env:
-   { ...process.env, GIT_DIR: gitDir }, stdio: ['pipe','pipe','pipe'] })`.
-   Write `stdin`, then `end()` it.
+1. **Resolve & probe.** `scriptPath = nodePath.join(hooksDir, name)`. `stat`
+   it (following symlinks — a symlinked hook resolves to its target). `ENOENT`
+   or not a regular file → `{ kind: 'skipped' }`. On POSIX, a regular file with
+   no executable bit (`(mode & 0o111) === 0`) → `skipped` (git's rule). On
+   Windows there is no executable bit — a regular file is considered runnable
+   ([ADR-068](../adr/068-windows-hook-execution.md)).
+2. **Spawn.** `child_process.spawn(scriptPath, args, { cwd: workDir, env:
+   { ...process.env, GIT_DIR: gitDir, GIT_INDEX_FILE: `${gitDir}/index` } })`
+   (default `pipe` stdio). Write `stdin`, then `end()` it.
 3. **Capture, bounded.** stdout / stderr accumulate up to
    `MAX_HOOK_OUTPUT_BYTES` (1 MiB) per stream; bytes past the cap are dropped
    (a runaway hook cannot exhaust memory).

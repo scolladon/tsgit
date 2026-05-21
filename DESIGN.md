@@ -78,9 +78,11 @@ See [docs/design/ports-and-adapters.md](docs/design/ports-and-adapters.md) for t
 | **Domain: Index** | Git index v2 parser, stat cache, staging area | `src/domain/git-index/` |
 | **Domain: Diff & Merge** | Tree comparison, three-way merge, conflict detection | `src/domain/diff-and-merge/` |
 | **Domain: Reflog** | Append-only per-ref logs, `@{N}` / `@{date}` resolution | `src/domain/reflog/` |
+| **Hooks** | `pre-commit` / `commit-msg` / `pre-push` script execution | `src/ports/hook-runner.ts` |
 | **Ports** | Interfaces for I/O and platform abstraction | `src/ports/` |
 | **Adapters** | Node, browser (OPFS), in-memory implementations | `src/adapters/` |
 | **Primitives** | Tier-2 composable low-level operations | `src/application/primitives/` |
 | **Commands** | Tier-1 high-level use cases (clone, log, status, etc.) | `src/application/commands/` |
 
-See [docs/prd/PRD.md](docs/prd/PRD.md) for the full architecture and competitive analysis, and [docs/design/reflog.md](docs/design/reflog.md) for the Phase 17.1 reflog design.
+See [docs/prd/PRD.md](docs/prd/PRD.md) for the full architecture and competitive analysis, and [docs/design/reflog.md](docs/design/reflog.md) for the Phase 17.1 reflog design,
+and [docs/design/hooks.md](docs/design/hooks.md) for the Phase 17.2 git-hooks design.

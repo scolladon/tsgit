@@ -2,7 +2,7 @@
 
 Track: `[ ]` todo, `[~]` in progress, `[x]` done, `[-]` skipped
 
-**Progress:** Phases 0–16 complete, Phase 17.1 shipping. `@scolladon/tsgit@1.0.0` published on npm with sigstore provenance (trusted-publisher OIDC). Phases 12–16 shipped (network: clone/fetch/push; working-tree: checkout/reset; pathspec: globs and `.gitignore`; Windows support; operations hardening; browser E2E). Phase 17.1 (reflog) is now implemented. Remaining v2.0 items (17.2–17.7) deferred.
+**Progress:** Phases 0–16 complete, Phase 17.1 shipping. `@scolladon/tsgit@1.0.0` published on npm with sigstore provenance (trusted-publisher OIDC). Phases 12–16 shipped (network: clone/fetch/push; working-tree: checkout/reset; pathspec: globs and `.gitignore`; Windows support; operations hardening; browser E2E). Phases 17.1 (reflog) and 17.2 (hooks) are now implemented. Remaining v2.0 items (17.3–17.7) deferred.
 
 ---
 
@@ -318,7 +318,25 @@ Design: `docs/design/phase-15-bench-observability.md`. ADRs: [054](adr/054-bench
 
 - [x] **17.1** Reflog (`HEAD@{N}`, `<branch>@{N}` syntax, `.git/logs/` writers).
       _Accepted:_ automatic gated logging via `recordRefUpdate` (the single reflog writer); `core.logAllRefUpdates` config gate + default-loggable-prefix rule; HEAD dual-logging when a branch update occurs; `@{N}` (integer index) and `@{date}` (approxidate forms: `now`, `yesterday`, `2.days.ago`, `2026-05-01`, `2026-05-01 12:30:00`) resolution in `revParse`; tier-1 `repo.reflog()` command with `show` / `exists` / `delete` (incl. `--rewrite`) / `expire` (reachable/unreachable two-cutoff prune, git-faithful); `FileSystem.appendUtf8` port method; `config-read` relocation to primitives tier (breaking change: v2.0). Design: `docs/design/reflog.md`. ADRs: [058](adr/058-reflog-integration-point.md) (auto-logging, `config-read` relocation, `reflogMessage` union), [059](adr/059-head-dual-logging.md) (HEAD coupling), [060](adr/060-append-utf8-port.md) (`appendUtf8`), [061](adr/061-reflog-identity.md) (identity + portable fallback), [062](adr/062-approxidate-subset.md) (date subset), [063](adr/063-log-all-ref-updates.md) (gate logic), [064](adr/064-reflog-command-shape.md) (command shape).
-- [ ] **17.2** Hooks (`pre-commit`, `commit-msg`, `pre-push` invocation contract; opt-in for the security model).
+- [x] **17.2** Hooks (`pre-commit`, `commit-msg`, `pre-push` invocation contract; opt-in for the security model).
+      _Accepted:_ a new `HookRunner` port executes `.git/hooks/*` scripts — the
+      Node adapter (`NodeHookRunner`) spawns them via `node:child_process`; the
+      browser has no runner (hooks inert); the memory adapter takes an
+      injectable runner for tests. `commit` runs `pre-commit` (before the index
+      is read, so a re-staging hook is honoured) and `commit-msg`
+      (round-tripping the message through `.git/COMMIT_EDITMSG`); `push` runs
+      `pre-push` with git's canonical `<local-ref> <local-oid> <remote-ref>
+      <remote-oid>` stdin. A non-zero exit throws `HOOK_FAILED`; `commit` /
+      `push` accept `noVerify` (git's `--no-verify`). Hooks run by default on
+      Node — `createNodeContext({ hooks: false })` / `openRepository({ hooks:
+      false })` opt out; `core.hooksPath` is honoured. The `runHook` primitive
+      is the single chokepoint; `NodeHookRunner` dependency-injects `spawn` /
+      `stat` for unit coverage (ADR-047 pattern). Design:
+      `docs/design/hooks.md`. ADRs: [065](adr/065-hook-runner-port.md)
+      (HookRunner port + script execution), [066](adr/066-hooks-default-on.md)
+      (default-on, `noVerify` / `hooks:false` opt-outs),
+      [067](adr/067-commit-msg-editmsg-roundtrip.md) (`COMMIT_EDITMSG`
+      round-trip), [068](adr/068-windows-hook-execution.md) (Windows execution).
 - [ ] **17.3** Sparse checkout (`.git/info/sparse-checkout` patterns, partial materialization).
 - [ ] **17.4** Partial clone (`--filter=blob:none`, lazy-fetch on read).
 - [ ] **17.5** Submodule walk (recurse into `.gitmodules`, expose as `repo.submodules` iterator).
