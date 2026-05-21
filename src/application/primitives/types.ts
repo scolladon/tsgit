@@ -73,10 +73,22 @@ export interface ResolveRefOptions {
   readonly maxPeelDepth?: number;
 }
 
-export interface UpdateRefOptions {
-  readonly expected?: ObjectId | 'absent';
-  readonly delete?: boolean;
-}
+/**
+ * `updateRef` option shapes. A write requires a `reflogMessage` — git's
+ * builtins always supply a reason string; the type checker forces every
+ * present and future ref write to state why the ref moved. A delete drops the
+ * reflog file, so it carries no message.
+ */
+export type UpdateRefOptions =
+  | {
+      readonly delete?: false;
+      readonly expected?: ObjectId | 'absent';
+      readonly reflogMessage: string;
+    }
+  | {
+      readonly delete: true;
+      readonly expected?: ObjectId | 'absent';
+    };
 
 export interface WalkCommitsOptions {
   readonly from: ReadonlyArray<ObjectId>;

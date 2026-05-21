@@ -400,7 +400,7 @@ const updateTrackingCache = async (
   // input push() can construct, hence the equivalent-mutant suppressions.
   // Stryker disable next-line ConditionalExpression: equivalent — `composed` is always a valid ref path (see above); the guard never fires.
   if (!isSafeRefName(composed)) return;
-  await updateRef(ctx, composed as RefName, m.localOid);
+  await updateRef(ctx, composed as RefName, m.localOid, { reflogMessage: 'update by push' });
 };
 
 const isSafeRefName = (name: string): boolean => {

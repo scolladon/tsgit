@@ -103,7 +103,10 @@ export const merge = async (ctx: Context, opts: MergeOptions): Promise<MergeResu
   if (base === theirId) return { kind: 'up-to-date', id: ourId };
   if (base === ourId) {
     if (opts.noFastForward !== true) {
-      await updateRef(ctx, head.target, theirId, { expected: ourId });
+      await updateRef(ctx, head.target, theirId, {
+        expected: ourId,
+        reflogMessage: `merge ${opts.target}: Fast-forward`,
+      });
       return { kind: 'fast-forward', id: theirId, branch: head.target };
     }
   }
@@ -160,7 +163,10 @@ const commitCleanMerge = async (
     extraHeaders: [],
   };
   const id = await createCommit(ctx, commitData);
-  await updateRef(ctx, branchName, id, { expected: ourId });
+  await updateRef(ctx, branchName, id, {
+    expected: ourId,
+    reflogMessage: `merge ${opts.target}: Merge made by the 'tsgit' strategy.`,
+  });
   return { kind: 'merge', id, branch: branchName, parents: [ourId, theirId] };
 };
 

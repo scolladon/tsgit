@@ -37,7 +37,7 @@ describe('composition laws', () => {
         async (hex) => {
           const ctx = await buildSeededContext();
           const id = hex as ObjectId;
-          await updateRef(ctx, 'refs/heads/main' as RefName, id);
+          await updateRef(ctx, 'refs/heads/main' as RefName, id, { reflogMessage: 'commit: law' });
           const resolved = await resolveRef(ctx, 'refs/heads/main' as RefName);
           return resolved === id;
         },

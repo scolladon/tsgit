@@ -16,6 +16,7 @@ import * as path from 'node:path';
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
+import { __resetConfigCacheForTests } from '../../../src/application/primitives/config-read.js';
 import { walkCommits } from '../../../src/application/primitives/index.js';
 import type { ObjectId, RefName } from '../../../src/domain/objects/index.js';
 import { openRepository } from '../../../src/index.node.js';
@@ -201,6 +202,9 @@ describe.skipIf(SKIP_REASON !== false)('fetch — end-to-end against git-http-ba
         `${existingConfig}\n[remote "origin"]\n  url = ${url}\n  fetch = +refs/heads/*:refs/remotes/origin/*\n`,
       );
     }
+    // clone primed the per-context config cache; drop it so the manual edit
+    // above is visible to the subsequent fetch.
+    __resetConfigCacheForTests();
 
     // Act
     const sut = await repo.fetch({ remote: 'origin' });

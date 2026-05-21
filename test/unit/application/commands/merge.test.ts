@@ -333,7 +333,9 @@ describe('merge', () => {
       message: 'unrelated-root',
       extraHeaders: [],
     });
-    await updateRef(ctx, 'refs/heads/unrelated' as RefName, otherCommitId, {});
+    await updateRef(ctx, 'refs/heads/unrelated' as RefName, otherCommitId, {
+      reflogMessage: 'branch: Created from seed',
+    });
 
     // Act
     const sut = await merge(ctx, { target: 'unrelated', author });

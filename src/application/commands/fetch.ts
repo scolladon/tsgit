@@ -19,6 +19,7 @@
 import { TsgitError } from '../../domain/error.js';
 import { remoteAdvertisesNoRefs, remoteNotConfigured } from '../../domain/index.js';
 import type { ObjectId, RefName } from '../../domain/objects/index.js';
+import { ZERO_OID } from '../../domain/objects/index.js';
 import type { AdvertisedRef, Advertisement } from '../../domain/protocol/index.js';
 import { validateRefName } from '../../domain/refs/ref-validation.js';
 import type { Context } from '../../ports/context.js';
@@ -229,7 +230,9 @@ const applyRemoteRefs = async (
       updates.push({ name: target, oldId, newId: ref.id });
       continue;
     }
-    await updateRef(ctx, target, ref.id);
+    await updateRef(ctx, target, ref.id, {
+      reflogMessage: `fetch ${remoteName}: storing head`,
+    });
     updates.push({ name: target, oldId, newId: ref.id });
   }
   return updates;
@@ -339,7 +342,7 @@ const deleteUnadvertised = async (
     // ref happens to live at the same path as a directory entry on a
     // case-folding filesystem (unlikely but possible).
     try {
-      await updateRef(ctx, refName, '0'.repeat(40) as ObjectId, { delete: true });
+      await updateRef(ctx, refName, ZERO_OID, { delete: true });
     } catch (err) {
       if (isPackedRefDeleteError(err)) {
         // Skip packed-only refs rather than crashing the whole fetch.
