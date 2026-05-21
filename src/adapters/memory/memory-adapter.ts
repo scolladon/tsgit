@@ -1,6 +1,7 @@
 import { SHA1_CONFIG, SHA256_CONFIG } from '../../domain/objects/hash-config.js';
 import { createLruCache } from '../../domain/storage/lru-cache.js';
 import { type Context, createContext, type RepositoryLayout } from '../../ports/context.js';
+import type { HookRunner } from '../../ports/hook-runner.js';
 import { noopProgress } from '../../progress.js';
 import { MemoryCompressor } from './memory-compressor.js';
 import { MemoryFileSystem, type MemoryFileSystemOptions } from './memory-file-system.js';
@@ -18,6 +19,8 @@ export interface MemoryAdapterOptions {
   readonly deltaCacheMaxEntries?: number;
   /** Optional home directory exposed via `ctx.layout.homeDir` (default: undefined). */
   readonly homeDir?: string;
+  /** Optional hook runner exposed via `ctx.hooks` (default: undefined — hooks inert). */
+  readonly hooks?: HookRunner;
 }
 
 const DEFAULT_WORK_DIR = '/repo';
@@ -56,8 +59,8 @@ export function createMemoryContext(options: MemoryAdapterOptions = {}): Context
     layout,
     hashConfig,
     deltaCache,
+    ...(options.signal !== undefined ? { signal: options.signal } : {}),
+    ...(options.hooks !== undefined ? { hooks: options.hooks } : {}),
   };
-  return options.signal === undefined
-    ? createContext(parts)
-    : createContext({ ...parts, signal: options.signal });
+  return createContext(parts);
 }
