@@ -90,15 +90,16 @@ describe('commands/internal commit-hooks applyCommitMsgHook', () => {
     expect(await ctx.fs.exists(`${ctx.layout.gitDir}/COMMIT_EDITMSG`)).toBe(false);
   });
 
-  it('Given no hook runner, When applyCommitMsgHook, Then it returns the message unchanged', async () => {
+  it('Given no hook runner, When applyCommitMsgHook, Then it returns the message unchanged without writing the editmsg file', async () => {
     // Arrange
     const ctx = createMemoryContext();
 
     // Act
     const result = await applyCommitMsgHook(ctx, 'original', opts);
 
-    // Assert
+    // Assert — no runner ⇒ the round-trip is skipped entirely.
     expect(result).toBe('original');
+    expect(await ctx.fs.exists(`${ctx.layout.gitDir}/COMMIT_EDITMSG`)).toBe(false);
   });
 
   it('Given a hook that does not touch the file, When applyCommitMsgHook, Then it returns the sanitised message', async () => {

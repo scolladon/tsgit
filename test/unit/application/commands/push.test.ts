@@ -1358,6 +1358,44 @@ describe('push — hooks', () => {
     expect(hooks.calls[0]?.stdin).toBe(`(delete) ${ZERO_OID} refs/heads/feature ${tip.id}\n`);
   });
 
+  it('Given a multi-ref push, When push runs, Then the pre-push stdin has one line per ref with no blank separator', async () => {
+    // Arrange — two branches, each one commit ahead of the advertised remote.
+    const ctx = createMemoryContext();
+    const parent = await seedCommit(ctx, [], 'gen-1');
+    const tip = await seedCommit(ctx, [parent.id], 'gen-2');
+    await seedRepo(ctx, {
+      refs: { 'refs/heads/main': tip.id, 'refs/heads/feature': tip.id },
+    });
+    await writeOriginConfig(ctx);
+    const { transport } = fakeServer({
+      url: 'https://example.com/r.git',
+      advertisedRefs: [
+        { name: 'refs/heads/main', id: parent.id },
+        { name: 'refs/heads/feature', id: parent.id },
+      ],
+      reportStatus: {
+        unpack: 'ok',
+        refs: [
+          { name: 'refs/heads/main', status: 'ok' },
+          { name: 'refs/heads/feature', status: 'ok' },
+        ],
+      },
+    });
+    const hooks = new MemoryHookRunner();
+
+    // Act
+    await push(
+      { ...ctx, transport, hooks },
+      { refspecs: ['refs/heads/main:refs/heads/main', 'refs/heads/feature:refs/heads/feature'] },
+    );
+
+    // Assert — exactly two consecutive lines, no blank separator between them.
+    expect(hooks.calls[0]?.stdin).toBe(
+      `refs/heads/main ${tip.id} refs/heads/main ${parent.id}\n` +
+        `refs/heads/feature ${tip.id} refs/heads/feature ${parent.id}\n`,
+    );
+  });
+
   it('Given a pre-push hook, When push runs, Then the hook receives the remote, url and one ref line on stdin', async () => {
     // Arrange
     const ctx = createMemoryContext();

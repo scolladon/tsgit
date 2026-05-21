@@ -159,16 +159,19 @@ describe('NodeHookRunner (POSIX hook execution)', () => {
     expect(result.stdout).toBe('one\ntwo\n');
   });
 
-  it('Given a hook, When run, Then GIT_DIR is in its environment and cwd is the working tree', async () => {
-    // Arrange — print GIT_DIR; `touch` lands in the process cwd.
-    await writeHook('pre-commit', '#!/bin/sh\nprintf %s "$GIT_DIR"\ntouch cwd-marker\n');
+  it('Given a hook, When run, Then GIT_DIR and GIT_INDEX_FILE are in its environment and cwd is the working tree', async () => {
+    // Arrange — echo the two env vars; `touch` lands in the process cwd.
+    await writeHook(
+      'pre-commit',
+      '#!/bin/sh\necho "$GIT_DIR"\necho "$GIT_INDEX_FILE"\ntouch cwd-marker\n',
+    );
     const sut = new NodeHookRunner();
 
     // Act
     const result = ran(await sut.run(request('pre-commit')));
 
     // Assert
-    expect(result.stdout).toBe(gitDir);
+    expect(result.stdout).toBe(`${gitDir}\n${gitDir}/index\n`);
     await expect(fsPromises.stat(nodePath.join(workDir, 'cwd-marker'))).resolves.toBeDefined();
   });
 
