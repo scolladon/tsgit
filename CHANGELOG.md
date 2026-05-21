@@ -1,5 +1,46 @@
 # Changelog
 
+## [1.1.0](https://github.com/scolladon/tsgit/compare/v1.0.0...v1.1.0) (2026-05-21)
+
+
+### Features
+
+* **add:** bulk-mode add --all walks the working tree (§14.1) ([#39](https://github.com/scolladon/tsgit/issues/39)) ([8cd131f](https://github.com/scolladon/tsgit/commit/8cd131f1206e8533dbb63eedc8f78a20d9a60838))
+* **bench:** clone:small-repo scenario vs isomorphic-git (Phase 12.4) ([#29](https://github.com/scolladon/tsgit/issues/29)) ([7e41388](https://github.com/scolladon/tsgit/commit/7e413881902fd6346edf2eec96109c1f136799dc))
+* **checkout:** materialize working tree + index on switch & path-restore (Phase 13.1) ([#30](https://github.com/scolladon/tsgit/issues/30)) ([62336f3](https://github.com/scolladon/tsgit/commit/62336f3b89c7f2bc1d54876ce9c4ffe53b7022e2))
+* **checkout:** path-restore source: 'index' uses staged content ([#34](https://github.com/scolladon/tsgit/issues/34)) ([2af0f1e](https://github.com/scolladon/tsgit/commit/2af0f1ecfe511a9d91e0129edfe683039b9da2c1))
+* clone smart-HTTP pack fetch ([#26](https://github.com/scolladon/tsgit/issues/26)) ([22f0594](https://github.com/scolladon/tsgit/commit/22f0594a8c62fa19e53d9e2be0993985fc50d7d7))
+* **fetch:** real upload-pack-driven fetch + shallow + prune ([#27](https://github.com/scolladon/tsgit/issues/27)) ([d7ecbac](https://github.com/scolladon/tsgit/commit/d7ecbac4302b2e3911e67b378c8acf0b53644b83))
+* **gitignore:** real .gitignore evaluation + status untracked (§14.3) ([#41](https://github.com/scolladon/tsgit/issues/41)) ([49a147e](https://github.com/scolladon/tsgit/commit/49a147e01f56fd0231f21f20f4f4c0817c7d9b10))
+* **merge:** clean-merge three-way tree walk ([#36](https://github.com/scolladon/tsgit/issues/36)) ([af6de38](https://github.com/scolladon/tsgit/commit/af6de38608353eb7d12ad4b83d137940fa9f5c56))
+* **merge:** persist conflict state for three-way merges ([#38](https://github.com/scolladon/tsgit/issues/38)) ([5ecd61a](https://github.com/scolladon/tsgit/commit/5ecd61a99e087de5c16669944486c28eb9e87cf9))
+* **pathspec:** globs across add/rm/checkout ([#42](https://github.com/scolladon/tsgit/issues/42)) ([963a72b](https://github.com/scolladon/tsgit/commit/963a72b9d86dfc622e6905a5ffa30066a7d6153a))
+* **push:** receive-pack negotiation + pack send + force-with-lease (Phase 12.3) ([#28](https://github.com/scolladon/tsgit/issues/28)) ([a191a35](https://github.com/scolladon/tsgit/commit/a191a353129d43ab8400c6cd240c16a61183e28a))
+* **read-object:** bounded-size reads + parallel-capped merge blob fetch ([#37](https://github.com/scolladon/tsgit/issues/37)) ([3ca03a7](https://github.com/scolladon/tsgit/commit/3ca03a7a1820ee89b2b3e4bc3e902fb2c098b4e8))
+* **reset:** hard mode materialises index and working tree ([#32](https://github.com/scolladon/tsgit/issues/32)) ([b620a0a](https://github.com/scolladon/tsgit/commit/b620a0a522134196e0110aafad0e02110ae8e523))
+* **reset:** mixed mode rebuilds index from target tree (Phase 13.2) ([#31](https://github.com/scolladon/tsgit/issues/31)) ([f0039d3](https://github.com/scolladon/tsgit/commit/f0039d3e3e2ad620884fffe63456097fff995032))
+* **windows:** full windows support ([e9e82e6](https://github.com/scolladon/tsgit/commit/e9e82e61a2d5c9dcbb4c16b2ae3db1a0e52d9ba8))
+
+
+### Bug Fixes
+
+* **checkout:** acquire index lock before readIndex — close TOCTOU (Phase 13.5) ([#33](https://github.com/scolladon/tsgit/issues/33)) ([26889c0](https://github.com/scolladon/tsgit/commit/26889c00eb8a27d2f9c4122959108344fba62f24))
+* **index-parser:** reject unsafe paths at parse time ([#35](https://github.com/scolladon/tsgit/issues/35)) ([f298989](https://github.com/scolladon/tsgit/commit/f2989894531927bb83707d7895932f8665f6f077))
+* **windows:** strip extended-length prefix in normalizeForCompare ([#46](https://github.com/scolladon/tsgit/issues/46)) ([e5aad39](https://github.com/scolladon/tsgit/commit/e5aad397b99122e0011cee87c609ae435e3abec9))
+
+
+### Documentation
+
+* **backlog:** close Phase 11 — v1.0.0 shipped ([#23](https://github.com/scolladon/tsgit/issues/23)) ([7986929](https://github.com/scolladon/tsgit/commit/7986929d68325fa1d7489f9f2498de817e65d96d))
+* **backlog:** correct stale 5.2/13.4 markers, clarify 11.2 ([#47](https://github.com/scolladon/tsgit/issues/47)) ([5da3b52](https://github.com/scolladon/tsgit/commit/5da3b52a7d462844fdde72543943049c4a5d3e47))
+* **claude-md:** codify the 8-step 'apply the workflow' sequence ([#24](https://github.com/scolladon/tsgit/issues/24)) ([f575041](https://github.com/scolladon/tsgit/commit/f5750411ee0066f26ea81346be28aa1bc985976c))
+* **claude-md:** tick BACKLOG inside the PR's own commits, not after merge ([#25](https://github.com/scolladon/tsgit/issues/25)) ([1c23aae](https://github.com/scolladon/tsgit/commit/1c23aae81c6737bf6cfe4ba6bbdc903d77f00584))
+
+
+### Refactor
+
+* perf, secu, architectures and tests ([#45](https://github.com/scolladon/tsgit/issues/45)) ([478e8a3](https://github.com/scolladon/tsgit/commit/478e8a3eec953619f1f75446e72a944b29985e50))
+
 ## [1.0.0](https://github.com/scolladon/tsgit/compare/v0.9.0...v1.0.0) (2026-05-17)
 
 
