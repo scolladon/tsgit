@@ -23,6 +23,7 @@ export async function diffTrees(
 }
 
 async function resolveInput(ctx: Context, input: DiffTreesInput): Promise<Tree | undefined> {
+  // Stryker disable next-line ConditionalExpression: equivalent — when input is undefined, skipping this guard falls through to `return input`, which is also undefined
   if (input === undefined) return undefined;
   if (typeof input === 'string') {
     return readTree(ctx, input);

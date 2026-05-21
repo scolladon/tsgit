@@ -50,6 +50,7 @@ const fail = (raw: string): never => {
 };
 
 export const parseExpression = (raw: string): RevExpression => {
+  // Stryker disable next-line ConditionalExpression: equivalent — when this guard is removed, '' still fails identically: parseRefOrHex's `base === ''` guard throws revparseUnresolved('') for the same input.
   if (raw === '') fail(raw);
   if (raw.startsWith(':')) return parseIndexStage(raw);
   if (raw.includes('@{')) fail(raw); // reflog navigation — not supported in v1.
@@ -62,8 +63,10 @@ const parseIndexStage = (raw: string): RevExpression => {
   const stageStr = (match as RegExpMatchArray)[1] as string;
   const path = (match as RegExpMatchArray)[2] as string;
   const stage = Number(stageStr);
-  if (stage < 0 || stage > 3) fail(raw);
-  if (path === '') fail(raw);
+  // `INDEX_STAGE_PATTERN` captures a single digit, so `stage` is always 0..9 — only the upper bound can be exceeded.
+  if (stage > 3) fail(raw);
+  // The `(.+)` capture in `INDEX_STAGE_PATTERN` guarantees `path` is non-empty,
+  // so no empty-path guard is needed here.
   return { kind: 'index-stage', stage: stage as 0 | 1 | 2 | 3, path };
 };
 
@@ -78,6 +81,7 @@ const parseRefOrHex = (raw: string): RevExpression => {
 
 /** Returns the index of the first `~` or `^` that begins an operator chain, or -1. */
 const findOperatorStart = (raw: string): number => {
+  // Stryker disable next-line EqualityOperator: equivalent — raw[raw.length] is undefined, which equals neither '~' nor '^', so one extra harmless iteration changes nothing.
   for (let i = 0; i < raw.length; i += 1) {
     const ch = raw[i];
     if (ch === '~' || ch === '^') return i;
@@ -110,6 +114,7 @@ const parseTilde = (
   i: number,
 ): { readonly op: RevOperation; readonly next: number } => {
   let j = i + 1;
+  // Stryker disable next-line EqualityOperator,ConditionalExpression: equivalent — at j === raw.length, charCodeAt returns NaN, isDigit(NaN) is false, so the `isDigit` operand terminates the loop whether or not the `j < raw.length` bound holds.
   while (j < raw.length && isDigit(raw.charCodeAt(j))) j += 1;
   if (j === i + 1) fail(raw); // no digits after `~`
   const n = Number(raw.slice(i + 1, j));
@@ -122,6 +127,7 @@ const parseCaret = (
 ): { readonly op: RevOperation; readonly next: number } => {
   if (raw[i + 1] === '{') {
     const closeIdx = raw.indexOf('}', i + 2);
+    // Stryker disable next-line ConditionalExpression,UnaryOperator: equivalent — when `closeIdx === -1` this guard is bypassed, `targetStr` becomes `raw.slice(i + 2, -1)` and `next` becomes 0; either the slice is not a valid peel target (fails at L130) or parseOperations re-enters at index 0 where the non-empty base's first char is neither `~` nor `^` (fails in the else branch). Both paths throw revparseUnresolved(raw) with identical `raw`.
     if (closeIdx === -1) fail(raw);
     const targetStr = raw.slice(i + 2, closeIdx);
     if (!VALID_PEEL_TARGETS.has(targetStr)) fail(raw);
@@ -131,6 +137,7 @@ const parseCaret = (
     };
   }
   let j = i + 1;
+  // Stryker disable next-line EqualityOperator,ConditionalExpression: equivalent — at j === raw.length, charCodeAt returns NaN, isDigit(NaN) is false, so the `isDigit` operand terminates the loop whether or not the `j < raw.length` bound holds.
   while (j < raw.length && isDigit(raw.charCodeAt(j))) j += 1;
   const digitsStr = raw.slice(i + 1, j);
   const n = digitsStr === '' ? 1 : Number(digitsStr);

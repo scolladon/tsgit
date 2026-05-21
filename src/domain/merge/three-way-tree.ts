@@ -189,6 +189,7 @@ async function resolveContentMerge(
 function resolveMode(base: FlatTreeEntry, our: FlatTreeEntry, their: FlatTreeEntry): FileMode {
   // Precondition: base, our, their share isSameKind. Within a kind at most two distinct
   // modes exist (file kind: 100644 / 100755), so at least two of the three agree.
+  // Stryker disable next-line ConditionalExpression: equivalent — when our.mode === their.mode the fall-through path also yields our.mode (it returns their.mode if our.mode === base.mode, else our.mode); this branch is a fast-path only.
   if (our.mode === their.mode) return our.mode;
   if (our.mode === base.mode) return their.mode;
   return our.mode;

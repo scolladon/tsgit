@@ -4,6 +4,7 @@ import { invalidRef } from './error.js';
 const FORBIDDEN_SIMPLE = new Set(['~', '^', ':', '?', '*', '[', '\\', ' ']);
 
 function throwIfBadChars(name: string): void {
+  // Stryker disable next-line EqualityOperator: equivalent — at i === name.length, charCodeAt returns NaN (no guard fires) and name[i] is undefined (skipped), so the extra iteration is observably inert.
   for (let i = 0; i < name.length; i++) {
     const code = name.charCodeAt(i);
     if (code <= 0x1f || code === 0x7f) {

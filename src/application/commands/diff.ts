@@ -27,11 +27,14 @@ export const diff = async (ctx: Context, opts: DiffOptions = {}): Promise<TreeDi
 };
 
 const resolveTreeId = async (ctx: Context, target: string): Promise<ObjectId> => {
+  // `validateRefName` is the identity for already-valid names (`'HEAD'`
+  // included), so a separate HEAD short-circuit would be redundant.
   const id = /^[0-9a-f]{40}$/.test(target)
     ? (target as ObjectId)
-    : await resolveRef(ctx, target === 'HEAD' ? 'HEAD' : validateRefName(target));
+    : await resolveRef(ctx, validateRefName(target));
   const obj = await readObject(ctx, id);
   if (obj.type === 'commit') return obj.data.tree;
-  if (obj.type === 'tree') return id;
+  // A non-commit target (tree, blob, tag) is used verbatim; `diffTrees` is the
+  // single place that validates the resolved id is tree-shaped.
   return id;
 };

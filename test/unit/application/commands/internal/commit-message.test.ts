@@ -196,5 +196,51 @@ describe('internal/commit-message', () => {
       // Assert
       expect(sut).toBe('<<<<<feature>>>>>');
     });
+
+    it('Given a SPACE (0x20, low boundary), When sanitizeMarkerLabel, Then it is kept verbatim (not escaped)', () => {
+      // Arrange — 0x20 is the inclusive lower bound; `code > 0x20` would escape it.
+      const sut = sanitizeMarkerLabel('a b');
+
+      // Assert
+      expect(sut).toBe('a b');
+    });
+
+    it('Given char 0x1F (just below low boundary), When sanitizeMarkerLabel, Then it is escaped', () => {
+      // Arrange — 0x1F is just under 0x20; `code >= 0x20` must reject it.
+      const sut = sanitizeMarkerLabel('a\x1Fb');
+
+      // Assert
+      expect(sut).toBe('a\\x1Fb');
+    });
+
+    it('Given a TILDE (0x7E, high boundary), When sanitizeMarkerLabel, Then it is kept verbatim (not escaped)', () => {
+      // Arrange — 0x7E is the inclusive upper bound; `code < 0x7e` would escape it.
+      const sut = sanitizeMarkerLabel('a~b');
+
+      // Assert
+      expect(sut).toBe('a~b');
+    });
+
+    it('Given char 0x7F (DEL, just above high boundary), When sanitizeMarkerLabel, Then it is escaped', () => {
+      // Arrange — 0x7F is just over 0x7E; `code <= 0x7e` (and the `true` mutant) must reject it.
+      const sut = sanitizeMarkerLabel('a\x7Fb');
+
+      // Assert
+      expect(sut).toBe('a\\x7Fb');
+    });
+
+    it('Given a label whose escape sequence crosses the 200-byte cap, When sanitizeMarkerLabel, Then output is sliced to exactly 200 bytes', () => {
+      // Arrange — 197 printable chars then a control char; escaping the control
+      // char ('\\x01' = 4 chars) pushes `out` to length 201, so the slice MUST
+      // trim it back to 200. Without the slice the result would be length 201.
+      const raw = `${'a'.repeat(197)}\x01`;
+
+      // Act
+      const sut = sanitizeMarkerLabel(raw);
+
+      // Assert
+      expect(sut.length).toBe(200);
+      expect(sut).toBe(`${'a'.repeat(197)}\\x0`);
+    });
   });
 });

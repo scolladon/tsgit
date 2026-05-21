@@ -182,6 +182,40 @@ describe('withLogging — URL redaction', () => {
     if (events[0]?.kind !== 'request') throw new Error('expected request');
     expect(events[0].url).toBe(expected);
   });
+
+  it('Given a URL with a non-sensitive query key, When logged, Then that key is preserved (deletion list starts empty)', async () => {
+    // Arrange — the to-delete list is seeded as `[]`; an `["..."]` mutant
+    // would pre-seed a spurious key and delete it from the URL. Using that
+    // exact literal as a query key proves the seed list is genuinely empty.
+    const { logger, events } = recordingLogger();
+    const { transport } = fakeTransport([makeResponse()]);
+    const sut = withLogging({ logger })(transport);
+
+    // Act
+    await sut.request(makeRequest({ url: 'https://example.com/r?Stryker+was+here=keep' }));
+
+    // Assert
+    if (events[0]?.kind !== 'request') throw new Error('expected request');
+    expect(events[0].url).toBe('https://example.com/r?Stryker+was+here=keep');
+  });
+});
+
+describe('withLogging — extra header redaction defaulting', () => {
+  it('Given no redactHeaders config, When a non-sensitive header is sent, Then it is preserved (extra-redact list defaults to empty)', async () => {
+    // Arrange — `config.redactHeaders ?? []` defaults to `[]`. An `["..."]`
+    // mutant would pre-seed a header name and strip it. Sending exactly that
+    // header proves the default list is genuinely empty.
+    const { logger, events } = recordingLogger();
+    const { transport } = fakeTransport([makeResponse()]);
+    const sut = withLogging({ logger })(transport);
+
+    // Act
+    await sut.request(makeRequest({ headers: { 'Stryker was here': 'kept' } }));
+
+    // Assert
+    if (events[0]?.kind !== 'request') throw new Error('expected request');
+    expect(events[0].headers['Stryker was here']).toBe('kept');
+  });
 });
 
 describe('withLogging — logger throw safety', () => {

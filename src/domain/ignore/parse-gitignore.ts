@@ -16,7 +16,9 @@ export type IgnoreRuleset = ReadonlyArray<IgnoreRule>;
 const stripTrailingSpaces = (line: string): string => {
   // Trailing space is significant only when escaped (`\ `).
   let end = line.length;
+  // Stryker disable next-line ConditionalExpression,EqualityOperator: equivalent — when end===0, charCodeAt(-1) is NaN, so `NaN===0x20` is false and the loop exits regardless of the `end > 0` bound.
   while (end > 0 && line.charCodeAt(end - 1) === 0x20) {
+    // Stryker disable next-line ConditionalExpression: the left-operand mutant (`end >= 2` -> true) is equivalent — when `end === 1` the dropped guard lets `line.charCodeAt(-1)` evaluate to `NaN`, and `NaN === 0x5c` is `false`, so the branch is not taken either way. `end >= 2` is a defensive guard the NaN behaviour already makes redundant.
     if (end >= 2 && line.charCodeAt(end - 2) === 0x5c) break; // backslash-space → preserve
     end -= 1;
   }
@@ -33,6 +35,7 @@ import { compileGlob } from '../pathspec/index.js';
 export const parseGitignore = (text: string): IgnoreRuleset => {
   const out: IgnoreRule[] = [];
   for (const rawLine of text.split('\n')) {
+    // Stryker disable next-line ConditionalExpression,StringLiteral: equivalent — the next guard `/^\s*$/.test(rawLine)` also skips the empty string, so removing/altering this fast-path guard cannot change which lines are kept.
     if (rawLine === '') continue;
     if (/^\s*$/.test(rawLine)) continue;
     // Comments start with `#` (unescaped) at line start.
@@ -44,6 +47,7 @@ export const parseGitignore = (text: string): IgnoreRuleset => {
     const afterNegation = negated ? trimmed.slice(1) : trimmed;
     const directoryOnly = afterNegation.endsWith('/');
     const withoutTrailingSlash = directoryOnly ? afterNegation.slice(0, -1) : afterNegation;
+    // Stryker disable next-line MethodExpression: equivalent — any string that startsWith '/' (or endsWith '/') necessarily also includes '/', so the left operand can never change the `||` result; it collapses to `includes('/')`.
     const anchored = withoutTrailingSlash.startsWith('/') || withoutTrailingSlash.includes('/');
     const stripped = withoutTrailingSlash.startsWith('/')
       ? withoutTrailingSlash.slice(1)

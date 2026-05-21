@@ -218,6 +218,24 @@ describe('parsePackedRefs', () => {
     }
   });
 
+  it('Given a no-space line longer than 80 chars, When parsing, Then error reason truncates the line at 80 chars', () => {
+    // Arrange — line has no space; 120 hex chars so slice(0, 80) is observable
+    const line = 'a'.repeat(120);
+    const content = `${line}\n`;
+
+    // Act & Assert
+    try {
+      parsePackedRefs(content);
+      expect.fail('should have thrown');
+    } catch (e) {
+      expect(e).toBeInstanceOf(TsgitError);
+      expect((e as TsgitError).data.code).toBe('INVALID_PACKED_REFS');
+      expect(((e as TsgitError).data as { reason: string }).reason).toBe(
+        `invalid ref line format: ${'a'.repeat(80)}`,
+      );
+    }
+  });
+
   it('Given content without header line (starts with ref), When parsing, Then sorted=false and peeling=none', () => {
     // Arrange — no "# pack-refs with:" header
     const content = `${'a'.repeat(40)} refs/heads/main\n`;
@@ -286,6 +304,27 @@ describe('serializePackedRefs', () => {
     // Assert
     const refLines = sut.split('\n').filter((l) => !l.startsWith('#') && l !== '');
     expect(refLines).toHaveLength(2);
+  });
+
+  it('Given two entries with equal names, When serializing, Then their input order is preserved (stable sort)', () => {
+    // Arrange — equal names force the comparator's `=== 0` branch; a `<=` mutant
+    // would return -1 here and reverse the pair
+    const refs: PackedRefs = {
+      entries: [
+        { name: 'refs/heads/main' as RefName, id: SHA1 },
+        { name: 'refs/heads/main' as RefName, id: SHA2 },
+      ],
+      peeling: 'none',
+      sorted: false,
+    };
+
+    // Act
+    const sut = serializePackedRefs(refs);
+
+    // Assert
+    const refLines = sut.split('\n').filter((l) => !l.startsWith('#') && l !== '');
+    expect(refLines[0]).toBe(`${SHA1} refs/heads/main`);
+    expect(refLines[1]).toBe(`${SHA2} refs/heads/main`);
   });
 
   it("Given peeling='fully', When serializing, Then header includes both peeled and fully-peeled", () => {

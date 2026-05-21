@@ -1291,6 +1291,116 @@ describe('fetchPack', () => {
       expect(numericUpdates[0]?.current).toBe(stretched.length);
     });
 
+    it('Given a pack body whose final byte lands exactly on a tick boundary, When fetchPack runs, Then NO extra flush tick fires (kills && / total !== lastTick mutants)', async () => {
+      // Arrange — four 32 768-byte drain chunks. Cumulative:
+      //  chunk1 → 32 768  (no tick)
+      //  chunk2 → 65 536  (TICK, lastTick = 65 536)
+      //  chunk3 → 98 304  (no tick)
+      //  chunk4 → 131 072 (TICK, lastTick = 131 072)
+      // After the loop `total === lastTick === 131 072`, so the post-loop
+      // flush guard `sawProgress && tailUnticked` is `true && false` → NO
+      // flush. Exactly two numeric updates fire.
+      //  `&&` → `||`     : `true || false` → flush → 3 updates.
+      //  `tailUnticked` forced `true`        → flush → 3 updates.
+      //  `total !== lastTick` → `total === lastTick` → `true` → flush → 3.
+      // The count differs ⇒ every one of those mutants dies.
+      const { reporter, events } = recordingProgress();
+      const ctx = withProgress(createMemoryContext(), reporter);
+      const dummyId = (await computeBlobId(ctx, ENCODER.encode('tick-exact\n'))) as ObjectId;
+      const stretched = new Uint8Array(12 + 131_040 + 20);
+      const dv = new DataView(stretched.buffer);
+      dv.setUint32(0, 0x5041434b);
+      dv.setUint32(4, 2);
+      dv.setUint32(8, 0);
+      const trailerBytes = hexToBytes(await ctx.hash.hashHex(stretched.subarray(0, -20)));
+      stretched.set(trailerBytes, stretched.length - 20);
+      expect(stretched.length).toBe(131_072);
+      const body = buildMultiChunkSidebandBody(stretched, 32_768);
+      const { transport } = captureRequestsChunked(body);
+
+      // Act
+      let caught: unknown;
+      try {
+        await fetchPack(ctx, transport, {
+          wants: [dummyId],
+          haves: [],
+          capabilities: ['side-band-64k'],
+          url: REMOTE_URL,
+          progressOp: 'test:write-objects',
+        });
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert — walker rejects the stretched-empty pack.
+      expect((caught as TsgitError).data.code).toBe('INVALID_PACK_HEADER');
+      // Exactly two ticks: both mid-stream (65 536 and 131 072), no flush.
+      const numericUpdates = events.filter(
+        (e): e is { kind: 'update'; op: string; current: number } =>
+          e.kind === 'update' && typeof e.current === 'number' && e.current > 0,
+      );
+      const counts = numericUpdates.map((u) => u.current);
+      expect(counts).toEqual([65_536, 131_072]);
+      expect(numericUpdates.length).toBe(2);
+    });
+
+    it('Given a pack with an OFS_DELTA whose base offset is itself (distance 0), When fetchPack runs, Then throws "unresolved entry at offset"', async () => {
+      // Arrange — a single OFS_DELTA at offset 12 with a distance-0 varint.
+      // `tryResolveEntry` computes `baseOffset = 12 - 0 = 12`, which is NOT
+      // `< PACK_HEADER_BYTES`, so the negative-offset guard does not fire;
+      // `byOffset.get(12)` is never populated (the delta cannot resolve
+      // itself), so the entry stays unresolved. `firstUnresolvedError` then
+      // falls through `refDeltaBaseId` (OFS_DELTA → undefined) to the final
+      // `unresolved entry at offset ${first.offset}` arm — pinning that
+      // template literal against the empty-string mutant.
+      const ctx = createMemoryContext();
+      // Pack header (12 bytes) — magic 'PACK', version 2, 1 entry.
+      const header = new Uint8Array(12);
+      const hdv = new DataView(header.buffer);
+      hdv.setUint32(0, 0x5041434b);
+      hdv.setUint32(4, 2);
+      hdv.setUint32(8, 1);
+      // Entry header: type=6 (OFS_DELTA), size=0 → byte (6 << 4) | 0 = 0x60.
+      // Distance = 0, encoded as a single 0x00 byte (no continuation).
+      const entryHeader = new Uint8Array([0x60, 0x00]);
+      // zlib-compressed empty delta payload (sourceLength=0, targetLength=0).
+      const zlibBody = await ctx.compressor.deflate(new Uint8Array([0x00, 0x00]));
+      const bodyBytes = new Uint8Array(header.length + entryHeader.length + zlibBody.length);
+      bodyBytes.set(header, 0);
+      bodyBytes.set(entryHeader, header.length);
+      bodyBytes.set(zlibBody, header.length + entryHeader.length);
+      const trailerHex = await ctx.hash.hashHex(bodyBytes);
+      const packBytes = new Uint8Array(bodyBytes.length + 20);
+      packBytes.set(bodyBytes, 0);
+      packBytes.set(hexToBytes(trailerHex), bodyBytes.length);
+      const dummyId = (await computeBlobId(ctx, ENCODER.encode('ofs-self\n'))) as ObjectId;
+      const body = buildUploadPackResponseBody({ packBytes, sideBand: true });
+      const { transport } = captureRequests(body);
+
+      // Act
+      let caught: unknown;
+      try {
+        await fetchPack(ctx, transport, {
+          wants: [dummyId],
+          haves: [],
+          capabilities: ['side-band-64k'],
+          url: REMOTE_URL,
+          progressOp: 'test:write-objects',
+        });
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert
+      expect(caught).toBeInstanceOf(TsgitError);
+      const data = (caught as TsgitError).data as { code: string; reason?: string };
+      expect(data.code).toBe('INVALID_PACK_HEADER');
+      expect(data.reason).toContain('unresolved entry at offset');
+      // The offset 12 must appear — proves the template literal interpolates
+      // `first.offset` and is not the empty string.
+      expect(data.reason).toContain('12');
+    });
+
     it('Given an empty pack body, When fetchPack runs, Then returns a synthetic empty result (no error, no update tick)', async () => {
       // Arrange — server returns NAK + no sideband frames (zero pack bytes).
       // this is a legitimate protocol state when the client's

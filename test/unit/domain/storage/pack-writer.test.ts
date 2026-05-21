@@ -252,6 +252,88 @@ describe('pack-writer', () => {
       expect(lookupPackIndex(idx, ('aa' + '00'.repeat(19)) as ObjectId)).toBe(0x7fffffff);
     });
 
+    it('Given 1 entry with offset exactly 0x7fffffff, When serializing, Then NO large-offset table is reserved (total length excludes 8 large-offset bytes)', () => {
+      // Arrange — 0x7fffffff must NOT count as large; `> 0x7fffffff` boundary.
+      // Kills the L78 `>=` EqualityOperator mutant (which would reserve 8 extra
+      // large-offset bytes for this exact-boundary offset).
+      const entries = [{ id: 'aa' + '00'.repeat(19), crc32: 0, offset: 0x7fffffff }];
+      const packChecksum = new Uint8Array(20);
+
+      // Act
+      const sut = serializePackIndex(entries, packChecksum);
+
+      // Assert — header 8 + fanout 1024 + sha 20 + crc 4 + offset 4 + large 0 + checksum 20
+      expect(sut.length).toBe(8 + 1024 + 20 + 4 + 4 + 0 + 20);
+    });
+
+    it('Given 2 small-offset entries, When serializing, Then total length reserves zero large-offset bytes', () => {
+      // Arrange — both offsets well below 0x7fffffff; kills the L78 ConditionalExpression
+      // `true` mutant (which counts every entry as large → 16 extra bytes).
+      const entries = [
+        { id: 'aa' + '00'.repeat(19), crc32: 0, offset: 12 },
+        { id: 'bb' + '00'.repeat(19), crc32: 0, offset: 99 },
+      ];
+      const packChecksum = new Uint8Array(20);
+
+      // Act
+      const sut = serializePackIndex(entries, packChecksum);
+
+      // Assert — header 8 + fanout 1024 + sha 40 + crc 8 + offset 8 + large 0 + checksum 20
+      expect(sut.length).toBe(8 + 1024 + 40 + 8 + 8 + 0 + 20);
+    });
+
+    it('Given 1 large-offset entry, When serializing, Then total length reserves exactly one 8-byte large-offset slot', () => {
+      // Arrange — offset strictly above 0x7fffffff: exactly one large slot.
+      // Pins L78 against ConditionalExpression `true` (which would count extra) — here n===1 so true≡correct,
+      // but combined with the small-offset tests this anchors the exact count.
+      const entries = [{ id: 'aa' + '00'.repeat(19), crc32: 0, offset: 0x80000000 }];
+      const packChecksum = new Uint8Array(20);
+
+      // Act
+      const sut = serializePackIndex(entries, packChecksum);
+
+      // Assert — header 8 + fanout 1024 + sha 20 + crc 4 + offset 4 + large 8 + checksum 20
+      expect(sut.length).toBe(8 + 1024 + 20 + 4 + 4 + 8 + 20);
+    });
+
+    it('Given 3 entries one large, When serializing, Then total length reserves exactly one large-offset slot (not three)', () => {
+      // Arrange — only the middle entry is large. Kills L78 ConditionalExpression `true`
+      // (would reserve 3 slots = 24 bytes) and L78 `>=` is irrelevant here.
+      const entries = [
+        { id: 'aa' + '00'.repeat(19), crc32: 0, offset: 12 },
+        { id: 'bb' + '00'.repeat(19), crc32: 0, offset: 0x90000000 },
+        { id: 'cc' + '00'.repeat(19), crc32: 0, offset: 200 },
+      ];
+      const packChecksum = new Uint8Array(20);
+
+      // Act
+      const sut = serializePackIndex(entries, packChecksum);
+
+      // Assert — header 8 + fanout 1024 + sha 60 + crc 12 + offset 12 + large 8 + checksum 20
+      expect(sut.length).toBe(8 + 1024 + 60 + 12 + 12 + 8 + 20);
+    });
+
+    it('Given 1 entry with SHA starting with non-zero byte, When serializing, Then SHA table is not corrupted by the fanout write loop', () => {
+      // Arrange — kills the L117 `i <= 256` EqualityOperator mutant: writing
+      // fanout[256] lands at byte offset 1032 (shaStart), zeroing the first 4
+      // bytes of SHA[0] and breaking the lookup of an `aa...`-prefixed id.
+      const id = 'aabbccdd' + '11'.repeat(16);
+      const entries = [{ id, crc32: 0, offset: 12 }];
+      const packChecksum = new Uint8Array(20);
+
+      // Act
+      const sut = serializePackIndex(entries, packChecksum);
+      const withTrailer = new Uint8Array(sut.length + 20);
+      withTrailer.set(sut);
+      const idx = parsePackIndex(withTrailer);
+
+      // Assert — first 4 SHA bytes intact: lookup succeeds with the exact id
+      expect(lookupPackIndex(idx, id as ObjectId)).toBe(12);
+      const view = new DataView(sut.buffer, sut.byteOffset, sut.byteLength);
+      // shaStart = 8 + 1024 = 1032; first 4 bytes must equal 0xaabbccdd
+      expect(view.getUint32(1032)).toBe(0xaabbccdd);
+    });
+
     it('Given offset > 2^32, When serializing then parsing, Then reads correct 64-bit value', () => {
       // Arrange — offset = 0x100000001 (high=1, low=1)
       const largeOffset = 0x100000001;

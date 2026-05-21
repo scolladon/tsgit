@@ -144,6 +144,34 @@ describe('readIndex', () => {
     expect((caught as TsgitError).message).toMatch(/shorter than the hash trailer/);
   });
 
+  it('Given a file exactly trailerSize bytes long with a valid empty-payload checksum, When readIndex is called, Then it does NOT reject with /shorter than/ (boundary: length === trailerSize is long enough)', async () => {
+    // Arrange — a 20-byte file whose bytes ARE the SHA-1 of the empty payload.
+    // `bytes.length (20) < trailerSize (20)` is false, so the trailer-too-short
+    // guard must NOT fire; the checksum then matches and parsing proceeds.
+    // A `<=` mutant would treat an exactly-trailerSize file as too short.
+    const ctx = await buildSeededContext();
+    const emptyHashHex = await ctx.hash.hashHex(new Uint8Array(0));
+    const trailer = new Uint8Array(20);
+    for (let i = 0; i < 20; i += 1) {
+      trailer[i] = Number.parseInt(emptyHashHex.slice(i * 2, i * 2 + 2), 16);
+    }
+    await ctx.fs.write('/repo/.git/index', trailer);
+
+    // Act
+    let caught: unknown;
+    try {
+      await readIndex(ctx);
+      expect.unreachable();
+    } catch (error) {
+      caught = error;
+    }
+
+    // Assert — the checksum passed; the failure is a parse error, never the
+    // trailer-too-short rejection that the `<=` mutant would produce.
+    expect(caught).toBeInstanceOf(TsgitError);
+    expect((caught as TsgitError).message).not.toMatch(/shorter than/);
+  });
+
   it('Given a multi-gigabyte index stat size, When readIndex is called, Then throws INVALID_INDEX_HEADER /exceeds 256 MiB/ (without materializing)', async () => {
     const ctx = await buildSeededContext();
     // Seed a tiny file so exists() returns true; then override stat via a wrapper context.

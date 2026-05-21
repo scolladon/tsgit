@@ -12,6 +12,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { FsOperations } from '../../../../src/adapters/node/fs-operations.js';
 import {
+  mapConcurrent,
   NodeFileSystem,
   realpathNearestExisting,
 } from '../../../../src/adapters/node/node-file-system.js';
@@ -1273,5 +1274,357 @@ describe('NodeFileSystem.rmRecursive — option-shape pin (DI)', () => {
     // Assert
     const rootCalls = realpathSpy.mock.calls.filter(([arg]: readonly unknown[]) => arg === rootDir);
     expect(rootCalls.length).toBe(2);
+  });
+});
+
+describe('mapConcurrent — empty-input short-circuit (DI)', () => {
+  it('Given an empty input and a negative limit, When mapped, Then it resolves without throwing (short-circuit fires before Math.min/Array.from)', async () => {
+    // Arrange — a negative limit would make `Array.from({ length:
+    // Math.min(limit, 0) })` throw RangeError. The empty-input guard
+    // returns BEFORE that line, so the call must resolve cleanly. A
+    // mutant that drops the guard (ConditionalExpression → false) reaches
+    // `Array.from` and throws.
+    const fn = vi.fn(async () => undefined);
+
+    // Act
+    let caught: unknown;
+    try {
+      await mapConcurrent([], -1, fn);
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert
+    expect(caught).toBeUndefined();
+    expect(fn).not.toHaveBeenCalled();
+  });
+});
+
+describe('realpathNearestExisting — root extraction and walk (DI)', () => {
+  it('Given a leaf that does not exist, When resolving, Then it walks up to the nearest existing ancestor (rootOf must yield the prefix, not the whole path)', async () => {
+    // Arrange — `realpath` succeeds only for `/root/exists`; the leaf
+    // ENOENTs. A mutant replacing `policy.rootOf(absolute)` with
+    // `absolute` makes `root` the whole path, `tail` empty, and skips the
+    // walk entirely — calling `realpath('/root/exists/missing')` (ENOENT)
+    // then `realpath('/root/exists/missing')` again and throwing.
+    const realpath = vi.fn().mockImplementation(async (input: string) => {
+      if (input === '/root/exists') return '/root/exists';
+      throw enoent();
+    });
+    const fsOps = fakeFsOps({ realpath });
+
+    // Act
+    const result = await realpathNearestExisting('/root/exists/missing', posixPolicy, fsOps);
+
+    // Assert — walk landed on `/root/exists` and re-joined the tail.
+    expect(result).toBe('/root/exists/missing');
+  });
+
+  it('Given a path with a doubled separator, When resolving, Then empty segments are filtered out (no spurious double-separator candidate)', async () => {
+    // Arrange — `realpath` is identity for any input. With `.filter(Boolean)`
+    // the segments of `/root//a` are `['root','a']`, so the first candidate
+    // is `/root/a` and the resolved result is `/root/a`. A mutant dropping
+    // `.filter(Boolean)` keeps the empty segment, making the first candidate
+    // `/root//a`, which `realpath` (identity) accepts → result `/root//a`.
+    const realpath = vi.fn().mockImplementation(async (input: string) => input);
+    const fsOps = fakeFsOps({ realpath });
+
+    // Act
+    const result = await realpathNearestExisting('/root//a', posixPolicy, fsOps);
+
+    // Assert
+    expect(result).toBe('/root/a');
+  });
+
+  it('Given every segment and the root all ENOENT, When resolving, Then realpath(root) is invoked exactly once (loop bound must stop at i > 0)', async () => {
+    // Arrange — nothing resolves. With the `i > 0` bound the loop never
+    // probes the root, so `realpath('/')` fires once at the post-loop
+    // anchor. A mutant relaxing the bound to `i >= 0` adds an in-loop
+    // `i === 0` iteration that calls `realpath('/')` too — two calls.
+    const realpath = vi.fn().mockRejectedValue(enoent());
+    const fsOps = fakeFsOps({ realpath });
+
+    // Act
+    let caught: unknown;
+    try {
+      await realpathNearestExisting('/missing', posixPolicy, fsOps);
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert — propagates ENOENT and probed the root exactly once.
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as NodeJS.ErrnoException).code).toBe('ENOENT');
+    const rootCalls = realpath.mock.calls.filter(([arg]: readonly unknown[]) => arg === '/');
+    expect(rootCalls.length).toBe(1);
+  });
+
+  it('Given a deep realpath rejecting with a non-ENOENT errno while an ancestor resolves, When resolving, Then the errno propagates (catch must not swallow it)', async () => {
+    // Arrange — `realpath('/root/a/b')` rejects EACCES; `/root` resolves.
+    // The catch only `continue`s on ENOENT, so EACCES must propagate.
+    // Mutants that empty the catch block (BlockStatement → {}) or force
+    // the guard true (ConditionalExpression → true) would swallow EACCES,
+    // continue the walk to `/root`, and return successfully instead.
+    const realpath = vi.fn().mockImplementation(async (input: string) => {
+      if (input === '/root') return '/root';
+      if (input === '/root/a/b') throw eacces();
+      throw enoent();
+    });
+    const fsOps = fakeFsOps({ realpath });
+
+    // Act
+    let caught: unknown;
+    try {
+      await realpathNearestExisting('/root/a/b', posixPolicy, fsOps);
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as NodeJS.ErrnoException).code).toBe('EACCES');
+  });
+
+  it('Given a deep realpath rejecting with a non-errno value while an ancestor resolves, When resolving, Then the value propagates (guard must require ENOENT, not just any errno)', async () => {
+    // Arrange — `realpath('/root/a/b')` rejects with a plain string;
+    // `/root` resolves. `isErrnoException` is false for a string, so the
+    // catch must rethrow it. A mutant forcing the whole guard true
+    // (ConditionalExpression → true at the `&&` root) would `continue`
+    // and resolve against `/root` instead of propagating the string.
+    const realpath = vi.fn().mockImplementation(async (input: string) => {
+      if (input === '/root') return '/root';
+      if (input === '/root/a/b') throw 'not-an-error';
+      throw enoent();
+    });
+    const fsOps = fakeFsOps({ realpath });
+
+    // Act
+    let caught: unknown;
+    try {
+      await realpathNearestExisting('/root/a/b', posixPolicy, fsOps);
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert
+    expect(caught).toBe('not-an-error');
+  });
+});
+
+describe('NodeFileSystem.openWithNoFollow — handle.read position (DI)', () => {
+  it('Given a wrapped FileHandle, When read is called with an explicit non-zero position, Then the underlying read receives that position (not coerced to null)', async () => {
+    // Arrange — `wrapNodeHandle.read` forwards `position ?? null`. A
+    // mutant turning `??` into `&&` would compute `5 && null === null`,
+    // dropping the caller's position. Pin the exact 4th argument.
+    const rootDir = '/root';
+    const readSpy = vi.fn().mockResolvedValue({ bytesRead: 0, buffer: Buffer.alloc(0) });
+    const handle = { read: readSpy, close: vi.fn().mockResolvedValue(undefined) };
+    const fsOps = fakeFsOps({
+      realpath: vi.fn().mockImplementation(async (input: string) => input),
+      lstat: vi.fn().mockResolvedValue({ isSymbolicLink: () => false }),
+      open: vi.fn().mockResolvedValue(handle),
+    });
+    const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+    const wrapped = await sut.openWithNoFollow('/root/file.bin', 'read');
+    const buffer = new Uint8Array(8);
+
+    // Act
+    await wrapped.read(buffer, 0, 8, 5);
+    await wrapped.close();
+
+    // Assert
+    expect(readSpy).toHaveBeenCalledWith(buffer, 0, 8, 5);
+  });
+
+  it('Given a wrapped FileHandle, When read is called without a position, Then the underlying read receives null (?? default)', async () => {
+    // Arrange — companion to the test above: the omitted-position arm.
+    const rootDir = '/root';
+    const readSpy = vi.fn().mockResolvedValue({ bytesRead: 0, buffer: Buffer.alloc(0) });
+    const handle = { read: readSpy, close: vi.fn().mockResolvedValue(undefined) };
+    const fsOps = fakeFsOps({
+      realpath: vi.fn().mockImplementation(async (input: string) => input),
+      lstat: vi.fn().mockResolvedValue({ isSymbolicLink: () => false }),
+      open: vi.fn().mockResolvedValue(handle),
+    });
+    const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+    const wrapped = await sut.openWithNoFollow('/root/file.bin', 'read');
+    const buffer = new Uint8Array(8);
+
+    // Act
+    await wrapped.read(buffer, 0, 8);
+    await wrapped.close();
+
+    // Assert
+    expect(readSpy).toHaveBeenCalledWith(buffer, 0, 8, null);
+  });
+});
+
+describe('NodeFileSystem.readSlice — handle close on success (DI)', () => {
+  it('Given a successful readSlice, When it returns, Then the underlying FileHandle is closed (finally block is load-bearing)', async () => {
+    // Arrange — `readSlice` opens a handle and must close it in its
+    // `finally` block. A mutant emptying that block (BlockStatement → {})
+    // leaks the descriptor. Inject a fake handle and assert `close` ran.
+    const rootDir = '/root';
+    const payload = Buffer.from([1, 2, 3, 4]);
+    const closeSpy = vi.fn().mockResolvedValue(undefined);
+    const handle = {
+      read: vi.fn().mockImplementation(async (buf: Buffer) => {
+        payload.copy(buf);
+        return { bytesRead: payload.length, buffer: buf };
+      }),
+      close: closeSpy,
+    };
+    const fsOps = fakeFsOps({
+      realpath: vi.fn().mockImplementation(async (input: string) => input),
+      open: vi.fn().mockResolvedValue(handle),
+    });
+    const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+
+    // Act
+    const slice = await sut.readSlice('/root/file.bin', 0, 4);
+
+    // Assert
+    expect(slice).toEqual(new Uint8Array([1, 2, 3, 4]));
+    expect(closeSpy).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('NodeFileSystem.symlink — absolute-target containment OR (DI)', () => {
+  it('Given an absolute target inside the canonical root but outside the raw root, When symlink runs, Then it succeeds (raw operand alone must not refuse)', async () => {
+    // Arrange — 8.3 short/long-name skew: the raw rootDir is the short
+    // form, its realpath is the long form. A target spelled in the long
+    // (canonical) form is contained by the canonical root but NOT the raw
+    // root. With the `&&` guard the symlink is created. A mutant flipping
+    // `&&` to `||` would refuse because the raw-root operand fails.
+    const shortRoot = 'C:\\Users\\RUNNER~1\\tsgit';
+    const longRoot = 'C:\\Users\\runneradmin\\tsgit';
+    const longTarget = 'C:\\Users\\runneradmin\\tsgit\\target';
+    const link = 'C:\\Users\\RUNNER~1\\tsgit\\link';
+    const symlinkOp = vi.fn().mockResolvedValue(undefined);
+    const fsOps = fakeFsOps({
+      realpath: vi.fn().mockImplementation(async (input: string) => {
+        if (input === shortRoot) return longRoot;
+        if (input === longTarget) return longTarget;
+        throw enoent();
+      }),
+      symlink: symlinkOp,
+    });
+    const sut = new NodeFileSystem(shortRoot, windowsPolicy, fsOps);
+
+    // Act
+    let caught: unknown;
+    try {
+      await sut.symlink(longTarget, link);
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert — the symlink op ran with the (unmodified) absolute target.
+    expect(caught).toBeUndefined();
+    expect(symlinkOp).toHaveBeenCalledTimes(1);
+    expect(symlinkOp.mock.calls[0]?.[0]).toBe(longTarget);
+  });
+
+  it('Given an absolute target inside the raw root but outside the canonical root, When symlink runs, Then it succeeds (canonical operand alone must not refuse)', async () => {
+    // Arrange — symmetric to the test above. The target is spelled in the
+    // short (raw) form: contained by the raw root, NOT the canonical root.
+    // A mutant flipping `&&` to `||` refuses because the canonical operand
+    // fails.
+    const shortRoot = 'C:\\Users\\RUNNER~1\\tsgit';
+    const longRoot = 'C:\\Users\\runneradmin\\tsgit';
+    const shortTarget = 'C:\\Users\\RUNNER~1\\tsgit\\target';
+    const link = 'C:\\Users\\RUNNER~1\\tsgit\\link';
+    const symlinkOp = vi.fn().mockResolvedValue(undefined);
+    const fsOps = fakeFsOps({
+      realpath: vi.fn().mockImplementation(async (input: string) => {
+        if (input === shortRoot) return longRoot;
+        if (input === shortTarget) return shortTarget;
+        throw enoent();
+      }),
+      symlink: symlinkOp,
+    });
+    const sut = new NodeFileSystem(shortRoot, windowsPolicy, fsOps);
+
+    // Act
+    let caught: unknown;
+    try {
+      await sut.symlink(shortTarget, link);
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert — the symlink op ran with the (unmodified) absolute target.
+    expect(caught).toBeUndefined();
+    expect(symlinkOp).toHaveBeenCalledTimes(1);
+    expect(symlinkOp.mock.calls[0]?.[0]).toBe(shortTarget);
+  });
+});
+
+describe('NodeFileSystem.openWithNoFollow — UNSUPPORTED_OPERATION rewrap (DI)', () => {
+  it('Given a Windows regular file whose open rejects with an unknown errno, When openWithNoFollow runs, Then the discriminator rewraps UNSUPPORTED_OPERATION to PERMISSION_DENIED', async () => {
+    // Arrange — an unknown errno hits `mapErrno`'s default arm →
+    // UNSUPPORTED_OPERATION. `isWindowsSymlinkRefusal` returns true for
+    // that code, so the catch block rewraps it to PERMISSION_DENIED. A
+    // mutant that skips the rewrap (ConditionalExpression → false) or
+    // empties the block (BlockStatement → {}) surfaces UNSUPPORTED_OPERATION.
+    const eunknown = (): NodeJS.ErrnoException =>
+      Object.assign(new Error('unknown errno'), { code: 'EWHATEVER' });
+    const root = 'C:\\canonical\\win-unknown';
+    const file = 'C:\\canonical\\win-unknown\\leaf';
+    const fsOps = fakeFsOps({
+      realpath: vi.fn().mockImplementation(async (input: string) => input),
+      lstat: vi.fn().mockResolvedValue({ isSymbolicLink: () => false }),
+      open: vi.fn().mockRejectedValue(eunknown()),
+    });
+    const sut = new NodeFileSystem(root, windowsPolicy, fsOps);
+
+    // Act
+    let caught: unknown;
+    try {
+      await sut.openWithNoFollow(file, 'read');
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert
+    expect(caught).toBeInstanceOf(TsgitError);
+    expect((caught as TsgitError).data.code).toBe('PERMISSION_DENIED');
+  });
+});
+
+describe('NodeFileSystem.realpathForCreation — non-ENOENT parent error (DI)', () => {
+  it('Given the direct parent realpath rejects ENOTDIR while the leaf realpath resolves, When write runs, Then NOT_A_DIRECTORY is thrown (non-ENOENT must not trigger the walk-up)', async () => {
+    // Arrange — `realpath` resolves the leaf and rootDir but rejects the
+    // parent with ENOTDIR. The cache-miss path's catch must rethrow any
+    // non-ENOENT error. A mutant forcing the guard true (whole condition
+    // or just the `code === 'ENOENT'` operand) would instead run the
+    // walk-up `realpathNearestExisting`, which resolves the leaf directly
+    // and lets the write succeed.
+    const rootDir = '/root';
+    const parent = '/root/sub';
+    const leaf = '/root/sub/leaf.bin';
+    const fsOps = fakeFsOps({
+      realpath: vi.fn().mockImplementation(async (input: string) => {
+        if (input === rootDir) return rootDir;
+        if (input === leaf) return leaf;
+        if (input === parent) throw enotdir();
+        throw enoent();
+      }),
+      lstat: vi.fn().mockRejectedValue(enoent()),
+    });
+    const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+
+    // Act
+    let caught: unknown;
+    try {
+      await sut.write(leaf, new Uint8Array([1]));
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert — the ENOTDIR propagated and mapped; the write never ran.
+    expect(caught).toBeInstanceOf(TsgitError);
+    expect((caught as TsgitError).data.code).toBe('NOT_A_DIRECTORY');
+    expect(fsOps.writeFile).not.toHaveBeenCalled();
   });
 });

@@ -181,13 +181,32 @@ const seedCommit = async (
   return { id, tree: treeId };
 };
 
+/**
+ * Decode the big-endian uint32 object count from the `PACK` header embedded
+ * in a receive-pack request body. The body is `<pkt-line updates><pack>`; the
+ * pack starts at the `PACK` (0x50 0x41 0x43 0x4b) signature, and bytes 8..12
+ * hold the entry count.
+ */
+const packObjectCount = (body: Uint8Array): number => {
+  let packStart = -1;
+  for (let i = 0; i + 4 <= body.length; i += 1) {
+    if (body[i] === 0x50 && body[i + 1] === 0x41 && body[i + 2] === 0x43 && body[i + 3] === 0x4b) {
+      packStart = i;
+      break;
+    }
+  }
+  if (packStart < 0) throw new Error('PACK signature not found in request body');
+  const view = new DataView(body.buffer, body.byteOffset + packStart + 8, 4);
+  return view.getUint32(0, false);
+};
+
 describe('push — config + refspec guards', () => {
   it.each([
     ['../escape'],
     ['has space'],
     ['weird/slash'],
     [''],
-  ])('Given an invalid remote name %j, When push runs, Then throws INVALID_OPTION', async (badName) => {
+  ])('Given an invalid remote name %j, When push runs, Then throws INVALID_OPTION naming the remote', async (badName) => {
     // Arrange — pins the REMOTE_NAME_RE allowlist guarding the composed
     // `refs/remotes/<remote>/<branch>` path against traversal.
     const ctx = createMemoryContext();
@@ -201,9 +220,17 @@ describe('push — config + refspec guards', () => {
       caught = err;
     }
 
-    // Assert
+    // Assert — option is the literal 'remote' and the message echoes the
+    // offending name (kills the StringLiteral mutants on the throw site).
     expect(caught).toBeInstanceOf(TsgitError);
-    expect((caught as TsgitError).data.code).toBe('INVALID_OPTION');
+    const data = (caught as TsgitError).data as {
+      code: string;
+      option: string;
+      reason: string;
+    };
+    expect(data.code).toBe('INVALID_OPTION');
+    expect(data.option).toBe('remote');
+    expect(data.reason).toBe(`invalid remote name: ${badName}`);
   });
 
   it('Given no remote configured, When push runs, Then throws REMOTE_NOT_CONFIGURED', async () => {
@@ -241,14 +268,16 @@ describe('push — config + refspec guards', () => {
       caught = err;
     }
 
-    // Assert
+    // Assert — option literal is 'refspecs' (kills the StringLiteral mutant).
     expect(caught).toBeInstanceOf(TsgitError);
     const data = (caught as TsgitError).data as {
       code: string;
+      option: string;
       reason: string;
     };
     expect(data.code).toBe('INVALID_OPTION');
-    expect(data.reason).toContain('no-default-refspec');
+    expect(data.option).toBe('refspecs');
+    expect(data.reason).toBe('no-default-refspec (HEAD is detached)');
   });
 });
 
@@ -343,11 +372,21 @@ describe('push — server responses', () => {
       caught = err;
     }
 
-    // Assert
+    // Assert — code, statusCode AND the exact reason string. The L319
+    // StringLiteral mutant empties `git-receive-pack returned ${statusCode}`
+    // to `''`, so we pin the reason and the rendered message verbatim.
     expect(caught).toBeInstanceOf(TsgitError);
-    const data = (caught as TsgitError).data as { code: string; statusCode: number };
+    const data = (caught as TsgitError).data as {
+      code: string;
+      statusCode: number;
+      reason: string;
+    };
     expect(data.code).toBe('HTTP_ERROR');
     expect(data.statusCode).toBe(503);
+    expect(data.reason).toBe('git-receive-pack returned 503');
+    expect((caught as TsgitError).message).toBe(
+      'HTTP_ERROR: HTTP 503: git-receive-pack returned 503',
+    );
   });
 
   it('Given the server returns `ng <ref> <reason>`, When push runs, Then the ref is reported as rejected with reason', async () => {
@@ -533,9 +572,17 @@ describe('push — force-with-lease', () => {
 
     // Assert
     expect(caught).toBeInstanceOf(TsgitError);
-    const data = (caught as TsgitError).data as { code: string; reason: string };
+    const data = (caught as TsgitError).data as {
+      code: string;
+      reason: string;
+      reportStatus: { unpackOk: boolean; refUpdates: ReadonlyArray<unknown> };
+    };
     expect(data.code).toBe('PUSH_REJECTED');
     expect(data.reason).toBe('lease-mismatch');
+    // emptyReport() attaches a synthetic all-clear report-status: unpackOk
+    // is `true`, refUpdates empty (kills the BooleanLiteral mutant).
+    expect(data.reportStatus.unpackOk).toBe(true);
+    expect(data.reportStatus.refUpdates).toEqual([]);
     // POST was NOT issued (lease check is pre-flight).
     expect(requests.map((r) => r.method)).toEqual(['GET']);
   });
@@ -619,7 +666,7 @@ describe('push — force-with-lease', () => {
       caught = err;
     }
 
-    // Assert
+    // Assert — option literal is 'forceWithLease' (kills the StringLiteral mutant).
     expect(caught).toBeInstanceOf(TsgitError);
     const data = (caught as TsgitError).data as {
       code: string;
@@ -627,7 +674,8 @@ describe('push — force-with-lease', () => {
       reason: string;
     };
     expect(data.code).toBe('INVALID_OPTION');
-    expect(data.reason).toContain('lease-on-non-branch');
+    expect(data.option).toBe('forceWithLease');
+    expect(data.reason).toBe('lease-on-non-branch');
   });
 });
 
@@ -676,9 +724,17 @@ describe('push — delete refspec', () => {
       caught = err;
     }
 
-    // Assert
+    // Assert — option literal is 'refspecs' and the message names the
+    // unadvertised delete target (kills both StringLiteral mutants).
     expect(caught).toBeInstanceOf(TsgitError);
-    expect((caught as TsgitError).data.code).toBe('INVALID_OPTION');
+    const data = (caught as TsgitError).data as {
+      code: string;
+      option: string;
+      reason: string;
+    };
+    expect(data.code).toBe('INVALID_OPTION');
+    expect(data.option).toBe('refspecs');
+    expect(data.reason).toBe('delete target refs/heads/feature is not advertised');
   });
 
   it('Given a successful delete, When push completes, Then refs/remotes/origin/<branch> is NOT created in the cache', async () => {
@@ -876,5 +932,344 @@ describe('push — progress reporting', () => {
     const startCount = events.filter((e) => e.kind === 'start').length;
     const endCount = events.filter((e) => e.kind === 'end').length;
     expect(endCount).toBe(startCount);
+  });
+
+  it("Given a successful push, When run, Then start/end pair fires with op === 'push:upload'", async () => {
+    // Arrange — pins the push:upload bracket in postReceivePack; without
+    // its `finally { ctx.progress.end(...) }` the end event never fires.
+    const ctx = createMemoryContext();
+    const parent = await seedCommit(ctx, [], 'p');
+    const tip = await seedCommit(ctx, [parent.id], 't');
+    await seedRepo(ctx, { refs: { 'refs/heads/main': tip.id } });
+    await writeOriginConfig(ctx);
+    const { transport } = fakeServer({
+      url: 'https://example.com/r.git',
+      advertisedRefs: [{ name: 'refs/heads/main', id: parent.id }],
+      reportStatus: { unpack: 'ok', refs: [{ name: 'refs/heads/main', status: 'ok' }] },
+    });
+    const { reporter, events } = recordingProgress();
+
+    // Act
+    await push(withProgress({ ...ctx, transport }, reporter));
+
+    // Assert — exactly one start and one end for push:upload.
+    const upload = events.filter((e) => e.op === 'push:upload');
+    expect(upload.filter((e) => e.kind === 'start')).toHaveLength(1);
+    expect(upload.filter((e) => e.kind === 'end')).toHaveLength(1);
+  });
+});
+
+describe('push — auth, signal, headers', () => {
+  it('Given ctx.config.auth is set, When push runs, Then every request carries the Authorization header', async () => {
+    // Arrange — kills the `{ auth: ctx.config.auth }` ObjectLiteral mutant:
+    // an empty `{}` would drop auth and no header would be injected.
+    const ctx = createMemoryContext();
+    const parent = await seedCommit(ctx, [], 'p');
+    const tip = await seedCommit(ctx, [parent.id], 't');
+    await seedRepo(ctx, { refs: { 'refs/heads/main': tip.id } });
+    await writeOriginConfig(ctx);
+    const { transport, requests } = fakeServer({
+      url: 'https://example.com/r.git',
+      advertisedRefs: [{ name: 'refs/heads/main', id: parent.id }],
+      reportStatus: { unpack: 'ok', refs: [{ name: 'refs/heads/main', status: 'ok' }] },
+    });
+
+    // Act
+    await push({
+      ...ctx,
+      transport,
+      config: { auth: { type: 'bearer', token: 'sekret-token' } },
+    });
+
+    // Assert — discovery GET and the POST both authenticated.
+    expect(requests).toHaveLength(2);
+    for (const req of requests) {
+      expect(req.headers.authorization).toBe('Bearer sekret-token');
+    }
+  });
+
+  it('Given no config.auth, When push runs, Then no Authorization header is sent', async () => {
+    // Arrange — kills the `{}` ObjectLiteral mutant in the other direction:
+    // a `{ auth: ... }` literal would need a defined auth, but the guard is
+    // `ctx.config?.auth !== undefined` so the empty branch must be taken.
+    const ctx = createMemoryContext();
+    const parent = await seedCommit(ctx, [], 'p');
+    const tip = await seedCommit(ctx, [parent.id], 't');
+    await seedRepo(ctx, { refs: { 'refs/heads/main': tip.id } });
+    await writeOriginConfig(ctx);
+    const { transport, requests } = fakeServer({
+      url: 'https://example.com/r.git',
+      advertisedRefs: [{ name: 'refs/heads/main', id: parent.id }],
+      reportStatus: { unpack: 'ok', refs: [{ name: 'refs/heads/main', status: 'ok' }] },
+    });
+
+    // Act
+    await push({ ...ctx, transport });
+
+    // Assert
+    for (const req of requests) {
+      expect(req.headers.authorization).toBeUndefined();
+    }
+  });
+
+  it('Given ctx.signal is set, When push runs, Then the receive-pack POST carries the signal', async () => {
+    // Arrange — kills the `{ signal: ctx.signal }` spread mutant; an empty
+    // `{}` would drop the signal from the POST request.
+    const ctx = createMemoryContext();
+    const parent = await seedCommit(ctx, [], 'p');
+    const tip = await seedCommit(ctx, [parent.id], 't');
+    await seedRepo(ctx, { refs: { 'refs/heads/main': tip.id } });
+    await writeOriginConfig(ctx);
+    const { transport, requests } = fakeServer({
+      url: 'https://example.com/r.git',
+      advertisedRefs: [{ name: 'refs/heads/main', id: parent.id }],
+      reportStatus: { unpack: 'ok', refs: [{ name: 'refs/heads/main', status: 'ok' }] },
+    });
+    const signal = new AbortController().signal;
+
+    // Act
+    await push({ ...ctx, transport, signal });
+
+    // Assert — the POST request object carries the exact signal instance.
+    const post = requests.find((r) => r.method === 'POST');
+    expect(post).toBeDefined();
+    expect(post?.signal).toBe(signal);
+  });
+
+  it('Given no ctx.signal, When push runs, Then the receive-pack POST omits the signal key entirely', async () => {
+    // Arrange — kills the L316 ConditionalExpression mutant: forcing the
+    // `ctx.signal !== undefined` ternary to `true` spreads `{ signal: undefined }`
+    // into the request, adding a `signal` KEY with value `undefined`. Asserting
+    // value-undefined alone passes either way, so we assert the key is ABSENT.
+    const ctx = createMemoryContext();
+    const parent = await seedCommit(ctx, [], 'p');
+    const tip = await seedCommit(ctx, [parent.id], 't');
+    await seedRepo(ctx, { refs: { 'refs/heads/main': tip.id } });
+    await writeOriginConfig(ctx);
+    const { transport, requests } = fakeServer({
+      url: 'https://example.com/r.git',
+      advertisedRefs: [{ name: 'refs/heads/main', id: parent.id }],
+      reportStatus: { unpack: 'ok', refs: [{ name: 'refs/heads/main', status: 'ok' }] },
+    });
+
+    // Act
+    await push({ ...ctx, transport });
+
+    // Assert — no `signal` own-property at all on the POST request object.
+    const post = requests.find((r) => r.method === 'POST');
+    expect(post).toBeDefined();
+    expect(post).not.toHaveProperty('signal');
+  });
+
+  it('Given a successful push, When run, Then the receive-pack POST carries the git content-type and accept headers', async () => {
+    // Arrange — kills the StringLiteral mutants on the POST header literals.
+    const ctx = createMemoryContext();
+    const parent = await seedCommit(ctx, [], 'p');
+    const tip = await seedCommit(ctx, [parent.id], 't');
+    await seedRepo(ctx, { refs: { 'refs/heads/main': tip.id } });
+    await writeOriginConfig(ctx);
+    const { transport, requests } = fakeServer({
+      url: 'https://example.com/r.git',
+      advertisedRefs: [{ name: 'refs/heads/main', id: parent.id }],
+      reportStatus: { unpack: 'ok', refs: [{ name: 'refs/heads/main', status: 'ok' }] },
+    });
+
+    // Act
+    await push({ ...ctx, transport });
+
+    // Assert
+    const post = requests.find((r) => r.method === 'POST');
+    expect(post).toBeDefined();
+    expect(post?.headers['content-type']).toBe('application/x-git-receive-pack-request');
+    expect(post?.headers.accept).toBe('application/x-git-receive-pack-result');
+  });
+});
+
+describe('push — explicit empty refspecs', () => {
+  it('Given an explicit empty refspecs array, When push runs, Then it falls back to the current branch', async () => {
+    // Arrange — kills the EqualityOperator mutant (`length > 0` → `>= 0`):
+    // with `>= 0` an empty array would be `.map`-ed to `[]`, yielding no
+    // movers and an empty result instead of pushing the current branch.
+    const ctx = createMemoryContext();
+    const parent = await seedCommit(ctx, [], 'p');
+    const tip = await seedCommit(ctx, [parent.id], 't');
+    await seedRepo(ctx, { refs: { 'refs/heads/main': tip.id } });
+    await writeOriginConfig(ctx);
+    const { transport } = fakeServer({
+      url: 'https://example.com/r.git',
+      advertisedRefs: [{ name: 'refs/heads/main', id: parent.id }],
+      reportStatus: { unpack: 'ok', refs: [{ name: 'refs/heads/main', status: 'ok' }] },
+    });
+
+    // Act
+    const sut = await push({ ...ctx, transport }, { refspecs: [] });
+
+    // Assert — current branch was pushed, not an empty no-op.
+    expect(sut.pushedRefs).toHaveLength(1);
+    expect(sut.pushedRefs[0]).toMatchObject({ name: 'refs/heads/main', status: 'ok' });
+  });
+});
+
+describe('push — pack contents', () => {
+  it('Given a non-empty want set, When push runs, Then the request pack carries the tip object closure', async () => {
+    // Arrange — kills the `wants.length === 0 → true` short-circuit and the
+    // empty `for await` block: both would yield a zero-object pack. The tip
+    // closure is exactly commit + tree + blob = 3 objects.
+    const ctx = createMemoryContext();
+    const parent = await seedCommit(ctx, [], 'p');
+    const tip = await seedCommit(ctx, [parent.id], 't');
+    await seedRepo(ctx, { refs: { 'refs/heads/main': tip.id } });
+    await writeOriginConfig(ctx);
+    const { transport, requestBodies } = fakeServer({
+      url: 'https://example.com/r.git',
+      advertisedRefs: [{ name: 'refs/heads/main', id: parent.id }],
+      reportStatus: { unpack: 'ok', refs: [{ name: 'refs/heads/main', status: 'ok' }] },
+    });
+
+    // Act
+    await push({ ...ctx, transport });
+
+    // Assert — the parent is advertised (a `have`), so only the tip's three
+    // objects ship.
+    const body = requestBodies[0];
+    expect(body).toBeDefined();
+    expect(packObjectCount(body as Uint8Array)).toBe(3);
+  });
+
+  it('Given an advertised parent, When push runs, Then the parent closure is excluded via haves filtering', async () => {
+    // Arrange — kills the haves ArrowFunction / EqualityOperator mutants. If
+    // `haves` were empty (`() => undefined` map, falsy filter, or inverted
+    // `id === ZERO_OID`), the parent's commit+tree+blob would also ship,
+    // doubling the pack to 6 objects.
+    const ctx = createMemoryContext();
+    const parent = await seedCommit(ctx, [], 'parent-gen');
+    const tip = await seedCommit(ctx, [parent.id], 'tip-gen');
+    await seedRepo(ctx, { refs: { 'refs/heads/main': tip.id } });
+    await writeOriginConfig(ctx);
+    const { transport, requestBodies } = fakeServer({
+      url: 'https://example.com/r.git',
+      advertisedRefs: [{ name: 'refs/heads/main', id: parent.id }],
+      reportStatus: { unpack: 'ok', refs: [{ name: 'refs/heads/main', status: 'ok' }] },
+    });
+
+    // Act
+    await push({ ...ctx, transport });
+
+    // Assert — exactly the tip's 3 objects, parent pruned by the haves boundary.
+    const body = requestBodies[0];
+    expect(body).toBeDefined();
+    expect(packObjectCount(body as Uint8Array)).toBe(3);
+  });
+});
+
+describe('push — non-fast-forward with a missing ancestor', () => {
+  it('Given a tip whose parent commit is absent on disk, When push runs a non-FF update, Then it still surfaces NON_FAST_FORWARD', async () => {
+    // Arrange — kills the `ignoreMissing: true → false` mutant in
+    // isAncestor. The local tip references a parent oid that was never
+    // written; with `ignoreMissing: false` the commit walk throws
+    // OBJECT_NOT_FOUND instead of completing and reporting NON_FAST_FORWARD.
+    const ctx = createMemoryContext();
+    const missingParentId = '1'.repeat(40) as ObjectId;
+    const serverTip = await seedCommit(ctx, [], 'server-tip'); // disjoint
+    const tip = await seedCommit(ctx, [missingParentId], 'local-tip');
+    await seedRepo(ctx, { refs: { 'refs/heads/main': tip.id } });
+    await writeOriginConfig(ctx);
+    const { transport } = fakeServer({
+      url: 'https://example.com/r.git',
+      advertisedRefs: [{ name: 'refs/heads/main', id: serverTip.id }],
+      reportStatus: { unpack: 'ok', refs: [] },
+    });
+
+    // Act
+    let caught: unknown;
+    try {
+      await push({ ...ctx, transport });
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert — the walk tolerates the missing parent and the non-FF guard
+    // fires (not OBJECT_NOT_FOUND).
+    expect(caught).toBeInstanceOf(TsgitError);
+    expect((caught as TsgitError).data.code).toBe('NON_FAST_FORWARD');
+  });
+});
+
+describe('push — buildReceivePackUrl', () => {
+  it('Given a remote URL with a trailing slash, When push runs, Then the POST hits <path>/git-receive-pack with no double slash', async () => {
+    // Arrange — kills the trailing-slash MethodExpression/UnaryOperator/
+    // StringLiteral mutants in buildReceivePackUrl and the path template.
+    const ctx = createMemoryContext();
+    const parent = await seedCommit(ctx, [], 'p');
+    const tip = await seedCommit(ctx, [parent.id], 't');
+    await seedRepo(ctx, { refs: { 'refs/heads/main': tip.id } });
+    await ctx.fs.writeUtf8(
+      `${ctx.layout.gitDir}/config`,
+      '[remote "origin"]\n  url = https://example.com/r.git/\n',
+    );
+    const { transport, requests } = fakeServer({
+      url: 'https://example.com/r.git/',
+      advertisedRefs: [{ name: 'refs/heads/main', id: parent.id }],
+      reportStatus: { unpack: 'ok', refs: [{ name: 'refs/heads/main', status: 'ok' }] },
+    });
+
+    // Act
+    await push({ ...ctx, transport });
+
+    // Assert — exactly one slash before git-receive-pack.
+    const post = requests.find((r) => r.method === 'POST');
+    expect(post).toBeDefined();
+    expect(post?.url).toBe('https://example.com/r.git/git-receive-pack');
+  });
+
+  it('Given a remote URL with no trailing slash and a query, When push runs, Then the POST preserves the path and query', async () => {
+    // Arrange — kills the non-trailing-slash branch of the pathname ternary
+    // and the `${parsed.search}` template segment.
+    const ctx = createMemoryContext();
+    const parent = await seedCommit(ctx, [], 'p');
+    const tip = await seedCommit(ctx, [parent.id], 't');
+    await seedRepo(ctx, { refs: { 'refs/heads/main': tip.id } });
+    await ctx.fs.writeUtf8(
+      `${ctx.layout.gitDir}/config`,
+      '[remote "origin"]\n  url = https://example.com/r.git?token=abc\n',
+    );
+    const { transport, requests } = fakeServer({
+      url: 'https://example.com/r.git?token=abc',
+      advertisedRefs: [{ name: 'refs/heads/main', id: parent.id }],
+      reportStatus: { unpack: 'ok', refs: [{ name: 'refs/heads/main', status: 'ok' }] },
+    });
+
+    // Act
+    await push({ ...ctx, transport });
+
+    // Assert — path kept verbatim, query carried onto the POST URL.
+    const post = requests.find((r) => r.method === 'POST');
+    expect(post).toBeDefined();
+    expect(post?.url).toBe('https://example.com/r.git/git-receive-pack?token=abc');
+  });
+});
+
+describe('push — tag refspec tracking cache', () => {
+  it('Given an accepted push of a tag refspec, When push completes, Then no refs/remotes tracking entry is written', async () => {
+    // Arrange — kills the `dst.startsWith(REFS_HEADS_PREFIX)` guard in
+    // updateTrackingCache: with the guard removed a tag dst would be sliced
+    // and written under refs/remotes/origin/.
+    const ctx = createMemoryContext();
+    const tagged = await seedCommit(ctx, [], 'tagged');
+    await seedRepo(ctx, { refs: { 'refs/tags/v1': tagged.id } });
+    await writeOriginConfig(ctx);
+    const { transport } = fakeServer({
+      url: 'https://example.com/r.git',
+      advertisedRefs: [{ name: 'refs/tags/v1', id: '0'.repeat(40) }],
+      reportStatus: { unpack: 'ok', refs: [{ name: 'refs/tags/v1', status: 'ok' }] },
+    });
+
+    // Act
+    const sut = await push({ ...ctx, transport }, { refspecs: ['refs/tags/v1:refs/tags/v1'] });
+
+    // Assert — the tag was accepted, but no tracking cache entry exists.
+    expect(sut.pushedRefs[0]?.status).toBe('ok');
+    const remotesDirExists = await ctx.fs.exists(`${ctx.layout.gitDir}/refs/remotes`);
+    expect(remotesDirExists).toBe(false);
   });
 });

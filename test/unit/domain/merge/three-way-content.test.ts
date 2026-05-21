@@ -382,6 +382,276 @@ describe('mergeContent', () => {
     assertConflict(sut, 'content');
   }, 60_000);
 
+  it('Given ours is a strict byte-prefix of base + theirs differs, When mergeContent called, Then conflict (length-guard short-circuits bytesEqual)', () => {
+    // Arrange — ours ("a\nb\n") is the exact 4-byte prefix of base ("a\nb\nc\n", 6 bytes).
+    // If the `a.length !== b.length` guard were forced false, bytesEqual(ours, base) would
+    // loop only i<4, find every byte equal, and wrongly report ours === base → clean theirs.
+    const base = enc('a\nb\nc\n');
+    const ours = enc('a\nb\n');
+    const theirs = enc('a\nb\nZ\n');
+
+    // Act
+    const sut = mergeContent(base, ours, theirs);
+
+    // Assert — ours (delete line 2) vs theirs (replace line 2) overlap → conflict
+    assertConflict(sut, 'content');
+  });
+
+  it('Given ours inserts strictly inside a theirs replacement range, When mergeContent called, Then conflict (zero-length a vs non-zero b)', () => {
+    // Arrange — ours inserts at base pos 2; theirs replaces base[1,3). rangesOverlap takes the
+    // ternary `:` branch. If the ternary condition were forced true it would compare
+    // a.baseStart === b.baseStart (2 === 1 → false) and miss the real overlap.
+    const base = enc('a\nb\nc\nd\ne\nf\ng\nh\n');
+    const ours = enc('a\nb\nINS\nc\nd\ne\nf\ng\nh\n');
+    const theirs = enc('a\nP\nQ\nd\ne\nf\ng\nh\n');
+
+    // Act
+    const sut = mergeContent(base, ours, theirs);
+
+    // Assert
+    assertConflict(sut, 'content');
+  });
+
+  it('Given two zero-length insertions at different base positions, When mergeContent called, Then clean merge (both-zero-length branch compares positions)', () => {
+    // Arrange — ours inserts at base pos 1, theirs inserts at base pos 5. Both ranges are
+    // zero-length but at distinct positions: a.baseStart === b.baseStart is false → no overlap.
+    // Forcing that comparison to true would wrongly flag a conflict.
+    const base = enc('a\nb\nc\nd\ne\nf\ng\nh\n');
+    const ours = enc('a\nIO\nb\nc\nd\ne\nf\ng\nh\n');
+    const theirs = enc('a\nb\nc\nd\ne\nIT\nf\ng\nh\n');
+
+    // Act
+    const sut = mergeContent(base, ours, theirs);
+
+    // Assert
+    assertClean(sut, 'a\nIO\nb\nc\nd\ne\nIT\nf\ng\nh\n');
+  });
+
+  it('Given a zero-length insertion before a disjoint non-zero theirs range, When mergeContent called, Then clean merge (a.baseStart < b.baseStart short-circuits)', () => {
+    // Arrange — ours inserts at base pos 1; theirs replaces base[3,5). The `:` branch evaluates
+    // a.baseStart >= b.baseStart (1 >= 3 → false). Forcing the branch true, or flipping && to ||,
+    // would wrongly report overlap.
+    const base = enc('a\nb\nc\nd\ne\nf\ng\nh\n');
+    const ours = enc('a\nIO\nb\nc\nd\ne\nf\ng\nh\n');
+    const theirs = enc('a\nb\nc\nP\nQ\nf\ng\nh\n');
+
+    // Act
+    const sut = mergeContent(base, ours, theirs);
+
+    // Assert
+    assertClean(sut, 'a\nIO\nb\nc\nP\nQ\nf\ng\nh\n');
+  });
+
+  it('Given a zero-length insertion exactly at the end of a non-zero theirs range, When mergeContent called, Then clean merge (a.baseStart < b.baseEnd is strict)', () => {
+    // Arrange — ours inserts at base pos 5; theirs replaces base[3,5). The `:` branch evaluates
+    // a.baseStart < b.baseEnd (5 < 5 → false). Relaxing `<` to `<=` (or forcing it true) would
+    // wrongly flag an overlap at the touching boundary.
+    const base = enc('a\nb\nc\nd\ne\nf\ng\nh\n');
+    const ours = enc('a\nb\nc\nd\ne\nIO\nf\ng\nh\n');
+    const theirs = enc('a\nb\nc\nP\nQ\nf\ng\nh\n');
+
+    // Act
+    const sut = mergeContent(base, ours, theirs);
+
+    // Assert
+    assertClean(sut, 'a\nb\nc\nP\nQ\nIO\nf\ng\nh\n');
+  });
+
+  it('Given two overlapping non-zero ranges where only the general branch detects it, When mergeContent called, Then conflict (b-non-zero path falls through to general overlap)', () => {
+    // Arrange — ours replaces base[3,5), theirs replaces base[1,4). Both ranges are non-zero,
+    // so rangesOverlap must skip the b-zero-length branch and use the general test. Forcing the
+    // `if (b.baseStart === b.baseEnd)` guard true would use the wrong (b-zero) formula → clean.
+    const base = enc('a\nb\nc\nd\ne\nf\ng\nh\n');
+    const ours = enc('a\nb\nc\nOO\nf\ng\nh\n');
+    const theirs = enc('a\nT1\nT2\ne\nf\ng\nh\n');
+
+    // Act
+    const sut = mergeContent(base, ours, theirs);
+
+    // Assert — ranges [3,5) and [1,4) overlap at line 3
+    assertConflict(sut, 'content');
+  });
+
+  it('Given a zero-length theirs insertion before a non-zero ours range, When mergeContent called, Then clean merge (b.baseStart >= a.baseStart short-circuits)', () => {
+    // Arrange — ours replaces base[3,5); theirs inserts at base pos 1. The b-zero-length branch
+    // evaluates b.baseStart >= a.baseStart (1 >= 3 → false). Forcing it true, or flipping && to
+    // ||, would wrongly report overlap.
+    const base = enc('a\nb\nc\nd\ne\nf\ng\nh\n');
+    const ours = enc('a\nb\nc\nOO\nf\ng\nh\n');
+    const theirs = enc('a\nIT\nb\nc\nd\ne\nf\ng\nh\n');
+
+    // Act
+    const sut = mergeContent(base, ours, theirs);
+
+    // Assert
+    assertClean(sut, 'a\nIT\nb\nc\nOO\nf\ng\nh\n');
+  });
+
+  it('Given a zero-length theirs insertion exactly at the end of a non-zero ours range, When mergeContent called, Then clean merge (b.baseStart < a.baseEnd is strict)', () => {
+    // Arrange — ours replaces base[3,5); theirs inserts at base pos 5. The b-zero-length branch
+    // evaluates b.baseStart < a.baseEnd (5 < 5 → false). Relaxing `<` to `<=` (or forcing it
+    // true) would wrongly flag a boundary overlap.
+    const base = enc('a\nb\nc\nd\ne\nf\ng\nh\n');
+    const ours = enc('a\nb\nc\nOO\nf\ng\nh\n');
+    const theirs = enc('a\nb\nc\nd\ne\nIT\nf\ng\nh\n');
+
+    // Act
+    const sut = mergeContent(base, ours, theirs);
+
+    // Assert
+    assertClean(sut, 'a\nb\nc\nOO\nIT\nf\ng\nh\n');
+  });
+
+  it('Given two touching non-zero ranges [3,5) and [1,3), When mergeContent called, Then clean merge (general overlap test uses strict a.baseStart < b.baseEnd)', () => {
+    // Arrange — ours replaces base[3,5); theirs replaces base[1,3). They touch at boundary 3 but
+    // do not overlap: a.baseStart < b.baseEnd is 3 < 3 → false. Relaxing `<` to `<=` (or forcing
+    // it true) would wrongly flag a conflict.
+    const base = enc('a\nb\nc\nd\ne\nf\ng\nh\n');
+    const ours = enc('a\nb\nc\nOO\nf\ng\nh\n');
+    const theirs = enc('a\nT1\nd\ne\nf\ng\nh\n');
+
+    // Act
+    const sut = mergeContent(base, ours, theirs);
+
+    // Assert
+    assertClean(sut, 'a\nT1\nOO\nf\ng\nh\n');
+  });
+
+  it('Given identical replacement content at ranges with different baseStart, When mergeContent called, Then conflict (twin requires equal baseStart)', () => {
+    // Arrange — ours replaces base[2,4) with [Z]; theirs replaces base[1,4) with [Z]. Same
+    // baseEnd and content but different baseStart, so they are NOT identical twins. Forcing the
+    // baseStart-equality check true would dedupe them and wrongly merge clean.
+    const base = enc('a\nb\nc\nd\ne\nf\ng\nh\n');
+    const ours = enc('a\nb\nZ\ne\nf\ng\nh\n');
+    const theirs = enc('a\nZ\ne\nf\ng\nh\n');
+
+    // Act
+    const sut = mergeContent(base, ours, theirs);
+
+    // Assert — ranges [2,4) and [1,4) overlap → conflict
+    assertConflict(sut, 'content');
+  });
+
+  it('Given changes sharing baseStart but differing in baseEnd and content, When mergeContent called, Then conflict (twin needs ALL three conditions AND-ed)', () => {
+    // Arrange — ours replaces base[2,4) with [Z]; theirs replaces base[2,5) with [W]. They share
+    // baseStart only. Replacing the twin guard's && with || would treat equal baseStart alone as
+    // a twin and wrongly merge clean.
+    const base = enc('a\nb\nc\nd\ne\nf\ng\nh\n');
+    const ours = enc('a\nb\nZ\ne\nf\ng\nh\n');
+    const theirs = enc('a\nb\nW\nf\ng\nh\n');
+
+    // Act
+    const sut = mergeContent(base, ours, theirs);
+
+    // Assert — ranges [2,4) and [2,5) overlap → conflict
+    assertConflict(sut, 'content');
+  });
+
+  it('Given identical content and baseStart but different baseEnd, When mergeContent called, Then conflict (twin requires equal baseEnd)', () => {
+    // Arrange — ours replaces base[2,4) with [Z]; theirs replaces base[2,5) with [Z]. Same
+    // baseStart and content but different baseEnd, so they are NOT twins. Forcing the
+    // baseEnd-equality check true would dedupe them and wrongly merge clean.
+    const base = enc('a\nb\nc\nd\ne\nf\ng\nh\n');
+    const ours = enc('a\nb\nZ\ne\nf\ng\nh\n');
+    const theirs = enc('a\nb\nZ\nf\ng\nh\n');
+
+    // Act
+    const sut = mergeContent(base, ours, theirs);
+
+    // Assert — ranges [2,4) and [2,5) overlap → conflict
+    assertConflict(sut, 'content');
+  });
+
+  it('Given an ours change after a theirs change in base order, When mergeContent called, Then plan is sorted by baseStart before applying', () => {
+    // Arrange — ours changes lines 1 and 5, theirs changes line 3. The merged plan is built as
+    // [ours[1,2), ours[5,6), theirs[3,4)] — out of base order. Without the final sort (or with a
+    // `+` comparator) applyPlan would walk ranges out of order and corrupt the output.
+    const base = enc('a\nb\nc\nd\ne\nf\ng\nh\n');
+    const ours = enc('a\nB\nc\nd\ne\nF\ng\nh\n');
+    const theirs = enc('a\nb\nc\nD\ne\nf\ng\nh\n');
+
+    // Act
+    const sut = mergeContent(base, ours, theirs);
+
+    // Assert — only an ascending sort produces this exact interleaving
+    assertClean(sut, 'a\nB\nc\nD\ne\nF\ng\nh\n');
+  });
+
+  it('Given ours diff degrades while theirs only appends one line at the base end, When mergeContent called, Then whole-file conflict (degraded guard fires)', () => {
+    // Arrange — base/ours exceed the diff line cap (M+N > 50000) so ours' diff degrades, while
+    // theirs is base plus a single appended line (a tiny, non-degraded diff). The degraded guard
+    // must short-circuit to a whole-file conflict: without it, the degraded whole-file change
+    // [0,baseLen) would NOT collide with theirs' zero-length end-append and wrongly merge clean.
+    const baseLen = 20_000;
+    const baseText = Array.from({ length: baseLen }, (_, i) => `b${i}\n`).join('');
+    const base = enc(baseText);
+    const ours = enc(Array.from({ length: 31_000 }, (_, i) => `o${i}\n`).join(''));
+    const theirs = enc(`${baseText}APPENDED\n`);
+
+    // Act
+    const sut = mergeContent(base, ours, theirs);
+
+    // Assert
+    assertConflict(sut, 'content');
+  });
+
+  it('Given ours equal to base and a cap-exceeding theirs, When mergeContent called, Then the ours-unchanged fast path returns clean theirs (not the degraded conflict)', () => {
+    // Arrange — ours === base (empty); theirs has 50_001 lines so diffLines(base, theirs)
+    // degrades (M+N > 50_000). The `bytesEqual(ours, base)` fast path must short-circuit
+    // to clean; skipping it falls through to the degraded slow path → whole-file conflict.
+    const base = new Uint8Array(0);
+    const ours = new Uint8Array(0);
+    const theirsText = Array.from({ length: 50_001 }, (_, i) => `line${i}\n`).join('');
+    const theirs = enc(theirsText);
+
+    // Act
+    const sut = mergeContent(base, ours, theirs);
+
+    // Assert — clean, byte-identical to theirs (slow path would yield status 'conflict')
+    expect(sut.status).toBe('clean');
+    if (sut.status === 'clean') {
+      expect(decoder.decode(sut.bytes)).toBe(theirsText);
+    }
+  });
+
+  it('Given theirs equal to base and a cap-exceeding ours, When mergeContent called, Then the theirs-unchanged fast path returns clean ours (not the degraded conflict)', () => {
+    // Arrange — theirs === base (empty); ours has 50_001 lines so diffLines(base, ours)
+    // degrades. The `bytesEqual(theirs, base)` fast path must short-circuit to clean;
+    // skipping it falls through to the degraded slow path → whole-file conflict.
+    const base = new Uint8Array(0);
+    const theirs = new Uint8Array(0);
+    const oursText = Array.from({ length: 50_001 }, (_, i) => `line${i}\n`).join('');
+    const ours = enc(oursText);
+
+    // Act
+    const sut = mergeContent(base, ours, theirs);
+
+    // Assert — clean, byte-identical to ours (slow path would yield status 'conflict')
+    expect(sut.status).toBe('clean');
+    if (sut.status === 'clean') {
+      expect(decoder.decode(sut.bytes)).toBe(oursText);
+    }
+  });
+
+  it('Given ours equal to theirs (both cap-exceeding, base differs), When mergeContent called, Then the ours-equals-theirs fast path returns clean ours (not the degraded conflict)', () => {
+    // Arrange — ours === theirs, both 50_001 lines; base empty so both side diffs degrade.
+    // The `bytesEqual(ours, theirs)` fast path must short-circuit to clean; skipping it
+    // falls through to the degraded slow path → whole-file conflict.
+    const base = new Uint8Array(0);
+    const sideText = Array.from({ length: 50_001 }, (_, i) => `line${i}\n`).join('');
+    const ours = enc(sideText);
+    const theirs = enc(sideText);
+
+    // Act
+    const sut = mergeContent(base, ours, theirs);
+
+    // Assert — clean, byte-identical to ours (slow path would yield status 'conflict')
+    expect(sut.status).toBe('clean');
+    if (sut.status === 'clean') {
+      expect(decoder.decode(sut.bytes)).toBe(sideText);
+    }
+  });
+
   it('Property: mergeContent(base, base, base) always clean for non-binary text', () => {
     // Arrange — generate text-only bytes (no NUL, bounded lines) to avoid binary detection
     const textByte = fc.integer({ min: 1, max: 127 });

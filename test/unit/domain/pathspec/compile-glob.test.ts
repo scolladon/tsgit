@@ -10,6 +10,17 @@ describe('compileGlob', () => {
     expect(sut.test('other')).toBe(false);
   });
 
+  it('Given anchored=true, When matched against a path that merely ends with the pattern, Then it does NOT match (the `^` anchor is present)', () => {
+    // Arrange — without the leading `^` the regex would be `src$`, which matches
+    // any string ending in `src`. The anchor must reject a prefixed path.
+    const sut = compileGlob('src', { anchored: true });
+
+    // Act / Assert
+    expect(sut.test('vendorsrc')).toBe(false);
+    expect(sut.test('a/src')).toBe(false);
+    expect(sut.test('src')).toBe(true);
+  });
+
   it('Given a literal "src" with anchored=true AND withDirSuffix=true, When compiled, Then matches the path AND any descendant', () => {
     const sut = compileGlob('src', { anchored: true, withDirSuffix: true });
 
@@ -87,6 +98,20 @@ describe('compileGlob', () => {
     expect(sut.test('foo')).toBe(true);
     expect(sut.test('a/foo')).toBe(true);
     expect(sut.test('a/b/foo')).toBe(true);
+  });
+
+  it('Given an unanchored literal "bar", When matched against "foobar", Then it does NOT match (the (^|.*/) prefix forbids a mid-segment match)', () => {
+    // Arrange — unanchored compiles with the `(^|.*/)` boundary prefix so the
+    // pattern matches a whole leading segment, never a substring inside one.
+    // A mutant replacing that prefix with `''` yields `bar$`, which matches
+    // `foobar`; this assertion fails under that mutant.
+    const sut = compileGlob('bar', { anchored: false });
+
+    // Act / Assert
+    expect(sut.test('foobar')).toBe(false);
+    // Balance: the legitimate segment matches must still hold.
+    expect(sut.test('bar')).toBe(true);
+    expect(sut.test('x/bar')).toBe(true);
   });
 
   it('Given a non-anchored GLOB "*.ts", When matched at depth, Then matches at any segment AND rejects non-matching extensions', () => {

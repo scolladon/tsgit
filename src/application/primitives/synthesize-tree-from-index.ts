@@ -64,8 +64,8 @@ const assertDepthBounded = (path: string): void => {
   // tick yielded). Path-level safety (segment-level rejection of `..` etc.)
   // lives upstream in `parseIndex`.
   let slashCount = 0;
-  for (let i = 0; i < path.length; i += 1) {
-    if (path.charCodeAt(i) === 0x2f /* '/' */) slashCount += 1;
+  for (const ch of path) {
+    if (ch === '/') slashCount += 1;
   }
   if (slashCount > MAX_TREE_DEPTH) {
     throw treeDepthExceeded(slashCount);
@@ -111,19 +111,22 @@ const groupByPrefix = (
   return { files, subdirs };
 };
 
+// Recursion depth is NOT re-checked here: `assertDepthBounded` already
+// caps every entry's slash count at `MAX_TREE_DEPTH` at the input
+// boundary, so the deepest leaf this descent can reach is exactly that
+// cap. A secondary `depth > MAX_TREE_DEPTH` guard would be dead code —
+// the JS call stack would overflow long before it could ever fire.
 const synthesizeLevel = async (
   ctx: Context,
   entries: ReadonlyArray<PendingEntry>,
-  depth: number,
 ): Promise<ObjectId> => {
-  if (depth > MAX_TREE_DEPTH) throw treeDepthExceeded(depth);
   const { files, subdirs } = groupByPrefix(entries);
   const treeEntries: TreeEntry[] = [];
   for (const file of files) {
     treeEntries.push({ name: file.path as FilePath, id: file.id, mode: file.mode });
   }
   for (const [prefix, subEntries] of subdirs) {
-    const subId = await synthesizeLevel(ctx, subEntries, depth + 1);
+    const subId = await synthesizeLevel(ctx, subEntries);
     treeEntries.push({ name: prefix as FilePath, id: subId, mode: FILE_MODE.DIRECTORY });
   }
   return writeTree(ctx, treeEntries);
@@ -137,4 +140,4 @@ const synthesizeLevel = async (
 export const synthesizeTreeFromIndex = async (
   ctx: Context,
   entries: ReadonlyArray<IndexEntry>,
-): Promise<ObjectId> => synthesizeLevel(ctx, stage0Entries(entries), 0);
+): Promise<ObjectId> => synthesizeLevel(ctx, stage0Entries(entries));

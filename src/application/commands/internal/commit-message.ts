@@ -61,6 +61,7 @@ export const sanitizeMarkerLabel = (raw: string): string => {
     } else {
       out += `\\x${code.toString(16).padStart(2, '0').toUpperCase()}`;
     }
+    // Stryker disable next-line EqualityOperator: equivalent — `out` grows monotonically and the slice always caps at MARKER_LABEL_MAX, so `>` only defers the early return by one iteration while yielding the identical first-200-char result.
     if (out.length >= MARKER_LABEL_MAX) {
       return out.slice(0, MARKER_LABEL_MAX);
     }

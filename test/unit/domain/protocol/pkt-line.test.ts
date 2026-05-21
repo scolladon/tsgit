@@ -159,6 +159,18 @@ describe('encodePktStream', () => {
     expect(sut.byteLength).toBe(p1.byteLength + 4 + p2.byteLength + 4 + 4);
   });
 
+  it('Given a payload of exactly MAX_PKT_LINE_PAYLOAD bytes in the stream, When encodePktStream, Then it does NOT throw', () => {
+    // Arrange — exact-boundary payload must be accepted; kills the `>=` mutant
+    // on the `p.byteLength > MAX_PKT_LINE_PAYLOAD` guard.
+    const atMax = new Uint8Array(MAX_PKT_LINE_PAYLOAD);
+
+    // Act
+    const sut = encodePktStream([atMax]);
+
+    // Assert — header(4) + payload + trailing flush(4)
+    expect(sut.byteLength).toBe(MAX_PKT_LINE_PAYLOAD + 4 + 4);
+  });
+
   it('Given a payload above MAX_PKT_LINE_PAYLOAD in the stream, When encodePktStream, Then throws RangeError with the exact documented message', () => {
     // Arrange
     const tooBig = new Uint8Array(MAX_PKT_LINE_PAYLOAD + 1);
@@ -478,6 +490,32 @@ describe('decodePktStream — DoS resistance', () => {
       const te = err as TsgitError;
       expect(te.data).toEqual({ code: 'PKT_TOO_LARGE', value: 0xfff5 });
     }
+  });
+});
+
+describe('decodePktStream — partial-header then capacity overflow', () => {
+  it('Given a 2-byte partial header then an over-capacity chunk completing a valid length, When decoded, Then PKT_TOO_LARGE value equals the 4-byte header count', () => {
+    // Arrange — chunk1 buffers 2 header bytes ("00"); chunk2 overflows ACC_CAPACITY
+    // and supplies the remaining 2 header bytes ("04") so the full header "0004"
+    // parses to a valid length, reaching `throw pktTooLarge(this.used)`.
+    // headerNeeded = MAX(0, 4 - 2) = 2 → used = 2 + 2 = 4.
+    // The L119 `-`→`+` mutant makes headerNeeded = 4 + 2 = 6 → used = 8.
+    // The L122 `+=`→`-=` mutant makes used = 2 - 2 = 0.
+    const chunk1 = bytesOf('00');
+    const overflow = new Uint8Array(MAX_PKT_LINE_PAYLOAD + 100); // > ACC_CAPACITY - 2
+    overflow.set(bytesOf('04'), 0);
+
+    // Act & Assert
+    return collect(decodePktStream(asyncOf([chunk1, overflow]))).then(
+      () => {
+        throw new Error('expected throw');
+      },
+      (err) => {
+        expect(err).toBeInstanceOf(TsgitError);
+        const te = err as TsgitError;
+        expect(te.data).toEqual({ code: 'PKT_TOO_LARGE', value: 4 });
+      },
+    );
   });
 });
 

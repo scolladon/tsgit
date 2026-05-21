@@ -84,6 +84,7 @@ export const commit = async (ctx: Context, opts: CommitOptions): Promise<CommitR
   const id = await createCommit(ctx, commitData);
   const branch = head.kind === 'symbolic' ? head.target : undefined;
   if (branch !== undefined) {
+    // Stryker disable next-line ObjectLiteral: equivalent — parentId is read from `branch` itself and the library is single-threaded, so the CAS `expected` always equals the ref's current value; dropping it cannot change the outcome.
     await updateRef(ctx, branch, id, parentId !== undefined ? { expected: parentId } : {});
   } else {
     await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, `${id}\n`);

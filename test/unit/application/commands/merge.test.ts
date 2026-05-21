@@ -5,16 +5,32 @@ import { branch } from '../../../../src/application/commands/branch.js';
 import { checkout } from '../../../../src/application/commands/checkout.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
-import { merge } from '../../../../src/application/commands/merge.js';
+import {
+  buildConflictIndexEntries,
+  MAX_MERGE_TREE_DEPTH,
+  materialiseConflictBytes,
+  merge,
+  parentDir,
+  removeWorkingTreeFile,
+  resolveMergeAuthor,
+  resolveMergeCommitter,
+  resolveTarget,
+  writeNestedTree,
+  writeOutcomeToTree,
+} from '../../../../src/application/commands/merge.js';
 import { readBlob } from '../../../../src/application/primitives/read-blob.js';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
 import { resolveRef } from '../../../../src/application/primitives/resolve-ref.js';
+import { writeObject } from '../../../../src/application/primitives/write-object.js';
+import type { MergeConflict, MergeOutcome } from '../../../../src/domain/merge/index.js';
 import type {
   AuthorIdentity,
+  FilePath,
   ObjectId,
   RefName,
   Tree,
 } from '../../../../src/domain/objects/index.js';
+import { FILE_MODE } from '../../../../src/domain/objects/index.js';
 
 const author: AuthorIdentity = {
   name: 'Ada',
@@ -847,5 +863,918 @@ describe('merge — progress reporting', () => {
     await merge(withProgress(ctx, reporter), { target: 'main' });
 
     expect(events).toEqual([]);
+  });
+
+  it('Given a real merge, When run, Then a merge:write-files end event fires (finally block runs)', async () => {
+    // Arrange — diverged histories force a true merge through mergeCommit's
+    // try/finally; the `finally { progress.end }` block must emit an `end`.
+    const ctx = createMemoryContext();
+    await init(ctx);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
+    await add(ctx, ['a.txt']);
+    await commit(ctx, { message: 'base', author });
+    await branch(ctx, { kind: 'create', name: 'feature' });
+    await checkout(ctx, { target: 'feature' });
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.txt`, 'b');
+    await add(ctx, ['b.txt']);
+    await commit(ctx, { message: 'on-feature', author });
+    await checkout(ctx, { target: 'main' });
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/c.txt`, 'c');
+    await add(ctx, ['c.txt']);
+    await commit(ctx, { message: 'on-main', author });
+    const { reporter, events } = recordingProgress();
+
+    // Act
+    await merge(withProgress(ctx, reporter), { target: 'feature', author });
+
+    // Assert — both a start and the finally-block end fired for the op.
+    expect(events).toContainEqual({ kind: 'start', op: 'merge:write-files' });
+    expect(events).toContainEqual({ kind: 'end', op: 'merge:write-files' });
+  });
+});
+
+describe('merge — guard rails', () => {
+  it('Given a bare repository, When merge runs, Then throws BARE_REPOSITORY with operation=merge', async () => {
+    // Arrange
+    const ctx = createMemoryContext();
+    await init(ctx);
+    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n  bare = true\n');
+
+    // Act
+    let caught: unknown;
+    try {
+      await merge(ctx, { target: 'feature' });
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert — `operation` carries the literal 'merge'.
+    const data = (caught as { data?: { code?: string; operation?: string } })?.data;
+    expect(data?.code).toBe('BARE_REPOSITORY');
+    expect(data?.operation).toBe('merge');
+  });
+
+  it('Given a detached HEAD, When merge runs, Then throws UNSUPPORTED_OPERATION with the detached-HEAD reason', async () => {
+    // Arrange — point HEAD directly at a commit id (detached).
+    const ctx = createMemoryContext();
+    await init(ctx);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
+    await add(ctx, ['a.txt']);
+    const c = await commit(ctx, { message: 'base', author });
+    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, `${c.id}\n`);
+
+    // Act
+    let caught: unknown;
+    try {
+      await merge(ctx, { target: 'feature' });
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert — both string args of unsupportedOperation are load-bearing.
+    const data = (caught as { data?: { code?: string; operation?: string; reason?: string } })
+      ?.data;
+    expect(data?.code).toBe('UNSUPPORTED_OPERATION');
+    expect(data?.operation).toBe('merge');
+    expect(data?.reason).toBe('cannot merge with detached HEAD');
+  });
+
+  it('Given a target that is a strict ancestor branch of HEAD, When merge runs, Then result.kind=up-to-date (base===theirId short-circuit)', async () => {
+    // Arrange — main advances two commits; `old` branch stays at the first.
+    // The merge target `old` is a STRICT ancestor: base===theirId but
+    // base!==ourId, so only the `base === theirId` guard catches it.
+    const ctx = createMemoryContext();
+    await init(ctx);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
+    await add(ctx, ['a.txt']);
+    await commit(ctx, { message: 'first', author });
+    await branch(ctx, { kind: 'create', name: 'old' });
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.txt`, 'b');
+    await add(ctx, ['b.txt']);
+    const second = await commit(ctx, { message: 'second', author });
+
+    // Act
+    const sut = await merge(ctx, { target: 'old', author });
+
+    // Assert — up-to-date, NOT a fresh merge commit.
+    expect(sut.kind).toBe('up-to-date');
+    if (sut.kind !== 'up-to-date') throw new Error('expected up-to-date');
+    expect(sut.id).toBe(second.id);
+  });
+
+  it('Given a clean merge with an empty message, When merge runs, Then throws EMPTY_COMMIT_MESSAGE (allowEmpty=false)', async () => {
+    // Arrange — diverged histories so a true clean merge is attempted.
+    const ctx = createMemoryContext();
+    await init(ctx);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
+    await add(ctx, ['a.txt']);
+    await commit(ctx, { message: 'base', author });
+    await branch(ctx, { kind: 'create', name: 'feature' });
+    await checkout(ctx, { target: 'feature' });
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.txt`, 'b');
+    await add(ctx, ['b.txt']);
+    await commit(ctx, { message: 'on-feature', author });
+    await checkout(ctx, { target: 'main' });
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/c.txt`, 'c');
+    await add(ctx, ['c.txt']);
+    await commit(ctx, { message: 'on-main', author });
+
+    // Act
+    let caught: unknown;
+    try {
+      await merge(ctx, { target: 'feature', author, message: '' });
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert
+    expect((caught as { data?: { code?: string } })?.data?.code).toBe('EMPTY_COMMIT_MESSAGE');
+  });
+
+  it('Given a conflicting merge with an empty message, When merge runs, Then throws EMPTY_COMMIT_MESSAGE (allowEmpty=false on the conflict path)', async () => {
+    // Arrange — a content conflict so persistConflictState's sanitizeMessage runs.
+    const ctx = createMemoryContext();
+    await init(ctx);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'base\n');
+    await add(ctx, ['file.txt']);
+    await commit(ctx, { message: 'base', author });
+    await branch(ctx, { kind: 'create', name: 'feature' });
+    await checkout(ctx, { target: 'feature' });
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'FEATURE\n');
+    await add(ctx, ['file.txt']);
+    await commit(ctx, { message: 'on-feature', author });
+    await checkout(ctx, { target: 'main' });
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'MAIN\n');
+    await add(ctx, ['file.txt']);
+    await commit(ctx, { message: 'on-main', author });
+
+    // Act
+    let caught: unknown;
+    try {
+      await merge(ctx, { target: 'feature', author, message: '' });
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert
+    expect((caught as { data?: { code?: string } })?.data?.code).toBe('EMPTY_COMMIT_MESSAGE');
+  });
+
+  it('Given a clean merge, When merge runs, Then the merge commit object records both parents', async () => {
+    // Arrange — diverged histories; assert the commit OBJECT's parents
+    // (commitData.parents), not just the result envelope.
+    const ctx = createMemoryContext();
+    await init(ctx);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
+    await add(ctx, ['a.txt']);
+    await commit(ctx, { message: 'base', author });
+    const preMain = await resolveRef(ctx, 'refs/heads/main' as RefName);
+    await branch(ctx, { kind: 'create', name: 'feature' });
+    await checkout(ctx, { target: 'feature' });
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.txt`, 'b');
+    await add(ctx, ['b.txt']);
+    const featureTip = await commit(ctx, { message: 'on-feature', author });
+    await checkout(ctx, { target: 'main' });
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/c.txt`, 'c');
+    await add(ctx, ['c.txt']);
+    const mainTip = await commit(ctx, { message: 'on-main', author });
+
+    // Act
+    const sut = await merge(ctx, { target: 'feature', author });
+
+    // Assert — exactly [ourId, theirId]; not an empty parents array.
+    expect(sut.kind).toBe('merge');
+    if (sut.kind !== 'merge') throw new Error('expected merge kind');
+    const mergeCommit = await readObject(ctx, sut.id);
+    if (mergeCommit.type !== 'commit') throw new Error('not a commit');
+    expect(mergeCommit.data.parents).toEqual([mainTip.id, featureTip.id]);
+    expect(mergeCommit.data.parents).not.toEqual([]);
+    expect(preMain).not.toBe(mainTip.id);
+  });
+});
+
+describe('merge — updateRef CAS guard', () => {
+  // Patch readUtf8 so the SECOND read of `refs/heads/main` (the updateRef
+  // CAS read) returns a fabricated id, simulating a concurrent ref move.
+  // resolveRef reads it once first; the CAS reads it again.
+  const patchStaleMainRef = (ctx: ReturnType<typeof createMemoryContext>): void => {
+    const refPath = `${ctx.layout.gitDir}/refs/heads/main`;
+    const staleId = '1'.repeat(40);
+    let mainReads = 0;
+    const original = ctx.fs.readUtf8.bind(ctx.fs);
+    (ctx.fs as { readUtf8: typeof original }).readUtf8 = async (path: string) => {
+      if (path !== refPath) return original(path);
+      mainReads += 1;
+      return mainReads === 1 ? original(path) : `${staleId}\n`;
+    };
+  };
+
+  it('Given the branch ref moved before a fast-forward updateRef, When merge runs, Then throws REF_UPDATE_CONFLICT (expected guard)', async () => {
+    // Arrange — fast-forward setup.
+    const ctx = createMemoryContext();
+    await init(ctx);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
+    await add(ctx, ['a.txt']);
+    await commit(ctx, { message: 'first', author });
+    await branch(ctx, { kind: 'create', name: 'feature' });
+    await checkout(ctx, { target: 'feature' });
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.txt`, 'b');
+    await add(ctx, ['b.txt']);
+    await commit(ctx, { message: 'second', author });
+    await checkout(ctx, { target: 'main' });
+    patchStaleMainRef(ctx);
+
+    // Act
+    let caught: unknown;
+    try {
+      await merge(ctx, { target: 'feature' });
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert — the `{ expected: ourId }` CAS rejects the stale ref.
+    expect((caught as { data?: { code?: string } })?.data?.code).toBe('REF_UPDATE_CONFLICT');
+  });
+
+  it('Given the branch ref moved before a clean-merge updateRef, When merge runs, Then throws REF_UPDATE_CONFLICT (expected guard)', async () => {
+    // Arrange — diverged histories → clean merge → commitCleanMerge's updateRef.
+    const ctx = createMemoryContext();
+    await init(ctx);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
+    await add(ctx, ['a.txt']);
+    await commit(ctx, { message: 'base', author });
+    await branch(ctx, { kind: 'create', name: 'feature' });
+    await checkout(ctx, { target: 'feature' });
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.txt`, 'b');
+    await add(ctx, ['b.txt']);
+    await commit(ctx, { message: 'on-feature', author });
+    await checkout(ctx, { target: 'main' });
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/c.txt`, 'c');
+    await add(ctx, ['c.txt']);
+    await commit(ctx, { message: 'on-main', author });
+    patchStaleMainRef(ctx);
+
+    // Act
+    let caught: unknown;
+    try {
+      await merge(ctx, { target: 'feature', author });
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert
+    expect((caught as { data?: { code?: string } })?.data?.code).toBe('REF_UPDATE_CONFLICT');
+  });
+
+  it('Given a working-tree write fails mid conflict-persist, When merge runs, Then the index lock is released so a retry is not RESOURCE_LOCKED', async () => {
+    // Arrange — a content conflict; patch fs.write to throw on the
+    // working-tree conflict file the FIRST time so writeConflictingWorkingTree
+    // fails inside persistConflictState's try. The finally block must
+    // release the index lock.
+    const ctx = createMemoryContext();
+    await init(ctx);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'base\n');
+    await add(ctx, ['file.txt']);
+    await commit(ctx, { message: 'base', author });
+    await branch(ctx, { kind: 'create', name: 'feature' });
+    await checkout(ctx, { target: 'feature' });
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'FEATURE\n');
+    await add(ctx, ['file.txt']);
+    await commit(ctx, { message: 'on-feature', author });
+    await checkout(ctx, { target: 'main' });
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'MAIN\n');
+    await add(ctx, ['file.txt']);
+    await commit(ctx, { message: 'on-main', author });
+
+    const conflictFile = `${ctx.layout.workDir}/file.txt`;
+    const originalWrite = ctx.fs.write.bind(ctx.fs);
+    let failOnce = true;
+    (ctx.fs as { write: typeof originalWrite }).write = async (path, data) => {
+      if (failOnce && path === conflictFile) {
+        failOnce = false;
+        throw new Error('injected working-tree write failure');
+      }
+      return originalWrite(path, data);
+    };
+
+    // Act — first merge fails mid-persist; lock must be released by finally.
+    let firstError: unknown;
+    try {
+      await merge(ctx, { target: 'feature', author });
+    } catch (err) {
+      firstError = err;
+    }
+
+    // Assert — first merge threw the injected error, AND the lock file is gone.
+    expect((firstError as Error)?.message).toBe('injected working-tree write failure');
+    expect(await ctx.fs.exists(`${ctx.layout.gitDir}/index.lock`)).toBe(false);
+  });
+});
+
+describe('resolveTarget (direct)', () => {
+  it('Given an exact 40-hex object id, When resolveTarget is called, Then returns it verbatim as an ObjectId', async () => {
+    // Arrange
+    const ctx = createMemoryContext();
+    await init(ctx);
+    const id = 'a'.repeat(40);
+
+    // Act
+    const sut = await resolveTarget(ctx, id);
+
+    // Assert
+    expect(sut).toBe(id);
+  });
+
+  it('Given a 40-hex id with a leading non-hex char, When resolveTarget is called, Then it is NOT treated as an oid (anchored ^ regex)', async () => {
+    // Arrange — `z` + 40 hex: a substring matches but the anchored regex must
+    // reject it, so resolveTarget falls through to a branch-name lookup.
+    const ctx = createMemoryContext();
+    await init(ctx);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
+    await add(ctx, ['a.txt']);
+    await commit(ctx, { message: 'm', author });
+    const target = `z${'a'.repeat(40)}`;
+
+    // Act / Assert — resolves as `refs/heads/<target>`, which does not exist.
+    let caught: unknown;
+    try {
+      await resolveTarget(ctx, target);
+    } catch (err) {
+      caught = err;
+    }
+    expect((caught as { data?: { code?: string } })?.data?.code).toBe('REF_NOT_FOUND');
+  });
+
+  it('Given a 40-hex id with a trailing extra char, When resolveTarget is called, Then it is NOT treated as an oid (anchored $ regex)', async () => {
+    // Arrange — 40 hex + `0`: 41 chars; the anchored `$` must reject it.
+    const ctx = createMemoryContext();
+    await init(ctx);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
+    await add(ctx, ['a.txt']);
+    await commit(ctx, { message: 'm', author });
+    const target = `${'a'.repeat(40)}0`;
+
+    // Act / Assert
+    let caught: unknown;
+    try {
+      await resolveTarget(ctx, target);
+    } catch (err) {
+      caught = err;
+    }
+    expect((caught as { data?: { code?: string } })?.data?.code).toBe('REF_NOT_FOUND');
+  });
+});
+
+describe('resolveMergeAuthor / resolveMergeCommitter (direct)', () => {
+  it('Given no explicit author and a configured user, When resolveMergeAuthor runs, Then returns the config user with a sane timestamp and +0000 offset', async () => {
+    // Arrange
+    const ctx = createMemoryContext();
+    await init(ctx);
+    await ctx.fs.writeUtf8(
+      `${ctx.layout.gitDir}/config`,
+      '[user]\n  name = Grace\n  email = grace@example.com\n',
+    );
+    const before = Math.floor(Date.now() / 1000);
+
+    // Act
+    const sut = await resolveMergeAuthor(ctx, { target: 'feature' });
+
+    // Assert — name/email from config; timestamp is Date.now()/1000 (seconds,
+    // not ms — kills the `/1000`→`*1000` mutant); offset is the literal +0000.
+    const after = Math.floor(Date.now() / 1000);
+    expect(sut.name).toBe('Grace');
+    expect(sut.email).toBe('grace@example.com');
+    expect(sut.timezoneOffset).toBe('+0000');
+    expect(sut.timestamp).toBeGreaterThanOrEqual(before);
+    expect(sut.timestamp).toBeLessThanOrEqual(after);
+  });
+
+  it('Given an explicit author, When resolveMergeAuthor runs, Then the explicit author wins over config', async () => {
+    // Arrange
+    const ctx = createMemoryContext();
+    await init(ctx);
+    await ctx.fs.writeUtf8(
+      `${ctx.layout.gitDir}/config`,
+      '[user]\n  name = Grace\n  email = grace@example.com\n',
+    );
+
+    // Act
+    const sut = await resolveMergeAuthor(ctx, { target: 'feature', author });
+
+    // Assert
+    expect(sut).toEqual(author);
+  });
+
+  it('Given an explicit committer, When resolveMergeCommitter runs, Then the explicit committer wins over the author', async () => {
+    // Arrange
+    const committer: AuthorIdentity = {
+      name: 'Linus',
+      email: 'linus@example.com',
+      timestamp: 1_700_000_500,
+      timezoneOffset: '+0100',
+    };
+
+    // Act
+    const sut = resolveMergeCommitter({ target: 'feature', committer }, author);
+
+    // Assert
+    expect(sut).toEqual(committer);
+  });
+
+  it('Given no explicit committer, When resolveMergeCommitter runs, Then it falls back to the author', async () => {
+    // Act
+    const sut = resolveMergeCommitter({ target: 'feature' }, author);
+
+    // Assert
+    expect(sut).toEqual(author);
+  });
+});
+
+describe('parentDir (direct)', () => {
+  it('Given a nested path, When parentDir is called, Then returns the directory above the leaf', () => {
+    // Act
+    const sut = parentDir('/work/sub/file.txt');
+
+    // Assert
+    expect(sut).toBe('/work/sub');
+  });
+
+  it('Given a path whose only slash is at index 0, When parentDir is called, Then returns undefined (lastSlash <= 0)', () => {
+    // Act — `/abc`: lastSlash === 0, the `<= 0` guard must fire.
+    const sut = parentDir('/abc');
+
+    // Assert
+    expect(sut).toBeUndefined();
+  });
+
+  it('Given a path with no slash, When parentDir is called, Then returns undefined (lastSlash === -1)', () => {
+    // Act
+    const sut = parentDir('abc');
+
+    // Assert
+    expect(sut).toBeUndefined();
+  });
+});
+
+describe('writeNestedTree (direct)', () => {
+  it('Given flat leaves at depth exactly MAX_MERGE_TREE_DEPTH, When writeNestedTree runs, Then it succeeds (depth > cap, not >=)', async () => {
+    // Arrange — no subdirs, so no recursion; depth === cap must NOT throw.
+    const ctx = createMemoryContext();
+    await init(ctx);
+    const blobId = await writeObject(ctx, {
+      type: 'blob',
+      content: new TextEncoder().encode('x'),
+      id: '' as ObjectId,
+    });
+    const leaves = [{ path: 'f.txt' as FilePath, id: blobId, mode: FILE_MODE.REGULAR }];
+
+    // Act
+    const sut = await writeNestedTree(ctx, leaves, MAX_MERGE_TREE_DEPTH);
+
+    // Assert — a real tree id was produced.
+    const tree = await readObject(ctx, sut);
+    expect(tree.type).toBe('tree');
+  });
+
+  it('Given a nested leaf at depth MAX_MERGE_TREE_DEPTH, When writeNestedTree recurses, Then it throws TREE_DEPTH_EXCEEDED with depth=cap+1', async () => {
+    // Arrange — a leaf with a `/` forces one recursion to depth cap+1.
+    const ctx = createMemoryContext();
+    await init(ctx);
+    const blobId = await writeObject(ctx, {
+      type: 'blob',
+      content: new TextEncoder().encode('x'),
+      id: '' as ObjectId,
+    });
+    const leaves = [{ path: 'sub/f.txt' as FilePath, id: blobId, mode: FILE_MODE.REGULAR }];
+
+    // Act
+    let caught: unknown;
+    try {
+      await writeNestedTree(ctx, leaves, MAX_MERGE_TREE_DEPTH);
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert — the recursion adds exactly 1 (depth + 1), tripping the cap at
+    // cap+1; this kills `depth - 1` and the `false` conditional mutant.
+    const data = (caught as { data?: { code?: string; depth?: number } })?.data;
+    expect(data?.code).toBe('TREE_DEPTH_EXCEEDED');
+    expect(data?.depth).toBe(MAX_MERGE_TREE_DEPTH + 1);
+  });
+});
+
+describe('writeOutcomeToTree (direct)', () => {
+  const seedBlob = async (
+    ctx: ReturnType<typeof createMemoryContext>,
+    text: string,
+  ): Promise<ObjectId> =>
+    writeObject(ctx, {
+      type: 'blob',
+      content: new TextEncoder().encode(text),
+      id: '' as ObjectId,
+    });
+
+  it('Given an unchanged outcome, When writeOutcomeToTree runs, Then the blob content is written to the working tree', async () => {
+    // Arrange
+    const ctx = createMemoryContext();
+    await init(ctx);
+    const id = await seedBlob(ctx, 'UNCHANGED-BYTES');
+    const outcome: MergeOutcome = {
+      status: 'unchanged',
+      path: 'u.txt' as FilePath,
+      id,
+      mode: FILE_MODE.REGULAR,
+    };
+
+    // Act
+    await writeOutcomeToTree(ctx, outcome);
+
+    // Assert
+    expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/u.txt`)).toBe('UNCHANGED-BYTES');
+  });
+
+  it('Given a resolved-known outcome, When writeOutcomeToTree runs, Then the blob content is written to the working tree', async () => {
+    // Arrange
+    const ctx = createMemoryContext();
+    await init(ctx);
+    const id = await seedBlob(ctx, 'KNOWN-BYTES');
+    const outcome: MergeOutcome = {
+      status: 'resolved-known',
+      path: 'k.txt' as FilePath,
+      id,
+      mode: FILE_MODE.REGULAR,
+    };
+
+    // Act
+    await writeOutcomeToTree(ctx, outcome);
+
+    // Assert
+    expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/k.txt`)).toBe('KNOWN-BYTES');
+  });
+
+  it('Given a resolved-merged outcome, When writeOutcomeToTree runs, Then the outcome bytes are written verbatim', async () => {
+    // Arrange
+    const ctx = createMemoryContext();
+    await init(ctx);
+    const outcome: MergeOutcome = {
+      status: 'resolved-merged',
+      path: 'm.txt' as FilePath,
+      bytes: new TextEncoder().encode('MERGED-BYTES'),
+      mode: FILE_MODE.REGULAR,
+    };
+
+    // Act
+    await writeOutcomeToTree(ctx, outcome);
+
+    // Assert
+    expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/m.txt`)).toBe('MERGED-BYTES');
+  });
+
+  it('Given a resolved-deleted outcome for an existing file, When writeOutcomeToTree runs, Then the working-tree file is removed', async () => {
+    // Arrange
+    const ctx = createMemoryContext();
+    await init(ctx);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/d.txt`, 'to-be-removed');
+    const outcome: MergeOutcome = { status: 'resolved-deleted', path: 'd.txt' as FilePath };
+
+    // Act
+    await writeOutcomeToTree(ctx, outcome);
+
+    // Assert
+    expect(await ctx.fs.exists(`${ctx.layout.workDir}/d.txt`)).toBe(false);
+  });
+});
+
+describe('removeWorkingTreeFile (direct)', () => {
+  it('Given an existing working-tree file, When removeWorkingTreeFile runs, Then the file is deleted', async () => {
+    // Arrange
+    const ctx = createMemoryContext();
+    await init(ctx);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/gone.txt`, 'bytes');
+
+    // Act
+    await removeWorkingTreeFile(ctx, 'gone.txt' as FilePath);
+
+    // Assert
+    expect(await ctx.fs.exists(`${ctx.layout.workDir}/gone.txt`)).toBe(false);
+  });
+
+  it('Given a path with no working-tree file, When removeWorkingTreeFile runs, Then it does NOT throw (exists guard)', async () => {
+    // Arrange
+    const ctx = createMemoryContext();
+    await init(ctx);
+
+    // Act / Assert — the `if (exists)` guard prevents an rm on a missing path.
+    await expect(removeWorkingTreeFile(ctx, 'absent.txt' as FilePath)).resolves.toBeUndefined();
+  });
+});
+
+describe('materialiseConflictBytes (direct)', () => {
+  const seedBlob = async (
+    ctx: ReturnType<typeof createMemoryContext>,
+    text: string,
+  ): Promise<ObjectId> =>
+    writeObject(ctx, {
+      type: 'blob',
+      content: new TextEncoder().encode(text),
+      id: '' as ObjectId,
+    });
+  const conflictOf = (over: Partial<MergeConflict>): MergeConflict =>
+    ({ path: 'c.txt' as FilePath, ...over }) as MergeConflict;
+  const decode = (b: Uint8Array | undefined): string =>
+    b === undefined ? '<undefined>' : new TextDecoder().decode(b);
+
+  it('Given a content conflict carrying conflictContent, When materialiseConflictBytes runs, Then it returns that conflictContent verbatim', async () => {
+    // Arrange
+    const ctx = createMemoryContext();
+    await init(ctx);
+    const marker = new TextEncoder().encode('PRECOMPUTED-CONFLICT-CONTENT');
+    const conflict = conflictOf({ type: 'content', conflictContent: marker });
+
+    // Act
+    const sut = await materialiseConflictBytes(ctx, conflict);
+
+    // Assert
+    expect(decode(sut)).toBe('PRECOMPUTED-CONFLICT-CONTENT');
+  });
+
+  it('Given a non-content conflict that also carries conflictContent, When materialiseConflictBytes runs, Then conflictContent is NOT used (the type===content operand matters)', async () => {
+    // Arrange — a type-change conflict with BOTH conflictContent and ourId.
+    // The `type === 'content'` operand must gate the early return; otherwise
+    // a mutant forcing it true would return conflictContent instead of ours.
+    const ctx = createMemoryContext();
+    await init(ctx);
+    const oursId = await seedBlob(ctx, 'OURS-TYPECHANGE');
+    const conflict = conflictOf({
+      type: 'type-change',
+      conflictContent: new TextEncoder().encode('SHOULD-NOT-BE-USED'),
+      ourId: oursId,
+    });
+
+    // Act
+    const sut = await materialiseConflictBytes(ctx, conflict);
+
+    // Assert — ours blob wins, conflictContent ignored.
+    expect(decode(sut)).toBe('OURS-TYPECHANGE');
+  });
+
+  it('Given a binary conflict with ourId, When materialiseConflictBytes runs, Then it returns the ours blob bytes', async () => {
+    // Arrange
+    const ctx = createMemoryContext();
+    await init(ctx);
+    const oursId = await seedBlob(ctx, 'OURS-BINARY');
+    const conflict = conflictOf({ type: 'binary', ourId: oursId });
+
+    // Act
+    const sut = await materialiseConflictBytes(ctx, conflict);
+
+    // Assert
+    expect(decode(sut)).toBe('OURS-BINARY');
+  });
+
+  it('Given a binary conflict with no ourId, When materialiseConflictBytes runs, Then it returns undefined', async () => {
+    // Arrange
+    const ctx = createMemoryContext();
+    await init(ctx);
+    const conflict = conflictOf({ type: 'binary' });
+
+    // Act
+    const sut = await materialiseConflictBytes(ctx, conflict);
+
+    // Assert
+    expect(sut).toBeUndefined();
+  });
+
+  it('Given an add-add conflict with ourId, When materialiseConflictBytes runs, Then it returns the ours blob bytes', async () => {
+    // Arrange
+    const ctx = createMemoryContext();
+    await init(ctx);
+    const oursId = await seedBlob(ctx, 'OURS-ADDADD');
+    const conflict = conflictOf({ type: 'add-add', ourId: oursId });
+
+    // Act
+    const sut = await materialiseConflictBytes(ctx, conflict);
+
+    // Assert
+    expect(decode(sut)).toBe('OURS-ADDADD');
+  });
+
+  it('Given an add-add conflict with no ourId, When materialiseConflictBytes runs, Then it returns undefined', async () => {
+    // Arrange
+    const ctx = createMemoryContext();
+    await init(ctx);
+    const conflict = conflictOf({ type: 'add-add' });
+
+    // Act / Assert
+    expect(await materialiseConflictBytes(ctx, conflict)).toBeUndefined();
+  });
+
+  it('Given a type-change conflict with ourId, When materialiseConflictBytes runs, Then it returns the ours blob bytes', async () => {
+    // Arrange
+    const ctx = createMemoryContext();
+    await init(ctx);
+    const oursId = await seedBlob(ctx, 'OURS-TYPE-CHANGE');
+    const conflict = conflictOf({ type: 'type-change', ourId: oursId });
+
+    // Act
+    const sut = await materialiseConflictBytes(ctx, conflict);
+
+    // Assert
+    expect(decode(sut)).toBe('OURS-TYPE-CHANGE');
+  });
+
+  it('Given a modify-delete conflict with ourId only, When materialiseConflictBytes runs, Then it returns the ours blob bytes', async () => {
+    // Arrange
+    const ctx = createMemoryContext();
+    await init(ctx);
+    const oursId = await seedBlob(ctx, 'OURS-MODDEL');
+    const conflict = conflictOf({ type: 'modify-delete', ourId: oursId });
+
+    // Act
+    const sut = await materialiseConflictBytes(ctx, conflict);
+
+    // Assert
+    expect(decode(sut)).toBe('OURS-MODDEL');
+  });
+
+  it('Given a modify-delete conflict with theirId only, When materialiseConflictBytes runs, Then it returns the theirs blob bytes (?? falls through)', async () => {
+    // Arrange — no ourId; the `ourId ?? theirId` must yield theirId.
+    const ctx = createMemoryContext();
+    await init(ctx);
+    const theirsId = await seedBlob(ctx, 'THEIRS-MODDEL');
+    const conflict = conflictOf({ type: 'modify-delete', theirId: theirsId });
+
+    // Act
+    const sut = await materialiseConflictBytes(ctx, conflict);
+
+    // Assert
+    expect(decode(sut)).toBe('THEIRS-MODDEL');
+  });
+
+  it('Given a modify-delete conflict with neither id, When materialiseConflictBytes runs, Then it returns undefined', async () => {
+    // Arrange
+    const ctx = createMemoryContext();
+    await init(ctx);
+    const conflict = conflictOf({ type: 'modify-delete' });
+
+    // Act / Assert
+    expect(await materialiseConflictBytes(ctx, conflict)).toBeUndefined();
+  });
+
+  it('Given a content conflict with no conflictContent but ours+theirs ids, When materialiseConflictBytes runs, Then it builds a marker block from both blobs', async () => {
+    // Arrange
+    const ctx = createMemoryContext();
+    await init(ctx);
+    const oursId = await seedBlob(ctx, 'OURS-LINE');
+    const theirsId = await seedBlob(ctx, 'THEIRS-LINE');
+    const conflict = conflictOf({ type: 'content', ourId: oursId, theirId: theirsId });
+
+    // Act
+    const sut = await materialiseConflictBytes(ctx, conflict);
+
+    // Assert — a real conflict-marker block containing BOTH sides.
+    const text = decode(sut);
+    expect(text).toContain('<<<<<<<');
+    expect(text).toContain('=======');
+    expect(text).toContain('>>>>>>>');
+    expect(text).toContain('OURS-LINE');
+    expect(text).toContain('THEIRS-LINE');
+  });
+
+  it('Given a content conflict with no conflictContent and only ourId, When materialiseConflictBytes runs, Then it returns undefined (theirId operand required)', async () => {
+    // Arrange
+    const ctx = createMemoryContext();
+    await init(ctx);
+    const oursId = await seedBlob(ctx, 'OURS-ONLY');
+    const conflict = conflictOf({ type: 'content', ourId: oursId });
+
+    // Act / Assert
+    expect(await materialiseConflictBytes(ctx, conflict)).toBeUndefined();
+  });
+
+  it('Given an unhandled conflict type carrying ours+theirs ids, When materialiseConflictBytes runs, Then it returns undefined (the second type===content guard matters)', async () => {
+    // Arrange — a gitlink conflict reaches the final `if` block; the
+    // `type === 'content'` operand must keep it out, returning undefined.
+    const ctx = createMemoryContext();
+    await init(ctx);
+    const oursId = await seedBlob(ctx, 'OURS-GITLINK');
+    const theirsId = await seedBlob(ctx, 'THEIRS-GITLINK');
+    const conflict = conflictOf({ type: 'gitlink', ourId: oursId, theirId: theirsId });
+
+    // Act / Assert
+    expect(await materialiseConflictBytes(ctx, conflict)).toBeUndefined();
+  });
+});
+
+describe('buildConflictIndexEntries (direct)', () => {
+  const fakeId = (c: string): ObjectId => c.repeat(40) as ObjectId;
+
+  it('Given an unchanged outcome, When buildConflictIndexEntries runs, Then a stage-0 entry is produced for it', () => {
+    // Arrange
+    const outcomes: MergeOutcome[] = [
+      {
+        status: 'unchanged',
+        path: 'u.txt' as FilePath,
+        id: fakeId('a'),
+        mode: FILE_MODE.REGULAR,
+      },
+    ];
+
+    // Act
+    const sut = buildConflictIndexEntries(outcomes, []);
+
+    // Assert
+    expect(sut).toHaveLength(1);
+    expect(sut[0]?.path).toBe('u.txt');
+    expect(sut[0]?.flags.stage).toBe(0);
+  });
+
+  it('Given a resolved-known outcome, When buildConflictIndexEntries runs, Then a stage-0 entry is produced for it', () => {
+    // Arrange
+    const outcomes: MergeOutcome[] = [
+      {
+        status: 'resolved-known',
+        path: 'k.txt' as FilePath,
+        id: fakeId('b'),
+        mode: FILE_MODE.REGULAR,
+      },
+    ];
+
+    // Act
+    const sut = buildConflictIndexEntries(outcomes, []);
+
+    // Assert
+    expect(sut).toHaveLength(1);
+    expect(sut[0]?.path).toBe('k.txt');
+    expect(sut[0]?.flags.stage).toBe(0);
+  });
+
+  it('Given a resolved-deleted outcome, When buildConflictIndexEntries runs, Then no stage-0 entry is produced', () => {
+    // Arrange — resolved-deleted/resolved-merged are excluded from stage-0.
+    const outcomes: MergeOutcome[] = [{ status: 'resolved-deleted', path: 'd.txt' as FilePath }];
+
+    // Act
+    const sut = buildConflictIndexEntries(outcomes, []);
+
+    // Assert
+    expect(sut).toEqual([]);
+  });
+
+  it('Given a stage-0 outcome, When buildConflictIndexEntries runs, Then the entry flags are assumeValid=false and extended=false', () => {
+    // Arrange
+    const outcomes: MergeOutcome[] = [
+      {
+        status: 'unchanged',
+        path: 'f.txt' as FilePath,
+        id: fakeId('c'),
+        mode: FILE_MODE.REGULAR,
+      },
+    ];
+
+    // Act
+    const sut = buildConflictIndexEntries(outcomes, []);
+
+    // Assert — both boolean flags are literally false.
+    expect(sut[0]?.flags.assumeValid).toBe(false);
+    expect(sut[0]?.flags.extended).toBe(false);
+  });
+
+  it('Given stage-0 outcomes and a conflict whose paths interleave alphabetically, When buildConflictIndexEntries runs, Then entries are sorted by (path, stage)', () => {
+    // Arrange — stage-0 paths `zzz`/`aaa` and a content conflict on `mmm`.
+    // `[...stage0, ...stageConflicts]` is `[zzz@0, aaa@0, mmm@1, mmm@2, mmm@3]`
+    // — NOT sorted; the explicit `combined.sort` must reorder it.
+    const outcomes: MergeOutcome[] = [
+      {
+        status: 'unchanged',
+        path: 'zzz.txt' as FilePath,
+        id: fakeId('e'),
+        mode: FILE_MODE.REGULAR,
+      },
+      {
+        status: 'resolved-known',
+        path: 'aaa.txt' as FilePath,
+        id: fakeId('d'),
+        mode: FILE_MODE.REGULAR,
+      },
+    ];
+    const conflicts: MergeConflict[] = [
+      {
+        type: 'content',
+        path: 'mmm.txt' as FilePath,
+        baseId: fakeId('1'),
+        ourId: fakeId('2'),
+        theirId: fakeId('3'),
+        baseMode: FILE_MODE.REGULAR,
+        ourMode: FILE_MODE.REGULAR,
+        theirMode: FILE_MODE.REGULAR,
+      },
+    ];
+
+    // Act
+    const sut = buildConflictIndexEntries(outcomes, conflicts);
+
+    // Assert — fully sorted by path, then by stage within `mmm.txt`.
+    const order = sut.map((e) => `${e.path}@${e.flags.stage}`);
+    expect(order).toEqual(['aaa.txt@0', 'mmm.txt@1', 'mmm.txt@2', 'mmm.txt@3', 'zzz.txt@0']);
   });
 });

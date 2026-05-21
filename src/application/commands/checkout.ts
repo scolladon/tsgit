@@ -87,7 +87,10 @@ const switchBranch = async (ctx: Context, opts: CheckoutSwitchOptions): Promise<
       currentIndex,
       force: opts.force ?? false,
     });
-    if (materializeResult.written > 0 || materializeResult.deleted > 0) {
+    // `written`/`deleted` are non-negative counts, so `!== 0` is equivalent
+    // to `> 0` here while sidestepping the always-true `>= 0` mutant.
+    // Stryker disable next-line ConditionalExpression: equivalent — forcing the guard true only adds an index commit on a no-op switch, and a no-op commit serializes byte-identically (newIndexEntries equals currentIndex.entries) so behavior is unchanged.
+    if (materializeResult.written !== 0 || materializeResult.deleted !== 0) {
       await lock.commit(materializeResult.newIndexEntries);
     }
   } finally {
@@ -166,6 +169,7 @@ const pathRestore = async (ctx: Context, opts: CheckoutPathsOptions): Promise<Ch
     branch: undefined,
     id: head,
     detached: false,
+    // Stryker disable next-line ArithmeticOperator: equivalent — path-restore always passes `paths: pathSet` to materializeTree, and every `pathSet` member is drawn from the source's own path universe, so the index→target diff can only classify entries as add/update/noop — never delete. `materializeResult.deleted` is therefore always 0, making `written + deleted` and `written - deleted` indistinguishable.
     changedPaths: materializeResult.written + materializeResult.deleted,
   };
 };
@@ -212,9 +216,13 @@ const materializePathRestoreLocked = async (
       forceRewriteAll: true,
       paths: pathSet,
     });
-    if (result.written > 0 || result.deleted > 0) {
-      await lock.commit(result.newIndexEntries);
-    }
+    // The commit is unconditional here: the L145 guard guarantees a
+    // non-empty `pathSet`, the pathspec universe is the source tree itself,
+    // and `forceRewriteAll` upgrades every matched entry to a write — so
+    // `result.written` is always `pathSet.size` (>= 1) and `result.deleted`
+    // is always 0. A `written > 0 || deleted > 0` guard would therefore be
+    // dead code (always true), so it is omitted.
+    await lock.commit(result.newIndexEntries);
     return result;
   } finally {
     await lock.release();
@@ -243,6 +251,7 @@ const enumerateSourcePaths = async (
   const treeId = await resolvePathSource(ctx, source);
   const paths: FilePath[] = [];
   for await (const entry of walkTree(ctx, treeId)) {
+    // Stryker disable next-line ConditionalExpression: equivalent — directory entries in the universe are unobservable: materializeTree filters DIRECTORY modes itself and matches by exact path, and any pathspec matching a directory also matches its (non-empty) descendant files.
     if (entry.mode !== FILE_MODE.DIRECTORY) paths.push(entry.path);
   }
   return paths;

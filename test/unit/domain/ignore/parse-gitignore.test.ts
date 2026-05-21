@@ -100,6 +100,22 @@ describe('parseGitignore', () => {
     expect(sut[0]?.pattern).toBe('foo');
   });
 
+  it('Given "foo " (one unescaped trailing space), When parsed, Then the trailing space is stripped', () => {
+    // Arrange — `foo` followed by exactly one space, no backslash. The
+    // backslash-escape guard inside the trim loop must NOT break here:
+    // charCodeAt(end-2) is 'o' (0x6f), not '\' (0x5c), so the loop must
+    // proceed and strip the space. A mutant that forces an immediate
+    // `break` leaves the pattern as `foo ` instead of `foo`.
+    const input = 'foo ';
+
+    // Act
+    const sut = parseGitignore(input);
+
+    // Assert
+    expect(sut).toHaveLength(1);
+    expect(sut[0]?.pattern).toBe('foo');
+  });
+
   it('Given a line with escaped trailing space, When parsed, Then escaped space is preserved', () => {
     // Arrange
     const input = 'foo\\ \n';
@@ -110,6 +126,48 @@ describe('parseGitignore', () => {
     // Assert
     expect(sut).toHaveLength(1);
     expect(sut[0]?.pattern).toBe('foo ');
+  });
+
+  it('Given a two-char line of escaped space "\\ ", When parsed, Then the escaped space is preserved', () => {
+    // Arrange — line is exactly backslash + space (length 2). stripTrailingSpaces
+    // starts at end=2; the `end >= 2` guard must hold so it inspects
+    // charCodeAt(0)===0x5c and breaks, preserving the space. The `end > 2`
+    // mutant would make `2 > 2` false → no break → space stripped → pattern '\'.
+    const input = '\\ ';
+
+    // Act
+    const sut = parseGitignore(input);
+
+    // Assert
+    expect(sut).toHaveLength(1);
+    expect(sut[0]?.pattern).toBe(' ');
+  });
+
+  it('Given "a/b" (slash only in the middle), When parsed, Then the rule is anchored', () => {
+    // Arrange — kills the `||` -> `&&` LogicalOperator mutant on the `anchored`
+    // expression: `startsWith('/')` is false here, `includes('/')` is true, so
+    // `||` yields true while `&&` would yield false.
+    const input = 'a/b';
+
+    // Act
+    const sut = parseGitignore(input);
+
+    // Assert
+    expect(sut).toHaveLength(1);
+    expect(sut[0]?.anchored).toBe(true);
+  });
+
+  it('Given "plain" (no slash anywhere), When parsed, Then the rule is NOT anchored', () => {
+    // Arrange — complements the `a/b` case: with no slash, `anchored` is false.
+    // Pins that `includes('/')` actually drives the result.
+    const input = 'plain';
+
+    // Act
+    const sut = parseGitignore(input);
+
+    // Assert
+    expect(sut).toHaveLength(1);
+    expect(sut[0]?.anchored).toBe(false);
   });
 
   it('Given an escaped # at line start, When parsed, Then yields a literal-# rule (not a comment)', () => {

@@ -109,6 +109,7 @@ function readOffset(index: PackIndex, i: number): number {
 export function lookupPackIndex(index: PackIndex, id: ObjectId): number | undefined {
   const targetBytes = hexToBytes(id);
   const firstByte = targetBytes[0]!;
+  // Stryker disable next-line ConditionalExpression: equivalent — `lo` only narrows the binary search; the loop over [0, hi) still converges on the same index (the target, if present, lies in [lo, hi) ⊆ [0, hi)), so forcing `lo` to 0 cannot change the looked-up offset.
   const lo = firstByte === 0 ? 0 : readFanout(index, firstByte - 1);
   const hi = readFanout(index, firstByte);
 
@@ -149,6 +150,7 @@ export function findByPrefix(index: PackIndex, prefix: string): ReadonlyArray<Ob
   const upperBytes = hexToBytes(upperHex);
 
   const firstByte = lowerBytes[0]!;
+  // Stryker disable next-line ConditionalExpression: equivalent — `lo` only narrows the search window; `findLowerBound`/`findUpperBound` over [0, hi) return the same bounds (the prefix range lies in [lo, hi) ⊆ [0, hi)), so forcing `lo` to 0 cannot change the result set.
   const lo = firstByte === 0 ? 0 : readFanout(index, firstByte - 1);
 
   const lastByte = upperBytes[0]!;

@@ -138,6 +138,8 @@ const resolveTarget = async (ctx: Context, target: string): Promise<ObjectId> =>
   // emptying the literal routes the call through the else branch, which
   // succeeds on the first try, producing the same observable result.
   const candidates: ReadonlyArray<RefName | 'HEAD'> =
+    // Stryker disable next-line ConditionalExpression: equivalent — forcing the else branch routes `'HEAD'` through `[target as RefName, ...]` whose first candidate is `'HEAD'`, resolved identically by resolveRef.
+    // Stryker disable next-line StringLiteral: equivalent — emptying the literal makes `target === ''` false for `'HEAD'`, routing it through the else branch whose first candidate `'HEAD'` resolves to the same commit.
     target === 'HEAD'
       ? ['HEAD']
       : [target as RefName, `refs/heads/${target}` as RefName, `refs/tags/${target}` as RefName];

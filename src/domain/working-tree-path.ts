@@ -26,10 +26,13 @@ const GIT_FORBIDDEN: ReadonlySet<string> = new Set(['.git']);
  * - Length caps: total path ≤ 4096 bytes; each component ≤ 255 bytes.
  */
 export const validateWorkingTreePath = (input: string): FilePath => {
+  // Stryker disable next-line ConditionalExpression: equivalent — when this fast-path guard is removed (`if (false)`), the empty string still splits to `['']`, whose empty component is rejected by `rejectComponent` with the identical `pathspecOutsideRepo('')` error.
   if (input === '') reject(input);
   if (byteLength(input) > MAX_PATH_BYTES) reject(input);
+  // Stryker disable next-line ConditionalExpression,MethodExpression: equivalent — a leading or trailing `/` always produces an empty path component, which `rejectComponent` rejects regardless; this guard only changes which line throws, not the accept/reject verdict or the error data.
   if (input.startsWith('/')) reject(input);
   if (input.includes('\\')) reject(input);
+  // Stryker disable next-line ConditionalExpression: equivalent — a NUL byte is code 0x00, always `<= 0x1f`, so the per-component control-char scan rejects it regardless of this fast-path guard.
   if (input.includes('\0')) reject(input);
   const components = input.split('/');
   for (const component of components) {
@@ -46,6 +49,7 @@ export const validateWorkingTreePath = (input: string): FilePath => {
  */
 export const isForbiddenGitComponent = (component: string): boolean => {
   const lowered = component.toLowerCase();
+  // Stryker disable next-line ConditionalExpression: equivalent — the only member of GIT_FORBIDDEN is '.git', and the trailing-dot/space strip below maps '.git' to itself, so the regex-strip path returns true for exactly the same input.
   if (GIT_FORBIDDEN.has(lowered)) return true;
   // NTFS strips trailing spaces/dots — treat any `.git` followed only by
   // whitespace/dots as `.git` (defensive against future variants).
@@ -65,6 +69,7 @@ const rejectComponent = (component: string, original: string): void => {
   // Reject `:` to block NTFS Alternate Data Streams (`.git:$DATA`) and
   // Windows drive-letter qualifiers (`C:relative`). POSIX paths never need `:`.
   if (component.includes(':')) reject(original);
+  // Stryker disable next-line EqualityOperator: equivalent — `i <= component.length` reads one past the end where `charCodeAt` returns NaN; `NaN <= 0x1f` and `NaN === 0x7f` are both false, so the extra iteration never rejects.
   for (let i = 0; i < component.length; i += 1) {
     const code = component.charCodeAt(i);
     if (code <= 0x1f || code === 0x7f) reject(original);

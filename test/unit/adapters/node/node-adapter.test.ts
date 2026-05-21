@@ -92,6 +92,24 @@ describe('createNodeContext', () => {
     expect(sut.hash.algorithm).toBe('sha1');
   });
 
+  it('Given deltaCacheMaxEntries=1, When inserting two entries, Then the delta cache evicts down to one (entry cap honored)', () => {
+    // Arrange — large byte budget so eviction can only be triggered by the entry cap.
+    const sut = createNodeContext({
+      workDir: '/tmp/tsgit-delta-entries',
+      deltaCacheMaxBytes: 1_000_000,
+      deltaCacheMaxEntries: 1,
+    });
+
+    // Act
+    sut.deltaCache.set('a', new Uint8Array([1]), 1);
+    sut.deltaCache.set('b', new Uint8Array([2]), 1);
+
+    // Assert — the configured cap of 1 is forwarded, so the LRU keeps only the newest entry.
+    expect(sut.deltaCache.entryCount).toBe(1);
+    expect(sut.deltaCache.has('b')).toBe(true);
+    expect(sut.deltaCache.has('a')).toBe(false);
+  });
+
   it('Given created context, When attempting to mutate, Then properties are frozen', () => {
     // Arrange
     const sut = createNodeContext({ workDir: '/tmp/tsgit-frozen' });

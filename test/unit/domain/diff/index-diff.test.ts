@@ -162,6 +162,47 @@ describe('diffIndexAgainstTree', () => {
     ]);
   });
 
+  it('Given same id but a DIFFERENT mode (same kind), When diffIndexAgainstTree called, Then ModifyChange (the mode-equality guard is not skipped)', () => {
+    // Arrange & Act — identical id, REGULAR -> EXECUTABLE: ids match so a
+    // `true`-mutated mode guard would treat it as unchanged and emit nothing.
+    const sut = diffIndexAgainstTree(
+      index([entry('foo', ID_A, FILE_MODE.EXECUTABLE, 0)]),
+      flatTree([['foo', ID_A, FILE_MODE.REGULAR]]),
+    );
+
+    // Assert — a change MUST be emitted because the mode differs.
+    expect(sut.changes).toEqual([
+      {
+        type: 'modify',
+        path: 'foo',
+        oldId: ID_A,
+        newId: ID_A,
+        oldMode: FILE_MODE.REGULAR,
+        newMode: FILE_MODE.EXECUTABLE,
+      },
+    ]);
+  });
+
+  it('Given same id but a DIFFERENT kind of mode, When diffIndexAgainstTree called, Then TypeChangeChange (mode guard still evaluated when ids match)', () => {
+    // Arrange & Act — identical id, REGULAR -> SYMLINK.
+    const sut = diffIndexAgainstTree(
+      index([entry('foo', ID_A, FILE_MODE.SYMLINK, 0)]),
+      flatTree([['foo', ID_A, FILE_MODE.REGULAR]]),
+    );
+
+    // Assert
+    expect(sut.changes).toEqual([
+      {
+        type: 'type-change',
+        path: 'foo',
+        oldId: ID_A,
+        newId: ID_A,
+        oldMode: FILE_MODE.REGULAR,
+        newMode: FILE_MODE.SYMLINK,
+      },
+    ]);
+  });
+
   it('Given FlatTree with MAX_FLAT_TREE_ENTRIES + 1 entries, When diffIndexAgainstTree called, Then throws INVALID_TREE_FOR_DIFF', () => {
     // Arrange — simulate an oversize FlatTree using a map-like object; avoid building a million entries
     const oversizeEntries = {
@@ -320,6 +361,19 @@ describe('conflictsToIndexEntries', () => {
     expect(sut[1]?.id).toBe(ID_B);
     expect(sut[2]?.flags.stage).toBe(3);
     expect(sut[2]?.id).toBe(ID_C);
+  });
+
+  it('Given one conflict with only ourId set, When conflictsToIndexEntries called, Then the emitted entry flags are assumeValid=false and extended=false', () => {
+    // Arrange & Act — index entries built for conflicts must NOT carry the
+    // assume-valid or extended bits; both default to false.
+    const sut = conflictsToIndexEntries(
+      [conflict({ path: 'file' as FilePath, ourId: ID_B, ourMode: FILE_MODE.REGULAR })],
+      zeroStat,
+    );
+
+    // Assert
+    expect(sut[0]?.flags.assumeValid).toBe(false);
+    expect(sut[0]?.flags.extended).toBe(false);
   });
 
   it('Given one conflict with only ourId set, When conflictsToIndexEntries called, Then 1 entry at stage 2', () => {

@@ -5,6 +5,7 @@ import type { PackedRefEntry, PackedRefs } from './ref-types.js';
 const HEADER_PREFIX = '# pack-refs with:';
 
 export function parsePackedRefs(content: string): PackedRefs {
+  // Stryker disable next-line ConditionalExpression,BlockStatement,StringLiteral: equivalent — falling through with '' yields ''.split('\n')=[''], parseHeader gives peeling='none'/sorted=false, parseEntries skips the empty line, producing the identical {entries:[],peeling:'none',sorted:false}.
   if (content === '') {
     return { entries: [], peeling: 'none', sorted: false };
   }
@@ -23,7 +24,9 @@ function parseHeader(lines: ReadonlyArray<string>): {
 } {
   const firstLine = lines[0];
   if (firstLine?.startsWith(HEADER_PREFIX)) {
+    // Stryker disable next-line MethodExpression: equivalent — traits are matched via includes(); the fixed prefix words ('#','pack-refs','with:') never equal a trait name, and split(/\s+/) tolerates surrounding whitespace, so dropping slice/trim leaves trait detection unchanged.
     const traitStr = firstLine.slice(HEADER_PREFIX.length).trim();
+    // Stryker disable next-line ConditionalExpression,StringLiteral,ArrayDeclaration,Regex: equivalent — '' and split('') both yield no trait matches; traitStr is never the Stryker literal; ['Stryker was here'] contains no trait name; /\s/ vs /\s+/ only differs by empty-string fragments which includes() ignores.
     const traits = traitStr === '' ? [] : traitStr.split(/\s+/);
     const hasPeeled = traits.includes('peeled');
     const hasFullyPeeled = traits.includes('fully-peeled');
@@ -40,6 +43,7 @@ function parseEntries(
 ): ReadonlyArray<PackedRefEntry> {
   const entries: PackedRefEntry[] = [];
 
+  // Stryker disable next-line EqualityOperator: equivalent — at i===lines.length, lines[i] is undefined and the `line === undefined` guard continues, producing no entry.
   for (let i = startIndex; i < lines.length; i++) {
     const line = lines[i];
     if (line === undefined || line === '' || line.startsWith('#')) {
@@ -77,6 +81,7 @@ export function serializePackedRefs(refs: PackedRefs): string {
   }
 
   const sorted = [...refs.entries].sort((a, b) =>
+    // Stryker disable next-line ConditionalExpression,EqualityOperator: equivalent — V8's stable sort only moves an element when the comparator returns < 0; the second ternary only ever yields 1 or 0, so its condition (>, >=, <=, true, false) never changes any final position
     (a.name as string) < (b.name as string) ? -1 : (a.name as string) > (b.name as string) ? 1 : 0,
   );
 

@@ -23,15 +23,31 @@ describe('validateWorkingTreePath', () => {
   });
 
   it('Given an empty input, When validated, Then rejects with PATHSPEC_OUTSIDE_REPO carrying the empty input', () => {
-    // Kills StringLiteral mutant (`input === 'Stryker was here!'`) AND
-    // ConditionalExpression mutant (`if (false)`) on the empty-input guard.
     const err = expectReject('');
     expect((err.data as { path: string }).path).toBe('');
+  });
+
+  it('Given a path containing spaces, When validated, Then accepts it as a valid relative path', () => {
+    // Kills the StringLiteral mutant on the empty-input guard
+    // (`input === ''` -> `input === 'Stryker was here!'`): that string is a
+    // legal relative path, so the mutated guard would wrongly reject it.
+    expect(validateWorkingTreePath('Stryker was here!')).toBe('Stryker was here!');
   });
 
   it('Given a path that exceeds 4096 bytes, When validated, Then rejects', () => {
     // 'a'.repeat(4097) — single-byte char, byteLength === length.
     const input = 'a'.repeat(4097);
+    const err = expectReject(input);
+    expect((err.data as { path: string }).path).toBe(input);
+  });
+
+  it('Given a path exceeding 4096 bytes but with every component legal, When validated, Then rejects on the total-byte cap', () => {
+    // Kills the L30 `if (byteLength(input) > MAX_PATH_BYTES)` -> `if (false)`
+    // mutant. Each component is 200 bytes (≤ 255) so the per-component guard
+    // never fires; only the total-byte cap can reject this input.
+    const segment = 'a'.repeat(200);
+    const input = Array.from({ length: 25 }, () => segment).join('/');
+    expect(input.length).toBeGreaterThan(4096);
     const err = expectReject(input);
     expect((err.data as { path: string }).path).toBe(input);
   });

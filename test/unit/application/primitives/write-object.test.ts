@@ -52,6 +52,40 @@ describe('writeObject', () => {
     }
   });
 
+  it('Given an aborted signal, When writeObject is called, Then the entry guard throws before hashHex runs', async () => {
+    // Arrange — the second abort guard (line 19) would also throw, so to pin
+    // the FIRST guard (line 9) we assert it short-circuits before any hashing.
+    // A `false` mutant of line 9 lets execution reach `hashHex`.
+    const controller = new AbortController();
+    controller.abort();
+    const base = await buildSeededContext({ signal: controller.signal });
+    let hashHexCalls = 0;
+    const ctx = {
+      ...base,
+      hash: {
+        ...base.hash,
+        hashHex: async (data: Uint8Array): Promise<string> => {
+          hashHexCalls += 1;
+          return base.hash.hashHex(data);
+        },
+      },
+    };
+    const blob: Blob = { type: 'blob', content: new Uint8Array([0]), id: '' as ObjectId };
+
+    // Act
+    let caught: unknown;
+    try {
+      await writeObject(ctx, blob);
+      expect.unreachable();
+    } catch (error) {
+      caught = error;
+    }
+
+    // Assert — guard fired first: no hashing happened, abort code reported.
+    expect(hashHexCalls).toBe(0);
+    expect((caught as TsgitError).data.code).toBe('OPERATION_ABORTED');
+  });
+
   it('Given a blob, When writeObject is followed by readObject, Then round-trips correctly', async () => {
     const ctx = await buildSeededContext();
     const content = new Uint8Array([10, 20, 30, 40]);
@@ -119,6 +153,22 @@ describe('writeObject', () => {
       expect(error).not.toBeInstanceOf(TsgitError);
       expect((error as Error).message).toBe('io boom');
     }
+  });
+
+  it('Given a blob, When writeObject is called, Then the objects sub-directory is the 2-char id prefix (not the full id)', async () => {
+    // Kills the MethodExpression mutant on `computed.slice(0, 2)`: dropping the
+    // slice makes `prefix` the full 40-char id, so mkdir creates
+    // `objects/<40-char-id>` instead of `objects/<2-char-prefix>`.
+    // Arrange
+    const ctx = await buildSeededContext();
+    const blob: Blob = { type: 'blob', content: new Uint8Array([77]), id: '' as ObjectId };
+
+    // Act
+    const id = await writeObject(ctx, blob);
+
+    // Assert — the 2-char prefix directory exists; the full-id directory does not.
+    expect(await ctx.fs.exists(`/repo/.git/objects/${id.slice(0, 2)}`)).toBe(true);
+    expect(await ctx.fs.exists(`/repo/.git/objects/${id}`)).toBe(false);
   });
 
   it('Given the signal aborts between serialize and writeExclusive, When writeObject is called, Then throws OPERATION_ABORTED (not silently writes)', async () => {

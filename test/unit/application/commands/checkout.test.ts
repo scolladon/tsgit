@@ -304,6 +304,607 @@ describe('checkout', () => {
   });
 });
 
+describe('checkout — mutation hardening', () => {
+  it('Given opts with target key set to undefined, When checkout, Then throws INVALID_OPTION (target is not switch mode)', async () => {
+    // Arrange — `'target' in opts` is true but `opts.target === undefined`.
+    // isSwitch must be false; with the `!== undefined` guard mutated away,
+    // switchMode would be true and route into switchBranch instead of throwing.
+    const { ctx } = await seedWithBranches();
+
+    // Act
+    let caught: unknown;
+    try {
+      await checkout(ctx, { target: undefined } as unknown as Parameters<typeof checkout>[1]);
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert — neither switch nor paths mode → "either target or paths" branch.
+    expect(caught).toBeInstanceOf(TsgitError);
+    const data = (caught as TsgitError).data;
+    expect(data.code).toBe('INVALID_OPTION');
+    if (data.code === 'INVALID_OPTION') {
+      expect(data.option).toBe('target');
+      expect((caught as TsgitError).message).toBe(
+        'INVALID_OPTION: invalid option: target — either target or paths must be provided',
+      );
+    }
+  });
+
+  it('Given opts with paths key set to undefined, When checkout, Then throws INVALID_OPTION (paths is not paths mode)', async () => {
+    // Arrange — `'paths' in opts` is true but `opts.paths === undefined`.
+    // isPaths must be false; mutating the `!== undefined` guard away would
+    // make pathsMode true and route into pathRestore.
+    const { ctx } = await seedWithBranches();
+
+    // Act
+    let caught: unknown;
+    try {
+      await checkout(ctx, { paths: undefined } as unknown as Parameters<typeof checkout>[1]);
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert
+    expect(caught).toBeInstanceOf(TsgitError);
+    const data = (caught as TsgitError).data;
+    expect(data.code).toBe('INVALID_OPTION');
+    if (data.code === 'INVALID_OPTION') {
+      expect(data.option).toBe('target');
+    }
+  });
+
+  it('Given a non-hex branch name, When checkout, Then it is resolved as a ref not as a raw oid', async () => {
+    // Arrange — `feature` is not 40-hex; the L55 regex / L60 detach detector
+    // must NOT classify it as a detached oid. A regex anchor mutation or a
+    // ConditionalExpression→true would treat every target as a raw oid and
+    // produce a detached HEAD instead of a symref.
+    const { ctx } = await seedWithBranches();
+
+    // Act
+    const sut = await checkout(ctx, { target: 'feature' });
+
+    // Assert — symref, not detached.
+    expect(sut.detached).toBe(false);
+    expect(sut.branch).toBe('refs/heads/feature');
+  });
+
+  it('Given a 39-hex target (one short), When checkout, Then it is treated as a ref name not a raw oid', async () => {
+    // Arrange — 39 hex chars must NOT match `/^[0-9a-f]{40}$/`. If the
+    // trailing `$` anchor were stripped, a 39-hex prefix of a longer string
+    // could match; here the value is exactly 39 chars so only the `{40}`
+    // quantifier discriminates. Treated as a ref → branchNotFound.
+    const { ctx } = await seedWithBranches();
+    const thirtyNineHex = 'a'.repeat(39);
+
+    // Act
+    let caught: unknown;
+    try {
+      await checkout(ctx, { target: thirtyNineHex });
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert — resolved as a ref name → branch not found.
+    expect(caught).toBeInstanceOf(TsgitError);
+    expect((caught as TsgitError).data.code).toBe('BRANCH_NOT_FOUND');
+  });
+
+  it('Given a target with a trailing non-hex char after 40 hex, When checkout, Then it is treated as a branch ref not a detached oid', async () => {
+    // Arrange — `<40 hex>z` (41 chars) must NOT match `/^[0-9a-f]{40}$/`.
+    // Without the `$` anchor (`/^[0-9a-f]{40}/`) the 40-hex prefix matches and
+    // both the L60 detach detector and the L55 oid check would misfire,
+    // routing the value through resolveSwitchOid as a detached oid. The
+    // correct path treats it as a (non-existent) branch name.
+    const { ctx } = await seedWithBranches();
+    const fortyHexPlus = `${'a'.repeat(40)}z`;
+
+    // Act
+    let caught: unknown;
+    try {
+      await checkout(ctx, { target: fortyHexPlus });
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert — non-detached branch lookup → BRANCH_NOT_FOUND, not an oid path.
+    expect(caught).toBeInstanceOf(TsgitError);
+    expect((caught as TsgitError).data.code).toBe('BRANCH_NOT_FOUND');
+  });
+
+  it('Given a target with a non-hex char before 40 hex, When checkout, Then it is treated as a branch ref not a detached oid', async () => {
+    // Arrange — `z<40 hex>` (41 chars) must NOT match. Without the `^` anchor
+    // (`/[0-9a-f]{40}$/`) the 40-hex suffix matches and the value is routed as
+    // a detached oid instead of a branch name.
+    const { ctx } = await seedWithBranches();
+    const prefixedHex = `z${'a'.repeat(40)}`;
+
+    // Act
+    let caught: unknown;
+    try {
+      await checkout(ctx, { target: prefixedHex });
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert
+    expect(caught).toBeInstanceOf(TsgitError);
+    expect((caught as TsgitError).data.code).toBe('BRANCH_NOT_FOUND');
+  });
+
+  it('Given detach=true with a full ref-path target, When checkout, Then the ref is resolved to its commit oid (L55 ref resolution path)', async () => {
+    // Arrange — detach:true forces the detached branch (L63), and the target
+    // is a ref path, not a 40-hex oid. resolveSwitchOid must take the
+    // L55-false path and resolveRef the ref into the commit oid. A
+    // ConditionalExpression→true at L55 would skip resolveRef and return the
+    // literal ref string as the oid; a regex anchor mutation could make the
+    // ref string wrongly match and do the same.
+    const { ctx, commitId } = await seedWithBranches();
+    const refPath = 'refs/heads/feature';
+
+    // Act
+    const sut = await checkout(ctx, { target: refPath, detach: true });
+
+    // Assert — HEAD detached at the RESOLVED commit oid, not the raw ref text.
+    expect(sut.detached).toBe(true);
+    expect(sut.id).toBe(commitId);
+    expect(sut.id).not.toBe(refPath);
+    const head = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/HEAD`);
+    expect(head).toBe(`${commitId}\n`);
+  });
+
+  it('Given detach=false with a branch name, When checkout, Then HEAD is a symref (detach flag honoured)', async () => {
+    // Arrange — explicit detach:false must keep the symref behaviour. A
+    // BooleanLiteral mutant on `opts.detach === true` (→false) or the
+    // `=== true` comparison still yields non-detached here, but pairing this
+    // with the detach=true test pins the boolean exactly.
+    const { ctx } = await seedWithBranches();
+
+    // Act
+    const sut = await checkout(ctx, { target: 'feature', detach: false });
+
+    // Assert
+    expect(sut.detached).toBe(false);
+    expect(sut.branch).toBe('refs/heads/feature');
+  });
+
+  it('Given force omitted and a dirty working tree the checkout would overwrite, When switch checkout, Then throws CHECKOUT_OVERWRITE_DIRTY (force defaults to false)', async () => {
+    // Arrange — two commits diverging `foo.txt`. Detach onto the first
+    // commit, then locally modify `foo.txt` so the working tree is dirty.
+    // Checking out the second commit without `force` must hit the dirty-tree
+    // guard. `force: opts.force ?? false` (L88) — a BooleanLiteral mutant
+    // flipping the default to `true` would skip the guard and succeed.
+    const ctx = createMemoryContext();
+    await init(ctx);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/foo.txt`, 'v1');
+    await add(ctx, ['foo.txt']);
+    const c1 = await commit(ctx, { message: 'v1', author });
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/foo.txt`, 'v2');
+    await add(ctx, ['foo.txt']);
+    const c2 = await commit(ctx, { message: 'v2', author });
+    await checkout(ctx, { target: c1.id, force: true });
+    // Dirty the working tree without staging — the guard must catch this.
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/foo.txt`, 'locally-edited');
+
+    // Act
+    let caught: unknown;
+    try {
+      await checkout(ctx, { target: c2.id });
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert — the dirty guard fired because force defaulted to false.
+    expect(caught).toBeInstanceOf(TsgitError);
+    const data = (caught as TsgitError).data;
+    expect(data.code).toBe('CHECKOUT_OVERWRITE_DIRTY');
+    if (data.code === 'CHECKOUT_OVERWRITE_DIRTY') {
+      expect(data.paths).toContain('foo.txt');
+    }
+  });
+
+  it('Given a switch checkout that only deletes files, When run, Then the index commit still runs (deleted>0 operand of L90)', async () => {
+    // Arrange — first commit has two files, second removes one. Checking out
+    // the second commit from the first deletes `gone.txt`: written===0,
+    // deleted===1. The L90 guard `written > 0 || deleted > 0` must commit on
+    // the deleted operand alone. A LogicalOperator mutant (|| → &&) or
+    // dropping the deleted operand would skip the commit and leave changedPaths
+    // wrong.
+    const { rm } = await import('../../../../src/application/commands/rm.js');
+    const ctx = createMemoryContext();
+    await init(ctx);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/keep.txt`, 'k');
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/gone.txt`, 'g');
+    await add(ctx, ['keep.txt', 'gone.txt']);
+    const both = await commit(ctx, { message: 'both', author });
+    await rm(ctx, ['gone.txt']);
+    const fewer = await commit(ctx, { message: 'fewer', author });
+
+    // Re-stage both then check out the older 'both' commit, then check out
+    // 'fewer' to force a deletion-only transition.
+    await checkout(ctx, { target: both.id, force: true });
+    const sut = await checkout(ctx, { target: fewer.id, force: true });
+
+    // Assert — exactly one path changed (the deletion) and it was committed.
+    expect(sut.changedPaths).toBe(1);
+    expect(await ctx.fs.exists(`${ctx.layout.workDir}/gone.txt`)).toBe(false);
+    const { readIndex } = await import('../../../../src/application/primitives/read-index.js');
+    const idx = await readIndex(ctx);
+    expect(idx.entries.some((e) => e.path === 'gone.txt')).toBe(false);
+  });
+
+  it('Given a switch checkout that only writes files, When run, Then changedPaths equals the written count (L90 written operand + L104/L112 sum)', async () => {
+    // Arrange — checkout a commit that ADDS a file: written>0, deleted===0.
+    // Pins the `written > 0` operand and the `written + deleted` sum: an
+    // ArithmeticOperator mutant (+ → -) would yield 0 instead of 1.
+    const ctx = createMemoryContext();
+    await init(ctx);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/base.txt`, 'b');
+    await add(ctx, ['base.txt']);
+    await commit(ctx, { message: 'base', author });
+    await branch(ctx, { kind: 'create', name: 'origin-pt' });
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/extra.txt`, 'e');
+    await add(ctx, ['extra.txt']);
+    const withExtra = await commit(ctx, { message: 'with extra', author });
+
+    // Detach onto origin-pt removing extra.txt, then check out withExtra by
+    // oid (detached) so the result goes through the L98 detached branch.
+    await checkout(ctx, { target: 'origin-pt', force: true });
+    const sut = await checkout(ctx, { target: withExtra.id, force: true });
+
+    // Assert — exactly one write, sum is exactly 1 (not -1 or other), and the
+    // index commit ran (the L90 guard fired on the written>0 operand; a
+    // LogicalOperator || → && or written>0 → written<=0 mutant would skip the
+    // commit and leave the index without extra.txt).
+    expect(sut.detached).toBe(true);
+    expect(sut.changedPaths).toBe(1);
+    expect(await ctx.fs.exists(`${ctx.layout.workDir}/extra.txt`)).toBe(true);
+    const { readIndex } = await import('../../../../src/application/primitives/read-index.js');
+    const idx = await readIndex(ctx);
+    expect(idx.entries.some((e) => e.path === 'extra.txt')).toBe(true);
+  });
+
+  it('Given detach:true onto a ref name with a 40-hex PREFIX, When checkout, Then resolveSwitchOid resolves it via resolveRef (L55 `^...{40}$` rejects the 41-char target — kills the `$`-anchor drop)', async () => {
+    // Arrange — a loose ref whose NAME is `<40 hex>z` (41 chars). The L55
+    // regex `/^[0-9a-f]{40}$/` must NOT match (length 41 + trailing `z`), so
+    // resolveSwitchOid resolves it via resolveRef into the real commit oid.
+    // Dropping the `$` anchor (`/^[0-9a-f]{40}/`) matches the 40-hex PREFIX,
+    // making resolveSwitchOid return the raw ref name as the oid — `sut.id`
+    // would then be the ref text, not the resolved commit.
+    const ctx = createMemoryContext();
+    await init(ctx);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
+    await add(ctx, ['a.txt']);
+    const c = await commit(ctx, { message: 'first', author });
+    const hexPrefixRef = `${'a'.repeat(40)}z`; // 40 hex chars + non-hex `z`
+    // Write the loose ref directly (resolveRef joins the name onto gitDir).
+    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/${hexPrefixRef}`, `${c.id}\n`);
+
+    // Act — detach:true forces the detached branch; target is the hex-prefix ref.
+    const sut = await checkout(ctx, { target: hexPrefixRef, detach: true });
+
+    // Assert — id is the RESOLVED commit oid, never the raw ref text.
+    expect(sut.detached).toBe(true);
+    expect(sut.id).toBe(c.id);
+    expect(sut.id).not.toBe(hexPrefixRef);
+    const head = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/HEAD`);
+    expect(head).toBe(`${c.id}\n`);
+  });
+
+  it('Given detach:true onto a ref name with a 40-hex SUFFIX, When checkout, Then resolveSwitchOid resolves it via resolveRef (L55 `^...{40}$` rejects the slashed target — kills the `^`-anchor drop)', async () => {
+    // Arrange — a branch literally named with 40 hex characters, so its full
+    // ref path `refs/heads/<40 hex>` ENDS with a 40-hex run. The L55 regex
+    // `/^[0-9a-f]{40}$/` must NOT match (the `refs/heads/` prefix breaks the
+    // `^` anchor), so resolveSwitchOid resolves it via resolveRef. Dropping
+    // the `^` anchor (`/[0-9a-f]{40}$/`) matches the 40-hex SUFFIX, making
+    // resolveSwitchOid return the raw `refs/heads/<40 hex>` text as the oid.
+    const ctx = createMemoryContext();
+    await init(ctx);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
+    await add(ctx, ['a.txt']);
+    const c = await commit(ctx, { message: 'first', author });
+    const hexBranch = 'b'.repeat(40); // branch name = 40 hex chars
+    await branch(ctx, { kind: 'create', name: hexBranch });
+    const fullRefPath = `refs/heads/${hexBranch}`;
+
+    // Act — target is the full ref path ending in a 40-hex run.
+    const sut = await checkout(ctx, { target: fullRefPath, detach: true });
+
+    // Assert — id is the RESOLVED commit oid, never the raw ref path text.
+    expect(sut.detached).toBe(true);
+    expect(sut.id).toBe(c.id);
+    expect(sut.id).not.toBe(fullRefPath);
+    const head = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/HEAD`);
+    expect(head).toBe(`${c.id}\n`);
+  });
+
+  it('Given a non-detached switch that both writes and deletes files, When checkout, Then changedPaths is written + deleted (L115 sum)', async () => {
+    // Arrange — main ends on a commit with only `b.txt`; `feature` sits on a
+    // commit with only `a.txt`. Switching main→feature WRITES `a.txt` and
+    // DELETES `b.txt`: written===1, deleted===1. The non-detached return at
+    // L115 sums them — an ArithmeticOperator `+`→`-` mutant would yield 0.
+    const ctx = createMemoryContext();
+    await init(ctx);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a-content');
+    await add(ctx, ['a.txt']);
+    await commit(ctx, { message: 'a-only', author });
+    await branch(ctx, { kind: 'create', name: 'feature' });
+    // Advance main: drop a.txt, add b.txt.
+    const { rm } = await import('../../../../src/application/commands/rm.js');
+    await rm(ctx, ['a.txt']);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.txt`, 'b-content');
+    await add(ctx, ['b.txt']);
+    await commit(ctx, { message: 'b-only', author });
+
+    // Act — non-detached switch back to feature (writes a.txt, deletes b.txt).
+    const sut = await checkout(ctx, { target: 'feature', force: true });
+
+    // Assert — symref branch (non-detached) and the exact sum 1 + 1 = 2.
+    expect(sut.detached).toBe(false);
+    expect(sut.branch).toBe('refs/heads/feature');
+    expect(sut.changedPaths).toBe(2);
+    expect(await ctx.fs.exists(`${ctx.layout.workDir}/a.txt`)).toBe(true);
+    expect(await ctx.fs.exists(`${ctx.layout.workDir}/b.txt`)).toBe(false);
+  });
+
+  it('Given a locked path-restore whose index read fails, When checkout, Then the index lock is released by the finally block (L226)', async () => {
+    // Arrange — path-restore from HEAD takes the LOCKED branch:
+    // acquireIndexLock creates `index.lock`, then readIndex runs inside the
+    // try. Corrupt the index so readIndex throws AFTER the lock is held but
+    // BEFORE lock.commit() — only the L226 `finally { await lock.release() }`
+    // can then remove the lock. A BlockStatement→`{}` mutant on that finally
+    // would leak `index.lock` on disk.
+    const ctx = createMemoryContext();
+    await init(ctx);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
+    await add(ctx, ['a.txt']);
+    await commit(ctx, { message: 'baseline', author });
+    // Corrupt the on-disk index: a 4-byte header readIndex rejects.
+    await ctx.fs.write(`${ctx.layout.gitDir}/index`, new Uint8Array([0x00, 0x00, 0x00, 0x00]));
+    const lockPath = `${ctx.layout.gitDir}/index.lock`;
+
+    // Act — must throw (corrupt index), and the lock must be released.
+    let caught: unknown;
+    try {
+      await checkout(ctx, { paths: ['a.txt'], source: 'HEAD' });
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert — the parse error surfaced AND the lock file is gone (released).
+    expect(caught).toBeInstanceOf(TsgitError);
+    expect(await ctx.fs.exists(lockPath)).toBe(false);
+  });
+
+  it('Given empty paths array, When checkout, Then the error names the paths option and the empty reason', async () => {
+    // Arrange — pins the L128 string literals 'paths' and 'must not be empty'.
+    const { ctx } = await seedWithBranches();
+
+    // Act
+    let caught: unknown;
+    try {
+      await checkout(ctx, { paths: [] });
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert
+    expect(caught).toBeInstanceOf(TsgitError);
+    const data = (caught as TsgitError).data;
+    expect(data.code).toBe('INVALID_OPTION');
+    if (data.code === 'INVALID_OPTION') {
+      expect(data.option).toBe('paths');
+      expect(data.reason).toBe('must not be empty');
+    }
+    expect((caught as TsgitError).message).toBe(
+      'INVALID_OPTION: invalid option: paths — must not be empty',
+    );
+  });
+
+  it('Given a glob with no match on the index source, When path-restore, Then changedPaths is 0 and HEAD is unchanged (L145 zero-match branch)', async () => {
+    // Arrange — default source 'index'; a glob matching nothing exits via the
+    // L145 `pathSet.size === 0` early return. A ConditionalExpression→false
+    // mutant would skip the early return and call materialize with an empty
+    // set; the BlockStatement mutant would drop the early return body.
+    const ctx = createMemoryContext();
+    await init(ctx);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.ts`, 'a');
+    await add(ctx, ['a.ts']);
+    const c = await commit(ctx, { message: 'baseline', author });
+
+    // Act
+    const sut = await checkout(ctx, { paths: ['*.nomatch'] });
+
+    // Assert — zero-match no-op; result resolves current HEAD, detached false.
+    expect(sut.changedPaths).toBe(0);
+    expect(sut.detached).toBe(false);
+    expect(sut.branch).toBeUndefined();
+    expect(sut.id).toBe(c.id);
+  });
+
+  it('Given a zero-match glob from HEAD AND a corrupted index, When path-restore, Then the early return short-circuits before readIndex (L145 branch + body)', async () => {
+    // Arrange — glob `*.nomatch` yields an empty pathSet. The L145
+    // `pathSet.size === 0` early return must fire BEFORE materialize touches
+    // the index. Corrupt the index so that a mutant — either the
+    // ConditionalExpression→false (skip the return) or the BlockStatement→{}
+    // (drop the return body) — would fall through to
+    // materializePathRestoreLocked → readIndex and throw a parse error.
+    const ctx = createMemoryContext();
+    await init(ctx);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.ts`, 'a');
+    await add(ctx, ['a.ts']);
+    const c = await commit(ctx, { message: 'baseline', author });
+    await ctx.fs.write(`${ctx.layout.gitDir}/index`, new Uint8Array([0, 0, 0, 0]));
+
+    // Act — must succeed: the early return never reads the corrupt index.
+    const sut = await checkout(ctx, { paths: ['*.nomatch'], source: 'HEAD' });
+
+    // Assert — no-op result, no parse error surfaced.
+    expect(sut.changedPaths).toBe(0);
+    expect(sut.id).toBe(c.id);
+    expect(sut.detached).toBe(false);
+  });
+
+  it('Given a successful path-restore from index, When run, Then result.detached is false (L168 boolean) and changedPaths sums written+deleted (L169)', async () => {
+    // Arrange — stage a file then locally modify it; path-restore from index
+    // rewrites exactly one path. Pins L168 detached:false and the L169
+    // written+deleted sum (ArithmeticOperator + → - would give 0 or negative).
+    const ctx = createMemoryContext();
+    await init(ctx);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'staged');
+    await add(ctx, ['a.txt']);
+    await commit(ctx, { message: 'c', author });
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'dirty');
+
+    // Act
+    const sut = await checkout(ctx, { paths: ['a.txt'] });
+
+    // Assert
+    expect(sut.detached).toBe(false);
+    expect(sut.changedPaths).toBe(1);
+  });
+
+  it('Given a path-restore from HEAD that rewrites a file, When run, Then the index is committed with HEADs blob id (L215 written>0 guard + L219 commit block)', async () => {
+    // Arrange — commit `h.txt`, then stage a divergent version so the index
+    // records a DIFFERENT blob id than HEAD. Path-restore from HEAD goes
+    // through the locked path: the L215 `result.written > 0` guard and the
+    // L219 `lock.commit` block must run so the index ends up recording
+    // HEAD's blob id. A ConditionalExpression→false or EqualityOperator
+    // (> → <=) mutant skips the commit, leaving the index on the staged blob.
+    const ctx = createMemoryContext();
+    await init(ctx);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/h.txt`, 'head-version');
+    await add(ctx, ['h.txt']);
+    await commit(ctx, { message: 'c', author });
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/h.txt`, 'staged-version');
+    await add(ctx, ['h.txt']);
+
+    // Capture HEAD's blob id and the (different) staged blob id.
+    const { readIndex } = await import('../../../../src/application/primitives/read-index.js');
+    const { resolveRef } = await import('../../../../src/application/primitives/resolve-ref.js');
+    const { readTree } = await import('../../../../src/application/primitives/read-tree.js');
+    const headOid = await resolveRef(ctx, 'HEAD');
+    const headTree = await readTree(ctx, headOid);
+    const headBlobId = headTree.entries.find((e) => e.name === 'h.txt')?.id;
+    const stagedBlobId = (await readIndex(ctx)).entries.find((e) => e.path === 'h.txt')?.id;
+    expect(headBlobId).toBeDefined();
+    expect(stagedBlobId).not.toBe(headBlobId);
+
+    // Act
+    const sut = await checkout(ctx, { paths: ['h.txt'], source: 'HEAD' });
+
+    // Assert — disk reverts AND the index commit recorded HEAD's blob id.
+    expect(sut.changedPaths).toBe(1);
+    expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/h.txt`)).toBe('head-version');
+    const committedIndex = await readIndex(ctx);
+    expect(committedIndex.entries.find((e) => e.path === 'h.txt')?.id).toBe(headBlobId);
+  });
+
+  it('Given a path-restore from HEAD over a nested tree, When run, Then the nested file is restored from HEAD', async () => {
+    // Arrange — commit a file inside a subdirectory, then locally modify it.
+    // Exercises enumerateSourcePaths over a tree containing a DIRECTORY entry
+    // (L246) — directory entries are filtered out of the path universe.
+    const ctx = createMemoryContext();
+    await init(ctx);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/dir/nested.txt`, 'nested-head');
+    await add(ctx, ['dir/nested.txt']);
+    await commit(ctx, { message: 'c', author });
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/dir/nested.txt`, 'dirty');
+
+    // Act
+    const sut = await checkout(ctx, { paths: ['dir/nested.txt'], source: 'HEAD' });
+
+    // Assert
+    expect(sut.changedPaths).toBe(1);
+    expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/dir/nested.txt`)).toBe('nested-head');
+  });
+
+  it('Given both target and paths, When checkout, Then the error names the paths option and the combine reason (L259 literals)', async () => {
+    // Arrange — pins the L259 string literals 'paths' and
+    // 'cannot be combined with target'.
+    const { ctx } = await seedWithBranches();
+
+    // Act
+    let caught: unknown;
+    try {
+      await checkout(ctx, {
+        target: 'main',
+        paths: ['a.txt'],
+      } as unknown as Parameters<typeof checkout>[1]);
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert
+    expect(caught).toBeInstanceOf(TsgitError);
+    const data = (caught as TsgitError).data;
+    expect(data.code).toBe('INVALID_OPTION');
+    if (data.code === 'INVALID_OPTION') {
+      expect(data.option).toBe('paths');
+      expect(data.reason).toBe('cannot be combined with target');
+    }
+    expect((caught as TsgitError).message).toBe(
+      'INVALID_OPTION: invalid option: paths — cannot be combined with target',
+    );
+  });
+
+  it('Given neither target nor paths, When checkout, Then the error names the target option and the requirement reason (L262 literals)', async () => {
+    // Arrange — pins the L262 string literals 'target' and
+    // 'either target or paths must be provided'.
+    const { ctx } = await seedWithBranches();
+
+    // Act
+    let caught: unknown;
+    try {
+      await checkout(ctx, {} as unknown as Parameters<typeof checkout>[1]);
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert
+    expect(caught).toBeInstanceOf(TsgitError);
+    const data = (caught as TsgitError).data;
+    expect(data.code).toBe('INVALID_OPTION');
+    if (data.code === 'INVALID_OPTION') {
+      expect(data.option).toBe('target');
+      expect(data.reason).toBe('either target or paths must be provided');
+    }
+    expect((caught as TsgitError).message).toBe(
+      'INVALID_OPTION: invalid option: target — either target or paths must be provided',
+    );
+  });
+
+  it('Given a bare repository, When checkout, Then throws BARE_REPOSITORY naming the checkout operation (L253 literal)', async () => {
+    // Arrange — a bare repo; assertNotBare(ctx, 'checkout') must throw with
+    // the operation string 'checkout'. A StringLiteral mutant emptying the
+    // 'checkout' argument would surface an empty operation in the message.
+    const ctx = createMemoryContext();
+    await init(ctx);
+    const cfgPath = `${ctx.layout.gitDir}/config`;
+    const cfg = await ctx.fs.readUtf8(cfgPath);
+    await ctx.fs.writeUtf8(cfgPath, `${cfg}\n[core]\n\tbare = true\n`);
+
+    // Act
+    let caught: unknown;
+    try {
+      await checkout(ctx, { target: 'main' });
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert
+    expect(caught).toBeInstanceOf(TsgitError);
+    const data = (caught as TsgitError).data;
+    expect(data.code).toBe('BARE_REPOSITORY');
+    if (data.code === 'BARE_REPOSITORY') {
+      expect(data.operation).toBe('checkout');
+    }
+    expect((caught as TsgitError).message).toBe(
+      'BARE_REPOSITORY: operation requires a working tree: checkout',
+    );
+  });
+});
+
 import { recordingProgress, withProgress } from './fixtures.js';
 
 describe('checkout — progress reporting', () => {

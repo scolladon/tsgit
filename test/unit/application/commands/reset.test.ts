@@ -4,6 +4,7 @@ import { add } from '../../../../src/application/commands/add.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
 import { reset } from '../../../../src/application/commands/reset.js';
+import { rm } from '../../../../src/application/commands/rm.js';
 import { readIndex } from '../../../../src/application/primitives/read-index.js';
 import type { AuthorIdentity, ObjectId } from '../../../../src/domain/objects/index.js';
 
@@ -400,5 +401,87 @@ describe('reset', () => {
     const data = (caught as { data?: { code?: string; operation?: string } })?.data;
     expect(data?.code).toBe('BARE_REPOSITORY');
     expect(data?.operation).toBe('reset --hard');
+  });
+
+  it('Given a detached HEAD, When reset, Then the HEAD file is rewritten to "<id>\\n" and branch is undefined', async () => {
+    // Arrange — detach HEAD onto c2 by overwriting the HEAD file with a raw oid.
+    const { ctx, c1, c2 } = await seedTwoCommits();
+    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, `${c2}\n`);
+
+    // Act
+    const sut = await reset(ctx, { mode: 'soft', target: c1 });
+
+    // Assert — the detached-HEAD branch writes `${gitDir}/HEAD` with `${id}\n`.
+    // Killing L64 BlockStatement: a skipped write would leave HEAD at c2.
+    // Killing L65 path literal: an empty path would leave HEAD at c2.
+    // Killing L65 content literal: empty content would make headRaw === ''.
+    expect(sut.branch).toBeUndefined();
+    expect(sut.id).toBe(c1);
+    expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/HEAD`)).toBe(`${c1}\n`);
+  });
+
+  it('Given a hard reset forward (written>0, deleted=0), When reset, Then the index commit runs and adds the new path', async () => {
+    // Arrange — at c1 the working tree + index hold only a.txt. Resetting
+    // forward to c2 writes b.txt (and re-writes a.txt via forceRewriteAll) so
+    // written>0 while deleted=0. The lock.commit MUST run for b.txt to land in
+    // the index. Kills the `result.written <= 0` mutant: that mutant turns the
+    // guard into `false || false` → skip → index would stay ['a.txt'].
+    const { ctx, c1, c2 } = await seedTwoCommits();
+    await reset(ctx, { mode: 'hard', target: c1 });
+    const mid = await readIndex(ctx);
+    expect(mid.entries.filter((e) => e.flags.stage === 0).map((e) => e.path)).toEqual(['a.txt']);
+
+    // Act
+    await reset(ctx, { mode: 'hard', target: c2 });
+
+    // Assert
+    const index = await readIndex(ctx);
+    const paths = index.entries.filter((e) => e.flags.stage === 0).map((e) => e.path);
+    expect(paths).toEqual(['a.txt', 'b.txt']);
+    expect(await ctx.fs.exists(`${ctx.layout.workDir}/b.txt`)).toBe(true);
+  });
+
+  it('Given a hard reset to an empty-tree commit (written=0, deleted>0), When reset, Then the index commit runs and drops every path', async () => {
+    // Arrange — c1 holds a.txt, cEmpty holds nothing. Resetting from c1 to
+    // cEmpty deletes a.txt: deleted>0 while written=0. The lock.commit MUST run
+    // for the index to empty. Kills `LogicalOperator -> &&` (false && true →
+    // skip), `L125:31 ConditionalExpression -> false` (written>0 || false →
+    // false → skip) and `deleted <= 0` (false || false → skip): every skip
+    // would leave a.txt in the index.
+    const ctx = createMemoryContext();
+    await init(ctx);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
+    await add(ctx, ['a.txt']);
+    const c1 = await commit(ctx, { message: 'c1', author });
+    await rm(ctx, ['a.txt'], {});
+    const cEmpty = await commit(ctx, { message: 'empty', author });
+    await reset(ctx, { mode: 'hard', target: c1.id });
+    const mid = await readIndex(ctx);
+    expect(mid.entries.filter((e) => e.flags.stage === 0).map((e) => e.path)).toEqual(['a.txt']);
+
+    // Act
+    await reset(ctx, { mode: 'hard', target: cEmpty.id });
+
+    // Assert
+    const index = await readIndex(ctx);
+    expect(index.entries.filter((e) => e.flags.stage === 0)).toEqual([]);
+    expect(await ctx.fs.exists(`${ctx.layout.workDir}/a.txt`)).toBe(false);
+  });
+
+  it('Given a hard reset to an empty-tree commit on an empty repo (written=0, deleted=0), When reset, Then the index commit is skipped and no index file is written', async () => {
+    // Arrange — a fresh repo with a single empty-tree commit. The hard reset
+    // computes written=0 and deleted=0, so the genuine code skips lock.commit
+    // and the index file is never created. Kills `ConditionalExpression ->
+    // true`, `result.written >= 0` and `result.deleted >= 0`: each turns the
+    // guard always-true → lock.commit([]) runs → an (empty) index file appears.
+    const ctx = createMemoryContext();
+    await init(ctx);
+    const empty = await commit(ctx, { message: 'empty', author });
+
+    // Act
+    await reset(ctx, { mode: 'hard', target: empty.id });
+
+    // Assert
+    expect(await ctx.fs.exists(`${ctx.layout.gitDir}/index`)).toBe(false);
   });
 });

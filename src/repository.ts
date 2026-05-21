@@ -200,6 +200,7 @@ export const openRepository = async (
   let state: DisposeState = 'OPEN';
   let disposePromise: Promise<void> | undefined;
   const dispose = async (): Promise<void> => {
+    // Stryker disable next-line ConditionalExpression: equivalent — `state === 'DISPOSED'` implies `disposePromise` is already set (state only flips to DISPOSED inside the IIFE assigned to disposePromise), so the next guard returns the same resolved promise; removing this fast-path changes nothing observable.
     if (state === 'DISPOSED') return;
     if (disposePromise !== undefined) return disposePromise;
     state = 'DISPOSING';
@@ -221,9 +222,11 @@ export const openRepository = async (
     // ctx.signal is unconditionally assigned at construction (line above the
     // ctx.freeze) so the non-null assertion is safe. The aborted check is
     // synchronous against `controller.abort()` inside dispose() — atomic gate.
-    // `state !== 'OPEN'` distinguishes REPOSITORY_DISPOSED (post-dispose) from
-    // OPERATION_ABORTED (signal-only abort by the caller).
-    if (ctx.signal!.aborted || state !== 'OPEN') {
+    // A `state !== 'OPEN'` operand would be dead code here: dispose() flips
+    // state away from 'OPEN' and calls controller.abort() in the same tick
+    // (no await between), so `ctx.signal.aborted` is already true in every
+    // non-'OPEN' state — `aborted` alone fully covers the disposed case.
+    if (ctx.signal!.aborted) {
       throw repositoryDisposed();
     }
   };

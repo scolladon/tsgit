@@ -60,8 +60,22 @@ const listBranches = async (ctx: Context): Promise<BranchResult> => {
     const id = await resolveRef(ctx, name);
     branches.push({ name, id, current: name === currentTarget });
   }
-  branches.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  branches.sort((a, b) => compareRefName(a.name, b.name));
   return { kind: 'list', branches };
+};
+
+/**
+ * Total order over ref names: `-1` / `0` / `1`. Exported for direct unit
+ * testing of the equal-keys (`0`) case, which `listBranches` cannot exercise
+ * because directory entries are unique. A code-unit comparison (not
+ * `localeCompare`) matches Git's byte-wise ref ordering.
+ */
+export const compareRefName = (left: RefName, right: RefName): number => {
+  const lower = left < right;
+  if (lower) return -1;
+  const higher = left > right;
+  if (higher) return 1;
+  return 0;
 };
 
 const createBranch = async (

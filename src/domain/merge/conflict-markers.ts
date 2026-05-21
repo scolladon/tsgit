@@ -16,7 +16,9 @@ type LabelSide = 'ours' | 'base' | 'theirs';
 
 function isControlCode(code: number): boolean {
   // C0 controls U+0000–U+001F, plus DEL and C1 controls U+007F–U+009F.
-  return (code >= 0x00 && code <= 0x1f) || (code >= 0x7f && code <= 0x9f);
+  // `code` comes from charCodeAt so it is always >= 0 (or NaN, for which every
+  // comparison is false) — the lower `>= 0x00` bound is redundant and omitted.
+  return code <= 0x1f || (code >= 0x7f && code <= 0x9f);
 }
 
 function isBidiOrInvisible(code: number): boolean {
@@ -34,6 +36,7 @@ function isBidiOrInvisible(code: number): boolean {
 }
 
 function hasForbiddenChar(label: string): boolean {
+  // Stryker disable next-line EqualityOperator: equivalent — at i === label.length, charCodeAt returns NaN; isControlCode/isBidiOrInvisible(NaN) are both false, so the extra iteration changes nothing
   for (let i = 0; i < label.length; i++) {
     const code = label.charCodeAt(i);
     if (isControlCode(code) || isBidiOrInvisible(code)) return true;
@@ -73,6 +76,7 @@ function concatEnsuringTrailingLf(lines: ReadonlyArray<Uint8Array>): Uint8Array 
   if (lines.length === 0) return new Uint8Array(0);
   const inner = sumBytes(lines);
   const last = lines[lines.length - 1]!;
+  // Stryker disable next-line ConditionalExpression: equivalent — when last.length === 0, last[-1] is undefined and undefined !== LF is true, so the right operand already yields true
   const needsLf = last.length === 0 || last[last.length - 1] !== LF;
   const block = new Uint8Array(inner + (needsLf ? 1 : 0));
   let offset = 0;
@@ -80,6 +84,7 @@ function concatEnsuringTrailingLf(lines: ReadonlyArray<Uint8Array>): Uint8Array 
     block.set(line, offset);
     offset += line.length;
   }
+  // Stryker disable next-line ConditionalExpression: equivalent — when needsLf is false, offset === block.length, so the out-of-bounds typed-array write is a silent no-op
   if (needsLf) block[offset] = LF;
   return block;
 }

@@ -69,6 +69,7 @@ export const defaultDelay = (ms: number, signal?: AbortSignal): Promise<void> =>
   return new Promise<void>((resolve, reject) => {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const onAbort = (): void => {
+      // Stryker disable next-line ConditionalExpression: equivalent — `timer` is assigned synchronously by the `setTimeout` call below before `addEventListener` registers `onAbort`, so by the time the abort listener can fire `timer` is always defined.
       if (timer !== undefined) clearTimeout(timer);
       reject(signal?.reason);
     };
@@ -77,6 +78,7 @@ export const defaultDelay = (ms: number, signal?: AbortSignal): Promise<void> =>
       resolve();
     }, ms);
     if (signal) {
+      // Stryker disable next-line ObjectLiteral,BooleanLiteral: equivalent — `onAbort` settles the promise on its first (and only) firing; AbortSignal aborts at most once and the natural-resolve path also calls `removeEventListener`, so dropping `once` only leaves a listener on an already-settled signal with no observable effect.
       signal.addEventListener('abort', onAbort, { once: true });
     }
   });
@@ -130,6 +132,7 @@ interface AttemptContext {
 }
 
 const shouldStop = (ctx: AttemptContext, isRetryable: RetryPredicate): boolean => {
+  // Stryker disable next-line ConditionalExpression: equivalent — `isAbortError` returns false for `undefined` (`undefined instanceof DOMException` is false), so `error !== undefined && isAbortError(error)` is exactly `isAbortError(error)`; replacing the left operand with `true` cannot change the result.
   if (ctx.outcome.error !== undefined && isAbortError(ctx.outcome.error)) return true;
   if (ctx.isLast) return true;
   return !isRetryable(buildRetryArgs(ctx.outcome, ctx.attempt));

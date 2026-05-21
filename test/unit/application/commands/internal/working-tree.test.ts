@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../../src/adapters/memory/memory-adapter.js';
 import {
   materializeFile,
@@ -6,8 +6,14 @@ import {
   removeFile,
   validatePath,
 } from '../../../../../src/application/commands/internal/working-tree.js';
-import { TsgitError } from '../../../../../src/domain/index.js';
+import {
+  permissionDenied,
+  TsgitError,
+  unsupportedOperation,
+} from '../../../../../src/domain/index.js';
 import type { FilePath } from '../../../../../src/domain/objects/object-id.js';
+import type { Context } from '../../../../../src/ports/context.js';
+import type { FileHandle, FileSystem } from '../../../../../src/ports/file-system.js';
 
 const expectError = async (
   fn: () => unknown | Promise<unknown>,
@@ -22,6 +28,25 @@ const expectError = async (
   expect(caught).toBeInstanceOf(TsgitError);
   expect((caught as TsgitError).data.code).toBe(code);
   return caught as TsgitError;
+};
+
+/**
+ * Build a context whose `openWithNoFollow` throws a caller-supplied error so
+ * the catch-branch fallback / rethrow logic in `materializeFile` is exercised
+ * — the memory adapter natively supports `openWithNoFollow`, so its happy path
+ * never reaches that branch.
+ */
+const contextWithFailingOpen = (
+  error: unknown,
+): { ctx: Context; chmod: ReturnType<typeof vi.fn> } => {
+  const base = createMemoryContext();
+  const chmod = vi.fn(base.fs.chmod);
+  const fs: FileSystem = {
+    ...base.fs,
+    chmod,
+    openWithNoFollow: (): Promise<FileHandle> => Promise.reject(error),
+  };
+  return { ctx: { ...base, fs }, chmod };
 };
 
 describe('internal/working-tree', () => {
@@ -180,16 +205,194 @@ describe('internal/working-tree', () => {
       expect(new TextDecoder().decode(bytes)).toBe('target/path');
     });
 
-    it('Given mode 160000 (gitlink), When materializeFile, Then throws UNSUPPORTED_OPERATION', async () => {
+    it('Given mode 160000 (gitlink), When materializeFile, Then throws UNSUPPORTED_OPERATION with gitlink operation/reason', async () => {
       // Arrange
       const ctx = createMemoryContext();
       const path = 'sub-module' as FilePath;
 
       // Act
-      await expectError(
+      const err = await expectError(
         () => materializeFile(ctx, path, new Uint8Array(), '160000'),
         'UNSUPPORTED_OPERATION',
       );
+
+      // Assert — exact factory args (kills the L43 StringLiteral mutants).
+      const data = err.data;
+      if (data.code === 'UNSUPPORTED_OPERATION') {
+        expect(data.operation).toBe('materializeFile');
+        expect(data.reason).toBe('gitlink (submodule) not supported in v1');
+      }
+    });
+
+    it('Given mode 40000 (tree), When materializeFile, Then throws UNSUPPORTED_OPERATION with directory-mode reason', async () => {
+      // Arrange — tree mode is not a leaf; covers the L45 guard + L47 StringLiterals.
+      const ctx = createMemoryContext();
+      const path = 'a-dir' as FilePath;
+
+      // Act
+      const err = await expectError(
+        () => materializeFile(ctx, path, new Uint8Array(), '40000'),
+        'UNSUPPORTED_OPERATION',
+      );
+
+      // Assert — exact factory args (kills the L47 StringLiteral mutants).
+      const data = err.data;
+      if (data.code === 'UNSUPPORTED_OPERATION') {
+        expect(data.operation).toBe('materializeFile');
+        expect(data.reason).toBe('directory mode is not a leaf');
+      }
+      // No file written for a tree-mode path.
+      expect(await ctx.fs.exists(`${ctx.layout.workDir}/${path}`)).toBe(false);
+    });
+
+    it('Given mode 100644, When materializeFile, Then chmod is called with 0o644 (not 0o755)', async () => {
+      // Arrange
+      const base = createMemoryContext();
+      const chmod = vi.fn(base.fs.chmod);
+      const ctx: Context = { ...base, fs: { ...base.fs, chmod } };
+      const path = 'src/regular.txt' as FilePath;
+
+      // Act
+      await materializeFile(ctx, path, new TextEncoder().encode('x'), '100644');
+
+      // Assert — kills L71 EqualityOperator / ConditionalExpression and the chmod-arg path.
+      expect(chmod).toHaveBeenCalledTimes(1);
+      expect(chmod).toHaveBeenCalledWith(`${ctx.layout.workDir}/${path}`, 0o644);
+    });
+
+    it('Given mode 100755, When materializeFile, Then chmod is called with 0o755 (not 0o644)', async () => {
+      // Arrange
+      const base = createMemoryContext();
+      const chmod = vi.fn(base.fs.chmod);
+      const ctx: Context = { ...base, fs: { ...base.fs, chmod } };
+      const path = 'bin/exec.sh' as FilePath;
+
+      // Act
+      await materializeFile(ctx, path, new TextEncoder().encode('#!/bin/sh\n'), '100755');
+
+      // Assert — kills L69 ConditionalExpression and the chmod-arg path.
+      expect(chmod).toHaveBeenCalledTimes(1);
+      expect(chmod).toHaveBeenCalledWith(`${ctx.layout.workDir}/${path}`, 0o755);
+    });
+
+    it('Given mode 120000 (symlink), When materializeFile, Then chmod is never called', async () => {
+      // Arrange — symlink mode matches neither chmod branch; both guards must be false.
+      const base = createMemoryContext();
+      const chmod = vi.fn(base.fs.chmod);
+      const ctx: Context = { ...base, fs: { ...base.fs, chmod } };
+      const path = 'a-link' as FilePath;
+
+      // Act
+      await materializeFile(ctx, path, new TextEncoder().encode('target'), '120000');
+
+      // Assert — kills the L69/L71 ConditionalExpression `true` mutants.
+      expect(chmod).not.toHaveBeenCalled();
+    });
+
+    it('Given openWithNoFollow throws UNSUPPORTED_OPERATION, When materializeFile, Then it falls back to a plain write', async () => {
+      // Arrange — emulates browser OPFS where O_NOFOLLOW is unavailable.
+      const { ctx } = contextWithFailingOpen(
+        unsupportedOperation('openWithNoFollow', 'OPFS has no symlinks'),
+      );
+      const path = 'src/fallback.txt' as FilePath;
+
+      // Act — covers the L60-62 catch block + L61 equality check.
+      await materializeFile(ctx, path, new TextEncoder().encode('via-fallback'), '100644');
+
+      // Assert — the blob landed through the plain-write fallback.
+      expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/${path}`)).toBe('via-fallback');
+    });
+
+    it('Given openWithNoFollow throws a non-UNSUPPORTED TsgitError, When materializeFile, Then it rethrows that error', async () => {
+      // Arrange — a different TsgitError must NOT trigger the fallback write.
+      const { ctx } = contextWithFailingOpen(permissionDenied('/repo/src/denied.txt'));
+      const path = 'src/denied.txt' as FilePath;
+
+      // Act — covers the L63-65 else branch (rethrow).
+      const err = await expectError(
+        () => materializeFile(ctx, path, new TextEncoder().encode('nope'), '100644'),
+        'PERMISSION_DENIED',
+      );
+
+      // Assert — the original error propagated; no fallback content was written.
+      const data = err.data;
+      if (data.code === 'PERMISSION_DENIED') {
+        expect(data.path).toBe('/repo/src/denied.txt');
+      }
+      expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/${path}`)).toBe('');
+    });
+
+    it('Given openWithNoFollow throws a plain non-TsgitError, When materializeFile, Then it rethrows (not a TsgitError → no fallback)', async () => {
+      // Arrange — proves the L61 `instanceof TsgitError` guard, not just the code check.
+      const sentinel = new Error('disk gone');
+      const { ctx } = contextWithFailingOpen(sentinel);
+      const path = 'src/plain-error.txt' as FilePath;
+
+      // Act + Assert — the raw error propagates unchanged.
+      let caught: unknown;
+      try {
+        await materializeFile(ctx, path, new TextEncoder().encode('nope'), '100644');
+      } catch (e) {
+        caught = e;
+      }
+      expect(caught).toBe(sentinel);
+      // No fallback write occurred.
+      expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/${path}`)).toBe('');
+    });
+
+    it('Given a successful no-follow write, When materializeFile, Then the file handle is closed in the finally block', async () => {
+      // Arrange — wrap the memory adapter's real handle so `write` still
+      // lands the bytes, but `close` is a spy. The L66 `finally` block
+      // (`await handle?.close()`) must run on the happy path; a BlockStatement
+      // mutant emptying that finally to `{}` would leak the descriptor.
+      const base = createMemoryContext();
+      const close = vi.fn<() => Promise<void>>(() => Promise.resolve());
+      const fs: FileSystem = {
+        ...base.fs,
+        openWithNoFollow: async (path: string, mode: 'read' | 'write'): Promise<FileHandle> => {
+          const real = await base.fs.openWithNoFollow(path, mode);
+          return { ...real, close };
+        },
+      };
+      const ctx: Context = { ...base, fs };
+      const path = 'src/closed.txt' as FilePath;
+
+      // Act
+      await materializeFile(ctx, path, new TextEncoder().encode('handle-content'), '100644');
+
+      // Assert — close ran exactly once AND the write still succeeded.
+      expect(close).toHaveBeenCalledTimes(1);
+      expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/${path}`)).toBe('handle-content');
+    });
+
+    it('Given the no-follow write itself throws, When materializeFile, Then the handle is still closed before the error propagates', async () => {
+      // Arrange — `handle.write` rejects, so the finally block is the only
+      // place `close` can run. A BlockStatement→`{}` mutant on the L66
+      // finally would skip `close` entirely on the error path.
+      const base = createMemoryContext();
+      const close = vi.fn<() => Promise<void>>(() => Promise.resolve());
+      const writeError = new Error('write blew up');
+      const fs: FileSystem = {
+        ...base.fs,
+        openWithNoFollow: async (path: string, mode: 'read' | 'write'): Promise<FileHandle> => {
+          const real = await base.fs.openWithNoFollow(path, mode);
+          return { ...real, write: () => Promise.reject(writeError), close };
+        },
+      };
+      const ctx: Context = { ...base, fs };
+      const path = 'src/error-then-close.txt' as FilePath;
+
+      // Act
+      let caught: unknown;
+      try {
+        await materializeFile(ctx, path, new TextEncoder().encode('x'), '100644');
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert — the original error propagated AND the handle was closed.
+      expect(caught).toBe(writeError);
+      expect(close).toHaveBeenCalledTimes(1);
     });
 
     it("Given a path containing '.git', When materializeFile, Then throws PATHSPEC_OUTSIDE_REPO before any I/O", async () => {
@@ -221,26 +424,49 @@ describe('internal/working-tree', () => {
       expect(await ctx.fs.exists(`${ctx.layout.workDir}/${path}`)).toBe(false);
     });
 
-    it('Given a directory at the path, When removeFile, Then throws CHECKOUT_OVERWRITE_DIRTY', async () => {
+    it('Given a directory at the path, When removeFile, Then throws CHECKOUT_OVERWRITE_DIRTY listing that path', async () => {
       // Arrange
       const ctx = createMemoryContext();
       const dir = 'subdir' as FilePath;
       await ctx.fs.mkdir(`${ctx.layout.workDir}/${dir}`);
 
       // Act
-      await expectError(() => removeFile(ctx, dir), 'CHECKOUT_OVERWRITE_DIRTY');
+      const err = await expectError(() => removeFile(ctx, dir), 'CHECKOUT_OVERWRITE_DIRTY');
+
+      // Assert — the offending path is reported (kills L99 ArrayDeclaration `[]`).
+      const data = err.data;
+      if (data.code === 'CHECKOUT_OVERWRITE_DIRTY') {
+        expect(data.paths).toEqual([dir]);
+      }
     });
 
-    it('Given a missing file, When removeFile, Then throws CHECKOUT_OVERWRITE_DIRTY (treated as a divergence)', async () => {
+    it('Given a missing file, When removeFile, Then throws CHECKOUT_OVERWRITE_DIRTY listing that path (treated as a divergence)', async () => {
       // Arrange — the contract says: if the working tree state doesn't match what we wrote, refuse.
       // Missing-when-expected qualifies as divergence; safer than silently succeeding.
       const ctx = createMemoryContext();
+      const path = 'missing.txt' as FilePath;
 
       // Act
-      await expectError(
-        () => removeFile(ctx, 'missing.txt' as FilePath),
-        'CHECKOUT_OVERWRITE_DIRTY',
-      );
+      const err = await expectError(() => removeFile(ctx, path), 'CHECKOUT_OVERWRITE_DIRTY');
+
+      // Assert — the offending path is reported (kills L96 ArrayDeclaration `[]`).
+      const data = err.data;
+      if (data.code === 'CHECKOUT_OVERWRITE_DIRTY') {
+        expect(data.paths).toEqual([path]);
+      }
+    });
+
+    it('Given a symlink at the path, When removeFile, Then it is removed (covers the !isSymbolicLink guard)', async () => {
+      // Arrange — a symlink leaf is a legitimate removal target, not a divergence.
+      const ctx = createMemoryContext();
+      const path = 'a-symlink' as FilePath;
+      await ctx.fs.symlink('target', `${ctx.layout.workDir}/${path}`);
+
+      // Act
+      await removeFile(ctx, path);
+
+      // Assert
+      expect(await ctx.fs.exists(`${ctx.layout.workDir}/${path}`)).toBe(false);
     });
 
     it('Given a path that fails validation, When removeFile, Then throws PATHSPEC_OUTSIDE_REPO before any I/O', async () => {

@@ -89,6 +89,7 @@ async function* walkCommitClosure(
   })) {
     if (tryEmit(state, commit.id)) yield commit.id;
     if (tryEmit(state, commit.data.tree)) yield commit.data.tree;
+    // Stryker disable next-line ObjectLiteral: equivalent — walkTree defaults `recursive` to `true` when the option is absent, so `{}` behaves identically to `{ recursive: true }`.
     for await (const entry of walkTree(ctx, commit.data.tree, { recursive: true })) {
       if (isGitlink(entry.mode)) continue;
       if (tryEmit(state, entry.id)) yield entry.id;

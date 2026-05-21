@@ -83,6 +83,24 @@ describe('buildPack', () => {
     expect(first.type).toBe(PACK_ENTRY_TYPE.BLOB);
   });
 
+  it('Given a tree oid, When buildPack runs, Then the entry header decodes as TREE', async () => {
+    // Arrange — kills the `packEntryTypeFor("tree")` mutant: dropping the
+    // `case 'tree'` body falls through to `'blob'`, mislabeling the entry.
+    const ctx = await buildSeededContext();
+    const blob: Blob = { type: 'blob', content: new Uint8Array([7]), id: '' as ObjectId };
+    const blobId = await writeObject(ctx, blob);
+    const treeId = await writeTree(ctx, [
+      { name: 'a.bin', mode: '100644' as FileMode, id: blobId },
+    ]);
+
+    // Act — pack the tree alone so its entry sits first in the pack.
+    const sut = await buildPack(ctx, { oids: [treeId] });
+
+    // Assert
+    const header = parsePackEntryHeader(sut.bytes, PACK_HEADER_BYTES, ctx.hashConfig);
+    expect(header.type).toBe(PACK_ENTRY_TYPE.TREE);
+  });
+
   it('Given a commit oid, When buildPack runs, Then the entry header decodes as COMMIT', async () => {
     // Arrange — kills the `packEntryTypeFor("commit")` mutant by exercising
     // the commit branch in isolation.

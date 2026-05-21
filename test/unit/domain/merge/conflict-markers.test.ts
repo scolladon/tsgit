@@ -193,6 +193,75 @@ describe('writeConflictMarkers — label validation (negative)', () => {
     );
   });
 
+  it('Given label of all printable ASCII (U+0020\u2013U+007E), When writeConflictMarkers called, Then accepted (no char treated as control)', () => {
+    // Arrange \u2014 every printable code point; none is a control or bidi/invisible char
+    let printable = '';
+    for (let code = 0x20; code <= 0x7e; code++) {
+      const ch = String.fromCharCode(code);
+      // skip marker-substring-forming chars handled by a separate guard
+      if (ch === '<' || ch === '=' || ch === '>' || ch === '|') continue;
+      printable += ch;
+    }
+
+    // Act
+    const sut = writeConflictMarkers([enc('a\n')], [enc('b\n')], {
+      labels: { ours: printable, theirs: 'HEAD' },
+    });
+
+    // Assert \u2014 label round-trips verbatim; isControlCode returned false for every char
+    const text = new TextDecoder().decode(sut);
+    expect(text).toContain(`<<<<<<< ${printable}\n`);
+  });
+
+  it('Given label with U+001F (C0 control upper boundary), When writeConflictMarkers called, Then throws INVALID_MERGE_INPUT', () => {
+    expectMergeError(
+      () => writeConflictMarkers([], [], { labels: { ours: 'HEAD\u001F', theirs: 'HEAD' } }),
+      'forbidden control character',
+    );
+  });
+
+  it('Given label with U+009F (C1 control upper boundary), When writeConflictMarkers called, Then throws INVALID_MERGE_INPUT', () => {
+    expectMergeError(
+      () => writeConflictMarkers([], [], { labels: { ours: 'HEAD\u009F', theirs: 'HEAD' } }),
+      'forbidden control character',
+    );
+  });
+
+  it('Given label with U+202A (bidi LRE, lower boundary of override range), When writeConflictMarkers called, Then throws INVALID_MERGE_INPUT', () => {
+    expectMergeError(
+      () => writeConflictMarkers([], [], { labels: { ours: 'HEAD\u202A', theirs: 'HEAD' } }),
+      'forbidden control character',
+    );
+  });
+
+  it('Given label with U+2066 (bidi isolate LRI, lower boundary), When writeConflictMarkers called, Then throws INVALID_MERGE_INPUT', () => {
+    expectMergeError(
+      () => writeConflictMarkers([], [], { labels: { ours: 'HEAD\u2066', theirs: 'HEAD' } }),
+      'forbidden control character',
+    );
+  });
+
+  it('Given label with U+2069 (bidi isolate PDI, upper boundary), When writeConflictMarkers called, Then throws INVALID_MERGE_INPUT', () => {
+    expectMergeError(
+      () => writeConflictMarkers([], [], { labels: { ours: 'HEAD\u2069', theirs: 'HEAD' } }),
+      'forbidden control character',
+    );
+  });
+
+  it('Given label with U+200C (ZWNJ invisible), When writeConflictMarkers called, Then throws INVALID_MERGE_INPUT', () => {
+    expectMergeError(
+      () => writeConflictMarkers([], [], { labels: { ours: 'HEAD\u200C', theirs: 'HEAD' } }),
+      'forbidden control character',
+    );
+  });
+
+  it('Given label with U+2060 (WORD JOINER invisible), When writeConflictMarkers called, Then throws INVALID_MERGE_INPUT', () => {
+    expectMergeError(
+      () => writeConflictMarkers([], [], { labels: { ours: 'HEAD\u2060', theirs: 'HEAD' } }),
+      'forbidden control character',
+    );
+  });
+
   it('Given label with U+202E (bidi RLO override), When writeConflictMarkers called, Then throws INVALID_MERGE_INPUT', () => {
     expectMergeError(() =>
       writeConflictMarkers([], [], { labels: { ours: 'HEAD\u202E<<<', theirs: 'HEAD' } }),

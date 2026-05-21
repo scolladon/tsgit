@@ -36,6 +36,7 @@ export const validateUrl = async (raw: string, opts: UrlValidateOptions): Promis
 };
 
 const rejectControlChars = (raw: string): void => {
+  // Stryker disable next-line EqualityOperator: equivalent — at i === raw.length, charCodeAt returns NaN and NaN === 0x0a/0x0d is false, so the extra iteration is a no-op.
   for (let i = 0; i < raw.length; i += 1) {
     const code = raw.charCodeAt(i);
     if (code === 0x0a || code === 0x0d) {
@@ -85,8 +86,9 @@ const parseIpv4 = (addr: string): ReadonlyArray<number> | undefined => {
   const out: number[] = [];
   for (const part of parts) {
     if (!/^\d{1,3}$/.test(part)) return undefined;
+    // `part` matched `\d{1,3}`, so `Number(part)` is 0..999 — never negative.
     const n = Number(part);
-    if (n < 0 || n > 255) return undefined;
+    if (n > 255) return undefined;
     out.push(n);
   }
   return out;
@@ -103,8 +105,8 @@ const isBlockedIpv4 = (addr: string): boolean => {
   if (a === 169 && b === 254) return true; // 169.254.0.0/16 (link-local)
   if (a === 172 && b >= 16 && b <= 31) return true; // 172.16.0.0/12
   if (a === 192 && b === 168) return true; // 192.168.0.0/16
-  if (a >= 224 && a <= 239) return true; // 224.0.0.0/4 (multicast)
-  if (a >= 240) return true; // 240.0.0.0/4 (reserved)
+  // 224.0.0.0/4 (multicast) + 240.0.0.0/4 (reserved) — together every a >= 224.
+  if (a >= 224) return true;
   return false;
 };
 

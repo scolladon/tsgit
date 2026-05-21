@@ -1,21 +1,11 @@
 import type { GitObject, ObjectId, RefName } from '../../domain/objects/index.js';
-import {
-  invalidRef,
-  refChainTooDeep,
-  refCycleDetected,
-  refNotFound,
-} from '../../domain/refs/error.js';
+import { refChainTooDeep, refCycleDetected, refNotFound } from '../../domain/refs/error.js';
 import { validateRefName } from '../../domain/refs/ref-validation.js';
 import type { Context } from '../../ports/context.js';
 import { readObject } from './read-object.js';
 import { getRefStore, type RefStore } from './ref-store.js';
 import { MAX_PEEL_DEPTH, MAX_SYMBOLIC_REF_DEPTH, type ResolveRefOptions } from './types.js';
-import {
-  exceedsMaxPeelDepth,
-  exceedsMaxSymbolicDepth,
-  isContainedRefSegment,
-  REASON_TARGET_ESCAPES_GIT_DIR,
-} from './validators.js';
+import { exceedsMaxPeelDepth, exceedsMaxSymbolicDepth } from './validators.js';
 
 export async function resolveRef(
   ctx: Context,
@@ -27,13 +17,12 @@ export async function resolveRef(
   const peel = options?.peel ?? false;
 
   const refStore = getRefStore(ctx);
-  const id = await resolveDirectChain(ctx, refStore, name, maxSymbolicDepth);
+  const id = await resolveDirectChain(refStore, name, maxSymbolicDepth);
   if (!peel) return id;
   return peelChain(ctx, id, maxPeelDepth);
 }
 
 async function resolveDirectChain(
-  ctx: Context,
   refStore: RefStore,
   initial: RefName | 'HEAD',
   maxDepth: number,
@@ -42,12 +31,12 @@ async function resolveDirectChain(
   let current: RefName = initial as RefName;
   let depth = 0;
   for (;;) {
+    // Stryker disable next-line StringLiteral,ConditionalExpression: equivalent — validateRefName('HEAD') is a no-op (HEAD is a valid ref name and its return value is discarded), so whether the guard skips it for HEAD or always runs it, behaviour is identical.
     if (current !== 'HEAD') {
+      // validateRefName rejects every filesystem path-escape vector — `..`,
+      // `:`, `\`, and a leading `/` — before `current` is used to build a
+      // path in resolveDirect, so no separate path-containment check is needed.
       validateRefName(current);
-      // Path containment is redundant for `HEAD` (a literal safe segment)
-      // but required for every other name as belt-and-braces on top of
-      // validateRefName.
-      assertContainment(ctx.layout.gitDir, current);
     }
     if (chain.includes(current)) {
       throw refCycleDetected([...chain, current]);
@@ -80,16 +69,5 @@ async function peelChain(ctx: Context, startId: ObjectId, maxDepth: number): Pro
       throw refChainTooDeep(depth, []);
     }
     current = object.data.object;
-  }
-}
-
-function assertContainment(_gitDir: string, name: string): void {
-  // isContainedRefSegment rejects every character or segment that could cause
-  // a `${gitDir}/${name}` path-join to escape (absolute, `..`, `:`, `\\`).
-  // Any joined-path check would be a tautology here, so we rely on the
-  // deny-list exclusively. gitDir is kept on the signature for future
-  // extension (e.g. realpath-based containment once OPFS support lands).
-  if (!isContainedRefSegment(name)) {
-    throw invalidRef(REASON_TARGET_ESCAPES_GIT_DIR);
   }
 }

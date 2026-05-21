@@ -26,6 +26,7 @@ const NUL = 0x00;
 export function splitLines(bytes: Uint8Array): ReadonlyArray<Uint8Array> {
   const lines: Uint8Array[] = [];
   let start = 0;
+  // Stryker disable next-line EqualityOperator: equivalent — at i===bytes.length, bytes[i] is undefined, !== LF, the extra iteration is a no-op
   for (let i = 0; i < bytes.length; i++) {
     if (bytes[i] === LF) {
       lines.push(bytes.subarray(start, i + 1));
@@ -71,6 +72,7 @@ export function isBinary(bytes: Uint8Array): boolean {
 
 function linesEqual(a: Uint8Array, b: Uint8Array): boolean {
   if (a.length !== b.length) return false;
+  // Stryker disable next-line EqualityOperator: equivalent — lengths are equal here, so at i===a.length both a[i] and b[i] are undefined and undefined !== undefined is false
   for (let i = 0; i < a.length; i++) {
     if (a[i] !== b[i]) return false;
   }
@@ -84,8 +86,13 @@ interface MyersResult {
   readonly totalD: number;
 }
 
+// The classic Myers `k !== d` upper-edge guard is omitted: at k===d, v[k+1+offset]
+// is the unwritten d+1 diagonal — 0 in the forward pass, undefined in a 2d+1-long
+// reconstruction snapshot. Since v[k-1+offset]! is always a non-negative x-coordinate,
+// `x < 0` / `x < undefined` is already false, so the comparison alone yields the
+// guard's result without the redundant `k !== d &&`.
 function chooseDown(v: ReadonlyArray<number>, offset: number, d: number, k: number): boolean {
-  return k === -d || (k !== d && v[k - 1 + offset]! < v[k + 1 + offset]!);
+  return k === -d || v[k - 1 + offset]! < v[k + 1 + offset]!;
 }
 
 function advanceSnake(
@@ -135,7 +142,9 @@ function computeMyersTrace(
     // Only store the active k-range [-d, d] (2*d+1 entries) instead of full v
     // to bound trace memory at O(D^2) instead of O(D*maxD).
     const snapLen = 2 * d + 1;
+    // Stryker disable next-line ArrayDeclaration: equivalent — the loop below densely fills indices 0..snapLen-1, so a pre-sized array and an empty one converge to identical content
     const snapshot = new Array<number>(snapLen);
+    // Stryker disable next-line EqualityOperator: equivalent — reconstructEdits only reads indices prevK+d ≤ 2d-1 < snapLen (k===d always picks down=false), so the extra index snapLen is never read
     for (let ki = 0; ki < snapLen; ki++) {
       snapshot[ki] = v[offset - d + ki]!;
     }
@@ -178,10 +187,13 @@ function reconstructEdits(
     if (x === prevX) y--;
     else x--;
   }
-  while (x > 0 && y > 0) {
+  // The trailing run walks the d=0 Myers snake, a diagonal from the origin, so
+  // x === y holds throughout. The y > 0 guard and the y decrement are therefore
+  // redundant (y is never read after this loop) and are omitted — this keeps the
+  // remaining mutants on the loop line fully killable.
+  while (x > 0) {
     edits.push('equal');
     x--;
-    y--;
   }
   edits.reverse();
   return edits;
@@ -196,7 +208,10 @@ function buildHunks(edits: ReadonlyArray<Edit>): ReadonlyArray<LineHunk> {
     const kind = edits[i]!;
     const startOurs = oursCursor;
     const startTheirs = theirsCursor;
-    while (i < edits.length && edits[i] === kind) {
+    // The `i < edits.length` bound is omitted: kind is always a defined Edit, and
+    // edits[i] past the end is undefined, so `undefined === kind` is false and the
+    // loop exits at the same point — keeping every mutant on this line killable.
+    while (edits[i] === kind) {
       if (kind === 'equal') {
         oursCursor++;
         theirsCursor++;

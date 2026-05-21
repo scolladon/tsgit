@@ -62,7 +62,9 @@ const enforcePatternBudget = (pattern: string): void => {
 const countDoubleStars = (pattern: string): number => {
   let count = 0;
   let i = 0;
+  // Stryker disable next-line EqualityOperator: equivalent — when `i === pattern.length`, `pattern[i]` is `undefined`, never `'*'`, so the extra iteration counts nothing and exits.
   while (i < pattern.length) {
+    // Stryker disable next-line ArithmeticOperator: equivalent — when `pattern[i]` is `'*'`, the scanner stepped over `pattern[i-1]` by 1; a preceding `'*'` would already have started a counted pair, so the lookbehind never adds a distinct count (verified exhaustively).
     if (pattern[i] === '*' && pattern[i + 1] === '*') {
       count += 1;
       i += 2;
@@ -81,6 +83,7 @@ export const enforceLiteralMustMatch = (
   literals: ReadonlyArray<FilePath>,
   matched: ReadonlyArray<FilePath>,
 ): void => {
+  // Stryker disable next-line ConditionalExpression: equivalent — the early return only skips an empty `for` loop; with zero literals the loop body never runs, so the observable result is identical.
   if (literals.length === 0) return;
   const matchedSet = new Set(matched);
   for (const lit of literals) {

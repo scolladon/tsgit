@@ -65,9 +65,9 @@ export class TsgitError extends Error {
 /** @internal */
 export function basename(path: string): string {
   const segments = path.split(/[/\\]/);
-  // equivalent-mutant: starting `i` at `segments.length + 1` (instead of -1) just performs
-  // extra `segments[i] === undefined` skips before landing on the same real index, so the
-  // returned value is identical for every input.
+  // Stryker disable next-line ArithmeticOperator: equivalent — starting `i` at `segments.length + 1`
+  // (instead of `- 1`) only performs extra `segments[i] === undefined` skips before landing on the
+  // same real index, so the returned value is identical for every input.
   for (let i = segments.length - 1; i >= 0; i--) {
     const segment = segments[i];
     if (segment !== undefined && segment !== '') {

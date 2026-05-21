@@ -177,6 +177,23 @@ describe('ref-store', () => {
     expect(reads).toBeLessThanOrEqual(1);
   });
 
+  it('Given no packed-refs file, When getPackedRefs is called, Then returns an empty unsorted PackedRefs (sorted=false)', async () => {
+    // Kills the BooleanLiteral mutant on the no-file fallback `sorted: false`:
+    // under `true`, downstream callers relying on the unsorted flag (e.g. to
+    // trigger a sort before binary search) would skip the sort and misbehave.
+    // Arrange
+    const ctx = await buildSeededContext();
+    const sut = createRefStore(ctx);
+
+    // Act
+    const result = await sut.getPackedRefs();
+
+    // Assert
+    expect(result.entries).toEqual([]);
+    expect(result.peeling).toBe('none');
+    expect(result.sorted).toBe(false);
+  });
+
   it('Given two getRefStore calls on the same Context, Then returns the same store instance (per-Context cache)', async () => {
     // Kills any mutant that drops the WeakMap cache: a second call would
     // create a fresh store and the identity check would fail.

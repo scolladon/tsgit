@@ -278,6 +278,39 @@ describe('tree', () => {
       // Assert
       expect(sut.entries).toEqual([]);
     });
+
+    it('Given a NUL byte inside the mode region (before the space), When parsing, Then the NUL search starts AFTER the space and the failure is INVALID_FILE_MODE, not a name error', () => {
+      // The NUL search begins at `spaceIndex + 1`. A mutant starting it at
+      // `spaceIndex - 1` would find the NUL byte that lives in the mode region
+      // (index 0 here), cut the name to empty, and throw INVALID_TREE_ENTRY.
+      // The correct offset skips that NUL and reaches mode validation, which
+      // rejects the ' ' mode with INVALID_FILE_MODE.
+      // Arrange — content = [0x00] mode + space + 'foo' + NUL + 20-byte hash.
+      const sha = new Uint8Array(20).fill(0xab);
+      const content = concatBytes(
+        new Uint8Array([0x00]),
+        new Uint8Array([0x20]),
+        encode('foo'),
+        new Uint8Array([0x00]),
+        sha,
+      );
+
+      // Act
+      let caught: unknown;
+      try {
+        parseTreeContent(DUMMY_ID, content, SHA1_CONFIG);
+        expect.unreachable();
+      } catch (error) {
+        caught = error;
+      }
+
+      // Assert — proves the NUL search skipped the in-mode NUL: a name error
+      // would mean the search started too early.
+      expect((caught as { data: { code: string; value: string } }).data.code).toBe(
+        'INVALID_FILE_MODE',
+      );
+      expect((caught as { data: { value: string } }).data.value).toBe(' ');
+    });
   });
 
   describe('serializeTreeContent', () => {

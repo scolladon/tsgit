@@ -42,6 +42,7 @@ export async function mapConcurrent<T>(
   limit: number,
   fn: (item: T) => Promise<void>,
 ): Promise<void> {
+  // Stryker disable next-line ConditionalExpression: equivalent — removing this fast-path guard (`if (false)`) is a no-op for an empty `items`: `workerCount` becomes `Math.min(limit, 0) === 0`, so zero workers spawn and `Promise.all([])` resolves immediately, exactly like the early return.
   if (items.length === 0) return;
   let next = 0;
   const workerCount = Math.min(limit, items.length);
@@ -49,6 +50,7 @@ export async function mapConcurrent<T>(
     while (true) {
       const i = next;
       next += 1;
+      // Stryker disable next-line ConditionalExpression,EqualityOperator: equivalent — when this bound is relaxed (false / `i > items.length`), the only reachable extra index is `i === items.length`, whose `items[i]` is `undefined`, caught by the `item === undefined` guard below; no `fn` call happens either way.
       if (i >= items.length) return;
       const item = items[i];
       if (item === undefined) return;
@@ -140,8 +142,10 @@ export function mapErrno(err: NodeJS.ErrnoException, path: string): TsgitError {
       // (e.g., to decide between abort vs. force-recursive) need both.
       return directoryNotEmpty(path);
     case 'EACCES':
+    // Stryker disable next-line ConditionalExpression: equivalent — emptying this case's consequent makes EPERM fall through to the next `permissionDenied` arm, yielding the identical TsgitError.
     case 'EPERM':
       return permissionDenied(path);
+    // Stryker disable next-line ConditionalExpression: equivalent — emptying this case's consequent makes ELOOP fall through to the EISDIR `permissionDenied` arm, yielding the identical TsgitError.
     case 'ELOOP':
       // POSIX errno for symlink-loop / O_NOFOLLOW refusal; Windows surfaces other
       // errnos handled by the `openWithNoFollow` discriminator.
@@ -187,9 +191,7 @@ export async function realpathNearestExisting(
     try {
       const real = await fsOps.realpath(candidate);
       const remaining = segments.slice(i).join(policy.sep);
-      // equivalent-mutant: relaxing `remaining.length > 0` to `>= 0` keeps the
-      // join branch, and `policy.join(real, '')` returns `real` — so both
-      // branches yield the same path when the remaining tail is empty.
+      // Stryker disable next-line ConditionalExpression,EqualityOperator: equivalent — forcing the join branch (true / `>= 0`) when `remaining` is empty evaluates `policy.join(real, '')`, which returns the already-normalised `real` — identical to the `: real` arm.
       return remaining.length > 0 ? policy.join(real, remaining) : real;
     } catch (err) {
       if (isErrnoException(err) && err.code === 'ENOENT') continue;
@@ -198,9 +200,7 @@ export async function realpathNearestExisting(
   }
   // All segments were non-existent; anchor at the (always-resolvable) root.
   const realRoot = await fsOps.realpath(root);
-  // equivalent-mutant: relaxing `segments.length > 0` to `>= 0` keeps the join
-  // branch — and `policy.join(realRoot, '')` returns `realRoot`, so the empty
-  // segments case still returns the same value as the explicit `: realRoot` arm.
+  // Stryker disable next-line ConditionalExpression,EqualityOperator: equivalent — forcing the join branch (true / `>= 0`) when `segments` is empty evaluates `policy.join(realRoot, '')`, which returns `realRoot` — identical to the `: realRoot` arm.
   return segments.length > 0 ? policy.join(realRoot, segments.join(policy.sep)) : realRoot;
 }
 
@@ -403,13 +403,8 @@ export class NodeFileSystem implements FileSystem {
         return Uint8Array.from(buf.subarray(0, bytesRead));
       }, path);
     } finally {
-      // equivalent-mutant: emptying this finally body (BlockStatement → {}) leaks the FileHandle
-      // silently. Node's ESM module namespace declares `fs/promises.open` as non-configurable,
-      // so `vi.spyOn`/`defineProperty` cannot intercept the call at runtime (TypeError:
-      // "Cannot redefine property"). Simulating FD exhaustion to surface the leak needs tens of
-      // thousands of sequential opens, which is prohibitively slow in a unit suite. Kept here
-      // because the finally is load-bearing for long-running processes that call readSlice on
-      // a hot path (pack index lookups); static review confirms the close is required.
+      // Load-bearing: release the descriptor on every exit path so a
+      // hot-path caller (pack index lookups) cannot leak FDs.
       await handle?.close();
     }
   };
@@ -457,6 +452,7 @@ export class NodeFileSystem implements FileSystem {
       }
       return true;
     } catch (err) {
+      // Stryker disable next-line ConditionalExpression: equivalent — a TsgitError is never an ErrnoException (no own `code`), so skipping this early rethrow lands it at the final `throw err` with the identical instance.
       if (err instanceof TsgitError) throw err;
       if (isErrnoException(err) && err.code === 'ENOENT') {
         // ENOENT — the resolved path doesn't exist. But the caller might be
@@ -754,10 +750,9 @@ export class NodeFileSystem implements FileSystem {
       check(real);
       return real;
     } catch (err) {
+      // Stryker disable next-line ConditionalExpression: equivalent — a TsgitError is never an ErrnoException (no own `code`), so skipping this early rethrow lands it at the final `throw err` with the identical instance.
       if (err instanceof TsgitError) throw err;
-      // equivalent-mutant: flipping `errno.code === 'ENOENT'` to `false`, or mutating the literal
-      // to `""`, funnels the error through `mapErrno` below — which also maps ENOENT to
-      // `fileNotFound(path)`. The early return is a micro-optimization with identical output.
+      // Stryker disable next-line ConditionalExpression,StringLiteral: equivalent — bypassing this ENOENT short-circuit (false / `""`) funnels the error through `mapErrno` below, whose ENOENT arm also returns `fileNotFound(path)`; identical output.
       if (isErrnoException(err) && err.code === 'ENOENT') throw fileNotFound(path);
       if (isErrnoException(err)) throw mapErrno(err, path);
       throw err;

@@ -47,7 +47,10 @@ const listTags = async (ctx: Context): Promise<TagResult> => {
     const id = await resolveRef(ctx, name);
     tags.push({ name, id });
   }
-  tags.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  // readdir yields distinct entry names, so a.name === b.name never occurs:
+  // a binary -1/1 comparator is sufficient (no equal-case to disambiguate).
+  // Stryker disable next-line EqualityOperator: equivalent — names are distinct, so < and <= behave identically
+  tags.sort((a, b) => (a.name < b.name ? -1 : 1));
   return { kind: 'list', tags };
 };
 

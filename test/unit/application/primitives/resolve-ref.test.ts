@@ -140,7 +140,7 @@ describe('resolveRef', () => {
     }
   });
 
-  it('Given a symbolic ref whose target is an absolute path, When resolveRef is called, Then throws INVALID_REF (validateRefName + containment defense in depth)', async () => {
+  it('Given a symbolic ref whose target is an absolute path, When resolveRef is called, Then throws INVALID_REF', async () => {
     const ctx = await buildSeededContext();
     await ctx.fs.writeUtf8('/repo/.git/HEAD', 'ref: /etc/passwd\n');
     try {
@@ -247,9 +247,7 @@ describe('resolveRef', () => {
     }
   });
 
-  it('Given a symbolic ref whose target contains `..`, When resolveRef is called, Then throws INVALID_REF via containment check', async () => {
-    // Kills the assertContainment BlockStatement `{}` and isContainedRefSegment
-    // ConditionalExpression `false` mutants.
+  it('Given a symbolic ref whose target contains `..`, When resolveRef is called, Then throws INVALID_REF', async () => {
     const ctx = await buildSeededContext();
     await ctx.fs.writeUtf8('/repo/.git/HEAD', 'ref: refs/../escape\n');
     try {

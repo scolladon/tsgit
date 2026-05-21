@@ -47,6 +47,45 @@ describe('compilePathspec', () => {
     expect(sut[0]?.compiled.test('src/foo')).toBe(true);
   });
 
+  it('Given a bare literal "lib", When compiled, Then the regex matches the directory AND every descendant (withDirSuffix is enabled)', () => {
+    // Arrange — a literal pathspec compiles with `withDirSuffix: true`, so the
+    // regex must cover descendants. If the flag were `false` the regex would be
+    // `^lib$` and reject everything below `lib`.
+    const sut = compilePathspec(['lib']);
+
+    // Act / Assert
+    expect(sut[0]?.compiled.test('lib')).toBe(true);
+    expect(sut[0]?.compiled.test('lib/a.ts')).toBe(true);
+    expect(sut[0]?.compiled.test('lib/nested/deep.ts')).toBe(true);
+    expect(sut[0]?.compiled.test('libs')).toBe(false);
+  });
+
+  it('Given a literal pathspec "lib", When compiled, Then the regex matches a descendant path "lib/foo.ts" (withDirSuffix directory semantics)', () => {
+    // Arrange — a literal pathspec compiles with `withDirSuffix: true`, so a
+    // bare `lib` covers `lib` itself and everything beneath it (Git's
+    // `git add lib` directory-prefix semantics). A mutant flipping the flag
+    // to `false` yields `^lib$`, which rejects `lib/foo.ts`.
+    const sut = compilePathspec(['lib']);
+
+    // Act / Assert
+    expect(sut[0]?.compiled.test('lib/foo.ts')).toBe(true);
+  });
+
+  it('Given a literal pathspec "lib", When compiled, Then the regex is anchored at the repo root and rejects "vendor/lib"', () => {
+    // Arrange — a literal pathspec compiles with `anchored: true`, so the regex
+    // is `^lib(/.*)?$`. It must match `lib` at the root only, NOT a `lib`
+    // segment nested under another directory. A mutant flipping `anchored` to
+    // `false` yields `(^|.*/)lib(/.*)?$`, which would wrongly match
+    // `vendor/lib` and `a/b/lib`.
+    const sut = compilePathspec(['lib']);
+
+    // Act / Assert
+    expect(sut[0]?.compiled.test('lib')).toBe(true);
+    expect(sut[0]?.compiled.test('vendor/lib')).toBe(false);
+    expect(sut[0]?.compiled.test('a/b/lib')).toBe(false);
+    expect(sut[0]?.compiled.test('vendor/lib/x.ts')).toBe(false);
+  });
+
   it('Given a "!"-prefixed glob "!*.test.ts", When compiled, Then negated=true with glob semantics', () => {
     const sut = compilePathspec(['!*.test.ts']);
 

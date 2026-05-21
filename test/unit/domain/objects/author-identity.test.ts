@@ -180,6 +180,38 @@ describe('author-identity', () => {
       );
     });
 
+    it('Given timezone with a leading non-offset char before +0200, When parsing, Then throws (anchored ^ rejects unanchored suffix match)', () => {
+      // Arrange — 'X+0200' matches /[+-]\d{4}$/ but not /^[+-]\d{4}$/
+      const line = 'Alice <a@a.com> 100 X+0200';
+
+      // Act / Assert
+      try {
+        parseIdentity(line);
+        expect.unreachable();
+      } catch (error) {
+        expect((error as { data: { code: string; reason: string } }).data.code).toBe(
+          'INVALID_IDENTITY',
+        );
+        expect((error as { data: { reason: string } }).data.reason).toBe('invalid timezone offset');
+      }
+    });
+
+    it('Given timezone with a trailing char after +0200, When parsing, Then throws (anchored $ rejects unanchored prefix match)', () => {
+      // Arrange — '+0200X' matches /^[+-]\d{4}/ but not /^[+-]\d{4}$/
+      const line = 'Alice <a@a.com> 100 +0200X';
+
+      // Act / Assert
+      try {
+        parseIdentity(line);
+        expect.unreachable();
+      } catch (error) {
+        expect((error as { data: { code: string; reason: string } }).data.code).toBe(
+          'INVALID_IDENTITY',
+        );
+        expect((error as { data: { reason: string } }).data.reason).toBe('invalid timezone offset');
+      }
+    });
+
     it('Given identity with double space before timezone, When parsing, Then parses correctly with tz=+0000', () => {
       // Arrange
       const line = 'Alice <a@a.com> 100  +0000';
@@ -588,6 +620,67 @@ describe('author-identity', () => {
           }),
         }),
       );
+    });
+
+    it('Given timezoneOffset with a leading non-offset char before +0200, When serializing, Then throws (anchored ^ rejects unanchored suffix match)', () => {
+      // Arrange — 'X+0200' matches /[+-]\d{4}$/ but not /^[+-]\d{4}$/
+      const identity: AuthorIdentity = {
+        name: 'Name',
+        email: 'a@a.com',
+        timestamp: 0,
+        timezoneOffset: 'X+0200',
+      };
+
+      // Act / Assert
+      try {
+        serializeIdentity(identity);
+        expect.unreachable();
+      } catch (error) {
+        expect((error as { data: { code: string; reason: string } }).data.code).toBe(
+          'INVALID_IDENTITY',
+        );
+        expect((error as { data: { reason: string } }).data.reason).toBe('invalid identity fields');
+      }
+    });
+
+    it('Given timezoneOffset with a trailing char after +0200, When serializing, Then throws (anchored $ rejects unanchored prefix match)', () => {
+      // Arrange — '+0200X' matches /^[+-]\d{4}/ but not /^[+-]\d{4}$/
+      const identity: AuthorIdentity = {
+        name: 'Name',
+        email: 'a@a.com',
+        timestamp: 0,
+        timezoneOffset: '+0200X',
+      };
+
+      // Act / Assert
+      try {
+        serializeIdentity(identity);
+        expect.unreachable();
+      } catch (error) {
+        expect((error as { data: { code: string; reason: string } }).data.code).toBe(
+          'INVALID_IDENTITY',
+        );
+        expect((error as { data: { reason: string } }).data.reason).toBe('invalid identity fields');
+      }
+    });
+
+    it('Given identity with control char in name, When serializing, Then error.data.line is the rendered "name <email>" string', () => {
+      // Arrange — line template must carry name and email; empty-template mutant yields ''
+      const identity: AuthorIdentity = {
+        name: 'Bad\nName',
+        email: 'a@a.com',
+        timestamp: 0,
+        timezoneOffset: '+0000',
+      };
+
+      // Act / Assert
+      try {
+        serializeIdentity(identity);
+        expect.unreachable();
+      } catch (error) {
+        expect((error as { data: { code: string } }).data.code).toBe('INVALID_IDENTITY');
+        expect((error as { data: { line: string } }).data.line).toBe('Bad\nName <a@a.com>');
+      }
     });
   });
 
