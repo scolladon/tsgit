@@ -67,6 +67,7 @@ describe('openRepository — Repository binding integrity', () => {
         'merge',
         'primitives',
         'push',
+        'reflog',
         'reset',
         'revParse',
         'rm',
@@ -89,6 +90,7 @@ describe('openRepository — Repository binding integrity', () => {
         'readIndex',
         'readObject',
         'readTree',
+        'recordRefUpdate',
         'resolveRef',
         'updateRef',
         'walkCommits',
@@ -261,6 +263,37 @@ describe('openRepository — round-trip via memory adapter', () => {
     await sut.init();
 
     expect(await sut.ctx.fs.exists('/repo/.git/HEAD')).toBe(true);
+  });
+
+  it('Given a fresh repo, When the bound reflog command is called, Then it delegates and returns a show result', async () => {
+    // Arrange — the bound `reflog` strips `ctx`; calling it with no args
+    // defaults to `show` on HEAD with an empty entry list.
+    const fallback = makeFallback();
+    const sut = await openRepository({ cwd: '/repo' }, fallback);
+    await sut.init();
+
+    // Act
+    const result = await sut.reflog();
+
+    // Assert
+    expect(result).toEqual({ kind: 'show', ref: 'HEAD', entries: [] });
+  });
+
+  it('Given a fresh repo, When the bound recordRefUpdate primitive is called, Then it appends a reflog entry', async () => {
+    // Arrange — the bound primitive strips `ctx`; a default-loggable branch ref
+    // is logged.
+    const fallback = makeFallback();
+    const sut = await openRepository({ cwd: '/repo' }, fallback);
+    await sut.init();
+    const zero = '0'.repeat(40) as never;
+    const newId = 'a'.repeat(40) as never;
+
+    // Act
+    await sut.primitives.recordRefUpdate('refs/heads/main' as never, zero, newId, 'commit: x');
+
+    // Assert
+    const result = await sut.reflog({ action: 'show', ref: 'refs/heads/main' });
+    expect(result.kind === 'show' && result.entries).toHaveLength(1);
   });
 });
 

@@ -94,7 +94,7 @@ export interface RuntimeFallback {
  * users never see Context except through `repo.ctx`.
  */
 export interface Repository {
-  // Tier-1 commands (16) — bound to ctx.
+  // Tier-1 commands (17) — bound to ctx.
   readonly add: BindCtx<typeof commands.add>;
   readonly branch: BindCtx<typeof commands.branch>;
   readonly checkout: BindCtx<typeof commands.checkout>;
@@ -106,13 +106,14 @@ export interface Repository {
   readonly log: BindCtx<typeof commands.log>;
   readonly merge: BindCtx<typeof commands.merge>;
   readonly push: BindCtx<typeof commands.push>;
+  readonly reflog: BindCtx<typeof commands.reflog>;
   readonly reset: BindCtx<typeof commands.reset>;
   readonly revParse: BindCtx<typeof commands.revParse>;
   readonly rm: BindCtx<typeof commands.rm>;
   readonly status: BindCtx<typeof commands.status>;
   readonly tag: BindCtx<typeof commands.tag>;
 
-  // Tier-2 primitives (15) — bound under.primitives.* to keep the top-level
+  // Tier-2 primitives (16) — bound under.primitives.* to keep the top-level
   // surface focused on user-facing commands.
   readonly primitives: {
     readonly createCommit: BindCtx<typeof primitives.createCommit>;
@@ -123,6 +124,7 @@ export interface Repository {
     readonly readIndex: BindCtx<typeof primitives.readIndex>;
     readonly readObject: BindCtx<typeof primitives.readObject>;
     readonly readTree: BindCtx<typeof primitives.readTree>;
+    readonly recordRefUpdate: BindCtx<typeof primitives.recordRefUpdate>;
     readonly resolveRef: BindCtx<typeof primitives.resolveRef>;
     readonly updateRef: BindCtx<typeof primitives.updateRef>;
     readonly walkCommits: BindCtx<typeof primitives.walkCommits>;
@@ -276,6 +278,10 @@ export const openRepository = async (
       guard();
       return commands.push(ctx, pushOpts);
     }) as Repository['push'],
+    reflog: ((reflogOpts) => {
+      guard();
+      return commands.reflog(ctx, reflogOpts);
+    }) as Repository['reflog'],
     reset: ((resetOpts) => {
       guard();
       return commands.reset(ctx, resetOpts);
@@ -329,6 +335,10 @@ export const openRepository = async (
         guard();
         return primitives.readTree(ctx, ref);
       }) as Repository['primitives']['readTree'],
+      recordRefUpdate: ((name, oldId, newId, message) => {
+        guard();
+        return primitives.recordRefUpdate(ctx, name, oldId, newId, message);
+      }) as Repository['primitives']['recordRefUpdate'],
       resolveRef: ((name, options) => {
         guard();
         return primitives.resolveRef(ctx, name, options);
