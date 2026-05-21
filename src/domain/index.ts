@@ -19,6 +19,7 @@ export * from './ignore/index.js';
 export * from './merge/index.js';
 export * from './objects/index.js';
 export * from './protocol/index.js';
+export * from './reflog/index.js';
 export * from './refs/index.js';
 export * from './repository/index.js';
 export * from './storage/index.js';
