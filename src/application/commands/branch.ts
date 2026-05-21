@@ -143,12 +143,13 @@ const renameBranch = async (
     }
     throw err;
   }
-  // updateRef's delete path drops `from`'s log; the source history survives by
-  // being re-attached to `to` ahead of the just-written rename entry.
-  await updateRef(ctx, from, ZERO_OID, { delete: true });
+  // Re-attach `from`'s history to `to` BEFORE deleting `from`: were the
+  // merged-log write to fail, `from`'s reflog must still be intact.
   if (movedLog.length > 0) {
     await writeReflog(ctx, to, [...movedLog, ...(await readReflog(ctx, to))]);
   }
+  // updateRef's delete path drops `from`'s log; its history is already on `to`.
+  await updateRef(ctx, from, ZERO_OID, { delete: true });
   const head = await readHeadRaw(ctx);
   if (head.kind === 'symbolic' && head.target === from) {
     await writeSymbolicRef(ctx, 'HEAD' as RefName, to);
