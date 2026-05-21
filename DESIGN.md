@@ -68,4 +68,19 @@ Every `FileSystem` adapter enforces the following invariants via contract tests:
 
 See [docs/design/ports-and-adapters.md](docs/design/ports-and-adapters.md) for the full Phase 4 design and [docs/adr/004-adapter-error-in-domain.md](docs/adr/004-adapter-error-in-domain.md) for the error-ownership decision.
 
-See [docs/prd/PRD.md](docs/prd/PRD.md) for the full architecture and competitive analysis.
+## Subsystems
+
+| Subsystem | Purpose | Location |
+|---|---|---|
+| **Domain: Objects** | Blob, tree, commit, tag parsers + serializers | `src/domain/objects/` |
+| **Domain: Storage** | Loose objects, packfiles, delta resolution | `src/domain/objects-storage/` |
+| **Domain: Refs** | Reference resolution, symbolic refs, packed-refs | `src/domain/refs/` |
+| **Domain: Index** | Git index v2 parser, stat cache, staging area | `src/domain/git-index/` |
+| **Domain: Diff & Merge** | Tree comparison, three-way merge, conflict detection | `src/domain/diff-and-merge/` |
+| **Domain: Reflog** | Append-only per-ref logs, `@{N}` / `@{date}` resolution | `src/domain/reflog/` |
+| **Ports** | Interfaces for I/O and platform abstraction | `src/ports/` |
+| **Adapters** | Node, browser (OPFS), in-memory implementations | `src/adapters/` |
+| **Primitives** | Tier-2 composable low-level operations | `src/application/primitives/` |
+| **Commands** | Tier-1 high-level use cases (clone, log, status, etc.) | `src/application/commands/` |
+
+See [docs/prd/PRD.md](docs/prd/PRD.md) for the full architecture and competitive analysis, and [docs/design/reflog.md](docs/design/reflog.md) for the Phase 17.1 reflog design.

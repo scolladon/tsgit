@@ -1,8 +1,9 @@
 # Reflog — Design (Phase 17.1)
 
-> Status: draft. Backlog item **17.1** — "Reflog (`HEAD@{N}`, `<branch>@{N}`
-> syntax, `.git/logs/` writers)". Targets the **v2.0** semantic surface, so
-> breaking changes to tier-2 primitive signatures are in scope.
+> Status: Implemented (v2.0). Backlog item **17.1** complete — "Reflog
+> (`HEAD@{N}`, `<branch>@{N}` syntax, `.git/logs/` writers)". See
+> [docs/BACKLOG.md](../BACKLOG.md#phase-v20--larger-semantic-surface) for
+> acceptance summary and ADRs 058–064.
 
 ## 1. Goal & scope
 

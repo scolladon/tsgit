@@ -35,6 +35,7 @@ A pure TypeScript git implementation designed to be the fastest portable git lib
 | 13.5 | `checkout` acquires `index.lock` before reading the index — closes a known TOCTOU window; path-restore from `'index'` stays lock-free | ✅ |
 | 13.6 | `checkout({ paths, source: 'index' })` synthesises a tree from staged entries — restores from index content, honouring divergence from HEAD | ✅ |
 | 14.4 | Full Windows support — 8.3 short-name reconciliation in `NodeFileSystem.checkContainment`, `ELOOP`/`EACCES` errno parity, `windows-latest` re-added to the unit-test matrix | ✅ |
+| 17.1 | Reflog — `HEAD@{N}` / `<ref>@{N}` syntax, `.git/logs/` append-only per-ref entries, `revParse` resolution, tier-1 `reflog` command (show/exists/delete/expire) | ✅ |
 
 ## Features
 
@@ -231,6 +232,26 @@ const recentByAlice = walkCommits(ctx, { from: 'main' })
 for await (const commit of recentByAlice) {
   console.log(commit.data.message);
 }
+```
+
+### Reflog — Navigate ref history
+
+Every ref movement records an entry in `.git/logs/<ref>` — the reflog. Query it by index or date:
+
+```typescript
+// Show the reflog for a branch
+const result = await repo.reflog({ ref: 'main' });
+for (const entry of result.entries) {
+  console.log(`${entry.selector}: ${entry.entry.message}`);
+}
+
+// Resolve a ref to its value from N moves ago (or at a specific date)
+const commitId = await repo.revParse('main@{2}');     // 2 moves back
+const commitId = await repo.revParse('main@{yesterday}'); // at yesterday 00:00 local time
+
+// Delete or expire reflog entries
+await repo.reflog({ action: 'delete', ref: 'main', index: 0 });
+await repo.reflog({ action: 'expire', all: true, expire: '90.days.ago' });
 ```
 
 ## Benchmarks
