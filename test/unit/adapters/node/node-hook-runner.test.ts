@@ -215,6 +215,7 @@ describe('adapters/node NodeHookRunner — spawn wiring', () => {
 
     // Assert
     expect(result.exitCode).toBe(126);
+    expect(result.stdout).toBe('');
     expect(result.stderr).toContain('spawn ENOENT');
   });
 
@@ -230,7 +231,7 @@ describe('adapters/node NodeHookRunner — spawn wiring', () => {
       }),
     );
 
-    // Assert — the `settled` guard drops the second result.
+    // Assert — resolve() is idempotent, so the first (error) result wins.
     expect(result.exitCode).toBe(126);
   });
 
@@ -334,6 +335,26 @@ describe('adapters/node NodeHookRunner — abort handling', () => {
     });
 
     // Assert
+    expect(child.killed).toBe(false);
+  });
+
+  it('Given a signal, When the hook completes before any abort, Then a later abort does not kill the child', async () => {
+    // Arrange
+    const controller = new AbortController();
+    const { runner, child } = makeHarness();
+
+    // Act — the hook finishes, then the signal aborts afterwards.
+    await runWithChild(
+      runner,
+      child,
+      baseRequest('pre-commit', { signal: controller.signal }),
+      (c) => {
+        c.emit('close', 0);
+      },
+    );
+    controller.abort();
+
+    // Assert — `finish` removed the abort listener, so the late abort is inert.
     expect(child.killed).toBe(false);
   });
 });

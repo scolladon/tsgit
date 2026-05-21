@@ -39,6 +39,11 @@ describe('primitives/run-hook resolveHooksDir', () => {
   it('Given a relative hooksPath, When resolveHooksDir, Then it resolves against the working-tree root', () => {
     expect(resolveHooksDir('.husky', layout())).toBe('/repo/.husky');
   });
+
+  it('Given a relative hooksPath with a drive-letter sequence mid-string, When resolveHooksDir, Then it stays relative', () => {
+    // The drive-letter form is absolute only when it anchors the start.
+    expect(resolveHooksDir('hooks/c:/sub', layout())).toBe('/repo/hooks/c:/sub');
+  });
 });
 
 describe('primitives/run-hook runHook', () => {

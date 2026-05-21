@@ -73,12 +73,13 @@ describe('createNodeContext', () => {
     expect(sut.signal).toBe(controller.signal);
   });
 
-  it('Given no signal, When creating context, Then signal is undefined', () => {
+  it('Given no signal, When creating context, Then signal is undefined and the key is absent', () => {
     // Arrange / Act
     const sut = createNodeContext({ workDir: '/tmp/tsgit-nosig' });
 
-    // Assert
+    // Assert — no stray `signal: undefined` key (exactOptionalPropertyTypes).
     expect(sut.signal).toBeUndefined();
+    expect('signal' in sut).toBe(false);
   });
 
   it('Given default options, When creating context, Then ctx.hooks is wired (a NodeHookRunner)', () => {

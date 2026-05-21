@@ -380,6 +380,14 @@ describe('commit — hooks', () => {
     // Assert
     expect(sut.id).toMatch(/^[0-9a-f]{40}$/);
   });
+
+  it('Given a commit-msg hook that empties the message and no allowEmptyMessage, When commit, Then it throws EMPTY_COMMIT_MESSAGE', async () => {
+    // Arrange — the hook blanks COMMIT_EDITMSG; the re-sanitise must reject it.
+    const ctx = await seedHooked(hookedCtx({ commitMsgRewrite: '   ' }));
+
+    // Act & Assert
+    await expectError(() => commit(ctx, { message: 'original', author }), 'EMPTY_COMMIT_MESSAGE');
+  });
 });
 
 afterEach(() => __resetConfigCacheForTests());
