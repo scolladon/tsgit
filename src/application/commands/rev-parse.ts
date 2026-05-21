@@ -95,15 +95,21 @@ const currentBranchRef = async (ctx: Context): Promise<RefName> => {
  * path still fires with a sensible ref).
  */
 const canonicalizeRef = async (ctx: Context, base: string): Promise<RefName> => {
-  const candidates = refCandidates(base);
+  // Validate before any candidate reaches the filesystem: an unchecked `base`
+  // carrying `..` would otherwise be probed on disk by reflogExists/refResolves.
+  const validated = validateBaseRef(base);
+  const candidates = refCandidates(validated);
   for (const candidate of candidates) {
     if (await reflogExists(ctx, candidate as RefName)) return candidate as RefName;
   }
   for (const candidate of candidates) {
     if (await refResolves(ctx, candidate)) return candidate as RefName;
   }
-  // No candidate has a reflog or resolves; only return a branded `RefName`
-  // when `base` is itself a valid ref name, never an unchecked cast.
+  // No candidate has a reflog or resolves: fall back to the validated base.
+  return validated;
+};
+
+const validateBaseRef = (base: string): RefName => {
   try {
     return validateRefName(base);
   } catch {
