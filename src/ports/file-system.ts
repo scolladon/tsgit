@@ -79,6 +79,12 @@ export interface FileSystem {
   /** Write UTF-8 string to file, creating parent directories as needed. */
   readonly writeUtf8: (path: string, content: string) => Promise<void>;
 
+  /**
+   * Append UTF-8 to a file, creating parent directories and the file as
+   * needed. Atomic per-call for line-sized writes (relies on `O_APPEND`).
+   */
+  readonly appendUtf8: (path: string, content: string) => Promise<void>;
+
   /** Check if path exists. */
   readonly exists: (path: string) => Promise<boolean>;
 

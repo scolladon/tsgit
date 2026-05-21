@@ -3,11 +3,11 @@ import { createMemoryContext } from '../../../../src/adapters/memory/memory-adap
 import { add } from '../../../../src/application/commands/add.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
-import { __resetConfigCacheForTests } from '../../../../src/application/commands/internal/config-read.js';
+import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { TsgitError } from '../../../../src/domain/index.js';
-import type { AuthorIdentity, ObjectId } from '../../../../src/domain/objects/index.js';
+import type { AuthorIdentity, ObjectId, RefName } from '../../../../src/domain/objects/index.js';
 import { ObjectId as ObjectIdFactory } from '../../../../src/domain/objects/index.js';
 
 const author: AuthorIdentity = {
@@ -138,6 +138,23 @@ describe('commit', () => {
     // to `true` (which would re-enable the guard and throw NOTHING_TO_COMMIT).
     expect(sut.tree).toBe(first.tree);
     expect(sut.parents).toEqual([first.id, mergeHead]);
+  });
+
+  it('Given a merge resolution, When commit, Then the branch reflog entry message is "commit (merge): <subject>"', async () => {
+    // Arrange — first commit, then a populated MERGE_HEAD so the commit resolves
+    // a merge. The reflog message must carry the `commit (merge):` catalogue
+    // prefix, not the plain `commit:` prefix and not an empty string.
+    const ctx = await seed();
+    await commit(ctx, { message: 'first', author });
+    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/MERGE_HEAD`, `${'1'.repeat(40)}\n`);
+
+    // Act
+    await commit(ctx, { message: 'resolve the merge', author });
+
+    // Assert
+    const { readReflog } = await import('../../../../src/application/primitives/reflog-store.js');
+    const entries = await readReflog(ctx, 'refs/heads/main' as RefName);
+    expect(entries[entries.length - 1]?.message).toBe('commit (merge): resolve the merge');
   });
 
   it('Given a non-empty user message during a merge resolution, When commit, Then the explicit message wins over MERGE_MSG', async () => {

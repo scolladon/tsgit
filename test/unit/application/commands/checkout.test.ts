@@ -6,7 +6,7 @@ import { checkout } from '../../../../src/application/commands/checkout.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
 import { TsgitError } from '../../../../src/domain/index.js';
-import type { AuthorIdentity } from '../../../../src/domain/objects/index.js';
+import type { AuthorIdentity, RefName } from '../../../../src/domain/objects/index.js';
 
 const author: AuthorIdentity = {
   name: 'Ada',
@@ -53,6 +53,89 @@ describe('checkout', () => {
     expect(sut.id).toBe(commitId);
     const head = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/HEAD`);
     expect(head).toBe(`${commitId}\n`);
+  });
+
+  it('Given a symbolic HEAD pointing outside refs/heads/, When checkout, Then the reflog label is the target basename (not a mangled prefix-strip)', async () => {
+    // Arrange — point HEAD at refs/remotes/origin/main. A naive
+    // slice(HEADS_PREFIX.length) would yield `gin/main`; the label must be the
+    // last path segment, `main`.
+    const { ctx, commitId } = await seedWithBranches();
+    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/remotes/origin/main`, `${commitId}\n`);
+    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/remotes/origin/main\n');
+    const { readReflog } = await import('../../../../src/application/primitives/reflog-store.js');
+
+    // Act
+    await checkout(ctx, { target: 'feature' });
+
+    // Assert — the newest HEAD reflog entry records the move from `main`.
+    const headLog = await readReflog(ctx, 'HEAD' as RefName);
+    expect(headLog[headLog.length - 1]?.message).toBe('checkout: moving from main to feature');
+  });
+
+  it('Given a symbolic HEAD on a nested branch under refs/heads/, When checkout, Then the label keeps the full sub-path (prefix-strip, not basename)', async () => {
+    // Arrange — prior HEAD on refs/heads/topic/sub. The label must strip only
+    // the refs/heads/ prefix (`topic/sub`); a basename fallback (`sub`) is wrong.
+    const { ctx, commitId } = await seedWithBranches();
+    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/topic/sub`, `${commitId}\n`);
+    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/topic/sub\n');
+    const { readReflog } = await import('../../../../src/application/primitives/reflog-store.js');
+
+    // Act
+    await checkout(ctx, { target: 'feature' });
+
+    // Assert
+    const headLog = await readReflog(ctx, 'HEAD' as RefName);
+    expect(headLog[headLog.length - 1]?.message).toBe('checkout: moving from topic/sub to feature');
+  });
+
+  it('Given a symbolic HEAD on a ref with no slash, When checkout, Then the label is that ref verbatim', async () => {
+    // Arrange — prior HEAD on a single-segment ref `legacy`. With no `/`, the
+    // basename fallback must return the whole name untouched.
+    const { ctx, commitId } = await seedWithBranches();
+    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/legacy`, `${commitId}\n`);
+    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: legacy\n');
+    const { readReflog } = await import('../../../../src/application/primitives/reflog-store.js');
+
+    // Act
+    await checkout(ctx, { target: 'feature' });
+
+    // Assert
+    const headLog = await readReflog(ctx, 'HEAD' as RefName);
+    expect(headLog[headLog.length - 1]?.message).toBe('checkout: moving from legacy to feature');
+  });
+
+  it('Given a symbolic HEAD on a two-segment ref outside refs/heads/, When checkout, Then the label is the segment after the single slash', async () => {
+    // Arrange — prior HEAD on `x/main`: the only `/` is at index 1, so the
+    // basename is the part after it. Pins the `lastIndexOf('/') === -1` guard
+    // against a `=== 1` mutation that would return the whole `x/main`.
+    const { ctx, commitId } = await seedWithBranches();
+    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/x/main`, `${commitId}\n`);
+    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: x/main\n');
+    const { readReflog } = await import('../../../../src/application/primitives/reflog-store.js');
+
+    // Act
+    await checkout(ctx, { target: 'feature' });
+
+    // Assert
+    const headLog = await readReflog(ctx, 'HEAD' as RefName);
+    expect(headLog[headLog.length - 1]?.message).toBe('checkout: moving from main to feature');
+  });
+
+  it('Given a detached prior HEAD, When checkout, Then the reflog label is the 7-char abbreviated oid (not the full oid)', async () => {
+    // Arrange — detach HEAD onto the commit oid, then check out a branch. The
+    // `from` label must be the commit abbreviated to 7 chars, not all 40.
+    const { ctx, commitId } = await seedWithBranches();
+    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, `${commitId}\n`);
+    const { readReflog } = await import('../../../../src/application/primitives/reflog-store.js');
+
+    // Act
+    await checkout(ctx, { target: 'feature' });
+
+    // Assert — the label is exactly the first 7 hex chars of the detached oid.
+    const headLog = await readReflog(ctx, 'HEAD' as RefName);
+    expect(headLog[headLog.length - 1]?.message).toBe(
+      `checkout: moving from ${commitId.slice(0, 7)} to feature`,
+    );
   });
 
   it('Given a non-existent branch, When checkout, Then throws BRANCH_NOT_FOUND', async () => {

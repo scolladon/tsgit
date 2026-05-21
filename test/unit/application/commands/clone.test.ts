@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { clone } from '../../../../src/application/commands/clone.js';
 import { TsgitError } from '../../../../src/domain/index.js';
+import type { RefName } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
 import type {
   HttpRequest,
@@ -163,6 +164,55 @@ describe('clone', () => {
     expect(mainRef.trim()).toBe(blobId);
     const remoteRef = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/refs/remotes/origin/main`);
     expect(remoteRef.trim()).toBe(blobId);
+  });
+
+  it('Given a discovery with one branch + a pack, When clone, Then the written refs and HEAD reflogs all carry a "clone: from <url>" message', async () => {
+    // Arrange
+    const ctx = createMemoryContext();
+    const { packBytes, blobId } = await buildPackFromSingleBlob(ctx, 'reflogged clone\n');
+    const transport = buildCloneRemote({
+      capabilities: ['side-band-64k', 'ofs-delta', 'symref=HEAD:refs/heads/main'],
+      refs: [{ name: 'refs/heads/main', id: blobId }],
+      head: 'refs/heads/main',
+      packBytes,
+    });
+    const networkCtx = withTransport(ctx, transport);
+
+    // Act
+    await clone(networkCtx, { url: REMOTE_URL });
+
+    // Assert — every loggable ref written by clone records the clone source.
+    const { readReflog } = await import('../../../../src/application/primitives/reflog-store.js');
+    const expected = [`clone: from ${REMOTE_URL}`];
+    expect((await readReflog(ctx, 'refs/heads/main' as RefName)).map((e) => e.message)).toEqual(
+      expected,
+    );
+    expect(
+      (await readReflog(ctx, 'refs/remotes/origin/main' as RefName)).map((e) => e.message),
+    ).toEqual(expected);
+    expect((await readReflog(ctx, 'HEAD' as RefName)).map((e) => e.message)).toEqual(expected);
+  });
+
+  it('Given a symref HEAD whose target branch is not advertised, When clone, Then no HEAD reflog is written', async () => {
+    // Arrange — the symref names `refs/heads/ghost`, but only `refs/heads/main`
+    // is advertised, so the advertisement carries no HEAD oid. logClonedHead
+    // must early-return rather than record a HEAD entry with a missing newId.
+    const ctx = createMemoryContext();
+    const { packBytes, blobId } = await buildPackFromSingleBlob(ctx, 'ghost head\n');
+    const transport = buildCloneRemote({
+      capabilities: ['side-band-64k', 'ofs-delta', 'symref=HEAD:refs/heads/ghost'],
+      refs: [{ name: 'refs/heads/main', id: blobId }],
+      head: 'refs/heads/main',
+      packBytes,
+    });
+    const networkCtx = withTransport(ctx, transport);
+
+    // Act
+    await clone(networkCtx, { url: REMOTE_URL });
+
+    // Assert — HEAD has no reflog file: the unresolved head oid skips logging.
+    const { reflogExists } = await import('../../../../src/application/primitives/reflog-store.js');
+    expect(await reflogExists(ctx, 'HEAD' as RefName)).toBe(false);
   });
 
   it('Given a discovery with multiple branches, When clone, Then writes refs/remotes/origin/<branch> for every advertised branch', async () => {

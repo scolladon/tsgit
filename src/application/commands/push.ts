@@ -38,11 +38,11 @@ import { readableStreamToAsyncIterable } from '../../operators/readable-stream.j
 import type { Context } from '../../ports/context.js';
 import type { HttpTransport } from '../../ports/http-transport.js';
 import { buildPack } from '../primitives/build-pack.js';
+import { readConfig } from '../primitives/config-read.js';
 import { enumeratePushObjects } from '../primitives/enumerate-push-objects.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
 import { updateRef } from '../primitives/update-ref.js';
 import { walkCommits } from '../primitives/walk-commits.js';
-import { readConfig } from './internal/config-read.js';
 import { withDefaults } from './internal/network-pipeline.js';
 import { discoverReceivePackRefs, selectPushCapabilities } from './internal/receive-pack-client.js';
 import { type ParsedRefspec, parseRefspec } from './internal/refspec.js';
@@ -400,7 +400,7 @@ const updateTrackingCache = async (
   // input push() can construct, hence the equivalent-mutant suppressions.
   // Stryker disable next-line ConditionalExpression: equivalent — `composed` is always a valid ref path (see above); the guard never fires.
   if (!isSafeRefName(composed)) return;
-  await updateRef(ctx, composed as RefName, m.localOid);
+  await updateRef(ctx, composed as RefName, m.localOid, { reflogMessage: 'update by push' });
 };
 
 const isSafeRefName = (name: string): boolean => {

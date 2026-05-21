@@ -8,6 +8,9 @@ export default defineConfig({
     // instrumentation amplifies tight-loop cost far past the 5s default — so
     // the suite uses a generous ceiling rather than spuriously timing out.
     testTimeout: 120_000,
+    // Pin the timezone so calendar-component date arithmetic (approxidate's
+    // ISO-form parsing) is deterministic across hosts and CI runners.
+    env: { TZ: 'UTC' },
     projects: [
       {
         extends: true,

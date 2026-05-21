@@ -2,11 +2,13 @@ import { describe, expect, it } from 'vitest';
 import {
   indexPath,
   lockSuffix,
+  logsDir,
   looseObjectPath,
   looseRefPath,
   objectsDir,
   packedRefsPath,
   packsDir,
+  reflogPath,
 } from '../../../../src/application/primitives/path-layout.js';
 import type { ObjectId, RefName } from '../../../../src/domain/objects/index.js';
 
@@ -40,5 +42,19 @@ describe('path-layout', () => {
 
   it('Given lockSuffix, When read, Then equals .lock', () => {
     expect(lockSuffix).toBe('.lock');
+  });
+
+  it('Given gitDir, When logsDir, Then returns /gitDir/logs', () => {
+    expect(logsDir('/g')).toBe('/g/logs');
+  });
+
+  it('Given gitDir and a RefName, When reflogPath, Then returns /gitDir/logs/<name>', () => {
+    const sut = reflogPath('/g', 'refs/heads/main' as RefName);
+    expect(sut).toBe('/g/logs/refs/heads/main');
+  });
+
+  it('Given gitDir and the HEAD ref, When reflogPath, Then returns /gitDir/logs/HEAD', () => {
+    const sut = reflogPath('/g', 'HEAD' as RefName);
+    expect(sut).toBe('/g/logs/HEAD');
   });
 });

@@ -47,6 +47,10 @@ export const wrapFsValidator = (fs: FileSystem, cwd: string): FileSystem => {
       guard(p);
       return fs.writeUtf8(p, c);
     },
+    appendUtf8: (p, c) => {
+      guard(p);
+      return fs.appendUtf8(p, c);
+    },
     exists: (p) => {
       guard(p);
       return fs.exists(p);

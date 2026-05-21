@@ -4,6 +4,7 @@ import type { IndexError } from './git-index/error.js';
 import type { MergeError } from './merge/error.js';
 import type { DomainObjectError } from './objects/error.js';
 import type { ProtocolError } from './protocol/error.js';
+import type { ReflogError } from './reflog/error.js';
 import type { RefsError } from './refs/error.js';
 import type { RepositoryError } from './repository/error.js';
 import type { StorageError } from './storage/error.js';
@@ -45,6 +46,7 @@ export type TsgitErrorData =
   | DomainObjectError
   | StorageError
   | RefsError
+  | ReflogError
   | IndexError
   | AdapterError
   | DiffError
@@ -302,6 +304,12 @@ function extractDetail(data: TsgitErrorData): string {
       return `working-tree file too large: ${basename(data.path)} size=${data.size} limit=${data.limit}`;
     case 'GITIGNORE_FILE_TOO_LARGE':
       return `.gitignore too large: ${basename(data.path)} size=${data.size} limit=${data.limit}`;
+    case 'INVALID_REFLOG_ENTRY':
+      return `invalid reflog entry: ${data.reason}`;
+    case 'REFLOG_NOT_FOUND':
+      return `reflog not found: ${data.ref}`;
+    case 'REFLOG_ENTRY_OUT_OF_RANGE':
+      return `reflog entry out of range: ref=${data.ref} requested=${data.requested} available=${data.available}`;
     default: {
       const _exhaustive: never = data;
       return String(_exhaustive);

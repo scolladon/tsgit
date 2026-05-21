@@ -20,6 +20,7 @@ import * as fsPromises from 'node:fs/promises';
 
 export type FsOperations = Pick<
   typeof fsPromises,
+  | 'appendFile'
   | 'chmod'
   | 'lstat'
   | 'mkdir'

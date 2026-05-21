@@ -19,6 +19,7 @@ import * as path from 'node:path';
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
+import { __resetConfigCacheForTests } from '../../../src/application/primitives/config-read.js';
 import {
   resolveRef,
   walkCommits,
@@ -237,6 +238,9 @@ describe.skipIf(SKIP_REASON !== false)('push — end-to-end against git-http-bac
         `${existingConfig}\n[remote "origin"]\n  url = ${url}\n  fetch = +refs/heads/*:refs/remotes/origin/*\n`,
       );
     }
+    // clone primed the per-context config cache; drop it so the manual edit
+    // above is visible to the subsequent push.
+    __resetConfigCacheForTests();
 
     // Add one new commit on main locally.
     const head = await resolveRef(repo.ctx, 'refs/heads/main' as RefName);
@@ -335,6 +339,9 @@ describe.skipIf(SKIP_REASON !== false)('push — end-to-end against git-http-bac
         `${existingConfig}\n[remote "origin"]\n  url = ${url}\n  fetch = +refs/heads/*:refs/remotes/origin/*\n`,
       );
     }
+    // clone primed the per-context config cache; drop it so the manual edit
+    // above is visible to the subsequent push.
+    __resetConfigCacheForTests();
 
     // Act — push with no local changes. Local main should equal remote main.
     const sut = await repo.push({

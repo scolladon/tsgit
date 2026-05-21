@@ -3,8 +3,8 @@ import { TsgitError } from '../../../domain/error.js';
 import { type IgnoreRuleset, parseGitignore } from '../../../domain/ignore/index.js';
 import type { FilePath } from '../../../domain/objects/object-id.js';
 import type { Context } from '../../../ports/context.js';
+import { readConfig } from '../../primitives/config-read.js';
 import { MAX_GITIGNORE_BYTES } from '../../primitives/types.js';
-import { readConfig } from './config-read.js';
 
 /**
  * Load and parse the `.gitignore` file in a directory relative to the

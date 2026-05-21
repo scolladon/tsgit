@@ -27,4 +27,8 @@ export const objectsDir = (gitDir: string, prefix: string): string => `${gitDir}
 
 export const packsDir = (gitDir: string): string => `${gitDir}/objects/pack`;
 
+export const logsDir = (gitDir: string): string => `${gitDir}/logs`;
+
+export const reflogPath = (gitDir: string, ref: RefName): string => `${gitDir}/logs/${ref}`;
+
 export const lockSuffix = '.lock';

@@ -46,6 +46,13 @@ export const MAX_WORKING_TREE_BLOB_BYTES = 256 * 1024 * 1024;
  */
 export const MAX_GITIGNORE_BYTES = 1 * 1024 * 1024;
 
+/**
+ * Per-file cap on a single `.git/logs/<ref>` reflog file. 16 MiB is generous
+ * — `reflog expire` is the size-management story; this guard only stops an
+ * adversarial or corrupt log from being buffered unbounded into memory.
+ */
+export const MAX_REFLOG_BYTES = 16 * 1024 * 1024;
+
 export interface ReadObjectOptions {
   readonly verifyHash?: boolean;
   /**
@@ -66,10 +73,22 @@ export interface ResolveRefOptions {
   readonly maxPeelDepth?: number;
 }
 
-export interface UpdateRefOptions {
-  readonly expected?: ObjectId | 'absent';
-  readonly delete?: boolean;
-}
+/**
+ * `updateRef` option shapes. A write requires a `reflogMessage` — git's
+ * builtins always supply a reason string; the type checker forces every
+ * present and future ref write to state why the ref moved. A delete drops the
+ * reflog file, so it carries no message.
+ */
+export type UpdateRefOptions =
+  | {
+      readonly delete?: false;
+      readonly expected?: ObjectId | 'absent';
+      readonly reflogMessage: string;
+    }
+  | {
+      readonly delete: true;
+      readonly expected?: ObjectId | 'absent';
+    };
 
 export interface WalkCommitsOptions {
   readonly from: ReadonlyArray<ObjectId>;

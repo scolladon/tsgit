@@ -19,16 +19,17 @@
 import { TsgitError } from '../../domain/error.js';
 import { remoteAdvertisesNoRefs, remoteNotConfigured } from '../../domain/index.js';
 import type { ObjectId, RefName } from '../../domain/objects/index.js';
+import { ZERO_OID } from '../../domain/objects/index.js';
 import type { AdvertisedRef, Advertisement } from '../../domain/protocol/index.js';
 import { validateRefName } from '../../domain/refs/ref-validation.js';
 import type { Context } from '../../ports/context.js';
+import { readConfig } from '../primitives/config-read.js';
 import { fetchPack } from '../primitives/fetch-pack.js';
 import { getRefStore } from '../primitives/ref-store.js';
 import { updateShallow } from '../primitives/shallow-file.js';
 import { MAX_HAVES, MAX_WALK_SEEDS } from '../primitives/types.js';
 import { updateRef } from '../primitives/update-ref.js';
 import { walkCommits } from '../primitives/walk-commits.js';
-import { readConfig } from './internal/config-read.js';
 import { withDefaults } from './internal/network-pipeline.js';
 import { assertRepository } from './internal/repo-state.js';
 import {
@@ -229,7 +230,9 @@ const applyRemoteRefs = async (
       updates.push({ name: target, oldId, newId: ref.id });
       continue;
     }
-    await updateRef(ctx, target, ref.id);
+    await updateRef(ctx, target, ref.id, {
+      reflogMessage: `fetch ${remoteName}: storing head`,
+    });
     updates.push({ name: target, oldId, newId: ref.id });
   }
   return updates;
@@ -339,7 +342,7 @@ const deleteUnadvertised = async (
     // ref happens to live at the same path as a directory entry on a
     // case-folding filesystem (unlikely but possible).
     try {
-      await updateRef(ctx, refName, '0'.repeat(40) as ObjectId, { delete: true });
+      await updateRef(ctx, refName, ZERO_OID, { delete: true });
     } catch (err) {
       if (isPackedRefDeleteError(err)) {
         // Skip packed-only refs rather than crashing the whole fetch.

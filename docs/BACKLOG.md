@@ -2,7 +2,7 @@
 
 Track: `[ ]` todo, `[~]` in progress, `[x]` done, `[-]` skipped
 
-**Progress:** Phases 0–11 complete. `@scolladon/tsgit@1.0.0` published on npm with sigstore provenance (trusted-publisher OIDC). Phase 12.1 (clone smart-HTTP pack fetch), 12.2 (fetch + shallow + prune), 12.3 (push), 12.4 (clone bench), 13.1 (checkout materialize), 13.2 (reset --mixed rebuilds the index), 13.3 (reset --hard materialises both index and working tree), 13.5 (checkout lock-first ordering — closes a known TOCTOU window), and 13.6 (path-restore from staged content via index-tree synthesis) shipped. Remaining Phase 13.x items (3-way merge tree walk, index-parser path validation hardening) are next.
+**Progress:** Phases 0–16 complete, Phase 17.1 shipping. `@scolladon/tsgit@1.0.0` published on npm with sigstore provenance (trusted-publisher OIDC). Phases 12–16 shipped (network: clone/fetch/push; working-tree: checkout/reset; pathspec: globs and `.gitignore`; Windows support; operations hardening; browser E2E). Phase 17.1 (reflog) is now implemented. Remaining v2.0 items (17.2–17.7) deferred.
 
 ---
 
@@ -316,7 +316,8 @@ Design: `docs/design/phase-15-bench-observability.md`. ADRs: [054](adr/054-bench
 
 ### v2.0 — Larger semantic surface
 
-- [ ] **17.1** Reflog (`HEAD@{N}`, `<branch>@{N}` syntax, `.git/logs/` writers).
+- [x] **17.1** Reflog (`HEAD@{N}`, `<branch>@{N}` syntax, `.git/logs/` writers).
+      _Accepted:_ automatic gated logging via `recordRefUpdate` (the single reflog writer); `core.logAllRefUpdates` config gate + default-loggable-prefix rule; HEAD dual-logging when a branch update occurs; `@{N}` (integer index) and `@{date}` (approxidate forms: `now`, `yesterday`, `2.days.ago`, `2026-05-01`, `2026-05-01 12:30:00`) resolution in `revParse`; tier-1 `repo.reflog()` command with `show` / `exists` / `delete` (incl. `--rewrite`) / `expire` (reachable/unreachable two-cutoff prune, git-faithful); `FileSystem.appendUtf8` port method; `config-read` relocation to primitives tier (breaking change: v2.0). Design: `docs/design/reflog.md`. ADRs: [058](adr/058-reflog-integration-point.md) (auto-logging, `config-read` relocation, `reflogMessage` union), [059](adr/059-head-dual-logging.md) (HEAD coupling), [060](adr/060-append-utf8-port.md) (`appendUtf8`), [061](adr/061-reflog-identity.md) (identity + portable fallback), [062](adr/062-approxidate-subset.md) (date subset), [063](adr/063-log-all-ref-updates.md) (gate logic), [064](adr/064-reflog-command-shape.md) (command shape).
 - [ ] **17.2** Hooks (`pre-commit`, `commit-msg`, `pre-push` invocation contract; opt-in for the security model).
 - [ ] **17.3** Sparse checkout (`.git/info/sparse-checkout` patterns, partial materialization).
 - [ ] **17.4** Partial clone (`--filter=blob:none`, lazy-fetch on read).

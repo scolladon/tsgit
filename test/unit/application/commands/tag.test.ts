@@ -4,8 +4,10 @@ import { add } from '../../../../src/application/commands/add.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
 import { tag } from '../../../../src/application/commands/tag.js';
+import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
+import { readReflog } from '../../../../src/application/primitives/reflog-store.js';
 import { TsgitError } from '../../../../src/domain/index.js';
-import type { AuthorIdentity } from '../../../../src/domain/objects/index.js';
+import type { AuthorIdentity, RefName } from '../../../../src/domain/objects/index.js';
 
 const author: AuthorIdentity = {
   name: 'Ada',
@@ -231,6 +233,22 @@ describe('tag', () => {
     // Assert — only REF_UPDATE_CONFLICT becomes TAG_EXISTS; REF_LOCKED is rethrown verbatim.
     expect(caught).toBeInstanceOf(TsgitError);
     expect((caught as TsgitError).data.code).toBe('REF_LOCKED');
+  });
+
+  it('Given core.logAllRefUpdates=always, When tag create, Then the reflog entry message is "tag: <name>"', async () => {
+    // Arrange — `always` makes even tag refs loggable, exposing the reflog
+    // message tag writes. The message must name the tag, not be empty.
+    const { ctx } = await seedWithCommit();
+    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n  logallrefupdates = always\n');
+    __resetConfigCacheForTests();
+
+    // Act
+    await tag(ctx, { kind: 'create', name: 'v1.0' });
+
+    // Assert
+    const entries = await readReflog(ctx, 'refs/tags/v1.0' as RefName);
+    expect(entries.map((e) => e.message)).toEqual(['tag: v1.0']);
+    __resetConfigCacheForTests();
   });
 
   it('Given updateRef throws a non-TsgitError, When tag create, Then that error propagates unchanged', async () => {

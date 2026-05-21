@@ -111,6 +111,9 @@ export function assertExhaustiveSwitch(data: TsgitErrorData): void {
     case 'OBJECT_TOO_LARGE':
     case 'WORKING_TREE_FILE_TOO_LARGE':
     case 'GITIGNORE_FILE_TOO_LARGE':
+    case 'INVALID_REFLOG_ENTRY':
+    case 'REFLOG_NOT_FOUND':
+    case 'REFLOG_ENTRY_OUT_OF_RANGE':
       return;
     default: {
       const _exhaustive: never = data;

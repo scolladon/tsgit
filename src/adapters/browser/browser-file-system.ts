@@ -62,6 +62,14 @@ export class BrowserFileSystem implements FileSystem {
     await this.write(path, new TextEncoder().encode(content));
   }
 
+  async appendUtf8(path: string, content: string): Promise<void> {
+    const handle = await this.resolveFileHandle(path, true);
+    const existing = await handle.getFile();
+    const writable = await handle.createWritable({ keepExistingData: true });
+    await writable.write({ type: 'write', position: existing.size, data: content });
+    await writable.close();
+  }
+
   async exists(path: string): Promise<boolean> {
     try {
       await this.resolveFileHandle(path, false);

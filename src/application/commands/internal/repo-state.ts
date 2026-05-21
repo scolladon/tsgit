@@ -6,7 +6,7 @@ import type { FilePath } from '../../../domain/objects/object-id.js';
 import { refNotFound } from '../../../domain/refs/error.js';
 import { parseLooseRef } from '../../../domain/refs/index.js';
 import type { Context } from '../../../ports/context.js';
-import { readConfig } from './config-read.js';
+import { readConfig } from '../../primitives/config-read.js';
 
 const HEAD_REF = RefName.from('HEAD');
 

@@ -1,11 +1,11 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../../src/adapters/memory/memory-adapter.js';
-import { __resetConfigCacheForTests } from '../../../../../src/application/commands/internal/config-read.js';
 import {
   readGitignore,
   readGlobalExcludes,
   readInfoExclude,
 } from '../../../../../src/application/commands/internal/read-gitignore.js';
+import { __resetConfigCacheForTests } from '../../../../../src/application/primitives/config-read.js';
 import { MAX_GITIGNORE_BYTES } from '../../../../../src/application/primitives/types.js';
 import { TsgitError } from '../../../../../src/domain/index.js';
 import type { FilePath } from '../../../../../src/domain/objects/object-id.js';

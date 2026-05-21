@@ -24,6 +24,7 @@ import {
   type RefName,
 } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
+import { readConfig } from '../primitives/config-read.js';
 import { createCommit } from '../primitives/create-commit.js';
 import { flattenTree } from '../primitives/flatten-tree.js';
 import { mergeBase } from '../primitives/merge-base.js';
@@ -34,7 +35,6 @@ import { updateRef } from '../primitives/update-ref.js';
 import { writeObject } from '../primitives/write-object.js';
 import { writeTree } from '../primitives/write-tree.js';
 import { resolveAuthor, resolveCommitter, sanitizeMessage } from './internal/commit-message.js';
-import { readConfig } from './internal/config-read.js';
 import { acquireIndexLock } from './internal/index-update.js';
 import { writeMergeHead, writeMergeMsg, writeOrigHead } from './internal/merge-state.js';
 import {
@@ -103,7 +103,10 @@ export const merge = async (ctx: Context, opts: MergeOptions): Promise<MergeResu
   if (base === theirId) return { kind: 'up-to-date', id: ourId };
   if (base === ourId) {
     if (opts.noFastForward !== true) {
-      await updateRef(ctx, head.target, theirId, { expected: ourId });
+      await updateRef(ctx, head.target, theirId, {
+        expected: ourId,
+        reflogMessage: `merge ${opts.target}: Fast-forward`,
+      });
       return { kind: 'fast-forward', id: theirId, branch: head.target };
     }
   }
@@ -160,7 +163,10 @@ const commitCleanMerge = async (
     extraHeaders: [],
   };
   const id = await createCommit(ctx, commitData);
-  await updateRef(ctx, branchName, id, { expected: ourId });
+  await updateRef(ctx, branchName, id, {
+    expected: ourId,
+    reflogMessage: `merge ${opts.target}: Merge made by the 'tsgit' strategy.`,
+  });
   return { kind: 'merge', id, branch: branchName, parents: [ourId, theirId] };
 };
 

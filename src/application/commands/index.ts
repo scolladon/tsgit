@@ -9,6 +9,12 @@ export { type InitOptions, type InitResult, init } from './init.js';
 export { type LogEntry, type LogOptions, log } from './log.js';
 export { type MergeOptions, type MergeResult, merge } from './merge.js';
 export { type PushOptions, type PushResult, push } from './push.js';
+export {
+  type ReflogAction,
+  type ReflogResult,
+  type ReflogShowEntry,
+  reflog,
+} from './reflog.js';
 export { type ResetMode, type ResetOptions, type ResetResult, reset } from './reset.js';
 export { revParse } from './rev-parse.js';
 export { type RmOptions, type RmResult, rm } from './rm.js';

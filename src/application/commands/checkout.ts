@@ -11,6 +11,7 @@ import type { Context } from '../../ports/context.js';
 import { materializeTree } from '../primitives/materialize-tree.js';
 import { readIndex } from '../primitives/read-index.js';
 import { readTree } from '../primitives/read-tree.js';
+import { recordRefUpdate } from '../primitives/record-ref-update.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
 import { synthesizeTreeFromIndex } from '../primitives/synthesize-tree-from-index.js';
 import { walkTree } from '../primitives/walk-tree.js';
@@ -20,6 +21,7 @@ import {
   assertNoPendingOperation,
   assertNotBare,
   assertRepository,
+  readHeadRaw,
 } from './internal/repo-state.js';
 import { enforceLiteralMustMatch, resolvePathspec } from './internal/resolve-pathspec.js';
 
@@ -56,8 +58,25 @@ const resolveSwitchOid = async (ctx: Context, target: string): Promise<ObjectId>
   return resolveRef(ctx, target as RefName);
 };
 
+/** git's checkout reflog label: the branch short-name on a branch, the
+ *  abbreviated oid when detached. A symbolic target outside `refs/heads/`
+ *  (e.g. `refs/remotes/...`) falls back to its last path segment so the
+ *  prefix-strip never mangles the name. */
+const headCheckoutLabel = (
+  head:
+    | { readonly kind: 'symbolic'; readonly target: RefName }
+    | { readonly kind: 'direct'; readonly id: ObjectId },
+): string => {
+  if (head.kind !== 'symbolic') return head.id.slice(0, 7);
+  if (head.target.startsWith(HEADS_PREFIX)) return head.target.slice(HEADS_PREFIX.length);
+  const lastSlash = head.target.lastIndexOf('/');
+  return lastSlash === -1 ? head.target : head.target.slice(lastSlash + 1);
+};
+
 const switchBranch = async (ctx: Context, opts: CheckoutSwitchOptions): Promise<CheckoutResult> => {
   const detached = opts.detach === true || /^[0-9a-f]{40}$/.test(opts.target);
+  const priorHead = await readHeadRaw(ctx);
+  const oldOid = await resolveRef(ctx, 'HEAD' as RefName);
   let branchRef: RefName | undefined;
   let oid: ObjectId;
   if (detached) {
@@ -98,8 +117,16 @@ const switchBranch = async (ctx: Context, opts: CheckoutSwitchOptions): Promise<
   }
 
   // Move HEAD — outside the index lock (HEAD writes are atomic on their own).
+  const fromLabel = headCheckoutLabel(priorHead);
   if (detached) {
     await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, `${oid}\n`);
+    await recordRefUpdate(
+      ctx,
+      'HEAD' as RefName,
+      oldOid,
+      oid,
+      `checkout: moving from ${fromLabel} to ${oid.slice(0, 7)}`,
+    );
     return {
       branch: undefined,
       id: oid,
@@ -108,6 +135,13 @@ const switchBranch = async (ctx: Context, opts: CheckoutSwitchOptions): Promise<
     };
   }
   await writeSymbolicRef(ctx, 'HEAD' as RefName, branchRef as RefName);
+  await recordRefUpdate(
+    ctx,
+    'HEAD' as RefName,
+    oldOid,
+    oid,
+    `checkout: moving from ${fromLabel} to ${opts.target}`,
+  );
   return {
     branch: branchRef,
     id: oid,

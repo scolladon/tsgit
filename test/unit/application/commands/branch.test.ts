@@ -4,6 +4,8 @@ import { add } from '../../../../src/application/commands/add.js';
 import { branch, compareRefName } from '../../../../src/application/commands/branch.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
+import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
+import { readReflog, reflogExists } from '../../../../src/application/primitives/reflog-store.js';
 import { TsgitError } from '../../../../src/domain/index.js';
 import type { AuthorIdentity, RefName } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
@@ -116,6 +118,45 @@ describe('branch', () => {
     expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/heads/trunk`)).toBe(true);
     const head = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/HEAD`);
     expect(head).toBe('ref: refs/heads/trunk\n');
+  });
+
+  it('Given a branch with reflog history, When branch rename, Then the new ref reflog is [...source-history, rename-entry] and the source reflog is gone', async () => {
+    // Arrange — the seed commit logs one entry to refs/heads/main's reflog.
+    const { ctx } = await seedWithCommit();
+    const before = await readReflog(ctx, 'refs/heads/main' as RefName);
+    expect(before).toHaveLength(1);
+
+    // Act
+    await branch(ctx, { kind: 'rename', from: 'main', to: 'trunk' });
+
+    // Assert — the moved history precedes the rename entry on the new ref,
+    // and the source reflog file no longer exists.
+    const movedLog = await readReflog(ctx, 'refs/heads/trunk' as RefName);
+    expect(movedLog).toHaveLength(2);
+    expect(movedLog[0]).toEqual(before[0]);
+    expect(movedLog[1]?.message).toBe('branch: renamed refs/heads/main to refs/heads/trunk');
+    expect(await reflogExists(ctx, 'refs/heads/main' as RefName)).toBe(false);
+  });
+
+  it('Given a source branch with no reflog, When branch rename, Then the renamed branch gets no empty reflog file', async () => {
+    // Arrange — logging is off before the seed commit, so refs/heads/main has
+    // no reflog. The rename must not write an (empty) reflog for the target:
+    // the moved-history write is guarded on a non-empty source log.
+    const ctx = createMemoryContext();
+    await init(ctx);
+    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n  logallrefupdates = false\n');
+    __resetConfigCacheForTests();
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
+    await add(ctx, ['a.txt']);
+    await commit(ctx, { message: 'first', author });
+    expect(await reflogExists(ctx, 'refs/heads/main' as RefName)).toBe(false);
+
+    // Act
+    await branch(ctx, { kind: 'rename', from: 'main', to: 'trunk' });
+
+    // Assert — no source history to move, so the target has no reflog file.
+    expect(await reflogExists(ctx, 'refs/heads/trunk' as RefName)).toBe(false);
+    __resetConfigCacheForTests();
   });
 
   it('Given a non-current branch, When branch rename, Then HEAD is unchanged (only the renamed-current branch updates HEAD)', async () => {

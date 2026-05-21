@@ -1,8 +1,10 @@
 import { TsgitError } from '../../domain/error.js';
 import { branchExists, branchNotFound, cannotDeleteCheckedOutBranch } from '../../domain/index.js';
 import type { ObjectId, RefName } from '../../domain/objects/index.js';
+import { ZERO_OID } from '../../domain/objects/index.js';
 import { validateRefName } from '../../domain/refs/index.js';
 import type { Context } from '../../ports/context.js';
+import { readReflog, writeReflog } from '../primitives/reflog-store.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
 import { updateRef } from '../primitives/update-ref.js';
 import { writeSymbolicRef } from '../primitives/write-symbolic-ref.js';
@@ -85,8 +87,14 @@ const createBranch = async (
   const name = validateRefName(`${HEADS_PREFIX}${action.name}`);
   const startPoint = action.startPoint ?? 'HEAD';
   const target = await resolveBranchTarget(ctx, startPoint);
+  const reflogMessage = `branch: Created from ${startPoint}`;
   try {
-    await updateRef(ctx, name, target, action.force === true ? {} : { expected: 'absent' });
+    await updateRef(
+      ctx,
+      name,
+      target,
+      action.force === true ? { reflogMessage } : { expected: 'absent', reflogMessage },
+    );
   } catch (err) {
     if (err instanceof TsgitError && err.data.code === 'REF_UPDATE_CONFLICT') {
       throw branchExists(name);
@@ -108,7 +116,7 @@ const deleteBranch = async (
   if (!(await ctx.fs.exists(`${ctx.layout.gitDir}/${name}`))) {
     throw branchNotFound(name);
   }
-  await updateRef(ctx, name, '0'.repeat(40) as ObjectId, { delete: true });
+  await updateRef(ctx, name, ZERO_OID, { delete: true });
   return { kind: 'delete', name };
 };
 
@@ -119,15 +127,29 @@ const renameBranch = async (
   const from = validateRefName(`${HEADS_PREFIX}${action.from}`);
   const to = validateRefName(`${HEADS_PREFIX}${action.to}`);
   const id = await resolveRef(ctx, from);
+  const reflogMessage = `branch: renamed ${from} to ${to}`;
+  // Capture the source log before any write so the rename preserves history.
+  const movedLog = await readReflog(ctx, from);
   try {
-    await updateRef(ctx, to, id, action.force === true ? {} : { expected: 'absent' });
+    await updateRef(
+      ctx,
+      to,
+      id,
+      action.force === true ? { reflogMessage } : { expected: 'absent', reflogMessage },
+    );
   } catch (err) {
     if (err instanceof TsgitError && err.data.code === 'REF_UPDATE_CONFLICT') {
       throw branchExists(to);
     }
     throw err;
   }
-  await updateRef(ctx, from, '0'.repeat(40) as ObjectId, { delete: true });
+  // Re-attach `from`'s history to `to` BEFORE deleting `from`: were the
+  // merged-log write to fail, `from`'s reflog must still be intact.
+  if (movedLog.length > 0) {
+    await writeReflog(ctx, to, [...movedLog, ...(await readReflog(ctx, to))]);
+  }
+  // updateRef's delete path drops `from`'s log; its history is already on `to`.
+  await updateRef(ctx, from, ZERO_OID, { delete: true });
   const head = await readHeadRaw(ctx);
   if (head.kind === 'symbolic' && head.target === from) {
     await writeSymbolicRef(ctx, 'HEAD' as RefName, to);

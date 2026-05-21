@@ -1,6 +1,7 @@
 import { TsgitError } from '../../domain/error.js';
 import { tagExists, tagNotFound } from '../../domain/index.js';
 import type { ObjectId, RefName } from '../../domain/objects/index.js';
+import { ZERO_OID } from '../../domain/objects/index.js';
 import { validateRefName } from '../../domain/refs/index.js';
 import type { Context } from '../../ports/context.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
@@ -63,8 +64,14 @@ const createTag = async (
   const id = /^[0-9a-f]{40}$/.test(target)
     ? (target as ObjectId)
     : await resolveRef(ctx, target as RefName);
+  const reflogMessage = `tag: ${action.name}`;
   try {
-    await updateRef(ctx, name, id, action.force === true ? {} : { expected: 'absent' });
+    await updateRef(
+      ctx,
+      name,
+      id,
+      action.force === true ? { reflogMessage } : { expected: 'absent', reflogMessage },
+    );
   } catch (err) {
     if (err instanceof TsgitError && err.data.code === 'REF_UPDATE_CONFLICT') {
       throw tagExists(name);
@@ -79,7 +86,7 @@ const deleteTag = async (ctx: Context, action: { readonly name: string }): Promi
   if (!(await ctx.fs.exists(`${ctx.layout.gitDir}/${name}`))) {
     throw tagNotFound(name);
   }
-  await updateRef(ctx, name, '0'.repeat(40) as ObjectId, { delete: true });
+  await updateRef(ctx, name, ZERO_OID, { delete: true });
   return { kind: 'delete', name };
 };
 

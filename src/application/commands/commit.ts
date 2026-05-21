@@ -3,17 +3,18 @@ import type { IndexEntry } from '../../domain/git-index/index.js';
 import { nothingToCommit } from '../../domain/index.js';
 import type { CommitData } from '../../domain/objects/commit.js';
 import type { AuthorIdentity, FilePath, ObjectId, TreeEntry } from '../../domain/objects/index.js';
-import { ObjectId as ObjectIdFactory } from '../../domain/objects/index.js';
+import { ZERO_OID } from '../../domain/objects/index.js';
 import type { RefName } from '../../domain/objects/object-id.js';
 import type { Context } from '../../ports/context.js';
+import { readConfig } from '../primitives/config-read.js';
 import { createCommit } from '../primitives/create-commit.js';
 import { readIndex } from '../primitives/read-index.js';
 import { readObject } from '../primitives/read-object.js';
+import { recordRefUpdate } from '../primitives/record-ref-update.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
 import { updateRef } from '../primitives/update-ref.js';
 import { writeTree } from '../primitives/write-tree.js';
 import { resolveAuthor, resolveCommitter, sanitizeMessage } from './internal/commit-message.js';
-import { readConfig } from './internal/config-read.js';
 import { clearMergeState, readMergeHead, readMergeMsg } from './internal/merge-state.js';
 import {
   assertNoPendingOperation,
@@ -83,11 +84,18 @@ export const commit = async (ctx: Context, opts: CommitOptions): Promise<CommitR
   };
   const id = await createCommit(ctx, commitData);
   const branch = head.kind === 'symbolic' ? head.target : undefined;
+  const reflogMessage = commitReflogMessage(message, parentId, mergeHead);
   if (branch !== undefined) {
     // Stryker disable next-line ObjectLiteral: equivalent — parentId is read from `branch` itself and the library is single-threaded, so the CAS `expected` always equals the ref's current value; dropping it cannot change the outcome.
-    await updateRef(ctx, branch, id, parentId !== undefined ? { expected: parentId } : {});
+    await updateRef(
+      ctx,
+      branch,
+      id,
+      parentId !== undefined ? { expected: parentId, reflogMessage } : { reflogMessage },
+    );
   } else {
     await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, `${id}\n`);
+    await recordRefUpdate(ctx, 'HEAD' as RefName, parentId ?? ZERO_OID, id, reflogMessage);
   }
   if (mergeHead !== undefined) {
     await clearMergeState(ctx);
@@ -106,6 +114,23 @@ const resolveCommitMessage = async (
   // Resolving a merge with an empty user message — fall back to MERGE_MSG.
   const draft = await readMergeMsg(ctx);
   return sanitizeMessage(draft ?? '', { allowEmpty: opts.allowEmptyMessage ?? false });
+};
+
+/**
+ * Build the catalogued reflog message for a commit: `commit (initial):` for
+ * the first commit on a branch, `commit (merge):` when resolving a conflicted
+ * merge, `commit:` otherwise. `<subject>` is the message's first line.
+ */
+const commitReflogMessage = (
+  message: string,
+  parentId: ObjectId | undefined,
+  mergeHead: ObjectId | undefined,
+): string => {
+  // `split` always yields at least one element, so `[0]` is a string.
+  const subject = message.split('\n')[0] as string;
+  if (parentId === undefined) return `commit (initial): ${subject}`;
+  if (mergeHead !== undefined) return `commit (merge): ${subject}`;
+  return `commit: ${subject}`;
 };
 
 const buildParents = (
@@ -182,7 +207,7 @@ const tryResolve = async (ctx: Context, name: RefName): Promise<ObjectId | undef
 
 const getParentTree = async (ctx: Context, parentId: ObjectId): Promise<ObjectId> => {
   const obj = await readObject(ctx, parentId);
-  if (obj.type !== 'commit') return ObjectIdFactory.from('0'.repeat(40));
+  if (obj.type !== 'commit') return ZERO_OID;
   return obj.data.tree;
 };
 

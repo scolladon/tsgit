@@ -6,6 +6,7 @@ import { buildIndexFromTree } from '../primitives/build-index-from-tree.js';
 import { materializeTree } from '../primitives/materialize-tree.js';
 import { readIndex } from '../primitives/read-index.js';
 import { readObject } from '../primitives/read-object.js';
+import { recordRefUpdate } from '../primitives/record-ref-update.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
 import { updateRef } from '../primitives/update-ref.js';
 import { acquireIndexLock } from './internal/index-update.js';
@@ -58,13 +59,14 @@ export const reset = async (ctx: Context, opts: ResetOptions): Promise<ResetResu
   }
 
   const head = await readHeadRaw(ctx);
-  const branch = head.kind === 'symbolic' ? head.target : undefined;
-  if (branch !== undefined) {
-    await updateRef(ctx, branch, id, {});
-  } else {
-    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, `${id}\n`);
+  const reflogMessage = `reset: moving to ${opts.target}`;
+  if (head.kind === 'symbolic') {
+    await updateRef(ctx, head.target, id, { reflogMessage });
+    return { mode: opts.mode, id, branch: head.target };
   }
-  return { mode: opts.mode, id, branch };
+  await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, `${id}\n`);
+  await recordRefUpdate(ctx, 'HEAD' as RefName, head.id, id, reflogMessage);
+  return { mode: opts.mode, id, branch: undefined };
 };
 
 const rebuildIndexFromCommit = async (ctx: Context, commitId: ObjectId): Promise<void> => {

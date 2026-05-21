@@ -25,7 +25,13 @@ import { push } from '../../../../src/application/commands/push.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { writeTree } from '../../../../src/application/primitives/write-tree.js';
 import { TsgitError } from '../../../../src/domain/index.js';
-import type { Blob, Commit, FileMode, ObjectId } from '../../../../src/domain/objects/index.js';
+import type {
+  Blob,
+  Commit,
+  FileMode,
+  ObjectId,
+  RefName,
+} from '../../../../src/domain/objects/index.js';
 import { encodePktStream } from '../../../../src/domain/protocol/pkt-line.js';
 import type {
   HttpRequest,
@@ -865,6 +871,28 @@ describe('push — remote-tracking cache', () => {
     // Assert
     const cached = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/refs/remotes/origin/main`);
     expect(cached.trim()).toBe(tip.id);
+  });
+
+  it('Given an accepted ref under refs/heads/, When push completes, Then the tracking ref reflog records an "update by push" entry', async () => {
+    // Arrange
+    const ctx = createMemoryContext();
+    const parent = await seedCommit(ctx, [], 'p');
+    const tip = await seedCommit(ctx, [parent.id], 't');
+    await seedRepo(ctx, { refs: { 'refs/heads/main': tip.id } });
+    await writeOriginConfig(ctx);
+    const { transport } = fakeServer({
+      url: 'https://example.com/r.git',
+      advertisedRefs: [{ name: 'refs/heads/main', id: parent.id }],
+      reportStatus: { unpack: 'ok', refs: [{ name: 'refs/heads/main', status: 'ok' }] },
+    });
+
+    // Act
+    await push({ ...ctx, transport });
+
+    // Assert — the tracking-cache write logs a non-empty "update by push" reason.
+    const { readReflog } = await import('../../../../src/application/primitives/reflog-store.js');
+    const entries = await readReflog(ctx, 'refs/remotes/origin/main' as RefName);
+    expect(entries.map((e) => e.message)).toEqual(['update by push']);
   });
 
   it('Given a rejected ref, When push completes, Then refs/remotes/origin/<branch> is NOT updated', async () => {
