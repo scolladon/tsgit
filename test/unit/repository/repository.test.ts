@@ -4,6 +4,7 @@ import {
   MemoryCompressor,
   MemoryFileSystem,
   MemoryHashService,
+  MemoryHookRunner,
   MemoryHttpTransport,
 } from '../../../src/adapters/memory/index.js';
 import { TsgitError } from '../../../src/domain/error.js';
@@ -44,6 +45,39 @@ describe('openRepository — construction', () => {
     const sut = await open();
 
     expect(Object.isFrozen(sut.ctx)).toBe(true);
+  });
+});
+
+describe('openRepository — hooks', () => {
+  it('Given no hooks option and a fallback without one, When openRepository runs, Then ctx.hooks is undefined', async () => {
+    const sut = await open();
+
+    expect(sut.ctx.hooks).toBeUndefined();
+  });
+
+  it('Given an explicit hook runner, When openRepository runs, Then ctx.hooks is that runner', async () => {
+    const runner = new MemoryHookRunner();
+
+    const sut = await open({ hooks: runner });
+
+    expect(sut.ctx.hooks).toBe(runner);
+  });
+
+  it('Given hooks: false and a fallback that supplies a runner, When openRepository runs, Then ctx.hooks is undefined', async () => {
+    const sut = await openRepository(
+      { cwd: '/repo', hooks: false },
+      { ...makeFallback(), hooks: new MemoryHookRunner() },
+    );
+
+    expect(sut.ctx.hooks).toBeUndefined();
+  });
+
+  it('Given no hooks option but a fallback that supplies a runner, When openRepository runs, Then ctx.hooks is the fallback runner', async () => {
+    const runner = new MemoryHookRunner();
+
+    const sut = await openRepository({ cwd: '/repo' }, { ...makeFallback(), hooks: runner });
+
+    expect(sut.ctx.hooks).toBe(runner);
   });
 });
 
@@ -92,6 +126,7 @@ describe('openRepository — Repository binding integrity', () => {
         'readTree',
         'recordRefUpdate',
         'resolveRef',
+        'runHook',
         'updateRef',
         'walkCommits',
         'walkTree',
