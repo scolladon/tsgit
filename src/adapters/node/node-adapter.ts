@@ -21,7 +21,11 @@ export interface NodeAdapterOptions {
   readonly signal?: AbortSignal;
   readonly deltaCacheMaxBytes?: number;
   readonly deltaCacheMaxEntries?: number;
-  /** Wire the git-hook runner (default true). Pass `false` to disable hooks entirely. */
+  /**
+   * Wire the git-hook runner (default true). Pass `false` to disable hooks.
+   * A wired runner spawns `.git/hooks/*` scripts that inherit the full
+   * `process.env` — disable it for repositories you do not trust.
+   */
   readonly hooks?: boolean;
 }
 

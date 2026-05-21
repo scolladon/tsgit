@@ -72,7 +72,11 @@ const spawnHook = (scriptPath: string, request: HookRequest): Promise<HookResult
   new Promise<HookResult>((resolve) => {
     const child = spawn(scriptPath, request.args, {
       cwd: request.workDir,
-      env: { ...process.env, GIT_DIR: request.gitDir },
+      env: {
+        ...process.env,
+        GIT_DIR: request.gitDir,
+        GIT_INDEX_FILE: `${request.gitDir}/index`,
+      },
     });
     const stdout = new BoundedBuffer();
     const stderr = new BoundedBuffer();
@@ -88,7 +92,11 @@ const spawnHook = (scriptPath: string, request: HookRequest): Promise<HookResult
     };
     signal?.addEventListener('abort', onAbort);
     if (signal?.aborted === true) child.kill();
+    // A failed spawn can emit both `error` and `close`; the first result wins.
+    let settled = false;
     const finish = (result: HookResult): void => {
+      if (settled) return;
+      settled = true;
       signal?.removeEventListener('abort', onAbort);
       resolve(result);
     };

@@ -49,6 +49,10 @@ export interface OpenRepositoryOptions {
   /**
    * Hook runner. Omit to inherit the runtime default (Node wires one; the
    * browser does not). Pass `false` to disable hooks entirely.
+   *
+   * WARNING: a wired runner spawns `.git/hooks/*` scripts that inherit the
+   * full `process.env` of the calling process — including any secrets it
+   * holds. Pass `false` when operating on a repository you do not trust.
    */
   readonly hooks?: HookRunner | false;
   /**

@@ -224,9 +224,10 @@ export const gitignoreFileTooLarge = (path: FilePath, size: number, limit: numbe
   new TsgitError({ code: 'GITIGNORE_FILE_TOO_LARGE', path, size, limit });
 
 /**
- * Cap on the `stderr` snippet embedded in a `HOOK_FAILED` error. A hook can
- * emit megabytes; an unbounded string inside a thrown error is an
- * amplification vector when callers log or serialise it.
+ * Cap on the sanitised `stderr` snippet embedded in a `HOOK_FAILED` error,
+ * measured in characters of the post-sanitisation string. A hook can emit
+ * megabytes; an unbounded string inside a thrown error is an amplification
+ * vector when callers log or serialise it.
  */
 export const MAX_HOOK_STDERR_IN_ERROR = 4096;
 
