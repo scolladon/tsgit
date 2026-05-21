@@ -34,6 +34,7 @@ export {
   writeReflog,
 } from './reflog-store.js';
 export { resolveRef } from './resolve-ref.js';
+export { type HookInput, runHook } from './run-hook.js';
 export { readShallow, updateShallow } from './shallow-file.js';
 export { synthesizeTreeFromIndex } from './synthesize-tree-from-index.js';
 export type * from './types.js';
