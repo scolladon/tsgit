@@ -41,6 +41,7 @@ import { buildPack } from '../primitives/build-pack.js';
 import { readConfig } from '../primitives/config-read.js';
 import { enumeratePushObjects } from '../primitives/enumerate-push-objects.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
+import { runHook } from '../primitives/run-hook.js';
 import { updateRef } from '../primitives/update-ref.js';
 import { walkCommits } from '../primitives/walk-commits.js';
 import { withDefaults } from './internal/network-pipeline.js';
@@ -53,6 +54,8 @@ export interface PushOptions {
   readonly refspecs?: ReadonlyArray<string>;
   readonly force?: boolean;
   readonly forceWithLease?: ObjectId | 'auto';
+  /** Skip the `pre-push` hook (git's `--no-verify`). */
+  readonly noVerify?: boolean;
 }
 
 export interface PushedRef {
@@ -98,11 +101,35 @@ export const push = async (ctx: Context, opts: PushOptions = {}): Promise<PushRe
     if (movers.length === 0) {
       return { remote: remoteName, url, pushedRefs: [] };
     }
+    await runPrePushHook(ctx, opts.noVerify ?? false, remoteName, url, movers);
     const pushedRefs = await sendUpdates(ctx, transport, url, adv, movers, remoteName);
     return { remote: remoteName, url, pushedRefs };
   } finally {
     ctx.progress.end(PUSH_ENUMERATE_OBJECTS_OP);
   }
+};
+
+/**
+ * Fire the `pre-push` hook with git's canonical stdin payload — one
+ * `<local-ref> SP <local-oid> SP <remote-ref> SP <remote-oid>` line per ref
+ * being updated. A no-op when verification is disabled (`--no-verify`).
+ */
+const runPrePushHook = async (
+  ctx: Context,
+  noVerify: boolean,
+  remoteName: string,
+  url: string,
+  movers: ReadonlyArray<ResolvedRefspec>,
+): Promise<void> => {
+  if (noVerify) return;
+  const stdin = movers.map(prePushLine).join('');
+  await runHook(ctx, 'pre-push', { args: [remoteName, url], stdin });
+};
+
+/** One `pre-push` stdin line. A delete refspec reports the `(delete)` sentinel. */
+const prePushLine = (m: ResolvedRefspec): string => {
+  const localRef = m.parsed.isDelete ? '(delete)' : m.parsed.src;
+  return `${localRef} ${m.localOid} ${m.parsed.dst} ${m.remoteOid}\n`;
 };
 
 /**

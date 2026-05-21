@@ -21,6 +21,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
+import { MemoryHookRunner } from '../../../../src/adapters/memory/memory-hook-runner.js';
 import { push } from '../../../../src/application/commands/push.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { writeTree } from '../../../../src/application/primitives/write-tree.js';
@@ -1299,5 +1300,82 @@ describe('push — tag refspec tracking cache', () => {
     expect(sut.pushedRefs[0]?.status).toBe('ok');
     const remotesDirExists = await ctx.fs.exists(`${ctx.layout.gitDir}/refs/remotes`);
     expect(remotesDirExists).toBe(false);
+  });
+});
+
+describe('push — hooks', () => {
+  it('Given a pre-push hook that exits non-zero, When push runs, Then it throws HOOK_FAILED before any upload', async () => {
+    // Arrange
+    const ctx = createMemoryContext();
+    const parent = await seedCommit(ctx, [], 'gen-1');
+    const tip = await seedCommit(ctx, [parent.id], 'gen-2');
+    await seedRepo(ctx, { refs: { 'refs/heads/main': tip.id } });
+    await writeOriginConfig(ctx);
+    const { transport, requests } = fakeServer({
+      url: 'https://example.com/r.git',
+      advertisedRefs: [{ name: 'refs/heads/main', id: parent.id }],
+      reportStatus: { unpack: 'ok', refs: [{ name: 'refs/heads/main', status: 'ok' }] },
+    });
+    const hooks = new MemoryHookRunner({
+      'pre-push': { kind: 'ran', exitCode: 1, stdout: '', stderr: 'declined' },
+    });
+
+    // Act
+    let caught: unknown;
+    try {
+      await push({ ...ctx, transport, hooks });
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert — aborted; only the discovery GET happened, no receive-pack POST.
+    expect((caught as TsgitError).data).toMatchObject({ code: 'HOOK_FAILED', hook: 'pre-push' });
+    expect(requests).toHaveLength(1);
+  });
+
+  it('Given a pre-push hook, When push runs, Then the hook receives the remote, url and one ref line on stdin', async () => {
+    // Arrange
+    const ctx = createMemoryContext();
+    const parent = await seedCommit(ctx, [], 'gen-1');
+    const tip = await seedCommit(ctx, [parent.id], 'gen-2');
+    await seedRepo(ctx, { refs: { 'refs/heads/main': tip.id } });
+    await writeOriginConfig(ctx);
+    const { transport } = fakeServer({
+      url: 'https://example.com/r.git',
+      advertisedRefs: [{ name: 'refs/heads/main', id: parent.id }],
+      reportStatus: { unpack: 'ok', refs: [{ name: 'refs/heads/main', status: 'ok' }] },
+    });
+    const hooks = new MemoryHookRunner();
+
+    // Act
+    await push({ ...ctx, transport, hooks });
+
+    // Assert
+    expect(hooks.calls).toHaveLength(1);
+    expect(hooks.calls[0]?.args).toEqual(['origin', 'https://example.com/r.git']);
+    expect(hooks.calls[0]?.stdin).toBe(`refs/heads/main ${tip.id} refs/heads/main ${parent.id}\n`);
+  });
+
+  it('Given a failing pre-push hook but noVerify true, When push runs, Then it succeeds with the hook skipped', async () => {
+    // Arrange
+    const ctx = createMemoryContext();
+    const parent = await seedCommit(ctx, [], 'gen-1');
+    const tip = await seedCommit(ctx, [parent.id], 'gen-2');
+    await seedRepo(ctx, { refs: { 'refs/heads/main': tip.id } });
+    await writeOriginConfig(ctx);
+    const { transport } = fakeServer({
+      url: 'https://example.com/r.git',
+      advertisedRefs: [{ name: 'refs/heads/main', id: parent.id }],
+      reportStatus: { unpack: 'ok', refs: [{ name: 'refs/heads/main', status: 'ok' }] },
+    });
+    const hooks = new MemoryHookRunner({
+      'pre-push': { kind: 'ran', exitCode: 1, stdout: '', stderr: 'x' },
+    });
+
+    // Act
+    const sut = await push({ ...ctx, transport, hooks }, { noVerify: true });
+
+    // Assert
+    expect(sut.pushedRefs).toHaveLength(1);
   });
 });
