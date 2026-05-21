@@ -46,6 +46,13 @@ export const MAX_WORKING_TREE_BLOB_BYTES = 256 * 1024 * 1024;
  */
 export const MAX_GITIGNORE_BYTES = 1 * 1024 * 1024;
 
+/**
+ * Per-file cap on a single `.git/logs/<ref>` reflog file. 16 MiB is generous
+ * — `reflog expire` is the size-management story; this guard only stops an
+ * adversarial or corrupt log from being buffered unbounded into memory.
+ */
+export const MAX_REFLOG_BYTES = 16 * 1024 * 1024;
+
 export interface ReadObjectOptions {
   readonly verifyHash?: boolean;
   /**
