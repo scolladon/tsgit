@@ -201,6 +201,30 @@ A successful push updates the local remote-tracking cache for accepted refs.
 See `test/integration/network/push-http-backend.test.ts` for an end-to-end
 example.
 
+### Git hooks
+
+On Node, tsgit runs your repository's `.git/hooks/` scripts — `pre-commit` and
+`commit-msg` during `commit`, `pre-push` during `push` — exactly as canonical
+git does. A non-zero hook exit aborts the operation with `HOOK_FAILED`:
+
+```typescript
+try {
+  await repo.commit({ message: 'add feature' });
+} catch (err) {
+  // a failing pre-commit / commit-msg hook surfaces as HOOK_FAILED
+}
+
+// skip hooks for a single call (git's --no-verify)
+await repo.commit({ message: 'wip', noVerify: true });
+await repo.push({ noVerify: true });
+```
+
+Hooks run by default on Node and honour `core.hooksPath`. Pass `hooks: false`
+to `openRepository` to disable them entirely — recommended when operating on a
+repository you do not trust, since hooks are arbitrary scripts that inherit the
+process environment. The browser adapter has no hook runner, so hooks are inert
+there.
+
 ### Progress reporting
 
 ```typescript

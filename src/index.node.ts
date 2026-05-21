@@ -10,6 +10,7 @@ import * as nodePath from 'node:path';
 import { NodeCompressor } from './adapters/node/node-compressor.js';
 import { NodeFileSystem } from './adapters/node/node-file-system.js';
 import { NodeHashService } from './adapters/node/node-hash-service.js';
+import { NodeHookRunner } from './adapters/node/node-hook-runner.js';
 import { NodeHttpTransport } from './adapters/node/node-http-transport.js';
 import { SHA1_CONFIG } from './domain/objects/hash-config.js';
 import { createLruCache } from './domain/storage/lru-cache.js';
@@ -64,6 +65,7 @@ export const openRepository = async (opts: OpenNodeRepositoryOptions = {}): Prom
     hash,
     compressor,
     transport,
+    hooks: new NodeHookRunner(),
     runtime: 'node' as const,
     layout,
     hashConfig: SHA1_CONFIG,

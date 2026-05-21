@@ -442,7 +442,17 @@
     "vendorsrc",
     "notasha",
     "notash",
-    "unpadded"
+    "unpadded",
+    "applypatch",
+    "editmsg",
+    "enoexec",
+    "execve",
+    "extensionless",
+    "hookspath",
+    "msys",
+    "runnability",
+    "sanitisation",
+    "sanitise"
   ],
   "ignorePaths": [
     "node_modules",

@@ -9,6 +9,8 @@ import { writeObject } from '../../../../src/application/primitives/write-object
 import { TsgitError } from '../../../../src/domain/index.js';
 import type { AuthorIdentity, ObjectId, RefName } from '../../../../src/domain/objects/index.js';
 import { ObjectId as ObjectIdFactory } from '../../../../src/domain/objects/index.js';
+import type { Context } from '../../../../src/ports/context.js';
+import type { HookResult, HookRunner } from '../../../../src/ports/hook-runner.js';
 
 const author: AuthorIdentity = {
   name: 'Ada',
@@ -300,6 +302,91 @@ describe('commit', () => {
     // would make ObjectId.from throw INVALID_OBJECT_ID instead of returning.
     expect(sut.id).toMatch(/^[0-9a-f]{40}$/);
     expect(sut.parents).toEqual([blobId]);
+  });
+});
+
+describe('commit — hooks', () => {
+  const hookedCtx = (
+    over: {
+      readonly preCommit?: HookResult;
+      readonly commitMsg?: HookResult;
+      readonly commitMsgRewrite?: string;
+    } = {},
+  ): Context => {
+    let ctx!: Context;
+    const runner: HookRunner = {
+      run: async (request) => {
+        if (request.name === 'pre-commit' && over.preCommit !== undefined) return over.preCommit;
+        if (request.name === 'commit-msg') {
+          if (over.commitMsgRewrite !== undefined) {
+            await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/COMMIT_EDITMSG`, over.commitMsgRewrite);
+          }
+          if (over.commitMsg !== undefined) return over.commitMsg;
+        }
+        return { kind: 'ran', exitCode: 0, stdout: '', stderr: '' };
+      },
+    };
+    ctx = createMemoryContext({ hooks: runner });
+    return ctx;
+  };
+
+  const seedHooked = async (ctx: Context): Promise<Context> => {
+    await init(ctx);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
+    await add(ctx, ['a.txt']);
+    return ctx;
+  };
+
+  it('Given a pre-commit hook that exits non-zero, When commit, Then it throws HOOK_FAILED and writes no commit', async () => {
+    // Arrange
+    const ctx = await seedHooked(
+      hookedCtx({ preCommit: { kind: 'ran', exitCode: 1, stdout: '', stderr: 'lint failed' } }),
+    );
+
+    // Act
+    await expectError(() => commit(ctx, { message: 'first', author }), 'HOOK_FAILED');
+
+    // Assert — aborted before the branch ref was created.
+    expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/heads/main`)).toBe(false);
+  });
+
+  it('Given a commit-msg hook that rewrites the message, When commit, Then the commit uses the rewritten message', async () => {
+    // Arrange
+    const ctx = await seedHooked(hookedCtx({ commitMsgRewrite: 'rewritten subject' }));
+
+    // Act
+    const sut = await commit(ctx, { message: 'original', author });
+
+    // Assert
+    const obj = await readObject(ctx, sut.id);
+    expect(obj.type).toBe('commit');
+    if (obj.type === 'commit') {
+      expect(obj.data.message).toBe('rewritten subject');
+    }
+  });
+
+  it('Given failing hooks but noVerify true, When commit, Then it succeeds with hooks skipped', async () => {
+    // Arrange
+    const ctx = await seedHooked(
+      hookedCtx({
+        preCommit: { kind: 'ran', exitCode: 1, stdout: '', stderr: 'x' },
+        commitMsg: { kind: 'ran', exitCode: 1, stdout: '', stderr: 'y' },
+      }),
+    );
+
+    // Act
+    const sut = await commit(ctx, { message: 'first', author, noVerify: true });
+
+    // Assert
+    expect(sut.id).toMatch(/^[0-9a-f]{40}$/);
+  });
+
+  it('Given a commit-msg hook that empties the message and no allowEmptyMessage, When commit, Then it throws EMPTY_COMMIT_MESSAGE', async () => {
+    // Arrange — the hook blanks COMMIT_EDITMSG; the re-sanitise must reject it.
+    const ctx = await seedHooked(hookedCtx({ commitMsgRewrite: '   ' }));
+
+    // Act & Assert
+    await expectError(() => commit(ctx, { message: 'original', author }), 'EMPTY_COMMIT_MESSAGE');
   });
 });
 

@@ -1,4 +1,5 @@
 import { TsgitError } from '../error.js';
+import type { HookName } from '../hooks/index.js';
 import type { FilePath, ObjectId, RefName } from '../objects/object-id.js';
 import type { ReceivePackResponse as ReportStatus } from '../protocol/receive-pack.js';
 
@@ -70,6 +71,12 @@ export type CommandError =
       readonly path: FilePath;
       readonly size: number;
       readonly limit: number;
+    }
+  | {
+      readonly code: 'HOOK_FAILED';
+      readonly hook: HookName;
+      readonly exitCode: number;
+      readonly stderr: string;
     };
 
 const sanitizeForDisplay = (s: string): string => {
@@ -215,3 +222,19 @@ export const workingTreeFileTooLarge = (path: FilePath, size: number, limit: num
 
 export const gitignoreFileTooLarge = (path: FilePath, size: number, limit: number): TsgitError =>
   new TsgitError({ code: 'GITIGNORE_FILE_TOO_LARGE', path, size, limit });
+
+/**
+ * Cap on the sanitised `stderr` snippet embedded in a `HOOK_FAILED` error,
+ * measured in characters of the post-sanitisation string. A hook can emit
+ * megabytes; an unbounded string inside a thrown error is an amplification
+ * vector when callers log or serialise it.
+ */
+export const MAX_HOOK_STDERR_IN_ERROR = 4096;
+
+export const hookFailed = (hook: HookName, exitCode: number, stderr: string): TsgitError =>
+  new TsgitError({
+    code: 'HOOK_FAILED',
+    hook,
+    exitCode,
+    stderr: sanitizeForDisplay(stderr).slice(0, MAX_HOOK_STDERR_IN_ERROR),
+  });

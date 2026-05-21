@@ -427,3 +427,34 @@ new `walkWorkingTree` primitive. Operator-visible behaviours:
   released after either a successful single-shot commit OR a thrown
   error. Concurrent processes hitting the index see either the old
   or new state, never a partial blend.
+
+## Operating git hooks (Phase 17.2)
+
+tsgit runs `.git/hooks/` scripts — `pre-commit` and `commit-msg` during
+`commit`, `pre-push` during `push`. Operator-visible behaviour:
+
+- **Default-on (Node).** `openRepository` / `createNodeContext` wire a hook
+  runner by default; hooks run as under canonical git. The browser adapter has
+  no runner — hooks are inert there.
+- **Disabling.** `openRepository({ hooks: false })` or
+  `createNodeContext({ hooks: false })` detaches the runner — no hook ever
+  runs. Use it when operating on a repository you do not trust: hooks are
+  arbitrary scripts that inherit the process environment (`process.env`,
+  including any secrets).
+- **Per-call skip.** `commit({ noVerify: true })` and `push({ noVerify: true })`
+  skip verification for that one call — git's `--no-verify`.
+- **Failure.** A non-zero hook exit throws `HOOK_FAILED { hook, exitCode,
+  stderr }`; `stderr` is sanitised and capped at 4 KiB. `commit` aborts before
+  the ref moves; `push` aborts before any upload.
+- **`core.hooksPath`.** Honoured — an absolute path is used as-is, `~/…`
+  expands against the home directory, a relative path resolves against the
+  working tree. Absent → `${gitDir}/hooks`.
+- **`commit-msg`.** The message is round-tripped through `.git/COMMIT_EDITMSG`
+  (written, hook run with that path as `argv[1]`, re-read) — a hook may rewrite
+  it. `pre-commit` runs before the index is read, so a re-staging hook is
+  honoured.
+- **Windows.** Hooks are spawned directly — native executables and `.bat` /
+  `.cmd` run; extensionless `#!/bin/sh` scripts need a shell on `PATH` (the
+  same constraint git-for-Windows carries). See ADR-068.
+- **Output bounds.** Captured hook stdout/stderr is capped at 1 MiB per stream;
+  a hung hook is killed when `ctx.signal` aborts.

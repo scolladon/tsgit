@@ -10,6 +10,7 @@ export interface ParsedConfig {
     readonly bare?: boolean;
     readonly excludesFile?: string;
     readonly logAllRefUpdates?: boolean | 'always';
+    readonly hooksPath?: string;
   };
   readonly user?: { readonly name: string; readonly email: string };
   readonly remote?: ReadonlyMap<
@@ -165,7 +166,12 @@ const parseKeyValue = (
 
 const assembleParsed = (sections: ReadonlyArray<MutableSection>): ParsedConfig => {
   const acc: {
-    core?: { bare?: boolean; excludesFile?: string; logAllRefUpdates?: boolean | 'always' };
+    core?: {
+      bare?: boolean;
+      excludesFile?: string;
+      logAllRefUpdates?: boolean | 'always';
+      hooksPath?: string;
+    };
     user?: { name?: string; email?: string };
     remote?: Map<string, { url?: string; fetch?: string[] }>;
     branch?: Map<string, { remote?: string; merge?: string }>;
@@ -185,7 +191,14 @@ const assembleParsed = (sections: ReadonlyArray<MutableSection>): ParsedConfig =
 };
 
 const mergeCore = (
-  acc: { core?: { bare?: boolean; excludesFile?: string; logAllRefUpdates?: boolean | 'always' } },
+  acc: {
+    core?: {
+      bare?: boolean;
+      excludesFile?: string;
+      logAllRefUpdates?: boolean | 'always';
+      hooksPath?: string;
+    };
+  },
   sec: MutableSection,
 ): void => {
   for (const { key, value } of sec.entries) {
@@ -199,6 +212,8 @@ const mergeCore = (
       acc.core = { ...acc.core, excludesFile: value };
     } else if (lowered === 'logallrefupdates') {
       acc.core = { ...acc.core, logAllRefUpdates: parseLogAllRefUpdates(value) };
+    } else if (lowered === 'hookspath') {
+      acc.core = { ...acc.core, hooksPath: value };
     }
   }
 };
@@ -256,34 +271,55 @@ const mergeBranch = (
   acc.branch.set(name, next);
 };
 
+/**
+ * Finalize the `[core]` section: emit only the keys that were set, or
+ * `undefined` when the section was never populated. `mergeCore` is the sole
+ * writer of `acc.core` and always writes a defined value, so a defined `core`
+ * always yields a non-empty object.
+ */
+const finalizeCore = (
+  core:
+    | {
+        bare?: boolean;
+        excludesFile?: string;
+        logAllRefUpdates?: boolean | 'always';
+        hooksPath?: string;
+      }
+    | undefined,
+): ParsedConfig['core'] => {
+  if (core === undefined) return undefined;
+  return {
+    ...(core.bare !== undefined ? { bare: core.bare } : {}),
+    ...(core.excludesFile !== undefined ? { excludesFile: core.excludesFile } : {}),
+    ...(core.logAllRefUpdates !== undefined ? { logAllRefUpdates: core.logAllRefUpdates } : {}),
+    ...(core.hooksPath !== undefined ? { hooksPath: core.hooksPath } : {}),
+  };
+};
+
 const finalize = (acc: {
-  core?: { bare?: boolean; excludesFile?: string; logAllRefUpdates?: boolean | 'always' };
+  core?: {
+    bare?: boolean;
+    excludesFile?: string;
+    logAllRefUpdates?: boolean | 'always';
+    hooksPath?: string;
+  };
   user?: { name?: string; email?: string };
   remote?: Map<string, { url?: string; fetch?: string[] }>;
   branch?: Map<string, { remote?: string; merge?: string }>;
 }): ParsedConfig => {
   const out: {
-    core?: { bare?: boolean; excludesFile?: string; logAllRefUpdates?: boolean | 'always' };
+    core?: {
+      bare?: boolean;
+      excludesFile?: string;
+      logAllRefUpdates?: boolean | 'always';
+      hooksPath?: string;
+    };
     user?: { name: string; email: string };
     remote?: ReadonlyMap<string, { url?: string; fetch?: ReadonlyArray<string> }>;
     branch?: ReadonlyMap<string, { remote?: string; merge?: string }>;
   } = {};
-  if (
-    acc.core?.bare !== undefined ||
-    acc.core?.excludesFile !== undefined ||
-    acc.core?.logAllRefUpdates !== undefined
-  ) {
-    out.core = {
-      // Stryker disable next-line OptionalChaining: equivalent — the enclosing `if` is only entered when `acc.core` is defined, so `acc.core.bare` cannot throw.
-      ...(acc.core?.bare !== undefined ? { bare: acc.core.bare } : {}),
-      // Stryker disable next-line OptionalChaining: equivalent — the enclosing `if` is only entered when `acc.core` is defined, so `acc.core.excludesFile` cannot throw.
-      ...(acc.core?.excludesFile !== undefined ? { excludesFile: acc.core.excludesFile } : {}),
-      // Stryker disable next-line OptionalChaining: equivalent — the enclosing `if` is only entered when `acc.core` is defined, so `acc.core.logAllRefUpdates` cannot throw.
-      ...(acc.core?.logAllRefUpdates !== undefined
-        ? { logAllRefUpdates: acc.core.logAllRefUpdates }
-        : {}),
-    };
-  }
+  const core = finalizeCore(acc.core);
+  if (core !== undefined) out.core = core;
   // Stryker disable next-line OptionalChaining: equivalent — `&&` short-circuits, so `acc.user?.email` is only read after `acc.user?.name !== undefined` proved `acc.user` is defined.
   if (acc.user?.name !== undefined && acc.user?.email !== undefined) {
     out.user = { name: acc.user.name, email: acc.user.email };

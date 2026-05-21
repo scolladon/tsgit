@@ -6,6 +6,7 @@ import type { Compressor } from './ports/compressor.js';
 import type { Context, RepositoryConfig } from './ports/context.js';
 import type { FileSystem } from './ports/file-system.js';
 import type { HashService } from './ports/hash-service.js';
+import type { HookRunner } from './ports/hook-runner.js';
 import type { HttpTransport } from './ports/http-transport.js';
 import { type Logger, wrapLoggerSanitizer } from './ports/logger.js';
 import type { ProgressReporter } from './ports/progress-reporter.js';
@@ -46,6 +47,15 @@ export interface OpenRepositoryOptions {
   /** AbortSignal threaded into every bound method's ctx.signal. */
   readonly signal?: AbortSignal;
   /**
+   * Hook runner. Omit to inherit the runtime default (Node wires one; the
+   * browser does not). Pass `false` to disable hooks entirely.
+   *
+   * WARNING: a wired runner spawns `.git/hooks/*` scripts that inherit the
+   * full `process.env` of the calling process — including any secrets it
+   * holds. Pass `false` when operating on a repository you do not trust.
+   */
+  readonly hooks?: HookRunner | false;
+  /**
    * Opt OUT of adapter validator wrapping for `fs` and `transport`. NEVER set
    * with adapters whose code you do not control; a raw transport receives
    * `config.auth` credentials with no SSRF guard.
@@ -82,6 +92,8 @@ export interface RuntimeFallback {
   readonly hash: HashService;
   readonly compressor: Compressor;
   readonly transport: HttpTransport;
+  /** Optional runtime-default hook runner (Node supplies one; others omit it). */
+  readonly hooks?: HookRunner;
   readonly runtime: 'node' | 'browser' | 'memory';
   readonly layout: RepositoryLayoutInput;
   readonly hashConfig: Context['hashConfig'];
@@ -126,6 +138,7 @@ export interface Repository {
     readonly readTree: BindCtx<typeof primitives.readTree>;
     readonly recordRefUpdate: BindCtx<typeof primitives.recordRefUpdate>;
     readonly resolveRef: BindCtx<typeof primitives.resolveRef>;
+    readonly runHook: BindCtx<typeof primitives.runHook>;
     readonly updateRef: BindCtx<typeof primitives.updateRef>;
     readonly walkCommits: BindCtx<typeof primitives.walkCommits>;
     readonly walkTree: BindCtx<typeof primitives.walkTree>;
@@ -193,10 +206,14 @@ export const openRepository = async (
     signal,
   };
   const sanitizedLogger = opts.logger !== undefined ? wrapLoggerSanitizer(opts.logger) : undefined;
+  // `false` fully disables hooks; otherwise an explicit runner overrides the
+  // runtime default (Node supplies one, browser/memory do not).
+  const hooks = opts.hooks === false ? undefined : (opts.hooks ?? fallback.hooks);
   const ctx: Context = Object.freeze({
     ...baseCtx,
     ...(config !== undefined ? { config } : {}),
     ...(sanitizedLogger !== undefined ? { logger: sanitizedLogger } : {}),
+    ...(hooks !== undefined ? { hooks } : {}),
   });
 
   let state: DisposeState = 'OPEN';
@@ -343,6 +360,10 @@ export const openRepository = async (
         guard();
         return primitives.resolveRef(ctx, name, options);
       }) as Repository['primitives']['resolveRef'],
+      runHook: ((name, input) => {
+        guard();
+        return primitives.runHook(ctx, name, input);
+      }) as Repository['primitives']['runHook'],
       updateRef: ((name, newId, options) => {
         guard();
         return primitives.updateRef(ctx, name, newId, options);

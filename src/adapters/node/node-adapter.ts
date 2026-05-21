@@ -7,6 +7,7 @@ import { noopProgress } from '../../progress.js';
 import { NodeCompressor } from './node-compressor.js';
 import { NodeFileSystem } from './node-file-system.js';
 import { NodeHashService } from './node-hash-service.js';
+import { NodeHookRunner } from './node-hook-runner.js';
 import { NodeHttpTransport } from './node-http-transport.js';
 
 const DEFAULT_DELTA_CACHE_BYTES = 16 * 1024 * 1024;
@@ -20,6 +21,12 @@ export interface NodeAdapterOptions {
   readonly signal?: AbortSignal;
   readonly deltaCacheMaxBytes?: number;
   readonly deltaCacheMaxEntries?: number;
+  /**
+   * Wire the git-hook runner (default true). Pass `false` to disable hooks.
+   * A wired runner spawns `.git/hooks/*` scripts that inherit the full
+   * `process.env` — disable it for repositories you do not trust.
+   */
+  readonly hooks?: boolean;
 }
 
 export function createNodeContext(options: NodeAdapterOptions): Context {
@@ -48,10 +55,10 @@ export function createNodeContext(options: NodeAdapterOptions): Context {
     layout,
     hashConfig: SHA1_CONFIG,
     deltaCache,
+    ...(options.signal !== undefined ? { signal: options.signal } : {}),
+    ...(options.hooks === false ? {} : { hooks: new NodeHookRunner() }),
   };
-  return options.signal !== undefined
-    ? createContext({ ...parts, signal: options.signal })
-    : createContext(parts);
+  return createContext(parts);
 }
 
 /**

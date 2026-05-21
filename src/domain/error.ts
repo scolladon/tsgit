@@ -310,6 +310,8 @@ function extractDetail(data: TsgitErrorData): string {
       return `reflog not found: ${data.ref}`;
     case 'REFLOG_ENTRY_OUT_OF_RANGE':
       return `reflog entry out of range: ref=${data.ref} requested=${data.requested} available=${data.available}`;
+    case 'HOOK_FAILED':
+      return `hook ${data.hook} failed with exit code ${data.exitCode}`;
     default: {
       const _exhaustive: never = data;
       return String(_exhaustive);

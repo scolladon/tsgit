@@ -149,6 +149,42 @@ describe('primitives/config-read', () => {
     expect(sut.core).toEqual({ logAllRefUpdates: 'always' });
   });
 
+  it('Given [core] hooksPath set, When readConfig, Then parsed.core.hooksPath carries the value', async () => {
+    // Arrange
+    const ctx = createMemoryContext();
+    await seed(ctx, '[core]\n  hooksPath = /opt/githooks\n');
+
+    // Act
+    const sut = await readConfig(ctx);
+
+    // Assert
+    expect(sut.core?.hooksPath).toBe('/opt/githooks');
+  });
+
+  it('Given [core] HooksPath in mixed case, When readConfig, Then the key match is case-insensitive', async () => {
+    // Arrange
+    const ctx = createMemoryContext();
+    await seed(ctx, '[core]\n  HooksPath = .husky\n');
+
+    // Act
+    const sut = await readConfig(ctx);
+
+    // Assert
+    expect(sut.core?.hooksPath).toBe('.husky');
+  });
+
+  it('Given only hooksPath in [core], When readConfig, Then core is emitted with that field', async () => {
+    // Arrange — guards the finalize() arm that now also checks hooksPath.
+    const ctx = createMemoryContext();
+    await seed(ctx, '[core]\n  hooksPath = /opt/githooks\n');
+
+    // Act
+    const sut = await readConfig(ctx);
+
+    // Assert
+    expect(sut.core).toEqual({ hooksPath: '/opt/githooks' });
+  });
+
   it('Given a config with [user] name and email, When readConfig, Then parsed.user is populated', async () => {
     // Arrange
     const ctx = createMemoryContext();
