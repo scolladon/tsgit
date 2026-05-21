@@ -114,7 +114,12 @@ describe('primitives/run-hook runHook', () => {
     }
 
     // Assert
-    expect((caught as TsgitError).data).toMatchObject({ code: 'HOOK_FAILED', exitCode: 2 });
+    expect((caught as TsgitError).data).toEqual({
+      code: 'HOOK_FAILED',
+      hook: 'pre-push',
+      exitCode: 2,
+      stderr: 'nope',
+    });
   });
 
   it('Given args and stdin, When runHook, Then the runner receives them verbatim', async () => {

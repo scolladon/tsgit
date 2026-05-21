@@ -60,7 +60,12 @@ describe('commands/internal commit-hooks runPreCommitHook', () => {
     }
 
     // Assert
-    expect((caught as TsgitError).data).toMatchObject({ code: 'HOOK_FAILED', hook: 'pre-commit' });
+    expect((caught as TsgitError).data).toEqual({
+      code: 'HOOK_FAILED',
+      hook: 'pre-commit',
+      exitCode: 1,
+      stderr: 'lint',
+    });
   });
 
   it('Given noVerify false and no hook, When runPreCommitHook, Then it resolves', async () => {
@@ -162,6 +167,25 @@ describe('commands/internal commit-hooks applyCommitMsgHook', () => {
     }
 
     // Assert
-    expect((caught as TsgitError).data).toMatchObject({ code: 'HOOK_FAILED', hook: 'commit-msg' });
+    expect((caught as TsgitError).data).toEqual({
+      code: 'HOOK_FAILED',
+      hook: 'commit-msg',
+      exitCode: 1,
+      stderr: 'bad',
+    });
+  });
+
+  it('Given a hook runner, When applyCommitMsgHook, Then the commit-msg hook receives the COMMIT_EDITMSG path as its only argument', async () => {
+    // Arrange
+    const runner = new MemoryHookRunner();
+    const ctx = createMemoryContext({ hooks: runner });
+
+    // Act
+    await applyCommitMsgHook(ctx, 'msg', opts);
+
+    // Assert
+    expect(runner.calls).toHaveLength(1);
+    expect(runner.calls[0]?.name).toBe('commit-msg');
+    expect(runner.calls[0]?.args).toEqual([`${ctx.layout.gitDir}/COMMIT_EDITMSG`]);
   });
 });

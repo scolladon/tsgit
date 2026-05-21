@@ -122,6 +122,19 @@ describe('NodeHookRunner (POSIX hook execution)', () => {
     expect(result.stderr).toContain('oops');
   });
 
+  it('Given an executable hook whose shebang interpreter does not exist, When run, Then spawn fails and it resolves exit code 126', async () => {
+    // Arrange — exec bit set, but `execve` cannot resolve the interpreter, so
+    // the spawn itself fails (the `error` event path).
+    await writeHook('pre-commit', '#!/nonexistent-interpreter-xyz\nexit 0\n');
+    const sut = new NodeHookRunner();
+
+    // Act
+    const result = ran(await sut.run(request('pre-commit')));
+
+    // Assert
+    expect(result.exitCode).toBe(126);
+  });
+
   it('Given a stdin payload, When run, Then the hook receives it on stdin', async () => {
     // Arrange — `cat` echoes stdin straight back to stdout.
     await writeHook('pre-push', '#!/bin/sh\ncat\n');

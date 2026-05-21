@@ -26,10 +26,10 @@ describe('Node openRepository — git hooks end to end', () => {
     await fsPromises.rm(root, { recursive: true, force: true });
   });
 
-  const writePreCommit = async (gitDir: string, body: string): Promise<void> => {
+  const writeHook = async (gitDir: string, name: string, body: string): Promise<void> => {
     const hooksDir = nodePath.join(gitDir, 'hooks');
     await fsPromises.mkdir(hooksDir, { recursive: true });
-    const path = nodePath.join(hooksDir, 'pre-commit');
+    const path = nodePath.join(hooksDir, name);
     await fsPromises.writeFile(path, body);
     await fsPromises.chmod(path, 0o755);
   };
@@ -39,7 +39,7 @@ describe('Node openRepository — git hooks end to end', () => {
     const repo = await openRepository({ cwd: root });
     try {
       await repo.init();
-      await writePreCommit(repo.ctx.layout.gitDir, '#!/bin/sh\nexit 1\n');
+      await writeHook(repo.ctx.layout.gitDir, 'pre-commit', '#!/bin/sh\nexit 1\n');
       await fsPromises.writeFile(nodePath.join(root, 'a.txt'), 'a');
       await repo.add(['a.txt']);
 
@@ -63,7 +63,7 @@ describe('Node openRepository — git hooks end to end', () => {
     const repo = await openRepository({ cwd: root });
     try {
       await repo.init();
-      await writePreCommit(repo.ctx.layout.gitDir, '#!/bin/sh\nexit 0\n');
+      await writeHook(repo.ctx.layout.gitDir, 'pre-commit', '#!/bin/sh\nexit 0\n');
       await fsPromises.writeFile(nodePath.join(root, 'a.txt'), 'a');
       await repo.add(['a.txt']);
 
@@ -72,6 +72,33 @@ describe('Node openRepository — git hooks end to end', () => {
 
       // Assert
       expect(result.id).toMatch(/^[0-9a-f]{40}$/);
+    } finally {
+      await repo.dispose();
+    }
+  });
+
+  it('Given a commit-msg hook that rewrites the message, When commit, Then the commit uses the rewritten message', async () => {
+    // Arrange
+    const repo = await openRepository({ cwd: root });
+    try {
+      await repo.init();
+      await writeHook(
+        repo.ctx.layout.gitDir,
+        'commit-msg',
+        '#!/bin/sh\necho "rewritten by hook" > "$1"\n',
+      );
+      await fsPromises.writeFile(nodePath.join(root, 'a.txt'), 'a');
+      await repo.add(['a.txt']);
+
+      // Act
+      const result = await repo.commit({ message: 'original', author });
+
+      // Assert
+      const obj = await repo.primitives.readObject(result.id);
+      expect(obj.type).toBe('commit');
+      if (obj.type === 'commit') {
+        expect(obj.data.message).toBe('rewritten by hook');
+      }
     } finally {
       await repo.dispose();
     }

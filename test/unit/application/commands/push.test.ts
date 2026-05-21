@@ -1329,8 +1329,33 @@ describe('push — hooks', () => {
     }
 
     // Assert — aborted; only the discovery GET happened, no receive-pack POST.
-    expect((caught as TsgitError).data).toMatchObject({ code: 'HOOK_FAILED', hook: 'pre-push' });
+    expect((caught as TsgitError).data).toEqual({
+      code: 'HOOK_FAILED',
+      hook: 'pre-push',
+      exitCode: 1,
+      stderr: 'declined',
+    });
     expect(requests).toHaveLength(1);
+  });
+
+  it('Given a delete refspec, When push runs, Then the pre-push stdin reports the (delete) sentinel', async () => {
+    // Arrange
+    const ctx = createMemoryContext();
+    const tip = await seedCommit(ctx, [], 'gen-1');
+    await seedRepo(ctx, { refs: { 'refs/heads/main': tip.id } });
+    await writeOriginConfig(ctx);
+    const { transport } = fakeServer({
+      url: 'https://example.com/r.git',
+      advertisedRefs: [{ name: 'refs/heads/feature', id: tip.id }],
+      reportStatus: { unpack: 'ok', refs: [{ name: 'refs/heads/feature', status: 'ok' }] },
+    });
+    const hooks = new MemoryHookRunner();
+
+    // Act
+    await push({ ...ctx, transport, hooks }, { refspecs: [':refs/heads/feature'] });
+
+    // Assert — a delete reports `(delete)` and the zero-oid as the local side.
+    expect(hooks.calls[0]?.stdin).toBe(`(delete) ${ZERO_OID} refs/heads/feature ${tip.id}\n`);
   });
 
   it('Given a pre-push hook, When push runs, Then the hook receives the remote, url and one ref line on stdin', async () => {
