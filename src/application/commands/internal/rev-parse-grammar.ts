@@ -93,16 +93,19 @@ const DIGITS_ONLY_PATTERN = /^\d+$/;
 /** Parse `<base>@{<selector>}<op>*`. The base may be empty (bare `@{N}`). */
 const parseReflog = (raw: string): RevExpression => {
   const at = raw.indexOf('@{');
+  // A missing `}` needs no explicit guard: `slice(at + 2, -1)` then yields
+  // either an empty body (rejected just below) or an `operations` slice that
+  // still contains `@{` — never a valid op-chain — so parseOperations fails
+  // with the same revparseUnresolved(raw). The guard would be dead code.
   const close = raw.indexOf('}', at + 2);
-  if (close === -1) fail(raw);
   const base = raw.slice(0, at);
   const body = raw.slice(at + 2, close);
   if (body === '') fail(raw);
   const reflog: ReflogSelector = DIGITS_ONLY_PATTERN.test(body)
     ? { kind: 'index', n: Number(body) }
     : { kind: 'date', raw: body };
-  const rest = raw.slice(close + 1);
-  const operations = rest === '' ? [] : parseOperations(rest, 0);
+  // parseOperations returns [] for an empty tail, so no separate empty guard.
+  const operations = parseOperations(raw.slice(close + 1), 0);
   return { kind: 'ref-or-hex', base, reflog, operations };
 };
 

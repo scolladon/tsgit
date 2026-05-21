@@ -102,7 +102,15 @@ const canonicalizeRef = async (ctx: Context, base: string): Promise<RefName> => 
   for (const candidate of candidates) {
     if (await reflogExists(ctx, candidate as RefName)) return candidate as RefName;
   }
+  // The loop below picks a "sensible ref" for the empty-log case, but once the
+  // loop above proves no candidate has a reflog file, its chosen ref is never
+  // observable: resolveReflogBase reads that ref's reflog (empty for every
+  // candidate, since none has a file) and throws REVPARSE_UNRESOLVED, which
+  // carries the raw expression — not the ref. Hence the equivalent-mutant
+  // suppressions: any ref name here yields the identical empty-log error.
+  // Stryker disable next-line BlockStatement: equivalent — see above.
   for (const candidate of candidates) {
+    // Stryker disable next-line ConditionalExpression: equivalent — see above.
     if (await refResolves(ctx, candidate)) return candidate as RefName;
   }
   // No candidate has a reflog or resolves: fall back to the validated base.
@@ -117,11 +125,16 @@ const validateBaseRef = (base: string): RefName => {
   }
 };
 
+// Only feeds canonicalizeRef's second loop, whose chosen ref is never
+// observable (see the comment there) — so both return values are
+// equivalent-mutant territory.
 const refResolves = async (ctx: Context, candidate: RefName | 'HEAD'): Promise<boolean> => {
   try {
     await resolveRef(ctx, candidate);
+    // Stryker disable next-line BooleanLiteral: equivalent — refResolves only gates canonicalizeRef's unobservable fallback loop.
     return true;
   } catch {
+    // Stryker disable next-line BooleanLiteral: equivalent — refResolves only gates canonicalizeRef's unobservable fallback loop.
     return false;
   }
 };

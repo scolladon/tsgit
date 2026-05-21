@@ -12,6 +12,7 @@ import type {
 } from '../../../../src/domain/objects/index.js';
 import { ZERO_OID } from '../../../../src/domain/objects/index.js';
 import type { ReflogEntry } from '../../../../src/domain/reflog/index.js';
+import { parseApproxidate } from '../../../../src/domain/reflog/index.js';
 import type { Context } from '../../../../src/ports/context.js';
 import { seedRepo } from './fixtures.js';
 
@@ -760,6 +761,137 @@ describe('reflog command', () => {
 
       // Assert
       expect(sut).toEqual({ kind: 'expire', removed: 0, kept: 0 });
+    });
+
+    it('Given a stale and a recent entry, When expire prunes the stale one, Then the reflog file no longer holds it', async () => {
+      // Arrange — two entries; only the 100-day-old one is pruned. The write
+      // back must persist the survivors-only list to disk, not just report it.
+      const now = wallNow();
+      const ctx = createMemoryContext();
+      const tip = await writeCommit(ctx, [], now);
+      await seedRepo(ctx, { refs: { 'refs/heads/main': tip } });
+      const stale = now - 100 * DAY;
+      const recent = now - 1 * DAY;
+      await writeReflog(ctx, HEAD, [
+        entry({ newId: tip, identity: identityAt(stale), message: 'stale reachable' }),
+        entry({ newId: tip, identity: identityAt(recent), message: 'recent reachable' }),
+      ]);
+
+      // Act
+      await reflog(ctx, { action: 'expire', ref: 'HEAD' });
+
+      // Assert — the file must show exactly the surviving recent entry.
+      const after = await reflog(ctx, { action: 'show', ref: 'HEAD' });
+      expect(after.kind === 'show' && after.entries.map((e) => e.entry.message)).toEqual([
+        'recent reachable',
+      ]);
+    });
+
+    it('Given no entry is stale enough to prune, When expire, Then the reflog file is not rewritten', async () => {
+      // Arrange — two recent reachable entries; nothing crosses the cutoff. The
+      // write-back must be skipped entirely (the count equality short-circuits
+      // it), so the reflog path receives no `writeUtf8` call.
+      const now = wallNow();
+      const ctx = createMemoryContext();
+      const tip = await writeCommit(ctx, [], now);
+      await seedRepo(ctx, { refs: { 'refs/heads/main': tip } });
+      await writeReflog(ctx, HEAD, [
+        entry({ newId: tip, identity: identityAt(now - 2 * DAY), message: 'first recent' }),
+        entry({ newId: tip, identity: identityAt(now - 1 * DAY), message: 'second recent' }),
+      ]);
+      const reflogPath = `${ctx.layout.gitDir}/logs/HEAD`;
+      const writes: string[] = [];
+      const spiedCtx: Context = {
+        ...ctx,
+        fs: {
+          ...ctx.fs,
+          writeUtf8: (path: string, content: string): Promise<void> => {
+            writes.push(path);
+            return ctx.fs.writeUtf8(path, content);
+          },
+        },
+      };
+
+      // Act
+      const sut = await reflog(spiedCtx, { action: 'expire', ref: 'HEAD' });
+
+      // Assert — nothing pruned, and the reflog file was never rewritten.
+      expect(sut).toEqual({ kind: 'expire', removed: 0, kept: 2 });
+      expect(writes).not.toContain(reflogPath);
+      const after = await reflog(ctx, { action: 'show', ref: 'HEAD' });
+      expect(after.kind === 'show' && after.entries.map((e) => e.entry.message)).toEqual([
+        'second recent',
+        'first recent',
+      ]);
+    });
+
+    it('Given an entry whose timestamp exactly equals the expire cutoff, When expire, Then it is kept', async () => {
+      // Arrange — a reachable entry timestamped at the exact cutoff instant.
+      // The keep predicate uses `>=`, so an entry AT the cutoff survives; `>`
+      // would prune it. The cutoff for an ISO date is clock-independent.
+      const cutoff = parseApproxidate('2024-06-01', wallNow()) as number;
+      const ctx = createMemoryContext();
+      const tip = await writeCommit(ctx, [], cutoff);
+      await seedRepo(ctx, { refs: { 'refs/heads/main': tip } });
+      await writeReflog(ctx, HEAD, [
+        entry({ newId: tip, identity: identityAt(cutoff), message: 'at the cutoff' }),
+      ]);
+
+      // Act
+      const sut = await reflog(ctx, { action: 'expire', ref: 'HEAD', expire: '2024-06-01' });
+
+      // Assert — the boundary entry is kept, not pruned.
+      expect(sut).toEqual({ kind: 'expire', removed: 0, kept: 1 });
+    });
+
+    it('Given resolving a ref tip throws a non-TsgitError, When expire, Then that error propagates instead of being swallowed', async () => {
+      // Arrange — `refs/heads/main` exists, but reading its file raises a plain
+      // Error (not a TsgitError). tryResolve only swallows TsgitErrors; an
+      // unexpected error must surface, not be silently treated as unresolved.
+      const ctx = createMemoryContext();
+      await seedRepo(ctx, { refs: { 'refs/heads/main': OID_X } });
+      await writeReflog(ctx, HEAD, [entry()]);
+      const refPath = `${ctx.layout.gitDir}/refs/heads/main`;
+      const boom = new Error('disk fault');
+      const faultyCtx: Context = {
+        ...ctx,
+        fs: {
+          ...ctx.fs,
+          readUtf8: (path: string): Promise<string> =>
+            path === refPath ? Promise.reject(boom) : ctx.fs.readUtf8(path),
+        },
+      };
+
+      // Act
+      let caught: unknown;
+      try {
+        await reflog(faultyCtx, { action: 'expire', ref: 'HEAD' });
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert — the exact non-TsgitError instance propagates unchanged.
+      expect(caught).toBe(boom);
+      expect(caught).not.toBeInstanceOf(TsgitError);
+    });
+
+    it('Given a ref tip pointing at a missing commit, When expire, Then the reachable walk ignores it and does not throw', async () => {
+      // Arrange — `refs/heads/main` resolves to an oid with no object file. The
+      // reachable-set walk must tolerate the missing seed (ignoreMissing) rather
+      // than aborting the whole expire.
+      const ctx = createMemoryContext();
+      const missingTip = 'd'.repeat(40) as ObjectId;
+      await seedRepo(ctx, { refs: { 'refs/heads/main': missingTip } });
+      const now = wallNow();
+      await writeReflog(ctx, HEAD, [
+        entry({ newId: OID_X, identity: identityAt(now - 100 * DAY), message: 'stale' }),
+      ]);
+
+      // Act — the walk seeds from the missing tip; expire must still complete.
+      const sut = await reflog(ctx, { action: 'expire', ref: 'HEAD' });
+
+      // Assert — the unreachable stale entry is pruned; no throw on the missing tip.
+      expect(sut).toEqual({ kind: 'expire', removed: 1, kept: 0 });
     });
   });
 });

@@ -257,6 +257,27 @@ describe('fetch', () => {
       expect(onDisk).toBe(blobId);
     });
 
+    it('Given an advertised branch ref, When fetch, Then the remote-tracking ref reflog records a "fetch <remote>: storing head" entry', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await seedRepo(ctx, {});
+      await writeOriginConfig(ctx);
+      const { packBytes, blobId } = await buildOneBlobPack(ctx, 'logged fetch\n');
+      const { transport } = fakeRemote({
+        url: 'https://example.com/r.git',
+        advertisedRefs: [{ name: 'refs/heads/main', id: blobId }],
+        packBytes,
+      });
+
+      // Act
+      await fetch({ ...ctx, transport });
+
+      // Assert — the reflog message must name the remote, not be empty.
+      const { readReflog } = await import('../../../../src/application/primitives/reflog-store.js');
+      const entries = await readReflog(ctx, 'refs/remotes/origin/main' as RefName);
+      expect(entries.map((e) => e.message)).toEqual(['fetch origin: storing head']);
+    });
+
     it('Given an advertised tag, When fetch, Then refs/tags/<tag> is written', async () => {
       // Arrange
       const ctx = createMemoryContext();

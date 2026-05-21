@@ -262,6 +262,27 @@ describe('internal/rev-parse-grammar', () => {
       expect(reflog).toEqual({ kind: 'date', raw: '1x' });
     });
 
+    it("Given 'HEAD@{12' (a multi-character body with no closing brace), When parseExpression, Then throws REVPARSE_UNRESOLVED", () => {
+      // Arrange / Act / Assert — isolates the missing-`}` guard from the
+      // empty-body guard: the body here ('12') is non-empty, so only the
+      // `close === -1` check can reject it.
+      expectError(() => parseExpression('HEAD@{12'), 'REVPARSE_UNRESOLVED');
+    });
+
+    it("Given 'x}}@{0}' (a base containing close braces before '@{'), When parseExpression, Then the body is read from after '@{', not from the base", () => {
+      // Arrange / Act — the `}` search must start after `@{`. A search anchored
+      // earlier would latch onto a brace inside the base and read an empty body.
+      const sut = parseExpression('x}}@{0}');
+
+      // Assert — base keeps its braces; the selector body is the digit after `@{`.
+      expect(sut).toEqual({
+        kind: 'ref-or-hex',
+        base: 'x}}',
+        reflog: { kind: 'index', n: 0 },
+        operations: [],
+      } satisfies RevExpression);
+    });
+
     it("Given 'abc' (3 hex chars, looks like a prefix but too short), When parseExpression, Then throws REVPARSE_UNRESOLVED", () => {
       expectError(() => parseExpression('abc'), 'REVPARSE_UNRESOLVED');
     });

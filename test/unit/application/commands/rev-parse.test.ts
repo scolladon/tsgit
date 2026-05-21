@@ -925,5 +925,48 @@ describe('revParse', () => {
       // Assert — the equal-timestamp entry (c1) is selected, not the prior oldId.
       expect(sut).toBe(c1);
     });
+
+    it('Given a relative date selector, When revParse(HEAD@{N.days.ago}), Then the cutoff is anchored to the current wall-clock seconds', async () => {
+      // Arrange — `now` must be `Date.now()` in SECONDS. Two entries straddle
+      // `now - 5.days`: one 10 days old (<= cutoff), one 1 day old (> cutoff).
+      // With a seconds-anchored `now` the 10-day entry is the newest at-or-
+      // before the cutoff; a mis-scaled `now` (e.g. milliseconds) pushes the
+      // cutoff far into the future and wrongly selects the 1-day entry.
+      const nowSeconds = Math.floor(Date.now() / 1000);
+      const DAY = 86_400;
+      const ctx = createMemoryContext();
+      const tenDayCommit = await writeCommit(ctx, TREE_OID as ObjectId, []);
+      const oneDayCommit = await writeCommit(ctx, TREE_OID as ObjectId, [tenDayCommit]);
+      await seedRepo(ctx, { refs: { 'refs/heads/main': oneDayCommit } });
+      await writeReflog(ctx, HEAD_REF, [
+        reflogEntry(ZERO_OID, tenDayCommit, nowSeconds - 10 * DAY),
+        reflogEntry(tenDayCommit, oneDayCommit, nowSeconds - 1 * DAY),
+      ]);
+
+      // Act
+      const sut = await revParse(ctx, 'HEAD@{5.days.ago}');
+
+      // Assert — the 10-day-old entry is the newest at or before `now - 5.days`.
+      expect(sut).toBe(tenDayCommit);
+    });
+
+    it('Given a base whose reflog lives on a later candidate than the resolving ref, When revParse(<base>@{0}), Then the reflog-file candidate wins', async () => {
+      // Arrange — base `v1`: the candidate ladder is [v1, refs/heads/v1,
+      // refs/tags/v1, refs/remotes/v1]. A branch resolves at refs/heads/v1, but
+      // the only reflog FILE is at refs/tags/v1. canonicalizeRef's first loop
+      // (reflog-file search) must win over the second loop (ref resolution),
+      // otherwise the empty refs/heads/v1 log throws REVPARSE_UNRESOLVED.
+      const ctx = createMemoryContext();
+      const branchTip = await writeCommit(ctx, TREE_OID as ObjectId, []);
+      const taggedTip = await writeCommit(ctx, TREE_OID as ObjectId, [branchTip]);
+      await seedRepo(ctx, { refs: { 'refs/heads/v1': branchTip } });
+      await writeReflog(ctx, 'refs/tags/v1' as RefName, [reflogEntry(ZERO_OID, taggedTip, 1_000)]);
+
+      // Act
+      const sut = await revParse(ctx, 'v1@{0}');
+
+      // Assert — resolved through the refs/tags/v1 reflog, not the branch.
+      expect(sut).toBe(taggedTip);
+    });
   });
 });

@@ -121,6 +121,23 @@ describe('checkout', () => {
     expect(headLog[headLog.length - 1]?.message).toBe('checkout: moving from main to feature');
   });
 
+  it('Given a detached prior HEAD, When checkout, Then the reflog label is the 7-char abbreviated oid (not the full oid)', async () => {
+    // Arrange — detach HEAD onto the commit oid, then check out a branch. The
+    // `from` label must be the commit abbreviated to 7 chars, not all 40.
+    const { ctx, commitId } = await seedWithBranches();
+    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, `${commitId}\n`);
+    const { readReflog } = await import('../../../../src/application/primitives/reflog-store.js');
+
+    // Act
+    await checkout(ctx, { target: 'feature' });
+
+    // Assert — the label is exactly the first 7 hex chars of the detached oid.
+    const headLog = await readReflog(ctx, 'HEAD' as RefName);
+    expect(headLog[headLog.length - 1]?.message).toBe(
+      `checkout: moving from ${commitId.slice(0, 7)} to feature`,
+    );
+  });
+
   it('Given a non-existent branch, When checkout, Then throws BRANCH_NOT_FOUND', async () => {
     // Arrange
     const { ctx } = await seedWithBranches();
