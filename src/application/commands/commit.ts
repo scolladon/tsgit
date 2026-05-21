@@ -14,6 +14,7 @@ import { recordRefUpdate } from '../primitives/record-ref-update.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
 import { updateRef } from '../primitives/update-ref.js';
 import { writeTree } from '../primitives/write-tree.js';
+import { applyCommitMsgHook, runPreCommitHook } from './internal/commit-hooks.js';
 import { resolveAuthor, resolveCommitter, sanitizeMessage } from './internal/commit-message.js';
 import { clearMergeState, readMergeHead, readMergeMsg } from './internal/merge-state.js';
 import {
@@ -29,6 +30,8 @@ export interface CommitOptions {
   readonly committer?: AuthorIdentity;
   readonly allowEmpty?: boolean;
   readonly allowEmptyMessage?: boolean;
+  /** Skip the `pre-commit` and `commit-msg` hooks (git's `--no-verify`). */
+  readonly noVerify?: boolean;
 }
 
 export interface CommitResult {
@@ -54,7 +57,11 @@ export const commit = async (ctx: Context, opts: CommitOptions): Promise<CommitR
   // skip the 'merge' marker check. All other in-progress operations still block.
   const mergeHead = await readMergeHead(ctx);
   await assertNoPendingOperation(ctx, mergeHead !== undefined ? { except: 'merge' } : {});
-  const message = await resolveCommitMessage(ctx, opts, mergeHead);
+  const noVerify = opts.noVerify ?? false;
+  // pre-commit runs before the index is read, so a hook that re-stages files
+  // (e.g. a formatter) is reflected in the committed tree.
+  await runPreCommitHook(ctx, noVerify);
+  const resolved = await resolveCommitMessage(ctx, opts, mergeHead);
   const config = await readConfig(ctx);
   const configUser = toAuthor(config.user);
   const author = resolveAuthor(buildResolverInput(opts.author, configUser));
@@ -74,6 +81,12 @@ export const commit = async (ctx: Context, opts: CommitOptions): Promise<CommitR
     const parentTree = await getParentTree(ctx, parentId);
     if (parentTree === treeId) throw nothingToCommit();
   }
+  // commit-msg runs once the commit is certain to happen; it may rewrite the
+  // message, so its result feeds both the commit object and the reflog.
+  const message = await applyCommitMsgHook(ctx, resolved, {
+    noVerify,
+    allowEmptyMessage: opts.allowEmptyMessage ?? false,
+  });
   const commitData: CommitData = {
     tree: treeId,
     parents,
