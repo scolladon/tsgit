@@ -12,6 +12,7 @@ export { createCommit } from './create-commit.js';
 export { diffTrees } from './diff-trees.js';
 export type { EnumeratePushObjectsInput } from './enumerate-push-objects.js';
 export { enumeratePushObjects } from './enumerate-push-objects.js';
+export { enumerateRefs } from './enumerate-refs.js';
 export type { FetchPackInput, FetchPackResult } from './fetch-pack.js';
 export { fetchPack } from './fetch-pack.js';
 export type { MaterializeTreeOpts, MaterializeTreeResult } from './materialize-tree.js';
@@ -22,6 +23,16 @@ export { readBlob } from './read-blob.js';
 export { readIndex } from './read-index.js';
 export { readObject } from './read-object.js';
 export { readTree } from './read-tree.js';
+export { recordRefUpdate } from './record-ref-update.js';
+export { resolveReflogIdentity } from './reflog-identity.js';
+export {
+  appendReflog,
+  deleteReflog,
+  listReflogs,
+  readReflog,
+  reflogExists,
+  writeReflog,
+} from './reflog-store.js';
 export { resolveRef } from './resolve-ref.js';
 export { readShallow, updateShallow } from './shallow-file.js';
 export { synthesizeTreeFromIndex } from './synthesize-tree-from-index.js';
