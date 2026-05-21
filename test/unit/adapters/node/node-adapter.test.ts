@@ -9,6 +9,7 @@ import {
 import { NodeCompressor } from '../../../../src/adapters/node/node-compressor.js';
 import { NodeFileSystem } from '../../../../src/adapters/node/node-file-system.js';
 import { NodeHashService } from '../../../../src/adapters/node/node-hash-service.js';
+import { NodeHookRunner } from '../../../../src/adapters/node/node-hook-runner.js';
 import { NodeHttpTransport } from '../../../../src/adapters/node/node-http-transport.js';
 import { TsgitError } from '../../../../src/domain/index.js';
 
@@ -78,6 +79,22 @@ describe('createNodeContext', () => {
 
     // Assert
     expect(sut.signal).toBeUndefined();
+  });
+
+  it('Given default options, When creating context, Then ctx.hooks is wired (a NodeHookRunner)', () => {
+    // Arrange / Act
+    const sut = createNodeContext({ workDir: '/tmp/tsgit-hooks-on' });
+
+    // Assert — hooks run by default, like git (ADR-066).
+    expect(sut.hooks).toBeInstanceOf(NodeHookRunner);
+  });
+
+  it('Given hooks: false, When creating context, Then ctx.hooks is undefined', () => {
+    // Arrange / Act
+    const sut = createNodeContext({ workDir: '/tmp/tsgit-hooks-off', hooks: false });
+
+    // Assert — the explicit opt-out detaches the runner.
+    expect(sut.hooks).toBeUndefined();
   });
 
   it('Given no options, When creating context, Then each port is its expected concrete class (no field-swap)', () => {
