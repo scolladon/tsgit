@@ -59,13 +59,19 @@ const resolveSwitchOid = async (ctx: Context, target: string): Promise<ObjectId>
 };
 
 /** git's checkout reflog label: the branch short-name on a branch, the
- *  abbreviated oid when detached. */
+ *  abbreviated oid when detached. A symbolic target outside `refs/heads/`
+ *  (e.g. `refs/remotes/...`) falls back to its last path segment so the
+ *  prefix-strip never mangles the name. */
 const headCheckoutLabel = (
   head:
     | { readonly kind: 'symbolic'; readonly target: RefName }
     | { readonly kind: 'direct'; readonly id: ObjectId },
-): string =>
-  head.kind === 'symbolic' ? head.target.slice(HEADS_PREFIX.length) : head.id.slice(0, 7);
+): string => {
+  if (head.kind !== 'symbolic') return head.id.slice(0, 7);
+  if (head.target.startsWith(HEADS_PREFIX)) return head.target.slice(HEADS_PREFIX.length);
+  const lastSlash = head.target.lastIndexOf('/');
+  return lastSlash === -1 ? head.target : head.target.slice(lastSlash + 1);
+};
 
 const switchBranch = async (ctx: Context, opts: CheckoutSwitchOptions): Promise<CheckoutResult> => {
   const detached = opts.detach === true || /^[0-9a-f]{40}$/.test(opts.target);

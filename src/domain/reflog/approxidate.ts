@@ -48,6 +48,8 @@ function parseIso(text: string): number | undefined {
   if (minute > 59) return undefined;
   if (secondOfMinute > 59) return undefined;
   const date = new Date(year, month - 1, day, hour, minute, secondOfMinute);
+  // `new Date(y, …)` coerces a two-digit year into 1900+y; pin the literal year.
+  date.setFullYear(year);
   return Math.floor(date.getTime() / 1000);
 }
 

@@ -261,6 +261,18 @@ describe('parseApproxidate', () => {
       // Assert
       expect(result).toBe(expected);
     });
+
+    it('Given an ISO date in year 0099, When parsing, Then the literal year 99 AD is used (not 1999)', () => {
+      // Arrange — `new Date(99, …)` coerces to 1999; the literal year must be pinned.
+      const expected = new Date(0, 0, 1, 0, 0, 0);
+      expected.setFullYear(99);
+
+      // Act
+      const result = parseApproxidate('0099-01-01', NOW);
+
+      // Assert
+      expect(result).toBe(Math.floor(expected.getTime() / 1000));
+    });
   });
 
   describe('relative dotted forms', () => {

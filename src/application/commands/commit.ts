@@ -3,7 +3,7 @@ import type { IndexEntry } from '../../domain/git-index/index.js';
 import { nothingToCommit } from '../../domain/index.js';
 import type { CommitData } from '../../domain/objects/commit.js';
 import type { AuthorIdentity, FilePath, ObjectId, TreeEntry } from '../../domain/objects/index.js';
-import { ObjectId as ObjectIdFactory, ZERO_OID } from '../../domain/objects/index.js';
+import { ZERO_OID } from '../../domain/objects/index.js';
 import type { RefName } from '../../domain/objects/object-id.js';
 import type { Context } from '../../ports/context.js';
 import { readConfig } from '../primitives/config-read.js';
@@ -207,7 +207,7 @@ const tryResolve = async (ctx: Context, name: RefName): Promise<ObjectId | undef
 
 const getParentTree = async (ctx: Context, parentId: ObjectId): Promise<ObjectId> => {
   const obj = await readObject(ctx, parentId);
-  if (obj.type !== 'commit') return ObjectIdFactory.from('0'.repeat(40));
+  if (obj.type !== 'commit') return ZERO_OID;
   return obj.data.tree;
 };
 
