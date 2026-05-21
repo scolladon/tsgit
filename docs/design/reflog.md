@@ -622,7 +622,7 @@ src/application/commands/
   (every importer of the old commands/internal/config-read path updates the import)
 
 src/repository.ts        + repo.reflog binding, + primitives.recordRefUpdate
-README.md DESIGN.md RUNBOOK.md CONTRIBUTING.md MIGRATION.md   docs refresh
+README.md DESIGN.md RUNBOOK.md CONTRIBUTING.md   docs refresh
 ```
 
 `config-read.ts` moving from `commands/internal/` to `primitives/` is a
@@ -768,6 +768,5 @@ Recorded under `docs/adr/` before implementation:
   unix timestamp. Documented; matches git.
 - **`config-read` relocation blast radius** — moving the module changes import
   paths at ~6 consumers. Mechanical; dependency-cruiser + `tsc` catch any miss.
-- **Breaking `updateRef` signature** — acceptable: 17.x targets v2.0 (major).
-  `MIGRATION.md` documents the new required `reflogMessage` and the
-  `config-read` import path.
+- **Breaking `updateRef` signature** — acceptable: 17.x targets v2.0 (major)
+  and tsgit has no released consumers to migrate yet.

@@ -5,41 +5,6 @@ tsgit equivalent. Numbers below come from the Phase 11 benchmark suite —
 roughly 2× faster on `status`, on par for `log` and `readBlob`, with the
 LRU delta cache narrowing further as the working set grows.
 
-## v2.0 Breaking Changes
-
-### `updateRef` options is now a discriminated union
-
-In v1.x, `updateRef` accepted `{ expected?, delete? }`. In v2.0, a ref **write** requires an explicit `reflogMessage`:
-
-```typescript
-// v1.x
-await repo.primitives.updateRef(ctx, 'refs/heads/main', newId, {});
-
-// v2.0 — write: reflogMessage required
-await repo.primitives.updateRef(ctx, 'refs/heads/main', newId, {
-  reflogMessage: 'commit: my message',
-});
-
-// v2.0 — delete: no message required
-await repo.primitives.updateRef(ctx, 'refs/heads/main', someId, {
-  delete: true,
-});
-```
-
-This change is enforced by TypeScript's type system: omitting `reflogMessage` on a write is a compile error, ensuring every ref movement is logged with a human-readable reason.
-
-### `config-read` moved from commands to primitives
-
-The `.git/config` reader relocated from `src/application/commands/internal/config-read.ts` to `src/application/primitives/config-read.ts`. Update imports if you depend on it directly:
-
-```typescript
-// v1.x
-import { readConfig } from '@scolladon/tsgit/commands/internal/config-read';
-
-// v2.0
-import { readConfig } from '@scolladon/tsgit/primitives';
-```
-
 ## Differences at a glance
 
 | Concern | isomorphic-git | tsgit |
