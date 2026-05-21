@@ -6,6 +6,8 @@ export type { BuildPackInput, BuildPackResult } from './build-pack.js';
 export { buildPack } from './build-pack.js';
 export type { Changeset, ChangesetEntry, ChangesetStats } from './compute-changeset.js';
 export { computeChangeset } from './compute-changeset.js';
+export type { ParsedConfig } from './config-read.js';
+export { readConfig } from './config-read.js';
 export { createCommit } from './create-commit.js';
 export { diffTrees } from './diff-trees.js';
 export type { EnumeratePushObjectsInput } from './enumerate-push-objects.js';

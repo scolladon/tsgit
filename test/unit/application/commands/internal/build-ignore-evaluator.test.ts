@@ -4,7 +4,7 @@ import {
   buildIgnoreEvaluator,
   buildRepoIgnorePredicate,
 } from '../../../../../src/application/commands/internal/build-ignore-evaluator.js';
-import { __resetConfigCacheForTests } from '../../../../../src/application/commands/internal/config-read.js';
+import { __resetConfigCacheForTests } from '../../../../../src/application/primitives/config-read.js';
 import type { FilePath } from '../../../../../src/domain/objects/object-id.js';
 
 afterEach(() => __resetConfigCacheForTests());

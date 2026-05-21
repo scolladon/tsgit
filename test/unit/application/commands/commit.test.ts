@@ -3,7 +3,7 @@ import { createMemoryContext } from '../../../../src/adapters/memory/memory-adap
 import { add } from '../../../../src/application/commands/add.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
-import { __resetConfigCacheForTests } from '../../../../src/application/commands/internal/config-read.js';
+import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { TsgitError } from '../../../../src/domain/index.js';

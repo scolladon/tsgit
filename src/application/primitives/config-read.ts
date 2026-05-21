@@ -1,12 +1,16 @@
-import { TsgitError } from '../../../domain/error.js';
-import type { Context } from '../../../ports/context.js';
+import { TsgitError } from '../../domain/error.js';
+import type { Context } from '../../ports/context.js';
 
 /**
  * Subset of `.git/config` that v1 commands consume. Only fields actually used by
  * commands are typed — the parser ignores everything else (lenient, like git itself).
  */
 export interface ParsedConfig {
-  readonly core?: { readonly bare?: boolean; readonly excludesFile?: string };
+  readonly core?: {
+    readonly bare?: boolean;
+    readonly excludesFile?: string;
+    readonly logAllRefUpdates?: boolean | 'always';
+  };
   readonly user?: { readonly name: string; readonly email: string };
   readonly remote?: ReadonlyMap<
     string,
@@ -161,7 +165,7 @@ const parseKeyValue = (
 
 const assembleParsed = (sections: ReadonlyArray<MutableSection>): ParsedConfig => {
   const acc: {
-    core?: { bare?: boolean };
+    core?: { bare?: boolean; excludesFile?: string; logAllRefUpdates?: boolean | 'always' };
     user?: { name?: string; email?: string };
     remote?: Map<string, { url?: string; fetch?: string[] }>;
     branch?: Map<string, { remote?: string; merge?: string }>;
@@ -181,7 +185,7 @@ const assembleParsed = (sections: ReadonlyArray<MutableSection>): ParsedConfig =
 };
 
 const mergeCore = (
-  acc: { core?: { bare?: boolean; excludesFile?: string } },
+  acc: { core?: { bare?: boolean; excludesFile?: string; logAllRefUpdates?: boolean | 'always' } },
   sec: MutableSection,
 ): void => {
   for (const { key, value } of sec.entries) {
@@ -193,9 +197,16 @@ const mergeCore = (
       acc.core = { ...acc.core, bare: parseGitBoolean(value) };
     } else if (lowered === 'excludesfile') {
       acc.core = { ...acc.core, excludesFile: value };
+    } else if (lowered === 'logallrefupdates') {
+      acc.core = { ...acc.core, logAllRefUpdates: parseLogAllRefUpdates(value) };
     }
   }
 };
+
+// The literal `always` is a third state beyond git's boolean values; anything
+// else falls through to the standard boolean parse.
+const parseLogAllRefUpdates = (value: string): boolean | 'always' =>
+  value.toLowerCase() === 'always' ? 'always' : parseGitBoolean(value);
 
 const mergeUser = (
   acc: { user?: { name?: string; email?: string } },
@@ -246,23 +257,31 @@ const mergeBranch = (
 };
 
 const finalize = (acc: {
-  core?: { bare?: boolean; excludesFile?: string };
+  core?: { bare?: boolean; excludesFile?: string; logAllRefUpdates?: boolean | 'always' };
   user?: { name?: string; email?: string };
   remote?: Map<string, { url?: string; fetch?: string[] }>;
   branch?: Map<string, { remote?: string; merge?: string }>;
 }): ParsedConfig => {
   const out: {
-    core?: { bare?: boolean; excludesFile?: string };
+    core?: { bare?: boolean; excludesFile?: string; logAllRefUpdates?: boolean | 'always' };
     user?: { name: string; email: string };
     remote?: ReadonlyMap<string, { url?: string; fetch?: ReadonlyArray<string> }>;
     branch?: ReadonlyMap<string, { remote?: string; merge?: string }>;
   } = {};
-  if (acc.core?.bare !== undefined || acc.core?.excludesFile !== undefined) {
+  if (
+    acc.core?.bare !== undefined ||
+    acc.core?.excludesFile !== undefined ||
+    acc.core?.logAllRefUpdates !== undefined
+  ) {
     out.core = {
       // Stryker disable next-line OptionalChaining: equivalent — the enclosing `if` is only entered when `acc.core` is defined, so `acc.core.bare` cannot throw.
       ...(acc.core?.bare !== undefined ? { bare: acc.core.bare } : {}),
       // Stryker disable next-line OptionalChaining: equivalent — the enclosing `if` is only entered when `acc.core` is defined, so `acc.core.excludesFile` cannot throw.
       ...(acc.core?.excludesFile !== undefined ? { excludesFile: acc.core.excludesFile } : {}),
+      // Stryker disable next-line OptionalChaining: equivalent — the enclosing `if` is only entered when `acc.core` is defined, so `acc.core.logAllRefUpdates` cannot throw.
+      ...(acc.core?.logAllRefUpdates !== undefined
+        ? { logAllRefUpdates: acc.core.logAllRefUpdates }
+        : {}),
     };
   }
   // Stryker disable next-line OptionalChaining: equivalent — `&&` short-circuits, so `acc.user?.email` is only read after `acc.user?.name !== undefined` proved `acc.user` is defined.

@@ -6,6 +6,7 @@ import type { AuthorIdentity, FilePath, ObjectId, TreeEntry } from '../../domain
 import { ObjectId as ObjectIdFactory } from '../../domain/objects/index.js';
 import type { RefName } from '../../domain/objects/object-id.js';
 import type { Context } from '../../ports/context.js';
+import { readConfig } from '../primitives/config-read.js';
 import { createCommit } from '../primitives/create-commit.js';
 import { readIndex } from '../primitives/read-index.js';
 import { readObject } from '../primitives/read-object.js';
@@ -13,7 +14,6 @@ import { resolveRef } from '../primitives/resolve-ref.js';
 import { updateRef } from '../primitives/update-ref.js';
 import { writeTree } from '../primitives/write-tree.js';
 import { resolveAuthor, resolveCommitter, sanitizeMessage } from './internal/commit-message.js';
-import { readConfig } from './internal/config-read.js';
 import { clearMergeState, readMergeHead, readMergeMsg } from './internal/merge-state.js';
 import {
   assertNoPendingOperation,

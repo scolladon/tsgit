@@ -24,6 +24,7 @@ import {
   type RefName,
 } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
+import { readConfig } from '../primitives/config-read.js';
 import { createCommit } from '../primitives/create-commit.js';
 import { flattenTree } from '../primitives/flatten-tree.js';
 import { mergeBase } from '../primitives/merge-base.js';
@@ -34,7 +35,6 @@ import { updateRef } from '../primitives/update-ref.js';
 import { writeObject } from '../primitives/write-object.js';
 import { writeTree } from '../primitives/write-tree.js';
 import { resolveAuthor, resolveCommitter, sanitizeMessage } from './internal/commit-message.js';
-import { readConfig } from './internal/config-read.js';
 import { acquireIndexLock } from './internal/index-update.js';
 import { writeMergeHead, writeMergeMsg, writeOrigHead } from './internal/merge-state.js';
 import {

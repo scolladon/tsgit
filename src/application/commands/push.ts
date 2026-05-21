@@ -38,11 +38,11 @@ import { readableStreamToAsyncIterable } from '../../operators/readable-stream.j
 import type { Context } from '../../ports/context.js';
 import type { HttpTransport } from '../../ports/http-transport.js';
 import { buildPack } from '../primitives/build-pack.js';
+import { readConfig } from '../primitives/config-read.js';
 import { enumeratePushObjects } from '../primitives/enumerate-push-objects.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
 import { updateRef } from '../primitives/update-ref.js';
 import { walkCommits } from '../primitives/walk-commits.js';
-import { readConfig } from './internal/config-read.js';
 import { withDefaults } from './internal/network-pipeline.js';
 import { discoverReceivePackRefs, selectPushCapabilities } from './internal/receive-pack-client.js';
 import { type ParsedRefspec, parseRefspec } from './internal/refspec.js';

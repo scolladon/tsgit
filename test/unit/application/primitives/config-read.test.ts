@@ -1,17 +1,17 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { createMemoryContext } from '../../../../../src/adapters/memory/memory-adapter.js';
+import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import {
   __resetConfigCacheForTests,
   readConfig,
-} from '../../../../../src/application/commands/internal/config-read.js';
-import { TsgitError } from '../../../../../src/domain/error.js';
-import type { Context } from '../../../../../src/ports/context.js';
+} from '../../../../src/application/primitives/config-read.js';
+import { TsgitError } from '../../../../src/domain/error.js';
+import type { Context } from '../../../../src/ports/context.js';
 
 const seed = async (ctx: Context, content: string): Promise<void> => {
   await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, content);
 };
 
-describe('internal/config-read', () => {
+describe('primitives/config-read', () => {
   beforeEach(() => {
     __resetConfigCacheForTests();
   });
@@ -61,6 +61,78 @@ describe('internal/config-read', () => {
 
     // Assert
     expect(sut.core?.bare).toBe(false);
+  });
+
+  it('Given [core] logallrefupdates=true, When readConfig, Then logAllRefUpdates is true', async () => {
+    // Arrange
+    const ctx = createMemoryContext();
+    await seed(ctx, '[core]\n  logallrefupdates = true\n');
+
+    // Act
+    const sut = await readConfig(ctx);
+
+    // Assert
+    expect(sut.core?.logAllRefUpdates).toBe(true);
+  });
+
+  it('Given [core] logallrefupdates=false, When readConfig, Then logAllRefUpdates is false', async () => {
+    // Arrange
+    const ctx = createMemoryContext();
+    await seed(ctx, '[core]\n  logallrefupdates = false\n');
+
+    // Act
+    const sut = await readConfig(ctx);
+
+    // Assert
+    expect(sut.core?.logAllRefUpdates).toBe(false);
+  });
+
+  it("Given [core] logallrefupdates=always, When readConfig, Then logAllRefUpdates is 'always'", async () => {
+    // Arrange
+    const ctx = createMemoryContext();
+    await seed(ctx, '[core]\n  logallrefupdates = always\n');
+
+    // Act
+    const sut = await readConfig(ctx);
+
+    // Assert
+    expect(sut.core?.logAllRefUpdates).toBe('always');
+  });
+
+  it('Given [core] logallrefupdates=ALWAYS (mixed case), When readConfig, Then matching is case-insensitive', async () => {
+    // Arrange
+    const ctx = createMemoryContext();
+    await seed(ctx, '[core]\n  logallrefupdates = ALWAYS\n');
+
+    // Act
+    const sut = await readConfig(ctx);
+
+    // Assert
+    expect(sut.core?.logAllRefUpdates).toBe('always');
+  });
+
+  it('Given a config without logallrefupdates, When readConfig, Then logAllRefUpdates is undefined', async () => {
+    // Arrange
+    const ctx = createMemoryContext();
+    await seed(ctx, '[core]\n  bare = true\n');
+
+    // Act
+    const sut = await readConfig(ctx);
+
+    // Assert
+    expect(sut.core?.logAllRefUpdates).toBeUndefined();
+  });
+
+  it('Given only logallrefupdates in [core], When readConfig, Then core is emitted with that field', async () => {
+    // Arrange — guards the finalize() arm that now also checks logAllRefUpdates.
+    const ctx = createMemoryContext();
+    await seed(ctx, '[core]\n  logallrefupdates = always\n');
+
+    // Act
+    const sut = await readConfig(ctx);
+
+    // Assert
+    expect(sut.core).toEqual({ logAllRefUpdates: 'always' });
   });
 
   it('Given a config with [user] name and email, When readConfig, Then parsed.user is populated', async () => {

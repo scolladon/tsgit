@@ -22,13 +22,13 @@ import type { ObjectId, RefName } from '../../domain/objects/index.js';
 import type { AdvertisedRef, Advertisement } from '../../domain/protocol/index.js';
 import { validateRefName } from '../../domain/refs/ref-validation.js';
 import type { Context } from '../../ports/context.js';
+import { readConfig } from '../primitives/config-read.js';
 import { fetchPack } from '../primitives/fetch-pack.js';
 import { getRefStore } from '../primitives/ref-store.js';
 import { updateShallow } from '../primitives/shallow-file.js';
 import { MAX_HAVES, MAX_WALK_SEEDS } from '../primitives/types.js';
 import { updateRef } from '../primitives/update-ref.js';
 import { walkCommits } from '../primitives/walk-commits.js';
-import { readConfig } from './internal/config-read.js';
 import { withDefaults } from './internal/network-pipeline.js';
 import { assertRepository } from './internal/repo-state.js';
 import {
