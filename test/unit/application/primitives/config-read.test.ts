@@ -111,7 +111,7 @@ describe('primitives/config-read', () => {
     expect(sut.core?.logAllRefUpdates).toBe('always');
   });
 
-  it('Given a config without logallrefupdates, When readConfig, Then logAllRefUpdates is undefined', async () => {
+  it('Given a config without logallrefupdates, When readConfig, Then core has no logAllRefUpdates key', async () => {
     // Arrange
     const ctx = createMemoryContext();
     await seed(ctx, '[core]\n  bare = true\n');
@@ -119,8 +119,22 @@ describe('primitives/config-read', () => {
     // Act
     const sut = await readConfig(ctx);
 
+    // Assert — strict shape: no `logAllRefUpdates` key is emitted at all,
+    // not even as an explicit `undefined`.
+    expect(sut.core).toStrictEqual({ bare: true });
+  });
+
+  it('Given an unrecognised [core] key, When readConfig, Then it does not become logAllRefUpdates', async () => {
+    // Arrange — only `bare`/`excludesfile`/`logallrefupdates` are consumed;
+    // `autocrlf` is a real git key tsgit ignores.
+    const ctx = createMemoryContext();
+    await seed(ctx, '[core]\n  autocrlf = always\n');
+
+    // Act
+    const sut = await readConfig(ctx);
+
     // Assert
-    expect(sut.core?.logAllRefUpdates).toBeUndefined();
+    expect(sut.core).toBeUndefined();
   });
 
   it('Given only logallrefupdates in [core], When readConfig, Then core is emitted with that field', async () => {

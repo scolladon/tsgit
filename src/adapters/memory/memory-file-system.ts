@@ -92,9 +92,10 @@ export class MemoryFileSystem implements FileSystem {
   };
 
   private async readExistingUtf8(path: string): Promise<string> {
-    const normalized = this.resolve(path);
-    const stored = this.files.get(normalized);
-    return stored === undefined ? '' : new TextDecoder().decode(stored);
+    const stored = this.files.get(this.resolve(path));
+    // `TextDecoder().decode(undefined)` is `''`, so a missing file decodes to
+    // the empty string without a separate branch.
+    return new TextDecoder().decode(stored);
   }
 
   exists = async (path: string): Promise<boolean> => {

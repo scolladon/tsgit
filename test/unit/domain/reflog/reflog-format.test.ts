@@ -28,13 +28,16 @@ const ENTRY: ReflogEntry = {
   message: 'commit: second',
 };
 
-function expectInvalidReflogEntry(act: () => unknown): void {
+function expectInvalidReflogEntry(act: () => unknown, expectedReason: string): void {
   try {
     act();
     expect.fail('expected INVALID_REFLOG_ENTRY');
   } catch (err) {
     expect(err).toBeInstanceOf(TsgitError);
-    expect((err as TsgitError).data.code).toBe('INVALID_REFLOG_ENTRY');
+    expect((err as TsgitError).data).toEqual({
+      code: 'INVALID_REFLOG_ENTRY',
+      reason: expectedReason,
+    });
   }
 }
 
@@ -79,7 +82,7 @@ describe('serializeReflogLine', () => {
     const sut: ReflogEntry = { ...ENTRY, message: 'first\nsecond' };
 
     // Act & Assert
-    expectInvalidReflogEntry(() => serializeReflogLine(sut));
+    expectInvalidReflogEntry(() => serializeReflogLine(sut), 'message contains a line break');
   });
 
   it('Given a message containing CR, When serializing, Then throws INVALID_REFLOG_ENTRY', () => {
@@ -87,7 +90,7 @@ describe('serializeReflogLine', () => {
     const sut: ReflogEntry = { ...ENTRY, message: 'first\rsecond' };
 
     // Act & Assert
-    expectInvalidReflogEntry(() => serializeReflogLine(sut));
+    expectInvalidReflogEntry(() => serializeReflogLine(sut), 'message contains a line break');
   });
 });
 
@@ -141,15 +144,16 @@ describe('parseReflogLine', () => {
     const sut = `${OID_A} ${OID_B} Ada <ada@example.com> 1716240000 +0000 commit: second`;
 
     // Act & Assert
-    expectInvalidReflogEntry(() => parseReflogLine(sut));
+    expectInvalidReflogEntry(() => parseReflogLine(sut), 'missing tab separator');
   });
 
   it('Given a line with a short old OID, When parsing, Then throws INVALID_REFLOG_ENTRY', () => {
     // Arrange
     const sut = `${'a'.repeat(39)} ${OID_B} Ada <ada@example.com> 1716240000 +0000\tx`;
 
-    // Act & Assert
-    expectInvalidReflogEntry(() => parseReflogLine(sut));
+    // Act & Assert — a 39-char OID shifts the index-40 separator off; the
+    // separator guard fires before OID validation.
+    expectInvalidReflogEntry(() => parseReflogLine(sut), 'misplaced field separator');
   });
 
   it('Given a line with a non-hex new OID, When parsing, Then throws INVALID_REFLOG_ENTRY', () => {
@@ -157,7 +161,7 @@ describe('parseReflogLine', () => {
     const sut = `${OID_A} ${'g'.repeat(40)} Ada <ada@example.com> 1716240000 +0000\tx`;
 
     // Act & Assert
-    expectInvalidReflogEntry(() => parseReflogLine(sut));
+    expectInvalidReflogEntry(() => parseReflogLine(sut), 'invalid object id');
   });
 
   it('Given a line whose field-separator at index 40 is not a space, When parsing, Then throws INVALID_REFLOG_ENTRY', () => {
@@ -165,7 +169,7 @@ describe('parseReflogLine', () => {
     const sut = `${OID_A}X${OID_B} Ada <ada@example.com> 1716240000 +0000\tx`;
 
     // Act & Assert
-    expectInvalidReflogEntry(() => parseReflogLine(sut));
+    expectInvalidReflogEntry(() => parseReflogLine(sut), 'misplaced field separator');
   });
 
   it('Given a line whose field-separator at index 81 is not a space, When parsing, Then throws INVALID_REFLOG_ENTRY', () => {
@@ -173,7 +177,7 @@ describe('parseReflogLine', () => {
     const sut = `${OID_A} ${OID_B}X Ada <ada@example.com> 1716240000 +0000\tx`;
 
     // Act & Assert
-    expectInvalidReflogEntry(() => parseReflogLine(sut));
+    expectInvalidReflogEntry(() => parseReflogLine(sut), 'misplaced field separator');
   });
 
   it('Given a line with an unparseable identity, When parsing, Then throws INVALID_REFLOG_ENTRY', () => {
@@ -181,7 +185,7 @@ describe('parseReflogLine', () => {
     const sut = `${OID_A} ${OID_B} no-brackets 1716240000 +0000\tx`;
 
     // Act & Assert
-    expectInvalidReflogEntry(() => parseReflogLine(sut));
+    expectInvalidReflogEntry(() => parseReflogLine(sut), 'invalid identity');
   });
 });
 
@@ -226,7 +230,7 @@ describe('parseReflog', () => {
     const sut = `${serializeReflogLine(ENTRY)}garbage line\n`;
 
     // Act & Assert
-    expectInvalidReflogEntry(() => parseReflog(sut));
+    expectInvalidReflogEntry(() => parseReflog(sut), 'missing tab separator');
   });
 });
 

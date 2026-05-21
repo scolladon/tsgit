@@ -35,6 +35,14 @@ const entry = (overrides: Partial<ReflogEntry> = {}): ReflogEntry => ({
   ...overrides,
 });
 
+// Build one syntactically valid reflog line whose serialized length is
+// exactly `bytes`, by padding the message. ASCII-only, so byte length equals
+// string length.
+const lineOfSize = (bytes: number): string => {
+  const prefix = serializeReflogLine(entry({ message: '' }));
+  return serializeReflogLine(entry({ message: 'x'.repeat(bytes - prefix.length) }));
+};
+
 describe('reflog-store', () => {
   describe('appendReflog', () => {
     it('Given a missing reflog, When appendReflog, Then the .git/logs file is created with the line', async () => {
@@ -92,10 +100,12 @@ describe('reflog-store', () => {
     });
 
     it('Given a reflog file larger than MAX_REFLOG_BYTES, When readReflog, Then throws INVALID_REFLOG_ENTRY', async () => {
-      // Arrange
+      // Arrange — a single, otherwise-valid line padded past the cap. Valid
+      // content proves the size guard fires before parsing, not because the
+      // bytes happen to be unparseable.
       const ctx = createMemoryContext();
-      const oversized = 'x'.repeat(MAX_REFLOG_BYTES + 1);
-      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/logs/HEAD`, oversized);
+      const padded = lineOfSize(MAX_REFLOG_BYTES + 1);
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/logs/HEAD`, padded);
 
       // Act
       try {
@@ -104,8 +114,25 @@ describe('reflog-store', () => {
       } catch (err) {
         // Assert
         expect(err).toBeInstanceOf(TsgitError);
-        expect((err as TsgitError).data.code).toBe('INVALID_REFLOG_ENTRY');
+        expect((err as TsgitError).data).toEqual({
+          code: 'INVALID_REFLOG_ENTRY',
+          reason: `reflog file exceeds ${MAX_REFLOG_BYTES} bytes`,
+        });
       }
+    });
+
+    it('Given a reflog file of exactly MAX_REFLOG_BYTES, When readReflog, Then it is accepted (boundary)', async () => {
+      // Arrange — a file sized exactly at the cap must still parse; the guard
+      // rejects only files strictly larger.
+      const ctx = createMemoryContext();
+      const atCap = lineOfSize(MAX_REFLOG_BYTES);
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/logs/HEAD`, atCap);
+
+      // Act
+      const result = await readReflog(ctx, HEAD);
+
+      // Assert
+      expect(result).toHaveLength(1);
     });
   });
 
@@ -141,6 +168,21 @@ describe('reflog-store', () => {
 
       // Assert
       expect(await readReflog(ctx, HEAD)).toEqual([survivor]);
+    });
+
+    it('Given several entries, When writeReflog, Then each one round-trips back, oldest-first', async () => {
+      // Arrange — a multi-entry write proves the lines are concatenated with no
+      // separator between them.
+      const ctx = createMemoryContext();
+      const first = entry({ message: 'first' });
+      const second = entry({ oldId: OID_A, newId: OID_B, message: 'second' });
+      const third = entry({ oldId: OID_B, newId: OID_A, message: 'third' });
+
+      // Act
+      await writeReflog(ctx, HEAD, [first, second, third]);
+
+      // Assert
+      expect(await readReflog(ctx, HEAD)).toEqual([first, second, third]);
     });
 
     it('Given an empty entry list, When writeReflog, Then the file holds no entries', async () => {
