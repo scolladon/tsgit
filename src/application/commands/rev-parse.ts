@@ -1,16 +1,23 @@
+import { revparseUnresolved } from '../../domain/commands/error.js';
 import { objectNotFound } from '../../domain/objects/error.js';
 import {
   type ObjectId,
   ObjectId as ObjectIdFactory,
   type RefName,
 } from '../../domain/objects/index.js';
+import { parseApproxidate } from '../../domain/reflog/approxidate.js';
+import { reflogEntryOutOfRange } from '../../domain/reflog/error.js';
+import type { ReflogEntry } from '../../domain/reflog/reflog-entry.js';
 import type { Context } from '../../ports/context.js';
 import { readIndex } from '../primitives/read-index.js';
 import { readObject } from '../primitives/read-object.js';
+import { getRefStore } from '../primitives/ref-store.js';
+import { readReflog, reflogExists } from '../primitives/reflog-store.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
 import { assertRepository } from './internal/repo-state.js';
 import {
   parseExpression,
+  type ReflogSelector,
   type RevExpression,
   type RevOperation,
 } from './internal/rev-parse-grammar.js';
@@ -18,14 +25,20 @@ import {
 export const revParse = async (ctx: Context, expression: string): Promise<ObjectId> => {
   await assertRepository(ctx);
   const expr = parseExpression(expression);
-  return evaluate(ctx, expr);
+  return evaluate(ctx, expr, expression);
 };
 
-const evaluate = async (ctx: Context, expr: RevExpression): Promise<ObjectId> => {
+const evaluate = async (ctx: Context, expr: RevExpression, raw: string): Promise<ObjectId> => {
   if (expr.kind === 'index-stage') {
     return resolveIndexStage(ctx, expr);
   }
-  let id = await resolveBase(ctx, expr.base);
+  // `now` is read once per call so the reflog `@{date}` resolution is
+  // deterministic within an evaluation; the grammar parser stays clock-free.
+  const now = Math.floor(Date.now() / 1000);
+  let id =
+    expr.reflog !== undefined
+      ? await resolveReflogBase(ctx, expr.base, expr.reflog, now, raw)
+      : await resolveBase(ctx, expr.base);
   for (const op of expr.operations) {
     id = await applyOperation(ctx, id, op);
   }
@@ -36,13 +49,7 @@ const resolveBase = async (ctx: Context, base: string): Promise<ObjectId> => {
   if (/^[0-9a-f]{40}$/.test(base)) return ObjectIdFactory.from(base);
   // Try as a ref name; the verbatim candidate also covers the HEAD literal,
   // which resolveRef accepts directly.
-  const candidates: ReadonlyArray<RefName | 'HEAD'> = [
-    base as RefName,
-    `refs/heads/${base}` as RefName,
-    `refs/tags/${base}` as RefName,
-    `refs/remotes/${base}` as RefName,
-  ];
-  for (const candidate of candidates) {
+  for (const candidate of refCandidates(base)) {
     try {
       return await resolveRef(ctx, candidate);
     } catch {
@@ -50,6 +57,87 @@ const resolveBase = async (ctx: Context, base: string): Promise<ObjectId> => {
     }
   }
   throw objectNotFound(base as ObjectId);
+};
+
+/** Candidate ref names a short base may stand for, in resolution priority order. */
+const refCandidates = (base: string): ReadonlyArray<RefName | 'HEAD'> => [
+  base as RefName,
+  `refs/heads/${base}` as RefName,
+  `refs/tags/${base}` as RefName,
+  `refs/remotes/${base}` as RefName,
+];
+
+/** Resolve `<base>@{<selector>}` through the reflog of the base ref. */
+const resolveReflogBase = async (
+  ctx: Context,
+  base: string,
+  selector: ReflogSelector,
+  now: number,
+  raw: string,
+): Promise<ObjectId> => {
+  const ref = base === '' ? await currentBranchRef(ctx) : await canonicalizeRef(ctx, base);
+  const entries = await readReflog(ctx, ref);
+  if (entries.length === 0) throw revparseUnresolved(raw);
+  if (selector.kind === 'index') return pickByIndex(entries, selector.n, ref);
+  return pickByDate(entries, selector.raw, now, raw);
+};
+
+/** HEAD's symbolic branch target, or the `HEAD` literal when HEAD is detached. */
+const currentBranchRef = async (ctx: Context): Promise<RefName> => {
+  const result = await getRefStore(ctx).resolveDirect('HEAD' as RefName);
+  return result.kind === 'symbolic' ? result.target : ('HEAD' as RefName);
+};
+
+/**
+ * Map a short base to the `RefName` whose reflog to read: the first candidate
+ * with a reflog file, else the first that resolves as a ref (so the empty-log
+ * path still fires with a sensible ref).
+ */
+const canonicalizeRef = async (ctx: Context, base: string): Promise<RefName> => {
+  const candidates = refCandidates(base);
+  for (const candidate of candidates) {
+    if (await reflogExists(ctx, candidate as RefName)) return candidate as RefName;
+  }
+  for (const candidate of candidates) {
+    if (await refResolves(ctx, candidate)) return candidate as RefName;
+  }
+  return base as RefName;
+};
+
+const refResolves = async (ctx: Context, candidate: RefName | 'HEAD'): Promise<boolean> => {
+  try {
+    await resolveRef(ctx, candidate);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+/** `@{n}` over an oldest-first reflog: the n-th entry counted newest-first. */
+const pickByIndex = (entries: ReadonlyArray<ReflogEntry>, n: number, ref: RefName): ObjectId => {
+  const position = entries.length - 1 - n;
+  const entry = entries[position];
+  if (entry === undefined) throw reflogEntryOutOfRange(ref, n, entries.length);
+  return entry.newId;
+};
+
+/**
+ * `@{date}`: the newest entry at or before `target`. A target preceding the
+ * oldest entry yields that entry's `oldId` — the ref's value before the log.
+ */
+const pickByDate = (
+  entries: ReadonlyArray<ReflogEntry>,
+  rawDate: string,
+  now: number,
+  raw: string,
+): ObjectId => {
+  const target = parseApproxidate(rawDate, now);
+  if (target === undefined) throw revparseUnresolved(raw);
+  for (let i = entries.length - 1; i >= 0; i -= 1) {
+    const entry = entries[i] as ReflogEntry;
+    if (entry.identity.timestamp <= target) return entry.newId;
+  }
+  return (entries[0] as ReflogEntry).oldId;
 };
 
 const applyOperation = async (ctx: Context, id: ObjectId, op: RevOperation): Promise<ObjectId> => {

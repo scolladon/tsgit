@@ -1,14 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { revParse } from '../../../../src/application/commands/rev-parse.js';
+import { writeReflog } from '../../../../src/application/primitives/reflog-store.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import type { GitIndex, IndexEntry } from '../../../../src/domain/git-index/index.js';
 import { serializeIndex } from '../../../../src/domain/git-index/index.js';
 import { TsgitError } from '../../../../src/domain/index.js';
 import { hexToBytes } from '../../../../src/domain/objects/encoding.js';
 import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
-import type { CommitData, ObjectId } from '../../../../src/domain/objects/index.js';
-import type { FilePath } from '../../../../src/domain/objects/object-id.js';
+import type { AuthorIdentity, CommitData, ObjectId } from '../../../../src/domain/objects/index.js';
+import { ZERO_OID } from '../../../../src/domain/objects/index.js';
+import type { FilePath, RefName } from '../../../../src/domain/objects/object-id.js';
+import type { ReflogEntry } from '../../../../src/domain/reflog/index.js';
 import type { Context } from '../../../../src/ports/context.js';
 import { seedRepo } from './fixtures.js';
 
@@ -600,5 +603,282 @@ describe('revParse', () => {
     const data = (caught as TsgitError).data as { code: string; id: string };
     expect(data.code).toBe('OBJECT_NOT_FOUND');
     expect(data.id).toBe('0:missing.txt');
+  });
+
+  describe('reflog selectors', () => {
+    const HEAD_REF = 'HEAD' as RefName;
+    const MAIN_REF = 'refs/heads/main' as RefName;
+
+    const identityAt = (timestamp: number): AuthorIdentity => ({
+      name: 'Test',
+      email: 'test@example.com',
+      timestamp,
+      timezoneOffset: '+0000',
+    });
+
+    const reflogEntry = (oldId: ObjectId, newId: ObjectId, timestamp: number): ReflogEntry => ({
+      oldId,
+      newId,
+      identity: identityAt(timestamp),
+      message: 'move',
+    });
+
+    it('Given a HEAD reflog with two moves, When revParse(HEAD@{1}), Then it returns the second-newest newId', async () => {
+      // Arrange — oldest-first file; @{1} is the second-newest entry's newId.
+      const ctx = createMemoryContext();
+      const c1 = await writeCommit(ctx, TREE_OID as ObjectId, []);
+      const c2 = await writeCommit(ctx, TREE_OID as ObjectId, [c1]);
+      await seedRepo(ctx, { refs: { 'refs/heads/main': c2 } });
+      await writeReflog(ctx, HEAD_REF, [
+        reflogEntry(ZERO_OID, c1, 1_000),
+        reflogEntry(c1, c2, 2_000),
+      ]);
+
+      // Act
+      const sut = await revParse(ctx, 'HEAD@{1}');
+
+      // Assert
+      expect(sut).toBe(c1);
+    });
+
+    it('Given a HEAD reflog, When revParse(HEAD@{0}), Then it returns the newest entry newId', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      const c1 = await writeCommit(ctx, TREE_OID as ObjectId, []);
+      const c2 = await writeCommit(ctx, TREE_OID as ObjectId, [c1]);
+      await seedRepo(ctx, { refs: { 'refs/heads/main': c2 } });
+      await writeReflog(ctx, HEAD_REF, [
+        reflogEntry(ZERO_OID, c1, 1_000),
+        reflogEntry(c1, c2, 2_000),
+      ]);
+
+      // Act
+      const sut = await revParse(ctx, 'HEAD@{0}');
+
+      // Assert
+      expect(sut).toBe(c2);
+    });
+
+    it('Given a branch reflog, When revParse(main@{0}), Then the branch log resolves the newest tip', async () => {
+      // Arrange — kills a mutant that hard-codes the base to HEAD.
+      const ctx = createMemoryContext();
+      const tip = await writeCommit(ctx, TREE_OID as ObjectId, []);
+      await seedRepo(ctx, { refs: { 'refs/heads/main': tip } });
+      await writeReflog(ctx, MAIN_REF, [reflogEntry(ZERO_OID, tip, 1_000)]);
+
+      // Act
+      const sut = await revParse(ctx, 'main@{0}');
+
+      // Assert
+      expect(sut).toBe(tip);
+    });
+
+    it('Given a bare @{N} selector and HEAD on a branch, When revParse(@{0}), Then it resolves against that branch reflog', async () => {
+      // Arrange — bare `@{N}` reads the checked-out branch's log, not HEAD's.
+      const ctx = createMemoryContext();
+      const tip = await writeCommit(ctx, TREE_OID as ObjectId, []);
+      await seedRepo(ctx, { refs: { 'refs/heads/main': tip } });
+      await writeReflog(ctx, MAIN_REF, [reflogEntry(ZERO_OID, tip, 1_000)]);
+
+      // Act
+      const sut = await revParse(ctx, '@{0}');
+
+      // Assert
+      expect(sut).toBe(tip);
+    });
+
+    it('Given a detached HEAD and a bare @{N} selector, When revParse(@{0}), Then it falls back to the HEAD reflog', async () => {
+      // Arrange — detached HEAD has no branch target, so `@{N}` reads HEAD's log.
+      const ctx = createMemoryContext();
+      const c1 = await writeCommit(ctx, TREE_OID as ObjectId, []);
+      await seedRepo(ctx, { head: c1, refs: { 'refs/heads/main': c1 } });
+      await writeReflog(ctx, HEAD_REF, [reflogEntry(ZERO_OID, c1, 1_000)]);
+
+      // Act
+      const sut = await revParse(ctx, '@{0}');
+
+      // Assert
+      expect(sut).toBe(c1);
+    });
+
+    it('Given HEAD@{1} chained with a parent op, When revParse(HEAD@{1}^), Then the reflog id flows through the ~/^ ops', async () => {
+      // Arrange — @{1} resolves to c2 (which has parent c1); `^` peels to c1.
+      const ctx = createMemoryContext();
+      const c1 = await writeCommit(ctx, TREE_OID as ObjectId, []);
+      const c2 = await writeCommit(ctx, TREE_OID as ObjectId, [c1]);
+      const c3 = await writeCommit(ctx, TREE_OID as ObjectId, [c2]);
+      await seedRepo(ctx, { refs: { 'refs/heads/main': c3 } });
+      await writeReflog(ctx, HEAD_REF, [
+        reflogEntry(ZERO_OID, c1, 1_000),
+        reflogEntry(c1, c2, 2_000),
+        reflogEntry(c2, c3, 3_000),
+      ]);
+
+      // Act
+      const sut = await revParse(ctx, 'HEAD@{1}^');
+
+      // Assert
+      expect(sut).toBe(c1);
+    });
+
+    it('Given an index past the newest entry, When revParse(HEAD@{5}), Then throws REFLOG_ENTRY_OUT_OF_RANGE with requested and available', async () => {
+      // Arrange — two entries, index 5 is out of range.
+      const ctx = createMemoryContext();
+      const c1 = await writeCommit(ctx, TREE_OID as ObjectId, []);
+      await seedRepo(ctx, { refs: { 'refs/heads/main': c1 } });
+      await writeReflog(ctx, HEAD_REF, [
+        reflogEntry(ZERO_OID, c1, 1_000),
+        reflogEntry(c1, c1, 2_000),
+      ]);
+
+      // Act
+      let caught: unknown;
+      try {
+        await revParse(ctx, 'HEAD@{5}');
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert
+      expect(caught).toBeInstanceOf(TsgitError);
+      expect((caught as TsgitError).data).toEqual({
+        code: 'REFLOG_ENTRY_OUT_OF_RANGE',
+        ref: 'HEAD',
+        requested: 5,
+        available: 2,
+      });
+    });
+
+    it('Given a ref with an empty reflog file, When revParse(HEAD@{0}), Then throws REVPARSE_UNRESOLVED', async () => {
+      // Arrange — the file exists but has no entries.
+      const ctx = createMemoryContext();
+      const c1 = await writeCommit(ctx, TREE_OID as ObjectId, []);
+      await seedRepo(ctx, { refs: { 'refs/heads/main': c1 } });
+      await writeReflog(ctx, HEAD_REF, []);
+
+      // Act
+      let caught: unknown;
+      try {
+        await revParse(ctx, 'HEAD@{0}');
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert
+      expect((caught as TsgitError).data).toEqual({
+        code: 'REVPARSE_UNRESOLVED',
+        expression: 'HEAD@{0}',
+      });
+    });
+
+    it('Given a base with no reflog file at all, When revParse(missing@{0}), Then throws REVPARSE_UNRESOLVED', async () => {
+      // Arrange — the candidate ladder finds no reflog file for the base.
+      const ctx = createMemoryContext();
+      await seedRepo(ctx, {});
+
+      // Act
+      let caught: unknown;
+      try {
+        await revParse(ctx, 'missing@{0}');
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert
+      expect((caught as TsgitError).data).toEqual({
+        code: 'REVPARSE_UNRESOLVED',
+        expression: 'missing@{0}',
+      });
+    });
+
+    it('Given a date after the newest entry, When revParse(HEAD@{<date>}), Then it returns the newest entry newId', async () => {
+      // Arrange — a target newer than every entry resolves to the newest move.
+      const ctx = createMemoryContext();
+      const c1 = await writeCommit(ctx, TREE_OID as ObjectId, []);
+      const c2 = await writeCommit(ctx, TREE_OID as ObjectId, [c1]);
+      await seedRepo(ctx, { refs: { 'refs/heads/main': c2 } });
+      await writeReflog(ctx, HEAD_REF, [
+        reflogEntry(ZERO_OID, c1, 1_000),
+        reflogEntry(c1, c2, 2_000),
+      ]);
+
+      // Act — `now` is the reference for `2.days.ago`; both entries (ts 1000,
+      // 2000, i.e. 1970) predate it, so the newest entry is selected.
+      const sut = await revParse(ctx, 'HEAD@{2.days.ago}');
+
+      // Assert
+      expect(sut).toBe(c2);
+    });
+
+    it('Given a date between two entries, When revParse(HEAD@{<iso>}), Then it returns the newest entry at or before that date', async () => {
+      // Arrange — entries at 2020-01-01 and 2024-01-01; a 2022 target picks the
+      // 2020 entry (the newest whose timestamp is <= target).
+      const ctx = createMemoryContext();
+      const c1 = await writeCommit(ctx, TREE_OID as ObjectId, []);
+      const c2 = await writeCommit(ctx, TREE_OID as ObjectId, [c1]);
+      await seedRepo(ctx, { refs: { 'refs/heads/main': c2 } });
+      const ts2020 = Math.floor(Date.UTC(2020, 0, 1) / 1000);
+      const ts2024 = Math.floor(Date.UTC(2024, 0, 1) / 1000);
+      await writeReflog(ctx, HEAD_REF, [
+        reflogEntry(ZERO_OID, c1, ts2020),
+        reflogEntry(c1, c2, ts2024),
+      ]);
+
+      // Act
+      const sut = await revParse(ctx, 'HEAD@{2022-01-01}');
+
+      // Assert
+      expect(sut).toBe(c1);
+    });
+
+    it('Given a date before the oldest entry, When revParse(HEAD@{<iso>}), Then it returns the oldest entry oldId', async () => {
+      // Arrange — git: a target before the log starts yields the ref's value
+      // before the first recorded move, i.e. the oldest entry's oldId.
+      const ctx = createMemoryContext();
+      const c1 = await writeCommit(ctx, TREE_OID as ObjectId, []);
+      await seedRepo(ctx, { refs: { 'refs/heads/main': c1 } });
+      const ts2024 = Math.floor(Date.UTC(2024, 0, 1) / 1000);
+      await writeReflog(ctx, HEAD_REF, [reflogEntry(c1, c1, ts2024)]);
+
+      // Act
+      const sut = await revParse(ctx, 'HEAD@{2020-01-01}');
+
+      // Assert
+      expect(sut).toBe(c1);
+    });
+
+    it('Given an unparseable date selector, When revParse(HEAD@{<garbage>}), Then throws REVPARSE_UNRESOLVED', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      const c1 = await writeCommit(ctx, TREE_OID as ObjectId, []);
+      await seedRepo(ctx, { refs: { 'refs/heads/main': c1 } });
+      await writeReflog(ctx, HEAD_REF, [reflogEntry(ZERO_OID, c1, 1_000)]);
+
+      // Act
+      let caught: unknown;
+      try {
+        await revParse(ctx, 'HEAD@{not-a-date}');
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert
+      expect((caught as TsgitError).data.code).toBe('REVPARSE_UNRESOLVED');
+    });
+
+    it('Given a base resolvable as a ref but with a reflog only under refs/heads/, When revParse(main@{0}), Then the candidate ladder finds the branch log', async () => {
+      // Arrange — the reflog file lives at refs/heads/main; the short base
+      // `main` must be canonicalized to it.
+      const ctx = createMemoryContext();
+      const tip = await writeCommit(ctx, TREE_OID as ObjectId, []);
+      await seedRepo(ctx, { refs: { 'refs/heads/main': tip } });
+      await writeReflog(ctx, MAIN_REF, [reflogEntry(ZERO_OID, tip, 1_000)]);
+
+      // Act
+      const sut = await revParse(ctx, 'main@{0}');
+
+      // Assert
+      expect(sut).toBe(tip);
+    });
   });
 });
