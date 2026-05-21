@@ -1,7 +1,5 @@
 import type { HookName } from '../domain/hooks/index.js';
 
-export type { HookName };
-
 /**
  * A single hook invocation. The port is stateless — every fact the adapter
  * needs to resolve and spawn the hook travels in this request.
