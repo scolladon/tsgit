@@ -15,6 +15,7 @@ export {
   unsupportedOperation,
 } from './error.js';
 export * from './git-index/index.js';
+export * from './hooks/index.js';
 export * from './ignore/index.js';
 export * from './merge/index.js';
 export * from './objects/index.js';

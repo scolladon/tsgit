@@ -12,8 +12,10 @@ import {
   emptyCommitMessage,
   emptyPathspec,
   gitignoreFileTooLarge,
+  hookFailed,
   invalidOption,
   invalidUrl,
+  MAX_HOOK_STDERR_IN_ERROR,
   maxRefspecsExceeded,
   mergeHasConflicts,
   nonFastForward,
@@ -336,6 +338,35 @@ describe('domain commands error — factory data', () => {
       reason: 'no\\x07OPFS',
     });
   });
+
+  it('Given a hook, exit code, and stderr, When hookFailed, Then data carries every field verbatim', () => {
+    expect(hookFailed('pre-commit', 1, 'lint failed').data).toEqual({
+      code: 'HOOK_FAILED',
+      hook: 'pre-commit',
+      exitCode: 1,
+      stderr: 'lint failed',
+    });
+  });
+
+  it('Given stderr with a CR byte, When hookFailed, Then stderr is sanitized via \\xNN', () => {
+    expect(hookFailed('commit-msg', 2, 'bad\rmsg').data).toEqual({
+      code: 'HOOK_FAILED',
+      hook: 'commit-msg',
+      exitCode: 2,
+      stderr: 'bad\\x0Dmsg',
+    });
+  });
+
+  it('Given stderr one byte over the cap, When hookFailed, Then stderr is truncated to the cap', () => {
+    // Arrange — printable bytes so sanitization is length-stable; one past the cap.
+    const oversized = 'x'.repeat(MAX_HOOK_STDERR_IN_ERROR + 1);
+
+    // Act
+    const data = hookFailed('pre-push', 1, oversized).data as { readonly stderr: string };
+
+    // Assert
+    expect(data.stderr).toHaveLength(MAX_HOOK_STDERR_IN_ERROR);
+  });
 });
 
 describe('sanitize helper', () => {
@@ -515,6 +546,10 @@ describe('domain commands error — extractDetail message formatting', () => {
         limit: 1_048_576,
       },
       'GITIGNORE_FILE_TOO_LARGE: .gitignore too large: .gitignore size=2000000 limit=1048576',
+    ],
+    [
+      { code: 'HOOK_FAILED', hook: 'pre-commit', exitCode: 1, stderr: 'lint failed' },
+      'HOOK_FAILED: hook pre-commit failed with exit code 1',
     ],
   ];
 

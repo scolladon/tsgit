@@ -4,6 +4,7 @@ import type { LruCache } from '../domain/storage/lru-cache.js';
 import type { Compressor } from './compressor.js';
 import type { FileSystem } from './file-system.js';
 import type { HashService } from './hash-service.js';
+import type { HookRunner } from './hook-runner.js';
 import type { HttpTransport } from './http-transport.js';
 import type { Logger } from './logger.js';
 import type { ProgressReporter } from './progress-reporter.js';
@@ -97,6 +98,8 @@ export interface Context {
   readonly logger?: Logger;
   /** Optional abort signal for cancelling long-running operations. */
   readonly signal?: AbortSignal;
+  /** Optional hook runner. Absent ⇒ hooks are inert (browser, or opted out). */
+  readonly hooks?: HookRunner;
 }
 
 export interface CreateContextParts {
@@ -112,6 +115,7 @@ export interface CreateContextParts {
   readonly config?: RepositoryConfig;
   readonly logger?: Logger;
   readonly signal?: AbortSignal;
+  readonly hooks?: HookRunner;
 }
 
 /** Assemble a frozen Context from its constituent ports + layout. */
