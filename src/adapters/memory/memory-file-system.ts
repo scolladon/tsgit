@@ -86,6 +86,17 @@ export class MemoryFileSystem implements FileSystem {
     await this.write(path, new TextEncoder().encode(content));
   };
 
+  appendUtf8 = async (path: string, content: string): Promise<void> => {
+    const existing = await this.readExistingUtf8(path);
+    await this.writeUtf8(path, existing + content);
+  };
+
+  private async readExistingUtf8(path: string): Promise<string> {
+    const normalized = this.resolve(path);
+    const stored = this.files.get(normalized);
+    return stored === undefined ? '' : new TextDecoder().decode(stored);
+  }
+
   exists = async (path: string): Promise<boolean> => {
     const normalized = this.resolve(path);
     return (

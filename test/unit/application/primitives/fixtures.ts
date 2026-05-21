@@ -99,6 +99,10 @@ export function instrumentedContext(base: Context): InstrumentedContext {
       record('writeUtf8', p);
       return base.fs.writeUtf8(p, c);
     },
+    appendUtf8: async (p, c) => {
+      record('appendUtf8', p);
+      return base.fs.appendUtf8(p, c);
+    },
     exists: async (p) => {
       record('exists', p);
       return base.fs.exists(p);

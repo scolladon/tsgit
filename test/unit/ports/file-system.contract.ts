@@ -22,6 +22,7 @@ const pathCalls: ReadonlyArray<PathCall> = [
   { name: 'write', invoke: (e, p) => e.fs.write(p, new Uint8Array()) },
   { name: 'writeExclusive', invoke: (e, p) => e.fs.writeExclusive(p, new Uint8Array()) },
   { name: 'writeUtf8', invoke: (e, p) => e.fs.writeUtf8(p, '') },
+  { name: 'appendUtf8', invoke: (e, p) => e.fs.appendUtf8(p, '') },
   { name: 'exists', invoke: (e, p) => e.fs.exists(p) },
   { name: 'stat', invoke: (e, p) => e.fs.stat(p) },
   { name: 'lstat', invoke: (e, p) => e.fs.lstat(p) },
@@ -528,6 +529,53 @@ export function fileSystemContractTests(createSut: () => Promise<FileSystemContr
 
       // Assert
       expect(await env.fs.readUtf8(path)).toBe('nested');
+    });
+
+    it('Given non-existent path, When appendUtf8, Then creates the file with the content', async () => {
+      // Arrange
+      const path = `${env.rootDir}/append-new.txt`;
+
+      // Act
+      await env.fs.appendUtf8(path, 'first line\n');
+
+      // Assert
+      expect(await env.fs.readUtf8(path)).toBe('first line\n');
+    });
+
+    it('Given nested path, When appendUtf8, Then creates parent directories', async () => {
+      // Arrange
+      const path = `${env.rootDir}/logs/refs/heads/main`;
+
+      // Act
+      await env.fs.appendUtf8(path, 'entry\n');
+
+      // Assert
+      expect(await env.fs.readUtf8(path)).toBe('entry\n');
+    });
+
+    it('Given an existing file, When appendUtf8, Then content is appended after the existing data', async () => {
+      // Arrange
+      const path = `${env.rootDir}/append-existing.txt`;
+      await env.fs.writeUtf8(path, 'first\n');
+
+      // Act
+      await env.fs.appendUtf8(path, 'second\n');
+
+      // Assert
+      expect(await env.fs.readUtf8(path)).toBe('first\nsecond\n');
+    });
+
+    it('Given sequential appendUtf8 calls, When reading, Then all writes accumulate in order', async () => {
+      // Arrange
+      const path = `${env.rootDir}/append-seq.txt`;
+
+      // Act
+      await env.fs.appendUtf8(path, 'a\n');
+      await env.fs.appendUtf8(path, 'b\n');
+      await env.fs.appendUtf8(path, 'c\n');
+
+      // Assert
+      expect(await env.fs.readUtf8(path)).toBe('a\nb\nc\n');
     });
 
     it('Given non-empty directory, When rm, Then throws a TsgitError', async () => {

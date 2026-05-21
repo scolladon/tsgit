@@ -438,6 +438,14 @@ export class NodeFileSystem implements FileSystem {
     }, path);
   };
 
+  appendUtf8 = async (path: string, content: string): Promise<void> => {
+    const real = await this.checkContainment(path, 'creation');
+    await runFs(async () => {
+      await this.fsOps.mkdir(this.pathPolicy.dirname(real), { recursive: true });
+      await this.fsOps.appendFile(real, content, 'utf-8');
+    }, path);
+  };
+
   exists = async (path: string): Promise<boolean> => {
     const resolved = this.pathPolicy.resolve(toAbsolute(path, this.rootDir, this.pathPolicy));
     await this.getCanonicalRoot();
