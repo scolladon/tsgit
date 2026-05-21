@@ -378,6 +378,7 @@ const makeEntry = (
   gid: stat.gid,
   fileSize: stat.size,
   id,
+  // Stryker disable next-line BooleanLiteral: equivalent — `extended` is write-only here. `serializeIndex`'s `writeEntry` builds `flagsRaw` from `assumeValid | stage | nameLength` only and never reads `.extended`; `parseFlags` always returns `extended: false`. Flipping this literal cannot change any serialized or re-parsed observable.
   flags: { assumeValid: false, extended: false, stage: 0 },
   path,
 });

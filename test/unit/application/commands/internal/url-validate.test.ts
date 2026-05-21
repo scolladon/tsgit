@@ -82,6 +82,21 @@ describe('internal/url-validate', () => {
     it('Given javascript URL, When validateUrl, Then throws UNSUPPORTED_SCHEME', async () => {
       await expectError(validateUrl('javascript:alert(1)', opts()), 'UNSUPPORTED_SCHEME');
     });
+
+    it('Given ftp URL with allowInsecure=true, When validateUrl, Then still throws UNSUPPORTED_SCHEME', async () => {
+      // Arrange / Act / Assert — `allowInsecure` widens the allowlist to
+      // `http:` ONLY. The scheme gate is `proto === 'http:' && allowInsecure`:
+      // the `proto === 'http:'` operand must hold independently. A mutant
+      // dropping that operand (`proto === 'http:'` -> true) collapses the gate
+      // to `allowInsecure` alone, which would wrongly accept `ftp:` (any
+      // non-http scheme) whenever `allowInsecure` is set.
+      const err = await expectError(
+        validateUrl('ftp://example.com/x', opts({ allowInsecure: true })),
+        'UNSUPPORTED_SCHEME',
+      );
+      const data = err.data as { readonly code: string; readonly scheme?: string };
+      expect(data.scheme).toBe('ftp');
+    });
   });
 
   describe('URL parse', () => {

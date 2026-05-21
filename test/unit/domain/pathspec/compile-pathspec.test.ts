@@ -71,6 +71,21 @@ describe('compilePathspec', () => {
     expect(sut[0]?.compiled.test('lib/foo.ts')).toBe(true);
   });
 
+  it('Given a literal pathspec "lib", When compiled, Then the regex is anchored at the repo root and rejects "vendor/lib"', () => {
+    // Arrange — a literal pathspec compiles with `anchored: true`, so the regex
+    // is `^lib(/.*)?$`. It must match `lib` at the root only, NOT a `lib`
+    // segment nested under another directory. A mutant flipping `anchored` to
+    // `false` yields `(^|.*/)lib(/.*)?$`, which would wrongly match
+    // `vendor/lib` and `a/b/lib`.
+    const sut = compilePathspec(['lib']);
+
+    // Act / Assert
+    expect(sut[0]?.compiled.test('lib')).toBe(true);
+    expect(sut[0]?.compiled.test('vendor/lib')).toBe(false);
+    expect(sut[0]?.compiled.test('a/b/lib')).toBe(false);
+    expect(sut[0]?.compiled.test('vendor/lib/x.ts')).toBe(false);
+  });
+
   it('Given a "!"-prefixed glob "!*.test.ts", When compiled, Then negated=true with glob semantics', () => {
     const sut = compilePathspec(['!*.test.ts']);
 

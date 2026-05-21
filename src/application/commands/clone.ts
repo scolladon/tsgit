@@ -148,6 +148,7 @@ const writeFetchedRefs = async (
       const remoteRef = `refs/remotes/origin/${branch}` as RefName;
       await writeRef(ctx, remoteRef, ref.id);
       written.push({ name: remoteRef, id: ref.id });
+      // Stryker disable next-line ConditionalExpression: the left-operand mutant (`headBranch !== undefined` -> true) is equivalent — `branch` is `ref.name.slice(...)`, always a string, so `branch === headBranch` is `false` whenever `headBranch` is `undefined`, identical to the short-circuited original. The whole-condition mutants remain covered by the non-HEAD-branch tests.
       if (headBranch !== undefined && branch === headBranch) {
         const localRef = ref.name as RefName;
         await writeRef(ctx, localRef, ref.id);

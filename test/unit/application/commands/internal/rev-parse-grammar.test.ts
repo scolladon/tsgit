@@ -316,5 +316,25 @@ describe('internal/rev-parse-grammar', () => {
       // digit, so the cursor lands on 'z' and the else branch fails.
       expectError(() => parseExpression('HEAD^3z'), 'REVPARSE_UNRESOLVED');
     });
+
+    it("Given 'HEAD~1.' (a digit then a '.' (0x2E) after '~'), When parseExpression, Then throws REVPARSE_UNRESOLVED", () => {
+      // Arrange / Act / Assert
+      // `isDigit` checks BOTH bounds: `code >= 0x30 && code <= 0x39`. '.' is
+      // 0x2E — below the lower bound. The digit loop must stop after '1',
+      // leaving the cursor on '.', which is neither '~' nor '^', so the else
+      // branch in `parseOperations` fails. A mutant dropping the lower-bound
+      // check (`code >= 0x30` -> true) would over-accept '.' (≤ 0x39), pull it
+      // into the ancestor count, and the parse would succeed instead.
+      expectError(() => parseExpression('HEAD~1.'), 'REVPARSE_UNRESOLVED');
+    });
+
+    it("Given 'HEAD^2/' (a digit then a '/' (0x2F) after '^'), When parseExpression, Then throws REVPARSE_UNRESOLVED", () => {
+      // Arrange / Act / Assert
+      // Same lower-bound guard for `parseCaret`'s digit loop: '/' is 0x2F,
+      // below 0x30. It must stop the digit run after '2', stranding the cursor
+      // on '/' so the else branch fails. A mutant dropping `code >= 0x30`
+      // would accept '/' as a digit and the parse would succeed.
+      expectError(() => parseExpression('HEAD^2/'), 'REVPARSE_UNRESOLVED');
+    });
   });
 });
