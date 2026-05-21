@@ -360,9 +360,12 @@ new MemoryHookRunner({
 });
 ```
 
-An unmapped hook returns `{ kind: 'skipped' }`. `MemoryAdapterOptions` gains
-`hooks?: HookRunner`; absent ⇒ no runner ⇒ hooks inert (the default for the
-existing test corpus, so nothing regresses).
+An unmapped hook returns `{ kind: 'skipped' }`. It also **records every
+`HookRequest`** it receives on a readonly `calls` array, so a test can assert
+the `name` / `args` / `stdin` / `hooksDir` a command passed — e.g. the
+`pre-push` stdin line format — without spawning a process. `MemoryAdapterOptions`
+gains `hooks?: HookRunner`; absent ⇒ no runner ⇒ hooks inert (the default for
+the existing test corpus, so nothing regresses).
 
 ### 8.3 Browser
 
