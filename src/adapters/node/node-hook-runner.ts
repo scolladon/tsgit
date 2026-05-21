@@ -62,9 +62,9 @@ class BoundedBuffer {
   private size = 0;
 
   append(chunk: Buffer): void {
-    const room = MAX_HOOK_OUTPUT_BYTES - this.size;
-    if (room <= 0) return;
-    const slice = chunk.length > room ? chunk.subarray(0, room) : chunk;
+    // `subarray` clamps to the chunk length, so a generous end is harmless;
+    // `Math.max(0, …)` keeps it non-negative once the cap is reached.
+    const slice = chunk.subarray(0, Math.max(0, MAX_HOOK_OUTPUT_BYTES - this.size));
     this.chunks.push(slice);
     this.size += slice.length;
   }
@@ -146,11 +146,9 @@ const spawnHook = (
     };
     signal?.addEventListener('abort', onAbort);
     if (signal?.aborted === true) child.kill();
-    // A failed spawn can emit both `error` and `close`; the first result wins.
-    let settled = false;
+    // `error` and `close` can both fire on a failed spawn; `resolve` is
+    // idempotent, so the first result wins and any second call is a no-op.
     const finish = (result: HookResult): void => {
-      if (settled) return;
-      settled = true;
       signal?.removeEventListener('abort', onAbort);
       resolve(result);
     };
