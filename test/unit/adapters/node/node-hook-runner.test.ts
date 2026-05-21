@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events';
+import * as nodePath from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -147,7 +148,9 @@ describe('adapters/node NodeHookRunner — spawn wiring', () => {
     );
 
     // Assert
-    expect(calls[0]?.command).toBe('/repo/.git/hooks/pre-push');
+    // `run` joins hooksDir + name with `nodePath.join`, so the separator is
+    // platform-native — compute the expectation the same way.
+    expect(calls[0]?.command).toBe(nodePath.join('/repo/.git/hooks', 'pre-push'));
     expect(calls[0]?.args).toEqual(['origin', 'url']);
     expect(calls[0]?.cwd).toBe('/repo');
     expect(calls[0]?.env['GIT_DIR']).toBe('/repo/.git');
