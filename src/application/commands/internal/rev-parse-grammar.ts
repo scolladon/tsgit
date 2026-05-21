@@ -17,7 +17,11 @@ import { revparseUnresolved } from '../../../domain/commands/error.js';
  *   - `^^^`           sequence of parent ops
  *   - `^{<type>}`     peel to type (commit | tree | blob | tag)
  *
- * Reflog `@{N}` is rejected (REVPARSE_UNRESOLVED) — no reflog support in v1.
+ * A reflog `@{…}` selector binds to the base ref, before any `~`/`^`:
+ *   `<base> @{ <selector> } <op>*`
+ * A digits-only body is an index; anything else is a date string the evaluator
+ * resolves. An empty base (bare `@{N}`) is allowed and resolves against the
+ * current branch.
  * Hex prefixes shorter than 7 are rejected at parse time; 7+ are deferred to
  * the evaluator (which scans loose objects + pack indices).
  */
@@ -29,10 +33,15 @@ export type RevOperation =
   | { readonly kind: 'ancestor'; readonly n: number }
   | { readonly kind: 'peel'; readonly target: PeelTarget };
 
+export type ReflogSelector =
+  | { readonly kind: 'index'; readonly n: number }
+  | { readonly kind: 'date'; readonly raw: string };
+
 export type RevExpression =
   | {
       readonly kind: 'ref-or-hex';
       readonly base: string;
+      readonly reflog?: ReflogSelector;
       readonly operations: ReadonlyArray<RevOperation>;
     }
   | {
@@ -53,7 +62,7 @@ export const parseExpression = (raw: string): RevExpression => {
   // Stryker disable next-line ConditionalExpression: equivalent — when this guard is removed, '' still fails identically: parseRefOrHex's `base === ''` guard throws revparseUnresolved('') for the same input.
   if (raw === '') fail(raw);
   if (raw.startsWith(':')) return parseIndexStage(raw);
-  if (raw.includes('@{')) fail(raw); // reflog navigation — not supported in v1.
+  if (raw.includes('@{')) return parseReflog(raw);
   return parseRefOrHex(raw);
 };
 
@@ -77,6 +86,24 @@ const parseRefOrHex = (raw: string): RevExpression => {
   if (SHORT_HEX_PATTERN.test(base) && opStart === -1) fail(raw);
   const operations = opStart === -1 ? [] : parseOperations(raw, opStart);
   return { kind: 'ref-or-hex', base, operations };
+};
+
+const DIGITS_ONLY_PATTERN = /^\d+$/;
+
+/** Parse `<base>@{<selector>}<op>*`. The base may be empty (bare `@{N}`). */
+const parseReflog = (raw: string): RevExpression => {
+  const at = raw.indexOf('@{');
+  const close = raw.indexOf('}', at + 2);
+  if (close === -1) fail(raw);
+  const base = raw.slice(0, at);
+  const body = raw.slice(at + 2, close);
+  if (body === '') fail(raw);
+  const reflog: ReflogSelector = DIGITS_ONLY_PATTERN.test(body)
+    ? { kind: 'index', n: Number(body) }
+    : { kind: 'date', raw: body };
+  const rest = raw.slice(close + 1);
+  const operations = rest === '' ? [] : parseOperations(rest, 0);
+  return { kind: 'ref-or-hex', base, reflog, operations };
 };
 
 /** Returns the index of the first `~` or `^` that begins an operator chain, or -1. */

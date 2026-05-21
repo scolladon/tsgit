@@ -146,8 +146,120 @@ describe('internal/rev-parse-grammar', () => {
       expectError(() => parseExpression('HEAD~~'), 'REVPARSE_UNRESOLVED');
     });
 
-    it("Given 'HEAD@{1}' (reflog), When parseExpression, Then throws REVPARSE_UNRESOLVED", () => {
-      expectError(() => parseExpression('HEAD@{1}'), 'REVPARSE_UNRESOLVED');
+    it("Given 'HEAD@{1}' (reflog index), When parseExpression, Then base=HEAD with an index reflog selector", () => {
+      // Act
+      const sut = parseExpression('HEAD@{1}');
+
+      // Assert
+      expect(sut).toEqual({
+        kind: 'ref-or-hex',
+        base: 'HEAD',
+        reflog: { kind: 'index', n: 1 },
+        operations: [],
+      } satisfies RevExpression);
+    });
+
+    it("Given 'HEAD@{0}' (boundary index zero), When parseExpression, Then the index selector carries n=0", () => {
+      // Act
+      const sut = parseExpression('HEAD@{0}');
+
+      // Assert
+      expect(sut).toEqual({
+        kind: 'ref-or-hex',
+        base: 'HEAD',
+        reflog: { kind: 'index', n: 0 },
+        operations: [],
+      } satisfies RevExpression);
+    });
+
+    it("Given 'HEAD@{12}' (multi-digit index), When parseExpression, Then the index selector carries n=12", () => {
+      // Act
+      const sut = parseExpression('HEAD@{12}');
+
+      // Assert
+      const reflog = (sut as { reflog?: { kind: string; n: number } }).reflog;
+      expect(reflog).toEqual({ kind: 'index', n: 12 });
+    });
+
+    it("Given 'main@{0}^' (reflog selector then a parent op), When parseExpression, Then both the selector and the operation chain are parsed", () => {
+      // Act — the `}` ends the selector; `^` after it is the operation chain.
+      const sut = parseExpression('main@{0}^');
+
+      // Assert
+      expect(sut).toEqual({
+        kind: 'ref-or-hex',
+        base: 'main',
+        reflog: { kind: 'index', n: 0 },
+        operations: [{ kind: 'parent', n: 1 }],
+      } satisfies RevExpression);
+    });
+
+    it("Given 'HEAD@{2.days.ago}~3' (date selector then ancestor op), When parseExpression, Then the date selector keeps its raw body and the op chain follows", () => {
+      // Act
+      const sut = parseExpression('HEAD@{2.days.ago}~3');
+
+      // Assert
+      expect(sut).toEqual({
+        kind: 'ref-or-hex',
+        base: 'HEAD',
+        reflog: { kind: 'date', raw: '2.days.ago' },
+        operations: [{ kind: 'ancestor', n: 3 }],
+      } satisfies RevExpression);
+    });
+
+    it("Given '@{yesterday}' (a date selector with no base), When parseExpression, Then base is empty and the selector is a date", () => {
+      // Act — a bare `@{…}` resolves against the current branch at evaluation.
+      const sut = parseExpression('@{yesterday}');
+
+      // Assert
+      expect(sut).toEqual({
+        kind: 'ref-or-hex',
+        base: '',
+        reflog: { kind: 'date', raw: 'yesterday' },
+        operations: [],
+      } satisfies RevExpression);
+    });
+
+    it("Given '@{1}' (a bare index selector), When parseExpression, Then base is empty and the selector is an index", () => {
+      // Act
+      const sut = parseExpression('@{1}');
+
+      // Assert
+      expect(sut).toEqual({
+        kind: 'ref-or-hex',
+        base: '',
+        reflog: { kind: 'index', n: 1 },
+        operations: [],
+      } satisfies RevExpression);
+    });
+
+    it("Given 'main@{2026-05-01 12:30:00}' (a date body with spaces), When parseExpression, Then the whole body is captured as the raw date", () => {
+      // Act — the closing `}` delimits the body, so spaces inside it are fine.
+      const sut = parseExpression('main@{2026-05-01 12:30:00}');
+
+      // Assert
+      const reflog = (sut as { reflog?: { kind: string; raw: string } }).reflog;
+      expect(reflog).toEqual({ kind: 'date', raw: '2026-05-01 12:30:00' });
+    });
+
+    it("Given 'HEAD@{}' (an empty selector body), When parseExpression, Then throws REVPARSE_UNRESOLVED", () => {
+      // Arrange / Act / Assert — an empty body is neither an index nor a date.
+      expectError(() => parseExpression('HEAD@{}'), 'REVPARSE_UNRESOLVED');
+    });
+
+    it("Given 'HEAD@{2' (an unbalanced '@{' with no closing brace), When parseExpression, Then throws REVPARSE_UNRESOLVED", () => {
+      // Arrange / Act / Assert
+      expectError(() => parseExpression('HEAD@{2'), 'REVPARSE_UNRESOLVED');
+    });
+
+    it("Given 'HEAD@{1x}' (a body that is digits then a letter), When parseExpression, Then it is a date selector, not an index", () => {
+      // Arrange / Act
+      // Index discrimination is all-digits; `1x` is not, so it falls to date.
+      const sut = parseExpression('HEAD@{1x}');
+
+      // Assert
+      const reflog = (sut as { reflog?: { kind: string; raw: string } }).reflog;
+      expect(reflog).toEqual({ kind: 'date', raw: '1x' });
     });
 
     it("Given 'abc' (3 hex chars, looks like a prefix but too short), When parseExpression, Then throws REVPARSE_UNRESOLVED", () => {
