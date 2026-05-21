@@ -12,6 +12,50 @@ const SIGNAL_KILLED_EXIT = 128;
 /** `mode` bits marking a file executable by owner, group, or other. */
 const EXECUTABLE_BITS = 0o111;
 
+/** Minimal `stat` result `NodeHookRunner` consumes. */
+interface HookStat {
+  readonly mode: number;
+  isFile(): boolean;
+}
+
+/** Minimal readable-stream surface — a hook's stdout / stderr. */
+interface HookReadable {
+  on(event: 'data', listener: (chunk: Buffer) => void): void;
+}
+
+/** Minimal writable surface — a hook's stdin. */
+interface HookWritable {
+  on(event: 'error', listener: () => void): void;
+  end(data: string): void;
+}
+
+/** Minimal child-process surface `NodeHookRunner` consumes. */
+interface HookChild {
+  readonly stdout: HookReadable;
+  readonly stderr: HookReadable;
+  readonly stdin: HookWritable;
+  on(event: 'error', listener: (err: Error) => void): void;
+  on(event: 'close', listener: (code: number | null) => void): void;
+  kill(): void;
+}
+
+/**
+ * Injectable process / filesystem surface. Production uses the Node builtins;
+ * unit tests inject a fake so every branch is exercised deterministically
+ * without spawning a real process (mirrors `FsOperations` — ADR-047).
+ */
+export interface HookRunnerOps {
+  readonly stat: (path: string) => Promise<HookStat>;
+  readonly spawn: (
+    command: string,
+    args: ReadonlyArray<string>,
+    options: { readonly cwd: string; readonly env: NodeJS.ProcessEnv },
+  ) => HookChild;
+}
+
+/** Production ops: the real `node:fs/promises` stat and `node:child_process` spawn. */
+export const realHookRunnerOps: HookRunnerOps = { stat, spawn };
+
 /** Length-bounded accumulator for a child process's stdout / stderr. */
 class BoundedBuffer {
   private readonly chunks: Buffer[] = [];
@@ -33,20 +77,26 @@ class BoundedBuffer {
 /**
  * Node `HookRunner`: resolves `${hooksDir}/${name}` and, when it exists and is
  * executable, spawns it via `node:child_process`. The hook inherits the
- * process environment plus `GIT_DIR`, runs with `cwd` at the working tree, and
- * its output is captured (bounded). Never rejects for a non-zero exit.
+ * process environment plus `GIT_DIR` / `GIT_INDEX_FILE`, runs with `cwd` at the
+ * working tree, and its output is captured (bounded). Never rejects for a
+ * non-zero exit.
  */
 export class NodeHookRunner implements HookRunner {
   private readonly isWindows: boolean;
+  private readonly ops: HookRunnerOps;
 
-  constructor(platform: NodeJS.Platform = process.platform) {
+  constructor(
+    platform: NodeJS.Platform = process.platform,
+    ops: HookRunnerOps = realHookRunnerOps,
+  ) {
     this.isWindows = platform === 'win32';
+    this.ops = ops;
   }
 
   async run(request: HookRequest): Promise<HookResult> {
     const scriptPath = nodePath.join(request.hooksDir, request.name);
     if (!(await this.isRunnable(scriptPath))) return { kind: 'skipped' };
-    return spawnHook(scriptPath, request);
+    return spawnHook(this.ops.spawn, scriptPath, request);
   }
 
   /**
@@ -57,7 +107,7 @@ export class NodeHookRunner implements HookRunner {
     let mode: number;
     let isFile: boolean;
     try {
-      const stats = await stat(scriptPath);
+      const stats = await this.ops.stat(scriptPath);
       mode = stats.mode;
       isFile = stats.isFile();
     } catch {
@@ -68,9 +118,13 @@ export class NodeHookRunner implements HookRunner {
   }
 }
 
-const spawnHook = (scriptPath: string, request: HookRequest): Promise<HookResult> =>
+const spawnHook = (
+  spawnFn: HookRunnerOps['spawn'],
+  scriptPath: string,
+  request: HookRequest,
+): Promise<HookResult> =>
   new Promise<HookResult>((resolve) => {
-    const child = spawn(scriptPath, request.args, {
+    const child = spawnFn(scriptPath, request.args, {
       cwd: request.workDir,
       env: {
         ...process.env,
