@@ -328,6 +328,7 @@ Design: `docs/design/phase-15-bench-observability.md`. ADRs: [054](adr/054-bench
 ### Cosmetic / housekeeping
 
 - [x] **18.1** Fix `examples/try-on-self.mjs` `mode → kind` mapping — replaced single-literal compare with the full FILE_MODE table (tree/file/exec/symlink/gitlink).
+- [ ] **18.2** Documentation polish for a newcomer audience — restructure `README.md`, `MIGRATION.md`, and the top-level docs to be easy to read and to showcase the library: a crisp value proposition and a runnable quickstart above the fold, a compact API showcase (`openRepository` → commands), and a readable performance section built from the Phase 11 benchmark numbers. Goal: a newcomer grasps what tsgit is, sees that it is fast, and runs a working snippet in under a minute.
 
 ---
 
