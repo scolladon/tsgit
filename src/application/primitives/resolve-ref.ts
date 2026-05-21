@@ -33,6 +33,9 @@ async function resolveDirectChain(
   for (;;) {
     // Stryker disable next-line StringLiteral,ConditionalExpression: equivalent — validateRefName('HEAD') is a no-op (HEAD is a valid ref name and its return value is discarded), so whether the guard skips it for HEAD or always runs it, behaviour is identical.
     if (current !== 'HEAD') {
+      // validateRefName rejects every filesystem path-escape vector — `..`,
+      // `:`, `\`, and a leading `/` — before `current` is used to build a
+      // path in resolveDirect, so no separate path-containment check is needed.
       validateRefName(current);
     }
     if (chain.includes(current)) {
