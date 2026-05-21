@@ -8,6 +8,7 @@ import {
 import { parseApproxidate } from '../../domain/reflog/approxidate.js';
 import { reflogEntryOutOfRange } from '../../domain/reflog/error.js';
 import type { ReflogEntry } from '../../domain/reflog/reflog-entry.js';
+import { validateRefName } from '../../domain/refs/index.js';
 import type { Context } from '../../ports/context.js';
 import { readIndex } from '../primitives/read-index.js';
 import { readObject } from '../primitives/read-object.js';
@@ -101,7 +102,13 @@ const canonicalizeRef = async (ctx: Context, base: string): Promise<RefName> => 
   for (const candidate of candidates) {
     if (await refResolves(ctx, candidate)) return candidate as RefName;
   }
-  return base as RefName;
+  // No candidate has a reflog or resolves; only return a branded `RefName`
+  // when `base` is itself a valid ref name, never an unchecked cast.
+  try {
+    return validateRefName(base);
+  } catch {
+    throw revparseUnresolved(base);
+  }
 };
 
 const refResolves = async (ctx: Context, candidate: RefName | 'HEAD'): Promise<boolean> => {

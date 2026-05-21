@@ -880,5 +880,50 @@ describe('revParse', () => {
       // Assert
       expect(sut).toBe(tip);
     });
+
+    it('Given an invalid base with no reflog and no resolving ref, When revParse(<invalid>@{0}), Then throws REVPARSE_UNRESOLVED with the base', async () => {
+      // Arrange — a base containing `..` has no reflog and resolves as no ref;
+      // canonicalizeRef must reject it rather than return an invalid RefName.
+      const ctx = createMemoryContext();
+      await seedRepo(ctx, {});
+
+      // Act
+      let caught: unknown;
+      try {
+        await revParse(ctx, '../../etc/passwd@{0}');
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert
+      expect(caught).toBeInstanceOf(TsgitError);
+      expect((caught as TsgitError).data).toEqual({
+        code: 'REVPARSE_UNRESOLVED',
+        expression: '../../etc/passwd',
+      });
+    });
+
+    it('Given a date exactly equal to an entry timestamp, When revParse(HEAD@{<date>}), Then that entry newId is returned', async () => {
+      // Arrange — pins the `<=` boundary: a target equal to an entry's
+      // timestamp must select that entry, not skip past it. The entry timestamp
+      // is built from the SAME local-calendar construction parseApproxidate
+      // uses for an ISO date, so the equality holds on any host timezone.
+      const ctx = createMemoryContext();
+      const c1 = await writeCommit(ctx, TREE_OID as ObjectId, []);
+      const c2 = await writeCommit(ctx, TREE_OID as ObjectId, [c1]);
+      await seedRepo(ctx, { refs: { 'refs/heads/main': c2 } });
+      const ts2020 = Math.floor(new Date(2020, 0, 1, 0, 0, 0).getTime() / 1000);
+      const ts2024 = Math.floor(new Date(2024, 0, 1, 0, 0, 0).getTime() / 1000);
+      await writeReflog(ctx, HEAD_REF, [
+        reflogEntry(ZERO_OID, c1, ts2020),
+        reflogEntry(c1, c2, ts2024),
+      ]);
+
+      // Act — target equals the older entry's exact timestamp.
+      const sut = await revParse(ctx, 'HEAD@{2020-01-01}');
+
+      // Assert — the equal-timestamp entry (c1) is selected, not the prior oldId.
+      expect(sut).toBe(c1);
+    });
   });
 });

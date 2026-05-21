@@ -10,6 +10,7 @@ import type { ObjectId, RefName } from '../../domain/objects/index.js';
 import { parseApproxidate } from '../../domain/reflog/approxidate.js';
 import { reflogEntryOutOfRange, reflogNotFound } from '../../domain/reflog/error.js';
 import type { ReflogEntry } from '../../domain/reflog/reflog-entry.js';
+import { validateRefName } from '../../domain/refs/index.js';
 import type { Context } from '../../ports/context.js';
 import { enumerateRefs } from '../primitives/enumerate-refs.js';
 import { listReflogs, readReflog, reflogExists, writeReflog } from '../primitives/reflog-store.js';
@@ -54,6 +55,13 @@ export type ReflogResult =
 const DEFAULT_EXPIRE = '90.days.ago';
 const DEFAULT_EXPIRE_UNREACHABLE = '30.days.ago';
 
+/**
+ * Validate a user-supplied ref before it indexes the filesystem. `validateRefName`
+ * accepts the `HEAD` pseudo-ref verbatim, so no special-casing is needed — every
+ * name, `HEAD` included, goes through the same containment-checking validator.
+ */
+const resolveUserRef = (ref: string): RefName => validateRefName(ref);
+
 export const reflog = async (ctx: Context, opts: ReflogAction = {}): Promise<ReflogResult> => {
   await assertRepository(ctx);
   if (opts.action === 'exists') return runExists(ctx, opts.ref);
@@ -63,30 +71,39 @@ export const reflog = async (ctx: Context, opts: ReflogAction = {}): Promise<Ref
 };
 
 const runShow = async (ctx: Context, refName: string): Promise<ReflogResult> => {
-  const ref = refName as RefName;
+  const ref = resolveUserRef(refName);
   const stored = await readReflog(ctx, ref);
   const lastIndex = stored.length - 1;
-  const entries = stored.map((entry, position) => {
-    const index = lastIndex - position;
-    return { index, selector: `${ref}@{${index}}`, entry };
-  });
-  entries.reverse();
+  // Build newest-first directly: output position `index` (0 = newest) reads the
+  // entry at file position `lastIndex - index` — no array mutation.
+  const entries = stored.map((_, index) => ({
+    index,
+    selector: `${ref}@{${index}}`,
+    entry: stored[lastIndex - index] as ReflogEntry,
+  }));
   return { kind: 'show', ref, entries };
 };
 
 const runExists = async (ctx: Context, refName: string): Promise<ReflogResult> => {
-  return { kind: 'exists', exists: await reflogExists(ctx, refName as RefName) };
+  return { kind: 'exists', exists: await reflogExists(ctx, resolveUserRef(refName)) };
 };
 
 const runDelete = async (
   ctx: Context,
   opts: { readonly ref: string; readonly index: number; readonly rewrite?: boolean },
 ): Promise<ReflogResult> => {
-  const ref = opts.ref as RefName;
+  const ref = resolveUserRef(opts.ref);
   if (!(await reflogExists(ctx, ref))) throw reflogNotFound(ref);
   const stored = await readReflog(ctx, ref);
+  // A non-integer or negative index would bypass the range guard below
+  // (`stored[NaN]` is `undefined`, silently returned as an entry).
+  if (!Number.isInteger(opts.index) || opts.index < 0) {
+    throw reflogEntryOutOfRange(ref, opts.index, stored.length);
+  }
+  // With `index` a non-negative integer, `target` cannot exceed `length - 1`;
+  // only the lower bound (index past the oldest entry) remains reachable.
   const target = stored.length - 1 - opts.index;
-  if (target < 0 || target >= stored.length) {
+  if (target < 0) {
     throw reflogEntryOutOfRange(ref, opts.index, stored.length);
   }
   const removed = stored[target] as ReflogEntry;
@@ -124,7 +141,7 @@ const runExpire = async (
   const expireCut = resolveCutoff(opts.expire ?? DEFAULT_EXPIRE, now);
   const unreachableCut = resolveCutoff(opts.expireUnreachable ?? DEFAULT_EXPIRE_UNREACHABLE, now);
   const reachable = await collectReachable(ctx);
-  const targets = opts.all === true ? await listReflogs(ctx) : [(opts.ref ?? 'HEAD') as RefName];
+  const targets = opts.all === true ? await listReflogs(ctx) : [resolveUserRef(opts.ref ?? 'HEAD')];
   let removed = 0;
   let kept = 0;
   for (const ref of targets) {

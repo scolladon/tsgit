@@ -255,6 +255,24 @@ describe('reflog command', () => {
       expect(after.kind === 'show' && after.entries.map((e) => e.entry)).toEqual([third, first]);
     });
 
+    it('Given the oldest entry (highest valid index), When delete, Then it is removed without an out-of-range throw', async () => {
+      // Arrange — two entries; index 1 (newest-first) targets file position 0,
+      // the oldest entry. This is the lower boundary of the valid index range.
+      const ctx = createMemoryContext();
+      await seedRepo(ctx, {});
+      const first = entry({ message: 'first' });
+      const second = entry({ oldId: OID_X, newId: OID_Y, message: 'second' });
+      await writeReflog(ctx, HEAD, [first, second]);
+
+      // Act
+      const sut = await reflog(ctx, { action: 'delete', ref: 'HEAD', index: 1 });
+
+      // Assert — the oldest entry is removed, not rejected as out of range.
+      expect(sut).toEqual({ kind: 'delete', removed: first });
+      const after = await reflog(ctx, { action: 'show', ref: 'HEAD' });
+      expect(after.kind === 'show' && after.entries.map((e) => e.entry)).toEqual([second]);
+    });
+
     it('Given a ref with no reflog file, When delete, Then throws REFLOG_NOT_FOUND with the ref', async () => {
       // Arrange
       const ctx = createMemoryContext();
@@ -344,6 +362,156 @@ describe('reflog command', () => {
         requested: 0,
         available: 0,
       });
+    });
+
+    it('Given a NaN index, When delete, Then throws REFLOG_ENTRY_OUT_OF_RANGE with the NaN requested', async () => {
+      // Arrange — NaN would index `stored[NaN]` as `undefined` and bypass the
+      // range guard; the integer guard must reject it.
+      const ctx = createMemoryContext();
+      await seedRepo(ctx, {});
+      await writeReflog(ctx, HEAD, [entry()]);
+
+      // Act
+      let caught: unknown;
+      try {
+        await reflog(ctx, { action: 'delete', ref: 'HEAD', index: Number.NaN });
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert
+      expect(caught).toBeInstanceOf(TsgitError);
+      expect((caught as TsgitError).data).toEqual({
+        code: 'REFLOG_ENTRY_OUT_OF_RANGE',
+        ref: 'HEAD',
+        requested: Number.NaN,
+        available: 1,
+      });
+    });
+
+    it('Given a fractional index, When delete, Then throws REFLOG_ENTRY_OUT_OF_RANGE', async () => {
+      // Arrange — 1.5 is in range numerically but is not a valid entry index.
+      const ctx = createMemoryContext();
+      await seedRepo(ctx, {});
+      await writeReflog(ctx, HEAD, [entry(), entry({ oldId: OID_X, newId: OID_Y })]);
+
+      // Act
+      let caught: unknown;
+      try {
+        await reflog(ctx, { action: 'delete', ref: 'HEAD', index: 1.5 });
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert
+      expect(caught).toBeInstanceOf(TsgitError);
+      expect((caught as TsgitError).data).toEqual({
+        code: 'REFLOG_ENTRY_OUT_OF_RANGE',
+        ref: 'HEAD',
+        requested: 1.5,
+        available: 2,
+      });
+    });
+  });
+
+  describe('ref-name validation', () => {
+    it('Given an invalid ref containing .., When reflog show, Then throws INVALID_REF', async () => {
+      // Arrange — a path-traversal attempt must be rejected before it indexes
+      // the filesystem.
+      const ctx = createMemoryContext();
+      await seedRepo(ctx, {});
+
+      // Act
+      let caught: unknown;
+      try {
+        await reflog(ctx, { action: 'show', ref: '../../etc/passwd' });
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert
+      expect(caught).toBeInstanceOf(TsgitError);
+      expect((caught as TsgitError).data).toEqual({
+        code: 'INVALID_REF',
+        reason: 'ref name must not contain ..',
+      });
+    });
+
+    it('Given an invalid ref, When reflog exists, Then throws INVALID_REF', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await seedRepo(ctx, {});
+
+      // Act
+      let caught: unknown;
+      try {
+        await reflog(ctx, { action: 'exists', ref: '../../etc/passwd' });
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert
+      expect((caught as TsgitError).data.code).toBe('INVALID_REF');
+    });
+
+    it('Given an invalid ref, When reflog delete, Then throws INVALID_REF', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await seedRepo(ctx, {});
+
+      // Act
+      let caught: unknown;
+      try {
+        await reflog(ctx, { action: 'delete', ref: '../../etc/passwd', index: 0 });
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert
+      expect((caught as TsgitError).data.code).toBe('INVALID_REF');
+    });
+
+    it('Given an invalid ref, When reflog expire, Then throws INVALID_REF', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await seedRepo(ctx, {});
+
+      // Act
+      let caught: unknown;
+      try {
+        await reflog(ctx, { action: 'expire', ref: '../../etc/passwd' });
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert
+      expect((caught as TsgitError).data.code).toBe('INVALID_REF');
+    });
+
+    it('Given the HEAD literal, When reflog show, Then it is accepted verbatim', async () => {
+      // Arrange — `HEAD` is a pseudo-ref the validator would not produce.
+      const ctx = createMemoryContext();
+      await seedRepo(ctx, {});
+      await appendReflog(ctx, HEAD, entry());
+
+      // Act
+      const sut = await reflog(ctx, { action: 'show', ref: 'HEAD' });
+
+      // Assert
+      expect(sut.kind === 'show' && sut.ref).toBe(HEAD);
+    });
+
+    it('Given a normal refs/heads ref, When reflog show, Then it resolves', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await seedRepo(ctx, {});
+      await appendReflog(ctx, BRANCH, entry());
+
+      // Act
+      const sut = await reflog(ctx, { action: 'show', ref: 'refs/heads/main' });
+
+      // Assert
+      expect(sut.kind === 'show' && sut.ref).toBe(BRANCH);
     });
   });
 
