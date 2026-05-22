@@ -1,4 +1,5 @@
 import type { FilePath } from '../objects/object-id.js';
+import type { GlobMatcher } from '../pathspec/index.js';
 
 /** A single non-cone pattern, parsed and compiled. */
 export interface SparseRule {
@@ -6,8 +7,8 @@ export interface SparseRule {
   readonly source: string;
   /** True when the line started with `!` (negation). */
   readonly negated: boolean;
-  /** Compiled regex — see `compileSparseRule`. */
-  readonly regex: RegExp;
+  /** Compiled glob matcher — see `compileSparseRule`. */
+  readonly matcher: GlobMatcher;
 }
 
 /**

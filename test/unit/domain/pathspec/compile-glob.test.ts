@@ -1,5 +1,42 @@
+import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
-import { compileGlob, containsGlob } from '../../../../src/domain/pathspec/compile-glob.js';
+import {
+  type CompileGlobOptions,
+  compileGlob,
+  containsGlob,
+} from '../../../../src/domain/pathspec/compile-glob.js';
+
+/**
+ * Oracle — the original regex-based compiler, kept verbatim as a test-only
+ * reference. The linear matcher must agree with it for every path free of JS
+ * line terminators (the domain on which the two are required to match — see
+ * docs/design/compile-glob-redos.md §6).
+ */
+const ORACLE_SPECIALS = /[.+^${}()|[\]\\]/;
+const oracleStar = (pattern: string, i: number): { regex: string; next: number } => {
+  if (pattern[i + 1] !== '*') return { regex: '[^/]*', next: i + 1 };
+  const after = i + 2;
+  if (pattern[after] === '/') return { regex: '(.*/)?', next: after + 1 };
+  return { regex: '.*', next: after };
+};
+const oracleToken = (pattern: string, i: number): { regex: string; next: number } => {
+  const ch = pattern[i] as string;
+  if (ch === '*') return oracleStar(pattern, i);
+  if (ch === '?') return { regex: '[^/]', next: i + 1 };
+  return { regex: ORACLE_SPECIALS.test(ch) ? `\\${ch}` : ch, next: i + 1 };
+};
+const oracleRegex = (pattern: string, options: CompileGlobOptions): RegExp => {
+  let body = '';
+  let i = 0;
+  while (i < pattern.length) {
+    const consumed = oracleToken(pattern, i);
+    body += consumed.regex;
+    i = consumed.next;
+  }
+  const prefix = options.anchored ? '^' : '(^|.*/)';
+  const suffix = options.withDirSuffix === true ? '(/.*)?$' : '$';
+  return new RegExp(`${prefix}${body}${suffix}`);
+};
 
 describe('compileGlob', () => {
   it('Given a literal "src" with anchored=true and no dir suffix, When compiled, Then matches only the exact path', () => {
@@ -121,6 +158,87 @@ describe('compileGlob', () => {
     expect(sut.test('src/a.ts')).toBe(true);
     expect(sut.test('src/a/b.ts')).toBe(true);
     expect(sut.test('src/a.js')).toBe(false);
+  });
+
+  it('Given an empty pattern with anchored=true, When matched, Then only the empty string matches', () => {
+    // Arrange — a zero-token pattern: the base layer must accept exactly j===0.
+    const sut = compileGlob('', { anchored: true });
+
+    // Act / Assert
+    expect(sut.test('')).toBe(true);
+    expect(sut.test('a')).toBe(false);
+  });
+
+  it('Given a single `*`, When matched, Then it matches a zero-length run (not only non-empty runs)', () => {
+    // Arrange — `a*` must match bare `a`; a mutant forcing `*` to consume at
+    // least one char would reject it.
+    const sut = compileGlob('a*', { anchored: true });
+
+    // Act / Assert
+    expect(sut.test('a')).toBe(true);
+    expect(sut.test('abc')).toBe(true);
+  });
+
+  it('Given a `**` NOT followed by `/`, When matched, Then it spans `/` within a segment run', () => {
+    // Arrange — `a**z` compiles to [literal a, star-star, literal z]; the
+    // star-star run spans slashes, unlike a single `*`.
+    const sut = compileGlob('a**z', { anchored: true });
+
+    // Act / Assert
+    expect(sut.test('a/x/z')).toBe(true);
+    expect(sut.test('axyz')).toBe(true);
+    expect(sut.test('az')).toBe(true);
+    // A single-star `a*z` would reject the slash-crossing case.
+    expect(compileGlob('a*z', { anchored: true }).test('a/x/z')).toBe(false);
+  });
+
+  it('Given a `***` run, When matched, Then it behaves as `**` followed by `*`', () => {
+    // Arrange — `***` scans to [star-star, star]; both span freely so the
+    // pair matches any run, slashes included.
+    const sut = compileGlob('a***z', { anchored: true });
+
+    // Act / Assert
+    expect(sut.test('a/x/z')).toBe(true);
+    expect(sut.test('az')).toBe(true);
+  });
+
+  it('Given an adversarial `a*a*…*b` pattern, When matched against a long non-matching run, Then it returns false without catastrophic backtracking', () => {
+    // Arrange — the ReDoS regression. The old regex `^a[^/]*a[^/]*…b$` would
+    // explore exponentially many splits of the `a`-run and hang the test;
+    // the linear matcher fills a table in O(tokens × length).
+    const sut = compileGlob(`${'a*'.repeat(64)}b`, { anchored: true });
+    const adversarial = 'a'.repeat(10_000);
+
+    // Act
+    const start = performance.now();
+    const result = sut.test(adversarial);
+    const elapsedMs = performance.now() - start;
+
+    // Assert — no `b`, so no match; and it completes near-instantly.
+    expect(result).toBe(false);
+    expect(elapsedMs).toBeLessThan(1000);
+  });
+
+  describe('equivalence with the original regex compiler', () => {
+    const arbPattern = fc.string({
+      unit: fc.constantFrom('a', 'b', '/', '*', '?', '.'),
+      maxLength: 12,
+    });
+    const arbPath = fc.string({ unit: fc.constantFrom('a', 'b', '/'), maxLength: 12 });
+    const arbOptions = fc.record({
+      anchored: fc.boolean(),
+      withDirSuffix: fc.boolean(),
+    });
+
+    it('Given any pattern and any line-terminator-free path, When matched, Then the linear matcher agrees with the regex oracle', () => {
+      fc.assert(
+        fc.property(arbPattern, arbPath, arbOptions, (pattern, path, options) => {
+          const linear = compileGlob(pattern, options).test(path);
+          const oracle = oracleRegex(pattern, options).test(path);
+          expect(linear).toBe(oracle);
+        }),
+      );
+    });
   });
 });
 

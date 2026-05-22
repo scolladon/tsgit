@@ -1,4 +1,4 @@
-import { compileGlob } from '../pathspec/index.js';
+import { compileGlob, type GlobMatcher } from '../pathspec/index.js';
 
 export interface IgnoreRule {
   /** Original input pattern (for diagnostics). */
@@ -9,8 +9,8 @@ export interface IgnoreRule {
   readonly directoryOnly: boolean;
   /** True when the pattern contains `/` before any `*` (anchored to repo root). */
   readonly anchored: boolean;
-  /** Compiled regex matching paths against the pattern. */
-  readonly compiled: RegExp;
+  /** Compiled glob matcher for paths against the pattern. */
+  readonly compiled: GlobMatcher;
 }
 
 export type IgnoreRuleset = ReadonlyArray<IgnoreRule>;
