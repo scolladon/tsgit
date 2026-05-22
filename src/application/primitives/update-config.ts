@@ -1,3 +1,4 @@
+import { invalidOption } from '../../domain/commands/error.js';
 import { TsgitError } from '../../domain/error.js';
 import type { Context } from '../../ports/context.js';
 import { invalidateConfigCache } from './config-read.js';
@@ -10,11 +11,15 @@ import { invalidateConfigCache } from './config-read.js';
  * unrelated keys, and every other section byte-for-byte.
  */
 
-/** A line whose trimmed form is a `[core]` / `[core ""]` section header. */
+/**
+ * A line whose trimmed form is a `[core]` / `[core ""]` section header. Git
+ * section names are case-insensitive, so the section name is lower-cased
+ * before comparison; a `[core "subsection"]` header is still NOT matched.
+ */
 const isCoreHeader = (line: string): boolean => {
   const trimmed = line.trim();
   // `[core]` with no subsection, or an explicitly empty `[core ""]` one.
-  return trimmed === '[core]' || trimmed === '[core ""]';
+  return trimmed.toLowerCase() === '[core]' || trimmed.toLowerCase() === '[core ""]';
 };
 
 /** Any `[section]` / `[section "sub"]` header line — marks the end of a section. */
@@ -85,7 +90,17 @@ const insertAfter = (
  *   inserted right after the header;
  * - no `[core]` section ⇒ `[core]\n\t<key> = <value>\n` is appended.
  */
+/** Reject a `key`/`value` carrying a `\n`, `\r`, or `\0` — those would let
+ * line surgery splice a forged config section into `.git/config`. */
+const rejectControlChars = (field: 'key' | 'value', text: string): void => {
+  if (/[\n\r\0]/.test(text)) {
+    throw invalidOption('config', `${field} must not contain a newline or NUL`);
+  }
+};
+
 export const setCoreConfigEntry = (text: string, key: string, value: string): string => {
+  rejectControlChars('key', key);
+  rejectControlChars('value', value);
   const lines = text.split('\n');
   const headerIndex = findCoreHeader(lines);
   if (headerIndex === -1) {

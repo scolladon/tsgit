@@ -20,14 +20,12 @@ export interface ParsedSparseCheckout {
 
 /**
  * Parse the non-cone rules out of a pattern file, enforcing the per-pattern
- * budget — at most `MAX_SPARSE_PATTERNS` lines, each at most
- * `MAX_SPARSE_PATTERN_BYTES` UTF-8 bytes.
+ * budget — at most `MAX_SPARSE_PATTERNS` effective compiled rules (blank and
+ * comment lines do not count), each at most `MAX_SPARSE_PATTERN_BYTES` UTF-8
+ * bytes.
  */
 const parseNonCone = (text: string): ReadonlyArray<SparseRule> => {
   const lines = text.split('\n');
-  if (lines.length > MAX_SPARSE_PATTERNS) {
-    throw invalidOption('patterns', `pattern file exceeds max ${MAX_SPARSE_PATTERNS} patterns`);
-  }
   const rules: SparseRule[] = [];
   for (const line of lines) {
     if (PATTERN_ENCODER.encode(line).byteLength > MAX_SPARSE_PATTERN_BYTES) {
@@ -38,6 +36,9 @@ const parseNonCone = (text: string): ReadonlyArray<SparseRule> => {
     }
     const tokenized = tokenizeIgnoreLine(line);
     if (tokenized === undefined) continue;
+    if (rules.length >= MAX_SPARSE_PATTERNS) {
+      throw invalidOption('patterns', `pattern file exceeds max ${MAX_SPARSE_PATTERNS} patterns`);
+    }
     rules.push(compileSparseRule(tokenized, line));
   }
   return rules;

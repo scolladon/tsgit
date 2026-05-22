@@ -376,6 +376,23 @@ describe('sparseCheckout command', () => {
   });
 
   describe('add', () => {
+    it('Given empty patterns, When add, Then throws INVALID_OPTION for patterns', async () => {
+      // Arrange — sparse enabled so the empty-pattern guard, not the
+      // sparse-disabled guard, is the one that fires.
+      const ctx = await seedRepoWithTree();
+      await sparseCheckout(ctx, { action: 'set', patterns: ['src/app'], cone: true });
+
+      // Act
+      const err = await expectError(() => sparseCheckout(ctx, { action: 'add', patterns: [] }));
+
+      // Assert — try/catch + direct `.data` field assertions.
+      expect(err.data.code).toBe('INVALID_OPTION');
+      if (err.data.code === 'INVALID_OPTION') {
+        expect(err.data.option).toBe('patterns');
+        expect(err.data.reason).toBe('add requires at least one pattern');
+      }
+    });
+
     it('Given sparse disabled, When add, Then throws INVALID_OPTION for action', async () => {
       // Arrange
       const ctx = await seedRepoWithTree();
@@ -406,6 +423,28 @@ describe('sparseCheckout command', () => {
       expect((sut as Extract<SparseCheckoutResult, { kind: 'applied' }>).materialized).toBe(1);
       expect(await fileExists(ctx, 'docs/guide.md')).toBe(true);
       expect(await readSparseFile(ctx)).toBe('/*\n!/*/\n/docs/\n/src/\n!/src/*/\n/src/app/\n');
+    });
+
+    it('Given a cone repo whose pattern file was hand-written non-cone-shaped, When add a directory, Then the cone is rebuilt from only the added dirs', async () => {
+      // Arrange — cone mode is enabled in config, but `.git/info/sparse-checkout`
+      // is hand-written into a NON-cone shape. `combineSpecAndText` parses the
+      // existing file in cone mode; the parse degrades to `no-cone`, so the
+      // prior shape cannot contribute recursive dirs. The design intent is that
+      // `add` rebuilds the cone from the added directories alone.
+      const ctx = await seedRepoWithTree();
+      await enableSparse(ctx, true);
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/info/sparse-checkout`, '*.ts\n');
+
+      // Act — add `docs`.
+      const sut = await sparseCheckout(ctx, { action: 'add', patterns: ['docs'] });
+
+      // Assert — the rewritten file is a clean cone built from `docs` only;
+      // the prior `*.ts` line is gone. `docs/guide.md` is materialised.
+      expect((sut as Extract<SparseCheckoutResult, { kind: 'applied' }>).cone).toBe(true);
+      expect(await readSparseFile(ctx)).toBe('/*\n!/*/\n/docs/\n');
+      expect(await fileExists(ctx, 'docs/guide.md')).toBe(true);
+      // src files fall outside the rebuilt `docs`-only cone — removed.
+      expect(await fileExists(ctx, 'src/util.ts')).toBe(false);
     });
 
     it('Given a non-cone repo, When add, Then the new pattern lines are appended to the file', async () => {

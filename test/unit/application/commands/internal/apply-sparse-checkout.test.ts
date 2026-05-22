@@ -293,6 +293,33 @@ describe('commands/internal/apply-sparse-checkout', () => {
     expect(byPath.get('src/a' as FilePath)?.flags.skipWorktree).toBe(false);
   });
 
+  it('Given a retained skip-worktree entry whose dirty file was re-created, When applySparseCheckout, Then it is retained AND skip-worktree is cleared', async () => {
+    // Arrange — `docs/b` came in as skip-worktree (an excluded file). The user
+    // manually re-created it with dirty content. The matcher still excludes it
+    // and there is no `force`, so it must be retained — and because the file
+    // IS present on disk, its skip-worktree bit must be cleared so `status`
+    // sees the now-present dirty file.
+    const ctx = createMemoryContext();
+    const srcId = await writeBlob(ctx, 'aaa');
+    const docId = await writeBlob(ctx, 'bbb');
+    const skippedDoc: IndexEntry = {
+      ...makeEntry('docs/b', docId),
+      flags: { ...STAGE0_FLAGS, skipWorktree: true },
+    };
+    await seedIndex(ctx, [makeEntry('src/a', srcId), skippedDoc]);
+    await seedWorkFile(ctx, 'src/a', 'aaa');
+    await seedWorkFile(ctx, 'docs/b', 'MANUALLY RE-CREATED DIRTY');
+
+    // Act
+    const sut = await applySparseCheckout(ctx, { matcher: srcOnly });
+
+    // Assert — retained, file left on disk, skip-worktree cleared.
+    expect(sut.retained).toEqual(['docs/b']);
+    expect(await ctx.fs.exists(`${ctx.layout.workDir}/docs/b`)).toBe(true);
+    const byPath = await readBackIndex(ctx);
+    expect(byPath.get('docs/b' as FilePath)?.flags.skipWorktree).toBe(false);
+  });
+
   it('Given a workdir path that ends with a slash, When applySparseCheckout, Then working-tree paths still resolve', async () => {
     // Arrange — a trailing-slash workDir exercises the `joinPath` slash branch.
     const base = createMemoryContext();

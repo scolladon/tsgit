@@ -57,9 +57,11 @@ export const loadSparseMatcher = async (ctx: Context): Promise<SparseMatcher | u
   if (config.core?.sparseCheckout !== true) return undefined;
   // `config.core` is non-undefined here — the guard above already narrowed it.
   const coneRequested = config.core.sparseCheckoutCone === true;
-  const text = (await readSparsePatternText(ctx)) ?? '';
-  const parsed = parseSparseCheckout(text, coneRequested);
-  if (parsed.degraded) {
+  const text = await readSparsePatternText(ctx);
+  const parsed = parseSparseCheckout(text ?? '', coneRequested);
+  // Only an actual pattern file can be "not cone-shaped" — an absent file
+  // (`text === undefined`) is not degraded, so it must not warn.
+  if (parsed.degraded && text !== undefined) {
     ctx.logger?.warn?.(
       '.git/info/sparse-checkout is not cone-shaped; falling back to non-cone matching',
     );

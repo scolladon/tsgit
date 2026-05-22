@@ -207,6 +207,116 @@ describe('primitives/update-config', () => {
       // Assert — the existing `sparseCheckout` line is replaced in place.
       expect(sut).toBe('[core]\n\tnot-a-header]\n\tsparseCheckout = true\n');
     });
+
+    it('Given a `[Core]` header (mixed case), When setCoreConfigEntry, Then it is matched and updated in place (no duplicate section)', () => {
+      // Arrange — git section names are case-insensitive; a `[Core]` header
+      // must be edited in place, not joined by an appended duplicate `[core]`.
+      const text = '[Core]\n\tsparseCheckout = false\n';
+
+      // Act
+      const sut = setCoreConfigEntry(text, 'sparseCheckout', 'true');
+
+      // Assert — the existing line is replaced; no second `[core]` appears.
+      expect(sut).toBe('[Core]\n\tsparseCheckout = true\n');
+    });
+
+    it('Given a `[CORE]` header (upper case), When setCoreConfigEntry, Then it is matched and updated in place (no duplicate section)', () => {
+      // Arrange — an all-caps header is still the core section.
+      const text = '[CORE]\n\tbare = false\n';
+
+      // Act
+      const sut = setCoreConfigEntry(text, 'sparseCheckout', 'true');
+
+      // Assert — the key is inserted under `[CORE]`; no appended `[core]`.
+      expect(sut).toBe('[CORE]\n\tsparseCheckout = true\n\tbare = false\n');
+    });
+
+    it('Given a `[Core "sub"]` subsection (mixed case), When setCoreConfigEntry, Then the subsection is NOT treated as [core]', () => {
+      // Arrange — case-insensitivity must not bleed into the subsection: a
+      // `[Core "sub"]` header still must not satisfy the plain `[core]` match.
+      const text = '[Core "sub"]\n\tsparseCheckout = false\n';
+
+      // Act
+      const sut = setCoreConfigEntry(text, 'sparseCheckout', 'true');
+
+      // Assert — the subsection survives; a real [core] is appended.
+      expect(sut).toBe('[Core "sub"]\n\tsparseCheckout = false\n[core]\n\tsparseCheckout = true\n');
+    });
+
+    it('Given a key containing a newline, When setCoreConfigEntry, Then it throws INVALID_OPTION', () => {
+      // Arrange — a `\n` in the key would let line surgery splice a forged
+      // section into `.git/config`.
+      let caught: unknown;
+
+      // Act
+      try {
+        setCoreConfigEntry('[core]\n', 'spar\nseCheckout', 'true');
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert — try/catch + direct `.data` field assertions.
+      expect(caught).toBeInstanceOf(TsgitError);
+      const data = (caught as TsgitError).data;
+      expect(data.code).toBe('INVALID_OPTION');
+      if (data.code === 'INVALID_OPTION') {
+        expect(data.option).toBe('config');
+        expect(data.reason).toBe('key must not contain a newline or NUL');
+      }
+    });
+
+    it('Given a value containing a newline, When setCoreConfigEntry, Then it throws INVALID_OPTION', () => {
+      // Arrange — a `\n` in the value would inject a fake config section.
+      let caught: unknown;
+
+      // Act
+      try {
+        setCoreConfigEntry('[core]\n', 'sparseCheckout', 'true\n[remote "evil"]');
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert
+      expect(caught).toBeInstanceOf(TsgitError);
+      const data = (caught as TsgitError).data;
+      expect(data.code).toBe('INVALID_OPTION');
+      if (data.code === 'INVALID_OPTION') {
+        expect(data.option).toBe('config');
+        expect(data.reason).toBe('value must not contain a newline or NUL');
+      }
+    });
+
+    it('Given a value containing a carriage return, When setCoreConfigEntry, Then it throws INVALID_OPTION', () => {
+      // Arrange — `\r` is rejected alongside `\n` so a CRLF-style splice fails too.
+      let caught: unknown;
+
+      // Act
+      try {
+        setCoreConfigEntry('[core]\n', 'sparseCheckout', 'true\r[evil]');
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert
+      expect(caught).toBeInstanceOf(TsgitError);
+      expect((caught as TsgitError).data.code).toBe('INVALID_OPTION');
+    });
+
+    it('Given a value containing a NUL byte, When setCoreConfigEntry, Then it throws INVALID_OPTION', () => {
+      // Arrange — `\0` is rejected so a NUL-bearing value cannot reach the file.
+      let caught: unknown;
+
+      // Act
+      try {
+        setCoreConfigEntry('[core]\n', 'sparseCheckout', 'true\0x');
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert
+      expect(caught).toBeInstanceOf(TsgitError);
+      expect((caught as TsgitError).data.code).toBe('INVALID_OPTION');
+    });
   });
 
   describe('updateCoreConfig', () => {

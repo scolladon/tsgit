@@ -233,13 +233,19 @@ const planMaterialize = (
   }
   const sparse = opts.sparse;
   if (sparse !== undefined) {
+    // Partition in a single pass — one matcher call per target entry, not two.
+    const target: TargetEntry[] = [];
+    const excluded: TargetEntry[] = [];
+    for (const entry of allTarget) {
+      (sparse(entry.path) ? target : excluded).push(entry);
+    }
     return {
-      target: allTarget.filter((t) => sparse(t.path)),
+      target,
       indexForDiff: {
         ...opts.currentIndex,
         entries: opts.currentIndex.entries.filter((e) => !e.flags.skipWorktree),
       },
-      excluded: allTarget.filter((t) => !sparse(t.path)),
+      excluded,
     };
   }
   return { target: allTarget, indexForDiff: opts.currentIndex, excluded: [] };

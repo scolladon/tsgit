@@ -256,6 +256,22 @@ describe('primitives/read-sparse-checkout', () => {
       expect(sut?.('src/main.ts' as FilePath)).toBe(true);
     });
 
+    it('Given cone mode with no pattern file, When loadSparseMatcher, Then a matcher is built and NO warning is logged', async () => {
+      // Arrange — `core.sparseCheckout` and `sparseCheckoutCone` are both true
+      // but `.git/info/sparse-checkout` is absent. An absent file is NOT a
+      // degraded cone file, so it must not emit the degraded warning.
+      const warn = vi.fn();
+      const ctx: Context = { ...createMemoryContext(), logger: { warn } };
+      await seedConfig(ctx, '[core]\n\tsparseCheckout = true\n\tsparseCheckoutCone = true\n');
+
+      // Act
+      const sut = await loadSparseMatcher(ctx);
+
+      // Assert — a matcher is returned, and no warning was logged.
+      expect(sut).toBeDefined();
+      expect(warn).not.toHaveBeenCalled();
+    });
+
     it('Given a cone file that parses cleanly, When loadSparseMatcher, Then no warning is logged', async () => {
       // Arrange — a well-formed cone file must NOT trigger the degraded warn.
       const warn = vi.fn();

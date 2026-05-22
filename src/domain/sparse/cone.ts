@@ -12,7 +12,7 @@ type ConeSpec = Extract<SparseSpec, { mode: 'cone' }>;
 const properAncestors = (dir: string): ReadonlyArray<string> => {
   const segments = dir.split('/');
   const ancestors: string[] = [];
-  // Stryker disable next-line ArithmeticOperator: equivalent — starting `count` at `length + 1` only prepends `dir` itself (`slice(0, count > length)` returns the whole array), which every caller already handles separately: `buildConeSpec` filters it via `recursive.has`, `underRecursive` checks `recursive.has(dir)` before the loop.
+  // Stryker disable next-line ArithmeticOperator: equivalent — starting `count` at `length + 1` only prepends `dir` itself (`slice(0, count > length)` returns the whole array), which the sole caller `buildConeSpec` already filters via `recursive.has`.
   for (let count = segments.length - 1; count > 0; count -= 1) {
     ancestors.push(segments.slice(0, count).join('/'));
   }
@@ -65,25 +65,26 @@ const dirname = (path: string): string => {
   return slash === -1 ? '' : path.slice(0, slash);
 };
 
-/** True when `dir` is, or is a descendant of, a recursive directory. */
-const underRecursive = (dir: string, recursive: ReadonlySet<string>): boolean => {
-  if (recursive.has(dir)) return true;
-  for (const ancestor of properAncestors(dir)) {
-    if (recursive.has(ancestor)) return true;
-  }
-  return false;
-};
-
 /**
  * Build a matcher for a cone spec. A path is included iff its parent
  * directory is the root, OR is a parent dir, OR is under a recursive dir.
+ *
+ * The membership test is an in-place prefix walk — from the path's parent
+ * directory it walks up via `lastIndexOf('/')`, allocating nothing per call
+ * (the matcher runs once per target entry in `materializeTree`'s hot path).
  */
 export const coneMatcher = (spec: ConeSpec): SparseMatcher => {
   return (path: FilePath): boolean => {
     const dir = dirname(path);
     if (dir === '') return true;
     if (spec.parents.has(dir)) return true;
-    return underRecursive(dir, spec.recursive);
+    let ancestor = dir;
+    while (true) {
+      if (spec.recursive.has(ancestor)) return true;
+      const slash = ancestor.lastIndexOf('/');
+      if (slash === -1) return false;
+      ancestor = ancestor.slice(0, slash);
+    }
   };
 };
 
@@ -110,7 +111,9 @@ export const serializeCone = (spec: ConeSpec): string => {
  * falls back to non-cone matching of the same text.
  */
 export const parseCone = (text: string): ConeSpec | undefined => {
-  const lines = text.split('\n');
+  // A CRLF-terminated file leaves a trailing `\r` on every line; strip it
+  // before the cone-grammar checks so a valid cone file is not misclassified.
+  const lines = text.split('\n').map((line) => line.replace(/\r$/, ''));
   if (lines[0] !== '/*' || lines[1] !== '!/*/') return undefined;
   const recursive = new Set<string>();
   const parents = new Set<string>();

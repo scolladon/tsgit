@@ -449,4 +449,32 @@ describe('parseCone', () => {
     expect([...(sut as ConeSpec).recursive]).toEqual(['src']);
     expect([...(sut as ConeSpec).parents]).toEqual([]);
   });
+
+  it('Given a cone file with CRLF line endings, When parsed, Then it still parses as cone', () => {
+    // Arrange — a `\r\n`-terminated file leaves a trailing `\r` on each line;
+    // it must be stripped before the cone-grammar checks.
+    const text = '/*\r\n!/*/\r\n/src/\r\n!/src/*/\r\n/src/app/\r\n';
+
+    // Act
+    const sut = parseCone(text);
+
+    // Assert
+    expect(sut).toBeDefined();
+    expect([...(sut as ConeSpec).recursive]).toEqual(['src/app']);
+    expect([...(sut as ConeSpec).parents]).toEqual(['src']);
+  });
+
+  it('Given a directory line with a mid-line carriage return, When parsed, Then only a trailing CR is stripped (the inner CR survives)', () => {
+    // Arrange — `/sr\rc/` carries a `\r` in the MIDDLE of the line, not at its
+    // end. The strip is anchored with `$`, so the inner `\r` is preserved and
+    // the dir is `sr\rc`. An un-anchored `/\r/` strip would remove it and
+    // wrongly yield `src`.
+    const text = '/*\n!/*/\n/sr\rc/\n';
+
+    // Act
+    const sut = parseCone(text);
+
+    // Assert — the inner CR is part of the recursive directory name.
+    expect([...(sut as ConeSpec).recursive]).toEqual(['sr\rc']);
+  });
 });

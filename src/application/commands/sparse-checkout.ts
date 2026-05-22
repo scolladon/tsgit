@@ -134,6 +134,9 @@ const runAdd = async (
   ctx: Context,
   opts: Extract<SparseCheckoutAction, { action: 'add' }>,
 ): Promise<SparseCheckoutResult> => {
+  if (opts.patterns.length === 0) {
+    throw invalidOption('patterns', 'add requires at least one pattern');
+  }
   const config = await readConfig(ctx);
   if (config.core?.sparseCheckout !== true) {
     throw invalidOption('action', 'add requires sparse checkout to be enabled');

@@ -106,8 +106,43 @@ describe('parseSparseCheckout', () => {
     expect(sut.spec.mode).toBe('no-cone');
   });
 
-  it('Given one pattern line over the maximum, When parsed, Then it throws INVALID_OPTION', () => {
-    // Arrange — `MAX_SPARSE_PATTERNS + 1` lines.
+  it('Given more than the max raw lines but only blank and comment ones over the budget, When parsed, Then it is accepted', () => {
+    // Arrange — the budget bounds effective compiled rules, not raw lines: a
+    // file padded with blank/comment lines past `MAX_SPARSE_PATTERNS` but with
+    // only one real pattern must parse fine.
+    const filler = Array.from({ length: MAX_SPARSE_PATTERNS + 64 }, (_, i) =>
+      i % 2 === 0 ? '' : '# comment',
+    );
+    const text = [...filler, '/src/'].join('\n');
+
+    // Act
+    const sut = parseSparseCheckout(text, false);
+
+    // Assert — exactly one effective rule survives the blank/comment filler.
+    expect(sut.spec.mode).toBe('no-cone');
+    if (sut.spec.mode === 'no-cone') {
+      expect(sut.spec.rules).toHaveLength(1);
+    }
+  });
+
+  it('Given exactly the max real patterns padded with blank lines, When parsed, Then it is accepted', () => {
+    // Arrange — `MAX_SPARSE_PATTERNS` real patterns plus blank-line padding;
+    // the blank lines do not count toward the budget.
+    const reals = Array.from({ length: MAX_SPARSE_PATTERNS }, () => '/src/');
+    const text = ['', '# header', ...reals, ''].join('\n');
+
+    // Act
+    const sut = parseSparseCheckout(text, false);
+
+    // Assert
+    expect(sut.spec.mode).toBe('no-cone');
+    if (sut.spec.mode === 'no-cone') {
+      expect(sut.spec.rules).toHaveLength(MAX_SPARSE_PATTERNS);
+    }
+  });
+
+  it('Given one real pattern over the maximum, When parsed, Then it throws INVALID_OPTION', () => {
+    // Arrange — `MAX_SPARSE_PATTERNS + 1` real (non-blank, non-comment) lines.
     const text = Array.from({ length: MAX_SPARSE_PATTERNS + 1 }, () => '/src/').join('\n');
 
     // Act

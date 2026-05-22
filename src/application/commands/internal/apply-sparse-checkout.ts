@@ -34,12 +34,19 @@ export interface ApplySparseCheckoutResult {
   readonly retained: ReadonlyArray<FilePath>;
 }
 
+/** An excluded entry paired with whether its working-tree file is on disk. */
+interface ExcludedEntry {
+  readonly entry: IndexEntry;
+  /** Result of the single `ctx.fs.exists` check from the partition step. */
+  readonly present: boolean;
+}
+
 /** A stage-0 index entry partitioned by the matcher's verdict. */
 interface Partitioned {
   /** In-pattern entries — materialised, skip-worktree cleared. */
   readonly included: ReadonlyArray<IndexEntry>;
   /** Out-of-pattern entries that are clean (or forced) — removable. */
-  readonly removable: ReadonlyArray<IndexEntry>;
+  readonly removable: ReadonlyArray<ExcludedEntry>;
   /** Out-of-pattern entries with uncommitted edits — retained, left on disk. */
   readonly retained: ReadonlyArray<IndexEntry>;
 }
@@ -56,7 +63,9 @@ const isIncluded = (matcher: SparseMatcher | undefined, path: FilePath): boolean
 
 /**
  * Partition stage-0 entries. An excluded entry whose working-tree file exists
- * and is dirty is retained unless `force`; otherwise it is removable.
+ * and is dirty is retained unless `force`; otherwise it is removable. The
+ * single `ctx.fs.exists` result for each excluded path is threaded onto the
+ * removable entry so `buildChangeset` need not re-check the same path.
  */
 const partition = async (
   ctx: Context,
@@ -65,7 +74,7 @@ const partition = async (
   opts: ApplySparseCheckoutOpts,
 ): Promise<Partitioned> => {
   const included: IndexEntry[] = [];
-  const removable: IndexEntry[] = [];
+  const removable: ExcludedEntry[] = [];
   const retained: IndexEntry[] = [];
   for (const entry of entries) {
     if (isIncluded(opts.matcher, entry.path)) {
@@ -73,11 +82,10 @@ const partition = async (
       continue;
     }
     const absPath = joinPath(workdir, entry.path);
-    const dirty = (await ctx.fs.exists(absPath))
-      ? await isWorkingTreeDirty(ctx, absPath, entry.id)
-      : false;
+    const present = await ctx.fs.exists(absPath);
+    const dirty = present ? await isWorkingTreeDirty(ctx, absPath, entry.id) : false;
     if (dirty && opts.force !== true) retained.push(entry);
-    else removable.push(entry);
+    else removable.push({ entry, present });
   }
   return { included, removable, retained };
 };
@@ -115,7 +123,9 @@ const noopEntry = (entry: IndexEntry): ChangesetEntry => ({
 /**
  * Build the changeset that re-shapes the working tree: `delete` every
  * removable excluded file still on disk, `add` every included file currently
- * absent, `noop` everything else.
+ * absent, `noop` everything else. Removable entries reuse the existence
+ * result the partition step already computed; only included entries are
+ * stat-checked here.
  */
 const buildChangeset = async (
   ctx: Context,
@@ -123,8 +133,7 @@ const buildChangeset = async (
   part: Partitioned,
 ): Promise<Changeset> => {
   const entries: ChangesetEntry[] = [];
-  for (const entry of part.removable) {
-    const present = await ctx.fs.exists(joinPath(workdir, entry.path));
+  for (const { entry, present } of part.removable) {
     entries.push(present ? deleteEntry(entry) : noopEntry(entry));
   }
   for (const entry of part.included) {
@@ -166,7 +175,8 @@ const clearSkipWorktree = (entry: IndexEntry): IndexEntry =>
  * Assemble the post-apply index entry list: included entries take their
  * fresh post-write record when `applyChangeset` wrote them, otherwise their
  * prior record with skip-worktree cleared; removable excludees become
- * skip-worktree; retained excludees pass through unchanged.
+ * skip-worktree; retained excludees stay on disk so their skip-worktree bit
+ * is cleared — `status` must see the now-present dirty file.
  */
 const assembleEntries = (
   part: Partitioned,
@@ -178,8 +188,8 @@ const assembleEntries = (
   for (const entry of part.included) {
     out.push(writtenByPath.get(entry.path) ?? clearSkipWorktree(entry));
   }
-  for (const entry of part.removable) out.push(toSkipWorktree(entry));
-  for (const entry of part.retained) out.push(entry);
+  for (const { entry } of part.removable) out.push(toSkipWorktree(entry));
+  for (const entry of part.retained) out.push(clearSkipWorktree(entry));
   return out;
 };
 
