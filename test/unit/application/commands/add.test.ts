@@ -301,6 +301,29 @@ describe('add', () => {
     expect(idx.entries.map((e) => e.path)).toEqual(['b.txt']);
   });
 
+  it('Given a skip-worktree entry absent from disk and all: true, When add, Then its removal is NOT staged and the entry is preserved', async () => {
+    // Arrange — a cone-mode `set` keeping only `src/` turns `docs/b.txt` into a
+    // skip-worktree entry, absent from disk. `add --all`'s post-walk removal
+    // pass must skip it: staging its removal would silently un-sparse it.
+    const { sparseCheckout } = await import(
+      '../../../../src/application/commands/sparse-checkout.js'
+    );
+    const ctx = await seedFreshRepo({ 'src/a.txt': 'a', 'docs/b.txt': 'b' });
+    await add(ctx, [], { all: true });
+    await sparseCheckout(ctx, { action: 'set', patterns: ['src'], cone: true });
+
+    // Act
+    const sut = await add(ctx, [], { all: true });
+
+    // Assert — `docs/b.txt` is not in `removed`, and it survives in the index
+    // still flagged skip-worktree.
+    expect(sut.removed).toEqual([]);
+    const idx = await readIndex(ctx);
+    const docEntry = idx.entries.find((e) => e.path === 'docs/b.txt');
+    expect(docEntry).toBeDefined();
+    expect(docEntry?.flags.skipWorktree).toBe(true);
+  });
+
   it('Given a symlink and all: true, When add, Then it stages as mode 120000', async () => {
     // Arrange
     const ctx = await seedFreshRepo({ 'a.txt': 'a' });

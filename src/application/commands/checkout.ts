@@ -10,6 +10,7 @@ import { validateRefName } from '../../domain/refs/index.js';
 import type { Context } from '../../ports/context.js';
 import { materializeTree } from '../primitives/materialize-tree.js';
 import { readIndex } from '../primitives/read-index.js';
+import { loadSparseMatcher } from '../primitives/read-sparse-checkout.js';
 import { readTree } from '../primitives/read-tree.js';
 import { recordRefUpdate } from '../primitives/record-ref-update.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
@@ -93,6 +94,11 @@ const switchBranch = async (ctx: Context, opts: CheckoutSwitchOptions): Promise<
   // this can happen outside the index lock without risk.
   const target = await readTree(ctx, oid);
 
+  // A defined matcher (`core.sparseCheckout` on) restricts the branch switch
+  // to in-pattern files; out-of-pattern entries get the skip-worktree bit.
+  // `undefined` ⇒ sparse inactive — the materialize call stays as-is.
+  const matcher = await loadSparseMatcher(ctx);
+
   // Acquire the index lock BEFORE reading the index. Wrapping the entire
   // read-materialise-commit sequence in the lock closes the TOCTOU window
   // where a concurrent index writer could otherwise stale the donor map
@@ -105,6 +111,8 @@ const switchBranch = async (ctx: Context, opts: CheckoutSwitchOptions): Promise<
       targetTree: target.id,
       currentIndex,
       force: opts.force ?? false,
+      // `exactOptionalPropertyTypes`: add `sparse` only when a matcher exists.
+      ...(matcher !== undefined ? { sparse: matcher } : {}),
     });
     // `written`/`deleted` are non-negative counts, so `!== 0` is equivalent
     // to `> 0` here while sidestepping the always-true `>= 0` mutant.

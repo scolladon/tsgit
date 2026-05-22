@@ -988,6 +988,77 @@ describe('checkout — mutation hardening', () => {
   });
 });
 
+describe('checkout — sparse checkout', () => {
+  // Two branches `main` / `feature`, both holding `src/a.txt` + `docs/b.txt`,
+  // BOTH on disk and recorded as normal (non-skip-worktree) index entries.
+  // Sparse is then flipped on by writing `.git/info/sparse-checkout` and the
+  // `core` config directly — so the index entries stay normal and the branch
+  // switch itself must apply the matcher (rather than inheriting an already
+  // materialised sparse state).
+  const seedRepoOnTwoBranches = async () => {
+    const ctx = createMemoryContext();
+    await init(ctx);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/src/a.txt`, 'a');
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/docs/b.txt`, 'b');
+    await add(ctx, ['src/a.txt', 'docs/b.txt']);
+    await commit(ctx, { message: 'first', author });
+    await branch(ctx, { kind: 'create', name: 'feature' });
+    return ctx;
+  };
+
+  const enableSparseSrcOnly = async (ctx: ReturnType<typeof createMemoryContext>) => {
+    const { updateCoreConfig } = await import(
+      '../../../../src/application/primitives/update-config.js'
+    );
+    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/info/sparse-checkout`, '/*\n!/*/\n/src/\n');
+    await updateCoreConfig(ctx, { sparseCheckout: 'true', sparseCheckoutCone: 'true' });
+  };
+
+  it('Given a sparse repo with normal index entries, When checkout switches branch, Then only in-pattern files are materialised and excluded entries become skip-worktree', async () => {
+    // Arrange — make the repo sparse AFTER the commit; `docs/b.txt` is still a
+    // normal index entry and present on disk. The branch switch must apply the
+    // matcher: drop `docs/b.txt` from disk and flag it skip-worktree.
+    const ctx = await seedRepoOnTwoBranches();
+    await enableSparseSrcOnly(ctx);
+
+    // Act
+    const sut = await checkout(ctx, { target: 'feature' });
+
+    // Assert — in-pattern file present, excluded file removed from disk.
+    expect(sut.branch).toBe('refs/heads/feature');
+    expect(await ctx.fs.exists(`${ctx.layout.workDir}/src/a.txt`)).toBe(true);
+    expect(await ctx.fs.exists(`${ctx.layout.workDir}/docs/b.txt`)).toBe(false);
+    // The new index keeps every path; `docs/b.txt` is now skip-worktree.
+    const { readIndex } = await import('../../../../src/application/primitives/read-index.js');
+    const idx = await readIndex(ctx);
+    expect(idx.entries.find((e) => e.path === 'src/a.txt')?.flags.skipWorktree).toBe(false);
+    expect(idx.entries.find((e) => e.path === 'docs/b.txt')?.flags.skipWorktree).toBe(true);
+  });
+
+  it('Given a NON-sparse repo, When checkout switches branch, Then every tracked file is materialised (sparse threading is inert)', async () => {
+    // Arrange — no sparse config: `loadSparseMatcher` returns undefined, so the
+    // `materializeTree` call must behave byte-for-byte as before this slice.
+    const ctx = createMemoryContext();
+    await init(ctx);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/src/a.txt`, 'a');
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/docs/b.txt`, 'b');
+    await add(ctx, ['src/a.txt', 'docs/b.txt']);
+    await commit(ctx, { message: 'first', author });
+    await branch(ctx, { kind: 'create', name: 'feature' });
+
+    // Act
+    const sut = await checkout(ctx, { target: 'feature' });
+
+    // Assert — both files on disk, no skip-worktree entry.
+    expect(sut.branch).toBe('refs/heads/feature');
+    expect(await ctx.fs.exists(`${ctx.layout.workDir}/src/a.txt`)).toBe(true);
+    expect(await ctx.fs.exists(`${ctx.layout.workDir}/docs/b.txt`)).toBe(true);
+    const { readIndex } = await import('../../../../src/application/primitives/read-index.js');
+    const idx = await readIndex(ctx);
+    expect(idx.entries.every((e) => e.flags.skipWorktree === false)).toBe(true);
+  });
+});
+
 import { recordingProgress, withProgress } from './fixtures.js';
 
 describe('checkout — progress reporting', () => {

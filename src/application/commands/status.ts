@@ -97,6 +97,10 @@ const classifyEntry = async (
   path: FilePath,
   entry: IndexEntry,
 ): Promise<ChangeEntry | undefined> => {
+  // A skip-worktree entry is intentionally absent from the working tree;
+  // reporting its absence as `deleted` would make a sparse repo permanently
+  // dirty. It stays in `indexByPath` so pass 2 still treats the path as tracked.
+  if (entry.flags.skipWorktree) return undefined;
   const stat = await ctx.fs.lstat(`${ctx.layout.workDir}/${path}`).catch(() => undefined);
   if (stat === undefined) return { kind: 'deleted', path };
   if (await isModified(ctx, path, entry)) return { kind: 'modified', path };
