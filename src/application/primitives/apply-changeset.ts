@@ -65,13 +65,18 @@ const blobMatches = async (ctx: Context, absPath: string, expectedId: string): P
   return id === expectedId;
 };
 
-const isTrackedDirty = async (
+/**
+ * `true` when a working-tree file exists at `absPath` but its blob content
+ * hash differs from `expectedId`. An absent file is not dirty. Shared by
+ * `applySparseCheckout`'s narrowing pre-scan (design §9).
+ */
+export const isWorkingTreeDirty = async (
   ctx: Context,
   absPath: string,
-  expected: string,
+  expectedId: string,
 ): Promise<boolean> => {
   if (!(await ctx.fs.exists(absPath))) return false;
-  return !(await blobMatches(ctx, absPath, expected));
+  return !(await blobMatches(ctx, absPath, expectedId));
 };
 
 const isUntrackedClash = async (ctx: Context, absPath: string): Promise<boolean> =>
@@ -85,7 +90,7 @@ const evaluateDirtyPath = async (
   const absPath = joinPath(workdir, entry.path);
   if (entry.kind === 'update' || entry.kind === 'delete') {
     if (entry.previousId === undefined) return undefined;
-    return (await isTrackedDirty(ctx, absPath, entry.previousId)) ? entry.path : undefined;
+    return (await isWorkingTreeDirty(ctx, absPath, entry.previousId)) ? entry.path : undefined;
   }
   if (entry.kind === 'add') {
     return (await isUntrackedClash(ctx, absPath)) ? entry.path : undefined;

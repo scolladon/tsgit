@@ -31,4 +31,6 @@ export const logsDir = (gitDir: string): string => `${gitDir}/logs`;
 
 export const reflogPath = (gitDir: string, ref: RefName): string => `${gitDir}/logs/${ref}`;
 
+export const sparseCheckoutPath = (gitDir: string): string => `${gitDir}/info/sparse-checkout`;
+
 export const lockSuffix = '.lock';

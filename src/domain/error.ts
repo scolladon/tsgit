@@ -304,6 +304,8 @@ function extractDetail(data: TsgitErrorData): string {
       return `working-tree file too large: ${basename(data.path)} size=${data.size} limit=${data.limit}`;
     case 'GITIGNORE_FILE_TOO_LARGE':
       return `.gitignore too large: ${basename(data.path)} size=${data.size} limit=${data.limit}`;
+    case 'SPARSE_PATTERN_FILE_TOO_LARGE':
+      return `sparse-checkout file too large: ${basename(data.path)} size=${data.size} limit=${data.limit}`;
     case 'INVALID_REFLOG_ENTRY':
       return `invalid reflog entry: ${data.reason}`;
     case 'REFLOG_NOT_FOUND':
