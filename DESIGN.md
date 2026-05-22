@@ -81,6 +81,7 @@ See [docs/design/ports-and-adapters.md](docs/design/ports-and-adapters.md) for t
 | **Domain: Sparse** | Cone / non-cone pattern parsing, matching, serialization | `src/domain/sparse/` |
 | **Hooks** | `pre-commit` / `commit-msg` / `pre-push` script execution | `src/ports/hook-runner.ts` |
 | **Partial clone** | `--filter` object filters, promisor remote, lazy-fetch on read | `src/domain/protocol/object-filter.ts`, `src/application/commands/fetch-missing.ts` |
+| **Submodules** | Tree-ish gitlink walk + `.gitmodules` join, optional recursion into absorbed nested gitdirs | `src/application/primitives/walk-submodules.ts`, `src/application/commands/submodules.ts` |
 | **Ports** | Interfaces for I/O and platform abstraction | `src/ports/` |
 | **Adapters** | Node, browser (OPFS), in-memory implementations | `src/adapters/` |
 | **Primitives** | Tier-2 composable low-level operations | `src/application/primitives/` |
@@ -89,4 +90,5 @@ See [docs/design/ports-and-adapters.md](docs/design/ports-and-adapters.md) for t
 See [docs/prd/PRD.md](docs/prd/PRD.md) for the full architecture and competitive analysis, [docs/design/reflog.md](docs/design/reflog.md) for the Phase 17.1 reflog design,
 [docs/design/hooks.md](docs/design/hooks.md) for the Phase 17.2 git-hooks design,
 [docs/design/sparse-checkout.md](docs/design/sparse-checkout.md) for the Phase 17.3 sparse-checkout design,
-and [docs/design/partial-clone.md](docs/design/partial-clone.md) for the Phase 17.4 partial-clone design.
+[docs/design/partial-clone.md](docs/design/partial-clone.md) for the Phase 17.4 partial-clone design,
+and [docs/design/submodule-walk.md](docs/design/submodule-walk.md) for the Phase 17.5 submodule-walk design.

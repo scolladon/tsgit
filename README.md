@@ -346,6 +346,34 @@ written to `.git/config`. A dirty out-of-cone file is **retained** (not
 discarded) unless `force: true`. `checkout` honours the cone on branch switch.
 See [RUNBOOK.md](RUNBOOK.md) for the operational sharp edges.
 
+### Submodules
+
+```typescript
+// List the submodules pinned by HEAD.
+const { entries } = await repo.submodules();
+for (const e of entries) {
+  console.log(e.path, e.commit, e.url ?? '(no .gitmodules row)');
+}
+
+// Walk a specific commit and descend into nested submodules whose absorbed
+// gitdir (`${gitDir}/modules/<name>`) is locally available.
+const nested = await repo.submodules({ ref: 'main', recursive: true });
+
+// Stream-of-entries form (bounded memory; iterate and stop when you want).
+for await (const e of repo.primitives.walkSubmodules({ recursive: true })) {
+  if (e.depth >= 2) break;
+}
+```
+
+`repo.submodules` reads from a tree-ish (default `HEAD`), so it works in bare
+repositories and is deterministic for a given ref. Each gitlink in the tree
+yields a `SubmoduleEntry { name, path, url?, branch?, commit, depth, parent? }`
+joined with its `submodule.<name>.{path,url,branch}` row from the tree's
+`.gitmodules` blob. Uninitialised / pinned-commit-missing / cycle-detected
+nested submodules contribute their own entry but no children, matching
+`git submodule status --recursive`. No network is touched — `url` is opaque
+data.
+
 ## Benchmarks
 
 Comparison against `isomorphic-git@1.38` on a synthetic 50-commit repo. Numbers
