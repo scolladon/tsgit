@@ -1389,7 +1389,7 @@ describe('writeOutcomeToTree (direct)', () => {
     };
 
     // Act
-    await writeOutcomeToTree(ctx, outcome);
+    await writeOutcomeToTree(ctx, outcome, undefined);
 
     // Assert
     expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/u.txt`)).toBe('UNCHANGED-BYTES');
@@ -1408,7 +1408,7 @@ describe('writeOutcomeToTree (direct)', () => {
     };
 
     // Act
-    await writeOutcomeToTree(ctx, outcome);
+    await writeOutcomeToTree(ctx, outcome, undefined);
 
     // Assert
     expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/k.txt`)).toBe('KNOWN-BYTES');
@@ -1426,7 +1426,7 @@ describe('writeOutcomeToTree (direct)', () => {
     };
 
     // Act
-    await writeOutcomeToTree(ctx, outcome);
+    await writeOutcomeToTree(ctx, outcome, undefined);
 
     // Assert
     expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/m.txt`)).toBe('MERGED-BYTES');
@@ -1440,7 +1440,7 @@ describe('writeOutcomeToTree (direct)', () => {
     const outcome: MergeOutcome = { status: 'resolved-deleted', path: 'd.txt' as FilePath };
 
     // Act
-    await writeOutcomeToTree(ctx, outcome);
+    await writeOutcomeToTree(ctx, outcome, undefined);
 
     // Assert
     expect(await ctx.fs.exists(`${ctx.layout.workDir}/d.txt`)).toBe(false);
@@ -1683,7 +1683,7 @@ describe('buildConflictIndexEntries (direct)', () => {
     ];
 
     // Act
-    const sut = buildConflictIndexEntries(outcomes, []);
+    const sut = buildConflictIndexEntries(outcomes, [], undefined);
 
     // Assert
     expect(sut).toHaveLength(1);
@@ -1703,7 +1703,7 @@ describe('buildConflictIndexEntries (direct)', () => {
     ];
 
     // Act
-    const sut = buildConflictIndexEntries(outcomes, []);
+    const sut = buildConflictIndexEntries(outcomes, [], undefined);
 
     // Assert
     expect(sut).toHaveLength(1);
@@ -1716,7 +1716,7 @@ describe('buildConflictIndexEntries (direct)', () => {
     const outcomes: MergeOutcome[] = [{ status: 'resolved-deleted', path: 'd.txt' as FilePath }];
 
     // Act
-    const sut = buildConflictIndexEntries(outcomes, []);
+    const sut = buildConflictIndexEntries(outcomes, [], undefined);
 
     // Assert
     expect(sut).toEqual([]);
@@ -1734,7 +1734,7 @@ describe('buildConflictIndexEntries (direct)', () => {
     ];
 
     // Act
-    const sut = buildConflictIndexEntries(outcomes, []);
+    const sut = buildConflictIndexEntries(outcomes, [], undefined);
 
     // Assert — every flag is literally false.
     expect(sut[0]?.flags.assumeValid).toBe(false);
@@ -1774,10 +1774,202 @@ describe('buildConflictIndexEntries (direct)', () => {
     ];
 
     // Act
-    const sut = buildConflictIndexEntries(outcomes, conflicts);
+    const sut = buildConflictIndexEntries(outcomes, conflicts, undefined);
 
     // Assert — fully sorted by path, then by stage within `mmm.txt`.
     const order = sut.map((e) => `${e.path}@${e.flags.stage}`);
     expect(order).toEqual(['aaa.txt@0', 'mmm.txt@1', 'mmm.txt@2', 'mmm.txt@3', 'zzz.txt@0']);
+  });
+});
+
+describe('merge — sparse checkout', () => {
+  // Matcher excluding any path that starts with `drop`.
+  const excludesDrop = (p: FilePath): boolean => !p.startsWith('drop');
+
+  const enableSparseSrcOnly = async (ctx: ReturnType<typeof createMemoryContext>) => {
+    const { updateCoreConfig } = await import(
+      '../../../../src/application/primitives/update-config.js'
+    );
+    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/info/sparse-checkout`, '/*\n!/*/\n/src/\n');
+    await updateCoreConfig(ctx, { sparseCheckout: 'true', sparseCheckoutCone: 'true' });
+  };
+
+  const seedBlob = async (
+    ctx: ReturnType<typeof createMemoryContext>,
+    text: string,
+  ): Promise<ObjectId> =>
+    writeObject(ctx, { type: 'blob', content: new TextEncoder().encode(text), id: '' as ObjectId });
+
+  it('Given an unchanged outcome whose path the sparse matcher excludes, When writeOutcomeToTree runs, Then the file is not written', async () => {
+    // Arrange
+    const ctx = createMemoryContext();
+    await init(ctx);
+    const id = await seedBlob(ctx, 'X');
+    const outcome: MergeOutcome = {
+      status: 'unchanged',
+      path: 'drop.txt' as FilePath,
+      id,
+      mode: FILE_MODE.REGULAR,
+    };
+
+    // Act
+    await writeOutcomeToTree(ctx, outcome, excludesDrop);
+
+    // Assert
+    expect(await ctx.fs.exists(`${ctx.layout.workDir}/drop.txt`)).toBe(false);
+  });
+
+  it('Given an unchanged outcome whose path the sparse matcher includes, When writeOutcomeToTree runs, Then the file is written', async () => {
+    // Arrange
+    const ctx = createMemoryContext();
+    await init(ctx);
+    const id = await seedBlob(ctx, 'KEPT');
+    const outcome: MergeOutcome = {
+      status: 'unchanged',
+      path: 'keep.txt' as FilePath,
+      id,
+      mode: FILE_MODE.REGULAR,
+    };
+
+    // Act
+    await writeOutcomeToTree(ctx, outcome, excludesDrop);
+
+    // Assert
+    expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/keep.txt`)).toBe('KEPT');
+  });
+
+  it('Given a resolved-merged outcome whose path the sparse matcher excludes, When writeOutcomeToTree runs, Then the file is not written', async () => {
+    // Arrange
+    const ctx = createMemoryContext();
+    await init(ctx);
+    const outcome: MergeOutcome = {
+      status: 'resolved-merged',
+      path: 'drop.txt' as FilePath,
+      bytes: new TextEncoder().encode('M'),
+      mode: FILE_MODE.REGULAR,
+    };
+
+    // Act
+    await writeOutcomeToTree(ctx, outcome, excludesDrop);
+
+    // Assert
+    expect(await ctx.fs.exists(`${ctx.layout.workDir}/drop.txt`)).toBe(false);
+  });
+
+  it('Given a resolved-merged outcome whose path the sparse matcher includes, When writeOutcomeToTree runs, Then the file is written', async () => {
+    // Arrange
+    const ctx = createMemoryContext();
+    await init(ctx);
+    const outcome: MergeOutcome = {
+      status: 'resolved-merged',
+      path: 'keep.txt' as FilePath,
+      bytes: new TextEncoder().encode('MERGED'),
+      mode: FILE_MODE.REGULAR,
+    };
+
+    // Act
+    await writeOutcomeToTree(ctx, outcome, excludesDrop);
+
+    // Assert
+    expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/keep.txt`)).toBe('MERGED');
+  });
+
+  it('Given an unchanged outcome whose path the sparse matcher excludes, When buildConflictIndexEntries runs, Then its stage-0 entry is skip-worktree', () => {
+    // Arrange
+    const outcomes: MergeOutcome[] = [
+      {
+        status: 'unchanged',
+        path: 'drop.txt' as FilePath,
+        id: 'a'.repeat(40) as ObjectId,
+        mode: FILE_MODE.REGULAR,
+      },
+    ];
+
+    // Act
+    const sut = buildConflictIndexEntries(outcomes, [], excludesDrop);
+
+    // Assert
+    expect(sut).toHaveLength(1);
+    expect(sut[0]?.path).toBe('drop.txt');
+    expect(sut[0]?.flags.stage).toBe(0);
+    expect(sut[0]?.flags.skipWorktree).toBe(true);
+  });
+
+  it('Given a resolved-known outcome whose path the sparse matcher excludes, When buildConflictIndexEntries runs, Then its stage-0 entry is skip-worktree', () => {
+    // Arrange
+    const outcomes: MergeOutcome[] = [
+      {
+        status: 'resolved-known',
+        path: 'drop.txt' as FilePath,
+        id: 'b'.repeat(40) as ObjectId,
+        mode: FILE_MODE.REGULAR,
+      },
+    ];
+
+    // Act
+    const sut = buildConflictIndexEntries(outcomes, [], excludesDrop);
+
+    // Assert
+    expect(sut[0]?.flags.skipWorktree).toBe(true);
+  });
+
+  it('Given an unchanged outcome whose path the sparse matcher includes, When buildConflictIndexEntries runs, Then its stage-0 entry is not skip-worktree', () => {
+    // Arrange
+    const outcomes: MergeOutcome[] = [
+      {
+        status: 'unchanged',
+        path: 'keep.txt' as FilePath,
+        id: 'c'.repeat(40) as ObjectId,
+        mode: FILE_MODE.REGULAR,
+      },
+    ];
+
+    // Act
+    const sut = buildConflictIndexEntries(outcomes, [], excludesDrop);
+
+    // Assert
+    expect(sut[0]?.flags.skipWorktree).toBe(false);
+  });
+
+  it('Given a sparse repo, When a conflicting merge runs, Then an excluded clean path is not re-materialised but the in-pattern conflict is', async () => {
+    // Arrange — base has `src/a.txt` + `docs/b.txt`; main and feature each
+    // change only `src/a.txt` (→ conflict). `docs/b.txt` is unchanged on every
+    // side (→ a clean `unchanged` outcome). Sparse excludes `docs/`; the file
+    // is removed from disk to mimic a sparse working tree.
+    const ctx = createMemoryContext();
+    await init(ctx);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/src/a.txt`, 'base-a\n');
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/docs/b.txt`, 'shared-b\n');
+    await add(ctx, ['src/a.txt', 'docs/b.txt']);
+    await commit(ctx, { message: 'base', author });
+    await branch(ctx, { kind: 'create', name: 'feature' });
+    await checkout(ctx, { target: 'feature' });
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/src/a.txt`, 'FEATURE-a\n');
+    await add(ctx, ['src/a.txt']);
+    await commit(ctx, { message: 'on-feature', author });
+    await checkout(ctx, { target: 'main' });
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/src/a.txt`, 'MAIN-a\n');
+    await add(ctx, ['src/a.txt']);
+    await commit(ctx, { message: 'on-main', author });
+    await enableSparseSrcOnly(ctx);
+    await ctx.fs.rm(`${ctx.layout.workDir}/docs/b.txt`);
+
+    // Act
+    const sut = await merge(ctx, { target: 'feature', author });
+
+    // Assert — the in-pattern conflict file is materialised with markers; the
+    // excluded clean file stays absent (the 17.3a bug fix) and is recorded
+    // skip-worktree.
+    expect(sut.kind).toBe('conflict');
+    expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/src/a.txt`)).toContain('<<<<<<<');
+    expect(await ctx.fs.exists(`${ctx.layout.workDir}/docs/b.txt`)).toBe(false);
+    const { readIndex } = await import('../../../../src/application/primitives/read-index.js');
+    const index = await readIndex(ctx);
+    expect(index.entries.find((e) => e.path === 'docs/b.txt')?.flags.skipWorktree).toBe(true);
+    const srcStages = index.entries
+      .filter((e) => e.path === 'src/a.txt')
+      .map((e) => e.flags.stage)
+      .sort();
+    expect(srcStages).toEqual([1, 2, 3]);
   });
 });
