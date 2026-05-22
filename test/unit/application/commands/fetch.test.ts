@@ -1532,3 +1532,108 @@ describe('fetch', () => {
     });
   });
 });
+
+describe('fetch — partial clone', () => {
+  const seedPartialRepo = async (
+    ctx: ReturnType<typeof createMemoryContext>,
+    configBody: string,
+  ): Promise<void> => {
+    await seedRepo(ctx, { head: 'refs/heads/main' });
+    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, configBody);
+  };
+
+  it('Given a repo with a stored partial-clone filter, When fetch, Then the request carries the filter and a promisor pack is written', async () => {
+    // Arrange
+    const ctx = createMemoryContext();
+    await seedPartialRepo(
+      ctx,
+      '[remote "origin"]\n  url = https://example.com/r.git\n  partialclonefilter = blob:none\n',
+    );
+    const { packBytes, blobId } = await buildOneBlobPack(ctx, 'partial fetch\n');
+    const { transport, requests } = fakeRemote({
+      url: 'https://example.com/r.git',
+      advertisedRefs: [{ name: 'refs/heads/main', id: blobId }],
+      advertisedCaps: ['side-band-64k', 'ofs-delta', 'filter'],
+      packBytes,
+    });
+
+    // Act
+    await fetch({ ...ctx, transport });
+
+    // Assert — the upload-pack POST carries the filter line.
+    const post = requests.find((r) => r.method === 'POST');
+    expect(new TextDecoder().decode(post?.body)).toContain('filter blob:none\n');
+    const packDir = await ctx.fs.readdir(`${ctx.layout.gitDir}/objects/pack`);
+    expect(packDir.some((e) => e.name.endsWith('.promisor'))).toBe(true);
+  });
+
+  it('Given a non-partial repo, When fetch, Then no filter line is sent and no promisor pack is written', async () => {
+    // Arrange
+    const ctx = createMemoryContext();
+    await seedPartialRepo(ctx, '[remote "origin"]\n  url = https://example.com/r.git\n');
+    const { packBytes, blobId } = await buildOneBlobPack(ctx, 'plain fetch\n');
+    const { transport, requests } = fakeRemote({
+      url: 'https://example.com/r.git',
+      advertisedRefs: [{ name: 'refs/heads/main', id: blobId }],
+      packBytes,
+    });
+
+    // Act
+    await fetch({ ...ctx, transport });
+
+    // Assert
+    const post = requests.find((r) => r.method === 'POST');
+    expect(new TextDecoder().decode(post?.body)).not.toContain('filter ');
+    const packDir = await ctx.fs.readdir(`${ctx.layout.gitDir}/objects/pack`);
+    expect(packDir.some((e) => e.name.endsWith('.promisor'))).toBe(false);
+  });
+
+  it('Given a corrupt stored filter, When fetch, Then throws INVALID_FILTER_SPEC', async () => {
+    // Arrange
+    const ctx = createMemoryContext();
+    await seedPartialRepo(
+      ctx,
+      '[remote "origin"]\n  url = https://example.com/r.git\n  partialclonefilter = bogus\n',
+    );
+
+    // Act
+    let caught: unknown;
+    try {
+      await fetch(ctx);
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert
+    expect(caught).toBeInstanceOf(TsgitError);
+    expect((caught as TsgitError).data.code).toBe('INVALID_FILTER_SPEC');
+  });
+
+  it('Given a partial repo and a server that dropped filter support, When fetch, Then throws REMOTE_FILTER_UNSUPPORTED', async () => {
+    // Arrange
+    const ctx = createMemoryContext();
+    await seedPartialRepo(
+      ctx,
+      '[remote "origin"]\n  url = https://example.com/r.git\n  partialclonefilter = blob:none\n',
+    );
+    const { packBytes, blobId } = await buildOneBlobPack(ctx, 'dropped\n');
+    const { transport } = fakeRemote({
+      url: 'https://example.com/r.git',
+      advertisedRefs: [{ name: 'refs/heads/main', id: blobId }],
+      advertisedCaps: ['side-band-64k', 'ofs-delta'],
+      packBytes,
+    });
+
+    // Act
+    let caught: unknown;
+    try {
+      await fetch({ ...ctx, transport });
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert
+    expect(caught).toBeInstanceOf(TsgitError);
+    expect((caught as TsgitError).data.code).toBe('REMOTE_FILTER_UNSUPPORTED');
+  });
+});
