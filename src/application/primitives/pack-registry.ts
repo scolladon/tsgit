@@ -24,6 +24,9 @@ export interface PackLookupHit {
 export interface PackRegistry {
   all(): Promise<ReadonlyArray<RegisteredPack>>;
   lookup(id: ObjectId): Promise<PackLookupHit | undefined>;
+  /** Drop the cached `.idx` scan so the next `all`/`lookup` re-scans the
+   *  pack directory — used after a lazy-fetch writes a new pack. */
+  refresh(): void;
 }
 
 function isSafePackName(name: string): boolean {
@@ -79,6 +82,9 @@ export function createPackRegistry(ctx: Context): PackRegistry {
 
   return {
     all: loadAll,
+    refresh(): void {
+      cache = undefined;
+    },
     async lookup(id: ObjectId): Promise<PackLookupHit | undefined> {
       const packs = await loadAll();
       for (const pack of packs) {

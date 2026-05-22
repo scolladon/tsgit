@@ -16,3 +16,4 @@ export type { HttpRequest, HttpResponse, HttpTransport } from './http-transport.
 export type { Logger } from './logger.js';
 export { noopLogger, wrapLoggerSanitizer } from './logger.js';
 export type { ProgressReporter } from './progress-reporter.js';
+export type { PromisorFetchOutcome, PromisorRemote } from './promisor.js';

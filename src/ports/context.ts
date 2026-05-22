@@ -8,6 +8,7 @@ import type { HookRunner } from './hook-runner.js';
 import type { HttpTransport } from './http-transport.js';
 import type { Logger } from './logger.js';
 import type { ProgressReporter } from './progress-reporter.js';
+import type { PromisorRemote } from './promisor.js';
 
 /**
  * Repository physical layout — where the working tree and.git directory live.
@@ -100,6 +101,11 @@ export interface Context {
   readonly signal?: AbortSignal;
   /** Optional hook runner. Absent ⇒ hooks are inert (browser, or opted out). */
   readonly hooks?: HookRunner;
+  /**
+   * Optional promisor-remote capability. Populated by `openRepository`;
+   * `readObject` consults it to lazy-fetch an object a partial clone omitted.
+   */
+  readonly promisor?: PromisorRemote;
 }
 
 export interface CreateContextParts {
