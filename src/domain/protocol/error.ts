@@ -21,7 +21,9 @@ export type ProtocolError =
   | { readonly code: 'EMPTY_WANTS' }
   | { readonly code: 'EMPTY_RECEIVE_UPDATES' }
   | { readonly code: 'REFSPEC_INVALID'; readonly raw: string; readonly reason: string }
-  | { readonly code: 'TOO_MANY_ADVERTISED_REFS'; readonly count: number; readonly limit: number };
+  | { readonly code: 'TOO_MANY_ADVERTISED_REFS'; readonly count: number; readonly limit: number }
+  | { readonly code: 'INVALID_FILTER_SPEC'; readonly spec: string; readonly reason: string }
+  | { readonly code: 'REMOTE_FILTER_UNSUPPORTED' };
 
 export const invalidPktLength = (value: string): TsgitError =>
   new TsgitError({ code: 'INVALID_PKT_LENGTH', value });
@@ -72,3 +74,9 @@ export const refspecInvalid = (raw: string, reason: string): TsgitError =>
 
 export const tooManyAdvertisedRefs = (count: number, limit: number): TsgitError =>
   new TsgitError({ code: 'TOO_MANY_ADVERTISED_REFS', count, limit });
+
+export const invalidFilterSpec = (spec: string, reason: string): TsgitError =>
+  new TsgitError({ code: 'INVALID_FILTER_SPEC', spec, reason });
+
+export const remoteFilterUnsupported = (): TsgitError =>
+  new TsgitError({ code: 'REMOTE_FILTER_UNSUPPORTED' });
