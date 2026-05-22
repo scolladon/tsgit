@@ -1838,31 +1838,15 @@ describe('merge — sparse checkout', () => {
     expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/keep.txt`)).toBe('KEPT');
   });
 
-  it('Given a resolved-merged outcome whose path the sparse matcher excludes, When writeOutcomeToTree runs, Then the file is not written', async () => {
-    // Arrange
+  it('Given a resolved-merged outcome whose path the sparse matcher excludes, When writeOutcomeToTree runs, Then the file is still written (merged bytes have no other persistence)', async () => {
+    // Arrange — `resolved-merged` carries its merged bytes in memory only;
+    // the working-tree write is their sole persistence, so it must happen
+    // even for an out-of-pattern path, unlike a blob-backed clean outcome.
     const ctx = createMemoryContext();
     await init(ctx);
     const outcome: MergeOutcome = {
       status: 'resolved-merged',
       path: 'drop.txt' as FilePath,
-      bytes: new TextEncoder().encode('M'),
-      mode: FILE_MODE.REGULAR,
-    };
-
-    // Act
-    await writeOutcomeToTree(ctx, outcome, excludesDrop);
-
-    // Assert
-    expect(await ctx.fs.exists(`${ctx.layout.workDir}/drop.txt`)).toBe(false);
-  });
-
-  it('Given a resolved-merged outcome whose path the sparse matcher includes, When writeOutcomeToTree runs, Then the file is written', async () => {
-    // Arrange
-    const ctx = createMemoryContext();
-    await init(ctx);
-    const outcome: MergeOutcome = {
-      status: 'resolved-merged',
-      path: 'keep.txt' as FilePath,
       bytes: new TextEncoder().encode('MERGED'),
       mode: FILE_MODE.REGULAR,
     };
@@ -1871,7 +1855,7 @@ describe('merge — sparse checkout', () => {
     await writeOutcomeToTree(ctx, outcome, excludesDrop);
 
     // Assert
-    expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/keep.txt`)).toBe('MERGED');
+    expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/drop.txt`)).toBe('MERGED');
   });
 
   it('Given an unchanged outcome whose path the sparse matcher excludes, When buildConflictIndexEntries runs, Then its stage-0 entry is skip-worktree', () => {
@@ -1958,7 +1942,7 @@ describe('merge — sparse checkout', () => {
     const sut = await merge(ctx, { target: 'feature', author });
 
     // Assert — the in-pattern conflict file is materialised with markers; the
-    // excluded clean file stays absent (the 17.3a bug fix) and is recorded
+    // excluded clean file stays absent (not re-materialised) and is recorded
     // skip-worktree.
     expect(sut.kind).toBe('conflict');
     expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/src/a.txt`)).toContain('<<<<<<<');
@@ -1969,7 +1953,7 @@ describe('merge — sparse checkout', () => {
     const srcStages = index.entries
       .filter((e) => e.path === 'src/a.txt')
       .map((e) => e.flags.stage)
-      .sort();
+      .sort((a, b) => a - b);
     expect(srcStages).toEqual([1, 2, 3]);
   });
 });

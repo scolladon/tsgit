@@ -1,5 +1,5 @@
 /**
- * Integration — sparse-checkout awareness in `reset` / `merge` (Phase 17.3a).
+ * Integration — sparse-checkout awareness in `reset` / `merge`.
  *
  * Drives the real command surface and asserts the property the unit tests
  * cannot: that `status` stays truthful afterwards (no phantom "deleted" entry
@@ -40,9 +40,9 @@ afterEach(() => {
 describe('integration — sparse reset/merge (memory adapter)', () => {
   it('Given a sparse cone repo, When reset --mixed rebuilds the index, Then the excluded path stays skip-worktree and status is clean', async () => {
     // Arrange — `docs/guide.md` is out of the `src/app` cone: sparse removed it
-    // from disk and set its skip-worktree bit. A 17.3-era reset --mixed would
-    // rebuild the index WITHOUT that bit, and status would then report the
-    // (deliberately absent) file as `deleted`.
+    // from disk and set its skip-worktree bit. A non-sparse-aware reset --mixed
+    // would rebuild the index WITHOUT that bit, and status would then report
+    // the (deliberately absent) file as `deleted`.
     const ctx = createMemoryContext();
     await init(ctx);
     await ctx.fs.writeUtf8(`${ctx.layout.workDir}/src/app/main.ts`, 'export const main = 1;\n');
@@ -116,6 +116,12 @@ describe('integration — sparse reset/merge (memory adapter)', () => {
     expect(await ctx.fs.exists(`${ctx.layout.workDir}/docs/guide.md`)).toBe(false);
     const index = await readIndex(ctx);
     expect(index.entries.find((e) => e.path === 'docs/guide.md')?.flags.skipWorktree).toBe(true);
+    // `status` reflects the conflict but never the excluded file: its
+    // skip-worktree bit keeps the absent `docs/guide.md` out of the change set.
+    const st = await status(ctx);
+    expect(st.clean).toBe(false);
+    const changedPaths = [...st.indexChanges, ...st.workingTreeChanges].map((c) => c.path);
+    expect(changedPaths).not.toContain('docs/guide.md');
   });
 });
 

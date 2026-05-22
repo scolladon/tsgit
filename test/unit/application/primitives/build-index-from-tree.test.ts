@@ -327,7 +327,7 @@ describe('buildIndexFromTree', () => {
 
     it('Given a sparse matcher excluding a path with a matching donor, When buildIndexFromTree runs, Then the entry is skip-worktree with zeroed stats', async () => {
       // Arrange — the donor carries real stat cache, but the matcher excludes
-      // the path; the matcher is authoritative (ADR-075).
+      // the path; the matcher is authoritative over the donor's bits.
       const ctx = await buildSeededContext();
       const blobId = await writeBlob(ctx, 'hello');
       const treeId = await writeTree(ctx, [

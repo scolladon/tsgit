@@ -92,6 +92,9 @@ const rebuildIndexFromCommit = async (ctx: Context, commitId: ObjectId): Promise
       // `exactOptionalPropertyTypes`: spread `sparse` only when defined.
       ...(matcher !== undefined ? { sparse: matcher } : {}),
     });
+    // --mixed always replaces the whole index with the rebuilt projection, so
+    // the commit is unconditional — unlike --hard, which can skip it when the
+    // materialise wrote and deleted nothing.
     await lock.commit(newEntries);
   } finally {
     await lock.release();

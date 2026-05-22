@@ -44,7 +44,7 @@ export interface BuildIndexFromTreeOpts {
    * Sparse-checkout filter. When supplied, an excluded path is rebuilt as a
    * zero-stat skip-worktree entry and an in-pattern path has any stale
    * skip-worktree bit cleared. `undefined` ⇒ sparse inactive — the rebuilt
-   * index is byte-identical to the pre-17.3a behaviour. See ADR-075.
+   * index is byte-identical to the non-sparse behaviour.
    */
   readonly sparse?: SparseMatcher;
 }
@@ -95,7 +95,7 @@ const zeroStatEntry = (leaf: TargetLeaf): IndexEntry => ({
  * cleared — the donor may carry a stale one from when the path was excluded,
  * and the matcher (which classified this path in-pattern) is authoritative.
  * When sparse is inactive the donor flags pass through verbatim, so a manually
- * set skip-worktree bit survives a non-sparse `reset --mixed`. See ADR-075.
+ * set skip-worktree bit survives a non-sparse `reset --mixed`.
  */
 const includedFlags = (
   donorFlags: IndexEntryFlags,
@@ -111,7 +111,7 @@ const projectLeaf = (
   sparse: SparseMatcher | undefined,
 ): IndexEntry => {
   // An excluded path is rebuilt as a zero-stat skip-worktree entry — the file
-  // is absent from disk, so any donor stat cache is meaningless. See ADR-075.
+  // is absent from disk, so any donor stat cache is meaningless.
   if (sparse !== undefined && !sparse(leaf.path)) return skipWorktreeEntry(leaf);
   const donor = donors.get(leaf.path);
   const matches = donor !== undefined && donor.id === leaf.id && donor.mode === leaf.mode;

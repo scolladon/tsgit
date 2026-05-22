@@ -362,8 +362,8 @@ const persistConflictState = async (
   rejectUnsupportedConflicts(result.conflicts);
 
   // loadSparseMatcher is a pure config/pattern-file read — no lock needed. A
-  // defined matcher keeps excluded clean paths out of the working tree and
-  // marks their stage-0 conflict-state entries skip-worktree. See ADR-076.
+  // defined matcher keeps excluded blob-backed paths out of the working tree
+  // and marks their stage-0 conflict-state entries skip-worktree.
   const matcher = await loadSparseMatcher(ctx);
   const lock = await acquireIndexLock(ctx);
   try {
@@ -429,8 +429,8 @@ const writeConflictingWorkingTree = async (
     writeOutcomeToTree(ctx, outcome, matcher),
   );
   // Conflicted paths are materialised even when sparse-excluded — a conflict
-  // the user cannot see is unresolvable (ADR-076), so `writeConflictToTree`
-  // takes no matcher.
+  // the user cannot see is unresolvable, so `writeConflictToTree` takes no
+  // matcher.
   await runBounded(conflicts, MAX_CONCURRENT_PATH_WRITES, (conflict) =>
     writeConflictToTree(ctx, conflict),
   );
@@ -463,9 +463,15 @@ export const runBounded = async <T>(
 
 /**
  * Write a single merge outcome to the working tree. Exported for direct unit
- * testing. A sparse-excluded path is not materialised — the working tree keeps
- * only in-pattern files (ADR-076); `resolved-deleted` needs no guard, since an
- * excluded file is already absent and `removeWorkingTreeFile` is a no-op then.
+ * testing.
+ *
+ * Sparse handling splits on where the content lives:
+ * - `unchanged` / `resolved-known` are backed by a committed blob, so an
+ *   excluded path is skipped — the working tree keeps only in-pattern files.
+ * - `resolved-merged` carries its merged bytes in memory only; this write is
+ *   their sole persistence, so the path is always materialised.
+ * - `resolved-deleted` needs no guard — an excluded file is already absent and
+ *   `removeWorkingTreeFile` is a no-op for it.
  */
 export const writeOutcomeToTree = async (
   ctx: Context,
@@ -482,7 +488,8 @@ export const writeOutcomeToTree = async (
     return;
   }
   if (outcome.status === 'resolved-merged') {
-    if (isExcluded(matcher, outcome.path)) return;
+    // The merged bytes exist only in memory — this write is their sole
+    // persistence, so the path is materialised regardless of the matcher.
     await writeWorkingTreeFile(ctx, outcome.path, outcome.bytes);
     return;
   }
@@ -607,7 +614,7 @@ export const buildConflictIndexEntries = (
   for (const outcome of outcomes) {
     if (outcome.status === 'unchanged' || outcome.status === 'resolved-known') {
       // An excluded clean path is recorded skip-worktree so `status` does not
-      // report the (deliberately un-written) file as deleted. See ADR-076.
+      // report the (deliberately un-written) file as deleted.
       stage0.push(
         isExcluded(matcher, outcome.path)
           ? skipWorktreeEntry({ path: outcome.path, id: outcome.id, mode: outcome.mode })

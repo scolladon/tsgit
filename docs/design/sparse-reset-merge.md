@@ -204,22 +204,29 @@ The fix threads the matcher through `persistConflictState`:
 const matcher = await loadSparseMatcher(ctx);   // before acquireIndexLock
 ```
 
-Three integration points:
+The rule gates on **content provenance** — see
+[ADR-076](../adr/076-merge-conflict-materialization.md). An outcome whose
+content is a committed blob (`unchanged` / `resolved-known`) is recoverable, so
+sparse may skip it; an outcome whose content exists only in memory
+(`resolved-merged` merged bytes, `conflict` marker bytes) has no other home and
+is always materialised. Three integration points:
 
-1. **`writeOutcomeToTree`** — for the clean write statuses (`unchanged`,
-   `resolved-known`, `resolved-merged`), an excluded path is **not written**.
-   `resolved-deleted` needs no guard: an excluded file is already absent, and
-   `removeWorkingTreeFile`'s `exists` check makes the call a no-op.
+1. **`writeOutcomeToTree`** — only the blob-backed clean statuses
+   (`unchanged`, `resolved-known`) skip an excluded path. `resolved-merged` is
+   **always written**: its merged bytes are computed in memory and the
+   working-tree write is their sole persistence (the conflicting-merge path
+   never hashes them into a blob). `resolved-deleted` needs no guard: an
+   excluded file is already absent, and `removeWorkingTreeFile`'s `exists`
+   check makes the call a no-op.
 
-2. **`writeConflictToTree`** — **always writes**, even for an excluded path.
-   **Decision** ([ADR-076](../adr/076-merge-conflict-materialization.md)): a
+2. **`writeConflictToTree`** — **always writes**, even for an excluded path. A
    genuine merge conflict must be materialised so the user can resolve it. A
    conflict's index rows are stages 1/2/3 — `skipWorktree` is a stage-0-only
    flag and does not apply. git itself materialises conflicted entries
    regardless of skip-worktree. Hiding a conflict the user must resolve by hand
    would be a worse failure than a transiently-visible out-of-cone file.
 
-3. **`buildConflictIndexEntries`** — the stage-0 entries it emits for clean
+3. **`buildConflictIndexEntries`** — the stage-0 entries it emits for
    `unchanged` / `resolved-known` outcomes get `skipWorktree: true` when the
    matcher excludes the path (so `status` does not report the un-written file
    as `deleted`). Conflict stage-1/2/3 rows are unchanged. `resolved-merged`
@@ -330,9 +337,10 @@ with an inline `// equivalent-mutant:` justification, per CLAUDE.md.
    branch and `merge`'s three integration points.
 2. **The matcher is authoritative over donor skip-worktree bits in `reset --mixed`**
    ([ADR-075](../adr/075-reset-sparse-integration.md)).
-3. **Merge conflicts are materialised even for excluded paths**
-   ([ADR-076](../adr/076-merge-conflict-materialization.md)) — a conflict the
-   user cannot see is unresolvable.
+3. **Merge materialises in-memory-only content even for excluded paths**
+   ([ADR-076](../adr/076-merge-conflict-materialization.md)) — conflict markers
+   and `resolved-merged` bytes have no other persistence; only blob-backed
+   clean outcomes honour the matcher.
 4. **The `reset --hard` commit guard widens only under sparse** — non-sparse
    behaviour is byte-identical; the index is committed unconditionally when a
    matcher exists, matching `checkout`.
