@@ -197,7 +197,10 @@ const combineSpecAndText = (
     const spec = buildConeSpec(dirs);
     return { spec, text: serializeCone(spec) };
   }
-  const lines = existing === '' ? added : [existing, ...added];
+  // Strip trailing newline(s) from the existing text so a hand-edited file
+  // ending in `\n` does not produce a blank line at the join point.
+  const trimmed = existing.replace(/\n+$/, '');
+  const lines = trimmed === '' ? added : [trimmed, ...added];
   const text = lines.join('\n');
   // `false`: non-cone mode — interpret the combined patterns with gitignore
   // semantics even if the result is cone-shaped (see `buildSpecAndText`).

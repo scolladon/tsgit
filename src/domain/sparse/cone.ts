@@ -47,6 +47,11 @@ const rejectBadSegment = (segment: string, raw: string): void => {
       `cone directory must not contain glob metacharacters: ${shown}`,
     );
   }
+  // A newline/NUL in a cone directory would corrupt the serialised pattern
+  // file — `serializeCone` emits one directory per line.
+  if (/[\n\r\0]/.test(segment)) {
+    throw invalidOption('patterns', `cone directory must not contain control characters: ${shown}`);
+  }
 };
 
 /**

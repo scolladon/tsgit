@@ -261,6 +261,28 @@ describe('buildConeSpec', () => {
       expect(data.reason).toBe(`cone directory has an invalid segment: ${'a'.repeat(128)}`);
     }
   });
+
+  it('Given a cone directory containing a newline, When built, Then it throws a control-character INVALID_OPTION', () => {
+    // Arrange — a newline in a cone dir would inject extra lines into the
+    // serialised `.git/info/sparse-checkout` file.
+    const dirs = ['src\napp'];
+
+    // Act
+    let caught: unknown;
+    try {
+      buildConeSpec(dirs);
+    } catch (error) {
+      caught = error;
+    }
+
+    // Assert
+    expect(caught).toBeInstanceOf(TsgitError);
+    const data = (caught as TsgitError).data;
+    expect(data.code).toBe('INVALID_OPTION');
+    if (data.code === 'INVALID_OPTION') {
+      expect(data.reason).toBe('cone directory must not contain control characters: src\napp');
+    }
+  });
 });
 
 describe('coneMatcher', () => {

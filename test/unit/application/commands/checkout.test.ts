@@ -1057,6 +1057,43 @@ describe('checkout — sparse checkout', () => {
     const idx = await readIndex(ctx);
     expect(idx.entries.every((e) => e.flags.skipWorktree === false)).toBe(true);
   });
+
+  it('Given a sparse repo, When checkout switches to a branch where only an excluded file differs, Then the index records the new branch excluded id', async () => {
+    // Regression — a sparse branch switch whose in-pattern files are identical
+    // but whose excluded file differs has written=0 AND deleted=0. The index
+    // commit must still run: guarding it on those counts would leave the prior
+    // branch's stale excluded id, and the next commit would serialise it wrong.
+    // Arrange — `main` and `feature` share `src/a.txt`; only `docs/b.txt` differs.
+    const ctx = createMemoryContext();
+    await init(ctx);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/src/a.txt`, 'a');
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/docs/b.txt`, 'b');
+    await add(ctx, ['src/a.txt', 'docs/b.txt']);
+    await commit(ctx, { message: 'first', author });
+    await branch(ctx, { kind: 'create', name: 'feature' });
+    await checkout(ctx, { target: 'feature' });
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/docs/b.txt`, 'b-on-feature');
+    await add(ctx, ['docs/b.txt']);
+    await commit(ctx, { message: 'feature edit', author });
+    const { readIndex } = await import('../../../../src/application/primitives/read-index.js');
+    const featureDocsId = (await readIndex(ctx)).entries.find((e) => e.path === 'docs/b.txt')?.id;
+    await checkout(ctx, { target: 'main' });
+    const { sparseCheckout } = await import(
+      '../../../../src/application/commands/sparse-checkout.js'
+    );
+    await sparseCheckout(ctx, { action: 'set', patterns: ['src'], cone: true });
+    const mainDocsId = (await readIndex(ctx)).entries.find((e) => e.path === 'docs/b.txt')?.id;
+
+    // Act — switch to feature: in-pattern `src/a.txt` is byte-identical, so
+    // written=0; `docs/b.txt` is excluded and already absent, so deleted=0.
+    await checkout(ctx, { target: 'feature' });
+
+    // Assert — the excluded entry now carries feature's id, not main's stale one.
+    const docsEntry = (await readIndex(ctx)).entries.find((e) => e.path === 'docs/b.txt');
+    expect(docsEntry?.flags.skipWorktree).toBe(true);
+    expect(docsEntry?.id).toBe(featureDocsId);
+    expect(docsEntry?.id).not.toBe(mainDocsId);
+  });
 });
 
 import { recordingProgress, withProgress } from './fixtures.js';

@@ -114,12 +114,12 @@ const switchBranch = async (ctx: Context, opts: CheckoutSwitchOptions): Promise<
       // `exactOptionalPropertyTypes`: add `sparse` only when a matcher exists.
       ...(matcher !== undefined ? { sparse: matcher } : {}),
     });
-    // `written`/`deleted` are non-negative counts, so `!== 0` is equivalent
-    // to `> 0` here while sidestepping the always-true `>= 0` mutant.
-    // Stryker disable next-line ConditionalExpression: equivalent — forcing the guard true only adds an index commit on a no-op switch, and a no-op commit serializes byte-identically (newIndexEntries equals currentIndex.entries) so behavior is unchanged.
-    if (materializeResult.written !== 0 || materializeResult.deleted !== 0) {
-      await lock.commit(materializeResult.newIndexEntries);
-    }
+    // Commit the index unconditionally. A no-op switch re-writes byte-identical
+    // bytes (harmless). Critically, a *sparse* switch can change excluded
+    // entries' ids — a skip-worktree file that differs between branches —
+    // while `written`/`deleted` are both 0; guarding the commit on those
+    // counts would leave a stale index that the next commit serialises wrong.
+    await lock.commit(materializeResult.newIndexEntries);
   } finally {
     await lock.release();
   }
