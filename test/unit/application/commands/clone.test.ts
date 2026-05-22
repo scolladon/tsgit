@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { clone } from '../../../../src/application/commands/clone.js';
+import { readConfig } from '../../../../src/application/primitives/config-read.js';
 import { TsgitError } from '../../../../src/domain/index.js';
 import type { RefName } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
@@ -703,14 +704,17 @@ describe('clone — partial clone', () => {
     // Act
     await clone(withTransport(ctx, transport), { url: REMOTE_URL, filter: 'blob:none' });
 
-    // Assert
+    // Assert — the promisor block round-trips through the config parser, so
+    // every section / subsection / value reached `.git/config` intact.
     const config = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
     expect(config).toContain('repositoryformatversion = 1');
-    expect(config).toContain('[extensions]');
-    expect(config).toContain('partialClone = origin');
-    expect(config).toContain('[remote "origin"]');
-    expect(config).toContain('promisor = true');
-    expect(config).toContain('partialclonefilter = blob:none');
+    const parsed = await readConfig(ctx);
+    const remote = parsed.remote?.get('origin');
+    expect(remote?.url).toBe(REMOTE_URL);
+    expect(remote?.fetch).toEqual(['+refs/heads/*:refs/remotes/origin/*']);
+    expect(remote?.promisor).toBe(true);
+    expect(remote?.partialCloneFilter).toBe('blob:none');
+    expect(parsed.extensions?.partialClone).toBe('origin');
     const packDir = await ctx.fs.readdir(`${ctx.layout.gitDir}/objects/pack`);
     expect(packDir.some((e) => e.name.endsWith('.promisor'))).toBe(true);
   });

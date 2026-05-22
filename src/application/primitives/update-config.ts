@@ -1,7 +1,7 @@
 import { invalidOption } from '../../domain/commands/error.js';
 import { TsgitError } from '../../domain/error.js';
 import type { Context } from '../../ports/context.js';
-import { invalidateConfigCache } from './config-read.js';
+import { invalidateConfigCache, parseSectionHeader } from './config-read.js';
 
 /**
  * Targeted `.git/config` writer (ADR-082). tsgit has no general INI writer;
@@ -10,30 +10,6 @@ import { invalidateConfigCache } from './config-read.js';
  * one `key = value` per call under any `[section]` / `[section "subsection"]`.
  */
 
-interface ParsedHeader {
-  readonly section: string;
-  readonly subsection: string | undefined;
-}
-
-/**
- * Parse a `[section]` / `[section "subsection"]` header line, or `undefined`
- * when the line is not a well-formed section header.
- */
-const parseHeader = (line: string): ParsedHeader | undefined => {
-  const trimmed = line.trim();
-  if (!trimmed.startsWith('[') || !trimmed.endsWith(']')) return undefined;
-  const inner = trimmed.slice(1, -1).trim();
-  if (inner === '') return undefined;
-  const quoteAt = inner.indexOf('"');
-  if (quoteAt === -1) return { section: inner, subsection: undefined };
-  const lastQuote = inner.lastIndexOf('"');
-  if (lastQuote <= quoteAt) return undefined;
-  return {
-    section: inner.slice(0, quoteAt).trim(),
-    subsection: inner.slice(quoteAt + 1, lastQuote),
-  };
-};
-
 /**
  * True when `line` is the header for `[section]` / `[section "subsection"]`.
  * Section names are matched case-insensitively (git semantics); subsection
@@ -41,7 +17,7 @@ const parseHeader = (line: string): ParsedHeader | undefined => {
  * no subsection or an explicitly empty one (`[section ""]`).
  */
 const matchesSection = (line: string, section: string, subsection: string | undefined): boolean => {
-  const header = parseHeader(line);
+  const header = parseSectionHeader(line.trim());
   if (header === undefined) return false;
   if (header.section.toLowerCase() !== section.toLowerCase()) return false;
   if (subsection === undefined) {

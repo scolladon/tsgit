@@ -85,6 +85,11 @@ export async function readObject(
     // Partial-clone lazy-fetch: pull the missing object, refresh the pack
     // registry so the new pack is visible, then retry the resolve exactly once.
     const attempted = await lazyFetchOnce(ctx, promisor, id);
+    // equivalent-mutant: forcing this guard to `false` (skip the early throw)
+    // is observable-equivalent — when the promisor did not attempt a fetch
+    // (non-partial repo), the retry below re-resolves the unchanged store and
+    // throws the identical OBJECT_NOT_FOUND. The guard is kept to surface the
+    // original error directly and skip a pointless re-resolve.
     if (!attempted) throw err;
     registry.refresh();
     return resolveObject(ctx, registry, id, verifyHash, options?.maxBytes);

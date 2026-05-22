@@ -157,7 +157,12 @@ const indexOfUnquoted = (line: string, ch: string): number => {
   return -1;
 };
 
-const parseSectionHeader = (
+/**
+ * Parse a trimmed `[section]` / `[section "subsection"]` header line, or
+ * `undefined` when the line is not a well-formed header. Exported so the
+ * sibling config *writer* (`update-config.ts`) shares one header parser.
+ */
+export const parseSectionHeader = (
   line: string,
 ): { readonly section: string; readonly subsection: string | undefined } | undefined => {
   if (!line.startsWith('[') || !line.endsWith(']')) return undefined;

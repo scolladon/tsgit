@@ -1124,5 +1124,53 @@ describe('primitives/config-read', () => {
       expect(remote?.promisor).toBeUndefined();
       expect(remote?.partialCloneFilter).toBeUndefined();
     });
+
+    it('Given a partialclone key under a non-extensions section, When readConfig, Then extensions stays undefined', async () => {
+      // Arrange — only the literal `[extensions]` section feeds mergeExtensions.
+      const ctx = createMemoryContext();
+      await seed(ctx, '[notanextension]\n\tpartialclone = origin\n');
+
+      // Act
+      const sut = await readConfig(ctx);
+
+      // Assert
+      expect(sut.extensions).toBeUndefined();
+    });
+
+    it('Given an [extensions "sub"] subsection, When readConfig, Then it is NOT treated as [extensions]', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await seed(ctx, '[extensions "sub"]\n\tpartialclone = origin\n');
+
+      // Act
+      const sut = await readConfig(ctx);
+
+      // Assert
+      expect(sut.extensions).toBeUndefined();
+    });
+
+    it('Given a [remote] section with an unrecognised key, When readConfig, Then partialCloneFilter stays undefined', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await seed(ctx, '[remote "origin"]\n\turl = https://e/r.git\n\tpushurl = https://e/p.git\n');
+
+      // Act
+      const sut = await readConfig(ctx);
+
+      // Assert — only the `partialclonefilter` key sets the field.
+      expect(sut.remote?.get('origin')?.partialCloneFilter).toBeUndefined();
+    });
+
+    it('Given an [extensions] section with a non-partialclone key, When readConfig, Then partialClone stays undefined', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await seed(ctx, '[extensions]\n\tworktreeconfig = true\n');
+
+      // Act
+      const sut = await readConfig(ctx);
+
+      // Assert — only the `partialclone` key populates extensions.
+      expect(sut.extensions?.partialClone).toBeUndefined();
+    });
   });
 });

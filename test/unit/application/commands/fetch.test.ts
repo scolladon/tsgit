@@ -1640,4 +1640,22 @@ describe('fetch — partial clone', () => {
     expect(caught).toBeInstanceOf(TsgitError);
     expect((caught as TsgitError).data.code).toBe('REMOTE_FILTER_UNSUPPORTED');
   });
+
+  it('Given a remote with an empty url, When fetch, Then throws REMOTE_NOT_CONFIGURED', async () => {
+    // Arrange
+    const ctx = createMemoryContext();
+    await seedPartialRepo(ctx, '[remote "origin"]\n  url =\n');
+
+    // Act
+    let caught: unknown;
+    try {
+      await fetch(ctx);
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert — an empty url is as unusable as a missing one.
+    expect(caught).toBeInstanceOf(TsgitError);
+    expect((caught as TsgitError).data.code).toBe('REMOTE_NOT_CONFIGURED');
+  });
 });

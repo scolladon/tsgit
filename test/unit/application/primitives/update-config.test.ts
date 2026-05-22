@@ -517,6 +517,7 @@ describe('primitives/update-config', () => {
       const data = (caught as TsgitError).data;
       expect(data.code).toBe('INVALID_OPTION');
       if (data.code !== 'INVALID_OPTION') throw new Error('unreachable');
+      expect(data.option).toBe('config');
       expect(data.reason).toContain('quote');
     });
 
@@ -534,6 +535,7 @@ describe('primitives/update-config', () => {
       const data = (caught as TsgitError).data;
       expect(data.code).toBe('INVALID_OPTION');
       if (data.code !== 'INVALID_OPTION') throw new Error('unreachable');
+      expect(data.option).toBe('config');
       expect(data.reason).toContain('section');
     });
   });

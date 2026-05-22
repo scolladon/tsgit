@@ -297,4 +297,24 @@ describe('fetchMissing', () => {
     expect(caught).toBeInstanceOf(TsgitError);
     expect((caught as TsgitError).data.code).toBe('HTTP_ERROR');
   });
+
+  it('Given a configured auth credential, When fetchMissing, Then the credentialled fetch succeeds', async () => {
+    // Arrange
+    const base = createMemoryContext();
+    await seedRepo(base, {});
+    await withConfig(base, PARTIAL_CONFIG);
+    const { packBytes, blobId } = await onePackedBlob(base, 'with auth\n');
+    const { transport } = fakeRemote(packBytes);
+    const ctx: Context = {
+      ...base,
+      transport,
+      config: { auth: { type: 'bearer', token: 'sekret' } },
+    };
+
+    // Act
+    const sut = await fetchMissing(ctx, { oids: [blobId] });
+
+    // Assert — the auth-bearing transport pipeline still resolves the object.
+    expect(sut).toEqual({ remote: 'origin', requested: 1, fetched: 1 });
+  });
 });
