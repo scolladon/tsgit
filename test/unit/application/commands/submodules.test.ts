@@ -164,6 +164,33 @@ describe('commands/submodules', () => {
     expect(sut.entries.map((e) => e.depth)).toEqual([0]);
   });
 
+  it('Given recursive=true and maxDepth=0, When submodules(), Then the depth cap is forwarded and only depth-0 entries yield', async () => {
+    // Arrange — set up an absorbed nested submodule.
+    __resetConfigCacheForTests();
+    const ctx = await buildSeededContext();
+    const childGitDir = `${ctx.layout.gitDir}/modules/foo`;
+    const childCtx: Context = Object.freeze({
+      ...ctx,
+      layout: Object.freeze({ ...ctx.layout, gitDir: childGitDir }),
+    });
+    const childTreeId = await writeRoot(childCtx, undefined, [
+      { name: 'inner', id: FAKE_COMMIT_NESTED },
+    ]);
+    const childCommit = await writeCommit(childCtx, childTreeId);
+    await ctx.fs.writeUtf8(`${childGitDir}/HEAD`, `${childCommit}\n`);
+
+    const text = '[submodule "foo"]\n\tpath = foo\n\turl = https://e/foo.git\n';
+    const parentTree = await writeRoot(ctx, text, [{ name: 'foo', id: childCommit }]);
+    const parentCommit = await writeCommit(ctx, parentTree);
+    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, `${parentCommit}\n`);
+
+    // Act
+    const sut = await submodules(ctx, { recursive: true, maxDepth: 0 });
+
+    // Assert — the cap was forwarded; recursion entered then short-circuited.
+    expect(sut.entries.map((e) => e.depth)).toEqual([0]);
+  });
+
   it('Given an explicit ref name, When submodules({ ref: "refs/heads/feature" }), Then walks that ref', async () => {
     // Arrange
     const { ctx, commit } = await seedRepoWithHead(undefined, [{ name: 'foo', id: FAKE_COMMIT }]);

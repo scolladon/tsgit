@@ -1,4 +1,4 @@
-# Design — Submodule Walk (Phase 17.5)
+# Design — Submodule Walk
 
 ## Goal
 
@@ -71,6 +71,12 @@ export interface WalkSubmodulesOptions {
   readonly ref?: RefName | ObjectId;
   /** Descend into nested submodules' own .gitmodules. Default: false. */
   readonly recursive?: boolean;
+  /**
+   * Cap on recursion depth. Default: MAX_SUBMODULE_DEPTH (100). Entries at
+   * exactly this depth are yielded but not recursed into; lets callers (and
+   * tests) tighten the backstop without changing the constant.
+   */
+  readonly maxDepth?: number;
 }
 ```
 
@@ -82,6 +88,8 @@ export type SubmodulesAction = {
   /** Tree-ish, as a string. Default: 'HEAD'. */
   readonly ref?: string;
   readonly recursive?: boolean;
+  /** Forwarded to `walkSubmodules.maxDepth`. Default: MAX_SUBMODULE_DEPTH. */
+  readonly maxDepth?: number;
 };
 
 export type SubmodulesResult = {

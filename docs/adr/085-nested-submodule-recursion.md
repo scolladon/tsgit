@@ -37,10 +37,11 @@ submodule:
 
 ```
 childGitDir = `${ctx.layout.gitDir}/modules/${name}`
-childCtx    = Object.freeze({ ...ctx,
+const { promisor, hooks, ...rest } = ctx
+childCtx    = Object.freeze({ ...rest,
                 layout: { workDir: `${ctx.layout.workDir}/${treeRelPath}`,
                           gitDir: childGitDir, bare: false, homeDir },
-                cwd: …, promisor: undefined })
+                cwd: childWorkDir })
 ```
 
 The formula is uniform at every nesting level: a nested submodule of a
@@ -53,10 +54,13 @@ Rules:
   delta cache is keyed by `ObjectId`, which is content-addressed and therefore
   globally unique across object stores; sharing it is safe and saves a
   re-allocation.
-- **`promisor` is dropped.** The parent's promisor closes over the *parent*
-  `Context`; left in place it would lazy-fetch a missing nested object from the
-  *superproject's* remote — the wrong store. A genuine nested miss must stop
-  recursion, not trigger a cross-repo fetch.
+- **`promisor` and `hooks` are dropped.** Both close over the *parent*
+  `Context`: the parent's promisor would lazy-fetch a missing nested object
+  from the *superproject's* remote (wrong store); a hook runner inheriting the
+  parent gitdir would fire against the wrong repository if ever invoked while
+  reading the child. The child `Context` is built from `{ ...rest }` where the
+  destructure pattern omits both fields, so neither path is reachable from a
+  nested read.
 - **Uninitialised → skipped.** If `${childGitDir}/HEAD` does not exist
   (probed with `fs.exists`, not a caught exception) the submodule is not
   initialised locally; the parent entry is still yielded, recursion stops.
@@ -68,7 +72,8 @@ Rules:
 - **Cycle guarded.** A set of visited gitdir paths is threaded through the
   recursion; a gitdir already in the set is not re-entered.
 - **Depth guarded.** `MAX_SUBMODULE_DEPTH = 100` backstops a pathologically
-  deep acyclic nest.
+  deep acyclic nest. Callers (and tests) can tighten the cap per call via
+  `WalkSubmodulesOptions.maxDepth`; the default remains the constant.
 - **Unsafe names rejected.** `name` is the only `.gitmodules`-supplied string
   used to build a filesystem path. A name that is empty, `.`/`..`, contains a
   `..` segment or a backslash, is absolute, or begins with `-` is rejected
@@ -108,6 +113,7 @@ Rules:
 ### Neutral
 
 - The child `Context` is a frozen spread of the parent — it inherits `signal`
-  and `config` (abort and parallelism propagate) and omits `promisor`.
+  and `config` (abort and parallelism propagate) and omits `promisor` and
+  `hooks` (both close over the parent gitdir).
 </content>
 </invoke>

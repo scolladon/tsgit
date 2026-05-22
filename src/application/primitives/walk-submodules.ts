@@ -136,7 +136,7 @@ interface SubmoduleKeys {
   readonly branch?: string;
 }
 
-const folder = (
+const mergeKey = (
   acc: SubmoduleKeys,
   kv: { readonly key: string; readonly value: string },
 ): SubmoduleKeys => {
@@ -151,7 +151,7 @@ const reduceSection = (section: IniSection): GitmodulesRow | undefined => {
   if (section.section !== 'submodule') return undefined;
   if (section.subsection === undefined) return undefined;
   if (isUnsafeSubmoduleName(section.subsection)) return undefined;
-  const keys = section.entries.reduce(folder, {});
+  const keys = section.entries.reduce(mergeKey, {});
   return {
     name: section.subsection,
     ...(keys.path !== undefined ? { path: keys.path } : {}),
@@ -200,6 +200,11 @@ const isUnsafeSubmoduleName = (name: string): boolean => {
 /** @internal — exposed solely for direct unit testing of the name guard. */
 export const __isUnsafeSubmoduleNameForTests = isUnsafeSubmoduleName;
 
+/**
+ * `name` is the `.gitmodules` subsection name as returned by `reduceSection`,
+ * which already rejects unsafe names; no second `isUnsafeSubmoduleName` check
+ * is needed here — a defensive call would be unreachable dead code.
+ */
 const deriveChildContext = async (
   ctx: Context,
   name: string | undefined,
@@ -207,7 +212,6 @@ const deriveChildContext = async (
   visited: ReadonlySet<string>,
 ): Promise<Context | undefined> => {
   if (name === undefined) return undefined;
-  if (isUnsafeSubmoduleName(name)) return undefined;
   const gitDir = `${ctx.layout.gitDir}/modules/${name}`;
   if (visited.has(gitDir)) return undefined;
   if (!(await ctx.fs.exists(`${gitDir}/HEAD`))) return undefined;

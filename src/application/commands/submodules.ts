@@ -19,6 +19,11 @@ export type SubmodulesAction = {
   readonly ref?: string;
   /** Descend into nested submodules' own `.gitmodules`. Default: `false`. */
   readonly recursive?: boolean;
+  /**
+   * Cap on recursion depth. Default: `MAX_SUBMODULE_DEPTH`. Entries at exactly
+   * this depth are yielded but not recursed into.
+   */
+  readonly maxDepth?: number;
 };
 
 export type SubmodulesResult = {
@@ -37,7 +42,11 @@ export const submodules = async (
   const ref = coerceRef(opts.ref ?? 'HEAD');
   const recursive = opts.recursive === true;
   const entries: SubmoduleEntry[] = [];
-  for await (const entry of walkSubmodules(ctx, { ref, recursive })) {
+  for await (const entry of walkSubmodules(ctx, {
+    ref,
+    recursive,
+    ...(opts.maxDepth !== undefined ? { maxDepth: opts.maxDepth } : {}),
+  })) {
     entries.push(entry);
   }
   return { kind: 'list', entries };
