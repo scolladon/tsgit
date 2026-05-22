@@ -1034,4 +1034,83 @@ describe('primitives/config-read', () => {
     // Assert
     expect(sut).not.toThrow();
   });
+
+  describe('partial-clone keys', () => {
+    it('Given an [extensions] partialClone entry, When readConfig, Then extensions.partialClone is set', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await seed(ctx, '[extensions]\n\tpartialClone = origin\n');
+
+      // Act
+      const sut = await readConfig(ctx);
+
+      // Assert
+      expect(sut.extensions?.partialClone).toBe('origin');
+    });
+
+    it('Given an [extensions] partialclone key in lower case, When readConfig, Then it is still parsed', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await seed(ctx, '[extensions]\n\tpartialclone = upstream\n');
+
+      // Act
+      const sut = await readConfig(ctx);
+
+      // Assert
+      expect(sut.extensions?.partialClone).toBe('upstream');
+    });
+
+    it('Given a config with no [extensions] section, When readConfig, Then extensions is undefined', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await seed(ctx, '[core]\n\tbare = false\n');
+
+      // Act
+      const sut = await readConfig(ctx);
+
+      // Assert
+      expect(sut.extensions).toBeUndefined();
+    });
+
+    it('Given a [remote] promisor = true, When readConfig, Then the remote entry is a promisor', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await seed(ctx, '[remote "origin"]\n\turl = https://example.com/r.git\n\tpromisor = true\n');
+
+      // Act
+      const sut = await readConfig(ctx);
+
+      // Assert
+      expect(sut.remote?.get('origin')?.promisor).toBe(true);
+    });
+
+    it('Given a [remote] partialclonefilter, When readConfig, Then the stored filter is parsed', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await seed(
+        ctx,
+        '[remote "origin"]\n\turl = https://example.com/r.git\n\tpartialclonefilter = blob:none\n',
+      );
+
+      // Act
+      const sut = await readConfig(ctx);
+
+      // Assert
+      expect(sut.remote?.get('origin')?.partialCloneFilter).toBe('blob:none');
+    });
+
+    it('Given a [remote] with only a url, When readConfig, Then promisor and filter stay undefined', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await seed(ctx, '[remote "origin"]\n\turl = https://example.com/r.git\n');
+
+      // Act
+      const sut = await readConfig(ctx);
+
+      // Assert
+      const remote = sut.remote?.get('origin');
+      expect(remote?.promisor).toBeUndefined();
+      expect(remote?.partialCloneFilter).toBeUndefined();
+    });
+  });
 });
