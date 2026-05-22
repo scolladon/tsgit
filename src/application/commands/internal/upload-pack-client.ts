@@ -64,3 +64,10 @@ export const uniqueRefOids = (refs: ReadonlyArray<AdvertisedRef>): ReadonlyArray
   }
   return out;
 };
+
+/**
+ * True when the server's ref-advertisement capability set includes the
+ * `filter` token — the prerequisite for a partial-clone `filter` request.
+ */
+export const advertisesFilter = (capabilities: ReadonlyArray<string>): boolean =>
+  capabilities.includes('filter');
