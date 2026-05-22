@@ -409,4 +409,63 @@ describe('readObject — lazy-fetch (partial clone)', () => {
     expect(sut.type).toBe('blob');
     expect(calls.count).toBe(0);
   });
+
+  it('Given a promisor and a corrupted object, When readObject, Then the hash-mismatch error propagates and the promisor is not consulted', async () => {
+    // Arrange — a loose object whose bytes do not hash to its id.
+    const base = await buildSeededContext();
+    const fakeId = 'a'.repeat(40) as ObjectId;
+    const compressed = await base.compressor.deflate(new TextEncoder().encode('blob 3\0xyz'));
+    await base.fs.write(
+      `${base.layout.gitDir}/objects/${await computeLooseObjectPathOf(fakeId)}`,
+      compressed,
+    );
+    const calls = { count: 0 };
+    const ctx: Context = {
+      ...base,
+      promisor: {
+        fetch: async (oids) => {
+          calls.count += 1;
+          return { attempted: true, requested: oids.length, fetched: 0 };
+        },
+      },
+    };
+
+    // Act & Assert — a non-OBJECT_NOT_FOUND error is rethrown untouched.
+    try {
+      await readObject(ctx, fakeId);
+      expect.unreachable();
+    } catch (error) {
+      expect((error as TsgitError).data.code).toBe('OBJECT_HASH_MISMATCH');
+    }
+    expect(calls.count).toBe(0);
+  });
+
+  it('Given two sequential reads of an object the promisor cannot supply, When readObject, Then the promisor is invoked for each', async () => {
+    // Arrange — the in-flight entry must clear after each fetch resolves.
+    const base = await buildSeededContext();
+    const id = 'e'.repeat(40) as ObjectId;
+    const calls = { count: 0 };
+    const ctx: Context = {
+      ...base,
+      promisor: {
+        fetch: async (oids) => {
+          calls.count += 1;
+          return { attempted: true, requested: oids.length, fetched: 0 };
+        },
+      },
+    };
+
+    // Act — two reads, awaited one after the other.
+    for (let i = 0; i < 2; i += 1) {
+      try {
+        await readObject(ctx, id);
+        expect.unreachable();
+      } catch (error) {
+        expect((error as TsgitError).data.code).toBe('OBJECT_NOT_FOUND');
+      }
+    }
+
+    // Assert — each sequential miss issued its own fetch.
+    expect(calls.count).toBe(2);
+  });
 });

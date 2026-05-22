@@ -161,7 +161,10 @@ describe('fetchMissing', () => {
 
     // Assert
     expect(caught).toBeInstanceOf(TsgitError);
-    expect((caught as TsgitError).data.code).toBe('REMOTE_NOT_CONFIGURED');
+    const data = (caught as TsgitError).data;
+    expect(data.code).toBe('REMOTE_NOT_CONFIGURED');
+    if (data.code !== 'REMOTE_NOT_CONFIGURED') throw new Error('unreachable');
+    expect(data.remote).toBe('origin');
   });
 
   it('Given an empty oid list, When fetchMissing, Then it is a no-op with no network call', async () => {
@@ -232,5 +235,38 @@ describe('fetchMissing', () => {
     // Assert — the pre-existing pack made writeExclusive throw FILE_EXISTS,
     // which fetchMissing swallows: the objects are already on disk.
     expect(sut).toEqual({ remote: 'origin', requested: 1, fetched: 1 });
+  });
+
+  it('Given a duplicate oid in the list, When fetchMissing, Then it is fetched once', async () => {
+    // Arrange
+    const base = createMemoryContext();
+    await seedRepo(base, {});
+    await withConfig(base, PARTIAL_CONFIG);
+    const { packBytes, blobId } = await onePackedBlob(base, 'deduped\n');
+    const { transport, requests } = fakeRemote(packBytes);
+    const ctx: Context = { ...base, transport };
+
+    // Act — the same missing oid appears twice.
+    const sut = await fetchMissing(ctx, { oids: [blobId, blobId] });
+
+    // Assert — collectMissing de-duplicates, so it is fetched once.
+    expect(sut).toEqual({ remote: 'origin', requested: 2, fetched: 1 });
+    expect(requests.filter((r) => r.method === 'POST')).toHaveLength(1);
+  });
+
+  it('Given a partial repo and a missing object, When the promisor port fetches, Then it reports attempted=true', async () => {
+    // Arrange
+    const base = createMemoryContext();
+    await seedRepo(base, {});
+    await withConfig(base, PARTIAL_CONFIG);
+    const { packBytes, blobId } = await onePackedBlob(base, 'port path\n');
+    const { transport } = fakeRemote(packBytes);
+    const ctx: Context = { ...base, transport };
+
+    // Act
+    const sut = await createPromisorRemote(ctx).fetch([blobId]);
+
+    // Assert
+    expect(sut).toEqual({ attempted: true, requested: 1, fetched: 1 });
   });
 });

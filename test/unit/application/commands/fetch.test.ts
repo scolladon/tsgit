@@ -1606,7 +1606,11 @@ describe('fetch — partial clone', () => {
 
     // Assert
     expect(caught).toBeInstanceOf(TsgitError);
-    expect((caught as TsgitError).data.code).toBe('INVALID_FILTER_SPEC');
+    const data = (caught as TsgitError).data;
+    expect(data.code).toBe('INVALID_FILTER_SPEC');
+    if (data.code !== 'INVALID_FILTER_SPEC') throw new Error('unreachable');
+    expect(data.spec).toBe('bogus');
+    expect(data.reason).toBe('unknown-kind');
   });
 
   it('Given a partial repo and a server that dropped filter support, When fetch, Then throws REMOTE_FILTER_UNSUPPORTED', async () => {

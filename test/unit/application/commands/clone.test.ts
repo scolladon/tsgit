@@ -658,7 +658,11 @@ describe('clone — partial clone', () => {
 
     // Assert
     expect(caught).toBeInstanceOf(TsgitError);
-    expect((caught as TsgitError).data.code).toBe('INVALID_FILTER_SPEC');
+    const data = (caught as TsgitError).data;
+    expect(data.code).toBe('INVALID_FILTER_SPEC');
+    if (data.code !== 'INVALID_FILTER_SPEC') throw new Error('unreachable');
+    expect(data.spec).toBe('not-a-filter');
+    expect(data.reason).toBe('unknown-kind');
   });
 
   it('Given a server that does not advertise filter, When clone with a filter, Then throws REMOTE_FILTER_UNSUPPORTED', async () => {
