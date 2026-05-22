@@ -478,7 +478,12 @@
     "promisors",
     "reserialise",
     "entrancy",
-    "reparsed"
+    "reparsed",
+    "superproject",
+    "uninitialised",
+    "initialising",
+    "streamable",
+    "retargets"
   ],
   "ignorePaths": [
     "node_modules",
