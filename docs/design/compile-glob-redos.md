@@ -74,7 +74,7 @@ token list — a pure value, no `RegExp` `lastIndex` state to worry about.
 ## 4. Tokenisation
 
 The pattern is scanned **once** into a `GlobToken[]`. The scan reuses the exact
-cursor logic the regex compiler already had (`consumeStar`'s `**/` /  `**` /
+cursor logic the regex compiler already had (`scanStar`'s `**/` /  `**` /
 `*` disambiguation), so tokenisation is byte-identical to the old regex's
 structure — only the emitted unit changes from a regex fragment to a token.
 

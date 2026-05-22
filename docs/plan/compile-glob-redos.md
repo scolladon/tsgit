@@ -36,7 +36,7 @@ not pass otherwise. This is one atomic commit.
 ### Implement — `src/domain/pathspec/compile-glob.ts`
 
 - Add `export interface GlobMatcher { test(path: string): boolean }`.
-- `GlobToken` union + `tokenize(pattern): GlobToken[]` (reuse the `consumeStar`
+- `GlobToken` union + `tokenize(pattern): GlobToken[]` (reuse the `scanStar`
   cursor logic; emit tokens, not regex fragments).
 - `matchTokens(tokens, anchored, withDirSuffix, path): boolean` — the backward
   DP of design §5. `step<kind>` helpers per token kind, small and pure.
