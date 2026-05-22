@@ -26,7 +26,12 @@
  *  as clean would survive the reset, AND the donor stats would be stale
  *  relative to the actual disk state.
  */
-import { type GitIndex, type IndexEntry, STAGE0_FLAGS } from '../../domain/git-index/index.js';
+import {
+  compareEntryPath,
+  type GitIndex,
+  type IndexEntry,
+  STAGE0_FLAGS,
+} from '../../domain/git-index/index.js';
 import {
   FILE_MODE,
   type FileMode,
@@ -195,12 +200,9 @@ const skipWorktreeEntry = (entry: TargetEntry): IndexEntry => ({
   path: entry.path,
 });
 
+/** Path-sort the merged entry list (in-pattern + synthesised excluded). */
 const sortIndexEntries = (entries: ReadonlyArray<IndexEntry>): IndexEntry[] =>
-  // In-pattern and excluded entries partition the unique target paths, so
-  // `a.path === b.path` never occurs and a single less-than test is a correct
-  // total order; the `> : 0` tail would be dead code.
-  // Stryker disable next-line EqualityOperator: equivalent — distinct paths mean `<` vs `<=` only differ on the impossible equal-path case.
-  [...entries].sort((a, b) => (a.path < b.path ? -1 : 1));
+  [...entries].sort(compareEntryPath);
 
 interface MaterializePlan {
   readonly target: ReadonlyArray<TargetEntry>;
@@ -277,6 +279,7 @@ export const materializeTree = async (
   // Sparse branch-switch: append one synthesised skip-worktree entry per
   // excluded target path so the index keeps every tracked path (git-faithful).
   const newIndexEntries =
+    // Stryker disable next-line ConditionalExpression: equivalent — forcing the guard false re-sorts the already-path-sorted `inScope` (from `mergeNewIndexEntries`) into a content-identical list when `excluded` is empty; the guard only skips that redundant work.
     plan.excluded.length === 0
       ? inScope
       : sortIndexEntries([...inScope, ...plan.excluded.map(skipWorktreeEntry)]);

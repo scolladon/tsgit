@@ -270,6 +270,38 @@ describe('checkout', () => {
     expect(data?.resource).toBe('index');
   });
 
+  it('Given a switch-checkout that throws on a dirty collision, When checkout, Then the index lock is released', async () => {
+    // Regression — `switchBranch` acquires the index lock, then `materializeTree`
+    // can throw (an untracked-file collision) BEFORE `lock.commit`. The `finally`
+    // block must still release the lock, or the repository is left wedged.
+    // Arrange — `feature` tracks `collide.txt`; `main` has an untracked file at
+    // the same path.
+    const ctx = createMemoryContext();
+    await init(ctx);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/base.txt`, 'base');
+    await add(ctx, ['base.txt']);
+    await commit(ctx, { message: 'base', author });
+    await branch(ctx, { kind: 'create', name: 'feature' });
+    await checkout(ctx, { target: 'feature' });
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/collide.txt`, 'from-feature');
+    await add(ctx, ['collide.txt']);
+    await commit(ctx, { message: 'feature file', author });
+    await checkout(ctx, { target: 'main' });
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/collide.txt`, 'untracked');
+
+    // Act — the switch throws CHECKOUT_OVERWRITE_DIRTY from inside the lock.
+    let caught: unknown;
+    try {
+      await checkout(ctx, { target: 'feature' });
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert — it threw, and the `finally` released the index lock.
+    expect((caught as TsgitError).data.code).toBe('CHECKOUT_OVERWRITE_DIRTY');
+    expect(await ctx.fs.exists(`${ctx.layout.gitDir}/index.lock`)).toBe(false);
+  });
+
   it('Given an index.lock already on disk, When path-restore from HEAD, Then throws RESOURCE_LOCKED (lock-first ordering for non-index source)', async () => {
     // Arrange
     const { ctx } = await seedWithBranches();

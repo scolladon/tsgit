@@ -280,6 +280,7 @@ describe('buildConeSpec', () => {
     const data = (caught as TsgitError).data;
     expect(data.code).toBe('INVALID_OPTION');
     if (data.code === 'INVALID_OPTION') {
+      expect(data.option).toBe('patterns');
       expect(data.reason).toBe('cone directory must not contain control characters: src\napp');
     }
   });

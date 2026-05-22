@@ -16,4 +16,4 @@ export { isStatClean, STAGE0_FLAGS } from './index-entry.js';
 export { parseIndex } from './index-parser.js';
 
 // Writer
-export { serializeIndex } from './index-writer.js';
+export { compareEntryPath, serializeIndex } from './index-writer.js';

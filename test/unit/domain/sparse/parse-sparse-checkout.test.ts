@@ -201,4 +201,16 @@ describe('buildSparseMatcher', () => {
     expect(sut(path('docs/guide.md'))).toBe(true);
     expect(sut(path('other/x.ts'))).toBe(false);
   });
+
+  it('Given a non-cone pattern with a mid-line CR, When parsed, Then only a trailing CR is stripped (the inner CR stays literal)', () => {
+    // Arrange — a `\r` between `r` and `c`; the strip is anchored to line-end,
+    // so the inner CR remains part of the pattern and `src/` must NOT match.
+    const { spec } = parseSparseCheckout('/sr\rc/\n', false);
+
+    // Act
+    const sut = buildSparseMatcher(spec);
+
+    // Assert
+    expect(sut(path('src/main.ts'))).toBe(false);
+  });
 });

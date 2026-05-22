@@ -15,8 +15,12 @@ import type { Context } from '../../ports/context.js';
 import { readConfig } from './config-read.js';
 import { sparseCheckoutPath } from './path-layout.js';
 
-/** Hard cap (bytes) on the `.git/info/sparse-checkout` file, mirroring `MAX_GITIGNORE_BYTES`. */
-export const MAX_SPARSE_PATTERN_FILE_BYTES = 1 * 1024 * 1024;
+/**
+ * Hard cap on the `.git/info/sparse-checkout` file — 1 MiB, mirroring
+ * `MAX_GITIGNORE_BYTES`. A plain literal (not `1024 * 1024`) so a boundary test
+ * keyed on the constant cannot drift with an arithmetic mutation of it.
+ */
+export const MAX_SPARSE_PATTERN_FILE_BYTES = 1_048_576;
 
 const DECODER = new TextDecoder();
 

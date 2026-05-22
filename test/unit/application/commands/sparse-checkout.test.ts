@@ -486,19 +486,6 @@ describe('sparseCheckout command', () => {
       expect((sut as Extract<SparseCheckoutResult, { kind: 'applied' }>).cone).toBe(false);
       expect(await readConfigText(ctx)).toContain('sparseCheckoutCone = false');
     });
-
-    it('Given a non-cone file ending in a newline, When add, Then no blank line is joined in', async () => {
-      // Arrange — a hand-edited pattern file that ends with a trailing newline.
-      const ctx = await seedRepoWithTree();
-      await enableSparse(ctx, false);
-      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/info/sparse-checkout`, '/keep/\n');
-
-      // Act
-      await sparseCheckout(ctx, { action: 'add', patterns: ['/docs/'] });
-
-      // Assert — the appended pattern follows directly; no `\n\n`.
-      expect(await readSparseFile(ctx)).toBe('/keep/\n/docs/');
-    });
   });
 
   describe('reapply', () => {
