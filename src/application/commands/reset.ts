@@ -6,6 +6,7 @@ import { buildIndexFromTree } from '../primitives/build-index-from-tree.js';
 import { materializeTree } from '../primitives/materialize-tree.js';
 import { readIndex } from '../primitives/read-index.js';
 import { readObject } from '../primitives/read-object.js';
+import { loadSparseMatcher } from '../primitives/read-sparse-checkout.js';
 import { recordRefUpdate } from '../primitives/record-ref-update.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
 import { updateRef } from '../primitives/update-ref.js';
@@ -74,6 +75,10 @@ const rebuildIndexFromCommit = async (ctx: Context, commitId: ObjectId): Promise
   if (commit.type !== 'commit') {
     throw unexpectedObjectType('commit', commit.type, commitId);
   }
+  // loadSparseMatcher is a pure config/pattern-file read — no index lock
+  // needed. A defined matcher marks excluded paths skip-worktree in the
+  // rebuilt index; `undefined` ⇒ sparse inactive and the rebuild is unchanged.
+  const matcher = await loadSparseMatcher(ctx);
   // Acquire the index lock BEFORE reading the index. A concurrent writer
   // (another reset, add, rm…) between read and commit would otherwise let
   // the donor map go stale, producing a result that reflects neither the
@@ -84,6 +89,8 @@ const rebuildIndexFromCommit = async (ctx: Context, commitId: ObjectId): Promise
     const newEntries = await buildIndexFromTree(ctx, {
       targetTree: commit.data.tree,
       currentIndex,
+      // `exactOptionalPropertyTypes`: spread `sparse` only when defined.
+      ...(matcher !== undefined ? { sparse: matcher } : {}),
     });
     await lock.commit(newEntries);
   } finally {

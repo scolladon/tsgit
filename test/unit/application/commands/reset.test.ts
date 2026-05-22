@@ -485,3 +485,54 @@ describe('reset', () => {
     expect(await ctx.fs.exists(`${ctx.layout.gitDir}/index`)).toBe(false);
   });
 });
+
+describe('reset — sparse checkout', () => {
+  // Sparse is flipped on AFTER the commit by writing `.git/info/sparse-checkout`
+  // and the `core` config directly, so the index entries stay normal and the
+  // reset itself must apply the matcher. Cone file: root files in, subdirs out,
+  // `/src/` back in — so `src/*` is in-pattern and `docs/*` is excluded.
+  const enableSparseSrcOnly = async (ctx: ReturnType<typeof createMemoryContext>) => {
+    const { updateCoreConfig } = await import(
+      '../../../../src/application/primitives/update-config.js'
+    );
+    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/info/sparse-checkout`, '/*\n!/*/\n/src/\n');
+    await updateCoreConfig(ctx, { sparseCheckout: 'true', sparseCheckoutCone: 'true' });
+  };
+
+  const seedSrcAndDocs = async () => {
+    const ctx = createMemoryContext();
+    await init(ctx);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/src/a.txt`, 'a');
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/docs/b.txt`, 'b');
+    await add(ctx, ['src/a.txt', 'docs/b.txt']);
+    const c1 = await commit(ctx, { message: 'first', author });
+    return { ctx, c1: c1.id };
+  };
+
+  it('Given a sparse repo, When reset --mixed runs, Then the rebuilt index marks excluded paths skip-worktree', async () => {
+    // Arrange — sparse enabled after the commit; both entries are still normal.
+    const { ctx, c1 } = await seedSrcAndDocs();
+    await enableSparseSrcOnly(ctx);
+
+    // Act
+    const sut = await reset(ctx, { mode: 'mixed', target: c1 });
+
+    // Assert — `docs/b.txt` is excluded, `src/a.txt` stays in-pattern.
+    expect(sut.mode).toBe('mixed');
+    const index = await readIndex(ctx);
+    expect(index.entries.find((e) => e.path === 'src/a.txt')?.flags.skipWorktree).toBe(false);
+    expect(index.entries.find((e) => e.path === 'docs/b.txt')?.flags.skipWorktree).toBe(true);
+  });
+
+  it('Given a NON-sparse repo, When reset --mixed runs, Then no index entry is skip-worktree (sparse threading is inert)', async () => {
+    // Arrange — no sparse config: `loadSparseMatcher` returns undefined.
+    const { ctx, c1 } = await seedSrcAndDocs();
+
+    // Act
+    await reset(ctx, { mode: 'mixed', target: c1 });
+
+    // Assert
+    const index = await readIndex(ctx);
+    expect(index.entries.every((e) => e.flags.skipWorktree === false)).toBe(true);
+  });
+});
