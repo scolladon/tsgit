@@ -10,6 +10,7 @@ export const CLIENT_CAPABILITIES_FETCH: ReadonlyArray<string> = [
   'thin-pack',
   'no-progress',
   'include-tag',
+  'filter',
   AGENT,
 ];
 

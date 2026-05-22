@@ -46,6 +46,12 @@ export interface WantHaveRequest {
   readonly haves: ReadonlyArray<ObjectId>;
   readonly capabilities: ReadonlyArray<string>;
   readonly depth?: number;
+  /**
+   * Partial-clone object filter — a canonical filter spec (see
+   * `parseObjectFilter`). When set, a `filter <spec>` line is emitted; the
+   * caller must have negotiated the `filter` capability.
+   */
+  readonly filter?: string;
   readonly done?: boolean;
 }
 
@@ -257,6 +263,8 @@ const haveLine = (oid: ObjectId): Uint8Array => TEXT_ENCODER.encode(`have ${oid}
 
 const deepenLine = (depth: number): Uint8Array => TEXT_ENCODER.encode(`deepen ${depth}\n`);
 
+const filterLine = (spec: string): Uint8Array => TEXT_ENCODER.encode(`filter ${spec}\n`);
+
 const DONE_FRAME = encodePktLine(TEXT_ENCODER.encode('done\n'));
 
 export const buildUploadPackRequest = (req: WantHaveRequest): Uint8Array => {
@@ -266,6 +274,7 @@ export const buildUploadPackRequest = (req: WantHaveRequest): Uint8Array => {
     wantPayloads.push(wantLine(w, idx === 0 ? req.capabilities : []));
   });
   if (req.depth !== undefined) wantPayloads.push(deepenLine(req.depth));
+  if (req.filter !== undefined) wantPayloads.push(filterLine(req.filter));
   const wantStream = encodePktStream(wantPayloads);
   const haveStream =
     req.haves.length === 0 ? new Uint8Array(0) : encodePktStream(req.haves.map(haveLine));

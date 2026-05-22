@@ -200,6 +200,7 @@ describe('CLIENT_CAPABILITIES_FETCH', () => {
     'thin-pack',
     'no-progress',
     'include-tag',
+    'filter',
   ])('Given CLIENT_CAPABILITIES_FETCH, When inspected, Then it includes %j', (cap) => {
     expect(CLIENT_CAPABILITIES_FETCH).toContain(cap);
   });
