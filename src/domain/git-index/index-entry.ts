@@ -2,9 +2,20 @@ import type { FileMode, FilePath, ObjectId } from '../objects/index.js';
 
 export interface IndexEntryFlags {
   readonly assumeValid: boolean;
-  readonly extended: boolean;
   readonly stage: 0 | 1 | 2 | 3;
+  /** Index v3 extended flag — the path is intentionally absent from the working tree. */
+  readonly skipWorktree: boolean;
+  /** Index v3 extended flag — `git add -N` placeholder. Modelled for faithful round-tripping. */
+  readonly intentToAdd: boolean;
 }
+
+/** The common case — a freshly staged, materialised, stage-0 entry. */
+export const STAGE0_FLAGS: IndexEntryFlags = {
+  assumeValid: false,
+  stage: 0,
+  skipWorktree: false,
+  intentToAdd: false,
+};
 
 export interface IndexEntry {
   readonly ctimeSeconds: number;
@@ -28,7 +39,7 @@ export interface IndexExtension {
 }
 
 export interface GitIndex {
-  readonly version: 2;
+  readonly version: 2 | 3;
   readonly entries: ReadonlyArray<IndexEntry>;
   readonly extensions: ReadonlyArray<IndexExtension>;
 }

@@ -1,4 +1,4 @@
-import type { GitIndex, IndexEntry, StatData } from '../git-index/index.js';
+import { type GitIndex, type IndexEntry, STAGE0_FLAGS, type StatData } from '../git-index/index.js';
 import type { MergeConflict } from '../merge/merge-types.js';
 import type { FileMode, FilePath, ObjectId } from '../objects/index.js';
 import { primaryPath } from './change-path.js';
@@ -165,7 +165,7 @@ function toIndexEntry(
     gid: stat.gid,
     fileSize: stat.fileSize,
     id: emission.id,
-    flags: { assumeValid: false, extended: false, stage: emission.stage },
+    flags: { ...STAGE0_FLAGS, stage: emission.stage },
     path,
   };
 }

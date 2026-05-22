@@ -4,6 +4,7 @@ import { synthesizeTreeFromIndex } from '../../../../src/application/primitives/
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { writeTree } from '../../../../src/application/primitives/write-tree.js';
 import type { GitIndex, IndexEntry } from '../../../../src/domain/git-index/index.js';
+import { STAGE0_FLAGS } from '../../../../src/domain/git-index/index.js';
 import { NO_PARSER_OFFSET } from '../../../../src/domain/git-index/path-validator.js';
 import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
 import type { FileMode, FilePath, ObjectId, Tree } from '../../../../src/domain/objects/index.js';
@@ -38,7 +39,7 @@ const makeIndexEntry = (
   gid: 0,
   fileSize: 0,
   id,
-  flags: { assumeValid: false, extended: false, stage },
+  flags: { ...STAGE0_FLAGS, stage },
   path: path as FilePath,
 });
 

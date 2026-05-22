@@ -1722,7 +1722,7 @@ describe('buildConflictIndexEntries (direct)', () => {
     expect(sut).toEqual([]);
   });
 
-  it('Given a stage-0 outcome, When buildConflictIndexEntries runs, Then the entry flags are assumeValid=false and extended=false', () => {
+  it('Given a stage-0 outcome, When buildConflictIndexEntries runs, Then the entry flags are assumeValid=false and skipWorktree=false', () => {
     // Arrange
     const outcomes: MergeOutcome[] = [
       {
@@ -1736,9 +1736,10 @@ describe('buildConflictIndexEntries (direct)', () => {
     // Act
     const sut = buildConflictIndexEntries(outcomes, []);
 
-    // Assert — both boolean flags are literally false.
+    // Assert — every flag is literally false.
     expect(sut[0]?.flags.assumeValid).toBe(false);
-    expect(sut[0]?.flags.extended).toBe(false);
+    expect(sut[0]?.flags.skipWorktree).toBe(false);
+    expect(sut[0]?.flags.intentToAdd).toBe(false);
   });
 
   it('Given stage-0 outcomes and a conflict whose paths interleave alphabetically, When buildConflictIndexEntries runs, Then entries are sorted by (path, stage)', () => {

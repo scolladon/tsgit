@@ -12,6 +12,7 @@ import type {
   IndexEntryFlags,
   StatData,
 } from '../../../../src/domain/git-index/index.js';
+import { STAGE0_FLAGS } from '../../../../src/domain/git-index/index.js';
 import type { MergeConflict } from '../../../../src/domain/merge/merge-types.js';
 import type { FileMode, FilePath, ObjectId } from '../../../../src/domain/objects/index.js';
 import { FILE_MODE } from '../../../../src/domain/objects/index.js';
@@ -36,7 +37,7 @@ function zeroStat(mode: FileMode): StatData {
 }
 
 function flags(stage: 0 | 1 | 2 | 3): IndexEntryFlags {
-  return { assumeValid: false, extended: false, stage };
+  return { ...STAGE0_FLAGS, stage };
 }
 
 function entry(path: string, id: ObjectId, mode: FileMode, stage: 0 | 1 | 2 | 3): IndexEntry {
@@ -363,9 +364,9 @@ describe('conflictsToIndexEntries', () => {
     expect(sut[2]?.id).toBe(ID_C);
   });
 
-  it('Given one conflict with only ourId set, When conflictsToIndexEntries called, Then the emitted entry flags are assumeValid=false and extended=false', () => {
+  it('Given one conflict with only ourId set, When conflictsToIndexEntries called, Then the emitted entry flags are assumeValid=false and skipWorktree=false', () => {
     // Arrange & Act — index entries built for conflicts must NOT carry the
-    // assume-valid or extended bits; both default to false.
+    // assume-valid or skip-worktree/intent-to-add bits; all default to false.
     const sut = conflictsToIndexEntries(
       [conflict({ path: 'file' as FilePath, ourId: ID_B, ourMode: FILE_MODE.REGULAR })],
       zeroStat,
@@ -373,7 +374,8 @@ describe('conflictsToIndexEntries', () => {
 
     // Assert
     expect(sut[0]?.flags.assumeValid).toBe(false);
-    expect(sut[0]?.flags.extended).toBe(false);
+    expect(sut[0]?.flags.skipWorktree).toBe(false);
+    expect(sut[0]?.flags.intentToAdd).toBe(false);
   });
 
   it('Given one conflict with only ourId set, When conflictsToIndexEntries called, Then 1 entry at stage 2', () => {

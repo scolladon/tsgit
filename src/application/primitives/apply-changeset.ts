@@ -15,7 +15,7 @@
  */
 import { checkoutOverwriteDirty } from '../../domain/commands/error.js';
 import { TsgitError } from '../../domain/error.js';
-import type { IndexEntry } from '../../domain/git-index/index.js';
+import { type IndexEntry, STAGE0_FLAGS } from '../../domain/git-index/index.js';
 import { FILE_MODE, type FileMode, type FilePath } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
 import type { Changeset, ChangesetEntry } from './compute-changeset.js';
@@ -148,7 +148,7 @@ const buildIndexEntry = async (
     gid: stat.gid,
     fileSize: stat.size,
     id: id as IndexEntry['id'],
-    flags: { assumeValid: false, extended: false, stage: 0 },
+    flags: STAGE0_FLAGS,
     path: relPath,
   };
 };

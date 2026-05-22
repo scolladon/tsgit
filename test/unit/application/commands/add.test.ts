@@ -3,6 +3,7 @@ import { createMemoryContext } from '../../../../src/adapters/memory/memory-adap
 import { add, addAll as addAllInternal } from '../../../../src/application/commands/add.js';
 import { readIndex } from '../../../../src/application/primitives/read-index.js';
 import { MAX_WORKING_TREE_BLOB_BYTES } from '../../../../src/application/primitives/types.js';
+import { STAGE0_FLAGS } from '../../../../src/domain/git-index/index.js';
 import { TsgitError } from '../../../../src/domain/index.js';
 import { seedRepo } from './fixtures.js';
 
@@ -178,21 +179,19 @@ describe('add', () => {
     expect(sut.added).toEqual([]);
   });
 
-  it('Given a single regular file, When add, Then the index entry flags have extended=false and assumeValid=false', async () => {
+  it('Given a single regular file, When add, Then the index entry flags are the default stage-0 flags', async () => {
     // Arrange
     const ctx = await seedFreshRepo({ 'plain.txt': 'content' });
 
     // Act
     await add(ctx, ['plain.txt']);
 
-    // Assert — `makeEntry` builds flags as
-    // `{ assumeValid: false, extended: false, stage: 0 }`; a BooleanLiteral
-    // mutant flipping `extended` to true would surface here.
+    // Assert — a freshly added file gets exactly `STAGE0_FLAGS`; a
+    // BooleanLiteral mutant flipping any flag would surface here.
     const idx = await readIndex(ctx);
     const entry = idx.entries.find((e) => e.path === 'plain.txt');
     expect(entry).toBeDefined();
-    expect(entry?.flags.extended).toBe(false);
-    expect(entry?.flags.assumeValid).toBe(false);
+    expect(entry?.flags).toEqual(STAGE0_FLAGS);
   });
 
   it('Given all: true with non-empty pathspec, When add, Then throws INVALID_OPTION with option=all', async () => {
@@ -228,16 +227,14 @@ describe('add', () => {
     await add(ctx, [], { all: true });
 
     // Assert — pins Math.floor(ctimeMs/1000) and the BooleanLiteral flag
-    // values so `* 1000` and `assumeValid: true` / `extended: true`
+    // values so `* 1000` and `assumeValid: true` / `skipWorktree: true`
     // mutants are killed.
     const idx = await readIndex(ctx);
     const entry = idx.entries.find((e) => e.path === 'pin.txt');
     expect(entry).toBeDefined();
     expect(entry?.ctimeSeconds).toBe(Math.floor(stat.ctimeMs / 1000));
     expect(entry?.mtimeSeconds).toBe(Math.floor(stat.mtimeMs / 1000));
-    expect(entry?.flags.assumeValid).toBe(false);
-    expect(entry?.flags.extended).toBe(false);
-    expect(entry?.flags.stage).toBe(0);
+    expect(entry?.flags).toEqual(STAGE0_FLAGS);
   });
 
   it('Given two untracked files and all: true, When add, Then both appear in added (sorted) and the index has them', async () => {

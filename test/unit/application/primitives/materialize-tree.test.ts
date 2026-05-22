@@ -4,6 +4,7 @@ import { materializeTree } from '../../../../src/application/primitives/material
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { writeTree } from '../../../../src/application/primitives/write-tree.js';
 import type { GitIndex, IndexEntry } from '../../../../src/domain/git-index/index.js';
+import { STAGE0_FLAGS } from '../../../../src/domain/git-index/index.js';
 import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
 import type { FilePath, ObjectId, TreeEntry } from '../../../../src/domain/objects/index.js';
 import { recordingProgress } from '../commands/fixtures.js';
@@ -33,7 +34,7 @@ const makeIndexEntry = (path: string, id: ObjectId, stage: 0 | 1 | 2 | 3 = 0): I
   gid: 0,
   fileSize: 0,
   id,
-  flags: { assumeValid: false, extended: false, stage },
+  flags: { ...STAGE0_FLAGS, stage },
   path: path as FilePath,
 });
 

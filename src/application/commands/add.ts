@@ -1,6 +1,6 @@
 import { invalidOption, workingTreeFileTooLarge } from '../../domain/commands/error.js';
 import { operationAborted, TsgitError } from '../../domain/error.js';
-import type { IndexEntry } from '../../domain/git-index/index.js';
+import { type IndexEntry, STAGE0_FLAGS } from '../../domain/git-index/index.js';
 import { emptyPathspec, pathspecNoMatch } from '../../domain/index.js';
 import type { FileMode, ObjectId } from '../../domain/objects/index.js';
 import type { FilePath } from '../../domain/objects/object-id.js';
@@ -378,7 +378,6 @@ const makeEntry = (
   gid: stat.gid,
   fileSize: stat.size,
   id,
-  // Stryker disable next-line BooleanLiteral: equivalent — `extended` is write-only here. `serializeIndex`'s `writeEntry` builds `flagsRaw` from `assumeValid | stage | nameLength` only and never reads `.extended`; `parseFlags` always returns `extended: false`. Flipping this literal cannot change any serialized or re-parsed observable.
-  flags: { assumeValid: false, extended: false, stage: 0 },
+  flags: STAGE0_FLAGS,
   path,
 });

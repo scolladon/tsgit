@@ -4,6 +4,7 @@ import { buildIndexFromTree } from '../../../../src/application/primitives/build
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { writeTree } from '../../../../src/application/primitives/write-tree.js';
 import type { GitIndex, IndexEntry } from '../../../../src/domain/git-index/index.js';
+import { STAGE0_FLAGS } from '../../../../src/domain/git-index/index.js';
 import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
 import type {
   FileMode,
@@ -43,7 +44,7 @@ const makeIndexEntry = (
   gid: 0,
   fileSize: 0,
   id,
-  flags: { assumeValid: false, extended: false, stage },
+  flags: { ...STAGE0_FLAGS, stage },
   path: path as FilePath,
   ...stats,
 });
@@ -90,7 +91,7 @@ describe('buildIndexFromTree', () => {
     expect(entry?.uid).toBe(0);
     expect(entry?.gid).toBe(0);
     expect(entry?.fileSize).toBe(0);
-    expect(entry?.flags).toEqual({ assumeValid: false, extended: false, stage: 0 });
+    expect(entry?.flags).toEqual(STAGE0_FLAGS);
   });
 
   it('Given a matching donor entry (same path + id + mode), When buildIndexFromTree runs, Then preserves donor stat-cache fields', async () => {
@@ -113,7 +114,7 @@ describe('buildIndexFromTree', () => {
         gid: 1000,
         fileSize: 5,
       }),
-      flags: { assumeValid: true, extended: true, stage: 0 },
+      flags: { ...STAGE0_FLAGS, assumeValid: true, skipWorktree: true },
     };
     const sut = buildIndexFromTree;
 
@@ -124,7 +125,7 @@ describe('buildIndexFromTree', () => {
     });
 
     // Assert — stat cache cloned byte-for-byte AND flags spread preserves donor's
-    // assumeValid/extended (stage is force-set to 0 regardless).
+    // assumeValid/skipWorktree (stage is force-set to 0 regardless).
     expect(result).toHaveLength(1);
     const entry = result[0];
     expect(entry?.ctimeSeconds).toBe(1_700_000_000);
@@ -137,7 +138,7 @@ describe('buildIndexFromTree', () => {
     expect(entry?.gid).toBe(1000);
     expect(entry?.fileSize).toBe(5);
     expect(entry?.flags.assumeValid).toBe(true);
-    expect(entry?.flags.extended).toBe(true);
+    expect(entry?.flags.skipWorktree).toBe(true);
     expect(entry?.flags.stage).toBe(0);
   });
 

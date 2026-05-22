@@ -1,7 +1,7 @@
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import type { IndexEntry, StatData } from '../../../../src/domain/git-index/index-entry.js';
-import { isStatClean } from '../../../../src/domain/git-index/index-entry.js';
+import { isStatClean, STAGE0_FLAGS } from '../../../../src/domain/git-index/index-entry.js';
 import type { ObjectId } from '../../../../src/domain/objects/index.js';
 import { FILE_MODE, FilePath } from '../../../../src/domain/objects/index.js';
 import { arbIndexEntry } from './arbitraries.js';
@@ -18,7 +18,7 @@ const BASE_ENTRY: IndexEntry = {
   gid: 200,
   fileSize: 4096,
   id: 'a'.repeat(40) as ObjectId,
-  flags: { assumeValid: false, extended: false, stage: 0 },
+  flags: STAGE0_FLAGS,
   path: FilePath.from('file.txt'),
 };
 
@@ -207,5 +207,41 @@ describe('isStatClean', () => {
         }),
       );
     });
+  });
+});
+
+describe('STAGE0_FLAGS', () => {
+  it('Given the STAGE0_FLAGS constant, When inspecting its shape, Then it is the default stage-0 flag record', () => {
+    // Arrange & Act
+    const sut = STAGE0_FLAGS;
+
+    // Assert — every field is pinned so a BooleanLiteral or stage mutant
+    // flipping any of them is caught.
+    expect(sut).toEqual({
+      assumeValid: false,
+      stage: 0,
+      skipWorktree: false,
+      intentToAdd: false,
+    });
+  });
+
+  it('Given the STAGE0_FLAGS constant, When reading assumeValid, Then it is exactly false', () => {
+    // Arrange & Act & Assert
+    expect(STAGE0_FLAGS.assumeValid).toBe(false);
+  });
+
+  it('Given the STAGE0_FLAGS constant, When reading stage, Then it is exactly 0', () => {
+    // Arrange & Act & Assert
+    expect(STAGE0_FLAGS.stage).toBe(0);
+  });
+
+  it('Given the STAGE0_FLAGS constant, When reading skipWorktree, Then it is exactly false', () => {
+    // Arrange & Act & Assert
+    expect(STAGE0_FLAGS.skipWorktree).toBe(false);
+  });
+
+  it('Given the STAGE0_FLAGS constant, When reading intentToAdd, Then it is exactly false', () => {
+    // Arrange & Act & Assert
+    expect(STAGE0_FLAGS.intentToAdd).toBe(false);
   });
 });

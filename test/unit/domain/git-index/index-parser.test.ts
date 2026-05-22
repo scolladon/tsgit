@@ -134,7 +134,8 @@ describe('parseIndex', () => {
     expect(entry.fileSize).toBe(4096);
     expect(entry.flags.stage).toBe(0);
     expect(entry.flags.assumeValid).toBe(false);
-    expect(entry.flags.extended).toBe(false);
+    expect(entry.flags.skipWorktree).toBe(false);
+    expect(entry.flags.intentToAdd).toBe(false);
   });
 
   it('Given valid index with 3 entries, When parsing, Then all entries correct', () => {
@@ -241,8 +242,9 @@ describe('parseIndex', () => {
     }
   });
 
-  it('Given index with extended flag set, When parsing, Then throws INVALID_INDEX_ENTRY at offset 12', () => {
-    // Arrange
+  it('Given a v2-header index whose entry sets the extended flag bit, When parsing, Then throws INVALID_INDEX_ENTRY at offset 12 (extended requires v3)', () => {
+    // Arrange — header version is 2 but the entry flags word sets 0x4000.
+    // A v2 index cannot carry extended entries; the parser must reject it.
     const pathBytes = new TextEncoder().encode('file.txt');
     const entryLength = 62 + pathBytes.length;
     const paddedLength = (entryLength + 8) & ~7;
@@ -259,7 +261,7 @@ describe('parseIndex', () => {
     view.setUint16(12 + 60, 0x4000 | pathBytes.length);
     buf.set(pathBytes, 12 + 62);
 
-    // Act & Assert
+    // Act & Assert — code, offset AND reason all pinned via try/catch.
     try {
       parseIndex(buf);
       expect.fail('should have thrown');
@@ -268,7 +270,7 @@ describe('parseIndex', () => {
       expect((e as TsgitError).data).toEqual({
         code: 'INVALID_INDEX_ENTRY',
         offset: 12,
-        reason: 'extended flag not supported in v2',
+        reason: 'extended flag requires index v3',
       });
     }
   });
@@ -317,12 +319,12 @@ describe('parseIndex', () => {
     }
   });
 
-  it('Given version != 2, When parsing, Then throws INVALID_INDEX_HEADER', () => {
-    // Arrange
+  it('Given version 4 (above the supported v2/v3 range), When parsing, Then throws INVALID_INDEX_HEADER', () => {
+    // Arrange — v4 (path-prefix compression) is not supported; only 2 and 3 are.
     const buf = new Uint8Array(32);
     const view = new DataView(buf.buffer);
     view.setUint32(0, 0x44495243);
-    view.setUint32(4, 3);
+    view.setUint32(4, 4);
 
     // Act & Assert
     try {
@@ -332,7 +334,28 @@ describe('parseIndex', () => {
       expect(e).toBeInstanceOf(TsgitError);
       expect((e as TsgitError).data).toEqual({
         code: 'INVALID_INDEX_HEADER',
-        reason: 'unsupported version: 3',
+        reason: 'unsupported version: 4',
+      });
+    }
+  });
+
+  it('Given version 1 (below the supported v2/v3 range), When parsing, Then throws INVALID_INDEX_HEADER', () => {
+    // Arrange — v1 is below the accepted range; pins the lower bound of the
+    // `version !== 2 && version !== 3` guard.
+    const buf = new Uint8Array(32);
+    const view = new DataView(buf.buffer);
+    view.setUint32(0, 0x44495243);
+    view.setUint32(4, 1);
+
+    // Act & Assert
+    try {
+      parseIndex(buf);
+      expect.fail('should have thrown');
+    } catch (e) {
+      expect(e).toBeInstanceOf(TsgitError);
+      expect((e as TsgitError).data).toEqual({
+        code: 'INVALID_INDEX_HEADER',
+        reason: 'unsupported version: 1',
       });
     }
   });
@@ -1037,6 +1060,191 @@ describe('parseIndex', () => {
       code: 'INVALID_INDEX_ENTRY',
       offset: 12,
       reason: "mandatory extension 'a?cd' not supported",
+    });
+  });
+});
+
+/**
+ * Build an index whose entries may carry the index-v3 extended flags word.
+ * When an entry's `extRaw` is provided, the 16-bit extended-flags field is
+ * emitted right after the 62-byte fixed header and the `0x4000` extended bit
+ * is set in the entry's flags word. The header version is passed explicitly
+ * so a v2-header / extended-entry mismatch can be exercised.
+ */
+function buildV3Index(
+  version: number,
+  entries: ReadonlyArray<{
+    readonly path: string;
+    readonly sha: string;
+    readonly extRaw?: number;
+  }>,
+): Uint8Array {
+  const entryBuffers: Uint8Array[] = [];
+
+  for (const entry of entries) {
+    const pathBytes = new TextEncoder().encode(entry.path);
+    const extendedSize = entry.extRaw === undefined ? 0 : 2;
+    const entryLength = 62 + extendedSize + pathBytes.length;
+    const paddedLength = (entryLength + 8) & ~7;
+    const buf = new Uint8Array(paddedLength);
+    const view = new DataView(buf.buffer);
+
+    view.setUint32(24, 0o100644);
+    buf.set(hexToBytes(entry.sha), 40);
+
+    const nameLen = Math.min(pathBytes.length, 0xfff);
+    const extendedBit = entry.extRaw === undefined ? 0 : 0x4000;
+    view.setUint16(60, extendedBit | nameLen);
+
+    if (entry.extRaw !== undefined) {
+      view.setUint16(62, entry.extRaw);
+    }
+    buf.set(pathBytes, 62 + extendedSize);
+    entryBuffers.push(buf);
+  }
+
+  const entryTotal = entryBuffers.reduce((s, b) => s + b.length, 0);
+  const total = 12 + entryTotal + CHECKSUM_SIZE;
+  const result = new Uint8Array(total);
+  const headerView = new DataView(result.buffer);
+
+  headerView.setUint32(0, 0x44495243);
+  headerView.setUint32(4, version);
+  headerView.setUint32(8, entries.length);
+
+  let offset = 12;
+  for (const buf of entryBuffers) {
+    result.set(buf, offset);
+    offset += buf.length;
+  }
+
+  return result;
+}
+
+describe('parseIndex — index v3 extended flags', () => {
+  it('Given a v3 index with one skip-worktree entry (extended word 0x4000), When parsing, Then version is 3 and skipWorktree is true', () => {
+    // Arrange — the extended-flags word sets only the skip-worktree bit.
+    const input = buildV3Index(3, [{ path: 'sparse.txt', sha: SHA_A, extRaw: 0x4000 }]);
+
+    // Act
+    const sut = parseIndex(input);
+
+    // Assert
+    expect(sut.version).toBe(3);
+    expect(sut.entries).toHaveLength(1);
+    const entry = sut.entries[0]!;
+    expect(entry.path).toBe('sparse.txt');
+    expect(entry.flags.skipWorktree).toBe(true);
+    expect(entry.flags.intentToAdd).toBe(false);
+  });
+
+  it('Given a v3 index with one intent-to-add entry (extended word 0x2000), When parsing, Then intentToAdd is true and skipWorktree is false', () => {
+    // Arrange — the extended-flags word sets only the intent-to-add bit.
+    const input = buildV3Index(3, [{ path: 'staged.txt', sha: SHA_A, extRaw: 0x2000 }]);
+
+    // Act
+    const sut = parseIndex(input);
+
+    // Assert
+    expect(sut.version).toBe(3);
+    const entry = sut.entries[0]!;
+    expect(entry.flags.intentToAdd).toBe(true);
+    expect(entry.flags.skipWorktree).toBe(false);
+  });
+
+  it('Given a v3 index with an entry carrying BOTH extended bits (0x6000), When parsing, Then skipWorktree and intentToAdd are both true', () => {
+    // Arrange — 0x4000 | 0x2000 — proves the two bit masks are read
+    // independently (a mutant collapsing one mask is caught).
+    const input = buildV3Index(3, [{ path: 'both.txt', sha: SHA_A, extRaw: 0x6000 }]);
+
+    // Act
+    const sut = parseIndex(input);
+
+    // Assert
+    const entry = sut.entries[0]!;
+    expect(entry.flags.skipWorktree).toBe(true);
+    expect(entry.flags.intentToAdd).toBe(true);
+  });
+
+  it('Given a v3 index whose extended entry has a zero extended word, When parsing, Then both extended flags are false', () => {
+    // Arrange — the entry is extended (carries the 2-byte word) but the word
+    // is 0; neither bit is set.
+    const input = buildV3Index(3, [{ path: 'plain.txt', sha: SHA_A, extRaw: 0x0000 }]);
+
+    // Act
+    const sut = parseIndex(input);
+
+    // Assert
+    const entry = sut.entries[0]!;
+    expect(entry.flags.skipWorktree).toBe(false);
+    expect(entry.flags.intentToAdd).toBe(false);
+  });
+
+  it('Given a v3 index with a non-extended entry, When parsing, Then version is 3 and the entry has skipWorktree=false / intentToAdd=false', () => {
+    // Arrange — a v3 header but the single entry never sets the extended bit,
+    // so no extended-flags word is present for it.
+    const input = buildV3Index(3, [{ path: 'normal.txt', sha: SHA_A }]);
+
+    // Act
+    const sut = parseIndex(input);
+
+    // Assert
+    expect(sut.version).toBe(3);
+    const entry = sut.entries[0]!;
+    expect(entry.flags.skipWorktree).toBe(false);
+    expect(entry.flags.intentToAdd).toBe(false);
+  });
+
+  it('Given a v3 index mixing an extended and a non-extended entry, When parsing, Then each entry decodes its own flags and the path cursor stays aligned', () => {
+    // Arrange — the extended first entry shifts the post-header cursor by 2
+    // bytes; the second (non-extended) entry must still parse its path
+    // correctly, proving the cursor arithmetic accounts for the extra word.
+    const SHA_B = 'b'.repeat(40);
+    const input = buildV3Index(3, [
+      { path: 'a-skip.txt', sha: SHA_A, extRaw: 0x4000 },
+      { path: 'b-normal.txt', sha: SHA_B },
+    ]);
+
+    // Act
+    const sut = parseIndex(input);
+
+    // Assert
+    expect(sut.entries).toHaveLength(2);
+    expect(sut.entries[0]?.path).toBe('a-skip.txt');
+    expect(sut.entries[0]?.flags.skipWorktree).toBe(true);
+    expect(sut.entries[1]?.path).toBe('b-normal.txt');
+    expect(sut.entries[1]?.id).toBe(SHA_B);
+    expect(sut.entries[1]?.flags.skipWorktree).toBe(false);
+  });
+
+  it('Given a v3 extended entry truncated mid extended-flags word, When parsing, Then throws INVALID_INDEX_ENTRY (truncated extended flags) at the entry start', () => {
+    // Arrange — the 62-byte fixed header fits, but the buffer ends before the
+    // 2-byte extended-flags word: 12 header + 62 entry header + 1 byte +
+    // 20 checksum. The flags word sets the extended bit, so the parser tries
+    // to read the extended word and runs off the buffer.
+    const buf = new Uint8Array(12 + 62 + 1 + CHECKSUM_SIZE);
+    const view = new DataView(buf.buffer);
+    view.setUint32(0, 0x44495243);
+    view.setUint32(4, 3);
+    view.setUint32(8, 1);
+
+    view.setUint32(12 + 24, 0o100644);
+    buf.set(hexToBytes(SHA_A), 12 + 40);
+    view.setUint16(12 + 60, 0x4000 | 4);
+
+    // Act
+    let caught: unknown;
+    try {
+      parseIndex(buf);
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert — code, offset AND reason pinned; offset is the entry start (12).
+    expect((caught as TsgitError).data).toEqual({
+      code: 'INVALID_INDEX_ENTRY',
+      offset: 12,
+      reason: 'truncated extended flags',
     });
   });
 });

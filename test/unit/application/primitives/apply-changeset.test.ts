@@ -541,7 +541,7 @@ describe('applyChangeset', () => {
     expect(result.writtenEntries[0]?.flags.assumeValid).toBe(false);
   });
 
-  it('Given a freshly written index entry, When applyChangeset builds it, Then the extended flag is false', async () => {
+  it('Given a freshly written index entry, When applyChangeset builds it, Then skipWorktree and intentToAdd are false', async () => {
     // Arrange
     const ctx = await buildSeededContext();
     const id = await writeBlob(ctx, new TextEncoder().encode('extflag'));
@@ -555,7 +555,8 @@ describe('applyChangeset', () => {
     });
 
     // Assert — a fresh entry never carries extended flags
-    expect(result.writtenEntries[0]?.flags.extended).toBe(false);
+    expect(result.writtenEntries[0]?.flags.skipWorktree).toBe(false);
+    expect(result.writtenEntries[0]?.flags.intentToAdd).toBe(false);
   });
 
   it('Given a delete entry whose target file does not exist, When applyChangeset runs with force, Then does not call rm and completes without throwing', async () => {
