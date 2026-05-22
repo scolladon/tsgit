@@ -81,20 +81,38 @@ const readRawConfig = async (ctx: Context): Promise<string | undefined> => {
   }
 };
 
-interface MutableSection {
+/**
+ * One `[section "subsection"]` block of a git-config-format INI file: the
+ * section name, an optional quoted subsection, and its key/value entries.
+ * Exported so `.gitmodules` parsing — byte-identical grammar — reuses one
+ * tokenizer (ADR-086).
+ */
+export interface IniSection {
+  readonly section: string;
+  readonly subsection: string | undefined;
+  readonly entries: ReadonlyArray<{ readonly key: string; readonly value: string }>;
+}
+
+/** Internal builder shape — `entries` stays mutable while a section is collected. */
+interface SectionBuilder {
   readonly section: string;
   readonly subsection: string | undefined;
   readonly entries: Array<{ readonly key: string; readonly value: string }>;
 }
 
 const parseConfigText = (text: string): ParsedConfig => {
-  const sections = collectSections(text);
+  const sections = parseIniSections(text);
   return assembleParsed(sections);
 };
 
-const collectSections = (text: string): ReadonlyArray<MutableSection> => {
-  const sections: MutableSection[] = [];
-  let current: MutableSection | undefined;
+/**
+ * Tokenize git-config-format INI text into its sections. Lenient, like git:
+ * orphan and malformed lines are skipped; comments and backslash
+ * continuations are honored.
+ */
+export const parseIniSections = (text: string): ReadonlyArray<IniSection> => {
+  const sections: SectionBuilder[] = [];
+  let current: SectionBuilder | undefined;
   for (const line of joinContinuations(text.split('\n'))) {
     const trimmed = stripInlineComment(line).trim();
     // Stryker disable next-line ConditionalExpression,StringLiteral: equivalent — an empty `trimmed` matches neither a section header nor a key/value, so skipping it explicitly or falling through both `continue` produces the same sections.
@@ -208,7 +226,7 @@ interface MutableParsedConfig {
   extensions?: { partialClone?: string };
 }
 
-const dispatchSection = (acc: MutableParsedConfig, sec: MutableSection): void => {
+const dispatchSection = (acc: MutableParsedConfig, sec: IniSection): void => {
   if (sec.section === 'core' && sec.subsection === undefined) {
     mergeCore(acc, sec);
   } else if (sec.section === 'user' && sec.subsection === undefined) {
@@ -222,7 +240,7 @@ const dispatchSection = (acc: MutableParsedConfig, sec: MutableSection): void =>
   }
 };
 
-const assembleParsed = (sections: ReadonlyArray<MutableSection>): ParsedConfig => {
+const assembleParsed = (sections: ReadonlyArray<IniSection>): ParsedConfig => {
   const acc: MutableParsedConfig = {};
   for (const sec of sections) {
     dispatchSection(acc, sec);
@@ -241,7 +259,7 @@ const mergeCore = (
       sparseCheckoutCone?: boolean;
     };
   },
-  sec: MutableSection,
+  sec: IniSection,
 ): void => {
   for (const { key, value } of sec.entries) {
     // Git config keys are case-insensitive; the parser preserves casing,
@@ -269,10 +287,7 @@ const mergeCore = (
 const parseLogAllRefUpdates = (value: string): boolean | 'always' =>
   value.toLowerCase() === 'always' ? 'always' : parseGitBoolean(value);
 
-const mergeUser = (
-  acc: { user?: { name?: string; email?: string } },
-  sec: MutableSection,
-): void => {
+const mergeUser = (acc: { user?: { name?: string; email?: string } }, sec: IniSection): void => {
   for (const { key, value } of sec.entries) {
     if (key === 'name') {
       // `{ ...undefined }` is `{}`, so the spread alone handles the first write.
@@ -291,7 +306,7 @@ const mergeRemote = (
     >;
   },
   name: string,
-  sec: MutableSection,
+  sec: IniSection,
 ): void => {
   acc.remote ??= new Map();
   const current = acc.remote.get(name) ?? {};
@@ -323,7 +338,7 @@ const mergeRemote = (
 const mergeBranch = (
   acc: { branch?: Map<string, { remote?: string; merge?: string }> },
   name: string,
-  sec: MutableSection,
+  sec: IniSection,
 ): void => {
   acc.branch ??= new Map();
   const current = acc.branch.get(name) ?? {};
@@ -337,7 +352,7 @@ const mergeBranch = (
 
 const mergeExtensions = (
   acc: { extensions?: { partialClone?: string } },
-  sec: MutableSection,
+  sec: IniSection,
 ): void => {
   for (const { key, value } of sec.entries) {
     // `partialClone` names the promisor remote of a partial clone.
