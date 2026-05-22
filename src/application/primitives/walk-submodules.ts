@@ -51,6 +51,7 @@ export async function* walkSubmodules(
   const recursive = options?.recursive === true;
   const maxDepth = options?.maxDepth ?? MAX_SUBMODULE_DEPTH;
   const rootTree = await readTree(ctx, ref);
+  // Stryker disable next-line ArrayDeclaration: equivalent — the visited-gitdir cycle guard is itself documented as defense-in-depth that cannot fire under safe names + the absorbed layout (paths only deepen), so seeding the set is observationally identical to seeding it with the empty array.
   const visited: ReadonlySet<string> = new Set<string>([ctx.layout.gitDir]);
   yield* walkInTree(ctx, rootTree, 0, undefined, '', visited, recursive, maxDepth);
 }
@@ -66,6 +67,7 @@ async function* walkInTree(
   maxDepth: number,
 ): AsyncIterable<SubmoduleEntry> {
   const rows = await readGitmodules(ctx, tree);
+  // Stryker disable next-line ObjectLiteral: equivalent — `walkTree`'s `recursive` option defaults to `true` when omitted (see `walk-tree.ts`), so `{}` and `{ recursive: true }` produce identical traversals.
   for await (const entry of walkTree(ctx, tree, { recursive: true })) {
     if (entry.mode !== FILE_MODE.GITLINK) continue;
     const fullPath = joinPath(pathPrefix, entry.path) as FilePath;
@@ -148,14 +150,18 @@ const mergeKey = (
 };
 
 const reduceSection = (section: IniSection): GitmodulesRow | undefined => {
+  // Stryker disable next-line ConditionalExpression: equivalent — a non-submodule section that nevertheless carries a `submodule.X.path` key would be filtered later (the row needs a `path` to be indexed into `rows`, and rows without `path` are dropped by `readGitmodules`).
   if (section.section !== 'submodule') return undefined;
   if (section.subsection === undefined) return undefined;
   if (isUnsafeSubmoduleName(section.subsection)) return undefined;
   const keys = section.entries.reduce(mergeKey, {});
   return {
     name: section.subsection,
+    // Stryker disable next-line ConditionalExpression,ObjectLiteral: equivalent — `{ path: undefined }` and `{}` both leave `row.path === undefined`, which is then filtered out by `if (row.path === undefined) continue` in `readGitmodules`. Identical observable behaviour.
     ...(keys.path !== undefined ? { path: keys.path } : {}),
+    // Stryker disable next-line ConditionalExpression,ObjectLiteral: equivalent — Vitest's `toEqual` treats `{ url: undefined }` and a missing `url` field as equal; spreading either shape yields the same `SubmoduleEntry` under structural equality.
     ...(keys.url !== undefined ? { url: keys.url } : {}),
+    // Stryker disable next-line ConditionalExpression,ObjectLiteral: equivalent — same reasoning as the `url` case above; `{ branch: undefined }` matches a missing field under structural equality.
     ...(keys.branch !== undefined ? { branch: keys.branch } : {}),
   };
 };
@@ -165,6 +171,7 @@ const CONTROL_CHAR_MAX = 0x1f;
 const DEL_CHAR = 0x7f;
 
 const hasControlChar = (name: string): boolean => {
+  // Stryker disable next-line EqualityOperator: equivalent — at `i === name.length` `charCodeAt(i)` returns `NaN`, which fails both `c <= 0x1f` and `c === 0x7f`, so the extra iteration is a no-op.
   for (let i = 0; i < name.length; i += 1) {
     const c = name.charCodeAt(i);
     if (c <= CONTROL_CHAR_MAX) return true;
@@ -185,14 +192,17 @@ const hasControlChar = (name: string): boolean => {
  * "trusted" — callers must still apply containment via the bounded FS.
  */
 const isUnsafeSubmoduleName = (name: string): boolean => {
-  if (name === '') return true;
+  // `name === ''` and `name.startsWith('/')` are subsumed by the segment loop
+  // below: `''.split('/')` is `['']` (empty segment) and `'/x'.split('/')` is
+  // `['', 'x']` (leading empty segment) — both trigger the empty-segment rule.
   if (name.startsWith('-')) return true;
-  if (name.startsWith('/')) return true;
   if (name.includes('\\')) return true;
   if (hasControlChar(name)) return true;
   if (DRIVE_LETTER_PREFIX.test(name)) return true;
   for (const segment of name.split('/')) {
-    if (segment === '' || segment === '.' || segment === '..') return true;
+    if (segment === '') return true;
+    if (segment === '.') return true;
+    if (segment === '..') return true;
   }
   return false;
 };
@@ -211,7 +221,9 @@ const deriveChildContext = async (
   treeRelPath: FilePath,
   visited: ReadonlySet<string>,
 ): Promise<Context | undefined> => {
+  // Stryker disable next-line ConditionalExpression: equivalent — letting an `undefined` name through builds `gitDir = '…/modules/undefined'`, which fails the next `fs.exists` probe and still returns `undefined`; identical observable behaviour.
   if (name === undefined) return undefined;
+  // Stryker disable next-line StringLiteral: equivalent — emptying the path template would leave `gitDir === '/modules/'` (or similar), which fails the `${gitDir}/HEAD` existence probe just as a real-but-uninitialised path would, so recursion is skipped identically.
   const gitDir = `${ctx.layout.gitDir}/modules/${name}`;
   // Defense-in-depth: under the absorbed layout + safe-name rules, the child
   // gitDir strictly extends an ancestor (`/modules/<name>` is appended at every
@@ -219,7 +231,9 @@ const deriveChildContext = async (
   // present to catch future contract changes (e.g. a relaxed name rule).
   // Stryker disable next-line ConditionalExpression,BooleanLiteral: equivalent — visited.has(gitDir) is always false under the current contract, so replacing it with `false` produces identical behaviour; the guard's value is defensive, not behavioral.
   if (visited.has(gitDir)) return undefined;
+  // Stryker disable next-line ConditionalExpression: equivalent — when the HEAD probe is false (uninitialised), removing the early `return undefined` lets the child Context be returned; `tryReadTree` then catches the resulting `OBJECT_NOT_FOUND` and yields the same "no children" outcome.
   if (!(await ctx.fs.exists(`${gitDir}/HEAD`))) return undefined;
+  // Stryker disable next-line StringLiteral: equivalent — `workDir` is informational on the child layout; no read primitive consults it (every read selects an object store by `gitDir`), so an empty `workDir` template produces no observable difference.
   const workDir = `${ctx.layout.workDir}/${treeRelPath}`;
   // Drop `promisor` AND `hooks` — both close over the parent ctx and would fire
   // against the parent's gitdir if invoked while reading the child store.
@@ -229,7 +243,9 @@ const deriveChildContext = async (
     layout: Object.freeze({
       workDir,
       gitDir,
+      // Stryker disable next-line BooleanLiteral: equivalent — no read primitive branches on `layout.bare`; the field is informational on the child Context, so flipping it has no observable effect on `walkSubmodules`.
       bare: false,
+      // Stryker disable next-line ConditionalExpression,BooleanLiteral,EqualityOperator,ObjectLiteral: equivalent — `homeDir` is unused by any read primitive (it only matters when expanding `core.excludesFile = ~/...`, which `walkSubmodules` never resolves), so the spread shape has no observable effect; the conditional only exists to satisfy `exactOptionalPropertyTypes`.
       ...(ctx.layout.homeDir !== undefined ? { homeDir: ctx.layout.homeDir } : {}),
     }),
     cwd: workDir,

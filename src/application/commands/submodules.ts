@@ -45,6 +45,7 @@ export const submodules = async (
   for await (const entry of walkSubmodules(ctx, {
     ref,
     recursive,
+    // Stryker disable next-line ConditionalExpression,ObjectLiteral: equivalent — `walkSubmodules` reads `options?.maxDepth ?? MAX_SUBMODULE_DEPTH`, so spreading `{ maxDepth: undefined }` is identical to spreading `{}`; the conditional only exists to keep the spread well-typed under `exactOptionalPropertyTypes`.
     ...(opts.maxDepth !== undefined ? { maxDepth: opts.maxDepth } : {}),
   })) {
     entries.push(entry);

@@ -142,6 +142,10 @@ describe('primitives/walk-submodules', () => {
       ['leading dash (option-like)', '-flag'],
       ['NUL byte', `a${String.fromCharCode(0)}b`],
       ['tab control char', 'a\tb'],
+      [
+        'unit-separator (0x1f) — boundary of the control-char range',
+        `a${String.fromCharCode(0x1f)}b`,
+      ],
       ['DEL control char', `a${String.fromCharCode(127)}b`],
     ])('Given an unsafe name (%s), When isUnsafeSubmoduleName, Then returns true', (_label, name) => {
       // Act
@@ -295,28 +299,81 @@ describe('primitives/walk-submodules', () => {
       ]);
     });
 
-    it('Given .gitmodules is a symlink (mode 120000), When walkSubmodules, Then the file is ignored (no rows)', async () => {
-      // Arrange
+    it('Given .gitmodules is a symlink (mode 120000) whose blob holds valid INI, When walkSubmodules, Then the mode guard wins (no metadata leaks)', async () => {
+      // Arrange — the symlink target blob holds a parseable INI section that
+      // *would* yield `url: https://attacker/x.git` if the mode guard were
+      // bypassed. A mutant dropping the mode check surfaces the URL.
       const ctx = await buildSeededContext();
-      // A symlink blob whose content names another file — must not be parsed as INI.
-      const linkTarget = await writeBlobText(ctx, '/etc/passwd');
-      const linkId = await writeObject(ctx, {
-        type: 'blob',
-        id: '' as ObjectId,
-        content: new TextEncoder().encode('decoy'),
-      } satisfies Blob);
+      const iniText = '[submodule "gitlink"]\n\tpath = gitlink\n\turl = https://attacker/x.git\n';
+      const linkId = await writeBlobText(ctx, iniText);
       const treeId = await writeTreeAt(ctx, [
         { name: '.gitmodules', mode: FILE_MODE.SYMLINK, id: linkId },
         { name: 'gitlink', mode: FILE_MODE.GITLINK, id: FAKE_COMMIT_A },
       ]);
-      // Ensure the symlink-target blob exists (defends the test against an unused-var warning).
-      expect(linkTarget).toMatch(/^[0-9a-f]{40}$/);
 
       // Act
       const sut = await collect(walkSubmodules(ctx, { ref: treeId }));
 
-      // Assert — gitlink still yields, but with no metadata (the symlink was skipped).
+      // Assert — name falls back to path, no url leaked.
       expect(sut).toEqual([{ name: 'gitlink', path: 'gitlink', commit: FAKE_COMMIT_A, depth: 0 }]);
+    });
+
+    it('Given .gitmodules with unknown keys interleaved with path/url/branch, When walkSubmodules, Then unknown keys do not perturb the row', async () => {
+      // Arrange — interleaving unknown keys (`ignoreme`, `update`, `extra`)
+      // around each known key kills the per-key `if (k === ...)` mutants in
+      // `mergeKey`: a mutant that drops one comparison would let a later
+      // unknown key clobber `path`, `url`, or `branch`.
+      const ctx = await buildSeededContext();
+      const text =
+        '[submodule "foo"]\n\tpath = foo\n\tignoreme = first\n\turl = https://e/foo.git\n\tupdate = checkout\n\tbranch = main\n\textra = last\n';
+      const treeId = await writeRootTreeWithGitmodules(ctx, text, [
+        { path: 'foo', id: FAKE_COMMIT_A },
+      ]);
+
+      // Act
+      const sut = await collect(walkSubmodules(ctx, { ref: treeId }));
+
+      // Assert — known keys carry their declared values, unaffected by the
+      // unknown ones that surround them.
+      expect(sut).toEqual([
+        {
+          name: 'foo',
+          path: 'foo',
+          url: 'https://e/foo.git',
+          branch: 'main',
+          commit: FAKE_COMMIT_A,
+          depth: 0,
+        },
+      ]);
+    });
+
+    it('Given a root tree whose sorted-first entry is .gitignore (not .gitmodules), When walkSubmodules, Then find still selects .gitmodules', async () => {
+      // Arrange — `.gitignore` < `.gitmodules`. A mutant `find` predicate that
+      // returns the first entry of any name would parse `.gitignore` as INI
+      // and miss the real submodule row, leaving the gitlink without a url.
+      const ctx = await buildSeededContext();
+      const ignoreBlob = await writeBlobText(ctx, '*.log\nbuild/\n');
+      const text = '[submodule "foo"]\n\tpath = foo\n\turl = https://e/foo.git\n';
+      const modulesBlob = await writeBlobText(ctx, text);
+      const treeId = await writeTreeAt(ctx, [
+        { name: '.gitignore', mode: FILE_MODE.REGULAR, id: ignoreBlob },
+        { name: '.gitmodules', mode: FILE_MODE.REGULAR, id: modulesBlob },
+        { name: 'foo', mode: FILE_MODE.GITLINK, id: FAKE_COMMIT_A },
+      ]);
+
+      // Act
+      const sut = await collect(walkSubmodules(ctx, { ref: treeId }));
+
+      // Assert — the gitlink carries the URL from .gitmodules.
+      expect(sut).toEqual([
+        {
+          name: 'foo',
+          path: 'foo',
+          url: 'https://e/foo.git',
+          commit: FAKE_COMMIT_A,
+          depth: 0,
+        },
+      ]);
     });
 
     it('Given .gitmodules with comments, quoted subsection, continuation, and case-varied keys, When walkSubmodules, Then it parses', async () => {
