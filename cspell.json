@@ -486,7 +486,8 @@
     "retargets",
     "superprojects",
     "libfoo",
-    "gitdirs"
+    "gitdirs",
+    "vendorfoo"
   ],
   "ignorePaths": [
     "node_modules",
