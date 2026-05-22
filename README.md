@@ -38,6 +38,7 @@ A pure TypeScript git implementation designed to be the fastest portable git lib
 | 17.1 | Reflog — `HEAD@{N}` / `<ref>@{N}` syntax, `.git/logs/` append-only per-ref entries, `revParse` resolution, tier-1 `reflog` command (show/exists/delete/expire) | ✅ |
 | 17.2 | Git hooks — `pre-commit` / `commit-msg` / `pre-push` script execution via the `HookRunner` port; default-on (Node), `noVerify` / `hooks: false` opt-outs | ✅ |
 | 17.3 | Sparse checkout — index v3 / skip-worktree, cone + non-cone pattern engine, `core.sparseCheckout*` config, tier-1 `sparseCheckout` command (list/set/add/reapply/disable) | ✅ |
+| 17.4 | Partial clone — `clone({ filter })` (`blob:none` / `blob:limit` / `tree:N`), promisor remote in `.git/config`, transparent lazy-fetch on read + `fetchMissing` batch API | ✅ |
 
 ## Features
 
@@ -127,6 +128,36 @@ writes every blob, sets the executable bit, follows symlinks, and commits a
 matching `.git/index` atomically. See
 `test/integration/network/clone-http-backend.test.ts` for an end-to-end
 example against a local `git-http-backend`.
+
+### Partial clone
+
+Pass a `filter` to `clone` to have the server omit objects — `blob:none`
+(blobless), `blob:limit=<n>` (size-capped, `k`/`m`/`g` suffixes), or
+`tree:<depth>`:
+
+```typescript
+const repo = await openRepository({ cwd: '/tmp/blobless', config: { /* … */ } });
+
+await repo.clone({
+  url: 'https://github.com/owner/repo.git',
+  filter: 'blob:none',
+  resolver: async (host) => (await import('node:dns')).promises.resolve(host),
+});
+```
+
+The clone records `origin` as a *promisor remote* in `.git/config`. Any object
+the filter omitted is fetched transparently the first time a read needs it —
+`repo.primitives.readObject` / `readBlob`, and every command built on them, work
+unchanged on a partial clone. For bulk reads, prefetch in one round-trip:
+
+```typescript
+await repo.fetchMissing({ oids: [blobA, blobB, blobC] });
+```
+
+A regular `repo.fetch()` into a partial clone re-applies the stored filter, so
+the repository stays partial. The promisor remote must allow filtered fetches
+(`uploadpack.allowfilter`) and arbitrary-oid wants (`uploadpack.allowanysha1inwant`).
+See `test/integration/network/partial-clone-http-backend.test.ts`.
 
 ### Staging files
 
