@@ -43,7 +43,13 @@ export { type HookInput, runHook } from './run-hook.js';
 export { readShallow, updateShallow } from './shallow-file.js';
 export { synthesizeTreeFromIndex } from './synthesize-tree-from-index.js';
 export type * from './types.js';
-export { setCoreConfigEntry, updateCoreConfig } from './update-config.js';
+export type { ConfigEntry } from './update-config.js';
+export {
+  setConfigEntry,
+  setCoreConfigEntry,
+  updateConfigEntries,
+  updateCoreConfig,
+} from './update-config.js';
 export { updateRef } from './update-ref.js';
 export { walkCommits } from './walk-commits.js';
 export { walkTree } from './walk-tree.js';

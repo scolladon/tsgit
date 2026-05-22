@@ -5,7 +5,9 @@ import {
   readConfig,
 } from '../../../../src/application/primitives/config-read.js';
 import {
+  setConfigEntry,
   setCoreConfigEntry,
+  updateConfigEntries,
   updateCoreConfig,
 } from '../../../../src/application/primitives/update-config.js';
 import { TsgitError } from '../../../../src/domain/error.js';
@@ -423,6 +425,138 @@ describe('primitives/update-config', () => {
 
       // Assert
       expect(caught).toBe(boom);
+    });
+  });
+
+  describe('setConfigEntry', () => {
+    it('Given no matching section, When setConfigEntry, Then the section is appended', () => {
+      // Arrange & Act
+      const sut = setConfigEntry('', 'extensions', undefined, 'partialClone', 'origin');
+
+      // Assert
+      expect(sut).toBe('[extensions]\n\tpartialClone = origin\n');
+    });
+
+    it('Given a subsection, When setConfigEntry, Then the subsectioned header is rendered', () => {
+      // Arrange & Act
+      const sut = setConfigEntry('', 'remote', 'origin', 'url', 'https://e/r.git');
+
+      // Assert
+      expect(sut).toBe('[remote "origin"]\n\turl = https://e/r.git\n');
+    });
+
+    it('Given an existing section without the key, When setConfigEntry, Then the key is inserted after the header', () => {
+      // Arrange
+      const text = '[remote "origin"]\n\turl = https://e/r.git\n';
+
+      // Act
+      const sut = setConfigEntry(text, 'remote', 'origin', 'promisor', 'true');
+
+      // Assert
+      expect(sut).toBe('[remote "origin"]\n\tpromisor = true\n\turl = https://e/r.git\n');
+    });
+
+    it('Given an existing key, When setConfigEntry, Then its value is replaced', () => {
+      // Arrange
+      const text = '[remote "origin"]\n\tpromisor = false\n';
+
+      // Act
+      const sut = setConfigEntry(text, 'remote', 'origin', 'promisor', 'true');
+
+      // Assert
+      expect(sut).toBe('[remote "origin"]\n\tpromisor = true\n');
+    });
+
+    it('Given a subsection differing only in case, When setConfigEntry, Then it is NOT matched (case-sensitive)', () => {
+      // Arrange
+      const text = '[remote "Origin"]\n\turl = old\n';
+
+      // Act
+      const sut = setConfigEntry(text, 'remote', 'origin', 'promisor', 'true');
+
+      // Assert
+      expect(sut).toBe('[remote "Origin"]\n\turl = old\n[remote "origin"]\n\tpromisor = true\n');
+    });
+
+    it('Given a section header differing only in case, When setConfigEntry, Then it IS matched (case-insensitive)', () => {
+      // Arrange
+      const text = '[EXTENSIONS]\n\tpartialClone = a\n';
+
+      // Act
+      const sut = setConfigEntry(text, 'extensions', undefined, 'partialClone', 'b');
+
+      // Assert
+      expect(sut).toBe('[EXTENSIONS]\n\tpartialClone = b\n');
+    });
+
+    it('Given a subsection containing a newline, When setConfigEntry, Then it throws INVALID_OPTION', () => {
+      // Act
+      let caught: unknown;
+      try {
+        setConfigEntry('', 'remote', 'ori\ngin', 'url', 'u');
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert
+      expect(caught).toBeInstanceOf(TsgitError);
+      expect((caught as TsgitError).data.code).toBe('INVALID_OPTION');
+    });
+
+    it('Given a subsection containing a quote, When setConfigEntry, Then it throws INVALID_OPTION', () => {
+      // Act
+      let caught: unknown;
+      try {
+        setConfigEntry('', 'remote', 'ori"gin', 'url', 'u');
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert
+      expect(caught).toBeInstanceOf(TsgitError);
+      const data = (caught as TsgitError).data;
+      expect(data.code).toBe('INVALID_OPTION');
+      if (data.code !== 'INVALID_OPTION') throw new Error('unreachable');
+      expect(data.reason).toContain('quote');
+    });
+  });
+
+  describe('updateConfigEntries', () => {
+    it('Given entries across several sections, When updateConfigEntries, Then every entry is written', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await seed(ctx, '[core]\n\tbare = false\n');
+
+      // Act
+      await updateConfigEntries(ctx, [
+        { section: 'core', key: 'repositoryformatversion', value: '1' },
+        { section: 'extensions', key: 'partialClone', value: 'origin' },
+        { section: 'remote', subsection: 'origin', key: 'promisor', value: 'true' },
+      ]);
+
+      // Assert
+      const written = await ctx.fs.readUtf8(configPath(ctx));
+      expect(written).toContain('repositoryformatversion = 1');
+      expect(written).toContain('[extensions]');
+      expect(written).toContain('partialClone = origin');
+      expect(written).toContain('[remote "origin"]');
+      expect(written).toContain('promisor = true');
+    });
+
+    it('Given a config cached by readConfig, When updateConfigEntries writes, Then a later readConfig sees it', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await seed(ctx, '[core]\n\tbare = false\n');
+      await readConfig(ctx);
+
+      // Act
+      await updateConfigEntries(ctx, [
+        { section: 'extensions', key: 'partialClone', value: 'origin' },
+      ]);
+
+      // Assert
+      const reread = await readConfig(ctx);
+      expect(reread.extensions?.partialClone).toBe('origin');
     });
   });
 });
