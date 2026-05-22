@@ -1128,7 +1128,7 @@ describe('primitives/config-read', () => {
     it('Given a partialclone key under a non-extensions section, When readConfig, Then extensions stays undefined', async () => {
       // Arrange — only the literal `[extensions]` section feeds mergeExtensions.
       const ctx = createMemoryContext();
-      await seed(ctx, '[notanextension]\n\tpartialclone = origin\n');
+      await seed(ctx, '[other]\npartialclone = origin\n');
 
       // Act
       const sut = await readConfig(ctx);
@@ -1164,7 +1164,7 @@ describe('primitives/config-read', () => {
     it('Given an [extensions] section with a non-partialclone key, When readConfig, Then partialClone stays undefined', async () => {
       // Arrange
       const ctx = createMemoryContext();
-      await seed(ctx, '[extensions]\n\tworktreeconfig = true\n');
+      await seed(ctx, '[extensions]\nname = enabled\n');
 
       // Act
       const sut = await readConfig(ctx);

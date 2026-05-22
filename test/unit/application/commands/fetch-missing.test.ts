@@ -298,7 +298,7 @@ describe('fetchMissing', () => {
     expect((caught as TsgitError).data.code).toBe('HTTP_ERROR');
   });
 
-  it('Given a configured auth credential, When fetchMissing, Then the credentialled fetch succeeds', async () => {
+  it('Given a configured auth credential, When fetchMissing, Then the fetch carries it', async () => {
     // Arrange
     const base = createMemoryContext();
     await seedRepo(base, {});
