@@ -304,7 +304,7 @@ describe('fetchMissing', () => {
     await seedRepo(base, {});
     await withConfig(base, PARTIAL_CONFIG);
     const { packBytes, blobId } = await onePackedBlob(base, 'with auth\n');
-    const { transport } = fakeRemote(packBytes);
+    const { transport, requests } = fakeRemote(packBytes);
     const ctx: Context = {
       ...base,
       transport,
@@ -314,7 +314,10 @@ describe('fetchMissing', () => {
     // Act
     const sut = await fetchMissing(ctx, { oids: [blobId] });
 
-    // Assert — the auth-bearing transport pipeline still resolves the object.
+    // Assert — the configured credential reached the wire: the `{ auth }`
+    // spread was passed to `withDefaults`, not an empty object.
     expect(sut).toEqual({ remote: 'origin', requested: 1, fetched: 1 });
+    const post = requests.find((r) => r.method === 'POST');
+    expect(post?.headers?.authorization).toBe('Bearer sekret');
   });
 });
