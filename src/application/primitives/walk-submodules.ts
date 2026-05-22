@@ -213,6 +213,11 @@ const deriveChildContext = async (
 ): Promise<Context | undefined> => {
   if (name === undefined) return undefined;
   const gitDir = `${ctx.layout.gitDir}/modules/${name}`;
+  // Defense-in-depth: under the absorbed layout + safe-name rules, the child
+  // gitDir strictly extends an ancestor (`/modules/<name>` is appended at every
+  // step), so it can never equal a visited entry — the guard is intentionally
+  // present to catch future contract changes (e.g. a relaxed name rule).
+  // Stryker disable next-line ConditionalExpression,BooleanLiteral: equivalent — visited.has(gitDir) is always false under the current contract, so replacing it with `false` produces identical behaviour; the guard's value is defensive, not behavioral.
   if (visited.has(gitDir)) return undefined;
   if (!(await ctx.fs.exists(`${gitDir}/HEAD`))) return undefined;
   const workDir = `${ctx.layout.workDir}/${treeRelPath}`;
@@ -231,15 +236,15 @@ const deriveChildContext = async (
   });
 };
 
+// `readTree` is invoked with an ObjectId here, so `resolveRef` is skipped and
+// `FILE_NOT_FOUND` cannot surface — loose-object misses are already remapped to
+// `OBJECT_NOT_FOUND` by `readObject`. Only the single not-fetched-yet code is
+// caught; anything else (e.g. UNEXPECTED_OBJECT_TYPE) rethrows.
 const tryReadTree = async (ctx: Context, commitId: ObjectId): Promise<Tree | undefined> => {
   try {
     return await readTree(ctx, commitId);
   } catch (err) {
-    if (err instanceof TsgitError) {
-      const code = err.data.code;
-      if (code === 'OBJECT_NOT_FOUND') return undefined;
-      if (code === 'FILE_NOT_FOUND') return undefined;
-    }
+    if (err instanceof TsgitError && err.data.code === 'OBJECT_NOT_FOUND') return undefined;
     throw err;
   }
 };

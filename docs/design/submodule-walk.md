@@ -247,13 +247,17 @@ when recursion cannot proceed (uninitialised, cycle, unsafe name).
 
 ```ts
 const childWorkDir = `${ctx.layout.workDir}/${treeRelPath}`;
-{ ...ctx,
-  layout: { workDir: childWorkDir,
-            gitDir,
-            bare: false,
-            ...(ctx.layout.homeDir ? { homeDir: ctx.layout.homeDir } : {}) },
+const { promisor: _drop, hooks: _drop2, ...rest } = ctx;
+return Object.freeze({
+  ...rest,
+  layout: Object.freeze({
+    workDir: childWorkDir,
+    gitDir,
+    bare: false,
+    ...(ctx.layout.homeDir ? { homeDir: ctx.layout.homeDir } : {}),
+  }),
   cwd: childWorkDir,
-  promisor: undefined }   // see below
+});
 ```
 
 `treeRelPath` is the gitlink path *within the current tree*, so the join
@@ -266,10 +270,13 @@ gitdir-agnostic; only `layout` selects which `objects/` directory primitives
 read. The `deltaCache` is reused too: it is keyed by `ObjectId`, which is
 content-addressed and therefore globally unique across object stores.
 
-`promisor` is **dropped**: the parent's promisor closes over the *parent*
-`Context` and would lazy-fetch a missing nested object from the
-*superproject's* remote — wrong store. A genuinely missing nested object must
-surface as a miss that stops recursion, not a cross-repo fetch.
+`promisor` and `hooks` are both **dropped**. `promisor` closes over the
+*parent* `Context` and would lazy-fetch a missing nested object from the
+*superproject's* remote — wrong store; a genuinely missing nested object must
+surface as a miss that stops recursion, not a cross-repo fetch. `hooks`
+likewise inherits the parent gitdir and would fire against the wrong
+repository if invoked while reading the child. The destructure pattern
+`{ promisor, hooks, ...rest }` omits both fields from the spread.
 
 `signal` and `config` are inherited (spread) so abort and parallelism settings
 propagate.

@@ -270,6 +270,31 @@ describe('primitives/walk-submodules', () => {
       expect(sut).toEqual([{ name: 'foo', path: 'foo', commit: FAKE_COMMIT_A, depth: 0 }]);
     });
 
+    it('Given .gitmodules with mode 100755 (executable), When walkSubmodules, Then it is parsed (matches the regular-file behaviour)', async () => {
+      // Arrange
+      const ctx = await buildSeededContext();
+      const text = '[submodule "vendor-foo"]\n\tpath = vendorfoo\n\turl = https://e/foo.git\n';
+      const blobId = await writeBlobText(ctx, text);
+      const treeId = await writeTreeAt(ctx, [
+        { name: '.gitmodules', mode: FILE_MODE.EXECUTABLE, id: blobId },
+        { name: 'vendorfoo', mode: FILE_MODE.GITLINK, id: FAKE_COMMIT_A },
+      ]);
+
+      // Act
+      const sut = await collect(walkSubmodules(ctx, { ref: treeId }));
+
+      // Assert — same shape as the regular-file case.
+      expect(sut).toEqual([
+        {
+          name: 'vendor-foo',
+          path: 'vendorfoo',
+          url: 'https://e/foo.git',
+          commit: FAKE_COMMIT_A,
+          depth: 0,
+        },
+      ]);
+    });
+
     it('Given .gitmodules is a symlink (mode 120000), When walkSubmodules, Then the file is ignored (no rows)', async () => {
       // Arrange
       const ctx = await buildSeededContext();
