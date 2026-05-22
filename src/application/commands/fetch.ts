@@ -21,6 +21,11 @@ import { remoteAdvertisesNoRefs, remoteNotConfigured } from '../../domain/index.
 import type { ObjectId, RefName } from '../../domain/objects/index.js';
 import { ZERO_OID } from '../../domain/objects/index.js';
 import type { AdvertisedRef, Advertisement } from '../../domain/protocol/index.js';
+import {
+  formatObjectFilter,
+  parseObjectFilter,
+  remoteFilterUnsupported,
+} from '../../domain/protocol/index.js';
 import { validateRefName } from '../../domain/refs/ref-validation.js';
 import type { Context } from '../../ports/context.js';
 import { readConfig } from '../primitives/config-read.js';
@@ -33,6 +38,7 @@ import { walkCommits } from '../primitives/walk-commits.js';
 import { withDefaults } from './internal/network-pipeline.js';
 import { assertRepository } from './internal/repo-state.js';
 import {
+  advertisesFilter,
   discoverRefs,
   selectFetchCapabilities,
   uniqueRefOids,
@@ -70,7 +76,7 @@ const FETCH_WRITE_OBJECTS_OP = 'fetch:write-objects';
 export const fetch = async (ctx: Context, opts: FetchOptions = {}): Promise<FetchResult> => {
   await assertRepository(ctx);
   const remoteName = opts.remote ?? 'origin';
-  const url = await resolveRemoteUrl(ctx, remoteName);
+  const { url, filter } = await resolveRemoteUrl(ctx, remoteName);
 
   ctx.progress.start(FETCH_NEGOTIATE_OP);
   try {
@@ -80,6 +86,11 @@ export const fetch = async (ctx: Context, opts: FetchOptions = {}): Promise<Fetc
     );
     const advertisement = await discoverRefs(ctx, transport, url);
     if (advertisement.refs.length === 0) throw remoteAdvertisesNoRefs();
+    // A partial repo's fetch must re-apply its filter; the server must still
+    // advertise the `filter` capability.
+    if (filter !== undefined && !advertisesFilter(advertisement.capabilities)) {
+      throw remoteFilterUnsupported();
+    }
 
     const capabilities = selectFetchCapabilities(advertisement.capabilities);
     const wants = uniqueRefOids(advertisement.refs);
@@ -93,6 +104,8 @@ export const fetch = async (ctx: Context, opts: FetchOptions = {}): Promise<Fetc
       progressOp: FETCH_WRITE_OBJECTS_OP,
       // Stryker disable next-line ConditionalExpression: equivalent — fetchPack gates on input.depth !== undefined, so depth:undefined behaves identically to a missing key.
       ...(opts.depth !== undefined ? { depth: opts.depth } : {}),
+      // A partial repo re-applies its stored filter and re-marks the pack promisor.
+      ...(filter !== undefined ? { filter, promisor: true } : {}),
     });
 
     if (packResult.shallow.length > 0 || packResult.unshallow.length > 0) {
@@ -118,11 +131,22 @@ export const fetch = async (ctx: Context, opts: FetchOptions = {}): Promise<Fetc
   }
 };
 
-const resolveRemoteUrl = async (ctx: Context, remoteName: string): Promise<string> => {
+const resolveRemoteUrl = async (
+  ctx: Context,
+  remoteName: string,
+): Promise<{ url: string; filter: string | undefined }> => {
   const config = await readConfig(ctx);
   const remote = config.remote?.get(remoteName);
-  if (remote?.url === undefined) throw remoteNotConfigured(remoteName);
-  return remote.url;
+  // An absent OR empty url means the remote is not usably configured.
+  if (remote?.url === undefined || remote.url === '') throw remoteNotConfigured(remoteName);
+  // A partial repo re-applies its recorded filter so a fetch does not pull
+  // full blobs and silently un-partial the repo. The stored value is
+  // re-validated — a hand-corrupted config filter is rejected before the wire.
+  const filter =
+    remote.partialCloneFilter !== undefined
+      ? formatObjectFilter(parseObjectFilter(remote.partialCloneFilter))
+      : undefined;
+  return { url: remote.url, filter };
 };
 
 /**

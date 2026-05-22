@@ -7,6 +7,7 @@ import { describe, expect, it } from 'vitest';
 
 import { createMemoryContext } from '../../../../../src/adapters/memory/memory-adapter.js';
 import {
+  advertisesFilter,
   discoverRefs,
   selectFetchCapabilities,
   uniqueRefOids,
@@ -193,6 +194,32 @@ describe('selectFetchCapabilities', () => {
     const agentEntries = sut.filter((c) => c.startsWith('agent='));
     expect(agentEntries).toHaveLength(1);
     expect(agentEntries[0]).not.toBe('agent=git/2.x');
+  });
+});
+
+describe('advertisesFilter', () => {
+  it('Given a capability set including filter, When advertisesFilter runs, Then returns true', () => {
+    // Arrange & Act
+    const sut = advertisesFilter(['ofs-delta', 'filter', 'side-band-64k']);
+
+    // Assert
+    expect(sut).toBe(true);
+  });
+
+  it('Given a capability set without filter, When advertisesFilter runs, Then returns false', () => {
+    // Arrange & Act
+    const sut = advertisesFilter(['ofs-delta', 'side-band-64k']);
+
+    // Assert
+    expect(sut).toBe(false);
+  });
+
+  it('Given an empty capability set, When advertisesFilter runs, Then returns false', () => {
+    // Arrange & Act
+    const sut = advertisesFilter([]);
+
+    // Assert
+    expect(sut).toBe(false);
   });
 });
 

@@ -642,6 +642,63 @@ describe('buildUploadPackRequest', () => {
     expect(dec.decode(dataLines[1]?.payload)).toBe('deepen 5\n');
   });
 
+  it('Given a filter, When built, Then includes a "filter <spec>" line before the flush', async () => {
+    // Arrange & Act
+    const sut = buildUploadPackRequest({
+      wants: [OID1],
+      haves: [],
+      capabilities: ['filter'],
+      filter: 'blob:none',
+      done: true,
+    });
+    const lines = await decodeAll(sut);
+
+    // Assert
+    const dec = new TextDecoder();
+    const dataLines = lines.filter(
+      (l): l is { kind: 'data'; payload: Uint8Array } => l.kind === 'data',
+    );
+    expect(dec.decode(dataLines[1]?.payload)).toBe('filter blob:none\n');
+    expect(lines[2]).toEqual({ kind: 'flush' });
+  });
+
+  it('Given no filter, When built, Then emits no filter line', async () => {
+    // Arrange & Act
+    const sut = buildUploadPackRequest({
+      wants: [OID1],
+      haves: [],
+      capabilities: [],
+    });
+    const lines = await decodeAll(sut);
+
+    // Assert
+    const dec = new TextDecoder();
+    const hasFilter = lines.some(
+      (l) => l.kind === 'data' && dec.decode(l.payload).startsWith('filter '),
+    );
+    expect(hasFilter).toBe(false);
+  });
+
+  it('Given both depth and filter, When built, Then the filter line follows the deepen line', async () => {
+    // Arrange & Act
+    const sut = buildUploadPackRequest({
+      wants: [OID1],
+      haves: [],
+      capabilities: [],
+      depth: 1,
+      filter: 'tree:0',
+    });
+    const lines = await decodeAll(sut);
+
+    // Assert
+    const dec = new TextDecoder();
+    const dataLines = lines.filter(
+      (l): l is { kind: 'data'; payload: Uint8Array } => l.kind === 'data',
+    );
+    expect(dec.decode(dataLines[1]?.payload)).toBe('deepen 1\n');
+    expect(dec.decode(dataLines[2]?.payload)).toBe('filter tree:0\n');
+  });
+
   it('Given empty wants, When built, Then throws EMPTY_WANTS', () => {
     try {
       buildUploadPackRequest({ wants: [], haves: [], capabilities: [] });

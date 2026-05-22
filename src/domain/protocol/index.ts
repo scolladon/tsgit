@@ -12,6 +12,7 @@ export {
   emptyReceiveUpdates,
   emptyWants,
   invalidBaseUrl,
+  invalidFilterSpec,
   invalidPktLength,
   invalidRefLine,
   invalidReportStatus,
@@ -21,9 +22,15 @@ export {
   pktLengthReserved,
   pktTooLarge,
   pktTruncated,
+  remoteFilterUnsupported,
   sidebandFatal,
   unknownAckStatus,
 } from './error.js';
+export {
+  formatObjectFilter,
+  type ObjectFilter,
+  parseObjectFilter,
+} from './object-filter.js';
 export {
   DELIM_PKT,
   decodePktStream,

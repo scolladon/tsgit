@@ -3,6 +3,8 @@ import { readObject } from '../../../../src/application/primitives/read-object.j
 import type { TsgitError } from '../../../../src/domain/error.js';
 import type { Blob, ObjectId } from '../../../../src/domain/objects/index.js';
 import { serializeObject } from '../../../../src/domain/objects/index.js';
+import type { Context } from '../../../../src/ports/context.js';
+import type { PromisorRemote } from '../../../../src/ports/promisor.js';
 import { buildSeededContext } from './fixtures.js';
 import { writeSyntheticPack } from './pack-fixture.js';
 
@@ -285,5 +287,185 @@ describe('readObject', () => {
 
     // Assert — at most one readdir on the pack dir (cache is honored).
     expect(readdirCount).toBeLessThanOrEqual(1);
+  });
+});
+
+describe('readObject — lazy-fetch (partial clone)', () => {
+  const computeLooseObjectPathOf = async (id: ObjectId): Promise<string> => {
+    const { computeLooseObjectPath } = await import('../../../../src/domain/storage/loose-path.js');
+    return computeLooseObjectPath(id);
+  };
+
+  /** A promisor whose `fetch` writes `blob` loose so the retry resolves it. */
+  const supplyingPromisor = (
+    ctx: Context,
+    id: ObjectId,
+    blob: Blob,
+    calls: { count: number },
+  ): PromisorRemote => ({
+    fetch: async (oids) => {
+      calls.count += 1;
+      const bytes = serializeObject(blob, ctx.hashConfig);
+      const compressed = await ctx.compressor.deflate(bytes);
+      await ctx.fs.write(
+        `${ctx.layout.gitDir}/objects/${await computeLooseObjectPathOf(id)}`,
+        compressed,
+      );
+      return { attempted: true, requested: oids.length, fetched: oids.length };
+    },
+  });
+
+  it('Given a missing object and a promisor that supplies it, When readObject, Then it is lazy-fetched', async () => {
+    // Arrange
+    const base = await buildSeededContext();
+    const blob: Blob = { type: 'blob', content: new Uint8Array([7, 8, 9]), id: '' as ObjectId };
+    const id = (await base.hash.hashHex(serializeObject(blob, base.hashConfig))) as ObjectId;
+    const calls = { count: 0 };
+    const ctx: Context = { ...base, promisor: supplyingPromisor(base, id, blob, calls) };
+
+    // Act
+    const sut = await readObject(ctx, id);
+
+    // Assert
+    expect(sut.type).toBe('blob');
+    expect(calls.count).toBe(1);
+  });
+
+  it('Given a promisor reporting attempted=false, When readObject misses, Then OBJECT_NOT_FOUND is thrown', async () => {
+    // Arrange
+    const base = await buildSeededContext();
+    const ctx: Context = {
+      ...base,
+      promisor: {
+        fetch: async (oids) => ({ attempted: false, requested: oids.length, fetched: 0 }),
+      },
+    };
+
+    // Act & Assert
+    try {
+      await readObject(ctx, 'f'.repeat(40) as ObjectId);
+      expect.unreachable();
+    } catch (error) {
+      expect((error as TsgitError).data.code).toBe('OBJECT_NOT_FOUND');
+    }
+  });
+
+  it('Given a promisor that attempts but supplies nothing, When readObject misses, Then OBJECT_NOT_FOUND is thrown', async () => {
+    // Arrange
+    const base = await buildSeededContext();
+    const ctx: Context = {
+      ...base,
+      promisor: {
+        fetch: async (oids) => ({ attempted: true, requested: oids.length, fetched: 0 }),
+      },
+    };
+
+    // Act & Assert
+    try {
+      await readObject(ctx, 'f'.repeat(40) as ObjectId);
+      expect.unreachable();
+    } catch (error) {
+      expect((error as TsgitError).data.code).toBe('OBJECT_NOT_FOUND');
+    }
+  });
+
+  it('Given two concurrent reads of the same missing object, When readObject, Then the promisor is invoked once', async () => {
+    // Arrange
+    const base = await buildSeededContext();
+    const blob: Blob = { type: 'blob', content: new Uint8Array([1, 1, 2]), id: '' as ObjectId };
+    const id = (await base.hash.hashHex(serializeObject(blob, base.hashConfig))) as ObjectId;
+    const calls = { count: 0 };
+    const ctx: Context = { ...base, promisor: supplyingPromisor(base, id, blob, calls) };
+
+    // Act
+    const [a, b] = await Promise.all([readObject(ctx, id), readObject(ctx, id)]);
+
+    // Assert
+    expect(a.type).toBe('blob');
+    expect(b.type).toBe('blob');
+    expect(calls.count).toBe(1);
+  });
+
+  it('Given an object already present, When readObject, Then the promisor is never consulted', async () => {
+    // Arrange
+    const blob: Blob = { type: 'blob', content: new Uint8Array([3, 1, 4]), id: '' as ObjectId };
+    const base = await buildSeededContext({ objects: [blob] });
+    const id = (await base.hash.hashHex(serializeObject(blob, base.hashConfig))) as ObjectId;
+    const calls = { count: 0 };
+    const ctx: Context = {
+      ...base,
+      promisor: {
+        fetch: async (oids) => {
+          calls.count += 1;
+          return { attempted: false, requested: oids.length, fetched: 0 };
+        },
+      },
+    };
+
+    // Act
+    const sut = await readObject(ctx, id);
+
+    // Assert
+    expect(sut.type).toBe('blob');
+    expect(calls.count).toBe(0);
+  });
+
+  it('Given a promisor and a corrupted object, When readObject, Then the hash-mismatch error propagates and the promisor is not consulted', async () => {
+    // Arrange — a loose object whose bytes do not hash to its id.
+    const base = await buildSeededContext();
+    const fakeId = 'a'.repeat(40) as ObjectId;
+    const compressed = await base.compressor.deflate(new TextEncoder().encode('blob 3\0xyz'));
+    await base.fs.write(
+      `${base.layout.gitDir}/objects/${await computeLooseObjectPathOf(fakeId)}`,
+      compressed,
+    );
+    const calls = { count: 0 };
+    const ctx: Context = {
+      ...base,
+      promisor: {
+        fetch: async (oids) => {
+          calls.count += 1;
+          return { attempted: true, requested: oids.length, fetched: 0 };
+        },
+      },
+    };
+
+    // Act & Assert — a non-OBJECT_NOT_FOUND error is rethrown untouched.
+    try {
+      await readObject(ctx, fakeId);
+      expect.unreachable();
+    } catch (error) {
+      expect((error as TsgitError).data.code).toBe('OBJECT_HASH_MISMATCH');
+    }
+    expect(calls.count).toBe(0);
+  });
+
+  it('Given two sequential reads of an object the promisor cannot supply, When readObject, Then the promisor is invoked for each', async () => {
+    // Arrange — the in-flight entry must clear after each fetch resolves.
+    const base = await buildSeededContext();
+    const id = 'e'.repeat(40) as ObjectId;
+    const calls = { count: 0 };
+    const ctx: Context = {
+      ...base,
+      promisor: {
+        fetch: async (oids) => {
+          calls.count += 1;
+          return { attempted: true, requested: oids.length, fetched: 0 };
+        },
+      },
+    };
+
+    // Act — two reads, awaited one after the other.
+    for (let i = 0; i < 2; i += 1) {
+      try {
+        await readObject(ctx, id);
+        expect.unreachable();
+      } catch (error) {
+        expect((error as TsgitError).data.code).toBe('OBJECT_NOT_FOUND');
+      }
+    }
+
+    // Assert — each sequential miss issued its own fetch.
+    expect(calls.count).toBe(2);
   });
 });

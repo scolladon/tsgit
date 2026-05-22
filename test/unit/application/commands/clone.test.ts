@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { clone } from '../../../../src/application/commands/clone.js';
+import { readConfig } from '../../../../src/application/primitives/config-read.js';
 import { TsgitError } from '../../../../src/domain/index.js';
 import type { RefName } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
@@ -636,5 +637,105 @@ describe('clone — progress reporting', () => {
     const startCount = events.filter((e) => e.kind === 'start').length;
     const endCount = events.filter((e) => e.kind === 'end').length;
     expect(endCount).toBe(startCount);
+  });
+});
+
+describe('clone — partial clone', () => {
+  it('Given an invalid filter spec, When clone, Then throws INVALID_FILTER_SPEC before any network call', async () => {
+    // Arrange — a transport that fails the test if discovery is reached.
+    const ctx = withTransport(createMemoryContext(), {
+      request: async (): Promise<HttpResponse> => {
+        throw new Error('network must not be touched');
+      },
+    });
+
+    // Act
+    let caught: unknown;
+    try {
+      await clone(ctx, { url: REMOTE_URL, filter: 'not-a-filter' });
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert
+    expect(caught).toBeInstanceOf(TsgitError);
+    const data = (caught as TsgitError).data;
+    expect(data.code).toBe('INVALID_FILTER_SPEC');
+    if (data.code !== 'INVALID_FILTER_SPEC') throw new Error('unreachable');
+    expect(data.spec).toBe('not-a-filter');
+    expect(data.reason).toBe('unknown-kind');
+  });
+
+  it('Given a server that does not advertise filter, When clone with a filter, Then throws REMOTE_FILTER_UNSUPPORTED', async () => {
+    // Arrange
+    const ctx = createMemoryContext();
+    const { packBytes, blobId } = await buildPackFromSingleBlob(ctx, 'unfiltered\n');
+    const transport = buildCloneRemote({
+      capabilities: ['side-band-64k', 'ofs-delta', 'symref=HEAD:refs/heads/main'],
+      refs: [{ name: 'refs/heads/main', id: blobId }],
+      head: 'refs/heads/main',
+      packBytes,
+    });
+
+    // Act
+    let caught: unknown;
+    try {
+      await clone(withTransport(ctx, transport), { url: REMOTE_URL, filter: 'blob:none' });
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert
+    expect(caught).toBeInstanceOf(TsgitError);
+    expect((caught as TsgitError).data.code).toBe('REMOTE_FILTER_UNSUPPORTED');
+  });
+
+  it('Given a filter-capable server, When clone with blob:none, Then the promisor config block and .promisor sentinel are written', async () => {
+    // Arrange
+    const ctx = createMemoryContext();
+    const { packBytes, blobId } = await buildPackFromSingleBlob(ctx, 'filtered\n');
+    const transport = buildCloneRemote({
+      capabilities: ['side-band-64k', 'ofs-delta', 'filter', 'symref=HEAD:refs/heads/main'],
+      refs: [{ name: 'refs/heads/main', id: blobId }],
+      head: 'refs/heads/main',
+      packBytes,
+    });
+
+    // Act
+    await clone(withTransport(ctx, transport), { url: REMOTE_URL, filter: 'blob:none' });
+
+    // Assert — the promisor block round-trips through the config parser, so
+    // every section / subsection / value reached `.git/config` intact.
+    const config = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
+    expect(config).toContain('repositoryformatversion = 1');
+    const parsed = await readConfig(ctx);
+    const remote = parsed.remote?.get('origin');
+    expect(remote?.url).toBe(REMOTE_URL);
+    expect(remote?.fetch).toEqual(['+refs/heads/*:refs/remotes/origin/*']);
+    expect(remote?.promisor).toBe(true);
+    expect(remote?.partialCloneFilter).toBe('blob:none');
+    expect(parsed.extensions?.partialClone).toBe('origin');
+    const packDir = await ctx.fs.readdir(`${ctx.layout.gitDir}/objects/pack`);
+    expect(packDir.some((e) => e.name.endsWith('.promisor'))).toBe(true);
+  });
+
+  it('Given no filter, When clone, Then no [extensions] or [remote] section is written', async () => {
+    // Arrange
+    const ctx = createMemoryContext();
+    const { packBytes, blobId } = await buildPackFromSingleBlob(ctx, 'plain clone\n');
+    const transport = buildCloneRemote({
+      capabilities: ['side-band-64k', 'ofs-delta', 'symref=HEAD:refs/heads/main'],
+      refs: [{ name: 'refs/heads/main', id: blobId }],
+      head: 'refs/heads/main',
+      packBytes,
+    });
+
+    // Act
+    await clone(withTransport(ctx, transport), { url: REMOTE_URL });
+
+    // Assert
+    const config = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
+    expect(config).not.toContain('[extensions]');
+    expect(config).not.toContain('[remote');
   });
 });

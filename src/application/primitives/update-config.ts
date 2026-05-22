@@ -1,25 +1,29 @@
 import { invalidOption } from '../../domain/commands/error.js';
 import { TsgitError } from '../../domain/error.js';
 import type { Context } from '../../ports/context.js';
-import { invalidateConfigCache } from './config-read.js';
+import { invalidateConfigCache, parseSectionHeader } from './config-read.js';
 
 /**
- * Targeted `.git/config` writer for the `[core]` section (design §6.2,
- * ADR-074). tsgit has no general INI writer; sparse checkout only needs to
- * flip `core.sparseCheckout` / `core.sparseCheckoutCone`, so this performs
- * line surgery that preserves comments, blank lines, key order, casing of
- * unrelated keys, and every other section byte-for-byte.
+ * Targeted `.git/config` writer (ADR-082). tsgit has no general INI writer;
+ * this performs line surgery that preserves comments, blank lines, key order,
+ * casing of unrelated keys, and every other section byte-for-byte. It writes
+ * one `key = value` per call under any `[section]` / `[section "subsection"]`.
  */
 
 /**
- * A line whose trimmed form is a `[core]` / `[core ""]` section header. Git
- * section names are case-insensitive, so the section name is lower-cased
- * before comparison; a `[core "subsection"]` header is still NOT matched.
+ * True when `line` is the header for `[section]` / `[section "subsection"]`.
+ * Section names are matched case-insensitively (git semantics); subsection
+ * names case-sensitively. A `subsection` of `undefined` matches a header with
+ * no subsection or an explicitly empty one (`[section ""]`).
  */
-const isCoreHeader = (line: string): boolean => {
-  const trimmed = line.trim();
-  // `[core]` with no subsection, or an explicitly empty `[core ""]` one.
-  return trimmed.toLowerCase() === '[core]' || trimmed.toLowerCase() === '[core ""]';
+const matchesSection = (line: string, section: string, subsection: string | undefined): boolean => {
+  const header = parseSectionHeader(line.trim());
+  if (header === undefined) return false;
+  if (header.section.toLowerCase() !== section.toLowerCase()) return false;
+  if (subsection === undefined) {
+    return header.subsection === undefined || header.subsection === '';
+  }
+  return header.subsection === subsection;
 };
 
 /** Any `[section]` / `[section "sub"]` header line — marks the end of a section. */
@@ -38,13 +42,21 @@ const isKeyLine = (line: string, key: string): boolean => {
   return line.slice(0, eqAt).trim().toLowerCase() === key.toLowerCase();
 };
 
-/** Render `key = value` indented with a tab — git's own `[core]` body style. */
+/** Render `key = value` indented with a tab — git's own section-body style. */
 const renderEntry = (key: string, value: string): string => `\t${key} = ${value}`;
 
-/** Index of the `[core]` header line, or `-1` when the file has no `[core]`. */
-const findCoreHeader = (lines: ReadonlyArray<string>): number => {
+/** Render a `[section]` / `[section "subsection"]` header line. */
+const renderSectionHeader = (section: string, subsection: string | undefined): string =>
+  subsection === undefined ? `[${section}]` : `[${section} "${subsection}"]`;
+
+/** Index of the matching section header line, or `-1` when absent. */
+const findSectionHeader = (
+  lines: ReadonlyArray<string>,
+  section: string,
+  subsection: string | undefined,
+): number => {
   for (let i = 0; i < lines.length; i += 1) {
-    if (isCoreHeader(lines[i] as string)) return i;
+    if (matchesSection(lines[i] as string, section, subsection)) return i;
   }
   return -1;
 };
@@ -82,30 +94,65 @@ const insertAfter = (
 ): ReadonlyArray<string> => [...lines.slice(0, at + 1), entry, ...lines.slice(at + 1)];
 
 /**
- * Set `key` under `[core]` to `value`, preserving everything else verbatim.
- *
- * - existing `[core] key =` line ⇒ its value is replaced (key match is
- *   case-insensitive; the rest of the file is byte-preserved);
- * - existing `[core]` without that key ⇒ a `\t<key> = <value>` line is
- *   inserted right after the header;
- * - no `[core]` section ⇒ `[core]\n\t<key> = <value>\n` is appended.
+ * Reject a `key`/`value`/`subsection` carrying a `\n`, `\r`, or `\0` — those
+ * would let line surgery splice a forged config section into `.git/config`.
  */
-/** Reject a `key`/`value` carrying a `\n`, `\r`, or `\0` — those would let
- * line surgery splice a forged config section into `.git/config`. */
-const rejectControlChars = (field: 'key' | 'value', text: string): void => {
+const rejectControlChars = (field: 'key' | 'value' | 'subsection', text: string): void => {
   if (/[\n\r\0]/.test(text)) {
     throw invalidOption('config', `${field} must not contain a newline or NUL`);
   }
 };
 
-export const setCoreConfigEntry = (text: string, key: string, value: string): string => {
+/**
+ * Reject a subsection name that would break the `[section "subsection"]`
+ * quoting: a control char (above) plus `"`, `\`, or `]`.
+ */
+const rejectSubsection = (subsection: string): void => {
+  rejectControlChars('subsection', subsection);
+  if (/["\\\]]/.test(subsection)) {
+    throw invalidOption('config', 'subsection must not contain a quote, backslash, or bracket');
+  }
+};
+
+/**
+ * Reject a section name that would break the `[section]` line: control chars
+ * plus `]`, `"`, `\`. Every current caller passes a hardcoded literal; the
+ * guard is defence-in-depth for a future dynamic caller of this public helper.
+ */
+const rejectSection = (section: string): void => {
+  if (/[\n\r\0\]"\\]/.test(section)) {
+    throw invalidOption(
+      'config',
+      'section must not contain a newline, NUL, bracket, quote, or backslash',
+    );
+  }
+};
+
+/**
+ * Set `key` under `[section]` / `[section "subsection"]`, preserving every
+ * other byte verbatim.
+ *
+ * - existing section with that key ⇒ its value is replaced;
+ * - existing section without that key ⇒ a `\t<key> = <value>` line is
+ *   inserted right after the header;
+ * - no such section ⇒ `[section]\n\t<key> = <value>\n` is appended.
+ */
+export const setConfigEntry = (
+  text: string,
+  section: string,
+  subsection: string | undefined,
+  key: string,
+  value: string,
+): string => {
+  rejectSection(section);
   rejectControlChars('key', key);
   rejectControlChars('value', value);
+  if (subsection !== undefined) rejectSubsection(subsection);
   const lines = text.split('\n');
-  const headerIndex = findCoreHeader(lines);
+  const headerIndex = findSectionHeader(lines, section, subsection);
   if (headerIndex === -1) {
     const prefix = text === '' ? '' : text.endsWith('\n') ? text : `${text}\n`;
-    return `${prefix}[core]\n${renderEntry(key, value)}\n`;
+    return `${prefix}${renderSectionHeader(section, subsection)}\n${renderEntry(key, value)}\n`;
   }
   const keyIndex = findKeyInSection(lines, headerIndex, key);
   if (keyIndex !== -1) {
@@ -114,23 +161,46 @@ export const setCoreConfigEntry = (text: string, key: string, value: string): st
   return insertAfter(lines, headerIndex, renderEntry(key, value)).join('\n');
 };
 
+/** `setConfigEntry` bound to the `[core]` section — kept for legacy callers. */
+export const setCoreConfigEntry = (text: string, key: string, value: string): string =>
+  setConfigEntry(text, 'core', undefined, key, value);
+
+/** One `key = value` write under `[section]` / `[section "subsection"]`. */
+export interface ConfigEntry {
+  readonly section: string;
+  readonly subsection?: string;
+  readonly key: string;
+  readonly value: string;
+}
+
 /**
  * Read `${gitDir}/config` (a missing file is treated as `''`), fold
- * `setCoreConfigEntry` over `entries`, write the result, and invalidate the
+ * `setConfigEntry` over `entries`, write the result, and invalidate the
  * per-`Context` `readConfig` cache so a later read sees the new values.
  */
-export const updateCoreConfig = async (
+export const updateConfigEntries = async (
   ctx: Context,
-  entries: Record<string, string>,
+  entries: ReadonlyArray<ConfigEntry>,
 ): Promise<void> => {
   const path = `${ctx.layout.gitDir}/config`;
   const original = await readConfigText(ctx, path);
-  const updated = Object.entries(entries).reduce(
-    (text, [key, value]) => setCoreConfigEntry(text, key, value),
+  const updated = entries.reduce(
+    (text, entry) => setConfigEntry(text, entry.section, entry.subsection, entry.key, entry.value),
     original,
   );
   await ctx.fs.writeUtf8(path, updated);
   invalidateConfigCache(ctx);
+};
+
+/** Fold a batch of `[core]` `key = value` writes via `updateConfigEntries`. */
+export const updateCoreConfig = async (
+  ctx: Context,
+  entries: Record<string, string>,
+): Promise<void> => {
+  await updateConfigEntries(
+    ctx,
+    Object.entries(entries).map(([key, value]) => ({ section: 'core', key, value })),
+  );
 };
 
 /**

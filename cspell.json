@@ -466,7 +466,19 @@
     "generalised",
     "sparsecheckout",
     "sparsecheckoutcone",
-    "parallelisable"
+    "parallelisable",
+    "blobless",
+    "partialclone",
+    "partialclonefilter",
+    "uploadpack",
+    "allowfilter",
+    "allowanysha",
+    "inwant",
+    "promisor",
+    "promisors",
+    "reserialise",
+    "entrancy",
+    "reparsed"
   ],
   "ignorePaths": [
     "node_modules",

@@ -292,6 +292,8 @@ function extractDetail(data: TsgitErrorData): string {
       return `${data.count} refspecs exceeds limit ${data.limit}`;
     case 'REMOTE_NOT_CONFIGURED':
       return `remote not configured: ${data.remote}`;
+    case 'NO_PROMISOR_REMOTE':
+      return 'no promisor remote configured; this repository is not a partial clone';
     case 'REFSPEC_INVALID':
       return `invalid refspec "${data.raw}": ${data.reason}`;
     case 'INVALID_OPTION':
@@ -314,6 +316,10 @@ function extractDetail(data: TsgitErrorData): string {
       return `reflog entry out of range: ref=${data.ref} requested=${data.requested} available=${data.available}`;
     case 'HOOK_FAILED':
       return `hook ${data.hook} failed with exit code ${data.exitCode}`;
+    case 'INVALID_FILTER_SPEC':
+      return `invalid object filter "${data.spec}": ${data.reason}`;
+    case 'REMOTE_FILTER_UNSUPPORTED':
+      return 'remote does not support partial-clone object filtering';
     default: {
       const _exhaustive: never = data;
       return String(_exhaustive);

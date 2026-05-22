@@ -78,7 +78,7 @@ async function stubRegistry(
     };
     return { pack, offset: match.offset };
   };
-  return { all: async () => [], lookup };
+  return { all: async () => [], refresh: () => undefined, lookup };
 }
 
 describe('object-resolver', () => {

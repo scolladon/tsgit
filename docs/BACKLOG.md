@@ -2,7 +2,7 @@
 
 Track: `[ ]` todo, `[~]` in progress, `[x]` done, `[-]` skipped
 
-**Progress:** Phases 0–16 complete, Phase 17.1 shipping. `@scolladon/tsgit@1.0.0` published on npm with sigstore provenance (trusted-publisher OIDC). Phases 12–16 shipped (network: clone/fetch/push; working-tree: checkout/reset; pathspec: globs and `.gitignore`; Windows support; operations hardening; browser E2E). Phases 17.1 (reflog), 17.2 (hooks) and 17.3 (sparse checkout) are now implemented. Remaining v2.0 items (17.4–17.7) deferred.
+**Progress:** Phases 0–16 complete, Phase 17.1 shipping. `@scolladon/tsgit@1.0.0` published on npm with sigstore provenance (trusted-publisher OIDC). Phases 12–16 shipped (network: clone/fetch/push; working-tree: checkout/reset; pathspec: globs and `.gitignore`; Windows support; operations hardening; browser E2E). Phases 17.1 (reflog), 17.2 (hooks), 17.3 (sparse checkout) and 17.4 (partial clone) are now implemented. Remaining v2.0 items (17.5–17.7) deferred.
 
 ---
 
@@ -384,7 +384,32 @@ Design: `docs/design/phase-15-bench-observability.md`. ADRs: [054](adr/054-bench
       `SparseRule.regex` is renamed `matcher`. Design:
       `docs/design/compile-glob-redos.md`. ADR:
       [077](adr/077-linear-glob-matcher.md).
-- [ ] **17.4** Partial clone (`--filter=blob:none`, lazy-fetch on read).
+- [x] **17.4** Partial clone (`--filter=blob:none`, lazy-fetch on read).
+      _Accepted:_ `repo.clone({ url, filter })` accepts `blob:none`,
+      `blob:limit=<n>[kmg]`, and `tree:<depth>` — the spec is parsed by the new
+      `parseObjectFilter` domain function (`src/domain/protocol/object-filter.ts`),
+      sent as a `filter` pkt-line in the upload-pack request, and the received
+      pack is marked promisor with a `pack-<sha>.promisor` sentinel. Clone
+      persists the promisor block to `.git/config`
+      (`core.repositoryformatversion = 1`, `[remote "origin"]`
+      url/fetch/`promisor`/`partialclonefilter`, `extensions.partialClone`).
+      `readObject` lazy-fetches an omitted object transparently on a miss via a
+      new `PromisorRemote` port on `Context` (wired by `openRepository`),
+      refreshing the pack registry and retrying once; concurrent reads of the
+      same oid share one fetch. A tier-1 `repo.fetchMissing({ oids })` command
+      batches a prefetch. A regular `fetch` into a partial repo re-applies the
+      stored filter so the repo stays partial. The `[core]`-only config writer
+      was generalised to any `[section]` (`setConfigEntry` /
+      `updateConfigEntries`). Interop-verified end-to-end against
+      `git-http-backend` (`test/integration/network/partial-clone-http-backend.test.ts`):
+      canonical git reads the lazy-filled repo. Design:
+      `docs/design/partial-clone.md`. ADRs:
+      [078](adr/078-partial-clone-filter-scope.md) (filter scope),
+      [079](adr/079-lazy-fetch-automatic-plus-batch.md) (automatic + batch
+      lazy-fetch), [080](adr/080-lazy-fetch-sends-no-filter.md) (no filter on
+      lazy-fetch), [081](adr/081-promisor-remote-port.md) (`PromisorRemote`
+      port), [082](adr/082-generalised-config-section-writer.md) (config
+      writer).
 - [ ] **17.5** Submodule walk (recurse into `.gitmodules`, expose as `repo.submodules` iterator).
 - [ ] **17.6** `git-cat-file --batch` equivalent on the primitive layer for high-throughput readers.
 - [ ] **17.7** isomorphic-git compatibility shim (runtime namespace re-export — explicitly out of scope for v1 per MIGRATION.md, revisit if adoption demands it).

@@ -96,6 +96,7 @@ describe('openRepository — Repository binding integrity', () => {
         'diff',
         'dispose',
         'fetch',
+        'fetchMissing',
         'init',
         'log',
         'merge',
@@ -186,6 +187,25 @@ describe('openRepository — dispose state machine', () => {
     // After dispose, init MUST throw REPOSITORY_DISPOSED.
     try {
       await sut.init();
+      expect.unreachable();
+    } catch (err) {
+      const data = (err as TsgitError).data;
+      expect(data.code).toBe('REPOSITORY_DISPOSED');
+    }
+  });
+
+  it('Given an opened repo, When ctx is inspected, Then the promisor port is wired', async () => {
+    const sut = await open();
+
+    expect(sut.ctx.promisor).toBeDefined();
+  });
+
+  it('Given a disposed repo, When fetchMissing is invoked, Then throws REPOSITORY_DISPOSED', async () => {
+    const sut = await open();
+
+    await sut.dispose();
+    try {
+      await sut.fetchMissing({ oids: [] });
       expect.unreachable();
     } catch (err) {
       const data = (err as TsgitError).data;

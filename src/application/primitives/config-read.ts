@@ -17,9 +17,18 @@ export interface ParsedConfig {
   readonly user?: { readonly name: string; readonly email: string };
   readonly remote?: ReadonlyMap<
     string,
-    { readonly url?: string; readonly fetch?: ReadonlyArray<string> }
+    {
+      readonly url?: string;
+      readonly fetch?: ReadonlyArray<string>;
+      /** `remote.<name>.promisor` — true when this is a partial-clone promisor remote. */
+      readonly promisor?: boolean;
+      /** `remote.<name>.partialclonefilter` — the canonical filter spec applied at clone. */
+      readonly partialCloneFilter?: string;
+    }
   >;
   readonly branch?: ReadonlyMap<string, { readonly remote?: string; readonly merge?: string }>;
+  /** `[extensions]` — `partialClone` names the promisor remote of a partial clone. */
+  readonly extensions?: { readonly partialClone?: string };
 }
 
 // Cache reference is mutable so test code can swap in a fresh WeakMap and
@@ -148,7 +157,12 @@ const indexOfUnquoted = (line: string, ch: string): number => {
   return -1;
 };
 
-const parseSectionHeader = (
+/**
+ * Parse a trimmed `[section]` / `[section "subsection"]` header line, or
+ * `undefined` when the line is not a well-formed header. Exported so the
+ * sibling config *writer* (`update-config.ts`) shares one header parser.
+ */
+export const parseSectionHeader = (
   line: string,
 ): { readonly section: string; readonly subsection: string | undefined } | undefined => {
   if (!line.startsWith('[') || !line.endsWith(']')) return undefined;
@@ -176,30 +190,42 @@ const parseKeyValue = (
   return { key, value };
 };
 
+interface MutableParsedConfig {
+  core?: {
+    bare?: boolean;
+    excludesFile?: string;
+    logAllRefUpdates?: boolean | 'always';
+    hooksPath?: string;
+    sparseCheckout?: boolean;
+    sparseCheckoutCone?: boolean;
+  };
+  user?: { name?: string; email?: string };
+  remote?: Map<
+    string,
+    { url?: string; fetch?: string[]; promisor?: boolean; partialCloneFilter?: string }
+  >;
+  branch?: Map<string, { remote?: string; merge?: string }>;
+  extensions?: { partialClone?: string };
+}
+
+const dispatchSection = (acc: MutableParsedConfig, sec: MutableSection): void => {
+  if (sec.section === 'core' && sec.subsection === undefined) {
+    mergeCore(acc, sec);
+  } else if (sec.section === 'user' && sec.subsection === undefined) {
+    mergeUser(acc, sec);
+  } else if (sec.section === 'remote' && sec.subsection !== undefined) {
+    mergeRemote(acc, sec.subsection, sec);
+  } else if (sec.section === 'branch' && sec.subsection !== undefined) {
+    mergeBranch(acc, sec.subsection, sec);
+  } else if (sec.section === 'extensions' && sec.subsection === undefined) {
+    mergeExtensions(acc, sec);
+  }
+};
+
 const assembleParsed = (sections: ReadonlyArray<MutableSection>): ParsedConfig => {
-  const acc: {
-    core?: {
-      bare?: boolean;
-      excludesFile?: string;
-      logAllRefUpdates?: boolean | 'always';
-      hooksPath?: string;
-      sparseCheckout?: boolean;
-      sparseCheckoutCone?: boolean;
-    };
-    user?: { name?: string; email?: string };
-    remote?: Map<string, { url?: string; fetch?: string[] }>;
-    branch?: Map<string, { remote?: string; merge?: string }>;
-  } = {};
+  const acc: MutableParsedConfig = {};
   for (const sec of sections) {
-    if (sec.section === 'core' && sec.subsection === undefined) {
-      mergeCore(acc, sec);
-    } else if (sec.section === 'user' && sec.subsection === undefined) {
-      mergeUser(acc, sec);
-    } else if (sec.section === 'remote' && sec.subsection !== undefined) {
-      mergeRemote(acc, sec.subsection, sec);
-    } else if (sec.section === 'branch' && sec.subsection !== undefined) {
-      mergeBranch(acc, sec.subsection, sec);
-    }
+    dispatchSection(acc, sec);
   }
   return finalize(acc);
 };
@@ -258,7 +284,12 @@ const mergeUser = (
 };
 
 const mergeRemote = (
-  acc: { remote?: Map<string, { url?: string; fetch?: string[] }> },
+  acc: {
+    remote?: Map<
+      string,
+      { url?: string; fetch?: string[]; promisor?: boolean; partialCloneFilter?: string }
+    >;
+  },
   name: string,
   sec: MutableSection,
 ): void => {
@@ -266,13 +297,26 @@ const mergeRemote = (
   const current = acc.remote.get(name) ?? {};
   const fetch = current.fetch ? [...current.fetch] : [];
   let url = current.url;
+  let promisor = current.promisor;
+  let partialCloneFilter = current.partialCloneFilter;
   for (const { key, value } of sec.entries) {
-    if (key === 'url') url = value;
-    else if (key === 'fetch') fetch.push(value);
+    // Git config keys are case-insensitive — compare on the lower-cased key.
+    const lowered = key.toLowerCase();
+    if (lowered === 'url') url = value;
+    else if (lowered === 'fetch') fetch.push(value);
+    else if (lowered === 'promisor') promisor = parseGitBoolean(value);
+    else if (lowered === 'partialclonefilter') partialCloneFilter = value;
   }
-  const merged: { url?: string; fetch?: string[] } = {};
+  const merged: {
+    url?: string;
+    fetch?: string[];
+    promisor?: boolean;
+    partialCloneFilter?: string;
+  } = {};
   if (url !== undefined) merged.url = url;
   if (fetch.length > 0) merged.fetch = fetch;
+  if (promisor !== undefined) merged.promisor = promisor;
+  if (partialCloneFilter !== undefined) merged.partialCloneFilter = partialCloneFilter;
   acc.remote.set(name, merged);
 };
 
@@ -289,6 +333,18 @@ const mergeBranch = (
     else if (key === 'merge') next.merge = value;
   }
   acc.branch.set(name, next);
+};
+
+const mergeExtensions = (
+  acc: { extensions?: { partialClone?: string } },
+  sec: MutableSection,
+): void => {
+  for (const { key, value } of sec.entries) {
+    // `partialClone` names the promisor remote of a partial clone.
+    if (key.toLowerCase() === 'partialclone') {
+      acc.extensions = { ...acc.extensions, partialClone: value };
+    }
+  }
 };
 
 /**
@@ -322,19 +378,7 @@ const finalizeCore = (
   };
 };
 
-const finalize = (acc: {
-  core?: {
-    bare?: boolean;
-    excludesFile?: string;
-    logAllRefUpdates?: boolean | 'always';
-    hooksPath?: string;
-    sparseCheckout?: boolean;
-    sparseCheckoutCone?: boolean;
-  };
-  user?: { name?: string; email?: string };
-  remote?: Map<string, { url?: string; fetch?: string[] }>;
-  branch?: Map<string, { remote?: string; merge?: string }>;
-}): ParsedConfig => {
+const finalize = (acc: MutableParsedConfig): ParsedConfig => {
   const out: {
     core?: {
       bare?: boolean;
@@ -345,8 +389,17 @@ const finalize = (acc: {
       sparseCheckoutCone?: boolean;
     };
     user?: { name: string; email: string };
-    remote?: ReadonlyMap<string, { url?: string; fetch?: ReadonlyArray<string> }>;
+    remote?: ReadonlyMap<
+      string,
+      {
+        url?: string;
+        fetch?: ReadonlyArray<string>;
+        promisor?: boolean;
+        partialCloneFilter?: string;
+      }
+    >;
     branch?: ReadonlyMap<string, { remote?: string; merge?: string }>;
+    extensions?: { partialClone?: string };
   } = {};
   const core = finalizeCore(acc.core);
   if (core !== undefined) out.core = core;
@@ -356,6 +409,9 @@ const finalize = (acc: {
   }
   // Stryker disable next-line EqualityOperator,ConditionalExpression: equivalent — `acc.remote` is only ever assigned after a `Map.set`, so when defined its size is always >= 1; `> 0`, `>= 0` and a constant `true` never differ.
   if (acc.remote !== undefined && acc.remote.size > 0) out.remote = acc.remote;
+  // `mergeExtensions` only assigns `acc.extensions` after observing a
+  // `partialclone` key, so a defined value is always non-empty.
+  if (acc.extensions !== undefined) out.extensions = acc.extensions;
   // Stryker disable next-line EqualityOperator,ConditionalExpression: equivalent — `acc.branch` is only ever assigned after a `Map.set`, so when defined its size is always >= 1; `> 0`, `>= 0` and a constant `true` never differ.
   if (acc.branch !== undefined && acc.branch.size > 0) out.branch = acc.branch;
   return out;

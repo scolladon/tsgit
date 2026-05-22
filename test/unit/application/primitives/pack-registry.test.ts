@@ -126,6 +126,34 @@ describe('pack-registry', () => {
     expect(reads).toEqual([]);
   });
 
+  it('Given a cached scan, When refresh() is called, Then the next all() re-scans the pack directory', async () => {
+    // Arrange
+    const ctx = await buildSeededContext();
+    let readdirCalls = 0;
+    const wrapped = {
+      ...ctx,
+      fs: {
+        ...ctx.fs,
+        exists: async () => true,
+        readdir: async (): Promise<ReadonlyArray<DirEntry>> => {
+          readdirCalls += 1;
+          return [];
+        },
+      },
+    };
+    const sut = createPackRegistry(wrapped);
+
+    // Act & Assert — first all() scans, the second is served from the cache.
+    await sut.all();
+    await sut.all();
+    expect(readdirCalls).toBe(1);
+
+    // refresh() drops the cache, so the next all() re-scans.
+    sut.refresh();
+    await sut.all();
+    expect(readdirCalls).toBe(2);
+  });
+
   it('Given an .idx file whose stat lies (small) but read returns oversized bytes (TOCTOU), When all() is called, Then throws INVALID_PACK_INDEX after read', async () => {
     // Kills the mutant where the post-read length check is removed.
     const ctx = await buildSeededContext();

@@ -103,6 +103,7 @@ export function assertExhaustiveSwitch(data: TsgitErrorData): void {
     case 'OPERATION_IN_PROGRESS':
     case 'MAX_REFSPECS_EXCEEDED':
     case 'REMOTE_NOT_CONFIGURED':
+    case 'NO_PROMISOR_REMOTE':
     case 'REFSPEC_INVALID':
     case 'INVALID_OPTION':
     case 'REPOSITORY_DISPOSED':
@@ -116,6 +117,8 @@ export function assertExhaustiveSwitch(data: TsgitErrorData): void {
     case 'REFLOG_NOT_FOUND':
     case 'REFLOG_ENTRY_OUT_OF_RANGE':
     case 'HOOK_FAILED':
+    case 'INVALID_FILTER_SPEC':
+    case 'REMOTE_FILTER_UNSUPPORTED':
       return;
     default: {
       const _exhaustive: never = data;
