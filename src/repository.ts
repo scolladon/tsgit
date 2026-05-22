@@ -10,6 +10,7 @@ import type { HookRunner } from './ports/hook-runner.js';
 import type { HttpTransport } from './ports/http-transport.js';
 import { type Logger, wrapLoggerSanitizer } from './ports/logger.js';
 import type { ProgressReporter } from './ports/progress-reporter.js';
+import type { PromisorRemote } from './ports/promisor.js';
 import { noopProgress } from './progress.js';
 import { composeAdapters } from './repository/compose-adapters.js';
 import { deepFreeze } from './repository/deep-freeze.js';
@@ -114,6 +115,7 @@ export interface Repository {
   readonly commit: BindCtx<typeof commands.commit>;
   readonly diff: BindCtx<typeof commands.diff>;
   readonly fetch: BindCtx<typeof commands.fetch>;
+  readonly fetchMissing: BindCtx<typeof commands.fetchMissing>;
   readonly init: BindCtx<typeof commands.init>;
   readonly log: BindCtx<typeof commands.log>;
   readonly merge: BindCtx<typeof commands.merge>;
@@ -210,12 +212,22 @@ export const openRepository = async (
   // `false` fully disables hooks; otherwise an explicit runner overrides the
   // runtime default (Node supplies one, browser/memory do not).
   const hooks = opts.hooks === false ? undefined : (opts.hooks ?? fallback.hooks);
+  // The promisor port closes over the very `Context` that carries it. `ctx` is
+  // frozen, so the closure captures it through a late-assigned binding —
+  // sound because `promisor.fetch` is only ever invoked after this function
+  // returns, by which time `promisorCtx` is populated.
+  let promisorCtx: Context;
+  const promisor: PromisorRemote = {
+    fetch: (oids) => commands.createPromisorRemote(promisorCtx).fetch(oids),
+  };
   const ctx: Context = Object.freeze({
     ...baseCtx,
     ...(config !== undefined ? { config } : {}),
     ...(sanitizedLogger !== undefined ? { logger: sanitizedLogger } : {}),
     ...(hooks !== undefined ? { hooks } : {}),
+    promisor,
   });
+  promisorCtx = ctx;
 
   let state: DisposeState = 'OPEN';
   let disposePromise: Promise<void> | undefined;
@@ -280,6 +292,10 @@ export const openRepository = async (
       guard();
       return commands.fetch(ctx, fetchOpts);
     }) as Repository['fetch'],
+    fetchMissing: ((fetchMissingOpts) => {
+      guard();
+      return commands.fetchMissing(ctx, fetchMissingOpts);
+    }) as Repository['fetchMissing'],
     init: ((initOpts) => {
       guard();
       return commands.init(ctx, initOpts);
