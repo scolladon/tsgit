@@ -94,7 +94,7 @@ const stepLiteral = (char: string, path: string, next: Uint8Array): Uint8Array =
 
 const stepSingle = (path: string, next: Uint8Array): Uint8Array => {
   const cur = new Uint8Array(path.length + 1);
-  // Stryker disable next-line EqualityOperator: equivalent — `j <= path.length` adds an iteration at `j = path.length` where `next[j + 1]` is out of bounds (`undefined`); the guard fails, so `cur[path.length]` keeps its correct 0.
+  // Stryker disable next-line EqualityOperator: equivalent — `j <= path.length` adds an iteration at `j = path.length`; `next[j + 1]` is then out of bounds (`undefined`), failing the `next[j + 1] === 1` operand, so `cur[path.length]` keeps its correct 0.
   for (let j = 0; j < path.length; j++) {
     if (path[j] !== '/' && next[j + 1] === 1) cur[j] = 1;
   }
