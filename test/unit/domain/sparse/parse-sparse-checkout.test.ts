@@ -187,4 +187,18 @@ describe('buildSparseMatcher', () => {
     expect(sut(path('src/main.ts'))).toBe(true);
     expect(sut(path('docs/guide.md'))).toBe(false);
   });
+
+  it('Given a non-cone pattern file with CRLF line endings, When parsed, Then the trailing CR is stripped and patterns match', () => {
+    // Arrange — a Windows-written sparse file with `\r\n` terminators. An
+    // unstripped `\r` would compile a rule that never matches a real path.
+    const { spec } = parseSparseCheckout('/src/\r\n/docs/\r\n', false);
+
+    // Act
+    const sut = buildSparseMatcher(spec);
+
+    // Assert
+    expect(sut(path('src/main.ts'))).toBe(true);
+    expect(sut(path('docs/guide.md'))).toBe(true);
+    expect(sut(path('other/x.ts'))).toBe(false);
+  });
 });

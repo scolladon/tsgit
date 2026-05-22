@@ -390,8 +390,8 @@ describe('commands/internal/apply-sparse-checkout', () => {
       caught = err;
     }
 
-    // Assert — it threw, and the lock file was cleaned up by `finally`.
-    expect(caught).toBeDefined();
+    // Assert — it threw a TsgitError, and the lock file was cleaned up by `finally`.
+    expect(caught).toBeInstanceOf(TsgitError);
     expect(await ctx.fs.exists(`${ctx.layout.gitDir}/index.lock`)).toBe(false);
   });
 });

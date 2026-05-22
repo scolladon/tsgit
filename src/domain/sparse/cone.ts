@@ -35,11 +35,17 @@ const normalizeConeDir = (raw: string): string => {
 };
 
 const rejectBadSegment = (segment: string, raw: string): void => {
+  // Clamp the reflected directory name: a pathologically long input must not
+  // amplify into a megabyte-sized error payload when the caller logs the error.
+  const shown = raw.slice(0, 128);
   if (segment === '' || segment === '.' || segment === '..') {
-    throw invalidOption('patterns', `cone directory has an invalid segment: ${raw}`);
+    throw invalidOption('patterns', `cone directory has an invalid segment: ${shown}`);
   }
   if (segment.includes('*') || segment.includes('?')) {
-    throw invalidOption('patterns', `cone directory must not contain glob metacharacters: ${raw}`);
+    throw invalidOption(
+      'patterns',
+      `cone directory must not contain glob metacharacters: ${shown}`,
+    );
   }
 };
 

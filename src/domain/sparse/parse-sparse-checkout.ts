@@ -25,7 +25,11 @@ export interface ParsedSparseCheckout {
  * bytes.
  */
 const parseNonCone = (text: string): ReadonlyArray<SparseRule> => {
-  const lines = text.split('\n');
+  // Strip a trailing CR so a CRLF-terminated pattern file (Windows editors,
+  // `core.autocrlf`) matches correctly — `tokenizeIgnoreLine` does not, and an
+  // unstripped `\r` would compile into a rule that never matches a real path.
+  // Mirrors `parseCone`'s CRLF handling.
+  const lines = text.split('\n').map((line) => line.replace(/\r$/, ''));
   const rules: SparseRule[] = [];
   for (const line of lines) {
     if (PATTERN_ENCODER.encode(line).byteLength > MAX_SPARSE_PATTERN_BYTES) {

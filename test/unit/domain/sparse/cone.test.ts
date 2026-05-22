@@ -239,6 +239,28 @@ describe('buildConeSpec', () => {
       option: 'patterns',
     });
   });
+
+  it('Given a 2000-char cone directory with a bad segment, When built, Then the reflected name in the error reason is clamped to 128 chars', () => {
+    // Arrange — a pathologically long directory name; the error reason must
+    // not amplify it into a megabyte-class payload.
+    const dirs = [`${'a'.repeat(2000)}/..`];
+
+    // Act
+    let caught: unknown;
+    try {
+      buildConeSpec(dirs);
+    } catch (error) {
+      caught = error;
+    }
+
+    // Assert — the reason embeds at most the first 128 chars of the input.
+    expect(caught).toBeInstanceOf(TsgitError);
+    const data = (caught as TsgitError).data;
+    expect(data.code).toBe('INVALID_OPTION');
+    if (data.code === 'INVALID_OPTION') {
+      expect(data.reason).toBe(`cone directory has an invalid segment: ${'a'.repeat(128)}`);
+    }
+  });
 });
 
 describe('coneMatcher', () => {
