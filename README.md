@@ -36,6 +36,8 @@ A pure TypeScript git implementation designed to be the fastest portable git lib
 | 13.6 | `checkout({ paths, source: 'index' })` synthesises a tree from staged entries — restores from index content, honouring divergence from HEAD | ✅ |
 | 14.4 | Full Windows support — 8.3 short-name reconciliation in `NodeFileSystem.checkContainment`, `ELOOP`/`EACCES` errno parity, `windows-latest` re-added to the unit-test matrix | ✅ |
 | 17.1 | Reflog — `HEAD@{N}` / `<ref>@{N}` syntax, `.git/logs/` append-only per-ref entries, `revParse` resolution, tier-1 `reflog` command (show/exists/delete/expire) | ✅ |
+| 17.2 | Git hooks — `pre-commit` / `commit-msg` / `pre-push` script execution via the `HookRunner` port; default-on (Node), `noVerify` / `hooks: false` opt-outs | ✅ |
+| 17.3 | Sparse checkout — index v3 / skip-worktree, cone + non-cone pattern engine, `core.sparseCheckout*` config, tier-1 `sparseCheckout` command (list/set/add/reapply/disable) | ✅ |
 
 ## Features
 
@@ -277,6 +279,41 @@ const commitId = await repo.revParse('main@{yesterday}'); // at yesterday 00:00 
 await repo.reflog({ action: 'delete', ref: 'main', index: 0 });
 await repo.reflog({ action: 'expire', all: true, expire: '90.days.ago' });
 ```
+
+### Sparse checkout — Materialise a subset of the tree
+
+`repo.sparseCheckout` materialises only a chosen subset of tracked files into
+the working tree. Excluded files stay in the index, marked **skip-worktree** (a
+git index v3 extended flag), so `commit` still records the whole tree and
+`status` does not report the absences as deletions:
+
+```typescript
+// Restrict the working tree to a set of directories (cone mode — the default).
+const applied = await repo.sparseCheckout({
+  action: 'set',
+  patterns: ['src/app', 'docs'],
+});
+console.log(applied.materialized, applied.removed); // files written / deleted
+
+// Widen the cone with more directories.
+await repo.sparseCheckout({ action: 'add', patterns: ['src/lib'] });
+
+// Inspect the active patterns.
+const { cone, patterns } = await repo.sparseCheckout({ action: 'list' });
+
+// Re-apply the on-disk patterns (e.g. after a `reset --hard` re-materialised
+// excluded files), or turn sparse checkout off and restore every file.
+await repo.sparseCheckout({ action: 'reapply' });
+await repo.sparseCheckout({ action: 'disable' });
+```
+
+Two pattern modes: **cone** (a directory list, git's modern default — an O(1)
+membership test) and **non-cone** (`.gitignore`-style patterns, last-match
+wins — pass `{ action: 'set', cone: false, patterns: ['*.ts', '!*.test.ts'] }`).
+`core.sparseCheckout` / `core.sparseCheckoutCone` gate the feature and are
+written to `.git/config`. A dirty out-of-cone file is **retained** (not
+discarded) unless `force: true`. `checkout` honours the cone on branch switch.
+See [RUNBOOK.md](RUNBOOK.md) for the operational sharp edges.
 
 ## Benchmarks
 

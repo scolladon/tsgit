@@ -2,7 +2,7 @@
 
 Track: `[ ]` todo, `[~]` in progress, `[x]` done, `[-]` skipped
 
-**Progress:** Phases 0–16 complete, Phase 17.1 shipping. `@scolladon/tsgit@1.0.0` published on npm with sigstore provenance (trusted-publisher OIDC). Phases 12–16 shipped (network: clone/fetch/push; working-tree: checkout/reset; pathspec: globs and `.gitignore`; Windows support; operations hardening; browser E2E). Phases 17.1 (reflog) and 17.2 (hooks) are now implemented. Remaining v2.0 items (17.3–17.7) deferred.
+**Progress:** Phases 0–16 complete, Phase 17.1 shipping. `@scolladon/tsgit@1.0.0` published on npm with sigstore provenance (trusted-publisher OIDC). Phases 12–16 shipped (network: clone/fetch/push; working-tree: checkout/reset; pathspec: globs and `.gitignore`; Windows support; operations hardening; browser E2E). Phases 17.1 (reflog), 17.2 (hooks) and 17.3 (sparse checkout) are now implemented. Remaining v2.0 items (17.4–17.7) deferred.
 
 ---
 
@@ -337,7 +337,42 @@ Design: `docs/design/phase-15-bench-observability.md`. ADRs: [054](adr/054-bench
       (default-on, `noVerify` / `hooks:false` opt-outs),
       [067](adr/067-commit-msg-editmsg-roundtrip.md) (`COMMIT_EDITMSG`
       round-trip), [068](adr/068-windows-hook-execution.md) (Windows execution).
-- [ ] **17.3** Sparse checkout (`.git/info/sparse-checkout` patterns, partial materialization).
+- [x] **17.3** Sparse checkout (`.git/info/sparse-checkout` patterns, partial materialization).
+      _Accepted:_ index v3 / skip-worktree extended flags (`IndexEntryFlags`
+      gains `skipWorktree` + `intentToAdd`, drops the derived `extended`;
+      `serializeIndex` picks the minimum on-disk version 2/3); a sparse pattern
+      engine in both **cone** mode (O(1) directory-membership test) and
+      **non-cone** mode (`.gitignore`-style last-match-wins), with a cone→
+      non-cone degradation fallback; `core.sparseCheckout` /
+      `core.sparseCheckoutCone` read from and written to `.git/config` via a
+      minimal targeted `[core]` line-surgery writer; a tier-1
+      `repo.sparseCheckout()` command with git-parity subcommands `list` /
+      `set` / `add` / `reapply` / `disable`; `checkout` (branch switch),
+      `status` and `add --all` made skip-worktree aware so a sparse repo
+      neither lies in `status` nor corrupts via a phantom deletion. Dirty
+      out-of-cone files are retained, not discarded, unless `force`.
+      Interop-verified: canonical `git` accepts tsgit's v3 skip-worktree index
+      and its cone pattern file. Design: `docs/design/sparse-checkout.md`.
+      ADRs: [069](adr/069-skip-worktree-index-v3.md) (skip-worktree / index
+      v3), [070](adr/070-cone-and-non-cone.md) (cone + non-cone),
+      [071](adr/071-sparse-command-shape.md) (command shape),
+      [072](adr/072-sparse-dirty-file-policy.md) (dirty-file retention),
+      [073](adr/073-sparse-integration-scope.md) (integration scope),
+      [074](adr/074-minimal-config-writer.md) (config writer).
+- [ ] **17.3a** Sparse-checkout awareness in `reset --hard` / `reset --mixed`
+      / `merge` — deferred from 17.3 ([ADR-073](adr/073-sparse-integration-scope.md)).
+      `materializeTree` already carries the `sparse` predicate, so this is a
+      wiring change: thread `loadSparseMatcher` into `reset` and the `merge`
+      materialisation path. Until then, `reset --hard` in a sparse repo
+      re-materialises excluded files (recover with `repo.sparseCheckout({
+      action: 'reapply' })`).
+- [ ] **17.3b** Harden `compileGlob` against catastrophic backtracking
+      (ReDoS) — a pre-existing issue surfaced by the 17.3 security review. An
+      adversarial pattern (`a*a*a*…b`) compiles to a backtracking regex;
+      `compileGlob` is shared by `.gitignore`, pathspec and sparse-checkout.
+      Replace the regex evaluation with a linear glob matcher (or atomic
+      grouping). `.gitignore` (transferred by clone) is the larger exposure;
+      the sparse-checkout file is local-only.
 - [ ] **17.4** Partial clone (`--filter=blob:none`, lazy-fetch on read).
 - [ ] **17.5** Submodule walk (recurse into `.gitmodules`, expose as `repo.submodules` iterator).
 - [ ] **17.6** `git-cat-file --batch` equivalent on the primitive layer for high-throughput readers.

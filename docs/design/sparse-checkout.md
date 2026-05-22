@@ -1,8 +1,13 @@
 # Sparse Checkout — Design (Phase 17.3)
 
-> Status: Drafted (v2.0). Backlog item **17.3** — "Sparse checkout
+> Status: Implemented (v2.0). Backlog item **17.3** — "Sparse checkout
 > (`.git/info/sparse-checkout` patterns, partial materialization)". ADRs
 > 069–074.
+>
+> Implementation note: `apply-sparse-checkout.ts` ships in
+> `src/application/commands/internal/` (not `src/application/primitives/` as
+> §7.4 / §13 originally drafted) — it depends on `acquireIndexLock`, a
+> command-internal helper, and a primitive may not import from `commands/`.
 
 ## 1. Goal & scope
 
