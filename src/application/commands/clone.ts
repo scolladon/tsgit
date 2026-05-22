@@ -3,13 +3,20 @@ import type { ObjectId, RefName } from '../../domain/objects/index.js';
 import { ZERO_OID } from '../../domain/objects/index.js';
 import type { FilePath } from '../../domain/objects/object-id.js';
 import type { Advertisement } from '../../domain/protocol/index.js';
+import {
+  formatObjectFilter,
+  parseObjectFilter,
+  remoteFilterUnsupported,
+} from '../../domain/protocol/index.js';
 import type { Context } from '../../ports/context.js';
 import { fetchPack } from '../primitives/fetch-pack.js';
 import { recordRefUpdate } from '../primitives/record-ref-update.js';
 import { updateShallow } from '../primitives/shallow-file.js';
+import { updateConfigEntries } from '../primitives/update-config.js';
 import { bootstrapRepository } from './internal/bootstrap.js';
 import { withDefaults } from './internal/network-pipeline.js';
 import {
+  advertisesFilter,
   discoverRefs,
   selectFetchCapabilities,
   uniqueRefOids,
@@ -29,6 +36,12 @@ export interface CloneOptions {
   readonly resolver?: DnsResolver;
   readonly allowInsecure?: boolean;
   readonly allowPrivateNetworks?: boolean;
+  /**
+   * Partial-clone object filter (`blob:none`, `blob:limit=<n>`, `tree:<n>`).
+   * When set, the server omits the filtered objects, a promisor remote is
+   * recorded in `.git/config`, and omitted objects are lazy-fetched on read.
+   */
+  readonly filter?: string;
 }
 
 export interface CloneResult {
@@ -60,6 +73,11 @@ export const clone = async (ctx: Context, opts: CloneOptions): Promise<CloneResu
     throw targetDirectoryNotEmpty(ctx.layout.workDir as FilePath);
   }
   if (opts.url === '') throw remoteAdvertisesNoRefs();
+  // Validate the filter spec up front — a bad `--filter` fails fast, before
+  // any filesystem mutation or network round-trip. `formatObjectFilter`
+  // canonicalises it for both the wire request and the persisted config.
+  const filterSpec =
+    opts.filter !== undefined ? formatObjectFilter(parseObjectFilter(opts.filter)) : undefined;
   ctx.progress.start(CLONE_DISCOVER_OP);
   try {
     // Defense-in-depth URL validation. Production callers go through
@@ -84,7 +102,7 @@ export const clone = async (ctx: Context, opts: CloneOptions): Promise<CloneResu
       bare: opts.bare ?? false,
     });
     try {
-      return await fetchAndPropagate(ctx, opts, bootstrap.gitDir);
+      return await fetchAndPropagate(ctx, opts, bootstrap.gitDir, filterSpec);
     } catch (err) {
       // Bootstrap rolls itself back on its own error path; we mirror the
       // semantics for failures past that point so callers always get a clean
@@ -101,6 +119,7 @@ const fetchAndPropagate = async (
   ctx: Context,
   opts: CloneOptions,
   gitDir: FilePath,
+  filterSpec: string | undefined,
 ): Promise<CloneResult> => {
   // withDefaults composes withRetry around ctx.transport. We omit `logger`
   // here because the transport-tier Logger shape (event-based) differs from
@@ -111,6 +130,11 @@ const fetchAndPropagate = async (
   });
   const advertisement = await discoverRefs(ctx, transport, opts.url);
   if (advertisement.refs.length === 0) throw remoteAdvertisesNoRefs();
+  // A filtered clone needs the server to advertise the `filter` capability;
+  // fail before the pack POST when it does not.
+  if (filterSpec !== undefined && !advertisesFilter(advertisement.capabilities)) {
+    throw remoteFilterUnsupported();
+  }
   const capabilities = selectFetchCapabilities(advertisement.capabilities);
   const wants = uniqueRefOids(advertisement.refs);
   const packResult = await fetchPack(ctx, transport, {
@@ -121,6 +145,8 @@ const fetchAndPropagate = async (
     progressOp: CLONE_WRITE_OBJECTS_OP,
     // Stryker disable next-line ConditionalExpression: equivalent — always-true ternary spreads `{ depth: opts.depth }`; `fetchPack` gates on `input.depth !== undefined`, so `depth: undefined` and the empty spread produce identical request bodies.
     ...(opts.depth !== undefined ? { depth: opts.depth } : {}),
+    // A filtered clone sends the `filter` line and marks the pack promisor.
+    ...(filterSpec !== undefined ? { filter: filterSpec, promisor: true } : {}),
   });
   // Stryker disable next-line EqualityOperator,ConditionalExpression: equivalent — with `shallow.length === 0`, `updateShallow` receives two empty arrays and short-circuits to `deleteIfPresent` on a freshly bootstrapped `.git` (no shallow file exists), so `>= 0`/always-true are indistinguishable from `> 0`. The killable `< 0`/always-false half is covered by the depth:1 shallow-success test.
   if (packResult.shallow.length > 0) {
@@ -134,7 +160,36 @@ const fetchAndPropagate = async (
   }
   const fetchedRefs = await writeFetchedRefs(ctx, advertisement, opts.url);
   const head = await applyRemoteHead(ctx, advertisement, opts.url);
+  if (filterSpec !== undefined) {
+    await writePromisorConfig(ctx, opts.url, filterSpec);
+  }
   return { path: gitDir, head, fetchedRefs };
+};
+
+/**
+ * Persist the promisor-remote config block for a partial clone: bump
+ * `core.repositoryformatversion` to 1 (extensions require config format v1),
+ * register `origin` as the promisor remote, and record the filter that was
+ * applied. See `docs/design/partial-clone.md` §7.3.
+ */
+const writePromisorConfig = async (
+  ctx: Context,
+  url: string,
+  filterSpec: string,
+): Promise<void> => {
+  await updateConfigEntries(ctx, [
+    { section: 'core', key: 'repositoryformatversion', value: '1' },
+    { section: 'remote', subsection: 'origin', key: 'url', value: url },
+    {
+      section: 'remote',
+      subsection: 'origin',
+      key: 'fetch',
+      value: '+refs/heads/*:refs/remotes/origin/*',
+    },
+    { section: 'remote', subsection: 'origin', key: 'promisor', value: 'true' },
+    { section: 'remote', subsection: 'origin', key: 'partialclonefilter', value: filterSpec },
+    { section: 'extensions', key: 'partialClone', value: 'origin' },
+  ]);
 };
 
 const writeFetchedRefs = async (
