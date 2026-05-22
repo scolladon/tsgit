@@ -105,6 +105,7 @@ describe('openRepository — Repository binding integrity', () => {
         'reset',
         'revParse',
         'rm',
+        'sparseCheckout',
         'status',
         'tag',
       ].sort(),
@@ -329,6 +330,20 @@ describe('openRepository — round-trip via memory adapter', () => {
     // Assert
     const result = await sut.reflog({ action: 'show', ref: 'refs/heads/main' });
     expect(result.kind === 'show' && result.entries).toHaveLength(1);
+  });
+
+  it('Given a fresh repo, When the bound sparseCheckout command is called, Then it delegates and returns a list result', async () => {
+    // Arrange — the bound `sparseCheckout` strips `ctx`; a fresh repo has
+    // sparse checkout disabled, so `list` returns the empty non-cone list.
+    const fallback = makeFallback();
+    const sut = await openRepository({ cwd: '/repo' }, fallback);
+    await sut.init();
+
+    // Act
+    const result = await sut.sparseCheckout({ action: 'list' });
+
+    // Assert
+    expect(result).toEqual({ kind: 'list', cone: false, patterns: [] });
   });
 });
 
