@@ -28,7 +28,7 @@ Two options for a conflict on an excluded path:
 
 1. **Skip writing it.** The index records stages 1/2/3, the file is absent.
    The user has an unmerged path they cannot see and cannot edit. To resolve it
-   they must first realise it exists, then somehow surface it.
+   they must first know it exists, then somehow surface it.
 2. **Write it anyway.** The conflicted file lands on disk with markers, exactly
    as in a non-sparse repo. The user resolves it and `add`s it.
 

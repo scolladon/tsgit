@@ -22,8 +22,8 @@ TDD throughout: Red → Green → Refactor. `Given/When/Then` titles, AAA bodies
   file-private `skipWorktreeEntry`, import the domain one. The point-free
   `plan.excluded.map(skipWorktreeEntry)` call site is preserved (the domain
   helper takes a structural `{ path, id, mode }`).
-- **Verify** — `npm run validate`: the materialize-tree suite is green
-  (helper is behaviourally identical), `check:duplicates` no longer has the
+- **Verify** — `npm run validate`: the materialize-tree suite is green (the
+  helper is identical in behaviour), `check:duplicates` no longer has the
   two-copy risk.
 - **Commit** — `refactor(git-index): extract skipWorktreeEntry to the domain`.
 
