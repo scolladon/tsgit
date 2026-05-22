@@ -391,9 +391,11 @@ jobs:
           fs.writeFileSync('/tmp/bench-comment.md', comment);
           fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY || '/dev/null', '\n' + comment + '\n');
 
+          // Informative only — never exit non-zero. A flagged regression is
+          // surfaced via the PR comment + step summary above; this job must
+          // not fail (same-runner benchmarking is too noisy to gate on).
           if (hasRegression) {
-            console.error('Performance regression exceeds threshold');
-            process.exit(1);
+            console.log('Performance regression flagged — informational only; see the PR comment.');
           }
           SCRIPT
 
