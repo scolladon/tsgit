@@ -1838,6 +1838,26 @@ describe('merge — sparse checkout', () => {
     expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/keep.txt`)).toBe('KEPT');
   });
 
+  it('Given a resolved-known outcome whose path the sparse matcher excludes, When writeOutcomeToTree runs, Then the file is not written', async () => {
+    // Arrange — `resolved-known` is blob-backed like `unchanged`, so an
+    // excluded path is skipped: its content is recoverable from the store.
+    const ctx = createMemoryContext();
+    await init(ctx);
+    const id = await seedBlob(ctx, 'X');
+    const outcome: MergeOutcome = {
+      status: 'resolved-known',
+      path: 'drop.txt' as FilePath,
+      id,
+      mode: FILE_MODE.REGULAR,
+    };
+
+    // Act
+    await writeOutcomeToTree(ctx, outcome, excludesDrop);
+
+    // Assert
+    expect(await ctx.fs.exists(`${ctx.layout.workDir}/drop.txt`)).toBe(false);
+  });
+
   it('Given a resolved-merged outcome whose path the sparse matcher excludes, When writeOutcomeToTree runs, Then the file is still written (merged bytes have no other persistence)', async () => {
     // Arrange — `resolved-merged` carries its merged bytes in memory only;
     // the working-tree write is their sole persistence, so it must happen
