@@ -1,8 +1,7 @@
 /**
  * Tier-1 `submodules` command — list the submodules in a tree-ish.
  * Materialises the streaming `walkSubmodules` primitive (mirrors the
- * `log` / `walkCommits` pairing). See `docs/design/submodule-walk.md`
- * and ADRs 083–086.
+ * `log` / `walkCommits` pairing).
  */
 import { ObjectId, type RefName } from '../../domain/objects/index.js';
 import { validateRefName } from '../../domain/refs/index.js';

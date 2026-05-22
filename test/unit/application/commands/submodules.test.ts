@@ -193,12 +193,13 @@ describe('commands/submodules', () => {
     // Arrange
     const { ctx } = await seedRepoWithHead(undefined, []);
 
-    // Act & Assert — refs with a literal ".." path-segment are invalid.
+    // Act & Assert — refs with a literal ".." path-segment are invalid by validateRefName.
     try {
       await submodules(ctx, { ref: 'refs/../escape' });
       expect.fail('submodules did not reject the bad ref');
     } catch (err) {
       expect(err).toBeInstanceOf(TsgitError);
+      expect((err as TsgitError).data.code).toBe('INVALID_REF');
     }
   });
 });

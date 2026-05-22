@@ -1,5 +1,5 @@
 /**
- * Integration — submodule walk end to end (Phase 17.5).
+ * Integration — submodule walk end to end.
  *
  * Drives the real Node-backed `openRepository` surface against a temp
  * directory containing an absorbed nested-submodule layout

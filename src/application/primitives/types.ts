@@ -205,6 +205,11 @@ export interface WalkSubmodulesOptions {
   readonly ref?: RefName | ObjectId;
   /** Descend into nested submodules' own `.gitmodules`. Default: `false`. */
   readonly recursive?: boolean;
+  /**
+   * Cap on recursion depth. Default: `MAX_SUBMODULE_DEPTH`. Entries at exactly
+   * this depth are yielded but not recursed into.
+   */
+  readonly maxDepth?: number;
 }
 
 export type { TreeDiff };

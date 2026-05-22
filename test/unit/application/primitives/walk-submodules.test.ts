@@ -5,7 +5,7 @@ import {
   type SubmoduleEntry,
 } from '../../../../src/application/primitives/types.js';
 import {
-  isUnsafeSubmoduleName,
+  __isUnsafeSubmoduleNameForTests as isUnsafeSubmoduleName,
   walkSubmodules,
 } from '../../../../src/application/primitives/walk-submodules.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
@@ -130,13 +130,19 @@ describe('primitives/walk-submodules', () => {
   describe('isUnsafeSubmoduleName', () => {
     it.each([
       ['empty', ''],
-      ['dot', '.'],
-      ['double-dot', '..'],
+      ['dot segment', '.'],
+      ['double-dot segment', '..'],
       ['nested double-dot', 'a/../b'],
+      ['nested dot', 'a/./b'],
+      ['empty segment (trailing slash)', 'foo/'],
+      ['empty segment (double slash)', 'foo//bar'],
       ['backslash', 'a\\b'],
       ['leading slash (POSIX absolute)', '/foo'],
       ['drive-letter prefix', 'C:/foo'],
       ['leading dash (option-like)', '-flag'],
+      ['NUL byte', `a${String.fromCharCode(0)}b`],
+      ['tab control char', 'a\tb'],
+      ['DEL control char', `a${String.fromCharCode(127)}b`],
     ])('Given an unsafe name (%s), When isUnsafeSubmoduleName, Then returns true', (_label, name) => {
       // Act
       const sut = isUnsafeSubmoduleName(name);
@@ -425,6 +431,29 @@ describe('primitives/walk-submodules', () => {
           parent: 'vendor/foo',
         },
       ]);
+    });
+
+    it('Given recursive=true and maxDepth=0, When walkSubmodules, Then the depth cap stops recursion at depth 0', async () => {
+      // Arrange — a real nested submodule exists; only the cap should stop us.
+      const ctx = await buildSeededContext();
+      const text = '[submodule "vendor-foo"]\n\tpath = vendor/foo\n\turl = https://e/foo.git\n';
+      const { headCommit } = await seedSubmoduleStore(ctx, 'vendor-foo', async (childCtx) => {
+        const childTreeId = await writeRootTreeWithGitmodules(childCtx, undefined, [
+          { path: 'inner', id: FAKE_COMMIT_C },
+        ]);
+        return { head: await writeCommit(childCtx, childTreeId) };
+      });
+      const parentTreeId = await writeRootTreeWithGitmodules(ctx, text, [
+        { path: 'vendor/foo', id: headCommit },
+      ]);
+
+      // Act
+      const sut = await collect(
+        walkSubmodules(ctx, { ref: parentTreeId, recursive: true, maxDepth: 0 }),
+      );
+
+      // Assert — recursion entered the branch then hit the depth cap; only depth 0 yielded.
+      expect(sut.map((e) => e.depth)).toEqual([0]);
     });
 
     it('Given a nested submodule, When walkSubmodules without recursive, Then only depth-0 entries yield', async () => {
