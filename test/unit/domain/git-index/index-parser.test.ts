@@ -1217,6 +1217,41 @@ describe('parseIndex — index v3 extended flags', () => {
     expect(sut.entries[1]?.flags.skipWorktree).toBe(false);
   });
 
+  it('Given a v3 extended entry whose extended-flags word ends exactly at the checksum boundary, When parsing, Then the truncation guard does NOT fire', () => {
+    // Arrange — buffer is 96 bytes: 12 header + 62 entry header + 2 extended
+    // flags word + 0 path room + 20 checksum. At entryStart=12 the guard
+    // compares offset+62+2 (76) against bytes.length-20 (76). The original
+    // `>` keeps the guard quiet (76 > 76 is false), so parsing proceeds and
+    // later fails on the empty path with "empty segment rejected". A `>=`
+    // mutant fires the guard and throws "truncated extended flags" instead.
+    const buf = new Uint8Array(96);
+    const view = new DataView(buf.buffer);
+    view.setUint32(0, 0x44495243);
+    view.setUint32(4, 3);
+    view.setUint32(8, 1);
+    view.setUint32(12 + 24, 0o100644);
+    // The flags word sets the extended (0x4000) bit so the extended-flags
+    // word is read; nameLength is 0, yielding the empty-path validation error.
+    view.setUint16(12 + 60, 0x4000);
+
+    // Act
+    let caught: unknown;
+    try {
+      parseIndex(buf);
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert — the empty-segment reason proves the extended-flags truncation
+    // guard stayed quiet; "truncated extended flags" would mean the `>=`
+    // mutant won.
+    expect((caught as TsgitError).data).toEqual({
+      code: 'INVALID_INDEX_ENTRY',
+      offset: 12,
+      reason: 'empty segment rejected',
+    });
+  });
+
   it('Given a v3 extended entry truncated mid extended-flags word, When parsing, Then throws INVALID_INDEX_ENTRY (truncated extended flags) at the entry start', () => {
     // Arrange — the 62-byte fixed header fits, but the buffer ends before the
     // 2-byte extended-flags word: 12 header + 62 entry header + 1 byte +
