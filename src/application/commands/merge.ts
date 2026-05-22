@@ -1,6 +1,11 @@
 import { nonFastForward } from '../../domain/commands/error.js';
 import { conflictsToIndexEntries } from '../../domain/diff/index.js';
-import { type IndexEntry, STAGE0_FLAGS, type StatData } from '../../domain/git-index/index.js';
+import {
+  type IndexEntry,
+  STAGE0_FLAGS,
+  type StatData,
+  skipWorktreeEntry,
+} from '../../domain/git-index/index.js';
 import { unsupportedOperation } from '../../domain/index.js';
 import {
   type ConflictType,
@@ -23,6 +28,7 @@ import {
   type ObjectId,
   type RefName,
 } from '../../domain/objects/index.js';
+import type { SparseMatcher } from '../../domain/sparse/index.js';
 import type { Context } from '../../ports/context.js';
 import { readConfig } from '../primitives/config-read.js';
 import { createCommit } from '../primitives/create-commit.js';
@@ -30,6 +36,7 @@ import { flattenTree } from '../primitives/flatten-tree.js';
 import { mergeBase } from '../primitives/merge-base.js';
 import { readBlob } from '../primitives/read-blob.js';
 import { readObject } from '../primitives/read-object.js';
+import { loadSparseMatcher } from '../primitives/read-sparse-checkout.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
 import { updateRef } from '../primitives/update-ref.js';
 import { writeObject } from '../primitives/write-object.js';
@@ -354,14 +361,18 @@ const persistConflictState = async (
 ): Promise<MergeResult> => {
   rejectUnsupportedConflicts(result.conflicts);
 
+  // loadSparseMatcher is a pure config/pattern-file read — no lock needed. A
+  // defined matcher keeps excluded blob-backed paths out of the working tree
+  // and marks their stage-0 conflict-state entries skip-worktree.
+  const matcher = await loadSparseMatcher(ctx);
   const lock = await acquireIndexLock(ctx);
   try {
-    await writeConflictingWorkingTree(ctx, result.outcomes, result.conflicts);
+    await writeConflictingWorkingTree(ctx, result.outcomes, result.conflicts, matcher);
     await writeOrigHead(ctx, ourId);
     await writeMergeHead(ctx, theirId);
     const message = sanitizeMessage(opts.message ?? `Merge ${opts.target}`, { allowEmpty: false });
     await writeMergeMsg(ctx, message);
-    const indexEntries = buildConflictIndexEntries(result.outcomes, result.conflicts);
+    const indexEntries = buildConflictIndexEntries(result.outcomes, result.conflicts, matcher);
     await lock.commit(indexEntries);
   } finally {
     // Always release the lock — `commit` flips the lock to a no-op state
@@ -401,17 +412,25 @@ export const rejectUnsupportedConflicts = (conflicts: ReadonlyArray<MergeConflic
 // (256 on macOS, 1024 on most Linux) and surface as EMFILE.
 const MAX_CONCURRENT_PATH_WRITES = 32;
 
+/** True iff a sparse matcher is active AND rejects the path. */
+const isExcluded = (matcher: SparseMatcher | undefined, path: FilePath): boolean =>
+  matcher !== undefined && !matcher(path);
+
 const writeConflictingWorkingTree = async (
   ctx: Context,
   outcomes: ReadonlyArray<MergeOutcome>,
   conflicts: ReadonlyArray<MergeConflict>,
+  matcher: SparseMatcher | undefined,
 ): Promise<void> => {
   // Bounded parallelism — independent path writes overlap, but the pool
   // caps in-flight at MAX_CONCURRENT_PATH_WRITES so a 10k-path merge
   // doesn't exhaust file descriptors.
   await runBounded(outcomes, MAX_CONCURRENT_PATH_WRITES, (outcome) =>
-    writeOutcomeToTree(ctx, outcome),
+    writeOutcomeToTree(ctx, outcome, matcher),
   );
+  // Conflicted paths are materialised even when sparse-excluded — a conflict
+  // the user cannot see is unresolvable, so `writeConflictToTree` takes no
+  // matcher.
   await runBounded(conflicts, MAX_CONCURRENT_PATH_WRITES, (conflict) =>
     writeConflictToTree(ctx, conflict),
   );
@@ -442,9 +461,25 @@ export const runBounded = async <T>(
   await Promise.all(workers);
 };
 
-/** Write a single merge outcome to the working tree. Exported for direct unit testing. */
-export const writeOutcomeToTree = async (ctx: Context, outcome: MergeOutcome): Promise<void> => {
+/**
+ * Write a single merge outcome to the working tree. Exported for direct unit
+ * testing.
+ *
+ * Sparse handling splits on where the content lives:
+ * - `unchanged` / `resolved-known` are backed by a committed blob, so an
+ *   excluded path is skipped — the working tree keeps only in-pattern files.
+ * - `resolved-merged` carries its merged bytes in memory only; this write is
+ *   their sole persistence, so the path is always materialised.
+ * - `resolved-deleted` needs no guard — an excluded file is already absent and
+ *   `removeWorkingTreeFile` is a no-op for it.
+ */
+export const writeOutcomeToTree = async (
+  ctx: Context,
+  outcome: MergeOutcome,
+  matcher: SparseMatcher | undefined,
+): Promise<void> => {
   if (outcome.status === 'unchanged' || outcome.status === 'resolved-known') {
+    if (isExcluded(matcher, outcome.path)) return;
     // Cap with MAX_CONFLICT_OUTPUT_BYTES so a hostile clean-tree blob
     // cannot OOM the merge consumer during a conflicting merge.
     // Stryker disable next-line ObjectLiteral: equivalent — the 256 MiB cap is unobservable without a 256 MiB fixture; cap mechanics covered by read-blob.test.ts.
@@ -453,6 +488,8 @@ export const writeOutcomeToTree = async (ctx: Context, outcome: MergeOutcome): P
     return;
   }
   if (outcome.status === 'resolved-merged') {
+    // The merged bytes exist only in memory — this write is their sole
+    // persistence, so the path is materialised regardless of the matcher.
     await writeWorkingTreeFile(ctx, outcome.path, outcome.bytes);
     return;
   }
@@ -563,6 +600,7 @@ const zeroStat = (mode: FileMode): StatData => ({
 export const buildConflictIndexEntries = (
   outcomes: ReadonlyArray<MergeOutcome>,
   conflicts: ReadonlyArray<MergeConflict>,
+  matcher: SparseMatcher | undefined,
 ): ReadonlyArray<IndexEntry> => {
   // Stage-0 entries from clean outcomes (resolved-deleted contributes
   // nothing). resolved-merged needs its bytes hashed but we already wrote
@@ -575,12 +613,18 @@ export const buildConflictIndexEntries = (
   const stage0: IndexEntry[] = [];
   for (const outcome of outcomes) {
     if (outcome.status === 'unchanged' || outcome.status === 'resolved-known') {
-      stage0.push({
-        ...zeroStat(outcome.mode),
-        id: outcome.id,
-        flags: STAGE0_FLAGS,
-        path: outcome.path,
-      });
+      // An excluded clean path is recorded skip-worktree so `status` does not
+      // report the (deliberately un-written) file as deleted.
+      stage0.push(
+        isExcluded(matcher, outcome.path)
+          ? skipWorktreeEntry({ path: outcome.path, id: outcome.id, mode: outcome.mode })
+          : {
+              ...zeroStat(outcome.mode),
+              id: outcome.id,
+              flags: STAGE0_FLAGS,
+              path: outcome.path,
+            },
+      );
     }
   }
 

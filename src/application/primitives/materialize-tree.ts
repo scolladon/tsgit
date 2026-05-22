@@ -30,7 +30,7 @@ import {
   compareEntryPath,
   type GitIndex,
   type IndexEntry,
-  STAGE0_FLAGS,
+  skipWorktreeEntry,
 } from '../../domain/git-index/index.js';
 import {
   FILE_MODE,
@@ -177,28 +177,6 @@ const upgradeNoopsToUpdates = (changeset: Changeset): Changeset => {
   // now stays consistent with the entry list it iterates.
   return { entries, stats: tallyStats(entries) };
 };
-
-/**
- * Synthesize the index entry for a target-tree path the sparse matcher
- * excludes: present in the index with the tree's `id` / `mode`, skip-worktree
- * set, stat fields zeroed (the file is absent — there is nothing to `lstat`,
- * and `status` skips skip-worktree entries so the zeroes are never consulted).
- */
-const skipWorktreeEntry = (entry: TargetEntry): IndexEntry => ({
-  ctimeSeconds: 0,
-  ctimeNanoseconds: 0,
-  mtimeSeconds: 0,
-  mtimeNanoseconds: 0,
-  dev: 0,
-  ino: 0,
-  mode: entry.mode,
-  uid: 0,
-  gid: 0,
-  fileSize: 0,
-  id: entry.id,
-  flags: { ...STAGE0_FLAGS, skipWorktree: true },
-  path: entry.path,
-});
 
 /** Path-sort the merged entry list (in-pattern + synthesised excluded). */
 const sortIndexEntries = (entries: ReadonlyArray<IndexEntry>): IndexEntry[] =>

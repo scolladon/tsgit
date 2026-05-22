@@ -1,7 +1,11 @@
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import type { IndexEntry, StatData } from '../../../../src/domain/git-index/index-entry.js';
-import { isStatClean, STAGE0_FLAGS } from '../../../../src/domain/git-index/index-entry.js';
+import {
+  isStatClean,
+  STAGE0_FLAGS,
+  skipWorktreeEntry,
+} from '../../../../src/domain/git-index/index-entry.js';
 import type { ObjectId } from '../../../../src/domain/objects/index.js';
 import { FILE_MODE, FilePath } from '../../../../src/domain/objects/index.js';
 import { arbIndexEntry } from './arbitraries.js';
@@ -243,5 +247,67 @@ describe('STAGE0_FLAGS', () => {
   it('Given the STAGE0_FLAGS constant, When reading intentToAdd, Then it is exactly false', () => {
     // Arrange & Act & Assert
     expect(STAGE0_FLAGS.intentToAdd).toBe(false);
+  });
+});
+
+describe('skipWorktreeEntry', () => {
+  it('Given a tree path, When skipWorktreeEntry, Then every stat field is zero', () => {
+    // Arrange
+    const input = {
+      path: FilePath.from('vendor/lib.js'),
+      id: 'b'.repeat(40) as ObjectId,
+      mode: FILE_MODE.REGULAR,
+    };
+
+    // Act
+    const sut = skipWorktreeEntry(input);
+
+    // Assert
+    expect(sut.ctimeSeconds).toBe(0);
+    expect(sut.ctimeNanoseconds).toBe(0);
+    expect(sut.mtimeSeconds).toBe(0);
+    expect(sut.mtimeNanoseconds).toBe(0);
+    expect(sut.dev).toBe(0);
+    expect(sut.ino).toBe(0);
+    expect(sut.uid).toBe(0);
+    expect(sut.gid).toBe(0);
+    expect(sut.fileSize).toBe(0);
+  });
+
+  it('Given a tree path, When skipWorktreeEntry, Then id/mode/path are copied verbatim', () => {
+    // Arrange — a non-default mode so a `mode:` literal mutant cannot survive.
+    const input = {
+      path: FilePath.from('scripts/run'),
+      id: 'c'.repeat(40) as ObjectId,
+      mode: FILE_MODE.EXECUTABLE,
+    };
+
+    // Act
+    const sut = skipWorktreeEntry(input);
+
+    // Assert
+    expect(sut.path).toBe(input.path);
+    expect(sut.id).toBe(input.id);
+    expect(sut.mode).toBe(FILE_MODE.EXECUTABLE);
+  });
+
+  it('Given a tree path, When skipWorktreeEntry, Then flags are stage-0 with skipWorktree set', () => {
+    // Arrange
+    const input = {
+      path: FilePath.from('docs/readme.md'),
+      id: 'd'.repeat(40) as ObjectId,
+      mode: FILE_MODE.REGULAR,
+    };
+
+    // Act
+    const sut = skipWorktreeEntry(input);
+
+    // Assert — skipWorktree true, every other flag the stage-0 default.
+    expect(sut.flags).toEqual({
+      assumeValid: false,
+      stage: 0,
+      skipWorktree: true,
+      intentToAdd: false,
+    });
   });
 });

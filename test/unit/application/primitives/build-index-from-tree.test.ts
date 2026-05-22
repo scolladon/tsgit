@@ -321,6 +321,169 @@ describe('buildIndexFromTree', () => {
     expect(result.map((e) => e.path)).toEqual(['a.txt', 'b.txt', 'c.txt']);
   });
 
+  describe('with a sparse matcher', () => {
+    // Excludes any path starting with `drop`; includes everything else.
+    const excludesDrop = (p: FilePath): boolean => !p.startsWith('drop');
+
+    it('Given a sparse matcher excluding a path with a matching donor, When buildIndexFromTree runs, Then the entry is skip-worktree with zeroed stats', async () => {
+      // Arrange — the donor carries real stat cache, but the matcher excludes
+      // the path; the matcher is authoritative over the donor's bits.
+      const ctx = await buildSeededContext();
+      const blobId = await writeBlob(ctx, 'hello');
+      const treeId = await writeTree(ctx, [
+        { name: 'drop.js' as FilePath, id: blobId, mode: FILE_MODE.REGULAR },
+      ]);
+      const donor = makeIndexEntry('drop.js', blobId, FILE_MODE.REGULAR, {
+        mtimeSeconds: 1_700_000_000,
+        fileSize: 5,
+      });
+      const sut = buildIndexFromTree;
+
+      // Act
+      const result = await sut(ctx, {
+        targetTree: treeId,
+        currentIndex: { ...EMPTY_INDEX, entries: [donor] },
+        sparse: excludesDrop,
+      });
+
+      // Assert — donor stats discarded, skip-worktree set, id/mode kept.
+      expect(result).toHaveLength(1);
+      const entry = result[0];
+      expect(entry?.flags.skipWorktree).toBe(true);
+      expect(entry?.flags.stage).toBe(0);
+      expect(entry?.mtimeSeconds).toBe(0);
+      expect(entry?.fileSize).toBe(0);
+      expect(entry?.id).toBe(blobId);
+      expect(entry?.mode).toBe(FILE_MODE.REGULAR);
+    });
+
+    it('Given a sparse matcher excluding a path with no donor, When buildIndexFromTree runs, Then the entry is a zero-stat skip-worktree entry', async () => {
+      // Arrange
+      const ctx = await buildSeededContext();
+      const blobId = await writeBlob(ctx, 'hello');
+      const treeId = await writeTree(ctx, [
+        { name: 'drop.js' as FilePath, id: blobId, mode: FILE_MODE.REGULAR },
+      ]);
+      const sut = buildIndexFromTree;
+
+      // Act
+      const result = await sut(ctx, {
+        targetTree: treeId,
+        currentIndex: EMPTY_INDEX,
+        sparse: excludesDrop,
+      });
+
+      // Assert
+      expect(result).toHaveLength(1);
+      expect(result[0]?.flags.skipWorktree).toBe(true);
+      expect(result[0]?.mtimeSeconds).toBe(0);
+    });
+
+    it('Given a sparse matcher including a path whose donor carries a stale skip-worktree bit, When buildIndexFromTree runs, Then the rebuilt entry clears skip-worktree but keeps donor stats', async () => {
+      // Arrange — the path was excluded before (donor skip-worktree) but the
+      // current matcher includes it; the matcher wins, the bit is cleared.
+      const ctx = await buildSeededContext();
+      const blobId = await writeBlob(ctx, 'hello');
+      const treeId = await writeTree(ctx, [
+        { name: 'keep.js' as FilePath, id: blobId, mode: FILE_MODE.REGULAR },
+      ]);
+      const donor: IndexEntry = {
+        ...makeIndexEntry('keep.js', blobId, FILE_MODE.REGULAR, {
+          mtimeSeconds: 1_700_000_000,
+          fileSize: 5,
+        }),
+        flags: { ...STAGE0_FLAGS, skipWorktree: true },
+      };
+      const sut = buildIndexFromTree;
+
+      // Act
+      const result = await sut(ctx, {
+        targetTree: treeId,
+        currentIndex: { ...EMPTY_INDEX, entries: [donor] },
+        sparse: excludesDrop,
+      });
+
+      // Assert — skip-worktree cleared, donor stat cache preserved.
+      expect(result).toHaveLength(1);
+      expect(result[0]?.flags.skipWorktree).toBe(false);
+      expect(result[0]?.flags.stage).toBe(0);
+      expect(result[0]?.mtimeSeconds).toBe(1_700_000_000);
+      expect(result[0]?.fileSize).toBe(5);
+    });
+
+    it('Given a sparse matcher including a path with a matching donor, When buildIndexFromTree runs, Then donor stats are preserved and skip-worktree is clear', async () => {
+      // Arrange
+      const ctx = await buildSeededContext();
+      const blobId = await writeBlob(ctx, 'hello');
+      const treeId = await writeTree(ctx, [
+        { name: 'keep.js' as FilePath, id: blobId, mode: FILE_MODE.REGULAR },
+      ]);
+      const donor = makeIndexEntry('keep.js', blobId, FILE_MODE.REGULAR, {
+        mtimeSeconds: 1_700_000_000,
+        fileSize: 5,
+      });
+      const sut = buildIndexFromTree;
+
+      // Act
+      const result = await sut(ctx, {
+        targetTree: treeId,
+        currentIndex: { ...EMPTY_INDEX, entries: [donor] },
+        sparse: excludesDrop,
+      });
+
+      // Assert
+      expect(result).toHaveLength(1);
+      expect(result[0]?.flags.skipWorktree).toBe(false);
+      expect(result[0]?.mtimeSeconds).toBe(1_700_000_000);
+      expect(result[0]?.fileSize).toBe(5);
+    });
+
+    it('Given a sparse matcher including a path with no donor, When buildIndexFromTree runs, Then the entry has zero stats and a clear skip-worktree bit', async () => {
+      // Arrange
+      const ctx = await buildSeededContext();
+      const blobId = await writeBlob(ctx, 'hello');
+      const treeId = await writeTree(ctx, [
+        { name: 'keep.js' as FilePath, id: blobId, mode: FILE_MODE.REGULAR },
+      ]);
+      const sut = buildIndexFromTree;
+
+      // Act
+      const result = await sut(ctx, {
+        targetTree: treeId,
+        currentIndex: EMPTY_INDEX,
+        sparse: excludesDrop,
+      });
+
+      // Assert
+      expect(result).toHaveLength(1);
+      expect(result[0]?.flags.skipWorktree).toBe(false);
+      expect(result[0]?.mtimeSeconds).toBe(0);
+    });
+
+    it('Given a sparse matcher partitioning a tree, When buildIndexFromTree runs, Then in-pattern and excluded paths get the right skip-worktree bits', async () => {
+      // Arrange — one tree, two leaves, one matcher call per leaf.
+      const ctx = await buildSeededContext();
+      const keepBlob = await writeBlob(ctx, 'keep');
+      const dropBlob = await writeBlob(ctx, 'drop');
+      const treeId = await writeTree(ctx, [
+        { name: 'drop.js' as FilePath, id: dropBlob, mode: FILE_MODE.REGULAR },
+        { name: 'keep.js' as FilePath, id: keepBlob, mode: FILE_MODE.REGULAR },
+      ]);
+      const sut = buildIndexFromTree;
+
+      // Act
+      const result = await sut(ctx, {
+        targetTree: treeId,
+        currentIndex: EMPTY_INDEX,
+        sparse: excludesDrop,
+      });
+
+      // Assert
+      expect(result.find((e) => e.path === 'drop.js')?.flags.skipWorktree).toBe(true);
+      expect(result.find((e) => e.path === 'keep.js')?.flags.skipWorktree).toBe(false);
+    });
+  });
+
   it('Given symlink and gitlink tree entries, When buildIndexFromTree runs, Then preserves their modes in the index', async () => {
     // Arrange — gitlink id is the submodule commit oid; symlink id is the symlink-target blob
     const ctx = await buildSeededContext();

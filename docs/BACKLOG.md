@@ -359,13 +359,20 @@ Design: `docs/design/phase-15-bench-observability.md`. ADRs: [054](adr/054-bench
       [072](adr/072-sparse-dirty-file-policy.md) (dirty-file retention),
       [073](adr/073-sparse-integration-scope.md) (integration scope),
       [074](adr/074-minimal-config-writer.md) (config writer).
-- [ ] **17.3a** Sparse-checkout awareness in `reset --hard` / `reset --mixed`
-      / `merge` — deferred from 17.3 ([ADR-073](adr/073-sparse-integration-scope.md)).
-      `materializeTree` already carries the `sparse` predicate, so this is a
-      wiring change: thread `loadSparseMatcher` into `reset` and the `merge`
-      materialisation path. Until then, `reset --hard` in a sparse repo
-      re-materialises excluded files (recover with `repo.sparseCheckout({
-      action: 'reapply' })`).
+- [x] **17.3a** Sparse-checkout awareness in `reset --hard` / `reset --mixed`
+      / `merge` — the follow-up [ADR-073](adr/073-sparse-integration-scope.md)
+      deferred from 17.3. `reset` threads `loadSparseMatcher` into both its
+      `materializeTree` (`--hard`) and `buildIndexFromTree` (`--mixed`) calls;
+      the conflicting-`merge` path no longer re-materialises excluded
+      blob-backed files, while still always writing in-memory-only content
+      (conflict markers, `resolved-merged` bytes). Excluded paths keep
+      `skipWorktree: true` so `status` stays truthful; `skipWorktreeEntry` is
+      promoted to a shared `domain/git-index` helper. Design:
+      `docs/design/sparse-reset-merge.md`. ADRs:
+      [075](adr/075-reset-sparse-integration.md) (matcher authoritative over
+      donor skip-worktree bits in `reset --mixed`),
+      [076](adr/076-merge-conflict-materialization.md) (`merge` materialises
+      in-memory-only content even for sparse-excluded paths).
 - [ ] **17.3b** Harden `compileGlob` against catastrophic backtracking
       (ReDoS) — a pre-existing issue surfaced by the 17.3 security review. An
       adversarial pattern (`a*a*a*…b`) compiles to a backtracking regex;

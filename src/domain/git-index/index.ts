@@ -10,7 +10,7 @@ export type {
   IndexExtension,
   StatData,
 } from './index-entry.js';
-export { isStatClean, STAGE0_FLAGS } from './index-entry.js';
+export { isStatClean, STAGE0_FLAGS, skipWorktreeEntry } from './index-entry.js';
 
 // Parser
 export { parseIndex } from './index-parser.js';
