@@ -1,3 +1,5 @@
+import { compileGlob } from '../pathspec/index.js';
+
 export interface IgnoreRule {
   /** Original input pattern (for diagnostics). */
   readonly pattern: string;
@@ -12,6 +14,18 @@ export interface IgnoreRule {
 }
 
 export type IgnoreRuleset = ReadonlyArray<IgnoreRule>;
+
+/** A `.gitignore`-syntax line decomposed into its semantic parts. */
+export interface TokenizedIgnoreLine {
+  /** True when the line started with `!` (negation). */
+  readonly negated: boolean;
+  /** True when the pattern is anchored to the repo root (contains a `/`). */
+  readonly anchored: boolean;
+  /** True when the pattern ended with `/` (directory-only). */
+  readonly directoryOnly: boolean;
+  /** Pattern body — negation, trailing `/`, leading `/` and escapes removed. */
+  readonly cleanPattern: string;
+}
 
 const stripTrailingSpaces = (line: string): string => {
   // Trailing space is significant only when escaped (`\ `).
@@ -30,36 +44,51 @@ const unescapePattern = (s: string): string => {
   return s.replace(/\\(.)/g, '$1');
 };
 
-import { compileGlob } from '../pathspec/index.js';
+/**
+ * Decompose a single `.gitignore`-syntax line into its semantic parts.
+ *
+ * Returns `undefined` for comment (`#`) and blank lines — the caller drops
+ * them. Shared by `parseGitignore` and the sparse-checkout non-cone parser so
+ * the comment/blank/escape/`!`-/`/`-handling lives in exactly one place.
+ */
+export const tokenizeIgnoreLine = (rawLine: string): TokenizedIgnoreLine | undefined => {
+  // Stryker disable next-line ConditionalExpression,StringLiteral: equivalent — the next guard `/^\s*$/.test(rawLine)` also skips the empty string, so removing/altering this fast-path guard cannot change which lines are kept.
+  if (rawLine === '') return undefined;
+  if (/^\s*$/.test(rawLine)) return undefined;
+  // Comments start with `#` (unescaped) at line start.
+  if (rawLine.startsWith('#')) return undefined;
+  // Whitespace-only lines were filtered out above; stripTrailingSpaces
+  // therefore returns a non-empty string for every surviving rawLine.
+  const trimmed = stripTrailingSpaces(rawLine);
+  const negated = trimmed.startsWith('!');
+  const afterNegation = negated ? trimmed.slice(1) : trimmed;
+  const directoryOnly = afterNegation.endsWith('/');
+  const withoutTrailingSlash = directoryOnly ? afterNegation.slice(0, -1) : afterNegation;
+  // Stryker disable next-line MethodExpression: equivalent — any string that startsWith '/' (or endsWith '/') necessarily also includes '/', so the left operand can never change the `||` result; it collapses to `includes('/')`.
+  const anchored = withoutTrailingSlash.startsWith('/') || withoutTrailingSlash.includes('/');
+  const stripped = withoutTrailingSlash.startsWith('/')
+    ? withoutTrailingSlash.slice(1)
+    : withoutTrailingSlash;
+  return {
+    negated,
+    anchored,
+    directoryOnly,
+    cleanPattern: unescapePattern(stripped),
+  };
+};
 
 export const parseGitignore = (text: string): IgnoreRuleset => {
   const out: IgnoreRule[] = [];
   for (const rawLine of text.split('\n')) {
-    // Stryker disable next-line ConditionalExpression,StringLiteral: equivalent — the next guard `/^\s*$/.test(rawLine)` also skips the empty string, so removing/altering this fast-path guard cannot change which lines are kept.
-    if (rawLine === '') continue;
-    if (/^\s*$/.test(rawLine)) continue;
-    // Comments start with `#` (unescaped) at line start.
-    if (rawLine.startsWith('#')) continue;
-    // Whitespace-only lines were filtered out above; stripTrailingSpaces
-    // therefore returns a non-empty string for every surviving rawLine.
-    const trimmed = stripTrailingSpaces(rawLine);
-    const negated = trimmed.startsWith('!');
-    const afterNegation = negated ? trimmed.slice(1) : trimmed;
-    const directoryOnly = afterNegation.endsWith('/');
-    const withoutTrailingSlash = directoryOnly ? afterNegation.slice(0, -1) : afterNegation;
-    // Stryker disable next-line MethodExpression: equivalent — any string that startsWith '/' (or endsWith '/') necessarily also includes '/', so the left operand can never change the `||` result; it collapses to `includes('/')`.
-    const anchored = withoutTrailingSlash.startsWith('/') || withoutTrailingSlash.includes('/');
-    const stripped = withoutTrailingSlash.startsWith('/')
-      ? withoutTrailingSlash.slice(1)
-      : withoutTrailingSlash;
-    const cleanPattern = unescapePattern(stripped);
-    const compiled = compileGlob(cleanPattern, { anchored });
+    const tokenized = tokenizeIgnoreLine(rawLine);
+    if (tokenized === undefined) continue;
+    const { negated, anchored, directoryOnly, cleanPattern } = tokenized;
     out.push({
-      pattern: unescapePattern(trimmed),
+      pattern: unescapePattern(stripTrailingSpaces(rawLine)),
       negated,
       directoryOnly,
       anchored,
-      compiled,
+      compiled: compileGlob(cleanPattern, { anchored }),
     });
   }
   return out;

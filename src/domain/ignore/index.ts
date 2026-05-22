@@ -4,4 +4,6 @@ export {
   type IgnoreRule,
   type IgnoreRuleset,
   parseGitignore,
+  type TokenizedIgnoreLine,
+  tokenizeIgnoreLine,
 } from './parse-gitignore.js';

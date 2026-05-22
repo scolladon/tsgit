@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
-import { parseGitignore } from '../../../../src/domain/ignore/parse-gitignore.js';
+import {
+  parseGitignore,
+  tokenizeIgnoreLine,
+} from '../../../../src/domain/ignore/parse-gitignore.js';
 
 describe('parseGitignore', () => {
   it('Given empty input, When parsed, Then yields zero rules', () => {
@@ -258,5 +261,142 @@ describe('parseGitignore', () => {
     expect(sut[0]?.pattern).toBe('*.log');
     expect(sut[1]?.directoryOnly).toBe(true);
     expect(sut[2]?.negated).toBe(true);
+  });
+});
+
+describe('tokenizeIgnoreLine', () => {
+  it('Given an empty line, When tokenized, Then yields undefined', () => {
+    // Arrange
+    const input = '';
+
+    // Act
+    const sut = tokenizeIgnoreLine(input);
+
+    // Assert
+    expect(sut).toBeUndefined();
+  });
+
+  it('Given a whitespace-only line, When tokenized, Then yields undefined', () => {
+    // Arrange
+    const input = '   ';
+
+    // Act
+    const sut = tokenizeIgnoreLine(input);
+
+    // Assert
+    expect(sut).toBeUndefined();
+  });
+
+  it('Given a comment line, When tokenized, Then yields undefined', () => {
+    // Arrange
+    const input = '# a comment';
+
+    // Act
+    const sut = tokenizeIgnoreLine(input);
+
+    // Assert
+    expect(sut).toBeUndefined();
+  });
+
+  it('Given a plain pattern, When tokenized, Then no flags are set', () => {
+    // Arrange
+    const input = 'plain';
+
+    // Act
+    const sut = tokenizeIgnoreLine(input);
+
+    // Assert
+    expect(sut).toEqual({
+      negated: false,
+      anchored: false,
+      directoryOnly: false,
+      cleanPattern: 'plain',
+    });
+  });
+
+  it('Given a "!"-prefixed pattern, When tokenized, Then negated is true and the "!" is stripped', () => {
+    // Arrange
+    const input = '!keep.txt';
+
+    // Act
+    const sut = tokenizeIgnoreLine(input);
+
+    // Assert
+    expect(sut?.negated).toBe(true);
+    expect(sut?.cleanPattern).toBe('keep.txt');
+  });
+
+  it('Given a leading-slash pattern, When tokenized, Then anchored is true and the slash is stripped', () => {
+    // Arrange
+    const input = '/dist';
+
+    // Act
+    const sut = tokenizeIgnoreLine(input);
+
+    // Assert
+    expect(sut?.anchored).toBe(true);
+    expect(sut?.cleanPattern).toBe('dist');
+  });
+
+  it('Given a mid-slash pattern, When tokenized, Then anchored is true and no slash is stripped', () => {
+    // Arrange
+    const input = 'a/b';
+
+    // Act
+    const sut = tokenizeIgnoreLine(input);
+
+    // Assert
+    expect(sut?.anchored).toBe(true);
+    expect(sut?.cleanPattern).toBe('a/b');
+  });
+
+  it('Given a trailing-slash pattern, When tokenized, Then directoryOnly is true and the slash is stripped', () => {
+    // Arrange
+    const input = 'build/';
+
+    // Act
+    const sut = tokenizeIgnoreLine(input);
+
+    // Assert
+    expect(sut?.directoryOnly).toBe(true);
+    expect(sut?.cleanPattern).toBe('build');
+  });
+
+  it('Given an escaped pattern, When tokenized, Then the escape is removed from cleanPattern', () => {
+    // Arrange
+    const input = '\\#literal';
+
+    // Act
+    const sut = tokenizeIgnoreLine(input);
+
+    // Assert
+    expect(sut?.cleanPattern).toBe('#literal');
+  });
+
+  it('Given a trailing-space pattern, When tokenized, Then the trailing space is stripped', () => {
+    // Arrange
+    const input = 'foo   ';
+
+    // Act
+    const sut = tokenizeIgnoreLine(input);
+
+    // Assert
+    expect(sut?.cleanPattern).toBe('foo');
+  });
+
+  it('Given a negated directory-only anchored pattern, When tokenized, Then all three flags are set', () => {
+    // Arrange
+    const input = '!/src/';
+
+    // Act
+    const sut = tokenizeIgnoreLine(input);
+
+    // Assert
+    expect(sut).toEqual({
+      negated: true,
+      anchored: true,
+      directoryOnly: true,
+      cleanPattern: 'src',
+    });
   });
 });
