@@ -20,19 +20,33 @@
  * post-reset state. See `reset.ts:rebuildIndexFromCommit` for the
  * canonical pattern: acquire → read → build → commit → release-in-finally.
  */
-import { type GitIndex, type IndexEntry, STAGE0_FLAGS } from '../../domain/git-index/index.js';
+import {
+  type GitIndex,
+  type IndexEntry,
+  type IndexEntryFlags,
+  STAGE0_FLAGS,
+  skipWorktreeEntry,
+} from '../../domain/git-index/index.js';
 import {
   FILE_MODE,
   type FileMode,
   type FilePath,
   type ObjectId,
 } from '../../domain/objects/index.js';
+import type { SparseMatcher } from '../../domain/sparse/index.js';
 import type { Context } from '../../ports/context.js';
 import { walkTree } from './walk-tree.js';
 
 export interface BuildIndexFromTreeOpts {
   readonly targetTree: ObjectId;
   readonly currentIndex: GitIndex;
+  /**
+   * Sparse-checkout filter. When supplied, an excluded path is rebuilt as a
+   * zero-stat skip-worktree entry and an in-pattern path has any stale
+   * skip-worktree bit cleared. `undefined` ⇒ sparse inactive — the rebuilt
+   * index is byte-identical to the pre-17.3a behaviour. See ADR-075.
+   */
+  readonly sparse?: SparseMatcher;
 }
 
 interface TargetLeaf {
@@ -75,14 +89,34 @@ const zeroStatEntry = (leaf: TargetLeaf): IndexEntry => ({
   path: leaf.path,
 });
 
-const projectLeaf = (leaf: TargetLeaf, donors: ReadonlyMap<FilePath, IndexEntry>): IndexEntry => {
+/**
+ * Resolve the `flags` of a donor-matched, in-pattern (or non-sparse) leaf.
+ * Stage is always forced to 0. When sparse is active the skip-worktree bit is
+ * cleared — the donor may carry a stale one from when the path was excluded,
+ * and the matcher (which classified this path in-pattern) is authoritative.
+ * When sparse is inactive the donor flags pass through verbatim, so a manually
+ * set skip-worktree bit survives a non-sparse `reset --mixed`. See ADR-075.
+ */
+const includedFlags = (
+  donorFlags: IndexEntryFlags,
+  sparse: SparseMatcher | undefined,
+): IndexEntryFlags =>
+  sparse !== undefined
+    ? { ...donorFlags, stage: 0, skipWorktree: false }
+    : { ...donorFlags, stage: 0 };
+
+const projectLeaf = (
+  leaf: TargetLeaf,
+  donors: ReadonlyMap<FilePath, IndexEntry>,
+  sparse: SparseMatcher | undefined,
+): IndexEntry => {
+  // An excluded path is rebuilt as a zero-stat skip-worktree entry — the file
+  // is absent from disk, so any donor stat cache is meaningless. See ADR-075.
+  if (sparse !== undefined && !sparse(leaf.path)) return skipWorktreeEntry(leaf);
   const donor = donors.get(leaf.path);
   const matches = donor !== undefined && donor.id === leaf.id && donor.mode === leaf.mode;
   if (!matches) return zeroStatEntry(leaf);
-  return {
-    ...donor,
-    flags: { ...donor.flags, stage: 0 },
-  };
+  return { ...donor, flags: includedFlags(donor.flags, sparse) };
 };
 
 // The comparator + the `entries.sort` call below are a defensive layer. Every
@@ -102,7 +136,7 @@ export const buildIndexFromTree = async (
 ): Promise<ReadonlyArray<IndexEntry>> => {
   const donors = donorByPath(opts.currentIndex);
   const leaves = await collectLeaves(ctx, opts.targetTree);
-  const entries = leaves.map((leaf) => projectLeaf(leaf, donors));
+  const entries = leaves.map((leaf) => projectLeaf(leaf, donors, opts.sparse));
   // Defensive sort: walkTree's depth-first traversal of a git-canonical tree
   // (entries sorted with trailing-`/` for subtrees) yields byte-sorted leaf
   // paths in practice, so this sort is a no-op for trees written via
