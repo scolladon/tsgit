@@ -483,7 +483,10 @@
     "uninitialised",
     "initialising",
     "streamable",
-    "retargets"
+    "retargets",
+    "superprojects",
+    "libfoo",
+    "gitdirs"
   ],
   "ignorePaths": [
     "node_modules",

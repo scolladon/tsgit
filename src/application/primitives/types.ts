@@ -9,6 +9,7 @@ import type {
   FileMode,
   FilePath,
   ObjectId,
+  RefName,
   Tree,
 } from '../../domain/objects/index.js';
 import type { FileStat } from '../../ports/file-system.js';
@@ -160,6 +161,50 @@ export type DiffTreesInput = Tree | ObjectId | undefined;
 export interface DiffTreesOptions {
   readonly detectRenames?: boolean;
   readonly renameOptions?: RenameDetectOptions;
+}
+
+/**
+ * Per-file cap on a single `.gitmodules` blob. 1 MiB matches the
+ * `MAX_GITIGNORE_BYTES` budget: real `.gitmodules` files are KB-scale even in
+ * very large superprojects, so a 1 MiB ceiling is a generous DoS guard
+ * applied before inflate.
+ */
+export const MAX_GITMODULES_BYTES = 1 * 1024 * 1024;
+
+/**
+ * Recursion backstop for `walkSubmodules` — the cycle guard (visited gitdir
+ * set) handles the genuine-cycle case; this cap stops a pathologically deep
+ * but acyclic nest from running away.
+ */
+export const MAX_SUBMODULE_DEPTH = 100;
+
+/** One submodule surfaced by `walkSubmodules`: a gitlink joined with its `.gitmodules` row. */
+export interface SubmoduleEntry {
+  /**
+   * The `[submodule "<name>"]` subsection name in the `.gitmodules` of the
+   * tree that contains this gitlink. Falls back to `path` when no row matches
+   * the gitlink (a gitlink committed without a corresponding config entry).
+   */
+  readonly name: string;
+  /** Slash-joined path from the *superproject* root to the gitlink. */
+  readonly path: FilePath;
+  /** `submodule.<name>.url` — absent when no `.gitmodules` row matched. */
+  readonly url?: string;
+  /** `submodule.<name>.branch` — absent when the key is unset. */
+  readonly branch?: string;
+  /** The commit object id the gitlink pins (the tree entry's id). */
+  readonly commit: ObjectId;
+  /** Recursion depth; 0 for a direct submodule of the superproject. */
+  readonly depth: number;
+  /** Path of the containing submodule; absent for `depth === 0` entries. */
+  readonly parent?: FilePath;
+}
+
+export interface WalkSubmodulesOptions {
+  /** Tree-ish to walk. Default: `HEAD`. */
+  readonly ref?: RefName | ObjectId;
+  /** Descend into nested submodules' own `.gitmodules`. Default: `false`. */
+  readonly recursive?: boolean;
 }
 
 export type { TreeDiff };
