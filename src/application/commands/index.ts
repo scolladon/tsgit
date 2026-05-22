@@ -5,6 +5,12 @@ export { type CloneOptions, type CloneResult, clone } from './clone.js';
 export { type CommitOptions, type CommitResult, commit } from './commit.js';
 export { type DiffOptions, diff } from './diff.js';
 export { type FetchOptions, type FetchResult, fetch } from './fetch.js';
+export {
+  createPromisorRemote,
+  type FetchMissingOptions,
+  type FetchMissingResult,
+  fetchMissing,
+} from './fetch-missing.js';
 export { type InitOptions, type InitResult, init } from './init.js';
 export { type LogEntry, type LogOptions, log } from './log.js';
 export { type MergeOptions, type MergeResult, merge } from './merge.js';

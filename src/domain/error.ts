@@ -292,6 +292,8 @@ function extractDetail(data: TsgitErrorData): string {
       return `${data.count} refspecs exceeds limit ${data.limit}`;
     case 'REMOTE_NOT_CONFIGURED':
       return `remote not configured: ${data.remote}`;
+    case 'NO_PROMISOR_REMOTE':
+      return 'no promisor remote configured; this repository is not a partial clone';
     case 'REFSPEC_INVALID':
       return `invalid refspec "${data.raw}": ${data.reason}`;
     case 'INVALID_OPTION':

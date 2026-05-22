@@ -21,6 +21,7 @@ export type CommandError =
   | { readonly code: 'UNSUPPORTED_SCHEME'; readonly scheme: string }
   | { readonly code: 'TARGET_DIRECTORY_NOT_EMPTY'; readonly path: FilePath }
   | { readonly code: 'REMOTE_ADVERTISES_NO_REFS' }
+  | { readonly code: 'NO_PROMISOR_REMOTE' }
   | {
       readonly code: 'NON_FAST_FORWARD';
       readonly ref: RefName;
@@ -152,6 +153,8 @@ export const targetDirectoryNotEmpty = (path: FilePath): TsgitError =>
 
 export const remoteAdvertisesNoRefs = (): TsgitError =>
   new TsgitError({ code: 'REMOTE_ADVERTISES_NO_REFS' });
+
+export const noPromisorRemote = (): TsgitError => new TsgitError({ code: 'NO_PROMISOR_REMOTE' });
 
 export const nonFastForward = (ref: RefName, local: ObjectId, remote: ObjectId): TsgitError =>
   new TsgitError({ code: 'NON_FAST_FORWARD', ref, local, remote });
