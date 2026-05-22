@@ -269,4 +269,32 @@ describe('fetchMissing', () => {
     // Assert
     expect(sut).toEqual({ attempted: true, requested: 1, fetched: 1 });
   });
+
+  it('Given fetchPack fails with a non-FILE_EXISTS error, When fetchMissing, Then the error propagates', async () => {
+    // Arrange — discovery succeeds, the upload-pack POST returns 500.
+    const ctx = createMemoryContext();
+    await seedRepo(ctx, {});
+    await withConfig(ctx, PARTIAL_CONFIG);
+    const advertisement = advertisementBytes();
+    const transport: HttpTransport = {
+      request: async (req: HttpRequest): Promise<HttpResponse> => {
+        if (req.url.includes('info/refs')) {
+          return { statusCode: 200, headers: {}, body: streamOf(advertisement.slice()) };
+        }
+        return { statusCode: 500, headers: {}, body: streamOf(new Uint8Array(0)) };
+      },
+    };
+
+    // Act
+    let caught: unknown;
+    try {
+      await fetchMissing({ ...ctx, transport }, { oids: [FAKE_TIP] });
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert — a non-FILE_EXISTS failure is rethrown, not swallowed.
+    expect(caught).toBeInstanceOf(TsgitError);
+    expect((caught as TsgitError).data.code).toBe('HTTP_ERROR');
+  });
 });
