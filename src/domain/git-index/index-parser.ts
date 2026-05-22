@@ -22,7 +22,7 @@ export function parseIndex(bytes: Uint8Array): GitIndex {
   }
 
   const version = view.getUint32(4);
-  if (version !== 2) {
+  if (version !== 2 && version !== 3) {
     throw invalidIndexHeader(`unsupported version: ${version}`);
   }
 
@@ -56,10 +56,10 @@ export function parseIndex(bytes: Uint8Array): GitIndex {
     const id = bytesToHex(shaBytes) as ObjectId;
 
     const flagsRaw = view.getUint16(offset + 60);
-    const flags = parseFlags(flagsRaw, offset);
+    const { flags, extendedSize } = decodeEntryFlags(view, offset, version, bytes.length);
 
     const mode = normalizeFileMode(rawMode.toString(8)) as FileMode;
-    offset += ENTRY_HEADER_SIZE;
+    offset += ENTRY_HEADER_SIZE + extendedSize;
 
     const nulEnd = findNul(bytes, offset);
     if (nulEnd === -1) {
@@ -96,17 +96,46 @@ export function parseIndex(bytes: Uint8Array): GitIndex {
 
   const extensions = parseExtensions(bytes, offset, view);
 
-  return { version: 2, entries, extensions };
+  return { version: version as 2 | 3, entries, extensions };
 }
 
-function parseFlags(raw: number, offset: number): IndexEntryFlags {
-  const assumeValid = (raw & 0x8000) !== 0;
-  const extended = (raw & 0x4000) !== 0;
-  if (extended) {
-    throw invalidIndexEntry(offset, 'extended flag not supported in v2');
+/**
+ * Decode an entry's flags. Reads the 16-bit `flags` word at `offset + 60`;
+ * when its extended (`0x4000`) bit is set, also reads the index-v3 16-bit
+ * extended-flags word that follows the 62-byte fixed header. Returns the
+ * decoded {@link IndexEntryFlags} plus `extendedSize` (`2` for an extended
+ * entry, `0` otherwise) so the caller can advance the cursor.
+ */
+function decodeEntryFlags(
+  view: DataView,
+  offset: number,
+  version: number,
+  byteLength: number,
+): { readonly flags: IndexEntryFlags; readonly extendedSize: number } {
+  const flagsRaw = view.getUint16(offset + 60);
+  const extended = (flagsRaw & 0x4000) !== 0;
+  if (extended && version !== 3) {
+    throw invalidIndexEntry(offset, 'extended flag requires index v3');
   }
+  const extendedSize = extended ? 2 : 0;
+  if (offset + ENTRY_HEADER_SIZE + extendedSize > byteLength - INDEX_CHECKSUM_SIZE) {
+    throw invalidIndexEntry(offset, 'truncated extended flags');
+  }
+  const extRaw = extended ? view.getUint16(offset + ENTRY_HEADER_SIZE) : 0;
+  return { flags: parseFlags(flagsRaw, extRaw), extendedSize };
+}
+
+/**
+ * Decode the 16-bit `flags` word and, for an index-v3 extended entry, the
+ * extra 16-bit extended-flags word. `extRaw` is `0` for a non-extended entry,
+ * which yields `skipWorktree: false` / `intentToAdd: false`.
+ */
+function parseFlags(raw: number, extRaw: number): IndexEntryFlags {
+  const assumeValid = (raw & 0x8000) !== 0;
   const stage = ((raw >>> 12) & 0x3) as 0 | 1 | 2 | 3;
-  return { assumeValid, extended: false, stage };
+  const skipWorktree = (extRaw & 0x4000) !== 0;
+  const intentToAdd = (extRaw & 0x2000) !== 0;
+  return { assumeValid, stage, skipWorktree, intentToAdd };
 }
 
 function findNul(bytes: Uint8Array, fromIndex: number): number {

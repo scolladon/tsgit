@@ -30,6 +30,7 @@ import {
   revparseAmbiguous,
   revparseUnresolved,
   sanitize,
+  sparsePatternFileTooLarge,
   tagExists,
   tagNotFound,
   targetDirectoryNotEmpty,
@@ -323,6 +324,17 @@ describe('domain commands error — factory data', () => {
     });
   });
 
+  it('Given a path, size, and limit, When sparsePatternFileTooLarge, Then data carries every field verbatim', () => {
+    expect(
+      sparsePatternFileTooLarge('info/sparse-checkout' as FilePath, 2_000_000, 1_048_576).data,
+    ).toEqual({
+      code: 'SPARSE_PATTERN_FILE_TOO_LARGE',
+      path: 'info/sparse-checkout',
+      size: 2_000_000,
+      limit: 1_048_576,
+    });
+  });
+
   it('Given runtime and reason, When adapterUnavailable, Then data carries verbatim runtime and sanitized reason', () => {
     expect(adapterUnavailable('node', 'process.versions missing').data).toEqual({
       code: 'ADAPTER_UNAVAILABLE',
@@ -546,6 +558,15 @@ describe('domain commands error — extractDetail message formatting', () => {
         limit: 1_048_576,
       },
       'GITIGNORE_FILE_TOO_LARGE: .gitignore too large: .gitignore size=2000000 limit=1048576',
+    ],
+    [
+      {
+        code: 'SPARSE_PATTERN_FILE_TOO_LARGE',
+        path: '/repo/.git/info/sparse-checkout' as FilePath,
+        size: 2_000_000,
+        limit: 1_048_576,
+      },
+      'SPARSE_PATTERN_FILE_TOO_LARGE: sparse-checkout file too large: sparse-checkout size=2000000 limit=1048576',
     ],
     [
       { code: 'HOOK_FAILED', hook: 'pre-commit', exitCode: 1, stderr: 'lint failed' },

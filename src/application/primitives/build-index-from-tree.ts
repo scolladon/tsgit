@@ -20,7 +20,7 @@
  * post-reset state. See `reset.ts:rebuildIndexFromCommit` for the
  * canonical pattern: acquire → read → build → commit → release-in-finally.
  */
-import type { GitIndex, IndexEntry } from '../../domain/git-index/index.js';
+import { type GitIndex, type IndexEntry, STAGE0_FLAGS } from '../../domain/git-index/index.js';
 import {
   FILE_MODE,
   type FileMode,
@@ -71,7 +71,7 @@ const zeroStatEntry = (leaf: TargetLeaf): IndexEntry => ({
   gid: 0,
   fileSize: 0,
   id: leaf.id,
-  flags: { assumeValid: false, extended: false, stage: 0 },
+  flags: STAGE0_FLAGS,
   path: leaf.path,
 });
 

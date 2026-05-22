@@ -23,4 +23,5 @@ export * from './protocol/index.js';
 export * from './reflog/index.js';
 export * from './refs/index.js';
 export * from './repository/index.js';
+export * from './sparse/index.js';
 export * from './storage/index.js';

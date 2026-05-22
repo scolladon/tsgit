@@ -1,6 +1,6 @@
 import { nonFastForward } from '../../domain/commands/error.js';
 import { conflictsToIndexEntries } from '../../domain/diff/index.js';
-import type { IndexEntry, StatData } from '../../domain/git-index/index.js';
+import { type IndexEntry, STAGE0_FLAGS, type StatData } from '../../domain/git-index/index.js';
 import { unsupportedOperation } from '../../domain/index.js';
 import {
   type ConflictType,
@@ -578,7 +578,7 @@ export const buildConflictIndexEntries = (
       stage0.push({
         ...zeroStat(outcome.mode),
         id: outcome.id,
-        flags: { assumeValid: false, extended: false, stage: 0 },
+        flags: STAGE0_FLAGS,
         path: outcome.path,
       });
     }

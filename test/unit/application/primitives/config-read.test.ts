@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import {
   __resetConfigCacheForTests,
+  invalidateConfigCache,
   readConfig,
 } from '../../../../src/application/primitives/config-read.js';
 import { TsgitError } from '../../../../src/domain/error.js';
@@ -852,5 +853,185 @@ describe('primitives/config-read', () => {
 
     // Assert
     expect(sut.core?.bare).toBe(false);
+  });
+
+  it('Given [core] sparseCheckout=true, When readConfig, Then parsed.core.sparseCheckout is true', async () => {
+    // Arrange
+    const ctx = createMemoryContext();
+    await seed(ctx, '[core]\n  sparseCheckout = true\n');
+
+    // Act
+    const sut = await readConfig(ctx);
+
+    // Assert
+    expect(sut.core?.sparseCheckout).toBe(true);
+  });
+
+  it('Given [core] sparseCheckout=false, When readConfig, Then parsed.core.sparseCheckout is false', async () => {
+    // Arrange
+    const ctx = createMemoryContext();
+    await seed(ctx, '[core]\n  sparseCheckout = false\n');
+
+    // Act
+    const sut = await readConfig(ctx);
+
+    // Assert
+    expect(sut.core?.sparseCheckout).toBe(false);
+  });
+
+  it('Given [core] SPARSECHECKOUT in upper case, When readConfig, Then the key match is case-insensitive', async () => {
+    // Arrange — git config keys are case-insensitive; the lowercased compare
+    // in mergeCore must still match an upper-cased key.
+    const ctx = createMemoryContext();
+    await seed(ctx, '[core]\n  SPARSECHECKOUT = true\n');
+
+    // Act
+    const sut = await readConfig(ctx);
+
+    // Assert
+    expect(sut.core?.sparseCheckout).toBe(true);
+  });
+
+  it('Given [core] sparseCheckout=yes (truthy alias), When readConfig, Then parsed.core.sparseCheckout is true', async () => {
+    // Arrange — parseGitBoolean accepts yes/on/1 as true.
+    const ctx = createMemoryContext();
+    await seed(ctx, '[core]\n  sparseCheckout = yes\n');
+
+    // Act
+    const sut = await readConfig(ctx);
+
+    // Assert
+    expect(sut.core?.sparseCheckout).toBe(true);
+  });
+
+  it('Given [core] sparseCheckoutCone=true, When readConfig, Then parsed.core.sparseCheckoutCone is true', async () => {
+    // Arrange
+    const ctx = createMemoryContext();
+    await seed(ctx, '[core]\n  sparseCheckoutCone = true\n');
+
+    // Act
+    const sut = await readConfig(ctx);
+
+    // Assert
+    expect(sut.core?.sparseCheckoutCone).toBe(true);
+  });
+
+  it('Given [core] sparseCheckoutCone=false, When readConfig, Then parsed.core.sparseCheckoutCone is false', async () => {
+    // Arrange
+    const ctx = createMemoryContext();
+    await seed(ctx, '[core]\n  sparseCheckoutCone = false\n');
+
+    // Act
+    const sut = await readConfig(ctx);
+
+    // Assert
+    expect(sut.core?.sparseCheckoutCone).toBe(false);
+  });
+
+  it('Given [core] SparseCheckoutCone in mixed case, When readConfig, Then the key match is case-insensitive', async () => {
+    // Arrange
+    const ctx = createMemoryContext();
+    await seed(ctx, '[core]\n  SparseCheckoutCone = on\n');
+
+    // Act
+    const sut = await readConfig(ctx);
+
+    // Assert
+    expect(sut.core?.sparseCheckoutCone).toBe(true);
+  });
+
+  it('Given only sparseCheckout in [core], When readConfig, Then core is emitted with just that field', async () => {
+    // Arrange — guards the finalizeCore arm for sparseCheckout: it must be the
+    // sole key in the emitted object, with no sibling keys synthesized.
+    const ctx = createMemoryContext();
+    await seed(ctx, '[core]\n  sparseCheckout = true\n');
+
+    // Act
+    const sut = await readConfig(ctx);
+
+    // Assert
+    expect(sut.core).toEqual({ sparseCheckout: true });
+  });
+
+  it('Given only sparseCheckoutCone in [core], When readConfig, Then core is emitted with just that field', async () => {
+    // Arrange — guards the finalizeCore arm for sparseCheckoutCone in isolation.
+    const ctx = createMemoryContext();
+    await seed(ctx, '[core]\n  sparseCheckoutCone = true\n');
+
+    // Act
+    const sut = await readConfig(ctx);
+
+    // Assert
+    expect(sut.core).toEqual({ sparseCheckoutCone: true });
+  });
+
+  it('Given a [core] with bare set but no sparse keys, When readConfig, Then no sparse keys are emitted', async () => {
+    // Arrange — the finalizeCore `!== undefined` arms must not synthesize the
+    // sparse keys when they were never configured.
+    const ctx = createMemoryContext();
+    await seed(ctx, '[core]\n  bare = true\n');
+
+    // Act
+    const sut = await readConfig(ctx);
+
+    // Assert — strict shape: only `bare`, neither sparse key present.
+    expect(sut.core).toStrictEqual({ bare: true });
+  });
+
+  it('Given both sparseCheckout and sparseCheckoutCone set, When readConfig, Then both round-trip independently', async () => {
+    // Arrange — sparseCheckout=true, sparseCheckoutCone=false: distinct values
+    // prove the two arms parse separate keys, not the same one.
+    const ctx = createMemoryContext();
+    await seed(ctx, '[core]\n  sparseCheckout = true\n  sparseCheckoutCone = false\n');
+
+    // Act
+    const sut = await readConfig(ctx);
+
+    // Assert
+    expect(sut.core).toEqual({ sparseCheckout: true, sparseCheckoutCone: false });
+  });
+
+  it('Given a cached config and invalidateConfigCache for that context, When readConfig is called again, Then the file is re-read', async () => {
+    // Arrange — the production per-context invalidator drops the stale entry.
+    const ctx = createMemoryContext();
+    await seed(ctx, '[core]\n  bare = true\n');
+    const spy = vi.spyOn(ctx.fs, 'readUtf8');
+
+    // Act
+    await readConfig(ctx);
+    invalidateConfigCache(ctx);
+    await readConfig(ctx);
+
+    // Assert — the dropped entry forces a second underlying read.
+    expect(spy).toHaveBeenCalledTimes(2);
+  });
+
+  it('Given invalidateConfigCache for one context, When another context reads, Then the other context keeps its cache', async () => {
+    // Arrange — invalidation is per-context: dropping ctxA must not evict ctxB.
+    const ctxA = createMemoryContext();
+    const ctxB = createMemoryContext();
+    await seed(ctxA, '[core]\n  bare = true\n');
+    await seed(ctxB, '[core]\n  bare = true\n');
+    const spyB = vi.spyOn(ctxB.fs, 'readUtf8');
+
+    // Act
+    await readConfig(ctxA);
+    await readConfig(ctxB);
+    invalidateConfigCache(ctxA);
+    await readConfig(ctxB);
+
+    // Assert — ctxB still served from cache: only one read.
+    expect(spyB).toHaveBeenCalledTimes(1);
+  });
+
+  it('Given a context never read before, When invalidateConfigCache is called, Then no error is thrown', async () => {
+    // Arrange — `cache.delete` of an absent key is a harmless no-op.
+    const ctx = createMemoryContext();
+
+    // Act
+    const sut = (): void => invalidateConfigCache(ctx);
+
+    // Assert
+    expect(sut).not.toThrow();
   });
 });

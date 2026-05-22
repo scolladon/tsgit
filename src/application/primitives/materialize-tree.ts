@@ -26,13 +26,19 @@
  *  as clean would survive the reset, AND the donor stats would be stale
  *  relative to the actual disk state.
  */
-import type { GitIndex, IndexEntry } from '../../domain/git-index/index.js';
+import {
+  compareEntryPath,
+  type GitIndex,
+  type IndexEntry,
+  STAGE0_FLAGS,
+} from '../../domain/git-index/index.js';
 import {
   FILE_MODE,
   type FileMode,
   type FilePath,
   type ObjectId,
 } from '../../domain/objects/index.js';
+import type { SparseMatcher } from '../../domain/sparse/index.js';
 import type { Context } from '../../ports/context.js';
 import { applyChangeset } from './apply-changeset.js';
 import {
@@ -58,6 +64,17 @@ export interface MaterializeTreeOpts {
    * 13.1 checkout behaviour: clean files are never spuriously rewritten.
    */
   readonly forceRewriteAll?: boolean;
+  /**
+   * Branch-switch sparse-checkout filter. Honoured ONLY when `paths` is
+   * undefined. A target-tree path the matcher rejects is NOT written to the
+   * working tree; its `newIndexEntries` record carries `skipWorktree: true`
+   * (the index keeps every path — git-faithful). A path the matcher accepts
+   * that the *current* index records as skip-worktree (absent on disk) is
+   * materialised even when its `id` matches, because the current index is
+   * filtered to drop skip-worktree entries before the diff — such a path
+   * classifies as `add`, never `noop`.
+   */
+  readonly sparse?: SparseMatcher;
 }
 
 export interface MaterializeTreeResult {
@@ -161,22 +178,89 @@ const upgradeNoopsToUpdates = (changeset: Changeset): Changeset => {
   return { entries, stats: tallyStats(entries) };
 };
 
+/**
+ * Synthesize the index entry for a target-tree path the sparse matcher
+ * excludes: present in the index with the tree's `id` / `mode`, skip-worktree
+ * set, stat fields zeroed (the file is absent — there is nothing to `lstat`,
+ * and `status` skips skip-worktree entries so the zeroes are never consulted).
+ */
+const skipWorktreeEntry = (entry: TargetEntry): IndexEntry => ({
+  ctimeSeconds: 0,
+  ctimeNanoseconds: 0,
+  mtimeSeconds: 0,
+  mtimeNanoseconds: 0,
+  dev: 0,
+  ino: 0,
+  mode: entry.mode,
+  uid: 0,
+  gid: 0,
+  fileSize: 0,
+  id: entry.id,
+  flags: { ...STAGE0_FLAGS, skipWorktree: true },
+  path: entry.path,
+});
+
+/** Path-sort the merged entry list (in-pattern + synthesised excluded). */
+const sortIndexEntries = (entries: ReadonlyArray<IndexEntry>): IndexEntry[] =>
+  [...entries].sort(compareEntryPath);
+
+interface MaterializePlan {
+  readonly target: ReadonlyArray<TargetEntry>;
+  readonly indexForDiff: GitIndex;
+  /** Target paths the sparse matcher excluded — synthesised as skip-worktree. */
+  readonly excluded: ReadonlyArray<TargetEntry>;
+}
+
+/**
+ * Resolve the three materialisation modes into one uniform plan:
+ * - path-restore (`paths` set) — both diff sides scoped to those paths;
+ * - sparse branch-switch (`sparse` set, `paths` undefined) — target scoped to
+ *   in-pattern paths, the diff base stripped of skip-worktree entries (so an
+ *   excluded→included path is an `add`, not a `noop`), excluded paths split off;
+ * - plain — the whole tree against the whole index.
+ */
+const planMaterialize = (
+  allTarget: ReadonlyArray<TargetEntry>,
+  opts: MaterializeTreeOpts,
+): MaterializePlan => {
+  if (opts.paths !== undefined) {
+    return {
+      target: filterByPaths(allTarget, opts.paths),
+      indexForDiff: {
+        ...opts.currentIndex,
+        entries: filterByPaths(opts.currentIndex.entries, opts.paths),
+      },
+      excluded: [],
+    };
+  }
+  const sparse = opts.sparse;
+  if (sparse !== undefined) {
+    // Partition in a single pass — one matcher call per target entry, not two.
+    const target: TargetEntry[] = [];
+    const excluded: TargetEntry[] = [];
+    for (const entry of allTarget) {
+      (sparse(entry.path) ? target : excluded).push(entry);
+    }
+    return {
+      target,
+      indexForDiff: {
+        ...opts.currentIndex,
+        entries: opts.currentIndex.entries.filter((e) => !e.flags.skipWorktree),
+      },
+      excluded,
+    };
+  }
+  return { target: allTarget, indexForDiff: opts.currentIndex, excluded: [] };
+};
+
 export const materializeTree = async (
   ctx: Context,
   opts: MaterializeTreeOpts,
 ): Promise<MaterializeTreeResult> => {
   const allTarget = await collectTargetEntries(ctx, opts.targetTree);
-  const target = opts.paths === undefined ? allTarget : filterByPaths(allTarget, opts.paths);
+  const plan = planMaterialize(allTarget, opts);
 
-  const indexForDiff =
-    opts.paths === undefined
-      ? opts.currentIndex
-      : ({
-          ...opts.currentIndex,
-          entries: filterByPaths(opts.currentIndex.entries, opts.paths),
-        } satisfies GitIndex);
-
-  const rawChangeset = computeChangeset(indexForDiff, target);
+  const rawChangeset = computeChangeset(plan.indexForDiff, plan.target);
   const changeset =
     opts.forceRewriteAll === true ? upgradeNoopsToUpdates(rawChangeset) : rawChangeset;
 
@@ -186,13 +270,22 @@ export const materializeTree = async (
     workdir: ctx.layout.workDir,
   });
 
+  const inScope = mergeNewIndexEntries(
+    result.writtenEntries,
+    opts.currentIndex,
+    plan.target,
+    opts.paths,
+  );
+  // Sparse branch-switch: append one synthesised skip-worktree entry per
+  // excluded target path so the index keeps every tracked path (git-faithful).
+  const newIndexEntries =
+    // Stryker disable next-line ConditionalExpression: equivalent — forcing the guard false re-sorts the already-path-sorted `inScope` (from `mergeNewIndexEntries`) into a content-identical list when `excluded` is empty; the guard only skips that redundant work.
+    plan.excluded.length === 0
+      ? inScope
+      : sortIndexEntries([...inScope, ...plan.excluded.map(skipWorktreeEntry)]);
+
   return {
-    newIndexEntries: mergeNewIndexEntries(
-      result.writtenEntries,
-      opts.currentIndex,
-      target,
-      opts.paths,
-    ),
+    newIndexEntries,
     written: result.written,
     deleted: result.deleted,
   };

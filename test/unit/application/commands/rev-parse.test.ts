@@ -4,7 +4,7 @@ import { revParse } from '../../../../src/application/commands/rev-parse.js';
 import { writeReflog } from '../../../../src/application/primitives/reflog-store.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import type { GitIndex, IndexEntry } from '../../../../src/domain/git-index/index.js';
-import { serializeIndex } from '../../../../src/domain/git-index/index.js';
+import { STAGE0_FLAGS, serializeIndex } from '../../../../src/domain/git-index/index.js';
 import { TsgitError } from '../../../../src/domain/index.js';
 import { hexToBytes } from '../../../../src/domain/objects/encoding.js';
 import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
@@ -81,7 +81,7 @@ const writeIndexFile = async (
     gid: 0,
     fileSize: 0,
     id: e.id,
-    flags: { assumeValid: false, extended: false, stage: e.stage },
+    flags: { ...STAGE0_FLAGS, stage: e.stage },
     path: e.path as FilePath,
   }));
   const index: GitIndex = { version: 2, entries: fullEntries, extensions: [] };

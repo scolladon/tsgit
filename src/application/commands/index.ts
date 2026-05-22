@@ -18,5 +18,10 @@ export {
 export { type ResetMode, type ResetOptions, type ResetResult, reset } from './reset.js';
 export { revParse } from './rev-parse.js';
 export { type RmOptions, type RmResult, rm } from './rm.js';
+export {
+  type SparseCheckoutAction,
+  type SparseCheckoutResult,
+  sparseCheckout,
+} from './sparse-checkout.js';
 export { type ChangeEntry, type ChangeKind, type StatusResult, status } from './status.js';
 export { type TagAction, type TagInfo, type TagResult, tag } from './tag.js';

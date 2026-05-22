@@ -18,7 +18,7 @@ Dependencies flow one way, inward. The domain core has zero `import` statements 
 
 | Layer | Location | Responsibility |
 |---|---|---|
-| **Domain** | `src/domain/` | Git objects (blob/tree/commit/tag), refs, git-index v2, packfile storage, delta resolution. Pure, zero outward dependencies. Branded types (`ObjectId`, `RefName`, `FilePath`, `FileMode`) enforce domain invariants. |
+| **Domain** | `src/domain/` | Git objects (blob/tree/commit/tag), refs, git-index v2/v3, packfile storage, delta resolution. Pure, zero outward dependencies. Branded types (`ObjectId`, `RefName`, `FilePath`, `FileMode`) enforce domain invariants. |
 | **Application** | `src/application/` | Use cases. Commands (Tier 1) orchestrate primitives (Tier 2). |
 | **Ports** | `src/ports/` | Interfaces only: `FileSystem` (16 methods, includes `readSlice` for random-access packfile reads and `writeExclusive` for lock files), `HashService` (with incremental `Hasher`), `Compressor`, `HttpTransport`, `ProgressReporter`, and `Context` (frozen record aggregating all ports + repo config + optional `AbortSignal`). |
 | **Adapters** | `src/adapters/` | Platform implementations: `Node.js` (real filesystem with realpath-based path containment, `node:crypto`, `node:zlib`, `node:http`/`node:https` with TLS enforcement), `Browser` (OPFS with sandboxed path resolution, `SubtleCrypto`, `CompressionStream`, `fetch`), `Memory` (first-class test fixture with defensive copying, ELOOP-guarded symlink follow). |
@@ -75,14 +75,16 @@ See [docs/design/ports-and-adapters.md](docs/design/ports-and-adapters.md) for t
 | **Domain: Objects** | Blob, tree, commit, tag parsers + serializers | `src/domain/objects/` |
 | **Domain: Storage** | Loose objects, packfiles, delta resolution | `src/domain/objects-storage/` |
 | **Domain: Refs** | Reference resolution, symbolic refs, packed-refs | `src/domain/refs/` |
-| **Domain: Index** | Git index v2 parser, stat cache, staging area | `src/domain/git-index/` |
+| **Domain: Index** | Git index v2/v3 parser (v3 extended flags carry the skip-worktree bit), stat cache, staging area | `src/domain/git-index/` |
 | **Domain: Diff & Merge** | Tree comparison, three-way merge, conflict detection | `src/domain/diff-and-merge/` |
 | **Domain: Reflog** | Append-only per-ref logs, `@{N}` / `@{date}` resolution | `src/domain/reflog/` |
+| **Domain: Sparse** | Cone / non-cone pattern parsing, matching, serialization | `src/domain/sparse/` |
 | **Hooks** | `pre-commit` / `commit-msg` / `pre-push` script execution | `src/ports/hook-runner.ts` |
 | **Ports** | Interfaces for I/O and platform abstraction | `src/ports/` |
 | **Adapters** | Node, browser (OPFS), in-memory implementations | `src/adapters/` |
 | **Primitives** | Tier-2 composable low-level operations | `src/application/primitives/` |
 | **Commands** | Tier-1 high-level use cases (clone, log, status, etc.) | `src/application/commands/` |
 
-See [docs/prd/PRD.md](docs/prd/PRD.md) for the full architecture and competitive analysis, and [docs/design/reflog.md](docs/design/reflog.md) for the Phase 17.1 reflog design,
-and [docs/design/hooks.md](docs/design/hooks.md) for the Phase 17.2 git-hooks design.
+See [docs/prd/PRD.md](docs/prd/PRD.md) for the full architecture and competitive analysis, [docs/design/reflog.md](docs/design/reflog.md) for the Phase 17.1 reflog design,
+[docs/design/hooks.md](docs/design/hooks.md) for the Phase 17.2 git-hooks design,
+and [docs/design/sparse-checkout.md](docs/design/sparse-checkout.md) for the Phase 17.3 sparse-checkout design.

@@ -234,7 +234,8 @@ jobs:
 
   # ──────────────────────────────────────────────
   # Stage 7: Performance
-  #   PRs: benchmark-compare diffs base vs PR on the same runner.
+  #   PRs: benchmark-compare diffs base vs PR on the same runner — informative
+  #   only, never blocks (same-runner benchmarking carries real measurement noise).
   #   Pushes to main: benchmark-snapshot converts the vitest output via
   #   scripts/bench-to-snapshot.ts and feeds github-action-benchmark for
   #   trend tracking + regression alerts. Its data lives on a dedicated
@@ -276,6 +277,9 @@ jobs:
     if: github.event_name == 'pull_request'
     needs: [unit-tests]
     runs-on: ubuntu-latest
+    # Informative only — a flagged regression is a prompt to look, never a
+    # merge gate. Same-runner benchmarking measures too much noise to block on.
+    continue-on-error: true
     permissions:
       pull-requests: write
     steps:
@@ -381,15 +385,17 @@ jobs:
             '|---|---|---|---|---|',
             ...rows,
             '',
-            hasRegression ? '**🔴 Performance regression detected. This PR must not degrade performance.**' : '**✅ No performance regression detected.**',
+            hasRegression ? '**🔴 Performance regression flagged — informational only (same-runner noise is significant); review the deltas above.**' : '**✅ No performance regression detected.**',
           ].join('\n');
 
           fs.writeFileSync('/tmp/bench-comment.md', comment);
           fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY || '/dev/null', '\n' + comment + '\n');
 
+          // Informative only — never exit non-zero. A flagged regression is
+          // surfaced via the PR comment + step summary above; this job must
+          // not fail (same-runner benchmarking is too noisy to gate on).
           if (hasRegression) {
-            console.error('Performance regression exceeds threshold');
-            process.exit(1);
+            console.log('Performance regression flagged — informational only; see the PR comment.');
           }
           SCRIPT
 

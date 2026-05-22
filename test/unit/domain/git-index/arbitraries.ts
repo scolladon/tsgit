@@ -23,8 +23,9 @@ export function arbFileMode(): fc.Arbitrary<FileMode> {
 export function arbFlags(): fc.Arbitrary<IndexEntryFlags> {
   return fc.record({
     assumeValid: fc.boolean(),
-    extended: fc.constant(false as boolean),
     stage: fc.constantFrom(0 as const, 1 as const, 2 as const, 3 as const),
+    skipWorktree: fc.boolean(),
+    intentToAdd: fc.boolean(),
   });
 }
 

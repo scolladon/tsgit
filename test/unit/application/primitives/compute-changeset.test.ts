@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { computeChangeset } from '../../../../src/application/primitives/compute-changeset.js';
 import type { GitIndex, IndexEntry } from '../../../../src/domain/git-index/index.js';
+import { STAGE0_FLAGS } from '../../../../src/domain/git-index/index.js';
 import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
 import type { FileMode, FilePath, ObjectId } from '../../../../src/domain/objects/index.js';
 
@@ -21,7 +22,7 @@ const makeEntry = (path: string, id: ObjectId, mode: FileMode = FILE_MODE.REGULA
   gid: 0,
   fileSize: 0,
   id,
-  flags: { assumeValid: false, extended: false, stage: 0 },
+  flags: STAGE0_FLAGS,
   path: path as FilePath,
 });
 
@@ -169,7 +170,7 @@ describe('computeChangeset', () => {
     const sut = computeChangeset;
     const stagedConflict: IndexEntry = {
       ...makeEntry('conflict.txt', OID_A),
-      flags: { assumeValid: false, extended: false, stage: 2 },
+      flags: { ...STAGE0_FLAGS, stage: 2 },
     };
 
     // Act

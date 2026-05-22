@@ -106,7 +106,7 @@ export interface RuntimeFallback {
  * users never see Context except through `repo.ctx`.
  */
 export interface Repository {
-  // Tier-1 commands (17) — bound to ctx.
+  // Tier-1 commands (18) — bound to ctx.
   readonly add: BindCtx<typeof commands.add>;
   readonly branch: BindCtx<typeof commands.branch>;
   readonly checkout: BindCtx<typeof commands.checkout>;
@@ -122,6 +122,7 @@ export interface Repository {
   readonly reset: BindCtx<typeof commands.reset>;
   readonly revParse: BindCtx<typeof commands.revParse>;
   readonly rm: BindCtx<typeof commands.rm>;
+  readonly sparseCheckout: BindCtx<typeof commands.sparseCheckout>;
   readonly status: BindCtx<typeof commands.status>;
   readonly tag: BindCtx<typeof commands.tag>;
 
@@ -311,6 +312,10 @@ export const openRepository = async (
       guard();
       return commands.rm(ctx, paths, rmOpts);
     }) as Repository['rm'],
+    sparseCheckout: ((action) => {
+      guard();
+      return commands.sparseCheckout(ctx, action);
+    }) as Repository['sparseCheckout'],
     status: (() => {
       guard();
       return commands.status(ctx);

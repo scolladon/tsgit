@@ -11,6 +11,8 @@ export interface ParsedConfig {
     readonly excludesFile?: string;
     readonly logAllRefUpdates?: boolean | 'always';
     readonly hooksPath?: string;
+    readonly sparseCheckout?: boolean;
+    readonly sparseCheckoutCone?: boolean;
   };
   readonly user?: { readonly name: string; readonly email: string };
   readonly remote?: ReadonlyMap<
@@ -43,6 +45,16 @@ export const readConfig = (ctx: Context): Promise<ParsedConfig> => {
 /** @internal — test-only cache reset between cases. Replaces the entire WeakMap. */
 export const __resetConfigCacheForTests = (): void => {
   cache = new WeakMap();
+};
+
+/**
+ * Drop the cached `readConfig` entry for a single `Context`. The production
+ * invalidator: a config write (`updateCoreConfig`) calls this so a subsequent
+ * `readConfig` on the same context re-reads the file instead of serving the
+ * stale parse.
+ */
+export const invalidateConfigCache = (ctx: Context): void => {
+  cache.delete(ctx);
 };
 
 const loadConfig = async (ctx: Context): Promise<ParsedConfig> => {
@@ -171,6 +183,8 @@ const assembleParsed = (sections: ReadonlyArray<MutableSection>): ParsedConfig =
       excludesFile?: string;
       logAllRefUpdates?: boolean | 'always';
       hooksPath?: string;
+      sparseCheckout?: boolean;
+      sparseCheckoutCone?: boolean;
     };
     user?: { name?: string; email?: string };
     remote?: Map<string, { url?: string; fetch?: string[] }>;
@@ -197,6 +211,8 @@ const mergeCore = (
       excludesFile?: string;
       logAllRefUpdates?: boolean | 'always';
       hooksPath?: string;
+      sparseCheckout?: boolean;
+      sparseCheckoutCone?: boolean;
     };
   },
   sec: MutableSection,
@@ -214,6 +230,10 @@ const mergeCore = (
       acc.core = { ...acc.core, logAllRefUpdates: parseLogAllRefUpdates(value) };
     } else if (lowered === 'hookspath') {
       acc.core = { ...acc.core, hooksPath: value };
+    } else if (lowered === 'sparsecheckout') {
+      acc.core = { ...acc.core, sparseCheckout: parseGitBoolean(value) };
+    } else if (lowered === 'sparsecheckoutcone') {
+      acc.core = { ...acc.core, sparseCheckoutCone: parseGitBoolean(value) };
     }
   }
 };
@@ -284,6 +304,8 @@ const finalizeCore = (
         excludesFile?: string;
         logAllRefUpdates?: boolean | 'always';
         hooksPath?: string;
+        sparseCheckout?: boolean;
+        sparseCheckoutCone?: boolean;
       }
     | undefined,
 ): ParsedConfig['core'] => {
@@ -293,6 +315,10 @@ const finalizeCore = (
     ...(core.excludesFile !== undefined ? { excludesFile: core.excludesFile } : {}),
     ...(core.logAllRefUpdates !== undefined ? { logAllRefUpdates: core.logAllRefUpdates } : {}),
     ...(core.hooksPath !== undefined ? { hooksPath: core.hooksPath } : {}),
+    ...(core.sparseCheckout !== undefined ? { sparseCheckout: core.sparseCheckout } : {}),
+    ...(core.sparseCheckoutCone !== undefined
+      ? { sparseCheckoutCone: core.sparseCheckoutCone }
+      : {}),
   };
 };
 
@@ -302,6 +328,8 @@ const finalize = (acc: {
     excludesFile?: string;
     logAllRefUpdates?: boolean | 'always';
     hooksPath?: string;
+    sparseCheckout?: boolean;
+    sparseCheckoutCone?: boolean;
   };
   user?: { name?: string; email?: string };
   remote?: Map<string, { url?: string; fetch?: string[] }>;
@@ -313,6 +341,8 @@ const finalize = (acc: {
       excludesFile?: string;
       logAllRefUpdates?: boolean | 'always';
       hooksPath?: string;
+      sparseCheckout?: boolean;
+      sparseCheckoutCone?: boolean;
     };
     user?: { name: string; email: string };
     remote?: ReadonlyMap<string, { url?: string; fetch?: ReadonlyArray<string> }>;

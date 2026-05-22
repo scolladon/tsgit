@@ -132,6 +132,50 @@ describe('status', () => {
     expect(untrackedPaths).toEqual(['u1.txt', 'u2.txt', 'u3.txt']);
   });
 
+  // A repo with `src/a.txt` + `docs/b.txt`, then a cone-mode `set` keeping
+  // only `src/` — `docs/b.txt` becomes a skip-worktree index entry, absent
+  // from disk.
+  const seedSparseRepo = async () => {
+    const { sparseCheckout } = await import(
+      '../../../../src/application/commands/sparse-checkout.js'
+    );
+    const ctx = createMemoryContext();
+    await init(ctx);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/src/a.txt`, 'a');
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/docs/b.txt`, 'b');
+    await add(ctx, ['src/a.txt', 'docs/b.txt']);
+    await commit(ctx, { message: 'first', author });
+    await sparseCheckout(ctx, { action: 'set', patterns: ['src'], cone: true });
+    return ctx;
+  };
+
+  it('Given a skip-worktree index entry absent from disk, When status, Then it is NOT reported as deleted and the repo is clean', async () => {
+    // Arrange — `docs/b.txt` is skip-worktree (sparse-excluded); its absence is
+    // expected, so `classifyEntry` must early-return undefined for it.
+    const ctx = await seedSparseRepo();
+
+    // Act
+    const sut = await status(ctx);
+
+    // Assert
+    expect(sut.clean).toBe(true);
+    expect(sut.workingTreeChanges).toEqual([]);
+  });
+
+  it('Given a skip-worktree path manually re-created on disk, When status, Then it is NOT reported as untracked (still treated as tracked)', async () => {
+    // Arrange — re-create the excluded file. It must stay in `indexByPath` so
+    // pass 2 does not emit a spurious `untracked` for a tracked path.
+    const ctx = await seedSparseRepo();
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/docs/b.txt`, 'b');
+
+    // Act
+    const sut = await status(ctx);
+
+    // Assert — no `untracked` entry for the still-tracked path.
+    const kinds = sut.workingTreeChanges.map((c) => `${c.kind}:${c.path}`);
+    expect(kinds).not.toContain('untracked:docs/b.txt');
+  });
+
   it('Given a tracked file whose read throws during scan, When status, Then it is reported as modified', async () => {
     // Arrange — a.txt is staged/committed clean. Wrap ctx.fs.read so reading
     // a.txt throws: lstat still succeeds, so classifyEntry reaches isModified,

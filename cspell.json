@@ -452,7 +452,16 @@
     "msys",
     "runnability",
     "sanitisation",
-    "sanitise"
+    "sanitise",
+    "tokenised",
+    "tokenisation",
+    "excludee",
+    "excludees",
+    "generalise",
+    "generalised",
+    "sparsecheckout",
+    "sparsecheckoutcone",
+    "parallelisable"
   ],
   "ignorePaths": [
     "node_modules",

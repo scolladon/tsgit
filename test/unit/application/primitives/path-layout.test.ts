@@ -9,6 +9,7 @@ import {
   packedRefsPath,
   packsDir,
   reflogPath,
+  sparseCheckoutPath,
 } from '../../../../src/application/primitives/path-layout.js';
 import type { ObjectId, RefName } from '../../../../src/domain/objects/index.js';
 
@@ -56,5 +57,9 @@ describe('path-layout', () => {
   it('Given gitDir and the HEAD ref, When reflogPath, Then returns /gitDir/logs/HEAD', () => {
     const sut = reflogPath('/g', 'HEAD' as RefName);
     expect(sut).toBe('/g/logs/HEAD');
+  });
+
+  it('Given gitDir, When sparseCheckoutPath, Then returns /gitDir/info/sparse-checkout', () => {
+    expect(sparseCheckoutPath('/g')).toBe('/g/info/sparse-checkout');
   });
 });

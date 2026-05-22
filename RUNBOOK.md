@@ -458,3 +458,50 @@ tsgit runs `.git/hooks/` scripts — `pre-commit` and `commit-msg` during
   same constraint git-for-Windows carries). See ADR-068.
 - **Output bounds.** Captured hook stdout/stderr is capped at 1 MiB per stream;
   a hung hook is killed when `ctx.signal` aborts.
+
+## Operating sparse checkout (Phase 17.3)
+
+`repo.sparseCheckout` materialises only a subset of tracked files into the
+working tree. Excluded files keep their index entry, marked **skip-worktree**
+(a git index v3 extended flag), so `commit` still records the whole tree.
+Operator-visible behaviour:
+
+- **Subcommands.** `{ action: 'set', patterns }` enables sparse checkout and
+  restricts the tree to `patterns`; `add` widens it with more patterns;
+  `list` returns `{ cone, patterns }`; `reapply` re-applies the on-disk
+  patterns; `disable` turns sparse checkout off and re-materialises every
+  file. `set`/`add`/`reapply`/`disable` return `{ kind: 'applied',
+  materialized, removed, retained }` counts.
+- **Pattern modes.** Cone (the default) takes a directory list; non-cone
+  (`{ cone: false }`) takes `.gitignore`-style patterns, last-match wins.
+  `core.sparseCheckout` / `core.sparseCheckoutCone` gate the feature and are
+  written to `.git/config` via a targeted `[core]` line-surgery writer that
+  preserves comments and unrelated sections.
+- **Persistence ordering.** A mutating action reshapes the working tree
+  **first** and persists the pattern file + config only on success — a failed
+  apply (e.g. `RESOURCE_LOCKED`) leaves `.git` exactly as it was, never a
+  half-state.
+- **`reset` / `merge` are NOT sparse-aware yet.** `reset --hard` /
+  `reset --mixed` / `merge` do not honour sparse patterns — deferred to
+  backlog item **17.3a**. A `reset --hard` in a sparse repo **re-materialises
+  excluded files and drops their skip-worktree bits**. This is documented, not
+  silent corruption: recovery is one call —
+  `repo.sparseCheckout({ action: 'reapply' })` — which rebuilds the working
+  tree from the on-disk pattern file.
+- **Dirty out-of-cone files are retained.** When `set`/`reapply` would exclude
+  a file that has uncommitted local modifications, the file is **left on disk**
+  and its entry keeps `skipWorktree: false` — it is surfaced in
+  `result.retained`, never silently discarded. Pass `force: true` to overwrite
+  it. (`checkout` differs: a branch switch that would put a dirty file
+  out-of-cone refuses the whole operation with `CHECKOUT_OVERWRITE_DIRTY`
+  unless forced.)
+- **The pattern file is local-only.** `.git/info/sparse-checkout` is never
+  transferred by `clone` or `fetch` — same trust boundary as `.git/hooks/`. A
+  cloned repo starts non-sparse regardless of the source repo's sparse state.
+- **Hand-edited cone files degrade gracefully.** Editing
+  `.git/info/sparse-checkout` into a shape that is no longer cone-valid makes
+  the loader fall back to non-cone matching with a one-line logged warning —
+  never a crash.
+- **Size bounds.** The pattern file is capped at 1 MiB
+  (`SPARSE_PATTERN_FILE_TOO_LARGE` above it); each pattern is capped at
+  256 UTF-8 bytes, max 2048 patterns (`INVALID_OPTION` beyond either).

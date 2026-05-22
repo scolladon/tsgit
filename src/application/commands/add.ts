@@ -1,6 +1,6 @@
 import { invalidOption, workingTreeFileTooLarge } from '../../domain/commands/error.js';
 import { operationAborted, TsgitError } from '../../domain/error.js';
-import type { IndexEntry } from '../../domain/git-index/index.js';
+import { type IndexEntry, STAGE0_FLAGS } from '../../domain/git-index/index.js';
 import { emptyPathspec, pathspecNoMatch } from '../../domain/index.js';
 import type { FileMode, ObjectId } from '../../domain/objects/index.js';
 import type { FilePath } from '../../domain/objects/object-id.js';
@@ -197,7 +197,6 @@ export const addAll = async (
     const seen = new Set<FilePath>();
     const added: FilePath[] = [];
     const modified: FilePath[] = [];
-    const removed: FilePath[] = [];
 
     // Walk-time pruning: the walker calls `ignore` on every directory
     // (skipping ignored subtrees) and every leaf. By the time we see a
@@ -209,17 +208,8 @@ export const addAll = async (
       if (result.kind === 'added') added.push(result.path);
       else if (result.kind === 'modified') modified.push(result.path);
     }
-    for (const [path] of existing) {
-      if (seen.has(path)) continue;
-      // Tracked-but-ignored invariant: a tracked file living under a
-      // pruned subtree (directory-level ignore) must NOT be marked
-      // removed just because the walker skipped it. Re-check the leaf
-      // AND every ancestor directory; if any is ignored, preserve the
-      // index entry. Git's invariant: ignore rules don't auto-untrack.
-      if (await isPathOrAncestorIgnored(path, ignore)) continue;
-      newEntries.delete(path);
-      removed.push(path);
-    }
+    const removed = await collectRemovedPaths(existing, seen, ignore);
+    for (const path of removed) newEntries.delete(path);
     added.sort();
     modified.sort();
     // Stryker disable next-line MethodExpression: equivalent — `removed` is built by iterating `existing`, a Map populated from the always-byte-sorted index (serializeIndex sorts on every write), so it is already in ascending path order; the sort is a defensive no-op.
@@ -236,6 +226,31 @@ interface WalkOutcome {
   readonly path: FilePath;
   readonly entry: IndexEntry;
 }
+
+/**
+ * The post-walk removal pass: every prior index entry the walk did not see on
+ * disk is a candidate removal. Two entries are preserved (NOT removed):
+ *
+ * - **skip-worktree** — a sparse-excluded entry is legitimately absent;
+ *   staging its removal would silently un-sparse it into a deletion.
+ * - **tracked-but-ignored** — a tracked file under a pruned subtree
+ *   (directory-level ignore) the walker skipped. Git's invariant: ignore
+ *   rules don't auto-untrack.
+ */
+const collectRemovedPaths = async (
+  existing: ReadonlyMap<FilePath, IndexEntry>,
+  seen: ReadonlySet<FilePath>,
+  ignore: IgnorePredicate,
+): Promise<FilePath[]> => {
+  const removed: FilePath[] = [];
+  for (const [path, entry] of existing) {
+    if (seen.has(path)) continue;
+    if (entry.flags.skipWorktree) continue;
+    if (await isPathOrAncestorIgnored(path, ignore)) continue;
+    removed.push(path);
+  }
+  return removed;
+};
 
 /**
  * True if `path` or any ancestor directory is reported ignored by the
@@ -378,7 +393,6 @@ const makeEntry = (
   gid: stat.gid,
   fileSize: stat.size,
   id,
-  // Stryker disable next-line BooleanLiteral: equivalent — `extended` is write-only here. `serializeIndex`'s `writeEntry` builds `flagsRaw` from `assumeValid | stage | nameLength` only and never reads `.extended`; `parseFlags` always returns `extended: false`. Flipping this literal cannot change any serialized or re-parsed observable.
-  flags: { assumeValid: false, extended: false, stage: 0 },
+  flags: STAGE0_FLAGS,
   path,
 });
