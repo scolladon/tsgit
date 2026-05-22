@@ -85,6 +85,7 @@ const tokenize = (pattern: string): GlobToken[] => {
 
 const stepLiteral = (char: string, path: string, next: Uint8Array): Uint8Array => {
   const cur = new Uint8Array(path.length + 1);
+  // Stryker disable next-line EqualityOperator: equivalent — `j <= path.length` adds an iteration at `j = path.length` where `path[j]` is `undefined`; `undefined === char` is false, so `cur[path.length]` keeps its correct 0.
   for (let j = 0; j < path.length; j++) {
     if (path[j] === char && next[j + 1] === 1) cur[j] = 1;
   }
@@ -93,6 +94,7 @@ const stepLiteral = (char: string, path: string, next: Uint8Array): Uint8Array =
 
 const stepSingle = (path: string, next: Uint8Array): Uint8Array => {
   const cur = new Uint8Array(path.length + 1);
+  // Stryker disable next-line EqualityOperator: equivalent — `j <= path.length` adds an iteration at `j = path.length` where `next[j + 1]` is out of bounds (`undefined`); the guard fails, so `cur[path.length]` keeps its correct 0.
   for (let j = 0; j < path.length; j++) {
     if (path[j] !== '/' && next[j + 1] === 1) cur[j] = 1;
   }
@@ -104,6 +106,7 @@ const stepSingle = (path: string, next: Uint8Array): Uint8Array => {
 const stepStar = (path: string, next: Uint8Array): Uint8Array => {
   const cur = new Uint8Array(path.length + 1);
   cur[path.length] = next[path.length] === 1 ? 1 : 0;
+  // Stryker disable next-line ArithmeticOperator: equivalent — starting at `path.length + 1` adds two no-op iterations: the out-of-bounds write is dropped by the typed array, and `j = path.length` recomputes `cur[path.length]` to the value just assigned above.
   for (let j = path.length - 1; j >= 0; j--) {
     cur[j] = next[j] === 1 || (path[j] !== '/' && cur[j + 1] === 1) ? 1 : 0;
   }
@@ -114,6 +117,7 @@ const stepStar = (path: string, next: Uint8Array): Uint8Array => {
 const stepStarStar = (path: string, next: Uint8Array): Uint8Array => {
   const cur = new Uint8Array(path.length + 1);
   cur[path.length] = next[path.length] === 1 ? 1 : 0;
+  // Stryker disable next-line ArithmeticOperator: equivalent — starting at `path.length + 1` adds two no-op iterations: the out-of-bounds write is dropped by the typed array, and `j = path.length` recomputes `cur[path.length]` to the value just assigned above.
   for (let j = path.length - 1; j >= 0; j--) {
     cur[j] = next[j] === 1 || cur[j + 1] === 1 ? 1 : 0;
   }
@@ -125,6 +129,7 @@ const stepStarStar = (path: string, next: Uint8Array): Uint8Array => {
 // run ends on a `/` and the following tokens match the remainder.
 const stepStarSlash = (path: string, next: Uint8Array): Uint8Array => {
   const seg = new Uint8Array(path.length + 1);
+  // Stryker disable next-line ArithmeticOperator: equivalent — starting at `path.length + 1` adds two no-op iterations: the out-of-bounds write is dropped by the typed array, and `j = path.length` recomputes `seg[path.length]` to 0, the value it already holds.
   for (let j = path.length - 1; j >= 0; j--) {
     seg[j] = (path[j] === '/' && next[j + 1] === 1) || seg[j + 1] === 1 ? 1 : 0;
   }
@@ -157,6 +162,7 @@ const baseLayer = (path: string, withDirSuffix: boolean): Uint8Array => {
   const dp = new Uint8Array(path.length + 1);
   dp[path.length] = 1;
   if (withDirSuffix) {
+    // Stryker disable next-line EqualityOperator: equivalent — `j <= path.length` adds an iteration at `j = path.length` where `path[j]` is `undefined`; `undefined === '/'` is false, so `dp[path.length]` keeps the 1 set above.
     for (let j = 0; j < path.length; j++) {
       if (path[j] === '/') dp[j] = 1;
     }

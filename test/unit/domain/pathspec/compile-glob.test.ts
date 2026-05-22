@@ -202,6 +202,26 @@ describe('compileGlob', () => {
     expect(sut.test('az')).toBe(true);
   });
 
+  it('Given a trailing `**`, When the matched prefix is the whole path, Then the empty remainder still matches', () => {
+    // Arrange — `a**` ends in star-star; its layer at the path end must accept
+    // an empty remaining run.
+    const sut = compileGlob('a**', { anchored: true });
+
+    // Act / Assert
+    expect(sut.test('a')).toBe(true);
+    expect(sut.test('a/b/c')).toBe(true);
+  });
+
+  it('Given a trailing `**` followed by a literal, When the literal is absent, Then it does NOT match', () => {
+    // Arrange — `a**b` must reject `a`: star-star matches the empty run, but
+    // the trailing `b` then has nothing to match.
+    const sut = compileGlob('a**b', { anchored: true });
+
+    // Act / Assert
+    expect(sut.test('a')).toBe(false);
+    expect(sut.test('ab')).toBe(true);
+  });
+
   it('Given an adversarial `a*a*…*b` pattern, When matched against a long non-matching run, Then it returns false without catastrophic backtracking', () => {
     // Arrange — the ReDoS regression. The old regex `^a[^/]*a[^/]*…b$` would
     // explore exponentially many splits of the `a`-run and hang the test;
@@ -237,6 +257,7 @@ describe('compileGlob', () => {
           const oracle = oracleRegex(pattern, options).test(path);
           expect(linear).toBe(oracle);
         }),
+        { numRuns: 1000 },
       );
     });
   });
