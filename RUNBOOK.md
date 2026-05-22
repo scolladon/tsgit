@@ -481,13 +481,12 @@ Operator-visible behaviour:
   **first** and persists the pattern file + config only on success — a failed
   apply (e.g. `RESOURCE_LOCKED`) leaves `.git` exactly as it was, never a
   half-state.
-- **`reset` / `merge` are NOT sparse-aware yet.** `reset --hard` /
-  `reset --mixed` / `merge` do not honour sparse patterns — deferred to
-  backlog item **17.3a**. A `reset --hard` in a sparse repo **re-materialises
-  excluded files and drops their skip-worktree bits**. This is documented, not
-  silent corruption: recovery is one call —
-  `repo.sparseCheckout({ action: 'reapply' })` — which rebuilds the working
-  tree from the on-disk pattern file.
+- **`reset` / `merge` honour sparse patterns.** `reset --hard` re-materialises
+  only in-pattern files; `reset --mixed` rebuilds the index with skip-worktree
+  bits intact; a conflicting `merge` keeps excluded blob-backed files out of
+  the working tree (it still writes conflict markers and `resolved-merged`
+  bytes — content with no other persistence). Excluded entries stay
+  `skipWorktree: true`, so `status` never reports a phantom deletion.
 - **Dirty out-of-cone files are retained.** When `set`/`reapply` would exclude
   a file that has uncommitted local modifications, the file is **left on disk**
   and its entry keeps `skipWorktree: false` — it is surfaced in

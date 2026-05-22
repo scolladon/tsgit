@@ -33,14 +33,12 @@ Phase 17.3 delivers:
    the feature does not produce phantom "deleted" entries or stage phantom
    removals.
 
-### Explicitly out of scope (documented sharp edges → follow-up 17.3a)
+### Explicitly out of scope of 17.3 itself
 
-- **`reset --hard` / `reset --mixed` / `merge` sparse-awareness.** These also
-  rewrite the working tree / index; making them honour sparse patterns is a
-  follow-up ([ADR-073](../adr/073-sparse-integration-scope.md)). A `reset
-  --hard` in a sparse repo re-materialises excluded files and drops their
-  skip-worktree bits; recovery is one `repo.sparseCheckout({ action: 'reapply'
-  })`. Documented, not silent corruption.
+- **`reset --hard` / `reset --mixed` / `merge` sparse-awareness** was deferred
+  by 17.3 ([ADR-073](../adr/073-sparse-integration-scope.md)) and **delivered
+  in 17.3a** — these commands now honour sparse patterns. See
+  `docs/design/sparse-reset-merge.md` and ADRs 075–076.
 - **The sparse-index optimization** — git's `.git/index` "sparse directory"
   entries that collapse an excluded subtree to a single tree entry. tsgit's
   index always holds one entry per file. Cone mode still gives the *visible*
@@ -789,7 +787,7 @@ Guard clauses get isolated per-condition tests — the `extended` /
 | [070](../adr/070-cone-and-non-cone.md) | Both **cone and non-cone** modes ship. Cone is an O(1) directory-membership test; non-cone is a `.gitignore`-style last-match-wins matcher. A non-cone-shaped cone file degrades to non-cone matching, as git does. `/dir/*`-style wildcard-last patterns cover direct children only. |
 | [071](../adr/071-sparse-command-shape.md) | `repo.sparseCheckout` exposes the **full git-parity** subcommand set — `list` / `set` / `add` / `reapply` / `disable` — as one discriminated-`action` tier-1 command. `set`/`add` inputs and `list` output are directories in cone mode, raw patterns in non-cone. |
 | [072](../adr/072-sparse-dirty-file-policy.md) | When narrowing would delete a file with **uncommitted local modifications**, the file is **retained** (left on disk, skip-worktree *not* set) and surfaced in `result.retained`; `force: true` overrides. Faithful to git; never silently discards work. |
-| [073](../adr/073-sparse-integration-scope.md) | 17.3 integrates sparse into **`checkout` / `status` / `add --all`**; **`reset` / `merge`** sparse-awareness is deferred to follow-up **17.3a**. `materializeTree` carries the `sparse` predicate so the follow-up is a wiring change, not a redesign. |
+| [073](../adr/073-sparse-integration-scope.md) | 17.3 integrates sparse into **`checkout` / `status` / `add --all`**; **`reset` / `merge`** sparse-awareness was deferred to follow-up **17.3a** — since **delivered** (ADRs 075–076). `materializeTree` carried the `sparse` predicate so the follow-up was a wiring change, not a redesign. |
 | [074](../adr/074-minimal-config-writer.md) | `.git/config` writes use **targeted `[core]` line surgery**, not a full INI re-render — preserving comments, ordering and unrelated sections. A general config writer is explicitly *not* built in 17.3. |
 
 ## 16. Risks & mitigations
@@ -799,9 +797,9 @@ Guard clauses get isolated per-condition tests — the `extended` /
   `serializeIndex` output is byte-identical for the whole non-sparse corpus.
   The parser only *adds* v3 acceptance; v2 parsing is untouched. Round-trip
   and interop tests pin both.
-- **Silent un-sparse via `reset --hard`.** Deferred (ADR-073). Mitigation:
-  documented in README/RUNBOOK; recovery is one `reapply`; the follow-up
-  17.3a is filed in `docs/BACKLOG.md`.
+- **Silent un-sparse via `reset --hard`.** Resolved in 17.3a — `reset` and
+  `merge` are now sparse-aware (ADRs 075–076,
+  `docs/design/sparse-reset-merge.md`).
 - **Hand-edited cone file.** A user editing `.git/info/sparse-checkout` into a
   non-cone shape is handled by the cone→non-cone fallback (ADR-070) with a
   logged warning — never a crash, never a wrong materialization that looks

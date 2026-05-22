@@ -301,8 +301,8 @@ await repo.sparseCheckout({ action: 'add', patterns: ['src/lib'] });
 // Inspect the active patterns.
 const { cone, patterns } = await repo.sparseCheckout({ action: 'list' });
 
-// Re-apply the on-disk patterns (e.g. after a `reset --hard` re-materialised
-// excluded files), or turn sparse checkout off and restore every file.
+// Re-apply the on-disk patterns (e.g. after hand-editing the pattern file),
+// or turn sparse checkout off and restore every file.
 await repo.sparseCheckout({ action: 'reapply' });
 await repo.sparseCheckout({ action: 'disable' });
 ```

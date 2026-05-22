@@ -4,6 +4,12 @@
 
 Accepted (at `c85927a`)
 
+> **Update:** the deferral this ADR records is **resolved** — `reset --hard` /
+> `reset --mixed` / `merge` sparse-awareness was delivered in **17.3a**. See
+> [ADR-075](075-reset-sparse-integration.md),
+> [ADR-076](076-merge-conflict-materialization.md), and
+> `docs/design/sparse-reset-merge.md`.
+
 ## Context
 
 git applies sparse-checkout rules in *every* operation that rewrites the
