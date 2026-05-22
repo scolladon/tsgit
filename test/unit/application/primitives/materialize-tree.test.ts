@@ -38,6 +38,25 @@ const makeIndexEntry = (path: string, id: ObjectId, stage: 0 | 1 | 2 | 3 = 0): I
   path: path as FilePath,
 });
 
+/** Build a one-level-nested tree (`<dir>/<name>` blobs) and return its id. */
+const writeNestedTree = async (
+  ctx: Awaited<ReturnType<typeof buildSeededContext>>,
+  files: ReadonlyArray<{ readonly dir: string; readonly name: string; readonly id: ObjectId }>,
+): Promise<ObjectId> => {
+  const byDir = new Map<string, TreeEntry[]>();
+  for (const f of files) {
+    const list = byDir.get(f.dir) ?? [];
+    list.push({ name: f.name as FilePath, id: f.id, mode: FILE_MODE.REGULAR });
+    byDir.set(f.dir, list);
+  }
+  const rootEntries: TreeEntry[] = [];
+  for (const [dir, entries] of byDir) {
+    const subId = await writeTree(ctx, entries);
+    rootEntries.push({ name: dir as FilePath, id: subId, mode: FILE_MODE.DIRECTORY });
+  }
+  return writeTree(ctx, rootEntries);
+};
+
 describe('materializeTree', () => {
   it('Given an empty index and a target tree with one blob, When materializeTree runs, Then writes the blob to the workdir', async () => {
     // Arrange
@@ -447,5 +466,163 @@ describe('materializeTree', () => {
     expect(result.written).toBe(1);
     expect(await ctx.fs.exists(`${ctx.layout.workDir}/a.txt`)).toBe(true);
     expect(await ctx.fs.exists(`${ctx.layout.workDir}/b.txt`)).toBe(false);
+  });
+
+  it('Given a sparse matcher excluding one target path, When materializeTree runs, Then the excluded path is a skip-worktree index entry with no file on disk', async () => {
+    // Arrange — target tree has an in-pattern `src/a.txt` and an out-of-pattern
+    // `docs/b.txt`; the sparse matcher selects only `src/`.
+    const ctx = await buildSeededContext();
+    const idA = await writeBlob(ctx, 'A');
+    const idB = await writeBlob(ctx, 'B');
+    const treeId = await writeNestedTree(ctx, [
+      { dir: 'docs', name: 'b.txt', id: idB },
+      { dir: 'src', name: 'a.txt', id: idA },
+    ]);
+    const sut = materializeTree;
+
+    // Act
+    const result = await sut(ctx, {
+      targetTree: treeId,
+      currentIndex: EMPTY_INDEX,
+      sparse: (path) => path.startsWith('src/'),
+    });
+
+    // Assert — only the in-pattern file is on disk; the excluded file is not.
+    expect(result.written).toBe(1);
+    expect(result.deleted).toBe(0);
+    expect(await ctx.fs.exists(`${ctx.layout.workDir}/src/a.txt`)).toBe(true);
+    expect(await ctx.fs.exists(`${ctx.layout.workDir}/docs/b.txt`)).toBe(false);
+    // The index keeps BOTH paths — the excluded one synthesised skip-worktree.
+    expect(result.newIndexEntries.map((e) => e.path)).toEqual(['docs/b.txt', 'src/a.txt']);
+    const excluded = result.newIndexEntries.find((e) => e.path === 'docs/b.txt');
+    expect(excluded).toEqual({
+      ctimeSeconds: 0,
+      ctimeNanoseconds: 0,
+      mtimeSeconds: 0,
+      mtimeNanoseconds: 0,
+      dev: 0,
+      ino: 0,
+      mode: FILE_MODE.REGULAR,
+      uid: 0,
+      gid: 0,
+      fileSize: 0,
+      id: idB,
+      flags: { ...STAGE0_FLAGS, skipWorktree: true },
+      path: 'docs/b.txt',
+    });
+    const included = result.newIndexEntries.find((e) => e.path === 'src/a.txt');
+    expect(included?.flags.skipWorktree).toBe(false);
+  });
+
+  it('Given a sparse matcher excluding a path whose file is currently on disk, When materializeTree runs, Then the file is deleted and its entry becomes skip-worktree', async () => {
+    // Arrange — `docs/b.txt` is materialised (index entry + file on disk); the
+    // new sparse matcher puts it out of pattern.
+    const ctx = await buildSeededContext();
+    const idA = await writeBlob(ctx, 'A');
+    const idB = await writeBlob(ctx, 'B');
+    await ctx.fs.write(`${ctx.layout.workDir}/docs/b.txt`, new TextEncoder().encode('B'));
+    const treeId = await writeNestedTree(ctx, [
+      { dir: 'docs', name: 'b.txt', id: idB },
+      { dir: 'src', name: 'a.txt', id: idA },
+    ]);
+    const index: GitIndex = { ...EMPTY_INDEX, entries: [makeIndexEntry('docs/b.txt', idB)] };
+    const sut = materializeTree;
+
+    // Act
+    const result = await sut(ctx, {
+      targetTree: treeId,
+      currentIndex: index,
+      sparse: (path) => path.startsWith('src/'),
+    });
+
+    // Assert — the now-excluded file is removed from the working tree.
+    expect(result.deleted).toBe(1);
+    expect(await ctx.fs.exists(`${ctx.layout.workDir}/docs/b.txt`)).toBe(false);
+    expect(result.newIndexEntries.find((e) => e.path === 'docs/b.txt')?.flags.skipWorktree).toBe(
+      true,
+    );
+  });
+
+  it('Given a skip-worktree index entry for a now-in-pattern path, When materializeTree runs, Then the absent file is materialised even though its id matches', async () => {
+    // Arrange — the index records `src/a.txt` with the target tree's id but as
+    // skip-worktree (the file is absent). A naive index→target diff would call
+    // this a `noop`; the sparse path drops skip-worktree entries from the diff
+    // base, so it classifies as `add` and the file IS written.
+    const ctx = await buildSeededContext();
+    const idA = await writeBlob(ctx, 'A');
+    const treeId = await writeNestedTree(ctx, [{ dir: 'src', name: 'a.txt', id: idA }]);
+    const skipped = makeIndexEntry('src/a.txt', idA);
+    const index: GitIndex = {
+      ...EMPTY_INDEX,
+      entries: [{ ...skipped, flags: { ...STAGE0_FLAGS, skipWorktree: true } }],
+    };
+    const sut = materializeTree;
+
+    // Act
+    const result = await sut(ctx, {
+      targetTree: treeId,
+      currentIndex: index,
+      sparse: (path) => path.startsWith('src/'),
+    });
+
+    // Assert — the file is written and its entry is no longer skip-worktree.
+    expect(result.written).toBe(1);
+    expect(await ctx.fs.exists(`${ctx.layout.workDir}/src/a.txt`)).toBe(true);
+    expect(result.newIndexEntries.find((e) => e.path === 'src/a.txt')?.flags.skipWorktree).toBe(
+      false,
+    );
+  });
+
+  it('Given a sparse matcher that includes every path, When materializeTree runs, Then it behaves like a plain materialize (all written, no skip-worktree)', async () => {
+    // Arrange — an all-true matcher exercises the sparse branch with an empty
+    // `excluded` set; the result must match the no-sparse behaviour.
+    const ctx = await buildSeededContext();
+    const idA = await writeBlob(ctx, 'A');
+    const idB = await writeBlob(ctx, 'B');
+    const treeId = await writeTree(ctx, [
+      { name: 'a.txt' as FilePath, id: idA, mode: FILE_MODE.REGULAR },
+      { name: 'b.txt' as FilePath, id: idB, mode: FILE_MODE.REGULAR },
+    ]);
+    const sut = materializeTree;
+
+    // Act
+    const result = await sut(ctx, {
+      targetTree: treeId,
+      currentIndex: EMPTY_INDEX,
+      sparse: () => true,
+    });
+
+    // Assert
+    expect(result.written).toBe(2);
+    expect(result.newIndexEntries.every((e) => e.flags.skipWorktree === false)).toBe(true);
+    expect(await ctx.fs.exists(`${ctx.layout.workDir}/a.txt`)).toBe(true);
+    expect(await ctx.fs.exists(`${ctx.layout.workDir}/b.txt`)).toBe(true);
+  });
+
+  it('Given both a paths filter and a sparse matcher, When materializeTree runs, Then paths mode wins and sparse is ignored', async () => {
+    // Arrange — `sparse` is honoured ONLY when `paths` is undefined. With both
+    // set, path-restore semantics apply: the sparse matcher (which would
+    // exclude `b.txt`) must have no effect, and `b.txt` is simply out of the
+    // path scope rather than a synthesised skip-worktree entry.
+    const ctx = await buildSeededContext();
+    const idA = await writeBlob(ctx, 'A');
+    const idB = await writeBlob(ctx, 'B');
+    const treeId = await writeTree(ctx, [
+      { name: 'a.txt' as FilePath, id: idA, mode: FILE_MODE.REGULAR },
+      { name: 'b.txt' as FilePath, id: idB, mode: FILE_MODE.REGULAR },
+    ]);
+    const sut = materializeTree;
+
+    // Act
+    const result = await sut(ctx, {
+      targetTree: treeId,
+      currentIndex: EMPTY_INDEX,
+      paths: new Set(['a.txt' as FilePath]),
+      sparse: () => false,
+    });
+
+    // Assert — only the path-scoped `a.txt`; no skip-worktree `b.txt` synthesised.
+    expect(result.newIndexEntries.map((e) => e.path)).toEqual(['a.txt']);
+    expect(result.written).toBe(1);
   });
 });
