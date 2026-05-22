@@ -108,6 +108,7 @@ describe('openRepository — Repository binding integrity', () => {
         'rm',
         'sparseCheckout',
         'status',
+        'submodules',
         'tag',
       ].sort(),
     );
@@ -131,6 +132,7 @@ describe('openRepository — Repository binding integrity', () => {
         'runHook',
         'updateRef',
         'walkCommits',
+        'walkSubmodules',
         'walkTree',
         'walkWorkingTree',
         'writeObject',
@@ -364,6 +366,36 @@ describe('openRepository — round-trip via memory adapter', () => {
 
     // Assert
     expect(result).toEqual({ kind: 'list', cone: false, patterns: [] });
+  });
+
+  it('Given a fresh repo with an empty tree, When the bound submodules command is called, Then it delegates and returns an empty list', async () => {
+    // Arrange — write an empty tree and target it explicitly so the call does
+    // not depend on an unborn HEAD; exercises the `submodules` binding.
+    const fallback = makeFallback();
+    const sut = await openRepository({ cwd: '/repo' }, fallback);
+    await sut.init();
+    const treeId = await sut.primitives.writeTree([]);
+
+    // Act
+    const result = await sut.submodules({ ref: treeId });
+
+    // Assert
+    expect(result).toEqual({ kind: 'list', entries: [] });
+  });
+
+  it('Given the bound walkSubmodules primitive, When iterated on an empty tree, Then yields nothing', async () => {
+    // Arrange
+    const fallback = makeFallback();
+    const sut = await openRepository({ cwd: '/repo' }, fallback);
+    await sut.init();
+    const treeId = await sut.primitives.writeTree([]);
+
+    // Act
+    let count = 0;
+    for await (const _ of sut.primitives.walkSubmodules({ ref: treeId })) count += 1;
+
+    // Assert
+    expect(count).toBe(0);
   });
 });
 

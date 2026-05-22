@@ -126,6 +126,7 @@ export interface Repository {
   readonly rm: BindCtx<typeof commands.rm>;
   readonly sparseCheckout: BindCtx<typeof commands.sparseCheckout>;
   readonly status: BindCtx<typeof commands.status>;
+  readonly submodules: BindCtx<typeof commands.submodules>;
   readonly tag: BindCtx<typeof commands.tag>;
 
   // Tier-2 primitives (16) — bound under.primitives.* to keep the top-level
@@ -144,6 +145,7 @@ export interface Repository {
     readonly runHook: BindCtx<typeof primitives.runHook>;
     readonly updateRef: BindCtx<typeof primitives.updateRef>;
     readonly walkCommits: BindCtx<typeof primitives.walkCommits>;
+    readonly walkSubmodules: BindCtx<typeof primitives.walkSubmodules>;
     readonly walkTree: BindCtx<typeof primitives.walkTree>;
     readonly walkWorkingTree: BindCtx<typeof primitives.walkWorkingTree>;
     readonly writeObject: BindCtx<typeof primitives.writeObject>;
@@ -336,6 +338,10 @@ export const openRepository = async (
       guard();
       return commands.status(ctx);
     }) as Repository['status'],
+    submodules: ((opts) => {
+      guard();
+      return commands.submodules(ctx, opts);
+    }) as Repository['submodules'],
     tag: ((action) => {
       guard();
       return commands.tag(ctx, action);
@@ -393,6 +399,10 @@ export const openRepository = async (
         guard();
         return primitives.walkCommits(ctx, options);
       }) as Repository['primitives']['walkCommits'],
+      walkSubmodules: ((options) => {
+        guard();
+        return primitives.walkSubmodules(ctx, options);
+      }) as Repository['primitives']['walkSubmodules'],
       walkTree: ((treeIdOrObject, options) => {
         guard();
         return primitives.walkTree(ctx, treeIdOrObject, options);
