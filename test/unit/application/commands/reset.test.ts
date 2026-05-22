@@ -535,4 +535,66 @@ describe('reset — sparse checkout', () => {
     const index = await readIndex(ctx);
     expect(index.entries.every((e) => e.flags.skipWorktree === false)).toBe(true);
   });
+
+  it('Given a sparse repo, When reset --hard runs, Then excluded files are removed from disk and recorded skip-worktree', async () => {
+    // Arrange — sparse enabled after the commit; `docs/b.txt` is on disk and a
+    // normal index entry. The hard reset must drop it and flag it skip-worktree
+    // while re-materialising the in-pattern `src/a.txt`.
+    const { ctx, c1 } = await seedSrcAndDocs();
+    await enableSparseSrcOnly(ctx);
+
+    // Act
+    const sut = await reset(ctx, { mode: 'hard', target: c1 });
+
+    // Assert
+    expect(sut.mode).toBe('hard');
+    expect(await ctx.fs.exists(`${ctx.layout.workDir}/src/a.txt`)).toBe(true);
+    expect(await ctx.fs.exists(`${ctx.layout.workDir}/docs/b.txt`)).toBe(false);
+    const index = await readIndex(ctx);
+    expect(index.entries.find((e) => e.path === 'src/a.txt')?.flags.skipWorktree).toBe(false);
+    expect(index.entries.find((e) => e.path === 'docs/b.txt')?.flags.skipWorktree).toBe(true);
+  });
+
+  it('Given a NON-sparse repo, When reset --hard runs, Then every tracked file is materialised and no entry is skip-worktree', async () => {
+    // Arrange — no sparse config: the materialize threading is inert.
+    const { ctx, c1 } = await seedSrcAndDocs();
+
+    // Act
+    await reset(ctx, { mode: 'hard', target: c1 });
+
+    // Assert
+    expect(await ctx.fs.exists(`${ctx.layout.workDir}/src/a.txt`)).toBe(true);
+    expect(await ctx.fs.exists(`${ctx.layout.workDir}/docs/b.txt`)).toBe(true);
+    const index = await readIndex(ctx);
+    expect(index.entries.every((e) => e.flags.skipWorktree === false)).toBe(true);
+  });
+
+  it('Given a sparse repo whose reset --hard target tree is entirely excluded, When reset --hard runs, Then the index is still committed with the new excluded id', async () => {
+    // Arrange — two commits differing only in an excluded (`docs/`) file. The
+    // first sparse hard-reset leaves `docs/x.txt` as a skip-worktree index
+    // entry; the SECOND hard-reset then writes/deletes nothing
+    // (written=deleted=0) yet must still commit the index so the excluded
+    // path's id advances to the new target — kills a mutant dropping the
+    // `|| matcher !== undefined` clause of the commit guard.
+    const ctx = createMemoryContext();
+    await init(ctx);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/docs/x.txt`, 'v1');
+    await add(ctx, ['docs/x.txt']);
+    const c1 = await commit(ctx, { message: 'v1', author });
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/docs/x.txt`, 'v2');
+    await add(ctx, ['docs/x.txt']);
+    const c2 = await commit(ctx, { message: 'v2', author });
+    await enableSparseSrcOnly(ctx);
+    await reset(ctx, { mode: 'hard', target: c1.id });
+    const idBefore = (await readIndex(ctx)).entries.find((e) => e.path === 'docs/x.txt')?.id;
+
+    // Act — c2's tree is entirely out-of-pattern; nothing is written or deleted.
+    await reset(ctx, { mode: 'hard', target: c2.id });
+
+    // Assert — the index advanced to c2's blob id for the excluded path.
+    const entry = (await readIndex(ctx)).entries.find((e) => e.path === 'docs/x.txt');
+    expect(entry?.flags.skipWorktree).toBe(true);
+    expect(entry?.id).toBeDefined();
+    expect(entry?.id).not.toBe(idBefore);
+  });
 });

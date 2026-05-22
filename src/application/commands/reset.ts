@@ -114,6 +114,9 @@ const hardResetFromCommit = async (ctx: Context, commitId: ObjectId): Promise<vo
   // The index commit uses materializeTree's `newIndexEntries` (post-write
   // lstat-derived stats), not buildIndexFromTree's donor stats — donor stats
   // would be stale for files we just rewrote.
+  //
+  // loadSparseMatcher is a pure config/pattern-file read — no lock needed.
+  const matcher = await loadSparseMatcher(ctx);
   const lock = await acquireIndexLock(ctx);
   try {
     const currentIndex = await readIndex(ctx);
@@ -126,12 +129,18 @@ const hardResetFromCommit = async (ctx: Context, commitId: ObjectId): Promise<vo
       // modifications that the index→target diff can't see. Without this
       // flag, dirty noop'd paths would survive the reset.
       forceRewriteAll: true,
+      // A defined matcher restricts materialisation to in-pattern files;
+      // excluded target paths become synthesised skip-worktree index entries.
+      // `exactOptionalPropertyTypes`: spread `sparse` only when defined.
+      ...(matcher !== undefined ? { sparse: matcher } : {}),
     });
-    // Skip the commit when there is genuinely nothing to write — matches
-    // checkout's no-op skip. With `forceRewriteAll: true`, this only fires
-    // in the degenerate case (empty target tree against an empty index);
-    // otherwise every target-tree path becomes an upgraded update.
-    if (result.written > 0 || result.deleted > 0) {
+    // Skip the commit only when there is genuinely nothing to record. Without
+    // sparse, `written`/`deleted` both 0 is the degenerate empty-tree case.
+    // WITH sparse the index can change while both counts are 0 — every target
+    // path excluded, nothing written, yet the synthesised skip-worktree
+    // entries differ from the pre-reset index — so a defined matcher forces
+    // the commit (checkout commits unconditionally for the same reason).
+    if (result.written > 0 || result.deleted > 0 || matcher !== undefined) {
       await lock.commit(result.newIndexEntries);
     }
   } finally {
