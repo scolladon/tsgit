@@ -15,15 +15,26 @@ export type ObjectFilter =
 const BLOB_LIMIT_PREFIX = 'blob:limit=';
 const TREE_PREFIX = 'tree:';
 
-/** k/m/g size suffixes for `blob:limit`, matching git's `git_parse_ulong`. */
-const SIZE_MULTIPLIER: Readonly<Record<string, number>> = {
-  k: 1024,
-  m: 1024 * 1024,
-  g: 1024 * 1024 * 1024,
-};
-
 const BLOB_LIMIT_RE = /^(\d+)([kmg])?$/i;
 const DEPTH_RE = /^\d+$/;
+
+/**
+ * k/m/g size-suffix multiplier for `blob:limit`, matching git's
+ * `git_parse_ulong`. An absent (or, by construction, unreachable other)
+ * suffix is a literal byte count — multiplier 1.
+ */
+const sizeMultiplier = (suffix: string | undefined): number => {
+  switch (suffix?.toLowerCase()) {
+    case 'k':
+      return 1024;
+    case 'm':
+      return 1024 * 1024;
+    case 'g':
+      return 1024 * 1024 * 1024;
+    default:
+      return 1;
+  }
+};
 
 const parseBlobLimit = (spec: string): ObjectFilter => {
   const match = spec.slice(BLOB_LIMIT_PREFIX.length).match(BLOB_LIMIT_RE);
@@ -31,10 +42,7 @@ const parseBlobLimit = (spec: string): ObjectFilter => {
     throw invalidFilterSpec(spec, 'bad-blob-limit');
   }
   const digits = match[1] as string;
-  const suffix = match[2];
-  const base = Number(digits);
-  const multiplier = suffix === undefined ? 1 : (SIZE_MULTIPLIER[suffix.toLowerCase()] as number);
-  const bytes = base * multiplier;
+  const bytes = Number(digits) * sizeMultiplier(match[2]);
   if (!Number.isSafeInteger(bytes)) {
     throw invalidFilterSpec(spec, 'bad-blob-limit');
   }

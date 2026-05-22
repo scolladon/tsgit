@@ -1099,6 +1099,18 @@ describe('primitives/config-read', () => {
       expect(sut.remote?.get('origin')?.partialCloneFilter).toBe('blob:none');
     });
 
+    it('Given a [remote] url key in upper case, When readConfig, Then it is still parsed', async () => {
+      // Arrange — git config keys are case-insensitive.
+      const ctx = createMemoryContext();
+      await seed(ctx, '[remote "origin"]\n\tURL = https://example.com/r.git\n');
+
+      // Act
+      const sut = await readConfig(ctx);
+
+      // Assert
+      expect(sut.remote?.get('origin')?.url).toBe('https://example.com/r.git');
+    });
+
     it('Given a [remote] with only a url, When readConfig, Then promisor and filter stay undefined', async () => {
       // Arrange
       const ctx = createMemoryContext();

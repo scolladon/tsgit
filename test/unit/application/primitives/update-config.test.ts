@@ -519,6 +519,23 @@ describe('primitives/update-config', () => {
       if (data.code !== 'INVALID_OPTION') throw new Error('unreachable');
       expect(data.reason).toContain('quote');
     });
+
+    it('Given a section name containing a bracket, When setConfigEntry, Then it throws INVALID_OPTION', () => {
+      // Act
+      let caught: unknown;
+      try {
+        setConfigEntry('', 'core]\n[evil', undefined, 'k', 'v');
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert
+      expect(caught).toBeInstanceOf(TsgitError);
+      const data = (caught as TsgitError).data;
+      expect(data.code).toBe('INVALID_OPTION');
+      if (data.code !== 'INVALID_OPTION') throw new Error('unreachable');
+      expect(data.reason).toContain('section');
+    });
   });
 
   describe('updateConfigEntries', () => {

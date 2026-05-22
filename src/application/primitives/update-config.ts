@@ -139,6 +139,20 @@ const rejectSubsection = (subsection: string): void => {
 };
 
 /**
+ * Reject a section name that would break the `[section]` line: control chars
+ * plus `]`, `"`, `\`. Every current caller passes a hardcoded literal; the
+ * guard is defence-in-depth for a future dynamic caller of this public helper.
+ */
+const rejectSection = (section: string): void => {
+  if (/[\n\r\0\]"\\]/.test(section)) {
+    throw invalidOption(
+      'config',
+      'section must not contain a newline, NUL, bracket, quote, or backslash',
+    );
+  }
+};
+
+/**
  * Set `key` under `[section]` / `[section "subsection"]`, preserving every
  * other byte verbatim.
  *
@@ -154,6 +168,7 @@ export const setConfigEntry = (
   key: string,
   value: string,
 ): string => {
+  rejectSection(section);
   rejectControlChars('key', key);
   rejectControlChars('value', value);
   if (subsection !== undefined) rejectSubsection(subsection);

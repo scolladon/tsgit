@@ -295,11 +295,10 @@ const mergeRemote = (
   let promisor = current.promisor;
   let partialCloneFilter = current.partialCloneFilter;
   for (const { key, value } of sec.entries) {
-    // Git config keys are case-insensitive; `promisor` / `partialclonefilter`
-    // are lower-cased before comparison, matching `mergeCore`.
+    // Git config keys are case-insensitive — compare on the lower-cased key.
     const lowered = key.toLowerCase();
-    if (key === 'url') url = value;
-    else if (key === 'fetch') fetch.push(value);
+    if (lowered === 'url') url = value;
+    else if (lowered === 'fetch') fetch.push(value);
     else if (lowered === 'promisor') promisor = parseGitBoolean(value);
     else if (lowered === 'partialclonefilter') partialCloneFilter = value;
   }

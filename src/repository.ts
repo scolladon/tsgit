@@ -216,7 +216,7 @@ export const openRepository = async (
   // frozen, so the closure captures it through a late-assigned binding —
   // sound because `promisor.fetch` is only ever invoked after this function
   // returns, by which time `promisorCtx` is populated.
-  let promisorCtx: Context;
+  let promisorCtx!: Context;
   const promisor: PromisorRemote = {
     fetch: (oids) => commands.createPromisorRemote(promisorCtx).fetch(oids),
   };

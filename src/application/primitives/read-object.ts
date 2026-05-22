@@ -47,9 +47,11 @@ function isObjectNotFound(err: unknown): boolean {
 }
 
 /**
- * Fetch `id` from the promisor remote, de-duplicating concurrent reads of the
- * same missing object so they share one fetch. Returns the promisor's
- * `attempted` flag — false when the repository is not a partial clone.
+ * Fetch `id` from the promisor remote, de-duplicating reads of the same
+ * missing object whose fetches overlap in time — they share one promisor
+ * call. A read that misses *after* an earlier fetch already completed is not
+ * a duplicate: the object was genuinely absent for it, so it fetches anew.
+ * Returns the promisor's `attempted` flag — false on a non-partial repo.
  */
 async function lazyFetchOnce(
   ctx: Context,

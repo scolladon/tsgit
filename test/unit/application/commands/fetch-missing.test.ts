@@ -145,6 +145,25 @@ describe('fetchMissing', () => {
     expect(data.remote).toBe('origin');
   });
 
+  it('Given a promisor remote with an empty url, When fetchMissing, Then throws REMOTE_NOT_CONFIGURED', async () => {
+    // Arrange
+    const ctx: Context = { ...createMemoryContext(), transport: forbiddenTransport() };
+    await seedRepo(ctx, {});
+    await withConfig(ctx, '[extensions]\n\tpartialClone = origin\n[remote "origin"]\n\turl =\n');
+
+    // Act
+    let caught: unknown;
+    try {
+      await fetchMissing(ctx, { oids: [FAKE_TIP] });
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert
+    expect(caught).toBeInstanceOf(TsgitError);
+    expect((caught as TsgitError).data.code).toBe('REMOTE_NOT_CONFIGURED');
+  });
+
   it('Given an empty oid list, When fetchMissing, Then it is a no-op with no network call', async () => {
     // Arrange
     const ctx: Context = { ...createMemoryContext(), transport: forbiddenTransport() };

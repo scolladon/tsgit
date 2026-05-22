@@ -84,7 +84,9 @@ const fetchMissingInternal = async (
   const remoteName = config.extensions?.partialClone;
   if (remoteName === undefined) return { kind: 'no-promisor' };
   const url = config.remote?.get(remoteName)?.url;
-  if (url === undefined) throw remoteNotConfigured(remoteName);
+  // An absent OR empty url means the promisor remote is not usably configured;
+  // surface REMOTE_NOT_CONFIGURED rather than a cryptic INVALID_BASE_URL.
+  if (url === undefined || url === '') throw remoteNotConfigured(remoteName);
 
   const missing = await collectMissing(ctx, oids);
   if (missing.length === 0) {
@@ -108,8 +110,9 @@ const fetchMissingInternal = async (
       promisor: true,
     });
   } catch (err) {
-    // A FILE_EXISTS collision means a concurrent identical (content-addressed)
-    // pack write already landed the objects — treat it as success.
+    // Packs are content-addressed (`pack-<sha>.*`), so any FILE_EXISTS from
+    // `fetchPack` — on the `.pack`, `.idx`, or `.promisor` write — means a
+    // concurrent fetch already landed byte-identical artifacts. Tolerate it.
     if (!isFileExists(err)) throw err;
   }
   return { kind: 'fetched', remote: remoteName, requested: oids.length, fetched: missing.length };
