@@ -267,6 +267,99 @@ describe('fetchPack', () => {
     });
   });
 
+  describe('partial clone', () => {
+    it('Given a filter, When fetchPack runs, Then the request body carries a filter line', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await ctx.fs.mkdir(`${ctx.layout.gitDir}/objects/pack`);
+      const { packBytes, blobId } = await buildSingleBlobPack(ctx, 'hello\n');
+      const body = buildUploadPackResponseBody({ packBytes, sideBand: true });
+      const { transport, requests } = captureRequests(body);
+
+      // Act
+      await fetchPack(ctx, transport, {
+        wants: [blobId],
+        haves: [],
+        capabilities: ['side-band-64k', 'ofs-delta', 'filter'],
+        url: REMOTE_URL,
+        progressOp: 'test:write-objects',
+        filter: 'blob:none',
+      });
+
+      // Assert
+      const sentBody = new TextDecoder().decode(requests[0]?.body);
+      expect(sentBody).toContain('filter blob:none\n');
+    });
+
+    it('Given promisor=true, When fetchPack runs, Then an empty pack-<sha>.promisor sentinel is written', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await ctx.fs.mkdir(`${ctx.layout.gitDir}/objects/pack`);
+      const { packBytes, blobId } = await buildSingleBlobPack(ctx, 'promised\n');
+      const body = buildUploadPackResponseBody({ packBytes, sideBand: true });
+      const { transport } = captureRequests(body);
+
+      // Act
+      const sut = await fetchPack(ctx, transport, {
+        wants: [blobId],
+        haves: [],
+        capabilities: ['side-band-64k', 'ofs-delta'],
+        url: REMOTE_URL,
+        progressOp: 'test:write-objects',
+        promisor: true,
+      });
+
+      // Assert
+      const promisorPath = `${ctx.layout.gitDir}/objects/pack/pack-${sut.packSha}.promisor`;
+      expect(await ctx.fs.exists(promisorPath)).toBe(true);
+      expect(await ctx.fs.read(promisorPath)).toEqual(new Uint8Array(0));
+    });
+
+    it('Given promisor unset, When fetchPack runs, Then no .promisor sentinel is written', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await ctx.fs.mkdir(`${ctx.layout.gitDir}/objects/pack`);
+      const { packBytes, blobId } = await buildSingleBlobPack(ctx, 'plain\n');
+      const body = buildUploadPackResponseBody({ packBytes, sideBand: true });
+      const { transport } = captureRequests(body);
+
+      // Act
+      const sut = await fetchPack(ctx, transport, {
+        wants: [blobId],
+        haves: [],
+        capabilities: ['side-band-64k', 'ofs-delta'],
+        url: REMOTE_URL,
+        progressOp: 'test:write-objects',
+      });
+
+      // Assert
+      const promisorPath = `${ctx.layout.gitDir}/objects/pack/pack-${sut.packSha}.promisor`;
+      expect(await ctx.fs.exists(promisorPath)).toBe(false);
+    });
+
+    it('Given an empty pack body and promisor=true, When fetchPack runs, Then no .promisor sentinel is written', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await ctx.fs.mkdir(`${ctx.layout.gitDir}/objects/pack`);
+      const { transport } = captureRequests(new Uint8Array(0));
+
+      // Act
+      const sut = await fetchPack(ctx, transport, {
+        wants: ['a'.repeat(40) as ObjectId],
+        haves: [],
+        capabilities: ['side-band-64k', 'ofs-delta'],
+        url: REMOTE_URL,
+        progressOp: 'test:write-objects',
+        promisor: true,
+      });
+
+      // Assert
+      expect(sut.packPath).toBe('');
+      const packDir = await ctx.fs.readdir(`${ctx.layout.gitDir}/objects/pack`);
+      expect(packDir.some((e) => e.name.endsWith('.promisor'))).toBe(false);
+    });
+  });
+
   describe('delta resolution', () => {
     it('Given a base + OFS_DELTA pack, When fetchPack runs, Then both ids appear in the.idx', async () => {
       // Arrange

@@ -72,6 +72,17 @@ export interface FetchPackInput {
    *
    */
   readonly depth?: number;
+  /**
+   * Partial-clone object filter — a canonical filter spec. When set, a
+   * `filter` line is emitted; the caller must have negotiated the `filter`
+   * capability.
+   */
+  readonly filter?: string;
+  /**
+   * When true, write an empty `pack-<sha>.promisor` sentinel beside the pack
+   * so the objects it references but omits are treated as promised.
+   */
+  readonly promisor?: boolean;
 }
 
 export interface FetchPackResult {
@@ -123,6 +134,7 @@ export const fetchPack = async (
       idxBytes,
       packSha,
       entries.length,
+      input.promisor === true,
     );
     return {
       ...written,
@@ -150,6 +162,8 @@ const downloadPack = async (
     // `depth` field — no `deepen N\n` line is emitted in either case.
     // Stryker disable next-line ConditionalExpression: equivalent — `buildUploadPackRequest` treats `depth: undefined` like an absent field, so spreading unconditionally emits no `deepen` line.
     ...(input.depth !== undefined ? { depth: input.depth } : {}),
+    // Stryker disable next-line ConditionalExpression: equivalent — `buildUploadPackRequest` treats `filter: undefined` like an absent field, so spreading unconditionally emits no `filter` line.
+    ...(input.filter !== undefined ? { filter: input.filter } : {}),
   });
   const uploadUrl = buildUploadPackUrl(input.url);
   const response = await transport.request({
@@ -495,6 +509,7 @@ const writePackArtifacts = async (
   idxBytes: Uint8Array,
   packSha: string,
   objectCount: number,
+  promisor: boolean,
 ): Promise<WrittenPackArtifacts> => {
   const packDir = `${ctx.layout.gitDir}/objects/pack`;
   await ctx.fs.mkdir(packDir);
@@ -502,5 +517,10 @@ const writePackArtifacts = async (
   const idxPath = `${packDir}/pack-${packSha}.idx`;
   await ctx.fs.writeExclusive(packPath, packBytes);
   await ctx.fs.writeExclusive(idxPath, idxBytes);
+  // A promisor pack vouches for the objects it references but omits; the
+  // empty `.promisor` sentinel marks it so missing objects read as promised.
+  if (promisor) {
+    await ctx.fs.writeExclusive(`${packDir}/pack-${packSha}.promisor`, new Uint8Array(0));
+  }
   return { packPath, idxPath, objectCount, packSha };
 };
