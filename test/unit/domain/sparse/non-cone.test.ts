@@ -19,9 +19,9 @@ describe('compileSparseRule', () => {
     const sut = rule('/src/');
 
     // Assert
-    expect(sut.regex.test('src')).toBe(true);
-    expect(sut.regex.test('src/main.c')).toBe(true);
-    expect(sut.regex.test('src/a/b/c.ts')).toBe(true);
+    expect(sut.matcher.test('src')).toBe(true);
+    expect(sut.matcher.test('src/main.c')).toBe(true);
+    expect(sut.matcher.test('src/a/b/c.ts')).toBe(true);
   });
 
   it('Given "/src" (no wildcard), When compiled, Then it covers "src" and every descendant', () => {
@@ -29,8 +29,8 @@ describe('compileSparseRule', () => {
     const sut = rule('/src');
 
     // Assert
-    expect(sut.regex.test('src')).toBe(true);
-    expect(sut.regex.test('src/main.c')).toBe(true);
+    expect(sut.matcher.test('src')).toBe(true);
+    expect(sut.matcher.test('src/main.c')).toBe(true);
   });
 
   it('Given "*.ts", When compiled, Then it covers any .ts file at any depth', () => {
@@ -38,9 +38,9 @@ describe('compileSparseRule', () => {
     const sut = rule('*.ts');
 
     // Assert
-    expect(sut.regex.test('main.ts')).toBe(true);
-    expect(sut.regex.test('src/app/main.ts')).toBe(true);
-    expect(sut.regex.test('main.js')).toBe(false);
+    expect(sut.matcher.test('main.ts')).toBe(true);
+    expect(sut.matcher.test('src/app/main.ts')).toBe(true);
+    expect(sut.matcher.test('main.js')).toBe(false);
   });
 
   it('Given "/src/*" (wildcard last segment), When compiled, Then it covers only direct children', () => {
@@ -48,8 +48,8 @@ describe('compileSparseRule', () => {
     const sut = rule('/src/*');
 
     // Assert
-    expect(sut.regex.test('src/main.c')).toBe(true);
-    expect(sut.regex.test('src/a/b.c')).toBe(false);
+    expect(sut.matcher.test('src/main.c')).toBe(true);
+    expect(sut.matcher.test('src/a/b.c')).toBe(false);
   });
 
   it('Given "build", When compiled, Then it covers any build subtree at any depth', () => {
@@ -57,9 +57,9 @@ describe('compileSparseRule', () => {
     const sut = rule('build');
 
     // Assert
-    expect(sut.regex.test('build')).toBe(true);
-    expect(sut.regex.test('build/out.o')).toBe(true);
-    expect(sut.regex.test('pkg/build/out.o')).toBe(true);
+    expect(sut.matcher.test('build')).toBe(true);
+    expect(sut.matcher.test('build/out.o')).toBe(true);
+    expect(sut.matcher.test('pkg/build/out.o')).toBe(true);
   });
 
   it('Given a "?"-wildcard last segment, When compiled, Then it is non-recursive', () => {
@@ -67,8 +67,8 @@ describe('compileSparseRule', () => {
     const sut = rule('/src/a?c');
 
     // Assert
-    expect(sut.regex.test('src/abc')).toBe(true);
-    expect(sut.regex.test('src/abc/deep.ts')).toBe(false);
+    expect(sut.matcher.test('src/abc')).toBe(true);
+    expect(sut.matcher.test('src/abc/deep.ts')).toBe(false);
   });
 
   it('Given a directory-only rule with a wildcard last segment, When compiled, Then directoryOnly alone makes it recursive', () => {
@@ -77,8 +77,8 @@ describe('compileSparseRule', () => {
     const sut = rule('/src*/');
 
     // Assert
-    expect(sut.regex.test('src-app')).toBe(true);
-    expect(sut.regex.test('src-app/deep/file.ts')).toBe(true);
+    expect(sut.matcher.test('src-app')).toBe(true);
+    expect(sut.matcher.test('src-app/deep/file.ts')).toBe(true);
   });
 
   it('Given a "!"-prefixed line, When compiled, Then the rule is negated and carries the source', () => {

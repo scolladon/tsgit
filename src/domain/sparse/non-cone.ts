@@ -26,7 +26,7 @@ export const compileSparseRule = (tokenized: TokenizedIgnoreLine, source: string
   return {
     source,
     negated: tokenized.negated,
-    regex: compileGlob(tokenized.cleanPattern, {
+    matcher: compileGlob(tokenized.cleanPattern, {
       anchored: tokenized.anchored,
       withDirSuffix: recursive,
     }),
@@ -41,9 +41,8 @@ export const nonConeMatcher = (rules: ReadonlyArray<SparseRule>): SparseMatcher 
   return (path: FilePath): boolean => {
     let included = false;
     for (const rule of rules) {
-      // `compileGlob` produces a regex with no `g`/`y` flag, so `.test()` keeps
-      // no `lastIndex` state — it is safe to reuse the same regex per call.
-      if (rule.regex.test(path)) included = !rule.negated;
+      // `compileGlob` returns a stateless matcher — safe to reuse per call.
+      if (rule.matcher.test(path)) included = !rule.negated;
     }
     return included;
   };

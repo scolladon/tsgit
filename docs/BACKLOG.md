@@ -373,13 +373,17 @@ Design: `docs/design/phase-15-bench-observability.md`. ADRs: [054](adr/054-bench
       donor skip-worktree bits in `reset --mixed`),
       [076](adr/076-merge-conflict-materialization.md) (`merge` materialises
       in-memory-only content even for sparse-excluded paths).
-- [ ] **17.3b** Harden `compileGlob` against catastrophic backtracking
+- [x] **17.3b** Harden `compileGlob` against catastrophic backtracking
       (ReDoS) — a pre-existing issue surfaced by the 17.3 security review. An
-      adversarial pattern (`a*a*a*…b`) compiles to a backtracking regex;
+      adversarial pattern (`a*a*a*…b`) compiled to a backtracking regex;
       `compileGlob` is shared by `.gitignore`, pathspec and sparse-checkout.
-      Replace the regex evaluation with a linear glob matcher (or atomic
-      grouping). `.gitignore` (transferred by clone) is the larger exposure;
-      the sparse-checkout file is local-only.
+      The regex evaluation is replaced by a linear, non-backtracking matcher:
+      a glob is tokenised once and matched with a backward dynamic program in
+      `O(tokenCount × pathLength)`. `compileGlob` now returns a `GlobMatcher`
+      (`{ test }`) — a drop-in for the old `RegExp` shape — and
+      `SparseRule.regex` is renamed `matcher`. Design:
+      `docs/design/compile-glob-redos.md`. ADR:
+      [077](adr/077-linear-glob-matcher.md).
 - [ ] **17.4** Partial clone (`--filter=blob:none`, lazy-fetch on read).
 - [ ] **17.5** Submodule walk (recurse into `.gitmodules`, expose as `repo.submodules` iterator).
 - [ ] **17.6** `git-cat-file --batch` equivalent on the primitive layer for high-throughput readers.

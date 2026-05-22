@@ -1,4 +1,4 @@
-import { compileGlob, containsGlob } from './compile-glob.js';
+import { compileGlob, containsGlob, type GlobMatcher } from './compile-glob.js';
 
 // One entry in a compiled pathspec. The order in the parent `Pathspec`
 // array matters: `matchesPathspec` evaluates entries in order and the
@@ -16,8 +16,8 @@ export interface PathspecEntry {
    * `git add src` semantics where `src` covers everything under it.
    */
   readonly isLiteral: boolean;
-  /** Compiled regex. Always tested against the candidate path verbatim. */
-  readonly compiled: RegExp;
+  /** Compiled glob matcher. Always tested against the candidate path verbatim. */
+  readonly compiled: GlobMatcher;
 }
 
 export type Pathspec = ReadonlyArray<PathspecEntry>;
