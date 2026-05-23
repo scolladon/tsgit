@@ -8,6 +8,7 @@ import type {
   ExtraHeader,
   FileMode,
   FilePath,
+  GitObject,
   ObjectId,
   RefName,
   Tree,
@@ -199,6 +200,27 @@ export interface SubmoduleEntry {
   /** Path of the containing submodule; absent for `depth === 0` entries. */
   readonly parent?: FilePath;
 }
+
+/**
+ * One entry yielded by `catFileBatch` — a discriminated union so that a
+ * single bad id never aborts the stream. `ok: true` carries the parsed
+ * object plus its canonical payload size (matches the `<size>` field of
+ * `git cat-file --batch`'s header). `ok: false` is shaped to extend later:
+ * `reason` is a literal union so a future variant is an additive change.
+ */
+export type CatFileBatchEntry =
+  | {
+      readonly ok: true;
+      readonly id: ObjectId;
+      readonly type: GitObject['type'];
+      readonly size: number;
+      readonly object: GitObject;
+    }
+  | {
+      readonly ok: false;
+      readonly id: ObjectId;
+      readonly reason: 'missing';
+    };
 
 export interface WalkSubmodulesOptions {
   /** Tree-ish to walk. Default: `HEAD`. */
