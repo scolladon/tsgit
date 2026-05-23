@@ -31,7 +31,7 @@ Excluded from mutation entirely (unchanged from current config):
 - `src/**/*.d.ts` — type-only.
 - `src/adapters/browser/**` — OPFS/SubtleCrypto/DecompressionStream are not callable under vitest's Node runtime.
 
-`src/index.ts` / `src/index.node.ts` / `src/index.browser.ts` / `src/index.default.ts` / `src/global.d.ts` — already excluded via the index/d.ts globs.
+`src/index.ts` and every per-folder `src/**/index.ts` barrel — excluded via `!src/**/index.ts`. `src/global.d.ts` — excluded via `!src/**/*.d.ts`. Note: `src/index.node.ts`, `src/index.browser.ts`, `src/index.default.ts` are **not** excluded — they are runtime entry points that wire the `openRepository` factory and are mutated as part of the `application` bucket (verified by the `compute-mutation-scope.sh` integration suite).
 
 ## 4. Per-domain budgets
 
@@ -98,7 +98,7 @@ to:
 - run: npm run check:mutation-budgets
 ```
 
-`compute-mutation-scope.sh` derives the diff from `${{ github.event.pull_request.base.sha }}..HEAD`, filters to `src/**/*.ts`, and excludes the same paths Stryker excludes (`index.ts`, `*.d.ts`, `adapters/browser/**`). Output is a comma-separated absolute-from-repo-root path list — Stryker's `--mutate` accepts that.
+`compute-mutation-scope.sh` derives the diff from `${{ github.event.pull_request.base.sha }}..HEAD`, filters to `src/**/*.ts`, and excludes the same paths Stryker excludes (`/index.ts` basenames, `*.d.ts`, `src/adapters/browser/**`). Output is a newline-separated list of repo-relative paths. The Node shim (`scripts/run-stryker-pr.ts`) reads the file, joins the lines with commas, and passes the result to `stryker --mutate`.
 
 `test:mutation:pr` is a new wireit script that runs a tiny shim `scripts/run-stryker-pr.ts`, which reads `TSGIT_MUTATE_PATHS_FILE` (or falls back to `--mutate` argv when invoked locally), splits the comma list, and spawns `stryker run --mutate <list>` non-incremental. The shim keeps the wireit declaration argument-free (wireit caches keyed on declared inputs, not argv), so cache invalidation stays correct across PRs with different diff scopes. `ignoreStatic: true` is already in the config and inherited. Incremental is dropped because the diff scope is the dominant filter; layering incremental on top would re-introduce state-management bugs (incremental cache vs PR base SHA mismatch) for negligible gain.
 

@@ -224,14 +224,14 @@ const allBucketsForPath = (
 };
 
 interface MutantTally {
-  total: number;
-  killed: number;
-  survived: number;
-  noCoverage: number;
-  timeout: number;
-  ignored: number;
-  compileError: number;
-  runtimeError: number;
+  readonly total: number;
+  readonly killed: number;
+  readonly survived: number;
+  readonly noCoverage: number;
+  readonly timeout: number;
+  readonly ignored: number;
+  readonly compileError: number;
+  readonly runtimeError: number;
 }
 
 const emptyTally = (): MutantTally => ({
@@ -245,36 +245,54 @@ const emptyTally = (): MutantTally => ({
   runtimeError: 0,
 });
 
-const tallyMutants = (acc: MutantTally, file: StrykerFileResult): MutantTally => {
-  const next = { ...acc, total: acc.total + file.mutants.length };
-  for (const m of file.mutants) {
-    switch (m.status) {
-      case 'Killed':
-        next.killed += 1;
-        break;
-      case 'Survived':
-        next.survived += 1;
-        break;
-      case 'NoCoverage':
-        next.noCoverage += 1;
-        break;
-      case 'Timeout':
-        next.timeout += 1;
-        break;
-      case 'Ignored':
-        next.ignored += 1;
-        break;
-      case 'CompileError':
-        next.compileError += 1;
-        break;
-      case 'RuntimeError':
-        next.runtimeError += 1;
-        break;
-      default:
-        break;
-    }
+const statusKey = (status: string): keyof Omit<MutantTally, 'total'> | null => {
+  switch (status) {
+    case 'Killed':
+      return 'killed';
+    case 'Survived':
+      return 'survived';
+    case 'NoCoverage':
+      return 'noCoverage';
+    case 'Timeout':
+      return 'timeout';
+    case 'Ignored':
+      return 'ignored';
+    case 'CompileError':
+      return 'compileError';
+    case 'RuntimeError':
+      return 'runtimeError';
+    default:
+      return null;
   }
-  return next;
+};
+
+const tallyMutants = (acc: MutantTally, file: StrykerFileResult): MutantTally => {
+  const counted = file.mutants.reduce(
+    (carry, m) => {
+      const key = statusKey(m.status);
+      if (key === null) return carry;
+      return { ...carry, [key]: carry[key] + 1 };
+    },
+    {
+      killed: acc.killed,
+      survived: acc.survived,
+      noCoverage: acc.noCoverage,
+      timeout: acc.timeout,
+      ignored: acc.ignored,
+      compileError: acc.compileError,
+      runtimeError: acc.runtimeError,
+    },
+  );
+  return {
+    total: acc.total + file.mutants.length,
+    killed: counted.killed,
+    survived: counted.survived,
+    noCoverage: counted.noCoverage,
+    timeout: counted.timeout,
+    ignored: counted.ignored,
+    compileError: counted.compileError,
+    runtimeError: counted.runtimeError,
+  };
 };
 
 const computeScore = (tally: MutantTally): number => {
@@ -283,11 +301,16 @@ const computeScore = (tally: MutantTally): number => {
   return (tally.killed / denom) * 100;
 };
 
+interface BucketAggregate {
+  readonly files: number;
+  readonly tally: MutantTally;
+}
+
 export const evaluateBudgets = (
   report: StrykerMutationReport,
   manifest: ParsedManifest,
 ): BudgetCheckOutcome => {
-  const perBucket: Map<BucketName, { files: number; tally: MutantTally }> = new Map();
+  const perBucket: Map<BucketName, BucketAggregate> = new Map();
   for (const bucket of manifest.buckets) {
     perBucket.set(bucket.name, { files: 0, tally: emptyTally() });
   }
@@ -307,8 +330,10 @@ export const evaluateBudgets = (
     if (first === undefined) continue;
     const slot = perBucket.get(first);
     if (slot === undefined) continue;
-    slot.files += 1;
-    Object.assign(slot, { tally: tallyMutants(slot.tally, fileResult) });
+    perBucket.set(first, {
+      files: slot.files + 1,
+      tally: tallyMutants(slot.tally, fileResult),
+    });
   }
 
   const results: BucketResult[] = manifest.buckets.map((bucket) => {

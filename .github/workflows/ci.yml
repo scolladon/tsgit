@@ -231,14 +231,18 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
+          set -euo pipefail
           bash .github/scripts/compute-mutation-scope.sh "$BASE_SHA" "$HEAD_SHA" > /tmp/mutate.txt
+          # Fail loudly if GITHUB_OUTPUT is missing or unwritable, rather than emit an
+          # empty `skip` value (which would evaluate `'' != 'true'` and bypass the gate).
+          : "${GITHUB_OUTPUT:?GITHUB_OUTPUT not set; runner misconfigured}"
           if [ -s /tmp/mutate.txt ]; then
-            echo "skip=false" >> "$GITHUB_OUTPUT"
+            printf 'skip=false\n' >> "$GITHUB_OUTPUT"
             echo "Mutating $(wc -l < /tmp/mutate.txt | tr -d ' ') file(s):"
             cat /tmp/mutate.txt
           else
             echo "::notice::No src/ files changed - skipping mutation"
-            echo "skip=true" >> "$GITHUB_OUTPUT"
+            printf 'skip=true\n' >> "$GITHUB_OUTPUT"
           fi
       - if: steps.scope.outputs.skip != 'true'
         run: npm run test:mutation:pr

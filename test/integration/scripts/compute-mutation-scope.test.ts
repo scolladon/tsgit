@@ -95,6 +95,22 @@ describe('compute-mutation-scope.sh', () => {
     expect(sut).toEqual(['src/application/a.ts']);
   });
 
+  it('Given a renamed src file, When run, Then only the new path is listed (--diff-filter=R)', async () => {
+    // Arrange — create a file under one name, commit, rename via git mv, commit
+    writeRel(ctx.dir, 'src/domain/old-name.ts', 'export const value = 1;\n');
+    await ctx.git('add', '.');
+    await ctx.git('commit', '-m', 'add');
+    await ctx.git('mv', 'src/domain/old-name.ts', 'src/domain/new-name.ts');
+    await ctx.git('commit', '-m', 'rename');
+
+    // Act
+    const sut = await runScope(ctx, 'HEAD~1');
+
+    // Assert — the new path appears; the old path does not.
+    expect(sut).toContain('src/domain/new-name.ts');
+    expect(sut).not.toContain('src/domain/old-name.ts');
+  });
+
   it('Given a deleted src file, When run, Then it is excluded (--diff-filter=AMR skips D)', async () => {
     // Arrange — set up a file, commit, delete it, commit
     writeRel(ctx.dir, 'src/domain/will-go.ts', 'export const k = 1;\n');

@@ -53,6 +53,11 @@ interface CliRun {
   readonly stderr: string;
 }
 
+const isExecFileException = (
+  err: unknown,
+): err is { code?: number | null; stdout?: string; stderr?: string } =>
+  typeof err === 'object' && err !== null;
+
 const runCli = async (cwd: string, extraArgs: readonly string[] = []): Promise<CliRun> => {
   try {
     const { stdout, stderr } = await execFileAsync(
@@ -62,8 +67,15 @@ const runCli = async (cwd: string, extraArgs: readonly string[] = []): Promise<C
     );
     return { exitCode: 0, stdout, stderr };
   } catch (err) {
-    const e = err as { code: number; stdout?: string; stderr?: string };
-    return { exitCode: e.code ?? 1, stdout: e.stdout ?? '', stderr: e.stderr ?? '' };
+    if (!isExecFileException(err)) {
+      throw err;
+    }
+    const code = typeof err.code === 'number' ? err.code : 1;
+    return {
+      exitCode: code,
+      stdout: typeof err.stdout === 'string' ? err.stdout : '',
+      stderr: typeof err.stderr === 'string' ? err.stderr : '',
+    };
   }
 };
 

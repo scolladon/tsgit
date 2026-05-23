@@ -109,11 +109,14 @@ const isEntryPoint = (): boolean => {
   return import.meta.url === pathToFileURL(entry).href;
 };
 
+const nodeSpawn: SpawnLike = (command, args, options) =>
+  spawn(command, [...args], options ?? {});
+
 if (isEntryPoint()) {
   const code = await runStrykerPr({
     argv: process.argv.slice(2),
     env: process.env,
-    spawn: spawn as unknown as SpawnLike,
+    spawn: nodeSpawn,
     stdout: (line) => process.stdout.write(`${line}\n`),
   });
   process.exit(code);
