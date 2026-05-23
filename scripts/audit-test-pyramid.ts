@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Testing-pyramid audit (Phase 19.2). Report-only — see ADR-104.
+ * Testing-pyramid audit. Report-only — findings never gate CI.
  *
  * Usage:
  *   node --experimental-strip-types scripts/audit-test-pyramid.ts
@@ -16,7 +16,7 @@ import * as process from 'node:process';
 
 import { classifyTestFile } from './test-pyramid/classify-test-file.ts';
 import { tallyTierFiles } from './test-pyramid/count-tier-files.ts';
-import { detectOverMocked, type SourceFile } from './test-pyramid/detect-over-mocked.ts';
+import { detectOverMocked } from './test-pyramid/detect-over-mocked.ts';
 import { detectUnderAsserted } from './test-pyramid/detect-under-asserted.ts';
 import { parseManifest, type PyramidManifest } from './test-pyramid/parse-manifest.ts';
 import {
@@ -24,6 +24,7 @@ import {
   renderMarkdown,
   type AuditOutcome,
 } from './test-pyramid/render-report.ts';
+import type { SourceFile } from './test-pyramid/types.ts';
 
 interface CliArgs {
   readonly root: string;

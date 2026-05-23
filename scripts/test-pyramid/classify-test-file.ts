@@ -1,5 +1,5 @@
 /**
- * Test-file classifier (Phase 19.2, ADR-105).
+ * Test-file classifier.
  *
  * Directory-based: walks the manifest's tier list in order, returns the first
  * tier whose glob matches the path. Normalises Windows-style backslashes so

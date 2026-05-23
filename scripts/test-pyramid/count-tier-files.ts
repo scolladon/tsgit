@@ -1,5 +1,5 @@
 /**
- * Tier counter (Phase 19.2).
+ * Tier counter.
  *
  * Pure: walks the classified paths, totals per-tier file counts, computes
  * shares (one decimal place), tags each tier with its warn-band status.

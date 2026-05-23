@@ -1,20 +1,18 @@
 /**
- * Under-asserted unit scanner (Phase 19.2, ADR-107).
+ * Under-asserted unit scanner.
  *
  * Walks each unit test file with a small brace/paren-balanced scanner. For
  * every `it(...)` / `test(...)` block (with the exception of `.skip` /
  * `.todo` / `.fails` modifiers), counts the number of assertion calls in the
  * body and emits a finding when the count is below the manifest's threshold.
  *
- * Parser strategy: regex/brace, in the spirit of ADR-097. Comments and string
- * literals inside test bodies can produce false positives — accepted per
- * ADR-107 / ADR-104.
+ * Parser strategy: regex/brace. Comments, string literals, and template-literal
+ * interpolations inside test bodies can produce false positives — that risk is
+ * accepted because the audit is report-only.
  */
 import { classifyTestFile } from './classify-test-file.ts';
 import type { PyramidManifest } from './parse-manifest.ts';
 import type { SourceFile } from './types.ts';
-
-export type { SourceFile };
 
 export interface UnderAssertedFinding {
   readonly path: string;
@@ -24,7 +22,7 @@ export interface UnderAssertedFinding {
 
 const SKIP_MODIFIERS = new Set(['skip', 'todo', 'fails']);
 const OPENER_RE = /\b(it|test)((?:\.\w+)*)\s*\(/g;
-const ASSERTION_RE = /\b(?:expect\w*|assert(?:\.[a-zA-Z]\w*|Equal|That)?)\s*\(/g;
+const ASSERTION_RE = /\b(?:expect\w*|assert(?:\.\w+)?)\s*\(/g;
 
 interface ItBlock {
   readonly line: number;
@@ -104,8 +102,7 @@ const scanItBlocks = (source: string): ReadonlyArray<ItBlock> => {
   const isInsideConsumed = (idx: number): boolean =>
     consumed.some(([start, end]) => idx >= start && idx < end);
 
-  const re = new RegExp(OPENER_RE.source, OPENER_RE.flags);
-  for (const match of source.matchAll(re)) {
+  for (const match of source.matchAll(OPENER_RE)) {
     const opener = match.index ?? -1;
     if (opener < 0 || isInsideConsumed(opener)) continue;
     const chain = match[2] ?? '';
@@ -151,9 +148,8 @@ const scanItBlocks = (source: string): ReadonlyArray<ItBlock> => {
 };
 
 const countAssertions = (body: string): number => {
-  const re = new RegExp(ASSERTION_RE.source, ASSERTION_RE.flags);
   let count = 0;
-  for (const _hit of body.matchAll(re)) count += 1;
+  for (const _hit of body.matchAll(ASSERTION_RE)) count += 1;
   return count;
 };
 

@@ -1,5 +1,5 @@
 /**
- * Report renderer (Phase 19.2).
+ * Report renderer.
  *
  * Two emitters: machine-readable JSON and human-readable Markdown. Both pure.
  */

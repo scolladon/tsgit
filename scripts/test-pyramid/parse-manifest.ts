@@ -1,12 +1,10 @@
 /**
- * Pyramid-audit manifest parser (Phase 19.2).
+ * Pyramid-audit manifest parser.
  *
  * Validates `test-pyramid-budgets.json` and returns a typed handle. Hand-rolled
  * validator — no Zod — matching the convention from `scripts/mutation-budgets.ts`.
  * Failures throw with `manifest invalid: <reason>`; callers translate that into
  * the script's exit-1 path.
- *
- * Design: docs/design/phase-19-2-testing-pyramid-audit.md §6.2.
  */
 
 export type TierName = string;

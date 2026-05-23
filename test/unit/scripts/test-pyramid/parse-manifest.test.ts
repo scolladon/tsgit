@@ -95,7 +95,7 @@ describe('parseManifest', () => {
       try {
         parseManifest(raw);
       } catch (error) {
-        caught = error as Error;
+        caught = error instanceof Error ? error : undefined;
       }
 
       // Assert
@@ -112,7 +112,7 @@ describe('parseManifest', () => {
       try {
         parseManifest(raw);
       } catch (error) {
-        caught = error as Error;
+        caught = error instanceof Error ? error : undefined;
       }
 
       // Assert
@@ -128,7 +128,7 @@ describe('parseManifest', () => {
       try {
         parseManifest(raw);
       } catch (error) {
-        caught = error as Error;
+        caught = error instanceof Error ? error : undefined;
       }
 
       // Assert
@@ -152,7 +152,7 @@ describe('parseManifest', () => {
       try {
         parseManifest(raw);
       } catch (error) {
-        caught = error as Error;
+        caught = error instanceof Error ? error : undefined;
       }
 
       // Assert
@@ -177,7 +177,7 @@ describe('parseManifest', () => {
       try {
         parseManifest(raw);
       } catch (error) {
-        caught = error as Error;
+        caught = error instanceof Error ? error : undefined;
       }
 
       // Assert
@@ -201,7 +201,7 @@ describe('parseManifest', () => {
       try {
         parseManifest(raw);
       } catch (error) {
-        caught = error as Error;
+        caught = error instanceof Error ? error : undefined;
       }
 
       // Assert
@@ -225,7 +225,7 @@ describe('parseManifest', () => {
       try {
         parseManifest(raw);
       } catch (error) {
-        caught = error as Error;
+        caught = error instanceof Error ? error : undefined;
       }
 
       // Assert
@@ -252,7 +252,7 @@ describe('parseManifest', () => {
       try {
         parseManifest(raw);
       } catch (error) {
-        caught = error as Error;
+        caught = error instanceof Error ? error : undefined;
       }
 
       // Assert
@@ -279,7 +279,7 @@ describe('parseManifest', () => {
       try {
         parseManifest(raw);
       } catch (error) {
-        caught = error as Error;
+        caught = error instanceof Error ? error : undefined;
       }
 
       // Assert
@@ -296,7 +296,7 @@ describe('parseManifest', () => {
       try {
         parseManifest(raw);
       } catch (error) {
-        caught = error as Error;
+        caught = error instanceof Error ? error : undefined;
       }
 
       // Assert
@@ -319,7 +319,7 @@ describe('parseManifest', () => {
       try {
         parseManifest(raw);
       } catch (error) {
-        caught = error as Error;
+        caught = error instanceof Error ? error : undefined;
       }
 
       // Assert
@@ -340,11 +340,311 @@ describe('parseManifest', () => {
       try {
         parseManifest(raw);
       } catch (error) {
-        caught = error as Error;
+        caught = error instanceof Error ? error : undefined;
       }
 
       // Assert
       expect(caught?.message).toContain('overMockedIntegration');
+    });
+
+    it('Given a tier whose warnAbove is a string, When parsed, Then throws "warnAbove must be a number 0..100 or null"', () => {
+      // Arrange
+      const broken = {
+        ...VALID_MANIFEST,
+        tiers: [
+          VALID_MANIFEST.tiers[0],
+          { ...VALID_MANIFEST.tiers[1], warnAbove: 'oops' as unknown as number },
+          VALID_MANIFEST.tiers[2],
+        ],
+      };
+      const raw = JSON.stringify(broken);
+
+      // Act
+      let caught: Error | undefined;
+      try {
+        parseManifest(raw);
+      } catch (error) {
+        caught = error instanceof Error ? error : undefined;
+      }
+
+      // Assert
+      expect(caught?.message).toContain('warnAbove must be a number 0..100 or null');
+    });
+
+    it('Given a tier whose warnBelow is greater than 100, When parsed, Then throws naming warnBelow', () => {
+      // Arrange
+      const broken = {
+        ...VALID_MANIFEST,
+        tiers: [
+          { ...VALID_MANIFEST.tiers[0], target: 50, warnBelow: 200 },
+          VALID_MANIFEST.tiers[1],
+          VALID_MANIFEST.tiers[2],
+        ],
+      };
+      const raw = JSON.stringify(broken);
+
+      // Act
+      let caught: Error | undefined;
+      try {
+        parseManifest(raw);
+      } catch (error) {
+        caught = error instanceof Error ? error : undefined;
+      }
+
+      // Assert
+      expect(caught?.message).toContain('warnBelow must be a number 0..100');
+    });
+
+    it('Given a tier with a numeric name, When parsed, Then throws "tier name must be a non-empty string"', () => {
+      // Arrange
+      const broken = {
+        ...VALID_MANIFEST,
+        tiers: [
+          { ...VALID_MANIFEST.tiers[0], name: 42 as unknown as string },
+          VALID_MANIFEST.tiers[1],
+          VALID_MANIFEST.tiers[2],
+        ],
+      };
+      const raw = JSON.stringify(broken);
+
+      // Act
+      let caught: Error | undefined;
+      try {
+        parseManifest(raw);
+      } catch (error) {
+        caught = error instanceof Error ? error : undefined;
+      }
+
+      // Assert
+      expect(caught?.message).toContain('name must be a non-empty string');
+    });
+
+    it('Given a tier with an empty glob string, When parsed, Then throws naming glob', () => {
+      // Arrange
+      const broken = {
+        ...VALID_MANIFEST,
+        tiers: [
+          { ...VALID_MANIFEST.tiers[0], glob: '' },
+          VALID_MANIFEST.tiers[1],
+          VALID_MANIFEST.tiers[2],
+        ],
+      };
+      const raw = JSON.stringify(broken);
+
+      // Act
+      let caught: Error | undefined;
+      try {
+        parseManifest(raw);
+      } catch (error) {
+        caught = error instanceof Error ? error : undefined;
+      }
+
+      // Assert
+      expect(caught?.message).toContain('glob must be a non-empty string');
+    });
+
+    it('Given a tier definition that is a string instead of an object, When parsed, Then throws "tier #0 must be an object"', () => {
+      // Arrange
+      const broken = { ...VALID_MANIFEST, tiers: ['not-an-object'] };
+      const raw = JSON.stringify(broken);
+
+      // Act
+      let caught: Error | undefined;
+      try {
+        parseManifest(raw);
+      } catch (error) {
+        caught = error instanceof Error ? error : undefined;
+      }
+
+      // Assert
+      expect(caught?.message).toContain('tier #0 must be an object');
+    });
+
+    it('Given overMockedIntegration as a string instead of an object, When parsed, Then throws "overMockedIntegration must be an object"', () => {
+      // Arrange
+      const broken = {
+        ...VALID_MANIFEST,
+        heuristics: {
+          ...VALID_MANIFEST.heuristics,
+          overMockedIntegration: 'not-an-object' as unknown as Record<string, unknown>,
+        },
+      };
+      const raw = JSON.stringify(broken);
+
+      // Act
+      let caught: Error | undefined;
+      try {
+        parseManifest(raw);
+      } catch (error) {
+        caught = error instanceof Error ? error : undefined;
+      }
+
+      // Assert
+      expect(caught?.message).toContain('overMockedIntegration must be an object');
+    });
+
+    it('Given overMockedIntegration with negative threshold, When parsed, Then throws naming threshold', () => {
+      // Arrange
+      const broken = {
+        ...VALID_MANIFEST,
+        heuristics: {
+          ...VALID_MANIFEST.heuristics,
+          overMockedIntegration: {
+            ...VALID_MANIFEST.heuristics.overMockedIntegration,
+            threshold: -1,
+          },
+        },
+      };
+      const raw = JSON.stringify(broken);
+
+      // Act
+      let caught: Error | undefined;
+      try {
+        parseManifest(raw);
+      } catch (error) {
+        caught = error instanceof Error ? error : undefined;
+      }
+
+      // Assert
+      expect(caught?.message).toContain('threshold must be a number >= 0');
+    });
+
+    it('Given overMockedIntegration with empty tier string, When parsed, Then throws naming tier', () => {
+      // Arrange
+      const broken = {
+        ...VALID_MANIFEST,
+        heuristics: {
+          ...VALID_MANIFEST.heuristics,
+          overMockedIntegration: {
+            ...VALID_MANIFEST.heuristics.overMockedIntegration,
+            tier: '',
+          },
+        },
+      };
+      const raw = JSON.stringify(broken);
+
+      // Act
+      let caught: Error | undefined;
+      try {
+        parseManifest(raw);
+      } catch (error) {
+        caught = error instanceof Error ? error : undefined;
+      }
+
+      // Assert
+      expect(caught?.message).toContain('tier must be a non-empty string');
+    });
+
+    it('Given overMockedIntegration with empty regex, When parsed, Then throws naming regex', () => {
+      // Arrange
+      const broken = {
+        ...VALID_MANIFEST,
+        heuristics: {
+          ...VALID_MANIFEST.heuristics,
+          overMockedIntegration: {
+            ...VALID_MANIFEST.heuristics.overMockedIntegration,
+            regex: '',
+          },
+        },
+      };
+      const raw = JSON.stringify(broken);
+
+      // Act
+      let caught: Error | undefined;
+      try {
+        parseManifest(raw);
+      } catch (error) {
+        caught = error instanceof Error ? error : undefined;
+      }
+
+      // Assert
+      expect(caught?.message).toContain('regex must be a non-empty string');
+    });
+
+    it('Given underAssertedUnit as a string instead of an object, When parsed, Then throws "underAssertedUnit must be an object"', () => {
+      // Arrange
+      const broken = {
+        ...VALID_MANIFEST,
+        heuristics: {
+          ...VALID_MANIFEST.heuristics,
+          underAssertedUnit: 'not-an-object' as unknown as Record<string, unknown>,
+        },
+      };
+      const raw = JSON.stringify(broken);
+
+      // Act
+      let caught: Error | undefined;
+      try {
+        parseManifest(raw);
+      } catch (error) {
+        caught = error instanceof Error ? error : undefined;
+      }
+
+      // Assert
+      expect(caught?.message).toContain('underAssertedUnit must be an object');
+    });
+
+    it('Given underAssertedUnit referencing an unknown tier, When parsed, Then throws naming the tier', () => {
+      // Arrange
+      const broken = {
+        ...VALID_MANIFEST,
+        heuristics: {
+          ...VALID_MANIFEST.heuristics,
+          underAssertedUnit: { tier: 'phantom', minAssertionsPerTest: 1 },
+        },
+      };
+      const raw = JSON.stringify(broken);
+
+      // Act
+      let caught: Error | undefined;
+      try {
+        parseManifest(raw);
+      } catch (error) {
+        caught = error instanceof Error ? error : undefined;
+      }
+
+      // Assert
+      expect(caught?.message).toContain('phantom');
+      expect(caught?.message).toContain('unknown tier');
+    });
+
+    it('Given underAssertedUnit with empty tier string, When parsed, Then throws naming tier', () => {
+      // Arrange
+      const broken = {
+        ...VALID_MANIFEST,
+        heuristics: {
+          ...VALID_MANIFEST.heuristics,
+          underAssertedUnit: { tier: '', minAssertionsPerTest: 1 },
+        },
+      };
+      const raw = JSON.stringify(broken);
+
+      // Act
+      let caught: Error | undefined;
+      try {
+        parseManifest(raw);
+      } catch (error) {
+        caught = error instanceof Error ? error : undefined;
+      }
+
+      // Assert
+      expect(caught?.message).toContain('tier must be a non-empty string');
+    });
+
+    it('Given a top-level non-object JSON value (a number), When parsed, Then throws "top-level value must be an object"', () => {
+      // Arrange
+      const raw = '42';
+
+      // Act
+      let caught: Error | undefined;
+      try {
+        parseManifest(raw);
+      } catch (error) {
+        caught = error instanceof Error ? error : undefined;
+      }
+
+      // Assert
+      expect(caught?.message).toContain('top-level value must be an object');
     });
 
     it('Given a manifest where underAssertedUnit is missing, When parsed, Then throws naming the missing heuristic', () => {
@@ -360,7 +660,7 @@ describe('parseManifest', () => {
       try {
         parseManifest(raw);
       } catch (error) {
-        caught = error as Error;
+        caught = error instanceof Error ? error : undefined;
       }
 
       // Assert

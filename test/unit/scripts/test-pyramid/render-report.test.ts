@@ -162,6 +162,48 @@ describe('renderMarkdown', () => {
     expect(sut.toLowerCase()).toContain('unclassified');
   });
 
+  it('Given a tier with warn-above status, When rendered, Then its row contains the literal "⚠ warn-above" badge', () => {
+    // Arrange
+    const overAbove: AuditOutcome = {
+      ...okOutcome,
+      tally: {
+        ...okOutcome.tally,
+        tiers: okOutcome.tally.tiers.map((t) =>
+          t.tier === 'integration' ? { ...t, sharePct: 40.0, status: 'warn-above' as const } : t,
+        ),
+      },
+    };
+
+    // Act
+    const sut = renderMarkdown(overAbove);
+
+    // Assert
+    const integrationRow = sut.split('\n').find((line) => line.includes('| integration |'));
+    expect(integrationRow).toBeDefined();
+    expect(integrationRow).toContain('⚠ warn-above');
+  });
+
+  it('Given a tier with no warnAbove, When rendered, Then its warn-band cell omits the upper bound', () => {
+    // Arrange + Act
+    const sut = renderMarkdown(okOutcome);
+
+    // Assert — unit has warnAbove: null; row should NOT show "≤ N%"
+    const unitRow = sut.split('\n').find((line) => line.includes('| unit |'));
+    expect(unitRow).toBeDefined();
+    expect(unitRow).toContain('≥ 75%');
+    expect(unitRow).not.toContain('≤');
+  });
+
+  it('Given a tier with both warnBelow and warnAbove, When rendered, Then its warn-band cell shows "≥ N% / ≤ M%"', () => {
+    // Arrange + Act
+    const sut = renderMarkdown(okOutcome);
+
+    // Assert
+    const integrationRow = sut.split('\n').find((line) => line.includes('| integration |'));
+    expect(integrationRow).toBeDefined();
+    expect(integrationRow).toContain('≥ 10% / ≤ 25%');
+  });
+
   it('Given any outcome, When rendered, Then output ends with a single newline', () => {
     // Arrange + Act
     const sut = renderMarkdown(okOutcome);

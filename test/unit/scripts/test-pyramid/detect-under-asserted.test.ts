@@ -381,4 +381,35 @@ it('empty', () => {});
     // Assert
     expect(sut).toEqual([]);
   });
+
+  it('Given an it.each(...) followed by no second call, When scanned, Then the block is skipped silently (isEach guard)', () => {
+    // Arrange — `it.each([])` is invalid in real vitest, but the scanner must
+    // skip it rather than crash. Test contains another well-formed it() to
+    // confirm scanning continues past the malformed each.
+    const source = `
+it.each([1, 2, 3]);
+it('valid', () => {
+  expect(1).toBe(1);
+});
+`;
+
+    // Act
+    const sut = detectUnderAsserted(MANIFEST, [file('test/unit/a.test.ts', source)]);
+
+    // Assert
+    expect(sut).toEqual([]);
+  });
+
+  it('Given an it.each(...) with an unbalanced inner call, When scanned, Then the block is skipped silently', () => {
+    // Arrange — second call opens but never closes.
+    const source = `
+it.each([1, 2])('case %s', (n) => { expect(n).toBeGreaterThan(0);
+`;
+
+    // Act
+    const sut = detectUnderAsserted(MANIFEST, [file('test/unit/a.test.ts', source)]);
+
+    // Assert — no crash, no finding emitted (block dropped).
+    expect(sut).toEqual([]);
+  });
 });
