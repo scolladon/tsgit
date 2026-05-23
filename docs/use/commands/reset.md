@@ -55,7 +55,7 @@ await repo.reset({ mode: 'hard', target: 'ORIG_HEAD' });
 
 ## See also
 
-- Primitives: [`materializeTree`](../primitives/materialize-tree.md), [`buildIndexFromTree`](../primitives/build-index-from-tree.md), [`recordRefUpdate`](../primitives/record-ref-update.md)
+- Primitives: [`materializeTree`](../primitives/internals.md#materializetree), [`buildIndexFromTree`](../primitives/internals.md#buildindexfromtree), [`recordRefUpdate`](../primitives/record-ref-update.md)
 - Related commands: [`checkout`](checkout.md), [`merge`](merge.md), [`revParse`](rev-parse.md)
 - ADRs: [021](../../adr/021-reset-mixed-stat-cache-donor.md), [022](../../adr/022-reset-mixed-pathspec-scope.md), [023](../../adr/023-reset-hard-index-stat-source.md), [075](../../adr/075-reset-sparse-integration.md)
 - Roadmap: Phase 22 — pathspec scoping for `reset --mixed/--hard`

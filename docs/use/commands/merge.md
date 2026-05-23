@@ -82,7 +82,7 @@ switch (result.kind) {
 
 ## See also
 
-- Primitives: [`mergeBase`](../primitives/merge-base.md), [`diffTrees`](../primitives/diff-trees.md), [`materializeTree`](../primitives/materialize-tree.md)
+- Primitives: [`mergeBase`](../primitives/merge-base.md), [`diffTrees`](../primitives/diff-trees.md), [`materializeTree`](../primitives/internals.md#materializetree)
 - Related commands: [`commit`](commit.md) (clears merge state), [`reset`](reset.md) (abort a merge with `mode: 'hard'` to `ORIG_HEAD`)
 - ADRs: [025](../../adr/025-merge-parallel-blob-reads.md), [026](../../adr/026-merge-conflict-returns-not-throws.md), [027](../../adr/027-merge-conflict-write-order.md), [028](../../adr/028-merge-msg-content.md), [076](../../adr/076-merge-conflict-materialization.md)
 - Roadmap: Phase 20.4 — explicit `abortMerge` / `continueMerge`

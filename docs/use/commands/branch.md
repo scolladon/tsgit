@@ -46,6 +46,6 @@ await repo.branch({ kind: 'delete', name: 'feature/x' });
 
 ## See also
 
-- Primitives: [`resolveRef`](../primitives/resolve-ref.md), [`updateRef`](../primitives/update-ref.md), [`enumerateRefs`](../primitives/enumerate-refs.md)
+- Primitives: [`resolveRef`](../primitives/resolve-ref.md), [`updateRef`](../primitives/update-ref.md), [`enumerateRefs`](../primitives/internals.md#enumeraterefs)
 - Related commands: [`checkout`](checkout.md), [`tag`](tag.md), [`merge`](merge.md)
 - Recipes: [navigate ref history](../recipes.md#navigate-ref-history)

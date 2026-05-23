@@ -74,7 +74,7 @@ await repo.reflog({ action: 'expire', all: true, expire: '90.days.ago' });
 
 ## See also
 
-- Primitives: [`appendReflog`](../primitives/reflog-store.md), [`readReflog`](../primitives/reflog-store.md), [`resolveReflogIdentity`](../primitives/reflog-identity.md), [`recordRefUpdate`](../primitives/record-ref-update.md)
+- Primitives: [`appendReflog`](../primitives/internals.md#appendreflog), [`readReflog`](../primitives/internals.md#readreflog), [`resolveReflogIdentity`](../primitives/internals.md#resolvereflogidentity), [`recordRefUpdate`](../primitives/record-ref-update.md)
 - Related commands: [`revParse`](rev-parse.md) (resolves `@{N}` / `@{date}`), [`log`](log.md)
 - Recipes: [navigate ref history](../recipes.md#navigate-ref-history)
 - ADRs: [058](../../adr/058-reflog-integration-point.md), [059](../../adr/059-head-dual-logging.md), [060](../../adr/060-append-utf8-port.md), [061](../../adr/061-reflog-identity.md), [062](../../adr/062-approxidate-subset.md), [063](../../adr/063-log-all-ref-updates.md), [064](../../adr/064-reflog-command-shape.md)

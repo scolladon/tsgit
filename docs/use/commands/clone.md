@@ -75,7 +75,7 @@ await repo.clone({ url: 'https://github.com/owner/repo.git', depth: 1 });
 
 ## See also
 
-- Primitives: [`fetchPack`](../primitives/fetch-pack.md), [`recordRefUpdate`](../primitives/record-ref-update.md), [`updateShallow`](../primitives/update-shallow.md), [`updateConfigEntries`](../primitives/update-config.md)
+- Primitives: [`fetchPack`](../primitives/internals.md#fetchpack), [`recordRefUpdate`](../primitives/record-ref-update.md), [`updateShallow`](../primitives/internals.md#updateshallow), [`updateConfigEntries`](../primitives/internals.md#setconfigentry--setcoreconfigentry--updateconfigentries--updatecoreconfig)
 - Related commands: [`fetch`](fetch.md), [`fetchMissing`](fetch-missing.md), [`checkout`](checkout.md)
 - Recipes: [clone + checkout](../recipes.md#clone-and-checkout), [partial clone with lazy-fetch](../recipes.md#partial-clone)
 - ADRs: [005](../../adr/005-clone-protocol-v1.md), [006](../../adr/006-clone-pack-storage-layout.md), [007](../../adr/007-clone-resume-semantics.md), [008](../../adr/008-clone-defer-shallow.md), [078](../../adr/078-partial-clone-filter-scope.md), [081](../../adr/081-promisor-remote-port.md)

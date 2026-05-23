@@ -58,6 +58,6 @@ await repo.sparseCheckout({ action: 'disable' });
 
 ## See also
 
-- Primitives: [`loadSparseMatcher`](../primitives/read-sparse-checkout.md), [`readSparsePatternText`](../primitives/read-sparse-checkout.md), [`writeSparsePatternText`](../primitives/write-sparse-checkout.md), [`materializeTree`](../primitives/materialize-tree.md)
+- Primitives: [`loadSparseMatcher`](../primitives/internals.md#loadsparsematcher), [`readSparsePatternText`](../primitives/internals.md#readsparsepatterntext), [`writeSparsePatternText`](../primitives/internals.md#writesparsepatterntext), [`materializeTree`](../primitives/internals.md#materializetree)
 - Related commands: [`checkout`](checkout.md), [`reset`](reset.md), [`status`](status.md)
 - ADRs: [069](../../adr/069-skip-worktree-index-v3.md), [070](../../adr/070-cone-and-non-cone.md), [071](../../adr/071-sparse-command-shape.md), [072](../../adr/072-sparse-dirty-file-policy.md), [073](../../adr/073-sparse-integration-scope.md), [074](../../adr/074-minimal-config-writer.md), [077](../../adr/077-linear-glob-matcher.md)

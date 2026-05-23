@@ -41,5 +41,5 @@ const second = await repo.revParse('main^2');
 
 ## See also
 
-- Primitives: [`resolveRef`](../primitives/resolve-ref.md), [`readReflog`](../primitives/reflog-store.md)
+- Primitives: [`resolveRef`](../primitives/resolve-ref.md), [`readReflog`](../primitives/internals.md#readreflog)
 - Related commands: [`log`](log.md), [`reflog`](reflog.md), [`checkout`](checkout.md)

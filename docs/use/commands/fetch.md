@@ -66,6 +66,6 @@ console.log(result.prunedRefs);
 
 ## See also
 
-- Primitives: [`fetchPack`](../primitives/fetch-pack.md), [`enumerateRefs`](../primitives/enumerate-refs.md), [`readShallow`](../primitives/read-shallow.md), [`updateShallow`](../primitives/update-shallow.md)
+- Primitives: [`fetchPack`](../primitives/internals.md#fetchpack), [`enumerateRefs`](../primitives/internals.md#enumeraterefs), [`readShallow`](../primitives/internals.md#readshallow), [`updateShallow`](../primitives/internals.md#updateshallow)
 - Related commands: [`clone`](clone.md), [`fetchMissing`](fetch-missing.md), [`push`](push.md)
 - ADRs: [009](../../adr/009-fetch-shallow-where.md), [010](../../adr/010-fetch-haves-strategy.md), [011](../../adr/011-fetch-ref-update-tx.md), [012](../../adr/012-fetch-prune-semantics.md)

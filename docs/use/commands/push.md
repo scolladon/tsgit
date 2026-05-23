@@ -75,6 +75,6 @@ for (const r of result.pushedRefs) {
 
 ## See also
 
-- Primitives: [`enumeratePushObjects`](../primitives/enumerate-push-objects.md), [`buildPack`](../primitives/build-pack.md)
+- Primitives: [`enumeratePushObjects`](../primitives/internals.md#enumeratepushobjects), [`buildPack`](../primitives/internals.md#buildpack)
 - Related commands: [`fetch`](fetch.md), [`branch`](branch.md), [`tag`](tag.md)
 - ADRs: [013](../../adr/013-push-pack-encoding.md), [014](../../adr/014-push-refspec-scope.md), [015](../../adr/015-push-force-with-lease.md), [016](../../adr/016-push-atomic-tx.md)

@@ -61,7 +61,7 @@ await repo.checkout({ target: 'main', force: true });
 
 ## See also
 
-- Primitives: [`materializeTree`](../primitives/materialize-tree.md), [`buildIndexFromTree`](../primitives/build-index-from-tree.md), [`synthesizeTreeFromIndex`](../primitives/synthesize-tree-from-index.md), [`readIndex`](../primitives/read-index.md)
+- Primitives: [`materializeTree`](../primitives/internals.md#materializetree), [`buildIndexFromTree`](../primitives/internals.md#buildindexfromtree), [`synthesizeTreeFromIndex`](../primitives/internals.md#synthesizetreefromindex), [`readIndex`](../primitives/read-index.md)
 - Related commands: [`reset`](reset.md), [`add`](add.md), [`rm`](rm.md), [`sparseCheckout`](sparse-checkout.md)
 - Recipes: [clone + checkout](../recipes.md#clone-and-checkout)
 - ADRs: [018](../../adr/018-checkout-atomicity-model.md), [019](../../adr/019-checkout-dirty-tree-guard.md), [020](../../adr/020-checkout-paths-api-shape.md)

@@ -46,7 +46,7 @@ for (const oid of [blobA, blobB, blobC]) {
 
 ## See also
 
-- Primitives: [`fetchPack`](../primitives/fetch-pack.md), [`readObject`](../primitives/read-object.md) (transparent lazy-fetch)
+- Primitives: [`fetchPack`](../primitives/internals.md#fetchpack), [`readObject`](../primitives/read-object.md) (transparent lazy-fetch)
 - Related commands: [`clone`](clone.md) (records the promisor), [`fetch`](fetch.md), [`catFile`](cat-file.md)
 - Recipes: [partial clone with lazy-fetch](../recipes.md#partial-clone)
 - ADRs: [079](../../adr/079-lazy-fetch-automatic-plus-batch.md), [080](../../adr/080-lazy-fetch-sends-no-filter.md), [081](../../adr/081-promisor-remote-port.md)

@@ -60,7 +60,7 @@ await repo.submodules({ ref: 'HEAD', recursive: true, maxDepth: 2 });
 
 ## See also
 
-- Primitives: [`walkSubmodules`](../primitives/walk-submodules.md), [`readObject`](../primitives/read-object.md), [`readConfig`](../primitives/config-read.md) (INI tokenizer reuse)
+- Primitives: [`walkSubmodules`](../primitives/walk-submodules.md), [`readObject`](../primitives/read-object.md), [`readConfig`](../primitives/internals.md#readconfig) (INI tokenizer reuse)
 - Related commands: [`log`](log.md), [`status`](status.md)
 - ADRs: [083](../../adr/083-submodule-api-surface.md), [084](../../adr/084-submodule-data-source.md), [085](../../adr/085-nested-submodule-recursion.md), [086](../../adr/086-gitmodules-ini-reuse.md)
 - Roadmap: Phase 25.4 — submodule write side (`add` / `init` / `update` / `sync` / `deinit`)
