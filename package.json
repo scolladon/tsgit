@@ -181,7 +181,7 @@
     "test:e2e": "wireit",
     "test:coverage": "wireit",
     "test:mutation": "wireit",
-    "test:mutation:incremental": "wireit",
+    "test:mutation:pr": "wireit",
     "test:bench": "wireit",
     "bench:summary": "wireit",
     "bench:fixture": "node --experimental-strip-types scripts/gen-bench-fixture.ts",
@@ -390,14 +390,15 @@
         "reports/mutation/**"
       ]
     },
-    "test:mutation:incremental": {
-      "command": "stryker run --incremental",
+    "test:mutation:pr": {
+      "command": "node --experimental-strip-types scripts/run-stryker-pr.ts",
       "dependencies": [
         "test:unit"
       ],
       "files": [
         "src/**/*.ts",
         "test/unit/**/*.ts",
+        "scripts/run-stryker-pr.ts",
         "stryker.config.json",
         "vitest.config.ts"
       ],

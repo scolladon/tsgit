@@ -210,7 +210,10 @@ jobs:
           if-no-files-found: warn
 
   # ──────────────────────────────────────────────
-  # Stage 4: Mutation Testing (PRs only, incremental)
+  # Stage 4: Mutation Testing (PRs only, diff-scoped per Phase 19.1)
+  #   Scopes Stryker to files changed in the PR vs base.sha, then enforces
+  #   per-bucket mutation-score budgets (mutation-budgets.json).
+  #   See docs/design/phase-19-1-mutation-pyramid.md, ADRs 100/101/102.
   # ──────────────────────────────────────────────
 
   mutation:
@@ -222,9 +225,29 @@ jobs:
         with:
           fetch-depth: 0
       - uses: ./.github/actions/setup
-      - run: npm run test:mutation:incremental
+      - id: scope
+        name: Compute mutated file set
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          bash .github/scripts/compute-mutation-scope.sh "$BASE_SHA" "$HEAD_SHA" > /tmp/mutate.txt
+          if [ -s /tmp/mutate.txt ]; then
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "Mutating $(wc -l < /tmp/mutate.txt | tr -d ' ') file(s):"
+            cat /tmp/mutate.txt
+          else
+            echo "::notice::No src/ files changed - skipping mutation"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.scope.outputs.skip != 'true'
+        run: npm run test:mutation:pr
+        env:
+          TSGIT_MUTATE_PATHS_FILE: /tmp/mutate.txt
+      - if: steps.scope.outputs.skip != 'true'
+        run: npm run check:mutation-budgets
       - uses: actions/upload-artifact@v7
-        if: always()
+        if: always() && steps.scope.outputs.skip != 'true'
         with:
           name: mutation-report
           path: reports/mutation/
