@@ -246,6 +246,6 @@ Before merging a feature branch, complete all of these steps:
    - `docs/design/*.md` — status line → `Implemented (at <sha>)` if applicable
    - `docs/adr/*.md` — status → `Accepted (at <sha>)` for new ADRs
    - `README.md` — update the phase-status table if a phase transitions
-   - `DESIGN.md` / `CONTRIBUTING.md` — reflect any new architectural or testing conventions introduced
+   - `docs/understand/architecture.md` / `docs/use/recipes.md` / `CONTRIBUTING.md` — reflect any new architectural or testing conventions introduced
 5. **Clean commit history** — squash WIP commits; ensure every commit passes tests (pre-commit hooks enforce this).
 6. **Worktree cleanup** — after squash-and-merge, `git worktree remove` and `git branch -D` the feature branch.

@@ -196,7 +196,7 @@ Design: `design/repository-facade.md`
 Ships in v1.x. No major bump (SemVer: additive + cosmetic only).
 
 - [x] **18.1** `examples/try-on-self.mjs` `mode → kind` fix
-- [~] **18.2** Audience-first doc restructure. Target: a newcomer grasps tsgit and runs a working snippet in under a minute.
+- [x] **18.2** Audience-first doc restructure. Target: a newcomer grasps tsgit and runs a working snippet in under a minute.
   - **README** — value prop + 60-second quickstart + jump links to the three funnels. Self-contained "Why tsgit": our numbers only, no competitor comparison (deferred to **26.6**). Runtime claims gated on tested matrix: Node + Browser + in-memory only until **19.8** lands Deno/Bun/Workers.
   - **`docs/get-started/`** — `node.md`, `browser.md`, `memory.md`, `migrate-from-isomorphic-git.md`
   - **`docs/use/`** — `api-commands.md` (tier-1 reference + recipes), `api-primitives.md` (tier-2 + composition), `recipes.md` (composed flows), `errors.md`
