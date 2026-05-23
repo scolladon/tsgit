@@ -1,5 +1,30 @@
 # Changelog
 
+## [1.2.0](https://github.com/scolladon/tsgit/compare/v1.1.0...v1.2.0) (2026-05-23)
+
+
+### Features
+
+* cat-file --batch equivalent ([#63](https://github.com/scolladon/tsgit/issues/63)) ([272c00d](https://github.com/scolladon/tsgit/commit/272c00daa77fc0cc1bfde4a0d71c2c8104c98e37))
+* git hooks — pre-commit, commit-msg, pre-push ([#57](https://github.com/scolladon/tsgit/issues/57)) ([c85927a](https://github.com/scolladon/tsgit/commit/c85927affc72730784b3bd1b60ed521ec1a7a90a))
+* partial clone — --filter + lazy-fetch on read ([#61](https://github.com/scolladon/tsgit/issues/61)) ([2ad72af](https://github.com/scolladon/tsgit/commit/2ad72aff9f22f4732aa04006bdc990db38e3a0d4))
+* reflog — .git/logs writers, @{N}/@{date} revparse, and the reflog command ([#54](https://github.com/scolladon/tsgit/issues/54)) ([b3cea6d](https://github.com/scolladon/tsgit/commit/b3cea6dfd73642464be4e0d007e3fc9c28c6c1b7))
+* sparse checkout (Phase 17.3) ([#58](https://github.com/scolladon/tsgit/issues/58)) ([38f345e](https://github.com/scolladon/tsgit/commit/38f345eeb1d72ffff61db5c816f27955b00af8f1))
+* sparse-checkout awareness in reset / merge (17.3a) ([#59](https://github.com/scolladon/tsgit/issues/59)) ([066ba21](https://github.com/scolladon/tsgit/commit/066ba21718d15bafc8bdc81289fe1418ffffb14d))
+* submodule walk (17.5) ([#62](https://github.com/scolladon/tsgit/issues/62)) ([cfacf2b](https://github.com/scolladon/tsgit/commit/cfacf2b154c8e4b945ac86b48ec5bd4532ebe8c5))
+
+
+### Bug Fixes
+
+* harden compileGlob against ReDoS (17.3b) ([#60](https://github.com/scolladon/tsgit/issues/60)) ([aef8dc2](https://github.com/scolladon/tsgit/commit/aef8dc253528a7513ca6ec9da7bbb55fff48f07b))
+
+
+### Documentation
+
+* **adr:** 091 abandon isomorphic-git compatibility shim ([#64](https://github.com/scolladon/tsgit/issues/64)) ([6160086](https://github.com/scolladon/tsgit/commit/6160086c89ee215b875d7a4f3780d28e87af2787))
+* audience-first doc restructure ([#65](https://github.com/scolladon/tsgit/issues/65)) ([5cb6a6b](https://github.com/scolladon/tsgit/commit/5cb6a6ba9e98cae2fcd7a6d8e65626a5abe9b4a9))
+* **backlog:** add documentation-polish task (18.2) ([#56](https://github.com/scolladon/tsgit/issues/56)) ([acb9c62](https://github.com/scolladon/tsgit/commit/acb9c62410770df1ad21f17a99e062338322a22d))
+
 ## [1.1.0](https://github.com/scolladon/tsgit/compare/v1.0.0...v1.1.0) (2026-05-21)
 
 
