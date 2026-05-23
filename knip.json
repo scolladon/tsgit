@@ -48,6 +48,7 @@
     "knip",
     "lint-staged",
     "ls-lint",
+    "lychee",
     "pkg-pr-new",
     "playwright",
     "rollup",

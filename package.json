@@ -188,6 +188,10 @@
     "profile": "npm run build && node --experimental-strip-types scripts/profile.ts",
     "docs": "wireit",
     "docs:check": "wireit",
+    "docs:json": "wireit",
+    "check:doc-links": "wireit",
+    "check:doc-coverage": "wireit",
+    "check:doc-typedoc": "wireit",
     "verify:tarball": "wireit",
     "check:size": "wireit",
     "check:exports": "wireit",
@@ -449,6 +453,38 @@
       ],
       "output": []
     },
+    "docs:json": {
+      "command": "typedoc --json reports/api.json --disableSources --out reports/api-tmp && rm -rf reports/api-tmp",
+      "files": [
+        "src/**/*.ts",
+        "typedoc.json",
+        "tsconfig.build.json",
+        "README.md"
+      ],
+      "output": [
+        "reports/api.json"
+      ]
+    },
+    "check:doc-links": {
+      "command": "lychee --config .lychee.toml README.md CONTRIBUTING.md RUNBOOK.md SECURITY.md 'docs/**/*.md'"
+    },
+    "check:doc-coverage": {
+      "command": "node --experimental-strip-types scripts/check-doc-coverage.ts",
+      "files": [
+        "src/repository.ts",
+        "scripts/check-doc-coverage.ts",
+        "scripts/check-doc-coverage.allowlist.json",
+        "docs/use/commands/**/*.md",
+        "docs/use/primitives/**/*.md"
+      ],
+      "output": []
+    },
+    "check:doc-typedoc": {
+      "command": "git diff --exit-code -- reports/api.json",
+      "dependencies": [
+        "docs:json"
+      ]
+    },
     "verify:tarball": {
       "command": "bash scripts/verify-tarball.sh",
       "dependencies": [
@@ -524,6 +560,8 @@
         "check:size",
         "check:exports",
         "check:security",
+        "check:doc-coverage",
+        "check:doc-typedoc",
         "test:coverage",
         "test:integration"
       ]

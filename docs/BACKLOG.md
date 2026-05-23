@@ -12,7 +12,7 @@ Details live in git history, ADRs (`docs/adr/`), and design docs (`docs/design/`
 |---|---|---|
 | **v1.0** — foundation through launch | 0–11 | shipped (`@scolladon/tsgit@1.0.0`) |
 | **v1.x** — semantic completion | 12–17 | shipped |
-| **v1.x** — housekeeping & doc restructure | 18 | in progress (18.2) |
+| **v1.x** — housekeeping & doc restructure | 18 | shipped (18.3 doc-maintenance harness) |
 | **v2.0** — test base + porcelain completeness + history rewriting | 19–22 | queued |
 | **v3.0** — inspection + maintenance & exotic | 23–24 | queued |
 | **v4.0** — transport + signing + perf | 25–26 | queued |
@@ -204,11 +204,11 @@ Ships in v1.x. No major bump (SemVer: additive + cosmetic only).
   - `adr/`, `design/`, `plan/`, `prd/`, `BACKLOG.md` untouched
   - `git rm DESIGN.md MIGRATION.md` — content absorbed into `docs/understand/` and `docs/get-started/`; no redirect stubs (inbound links are internal only)
   - `CLAUDE.md` step 8 + `CONTRIBUTING.md` "Update docs" point at `docs/understand/` and `docs/get-started/` instead of root `DESIGN.md` / `MIGRATION.md`
-- [ ] **18.3** Doc-maintenance harness — automated drift detection so the new structure doesn't rot. Follow-up PR after 18.2.
-  - Markdown link checker (lychee or markdown-link-check) in CI; fails on broken internal/external links
-  - API drift check — `scripts/check-doc-coverage.ts` compares `src/index.{node,browser,default}.ts` exports against the API ToC in `docs/use/api-{commands,primitives}.md`; CI fails on missing entries
-  - TypeDoc drift check — regenerated `reports/api/` must equal committed; CI fails on diff
-  - Path-based PR gate — when `src/application/{commands,primitives}/` files change, CI requires a corresponding `docs/use/*.md` change in the same PR
+- [x] **18.3** Doc-maintenance harness — automated drift detection so the new structure doesn't rot. ADRs 095–099 · `design/18-3-doc-maintenance-harness.md`
+  - Markdown link checker (lychee in CI via `.lychee.toml`; `npm run check:doc-links` locally)
+  - API coverage drift (`scripts/check-doc-coverage.ts` parses `src/repository.ts`, verifies per-file pages + index rows under `docs/use/{commands,primitives}/`)
+  - TypeDoc drift (`reports/api.json` committed as baseline; CI diffs against regenerated snapshot)
+  - Path-based docs PR gate — warn-only at land time (ADR-099); promote to blocking after one cycle of observation
 
 ---
 

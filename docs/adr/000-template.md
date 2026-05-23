@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed | Accepted (at `<sha>`) | Deprecated | Superseded by [ADR-NNN](NNN-title.md)
+Proposed | Accepted (at `<sha>`) | Deprecated | Superseded by `[ADR-NNN](NNN-title.md)`
 
 <!-- Include the SHA of main when the decision was accepted -->
 

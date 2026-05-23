@@ -216,9 +216,21 @@ Before any PR can merge, all of these must pass:
 - [ ] `npm run check:dead-code` — knip (no unused code)
 - [ ] `npm run check:duplicates` — jscpd (no copy-paste)
 - [ ] `npm run check:filesystem` — ls-lint (naming conventions)
+- [ ] `npm run check:doc-coverage` — every `repo.*` and `repo.primitives.*` has a docs page
+- [ ] `npm run check:doc-typedoc` — committed `reports/api.json` matches the regenerated snapshot
+- [ ] `npm run check:doc-links` — markdown links resolve (requires `lychee` locally; `brew install lychee` / `cargo install lychee`)
 - [ ] `npm run test:coverage` — 100% on all KPIs
 - [ ] `npm run test:mutation` — Stryker (target 0 survivors)
 - [ ] CI pipeline green (7 stages)
+
+### Doc-maintenance harness (Phase 18.3)
+
+Four CI checks detect documentation drift; see `docs/design/18-3-doc-maintenance-harness.md`.
+
+- **Link checker** — `lychee` (Rust binary) scans every `.md` file in the doc tree. Local install: `brew install lychee` or `cargo install lychee`. Run via `npm run check:doc-links`.
+- **API coverage** — when you add a `repo.<command>` or `repo.primitives.<primitive>` binding in `src/repository.ts`, the same PR must add the matching `docs/use/{commands,primitives}/<kebab>.md` and a row in the funnel `README.md`.
+- **TypeDoc snapshot** — `reports/api.json` is the committed public-surface baseline. After any JSDoc change on an exported symbol, run `npm run check:doc-typedoc` and commit the regenerated `reports/api.json`.
+- **Docs PR gate** — CI-only, currently **warn-only**. When you touch `src/application/{commands,primitives}/<name>.ts`, the PR comment will flag a missing matching docs change. Promotion to blocking is tracked as a 18.x follow-up.
 
 ## Mutation Testing Discipline
 

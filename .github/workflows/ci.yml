@@ -85,6 +85,74 @@ jobs:
       - run: npm run check:security
 
   # ──────────────────────────────────────────────
+  # Stage 1b: Doc-maintenance harness (Phase 18.3)
+  #   Four parallel jobs detecting documentation drift independently.
+  #   See docs/design/18-3-doc-maintenance-harness.md.
+  # ──────────────────────────────────────────────
+
+  doc-links:
+    needs: [lint, typecheck]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Restore lychee cache
+        uses: actions/cache@v5
+        with:
+          path: .lycheecache
+          key: lychee-${{ hashFiles('.lychee.toml') }}-${{ github.run_id }}
+          restore-keys: |
+            lychee-${{ hashFiles('.lychee.toml') }}-
+            lychee-
+      - uses: lycheeverse/lychee-action@v2
+        with:
+          args: >-
+            --config .lychee.toml
+            --no-progress
+            README.md
+            CONTRIBUTING.md
+            RUNBOOK.md
+            SECURITY.md
+            'docs/**/*.md'
+          fail: true
+
+  doc-coverage:
+    needs: [lint, typecheck]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/setup
+      - run: npm run check:doc-coverage
+
+  doc-typedoc:
+    needs: [lint, typecheck]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/setup
+      - run: npm run check:doc-typedoc
+
+  docs-pr-gate:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Compute changed-file set and check for docs drift
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          COMMENT_TAG: "<!-- docs-pr-gate -->"
+        run: bash .github/scripts/docs-pr-gate.sh
+
+  # ──────────────────────────────────────────────
   # Stage 2: Build + Verify (needs lint + types)
   # ──────────────────────────────────────────────
 

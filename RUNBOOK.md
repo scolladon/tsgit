@@ -41,6 +41,10 @@ npm install
 | `npm run check:size` | Bundle size budget (size-limit) |
 | `npm run check:exports` | Package exports correctness (attw) |
 | `npm run check:security` | Dependency vulnerability audit |
+| `npm run check:doc-links` | Markdown link checker (`lychee` required) |
+| `npm run check:doc-coverage` | Verify every `repo.*` binding has a `docs/use/*` page |
+| `npm run check:doc-typedoc` | Verify committed `reports/api.json` matches the regenerated snapshot |
+| `npm run docs:json` | Emit `reports/api.json` (the typedoc drift baseline) |
 | `npm run validate` | Full validation (all checks + tests) |
 
 ### Wireit Caching
@@ -359,6 +363,44 @@ npm run test:mutation  # Uses cached results from reports/stryker-incremental.js
 ```bash
 npm run test:coverage  # See uncovered lines in coverage/index.html
 ```
+
+### Doc-maintenance harness (Phase 18.3)
+
+Four CI checks detect doc drift; their design lives in
+`docs/design/18-3-doc-maintenance-harness.md`. Local reproduction:
+
+```bash
+# Markdown link checker (requires lychee binary on PATH).
+brew install lychee                # or: cargo install lychee
+npm run check:doc-links
+
+# API coverage drift — every repo.*/repo.primitives.* binding has a docs page.
+npm run check:doc-coverage
+
+# TypeDoc snapshot drift — regenerate reports/api.json and diff against committed.
+npm run check:doc-typedoc
+
+# If reports/api.json is out of date, regenerate and commit:
+npm run docs:json
+git add reports/api.json
+```
+
+The path-based docs PR gate (`docs-pr-gate` job in CI) is GitHub-only — it
+reads the changed-file set off the `pull_request` event payload. It is
+**warn-only** at land time; a flagged PR receives an informational comment
+and step summary but the job continues green. Promotion to a blocking gate
+is a follow-up commit (ADR-099).
+
+To debug a broken link locally:
+
+```bash
+lychee --config .lychee.toml --verbose README.md docs/**/*.md
+```
+
+The output reports each broken target as `<file>:<line> -> <url> (status: …)`.
+External-URL flakes (429, transient timeouts) are retried in-process; if a
+host is reliably flaky, add it to `.lychee.toml`'s `accept` list rather than
+ignoring the link.
 
 ## Operating `repo.add({ all: true })` (Phase 14.1)
 
