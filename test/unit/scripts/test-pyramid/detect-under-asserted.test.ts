@@ -194,11 +194,57 @@ it('uses helper', () => {
     expect(sut).toEqual([]);
   });
 
+  it('Given a body that calls a helper-prefixed assertXxx(...) (project convention), When scanned, Then the regex matches and no finding is reported', () => {
+    // Arrange
+    const source = `
+it('uses assertion helper', () => {
+  assertRefspecInvalid(() => parse('+'), 'after force prefix');
+});
+`;
+
+    // Act
+    const sut = detectUnderAsserted(MANIFEST, [file('test/unit/a.test.ts', source)]);
+
+    // Assert
+    expect(sut).toEqual([]);
+  });
+
   it('Given a body that uses node:assert (assert.equal), When scanned, Then the regex matches and no finding is reported', () => {
     // Arrange
     const source = `
 it('uses node assert', () => {
   assert.equal(1, 1);
+});
+`;
+
+    // Act
+    const sut = detectUnderAsserted(MANIFEST, [file('test/unit/a.test.ts', source)]);
+
+    // Assert
+    expect(sut).toEqual([]);
+  });
+
+  it('Given a body that uses expectTypeOf<T>() with generic args, When scanned, Then the regex matches and no finding is reported', () => {
+    // Arrange
+    const source = `
+it('type-level test', () => {
+  expectTypeOf<number>().toExtend<Awaitable<number>>();
+});
+`;
+
+    // Act
+    const sut = detectUnderAsserted(MANIFEST, [file('test/unit/a.test.ts', source)]);
+
+    // Assert
+    expect(sut).toEqual([]);
+  });
+
+  it('Given a unit test whose body calls a method named test() (e.g. regex.test()), When scanned, Then the method call is not mistaken for a vitest test opener', () => {
+    // Arrange — `compiled.test('lib/foo.ts')` must not be classified as a
+    // nested vitest test block. The outer it() has assertions; no finding.
+    const source = `
+it('pathspec regex check', () => {
+  expect(compiled.test('lib/foo.ts')).toBe(true);
 });
 `;
 

@@ -21,8 +21,11 @@ export interface UnderAssertedFinding {
 }
 
 const SKIP_MODIFIERS = new Set(['skip', 'todo', 'fails']);
-const OPENER_RE = /\b(it|test)((?:\.\w+)*)\s*\(/g;
-const ASSERTION_RE = /\b(?:expect\w*|assert(?:\.\w+)?)\s*\(/g;
+// `(?<!\.)` excludes method-call sites like `compiled.test(...)` and
+// `it.each(...)` chains entered mid-expression; we only want top-level
+// vitest test openers.
+const OPENER_RE = /(?<!\.)\b(it|test)((?:\.\w+)*)\s*\(/g;
+const ASSERTION_RE = /\b(?:expect|assert)\w*(?:<[^<>]*>)?(?:\.\w+)?\s*\(/g;
 
 interface ItBlock {
   readonly line: number;
