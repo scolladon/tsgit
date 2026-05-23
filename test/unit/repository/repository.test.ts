@@ -397,6 +397,56 @@ describe('openRepository — round-trip via memory adapter', () => {
     // Assert
     expect(count).toBe(0);
   });
+
+  it('Given a stored blob, When the bound catFile command is called, Then it returns the parsed entry', async () => {
+    // Arrange
+    const fallback = makeFallback();
+    const sut = await openRepository({ cwd: '/repo' }, fallback);
+    await sut.init();
+    const content = new TextEncoder().encode('hi');
+    const blobId = await sut.primitives.writeObject({
+      type: 'blob',
+      // biome-ignore lint/suspicious/noExplicitAny: writeObject ignores `id` at the call site
+      id: '' as any,
+      content,
+    });
+
+    // Act
+    const result = await sut.catFile({ ids: [blobId] });
+
+    // Assert
+    expect(result.kind).toBe('batch');
+    expect(result.entries).toHaveLength(1);
+    const [entry] = result.entries;
+    if (entry?.ok !== true) throw new Error('expected ok');
+    expect(entry.size).toBe(content.byteLength);
+  });
+
+  it('Given the bound catFileBatch primitive, When fed two ids, Then yields entries in order', async () => {
+    // Arrange
+    const fallback = makeFallback();
+    const sut = await openRepository({ cwd: '/repo' }, fallback);
+    await sut.init();
+    const a = await sut.primitives.writeObject({
+      type: 'blob',
+      // biome-ignore lint/suspicious/noExplicitAny: writeObject ignores `id` at the call site
+      id: '' as any,
+      content: new Uint8Array([1]),
+    });
+    const b = await sut.primitives.writeObject({
+      type: 'blob',
+      // biome-ignore lint/suspicious/noExplicitAny: writeObject ignores `id` at the call site
+      id: '' as any,
+      content: new Uint8Array([2]),
+    });
+
+    // Act
+    const ids: string[] = [];
+    for await (const e of sut.primitives.catFileBatch([a, b])) ids.push(e.id);
+
+    // Assert
+    expect(ids).toEqual([a, b]);
+  });
 });
 
 describe('openRepository — ctx fields', () => {

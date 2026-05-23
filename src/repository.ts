@@ -110,6 +110,7 @@ export interface Repository {
   // Tier-1 commands (18) — bound to ctx.
   readonly add: BindCtx<typeof commands.add>;
   readonly branch: BindCtx<typeof commands.branch>;
+  readonly catFile: BindCtx<typeof commands.catFile>;
   readonly checkout: BindCtx<typeof commands.checkout>;
   readonly clone: BindCtx<typeof commands.clone>;
   readonly commit: BindCtx<typeof commands.commit>;
@@ -132,6 +133,7 @@ export interface Repository {
   // Tier-2 primitives (16) — bound under.primitives.* to keep the top-level
   // surface focused on user-facing commands.
   readonly primitives: {
+    readonly catFileBatch: BindCtx<typeof primitives.catFileBatch>;
     readonly createCommit: BindCtx<typeof primitives.createCommit>;
     readonly diffTrees: BindCtx<typeof primitives.diffTrees>;
     readonly getRepoRoot: BindCtx<typeof primitives.getRepoRoot>;
@@ -278,6 +280,10 @@ export const openRepository = async (
       guard();
       return commands.checkout(ctx, checkoutOpts);
     }) as Repository['checkout'],
+    catFile: ((opts) => {
+      guard();
+      return commands.catFile(ctx, opts);
+    }) as Repository['catFile'],
     clone: ((cloneOpts) => {
       guard();
       return commands.clone(ctx, cloneOpts);
@@ -347,6 +353,10 @@ export const openRepository = async (
       return commands.tag(ctx, action);
     }) as Repository['tag'],
     primitives: Object.freeze({
+      catFileBatch: ((ids) => {
+        guard();
+        return primitives.catFileBatch(ctx, ids);
+      }) as Repository['primitives']['catFileBatch'],
       createCommit: ((input) => {
         guard();
         return primitives.createCommit(ctx, input);
