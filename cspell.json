@@ -478,7 +478,18 @@
     "promisors",
     "reserialise",
     "entrancy",
-    "reparsed"
+    "reparsed",
+    "superproject",
+    "uninitialised",
+    "initialising",
+    "streamable",
+    "retargets",
+    "superprojects",
+    "libfoo",
+    "gitdirs",
+    "vendorfoo",
+    "ignoreme",
+    "tignoreme"
   ],
   "ignorePaths": [
     "node_modules",

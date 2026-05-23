@@ -30,4 +30,10 @@ export {
   sparseCheckout,
 } from './sparse-checkout.js';
 export { type ChangeEntry, type ChangeKind, type StatusResult, status } from './status.js';
+export {
+  type SubmoduleEntry,
+  type SubmodulesAction,
+  type SubmodulesResult,
+  submodules,
+} from './submodules.js';
 export { type TagAction, type TagInfo, type TagResult, tag } from './tag.js';

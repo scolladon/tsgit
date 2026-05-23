@@ -2,7 +2,7 @@
 
 Track: `[ ]` todo, `[~]` in progress, `[x]` done, `[-]` skipped
 
-**Progress:** Phases 0–16 complete, Phase 17.1 shipping. `@scolladon/tsgit@1.0.0` published on npm with sigstore provenance (trusted-publisher OIDC). Phases 12–16 shipped (network: clone/fetch/push; working-tree: checkout/reset; pathspec: globs and `.gitignore`; Windows support; operations hardening; browser E2E). Phases 17.1 (reflog), 17.2 (hooks), 17.3 (sparse checkout) and 17.4 (partial clone) are now implemented. Remaining v2.0 items (17.5–17.7) deferred.
+**Progress:** Phases 0–16 complete, Phase 17.1 shipping. `@scolladon/tsgit@1.0.0` published on npm with sigstore provenance (trusted-publisher OIDC). Phases 12–16 shipped (network: clone/fetch/push; working-tree: checkout/reset; pathspec: globs and `.gitignore`; Windows support; operations hardening; browser E2E). Phases 17.1 (reflog), 17.2 (hooks), 17.3 (sparse checkout), 17.4 (partial clone) and 17.5 (submodule walk) are now implemented. Remaining v2.0 items (17.6–17.7) deferred.
 
 ---
 
@@ -410,7 +410,31 @@ Design: `docs/design/phase-15-bench-observability.md`. ADRs: [054](adr/054-bench
       lazy-fetch), [081](adr/081-promisor-remote-port.md) (`PromisorRemote`
       port), [082](adr/082-generalised-config-section-writer.md) (config
       writer).
-- [ ] **17.5** Submodule walk (recurse into `.gitmodules`, expose as `repo.submodules` iterator).
+- [x] **17.5** Submodule walk (recurse into `.gitmodules`, expose as `repo.submodules` iterator).
+      _Accepted:_ `repo.submodules({ ref?, recursive?, maxDepth? })` is the new
+      tier-1 command returning `{ kind: 'list', entries }`; it materialises a
+      new tier-2 `walkSubmodules` primitive (`repo.primitives.walkSubmodules`),
+      `AsyncIterable<SubmoduleEntry>`, mirroring the `log` / `walkCommits`
+      pair (ADR-083). The walk reads from a tree-ish — default `HEAD` (ADR-084)
+      — finds every gitlink (mode `160000`) at any depth and joins it with
+      `submodule.<name>.{path,url,branch}` rows from the tree's `.gitmodules`
+      blob. `.gitmodules` parsing reuses the exported `parseIniSections`
+      tokenizer from `config-read` (ADR-086). With `recursive: true`,
+      `walkSubmodules` descends into each nested submodule whose absorbed
+      gitdir (`${gitDir}/modules/<name>`) is locally available by deriving a
+      child `Context` via a `layout` swap; `promisor` and `hooks` are dropped
+      from the child (ADR-085) and uninitialised/missing/cyclic/depth-capped
+      submodules contribute their own entry but no children — git-faithful
+      with `git submodule status --recursive`. Submodule-name validation
+      (CVE-2018-17456 lineage) rejects empty / `.` / `..` / `..` segments,
+      backslash, absolute, drive-prefixed, leading `-`, NUL and other control
+      characters. `.gitmodules` is only read when the tree entry mode is
+      `100644`/`100755` — symlink / directory / gitlink modes are ignored
+      (CVE-2018-11235 hardening). Design: `docs/design/submodule-walk.md`.
+      ADRs: [083](adr/083-submodule-api-surface.md) (command + primitive
+      pair), [084](adr/084-submodule-data-source.md) (tree-ish source),
+      [085](adr/085-nested-submodule-recursion.md) (child-Context recursion),
+      [086](adr/086-gitmodules-ini-reuse.md) (INI tokenizer reuse).
 - [ ] **17.6** `git-cat-file --batch` equivalent on the primitive layer for high-throughput readers.
 - [ ] **17.7** isomorphic-git compatibility shim (runtime namespace re-export — explicitly out of scope for v1 per MIGRATION.md, revisit if adoption demands it).
 

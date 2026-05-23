@@ -2,7 +2,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import {
   __resetConfigCacheForTests,
+  type IniSection,
   invalidateConfigCache,
+  parseIniSections,
   readConfig,
 } from '../../../../src/application/primitives/config-read.js';
 import { TsgitError } from '../../../../src/domain/error.js';
@@ -1172,5 +1174,37 @@ describe('primitives/config-read', () => {
       // Assert — only the `partialclone` key populates extensions.
       expect(sut.extensions?.partialClone).toBeUndefined();
     });
+  });
+});
+
+describe('primitives/config-read parseIniSections', () => {
+  it('Given INI text with a subsection, comment, and continuation, When parseIniSections, Then sections carry section/subsection/entries', () => {
+    // Arrange
+    const text =
+      '[core]\n\tbare = true\n# a comment\n[remote "origin"]\n\turl = https://e\\\n/r.git\n';
+
+    // Act
+    const sut: ReadonlyArray<IniSection> = parseIniSections(text);
+
+    // Assert
+    expect(sut).toEqual([
+      { section: 'core', subsection: undefined, entries: [{ key: 'bare', value: 'true' }] },
+      {
+        section: 'remote',
+        subsection: 'origin',
+        entries: [{ key: 'url', value: 'https://e/r.git' }],
+      },
+    ]);
+  });
+
+  it('Given empty text, When parseIniSections, Then returns no sections', () => {
+    // Arrange
+    const text = '';
+
+    // Act
+    const sut = parseIniSections(text);
+
+    // Assert
+    expect(sut).toEqual([]);
   });
 });
