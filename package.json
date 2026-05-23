@@ -192,6 +192,7 @@
     "check:doc-links": "wireit",
     "check:doc-coverage": "wireit",
     "check:doc-typedoc": "wireit",
+    "check:mutation-budgets": "wireit",
     "verify:tarball": "wireit",
     "check:size": "wireit",
     "check:exports": "wireit",
@@ -484,6 +485,16 @@
       "dependencies": [
         "docs:json"
       ]
+    },
+    "check:mutation-budgets": {
+      "command": "node --experimental-strip-types scripts/check-mutation-budgets.ts",
+      "files": [
+        "scripts/check-mutation-budgets.ts",
+        "scripts/mutation-budgets.ts",
+        "mutation-budgets.json",
+        "reports/mutation/mutation-report.json"
+      ],
+      "output": []
     },
     "verify:tarball": {
       "command": "bash scripts/verify-tarball.sh",
