@@ -537,7 +537,9 @@
     "touchpoint",
     "stabilise",
     "rollouts",
-    "emptively"
+    "emptively",
+    "miscategorised",
+    "Cohn"
   ],
   "ignorePaths": [
     "node_modules",
