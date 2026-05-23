@@ -10,7 +10,7 @@ Accepted (at `cfacf2b`)
 
 - `--batch` — `<sha> <type> <size>\n<contents>\n` per entry.
 - `--batch-check` — `<sha> <type> <size>\n` per entry (no contents).
-- `--batch` with `%(rest)`-style format strings — fully customisable.
+- `--batch` with `%(rest)`-style format strings — fully customizable.
 
 For a TypeScript library, each mode is a different return shape:
 

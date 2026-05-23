@@ -89,6 +89,7 @@ describe('openRepository — Repository binding integrity', () => {
       [
         'add',
         'branch',
+        'catFile',
         'checkout',
         'clone',
         'commit',
@@ -119,6 +120,7 @@ describe('openRepository — Repository binding integrity', () => {
 
     expect(Object.keys(sut.primitives).sort()).toEqual(
       [
+        'catFileBatch',
         'createCommit',
         'diffTrees',
         'getRepoRoot',
