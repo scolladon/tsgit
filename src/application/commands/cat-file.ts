@@ -28,11 +28,11 @@ export interface CatFileResult {
   readonly entries: ReadonlyArray<CatFileBatchEntry>;
 }
 
+// `ObjectId` is a branded `string` at runtime, so both arms of the typeof
+// resolve to a string-going-through-`ObjectId.from` shape; the conditional
+// only exists to honor the typed input, not to gate runtime behavior.
 const coerceId = (id: ObjectId | string): ObjectId =>
-  // Stryker disable next-line ConditionalExpression: equivalent — `ObjectId` is a
-  // branded `string` at runtime, so `typeof id !== 'string'` is unreachable in
-  // practice. The branch exists to honor the typed input, not to gate runtime
-  // behavior; flipping the predicate changes nothing observable.
+  // Stryker disable next-line ConditionalExpression: equivalent — see comment above.
   typeof id === 'string' ? ObjectId.from(id) : id;
 
 export const catFile = async (ctx: Context, opts: CatFileInput): Promise<CatFileResult> => {

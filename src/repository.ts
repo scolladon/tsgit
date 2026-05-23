@@ -353,9 +353,9 @@ export const openRepository = async (
       return commands.tag(ctx, action);
     }) as Repository['tag'],
     primitives: Object.freeze({
-      catFileBatch: ((ids) => {
+      catFileBatch: ((ids, options) => {
         guard();
-        return primitives.catFileBatch(ctx, ids);
+        return primitives.catFileBatch(ctx, ids, options);
       }) as Repository['primitives']['catFileBatch'],
       createCommit: ((input) => {
         guard();

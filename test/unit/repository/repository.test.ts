@@ -424,6 +424,33 @@ describe('openRepository — round-trip via memory adapter', () => {
     expect(entry.size).toBe(content.byteLength);
   });
 
+  it('Given the bound catFileBatch primitive with maxBytes, When the blob exceeds the cap, Then OBJECT_TOO_LARGE propagates (options forwarded by the binding)', async () => {
+    // Arrange
+    const fallback = makeFallback();
+    const sut = await openRepository({ cwd: '/repo' }, fallback);
+    await sut.init();
+    const id = await sut.primitives.writeObject({
+      type: 'blob',
+      id: '' as ObjectId,
+      content: new Uint8Array([1, 2, 3, 4]),
+    } satisfies Blob);
+
+    // Act
+    let caught: unknown;
+    try {
+      for await (const _ of sut.primitives.catFileBatch([id], { maxBytes: 2 })) {
+        // No iterations expected — the read should reject pre-yield.
+      }
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert
+    expect(caught).toBeInstanceOf(TsgitError);
+    if (!(caught instanceof TsgitError)) throw caught;
+    expect(caught.data.code).toBe('OBJECT_TOO_LARGE');
+  });
+
   it('Given the bound catFileBatch primitive, When fed two ids, Then yields entries in order', async () => {
     // Arrange
     const fallback = makeFallback();

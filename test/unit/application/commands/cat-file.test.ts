@@ -80,6 +80,45 @@ describe('catFile', () => {
     expect(result).toEqual({ kind: 'batch', entries: [] });
   });
 
+  it('Given maxBytes smaller than the stored blob, When invoked, Then propagates OBJECT_TOO_LARGE (option forwarded to the primitive)', async () => {
+    // Arrange
+    const ctx = await buildSeededContext();
+    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
+    const id = await writeBlobBytes(ctx, new Uint8Array([1, 2, 3, 4]));
+    const sut = catFile;
+
+    // Act
+    let caught: unknown;
+    try {
+      await sut(ctx, { ids: [id], maxBytes: 2 });
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert
+    expect(caught).toBeInstanceOf(TsgitError);
+    if (!(caught instanceof TsgitError)) throw caught;
+    expect(caught.data.code).toBe('OBJECT_TOO_LARGE');
+  });
+
+  it('Given maxBytes equal to the stored blob length, When invoked, Then returns the entry', async () => {
+    // Arrange
+    const ctx = await buildSeededContext();
+    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
+    const content = new Uint8Array([7, 8, 9]);
+    const id = await writeBlobBytes(ctx, content);
+    const sut = catFile;
+
+    // Act
+    const result = await sut(ctx, { ids: [id], maxBytes: content.byteLength });
+
+    // Assert
+    expect(result.entries).toHaveLength(1);
+    const [entry] = result.entries;
+    if (entry?.ok !== true) throw new Error('expected ok');
+    expect(entry.size).toBe(content.byteLength);
+  });
+
   it('Given a mix of stored and missing ids, When invoked, Then per-entry ok shape in input order', async () => {
     // Arrange
     const ctx = await buildSeededContext();
