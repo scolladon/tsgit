@@ -17,6 +17,9 @@ coverage/
 reports/*
 !reports/api.json
 
+# Lychee local cache (.lycheecache) — populated by `npm run check:doc-links`.
+.lycheecache
+
 # Wireit cache
 .wireit/
 

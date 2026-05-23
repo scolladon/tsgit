@@ -21,6 +21,22 @@ set -euo pipefail
 : "${COMMENT_TAG:?missing}"
 : "${GITHUB_STEP_SUMMARY:?missing}"
 
+# Defense-in-depth: the GitHub event payload constrains these inputs to safe
+# character sets (PR_NUMBER is integer, REPO is owner/name, BASE/HEAD are
+# 40-char hex). Reassert that invariant before we interpolate them into URLs.
+if [[ ! "$PR_NUMBER" =~ ^[0-9]+$ ]]; then
+  echo "docs-pr-gate: PR_NUMBER ($PR_NUMBER) is not numeric — refusing to proceed" >&2
+  exit 0
+fi
+if [[ ! "$REPO" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]; then
+  echo "docs-pr-gate: REPO ($REPO) is not owner/name shape — refusing to proceed" >&2
+  exit 0
+fi
+if [[ ! "$BASE_SHA" =~ ^[0-9a-f]{7,64}$ ]] || [[ ! "$HEAD_SHA" =~ ^[0-9a-f]{7,64}$ ]]; then
+  echo "docs-pr-gate: BASE_SHA / HEAD_SHA do not look like git OIDs — refusing to proceed" >&2
+  exit 0
+fi
+
 changed=$(git diff --name-only "$BASE_SHA...$HEAD_SHA")
 mismatches=""
 

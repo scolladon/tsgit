@@ -4,12 +4,13 @@
 # Limit to web schemes; mailto / tel / file are intentionally skipped.
 scheme = ["http", "https"]
 
-# External-URL behaviour. The 429 acceptance covers rate-limited GitHub /
-# npm / archlinux runs; lychee retries before giving up.
+# External-URL behaviour. The accept list covers rate-limited / bot-protected
+# responses (429, 403). npmjs.com routinely returns 403 to non-browser
+# user-agents and there is no canonical workaround.
 timeout = 20
 max_retries = 2
 retry_wait_time = 2
-accept = ["200", "206", "301", "302", "304", "307", "308", "429"]
+accept = [200, 206, 301, 302, 304, 307, 308, 403, 429]
 
 # Cache results between runs (local + per-CI-cache). Lychee invalidates the
 # cache after `max_cache_age`.
@@ -34,10 +35,11 @@ exclude_path = [
   "reports",
 ]
 
-# Anchor fragments are not checked in this phase — heading-text churn
-# would generate too much noise to bound usefully at the gate.
-# See `docs/design/18-3-doc-maintenance-harness.md` §2.3.
-include_fragments = false
+# Anchor fragments are not checked in this phase — the lychee default
+# (no fragment validation unless --include-fragments is passed) matches
+# what we want; heading-text churn would otherwise generate too much
+# noise to bound usefully at the gate. See
+# `docs/design/18-3-doc-maintenance-harness.md` §2.3.
 
 # Verbose output makes CI failures easier to debug — one line per broken
 # link with source file, line number, target, status.

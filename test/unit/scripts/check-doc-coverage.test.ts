@@ -8,6 +8,7 @@ import {
   checkIndexRow,
   formatGapStanza,
   kebabCase,
+  parseAllowList,
   parseRepositoryInterface,
   runCheck,
 } from '../../../scripts/check-doc-coverage.js';
@@ -308,5 +309,81 @@ describe('runCheck against the real repo', () => {
 
     // Assert
     expect(sut).toEqual([]);
+  });
+
+  it('Given a synthesised repository.ts with zero commands and zero primitives, When runCheck runs, Then it throws', () => {
+    // Arrange
+    const readSource = (): string => 'interface Repository {}';
+
+    // Act + Assert
+    expect(() => runCheck('/any/root', readSource)).toThrow(/zero commands AND zero primitives/);
+  });
+});
+
+describe('parseAllowList', () => {
+  it('Given a valid JSON object with both arrays, When parsed, Then both lists are returned', () => {
+    // Arrange
+    const raw = JSON.stringify({ commands: ['clone'], primitives: ['readObject'] });
+
+    // Act
+    const sut = parseAllowList(raw);
+
+    // Assert
+    expect(sut).toEqual({ commands: ['clone'], primitives: ['readObject'] });
+  });
+
+  it('Given JSON whose commands is a non-array, When parsed, Then commands defaults to empty', () => {
+    // Arrange
+    const raw = JSON.stringify({ commands: 'oops', primitives: [] });
+
+    // Act
+    const sut = parseAllowList(raw);
+
+    // Assert
+    expect(sut.commands).toEqual([]);
+  });
+
+  it('Given JSON whose entries contain non-strings, When parsed, Then non-strings are filtered out', () => {
+    // Arrange
+    const raw = JSON.stringify({ commands: ['clone', 42, null, 'add'], primitives: [] });
+
+    // Act
+    const sut = parseAllowList(raw);
+
+    // Assert
+    expect(sut.commands).toEqual(['clone', 'add']);
+  });
+
+  it('Given malformed JSON, When parsed, Then both lists default to empty', () => {
+    // Arrange
+    const raw = '{ not valid json';
+
+    // Act
+    const sut = parseAllowList(raw);
+
+    // Assert
+    expect(sut).toEqual({ commands: [], primitives: [] });
+  });
+
+  it('Given JSON parsing to a non-object value (e.g. an array), When parsed, Then both lists default to empty', () => {
+    // Arrange
+    const raw = JSON.stringify(['just', 'an', 'array']);
+
+    // Act
+    const sut = parseAllowList(raw);
+
+    // Assert
+    expect(sut).toEqual({ commands: [], primitives: [] });
+  });
+
+  it('Given JSON parsing to null, When parsed, Then both lists default to empty', () => {
+    // Arrange
+    const raw = 'null';
+
+    // Act
+    const sut = parseAllowList(raw);
+
+    // Assert
+    expect(sut).toEqual({ commands: [], primitives: [] });
   });
 });

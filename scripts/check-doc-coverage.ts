@@ -107,8 +107,8 @@ export const checkIndexRow = (
 };
 
 export const formatGapStanza = (gap: Gap): string => {
-  const indexFile = path.join(path.dirname(gap.expectedPath), 'README.md');
   if (gap.missing === 'file') {
+    const indexFile = path.join(path.dirname(gap.expectedPath), 'README.md');
     return [
       `ERROR ${gap.expectedPath} missing`,
       `  Surface symbol: repo.${gap.kind === 'commands' ? '' : 'primitives.'}${gap.name}`,
@@ -123,21 +123,40 @@ export const formatGapStanza = (gap: Gap): string => {
   ].join('\n');
 };
 
-const loadAllowList = (allowPath: string): AllowList => {
+const asStringArray = (value: unknown): ReadonlyArray<string> => {
+  if (!Array.isArray(value)) return [];
+  return value.filter((entry): entry is string => typeof entry === 'string');
+};
+
+export const parseAllowList = (raw: string): AllowList => {
   try {
-    const raw = readFileSync(allowPath, 'utf8');
-    const parsed = JSON.parse(raw) as Partial<AllowList>;
+    const parsed: unknown = JSON.parse(raw);
+    if (parsed === null || typeof parsed !== 'object') {
+      return { commands: [], primitives: [] };
+    }
+    const record = parsed as Record<string, unknown>;
     return {
-      commands: parsed.commands ?? [],
-      primitives: parsed.primitives ?? [],
+      commands: asStringArray(record['commands']),
+      primitives: asStringArray(record['primitives']),
     };
   } catch {
     return { commands: [], primitives: [] };
   }
 };
 
-export const runCheck = (repoRoot: string): ReadonlyArray<Gap> => {
-  const source = readFileSync(path.join(repoRoot, 'src', 'repository.ts'), 'utf8');
+const loadAllowList = (allowPath: string): AllowList => {
+  try {
+    return parseAllowList(readFileSync(allowPath, 'utf8'));
+  } catch {
+    return { commands: [], primitives: [] };
+  }
+};
+
+export const runCheck = (
+  repoRoot: string,
+  readSource: (p: string) => string = (p) => readFileSync(p, 'utf8'),
+): ReadonlyArray<Gap> => {
+  const source = readSource(path.join(repoRoot, 'src', 'repository.ts'));
   const { commands, primitives } = parseRepositoryInterface(source);
   if (commands.length === 0 && primitives.length === 0) {
     throw new Error(
@@ -169,6 +188,12 @@ const main = (): void => {
   process.exitCode = 1;
 };
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+const invokedDirectly = (): boolean => {
+  const entry = process.argv[1];
+  if (entry === undefined) return false;
+  return url.fileURLToPath(import.meta.url) === path.resolve(entry);
+};
+
+if (invokedDirectly()) {
   main();
 }
