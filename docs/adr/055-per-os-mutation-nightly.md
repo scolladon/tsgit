@@ -2,7 +2,9 @@
 
 ## Status
 
-Accepted (at `5da3b52`)
+Superseded by [ADR-102](102-remove-per-os-mutation-nightly.md) — the per-OS nightly is being removed. The original context (per-PR matrix mutation would be ~3× the slowest gate) still stands; what changed is that the nightly's signal has been empty since landing, and 19.1's diff-scoped PR gate makes the "full nightly" role obsolete.
+
+Originally accepted at `5da3b52`.
 
 ## Context
 
