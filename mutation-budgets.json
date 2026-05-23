@@ -18,21 +18,12 @@
     },
     {
       "name": "adapters",
-      "globs": [
-        "src/adapters/node/**",
-        "src/adapters/memory/**",
-        "src/adapter-detect.ts"
-      ],
+      "globs": ["src/adapters/node/**", "src/adapters/memory/**", "src/adapter-detect.ts"],
       "thresholds": { "high": 95, "low": 90, "break": 85 }
     },
     {
       "name": "infra",
-      "globs": [
-        "src/operators/**",
-        "src/transport/**",
-        "src/ports/**",
-        "src/progress.ts"
-      ],
+      "globs": ["src/operators/**", "src/transport/**", "src/ports/**", "src/progress.ts"],
       "thresholds": { "high": 100, "low": 95, "break": 90 }
     }
   ]
