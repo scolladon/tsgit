@@ -303,6 +303,68 @@ describe('parseManifest', () => {
       expect(caught?.message).toContain('heuristics block is required');
     });
 
+    it('Given a tier where warnAbove is omitted from the JSON, When parsed, Then warnAbove parses as null (undefined arm of the guard)', () => {
+      // Arrange — explicit `null` is the happy path; this verifies the
+      // omission arm of `warnAbove === null || warnAbove === undefined`.
+      const broken = {
+        ...VALID_MANIFEST,
+        tiers: [
+          { name: 'unit', glob: 'test/unit/**/*.test.ts', target: 80, warnBelow: 75 },
+          VALID_MANIFEST.tiers[1],
+          VALID_MANIFEST.tiers[2],
+        ],
+      };
+      const raw = JSON.stringify(broken);
+
+      // Act
+      const sut = parseManifest(raw);
+
+      // Assert
+      expect(sut.tiers[0]?.warnAbove).toBeNull();
+    });
+
+    it('Given a heuristics block that is not an object (a number), When parsed, Then throws "heuristics block is required"', () => {
+      // Arrange — exercises the isObject() guard on heuristics itself
+      // (distinct from the `=== undefined` shortcut on inner heuristic keys).
+      const broken = { tiers: VALID_MANIFEST.tiers, heuristics: 42 };
+      const raw = JSON.stringify(broken);
+
+      // Act
+      let caught: Error | undefined;
+      try {
+        parseManifest(raw);
+      } catch (error) {
+        caught = error instanceof Error ? error : undefined;
+      }
+
+      // Assert
+      expect(caught?.message).toContain('heuristics block is required');
+    });
+
+    it('Given a heuristic with minAssertionsPerTest that is a non-integer number (1.5), When parsed, Then throws naming the field', () => {
+      // Arrange
+      const broken = {
+        ...VALID_MANIFEST,
+        heuristics: {
+          ...VALID_MANIFEST.heuristics,
+          underAssertedUnit: { tier: 'unit', minAssertionsPerTest: 1.5 },
+        },
+      };
+      const raw = JSON.stringify(broken);
+
+      // Act
+      let caught: Error | undefined;
+      try {
+        parseManifest(raw);
+      } catch (error) {
+        caught = error instanceof Error ? error : undefined;
+      }
+
+      // Assert
+      expect(caught?.message).toContain('minAssertionsPerTest');
+      expect(caught?.message).toContain('integer');
+    });
+
     it('Given a heuristic with minAssertionsPerTest below 1, When parsed, Then throws naming the field', () => {
       // Arrange
       const broken = {
