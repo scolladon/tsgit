@@ -11,7 +11,7 @@ import { operationAborted, TsgitError } from '../../domain/error.js';
 import { type GitObject, type ObjectId, payloadByteLength } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
 import { readObject } from './read-object.js';
-import type { CatFileBatchEntry, CatFileBatchOptions } from './types.js';
+import type { CatFileBatchEntry, CatFileBatchOptions, ReadObjectOptions } from './types.js';
 
 const throwIfAborted = (ctx: Context): void => {
   if (ctx.signal?.aborted) throw operationAborted();
@@ -37,11 +37,10 @@ const isObjectNotFound = (err: unknown): boolean =>
 const readOne = async (
   ctx: Context,
   id: ObjectId,
-  maxBytes: number | undefined,
+  readOptions: ReadObjectOptions | undefined,
 ): Promise<CatFileBatchEntry> => {
   try {
-    const object =
-      maxBytes === undefined ? await readObject(ctx, id) : await readObject(ctx, id, { maxBytes });
+    const object = await readObject(ctx, id, readOptions);
     return buildOkEntry(ctx, id, object);
   } catch (err) {
     if (isObjectNotFound(err)) return buildMissingEntry(id);
@@ -54,10 +53,11 @@ export async function* catFileBatch(
   ids: AsyncIterable<ObjectId> | Iterable<ObjectId>,
   options?: CatFileBatchOptions,
 ): AsyncIterable<CatFileBatchEntry> {
-  const maxBytes = options?.maxBytes;
+  const readOptions: ReadObjectOptions | undefined =
+    options?.maxBytes === undefined ? undefined : { maxBytes: options.maxBytes };
   for await (const id of ids) {
     throwIfAborted(ctx);
-    const entry = await readOne(ctx, id, maxBytes);
+    const entry = await readOne(ctx, id, readOptions);
     yield entry;
     throwIfAborted(ctx);
   }

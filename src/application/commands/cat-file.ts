@@ -41,9 +41,7 @@ export const catFile = async (ctx: Context, opts: CatFileInput): Promise<CatFile
   const batchOptions: CatFileBatchOptions | undefined =
     opts.maxBytes === undefined ? undefined : { maxBytes: opts.maxBytes };
   const entries: CatFileBatchEntry[] = [];
-  const stream =
-    batchOptions === undefined ? catFileBatch(ctx, ids) : catFileBatch(ctx, ids, batchOptions);
-  for await (const entry of stream) {
+  for await (const entry of catFileBatch(ctx, ids, batchOptions)) {
     entries.push(entry);
   }
   return { kind: 'batch', entries };

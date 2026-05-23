@@ -90,8 +90,9 @@ Behaviour:
 ```ts
 // src/application/commands/cat-file.ts
 export type CatFileInput = {
-  readonly action?: 'batch';
   readonly ids: ReadonlyArray<ObjectId | string>;
+  /** Per-object byte cap; forwarded to the underlying `readObject` call. */
+  readonly maxBytes?: number;
 };
 
 export type CatFileResult = {
@@ -237,8 +238,14 @@ export const catFile = async (
 ): Promise<CatFileResult> => {
   await assertRepository(ctx);
   const ids = opts.ids.map(coerceObjectId); // throws INVALID_OBJECT_ID
+  const batchOptions =
+    opts.maxBytes === undefined ? undefined : { maxBytes: opts.maxBytes };
   const entries: CatFileBatchEntry[] = [];
-  for await (const entry of catFileBatch(ctx, ids)) {
+  const stream =
+    batchOptions === undefined
+      ? catFileBatch(ctx, ids)
+      : catFileBatch(ctx, ids, batchOptions);
+  for await (const entry of stream) {
     entries.push(entry);
   }
   return { kind: 'batch', entries };
