@@ -4,8 +4,8 @@
  * Pure: walks the classified paths, totals per-tier file counts, computes
  * shares (one decimal place), tags each tier with its warn-band status.
  */
-import { classifyTestFile } from './classify-test-file.js';
-import type { PyramidManifest, TierName } from './parse-manifest.js';
+import { classifyTestFile } from './classify-test-file.ts';
+import type { PyramidManifest, TierName } from './parse-manifest.ts';
 
 export type TierStatus = 'ok' | 'warn-below' | 'warn-above';
 

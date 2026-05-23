@@ -3,9 +3,9 @@
  *
  * Two emitters: machine-readable JSON and human-readable Markdown. Both pure.
  */
-import type { OverMockedFinding } from './detect-over-mocked.js';
-import type { UnderAssertedFinding } from './detect-under-asserted.js';
-import type { TallyResult, TierStatus, TierTally } from './count-tier-files.js';
+import type { OverMockedFinding } from './detect-over-mocked.ts';
+import type { UnderAssertedFinding } from './detect-under-asserted.ts';
+import type { TallyResult, TierStatus, TierTally } from './count-tier-files.ts';
 
 export interface AuditOutcome {
   readonly tally: TallyResult;

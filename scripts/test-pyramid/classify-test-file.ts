@@ -7,7 +7,7 @@
  */
 import { minimatch } from 'minimatch';
 
-import type { PyramidManifest, TierName } from './parse-manifest.js';
+import type { PyramidManifest, TierName } from './parse-manifest.ts';
 
 export type Classification = TierName | 'unclassified';
 

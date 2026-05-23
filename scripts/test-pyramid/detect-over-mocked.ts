@@ -5,8 +5,8 @@
  * configured on the heuristic, counts manifest-regex matches per file, returns
  * findings sorted by path.
  */
-import { classifyTestFile } from './classify-test-file.js';
-import type { PyramidManifest } from './parse-manifest.js';
+import { classifyTestFile } from './classify-test-file.ts';
+import type { PyramidManifest } from './parse-manifest.ts';
 
 export interface SourceFile {
   readonly path: string;

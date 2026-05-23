@@ -10,8 +10,8 @@
  * literals inside test bodies can produce false positives — accepted per
  * ADR-107 / ADR-104.
  */
-import { classifyTestFile } from './classify-test-file.js';
-import type { PyramidManifest } from './parse-manifest.js';
+import { classifyTestFile } from './classify-test-file.ts';
+import type { PyramidManifest } from './parse-manifest.ts';
 
 export interface SourceFile {
   readonly path: string;
