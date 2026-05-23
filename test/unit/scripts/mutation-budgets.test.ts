@@ -187,6 +187,21 @@ describe('parseReport', () => {
       /report invalid: file "src\/x\.ts" has Pending mutant/,
     );
   });
+
+  it('Given a report with an unknown mutant status, When parsed, Then throws (schema-drift sentinel)', () => {
+    // Arrange — Stryker may add new statuses in a future major; the parser
+    // must fail loudly rather than silently drop them and let `total` diverge
+    // from the sum of named fields.
+    const raw = {
+      ...REPORT_BASE,
+      files: { 'src/x.ts': fileResult(['Killed', 'Hyperkilled']) },
+    };
+
+    // Act + Assert
+    expect(() => parseReport(raw)).toThrowError(
+      /report invalid: file "src\/x\.ts" has unknown mutant status "Hyperkilled"/,
+    );
+  });
 });
 
 describe('bucketForPath', () => {

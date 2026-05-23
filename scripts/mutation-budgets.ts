@@ -125,22 +125,26 @@ export const parseManifest = (raw: unknown): ParsedManifest => {
     if (!('thresholds' in bucket) || !isRecord(bucket.thresholds)) {
       throw new Error(`manifest invalid: bucket[${index}] "${name}" missing thresholds`);
     }
+    const rawThresholds = bucket.thresholds;
+    const thresholdValues: { high: number; low: number; break: number } = {
+      high: 0,
+      low: 0,
+      break: 0,
+    };
     for (const key of ['high', 'low', 'break'] as const) {
-      const value = bucket.thresholds[key];
+      const value = rawThresholds[key];
       if (typeof value !== 'number') {
         throw new Error(`manifest invalid: bucket[${index}] "${name}" threshold ${key} missing or not a number`);
       }
       if (value < 0 || value > 100) {
         throw new Error(`manifest invalid: bucket[${index}] "${name}" threshold ${key} out of range (got ${value})`);
       }
-    }
-    if (!isThresholds(bucket.thresholds)) {
-      throw new Error(`manifest invalid: bucket[${index}] "${name}" thresholds malformed`);
+      thresholdValues[key] = value;
     }
     validated.push({
       name,
       globs: globs as readonly string[],
-      thresholds: bucket.thresholds,
+      thresholds: thresholdValues,
     });
   });
 
@@ -173,6 +177,11 @@ export const parseReport = (raw: unknown): StrykerMutationReport => {
       }
       if (m.status === 'Pending') {
         throw new Error(`report invalid: file "${path}" has Pending mutant (incomplete run)`);
+      }
+      if (!KNOWN_MUTANT_STATUSES.has(m.status)) {
+        throw new Error(
+          `report invalid: file "${path}" has unknown mutant status "${m.status}" (parser needs update for new Stryker statuses)`,
+        );
       }
       mutants.push({
         id: typeof m.id === 'string' ? m.id : String(m.id),
@@ -245,32 +254,28 @@ const emptyTally = (): MutantTally => ({
   runtimeError: 0,
 });
 
-const statusKey = (status: string): keyof Omit<MutantTally, 'total'> | null => {
-  switch (status) {
-    case 'Killed':
-      return 'killed';
-    case 'Survived':
-      return 'survived';
-    case 'NoCoverage':
-      return 'noCoverage';
-    case 'Timeout':
-      return 'timeout';
-    case 'Ignored':
-      return 'ignored';
-    case 'CompileError':
-      return 'compileError';
-    case 'RuntimeError':
-      return 'runtimeError';
-    default:
-      return null;
-  }
+type CountedField = keyof Omit<MutantTally, 'total'>;
+
+const STATUS_TO_FIELD: Readonly<Record<string, CountedField>> = {
+  Killed: 'killed',
+  Survived: 'survived',
+  NoCoverage: 'noCoverage',
+  Timeout: 'timeout',
+  Ignored: 'ignored',
+  CompileError: 'compileError',
+  RuntimeError: 'runtimeError',
 };
+
+const KNOWN_MUTANT_STATUSES: ReadonlySet<string> = new Set(Object.keys(STATUS_TO_FIELD));
 
 const tallyMutants = (acc: MutantTally, file: StrykerFileResult): MutantTally => {
   const counted = file.mutants.reduce(
     (carry, m) => {
-      const key = statusKey(m.status);
-      if (key === null) return carry;
+      // parseReport rejects unknown statuses, so STATUS_TO_FIELD[m.status] is
+      // always defined here. The `?? carry` short-circuit is a no-op kept as
+      // a type-narrowing aid.
+      const key = STATUS_TO_FIELD[m.status];
+      if (key === undefined) return carry;
       return { ...carry, [key]: carry[key] + 1 };
     },
     {

@@ -21,6 +21,15 @@ const fakeSpawn = (exitCode: number, calls: SpawnCall[]): SpawnLike => {
   };
 };
 
+const fakeSpawnError = (error: Error, calls: SpawnCall[]): SpawnLike => {
+  return (command, args) => {
+    calls.push({ command, args });
+    const emitter = new EventEmitter();
+    queueMicrotask(() => emitter.emit('error', error));
+    return { on: emitter.on.bind(emitter) };
+  };
+};
+
 describe('runStrykerPr', () => {
   let tmpDir: string;
   let stdoutLines: string[];
@@ -124,6 +133,23 @@ describe('runStrykerPr', () => {
 
     // Assert
     expect(sut).toBe(2);
+  });
+
+  it('Given the spawned child emits error (e.g. stryker not on PATH), When awaited, Then runStrykerPr returns 1 and logs the error', async () => {
+    // Arrange
+    const calls: SpawnCall[] = [];
+
+    // Act
+    const sut = await runStrykerPr({
+      argv: [],
+      env: {},
+      spawn: fakeSpawnError(new Error('ENOENT: stryker not found'), calls),
+      stdout: (line) => stdoutLines.push(line),
+    });
+
+    // Assert
+    expect(sut).toBe(1);
+    expect(stdoutLines.join('\n')).toMatch(/failed to spawn stryker: ENOENT: stryker not found/);
   });
 
   it('Given a non-existent TSGIT_MUTATE_PATHS_FILE, When invoked, Then treats it as empty (exits 0 without spawning)', async () => {
