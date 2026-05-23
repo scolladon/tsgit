@@ -10,8 +10,12 @@ coverage/
 # Mutation testing
 .stryker-tmp/
 
-# Reports
-reports/
+# Reports — directory contents are gitignored except the typedoc JSON snapshot,
+# which is committed as the drift baseline (Phase 18.3, ADR-098). git won't
+# re-include files under a wholly-excluded parent, so we exclude entries
+# instead of the directory itself.
+reports/*
+!reports/api.json
 
 # Wireit cache
 .wireit/

@@ -1,0 +1,44 @@
+# Lychee config — markdown link checker for the doc-maintenance harness (18.3).
+# See ADR-095 for the tool-choice rationale.
+
+# Limit to web schemes; mailto / tel / file are intentionally skipped.
+scheme = ["http", "https"]
+
+# External-URL behaviour. The 429 acceptance covers rate-limited GitHub /
+# npm / archlinux runs; lychee retries before giving up.
+timeout = 20
+max_retries = 2
+retry_wait_time = 2
+accept = ["200", "206", "301", "302", "304", "307", "308", "429"]
+
+# Cache results between runs (local + per-CI-cache). Lychee invalidates the
+# cache after `max_cache_age`.
+cache = true
+max_cache_age = "1d"
+
+# Don't follow redirects past the first hop — saves time, still verifies
+# the resource exists at the original URL.
+no_progress = true
+
+# Historical snapshots — frozen at land time, reference files that no
+# longer exist (DESIGN.md, MIGRATION.md, legacy error-code names).
+# Rewriting them would be lying about history (see ADR-093, 18.2 design).
+exclude_path = [
+  "docs/plan",
+  "docs/spike",
+  "docs/design/phase-13-4b-merge-conflict-handling.md",
+  "node_modules",
+  ".wireit",
+  "coverage",
+  "dist",
+  "reports",
+]
+
+# Anchor fragments are not checked in this phase — heading-text churn
+# would generate too much noise to bound usefully at the gate.
+# See `docs/design/18-3-doc-maintenance-harness.md` §2.3.
+include_fragments = false
+
+# Verbose output makes CI failures easier to debug — one line per broken
+# link with source file, line number, target, status.
+verbose = "info"
