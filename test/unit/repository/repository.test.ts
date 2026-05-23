@@ -9,6 +9,7 @@ import {
 } from '../../../src/adapters/memory/index.js';
 import { TsgitError } from '../../../src/domain/error.js';
 import { SHA1_CONFIG } from '../../../src/domain/objects/hash-config.js';
+import type { Blob, ObjectId } from '../../../src/domain/objects/index.js';
 import { createLruCache } from '../../../src/domain/storage/lru-cache.js';
 import { openRepository, type Repository, type RuntimeFallback } from '../../../src/repository.js';
 
@@ -89,6 +90,7 @@ describe('openRepository — Repository binding integrity', () => {
       [
         'add',
         'branch',
+        'catFile',
         'checkout',
         'clone',
         'commit',
@@ -119,6 +121,7 @@ describe('openRepository — Repository binding integrity', () => {
 
     expect(Object.keys(sut.primitives).sort()).toEqual(
       [
+        'catFileBatch',
         'createCommit',
         'diffTrees',
         'getRepoRoot',
@@ -396,6 +399,80 @@ describe('openRepository — round-trip via memory adapter', () => {
 
     // Assert
     expect(count).toBe(0);
+  });
+
+  it('Given a stored blob, When the bound catFile command is called, Then it returns the parsed entry', async () => {
+    // Arrange
+    const fallback = makeFallback();
+    const sut = await openRepository({ cwd: '/repo' }, fallback);
+    await sut.init();
+    const content = new TextEncoder().encode('hi');
+    const blobId = await sut.primitives.writeObject({
+      type: 'blob',
+      id: '' as ObjectId,
+      content,
+    } satisfies Blob);
+
+    // Act
+    const result = await sut.catFile({ ids: [blobId] });
+
+    // Assert
+    expect(result.kind).toBe('batch');
+    expect(result.entries).toHaveLength(1);
+    const [entry] = result.entries;
+    if (entry?.ok !== true) throw new Error('expected ok');
+    expect(entry.size).toBe(content.byteLength);
+  });
+
+  it('Given the bound catFileBatch primitive with maxBytes, When the blob exceeds the cap, Then OBJECT_TOO_LARGE propagates (options forwarded by the binding)', async () => {
+    // Arrange
+    const fallback = makeFallback();
+    const sut = await openRepository({ cwd: '/repo' }, fallback);
+    await sut.init();
+    const id = await sut.primitives.writeObject({
+      type: 'blob',
+      id: '' as ObjectId,
+      content: new Uint8Array([1, 2, 3, 4]),
+    } satisfies Blob);
+
+    // Act
+    let caught: unknown;
+    try {
+      for await (const _ of sut.primitives.catFileBatch([id], { maxBytes: 2 })) {
+        // No iterations expected — the read should reject pre-yield.
+      }
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert
+    expect(caught).toBeInstanceOf(TsgitError);
+    if (!(caught instanceof TsgitError)) throw caught;
+    expect(caught.data.code).toBe('OBJECT_TOO_LARGE');
+  });
+
+  it('Given the bound catFileBatch primitive, When fed two ids, Then yields entries in order', async () => {
+    // Arrange
+    const fallback = makeFallback();
+    const sut = await openRepository({ cwd: '/repo' }, fallback);
+    await sut.init();
+    const a = await sut.primitives.writeObject({
+      type: 'blob',
+      id: '' as ObjectId,
+      content: new Uint8Array([1]),
+    } satisfies Blob);
+    const b = await sut.primitives.writeObject({
+      type: 'blob',
+      id: '' as ObjectId,
+      content: new Uint8Array([2]),
+    } satisfies Blob);
+
+    // Act
+    const ids: string[] = [];
+    for await (const e of sut.primitives.catFileBatch([a, b])) ids.push(e.id);
+
+    // Assert
+    expect(ids).toEqual([a, b]);
   });
 });
 

@@ -2,7 +2,7 @@
 
 Track: `[ ]` todo, `[~]` in progress, `[x]` done, `[-]` skipped
 
-**Progress:** Phases 0–16 complete, Phase 17.1 shipping. `@scolladon/tsgit@1.0.0` published on npm with sigstore provenance (trusted-publisher OIDC). Phases 12–16 shipped (network: clone/fetch/push; working-tree: checkout/reset; pathspec: globs and `.gitignore`; Windows support; operations hardening; browser E2E). Phases 17.1 (reflog), 17.2 (hooks), 17.3 (sparse checkout), 17.4 (partial clone) and 17.5 (submodule walk) are now implemented. Remaining v2.0 items (17.6–17.7) deferred.
+**Progress:** Phases 0–16 complete, Phase 17.1 shipping. `@scolladon/tsgit@1.0.0` published on npm with sigstore provenance (trusted-publisher OIDC). Phases 12–16 shipped (network: clone/fetch/push; working-tree: checkout/reset; pathspec: globs and `.gitignore`; Windows support; operations hardening; browser E2E). Phases 17.1 (reflog), 17.2 (hooks), 17.3 (sparse checkout), 17.4 (partial clone), 17.5 (submodule walk) and 17.6 (`cat-file --batch`) are now implemented. Remaining v2.0 item (17.7) deferred.
 
 ---
 
@@ -435,7 +435,31 @@ Design: `docs/design/phase-15-bench-observability.md`. ADRs: [054](adr/054-bench
       pair), [084](adr/084-submodule-data-source.md) (tree-ish source),
       [085](adr/085-nested-submodule-recursion.md) (child-Context recursion),
       [086](adr/086-gitmodules-ini-reuse.md) (INI tokenizer reuse).
-- [ ] **17.6** `git-cat-file --batch` equivalent on the primitive layer for high-throughput readers.
+- [x] **17.6** `git-cat-file --batch` equivalent on the primitive layer for
+      high-throughput readers.
+      _Accepted:_ a tier-2 `catFileBatch(ctx, ids, options?)` primitive yields
+      `AsyncIterable<CatFileBatchEntry>` in strict input order, sequentially,
+      with one entry per id. A missing object becomes
+      `{ ok: false, id, reason: 'missing' }` so the stream survives misses
+      (ADR-088); every other resolver error propagates. Per-object `maxBytes`
+      is forwarded to `readObject` — a long batch over untrusted ids cannot
+      exhaust the heap. The thin tier-1 wrapper `repo.catFile({ ids,
+      maxBytes? })` coerces string ids through `ObjectId.from` at the
+      boundary (fail-fast `INVALID_OBJECT_ID`) and drains the iterable into
+      `{ kind: 'batch', entries }` (ADR-087). Sequential reads share the
+      Context's pack registry + delta cache; no concurrency knob ships in
+      v1 (ADR-090). Only the contents payload mode is exposed; `--batch
+      -check` and raw-bytes are deferred (ADR-089). `payloadByteLength`
+      (`src/domain/objects/size.ts`) measures the canonical body length for
+      every `GitObject` type via the existing `serializeXxxContent`
+      functions. Lazy-fetch parity is interop-verified end-to-end against
+      `git-http-backend` (`test/integration/network/cat-file-batch-promisor
+      .test.ts`). Design: `docs/design/cat-file-batch.md`. ADRs:
+      [087](adr/087-cat-file-api-shape.md) (dual primitive + command shape),
+      [088](adr/088-cat-file-missing-per-entry.md) (per-entry missing),
+      [089](adr/089-cat-file-contents-only.md) (contents-only mode),
+      [090](adr/090-cat-file-strict-order-sequential.md) (ordering /
+      concurrency).
 - [ ] **17.7** isomorphic-git compatibility shim (runtime namespace re-export — explicitly out of scope for v1 per MIGRATION.md, revisit if adoption demands it).
 
 ### Cosmetic / housekeeping

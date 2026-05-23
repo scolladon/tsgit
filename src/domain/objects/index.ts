@@ -38,6 +38,8 @@ export { SHA1_CONFIG, SHA256_CONFIG } from './hash-config.js';
 export type { ObjectType } from './header.js';
 export { parseHeader, serializeHeader } from './header.js';
 export * from './object-id.js';
+// Payload size
+export { payloadByteLength } from './size.js';
 
 // Tag
 export type { Tag, TagData } from './tag.js';

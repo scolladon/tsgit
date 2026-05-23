@@ -8,6 +8,7 @@ import type {
   ExtraHeader,
   FileMode,
   FilePath,
+  GitObject,
   ObjectId,
   RefName,
   Tree,
@@ -199,6 +200,41 @@ export interface SubmoduleEntry {
   /** Path of the containing submodule; absent for `depth === 0` entries. */
   readonly parent?: FilePath;
 }
+
+/**
+ * One entry yielded by `catFileBatch` — a discriminated union so that a
+ * single bad id never aborts the stream. `ok: true` carries the parsed
+ * object plus its canonical payload size (matches the `<size>` field of
+ * `git cat-file --batch`'s header). `ok: false` is shaped to extend later:
+ * `reason` is a literal union so a future variant is an additive change.
+ */
+/**
+ * Optional knobs for the `catFileBatch` primitive — currently a single
+ * `maxBytes` cap forwarded to each per-id `readObject` call so a long
+ * batch over untrusted ids cannot exhaust the heap. Defaults to no cap.
+ */
+export interface CatFileBatchOptions {
+  /**
+   * Per-object byte cap. Rejected pre-inflate; same semantics as
+   * `ReadObjectOptions.maxBytes`. When unset, no cap applies (parity
+   * with `readObject`).
+   */
+  readonly maxBytes?: number;
+}
+
+export type CatFileBatchEntry =
+  | {
+      readonly ok: true;
+      readonly id: ObjectId;
+      readonly type: GitObject['type'];
+      readonly size: number;
+      readonly object: GitObject;
+    }
+  | {
+      readonly ok: false;
+      readonly id: ObjectId;
+      readonly reason: 'missing';
+    };
 
 export interface WalkSubmodulesOptions {
   /** Tree-ish to walk. Default: `HEAD`. */
