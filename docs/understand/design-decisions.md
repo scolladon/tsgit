@@ -141,6 +141,7 @@ ADRs are ordered chronologically in the `adr/` folder. This page groups them by 
 - [ADR-100 — Bucket partition: domain / application / adapters / infra](../adr/100-mutation-pyramid-bucket-partitioning.md)
 - [ADR-101 — Per-bucket mutation thresholds (high / low / break)](../adr/101-mutation-budgets-per-bucket.md)
 - [ADR-102 — Remove the per-OS nightly mutation job (supersedes ADR-055)](../adr/102-remove-per-os-mutation-nightly.md)
+- [ADR-103 — Skip code-dependent CI jobs when the diff has no code changes](../adr/103-ci-code-change-gating.md)
 - Design: [`docs/design/phase-19-1-mutation-pyramid.md`](../design/phase-19-1-mutation-pyramid.md)
 
 ## Reading order tips

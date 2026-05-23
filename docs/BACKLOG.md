@@ -216,7 +216,7 @@ Ships in v1.x. No major bump (SemVer: additive + cosmetic only).
 
 Front-loaded. Every Phase 20+ item ships against this harness. Goal: catch regressions before they ship, not after.
 
-- [x] **19.1** Mutation pyramid — per-bucket budgets (domain/application/adapters/infra) + diff-scoped PR gate; per-OS nightly removed (ADR-102 supersedes ADR-055); equivalent-mutant catalogue kept inline-only · ADRs 100–102 · `design/phase-19-1-mutation-pyramid.md`
+- [x] **19.1** Mutation pyramid — per-bucket budgets (domain/application/adapters/infra) + diff-scoped PR gate; per-OS nightly removed (ADR-102 supersedes ADR-055); equivalent-mutant catalogue kept inline-only; docs-only PRs skip code-dependent CI jobs (ADR-103) · ADRs 100–103 · `design/phase-19-1-mutation-pyramid.md`
 - [ ] **19.2** Testing-pyramid audit — count unit/integration/e2e, target ratio, flag over-mocked integrations and under-asserted units.
 - [ ] **19.3** Unit-test expressiveness lint — enforce `Given/When/Then` titles, AAA body comments, `sut` naming; ban `toThrow(Class)` without data assertion.
 - [ ] **19.4** Integration-test usefulness audit — kill duplicates, promote orphans into surface-parity coverage, document what each one proves.
