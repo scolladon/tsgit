@@ -28,13 +28,19 @@ interface PushedRef {
 
 ## Options
 
-| Field | Default | Meaning |
-|---|---|---|
-| `remote` | `'origin'` | Remote name from `.git/config`. |
-| `refspecs` | (current branch) | Explicit `<src>:<dst>`, `+<src>:<dst>`, `:<dst>`, or short-form (`main`). `HEAD` permitted as source. |
-| `force` | `false` | Skip the non-fast-forward guard for all refspecs in this call. |
-| `forceWithLease` | (none) | `'auto'` reads `refs/remotes/<remote>/<branch>` as the lease; explicit `ObjectId` accepts a caller-supplied expected oid. Mismatch throws `PUSH_REJECTED`. |
-| `noVerify` | `false` | Skip the `pre-push` hook. |
+| Field | Type | Default | Meaning |
+|---|---|---|---|
+| `remote` | `string` | `'origin'` | Remote name from `.git/config`. |
+| `refspecs` | `ReadonlyArray<string>` | (current branch) | Explicit `<src>:<dst>`, `+<src>:<dst>`, `:<dst>`, or short-form (`main`). `HEAD` permitted as source. |
+| `force` | `boolean` | `false` | Skip the non-fast-forward guard for all refspecs in this call. |
+| `forceWithLease` | `ObjectId \| 'auto'` | (none) | `'auto'` reads `refs/remotes/<remote>/<branch>` as the lease; explicit `ObjectId` accepts a caller-supplied expected oid. Mismatch throws `PUSH_REJECTED`. |
+| `noVerify` | `boolean` | `false` | Skip the `pre-push` hook. |
+
+## Behaviour
+
+- **Atomic ref updates.** All accepted refspecs land server-side under the same transaction.
+- **Local remote-tracking refresh.** On an accepted heads-branch push, `refs/remotes/<remote>/<branch>` is updated to the new oid.
+- **Hooks (Node only):** `pre-push` runs with git's canonical `<local-ref> <local-oid> <remote-ref> <remote-oid>` stdin.
 
 ## Examples
 
@@ -57,12 +63,6 @@ for (const r of result.pushedRefs) {
   console.log(r.name, r.status, r.reason ?? '');
 }
 ```
-
-## Behaviour
-
-- **Atomic ref updates.** All accepted refspecs land server-side under the same transaction.
-- **Local remote-tracking refresh.** On an accepted heads-branch push, `refs/remotes/<remote>/<branch>` is updated to the new oid.
-- **Hooks (Node only):** `pre-push` runs with git's canonical `<local-ref> <local-oid> <remote-ref> <remote-oid>` stdin.
 
 ## Throws
 

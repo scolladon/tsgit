@@ -23,13 +23,13 @@ interface TagInfo {
 }
 ```
 
-## Options
+## Actions
 
-| Field | Meaning |
+| Action | Meaning |
 |---|---|
-| `kind: 'list'` | List tags (`refs/tags/*`). |
-| `kind: 'create'` | Create a lightweight tag. `target` defaults to HEAD. `force` overwrites an existing tag with the same name. |
-| `kind: 'delete'` | Delete a tag. |
+| `{ kind: 'list' }` | List tags (`refs/tags/*`). |
+| `{ kind: 'create', name, target?, force? }` | Create a lightweight tag. `target` defaults to HEAD; `force` overwrites an existing tag with the same name. |
+| `{ kind: 'delete', name }` | Delete a tag. |
 
 ## Examples
 

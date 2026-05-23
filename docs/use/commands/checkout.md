@@ -28,6 +28,13 @@ interface CheckoutPathsOptions {
 | **Restore from index** (default) | `{ paths }` (no `source` or `source: 'index'`) | Restore staged content into the working tree. Index untouched. |
 | **Restore from HEAD or tree** | `{ paths, source: 'HEAD' \| <ObjectId> }` | Restore content from HEAD's tree (or an arbitrary tree). Index entries for the listed paths are also rewritten. |
 
+## Behaviour
+
+- **Dirty-tree guard.** Switch mode refuses to overwrite tracked modifications or to clobber untracked paths that would collide. Use `force: true` to override.
+- **Atomicity.** Per-file (matches canonical git). The index commit is atomic; working-tree writes are not all-or-nothing if power is cut mid-write.
+- **Sparse checkout.** Switch mode honours the active sparse pattern on the target branch.
+- **Path restore via globs.** `paths` accepts the same pathspec syntax as [`add`](add.md).
+
 ## Examples
 
 ```ts
@@ -44,13 +51,6 @@ await repo.checkout({ paths: ['src/foo.ts'], source: 'HEAD' });
 // Force-switch through a dirty tree
 await repo.checkout({ target: 'main', force: true });
 ```
-
-## Behaviour
-
-- **Dirty-tree guard.** Switch mode refuses to overwrite tracked modifications or to clobber untracked paths that would collide. Use `force: true` to override.
-- **Atomicity.** Per-file (matches canonical git). The index commit is atomic; working-tree writes are not all-or-nothing if power is cut mid-write.
-- **Sparse checkout.** Switch mode honours the active sparse pattern on the target branch.
-- **Path restore via globs.** `paths` accepts the same pathspec syntax as [`add`](add.md).
 
 ## Throws
 

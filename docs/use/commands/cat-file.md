@@ -26,10 +26,10 @@ type CatFileBatchEntry =
 
 ## Options
 
-| Field | Type | Meaning |
-|---|---|---|
-| `ids` | `ReadonlyArray<ObjectId \| string>` | Object ids. String ids are coerced through `ObjectId.from` (fail-fast `INVALID_OBJECT_ID`). |
-| `maxBytes` | `number` | Per-object byte cap; forwarded to `readObject`. A long batch over untrusted ids cannot exhaust the heap. |
+| Field | Type | Default | Meaning |
+|---|---|---|---|
+| `ids` | `ReadonlyArray<ObjectId \| string>` | (required) | Object ids. String ids are coerced through `ObjectId.from` (fail-fast `INVALID_OBJECT_ID`). |
+| `maxBytes` | `number` | (none) | Per-object byte cap; forwarded to `readObject`. A long batch over untrusted ids cannot exhaust the heap. |
 
 ## Behaviour
 

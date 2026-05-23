@@ -26,6 +26,12 @@ interface ResetResult {
 | `mixed` | untouched | rebuilt from `target`'s tree (stat-cache preserved for unchanged paths) | moved to `target` |
 | `hard` | rewritten to match `target` (force-overwriting modifications) | rebuilt | moved to `target` |
 
+## Behaviour
+
+- **Sparse-aware:** `mode: 'hard'` and `mode: 'mixed'` honour the active sparse pattern. Out-of-cone paths keep `skipWorktree: true`; their working-tree files are not materialised.
+- **Stat-cache donor strategy** (mixed): index entries whose `id + mode` match the prior index preserve their stat fields, so the next `status()` stays fast.
+- **Untracked files outside the target tree** are left alone in `hard` mode — only tracked paths are rewritten.
+
 ## Examples
 
 ```ts
@@ -41,12 +47,6 @@ await repo.reset({ mode: 'hard', target: 'origin/main' });
 // Abort a merge by going back to ORIG_HEAD
 await repo.reset({ mode: 'hard', target: 'ORIG_HEAD' });
 ```
-
-## Behaviour
-
-- **Sparse-aware:** `mode: 'hard'` and `mode: 'mixed'` honour the active sparse pattern. Out-of-cone paths keep `skipWorktree: true`; their working-tree files are not materialised.
-- **Stat-cache donor strategy** (mixed): index entries whose `id + mode` match the prior index preserve their stat fields, so the next `status()` stays fast.
-- **Untracked files outside the target tree** are left alone in `hard` mode — only tracked paths are rewritten.
 
 ## Throws
 

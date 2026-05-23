@@ -17,10 +17,10 @@ interface RmResult {
 
 ## Options
 
-| Field | Default | Meaning |
-|---|---|---|
-| `cached` | `false` | Index only — leave the working-tree file in place. |
-| `breakStaleLockMs` | (none) | Break a stale `.git/index.lock` older than this many ms. |
+| Field | Type | Default | Meaning |
+|---|---|---|---|
+| `cached` | `boolean` | `false` | Index only — leave the working-tree file in place. |
+| `breakStaleLockMs` | `number` | (none) | Break a stale `.git/index.lock` older than this many ms. |
 
 ## Examples
 

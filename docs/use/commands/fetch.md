@@ -30,12 +30,18 @@ interface FetchUpdate {
 
 ## Options
 
-| Field | Default | Meaning |
-|---|---|---|
-| `remote` | `'origin'` | Remote name. Resolved against `.git/config` `[remote "<name>"]`. |
-| `refspecs` | branches refspec | Explicit refspec list. |
-| `prune` | `false` | Delete `refs/remotes/<remote>/*` entries the server no longer advertises. Local branches and tags are never touched. |
-| `depth` | (full) | Shallow fetch depth. Writes `.git/shallow`. |
+| Field | Type | Default | Meaning |
+|---|---|---|---|
+| `remote` | `string` | `'origin'` | Remote name. Resolved against `.git/config` `[remote "<name>"]`. |
+| `refspecs` | `ReadonlyArray<string>` | branches refspec | Explicit refspec list. |
+| `prune` | `boolean` | `false` | Delete `refs/remotes/<remote>/*` entries the server no longer advertises. Local branches and tags are never touched. |
+| `depth` | `number` | (full) | Shallow fetch depth. Writes `.git/shallow`. |
+
+## Behaviour
+
+- **Partial clone aware:** if `.git/config` records `partialclonefilter`, the fetch re-applies that filter; the repo stays partial.
+- **Atomic ref updates:** all ref updates land under a single lock or none do.
+- **Reflog:** updates land in `.git/logs/` via the standard `recordRefUpdate` writer.
 
 ## Examples
 
@@ -50,12 +56,6 @@ await repo.fetch({ remote: 'origin', refspecs: ['refs/heads/main:refs/remotes/or
 const result = await repo.fetch({ prune: true });
 console.log(result.prunedRefs);
 ```
-
-## Behaviour
-
-- **Partial clone aware:** if `.git/config` records `partialclonefilter`, the fetch re-applies that filter; the repo stays partial.
-- **Atomic ref updates:** all ref updates land under a single lock or none do.
-- **Reflog:** updates land in `.git/logs/` via the standard `recordRefUpdate` writer.
 
 ## Throws
 

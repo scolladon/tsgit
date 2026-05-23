@@ -40,32 +40,32 @@ Alphabetical.
 ### `readConfig`
 `config-read.ts`. Read `.git/config` (INI tokenizer; reused by `.gitmodules` parsing in submodules).
 
+### `appendReflog`
+`reflog-store.ts`. Append one entry to `.git/logs/<ref>`. Called via [`recordRefUpdate`](record-ref-update.md).
+
+### `deleteReflog`
+`reflog-store.ts`. Drop one entry by index, optionally rewriting subsequent entries.
+
+### `listReflogs`
+`reflog-store.ts`. Enumerate refs that have a reflog.
+
+### `readReflog`
+`reflog-store.ts`. Read entries for one ref.
+
 ### `readShallow`
 `shallow-file.ts`. Read `.git/shallow` boundaries.
 
 ### `readSparsePatternText`
 `read-sparse-checkout.ts`. Read raw `.git/info/sparse-checkout` text (no compilation).
 
-### `appendReflog`
-`reflog-store.ts`. Append one entry to `.git/logs/<ref>`. Called via [`recordRefUpdate`](record-ref-update.md).
-
-### `readReflog`
-`reflog-store.ts`. Read entries for one ref.
-
-### `listReflogs`
-`reflog-store.ts`. Enumerate refs that have a reflog.
-
 ### `reflogExists`
 `reflog-store.ts`. Predicate over `.git/logs/<ref>`.
 
-### `deleteReflog`
-`reflog-store.ts`. Drop one entry by index, optionally rewriting subsequent entries.
+### `resolveReflogIdentity`
+`reflog-identity.ts`. Resolve the identity for reflog entries (config + portable fallback).
 
 ### `writeReflog`
 `reflog-store.ts`. Bulk write entries for one ref (used by `expire`).
-
-### `resolveReflogIdentity`
-`reflog-identity.ts`. Resolve the identity for reflog entries (config + portable fallback).
 
 ### `setConfigEntry` · `setCoreConfigEntry` · `updateConfigEntries` · `updateCoreConfig`
 `update-config.ts`. Targeted line-surgery writers for `.git/config`. Used by [`clone`](../commands/clone.md) (promisor + partial-clone config), [`sparseCheckout`](../commands/sparse-checkout.md).

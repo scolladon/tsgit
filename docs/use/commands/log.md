@@ -24,6 +24,11 @@ interface LogEntry {
 }
 ```
 
+## Behaviour
+
+- **First-parent walk:** for merge commits, only the first parent is followed. Use [`walkCommits`](../primitives/walk-commits.md) for arbitrary parent ordering.
+- **Order:** newest first.
+
 ## Examples
 
 ```ts
@@ -37,11 +42,6 @@ const incoming = await repo.log({ from: 'feature/x', excluding: ['main'] });
 const before = new Date('2026-01-01');
 const last = await repo.log({ before });
 ```
-
-## Behaviour
-
-- **First-parent walk:** for merge commits, only the first parent is followed. Use [`walkCommits`](../primitives/walk-commits.md) for arbitrary parent ordering.
-- **Order:** newest first.
 
 ## Throws
 

@@ -21,13 +21,13 @@ interface BranchInfo {
 }
 ```
 
-## Options
+## Actions
 
-| Field | Type | Meaning |
-|---|---|---|
-| `kind: 'list'` | — | List local branches (`refs/heads/*`). |
-| `kind: 'create'` | — | Create a branch. `startPoint` defaults to HEAD. `force` overwrites an existing branch with the same name. |
-| `kind: 'delete'` | — | Delete a local branch. `force` removes branches whose tip is not merged into HEAD. |
+| Action | Meaning |
+|---|---|
+| `{ kind: 'list' }` | List local branches (`refs/heads/*`). |
+| `{ kind: 'create', name, startPoint?, force? }` | Create a branch. `startPoint` defaults to HEAD; `force` overwrites an existing branch with the same name. |
+| `{ kind: 'delete', name, force? }` | Delete a local branch. `force` removes branches whose tip is not merged into HEAD. |
 
 ## Examples
 

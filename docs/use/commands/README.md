@@ -26,6 +26,15 @@ Every method bound on a `Repository` handle. 21 entries, alphabetical.
 | [`submodules`](submodules.md) | Walk submodules pinned at a tree-ish. |
 | [`tag`](tag.md) | List, create, or delete tags. |
 
-Each page follows the same shape: signature · options · behaviour notes (when applicable) · examples · throws · see also.
+## Page shape
+
+Every page follows the same shape — in this order:
+
+1. `## Signature` — TypeScript signature lifted from source
+2. `## Options` (or `## Actions` / `## Modes` for discriminated unions) — `Field \| Type \| Default \| Meaning` columns; `(required)` and `(none)` shown explicitly
+3. `## Behaviour` — semantics worth narrating (when applicable; some pages skip)
+4. `## Examples` (plural) — 2-4 minimal happy-path snippets, comments imperative
+5. `## Throws` — error codes raised by this call; each cites the canonical `TsgitError.data.code` from [`../errors.md`](../errors.md)
+6. `## See also` — bulleted: `Primitives:` · `Related commands:` · `Recipes:` · `ADRs:` · `Roadmap:`
 
 For Tier-2 building blocks see [`../primitives/`](../primitives/). For composed flows see [`../recipes.md`](../recipes.md). For error codes see [`../errors.md`](../errors.md).

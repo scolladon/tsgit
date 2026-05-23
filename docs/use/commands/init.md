@@ -21,10 +21,10 @@ interface InitResult {
 
 ## Options
 
-| Field | Default | Meaning |
-|---|---|---|
-| `initialBranch` | `'main'` | Initial branch name HEAD points at. |
-| `bare` | `false` | Bare repository (no working tree); `gitDir === workDir`. |
+| Field | Type | Default | Meaning |
+|---|---|---|---|
+| `initialBranch` | `string` | `'main'` | Initial branch name HEAD points at. |
+| `bare` | `boolean` | `false` | Bare repository (no working tree); `gitDir === workDir`. |
 
 ## Examples
 

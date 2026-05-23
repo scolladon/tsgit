@@ -29,13 +29,13 @@ type MergeResult =
 
 ## Options
 
-| Field | Default | Meaning |
-|---|---|---|
-| `target` | (required) | Ref name, oid, or `'HEAD'` of the branch to merge in. |
-| `message` | auto | Override the merge-commit message. |
-| `fastForwardOnly` | `false` | Reject when a fast-forward is not possible. |
-| `noFastForward` | `false` | Always create a merge commit, even when fast-forward would work. |
-| `author` / `committer` | from config | Identities for the merge commit. |
+| Field | Type | Default | Meaning |
+|---|---|---|---|
+| `target` | `string` | (required) | Ref name, oid, or `'HEAD'` of the branch to merge in. |
+| `message` | `string` | auto | Override the merge-commit message. |
+| `fastForwardOnly` | `boolean` | `false` | Reject when a fast-forward is not possible. |
+| `noFastForward` | `boolean` | `false` | Always create a merge commit, even when fast-forward would work. |
+| `author` / `committer` | `AuthorIdentity` | from config | Identities for the merge commit. |
 
 ## Conflict handling
 

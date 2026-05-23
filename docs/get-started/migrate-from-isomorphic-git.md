@@ -300,3 +300,12 @@ try {
 A drop-in `isomorphic-git` namespace shim is **not planned** ([ADR-091](../adr/091-abandon-isomorphic-git-shim.md)). The two APIs surface different lifetime + validation models, and a literal shim would either re-introduce isomorphic-git's per-call validation gaps or hide a singleton repo behind the namespace — both undermine the invariants the v1 surface exists to enforce.
 
 If you need a transitional layer, wrap tsgit in your own adapter and migrate one call site at a time. If you hit a migration blocker that a per-codebase adapter can't paper over, open an issue with a concrete example — that's the signal that would justify revisiting.
+
+## What's next
+
+| Want to… | Read |
+|---|---|
+| See every command available | [Commands reference](../use/commands/) |
+| Compose your own walks | [Primitives reference](../use/primitives/) |
+| See real-world flows | [Recipes](../use/recipes.md) |
+| Understand the design | [Architecture](../understand/architecture.md) · [design decisions](../understand/design-decisions.md) |

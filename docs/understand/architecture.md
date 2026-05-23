@@ -39,7 +39,7 @@ See [`../use/commands/`](../use/commands/) and [`../use/primitives/`](../use/pri
 | **FP-first** | Pure functions, immutable data, function composition. |
 | **Hexagonal** | Domain isolated from infrastructure via ports. |
 | **Object Calisthenics for the domain** | Branded types for domain concepts; no primitives crossing boundaries. |
-| **KISS** | Simple over clever. Profile first, optimize second. |
+| **KISS** | Simple over clever. Profile first, optimise second. |
 | **YAGNI** | Smallest useful API. No speculative features. |
 | **Composition over reimplementation** | New commands MUST build on existing primitives. |
 

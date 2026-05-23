@@ -45,3 +45,13 @@ for await (const commit of recent) console.log(commit.data.message);
 ```
 
 Back-pressure is native — the walker only advances when the consumer pulls. Memory stays bounded across arbitrarily large repos.
+
+## Page shape
+
+Every primitive page follows the same shape — in this order:
+
+1. `## Signature` — TypeScript signature
+2. `## Behaviour` — semantics (when applicable)
+3. `## Example` (singular — primitives usually show one canonical use) — comments imperative
+4. `## Throws` — error codes raised
+5. `## See also` — bulleted: `Tier-1:` · `Related primitives:` · `ADRs:` · `Roadmap:`

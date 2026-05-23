@@ -63,7 +63,7 @@ The limits are CI gates. Real measured bytes (`npm run reports:bundle-sizes`) an
 ## Roadmap
 
 - **Phase 26.1** — Per-command profile capture (`npm run profile <cmd>`); commit baseline.
-- **Phase 26.2** — Hot-path optimizations from 26.1 findings. Targets: `log:walk` ≥ 1.5× (currently 0.66×), `readBlob:cold` ≥ 1.0× (currently 0.67×).
+- **Phase 26.2** — Hot-path optimisations from 26.1 findings. Targets: `log:walk` ≥ 1.5× (currently 0.66×), `readBlob:cold` ≥ 1.0× (currently 0.67×).
 - **Phase 26.3** — Regression gate in CI: `bench:summary` diff must not exceed ±N% per scenario.
 - **Phase 26.4** — Memory-pressure scenarios (large packs, deep delta chains) added to bench suite.
 - **Phase 26.5** — Bundle measurements as regenerable artifacts (`reports/bundle/{sizes,treeshake,load-time}.md`).

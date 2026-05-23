@@ -40,6 +40,12 @@ interface ReflogShowEntry {
 | `delete` | Drop entry at `index` (newest = 0). `rewrite: true` shifts subsequent entries up. |
 | `expire` | Prune by date (`'90.days.ago'`, `'2026-01-01'`, …) with optional `expireUnreachable` for two-cutoff prune. `dryRun: true` reports without modifying. |
 
+## Behaviour
+
+- **Approxidate parser** accepts a subset of git's date forms: `now`, `yesterday`, `<N>.days.ago`, `YYYY-MM-DD`, `YYYY-MM-DD HH:MM:SS`. Anything else throws `REVPARSE_UNRESOLVED`.
+- **HEAD dual logging:** when a branch update advances HEAD (no detach), both `.git/logs/HEAD` and `.git/logs/refs/heads/<branch>` receive entries.
+- **Identity:** the writer reads `user.name` / `user.email` from `.git/config` and falls back to a portable identity when absent.
+
 ## Examples
 
 ```ts
@@ -59,12 +65,6 @@ await repo.reflog({ action: 'delete', ref: 'main', index: 0 });
 // Expire entries older than 90 days across every ref
 await repo.reflog({ action: 'expire', all: true, expire: '90.days.ago' });
 ```
-
-## Behaviour
-
-- **Approxidate parser** accepts a subset of git's date forms: `now`, `yesterday`, `<N>.days.ago`, `YYYY-MM-DD`, `YYYY-MM-DD HH:MM:SS`. Anything else throws `REVPARSE_UNRESOLVED`.
-- **HEAD dual logging:** when a branch update advances HEAD (no detach), both `.git/logs/HEAD` and `.git/logs/refs/heads/<branch>` receive entries.
-- **Identity:** the writer reads `user.name` / `user.email` from `.git/config` and falls back to a portable identity when absent.
 
 ## Throws
 
