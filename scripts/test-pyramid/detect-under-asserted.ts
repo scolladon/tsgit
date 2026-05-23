@@ -25,7 +25,11 @@ const SKIP_MODIFIERS = new Set(['skip', 'todo', 'fails']);
 // `it.each(...)` chains entered mid-expression; we only want top-level
 // vitest test openers.
 const OPENER_RE = /(?<!\.)\b(it|test)((?:\.\w+)*)\s*\(/g;
-const ASSERTION_RE = /\b(?:expect|assert)\w*(?:<[^<>]*>)?(?:\.\w+)?\s*\(/g;
+// Identifier `expect…` or `assert…` followed immediately by `(`, `<`, or `.`.
+// Matches `expect(`, `expectFoo(`, `expect.soft(`, `expectTypeOf<T>(`,
+// `expectTypeOf<Promise<T>>()`, `assertRefspecInvalid(`, `assert.equal(`.
+// Does not match `expected`, `assertion`, or other adjacent identifiers.
+const ASSERTION_RE = /\b(?:expect|assert)[a-zA-Z]*[(<.]/g;
 
 interface ItBlock {
   readonly line: number;

@@ -239,6 +239,38 @@ it('type-level test', () => {
     expect(sut).toEqual([]);
   });
 
+  it('Given a body that uses expectTypeOf<Promise<T>>() with nested generic args, When scanned, Then the regex matches and no finding is reported', () => {
+    // Arrange
+    const source = `
+it('nested generics', () => {
+  expectTypeOf<Promise<string>>().toExtend<Awaitable<string>>();
+});
+`;
+
+    // Act
+    const sut = detectUnderAsserted(MANIFEST, [file('test/unit/a.test.ts', source)]);
+
+    // Assert
+    expect(sut).toEqual([]);
+  });
+
+  it('Given a body where a local variable is named `expected` (not an assertion call), When scanned, Then it is not mistaken for an assertion', () => {
+    // Arrange — `const expected = …` must not satisfy the heuristic.
+    const source = `
+it('uses local named expected', () => {
+  const expected = 1;
+  void expected;
+});
+`;
+
+    // Act
+    const sut = detectUnderAsserted(MANIFEST, [file('test/unit/a.test.ts', source)]);
+
+    // Assert — no assertion call → finding emitted.
+    expect(sut).toHaveLength(1);
+    expect(sut[0]?.title).toBe('uses local named expected');
+  });
+
   it('Given a unit test whose body calls a method named test() (e.g. regex.test()), When scanned, Then the method call is not mistaken for a vitest test opener', () => {
     // Arrange — `compiled.test('lib/foo.ts')` must not be classified as a
     // nested vitest test block. The outer it() has assertions; no finding.
