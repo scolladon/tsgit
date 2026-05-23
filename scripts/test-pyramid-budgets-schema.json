@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/scolladon/tsgit/scripts/test-pyramid-budgets-schema.json",
+  "title": "tsgit testing-pyramid budgets",
+  "description": "Per-tier targets and per-heuristic thresholds for scripts/audit-test-pyramid.ts. See docs/design/phase-19-2-testing-pyramid-audit.md.",
+  "type": "object",
+  "required": ["tiers", "heuristics"],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": { "type": "string" },
+    "tiers": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/tier" }
+    },
+    "heuristics": {
+      "type": "object",
+      "required": ["overMockedIntegration", "underAssertedUnit"],
+      "additionalProperties": false,
+      "properties": {
+        "overMockedIntegration": { "$ref": "#/$defs/overMockedHeuristic" },
+        "underAssertedUnit": { "$ref": "#/$defs/underAssertedHeuristic" }
+      }
+    }
+  },
+  "$defs": {
+    "tier": {
+      "type": "object",
+      "required": ["name", "glob", "target", "warnBelow", "warnAbove"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "glob": { "type": "string", "minLength": 1 },
+        "target": { "type": "number", "minimum": 0, "maximum": 100 },
+        "warnBelow": { "type": "number", "minimum": 0, "maximum": 100 },
+        "warnAbove": {
+          "oneOf": [
+            { "type": "number", "minimum": 0, "maximum": 100 },
+            { "type": "null" }
+          ]
+        }
+      }
+    },
+    "overMockedHeuristic": {
+      "type": "object",
+      "required": ["tier", "regex", "threshold"],
+      "additionalProperties": false,
+      "properties": {
+        "tier": { "type": "string", "minLength": 1 },
+        "regex": { "type": "string", "minLength": 1 },
+        "threshold": { "type": "number", "minimum": 0 }
+      }
+    },
+    "underAssertedHeuristic": {
+      "type": "object",
+      "required": ["tier", "minAssertionsPerTest"],
+      "additionalProperties": false,
+      "properties": {
+        "tier": { "type": "string", "minLength": 1 },
+        "minAssertionsPerTest": { "type": "integer", "minimum": 1 }
+      }
+    }
+  }
+}
