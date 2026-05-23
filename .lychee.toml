@@ -1,8 +1,9 @@
 # Lychee config — markdown link checker for the doc-maintenance harness (18.3).
 # See ADR-095 for the tool-choice rationale.
 
-# Limit to web schemes; mailto / tel / file are intentionally skipped.
-scheme = ["http", "https"]
+# Skip non-web, non-file schemes (mailto, tel, irc, …). Local file links
+# (resolved as `file://`) and remote web links are both checked.
+scheme = ["http", "https", "file"]
 
 # External-URL behaviour. The accept list covers rate-limited / bot-protected
 # responses (429, 403). npmjs.com routinely returns 403 to non-browser

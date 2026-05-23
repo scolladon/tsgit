@@ -4,7 +4,7 @@ This document explains what tsgit measures, how it measures, and how to read the
 
 ## Current measured numbers
 
-Source: [`reports/benchmarks/summary.md`](../../reports/benchmarks/summary.md) — regenerable from `npm run bench:summary`.
+Source: `reports/benchmarks/summary.md` (generated locally, not committed) — regenerable from `npm run bench:summary`.
 
 Platform: `darwin-arm64`, Node 22.22.3, Apple M3 Pro.
 
