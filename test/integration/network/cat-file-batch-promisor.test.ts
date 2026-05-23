@@ -13,6 +13,7 @@ import * as path from 'node:path';
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
+import { TsgitError } from '../../../src/domain/error.js';
 import type { Commit, ObjectId } from '../../../src/domain/objects/index.js';
 import { openRepository } from '../../../src/index.node.js';
 import {
@@ -142,10 +143,21 @@ describe.skipIf(SKIP_REASON !== false)('catFile — partial-clone lazy fetch', (
     const workDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-cf-'));
     workDirs.push(workDir);
     const repo = await cloneInto(workDir);
-    const unknown = 'a'.repeat(40) as ObjectId;
+    const unknown = '1'.repeat(40) as ObjectId;
 
-    // Act / Assert
-    await expect(repo.catFile({ ids: [unknown] })).rejects.toThrow();
+    // Act
+    let caught: unknown;
+    try {
+      await repo.catFile({ ids: [unknown] });
+    } catch (err) {
+      caught = err;
+    }
+
+    // Assert — a TsgitError of a non-OBJECT_NOT_FOUND code propagates; the
+    // result is NOT a soft `{ ok: false, reason: 'missing' }` entry.
+    expect(caught).toBeInstanceOf(TsgitError);
+    if (!(caught instanceof TsgitError)) throw caught;
+    expect(caught.data.code).not.toBe('OBJECT_NOT_FOUND');
 
     await repo.dispose();
   }, 30_000);

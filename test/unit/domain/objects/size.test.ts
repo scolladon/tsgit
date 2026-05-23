@@ -1,15 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { parseBlobContent } from '../../../../src/domain/objects/blob.js';
 import type { Commit } from '../../../../src/domain/objects/commit.js';
-import { serializeCommitContent } from '../../../../src/domain/objects/commit.js';
 import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
+import { serializeObject } from '../../../../src/domain/objects/git-object.js';
 import { SHA1_CONFIG } from '../../../../src/domain/objects/hash-config.js';
+import { parseHeader } from '../../../../src/domain/objects/header.js';
 import { ObjectId } from '../../../../src/domain/objects/object-id.js';
 import { payloadByteLength } from '../../../../src/domain/objects/size.js';
 import type { Tag } from '../../../../src/domain/objects/tag.js';
-import { serializeTagContent } from '../../../../src/domain/objects/tag.js';
 import type { Tree, TreeEntry } from '../../../../src/domain/objects/tree.js';
-import { serializeTreeContent } from '../../../../src/domain/objects/tree.js';
 
 const DUMMY_ID = ObjectId.from('a'.repeat(40));
 const OTHER_ID = ObjectId.from('b'.repeat(40));
@@ -79,10 +78,13 @@ describe('payloadByteLength', () => {
     expect(sut).toBe(0);
   });
 
-  it('Given a tree, When measured, Then size equals serializeTreeContent(...).byteLength', () => {
-    // Arrange
+  it('Given a tree, When measured, Then size equals the header size of its on-disk encoding', () => {
+    // Arrange — cross-check via `serializeObject` + `parseHeader` so a
+    // type-swap mutant inside `payloadByteLength` cannot pass by routing
+    // through the same serializer.
     const tree = buildTree();
-    const expected = serializeTreeContent(tree, SHA1_CONFIG).byteLength;
+    const onDiskBytes = serializeObject(tree, SHA1_CONFIG);
+    const expected = parseHeader(onDiskBytes).size;
 
     // Act
     const sut = payloadByteLength(tree, SHA1_CONFIG);
@@ -91,10 +93,11 @@ describe('payloadByteLength', () => {
     expect(sut).toBe(expected);
   });
 
-  it('Given a commit, When measured, Then size equals serializeCommitContent(...).byteLength', () => {
+  it('Given a commit, When measured, Then size equals the header size of its on-disk encoding', () => {
     // Arrange
     const commit = buildCommit();
-    const expected = serializeCommitContent(commit).byteLength;
+    const onDiskBytes = serializeObject(commit, SHA1_CONFIG);
+    const expected = parseHeader(onDiskBytes).size;
 
     // Act
     const sut = payloadByteLength(commit, SHA1_CONFIG);
@@ -103,10 +106,11 @@ describe('payloadByteLength', () => {
     expect(sut).toBe(expected);
   });
 
-  it('Given a tag, When measured, Then size equals serializeTagContent(...).byteLength', () => {
+  it('Given a tag, When measured, Then size equals the header size of its on-disk encoding', () => {
     // Arrange
     const tag = buildTag();
-    const expected = serializeTagContent(tag).byteLength;
+    const onDiskBytes = serializeObject(tag, SHA1_CONFIG);
+    const expected = parseHeader(onDiskBytes).size;
 
     // Act
     const sut = payloadByteLength(tag, SHA1_CONFIG);

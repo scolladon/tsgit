@@ -270,8 +270,45 @@ describe('catFileBatch', () => {
     });
   });
 
+  describe('options', () => {
+    it('Given maxBytes smaller than the stored blob, When iterated, Then propagates OBJECT_TOO_LARGE (cap forwarded to readObject)', async () => {
+      // Arrange
+      const ctx = await buildSeededContext();
+      const id = await writeBlobBytes(ctx, new Uint8Array([1, 2, 3, 4]));
+      const sut = catFileBatch(ctx, [id], { maxBytes: 2 });
+
+      // Act
+      let caught: unknown;
+      try {
+        await collect(sut);
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert
+      expect(caught).toBeInstanceOf(TsgitError);
+      if (!(caught instanceof TsgitError)) throw caught;
+      expect(caught.data.code).toBe('OBJECT_TOO_LARGE');
+    });
+
+    it('Given maxBytes equal to the stored blob byte length, When iterated, Then yields the entry', async () => {
+      // Arrange
+      const ctx = await buildSeededContext();
+      const content = new Uint8Array([10, 20, 30]);
+      const id = await writeBlobBytes(ctx, content);
+      const sut = catFileBatch(ctx, [id], { maxBytes: content.byteLength });
+
+      // Act
+      const [entry] = await collect(sut);
+
+      // Assert
+      if (entry?.ok !== true) throw new Error('expected ok');
+      expect(entry.size).toBe(content.byteLength);
+    });
+  });
+
   describe('cancellation', () => {
-    it('Given a signal already aborted, When iterated, Then throws OPERATION_ABORTED on the first read', async () => {
+    it('Given a signal already aborted, When iterated, Then throws OPERATION_ABORTED before any entry is yielded', async () => {
       // Arrange
       const controller = new AbortController();
       const ctx = await buildSeededContext({ signal: controller.signal });
@@ -279,13 +316,45 @@ describe('catFileBatch', () => {
       controller.abort();
       const sut = catFileBatch(ctx, [id]);
 
-      // Act / Assert
+      // Act
+      const entries: CatFileBatchEntry[] = [];
       let caught: unknown;
       try {
-        await collect(sut);
+        for await (const entry of sut) entries.push(entry);
       } catch (err) {
         caught = err;
       }
+
+      // Assert — the abort fires before the first read; no entry was yielded.
+      expect(entries).toHaveLength(0);
+      expect(caught).toBeInstanceOf(TsgitError);
+      if (!(caught instanceof TsgitError)) throw caught;
+      expect(caught.data.code).toBe('OPERATION_ABORTED');
+    });
+
+    it('Given a signal aborted after the only yield, When iteration continues past it, Then the post-yield guard throws OPERATION_ABORTED', async () => {
+      // Arrange — a single-id batch so the post-yield `throwIfAborted` is
+      // the only check between the last yield and the iterator finishing.
+      // Removing it would let the loop complete normally; this test
+      // independently proves the post-yield guard is load-bearing.
+      const controller = new AbortController();
+      const ctx = await buildSeededContext({ signal: controller.signal });
+      const id = await writeBlobBytes(ctx, new Uint8Array([7]));
+      const sut = catFileBatch(ctx, [id]);
+      const iterator = sut[Symbol.asyncIterator]();
+      const first = await iterator.next();
+      controller.abort();
+
+      // Act
+      let caught: unknown;
+      try {
+        await iterator.next();
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert
+      expect(first.done).toBe(false);
       expect(caught).toBeInstanceOf(TsgitError);
       if (!(caught instanceof TsgitError)) throw caught;
       expect(caught.data.code).toBe('OPERATION_ABORTED');

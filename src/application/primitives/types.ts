@@ -208,6 +208,20 @@ export interface SubmoduleEntry {
  * `git cat-file --batch`'s header). `ok: false` is shaped to extend later:
  * `reason` is a literal union so a future variant is an additive change.
  */
+/**
+ * Optional knobs for the `catFileBatch` primitive — currently a single
+ * `maxBytes` cap forwarded to each per-id `readObject` call so a long
+ * batch over untrusted ids cannot exhaust the heap. Defaults to no cap.
+ */
+export interface CatFileBatchOptions {
+  /**
+   * Per-object byte cap. Rejected pre-inflate; same semantics as
+   * `ReadObjectOptions.maxBytes`. When unset, no cap applies (parity
+   * with `readObject`).
+   */
+  readonly maxBytes?: number;
+}
+
 export type CatFileBatchEntry =
   | {
       readonly ok: true;

@@ -9,6 +9,7 @@ import {
 } from '../../../src/adapters/memory/index.js';
 import { TsgitError } from '../../../src/domain/error.js';
 import { SHA1_CONFIG } from '../../../src/domain/objects/hash-config.js';
+import type { Blob, ObjectId } from '../../../src/domain/objects/index.js';
 import { createLruCache } from '../../../src/domain/storage/lru-cache.js';
 import { openRepository, type Repository, type RuntimeFallback } from '../../../src/repository.js';
 
@@ -408,10 +409,9 @@ describe('openRepository — round-trip via memory adapter', () => {
     const content = new TextEncoder().encode('hi');
     const blobId = await sut.primitives.writeObject({
       type: 'blob',
-      // biome-ignore lint/suspicious/noExplicitAny: writeObject ignores `id` at the call site
-      id: '' as any,
+      id: '' as ObjectId,
       content,
-    });
+    } satisfies Blob);
 
     // Act
     const result = await sut.catFile({ ids: [blobId] });
@@ -431,16 +431,14 @@ describe('openRepository — round-trip via memory adapter', () => {
     await sut.init();
     const a = await sut.primitives.writeObject({
       type: 'blob',
-      // biome-ignore lint/suspicious/noExplicitAny: writeObject ignores `id` at the call site
-      id: '' as any,
+      id: '' as ObjectId,
       content: new Uint8Array([1]),
-    });
+    } satisfies Blob);
     const b = await sut.primitives.writeObject({
       type: 'blob',
-      // biome-ignore lint/suspicious/noExplicitAny: writeObject ignores `id` at the call site
-      id: '' as any,
+      id: '' as ObjectId,
       content: new Uint8Array([2]),
-    });
+    } satisfies Blob);
 
     // Act
     const ids: string[] = [];
