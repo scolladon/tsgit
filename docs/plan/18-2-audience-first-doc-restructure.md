@@ -51,15 +51,15 @@ Convergence cap: this is a documentation move, not a code change. Self-review ×
 
 **Method:**
 
-- `api-commands.md` — one section per Tier-1 command, alphabetical order (declared in the file header). Each section: signature → 1-line summary → options table → 1–2 examples → cross-links to primitives it composes + related commands. Voice sample: `clone` and `add`, lands with this plan.
-- `api-primitives.md` — same shape, one section per Tier-2 primitive. Highlights the `AsyncIterable` composition pattern at the top so users grasp the operator toolkit's relevance.
+- `commands/` — one file per Tier-1 command (`commands/<kebab>.md`), kebab-case filename enforced by ls-lint (`cat-file.md`, `fetch-missing.md`, `rev-parse.md`, `sparse-checkout.md`). `commands/README.md` is the alphabetical index. Each entry: signature → 1-line summary → options table → behaviour notes → 1–2 examples → throws → cross-links to primitives + related commands + ADRs + recipes.
+- `primitives/` — same per-file shape (`primitives/<kebab>.md`). `primitives/README.md` index. Highlights the `AsyncIterable` composition pattern at the top so users grasp the operator toolkit's relevance.
 - `recipes.md` — task-oriented; titles are "Do X" sentences. One recipe per former README walkthrough: clone+checkout, partial clone with lazy-fetch, stage with globs, hook integration, progress + cancellation, navigate ref history, materialise a subset (sparse), walk submodules, streaming object reader.
 - `errors.md` — table of every `TsgitError.code`, the `reason` shape when present, and which commands/primitives can throw it. Generated initially by grep over `src/domain/errors/`; refined for prose.
 
-**Commits:**
+**Commits (batched by funnel; atomic-per-file rule loosened where it adds friction without value):**
 
-- `docs(use): api-commands reference`
-- `docs(use): api-primitives reference`
+- `docs(use): commands reference (per-file, alphabetical)`
+- `docs(use): primitives reference (per-file, alphabetical)`
 - `docs(use): recipes`
 - `docs(use): error reference`
 
