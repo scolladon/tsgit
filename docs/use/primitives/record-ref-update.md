@@ -16,7 +16,7 @@ repo.primitives.recordRefUpdate(
 ## Behaviour
 
 - **Atomicity:** the ref write and the reflog append are wrapped in a single lock.
-- **`oldId` check** (CAS): if `oldId` is set and doesn't match the current value, throws `REF_CAS_FAILURE`. Pass `undefined` to skip the check.
+- **`oldId` check** (CAS): if `oldId` is set and doesn't match the current value, throws `REF_UPDATE_CONFLICT`. Pass `undefined` to skip the check.
 - **`newId === ZERO_OID`** deletes the ref.
 - **Reflog gate:** writes a reflog entry when `core.logAllRefUpdates` is on (default) for default-loggable prefixes (`refs/heads/`, `refs/remotes/`, `refs/notes/`, `HEAD`).
 - **HEAD dual logging:** when the update advances HEAD's underlying branch, both `.git/logs/HEAD` and `.git/logs/refs/heads/<branch>` get entries.

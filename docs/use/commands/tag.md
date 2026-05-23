@@ -42,9 +42,9 @@ await repo.tag({ kind: 'delete', name: 'v1.0.0' });
 
 ## Throws
 
-- `REF_ALREADY_EXISTS` — `kind: 'create'` with an existing name and no `force`.
-- `INVALID_REF_NAME` — name violates git ref syntax.
-- `REF_NOT_FOUND` — `kind: 'delete'` on a name that does not exist.
+- `TAG_EXISTS` — `kind: 'create'` with an existing name and no `force`.
+- `INVALID_REF` — name violates git ref syntax.
+- `TAG_NOT_FOUND` — `kind: 'delete'` on a name that does not exist.
 
 ## See also
 

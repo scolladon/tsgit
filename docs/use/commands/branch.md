@@ -39,10 +39,10 @@ await repo.branch({ kind: 'delete', name: 'feature/x' });
 
 ## Throws
 
-- `REF_ALREADY_EXISTS` — `kind: 'create'` with an existing name and no `force`.
-- `INVALID_REF_NAME` — name violates git ref syntax.
-- `BRANCH_NOT_MERGED` — `kind: 'delete'` without `force` and the branch tip is not reachable from HEAD.
-- `REF_NOT_FOUND` — `kind: 'delete'` on a name that does not exist.
+- `BRANCH_EXISTS` — `kind: 'create'` with an existing name and no `force`.
+- `INVALID_REF` — name violates git ref syntax.
+- `BRANCH_NOT_FOUND` — `kind: 'delete'` on a name that does not exist.
+- `CANNOT_DELETE_CHECKED_OUT_BRANCH` — `kind: 'delete'` on the branch HEAD points at.
 
 ## See also
 

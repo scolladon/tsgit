@@ -50,8 +50,8 @@ await repo.reset({ mode: 'hard', target: 'ORIG_HEAD' });
 
 ## Throws
 
-- `BARE_REPO` — `hard` (or `mixed` writing the working tree) is not valid in a bare repository.
-- `REF_NOT_FOUND` / `INVALID_REF_NAME` — `target` does not resolve.
+- `BARE_REPOSITORY` — `hard` (or `mixed` writing the working tree) is not valid in a bare repository.
+- `REF_NOT_FOUND` / `INVALID_REF` — `target` does not resolve.
 
 ## See also
 

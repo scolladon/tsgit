@@ -31,11 +31,11 @@ If you pass `cwd` pointing at a path that doesn't exist yet, tsgit treats it as 
 
 ```ts
 // Last ten commits on the current branch
-const commits = await repo.log({ depth: 10 });
+const commits = await repo.log({ limit: 10 });
 
 // Working-tree / index / HEAD differences
-const { clean, branch, changes } = await repo.status();
-console.log(`on ${branch}, ${changes.length} change(s)`);
+const { clean, branch, indexChanges, workingTreeChanges } = await repo.status();
+console.log(`on ${branch}, ${indexChanges.length} staged, ${workingTreeChanges.length} unstaged`);
 ```
 
 `log` and `status` are both Tier-1 commands. They build on Tier-2 primitives (`walkCommits`, `readIndex`, `walkWorkingTree`); see the [primitives reference](../use/primitives/) when you want to compose your own walks.

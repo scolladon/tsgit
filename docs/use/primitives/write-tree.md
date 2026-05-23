@@ -19,7 +19,7 @@ const tree = await repo.primitives.writeTree([
 
 ## Throws
 
-- `TREE_ENTRIES_NOT_SORTED` — entries out of git-canonical order.
+- `INVALID_TREE_ENTRY` — entries out of git-canonical order, or otherwise malformed.
 
 ## See also
 

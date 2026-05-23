@@ -62,15 +62,15 @@ await repo.reflog({ action: 'expire', all: true, expire: '90.days.ago' });
 
 ## Behaviour
 
-- **Approxidate parser** accepts a subset of git's date forms: `now`, `yesterday`, `<N>.days.ago`, `YYYY-MM-DD`, `YYYY-MM-DD HH:MM:SS`. Anything else throws `INVALID_APPROXIDATE`.
+- **Approxidate parser** accepts a subset of git's date forms: `now`, `yesterday`, `<N>.days.ago`, `YYYY-MM-DD`, `YYYY-MM-DD HH:MM:SS`. Anything else throws `REVPARSE_UNRESOLVED`.
 - **HEAD dual logging:** when a branch update advances HEAD (no detach), both `.git/logs/HEAD` and `.git/logs/refs/heads/<branch>` receive entries.
 - **Identity:** the writer reads `user.name` / `user.email` from `.git/config` and falls back to a portable identity when absent.
 
 ## Throws
 
-- `INVALID_APPROXIDATE` — unparseable date expression.
-- `REFLOG_INDEX_OUT_OF_RANGE` — `delete` index ≥ entry count.
-- `REF_NOT_FOUND` — referenced ref has no log.
+- `REVPARSE_UNRESOLVED` — unparseable date expression (e.g. `expire: 'tomorrow afternoon'`).
+- `REFLOG_ENTRY_OUT_OF_RANGE` — `delete` index ≥ entry count.
+- `REFLOG_NOT_FOUND` — referenced ref has no log.
 
 ## See also
 

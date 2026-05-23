@@ -38,7 +38,7 @@ await repo.rm(['*.log']);
 ## Throws
 
 - `PATHSPEC_NO_MATCH` — a literal pattern matched nothing. (Glob no-match is a silent no-op.)
-- `BARE_REPO` — `rm` is not valid in a bare repository.
+- `BARE_REPOSITORY` — `rm` is not valid in a bare repository.
 
 ## See also
 

@@ -66,12 +66,11 @@ for (const r of result.pushedRefs) {
 
 ## Throws
 
-- `PUSH_REJECTED` — server returned `ng` for at least one ref (surfaces in `pushedRefs[i].status`).
-- `PUSH_NOT_FAST_FORWARD` — non-fast-forward refspec without `force` / `forceWithLease`.
-- `PUSH_LEASE_BROKEN` — `forceWithLease` did not match.
+- `PUSH_REJECTED` — server returned `ng` for at least one ref (also covers `forceWithLease` mismatch). Surfaces in `pushedRefs[i].status`.
+- `NON_FAST_FORWARD` — non-fast-forward refspec without `force` / `forceWithLease`.
 - `HOOK_FAILED` — `pre-push` returned non-zero exit (when hooks are enabled).
 - `NETWORK_ERROR` — transport failure.
-- `REMOTE_NOT_FOUND` — `remote` is not in `.git/config`.
+- `REMOTE_NOT_CONFIGURED` — `remote` is not in `.git/config`.
 
 ## See also
 

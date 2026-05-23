@@ -55,9 +55,9 @@ await repo.checkout({ target: 'main', force: true });
 ## Throws
 
 - `CHECKOUT_OVERWRITE_DIRTY` — switch without `force` against a dirty working tree.
-- `REF_NOT_FOUND` / `INVALID_REF_NAME` — `target` does not resolve.
+- `REF_NOT_FOUND` / `INVALID_REF` — `target` does not resolve.
 - `PATHSPEC_NO_MATCH` — a literal path pattern matched nothing.
-- `BARE_REPO` — checkout is not valid in a bare repository.
+- `BARE_REPOSITORY` — checkout is not valid in a bare repository.
 
 ## See also
 

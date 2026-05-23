@@ -130,6 +130,7 @@ Codes are grouped by domain. Within each group, alphabetical.
 | `INVALID_IDENTITY` | `reason` | Author / committer identity malformed. |
 | `INVALID_OPTION` | `option, reason` | Caller passed an incompatible option combination. |
 | `INVALID_TAG` | `reason` | Tag object failed validation. |
+| `NOTHING_TO_COMMIT` | — | `commit` called when the index matches HEAD's tree (no changes to commit). |
 | `OPERATION_IN_PROGRESS` | `operation` | Another long-running operation (merge / rebase / cherry-pick) is pending. |
 
 ### Network, transport, partial clone

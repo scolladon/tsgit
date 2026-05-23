@@ -16,7 +16,7 @@ repo.revParse(expression: string): Promise<ObjectId>;
 | Symbolic ref | `HEAD` | current branch tip |
 | Tag | `v1.0.0` | tag's target (peeled) |
 | Full oid | `9f86d08...` | the oid itself |
-| Short oid | `9f86d08` | the unambiguous oid (`AMBIGUOUS_OID` on collision) |
+| Short oid | `9f86d08` | the unambiguous oid (`REVPARSE_AMBIGUOUS` on collision) |
 | `@{N}` | `HEAD@{2}` | reflog entry N moves back |
 | `@{date}` | `main@{yesterday}` | ref's value at the given date |
 | `~N` | `main~3` | N first-parents back |
@@ -34,10 +34,9 @@ const second = await repo.revParse('main^2');
 
 ## Throws
 
-- `REF_NOT_FOUND` — name does not resolve.
-- `AMBIGUOUS_OID` — short oid matches multiple objects.
-- `INVALID_APPROXIDATE` — `@{date}` form unparseable.
-- `REFLOG_INDEX_OUT_OF_RANGE` — `@{N}` beyond the reflog length.
+- `REVPARSE_UNRESOLVED` — name does not resolve, or `@{date}` form unparseable.
+- `REVPARSE_AMBIGUOUS` — short oid matches multiple objects.
+- `REFLOG_ENTRY_OUT_OF_RANGE` — `@{N}` beyond the reflog length.
 
 ## See also
 

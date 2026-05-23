@@ -90,7 +90,7 @@ Every object read through `readObject` is hashed and verified against the reques
 - leading `-` (would be parsed as a CLI flag by lower-level tooling)
 - NUL or other control characters
 
-…surfaced as `INVALID_SUBMODULE_NAME`.
+…surfaced as `UNSUPPORTED_OPERATION` with the offending name in the payload.
 
 ## `.gitmodules` parsing (CVE-2018-11235 hardening)
 

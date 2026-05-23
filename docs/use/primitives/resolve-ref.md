@@ -22,7 +22,7 @@ const tagCommit = await repo.primitives.resolveRef('refs/tags/v1.0.0', { peel: t
 ## Throws
 
 - `REF_NOT_FOUND` — name does not resolve.
-- `INVALID_REF_NAME` — syntactically invalid.
+- `INVALID_REF` — syntactically invalid.
 
 ## See also
 

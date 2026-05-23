@@ -54,9 +54,8 @@ await repo.submodules({ ref: 'HEAD', recursive: true, maxDepth: 2 });
 
 ## Throws
 
-- `REF_NOT_FOUND` / `INVALID_REF_NAME` — `ref` does not resolve.
-- `INVALID_SUBMODULE_NAME` — `.gitmodules` row violates CVE-2018-17456 name rules.
-- `GITMODULES_TOO_LARGE` — `.gitmodules` exceeds the size cap.
+- `REF_NOT_FOUND` / `INVALID_REF` — `ref` does not resolve.
+- `UNSUPPORTED_OPERATION` — `.gitmodules` row violates the CVE-2018-17456 name rules (empty / `.` / `..` segments, backslash, absolute, drive-prefixed, leading `-`, control characters).
 
 ## See also
 

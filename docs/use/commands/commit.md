@@ -61,10 +61,9 @@ await repo.commit({ message: 'resolve conflict' });
 
 ## Throws
 
-- `EMPTY_COMMIT` — index matches HEAD's tree (no changes to commit).
+- `NOTHING_TO_COMMIT` — index matches HEAD's tree (no changes to commit).
 - `HOOK_FAILED` — `pre-commit` or `commit-msg` returned non-zero exit (when hooks are enabled).
-- `BARE_REPO` — commit is not valid in a bare repository.
-- `MERGE_CONFLICTS_PENDING` — unresolved unmerged entries in the index.
+- `BARE_REPOSITORY` — commit is not valid in a bare repository.
 
 ## See also
 

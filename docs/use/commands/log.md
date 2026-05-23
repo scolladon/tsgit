@@ -45,7 +45,7 @@ const last = await repo.log({ before });
 
 ## Throws
 
-- `REF_NOT_FOUND` / `INVALID_REF_NAME` — `from` does not resolve.
+- `REF_NOT_FOUND` / `INVALID_REF` — `from` does not resolve.
 
 ## See also
 

@@ -53,8 +53,9 @@ await repo.sparseCheckout({ action: 'disable' });
 
 ## Throws
 
-- `SPARSE_DIRTY_OUT_OF_CONE` — `set` / `add` would discard a dirty out-of-cone file and `force` is not set.
+- `WORKING_TREE_DIRTY` — `set` / `add` would discard a dirty out-of-cone file and `force` is not set.
 - `INVALID_OPTION` — empty pattern list, or `cone: true` with a non-cone-compatible pattern.
+- `SPARSE_PATTERN_FILE_TOO_LARGE` — `.git/info/sparse-checkout` exceeds the size cap.
 
 ## See also
 

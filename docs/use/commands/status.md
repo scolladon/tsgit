@@ -16,7 +16,7 @@ interface StatusResult {
 }
 
 interface ChangeEntry {
-  readonly kind: ChangeKind;     // 'added' | 'modified' | 'deleted' | 'renamed' | 'untracked' | 'typechange'
+  readonly kind: ChangeKind;     // 'modified' | 'added' | 'deleted' | 'untracked'
   readonly path: FilePath;
 }
 ```
@@ -40,7 +40,7 @@ const ts = workingTreeChanges.filter(c => c.path.endsWith('.ts'));
 
 ## See also
 
-- Primitives: [`readIndex`](../primitives/read-index.md), [`walkWorkingTree`](../primitives/walk-working-tree.md), [`diffIndexAgainstTree`](../primitives/diff-trees.md)
+- Primitives: [`readIndex`](../primitives/read-index.md), [`walkWorkingTree`](../primitives/walk-working-tree.md), [`diffTrees`](../primitives/diff-trees.md)
 - Related commands: [`add`](add.md), [`diff`](diff.md), [`checkout`](checkout.md)
 - ADRs: [039](../../adr/039-defer-status-pathspec.md)
 - Roadmap: Phase 22 — pathspec scoping on `status`

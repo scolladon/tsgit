@@ -49,7 +49,7 @@ console.log(result.added.length, result.modified.length, result.removed.length);
 - `PATHSPEC_NO_MATCH` — a literal pattern matched nothing. (Glob no-match is a silent no-op.)
 - `INVALID_OPTION { option: 'all' }` — `all: true` with a non-empty pathspec.
 - `WORKING_TREE_FILE_TOO_LARGE` — a file exceeds `MAX_WORKING_TREE_BLOB_BYTES` (256 MiB).
-- `BARE_REPO` — `add` is not valid in a bare repository.
+- `BARE_REPOSITORY` — `add` is not valid in a bare repository.
 - `EMPTY_PATHSPEC` — `paths` is empty and `all` is not set.
 
 ## See also

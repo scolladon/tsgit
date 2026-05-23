@@ -47,7 +47,7 @@ When the merge cannot resolve cleanly, the result is `{ kind: 'conflict', confli
 
 Resolve the working-tree files, `repo.add` the resolved paths, then `repo.commit({ message })`. The next `commit` reads `MERGE_HEAD` as a second parent and clears the merge-state files atomically.
 
-Unsupported conflict types (`rename-rename`, `gitlink`) reject upfront with `unsupportedOperation` before any disk write.
+Unsupported conflict types (`rename-rename`, `gitlink`) reject upfront with `UNSUPPORTED_OPERATION` before any disk write.
 
 ## Examples
 
@@ -76,8 +76,7 @@ switch (result.kind) {
 
 ## Throws
 
-- `MERGE_NOT_FAST_FORWARD` — `fastForwardOnly: true` and no fast-forward exists.
-- `UNSUPPORTED_OPERATION` — conflict type not supported in v1 (e.g. rename/rename).
+- `UNSUPPORTED_OPERATION` — conflict type not supported in v1 (e.g. rename/rename) or `fastForwardOnly: true` and no fast-forward exists.
 - `REF_NOT_FOUND` — `target` does not resolve.
 
 ## See also

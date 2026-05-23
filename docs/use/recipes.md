@@ -146,8 +146,8 @@ const applied = await repo.sparseCheckout({
   action: 'set',
   patterns: ['src/app', 'docs'],
 });
-console.log(applied.materialized.length, 'files written');
-console.log(applied.removed.length, 'files removed');
+console.log(applied.materialized, 'files written');
+console.log(applied.removed, 'files removed');
 
 // Widen
 await repo.sparseCheckout({ action: 'add', patterns: ['src/lib'] });
