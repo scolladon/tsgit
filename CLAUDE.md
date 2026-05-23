@@ -139,7 +139,7 @@ After implementation, run **three review passes** on the diff — code quality, 
 
 ### 8. Docs refresh, push, open PR
 
-Update `README.md`, `RUNBOOK.md`, `CONTRIBUTING.md`, `DESIGN.md`, and any phase design docs that the implementation invalidated. **Flip every relevant `docs/BACKLOG.md` entry (`[ ]` / `[~]` → `[x]`) inside the PR's own commits** — never as a follow-up after merge. The squash-merge that closes the PR is what flips the line in `main`, so the tick must travel with the implementation, not chase it. Push the branch, open a PR with a thorough body (summary + test plan), and let CI exercise the full pipeline. Squash-merge on green. Cleanup: `git worktree remove`, `git branch -D`.
+Update `README.md`, `RUNBOOK.md`, `CONTRIBUTING.md`, the relevant pages under `docs/get-started/` · `docs/use/` · `docs/understand/`, and any phase design docs that the implementation invalidated. **Flip every relevant `docs/BACKLOG.md` entry (`[ ]` / `[~]` → `[x]`) inside the PR's own commits** — never as a follow-up after merge. The squash-merge that closes the PR is what flips the line in `main`, so the tick must travel with the implementation, not chase it. Push the branch, open a PR with a thorough body (summary + test plan), and let CI exercise the full pipeline. Squash-merge on green. Cleanup: `git worktree remove`, `git branch -D`.
 
 ### Workflow summary
 
