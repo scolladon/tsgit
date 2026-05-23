@@ -374,6 +374,33 @@ nested submodules contribute their own entry but no children, matching
 `git submodule status --recursive`. No network is touched — `url` is opaque
 data.
 
+### Streaming object reader (`cat-file --batch`)
+
+```typescript
+// Tier-1 — collect entries for a known set of ids.
+const { entries } = await repo.catFile({
+  ids: [oid1, oid2, missingOid],
+  maxBytes: 16 * 1024 * 1024, // optional per-object cap
+});
+for (const entry of entries) {
+  if (entry.ok) console.log(entry.id, entry.type, entry.size);
+  else console.log(entry.id, 'missing');
+}
+
+// Tier-2 — back-pressure-friendly stream for very large batches.
+for await (const entry of repo.primitives.catFileBatch(idsIterable)) {
+  if (entry.ok && entry.type === 'blob') process(entry.object);
+}
+```
+
+Entries land in **strict input order**, one per id, sequentially. A missing
+object yields `{ ok: false, id, reason: 'missing' }` so a long batch survives
+sparse misses; every other resolver error (corrupt pack, hash mismatch,
+network failure on a promisor) propagates. Partial-clone lazy-fetch is
+transparent — calling `catFile` on a `blob:none` clone pulls each missing
+blob exactly once. `maxBytes` (forwarded to `readObject`) caps per-object
+memory, important for batches over untrusted ids.
+
 ## Benchmarks
 
 Comparison against `isomorphic-git@1.38` on a synthetic 50-commit repo. Numbers

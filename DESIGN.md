@@ -82,6 +82,7 @@ See [docs/design/ports-and-adapters.md](docs/design/ports-and-adapters.md) for t
 | **Hooks** | `pre-commit` / `commit-msg` / `pre-push` script execution | `src/ports/hook-runner.ts` |
 | **Partial clone** | `--filter` object filters, promisor remote, lazy-fetch on read | `src/domain/protocol/object-filter.ts`, `src/application/commands/fetch-missing.ts` |
 | **Submodules** | Tree-ish gitlink walk + `.gitmodules` join, optional recursion into absorbed nested gitdirs | `src/application/primitives/walk-submodules.ts`, `src/application/commands/submodules.ts` |
+| **Cat-file batch** | Streaming `git cat-file --batch` equivalent — `AsyncIterable<ObjectId>` in, per-id `{ ok, … }` discriminated entries out, in input order; per-object `maxBytes` cap forwarded to `readObject` | `src/application/primitives/cat-file-batch.ts`, `src/application/commands/cat-file.ts` |
 | **Ports** | Interfaces for I/O and platform abstraction | `src/ports/` |
 | **Adapters** | Node, browser (OPFS), in-memory implementations | `src/adapters/` |
 | **Primitives** | Tier-2 composable low-level operations | `src/application/primitives/` |
@@ -91,4 +92,5 @@ See [docs/prd/PRD.md](docs/prd/PRD.md) for the full architecture and competitive
 [docs/design/hooks.md](docs/design/hooks.md) for the Phase 17.2 git-hooks design,
 [docs/design/sparse-checkout.md](docs/design/sparse-checkout.md) for the Phase 17.3 sparse-checkout design,
 [docs/design/partial-clone.md](docs/design/partial-clone.md) for the Phase 17.4 partial-clone design,
-and [docs/design/submodule-walk.md](docs/design/submodule-walk.md) for the Phase 17.5 submodule-walk design.
+[docs/design/submodule-walk.md](docs/design/submodule-walk.md) for the Phase 17.5 submodule-walk design,
+and [docs/design/cat-file-batch.md](docs/design/cat-file-batch.md) for the Phase 17.6 `cat-file --batch` design.
