@@ -143,7 +143,8 @@ describe('kebabCase', () => {
 describe('checkDocsExist', () => {
   it('Given a docs root with the expected file, When checkDocsExist runs, Then no gaps are returned', () => {
     // Arrange
-    const fileExists = (p: string): boolean => p === '/docs/commands/clone.md';
+    const expected = path.join('/docs', 'commands', 'clone.md');
+    const fileExists = (p: string): boolean => p === expected;
 
     // Act
     const sut = checkDocsExist('commands', ['clone'], '/docs', [], fileExists);
@@ -165,7 +166,7 @@ describe('checkDocsExist', () => {
         kind: 'commands',
         name: 'clone',
         missing: 'file',
-        expectedPath: '/docs/commands/clone.md',
+        expectedPath: path.join('/docs', 'commands', 'clone.md'),
       },
     ]);
   });
@@ -183,7 +184,8 @@ describe('checkDocsExist', () => {
 
   it('Given multiple names, When some are missing and others exist, Then only the missing ones are reported', () => {
     // Arrange
-    const fileExists = (p: string): boolean => p === '/docs/commands/clone.md';
+    const expected = path.join('/docs', 'commands', 'clone.md');
+    const fileExists = (p: string): boolean => p === expected;
 
     // Act
     const sut = checkDocsExist('commands', ['clone', 'add', 'commit'], '/docs', [], fileExists);
@@ -218,7 +220,7 @@ describe('checkIndexRow', () => {
         kind: 'commands',
         name: 'clone',
         missing: 'index-row',
-        expectedPath: '/docs/commands/README.md',
+        expectedPath: path.join('/docs', 'commands', 'README.md'),
       },
     ]);
   });

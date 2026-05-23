@@ -454,7 +454,7 @@
       "output": []
     },
     "docs:json": {
-      "command": "typedoc --json reports/api.json --out reports/api-tmp && rm -rf reports/api-tmp",
+      "command": "typedoc --json reports/api.json --disableSources --out reports/api-tmp && rm -rf reports/api-tmp",
       "files": [
         "src/**/*.ts",
         "typedoc.json",
