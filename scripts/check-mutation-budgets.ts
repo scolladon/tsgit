@@ -16,6 +16,7 @@
 import { readFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import * as process from 'node:process';
+import { pathToFileURL } from 'node:url';
 
 import {
   evaluateBudgets,
@@ -163,8 +164,7 @@ export const run = async (
 const isEntryPoint = (): boolean => {
   const entry = process.argv[1];
   if (entry === undefined) return false;
-  const meta = import.meta.url;
-  return meta === `file://${entry}` || meta.endsWith(path.basename(entry));
+  return import.meta.url === pathToFileURL(entry).href;
 };
 
 if (isEntryPoint()) {
