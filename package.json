@@ -181,7 +181,7 @@
     "test:e2e": "wireit",
     "test:coverage": "wireit",
     "test:mutation": "wireit",
-    "test:mutation:incremental": "wireit",
+    "test:mutation:pr": "wireit",
     "test:bench": "wireit",
     "bench:summary": "wireit",
     "bench:fixture": "node --experimental-strip-types scripts/gen-bench-fixture.ts",
@@ -192,6 +192,7 @@
     "check:doc-links": "wireit",
     "check:doc-coverage": "wireit",
     "check:doc-typedoc": "wireit",
+    "check:mutation-budgets": "wireit",
     "verify:tarball": "wireit",
     "check:size": "wireit",
     "check:exports": "wireit",
@@ -389,14 +390,15 @@
         "reports/mutation/**"
       ]
     },
-    "test:mutation:incremental": {
-      "command": "stryker run --incremental",
+    "test:mutation:pr": {
+      "command": "node --experimental-strip-types scripts/run-stryker-pr.ts",
       "dependencies": [
         "test:unit"
       ],
       "files": [
         "src/**/*.ts",
         "test/unit/**/*.ts",
+        "scripts/run-stryker-pr.ts",
         "stryker.config.json",
         "vitest.config.ts"
       ],
@@ -484,6 +486,16 @@
       "dependencies": [
         "docs:json"
       ]
+    },
+    "check:mutation-budgets": {
+      "command": "node --experimental-strip-types scripts/check-mutation-budgets.ts",
+      "files": [
+        "scripts/check-mutation-budgets.ts",
+        "scripts/mutation-budgets.ts",
+        "mutation-budgets.json",
+        "reports/mutation/mutation-report.json"
+      ],
+      "output": []
     },
     "verify:tarball": {
       "command": "bash scripts/verify-tarball.sh",
@@ -597,6 +609,7 @@
     "jscpd": "4.2.3",
     "knip": "6.14.2",
     "lint-staged": "17.0.5",
+    "minimatch": "10.2.5",
     "rollup": "4.60.4",
     "rollup-plugin-dts": "6.4.1",
     "rollup-plugin-visualizer": "7.0.1",
