@@ -211,7 +211,7 @@ Entries land in strict input order, one per id, sequentially. A missing object y
 
 ## Compose your own walk
 
-The walker primitives are real `AsyncIterable`s; the [operator toolkit](../use/api-primitives.md#composition-pattern) composes against them:
+The walker primitives are real `AsyncIterable`s; the [operator toolkit](primitives/README.md#composition-pattern) composes against them:
 
 ```ts
 import { pipe, filter, map, take, toArray } from '@scolladon/tsgit/operators';

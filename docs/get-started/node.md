@@ -38,7 +38,7 @@ const { clean, branch, changes } = await repo.status();
 console.log(`on ${branch}, ${changes.length} change(s)`);
 ```
 
-`log` and `status` are both Tier-1 commands. They build on Tier-2 primitives (`walkCommits`, `readIndex`, `walkWorkingTree`); see [api-primitives.md](../use/api-primitives.md) when you want to compose your own walks.
+`log` and `status` are both Tier-1 commands. They build on Tier-2 primitives (`walkCommits`, `readIndex`, `walkWorkingTree`); see the [primitives reference](../use/primitives/) when you want to compose your own walks.
 
 ## Write
 
@@ -88,7 +88,7 @@ If your code already wraps work in `using`/`await using` (TypeScript 5.2+), `dis
 | Run tsgit in a browser tab | [Browser quickstart](browser.md) |
 | Use the in-memory adapter for tests | [In-memory adapter](memory.md) |
 | Migrate from `isomorphic-git` | [Migration guide](migrate-from-isomorphic-git.md) |
-| See every command available | [Commands reference](../use/api-commands.md) |
-| Compose your own walks | [Primitives reference](../use/api-primitives.md) |
+| See every command available | [Commands reference](../use/commands/) |
+| Compose your own walks | [Primitives reference](../use/primitives/) |
 | See real-world flows (clone + checkout, partial clone, hooks, …) | [Recipes](../use/recipes.md) |
 | Understand why tsgit looks like this | [Architecture](../understand/architecture.md) · [design decisions](../understand/design-decisions.md) |

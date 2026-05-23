@@ -1,6 +1,6 @@
 # `walkCommits`
 
-`AsyncIterable<Commit>` walker. Any parent ordering — not first-parent-only like the `log` command. Composable with the [operator toolkit](../api-primitives.md#composition-pattern).
+`AsyncIterable<Commit>` walker. Any parent ordering — not first-parent-only like the `log` command. Composable with the [operator toolkit](README.md#composition-pattern).
 
 ## Signature
 
