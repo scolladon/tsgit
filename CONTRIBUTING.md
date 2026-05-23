@@ -170,7 +170,30 @@ fileSystemContractTests(async () => ({
 | Branch coverage | 100% |
 | Function coverage | 100% |
 | Statement coverage | 100% |
-| Mutation score | Target: 100% (break threshold: 90%) |
+| Mutation score | Per-bucket budgets — see [Mutation budgets](#mutation-budgets) |
+
+### Mutation budgets
+
+Mutation testing is bucketed by architecture tier. Each bucket has its own `break` threshold; the PR gate enforces the budget for files touched in the PR diff.
+
+| Bucket | Globs | break | Why |
+|---|---|---|---|
+| `domain` | `src/domain/**` | 99 | Pure logic, no platform escape hatch. |
+| `application` | `src/application/**`, `src/repository.ts`, `src/repository/**`, `src/dispose-adapters.ts` | 95 | Composition of primitives + ports; defensive guards covered by integration. |
+| `adapters` | `src/adapters/node/**`, `src/adapters/memory/**`, `src/adapter-detect.ts` | 85 | Errno-conditional code covered by `posix-integration` + `win-integration` jobs, not unit mutation. |
+| `infra` | `src/operators/**`, `src/transport/**`, `src/ports/**`, `src/progress.ts` | 90 | Pure operators + timer-sensitive transport middleware. |
+
+Source of truth: `mutation-budgets.json` at repo root. The gate is `npm run check:mutation-budgets`, invoked after `stryker run`.
+
+**Local workflow** (full-tree):
+```bash
+npm run test:mutation
+npm run check:mutation-budgets
+```
+
+**CI workflow** (diff-scoped): `.github/scripts/compute-mutation-scope.sh` derives the file list from the PR diff vs `base.sha`; `test:mutation:pr` runs Stryker over that scope; `check:mutation-budgets` evaluates the resulting report. PRs that don't touch `src/` skip mutation entirely. See `docs/design/phase-19-1-mutation-pyramid.md` and ADRs 100–102.
+
+**Equivalent mutants.** When a mutant is provably equivalent (the test would pass for both the original and the mutant), annotate the source with `// equivalent-mutant: <why>` on the line above. No catalogue, no allowlist — the annotation is the documentation.
 
 ## Commit Messages
 

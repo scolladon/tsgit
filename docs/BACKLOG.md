@@ -13,7 +13,7 @@ Details live in git history, ADRs (`docs/adr/`), and design docs (`docs/design/`
 | **v1.0** — foundation through launch | 0–11 | shipped (`@scolladon/tsgit@1.0.0`) |
 | **v1.x** — semantic completion | 12–17 | shipped |
 | **v1.x** — housekeeping & doc restructure | 18 | shipped (18.3 doc-maintenance harness) |
-| **v2.0** — test base + porcelain completeness + history rewriting | 19–22 | queued |
+| **v2.0** — test base + porcelain completeness + history rewriting | 19–22 | in progress (19.1 shipped) |
 | **v3.0** — inspection + maintenance & exotic | 23–24 | queued |
 | **v4.0** — transport + signing + perf | 25–26 | queued |
 
@@ -216,7 +216,7 @@ Ships in v1.x. No major bump (SemVer: additive + cosmetic only).
 
 Front-loaded. Every Phase 20+ item ships against this harness. Goal: catch regressions before they ship, not after.
 
-- [ ] **19.1** Mutation pyramid — per-domain budgets + fast PR gate + full nightly. Quarantine equivalent-mutant catalogue.
+- [x] **19.1** Mutation pyramid — per-bucket budgets (domain/application/adapters/infra) + diff-scoped PR gate; per-OS nightly removed (ADR-102 supersedes ADR-055); equivalent-mutant catalogue kept inline-only · ADRs 100–102 · `design/phase-19-1-mutation-pyramid.md`
 - [ ] **19.2** Testing-pyramid audit — count unit/integration/e2e, target ratio, flag over-mocked integrations and under-asserted units.
 - [ ] **19.3** Unit-test expressiveness lint — enforce `Given/When/Then` titles, AAA body comments, `sut` naming; ban `toThrow(Class)` without data assertion.
 - [ ] **19.4** Integration-test usefulness audit — kill duplicates, promote orphans into surface-parity coverage, document what each one proves.

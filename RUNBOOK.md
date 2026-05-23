@@ -32,7 +32,9 @@ npm install
 | `npm run test:integration` | Integration tests only |
 | `npm run test:e2e` | End-to-end tests (Playwright) |
 | `npm run test:coverage` | Tests with 100% coverage enforcement |
-| `npm run test:mutation` | Mutation testing — incremental (Stryker) |
+| `npm run test:mutation` | Mutation testing — full tree (Stryker) |
+| `npm run test:mutation:pr` | Mutation testing — diff-scoped (reads `TSGIT_MUTATE_PATHS_FILE` or `--mutate`); CI invokes this |
+| `npm run check:mutation-budgets` | Evaluate per-bucket mutation budgets against the latest `reports/mutation/mutation-report.json` (Phase 19.1) |
 | `npm run test:bench` | Performance benchmarks |
 | `npm run bench:fixture -- <medium\|large>` | Generate + cache a scaled bench fixture |
 | `npm run profile` | V8 CPU profiles for log / status / pack-read |
