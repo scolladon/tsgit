@@ -1,5 +1,11 @@
 export { type AddOptions, type AddResult, add } from './add.js';
 export { type BranchAction, type BranchInfo, type BranchResult, branch } from './branch.js';
+export {
+  type CatFileBatchEntry,
+  type CatFileInput,
+  type CatFileResult,
+  catFile,
+} from './cat-file.js';
 export { type CheckoutOptions, type CheckoutResult, checkout } from './checkout.js';
 export { type CloneOptions, type CloneResult, clone } from './clone.js';
 export { type CommitOptions, type CommitResult, commit } from './commit.js';
