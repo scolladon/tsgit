@@ -34,6 +34,7 @@
     "husky",
     "jscpd",
     "lint-staged",
+    "minimatch",
     "size-limit",
     "wireit"
   ],

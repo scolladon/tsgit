@@ -80,7 +80,7 @@ const formatScore = (score: number): string =>
 
 export const renderTable = (outcome: BudgetCheckOutcome): string => {
   const header =
-    '  bucket       files  mutants  killed  surv  noCov  timeo   score  break  status';
+    '  bucket       files  mutants  killed  surv  noCov   t/o    score  break  status';
   const sep = '  ' + '-'.repeat(header.length - 2);
   const rows = outcome.results.map((r) => {
     const status =
