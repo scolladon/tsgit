@@ -101,7 +101,7 @@ describe('renderMarkdown', () => {
     // Assert — integration is warn-below in okOutcome
     const integrationRow = sut.split('\n').find((line) => line.includes('| integration |'));
     expect(integrationRow).toBeDefined();
-    expect(integrationRow).toMatch(/⚠|warn-below/);
+    expect(integrationRow).toContain('⚠ warn-below');
   });
 
   it('Given findings, When rendered, Then a Findings section lists over-mocked and under-asserted entries', () => {

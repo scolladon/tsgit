@@ -133,8 +133,9 @@ describe('scripts/audit-test-pyramid (integration)', () => {
     // Act
     const sut = await runScript(tmpRoot);
 
-    // Assert
+    // Assert — ADR-104: findings never gate; exit must remain 0.
     expect(sut.code).toBe(0);
+    expect(sut.stderr).toBe('');
     const json = JSON.parse(await readFile(path.join(tmpRoot, 'out', 'test-pyramid.json'), 'utf8'));
     expect(json.findings.overMocked).toEqual([{ path: 'test/integration/bad.test.ts', hits: 1 }]);
   });
@@ -169,10 +170,8 @@ describe('scripts/audit-test-pyramid (integration)', () => {
     // Assert
     expect(sut.code).toBe(0);
     const json = JSON.parse(await readFile(path.join(tmpRoot, 'out', 'test-pyramid.json'), 'utf8'));
-    expect(json.findings.underAsserted).toHaveLength(1);
-    expect(json.findings.underAsserted[0]).toMatchObject({
-      path: 'test/unit/empty.test.ts',
-      title: 'says nothing',
-    });
+    expect(json.findings.underAsserted).toEqual([
+      { path: 'test/unit/empty.test.ts', line: 1, title: 'says nothing' },
+    ]);
   });
 });

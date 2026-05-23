@@ -156,6 +156,30 @@ describe('tallyTierFiles', () => {
     expect(sut.tiers.find((t) => t.tier === 'unit')?.status).toBe('ok');
   });
 
+  it('Given a unit share exactly equal to warnBelow (75%), When tallied, Then status is "ok" (strict less-than)', () => {
+    // Arrange — 75 unit / 20 integration / 5 e2e → unit share = 75.0%, exactly the warnBelow floor.
+    const paths = [...unitPaths(75), ...integrationPaths(20), ...e2ePaths(5)];
+
+    // Act
+    const sut = tallyTierFiles(MANIFEST, paths);
+
+    // Assert
+    expect(sut.tiers.find((t) => t.tier === 'unit')?.sharePct).toBe(75.0);
+    expect(sut.tiers.find((t) => t.tier === 'unit')?.status).toBe('ok');
+  });
+
+  it('Given an integration share exactly equal to warnAbove (25%), When tallied, Then status is "ok" (strict greater-than)', () => {
+    // Arrange — 65 unit / 25 integration / 10 e2e → integration share = 25.0%, exactly warnAbove.
+    const paths = [...unitPaths(65), ...integrationPaths(25), ...e2ePaths(10)];
+
+    // Act
+    const sut = tallyTierFiles(MANIFEST, paths);
+
+    // Assert
+    expect(sut.tiers.find((t) => t.tier === 'integration')?.sharePct).toBe(25.0);
+    expect(sut.tiers.find((t) => t.tier === 'integration')?.status).toBe('ok');
+  });
+
   it('Given the result, When checked, Then tiers are returned in manifest order', () => {
     // Arrange
     const paths = [...unitPaths(8), ...integrationPaths(1), ...e2ePaths(1)];

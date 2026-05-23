@@ -59,7 +59,8 @@ describe('a', () => {
   });
 
   it('Given a unit it() block with zero assertions, When scanned, Then one finding with path/line/title is returned', () => {
-    // Arrange
+    // Arrange — leading newline = line 1, import = line 2, describe = line 3,
+    // inner it() opens on line 4.
     const source = `
 import { describe, it } from 'vitest';
 describe('a', () => {
@@ -73,10 +74,7 @@ describe('a', () => {
     const sut = detectUnderAsserted(MANIFEST, [file('test/unit/a.test.ts', source)]);
 
     // Assert
-    expect(sut).toHaveLength(1);
-    expect(sut[0]?.path).toBe('test/unit/a.test.ts');
-    expect(sut[0]?.title).toBe('does nothing');
-    expect(sut[0]?.line).toBeGreaterThan(0);
+    expect(sut).toEqual([{ path: 'test/unit/a.test.ts', line: 4, title: 'does nothing' }]);
   });
 
   it('Given an it.skip block with zero assertions, When scanned, Then no finding (skip exempt)', () => {
@@ -262,7 +260,11 @@ it('second', () => {});
       'test/unit/b.test.ts',
       'test/unit/b.test.ts',
     ]);
-    expect(sut[1]?.line).toBeLessThan(sut[2]!.line);
+    const second = sut[1]?.line;
+    const third = sut[2]?.line;
+    expect(second).toBeDefined();
+    expect(third).toBeDefined();
+    expect(second).toBeLessThan(third as number);
   });
 
   it('Given a test using a template literal title with zero assertions, When scanned, Then a finding is reported with the literal text', () => {
@@ -292,6 +294,84 @@ it('arrow expression body', () => expect(1).toBe(1));
 
     // Assert
     expect(sut).toEqual([]);
+  });
+
+  it('Given a test whose title string contains "expect(" literally, When scanned, Then the title text does not satisfy the assertion-count (one finding)', () => {
+    // Arrange — the title contains expect(1) but the body has no real assertion.
+    const source = `
+it('expect(1)', () => {
+  const x = 1;
+});
+`;
+
+    // Act
+    const sut = detectUnderAsserted(MANIFEST, [file('test/unit/a.test.ts', source)]);
+
+    // Assert
+    expect(sut).toHaveLength(1);
+    expect(sut[0]?.title).toBe('expect(1)');
+  });
+
+  it('Given a heuristic where minAssertionsPerTest is 2, When the test has exactly one assertion, Then a finding is reported', () => {
+    // Arrange
+    const stricter: PyramidManifest = {
+      ...MANIFEST,
+      heuristics: {
+        ...MANIFEST.heuristics,
+        underAssertedUnit: { tier: 'unit', minAssertionsPerTest: 2 },
+      },
+    };
+    const source = `
+it('only one assert', () => {
+  expect(1).toBe(1);
+});
+`;
+
+    // Act
+    const sut = detectUnderAsserted(stricter, [file('test/unit/a.test.ts', source)]);
+
+    // Assert
+    expect(sut).toHaveLength(1);
+    expect(sut[0]?.title).toBe('only one assert');
+  });
+
+  it('Given a heuristic where minAssertionsPerTest is 2, When the test has exactly two assertions, Then no finding (boundary case)', () => {
+    // Arrange
+    const stricter: PyramidManifest = {
+      ...MANIFEST,
+      heuristics: {
+        ...MANIFEST.heuristics,
+        underAssertedUnit: { tier: 'unit', minAssertionsPerTest: 2 },
+      },
+    };
+    const source = `
+it('two asserts', () => {
+  expect(1).toBe(1);
+  expect(2).toBe(2);
+});
+`;
+
+    // Act
+    const sut = detectUnderAsserted(stricter, [file('test/unit/a.test.ts', source)]);
+
+    // Assert
+    expect(sut).toEqual([]);
+  });
+
+  it('Given a file fixture, When the empty-body it lives at line 3, Then the finding reports line 3 exactly', () => {
+    // Arrange — line 1 is empty (the leading \n), line 2 is the import line,
+    // line 3 is the `it(...)` opener.
+    const source = `
+import { it } from 'vitest';
+it('empty', () => {});
+`;
+
+    // Act
+    const sut = detectUnderAsserted(MANIFEST, [file('test/unit/a.test.ts', source)]);
+
+    // Assert
+    expect(sut).toHaveLength(1);
+    expect(sut[0]?.line).toBe(3);
   });
 
   it('Given an empty file list, When scanned, Then an empty array is returned', () => {

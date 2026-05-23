@@ -7,11 +7,9 @@
  */
 import { classifyTestFile } from './classify-test-file.ts';
 import type { PyramidManifest } from './parse-manifest.ts';
+import type { SourceFile } from './types.ts';
 
-export interface SourceFile {
-  readonly path: string;
-  readonly source: string;
-}
+export type { SourceFile };
 
 export interface OverMockedFinding {
   readonly path: string;

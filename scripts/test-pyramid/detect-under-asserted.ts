@@ -12,11 +12,9 @@
  */
 import { classifyTestFile } from './classify-test-file.ts';
 import type { PyramidManifest } from './parse-manifest.ts';
+import type { SourceFile } from './types.ts';
 
-export interface SourceFile {
-  readonly path: string;
-  readonly source: string;
-}
+export type { SourceFile };
 
 export interface UnderAssertedFinding {
   readonly path: string;
@@ -142,11 +140,11 @@ const scanItBlocks = (source: string): ReadonlyArray<ItBlock> => {
       consumedEnd = innerClose + 1;
     }
 
-    const { title } = extractTitle(source, titleStart);
+    const { title, afterIdx } = extractTitle(source, titleStart);
     consumed.push([opener, consumedEnd]);
     if (title === null) continue;
 
-    const body = source.slice(titleStart, bodyEnd);
+    const body = source.slice(afterIdx, bodyEnd);
     blocks.push({ line: lineAt(source, opener), title, body, isSkipped });
   }
   return blocks;

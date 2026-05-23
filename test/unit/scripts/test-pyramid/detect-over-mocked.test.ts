@@ -187,6 +187,58 @@ describe('detectOverMocked', () => {
     expect(sut[0]?.hits).toBe(1);
   });
 
+  it('Given threshold=2 and a file with exactly 2 hits, When scanned, Then no finding (boundary case — hits must exceed threshold)', () => {
+    // Arrange
+    const lenient: PyramidManifest = {
+      ...MANIFEST,
+      heuristics: {
+        ...MANIFEST.heuristics,
+        overMockedIntegration: {
+          ...MANIFEST.heuristics.overMockedIntegration,
+          threshold: 2,
+        },
+      },
+    };
+    const files = [
+      {
+        path: 'test/integration/clone.test.ts',
+        source: 'vi.mock("a"); vi.fn();',
+      },
+    ];
+
+    // Act
+    const sut = detectOverMocked(lenient, files);
+
+    // Assert
+    expect(sut).toEqual([]);
+  });
+
+  it('Given threshold=2 and a file with exactly 3 hits, When scanned, Then a finding is reported with hits=3', () => {
+    // Arrange
+    const lenient: PyramidManifest = {
+      ...MANIFEST,
+      heuristics: {
+        ...MANIFEST.heuristics,
+        overMockedIntegration: {
+          ...MANIFEST.heuristics.overMockedIntegration,
+          threshold: 2,
+        },
+      },
+    };
+    const files = [
+      {
+        path: 'test/integration/clone.test.ts',
+        source: 'vi.mock("a"); vi.fn(); vi.spyOn(o, "m");',
+      },
+    ];
+
+    // Act
+    const sut = detectOverMocked(lenient, files);
+
+    // Assert
+    expect(sut).toEqual([{ path: 'test/integration/clone.test.ts', hits: 3 }]);
+  });
+
   it('Given an empty file list, When scanned, Then an empty array is returned', () => {
     // Arrange + Act
     const sut = detectOverMocked(MANIFEST, []);
