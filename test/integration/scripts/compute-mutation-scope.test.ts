@@ -6,6 +6,8 @@ import { promisify } from 'node:util';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { assertInitialised, cleanGitEnv, spawnGitInTmp } from './git-tmp.js';
+
 const execFileAsync = promisify(execFile);
 const REPO_ROOT = path.resolve(import.meta.dirname, '..', '..', '..');
 const SCRIPT = path.join(REPO_ROOT, '.github', 'scripts', 'compute-mutation-scope.sh');
@@ -17,16 +19,14 @@ interface GitCtx {
 
 const setupRepo = (): GitCtx => {
   const dir = mkdtempSync(path.join(os.tmpdir(), 'tsgit-mutscope-'));
-  const git = async (...args: readonly string[]): Promise<string> => {
-    const { stdout } = await execFileAsync('git', args as string[], { cwd: dir });
-    return stdout;
-  };
+  const git = (...args: readonly string[]): Promise<string> => spawnGitInTmp(dir, args);
   return { dir, git };
 };
 
 const runScope = async (ctx: GitCtx, baseRef: string, headRef = 'HEAD'): Promise<string[]> => {
   const { stdout } = await execFileAsync('bash', [SCRIPT, baseRef, headRef], {
     cwd: ctx.dir,
+    env: cleanGitEnv(),
   });
   return stdout
     .split(/\r?\n/)
@@ -46,6 +46,7 @@ describe('compute-mutation-scope.sh', () => {
   beforeEach(async () => {
     ctx = setupRepo();
     await ctx.git('init', '-q');
+    assertInitialised(ctx.dir);
     await ctx.git('config', 'user.email', 't@test');
     await ctx.git('config', 'user.name', 'test');
     await ctx.git('commit', '--allow-empty', '-m', 'base');

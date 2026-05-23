@@ -7,6 +7,8 @@ import { promisify } from 'node:util';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { assertInitialised, cleanGitEnv, spawnGitInTmp } from './git-tmp.js';
+
 const execFileAsync = promisify(execFile);
 const REPO_ROOT = path.resolve(import.meta.dirname, '..', '..', '..');
 const SCRIPT = path.join(REPO_ROOT, '.github', 'scripts', 'has-code-changes.sh');
@@ -21,10 +23,7 @@ const setupRepo = (): GitCtx => {
   const dir = mkdtempSync(path.join(os.tmpdir(), 'tsgit-changes-'));
   const outputFile = path.join(dir, 'github-output.txt');
   writeFileSync(outputFile, '');
-  const git = async (...args: readonly string[]): Promise<string> => {
-    const { stdout } = await execFileAsync('git', args as string[], { cwd: dir });
-    return stdout;
-  };
+  const git = (...args: readonly string[]): Promise<string> => spawnGitInTmp(dir, args);
   return { dir, outputFile, git };
 };
 
@@ -35,7 +34,7 @@ const runScript = async (
 ): Promise<{ stdout: string; output: string }> => {
   const { stdout } = await execFileAsync('bash', [SCRIPT, baseRef, headRef], {
     cwd: ctx.dir,
-    env: { ...process.env, GITHUB_OUTPUT: ctx.outputFile },
+    env: cleanGitEnv({ GITHUB_OUTPUT: ctx.outputFile }),
   });
   const output = await readFile(ctx.outputFile, 'utf8');
   return { stdout, output };
@@ -53,6 +52,7 @@ describe('has-code-changes.sh', () => {
   beforeEach(async () => {
     ctx = setupRepo();
     await ctx.git('init', '-q');
+    assertInitialised(ctx.dir);
     await ctx.git('config', 'user.email', 't@test');
     await ctx.git('config', 'user.name', 'test');
     await ctx.git('commit', '--allow-empty', '-m', 'base');
@@ -196,7 +196,7 @@ describe('has-code-changes.sh', () => {
     // Arrange + Act — invoke with no args at all
     const { stdout } = await execFileAsync('bash', [SCRIPT], {
       cwd: ctx.dir,
-      env: { ...process.env, GITHUB_OUTPUT: ctx.outputFile },
+      env: cleanGitEnv({ GITHUB_OUTPUT: ctx.outputFile }),
     });
     const output = await readFile(ctx.outputFile, 'utf8');
 
@@ -214,7 +214,7 @@ describe('has-code-changes.sh', () => {
     try {
       await execFileAsync('bash', [SCRIPT, 'main;rm -rf /', 'HEAD'], {
         cwd: ctx.dir,
-        env: { ...process.env, GITHUB_OUTPUT: ctx.outputFile },
+        env: cleanGitEnv({ GITHUB_OUTPUT: ctx.outputFile }),
       });
     } catch (err) {
       failed = true;
