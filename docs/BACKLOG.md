@@ -460,7 +460,6 @@ Design: `docs/design/phase-15-bench-observability.md`. ADRs: [054](adr/054-bench
       [089](adr/089-cat-file-contents-only.md) (contents-only mode),
       [090](adr/090-cat-file-strict-order-sequential.md) (ordering /
       concurrency).
-- [ ] **17.7** isomorphic-git compatibility shim (runtime namespace re-export — explicitly out of scope for v1 per MIGRATION.md, revisit if adoption demands it).
 
 ### Cosmetic / housekeeping
 
@@ -471,12 +470,13 @@ Design: `docs/design/phase-15-bench-observability.md`. ADRs: [054](adr/054-bench
 
 ## Abandoned work
 
-Items that were started and then deliberately dropped. Ticked `[x]`
-because the *decision* is final — they are NOT queued. Each links the
-ADR that records why.
+Items that were started or queued and then deliberately dropped. Ticked
+`[x]` because the *decision* is final — they are NOT queued. Each links
+the ADR that records why.
 
 - [x] **14.5.3** Gate `policy.resolve()` in `checkContainment` to skip a "no-op" resolve on clean absolute inputs. Implemented in the §14.5 bundle, then abandoned: `policy.resolve` also normalises foreign separators (a `/` in a Windows path) — a contract ADR-045 requires the adapter to honour — and no cheap caller-side probe can safely mirror Node's full `path.resolve` normalisation surface. The cost the optimization chased (a `process.cwd()` hit) does not even occur for absolute inputs. See [ADR-053](adr/053-abandon-skip-resolve-optimization.md).
 - [x] **16.1** Pin every third-party GitHub Action `uses:` to a 40-char commit SHA. Prototyped, then abandoned: SHA refs are verbose and opaque, and each action patch release would need its own Dependabot bump — high maintenance for marginal value on a small repo whose actions are all well-known publishers. Workflows stay on floating major tags; **16.2** keeps them current via a grouped Dependabot entry. See [ADR-057](adr/057-action-sha-pinning.md).
+- [x] **17.7** isomorphic-git compatibility shim (runtime namespace re-export). Queued as a possible adoption aid, then abandoned without implementation: the two libraries have fundamentally different lifetime + validation models, and a literal shim would either re-introduce isomorphic-git's per-call validation gaps or hide a singleton repo behind the namespace — both violate the v1 surface invariants. No adoption signal exists today to justify the cost; users migrating from isomorphic-git can write a thin per-codebase adapter (already documented in `MIGRATION.md`). Reversible: if a concrete migration-blocker surfaces, the next artifact is an adapter PoC over the top ~10 calls, not a spike. See [ADR-091](adr/091-abandon-isomorphic-git-shim.md).
 
 ---
 
