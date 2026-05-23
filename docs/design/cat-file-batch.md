@@ -1,6 +1,6 @@
 # Design — `cat-file --batch` equivalent (Phase 17.6)
 
-**Status:** Accepted (at <main-sha>).
+**Status:** Accepted (at `cfacf2b`).
 
 Backlog: **17.6** — _“`git-cat-file --batch` equivalent on the primitive
 layer for high-throughput readers.”_
