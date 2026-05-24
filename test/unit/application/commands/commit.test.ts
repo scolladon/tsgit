@@ -62,7 +62,6 @@ describe('commit', () => {
     const ctx = await seed();
     await commit(ctx, { message: 'first', author });
 
-    // Act
     // Assert
     await expectError(() => commit(ctx, { message: 'second', author }), 'NOTHING_TO_COMMIT');
   });
@@ -393,7 +392,6 @@ describe('commit — hooks', () => {
     const ctx = await seedHooked(hookedCtx({ commitMsgRewrite: '   ' }));
 
     // Act & Assert
-    // Assert
     await expectError(() => commit(ctx, { message: 'original', author }), 'EMPTY_COMMIT_MESSAGE');
   });
 });

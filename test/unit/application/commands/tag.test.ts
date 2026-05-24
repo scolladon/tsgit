@@ -129,7 +129,6 @@ describe('tag', () => {
     await tag(ctx, { kind: 'create', name: 'v1.0' });
 
     // Act + Assert — must not throw with force.
-    // Assert
     await expect(tag(ctx, { kind: 'create', name: 'v1.0', force: true })).resolves.toBeDefined();
   });
 
