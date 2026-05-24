@@ -157,6 +157,15 @@ ADRs are ordered chronologically in the `adr/` folder. This page groups them by 
 
 - [ADR-119 — Cancel-on-merge workflow scope](../adr/119-cancel-on-merge-workflow.md)
 
+## Integration-test usefulness audit + E2E parity harness (Phases 19.4 / 19.5)
+
+- [ADR-120 — Two-stage `it.skipIf` / `it.runIf` scanner support](../adr/120-skipif-runif-non-skipped-at-scan.md)
+- [ADRs 121–126 — `@proves` grammar, integration bucket taxonomy, duplicate detection, usefulness heuristic, gating posture, sweep policy](../adr/121-integration-proves-header-grammar.md)
+- [ADR-127 — Browser parity scenarios are bundled, not function-source-serialized](../adr/127-parity-scenarios-bundled-not-serialized.md)
+- [ADR-128 — Golden `commit.id` per scenario as the load-bearing determinism signal](../adr/128-golden-commit-id-as-parity-signal.md)
+- [ADR-129 — Parity scenarios are additive in 19.5; duplicate browser specs retired in 19.5a](../adr/129-parity-scenarios-additive-no-deletion-in-19-5.md)
+- Design: [`docs/design/phase-19-5-e2e-harness-upgrade.md`](../design/phase-19-5-e2e-harness-upgrade.md)
+
 ## Reading order tips
 
 - **Onboarding to the codebase?** Read ADR-001, ADR-004, ADR-091 in order. They set the architectural ground rules.

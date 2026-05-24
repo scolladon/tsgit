@@ -31,11 +31,14 @@ npm install
 | `npm run test:unit` | Unit tests only |
 | `npm run test:integration` | Integration tests only |
 | `npm run test:e2e` | End-to-end tests (Playwright) |
+| `npm run test:parity` | Cross-adapter parity tests — runs the same scenarios against Node + Memory (Phase 19.5); the Browser side runs through `test:e2e` |
 | `npm run test:coverage` | Tests with 100% coverage enforcement |
 | `npm run test:mutation` | Mutation testing — full tree (Stryker) |
 | `npm run test:mutation:pr` | Mutation testing — diff-scoped (reads `TSGIT_MUTATE_PATHS_FILE` or `--mutate`); CI invokes this |
 | `npm run check:mutation-budgets` | Evaluate per-bucket mutation budgets against the latest `reports/mutation/mutation-report.json` (Phase 19.1) |
 | `npm run check:test-pyramid` | Testing-pyramid audit — counts unit/integration/e2e files, flags over-mocked integrations, under-asserted units, and integration-test usefulness (missing `@proves` headers, duplicate `(surface, bucket)` pairs, misplaced buckets); writes `reports/test-pyramid.{json,md}` plus `reports/integration-surfaces.json`. Integration-usefulness ships warn-only |
+| `npm run check:parity-fixtures` | Determinism audit on parity-scenario fixtures — flags `Date.now()`, `Math.random`, `performance.now()`, and unpinned `new Date(...)` (Phase 19.5); writes `reports/parity-fixtures.json` |
+| `npm run build:parity` | Build the browser-side parity scenario bundle (`test/browser/parity-scenarios.bundle.js`) consumed by `parity.spec.ts`; `test:e2e` depends on it automatically |
 | `npm run test:bench` | Performance benchmarks |
 | `npm run bench:fixture -- <medium\|large>` | Generate + cache a scaled bench fixture |
 | `npm run profile` | V8 CPU profiles for log / status / pack-read |
@@ -86,6 +89,30 @@ scenarios build their fixtures inline; the **scaled** scenarios
 - **Profiling:** `npm run profile` captures V8 CPU profiles for the `log`,
   `status`, and `pack-read` hot paths against the medium fixture, writing
   digests to `reports/profiles/` (git-ignored).
+
+### Cross-adapter parity (Phase 19.5)
+
+Scenarios under `test/parity/scenarios/*.scenario.ts` declare a single
+`Scenario<TResult>` object with `inputs`, `expected`, and a `run(repo,
+inputs)` body. The same scenario runs against three adapters:
+
+- **Node:** `test/parity/node.test.ts` opens a per-test temp dir.
+- **Memory:** `test/parity/memory.test.ts` opens an in-memory FS.
+- **Browser:** `test/browser/parity.spec.ts` opens an OPFS root through
+  the bundled `window.__tsgitParity` registry (built by `build:parity`).
+
+`expected.commit.id` is a 40-hex literal — the load-bearing parity signal
+(ADR-128). A divergent SHA-1 on any driver fails the matching test.
+
+**Updating a scenario's golden after deliberately changing inputs:**
+
+1. Edit `fixtures.ts` (or the scenario's `inputs`) with the new constant.
+2. Run `npm run test:parity` — it fails with a diff showing the new SHA-1.
+3. Copy the actual 40-hex value into `expected.commit.id` (and any other
+   ID-bearing golden field).
+4. Re-run `npm run test:parity` to confirm; then run `npm run test:e2e`
+   so the browser driver picks up the updated `expected` via the rebuilt
+   bundle (wireit handles the rebuild).
 
 ## CI/CD
 

@@ -81,9 +81,30 @@ test/
 │   ├── network/                # Real repos, cross-adapter, git-http-backend interop (Linux-only)
 │   ├── posix-only/             # Real POSIX filesystem semantics (symlinks, chmod, EACCES)
 │   └── win-only/               # Real Windows filesystem semantics (8.3 short names, drive letters)
-├── browser/                    # Playwright × Chromium/Firefox/WebKit — OPFS round-trip, SubtleCrypto, DecompressionStream, command surface (log/branch/checkout/tag)
+├── browser/                    # Playwright × Chromium/Firefox/WebKit — OPFS round-trip, SubtleCrypto, DecompressionStream, command surface (log/branch/checkout/tag), and the cross-adapter parity driver (parity.spec.ts)
+├── parity/                     # Cross-adapter parity scenarios (Phase 19.5) — one Scenario<TResult> per file, asserted byte-identically by node.test.ts, memory.test.ts, and browser/parity.spec.ts
 └── bench/                      # vitest bench scenarios comparing tsgit vs isomorphic-git
 ```
+
+#### Adding a cross-adapter parity scenario (Phase 19.5)
+
+When a new `Repository` flow needs the Node × Memory × Browser parity
+guarantee, add a single file under `test/parity/scenarios/<name>.scenario.ts`:
+
+1. Declare a `<Name>Result` interface — only fields exact-equality-safe
+   across all three adapters (use the existing `ChangeEntry` shape for
+   `status.*Changes`).
+2. Export `scenario: Scenario<<Name>Result>` with `name`, `inputs` (drawn
+   from `test/parity/fixtures.ts` constants — no inline literals; the
+   `check:parity-fixtures` audit gates determinism), `expected` (with
+   40-hex `commit.id` literals — see [ADR-128](docs/adr/128-golden-commit-id-as-parity-signal.md)),
+   and `run`.
+3. Append to `SCENARIOS` in `test/parity/scenarios/index.ts`. All three
+   drivers and the browser bundle pick it up automatically.
+4. Run `npm run test:parity` — it fails with the real Node-side SHA-1;
+   copy that into `expected.commit.id`. Re-run; then `npm run test:e2e`
+   to verify the browser side. See `RUNBOOK.md` → "Cross-adapter parity"
+   for the full recipe.
 
 #### Test-folder placement rule (Phase 14.4)
 
