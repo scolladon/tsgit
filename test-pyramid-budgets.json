@@ -1,0 +1,37 @@
+{
+  "$schema": "./scripts/test-pyramid-budgets-schema.json",
+  "tiers": [
+    {
+      "name": "unit",
+      "glob": "test/unit/**/*.test.ts",
+      "target": 80,
+      "warnBelow": 75,
+      "warnAbove": null
+    },
+    {
+      "name": "integration",
+      "glob": "test/integration/**/*.test.ts",
+      "target": 15,
+      "warnBelow": 10,
+      "warnAbove": 25
+    },
+    {
+      "name": "e2e",
+      "glob": "test/browser/**/*.spec.ts",
+      "target": 5,
+      "warnBelow": 3,
+      "warnAbove": null
+    }
+  ],
+  "heuristics": {
+    "overMockedIntegration": {
+      "tier": "integration",
+      "regex": "\\bvi\\.(mock|fn|spyOn|stubGlobal|stubEnv)\\s*\\(",
+      "threshold": 0
+    },
+    "underAssertedUnit": {
+      "tier": "unit",
+      "minAssertionsPerTest": 1
+    }
+  }
+}

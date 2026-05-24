@@ -35,6 +35,7 @@ npm install
 | `npm run test:mutation` | Mutation testing — full tree (Stryker) |
 | `npm run test:mutation:pr` | Mutation testing — diff-scoped (reads `TSGIT_MUTATE_PATHS_FILE` or `--mutate`); CI invokes this |
 | `npm run check:mutation-budgets` | Evaluate per-bucket mutation budgets against the latest `reports/mutation/mutation-report.json` (Phase 19.1) |
+| `npm run check:test-pyramid` | Testing-pyramid audit — counts unit/integration/e2e files, flags over-mocked integrations and under-asserted units; writes `reports/test-pyramid.{json,md}`. Report-only (ADR-104) |
 | `npm run test:bench` | Performance benchmarks |
 | `npm run bench:fixture -- <medium\|large>` | Generate + cache a scaled bench fixture |
 | `npm run profile` | V8 CPU profiles for log / status / pack-read |
@@ -93,6 +94,7 @@ scenarios build their fixtures inline; the **scaled** scenarios
 1. **Static Analysis** — biome, tsc, knip, jscpd, ls-lint, npm outdated (parallel)
 2. **Unit Tests** — Matrix: Ubuntu/macOS/Windows × Node 22/24 (Windows re-added in Phase 14.4)
 3. **Mutation Testing** — Stryker incremental on PRs (Linux, ADR-044); macOS + Windows nightly via `mutation-os.yml` (ADR-055)
+3a. **Testing-pyramid audit** — `npm run check:test-pyramid` runs in the `test-pyramid-audit` job; reports are uploaded as the `test-pyramid-audit` artifact. Report-only — never gates merges (ADR-104).
 4. **Integration Tests** — Three jobs split by platform contract (see below)
 5. **E2E Tests** — Playwright: Chrome, Firefox, Safari (Linux runner)
 6. **Performance** — vitest bench (PR base-vs-PR compare + main-push snapshot to the `gh-pages` data branch) + bundle size checks

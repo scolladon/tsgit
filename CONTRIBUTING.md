@@ -195,6 +195,23 @@ npm run check:mutation-budgets
 
 **Equivalent mutants.** When a mutant is provably equivalent (the test would pass for both the original and the mutant), annotate the source with `// equivalent-mutant: <why>` on the line above. No catalogue, no allowlist — the annotation is the documentation.
 
+### Testing-pyramid audit (Phase 19.2)
+
+`npm run check:test-pyramid` counts unit/integration/e2e tests, reports their
+share against an 80/15/5 target (ADR-106), and flags two heuristic findings
+(ADR-107):
+
+- **Over-mocked integration** — any `test/integration/**` file matching
+  `\bvi\.(mock|fn|spyOn|stubGlobal|stubEnv)\(`. Use real fixtures (the memory
+  adapter is fine — it's a real class, not a mock).
+- **Under-asserted unit** — any `it()`/`test()` block in `test/unit/**` whose
+  body contains no `expect(...)` / `assert.*(...)` call. `.skip` / `.todo` /
+  `.fails` are exempt.
+
+Source of truth: `test-pyramid-budgets.json` at repo root. The audit is
+report-only (ADR-104) — findings appear in `reports/test-pyramid.{json,md}`
+and as the `test-pyramid-audit` workflow artifact, but never gate merges.
+
 ## Commit Messages
 
 Follow [Conventional Commits](https://www.conventionalcommits.org/):

@@ -6,7 +6,8 @@
     "declaration": true,
     "declarationMap": true,
     "sourceMap": true,
-    "stripInternal": true
+    "stripInternal": true,
+    "allowImportingTsExtensions": false
   },
   "include": ["src/**/*.ts"],
   "exclude": ["test/**", "**/*.test.ts", "**/*.bench.ts"]

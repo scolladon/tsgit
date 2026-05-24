@@ -164,6 +164,23 @@ jobs:
       - uses: ./.github/actions/setup
       - run: npm run check:doc-typedoc
 
+  test-pyramid-audit:
+    needs: [lint, typecheck]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/setup
+      - run: npm run check:test-pyramid
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-pyramid-audit
+          path: |
+            reports/test-pyramid.json
+            reports/test-pyramid.md
+          if-no-files-found: ignore
+          retention-days: 14
+
   docs-pr-gate:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest

@@ -192,6 +192,7 @@
     "check:doc-links": "wireit",
     "check:doc-coverage": "wireit",
     "check:doc-typedoc": "wireit",
+    "check:test-pyramid": "wireit",
     "check:mutation-budgets": "wireit",
     "verify:tarball": "wireit",
     "check:size": "wireit",
@@ -487,6 +488,21 @@
         "docs:json"
       ]
     },
+    "check:test-pyramid": {
+      "command": "node --experimental-strip-types scripts/audit-test-pyramid.ts",
+      "files": [
+        "scripts/audit-test-pyramid.ts",
+        "scripts/test-pyramid/**/*.ts",
+        "test-pyramid-budgets.json",
+        "test/unit/**/*.test.ts",
+        "test/integration/**/*.test.ts",
+        "test/browser/**/*.spec.ts"
+      ],
+      "output": [
+        "reports/test-pyramid.json",
+        "reports/test-pyramid.md"
+      ]
+    },
     "check:mutation-budgets": {
       "command": "node --experimental-strip-types scripts/check-mutation-budgets.ts",
       "files": [
@@ -574,6 +590,7 @@
         "check:security",
         "check:doc-coverage",
         "check:doc-typedoc",
+        "check:test-pyramid",
         "test:coverage",
         "test:integration"
       ]
@@ -602,7 +619,7 @@
     "@types/node": "25.9.1",
     "@vitest/coverage-v8": "4.1.7",
     "cspell": "10.0.0",
-    "dependency-cruiser": "17.4.0",
+    "dependency-cruiser": "17.4.2",
     "fast-check": "4.8.0",
     "husky": "9.1.7",
     "isomorphic-git": "1.38.1",
