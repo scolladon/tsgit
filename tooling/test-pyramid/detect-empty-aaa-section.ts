@@ -75,7 +75,6 @@ const isStatementBearingLine = (line: string): boolean => {
   if (trimmed.length === 0) return false;
   if (trimmed.startsWith('//')) return false;
   if (trimmed.startsWith('/*')) return false;
-  if (trimmed.startsWith('*/')) return false;
   if (trimmed.startsWith('*')) return false;
   const head = trimmed[0];
   if (head === '}' || head === ')' || head === ']') return false;
