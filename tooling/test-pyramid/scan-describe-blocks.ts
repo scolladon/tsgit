@@ -1,14 +1,20 @@
 /**
  * Sibling scanner for vitest `describe(...)` blocks.
  *
- * Mirrors `scanItBlocks` (paren/brace walker, same skip modifiers,
- * same `each`-aware title position logic). Emits the open/close
- * offsets so callers can join `it()` records to their describe
- * ancestors via source-offset containment (see ADR-118 and
+ * Mirrors `scanItBlocks` (paren/brace walker, same skip modifiers, same
+ * two-stage title position logic for `each` / `skipIf` / `runIf`). Emits
+ * the open/close offsets so callers can join `it()` records to their
+ * describe ancestors via source-offset containment (see ADR-118 and
  * detect-bad-title.ts).
  */
 
 const SKIP_MODIFIERS = new Set(['skip', 'todo', 'fails']);
+// Modifier chain segments that wrap the title in a SECOND `(…)` call:
+//   describe.each([…])('title', body)
+//   describe.skipIf(cond)('title', body)
+//   describe.runIf(cond)('title', body)
+// See ADR-120 for the `isSkipped` choice on skipIf/runIf.
+const TWO_STAGE_MODIFIERS = new Set(['each', 'skipIf', 'runIf']);
 const OPENER_RE = /(?<!\.)\bdescribe((?:\.\w+)*)\s*\(/g;
 
 export interface DescribeBlock {
@@ -110,7 +116,7 @@ export const scanDescribeBlocks = (source: string): ReadonlyArray<DescribeBlock>
     const chain = match[1] ?? '';
     const chainKeys = chain.split('.').filter((seg) => seg.length > 0);
     const isSkipped = chainKeys.some((seg) => SKIP_MODIFIERS.has(seg));
-    const isEach = chainKeys.includes('each');
+    const isTwoStage = chainKeys.some((seg) => TWO_STAGE_MODIFIERS.has(seg));
 
     const matchEnd = opener + match[0].length;
     const openParen = matchEnd - 1;
@@ -120,7 +126,7 @@ export const scanDescribeBlocks = (source: string): ReadonlyArray<DescribeBlock>
     let titleStart = openParen + 1;
     let bodyEnd = closeParen;
 
-    if (isEach) {
+    if (isTwoStage) {
       let next = closeParen + 1;
       while (next < source.length && isWhitespace(source[next]!)) next += 1;
       if (source[next] !== '(') continue;

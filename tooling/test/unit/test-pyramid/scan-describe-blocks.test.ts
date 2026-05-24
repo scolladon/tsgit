@@ -192,3 +192,104 @@ describe('Given two sibling describe blocks at top level', () => {
     });
   });
 });
+
+describe('Given a describe.skipIf(cond)("title", body) block', () => {
+  describe('When scanDescribeBlocks runs', () => {
+    it('Then the inner title is extracted and isSkipped is false', () => {
+      // Arrange — conditional-skip helpers wrap the title in a second call;
+      // the scanner treats them as two-stage like `describe.each([…])(…)`.
+      const source = `describe.skipIf(process.env.CI)('Given x', () => { it('Then y', () => {}); });`;
+
+      // Act
+      const sut = scanDescribeBlocks(source);
+
+      // Assert
+      expect(sut.map((b) => b.title)).toEqual(['Given x']);
+      expect(sut[0]?.isSkipped).toBe(false);
+    });
+  });
+});
+
+describe('Given a describe.runIf(cond)("title", body) block', () => {
+  describe('When scanDescribeBlocks runs', () => {
+    it('Then the inner title is extracted and isSkipped is false', () => {
+      // Arrange
+      const source = `describe.runIf(process.env.CI)('Given y', () => { it('Then z', () => {}); });`;
+
+      // Act
+      const sut = scanDescribeBlocks(source);
+
+      // Assert
+      expect(sut.map((b) => b.title)).toEqual(['Given y']);
+      expect(sut[0]?.isSkipped).toBe(false);
+    });
+  });
+});
+
+describe('Given a describe.skipIf(cond) followed by no inner call', () => {
+  describe('When scanDescribeBlocks runs', () => {
+    it('Then the block is dropped silently', () => {
+      // Arrange — invalid in vitest, but the scanner must not crash and must
+      // still emit the well-formed sibling block.
+      const source = `\ndescribe.skipIf(true);\ndescribe('valid', () => {});\n`;
+
+      // Act
+      const sut = scanDescribeBlocks(source);
+
+      // Assert
+      expect(sut.map((b) => b.title)).toEqual(['valid']);
+    });
+  });
+});
+
+describe('Given a describe.runIf(cond)("title", body) whose inner call never closes', () => {
+  describe('When scanDescribeBlocks runs', () => {
+    it('Then the block is dropped silently', () => {
+      // Arrange
+      const source = `describe.runIf(true)('Given x', () => { it('Then y',`;
+
+      // Act
+      const sut = scanDescribeBlocks(source);
+
+      // Assert
+      expect(sut).toEqual([]);
+    });
+  });
+});
+
+describe('Given a describe.concurrent.skipIf(cond)("title", body) mixed-chain block', () => {
+  describe('When scanDescribeBlocks runs', () => {
+    it('Then the inner title is extracted and isSkipped is false', () => {
+      // Arrange — chain segments other than the two-stage modifier must not
+      // prevent the predicate from firing; `concurrent` is not in
+      // SKIP_MODIFIERS so isSkipped stays false.
+      const source = `describe.concurrent.skipIf(false)('Given x', () => { it('Then y', () => {}); });`;
+
+      // Act
+      const sut = scanDescribeBlocks(source);
+
+      // Assert
+      expect(sut.map((b) => b.title)).toEqual(['Given x']);
+      expect(sut[0]?.isSkipped).toBe(false);
+    });
+  });
+});
+
+describe('Given a describe.skipIf(cond)("outer", body) wrapping an inner describe', () => {
+  describe('When scanDescribeBlocks runs', () => {
+    it('Then both records are returned and the inner span is contained by the outer span', () => {
+      // Arrange
+      const source = `describe.skipIf(false)('outer', () => { describe('inner', () => {}); });`;
+
+      // Act
+      const sut = scanDescribeBlocks(source);
+
+      // Assert
+      expect(sut.map((b) => b.title)).toEqual(['outer', 'inner']);
+      const outer = sut[0]!;
+      const inner = sut[1]!;
+      expect(inner.openIdx).toBeGreaterThan(outer.openIdx);
+      expect(inner.closeIdx).toBeLessThan(outer.closeIdx);
+    });
+  });
+});
