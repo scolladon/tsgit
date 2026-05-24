@@ -21,7 +21,8 @@
         "gwtTitle",
         "aaaBody",
         "sutNaming",
-        "bareClassToThrow"
+        "bareClassToThrow",
+        "emptyAaaSection"
       ],
       "additionalProperties": false,
       "properties": {
@@ -30,7 +31,8 @@
         "gwtTitle": { "$ref": "#/$defs/regexHeuristic" },
         "aaaBody": { "$ref": "#/$defs/aaaBodyHeuristic" },
         "sutNaming": { "$ref": "#/$defs/sutNamingHeuristic" },
-        "bareClassToThrow": { "$ref": "#/$defs/regexHeuristic" }
+        "bareClassToThrow": { "$ref": "#/$defs/regexHeuristic" },
+        "emptyAaaSection": { "$ref": "#/$defs/structuralHeuristic" }
       }
     },
     "gating": {
@@ -42,7 +44,8 @@
         "gwtTitle": { "type": "boolean" },
         "aaaBody": { "type": "boolean" },
         "sutNaming": { "type": "boolean" },
-        "bareClassToThrow": { "type": "boolean" }
+        "bareClassToThrow": { "type": "boolean" },
+        "emptyAaaSection": { "type": "boolean" }
       }
     },
     "excludePaths": {
@@ -122,6 +125,14 @@
           "uniqueItems": true,
           "items": { "type": "string", "pattern": "^[A-Za-z_$][A-Za-z0-9_$]*$" }
         }
+      }
+    },
+    "structuralHeuristic": {
+      "type": "object",
+      "required": ["tier"],
+      "additionalProperties": false,
+      "properties": {
+        "tier": { "type": "string", "minLength": 1 }
       }
     }
   }

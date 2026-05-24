@@ -268,8 +268,7 @@ describe('serializeIndex', () => {
 
   describe('property-based tests', () => {
     it('Given arbitrary entries, When serializing then parsing, Then all entries preserved', () => {
-      // Arrange
-      // Assert
+      // Arrange + Assert
       fc.assert(
         fc.property(fc.array(arbIndexEntry(), { minLength: 0, maxLength: 5 }), (entries) => {
           const uniqueEntries = deduplicateByPath(entries);
@@ -285,8 +284,7 @@ describe('serializeIndex', () => {
     });
 
     it('Given any entry, When serializing, Then total entry size is multiple of 8', () => {
-      // Arrange
-      // Assert
+      // Arrange + Assert
       fc.assert(
         fc.property(arbIndexEntry(), (entry) => {
           const index: GitIndex = { version: 2, entries: [entry], extensions: [] };

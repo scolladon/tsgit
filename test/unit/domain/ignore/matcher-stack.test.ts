@@ -12,8 +12,10 @@ const path = (s: string): FilePath => s as FilePath;
 describe('matchInStack', () => {
   it('Given an empty stack, When matched, Then returns "unset"', () => {
     // Arrange
+    const sut = matchInStack([], path('foo.log'), false);
+
     // Assert
-    expect(matchInStack([], path('foo.log'), false)).toBe('unset');
+    expect(sut).toBe('unset');
   });
 
   it('Given a multi-level stack where NO level matches, When matched, Then returns "unset" (kills initialiser mutants)', () => {

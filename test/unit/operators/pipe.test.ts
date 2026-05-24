@@ -57,7 +57,6 @@ describe('pipe', () => {
     const step3 = vi.fn((n: number) => n);
 
     // Act / Assert
-    // Assert
     expect(() => pipe(3, step1, step2, step3)).toThrow(boom);
     expect(step3).not.toHaveBeenCalled();
   });
@@ -103,20 +102,17 @@ describe('pipe', () => {
 
 describe('pipe — type-level overloads', () => {
   it('Given arity 1, When invoked, Then result is the seed type', () => {
-    // Arrange
-    // Assert
+    // Arrange + Assert
     expectTypeOf(pipe(1)).toEqualTypeOf<number>();
   });
 
   it('Given arity 2, When invoked, Then result is the last function return type', () => {
-    // Arrange
-    // Assert
+    // Arrange + Assert
     expectTypeOf(pipe(1, (n: number) => n.toString())).toEqualTypeOf<string>();
   });
 
   it('Given arity 5, When invoked, Then result is the fifth function return type', () => {
-    // Arrange
-    // Assert
+    // Arrange + Assert
     expectTypeOf(
       pipe(
         1,
@@ -130,8 +126,7 @@ describe('pipe — type-level overloads', () => {
   });
 
   it('Given arity 9, When invoked, Then result is the ninth function return type', () => {
-    // Arrange
-    // Assert
+    // Arrange + Assert
     expectTypeOf(
       pipe(
         1,

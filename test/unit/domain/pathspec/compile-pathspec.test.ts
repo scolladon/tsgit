@@ -4,8 +4,10 @@ import { compilePathspec } from '../../../../src/domain/pathspec/compile-pathspe
 describe('compilePathspec', () => {
   it('Given an empty list, When compiled, Then yields an empty array', () => {
     // Arrange
+    const sut = compilePathspec([]);
+
     // Assert
-    expect(compilePathspec([])).toEqual([]);
+    expect(sut).toEqual([]);
   });
 
   it('Given a single literal "src/foo.ts", When compiled, Then yields one literal entry with regex matching path-or-descendants', () => {
@@ -64,7 +66,6 @@ describe('compilePathspec', () => {
     const sut = compilePathspec(['lib']);
 
     // Act / Assert
-    // Assert
     expect(sut[0]?.compiled.test('lib')).toBe(true);
     expect(sut[0]?.compiled.test('lib/a.ts')).toBe(true);
     expect(sut[0]?.compiled.test('lib/nested/deep.ts')).toBe(true);
@@ -91,7 +92,6 @@ describe('compilePathspec', () => {
     const sut = compilePathspec(['lib']);
 
     // Act / Assert
-    // Assert
     expect(sut[0]?.compiled.test('lib')).toBe(true);
     expect(sut[0]?.compiled.test('vendor/lib')).toBe(false);
     expect(sut[0]?.compiled.test('a/b/lib')).toBe(false);

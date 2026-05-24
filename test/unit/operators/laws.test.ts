@@ -10,8 +10,7 @@ async function* toAsyncIterable<T>(items: readonly T[]): AsyncIterable<T> {
 
 describe('operator composition laws', () => {
   it('Given the law "take(n) ∘ take(m) ≡ take(min(n, m))", When evaluated, Then it holds', async () => {
-    // Arrange
-    // Assert
+    // Arrange + Assert
     await fc.assert(
       fc.asyncProperty(
         fc.nat({ max: 30 }),
@@ -28,8 +27,7 @@ describe('operator composition laws', () => {
   });
 
   it('Given the law "filter(p) ∘ filter(q) ≡ filter(x => q(x) && p(x))", When evaluated, Then it holds', async () => {
-    // Arrange
-    // Assert
+    // Arrange + Assert
     await fc.assert(
       fc.asyncProperty(fc.array(fc.integer(), { maxLength: 30 }), async (source) => {
         const p = (n: number): boolean => n % 2 === 0;
@@ -43,8 +41,7 @@ describe('operator composition laws', () => {
   });
 
   it('Given the law "map(g) ∘ map(f) ≡ map(x => g(f(x)))", When evaluated, Then it holds', async () => {
-    // Arrange
-    // Assert
+    // Arrange + Assert
     await fc.assert(
       fc.asyncProperty(fc.array(fc.integer(), { maxLength: 30 }), async (source) => {
         const f = (n: number): number => n + 1;
@@ -58,8 +55,7 @@ describe('operator composition laws', () => {
   });
 
   it('Given the law "filter(p) ∘ map(f) ≡ map(f) ∘ filter(x => p(f(x)))", When evaluated, Then it holds', async () => {
-    // Arrange
-    // Assert
+    // Arrange + Assert
     await fc.assert(
       fc.asyncProperty(fc.array(fc.integer(), { maxLength: 30 }), async (source) => {
         const f = (n: number): number => n * 2;
@@ -75,8 +71,7 @@ describe('operator composition laws', () => {
   });
 
   it('Given the law "toArray ∘ flatMap(x => [x]) ≡ toArray", When evaluated, Then it holds', async () => {
-    // Arrange
-    // Assert
+    // Arrange + Assert
     await fc.assert(
       fc.asyncProperty(fc.array(fc.integer(), { maxLength: 30 }), async (source) => {
         const lifted = await toArray(flatMap((x: number) => [x])(toAsyncIterable(source)));
@@ -88,8 +83,7 @@ describe('operator composition laws', () => {
   });
 
   it('Given the law "toArray(source).length === N for finite source of length N", When evaluated, Then it holds', async () => {
-    // Arrange
-    // Assert
+    // Arrange + Assert
     await fc.assert(
       fc.asyncProperty(fc.array(fc.integer(), { maxLength: 50 }), async (source) => {
         const result = await toArray(toAsyncIterable(source));
@@ -100,8 +94,7 @@ describe('operator composition laws', () => {
   });
 
   it('Given the law "toArray ∘ map(x => x) ≡ toArray", When evaluated, Then it holds', async () => {
-    // Arrange
-    // Assert
+    // Arrange + Assert
     await fc.assert(
       fc.asyncProperty(fc.array(fc.integer(), { maxLength: 30 }), async (source) => {
         const identity = await toArray(map((x: number) => x)(toAsyncIterable(source)));
@@ -113,8 +106,7 @@ describe('operator composition laws', () => {
   });
 
   it('Given the law "toArray ∘ filter(() => true) ≡ toArray", When evaluated, Then it holds', async () => {
-    // Arrange
-    // Assert
+    // Arrange + Assert
     await fc.assert(
       fc.asyncProperty(fc.array(fc.integer(), { maxLength: 30 }), async (source) => {
         const kept = await toArray(filter(() => true)(toAsyncIterable(source)));
@@ -126,8 +118,7 @@ describe('operator composition laws', () => {
   });
 
   it('Given the law "toArray ∘ filter(() => false) ≡ []", When evaluated, Then it holds', async () => {
-    // Arrange
-    // Assert
+    // Arrange + Assert
     await fc.assert(
       fc.asyncProperty(fc.array(fc.integer(), { maxLength: 30 }), async (source) => {
         const empty = await toArray(filter(() => false)(toAsyncIterable(source)));
@@ -138,8 +129,7 @@ describe('operator composition laws', () => {
   });
 
   it('Given the law "Array.from(groupBy(k)(source).values()).flat() is a permutation of toArray(source)", When evaluated, Then it holds', async () => {
-    // Arrange
-    // Assert
+    // Arrange + Assert
     await fc.assert(
       fc.asyncProperty(fc.array(fc.integer(), { maxLength: 30 }), async (source) => {
         const grouped = await groupBy((n: number) => n % 4)(toAsyncIterable(source));

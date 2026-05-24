@@ -496,8 +496,7 @@ describe('tree', () => {
       .map(([mode, name, id]) => ({ mode, name, id }));
 
     it('Given the sort idempotence property "sort(sort(entries)) equals sort(entries)", When checked, Then it holds', () => {
-      // Arrange
-      // Assert
+      // Arrange + Assert
       fc.assert(
         fc.property(fc.array(arbTreeEntry), (entries) => {
           const sorted = sortTreeEntries(entries);
@@ -508,8 +507,7 @@ describe('tree', () => {
     });
 
     it('Given the sort byte-consistency property "for adjacent sorted entries, treeEntryCompare(a, b) <= 0", When checked, Then it holds', () => {
-      // Arrange
-      // Assert
+      // Arrange + Assert
       fc.assert(
         fc.property(fc.array(arbTreeEntry, { minLength: 2 }), (entries) => {
           const sorted = sortTreeEntries(entries);
@@ -521,11 +519,10 @@ describe('tree', () => {
     });
 
     it('Given the tree roundtrip property "parseTreeContent(id, serializeTreeContent(tree, hash), hash) preserves all entries", When checked, Then it holds', () => {
-      // Arrange
+      // Arrange + Assert
       // Git trees cannot contain duplicate entry names — the parser rejects them.
       // Dedupe by name before building the tree so the arbitrary never generates
       // a tree that is invalid by construction (which would look like a flaky test).
-      // Assert
       fc.assert(
         fc.property(fc.array(arbTreeEntry), (rawEntries) => {
           const seen = new Set<string>();

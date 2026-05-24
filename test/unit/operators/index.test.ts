@@ -3,8 +3,7 @@ import * as operators from '../../../src/operators/index.js';
 
 describe('operators barrel', () => {
   it('Given the barrel module, When imported, Then all operators are exposed', () => {
-    // Arrange
-    // Assert
+    // Arrange + Assert
     expect(typeof operators.filter).toBe('function');
     expect(typeof operators.find).toBe('function');
     expect(typeof operators.flatMap).toBe('function');

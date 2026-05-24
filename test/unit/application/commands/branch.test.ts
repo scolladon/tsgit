@@ -70,7 +70,6 @@ describe('branch', () => {
     const { ctx } = await seedWithCommit();
     await branch(ctx, { kind: 'create', name: 'feature' });
 
-    // Act
     // Assert
     await expectError(() => branch(ctx, { kind: 'create', name: 'feature' }), 'BRANCH_EXISTS');
   });
@@ -91,7 +90,6 @@ describe('branch', () => {
     // Arrange
     const { ctx } = await seedWithCommit();
 
-    // Act
     // Assert
     await expectError(
       () => branch(ctx, { kind: 'delete', name: 'main' }),
@@ -103,7 +101,6 @@ describe('branch', () => {
     // Arrange
     const { ctx } = await seedWithCommit();
 
-    // Act
     // Assert
     await expectError(() => branch(ctx, { kind: 'delete', name: 'ghost' }), 'BRANCH_NOT_FOUND');
   });
@@ -217,7 +214,6 @@ describe('branch', () => {
     // Arrange
     const { ctx } = await seedWithCommit();
 
-    // Act
     // Assert
     await expectError(
       () => branch(ctx, { kind: 'create', name: 'pin', startPoint: 'no-such' }),
@@ -256,7 +252,6 @@ describe('branch', () => {
     await branch(ctx, { kind: 'create', name: 'a' });
     await branch(ctx, { kind: 'create', name: 'b' });
 
-    // Act
     // Assert
     await expectError(() => branch(ctx, { kind: 'rename', from: 'a', to: 'b' }), 'BRANCH_EXISTS');
   });
@@ -420,7 +415,6 @@ describe('branch', () => {
     // and resolves as a ref name instead -> BRANCH_NOT_FOUND.
     const { ctx, commitId } = await seedWithCommit();
 
-    // Act
     // Assert
     await expectError(
       () => branch(ctx, { kind: 'create', name: 'pin', startPoint: `${commitId}f` }),
@@ -432,7 +426,6 @@ describe('branch', () => {
     // Arrange — kills the `^` anchor of the oid regex.
     const { ctx, commitId } = await seedWithCommit();
 
-    // Act
     // Assert
     await expectError(
       () => branch(ctx, { kind: 'create', name: 'pin', startPoint: `f${commitId}` }),

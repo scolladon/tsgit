@@ -406,8 +406,7 @@ describe('validateRefName', () => {
 
   describe('property-based tests', () => {
     it('Given any arbRefName, When validating, Then it is accepted', () => {
-      // Arrange
-      // Assert
+      // Arrange + Assert
       fc.assert(
         fc.property(arbRefName(), (name) => {
           const sut = validateRefName(name);
@@ -417,8 +416,7 @@ describe('validateRefName', () => {
     });
 
     it('Given any string accepted by validateRefName, When inspecting, Then it contains no forbidden patterns', () => {
-      // Arrange
-      // Assert
+      // Arrange + Assert
       fc.assert(
         fc.property(
           fc.string({ minLength: 1, maxLength: 50 }).filter((s) => {

@@ -4,20 +4,17 @@ import type { Awaitable } from '../../../src/operators/types.js';
 
 describe('Awaitable<T>', () => {
   it('Given a value of type T, When invoked, Then it is assignable to Awaitable<T>', () => {
-    // Arrange
-    // Assert (type-level)
+    // Arrange + Assert (type-level)
     expectTypeOf<number>().toExtend<Awaitable<number>>();
   });
 
   it('Given a Promise<T>, When invoked, Then it is assignable to Awaitable<T>', () => {
-    // Arrange
-    // Assert (type-level)
+    // Arrange + Assert (type-level)
     expectTypeOf<Promise<string>>().toExtend<Awaitable<string>>();
   });
 
   it('Given a PromiseLike<T> with a then method, When invoked, Then it is assignable to Awaitable<T>', () => {
-    // Arrange
-    // Assert (type-level) — pins the PromiseLike (not Promise) widening
+    // Arrange + Assert (type-level) — pins the PromiseLike (not Promise) widening
     expectTypeOf<PromiseLike<boolean>>().toExtend<Awaitable<boolean>>();
   });
 

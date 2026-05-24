@@ -489,7 +489,6 @@ describe('pack-entry', () => {
   describe('encodePackEntryHeader', () => {
     it('Given type=1 size=5, When encoding, Then single byte 0b0_001_0101', () => {
       // Arrange
-      // Act
       const sut = encodePackEntryHeader(PACK_ENTRY_TYPE.COMMIT, 5);
 
       // Assert
@@ -498,7 +497,6 @@ describe('pack-entry', () => {
 
     it('Given type=3 size=16, When encoding, Then two bytes (continuation needed for size > 15)', () => {
       // Arrange
-      // Act
       const sut = encodePackEntryHeader(PACK_ENTRY_TYPE.BLOB, 16);
 
       // Assert — low 4 bits = 0, continuation byte = 1
@@ -507,7 +505,6 @@ describe('pack-entry', () => {
 
     it('Given type=4 size=0, When encoding, Then single byte with size bits = 0', () => {
       // Arrange
-      // Act
       const sut = encodePackEntryHeader(PACK_ENTRY_TYPE.TAG, 0);
 
       // Assert
@@ -518,7 +515,6 @@ describe('pack-entry', () => {
   describe('encodeOfsDistance', () => {
     it('Given distance=0, When encoding, Then single byte 0x00', () => {
       // Arrange
-      // Act
       const sut = encodeOfsDistance(0);
 
       // Assert
@@ -527,7 +523,6 @@ describe('pack-entry', () => {
 
     it('Given distance=127, When encoding, Then single byte 0x7F', () => {
       // Arrange
-      // Act
       const sut = encodeOfsDistance(127);
 
       // Assert
@@ -536,7 +531,6 @@ describe('pack-entry', () => {
 
     it('Given distance=128, When encoding, Then two bytes with continuation', () => {
       // Arrange
-      // Act
       const sut = encodeOfsDistance(128);
 
       // Assert — Verify roundtrip
@@ -551,7 +545,6 @@ describe('pack-entry', () => {
 
     it('Given large distance (100000), When encoding then roundtripping, Then baseDistance matches', () => {
       // Arrange
-      // Act
       const sut = encodeOfsDistance(100000);
       const entryHeader = encodePackEntryHeader(PACK_ENTRY_TYPE.OFS_DELTA, 0);
       const combined = new Uint8Array(entryHeader.length + sut.length);
@@ -568,38 +561,50 @@ describe('pack-entry', () => {
   describe('packEntryTypeToObjectType', () => {
     it("Given COMMIT(1), When mapping, Then returns 'commit'", () => {
       // Arrange
+      const sut = packEntryTypeToObjectType(PACK_ENTRY_TYPE.COMMIT);
+
       // Assert
-      expect(packEntryTypeToObjectType(PACK_ENTRY_TYPE.COMMIT)).toBe('commit');
+      expect(sut).toBe('commit');
     });
 
     it("Given TREE(2), When mapping, Then returns 'tree'", () => {
       // Arrange
+      const sut = packEntryTypeToObjectType(PACK_ENTRY_TYPE.TREE);
+
       // Assert
-      expect(packEntryTypeToObjectType(PACK_ENTRY_TYPE.TREE)).toBe('tree');
+      expect(sut).toBe('tree');
     });
 
     it("Given BLOB(3), When mapping, Then returns 'blob'", () => {
       // Arrange
+      const sut = packEntryTypeToObjectType(PACK_ENTRY_TYPE.BLOB);
+
       // Assert
-      expect(packEntryTypeToObjectType(PACK_ENTRY_TYPE.BLOB)).toBe('blob');
+      expect(sut).toBe('blob');
     });
 
     it("Given TAG(4), When mapping, Then returns 'tag'", () => {
       // Arrange
+      const sut = packEntryTypeToObjectType(PACK_ENTRY_TYPE.TAG);
+
       // Assert
-      expect(packEntryTypeToObjectType(PACK_ENTRY_TYPE.TAG)).toBe('tag');
+      expect(sut).toBe('tag');
     });
 
     it('Given OFS_DELTA(6), When mapping, Then returns undefined', () => {
       // Arrange
+      const sut = packEntryTypeToObjectType(PACK_ENTRY_TYPE.OFS_DELTA);
+
       // Assert
-      expect(packEntryTypeToObjectType(PACK_ENTRY_TYPE.OFS_DELTA)).toBeUndefined();
+      expect(sut).toBeUndefined();
     });
 
     it('Given REF_DELTA(7), When mapping, Then returns undefined', () => {
       // Arrange
+      const sut = packEntryTypeToObjectType(PACK_ENTRY_TYPE.REF_DELTA);
+
       // Assert
-      expect(packEntryTypeToObjectType(PACK_ENTRY_TYPE.REF_DELTA)).toBeUndefined();
+      expect(sut).toBeUndefined();
     });
   });
 

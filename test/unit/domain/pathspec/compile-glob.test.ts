@@ -55,7 +55,6 @@ describe('compileGlob', () => {
     const sut = compileGlob('src', { anchored: true });
 
     // Act / Assert
-    // Assert
     expect(sut.test('vendorsrc')).toBe(false);
     expect(sut.test('a/src')).toBe(false);
     expect(sut.test('src')).toBe(true);
@@ -166,7 +165,6 @@ describe('compileGlob', () => {
     const sut = compileGlob('bar', { anchored: false });
 
     // Act / Assert
-    // Assert
     expect(sut.test('foobar')).toBe(false);
     // Balance: the legitimate segment matches must still hold.
     expect(sut.test('bar')).toBe(true);
@@ -189,7 +187,6 @@ describe('compileGlob', () => {
     const sut = compileGlob('', { anchored: true });
 
     // Act / Assert
-    // Assert
     expect(sut.test('')).toBe(true);
     expect(sut.test('a')).toBe(false);
   });
@@ -200,7 +197,6 @@ describe('compileGlob', () => {
     const sut = compileGlob('a*', { anchored: true });
 
     // Act / Assert
-    // Assert
     expect(sut.test('a')).toBe(true);
     expect(sut.test('abc')).toBe(true);
   });
@@ -211,7 +207,6 @@ describe('compileGlob', () => {
     const sut = compileGlob('a**z', { anchored: true });
 
     // Act / Assert
-    // Assert
     expect(sut.test('a/x/z')).toBe(true);
     expect(sut.test('axyz')).toBe(true);
     expect(sut.test('az')).toBe(true);
@@ -225,7 +220,6 @@ describe('compileGlob', () => {
     const sut = compileGlob('a***z', { anchored: true });
 
     // Act / Assert
-    // Assert
     expect(sut.test('a/x/z')).toBe(true);
     expect(sut.test('az')).toBe(true);
   });
@@ -236,7 +230,6 @@ describe('compileGlob', () => {
     const sut = compileGlob('a**', { anchored: true });
 
     // Act / Assert
-    // Assert
     expect(sut.test('a')).toBe(true);
     expect(sut.test('a/b/c')).toBe(true);
   });
@@ -247,7 +240,6 @@ describe('compileGlob', () => {
     const sut = compileGlob('a**b', { anchored: true });
 
     // Act / Assert
-    // Assert
     expect(sut.test('a')).toBe(false);
     expect(sut.test('ab')).toBe(true);
   });
@@ -281,8 +273,7 @@ describe('compileGlob', () => {
     });
 
     it('Given any pattern and any line-terminator-free path, When matched, Then the linear matcher agrees with the regex oracle', () => {
-      // Arrange
-      // Assert
+      // Arrange + Assert
       fc.assert(
         fc.property(arbPattern, arbPath, arbOptions, (pattern, path, options) => {
           const linear = compileGlob(pattern, options).test(path);
@@ -306,7 +297,9 @@ describe('containsGlob', () => {
     ['[abc]', false],
   ])('Given pattern %j, When checked, Then returns %s (no character-class detection in v1)', (input, expected) => {
     // Arrange
+    const sut = containsGlob(input);
+
     // Assert
-    expect(containsGlob(input)).toBe(expected);
+    expect(sut).toBe(expected);
   });
 });

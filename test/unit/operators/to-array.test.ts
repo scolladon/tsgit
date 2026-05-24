@@ -42,7 +42,6 @@ describe('toArray', () => {
     const source = throwingAt(3, 10);
 
     // Act / Assert
-    // Assert
     await expect(toArray(source)).rejects.toThrow(/threw at item 3/);
   });
 

@@ -57,6 +57,7 @@ const buildManifest = (overrides: ManifestOverrides = {}): Record<string, unknow
       tier: 'unit',
       regex: '\\.toThrow(?:Error)?\\s*\\(\\s*([A-Z]\\w*)\\s*\\)',
     },
+    emptyAaaSection: { tier: 'unit' },
   },
   ...(overrides.gating === undefined ? {} : { gating: overrides.gating }),
 });
@@ -137,6 +138,7 @@ describe('tooling/audit-test-pyramid (integration)', () => {
     expect(json.findings.missingAaa).toEqual([]);
     expect(json.findings.bannedSut).toEqual([]);
     expect(json.findings.bareClassThrow).toEqual([]);
+    expect(json.findings.emptyAaaSection).toEqual([]);
     const md = await readFile(path.join(tmpRoot, 'out', 'test-pyramid.md'), 'utf8');
     expect(md).toContain('# Testing-pyramid audit');
   });
@@ -290,5 +292,60 @@ describe('tooling/audit-test-pyramid (integration)', () => {
     // Assert
     expect(sut.code).toBe(1);
     expect(sut.stderr).toContain('underAssertedUnit');
+  });
+
+  it('Given a unit test with an empty Arrange section but no gating, When the script runs, Then the emptyAaaSection finding is reported and exit is 0', async () => {
+    // Arrange
+    await writeManifest(tmpRoot, PASSING_MANIFEST);
+    await mkdir(path.join(tmpRoot, 'test', 'unit'), { recursive: true });
+    await writeFile(
+      path.join(tmpRoot, 'test', 'unit', 'empty-aaa.test.ts'),
+      "it('Given x, When y, Then z', () => {\n  // Arrange\n  // Assert\n  expect(1).toBe(1);\n});\n",
+    );
+
+    // Act
+    const sut = await runScript(tmpRoot);
+
+    // Assert
+    expect(sut.code).toBe(0);
+    const json = JSON.parse(await readFile(path.join(tmpRoot, 'out', 'test-pyramid.json'), 'utf8'));
+    expect(json.findings.emptyAaaSection).toHaveLength(1);
+    expect(json.findings.emptyAaaSection[0]).toMatchObject({
+      path: 'test/unit/empty-aaa.test.ts',
+      marker: 'Arrange',
+    });
+  });
+
+  it('Given emptyAaaSection gated on and an empty Arrange section, When the script runs, Then exit is 1 and stderr names emptyAaaSection', async () => {
+    // Arrange
+    await writeManifest(tmpRoot, buildManifest({ gating: { emptyAaaSection: true } }));
+    await mkdir(path.join(tmpRoot, 'test', 'unit'), { recursive: true });
+    await writeFile(
+      path.join(tmpRoot, 'test', 'unit', 'empty-aaa.test.ts'),
+      "it('Given x, When y, Then z', () => {\n  // Arrange\n  // Assert\n  expect(1).toBe(1);\n});\n",
+    );
+
+    // Act
+    const sut = await runScript(tmpRoot);
+
+    // Assert
+    expect(sut.code).toBe(1);
+    expect(sut.stderr).toContain('emptyAaaSection');
+  });
+
+  it('Given emptyAaaSection gated on and an empty Arrange section, When --report-only is set, Then exit is 0 despite the finding', async () => {
+    // Arrange
+    await writeManifest(tmpRoot, buildManifest({ gating: { emptyAaaSection: true } }));
+    await mkdir(path.join(tmpRoot, 'test', 'unit'), { recursive: true });
+    await writeFile(
+      path.join(tmpRoot, 'test', 'unit', 'empty-aaa.test.ts'),
+      "it('Given x, When y, Then z', () => {\n  // Arrange\n  // Assert\n  expect(1).toBe(1);\n});\n",
+    );
+
+    // Act
+    const sut = await runScript(tmpRoot, ['--report-only']);
+
+    // Assert
+    expect(sut.code).toBe(0);
   });
 });

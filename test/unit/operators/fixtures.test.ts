@@ -73,7 +73,6 @@ describe('throwingAt', () => {
     const seen: number[] = [];
 
     // Act / Assert
-    // Assert
     await expect(
       (async () => {
         for await (const v of sut) {
@@ -125,7 +124,6 @@ describe('throwingPredicate', () => {
     const sut = throwingPredicate<number>((x) => x === 2, boom);
 
     // Act / Assert
-    // Assert
     await expect(sut(1)).resolves.toBe(false);
     await expect(sut(2)).rejects.toBe(boom);
   });

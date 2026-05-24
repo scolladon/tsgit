@@ -31,7 +31,6 @@ describe('internal/commit-message', () => {
 
     it('Given no explicit author + configUser set, When resolveAuthor, Then returns the config user', () => {
       // Arrange
-      // Act
       const sut = resolveAuthor({
         configUser: author({ name: 'Cfg', email: 'cfg@example.com' }),
       });
@@ -42,7 +41,6 @@ describe('internal/commit-message', () => {
 
     it('Given neither explicit nor configUser, When resolveAuthor, Then throws AUTHOR_UNCONFIGURED', () => {
       // Arrange
-      // Act
       let caught: unknown;
       try {
         resolveAuthor({});
@@ -93,7 +91,6 @@ describe('internal/commit-message', () => {
 
     it('Given no explicit + no author + configUser, When resolveCommitter, Then returns config user', () => {
       // Arrange
-      // Act
       const sut = resolveCommitter({
         configUser: author({ name: 'Cfg', email: 'cfg@example.com' }),
       });
@@ -104,7 +101,6 @@ describe('internal/commit-message', () => {
 
     it('Given nothing at all, When resolveCommitter, Then throws AUTHOR_UNCONFIGURED', () => {
       // Arrange
-      // Act
       let caught: unknown;
       try {
         resolveCommitter({});
@@ -121,7 +117,6 @@ describe('internal/commit-message', () => {
   describe('sanitizeMessage', () => {
     it("Given '   leading + trailing whitespace   \\n\\n' with allowEmpty=false, When sanitizeMessage, Then returns trimmed", () => {
       // Arrange
-      // Act
       const sut = sanitizeMessage('   leading + trailing whitespace   \n\n', { allowEmpty: false });
 
       // Assert
@@ -130,7 +125,6 @@ describe('internal/commit-message', () => {
 
     it("Given '' with allowEmpty=false, When sanitizeMessage, Then throws EMPTY_COMMIT_MESSAGE", () => {
       // Arrange
-      // Act
       let caught: unknown;
       try {
         sanitizeMessage('', { allowEmpty: false });
@@ -158,7 +152,6 @@ describe('internal/commit-message', () => {
 
     it("Given '' with allowEmpty=true, When sanitizeMessage, Then returns ''", () => {
       // Arrange
-      // Act
       const sut = sanitizeMessage('', { allowEmpty: true });
 
       // Assert
@@ -169,13 +162,14 @@ describe('internal/commit-message', () => {
   describe('sanitizeMarkerLabel', () => {
     it("Given 'main', When sanitizeMarkerLabel, Then returns 'main'", () => {
       // Arrange
+      const sut = sanitizeMarkerLabel('main');
+
       // Assert
-      expect(sanitizeMarkerLabel('main')).toBe('main');
+      expect(sut).toBe('main');
     });
 
     it("Given 'main\\nfoo', When sanitizeMarkerLabel, Then CR/LF/control chars escaped", () => {
       // Arrange
-      // Act
       const sut = sanitizeMarkerLabel('main\nfoo');
 
       // Assert — LF escaped (label must be single-line for marker safety).
@@ -195,7 +189,6 @@ describe('internal/commit-message', () => {
 
     it('Given a label with NUL byte, When sanitizeMarkerLabel, Then NUL is escaped', () => {
       // Arrange
-      // Act
       const sut = sanitizeMarkerLabel('a\0b');
 
       // Assert

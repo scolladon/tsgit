@@ -75,7 +75,6 @@ describe('filter', () => {
     const sut = filter(throwingPredicate<number>((n) => n === 2, boom));
 
     // Act / Assert
-    // Assert
     await expect(toArray(sut(source.source))).rejects.toBe(boom);
     expect(source.returnCalled()).toBe(true);
   });

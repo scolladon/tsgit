@@ -453,7 +453,6 @@ describe('pack-index', () => {
       const idx = parsePackIndex(buildTestIndex(entries));
 
       // Act & Assert
-      // Assert
       expect(lookupPackIndex(idx, ('aa' + '00'.repeat(19)) as ObjectId)).toBe(0x80000001);
       expect(lookupPackIndex(idx, ('bb' + '00'.repeat(19)) as ObjectId)).toBe(0x80000002);
       expect(lookupPackIndex(idx, ('cc' + '00'.repeat(19)) as ObjectId)).toBe(0x90000000);
@@ -760,8 +759,7 @@ describe('pack-index', () => {
 
   describe('property-based tests', () => {
     it('Given any set of entries, When building index and looking up each, Then finds correct offset', () => {
-      // Arrange
-      // Assert
+      // Arrange + Assert
       fc.assert(
         fc.property(arbUniqueEntries(10), (entries) => {
           fc.pre(entries.length > 0);
@@ -774,8 +772,7 @@ describe('pack-index', () => {
     });
 
     it('Given any ObjectId not in the index, When looking up, Then returns undefined', () => {
-      // Arrange
-      // Assert
+      // Arrange + Assert
       fc.assert(
         fc.property(arbObjectId(40), arbObjectId(40), (indexId, lookupId) => {
           fc.pre(indexId !== lookupId);

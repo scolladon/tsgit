@@ -72,8 +72,7 @@ describe('blob', () => {
 
   describe('property-based tests', () => {
     it('Given the roundtrip property "parseBlobContent(id, serializeBlobContent(blob)).content equals original content", When sampled, Then it holds', () => {
-      // Arrange
-      // Assert
+      // Arrange + Assert
       fc.assert(
         fc.property(fc.uint8Array({ minLength: 0, maxLength: 10000 }), (content) => {
           const blob = parseBlobContent(DUMMY_ID, content);

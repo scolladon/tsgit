@@ -654,8 +654,7 @@ describe('delta', () => {
 
   describe('property-based tests', () => {
     it('Given any generated delta, When applying, Then result matches expected output', () => {
-      // Arrange
-      // Assert
+      // Arrange + Assert
       fc.assert(
         fc.property(arbDeltaTriple(), ({ base, instructions, expected }) => {
           fc.pre(instructions.length > 0 && expected.length > 0);
@@ -670,8 +669,7 @@ describe('delta', () => {
     });
 
     it('Given any valid delta, When applying, Then result length equals targetLength', () => {
-      // Arrange
-      // Assert
+      // Arrange + Assert
       fc.assert(
         fc.property(fc.uint8Array({ minLength: 1, maxLength: 100 }), (base) => {
           const insert = base.slice(0, Math.min(10, base.length));
@@ -847,8 +845,7 @@ describe('delta', () => {
 
   describe('MAX_DELTA_CHAIN_DEPTH', () => {
     it('Given the exported constant, When read, Then equals 50 (git default)', () => {
-      // Arrange
-      // Assert
+      // Arrange + Assert
       expect(MAX_DELTA_CHAIN_DEPTH).toBe(50);
     });
   });

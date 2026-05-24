@@ -41,7 +41,6 @@ describe('NodeCompressor', () => {
     describe('describeError', () => {
       it('Given an Error instance, When describing, Then returns its message', () => {
         // Arrange
-        // Act
         const sut = describeError(new Error('boom'));
 
         // Assert
@@ -50,7 +49,6 @@ describe('NodeCompressor', () => {
 
       it('Given a non-Error value, When describing, Then returns String(value)', () => {
         // Arrange
-        // Act
         const sut = describeError(42);
 
         // Assert

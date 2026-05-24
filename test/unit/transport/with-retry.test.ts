@@ -56,8 +56,10 @@ describe('withRetry — validation', () => {
 
   it('Given baseMs=0, When withRetry is created, Then returns a factory', () => {
     // Arrange
+    const sut = typeof withRetry({ attempts: 3, baseMs: 0 });
+
     // Assert
-    expect(typeof withRetry({ attempts: 3, baseMs: 0 })).toBe('function');
+    expect(sut).toBe('function');
   });
 
   it('Given baseMs=200, maxDelayMs=100, When withRetry is created, Then throws RangeError', () => {
@@ -74,8 +76,10 @@ describe('withRetry — validation', () => {
 
   it('Given baseMs=100, maxDelayMs=100 (equal), When withRetry is created, Then returns a factory', () => {
     // Arrange
+    const sut = typeof withRetry({ attempts: 3, baseMs: 100, maxDelayMs: 100 });
+
     // Assert
-    expect(typeof withRetry({ attempts: 3, baseMs: 100, maxDelayMs: 100 })).toBe('function');
+    expect(sut).toBe('function');
   });
 
   it.each([
@@ -96,8 +100,10 @@ describe('withRetry — validation', () => {
     0, 1,
   ])('Given jitter=%j (boundary), When withRetry is created, Then returns a factory', (jitter) => {
     // Arrange
+    const sut = typeof withRetry({ attempts: 3, jitter });
+
     // Assert
-    expect(typeof withRetry({ attempts: 3, jitter })).toBe('function');
+    expect(sut).toBe('function');
   });
 });
 
@@ -410,8 +416,10 @@ describe('defaultDelay primitive', () => {
 describe('defaultIsRetryable — direct table', () => {
   it('Given an error with no response, When evaluated, Then returns true', () => {
     // Arrange
+    const sut = defaultIsRetryable({ error: new Error('boom'), attempt: 1 });
+
     // Assert
-    expect(defaultIsRetryable({ error: new Error('boom'), attempt: 1 })).toBe(true);
+    expect(sut).toBe(true);
   });
 
   it('Given an AbortError DOMException, When evaluated, Then returns false', () => {
@@ -430,8 +438,10 @@ describe('defaultIsRetryable — direct table', () => {
 
   it('Given no error and no response (undefined undefined), When evaluated, Then returns false', () => {
     // Arrange
+    const sut = defaultIsRetryable({ attempt: 1 });
+
     // Assert
-    expect(defaultIsRetryable({ attempt: 1 })).toBe(false);
+    expect(sut).toBe(false);
   });
 
   it.each([

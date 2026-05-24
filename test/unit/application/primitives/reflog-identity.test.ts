@@ -100,7 +100,6 @@ describe('resolveReflogIdentity', () => {
     const ctx = createMemoryContext();
 
     // Act & Assert — resolution must not abort a ref update.
-    // Assert
     await expect(resolveReflogIdentity(ctx)).resolves.toBeDefined();
   });
 });

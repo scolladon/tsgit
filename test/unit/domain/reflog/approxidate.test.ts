@@ -340,82 +340,108 @@ describe('parseApproxidate', () => {
   describe('every supported unit', () => {
     it("Given '10 seconds ago', When parsing, Then subtracts ten seconds", () => {
       // Arrange
+      const sut = parseApproxidate('10 seconds ago', NOW);
+
       // Assert
-      expect(parseApproxidate('10 seconds ago', NOW)).toBe(NOW - 10);
+      expect(sut).toBe(NOW - 10);
     });
 
     it("Given '10 minutes ago', When parsing, Then subtracts ten minutes", () => {
       // Arrange
+      const sut = parseApproxidate('10 minutes ago', NOW);
+
       // Assert
-      expect(parseApproxidate('10 minutes ago', NOW)).toBe(NOW - 10 * MINUTE);
+      expect(sut).toBe(NOW - 10 * MINUTE);
     });
 
     it("Given '10 hours ago', When parsing, Then subtracts ten hours", () => {
       // Arrange
+      const sut = parseApproxidate('10 hours ago', NOW);
+
       // Assert
-      expect(parseApproxidate('10 hours ago', NOW)).toBe(NOW - 10 * HOUR);
+      expect(sut).toBe(NOW - 10 * HOUR);
     });
 
     it("Given '10 days ago', When parsing, Then subtracts ten days", () => {
       // Arrange
+      const sut = parseApproxidate('10 days ago', NOW);
+
       // Assert
-      expect(parseApproxidate('10 days ago', NOW)).toBe(NOW - 10 * DAY);
+      expect(sut).toBe(NOW - 10 * DAY);
     });
 
     it("Given '10 weeks ago', When parsing, Then subtracts ten weeks", () => {
       // Arrange
+      const sut = parseApproxidate('10 weeks ago', NOW);
+
       // Assert
-      expect(parseApproxidate('10 weeks ago', NOW)).toBe(NOW - 10 * WEEK);
+      expect(sut).toBe(NOW - 10 * WEEK);
     });
 
     it("Given '2 months ago', When parsing, Then subtracts two 30-day months", () => {
       // Arrange
+      const sut = parseApproxidate('2 months ago', NOW);
+
       // Assert
-      expect(parseApproxidate('2 months ago', NOW)).toBe(NOW - 2 * MONTH);
+      expect(sut).toBe(NOW - 2 * MONTH);
     });
 
     it("Given '1 year ago', When parsing, Then subtracts a 365-day year", () => {
       // Arrange
+      const sut = parseApproxidate('1 year ago', NOW);
+
       // Assert
-      expect(parseApproxidate('1 year ago', NOW)).toBe(NOW - YEAR);
+      expect(sut).toBe(NOW - YEAR);
     });
   });
 
   describe('unparseable input', () => {
     it('Given an empty string, When parsing, Then returns undefined', () => {
       // Arrange
+      const sut = parseApproxidate('', NOW);
+
       // Assert
-      expect(parseApproxidate('', NOW)).toBeUndefined();
+      expect(sut).toBeUndefined();
     });
 
     it('Given garbage text, When parsing, Then returns undefined', () => {
       // Arrange
+      const sut = parseApproxidate('not a date at all', NOW);
+
       // Assert
-      expect(parseApproxidate('not a date at all', NOW)).toBeUndefined();
+      expect(sut).toBeUndefined();
     });
 
     it('Given an unknown unit, When parsing, Then returns undefined', () => {
       // Arrange
+      const sut = parseApproxidate('3 fortnights ago', NOW);
+
       // Assert
-      expect(parseApproxidate('3 fortnights ago', NOW)).toBeUndefined();
+      expect(sut).toBeUndefined();
     });
 
     it('Given a relative form with a non-numeric count, When parsing, Then returns undefined', () => {
       // Arrange
+      const sut = parseApproxidate('many days ago', NOW);
+
       // Assert
-      expect(parseApproxidate('many days ago', NOW)).toBeUndefined();
+      expect(sut).toBeUndefined();
     });
 
     it('Given a weekday name (unsupported form), When parsing, Then returns undefined', () => {
       // Arrange
+      const sut = parseApproxidate('monday', NOW);
+
       // Assert
-      expect(parseApproxidate('monday', NOW)).toBeUndefined();
+      expect(sut).toBeUndefined();
     });
 
     it('Given a bare integer, When parsing, Then returns undefined', () => {
       // Arrange
+      const sut = parseApproxidate('1779710400', NOW);
+
       // Assert
-      expect(parseApproxidate('1779710400', NOW)).toBeUndefined();
+      expect(sut).toBeUndefined();
     });
   });
 });

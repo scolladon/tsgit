@@ -43,6 +43,7 @@ const okOutcome: AuditOutcome = {
     missingAaa: [],
     bannedSut: [],
     bareClassThrow: [],
+    emptyAaaSection: [],
   },
   excludePaths: [],
 };
@@ -85,6 +86,14 @@ const outcomeWithFindings: AuditOutcome = {
         line: 15,
         title: 'Given x, When y, Then z',
         identifier: 'TsgitError',
+      },
+    ],
+    emptyAaaSection: [
+      {
+        path: 'test/unit/g.test.ts',
+        line: 17,
+        title: 'Given x, When y, Then z',
+        marker: 'Arrange',
       },
     ],
   },
@@ -181,6 +190,7 @@ describe('renderMarkdown', () => {
         missingAaa: [],
         bannedSut: [],
         bareClassThrow: [],
+        emptyAaaSection: [],
       },
       excludePaths: [],
     };
@@ -267,6 +277,7 @@ describe('renderMarkdown', () => {
     expect(sut).toContain('### Missing AAA body comments');
     expect(sut).toContain('### Banned SUT name synonyms');
     expect(sut).toContain('### Bare-class `.toThrow(Class)` calls');
+    expect(sut).toContain('### Empty AAA sections');
   });
 
   it('Given a bad-title finding, When rendered, Then the row names the reason and the title', () => {
@@ -305,6 +316,15 @@ describe('renderMarkdown', () => {
     expect(sut).toContain('`.toThrow(TsgitError)`');
   });
 
+  it('Given an empty-AAA-section finding, When rendered, Then the row names the empty marker', () => {
+    // Arrange + Act
+    const sut = renderMarkdown(outcomeWithFindings);
+
+    // Assert
+    expect(sut).toContain('test/unit/g.test.ts:17');
+    expect(sut).toContain('empty Arrange section');
+  });
+
   it('Given an outcome with empty new-finding arrays, When rendered, Then each new section renders as "_none_"', () => {
     // Arrange + Act
     const sut = renderMarkdown(okOutcome);
@@ -314,5 +334,6 @@ describe('renderMarkdown', () => {
     expect(sut).toMatch(/Missing AAA[\s\S]*_none_/);
     expect(sut).toMatch(/Banned SUT[\s\S]*_none_/);
     expect(sut).toMatch(/Bare-class[\s\S]*_none_/);
+    expect(sut).toMatch(/Empty AAA sections[\s\S]*_none_/);
   });
 });

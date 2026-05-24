@@ -53,6 +53,10 @@ export interface BareClassThrowHeuristic {
   readonly compiledRegex: RegExp;
 }
 
+export interface EmptyAaaSectionHeuristic {
+  readonly tier: TierName;
+}
+
 export const GATING_KEYS = [
   'overMockedIntegration',
   'underAssertedUnit',
@@ -60,6 +64,7 @@ export const GATING_KEYS = [
   'aaaBody',
   'sutNaming',
   'bareClassToThrow',
+  'emptyAaaSection',
 ] as const;
 export type GatingKey = (typeof GATING_KEYS)[number];
 export type GatingConfig = Readonly<Record<GatingKey, boolean>>;
@@ -73,6 +78,7 @@ export interface PyramidManifest {
     readonly aaaBody: AaaBodyHeuristic;
     readonly sutNaming: SutNamingHeuristic;
     readonly bareClassToThrow: BareClassThrowHeuristic;
+    readonly emptyAaaSection: EmptyAaaSectionHeuristic;
   };
   readonly gating: GatingConfig;
   readonly excludePaths: ReadonlyArray<string>;
@@ -282,6 +288,17 @@ const parseBareClassThrow = (
   return { tier, regex, compiledRegex: compileRegex(regex, 'bareClassToThrow', 'g') };
 };
 
+const parseEmptyAaaSection = (
+  raw: unknown,
+  tierNames: ReadonlySet<TierName>,
+): EmptyAaaSectionHeuristic => {
+  if (!isObject(raw)) {
+    return fail('emptyAaaSection must be an object');
+  }
+  const tier = requireTier(raw.tier, 'emptyAaaSection', tierNames);
+  return { tier };
+};
+
 const DEFAULT_GATING: GatingConfig = Object.freeze<GatingConfig>({
   overMockedIntegration: false,
   underAssertedUnit: false,
@@ -289,6 +306,7 @@ const DEFAULT_GATING: GatingConfig = Object.freeze<GatingConfig>({
   aaaBody: false,
   sutNaming: false,
   bareClassToThrow: false,
+  emptyAaaSection: false,
 });
 
 // `excludePaths` is reserved for the audit's own self-test fixtures — files
@@ -370,6 +388,7 @@ export const parseManifest = (raw: string): PyramidManifest => {
     'aaaBody',
     'sutNaming',
     'bareClassToThrow',
+    'emptyAaaSection',
   ] as const;
   for (const key of requiredHeuristicKeys) {
     if (heuristics[key] === undefined) {
@@ -387,6 +406,7 @@ export const parseManifest = (raw: string): PyramidManifest => {
       aaaBody: parseAaaBody(heuristics.aaaBody, tierNames),
       sutNaming: parseSutNaming(heuristics.sutNaming, tierNames),
       bareClassToThrow: parseBareClassThrow(heuristics.bareClassToThrow, tierNames),
+      emptyAaaSection: parseEmptyAaaSection(heuristics.emptyAaaSection, tierNames),
     },
     gating: parseGating(gating),
     excludePaths: parseExcludePaths(excludePaths),

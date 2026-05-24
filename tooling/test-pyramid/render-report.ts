@@ -6,6 +6,7 @@
 import type { BadTitleFinding } from './detect-bad-title.ts';
 import type { BannedSutFinding } from './detect-banned-sut-name.ts';
 import type { BareClassThrowFinding } from './detect-bare-class-throw.ts';
+import type { EmptyAaaSectionFinding } from './detect-empty-aaa-section.ts';
 import type { MissingAaaFinding } from './detect-missing-aaa.ts';
 import type { OverMockedFinding } from './detect-over-mocked.ts';
 import type { UnderAssertedFinding } from './detect-under-asserted.ts';
@@ -18,6 +19,7 @@ export interface AuditFindings {
   readonly missingAaa: ReadonlyArray<MissingAaaFinding>;
   readonly bannedSut: ReadonlyArray<BannedSutFinding>;
   readonly bareClassThrow: ReadonlyArray<BareClassThrowFinding>;
+  readonly emptyAaaSection: ReadonlyArray<EmptyAaaSectionFinding>;
 }
 
 export interface AuditOutcome {
@@ -102,6 +104,15 @@ const renderBareClassThrow = (
     .join('\n');
 };
 
+const renderEmptyAaaSection = (
+  findings: ReadonlyArray<EmptyAaaSectionFinding>,
+): string => {
+  if (findings.length === 0) return '_none_';
+  return findings
+    .map((f) => `- \`${f.path}:${f.line}\` — empty ${f.marker} section (${f.title})`)
+    .join('\n');
+};
+
 const renderUnclassified = (paths: ReadonlyArray<string>): string => {
   if (paths.length === 0) return '';
   const lines = paths.map((p) => `- \`${p}\``);
@@ -143,6 +154,12 @@ export const renderMarkdown = (outcome: AuditOutcome): string => {
   sections.push('', '### Under-asserted unit tests', '', renderUnderAsserted(findings.underAsserted));
   sections.push('', '### Non-GWT unit test titles', '', renderBadTitle(findings.badTitle));
   sections.push('', '### Missing AAA body comments', '', renderMissingAaa(findings.missingAaa));
+  sections.push(
+    '',
+    '### Empty AAA sections',
+    '',
+    renderEmptyAaaSection(findings.emptyAaaSection),
+  );
   sections.push('', '### Banned SUT name synonyms', '', renderBannedSut(findings.bannedSut));
   sections.push(
     '',

@@ -40,7 +40,6 @@ describe('commands/internal commit-hooks runPreCommitHook', () => {
     });
 
     // Act & Assert
-    // Assert
     await expect(runPreCommitHook(ctx, true)).resolves.toBeUndefined();
   });
 
@@ -74,7 +73,6 @@ describe('commands/internal commit-hooks runPreCommitHook', () => {
     const ctx = createMemoryContext({ hooks: new MemoryHookRunner() });
 
     // Act & Assert
-    // Assert
     await expect(runPreCommitHook(ctx, false)).resolves.toBeUndefined();
   });
 });

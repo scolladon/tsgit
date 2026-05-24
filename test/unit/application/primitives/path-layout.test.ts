@@ -31,38 +31,47 @@ describe('path-layout', () => {
 
   it('Given gitDir, When packedRefsPath, Then returns /gitDir/packed-refs', () => {
     // Arrange
+    const sut = packedRefsPath('/g');
+
     // Assert
-    expect(packedRefsPath('/g')).toBe('/g/packed-refs');
+    expect(sut).toBe('/g/packed-refs');
   });
 
   it('Given gitDir, When indexPath, Then returns /gitDir/index', () => {
     // Arrange
+    const sut = indexPath('/g');
+
     // Assert
-    expect(indexPath('/g')).toBe('/g/index');
+    expect(sut).toBe('/g/index');
   });
 
   it('Given gitDir and prefix, When objectsDir, Then returns /gitDir/objects/<prefix>', () => {
     // Arrange
+    const sut = objectsDir('/g', 'ab');
+
     // Assert
-    expect(objectsDir('/g', 'ab')).toBe('/g/objects/ab');
+    expect(sut).toBe('/g/objects/ab');
   });
 
   it('Given gitDir, When packsDir, Then returns /gitDir/objects/pack', () => {
     // Arrange
+    const sut = packsDir('/g');
+
     // Assert
-    expect(packsDir('/g')).toBe('/g/objects/pack');
+    expect(sut).toBe('/g/objects/pack');
   });
 
   it('Given lockSuffix, When read, Then equals .lock', () => {
-    // Arrange
-    // Assert
+    // Arrange + Assert
     expect(lockSuffix).toBe('.lock');
   });
 
   it('Given gitDir, When logsDir, Then returns /gitDir/logs', () => {
     // Arrange
+    const sut = logsDir('/g');
+
     // Assert
-    expect(logsDir('/g')).toBe('/g/logs');
+    expect(sut).toBe('/g/logs');
   });
 
   it('Given gitDir and a RefName, When reflogPath, Then returns /gitDir/logs/<name>', () => {
@@ -81,7 +90,9 @@ describe('path-layout', () => {
 
   it('Given gitDir, When sparseCheckoutPath, Then returns /gitDir/info/sparse-checkout', () => {
     // Arrange
+    const sut = sparseCheckoutPath('/g');
+
     // Assert
-    expect(sparseCheckoutPath('/g')).toBe('/g/info/sparse-checkout');
+    expect(sut).toBe('/g/info/sparse-checkout');
   });
 });

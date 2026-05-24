@@ -8,8 +8,10 @@ const path = (s: string): FilePath => s as FilePath;
 describe('matchesPathspec', () => {
   it('Given an empty spec, When matched against any path, Then returns false', () => {
     // Arrange
+    const sut = matchesPathspec([], path('foo.ts'));
+
     // Assert
-    expect(matchesPathspec([], path('foo.ts'))).toBe(false);
+    expect(sut).toBe(false);
   });
 
   it('Given a single literal "src/foo.ts", When matched, Then matches the exact path AND descendants', () => {

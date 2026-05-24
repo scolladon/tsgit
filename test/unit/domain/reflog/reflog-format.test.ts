@@ -82,7 +82,6 @@ describe('serializeReflogLine', () => {
     const sut: ReflogEntry = { ...ENTRY, message: 'first\nsecond' };
 
     // Act & Assert
-    // Assert
     expectInvalidReflogEntry(() => serializeReflogLine(sut), 'message contains a line break');
   });
 
@@ -91,7 +90,6 @@ describe('serializeReflogLine', () => {
     const sut: ReflogEntry = { ...ENTRY, message: 'first\rsecond' };
 
     // Act & Assert
-    // Assert
     expectInvalidReflogEntry(() => serializeReflogLine(sut), 'message contains a line break');
   });
 });
@@ -146,7 +144,6 @@ describe('parseReflogLine', () => {
     const sut = `${OID_A} ${OID_B} Ada <ada@example.com> 1716240000 +0000 commit: second`;
 
     // Act & Assert
-    // Assert
     expectInvalidReflogEntry(() => parseReflogLine(sut), 'missing tab separator');
   });
 
@@ -156,7 +153,6 @@ describe('parseReflogLine', () => {
 
     // Act & Assert — a 39-char OID shifts the index-40 separator off; the
     // separator guard fires before OID validation.
-    // Assert
     expectInvalidReflogEntry(() => parseReflogLine(sut), 'misplaced field separator');
   });
 
@@ -165,7 +161,6 @@ describe('parseReflogLine', () => {
     const sut = `${OID_A} ${'g'.repeat(40)} Ada <ada@example.com> 1716240000 +0000\tx`;
 
     // Act & Assert
-    // Assert
     expectInvalidReflogEntry(() => parseReflogLine(sut), 'invalid object id');
   });
 
@@ -174,7 +169,6 @@ describe('parseReflogLine', () => {
     const sut = `${OID_A}X${OID_B} Ada <ada@example.com> 1716240000 +0000\tx`;
 
     // Act & Assert
-    // Assert
     expectInvalidReflogEntry(() => parseReflogLine(sut), 'misplaced field separator');
   });
 
@@ -183,7 +177,6 @@ describe('parseReflogLine', () => {
     const sut = `${OID_A} ${OID_B}X Ada <ada@example.com> 1716240000 +0000\tx`;
 
     // Act & Assert
-    // Assert
     expectInvalidReflogEntry(() => parseReflogLine(sut), 'misplaced field separator');
   });
 
@@ -192,7 +185,6 @@ describe('parseReflogLine', () => {
     const sut = `${OID_A} ${OID_B} no-brackets 1716240000 +0000\tx`;
 
     // Act & Assert
-    // Assert
     expectInvalidReflogEntry(() => parseReflogLine(sut), 'invalid identity');
   });
 });
@@ -238,7 +230,6 @@ describe('parseReflog', () => {
     const sut = `${serializeReflogLine(ENTRY)}garbage line\n`;
 
     // Act & Assert
-    // Assert
     expectInvalidReflogEntry(() => parseReflog(sut), 'missing tab separator');
   });
 });

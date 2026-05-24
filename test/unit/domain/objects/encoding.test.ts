@@ -328,19 +328,16 @@ describe('encoding', () => {
 
     it('Given key containing newline, When formatting, Then throws', () => {
       // Arrange & Act & Assert
-      // Assert
       expect(() => formatContinuationHeader('bad\nkey', 'value')).toThrow('invalid header key');
     });
 
     it('Given key containing space, When formatting, Then throws', () => {
       // Arrange & Act & Assert
-      // Assert
       expect(() => formatContinuationHeader('bad key', 'value')).toThrow('invalid header key');
     });
 
     it('Given empty key, When formatting, Then throws', () => {
       // Arrange & Act & Assert
-      // Assert
       expect(() => formatContinuationHeader('', 'value')).toThrow('invalid header key');
     });
   });
@@ -365,8 +362,7 @@ describe('encoding', () => {
 
   describe('property-based tests', () => {
     it('Given the roundtrip property "bytesToHex(hexToBytes(hex)) === hex for any valid even-length hex string", When sampled, Then it holds', () => {
-      // Arrange
-      // Assert
+      // Arrange + Assert
       fc.assert(
         fc.property(
           fc.uint8Array({ minLength: 0, maxLength: 100 }).map((bytes) =>
@@ -383,8 +379,7 @@ describe('encoding', () => {
     });
 
     it('Given the roundtrip property "hexToBytes(bytesToHex(bytes)) equals original bytes", When sampled, Then it holds', () => {
-      // Arrange
-      // Assert
+      // Arrange + Assert
       fc.assert(
         fc.property(fc.uint8Array({ minLength: 0, maxLength: 100 }), (bytes) => {
           const sut = hexToBytes(bytesToHex(bytes));
@@ -394,8 +389,7 @@ describe('encoding', () => {
     });
 
     it('Given the reflexive property "compareBytes(a, a) === 0 for any array", When checked, Then it holds', () => {
-      // Arrange
-      // Assert
+      // Arrange + Assert
       fc.assert(
         fc.property(fc.uint8Array({ minLength: 0, maxLength: 100 }), (a) => {
           const sut = compareBytes(a, a);
@@ -405,8 +399,7 @@ describe('encoding', () => {
     });
 
     it('Given the antisymmetric property "Math.sign(compareBytes(a, b)) === -Math.sign(compareBytes(b, a))", When checked, Then it holds', () => {
-      // Arrange
-      // Assert
+      // Arrange + Assert
       fc.assert(
         fc.property(
           fc.uint8Array({ minLength: 0, maxLength: 50 }),

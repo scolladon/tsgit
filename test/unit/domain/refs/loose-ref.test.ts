@@ -205,8 +205,7 @@ describe('serializeSymbolicRef', () => {
 
 describe('roundtrip', () => {
   it('Given any ObjectId, When serializing then parsing, Then roundtrips', () => {
-    // Arrange
-    // Assert
+    // Arrange + Assert
     fc.assert(
       fc.property(arbObjectId(), (id) => {
         const sut = parseLooseRef(serializeDirectRef(id));
@@ -216,8 +215,7 @@ describe('roundtrip', () => {
   });
 
   it('Given any RefName (via arbRefName), When serializing symbolic then parsing, Then roundtrips', () => {
-    // Arrange
-    // Assert
+    // Arrange + Assert
     fc.assert(
       fc.property(arbRefName(), (name) => {
         const sut = parseLooseRef(serializeSymbolicRef(name));

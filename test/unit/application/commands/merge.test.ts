@@ -612,7 +612,6 @@ describe('merge.4b conflict persistence', () => {
       };
 
       // Act / Assert
-      // Assert
       await expect(runBounded([1, 2, 3, 4, 5, 6], 2, fn)).rejects.toThrow('boom');
     });
   });
@@ -662,7 +661,6 @@ describe('merge.4b conflict persistence', () => {
       const conflict = { type: conflictType, path: 'x.txt' as never } as never;
 
       // Act / Assert — no throw.
-      // Assert
       expect(() => rejectUnsupportedConflicts([conflict])).not.toThrow();
     });
 
@@ -673,7 +671,6 @@ describe('merge.4b conflict persistence', () => {
       );
 
       // Act / Assert
-      // Assert
       expect(() => rejectUnsupportedConflicts([])).not.toThrow();
     });
   });
@@ -1296,7 +1293,6 @@ describe('resolveMergeAuthor / resolveMergeCommitter (direct)', () => {
 
   it('Given no explicit committer, When resolveMergeCommitter runs, Then it falls back to the author', async () => {
     // Arrange
-    // Act
     const sut = resolveMergeCommitter({ target: 'feature' }, author);
 
     // Assert
@@ -1307,7 +1303,6 @@ describe('resolveMergeAuthor / resolveMergeCommitter (direct)', () => {
 describe('parentDir (direct)', () => {
   it('Given a nested path, When parentDir is called, Then returns the directory above the leaf', () => {
     // Arrange
-    // Act
     const sut = parentDir('/work/sub/file.txt');
 
     // Assert
@@ -1316,7 +1311,6 @@ describe('parentDir (direct)', () => {
 
   it('Given a path whose only slash is at index 0, When parentDir is called, Then returns undefined (lastSlash <= 0)', () => {
     // Arrange
-    // Act — `/abc`: lastSlash === 0, the `<= 0` guard must fire.
     const sut = parentDir('/abc');
 
     // Assert
@@ -1325,7 +1319,6 @@ describe('parentDir (direct)', () => {
 
   it('Given a path with no slash, When parentDir is called, Then returns undefined (lastSlash === -1)', () => {
     // Arrange
-    // Act
     const sut = parentDir('abc');
 
     // Assert
@@ -1482,7 +1475,6 @@ describe('removeWorkingTreeFile (direct)', () => {
     await init(ctx);
 
     // Act / Assert — the `if (exists)` guard prevents an rm on a missing path.
-    // Assert
     await expect(removeWorkingTreeFile(ctx, 'absent.txt' as FilePath)).resolves.toBeUndefined();
   });
 });
@@ -1584,7 +1576,6 @@ describe('materialiseConflictBytes (direct)', () => {
     const conflict = conflictOf({ type: 'add-add' });
 
     // Act / Assert
-    // Assert
     expect(await materialiseConflictBytes(ctx, conflict)).toBeUndefined();
   });
 
@@ -1637,7 +1628,6 @@ describe('materialiseConflictBytes (direct)', () => {
     const conflict = conflictOf({ type: 'modify-delete' });
 
     // Act / Assert
-    // Assert
     expect(await materialiseConflictBytes(ctx, conflict)).toBeUndefined();
   });
 
@@ -1669,7 +1659,6 @@ describe('materialiseConflictBytes (direct)', () => {
     const conflict = conflictOf({ type: 'content', ourId: oursId });
 
     // Act / Assert
-    // Assert
     expect(await materialiseConflictBytes(ctx, conflict)).toBeUndefined();
   });
 
@@ -1683,7 +1672,6 @@ describe('materialiseConflictBytes (direct)', () => {
     const conflict = conflictOf({ type: 'gitlink', ourId: oursId, theirId: theirsId });
 
     // Act / Assert
-    // Assert
     expect(await materialiseConflictBytes(ctx, conflict)).toBeUndefined();
   });
 });

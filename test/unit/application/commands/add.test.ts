@@ -530,7 +530,6 @@ describe('add', () => {
       fs: racingLstatFs(ctx, '/link', { isSymbolicLink: false, isFile: true }),
     };
 
-    // Act
     // Assert
     await expectError(() => add(racingCtx, [], { all: true }), 'OPERATION_ABORTED');
   });
@@ -544,7 +543,6 @@ describe('add', () => {
       fs: racingLstatFs(ctx, '/a.txt', { isFile: false, isDirectory: true }),
     };
 
-    // Act
     // Assert
     await expectError(() => add(racingCtx, [], { all: true }), 'OPERATION_ABORTED');
   });
@@ -559,7 +557,6 @@ describe('add', () => {
       fs: racingLstatFs(ctx, '/a.txt', { isSymbolicLink: true }),
     };
 
-    // Act
     // Assert
     await expectError(() => add(racingCtx, [], { all: true }), 'OPERATION_ABORTED');
   });
@@ -572,7 +569,6 @@ describe('add', () => {
       fs: racingLstatFs(ctx, '/a.txt', { isDirectory: true }),
     };
 
-    // Act
     // Assert
     await expectError(() => add(racingCtx, [], { all: true }), 'OPERATION_ABORTED');
   });
@@ -585,7 +581,6 @@ describe('add', () => {
       fs: racingLstatFs(ctx, '/a.txt', { isFile: false }),
     };
 
-    // Act
     // Assert
     await expectError(() => add(racingCtx, [], { all: true }), 'OPERATION_ABORTED');
   });
@@ -1000,7 +995,6 @@ describe('add', () => {
     const abortedCtx = { ...ctx, signal: controller.signal };
 
     // Act + Assert
-    // Assert
     await expectError(() => add(abortedCtx, ['!a.txt']), 'OPERATION_ABORTED');
   });
 
@@ -1331,7 +1325,6 @@ describe('add', () => {
 
     // Act + Assert — PERMISSION_DENIED is not a missing-index code, so it
     // surfaces instead of being absorbed.
-    // Assert
     await expectError(() => add(failingCtx, ['a.txt']), 'PERMISSION_DENIED');
   });
 

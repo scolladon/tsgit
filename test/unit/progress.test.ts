@@ -196,7 +196,6 @@ describe('consoleProgress — sink robustness', () => {
     const sut = consoleProgress(sink);
 
     // Act / Assert
-    // Assert
     expect(() => sut.start('op')).not.toThrow();
   });
 
@@ -208,7 +207,6 @@ describe('consoleProgress — sink robustness', () => {
     const sut = consoleProgress(sink);
 
     // Act / Assert
-    // Assert
     expect(() => sut.update('op', 1, 2)).not.toThrow();
   });
 
@@ -220,7 +218,6 @@ describe('consoleProgress — sink robustness', () => {
     const sut = consoleProgress(sink);
 
     // Act / Assert
-    // Assert
     expect(() => sut.end('op')).not.toThrow();
   });
 });
