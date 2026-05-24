@@ -72,7 +72,6 @@ describe('find', () => {
     const sut = find(throwingPredicate<number>((n) => n === 2, boom));
 
     // Act / Assert
-    // Assert
     await expect(sut(fromArray([1, 2, 3]))).rejects.toBe(boom);
   });
 

@@ -72,7 +72,6 @@ describe('map', () => {
     });
 
     // Act / Assert
-    // Assert
     await expect(toArray(sut(source.source))).rejects.toBe(boom);
     expect(source.returnCalled()).toBe(true);
   });
@@ -155,8 +154,9 @@ describe('map', () => {
 
   it('Given a type-level scenario "map((n: number) => n.toString()) returns a function AsyncIterable<number> -> AsyncIterable<string>", When type-checked, Then types align', () => {
     // Arrange
-    // Assert (type-level)
     const sut = map((n: number) => n.toString());
+
+    // Assert (type-level)
     expectTypeOf(sut).parameter(0).toEqualTypeOf<AsyncIterable<number>>();
     expectTypeOf(sut).returns.toEqualTypeOf<AsyncIterable<string>>();
   });

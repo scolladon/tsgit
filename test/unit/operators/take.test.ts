@@ -221,8 +221,7 @@ describe('take', () => {
   });
 
   it('Given the property "take(n)(source) yields exactly min(n, L) items equal to the first min(n, L) of source", When sampled, Then it holds', async () => {
-    // Arrange
-    // Assert
+    // Arrange + Assert
     await fc.assert(
       fc.asyncProperty(
         fc.nat({ max: 50 }),
