@@ -144,6 +144,19 @@ ADRs are ordered chronologically in the `adr/` folder. This page groups them by 
 - [ADR-103 — Skip code-dependent CI jobs when the diff has no code changes](../adr/103-ci-code-change-gating.md)
 - Design: [`docs/design/phase-19-1-mutation-pyramid.md`](../design/phase-19-1-mutation-pyramid.md)
 
+## Testing-pyramid audit + expressiveness lint (Phases 19.2 / 19.3 / 19.3a / 19.3c)
+
+- [ADRs 104–108 — Directory-based classification, ratio targets, heuristics, tooling/mutation policy](../adr/104-pyramid-audit-report-only.md)
+- [ADRs 109–113 — Gating posture, sut-naming denylist, bare-class toThrow ban, AAA marker grammar, GWT title regex](../adr/109-pyramid-audit-gating-posture.md)
+- [ADRs 114–116 — AAA semantic audit hybrid posture, empty AAA section grammar, sweep policy](../adr/114-aaa-semantic-audit-hybrid-posture.md)
+- [ADR-117 — GWT clause partitioning between `describe` and `it`](../adr/117-gwt-clause-partitioning-describe-it.md)
+- [ADR-118 — Two-pass scanner with offset-containment join](../adr/118-two-pass-scanner-describe-it-join.md)
+- Design: [`docs/design/phase-19-3c-gwt-describe-it-split.md`](../design/phase-19-3c-gwt-describe-it-split.md)
+
+## CI hygiene
+
+- [ADR-119 — Cancel-on-merge workflow scope](../adr/119-cancel-on-merge-workflow.md)
+
 ## Reading order tips
 
 - **Onboarding to the codebase?** Read ADR-001, ADR-004, ADR-091 in order. They set the architectural ground rules.
