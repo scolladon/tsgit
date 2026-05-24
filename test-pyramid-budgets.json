@@ -60,7 +60,7 @@
     "aaaBody": true,
     "sutNaming": true,
     "bareClassToThrow": true,
-    "emptyAaaSection": false
+    "emptyAaaSection": true
   },
   "excludePaths": [
     "tooling/test/unit/test-pyramid/detect-*.test.ts",
