@@ -212,7 +212,7 @@ integration}/` and are scanned by the same audit globs.
   adapter is fine — it's a real class, not a mock). Promotion to gating is
   19.4's job.
 
-**Gating (ADRs 109–113)** — exit code `1` on any finding, fails CI:
+**Gating (ADRs 109–116)** — exit code `1` on any finding, fails CI:
 
 - **Under-asserted unit** — `it()`/`test()` blocks in `test/unit/**` whose
   body contains no `expect(...)` / `assert.*(...)` call. Promoted from
@@ -233,6 +233,13 @@ integration}/` and are scanned by the same audit globs.
   identifier is rejected. Replace with a data-bearing matcher such as
   `expect.objectContaining({ data: expect.objectContaining({ code: 'X' }) })`
   or a try/catch with `.data.code` assertions (ADR-111).
+- **Empty AAA section** — every `// Arrange`, `// Act`, or `// Assert`
+  marker that is *present* in a non-skipped unit body must be followed
+  by at least one statement-bearing line before the next marker (or end
+  of body). Markers introduced by an autofix but adjacent to another
+  marker with nothing between them are flagged: extract a `sut`
+  variable, hoist the act statement, or merge the two markers into a
+  compound `// Arrange + Assert` line (ADRs 114–116).
 
 **Per-heuristic gating** — flip `gating.<heuristic>` to `true` in
 `test-pyramid-budgets.json`. Default-off so a newly-added heuristic ships
