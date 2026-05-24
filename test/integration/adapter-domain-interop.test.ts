@@ -8,6 +8,11 @@
  *
  * Current scope: prove that adapters correctly roundtrip the bytes produced
  * and consumed by-3 domain serializers/parsers.
+ *
+ * @proves
+ *   surface: memory.objectRoundtrip
+ *   bucket:  multi-adapter-parity
+ *   unique:  domain serializers/parsers roundtrip byte-identical through the Memory adapter
  */
 import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../src/adapters/memory/memory-adapter.js';

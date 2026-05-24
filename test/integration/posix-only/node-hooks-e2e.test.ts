@@ -2,6 +2,11 @@
  * POSIX-only end-to-end test: `openRepository` (Node shim) wires a real
  * `NodeHookRunner`, so a `.git/hooks/pre-commit` shell script actually runs
  * during `repo.commit`. Shell-script hooks are POSIX-bound (ADR-068).
+ *
+ * @proves
+ *   surface: hooks.e2e
+ *   bucket:  real-process
+ *   unique:  repo.commit invokes the real .git/hooks/pre-commit script through the Node shim
  */
 import * as fsPromises from 'node:fs/promises';
 import * as os from 'node:os';

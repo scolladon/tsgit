@@ -3,6 +3,11 @@
  * end through the memory adapter and asserts the `.git/logs/**` files that
  * `updateRef` / `recordRefUpdate` produce, then cross-checks the on-disk
  * format against canonical `git` where the binary is available.
+ *
+ * @proves
+ *   surface: reflog
+ *   bucket:  cross-tool-interop
+ *   unique:  .git/logs/** on-disk format round-trips against canonical git
  */
 import { execFileSync } from 'node:child_process';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';

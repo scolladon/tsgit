@@ -15,6 +15,11 @@
  * (`RUNNER~1` → `runneradmin`) and normalises mixed separators. The
  * assertions below check that the call SUCCEEDS (no INVALID_OPTION),
  * not that the resolved `ctx.cwd` equals the raw input.
+ *
+ * @proves
+ *   surface: openRepository.windowsPaths
+ *   bucket:  platform-only
+ *   unique:  openRepository accepts drive-letter and UNC paths on a real Windows runner
  */
 import { mkdtemp, realpath, rm } from 'node:fs/promises';
 import * as os from 'node:os';

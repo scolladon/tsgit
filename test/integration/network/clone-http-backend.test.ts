@@ -12,6 +12,11 @@
  * The suite is gated on `git --version` being available + a discoverable
  * `git-http-backend` binary under `git --exec-path`. CI runners (Ubuntu,
  * macOS) have both pre-installed. Windows is out of scope.
+ *
+ * @proves
+ *   surface: clone
+ *   bucket:  real-http
+ *   unique:  smart-HTTP packfile exchange against canonical git-http-backend produces a working repo
  */
 import { accessSync } from 'node:fs';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';

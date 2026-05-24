@@ -8,6 +8,11 @@
  * integrations,
  * and the dirty-file retention policy. A final `describe.skipIf` block
  * cross-checks tsgit's index + pattern file against canonical `git`.
+ *
+ * @proves
+ *   surface: sparseCheckout
+ *   bucket:  multi-adapter-parity
+ *   unique:  cone + non-cone lifecycles, skip-worktree flags, status truthfulness end to end
  */
 import { execFileSync } from 'node:child_process';
 import { mkdtemp, rm } from 'node:fs/promises';

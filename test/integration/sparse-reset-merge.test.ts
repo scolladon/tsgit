@@ -5,6 +5,11 @@
  * cannot: that `status` stays truthful afterwards (no phantom "deleted" entry
  * for an excluded file). A final `describe.skipIf` block cross-checks the
  * index a tsgit `reset --mixed` writes against canonical `git`.
+ *
+ * @proves
+ *   surface: sparseResetMerge
+ *   bucket:  multi-adapter-parity
+ *   unique:  reset and merge keep skip-worktree truthful and status clean under sparse cones
  */
 import { execFileSync } from 'node:child_process';
 import { mkdtemp, rm } from 'node:fs/promises';

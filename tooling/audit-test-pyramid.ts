@@ -24,6 +24,7 @@ import { detectBadTitle } from './test-pyramid/detect-bad-title.ts';
 import { detectBannedSutName } from './test-pyramid/detect-banned-sut-name.ts';
 import { detectBareClassThrow } from './test-pyramid/detect-bare-class-throw.ts';
 import { detectEmptyAaaSection } from './test-pyramid/detect-empty-aaa-section.ts';
+import { detectIntegrationProof } from './test-pyramid/detect-integration-proof.ts';
 import { detectMissingAaa } from './test-pyramid/detect-missing-aaa.ts';
 import { detectOverMocked } from './test-pyramid/detect-over-mocked.ts';
 import { detectUnderAsserted } from './test-pyramid/detect-under-asserted.ts';
@@ -38,6 +39,7 @@ import {
   renderMarkdown,
   type AuditOutcome,
 } from './test-pyramid/render-report.ts';
+import type { AcceptedRecord } from './test-pyramid/detect-integration-proof.ts';
 import type { SourceFile } from './test-pyramid/types.ts';
 
 interface CliArgs {
@@ -136,15 +138,40 @@ export const runAudit = async (args: CliArgs): Promise<{
       bannedSut: detectBannedSutName(manifest, files),
       bareClassThrow: detectBareClassThrow(manifest, files),
       emptyAaaSection: detectEmptyAaaSection(manifest, files),
+      integrationProof: detectIntegrationProof(manifest, files),
     },
   };
   return { manifest, outcome };
+};
+
+interface IntegrationSurfacesFile {
+  readonly path: string;
+  readonly surface: string;
+  readonly bucket: string;
+  readonly unique: string;
+}
+
+const renderIntegrationSurfaces = (outcome: AuditOutcome): string => {
+  const files: IntegrationSurfacesFile[] = outcome.findings.integrationProof.accepted.map(
+    (record: AcceptedRecord) => ({
+      path: record.path,
+      surface: record.surface,
+      bucket: record.bucket,
+      unique: record.unique,
+    }),
+  );
+  return `${JSON.stringify({ files }, null, 2)}\n`;
 };
 
 export const writeReports = async (outDir: string, outcome: AuditOutcome): Promise<void> => {
   await mkdir(outDir, { recursive: true });
   await writeFile(path.join(outDir, 'test-pyramid.json'), renderJson(outcome), 'utf8');
   await writeFile(path.join(outDir, 'test-pyramid.md'), renderMarkdown(outcome), 'utf8');
+  await writeFile(
+    path.join(outDir, 'integration-surfaces.json'),
+    renderIntegrationSurfaces(outcome),
+    'utf8',
+  );
 };
 
 const FINDING_KEY_BY_GATING: Readonly<Record<GatingKey, keyof AuditOutcome['findings']>> = {
@@ -155,6 +182,23 @@ const FINDING_KEY_BY_GATING: Readonly<Record<GatingKey, keyof AuditOutcome['find
   sutNaming: 'bannedSut',
   bareClassToThrow: 'bareClassThrow',
   emptyAaaSection: 'emptyAaaSection',
+  integrationProof: 'integrationProof',
+};
+
+type AnyFinding = AuditOutcome['findings'][keyof AuditOutcome['findings']];
+
+const hasFindings = (findings: AnyFinding): boolean => {
+  if (Array.isArray(findings)) return findings.length > 0;
+  const structured = findings as {
+    readonly missing: ReadonlyArray<unknown>;
+    readonly duplicate: ReadonlyArray<unknown>;
+    readonly misplaced: ReadonlyArray<unknown>;
+  };
+  return (
+    structured.missing.length > 0 ||
+    structured.duplicate.length > 0 ||
+    structured.misplaced.length > 0
+  );
 };
 
 export const collectGatingViolations = (
@@ -165,7 +209,7 @@ export const collectGatingViolations = (
   for (const key of GATING_KEYS) {
     if (!manifest.gating[key]) continue;
     const findingKey = FINDING_KEY_BY_GATING[key];
-    if (outcome.findings[findingKey].length > 0) out.push(key);
+    if (hasFindings(outcome.findings[findingKey])) out.push(key);
   }
   return out;
 };

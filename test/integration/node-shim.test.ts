@@ -3,6 +3,11 @@
  * (no in-memory fs) so the runtime shim's own code path is mutation-tested
  * end-to-end. Closes the 0%-coverage gap on src/index.node.ts that the unit
  * suite cannot reach (it stubs adapters; the shim is what builds them).
+ *
+ * @proves
+ *   surface: nodeShim
+ *   bucket:  coverage-gap
+ *   unique:  src/index.node.ts runtime-shim adapter construction path the unit suite cannot reach
  */
 import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';

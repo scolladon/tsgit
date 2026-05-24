@@ -8,6 +8,11 @@
  * The served repository is a *copy* of the committed `clone-source` fixture,
  * configured in `beforeAll` with `uploadpack.allowfilter` +
  * `uploadpack.allowanysha1inwant` — the committed fixture is never mutated.
+ *
+ * @proves
+ *   surface: clone.partial
+ *   bucket:  real-http
+ *   unique:  blob:none partial clone configures the promisor and lazy-fetches blobs on demand
  */
 import { execFileSync } from 'node:child_process';
 import { accessSync } from 'node:fs';

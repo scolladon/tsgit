@@ -4,6 +4,11 @@
  *
  * Mirrors `partial-clone-http-backend.test.ts`'s setup so the fixture and
  * SSRF guards stay aligned (backlog 17.6, ADRs 087–090).
+ *
+ * @proves
+ *   surface: catFile.promisor
+ *   bucket:  real-http
+ *   unique:  catFile lazy-fetches omitted blobs from a real promisor remote
  */
 import { execFileSync } from 'node:child_process';
 import { accessSync } from 'node:fs';

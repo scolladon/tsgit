@@ -67,6 +67,19 @@ export interface EmptyAaaSectionHeuristic {
   readonly tier: TierName;
 }
 
+export const DIRECTORY_CLASSES = ['root', 'network/', 'posix-only/', 'win-only/'] as const;
+export type DirectoryClass = (typeof DIRECTORY_CLASSES)[number];
+
+export interface IntegrationProofHeuristic {
+  readonly tier: TierName;
+  readonly buckets: ReadonlyArray<string>;
+  readonly surfaceRegex: RegExp;
+  readonly surfaceRegexSource: string;
+  readonly uniqueMinLength: number;
+  readonly uniqueMaxLength: number;
+  readonly directoryRules: ReadonlyMap<string, ReadonlyArray<DirectoryClass>>;
+}
+
 export const GATING_KEYS = [
   'overMockedIntegration',
   'underAssertedUnit',
@@ -75,6 +88,7 @@ export const GATING_KEYS = [
   'sutNaming',
   'bareClassToThrow',
   'emptyAaaSection',
+  'integrationProof',
 ] as const;
 export type GatingKey = (typeof GATING_KEYS)[number];
 export type GatingConfig = Readonly<Record<GatingKey, boolean>>;
@@ -89,6 +103,7 @@ export interface PyramidManifest {
     readonly sutNaming: SutNamingHeuristic;
     readonly bareClassToThrow: BareClassThrowHeuristic;
     readonly emptyAaaSection: EmptyAaaSectionHeuristic;
+    readonly integrationProof: IntegrationProofHeuristic;
   };
   readonly gating: GatingConfig;
   readonly excludePaths: ReadonlyArray<string>;
@@ -328,6 +343,94 @@ const parseEmptyAaaSection = (
   return { tier };
 };
 
+const DIRECTORY_CLASS_SET: ReadonlySet<string> = new Set<string>(DIRECTORY_CLASSES);
+
+const requirePositiveInt = (raw: unknown, field: string): number => {
+  if (typeof raw !== 'number' || !Number.isInteger(raw) || raw <= 0) {
+    return fail(`${field} must be a positive integer`);
+  }
+  return raw;
+};
+
+const parseBuckets = (raw: unknown): ReadonlyArray<string> => {
+  if (!Array.isArray(raw) || raw.length === 0) {
+    return fail('integrationProof buckets must be a non-empty array');
+  }
+  const seen = new Set<string>();
+  const buckets: string[] = [];
+  for (const entry of raw) {
+    if (typeof entry !== 'string' || entry.length === 0) {
+      return fail('integrationProof bucket must be a non-empty string');
+    }
+    if (seen.has(entry)) {
+      return fail(`integrationProof has duplicate bucket "${entry}"`);
+    }
+    seen.add(entry);
+    buckets.push(entry);
+  }
+  return buckets;
+};
+
+const parseDirectoryRules = (
+  raw: unknown,
+  buckets: ReadonlyArray<string>,
+): ReadonlyMap<string, ReadonlyArray<DirectoryClass>> => {
+  if (!isObject(raw)) {
+    return fail('integrationProof directoryRules must be an object');
+  }
+  const bucketSet = new Set(buckets);
+  const keys = Object.keys(raw);
+  if (keys.length !== buckets.length || keys.some((k) => !bucketSet.has(k))) {
+    return fail('integrationProof directoryRules keys must equal buckets');
+  }
+  const map = new Map<string, ReadonlyArray<DirectoryClass>>();
+  for (const bucket of buckets) {
+    const entry = raw[bucket];
+    if (!Array.isArray(entry) || entry.length === 0) {
+      return fail(`integrationProof directoryRules entry must be a non-empty array (${bucket})`);
+    }
+    const classes: DirectoryClass[] = [];
+    for (const value of entry) {
+      if (typeof value !== 'string' || !DIRECTORY_CLASS_SET.has(value)) {
+        return fail(
+          `integrationProof directoryRules has unknown directory class "${String(value)}" for bucket "${bucket}"`,
+        );
+      }
+      classes.push(value as DirectoryClass);
+    }
+    map.set(bucket, classes);
+  }
+  return map;
+};
+
+const parseIntegrationProof = (
+  raw: unknown,
+  tierNames: ReadonlySet<TierName>,
+): IntegrationProofHeuristic => {
+  if (!isObject(raw)) {
+    return fail('integrationProof must be an object');
+  }
+  const tier = requireTier(raw.tier, 'integrationProof', tierNames);
+  const buckets = parseBuckets(raw.buckets);
+  const surfaceRegexSource = requireRegexPattern(raw.surfaceRegex, 'integrationProof.surfaceRegex');
+  const surfaceRegex = compileRegex(surfaceRegexSource, 'integrationProof.surfaceRegex', '');
+  const uniqueMinLength = requirePositiveInt(raw.uniqueMinLength, 'integrationProof.uniqueMinLength');
+  const uniqueMaxLength = requirePositiveInt(raw.uniqueMaxLength, 'integrationProof.uniqueMaxLength');
+  if (uniqueMinLength >= uniqueMaxLength) {
+    return fail('integrationProof uniqueMinLength must be < uniqueMaxLength');
+  }
+  const directoryRules = parseDirectoryRules(raw.directoryRules, buckets);
+  return {
+    tier,
+    buckets,
+    surfaceRegex,
+    surfaceRegexSource,
+    uniqueMinLength,
+    uniqueMaxLength,
+    directoryRules,
+  };
+};
+
 const DEFAULT_GATING: GatingConfig = Object.freeze<GatingConfig>({
   overMockedIntegration: false,
   underAssertedUnit: false,
@@ -336,6 +439,7 @@ const DEFAULT_GATING: GatingConfig = Object.freeze<GatingConfig>({
   sutNaming: false,
   bareClassToThrow: false,
   emptyAaaSection: false,
+  integrationProof: false,
 });
 
 // `excludePaths` is reserved for the audit's own self-test fixtures — files
@@ -418,6 +522,7 @@ export const parseManifest = (raw: string): PyramidManifest => {
     'sutNaming',
     'bareClassToThrow',
     'emptyAaaSection',
+    'integrationProof',
   ] as const;
   for (const key of requiredHeuristicKeys) {
     if (heuristics[key] === undefined) {
@@ -436,6 +541,7 @@ export const parseManifest = (raw: string): PyramidManifest => {
       sutNaming: parseSutNaming(heuristics.sutNaming, tierNames),
       bareClassToThrow: parseBareClassThrow(heuristics.bareClassToThrow, tierNames),
       emptyAaaSection: parseEmptyAaaSection(heuristics.emptyAaaSection, tierNames),
+      integrationProof: parseIntegrationProof(heuristics.integrationProof, tierNames),
     },
     gating: parseGating(gating),
     excludePaths: parseExcludePaths(excludePaths),

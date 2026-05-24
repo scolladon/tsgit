@@ -58,6 +58,30 @@ const VALID_MANIFEST = {
     emptyAaaSection: {
       tier: 'unit',
     },
+    integrationProof: {
+      tier: 'integration',
+      buckets: [
+        'real-fs',
+        'real-http',
+        'real-process',
+        'cross-tool-interop',
+        'platform-only',
+        'multi-adapter-parity',
+        'coverage-gap',
+      ],
+      surfaceRegex: '^[a-z][a-zA-Z0-9.-]{1,40}$',
+      uniqueMinLength: 12,
+      uniqueMaxLength: 200,
+      directoryRules: {
+        'real-http': ['network/'],
+        'real-fs': ['root', 'posix-only/', 'win-only/'],
+        'real-process': ['posix-only/', 'win-only/'],
+        'platform-only': ['posix-only/', 'win-only/'],
+        'cross-tool-interop': ['root'],
+        'multi-adapter-parity': ['root'],
+        'coverage-gap': ['root'],
+      },
+    },
   },
 };
 
@@ -1166,6 +1190,7 @@ describe('parseManifest', () => {
         sutNaming: false,
         bareClassToThrow: false,
         emptyAaaSection: false,
+        integrationProof: false,
       });
     });
 
@@ -1357,6 +1382,267 @@ describe('parseManifest', () => {
       // Assert
       expect(caught?.message).toContain('test/unit/domain/objects/object-id.test.ts');
       expect(caught?.message).toContain('tooling/test/');
+    });
+  });
+
+  describe('integrationProof — happy path', () => {
+    it('Given a well-formed integrationProof block, When parsed, Then exposes buckets, regex, length bounds, and rules map', () => {
+      // Arrange
+      const raw = JSON.stringify(VALID_MANIFEST);
+
+      // Act
+      const sut = parseManifest(raw);
+
+      // Assert
+      const proof = sut.heuristics.integrationProof;
+      expect(proof.tier).toBe('integration');
+      expect(proof.buckets).toEqual([
+        'real-fs',
+        'real-http',
+        'real-process',
+        'cross-tool-interop',
+        'platform-only',
+        'multi-adapter-parity',
+        'coverage-gap',
+      ]);
+      expect(proof.surfaceRegex.test('clone')).toBe(true);
+      expect(proof.surfaceRegex.test('sparseCheckout')).toBe(true);
+      expect(proof.surfaceRegex.test('nodeFs.chmod')).toBe(true);
+      expect(proof.surfaceRegex.test('Clone')).toBe(false);
+      expect(proof.uniqueMinLength).toBe(12);
+      expect(proof.uniqueMaxLength).toBe(200);
+      expect(proof.directoryRules.get('real-http')).toEqual(['network/']);
+      expect(proof.directoryRules.get('real-fs')).toEqual(['root', 'posix-only/', 'win-only/']);
+      expect(proof.directoryRules.get('cross-tool-interop')).toEqual(['root']);
+    });
+
+    it('Given gating.integrationProof omitted from gating, When parsed, Then defaults to false', () => {
+      // Arrange
+      const raw = JSON.stringify({ ...VALID_MANIFEST, gating: { overMockedIntegration: true } });
+
+      // Act
+      const sut = parseManifest(raw);
+
+      // Assert
+      expect(sut.gating.integrationProof).toBe(false);
+      expect(sut.gating.overMockedIntegration).toBe(true);
+    });
+
+    it('Given gating.integrationProof set to true, When parsed, Then exposes true', () => {
+      // Arrange
+      const raw = JSON.stringify({ ...VALID_MANIFEST, gating: { integrationProof: true } });
+
+      // Act
+      const sut = parseManifest(raw);
+
+      // Assert
+      expect(sut.gating.integrationProof).toBe(true);
+    });
+  });
+
+  describe('integrationProof — failure modes', () => {
+    it('Given integrationProof missing, When parsed, Then throws naming integrationProof', () => {
+      // Arrange
+      const raw = JSON.stringify(replaceHeuristic(VALID_MANIFEST, 'integrationProof', undefined));
+
+      // Act
+      let caught: Error | undefined;
+      try {
+        parseManifest(raw);
+      } catch (error) {
+        caught = error instanceof Error ? error : undefined;
+      }
+
+      // Assert
+      expect(caught?.message).toContain('heuristics.integrationProof is required');
+    });
+
+    it('Given integrationProof as a string instead of an object, When parsed, Then throws naming integrationProof', () => {
+      // Arrange
+      const raw = JSON.stringify(replaceHeuristic(VALID_MANIFEST, 'integrationProof', 'oops'));
+
+      // Act
+      let caught: Error | undefined;
+      try {
+        parseManifest(raw);
+      } catch (error) {
+        caught = error instanceof Error ? error : undefined;
+      }
+
+      // Assert
+      expect(caught?.message).toContain('integrationProof must be an object');
+    });
+
+    it('Given integrationProof with an empty buckets array, When parsed, Then throws "buckets must be a non-empty array"', () => {
+      // Arrange
+      const base = VALID_MANIFEST.heuristics.integrationProof;
+      const raw = JSON.stringify(
+        replaceHeuristic(VALID_MANIFEST, 'integrationProof', { ...base, buckets: [] }),
+      );
+
+      // Act
+      let caught: Error | undefined;
+      try {
+        parseManifest(raw);
+      } catch (error) {
+        caught = error instanceof Error ? error : undefined;
+      }
+
+      // Assert
+      expect(caught?.message).toContain('buckets must be a non-empty array');
+    });
+
+    it('Given integrationProof buckets with a duplicate, When parsed, Then throws naming the duplicate', () => {
+      // Arrange
+      const base = VALID_MANIFEST.heuristics.integrationProof;
+      const raw = JSON.stringify(
+        replaceHeuristic(VALID_MANIFEST, 'integrationProof', {
+          ...base,
+          buckets: [...base.buckets, 'real-fs'],
+          directoryRules: { ...base.directoryRules },
+        }),
+      );
+
+      // Act
+      let caught: Error | undefined;
+      try {
+        parseManifest(raw);
+      } catch (error) {
+        caught = error instanceof Error ? error : undefined;
+      }
+
+      // Assert
+      expect(caught?.message).toContain('duplicate bucket "real-fs"');
+    });
+
+    it('Given integrationProof with invalid surfaceRegex, When parsed, Then throws naming the field', () => {
+      // Arrange
+      const base = VALID_MANIFEST.heuristics.integrationProof;
+      const raw = JSON.stringify(
+        replaceHeuristic(VALID_MANIFEST, 'integrationProof', { ...base, surfaceRegex: '[' }),
+      );
+
+      // Act
+      let caught: Error | undefined;
+      try {
+        parseManifest(raw);
+      } catch (error) {
+        caught = error instanceof Error ? error : undefined;
+      }
+
+      // Assert
+      expect(caught?.message).toContain('heuristic regex invalid (integrationProof.surfaceRegex)');
+    });
+
+    it('Given uniqueMinLength >= uniqueMaxLength, When parsed, Then throws naming the bound', () => {
+      // Arrange
+      const base = VALID_MANIFEST.heuristics.integrationProof;
+      const raw = JSON.stringify(
+        replaceHeuristic(VALID_MANIFEST, 'integrationProof', {
+          ...base,
+          uniqueMinLength: 200,
+          uniqueMaxLength: 12,
+        }),
+      );
+
+      // Act
+      let caught: Error | undefined;
+      try {
+        parseManifest(raw);
+      } catch (error) {
+        caught = error instanceof Error ? error : undefined;
+      }
+
+      // Assert
+      expect(caught?.message).toContain('uniqueMinLength must be < uniqueMaxLength');
+    });
+
+    it('Given directoryRules keys ≠ buckets, When parsed, Then throws naming the mismatch', () => {
+      // Arrange — drop one key from directoryRules
+      const base = VALID_MANIFEST.heuristics.integrationProof;
+      const { 'coverage-gap': _drop, ...partialRules } = base.directoryRules;
+      const raw = JSON.stringify(
+        replaceHeuristic(VALID_MANIFEST, 'integrationProof', {
+          ...base,
+          directoryRules: partialRules,
+        }),
+      );
+
+      // Act
+      let caught: Error | undefined;
+      try {
+        parseManifest(raw);
+      } catch (error) {
+        caught = error instanceof Error ? error : undefined;
+      }
+
+      // Assert
+      expect(caught?.message).toContain('directoryRules keys must equal buckets');
+    });
+
+    it('Given directoryRules value naming an unknown directory class, When parsed, Then throws naming the class', () => {
+      // Arrange
+      const base = VALID_MANIFEST.heuristics.integrationProof;
+      const raw = JSON.stringify(
+        replaceHeuristic(VALID_MANIFEST, 'integrationProof', {
+          ...base,
+          directoryRules: { ...base.directoryRules, 'real-fs': ['phantom/'] },
+        }),
+      );
+
+      // Act
+      let caught: Error | undefined;
+      try {
+        parseManifest(raw);
+      } catch (error) {
+        caught = error instanceof Error ? error : undefined;
+      }
+
+      // Assert
+      expect(caught?.message).toContain('phantom/');
+      expect(caught?.message).toContain('unknown directory class');
+    });
+
+    it('Given uniqueMinLength as a non-integer, When parsed, Then throws naming the field', () => {
+      // Arrange
+      const base = VALID_MANIFEST.heuristics.integrationProof;
+      const raw = JSON.stringify(
+        replaceHeuristic(VALID_MANIFEST, 'integrationProof', { ...base, uniqueMinLength: 1.5 }),
+      );
+
+      // Act
+      let caught: Error | undefined;
+      try {
+        parseManifest(raw);
+      } catch (error) {
+        caught = error instanceof Error ? error : undefined;
+      }
+
+      // Assert
+      expect(caught?.message).toContain('uniqueMinLength must be a positive integer');
+    });
+
+    it('Given directoryRules with an empty array value, When parsed, Then throws naming the bucket', () => {
+      // Arrange
+      const base = VALID_MANIFEST.heuristics.integrationProof;
+      const raw = JSON.stringify(
+        replaceHeuristic(VALID_MANIFEST, 'integrationProof', {
+          ...base,
+          directoryRules: { ...base.directoryRules, 'real-fs': [] },
+        }),
+      );
+
+      // Act
+      let caught: Error | undefined;
+      try {
+        parseManifest(raw);
+      } catch (error) {
+        caught = error instanceof Error ? error : undefined;
+      }
+
+      // Assert
+      expect(caught?.message).toContain('real-fs');
+      expect(caught?.message).toContain('directoryRules entry must be a non-empty array');
     });
   });
 });

@@ -8,6 +8,11 @@
  * are platform-bound by design. The adapter's `removeTree` errno
  * propagation behaviour is covered cross-platform in
  * `test/unit/adapters/node/node-file-system-injected.test.ts`.
+ *
+ * @proves
+ *   surface: nodeFs.lockedDir
+ *   bucket:  platform-only
+ *   unique:  rmRecursive and openWithNoFollow honour POSIX EISDIR and locked-directory semantics
  */
 import * as fsPromises from 'node:fs/promises';
 import * as os from 'node:os';
