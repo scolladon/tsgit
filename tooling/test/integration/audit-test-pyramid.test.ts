@@ -167,6 +167,12 @@ describe('tooling/audit-test-pyramid (integration)', () => {
     expect(json.findings.bannedSut).toEqual([]);
     expect(json.findings.bareClassThrow).toEqual([]);
     expect(json.findings.emptyAaaSection).toEqual([]);
+    // The integration file written above (`b.test.ts`) has no @proves header,
+    // so the new heuristic must flag it. Locks in that the heuristic ran at
+    // all — without this, a regression where the detector silently dropped
+    // out would pass.
+    expect(json.findings.integrationProof.missing).toHaveLength(1);
+    expect(json.findings.integrationProof.missing[0].path).toBe('test/integration/b.test.ts');
     const md = await readFile(path.join(tmpRoot, 'out', 'test-pyramid.md'), 'utf8');
     expect(md).toContain('# Testing-pyramid audit');
   });

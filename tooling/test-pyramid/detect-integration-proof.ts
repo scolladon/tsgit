@@ -2,11 +2,11 @@
  * Integration-test usefulness detector.
  *
  * Reads `@proves` headers from integration test files and emits three
- * disjoint finding classes per ADR-124:
+ * disjoint finding classes:
  *
  *   missing   — header absent or grammar-invalid
  *   duplicate — two files claim the same `(surface, bucket)` pair without
- *               the platform-only exemption (ADR-123)
+ *               the platform-only exemption
  *   misplaced — bucket's directoryRules forbid the file's directory class
  *
  * Pure function. Caller owns I/O.
@@ -56,6 +56,13 @@ export interface AcceptedRecord {
 
 const PLATFORM_BUCKET = 'platform-only';
 
+// Composite-key delimiter for `(surface, bucket)` grouping. `|` is forbidden
+// by both the surface regex (`^[a-z][a-zA-Z0-9.-]{1,40}$`) and the bucket
+// enum (kebab-case identifiers), so a literal pipe in the key cannot collide
+// with a real value. Without the delimiter, `foo` + `bar` would key-match
+// `foob` + `ar`.
+const KEY_DELIM = '|';
+
 export const classifyDirectory = (repoRelPath: string): DirectoryClass => {
   const normalised = repoRelPath.replace(/\\/g, '/');
   const parts = normalised.split('/');
@@ -77,7 +84,7 @@ const collectDuplicates = (
 ): ReadonlyArray<DuplicateFinding> => {
   const byKey = new Map<string, { surface: string; bucket: string; paths: string[] }>();
   for (const [path, header] of parsed) {
-    const key = `${header.surface}${header.bucket}`;
+    const key = `${header.surface}${KEY_DELIM}${header.bucket}`;
     const entry = byKey.get(key);
     if (entry === undefined) {
       byKey.set(key, { surface: header.surface, bucket: header.bucket, paths: [path] });

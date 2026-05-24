@@ -174,31 +174,25 @@ export const writeReports = async (outDir: string, outcome: AuditOutcome): Promi
   );
 };
 
-const FINDING_KEY_BY_GATING: Readonly<Record<GatingKey, keyof AuditOutcome['findings']>> = {
-  overMockedIntegration: 'overMocked',
-  underAssertedUnit: 'underAsserted',
-  gwtTitle: 'badTitle',
-  aaaBody: 'missingAaa',
-  sutNaming: 'bannedSut',
-  bareClassToThrow: 'bareClassThrow',
-  emptyAaaSection: 'emptyAaaSection',
-  integrationProof: 'integrationProof',
-};
-
-type AnyFinding = AuditOutcome['findings'][keyof AuditOutcome['findings']];
-
-const hasFindings = (findings: AnyFinding): boolean => {
-  if (Array.isArray(findings)) return findings.length > 0;
-  const structured = findings as {
-    readonly missing: ReadonlyArray<unknown>;
-    readonly duplicate: ReadonlyArray<unknown>;
-    readonly misplaced: ReadonlyArray<unknown>;
-  };
-  return (
-    structured.missing.length > 0 ||
-    structured.duplicate.length > 0 ||
-    structured.misplaced.length > 0
-  );
+// Each entry maps a gating switch to a "are there findings?" predicate.
+// Most detectors return a flat `ReadonlyArray`; `integrationProof` is a
+// structured record. Dispatching by the gating key (not by runtime shape)
+// keeps the gating check exhaustive: a new structured detector will fail to
+// compile until this dispatcher knows about it.
+const FINDING_PRESENT_BY_GATING: Readonly<
+  Record<GatingKey, (findings: AuditOutcome['findings']) => boolean>
+> = {
+  overMockedIntegration: (f) => f.overMocked.length > 0,
+  underAssertedUnit: (f) => f.underAsserted.length > 0,
+  gwtTitle: (f) => f.badTitle.length > 0,
+  aaaBody: (f) => f.missingAaa.length > 0,
+  sutNaming: (f) => f.bannedSut.length > 0,
+  bareClassToThrow: (f) => f.bareClassThrow.length > 0,
+  emptyAaaSection: (f) => f.emptyAaaSection.length > 0,
+  integrationProof: (f) =>
+    f.integrationProof.missing.length > 0 ||
+    f.integrationProof.duplicate.length > 0 ||
+    f.integrationProof.misplaced.length > 0,
 };
 
 export const collectGatingViolations = (
@@ -208,8 +202,7 @@ export const collectGatingViolations = (
   const out: GatingKey[] = [];
   for (const key of GATING_KEYS) {
     if (!manifest.gating[key]) continue;
-    const findingKey = FINDING_KEY_BY_GATING[key];
-    if (hasFindings(outcome.findings[findingKey])) out.push(key);
+    if (FINDING_PRESENT_BY_GATING[key](outcome.findings)) out.push(key);
   }
   return out;
 };

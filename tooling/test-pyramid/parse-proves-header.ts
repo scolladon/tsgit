@@ -3,8 +3,10 @@
  * comment block at the top of an integration test file and extracts the
  * `surface`, `bucket`, and `unique` keys declared under a `@proves` directive.
  *
- * Grammar lives in design `phase-19-4-integration-test-usefulness-audit.md` §3
- * and ADR-121.
+ * Grammar:
+ *   - block must be the first JSDoc in the file (optionally after a shebang)
+ *   - `@proves` directive followed by three `key: value` lines
+ *   - surface ∈ `surfaceRegex`, bucket ∈ enum, unique ∈ length window
  */
 import type { IntegrationProofHeuristic } from './parse-manifest.ts';
 
@@ -72,9 +74,9 @@ const validateUnique = (
   value: string,
   config: IntegrationProofHeuristic,
 ): ProvesError | null => {
-  if (value.includes('\n')) {
-    return { reason: 'bad-unique', detail: 'must be a single line' };
-  }
+  // `collectKeys` already splits the JSDoc on `\n` and the per-line regex
+  // (`KEY_LINE`) cannot capture across line breaks, so a multi-line `unique`
+  // value never reaches here. Length bounds are the only failure modes.
   if (value.length < config.uniqueMinLength) {
     return {
       reason: 'bad-unique',

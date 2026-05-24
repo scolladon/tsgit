@@ -11,23 +11,70 @@ const HEADER = (surface: string, bucket: string, unique = 'enough characters her
   `/**\n * @proves\n *   surface: ${surface}\n *   bucket: ${bucket}\n *   unique: ${unique}\n */\n`;
 
 describe('classifyDirectory', () => {
-  it('Given paths under each known integration directory, When classified, Then returns the matching DirectoryClass', () => {
-    // Arrange + Act + Assert
-    expect(classifyDirectory('test/integration/network/clone-http-backend.test.ts')).toBe('network/');
-    expect(classifyDirectory('test/integration/posix-only/node-fs-mode-bits.test.ts')).toBe(
-      'posix-only/',
-    );
-    expect(classifyDirectory('test/integration/win-only/node-fs-windows-real.test.ts')).toBe(
-      'win-only/',
-    );
-    expect(classifyDirectory('test/integration/add-all.test.ts')).toBe('root');
+  it('Given a path under test/integration/network/, When classified, Then returns network/', () => {
+    // Arrange
+    const path = 'test/integration/network/clone-http-backend.test.ts';
+
+    // Act
+    const sut = classifyDirectory(path);
+
+    // Assert
+    expect(sut).toBe('network/');
   });
 
-  it('Given a Windows-style path with backslashes, When classified, Then the classifier normalises and still detects the bucket directory', () => {
-    // Arrange + Act + Assert
-    expect(classifyDirectory('test\\integration\\network\\clone-http-backend.test.ts')).toBe(
-      'network/',
-    );
+  it('Given a path under test/integration/posix-only/, When classified, Then returns posix-only/', () => {
+    // Arrange
+    const path = 'test/integration/posix-only/node-fs-mode-bits.test.ts';
+
+    // Act
+    const sut = classifyDirectory(path);
+
+    // Assert
+    expect(sut).toBe('posix-only/');
+  });
+
+  it('Given a path under test/integration/win-only/, When classified, Then returns win-only/', () => {
+    // Arrange
+    const path = 'test/integration/win-only/node-fs-windows-real.test.ts';
+
+    // Act
+    const sut = classifyDirectory(path);
+
+    // Assert
+    expect(sut).toBe('win-only/');
+  });
+
+  it('Given a path directly under test/integration/, When classified, Then returns root', () => {
+    // Arrange
+    const path = 'test/integration/add-all.test.ts';
+
+    // Act
+    const sut = classifyDirectory(path);
+
+    // Assert
+    expect(sut).toBe('root');
+  });
+
+  it('Given a Windows-style path with backslashes, When classified, Then the classifier normalises separators and still detects the bucket directory', () => {
+    // Arrange
+    const path = 'test\\integration\\network\\clone-http-backend.test.ts';
+
+    // Act
+    const sut = classifyDirectory(path);
+
+    // Assert
+    expect(sut).toBe('network/');
+  });
+
+  it('Given a path with fewer than three segments, When classified, Then falls through to root (parts[2] is undefined)', () => {
+    // Arrange — covers the implicit `undefined` branch in `parts[2]`
+    const path = 'leaf.test.ts';
+
+    // Act
+    const sut = classifyDirectory(path);
+
+    // Assert
+    expect(sut).toBe('root');
   });
 });
 
