@@ -49,7 +49,7 @@ as 19.3 itself (implementation → cleanup → gate-flip).
   (six from 19.3 + one from 19.3a) is still well within the ceiling we
   agreed to revisit at.
 - **No `scanItBlocks` change.** 19.3b owns `skipIf` / `runIf` support;
-  19.3a does not pre-empt it.
+  19.3a does not preempt it.
 
 ## 3. Heuristic — empty AAA section
 
