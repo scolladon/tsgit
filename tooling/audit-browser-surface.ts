@@ -75,6 +75,9 @@ export interface SurfaceReport {
   };
 }
 
+const describeError = (err: unknown): string =>
+  err instanceof Error ? err.message : String(err);
+
 const matchAll = (re: RegExp, source: string): ReadonlyArray<string> => {
   const fresh = new RegExp(re.source, re.flags);
   const out: string[] = [];
@@ -135,7 +138,7 @@ export const parseAllowlist = (raw: string): Allowlist => {
   try {
     parsed = JSON.parse(raw);
   } catch (err) {
-    throw new Error(`allowlist: invalid JSON (${(err as Error).message})`);
+    throw new Error(`allowlist: invalid JSON (${describeError(err)})`);
   }
   if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
     throw new Error('allowlist: expected an object with {commands, primitives}');
@@ -369,7 +372,7 @@ const parseFlagsOrExit = (argv: ReadonlyArray<string>): CliFlags => {
   try {
     return parseArgs(argv);
   } catch (err) {
-    process.stderr.write(`audit-browser-surface: ${(err as Error).message}\n`);
+    process.stderr.write(`audit-browser-surface: ${describeError(err)}\n`);
     process.exit(1);
   }
 };
@@ -399,7 +402,7 @@ const invokedDirectly = (): boolean => {
 
 if (invokedDirectly()) {
   await main().catch((err: unknown) => {
-    process.stderr.write(`audit-browser-surface: ${(err as Error).message}\n`);
+    process.stderr.write(`audit-browser-surface: ${describeError(err)}\n`);
     process.exit(1);
   });
 }
