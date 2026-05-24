@@ -160,8 +160,7 @@ describe('isStatClean', () => {
 
   describe('property-based tests', () => {
     it('Given any IndexEntry, When extracting stat and comparing, Then isStatClean returns true', () => {
-      // Arrange
-      // Assert
+      // Arrange + Assert
       fc.assert(
         fc.property(arbIndexEntry(), (entry) => {
           const stat: StatData = {
@@ -235,25 +234,21 @@ describe('STAGE0_FLAGS', () => {
 
   it('Given the STAGE0_FLAGS constant, When reading assumeValid, Then it is exactly false', () => {
     // Arrange & Act & Assert
-    // Assert
     expect(STAGE0_FLAGS.assumeValid).toBe(false);
   });
 
   it('Given the STAGE0_FLAGS constant, When reading stage, Then it is exactly 0', () => {
     // Arrange & Act & Assert
-    // Assert
     expect(STAGE0_FLAGS.stage).toBe(0);
   });
 
   it('Given the STAGE0_FLAGS constant, When reading skipWorktree, Then it is exactly false', () => {
     // Arrange & Act & Assert
-    // Assert
     expect(STAGE0_FLAGS.skipWorktree).toBe(false);
   });
 
   it('Given the STAGE0_FLAGS constant, When reading intentToAdd, Then it is exactly false', () => {
     // Arrange & Act & Assert
-    // Assert
     expect(STAGE0_FLAGS.intentToAdd).toBe(false);
   });
 });

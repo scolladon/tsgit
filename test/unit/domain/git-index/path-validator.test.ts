@@ -21,7 +21,6 @@ describe('validateIndexPath', () => {
     const path = 'src/domain/file.ts';
 
     // Act + Assert — must not throw.
-    // Assert
     expect(() => validateIndexPath(path, 0)).not.toThrow();
   });
 
@@ -96,7 +95,6 @@ describe('validateIndexPath', () => {
     const path = `a${String.fromCharCode(0xa0)}b`;
 
     // Act + Assert
-    // Assert
     expect(() => validateIndexPath(path, 0)).not.toThrow();
   });
 
@@ -171,8 +169,7 @@ describe('validateIndexPath', () => {
 
 describe('NO_PARSER_OFFSET', () => {
   it('Given the sentinel, When inspected, Then it is -1', () => {
-    // Arrange
-    // Assert
+    // Arrange + Assert
     expect(NO_PARSER_OFFSET).toBe(-1);
   });
 });
