@@ -1,8 +1,24 @@
 import { branchLifecycleScenario } from './branch-lifecycle.scenario.ts';
+import { diffPipelineScenario } from './diff-pipeline.scenario.ts';
 import { initAddCommitStatusScenario } from './init-add-commit-status.scenario.ts';
+import { mergeFfScenario } from './merge-ff.scenario.ts';
+import { readPipelineScenario } from './read-pipeline.scenario.ts';
+import { refsPipelineScenario } from './refs-pipeline.scenario.ts';
+import { resetRmReflogScenario } from './reset-rm-reflog.scenario.ts';
+import { sparseCheckoutScenario } from './sparse-checkout.scenario.ts';
+import { submodulesEmptyScenario } from './submodules-empty.scenario.ts';
 import type { Scenario } from './types.ts';
+import { writePipelineScenario } from './write-pipeline.scenario.ts';
 
 export const SCENARIOS: ReadonlyArray<Scenario<unknown>> = [
   initAddCommitStatusScenario,
   branchLifecycleScenario,
+  readPipelineScenario,
+  refsPipelineScenario,
+  writePipelineScenario,
+  diffPipelineScenario,
+  resetRmReflogScenario,
+  mergeFfScenario,
+  sparseCheckoutScenario,
+  submodulesEmptyScenario,
 ];
