@@ -83,8 +83,7 @@ describe('line-diff — splitLines', () => {
   });
 
   it('Given the property "for any bytes X, concat(splitLines(X)) equals X (roundtrip)", When sampled, Then it holds', () => {
-    // Arrange
-    // Assert
+    // Arrange + Assert
     fc.assert(
       fc.property(fc.uint8Array({ maxLength: 512 }), (bytes) => {
         const input = new Uint8Array(bytes);
@@ -436,8 +435,7 @@ describe('line-diff — diffLines', () => {
   }, 90_000);
 
   it('Given the property "diffLines(X, X) yields a single common hunk covering all lines with degraded false", When sampled, Then it holds', () => {
-    // Arrange
-    // Assert
+    // Arrange + Assert
     fc.assert(
       fc.property(fc.uint8Array({ maxLength: 200 }), (bytes) => {
         const input = new Uint8Array(bytes);
