@@ -182,8 +182,8 @@ describe('internal/index-update', () => {
     await lock.commit([]);
 
     // Act + Assert — second commit should not re-write the index or throw.
-    await lock.commit([]);
     // Assert
+    await expect(lock.commit([])).resolves.toBeUndefined();
   });
 
   it('Given release then release on the same lock object, When release is called twice, Then second is a no-op', async () => {
@@ -192,8 +192,8 @@ describe('internal/index-update', () => {
     const lock = await acquireIndexLock(ctx);
 
     await lock.release();
-    await lock.release();
     // Assert
+    await expect(lock.release()).resolves.toBeUndefined();
   });
 
   it('Given two concurrent acquireIndexLock calls, When both started, Then exactly one wins', async () => {
