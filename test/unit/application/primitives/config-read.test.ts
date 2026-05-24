@@ -441,24 +441,30 @@ describe('primitives/config-read', () => {
   });
 
   it('Given a section header without closing bracket, When readConfig, Then the malformed line is ignored', async () => {
+    // Arrange
     const ctx = createMemoryContext();
     await seed(ctx, '[core\n  bare = true\n[user]\n  name = X\n  email = x@y.com\n');
     const sut = await readConfig(ctx);
+    // Assert
     expect(sut.core?.bare).toBeUndefined();
     expect(sut.user?.name).toBe('X');
   });
 
   it('Given an inline comment after a value, When readConfig, Then the comment is stripped from the value', async () => {
+    // Arrange
     const ctx = createMemoryContext();
     await seed(ctx, '[remote "origin"]\n  url = https://example.com/r.git # trailing\n');
     const sut = await readConfig(ctx);
+    // Assert
     expect(sut.remote?.get('origin')?.url).toBe('https://example.com/r.git');
   });
 
   it('Given a value containing a quoted `#`, When readConfig, Then the `#` inside the quotes is preserved', async () => {
+    // Arrange
     const ctx = createMemoryContext();
     await seed(ctx, '[remote "origin"]\n  url = "https://example.com/r#frag.git"\n');
     const sut = await readConfig(ctx);
+    // Assert
     expect(sut.remote?.get('origin')?.url).toContain('#frag');
   });
 

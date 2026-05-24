@@ -195,6 +195,7 @@ describe('parseIndex', () => {
     // Act & Assert
     try {
       parseIndex(input);
+      // Assert
       expect.fail('should have thrown');
     } catch (e) {
       expect(e).toBeInstanceOf(TsgitError);
@@ -213,6 +214,7 @@ describe('parseIndex', () => {
     // Act & Assert
     try {
       parseIndex(input);
+      // Assert
       expect.fail('should have thrown');
     } catch (e) {
       expect(e).toBeInstanceOf(TsgitError);
@@ -231,6 +233,7 @@ describe('parseIndex', () => {
     // Act & Assert
     try {
       parseIndex(input);
+      // Assert
       expect.fail('should have thrown');
     } catch (e) {
       expect(e).toBeInstanceOf(TsgitError);
@@ -264,6 +267,7 @@ describe('parseIndex', () => {
     // Act & Assert — code, offset AND reason all pinned via try/catch.
     try {
       parseIndex(buf);
+      // Assert
       expect.fail('should have thrown');
     } catch (e) {
       expect(e).toBeInstanceOf(TsgitError);
@@ -309,6 +313,7 @@ describe('parseIndex', () => {
     // Act & Assert
     try {
       parseIndex(buf);
+      // Assert
       expect.fail('should have thrown');
     } catch (e) {
       expect(e).toBeInstanceOf(TsgitError);
@@ -329,6 +334,7 @@ describe('parseIndex', () => {
     // Act & Assert
     try {
       parseIndex(buf);
+      // Assert
       expect.fail('should have thrown');
     } catch (e) {
       expect(e).toBeInstanceOf(TsgitError);
@@ -350,6 +356,7 @@ describe('parseIndex', () => {
     // Act & Assert
     try {
       parseIndex(buf);
+      // Assert
       expect.fail('should have thrown');
     } catch (e) {
       expect(e).toBeInstanceOf(TsgitError);
@@ -367,6 +374,7 @@ describe('parseIndex', () => {
     // Act & Assert
     try {
       parseIndex(buf);
+      // Assert
       expect.fail('should have thrown');
     } catch (e) {
       expect(e).toBeInstanceOf(TsgitError);
@@ -388,6 +396,7 @@ describe('parseIndex', () => {
     // Act & Assert
     try {
       parseIndex(buf);
+      // Assert
       expect.fail('should have thrown');
     } catch (e) {
       expect(e).toBeInstanceOf(TsgitError);
@@ -406,6 +415,7 @@ describe('parseIndex', () => {
     // Act & Assert
     try {
       parseIndex(buf);
+      // Assert
       expect.fail('should have thrown');
     } catch (e) {
       expect(e).toBeInstanceOf(TsgitError);
@@ -430,6 +440,7 @@ describe('parseIndex', () => {
     // Act & Assert
     try {
       parseIndex(buf);
+      // Assert
       expect.fail('should have thrown');
     } catch (e) {
       expect(e).toBeInstanceOf(TsgitError);
@@ -454,6 +465,7 @@ describe('parseIndex', () => {
     // Act & Assert
     try {
       parseIndex(buf);
+      // Assert
       expect.fail('should have thrown');
     } catch (e) {
       expect(e).toBeInstanceOf(TsgitError);
@@ -476,6 +488,7 @@ describe('parseIndex', () => {
     // Act & Assert
     try {
       parseIndex(buf);
+      // Assert
       expect.fail('should have thrown');
     } catch (e) {
       expect(e).toBeInstanceOf(TsgitError);
@@ -522,6 +535,7 @@ describe('parseIndex', () => {
     // Act & Assert
     try {
       parseIndex(buf);
+      // Assert
       expect.fail('should have thrown');
     } catch (e) {
       expect(e).toBeInstanceOf(TsgitError);
@@ -545,6 +559,7 @@ describe('parseIndex', () => {
     // Act & Assert
     try {
       parseIndex(buf);
+      // Assert
       expect.fail('should have thrown');
     } catch (e) {
       expect(e).toBeInstanceOf(TsgitError);
@@ -613,9 +628,11 @@ describe('parseIndex', () => {
     // That's exactly 62 bytes for the entry header, 0 for path. But path can't be empty.
     // Use buildTestIndex with 1-char path for a just-fits scenario instead.
     const input = buildTestIndex([{ path: 'a', sha: SHA_A }]);
-    // This should parse successfully
+
+    // Act — this should parse successfully
     const sut = parseIndex(input);
 
+    // Assert
     expect(sut.entries).toHaveLength(1);
     expect(sut.entries[0]?.path).toBe('a');
   });
@@ -664,6 +681,7 @@ describe('parseIndex', () => {
     // Act & Assert
     try {
       parseIndex(buf);
+      // Assert
       expect.fail('should have thrown');
     } catch (e) {
       expect(e).toBeInstanceOf(TsgitError);

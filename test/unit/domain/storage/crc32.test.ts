@@ -83,6 +83,7 @@ describe('crc32', () => {
 
   describe('property-based tests', () => {
     it('Given any data, When computing CRC-32 twice, Then results are identical (deterministic)', () => {
+      // Arrange
       fc.assert(
         fc.property(fc.uint8Array({ maxLength: 10000 }), (data) => {
           // Act
@@ -95,6 +96,7 @@ describe('crc32', () => {
     });
 
     it('Given any data, When computing CRC-32, Then result is unsigned 32-bit (>= 0 and < 2^32)', () => {
+      // Arrange
       fc.assert(
         fc.property(fc.uint8Array({ maxLength: 10000 }), (data) => {
           // Act

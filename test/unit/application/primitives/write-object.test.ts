@@ -7,23 +7,28 @@ import { buildSeededContext } from './fixtures.js';
 
 describe('writeObject', () => {
   it('Given a fresh blob, When writeObject is called, Then returns the computed id and file exists', async () => {
+    // Arrange
     const ctx = await buildSeededContext();
     const blob: Blob = { type: 'blob', content: new Uint8Array([1]), id: '' as ObjectId };
     const id = await writeObject(ctx, blob);
+    // Assert
     expect(id).toMatch(/^[0-9a-f]{40}$/);
     const roundtripped = await readObject(ctx, id);
     expect(roundtripped.type).toBe('blob');
   });
 
   it('Given two identical writes, When writeObject is called twice, Then second call is idempotent (same id, no error)', async () => {
+    // Arrange
     const ctx = await buildSeededContext();
     const blob: Blob = { type: 'blob', content: new Uint8Array([2, 3]), id: '' as ObjectId };
     const id1 = await writeObject(ctx, blob);
     const id2 = await writeObject(ctx, blob);
+    // Assert
     expect(id1).toBe(id2);
   });
 
   it('Given an object whose id mismatches the computed hash, When writeObject is called, Then throws OBJECT_HASH_MISMATCH', async () => {
+    // Arrange
     const ctx = await buildSeededContext();
     const blob: Blob = {
       type: 'blob',
@@ -32,6 +37,7 @@ describe('writeObject', () => {
     };
     try {
       await writeObject(ctx, blob);
+      // Assert
       expect.unreachable();
     } catch (error) {
       expect(error).toBeInstanceOf(TsgitError);
@@ -40,12 +46,14 @@ describe('writeObject', () => {
   });
 
   it('Given an aborted signal, When writeObject is called, Then throws OPERATION_ABORTED', async () => {
+    // Arrange
     const controller = new AbortController();
     controller.abort();
     const ctx = await buildSeededContext({ signal: controller.signal });
     const blob: Blob = { type: 'blob', content: new Uint8Array([0]), id: '' as ObjectId };
     try {
       await writeObject(ctx, blob);
+      // Assert
       expect.unreachable();
     } catch (error) {
       expect((error as TsgitError).data.code).toBe('OPERATION_ABORTED');
@@ -87,15 +95,18 @@ describe('writeObject', () => {
   });
 
   it('Given a blob, When writeObject is followed by readObject, Then round-trips correctly', async () => {
+    // Arrange
     const ctx = await buildSeededContext();
     const content = new Uint8Array([10, 20, 30, 40]);
     const blob: Blob = { type: 'blob', content, id: '' as ObjectId };
     const id = await writeObject(ctx, blob);
     const read = await readObject(ctx, id);
+    // Assert
     expect((read as Blob).content).toEqual(content);
   });
 
   it('Given a pre-declared id that matches the computed hash, When writeObject is called, Then succeeds and returns the same id', async () => {
+    // Arrange
     // Kills the ConditionalExpression mutant on `hasDeclaredId(declaredId) && declaredId !== computed`:
     // under `true`, this would incorrectly reject a correctly-declared id.
     const ctx = await buildSeededContext();
@@ -109,10 +120,12 @@ describe('writeObject', () => {
     // Now re-write with the id pre-declared.
     const declared: Blob = { ...blob, id: computedId };
     const id2 = await writeObject(ctx, declared);
+    // Assert
     expect(id2).toBe(computedId);
   });
 
   it('Given writeExclusive throws a non-FILE_EXISTS TsgitError, When writeObject is called, Then propagates the original error', async () => {
+    // Arrange
     // Kills both `isFileExists` mutants and the conditional `true`/`false` at the
     // try/catch: under `true` the error would be swallowed and return a wrong id.
     const ctx = await buildSeededContext();
@@ -128,6 +141,7 @@ describe('writeObject', () => {
     const blob: Blob = { type: 'blob', content: new Uint8Array([9]), id: '' as ObjectId };
     try {
       await writeObject(wrapped, blob);
+      // Assert
       expect.unreachable();
     } catch (error) {
       expect((error as TsgitError).data.code).toBe('PERMISSION_DENIED');
@@ -135,6 +149,7 @@ describe('writeObject', () => {
   });
 
   it('Given writeExclusive throws a plain Error (not TsgitError), When writeObject is called, Then propagates the plain Error', async () => {
+    // Arrange
     const ctx = await buildSeededContext();
     const wrapped = {
       ...ctx,
@@ -148,6 +163,7 @@ describe('writeObject', () => {
     const blob: Blob = { type: 'blob', content: new Uint8Array([10]), id: '' as ObjectId };
     try {
       await writeObject(wrapped, blob);
+      // Assert
       expect.unreachable();
     } catch (error) {
       expect(error).not.toBeInstanceOf(TsgitError);
@@ -172,6 +188,7 @@ describe('writeObject', () => {
   });
 
   it('Given the signal aborts between serialize and writeExclusive, When writeObject is called, Then throws OPERATION_ABORTED (not silently writes)', async () => {
+    // Arrange
     // Kills the second `ctx.signal?.aborted` check at line 19.
     const ctx = await buildSeededContext();
     const controller = new AbortController();
@@ -192,6 +209,7 @@ describe('writeObject', () => {
     const blob: Blob = { type: 'blob', content: new Uint8Array([50]), id: '' as ObjectId };
     try {
       await writeObject(wrapped, blob);
+      // Assert
       expect.unreachable();
     } catch (error) {
       expect((error as TsgitError).data.code).toBe('OPERATION_ABORTED');

@@ -30,6 +30,7 @@ describe('internal/commit-message', () => {
     });
 
     it('Given no explicit author + configUser set, When resolveAuthor, Then returns the config user', () => {
+      // Arrange
       // Act
       const sut = resolveAuthor({
         configUser: author({ name: 'Cfg', email: 'cfg@example.com' }),
@@ -40,6 +41,7 @@ describe('internal/commit-message', () => {
     });
 
     it('Given neither explicit nor configUser, When resolveAuthor, Then throws AUTHOR_UNCONFIGURED', () => {
+      // Arrange
       // Act
       let caught: unknown;
       try {
@@ -90,6 +92,7 @@ describe('internal/commit-message', () => {
     });
 
     it('Given no explicit + no author + configUser, When resolveCommitter, Then returns config user', () => {
+      // Arrange
       // Act
       const sut = resolveCommitter({
         configUser: author({ name: 'Cfg', email: 'cfg@example.com' }),
@@ -100,6 +103,7 @@ describe('internal/commit-message', () => {
     });
 
     it('Given nothing at all, When resolveCommitter, Then throws AUTHOR_UNCONFIGURED', () => {
+      // Arrange
       // Act
       let caught: unknown;
       try {
@@ -116,6 +120,7 @@ describe('internal/commit-message', () => {
 
   describe('sanitizeMessage', () => {
     it("Given '   leading + trailing whitespace   \\n\\n' with allowEmpty=false, When sanitizeMessage, Then returns trimmed", () => {
+      // Arrange
       // Act
       const sut = sanitizeMessage('   leading + trailing whitespace   \n\n', { allowEmpty: false });
 
@@ -124,6 +129,7 @@ describe('internal/commit-message', () => {
     });
 
     it("Given '' with allowEmpty=false, When sanitizeMessage, Then throws EMPTY_COMMIT_MESSAGE", () => {
+      // Arrange
       // Act
       let caught: unknown;
       try {
@@ -138,17 +144,20 @@ describe('internal/commit-message', () => {
     });
 
     it('Given whitespace-only with allowEmpty=false, When sanitizeMessage, Then throws EMPTY_COMMIT_MESSAGE', () => {
+      // Arrange
       let caught: unknown;
       try {
         sanitizeMessage('  \n  ', { allowEmpty: false });
       } catch (err) {
         caught = err;
       }
+      // Assert
       expect(caught).toBeInstanceOf(TsgitError);
       expect((caught as TsgitError).data.code).toBe('EMPTY_COMMIT_MESSAGE');
     });
 
     it("Given '' with allowEmpty=true, When sanitizeMessage, Then returns ''", () => {
+      // Arrange
       // Act
       const sut = sanitizeMessage('', { allowEmpty: true });
 
@@ -159,10 +168,13 @@ describe('internal/commit-message', () => {
 
   describe('sanitizeMarkerLabel', () => {
     it("Given 'main', When sanitizeMarkerLabel, Then returns 'main'", () => {
+      // Arrange
+      // Assert
       expect(sanitizeMarkerLabel('main')).toBe('main');
     });
 
     it("Given 'main\\nfoo', When sanitizeMarkerLabel, Then CR/LF/control chars escaped", () => {
+      // Arrange
       // Act
       const sut = sanitizeMarkerLabel('main\nfoo');
 
@@ -182,6 +194,7 @@ describe('internal/commit-message', () => {
     });
 
     it('Given a label with NUL byte, When sanitizeMarkerLabel, Then NUL is escaped', () => {
+      // Arrange
       // Act
       const sut = sanitizeMarkerLabel('a\0b');
 

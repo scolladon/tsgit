@@ -63,21 +63,28 @@ describe('commit', () => {
     await commit(ctx, { message: 'first', author });
 
     // Act
+    // Assert
     await expectError(() => commit(ctx, { message: 'second', author }), 'NOTHING_TO_COMMIT');
   });
 
   it('Given an empty message + allowEmptyMessage=false, When commit, Then throws EMPTY_COMMIT_MESSAGE', async () => {
+    // Arrange
     const ctx = await seed();
+    // Assert
     await expectError(() => commit(ctx, { message: '   \n   ', author }), 'EMPTY_COMMIT_MESSAGE');
   });
 
   it('Given no author and no config user, When commit, Then throws AUTHOR_UNCONFIGURED', async () => {
+    // Arrange
     const ctx = await seed();
+    // Assert
     await expectError(() => commit(ctx, { message: 'x' }), 'AUTHOR_UNCONFIGURED');
   });
 
   it('Given a non-repo ctx, When commit, Then throws NOT_A_REPOSITORY', async () => {
+    // Arrange
     const ctx = createMemoryContext();
+    // Assert
     await expectError(() => commit(ctx, { message: 'x', author }), 'NOT_A_REPOSITORY');
   });
 
@@ -386,6 +393,7 @@ describe('commit — hooks', () => {
     const ctx = await seedHooked(hookedCtx({ commitMsgRewrite: '   ' }));
 
     // Act & Assert
+    // Assert
     await expectError(() => commit(ctx, { message: 'original', author }), 'EMPTY_COMMIT_MESSAGE');
   });
 });

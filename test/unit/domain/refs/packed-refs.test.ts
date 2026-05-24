@@ -176,6 +176,7 @@ describe('parsePackedRefs', () => {
     // Act & Assert
     try {
       parsePackedRefs(content);
+      // Assert
       expect.fail('should have thrown');
     } catch (e) {
       expect(e).toBeInstanceOf(TsgitError);
@@ -190,6 +191,7 @@ describe('parsePackedRefs', () => {
     // Act & Assert
     try {
       parsePackedRefs(content);
+      // Assert
       expect.fail('should have thrown');
     } catch (e) {
       expect(e).toBeInstanceOf(TsgitError);
@@ -208,6 +210,7 @@ describe('parsePackedRefs', () => {
     // Act & Assert
     try {
       parsePackedRefs(content);
+      // Assert
       expect.fail('should have thrown');
     } catch (e) {
       expect(e).toBeInstanceOf(TsgitError);
@@ -226,6 +229,7 @@ describe('parsePackedRefs', () => {
     // Act & Assert
     try {
       parsePackedRefs(content);
+      // Assert
       expect.fail('should have thrown');
     } catch (e) {
       expect(e).toBeInstanceOf(TsgitError);
@@ -402,6 +406,8 @@ describe('roundtrip', () => {
   });
 
   it('Given arbitrary entries, When serializing then parsing, Then all entries preserved', () => {
+    // Arrange
+    // Assert
     fc.assert(
       fc.property(
         fc.array(

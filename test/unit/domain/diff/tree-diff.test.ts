@@ -248,7 +248,9 @@ describe('diffTrees', () => {
     expect(sut.changes[1]?.type).toBe('add');
   });
 
-  it('Property: for any Tree A, diffTrees(A, A).changes is empty', () => {
+  it('Given the property "for any Tree A, diffTrees(A, A).changes is empty", When sampled, Then it holds', () => {
+    // Arrange
+    // Assert
     fc.assert(
       fc.property(arbTree(), (t) => {
         const result = diffTrees(t, t);
@@ -257,7 +259,9 @@ describe('diffTrees', () => {
     );
   });
 
-  it('Property: diffTrees(undefined, X) deep-equals diffTrees({type:"tree", entries:[]}, X) for any X', () => {
+  it('Given the property "diffTrees(undefined, X) deep-equals diffTrees({type:"tree", entries:[]}, X) for any X", When sampled, Then it holds', () => {
+    // Arrange
+    // Assert
     fc.assert(
       fc.property(arbTree(), (t) => {
         const a = diffTrees(undefined, t);

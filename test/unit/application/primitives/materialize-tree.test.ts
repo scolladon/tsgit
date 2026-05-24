@@ -410,6 +410,7 @@ describe('materializeTree', () => {
     } catch (error) {
       captured = error;
     }
+    // Assert
     expect(captured).toBeInstanceOf(Error);
     const data = (captured as { data: { code: string; paths: ReadonlyArray<string> } }).data;
     expect(data.code).toBe('CHECKOUT_OVERWRITE_DIRTY');

@@ -45,6 +45,7 @@ describe('writeSymbolicRef', () => {
       await writeSymbolicRef(ctx, '/HEAD' as RefName, 'refs/heads/main' as RefName);
       throw new Error('expected throw');
     } catch (err) {
+      // Assert
       expect(err).toBeInstanceOf(TsgitError);
       expect((err as TsgitError).data.code).toBe('INVALID_REF');
     }
@@ -59,6 +60,7 @@ describe('writeSymbolicRef', () => {
       await writeSymbolicRef(ctx, 'HEAD' as RefName, 'refs/heads/has space' as RefName);
       throw new Error('expected throw');
     } catch (err) {
+      // Assert
       expect(err).toBeInstanceOf(TsgitError);
       expect((err as TsgitError).data.code).toBe('INVALID_REF');
     }

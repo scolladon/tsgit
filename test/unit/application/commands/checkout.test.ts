@@ -212,6 +212,7 @@ describe('checkout', () => {
       } as unknown as Parameters<typeof checkout>[1]);
       throw new Error('expected throw');
     } catch (err) {
+      // Assert
       expect(err).toBeInstanceOf(TsgitError);
       expect((err as TsgitError).data.code).toBe('INVALID_OPTION');
     }
@@ -226,6 +227,7 @@ describe('checkout', () => {
       await checkout(ctx, {} as unknown as Parameters<typeof checkout>[1]);
       throw new Error('expected throw');
     } catch (err) {
+      // Assert
       expect((err as TsgitError).data.code).toBe('INVALID_OPTION');
     }
   });
@@ -239,6 +241,7 @@ describe('checkout', () => {
       await checkout(ctx, { paths: [] });
       throw new Error('expected throw');
     } catch (err) {
+      // Assert
       expect((err as TsgitError).data.code).toBe('INVALID_OPTION');
     }
   });
@@ -1142,11 +1145,13 @@ describe('checkout — progress reporting', () => {
   };
 
   it("Given a successful checkout, When run, Then start fires before end with op === 'checkout:materialize'", async () => {
+    // Arrange
     const ctx = await seedWithBranch();
     const { reporter, events } = recordingProgress();
 
     await checkout(withProgress(ctx, reporter), { target: 'feature' });
 
+    // Assert
     expect(events[0]).toEqual({ kind: 'start', op: 'checkout:materialize' });
     expect(events[events.length - 1]).toEqual({ kind: 'end', op: 'checkout:materialize' });
   });
@@ -1232,6 +1237,7 @@ describe('checkout — progress reporting', () => {
   });
 
   it('Given a checkout that throws (unknown branch), When run, Then end still fires', async () => {
+    // Arrange
     const ctx = await seedWithBranch();
     const { reporter, events } = recordingProgress();
 
@@ -1243,6 +1249,7 @@ describe('checkout — progress reporting', () => {
 
     const startCount = events.filter((e) => e.kind === 'start').length;
     const endCount = events.filter((e) => e.kind === 'end').length;
+    // Assert
     expect(endCount).toBe(startCount);
   });
 });

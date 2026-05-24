@@ -102,6 +102,7 @@ describe('commands/submodules', () => {
     // Act & Assert
     try {
       await submodules(ctx);
+      // Assert
       expect.fail('submodules did not throw');
     } catch (err) {
       expect(err).toBeInstanceOf(TsgitError);
@@ -223,6 +224,7 @@ describe('commands/submodules', () => {
     // Act & Assert — refs with a literal ".." path-segment are invalid by validateRefName.
     try {
       await submodules(ctx, { ref: 'refs/../escape' });
+      // Assert
       expect.fail('submodules did not reject the bad ref');
     } catch (err) {
       expect(err).toBeInstanceOf(TsgitError);

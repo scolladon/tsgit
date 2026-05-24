@@ -195,22 +195,57 @@ npm run check:mutation-budgets
 
 **Equivalent mutants.** When a mutant is provably equivalent (the test would pass for both the original and the mutant), annotate the source with `// equivalent-mutant: <why>` on the line above. No catalogue, no allowlist — the annotation is the documentation.
 
-### Testing-pyramid audit (Phase 19.2)
+### Testing-pyramid audit (Phases 19.2 + 19.3)
 
-`npm run check:test-pyramid` counts unit/integration/e2e tests, reports their
-share against an 80/15/5 target (ADR-106), and flags two heuristic findings
-(ADR-107):
+`npm run check:test-pyramid` (also part of `npm run validate`) counts
+unit/integration/e2e tests, reports their share against an 80/15/5 target
+(ADR-106), and lints unit tests for expressiveness. Source of truth:
+`test-pyramid-budgets.json` at repo root. Tooling lives in `tooling/`
+alongside `src/` and `test/`; tooling tests are at `tooling/test/{unit,
+integration}/` and are scanned by the same audit globs.
 
-- **Over-mocked integration** — any `test/integration/**` file matching
+**Report-only (ADR-104, ADR-107)** — never blocks merges:
+
+- **Over-mocked integration** — any `test/integration/**` (or
+  `tooling/test/integration/**`) file matching
   `\bvi\.(mock|fn|spyOn|stubGlobal|stubEnv)\(`. Use real fixtures (the memory
-  adapter is fine — it's a real class, not a mock).
-- **Under-asserted unit** — any `it()`/`test()` block in `test/unit/**` whose
-  body contains no `expect(...)` / `assert.*(...)` call. `.skip` / `.todo` /
-  `.fails` are exempt.
+  adapter is fine — it's a real class, not a mock). Promotion to gating is
+  19.4's job.
 
-Source of truth: `test-pyramid-budgets.json` at repo root. The audit is
-report-only (ADR-104) — findings appear in `reports/test-pyramid.{json,md}`
-and as the `test-pyramid-audit` workflow artifact, but never gate merges.
+**Gating (ADRs 109–113)** — exit code `1` on any finding, fails CI:
+
+- **Under-asserted unit** — `it()`/`test()` blocks in `test/unit/**` whose
+  body contains no `expect(...)` / `assert.*(...)` call. Promoted from
+  report-only by 19.3. `.skip` / `.todo` / `.fails` exempt.
+- **GWT title** — every unit `it()`/`test()` title must match
+  `^Given .+?, When .+?, Then .+$` (case-sensitive). Skipped blocks are
+  still validated (ADR-113).
+- **AAA body comments** — every non-skipped unit test body must contain
+  both `// Arrange` and `// Assert` markers at the start of a `//`-comment
+  line. Compound forms (`// Arrange + Act`, `// Act + Assert`) count as
+  both. `// Act` is optional (ADR-112).
+- **`sut` naming** — declaring any of `subject`, `objectUnderTest`,
+  `systemUnderTest`, `cut` as a `const`/`let`/`var` in a unit test body is
+  rejected. The convention is `sut` (ADR-110). Destructured forms
+  (`const { subject } = …`) bypass the check by design.
+- **Bare-class `.toThrow(Class)`** — `.toThrow(SomeError)` /
+  `.toThrowError(SomeError)` where the only argument is a PascalCase
+  identifier is rejected. Replace with a data-bearing matcher such as
+  `expect.objectContaining({ data: expect.objectContaining({ code: 'X' }) })`
+  or a try/catch with `.data.code` assertions (ADR-111).
+
+**Per-heuristic gating** — flip `gating.<heuristic>` to `true` in
+`test-pyramid-budgets.json`. Default-off so a newly-added heuristic ships
+report-only until graduated by ADR.
+
+**Self-test exclusions** — files listed in `excludePaths` (e.g. the audit's
+own detector tests, which use intentional anti-pattern fixtures) are
+skipped from heuristic scanning. Add a path there if a test file is
+genuinely demonstrating a lint violation.
+
+**Local escape hatch** — run `node --experimental-strip-types
+tooling/audit-test-pyramid.ts --report-only` to inspect findings without
+the gate triggering. Useful mid-fix; CI never uses the flag.
 
 ## Commit Messages
 

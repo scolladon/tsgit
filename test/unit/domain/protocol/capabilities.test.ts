@@ -179,15 +179,21 @@ describe('negotiateCapabilities', () => {
 
 describe('AGENT constant shape', () => {
   it('Given AGENT, When inspected, Then matches /^agent=tsgit\\/(?:\\d+\\.\\d+|0\\.x)$/', () => {
+    // Arrange
+    // Assert
     expect(AGENT).toMatch(/^agent=tsgit\/(?:\d+\.\d+|0\.x)$/);
   });
 
   it('Given AGENT, When inspected, Then it does NOT contain a third numeric segment', () => {
+    // Arrange
     // Pinned via regex match above, but the explicit pin guards against future drift.
+    // Assert
     expect(AGENT).not.toMatch(/agent=tsgit\/\d+\.\d+\.\d/);
   });
 
   it('Given AGENT, When inspected, Then it does NOT contain a SHA, "+build", or "-rc" suffix', () => {
+    // Arrange
+    // Assert
     expect(AGENT).not.toMatch(/[+-]/);
   });
 });
@@ -202,10 +208,14 @@ describe('CLIENT_CAPABILITIES_FETCH', () => {
     'include-tag',
     'filter',
   ])('Given CLIENT_CAPABILITIES_FETCH, When inspected, Then it includes %j', (cap) => {
+    // Arrange
+    // Assert
     expect(CLIENT_CAPABILITIES_FETCH).toContain(cap);
   });
 
   it('Given CLIENT_CAPABILITIES_FETCH, When inspected, Then it includes the AGENT token', () => {
+    // Arrange
+    // Assert
     expect(CLIENT_CAPABILITIES_FETCH).toContain(AGENT);
   });
 });
@@ -218,10 +228,14 @@ describe('CLIENT_CAPABILITIES_PUSH', () => {
     'atomic',
     'delete-refs',
   ])('Given CLIENT_CAPABILITIES_PUSH, When inspected, Then it includes %j', (cap) => {
+    // Arrange
+    // Assert
     expect(CLIENT_CAPABILITIES_PUSH).toContain(cap);
   });
 
   it('Given CLIENT_CAPABILITIES_PUSH, When inspected, Then it includes the AGENT token', () => {
+    // Arrange
+    // Assert
     expect(CLIENT_CAPABILITIES_PUSH).toContain(AGENT);
   });
 });

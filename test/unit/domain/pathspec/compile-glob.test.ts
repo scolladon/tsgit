@@ -40,8 +40,10 @@ const oracleRegex = (pattern: string, options: CompileGlobOptions): RegExp => {
 
 describe('compileGlob', () => {
   it('Given a literal "src" with anchored=true and no dir suffix, When compiled, Then matches only the exact path', () => {
+    // Arrange
     const sut = compileGlob('src', { anchored: true });
 
+    // Assert
     expect(sut.test('src')).toBe(true);
     expect(sut.test('src/foo')).toBe(false);
     expect(sut.test('other')).toBe(false);
@@ -53,14 +55,17 @@ describe('compileGlob', () => {
     const sut = compileGlob('src', { anchored: true });
 
     // Act / Assert
+    // Assert
     expect(sut.test('vendorsrc')).toBe(false);
     expect(sut.test('a/src')).toBe(false);
     expect(sut.test('src')).toBe(true);
   });
 
   it('Given a literal "src" with anchored=true AND withDirSuffix=true, When compiled, Then matches the path AND any descendant', () => {
+    // Arrange
     const sut = compileGlob('src', { anchored: true, withDirSuffix: true });
 
+    // Assert
     expect(sut.test('src')).toBe(true);
     expect(sut.test('src/foo')).toBe(true);
     expect(sut.test('src/a/b/c')).toBe(true);
@@ -69,8 +74,10 @@ describe('compileGlob', () => {
   });
 
   it('Given a single-star glob "*.ts" non-anchored, When compiled, Then matches files at any depth', () => {
+    // Arrange
     const sut = compileGlob('*.ts', { anchored: false });
 
+    // Assert
     expect(sut.test('foo.ts')).toBe(true);
     expect(sut.test('src/foo.ts')).toBe(true);
     expect(sut.test('foo.tsx')).toBe(false);
@@ -78,15 +85,19 @@ describe('compileGlob', () => {
   });
 
   it('Given a single-star glob, When matched against a path with a slash inside the segment, Then it does NOT match (single `*` excludes `/`)', () => {
+    // Arrange
     const sut = compileGlob('a*c', { anchored: true });
 
+    // Assert
     expect(sut.test('abc')).toBe(true);
     expect(sut.test('a/c')).toBe(false);
   });
 
   it('Given a double-star glob "**", When matched, Then it spans path segments', () => {
+    // Arrange
     const sut = compileGlob('a/**/c', { anchored: true });
 
+    // Assert
     expect(sut.test('a/c')).toBe(true);
     expect(sut.test('a/b/c')).toBe(true);
     expect(sut.test('a/b/d/c')).toBe(true);
@@ -94,8 +105,10 @@ describe('compileGlob', () => {
   });
 
   it('Given a `?` glob, When matched, Then it matches exactly one non-`/` byte (not zero, not many)', () => {
+    // Arrange
     const sut = compileGlob('a?c', { anchored: true });
 
+    // Assert
     expect(sut.test('abc')).toBe(true);
     expect(sut.test('ac')).toBe(false);
     expect(sut.test('abbc')).toBe(false);
@@ -103,8 +116,10 @@ describe('compileGlob', () => {
   });
 
   it('Given a mid-pattern `**/`, When matched, Then it spans zero-or-more segments AND does NOT match within a segment (kills the `.*` regex bug)', () => {
+    // Arrange
     const sut = compileGlob('a/**/c', { anchored: true });
 
+    // Assert
     expect(sut.test('a/c')).toBe(true);
     expect(sut.test('a/b/c')).toBe(true);
     expect(sut.test('a/b/d/c')).toBe(true);
@@ -116,22 +131,28 @@ describe('compileGlob', () => {
   });
 
   it('Given a pattern with regex specials, When compiled, Then they are escaped (literal match)', () => {
+    // Arrange
     const sut = compileGlob('foo.bar', { anchored: true });
 
+    // Assert
     expect(sut.test('foo.bar')).toBe(true);
     expect(sut.test('fooXbar')).toBe(false);
   });
 
   it('Given a `[abc]` pattern, When compiled in v1, Then the brackets are escaped (literal match — character classes not supported)', () => {
+    // Arrange
     const sut = compileGlob('[abc]', { anchored: true });
 
+    // Assert
     expect(sut.test('[abc]')).toBe(true);
     expect(sut.test('a')).toBe(false);
   });
 
   it('Given anchored=false, When compiled, Then the pattern matches at any depth via the (^|.*/) prefix', () => {
+    // Arrange
     const sut = compileGlob('foo', { anchored: false });
 
+    // Assert
     expect(sut.test('foo')).toBe(true);
     expect(sut.test('a/foo')).toBe(true);
     expect(sut.test('a/b/foo')).toBe(true);
@@ -145,6 +166,7 @@ describe('compileGlob', () => {
     const sut = compileGlob('bar', { anchored: false });
 
     // Act / Assert
+    // Assert
     expect(sut.test('foobar')).toBe(false);
     // Balance: the legitimate segment matches must still hold.
     expect(sut.test('bar')).toBe(true);
@@ -152,8 +174,10 @@ describe('compileGlob', () => {
   });
 
   it('Given a non-anchored GLOB "*.ts", When matched at depth, Then matches at any segment AND rejects non-matching extensions', () => {
+    // Arrange
     const sut = compileGlob('*.ts', { anchored: false });
 
+    // Assert
     expect(sut.test('a.ts')).toBe(true);
     expect(sut.test('src/a.ts')).toBe(true);
     expect(sut.test('src/a/b.ts')).toBe(true);
@@ -165,6 +189,7 @@ describe('compileGlob', () => {
     const sut = compileGlob('', { anchored: true });
 
     // Act / Assert
+    // Assert
     expect(sut.test('')).toBe(true);
     expect(sut.test('a')).toBe(false);
   });
@@ -175,6 +200,7 @@ describe('compileGlob', () => {
     const sut = compileGlob('a*', { anchored: true });
 
     // Act / Assert
+    // Assert
     expect(sut.test('a')).toBe(true);
     expect(sut.test('abc')).toBe(true);
   });
@@ -185,6 +211,7 @@ describe('compileGlob', () => {
     const sut = compileGlob('a**z', { anchored: true });
 
     // Act / Assert
+    // Assert
     expect(sut.test('a/x/z')).toBe(true);
     expect(sut.test('axyz')).toBe(true);
     expect(sut.test('az')).toBe(true);
@@ -198,6 +225,7 @@ describe('compileGlob', () => {
     const sut = compileGlob('a***z', { anchored: true });
 
     // Act / Assert
+    // Assert
     expect(sut.test('a/x/z')).toBe(true);
     expect(sut.test('az')).toBe(true);
   });
@@ -208,6 +236,7 @@ describe('compileGlob', () => {
     const sut = compileGlob('a**', { anchored: true });
 
     // Act / Assert
+    // Assert
     expect(sut.test('a')).toBe(true);
     expect(sut.test('a/b/c')).toBe(true);
   });
@@ -218,6 +247,7 @@ describe('compileGlob', () => {
     const sut = compileGlob('a**b', { anchored: true });
 
     // Act / Assert
+    // Assert
     expect(sut.test('a')).toBe(false);
     expect(sut.test('ab')).toBe(true);
   });
@@ -251,6 +281,8 @@ describe('compileGlob', () => {
     });
 
     it('Given any pattern and any line-terminator-free path, When matched, Then the linear matcher agrees with the regex oracle', () => {
+      // Arrange
+      // Assert
       fc.assert(
         fc.property(arbPattern, arbPath, arbOptions, (pattern, path, options) => {
           const linear = compileGlob(pattern, options).test(path);
@@ -273,6 +305,8 @@ describe('containsGlob', () => {
     ['', false],
     ['[abc]', false],
   ])('Given pattern %j, When checked, Then returns %s (no character-class detection in v1)', (input, expected) => {
+    // Arrange
+    // Assert
     expect(containsGlob(input)).toBe(expected);
   });
 });

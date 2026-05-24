@@ -21,11 +21,13 @@ const expectInvalid = (fn: () => void, option: string, reasonContains: string): 
 describe('validateOptions — happy path', () => {
   it('Given an empty opts object, When validateOptions runs, Then it does not throw', () => {
     // Arrange / Act / Assert
+    // Assert
     expect(() => validateOptions({})).not.toThrow();
   });
 
   it('Given fully-populated valid opts, When validateOptions runs, Then it does not throw', () => {
     // Arrange / Act / Assert
+    // Assert
     expect(() =>
       validateOptions({
         cwd: '/abs/path',
@@ -44,14 +46,20 @@ describe('validateOptions — happy path', () => {
 
 describe('validateOptions — opts.cwd', () => {
   it("Given opts.cwd = 'relative/path', When validateOptions runs, Then throws INVALID_OPTION with .option === 'cwd'", () => {
+    // Arrange
+    // Assert
     expectInvalid(() => validateOptions({ cwd: 'relative/path' }), 'cwd', 'absolute');
   });
 
   it("Given opts.cwd = '' (empty string), When validateOptions runs, Then throws INVALID_OPTION with .option === 'cwd'", () => {
+    // Arrange
+    // Assert
     expectInvalid(() => validateOptions({ cwd: '' }), 'cwd', 'absolute');
   });
 
   it("Given opts.cwd = '/abs/path' (absolute), When validateOptions runs, Then it does not throw", () => {
+    // Arrange
+    // Assert
     expect(() => validateOptions({ cwd: '/abs/path' })).not.toThrow();
   });
 
@@ -62,28 +70,39 @@ describe('validateOptions — opts.cwd', () => {
     const cwd = '\\\\server\\share';
 
     // Act / Assert
+    // Assert
     expect(() => validateOptions({ cwd })).not.toThrow();
   });
 });
 
 describe('validateOptions — opts.config.parallelism', () => {
   it('Given parallelism = 0, When validateOptions runs, Then throws INVALID_OPTION', () => {
+    // Arrange
+    // Assert
     expectInvalid(() => validateOptions({ config: { parallelism: 0 } }), 'parallelism', '1..32');
   });
 
   it('Given parallelism = 33, When validateOptions runs, Then throws INVALID_OPTION', () => {
+    // Arrange
+    // Assert
     expectInvalid(() => validateOptions({ config: { parallelism: 33 } }), 'parallelism', '1..32');
   });
 
   it('Given parallelism = 1 (lower boundary), When validateOptions runs, Then it does not throw', () => {
+    // Arrange
+    // Assert
     expect(() => validateOptions({ config: { parallelism: 1 } })).not.toThrow();
   });
 
   it('Given parallelism = 32 (upper boundary), When validateOptions runs, Then it does not throw', () => {
+    // Arrange
+    // Assert
     expect(() => validateOptions({ config: { parallelism: 32 } })).not.toThrow();
   });
 
   it('Given parallelism = 1.5 (non-integer), When validateOptions runs, Then throws INVALID_OPTION', () => {
+    // Arrange
+    // Assert
     expectInvalid(
       () => validateOptions({ config: { parallelism: 1.5 } }),
       'parallelism',
@@ -94,6 +113,8 @@ describe('validateOptions — opts.config.parallelism', () => {
 
 describe('validateOptions — opts.config.maxResponseBytes', () => {
   it('Given maxResponseBytes = 1023, When validateOptions runs, Then throws INVALID_OPTION', () => {
+    // Arrange
+    // Assert
     expectInvalid(
       () => validateOptions({ config: { maxResponseBytes: 1023 } }),
       'maxResponseBytes',
@@ -102,12 +123,16 @@ describe('validateOptions — opts.config.maxResponseBytes', () => {
   });
 
   it('Given maxResponseBytes = 1024 (boundary), When validateOptions runs, Then it does not throw', () => {
+    // Arrange
+    // Assert
     expect(() => validateOptions({ config: { maxResponseBytes: 1024 } })).not.toThrow();
   });
 });
 
 describe('validateOptions — opts.config.breakStaleLockMs', () => {
   it('Given breakStaleLockMs = -1, When validateOptions runs, Then throws INVALID_OPTION', () => {
+    // Arrange
+    // Assert
     expectInvalid(
       () => validateOptions({ config: { breakStaleLockMs: -1 } }),
       'breakStaleLockMs',
@@ -116,12 +141,16 @@ describe('validateOptions — opts.config.breakStaleLockMs', () => {
   });
 
   it('Given breakStaleLockMs = 0 (boundary), When validateOptions runs, Then it does not throw', () => {
+    // Arrange
+    // Assert
     expect(() => validateOptions({ config: { breakStaleLockMs: 0 } })).not.toThrow();
   });
 });
 
 describe('validateOptions — opts.config.maxObjectsPerPack', () => {
   it('Given maxObjectsPerPack = 0, When validateOptions runs, Then throws INVALID_OPTION', () => {
+    // Arrange
+    // Assert
     expectInvalid(
       () => validateOptions({ config: { maxObjectsPerPack: 0 } }),
       'maxObjectsPerPack',
@@ -130,27 +159,37 @@ describe('validateOptions — opts.config.maxObjectsPerPack', () => {
   });
 
   it('Given maxObjectsPerPack = 1 (boundary), When validateOptions runs, Then it does not throw', () => {
+    // Arrange
+    // Assert
     expect(() => validateOptions({ config: { maxObjectsPerPack: 1 } })).not.toThrow();
   });
 });
 
 describe('validateOptions — opts.config.maxDnsResults', () => {
   it('Given maxDnsResults = 0, When validateOptions runs, Then throws INVALID_OPTION', () => {
+    // Arrange
+    // Assert
     expectInvalid(() => validateOptions({ config: { maxDnsResults: 0 } }), 'maxDnsResults', '>= 1');
   });
 
   it('Given maxDnsResults = 1 (boundary), When validateOptions runs, Then it does not throw', () => {
+    // Arrange
+    // Assert
     expect(() => validateOptions({ config: { maxDnsResults: 1 } })).not.toThrow();
   });
 
   it('Given maxDnsResults = 64 (default), When validateOptions runs, Then it does not throw', () => {
+    // Arrange
+    // Assert
     expect(() => validateOptions({ config: { maxDnsResults: 64 } })).not.toThrow();
   });
 });
 
 describe('validateOptions — opts.config.dnsResolver', () => {
   it('Given dnsResolver passed as a non-function via unsafe cast, When validateOptions runs, Then throws INVALID_OPTION', () => {
+    // Arrange
     // TypeScript blocks the unsafe shape at compile time; the runtime guard is the second line of defense.
+    // Assert
     expectInvalid(
       () =>
         validateOptions({
@@ -164,6 +203,8 @@ describe('validateOptions — opts.config.dnsResolver', () => {
   });
 
   it('Given dnsResolver = an actual function, When validateOptions runs, Then it does not throw', () => {
+    // Arrange
+    // Assert
     expect(() => validateOptions({ config: { dnsResolver: async () => [] } })).not.toThrow();
   });
 });

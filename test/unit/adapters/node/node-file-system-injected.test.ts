@@ -371,6 +371,7 @@ describe('NodeFileSystem — openWithNoFollow Windows symlink refusal (DI)', () 
     } catch (err) {
       caught = err;
     }
+    // Assert
     expect(caught).toBeInstanceOf(TsgitError);
     expect((caught as InstanceType<typeof TsgitError>).data.code).toBe('PERMISSION_DENIED');
   });
@@ -420,6 +421,7 @@ describe('NodeFileSystem — openWithNoFollow Windows symlink refusal (DI)', () 
     } catch (err) {
       caught = err;
     }
+    // Assert
     expect(caught).toBeInstanceOf(TsgitError);
     expect((caught as InstanceType<typeof TsgitError>).data.code).toBe('PERMISSION_DENIED');
   });
@@ -498,6 +500,7 @@ describe('NodeFileSystem — openWithNoFollow Windows symlink refusal (DI)', () 
     } catch (err) {
       caught = err;
     }
+    // Assert
     expect(caught).toBeInstanceOf(TsgitError);
     expect((caught as InstanceType<typeof TsgitError>).data.code).toBe('PERMISSION_DENIED');
   });
@@ -522,6 +525,7 @@ describe('NodeFileSystem — non-errno fault propagation (DI)', () => {
     } catch (err) {
       caught = err;
     }
+    // Assert
     expect(caught).toBe('not-an-error');
   });
 
@@ -563,6 +567,7 @@ describe('NodeFileSystem — non-errno fault propagation (DI)', () => {
     } catch (err) {
       caught = err;
     }
+    // Assert
     expect(caught).toBeInstanceOf(Error);
     expect((caught as NodeJS.ErrnoException).code).toBe('EACCES');
   });
@@ -695,6 +700,7 @@ describe('NodeFileSystem — Windows-mocked containment (DI)', () => {
     } catch (err) {
       caught = err;
     }
+    // Assert
     expect(caught).toBeInstanceOf(TsgitError);
     expect((caught as InstanceType<typeof TsgitError>).data.code).toBe('PERMISSION_DENIED');
   });
@@ -773,6 +779,7 @@ describe('NodeFileSystem — Windows-mocked containment (DI)', () => {
     } catch (err) {
       caught = err;
     }
+    // Assert
     expect(caught).toBeInstanceOf(TsgitError);
     expect((caught as InstanceType<typeof TsgitError>).data.code).toBe('PERMISSION_DENIED');
   });

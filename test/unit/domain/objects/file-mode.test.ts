@@ -49,14 +49,42 @@ describe('file-mode', () => {
       expect(sut).toBe('160000');
     });
 
-    it("Given '999999', When validating, Then throws INVALID_FILE_MODE", () => {
-      // Arrange & Act & Assert
-      expect(() => validateFileMode('999999')).toThrow(TsgitError);
+    it("Given '999999', When validating, Then throws INVALID_FILE_MODE with the invalid value", () => {
+      // Arrange
+      let caught: unknown;
+
+      // Act
+      try {
+        validateFileMode('999999');
+      } catch (error) {
+        caught = error;
+      }
+
+      // Assert — both `code` and `value` are pinned to kill nested-property mutants.
+      expect(caught).toBeInstanceOf(TsgitError);
+      expect((caught as TsgitError).data).toEqual({
+        code: 'INVALID_FILE_MODE',
+        value: '999999',
+      });
     });
 
-    it("Given '', When validating, Then throws INVALID_FILE_MODE", () => {
-      // Arrange & Act & Assert
-      expect(() => validateFileMode('')).toThrow(TsgitError);
+    it("Given '', When validating, Then throws INVALID_FILE_MODE with the invalid value", () => {
+      // Arrange
+      let caught: unknown;
+
+      // Act
+      try {
+        validateFileMode('');
+      } catch (error) {
+        caught = error;
+      }
+
+      // Assert
+      expect(caught).toBeInstanceOf(TsgitError);
+      expect((caught as TsgitError).data).toEqual({
+        code: 'INVALID_FILE_MODE',
+        value: '',
+      });
     });
   });
 
@@ -85,9 +113,23 @@ describe('file-mode', () => {
       expect(sut).toBe('40000');
     });
 
-    it("Given '999999', When normalizing, Then throws INVALID_FILE_MODE", () => {
-      // Arrange & Act & Assert
-      expect(() => normalizeFileMode('999999')).toThrow(TsgitError);
+    it("Given '999999', When normalizing, Then throws INVALID_FILE_MODE with the invalid value", () => {
+      // Arrange
+      let caught: unknown;
+
+      // Act
+      try {
+        normalizeFileMode('999999');
+      } catch (error) {
+        caught = error;
+      }
+
+      // Assert
+      expect(caught).toBeInstanceOf(TsgitError);
+      expect((caught as TsgitError).data).toEqual({
+        code: 'INVALID_FILE_MODE',
+        value: '999999',
+      });
     });
   });
 

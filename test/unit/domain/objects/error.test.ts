@@ -191,6 +191,7 @@ describe('error', () => {
       // Act & Assert
       for (const error of errors) {
         const data: TsgitErrorData = error.data;
+        // Assert
         assertExhaustiveSwitch(data);
       }
     });

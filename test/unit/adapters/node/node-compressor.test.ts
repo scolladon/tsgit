@@ -40,6 +40,7 @@ describe('NodeCompressor', () => {
 
     describe('describeError', () => {
       it('Given an Error instance, When describing, Then returns its message', () => {
+        // Arrange
         // Act
         const sut = describeError(new Error('boom'));
 
@@ -48,6 +49,7 @@ describe('NodeCompressor', () => {
       });
 
       it('Given a non-Error value, When describing, Then returns String(value)', () => {
+        // Arrange
         // Act
         const sut = describeError(42);
 
@@ -87,6 +89,7 @@ describe('NodeCompressor', () => {
     });
 
     it('Given a small inflated-bytes cap and a roundtrip whose output exceeds it, When streamInflate runs, Then rejects with DECOMPRESS_FAILED (zip-bomb cap)', async () => {
+      // Arrange
       const sut = new NodeCompressor({ maxInflatedBytes: 4 });
       const payload = new TextEncoder().encode('aaaaaaaaaaaaaaaaaaaa'); // 20 bytes
       const deflated = await sut.deflate(payload);
@@ -96,11 +99,13 @@ describe('NodeCompressor', () => {
       } catch (err) {
         caught = err;
       }
+      // Assert
       expect(caught).toBeInstanceOf(TsgitError);
       expect((caught as TsgitError).data.code).toBe('DECOMPRESS_FAILED');
     });
 
     it('Given a small inflated-bytes cap and a roundtrip exceeding it via createInflateStream, When piped, Then errors the stream with DECOMPRESS_FAILED', async () => {
+      // Arrange
       const sut = new NodeCompressor({ maxInflatedBytes: 4 });
       const payload = new TextEncoder().encode('aaaaaaaaaaaaaaaaaaaa');
       const deflated = await sut.deflate(payload);
@@ -117,6 +122,7 @@ describe('NodeCompressor', () => {
       } catch (err) {
         caught = err;
       }
+      // Assert
       expect(caught).toBeInstanceOf(TsgitError);
       expect((caught as TsgitError).data.code).toBe('DECOMPRESS_FAILED');
     });
@@ -222,6 +228,7 @@ describe('NodeCompressor', () => {
     });
 
     it('Given oversized payload to inflate(), When inflate runs, Then throws DECOMPRESS_FAILED (Node maxOutputLength enforced)', async () => {
+      // Arrange
       // Kills the mutant where the inflate() maxOutputLength option is removed.
       const sut = new NodeCompressor({ maxInflatedBytes: 4 });
       const payload = new TextEncoder().encode('aaaaaaaaaaaaaaaaaaaa');
@@ -232,6 +239,7 @@ describe('NodeCompressor', () => {
       } catch (err) {
         caught = err;
       }
+      // Assert
       expect(caught).toBeInstanceOf(TsgitError);
       expect((caught as TsgitError).data.code).toBe('DECOMPRESS_FAILED');
     });

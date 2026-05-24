@@ -239,7 +239,7 @@ describe('detectRenames', () => {
     ]);
   });
 
-  it('Property: detectRenames(detectRenames(d)) deep-equals detectRenames(d) (idempotence)', () => {
+  it('Given the property "detectRenames(detectRenames(d)) deep-equals detectRenames(d) (idempotence)", When sampled, Then it holds', () => {
     // Arrange
     const sut = diff([
       deleteChange('a.txt', ID_A),
@@ -256,7 +256,7 @@ describe('detectRenames', () => {
     expect(twice).toEqual(once);
   });
 
-  it('Property: detectRenames output paths are a subset of input paths', () => {
+  it('Given the property "detectRenames output paths are a subset of input paths", When sampled, Then it holds', () => {
     // Arrange
     const sut = diff([
       deleteChange('a.txt', ID_A),

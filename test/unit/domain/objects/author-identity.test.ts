@@ -94,7 +94,7 @@ describe('author-identity', () => {
       // Arrange
       const line = 'no opening> 0 +0000';
 
-      // Act & Assert
+      // Act + Assert
       expect(() => parseIdentity(line)).toThrow(
         expect.objectContaining({
           data: expect.objectContaining({
@@ -109,7 +109,7 @@ describe('author-identity', () => {
       // Arrange
       const line = 'Name <email@test.com> NaN +0000';
 
-      // Act & Assert
+      // Act + Assert
       expect(() => parseIdentity(line)).toThrow(
         expect.objectContaining({
           data: expect.objectContaining({
@@ -124,7 +124,7 @@ describe('author-identity', () => {
       // Arrange
       const line = 'Alice <a@a.com> 100.5 +0000';
 
-      // Act & Assert
+      // Act + Assert
       expect(() => parseIdentity(line)).toThrow(
         expect.objectContaining({
           data: expect.objectContaining({
@@ -139,7 +139,7 @@ describe('author-identity', () => {
       // Arrange — above Number.MAX_SAFE_INTEGER
       const line = 'Alice <a@a.com> 9007199254740993 +0000';
 
-      // Act & Assert
+      // Act + Assert
       expect(() => parseIdentity(line)).toThrow(
         expect.objectContaining({
           data: expect.objectContaining({
@@ -154,7 +154,7 @@ describe('author-identity', () => {
       // Arrange
       const line = 'Alice <a@a.com> 100 abc';
 
-      // Act & Assert
+      // Act + Assert
       expect(() => parseIdentity(line)).toThrow(
         expect.objectContaining({
           data: expect.objectContaining({
@@ -169,7 +169,7 @@ describe('author-identity', () => {
       // Arrange
       const line = 'Alice <a@a.com> 100 <bad';
 
-      // Act & Assert
+      // Act + Assert
       expect(() => parseIdentity(line)).toThrow(
         expect.objectContaining({
           data: expect.objectContaining({
@@ -187,6 +187,7 @@ describe('author-identity', () => {
       // Act / Assert
       try {
         parseIdentity(line);
+        // Assert
         expect.unreachable();
       } catch (error) {
         expect((error as { data: { code: string; reason: string } }).data.code).toBe(
@@ -203,6 +204,7 @@ describe('author-identity', () => {
       // Act / Assert
       try {
         parseIdentity(line);
+        // Assert
         expect.unreachable();
       } catch (error) {
         expect((error as { data: { code: string; reason: string } }).data.code).toBe(
@@ -228,7 +230,7 @@ describe('author-identity', () => {
       // Arrange
       const line = 'no brackets here';
 
-      // Act & Assert
+      // Act + Assert
       expect(() => parseIdentity(line)).toThrow(
         expect.objectContaining({
           data: expect.objectContaining({
@@ -243,7 +245,7 @@ describe('author-identity', () => {
       // Arrange
       const line = 'Name <email>';
 
-      // Act & Assert
+      // Act + Assert
       expect(() => parseIdentity(line)).toThrow(
         expect.objectContaining({
           data: expect.objectContaining({
@@ -258,7 +260,7 @@ describe('author-identity', () => {
       // Arrange
       const line = 'Name <email> 123';
 
-      // Act & Assert
+      // Act + Assert
       expect(() => parseIdentity(line)).toThrow(
         expect.objectContaining({
           data: expect.objectContaining({
@@ -337,6 +339,7 @@ describe('author-identity', () => {
       // Act / Assert
       try {
         serializeIdentity(identity);
+        // Assert
         expect.unreachable();
       } catch (error) {
         expect(error).toHaveProperty('data.code', 'INVALID_IDENTITY');
@@ -358,6 +361,7 @@ describe('author-identity', () => {
       // Act / Assert
       try {
         serializeIdentity(identity);
+        // Assert
         expect.unreachable();
       } catch (error) {
         expect(error).toHaveProperty('data.code', 'INVALID_IDENTITY');
@@ -379,6 +383,7 @@ describe('author-identity', () => {
       // Act / Assert
       try {
         serializeIdentity(identity);
+        // Assert
         expect.unreachable();
       } catch (error) {
         expect(error).toHaveProperty('data.code', 'INVALID_IDENTITY');
@@ -400,6 +405,7 @@ describe('author-identity', () => {
       // Act / Assert
       try {
         serializeIdentity(identity);
+        // Assert
         expect.unreachable();
       } catch (error) {
         expect(error).toHaveProperty('data.code', 'INVALID_IDENTITY');
@@ -421,6 +427,7 @@ describe('author-identity', () => {
       // Act / Assert
       try {
         serializeIdentity(identity);
+        // Assert
         expect.unreachable();
       } catch (error) {
         expect(error).toHaveProperty('data.code', 'INVALID_IDENTITY');
@@ -442,6 +449,7 @@ describe('author-identity', () => {
       // Act / Assert
       try {
         serializeIdentity(identity);
+        // Assert
         expect.unreachable();
       } catch (error) {
         expect(error).toHaveProperty('data.code', 'INVALID_IDENTITY');
@@ -463,6 +471,7 @@ describe('author-identity', () => {
       // Act / Assert
       try {
         serializeIdentity(identity);
+        // Assert
         expect.unreachable();
       } catch (error) {
         expect(error).toHaveProperty('data.code', 'INVALID_IDENTITY');
@@ -484,6 +493,7 @@ describe('author-identity', () => {
       // Act / Assert
       try {
         serializeIdentity(identity);
+        // Assert
         expect.unreachable();
       } catch (error) {
         expect(error).toHaveProperty('data.code', 'INVALID_IDENTITY');
@@ -505,6 +515,7 @@ describe('author-identity', () => {
       // Act / Assert
       try {
         serializeIdentity(identity);
+        // Assert
         expect.unreachable();
       } catch (error) {
         expect(error).toHaveProperty('data.code', 'INVALID_IDENTITY');
@@ -571,7 +582,7 @@ describe('author-identity', () => {
         timezoneOffset: '+0000',
       };
 
-      // Act & Assert
+      // Act + Assert
       expect(() => serializeIdentity(identity)).toThrow(
         expect.objectContaining({
           data: expect.objectContaining({
@@ -591,7 +602,7 @@ describe('author-identity', () => {
         timezoneOffset: '+0000',
       };
 
-      // Act & Assert
+      // Act + Assert
       expect(() => serializeIdentity(identity)).toThrow(
         expect.objectContaining({
           data: expect.objectContaining({
@@ -611,7 +622,7 @@ describe('author-identity', () => {
         timezoneOffset: 'bad',
       };
 
-      // Act & Assert
+      // Act + Assert
       expect(() => serializeIdentity(identity)).toThrow(
         expect.objectContaining({
           data: expect.objectContaining({
@@ -634,6 +645,7 @@ describe('author-identity', () => {
       // Act / Assert
       try {
         serializeIdentity(identity);
+        // Assert
         expect.unreachable();
       } catch (error) {
         expect((error as { data: { code: string; reason: string } }).data.code).toBe(
@@ -655,6 +667,7 @@ describe('author-identity', () => {
       // Act / Assert
       try {
         serializeIdentity(identity);
+        // Assert
         expect.unreachable();
       } catch (error) {
         expect((error as { data: { code: string; reason: string } }).data.code).toBe(
@@ -676,6 +689,7 @@ describe('author-identity', () => {
       // Act / Assert
       try {
         serializeIdentity(identity);
+        // Assert
         expect.unreachable();
       } catch (error) {
         expect((error as { data: { code: string } }).data.code).toBe('INVALID_IDENTITY');
@@ -703,7 +717,8 @@ describe('author-identity', () => {
   });
 
   describe('property-based tests', () => {
-    it('Roundtrip: parseIdentity(serializeIdentity(identity)) equals original for valid identities', () => {
+    it('Given the roundtrip property "parseIdentity(serializeIdentity(identity)) equals original for valid identities", When sampled, Then it holds', () => {
+      // Arrange
       const arbIdentity = fc.record({
         name: fc.string().filter((s) => !s.includes('<') && !s.includes('>') && !s.includes('\n')),
         email: fc
@@ -724,6 +739,7 @@ describe('author-identity', () => {
           ),
       });
 
+      // Assert
       fc.assert(
         fc.property(arbIdentity, (identity) => {
           const serialized = serializeIdentity(identity);

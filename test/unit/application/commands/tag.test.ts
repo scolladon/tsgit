@@ -129,7 +129,8 @@ describe('tag', () => {
     await tag(ctx, { kind: 'create', name: 'v1.0' });
 
     // Act + Assert — must not throw with force.
-    await tag(ctx, { kind: 'create', name: 'v1.0', force: true });
+    // Assert
+    await expect(tag(ctx, { kind: 'create', name: 'v1.0', force: true })).resolves.toBeDefined();
   });
 
   it('Given a fresh repo with no tags, When tag list, Then returns an empty array', async () => {

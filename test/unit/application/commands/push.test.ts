@@ -241,6 +241,7 @@ describe('push — config + refspec guards', () => {
   });
 
   it('Given no remote configured, When push runs, Then throws REMOTE_NOT_CONFIGURED', async () => {
+    // Arrange
     const ctx = createMemoryContext();
     await seedRepo(ctx, {});
     let caught: unknown;
@@ -249,6 +250,7 @@ describe('push — config + refspec guards', () => {
     } catch (err) {
       caught = err;
     }
+    // Assert
     expect(caught).toBeInstanceOf(TsgitError);
     expect((caught as TsgitError).data.code).toBe('REMOTE_NOT_CONFIGURED');
   });

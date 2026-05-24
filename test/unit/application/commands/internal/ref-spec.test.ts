@@ -10,6 +10,7 @@ import type { RefName } from '../../../../../src/domain/objects/object-id.js';
 describe('internal/ref-spec', () => {
   describe('parseRefspec', () => {
     it("Given 'refs/heads/main:refs/remotes/origin/main', When parseRefspec, Then non-force, src/dst set, no wildcard", () => {
+      // Arrange
       // Act
       const sut = parseRefspec('refs/heads/main:refs/remotes/origin/main');
 
@@ -23,6 +24,7 @@ describe('internal/ref-spec', () => {
     });
 
     it("Given '+refs/heads/main:refs/remotes/origin/main', When parseRefspec, Then force is true and '+' is stripped from src", () => {
+      // Arrange
       // Act
       const sut = parseRefspec('+refs/heads/main:refs/remotes/origin/main');
 
@@ -32,6 +34,7 @@ describe('internal/ref-spec', () => {
     });
 
     it('Given a non-force refspec with no NUL byte, When parseRefspec, Then does not throw the NUL-byte error', () => {
+      // Arrange
       // Act
       const sut = parseRefspec('refs/heads/main:refs/remotes/origin/main');
 
@@ -40,6 +43,7 @@ describe('internal/ref-spec', () => {
     });
 
     it("Given 'refs/heads/*:refs/remotes/origin/*', When parseRefspec, Then hasWildcard is true", () => {
+      // Arrange
       // Act
       const sut = parseRefspec('refs/heads/*:refs/remotes/origin/*');
 
@@ -48,6 +52,7 @@ describe('internal/ref-spec', () => {
     });
 
     it('Given mismatched wildcards (src wild, dst not), When parseRefspec, Then throws REFSPEC_INVALID with wildcard-mismatch reason', () => {
+      // Arrange
       // Act
       let caught: unknown;
       try {
@@ -66,6 +71,7 @@ describe('internal/ref-spec', () => {
     });
 
     it('Given a refspec with no colon, When parseRefspec, Then throws REFSPEC_INVALID with missing-separator reason', () => {
+      // Arrange
       // Act
       let caught: unknown;
       try {
@@ -84,6 +90,7 @@ describe('internal/ref-spec', () => {
     });
 
     it('Given a refspec with NUL byte, When parseRefspec, Then throws REFSPEC_INVALID with NUL-byte reason', () => {
+      // Arrange
       // Act
       let caught: unknown;
       try {
@@ -102,6 +109,7 @@ describe('internal/ref-spec', () => {
     });
 
     it('Given an empty src, When parseRefspec, Then throws REFSPEC_INVALID with non-empty reason', () => {
+      // Arrange
       // Act
       let caught: unknown;
       try {
@@ -120,6 +128,7 @@ describe('internal/ref-spec', () => {
     });
 
     it('Given an empty dst, When parseRefspec, Then throws REFSPEC_INVALID with non-empty reason', () => {
+      // Arrange
       // Act
       let caught: unknown;
       try {
@@ -138,6 +147,7 @@ describe('internal/ref-spec', () => {
     });
 
     it('Given a refspec whose src has two "*", When parseRefspec, Then throws REFSPEC_INVALID with at-most-one-star reason', () => {
+      // Arrange
       // Act
       let caught: unknown;
       try {
@@ -156,6 +166,7 @@ describe('internal/ref-spec', () => {
     });
 
     it('Given a refspec whose dst has two "*", When parseRefspec, Then throws REFSPEC_INVALID with at-most-one-star reason', () => {
+      // Arrange
       // Act
       let caught: unknown;
       try {
@@ -174,6 +185,7 @@ describe('internal/ref-spec', () => {
     });
 
     it('Given a single-wildcard refspec on both sides, When parseRefspec, Then accepts it without throwing the at-most-one-star error', () => {
+      // Arrange
       // Act
       const sut = parseRefspec('refs/heads/*:refs/remotes/origin/*');
 
@@ -251,7 +263,9 @@ describe('internal/ref-spec', () => {
   });
 
   describe('MAX_REFSPECS_PER_FETCH', () => {
-    it('Equals 1024', () => {
+    it('Given a constant 1024, When read, Then equals 1024', () => {
+      // Arrange
+      // Assert
       expect(MAX_REFSPECS_PER_FETCH).toBe(1024);
     });
   });

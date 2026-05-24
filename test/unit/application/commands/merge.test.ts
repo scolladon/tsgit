@@ -415,7 +415,7 @@ describe('merge.4b conflict persistence', () => {
     expect(sut).toContain('FEATURE');
   });
 
-  it('Given a content conflict, When merge runs, Then.git/MERGE_HEAD records the target tip id', async () => {
+  it('Given a content conflict, When merge runs, Then .git/MERGE_HEAD records the target tip id', async () => {
     // Arrange
     const ctx = createMemoryContext();
     const { featureTip } = await setupConflictingMerge(ctx);
@@ -429,7 +429,7 @@ describe('merge.4b conflict persistence', () => {
     expect(sut).toBe(`${featureTip}\n`);
   });
 
-  it('Given a content conflict, When merge runs, Then.git/ORIG_HEAD records the pre-merge HEAD id', async () => {
+  it('Given a content conflict, When merge runs, Then .git/ORIG_HEAD records the pre-merge HEAD id', async () => {
     // Arrange
     const ctx = createMemoryContext();
     const { preMergeMain } = await setupConflictingMerge(ctx);
@@ -442,7 +442,7 @@ describe('merge.4b conflict persistence', () => {
     expect(sut).toBe(`${preMergeMain}\n`);
   });
 
-  it('Given a content conflict, When merge runs with a message, Then.git/MERGE_MSG records the message', async () => {
+  it('Given a content conflict, When merge runs with a message, Then .git/MERGE_MSG records the message', async () => {
     // Arrange
     const ctx = createMemoryContext();
     await setupConflictingMerge(ctx);
@@ -508,6 +508,7 @@ describe('merge.4b conflict persistence', () => {
       caught = err;
     }
     const data = (caught as { data?: { code?: string; operation?: string } })?.data;
+    // Assert
     expect(data?.code).toBe('OPERATION_IN_PROGRESS');
     expect(data?.operation).toBe('merge');
   });
@@ -527,6 +528,7 @@ describe('merge.4b conflict persistence', () => {
       caught = err;
     }
     const data = (caught as { data?: { code?: string; count?: number } })?.data;
+    // Assert
     expect(data?.code).toBe('MERGE_HAS_CONFLICTS');
     expect(data?.count).toBe(1);
   });
@@ -610,6 +612,7 @@ describe('merge.4b conflict persistence', () => {
       };
 
       // Act / Assert
+      // Assert
       await expect(runBounded([1, 2, 3, 4, 5, 6], 2, fn)).rejects.toThrow('boom');
     });
   });
@@ -659,6 +662,7 @@ describe('merge.4b conflict persistence', () => {
       const conflict = { type: conflictType, path: 'x.txt' as never } as never;
 
       // Act / Assert — no throw.
+      // Assert
       expect(() => rejectUnsupportedConflicts([conflict])).not.toThrow();
     });
 
@@ -669,6 +673,7 @@ describe('merge.4b conflict persistence', () => {
       );
 
       // Act / Assert
+      // Assert
       expect(() => rejectUnsupportedConflicts([])).not.toThrow();
     });
   });
@@ -713,6 +718,7 @@ describe('merge.4b conflict persistence', () => {
     const data = (
       caught as { data?: { code?: string; count?: number; paths?: ReadonlyArray<string> } }
     )?.data;
+    // Assert
     expect(data?.code).toBe('MERGE_HAS_CONFLICTS');
     expect(data?.count).toBe(1);
     expect(data?.paths).toEqual(['file-b.txt']);
@@ -736,6 +742,7 @@ describe('merge.4b conflict persistence', () => {
     } catch (err) {
       caught = err;
     }
+    // Assert
     expect((caught as { data?: { code?: string } })?.data?.code).toBe('EMPTY_COMMIT_MESSAGE');
   });
 
@@ -855,6 +862,7 @@ describe('merge — bounded blob reads', () => {
 
 describe('merge — progress reporting', () => {
   it('Given an up-to-date merge, When run, Then NO progress events fire (early return before start)', async () => {
+    // Arrange
     const ctx = createMemoryContext();
     await init(ctx);
     await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
@@ -864,6 +872,7 @@ describe('merge — progress reporting', () => {
 
     await merge(withProgress(ctx, reporter), { target: 'main' });
 
+    // Assert
     expect(events).toEqual([]);
   });
 
@@ -1204,6 +1213,7 @@ describe('resolveTarget (direct)', () => {
     } catch (err) {
       caught = err;
     }
+    // Assert
     expect((caught as { data?: { code?: string } })?.data?.code).toBe('REF_NOT_FOUND');
   });
 
@@ -1223,6 +1233,7 @@ describe('resolveTarget (direct)', () => {
     } catch (err) {
       caught = err;
     }
+    // Assert
     expect((caught as { data?: { code?: string } })?.data?.code).toBe('REF_NOT_FOUND');
   });
 });
@@ -1284,6 +1295,7 @@ describe('resolveMergeAuthor / resolveMergeCommitter (direct)', () => {
   });
 
   it('Given no explicit committer, When resolveMergeCommitter runs, Then it falls back to the author', async () => {
+    // Arrange
     // Act
     const sut = resolveMergeCommitter({ target: 'feature' }, author);
 
@@ -1294,6 +1306,7 @@ describe('resolveMergeAuthor / resolveMergeCommitter (direct)', () => {
 
 describe('parentDir (direct)', () => {
   it('Given a nested path, When parentDir is called, Then returns the directory above the leaf', () => {
+    // Arrange
     // Act
     const sut = parentDir('/work/sub/file.txt');
 
@@ -1302,6 +1315,7 @@ describe('parentDir (direct)', () => {
   });
 
   it('Given a path whose only slash is at index 0, When parentDir is called, Then returns undefined (lastSlash <= 0)', () => {
+    // Arrange
     // Act — `/abc`: lastSlash === 0, the `<= 0` guard must fire.
     const sut = parentDir('/abc');
 
@@ -1310,6 +1324,7 @@ describe('parentDir (direct)', () => {
   });
 
   it('Given a path with no slash, When parentDir is called, Then returns undefined (lastSlash === -1)', () => {
+    // Arrange
     // Act
     const sut = parentDir('abc');
 
@@ -1467,6 +1482,7 @@ describe('removeWorkingTreeFile (direct)', () => {
     await init(ctx);
 
     // Act / Assert — the `if (exists)` guard prevents an rm on a missing path.
+    // Assert
     await expect(removeWorkingTreeFile(ctx, 'absent.txt' as FilePath)).resolves.toBeUndefined();
   });
 });
@@ -1568,6 +1584,7 @@ describe('materialiseConflictBytes (direct)', () => {
     const conflict = conflictOf({ type: 'add-add' });
 
     // Act / Assert
+    // Assert
     expect(await materialiseConflictBytes(ctx, conflict)).toBeUndefined();
   });
 
@@ -1620,6 +1637,7 @@ describe('materialiseConflictBytes (direct)', () => {
     const conflict = conflictOf({ type: 'modify-delete' });
 
     // Act / Assert
+    // Assert
     expect(await materialiseConflictBytes(ctx, conflict)).toBeUndefined();
   });
 
@@ -1651,6 +1669,7 @@ describe('materialiseConflictBytes (direct)', () => {
     const conflict = conflictOf({ type: 'content', ourId: oursId });
 
     // Act / Assert
+    // Assert
     expect(await materialiseConflictBytes(ctx, conflict)).toBeUndefined();
   });
 
@@ -1664,6 +1683,7 @@ describe('materialiseConflictBytes (direct)', () => {
     const conflict = conflictOf({ type: 'gitlink', ourId: oursId, theirId: theirsId });
 
     // Act / Assert
+    // Assert
     expect(await materialiseConflictBytes(ctx, conflict)).toBeUndefined();
   });
 });

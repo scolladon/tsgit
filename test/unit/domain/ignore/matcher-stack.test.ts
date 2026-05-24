@@ -11,6 +11,8 @@ const path = (s: string): FilePath => s as FilePath;
 
 describe('matchInStack', () => {
   it('Given an empty stack, When matched, Then returns "unset"', () => {
+    // Arrange
+    // Assert
     expect(matchInStack([], path('foo.log'), false)).toBe('unset');
   });
 
@@ -29,8 +31,10 @@ describe('matchInStack', () => {
   });
 
   it('Given a single root level with `*.log`, When matched against `foo.log`, Then returns "ignored"', () => {
+    // Arrange
     const stack = [level('', '*.log')];
 
+    // Assert
     expect(matchInStack(stack, path('foo.log'), false)).toBe('ignored');
   });
 
@@ -101,8 +105,10 @@ describe('matchInStack', () => {
   });
 
   it('Given a directory-only rule and a matching directory path, When matched, Then returns "ignored"', () => {
+    // Arrange
     const stack = [level('', 'build/')];
 
+    // Assert
     expect(matchInStack(stack, path('build'), true)).toBe('ignored');
   });
 });

@@ -23,14 +23,17 @@ const AUTHOR: AuthorIdentity = {
 
 describe('readTree', () => {
   it('Given a tree id, When readTree is called, Then returns the Tree', async () => {
+    // Arrange
     const ctx = await buildSeededContext();
     const tree: Tree = { type: 'tree', entries: [], id: '' as ObjectId };
     const id = await writeObject(ctx, tree);
     const sut = await readTree(ctx, id);
+    // Assert
     expect(sut.type).toBe('tree');
   });
 
   it('Given a commit id, When readTree is called, Then peels to the commit.tree', async () => {
+    // Arrange
     const ctx = await buildSeededContext();
     const tree: Tree = { type: 'tree', entries: [], id: '' as ObjectId };
     const treeId = await writeObject(ctx, tree);
@@ -42,10 +45,12 @@ describe('readTree', () => {
       message: 'm',
     });
     const sut = await readTree(ctx, commitId);
+    // Assert
     expect(sut.id).toBe(treeId);
   });
 
   it('Given HEAD as ref, When readTree is called, Then resolves HEAD → peels commit → tree', async () => {
+    // Arrange
     const ctx = await buildSeededContext();
     const tree: Tree = { type: 'tree', entries: [], id: '' as ObjectId };
     const treeId = await writeObject(ctx, tree);
@@ -59,13 +64,14 @@ describe('readTree', () => {
     await ctx.fs.writeUtf8('/repo/.git/refs/heads/main', `${commitId}\n`);
     await ctx.fs.writeUtf8('/repo/.git/HEAD', 'ref: refs/heads/main\n');
     const sut = await readTree(ctx, 'HEAD' as RefName);
+    // Assert
     expect(sut.id).toBe(treeId);
   });
 
   it('Given a tag chain at exactly MAX_PEEL_DEPTH (at cap), When readTree is called, Then succeeds', async () => {
-    // Kills the `depth > MAX_PEEL_DEPTH` EqualityOperator `>=` mutant: under
-    // `>=`, depth=5 would trip the guard; under `>`, it's the threshold that
-    // still succeeds.
+    // Arrange — kills the `depth > MAX_PEEL_DEPTH` EqualityOperator `>=`
+    // mutant: under `>=`, depth=5 would trip the guard; under `>`, it's the
+    // threshold that still succeeds.
     const ctx = await buildSeededContext();
     const tree: Tree = { type: 'tree', entries: [], id: '' as ObjectId };
     const treeId = await writeObject(ctx, tree);
@@ -90,6 +96,8 @@ describe('readTree', () => {
       currentType = 'tag';
     }
     const sut = await readTree(ctx, currentId);
+
+    // Assert
     expect(sut.type).toBe('tree');
     expect(sut.id).toBe(treeId);
   });
@@ -122,6 +130,7 @@ describe('readTree', () => {
     // Act / Assert
     try {
       await readTree(ctx, currentId);
+      // Assert
       expect.unreachable();
     } catch (error) {
       expect((error as TsgitError).data.code).toBe('REF_CHAIN_TOO_DEEP');
@@ -129,11 +138,13 @@ describe('readTree', () => {
   });
 
   it('Given a blob id, When readTree is called, Then throws UNEXPECTED_OBJECT_TYPE', async () => {
+    // Arrange
     const ctx = await buildSeededContext();
     const blob: Blob = { type: 'blob', content: new Uint8Array([1]), id: '' as ObjectId };
     const id = await writeObject(ctx, blob);
     try {
       await readTree(ctx, id);
+      // Assert
       expect.unreachable();
     } catch (error) {
       expect((error as TsgitError).data.code).toBe('UNEXPECTED_OBJECT_TYPE');

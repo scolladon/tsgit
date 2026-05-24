@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest';
 import type { Blob } from '../../../../src/domain/objects/blob.js';
 import type { Commit } from '../../../../src/domain/objects/commit.js';
 import { encode } from '../../../../src/domain/objects/encoding.js';
-import { TsgitError } from '../../../../src/domain/objects/error.js';
 import { parseObject, serializeObject } from '../../../../src/domain/objects/git-object.js';
 import { SHA1_CONFIG } from '../../../../src/domain/objects/hash-config.js';
 import { ObjectId } from '../../../../src/domain/objects/object-id.js';
@@ -124,19 +123,27 @@ describe('git-object', () => {
       expect(sut.type).toBe('tag');
     });
 
-    it('Given raw bytes with invalid header type, When calling parseObject, Then throws INVALID_OBJECT_HEADER', () => {
+    it('Given raw bytes with invalid header type, When calling parseObject, Then throws INVALID_OBJECT_HEADER with the unknown-type reason', () => {
       // Arrange
       const raw = encode('invalid 5\0hello');
 
-      // Act & Assert
-      expect(() => parseObject(DUMMY_ID, raw, SHA1_CONFIG)).toThrow(TsgitError);
+      // Act & Assert — pin the exact reason string so a StringLiteral
+      // mutant on the template literal at header.ts:27 cannot survive.
+      expect(() => parseObject(DUMMY_ID, raw, SHA1_CONFIG)).toThrow(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            code: 'INVALID_OBJECT_HEADER',
+            reason: 'unknown object type: invalid',
+          }),
+        }),
+      );
     });
 
     it('Given header size != actual content length, When calling parseObject, Then throws INVALID_OBJECT_HEADER with size mismatch reason', () => {
       // Arrange
       const raw = encode('blob 999\0short');
 
-      // Act & Assert
+      // Act + Assert
       expect(() => parseObject(DUMMY_ID, raw, SHA1_CONFIG)).toThrow(
         expect.objectContaining({
           data: expect.objectContaining({

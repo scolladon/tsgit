@@ -42,6 +42,7 @@ describe('toArray', () => {
     const source = throwingAt(3, 10);
 
     // Act / Assert
+    // Assert
     await expect(toArray(source)).rejects.toThrow(/threw at item 3/);
   });
 
@@ -52,6 +53,7 @@ describe('toArray', () => {
     // Act / Assert
     try {
       await toArray(source, 3);
+      // Assert
       expect.unreachable();
     } catch (error) {
       expect(error).toBeInstanceOf(RangeError);
@@ -99,6 +101,7 @@ describe('toArray', () => {
     // Act / Assert
     try {
       await toArray(source, 0);
+      // Assert
       expect.unreachable();
     } catch (error) {
       expect(error).toBeInstanceOf(RangeError);
@@ -113,6 +116,7 @@ describe('toArray', () => {
     // Act / Assert
     try {
       await toArray(source, -1);
+      // Assert
       expect.unreachable();
     } catch (error) {
       expect(error).toBeInstanceOf(RangeError);
@@ -127,6 +131,7 @@ describe('toArray', () => {
     // Act / Assert
     try {
       await toArray(source, Number.NaN);
+      // Assert
       expect.unreachable();
     } catch (error) {
       expect(error).toBeInstanceOf(RangeError);

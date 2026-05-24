@@ -72,7 +72,7 @@ describe('header', () => {
       // Arrange
       const raw = headerBytes('invalid 12\0');
 
-      // Act & Assert
+      // Act + Assert
       expect(() => parseHeader(raw)).toThrow(
         expect.objectContaining({
           data: expect.objectContaining({
@@ -87,7 +87,7 @@ describe('header', () => {
       // Arrange
       const raw = headerBytes('blob 12');
 
-      // Act & Assert
+      // Act + Assert
       expect(() => parseHeader(raw)).toThrow(
         expect.objectContaining({
           data: expect.objectContaining({
@@ -102,7 +102,7 @@ describe('header', () => {
       // Arrange
       const raw = headerBytes('blob12\0');
 
-      // Act & Assert
+      // Act + Assert
       expect(() => parseHeader(raw)).toThrow(
         expect.objectContaining({
           data: expect.objectContaining({
@@ -117,7 +117,7 @@ describe('header', () => {
       // Arrange
       const raw = headerBytes('blob abc\0');
 
-      // Act & Assert
+      // Act + Assert
       expect(() => parseHeader(raw)).toThrow(
         expect.objectContaining({
           data: expect.objectContaining({
@@ -132,7 +132,7 @@ describe('header', () => {
       // Arrange
       const raw = headerBytes('blob -1\0');
 
-      // Act & Assert
+      // Act + Assert
       expect(() => parseHeader(raw)).toThrow(
         expect.objectContaining({
           data: expect.objectContaining({
@@ -147,7 +147,7 @@ describe('header', () => {
       // Arrange
       const raw = headerBytes('blob 01\0');
 
-      // Act & Assert
+      // Act + Assert
       expect(() => parseHeader(raw)).toThrow(
         expect.objectContaining({
           data: expect.objectContaining({

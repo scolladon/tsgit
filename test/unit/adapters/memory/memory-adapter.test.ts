@@ -83,6 +83,7 @@ describe('createMemoryContext', () => {
     const sut = createMemoryContext();
 
     // Act / Assert
+    // Assert
     expect(() => {
       (sut as { fs: unknown }).fs = null;
     }).toThrow();

@@ -1,16 +1,16 @@
 {
-  "$schema": "./scripts/test-pyramid-budgets-schema.json",
+  "$schema": "./tooling/test-pyramid-budgets-schema.json",
   "tiers": [
     {
       "name": "unit",
-      "glob": "test/unit/**/*.test.ts",
+      "glob": "{test,tooling/test}/unit/**/*.test.ts",
       "target": 80,
       "warnBelow": 75,
       "warnAbove": null
     },
     {
       "name": "integration",
-      "glob": "test/integration/**/*.test.ts",
+      "glob": "{test,tooling/test}/integration/**/*.test.ts",
       "target": 15,
       "warnBelow": 10,
       "warnAbove": 25
@@ -32,6 +32,36 @@
     "underAssertedUnit": {
       "tier": "unit",
       "minAssertionsPerTest": 1
+    },
+    "gwtTitle": {
+      "tier": "unit",
+      "regex": "^Given .+?, When .+?, Then .+$"
+    },
+    "aaaBody": {
+      "tier": "unit",
+      "required": ["Arrange", "Assert"]
+    },
+    "sutNaming": {
+      "tier": "unit",
+      "banned": ["subject", "objectUnderTest", "systemUnderTest", "cut"]
+    },
+    "bareClassToThrow": {
+      "tier": "unit",
+      "regex": "\\.toThrow(?:Error)?\\s*\\(\\s*([A-Z]\\w*)\\s*\\)"
     }
-  }
+  },
+  "gating": {
+    "overMockedIntegration": false,
+    "underAssertedUnit": true,
+    "gwtTitle": true,
+    "aaaBody": true,
+    "sutNaming": true,
+    "bareClassToThrow": true
+  },
+  "excludePaths": [
+    "tooling/test/unit/test-pyramid/detect-*.test.ts",
+    "tooling/test/unit/test-pyramid/parse-manifest.test.ts",
+    "tooling/test/unit/test-pyramid/render-report.test.ts",
+    "tooling/test/integration/audit-test-pyramid.test.ts"
+  ]
 }

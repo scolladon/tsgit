@@ -652,7 +652,7 @@ describe('mergeContent', () => {
     }
   });
 
-  it('Property: mergeContent(base, base, base) always clean for non-binary text', () => {
+  it('Given the property "mergeContent(base, base, base) always clean for non-binary text", When sampled, Then it holds', () => {
     // Arrange — generate text-only bytes (no NUL, bounded lines) to avoid binary detection
     const textByte = fc.integer({ min: 1, max: 127 });
     const textArray = fc.array(textByte, { maxLength: 200 }).map((arr) => new Uint8Array(arr));

@@ -103,6 +103,7 @@ describe('encodePktLine', () => {
       encodePktLine(payload);
       throw new Error('expected throw');
     } catch (err) {
+      // Assert
       expect(err).toBeInstanceOf(RangeError);
       expect((err as RangeError).message).toBe(expected);
     }
@@ -181,6 +182,7 @@ describe('encodePktStream', () => {
       encodePktStream([tooBig]);
       throw new Error('expected throw');
     } catch (err) {
+      // Assert
       expect(err).toBeInstanceOf(RangeError);
       expect((err as RangeError).message).toBe(expected);
     }
@@ -189,14 +191,20 @@ describe('encodePktStream', () => {
 
 describe('FLUSH_PKT / DELIM_PKT / RESPONSE_END_PKT constants', () => {
   it('Given FLUSH_PKT, When inspected, Then equals bytesOf("0000")', () => {
+    // Arrange
+    // Assert
     expect(FLUSH_PKT).toEqual(bytesOf('0000'));
   });
 
   it('Given DELIM_PKT, When inspected, Then equals bytesOf("0001")', () => {
+    // Arrange
+    // Assert
     expect(DELIM_PKT).toEqual(bytesOf('0001'));
   });
 
   it('Given RESPONSE_END_PKT, When inspected, Then equals bytesOf("0002")', () => {
+    // Arrange
+    // Assert
     expect(RESPONSE_END_PKT).toEqual(bytesOf('0002'));
   });
 });
@@ -222,6 +230,7 @@ describe('decodePktStream — basic packets', () => {
       await collect(decodePktStream(asyncOf(chunks)));
       throw new Error('expected throw');
     } catch (err) {
+      // Assert
       expect(err).toBeInstanceOf(TsgitError);
       const te = err as TsgitError;
       expect(te.data).toEqual({ code: 'PKT_LENGTH_RESERVED', value: 1 });
@@ -248,6 +257,7 @@ describe('decodePktStream — basic packets', () => {
       await collect(decodePktStream(asyncOf(chunks)));
       throw new Error('expected throw');
     } catch (err) {
+      // Assert
       expect(err).toBeInstanceOf(TsgitError);
       const te = err as TsgitError;
       expect(te.data).toEqual({ code: 'PKT_LENGTH_RESERVED', value: 2 });
@@ -275,6 +285,7 @@ describe('decodePktStream — basic packets', () => {
         await collect(decodePktStream(asyncOf(chunks), { v2 }));
         throw new Error('expected throw');
       } catch (err) {
+        // Assert
         expect(err).toBeInstanceOf(TsgitError);
         const te = err as TsgitError;
         expect(te.data).toEqual({ code: 'PKT_LENGTH_RESERVED', value: 3 });
@@ -372,6 +383,7 @@ describe('decodePktStream — length boundary triple', () => {
       await collect(decodePktStream(asyncOf([chunk])));
       throw new Error('expected throw');
     } catch (err) {
+      // Assert
       expect(err).toBeInstanceOf(TsgitError);
       const te = err as TsgitError;
       expect(te.data).toEqual({ code: 'PKT_TOO_LARGE', value: 0xfff1 });
@@ -405,6 +417,7 @@ describe('decodePktStream — truncation', () => {
       await collect(decodePktStream(asyncOf(chunks)));
       throw new Error('expected throw');
     } catch (err) {
+      // Assert
       expect(err).toBeInstanceOf(TsgitError);
       const te = err as TsgitError;
       expect(te.data).toEqual({ code: 'PKT_TRUNCATED', remaining: 2 });
@@ -420,6 +433,7 @@ describe('decodePktStream — truncation', () => {
       await collect(decodePktStream(asyncOf(chunks)));
       throw new Error('expected throw');
     } catch (err) {
+      // Assert
       expect(err).toBeInstanceOf(TsgitError);
       const te = err as TsgitError;
       expect(te.data).toEqual({ code: 'PKT_TRUNCATED', remaining: 6 });
@@ -437,6 +451,7 @@ describe('decodePktStream — invalid length', () => {
       await collect(decodePktStream(asyncOf(chunks)));
       throw new Error('expected throw');
     } catch (err) {
+      // Assert
       expect(err).toBeInstanceOf(TsgitError);
       const te = err as TsgitError;
       expect(te.data).toEqual({ code: 'INVALID_PKT_LENGTH', value: 'xxxx' });
@@ -452,6 +467,7 @@ describe('decodePktStream — invalid length', () => {
       await collect(decodePktStream(asyncOf(chunks)));
       throw new Error('expected throw');
     } catch (err) {
+      // Assert
       expect(err).toBeInstanceOf(TsgitError);
       const te = err as TsgitError;
       expect(te.data).toEqual({ code: 'INVALID_PKT_LENGTH', value: '0g00' });
@@ -470,6 +486,7 @@ describe('decodePktStream — DoS resistance', () => {
       await collect(decodePktStream(asyncOf([giant])));
       throw new Error('expected throw');
     } catch (err) {
+      // Assert
       expect(err).toBeInstanceOf(TsgitError);
       const te = err as TsgitError;
       expect(te.data.code).toBe('INVALID_PKT_LENGTH');
@@ -486,6 +503,7 @@ describe('decodePktStream — DoS resistance', () => {
       await collect(decodePktStream(asyncOf([giant])));
       throw new Error('expected throw');
     } catch (err) {
+      // Assert
       expect(err).toBeInstanceOf(TsgitError);
       const te = err as TsgitError;
       expect(te.data).toEqual({ code: 'PKT_TOO_LARGE', value: 0xfff5 });
@@ -511,6 +529,7 @@ describe('decodePktStream — partial-header then capacity overflow', () => {
         throw new Error('expected throw');
       },
       (err) => {
+        // Assert
         expect(err).toBeInstanceOf(TsgitError);
         const te = err as TsgitError;
         expect(te.data).toEqual({ code: 'PKT_TOO_LARGE', value: 4 });

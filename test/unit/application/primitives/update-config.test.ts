@@ -490,6 +490,7 @@ describe('primitives/update-config', () => {
     });
 
     it('Given a subsection containing a newline, When setConfigEntry, Then it throws INVALID_OPTION', () => {
+      // Arrange
       // Act
       let caught: unknown;
       try {
@@ -504,6 +505,7 @@ describe('primitives/update-config', () => {
     });
 
     it('Given a subsection containing a quote, When setConfigEntry, Then it throws INVALID_OPTION', () => {
+      // Arrange
       // Act
       let caught: unknown;
       try {
@@ -522,6 +524,7 @@ describe('primitives/update-config', () => {
     });
 
     it('Given a section name containing a bracket, When setConfigEntry, Then it throws INVALID_OPTION', () => {
+      // Arrange
       // Act
       let caught: unknown;
       try {

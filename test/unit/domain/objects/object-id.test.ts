@@ -40,32 +40,48 @@ describe('object-id', () => {
       // Arrange
       const hex = 'xyz';
 
-      // Act & Assert
-      expect(() => ObjectId.from(hex)).toThrow(TsgitError);
+      // Act + Assert
+      expect(() => ObjectId.from(hex)).toThrow(
+        expect.objectContaining({
+          data: { code: 'INVALID_OBJECT_ID', value: hex },
+        }),
+      );
     });
 
     it('Given an empty string, When calling ObjectId.from, Then throws INVALID_OBJECT_ID', () => {
       // Arrange
       const hex = '';
 
-      // Act & Assert
-      expect(() => ObjectId.from(hex)).toThrow(TsgitError);
+      // Act + Assert
+      expect(() => ObjectId.from(hex)).toThrow(
+        expect.objectContaining({
+          data: { code: 'INVALID_OBJECT_ID', value: hex },
+        }),
+      );
     });
 
     it('Given uppercase hex, When calling ObjectId.from, Then throws INVALID_OBJECT_ID', () => {
       // Arrange
       const hex = 'A'.repeat(40);
 
-      // Act & Assert
-      expect(() => ObjectId.from(hex)).toThrow(TsgitError);
+      // Act + Assert
+      expect(() => ObjectId.from(hex)).toThrow(
+        expect.objectContaining({
+          data: { code: 'INVALID_OBJECT_ID', value: hex },
+        }),
+      );
     });
 
     it('Given a 39-char hex string, When calling ObjectId.from, Then throws INVALID_OBJECT_ID', () => {
       // Arrange
       const hex = 'a'.repeat(39);
 
-      // Act & Assert
-      expect(() => ObjectId.from(hex)).toThrow(TsgitError);
+      // Act + Assert
+      expect(() => ObjectId.from(hex)).toThrow(
+        expect.objectContaining({
+          data: { code: 'INVALID_OBJECT_ID', value: hex },
+        }),
+      );
     });
   });
 
@@ -98,16 +114,24 @@ describe('object-id', () => {
       // Arrange
       const bytes = new Uint8Array(19);
 
-      // Act & Assert
-      expect(() => ObjectId.fromRaw(bytes)).toThrow(TsgitError);
+      // Act + Assert
+      expect(() => ObjectId.fromRaw(bytes)).toThrow(
+        expect.objectContaining({
+          data: { code: 'INVALID_OBJECT_ID', value: 'raw bytes length 19 is not 20 or 32' },
+        }),
+      );
     });
 
     it('Given a 0-byte Uint8Array, When calling ObjectId.fromRaw, Then throws INVALID_OBJECT_ID', () => {
       // Arrange
       const bytes = new Uint8Array(0);
 
-      // Act & Assert
-      expect(() => ObjectId.fromRaw(bytes)).toThrow(TsgitError);
+      // Act + Assert
+      expect(() => ObjectId.fromRaw(bytes)).toThrow(
+        expect.objectContaining({
+          data: { code: 'INVALID_OBJECT_ID', value: 'raw bytes length 0 is not 20 or 32' },
+        }),
+      );
     });
   });
 
@@ -211,9 +235,15 @@ describe('object-id', () => {
       // Arrange
       const name = '';
 
-      // Act & Assert
-      expect(() => RefName.from(name)).toThrow(Error);
-      expect(() => RefName.from(name)).not.toThrow(TsgitError);
+      // Act + Assert
+      expect(() => RefName.from(name)).toThrow('RefName must not be empty');
+      try {
+        RefName.from(name);
+        expect.unreachable();
+      } catch (error) {
+        expect(error).toBeInstanceOf(Error);
+        expect(error).not.toBeInstanceOf(TsgitError);
+      }
     });
   });
 
@@ -233,14 +263,22 @@ describe('object-id', () => {
       // Arrange
       const path = '';
 
-      // Act & Assert
-      expect(() => FilePath.from(path)).toThrow(Error);
-      expect(() => FilePath.from(path)).not.toThrow(TsgitError);
+      // Act + Assert
+      expect(() => FilePath.from(path)).toThrow('FilePath must not be empty');
+      try {
+        FilePath.from(path);
+        expect.unreachable();
+      } catch (error) {
+        expect(error).toBeInstanceOf(Error);
+        expect(error).not.toBeInstanceOf(TsgitError);
+      }
     });
   });
 
   describe('property-based tests', () => {
-    it('Roundtrip: ObjectId.fromRaw(hexToBytes(id)) equals the original id for valid 40-char ids', () => {
+    it('Given the roundtrip property "ObjectId.fromRaw(hexToBytes(id)) equals the original id for valid 40-char ids", When sampled, Then it holds', () => {
+      // Arrange
+      // Assert
       fc.assert(
         fc.property(arbObjectId(40), (id) => {
           const sut = ObjectId.fromRaw(hexToBytes(id));
@@ -249,7 +287,9 @@ describe('object-id', () => {
       );
     });
 
-    it('Roundtrip: ObjectId.fromRaw(hexToBytes(id)) equals the original id for valid 64-char ids', () => {
+    it('Given the roundtrip property "ObjectId.fromRaw(hexToBytes(id)) equals the original id for valid 64-char ids", When sampled, Then it holds', () => {
+      // Arrange
+      // Assert
       fc.assert(
         fc.property(arbObjectId(64), (id) => {
           const sut = ObjectId.fromRaw(hexToBytes(id));

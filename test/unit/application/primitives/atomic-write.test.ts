@@ -27,6 +27,7 @@ describe('atomicWriteRef', () => {
     // Act / Assert
     try {
       await atomicWriteRef(ctx, 'refs/heads/busy' as never, refPath, new Uint8Array([1]));
+      // Assert
       expect.unreachable();
     } catch (error) {
       expect(error).toBeInstanceOf(TsgitError);
@@ -35,6 +36,7 @@ describe('atomicWriteRef', () => {
   });
 
   it('Given writeExclusive throws a non-FILE_EXISTS TsgitError, When atomicWriteRef is called, Then propagates the original error (not REF_LOCKED)', async () => {
+    // Arrange
     // Kills the `error instanceof TsgitError && code === FILE_EXISTS` mutants:
     // under a `true` mutation, ANY error becomes REF_LOCKED.
     const ctx = await buildSeededContext();
@@ -54,6 +56,7 @@ describe('atomicWriteRef', () => {
         '/repo/.git/refs/heads/x',
         new Uint8Array([1]),
       );
+      // Assert
       expect.unreachable();
     } catch (error) {
       expect(error).toBeInstanceOf(TsgitError);
@@ -62,6 +65,7 @@ describe('atomicWriteRef', () => {
   });
 
   it('Given writeExclusive throws a plain Error (not TsgitError), When atomicWriteRef is called, Then propagates the plain Error (not REF_LOCKED)', async () => {
+    // Arrange
     // Kills the `error instanceof TsgitError` mutant: under a `true` mutation,
     // a plain Error would be misclassified as REF_LOCKED.
     const ctx = await buildSeededContext();
@@ -81,6 +85,7 @@ describe('atomicWriteRef', () => {
         '/repo/.git/refs/heads/y',
         new Uint8Array([1]),
       );
+      // Assert
       expect.unreachable();
     } catch (error) {
       expect(error).not.toBeInstanceOf(TsgitError);

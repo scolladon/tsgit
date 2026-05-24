@@ -82,7 +82,9 @@ describe('line-diff — splitLines', () => {
     expect(bytesEqual(sut[1]!, enc('\n'))).toBe(true);
   });
 
-  it('Property: for any bytes X, concat(splitLines(X)) equals X (roundtrip)', () => {
+  it('Given the property "for any bytes X, concat(splitLines(X)) equals X (roundtrip)", When sampled, Then it holds', () => {
+    // Arrange
+    // Assert
     fc.assert(
       fc.property(fc.uint8Array({ maxLength: 512 }), (bytes) => {
         const input = new Uint8Array(bytes);
@@ -433,7 +435,9 @@ describe('line-diff — diffLines', () => {
     // 90s tolerates Stryker dry-run overhead (~3x slower than vitest direct).
   }, 90_000);
 
-  it('Property: diffLines(X, X) yields a single common hunk covering all lines with degraded false', () => {
+  it('Given the property "diffLines(X, X) yields a single common hunk covering all lines with degraded false", When sampled, Then it holds', () => {
+    // Arrange
+    // Assert
     fc.assert(
       fc.property(fc.uint8Array({ maxLength: 200 }), (bytes) => {
         const input = new Uint8Array(bytes);
@@ -461,13 +465,15 @@ describe('line-diff — diffLines', () => {
     );
   });
 
-  it('Property: sum of common + ours-only ranges covers ours exactly; symmetric for theirs', () => {
+  it('Given the property "sum of common + ours-only ranges covers ours exactly; symmetric for theirs", When sampled, Then it holds', () => {
+    // Arrange
     const hunkLen = (h: {
       readonly oursStart: number;
       readonly oursEnd: number;
       readonly theirsStart: number;
       readonly theirsEnd: number;
     }) => ({ ours: h.oursEnd - h.oursStart, theirs: h.theirsEnd - h.theirsStart });
+    // Assert
     fc.assert(
       fc.property(fc.uint8Array({ maxLength: 100 }), fc.uint8Array({ maxLength: 100 }), (a, b) => {
         const result = diffLines(new Uint8Array(a), new Uint8Array(b));

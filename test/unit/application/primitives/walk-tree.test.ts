@@ -14,13 +14,16 @@ async function collect(iter: AsyncIterable<WTE>): Promise<WTE[]> {
 
 describe('walkTree', () => {
   it('Given an empty tree, When walkTree is iterated, Then yields nothing', async () => {
+    // Arrange
     const ctx = await buildSeededContext();
     const id = await writeTree(ctx, []);
     const out = await collect(walkTree(ctx, id));
+    // Assert
     expect(out).toEqual([]);
   });
 
   it('Given a flat tree with 2 blobs, When walkTree is iterated, Then yields 2 entries in byte-order', async () => {
+    // Arrange
     const ctx = await buildSeededContext();
     const b1 = await writeObject(ctx, {
       type: 'blob',
@@ -38,10 +41,12 @@ describe('walkTree', () => {
     ];
     const id = await writeTree(ctx, entries);
     const out = await collect(walkTree(ctx, id));
+    // Assert
     expect(out.map((e) => e.path)).toEqual(['a', 'b']);
   });
 
   it('Given recursive=false, When walkTree is iterated over a nested tree, Then only top-level entries are yielded', async () => {
+    // Arrange
     const ctx = await buildSeededContext();
     const b1 = await writeObject(ctx, {
       type: 'blob',
@@ -51,11 +56,13 @@ describe('walkTree', () => {
     const subId = await writeTree(ctx, [{ name: 'inner', mode: '100644' as FileMode, id: b1 }]);
     const rootId = await writeTree(ctx, [{ name: 'sub', mode: '040000' as FileMode, id: subId }]);
     const out = await collect(walkTree(ctx, rootId, { recursive: false }));
+    // Assert
     expect(out.length).toBe(1);
     expect(out[0]?.path).toBe('sub');
   });
 
   it('Given maxEntries=2 and a 3-entry tree, When walkTree is iterated, Then throws TREE_ENTRY_LIMIT_EXCEEDED (just-over)', async () => {
+    // Arrange
     const ctx = await buildSeededContext();
     const b1 = await writeObject(ctx, {
       type: 'blob',
@@ -70,6 +77,7 @@ describe('walkTree', () => {
     const id = await writeTree(ctx, entries);
     try {
       await collect(walkTree(ctx, id, { maxEntries: 2 }));
+      // Assert
       expect.unreachable();
     } catch (error) {
       const code = (error as { data: { code: string } }).data.code;
@@ -78,6 +86,7 @@ describe('walkTree', () => {
   });
 
   it('Given maxEntries=3 and a 3-entry tree (at cap), When walkTree is iterated, Then all entries are yielded', async () => {
+    // Arrange
     const ctx = await buildSeededContext();
     const b1 = await writeObject(ctx, {
       type: 'blob',
@@ -91,10 +100,12 @@ describe('walkTree', () => {
     ];
     const id = await writeTree(ctx, entries);
     const out = await collect(walkTree(ctx, id, { maxEntries: 3 }));
+    // Assert
     expect(out.length).toBe(3);
   });
 
   it('Given a gitlink whose id points to a real tree, When walkTree is iterated, Then the tree is NOT recursed into (gitlink guard fires)', async () => {
+    // Arrange
     // Kills the `if (isGitlink(mode)) return false` guards: under the mutation
     // the walker would recurse into the subtree and yield its inner entries.
     const ctx = await buildSeededContext();
@@ -110,10 +121,12 @@ describe('walkTree', () => {
       { name: 'sub', mode: '160000' as FileMode, id: subTreeId },
     ]);
     const out = await collect(walkTree(ctx, rootId));
+    // Assert
     expect(out.map((e) => e.path)).toEqual(['sub']);
   });
 
   it('Given a tree containing a gitlink (mode 160000), When walkTree is iterated, Then gitlink entry is yielded but NOT recursed', async () => {
+    // Arrange
     const ctx = await buildSeededContext();
     const b1 = await writeObject(ctx, {
       type: 'blob',
@@ -122,11 +135,13 @@ describe('walkTree', () => {
     } satisfies Blob);
     const id = await writeTree(ctx, [{ name: 'submodule', mode: '160000' as FileMode, id: b1 }]);
     const out = await collect(walkTree(ctx, id));
+    // Assert
     expect(out.length).toBe(1);
     expect(out[0]?.mode).toBe('160000');
   });
 
   it('Given an aborted signal before walkTree starts, When iterated, Then throws OPERATION_ABORTED', async () => {
+    // Arrange
     const ctx = await buildSeededContext();
     const b1 = await writeObject(ctx, {
       type: 'blob',
@@ -139,6 +154,7 @@ describe('walkTree', () => {
     const aborted = { ...ctx, signal: controller.signal };
     try {
       await collect(walkTree(aborted, id));
+      // Assert
       expect.unreachable();
     } catch (error) {
       const code = (error as { data: { code: string } }).data.code;
@@ -147,6 +163,7 @@ describe('walkTree', () => {
   });
 
   it('Given a default walkTree call on a nested tree, When iterated, Then recurses (default recursive=true)', async () => {
+    // Arrange
     // Kills the `options?.recursive ?? true` BooleanLiteral mutant: flipping
     // the default to `false` would skip the sub-tree.
     const ctx = await buildSeededContext();
@@ -158,10 +175,12 @@ describe('walkTree', () => {
     const subId = await writeTree(ctx, [{ name: 'inner', mode: '100644' as FileMode, id: b1 }]);
     const rootId = await writeTree(ctx, [{ name: 'sub', mode: '040000' as FileMode, id: subId }]);
     const out = await collect(walkTree(ctx, rootId));
+    // Assert
     expect(out.map((e) => e.path)).toEqual(['sub', 'sub/inner']);
   });
 
   it('Given a caller-supplied Tree object whose sub-entry resolves back to it, When walkTree iterates, Then throws TREE_CYCLE_DETECTED', async () => {
+    // Arrange
     // Kills the `stack.includes(tree.id)` guard mutant.
     // Cryptographic hashes prevent a legitimate self-referential tree from
     // ever existing on disk. Instead we pass a Tree object directly (walkTree
@@ -174,6 +193,7 @@ describe('walkTree', () => {
       type: 'tree' as const,
       id: realTreeId, // matches what readObject will return for the entry's id
       entries: [{ name: 'loop', mode: '40000' as FileMode, id: realTreeId }],
+      // Assert
     };
     try {
       for await (const _ of walkTree(ctx, syntheticRoot, { recursive: true })) void _;
@@ -185,6 +205,7 @@ describe('walkTree', () => {
   });
 
   it('Given maxDepth=1 and a 2-level nested tree, When walkTree is iterated, Then throws TREE_DEPTH_EXCEEDED', async () => {
+    // Arrange
     // Kills the exceedsMaxTreeDepth guard mutants.
     const ctx = await buildSeededContext();
     const b1 = await writeObject(ctx, {
@@ -197,6 +218,7 @@ describe('walkTree', () => {
     const rootId = await writeTree(ctx, [{ name: 'root', mode: '040000' as FileMode, id: midId }]);
     try {
       await collect(walkTree(ctx, rootId, { maxDepth: 1 }));
+      // Assert
       expect.unreachable();
     } catch (error) {
       const code = (error as { data: { code: string } }).data.code;
@@ -205,6 +227,7 @@ describe('walkTree', () => {
   });
 
   it('Given a signal aborted mid-walk (after first yield), When walkTree continues, Then throws OPERATION_ABORTED', async () => {
+    // Arrange
     // Kills the per-entry signal check inside walkInternal.
     const ctx = await buildSeededContext();
     const b1 = await writeObject(ctx, {
@@ -226,6 +249,7 @@ describe('walkTree', () => {
         // Abort AFTER the first entry is yielded.
         controller.abort();
       }
+      // Assert
       expect.unreachable();
     } catch (error) {
       const code = (error as { data: { code: string } }).data.code;
@@ -234,6 +258,7 @@ describe('walkTree', () => {
   });
 
   it('Given a non-tree id (blob), When walkTree is called, Then throws UNEXPECTED_OBJECT_TYPE', async () => {
+    // Arrange
     const ctx = await buildSeededContext();
     const blobId = await writeObject(ctx, {
       type: 'blob',
@@ -242,6 +267,7 @@ describe('walkTree', () => {
     } satisfies Blob);
     try {
       await collect(walkTree(ctx, blobId));
+      // Assert
       expect.unreachable();
     } catch (error) {
       const code = (error as { data: { code: string } }).data.code;

@@ -623,6 +623,7 @@ describe('clone — progress reporting', () => {
   });
 
   it('Given a clone that throws (target not empty), When run, Then end still fires when start fired', async () => {
+    // Arrange
     const ctx = createMemoryContext();
     await ctx.fs.mkdir(`${ctx.layout.gitDir}`);
     await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
@@ -636,6 +637,7 @@ describe('clone — progress reporting', () => {
 
     const startCount = events.filter((e) => e.kind === 'start').length;
     const endCount = events.filter((e) => e.kind === 'end').length;
+    // Assert
     expect(endCount).toBe(startCount);
   });
 });

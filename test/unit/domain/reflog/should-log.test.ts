@@ -27,6 +27,7 @@ describe('shouldAutocreateReflog', () => {
       const cfg: LogAllRefUpdates = { logAllRefUpdates: 'always' };
 
       // Act & Assert
+      // Assert
       expect(shouldAutocreateReflog(BRANCH, cfg)).toBe(true);
     });
 
@@ -35,6 +36,7 @@ describe('shouldAutocreateReflog', () => {
       const cfg: LogAllRefUpdates = { logAllRefUpdates: 'always', bare: true };
 
       // Act & Assert
+      // Assert
       expect(shouldAutocreateReflog(TAG, cfg)).toBe(true);
     });
   });
@@ -56,6 +58,7 @@ describe('shouldAutocreateReflog', () => {
       const cfg: LogAllRefUpdates = { logAllRefUpdates: false };
 
       // Act & Assert
+      // Assert
       expect(shouldAutocreateReflog(BRANCH, cfg)).toBe(false);
     });
   });
@@ -66,6 +69,7 @@ describe('shouldAutocreateReflog', () => {
       const cfg: LogAllRefUpdates = { logAllRefUpdates: true };
 
       // Act & Assert
+      // Assert
       expect(shouldAutocreateReflog(HEAD, cfg)).toBe(true);
     });
 
@@ -74,6 +78,7 @@ describe('shouldAutocreateReflog', () => {
       const cfg: LogAllRefUpdates = { logAllRefUpdates: true, bare: true };
 
       // Act & Assert
+      // Assert
       expect(shouldAutocreateReflog(BRANCH, cfg)).toBe(true);
     });
 
@@ -82,6 +87,7 @@ describe('shouldAutocreateReflog', () => {
       const cfg: LogAllRefUpdates = { logAllRefUpdates: true };
 
       // Act & Assert
+      // Assert
       expect(shouldAutocreateReflog(TAG, cfg)).toBe(false);
     });
   });
@@ -92,6 +98,7 @@ describe('shouldAutocreateReflog', () => {
       const cfg: LogAllRefUpdates = { bare: false };
 
       // Act & Assert
+      // Assert
       expect(shouldAutocreateReflog(BRANCH, cfg)).toBe(true);
     });
 
@@ -100,6 +107,7 @@ describe('shouldAutocreateReflog', () => {
       const cfg: LogAllRefUpdates = { bare: true };
 
       // Act & Assert
+      // Assert
       expect(shouldAutocreateReflog(BRANCH, cfg)).toBe(false);
     });
 
@@ -108,6 +116,7 @@ describe('shouldAutocreateReflog', () => {
       const cfg: LogAllRefUpdates = {};
 
       // Act & Assert
+      // Assert
       expect(shouldAutocreateReflog(BRANCH, cfg)).toBe(true);
     });
   });
@@ -116,26 +125,38 @@ describe('shouldAutocreateReflog', () => {
     const cfg: LogAllRefUpdates = { logAllRefUpdates: true };
 
     it('Given true, When the ref is HEAD, Then logs', () => {
+      // Arrange
+      // Assert
       expect(shouldAutocreateReflog(HEAD, cfg)).toBe(true);
     });
 
     it('Given true, When the ref is under refs/heads/, Then logs', () => {
+      // Arrange
+      // Assert
       expect(shouldAutocreateReflog(BRANCH, cfg)).toBe(true);
     });
 
     it('Given true, When the ref is under refs/remotes/, Then logs', () => {
+      // Arrange
+      // Assert
       expect(shouldAutocreateReflog(REMOTE, cfg)).toBe(true);
     });
 
     it('Given true, When the ref is under refs/notes/, Then logs', () => {
+      // Arrange
+      // Assert
       expect(shouldAutocreateReflog(NOTE, cfg)).toBe(true);
     });
 
     it('Given true, When the ref is under refs/tags/, Then does not log', () => {
+      // Arrange
+      // Assert
       expect(shouldAutocreateReflog(TAG, cfg)).toBe(false);
     });
 
     it('Given true, When the ref is an unknown pseudo-ref, Then does not log', () => {
+      // Arrange
+      // Assert
       expect(shouldAutocreateReflog('FETCH_HEAD' as RefName, cfg)).toBe(false);
     });
   });

@@ -245,6 +245,7 @@ describe('catFileBatch', () => {
       } catch (err) {
         caught = err;
       }
+      // Assert
       expect(caught).toBeInstanceOf(TsgitError);
       if (!(caught instanceof TsgitError)) throw caught;
       expect(caught.data.code).toBe('DECOMPRESS_FAILED');
@@ -266,6 +267,7 @@ describe('catFileBatch', () => {
       const sut = catFileBatch(probe, [stored]);
 
       // Act / Assert
+      // Assert
       await expect(collect(sut)).rejects.toBeInstanceOf(RangeError);
     });
   });

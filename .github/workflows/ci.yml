@@ -20,7 +20,7 @@ jobs:
   # ──────────────────────────────────────────────
   # Stage 0: Change detection (ADR-103)
   #   On PR events, emit `code=true` if the diff touches any code-relevant
-  #   path (src/, test/, scripts/, .github/, config). On push (main, tags)
+  #   path (src/, test/, tooling/, .github/, config). On push (main, tags)
   #   always `code=true`. Downstream code-gated jobs gate on this output
   #   so docs-only PRs skip the heavy matrix.
   # ──────────────────────────────────────────────
@@ -388,7 +388,7 @@ jobs:
   #   PRs: benchmark-compare diffs base vs PR on the same runner — informative
   #   only, never blocks (same-runner benchmarking carries real measurement noise).
   #   Pushes to main: benchmark-snapshot converts the vitest output via
-  #   scripts/bench-to-snapshot.ts and feeds github-action-benchmark for
+  #   tooling/bench-to-snapshot.ts and feeds github-action-benchmark for
   #   trend tracking + regression alerts. Its data lives on a dedicated
   #   `gh-pages` data branch; the served Pages site (gh-pages.yml) uses the
   #   Actions artifact model and is unaffected.
@@ -409,7 +409,7 @@ jobs:
           path: ~/.cache/tsgit-bench
           key: tsgit-bench-${{ hashFiles('test/bench/support/fixture-generator.ts') }}
       - run: npm run test:bench
-      - run: node --experimental-strip-types scripts/bench-to-snapshot.ts
+      - run: node --experimental-strip-types tooling/bench-to-snapshot.ts
       - name: Publish benchmark snapshot
         uses: benchmark-action/github-action-benchmark@v1
         with:

@@ -33,6 +33,7 @@ const expectError = async (
 describe('internal/url-validate', () => {
   describe('scheme allowlist', () => {
     it('Given https URL, When validateUrl, Then returns ValidatedUrl', async () => {
+      // Arrange
       // Act
       const sut = await validateUrl('https://example.com/x', opts());
 
@@ -42,6 +43,8 @@ describe('internal/url-validate', () => {
     });
 
     it('Given http URL with allowInsecure=false (default), When validateUrl, Then throws UNSUPPORTED_SCHEME', async () => {
+      // Arrange
+      // Assert
       await expectError(validateUrl('http://example.com/x', opts()), 'UNSUPPORTED_SCHEME');
     });
 
@@ -60,6 +63,7 @@ describe('internal/url-validate', () => {
     });
 
     it('Given http URL with allowInsecure=true, When validateUrl, Then returns ValidatedUrl', async () => {
+      // Arrange
       // Act
       const sut = await validateUrl('http://example.com/x', opts({ allowInsecure: true }));
 
@@ -68,18 +72,26 @@ describe('internal/url-validate', () => {
     });
 
     it('Given ftp URL, When validateUrl, Then throws UNSUPPORTED_SCHEME', async () => {
+      // Arrange
+      // Assert
       await expectError(validateUrl('ftp://example.com/x', opts()), 'UNSUPPORTED_SCHEME');
     });
 
     it('Given file URL, When validateUrl, Then throws UNSUPPORTED_SCHEME', async () => {
+      // Arrange
+      // Assert
       await expectError(validateUrl('file:///etc/passwd', opts()), 'UNSUPPORTED_SCHEME');
     });
 
     it('Given data URL, When validateUrl, Then throws UNSUPPORTED_SCHEME', async () => {
+      // Arrange
+      // Assert
       await expectError(validateUrl('data:text/plain,hi', opts()), 'UNSUPPORTED_SCHEME');
     });
 
     it('Given javascript URL, When validateUrl, Then throws UNSUPPORTED_SCHEME', async () => {
+      // Arrange
+      // Assert
       await expectError(validateUrl('javascript:alert(1)', opts()), 'UNSUPPORTED_SCHEME');
     });
 
@@ -90,6 +102,7 @@ describe('internal/url-validate', () => {
       // dropping that operand (`proto === 'http:'` -> true) collapses the gate
       // to `allowInsecure` alone, which would wrongly accept `ftp:` (any
       // non-http scheme) whenever `allowInsecure` is set.
+      // Assert
       const err = await expectError(
         validateUrl('ftp://example.com/x', opts({ allowInsecure: true })),
         'UNSUPPORTED_SCHEME',
@@ -101,10 +114,13 @@ describe('internal/url-validate', () => {
 
   describe('URL parse', () => {
     it('Given not-a-url, When validateUrl, Then throws INVALID_URL', async () => {
+      // Arrange
+      // Assert
       await expectError(validateUrl('not-a-url', opts()), 'INVALID_URL');
     });
 
     it('Given URL with fragment, When validateUrl, Then throws INVALID_URL with reason mentioning fragment', async () => {
+      // Arrange
       // Act
       const err = await expectError(
         validateUrl('https://example.com/#frag', opts()),
@@ -136,6 +152,8 @@ describe('internal/url-validate', () => {
     ];
     for (const { addr, label } of blocked) {
       it(`Given DNS resolves to ${addr} (${label}), When validateUrl, Then throws BLOCKED_HOST`, async () => {
+        // Arrange
+        // Assert
         await expectError(
           validateUrl('https://example.com/x', opts({ resolver: fixedResolver(addr) })),
           'BLOCKED_HOST',
@@ -156,10 +174,12 @@ describe('internal/url-validate', () => {
     ];
     for (const { addr, label } of allowed) {
       it(`Given DNS resolves to ${addr} (${label}), When validateUrl, Then succeeds (anti-boundary)`, async () => {
+        // Arrange
         const sut = await validateUrl(
           'https://example.com/x',
           opts({ resolver: fixedResolver(addr) }),
         );
+        // Assert
         expect(sut.pinnedAddress).toBe(addr);
       });
     }
@@ -176,6 +196,8 @@ describe('internal/url-validate', () => {
     ];
     for (const { addr, label } of blocked) {
       it(`Given DNS resolves to ${addr} (${label}), When validateUrl, Then throws BLOCKED_HOST`, async () => {
+        // Arrange
+        // Assert
         await expectError(
           validateUrl('https://example.com/x', opts({ resolver: fixedResolver(addr) })),
           'BLOCKED_HOST',
@@ -186,6 +208,7 @@ describe('internal/url-validate', () => {
 
   describe('Allow override', () => {
     it('Given allowPrivateNetworks=true and DNS resolves to 192.168.1.1, When validateUrl, Then returns ValidatedUrl', async () => {
+      // Arrange
       // Act
       const sut = await validateUrl(
         'https://example.com/x',
@@ -199,6 +222,7 @@ describe('internal/url-validate', () => {
 
   describe('DNS pinning', () => {
     it('Given DNS resolves to a public IP, When validateUrl, Then ValidatedUrl.pinnedAddress equals that IP', async () => {
+      // Arrange
       // Act
       const sut = await validateUrl(
         'https://example.com/x',
@@ -221,6 +245,8 @@ describe('internal/url-validate', () => {
     });
 
     it('Given DNS returns only blocked addresses, When validateUrl, Then throws BLOCKED_HOST', async () => {
+      // Arrange
+      // Assert
       await expectError(
         validateUrl(
           'https://example.com/x',
@@ -231,6 +257,8 @@ describe('internal/url-validate', () => {
     });
 
     it('Given DNS returns no addresses, When validateUrl, Then throws BLOCKED_HOST', async () => {
+      // Arrange
+      // Assert
       await expectError(
         validateUrl('https://example.com/x', opts({ resolver: fixedResolver() })),
         'BLOCKED_HOST',
@@ -240,6 +268,7 @@ describe('internal/url-validate', () => {
 
   describe('Public passthrough', () => {
     it('Given DNS resolves to 8.8.8.8, When validateUrl, Then returns ValidatedUrl with pinnedAddress=8.8.8.8', async () => {
+      // Arrange
       // Act
       const sut = await validateUrl(
         'https://example.com/',
@@ -253,6 +282,8 @@ describe('internal/url-validate', () => {
 
   describe('IPv6 hex IPv4-mapped (anti-bypass)', () => {
     it('Given DNS resolves to ::ffff:7f00:1 (hex form of 127.0.0.1), When validateUrl, Then throws BLOCKED_HOST', async () => {
+      // Arrange
+      // Assert
       await expectError(
         validateUrl('https://example.com/x', opts({ resolver: fixedResolver('::ffff:7f00:1') })),
         'BLOCKED_HOST',
@@ -260,6 +291,8 @@ describe('internal/url-validate', () => {
     });
 
     it('Given DNS resolves to ::ffff:a00:1 (hex form of 10.0.0.1), When validateUrl, Then throws BLOCKED_HOST', async () => {
+      // Arrange
+      // Assert
       await expectError(
         validateUrl('https://example.com/x', opts({ resolver: fixedResolver('::ffff:a00:1') })),
         'BLOCKED_HOST',
@@ -281,6 +314,8 @@ describe('internal/url-validate', () => {
     });
 
     it('Given a URL with embedded credentials and a private host, When validateUrl, Then throws BLOCKED_HOST (userinfo cannot bypass)', async () => {
+      // Arrange
+      // Assert
       await expectError(
         validateUrl(
           'https://user:secret@internal.lan/r.git',
@@ -293,6 +328,8 @@ describe('internal/url-validate', () => {
 
   describe('Error data assertions (kill StringLiteral mutants on factory args)', () => {
     it('Given a CRLF-injection URL, When validateUrl, Then INVALID_URL.data.reason mentions a control character', async () => {
+      // Arrange
+      // Assert
       const err = await expectError(validateUrl('https://example.com\r\n', opts()), 'INVALID_URL');
       const data = err.data;
       if (data.code === 'INVALID_URL') {
@@ -301,6 +338,8 @@ describe('internal/url-validate', () => {
     });
 
     it('Given an unsupported scheme, When validateUrl, Then UNSUPPORTED_SCHEME.data.scheme is the actual scheme (no trailing colon)', async () => {
+      // Arrange
+      // Assert
       const err = await expectError(
         validateUrl('ftp://example.com/x', opts()),
         'UNSUPPORTED_SCHEME',
@@ -312,6 +351,8 @@ describe('internal/url-validate', () => {
     });
 
     it('Given DNS returns 0 addresses, When validateUrl, Then BLOCKED_HOST data carries a non-empty reason', async () => {
+      // Arrange
+      // Assert
       const err = await expectError(
         validateUrl('https://example.com/x', opts({ resolver: fixedResolver() })),
         'BLOCKED_HOST',
@@ -325,6 +366,8 @@ describe('internal/url-validate', () => {
 
   describe('IPv6 boundaries (kill startsWith / endsWith / prefix mutants)', () => {
     it('Given fe80::1, When validateUrl, Then BLOCKED (startsWith fe80::)', async () => {
+      // Arrange
+      // Assert
       await expectError(
         validateUrl('https://example.com/x', opts({ resolver: fixedResolver('fe80::1') })),
         'BLOCKED_HOST',
@@ -332,6 +375,8 @@ describe('internal/url-validate', () => {
     });
 
     it('Given fe80:: alone, When validateUrl, Then BLOCKED', async () => {
+      // Arrange
+      // Assert
       await expectError(
         validateUrl('https://example.com/x', opts({ resolver: fixedResolver('fe80::') })),
         'BLOCKED_HOST',
@@ -339,6 +384,8 @@ describe('internal/url-validate', () => {
     });
 
     it('Given fd00::1 (different ULA prefix), When validateUrl, Then BLOCKED (fc00::/7 covers fd00 too)', async () => {
+      // Arrange
+      // Assert
       await expectError(
         validateUrl('https://example.com/x', opts({ resolver: fixedResolver('fd00::1') })),
         'BLOCKED_HOST',
@@ -346,16 +393,19 @@ describe('internal/url-validate', () => {
     });
 
     it('Given 2001:db8::1 (documentation prefix, not blocked), When validateUrl, Then succeeds', async () => {
+      // Arrange
       const sut = await validateUrl(
         'https://example.com/x',
         opts({ resolver: fixedResolver('2001:db8::1') }),
       );
+      // Assert
       expect(sut.pinnedAddress).toBe('2001:db8::1');
     });
   });
 
   describe('Sanitization', () => {
     it('Given URL with CRLF in raw input, When validateUrl, Then throws INVALID_URL with sanitized reason (no raw CRLF in message)', async () => {
+      // Arrange
       // Act
       const err = await expectError(
         validateUrl('https://example.com\r\nHost: evil.com/path', opts()),
@@ -375,6 +425,7 @@ describe('internal/url-validate', () => {
     it('Given a URL containing a lone LF (0x0a), When validateUrl, Then throws INVALID_URL', async () => {
       // Arrange — only the LF branch of `code === 0x0a || code === 0x0d`.
       // Act + Assert
+      // Assert
       const err = await expectError(validateUrl('https://example.com\nx', opts()), 'INVALID_URL');
       const data = err.data;
       if (data.code === 'INVALID_URL') {
@@ -385,6 +436,7 @@ describe('internal/url-validate', () => {
     it('Given a URL containing a lone CR (0x0d), When validateUrl, Then throws INVALID_URL', async () => {
       // Arrange — only the CR branch of `code === 0x0a || code === 0x0d`.
       // Act + Assert
+      // Assert
       const err = await expectError(validateUrl('https://example.com\rx', opts()), 'INVALID_URL');
       const data = err.data;
       if (data.code === 'INVALID_URL') {
@@ -395,6 +447,7 @@ describe('internal/url-validate', () => {
 
   describe('Parse-failure reason (kill StringLiteral at L51)', () => {
     it('Given a non-URL string, When validateUrl, Then INVALID_URL.data.reason is a non-empty message', async () => {
+      // Arrange
       // Act
       const err = await expectError(validateUrl('not-a-url', opts()), 'INVALID_URL');
       const data = err.data;
@@ -426,6 +479,7 @@ describe('internal/url-validate', () => {
     });
 
     it('Given DNS returns zero addresses, When validateUrl, Then BLOCKED_HOST.data.reason mentions no DNS records', async () => {
+      // Arrange
       // Act
       const err = await expectError(
         validateUrl('https://example.com/x', opts({ resolver: fixedResolver() })),
@@ -482,6 +536,7 @@ describe('internal/url-validate', () => {
     it('Given DNS resolves to 10.0.0.255 (octet exactly 255), When validateUrl, Then throws BLOCKED_HOST (upper octet bound inclusive)', async () => {
       // Arrange — `n > 255` must be false at 255 so the 10/8 verdict still stands.
       // Act + Assert
+      // Assert
       await expectError(
         validateUrl('https://example.com/x', opts({ resolver: fixedResolver('10.0.0.255') })),
         'BLOCKED_HOST',
@@ -545,6 +600,7 @@ describe('internal/url-validate', () => {
     it('Given DNS resolves to ::ffff:0:10.0.0.1 (IPv4-mapped via 0: form), When validateUrl, Then throws BLOCKED_HOST', async () => {
       // Arrange — the optional `(?:0:)?` group plus the embedded private IPv4.
       // Act + Assert
+      // Assert
       await expectError(
         validateUrl(
           'https://example.com/x',
@@ -610,6 +666,7 @@ describe('internal/url-validate', () => {
       // Arrange — the low group `aa` has 2 hex digits; shrinking `{1,4}` to `{1}`
       // would make the regex miss it, letting the loopback address bypass the guard.
       // Act + Assert
+      // Assert
       await expectError(
         validateUrl('https://example.com/x', opts({ resolver: fixedResolver('::ffff:7f00:aa') })),
         'BLOCKED_HOST',
@@ -647,6 +704,7 @@ describe('internal/url-validate', () => {
     it('Given DNS resolves to :: (all-zeros), When validateUrl, Then throws BLOCKED_HOST', async () => {
       // Arrange — the `lower === '::'` operand only.
       // Act + Assert
+      // Assert
       await expectError(
         validateUrl('https://example.com/x', opts({ resolver: fixedResolver('::') })),
         'BLOCKED_HOST',
@@ -656,6 +714,7 @@ describe('internal/url-validate', () => {
     it('Given DNS resolves to ::1 (loopback), When validateUrl, Then throws BLOCKED_HOST', async () => {
       // Arrange — the `lower === '::1'` operand only.
       // Act + Assert
+      // Assert
       await expectError(
         validateUrl('https://example.com/x', opts({ resolver: fixedResolver('::1') })),
         'BLOCKED_HOST',
@@ -679,6 +738,7 @@ describe('internal/url-validate', () => {
     it('Given DNS resolves to fe80:abcd::1 (fe80: prefix, not fe80::), When validateUrl, Then throws BLOCKED_HOST', async () => {
       // Arrange — only the `startsWith('fe80:')` operand matches here.
       // Act + Assert
+      // Assert
       await expectError(
         validateUrl('https://example.com/x', opts({ resolver: fixedResolver('fe80:abcd::1') })),
         'BLOCKED_HOST',

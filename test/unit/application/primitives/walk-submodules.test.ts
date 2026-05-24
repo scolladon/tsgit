@@ -148,6 +148,7 @@ describe('primitives/walk-submodules', () => {
       ],
       ['DEL control char', `a${String.fromCharCode(127)}b`],
     ])('Given an unsafe name (%s), When isUnsafeSubmoduleName, Then returns true', (_label, name) => {
+      // Arrange
       // Act
       const sut = isUnsafeSubmoduleName(name);
       // Assert
@@ -155,6 +156,7 @@ describe('primitives/walk-submodules', () => {
     });
 
     it('Given a plain name, When isUnsafeSubmoduleName, Then returns false', () => {
+      // Arrange
       // Act
       const sut = isUnsafeSubmoduleName('libfoo');
       // Assert
@@ -162,6 +164,7 @@ describe('primitives/walk-submodules', () => {
     });
 
     it('Given a slash-containing name (legitimate for nested module dirs), When isUnsafeSubmoduleName, Then returns false', () => {
+      // Arrange
       // Act
       const sut = isUnsafeSubmoduleName('libs/foo');
       // Assert
@@ -418,6 +421,7 @@ describe('primitives/walk-submodules', () => {
       // Act & Assert — assert the specific error code via try/catch + .data inspection.
       try {
         await collect(walkSubmodules(ctx, { ref: treeId }));
+        // Assert
         expect.fail('walkSubmodules did not throw');
       } catch (err) {
         expect(err).toBeInstanceOf(TsgitError);
@@ -683,6 +687,7 @@ describe('primitives/walk-submodules', () => {
       // Act & Assert
       try {
         await collect(walkSubmodules(ctx, { ref: parentTreeId, recursive: true }));
+        // Assert
         expect.fail('walkSubmodules did not throw');
       } catch (err) {
         expect(err).toBeInstanceOf(TsgitError);

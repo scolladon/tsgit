@@ -41,6 +41,7 @@ describe('pack-entry', () => {
       // Act & Assert
       try {
         parsePackHeader(sut);
+        // Assert
         expect.fail('Should have thrown');
       } catch (e) {
         const err = e as TsgitError;
@@ -64,6 +65,7 @@ describe('pack-entry', () => {
       // Act & Assert
       try {
         parsePackHeader(sut);
+        // Assert
         expect.fail('Should have thrown');
       } catch (e) {
         const err = e as TsgitError;
@@ -83,6 +85,7 @@ describe('pack-entry', () => {
       // Act & Assert
       try {
         parsePackHeader(sut);
+        // Assert
         expect.fail('Should have thrown');
       } catch (e) {
         const err = e as TsgitError;
@@ -258,6 +261,7 @@ describe('pack-entry', () => {
       // Act & Assert
       try {
         parsePackEntryHeader(sut, 0, SHA1_CONFIG);
+        // Assert
         expect.fail('Should have thrown');
       } catch (e) {
         const err = e as TsgitError;
@@ -277,6 +281,7 @@ describe('pack-entry', () => {
       // Act & Assert
       try {
         parsePackEntryHeader(sut, 0, SHA1_CONFIG);
+        // Assert
         expect.fail('Should have thrown');
       } catch (e) {
         const err = e as TsgitError;
@@ -296,6 +301,7 @@ describe('pack-entry', () => {
       // Act & Assert
       try {
         parsePackEntryHeader(sut, 0, SHA1_CONFIG);
+        // Assert
         expect.fail('Should have thrown');
       } catch (e) {
         const err = e as TsgitError;
@@ -315,6 +321,7 @@ describe('pack-entry', () => {
       // Act & Assert
       try {
         parsePackEntryHeader(sut, 0, SHA1_CONFIG);
+        // Assert
         expect.fail('Should have thrown');
       } catch (e) {
         const err = e as TsgitError;
@@ -334,6 +341,7 @@ describe('pack-entry', () => {
       // Act & Assert
       try {
         parsePackEntryHeader(sut, 0, SHA1_CONFIG);
+        // Assert
         expect.fail('Should have thrown');
       } catch (e) {
         const err = e as TsgitError;
@@ -368,6 +376,7 @@ describe('pack-entry', () => {
       // Act & Assert
       try {
         parsePackEntryHeader(sut, 5, SHA1_CONFIG);
+        // Assert
         expect.fail('Should have thrown');
       } catch (e) {
         const err = e as TsgitError;
@@ -387,6 +396,7 @@ describe('pack-entry', () => {
       // Act & Assert
       try {
         parsePackEntryHeader(sut, 1, SHA1_CONFIG);
+        // Assert
         expect.fail('Should have thrown');
       } catch (e) {
         const err = e as TsgitError;
@@ -406,6 +416,7 @@ describe('pack-entry', () => {
       // Act & Assert
       try {
         parsePackEntryHeader(sut, 0, SHA1_CONFIG);
+        // Assert
         expect.fail('Should have thrown');
       } catch (e) {
         const err = e as TsgitError;
@@ -440,6 +451,7 @@ describe('pack-entry', () => {
       // Act & Assert
       try {
         parsePackEntryHeader(sut, 0, SHA1_CONFIG);
+        // Assert
         expect.fail('Should have thrown');
       } catch (e) {
         const err = e as TsgitError;
@@ -460,6 +472,7 @@ describe('pack-entry', () => {
       // Act & Assert
       try {
         parsePackEntryHeader(sut, 0, SHA1_CONFIG);
+        // Assert
         expect.fail('Should have thrown');
       } catch (e) {
         const err = e as TsgitError;
@@ -475,6 +488,7 @@ describe('pack-entry', () => {
 
   describe('encodePackEntryHeader', () => {
     it('Given type=1 size=5, When encoding, Then single byte 0b0_001_0101', () => {
+      // Arrange
       // Act
       const sut = encodePackEntryHeader(PACK_ENTRY_TYPE.COMMIT, 5);
 
@@ -483,6 +497,7 @@ describe('pack-entry', () => {
     });
 
     it('Given type=3 size=16, When encoding, Then two bytes (continuation needed for size > 15)', () => {
+      // Arrange
       // Act
       const sut = encodePackEntryHeader(PACK_ENTRY_TYPE.BLOB, 16);
 
@@ -491,6 +506,7 @@ describe('pack-entry', () => {
     });
 
     it('Given type=4 size=0, When encoding, Then single byte with size bits = 0', () => {
+      // Arrange
       // Act
       const sut = encodePackEntryHeader(PACK_ENTRY_TYPE.TAG, 0);
 
@@ -501,6 +517,7 @@ describe('pack-entry', () => {
 
   describe('encodeOfsDistance', () => {
     it('Given distance=0, When encoding, Then single byte 0x00', () => {
+      // Arrange
       // Act
       const sut = encodeOfsDistance(0);
 
@@ -509,6 +526,7 @@ describe('pack-entry', () => {
     });
 
     it('Given distance=127, When encoding, Then single byte 0x7F', () => {
+      // Arrange
       // Act
       const sut = encodeOfsDistance(127);
 
@@ -517,6 +535,7 @@ describe('pack-entry', () => {
     });
 
     it('Given distance=128, When encoding, Then two bytes with continuation', () => {
+      // Arrange
       // Act
       const sut = encodeOfsDistance(128);
 
@@ -531,6 +550,7 @@ describe('pack-entry', () => {
     });
 
     it('Given large distance (100000), When encoding then roundtripping, Then baseDistance matches', () => {
+      // Arrange
       // Act
       const sut = encodeOfsDistance(100000);
       const entryHeader = encodePackEntryHeader(PACK_ENTRY_TYPE.OFS_DELTA, 0);
@@ -547,32 +567,45 @@ describe('pack-entry', () => {
 
   describe('packEntryTypeToObjectType', () => {
     it("Given COMMIT(1), When mapping, Then returns 'commit'", () => {
+      // Arrange
+      // Assert
       expect(packEntryTypeToObjectType(PACK_ENTRY_TYPE.COMMIT)).toBe('commit');
     });
 
     it("Given TREE(2), When mapping, Then returns 'tree'", () => {
+      // Arrange
+      // Assert
       expect(packEntryTypeToObjectType(PACK_ENTRY_TYPE.TREE)).toBe('tree');
     });
 
     it("Given BLOB(3), When mapping, Then returns 'blob'", () => {
+      // Arrange
+      // Assert
       expect(packEntryTypeToObjectType(PACK_ENTRY_TYPE.BLOB)).toBe('blob');
     });
 
     it("Given TAG(4), When mapping, Then returns 'tag'", () => {
+      // Arrange
+      // Assert
       expect(packEntryTypeToObjectType(PACK_ENTRY_TYPE.TAG)).toBe('tag');
     });
 
     it('Given OFS_DELTA(6), When mapping, Then returns undefined', () => {
+      // Arrange
+      // Assert
       expect(packEntryTypeToObjectType(PACK_ENTRY_TYPE.OFS_DELTA)).toBeUndefined();
     });
 
     it('Given REF_DELTA(7), When mapping, Then returns undefined', () => {
+      // Arrange
+      // Assert
       expect(packEntryTypeToObjectType(PACK_ENTRY_TYPE.REF_DELTA)).toBeUndefined();
     });
   });
 
   describe('property-based tests', () => {
     it('Given any pack header roundtrip, When serializing then parsing, Then preserves values', () => {
+      // Arrange
       fc.assert(
         fc.property(fc.integer({ min: 0, max: 2 ** 32 - 1 }), (objectCount) => {
           // Act
@@ -586,6 +619,7 @@ describe('pack-entry', () => {
     });
 
     it('Given any base type and size, When encoding then parsing entry header, Then roundtrips', () => {
+      // Arrange
       fc.assert(
         fc.property(
           fc.constantFrom(1, 2, 3, 4) as fc.Arbitrary<BasePackEntryType>,

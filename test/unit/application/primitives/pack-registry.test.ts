@@ -30,16 +30,20 @@ function makeStat(): FileStat {
 
 describe('pack-registry', () => {
   it('Given a missing pack directory, When all() is called, Then returns an empty array', async () => {
+    // Arrange
     const ctx = await buildSeededContext();
     const sut = createPackRegistry(ctx);
     const result = await sut.all();
+    // Assert
     expect(result).toEqual([]);
   });
 
   it('Given a missing pack directory, When lookup is called, Then returns undefined', async () => {
+    // Arrange
     const ctx = await buildSeededContext();
     const sut = createPackRegistry(ctx);
     const result = await sut.lookup('a'.repeat(40) as ObjectId);
+    // Assert
     expect(result).toBeUndefined();
   });
 
@@ -48,6 +52,7 @@ describe('pack-registry', () => {
     ['backslash (no dot-dot, no slash)', 'pac\\k.idx'],
     ['dot-dot (no slash, no backslash)', 'pa..k.idx'],
   ])('Given a readdir entry whose name contains a %s, When all() is called, Then loadPack is never reached for the unsafe path', async (_label, badName) => {
+    // Arrange
     // Each bad name carries exactly ONE of the three forbidden substrings so a
     // per-operand mutation of `isSafePackName` (`&&` -> `||`, or any operand
     // forced true) lets that specific name through. loadPack's first op is
@@ -78,6 +83,7 @@ describe('pack-registry', () => {
     try {
       await sut.all();
     } catch {
+      // Assert
       // parsePackIndex will throw on our fake bytes; that's expected.
     }
     // Good entry is statted; the unsafe one must have been filtered out.
@@ -86,6 +92,7 @@ describe('pack-registry', () => {
   });
 
   it('Given an .idx file whose stat reports > MAX_PACK_IDX_BYTES, When all() is called, Then throws INVALID_PACK_INDEX without issuing a read', async () => {
+    // Arrange
     // Kills the mutant where the stat size guard is removed — read() would be
     // called and a multi-GiB array would be allocated.
     const ctx = await buildSeededContext();
@@ -146,6 +153,7 @@ describe('pack-registry', () => {
     // Act & Assert — first all() scans, the second is served from the cache.
     await sut.all();
     await sut.all();
+    // Assert
     expect(readdirCalls).toBe(1);
 
     // refresh() drops the cache, so the next all() re-scans.
@@ -155,6 +163,7 @@ describe('pack-registry', () => {
   });
 
   it('Given an .idx file whose stat lies (small) but read returns oversized bytes (TOCTOU), When all() is called, Then throws INVALID_PACK_INDEX after read', async () => {
+    // Arrange
     // Kills the mutant where the post-read length check is removed.
     const ctx = await buildSeededContext();
     const oversized = new Uint8Array(64 * 1024 * 1024 + 1);
@@ -181,6 +190,7 @@ describe('pack-registry', () => {
       caught = error;
     }
     const data = (caught as { data?: { code?: string; reason?: string } }).data;
+    // Assert
     expect(data?.code).toBe('INVALID_PACK_INDEX');
     // Kills the L46 `ConditionalExpression -> false` and `BlockStatement -> {}`
     // mutants: without the post-read length check, the oversized zero-filled

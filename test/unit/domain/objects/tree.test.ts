@@ -137,7 +137,7 @@ describe('tree', () => {
       // Arrange - a byte array with no space byte (0x20) at all
       const content = new Uint8Array([49, 48, 48, 54, 52, 52]); // "100644" without space
 
-      // Act & Assert
+      // Act + Assert
       expect(() => parseTreeContent(DUMMY_ID, content, SHA1_CONFIG)).toThrow(
         expect.objectContaining({
           data: expect.objectContaining({
@@ -158,7 +158,7 @@ describe('tree', () => {
         new Uint8Array(10), // only 10 bytes, need 20
       );
 
-      // Act & Assert
+      // Act + Assert
       expect(() => parseTreeContent(DUMMY_ID, content, SHA1_CONFIG)).toThrow(
         expect.objectContaining({
           data: expect.objectContaining({
@@ -173,7 +173,7 @@ describe('tree', () => {
       // Arrange
       const content = encode('100644 filename');
 
-      // Act & Assert
+      // Act + Assert
       expect(() => parseTreeContent(DUMMY_ID, content, SHA1_CONFIG)).toThrow(
         expect.objectContaining({
           data: expect.objectContaining({
@@ -189,7 +189,7 @@ describe('tree', () => {
       const sha = new Uint8Array(20).fill(0xab);
       const content = buildTreeEntry('100644', '', sha);
 
-      // Act & Assert
+      // Act + Assert
       expect(() => parseTreeContent(DUMMY_ID, content, SHA1_CONFIG)).toThrow(
         expect.objectContaining({
           data: expect.objectContaining({
@@ -205,7 +205,7 @@ describe('tree', () => {
       const sha = new Uint8Array(20).fill(0xab);
       const content = buildTreeEntry('100644', '.', sha);
 
-      // Act & Assert
+      // Act + Assert
       expect(() => parseTreeContent(DUMMY_ID, content, SHA1_CONFIG)).toThrow(
         expect.objectContaining({
           data: expect.objectContaining({
@@ -221,7 +221,7 @@ describe('tree', () => {
       const sha = new Uint8Array(20).fill(0xab);
       const content = buildTreeEntry('100644', '..', sha);
 
-      // Act & Assert
+      // Act + Assert
       expect(() => parseTreeContent(DUMMY_ID, content, SHA1_CONFIG)).toThrow(
         expect.objectContaining({
           data: expect.objectContaining({
@@ -237,7 +237,7 @@ describe('tree', () => {
       const sha = new Uint8Array(20).fill(0xab);
       const content = buildTreeEntry('100644', 'sub/dir', sha);
 
-      // Act & Assert
+      // Act + Assert
       expect(() => parseTreeContent(DUMMY_ID, content, SHA1_CONFIG)).toThrow(
         expect.objectContaining({
           data: expect.objectContaining({
@@ -257,7 +257,7 @@ describe('tree', () => {
         buildTreeEntry('100644', 'same.txt', sha2),
       );
 
-      // Act & Assert
+      // Act + Assert
       expect(() => parseTreeContent(DUMMY_ID, content, SHA1_CONFIG)).toThrow(
         expect.objectContaining({
           data: expect.objectContaining({
@@ -495,7 +495,9 @@ describe('tree', () => {
       )
       .map(([mode, name, id]) => ({ mode, name, id }));
 
-    it('Sort is idempotent: sort(sort(entries)) equals sort(entries)', () => {
+    it('Given the sort idempotence property "sort(sort(entries)) equals sort(entries)", When checked, Then it holds', () => {
+      // Arrange
+      // Assert
       fc.assert(
         fc.property(fc.array(arbTreeEntry), (entries) => {
           const sorted = sortTreeEntries(entries);
@@ -505,7 +507,9 @@ describe('tree', () => {
       );
     });
 
-    it('Sort is byte-consistent: for adjacent sorted entries, treeEntryCompare(a, b) <= 0', () => {
+    it('Given the sort byte-consistency property "for adjacent sorted entries, treeEntryCompare(a, b) <= 0", When checked, Then it holds', () => {
+      // Arrange
+      // Assert
       fc.assert(
         fc.property(fc.array(arbTreeEntry, { minLength: 2 }), (entries) => {
           const sorted = sortTreeEntries(entries);
@@ -516,10 +520,12 @@ describe('tree', () => {
       );
     });
 
-    it('Tree roundtrip: parseTreeContent(id, serializeTreeContent(tree, hash), hash) preserves all entries', () => {
+    it('Given the tree roundtrip property "parseTreeContent(id, serializeTreeContent(tree, hash), hash) preserves all entries", When checked, Then it holds', () => {
+      // Arrange
       // Git trees cannot contain duplicate entry names — the parser rejects them.
       // Dedupe by name before building the tree so the arbitrary never generates
       // a tree that is invalid by construction (which would look like a flaky test).
+      // Assert
       fc.assert(
         fc.property(fc.array(arbTreeEntry), (rawEntries) => {
           const seen = new Set<string>();

@@ -10,17 +10,21 @@ import { writeSyntheticPack } from './pack-fixture.js';
 
 describe('readObject', () => {
   it('Given a seeded blob, When readObject is called, Then returns the Blob', async () => {
+    // Arrange
     const blob: Blob = { type: 'blob', content: new Uint8Array([4, 5, 6]), id: '' as ObjectId };
     const ctx = await buildSeededContext({ objects: [blob] });
     const id = (await ctx.hash.hashHex(serializeObject(blob, ctx.hashConfig))) as ObjectId;
     const sut = await readObject(ctx, id);
+    // Assert
     expect(sut.type).toBe('blob');
   });
 
   it('Given a missing id and default verifyHash, When readObject is called, Then throws OBJECT_NOT_FOUND', async () => {
+    // Arrange
     const ctx = await buildSeededContext();
     try {
       await readObject(ctx, 'f'.repeat(40) as ObjectId);
+      // Assert
       expect.unreachable();
     } catch (error) {
       expect((error as TsgitError).data.code).toBe('OBJECT_NOT_FOUND');
@@ -28,6 +32,7 @@ describe('readObject', () => {
   });
 
   it('Given a corrupted loose file and verifyHash default true, When readObject is called, Then throws OBJECT_HASH_MISMATCH', async () => {
+    // Arrange
     const ctx = await buildSeededContext();
     const fakeId = 'a'.repeat(40) as ObjectId;
     const { computeLooseObjectPath } = await import('../../../../src/domain/storage/loose-path.js');
@@ -40,6 +45,7 @@ describe('readObject', () => {
 
     try {
       await readObject(ctx, fakeId);
+      // Assert
       expect.unreachable();
     } catch (error) {
       expect((error as TsgitError).data.code).toBe('OBJECT_HASH_MISMATCH');
@@ -47,6 +53,7 @@ describe('readObject', () => {
   });
 
   it('Given verifyHash=false on the same corrupted file, When readObject is called, Then returns the bytes', async () => {
+    // Arrange
     const ctx = await buildSeededContext();
     const fakeId = 'a'.repeat(40) as ObjectId;
     const { computeLooseObjectPath } = await import('../../../../src/domain/storage/loose-path.js');
@@ -58,6 +65,7 @@ describe('readObject', () => {
     );
 
     const sut = await readObject(ctx, fakeId, { verifyHash: false });
+    // Assert
     expect(sut.type).toBe('blob');
   });
 
@@ -87,6 +95,7 @@ describe('readObject', () => {
       // Act / Assert
       try {
         await readObject(ctx, id, { maxBytes: 8 });
+        // Assert
         expect.unreachable();
       } catch (error) {
         const data = (error as TsgitError).data;
@@ -122,6 +131,7 @@ describe('readObject', () => {
       // Act / Assert
       try {
         await readObject(ctx, id, { maxBytes: 0 });
+        // Assert
         expect.unreachable();
       } catch (error) {
         const data = (error as TsgitError).data;
@@ -198,6 +208,7 @@ describe('readObject', () => {
       // Act / Assert
       try {
         await readObject(ctx, id as ObjectId, { maxBytes: 8 });
+        // Assert
         expect.unreachable();
       } catch (error) {
         const data = (error as TsgitError).data;
@@ -225,6 +236,7 @@ describe('readObject', () => {
       // Act / Assert
       try {
         await readObject(ctx, deltaId, { maxBytes: 8 });
+        // Assert
         expect.unreachable();
       } catch (error) {
         const data = (error as TsgitError).data;
@@ -256,6 +268,7 @@ describe('readObject', () => {
   });
 
   it('Given two readObject calls on the same context, When readObject is called twice, Then the pack registry is cached (readdir runs at most once)', async () => {
+    // Arrange
     // The WeakMap<Context, PackRegistry> cache in read-object.ts avoids
     // re-scanning the pack directory across many lookups during a walk.
     // If the guard is broken, readdir runs once per readObject call.
@@ -344,6 +357,7 @@ describe('readObject — lazy-fetch (partial clone)', () => {
     // Act & Assert
     try {
       await readObject(ctx, 'f'.repeat(40) as ObjectId);
+      // Assert
       expect.unreachable();
     } catch (error) {
       expect((error as TsgitError).data.code).toBe('OBJECT_NOT_FOUND');
@@ -363,6 +377,7 @@ describe('readObject — lazy-fetch (partial clone)', () => {
     // Act & Assert
     try {
       await readObject(ctx, 'f'.repeat(40) as ObjectId);
+      // Assert
       expect.unreachable();
     } catch (error) {
       expect((error as TsgitError).data.code).toBe('OBJECT_NOT_FOUND');
@@ -433,6 +448,7 @@ describe('readObject — lazy-fetch (partial clone)', () => {
     // Act & Assert — a non-OBJECT_NOT_FOUND error is rethrown untouched.
     try {
       await readObject(ctx, fakeId);
+      // Assert
       expect.unreachable();
     } catch (error) {
       expect((error as TsgitError).data.code).toBe('OBJECT_HASH_MISMATCH');

@@ -29,63 +29,79 @@ const open = (opts: Parameters<typeof openRepository>[0] = {}): Promise<Reposito
 
 describe('openRepository — construction', () => {
   it('Given a fallback set and no overrides, When openRepository runs, Then resolves to a Repository handle', async () => {
+    // Arrange
     const sut = await open();
 
+    // Assert
     expect(sut).toBeDefined();
     expect(typeof sut.dispose).toBe('function');
   });
 
   it('Given the returned handle, When inspecting it, Then it is frozen', async () => {
+    // Arrange
     const sut = await open();
 
+    // Assert
     expect(Object.isFrozen(sut)).toBe(true);
     expect(Object.isFrozen(sut.primitives)).toBe(true);
   });
 
   it('Given the returned handle, When inspecting ctx, Then ctx is frozen', async () => {
+    // Arrange
     const sut = await open();
 
+    // Assert
     expect(Object.isFrozen(sut.ctx)).toBe(true);
   });
 });
 
 describe('openRepository — hooks', () => {
   it('Given no hooks option and a fallback without one, When openRepository runs, Then ctx.hooks is undefined', async () => {
+    // Arrange
     const sut = await open();
 
+    // Assert
     expect(sut.ctx.hooks).toBeUndefined();
   });
 
   it('Given an explicit hook runner, When openRepository runs, Then ctx.hooks is that runner', async () => {
+    // Arrange
     const runner = new MemoryHookRunner();
 
     const sut = await open({ hooks: runner });
 
+    // Assert
     expect(sut.ctx.hooks).toBe(runner);
   });
 
   it('Given hooks: false and a fallback that supplies a runner, When openRepository runs, Then ctx.hooks is undefined', async () => {
+    // Arrange
     const sut = await openRepository(
       { cwd: '/repo', hooks: false },
       { ...makeFallback(), hooks: new MemoryHookRunner() },
     );
 
+    // Assert
     expect(sut.ctx.hooks).toBeUndefined();
   });
 
   it('Given no hooks option but a fallback that supplies a runner, When openRepository runs, Then ctx.hooks is the fallback runner', async () => {
+    // Arrange
     const runner = new MemoryHookRunner();
 
     const sut = await openRepository({ cwd: '/repo' }, { ...makeFallback(), hooks: runner });
 
+    // Assert
     expect(sut.ctx.hooks).toBe(runner);
   });
 });
 
 describe('openRepository — Repository binding integrity', () => {
   it('Given the returned handle, When listing top-level keys, Then they exactly match the documented surface', async () => {
+    // Arrange
     const sut = await open();
 
+    // Assert
     expect(Object.keys(sut).sort()).toEqual(
       [
         'add',
@@ -117,8 +133,10 @@ describe('openRepository — Repository binding integrity', () => {
   });
 
   it('Given the returned handle, When listing primitives, Then they match the documented Tier-2 surface', async () => {
+    // Arrange
     const sut = await open();
 
+    // Assert
     expect(Object.keys(sut.primitives).sort()).toEqual(
       [
         'catFileBatch',
@@ -146,10 +164,12 @@ describe('openRepository — Repository binding integrity', () => {
   });
 
   it('Given the returned handle, When typeof every binding is checked, Then each is a function', async () => {
+    // Arrange
     const sut = await open();
 
     for (const key of Object.keys(sut)) {
       if (key === 'ctx' || key === 'primitives') continue;
+      // Assert
       expect(typeof (sut as unknown as Record<string, unknown>)[key]).toBe('function');
     }
     for (const key of Object.keys(sut.primitives)) {
@@ -160,8 +180,10 @@ describe('openRepository — Repository binding integrity', () => {
 
 describe('openRepository — INVALID_OPTION validation', () => {
   it('Given a relative cwd, When openRepository runs, Then throws INVALID_OPTION with .data.option === cwd', async () => {
+    // Arrange
     try {
       await openRepository({ cwd: 'relative' }, makeFallback());
+      // Assert
       expect.unreachable();
     } catch (err) {
       expect(err).toBeInstanceOf(TsgitError);
@@ -174,8 +196,10 @@ describe('openRepository — INVALID_OPTION validation', () => {
   });
 
   it('Given parallelism = 0, When openRepository runs, Then throws INVALID_OPTION', async () => {
+    // Arrange
     try {
       await openRepository({ cwd: '/repo', config: { parallelism: 0 } }, makeFallback());
+      // Assert
       expect.unreachable();
     } catch (err) {
       const data = (err as TsgitError).data;
@@ -186,12 +210,14 @@ describe('openRepository — INVALID_OPTION validation', () => {
 
 describe('openRepository — dispose state machine', () => {
   it('Given a fresh repo, When dispose is called, Then state transitions to DISPOSED', async () => {
+    // Arrange
     const sut = await open();
 
     await sut.dispose();
     // After dispose, init MUST throw REPOSITORY_DISPOSED.
     try {
       await sut.init();
+      // Assert
       expect.unreachable();
     } catch (err) {
       const data = (err as TsgitError).data;
@@ -200,17 +226,21 @@ describe('openRepository — dispose state machine', () => {
   });
 
   it('Given an opened repo, When ctx is inspected, Then the promisor port is wired', async () => {
+    // Arrange
     const sut = await open();
 
+    // Assert
     expect(sut.ctx.promisor).toBeDefined();
   });
 
   it('Given a disposed repo, When fetchMissing is invoked, Then throws REPOSITORY_DISPOSED', async () => {
+    // Arrange
     const sut = await open();
 
     await sut.dispose();
     try {
       await sut.fetchMissing({ oids: [] });
+      // Assert
       expect.unreachable();
     } catch (err) {
       const data = (err as TsgitError).data;
@@ -219,13 +249,16 @@ describe('openRepository — dispose state machine', () => {
   });
 
   it('Given a disposed repo, When dispose is called again, Then resolves without throwing (idempotent)', async () => {
+    // Arrange
     const sut = await open();
 
     await sut.dispose();
+    // Assert
     await expect(sut.dispose()).resolves.toBeUndefined();
   });
 
   it('Given a port that increments a counter on dispose AND two concurrent dispose calls, When awaited, Then dispose is called EXACTLY ONCE on that port', async () => {
+    // Arrange
     let disposeCalls = 0;
     const fallback = makeFallback();
     const innerFs = fallback.fs;
@@ -242,15 +275,18 @@ describe('openRepository — dispose state machine', () => {
 
     await Promise.all([sut.dispose(), sut.dispose(), sut.dispose()]);
 
+    // Assert
     expect(disposeCalls).toBe(1);
   });
 
   it('Given dispose has been called, When any bound primitive is invoked, Then throws REPOSITORY_DISPOSED', async () => {
+    // Arrange
     const sut = await open();
 
     await sut.dispose();
     try {
       await sut.primitives.readIndex();
+      // Assert
       expect.unreachable();
     } catch (err) {
       const data = (err as TsgitError).data;
@@ -259,12 +295,14 @@ describe('openRepository — dispose state machine', () => {
   });
 
   it('Given a user-supplied signal that aborts before dispose, When a bound method is invoked, Then it throws REPOSITORY_DISPOSED via the atomic gate', async () => {
+    // Arrange
     const controller = new AbortController();
     const sut = await openRepository({ cwd: '/repo', signal: controller.signal }, makeFallback());
 
     controller.abort();
     try {
       await sut.init();
+      // Assert
       expect.unreachable();
     } catch (err) {
       const data = (err as TsgitError).data;
@@ -275,6 +313,7 @@ describe('openRepository — dispose state machine', () => {
 
 describe('openRepository — unsafeRawAdapters', () => {
   it('Given unsafeRawAdapters: true and a custom fs, When the wrapped fs is read from ctx, Then it is reference-equal to the user-supplied fs (no wrapper layer in between) — kills mutants on the wrapping condition', async () => {
+    // Arrange
     // Reference-equality is a stronger probe than behavioral: if wrapping is
     // applied, ctx.fs is a NEW object (the wrapper); without wrapping, ctx.fs
     // IS the user-supplied object.
@@ -285,18 +324,22 @@ describe('openRepository — unsafeRawAdapters', () => {
       fallback,
     );
 
+    // Assert
     expect(sut.ctx.fs).toBe(innerFs);
   });
 
   it('Given unsafeRawAdapters: false (default) and a custom fs, When the wrapped fs is read from ctx, Then it is NOT reference-equal to the user-supplied fs (wrapper applied)', async () => {
+    // Arrange
     const fallback = makeFallback();
     const innerFs = fallback.fs;
     const sut = await openRepository({ cwd: '/repo', fs: innerFs }, fallback);
 
+    // Assert
     expect(sut.ctx.fs).not.toBe(innerFs);
   });
 
   it('Given unsafeRawAdapters: false (default), When the user-supplied fs writes outside cwd, Then PATHSPEC_OUTSIDE_REPO is thrown by the wrapper', async () => {
+    // Arrange
     const fallback = makeFallback();
     const innerFs = fallback.fs;
     const sut = await openRepository(
@@ -308,6 +351,7 @@ describe('openRepository — unsafeRawAdapters', () => {
     try {
       // Bypass type-system: invoke wrapped fs directly with an out-of-cwd path.
       await sut.ctx.fs.write('/etc/passwd', new Uint8Array(0));
+      // Assert
       expect.unreachable();
     } catch (err) {
       expect((err as { data: { code: string } }).data.code).toBe('PATHSPEC_OUTSIDE_REPO');
@@ -318,11 +362,13 @@ describe('openRepository — unsafeRawAdapters', () => {
 describe('openRepository — round-trip via memory adapter', () => {
   // A minimal smoke test that the bound init command delegates correctly.
   it('Given a fresh repo, When init is called, Then it completes and the .git directory is created', async () => {
+    // Arrange
     const fallback = makeFallback();
     const sut = await openRepository({ cwd: '/repo' }, fallback);
 
     await sut.init();
 
+    // Assert
     expect(await sut.ctx.fs.exists('/repo/.git/HEAD')).toBe(true);
   });
 
@@ -478,9 +524,11 @@ describe('openRepository — round-trip via memory adapter', () => {
 
 describe('openRepository — ctx fields', () => {
   it('Given an opts.signal, When openRepository runs, Then ctx.signal is set and aborts when the user signal aborts', async () => {
+    // Arrange
     const controller = new AbortController();
     const sut = await openRepository({ cwd: '/repo', signal: controller.signal }, makeFallback());
 
+    // Assert
     expect(sut.ctx.signal).toBeDefined();
     expect(sut.ctx.signal!.aborted).toBe(false);
     controller.abort();
@@ -488,38 +536,48 @@ describe('openRepository — ctx fields', () => {
   });
 
   it('Given opts.config with parallelism, When openRepository runs, Then ctx.config carries the value and is frozen', async () => {
+    // Arrange
     const sut = await openRepository({ cwd: '/repo', config: { parallelism: 4 } }, makeFallback());
 
+    // Assert
     expect(sut.ctx.config).toBeDefined();
     expect(sut.ctx.config!.parallelism).toBe(4);
     expect(Object.isFrozen(sut.ctx.config)).toBe(true);
   });
 
   it('Given opts.config is omitted, When openRepository runs, Then ctx.config is undefined (NOT a frozen empty object) — kills the always-deepFreeze mutant', async () => {
+    // Arrange
     const sut = await openRepository({ cwd: '/repo' }, makeFallback());
 
+    // Assert
     expect(sut.ctx.config).toBeUndefined();
   });
 
   it('Given opts.progress, When openRepository runs, Then ctx.progress is the user-supplied reporter', async () => {
+    // Arrange
     const reporter = { start: vi.fn(), update: vi.fn(), end: vi.fn() };
     const sut = await openRepository({ cwd: '/repo', progress: reporter }, makeFallback());
 
+    // Assert
     expect(sut.ctx.progress).toBe(reporter);
   });
 
   it('Given an opts.logger, When openRepository runs, Then ctx.logger is present (sanitizer-wrapped) — kills the empty-object spread mutant', async () => {
+    // Arrange
     // The `{ logger: sanitizedLogger }` literal carries the logger into ctx;
     // a `{}` mutant would drop it entirely.
     const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
     const sut = await openRepository({ cwd: '/repo', logger }, makeFallback());
 
+    // Assert
     expect(sut.ctx.logger).toBeDefined();
   });
 
   it('Given opts.logger is omitted, When openRepository runs, Then ctx.logger is undefined', async () => {
+    // Arrange
     const sut = await openRepository({ cwd: '/repo' }, makeFallback());
 
+    // Assert
     expect(sut.ctx.logger).toBeUndefined();
   });
 });

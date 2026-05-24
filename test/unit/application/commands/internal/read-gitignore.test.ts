@@ -32,8 +32,10 @@ const expectError = async (fn: () => Promise<unknown>, code: string): Promise<Ts
 
 describe('readGitignore', () => {
   it('Given no.gitignore at root, When read, Then returns undefined', async () => {
+    // Arrange
     const ctx = await seed();
 
+    // Assert
     expect(await readGitignore(ctx, '')).toBeUndefined();
   });
 
@@ -97,8 +99,10 @@ describe('readGitignore', () => {
 
 describe('readInfoExclude', () => {
   it('Given no.git/info/exclude, When read, Then returns undefined', async () => {
+    // Arrange
     const ctx = await seed();
 
+    // Assert
     expect(await readInfoExclude(ctx)).toBeUndefined();
   });
 
@@ -118,8 +122,10 @@ describe('readInfoExclude', () => {
 
 describe('readGlobalExcludes', () => {
   it('Given no core.excludesFile in config, When read, Then returns undefined', async () => {
+    // Arrange
     const ctx = await seed();
 
+    // Assert
     expect(await readGlobalExcludes(ctx)).toBeUndefined();
   });
 
@@ -208,6 +214,7 @@ describe('readGlobalExcludes', () => {
     } catch (err) {
       caught = err;
     }
+    // Assert
     expect(caught).toBeInstanceOf(Error);
     expect((caught as Error).message).toBe('unexpected I/O failure');
   });

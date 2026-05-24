@@ -7,19 +7,23 @@ import { buildSeededContext } from './fixtures.js';
 
 describe('readBlob', () => {
   it('Given a seeded blob id, When readBlob is called, Then returns the Blob', async () => {
+    // Arrange
     const ctx = await buildSeededContext();
     const blob: Blob = { type: 'blob', content: new Uint8Array([9]), id: '' as ObjectId };
     const id = await writeObject(ctx, blob);
     const sut = await readBlob(ctx, id);
+    // Assert
     expect(sut.type).toBe('blob');
   });
 
   it('Given a tree id, When readBlob is called, Then throws UNEXPECTED_OBJECT_TYPE with expected="blob", actual="tree"', async () => {
+    // Arrange
     const ctx = await buildSeededContext();
     const tree: Tree = { type: 'tree', entries: [], id: '' as ObjectId };
     const id = await writeObject(ctx, tree);
     try {
       await readBlob(ctx, id);
+      // Assert
       expect.unreachable();
     } catch (error) {
       expect(error).toBeInstanceOf(TsgitError);
@@ -33,6 +37,7 @@ describe('readBlob', () => {
   });
 
   it('Given a commit id, When readBlob is called, Then throws UNEXPECTED_OBJECT_TYPE actual="commit"', async () => {
+    // Arrange
     const ctx = await buildSeededContext();
     // Build a small commit pointing at an empty tree
     const tree: Tree = { type: 'tree', entries: [], id: '' as ObjectId };
@@ -52,6 +57,7 @@ describe('readBlob', () => {
     const id = await writeObject(ctx, commit);
     try {
       await readBlob(ctx, id);
+      // Assert
       expect.unreachable();
     } catch (error) {
       const data = (error as TsgitError).data;
@@ -62,6 +68,7 @@ describe('readBlob', () => {
   });
 
   it('Given a tag id, When readBlob is called, Then throws UNEXPECTED_OBJECT_TYPE actual="tag"', async () => {
+    // Arrange
     const ctx = await buildSeededContext();
     const tree: Tree = { type: 'tree', entries: [], id: '' as ObjectId };
     const treeId = await writeObject(ctx, tree);
@@ -80,6 +87,7 @@ describe('readBlob', () => {
     const id = await writeObject(ctx, tag);
     try {
       await readBlob(ctx, id);
+      // Assert
       expect.unreachable();
     } catch (error) {
       const data = (error as TsgitError).data;
@@ -90,14 +98,17 @@ describe('readBlob', () => {
   });
 
   it('Given options.verifyHash=false, When readBlob is called, Then propagates through readObject', async () => {
+    // Arrange
     const ctx = await buildSeededContext();
     const blob: Blob = { type: 'blob', content: new Uint8Array([7]), id: '' as ObjectId };
     const id = await writeObject(ctx, blob);
     const sut = await readBlob(ctx, id, { verifyHash: false });
+    // Assert
     expect(sut.type).toBe('blob');
   });
 
   it('Given options.maxBytes within bounds, When readBlob is called, Then returns the Blob (passthrough)', async () => {
+    // Arrange
     const ctx = await buildSeededContext();
     const blob: Blob = {
       type: 'blob',
@@ -106,10 +117,12 @@ describe('readBlob', () => {
     };
     const id = await writeObject(ctx, blob);
     const sut = await readBlob(ctx, id, { maxBytes: 4 });
+    // Assert
     expect(sut.content).toEqual(new Uint8Array([1, 2, 3, 4]));
   });
 
   it('Given options.maxBytes below the blob size, When readBlob is called, Then throws OBJECT_TOO_LARGE (passthrough)', async () => {
+    // Arrange
     const ctx = await buildSeededContext();
     const blob: Blob = {
       type: 'blob',
@@ -119,6 +132,7 @@ describe('readBlob', () => {
     const id = await writeObject(ctx, blob);
     try {
       await readBlob(ctx, id, { maxBytes: 4 });
+      // Assert
       expect.unreachable();
     } catch (error) {
       const data = (error as TsgitError).data;

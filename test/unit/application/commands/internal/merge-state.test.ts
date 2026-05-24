@@ -13,7 +13,7 @@ import type { ObjectId } from '../../../../../src/domain/objects/index.js';
 
 describe('merge-state', () => {
   describe('writeMergeHead', () => {
-    it('Given a target ObjectId, When writeMergeHead is called, Then.git/MERGE_HEAD contains the id followed by a single newline', async () => {
+    it('Given a target ObjectId, When writeMergeHead is called, Then .git/MERGE_HEAD contains the id followed by a single newline', async () => {
       // Arrange
       const ctx = createMemoryContext();
       await init(ctx);
@@ -45,7 +45,7 @@ describe('merge-state', () => {
   });
 
   describe('writeMergeMsg', () => {
-    it('Given a merge message, When writeMergeMsg is called, Then.git/MERGE_MSG contains exactly the message (no trailing LF added)', async () => {
+    it('Given a merge message, When writeMergeMsg is called, Then .git/MERGE_MSG contains exactly the message (no trailing LF added)', async () => {
       // Arrange the message is stored verbatim, no
       // Conflicts trailer, no LF normalisation.
       const ctx = createMemoryContext();
@@ -75,7 +75,7 @@ describe('merge-state', () => {
   });
 
   describe('writeOrigHead', () => {
-    it('Given a pre-merge HEAD id, When writeOrigHead is called, Then.git/ORIG_HEAD contains the id followed by a single newline', async () => {
+    it('Given a pre-merge HEAD id, When writeOrigHead is called, Then .git/ORIG_HEAD contains the id followed by a single newline', async () => {
       // Arrange
       const ctx = createMemoryContext();
       await init(ctx);
@@ -206,6 +206,7 @@ describe('merge-state', () => {
       await init(ctx);
 
       // Act / Assert
+      // Assert
       await expect(clearMergeState(ctx)).resolves.toBeUndefined();
     });
   });

@@ -42,7 +42,7 @@ if ! [[ "$HEAD_SHA" =~ $sha_or_ref_re ]]; then
 fi
 
 # Code-path allowlist. Order doesn't matter; grep -E uses the union.
-CODE_RE='^(src/|test/|scripts/|\.github/|package\.json$|package-lock\.json$|tsconfig.*\.json$|vitest\.config\.ts$|stryker\.config\.json$|rollup\.config\.ts$|mutation-budgets\.json$|biome\.json$|knip\.json$|\.ls-lint\.yml$|cspell\.json$)'
+CODE_RE='^(src/|test/|tooling/|\.github/|package\.json$|package-lock\.json$|tsconfig.*\.json$|vitest\.config\.ts$|stryker\.config\.json$|rollup\.config\.ts$|mutation-budgets\.json$|biome\.json$|knip\.json$|\.ls-lint\.yml$|cspell\.json$)'
 
 CHANGED=$(git diff --name-only "$BASE_SHA" "$HEAD_SHA")
 

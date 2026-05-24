@@ -148,6 +148,7 @@ describe('delta', () => {
       // Act & Assert
       try {
         applyDelta(base, delta);
+        // Assert
         expect.fail('Should have thrown');
       } catch (e) {
         const err = e as TsgitError;
@@ -168,6 +169,7 @@ describe('delta', () => {
       // Act & Assert
       try {
         applyDelta(base, delta);
+        // Assert
         expect.fail('Should have thrown');
       } catch (e) {
         const err = e as TsgitError;
@@ -188,6 +190,7 @@ describe('delta', () => {
       // Act & Assert
       try {
         applyDelta(base, delta);
+        // Assert
         expect.fail('Should have thrown');
       } catch (e) {
         const err = e as TsgitError;
@@ -208,6 +211,7 @@ describe('delta', () => {
       // Act & Assert
       try {
         applyDelta(base, delta);
+        // Assert
         expect.fail('Should have thrown');
       } catch (e) {
         const err = e as TsgitError;
@@ -228,6 +232,7 @@ describe('delta', () => {
       // Act & Assert
       try {
         applyDelta(base, delta);
+        // Assert
         expect.fail('Should have thrown');
       } catch (e) {
         const err = e as TsgitError;
@@ -248,6 +253,7 @@ describe('delta', () => {
       // Act & Assert
       try {
         applyDelta(base, delta);
+        // Assert
         expect.fail('Should have thrown');
       } catch (e) {
         const err = e as TsgitError;
@@ -267,6 +273,7 @@ describe('delta', () => {
       // Act & Assert
       try {
         applyDelta(new Uint8Array(0), delta);
+        // Assert
         expect.fail('Should have thrown');
       } catch (e) {
         const err = e as TsgitError;
@@ -286,6 +293,7 @@ describe('delta', () => {
       // Act & Assert
       try {
         applyDelta(new Uint8Array(0), delta);
+        // Assert
         expect.fail('Should have thrown');
       } catch (e) {
         const err = e as TsgitError;
@@ -307,6 +315,7 @@ describe('delta', () => {
       // Act & Assert
       try {
         applyDelta(new Uint8Array(0), delta);
+        // Assert
         expect.fail('Should have thrown');
       } catch (e) {
         const err = e as TsgitError;
@@ -326,6 +335,7 @@ describe('delta', () => {
       // Act & Assert
       try {
         applyDelta(new Uint8Array(5), delta);
+        // Assert
         expect.fail('Should have thrown');
       } catch (e) {
         const err = e as TsgitError;
@@ -358,6 +368,7 @@ describe('delta', () => {
       // Act & Assert
       try {
         applyDelta(base, delta);
+        // Assert
         expect.fail('Should have thrown');
       } catch (e) {
         const err = e as TsgitError;
@@ -409,6 +420,7 @@ describe('delta', () => {
       // Act & Assert
       try {
         applyDelta(base, delta);
+        // Assert
         expect.fail('Should have thrown');
       } catch (e) {
         const err = e as TsgitError;
@@ -499,6 +511,7 @@ describe('delta', () => {
       // Act & Assert
       try {
         applyDelta(new Uint8Array(0), delta);
+        // Assert
         expect.fail('Should have thrown');
       } catch (e) {
         const err = e as TsgitError;
@@ -525,6 +538,7 @@ describe('delta', () => {
       // Act & Assert
       try {
         applyDelta(base, delta);
+        // Assert
         expect.fail('Should have thrown');
       } catch (e) {
         const err = e as TsgitError;
@@ -602,6 +616,7 @@ describe('delta', () => {
       // Act & Assert
       try {
         parseDelta(delta);
+        // Assert
         expect.fail('Should have thrown');
       } catch (e) {
         const err = e as TsgitError;
@@ -623,6 +638,7 @@ describe('delta', () => {
       // Act & Assert
       try {
         parseDelta(delta);
+        // Assert
         expect.fail('Should have thrown');
       } catch (e) {
         const err = e as TsgitError;
@@ -638,6 +654,8 @@ describe('delta', () => {
 
   describe('property-based tests', () => {
     it('Given any generated delta, When applying, Then result matches expected output', () => {
+      // Arrange
+      // Assert
       fc.assert(
         fc.property(arbDeltaTriple(), ({ base, instructions, expected }) => {
           fc.pre(instructions.length > 0 && expected.length > 0);
@@ -652,6 +670,8 @@ describe('delta', () => {
     });
 
     it('Given any valid delta, When applying, Then result length equals targetLength', () => {
+      // Arrange
+      // Assert
       fc.assert(
         fc.property(fc.uint8Array({ minLength: 1, maxLength: 100 }), (base) => {
           const insert = base.slice(0, Math.min(10, base.length));
@@ -673,6 +693,7 @@ describe('delta', () => {
       // Act & Assert
       try {
         readDeltaTargetSize(delta);
+        // Assert
         expect.fail('Should have thrown');
       } catch (e) {
         const err = e as TsgitError;
@@ -690,6 +711,7 @@ describe('delta', () => {
       // Act & Assert
       try {
         readDeltaTargetSize(delta);
+        // Assert
         expect.fail('Should have thrown');
       } catch (e) {
         const err = e as TsgitError;
@@ -752,6 +774,7 @@ describe('delta', () => {
         // Act & Assert
         try {
           applyDelta(new Uint8Array(0), delta);
+          // Assert
           expect.fail('Should have thrown');
         } catch (e) {
           const err = e as TsgitError;
@@ -774,6 +797,7 @@ describe('delta', () => {
       // Act & Assert — the header passes; the apply loop then fails on underfill, NOT on the size cap.
       try {
         applyDelta(new Uint8Array(0), delta);
+        // Assert
         expect.fail('Should have thrown');
       } catch (e) {
         const err = e as TsgitError;
@@ -809,6 +833,7 @@ describe('delta', () => {
       // Act & Assert
       try {
         parseDelta(delta);
+        // Assert
         expect.fail('Should have thrown');
       } catch (e) {
         const err = e as TsgitError;
@@ -822,6 +847,7 @@ describe('delta', () => {
 
   describe('MAX_DELTA_CHAIN_DEPTH', () => {
     it('Given the exported constant, When read, Then equals 50 (git default)', () => {
+      // Arrange
       // Assert
       expect(MAX_DELTA_CHAIN_DEPTH).toBe(50);
     });

@@ -11,10 +11,12 @@ import {
 
 describe('withLogging — events on success', () => {
   it('Given inner resolves with statusCode 200, When request is awaited, Then events contain request then response', async () => {
+    // Arrange
     const { logger, events } = recordingLogger();
     const { transport } = fakeTransport([makeResponse({ statusCode: 200 })]);
     const sut = withLogging({ logger })(transport);
     await sut.request(makeRequest());
+    // Assert
     expect(events).toHaveLength(2);
     expect(events[0]?.kind).toBe('request');
     expect(events[1]?.kind).toBe('response');
@@ -25,6 +27,7 @@ describe('withLogging — events on success', () => {
   });
 
   it('Given a fakeClock that advances 250ms, When request is awaited, Then response.elapsedMs equals 250', async () => {
+    // Arrange
     const { logger, events } = recordingLogger();
     const clock = fakeClock(1000);
     const { transport } = fakeTransport([makeResponse({ statusCode: 200 })]);
@@ -37,6 +40,7 @@ describe('withLogging — events on success', () => {
     clock.advance(250);
     await promise;
     if (events[1]?.kind === 'response') {
+      // Assert
       expect(events[1].elapsedMs).toBe(250);
     } else {
       throw new Error('expected response event');
@@ -46,10 +50,12 @@ describe('withLogging — events on success', () => {
 
 describe('withLogging — events on failure', () => {
   it('Given inner rejects, When awaited, Then events are [request, error] and error reference unchanged', async () => {
+    // Arrange
     const { logger, events } = recordingLogger();
     const original = new Error('boom');
     const { transport } = fakeTransport([original]);
     const sut = withLogging({ logger })(transport);
+    // Assert
     await expect(sut.request(makeRequest())).rejects.toBe(original);
     expect(events).toHaveLength(2);
     expect(events[0]?.kind).toBe('request');
@@ -60,6 +66,7 @@ describe('withLogging — events on failure', () => {
   });
 
   it('Given a fakeClock that advances 700ms before inner rejects, When awaited, Then error.elapsedMs equals 700', async () => {
+    // Arrange
     const { logger, events } = recordingLogger();
     const clock = fakeClock(500);
     const transport = {
@@ -69,6 +76,7 @@ describe('withLogging — events on failure', () => {
       },
     };
     const sut = withLogging({ logger, now: clock.now })(transport);
+    // Assert
     await expect(sut.request(makeRequest())).rejects.toThrow('slow boom');
     if (events[1]?.kind !== 'error') throw new Error('expected error event');
     expect(events[1].elapsedMs).toBe(700);
@@ -77,6 +85,7 @@ describe('withLogging — events on failure', () => {
 
 describe('withLogging — header redaction', () => {
   it('Given authorization (lowercase), When sent, Then events.headers.authorization is undefined', async () => {
+    // Arrange
     const { logger, events } = recordingLogger();
     const { transport } = fakeTransport([makeResponse()]);
     const sut = withLogging({ logger })(transport);
@@ -84,30 +93,36 @@ describe('withLogging — header redaction', () => {
       makeRequest({ headers: { authorization: 'Bearer xyz', 'x-trace-id': 'abc' } }),
     );
     if (events[0]?.kind !== 'request') throw new Error('expected request');
+    // Assert
     expect(events[0].headers.authorization).toBeUndefined();
     expect(events[0].headers['x-trace-id']).toBe('abc');
   });
 
   it('Given Authorization (capital), When sent, Then NO key whose lowercase form is "authorization" is present', async () => {
+    // Arrange
     const { logger, events } = recordingLogger();
     const { transport } = fakeTransport([makeResponse()]);
     const sut = withLogging({ logger })(transport);
     await sut.request(makeRequest({ headers: { Authorization: 'Bearer xyz' } }));
     if (events[0]?.kind !== 'request') throw new Error('expected request');
     const keys = Object.keys(events[0].headers).map((k) => k.toLowerCase());
+    // Assert
     expect(keys).not.toContain('authorization');
   });
 
   it('Given redactHeaders=[], When authorization present, Then it is STILL stripped (forced; non-opt-out)', async () => {
+    // Arrange
     const { logger, events } = recordingLogger();
     const { transport } = fakeTransport([makeResponse()]);
     const sut = withLogging({ logger, redactHeaders: [] })(transport);
     await sut.request(makeRequest({ headers: { authorization: 'Bearer xyz' } }));
     if (events[0]?.kind !== 'request') throw new Error('expected request');
+    // Assert
     expect(events[0].headers.authorization).toBeUndefined();
   });
 
   it('Given redactHeaders=["x-trace-id"], When sent, Then both authorization and x-trace-id are stripped', async () => {
+    // Arrange
     const { logger, events } = recordingLogger();
     const { transport } = fakeTransport([makeResponse()]);
     const sut = withLogging({ logger, redactHeaders: ['x-trace-id'] })(transport);
@@ -115,6 +130,7 @@ describe('withLogging — header redaction', () => {
       makeRequest({ headers: { authorization: 'Bearer xyz', 'x-trace-id': 'abc' } }),
     );
     if (events[0]?.kind !== 'request') throw new Error('expected request');
+    // Assert
     expect(events[0].headers.authorization).toBeUndefined();
     expect(events[0].headers['x-trace-id']).toBeUndefined();
   });
@@ -141,6 +157,7 @@ describe('withLogging — header redaction', () => {
   });
 
   it('Given a request with cookie, set-cookie, proxy-authorization, authorization headers, When sent, Then all four are stripped', async () => {
+    // Arrange
     const { logger, events } = recordingLogger();
     const { transport } = fakeTransport([makeResponse()]);
     const sut = withLogging({ logger })(transport);
@@ -156,6 +173,7 @@ describe('withLogging — header redaction', () => {
     );
     if (events[0]?.kind !== 'request') throw new Error('expected request');
     const keys = Object.keys(events[0].headers).map((k) => k.toLowerCase());
+    // Assert
     expect(keys).not.toContain('authorization');
     expect(keys).not.toContain('cookie');
     expect(keys).not.toContain('set-cookie');
@@ -175,11 +193,13 @@ describe('withLogging — URL redaction', () => {
   ];
 
   it.each(cases)('Given url=%j, When logged, Then events[0].url=%j', async (input, expected) => {
+    // Arrange
     const { logger, events } = recordingLogger();
     const { transport } = fakeTransport([makeResponse()]);
     const sut = withLogging({ logger })(transport);
     await sut.request(makeRequest({ url: input }));
     if (events[0]?.kind !== 'request') throw new Error('expected request');
+    // Assert
     expect(events[0].url).toBe(expected);
   });
 
@@ -220,6 +240,7 @@ describe('withLogging — extra header redaction defaulting', () => {
 
 describe('withLogging — logger throw safety', () => {
   it('Given a logger that throws on every event, When request resolves with 200, Then wrapped resolves with 200 (throw swallowed)', async () => {
+    // Arrange
     const logger: Logger = {
       log: () => {
         throw new Error('boom');
@@ -228,10 +249,12 @@ describe('withLogging — logger throw safety', () => {
     const { transport } = fakeTransport([makeResponse({ statusCode: 200 })]);
     const sut = withLogging({ logger })(transport);
     const result = await sut.request(makeRequest());
+    // Assert
     expect(result.statusCode).toBe(200);
   });
 
   it('Given a logger that throws only on request event, When sent, Then response event still emitted and request resolves', async () => {
+    // Arrange
     const events: LogEvent[] = [];
     const logger: Logger = {
       log: (e) => {
@@ -242,6 +265,7 @@ describe('withLogging — logger throw safety', () => {
     const { transport } = fakeTransport([makeResponse({ statusCode: 200 })]);
     const sut = withLogging({ logger })(transport);
     await sut.request(makeRequest());
+    // Assert
     expect(events).toHaveLength(1);
     expect(events[0]?.kind).toBe('response');
   });
