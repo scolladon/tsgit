@@ -196,6 +196,7 @@
     "check:doc-typedoc": "wireit",
     "check:test-pyramid": "wireit",
     "check:parity-fixtures": "wireit",
+    "check:browser-surface": "wireit",
     "check:mutation-budgets": "wireit",
     "verify:tarball": "wireit",
     "check:size": "wireit",
@@ -545,6 +546,20 @@
         "reports/parity-fixtures.json"
       ]
     },
+    "check:browser-surface": {
+      "command": "node --experimental-strip-types tooling/audit-browser-surface.ts",
+      "files": [
+        "src/repository.ts",
+        "test/browser/**/*.spec.ts",
+        "test/parity/scenarios/**/*.ts",
+        "tooling/audit-browser-surface.ts",
+        "tooling/audit-browser-surface/**/*.ts",
+        "tooling/audit-browser-surface.allowlist.json"
+      ],
+      "output": [
+        "reports/browser-surface-coverage.json"
+      ]
+    },
     "check:mutation-budgets": {
       "command": "node --experimental-strip-types tooling/check-mutation-budgets.ts",
       "files": [
@@ -634,6 +649,7 @@
         "check:doc-typedoc",
         "check:test-pyramid",
         "check:parity-fixtures",
+        "check:browser-surface",
         "test:coverage",
         "test:integration",
         "test:parity"
