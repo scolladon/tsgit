@@ -5,13 +5,14 @@ import { noopLogger, wrapLoggerSanitizer } from '../../../src/ports/logger.js';
 describe('Logger port — noopLogger', () => {
   it('Given noopLogger, When inspecting it, Then it is frozen', () => {
     // Arrange
+    const sut = Object.isFrozen(noopLogger);
+
     // Assert
-    expect(Object.isFrozen(noopLogger)).toBe(true);
+    expect(sut).toBe(true);
   });
 
   it('Given noopLogger, When reading any level method, Then it is undefined', () => {
-    // Arrange
-    // Assert
+    // Arrange + Assert
     expect(noopLogger.debug).toBeUndefined();
     expect(noopLogger.info).toBeUndefined();
     expect(noopLogger.warn).toBeUndefined();
