@@ -1,41 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { classifyTestFile } from '../../../../scripts/test-pyramid/classify-test-file.js';
 import type { PyramidManifest } from '../../../../scripts/test-pyramid/parse-manifest.js';
+import { makeManifest } from './manifest-fixture.js';
 
-const MANIFEST: PyramidManifest = {
-  tiers: [
-    {
-      name: 'unit',
-      glob: 'test/unit/**/*.test.ts',
-      target: 80,
-      warnBelow: 75,
-      warnAbove: null,
-    },
-    {
-      name: 'integration',
-      glob: 'test/integration/**/*.test.ts',
-      target: 15,
-      warnBelow: 10,
-      warnAbove: 25,
-    },
-    {
-      name: 'e2e',
-      glob: 'test/browser/**/*.spec.ts',
-      target: 5,
-      warnBelow: 3,
-      warnAbove: null,
-    },
-  ],
-  heuristics: {
-    overMockedIntegration: {
-      tier: 'integration',
-      regex: '\\bvi\\.mock\\s*\\(',
-      compiledRegex: /\bvi\.mock\s*\(/g,
-      threshold: 0,
-    },
-    underAssertedUnit: { tier: 'unit', minAssertionsPerTest: 1 },
-  },
-};
+const MANIFEST = makeManifest();
 
 describe('classifyTestFile', () => {
   it('Given a path under test/unit, When classified, Then returns "unit"', () => {

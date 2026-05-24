@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/scolladon/tsgit/scripts/test-pyramid-budgets-schema.json",
   "title": "tsgit testing-pyramid budgets",
-  "description": "Per-tier targets and per-heuristic thresholds for scripts/audit-test-pyramid.ts. See docs/design/phase-19-2-testing-pyramid-audit.md.",
+  "description": "Per-tier targets, per-heuristic thresholds, and gating switches for scripts/audit-test-pyramid.ts. See docs/design/phase-19-2-testing-pyramid-audit.md and docs/design/phase-19-3-unit-test-expressiveness-lint.md.",
   "type": "object",
   "required": ["tiers", "heuristics"],
   "additionalProperties": false,
@@ -15,11 +15,34 @@
     },
     "heuristics": {
       "type": "object",
-      "required": ["overMockedIntegration", "underAssertedUnit"],
+      "required": [
+        "overMockedIntegration",
+        "underAssertedUnit",
+        "gwtTitle",
+        "aaaBody",
+        "sutNaming",
+        "bareClassToThrow"
+      ],
       "additionalProperties": false,
       "properties": {
         "overMockedIntegration": { "$ref": "#/$defs/overMockedHeuristic" },
-        "underAssertedUnit": { "$ref": "#/$defs/underAssertedHeuristic" }
+        "underAssertedUnit": { "$ref": "#/$defs/underAssertedHeuristic" },
+        "gwtTitle": { "$ref": "#/$defs/regexHeuristic" },
+        "aaaBody": { "$ref": "#/$defs/aaaBodyHeuristic" },
+        "sutNaming": { "$ref": "#/$defs/sutNamingHeuristic" },
+        "bareClassToThrow": { "$ref": "#/$defs/regexHeuristic" }
+      }
+    },
+    "gating": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "overMockedIntegration": { "type": "boolean" },
+        "underAssertedUnit": { "type": "boolean" },
+        "gwtTitle": { "type": "boolean" },
+        "aaaBody": { "type": "boolean" },
+        "sutNaming": { "type": "boolean" },
+        "bareClassToThrow": { "type": "boolean" }
       }
     }
   },
@@ -58,6 +81,43 @@
       "properties": {
         "tier": { "type": "string", "minLength": 1 },
         "minAssertionsPerTest": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "regexHeuristic": {
+      "type": "object",
+      "required": ["tier", "regex"],
+      "additionalProperties": false,
+      "properties": {
+        "tier": { "type": "string", "minLength": 1 },
+        "regex": { "type": "string", "minLength": 1 }
+      }
+    },
+    "aaaBodyHeuristic": {
+      "type": "object",
+      "required": ["tier", "required"],
+      "additionalProperties": false,
+      "properties": {
+        "tier": { "type": "string", "minLength": 1 },
+        "required": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "enum": ["Arrange", "Act", "Assert"] }
+        }
+      }
+    },
+    "sutNamingHeuristic": {
+      "type": "object",
+      "required": ["tier", "banned"],
+      "additionalProperties": false,
+      "properties": {
+        "tier": { "type": "string", "minLength": 1 },
+        "banned": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^[A-Za-z_$][A-Za-z0-9_$]*$" }
+        }
       }
     }
   }

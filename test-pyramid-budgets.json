@@ -32,6 +32,30 @@
     "underAssertedUnit": {
       "tier": "unit",
       "minAssertionsPerTest": 1
+    },
+    "gwtTitle": {
+      "tier": "unit",
+      "regex": "^Given .+?, When .+?, Then .+$"
+    },
+    "aaaBody": {
+      "tier": "unit",
+      "required": ["Arrange", "Assert"]
+    },
+    "sutNaming": {
+      "tier": "unit",
+      "banned": ["subject", "objectUnderTest", "systemUnderTest", "cut"]
+    },
+    "bareClassToThrow": {
+      "tier": "unit",
+      "regex": "\\.toThrow(?:Error)?\\s*\\(\\s*([A-Z]\\w*)\\s*\\)"
     }
+  },
+  "gating": {
+    "overMockedIntegration": false,
+    "underAssertedUnit": false,
+    "gwtTitle": false,
+    "aaaBody": false,
+    "sutNaming": false,
+    "bareClassToThrow": false
   }
 }

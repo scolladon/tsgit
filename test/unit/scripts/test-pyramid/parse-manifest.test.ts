@@ -35,7 +35,37 @@ const VALID_MANIFEST = {
       tier: 'unit',
       minAssertionsPerTest: 1,
     },
+    gwtTitle: {
+      tier: 'unit',
+      regex: '^Given .+?, When .+?, Then .+$',
+    },
+    aaaBody: {
+      tier: 'unit',
+      required: ['Arrange', 'Assert'],
+    },
+    sutNaming: {
+      tier: 'unit',
+      banned: ['subject', 'objectUnderTest', 'systemUnderTest', 'cut'],
+    },
+    bareClassToThrow: {
+      tier: 'unit',
+      regex: '\\.toThrow(?:Error)?\\s*\\(\\s*([A-Z]\\w*)\\s*\\)',
+    },
   },
+};
+
+const replaceHeuristic = (
+  base: Record<string, unknown>,
+  key: string,
+  value: unknown,
+): Record<string, unknown> => {
+  const heuristics = { ...(base.heuristics as Record<string, unknown>) };
+  if (value === undefined) {
+    delete heuristics[key];
+  } else {
+    heuristics[key] = value;
+  }
+  return { ...base, heuristics };
 };
 
 describe('parseManifest', () => {
@@ -727,6 +757,395 @@ describe('parseManifest', () => {
 
       // Assert
       expect(caught?.message).toContain('underAssertedUnit');
+    });
+  });
+
+  describe('expressiveness heuristics — happy path', () => {
+    it('Given the gwtTitle heuristic, When parsed, Then the compiled RegExp matches a GWT title', () => {
+      // Arrange
+      const raw = JSON.stringify(VALID_MANIFEST);
+
+      // Act
+      const sut = parseManifest(raw);
+
+      // Assert
+      const re = sut.heuristics.gwtTitle.compiledRegex;
+      expect(re).toBeInstanceOf(RegExp);
+      const fresh = new RegExp(sut.heuristics.gwtTitle.regex);
+      expect(fresh.test('Given a, When b, Then c')).toBe(true);
+      expect(fresh.test('it works')).toBe(false);
+    });
+
+    it('Given the aaaBody heuristic, When parsed, Then required is the preserved array', () => {
+      // Arrange
+      const raw = JSON.stringify(VALID_MANIFEST);
+
+      // Act
+      const sut = parseManifest(raw);
+
+      // Assert
+      expect(sut.heuristics.aaaBody.required).toEqual(['Arrange', 'Assert']);
+    });
+
+    it('Given the sutNaming heuristic, When parsed, Then banned is the preserved list', () => {
+      // Arrange
+      const raw = JSON.stringify(VALID_MANIFEST);
+
+      // Act
+      const sut = parseManifest(raw);
+
+      // Assert
+      expect(sut.heuristics.sutNaming.banned).toEqual([
+        'subject',
+        'objectUnderTest',
+        'systemUnderTest',
+        'cut',
+      ]);
+    });
+
+    it('Given the bareClassToThrow heuristic, When parsed, Then the compiled RegExp catches PascalCase identifiers', () => {
+      // Arrange
+      const raw = JSON.stringify(VALID_MANIFEST);
+
+      // Act
+      const sut = parseManifest(raw);
+
+      // Assert
+      const fresh = new RegExp(sut.heuristics.bareClassToThrow.regex);
+      expect(fresh.test('.toThrow(TsgitError)')).toBe(true);
+      expect(fresh.test(".toThrow('msg')")).toBe(false);
+      expect(fresh.test('.toThrow(/re/)')).toBe(false);
+    });
+  });
+
+  describe('expressiveness heuristics — failure modes', () => {
+    it('Given gwtTitle missing, When parsed, Then throws naming gwtTitle', () => {
+      // Arrange
+      const raw = JSON.stringify(replaceHeuristic(VALID_MANIFEST, 'gwtTitle', undefined));
+
+      // Act
+      let caught: Error | undefined;
+      try {
+        parseManifest(raw);
+      } catch (error) {
+        caught = error instanceof Error ? error : undefined;
+      }
+
+      // Assert
+      expect(caught?.message).toContain('heuristics.gwtTitle is required');
+    });
+
+    it('Given gwtTitle as a string instead of an object, When parsed, Then throws naming gwtTitle', () => {
+      // Arrange
+      const raw = JSON.stringify(replaceHeuristic(VALID_MANIFEST, 'gwtTitle', 'oops'));
+
+      // Act
+      let caught: Error | undefined;
+      try {
+        parseManifest(raw);
+      } catch (error) {
+        caught = error instanceof Error ? error : undefined;
+      }
+
+      // Assert
+      expect(caught?.message).toContain('gwtTitle must be an object');
+    });
+
+    it('Given gwtTitle with an invalid regex, When parsed, Then throws "heuristic regex invalid (gwtTitle)"', () => {
+      // Arrange
+      const raw = JSON.stringify(
+        replaceHeuristic(VALID_MANIFEST, 'gwtTitle', { tier: 'unit', regex: '[' }),
+      );
+
+      // Act
+      let caught: Error | undefined;
+      try {
+        parseManifest(raw);
+      } catch (error) {
+        caught = error instanceof Error ? error : undefined;
+      }
+
+      // Assert
+      expect(caught?.message).toContain('heuristic regex invalid (gwtTitle)');
+    });
+
+    it('Given aaaBody with required containing an unknown marker, When parsed, Then throws naming the bad marker', () => {
+      // Arrange
+      const raw = JSON.stringify(
+        replaceHeuristic(VALID_MANIFEST, 'aaaBody', {
+          tier: 'unit',
+          required: ['Arrange', 'Bogus'],
+        }),
+      );
+
+      // Act
+      let caught: Error | undefined;
+      try {
+        parseManifest(raw);
+      } catch (error) {
+        caught = error instanceof Error ? error : undefined;
+      }
+
+      // Assert
+      expect(caught?.message).toContain('aaaBody required entry "Bogus"');
+    });
+
+    it('Given aaaBody required as an empty array, When parsed, Then throws naming required', () => {
+      // Arrange
+      const raw = JSON.stringify(
+        replaceHeuristic(VALID_MANIFEST, 'aaaBody', { tier: 'unit', required: [] }),
+      );
+
+      // Act
+      let caught: Error | undefined;
+      try {
+        parseManifest(raw);
+      } catch (error) {
+        caught = error instanceof Error ? error : undefined;
+      }
+
+      // Assert
+      expect(caught?.message).toContain('aaaBody required must be a non-empty array');
+    });
+
+    it('Given aaaBody required with duplicates, When parsed, Then throws naming the duplicate', () => {
+      // Arrange
+      const raw = JSON.stringify(
+        replaceHeuristic(VALID_MANIFEST, 'aaaBody', {
+          tier: 'unit',
+          required: ['Arrange', 'Arrange'],
+        }),
+      );
+
+      // Act
+      let caught: Error | undefined;
+      try {
+        parseManifest(raw);
+      } catch (error) {
+        caught = error instanceof Error ? error : undefined;
+      }
+
+      // Assert
+      expect(caught?.message).toContain('aaaBody required has duplicate "Arrange"');
+    });
+
+    it('Given sutNaming with an empty banned list, When parsed, Then throws naming banned', () => {
+      // Arrange
+      const raw = JSON.stringify(
+        replaceHeuristic(VALID_MANIFEST, 'sutNaming', { tier: 'unit', banned: [] }),
+      );
+
+      // Act
+      let caught: Error | undefined;
+      try {
+        parseManifest(raw);
+      } catch (error) {
+        caught = error instanceof Error ? error : undefined;
+      }
+
+      // Assert
+      expect(caught?.message).toContain('sutNaming banned must be a non-empty array');
+    });
+
+    it('Given sutNaming with a non-identifier entry, When parsed, Then throws naming the bad entry', () => {
+      // Arrange
+      const raw = JSON.stringify(
+        replaceHeuristic(VALID_MANIFEST, 'sutNaming', {
+          tier: 'unit',
+          banned: ['ok', '1nope'],
+        }),
+      );
+
+      // Act
+      let caught: Error | undefined;
+      try {
+        parseManifest(raw);
+      } catch (error) {
+        caught = error instanceof Error ? error : undefined;
+      }
+
+      // Assert
+      expect(caught?.message).toContain('sutNaming banned entry "1nope"');
+    });
+
+    it('Given sutNaming banned with a duplicate, When parsed, Then throws naming the duplicate', () => {
+      // Arrange
+      const raw = JSON.stringify(
+        replaceHeuristic(VALID_MANIFEST, 'sutNaming', {
+          tier: 'unit',
+          banned: ['x', 'x'],
+        }),
+      );
+
+      // Act
+      let caught: Error | undefined;
+      try {
+        parseManifest(raw);
+      } catch (error) {
+        caught = error instanceof Error ? error : undefined;
+      }
+
+      // Assert
+      expect(caught?.message).toContain('sutNaming banned has duplicate "x"');
+    });
+
+    it('Given bareClassToThrow as a non-object, When parsed, Then throws naming bareClassToThrow', () => {
+      // Arrange
+      const raw = JSON.stringify(replaceHeuristic(VALID_MANIFEST, 'bareClassToThrow', 42));
+
+      // Act
+      let caught: Error | undefined;
+      try {
+        parseManifest(raw);
+      } catch (error) {
+        caught = error instanceof Error ? error : undefined;
+      }
+
+      // Assert
+      expect(caught?.message).toContain('bareClassToThrow must be an object');
+    });
+
+    it('Given bareClassToThrow with an unknown tier, When parsed, Then throws naming the tier', () => {
+      // Arrange
+      const raw = JSON.stringify(
+        replaceHeuristic(VALID_MANIFEST, 'bareClassToThrow', {
+          tier: 'ghost',
+          regex: '.+',
+        }),
+      );
+
+      // Act
+      let caught: Error | undefined;
+      try {
+        parseManifest(raw);
+      } catch (error) {
+        caught = error instanceof Error ? error : undefined;
+      }
+
+      // Assert
+      expect(caught?.message).toContain('unknown tier "ghost"');
+    });
+
+    it('Given sutNaming as a non-object, When parsed, Then throws naming sutNaming', () => {
+      // Arrange
+      const raw = JSON.stringify(replaceHeuristic(VALID_MANIFEST, 'sutNaming', null));
+
+      // Act
+      let caught: Error | undefined;
+      try {
+        parseManifest(raw);
+      } catch (error) {
+        caught = error instanceof Error ? error : undefined;
+      }
+
+      // Assert
+      expect(caught?.message).toContain('sutNaming must be an object');
+    });
+
+    it('Given aaaBody as a non-object, When parsed, Then throws naming aaaBody', () => {
+      // Arrange
+      const raw = JSON.stringify(replaceHeuristic(VALID_MANIFEST, 'aaaBody', 'oops'));
+
+      // Act
+      let caught: Error | undefined;
+      try {
+        parseManifest(raw);
+      } catch (error) {
+        caught = error instanceof Error ? error : undefined;
+      }
+
+      // Assert
+      expect(caught?.message).toContain('aaaBody must be an object');
+    });
+  });
+
+  describe('gating block', () => {
+    it('Given a manifest without a gating object, When parsed, Then gating defaults all keys to false', () => {
+      // Arrange
+      const raw = JSON.stringify(VALID_MANIFEST);
+
+      // Act
+      const sut = parseManifest(raw);
+
+      // Assert
+      expect(sut.gating).toEqual({
+        overMockedIntegration: false,
+        underAssertedUnit: false,
+        gwtTitle: false,
+        aaaBody: false,
+        sutNaming: false,
+        bareClassToThrow: false,
+      });
+    });
+
+    it('Given gating with partial keys set true, When parsed, Then unspecified keys default to false', () => {
+      // Arrange
+      const raw = JSON.stringify({
+        ...VALID_MANIFEST,
+        gating: { gwtTitle: true, sutNaming: true },
+      });
+
+      // Act
+      const sut = parseManifest(raw);
+
+      // Assert
+      expect(sut.gating.gwtTitle).toBe(true);
+      expect(sut.gating.sutNaming).toBe(true);
+      expect(sut.gating.aaaBody).toBe(false);
+      expect(sut.gating.bareClassToThrow).toBe(false);
+      expect(sut.gating.underAssertedUnit).toBe(false);
+      expect(sut.gating.overMockedIntegration).toBe(false);
+    });
+
+    it('Given gating referencing an unknown heuristic, When parsed, Then throws naming the unknown key', () => {
+      // Arrange
+      const raw = JSON.stringify({ ...VALID_MANIFEST, gating: { mystery: true } });
+
+      // Act
+      let caught: Error | undefined;
+      try {
+        parseManifest(raw);
+      } catch (error) {
+        caught = error instanceof Error ? error : undefined;
+      }
+
+      // Assert
+      expect(caught?.message).toContain('unknown heuristic "mystery"');
+    });
+
+    it('Given gating with a non-boolean value, When parsed, Then throws naming the key', () => {
+      // Arrange
+      const raw = JSON.stringify({
+        ...VALID_MANIFEST,
+        gating: { gwtTitle: 'yes' },
+      });
+
+      // Act
+      let caught: Error | undefined;
+      try {
+        parseManifest(raw);
+      } catch (error) {
+        caught = error instanceof Error ? error : undefined;
+      }
+
+      // Assert
+      expect(caught?.message).toContain('gating "gwtTitle" must be a boolean');
+    });
+
+    it('Given gating as a string instead of an object, When parsed, Then throws naming gating', () => {
+      // Arrange
+      const raw = JSON.stringify({ ...VALID_MANIFEST, gating: 'all' });
+
+      // Act
+      let caught: Error | undefined;
+      try {
+        parseManifest(raw);
+      } catch (error) {
+        caught = error instanceof Error ? error : undefined;
+      }
+
+      // Assert
+      expect(caught?.message).toContain('gating must be an object');
     });
   });
 });

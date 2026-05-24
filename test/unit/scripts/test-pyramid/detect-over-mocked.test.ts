@@ -1,41 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { detectOverMocked } from '../../../../scripts/test-pyramid/detect-over-mocked.js';
 import type { PyramidManifest } from '../../../../scripts/test-pyramid/parse-manifest.js';
+import { makeManifest } from './manifest-fixture.js';
 
-const MANIFEST: PyramidManifest = {
-  tiers: [
-    {
-      name: 'unit',
-      glob: 'test/unit/**/*.test.ts',
-      target: 80,
-      warnBelow: 75,
-      warnAbove: null,
-    },
-    {
-      name: 'integration',
-      glob: 'test/integration/**/*.test.ts',
-      target: 15,
-      warnBelow: 10,
-      warnAbove: 25,
-    },
-    {
-      name: 'e2e',
-      glob: 'test/browser/**/*.spec.ts',
-      target: 5,
-      warnBelow: 3,
-      warnAbove: null,
-    },
-  ],
-  heuristics: {
-    overMockedIntegration: {
-      tier: 'integration',
-      regex: '\\bvi\\.(mock|fn|spyOn|stubGlobal|stubEnv)\\s*\\(',
-      compiledRegex: /\bvi\.(mock|fn|spyOn|stubGlobal|stubEnv)\s*\(/g,
-      threshold: 0,
-    },
-    underAssertedUnit: { tier: 'unit', minAssertionsPerTest: 1 },
-  },
-};
+const MANIFEST = makeManifest();
 
 describe('detectOverMocked', () => {
   it('Given an integration file with no vi.* calls, When scanned, Then no finding is returned', () => {

@@ -29,13 +29,55 @@ export interface UnderAssertedHeuristic {
   readonly minAssertionsPerTest: number;
 }
 
+export type AaaMarker = 'Arrange' | 'Act' | 'Assert';
+
+export interface GwtTitleHeuristic {
+  readonly tier: TierName;
+  readonly regex: string;
+  readonly compiledRegex: RegExp;
+}
+
+export interface AaaBodyHeuristic {
+  readonly tier: TierName;
+  readonly required: ReadonlyArray<AaaMarker>;
+}
+
+export interface SutNamingHeuristic {
+  readonly tier: TierName;
+  readonly banned: ReadonlyArray<string>;
+}
+
+export interface BareClassThrowHeuristic {
+  readonly tier: TierName;
+  readonly regex: string;
+  readonly compiledRegex: RegExp;
+}
+
+export const GATING_KEYS = [
+  'overMockedIntegration',
+  'underAssertedUnit',
+  'gwtTitle',
+  'aaaBody',
+  'sutNaming',
+  'bareClassToThrow',
+] as const;
+export type GatingKey = (typeof GATING_KEYS)[number];
+export type GatingConfig = Readonly<Record<GatingKey, boolean>>;
+
 export interface PyramidManifest {
   readonly tiers: ReadonlyArray<TierDefinition>;
   readonly heuristics: {
     readonly overMockedIntegration: OverMockedHeuristic;
     readonly underAssertedUnit: UnderAssertedHeuristic;
+    readonly gwtTitle: GwtTitleHeuristic;
+    readonly aaaBody: AaaBodyHeuristic;
+    readonly sutNaming: SutNamingHeuristic;
+    readonly bareClassToThrow: BareClassThrowHeuristic;
   };
+  readonly gating: GatingConfig;
 }
+
+const AAA_MARKERS: ReadonlySet<AaaMarker> = new Set<AaaMarker>(['Arrange', 'Act', 'Assert']);
 
 const fail = (reason: string): never => {
   throw new Error(`manifest invalid: ${reason}`);
@@ -92,6 +134,27 @@ const compileRegex = (pattern: string, heuristicName: string): RegExp => {
   }
 };
 
+const requireTier = (
+  raw: unknown,
+  field: string,
+  tierNames: ReadonlySet<TierName>,
+): TierName => {
+  if (typeof raw !== 'string' || raw.length === 0) {
+    return fail(`${field} tier must be a non-empty string`);
+  }
+  if (!tierNames.has(raw)) {
+    return fail(`${field} references unknown tier "${raw}"`);
+  }
+  return raw;
+};
+
+const requireRegexPattern = (raw: unknown, field: string): string => {
+  if (typeof raw !== 'string' || raw.length === 0) {
+    return fail(`${field} regex must be a non-empty string`);
+  }
+  return raw;
+};
+
 const parseOverMocked = (
   raw: unknown,
   tierNames: ReadonlySet<TierName>,
@@ -99,16 +162,9 @@ const parseOverMocked = (
   if (!isObject(raw)) {
     return fail('overMockedIntegration must be an object');
   }
-  const { tier, regex, threshold } = raw;
-  if (typeof tier !== 'string' || tier.length === 0) {
-    return fail('overMockedIntegration tier must be a non-empty string');
-  }
-  if (!tierNames.has(tier)) {
-    return fail(`overMockedIntegration references unknown tier "${tier}"`);
-  }
-  if (typeof regex !== 'string' || regex.length === 0) {
-    return fail('overMockedIntegration regex must be a non-empty string');
-  }
+  const tier = requireTier(raw.tier, 'overMockedIntegration', tierNames);
+  const regex = requireRegexPattern(raw.regex, 'overMockedIntegration');
+  const { threshold } = raw;
   if (typeof threshold !== 'number' || !Number.isFinite(threshold) || threshold < 0) {
     return fail('overMockedIntegration threshold must be a number >= 0');
   }
@@ -127,13 +183,8 @@ const parseUnderAsserted = (
   if (!isObject(raw)) {
     return fail('underAssertedUnit must be an object');
   }
-  const { tier, minAssertionsPerTest } = raw;
-  if (typeof tier !== 'string' || tier.length === 0) {
-    return fail('underAssertedUnit tier must be a non-empty string');
-  }
-  if (!tierNames.has(tier)) {
-    return fail(`underAssertedUnit references unknown tier "${tier}"`);
-  }
+  const tier = requireTier(raw.tier, 'underAssertedUnit', tierNames);
+  const { minAssertionsPerTest } = raw;
   if (
     typeof minAssertionsPerTest !== 'number' ||
     !Number.isInteger(minAssertionsPerTest) ||
@@ -142,6 +193,115 @@ const parseUnderAsserted = (
     return fail('underAssertedUnit minAssertionsPerTest must be an integer >= 1');
   }
   return { tier, minAssertionsPerTest };
+};
+
+const parseGwtTitle = (
+  raw: unknown,
+  tierNames: ReadonlySet<TierName>,
+): GwtTitleHeuristic => {
+  if (!isObject(raw)) {
+    return fail('gwtTitle must be an object');
+  }
+  const tier = requireTier(raw.tier, 'gwtTitle', tierNames);
+  const regex = requireRegexPattern(raw.regex, 'gwtTitle');
+  return { tier, regex, compiledRegex: compileRegex(regex, 'gwtTitle') };
+};
+
+const parseAaaBody = (
+  raw: unknown,
+  tierNames: ReadonlySet<TierName>,
+): AaaBodyHeuristic => {
+  if (!isObject(raw)) {
+    return fail('aaaBody must be an object');
+  }
+  const tier = requireTier(raw.tier, 'aaaBody', tierNames);
+  const { required } = raw;
+  if (!Array.isArray(required) || required.length === 0) {
+    return fail('aaaBody required must be a non-empty array');
+  }
+  const seen = new Set<AaaMarker>();
+  const markers: AaaMarker[] = [];
+  for (const entry of required) {
+    if (typeof entry !== 'string' || !AAA_MARKERS.has(entry as AaaMarker)) {
+      return fail(`aaaBody required entry "${String(entry)}" must be Arrange|Act|Assert`);
+    }
+    const marker = entry as AaaMarker;
+    if (seen.has(marker)) {
+      return fail(`aaaBody required has duplicate "${marker}"`);
+    }
+    seen.add(marker);
+    markers.push(marker);
+  }
+  return { tier, required: markers };
+};
+
+const parseSutNaming = (
+  raw: unknown,
+  tierNames: ReadonlySet<TierName>,
+): SutNamingHeuristic => {
+  if (!isObject(raw)) {
+    return fail('sutNaming must be an object');
+  }
+  const tier = requireTier(raw.tier, 'sutNaming', tierNames);
+  const { banned } = raw;
+  if (!Array.isArray(banned) || banned.length === 0) {
+    return fail('sutNaming banned must be a non-empty array');
+  }
+  const aliases: string[] = [];
+  const seen = new Set<string>();
+  for (const entry of banned) {
+    if (typeof entry !== 'string' || entry.length === 0) {
+      return fail('sutNaming banned entry must be a non-empty string');
+    }
+    if (!/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(entry)) {
+      return fail(`sutNaming banned entry "${entry}" must be a valid identifier`);
+    }
+    if (seen.has(entry)) {
+      return fail(`sutNaming banned has duplicate "${entry}"`);
+    }
+    seen.add(entry);
+    aliases.push(entry);
+  }
+  return { tier, banned: aliases };
+};
+
+const parseBareClassThrow = (
+  raw: unknown,
+  tierNames: ReadonlySet<TierName>,
+): BareClassThrowHeuristic => {
+  if (!isObject(raw)) {
+    return fail('bareClassToThrow must be an object');
+  }
+  const tier = requireTier(raw.tier, 'bareClassToThrow', tierNames);
+  const regex = requireRegexPattern(raw.regex, 'bareClassToThrow');
+  return { tier, regex, compiledRegex: compileRegex(regex, 'bareClassToThrow') };
+};
+
+const DEFAULT_GATING: GatingConfig = Object.freeze({
+  overMockedIntegration: false,
+  underAssertedUnit: false,
+  gwtTitle: false,
+  aaaBody: false,
+  sutNaming: false,
+  bareClassToThrow: false,
+}) as GatingConfig;
+
+const parseGating = (raw: unknown): GatingConfig => {
+  if (raw === undefined) return DEFAULT_GATING;
+  if (!isObject(raw)) {
+    return fail('gating must be an object');
+  }
+  const out: Record<string, boolean> = { ...DEFAULT_GATING };
+  for (const [key, value] of Object.entries(raw)) {
+    if (!(GATING_KEYS as ReadonlyArray<string>).includes(key)) {
+      return fail(`gating references unknown heuristic "${key}"`);
+    }
+    if (typeof value !== 'boolean') {
+      return fail(`gating "${key}" must be a boolean`);
+    }
+    out[key] = value;
+  }
+  return out as GatingConfig;
 };
 
 export const parseManifest = (raw: string): PyramidManifest => {
@@ -153,7 +313,7 @@ export const parseManifest = (raw: string): PyramidManifest => {
   }
   if (!isObject(json)) return fail('top-level value must be an object');
 
-  const { tiers, heuristics } = json;
+  const { tiers, heuristics, gating } = json;
 
   if (!Array.isArray(tiers)) return fail('tiers field is required and must be an array');
   if (tiers.length === 0) return fail('tiers must contain at least one entry');
@@ -170,20 +330,31 @@ export const parseManifest = (raw: string): PyramidManifest => {
 
   if (!isObject(heuristics)) return fail('heuristics block is required');
 
-  const { overMockedIntegration, underAssertedUnit } = heuristics;
-  if (overMockedIntegration === undefined) {
-    return fail('heuristics.overMockedIntegration is required');
-  }
-  if (underAssertedUnit === undefined) {
-    return fail('heuristics.underAssertedUnit is required');
+  const requiredHeuristicKeys = [
+    'overMockedIntegration',
+    'underAssertedUnit',
+    'gwtTitle',
+    'aaaBody',
+    'sutNaming',
+    'bareClassToThrow',
+  ] as const;
+  for (const key of requiredHeuristicKeys) {
+    if (heuristics[key] === undefined) {
+      return fail(`heuristics.${key} is required`);
+    }
   }
 
   const tierNames = new Set(parsedTiers.map((t) => t.name));
   return {
     tiers: parsedTiers,
     heuristics: {
-      overMockedIntegration: parseOverMocked(overMockedIntegration, tierNames),
-      underAssertedUnit: parseUnderAsserted(underAssertedUnit, tierNames),
+      overMockedIntegration: parseOverMocked(heuristics.overMockedIntegration, tierNames),
+      underAssertedUnit: parseUnderAsserted(heuristics.underAssertedUnit, tierNames),
+      gwtTitle: parseGwtTitle(heuristics.gwtTitle, tierNames),
+      aaaBody: parseAaaBody(heuristics.aaaBody, tierNames),
+      sutNaming: parseSutNaming(heuristics.sutNaming, tierNames),
+      bareClassToThrow: parseBareClassThrow(heuristics.bareClassToThrow, tierNames),
     },
+    gating: parseGating(gating),
   };
 };
