@@ -1,10 +1,10 @@
 /**
  * Sibling scanner for vitest `describe(...)` blocks.
  *
- * Mirrors `scanItBlocks` (paren/brace walker, same skip modifiers,
- * same `each`-aware title position logic). Emits the open/close
- * offsets so callers can join `it()` records to their describe
- * ancestors via source-offset containment (see ADR-118 and
+ * Mirrors `scanItBlocks` (paren/brace walker, same skip modifiers, same
+ * two-stage title position logic for `each` / `skipIf` / `runIf`). Emits
+ * the open/close offsets so callers can join `it()` records to their
+ * describe ancestors via source-offset containment (see ADR-118 and
  * detect-bad-title.ts).
  */
 

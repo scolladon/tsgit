@@ -283,6 +283,20 @@ describe('scanItBlocks', () => {
     expect(sut[0]?.isSkipped).toBe(false);
   });
 
+  it('Given a test.skipIf(cond)(...) alias block, When scanned, Then the inner title is extracted just like the it.skipIf form', () => {
+    // Arrange — the OPENER_RE matches both `it` and `test`; the two-stage
+    // logic must apply equally to the `test` alias.
+    const source = `test.skipIf(true)('Given x, When y, Then z', () => { expect(1).toBe(1); });`;
+
+    // Act
+    const sut = scanItBlocks(source);
+
+    // Assert
+    expect(sut).toHaveLength(1);
+    expect(sut[0]?.title).toBe('Given x, When y, Then z');
+    expect(sut[0]?.isSkipped).toBe(false);
+  });
+
   it('Given an it.concurrent.skip(...) block, When scanned, Then isSkipped is true (chain key)', () => {
     // Arrange
     const source = `it.concurrent.skip('Given x, When y, Then z', () => {});`;
