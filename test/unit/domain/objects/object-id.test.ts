@@ -163,9 +163,6 @@ describe('object-id', () => {
 
     it('Given ZERO_OID, When length is read, Then it equals 40 (sha1 width)', () => {
       // Arrange
-      // (no arrangement)
-
-      // Act
       const sut = ZERO_OID.length;
 
       // Assert
@@ -198,9 +195,6 @@ describe('object-id', () => {
 
     it('Given EMPTY_TREE_OID, When length is read, Then it equals 40', () => {
       // Arrange
-      // (no arrangement)
-
-      // Act
       const sut = EMPTY_TREE_OID.length;
 
       // Assert
@@ -277,8 +271,7 @@ describe('object-id', () => {
 
   describe('property-based tests', () => {
     it('Given the roundtrip property "ObjectId.fromRaw(hexToBytes(id)) equals the original id for valid 40-char ids", When sampled, Then it holds', () => {
-      // Arrange
-      // Assert
+      // Arrange + Assert
       fc.assert(
         fc.property(arbObjectId(40), (id) => {
           const sut = ObjectId.fromRaw(hexToBytes(id));
@@ -288,8 +281,7 @@ describe('object-id', () => {
     });
 
     it('Given the roundtrip property "ObjectId.fromRaw(hexToBytes(id)) equals the original id for valid 64-char ids", When sampled, Then it holds', () => {
-      // Arrange
-      // Assert
+      // Arrange + Assert
       fc.assert(
         fc.property(arbObjectId(64), (id) => {
           const sut = ObjectId.fromRaw(hexToBytes(id));
