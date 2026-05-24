@@ -52,11 +52,11 @@
   },
   "gating": {
     "overMockedIntegration": false,
-    "underAssertedUnit": false,
-    "gwtTitle": false,
-    "aaaBody": false,
-    "sutNaming": false,
-    "bareClassToThrow": false
+    "underAssertedUnit": true,
+    "gwtTitle": true,
+    "aaaBody": true,
+    "sutNaming": true,
+    "bareClassToThrow": true
   },
   "excludePaths": [
     "tooling/test/unit/test-pyramid/detect-*.test.ts",
