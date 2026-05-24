@@ -7,12 +7,15 @@ import { buildSeededContext } from './fixtures.js';
 
 describe('diffTrees', () => {
   it('Given undefined vs undefined, When diffTrees is called, Then returns an empty TreeDiff', async () => {
+    // Arrange
     const ctx = await buildSeededContext();
     const sut = await diffTrees(ctx, undefined, undefined);
+    // Assert
     expect(sut.changes).toEqual([]);
   });
 
   it('Given a single blob added between two trees, When diffTrees is called, Then yields one AddChange', async () => {
+    // Arrange
     const ctx = await buildSeededContext();
     const blob: Blob = { type: 'blob', content: new Uint8Array([1]), id: '' as ObjectId };
     const blobId = await writeObject(ctx, blob);
@@ -21,14 +24,17 @@ describe('diffTrees', () => {
       { name: 'a.txt', mode: '100644' as FileMode, id: blobId },
     ]);
     const sut = await diffTrees(ctx, emptyId, withEntryId);
+    // Assert
     expect(sut.changes.length).toBe(1);
     expect(sut.changes[0]?.type).toBe('add');
   });
 
   it('Given two identical trees, When diffTrees is called, Then returns empty diff', async () => {
+    // Arrange
     const ctx = await buildSeededContext();
     const emptyId = await writeTree(ctx, []);
     const sut = await diffTrees(ctx, emptyId, emptyId);
+    // Assert
     expect(sut.changes).toEqual([]);
   });
 

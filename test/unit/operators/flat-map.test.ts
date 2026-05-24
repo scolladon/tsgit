@@ -96,6 +96,7 @@ describe('flatMap', () => {
     });
 
     // Act / Assert
+    // Assert
     await expect(toArray(sut(source.source))).rejects.toThrow(/threw at item 0/);
     expect(source.returnCalled()).toBe(true);
   });
@@ -105,6 +106,7 @@ describe('flatMap', () => {
     const sut = flatMap((n: number) => [n]);
 
     // Act / Assert
+    // Assert
     await expect(toArray(sut(throwingAt(2, 10)))).rejects.toThrow(/threw at item 2/);
   });
 

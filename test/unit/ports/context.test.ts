@@ -20,6 +20,7 @@ const sentinelDeltaCache = createLruCache<Uint8Array>(1024);
 
 describe('Context', () => {
   it('Given distinct sentinel ports, When creating context, Then ctx.fs === sentinelFs', () => {
+    // Arrange
     const sut = createContext({
       fs: sentinelFs,
       hash: sentinelHash,
@@ -30,10 +31,12 @@ describe('Context', () => {
       hashConfig: sentinelHashConfig,
       deltaCache: sentinelDeltaCache,
     });
+    // Assert
     expect(sut.fs).toBe(sentinelFs);
   });
 
   it('Given distinct sentinel ports, When creating context, Then ctx.hash === sentinelHash', () => {
+    // Arrange
     const sut = createContext({
       fs: sentinelFs,
       hash: sentinelHash,
@@ -44,10 +47,12 @@ describe('Context', () => {
       hashConfig: sentinelHashConfig,
       deltaCache: sentinelDeltaCache,
     });
+    // Assert
     expect(sut.hash).toBe(sentinelHash);
   });
 
   it('Given distinct sentinel ports, When creating context, Then ctx.compressor === sentinelCompressor', () => {
+    // Arrange
     const sut = createContext({
       fs: sentinelFs,
       hash: sentinelHash,
@@ -58,10 +63,12 @@ describe('Context', () => {
       hashConfig: sentinelHashConfig,
       deltaCache: sentinelDeltaCache,
     });
+    // Assert
     expect(sut.compressor).toBe(sentinelCompressor);
   });
 
   it('Given distinct sentinel ports, When creating context, Then ctx.transport === sentinelTransport', () => {
+    // Arrange
     const sut = createContext({
       fs: sentinelFs,
       hash: sentinelHash,
@@ -72,10 +79,12 @@ describe('Context', () => {
       hashConfig: sentinelHashConfig,
       deltaCache: sentinelDeltaCache,
     });
+    // Assert
     expect(sut.transport).toBe(sentinelTransport);
   });
 
   it('Given distinct sentinel ports, When creating context, Then ctx.progress === sentinelProgress', () => {
+    // Arrange
     const sut = createContext({
       fs: sentinelFs,
       hash: sentinelHash,
@@ -86,10 +95,12 @@ describe('Context', () => {
       hashConfig: sentinelHashConfig,
       deltaCache: sentinelDeltaCache,
     });
+    // Assert
     expect(sut.progress).toBe(sentinelProgress);
   });
 
   it('Given config, When reading ctx.config, Then all fields match input', () => {
+    // Arrange
     const sut = createContext({
       fs: sentinelFs,
       hash: sentinelHash,
@@ -100,10 +111,12 @@ describe('Context', () => {
       hashConfig: sentinelHashConfig,
       deltaCache: sentinelDeltaCache,
     });
+    // Assert
     expect(sut.layout).toEqual({ workDir: '/w', gitDir: '/w/.git', bare: false });
   });
 
   it('Given created context, When attempting mutation, Then throws (frozen)', () => {
+    // Arrange
     const sut = createContext({
       fs: sentinelFs,
       hash: sentinelHash,
@@ -114,10 +127,12 @@ describe('Context', () => {
       hashConfig: sentinelHashConfig,
       deltaCache: sentinelDeltaCache,
     });
+    // Assert
     expect(() => Object.assign(sut, { fs: {} })).toThrow();
   });
 
   it('Given context with signal, When reading ctx.signal, Then correct AbortSignal returned', () => {
+    // Arrange
     const ac = new AbortController();
     const sut = createContext({
       fs: sentinelFs,
@@ -130,10 +145,12 @@ describe('Context', () => {
       deltaCache: sentinelDeltaCache,
       signal: ac.signal,
     });
+    // Assert
     expect(sut.signal).toBe(ac.signal);
   });
 
   it('Given context without signal, When reading ctx.signal, Then undefined', () => {
+    // Arrange
     const sut = createContext({
       fs: sentinelFs,
       hash: sentinelHash,
@@ -144,6 +161,7 @@ describe('Context', () => {
       hashConfig: sentinelHashConfig,
       deltaCache: sentinelDeltaCache,
     });
+    // Assert
     expect(sut.signal).toBeUndefined();
   });
 });

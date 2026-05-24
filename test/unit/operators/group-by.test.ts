@@ -125,6 +125,7 @@ describe('groupBy', () => {
     const sut = groupBy(keyFn);
 
     // Act / Assert
+    // Assert
     await expect(sut(source.source)).rejects.toBe(boom);
     expect(source.returnCalled()).toBe(true);
   });
@@ -136,6 +137,7 @@ describe('groupBy', () => {
     // Act / Assert
     try {
       await sut(fromArray([1, 2, 3, 4, 5]));
+      // Assert
       expect.unreachable();
     } catch (error) {
       expect(error).toBeInstanceOf(RangeError);
@@ -144,9 +146,11 @@ describe('groupBy', () => {
   });
 
   it('Given groupBy(k, -1), When factory invoked, Then RangeError synchronously at construction time', () => {
+    // Arrange
     // Act / Assert
     try {
       groupBy((n: number) => n, -1);
+      // Assert
       expect.unreachable();
     } catch (error) {
       expect(error).toBeInstanceOf(RangeError);
@@ -155,6 +159,7 @@ describe('groupBy', () => {
   });
 
   it('Given groupBy(k, 0) at factory time, When called, Then it does not throw (0 is a valid limit)', () => {
+    // Arrange
     // Act
     const sut = groupBy((n: number) => n, 0);
 
@@ -169,6 +174,7 @@ describe('groupBy', () => {
     // Act / Assert
     try {
       await sut(fromArray([1]));
+      // Assert
       expect.unreachable();
     } catch (error) {
       expect(error).toBeInstanceOf(RangeError);
@@ -177,9 +183,11 @@ describe('groupBy', () => {
   });
 
   it('Given groupBy(k, NaN), When factory invoked, Then RangeError', () => {
+    // Arrange
     // Act / Assert
     try {
       groupBy((n: number) => n, Number.NaN);
+      // Assert
       expect.unreachable();
     } catch (error) {
       expect(error).toBeInstanceOf(RangeError);
@@ -188,6 +196,8 @@ describe('groupBy', () => {
   });
 
   it('Property: Array.from(result.values()).flat() is a permutation of toArray(source) for any source and keyFn', async () => {
+    // Arrange
+    // Assert
     await fc.assert(
       fc.asyncProperty(fc.array(fc.integer(), { maxLength: 30 }), async (input) => {
         const sut = groupBy((n: number) => n % 3);

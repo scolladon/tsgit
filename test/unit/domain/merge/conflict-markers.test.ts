@@ -134,18 +134,24 @@ describe('writeConflictMarkers — positive', () => {
 
 describe('writeConflictMarkers — label validation (negative)', () => {
   it('Given label with \\n, When writeConflictMarkers called, Then throws INVALID_MERGE_INPUT', () => {
+    // Arrange
+    // Assert
     expectMergeError(() =>
       writeConflictMarkers([], [], { labels: { ours: 'a\nb', theirs: 'HEAD' } }),
     );
   });
 
   it('Given label with \\r, When writeConflictMarkers called, Then throws INVALID_MERGE_INPUT', () => {
+    // Arrange
+    // Assert
     expectMergeError(() =>
       writeConflictMarkers([], [], { labels: { ours: 'a\rb', theirs: 'HEAD' } }),
     );
   });
 
   it('Given label with \\x1b (C0 ANSI escape), When writeConflictMarkers called, Then throws INVALID_MERGE_INPUT', () => {
+    // Arrange
+    // Assert
     expectMergeError(() =>
       writeConflictMarkers([], [], {
         labels: { ours: 'HEAD\x1b[31mred', theirs: 'HEAD' },
@@ -154,6 +160,8 @@ describe('writeConflictMarkers — label validation (negative)', () => {
   });
 
   it('Given label with \\x7f (DEL), When writeConflictMarkers called, Then throws INVALID_MERGE_INPUT', () => {
+    // Arrange
+    // Assert
     expectMergeError(() =>
       writeConflictMarkers([], [], {
         labels: { ours: 'HEAD\x7fX', theirs: 'HEAD' },
@@ -162,6 +170,8 @@ describe('writeConflictMarkers — label validation (negative)', () => {
   });
 
   it('Given label with \\x9b (C1 control), When writeConflictMarkers called, Then throws INVALID_MERGE_INPUT', () => {
+    // Arrange
+    // Assert
     expectMergeError(() =>
       writeConflictMarkers([], [], {
         labels: { ours: 'HEAD\u009b', theirs: 'HEAD' },
@@ -170,24 +180,32 @@ describe('writeConflictMarkers — label validation (negative)', () => {
   });
 
   it('Given label containing <<<<<<<, When writeConflictMarkers called, Then throws INVALID_MERGE_INPUT', () => {
+    // Arrange
+    // Assert
     expectMergeError(() =>
       writeConflictMarkers([], [], { labels: { ours: '<<<<<<<', theirs: 'HEAD' } }),
     );
   });
 
   it('Given label containing =======, When writeConflictMarkers called, Then throws INVALID_MERGE_INPUT', () => {
+    // Arrange
+    // Assert
     expectMergeError(() =>
       writeConflictMarkers([], [], { labels: { ours: '=======', theirs: 'HEAD' } }),
     );
   });
 
   it('Given label containing >>>>>>>, When writeConflictMarkers called, Then throws INVALID_MERGE_INPUT', () => {
+    // Arrange
+    // Assert
     expectMergeError(() =>
       writeConflictMarkers([], [], { labels: { ours: '>>>>>>>', theirs: 'HEAD' } }),
     );
   });
 
   it('Given label containing |||||||, When writeConflictMarkers called, Then throws INVALID_MERGE_INPUT', () => {
+    // Arrange
+    // Assert
     expectMergeError(() =>
       writeConflictMarkers([], [], { labels: { ours: '|||||||', theirs: 'HEAD' } }),
     );
@@ -214,6 +232,8 @@ describe('writeConflictMarkers — label validation (negative)', () => {
   });
 
   it('Given label with U+001F (C0 control upper boundary), When writeConflictMarkers called, Then throws INVALID_MERGE_INPUT', () => {
+    // Arrange
+    // Assert
     expectMergeError(
       () => writeConflictMarkers([], [], { labels: { ours: 'HEAD\u001F', theirs: 'HEAD' } }),
       'forbidden control character',
@@ -221,6 +241,8 @@ describe('writeConflictMarkers — label validation (negative)', () => {
   });
 
   it('Given label with U+009F (C1 control upper boundary), When writeConflictMarkers called, Then throws INVALID_MERGE_INPUT', () => {
+    // Arrange
+    // Assert
     expectMergeError(
       () => writeConflictMarkers([], [], { labels: { ours: 'HEAD\u009F', theirs: 'HEAD' } }),
       'forbidden control character',
@@ -228,6 +250,8 @@ describe('writeConflictMarkers — label validation (negative)', () => {
   });
 
   it('Given label with U+202A (bidi LRE, lower boundary of override range), When writeConflictMarkers called, Then throws INVALID_MERGE_INPUT', () => {
+    // Arrange
+    // Assert
     expectMergeError(
       () => writeConflictMarkers([], [], { labels: { ours: 'HEAD\u202A', theirs: 'HEAD' } }),
       'forbidden control character',
@@ -235,6 +259,8 @@ describe('writeConflictMarkers — label validation (negative)', () => {
   });
 
   it('Given label with U+2066 (bidi isolate LRI, lower boundary), When writeConflictMarkers called, Then throws INVALID_MERGE_INPUT', () => {
+    // Arrange
+    // Assert
     expectMergeError(
       () => writeConflictMarkers([], [], { labels: { ours: 'HEAD\u2066', theirs: 'HEAD' } }),
       'forbidden control character',
@@ -242,6 +268,8 @@ describe('writeConflictMarkers — label validation (negative)', () => {
   });
 
   it('Given label with U+2069 (bidi isolate PDI, upper boundary), When writeConflictMarkers called, Then throws INVALID_MERGE_INPUT', () => {
+    // Arrange
+    // Assert
     expectMergeError(
       () => writeConflictMarkers([], [], { labels: { ours: 'HEAD\u2069', theirs: 'HEAD' } }),
       'forbidden control character',
@@ -249,6 +277,8 @@ describe('writeConflictMarkers — label validation (negative)', () => {
   });
 
   it('Given label with U+200C (ZWNJ invisible), When writeConflictMarkers called, Then throws INVALID_MERGE_INPUT', () => {
+    // Arrange
+    // Assert
     expectMergeError(
       () => writeConflictMarkers([], [], { labels: { ours: 'HEAD\u200C', theirs: 'HEAD' } }),
       'forbidden control character',
@@ -256,6 +286,8 @@ describe('writeConflictMarkers — label validation (negative)', () => {
   });
 
   it('Given label with U+2060 (WORD JOINER invisible), When writeConflictMarkers called, Then throws INVALID_MERGE_INPUT', () => {
+    // Arrange
+    // Assert
     expectMergeError(
       () => writeConflictMarkers([], [], { labels: { ours: 'HEAD\u2060', theirs: 'HEAD' } }),
       'forbidden control character',
@@ -263,30 +295,40 @@ describe('writeConflictMarkers — label validation (negative)', () => {
   });
 
   it('Given label with U+202E (bidi RLO override), When writeConflictMarkers called, Then throws INVALID_MERGE_INPUT', () => {
+    // Arrange
+    // Assert
     expectMergeError(() =>
       writeConflictMarkers([], [], { labels: { ours: 'HEAD\u202E<<<', theirs: 'HEAD' } }),
     );
   });
 
   it('Given label with U+200D (ZWJ invisible), When writeConflictMarkers called, Then throws INVALID_MERGE_INPUT', () => {
+    // Arrange
+    // Assert
     expectMergeError(() =>
       writeConflictMarkers([], [], { labels: { ours: 'HEAD\u200D', theirs: 'HEAD' } }),
     );
   });
 
   it('Given label with U+200B (ZERO WIDTH SPACE), When writeConflictMarkers called, Then throws INVALID_MERGE_INPUT', () => {
+    // Arrange
+    // Assert
     expectMergeError(() =>
       writeConflictMarkers([], [], { labels: { ours: 'HEAD\u200B', theirs: 'HEAD' } }),
     );
   });
 
   it('Given label with U+FEFF (BOM), When writeConflictMarkers called, Then throws INVALID_MERGE_INPUT', () => {
+    // Arrange
+    // Assert
     expectMergeError(() =>
       writeConflictMarkers([], [], { labels: { ours: 'HEAD\uFEFF', theirs: 'HEAD' } }),
     );
   });
 
   it("Given empty label '', When writeConflictMarkers called, Then throws INVALID_MERGE_INPUT", () => {
+    // Arrange
+    // Assert
     expectMergeError(
       () => writeConflictMarkers([], [], { labels: { ours: '', theirs: 'HEAD' } }),
       'empty or whitespace-only',
@@ -294,6 +336,8 @@ describe('writeConflictMarkers — label validation (negative)', () => {
   });
 
   it("Given whitespace-only label ' \\t\\v\\f ', When writeConflictMarkers called, Then throws INVALID_MERGE_INPUT", () => {
+    // Arrange
+    // Assert
     expectMergeError(
       () => writeConflictMarkers([], [], { labels: { ours: ' \t\v\f ', theirs: 'HEAD' } }),
       'empty or whitespace-only',
@@ -301,6 +345,8 @@ describe('writeConflictMarkers — label validation (negative)', () => {
   });
 
   it('Given invalid base label, When writeConflictMarkers called, Then throws INVALID_MERGE_INPUT', () => {
+    // Arrange
+    // Assert
     expectMergeError(
       () =>
         writeConflictMarkers([], [], {
@@ -315,6 +361,7 @@ describe('writeConflictMarkers — label validation (negative)', () => {
     const label = 'a'.repeat(255);
 
     // Act & Assert
+    // Assert
     expect(() =>
       writeConflictMarkers([], [], { labels: { ours: label, theirs: 'HEAD' } }),
     ).not.toThrow();
@@ -325,6 +372,7 @@ describe('writeConflictMarkers — label validation (negative)', () => {
     const label = 'a'.repeat(256);
 
     // Act & Assert
+    // Assert
     expectMergeError(
       () => writeConflictMarkers([], [], { labels: { ours: label, theirs: 'HEAD' } }),
       'exceeds maximum length',
@@ -332,6 +380,8 @@ describe('writeConflictMarkers — label validation (negative)', () => {
   });
 
   it('Given invalid theirs label, When writeConflictMarkers called, Then throws INVALID_MERGE_INPUT with theirs in reason', () => {
+    // Arrange
+    // Assert
     expectMergeError(
       () =>
         writeConflictMarkers([], [], {
@@ -343,6 +393,7 @@ describe('writeConflictMarkers — label validation (negative)', () => {
 
   it('Given label with forbidden char at last position, When writeConflictMarkers called, Then throws INVALID_MERGE_INPUT (loop reaches final index)', () => {
     // Arrange — NUL at the very last character position; ensures the loop bound reaches the last index
+    // Assert
     expectMergeError(
       () =>
         writeConflictMarkers([], [], {
@@ -358,6 +409,7 @@ describe('writeConflictMarkers — label validation (negative)', () => {
     const hostile = `${secret}\n`;
 
     // Act & Assert
+    // Assert
     expectMergeError(
       () =>
         writeConflictMarkers([], [], {
@@ -371,6 +423,8 @@ describe('writeConflictMarkers — label validation (negative)', () => {
   });
 
   it("Given conflictStyle 'diff3' option, When writeConflictMarkers called, Then throws INVALID_MERGE_INPUT containing 'diff3'", () => {
+    // Arrange
+    // Assert
     expectMergeError(
       () =>
         writeConflictMarkers([], [], {
@@ -392,6 +446,7 @@ describe('writeConflictMarkers — output-size cap', () => {
     theirsLine.fill(0x62);
 
     // Act — append LF via trailing ensureTrailingLf; no throw expected
+    // Assert
     expect(() =>
       writeConflictMarkers([oursLine], [theirsLine], {
         labels: { ours: 'H', theirs: 'H' },
@@ -406,6 +461,7 @@ describe('writeConflictMarkers — output-size cap', () => {
     const theirsLine = new Uint8Array(halfBytes + 1);
 
     // Act & Assert
+    // Assert
     expectMergeError(
       () =>
         writeConflictMarkers([oursLine], [theirsLine], {

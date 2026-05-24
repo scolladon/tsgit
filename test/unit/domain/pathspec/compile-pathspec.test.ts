@@ -3,12 +3,16 @@ import { compilePathspec } from '../../../../src/domain/pathspec/compile-pathspe
 
 describe('compilePathspec', () => {
   it('Given an empty list, When compiled, Then yields an empty array', () => {
+    // Arrange
+    // Assert
     expect(compilePathspec([])).toEqual([]);
   });
 
   it('Given a single literal "src/foo.ts", When compiled, Then yields one literal entry with regex matching path-or-descendants', () => {
+    // Arrange
     const sut = compilePathspec(['src/foo.ts']);
 
+    // Assert
     expect(sut).toHaveLength(1);
     expect(sut[0]?.isLiteral).toBe(true);
     expect(sut[0]?.negated).toBe(false);
@@ -19,8 +23,10 @@ describe('compilePathspec', () => {
   });
 
   it('Given a glob "*.ts", When compiled, Then yields a non-literal non-anchored entry', () => {
+    // Arrange
     const sut = compilePathspec(['*.ts']);
 
+    // Assert
     expect(sut[0]?.isLiteral).toBe(false);
     expect(sut[0]?.negated).toBe(false);
     // Non-anchored — matches at any depth.
@@ -29,8 +35,10 @@ describe('compilePathspec', () => {
   });
 
   it('Given an anchored glob "src/**", When compiled, Then yields an anchored entry', () => {
+    // Arrange
     const sut = compilePathspec(['src/**']);
 
+    // Assert
     expect(sut[0]?.isLiteral).toBe(false);
     // Anchored — only matches paths starting at the repo root.
     expect(sut[0]?.compiled.test('src/foo')).toBe(true);
@@ -39,8 +47,10 @@ describe('compilePathspec', () => {
   });
 
   it('Given a "!"-prefixed literal "!src/foo", When compiled, Then negated=true and the body parses as literal', () => {
+    // Arrange
     const sut = compilePathspec(['!src/foo']);
 
+    // Assert
     expect(sut[0]?.negated).toBe(true);
     expect(sut[0]?.isLiteral).toBe(true);
     expect(sut[0]?.pattern).toBe('!src/foo');
@@ -54,6 +64,7 @@ describe('compilePathspec', () => {
     const sut = compilePathspec(['lib']);
 
     // Act / Assert
+    // Assert
     expect(sut[0]?.compiled.test('lib')).toBe(true);
     expect(sut[0]?.compiled.test('lib/a.ts')).toBe(true);
     expect(sut[0]?.compiled.test('lib/nested/deep.ts')).toBe(true);
@@ -80,6 +91,7 @@ describe('compilePathspec', () => {
     const sut = compilePathspec(['lib']);
 
     // Act / Assert
+    // Assert
     expect(sut[0]?.compiled.test('lib')).toBe(true);
     expect(sut[0]?.compiled.test('vendor/lib')).toBe(false);
     expect(sut[0]?.compiled.test('a/b/lib')).toBe(false);
@@ -87,16 +99,20 @@ describe('compilePathspec', () => {
   });
 
   it('Given a "!"-prefixed glob "!*.test.ts", When compiled, Then negated=true with glob semantics', () => {
+    // Arrange
     const sut = compilePathspec(['!*.test.ts']);
 
+    // Assert
     expect(sut[0]?.negated).toBe(true);
     expect(sut[0]?.isLiteral).toBe(false);
     expect(sut[0]?.compiled.test('foo.test.ts')).toBe(true);
   });
 
   it('Given multiple patterns, When compiled, Then the order is preserved', () => {
+    // Arrange
     const sut = compilePathspec(['*.ts', '!*.test.ts', 'src/foo']);
 
+    // Assert
     expect(sut.map((e) => e.pattern)).toEqual(['*.ts', '!*.test.ts', 'src/foo']);
   });
 });

@@ -197,6 +197,7 @@ describe('tag', () => {
       const content = tagText([`object ${'b'.repeat(40)}`, 'type invalid', 'tag v1.0', '', 'msg']);
 
       // Act & Assert
+      // Assert
       expect(() => parseTagContent(DUMMY_ID, content)).toThrow(
         expect.objectContaining({
           data: expect.objectContaining({
@@ -212,6 +213,7 @@ describe('tag', () => {
       const content = tagText(['type commit', 'tag v1.0', '', 'msg']);
 
       // Act & Assert
+      // Assert
       expect(() => parseTagContent(DUMMY_ID, content)).toThrow(
         expect.objectContaining({
           data: expect.objectContaining({
@@ -273,6 +275,7 @@ describe('tag', () => {
       const content = tagText([`object ${'b'.repeat(40)}`, 'tag v1.0', '', 'msg']);
 
       // Act & Assert
+      // Assert
       expect(() => parseTagContent(DUMMY_ID, content)).toThrow(
         expect.objectContaining({
           data: expect.objectContaining({
@@ -288,6 +291,7 @@ describe('tag', () => {
       const content = tagText([]);
 
       // Act & Assert
+      // Assert
       expect(() => parseTagContent(DUMMY_ID, content)).toThrow(
         expect.objectContaining({
           data: expect.objectContaining({
@@ -303,6 +307,7 @@ describe('tag', () => {
       const content = tagText([`object ${'b'.repeat(40)}`]);
 
       // Act & Assert
+      // Assert
       expect(() => parseTagContent(DUMMY_ID, content)).toThrow(
         expect.objectContaining({
           data: expect.objectContaining({
@@ -318,6 +323,7 @@ describe('tag', () => {
       const content = tagText([`object ${'b'.repeat(40)}`, 'type commit']);
 
       // Act & Assert
+      // Assert
       expect(() => parseTagContent(DUMMY_ID, content)).toThrow(
         expect.objectContaining({
           data: expect.objectContaining({
@@ -333,6 +339,7 @@ describe('tag', () => {
       const content = tagText([`object ${'b'.repeat(40)}`, 'type commit', 'tag ', '', 'msg']);
 
       // Act & Assert
+      // Assert
       expect(() => parseTagContent(DUMMY_ID, content)).toThrow(
         expect.objectContaining({
           data: expect.objectContaining({
@@ -348,6 +355,7 @@ describe('tag', () => {
       const content = tagText([`object ${'b'.repeat(40)}`, 'type commit', 'tag v1\0.0', '', 'msg']);
 
       // Act & Assert
+      // Assert
       expect(() => parseTagContent(DUMMY_ID, content)).toThrow(
         expect.objectContaining({
           data: expect.objectContaining({
@@ -371,6 +379,7 @@ describe('tag', () => {
       ]);
 
       // Act & Assert
+      // Assert
       expect(() => parseTagContent(DUMMY_ID, content)).toThrow(
         expect.objectContaining({
           data: expect.objectContaining({
@@ -393,6 +402,7 @@ describe('tag', () => {
       ]);
 
       // Act & Assert
+      // Assert
       expect(() => parseTagContent(DUMMY_ID, content)).toThrow(
         expect.objectContaining({
           data: expect.objectContaining({
@@ -630,6 +640,7 @@ describe('tag', () => {
 
   describe('property-based tests', () => {
     it('Roundtrip: parseTagContent(id, serializeTagContent(tag)) preserves all fields', () => {
+      // Arrange
       const arbIdentity = fc.record({
         name: fc
           .string({ maxLength: 20 })
@@ -666,6 +677,7 @@ describe('tag', () => {
         ),
       });
 
+      // Assert
       fc.assert(
         fc.property(arbTagData, (data) => {
           const tagData =

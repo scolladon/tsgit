@@ -52,6 +52,8 @@ const dummyReportStatus = {
 
 describe('domain commands error — factory data', () => {
   it('workingTreeDirty', () => {
+    // Arrange
+    // Assert
     expect(workingTreeDirty(['a' as FilePath]).data).toEqual({
       code: 'WORKING_TREE_DIRTY',
       paths: ['a'],
@@ -59,6 +61,8 @@ describe('domain commands error — factory data', () => {
   });
 
   it('pathspecNoMatch', () => {
+    // Arrange
+    // Assert
     expect(pathspecNoMatch('*.zzz').data).toEqual({
       code: 'PATHSPEC_NO_MATCH',
       pattern: '*.zzz',
@@ -66,6 +70,8 @@ describe('domain commands error — factory data', () => {
   });
 
   it('pathspecOutsideRepo', () => {
+    // Arrange
+    // Assert
     expect(pathspecOutsideRepo('/etc/passwd' as FilePath).data).toEqual({
       code: 'PATHSPEC_OUTSIDE_REPO',
       path: '/etc/passwd',
@@ -73,18 +79,26 @@ describe('domain commands error — factory data', () => {
   });
 
   it('nothingToCommit', () => {
+    // Arrange
+    // Assert
     expect(nothingToCommit().data).toEqual({ code: 'NOTHING_TO_COMMIT' });
   });
 
   it('emptyCommitMessage', () => {
+    // Arrange
+    // Assert
     expect(emptyCommitMessage().data).toEqual({ code: 'EMPTY_COMMIT_MESSAGE' });
   });
 
   it('authorUnconfigured', () => {
+    // Arrange
+    // Assert
     expect(authorUnconfigured().data).toEqual({ code: 'AUTHOR_UNCONFIGURED' });
   });
 
   it('branchExists', () => {
+    // Arrange
+    // Assert
     expect(branchExists('refs/heads/x' as RefName).data).toEqual({
       code: 'BRANCH_EXISTS',
       name: 'refs/heads/x',
@@ -92,6 +106,8 @@ describe('domain commands error — factory data', () => {
   });
 
   it('branchNotFound', () => {
+    // Arrange
+    // Assert
     expect(branchNotFound('refs/heads/x' as RefName).data).toEqual({
       code: 'BRANCH_NOT_FOUND',
       name: 'refs/heads/x',
@@ -99,6 +115,8 @@ describe('domain commands error — factory data', () => {
   });
 
   it('tagExists', () => {
+    // Arrange
+    // Assert
     expect(tagExists('refs/tags/v1' as RefName).data).toEqual({
       code: 'TAG_EXISTS',
       name: 'refs/tags/v1',
@@ -106,6 +124,8 @@ describe('domain commands error — factory data', () => {
   });
 
   it('tagNotFound', () => {
+    // Arrange
+    // Assert
     expect(tagNotFound('refs/tags/v1' as RefName).data).toEqual({
       code: 'TAG_NOT_FOUND',
       name: 'refs/tags/v1',
@@ -113,6 +133,8 @@ describe('domain commands error — factory data', () => {
   });
 
   it('cannotDeleteCheckedOutBranch', () => {
+    // Arrange
+    // Assert
     expect(cannotDeleteCheckedOutBranch('refs/heads/main' as RefName).data).toEqual({
       code: 'CANNOT_DELETE_CHECKED_OUT_BRANCH',
       name: 'refs/heads/main',
@@ -120,10 +142,14 @@ describe('domain commands error — factory data', () => {
   });
 
   it('invalidUrl', () => {
+    // Arrange
+    // Assert
     expect(invalidUrl('bad').data).toEqual({ code: 'INVALID_URL', reason: 'bad' });
   });
 
   it('blockedHost', () => {
+    // Arrange
+    // Assert
     expect(blockedHost('1.2.3.4', 'private').data).toEqual({
       code: 'BLOCKED_HOST',
       host: '1.2.3.4',
@@ -132,10 +158,14 @@ describe('domain commands error — factory data', () => {
   });
 
   it('tooManyRedirects', () => {
+    // Arrange
+    // Assert
     expect(tooManyRedirects(6).data).toEqual({ code: 'TOO_MANY_REDIRECTS', count: 6 });
   });
 
   it('unsupportedScheme', () => {
+    // Arrange
+    // Assert
     expect(unsupportedScheme('ftp').data).toEqual({
       code: 'UNSUPPORTED_SCHEME',
       scheme: 'ftp',
@@ -143,6 +173,8 @@ describe('domain commands error — factory data', () => {
   });
 
   it('targetDirectoryNotEmpty', () => {
+    // Arrange
+    // Assert
     expect(targetDirectoryNotEmpty('/repo' as FilePath).data).toEqual({
       code: 'TARGET_DIRECTORY_NOT_EMPTY',
       path: '/repo',
@@ -150,10 +182,14 @@ describe('domain commands error — factory data', () => {
   });
 
   it('remoteAdvertisesNoRefs', () => {
+    // Arrange
+    // Assert
     expect(remoteAdvertisesNoRefs().data).toEqual({ code: 'REMOTE_ADVERTISES_NO_REFS' });
   });
 
   it('nonFastForward', () => {
+    // Arrange
+    // Assert
     expect(nonFastForward('refs/heads/main' as RefName, OID1, OID2).data).toEqual({
       code: 'NON_FAST_FORWARD',
       ref: 'refs/heads/main',
@@ -163,6 +199,8 @@ describe('domain commands error — factory data', () => {
   });
 
   it('pushRejected', () => {
+    // Arrange
+    // Assert
     expect(pushRejected('refs/heads/main' as RefName, 'declined', dummyReportStatus).data).toEqual({
       code: 'PUSH_REJECTED',
       ref: 'refs/heads/main',
@@ -172,6 +210,8 @@ describe('domain commands error — factory data', () => {
   });
 
   it('mergeHasConflicts (default paths)', () => {
+    // Arrange
+    // Assert
     expect(mergeHasConflicts(3).data).toEqual({
       code: 'MERGE_HAS_CONFLICTS',
       count: 3,
@@ -180,6 +220,8 @@ describe('domain commands error — factory data', () => {
   });
 
   it('mergeHasConflicts (explicit paths)', () => {
+    // Arrange
+    // Assert
     expect(mergeHasConflicts(2, ['a.txt' as FilePath, 'b.txt' as FilePath]).data).toEqual({
       code: 'MERGE_HAS_CONFLICTS',
       count: 2,
@@ -239,6 +281,8 @@ describe('domain commands error — factory data', () => {
   });
 
   it('checkoutOverwriteDirty', () => {
+    // Arrange
+    // Assert
     expect(checkoutOverwriteDirty(['a' as FilePath]).data).toEqual({
       code: 'CHECKOUT_OVERWRITE_DIRTY',
       paths: ['a'],
@@ -246,6 +290,8 @@ describe('domain commands error — factory data', () => {
   });
 
   it('revparseAmbiguous', () => {
+    // Arrange
+    // Assert
     expect(revparseAmbiguous('abc1', [OID1, OID2]).data).toEqual({
       code: 'REVPARSE_AMBIGUOUS',
       expression: 'abc1',
@@ -254,6 +300,8 @@ describe('domain commands error — factory data', () => {
   });
 
   it('revparseUnresolved', () => {
+    // Arrange
+    // Assert
     expect(revparseUnresolved('foo').data).toEqual({
       code: 'REVPARSE_UNRESOLVED',
       expression: 'foo',
@@ -261,10 +309,14 @@ describe('domain commands error — factory data', () => {
   });
 
   it('emptyPathspec', () => {
+    // Arrange
+    // Assert
     expect(emptyPathspec().data).toEqual({ code: 'EMPTY_PATHSPEC' });
   });
 
   it('operationInProgress', () => {
+    // Arrange
+    // Assert
     expect(operationInProgress('merge').data).toEqual({
       code: 'OPERATION_IN_PROGRESS',
       operation: 'merge',
@@ -272,6 +324,8 @@ describe('domain commands error — factory data', () => {
   });
 
   it('maxRefspecsExceeded', () => {
+    // Arrange
+    // Assert
     expect(maxRefspecsExceeded(2000, 1024).data).toEqual({
       code: 'MAX_REFSPECS_EXCEEDED',
       count: 2000,
@@ -280,6 +334,8 @@ describe('domain commands error — factory data', () => {
   });
 
   it('remoteNotConfigured', () => {
+    // Arrange
+    // Assert
     expect(remoteNotConfigured('upstream').data).toEqual({
       code: 'REMOTE_NOT_CONFIGURED',
       remote: 'upstream',
@@ -287,6 +343,8 @@ describe('domain commands error — factory data', () => {
   });
 
   it('Given a printable reason, When invalidOption, Then data carries the verbatim option name and sanitized reason', () => {
+    // Arrange
+    // Assert
     expect(invalidOption('cwd', 'must be absolute').data).toEqual({
       code: 'INVALID_OPTION',
       option: 'cwd',
@@ -295,6 +353,8 @@ describe('domain commands error — factory data', () => {
   });
 
   it('Given a reason with a CR byte, When invalidOption, Then reason is sanitized via \\xNN', () => {
+    // Arrange
+    // Assert
     expect(invalidOption('cwd', 'bad\rvalue').data).toEqual({
       code: 'INVALID_OPTION',
       option: 'cwd',
@@ -303,10 +363,14 @@ describe('domain commands error — factory data', () => {
   });
 
   it('Given no arguments, When repositoryDisposed, Then data has only the code', () => {
+    // Arrange
+    // Assert
     expect(repositoryDisposed().data).toEqual({ code: 'REPOSITORY_DISPOSED' });
   });
 
   it('Given a path, size, and limit, When workingTreeFileTooLarge, Then data carries every field verbatim', () => {
+    // Arrange
+    // Assert
     expect(workingTreeFileTooLarge('big.bin' as FilePath, 300, 256).data).toEqual({
       code: 'WORKING_TREE_FILE_TOO_LARGE',
       path: 'big.bin',
@@ -316,6 +380,8 @@ describe('domain commands error — factory data', () => {
   });
 
   it('Given a path, size, and limit, When gitignoreFileTooLarge, Then data carries every field verbatim', () => {
+    // Arrange
+    // Assert
     expect(gitignoreFileTooLarge('.gitignore' as FilePath, 2_000_000, 1_048_576).data).toEqual({
       code: 'GITIGNORE_FILE_TOO_LARGE',
       path: '.gitignore',
@@ -325,6 +391,8 @@ describe('domain commands error — factory data', () => {
   });
 
   it('Given a path, size, and limit, When sparsePatternFileTooLarge, Then data carries every field verbatim', () => {
+    // Arrange
+    // Assert
     expect(
       sparsePatternFileTooLarge('info/sparse-checkout' as FilePath, 2_000_000, 1_048_576).data,
     ).toEqual({
@@ -336,6 +404,8 @@ describe('domain commands error — factory data', () => {
   });
 
   it('Given runtime and reason, When adapterUnavailable, Then data carries verbatim runtime and sanitized reason', () => {
+    // Arrange
+    // Assert
     expect(adapterUnavailable('node', 'process.versions missing').data).toEqual({
       code: 'ADAPTER_UNAVAILABLE',
       runtime: 'node',
@@ -344,6 +414,8 @@ describe('domain commands error — factory data', () => {
   });
 
   it('Given a reason with a control byte, When adapterUnavailable, Then reason is sanitized', () => {
+    // Arrange
+    // Assert
     expect(adapterUnavailable('browser', 'no\x07OPFS').data).toEqual({
       code: 'ADAPTER_UNAVAILABLE',
       runtime: 'browser',
@@ -352,6 +424,8 @@ describe('domain commands error — factory data', () => {
   });
 
   it('Given a hook, exit code, and stderr, When hookFailed, Then data carries every field verbatim', () => {
+    // Arrange
+    // Assert
     expect(hookFailed('pre-commit', 1, 'lint failed').data).toEqual({
       code: 'HOOK_FAILED',
       hook: 'pre-commit',
@@ -361,6 +435,8 @@ describe('domain commands error — factory data', () => {
   });
 
   it('Given stderr with a CR byte, When hookFailed, Then stderr is sanitized via \\xNN', () => {
+    // Arrange
+    // Assert
     expect(hookFailed('commit-msg', 2, 'bad\rmsg').data).toEqual({
       code: 'HOOK_FAILED',
       hook: 'commit-msg',
@@ -383,32 +459,46 @@ describe('domain commands error — factory data', () => {
 
 describe('sanitize helper', () => {
   it('Given printable ASCII, When sanitize, Then returns input unchanged', () => {
+    // Arrange
+    // Assert
     expect(sanitize('hello world 123')).toBe('hello world 123');
   });
 
   it('Given a tab and newline, When sanitize, Then preserves them verbatim', () => {
+    // Arrange
+    // Assert
     expect(sanitize('a\tb\nc')).toBe('a\tb\nc');
   });
 
   it('Given CR and other control bytes, When sanitize, Then escapes them as \\xNN', () => {
+    // Arrange
+    // Assert
     expect(sanitize('a\rb')).toBe('a\\x0Db');
   });
 
   it('Given a NUL byte, When sanitize, Then escapes as \\x00', () => {
+    // Arrange
+    // Assert
     expect(sanitize('a\0b')).toBe('a\\x00b');
   });
 
   it('Given a high-byte non-ASCII character, When sanitize, Then escapes', () => {
+    // Arrange
+    // Assert
     expect(sanitize('ab')).toBe('a\\x80b');
   });
 
   it('Given a tilde (0x7e, the printable-range upper bound), When sanitize, Then keeps it verbatim', () => {
+    // Arrange
     // 0x7e is the inclusive upper bound of the printable ASCII range; it must
     // be preserved, not escaped.
+    // Assert
     expect(sanitize('a~b')).toBe('a~b');
   });
 
   it('Given DEL (0x7f, just past the printable upper bound), When sanitize, Then escapes it', () => {
+    // Arrange
+    // Assert
     expect(sanitize('ab')).toBe('a\\x7Fb');
   });
 });

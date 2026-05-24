@@ -144,6 +144,7 @@ describe('walkWorkingTree', () => {
     const ctx = await seedFs({ 'a.txt': '1' }, { signal: controller.signal });
 
     // Act
+    // Assert
     await expectError(() => collect(walkWorkingTree(ctx)), 'OPERATION_ABORTED');
   });
 
@@ -261,6 +262,7 @@ describe('walkWorkingTree', () => {
     const hostileCtx = { ...ctx, fs: hostileFs };
 
     // Act
+    // Assert
     await expectError(() => collect(walkWorkingTree(hostileCtx)), 'PATHSPEC_OUTSIDE_REPO');
   });
 

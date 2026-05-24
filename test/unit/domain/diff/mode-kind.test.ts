@@ -111,6 +111,7 @@ describe('isSameKind', () => {
   });
 
   it('Property: isSameKind(a, b) === isSameKind(b, a) (symmetry)', () => {
+    // Arrange
     const allModes: FileMode[] = [
       FILE_MODE.REGULAR,
       FILE_MODE.EXECUTABLE,
@@ -119,6 +120,7 @@ describe('isSameKind', () => {
       FILE_MODE.GITLINK,
     ];
     const modeArb = fc.constantFrom(...allModes);
+    // Assert
     fc.assert(
       fc.property(modeArb, modeArb, (a, b) => {
         return isSameKind(a, b) === isSameKind(b, a);

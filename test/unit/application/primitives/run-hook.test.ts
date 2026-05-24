@@ -15,33 +15,47 @@ const layout = (over: Partial<RepositoryLayout> = {}): RepositoryLayout => ({
 
 describe('primitives/run-hook resolveHooksDir', () => {
   it('Given no hooksPath, When resolveHooksDir, Then it defaults to <gitDir>/hooks', () => {
+    // Arrange
+    // Assert
     expect(resolveHooksDir(undefined, layout())).toBe('/repo/.git/hooks');
   });
 
   it('Given an absolute POSIX hooksPath, When resolveHooksDir, Then it is used verbatim', () => {
+    // Arrange
+    // Assert
     expect(resolveHooksDir('/opt/githooks', layout())).toBe('/opt/githooks');
   });
 
   it('Given an absolute Windows hooksPath, When resolveHooksDir, Then it is used verbatim', () => {
+    // Arrange
+    // Assert
     expect(resolveHooksDir('C:\\githooks', layout())).toBe('C:\\githooks');
   });
 
   it('Given a ~/ hooksPath with a known homeDir, When resolveHooksDir, Then it expands against homeDir', () => {
+    // Arrange
+    // Assert
     expect(resolveHooksDir('~/.githooks', layout({ homeDir: '/home/ada' }))).toBe(
       '/home/ada/.githooks',
     );
   });
 
   it('Given a ~/ hooksPath with no homeDir, When resolveHooksDir, Then it falls back to <gitDir>/hooks', () => {
+    // Arrange
+    // Assert
     expect(resolveHooksDir('~/.githooks', layout())).toBe('/repo/.git/hooks');
   });
 
   it('Given a relative hooksPath, When resolveHooksDir, Then it resolves against the working-tree root', () => {
+    // Arrange
+    // Assert
     expect(resolveHooksDir('.husky', layout())).toBe('/repo/.husky');
   });
 
   it('Given a relative hooksPath with a drive-letter sequence mid-string, When resolveHooksDir, Then it stays relative', () => {
+    // Arrange
     // The drive-letter form is absolute only when it anchors the start.
+    // Assert
     expect(resolveHooksDir('hooks/c:/sub', layout())).toBe('/repo/hooks/c:/sub');
   });
 });
@@ -56,6 +70,7 @@ describe('primitives/run-hook runHook', () => {
     const ctx = createMemoryContext();
 
     // Act & Assert
+    // Assert
     await expect(runHook(ctx, 'pre-commit')).resolves.toBeUndefined();
   });
 
@@ -64,6 +79,7 @@ describe('primitives/run-hook runHook', () => {
     const ctx = createMemoryContext({ hooks: new MemoryHookRunner() });
 
     // Act & Assert
+    // Assert
     await expect(runHook(ctx, 'pre-commit')).resolves.toBeUndefined();
   });
 
@@ -75,6 +91,7 @@ describe('primitives/run-hook runHook', () => {
     const ctx = createMemoryContext({ hooks: runner });
 
     // Act & Assert
+    // Assert
     await expect(runHook(ctx, 'pre-commit')).resolves.toBeUndefined();
   });
 

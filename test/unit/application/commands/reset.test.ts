@@ -44,15 +44,19 @@ describe('reset', () => {
   });
 
   it('Given mixed mode and target oid, When reset, Then HEAD branch updated', async () => {
+    // Arrange
     const { ctx, c1 } = await seedTwoCommits();
     const sut = await reset(ctx, { mode: 'mixed', target: c1 });
+    // Assert
     expect(sut.mode).toBe('mixed');
     expect(sut.id).toBe(c1);
   });
 
   it('Given hard mode and target oid, When reset, Then result.mode=hard and HEAD branch updated', async () => {
+    // Arrange
     const { ctx, c1 } = await seedTwoCommits();
     const sut = await reset(ctx, { mode: 'hard', target: c1 });
+    // Assert
     expect(sut.mode).toBe('hard');
     expect(sut.id).toBe(c1);
   });
@@ -181,6 +185,7 @@ describe('reset', () => {
   });
 
   it('Given an unresolvable target, When reset, Then throws REVPARSE_UNRESOLVED', async () => {
+    // Arrange
     const { ctx } = await seedTwoCommits();
     let caught: unknown;
     try {
@@ -188,20 +193,25 @@ describe('reset', () => {
     } catch (err) {
       caught = err;
     }
+    // Assert
     expect((caught as { data?: { code?: string } })?.data?.code).toBe('REVPARSE_UNRESOLVED');
   });
 
   it('Given target as a branch name, When reset, Then resolves via refs/heads/<name>', async () => {
+    // Arrange
     const { ctx, c2 } = await seedTwoCommits();
     const sut = await reset(ctx, { mode: 'soft', target: 'main' });
     // Pin to the exact resolved oid so a mutation to the candidate list (e.g.
     // dropping the `refs/heads/${target}` prefix) is caught.
+    // Assert
     expect(sut.id).toBe(c2);
   });
 
   it('Given target as HEAD, When reset, Then no-op (HEAD already points there)', async () => {
+    // Arrange
     const { ctx, c2 } = await seedTwoCommits();
     const sut = await reset(ctx, { mode: 'soft', target: 'HEAD' });
+    // Assert
     expect(sut.id).toBe(c2);
   });
 

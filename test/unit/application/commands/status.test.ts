@@ -441,6 +441,7 @@ describe('status — progress reporting', () => {
     // the contract is: IF start fires, end MUST follow.
     const startCount = events.filter((e) => e.kind === 'start').length;
     const endCount = events.filter((e) => e.kind === 'end').length;
+    // Assert
     expect(endCount).toBe(startCount);
   });
 });

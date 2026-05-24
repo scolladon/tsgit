@@ -72,6 +72,8 @@ describe('blob', () => {
 
   describe('property-based tests', () => {
     it('Roundtrip: parseBlobContent(id, serializeBlobContent(blob)).content equals original content', () => {
+      // Arrange
+      // Assert
       fc.assert(
         fc.property(fc.uint8Array({ minLength: 0, maxLength: 10000 }), (content) => {
           const blob = parseBlobContent(DUMMY_ID, content);

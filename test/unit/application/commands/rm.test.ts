@@ -26,7 +26,9 @@ const expectError = async (fn: () => Promise<unknown>, code: string): Promise<Ts
 
 describe('rm', () => {
   it('Given an empty pathspec, When rm, Then throws EMPTY_PATHSPEC', async () => {
+    // Arrange
     const ctx = await seedAndStage({ 'a.txt': 'a' });
+    // Assert
     await expectError(() => rm(ctx, []), 'EMPTY_PATHSPEC');
   });
 
@@ -54,7 +56,9 @@ describe('rm', () => {
   });
 
   it('Given an untracked path, When rm, Then throws PATHSPEC_NO_MATCH', async () => {
+    // Arrange
     const ctx = await seedAndStage({ 'a.txt': 'a' });
+    // Assert
     await expectError(() => rm(ctx, ['ghost.txt']), 'PATHSPEC_NO_MATCH');
   });
 
@@ -199,6 +203,7 @@ describe('rm', () => {
     // mutant would swallow this, a `false` mutant would swallow nothing — and
     // this branch must re-throw PERMISSION_DENIED specifically because it is
     // not an INDEX_MISSING code.
+    // Assert
     await expectError(() => rm(failingCtx, ['*.nope']), 'PERMISSION_DENIED');
   });
 
@@ -240,6 +245,7 @@ describe('rm', () => {
     // Act / Assert — the removeFile catch must re-throw any non-FILE_NOT_FOUND
     // error. Kills L69 EqualityOperator `=== ` -> `!==` (which would swallow
     // CHECKOUT_OVERWRITE_DIRTY) and the `-> true` ConditionalExpression mutant.
+    // Assert
     const err = await expectError(() => rm(ctx, ['a.txt']), 'CHECKOUT_OVERWRITE_DIRTY');
     if (err.data.code !== 'CHECKOUT_OVERWRITE_DIRTY') throw new Error('unexpected error shape');
     expect(err.data.paths).toEqual(['a.txt']);
@@ -278,6 +284,7 @@ describe('rm', () => {
     await ctx.fs.writeExclusive(`${ctx.layout.gitDir}/index.lock`, new Uint8Array());
 
     // Act / Assert — baseline: without the option a contended lock is fatal.
+    // Assert
     const err = await expectError(() => rm(ctx, ['a.txt']), 'RESOURCE_LOCKED');
     if (err.data.code !== 'RESOURCE_LOCKED') throw new Error('unexpected error shape');
     expect(err.data.resource).toBe('index');

@@ -52,6 +52,7 @@ const contextWithFailingOpen = (
 describe('internal/working-tree', () => {
   describe('validatePath', () => {
     it("Given 'src/foo.ts', When validatePath, Then returns it as a FilePath", () => {
+      // Arrange
       // Act
       const sut = validatePath('src/foo.ts');
 
@@ -60,56 +61,82 @@ describe('internal/working-tree', () => {
     });
 
     it("Given '/abs/path', When validatePath, Then throws PATHSPEC_OUTSIDE_REPO", async () => {
+      // Arrange
+      // Assert
       await expectError(() => validatePath('/abs/path'), 'PATHSPEC_OUTSIDE_REPO');
     });
 
     it("Given '../escape', When validatePath, Then throws PATHSPEC_OUTSIDE_REPO", async () => {
+      // Arrange
+      // Assert
       await expectError(() => validatePath('../escape'), 'PATHSPEC_OUTSIDE_REPO');
     });
 
     it("Given 'a/../b', When validatePath, Then throws PATHSPEC_OUTSIDE_REPO", async () => {
+      // Arrange
+      // Assert
       await expectError(() => validatePath('a/../b'), 'PATHSPEC_OUTSIDE_REPO');
     });
 
     it('Given a path containing NUL byte, When validatePath, Then throws PATHSPEC_OUTSIDE_REPO', async () => {
+      // Arrange
+      // Assert
       await expectError(() => validatePath('a\0b'), 'PATHSPEC_OUTSIDE_REPO');
     });
 
     it("Given 'foo/.git/config' (lowercase .git), When validatePath, Then throws", async () => {
+      // Arrange
+      // Assert
       await expectError(() => validatePath('foo/.git/config'), 'PATHSPEC_OUTSIDE_REPO');
     });
 
     it("Given 'foo/.GIT/config' (uppercase .GIT), When validatePath, Then throws (case-insensitive)", async () => {
+      // Arrange
+      // Assert
       await expectError(() => validatePath('foo/.GIT/config'), 'PATHSPEC_OUTSIDE_REPO');
     });
 
     it("Given 'foo/.git ' (trailing space), When validatePath, Then throws (NTFS-safe)", async () => {
+      // Arrange
+      // Assert
       await expectError(() => validatePath('foo/.git /file'), 'PATHSPEC_OUTSIDE_REPO');
     });
 
     it("Given 'foo/.git.' (trailing dot), When validatePath, Then throws (NTFS-safe)", async () => {
+      // Arrange
+      // Assert
       await expectError(() => validatePath('foo/.git./file'), 'PATHSPEC_OUTSIDE_REPO');
     });
 
     it('Given a path 4097 bytes long, When validatePath, Then throws', async () => {
+      // Arrange
       const tooLong = `${'a'.repeat(4097)}`;
+      // Assert
       await expectError(() => validatePath(tooLong), 'PATHSPEC_OUTSIDE_REPO');
     });
 
     it('Given a 256-byte component, When validatePath, Then throws', async () => {
+      // Arrange
       const bigComponent = 'b'.repeat(256);
+      // Assert
       await expectError(() => validatePath(`a/${bigComponent}/c`), 'PATHSPEC_OUTSIDE_REPO');
     });
 
     it('Given a control character (\\x01) in component, When validatePath, Then throws', async () => {
+      // Arrange
+      // Assert
       await expectError(() => validatePath('foo/bar\x01baz'), 'PATHSPEC_OUTSIDE_REPO');
     });
 
     it('Given an empty string, When validatePath, Then throws', async () => {
+      // Arrange
+      // Assert
       await expectError(() => validatePath(''), 'PATHSPEC_OUTSIDE_REPO');
     });
 
     it('Given a path with backslash separator (Windows-style), When validatePath, Then throws (use POSIX separators)', async () => {
+      // Arrange
+      // Assert
       await expectError(() => validatePath('a\\b'), 'PATHSPEC_OUTSIDE_REPO');
     });
 
@@ -118,6 +145,7 @@ describe('internal/working-tree', () => {
       // 16 segments × 255 = 4080, plus 15 separators = 4095. Total 4095 ≤ 4096.
       const big = 'a'.repeat(255);
       const path = Array.from({ length: 16 }, () => big).join('/');
+      // Assert
       expect(path.length).toBe(4095);
 
       // Act + Assert — exactly one byte under the cap must NOT throw.
@@ -125,16 +153,22 @@ describe('internal/working-tree', () => {
     });
 
     it('Given a 4097-byte path, When validatePath, Then throws (one over the cap)', async () => {
+      // Arrange
       const path = 'a'.repeat(4097);
+      // Assert
       await expectError(() => validatePath(path), 'PATHSPEC_OUTSIDE_REPO');
     });
 
     it('Given a component of exactly 255 bytes, When validatePath, Then succeeds (boundary)', () => {
+      // Arrange
       const path = `a/${'b'.repeat(255)}/c`;
+      // Assert
       expect(() => validatePath(path)).not.toThrow();
     });
 
     it('Given a control character at exactly 0x1F, When validatePath, Then throws (boundary kill for `code <= 0x1f`)', async () => {
+      // Arrange
+      // Assert
       await expectError(
         () => validatePath(`foo/bar${String.fromCharCode(0x1f)}baz`),
         'PATHSPEC_OUTSIDE_REPO',
@@ -142,22 +176,32 @@ describe('internal/working-tree', () => {
     });
 
     it('Given a component containing `:` (NTFS Alternate Data Stream / Windows drive), When validatePath, Then throws', async () => {
+      // Arrange
+      // Assert
       await expectError(() => validatePath('foo/.git:$DATA/x'), 'PATHSPEC_OUTSIDE_REPO');
     });
 
     it('Given a component starting with a Windows drive letter (`C:rel`), When validatePath, Then throws', async () => {
+      // Arrange
+      // Assert
       await expectError(() => validatePath('C:relative/file'), 'PATHSPEC_OUTSIDE_REPO');
     });
 
     it('Given `.git` followed by mixed dots and spaces, When validatePath, Then throws (defensive NTFS strip)', async () => {
+      // Arrange
+      // Assert
       await expectError(() => validatePath('foo/.git . . /file'), 'PATHSPEC_OUTSIDE_REPO');
     });
 
     it('Given a path with trailing slash, When validatePath, Then throws (kills `startsWith` vs `endsWith` direction mutant)', async () => {
+      // Arrange
+      // Assert
       await expectError(() => validatePath('foo/'), 'PATHSPEC_OUTSIDE_REPO');
     });
 
     it('Given a path with leading slash, When validatePath, Then thrown error.data.path is the original input (kills StringLiteral on factory arg)', async () => {
+      // Arrange
+      // Assert
       const err = await expectError(() => validatePath('/abs'), 'PATHSPEC_OUTSIDE_REPO');
       const data = err.data;
       if (data.code === 'PATHSPEC_OUTSIDE_REPO') {
@@ -335,6 +379,7 @@ describe('internal/working-tree', () => {
       } catch (e) {
         caught = e;
       }
+      // Assert
       expect(caught).toBe(sentinel);
       // No fallback write occurred.
       expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/${path}`)).toBe('');
@@ -474,6 +519,7 @@ describe('internal/working-tree', () => {
       const ctx = createMemoryContext();
 
       // Act
+      // Assert
       await expectError(() => removeFile(ctx, '../escape' as FilePath), 'PATHSPEC_OUTSIDE_REPO');
     });
   });
@@ -498,6 +544,7 @@ describe('internal/working-tree', () => {
       const ctx = createMemoryContext();
 
       // Act
+      // Assert
       await expectError(() => readFile(ctx, '../oops' as FilePath), 'PATHSPEC_OUTSIDE_REPO');
     });
   });

@@ -20,6 +20,8 @@ const expectError = (fn: () => unknown, code: string): TsgitError => {
 describe('internal/rev-parse-grammar', () => {
   describe('parseExpression', () => {
     it("Given '', When parseExpression, Then throws REVPARSE_UNRESOLVED", () => {
+      // Arrange
+      // Assert
       expectError(() => parseExpression(''), 'REVPARSE_UNRESOLVED');
     });
 
@@ -39,6 +41,7 @@ describe('internal/rev-parse-grammar', () => {
     });
 
     it("Given 'HEAD', When parseExpression, Then returns kind=ref base=HEAD with no operations", () => {
+      // Arrange
       // Act
       const sut = parseExpression('HEAD');
 
@@ -51,27 +54,37 @@ describe('internal/rev-parse-grammar', () => {
     });
 
     it("Given 'main', When parseExpression, Then returns kind=ref base=main", () => {
+      // Arrange
       const sut = parseExpression('main');
+      // Assert
       expect(sut).toEqual({ kind: 'ref-or-hex', base: 'main', operations: [] });
     });
 
     it("Given ':0:src/foo.ts', When parseExpression, Then returns kind=index-stage with stage=0 and path", () => {
+      // Arrange
       const sut = parseExpression(':0:src/foo.ts');
+      // Assert
       expect(sut).toEqual({ kind: 'index-stage', stage: 0, path: 'src/foo.ts' });
     });
 
     it("Given ':1:path' / ':2:path' / ':3:path', When parseExpression, Then stage is 1/2/3", () => {
+      // Arrange
+      // Assert
       expect(parseExpression(':1:f.txt')).toEqual({ kind: 'index-stage', stage: 1, path: 'f.txt' });
       expect(parseExpression(':2:f.txt')).toEqual({ kind: 'index-stage', stage: 2, path: 'f.txt' });
       expect(parseExpression(':3:f.txt')).toEqual({ kind: 'index-stage', stage: 3, path: 'f.txt' });
     });
 
     it("Given ':4:path' (out-of-range stage), When parseExpression, Then throws REVPARSE_UNRESOLVED", () => {
+      // Arrange
+      // Assert
       expectError(() => parseExpression(':4:f.txt'), 'REVPARSE_UNRESOLVED');
     });
 
     it("Given 'HEAD~3', When parseExpression, Then operations=[ancestor 3]", () => {
+      // Arrange
       const sut = parseExpression('HEAD~3');
+      // Assert
       expect(sut).toEqual({
         kind: 'ref-or-hex',
         base: 'HEAD',
@@ -80,7 +93,9 @@ describe('internal/rev-parse-grammar', () => {
     });
 
     it("Given 'HEAD^', When parseExpression, Then operations=[parent 1]", () => {
+      // Arrange
       const sut = parseExpression('HEAD^');
+      // Assert
       expect(sut).toEqual({
         kind: 'ref-or-hex',
         base: 'HEAD',
@@ -89,7 +104,9 @@ describe('internal/rev-parse-grammar', () => {
     });
 
     it("Given 'HEAD^2', When parseExpression, Then operations=[parent 2]", () => {
+      // Arrange
       const sut = parseExpression('HEAD^2');
+      // Assert
       expect(sut).toEqual({
         kind: 'ref-or-hex',
         base: 'HEAD',
@@ -98,7 +115,9 @@ describe('internal/rev-parse-grammar', () => {
     });
 
     it("Given 'HEAD^^^', When parseExpression, Then three parent ops in sequence", () => {
+      // Arrange
       const sut = parseExpression('HEAD^^^');
+      // Assert
       expect(sut).toEqual({
         kind: 'ref-or-hex',
         base: 'HEAD',
@@ -111,7 +130,9 @@ describe('internal/rev-parse-grammar', () => {
     });
 
     it("Given 'HEAD^{tree}', When parseExpression, Then operations=[peel tree]", () => {
+      // Arrange
       const sut = parseExpression('HEAD^{tree}');
+      // Assert
       expect(sut).toEqual({
         kind: 'ref-or-hex',
         base: 'HEAD',
@@ -120,7 +141,9 @@ describe('internal/rev-parse-grammar', () => {
     });
 
     it("Given 'HEAD^{commit}', When parseExpression, Then operations=[peel commit]", () => {
+      // Arrange
       const sut = parseExpression('HEAD^{commit}');
+      // Assert
       expect(sut.kind === 'ref-or-hex' && sut.operations[0]).toEqual({
         kind: 'peel',
         target: 'commit',
@@ -128,6 +151,8 @@ describe('internal/rev-parse-grammar', () => {
     });
 
     it("Given 'HEAD^{blob}' / 'HEAD^{tag}', When parseExpression, Then peel target reflects type", () => {
+      // Arrange
+      // Assert
       expect(
         (parseExpression('HEAD^{blob}') as { operations: ReadonlyArray<{ target: string }> })
           .operations[0]?.target,
@@ -139,14 +164,19 @@ describe('internal/rev-parse-grammar', () => {
     });
 
     it("Given 'HEAD^{garbage}' (unknown type), When parseExpression, Then throws REVPARSE_UNRESOLVED", () => {
+      // Arrange
+      // Assert
       expectError(() => parseExpression('HEAD^{garbage}'), 'REVPARSE_UNRESOLVED');
     });
 
     it("Given 'HEAD~~' (~ with no number after), When parseExpression, Then throws REVPARSE_UNRESOLVED", () => {
+      // Arrange
+      // Assert
       expectError(() => parseExpression('HEAD~~'), 'REVPARSE_UNRESOLVED');
     });
 
     it("Given 'HEAD@{1}' (reflog index), When parseExpression, Then base=HEAD with an index reflog selector", () => {
+      // Arrange
       // Act
       const sut = parseExpression('HEAD@{1}');
 
@@ -160,6 +190,7 @@ describe('internal/rev-parse-grammar', () => {
     });
 
     it("Given 'HEAD@{0}' (boundary index zero), When parseExpression, Then the index selector carries n=0", () => {
+      // Arrange
       // Act
       const sut = parseExpression('HEAD@{0}');
 
@@ -173,6 +204,7 @@ describe('internal/rev-parse-grammar', () => {
     });
 
     it("Given 'HEAD@{12}' (multi-digit index), When parseExpression, Then the index selector carries n=12", () => {
+      // Arrange
       // Act
       const sut = parseExpression('HEAD@{12}');
 
@@ -182,6 +214,7 @@ describe('internal/rev-parse-grammar', () => {
     });
 
     it("Given 'main@{0}^' (reflog selector then a parent op), When parseExpression, Then both the selector and the operation chain are parsed", () => {
+      // Arrange
       // Act — the `}` ends the selector; `^` after it is the operation chain.
       const sut = parseExpression('main@{0}^');
 
@@ -195,6 +228,7 @@ describe('internal/rev-parse-grammar', () => {
     });
 
     it("Given 'HEAD@{2.days.ago}~3' (date selector then ancestor op), When parseExpression, Then the date selector keeps its raw body and the op chain follows", () => {
+      // Arrange
       // Act
       const sut = parseExpression('HEAD@{2.days.ago}~3');
 
@@ -208,6 +242,7 @@ describe('internal/rev-parse-grammar', () => {
     });
 
     it("Given '@{yesterday}' (a date selector with no base), When parseExpression, Then base is empty and the selector is a date", () => {
+      // Arrange
       // Act — a bare `@{…}` resolves against the current branch at evaluation.
       const sut = parseExpression('@{yesterday}');
 
@@ -221,6 +256,7 @@ describe('internal/rev-parse-grammar', () => {
     });
 
     it("Given '@{1}' (a bare index selector), When parseExpression, Then base is empty and the selector is an index", () => {
+      // Arrange
       // Act
       const sut = parseExpression('@{1}');
 
@@ -234,6 +270,7 @@ describe('internal/rev-parse-grammar', () => {
     });
 
     it("Given 'main@{2026-05-01 12:30:00}' (a date body with spaces), When parseExpression, Then the whole body is captured as the raw date", () => {
+      // Arrange
       // Act — the closing `}` delimits the body, so spaces inside it are fine.
       const sut = parseExpression('main@{2026-05-01 12:30:00}');
 
@@ -244,11 +281,13 @@ describe('internal/rev-parse-grammar', () => {
 
     it("Given 'HEAD@{}' (an empty selector body), When parseExpression, Then throws REVPARSE_UNRESOLVED", () => {
       // Arrange / Act / Assert — an empty body is neither an index nor a date.
+      // Assert
       expectError(() => parseExpression('HEAD@{}'), 'REVPARSE_UNRESOLVED');
     });
 
     it("Given 'HEAD@{2' (an unbalanced '@{' with no closing brace), When parseExpression, Then throws REVPARSE_UNRESOLVED", () => {
       // Arrange / Act / Assert
+      // Assert
       expectError(() => parseExpression('HEAD@{2'), 'REVPARSE_UNRESOLVED');
     });
 
@@ -266,6 +305,7 @@ describe('internal/rev-parse-grammar', () => {
       // Arrange / Act / Assert — isolates the missing-`}` guard from the
       // empty-body guard: the body here ('12') is non-empty, so only the
       // `close === -1` check can reject it.
+      // Assert
       expectError(() => parseExpression('HEAD@{12'), 'REVPARSE_UNRESOLVED');
     });
 
@@ -284,16 +324,22 @@ describe('internal/rev-parse-grammar', () => {
     });
 
     it("Given 'abc' (3 hex chars, looks like a prefix but too short), When parseExpression, Then throws REVPARSE_UNRESOLVED", () => {
+      // Arrange
+      // Assert
       expectError(() => parseExpression('abc'), 'REVPARSE_UNRESOLVED');
     });
 
     it("Given 'abc1234' (7 hex chars), When parseExpression, Then accepted as ref-or-hex with base=abc1234", () => {
+      // Arrange
       const sut = parseExpression('abc1234');
+      // Assert
       expect(sut).toEqual({ kind: 'ref-or-hex', base: 'abc1234', operations: [] });
     });
 
     it("Given 'HEAD~3^2', When parseExpression, Then ops=[ancestor 3, parent 2]", () => {
+      // Arrange
       const sut = parseExpression('HEAD~3^2');
+      // Assert
       expect(sut).toEqual({
         kind: 'ref-or-hex',
         base: 'HEAD',
@@ -305,20 +351,28 @@ describe('internal/rev-parse-grammar', () => {
     });
 
     it("Given 'origin/main' (slash inside ref name), When parseExpression, Then base preserves slash", () => {
+      // Arrange
       const sut = parseExpression('origin/main');
+      // Assert
       expect(sut).toEqual({ kind: 'ref-or-hex', base: 'origin/main', operations: [] });
     });
 
     it("Given ':0:' (empty path), When parseExpression, Then throws REVPARSE_UNRESOLVED", () => {
+      // Arrange
+      // Assert
       expectError(() => parseExpression(':0:'), 'REVPARSE_UNRESOLVED');
     });
 
     it("Given ':' alone, When parseExpression, Then throws REVPARSE_UNRESOLVED", () => {
+      // Arrange
+      // Assert
       expectError(() => parseExpression(':'), 'REVPARSE_UNRESOLVED');
     });
 
     it("Given 'HEAD~9' (boundary digit 9), When parseExpression, Then ancestor n=9", () => {
+      // Arrange
       const sut = parseExpression('HEAD~9');
+      // Assert
       expect(sut).toEqual({
         kind: 'ref-or-hex',
         base: 'HEAD',
@@ -327,7 +381,9 @@ describe('internal/rev-parse-grammar', () => {
     });
 
     it("Given 'HEAD~0' (boundary digit 0), When parseExpression, Then ancestor n=0", () => {
+      // Arrange
       const sut = parseExpression('HEAD~0');
+      // Assert
       expect(sut).toEqual({
         kind: 'ref-or-hex',
         base: 'HEAD',
@@ -336,23 +392,31 @@ describe('internal/rev-parse-grammar', () => {
     });
 
     it("Given 'HEAD~10' (multi-digit), When parseExpression, Then ancestor n=10", () => {
+      // Arrange
       const sut = parseExpression('HEAD~10');
       const op = (sut as { operations: ReadonlyArray<{ n: number }> }).operations[0];
+      // Assert
       expect(op?.n).toBe(10);
     });
 
     it("Given 'HEAD^{' (peel with no closing brace), When parseExpression, Then throws REVPARSE_UNRESOLVED", () => {
+      // Arrange
+      // Assert
       expectError(() => parseExpression('HEAD^{'), 'REVPARSE_UNRESOLVED');
     });
 
     it("Given ':0' (stage with no path separator), When parseExpression, Then throws REVPARSE_UNRESOLVED", () => {
+      // Arrange
+      // Assert
       expectError(() => parseExpression(':0'), 'REVPARSE_UNRESOLVED');
     });
 
     it("Given 'HEAD<garbage' (no operator after base, just an unknown char), When parseExpression, Then base contains the full text", () => {
+      // Arrange
       // The parser only stops at `~` and `^`. Anything else is part of the base
       // and forwarded to evaluation, where ref/hex resolution will fail.
       const sut = parseExpression('HEAD<garbage');
+      // Assert
       expect((sut as { base: string }).base).toBe('HEAD<garbage');
     });
 
@@ -373,16 +437,19 @@ describe('internal/rev-parse-grammar', () => {
     it("Given 'HEAD^x' (non-operator char inside the operation chain), When parseExpression, Then throws REVPARSE_UNRESOLVED", () => {
       // Arrange / Act / Assert
       // After parsing `^`, the cursor lands on `x`, which is neither `~` nor `^`.
+      // Assert
       expectError(() => parseExpression('HEAD^x'), 'REVPARSE_UNRESOLVED');
     });
 
     it("Given '^1' (empty base before an operator), When parseExpression, Then throws REVPARSE_UNRESOLVED", () => {
       // Arrange / Act / Assert
+      // Assert
       expectError(() => parseExpression('^1'), 'REVPARSE_UNRESOLVED');
     });
 
     it("Given ':5:f.txt' (single-digit out-of-range stage), When parseExpression, Then throws REVPARSE_UNRESOLVED", () => {
       // Arrange / Act / Assert
+      // Assert
       expectError(() => parseExpression(':5:f.txt'), 'REVPARSE_UNRESOLVED');
     });
 
@@ -458,6 +525,7 @@ describe('internal/rev-parse-grammar', () => {
       // branch in `parseOperations` fails. A mutant dropping the lower-bound
       // check (`code >= 0x30` -> true) would over-accept '.' (≤ 0x39), pull it
       // into the ancestor count, and the parse would succeed instead.
+      // Assert
       expectError(() => parseExpression('HEAD~1.'), 'REVPARSE_UNRESOLVED');
     });
 

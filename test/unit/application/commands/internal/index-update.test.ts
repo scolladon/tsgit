@@ -69,6 +69,7 @@ describe('internal/index-update', () => {
     await ctx.fs.write(lockPath(ctx), new Uint8Array([1]));
 
     // Act + Assert
+    // Assert
     await expectError(() => acquireIndexLock(ctx), 'RESOURCE_LOCKED');
   });
 
@@ -95,6 +96,7 @@ describe('internal/index-update', () => {
     const now = () => Date.now() - 60_000;
 
     // Act + Assert
+    // Assert
     await expectError(
       () => acquireIndexLock(ctx, { breakStaleLockMs: 1000, now }),
       'RESOURCE_LOCKED',
@@ -122,6 +124,7 @@ describe('internal/index-update', () => {
 
     // Act + Assert — must not throw.
     await sut.release();
+    // Assert
     expect(await ctx.fs.exists(lockPath(ctx))).toBe(false);
   });
 
@@ -165,6 +168,7 @@ describe('internal/index-update', () => {
     const now = () => mtime + 999; // 1 ms below threshold
 
     // Act + Assert
+    // Assert
     await expectError(
       () => acquireIndexLock(ctx, { breakStaleLockMs: 1000, now }),
       'RESOURCE_LOCKED',
@@ -179,14 +183,17 @@ describe('internal/index-update', () => {
 
     // Act + Assert — second commit should not re-write the index or throw.
     await lock.commit([]);
+    // Assert
   });
 
   it('Given release then release on the same lock object, When release is called twice, Then second is a no-op', async () => {
+    // Arrange
     const ctx = createMemoryContext();
     const lock = await acquireIndexLock(ctx);
 
     await lock.release();
     await lock.release();
+    // Assert
   });
 
   it('Given two concurrent acquireIndexLock calls, When both started, Then exactly one wins', async () => {
@@ -235,6 +242,7 @@ describe('internal/index-update', () => {
     const ctx: Context = { ...base, fs: { ...base.fs, writeExclusive } };
 
     // Act + Assert
+    // Assert
     const caught = await expectError(() => acquireIndexLock(ctx), 'PERMISSION_DENIED');
     expect(caught).toBe(denied);
   });
@@ -249,6 +257,7 @@ describe('internal/index-update', () => {
     const now = (): number => mtime - 50; // age = -50, above threshold -100
 
     // Act + Assert — clock-skew guard fires before the threshold comparison.
+    // Assert
     const caught = await expectError(
       () => acquireIndexLock(ctx, { breakStaleLockMs: -100, now }),
       'RESOURCE_LOCKED',
@@ -362,6 +371,7 @@ describe('internal/index-update', () => {
     const sut = await acquireIndexLock(ctx);
 
     // Act + Assert
+    // Assert
     const caught = await expectError(() => sut.release(), 'PERMISSION_DENIED');
     expect(caught).toBe(denied);
   });
@@ -376,6 +386,7 @@ describe('internal/index-update', () => {
     const sut = await acquireIndexLock(ctx);
 
     // Act + Assert — release resolves without throwing.
+    // Assert
     await expect(sut.release()).resolves.toBeUndefined();
   });
 
@@ -402,6 +413,7 @@ describe('internal/index-update', () => {
     };
 
     // Act + Assert
+    // Assert
     const caught = await expectError(
       () => acquireIndexLock(ctxStale, { breakStaleLockMs: 1000, now }),
       'RESOURCE_LOCKED',
@@ -434,6 +446,7 @@ describe('internal/index-update', () => {
     const now = (): number => 10_000;
 
     // Act + Assert
+    // Assert
     const caught = await expectError(
       () => acquireIndexLock(ctx, { breakStaleLockMs: 1000, now }),
       'PERMISSION_DENIED',

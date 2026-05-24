@@ -249,6 +249,8 @@ describe('diffTrees', () => {
   });
 
   it('Property: for any Tree A, diffTrees(A, A).changes is empty', () => {
+    // Arrange
+    // Assert
     fc.assert(
       fc.property(arbTree(), (t) => {
         const result = diffTrees(t, t);
@@ -258,6 +260,8 @@ describe('diffTrees', () => {
   });
 
   it('Property: diffTrees(undefined, X) deep-equals diffTrees({type:"tree", entries:[]}, X) for any X', () => {
+    // Arrange
+    // Assert
     fc.assert(
       fc.property(arbTree(), (t) => {
         const a = diffTrees(undefined, t);

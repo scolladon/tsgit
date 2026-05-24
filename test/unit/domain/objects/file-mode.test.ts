@@ -51,11 +51,13 @@ describe('file-mode', () => {
 
     it("Given '999999', When validating, Then throws INVALID_FILE_MODE", () => {
       // Arrange & Act & Assert
+      // Assert
       expect(() => validateFileMode('999999')).toThrow(TsgitError);
     });
 
     it("Given '', When validating, Then throws INVALID_FILE_MODE", () => {
       // Arrange & Act & Assert
+      // Assert
       expect(() => validateFileMode('')).toThrow(TsgitError);
     });
   });
@@ -87,6 +89,7 @@ describe('file-mode', () => {
 
     it("Given '999999', When normalizing, Then throws INVALID_FILE_MODE", () => {
       // Arrange & Act & Assert
+      // Assert
       expect(() => normalizeFileMode('999999')).toThrow(TsgitError);
     });
   });

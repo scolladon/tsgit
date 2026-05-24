@@ -14,6 +14,8 @@ import { buildSeededContext } from './fixtures.js';
 
 describe('composition laws', () => {
   it('Law: writeObject ∘ readObject is identity for blobs (property)', async () => {
+    // Arrange
+    // Assert
     await fc.assert(
       fc.asyncProperty(fc.uint8Array({ maxLength: 64 }), async (bytes) => {
         const ctx = await buildSeededContext();
@@ -31,6 +33,8 @@ describe('composition laws', () => {
   });
 
   it('Law: updateRef ∘ resolveRef returns the same id', async () => {
+    // Arrange
+    // Assert
     await fc.assert(
       fc.asyncProperty(
         fc.string({ unit: fc.constantFrom(...'0123456789abcdef'), minLength: 40, maxLength: 40 }),
@@ -47,6 +51,7 @@ describe('composition laws', () => {
   });
 
   it('Law: writeTree permutation independence (output hash stable under input shuffling)', async () => {
+    // Arrange
     const ctx = await buildSeededContext();
     const b1 = await writeObject(ctx, {
       type: 'blob',
@@ -66,17 +71,21 @@ describe('composition laws', () => {
       { name: 'b', mode: '100644' as FileMode, id: b2 },
       { name: 'a', mode: '100644' as FileMode, id: b1 },
     ]);
+    // Assert
     expect(idA).toBe(idB);
   });
 
   it('Law: diffTrees(tree, tree) returns empty', async () => {
+    // Arrange
     const ctx = await buildSeededContext();
     const emptyId = await writeTree(ctx, []);
     const sut = await diffTrees(ctx, emptyId, emptyId);
+    // Assert
     expect(sut.changes).toEqual([]);
   });
 
   it('Law: readTree ∘ writeTree yields back the same entries shape', async () => {
+    // Arrange
     const ctx = await buildSeededContext();
     const b1 = await writeObject(ctx, {
       type: 'blob',
@@ -86,6 +95,7 @@ describe('composition laws', () => {
     const entries = [{ name: 'f', mode: '100644' as FileMode, id: b1 }];
     const id = await writeTree(ctx, entries);
     const tree = await readTree(ctx, id);
+    // Assert
     expect(tree.entries.length).toBe(1);
     expect(tree.entries[0]?.name).toBe('f');
   });

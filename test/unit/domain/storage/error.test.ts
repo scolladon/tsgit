@@ -87,6 +87,7 @@ describe('storage error', () => {
 
       // Act & Assert
       const data: TsgitErrorData = sut.data;
+      // Assert
       assertExhaustiveSwitch(data);
     });
   });

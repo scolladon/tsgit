@@ -47,6 +47,7 @@ describe('selectNativePolicy', () => {
 
 describe('narrowSep', () => {
   it('Given the POSIX separator, When narrowed, Then returns it unchanged', () => {
+    // Arrange
     // Act
     const sut = narrowSep('/');
 
@@ -55,6 +56,7 @@ describe('narrowSep', () => {
   });
 
   it('Given the Windows separator, When narrowed, Then returns it unchanged', () => {
+    // Arrange
     // Act
     const sut = narrowSep('\\');
 
@@ -95,6 +97,7 @@ describe('narrowSep', () => {
 
 describe('nativePolicy', () => {
   it('Given the host platform, When nativePolicy is inspected, Then it matches selectNativePolicy(process.platform)', () => {
+    // Arrange
     // Act
     const sut = nativePolicy;
 
@@ -105,61 +108,87 @@ describe('nativePolicy', () => {
 
 describe('posixPolicy', () => {
   it('Given posix policy, When sep is read, Then it is forward slash', () => {
+    // Arrange
+    // Assert
     expect(posixPolicy.sep).toBe('/');
   });
 
   it('Given posix policy, When caseInsensitive is read, Then it is false', () => {
+    // Arrange
+    // Assert
     expect(posixPolicy.caseInsensitive).toBe(false);
   });
 
   it('Given mixed-case input, When normalizeForCompare runs, Then identity is returned', () => {
+    // Arrange
+    // Assert
     expect(posixPolicy.normalizeForCompare('/Users/Foo')).toBe('/Users/Foo');
   });
 
   it('Given an input shaped like a Windows extended-length path, When normalizeForCompare runs, Then it is returned verbatim (POSIX never strips)', () => {
+    // Arrange
     // Pins the `caseInsensitive` guard: a ConditionalExpression mutant that
     // routed POSIX through the strip would mangle this otherwise-opaque input.
+    // Assert
     expect(posixPolicy.normalizeForCompare('\\\\?\\C:\\X')).toBe('\\\\?\\C:\\X');
   });
 
   it('Given an absolute POSIX path, When rootOf is called, Then returns "/"', () => {
+    // Arrange
+    // Assert
     expect(posixPolicy.rootOf('/foo/bar')).toBe('/');
   });
 });
 
 describe('windowsPolicy', () => {
   it('Given windows policy, When sep is read, Then it is backslash', () => {
+    // Arrange
+    // Assert
     expect(windowsPolicy.sep).toBe('\\');
   });
 
   it('Given windows policy, When caseInsensitive is read, Then it is true', () => {
+    // Arrange
+    // Assert
     expect(windowsPolicy.caseInsensitive).toBe(true);
   });
 
   it('Given mixed-case input, When normalizeForCompare runs, Then returns lowercased string', () => {
+    // Arrange
+    // Assert
     expect(windowsPolicy.normalizeForCompare('C:\\Users\\Foo')).toBe('c:\\users\\foo');
   });
 
   it('Given a drive path with no extended-length prefix, When normalizeForCompare runs, Then no characters are stripped', () => {
+    // Arrange
     // Guards the `return p` fall-through arm of stripWinExtendedPrefix.
+    // Assert
     expect(windowsPolicy.normalizeForCompare('D:\\proj\\src')).toBe('d:\\proj\\src');
   });
 
   it('Given a \\\\?\\ extended-length drive path, When normalizeForCompare runs, Then the prefix is stripped before case-folding', () => {
+    // Arrange
+    // Assert
     expect(windowsPolicy.normalizeForCompare('\\\\?\\C:\\Users\\Foo')).toBe('c:\\users\\foo');
   });
 
   it('Given a \\\\?\\UNC\\ extended-length path, When normalizeForCompare runs, Then it collapses to the plain UNC form', () => {
+    // Arrange
+    // Assert
     expect(windowsPolicy.normalizeForCompare('\\\\?\\UNC\\Server\\Share\\file.bin')).toBe(
       '\\\\server\\share\\file.bin',
     );
   });
 
   it('Given a Windows drive-letter path, When rootOf is called, Then returns the drive prefix with trailing separator', () => {
+    // Arrange
+    // Assert
     expect(windowsPolicy.rootOf('C:\\Users\\Foo')).toBe('C:\\');
   });
 
   it('Given a UNC path, When rootOf is called, Then returns the server+share prefix', () => {
+    // Arrange
+    // Assert
     expect(windowsPolicy.rootOf('\\\\server\\share\\file.bin')).toBe('\\\\server\\share\\');
   });
 });

@@ -51,7 +51,9 @@ const expectError = async (fn: () => Promise<unknown>, code: string): Promise<Ts
 
 describe('add', () => {
   it('Given empty paths, When add, Then throws EMPTY_PATHSPEC', async () => {
+    // Arrange
     const ctx = await seedFreshRepo();
+    // Assert
     await expectError(() => add(ctx, []), 'EMPTY_PATHSPEC');
   });
 
@@ -67,12 +69,16 @@ describe('add', () => {
   });
 
   it('Given an outside-repo path, When add, Then throws PATHSPEC_OUTSIDE_REPO before any I/O', async () => {
+    // Arrange
     const ctx = await seedFreshRepo();
+    // Assert
     await expectError(() => add(ctx, ['../escape']), 'PATHSPEC_OUTSIDE_REPO');
   });
 
   it('Given a non-existent path, When add, Then throws PATHSPEC_NO_MATCH', async () => {
+    // Arrange
     const ctx = await seedFreshRepo();
+    // Assert
     await expectError(() => add(ctx, ['nonexistent.txt']), 'PATHSPEC_NO_MATCH');
   });
 
@@ -90,7 +96,9 @@ describe('add', () => {
   });
 
   it('Given a non-repo ctx, When add, Then throws NOT_A_REPOSITORY', async () => {
+    // Arrange
     const ctx = createMemoryContext();
+    // Assert
     await expectError(() => add(ctx, ['x']), 'NOT_A_REPOSITORY');
   });
 
@@ -131,6 +139,7 @@ describe('add', () => {
       caught = err;
     }
     const data = (caught as { data?: { code?: string; operation?: string } })?.data;
+    // Assert
     expect(data?.code).toBe('OPERATION_IN_PROGRESS');
     expect(data?.operation).toBe(expectedOp);
   });
@@ -522,6 +531,7 @@ describe('add', () => {
     };
 
     // Act
+    // Assert
     await expectError(() => add(racingCtx, [], { all: true }), 'OPERATION_ABORTED');
   });
 
@@ -535,6 +545,7 @@ describe('add', () => {
     };
 
     // Act
+    // Assert
     await expectError(() => add(racingCtx, [], { all: true }), 'OPERATION_ABORTED');
   });
 
@@ -549,6 +560,7 @@ describe('add', () => {
     };
 
     // Act
+    // Assert
     await expectError(() => add(racingCtx, [], { all: true }), 'OPERATION_ABORTED');
   });
 
@@ -561,6 +573,7 @@ describe('add', () => {
     };
 
     // Act
+    // Assert
     await expectError(() => add(racingCtx, [], { all: true }), 'OPERATION_ABORTED');
   });
 
@@ -573,6 +586,7 @@ describe('add', () => {
     };
 
     // Act
+    // Assert
     await expectError(() => add(racingCtx, [], { all: true }), 'OPERATION_ABORTED');
   });
 
@@ -1316,6 +1330,7 @@ describe('add', () => {
 
     // Act + Assert — PERMISSION_DENIED is not a missing-index code, so it
     // surfaces instead of being absorbed.
+    // Assert
     await expectError(() => add(failingCtx, ['a.txt']), 'PERMISSION_DENIED');
   });
 

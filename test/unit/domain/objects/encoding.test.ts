@@ -66,6 +66,7 @@ describe('encoding', () => {
       const hex = 'abc';
 
       // Act & Assert
+      // Assert
       expect(() => hexToBytes(hex)).toThrow('Hex string must have even length');
     });
 
@@ -74,6 +75,7 @@ describe('encoding', () => {
       const hex = 'zzzz';
 
       // Act & Assert
+      // Assert
       expect(() => hexToBytes(hex)).toThrow('Invalid hex character at position 0');
     });
 
@@ -82,6 +84,7 @@ describe('encoding', () => {
       const hex = 'ABCD';
 
       // Act & Assert
+      // Assert
       expect(() => hexToBytes(hex)).toThrow('Invalid hex character at position 0');
     });
 
@@ -90,6 +93,7 @@ describe('encoding', () => {
       const hex = 'aagb';
 
       // Act & Assert
+      // Assert
       expect(() => hexToBytes(hex)).toThrow('Invalid hex character at position 2');
     });
 
@@ -98,6 +102,7 @@ describe('encoding', () => {
       const hex = 'az';
 
       // Act & Assert
+      // Assert
       expect(() => hexToBytes(hex)).toThrow('Invalid hex character at position 0');
     });
 
@@ -117,6 +122,7 @@ describe('encoding', () => {
       const hex = '.0';
 
       // Act & Assert
+      // Assert
       expect(() => hexToBytes(hex)).toThrow('Invalid hex character at position 0');
     });
   });
@@ -328,16 +334,19 @@ describe('encoding', () => {
 
     it('Given key containing newline, When formatting, Then throws', () => {
       // Arrange & Act & Assert
+      // Assert
       expect(() => formatContinuationHeader('bad\nkey', 'value')).toThrow('invalid header key');
     });
 
     it('Given key containing space, When formatting, Then throws', () => {
       // Arrange & Act & Assert
+      // Assert
       expect(() => formatContinuationHeader('bad key', 'value')).toThrow('invalid header key');
     });
 
     it('Given empty key, When formatting, Then throws', () => {
       // Arrange & Act & Assert
+      // Assert
       expect(() => formatContinuationHeader('', 'value')).toThrow('invalid header key');
     });
   });
@@ -362,6 +371,8 @@ describe('encoding', () => {
 
   describe('property-based tests', () => {
     it('Roundtrip: bytesToHex(hexToBytes(hex)) === hex for any valid even-length hex string', () => {
+      // Arrange
+      // Assert
       fc.assert(
         fc.property(
           fc.uint8Array({ minLength: 0, maxLength: 100 }).map((bytes) =>
@@ -378,6 +389,8 @@ describe('encoding', () => {
     });
 
     it('Roundtrip: hexToBytes(bytesToHex(bytes)) equals original bytes', () => {
+      // Arrange
+      // Assert
       fc.assert(
         fc.property(fc.uint8Array({ minLength: 0, maxLength: 100 }), (bytes) => {
           const sut = hexToBytes(bytesToHex(bytes));
@@ -387,6 +400,8 @@ describe('encoding', () => {
     });
 
     it('Reflexive: compareBytes(a, a) === 0 for any array', () => {
+      // Arrange
+      // Assert
       fc.assert(
         fc.property(fc.uint8Array({ minLength: 0, maxLength: 100 }), (a) => {
           const sut = compareBytes(a, a);
@@ -396,6 +411,8 @@ describe('encoding', () => {
     });
 
     it('Antisymmetric: Math.sign(compareBytes(a, b)) === -Math.sign(compareBytes(b, a))', () => {
+      // Arrange
+      // Assert
       fc.assert(
         fc.property(
           fc.uint8Array({ minLength: 0, maxLength: 50 }),

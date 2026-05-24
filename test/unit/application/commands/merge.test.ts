@@ -855,6 +855,7 @@ describe('merge — bounded blob reads', () => {
 
 describe('merge — progress reporting', () => {
   it('Given an up-to-date merge, When run, Then NO progress events fire (early return before start)', async () => {
+    // Arrange
     const ctx = createMemoryContext();
     await init(ctx);
     await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
@@ -864,6 +865,7 @@ describe('merge — progress reporting', () => {
 
     await merge(withProgress(ctx, reporter), { target: 'main' });
 
+    // Assert
     expect(events).toEqual([]);
   });
 
@@ -1204,6 +1206,7 @@ describe('resolveTarget (direct)', () => {
     } catch (err) {
       caught = err;
     }
+    // Assert
     expect((caught as { data?: { code?: string } })?.data?.code).toBe('REF_NOT_FOUND');
   });
 
@@ -1223,6 +1226,7 @@ describe('resolveTarget (direct)', () => {
     } catch (err) {
       caught = err;
     }
+    // Assert
     expect((caught as { data?: { code?: string } })?.data?.code).toBe('REF_NOT_FOUND');
   });
 });
@@ -1284,6 +1288,7 @@ describe('resolveMergeAuthor / resolveMergeCommitter (direct)', () => {
   });
 
   it('Given no explicit committer, When resolveMergeCommitter runs, Then it falls back to the author', async () => {
+    // Arrange
     // Act
     const sut = resolveMergeCommitter({ target: 'feature' }, author);
 
@@ -1294,6 +1299,7 @@ describe('resolveMergeAuthor / resolveMergeCommitter (direct)', () => {
 
 describe('parentDir (direct)', () => {
   it('Given a nested path, When parentDir is called, Then returns the directory above the leaf', () => {
+    // Arrange
     // Act
     const sut = parentDir('/work/sub/file.txt');
 
@@ -1302,6 +1308,7 @@ describe('parentDir (direct)', () => {
   });
 
   it('Given a path whose only slash is at index 0, When parentDir is called, Then returns undefined (lastSlash <= 0)', () => {
+    // Arrange
     // Act — `/abc`: lastSlash === 0, the `<= 0` guard must fire.
     const sut = parentDir('/abc');
 
@@ -1310,6 +1317,7 @@ describe('parentDir (direct)', () => {
   });
 
   it('Given a path with no slash, When parentDir is called, Then returns undefined (lastSlash === -1)', () => {
+    // Arrange
     // Act
     const sut = parentDir('abc');
 
@@ -1467,6 +1475,7 @@ describe('removeWorkingTreeFile (direct)', () => {
     await init(ctx);
 
     // Act / Assert — the `if (exists)` guard prevents an rm on a missing path.
+    // Assert
     await expect(removeWorkingTreeFile(ctx, 'absent.txt' as FilePath)).resolves.toBeUndefined();
   });
 });
@@ -1568,6 +1577,7 @@ describe('materialiseConflictBytes (direct)', () => {
     const conflict = conflictOf({ type: 'add-add' });
 
     // Act / Assert
+    // Assert
     expect(await materialiseConflictBytes(ctx, conflict)).toBeUndefined();
   });
 
@@ -1620,6 +1630,7 @@ describe('materialiseConflictBytes (direct)', () => {
     const conflict = conflictOf({ type: 'modify-delete' });
 
     // Act / Assert
+    // Assert
     expect(await materialiseConflictBytes(ctx, conflict)).toBeUndefined();
   });
 
@@ -1651,6 +1662,7 @@ describe('materialiseConflictBytes (direct)', () => {
     const conflict = conflictOf({ type: 'content', ourId: oursId });
 
     // Act / Assert
+    // Assert
     expect(await materialiseConflictBytes(ctx, conflict)).toBeUndefined();
   });
 
@@ -1664,6 +1676,7 @@ describe('materialiseConflictBytes (direct)', () => {
     const conflict = conflictOf({ type: 'gitlink', ourId: oursId, theirId: theirsId });
 
     // Act / Assert
+    // Assert
     expect(await materialiseConflictBytes(ctx, conflict)).toBeUndefined();
   });
 });

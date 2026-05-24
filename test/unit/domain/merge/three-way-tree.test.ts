@@ -462,6 +462,7 @@ describe('mergeTrees — contentMerger contract', () => {
     };
 
     // Act & Assert
+    // Assert
     await expect(mergeTrees(base, ours, theirs, merger)).rejects.toThrow('sync failure');
   });
 
@@ -474,6 +475,7 @@ describe('mergeTrees — contentMerger contract', () => {
       Promise.reject(new Error('async failure'));
 
     // Act & Assert
+    // Assert
     await expect(mergeTrees(base, ours, theirs, merger)).rejects.toThrow('async failure');
   });
 

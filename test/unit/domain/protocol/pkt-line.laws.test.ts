@@ -33,6 +33,8 @@ const splitBytes = (buf: Uint8Array, sizes: ReadonlyArray<number>): ReadonlyArra
 
 describe('pkt-line laws', () => {
   it('Property: encodePktLine then decodePktStream round-trips for any payload up to MAX_PKT_LINE_PAYLOAD', async () => {
+    // Arrange
+    // Assert
     await fc.assert(
       fc.asyncProperty(fc.uint8Array({ minLength: 0, maxLength: 65516 }), async (payloadArr) => {
         const payload = Uint8Array.from(payloadArr);
@@ -45,6 +47,8 @@ describe('pkt-line laws', () => {
   });
 
   it('Property: encodePktStream then decode produces N data entries plus a trailing flush', async () => {
+    // Arrange
+    // Assert
     await fc.assert(
       fc.asyncProperty(
         fc.array(fc.uint8Array({ minLength: 0, maxLength: 1024 }), { maxLength: 50 }),
@@ -64,6 +68,8 @@ describe('pkt-line laws', () => {
   });
 
   it('Property: chunk re-arrangement is invariant for valid encoded streams', async () => {
+    // Arrange
+    // Assert
     await fc.assert(
       fc.asyncProperty(
         fc.array(fc.uint8Array({ minLength: 0, maxLength: 256 }), { maxLength: 8 }),

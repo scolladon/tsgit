@@ -83,6 +83,8 @@ describe('line-diff — splitLines', () => {
   });
 
   it('Property: for any bytes X, concat(splitLines(X)) equals X (roundtrip)', () => {
+    // Arrange
+    // Assert
     fc.assert(
       fc.property(fc.uint8Array({ maxLength: 512 }), (bytes) => {
         const input = new Uint8Array(bytes);
@@ -434,6 +436,8 @@ describe('line-diff — diffLines', () => {
   }, 90_000);
 
   it('Property: diffLines(X, X) yields a single common hunk covering all lines with degraded false', () => {
+    // Arrange
+    // Assert
     fc.assert(
       fc.property(fc.uint8Array({ maxLength: 200 }), (bytes) => {
         const input = new Uint8Array(bytes);
@@ -462,12 +466,14 @@ describe('line-diff — diffLines', () => {
   });
 
   it('Property: sum of common + ours-only ranges covers ours exactly; symmetric for theirs', () => {
+    // Arrange
     const hunkLen = (h: {
       readonly oursStart: number;
       readonly oursEnd: number;
       readonly theirsStart: number;
       readonly theirsEnd: number;
     }) => ({ ours: h.oursEnd - h.oursStart, theirs: h.theirsEnd - h.theirsStart });
+    // Assert
     fc.assert(
       fc.property(fc.uint8Array({ maxLength: 100 }), fc.uint8Array({ maxLength: 100 }), (a, b) => {
         const result = diffLines(new Uint8Array(a), new Uint8Array(b));

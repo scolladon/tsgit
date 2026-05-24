@@ -339,56 +339,82 @@ describe('parseApproxidate', () => {
 
   describe('every supported unit', () => {
     it("Given '10 seconds ago', When parsing, Then subtracts ten seconds", () => {
+      // Arrange
+      // Assert
       expect(parseApproxidate('10 seconds ago', NOW)).toBe(NOW - 10);
     });
 
     it("Given '10 minutes ago', When parsing, Then subtracts ten minutes", () => {
+      // Arrange
+      // Assert
       expect(parseApproxidate('10 minutes ago', NOW)).toBe(NOW - 10 * MINUTE);
     });
 
     it("Given '10 hours ago', When parsing, Then subtracts ten hours", () => {
+      // Arrange
+      // Assert
       expect(parseApproxidate('10 hours ago', NOW)).toBe(NOW - 10 * HOUR);
     });
 
     it("Given '10 days ago', When parsing, Then subtracts ten days", () => {
+      // Arrange
+      // Assert
       expect(parseApproxidate('10 days ago', NOW)).toBe(NOW - 10 * DAY);
     });
 
     it("Given '10 weeks ago', When parsing, Then subtracts ten weeks", () => {
+      // Arrange
+      // Assert
       expect(parseApproxidate('10 weeks ago', NOW)).toBe(NOW - 10 * WEEK);
     });
 
     it("Given '2 months ago', When parsing, Then subtracts two 30-day months", () => {
+      // Arrange
+      // Assert
       expect(parseApproxidate('2 months ago', NOW)).toBe(NOW - 2 * MONTH);
     });
 
     it("Given '1 year ago', When parsing, Then subtracts a 365-day year", () => {
+      // Arrange
+      // Assert
       expect(parseApproxidate('1 year ago', NOW)).toBe(NOW - YEAR);
     });
   });
 
   describe('unparseable input', () => {
     it('Given an empty string, When parsing, Then returns undefined', () => {
+      // Arrange
+      // Assert
       expect(parseApproxidate('', NOW)).toBeUndefined();
     });
 
     it('Given garbage text, When parsing, Then returns undefined', () => {
+      // Arrange
+      // Assert
       expect(parseApproxidate('not a date at all', NOW)).toBeUndefined();
     });
 
     it('Given an unknown unit, When parsing, Then returns undefined', () => {
+      // Arrange
+      // Assert
       expect(parseApproxidate('3 fortnights ago', NOW)).toBeUndefined();
     });
 
     it('Given a relative form with a non-numeric count, When parsing, Then returns undefined', () => {
+      // Arrange
+      // Assert
       expect(parseApproxidate('many days ago', NOW)).toBeUndefined();
     });
 
     it('Given a weekday name (unsupported form), When parsing, Then returns undefined', () => {
+      // Arrange
+      // Assert
       expect(parseApproxidate('monday', NOW)).toBeUndefined();
     });
 
     it('Given a bare integer, When parsing, Then returns undefined', () => {
+      // Arrange
+      // Assert
       expect(parseApproxidate('1779710400', NOW)).toBeUndefined();
     });
   });

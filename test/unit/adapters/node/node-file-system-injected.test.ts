@@ -371,6 +371,7 @@ describe('NodeFileSystem — openWithNoFollow Windows symlink refusal (DI)', () 
     } catch (err) {
       caught = err;
     }
+    // Assert
     expect(caught).toBeInstanceOf(TsgitError);
     expect((caught as InstanceType<typeof TsgitError>).data.code).toBe('PERMISSION_DENIED');
   });
@@ -563,6 +564,7 @@ describe('NodeFileSystem — non-errno fault propagation (DI)', () => {
     } catch (err) {
       caught = err;
     }
+    // Assert
     expect(caught).toBeInstanceOf(Error);
     expect((caught as NodeJS.ErrnoException).code).toBe('EACCES');
   });

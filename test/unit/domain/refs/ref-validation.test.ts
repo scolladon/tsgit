@@ -52,6 +52,7 @@ describe('validateRefName', () => {
       // Arrange & Act & Assert
       try {
         validateRefName('refs/heads/..main');
+        // Assert
         expect.fail('should have thrown');
       } catch (e) {
         expect(e).toBeInstanceOf(TsgitError);
@@ -61,8 +62,10 @@ describe('validateRefName', () => {
     });
 
     it("Given 'refs/heads/main.lock' (component ends with .lock), When validating, Then throws INVALID_REF", () => {
+      // Arrange
       try {
         validateRefName('refs/heads/main.lock');
+        // Assert
         expect.fail('should have thrown');
       } catch (e) {
         expect(e).toBeInstanceOf(TsgitError);
@@ -75,8 +78,10 @@ describe('validateRefName', () => {
     });
 
     it("Given 'refs/foo.lock/bar' (interior component ends with .lock), When validating, Then throws INVALID_REF", () => {
+      // Arrange
       try {
         validateRefName('refs/foo.lock/bar');
+        // Assert
         expect.fail('should have thrown');
       } catch (e) {
         expect(e).toBeInstanceOf(TsgitError);
@@ -89,8 +94,10 @@ describe('validateRefName', () => {
     });
 
     it("Given 'refs//heads' (consecutive slashes), When validating, Then throws INVALID_REF", () => {
+      // Arrange
       try {
         validateRefName('refs//heads');
+        // Assert
         expect.fail('should have thrown');
       } catch (e) {
         expect(e).toBeInstanceOf(TsgitError);
@@ -103,8 +110,10 @@ describe('validateRefName', () => {
     });
 
     it("Given 'refs/heads/' (trailing slash), When validating, Then throws INVALID_REF", () => {
+      // Arrange
       try {
         validateRefName('refs/heads/');
+        // Assert
         expect.fail('should have thrown');
       } catch (e) {
         expect(e).toBeInstanceOf(TsgitError);
@@ -117,8 +126,10 @@ describe('validateRefName', () => {
     });
 
     it("Given '/refs/heads/main' (leading slash), When validating, Then throws INVALID_REF", () => {
+      // Arrange
       try {
         validateRefName('/refs/heads/main');
+        // Assert
         expect.fail('should have thrown');
       } catch (e) {
         expect(e).toBeInstanceOf(TsgitError);
@@ -131,8 +142,10 @@ describe('validateRefName', () => {
     });
 
     it("Given '-refs' (starts with dash), When validating, Then throws INVALID_REF", () => {
+      // Arrange
       try {
         validateRefName('-refs');
+        // Assert
         expect.fail('should have thrown');
       } catch (e) {
         expect(e).toBeInstanceOf(TsgitError);
@@ -142,8 +155,10 @@ describe('validateRefName', () => {
     });
 
     it("Given '@' (single @), When validating, Then throws INVALID_REF", () => {
+      // Arrange
       try {
         validateRefName('@');
+        // Assert
         expect.fail('should have thrown');
       } catch (e) {
         expect(e).toBeInstanceOf(TsgitError);
@@ -153,8 +168,10 @@ describe('validateRefName', () => {
     });
 
     it("Given 'refs/heads/@{main}' (contains @{), When validating, Then throws INVALID_REF", () => {
+      // Arrange
       try {
         validateRefName('refs/heads/@{main}');
+        // Assert
         expect.fail('should have thrown');
       } catch (e) {
         expect(e).toBeInstanceOf(TsgitError);
@@ -164,8 +181,10 @@ describe('validateRefName', () => {
     });
 
     it("Given 'refs/.hidden/main' (component starts with dot), When validating, Then throws INVALID_REF", () => {
+      // Arrange
       try {
         validateRefName('refs/.hidden/main');
+        // Assert
         expect.fail('should have thrown');
       } catch (e) {
         expect(e).toBeInstanceOf(TsgitError);
@@ -178,8 +197,10 @@ describe('validateRefName', () => {
     });
 
     it("Given 'refs/heads/trail.' (ends with dot), When validating, Then throws INVALID_REF", () => {
+      // Arrange
       try {
         validateRefName('refs/heads/trail.');
+        // Assert
         expect.fail('should have thrown');
       } catch (e) {
         expect(e).toBeInstanceOf(TsgitError);
@@ -189,8 +210,10 @@ describe('validateRefName', () => {
     });
 
     it("Given 'refs/heads/spa ce' (contains space), When validating, Then throws INVALID_REF", () => {
+      // Arrange
       try {
         validateRefName('refs/heads/spa ce');
+        // Assert
         expect.fail('should have thrown');
       } catch (e) {
         expect(e).toBeInstanceOf(TsgitError);
@@ -203,8 +226,10 @@ describe('validateRefName', () => {
     });
 
     it("Given 'refs/heads/til~de' (contains ~), When validating, Then throws INVALID_REF", () => {
+      // Arrange
       try {
         validateRefName('refs/heads/til~de');
+        // Assert
         expect.fail('should have thrown');
       } catch (e) {
         expect(e).toBeInstanceOf(TsgitError);
@@ -216,8 +241,10 @@ describe('validateRefName', () => {
     });
 
     it("Given 'refs/heads/car^et' (contains ^), When validating, Then throws INVALID_REF", () => {
+      // Arrange
       try {
         validateRefName('refs/heads/car^et');
+        // Assert
         expect.fail('should have thrown');
       } catch (e) {
         expect(e).toBeInstanceOf(TsgitError);
@@ -229,8 +256,10 @@ describe('validateRefName', () => {
     });
 
     it("Given 'refs/heads/col:on' (contains :), When validating, Then throws INVALID_REF", () => {
+      // Arrange
       try {
         validateRefName('refs/heads/col:on');
+        // Assert
         expect.fail('should have thrown');
       } catch (e) {
         expect(e).toBeInstanceOf(TsgitError);
@@ -242,8 +271,10 @@ describe('validateRefName', () => {
     });
 
     it("Given 'refs/heads/quest?' (contains ?), When validating, Then throws INVALID_REF", () => {
+      // Arrange
       try {
         validateRefName('refs/heads/quest?');
+        // Assert
         expect.fail('should have thrown');
       } catch (e) {
         expect(e).toBeInstanceOf(TsgitError);
@@ -255,8 +286,10 @@ describe('validateRefName', () => {
     });
 
     it("Given 'refs/heads/star*' (contains *), When validating, Then throws INVALID_REF", () => {
+      // Arrange
       try {
         validateRefName('refs/heads/star*');
+        // Assert
         expect.fail('should have thrown');
       } catch (e) {
         expect(e).toBeInstanceOf(TsgitError);
@@ -268,8 +301,10 @@ describe('validateRefName', () => {
     });
 
     it("Given 'refs/heads/bra[cket' (contains [), When validating, Then throws INVALID_REF", () => {
+      // Arrange
       try {
         validateRefName('refs/heads/bra[cket');
+        // Assert
         expect.fail('should have thrown');
       } catch (e) {
         expect(e).toBeInstanceOf(TsgitError);
@@ -281,8 +316,10 @@ describe('validateRefName', () => {
     });
 
     it("Given 'refs/heads/back\\slash' (contains \\), When validating, Then throws INVALID_REF", () => {
+      // Arrange
       try {
         validateRefName('refs/heads/back\\slash');
+        // Assert
         expect.fail('should have thrown');
       } catch (e) {
         expect(e).toBeInstanceOf(TsgitError);
@@ -294,8 +331,10 @@ describe('validateRefName', () => {
     });
 
     it("Given '' (empty string), When validating, Then throws INVALID_REF", () => {
+      // Arrange
       try {
         validateRefName('');
+        // Assert
         expect.fail('should have thrown');
       } catch (e) {
         expect(e).toBeInstanceOf(TsgitError);
@@ -305,8 +344,10 @@ describe('validateRefName', () => {
     });
 
     it('Given string with NUL byte, When validating, Then throws INVALID_REF', () => {
+      // Arrange
       try {
         validateRefName('refs/heads/ma\0in');
+        // Assert
         expect.fail('should have thrown');
       } catch (e) {
         expect(e).toBeInstanceOf(TsgitError);
@@ -318,8 +359,10 @@ describe('validateRefName', () => {
     });
 
     it('Given string with ASCII control char (0x01), When validating, Then throws INVALID_REF', () => {
+      // Arrange
       try {
         validateRefName('refs/heads/ma\x01in');
+        // Assert
         expect.fail('should have thrown');
       } catch (e) {
         expect(e).toBeInstanceOf(TsgitError);
@@ -331,8 +374,10 @@ describe('validateRefName', () => {
     });
 
     it('Given string with DEL char (0x7F), When validating, Then throws INVALID_REF', () => {
+      // Arrange
       try {
         validateRefName('refs/heads/ma\x7fin');
+        // Assert
         expect.fail('should have thrown');
       } catch (e) {
         expect(e).toBeInstanceOf(TsgitError);
@@ -344,8 +389,10 @@ describe('validateRefName', () => {
     });
 
     it('Given string with char 0x1F (boundary), When validating, Then throws INVALID_REF', () => {
+      // Arrange
       try {
         validateRefName('refs/heads/ma\x1fin');
+        // Assert
         expect.fail('should have thrown');
       } catch (e) {
         expect(e).toBeInstanceOf(TsgitError);
@@ -359,6 +406,8 @@ describe('validateRefName', () => {
 
   describe('property-based tests', () => {
     it('Given any arbRefName, When validating, Then it is accepted', () => {
+      // Arrange
+      // Assert
       fc.assert(
         fc.property(arbRefName(), (name) => {
           const sut = validateRefName(name);
@@ -368,6 +417,8 @@ describe('validateRefName', () => {
     });
 
     it('Given any string accepted by validateRefName, When inspecting, Then it contains no forbidden patterns', () => {
+      // Arrange
+      // Assert
       fc.assert(
         fc.property(
           fc.string({ minLength: 1, maxLength: 50 }).filter((s) => {
@@ -408,8 +459,10 @@ describe('validateRefName', () => {
 
     for (const [label, code] of overrides) {
       it(`Given a ref name containing ${label}, When validating, Then throws INVALID_REF /forbidden Unicode override/`, () => {
+        // Arrange
         try {
           validateRefName(`refs/heads/bad${String.fromCharCode(code)}name`);
+          // Assert
           expect.fail('should have thrown');
         } catch (e) {
           expect(e).toBeInstanceOf(TsgitError);
@@ -422,7 +475,9 @@ describe('validateRefName', () => {
     }
 
     it('Given a ref name with no overrides, When validating, Then succeeds (baseline accept)', () => {
+      // Arrange
       const sut = validateRefName('refs/heads/main');
+      // Assert
       expect(sut).toBe('refs/heads/main');
     });
 
@@ -435,7 +490,9 @@ describe('validateRefName', () => {
 
     for (const [label, code] of negatives) {
       it(`Given a ref name containing ${label}, When validating, Then succeeds (negative boundary)`, () => {
+        // Arrange
         const sut = validateRefName(`refs/heads/ok${String.fromCharCode(code)}name`);
+        // Assert
         expect(sut).toContain('refs/heads/');
       });
     }

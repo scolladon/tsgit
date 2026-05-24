@@ -182,6 +182,7 @@ describe('applyChangeset', () => {
       });
       throw new Error('expected throw');
     } catch (err) {
+      // Assert
       expect(err).toBeInstanceOf(TsgitError);
       if (!(err instanceof TsgitError)) throw err;
       expect(err.data.code).toBe('CHECKOUT_OVERWRITE_DIRTY');
@@ -225,6 +226,7 @@ describe('applyChangeset', () => {
       throw new Error('expected throw');
     } catch (err) {
       if (!(err instanceof TsgitError)) throw err;
+      // Assert
       expect(err.data.code).toBe('CHECKOUT_OVERWRITE_DIRTY');
     }
   });
@@ -266,6 +268,7 @@ describe('applyChangeset', () => {
       });
       throw new Error('expected throw');
     } catch (err) {
+      // Assert
       expect(err).toBeInstanceOf(TsgitError);
       expect((err as TsgitError).data.code).toBe('PERMISSION_DENIED');
     }
@@ -373,6 +376,7 @@ describe('applyChangeset', () => {
       force: false,
       workdir: WORKDIR,
     });
+    // Assert
     expect(result.written).toBe(1);
   });
 
@@ -393,6 +397,7 @@ describe('applyChangeset', () => {
       throw new Error('expected throw');
     } catch (err) {
       if (!(err instanceof TsgitError)) throw err;
+      // Assert
       expect(err.data.code).toBe('CHECKOUT_OVERWRITE_DIRTY');
       expect(err.data.code === 'CHECKOUT_OVERWRITE_DIRTY' && err.data.paths).toEqual(['del.txt']);
     }

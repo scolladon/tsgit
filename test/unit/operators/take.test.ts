@@ -91,8 +91,10 @@ describe('take', () => {
   });
 
   it('Given take(-1), Then RangeError /non-negative integer/', () => {
+    // Arrange
     try {
       take<number>(-1);
+      // Assert
       expect.unreachable();
     } catch (error) {
       expect(error).toBeInstanceOf(RangeError);
@@ -101,8 +103,10 @@ describe('take', () => {
   });
 
   it('Given take(-2), Then RangeError /non-negative integer/', () => {
+    // Arrange
     try {
       take<number>(-2);
+      // Assert
       expect.unreachable();
     } catch (error) {
       expect(error).toBeInstanceOf(RangeError);
@@ -111,8 +115,10 @@ describe('take', () => {
   });
 
   it('Given take(1.5), Then RangeError /non-negative integer/', () => {
+    // Arrange
     try {
       take<number>(1.5);
+      // Assert
       expect.unreachable();
     } catch (error) {
       expect(error).toBeInstanceOf(RangeError);
@@ -121,8 +127,10 @@ describe('take', () => {
   });
 
   it('Given take(NaN), Then RangeError /non-negative integer/', () => {
+    // Arrange
     try {
       take<number>(Number.NaN);
+      // Assert
       expect.unreachable();
     } catch (error) {
       expect(error).toBeInstanceOf(RangeError);
@@ -131,8 +139,10 @@ describe('take', () => {
   });
 
   it('Given take(Infinity), Then RangeError /non-negative integer/', () => {
+    // Arrange
     try {
       take<number>(Number.POSITIVE_INFINITY);
+      // Assert
       expect.unreachable();
     } catch (error) {
       expect(error).toBeInstanceOf(RangeError);
@@ -211,6 +221,8 @@ describe('take', () => {
   });
 
   it('Property: take(n)(source) yields exactly min(n, L) items equal to the first min(n, L) of source', async () => {
+    // Arrange
+    // Assert
     await fc.assert(
       fc.asyncProperty(
         fc.nat({ max: 50 }),

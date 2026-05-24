@@ -86,22 +86,28 @@ describe('buildDiscoveryUrl', () => {
   });
 
   it('Given a trailing slash, When buildDiscoveryUrl, Then no double slash', () => {
+    // Arrange
+    // Assert
     expect(buildDiscoveryUrl('https://example.com/repo.git/', 'git-upload-pack')).toBe(
       'https://example.com/repo.git/info/refs?service=git-upload-pack',
     );
   });
 
   it('Given a pre-existing query string, When buildDiscoveryUrl, Then appends with &', () => {
+    // Arrange
+    // Assert
     expect(buildDiscoveryUrl('https://example.com/repo.git?token=xyz', 'git-upload-pack')).toBe(
       'https://example.com/repo.git/info/refs?token=xyz&service=git-upload-pack',
     );
   });
 
   it('Given a fragment, When buildDiscoveryUrl, Then throws INVALID_BASE_URL with reason "fragment must not be set"', () => {
+    // Arrange
     try {
       buildDiscoveryUrl('https://example.com/repo.git#frag', 'git-upload-pack');
       throw new Error('expected throw');
     } catch (err) {
+      // Assert
       expect(err).toBeInstanceOf(TsgitError);
       const te = err as TsgitError;
       expect(te.data).toEqual({ code: 'INVALID_BASE_URL', reason: 'fragment must not be set' });
@@ -109,10 +115,12 @@ describe('buildDiscoveryUrl', () => {
   });
 
   it('Given an invalid URL, When buildDiscoveryUrl, Then throws INVALID_BASE_URL with reason "invalid URL"', () => {
+    // Arrange
     try {
       buildDiscoveryUrl('not-a-url', 'git-upload-pack');
       throw new Error('expected throw');
     } catch (err) {
+      // Assert
       expect(err).toBeInstanceOf(TsgitError);
       const te = err as TsgitError;
       expect(te.data).toEqual({ code: 'INVALID_BASE_URL', reason: 'invalid URL' });
@@ -120,12 +128,16 @@ describe('buildDiscoveryUrl', () => {
   });
 
   it('Given an ftp:// scheme, When buildDiscoveryUrl, Then returns the URL (scheme validated at adapter layer)', () => {
+    // Arrange
+    // Assert
     expect(buildDiscoveryUrl('ftp://example.com/repo', 'git-upload-pack')).toBe(
       'ftp://example.com/repo/info/refs?service=git-upload-pack',
     );
   });
 
   it('Given a URL with no .git suffix, When buildDiscoveryUrl, Then no auto-append', () => {
+    // Arrange
+    // Assert
     expect(buildDiscoveryUrl('https://example.com/repo', 'git-upload-pack')).toBe(
       'https://example.com/repo/info/refs?service=git-upload-pack',
     );
@@ -144,6 +156,7 @@ describe('parseAdvertisedRefs — edge cases', () => {
       await parseAdvertisedRefs(decodePktStream(empty), 'git-upload-pack');
       throw new Error('expected throw');
     } catch (err) {
+      // Assert
       expect(err).toBeInstanceOf(TsgitError);
       const te = err as TsgitError;
       expect(te.data.code).toBe('MISSING_SERVICE_HEADER');
@@ -162,6 +175,7 @@ describe('parseAdvertisedRefs — edge cases', () => {
       await parseAdvertisedRefs(decodePktStream(asyncBytes([headerStream])), 'git-upload-pack');
       throw new Error('expected throw');
     } catch (err) {
+      // Assert
       expect(err).toBeInstanceOf(TsgitError);
       const te = err as TsgitError;
       expect(te.data.code).toBe('MISSING_SERVICE_HEADER');
@@ -178,6 +192,7 @@ describe('parseAdvertisedRefs — edge cases', () => {
       await parseAdvertisedRefs(decodePktStream(asyncBytes([trimmed])), 'git-upload-pack');
       throw new Error('expected throw');
     } catch (err) {
+      // Assert
       expect(err).toBeInstanceOf(TsgitError);
       const te = err as TsgitError;
       expect(te.data.code).toBe('MISSING_SERVICE_HEADER');
@@ -222,6 +237,7 @@ describe('parseAdvertisedRefs — service header validation', () => {
       await parseAdvertisedRefs(decodePktStream(asyncBytes([body])), 'git-upload-pack');
       throw new Error('expected throw');
     } catch (err) {
+      // Assert
       expect(err).toBeInstanceOf(TsgitError);
       const te = err as TsgitError;
       expect(te.data).toEqual({
@@ -241,6 +257,7 @@ describe('parseAdvertisedRefs — service header validation', () => {
       await parseAdvertisedRefs(decodePktStream(asyncBytes([body])), 'git-upload-pack');
       throw new Error('expected throw');
     } catch (err) {
+      // Assert
       expect(err).toBeInstanceOf(TsgitError);
       const te = err as TsgitError;
       expect(te.data.code).toBe('MISSING_SERVICE_HEADER');
@@ -260,6 +277,7 @@ describe('parseAdvertisedRefs — capability extraction', () => {
       await parseAdvertisedRefs(decodePktStream(asyncBytes([body])), 'git-upload-pack');
       throw new Error('expected throw');
     } catch (err) {
+      // Assert
       expect(err).toBeInstanceOf(TsgitError);
       const te = err as TsgitError;
       expect(te.data.code).toBe('MISSING_CAPABILITIES');
@@ -279,6 +297,7 @@ describe('parseAdvertisedRefs — ref validation', () => {
       await parseAdvertisedRefs(decodePktStream(asyncBytes([body])), 'git-upload-pack');
       throw new Error('expected throw');
     } catch (err) {
+      // Assert
       expect(err).toBeInstanceOf(TsgitError);
       const te = err as TsgitError;
       expect(te.data.code).toBe('INVALID_REF_LINE');
@@ -296,6 +315,7 @@ describe('parseAdvertisedRefs — ref validation', () => {
       await parseAdvertisedRefs(decodePktStream(asyncBytes([body])), 'git-upload-pack');
       throw new Error('expected throw');
     } catch (err) {
+      // Assert
       expect(err).toBeInstanceOf(TsgitError);
       const te = err as TsgitError;
       expect(te.data.code).toBe('INVALID_REF_LINE');
@@ -318,6 +338,7 @@ describe('parseAdvertisedRefs — ref validation', () => {
       await parseAdvertisedRefs(decodePktStream(asyncBytes([body])), 'git-upload-pack');
       throw new Error('expected throw');
     } catch (err) {
+      // Assert
       expect(err).toBeInstanceOf(TsgitError);
       const te = err as TsgitError;
       expect(te.data).toEqual({ code: 'DUPLICATE_REF', name: 'refs/heads/main' });
@@ -397,6 +418,7 @@ describe('parseAdvertisedRefs — additional ref validation', () => {
       await parseAdvertisedRefs(decodePktStream(asyncBytes([body])), 'git-upload-pack');
       throw new Error('expected throw');
     } catch (err) {
+      // Assert
       expect(err).toBeInstanceOf(TsgitError);
       const te = err as TsgitError;
       expect(te.data.code).toBe('INVALID_REF_LINE');
@@ -419,6 +441,7 @@ describe('parseAdvertisedRefs — additional ref validation', () => {
       await parseAdvertisedRefs(decodePktStream(asyncBytes([fullBody])), 'git-upload-pack');
       throw new Error('expected throw');
     } catch (err) {
+      // Assert
       expect(err).toBeInstanceOf(TsgitError);
       const te = err as TsgitError;
       expect(te.data.code).toBe('INVALID_REF_LINE');
@@ -440,6 +463,7 @@ describe('parseAdvertisedRefs — additional ref validation', () => {
       await parseAdvertisedRefs(decodePktStream(asyncBytes([fullBody])), 'git-upload-pack');
       throw new Error('expected throw');
     } catch (err) {
+      // Assert
       expect(err).toBeInstanceOf(TsgitError);
       const te = err as TsgitError;
       expect(te.data.code).toBe('INVALID_REF_LINE');
@@ -460,6 +484,7 @@ describe('parseAdvertisedRefs — additional ref validation', () => {
       await parseAdvertisedRefs(decodePktStream(asyncBytes([body])), 'git-upload-pack');
       throw new Error('expected throw');
     } catch (err) {
+      // Assert
       expect(err).toBeInstanceOf(TsgitError);
       const te = err as TsgitError;
       expect(te.data.code).toBe('INVALID_REF_LINE');
@@ -700,10 +725,12 @@ describe('buildUploadPackRequest', () => {
   });
 
   it('Given empty wants, When built, Then throws EMPTY_WANTS', () => {
+    // Arrange
     try {
       buildUploadPackRequest({ wants: [], haves: [], capabilities: [] });
       throw new Error('expected throw');
     } catch (err) {
+      // Assert
       expect(err).toBeInstanceOf(TsgitError);
       const te = err as TsgitError;
       expect(te.data.code).toBe('EMPTY_WANTS');
@@ -790,6 +817,7 @@ describe('parseUploadPackResponse', () => {
       await parseUploadPackResponse(source, { sideBand: true });
       throw new Error('expected rejection');
     } catch (err) {
+      // Assert
       expect(err).toBeInstanceOf(TsgitError);
       const te = err as TsgitError;
       expect(te.data).toEqual({ code: 'UNKNOWN_ACK_STATUS', value: 'bogus' });
@@ -946,6 +974,7 @@ describe('parseShallowResponse', () => {
     } catch (err) {
       caught = err;
     }
+    // Assert
     expect(caught).toBeInstanceOf(TsgitError);
     const data = (caught as TsgitError).data as { code: string; line?: string };
     expect(data.code).toBe('INVALID_REF_LINE');
@@ -967,6 +996,7 @@ describe('parseShallowResponse', () => {
     } catch (err) {
       caught = err;
     }
+    // Assert
     expect(caught).toBeInstanceOf(TsgitError);
     expect((caught as TsgitError).data.code).toBe('INVALID_REF_LINE');
   });
@@ -1111,6 +1141,7 @@ describe('parseAdvertisedRefs — first-ref splitting boundaries', () => {
       await parseAdvertisedRefs(decodePktStream(asyncBytes([body])), 'git-upload-pack');
       throw new Error('expected throw');
     } catch (err) {
+      // Assert
       expect(err).toBeInstanceOf(TsgitError);
       const data = (err as TsgitError).data as { code: string; line?: string };
       expect(data.code).toBe('INVALID_REF_LINE');
@@ -1132,6 +1163,7 @@ describe('parseAdvertisedRefs — first-ref splitting boundaries', () => {
       await parseAdvertisedRefs(decodePktStream(asyncBytes([body])), 'git-upload-pack');
       throw new Error('expected throw');
     } catch (err) {
+      // Assert
       expect(err).toBeInstanceOf(TsgitError);
       const data = (err as TsgitError).data as { code: string; line?: string };
       expect(data.code).toBe('INVALID_REF_LINE');
@@ -1153,6 +1185,7 @@ describe('parseAdvertisedRefs — first-ref splitting boundaries', () => {
       await parseAdvertisedRefs(decodePktStream(asyncBytes([body])), 'git-upload-pack');
       throw new Error('expected throw');
     } catch (err) {
+      // Assert
       expect(err).toBeInstanceOf(TsgitError);
       const data = (err as TsgitError).data as { code: string; line?: string };
       expect(data.code).toBe('INVALID_REF_LINE');
@@ -1179,6 +1212,7 @@ describe('parseAdvertisedRefs — subsequent-ref splitting boundaries', () => {
       await parseAdvertisedRefs(decodePktStream(asyncBytes([fullBody])), 'git-upload-pack');
       throw new Error('expected throw');
     } catch (err) {
+      // Assert
       expect(err).toBeInstanceOf(TsgitError);
       const data = (err as TsgitError).data as { code: string; line?: string };
       expect(data.code).toBe('INVALID_REF_LINE');
@@ -1204,6 +1238,7 @@ describe('parseAdvertisedRefs — subsequent-ref splitting boundaries', () => {
       await parseAdvertisedRefs(decodePktStream(asyncBytes([fullBody])), 'git-upload-pack');
       throw new Error('expected throw');
     } catch (err) {
+      // Assert
       expect(err).toBeInstanceOf(TsgitError);
       const data = (err as TsgitError).data as { code: string; line?: string };
       expect(data.code).toBe('INVALID_REF_LINE');
@@ -1247,6 +1282,7 @@ describe('parseAdvertisedRefs — missing service header carries empty actual', 
       await parseAdvertisedRefs(decodePktStream(empty), 'git-upload-pack');
       throw new Error('expected throw');
     } catch (err) {
+      // Assert
       expect(err).toBeInstanceOf(TsgitError);
       const data = (err as TsgitError).data as { code: string; actual?: string };
       expect(data.code).toBe('MISSING_SERVICE_HEADER');

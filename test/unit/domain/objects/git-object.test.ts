@@ -129,6 +129,7 @@ describe('git-object', () => {
       const raw = encode('invalid 5\0hello');
 
       // Act & Assert
+      // Assert
       expect(() => parseObject(DUMMY_ID, raw, SHA1_CONFIG)).toThrow(TsgitError);
     });
 
@@ -137,6 +138,7 @@ describe('git-object', () => {
       const raw = encode('blob 999\0short');
 
       // Act & Assert
+      // Assert
       expect(() => parseObject(DUMMY_ID, raw, SHA1_CONFIG)).toThrow(
         expect.objectContaining({
           data: expect.objectContaining({

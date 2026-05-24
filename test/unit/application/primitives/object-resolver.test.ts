@@ -106,6 +106,7 @@ describe('object-resolver', () => {
     // Act / Assert
     try {
       await resolveObject(ctx, registry, 'f'.repeat(40) as ObjectId, true);
+      // Assert
       expect.unreachable();
     } catch (error) {
       expect(error).toBeInstanceOf(TsgitError);
@@ -123,6 +124,7 @@ describe('object-resolver', () => {
     // Act / Assert
     try {
       await resolveObject(ctx, registry, 'a'.repeat(40) as ObjectId, true);
+      // Assert
       expect.unreachable();
     } catch (error) {
       expect(error).toBeInstanceOf(TsgitError);
@@ -162,6 +164,7 @@ describe('object-resolver', () => {
     // Act / Assert
     try {
       await resolveObject(ctx, registry, fakeId, true);
+      // Assert
       expect.unreachable();
     } catch (error) {
       expect(error).toBeInstanceOf(TsgitError);
@@ -342,6 +345,7 @@ describe('object-resolver', () => {
       // Act / Assert — cap rejects on the base, not the target.
       try {
         await resolveObject(ctx, registry, deltaId, false, 4);
+        // Assert
         expect.unreachable();
       } catch (error) {
         const data = (error as TsgitError).data;
@@ -566,6 +570,7 @@ describe('object-resolver', () => {
     // Act / Assert
     try {
       await resolveObject(ctx, registry, deltaId as ObjectId, false);
+      // Assert
       expect.unreachable();
     } catch (error) {
       expect((error as TsgitError).data.code).toBe('OBJECT_NOT_FOUND');
@@ -597,6 +602,7 @@ describe('object-resolver', () => {
     // Act / Assert
     try {
       await resolveObject(ctx, registry, deltaId as ObjectId, false);
+      // Assert
       expect.unreachable();
     } catch (error) {
       expect((error as TsgitError).data.code).toBe('OBJECT_NOT_FOUND');
@@ -623,6 +629,7 @@ describe('object-resolver', () => {
       throw new Error('should not reach here');
     } catch (error) {
       if (!(error instanceof TsgitError)) throw error;
+      // Assert
       expect(error.data.code).toBe('DELTA_CHAIN_TOO_DEEP');
     }
   });
@@ -650,6 +657,7 @@ describe('object-resolver', () => {
     // Act / Assert
     try {
       await resolveObject(ctx, registry, deltaId as ObjectId, false);
+      // Assert
       expect.unreachable();
     } catch (error) {
       expect((error as TsgitError).data.code).toBe('OBJECT_NOT_FOUND');
@@ -684,6 +692,7 @@ describe('object-resolver', () => {
       // Act / Assert — cap = 4, far below the 14-byte poisoned buffer.
       try {
         await resolveObject(ctx, registry, deltaId as ObjectId, false, 4);
+        // Assert
         expect.unreachable();
       } catch (error) {
         const data = (error as TsgitError).data;
@@ -721,6 +730,7 @@ describe('object-resolver', () => {
       // Act / Assert — cap = 4, content size 20 > 4.
       try {
         await resolveObject(ctx, registry, deltaId as ObjectId, false, 4);
+        // Assert
         expect.unreachable();
       } catch (error) {
         const data = (error as TsgitError).data;
@@ -755,6 +765,7 @@ describe('object-resolver', () => {
       // Act / Assert
       try {
         await resolveObject(ctx, registry, targetId, false);
+        // Assert
         expect.unreachable();
       } catch (error) {
         const data = (error as TsgitError).data;
@@ -785,6 +796,7 @@ describe('object-resolver', () => {
       // Act / Assert — current code reaches offset 0 and rejects the magic.
       try {
         await resolveObject(ctx, registry, targetId, false);
+        // Assert
         expect.unreachable();
       } catch (error) {
         const data = (error as TsgitError).data;
@@ -817,6 +829,7 @@ describe('object-resolver', () => {
     // Act / Assert — cap 4, actual inflated content 40 bytes.
     try {
       await resolveObject(ctx, registry, targetId, false, 4);
+      // Assert
       expect.unreachable();
     } catch (error) {
       const data = (error as TsgitError).data;

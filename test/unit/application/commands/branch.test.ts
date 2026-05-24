@@ -71,6 +71,7 @@ describe('branch', () => {
     await branch(ctx, { kind: 'create', name: 'feature' });
 
     // Act
+    // Assert
     await expectError(() => branch(ctx, { kind: 'create', name: 'feature' }), 'BRANCH_EXISTS');
   });
 
@@ -91,6 +92,7 @@ describe('branch', () => {
     const { ctx } = await seedWithCommit();
 
     // Act
+    // Assert
     await expectError(
       () => branch(ctx, { kind: 'delete', name: 'main' }),
       'CANNOT_DELETE_CHECKED_OUT_BRANCH',
@@ -102,6 +104,7 @@ describe('branch', () => {
     const { ctx } = await seedWithCommit();
 
     // Act
+    // Assert
     await expectError(() => branch(ctx, { kind: 'delete', name: 'ghost' }), 'BRANCH_NOT_FOUND');
   });
 
@@ -414,6 +417,7 @@ describe('branch', () => {
     const { ctx, commitId } = await seedWithCommit();
 
     // Act
+    // Assert
     await expectError(
       () => branch(ctx, { kind: 'create', name: 'pin', startPoint: `${commitId}f` }),
       'BRANCH_NOT_FOUND',
@@ -425,6 +429,7 @@ describe('branch', () => {
     const { ctx, commitId } = await seedWithCommit();
 
     // Act
+    // Assert
     await expectError(
       () => branch(ctx, { kind: 'create', name: 'pin', startPoint: `f${commitId}` }),
       'BRANCH_NOT_FOUND',

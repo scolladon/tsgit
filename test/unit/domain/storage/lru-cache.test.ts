@@ -20,6 +20,7 @@ describe('lru-cache', () => {
       const sut = createLruCache<string>(100);
 
       // Act & Assert
+      // Assert
       expect(sut.has('missing')).toBe(false);
     });
 
@@ -41,6 +42,7 @@ describe('lru-cache', () => {
       sut.set('a', 'value-a', 50);
 
       // Act & Assert
+      // Assert
       expect(sut.has('a')).toBe(true);
     });
 
@@ -50,6 +52,7 @@ describe('lru-cache', () => {
       sut.set('a', 'value-a', 50);
 
       // Act & Assert
+      // Assert
       expect(sut.currentSize).toBe(50);
     });
 
@@ -59,6 +62,7 @@ describe('lru-cache', () => {
       sut.set('a', 'value-a', 50);
 
       // Act & Assert
+      // Assert
       expect(sut.entryCount).toBe(1);
     });
 
@@ -67,6 +71,7 @@ describe('lru-cache', () => {
       const sut = createLruCache<string>(100);
 
       // Act & Assert
+      // Assert
       expect(sut.maxSize).toBe(100);
     });
   });
@@ -283,6 +288,7 @@ describe('lru-cache', () => {
       const sut = createLruCache<string>(100);
 
       // Act & Assert
+      // Assert
       expect(() => sut.set('a', 'val', 0)).toThrow('byteSize must be positive');
     });
 
@@ -291,6 +297,7 @@ describe('lru-cache', () => {
       const sut = createLruCache<string>(100);
 
       // Act & Assert
+      // Assert
       expect(() => sut.set('a', 'val', -1)).toThrow('byteSize must be positive');
     });
 

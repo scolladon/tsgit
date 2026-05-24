@@ -318,6 +318,7 @@ describe('runCheck against the real repo', () => {
     const readSource = (): string => 'interface Repository {}';
 
     // Act + Assert
+    // Assert
     expect(() => runCheck('/any/root', readSource)).toThrow(/zero commands AND zero primitives/);
   });
 });

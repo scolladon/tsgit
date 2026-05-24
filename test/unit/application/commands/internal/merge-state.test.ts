@@ -206,6 +206,7 @@ describe('merge-state', () => {
       await init(ctx);
 
       // Act / Assert
+      // Assert
       await expect(clearMergeState(ctx)).resolves.toBeUndefined();
     });
   });

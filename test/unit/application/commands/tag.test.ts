@@ -130,6 +130,7 @@ describe('tag', () => {
 
     // Act + Assert — must not throw with force.
     await tag(ctx, { kind: 'create', name: 'v1.0', force: true });
+    // Assert
   });
 
   it('Given a fresh repo with no tags, When tag list, Then returns an empty array', async () => {

@@ -376,10 +376,12 @@ describe('NodeFileSystem', () => {
 
     describe('mapConcurrent', () => {
       it('Given an empty input, When mapped, Then fn is never called', async () => {
+        // Arrange
         const fn = vi.fn(async () => undefined);
 
         await mapConcurrent([], 8, fn);
 
+        // Assert
         expect(fn).not.toHaveBeenCalled();
       });
 
@@ -597,6 +599,7 @@ describe('NodeFileSystem', () => {
       });
 
       it('Given ok=true with isSymlink=true, When interpreting, Then throws PERMISSION_DENIED', () => {
+        // Arrange
         // Act
         let caught: unknown;
         try {
@@ -610,6 +613,7 @@ describe('NodeFileSystem', () => {
       });
 
       it('Given ok=false with ENOENT error, When interpreting, Then returns without throwing (leaf absent is expected)', () => {
+        // Arrange
         // Act
         let caught: unknown;
         try {
@@ -623,6 +627,7 @@ describe('NodeFileSystem', () => {
       });
 
       it('Given ok=false with EACCES (non-ENOENT errno), When interpreting, Then throws PERMISSION_DENIED (NOT silently swallowed)', () => {
+        // Arrange
         // Act
         let caught: unknown;
         try {
@@ -636,6 +641,7 @@ describe('NodeFileSystem', () => {
       });
 
       it('Given ok=false with non-errno throwable, When interpreting, Then re-bubbles the original error', () => {
+        // Arrange
         // Act
         const original = new RangeError('weird');
         let caught: unknown;
@@ -651,6 +657,7 @@ describe('NodeFileSystem', () => {
 
     describe('runFs', () => {
       it('Given op throwing an errno exception, When running, Then throws mapped TsgitError', async () => {
+        // Arrange
         // Act
         let caught: unknown;
         try {
@@ -685,6 +692,7 @@ describe('NodeFileSystem', () => {
       });
 
       it('Given successful op, When running, Then returns the op result', async () => {
+        // Arrange
         // Act
         const sut = await runFs(async () => 42, '/ok');
 
@@ -711,6 +719,7 @@ describe('NodeFileSystem', () => {
       });
 
       it('Given fully non-existent path, When resolving, Then returns root joined with every non-existent segment (loop-exhausted branch)', async () => {
+        // Arrange
         // Act — a non-existent absolute path that shares no existing prefix except '/'
         const sut = await realpathNearestExisting('/totally/made/up/path/doesnotexist');
 
@@ -722,6 +731,7 @@ describe('NodeFileSystem', () => {
       });
 
       it('Given the root path itself, When resolving, Then returns the realpath of root (empty-segments branch)', async () => {
+        // Arrange
         // Act — '/' split yields no segments, exercising the `segments.length > 0 ?... : root` false branch
         const sut = await realpathNearestExisting('/');
 
@@ -782,6 +792,7 @@ describe('NodeFileSystem', () => {
       });
 
       it('Given stat with ctimeNs and mtimeNs, When mapping, Then result includes the ns fields', () => {
+        // Arrange
         // Act
         const sut = mapStat(makeBigIntStat());
 

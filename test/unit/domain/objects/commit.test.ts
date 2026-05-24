@@ -297,6 +297,7 @@ describe('commit', () => {
       ]);
 
       // Act & Assert
+      // Assert
       expect(() => parseCommitContent(DUMMY_ID, content)).toThrow(
         expect.objectContaining({
           data: expect.objectContaining({
@@ -318,6 +319,7 @@ describe('commit', () => {
       ]);
 
       // Act & Assert
+      // Assert
       expect(() => parseCommitContent(DUMMY_ID, content)).toThrow(
         expect.objectContaining({
           data: expect.objectContaining({
@@ -338,6 +340,7 @@ describe('commit', () => {
       ]);
 
       // Act & Assert
+      // Assert
       expect(() => parseCommitContent(DUMMY_ID, content)).toThrow(
         expect.objectContaining({
           data: expect.objectContaining({
@@ -404,6 +407,7 @@ describe('commit', () => {
       const content = commitText(['', 'msg']);
 
       // Act & Assert
+      // Assert
       expect(() => parseCommitContent(DUMMY_ID, content)).toThrow(
         expect.objectContaining({
           data: expect.objectContaining({
@@ -419,6 +423,7 @@ describe('commit', () => {
       const content = commitText([`tree ${'b'.repeat(40)}`, `parent ${'c'.repeat(40)}`, '', 'msg']);
 
       // Act & Assert
+      // Assert
       expect(() => parseCommitContent(DUMMY_ID, content)).toThrow(
         expect.objectContaining({
           data: expect.objectContaining({
@@ -434,6 +439,7 @@ describe('commit', () => {
       const content = commitText([`tree ${'b'.repeat(40)}`, 'author A <a@a.com> 0 +0000']);
 
       // Act & Assert
+      // Assert
       expect(() => parseCommitContent(DUMMY_ID, content)).toThrow(
         expect.objectContaining({
           data: expect.objectContaining({
@@ -457,6 +463,7 @@ describe('commit', () => {
       ]);
 
       // Act & Assert
+      // Assert
       expect(() => parseCommitContent(DUMMY_ID, content)).toThrow(
         expect.objectContaining({
           data: expect.objectContaining({
@@ -479,6 +486,7 @@ describe('commit', () => {
       ]);
 
       // Act & Assert
+      // Assert
       expect(() => parseCommitContent(DUMMY_ID, content)).toThrow(
         expect.objectContaining({
           data: expect.objectContaining({
@@ -654,6 +662,7 @@ describe('commit', () => {
 
   describe('property-based tests', () => {
     it('Roundtrip: parseCommitContent(id, serializeCommitContent(commit)) preserves all fields', () => {
+      // Arrange
       const arbIdentity = fc.record({
         name: fc
           .string({ maxLength: 20 })
@@ -681,6 +690,7 @@ describe('commit', () => {
         extraHeaders: fc.constant([] as { readonly key: string; readonly value: string }[]),
       });
 
+      // Assert
       fc.assert(
         fc.property(arbCommitData, (data) => {
           const commit: Commit = {

@@ -81,8 +81,10 @@ describe('parseLooseRef', () => {
   });
 
   it("Given '' (empty), When parsing, Then throws INVALID_REF", () => {
+    // Arrange
     try {
       parseLooseRef('');
+      // Assert
       expect.fail('should have thrown');
     } catch (e) {
       expect(e).toBeInstanceOf(TsgitError);
@@ -92,8 +94,10 @@ describe('parseLooseRef', () => {
   });
 
   it("Given 'not-a-sha', When parsing, Then throws INVALID_OBJECT_ID", () => {
+    // Arrange
     try {
       parseLooseRef('not-a-sha');
+      // Assert
       expect.fail('should have thrown');
     } catch (e) {
       expect(e).toBeInstanceOf(TsgitError);
@@ -102,8 +106,10 @@ describe('parseLooseRef', () => {
   });
 
   it("Given 'ref: ' (empty target), When parsing, Then throws INVALID_REF", () => {
+    // Arrange
     try {
       parseLooseRef('ref: ');
+      // Assert
       expect.fail('should have thrown');
     } catch (e) {
       expect(e).toBeInstanceOf(TsgitError);
@@ -113,8 +119,10 @@ describe('parseLooseRef', () => {
   });
 
   it("Given 'ref: \\n' (whitespace-only target after trim), When parsing, Then throws INVALID_REF", () => {
+    // Arrange
     try {
       parseLooseRef('ref: \n');
+      // Assert
       expect.fail('should have thrown');
     } catch (e) {
       expect(e).toBeInstanceOf(TsgitError);
@@ -124,8 +132,10 @@ describe('parseLooseRef', () => {
   });
 
   it("Given 'ref: ../../../etc/passwd\\n' (path traversal), When parsing, Then throws INVALID_REF", () => {
+    // Arrange
     try {
       parseLooseRef('ref: ../../../etc/passwd\n');
+      // Assert
       expect.fail('should have thrown');
     } catch (e) {
       expect(e).toBeInstanceOf(TsgitError);
@@ -140,6 +150,7 @@ describe('parseLooseRef', () => {
     // Act & Assert
     try {
       parseLooseRef(content);
+      // Assert
       expect.fail('should have thrown');
     } catch (e) {
       expect(e).toBeInstanceOf(TsgitError);
@@ -156,6 +167,7 @@ describe('parseLooseRef', () => {
     // Act & Assert
     try {
       parseLooseRef(content);
+      // Assert
       expect.fail('should have thrown');
     } catch (e) {
       expect(e).toBeInstanceOf(TsgitError);
@@ -193,6 +205,8 @@ describe('serializeSymbolicRef', () => {
 
 describe('roundtrip', () => {
   it('Given any ObjectId, When serializing then parsing, Then roundtrips', () => {
+    // Arrange
+    // Assert
     fc.assert(
       fc.property(arbObjectId(), (id) => {
         const sut = parseLooseRef(serializeDirectRef(id));
@@ -202,6 +216,8 @@ describe('roundtrip', () => {
   });
 
   it('Given any RefName (via arbRefName), When serializing symbolic then parsing, Then roundtrips', () => {
+    // Arrange
+    // Assert
     fc.assert(
       fc.property(arbRefName(), (name) => {
         const sut = parseLooseRef(serializeSymbolicRef(name));

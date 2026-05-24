@@ -100,6 +100,7 @@ describe('parseSideBand — channel 3 (fatal)', () => {
       await collect(parseSideBand(source, { onError }));
       throw new Error('expected throw');
     } catch (err) {
+      // Assert
       expect(err).toBeInstanceOf(TsgitError);
       const te = err as TsgitError;
       expect(te.data).toEqual({ code: 'SIDEBAND_FATAL', message: 'repository not found' });
@@ -117,6 +118,7 @@ describe('parseSideBand — channel 3 (fatal)', () => {
       await collect(parseSideBand(source, {}));
       throw new Error('expected throw');
     } catch (err) {
+      // Assert
       expect(err).toBeInstanceOf(TsgitError);
       const te = err as TsgitError;
       expect(te.data).toEqual({ code: 'SIDEBAND_FATAL', message: 'boom' });
@@ -135,6 +137,7 @@ describe('parseSideBand — channel 3 (fatal)', () => {
       await collect(parseSideBand(source, { onError }));
       throw new Error('expected throw');
     } catch (err) {
+      // Assert
       expect(err).toBeInstanceOf(TsgitError);
       const te = err as TsgitError;
       expect(te.data).toEqual({ code: 'SIDEBAND_FATAL', message: 'fatal-msg' });
@@ -153,6 +156,7 @@ describe('parseSideBand — empty data packet', () => {
       await collect(parseSideBand(source, {}));
       throw new Error('expected throw');
     } catch (err) {
+      // Assert
       expect(err).toBeInstanceOf(TsgitError);
       const te = err as TsgitError;
       expect(te.data).toEqual({ code: 'INVALID_SIDEBAND_CHANNEL', channel: -1 });
@@ -170,6 +174,7 @@ describe('parseSideBand — invalid channels', () => {
       await collect(parseSideBand(source, {}));
       throw new Error('expected throw');
     } catch (err) {
+      // Assert
       expect(err).toBeInstanceOf(TsgitError);
       const te = err as TsgitError;
       expect(te.data).toEqual({ code: 'INVALID_SIDEBAND_CHANNEL', channel: 4 });
@@ -185,6 +190,7 @@ describe('parseSideBand — invalid channels', () => {
       await collect(parseSideBand(source, {}));
       throw new Error('expected throw');
     } catch (err) {
+      // Assert
       expect(err).toBeInstanceOf(TsgitError);
       const te = err as TsgitError;
       expect(te.data).toEqual({ code: 'INVALID_SIDEBAND_CHANNEL', channel: 0 });

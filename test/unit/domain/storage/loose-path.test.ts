@@ -65,6 +65,7 @@ describe('loose-path', () => {
 
   describe('property-based tests', () => {
     it('Given any SHA-1 ObjectId, When computing path then removing slash, Then equals original id', () => {
+      // Arrange
       fc.assert(
         fc.property(arbObjectId(40), (id) => {
           // Act
@@ -77,6 +78,7 @@ describe('loose-path', () => {
     });
 
     it('Given any SHA-256 ObjectId, When computing path then removing slash, Then equals original id', () => {
+      // Arrange
       fc.assert(
         fc.property(arbObjectId(64), (id) => {
           // Act
@@ -89,6 +91,7 @@ describe('loose-path', () => {
     });
 
     it("Given any ObjectId, When computing path, Then '/' is at index 2", () => {
+      // Arrange
       fc.assert(
         fc.property(arbObjectId(40), (id) => {
           // Act

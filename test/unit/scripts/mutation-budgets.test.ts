@@ -49,6 +49,7 @@ describe('parseManifest', () => {
     const raw = {};
 
     // Act + Assert
+    // Assert
     expect(() => parseManifest(raw)).toThrowError(/manifest invalid: missing buckets array/);
   });
 
@@ -57,6 +58,7 @@ describe('parseManifest', () => {
     const raw = { buckets: [] };
 
     // Act + Assert
+    // Assert
     expect(() => parseManifest(raw)).toThrowError(
       /manifest invalid: buckets array must not be empty/,
     );
@@ -69,6 +71,7 @@ describe('parseManifest', () => {
     };
 
     // Act + Assert
+    // Assert
     expect(() => parseManifest(raw)).toThrowError(/manifest invalid: bucket\[0\] missing name/);
   });
 
@@ -85,6 +88,7 @@ describe('parseManifest', () => {
     };
 
     // Act + Assert
+    // Assert
     expect(() => parseManifest(raw)).toThrowError(
       /manifest invalid: bucket\[0\] unknown name "mystery"/,
     );
@@ -103,6 +107,7 @@ describe('parseManifest', () => {
     };
 
     // Act + Assert
+    // Assert
     expect(() => parseManifest(raw)).toThrowError(
       /manifest invalid: bucket\[0\] "domain" globs must not be empty/,
     );
@@ -121,6 +126,7 @@ describe('parseManifest', () => {
     };
 
     // Act + Assert
+    // Assert
     expect(() => parseManifest(raw)).toThrowError(
       /manifest invalid: bucket\[0\] "domain" threshold break out of range/,
     );
@@ -156,6 +162,7 @@ describe('parseReport', () => {
     const raw = { files: {}, thresholds: REPORT_BASE.thresholds };
 
     // Act + Assert
+    // Assert
     expect(() => parseReport(raw)).toThrowError(/report invalid: missing schemaVersion/);
   });
 
@@ -164,6 +171,7 @@ describe('parseReport', () => {
     const raw = { ...REPORT_BASE, schemaVersion: '99.0', files: {} };
 
     // Act + Assert
+    // Assert
     expect(() => parseReport(raw)).toThrowError(/unsupported mutation-report schemaVersion: 99\.0/);
   });
 
@@ -172,6 +180,7 @@ describe('parseReport', () => {
     const raw = { ...REPORT_BASE };
 
     // Act + Assert
+    // Assert
     expect(() => parseReport(raw)).toThrowError(/report invalid: missing files object/);
   });
 
@@ -183,6 +192,7 @@ describe('parseReport', () => {
     };
 
     // Act + Assert
+    // Assert
     expect(() => parseReport(raw)).toThrowError(
       /report invalid: file "src\/x\.ts" has Pending mutant/,
     );
@@ -198,6 +208,7 @@ describe('parseReport', () => {
     };
 
     // Act + Assert
+    // Assert
     expect(() => parseReport(raw)).toThrowError(
       /report invalid: file "src\/x\.ts" has unknown mutant status "Hyperkilled"/,
     );
@@ -208,6 +219,7 @@ describe('bucketForPath', () => {
   const buckets: readonly BucketDefinition[] = VALID_MANIFEST.buckets;
 
   it('Given src/domain/objects/blob.ts and the canonical manifest, When looked up, Then returns domain', () => {
+    // Arrange
     // Act
     const sut = bucketForPath('src/domain/objects/blob.ts', buckets);
 
@@ -216,6 +228,7 @@ describe('bucketForPath', () => {
   });
 
   it('Given src/repository.ts and the canonical manifest, When looked up, Then returns application', () => {
+    // Arrange
     // Act
     const sut = bucketForPath('src/repository.ts', buckets);
 
@@ -224,6 +237,7 @@ describe('bucketForPath', () => {
   });
 
   it('Given a path matching no glob, When looked up, Then returns null', () => {
+    // Arrange
     // Act
     const sut = bucketForPath('src/notabucket/foo.ts', buckets);
 

@@ -17,10 +17,12 @@ const seed = async (homeDir?: string) => {
 
 describe('buildIgnoreEvaluator', () => {
   it('Given no ignore sources, When built, Then base is empty', async () => {
+    // Arrange
     const ctx = await seed();
 
     const sut = await buildIgnoreEvaluator(ctx);
 
+    // Assert
     expect(sut.base).toEqual([]);
   });
 
@@ -83,9 +85,11 @@ describe('buildIgnoreEvaluator', () => {
 
 describe('buildRepoIgnorePredicate', () => {
   it('Given no ignore sources, When called, Then returns false for any path', async () => {
+    // Arrange
     const ctx = await seed();
     const sut = await buildRepoIgnorePredicate(ctx);
 
+    // Assert
     expect(await sut('foo.txt' as FilePath, false)).toBe(false);
     expect(await sut('sub' as FilePath, true)).toBe(false);
   });
@@ -97,6 +101,7 @@ describe('buildRepoIgnorePredicate', () => {
     const sut = await buildRepoIgnorePredicate(ctx);
 
     // Act / Assert
+    // Assert
     expect(await sut('foo.log' as FilePath, false)).toBe(true);
   });
 
@@ -122,6 +127,7 @@ describe('buildRepoIgnorePredicate', () => {
     const sut = await buildRepoIgnorePredicate(ctx);
 
     // Act / Assert
+    // Assert
     expect(await sut('sub/other.log' as FilePath, false)).toBe(true);
   });
 
@@ -132,6 +138,7 @@ describe('buildRepoIgnorePredicate', () => {
     const sut = await buildRepoIgnorePredicate(ctx);
 
     // Act / Assert
+    // Assert
     expect(await sut('build' as FilePath, true)).toBe(true);
     expect(await sut('build' as FilePath, false)).toBe(false);
   });
@@ -190,6 +197,7 @@ describe('buildRepoIgnorePredicate', () => {
     const sut = await buildRepoIgnorePredicate(ctx);
 
     // Act / Assert
+    // Assert
     expect(await sut('secret.txt' as FilePath, false)).toBe(true);
   });
 

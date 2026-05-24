@@ -121,6 +121,7 @@ describe('pack-writer', () => {
     });
 
     it('Given 0 entries, When serializing, Then result.data is just the 12-byte pack header', () => {
+      // Arrange
       // Act
       const sut = serializePackfile([]);
 
@@ -400,6 +401,7 @@ describe('pack-writer', () => {
       // Act & Assert
       try {
         serializePackIndex(entries, packChecksum);
+        // Assert
         expect.fail('Should have thrown');
       } catch (e) {
         const err = e as TsgitError;
@@ -468,6 +470,8 @@ describe('pack-writer', () => {
     });
 
     it('Given any entries, When serializing index then parsing, Then lookupPackIndex finds every entry', () => {
+      // Arrange
+      // Assert
       fc.assert(
         fc.property(arbUniqueIndexEntries(8), (entries) => {
           fc.pre(entries.length > 0);
@@ -485,6 +489,8 @@ describe('pack-writer', () => {
     });
 
     it('Given any pack entries, When serializing, Then CRC-32 matches independently computed value', () => {
+      // Arrange
+      // Assert
       fc.assert(
         fc.property(
           fc.array(

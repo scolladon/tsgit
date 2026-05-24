@@ -101,6 +101,7 @@ describe('internal/repo-state', () => {
       const ctx = createMemoryContext();
 
       // Act + Assert — must not throw.
+      // Assert
       await assertNotBare(ctx, 'add');
     });
 
@@ -228,6 +229,7 @@ describe('internal/repo-state', () => {
       const ctx = createMemoryContext();
 
       // Act + Assert — must not throw.
+      // Assert
       await assertNoPendingOperation(ctx);
     });
 

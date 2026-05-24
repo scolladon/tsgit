@@ -3,6 +3,7 @@ import * as primitives from '../../../../src/application/primitives/index.js';
 
 describe('primitives barrel', () => {
   it('Given the barrel, When imported, Then all primitives are exposed as functions', () => {
+    // Arrange
     const names = [
       'appendReflog',
       'applyChangeset',
@@ -55,11 +56,13 @@ describe('primitives barrel', () => {
       'writeTree',
     ];
     for (const name of names) {
+      // Assert
       expect(typeof (primitives as Record<string, unknown>)[name]).toBe('function');
     }
   });
 
   it('Given the barrel, When inspecting keys, Then only expected public surface is exposed', () => {
+    // Arrange
     const expected = new Set([
       'appendReflog',
       'applyChangeset',
@@ -113,6 +116,7 @@ describe('primitives barrel', () => {
       'writeTree',
     ]);
     const actual = new Set(Object.keys(primitives));
+    // Assert
     expect(actual).toEqual(expected);
   });
 });

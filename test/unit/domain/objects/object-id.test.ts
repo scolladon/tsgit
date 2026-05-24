@@ -41,6 +41,7 @@ describe('object-id', () => {
       const hex = 'xyz';
 
       // Act & Assert
+      // Assert
       expect(() => ObjectId.from(hex)).toThrow(TsgitError);
     });
 
@@ -49,6 +50,7 @@ describe('object-id', () => {
       const hex = '';
 
       // Act & Assert
+      // Assert
       expect(() => ObjectId.from(hex)).toThrow(TsgitError);
     });
 
@@ -57,6 +59,7 @@ describe('object-id', () => {
       const hex = 'A'.repeat(40);
 
       // Act & Assert
+      // Assert
       expect(() => ObjectId.from(hex)).toThrow(TsgitError);
     });
 
@@ -65,6 +68,7 @@ describe('object-id', () => {
       const hex = 'a'.repeat(39);
 
       // Act & Assert
+      // Assert
       expect(() => ObjectId.from(hex)).toThrow(TsgitError);
     });
   });
@@ -99,6 +103,7 @@ describe('object-id', () => {
       const bytes = new Uint8Array(19);
 
       // Act & Assert
+      // Assert
       expect(() => ObjectId.fromRaw(bytes)).toThrow(TsgitError);
     });
 
@@ -107,6 +112,7 @@ describe('object-id', () => {
       const bytes = new Uint8Array(0);
 
       // Act & Assert
+      // Assert
       expect(() => ObjectId.fromRaw(bytes)).toThrow(TsgitError);
     });
   });
@@ -212,6 +218,7 @@ describe('object-id', () => {
       const name = '';
 
       // Act & Assert
+      // Assert
       expect(() => RefName.from(name)).toThrow(Error);
       expect(() => RefName.from(name)).not.toThrow(TsgitError);
     });
@@ -234,6 +241,7 @@ describe('object-id', () => {
       const path = '';
 
       // Act & Assert
+      // Assert
       expect(() => FilePath.from(path)).toThrow(Error);
       expect(() => FilePath.from(path)).not.toThrow(TsgitError);
     });
@@ -241,6 +249,8 @@ describe('object-id', () => {
 
   describe('property-based tests', () => {
     it('Roundtrip: ObjectId.fromRaw(hexToBytes(id)) equals the original id for valid 40-char ids', () => {
+      // Arrange
+      // Assert
       fc.assert(
         fc.property(arbObjectId(40), (id) => {
           const sut = ObjectId.fromRaw(hexToBytes(id));
@@ -250,6 +260,8 @@ describe('object-id', () => {
     });
 
     it('Roundtrip: ObjectId.fromRaw(hexToBytes(id)) equals the original id for valid 64-char ids', () => {
+      // Arrange
+      // Assert
       fc.assert(
         fc.property(arbObjectId(64), (id) => {
           const sut = ObjectId.fromRaw(hexToBytes(id));

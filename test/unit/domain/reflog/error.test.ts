@@ -95,6 +95,7 @@ describe('reflog error', () => {
 
       // Act & Assert
       const data: TsgitErrorData = sut.data;
+      // Assert
       assertExhaustiveSwitch(data);
     });
 
@@ -108,6 +109,7 @@ describe('reflog error', () => {
 
       // Act & Assert
       for (const sut of cases) {
+        // Assert
         expect(sut.message).not.toContain('[object Object]');
       }
     });
