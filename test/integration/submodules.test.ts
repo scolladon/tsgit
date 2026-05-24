@@ -5,6 +5,11 @@
  * directory containing an absorbed nested-submodule layout
  * (`.git/modules/<name>`). Confirms the child-Context gitdir resolution
  * works against a real filesystem (not just the memory adapter).
+ *
+ * @proves
+ *   surface: submodules.walk
+ *   bucket:  real-fs
+ *   unique:  child-Context gitdir resolves through .git/modules/<name> on a real tmpdir
  */
 import { mkdtemp, rm } from 'node:fs/promises';
 import * as os from 'node:os';

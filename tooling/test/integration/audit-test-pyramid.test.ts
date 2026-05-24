@@ -62,6 +62,30 @@ const buildManifest = (overrides: ManifestOverrides = {}): Record<string, unknow
       regex: '\\.toThrow(?:Error)?\\s*\\(\\s*([A-Z]\\w*)\\s*\\)',
     },
     emptyAaaSection: { tier: 'unit' },
+    integrationProof: {
+      tier: 'integration',
+      buckets: [
+        'real-fs',
+        'real-http',
+        'real-process',
+        'cross-tool-interop',
+        'platform-only',
+        'multi-adapter-parity',
+        'coverage-gap',
+      ],
+      surfaceRegex: '^[a-z][a-zA-Z0-9.-]{1,40}$',
+      uniqueMinLength: 12,
+      uniqueMaxLength: 200,
+      directoryRules: {
+        'real-http': ['network/'],
+        'real-fs': ['root', 'posix-only/', 'win-only/'],
+        'real-process': ['posix-only/', 'win-only/'],
+        'platform-only': ['posix-only/', 'win-only/'],
+        'cross-tool-interop': ['root'],
+        'multi-adapter-parity': ['root'],
+        'coverage-gap': ['root'],
+      },
+    },
   },
   ...(overrides.gating === undefined ? {} : { gating: overrides.gating }),
 });
@@ -143,6 +167,12 @@ describe('tooling/audit-test-pyramid (integration)', () => {
     expect(json.findings.bannedSut).toEqual([]);
     expect(json.findings.bareClassThrow).toEqual([]);
     expect(json.findings.emptyAaaSection).toEqual([]);
+    // The integration file written above (`b.test.ts`) has no @proves header,
+    // so the new heuristic must flag it. Locks in that the heuristic ran at
+    // all — without this, a regression where the detector silently dropped
+    // out would pass.
+    expect(json.findings.integrationProof.missing).toHaveLength(1);
+    expect(json.findings.integrationProof.missing[0].path).toBe('test/integration/b.test.ts');
     const md = await readFile(path.join(tmpRoot, 'out', 'test-pyramid.md'), 'utf8');
     expect(md).toContain('# Testing-pyramid audit');
   });
@@ -351,5 +381,88 @@ describe('tooling/audit-test-pyramid (integration)', () => {
 
     // Assert
     expect(sut.code).toBe(0);
+  });
+
+  describe('integrationProof heuristic — end-to-end', () => {
+    const VALID_HEADER = (
+      surface: string,
+      bucket: string,
+      unique = 'enough characters here for the bound',
+    ): string =>
+      `/**\n * @proves\n *   surface: ${surface}\n *   bucket: ${bucket}\n *   unique: ${unique}\n */\nit('Given x, When y, Then z', () => { expect(1).toBe(1); });\n`;
+
+    it('Given three synthetic integration files (clean / missing-header / duplicate), When the audit runs, Then findings, sidecar, and markdown all reflect the partition', async () => {
+      // Arrange
+      await writeManifest(tmpRoot, PASSING_MANIFEST);
+      await mkdir(path.join(tmpRoot, 'test', 'integration', 'network'), { recursive: true });
+      await writeFile(
+        path.join(tmpRoot, 'test', 'integration', 'network', 'clone-a.test.ts'),
+        VALID_HEADER('clone', 'real-http'),
+      );
+      // Duplicate (same surface+bucket as clone-a)
+      await writeFile(
+        path.join(tmpRoot, 'test', 'integration', 'network', 'clone-b.test.ts'),
+        VALID_HEADER('clone', 'real-http'),
+      );
+      // Missing header
+      await writeFile(
+        path.join(tmpRoot, 'test', 'integration', 'orphan.test.ts'),
+        "it('Given x, When y, Then z', () => { expect(1).toBe(1); });\n",
+      );
+
+      // Act
+      const sut = await runScript(tmpRoot, ['--report-only']);
+
+      // Assert
+      expect(sut.code).toBe(0);
+      const json = JSON.parse(
+        await readFile(path.join(tmpRoot, 'out', 'test-pyramid.json'), 'utf8'),
+      );
+      const proof = json.findings.integrationProof;
+      expect(proof.missing).toHaveLength(1);
+      expect(proof.missing[0].path).toBe('test/integration/orphan.test.ts');
+      expect(proof.duplicate).toHaveLength(1);
+      expect(proof.duplicate[0].surface).toBe('clone');
+      expect(proof.duplicate[0].paths).toEqual([
+        'test/integration/network/clone-a.test.ts',
+        'test/integration/network/clone-b.test.ts',
+      ]);
+      expect(proof.misplaced).toEqual([]);
+
+      const markdown = await readFile(path.join(tmpRoot, 'out', 'test-pyramid.md'), 'utf8');
+      expect(markdown).toContain('### Integration usefulness — missing proof header');
+      expect(markdown).toContain('### Integration usefulness — duplicate proof');
+
+      const sidecar = JSON.parse(
+        await readFile(path.join(tmpRoot, 'out', 'integration-surfaces.json'), 'utf8'),
+      );
+      // Two accepted: clone-a, clone-b (orphan is rejected, not in sidecar)
+      expect(sidecar.files).toHaveLength(2);
+      expect(sidecar.files.map((f: { surface: string }) => f.surface)).toEqual(['clone', 'clone']);
+    });
+
+    it('Given gating.integrationProof=true and a duplicate present, When the audit runs without --report-only, Then exit code is 1 and stderr names the heuristic', async () => {
+      // Arrange
+      await writeManifest(
+        tmpRoot,
+        buildManifest({ gating: { integrationProof: true } }),
+      );
+      await mkdir(path.join(tmpRoot, 'test', 'integration', 'network'), { recursive: true });
+      await writeFile(
+        path.join(tmpRoot, 'test', 'integration', 'network', 'clone-a.test.ts'),
+        VALID_HEADER('clone', 'real-http'),
+      );
+      await writeFile(
+        path.join(tmpRoot, 'test', 'integration', 'network', 'clone-b.test.ts'),
+        VALID_HEADER('clone', 'real-http'),
+      );
+
+      // Act
+      const sut = await runScript(tmpRoot);
+
+      // Assert
+      expect(sut.code).toBe(1);
+      expect(sut.stderr).toContain('integrationProof');
+    });
   });
 });

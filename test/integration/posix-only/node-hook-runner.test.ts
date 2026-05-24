@@ -6,6 +6,11 @@
  *
  * Shell-script hooks are POSIX-bound (Windows needs a shell on PATH — ADR-068),
  * so this lives in `posix-only/` rather than the unit suite.
+ *
+ * @proves
+ *   surface: hookRunner
+ *   bucket:  real-process
+ *   unique:  NodeHookRunner spawns real /bin/sh hook scripts and captures exit code, stdin, stdout
  */
 import * as fsPromises from 'node:fs/promises';
 import * as os from 'node:os';

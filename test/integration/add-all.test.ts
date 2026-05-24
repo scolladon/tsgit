@@ -4,6 +4,11 @@
  * Walks the working tree end-to-end through the memory adapter, validating
  * that the entries surfaced by the bulk-mode dispatcher match the on-disk
  * index produced by `readIndex`.
+ *
+ * @proves
+ *   surface: addAll
+ *   bucket:  multi-adapter-parity
+ *   unique:  bulk-mode dispatcher entries match the index produced by readIndex
  */
 import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../src/adapters/memory/memory-adapter.js';

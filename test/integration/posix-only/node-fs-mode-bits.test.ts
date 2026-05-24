@@ -6,6 +6,11 @@
  * (Windows `fs.chmod` only honours the read-only bit) so this is
  * fundamentally platform-bound — it lives in `posix-only/` rather than
  * being a `skipIf` in the unit suite.
+ *
+ * @proves
+ *   surface: nodeFs.chmod
+ *   bucket:  platform-only
+ *   unique:  chmod(0o600) actually changes POSIX mode bits as reported by stat
  */
 import * as fsPromises from 'node:fs/promises';
 import * as os from 'node:os';

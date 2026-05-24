@@ -55,6 +55,30 @@
     },
     "emptyAaaSection": {
       "tier": "unit"
+    },
+    "integrationProof": {
+      "tier": "integration",
+      "buckets": [
+        "real-fs",
+        "real-http",
+        "real-process",
+        "cross-tool-interop",
+        "platform-only",
+        "multi-adapter-parity",
+        "coverage-gap"
+      ],
+      "surfaceRegex": "^[a-z][a-zA-Z0-9.-]{1,40}$",
+      "uniqueMinLength": 12,
+      "uniqueMaxLength": 200,
+      "directoryRules": {
+        "real-http": ["network/"],
+        "real-fs": ["root", "posix-only/", "win-only/"],
+        "real-process": ["posix-only/", "win-only/"],
+        "platform-only": ["posix-only/", "win-only/"],
+        "cross-tool-interop": ["root"],
+        "multi-adapter-parity": ["root"],
+        "coverage-gap": ["root"]
+      }
     }
   },
   "gating": {
@@ -64,14 +88,19 @@
     "aaaBody": true,
     "sutNaming": true,
     "bareClassToThrow": true,
-    "emptyAaaSection": true
+    "emptyAaaSection": true,
+    "integrationProof": false
   },
   "excludePaths": [
     "tooling/test/unit/test-pyramid/detect-*.test.ts",
     "tooling/test/unit/test-pyramid/parse-manifest.test.ts",
+    "tooling/test/unit/test-pyramid/parse-proves-header.test.ts",
     "tooling/test/unit/test-pyramid/render-report.test.ts",
     "tooling/test/unit/test-pyramid/scan-it-blocks.test.ts",
     "tooling/test/unit/test-pyramid/scan-describe-blocks.test.ts",
-    "tooling/test/integration/audit-test-pyramid.test.ts"
+    "tooling/test/integration/audit-test-pyramid.test.ts",
+    "tooling/test/integration/check-mutation-budgets.test.ts",
+    "tooling/test/integration/compute-mutation-scope.test.ts",
+    "tooling/test/integration/has-code-changes.test.ts"
   ]
 }

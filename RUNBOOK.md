@@ -35,7 +35,7 @@ npm install
 | `npm run test:mutation` | Mutation testing — full tree (Stryker) |
 | `npm run test:mutation:pr` | Mutation testing — diff-scoped (reads `TSGIT_MUTATE_PATHS_FILE` or `--mutate`); CI invokes this |
 | `npm run check:mutation-budgets` | Evaluate per-bucket mutation budgets against the latest `reports/mutation/mutation-report.json` (Phase 19.1) |
-| `npm run check:test-pyramid` | Testing-pyramid audit — counts unit/integration/e2e files, flags over-mocked integrations and under-asserted units; writes `reports/test-pyramid.{json,md}`. Report-only (ADR-104) |
+| `npm run check:test-pyramid` | Testing-pyramid audit — counts unit/integration/e2e files, flags over-mocked integrations, under-asserted units, and integration-test usefulness (missing `@proves` headers, duplicate `(surface, bucket)` pairs, misplaced buckets); writes `reports/test-pyramid.{json,md}` plus `reports/integration-surfaces.json`. Integration-usefulness ships warn-only |
 | `npm run test:bench` | Performance benchmarks |
 | `npm run bench:fixture -- <medium\|large>` | Generate + cache a scaled bench fixture |
 | `npm run profile` | V8 CPU profiles for log / status / pack-read |

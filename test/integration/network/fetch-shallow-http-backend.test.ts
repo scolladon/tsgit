@@ -15,6 +15,11 @@
  * scripts/regenerate-clone-fixtures.sh and committed.
  *
  * Suite is gated on `git --version` + a discoverable `git-http-backend`.
+ *
+ * @proves
+ *   surface: fetch.shallow
+ *   bucket:  real-http
+ *   unique:  shallow clone writes .git/shallow and bounds walkCommits to depth 1
  */
 import { execFileSync, spawn } from 'node:child_process';
 import { accessSync } from 'node:fs';

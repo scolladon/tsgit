@@ -7,6 +7,12 @@ import type { BadTitleFinding } from './detect-bad-title.ts';
 import type { BannedSutFinding } from './detect-banned-sut-name.ts';
 import type { BareClassThrowFinding } from './detect-bare-class-throw.ts';
 import type { EmptyAaaSectionFinding } from './detect-empty-aaa-section.ts';
+import type {
+  DuplicateFinding,
+  IntegrationProofFindings,
+  MisplacedFinding,
+  MissingFinding,
+} from './detect-integration-proof.ts';
 import type { MissingAaaFinding } from './detect-missing-aaa.ts';
 import type { OverMockedFinding } from './detect-over-mocked.ts';
 import type { UnderAssertedFinding } from './detect-under-asserted.ts';
@@ -20,6 +26,7 @@ export interface AuditFindings {
   readonly bannedSut: ReadonlyArray<BannedSutFinding>;
   readonly bareClassThrow: ReadonlyArray<BareClassThrowFinding>;
   readonly emptyAaaSection: ReadonlyArray<EmptyAaaSectionFinding>;
+  readonly integrationProof: IntegrationProofFindings;
 }
 
 export interface AuditOutcome {
@@ -116,6 +123,44 @@ const renderEmptyAaaSection = (
     .join('\n');
 };
 
+const renderMissingProof = (findings: ReadonlyArray<MissingFinding>): string => {
+  if (findings.length === 0) return '_none_';
+  return findings
+    .map((f) => {
+      const detail = f.detail === undefined ? '' : ` (${f.detail})`;
+      return `- \`${f.path}\` — ${f.reason}${detail}`;
+    })
+    .join('\n');
+};
+
+const renderDuplicateProof = (findings: ReadonlyArray<DuplicateFinding>): string => {
+  if (findings.length === 0) return '_none_';
+  return findings
+    .map((f) => {
+      const paths = f.paths.map((p: string) => `\`${p}\``).join(', ');
+      return `- \`${f.surface}\` (${f.bucket}): ${paths}`;
+    })
+    .join('\n');
+};
+
+const renderMisplacedProof = (findings: ReadonlyArray<MisplacedFinding>): string => {
+  if (findings.length === 0) return '_none_';
+  return findings
+    .map(
+      (f) =>
+        `- \`${f.path}\` — bucket \`${f.bucket}\` requires ${f.expected.join('|')} but lives at \`${f.actual}\``,
+    )
+    .join('\n');
+};
+
+const renderIntegrationProof = (findings: IntegrationProofFindings): string => {
+  const parts: string[] = [];
+  parts.push('', '### Integration usefulness — missing proof header', '', renderMissingProof(findings.missing));
+  parts.push('', '### Integration usefulness — duplicate proof', '', renderDuplicateProof(findings.duplicate));
+  parts.push('', '### Integration usefulness — misplaced bucket', '', renderMisplacedProof(findings.misplaced));
+  return parts.join('\n');
+};
+
 const renderUnclassified = (paths: ReadonlyArray<string>): string => {
   if (paths.length === 0) return '';
   const lines = paths.map((p) => `- \`${p}\``);
@@ -170,6 +215,7 @@ export const renderMarkdown = (outcome: AuditOutcome): string => {
     '',
     renderBareClassThrow(findings.bareClassThrow),
   );
+  sections.push(renderIntegrationProof(findings.integrationProof));
 
   const unclassified = renderUnclassified(tally.unclassified);
   if (unclassified.length > 0) sections.push(unclassified);

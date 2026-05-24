@@ -9,6 +9,11 @@
  * via `git --git-dir <bare> rev-parse main`.
  *
  * Suite is gated on `git --version` + a discoverable `git-http-backend`.
+ *
+ * @proves
+ *   surface: push
+ *   bucket:  real-http
+ *   unique:  push advances refs/heads/main on canonical bare repo via receive-pack
  */
 import { execFileSync, spawn } from 'node:child_process';
 import { accessSync, cpSync } from 'node:fs';

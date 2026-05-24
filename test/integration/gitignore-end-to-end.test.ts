@@ -3,6 +3,11 @@
  * . Exercises the four ignore sources, nested rules with
  * negation, and the tracked-beats-ignored invariant end-to-end through
  * the memory adapter.
+ *
+ * @proves
+ *   surface: gitignore
+ *   bucket:  multi-adapter-parity
+ *   unique:  four ignore sources, nested negation, and tracked-beats-ignored invariant end to end
  */
 import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../src/adapters/memory/memory-adapter.js';

@@ -6,6 +6,11 @@
  * and that the full commit history is reachable from it.
  *
  * Suite is gated on `git --version` + a discoverable `git-http-backend`.
+ *
+ * @proves
+ *   surface: fetch
+ *   bucket:  real-http
+ *   unique:  fetch updates refs/remotes/origin/* from canonical git-http-backend
  */
 import { execFileSync, spawn } from 'node:child_process';
 import { accessSync } from 'node:fs';

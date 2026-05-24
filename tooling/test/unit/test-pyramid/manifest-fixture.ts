@@ -8,6 +8,7 @@
  */
 import type {
   AaaMarker,
+  DirectoryClass,
   GatingConfig,
   PyramidManifest,
   TierDefinition,
@@ -21,6 +22,14 @@ interface GwtTitleOverrides {
   readonly legacyItGwt?: string;
 }
 
+interface IntegrationProofOverrides {
+  readonly buckets?: ReadonlyArray<string>;
+  readonly surfaceRegex?: string;
+  readonly uniqueMinLength?: number;
+  readonly uniqueMaxLength?: number;
+  readonly directoryRules?: ReadonlyMap<string, ReadonlyArray<DirectoryClass>>;
+}
+
 interface ManifestOverrides {
   readonly tiers?: ReadonlyArray<TierDefinition>;
   readonly overMockedRegex?: string;
@@ -29,6 +38,7 @@ interface ManifestOverrides {
   readonly aaaRequired?: ReadonlyArray<AaaMarker>;
   readonly sutBanned?: ReadonlyArray<string>;
   readonly bareClassRegex?: string;
+  readonly integrationProof?: IntegrationProofOverrides;
   readonly gating?: Partial<GatingConfig>;
   readonly excludePaths?: ReadonlyArray<string>;
 }
@@ -65,6 +75,31 @@ const DEFAULT_GWT_IT_THEN = '^Then .+$';
 const DEFAULT_GWT_LEGACY_IT = '^Given .+?, When .+?, Then .+$';
 const DEFAULT_BARE_CLASS_REGEX = '\\.toThrow(?:Error)?\\s*\\(\\s*([A-Z]\\w*)\\s*\\)';
 
+const DEFAULT_INTEGRATION_BUCKETS: ReadonlyArray<string> = [
+  'real-fs',
+  'real-http',
+  'real-process',
+  'cross-tool-interop',
+  'platform-only',
+  'multi-adapter-parity',
+  'coverage-gap',
+];
+
+const DEFAULT_SURFACE_REGEX_SOURCE = '^[a-z][a-zA-Z0-9.-]{1,40}$';
+
+const DEFAULT_DIRECTORY_RULES: ReadonlyMap<string, ReadonlyArray<DirectoryClass>> = new Map<
+  string,
+  ReadonlyArray<DirectoryClass>
+>([
+  ['real-http', ['network/']],
+  ['real-fs', ['root', 'posix-only/', 'win-only/']],
+  ['real-process', ['posix-only/', 'win-only/']],
+  ['platform-only', ['posix-only/', 'win-only/']],
+  ['cross-tool-interop', ['root']],
+  ['multi-adapter-parity', ['root']],
+  ['coverage-gap', ['root']],
+]);
+
 const DEFAULT_GATING: GatingConfig = {
   overMockedIntegration: false,
   underAssertedUnit: false,
@@ -73,6 +108,7 @@ const DEFAULT_GATING: GatingConfig = {
   sutNaming: false,
   bareClassToThrow: false,
   emptyAaaSection: false,
+  integrationProof: false,
 };
 
 export const makeManifest = (overrides: ManifestOverrides = {}): PyramidManifest => {
@@ -127,6 +163,20 @@ export const makeManifest = (overrides: ManifestOverrides = {}): PyramidManifest
       emptyAaaSection: {
         tier: 'unit',
       },
+      integrationProof: ((): PyramidManifest['heuristics']['integrationProof'] => {
+        const ip = overrides.integrationProof ?? {};
+        const buckets = ip.buckets ?? DEFAULT_INTEGRATION_BUCKETS;
+        const surfaceRegexSource = ip.surfaceRegex ?? DEFAULT_SURFACE_REGEX_SOURCE;
+        return {
+          tier: 'integration',
+          buckets,
+          surfaceRegex: new RegExp(surfaceRegexSource),
+          surfaceRegexSource,
+          uniqueMinLength: ip.uniqueMinLength ?? 12,
+          uniqueMaxLength: ip.uniqueMaxLength ?? 200,
+          directoryRules: ip.directoryRules ?? DEFAULT_DIRECTORY_RULES,
+        };
+      })(),
     },
     gating: { ...DEFAULT_GATING, ...(overrides.gating ?? {}) },
     excludePaths: overrides.excludePaths ?? [],

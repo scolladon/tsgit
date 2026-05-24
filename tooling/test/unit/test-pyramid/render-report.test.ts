@@ -44,6 +44,7 @@ const okOutcome: AuditOutcome = {
     bannedSut: [],
     bareClassThrow: [],
     emptyAaaSection: [],
+    integrationProof: { missing: [], duplicate: [], misplaced: [], accepted: [] },
   },
   excludePaths: [],
 };
@@ -97,6 +98,7 @@ const outcomeWithFindings: AuditOutcome = {
         marker: 'Arrange',
       },
     ],
+    integrationProof: { missing: [], duplicate: [], misplaced: [], accepted: [] },
   },
 };
 
@@ -192,6 +194,7 @@ describe('renderMarkdown', () => {
         bannedSut: [],
         bareClassThrow: [],
         emptyAaaSection: [],
+        integrationProof: { missing: [], duplicate: [], misplaced: [], accepted: [] },
       },
       excludePaths: [],
     };

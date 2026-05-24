@@ -3,6 +3,11 @@
  * `test/integration/win-only/` — scheduled by CI only on the Windows
  * runner via the `win-integration` Vitest project. No `skipIf` needed:
  * the folder + matrix cell dictate platform.
+ *
+ * @proves
+ *   surface: nodeFs.windows
+ *   bucket:  platform-only
+ *   unique:  NodeFileSystem honours NTFS semantics (no POSIX mode bits, junctions, etc.)
  */
 import * as fsPromises from 'node:fs/promises';
 import * as os from 'node:os';
