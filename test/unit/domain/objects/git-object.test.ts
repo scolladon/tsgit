@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest';
 import type { Blob } from '../../../../src/domain/objects/blob.js';
 import type { Commit } from '../../../../src/domain/objects/commit.js';
 import { encode } from '../../../../src/domain/objects/encoding.js';
-import { TsgitError } from '../../../../src/domain/objects/error.js';
 import { parseObject, serializeObject } from '../../../../src/domain/objects/git-object.js';
 import { SHA1_CONFIG } from '../../../../src/domain/objects/hash-config.js';
 import { ObjectId } from '../../../../src/domain/objects/object-id.js';
@@ -130,7 +129,11 @@ describe('git-object', () => {
 
       // Act & Assert
       // Assert
-      expect(() => parseObject(DUMMY_ID, raw, SHA1_CONFIG)).toThrow(TsgitError);
+      expect(() => parseObject(DUMMY_ID, raw, SHA1_CONFIG)).toThrow(
+        expect.objectContaining({
+          data: expect.objectContaining({ code: 'INVALID_OBJECT_HEADER' }),
+        }),
+      );
     });
 
     it('Given header size != actual content length, When calling parseObject, Then throws INVALID_OBJECT_HEADER with size mismatch reason', () => {

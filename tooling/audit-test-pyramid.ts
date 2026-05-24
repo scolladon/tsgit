@@ -16,6 +16,8 @@ import { glob, mkdir, readFile, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import * as process from 'node:process';
 
+import { minimatch } from 'minimatch';
+
 import { classifyTestFile } from './test-pyramid/classify-test-file.ts';
 import { tallyTierFiles } from './test-pyramid/count-tier-files.ts';
 import { detectBadTitle } from './test-pyramid/detect-bad-title.ts';
@@ -112,13 +114,17 @@ export const runAudit = async (args: CliArgs): Promise<{
   const manifest = parseManifest(manifestRaw);
 
   const allPaths = await collectFiles(args.root, manifest);
+  const isExcluded = (filePath: string): boolean =>
+    manifest.excludePaths.some((pattern) => minimatch(filePath, pattern));
   const classifiedPaths = allPaths.filter(
     (p) => classifyTestFile(manifest, p) !== 'unclassified',
   );
-  const files = await readSourceFiles(args.root, classifiedPaths);
+  const filesForTally = classifiedPaths;
+  const filesForHeuristics = classifiedPaths.filter((p) => !isExcluded(p));
+  const files = await readSourceFiles(args.root, filesForHeuristics);
 
   const outcome: AuditOutcome = {
-    tally: tallyTierFiles(manifest, classifiedPaths),
+    tally: tallyTierFiles(manifest, filesForTally),
     findings: {
       overMocked: detectOverMocked(manifest, files),
       underAsserted: detectUnderAsserted(manifest, files),

@@ -44,6 +44,10 @@
         "sutNaming": { "type": "boolean" },
         "bareClassToThrow": { "type": "boolean" }
       }
+    },
+    "excludePaths": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
     }
   },
   "$defs": {

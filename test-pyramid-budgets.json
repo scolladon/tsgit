@@ -57,5 +57,11 @@
     "aaaBody": false,
     "sutNaming": false,
     "bareClassToThrow": false
-  }
+  },
+  "excludePaths": [
+    "tooling/test/unit/test-pyramid/detect-*.test.ts",
+    "tooling/test/unit/test-pyramid/parse-manifest.test.ts",
+    "tooling/test/unit/test-pyramid/render-report.test.ts",
+    "tooling/test/integration/audit-test-pyramid.test.ts"
+  ]
 }

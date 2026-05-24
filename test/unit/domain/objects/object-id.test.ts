@@ -42,7 +42,11 @@ describe('object-id', () => {
 
       // Act & Assert
       // Assert
-      expect(() => ObjectId.from(hex)).toThrow(TsgitError);
+      expect(() => ObjectId.from(hex)).toThrow(
+        expect.objectContaining({
+          data: expect.objectContaining({ code: 'INVALID_OBJECT_ID' }),
+        }),
+      );
     });
 
     it('Given an empty string, When calling ObjectId.from, Then throws INVALID_OBJECT_ID', () => {
@@ -51,7 +55,11 @@ describe('object-id', () => {
 
       // Act & Assert
       // Assert
-      expect(() => ObjectId.from(hex)).toThrow(TsgitError);
+      expect(() => ObjectId.from(hex)).toThrow(
+        expect.objectContaining({
+          data: expect.objectContaining({ code: 'INVALID_OBJECT_ID' }),
+        }),
+      );
     });
 
     it('Given uppercase hex, When calling ObjectId.from, Then throws INVALID_OBJECT_ID', () => {
@@ -60,7 +68,11 @@ describe('object-id', () => {
 
       // Act & Assert
       // Assert
-      expect(() => ObjectId.from(hex)).toThrow(TsgitError);
+      expect(() => ObjectId.from(hex)).toThrow(
+        expect.objectContaining({
+          data: expect.objectContaining({ code: 'INVALID_OBJECT_ID' }),
+        }),
+      );
     });
 
     it('Given a 39-char hex string, When calling ObjectId.from, Then throws INVALID_OBJECT_ID', () => {
@@ -69,7 +81,11 @@ describe('object-id', () => {
 
       // Act & Assert
       // Assert
-      expect(() => ObjectId.from(hex)).toThrow(TsgitError);
+      expect(() => ObjectId.from(hex)).toThrow(
+        expect.objectContaining({
+          data: expect.objectContaining({ code: 'INVALID_OBJECT_ID' }),
+        }),
+      );
     });
   });
 
@@ -104,7 +120,11 @@ describe('object-id', () => {
 
       // Act & Assert
       // Assert
-      expect(() => ObjectId.fromRaw(bytes)).toThrow(TsgitError);
+      expect(() => ObjectId.fromRaw(bytes)).toThrow(
+        expect.objectContaining({
+          data: expect.objectContaining({ code: 'INVALID_OBJECT_ID' }),
+        }),
+      );
     });
 
     it('Given a 0-byte Uint8Array, When calling ObjectId.fromRaw, Then throws INVALID_OBJECT_ID', () => {
@@ -113,7 +133,11 @@ describe('object-id', () => {
 
       // Act & Assert
       // Assert
-      expect(() => ObjectId.fromRaw(bytes)).toThrow(TsgitError);
+      expect(() => ObjectId.fromRaw(bytes)).toThrow(
+        expect.objectContaining({
+          data: expect.objectContaining({ code: 'INVALID_OBJECT_ID' }),
+        }),
+      );
     });
   });
 
@@ -219,8 +243,14 @@ describe('object-id', () => {
 
       // Act & Assert
       // Assert
-      expect(() => RefName.from(name)).toThrow(Error);
-      expect(() => RefName.from(name)).not.toThrow(TsgitError);
+      expect(() => RefName.from(name)).toThrow('RefName must not be empty');
+      try {
+        RefName.from(name);
+        expect.unreachable();
+      } catch (error) {
+        expect(error).toBeInstanceOf(Error);
+        expect(error).not.toBeInstanceOf(TsgitError);
+      }
     });
   });
 
@@ -242,8 +272,14 @@ describe('object-id', () => {
 
       // Act & Assert
       // Assert
-      expect(() => FilePath.from(path)).toThrow(Error);
-      expect(() => FilePath.from(path)).not.toThrow(TsgitError);
+      expect(() => FilePath.from(path)).toThrow('FilePath must not be empty');
+      try {
+        FilePath.from(path);
+        expect.unreachable();
+      } catch (error) {
+        expect(error).toBeInstanceOf(Error);
+        expect(error).not.toBeInstanceOf(TsgitError);
+      }
     });
   });
 

@@ -22,6 +22,7 @@ interface ManifestOverrides {
   readonly sutBanned?: ReadonlyArray<string>;
   readonly bareClassRegex?: string;
   readonly gating?: Partial<GatingConfig>;
+  readonly excludePaths?: ReadonlyArray<string>;
 }
 
 const DEFAULT_TIERS: ReadonlyArray<TierDefinition> = [
@@ -99,5 +100,6 @@ export const makeManifest = (overrides: ManifestOverrides = {}): PyramidManifest
       },
     },
     gating: { ...DEFAULT_GATING, ...(overrides.gating ?? {}) },
+    excludePaths: overrides.excludePaths ?? [],
   };
 };

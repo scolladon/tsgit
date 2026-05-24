@@ -75,6 +75,7 @@ export interface PyramidManifest {
     readonly bareClassToThrow: BareClassThrowHeuristic;
   };
   readonly gating: GatingConfig;
+  readonly excludePaths: ReadonlyArray<string>;
 }
 
 const AAA_MARKERS: ReadonlySet<AaaMarker> = new Set<AaaMarker>(['Arrange', 'Act', 'Assert']);
@@ -286,6 +287,19 @@ const DEFAULT_GATING: GatingConfig = Object.freeze({
   bareClassToThrow: false,
 }) as GatingConfig;
 
+const parseExcludePaths = (raw: unknown): ReadonlyArray<string> => {
+  if (raw === undefined) return [];
+  if (!Array.isArray(raw)) return fail('excludePaths must be an array');
+  const out: string[] = [];
+  for (const entry of raw) {
+    if (typeof entry !== 'string' || entry.length === 0) {
+      return fail('excludePaths entry must be a non-empty string');
+    }
+    out.push(entry);
+  }
+  return out;
+};
+
 const parseGating = (raw: unknown): GatingConfig => {
   if (raw === undefined) return DEFAULT_GATING;
   if (!isObject(raw)) {
@@ -313,7 +327,7 @@ export const parseManifest = (raw: string): PyramidManifest => {
   }
   if (!isObject(json)) return fail('top-level value must be an object');
 
-  const { tiers, heuristics, gating } = json;
+  const { tiers, heuristics, gating, excludePaths } = json;
 
   if (!Array.isArray(tiers)) return fail('tiers field is required and must be an array');
   if (tiers.length === 0) return fail('tiers must contain at least one entry');
@@ -356,5 +370,6 @@ export const parseManifest = (raw: string): PyramidManifest => {
       bareClassToThrow: parseBareClassThrow(heuristics.bareClassToThrow, tierNames),
     },
     gating: parseGating(gating),
+    excludePaths: parseExcludePaths(excludePaths),
   };
 };
