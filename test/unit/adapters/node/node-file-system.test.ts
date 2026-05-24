@@ -460,7 +460,6 @@ describe('NodeFileSystem', () => {
     describe('isErrnoException', () => {
       it('Given a generic Error without code, When checking, Then returns false', () => {
         // Arrange
-        // Act
         const sut = isErrnoException(new Error('plain'));
 
         // Assert
@@ -469,7 +468,6 @@ describe('NodeFileSystem', () => {
 
       it('Given an errno-like error, When checking, Then returns true', () => {
         // Arrange
-        // Act
         const sut = isErrnoException(makeErrnoError('ENOENT'));
 
         // Assert
@@ -478,7 +476,6 @@ describe('NodeFileSystem', () => {
 
       it('Given a non-Error value, When checking, Then returns false', () => {
         // Arrange
-        // Act
         const sut = isErrnoException('not an error');
 
         // Assert
@@ -489,7 +486,6 @@ describe('NodeFileSystem', () => {
     describe('mapErrno', () => {
       it('Given ENOENT, When mapping, Then returns FILE_NOT_FOUND', () => {
         // Arrange
-        // Act
         const sut = mapErrno(makeErrnoError('ENOENT'), '/missing');
 
         // Assert
@@ -498,7 +494,6 @@ describe('NodeFileSystem', () => {
 
       it('Given EEXIST, When mapping, Then returns FILE_EXISTS', () => {
         // Arrange
-        // Act
         const sut = mapErrno(makeErrnoError('EEXIST'), '/existing');
 
         // Assert
@@ -507,7 +502,6 @@ describe('NodeFileSystem', () => {
 
       it('Given ENOTDIR, When mapping, Then returns NOT_A_DIRECTORY', () => {
         // Arrange
-        // Act
         const sut = mapErrno(makeErrnoError('ENOTDIR'), '/not-dir');
 
         // Assert
@@ -516,7 +510,6 @@ describe('NodeFileSystem', () => {
 
       it('Given EACCES, When mapping, Then returns PERMISSION_DENIED', () => {
         // Arrange
-        // Act
         const sut = mapErrno(makeErrnoError('EACCES'), '/locked');
 
         // Assert
@@ -525,7 +518,6 @@ describe('NodeFileSystem', () => {
 
       it('Given EPERM, When mapping, Then returns PERMISSION_DENIED', () => {
         // Arrange
-        // Act
         const sut = mapErrno(makeErrnoError('EPERM'), '/locked');
 
         // Assert
@@ -534,7 +526,6 @@ describe('NodeFileSystem', () => {
 
       it('Given ELOOP, When mapping, Then returns PERMISSION_DENIED (symlink-refusal contract)', () => {
         // Arrange
-        // Act
         const sut = mapErrno(makeErrnoError('ELOOP'), '/looping');
 
         // Assert
@@ -543,7 +534,6 @@ describe('NodeFileSystem', () => {
 
       it('Given EISDIR, When mapping, Then returns PERMISSION_DENIED (open-directory refusal, cross-platform)', () => {
         // Arrange
-        // Act
         const sut = mapErrno(makeErrnoError('EISDIR'), '/some-dir');
 
         // Assert
@@ -555,7 +545,6 @@ describe('NodeFileSystem', () => {
 
       it('Given an unknown errno code, When mapping, Then returns UNSUPPORTED_OPERATION with operation="filesystem" and the code as reason', () => {
         // Arrange
-        // Act
         const sut = mapErrno(makeErrnoError('EOTHER'), '/weird');
 
         // Assert
@@ -583,7 +572,6 @@ describe('NodeFileSystem', () => {
 
       it('Given ENOTEMPTY, When mapping, Then returns DIRECTORY_NOT_EMPTY (non-empty rmdir is distinct from a wrong-shape path)', () => {
         // Arrange
-        // Act
         const sut = mapErrno(makeErrnoError('ENOTEMPTY'), '/non-empty-dir');
 
         // Assert
@@ -613,7 +601,6 @@ describe('NodeFileSystem', () => {
 
       it('Given ok=true with isSymlink=true, When interpreting, Then throws PERMISSION_DENIED', () => {
         // Arrange
-        // Act
         let caught: unknown;
         try {
           interpretCreationLstat({ ok: true, isSymlink: true }, '/symlinked-leaf');
@@ -627,7 +614,6 @@ describe('NodeFileSystem', () => {
 
       it('Given ok=false with ENOENT error, When interpreting, Then returns without throwing (leaf absent is expected)', () => {
         // Arrange
-        // Act
         let caught: unknown;
         try {
           interpretCreationLstat({ ok: false, err: makeErrnoError('ENOENT') }, '/to-create');
@@ -641,7 +627,6 @@ describe('NodeFileSystem', () => {
 
       it('Given ok=false with EACCES (non-ENOENT errno), When interpreting, Then throws PERMISSION_DENIED (NOT silently swallowed)', () => {
         // Arrange
-        // Act
         let caught: unknown;
         try {
           interpretCreationLstat({ ok: false, err: makeErrnoError('EACCES') }, '/guarded');
@@ -655,7 +640,6 @@ describe('NodeFileSystem', () => {
 
       it('Given ok=false with non-errno throwable, When interpreting, Then re-bubbles the original error', () => {
         // Arrange
-        // Act
         const original = new RangeError('weird');
         let caught: unknown;
         try {
@@ -671,7 +655,6 @@ describe('NodeFileSystem', () => {
     describe('runFs', () => {
       it('Given op throwing an errno exception, When running, Then throws mapped TsgitError', async () => {
         // Arrange
-        // Act
         let caught: unknown;
         try {
           await runFs(async () => {
@@ -706,7 +689,6 @@ describe('NodeFileSystem', () => {
 
       it('Given successful op, When running, Then returns the op result', async () => {
         // Arrange
-        // Act
         const sut = await runFs(async () => 42, '/ok');
 
         // Assert
@@ -733,7 +715,6 @@ describe('NodeFileSystem', () => {
 
       it('Given fully non-existent path, When resolving, Then returns root joined with every non-existent segment (loop-exhausted branch)', async () => {
         // Arrange
-        // Act — a non-existent absolute path that shares no existing prefix except '/'
         const sut = await realpathNearestExisting('/totally/made/up/path/doesnotexist');
 
         // Assert — original joins realpath('/')='/' with every segment; a mutant that returns
@@ -745,7 +726,6 @@ describe('NodeFileSystem', () => {
 
       it('Given the root path itself, When resolving, Then returns the realpath of root (empty-segments branch)', async () => {
         // Arrange
-        // Act — '/' split yields no segments, exercising the `segments.length > 0 ?... : root` false branch
         const sut = await realpathNearestExisting('/');
 
         // Assert
@@ -806,7 +786,6 @@ describe('NodeFileSystem', () => {
 
       it('Given stat with ctimeNs and mtimeNs, When mapping, Then result includes the ns fields', () => {
         // Arrange
-        // Act
         const sut = mapStat(makeBigIntStat());
 
         // Assert

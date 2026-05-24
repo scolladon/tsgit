@@ -280,7 +280,6 @@ describe('NodeHttpTransport', () => {
     describe('normalizeHeaders — pure header-coercion helper', () => {
       it('Given string value, When normalizing, Then key is lowercased and value preserved', () => {
         // Arrange
-        // Act
         const sut = normalizeHeaders({ 'Content-Type': 'text/plain' });
 
         // Assert
@@ -289,7 +288,6 @@ describe('NodeHttpTransport', () => {
 
       it('Given array value, When normalizing, Then values are joined with comma space', () => {
         // Arrange
-        // Act
         const sut = normalizeHeaders({ 'Set-Cookie': ['a=1', 'b=2'] });
 
         // Assert
@@ -298,7 +296,6 @@ describe('NodeHttpTransport', () => {
 
       it('Given undefined value, When normalizing, Then the entry is omitted', () => {
         // Arrange
-        // Act
         const sut = normalizeHeaders({ 'x-skip': undefined, 'x-keep': 'yes' });
 
         // Assert

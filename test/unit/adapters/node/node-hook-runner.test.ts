@@ -90,7 +90,6 @@ describe('adapters/node NodeHookRunner — isRunnable', () => {
     const { runner } = makeHarness({ stat: () => Promise.reject(new Error('ENOENT')) });
 
     // Act & Assert
-    // Assert
     expect(await runner.run(baseRequest('pre-commit'))).toEqual({ kind: 'skipped' });
   });
 
@@ -101,7 +100,6 @@ describe('adapters/node NodeHookRunner — isRunnable', () => {
     });
 
     // Act & Assert
-    // Assert
     expect(await runner.run(baseRequest('pre-commit'))).toEqual({ kind: 'skipped' });
   });
 
@@ -113,7 +111,6 @@ describe('adapters/node NodeHookRunner — isRunnable', () => {
     });
 
     // Act & Assert
-    // Assert
     expect(await runner.run(baseRequest('pre-commit'))).toEqual({ kind: 'skipped' });
   });
 

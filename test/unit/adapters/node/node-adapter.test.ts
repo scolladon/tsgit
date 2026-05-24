@@ -133,7 +133,6 @@ describe('createNodeContext', () => {
     const sut = createNodeContext({ workDir: '/tmp/tsgit-frozen' });
 
     // Act / Assert
-    // Assert
     expect(Object.isFrozen(sut)).toBe(true);
   });
 
@@ -206,14 +205,18 @@ describe('createNodeContext', () => {
 describe('resolveHomeDir', () => {
   it('Given an empty string, When resolved, Then returns undefined', () => {
     // Arrange
+    const sut = resolveHomeDir('');
+
     // Assert
-    expect(resolveHomeDir('')).toBeUndefined();
+    expect(sut).toBeUndefined();
   });
 
   it('Given a non-empty path, When resolved, Then returns the path verbatim', () => {
     // Arrange
+    const sut = resolveHomeDir('/home/me');
+
     // Assert
-    expect(resolveHomeDir('/home/me')).toBe('/home/me');
+    expect(sut).toBe('/home/me');
   });
 });
 
