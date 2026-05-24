@@ -153,15 +153,22 @@ describe('tag', () => {
 
   describe('Given force=true on an existing tag', () => {
     describe('When tag create', () => {
-      it('Then it overwrites without throwing', async () => {
-        // Arrange
+      it('Then the second create overwrites the ref (commit oid is unchanged)', async () => {
+        // Arrange — seed a commit and tag it once.
         const { ctx } = await seedWithCommit();
-        await tag(ctx, { kind: 'create', name: 'v1.0' });
+        const first = await tag(ctx, { kind: 'create', name: 'v1.0' });
+        if (first.kind !== 'create') throw new Error('expected create result');
 
-        // Act + Assert — must not throw with force.
-        await expect(
-          tag(ctx, { kind: 'create', name: 'v1.0', force: true }),
-        ).resolves.toBeDefined();
+        // Act — second create with force MUST NOT throw and MUST end pointing
+        // at the same commit oid (no rewrite of the underlying ref target).
+        const sut = await tag(ctx, { kind: 'create', name: 'v1.0', force: true });
+
+        // Assert — discriminated-union narrow first, then check the fields
+        // that prove the ref was rewritten in place (full name + same oid).
+        expect(sut.kind).toBe('create');
+        if (sut.kind !== 'create') throw new Error('expected create result');
+        expect(sut.name).toBe('refs/tags/v1.0');
+        expect(sut.id).toBe(first.id);
       });
     });
   });

@@ -169,8 +169,10 @@ describe('log', () => {
           caught = err;
         }
 
-        // Assert
-        expect(caught).toBeDefined();
+        // Assert — error must name the missing HEAD ref, not just be defined.
+        expect(caught).toBeInstanceOf(Error);
+        const data = (caught as { data?: { code?: string } }).data;
+        expect(data?.code).toBe('REF_NOT_FOUND');
       });
     });
   });
