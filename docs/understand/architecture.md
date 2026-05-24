@@ -99,6 +99,27 @@ See [`security.md`](security.md) for the full table. Highlights:
 - **Defensive copying** in the Memory adapter — every read / write clones the `Uint8Array`.
 - **Symlink loop protection** — Memory adapter caps at 40 hops (POSIX `SYMLOOP_MAX`).
 
+## Cross-adapter parity (test layer)
+
+Every adapter implements the same `Repository` facade, but only end-to-end
+byte-identical equality across them proves they truly agree. Phase 19.5
+adds a cross-adapter parity test layer: each `test/parity/scenarios/*.scenario.ts`
+declares one `Scenario<TResult>` (inputs + golden `expected` + a `run(repo,
+inputs)` body), and three drivers — Node (`test/parity/node.test.ts`),
+Memory (`test/parity/memory.test.ts`), and Browser/OPFS (`test/browser/parity.spec.ts`)
+— run the scenario against their adapter and assert against the same
+`expected`. The golden's 40-hex `commit.id` is the load-bearing signal
+([ADR-128](../adr/128-golden-commit-id-as-parity-signal.md)): a single
+non-deterministic byte anywhere in object serialization, hash framing, or
+author-identity encoding mutates the SHA-1 and the assertion fails.
+
+A determinism lint (`npm run check:parity-fixtures`) bans `Date.now()` /
+`Math.random` / unpinned `new Date(...)` inside scenario files so the
+constants stay reproducible across runs and runners. The Browser driver
+crosses the `page.evaluate` boundary by name lookup against
+`window.__tsgitParity`, populated by a small bundled module
+([ADR-127](../adr/127-parity-scenarios-bundled-not-serialized.md)).
+
 ## ADRs
 
 For the receipts behind each major design choice, see [`design-decisions.md`](design-decisions.md) — a curated, subsystem-grouped index of the [ADR collection](../adr/).
