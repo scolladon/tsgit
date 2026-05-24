@@ -31,9 +31,6 @@ import {
 import { type ItBlock, scanItBlocks } from './test-pyramid/scan-it-blocks.ts';
 
 const LEGACY_RE = /^Given (.+?), When (.+?), Then (.+)$/;
-// Same shape, no anchors — used to splice the rewritten title inside the
-// surrounding `it(...)` source slice.
-const LEGACY_REPLACE_RE = /Given (.+?), When (.+?), Then ([^'"`]+)/;
 
 interface ParsedLegacy {
   readonly given: string;
@@ -65,11 +62,9 @@ const parseLegacy = (title: string): ParsedLegacy | null => {
 };
 
 
-const findStatementEnd = (source: string, openerIdx: number): number => {
-  let i = openerIdx;
-  while (i < source.length && source[i] !== '(') i += 1;
-  if (i >= source.length) return openerIdx;
-  let depth = 0;
+const findCloseParen = (source: string, openParen: number): number => {
+  let i = openParen + 1;
+  let depth = 1;
   let inString: string | null = null;
   while (i < source.length) {
     const c = source[i]!;
@@ -89,7 +84,7 @@ const findStatementEnd = (source: string, openerIdx: number): number => {
     }
     if (c === '/' && source[i + 1] === '*') {
       const end = source.indexOf('*/', i + 2);
-      if (end < 0) return i;
+      if (end < 0) return -1;
       i = end + 2;
       continue;
     }
@@ -99,12 +94,28 @@ const findStatementEnd = (source: string, openerIdx: number): number => {
       depth += 1;
     } else if (c === ')') {
       depth -= 1;
-      if (depth === 0) {
-        i += 1;
-        break;
-      }
+      if (depth === 0) return i;
     }
     i += 1;
+  }
+  return -1;
+};
+
+const findStatementEnd = (source: string, openerIdx: number): number => {
+  let i = openerIdx;
+  while (i < source.length && source[i] !== '(') i += 1;
+  if (i >= source.length) return openerIdx;
+  // Walk past every chained `(...)` group — handles `it.each([…])('title',
+  // body)` where the title lives in the second parens. Stop when the
+  // next non-whitespace is not `(`.
+  for (;;) {
+    const close = findCloseParen(source, i);
+    if (close < 0) return openerIdx;
+    i = close + 1;
+    let j = i;
+    while (j < source.length && (source[j] === ' ' || source[j] === '\t' || source[j] === '\n' || source[j] === '\r')) j += 1;
+    if (source[j] !== '(') break;
+    i = j;
   }
   if (source[i] === ';') i += 1;
   return i;
@@ -159,15 +170,23 @@ const rewriteLeafSnippet = (
   source: string,
   enriched: EnrichedIt,
   leafIndent: string,
-  originalIndent: string,
 ): string => {
+  // Re-indent ONLY the first line: subsequent lines may sit inside a
+  // multi-line template literal where whitespace is semantically
+  // significant. Biome reformats the outer structure on commit; the
+  // template-literal contents stay byte-identical.
   const orig = source.slice(enriched.it.openIdx, enriched.statementEnd);
-  const rewritten = orig.replace(LEGACY_REPLACE_RE, `Then ${enriched.parsed!.then}`);
-  const lines = rewritten.split('\n');
-  const indented = lines.map((line, idx) =>
-    idx === 0 ? line : leafIndent.slice(originalIndent.length) + line,
-  );
-  return leafIndent + indented.join('\n');
+  const parsed = enriched.parsed!;
+  // Literal string replace — the scanner gave us the exact title text,
+  // so it appears byte-for-byte in the source slice. Use the function
+  // form of `.replace()` because string-form replacements interpret `$`,
+  // `$&`, `$``, etc. as backreferences — titles can contain `$` (regex
+  // shapes, template-literal expressions) and would be corrupted by the
+  // string form.
+  const legacyTitle = `Given ${parsed.given}, When ${parsed.when}, Then ${parsed.then}`;
+  const newTitle = `Then ${parsed.then}`;
+  const rewritten = orig.replace(legacyTitle, () => newTitle);
+  return leafIndent + rewritten;
 };
 
 const groupOrdered = <K, V>(items: ReadonlyArray<V>, keyOf: (v: V) => K): Map<K, V[]> => {
@@ -196,14 +215,19 @@ const buildReplacement = (
     const whenBlocks: string[] = [];
     for (const [when, whenItems] of byWhen) {
       const leaves = whenItems
-        .map((e) => rewriteLeafSnippet(source, e, leafIndent, indent))
+        .map((e) => rewriteLeafSnippet(source, e, leafIndent))
         .join('\n');
+      // JSON.stringify gives a properly-escaped double-quoted string;
+      // safe for titles containing single/double quotes, backslashes, or
+      // control characters. Biome will rewrite to project quote style.
+      const whenLit = JSON.stringify(`When ${when}`);
       whenBlocks.push(
-        `${whenIndent}describe('When ${when}', () => {\n${leaves}\n${whenIndent}});`,
+        `${whenIndent}describe(${whenLit}, () => {\n${leaves}\n${whenIndent}});`,
       );
     }
+    const givenLit = JSON.stringify(`Given ${given}`);
     givenBlocks.push(
-      `describe('Given ${given}', () => {\n${whenBlocks.join('\n')}\n${givenIndent}});`,
+      `describe(${givenLit}, () => {\n${whenBlocks.join('\n')}\n${givenIndent}});`,
     );
   }
   return givenBlocks.join(`\n${givenIndent}`);

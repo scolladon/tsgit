@@ -15,13 +15,13 @@ describe('Given a file with sibling legacy it() titles sharing Given+When', () =
       const sut = rewriteSource(source);
 
       // Assert
-      expect(sut).toContain("describe('Given a sut', () => {");
-      expect(sut).toContain("describe('When op runs', () => {");
+      expect(sut).toContain('describe("Given a sut", () => {');
+      expect(sut).toContain('describe("When op runs", () => {');
       expect(sut).toContain("it('Then result is x',");
       expect(sut).toContain("it('Then it returns y',");
       // Both leaves under one Given>When.
-      expect(sut.match(/describe\('Given a sut'/g)?.length).toBe(1);
-      expect(sut.match(/describe\('When op runs'/g)?.length).toBe(1);
+      expect(sut.match(/describe\("Given a sut"/g)?.length).toBe(1);
+      expect(sut.match(/describe\("When op runs"/g)?.length).toBe(1);
     });
   });
 });
@@ -38,8 +38,8 @@ describe('Given a file with a single legacy it()', () => {
       const sut = rewriteSource(source);
 
       // Assert
-      expect(sut).toContain("describe('Given X', () => {");
-      expect(sut).toContain("describe('When Y', () => {");
+      expect(sut).toContain('describe("Given X", () => {');
+      expect(sut).toContain('describe("When Y", () => {');
       expect(sut).toContain("it('Then Z',");
     });
   });
@@ -80,8 +80,8 @@ describe('Given a file with legacy it() leaves nested inside a module describe',
 
       // Assert
       expect(sut).toContain("describe('moduleName', () => {");
-      expect(sut).toContain("describe('Given a', () => {");
-      expect(sut).toContain("describe('When b', () => {");
+      expect(sut).toContain('describe("Given a", () => {');
+      expect(sut).toContain('describe("When b", () => {');
       expect(sut).toContain("it('Then c',");
       expect(sut).toContain("it('Then d',");
     });
@@ -117,10 +117,10 @@ describe('Given a file with leaves under different (Given, When) pairs', () => {
       const sut = rewriteSource(source);
 
       // Assert
-      expect(sut.match(/describe\('Given a'/g)?.length).toBe(1);
-      expect(sut.match(/describe\('Given b'/g)?.length).toBe(1);
-      expect(sut.match(/describe\('When op1'/g)?.length).toBe(2);
-      expect(sut.match(/describe\('When op2'/g)?.length).toBe(1);
+      expect(sut.match(/describe\("Given a"/g)?.length).toBe(1);
+      expect(sut.match(/describe\("Given b"/g)?.length).toBe(1);
+      expect(sut.match(/describe\("When op1"/g)?.length).toBe(2);
+      expect(sut.match(/describe\("When op2"/g)?.length).toBe(1);
     });
   });
 });
