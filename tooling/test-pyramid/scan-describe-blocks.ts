@@ -1,36 +1,22 @@
 /**
- * Shared paren/brace scanner for vitest `it(...)` / `test(...)` blocks.
+ * Sibling scanner for vitest `describe(...)` blocks.
  *
- * Used by every per-heuristic detector in `scripts/test-pyramid/**`. Strategy
- * mirrors ADR-097's regex/brace approach: locate each top-level test opener,
- * extract the literal title, and slice the body out to the matching close
- * paren. Comments, string literals, and template-literal interpolations
- * inside test bodies can produce false positives — that risk is accepted
- * because the audit is documented as regex-only.
+ * Mirrors `scanItBlocks` (paren/brace walker, same skip modifiers,
+ * same `each`-aware title position logic). Emits the open/close
+ * offsets so callers can join `it()` records to their describe
+ * ancestors via source-offset containment (see ADR-118 and
+ * detect-bad-title.ts).
  */
 
-// Modifier chain segments whose presence marks a test as skipped. The
-// scanner currently extracts blocks only when the title literal sits in the
-// immediate parens (e.g. `it.skip('title', …)` and `it.each([…])('title',
-// …)`). Two-stage helpers like `it.skipIf(cond)('title', …)` and
-// `it.runIf(cond)('title', …)` are dropped silently by the title extractor
-// because the first `(…)` holds a condition expression, not a literal.
-// That's a known limitation — see BACKLOG 19.3b follow-up.
 const SKIP_MODIFIERS = new Set(['skip', 'todo', 'fails']);
-// `(?<!\.)` excludes method-call sites like `compiled.test(...)` and
-// `it.each(...)` chains entered mid-expression; we only want top-level
-// vitest test openers.
-const OPENER_RE = /(?<!\.)\b(it|test)((?:\.\w+)*)\s*\(/g;
+const OPENER_RE = /(?<!\.)\bdescribe((?:\.\w+)*)\s*\(/g;
 
-export interface ItBlock {
+export interface DescribeBlock {
   readonly line: number;
   readonly title: string;
-  readonly body: string;
-  readonly isSkipped: boolean;
-  // Offset of the opener within `source` (e.g. start of `it` / `test`).
-  // Used by detect-bad-title to join `it()` records to their describe
-  // ancestors via source-offset containment (ADR-118).
   readonly openIdx: number;
+  readonly closeIdx: number;
+  readonly isSkipped: boolean;
 }
 
 const lineAt = (source: string, idx: number): number => {
@@ -62,8 +48,6 @@ const findMatchingClose = (source: string, openIdx: number): number => {
     }
     if (c === '/' && source[i + 1] === '/') {
       const nl = source.indexOf('\n', i + 2);
-      // EOF without trailing newline: skip to end-of-input rather than
-      // bailing out — the outer `i < source.length` guard will terminate.
       i = nl < 0 ? source.length : nl + 1;
       continue;
     }
@@ -112,16 +96,20 @@ const extractTitle = (source: string, fromIdx: number): TitleSpan => {
   return { title: null, afterIdx: i };
 };
 
-export const scanItBlocks = (source: string): ReadonlyArray<ItBlock> => {
-  const blocks: ItBlock[] = [];
-  const consumed: Array<readonly [number, number]> = [];
-  const isInsideConsumed = (idx: number): boolean =>
-    consumed.some(([start, end]) => idx >= start && idx < end);
+export const scanDescribeBlocks = (source: string): ReadonlyArray<DescribeBlock> => {
+  const blocks: DescribeBlock[] = [];
+  // Skipped ranges hold the *second* `(...)` of `describe.each(...)('title',
+  // ...)` so its opening paren isn't re-matched as a fresh describe opener.
+  // Outer-body spans are deliberately NOT skipped — we want nested describes
+  // captured (unlike scanItBlocks, which doesn't enter test bodies).
+  const skippedRanges: Array<readonly [number, number]> = [];
+  const isInSkippedRange = (idx: number): boolean =>
+    skippedRanges.some(([start, end]) => idx >= start && idx < end);
 
   for (const match of source.matchAll(OPENER_RE)) {
     const opener = match.index ?? -1;
-    if (opener < 0 || isInsideConsumed(opener)) continue;
-    const chain = match[2] ?? '';
+    if (opener < 0 || isInSkippedRange(opener)) continue;
+    const chain = match[1] ?? '';
     const chainKeys = chain.split('.').filter((seg) => seg.length > 0);
     const isSkipped = chainKeys.some((seg) => SKIP_MODIFIERS.has(seg));
     const isEach = chainKeys.includes('each');
@@ -133,32 +121,29 @@ export const scanItBlocks = (source: string): ReadonlyArray<ItBlock> => {
 
     let titleStart = openParen + 1;
     let bodyEnd = closeParen;
-    let consumedEnd = closeParen + 1;
 
     if (isEach) {
       let next = closeParen + 1;
       while (next < source.length && isWhitespace(source[next]!)) next += 1;
-      if (source[next] !== '(') {
-        consumed.push([opener, consumedEnd]);
-        continue;
-      }
+      if (source[next] !== '(') continue;
       const innerOpen = next;
       const innerClose = findMatchingClose(source, innerOpen);
-      if (innerClose < 0) {
-        consumed.push([opener, consumedEnd]);
-        continue;
-      }
+      if (innerClose < 0) continue;
       titleStart = innerOpen + 1;
       bodyEnd = innerClose;
-      consumedEnd = innerClose + 1;
+      skippedRanges.push([innerOpen, innerClose + 1]);
     }
 
-    const { title, afterIdx } = extractTitle(source, titleStart);
-    consumed.push([opener, consumedEnd]);
+    const { title } = extractTitle(source, titleStart);
     if (title === null) continue;
 
-    const body = source.slice(afterIdx, bodyEnd);
-    blocks.push({ line: lineAt(source, opener), title, body, isSkipped, openIdx: opener });
+    blocks.push({
+      line: lineAt(source, opener),
+      title,
+      openIdx: opener,
+      closeIdx: bodyEnd,
+      isSkipped,
+    });
   }
   return blocks;
 };
