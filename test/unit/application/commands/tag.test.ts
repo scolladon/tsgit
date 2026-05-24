@@ -26,254 +26,323 @@ const seedWithCommit = async () => {
 };
 
 describe('tag', () => {
-  it('Given a fresh tag, When tag create, Then refs/tags/<name> exists', async () => {
-    // Arrange
-    const { ctx, commitId } = await seedWithCommit();
+  describe('Given a fresh tag', () => {
+    describe('When tag create', () => {
+      it('Then refs/tags/<name> exists', async () => {
+        // Arrange
+        const { ctx, commitId } = await seedWithCommit();
 
-    // Act
-    const sut = await tag(ctx, { kind: 'create', name: 'v1.0' });
+        // Act
+        const sut = await tag(ctx, { kind: 'create', name: 'v1.0' });
 
-    // Assert
-    if (sut.kind !== 'create') throw new Error('expected create');
-    expect(sut.id).toBe(commitId);
+        // Assert
+        if (sut.kind !== 'create') throw new Error('expected create');
+        expect(sut.id).toBe(commitId);
+      });
+    });
   });
 
-  it('Given an existing tag, When tag create without force, Then throws TAG_EXISTS', async () => {
-    // Arrange
-    const { ctx } = await seedWithCommit();
-    await tag(ctx, { kind: 'create', name: 'v1.0' });
+  describe('Given an existing tag', () => {
+    describe('When tag create without force', () => {
+      it('Then throws TAG_EXISTS', async () => {
+        // Arrange
+        const { ctx } = await seedWithCommit();
+        await tag(ctx, { kind: 'create', name: 'v1.0' });
 
-    // Act
-    let caught: unknown;
-    try {
-      await tag(ctx, { kind: 'create', name: 'v1.0' });
-    } catch (err) {
-      caught = err;
-    }
+        // Act
+        let caught: unknown;
+        try {
+          await tag(ctx, { kind: 'create', name: 'v1.0' });
+        } catch (err) {
+          caught = err;
+        }
 
-    // Assert
-    expect(caught).toBeInstanceOf(TsgitError);
-    expect((caught as TsgitError).data.code).toBe('TAG_EXISTS');
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data.code).toBe('TAG_EXISTS');
+      });
+    });
   });
 
-  it('Given a tag, When tag delete, Then ref is removed', async () => {
-    // Arrange
-    const { ctx } = await seedWithCommit();
-    await tag(ctx, { kind: 'create', name: 'v1.0' });
+  describe('Given a tag', () => {
+    describe('When tag delete', () => {
+      it('Then ref is removed', async () => {
+        // Arrange
+        const { ctx } = await seedWithCommit();
+        await tag(ctx, { kind: 'create', name: 'v1.0' });
 
-    // Act
-    await tag(ctx, { kind: 'delete', name: 'v1.0' });
+        // Act
+        await tag(ctx, { kind: 'delete', name: 'v1.0' });
 
-    // Assert
-    expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/tags/v1.0`)).toBe(false);
+        // Assert
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/tags/v1.0`)).toBe(false);
+      });
+    });
   });
 
-  it('Given a non-existent tag, When tag delete, Then throws TAG_NOT_FOUND', async () => {
-    // Arrange
-    const { ctx } = await seedWithCommit();
+  describe('Given a non-existent tag', () => {
+    describe('When tag delete', () => {
+      it('Then throws TAG_NOT_FOUND', async () => {
+        // Arrange
+        const { ctx } = await seedWithCommit();
 
-    // Act
-    let caught: unknown;
-    try {
-      await tag(ctx, { kind: 'delete', name: 'ghost' });
-    } catch (err) {
-      caught = err;
-    }
+        // Act
+        let caught: unknown;
+        try {
+          await tag(ctx, { kind: 'delete', name: 'ghost' });
+        } catch (err) {
+          caught = err;
+        }
 
-    // Assert
-    expect(caught).toBeInstanceOf(TsgitError);
-    expect((caught as TsgitError).data.code).toBe('TAG_NOT_FOUND');
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data.code).toBe('TAG_NOT_FOUND');
+      });
+    });
   });
 
-  it('Given two tags, When tag list, Then returns them sorted', async () => {
-    // Arrange
-    const { ctx } = await seedWithCommit();
-    await tag(ctx, { kind: 'create', name: 'v2.0' });
-    await tag(ctx, { kind: 'create', name: 'v1.0' });
+  describe('Given two tags', () => {
+    describe('When tag list', () => {
+      it('Then returns them sorted', async () => {
+        // Arrange
+        const { ctx } = await seedWithCommit();
+        await tag(ctx, { kind: 'create', name: 'v2.0' });
+        await tag(ctx, { kind: 'create', name: 'v1.0' });
 
-    // Act
-    const sut = await tag(ctx, { kind: 'list' });
+        // Act
+        const sut = await tag(ctx, { kind: 'list' });
 
-    // Assert
-    if (sut.kind !== 'list') throw new Error('expected list');
-    expect(sut.tags.map((t) => t.name)).toEqual(['refs/tags/v1.0', 'refs/tags/v2.0']);
+        // Assert
+        if (sut.kind !== 'list') throw new Error('expected list');
+        expect(sut.tags.map((t) => t.name)).toEqual(['refs/tags/v1.0', 'refs/tags/v2.0']);
+      });
+    });
   });
 
-  it('Given an explicit target oid, When tag create, Then the tag points at that oid (not HEAD)', async () => {
-    // Arrange
-    const { ctx, commitId } = await seedWithCommit();
+  describe('Given an explicit target oid', () => {
+    describe('When tag create', () => {
+      it('Then the tag points at that oid (not HEAD)', async () => {
+        // Arrange
+        const { ctx, commitId } = await seedWithCommit();
 
-    // Act
-    const sut = await tag(ctx, { kind: 'create', name: 'pin', target: commitId });
+        // Act
+        const sut = await tag(ctx, { kind: 'create', name: 'pin', target: commitId });
 
-    // Assert
-    if (sut.kind !== 'create') throw new Error('expected create');
-    expect(sut.id).toBe(commitId);
+        // Assert
+        if (sut.kind !== 'create') throw new Error('expected create');
+        expect(sut.id).toBe(commitId);
+      });
+    });
   });
 
-  it('Given an explicit target as a ref name, When tag create, Then resolves it via resolveRef', async () => {
-    // Arrange
-    const { ctx, commitId } = await seedWithCommit();
+  describe('Given an explicit target as a ref name', () => {
+    describe('When tag create', () => {
+      it('Then resolves it via resolveRef', async () => {
+        // Arrange
+        const { ctx, commitId } = await seedWithCommit();
 
-    // Act
-    const sut = await tag(ctx, { kind: 'create', name: 'pin', target: 'refs/heads/main' });
+        // Act
+        const sut = await tag(ctx, { kind: 'create', name: 'pin', target: 'refs/heads/main' });
 
-    // Assert
-    if (sut.kind !== 'create') throw new Error('expected create');
-    expect(sut.id).toBe(commitId);
+        // Assert
+        if (sut.kind !== 'create') throw new Error('expected create');
+        expect(sut.id).toBe(commitId);
+      });
+    });
   });
 
-  it('Given force=true on an existing tag, When tag create, Then it overwrites without throwing', async () => {
-    // Arrange
-    const { ctx } = await seedWithCommit();
-    await tag(ctx, { kind: 'create', name: 'v1.0' });
+  describe('Given force=true on an existing tag', () => {
+    describe('When tag create', () => {
+      it('Then it overwrites without throwing', async () => {
+        // Arrange
+        const { ctx } = await seedWithCommit();
+        await tag(ctx, { kind: 'create', name: 'v1.0' });
 
-    // Act + Assert — must not throw with force.
-    await expect(tag(ctx, { kind: 'create', name: 'v1.0', force: true })).resolves.toBeDefined();
+        // Act + Assert — must not throw with force.
+        await expect(
+          tag(ctx, { kind: 'create', name: 'v1.0', force: true }),
+        ).resolves.toBeDefined();
+      });
+    });
   });
 
-  it('Given a fresh repo with no tags, When tag list, Then returns an empty array', async () => {
-    // Arrange
-    const ctx = createMemoryContext();
-    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
+  describe('Given a fresh repo with no tags', () => {
+    describe('When tag list', () => {
+      it('Then returns an empty array', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
 
-    // Act
-    const sut = await tag(ctx, { kind: 'list' });
+        // Act
+        const sut = await tag(ctx, { kind: 'list' });
 
-    // Assert
-    if (sut.kind !== 'list') throw new Error('expected list');
-    expect(sut.tags).toEqual([]);
+        // Assert
+        if (sut.kind !== 'list') throw new Error('expected list');
+        expect(sut.tags).toEqual([]);
+      });
+    });
   });
 
-  it('Given a subdirectory inside refs/tags, When tag list, Then non-file entries are skipped', async () => {
-    // Arrange — a file tag plus a directory entry sharing the refs/tags namespace
-    const { ctx } = await seedWithCommit();
-    await tag(ctx, { kind: 'create', name: 'v1.0' });
-    await ctx.fs.mkdir(`${ctx.layout.gitDir}/refs/tags/group`);
+  describe('Given a subdirectory inside refs/tags', () => {
+    describe('When tag list', () => {
+      it('Then non-file entries are skipped', async () => {
+        // Arrange — a file tag plus a directory entry sharing the refs/tags namespace
+        const { ctx } = await seedWithCommit();
+        await tag(ctx, { kind: 'create', name: 'v1.0' });
+        await ctx.fs.mkdir(`${ctx.layout.gitDir}/refs/tags/group`);
 
-    // Act — must not throw: the directory entry is filtered out before resolveRef
-    const sut = await tag(ctx, { kind: 'list' });
+        // Act — must not throw: the directory entry is filtered out before resolveRef
+        const sut = await tag(ctx, { kind: 'list' });
 
-    // Assert — only the file tag is listed; the directory is not resolved as a ref
-    if (sut.kind !== 'list') throw new Error('expected list');
-    expect(sut.tags.map((t) => t.name)).toEqual(['refs/tags/v1.0']);
+        // Assert — only the file tag is listed; the directory is not resolved as a ref
+        if (sut.kind !== 'list') throw new Error('expected list');
+        expect(sut.tags.map((t) => t.name)).toEqual(['refs/tags/v1.0']);
+      });
+    });
   });
 
-  it('Given three tags created out of order, When tag list, Then returns them in strict ascending order', async () => {
-    // Arrange — insertion order v3, v1, v2 so readdir yields an unsorted array
-    const { ctx } = await seedWithCommit();
-    await tag(ctx, { kind: 'create', name: 'v3.0' });
-    await tag(ctx, { kind: 'create', name: 'v1.0' });
-    await tag(ctx, { kind: 'create', name: 'v2.0' });
+  describe('Given three tags created out of order', () => {
+    describe('When tag list', () => {
+      it('Then returns them in strict ascending order', async () => {
+        // Arrange — insertion order v3, v1, v2 so readdir yields an unsorted array
+        const { ctx } = await seedWithCommit();
+        await tag(ctx, { kind: 'create', name: 'v3.0' });
+        await tag(ctx, { kind: 'create', name: 'v1.0' });
+        await tag(ctx, { kind: 'create', name: 'v2.0' });
 
-    // Act
-    const sut = await tag(ctx, { kind: 'list' });
+        // Act
+        const sut = await tag(ctx, { kind: 'list' });
 
-    // Assert — comparator must order ascending; an always-(-1)/always-(1) comparator
-    // would leave [v3,v1,v2] or reverse it to [v2,v1,v3], neither matching this.
-    if (sut.kind !== 'list') throw new Error('expected list');
-    expect(sut.tags.map((t) => t.name)).toEqual([
-      'refs/tags/v1.0',
-      'refs/tags/v2.0',
-      'refs/tags/v3.0',
-    ]);
+        // Assert — comparator must order ascending; an always-(-1)/always-(1) comparator
+        // would leave [v3,v1,v2] or reverse it to [v2,v1,v3], neither matching this.
+        if (sut.kind !== 'list') throw new Error('expected list');
+        expect(sut.tags.map((t) => t.name)).toEqual([
+          'refs/tags/v1.0',
+          'refs/tags/v2.0',
+          'refs/tags/v3.0',
+        ]);
+      });
+    });
   });
 
-  it('Given a target ending in 40 hex but prefixed by a non-hex char, When tag create, Then treated as a ref name and throws REF_NOT_FOUND', async () => {
-    // Arrange — 'z' + 40 hex: NOT a full-oid (anchored regex requires ^), so it
-    // must be resolved as a ref name and fail because no such ref exists.
-    const { ctx } = await seedWithCommit();
-    const target = `z${'a'.repeat(40)}`;
+  describe('Given a target ending in 40 hex but prefixed by a non-hex char', () => {
+    describe('When tag create', () => {
+      it('Then treated as a ref name and throws REF_NOT_FOUND', async () => {
+        // Arrange — 'z' + 40 hex: NOT a full-oid (anchored regex requires ^), so it
+        // must be resolved as a ref name and fail because no such ref exists.
+        const { ctx } = await seedWithCommit();
+        const target = `z${'a'.repeat(40)}`;
 
-    // Act
-    let caught: unknown;
-    try {
-      await tag(ctx, { kind: 'create', name: 'pin', target });
-    } catch (err) {
-      caught = err;
-    }
+        // Act
+        let caught: unknown;
+        try {
+          await tag(ctx, { kind: 'create', name: 'pin', target });
+        } catch (err) {
+          caught = err;
+        }
 
-    // Assert
-    expect(caught).toBeInstanceOf(TsgitError);
-    expect((caught as TsgitError).data.code).toBe('REF_NOT_FOUND');
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data.code).toBe('REF_NOT_FOUND');
+      });
+    });
   });
 
-  it('Given a target starting with 40 hex but with a trailing extra char, When tag create, Then treated as a ref name and throws REF_NOT_FOUND', async () => {
-    // Arrange — 40 hex + 'z': NOT a full-oid (anchored regex requires $), so it
-    // must be resolved as a ref name and fail because no such ref exists.
-    const { ctx } = await seedWithCommit();
-    const target = `${'a'.repeat(40)}z`;
+  describe('Given a target starting with 40 hex but with a trailing extra char', () => {
+    describe('When tag create', () => {
+      it('Then treated as a ref name and throws REF_NOT_FOUND', async () => {
+        // Arrange — 40 hex + 'z': NOT a full-oid (anchored regex requires $), so it
+        // must be resolved as a ref name and fail because no such ref exists.
+        const { ctx } = await seedWithCommit();
+        const target = `${'a'.repeat(40)}z`;
 
-    // Act
-    let caught: unknown;
-    try {
-      await tag(ctx, { kind: 'create', name: 'pin', target });
-    } catch (err) {
-      caught = err;
-    }
+        // Act
+        let caught: unknown;
+        try {
+          await tag(ctx, { kind: 'create', name: 'pin', target });
+        } catch (err) {
+          caught = err;
+        }
 
-    // Assert
-    expect(caught).toBeInstanceOf(TsgitError);
-    expect((caught as TsgitError).data.code).toBe('REF_NOT_FOUND');
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data.code).toBe('REF_NOT_FOUND');
+      });
+    });
   });
 
-  it('Given updateRef throws a non-conflict TsgitError, When tag create, Then that error propagates unchanged (not converted to TAG_EXISTS)', async () => {
-    // Arrange — a stale lock file makes the exclusive ref write throw REF_LOCKED.
-    const { ctx } = await seedWithCommit();
-    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/tags/locked.lock`, 'stale');
+  describe('Given updateRef throws a non-conflict TsgitError', () => {
+    describe('When tag create', () => {
+      it('Then that error propagates unchanged (not converted to TAG_EXISTS)', async () => {
+        // Arrange — a stale lock file makes the exclusive ref write throw REF_LOCKED.
+        const { ctx } = await seedWithCommit();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/tags/locked.lock`, 'stale');
 
-    // Act
-    let caught: unknown;
-    try {
-      await tag(ctx, { kind: 'create', name: 'locked' });
-    } catch (err) {
-      caught = err;
-    }
+        // Act
+        let caught: unknown;
+        try {
+          await tag(ctx, { kind: 'create', name: 'locked' });
+        } catch (err) {
+          caught = err;
+        }
 
-    // Assert — only REF_UPDATE_CONFLICT becomes TAG_EXISTS; REF_LOCKED is rethrown verbatim.
-    expect(caught).toBeInstanceOf(TsgitError);
-    expect((caught as TsgitError).data.code).toBe('REF_LOCKED');
+        // Assert — only REF_UPDATE_CONFLICT becomes TAG_EXISTS; REF_LOCKED is rethrown verbatim.
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data.code).toBe('REF_LOCKED');
+      });
+    });
   });
 
-  it('Given core.logAllRefUpdates=always, When tag create, Then the reflog entry message is "tag: <name>"', async () => {
-    // Arrange — `always` makes even tag refs loggable, exposing the reflog
-    // message tag writes. The message must name the tag, not be empty.
-    const { ctx } = await seedWithCommit();
-    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n  logallrefupdates = always\n');
-    __resetConfigCacheForTests();
+  describe('Given core.logAllRefUpdates=always', () => {
+    describe('When tag create', () => {
+      it('Then the reflog entry message is "tag: <name>"', async () => {
+        // Arrange — `always` makes even tag refs loggable, exposing the reflog
+        // message tag writes. The message must name the tag, not be empty.
+        const { ctx } = await seedWithCommit();
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          '[core]\n  logallrefupdates = always\n',
+        );
+        __resetConfigCacheForTests();
 
-    // Act
-    await tag(ctx, { kind: 'create', name: 'v1.0' });
+        // Act
+        await tag(ctx, { kind: 'create', name: 'v1.0' });
 
-    // Assert
-    const entries = await readReflog(ctx, 'refs/tags/v1.0' as RefName);
-    expect(entries.map((e) => e.message)).toEqual(['tag: v1.0']);
-    __resetConfigCacheForTests();
+        // Assert
+        const entries = await readReflog(ctx, 'refs/tags/v1.0' as RefName);
+        expect(entries.map((e) => e.message)).toEqual(['tag: v1.0']);
+        __resetConfigCacheForTests();
+      });
+    });
   });
 
-  it('Given updateRef throws a non-TsgitError, When tag create, Then that error propagates unchanged', async () => {
-    // Arrange — wrap fs so the ref rename throws a plain Error inside updateRef.
-    const { ctx } = await seedWithCommit();
-    const renameFailure = new Error('rename exploded');
-    const failingCtx = {
-      ...ctx,
-      fs: {
-        ...ctx.fs,
-        rename: async (): Promise<void> => {
-          throw renameFailure;
-        },
-      },
-    };
+  describe('Given updateRef throws a non-TsgitError', () => {
+    describe('When tag create', () => {
+      it('Then that error propagates unchanged', async () => {
+        // Arrange — wrap fs so the ref rename throws a plain Error inside updateRef.
+        const { ctx } = await seedWithCommit();
+        const renameFailure = new Error('rename exploded');
+        const failingCtx = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            rename: async (): Promise<void> => {
+              throw renameFailure;
+            },
+          },
+        };
 
-    // Act
-    let caught: unknown;
-    try {
-      await tag(failingCtx, { kind: 'create', name: 'v9.9' });
-    } catch (err) {
-      caught = err;
-    }
+        // Act
+        let caught: unknown;
+        try {
+          await tag(failingCtx, { kind: 'create', name: 'v9.9' });
+        } catch (err) {
+          caught = err;
+        }
 
-    // Assert — the plain Error is rethrown as-is, never dereferenced for `.data.code`.
-    expect(caught).toBe(renameFailure);
+        // Assert — the plain Error is rethrown as-is, never dereferenced for `.data.code`.
+        expect(caught).toBe(renameFailure);
+      });
+    });
   });
 });

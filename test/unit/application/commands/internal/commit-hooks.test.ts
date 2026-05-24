@@ -31,162 +31,209 @@ const hookedContext = (commitMsgRewrite?: string): Context => {
 const opts = { noVerify: false, allowEmptyMessage: false };
 
 describe('commands/internal commit-hooks runPreCommitHook', () => {
-  it('Given noVerify true, When runPreCommitHook, Then it is a no-op despite a failing hook', async () => {
-    // Arrange
-    const ctx = createMemoryContext({
-      hooks: new MemoryHookRunner({
-        'pre-commit': { kind: 'ran', exitCode: 1, stdout: '', stderr: 'lint' },
-      }),
-    });
+  describe('Given noVerify true', () => {
+    describe('When runPreCommitHook', () => {
+      it('Then it is a no-op despite a failing hook', async () => {
+        // Arrange
+        const ctx = createMemoryContext({
+          hooks: new MemoryHookRunner({
+            'pre-commit': { kind: 'ran', exitCode: 1, stdout: '', stderr: 'lint' },
+          }),
+        });
 
-    // Act & Assert
-    await expect(runPreCommitHook(ctx, true)).resolves.toBeUndefined();
-  });
-
-  it('Given noVerify false and a pre-commit hook that fails, When runPreCommitHook, Then it throws HOOK_FAILED', async () => {
-    // Arrange
-    const ctx = createMemoryContext({
-      hooks: new MemoryHookRunner({
-        'pre-commit': { kind: 'ran', exitCode: 1, stdout: '', stderr: 'lint' },
-      }),
-    });
-
-    // Act
-    let caught: unknown;
-    try {
-      await runPreCommitHook(ctx, false);
-    } catch (err) {
-      caught = err;
-    }
-
-    // Assert
-    expect((caught as TsgitError).data).toEqual({
-      code: 'HOOK_FAILED',
-      hook: 'pre-commit',
-      exitCode: 1,
-      stderr: 'lint',
+        // Act & Assert
+        await expect(runPreCommitHook(ctx, true)).resolves.toBeUndefined();
+      });
     });
   });
 
-  it('Given noVerify false and no hook, When runPreCommitHook, Then it resolves', async () => {
-    // Arrange
-    const ctx = createMemoryContext({ hooks: new MemoryHookRunner() });
+  describe('Given noVerify false and a pre-commit hook that fails', () => {
+    describe('When runPreCommitHook', () => {
+      it('Then it throws HOOK_FAILED', async () => {
+        // Arrange
+        const ctx = createMemoryContext({
+          hooks: new MemoryHookRunner({
+            'pre-commit': { kind: 'ran', exitCode: 1, stdout: '', stderr: 'lint' },
+          }),
+        });
 
-    // Act & Assert
-    await expect(runPreCommitHook(ctx, false)).resolves.toBeUndefined();
+        // Act
+        let caught: unknown;
+        try {
+          await runPreCommitHook(ctx, false);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({
+          code: 'HOOK_FAILED',
+          hook: 'pre-commit',
+          exitCode: 1,
+          stderr: 'lint',
+        });
+      });
+    });
+  });
+
+  describe('Given noVerify false and no hook', () => {
+    describe('When runPreCommitHook', () => {
+      it('Then it resolves', async () => {
+        // Arrange
+        const ctx = createMemoryContext({ hooks: new MemoryHookRunner() });
+
+        // Act & Assert
+        await expect(runPreCommitHook(ctx, false)).resolves.toBeUndefined();
+      });
+    });
   });
 });
 
 describe('commands/internal commit-hooks applyCommitMsgHook', () => {
-  it('Given noVerify true, When applyCommitMsgHook, Then it returns the message unchanged and writes no editmsg file', async () => {
-    // Arrange
-    const ctx = createMemoryContext({ hooks: new MemoryHookRunner() });
+  describe('Given noVerify true', () => {
+    describe('When applyCommitMsgHook', () => {
+      it('Then it returns the message unchanged and writes no editmsg file', async () => {
+        // Arrange
+        const ctx = createMemoryContext({ hooks: new MemoryHookRunner() });
 
-    // Act
-    const result = await applyCommitMsgHook(ctx, 'original', { ...opts, noVerify: true });
+        // Act
+        const result = await applyCommitMsgHook(ctx, 'original', { ...opts, noVerify: true });
 
-    // Assert
-    expect(result).toBe('original');
-    expect(await ctx.fs.exists(`${ctx.layout.gitDir}/COMMIT_EDITMSG`)).toBe(false);
-  });
-
-  it('Given no hook runner, When applyCommitMsgHook, Then it returns the message unchanged without writing the editmsg file', async () => {
-    // Arrange
-    const ctx = createMemoryContext();
-
-    // Act
-    const result = await applyCommitMsgHook(ctx, 'original', opts);
-
-    // Assert — no runner ⇒ the round-trip is skipped entirely.
-    expect(result).toBe('original');
-    expect(await ctx.fs.exists(`${ctx.layout.gitDir}/COMMIT_EDITMSG`)).toBe(false);
-  });
-
-  it('Given a hook that does not touch the file, When applyCommitMsgHook, Then it returns the sanitised message', async () => {
-    // Arrange
-    const ctx = hookedContext();
-
-    // Act
-    const result = await applyCommitMsgHook(ctx, '  spaced  ', opts);
-
-    // Assert — the round-trip re-sanitises (trims) the message.
-    expect(result).toBe('spaced');
-  });
-
-  it('Given a commit-msg hook that rewrites COMMIT_EDITMSG, When applyCommitMsgHook, Then it returns the rewritten message', async () => {
-    // Arrange
-    const ctx = hookedContext('rewritten by hook');
-
-    // Act
-    const result = await applyCommitMsgHook(ctx, 'original', opts);
-
-    // Assert
-    expect(result).toBe('rewritten by hook');
-  });
-
-  it('Given a commit-msg hook that empties the message and allowEmptyMessage false, When applyCommitMsgHook, Then it throws EMPTY_COMMIT_MESSAGE', async () => {
-    // Arrange
-    const ctx = hookedContext('   ');
-
-    // Act
-    let caught: unknown;
-    try {
-      await applyCommitMsgHook(ctx, 'original', opts);
-    } catch (err) {
-      caught = err;
-    }
-
-    // Assert
-    expect((caught as TsgitError).data.code).toBe('EMPTY_COMMIT_MESSAGE');
-  });
-
-  it('Given a commit-msg hook that empties the message and allowEmptyMessage true, When applyCommitMsgHook, Then it returns an empty string', async () => {
-    // Arrange
-    const ctx = hookedContext('   ');
-
-    // Act
-    const result = await applyCommitMsgHook(ctx, 'original', { ...opts, allowEmptyMessage: true });
-
-    // Assert
-    expect(result).toBe('');
-  });
-
-  it('Given a commit-msg hook that exits non-zero, When applyCommitMsgHook, Then it throws HOOK_FAILED', async () => {
-    // Arrange
-    const ctx = createMemoryContext({
-      hooks: new MemoryHookRunner({
-        'commit-msg': { kind: 'ran', exitCode: 1, stdout: '', stderr: 'bad' },
-      }),
-    });
-
-    // Act
-    let caught: unknown;
-    try {
-      await applyCommitMsgHook(ctx, 'original', opts);
-    } catch (err) {
-      caught = err;
-    }
-
-    // Assert
-    expect((caught as TsgitError).data).toEqual({
-      code: 'HOOK_FAILED',
-      hook: 'commit-msg',
-      exitCode: 1,
-      stderr: 'bad',
+        // Assert
+        expect(result).toBe('original');
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/COMMIT_EDITMSG`)).toBe(false);
+      });
     });
   });
 
-  it('Given a hook runner, When applyCommitMsgHook, Then the commit-msg hook receives the COMMIT_EDITMSG path as its only argument', async () => {
-    // Arrange
-    const runner = new MemoryHookRunner();
-    const ctx = createMemoryContext({ hooks: runner });
+  describe('Given no hook runner', () => {
+    describe('When applyCommitMsgHook', () => {
+      it('Then it returns the message unchanged without writing the editmsg file', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
 
-    // Act
-    await applyCommitMsgHook(ctx, 'msg', opts);
+        // Act
+        const result = await applyCommitMsgHook(ctx, 'original', opts);
 
-    // Assert
-    expect(runner.calls).toHaveLength(1);
-    expect(runner.calls[0]?.name).toBe('commit-msg');
-    expect(runner.calls[0]?.args).toEqual([`${ctx.layout.gitDir}/COMMIT_EDITMSG`]);
+        // Assert — no runner ⇒ the round-trip is skipped entirely.
+        expect(result).toBe('original');
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/COMMIT_EDITMSG`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a hook that does not touch the file', () => {
+    describe('When applyCommitMsgHook', () => {
+      it('Then it returns the sanitised message', async () => {
+        // Arrange
+        const ctx = hookedContext();
+
+        // Act
+        const result = await applyCommitMsgHook(ctx, '  spaced  ', opts);
+
+        // Assert — the round-trip re-sanitises (trims) the message.
+        expect(result).toBe('spaced');
+      });
+    });
+  });
+
+  describe('Given a commit-msg hook that rewrites COMMIT_EDITMSG', () => {
+    describe('When applyCommitMsgHook', () => {
+      it('Then it returns the rewritten message', async () => {
+        // Arrange
+        const ctx = hookedContext('rewritten by hook');
+
+        // Act
+        const result = await applyCommitMsgHook(ctx, 'original', opts);
+
+        // Assert
+        expect(result).toBe('rewritten by hook');
+      });
+    });
+  });
+
+  describe('Given a commit-msg hook that empties the message and allowEmptyMessage false', () => {
+    describe('When applyCommitMsgHook', () => {
+      it('Then it throws EMPTY_COMMIT_MESSAGE', async () => {
+        // Arrange
+        const ctx = hookedContext('   ');
+
+        // Act
+        let caught: unknown;
+        try {
+          await applyCommitMsgHook(ctx, 'original', opts);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data.code).toBe('EMPTY_COMMIT_MESSAGE');
+      });
+    });
+  });
+
+  describe('Given a commit-msg hook that empties the message and allowEmptyMessage true', () => {
+    describe('When applyCommitMsgHook', () => {
+      it('Then it returns an empty string', async () => {
+        // Arrange
+        const ctx = hookedContext('   ');
+
+        // Act
+        const result = await applyCommitMsgHook(ctx, 'original', {
+          ...opts,
+          allowEmptyMessage: true,
+        });
+
+        // Assert
+        expect(result).toBe('');
+      });
+    });
+  });
+
+  describe('Given a commit-msg hook that exits non-zero', () => {
+    describe('When applyCommitMsgHook', () => {
+      it('Then it throws HOOK_FAILED', async () => {
+        // Arrange
+        const ctx = createMemoryContext({
+          hooks: new MemoryHookRunner({
+            'commit-msg': { kind: 'ran', exitCode: 1, stdout: '', stderr: 'bad' },
+          }),
+        });
+
+        // Act
+        let caught: unknown;
+        try {
+          await applyCommitMsgHook(ctx, 'original', opts);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({
+          code: 'HOOK_FAILED',
+          hook: 'commit-msg',
+          exitCode: 1,
+          stderr: 'bad',
+        });
+      });
+    });
+  });
+
+  describe('Given a hook runner', () => {
+    describe('When applyCommitMsgHook', () => {
+      it('Then the commit-msg hook receives the COMMIT_EDITMSG path as its only argument', async () => {
+        // Arrange
+        const runner = new MemoryHookRunner();
+        const ctx = createMemoryContext({ hooks: runner });
+
+        // Act
+        await applyCommitMsgHook(ctx, 'msg', opts);
+
+        // Assert
+        expect(runner.calls).toHaveLength(1);
+        expect(runner.calls[0]?.name).toBe('commit-msg');
+        expect(runner.calls[0]?.args).toEqual([`${ctx.layout.gitDir}/COMMIT_EDITMSG`]);
+      });
+    });
   });
 });

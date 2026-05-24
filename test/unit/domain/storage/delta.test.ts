@@ -71,684 +71,844 @@ function arbDeltaTriple(): fc.Arbitrary<{
 
 describe('delta', () => {
   describe('applyDelta', () => {
-    it("Given base 'hello' and delta that copies all, When applying, Then result equals 'hello'", () => {
-      // Arrange
-      const base = new TextEncoder().encode('hello');
-      const delta = buildDelta(5, 5, [{ type: 'copy', offset: 0, size: 5 }]);
+    describe("Given base 'hello' and delta that copies all", () => {
+      describe('When applying', () => {
+        it("Then result equals 'hello'", () => {
+          // Arrange
+          const base = new TextEncoder().encode('hello');
+          const delta = buildDelta(5, 5, [{ type: 'copy', offset: 0, size: 5 }]);
 
-      // Act
-      const sut = applyDelta(base, delta);
+          // Act
+          const sut = applyDelta(base, delta);
 
-      // Assert
-      expect(sut).toEqual(base);
+          // Assert
+          expect(sut).toEqual(base);
+        });
+      });
     });
 
-    it("Given base 'hello world' and delta with COPY offset=6 size=5, When applying, Then result is 'world'", () => {
-      // Arrange
-      const base = new TextEncoder().encode('hello world');
-      const delta = buildDelta(11, 5, [{ type: 'copy', offset: 6, size: 5 }]);
+    describe("Given base 'hello world' and delta with COPY offset=6 size=5", () => {
+      describe('When applying', () => {
+        it("Then result is 'world'", () => {
+          // Arrange
+          const base = new TextEncoder().encode('hello world');
+          const delta = buildDelta(11, 5, [{ type: 'copy', offset: 6, size: 5 }]);
 
-      // Act
-      const sut = applyDelta(base, delta);
+          // Act
+          const sut = applyDelta(base, delta);
 
-      // Assert
-      expect(new TextDecoder().decode(sut)).toBe('world');
+          // Assert
+          expect(new TextDecoder().decode(sut)).toBe('world');
+        });
+      });
     });
 
-    it('Given base and delta with INSERT of literal bytes, When applying, Then result contains inserted bytes', () => {
-      // Arrange
-      const base = new Uint8Array(0);
-      const insertData = new TextEncoder().encode('inserted');
-      const delta = buildDelta(0, 8, [{ type: 'insert', data: insertData }]);
+    describe('Given base and delta with INSERT of literal bytes', () => {
+      describe('When applying', () => {
+        it('Then result contains inserted bytes', () => {
+          // Arrange
+          const base = new Uint8Array(0);
+          const insertData = new TextEncoder().encode('inserted');
+          const delta = buildDelta(0, 8, [{ type: 'insert', data: insertData }]);
 
-      // Act
-      const sut = applyDelta(base, delta);
+          // Act
+          const sut = applyDelta(base, delta);
 
-      // Assert
-      expect(new TextDecoder().decode(sut)).toBe('inserted');
+          // Assert
+          expect(new TextDecoder().decode(sut)).toBe('inserted');
+        });
+      });
     });
 
-    it('Given base and delta with mixed COPY + INSERT, When applying, Then result matches expected', () => {
-      // Arrange
-      const base = new TextEncoder().encode('hello world');
-      const insertData = new TextEncoder().encode(' dear');
-      const delta = buildDelta(11, 16, [
-        { type: 'copy', offset: 0, size: 5 },
-        { type: 'insert', data: insertData },
-        { type: 'copy', offset: 5, size: 6 },
-      ]);
+    describe('Given base and delta with mixed COPY + INSERT', () => {
+      describe('When applying', () => {
+        it('Then result matches expected', () => {
+          // Arrange
+          const base = new TextEncoder().encode('hello world');
+          const insertData = new TextEncoder().encode(' dear');
+          const delta = buildDelta(11, 16, [
+            { type: 'copy', offset: 0, size: 5 },
+            { type: 'insert', data: insertData },
+            { type: 'copy', offset: 5, size: 6 },
+          ]);
 
-      // Act
-      const sut = applyDelta(base, delta);
+          // Act
+          const sut = applyDelta(base, delta);
 
-      // Assert
-      expect(new TextDecoder().decode(sut)).toBe('hello dear world');
+          // Assert
+          expect(new TextDecoder().decode(sut)).toBe('hello dear world');
+        });
+      });
     });
 
-    it('Given base >= 64KB and delta with COPY size=0 (→ 0x10000), When applying, Then copies 64KB', () => {
-      // Arrange
-      const base = new Uint8Array(0x10000);
-      base.fill(0xaa);
-      const delta = buildDelta(0x10000, 0x10000, [{ type: 'copy', offset: 0, size: 0x10000 }]);
+    describe('Given base >= 64KB and delta with COPY size=0 (→ 0x10000)', () => {
+      describe('When applying', () => {
+        it('Then copies 64KB', () => {
+          // Arrange
+          const base = new Uint8Array(0x10000);
+          base.fill(0xaa);
+          const delta = buildDelta(0x10000, 0x10000, [{ type: 'copy', offset: 0, size: 0x10000 }]);
 
-      // Act
-      const sut = applyDelta(base, delta);
+          // Act
+          const sut = applyDelta(base, delta);
 
-      // Assert
-      expect(sut.length).toBe(0x10000);
-      expect(sut[0]).toBe(0xaa);
-      expect(sut[0xffff]).toBe(0xaa);
+          // Assert
+          expect(sut.length).toBe(0x10000);
+          expect(sut[0]).toBe(0xaa);
+          expect(sut[0xffff]).toBe(0xaa);
+        });
+      });
     });
 
-    it('Given delta with source length != base.length, When applying, Then throws INVALID_DELTA', () => {
-      // Arrange
-      const base = new Uint8Array(10);
-      const delta = buildDelta(20, 5, [{ type: 'copy', offset: 0, size: 5 }]);
+    describe('Given delta with source length != base.length', () => {
+      describe('When applying', () => {
+        it('Then throws INVALID_DELTA', () => {
+          // Arrange
+          const base = new Uint8Array(10);
+          const delta = buildDelta(20, 5, [{ type: 'copy', offset: 0, size: 5 }]);
 
-      // Act & Assert
-      try {
-        applyDelta(base, delta);
-        // Assert
-        expect.fail('Should have thrown');
-      } catch (e) {
-        const err = e as TsgitError;
-        expect(err.data).toEqual(
-          expect.objectContaining({
-            code: 'INVALID_DELTA',
-            reason: expect.stringContaining('source length mismatch'),
-          }),
-        );
-      }
+          // Act & Assert
+          try {
+            applyDelta(base, delta);
+            // Assert
+            expect.fail('Should have thrown');
+          } catch (e) {
+            const err = e as TsgitError;
+            expect(err.data).toEqual(
+              expect.objectContaining({
+                code: 'INVALID_DELTA',
+                reason: expect.stringContaining('source length mismatch'),
+              }),
+            );
+          }
+        });
+      });
     });
 
-    it('Given delta with COPY offset+size > base.length, When applying, Then throws INVALID_DELTA', () => {
-      // Arrange
-      const base = new Uint8Array(5);
-      const delta = buildDelta(5, 10, [{ type: 'copy', offset: 3, size: 7 }]);
+    describe('Given delta with COPY offset+size > base.length', () => {
+      describe('When applying', () => {
+        it('Then throws INVALID_DELTA', () => {
+          // Arrange
+          const base = new Uint8Array(5);
+          const delta = buildDelta(5, 10, [{ type: 'copy', offset: 3, size: 7 }]);
 
-      // Act & Assert
-      try {
-        applyDelta(base, delta);
-        // Assert
-        expect.fail('Should have thrown');
-      } catch (e) {
-        const err = e as TsgitError;
-        expect(err.data).toEqual(
-          expect.objectContaining({
-            code: 'INVALID_DELTA',
-            reason: expect.stringContaining('COPY out of bounds'),
-          }),
-        );
-      }
+          // Act & Assert
+          try {
+            applyDelta(base, delta);
+            // Assert
+            expect.fail('Should have thrown');
+          } catch (e) {
+            const err = e as TsgitError;
+            expect(err.data).toEqual(
+              expect.objectContaining({
+                code: 'INVALID_DELTA',
+                reason: expect.stringContaining('COPY out of bounds'),
+              }),
+            );
+          }
+        });
+      });
     });
 
-    it('Given delta with COPY that overflows result buffer, When applying, Then throws INVALID_DELTA', () => {
-      // Arrange
-      const base = new Uint8Array(20);
-      const delta = buildDelta(20, 5, [{ type: 'copy', offset: 0, size: 10 }]);
+    describe('Given delta with COPY that overflows result buffer', () => {
+      describe('When applying', () => {
+        it('Then throws INVALID_DELTA', () => {
+          // Arrange
+          const base = new Uint8Array(20);
+          const delta = buildDelta(20, 5, [{ type: 'copy', offset: 0, size: 10 }]);
 
-      // Act & Assert
-      try {
-        applyDelta(base, delta);
-        // Assert
-        expect.fail('Should have thrown');
-      } catch (e) {
-        const err = e as TsgitError;
-        expect(err.data).toEqual(
-          expect.objectContaining({
-            code: 'INVALID_DELTA',
-            reason: expect.stringContaining('overflows target'),
-          }),
-        );
-      }
+          // Act & Assert
+          try {
+            applyDelta(base, delta);
+            // Assert
+            expect.fail('Should have thrown');
+          } catch (e) {
+            const err = e as TsgitError;
+            expect(err.data).toEqual(
+              expect.objectContaining({
+                code: 'INVALID_DELTA',
+                reason: expect.stringContaining('overflows target'),
+              }),
+            );
+          }
+        });
+      });
     });
 
-    it('Given delta with INSERT that overflows result buffer, When applying, Then throws INVALID_DELTA', () => {
-      // Arrange
-      const base = new Uint8Array(0);
-      const delta = buildDelta(0, 3, [{ type: 'insert', data: new Uint8Array(5) }]);
+    describe('Given delta with INSERT that overflows result buffer', () => {
+      describe('When applying', () => {
+        it('Then throws INVALID_DELTA', () => {
+          // Arrange
+          const base = new Uint8Array(0);
+          const delta = buildDelta(0, 3, [{ type: 'insert', data: new Uint8Array(5) }]);
 
-      // Act & Assert
-      try {
-        applyDelta(base, delta);
-        // Assert
-        expect.fail('Should have thrown');
-      } catch (e) {
-        const err = e as TsgitError;
-        expect(err.data).toEqual(
-          expect.objectContaining({
-            code: 'INVALID_DELTA',
-            reason: expect.stringContaining('INSERT overflows target'),
-          }),
-        );
-      }
+          // Act & Assert
+          try {
+            applyDelta(base, delta);
+            // Assert
+            expect.fail('Should have thrown');
+          } catch (e) {
+            const err = e as TsgitError;
+            expect(err.data).toEqual(
+              expect.objectContaining({
+                code: 'INVALID_DELTA',
+                reason: expect.stringContaining('INSERT overflows target'),
+              }),
+            );
+          }
+        });
+      });
     });
 
-    it('Given delta with INSERT N=0, When applying, Then throws INVALID_DELTA', () => {
-      // Arrange — manually craft a delta with INSERT 0
-      const delta = new Uint8Array([5, 5, 0x00]);
-      const base = new Uint8Array(5);
+    describe('Given delta with INSERT N=0', () => {
+      describe('When applying', () => {
+        it('Then throws INVALID_DELTA', () => {
+          // Arrange — manually craft a delta with INSERT 0
+          const delta = new Uint8Array([5, 5, 0x00]);
+          const base = new Uint8Array(5);
 
-      // Act & Assert
-      try {
-        applyDelta(base, delta);
-        // Assert
-        expect.fail('Should have thrown');
-      } catch (e) {
-        const err = e as TsgitError;
-        expect(err.data).toEqual(
-          expect.objectContaining({
-            code: 'INVALID_DELTA',
-            reason: expect.stringContaining('INSERT with N=0'),
-          }),
-        );
-      }
+          // Act & Assert
+          try {
+            applyDelta(base, delta);
+            // Assert
+            expect.fail('Should have thrown');
+          } catch (e) {
+            const err = e as TsgitError;
+            expect(err.data).toEqual(
+              expect.objectContaining({
+                code: 'INVALID_DELTA',
+                reason: expect.stringContaining('INSERT with N=0'),
+              }),
+            );
+          }
+        });
+      });
     });
 
-    it('Given empty byte array as delta, When applying, Then throws INVALID_DELTA (truncated varint)', () => {
-      // Arrange
-      const base = new Uint8Array(0);
-      const delta = new Uint8Array(0);
+    describe('Given empty byte array as delta', () => {
+      describe('When applying', () => {
+        it('Then throws INVALID_DELTA (truncated varint)', () => {
+          // Arrange
+          const base = new Uint8Array(0);
+          const delta = new Uint8Array(0);
 
-      // Act & Assert
-      try {
-        applyDelta(base, delta);
-        // Assert
-        expect.fail('Should have thrown');
-      } catch (e) {
-        const err = e as TsgitError;
-        expect(err.data).toEqual(
-          expect.objectContaining({
-            code: 'INVALID_DELTA',
-            reason: expect.stringContaining('truncated'),
-          }),
-        );
-      }
+          // Act & Assert
+          try {
+            applyDelta(base, delta);
+            // Assert
+            expect.fail('Should have thrown');
+          } catch (e) {
+            const err = e as TsgitError;
+            expect(err.data).toEqual(
+              expect.objectContaining({
+                code: 'INVALID_DELTA',
+                reason: expect.stringContaining('truncated'),
+              }),
+            );
+          }
+        });
+      });
     });
 
-    it('Given delta with varint truncated mid-stream (2 continuation bytes then EOF), When applying, Then throws INVALID_DELTA', () => {
-      // Arrange — 2 bytes with continuation bit set, then EOF (no terminal byte)
-      const delta = new Uint8Array([0x80, 0x80]);
+    describe('Given delta with varint truncated mid-stream (2 continuation bytes then EOF)', () => {
+      describe('When applying', () => {
+        it('Then throws INVALID_DELTA', () => {
+          // Arrange — 2 bytes with continuation bit set, then EOF (no terminal byte)
+          const delta = new Uint8Array([0x80, 0x80]);
 
-      // Act & Assert
-      try {
-        applyDelta(new Uint8Array(0), delta);
-        // Assert
-        expect.fail('Should have thrown');
-      } catch (e) {
-        const err = e as TsgitError;
-        expect(err.data).toEqual(
-          expect.objectContaining({
-            code: 'INVALID_DELTA',
-            reason: expect.stringContaining('truncated'),
-          }),
-        );
-      }
+          // Act & Assert
+          try {
+            applyDelta(new Uint8Array(0), delta);
+            // Assert
+            expect.fail('Should have thrown');
+          } catch (e) {
+            const err = e as TsgitError;
+            expect(err.data).toEqual(
+              expect.objectContaining({
+                code: 'INVALID_DELTA',
+                reason: expect.stringContaining('truncated'),
+              }),
+            );
+          }
+        });
+      });
     });
 
-    it('Given delta with varint continuation exceeding 5 bytes, When applying, Then throws INVALID_DELTA', () => {
-      // Arrange — 6 bytes all with continuation bit set
-      const delta = new Uint8Array([0x80, 0x80, 0x80, 0x80, 0x80, 0x80]);
+    describe('Given delta with varint continuation exceeding 5 bytes', () => {
+      describe('When applying', () => {
+        it('Then throws INVALID_DELTA', () => {
+          // Arrange — 6 bytes all with continuation bit set
+          const delta = new Uint8Array([0x80, 0x80, 0x80, 0x80, 0x80, 0x80]);
 
-      // Act & Assert
-      try {
-        applyDelta(new Uint8Array(0), delta);
-        // Assert
-        expect.fail('Should have thrown');
-      } catch (e) {
-        const err = e as TsgitError;
-        expect(err.data).toEqual(
-          expect.objectContaining({
-            code: 'INVALID_DELTA',
-            reason: expect.stringContaining('too long'),
-          }),
-        );
-      }
+          // Act & Assert
+          try {
+            applyDelta(new Uint8Array(0), delta);
+            // Assert
+            expect.fail('Should have thrown');
+          } catch (e) {
+            const err = e as TsgitError;
+            expect(err.data).toEqual(
+              expect.objectContaining({
+                code: 'INVALID_DELTA',
+                reason: expect.stringContaining('too long'),
+              }),
+            );
+          }
+        });
+      });
     });
 
-    it('Given delta with target length exceeding 2GB, When applying, Then throws INVALID_DELTA', () => {
-      // Arrange — manually craft varint encoding sourceLength=0, targetLength=0x80000001 (>2GB)
-      // sourceLength = 0 → [0x00]
-      // targetLength = 0x80000001 → varint: [0x81, 0x80, 0x80, 0x80, 0x08]
-      const delta = new Uint8Array([0x00, 0x81, 0x80, 0x80, 0x80, 0x08]);
+    describe('Given delta with target length exceeding 2GB', () => {
+      describe('When applying', () => {
+        it('Then throws INVALID_DELTA', () => {
+          // Arrange — manually craft varint encoding sourceLength=0, targetLength=0x80000001 (>2GB)
+          // sourceLength = 0 → [0x00]
+          // targetLength = 0x80000001 → varint: [0x81, 0x80, 0x80, 0x80, 0x08]
+          const delta = new Uint8Array([0x00, 0x81, 0x80, 0x80, 0x80, 0x08]);
 
-      // Act & Assert
-      try {
-        applyDelta(new Uint8Array(0), delta);
-        // Assert
-        expect.fail('Should have thrown');
-      } catch (e) {
-        const err = e as TsgitError;
-        expect(err.data).toEqual(
-          expect.objectContaining({
-            code: 'INVALID_DELTA',
-            reason: expect.stringContaining('exceeds maximum allowed size'),
-          }),
-        );
-      }
+          // Act & Assert
+          try {
+            applyDelta(new Uint8Array(0), delta);
+            // Assert
+            expect.fail('Should have thrown');
+          } catch (e) {
+            const err = e as TsgitError;
+            expect(err.data).toEqual(
+              expect.objectContaining({
+                code: 'INVALID_DELTA',
+                reason: expect.stringContaining('exceeds maximum allowed size'),
+              }),
+            );
+          }
+        });
+      });
     });
 
-    it('Given delta with COPY instruction missing field bytes, When applying, Then throws INVALID_DELTA', () => {
-      // Arrange — sourceLength=5, targetLength=5, COPY cmd=0xFF (all 7 fields), but no field bytes
-      const delta = new Uint8Array([5, 5, 0xff]);
+    describe('Given delta with COPY instruction missing field bytes', () => {
+      describe('When applying', () => {
+        it('Then throws INVALID_DELTA', () => {
+          // Arrange — sourceLength=5, targetLength=5, COPY cmd=0xFF (all 7 fields), but no field bytes
+          const delta = new Uint8Array([5, 5, 0xff]);
 
-      // Act & Assert
-      try {
-        applyDelta(new Uint8Array(5), delta);
-        // Assert
-        expect.fail('Should have thrown');
-      } catch (e) {
-        const err = e as TsgitError;
-        expect(err.data).toEqual(
-          expect.objectContaining({
-            code: 'INVALID_DELTA',
-            reason: expect.stringContaining('COPY instruction truncated'),
-          }),
-        );
-      }
+          // Act & Assert
+          try {
+            applyDelta(new Uint8Array(5), delta);
+            // Assert
+            expect.fail('Should have thrown');
+          } catch (e) {
+            const err = e as TsgitError;
+            expect(err.data).toEqual(
+              expect.objectContaining({
+                code: 'INVALID_DELTA',
+                reason: expect.stringContaining('COPY instruction truncated'),
+              }),
+            );
+          }
+        });
+      });
     });
 
-    it('Given empty delta (sourceLength=0, targetLength=0, no instructions), When applying with empty base, Then returns empty', () => {
-      // Arrange
-      const base = new Uint8Array(0);
-      const delta = buildDelta(0, 0, []);
+    describe('Given empty delta (sourceLength=0, targetLength=0, no instructions)', () => {
+      describe('When applying with empty base', () => {
+        it('Then returns empty', () => {
+          // Arrange
+          const base = new Uint8Array(0);
+          const delta = buildDelta(0, 0, []);
 
-      // Act
-      const sut = applyDelta(base, delta);
+          // Act
+          const sut = applyDelta(base, delta);
 
-      // Assert
-      expect(sut.length).toBe(0);
+          // Assert
+          expect(sut.length).toBe(0);
+        });
+      });
     });
 
-    it('Given delta with sourceLength>0 targetLength>0 but no instructions, When applying, Then throws INVALID_DELTA (underfill)', () => {
-      // Arrange
-      const base = new Uint8Array(5);
-      const delta = buildDelta(5, 5, []);
+    describe('Given delta with sourceLength>0 targetLength>0 but no instructions', () => {
+      describe('When applying', () => {
+        it('Then throws INVALID_DELTA (underfill)', () => {
+          // Arrange
+          const base = new Uint8Array(5);
+          const delta = buildDelta(5, 5, []);
 
-      // Act & Assert
-      try {
-        applyDelta(base, delta);
-        // Assert
-        expect.fail('Should have thrown');
-      } catch (e) {
-        const err = e as TsgitError;
-        expect(err.data).toEqual(
-          expect.objectContaining({
-            code: 'INVALID_DELTA',
-            reason: expect.stringContaining('underfill'),
-          }),
-        );
-      }
+          // Act & Assert
+          try {
+            applyDelta(base, delta);
+            // Assert
+            expect.fail('Should have thrown');
+          } catch (e) {
+            const err = e as TsgitError;
+            expect(err.data).toEqual(
+              expect.objectContaining({
+                code: 'INVALID_DELTA',
+                reason: expect.stringContaining('underfill'),
+              }),
+            );
+          }
+        });
+      });
     });
 
-    it('Given delta with COPY spanning entire base, When applying, Then result equals base', () => {
-      // Arrange
-      const base = new TextEncoder().encode('entire base content');
-      const delta = buildDelta(base.length, base.length, [
-        { type: 'copy', offset: 0, size: base.length },
-      ]);
+    describe('Given delta with COPY spanning entire base', () => {
+      describe('When applying', () => {
+        it('Then result equals base', () => {
+          // Arrange
+          const base = new TextEncoder().encode('entire base content');
+          const delta = buildDelta(base.length, base.length, [
+            { type: 'copy', offset: 0, size: base.length },
+          ]);
 
-      // Act
-      const sut = applyDelta(base, delta);
+          // Act
+          const sut = applyDelta(base, delta);
 
-      // Assert
-      expect(sut).toEqual(base);
+          // Assert
+          expect(sut).toEqual(base);
+        });
+      });
     });
 
-    it('Given delta with multiple consecutive INSERT instructions, When applying, Then all literal data present', () => {
-      // Arrange
-      const base = new Uint8Array(0);
-      const insert1 = new TextEncoder().encode('abc');
-      const insert2 = new TextEncoder().encode('def');
-      const delta = buildDelta(0, 6, [
-        { type: 'insert', data: insert1 },
-        { type: 'insert', data: insert2 },
-      ]);
+    describe('Given delta with multiple consecutive INSERT instructions', () => {
+      describe('When applying', () => {
+        it('Then all literal data present', () => {
+          // Arrange
+          const base = new Uint8Array(0);
+          const insert1 = new TextEncoder().encode('abc');
+          const insert2 = new TextEncoder().encode('def');
+          const delta = buildDelta(0, 6, [
+            { type: 'insert', data: insert1 },
+            { type: 'insert', data: insert2 },
+          ]);
 
-      // Act
-      const sut = applyDelta(base, delta);
+          // Act
+          const sut = applyDelta(base, delta);
 
-      // Assert
-      expect(new TextDecoder().decode(sut)).toBe('abcdef');
+          // Assert
+          expect(new TextDecoder().decode(sut)).toBe('abcdef');
+        });
+      });
     });
 
-    it('Given delta that partially fills target, When applying, Then throws INVALID_DELTA (underfill)', () => {
-      // Arrange
-      const base = new Uint8Array(10);
-      const delta = buildDelta(10, 10, [{ type: 'copy', offset: 0, size: 5 }]);
+    describe('Given delta that partially fills target', () => {
+      describe('When applying', () => {
+        it('Then throws INVALID_DELTA (underfill)', () => {
+          // Arrange
+          const base = new Uint8Array(10);
+          const delta = buildDelta(10, 10, [{ type: 'copy', offset: 0, size: 5 }]);
 
-      // Act & Assert
-      try {
-        applyDelta(base, delta);
-        // Assert
-        expect.fail('Should have thrown');
-      } catch (e) {
-        const err = e as TsgitError;
-        expect(err.data).toEqual(
-          expect.objectContaining({
-            code: 'INVALID_DELTA',
-            reason: expect.stringContaining('underfill'),
-          }),
-        );
-      }
+          // Act & Assert
+          try {
+            applyDelta(base, delta);
+            // Assert
+            expect.fail('Should have thrown');
+          } catch (e) {
+            const err = e as TsgitError;
+            expect(err.data).toEqual(
+              expect.objectContaining({
+                code: 'INVALID_DELTA',
+                reason: expect.stringContaining('underfill'),
+              }),
+            );
+          }
+        });
+      });
     });
   });
 
   describe('applyDelta — COPY byte selector coverage', () => {
-    it('Given COPY with offset byte 1 (bit 1), When applying, Then reads offset byte 1', () => {
-      // Arrange — offset = 0x0100 (256), size = 1
-      const base = new Uint8Array(0x0200);
-      base[0x0100] = 0xab;
-      const delta = buildDelta(base.length, 1, [{ type: 'copy', offset: 0x0100, size: 1 }]);
+    describe('Given COPY with offset byte 1 (bit 1)', () => {
+      describe('When applying', () => {
+        it('Then reads offset byte 1', () => {
+          // Arrange — offset = 0x0100 (256), size = 1
+          const base = new Uint8Array(0x0200);
+          base[0x0100] = 0xab;
+          const delta = buildDelta(base.length, 1, [{ type: 'copy', offset: 0x0100, size: 1 }]);
 
-      // Act
-      const sut = applyDelta(base, delta);
+          // Act
+          const sut = applyDelta(base, delta);
 
-      // Assert
-      expect(sut[0]).toBe(0xab);
+          // Assert
+          expect(sut[0]).toBe(0xab);
+        });
+      });
     });
 
-    it('Given COPY with offset byte 2 (bit 2), When applying, Then reads offset byte 2', () => {
-      // Arrange — offset = 0x010000, size = 1
-      const base = new Uint8Array(0x010001);
-      base[0x010000] = 0xcd;
-      const delta = buildDelta(base.length, 1, [{ type: 'copy', offset: 0x010000, size: 1 }]);
+    describe('Given COPY with offset byte 2 (bit 2)', () => {
+      describe('When applying', () => {
+        it('Then reads offset byte 2', () => {
+          // Arrange — offset = 0x010000, size = 1
+          const base = new Uint8Array(0x010001);
+          base[0x010000] = 0xcd;
+          const delta = buildDelta(base.length, 1, [{ type: 'copy', offset: 0x010000, size: 1 }]);
 
-      // Act
-      const sut = applyDelta(base, delta);
+          // Act
+          const sut = applyDelta(base, delta);
 
-      // Assert
-      expect(sut[0]).toBe(0xcd);
+          // Assert
+          expect(sut[0]).toBe(0xcd);
+        });
+      });
     });
 
-    it('Given COPY with size byte 1 (bit 5), When applying, Then reads size high byte', () => {
-      // Arrange — offset = 0, size = 0x0100 (256)
-      const base = new Uint8Array(0x0200);
-      base.fill(0xee);
-      const delta = buildDelta(base.length, 0x0100, [{ type: 'copy', offset: 0, size: 0x0100 }]);
+    describe('Given COPY with size byte 1 (bit 5)', () => {
+      describe('When applying', () => {
+        it('Then reads size high byte', () => {
+          // Arrange — offset = 0, size = 0x0100 (256)
+          const base = new Uint8Array(0x0200);
+          base.fill(0xee);
+          const delta = buildDelta(base.length, 0x0100, [
+            { type: 'copy', offset: 0, size: 0x0100 },
+          ]);
 
-      // Act
-      const sut = applyDelta(base, delta);
+          // Act
+          const sut = applyDelta(base, delta);
 
-      // Assert
-      expect(sut.length).toBe(0x0100);
-      expect(sut[0]).toBe(0xee);
+          // Assert
+          expect(sut.length).toBe(0x0100);
+          expect(sut[0]).toBe(0xee);
+        });
+      });
     });
 
-    it('Given COPY with size byte 2 (bit 6), When applying, Then reads size highest byte', () => {
-      // Arrange — offset = 0, size = 0x020000 (131072, needs byte 2)
-      const base = new Uint8Array(0x020001);
-      base.fill(0x11);
-      const delta = buildDelta(base.length, 0x020000, [
-        { type: 'copy', offset: 0, size: 0x020000 },
-      ]);
+    describe('Given COPY with size byte 2 (bit 6)', () => {
+      describe('When applying', () => {
+        it('Then reads size highest byte', () => {
+          // Arrange — offset = 0, size = 0x020000 (131072, needs byte 2)
+          const base = new Uint8Array(0x020001);
+          base.fill(0x11);
+          const delta = buildDelta(base.length, 0x020000, [
+            { type: 'copy', offset: 0, size: 0x020000 },
+          ]);
 
-      // Act
-      const sut = applyDelta(base, delta);
+          // Act
+          const sut = applyDelta(base, delta);
 
-      // Assert
-      expect(sut.length).toBe(0x020000);
+          // Assert
+          expect(sut.length).toBe(0x020000);
+        });
+      });
     });
 
-    it('Given COPY with offset byte 3 (bit 3), When applying, Then reads high offset byte', () => {
-      // Arrange — offset with byte 3 set: 0x01000000
-      const offsetVal = 0x01000000;
-      const base = new Uint8Array(offsetVal + 1);
-      base[offsetVal] = 0x77;
-      const delta = buildDelta(base.length, 1, [{ type: 'copy', offset: offsetVal, size: 1 }]);
+    describe('Given COPY with offset byte 3 (bit 3)', () => {
+      describe('When applying', () => {
+        it('Then reads high offset byte', () => {
+          // Arrange — offset with byte 3 set: 0x01000000
+          const offsetVal = 0x01000000;
+          const base = new Uint8Array(offsetVal + 1);
+          base[offsetVal] = 0x77;
+          const delta = buildDelta(base.length, 1, [{ type: 'copy', offset: offsetVal, size: 1 }]);
 
-      // Act
-      const sut = applyDelta(base, delta);
+          // Act
+          const sut = applyDelta(base, delta);
 
-      // Assert
-      expect(sut[0]).toBe(0x77);
+          // Assert
+          expect(sut[0]).toBe(0x77);
+        });
+      });
     });
 
-    it('Given delta with truncated INSERT data, When applying, Then throws INVALID_DELTA with truncated reason', () => {
-      // Arrange — manually craft: sourceLength=0, targetLength=5, INSERT 5 bytes but only 2 bytes follow
-      const delta = new Uint8Array([0, 5, 5, 0xaa, 0xbb]);
+    describe('Given delta with truncated INSERT data', () => {
+      describe('When applying', () => {
+        it('Then throws INVALID_DELTA with truncated reason', () => {
+          // Arrange — manually craft: sourceLength=0, targetLength=5, INSERT 5 bytes but only 2 bytes follow
+          const delta = new Uint8Array([0, 5, 5, 0xaa, 0xbb]);
 
-      // Act & Assert
-      try {
-        applyDelta(new Uint8Array(0), delta);
-        // Assert
-        expect.fail('Should have thrown');
-      } catch (e) {
-        const err = e as TsgitError;
-        expect(err.data).toEqual(
-          expect.objectContaining({
-            code: 'INVALID_DELTA',
-            reason: expect.stringContaining('truncated'),
-          }),
-        );
-      }
+          // Act & Assert
+          try {
+            applyDelta(new Uint8Array(0), delta);
+            // Assert
+            expect.fail('Should have thrown');
+          } catch (e) {
+            const err = e as TsgitError;
+            expect(err.data).toEqual(
+              expect.objectContaining({
+                code: 'INVALID_DELTA',
+                reason: expect.stringContaining('truncated'),
+              }),
+            );
+          }
+        });
+      });
     });
 
-    it('Given delta with trailing bytes after target is full, When applying, Then throws INVALID_DELTA with overflow reason', () => {
-      // Arrange — manually craft delta with extra INSERT after complete
-      const base = new Uint8Array(5);
-      base.fill(0xaa);
-      const validDelta = buildDelta(5, 5, [{ type: 'copy', offset: 0, size: 5 }]);
-      // Append extra INSERT instruction byte
-      const delta = new Uint8Array(validDelta.length + 2);
-      delta.set(validDelta);
-      delta[validDelta.length] = 0x01;
-      delta[validDelta.length + 1] = 0xbb;
+    describe('Given delta with trailing bytes after target is full', () => {
+      describe('When applying', () => {
+        it('Then throws INVALID_DELTA with overflow reason', () => {
+          // Arrange — manually craft delta with extra INSERT after complete
+          const base = new Uint8Array(5);
+          base.fill(0xaa);
+          const validDelta = buildDelta(5, 5, [{ type: 'copy', offset: 0, size: 5 }]);
+          // Append extra INSERT instruction byte
+          const delta = new Uint8Array(validDelta.length + 2);
+          delta.set(validDelta);
+          delta[validDelta.length] = 0x01;
+          delta[validDelta.length + 1] = 0xbb;
 
-      // Act & Assert
-      try {
-        applyDelta(base, delta);
-        // Assert
-        expect.fail('Should have thrown');
-      } catch (e) {
-        const err = e as TsgitError;
-        expect(err.data).toEqual(
-          expect.objectContaining({
-            code: 'INVALID_DELTA',
-            reason: expect.stringContaining('overflows target'),
-          }),
-        );
-      }
+          // Act & Assert
+          try {
+            applyDelta(base, delta);
+            // Assert
+            expect.fail('Should have thrown');
+          } catch (e) {
+            const err = e as TsgitError;
+            expect(err.data).toEqual(
+              expect.objectContaining({
+                code: 'INVALID_DELTA',
+                reason: expect.stringContaining('overflows target'),
+              }),
+            );
+          }
+        });
+      });
     });
   });
 
   describe('parseDelta', () => {
-    it('Given a delta with 1 COPY + 1 INSERT, When parsing, Then returns correct lengths and 2 instructions', () => {
-      // Arrange
-      const delta = buildDelta(10, 8, [
-        { type: 'copy', offset: 0, size: 5 },
-        { type: 'insert', data: new TextEncoder().encode('abc') },
-      ]);
+    describe('Given a delta with 1 COPY + 1 INSERT', () => {
+      describe('When parsing', () => {
+        it('Then returns correct lengths and 2 instructions', () => {
+          // Arrange
+          const delta = buildDelta(10, 8, [
+            { type: 'copy', offset: 0, size: 5 },
+            { type: 'insert', data: new TextEncoder().encode('abc') },
+          ]);
 
-      // Act
-      const sut = parseDelta(delta);
+          // Act
+          const sut = parseDelta(delta);
 
-      // Assert
-      expect(sut.sourceLength).toBe(10);
-      expect(sut.targetLength).toBe(8);
-      expect(sut.instructions).toHaveLength(2);
+          // Assert
+          expect(sut.sourceLength).toBe(10);
+          expect(sut.targetLength).toBe(8);
+          expect(sut.instructions).toHaveLength(2);
+        });
+      });
     });
 
-    it('Given a COPY instruction, When parsed, Then type=copy with correct offset and size', () => {
-      // Arrange
-      const delta = buildDelta(20, 5, [{ type: 'copy', offset: 3, size: 5 }]);
+    describe('Given a COPY instruction', () => {
+      describe('When parsed', () => {
+        it('Then type=copy with correct offset and size', () => {
+          // Arrange
+          const delta = buildDelta(20, 5, [{ type: 'copy', offset: 3, size: 5 }]);
 
-      // Act
-      const sut = parseDelta(delta);
+          // Act
+          const sut = parseDelta(delta);
 
-      // Assert
-      expect(sut.instructions[0]).toEqual({ type: 'copy', offset: 3, size: 5 });
+          // Assert
+          expect(sut.instructions[0]).toEqual({ type: 'copy', offset: 3, size: 5 });
+        });
+      });
     });
 
-    it('Given an INSERT instruction, When parsed, Then type=insert with correct data', () => {
-      // Arrange
-      const insertData = new TextEncoder().encode('xyz');
-      const delta = buildDelta(0, 3, [{ type: 'insert', data: insertData }]);
+    describe('Given an INSERT instruction', () => {
+      describe('When parsed', () => {
+        it('Then type=insert with correct data', () => {
+          // Arrange
+          const insertData = new TextEncoder().encode('xyz');
+          const delta = buildDelta(0, 3, [{ type: 'insert', data: insertData }]);
 
-      // Act
-      const sut = parseDelta(delta);
+          // Act
+          const sut = parseDelta(delta);
 
-      // Assert
-      const inst = sut.instructions[0]!;
-      expect(inst.type).toBe('insert');
-      expect(inst.type === 'insert' && inst.data).toEqual(insertData);
+          // Assert
+          const inst = sut.instructions[0]!;
+          expect(inst.type).toBe('insert');
+          expect(inst.type === 'insert' && inst.data).toEqual(insertData);
+        });
+      });
     });
 
-    it('Given same delta, When parsed, Then InsertInstruction.data is independent copy', () => {
-      // Arrange
-      const insertData = new TextEncoder().encode('xyz');
-      const delta = buildDelta(0, 3, [{ type: 'insert', data: insertData }]);
+    describe('Given same delta', () => {
+      describe('When parsed', () => {
+        it('Then InsertInstruction.data is independent copy', () => {
+          // Arrange
+          const insertData = new TextEncoder().encode('xyz');
+          const delta = buildDelta(0, 3, [{ type: 'insert', data: insertData }]);
 
-      // Act
-      const sut = parseDelta(delta);
-      delta[delta.length - 1] = 0xff;
+          // Act
+          const sut = parseDelta(delta);
+          delta[delta.length - 1] = 0xff;
 
-      // Assert
-      const inst = sut.instructions[0]!;
-      expect(inst.type).toBe('insert');
-      expect(inst.type === 'insert' && inst.data[2]).not.toBe(0xff);
+          // Assert
+          const inst = sut.instructions[0]!;
+          expect(inst.type).toBe('insert');
+          expect(inst.type === 'insert' && inst.data[2]).not.toBe(0xff);
+        });
+      });
     });
 
-    it('Given delta with INSERT N=0, When parsing, Then throws INVALID_DELTA', () => {
-      // Arrange
-      const delta = new Uint8Array([5, 5, 0x00]);
+    describe('Given delta with INSERT N=0', () => {
+      describe('When parsing', () => {
+        it('Then throws INVALID_DELTA', () => {
+          // Arrange
+          const delta = new Uint8Array([5, 5, 0x00]);
 
-      // Act & Assert
-      try {
-        parseDelta(delta);
-        // Assert
-        expect.fail('Should have thrown');
-      } catch (e) {
-        const err = e as TsgitError;
-        expect(err.data).toEqual(
-          expect.objectContaining({
-            code: 'INVALID_DELTA',
-            reason: expect.stringContaining('INSERT with N=0'),
-          }),
-        );
-      }
+          // Act & Assert
+          try {
+            parseDelta(delta);
+            // Assert
+            expect.fail('Should have thrown');
+          } catch (e) {
+            const err = e as TsgitError;
+            expect(err.data).toEqual(
+              expect.objectContaining({
+                code: 'INVALID_DELTA',
+                reason: expect.stringContaining('INSERT with N=0'),
+              }),
+            );
+          }
+        });
+      });
     });
   });
 
   describe('parseDelta — security guards', () => {
-    it('Given parseDelta with INSERT referencing more data than available, When parsing, Then throws INVALID_DELTA', () => {
-      // Arrange — sourceLength=0, targetLength=10, INSERT N=10 but only 3 bytes follow
-      const delta = new Uint8Array([0, 10, 10, 0xaa, 0xbb, 0xcc]);
+    describe('Given parseDelta with INSERT referencing more data than available', () => {
+      describe('When parsing', () => {
+        it('Then throws INVALID_DELTA', () => {
+          // Arrange — sourceLength=0, targetLength=10, INSERT N=10 but only 3 bytes follow
+          const delta = new Uint8Array([0, 10, 10, 0xaa, 0xbb, 0xcc]);
 
-      // Act & Assert
-      try {
-        parseDelta(delta);
-        // Assert
-        expect.fail('Should have thrown');
-      } catch (e) {
-        const err = e as TsgitError;
-        expect(err.data).toEqual(
-          expect.objectContaining({
-            code: 'INVALID_DELTA',
-            reason: expect.stringContaining('INSERT data truncated'),
-          }),
-        );
-      }
+          // Act & Assert
+          try {
+            parseDelta(delta);
+            // Assert
+            expect.fail('Should have thrown');
+          } catch (e) {
+            const err = e as TsgitError;
+            expect(err.data).toEqual(
+              expect.objectContaining({
+                code: 'INVALID_DELTA',
+                reason: expect.stringContaining('INSERT data truncated'),
+              }),
+            );
+          }
+        });
+      });
     });
   });
 
   describe('property-based tests', () => {
-    it('Given any generated delta, When applying, Then result matches expected output', () => {
-      // Arrange + Assert
-      fc.assert(
-        fc.property(arbDeltaTriple(), ({ base, instructions, expected }) => {
-          fc.pre(instructions.length > 0 && expected.length > 0);
-          const delta = buildDelta(base.length, expected.length, instructions);
-          const sut = applyDelta(base, delta);
+    describe('Given any generated delta', () => {
+      describe('When applying', () => {
+        it('Then result matches expected output', () => {
+          // Arrange + Assert
+          fc.assert(
+            fc.property(arbDeltaTriple(), ({ base, instructions, expected }) => {
+              fc.pre(instructions.length > 0 && expected.length > 0);
+              const delta = buildDelta(base.length, expected.length, instructions);
+              const sut = applyDelta(base, delta);
 
-          expect(sut).toEqual(expected);
-          expect(sut.length).toBe(expected.length);
-        }),
-        { numRuns: 50 },
-      );
+              expect(sut).toEqual(expected);
+              expect(sut.length).toBe(expected.length);
+            }),
+            { numRuns: 50 },
+          );
+        });
+      });
     });
 
-    it('Given any valid delta, When applying, Then result length equals targetLength', () => {
-      // Arrange + Assert
-      fc.assert(
-        fc.property(fc.uint8Array({ minLength: 1, maxLength: 100 }), (base) => {
-          const insert = base.slice(0, Math.min(10, base.length));
-          const delta = buildDelta(base.length, insert.length, [{ type: 'insert', data: insert }]);
+    describe('Given any valid delta', () => {
+      describe('When applying', () => {
+        it('Then result length equals targetLength', () => {
+          // Arrange + Assert
+          fc.assert(
+            fc.property(fc.uint8Array({ minLength: 1, maxLength: 100 }), (base) => {
+              const insert = base.slice(0, Math.min(10, base.length));
+              const delta = buildDelta(base.length, insert.length, [
+                { type: 'insert', data: insert },
+              ]);
 
-          const sut = applyDelta(base, delta);
+              const sut = applyDelta(base, delta);
 
-          expect(sut.length).toBe(insert.length);
-        }),
-      );
+              expect(sut.length).toBe(insert.length);
+            }),
+          );
+        });
+      });
     });
   });
 
   describe('readVariableLengthInt boundary — second varint at exact EOF', () => {
-    it('Given a delta whose second varint starts exactly at bytes.length, When reading target size, Then throws INVALID_DELTA (truncated)', () => {
-      // Arrange — single byte: first varint consumes it (o1=1), second varint starts at offset 1 === length 1
-      const delta = new Uint8Array([0x00]);
+    describe('Given a delta whose second varint starts exactly at bytes.length', () => {
+      describe('When reading target size', () => {
+        it('Then throws INVALID_DELTA (truncated)', () => {
+          // Arrange — single byte: first varint consumes it (o1=1), second varint starts at offset 1 === length 1
+          const delta = new Uint8Array([0x00]);
 
-      // Act & Assert
-      try {
-        readDeltaTargetSize(delta);
-        // Assert
-        expect.fail('Should have thrown');
-      } catch (e) {
-        const err = e as TsgitError;
-        expect(err.data).toEqual({
-          code: 'INVALID_DELTA',
-          reason: 'truncated variable-length integer',
+          // Act & Assert
+          try {
+            readDeltaTargetSize(delta);
+            // Assert
+            expect.fail('Should have thrown');
+          } catch (e) {
+            const err = e as TsgitError;
+            expect(err.data).toEqual({
+              code: 'INVALID_DELTA',
+              reason: 'truncated variable-length integer',
+            });
+          }
         });
-      }
+      });
     });
 
-    it('Given a delta with a varint continuation byte then exact EOF, When reading target size, Then throws INVALID_DELTA (truncated mid-loop)', () => {
-      // Arrange — byte0=0x05 (first varint, no continuation), then 0x80,0x80: second varint continues then hits EOF at pos===length
-      const delta = new Uint8Array([0x05, 0x80, 0x80]);
+    describe('Given a delta with a varint continuation byte then exact EOF', () => {
+      describe('When reading target size', () => {
+        it('Then throws INVALID_DELTA (truncated mid-loop)', () => {
+          // Arrange — byte0=0x05 (first varint, no continuation), then 0x80,0x80: second varint continues then hits EOF at pos===length
+          const delta = new Uint8Array([0x05, 0x80, 0x80]);
 
-      // Act & Assert
-      try {
-        readDeltaTargetSize(delta);
-        // Assert
-        expect.fail('Should have thrown');
-      } catch (e) {
-        const err = e as TsgitError;
-        expect(err.data).toEqual({
-          code: 'INVALID_DELTA',
-          reason: 'truncated variable-length integer',
+          // Act & Assert
+          try {
+            readDeltaTargetSize(delta);
+            // Assert
+            expect.fail('Should have thrown');
+          } catch (e) {
+            const err = e as TsgitError;
+            expect(err.data).toEqual({
+              code: 'INVALID_DELTA',
+              reason: 'truncated variable-length integer',
+            });
+          }
         });
-      }
+      });
     });
 
-    it('Given a well-formed delta, When reading target size, Then returns the encoded target length', () => {
-      // Arrange — sourceLength=10, targetLength=300, one COPY (irrelevant to the peek)
-      const delta = buildDelta(10, 300, [{ type: 'copy', offset: 0, size: 10 }]);
+    describe('Given a well-formed delta', () => {
+      describe('When reading target size', () => {
+        it('Then returns the encoded target length', () => {
+          // Arrange — sourceLength=10, targetLength=300, one COPY (irrelevant to the peek)
+          const delta = buildDelta(10, 300, [{ type: 'copy', offset: 0, size: 10 }]);
 
-      // Act
-      const sut = readDeltaTargetSize(delta);
+          // Act
+          const sut = readDeltaTargetSize(delta);
 
-      // Assert
-      expect(sut).toBe(300);
+          // Assert
+          expect(sut).toBe(300);
+        });
+      });
     });
   });
 
   describe('readVariableLengthInt — MAX_VARINT_BYTES boundary', () => {
-    it('Given a varint with exactly 5 continuation bytes (no terminator), When applying, Then throws too-long before reading a 6th byte', () => {
-      // Arrange — 5 bytes all with continuation bit: the 5th byte's continuation must trip the length guard,
-      // NOT fall through to a truncation read of a 6th byte.
-      const delta = new Uint8Array([0x80, 0x80, 0x80, 0x80, 0x80]);
+    describe('Given a varint with exactly 5 continuation bytes (no terminator)', () => {
+      describe('When applying', () => {
+        it('Then throws too-long before reading a 6th byte', () => {
+          // Arrange — 5 bytes all with continuation bit: the 5th byte's continuation must trip the length guard,
+          // NOT fall through to a truncation read of a 6th byte.
+          const delta = new Uint8Array([0x80, 0x80, 0x80, 0x80, 0x80]);
 
-      // Act & Assert
-      try {
-        applyDelta(new Uint8Array(0), delta);
-        expect.fail('Should have thrown');
-      } catch (e) {
-        const err = e as TsgitError;
-        expect(err.data).toEqual({
-          code: 'INVALID_DELTA',
-          reason: 'variable-length integer too long',
+          // Act & Assert
+          try {
+            applyDelta(new Uint8Array(0), delta);
+            expect.fail('Should have thrown');
+          } catch (e) {
+            const err = e as TsgitError;
+            expect(err.data).toEqual({
+              code: 'INVALID_DELTA',
+              reason: 'variable-length integer too long',
+            });
+          }
         });
-      }
+      });
     });
   });
 
@@ -763,90 +923,110 @@ describe('delta', () => {
       { bit: 0x40, label: 'size byte 2' },
     ];
 
-    for (const { bit, label } of bits) {
-      it(`Given a COPY cmd with only ${label} flagged but zero field bytes, When applying, Then throws COPY-truncated`, () => {
-        // Arrange — sourceLength=0, targetLength=1, COPY cmd with exactly one field bit and NO field byte.
-        // countCopyFieldBytes must report 1; any miscount skips the truncation guard.
-        const delta = new Uint8Array([0x00, 0x01, 0x80 | bit]);
+    describe('Given a COPY cmd with one field bit flagged but zero field bytes', () => {
+      describe('When applying', () => {
+        for (const { bit, label } of bits) {
+          it(`Then ${label} flagged throws COPY-truncated`, () => {
+            // Arrange — sourceLength=0, targetLength=1, COPY cmd with exactly one field bit and NO field byte.
+            // countCopyFieldBytes must report 1; any miscount skips the truncation guard.
+            const delta = new Uint8Array([0x00, 0x01, 0x80 | bit]);
 
-        // Act & Assert
-        try {
-          applyDelta(new Uint8Array(0), delta);
-          // Assert
-          expect.fail('Should have thrown');
-        } catch (e) {
-          const err = e as TsgitError;
-          expect(err.data).toEqual({
-            code: 'INVALID_DELTA',
-            reason: 'COPY instruction truncated: needs 1 bytes at position 3',
+            // Act & Assert
+            try {
+              applyDelta(new Uint8Array(0), delta);
+              // Assert
+              expect.fail('Should have thrown');
+            } catch (e) {
+              const err = e as TsgitError;
+              expect(err.data).toEqual({
+                code: 'INVALID_DELTA',
+                reason: 'COPY instruction truncated: needs 1 bytes at position 3',
+              });
+            }
           });
         }
       });
-    }
+    });
   });
 
   describe('validateDeltaHeader — target length at exact maximum', () => {
-    it('Given a delta with targetLength exactly at the 2GB maximum, When applying, Then it is accepted (no exceeds-maximum error)', () => {
-      // Arrange — sourceLength=0, targetLength = 2*1024*1024*1024, no instructions.
-      // Boundary: `>` accepts === MAX; `>=` would wrongly reject it.
-      const maxTarget = 2 * 1024 * 1024 * 1024;
-      const delta = buildDelta(0, maxTarget, []);
+    describe('Given a delta with targetLength exactly at the 2GB maximum', () => {
+      describe('When applying', () => {
+        it('Then it is accepted (no exceeds-maximum error)', () => {
+          // Arrange — sourceLength=0, targetLength = 2*1024*1024*1024, no instructions.
+          // Boundary: `>` accepts === MAX; `>=` would wrongly reject it.
+          const maxTarget = 2 * 1024 * 1024 * 1024;
+          const delta = buildDelta(0, maxTarget, []);
 
-      // Act & Assert — the header passes; the apply loop then fails on underfill, NOT on the size cap.
-      try {
-        applyDelta(new Uint8Array(0), delta);
-        // Assert
-        expect.fail('Should have thrown');
-      } catch (e) {
-        const err = e as TsgitError;
-        expect(err.data).toEqual({
-          code: 'INVALID_DELTA',
-          reason: `underfill: produced 0 bytes but target length is ${maxTarget}`,
+          // Act & Assert — the header passes; the apply loop then fails on underfill, NOT on the size cap.
+          try {
+            applyDelta(new Uint8Array(0), delta);
+            // Assert
+            expect.fail('Should have thrown');
+          } catch (e) {
+            const err = e as TsgitError;
+            expect(err.data).toEqual({
+              code: 'INVALID_DELTA',
+              reason: `underfill: produced 0 bytes but target length is ${maxTarget}`,
+            });
+          }
         });
-      }
+      });
     });
   });
 
   describe('applyDelta — empty delta vs early-return removal', () => {
-    it('Given a non-empty delta (sourceLength=0, targetLength>0), When applying, Then it is NOT short-circuited to an empty result', () => {
-      // Arrange — would-be early-return condition operands: source=0 but target≠0 and instructions present.
-      const insertData = new TextEncoder().encode('inserted');
-      const delta = buildDelta(0, insertData.length, [{ type: 'insert', data: insertData }]);
+    describe('Given a non-empty delta (sourceLength=0, targetLength>0)', () => {
+      describe('When applying', () => {
+        it('Then it is NOT short-circuited to an empty result', () => {
+          // Arrange — would-be early-return condition operands: source=0 but target≠0 and instructions present.
+          const insertData = new TextEncoder().encode('inserted');
+          const delta = buildDelta(0, insertData.length, [{ type: 'insert', data: insertData }]);
 
-      // Act
-      const sut = applyDelta(new Uint8Array(0), delta);
+          // Act
+          const sut = applyDelta(new Uint8Array(0), delta);
 
-      // Assert
-      expect(new TextDecoder().decode(sut)).toBe('inserted');
-      expect(sut.length).toBe(8);
+          // Assert
+          expect(new TextDecoder().decode(sut)).toBe('inserted');
+          expect(sut.length).toBe(8);
+        });
+      });
     });
   });
 
   describe('parseDelta — truncated INSERT available-byte count', () => {
-    it('Given an INSERT claiming more bytes than remain, When parsing, Then the error reports the exact available count', () => {
-      // Arrange — sourceLength=0, targetLength=10, INSERT N=10, only 3 data bytes follow.
-      // Available = delta.length(6) - pos(3) = 3.
-      const delta = new Uint8Array([0, 10, 10, 0xaa, 0xbb, 0xcc]);
+    describe('Given an INSERT claiming more bytes than remain', () => {
+      describe('When parsing', () => {
+        it('Then the error reports the exact available count', () => {
+          // Arrange — sourceLength=0, targetLength=10, INSERT N=10, only 3 data bytes follow.
+          // Available = delta.length(6) - pos(3) = 3.
+          const delta = new Uint8Array([0, 10, 10, 0xaa, 0xbb, 0xcc]);
 
-      // Act & Assert
-      try {
-        parseDelta(delta);
-        // Assert
-        expect.fail('Should have thrown');
-      } catch (e) {
-        const err = e as TsgitError;
-        expect(err.data).toEqual({
-          code: 'INVALID_DELTA',
-          reason: 'INSERT data truncated: needs 10 bytes at position 3, only 3 available',
+          // Act & Assert
+          try {
+            parseDelta(delta);
+            // Assert
+            expect.fail('Should have thrown');
+          } catch (e) {
+            const err = e as TsgitError;
+            expect(err.data).toEqual({
+              code: 'INVALID_DELTA',
+              reason: 'INSERT data truncated: needs 10 bytes at position 3, only 3 available',
+            });
+          }
         });
-      }
+      });
     });
   });
 
   describe('MAX_DELTA_CHAIN_DEPTH', () => {
-    it('Given the exported constant, When read, Then equals 50 (git default)', () => {
-      // Arrange + Assert
-      expect(MAX_DELTA_CHAIN_DEPTH).toBe(50);
+    describe('Given the exported constant', () => {
+      describe('When read', () => {
+        it('Then equals 50 (git default)', () => {
+          // Arrange + Assert
+          expect(MAX_DELTA_CHAIN_DEPTH).toBe(50);
+        });
+      });
     });
   });
 });

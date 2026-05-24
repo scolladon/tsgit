@@ -21,85 +21,108 @@ describe('resolveReflogIdentity', () => {
     vi.useRealTimers();
   });
 
-  it('Given config with user.name and user.email, When resolving, Then the identity uses those values', async () => {
-    // Arrange
-    const ctx = createMemoryContext();
-    await seedConfig(ctx, '[user]\n  name = Ada Lovelace\n  email = ada@example.com\n');
+  describe('Given config with user.name and user.email', () => {
+    describe('When resolving', () => {
+      it('Then the identity uses those values', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedConfig(ctx, '[user]\n  name = Ada Lovelace\n  email = ada@example.com\n');
 
-    // Act
-    const sut = await resolveReflogIdentity(ctx);
+        // Act
+        const sut = await resolveReflogIdentity(ctx);
 
-    // Assert
-    expect(sut.name).toBe('Ada Lovelace');
-    expect(sut.email).toBe('ada@example.com');
+        // Assert
+        expect(sut.name).toBe('Ada Lovelace');
+        expect(sut.email).toBe('ada@example.com');
+      });
+    });
   });
 
-  it('Given config with user.*, When resolving, Then the timestamp is the current instant in seconds', async () => {
-    // Arrange
-    const ctx = createMemoryContext();
-    await seedConfig(ctx, '[user]\n  name = Ada\n  email = ada@example.com\n');
+  describe('Given config with user.*', () => {
+    describe('When resolving', () => {
+      it('Then the timestamp is the current instant in seconds', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedConfig(ctx, '[user]\n  name = Ada\n  email = ada@example.com\n');
 
-    // Act
-    const sut = await resolveReflogIdentity(ctx);
+        // Act
+        const sut = await resolveReflogIdentity(ctx);
 
-    // Assert
-    expect(sut.timestamp).toBe(Math.floor(FIXED_NOW_MS / 1000));
+        // Assert
+        expect(sut.timestamp).toBe(Math.floor(FIXED_NOW_MS / 1000));
+      });
+      it('Then the timezone offset is +0000', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedConfig(ctx, '[user]\n  name = Ada\n  email = ada@example.com\n');
+
+        // Act
+        const sut = await resolveReflogIdentity(ctx);
+
+        // Assert
+        expect(sut.timezoneOffset).toBe('+0000');
+      });
+    });
   });
 
-  it('Given config with user.*, When resolving, Then the timezone offset is +0000', async () => {
-    // Arrange
-    const ctx = createMemoryContext();
-    await seedConfig(ctx, '[user]\n  name = Ada\n  email = ada@example.com\n');
+  describe('Given no .git/config at all', () => {
+    describe('When resolving', () => {
+      it('Then the portable fallback identity is used', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
 
-    // Act
-    const sut = await resolveReflogIdentity(ctx);
+        // Act
+        const sut = await resolveReflogIdentity(ctx);
 
-    // Assert
-    expect(sut.timezoneOffset).toBe('+0000');
+        // Assert
+        expect(sut.name).toBe('tsgit');
+        expect(sut.email).toBe('tsgit@localhost');
+      });
+    });
   });
 
-  it('Given no .git/config at all, When resolving, Then the portable fallback identity is used', async () => {
-    // Arrange
-    const ctx = createMemoryContext();
+  describe('Given a config with [user] but no name/email', () => {
+    describe('When resolving', () => {
+      it('Then the portable fallback is used', async () => {
+        // Arrange — git treats a half-configured user as unconfigured.
+        const ctx = createMemoryContext();
+        await seedConfig(ctx, '[core]\n  bare = false\n');
 
-    // Act
-    const sut = await resolveReflogIdentity(ctx);
+        // Act
+        const sut = await resolveReflogIdentity(ctx);
 
-    // Assert
-    expect(sut.name).toBe('tsgit');
-    expect(sut.email).toBe('tsgit@localhost');
+        // Assert
+        expect(sut.name).toBe('tsgit');
+        expect(sut.email).toBe('tsgit@localhost');
+      });
+    });
   });
 
-  it('Given a config with [user] but no name/email, When resolving, Then the portable fallback is used', async () => {
-    // Arrange — git treats a half-configured user as unconfigured.
-    const ctx = createMemoryContext();
-    await seedConfig(ctx, '[core]\n  bare = false\n');
+  describe('Given the fallback identity', () => {
+    describe('When resolving', () => {
+      it('Then it still carries a fresh timestamp', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
 
-    // Act
-    const sut = await resolveReflogIdentity(ctx);
+        // Act
+        const sut = await resolveReflogIdentity(ctx);
 
-    // Assert
-    expect(sut.name).toBe('tsgit');
-    expect(sut.email).toBe('tsgit@localhost');
+        // Assert
+        expect(sut.timestamp).toBe(Math.floor(FIXED_NOW_MS / 1000));
+        expect(sut.timezoneOffset).toBe('+0000');
+      });
+    });
   });
 
-  it('Given the fallback identity, When resolving, Then it still carries a fresh timestamp', async () => {
-    // Arrange
-    const ctx = createMemoryContext();
+  describe('Given an unconfigured repo', () => {
+    describe('When resolving', () => {
+      it('Then it never throws', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
 
-    // Act
-    const sut = await resolveReflogIdentity(ctx);
-
-    // Assert
-    expect(sut.timestamp).toBe(Math.floor(FIXED_NOW_MS / 1000));
-    expect(sut.timezoneOffset).toBe('+0000');
-  });
-
-  it('Given an unconfigured repo, When resolving, Then it never throws', async () => {
-    // Arrange
-    const ctx = createMemoryContext();
-
-    // Act & Assert — resolution must not abort a ref update.
-    await expect(resolveReflogIdentity(ctx)).resolves.toBeDefined();
+        // Act & Assert — resolution must not abort a ref update.
+        await expect(resolveReflogIdentity(ctx)).resolves.toBeDefined();
+      });
+    });
   });
 });

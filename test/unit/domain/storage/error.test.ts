@@ -11,84 +11,111 @@ import { assertExhaustiveSwitch } from '../exhaustiveness.js';
 
 describe('storage error', () => {
   describe('factory functions', () => {
-    it("Given invalidPackHeader('bad magic'), When checking error.data.code, Then equals 'INVALID_PACK_HEADER'", () => {
-      // Arrange & Act
-      const sut = invalidPackHeader('bad magic');
+    describe("Given invalidPackHeader('bad magic')", () => {
+      describe('When checking error.data.code', () => {
+        it("Then equals 'INVALID_PACK_HEADER'", () => {
+          // Arrange & Act
+          const sut = invalidPackHeader('bad magic');
 
-      // Assert
-      expect(sut.data).toEqual({ code: 'INVALID_PACK_HEADER', reason: 'bad magic' });
-    });
-
-    it("Given invalidPackIndex('fanout'), When checking error.data.code, Then equals 'INVALID_PACK_INDEX'", () => {
-      // Arrange & Act
-      const sut = invalidPackIndex('fanout');
-
-      // Assert
-      expect(sut.data).toEqual({ code: 'INVALID_PACK_INDEX', reason: 'fanout' });
-    });
-
-    it("Given invalidPackEntry(42, 'truncated'), When checking error.data, Then offset is 42 and reason is 'truncated'", () => {
-      // Arrange & Act
-      const sut = invalidPackEntry(42, 'truncated');
-
-      // Assert
-      expect(sut.data).toEqual({
-        code: 'INVALID_PACK_ENTRY',
-        offset: 42,
-        reason: 'truncated',
+          // Assert
+          expect(sut.data).toEqual({ code: 'INVALID_PACK_HEADER', reason: 'bad magic' });
+        });
       });
     });
 
-    it("Given invalidDelta('source mismatch'), When checking error.data.code, Then equals 'INVALID_DELTA'", () => {
-      // Arrange & Act
-      const sut = invalidDelta('source mismatch');
+    describe("Given invalidPackIndex('fanout')", () => {
+      describe('When checking error.data.code', () => {
+        it("Then equals 'INVALID_PACK_INDEX'", () => {
+          // Arrange & Act
+          const sut = invalidPackIndex('fanout');
 
-      // Assert
-      expect(sut.data).toEqual({ code: 'INVALID_DELTA', reason: 'source mismatch' });
+          // Assert
+          expect(sut.data).toEqual({ code: 'INVALID_PACK_INDEX', reason: 'fanout' });
+        });
+      });
     });
 
-    it('Given deltaChainTooDeep(depth), When checking error.data, Then code and depth are set', () => {
-      // Arrange & Act
-      const sut = deltaChainTooDeep(51);
+    describe("Given invalidPackEntry(42, 'truncated')", () => {
+      describe('When checking error.data', () => {
+        it("Then offset is 42 and reason is 'truncated'", () => {
+          // Arrange & Act
+          const sut = invalidPackEntry(42, 'truncated');
 
-      // Assert
-      expect(sut.data).toEqual({ code: 'DELTA_CHAIN_TOO_DEEP', depth: 51 });
+          // Assert
+          expect(sut.data).toEqual({
+            code: 'INVALID_PACK_ENTRY',
+            offset: 42,
+            reason: 'truncated',
+          });
+        });
+      });
+    });
+
+    describe("Given invalidDelta('source mismatch')", () => {
+      describe('When checking error.data.code', () => {
+        it("Then equals 'INVALID_DELTA'", () => {
+          // Arrange & Act
+          const sut = invalidDelta('source mismatch');
+
+          // Assert
+          expect(sut.data).toEqual({ code: 'INVALID_DELTA', reason: 'source mismatch' });
+        });
+      });
+    });
+
+    describe('Given deltaChainTooDeep(depth)', () => {
+      describe('When checking error.data', () => {
+        it('Then code and depth are set', () => {
+          // Arrange & Act
+          const sut = deltaChainTooDeep(51);
+
+          // Assert
+          expect(sut.data).toEqual({ code: 'DELTA_CHAIN_TOO_DEEP', depth: 51 });
+        });
+      });
     });
   });
 
   describe('TsgitError class', () => {
-    it('Given a storage TsgitError, When checking instanceof Error, Then returns true', () => {
-      // Arrange & Act
-      const sut = invalidPackHeader('bad');
+    describe('Given a storage TsgitError', () => {
+      describe('When checking instanceof Error', () => {
+        it('Then returns true', () => {
+          // Arrange & Act
+          const sut = invalidPackHeader('bad');
 
-      // Assert
-      expect(sut).toBeInstanceOf(Error);
-    });
+          // Assert
+          expect(sut).toBeInstanceOf(Error);
+        });
+      });
+      describe('When accessing .name', () => {
+        it("Then equals 'TsgitError'", () => {
+          // Arrange & Act
+          const sut = invalidPackHeader('bad');
 
-    it("Given a storage TsgitError, When accessing .name, Then equals 'TsgitError'", () => {
-      // Arrange & Act
-      const sut = invalidPackHeader('bad');
+          // Assert
+          expect(sut.name).toBe('TsgitError');
+        });
+      });
+      describe('When accessing .message', () => {
+        it('Then contains the error code', () => {
+          // Arrange & Act
+          const sut = invalidPackHeader('bad');
 
-      // Assert
-      expect(sut.name).toBe('TsgitError');
-    });
+          // Assert
+          expect(sut.message).toContain('INVALID_PACK_HEADER');
+        });
+      });
+      describe('When switching on data.code in exhaustive switch', () => {
+        it('Then all 29 cases handleable', () => {
+          // Arrange
+          const sut = invalidPackHeader('test');
 
-    it('Given a storage TsgitError, When accessing .message, Then contains the error code', () => {
-      // Arrange & Act
-      const sut = invalidPackHeader('bad');
-
-      // Assert
-      expect(sut.message).toContain('INVALID_PACK_HEADER');
-    });
-
-    it('Given a storage TsgitError, When switching on data.code in exhaustive switch, Then all 29 cases handleable', () => {
-      // Arrange
-      const sut = invalidPackHeader('test');
-
-      // Act & Assert
-      const data: TsgitErrorData = sut.data;
-      // Assert
-      assertExhaustiveSwitch(data);
+          // Act & Assert
+          const data: TsgitErrorData = sut.data;
+          // Assert
+          assertExhaustiveSwitch(data);
+        });
+      });
     });
   });
 });

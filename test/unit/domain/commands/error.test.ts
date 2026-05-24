@@ -51,452 +51,644 @@ const dummyReportStatus = {
 } as const;
 
 describe('domain commands error — factory data', () => {
-  it('Given the workingTreeDirty error helper, When called, Then data matches expected shape', () => {
-    // Arrange + Assert
-    expect(workingTreeDirty(['a' as FilePath]).data).toEqual({
-      code: 'WORKING_TREE_DIRTY',
-      paths: ['a'],
+  describe('Given the workingTreeDirty error helper', () => {
+    describe('When called', () => {
+      it('Then data matches expected shape', () => {
+        // Arrange + Assert
+        expect(workingTreeDirty(['a' as FilePath]).data).toEqual({
+          code: 'WORKING_TREE_DIRTY',
+          paths: ['a'],
+        });
+      });
     });
   });
 
-  it('Given the pathspecNoMatch error helper, When called, Then data matches expected shape', () => {
-    // Arrange + Assert
-    expect(pathspecNoMatch('*.zzz').data).toEqual({
-      code: 'PATHSPEC_NO_MATCH',
-      pattern: '*.zzz',
+  describe('Given the pathspecNoMatch error helper', () => {
+    describe('When called', () => {
+      it('Then data matches expected shape', () => {
+        // Arrange + Assert
+        expect(pathspecNoMatch('*.zzz').data).toEqual({
+          code: 'PATHSPEC_NO_MATCH',
+          pattern: '*.zzz',
+        });
+      });
     });
   });
 
-  it('Given the pathspecOutsideRepo error helper, When called, Then data matches expected shape', () => {
-    // Arrange + Assert
-    expect(pathspecOutsideRepo('/etc/passwd' as FilePath).data).toEqual({
-      code: 'PATHSPEC_OUTSIDE_REPO',
-      path: '/etc/passwd',
+  describe('Given the pathspecOutsideRepo error helper', () => {
+    describe('When called', () => {
+      it('Then data matches expected shape', () => {
+        // Arrange + Assert
+        expect(pathspecOutsideRepo('/etc/passwd' as FilePath).data).toEqual({
+          code: 'PATHSPEC_OUTSIDE_REPO',
+          path: '/etc/passwd',
+        });
+      });
     });
   });
 
-  it('Given the nothingToCommit error helper, When called, Then data matches expected shape', () => {
-    // Arrange
-    const sut = nothingToCommit().data;
+  describe('Given the nothingToCommit error helper', () => {
+    describe('When called', () => {
+      it('Then data matches expected shape', () => {
+        // Arrange
+        const sut = nothingToCommit().data;
 
-    // Assert
-    expect(sut).toEqual({ code: 'NOTHING_TO_COMMIT' });
-  });
-
-  it('Given the emptyCommitMessage error helper, When called, Then data matches expected shape', () => {
-    // Arrange
-    const sut = emptyCommitMessage().data;
-
-    // Assert
-    expect(sut).toEqual({ code: 'EMPTY_COMMIT_MESSAGE' });
-  });
-
-  it('Given the authorUnconfigured error helper, When called, Then data matches expected shape', () => {
-    // Arrange
-    const sut = authorUnconfigured().data;
-
-    // Assert
-    expect(sut).toEqual({ code: 'AUTHOR_UNCONFIGURED' });
-  });
-
-  it('Given the branchExists error helper, When called, Then data matches expected shape', () => {
-    // Arrange + Assert
-    expect(branchExists('refs/heads/x' as RefName).data).toEqual({
-      code: 'BRANCH_EXISTS',
-      name: 'refs/heads/x',
+        // Assert
+        expect(sut).toEqual({ code: 'NOTHING_TO_COMMIT' });
+      });
     });
   });
 
-  it('Given the branchNotFound error helper, When called, Then data matches expected shape', () => {
-    // Arrange + Assert
-    expect(branchNotFound('refs/heads/x' as RefName).data).toEqual({
-      code: 'BRANCH_NOT_FOUND',
-      name: 'refs/heads/x',
+  describe('Given the emptyCommitMessage error helper', () => {
+    describe('When called', () => {
+      it('Then data matches expected shape', () => {
+        // Arrange
+        const sut = emptyCommitMessage().data;
+
+        // Assert
+        expect(sut).toEqual({ code: 'EMPTY_COMMIT_MESSAGE' });
+      });
     });
   });
 
-  it('Given the tagExists error helper, When called, Then data matches expected shape', () => {
-    // Arrange + Assert
-    expect(tagExists('refs/tags/v1' as RefName).data).toEqual({
-      code: 'TAG_EXISTS',
-      name: 'refs/tags/v1',
+  describe('Given the authorUnconfigured error helper', () => {
+    describe('When called', () => {
+      it('Then data matches expected shape', () => {
+        // Arrange
+        const sut = authorUnconfigured().data;
+
+        // Assert
+        expect(sut).toEqual({ code: 'AUTHOR_UNCONFIGURED' });
+      });
     });
   });
 
-  it('Given the tagNotFound error helper, When called, Then data matches expected shape', () => {
-    // Arrange + Assert
-    expect(tagNotFound('refs/tags/v1' as RefName).data).toEqual({
-      code: 'TAG_NOT_FOUND',
-      name: 'refs/tags/v1',
+  describe('Given the branchExists error helper', () => {
+    describe('When called', () => {
+      it('Then data matches expected shape', () => {
+        // Arrange + Assert
+        expect(branchExists('refs/heads/x' as RefName).data).toEqual({
+          code: 'BRANCH_EXISTS',
+          name: 'refs/heads/x',
+        });
+      });
     });
   });
 
-  it('Given the cannotDeleteCheckedOutBranch error helper, When called, Then data matches expected shape', () => {
-    // Arrange + Assert
-    expect(cannotDeleteCheckedOutBranch('refs/heads/main' as RefName).data).toEqual({
-      code: 'CANNOT_DELETE_CHECKED_OUT_BRANCH',
-      name: 'refs/heads/main',
+  describe('Given the branchNotFound error helper', () => {
+    describe('When called', () => {
+      it('Then data matches expected shape', () => {
+        // Arrange + Assert
+        expect(branchNotFound('refs/heads/x' as RefName).data).toEqual({
+          code: 'BRANCH_NOT_FOUND',
+          name: 'refs/heads/x',
+        });
+      });
     });
   });
 
-  it('Given the invalidUrl error helper, When called, Then data matches expected shape', () => {
-    // Arrange
-    const sut = invalidUrl('bad').data;
-
-    // Assert
-    expect(sut).toEqual({ code: 'INVALID_URL', reason: 'bad' });
-  });
-
-  it('Given the blockedHost error helper, When called, Then data matches expected shape', () => {
-    // Arrange + Assert
-    expect(blockedHost('1.2.3.4', 'private').data).toEqual({
-      code: 'BLOCKED_HOST',
-      host: '1.2.3.4',
-      reason: 'private',
+  describe('Given the tagExists error helper', () => {
+    describe('When called', () => {
+      it('Then data matches expected shape', () => {
+        // Arrange + Assert
+        expect(tagExists('refs/tags/v1' as RefName).data).toEqual({
+          code: 'TAG_EXISTS',
+          name: 'refs/tags/v1',
+        });
+      });
     });
   });
 
-  it('Given the tooManyRedirects error helper, When called, Then data matches expected shape', () => {
-    // Arrange
-    const sut = tooManyRedirects(6).data;
-
-    // Assert
-    expect(sut).toEqual({ code: 'TOO_MANY_REDIRECTS', count: 6 });
-  });
-
-  it('Given the unsupportedScheme error helper, When called, Then data matches expected shape', () => {
-    // Arrange + Assert
-    expect(unsupportedScheme('ftp').data).toEqual({
-      code: 'UNSUPPORTED_SCHEME',
-      scheme: 'ftp',
+  describe('Given the tagNotFound error helper', () => {
+    describe('When called', () => {
+      it('Then data matches expected shape', () => {
+        // Arrange + Assert
+        expect(tagNotFound('refs/tags/v1' as RefName).data).toEqual({
+          code: 'TAG_NOT_FOUND',
+          name: 'refs/tags/v1',
+        });
+      });
     });
   });
 
-  it('Given the targetDirectoryNotEmpty error helper, When called, Then data matches expected shape', () => {
-    // Arrange + Assert
-    expect(targetDirectoryNotEmpty('/repo' as FilePath).data).toEqual({
-      code: 'TARGET_DIRECTORY_NOT_EMPTY',
-      path: '/repo',
+  describe('Given the cannotDeleteCheckedOutBranch error helper', () => {
+    describe('When called', () => {
+      it('Then data matches expected shape', () => {
+        // Arrange + Assert
+        expect(cannotDeleteCheckedOutBranch('refs/heads/main' as RefName).data).toEqual({
+          code: 'CANNOT_DELETE_CHECKED_OUT_BRANCH',
+          name: 'refs/heads/main',
+        });
+      });
     });
   });
 
-  it('Given the remoteAdvertisesNoRefs error helper, When called, Then data matches expected shape', () => {
-    // Arrange
-    const sut = remoteAdvertisesNoRefs().data;
+  describe('Given the invalidUrl error helper', () => {
+    describe('When called', () => {
+      it('Then data matches expected shape', () => {
+        // Arrange
+        const sut = invalidUrl('bad').data;
 
-    // Assert
-    expect(sut).toEqual({ code: 'REMOTE_ADVERTISES_NO_REFS' });
-  });
-
-  it('Given the nonFastForward error helper, When called, Then data matches expected shape', () => {
-    // Arrange + Assert
-    expect(nonFastForward('refs/heads/main' as RefName, OID1, OID2).data).toEqual({
-      code: 'NON_FAST_FORWARD',
-      ref: 'refs/heads/main',
-      local: OID1,
-      remote: OID2,
+        // Assert
+        expect(sut).toEqual({ code: 'INVALID_URL', reason: 'bad' });
+      });
     });
   });
 
-  it('Given the pushRejected error helper, When called, Then data matches expected shape', () => {
-    // Arrange + Assert
-    expect(pushRejected('refs/heads/main' as RefName, 'declined', dummyReportStatus).data).toEqual({
-      code: 'PUSH_REJECTED',
-      ref: 'refs/heads/main',
-      reason: 'declined',
-      reportStatus: dummyReportStatus,
+  describe('Given the blockedHost error helper', () => {
+    describe('When called', () => {
+      it('Then data matches expected shape', () => {
+        // Arrange + Assert
+        expect(blockedHost('1.2.3.4', 'private').data).toEqual({
+          code: 'BLOCKED_HOST',
+          host: '1.2.3.4',
+          reason: 'private',
+        });
+      });
     });
   });
 
-  it('Given the mergeHasConflicts helper variant (default paths), When called, Then data matches expected shape', () => {
-    // Arrange + Assert
-    expect(mergeHasConflicts(3).data).toEqual({
-      code: 'MERGE_HAS_CONFLICTS',
-      count: 3,
-      paths: [],
+  describe('Given the tooManyRedirects error helper', () => {
+    describe('When called', () => {
+      it('Then data matches expected shape', () => {
+        // Arrange
+        const sut = tooManyRedirects(6).data;
+
+        // Assert
+        expect(sut).toEqual({ code: 'TOO_MANY_REDIRECTS', count: 6 });
+      });
     });
   });
 
-  it('Given the mergeHasConflicts helper variant (explicit paths), When called, Then data matches expected shape', () => {
-    // Arrange + Assert
-    expect(mergeHasConflicts(2, ['a.txt' as FilePath, 'b.txt' as FilePath]).data).toEqual({
-      code: 'MERGE_HAS_CONFLICTS',
-      count: 2,
-      paths: ['a.txt', 'b.txt'],
+  describe('Given the unsupportedScheme error helper', () => {
+    describe('When called', () => {
+      it('Then data matches expected shape', () => {
+        // Arrange + Assert
+        expect(unsupportedScheme('ftp').data).toEqual({
+          code: 'UNSUPPORTED_SCHEME',
+          scheme: 'ftp',
+        });
+      });
     });
   });
 
-  it('Given more conflict paths than the cap, When mergeHasConflicts is called, Then the paths array is truncated', () => {
-    // Arrange — 150 fake paths exceeds MAX_CONFLICT_PATHS_IN_ERROR (100).
-    const paths = Array.from({ length: 150 }, (_, i) => `f${i}.txt` as FilePath);
-
-    // Act
-    const err = mergeHasConflicts(150, paths);
-    const data = err.data as {
-      readonly code: string;
-      readonly count: number;
-      readonly paths: ReadonlyArray<string>;
-      readonly truncated?: boolean;
-    };
-
-    // Assert — count reflects the full conflict total; paths is capped; the
-    // truncated flag fires so observers know the elision happened.
-    expect(data.count).toBe(150);
-    expect(data.paths).toHaveLength(100);
-    expect(data.paths[0]).toBe('f0.txt');
-    expect(data.paths[99]).toBe('f99.txt');
-    expect(data.truncated).toBe(true);
-  });
-
-  it('Given paths fitting under the cap, When mergeHasConflicts is called, Then truncated is not set', () => {
-    // Arrange
-    const paths = Array.from({ length: 5 }, (_, i) => `f${i}.txt` as FilePath);
-
-    // Act
-    const err = mergeHasConflicts(5, paths);
-    const data = err.data as { readonly truncated?: boolean };
-
-    // Assert — truncated field absent (not just false) when no elision happened.
-    expect(data.truncated).toBeUndefined();
-  });
-
-  it('Given paths exactly at the cap, When mergeHasConflicts is called, Then all paths are kept and truncated is omitted', () => {
-    // Arrange — exactly MAX_CONFLICT_PATHS_IN_ERROR (100) paths: the boundary
-    // where `paths.length > cap` is false and `>= cap` would be true.
-    const paths = Array.from({ length: 100 }, (_, i) => `f${i}.txt` as FilePath);
-
-    // Act
-    const err = mergeHasConflicts(100, paths);
-    const data = err.data as {
-      readonly paths: ReadonlyArray<string>;
-      readonly truncated?: boolean;
-    };
-
-    // Assert — no elision: every path retained, truncated field absent.
-    expect(data.paths).toHaveLength(100);
-    expect(data.truncated).toBeUndefined();
-  });
-
-  it('Given the checkoutOverwriteDirty error helper, When called, Then data matches expected shape', () => {
-    // Arrange + Assert
-    expect(checkoutOverwriteDirty(['a' as FilePath]).data).toEqual({
-      code: 'CHECKOUT_OVERWRITE_DIRTY',
-      paths: ['a'],
+  describe('Given the targetDirectoryNotEmpty error helper', () => {
+    describe('When called', () => {
+      it('Then data matches expected shape', () => {
+        // Arrange + Assert
+        expect(targetDirectoryNotEmpty('/repo' as FilePath).data).toEqual({
+          code: 'TARGET_DIRECTORY_NOT_EMPTY',
+          path: '/repo',
+        });
+      });
     });
   });
 
-  it('Given the revparseAmbiguous error helper, When called, Then data matches expected shape', () => {
-    // Arrange + Assert
-    expect(revparseAmbiguous('abc1', [OID1, OID2]).data).toEqual({
-      code: 'REVPARSE_AMBIGUOUS',
-      expression: 'abc1',
-      candidates: [OID1, OID2],
+  describe('Given the remoteAdvertisesNoRefs error helper', () => {
+    describe('When called', () => {
+      it('Then data matches expected shape', () => {
+        // Arrange
+        const sut = remoteAdvertisesNoRefs().data;
+
+        // Assert
+        expect(sut).toEqual({ code: 'REMOTE_ADVERTISES_NO_REFS' });
+      });
     });
   });
 
-  it('Given the revparseUnresolved error helper, When called, Then data matches expected shape', () => {
-    // Arrange + Assert
-    expect(revparseUnresolved('foo').data).toEqual({
-      code: 'REVPARSE_UNRESOLVED',
-      expression: 'foo',
+  describe('Given the nonFastForward error helper', () => {
+    describe('When called', () => {
+      it('Then data matches expected shape', () => {
+        // Arrange + Assert
+        expect(nonFastForward('refs/heads/main' as RefName, OID1, OID2).data).toEqual({
+          code: 'NON_FAST_FORWARD',
+          ref: 'refs/heads/main',
+          local: OID1,
+          remote: OID2,
+        });
+      });
     });
   });
 
-  it('Given the emptyPathspec error helper, When called, Then data matches expected shape', () => {
-    // Arrange
-    const sut = emptyPathspec().data;
-
-    // Assert
-    expect(sut).toEqual({ code: 'EMPTY_PATHSPEC' });
-  });
-
-  it('Given the operationInProgress error helper, When called, Then data matches expected shape', () => {
-    // Arrange + Assert
-    expect(operationInProgress('merge').data).toEqual({
-      code: 'OPERATION_IN_PROGRESS',
-      operation: 'merge',
+  describe('Given the pushRejected error helper', () => {
+    describe('When called', () => {
+      it('Then data matches expected shape', () => {
+        // Arrange + Assert
+        expect(
+          pushRejected('refs/heads/main' as RefName, 'declined', dummyReportStatus).data,
+        ).toEqual({
+          code: 'PUSH_REJECTED',
+          ref: 'refs/heads/main',
+          reason: 'declined',
+          reportStatus: dummyReportStatus,
+        });
+      });
     });
   });
 
-  it('Given the maxRefspecsExceeded error helper, When called, Then data matches expected shape', () => {
-    // Arrange + Assert
-    expect(maxRefspecsExceeded(2000, 1024).data).toEqual({
-      code: 'MAX_REFSPECS_EXCEEDED',
-      count: 2000,
-      limit: 1024,
+  describe('Given the mergeHasConflicts helper variant (default paths)', () => {
+    describe('When called', () => {
+      it('Then data matches expected shape', () => {
+        // Arrange + Assert
+        expect(mergeHasConflicts(3).data).toEqual({
+          code: 'MERGE_HAS_CONFLICTS',
+          count: 3,
+          paths: [],
+        });
+      });
     });
   });
 
-  it('Given the remoteNotConfigured error helper, When called, Then data matches expected shape', () => {
-    // Arrange + Assert
-    expect(remoteNotConfigured('upstream').data).toEqual({
-      code: 'REMOTE_NOT_CONFIGURED',
-      remote: 'upstream',
+  describe('Given the mergeHasConflicts helper variant (explicit paths)', () => {
+    describe('When called', () => {
+      it('Then data matches expected shape', () => {
+        // Arrange + Assert
+        expect(mergeHasConflicts(2, ['a.txt' as FilePath, 'b.txt' as FilePath]).data).toEqual({
+          code: 'MERGE_HAS_CONFLICTS',
+          count: 2,
+          paths: ['a.txt', 'b.txt'],
+        });
+      });
     });
   });
 
-  it('Given a printable reason, When invalidOption, Then data carries the verbatim option name and sanitized reason', () => {
-    // Arrange + Assert
-    expect(invalidOption('cwd', 'must be absolute').data).toEqual({
-      code: 'INVALID_OPTION',
-      option: 'cwd',
-      reason: 'must be absolute',
+  describe('Given more conflict paths than the cap', () => {
+    describe('When mergeHasConflicts is called', () => {
+      it('Then the paths array is truncated', () => {
+        // Arrange — 150 fake paths exceeds MAX_CONFLICT_PATHS_IN_ERROR (100).
+        const paths = Array.from({ length: 150 }, (_, i) => `f${i}.txt` as FilePath);
+
+        // Act
+        const err = mergeHasConflicts(150, paths);
+        const data = err.data as {
+          readonly code: string;
+          readonly count: number;
+          readonly paths: ReadonlyArray<string>;
+          readonly truncated?: boolean;
+        };
+
+        // Assert — count reflects the full conflict total; paths is capped; the
+        // truncated flag fires so observers know the elision happened.
+        expect(data.count).toBe(150);
+        expect(data.paths).toHaveLength(100);
+        expect(data.paths[0]).toBe('f0.txt');
+        expect(data.paths[99]).toBe('f99.txt');
+        expect(data.truncated).toBe(true);
+      });
     });
   });
 
-  it('Given a reason with a CR byte, When invalidOption, Then reason is sanitized via \\xNN', () => {
-    // Arrange + Assert
-    expect(invalidOption('cwd', 'bad\rvalue').data).toEqual({
-      code: 'INVALID_OPTION',
-      option: 'cwd',
-      reason: 'bad\\x0Dvalue',
+  describe('Given paths fitting under the cap', () => {
+    describe('When mergeHasConflicts is called', () => {
+      it('Then truncated is not set', () => {
+        // Arrange
+        const paths = Array.from({ length: 5 }, (_, i) => `f${i}.txt` as FilePath);
+
+        // Act
+        const err = mergeHasConflicts(5, paths);
+        const data = err.data as { readonly truncated?: boolean };
+
+        // Assert — truncated field absent (not just false) when no elision happened.
+        expect(data.truncated).toBeUndefined();
+      });
     });
   });
 
-  it('Given no arguments, When repositoryDisposed, Then data has only the code', () => {
-    // Arrange
-    const sut = repositoryDisposed().data;
+  describe('Given paths exactly at the cap', () => {
+    describe('When mergeHasConflicts is called', () => {
+      it('Then all paths are kept and truncated is omitted', () => {
+        // Arrange — exactly MAX_CONFLICT_PATHS_IN_ERROR (100) paths: the boundary
+        // where `paths.length > cap` is false and `>= cap` would be true.
+        const paths = Array.from({ length: 100 }, (_, i) => `f${i}.txt` as FilePath);
 
-    // Assert
-    expect(sut).toEqual({ code: 'REPOSITORY_DISPOSED' });
-  });
+        // Act
+        const err = mergeHasConflicts(100, paths);
+        const data = err.data as {
+          readonly paths: ReadonlyArray<string>;
+          readonly truncated?: boolean;
+        };
 
-  it('Given a path, size, and limit, When workingTreeFileTooLarge, Then data carries every field verbatim', () => {
-    // Arrange + Assert
-    expect(workingTreeFileTooLarge('big.bin' as FilePath, 300, 256).data).toEqual({
-      code: 'WORKING_TREE_FILE_TOO_LARGE',
-      path: 'big.bin',
-      size: 300,
-      limit: 256,
+        // Assert — no elision: every path retained, truncated field absent.
+        expect(data.paths).toHaveLength(100);
+        expect(data.truncated).toBeUndefined();
+      });
     });
   });
 
-  it('Given a path, size, and limit, When gitignoreFileTooLarge, Then data carries every field verbatim', () => {
-    // Arrange + Assert
-    expect(gitignoreFileTooLarge('.gitignore' as FilePath, 2_000_000, 1_048_576).data).toEqual({
-      code: 'GITIGNORE_FILE_TOO_LARGE',
-      path: '.gitignore',
-      size: 2_000_000,
-      limit: 1_048_576,
+  describe('Given the checkoutOverwriteDirty error helper', () => {
+    describe('When called', () => {
+      it('Then data matches expected shape', () => {
+        // Arrange + Assert
+        expect(checkoutOverwriteDirty(['a' as FilePath]).data).toEqual({
+          code: 'CHECKOUT_OVERWRITE_DIRTY',
+          paths: ['a'],
+        });
+      });
     });
   });
 
-  it('Given a path, size, and limit, When sparsePatternFileTooLarge, Then data carries every field verbatim', () => {
-    // Arrange + Assert
-    expect(
-      sparsePatternFileTooLarge('info/sparse-checkout' as FilePath, 2_000_000, 1_048_576).data,
-    ).toEqual({
-      code: 'SPARSE_PATTERN_FILE_TOO_LARGE',
-      path: 'info/sparse-checkout',
-      size: 2_000_000,
-      limit: 1_048_576,
+  describe('Given the revparseAmbiguous error helper', () => {
+    describe('When called', () => {
+      it('Then data matches expected shape', () => {
+        // Arrange + Assert
+        expect(revparseAmbiguous('abc1', [OID1, OID2]).data).toEqual({
+          code: 'REVPARSE_AMBIGUOUS',
+          expression: 'abc1',
+          candidates: [OID1, OID2],
+        });
+      });
     });
   });
 
-  it('Given runtime and reason, When adapterUnavailable, Then data carries verbatim runtime and sanitized reason', () => {
-    // Arrange + Assert
-    expect(adapterUnavailable('node', 'process.versions missing').data).toEqual({
-      code: 'ADAPTER_UNAVAILABLE',
-      runtime: 'node',
-      reason: 'process.versions missing',
+  describe('Given the revparseUnresolved error helper', () => {
+    describe('When called', () => {
+      it('Then data matches expected shape', () => {
+        // Arrange + Assert
+        expect(revparseUnresolved('foo').data).toEqual({
+          code: 'REVPARSE_UNRESOLVED',
+          expression: 'foo',
+        });
+      });
     });
   });
 
-  it('Given a reason with a control byte, When adapterUnavailable, Then reason is sanitized', () => {
-    // Arrange + Assert
-    expect(adapterUnavailable('browser', 'no\x07OPFS').data).toEqual({
-      code: 'ADAPTER_UNAVAILABLE',
-      runtime: 'browser',
-      reason: 'no\\x07OPFS',
+  describe('Given the emptyPathspec error helper', () => {
+    describe('When called', () => {
+      it('Then data matches expected shape', () => {
+        // Arrange
+        const sut = emptyPathspec().data;
+
+        // Assert
+        expect(sut).toEqual({ code: 'EMPTY_PATHSPEC' });
+      });
     });
   });
 
-  it('Given a hook, exit code, and stderr, When hookFailed, Then data carries every field verbatim', () => {
-    // Arrange + Assert
-    expect(hookFailed('pre-commit', 1, 'lint failed').data).toEqual({
-      code: 'HOOK_FAILED',
-      hook: 'pre-commit',
-      exitCode: 1,
-      stderr: 'lint failed',
+  describe('Given the operationInProgress error helper', () => {
+    describe('When called', () => {
+      it('Then data matches expected shape', () => {
+        // Arrange + Assert
+        expect(operationInProgress('merge').data).toEqual({
+          code: 'OPERATION_IN_PROGRESS',
+          operation: 'merge',
+        });
+      });
     });
   });
 
-  it('Given stderr with a CR byte, When hookFailed, Then stderr is sanitized via \\xNN', () => {
-    // Arrange + Assert
-    expect(hookFailed('commit-msg', 2, 'bad\rmsg').data).toEqual({
-      code: 'HOOK_FAILED',
-      hook: 'commit-msg',
-      exitCode: 2,
-      stderr: 'bad\\x0Dmsg',
+  describe('Given the maxRefspecsExceeded error helper', () => {
+    describe('When called', () => {
+      it('Then data matches expected shape', () => {
+        // Arrange + Assert
+        expect(maxRefspecsExceeded(2000, 1024).data).toEqual({
+          code: 'MAX_REFSPECS_EXCEEDED',
+          count: 2000,
+          limit: 1024,
+        });
+      });
     });
   });
 
-  it('Given stderr one byte over the cap, When hookFailed, Then stderr is truncated to the cap', () => {
-    // Arrange — printable bytes so sanitization is length-stable; one past the cap.
-    const oversized = 'x'.repeat(MAX_HOOK_STDERR_IN_ERROR + 1);
+  describe('Given the remoteNotConfigured error helper', () => {
+    describe('When called', () => {
+      it('Then data matches expected shape', () => {
+        // Arrange + Assert
+        expect(remoteNotConfigured('upstream').data).toEqual({
+          code: 'REMOTE_NOT_CONFIGURED',
+          remote: 'upstream',
+        });
+      });
+    });
+  });
 
-    // Act
-    const data = hookFailed('pre-push', 1, oversized).data as { readonly stderr: string };
+  describe('Given a printable reason', () => {
+    describe('When invalidOption', () => {
+      it('Then data carries the verbatim option name and sanitized reason', () => {
+        // Arrange + Assert
+        expect(invalidOption('cwd', 'must be absolute').data).toEqual({
+          code: 'INVALID_OPTION',
+          option: 'cwd',
+          reason: 'must be absolute',
+        });
+      });
+    });
+  });
 
-    // Assert
-    expect(data.stderr).toHaveLength(MAX_HOOK_STDERR_IN_ERROR);
+  describe('Given a reason with a CR byte', () => {
+    describe('When invalidOption', () => {
+      it('Then reason is sanitized via \\xNN', () => {
+        // Arrange + Assert
+        expect(invalidOption('cwd', 'bad\rvalue').data).toEqual({
+          code: 'INVALID_OPTION',
+          option: 'cwd',
+          reason: 'bad\\x0Dvalue',
+        });
+      });
+    });
+  });
+
+  describe('Given no arguments', () => {
+    describe('When repositoryDisposed', () => {
+      it('Then data has only the code', () => {
+        // Arrange
+        const sut = repositoryDisposed().data;
+
+        // Assert
+        expect(sut).toEqual({ code: 'REPOSITORY_DISPOSED' });
+      });
+    });
+  });
+
+  describe('Given a path, size, and limit', () => {
+    describe('When workingTreeFileTooLarge', () => {
+      it('Then data carries every field verbatim', () => {
+        // Arrange + Assert
+        expect(workingTreeFileTooLarge('big.bin' as FilePath, 300, 256).data).toEqual({
+          code: 'WORKING_TREE_FILE_TOO_LARGE',
+          path: 'big.bin',
+          size: 300,
+          limit: 256,
+        });
+      });
+    });
+    describe('When gitignoreFileTooLarge', () => {
+      it('Then data carries every field verbatim', () => {
+        // Arrange + Assert
+        expect(gitignoreFileTooLarge('.gitignore' as FilePath, 2_000_000, 1_048_576).data).toEqual({
+          code: 'GITIGNORE_FILE_TOO_LARGE',
+          path: '.gitignore',
+          size: 2_000_000,
+          limit: 1_048_576,
+        });
+      });
+    });
+    describe('When sparsePatternFileTooLarge', () => {
+      it('Then data carries every field verbatim', () => {
+        // Arrange + Assert
+        expect(
+          sparsePatternFileTooLarge('info/sparse-checkout' as FilePath, 2_000_000, 1_048_576).data,
+        ).toEqual({
+          code: 'SPARSE_PATTERN_FILE_TOO_LARGE',
+          path: 'info/sparse-checkout',
+          size: 2_000_000,
+          limit: 1_048_576,
+        });
+      });
+    });
+  });
+
+  describe('Given runtime and reason', () => {
+    describe('When adapterUnavailable', () => {
+      it('Then data carries verbatim runtime and sanitized reason', () => {
+        // Arrange + Assert
+        expect(adapterUnavailable('node', 'process.versions missing').data).toEqual({
+          code: 'ADAPTER_UNAVAILABLE',
+          runtime: 'node',
+          reason: 'process.versions missing',
+        });
+      });
+    });
+  });
+
+  describe('Given a reason with a control byte', () => {
+    describe('When adapterUnavailable', () => {
+      it('Then reason is sanitized', () => {
+        // Arrange + Assert
+        expect(adapterUnavailable('browser', 'no\x07OPFS').data).toEqual({
+          code: 'ADAPTER_UNAVAILABLE',
+          runtime: 'browser',
+          reason: 'no\\x07OPFS',
+        });
+      });
+    });
+  });
+
+  describe('Given a hook, exit code, and stderr', () => {
+    describe('When hookFailed', () => {
+      it('Then data carries every field verbatim', () => {
+        // Arrange + Assert
+        expect(hookFailed('pre-commit', 1, 'lint failed').data).toEqual({
+          code: 'HOOK_FAILED',
+          hook: 'pre-commit',
+          exitCode: 1,
+          stderr: 'lint failed',
+        });
+      });
+    });
+  });
+
+  describe('Given stderr with a CR byte', () => {
+    describe('When hookFailed', () => {
+      it('Then stderr is sanitized via \\xNN', () => {
+        // Arrange + Assert
+        expect(hookFailed('commit-msg', 2, 'bad\rmsg').data).toEqual({
+          code: 'HOOK_FAILED',
+          hook: 'commit-msg',
+          exitCode: 2,
+          stderr: 'bad\\x0Dmsg',
+        });
+      });
+    });
+  });
+
+  describe('Given stderr one byte over the cap', () => {
+    describe('When hookFailed', () => {
+      it('Then stderr is truncated to the cap', () => {
+        // Arrange — printable bytes so sanitization is length-stable; one past the cap.
+        const oversized = 'x'.repeat(MAX_HOOK_STDERR_IN_ERROR + 1);
+
+        // Act
+        const data = hookFailed('pre-push', 1, oversized).data as { readonly stderr: string };
+
+        // Assert
+        expect(data.stderr).toHaveLength(MAX_HOOK_STDERR_IN_ERROR);
+      });
+    });
   });
 });
 
 describe('sanitize helper', () => {
-  it('Given printable ASCII, When sanitize, Then returns input unchanged', () => {
-    // Arrange
-    const sut = sanitize('hello world 123');
+  describe('Given printable ASCII', () => {
+    describe('When sanitize', () => {
+      it('Then returns input unchanged', () => {
+        // Arrange
+        const sut = sanitize('hello world 123');
 
-    // Assert
-    expect(sut).toBe('hello world 123');
+        // Assert
+        expect(sut).toBe('hello world 123');
+      });
+    });
   });
 
-  it('Given a tab and newline, When sanitize, Then preserves them verbatim', () => {
-    // Arrange
-    const sut = sanitize('a\tb\nc');
+  describe('Given a tab and newline', () => {
+    describe('When sanitize', () => {
+      it('Then preserves them verbatim', () => {
+        // Arrange
+        const sut = sanitize('a\tb\nc');
 
-    // Assert
-    expect(sut).toBe('a\tb\nc');
+        // Assert
+        expect(sut).toBe('a\tb\nc');
+      });
+    });
   });
 
-  it('Given CR and other control bytes, When sanitize, Then escapes them as \\xNN', () => {
-    // Arrange
-    const sut = sanitize('a\rb');
+  describe('Given CR and other control bytes', () => {
+    describe('When sanitize', () => {
+      it('Then escapes them as \\xNN', () => {
+        // Arrange
+        const sut = sanitize('a\rb');
 
-    // Assert
-    expect(sut).toBe('a\\x0Db');
+        // Assert
+        expect(sut).toBe('a\\x0Db');
+      });
+    });
   });
 
-  it('Given a NUL byte, When sanitize, Then escapes as \\x00', () => {
-    // Arrange
-    const sut = sanitize('a\0b');
+  describe('Given a NUL byte', () => {
+    describe('When sanitize', () => {
+      it('Then escapes as \\x00', () => {
+        // Arrange
+        const sut = sanitize('a\0b');
 
-    // Assert
-    expect(sut).toBe('a\\x00b');
+        // Assert
+        expect(sut).toBe('a\\x00b');
+      });
+    });
   });
 
-  it('Given a high-byte non-ASCII character, When sanitize, Then escapes', () => {
-    // Arrange
-    const sut = sanitize('ab');
+  describe('Given a high-byte non-ASCII character', () => {
+    describe('When sanitize', () => {
+      it('Then escapes', () => {
+        // Arrange
+        const sut = sanitize('ab');
 
-    // Assert
-    expect(sut).toBe('a\\x80b');
+        // Assert
+        expect(sut).toBe('a\\x80b');
+      });
+    });
   });
 
-  it('Given a tilde (0x7e, the printable-range upper bound), When sanitize, Then keeps it verbatim', () => {
-    // Arrange + Assert
-    // 0x7e is the inclusive upper bound of the printable ASCII range; it must
-    // be preserved, not escaped.
-    expect(sanitize('a~b')).toBe('a~b');
+  describe('Given a tilde (0x7e, the printable-range upper bound)', () => {
+    describe('When sanitize', () => {
+      it('Then keeps it verbatim', () => {
+        // Arrange + Assert
+        // 0x7e is the inclusive upper bound of the printable ASCII range; it must
+        // be preserved, not escaped.
+        expect(sanitize('a~b')).toBe('a~b');
+      });
+    });
   });
 
-  it('Given DEL (0x7f, just past the printable upper bound), When sanitize, Then escapes it', () => {
-    // Arrange
-    const sut = sanitize('ab');
+  describe('Given DEL (0x7f, just past the printable upper bound)', () => {
+    describe('When sanitize', () => {
+      it('Then escapes it', () => {
+        // Arrange
+        const sut = sanitize('ab');
 
-    // Assert
-    expect(sut).toBe('a\\x7Fb');
+        // Assert
+        expect(sut).toBe('a\\x7Fb');
+      });
+    });
   });
 });
 
@@ -661,13 +853,15 @@ describe('domain commands error — extractDetail message formatting', () => {
     ],
   ];
 
-  it.each(
-    cases,
-  )('Given command error %j, When TsgitError(...).message is read, Then it equals the documented format', (data, expected) => {
-    // Arrange & Act
-    const sut = new TsgitError(data);
+  describe('Given command error %j', () => {
+    describe('When TsgitError(...).message is read', () => {
+      it.each(cases)('Then it equals the documented format', (data, expected) => {
+        // Arrange & Act
+        const sut = new TsgitError(data);
 
-    // Assert
-    expect(sut.message).toBe(expected);
+        // Assert
+        expect(sut.message).toBe(expected);
+      });
+    });
   });
 });

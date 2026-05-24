@@ -14,85 +14,126 @@ import {
 import type { ObjectId, RefName } from '../../../../src/domain/objects/index.js';
 
 describe('path-layout', () => {
-  it('Given gitDir and an ObjectId, When looseObjectPath, Then returns /gitDir/objects/xx/yyyy...', () => {
-    // Arrange
-    const id = ('ab' + 'cd'.repeat(19)) as ObjectId;
-    const sut = looseObjectPath('/g', id);
-    // Assert
-    expect(sut).toBe('/g/objects/ab/' + 'cd'.repeat(19));
+  describe('Given gitDir and an ObjectId', () => {
+    describe('When looseObjectPath', () => {
+      it('Then returns /gitDir/objects/xx/yyyy...', () => {
+        // Arrange
+        const id = ('ab' + 'cd'.repeat(19)) as ObjectId;
+        const sut = looseObjectPath('/g', id);
+        // Assert
+        expect(sut).toBe('/g/objects/ab/' + 'cd'.repeat(19));
+      });
+    });
   });
 
-  it('Given gitDir and a RefName, When looseRefPath, Then returns /gitDir/<name>', () => {
-    // Arrange
-    const sut = looseRefPath('/g', 'refs/heads/main' as RefName);
-    // Assert
-    expect(sut).toBe('/g/refs/heads/main');
+  describe('Given gitDir and a RefName', () => {
+    describe('When looseRefPath', () => {
+      it('Then returns /gitDir/<name>', () => {
+        // Arrange
+        const sut = looseRefPath('/g', 'refs/heads/main' as RefName);
+        // Assert
+        expect(sut).toBe('/g/refs/heads/main');
+      });
+    });
   });
 
-  it('Given gitDir, When packedRefsPath, Then returns /gitDir/packed-refs', () => {
-    // Arrange
-    const sut = packedRefsPath('/g');
+  describe('Given gitDir', () => {
+    describe('When packedRefsPath', () => {
+      it('Then returns /gitDir/packed-refs', () => {
+        // Arrange
+        const sut = packedRefsPath('/g');
 
-    // Assert
-    expect(sut).toBe('/g/packed-refs');
+        // Assert
+        expect(sut).toBe('/g/packed-refs');
+      });
+    });
+    describe('When indexPath', () => {
+      it('Then returns /gitDir/index', () => {
+        // Arrange
+        const sut = indexPath('/g');
+
+        // Assert
+        expect(sut).toBe('/g/index');
+      });
+    });
   });
 
-  it('Given gitDir, When indexPath, Then returns /gitDir/index', () => {
-    // Arrange
-    const sut = indexPath('/g');
+  describe('Given gitDir and prefix', () => {
+    describe('When objectsDir', () => {
+      it('Then returns /gitDir/objects/<prefix>', () => {
+        // Arrange
+        const sut = objectsDir('/g', 'ab');
 
-    // Assert
-    expect(sut).toBe('/g/index');
+        // Assert
+        expect(sut).toBe('/g/objects/ab');
+      });
+    });
   });
 
-  it('Given gitDir and prefix, When objectsDir, Then returns /gitDir/objects/<prefix>', () => {
-    // Arrange
-    const sut = objectsDir('/g', 'ab');
+  describe('Given gitDir', () => {
+    describe('When packsDir', () => {
+      it('Then returns /gitDir/objects/pack', () => {
+        // Arrange
+        const sut = packsDir('/g');
 
-    // Assert
-    expect(sut).toBe('/g/objects/ab');
+        // Assert
+        expect(sut).toBe('/g/objects/pack');
+      });
+    });
   });
 
-  it('Given gitDir, When packsDir, Then returns /gitDir/objects/pack', () => {
-    // Arrange
-    const sut = packsDir('/g');
-
-    // Assert
-    expect(sut).toBe('/g/objects/pack');
+  describe('Given lockSuffix', () => {
+    describe('When read', () => {
+      it('Then equals .lock', () => {
+        // Arrange + Assert
+        expect(lockSuffix).toBe('.lock');
+      });
+    });
   });
 
-  it('Given lockSuffix, When read, Then equals .lock', () => {
-    // Arrange + Assert
-    expect(lockSuffix).toBe('.lock');
+  describe('Given gitDir', () => {
+    describe('When logsDir', () => {
+      it('Then returns /gitDir/logs', () => {
+        // Arrange
+        const sut = logsDir('/g');
+
+        // Assert
+        expect(sut).toBe('/g/logs');
+      });
+    });
   });
 
-  it('Given gitDir, When logsDir, Then returns /gitDir/logs', () => {
-    // Arrange
-    const sut = logsDir('/g');
-
-    // Assert
-    expect(sut).toBe('/g/logs');
+  describe('Given gitDir and a RefName', () => {
+    describe('When reflogPath', () => {
+      it('Then returns /gitDir/logs/<name>', () => {
+        // Arrange
+        const sut = reflogPath('/g', 'refs/heads/main' as RefName);
+        // Assert
+        expect(sut).toBe('/g/logs/refs/heads/main');
+      });
+    });
   });
 
-  it('Given gitDir and a RefName, When reflogPath, Then returns /gitDir/logs/<name>', () => {
-    // Arrange
-    const sut = reflogPath('/g', 'refs/heads/main' as RefName);
-    // Assert
-    expect(sut).toBe('/g/logs/refs/heads/main');
+  describe('Given gitDir and the HEAD ref', () => {
+    describe('When reflogPath', () => {
+      it('Then returns /gitDir/logs/HEAD', () => {
+        // Arrange
+        const sut = reflogPath('/g', 'HEAD' as RefName);
+        // Assert
+        expect(sut).toBe('/g/logs/HEAD');
+      });
+    });
   });
 
-  it('Given gitDir and the HEAD ref, When reflogPath, Then returns /gitDir/logs/HEAD', () => {
-    // Arrange
-    const sut = reflogPath('/g', 'HEAD' as RefName);
-    // Assert
-    expect(sut).toBe('/g/logs/HEAD');
-  });
+  describe('Given gitDir', () => {
+    describe('When sparseCheckoutPath', () => {
+      it('Then returns /gitDir/info/sparse-checkout', () => {
+        // Arrange
+        const sut = sparseCheckoutPath('/g');
 
-  it('Given gitDir, When sparseCheckoutPath, Then returns /gitDir/info/sparse-checkout', () => {
-    // Arrange
-    const sut = sparseCheckoutPath('/g');
-
-    // Assert
-    expect(sut).toBe('/g/info/sparse-checkout');
+        // Assert
+        expect(sut).toBe('/g/info/sparse-checkout');
+      });
+    });
   });
 });

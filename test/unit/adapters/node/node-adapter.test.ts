@@ -14,228 +14,300 @@ import { NodeHttpTransport } from '../../../../src/adapters/node/node-http-trans
 import { TsgitError } from '../../../../src/domain/index.js';
 
 describe('createNodeContext', () => {
-  it('Given workDir only, When creating context, Then gitDir defaults to <workDir>/.git', () => {
-    // Arrange
-    const workDir = '/tmp/tsgit-ctx-test';
+  describe('Given workDir only', () => {
+    describe('When creating context', () => {
+      it('Then gitDir defaults to <workDir>/.git', () => {
+        // Arrange
+        const workDir = '/tmp/tsgit-ctx-test';
 
-    // Act
-    const sut = createNodeContext({ workDir });
+        // Act
+        const sut = createNodeContext({ workDir });
 
-    // Assert
-    expect(sut.layout.workDir).toBe(nodePath.resolve(workDir));
-    expect(sut.layout.gitDir).toBe(nodePath.join(nodePath.resolve(workDir), '.git'));
-    expect(sut.layout.bare).toBe(false);
-  });
-
-  it('Given explicit gitDir, When creating context, Then uses resolved absolute gitDir', () => {
-    // Arrange
-    const workDir = '/tmp/tsgit-explicit-wt';
-    const gitDir = '/tmp/tsgit-explicit-git';
-
-    // Act
-    const sut = createNodeContext({ workDir, gitDir });
-
-    // Assert
-    expect(sut.layout.gitDir).toBe(nodePath.resolve(gitDir));
-  });
-
-  it('Given a runtime with a non-empty home directory, When creating context, Then layout.homeDir matches os.homedir()', () => {
-    // Arrange
-    const expected = homedir();
-
-    // Act
-    const sut = createNodeContext({ workDir: '/tmp/tsgit-home' });
-
-    // Assert — when the runtime provides a home dir, the layout surfaces it.
-    if (expected === '') {
-      expect(sut.layout.homeDir).toBeUndefined();
-    } else {
-      expect(sut.layout.homeDir).toBe(expected);
-    }
-  });
-
-  it('Given bare=true, When creating context, Then config.bare is true', () => {
-    // Arrange / Act
-    const sut = createNodeContext({ workDir: '/tmp/tsgit-bare', bare: true });
-
-    // Assert
-    expect(sut.layout.bare).toBe(true);
-  });
-
-  it('Given AbortSignal, When creating context, Then signal is forwarded', () => {
-    // Arrange
-    const controller = new AbortController();
-
-    // Act
-    const sut = createNodeContext({ workDir: '/tmp/tsgit-sig', signal: controller.signal });
-
-    // Assert
-    expect(sut.signal).toBe(controller.signal);
-  });
-
-  it('Given no signal, When creating context, Then signal is undefined and the key is absent', () => {
-    // Arrange / Act
-    const sut = createNodeContext({ workDir: '/tmp/tsgit-nosig' });
-
-    // Assert — no stray `signal: undefined` key (exactOptionalPropertyTypes).
-    expect(sut.signal).toBeUndefined();
-    expect('signal' in sut).toBe(false);
-  });
-
-  it('Given default options, When creating context, Then ctx.hooks is wired (a NodeHookRunner)', () => {
-    // Arrange / Act
-    const sut = createNodeContext({ workDir: '/tmp/tsgit-hooks-on' });
-
-    // Assert — hooks run by default, like git (ADR-066).
-    expect(sut.hooks).toBeInstanceOf(NodeHookRunner);
-  });
-
-  it('Given hooks: false, When creating context, Then ctx.hooks is undefined', () => {
-    // Arrange / Act
-    const sut = createNodeContext({ workDir: '/tmp/tsgit-hooks-off', hooks: false });
-
-    // Assert — the explicit opt-out detaches the runner.
-    expect(sut.hooks).toBeUndefined();
-  });
-
-  it('Given no options, When creating context, Then each port is its expected concrete class (no field-swap)', () => {
-    // Arrange / Act
-    const sut = createNodeContext({ workDir: '/tmp/tsgit-ports' });
-
-    // Assert — distinct class checks catch a mutant that swaps two port fields in the factory.
-    expect(sut.fs).toBeInstanceOf(NodeFileSystem);
-    expect(sut.hash).toBeInstanceOf(NodeHashService);
-    expect(sut.compressor).toBeInstanceOf(NodeCompressor);
-    expect(sut.transport).toBeInstanceOf(NodeHttpTransport);
-    expect(sut.hash.algorithm).toBe('sha1');
-  });
-
-  it('Given deltaCacheMaxEntries=1, When inserting two entries, Then the delta cache evicts down to one (entry cap honored)', () => {
-    // Arrange — large byte budget so eviction can only be triggered by the entry cap.
-    const sut = createNodeContext({
-      workDir: '/tmp/tsgit-delta-entries',
-      deltaCacheMaxBytes: 1_000_000,
-      deltaCacheMaxEntries: 1,
-    });
-
-    // Act
-    sut.deltaCache.set('a', new Uint8Array([1]), 1);
-    sut.deltaCache.set('b', new Uint8Array([2]), 1);
-
-    // Assert — the configured cap of 1 is forwarded, so the LRU keeps only the newest entry.
-    expect(sut.deltaCache.entryCount).toBe(1);
-    expect(sut.deltaCache.has('b')).toBe(true);
-    expect(sut.deltaCache.has('a')).toBe(false);
-  });
-
-  it('Given created context, When attempting to mutate, Then properties are frozen', () => {
-    // Arrange
-    const sut = createNodeContext({ workDir: '/tmp/tsgit-frozen' });
-
-    // Act / Assert
-    expect(Object.isFrozen(sut)).toBe(true);
-  });
-
-  it('Given relative workDir, When creating context, Then workDir is resolved to absolute', () => {
-    // Arrange
-    const relative = 'some/rel/path';
-
-    // Act
-    const sut = createNodeContext({ workDir: relative });
-
-    // Assert
-    expect(nodePath.isAbsolute(sut.layout.workDir)).toBe(true);
-  });
-
-  it('Given allowInsecureHttp=true, When transport receives http:// URL, Then bypasses HTTPS guard (opt-in propagates through factory)', async () => {
-    // Arrange — proves `createNodeContext` forwards `allowInsecureHttp: true` to the transport
-    // (kills the ObjectLiteral mutant that would swallow it by passing `{}` to NodeHttpTransport).
-    const sut = createNodeContext({
-      workDir: '/tmp/tsgit-insecure-opt-in',
-      allowInsecureHttp: true,
-    });
-
-    // Act — send to a closed local port so the request fails at the network layer, not at the HTTPS guard.
-    let caught: unknown;
-    try {
-      await sut.transport.request({
-        url: 'http://127.0.0.1:1/anything',
-        method: 'GET',
-        headers: {},
+        // Assert
+        expect(sut.layout.workDir).toBe(nodePath.resolve(workDir));
+        expect(sut.layout.gitDir).toBe(nodePath.join(nodePath.resolve(workDir), '.git'));
+        expect(sut.layout.bare).toBe(false);
       });
-    } catch (err) {
-      caught = err;
-    }
-
-    // Assert — when the opt-in reached the transport, the reason is a network error (e.g. ECONNREFUSED),
-    // not the HTTPS-required gate that would fire without opt-in propagation.
-    expect(caught).toBeInstanceOf(TsgitError);
-    const data = (caught as TsgitError).data;
-    expect(data.code).toBe('NETWORK_ERROR');
-    if (data.code === 'NETWORK_ERROR') {
-      expect(data.reason).not.toContain('HTTPS required');
-    }
+    });
   });
 
-  it('Given no allowInsecureHttp, When transport receives http:// URL, Then rejects with NETWORK_ERROR (default is secure)', async () => {
-    // Arrange — proves createNodeContext defaults allowInsecureHttp to false
-    // (kills the `?? true` mutant that would silently allow plaintext HTTP).
-    const sut = createNodeContext({ workDir: '/tmp/tsgit-insecure-default' });
+  describe('Given explicit gitDir', () => {
+    describe('When creating context', () => {
+      it('Then uses resolved absolute gitDir', () => {
+        // Arrange
+        const workDir = '/tmp/tsgit-explicit-wt';
+        const gitDir = '/tmp/tsgit-explicit-git';
 
-    // Act
-    let caught: unknown;
-    try {
-      await sut.transport.request({
-        url: 'http://example.invalid/resource',
-        method: 'GET',
-        headers: {},
+        // Act
+        const sut = createNodeContext({ workDir, gitDir });
+
+        // Assert
+        expect(sut.layout.gitDir).toBe(nodePath.resolve(gitDir));
       });
-    } catch (err) {
-      caught = err;
-    }
+    });
+  });
 
-    // Assert
-    expect(caught).toBeInstanceOf(TsgitError);
-    const data = (caught as TsgitError).data;
-    expect(data.code).toBe('NETWORK_ERROR');
-    expect(data.code === 'NETWORK_ERROR' && data.reason).toContain('HTTPS required');
+  describe('Given a runtime with a non-empty home directory', () => {
+    describe('When creating context', () => {
+      it('Then layout.homeDir matches os.homedir()', () => {
+        // Arrange
+        const expected = homedir();
+
+        // Act
+        const sut = createNodeContext({ workDir: '/tmp/tsgit-home' });
+
+        // Assert — when the runtime provides a home dir, the layout surfaces it.
+        if (expected === '') {
+          expect(sut.layout.homeDir).toBeUndefined();
+        } else {
+          expect(sut.layout.homeDir).toBe(expected);
+        }
+      });
+    });
+  });
+
+  describe('Given bare=true', () => {
+    describe('When creating context', () => {
+      it('Then config.bare is true', () => {
+        // Arrange / Act
+        const sut = createNodeContext({ workDir: '/tmp/tsgit-bare', bare: true });
+
+        // Assert
+        expect(sut.layout.bare).toBe(true);
+      });
+    });
+  });
+
+  describe('Given AbortSignal', () => {
+    describe('When creating context', () => {
+      it('Then signal is forwarded', () => {
+        // Arrange
+        const controller = new AbortController();
+
+        // Act
+        const sut = createNodeContext({ workDir: '/tmp/tsgit-sig', signal: controller.signal });
+
+        // Assert
+        expect(sut.signal).toBe(controller.signal);
+      });
+    });
+  });
+
+  describe('Given no signal', () => {
+    describe('When creating context', () => {
+      it('Then signal is undefined and the key is absent', () => {
+        // Arrange / Act
+        const sut = createNodeContext({ workDir: '/tmp/tsgit-nosig' });
+
+        // Assert — no stray `signal: undefined` key (exactOptionalPropertyTypes).
+        expect(sut.signal).toBeUndefined();
+        expect('signal' in sut).toBe(false);
+      });
+    });
+  });
+
+  describe('Given default options', () => {
+    describe('When creating context', () => {
+      it('Then ctx.hooks is wired (a NodeHookRunner)', () => {
+        // Arrange / Act
+        const sut = createNodeContext({ workDir: '/tmp/tsgit-hooks-on' });
+
+        // Assert — hooks run by default, like git (ADR-066).
+        expect(sut.hooks).toBeInstanceOf(NodeHookRunner);
+      });
+    });
+  });
+
+  describe('Given hooks: false', () => {
+    describe('When creating context', () => {
+      it('Then ctx.hooks is undefined', () => {
+        // Arrange / Act
+        const sut = createNodeContext({ workDir: '/tmp/tsgit-hooks-off', hooks: false });
+
+        // Assert — the explicit opt-out detaches the runner.
+        expect(sut.hooks).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given no options', () => {
+    describe('When creating context', () => {
+      it('Then each port is its expected concrete class (no field-swap)', () => {
+        // Arrange / Act
+        const sut = createNodeContext({ workDir: '/tmp/tsgit-ports' });
+
+        // Assert — distinct class checks catch a mutant that swaps two port fields in the factory.
+        expect(sut.fs).toBeInstanceOf(NodeFileSystem);
+        expect(sut.hash).toBeInstanceOf(NodeHashService);
+        expect(sut.compressor).toBeInstanceOf(NodeCompressor);
+        expect(sut.transport).toBeInstanceOf(NodeHttpTransport);
+        expect(sut.hash.algorithm).toBe('sha1');
+      });
+    });
+  });
+
+  describe('Given deltaCacheMaxEntries=1', () => {
+    describe('When inserting two entries', () => {
+      it('Then the delta cache evicts down to one (entry cap honored)', () => {
+        // Arrange — large byte budget so eviction can only be triggered by the entry cap.
+        const sut = createNodeContext({
+          workDir: '/tmp/tsgit-delta-entries',
+          deltaCacheMaxBytes: 1_000_000,
+          deltaCacheMaxEntries: 1,
+        });
+
+        // Act
+        sut.deltaCache.set('a', new Uint8Array([1]), 1);
+        sut.deltaCache.set('b', new Uint8Array([2]), 1);
+
+        // Assert — the configured cap of 1 is forwarded, so the LRU keeps only the newest entry.
+        expect(sut.deltaCache.entryCount).toBe(1);
+        expect(sut.deltaCache.has('b')).toBe(true);
+        expect(sut.deltaCache.has('a')).toBe(false);
+      });
+    });
+  });
+
+  describe('Given created context', () => {
+    describe('When attempting to mutate', () => {
+      it('Then properties are frozen', () => {
+        // Arrange
+        const sut = createNodeContext({ workDir: '/tmp/tsgit-frozen' });
+
+        // Act / Assert
+        expect(Object.isFrozen(sut)).toBe(true);
+      });
+    });
+  });
+
+  describe('Given relative workDir', () => {
+    describe('When creating context', () => {
+      it('Then workDir is resolved to absolute', () => {
+        // Arrange
+        const relative = 'some/rel/path';
+
+        // Act
+        const sut = createNodeContext({ workDir: relative });
+
+        // Assert
+        expect(nodePath.isAbsolute(sut.layout.workDir)).toBe(true);
+      });
+    });
+  });
+
+  describe('Given allowInsecureHttp=true', () => {
+    describe('When transport receives http:// URL', () => {
+      it('Then bypasses HTTPS guard (opt-in propagates through factory)', async () => {
+        // Arrange — proves `createNodeContext` forwards `allowInsecureHttp: true` to the transport
+        // (kills the ObjectLiteral mutant that would swallow it by passing `{}` to NodeHttpTransport).
+        const sut = createNodeContext({
+          workDir: '/tmp/tsgit-insecure-opt-in',
+          allowInsecureHttp: true,
+        });
+
+        // Act — send to a closed local port so the request fails at the network layer, not at the HTTPS guard.
+        let caught: unknown;
+        try {
+          await sut.transport.request({
+            url: 'http://127.0.0.1:1/anything',
+            method: 'GET',
+            headers: {},
+          });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert — when the opt-in reached the transport, the reason is a network error (e.g. ECONNREFUSED),
+        // not the HTTPS-required gate that would fire without opt-in propagation.
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data;
+        expect(data.code).toBe('NETWORK_ERROR');
+        if (data.code === 'NETWORK_ERROR') {
+          expect(data.reason).not.toContain('HTTPS required');
+        }
+      });
+    });
+  });
+
+  describe('Given no allowInsecureHttp', () => {
+    describe('When transport receives http:// URL', () => {
+      it('Then rejects with NETWORK_ERROR (default is secure)', async () => {
+        // Arrange — proves createNodeContext defaults allowInsecureHttp to false
+        // (kills the `?? true` mutant that would silently allow plaintext HTTP).
+        const sut = createNodeContext({ workDir: '/tmp/tsgit-insecure-default' });
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut.transport.request({
+            url: 'http://example.invalid/resource',
+            method: 'GET',
+            headers: {},
+          });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data;
+        expect(data.code).toBe('NETWORK_ERROR');
+        expect(data.code === 'NETWORK_ERROR' && data.reason).toContain('HTTPS required');
+      });
+    });
   });
 });
 
 describe('resolveHomeDir', () => {
-  it('Given an empty string, When resolved, Then returns undefined', () => {
-    // Arrange
-    const sut = resolveHomeDir('');
+  describe('Given an empty string', () => {
+    describe('When resolved', () => {
+      it('Then returns undefined', () => {
+        // Arrange
+        const sut = resolveHomeDir('');
 
-    // Assert
-    expect(sut).toBeUndefined();
+        // Assert
+        expect(sut).toBeUndefined();
+      });
+    });
   });
 
-  it('Given a non-empty path, When resolved, Then returns the path verbatim', () => {
-    // Arrange
-    const sut = resolveHomeDir('/home/me');
+  describe('Given a non-empty path', () => {
+    describe('When resolved', () => {
+      it('Then returns the path verbatim', () => {
+        // Arrange
+        const sut = resolveHomeDir('/home/me');
 
-    // Assert
-    expect(sut).toBe('/home/me');
+        // Assert
+        expect(sut).toBe('/home/me');
+      });
+    });
   });
 });
 
 describe('buildLayout', () => {
-  it('Given homeDir=undefined, When built, Then layout has no homeDir key', () => {
-    // Arrange
-    const sut = buildLayout('/wt', '/wt/.git', false, undefined);
+  describe('Given homeDir=undefined', () => {
+    describe('When built', () => {
+      it('Then layout has no homeDir key', () => {
+        // Arrange
+        const sut = buildLayout('/wt', '/wt/.git', false, undefined);
 
-    // Assert
-    expect(sut).toEqual({ workDir: '/wt', gitDir: '/wt/.git', bare: false });
-    expect('homeDir' in sut).toBe(false);
+        // Assert
+        expect(sut).toEqual({ workDir: '/wt', gitDir: '/wt/.git', bare: false });
+        expect('homeDir' in sut).toBe(false);
+      });
+    });
   });
 
-  it('Given homeDir set, When built, Then layout.homeDir matches', () => {
-    // Arrange
-    const sut = buildLayout('/wt', '/wt/.git', true, '/home/me');
+  describe('Given homeDir set', () => {
+    describe('When built', () => {
+      it('Then layout.homeDir matches', () => {
+        // Arrange
+        const sut = buildLayout('/wt', '/wt/.git', true, '/home/me');
 
-    // Assert
-    expect(sut.homeDir).toBe('/home/me');
-    expect(sut.bare).toBe(true);
+        // Assert
+        expect(sut.homeDir).toBe('/home/me');
+        expect(sut.bare).toBe(true);
+      });
+    });
   });
 });

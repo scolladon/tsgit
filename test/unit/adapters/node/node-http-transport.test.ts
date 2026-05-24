@@ -78,229 +78,269 @@ describe('NodeHttpTransport', () => {
   });
 
   describe('node-specific behaviors', () => {
-    it('Given http:// URL with allowInsecureHttp=false, When requesting, Then throws NETWORK_ERROR', async () => {
-      // Arrange
-      const sut = new NodeHttpTransport();
+    describe('Given http:// URL with allowInsecureHttp=false', () => {
+      describe('When requesting', () => {
+        it('Then throws NETWORK_ERROR', async () => {
+          // Arrange
+          const sut = new NodeHttpTransport();
 
-      // Act
-      let caught: unknown;
-      try {
-        await sut.request({
-          url: `http://localhost:${port}/anything`,
-          method: 'GET',
-          headers: {},
-        });
-      } catch (err) {
-        caught = err;
-      }
+          // Act
+          let caught: unknown;
+          try {
+            await sut.request({
+              url: `http://localhost:${port}/anything`,
+              method: 'GET',
+              headers: {},
+            });
+          } catch (err) {
+            caught = err;
+          }
 
-      // Assert
-      expect(caught).toBeInstanceOf(TsgitError);
-      expect((caught as TsgitError).data.code).toBe('NETWORK_ERROR');
-    });
-
-    it('Given unreachable host, When requesting, Then NETWORK_ERROR reason is sanitized (no host/port leak)', async () => {
-      // Arrange — port 1 is ~always closed on localhost, guaranteed ECONNREFUSED without DNS
-      const sut = new NodeHttpTransport({ allowInsecureHttp: true });
-
-      // Act
-      let caught: unknown;
-      try {
-        await sut.request({
-          url: 'http://127.0.0.1:1/will-refuse',
-          method: 'GET',
-          headers: {},
-        });
-      } catch (err) {
-        caught = err;
-      }
-
-      // Assert
-      expect(caught).toBeInstanceOf(TsgitError);
-      const data = (caught as TsgitError).data;
-      expect(data.code).toBe('NETWORK_ERROR');
-      if (data.code === 'NETWORK_ERROR') {
-        // Sanitized: must not include path/port details from the URL
-        expect(data.reason).not.toContain('127.0.0.1');
-        expect(data.reason).not.toContain('1');
-      }
-    });
-
-    it('Given POST with body, When requesting, Then server receives the body', async () => {
-      // Arrange
-      const sut = new NodeHttpTransport({ allowInsecureHttp: true });
-      const received: Buffer[] = [];
-      handlers.set('POST /echo', (req, res) => {
-        req.on('data', (chunk: Buffer) => received.push(chunk));
-        req.on('end', () => {
-          res.statusCode = 204;
-          res.end();
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as TsgitError).data.code).toBe('NETWORK_ERROR');
         });
       });
-      const body = new Uint8Array([1, 2, 3, 4, 5]);
-
-      // Act
-      const response = await sut.request({
-        url: `http://localhost:${port}/echo`,
-        method: 'POST',
-        headers: { 'content-type': 'application/octet-stream' },
-        body,
-      });
-      // Drain response to ensure completion
-      const reader = response.body.getReader();
-      // eslint-disable-next-line no-constant-condition
-      while (true) {
-        const { done } = await reader.read();
-        if (done) break;
-      }
-
-      // Assert
-      expect(response.statusCode).toBe(204);
-      expect(Buffer.concat(received)).toEqual(Buffer.from(body));
-      handlers.clear();
     });
 
-    it('Given request with custom headers, When requesting, Then the server receives those exact headers', async () => {
-      // Arrange — proves headers from the request are forwarded. Kills the ObjectLiteral → {}
-      // mutant on the spread of req.headers into node's RequestOptions.
-      const sut = new NodeHttpTransport({ allowInsecureHttp: true });
-      let received: http.IncomingHttpHeaders | undefined;
-      handlers.set('GET /headers-in', (req, res) => {
-        received = req.headers;
-        res.statusCode = 204;
-        res.end();
-      });
+    describe('Given unreachable host', () => {
+      describe('When requesting', () => {
+        it('Then NETWORK_ERROR reason is sanitized (no host/port leak)', async () => {
+          // Arrange — port 1 is ~always closed on localhost, guaranteed ECONNREFUSED without DNS
+          const sut = new NodeHttpTransport({ allowInsecureHttp: true });
 
-      // Act
-      const response = await sut.request({
-        url: `http://localhost:${port}/headers-in`,
-        method: 'GET',
-        headers: { 'x-tsgit-custom': 'sentinel-value', authorization: 'Bearer abc123' },
-      });
-      const reader = response.body.getReader();
-      // eslint-disable-next-line no-constant-condition
-      while (true) {
-        const { done } = await reader.read();
-        if (done) break;
-      }
+          // Act
+          let caught: unknown;
+          try {
+            await sut.request({
+              url: 'http://127.0.0.1:1/will-refuse',
+              method: 'GET',
+              headers: {},
+            });
+          } catch (err) {
+            caught = err;
+          }
 
-      // Assert
-      expect(received).toBeDefined();
-      expect(received?.['x-tsgit-custom']).toBe('sentinel-value');
-      expect(received?.authorization).toBe('Bearer abc123');
-      handlers.clear();
-    });
-
-    it('Given response with multi-value header, When reading, Then array values joined with comma', async () => {
-      // Arrange
-      const sut = new NodeHttpTransport({ allowInsecureHttp: true });
-      handlers.set('GET /multi', (_req, res) => {
-        res.setHeader('set-cookie', ['a=1', 'b=2']);
-        res.statusCode = 200;
-        res.end();
-      });
-
-      // Act
-      const response = await sut.request({
-        url: `http://localhost:${port}/multi`,
-        method: 'GET',
-        headers: {},
-      });
-      const reader = response.body.getReader();
-      // eslint-disable-next-line no-constant-condition
-      while (true) {
-        const { done } = await reader.read();
-        if (done) break;
-      }
-
-      // Assert
-      expect(response.headers['set-cookie']).toContain('a=1');
-      expect(response.headers['set-cookie']).toContain('b=2');
-      handlers.clear();
-    });
-
-    it('Given unresolvable DNS name, When requesting, Then NETWORK_ERROR reason is "DNS resolution failed"', async () => {
-      // Arrange — RFC 2606 reserves .invalid for guaranteed DNS failures
-      const sut = new NodeHttpTransport();
-
-      // Act
-      let caught: unknown;
-      try {
-        await sut.request({
-          url: 'https://nonexistent-host-tsgit.invalid/path',
-          method: 'GET',
-          headers: {},
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data;
+          expect(data.code).toBe('NETWORK_ERROR');
+          if (data.code === 'NETWORK_ERROR') {
+            // Sanitized: must not include path/port details from the URL
+            expect(data.reason).not.toContain('127.0.0.1');
+            expect(data.reason).not.toContain('1');
+          }
         });
-      } catch (err) {
-        caught = err;
-      }
-
-      // Assert
-      expect(caught).toBeInstanceOf(TsgitError);
-      const data = (caught as TsgitError).data;
-      expect(data.code).toBe('NETWORK_ERROR');
-      if (data.code === 'NETWORK_ERROR') {
-        expect(data.reason).toBe('DNS resolution failed');
-        expect(data.reason).not.toContain('nonexistent-host-tsgit.invalid');
-      }
-    }, 15000);
-
-    it('Given request aborted via AbortSignal, When requesting, Then NETWORK_ERROR falls through default sanitizer branch', async () => {
-      // Arrange — pre-aborted signal hits the error handler immediately with a non-mapped code.
-      const sut = new NodeHttpTransport({ allowInsecureHttp: true });
-      handlers.set('GET /slow', (_req, res) => {
-        // Never respond quickly — we expect abort before this returns.
-        setTimeout(() => {
-          res.statusCode = 200;
-          res.end();
-        }, 5000);
       });
-      const controller = new AbortController();
-      controller.abort();
+    });
 
-      // Act
-      let caught: unknown;
-      try {
-        await sut.request({
-          url: `http://localhost:${port}/slow`,
-          method: 'GET',
-          headers: {},
-          signal: controller.signal,
+    describe('Given POST with body', () => {
+      describe('When requesting', () => {
+        it('Then server receives the body', async () => {
+          // Arrange
+          const sut = new NodeHttpTransport({ allowInsecureHttp: true });
+          const received: Buffer[] = [];
+          handlers.set('POST /echo', (req, res) => {
+            req.on('data', (chunk: Buffer) => received.push(chunk));
+            req.on('end', () => {
+              res.statusCode = 204;
+              res.end();
+            });
+          });
+          const body = new Uint8Array([1, 2, 3, 4, 5]);
+
+          // Act
+          const response = await sut.request({
+            url: `http://localhost:${port}/echo`,
+            method: 'POST',
+            headers: { 'content-type': 'application/octet-stream' },
+            body,
+          });
+          // Drain response to ensure completion
+          const reader = response.body.getReader();
+          // eslint-disable-next-line no-constant-condition
+          while (true) {
+            const { done } = await reader.read();
+            if (done) break;
+          }
+
+          // Assert
+          expect(response.statusCode).toBe(204);
+          expect(Buffer.concat(received)).toEqual(Buffer.from(body));
+          handlers.clear();
         });
-      } catch (err) {
-        caught = err;
-      }
-      handlers.clear();
+      });
+    });
 
-      // Assert
-      expect(caught).toBeInstanceOf(TsgitError);
-      expect((caught as TsgitError).data.code).toBe('NETWORK_ERROR');
+    describe('Given request with custom headers', () => {
+      describe('When requesting', () => {
+        it('Then the server receives those exact headers', async () => {
+          // Arrange — proves headers from the request are forwarded. Kills the ObjectLiteral → {}
+          // mutant on the spread of req.headers into node's RequestOptions.
+          const sut = new NodeHttpTransport({ allowInsecureHttp: true });
+          let received: http.IncomingHttpHeaders | undefined;
+          handlers.set('GET /headers-in', (req, res) => {
+            received = req.headers;
+            res.statusCode = 204;
+            res.end();
+          });
+
+          // Act
+          const response = await sut.request({
+            url: `http://localhost:${port}/headers-in`,
+            method: 'GET',
+            headers: { 'x-tsgit-custom': 'sentinel-value', authorization: 'Bearer abc123' },
+          });
+          const reader = response.body.getReader();
+          // eslint-disable-next-line no-constant-condition
+          while (true) {
+            const { done } = await reader.read();
+            if (done) break;
+          }
+
+          // Assert
+          expect(received).toBeDefined();
+          expect(received?.['x-tsgit-custom']).toBe('sentinel-value');
+          expect(received?.authorization).toBe('Bearer abc123');
+          handlers.clear();
+        });
+      });
+    });
+
+    describe('Given response with multi-value header', () => {
+      describe('When reading', () => {
+        it('Then array values joined with comma', async () => {
+          // Arrange
+          const sut = new NodeHttpTransport({ allowInsecureHttp: true });
+          handlers.set('GET /multi', (_req, res) => {
+            res.setHeader('set-cookie', ['a=1', 'b=2']);
+            res.statusCode = 200;
+            res.end();
+          });
+
+          // Act
+          const response = await sut.request({
+            url: `http://localhost:${port}/multi`,
+            method: 'GET',
+            headers: {},
+          });
+          const reader = response.body.getReader();
+          // eslint-disable-next-line no-constant-condition
+          while (true) {
+            const { done } = await reader.read();
+            if (done) break;
+          }
+
+          // Assert
+          expect(response.headers['set-cookie']).toContain('a=1');
+          expect(response.headers['set-cookie']).toContain('b=2');
+          handlers.clear();
+        });
+      });
+    });
+
+    describe('Given unresolvable DNS name', () => {
+      describe('When requesting', () => {
+        it('Then NETWORK_ERROR reason is "DNS resolution failed"', async () => {
+          // Arrange — RFC 2606 reserves .invalid for guaranteed DNS failures
+          const sut = new NodeHttpTransport();
+
+          // Act
+          let caught: unknown;
+          try {
+            await sut.request({
+              url: 'https://nonexistent-host-tsgit.invalid/path',
+              method: 'GET',
+              headers: {},
+            });
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data;
+          expect(data.code).toBe('NETWORK_ERROR');
+          if (data.code === 'NETWORK_ERROR') {
+            expect(data.reason).toBe('DNS resolution failed');
+            expect(data.reason).not.toContain('nonexistent-host-tsgit.invalid');
+          }
+        }, 15000);
+      });
+    });
+
+    describe('Given request aborted via AbortSignal', () => {
+      describe('When requesting', () => {
+        it('Then NETWORK_ERROR falls through default sanitizer branch', async () => {
+          // Arrange — pre-aborted signal hits the error handler immediately with a non-mapped code.
+          const sut = new NodeHttpTransport({ allowInsecureHttp: true });
+          handlers.set('GET /slow', (_req, res) => {
+            // Never respond quickly — we expect abort before this returns.
+            setTimeout(() => {
+              res.statusCode = 200;
+              res.end();
+            }, 5000);
+          });
+          const controller = new AbortController();
+          controller.abort();
+
+          // Act
+          let caught: unknown;
+          try {
+            await sut.request({
+              url: `http://localhost:${port}/slow`,
+              method: 'GET',
+              headers: {},
+              signal: controller.signal,
+            });
+          } catch (err) {
+            caught = err;
+          }
+          handlers.clear();
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as TsgitError).data.code).toBe('NETWORK_ERROR');
+        });
+      });
     });
 
     describe('normalizeHeaders — pure header-coercion helper', () => {
-      it('Given string value, When normalizing, Then key is lowercased and value preserved', () => {
-        // Arrange
-        const sut = normalizeHeaders({ 'Content-Type': 'text/plain' });
+      describe('Given string value', () => {
+        describe('When normalizing', () => {
+          it('Then key is lowercased and value preserved', () => {
+            // Arrange
+            const sut = normalizeHeaders({ 'Content-Type': 'text/plain' });
 
-        // Assert
-        expect(sut).toEqual({ 'content-type': 'text/plain' });
+            // Assert
+            expect(sut).toEqual({ 'content-type': 'text/plain' });
+          });
+        });
       });
 
-      it('Given array value, When normalizing, Then values are joined with comma space', () => {
-        // Arrange
-        const sut = normalizeHeaders({ 'Set-Cookie': ['a=1', 'b=2'] });
+      describe('Given array value', () => {
+        describe('When normalizing', () => {
+          it('Then values are joined with comma space', () => {
+            // Arrange
+            const sut = normalizeHeaders({ 'Set-Cookie': ['a=1', 'b=2'] });
 
-        // Assert
-        expect(sut).toEqual({ 'set-cookie': 'a=1, b=2' });
+            // Assert
+            expect(sut).toEqual({ 'set-cookie': 'a=1, b=2' });
+          });
+        });
       });
 
-      it('Given undefined value, When normalizing, Then the entry is omitted', () => {
-        // Arrange
-        const sut = normalizeHeaders({ 'x-skip': undefined, 'x-keep': 'yes' });
+      describe('Given undefined value', () => {
+        describe('When normalizing', () => {
+          it('Then the entry is omitted', () => {
+            // Arrange
+            const sut = normalizeHeaders({ 'x-skip': undefined, 'x-keep': 'yes' });
 
-        // Assert
-        expect(sut).toEqual({ 'x-keep': 'yes' });
-        expect(sut['x-skip']).toBeUndefined();
+            // Assert
+            expect(sut).toEqual({ 'x-keep': 'yes' });
+            expect(sut['x-skip']).toBeUndefined();
+          });
+        });
       });
     });
 
@@ -311,60 +351,80 @@ describe('NodeHttpTransport', () => {
         return err;
       };
 
-      it('Given ENOTFOUND errno, When sanitizing, Then returns "DNS resolution failed"', () => {
-        // Arrange
-        const sut = makeErrnoError('ENOTFOUND');
+      describe('Given ENOTFOUND errno', () => {
+        describe('When sanitizing', () => {
+          it('Then returns "DNS resolution failed"', () => {
+            // Arrange
+            const sut = makeErrnoError('ENOTFOUND');
 
-        // Act
-        const reason = sanitizeErrorReason(sut);
+            // Act
+            const reason = sanitizeErrorReason(sut);
 
-        // Assert
-        expect(reason).toBe('DNS resolution failed');
+            // Assert
+            expect(reason).toBe('DNS resolution failed');
+          });
+        });
       });
 
-      it('Given ECONNREFUSED errno, When sanitizing, Then returns "Connection refused"', () => {
-        // Arrange
-        const sut = makeErrnoError('ECONNREFUSED');
+      describe('Given ECONNREFUSED errno', () => {
+        describe('When sanitizing', () => {
+          it('Then returns "Connection refused"', () => {
+            // Arrange
+            const sut = makeErrnoError('ECONNREFUSED');
 
-        // Act
-        const reason = sanitizeErrorReason(sut);
+            // Act
+            const reason = sanitizeErrorReason(sut);
 
-        // Assert
-        expect(reason).toBe('Connection refused');
+            // Assert
+            expect(reason).toBe('Connection refused');
+          });
+        });
       });
 
-      it('Given ETIMEDOUT errno, When sanitizing, Then returns "Connection timed out"', () => {
-        // Arrange
-        const sut = makeErrnoError('ETIMEDOUT');
+      describe('Given ETIMEDOUT errno', () => {
+        describe('When sanitizing', () => {
+          it('Then returns "Connection timed out"', () => {
+            // Arrange
+            const sut = makeErrnoError('ETIMEDOUT');
 
-        // Act
-        const reason = sanitizeErrorReason(sut);
+            // Act
+            const reason = sanitizeErrorReason(sut);
 
-        // Assert
-        expect(reason).toBe('Connection timed out');
+            // Assert
+            expect(reason).toBe('Connection timed out');
+          });
+        });
       });
 
-      it('Given unknown errno code, When sanitizing, Then returns static "network error" (no errno leak)', () => {
-        // Arrange — unknown codes like EPROTO / ECONNRESET must not leak into the message.
-        const sut = makeErrnoError('ESOMETHINGELSE');
+      describe('Given unknown errno code', () => {
+        describe('When sanitizing', () => {
+          it('Then returns static "network error" (no errno leak)', () => {
+            // Arrange — unknown codes like EPROTO / ECONNRESET must not leak into the message.
+            const sut = makeErrnoError('ESOMETHINGELSE');
 
-        // Act
-        const reason = sanitizeErrorReason(sut);
+            // Act
+            const reason = sanitizeErrorReason(sut);
 
-        // Assert
-        expect(reason).toBe('network error');
-        expect(reason).not.toContain('ESOMETHINGELSE');
+            // Assert
+            expect(reason).toBe('network error');
+            expect(reason).not.toContain('ESOMETHINGELSE');
+          });
+        });
       });
 
-      it('Given error with no code, When sanitizing, Then returns fallback "network error"', () => {
-        // Arrange
-        const sut = makeErrnoError(undefined);
+      describe('Given error with no code', () => {
+        describe('When sanitizing', () => {
+          it('Then returns fallback "network error"', () => {
+            // Arrange
+            const sut = makeErrnoError(undefined);
 
-        // Act
-        const reason = sanitizeErrorReason(sut);
+            // Act
+            const reason = sanitizeErrorReason(sut);
 
-        // Assert
-        expect(reason).toBe('network error');
+            // Assert
+            expect(reason).toBe('network error');
+          });
+        });
       });
     });
   });
