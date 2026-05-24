@@ -13,11 +13,19 @@ import type {
   TierDefinition,
 } from '../../../test-pyramid/parse-manifest.js';
 
+interface GwtTitleOverrides {
+  readonly describeGiven?: string;
+  readonly describeWhen?: string;
+  readonly describeCombined?: string;
+  readonly itThen?: string;
+  readonly legacyItGwt?: string;
+}
+
 interface ManifestOverrides {
   readonly tiers?: ReadonlyArray<TierDefinition>;
   readonly overMockedRegex?: string;
   readonly underAssertedMin?: number;
-  readonly gwtTitleRegex?: string;
+  readonly gwtTitle?: GwtTitleOverrides;
   readonly aaaRequired?: ReadonlyArray<AaaMarker>;
   readonly sutBanned?: ReadonlyArray<string>;
   readonly bareClassRegex?: string;
@@ -50,7 +58,11 @@ const DEFAULT_TIERS: ReadonlyArray<TierDefinition> = [
 ];
 
 const DEFAULT_OVER_MOCKED_REGEX = '\\bvi\\.(mock|fn|spyOn|stubGlobal|stubEnv)\\s*\\(';
-const DEFAULT_GWT_REGEX = '^Given .+?, When .+?, Then .+$';
+const DEFAULT_GWT_DESCRIBE_GIVEN = '^Given .+$';
+const DEFAULT_GWT_DESCRIBE_WHEN = '^When .+$';
+const DEFAULT_GWT_DESCRIBE_COMBINED = '^Given .+?, When .+$';
+const DEFAULT_GWT_IT_THEN = '^Then .+$';
+const DEFAULT_GWT_LEGACY_IT = '^Given .+?, When .+?, Then .+$';
 const DEFAULT_BARE_CLASS_REGEX = '\\.toThrow(?:Error)?\\s*\\(\\s*([A-Z]\\w*)\\s*\\)';
 
 const DEFAULT_GATING: GatingConfig = {
@@ -65,7 +77,12 @@ const DEFAULT_GATING: GatingConfig = {
 
 export const makeManifest = (overrides: ManifestOverrides = {}): PyramidManifest => {
   const overMockedRegex = overrides.overMockedRegex ?? DEFAULT_OVER_MOCKED_REGEX;
-  const gwtRegex = overrides.gwtTitleRegex ?? DEFAULT_GWT_REGEX;
+  const gwt = overrides.gwtTitle ?? {};
+  const describeGiven = gwt.describeGiven ?? DEFAULT_GWT_DESCRIBE_GIVEN;
+  const describeWhen = gwt.describeWhen ?? DEFAULT_GWT_DESCRIBE_WHEN;
+  const describeCombined = gwt.describeCombined ?? DEFAULT_GWT_DESCRIBE_COMBINED;
+  const itThen = gwt.itThen ?? DEFAULT_GWT_IT_THEN;
+  const legacyItGwt = gwt.legacyItGwt ?? DEFAULT_GWT_LEGACY_IT;
   const bareClassRegex = overrides.bareClassRegex ?? DEFAULT_BARE_CLASS_REGEX;
 
   return {
@@ -83,8 +100,16 @@ export const makeManifest = (overrides: ManifestOverrides = {}): PyramidManifest
       },
       gwtTitle: {
         tier: 'unit',
-        regex: gwtRegex,
-        compiledRegex: new RegExp(gwtRegex, 'g'),
+        describeGiven,
+        describeWhen,
+        describeCombined,
+        itThen,
+        legacyItGwt,
+        describeGivenRe: new RegExp(describeGiven),
+        describeWhenRe: new RegExp(describeWhen),
+        describeCombinedRe: new RegExp(describeCombined),
+        itThenRe: new RegExp(itThen),
+        legacyItGwtRe: new RegExp(legacyItGwt),
       },
       aaaBody: {
         tier: 'unit',

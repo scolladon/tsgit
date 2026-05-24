@@ -35,7 +35,11 @@
     },
     "gwtTitle": {
       "tier": "unit",
-      "regex": "^Given .+?, When .+?, Then .+$"
+      "describeGiven": "^Given .+$",
+      "describeWhen": "^When .+$",
+      "describeCombined": "^Given .+?, When .+$",
+      "itThen": "^Then .+$",
+      "legacyItGwt": "^Given .+?, When .+?, Then .+$"
     },
     "aaaBody": {
       "tier": "unit",

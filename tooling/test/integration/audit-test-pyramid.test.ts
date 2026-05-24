@@ -46,7 +46,11 @@ const buildManifest = (overrides: ManifestOverrides = {}): Record<string, unknow
     underAssertedUnit: { tier: 'unit', minAssertionsPerTest: 1 },
     gwtTitle: {
       tier: 'unit',
-      regex: '^Given .+?, When .+?, Then .+$',
+      describeGiven: '^Given .+$',
+      describeWhen: '^When .+$',
+      describeCombined: '^Given .+?, When .+$',
+      itThen: '^Then .+$',
+      legacyItGwt: '^Given .+?, When .+?, Then .+$',
     },
     aaaBody: { tier: 'unit', required: ['Arrange', 'Assert'] },
     sutNaming: {
@@ -112,7 +116,7 @@ describe('tooling/audit-test-pyramid (integration)', () => {
     await mkdir(path.join(tmpRoot, 'test', 'browser'), { recursive: true });
     await writeFile(
       path.join(tmpRoot, 'test', 'unit', 'a.test.ts'),
-      "it('Given x, When y, Then z', () => {\n  // Arrange\n  const sut = 1;\n  // Assert\n  expect(sut).toBe(1);\n});\n",
+      "describe('Given x', () => {\n  describe('When y', () => {\n    it('Then z', () => {\n      // Arrange\n      const sut = 1;\n      // Assert\n      expect(sut).toBe(1);\n    });\n  });\n});\n",
     );
     await writeFile(
       path.join(tmpRoot, 'test', 'integration', 'b.test.ts'),
@@ -179,7 +183,7 @@ describe('tooling/audit-test-pyramid (integration)', () => {
     await mkdir(path.join(tmpRoot, 'test', 'unit'), { recursive: true });
     await writeFile(
       path.join(tmpRoot, 'test', 'unit', 'empty.test.ts'),
-      "it('Given x, When y, Then z', () => {\n  // Arrange\n  const sut = 1;\n  // Assert\n});\n",
+      "describe('Given x', () => {\n  describe('When y', () => {\n    it('Then z', () => {\n      // Arrange\n      const sut = 1;\n      // Assert\n    });\n  });\n});\n",
     );
 
     // Act
@@ -232,7 +236,7 @@ describe('tooling/audit-test-pyramid (integration)', () => {
     await mkdir(path.join(tmpRoot, 'test', 'unit'), { recursive: true });
     await writeFile(
       path.join(tmpRoot, 'test', 'unit', 'no-aaa.test.ts'),
-      "it('Given x, When y, Then z', () => { expect(1).toBe(1); });\n",
+      "describe('Given x', () => {\n  describe('When y', () => {\n    it('Then z', () => { expect(1).toBe(1); });\n  });\n});\n",
     );
 
     // Act
@@ -249,7 +253,7 @@ describe('tooling/audit-test-pyramid (integration)', () => {
     await mkdir(path.join(tmpRoot, 'test', 'unit'), { recursive: true });
     await writeFile(
       path.join(tmpRoot, 'test', 'unit', 'subject.test.ts'),
-      "it('Given x, When y, Then z', () => {\n  // Arrange\n  const subject = 1;\n  // Assert\n  expect(subject).toBe(1);\n});\n",
+      "describe('Given x', () => {\n  describe('When y', () => {\n    it('Then z', () => {\n      // Arrange\n      const subject = 1;\n      // Assert\n      expect(subject).toBe(1);\n    });\n  });\n});\n",
     );
 
     // Act
@@ -266,7 +270,7 @@ describe('tooling/audit-test-pyramid (integration)', () => {
     await mkdir(path.join(tmpRoot, 'test', 'unit'), { recursive: true });
     await writeFile(
       path.join(tmpRoot, 'test', 'unit', 'throws.test.ts'),
-      "it('Given x, When y, Then z', () => {\n  // Arrange\n  const sut = () => { throw new Error('boom'); };\n  // Assert\n  expect(sut).toThrow(TsgitError);\n});\n",
+      "describe('Given x', () => {\n  describe('When y', () => {\n    it('Then z', () => {\n      // Arrange\n      const sut = () => { throw new Error('boom'); };\n      // Assert\n      expect(sut).toThrow(TsgitError);\n    });\n  });\n});\n",
     );
 
     // Act
@@ -283,7 +287,7 @@ describe('tooling/audit-test-pyramid (integration)', () => {
     await mkdir(path.join(tmpRoot, 'test', 'unit'), { recursive: true });
     await writeFile(
       path.join(tmpRoot, 'test', 'unit', 'empty.test.ts'),
-      "it('Given x, When y, Then z', () => {\n  // Arrange\n  const sut = 1;\n  // Assert\n});\n",
+      "describe('Given x', () => {\n  describe('When y', () => {\n    it('Then z', () => {\n      // Arrange\n      const sut = 1;\n      // Assert\n    });\n  });\n});\n",
     );
 
     // Act
@@ -300,7 +304,7 @@ describe('tooling/audit-test-pyramid (integration)', () => {
     await mkdir(path.join(tmpRoot, 'test', 'unit'), { recursive: true });
     await writeFile(
       path.join(tmpRoot, 'test', 'unit', 'empty-aaa.test.ts'),
-      "it('Given x, When y, Then z', () => {\n  // Arrange\n  // Assert\n  expect(1).toBe(1);\n});\n",
+      "describe('Given x', () => {\n  describe('When y', () => {\n    it('Then z', () => {\n      // Arrange\n      // Assert\n      expect(1).toBe(1);\n    });\n  });\n});\n",
     );
 
     // Act
@@ -322,7 +326,7 @@ describe('tooling/audit-test-pyramid (integration)', () => {
     await mkdir(path.join(tmpRoot, 'test', 'unit'), { recursive: true });
     await writeFile(
       path.join(tmpRoot, 'test', 'unit', 'empty-aaa.test.ts'),
-      "it('Given x, When y, Then z', () => {\n  // Arrange\n  // Assert\n  expect(1).toBe(1);\n});\n",
+      "describe('Given x', () => {\n  describe('When y', () => {\n    it('Then z', () => {\n      // Arrange\n      // Assert\n      expect(1).toBe(1);\n    });\n  });\n});\n",
     );
 
     // Act
@@ -339,7 +343,7 @@ describe('tooling/audit-test-pyramid (integration)', () => {
     await mkdir(path.join(tmpRoot, 'test', 'unit'), { recursive: true });
     await writeFile(
       path.join(tmpRoot, 'test', 'unit', 'empty-aaa.test.ts'),
-      "it('Given x, When y, Then z', () => {\n  // Arrange\n  // Assert\n  expect(1).toBe(1);\n});\n",
+      "describe('Given x', () => {\n  describe('When y', () => {\n    it('Then z', () => {\n      // Arrange\n      // Assert\n      expect(1).toBe(1);\n    });\n  });\n});\n",
     );
 
     // Act

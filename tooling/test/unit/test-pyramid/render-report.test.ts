@@ -61,7 +61,8 @@ const outcomeWithFindings: AuditOutcome = {
         path: 'test/unit/c.test.ts',
         line: 9,
         title: 'no gwt here',
-        reason: 'malformed',
+        ancestors: ['When op runs', 'Given a sut'],
+        reason: 'then-missing',
       },
     ],
     missingAaa: [
@@ -280,13 +281,14 @@ describe('renderMarkdown', () => {
     expect(sut).toContain('### Empty AAA sections');
   });
 
-  it('Given a bad-title finding, When rendered, Then the row names the reason and the title', () => {
+  it('Given a bad-title finding, When rendered, Then the row names the reason, the title, and the GWT ancestry', () => {
     // Arrange + Act
     const sut = renderMarkdown(outcomeWithFindings);
 
     // Assert
     expect(sut).toContain('test/unit/c.test.ts:9');
-    expect(sut).toContain('malformed: no gwt here');
+    expect(sut).toContain('then-missing: no gwt here');
+    expect(sut).toContain('[under: When op runs < Given a sut]');
   });
 
   it('Given a missing-AAA finding, When rendered, Then the row lists the missing markers', () => {

@@ -4,159 +4,302 @@ import { makeManifest } from './manifest-fixture.js';
 
 const MANIFEST = makeManifest();
 const file = (path: string, source: string) => ({ path, source });
+const at = (path: string, source: string) => detectBadTitle(MANIFEST, [file(path, source)]);
 
-describe('detectBadTitle', () => {
-  it('Given a unit it() with a GWT title, When scanned, Then no finding', () => {
-    // Arrange
-    const source = `\nit('Given x, When y, Then z', () => { expect(1).toBe(1); });\n`;
+describe('Given a 3-level describe/describe/it tree', () => {
+  describe('When the leaf is Then-only and ancestors are Given+When', () => {
+    it('Then no finding is emitted', () => {
+      // Arrange
+      const source =
+        `describe('Given a sut', () => {\n` +
+        `  describe('When op runs', () => {\n` +
+        `    it('Then it returns x', () => { expect(1).toBe(1); });\n` +
+        `  });\n` +
+        `});`;
 
-    // Act
-    const sut = detectBadTitle(MANIFEST, [file('test/unit/a.test.ts', source)]);
+      // Act
+      const sut = at('test/unit/a.test.ts', source);
 
-    // Assert
-    expect(sut).toEqual([]);
+      // Assert
+      expect(sut).toEqual([]);
+    });
   });
+});
 
-  it('Given a unit it() with a title missing "When", When scanned, Then a malformed finding', () => {
-    // Arrange
-    const source = `\nit('Given a state, Then it works', () => { expect(1).toBe(1); });\n`;
+describe('Given a 2-level describe with combined Given+When', () => {
+  describe('When the leaf is Then-only', () => {
+    it('Then no finding is emitted', () => {
+      // Arrange
+      const source =
+        `describe('Given a sut, When op runs', () => {\n` +
+        `  it('Then it returns x', () => { expect(1).toBe(1); });\n` +
+        `});`;
 
-    // Act
-    const sut = detectBadTitle(MANIFEST, [file('test/unit/a.test.ts', source)]);
+      // Act
+      const sut = at('test/unit/a.test.ts', source);
 
-    // Assert
-    expect(sut).toEqual([
-      {
-        path: 'test/unit/a.test.ts',
-        line: 2,
-        title: 'Given a state, Then it works',
-        reason: 'malformed',
-      },
-    ]);
+      // Assert
+      expect(sut).toEqual([]);
+    });
   });
+});
 
-  it('Given a unit it() with a title missing "Then", When scanned, Then a malformed finding', () => {
-    // Arrange
-    const source = `\nit('Given x, When y', () => { expect(1).toBe(1); });\n`;
+describe('Given an outer non-GWT describe wrapping a 3-level GWT group', () => {
+  describe('When the audit runs', () => {
+    it('Then the non-GWT describe is transparent and no finding is emitted', () => {
+      // Arrange
+      const source =
+        `describe('moduleName', () => {\n` +
+        `  describe('Given a sut', () => {\n` +
+        `    describe('When op runs', () => {\n` +
+        `      it('Then it returns x', () => { expect(1).toBe(1); });\n` +
+        `    });\n` +
+        `  });\n` +
+        `});`;
 
-    // Act
-    const sut = detectBadTitle(MANIFEST, [file('test/unit/a.test.ts', source)]);
+      // Act
+      const sut = at('test/unit/a.test.ts', source);
 
-    // Assert
-    expect(sut).toHaveLength(1);
-    expect(sut[0]?.reason).toBe('malformed');
+      // Assert
+      expect(sut).toEqual([]);
+    });
   });
+});
 
-  it('Given a unit it() with a lowercase "given" prefix, When scanned, Then a malformed finding (case-sensitive)', () => {
-    // Arrange
-    const source = `\nit('given x, when y, then z', () => { expect(1).toBe(1); });\n`;
+describe('Given an it() with no literal title', () => {
+  describe('When scanned', () => {
+    it('Then the block is dropped by scanItBlocks and produces no finding', () => {
+      // Arrange — `it(() => {…})` has no title; scanner skips it.
+      const source = `it(() => { expect(1).toBe(1); });`;
 
-    // Act
-    const sut = detectBadTitle(MANIFEST, [file('test/unit/a.test.ts', source)]);
+      // Act
+      const sut = at('test/unit/a.test.ts', source);
 
-    // Assert
-    expect(sut).toHaveLength(1);
-    expect(sut[0]?.reason).toBe('malformed');
+      // Assert
+      expect(sut).toEqual([]);
+    });
   });
+});
 
-  it('Given a unit it() without a literal title (arrow-only), When scanned, Then no finding (block dropped by scanner)', () => {
-    // Arrange — title-less openers are dropped by scanItBlocks itself; the
-    // detector never sees them. Documented behaviour.
-    const source = `\nit(() => { expect(1).toBe(1); });\n`;
+describe("Given an it() with an empty title ''", () => {
+  describe('When scanned', () => {
+    it('Then a missing finding is emitted', () => {
+      // Arrange
+      const source = `it('', () => { expect(1).toBe(1); });`;
 
-    // Act
-    const sut = detectBadTitle(MANIFEST, [file('test/unit/a.test.ts', source)]);
+      // Act
+      const sut = at('test/unit/a.test.ts', source);
 
-    // Assert
-    expect(sut).toEqual([]);
+      // Assert
+      expect(sut).toEqual([
+        {
+          path: 'test/unit/a.test.ts',
+          line: 1,
+          title: '<missing>',
+          ancestors: [],
+          reason: 'missing',
+        },
+      ]);
+    });
   });
+});
 
-  it("Given a unit it() with an empty title string '', When scanned, Then a missing finding is emitted", () => {
-    // Arrange
-    const source = `\nit('', () => { expect(1).toBe(1); });\n`;
+describe('Given a Then-only leaf with no GWT ancestor', () => {
+  describe('When scanned', () => {
+    it('Then a when-missing finding is emitted', () => {
+      // Arrange
+      const source = `it('Then it returns x', () => { expect(1).toBe(1); });`;
 
-    // Act
-    const sut = detectBadTitle(MANIFEST, [file('test/unit/a.test.ts', source)]);
+      // Act
+      const sut = at('test/unit/a.test.ts', source);
 
-    // Assert
-    expect(sut).toEqual([
-      { path: 'test/unit/a.test.ts', line: 2, title: '<missing>', reason: 'missing' },
-    ]);
+      // Assert
+      expect(sut).toHaveLength(1);
+      expect(sut[0]?.reason).toBe('when-missing');
+    });
   });
+});
 
-  it('Given an it.each([...])(template, body), When the template matches GWT, Then no finding', () => {
-    // Arrange
-    const source = `it.each([1])('Given n=%s, When called, Then ok', (n) => { expect(n).toBe(1); });`;
+describe('Given a Then-only leaf under describe("When ...") only', () => {
+  describe('When scanned', () => {
+    it('Then a given-missing finding is emitted', () => {
+      // Arrange
+      const source =
+        `describe('When op runs', () => {\n` +
+        `  it('Then it returns x', () => { expect(1).toBe(1); });\n` +
+        `});`;
 
-    // Act
-    const sut = detectBadTitle(MANIFEST, [file('test/unit/a.test.ts', source)]);
+      // Act
+      const sut = at('test/unit/a.test.ts', source);
 
-    // Assert
-    expect(sut).toEqual([]);
+      // Assert
+      expect(sut).toHaveLength(1);
+      expect(sut[0]?.reason).toBe('given-missing');
+    });
   });
+});
 
-  it('Given an it.skip block with a non-GWT title, When scanned, Then a malformed finding (skip is still validated)', () => {
-    // Arrange
-    const source = `it.skip('TODO', () => {});`;
+describe('Given a Then-only leaf under describe("Given ...") only', () => {
+  describe('When scanned', () => {
+    it('Then a when-missing finding is emitted', () => {
+      // Arrange
+      const source =
+        `describe('Given a sut', () => {\n` +
+        `  it('Then it returns x', () => { expect(1).toBe(1); });\n` +
+        `});`;
 
-    // Act
-    const sut = detectBadTitle(MANIFEST, [file('test/unit/a.test.ts', source)]);
+      // Act
+      const sut = at('test/unit/a.test.ts', source);
 
-    // Assert
-    expect(sut).toHaveLength(1);
-    expect(sut[0]?.reason).toBe('malformed');
-    expect(sut[0]?.title).toBe('TODO');
+      // Assert
+      expect(sut).toHaveLength(1);
+      expect(sut[0]?.reason).toBe('when-missing');
+    });
   });
+});
 
-  it('Given an integration test file with a non-GWT title, When scanned, Then no finding (heuristic scoped to unit)', () => {
-    // Arrange
-    const source = `it('no GWT here', () => { expect(1).toBe(1); });`;
+describe('Given a reversed-nesting describe("When") > describe("Given") > it("Then")', () => {
+  describe('When scanned', () => {
+    it('Then a nested-gwt finding is emitted', () => {
+      // Arrange — closest ancestor is Given, outer is When; rule wants the inverse.
+      const source =
+        `describe('When op runs', () => {\n` +
+        `  describe('Given a sut', () => {\n` +
+        `    it('Then it returns x', () => { expect(1).toBe(1); });\n` +
+        `  });\n` +
+        `});`;
 
-    // Act
-    const sut = detectBadTitle(MANIFEST, [file('test/integration/a.test.ts', source)]);
+      // Act
+      const sut = at('test/unit/a.test.ts', source);
 
-    // Assert
-    expect(sut).toEqual([]);
+      // Assert
+      expect(sut).toHaveLength(1);
+      expect(sut[0]?.reason).toBe('nested-gwt');
+    });
   });
+});
 
-  it('Given a multi-line opener with a malformed title on the second line, When scanned, Then one malformed finding is emitted', () => {
-    // Arrange
-    const source = `\nit(\n  'plain old title',\n  () => { expect(1).toBe(1); },\n);\n`;
+describe('Given a triple-nested GWT path with a duplicated clause', () => {
+  describe('When scanned', () => {
+    it('Then a nested-gwt finding is emitted', () => {
+      // Arrange — two Givens stacked.
+      const source =
+        `describe('Given a parent', () => {\n` +
+        `  describe('Given a sut', () => {\n` +
+        `    describe('When op runs', () => {\n` +
+        `      it('Then it returns x', () => { expect(1).toBe(1); });\n` +
+        `    });\n` +
+        `  });\n` +
+        `});`;
 
-    // Act
-    const sut = detectBadTitle(MANIFEST, [file('test/unit/a.test.ts', source)]);
+      // Act
+      const sut = at('test/unit/a.test.ts', source);
 
-    // Assert
-    expect(sut).toHaveLength(1);
-    expect(sut[0]?.line).toBe(2);
-    expect(sut[0]?.title).toBe('plain old title');
+      // Assert
+      expect(sut).toHaveLength(1);
+      expect(sut[0]?.reason).toBe('nested-gwt');
+    });
   });
+});
 
-  it('Given multiple files with findings, When scanned, Then findings are sorted by path then by line', () => {
-    // Arrange
-    const sourceA = `it('bad', () => { expect(1).toBe(1); });`;
-    const sourceB = `it('also bad', () => { expect(1).toBe(1); });\nit('Given a, When b, Then c', () => { expect(1).toBe(1); });\nit('third bad', () => { expect(1).toBe(1); });`;
+describe('Given a legacy it("Given X, When Y, Then Z") leaf', () => {
+  describe('When scanned', () => {
+    it('Then a legacy-it-gwt finding is emitted (no ancestors needed)', () => {
+      // Arrange
+      const source = `it('Given a, When b, Then c', () => { expect(1).toBe(1); });`;
 
-    // Act
-    const sut = detectBadTitle(MANIFEST, [
-      file('test/unit/b.test.ts', sourceB),
-      file('test/unit/a.test.ts', sourceA),
-    ]);
+      // Act
+      const sut = at('test/unit/a.test.ts', source);
 
-    // Assert
-    expect(sut.map((f) => f.path)).toEqual([
-      'test/unit/a.test.ts',
-      'test/unit/b.test.ts',
-      'test/unit/b.test.ts',
-    ]);
-    expect(sut[2]?.line).toBeGreaterThan(sut[1]?.line ?? 0);
+      // Assert
+      expect(sut).toHaveLength(1);
+      expect(sut[0]?.reason).toBe('legacy-it-gwt');
+      expect(sut[0]?.ancestors).toEqual([]);
+    });
   });
+});
 
-  it('Given an empty list of files, When scanned, Then an empty array is returned', () => {
-    // Arrange + Act
-    const sut = detectBadTitle(MANIFEST, []);
+describe('Given a non-GWT it("does X") leaf', () => {
+  describe('When scanned', () => {
+    it('Then a then-missing finding is emitted', () => {
+      // Arrange
+      const source = `it('does something', () => { expect(1).toBe(1); });`;
 
-    // Assert
-    expect(sut).toEqual([]);
+      // Act
+      const sut = at('test/unit/a.test.ts', source);
+
+      // Assert
+      expect(sut).toHaveLength(1);
+      expect(sut[0]?.reason).toBe('then-missing');
+    });
+  });
+});
+
+describe('Given a .skip leaf with a non-GWT title', () => {
+  describe('When scanned', () => {
+    it('Then the skipped block is still validated and a finding is emitted', () => {
+      // Arrange
+      const source = `it.skip('TODO', () => {});`;
+
+      // Act
+      const sut = at('test/unit/a.test.ts', source);
+
+      // Assert
+      expect(sut).toHaveLength(1);
+      expect(sut[0]?.reason).toBe('then-missing');
+    });
+  });
+});
+
+describe('Given an integration test file with a non-GWT leaf', () => {
+  describe('When scanned', () => {
+    it('Then no finding is emitted (heuristic is scoped to the unit tier)', () => {
+      // Arrange
+      const source = `it('plain title', () => { expect(1).toBe(1); });`;
+
+      // Act
+      const sut = at('test/integration/a.test.ts', source);
+
+      // Assert
+      expect(sut).toEqual([]);
+    });
+  });
+});
+
+describe('Given multiple files with findings', () => {
+  describe('When scanned together', () => {
+    it('Then findings are sorted by path and then by line', () => {
+      // Arrange
+      const sourceA = `it('plain', () => { expect(1).toBe(1); });`;
+      const sourceB =
+        `it('Then x', () => { expect(1).toBe(1); });\n` +
+        `it('Given a, When b, Then c', () => { expect(1).toBe(1); });`;
+
+      // Act
+      const sut = detectBadTitle(MANIFEST, [
+        file('test/unit/b.test.ts', sourceB),
+        file('test/unit/a.test.ts', sourceA),
+      ]);
+
+      // Assert
+      expect(sut.map((f) => f.path)).toEqual([
+        'test/unit/a.test.ts',
+        'test/unit/b.test.ts',
+        'test/unit/b.test.ts',
+      ]);
+      expect(sut[2]?.line).toBeGreaterThan(sut[1]?.line ?? 0);
+    });
+  });
+});
+
+describe('Given an empty list of files', () => {
+  describe('When scanned', () => {
+    it('Then an empty array is returned', () => {
+      // Arrange + Act
+      const sut = detectBadTitle(MANIFEST, []);
+
+      // Assert
+      expect(sut).toEqual([]);
+    });
   });
 });

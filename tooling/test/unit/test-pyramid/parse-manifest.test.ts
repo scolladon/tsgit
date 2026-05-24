@@ -37,7 +37,11 @@ const VALID_MANIFEST = {
     },
     gwtTitle: {
       tier: 'unit',
-      regex: '^Given .+?, When .+?, Then .+$',
+      describeGiven: '^Given .+$',
+      describeWhen: '^When .+$',
+      describeCombined: '^Given .+?, When .+$',
+      itThen: '^Then .+$',
+      legacyItGwt: '^Given .+?, When .+?, Then .+$',
     },
     aaaBody: {
       tier: 'unit',
@@ -764,7 +768,7 @@ describe('parseManifest', () => {
   });
 
   describe('expressiveness heuristics — happy path', () => {
-    it('Given the gwtTitle heuristic, When parsed, Then the compiled RegExp matches a GWT title', () => {
+    it('Given the gwtTitle heuristic, When parsed, Then all five compiled RegExps match their respective shapes', () => {
       // Arrange
       const raw = JSON.stringify(VALID_MANIFEST);
 
@@ -772,11 +776,12 @@ describe('parseManifest', () => {
       const sut = parseManifest(raw);
 
       // Assert
-      const re = sut.heuristics.gwtTitle.compiledRegex;
-      expect(re).toBeInstanceOf(RegExp);
-      const fresh = new RegExp(sut.heuristics.gwtTitle.regex);
-      expect(fresh.test('Given a, When b, Then c')).toBe(true);
-      expect(fresh.test('it works')).toBe(false);
+      expect(sut.heuristics.gwtTitle.describeGivenRe.test('Given a thing')).toBe(true);
+      expect(sut.heuristics.gwtTitle.describeWhenRe.test('When something')).toBe(true);
+      expect(sut.heuristics.gwtTitle.describeCombinedRe.test('Given a, When b')).toBe(true);
+      expect(sut.heuristics.gwtTitle.itThenRe.test('Then z happens')).toBe(true);
+      expect(sut.heuristics.gwtTitle.legacyItGwtRe.test('Given a, When b, Then c')).toBe(true);
+      expect(sut.heuristics.gwtTitle.describeGivenRe.test('it works')).toBe(false);
     });
 
     it('Given the aaaBody heuristic, When parsed, Then required is the preserved array', () => {
@@ -854,10 +859,17 @@ describe('parseManifest', () => {
       expect(caught?.message).toContain('gwtTitle must be an object');
     });
 
-    it('Given gwtTitle with an invalid regex, When parsed, Then throws "heuristic regex invalid (gwtTitle)"', () => {
+    it('Given gwtTitle with an invalid describeGiven regex, When parsed, Then throws naming that field', () => {
       // Arrange
       const raw = JSON.stringify(
-        replaceHeuristic(VALID_MANIFEST, 'gwtTitle', { tier: 'unit', regex: '[' }),
+        replaceHeuristic(VALID_MANIFEST, 'gwtTitle', {
+          tier: 'unit',
+          describeGiven: '[',
+          describeWhen: '^When .+$',
+          describeCombined: '^Given .+?, When .+$',
+          itThen: '^Then .+$',
+          legacyItGwt: '^Given .+?, When .+?, Then .+$',
+        }),
       );
 
       // Act
@@ -869,7 +881,32 @@ describe('parseManifest', () => {
       }
 
       // Assert
-      expect(caught?.message).toContain('heuristic regex invalid (gwtTitle)');
+      expect(caught?.message).toContain('heuristic regex invalid (gwtTitle.describeGiven)');
+    });
+
+    it('Given gwtTitle missing the itThen field, When parsed, Then throws naming that field', () => {
+      // Arrange
+      const raw = JSON.stringify(
+        replaceHeuristic(VALID_MANIFEST, 'gwtTitle', {
+          tier: 'unit',
+          describeGiven: '^Given .+$',
+          describeWhen: '^When .+$',
+          describeCombined: '^Given .+?, When .+$',
+          // itThen omitted
+          legacyItGwt: '^Given .+?, When .+?, Then .+$',
+        }),
+      );
+
+      // Act
+      let caught: Error | undefined;
+      try {
+        parseManifest(raw);
+      } catch (error) {
+        caught = error instanceof Error ? error : undefined;
+      }
+
+      // Assert
+      expect(caught?.message).toContain('gwtTitle.itThen');
     });
 
     it('Given aaaBody with required containing an unknown marker, When parsed, Then throws naming the bad marker', () => {
