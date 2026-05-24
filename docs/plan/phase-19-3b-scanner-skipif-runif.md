@@ -79,8 +79,8 @@ If the audit reports findings, they are pre-existing or genuine — investigate 
 Look at the two scanner files side by side. The change in step 2 leaves a near-duplicate `TWO_STAGE_MODIFIERS` constant in each file. Do **not** extract a shared module:
 
 - The two scanners already share `findMatchingClose`, `extractTitle`, `lineAt`, `isWhitespace` as copy-paste duplicates (deliberate, per the existing comment in `scan-describe-blocks.ts`: "Mirrors `scanItBlocks` (paren/brace walker, same skip modifiers, …)").
-- Centralising the constant alone would be inconsistent with the rest of the file's deliberate duplication policy.
-- Centralising the whole shared infrastructure is out of scope for 19.3b — that's a separate refactor.
+- Centralizing the constant alone would be inconsistent with the rest of the file's deliberate duplication policy.
+- Centralizing the whole shared infrastructure is out of scope for 19.3b — that's a separate refactor.
 
 Confirm both files compile and pass tests; nothing else moves.
 
