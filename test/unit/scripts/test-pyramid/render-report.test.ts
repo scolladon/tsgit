@@ -39,6 +39,10 @@ const okOutcome: AuditOutcome = {
   findings: {
     overMocked: [],
     underAsserted: [],
+    badTitle: [],
+    missingAaa: [],
+    bannedSut: [],
+    bareClassThrow: [],
   },
 };
 
@@ -49,6 +53,38 @@ const outcomeWithFindings: AuditOutcome = {
     underAsserted: [
       { path: 'test/unit/a.test.ts', line: 42, title: 'does nothing' },
       { path: 'test/unit/b.test.ts', line: 7, title: 'no assert' },
+    ],
+    badTitle: [
+      {
+        path: 'test/unit/c.test.ts',
+        line: 9,
+        title: 'no gwt here',
+        reason: 'malformed',
+      },
+    ],
+    missingAaa: [
+      {
+        path: 'test/unit/d.test.ts',
+        line: 11,
+        title: 'Given x, When y, Then z',
+        missing: ['Arrange'],
+      },
+    ],
+    bannedSut: [
+      {
+        path: 'test/unit/e.test.ts',
+        line: 13,
+        title: 'Given x, When y, Then z',
+        alias: 'subject',
+      },
+    ],
+    bareClassThrow: [
+      {
+        path: 'test/unit/f.test.ts',
+        line: 15,
+        title: 'Given x, When y, Then z',
+        identifier: 'TsgitError',
+      },
     ],
   },
 };
@@ -137,7 +173,14 @@ describe('renderMarkdown', () => {
         unclassified: [],
         totalClassified: 0,
       },
-      findings: { overMocked: [], underAsserted: [] },
+      findings: {
+        overMocked: [],
+        underAsserted: [],
+        badTitle: [],
+        missingAaa: [],
+        bannedSut: [],
+        bareClassThrow: [],
+      },
     };
 
     // Act
@@ -211,5 +254,63 @@ describe('renderMarkdown', () => {
     // Assert
     expect(sut.endsWith('\n')).toBe(true);
     expect(sut.endsWith('\n\n')).toBe(false);
+  });
+
+  it('Given findings for each new heuristic, When rendered, Then markdown contains a section header per heuristic', () => {
+    // Arrange + Act
+    const sut = renderMarkdown(outcomeWithFindings);
+
+    // Assert
+    expect(sut).toContain('### Non-GWT unit test titles');
+    expect(sut).toContain('### Missing AAA body comments');
+    expect(sut).toContain('### Banned SUT name synonyms');
+    expect(sut).toContain('### Bare-class `.toThrow(Class)` calls');
+  });
+
+  it('Given a bad-title finding, When rendered, Then the row names the reason and the title', () => {
+    // Arrange + Act
+    const sut = renderMarkdown(outcomeWithFindings);
+
+    // Assert
+    expect(sut).toContain('test/unit/c.test.ts:9');
+    expect(sut).toContain('malformed: no gwt here');
+  });
+
+  it('Given a missing-AAA finding, When rendered, Then the row lists the missing markers', () => {
+    // Arrange + Act
+    const sut = renderMarkdown(outcomeWithFindings);
+
+    // Assert
+    expect(sut).toContain('test/unit/d.test.ts:11');
+    expect(sut).toContain('missing Arrange');
+  });
+
+  it('Given a banned-sut finding, When rendered, Then the row names the alias', () => {
+    // Arrange + Act
+    const sut = renderMarkdown(outcomeWithFindings);
+
+    // Assert
+    expect(sut).toContain('test/unit/e.test.ts:13');
+    expect(sut).toContain('`subject` should be `sut`');
+  });
+
+  it('Given a bare-class throw finding, When rendered, Then the row names the identifier', () => {
+    // Arrange + Act
+    const sut = renderMarkdown(outcomeWithFindings);
+
+    // Assert
+    expect(sut).toContain('test/unit/f.test.ts:15');
+    expect(sut).toContain('`.toThrow(TsgitError)`');
+  });
+
+  it('Given an outcome with empty new-finding arrays, When rendered, Then each new section renders as "_none_"', () => {
+    // Arrange + Act
+    const sut = renderMarkdown(okOutcome);
+
+    // Assert
+    expect(sut).toMatch(/Non-GWT[\s\S]*_none_/);
+    expect(sut).toMatch(/Missing AAA[\s\S]*_none_/);
+    expect(sut).toMatch(/Banned SUT[\s\S]*_none_/);
+    expect(sut).toMatch(/Bare-class[\s\S]*_none_/);
   });
 });

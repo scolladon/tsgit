@@ -3,16 +3,26 @@
  *
  * Two emitters: machine-readable JSON and human-readable Markdown. Both pure.
  */
+import type { BadTitleFinding } from './detect-bad-title.ts';
+import type { BannedSutFinding } from './detect-banned-sut-name.ts';
+import type { BareClassThrowFinding } from './detect-bare-class-throw.ts';
+import type { MissingAaaFinding } from './detect-missing-aaa.ts';
 import type { OverMockedFinding } from './detect-over-mocked.ts';
 import type { UnderAssertedFinding } from './detect-under-asserted.ts';
 import type { TallyResult, TierStatus, TierTally } from './count-tier-files.ts';
 
+export interface AuditFindings {
+  readonly overMocked: ReadonlyArray<OverMockedFinding>;
+  readonly underAsserted: ReadonlyArray<UnderAssertedFinding>;
+  readonly badTitle: ReadonlyArray<BadTitleFinding>;
+  readonly missingAaa: ReadonlyArray<MissingAaaFinding>;
+  readonly bannedSut: ReadonlyArray<BannedSutFinding>;
+  readonly bareClassThrow: ReadonlyArray<BareClassThrowFinding>;
+}
+
 export interface AuditOutcome {
   readonly tally: TallyResult;
-  readonly findings: {
-    readonly overMocked: ReadonlyArray<OverMockedFinding>;
-    readonly underAsserted: ReadonlyArray<UnderAssertedFinding>;
-  };
+  readonly findings: AuditFindings;
 }
 
 const STATUS_BADGE: Record<TierStatus, string> = {
@@ -48,12 +58,47 @@ const renderTierTable = (tally: TallyResult): string => {
 
 const renderOverMocked = (findings: ReadonlyArray<OverMockedFinding>): string => {
   if (findings.length === 0) return '_none_';
-  return findings.map((f) => `- \`${f.path}\` — ${f.hits} hit${f.hits === 1 ? '' : 's'}`).join('\n');
+  return findings
+    .map((f) => `- \`${f.path}\` — ${f.hits} hit${f.hits === 1 ? '' : 's'}`)
+    .join('\n');
 };
 
 const renderUnderAsserted = (findings: ReadonlyArray<UnderAssertedFinding>): string => {
   if (findings.length === 0) return '_none_';
   return findings.map((f) => `- \`${f.path}:${f.line}\` — ${f.title}`).join('\n');
+};
+
+const renderBadTitle = (findings: ReadonlyArray<BadTitleFinding>): string => {
+  if (findings.length === 0) return '_none_';
+  return findings
+    .map((f) => `- \`${f.path}:${f.line}\` — ${f.reason}: ${f.title}`)
+    .join('\n');
+};
+
+const renderMissingAaa = (findings: ReadonlyArray<MissingAaaFinding>): string => {
+  if (findings.length === 0) return '_none_';
+  return findings
+    .map((f) => `- \`${f.path}:${f.line}\` — missing ${f.missing.join(', ')} (${f.title})`)
+    .join('\n');
+};
+
+const renderBannedSut = (findings: ReadonlyArray<BannedSutFinding>): string => {
+  if (findings.length === 0) return '_none_';
+  return findings
+    .map((f) => `- \`${f.path}:${f.line}\` — \`${f.alias}\` should be \`sut\` (${f.title})`)
+    .join('\n');
+};
+
+const renderBareClassThrow = (
+  findings: ReadonlyArray<BareClassThrowFinding>,
+): string => {
+  if (findings.length === 0) return '_none_';
+  return findings
+    .map(
+      (f) =>
+        `- \`${f.path}:${f.line}\` — \`.toThrow(${f.identifier})\` needs a data assertion (${f.title})`,
+    )
+    .join('\n');
 };
 
 const renderUnclassified = (paths: ReadonlyArray<string>): string => {
@@ -75,6 +120,15 @@ export const renderMarkdown = (outcome: AuditOutcome): string => {
   sections.push('', '## Findings');
   sections.push('', '### Over-mocked integration tests', '', renderOverMocked(findings.overMocked));
   sections.push('', '### Under-asserted unit tests', '', renderUnderAsserted(findings.underAsserted));
+  sections.push('', '### Non-GWT unit test titles', '', renderBadTitle(findings.badTitle));
+  sections.push('', '### Missing AAA body comments', '', renderMissingAaa(findings.missingAaa));
+  sections.push('', '### Banned SUT name synonyms', '', renderBannedSut(findings.bannedSut));
+  sections.push(
+    '',
+    '### Bare-class `.toThrow(Class)` calls',
+    '',
+    renderBareClassThrow(findings.bareClassThrow),
+  );
 
   const unclassified = renderUnclassified(tally.unclassified);
   if (unclassified.length > 0) sections.push(unclassified);

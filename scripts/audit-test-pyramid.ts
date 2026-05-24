@@ -1,14 +1,16 @@
 #!/usr/bin/env node
 /**
- * Testing-pyramid audit. Report-only — findings never gate CI.
+ * Testing-pyramid audit. Gates on findings whose heuristic key is set to
+ * `true` in the manifest's `gating` block; everything else is report-only.
  *
  * Usage:
  *   node --experimental-strip-types scripts/audit-test-pyramid.ts
- *     [--root <repo-root>] [--manifest <path>] [--out <dir>]
+ *     [--root <repo-root>] [--manifest <path>] [--out <dir>] [--report-only]
  *
  * Defaults to the current working directory, `./test-pyramid-budgets.json`,
- * and `./reports/`. Always exits 0 on a clean run; exits 1 only when the
- * manifest is malformed or a filesystem error prevents the run.
+ * and `./reports/`. With `--report-only`, exit is `0` regardless of
+ * findings. Without it, any gated heuristic with ≥ 1 finding exits `1`.
+ * Manifest / filesystem errors also exit `1`.
  */
 import { glob, mkdir, readFile, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
@@ -16,9 +18,17 @@ import * as process from 'node:process';
 
 import { classifyTestFile } from './test-pyramid/classify-test-file.ts';
 import { tallyTierFiles } from './test-pyramid/count-tier-files.ts';
+import { detectBadTitle } from './test-pyramid/detect-bad-title.ts';
+import { detectBannedSutName } from './test-pyramid/detect-banned-sut-name.ts';
+import { detectBareClassThrow } from './test-pyramid/detect-bare-class-throw.ts';
+import { detectMissingAaa } from './test-pyramid/detect-missing-aaa.ts';
 import { detectOverMocked } from './test-pyramid/detect-over-mocked.ts';
 import { detectUnderAsserted } from './test-pyramid/detect-under-asserted.ts';
-import { parseManifest, type PyramidManifest } from './test-pyramid/parse-manifest.ts';
+import {
+  parseManifest,
+  type GatingKey,
+  type PyramidManifest,
+} from './test-pyramid/parse-manifest.ts';
 import {
   renderJson,
   renderMarkdown,
@@ -30,6 +40,7 @@ interface CliArgs {
   readonly root: string;
   readonly manifestPath: string;
   readonly outDir: string;
+  readonly reportOnly: boolean;
 }
 
 const DEFAULT_MANIFEST = 'test-pyramid-budgets.json';
@@ -39,6 +50,7 @@ export const parseArgs = (argv: readonly string[]): CliArgs => {
   let root = process.cwd();
   let manifestPath = DEFAULT_MANIFEST;
   let outDir = DEFAULT_OUT;
+  let reportOnly = false;
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === '--root') {
@@ -56,11 +68,13 @@ export const parseArgs = (argv: readonly string[]): CliArgs => {
       if (next === undefined) throw new Error('--out requires a path argument');
       outDir = next;
       i += 1;
+    } else if (arg === '--report-only') {
+      reportOnly = true;
     } else {
       throw new Error(`unknown argument: ${arg}`);
     }
   }
-  return { root, manifestPath, outDir };
+  return { root, manifestPath, outDir, reportOnly };
 };
 
 const collectFiles = async (
@@ -90,7 +104,10 @@ const readSourceFiles = async (
   return out;
 };
 
-export const runAudit = async (args: CliArgs): Promise<AuditOutcome> => {
+export const runAudit = async (args: CliArgs): Promise<{
+  readonly manifest: PyramidManifest;
+  readonly outcome: AuditOutcome;
+}> => {
   const manifestRaw = await readFile(path.resolve(args.root, args.manifestPath), 'utf8');
   const manifest = parseManifest(manifestRaw);
 
@@ -100,19 +117,48 @@ export const runAudit = async (args: CliArgs): Promise<AuditOutcome> => {
   );
   const files = await readSourceFiles(args.root, classifiedPaths);
 
-  return {
+  const outcome: AuditOutcome = {
     tally: tallyTierFiles(manifest, classifiedPaths),
     findings: {
       overMocked: detectOverMocked(manifest, files),
       underAsserted: detectUnderAsserted(manifest, files),
+      badTitle: detectBadTitle(manifest, files),
+      missingAaa: detectMissingAaa(manifest, files),
+      bannedSut: detectBannedSutName(manifest, files),
+      bareClassThrow: detectBareClassThrow(manifest, files),
     },
   };
+  return { manifest, outcome };
 };
 
 export const writeReports = async (outDir: string, outcome: AuditOutcome): Promise<void> => {
   await mkdir(outDir, { recursive: true });
   await writeFile(path.join(outDir, 'test-pyramid.json'), renderJson(outcome), 'utf8');
   await writeFile(path.join(outDir, 'test-pyramid.md'), renderMarkdown(outcome), 'utf8');
+};
+
+const FINDING_KEY_BY_GATING: Readonly<Record<GatingKey, keyof AuditOutcome['findings']>> = {
+  overMockedIntegration: 'overMocked',
+  underAssertedUnit: 'underAsserted',
+  gwtTitle: 'badTitle',
+  aaaBody: 'missingAaa',
+  sutNaming: 'bannedSut',
+  bareClassToThrow: 'bareClassThrow',
+};
+
+export const collectGatingViolations = (
+  manifest: PyramidManifest,
+  outcome: AuditOutcome,
+): ReadonlyArray<GatingKey> => {
+  const out: GatingKey[] = [];
+  for (const [key, enabled] of Object.entries(manifest.gating) as ReadonlyArray<
+    readonly [GatingKey, boolean]
+  >) {
+    if (!enabled) continue;
+    const findingKey = FINDING_KEY_BY_GATING[key];
+    if (outcome.findings[findingKey].length > 0) out.push(key);
+  }
+  return out;
 };
 
 const isMainModule = (): boolean => {
@@ -127,9 +173,18 @@ if (isMainModule()) {
   let code = 0;
   try {
     const args = parseArgs(process.argv.slice(2));
-    const outcome = await runAudit(args);
+    const { manifest, outcome } = await runAudit(args);
     await writeReports(path.resolve(args.root, args.outDir), outcome);
     process.stdout.write(renderMarkdown(outcome));
+    if (!args.reportOnly) {
+      const violations = collectGatingViolations(manifest, outcome);
+      if (violations.length > 0) {
+        process.stderr.write(
+          `audit gating failed: ${violations.join(', ')}\n`,
+        );
+        code = 1;
+      }
+    }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     process.stderr.write(`audit failed: ${message}\n`);
