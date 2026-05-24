@@ -151,7 +151,8 @@ describe('detectEmptyAaaSection', () => {
       'test/unit/b.test.ts',
       'test/unit/b.test.ts',
     ]);
-    expect((sut[2]?.line ?? 0)).toBeGreaterThan(sut[1]?.line ?? 0);
+    expect(sut).toHaveLength(3);
+    expect(sut[2]!.line).toBeGreaterThan(sut[1]!.line);
   });
 
   it('Given a body with a marker present but no other markers, When the section under it is empty, Then a finding is emitted', () => {
@@ -197,5 +198,30 @@ describe('detectEmptyAaaSection', () => {
 
     // Assert
     expect(sut).toEqual([]);
+  });
+
+  it('Given a compound // Act + Arrange marker line (Act textually first), When the section underneath is empty, Then the finding names Act', () => {
+    // Arrange — non-canonical ordering exercises the textual-position rule from ADR-115.
+    const source = `\nit('Given x, When y, Then z', () => {\n  // Act + Arrange\n  // Assert\n  expect(1).toBe(1);\n});\n`;
+
+    // Act
+    const sut = detectEmptyAaaSection(MANIFEST, [file('test/unit/a.test.ts', source)]);
+
+    // Assert — the marker owner is whichever name appears FIRST textually on the compound line.
+    expect(sut).toHaveLength(1);
+    expect(sut[0]!.marker).toBe('Act');
+  });
+
+  it('Given a section containing only a multi-line block comment, When scanned, Then a finding (block-comment continuation lines are not statement-bearing)', () => {
+    // Arrange
+    const source =
+      "\nit('Given x, When y, Then z', () => {\n  // Arrange\n  /*\n   * just a note\n   */\n  // Assert\n  expect(1).toBe(1);\n});\n";
+
+    // Act
+    const sut = detectEmptyAaaSection(MANIFEST, [file('test/unit/a.test.ts', source)]);
+
+    // Assert
+    expect(sut).toHaveLength(1);
+    expect(sut[0]!.marker).toBe('Arrange');
   });
 });

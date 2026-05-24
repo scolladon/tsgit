@@ -44,15 +44,21 @@ const MARKER_ORDER: Readonly<Record<AaaMarker, number>> = {
   Assert: 2,
 };
 const MARKER_LINE_RE = /^[ \t]*\/\/[^\n]*$/;
+const MARKER_WORD_RE: Readonly<Record<AaaMarker, RegExp>> = {
+  Arrange: /\bArrange\b/,
+  Act: /\bAct\b/,
+  Assert: /\bAssert\b/,
+};
 
 const detectMarkersOnLine = (line: string): ReadonlyArray<AaaMarker> => {
   if (!MARKER_LINE_RE.test(line)) return [];
-  const hits: AaaMarker[] = [];
+  const hits: Array<{ name: AaaMarker; index: number }> = [];
   for (const name of MARKER_NAMES) {
-    const re = new RegExp(`\\b${name}\\b`);
-    if (re.test(line)) hits.push(name);
+    const idx = line.search(MARKER_WORD_RE[name]);
+    if (idx >= 0) hits.push({ name, index: idx });
   }
-  return hits;
+  hits.sort((a, b) => a.index - b.index);
+  return hits.map((h) => h.name);
 };
 
 const collectMarkerHits = (bodyLines: ReadonlyArray<string>): ReadonlyArray<MarkerHit> => {
@@ -69,6 +75,8 @@ const isStatementBearingLine = (line: string): boolean => {
   if (trimmed.length === 0) return false;
   if (trimmed.startsWith('//')) return false;
   if (trimmed.startsWith('/*')) return false;
+  if (trimmed.startsWith('*/')) return false;
+  if (trimmed.startsWith('*')) return false;
   const head = trimmed[0];
   if (head === '}' || head === ')' || head === ']') return false;
   return true;
@@ -107,6 +115,9 @@ export const detectEmptyAaaSection = (
       if (block.isSkipped) continue;
       const bodyLines = block.body.split('\n');
       const hits = collectMarkerHits(bodyLines);
+      // One iteration per marker line — compound lines own a single section
+      // (the names sharing the line accumulate into `hit.markers`; only the
+      // textually first name is the reporting owner per ADR-115).
       for (let h = 0; h < hits.length; h += 1) {
         const hit = hits[h]!;
         const next = hits[h + 1];
