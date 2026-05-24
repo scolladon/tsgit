@@ -35,20 +35,26 @@ describe('withAuth — validation', () => {
 
   it('Given basic with empty username, When created, Then returns a factory', () => {
     // Arrange
+    const sut = typeof withAuth({ type: 'basic', username: '', password: 'x' });
+
     // Assert
-    expect(typeof withAuth({ type: 'basic', username: '', password: 'x' })).toBe('function');
+    expect(sut).toBe('function');
   });
 
   it('Given basic with empty password, When created, Then returns a factory', () => {
     // Arrange
+    const sut = typeof withAuth({ type: 'basic', username: 'u', password: '' });
+
     // Assert
-    expect(typeof withAuth({ type: 'basic', username: 'u', password: '' })).toBe('function');
+    expect(sut).toBe('function');
   });
 
   it('Given custom config, When created, Then returns a factory', () => {
     // Arrange
+    const sut = typeof withAuth({ type: 'custom', header: () => 'token' });
+
     // Assert
-    expect(typeof withAuth({ type: 'custom', header: () => 'token' })).toBe('function');
+    expect(sut).toBe('function');
   });
 });
 
