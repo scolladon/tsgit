@@ -661,7 +661,7 @@ describe('commit', () => {
   });
 
   describe('property-based tests', () => {
-    it('Roundtrip: parseCommitContent(id, serializeCommitContent(commit)) preserves all fields', () => {
+    it('Given the roundtrip property "parseCommitContent(id, serializeCommitContent(commit)) preserves all fields", When sampled, Then it holds', () => {
       // Arrange
       const arbIdentity = fc.record({
         name: fc

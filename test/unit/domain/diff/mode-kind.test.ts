@@ -110,7 +110,7 @@ describe('isSameKind', () => {
     expect(sut).toBe(false);
   });
 
-  it('Property: isSameKind(a, b) === isSameKind(b, a) (symmetry)', () => {
+  it('Given the property "isSameKind(a, b) === isSameKind(b, a) (symmetry)", When sampled, Then it holds', () => {
     // Arrange
     const allModes: FileMode[] = [
       FILE_MODE.REGULAR,

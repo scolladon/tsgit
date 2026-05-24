@@ -102,7 +102,7 @@ describe('add', () => {
     await expectError(() => add(ctx, ['x']), 'NOT_A_REPOSITORY');
   });
 
-  it('Given.git/MERGE_HEAD exists, When add runs, Then succeeds (resolving a conflicted merge is the legitimate path forward.4b)', async () => {
+  it('Given .git/MERGE_HEAD exists, When add runs, Then succeeds (resolving a conflicted merge is the legitimate path forward.4b)', async () => {
     // Arrange — MERGE_HEAD presence used to block `add`.4b
     // changed the contract: `add` must allow staging resolved files
     // during a conflicted merge. Other pending markers still block.
@@ -375,7 +375,7 @@ describe('add', () => {
     expect(entry?.mode).toBe('100755');
   });
 
-  it('Given a.git directory at the root and all: true, When add, Then.git contents are not staged', async () => {
+  it('Given a .git directory at the root and all: true, When add, Then .git contents are not staged', async () => {
     // Arrange — seedRepo already wrote.git/HEAD via the fixture. Add a stray
     // .git/config to make sure no.git path leaks into the index.
     const ctx = await seedFreshRepo({ 'a.txt': 'a' });

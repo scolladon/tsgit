@@ -626,7 +626,7 @@ describe('fetch', () => {
   });
 
   describe('shallow file write triggers (mutation kills for the OR clause)', () => {
-    it('Given a server returning unshallow ONLY, When fetch, Then.git/shallow is written', async () => {
+    it('Given a server returning unshallow ONLY, When fetch, Then .git/shallow is written', async () => {
       // Arrange — kills the `unshallow.length > 0 ? false :...` mutant.
       // The `unshallow > 0` half of the OR must independently trigger
       // updateShallow.
@@ -656,7 +656,7 @@ describe('fetch', () => {
       expect(remaining).toBe('b'.repeat(40));
     });
 
-    it('Given pre-existing.git/shallow and a fetch with NO shallow/unshallow lines, When fetch, Then.git/shallow is preserved (no spurious rewrite)', async () => {
+    it('Given pre-existing.git/shallow and a fetch with NO shallow/unshallow lines, When fetch, Then .git/shallow is preserved (no spurious rewrite)', async () => {
       // Arrange — kills the `shallow.length > 0 || unshallow.length > 0` →
       // always-true mutant. With always-true, updateShallow would re-process
       // (re-read + re-write) the file even when the server said nothing.
@@ -1013,7 +1013,7 @@ describe('fetch', () => {
   });
 
   describe('shallow fetch', () => {
-    it('Given depth=1 and a server emitting shallow <oid>, When fetch, Then.git/shallow is written with that oid and result.shallow contains it', async () => {
+    it('Given depth=1 and a server emitting shallow <oid>, When fetch, Then .git/shallow is written with that oid and result.shallow contains it', async () => {
       // Arrange
       const ctx = createMemoryContext();
       await seedRepo(ctx, {});
@@ -1036,7 +1036,7 @@ describe('fetch', () => {
       expect(onDisk.has(shallowOid as ObjectId)).toBe(true);
     });
 
-    it('Given depth=1 and the server ignores deepen, When fetch, Then.git/shallow is NOT created', async () => {
+    it('Given depth=1 and the server ignores deepen, When fetch, Then .git/shallow is NOT created', async () => {
       // Arrange
       const ctx = createMemoryContext();
       await seedRepo(ctx, {});

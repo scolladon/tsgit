@@ -370,7 +370,7 @@ describe('encoding', () => {
   });
 
   describe('property-based tests', () => {
-    it('Roundtrip: bytesToHex(hexToBytes(hex)) === hex for any valid even-length hex string', () => {
+    it('Given the roundtrip property "bytesToHex(hexToBytes(hex)) === hex for any valid even-length hex string", When sampled, Then it holds', () => {
       // Arrange
       // Assert
       fc.assert(
@@ -388,7 +388,7 @@ describe('encoding', () => {
       );
     });
 
-    it('Roundtrip: hexToBytes(bytesToHex(bytes)) equals original bytes', () => {
+    it('Given the roundtrip property "hexToBytes(bytesToHex(bytes)) equals original bytes", When sampled, Then it holds', () => {
       // Arrange
       // Assert
       fc.assert(
@@ -399,7 +399,7 @@ describe('encoding', () => {
       );
     });
 
-    it('Reflexive: compareBytes(a, a) === 0 for any array', () => {
+    it('Given the reflexive property "compareBytes(a, a) === 0 for any array", When checked, Then it holds', () => {
       // Arrange
       // Assert
       fc.assert(
@@ -410,7 +410,7 @@ describe('encoding', () => {
       );
     });
 
-    it('Antisymmetric: Math.sign(compareBytes(a, b)) === -Math.sign(compareBytes(b, a))', () => {
+    it('Given the antisymmetric property "Math.sign(compareBytes(a, b)) === -Math.sign(compareBytes(b, a))", When checked, Then it holds', () => {
       // Arrange
       // Assert
       fc.assert(

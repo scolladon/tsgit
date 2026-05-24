@@ -22,7 +22,7 @@ describe('filter', () => {
     expect(result).toEqual([2, 4]);
   });
 
-  it('Given a predicate returning true for all items, Then toArray(sut(source)) deep-equals toArray(source)', async () => {
+  it('Given a predicate returning true for all items, When invoked, Then toArray(sut(source)) deep-equals toArray(source)', async () => {
     // Arrange
     const input = [1, 2, 3];
     const sut = filter(() => true);
@@ -35,7 +35,7 @@ describe('filter', () => {
     expect(filtered).toEqual(passthrough);
   });
 
-  it('Given a predicate returning false for all items, Then toArray output is []', async () => {
+  it('Given a predicate returning false for all items, When invoked, Then toArray output is []', async () => {
     // Arrange
     const sut = filter(() => false);
 

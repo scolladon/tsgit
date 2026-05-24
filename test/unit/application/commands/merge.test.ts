@@ -415,7 +415,7 @@ describe('merge.4b conflict persistence', () => {
     expect(sut).toContain('FEATURE');
   });
 
-  it('Given a content conflict, When merge runs, Then.git/MERGE_HEAD records the target tip id', async () => {
+  it('Given a content conflict, When merge runs, Then .git/MERGE_HEAD records the target tip id', async () => {
     // Arrange
     const ctx = createMemoryContext();
     const { featureTip } = await setupConflictingMerge(ctx);
@@ -429,7 +429,7 @@ describe('merge.4b conflict persistence', () => {
     expect(sut).toBe(`${featureTip}\n`);
   });
 
-  it('Given a content conflict, When merge runs, Then.git/ORIG_HEAD records the pre-merge HEAD id', async () => {
+  it('Given a content conflict, When merge runs, Then .git/ORIG_HEAD records the pre-merge HEAD id', async () => {
     // Arrange
     const ctx = createMemoryContext();
     const { preMergeMain } = await setupConflictingMerge(ctx);
@@ -442,7 +442,7 @@ describe('merge.4b conflict persistence', () => {
     expect(sut).toBe(`${preMergeMain}\n`);
   });
 
-  it('Given a content conflict, When merge runs with a message, Then.git/MERGE_MSG records the message', async () => {
+  it('Given a content conflict, When merge runs with a message, Then .git/MERGE_MSG records the message', async () => {
     // Arrange
     const ctx = createMemoryContext();
     await setupConflictingMerge(ctx);

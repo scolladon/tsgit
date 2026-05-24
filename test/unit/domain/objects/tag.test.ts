@@ -639,7 +639,7 @@ describe('tag', () => {
   });
 
   describe('property-based tests', () => {
-    it('Roundtrip: parseTagContent(id, serializeTagContent(tag)) preserves all fields', () => {
+    it('Given the roundtrip property "parseTagContent(id, serializeTagContent(tag)) preserves all fields", When sampled, Then it holds', () => {
       // Arrange
       const arbIdentity = fc.record({
         name: fc

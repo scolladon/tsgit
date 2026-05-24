@@ -948,7 +948,7 @@ describe('NodeFileSystem', () => {
       expect(result).toBe(false);
     });
 
-    it('Given Windows host and case-different prefix paths, Then returns true (case-insensitive prefix)', () => {
+    it('Given Windows host and case-different prefix paths, When invoked, Then returns true (case-insensitive prefix)', () => {
       // Arrange — Windows-shaped paths to match the platform separator.
       const sut = pathContains;
       const parent = 'C:\\Users\\Foo';
@@ -961,7 +961,7 @@ describe('NodeFileSystem', () => {
       expect(result).toBe(true);
     });
 
-    it('Given Windows host and child equal to parent in different case, Then returns true (identity arm)', () => {
+    it('Given Windows host and child equal to parent in different case, When invoked, Then returns true (identity arm)', () => {
       // Arrange
       const sut = pathContains;
 
@@ -972,7 +972,7 @@ describe('NodeFileSystem', () => {
       expect(result).toBe(true);
     });
 
-    it('Given POSIX host and same path with different case, Then returns false (case-sensitive)', () => {
+    it('Given POSIX host and same path with different case, When invoked, Then returns false (case-sensitive)', () => {
       // Arrange
       const sut = pathContains;
 

@@ -58,7 +58,7 @@ describe('take', () => {
     expect(source.pullCount()).toBe(1);
   });
 
-  it('Given take(N) on a source of exactly N items, Then pullCount() === N (no extra next())', async () => {
+  it('Given take(N) on a source of exactly N items, When invoked, Then pullCount() === N (no extra next())', async () => {
     // Arrange — bounded pull-counting source
     let pulls = 0;
     async function* bounded(n: number): AsyncIterable<number> {
@@ -90,7 +90,7 @@ describe('take', () => {
     expect(source.returnCalled()).toBe(true);
   });
 
-  it('Given take(-1), Then RangeError /non-negative integer/', () => {
+  it('Given take(-1), When invoked, Then RangeError /non-negative integer/', () => {
     // Arrange
     try {
       take<number>(-1);
@@ -102,7 +102,7 @@ describe('take', () => {
     }
   });
 
-  it('Given take(-2), Then RangeError /non-negative integer/', () => {
+  it('Given take(-2), When invoked, Then RangeError /non-negative integer/', () => {
     // Arrange
     try {
       take<number>(-2);
@@ -114,7 +114,7 @@ describe('take', () => {
     }
   });
 
-  it('Given take(1.5), Then RangeError /non-negative integer/', () => {
+  it('Given take(1.5), When invoked, Then RangeError /non-negative integer/', () => {
     // Arrange
     try {
       take<number>(1.5);
@@ -126,7 +126,7 @@ describe('take', () => {
     }
   });
 
-  it('Given take(NaN), Then RangeError /non-negative integer/', () => {
+  it('Given take(NaN), When invoked, Then RangeError /non-negative integer/', () => {
     // Arrange
     try {
       take<number>(Number.NaN);
@@ -138,7 +138,7 @@ describe('take', () => {
     }
   });
 
-  it('Given take(Infinity), Then RangeError /non-negative integer/', () => {
+  it('Given take(Infinity), When invoked, Then RangeError /non-negative integer/', () => {
     // Arrange
     try {
       take<number>(Number.POSITIVE_INFINITY);
@@ -220,7 +220,7 @@ describe('take', () => {
     expect(flags).toEqual({ s0: true, s1: true, s2: true, s3: true });
   });
 
-  it('Property: take(n)(source) yields exactly min(n, L) items equal to the first min(n, L) of source', async () => {
+  it('Given the property "take(n)(source) yields exactly min(n, L) items equal to the first min(n, L) of source", When sampled, Then it holds', async () => {
     // Arrange
     // Assert
     await fc.assert(

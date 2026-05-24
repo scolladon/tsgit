@@ -27,7 +27,7 @@ describe('map', () => {
     expect(result).toHaveLength(5);
   });
 
-  it('Given map(x => x) (identity), Then toArray(sut(source)) deep-equals toArray(source)', async () => {
+  it('Given map(x => x) (identity), When invoked, Then toArray(sut(source)) deep-equals toArray(source)', async () => {
     // Arrange
     const input = [7, 8, 9];
     const sut = map((n: number) => n);
@@ -153,7 +153,7 @@ describe('map', () => {
     expect(result).toEqual([10, 11, 12, 13, 14]);
   });
 
-  it('Type-level: map((n: number) => n.toString()) returns a function AsyncIterable<number> -> AsyncIterable<string>', () => {
+  it('Given a type-level scenario "map((n: number) => n.toString()) returns a function AsyncIterable<number> -> AsyncIterable<string>", When type-checked, Then types align', () => {
     // Arrange
     // Assert (type-level)
     const sut = map((n: number) => n.toString());

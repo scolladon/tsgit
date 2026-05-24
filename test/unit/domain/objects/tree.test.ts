@@ -503,7 +503,7 @@ describe('tree', () => {
       )
       .map(([mode, name, id]) => ({ mode, name, id }));
 
-    it('Sort is idempotent: sort(sort(entries)) equals sort(entries)', () => {
+    it('Given the sort idempotence property "sort(sort(entries)) equals sort(entries)", When checked, Then it holds', () => {
       // Arrange
       // Assert
       fc.assert(
@@ -515,7 +515,7 @@ describe('tree', () => {
       );
     });
 
-    it('Sort is byte-consistent: for adjacent sorted entries, treeEntryCompare(a, b) <= 0', () => {
+    it('Given the sort byte-consistency property "for adjacent sorted entries, treeEntryCompare(a, b) <= 0", When checked, Then it holds', () => {
       // Arrange
       // Assert
       fc.assert(
@@ -528,7 +528,7 @@ describe('tree', () => {
       );
     });
 
-    it('Tree roundtrip: parseTreeContent(id, serializeTreeContent(tree, hash), hash) preserves all entries', () => {
+    it('Given the tree roundtrip property "parseTreeContent(id, serializeTreeContent(tree, hash), hash) preserves all entries", When checked, Then it holds', () => {
       // Arrange
       // Git trees cannot contain duplicate entry names — the parser rejects them.
       // Dedupe by name before building the tree so the arbitrary never generates

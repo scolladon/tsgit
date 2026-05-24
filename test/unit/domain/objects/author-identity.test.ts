@@ -729,7 +729,7 @@ describe('author-identity', () => {
   });
 
   describe('property-based tests', () => {
-    it('Roundtrip: parseIdentity(serializeIdentity(identity)) equals original for valid identities', () => {
+    it('Given the roundtrip property "parseIdentity(serializeIdentity(identity)) equals original for valid identities", When sampled, Then it holds', () => {
       // Arrange
       const arbIdentity = fc.record({
         name: fc.string().filter((s) => !s.includes('<') && !s.includes('>') && !s.includes('\n')),

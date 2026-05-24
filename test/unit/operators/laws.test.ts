@@ -9,7 +9,7 @@ async function* toAsyncIterable<T>(items: readonly T[]): AsyncIterable<T> {
 }
 
 describe('operator composition laws', () => {
-  it('Law: take(n) ∘ take(m) ≡ take(min(n, m))', async () => {
+  it('Given the law "take(n) ∘ take(m) ≡ take(min(n, m))", When evaluated, Then it holds', async () => {
     // Arrange
     // Assert
     await fc.assert(
@@ -27,7 +27,7 @@ describe('operator composition laws', () => {
     );
   });
 
-  it('Law: filter(p) ∘ filter(q) ≡ filter(x => q(x) && p(x))', async () => {
+  it('Given the law "filter(p) ∘ filter(q) ≡ filter(x => q(x) && p(x))", When evaluated, Then it holds', async () => {
     // Arrange
     // Assert
     await fc.assert(
@@ -42,7 +42,7 @@ describe('operator composition laws', () => {
     );
   });
 
-  it('Law: map(g) ∘ map(f) ≡ map(x => g(f(x)))', async () => {
+  it('Given the law "map(g) ∘ map(f) ≡ map(x => g(f(x)))", When evaluated, Then it holds', async () => {
     // Arrange
     // Assert
     await fc.assert(
@@ -57,7 +57,7 @@ describe('operator composition laws', () => {
     );
   });
 
-  it('Law: filter(p) ∘ map(f) ≡ map(f) ∘ filter(x => p(f(x)))', async () => {
+  it('Given the law "filter(p) ∘ map(f) ≡ map(f) ∘ filter(x => p(f(x)))", When evaluated, Then it holds', async () => {
     // Arrange
     // Assert
     await fc.assert(
@@ -74,7 +74,7 @@ describe('operator composition laws', () => {
     );
   });
 
-  it('Law: toArray ∘ flatMap(x => [x]) ≡ toArray', async () => {
+  it('Given the law "toArray ∘ flatMap(x => [x]) ≡ toArray", When evaluated, Then it holds', async () => {
     // Arrange
     // Assert
     await fc.assert(
@@ -87,7 +87,7 @@ describe('operator composition laws', () => {
     );
   });
 
-  it('Law: toArray(source).length === N for finite source of length N', async () => {
+  it('Given the law "toArray(source).length === N for finite source of length N", When evaluated, Then it holds', async () => {
     // Arrange
     // Assert
     await fc.assert(
@@ -99,7 +99,7 @@ describe('operator composition laws', () => {
     );
   });
 
-  it('Law: toArray ∘ map(x => x) ≡ toArray', async () => {
+  it('Given the law "toArray ∘ map(x => x) ≡ toArray", When evaluated, Then it holds', async () => {
     // Arrange
     // Assert
     await fc.assert(
@@ -112,7 +112,7 @@ describe('operator composition laws', () => {
     );
   });
 
-  it('Law: toArray ∘ filter(() => true) ≡ toArray', async () => {
+  it('Given the law "toArray ∘ filter(() => true) ≡ toArray", When evaluated, Then it holds', async () => {
     // Arrange
     // Assert
     await fc.assert(
@@ -125,7 +125,7 @@ describe('operator composition laws', () => {
     );
   });
 
-  it('Law: toArray ∘ filter(() => false) ≡ []', async () => {
+  it('Given the law "toArray ∘ filter(() => false) ≡ []", When evaluated, Then it holds', async () => {
     // Arrange
     // Assert
     await fc.assert(
@@ -137,7 +137,7 @@ describe('operator composition laws', () => {
     );
   });
 
-  it('Law: Array.from(groupBy(k)(source).values()).flat() is a permutation of toArray(source)', async () => {
+  it('Given the law "Array.from(groupBy(k)(source).values()).flat() is a permutation of toArray(source)", When evaluated, Then it holds', async () => {
     // Arrange
     // Assert
     await fc.assert(

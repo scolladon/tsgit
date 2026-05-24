@@ -13,7 +13,7 @@ import type { Blob, FileMode, ObjectId, RefName } from '../../../../src/domain/o
 import { buildSeededContext } from './fixtures.js';
 
 describe('composition laws', () => {
-  it('Law: writeObject ∘ readObject is identity for blobs (property)', async () => {
+  it('Given the law "writeObject ∘ readObject is identity for blobs (property)", When evaluated, Then it holds', async () => {
     // Arrange
     // Assert
     await fc.assert(
@@ -32,7 +32,7 @@ describe('composition laws', () => {
     );
   });
 
-  it('Law: updateRef ∘ resolveRef returns the same id', async () => {
+  it('Given the law "updateRef ∘ resolveRef returns the same id", When evaluated, Then it holds', async () => {
     // Arrange
     // Assert
     await fc.assert(
@@ -50,7 +50,7 @@ describe('composition laws', () => {
     );
   });
 
-  it('Law: writeTree permutation independence (output hash stable under input shuffling)', async () => {
+  it('Given the law "writeTree permutation independence (output hash stable under input shuffling)", When evaluated, Then it holds', async () => {
     // Arrange
     const ctx = await buildSeededContext();
     const b1 = await writeObject(ctx, {
@@ -75,7 +75,7 @@ describe('composition laws', () => {
     expect(idA).toBe(idB);
   });
 
-  it('Law: diffTrees(tree, tree) returns empty', async () => {
+  it('Given the law "diffTrees(tree, tree) returns empty", When evaluated, Then it holds', async () => {
     // Arrange
     const ctx = await buildSeededContext();
     const emptyId = await writeTree(ctx, []);
@@ -84,7 +84,7 @@ describe('composition laws', () => {
     expect(sut.changes).toEqual([]);
   });
 
-  it('Law: readTree ∘ writeTree yields back the same entries shape', async () => {
+  it('Given the law "readTree ∘ writeTree yields back the same entries shape", When evaluated, Then it holds', async () => {
     // Arrange
     const ctx = await buildSeededContext();
     const b1 = await writeObject(ctx, {

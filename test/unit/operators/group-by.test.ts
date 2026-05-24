@@ -195,7 +195,7 @@ describe('groupBy', () => {
     }
   });
 
-  it('Property: Array.from(result.values()).flat() is a permutation of toArray(source) for any source and keyFn', async () => {
+  it('Given the property "Array.from(result.values()).flat() is a permutation of toArray(source) for any source and keyFn", When sampled, Then it holds', async () => {
     // Arrange
     // Assert
     await fc.assert(

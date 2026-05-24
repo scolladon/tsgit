@@ -284,7 +284,7 @@ describe('object-id', () => {
   });
 
   describe('property-based tests', () => {
-    it('Roundtrip: ObjectId.fromRaw(hexToBytes(id)) equals the original id for valid 40-char ids', () => {
+    it('Given the roundtrip property "ObjectId.fromRaw(hexToBytes(id)) equals the original id for valid 40-char ids", When sampled, Then it holds', () => {
       // Arrange
       // Assert
       fc.assert(
@@ -295,7 +295,7 @@ describe('object-id', () => {
       );
     });
 
-    it('Roundtrip: ObjectId.fromRaw(hexToBytes(id)) equals the original id for valid 64-char ids', () => {
+    it('Given the roundtrip property "ObjectId.fromRaw(hexToBytes(id)) equals the original id for valid 64-char ids", When sampled, Then it holds', () => {
       // Arrange
       // Assert
       fc.assert(

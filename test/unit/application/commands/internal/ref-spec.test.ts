@@ -263,7 +263,7 @@ describe('internal/ref-spec', () => {
   });
 
   describe('MAX_REFSPECS_PER_FETCH', () => {
-    it('Equals 1024', () => {
+    it('Given a constant 1024, When read, Then equals 1024', () => {
       // Arrange
       // Assert
       expect(MAX_REFSPECS_PER_FETCH).toBe(1024);

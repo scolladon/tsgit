@@ -395,7 +395,7 @@ describe('lru-cache', () => {
       );
     });
 
-    it('Given any sequence of operations, after clear(), entryCount === 0 and currentSize === 0', () => {
+    it('Given any sequence of operations, When clear() is called, Then entryCount === 0 and currentSize === 0', () => {
       fc.assert(
         fc.property(
           fc.array(fc.tuple(fc.string(), fc.integer({ min: 1, max: 100 }))),

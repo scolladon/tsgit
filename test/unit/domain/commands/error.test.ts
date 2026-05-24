@@ -51,7 +51,7 @@ const dummyReportStatus = {
 } as const;
 
 describe('domain commands error — factory data', () => {
-  it('workingTreeDirty', () => {
+  it('Given the workingTreeDirty error helper, When called, Then data matches expected shape', () => {
     // Arrange
     // Assert
     expect(workingTreeDirty(['a' as FilePath]).data).toEqual({
@@ -60,7 +60,7 @@ describe('domain commands error — factory data', () => {
     });
   });
 
-  it('pathspecNoMatch', () => {
+  it('Given the pathspecNoMatch error helper, When called, Then data matches expected shape', () => {
     // Arrange
     // Assert
     expect(pathspecNoMatch('*.zzz').data).toEqual({
@@ -69,7 +69,7 @@ describe('domain commands error — factory data', () => {
     });
   });
 
-  it('pathspecOutsideRepo', () => {
+  it('Given the pathspecOutsideRepo error helper, When called, Then data matches expected shape', () => {
     // Arrange
     // Assert
     expect(pathspecOutsideRepo('/etc/passwd' as FilePath).data).toEqual({
@@ -78,25 +78,25 @@ describe('domain commands error — factory data', () => {
     });
   });
 
-  it('nothingToCommit', () => {
+  it('Given the nothingToCommit error helper, When called, Then data matches expected shape', () => {
     // Arrange
     // Assert
     expect(nothingToCommit().data).toEqual({ code: 'NOTHING_TO_COMMIT' });
   });
 
-  it('emptyCommitMessage', () => {
+  it('Given the emptyCommitMessage error helper, When called, Then data matches expected shape', () => {
     // Arrange
     // Assert
     expect(emptyCommitMessage().data).toEqual({ code: 'EMPTY_COMMIT_MESSAGE' });
   });
 
-  it('authorUnconfigured', () => {
+  it('Given the authorUnconfigured error helper, When called, Then data matches expected shape', () => {
     // Arrange
     // Assert
     expect(authorUnconfigured().data).toEqual({ code: 'AUTHOR_UNCONFIGURED' });
   });
 
-  it('branchExists', () => {
+  it('Given the branchExists error helper, When called, Then data matches expected shape', () => {
     // Arrange
     // Assert
     expect(branchExists('refs/heads/x' as RefName).data).toEqual({
@@ -105,7 +105,7 @@ describe('domain commands error — factory data', () => {
     });
   });
 
-  it('branchNotFound', () => {
+  it('Given the branchNotFound error helper, When called, Then data matches expected shape', () => {
     // Arrange
     // Assert
     expect(branchNotFound('refs/heads/x' as RefName).data).toEqual({
@@ -114,7 +114,7 @@ describe('domain commands error — factory data', () => {
     });
   });
 
-  it('tagExists', () => {
+  it('Given the tagExists error helper, When called, Then data matches expected shape', () => {
     // Arrange
     // Assert
     expect(tagExists('refs/tags/v1' as RefName).data).toEqual({
@@ -123,7 +123,7 @@ describe('domain commands error — factory data', () => {
     });
   });
 
-  it('tagNotFound', () => {
+  it('Given the tagNotFound error helper, When called, Then data matches expected shape', () => {
     // Arrange
     // Assert
     expect(tagNotFound('refs/tags/v1' as RefName).data).toEqual({
@@ -132,7 +132,7 @@ describe('domain commands error — factory data', () => {
     });
   });
 
-  it('cannotDeleteCheckedOutBranch', () => {
+  it('Given the cannotDeleteCheckedOutBranch error helper, When called, Then data matches expected shape', () => {
     // Arrange
     // Assert
     expect(cannotDeleteCheckedOutBranch('refs/heads/main' as RefName).data).toEqual({
@@ -141,13 +141,13 @@ describe('domain commands error — factory data', () => {
     });
   });
 
-  it('invalidUrl', () => {
+  it('Given the invalidUrl error helper, When called, Then data matches expected shape', () => {
     // Arrange
     // Assert
     expect(invalidUrl('bad').data).toEqual({ code: 'INVALID_URL', reason: 'bad' });
   });
 
-  it('blockedHost', () => {
+  it('Given the blockedHost error helper, When called, Then data matches expected shape', () => {
     // Arrange
     // Assert
     expect(blockedHost('1.2.3.4', 'private').data).toEqual({
@@ -157,13 +157,13 @@ describe('domain commands error — factory data', () => {
     });
   });
 
-  it('tooManyRedirects', () => {
+  it('Given the tooManyRedirects error helper, When called, Then data matches expected shape', () => {
     // Arrange
     // Assert
     expect(tooManyRedirects(6).data).toEqual({ code: 'TOO_MANY_REDIRECTS', count: 6 });
   });
 
-  it('unsupportedScheme', () => {
+  it('Given the unsupportedScheme error helper, When called, Then data matches expected shape', () => {
     // Arrange
     // Assert
     expect(unsupportedScheme('ftp').data).toEqual({
@@ -172,7 +172,7 @@ describe('domain commands error — factory data', () => {
     });
   });
 
-  it('targetDirectoryNotEmpty', () => {
+  it('Given the targetDirectoryNotEmpty error helper, When called, Then data matches expected shape', () => {
     // Arrange
     // Assert
     expect(targetDirectoryNotEmpty('/repo' as FilePath).data).toEqual({
@@ -181,13 +181,13 @@ describe('domain commands error — factory data', () => {
     });
   });
 
-  it('remoteAdvertisesNoRefs', () => {
+  it('Given the remoteAdvertisesNoRefs error helper, When called, Then data matches expected shape', () => {
     // Arrange
     // Assert
     expect(remoteAdvertisesNoRefs().data).toEqual({ code: 'REMOTE_ADVERTISES_NO_REFS' });
   });
 
-  it('nonFastForward', () => {
+  it('Given the nonFastForward error helper, When called, Then data matches expected shape', () => {
     // Arrange
     // Assert
     expect(nonFastForward('refs/heads/main' as RefName, OID1, OID2).data).toEqual({
@@ -198,7 +198,7 @@ describe('domain commands error — factory data', () => {
     });
   });
 
-  it('pushRejected', () => {
+  it('Given the pushRejected error helper, When called, Then data matches expected shape', () => {
     // Arrange
     // Assert
     expect(pushRejected('refs/heads/main' as RefName, 'declined', dummyReportStatus).data).toEqual({
@@ -209,7 +209,7 @@ describe('domain commands error — factory data', () => {
     });
   });
 
-  it('mergeHasConflicts (default paths)', () => {
+  it('Given the mergeHasConflicts helper variant (default paths), When called, Then data matches expected shape', () => {
     // Arrange
     // Assert
     expect(mergeHasConflicts(3).data).toEqual({
@@ -219,7 +219,7 @@ describe('domain commands error — factory data', () => {
     });
   });
 
-  it('mergeHasConflicts (explicit paths)', () => {
+  it('Given the mergeHasConflicts helper variant (explicit paths), When called, Then data matches expected shape', () => {
     // Arrange
     // Assert
     expect(mergeHasConflicts(2, ['a.txt' as FilePath, 'b.txt' as FilePath]).data).toEqual({
@@ -229,7 +229,7 @@ describe('domain commands error — factory data', () => {
     });
   });
 
-  it('mergeHasConflicts truncates the paths array when over the cap', () => {
+  it('Given more conflict paths than the cap, When mergeHasConflicts is called, Then the paths array is truncated', () => {
     // Arrange — 150 fake paths exceeds MAX_CONFLICT_PATHS_IN_ERROR (100).
     const paths = Array.from({ length: 150 }, (_, i) => `f${i}.txt` as FilePath);
 
@@ -251,7 +251,7 @@ describe('domain commands error — factory data', () => {
     expect(data.truncated).toBe(true);
   });
 
-  it('mergeHasConflicts does NOT set truncated when paths fit under the cap', () => {
+  it('Given paths fitting under the cap, When mergeHasConflicts is called, Then truncated is not set', () => {
     // Arrange
     const paths = Array.from({ length: 5 }, (_, i) => `f${i}.txt` as FilePath);
 
@@ -263,7 +263,7 @@ describe('domain commands error — factory data', () => {
     expect(data.truncated).toBeUndefined();
   });
 
-  it('mergeHasConflicts keeps all paths and omits truncated at exactly the cap', () => {
+  it('Given paths exactly at the cap, When mergeHasConflicts is called, Then all paths are kept and truncated is omitted', () => {
     // Arrange — exactly MAX_CONFLICT_PATHS_IN_ERROR (100) paths: the boundary
     // where `paths.length > cap` is false and `>= cap` would be true.
     const paths = Array.from({ length: 100 }, (_, i) => `f${i}.txt` as FilePath);
@@ -280,7 +280,7 @@ describe('domain commands error — factory data', () => {
     expect(data.truncated).toBeUndefined();
   });
 
-  it('checkoutOverwriteDirty', () => {
+  it('Given the checkoutOverwriteDirty error helper, When called, Then data matches expected shape', () => {
     // Arrange
     // Assert
     expect(checkoutOverwriteDirty(['a' as FilePath]).data).toEqual({
@@ -289,7 +289,7 @@ describe('domain commands error — factory data', () => {
     });
   });
 
-  it('revparseAmbiguous', () => {
+  it('Given the revparseAmbiguous error helper, When called, Then data matches expected shape', () => {
     // Arrange
     // Assert
     expect(revparseAmbiguous('abc1', [OID1, OID2]).data).toEqual({
@@ -299,7 +299,7 @@ describe('domain commands error — factory data', () => {
     });
   });
 
-  it('revparseUnresolved', () => {
+  it('Given the revparseUnresolved error helper, When called, Then data matches expected shape', () => {
     // Arrange
     // Assert
     expect(revparseUnresolved('foo').data).toEqual({
@@ -308,13 +308,13 @@ describe('domain commands error — factory data', () => {
     });
   });
 
-  it('emptyPathspec', () => {
+  it('Given the emptyPathspec error helper, When called, Then data matches expected shape', () => {
     // Arrange
     // Assert
     expect(emptyPathspec().data).toEqual({ code: 'EMPTY_PATHSPEC' });
   });
 
-  it('operationInProgress', () => {
+  it('Given the operationInProgress error helper, When called, Then data matches expected shape', () => {
     // Arrange
     // Assert
     expect(operationInProgress('merge').data).toEqual({
@@ -323,7 +323,7 @@ describe('domain commands error — factory data', () => {
     });
   });
 
-  it('maxRefspecsExceeded', () => {
+  it('Given the maxRefspecsExceeded error helper, When called, Then data matches expected shape', () => {
     // Arrange
     // Assert
     expect(maxRefspecsExceeded(2000, 1024).data).toEqual({
@@ -333,7 +333,7 @@ describe('domain commands error — factory data', () => {
     });
   });
 
-  it('remoteNotConfigured', () => {
+  it('Given the remoteNotConfigured error helper, When called, Then data matches expected shape', () => {
     // Arrange
     // Assert
     expect(remoteNotConfigured('upstream').data).toEqual({

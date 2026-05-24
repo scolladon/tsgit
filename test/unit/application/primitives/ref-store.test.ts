@@ -83,7 +83,7 @@ describe('ref-store', () => {
     if (result.kind === 'symbolic') expect(result.target).toBe('refs/heads/main');
   });
 
-  it('Given writeLoose then resolveDirect, Then returns the written id', async () => {
+  it('Given writeLoose then resolveDirect, When invoked, Then returns the written id', async () => {
     // Arrange
     const ctx = await buildSeededContext();
     const sut = createRefStore(ctx);
@@ -212,7 +212,7 @@ describe('ref-store', () => {
     expect(result.sorted).toBe(false);
   });
 
-  it('Given two getRefStore calls on the same Context, Then returns the same store instance (per-Context cache)', async () => {
+  it('Given two getRefStore calls on the same Context, When invoked, Then returns the same store instance (per-Context cache)', async () => {
     // Arrange
     // Kills any mutant that drops the WeakMap cache: a second call would
     // create a fresh store and the identity check would fail.
@@ -223,7 +223,7 @@ describe('ref-store', () => {
     expect(a).toBe(b);
   });
 
-  it('Given getRefStore on two different Contexts, Then returns distinct store instances (cache is keyed by Context)', async () => {
+  it('Given getRefStore on two different Contexts, When invoked, Then returns distinct store instances (cache is keyed by Context)', async () => {
     // Arrange
     // Kills the mutant where the cache key is shared across all contexts.
     const ctxA = await buildSeededContext();
