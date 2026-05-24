@@ -178,6 +178,7 @@
     "test:integration": "wireit",
     "test:posix-integration": "wireit",
     "test:win-integration": "wireit",
+    "test:parity": "wireit",
     "test:e2e": "wireit",
     "test:coverage": "wireit",
     "test:mutation": "wireit",
@@ -343,6 +344,18 @@
       "files": [
         "src/**/*.ts",
         "test/integration/win-only/**/*.ts",
+        "vitest.config.ts"
+      ],
+      "output": []
+    },
+    "test:parity": {
+      "command": "vitest run --project parity",
+      "dependencies": [
+        "check:types"
+      ],
+      "files": [
+        "src/**/*.ts",
+        "test/parity/**/*.ts",
         "vitest.config.ts"
       ],
       "output": []
@@ -592,7 +605,8 @@
         "check:doc-typedoc",
         "check:test-pyramid",
         "test:coverage",
-        "test:integration"
+        "test:integration",
+        "test:parity"
       ]
     }
   },

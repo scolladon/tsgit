@@ -49,6 +49,17 @@ export default defineConfig({
           include: ['test/integration/win-only/**/*.test.ts'],
         },
       },
+      {
+        extends: true,
+        test: {
+          // Cross-adapter parity drivers. Runs the same scenarios against
+          // Node and Memory adapters and asserts byte-identical results.
+          // The Browser driver lives in test/browser/parity.spec.ts and
+          // runs through Playwright.
+          name: 'parity',
+          include: ['test/parity/**/*.test.ts'],
+        },
+      },
     ],
     coverage: {
       provider: 'v8',

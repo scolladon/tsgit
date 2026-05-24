@@ -22,12 +22,12 @@ export const initAddCommitStatusScenario: Scenario<InitAddCommitStatusResult> = 
     message: MESSAGES.seed,
   },
   expected: {
-    init: { initialBranch: 'refs/heads/main', bare: false },
+    init: { initialBranch: 'main', bare: false },
     add: { added: ['a.txt'] },
-    // Commit id is filled in slice 1 once the Node driver runs and emits the
-    // real SHA-1. Placeholder until then — the first run intentionally fails
-    // with a golden mismatch that prints the actual value.
-    commit: { id: '0000000000000000000000000000000000000000', branch: 'refs/heads/main' },
+    // 40-hex golden — Node baseline. Memory and Browser drivers assert the
+    // same value; divergence proves a parity bug in object serialization,
+    // hash framing, or author identity encoding (ADR-128).
+    commit: { id: '87863a6f57aeedd577100911fadbc21ff1062bec', branch: 'refs/heads/main' },
     status: {
       clean: true,
       branch: 'refs/heads/main',
