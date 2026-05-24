@@ -175,7 +175,14 @@ export interface ScanFile {
   readonly source: string;
 }
 
-const recordSource = (target: Map<string, string[]>, name: string, file: string): void => {
+// CQS-violating by intent — the caller (`buildCoverage`) owns the maps and
+// has no other writer; promoting the mutation into the function name keeps
+// the side-effect honest at call sites.
+const appendSourceInPlace = (
+  target: Map<string, string[]>,
+  name: string,
+  file: string,
+): void => {
   const existing = target.get(name);
   if (existing === undefined) {
     target.set(name, [file]);
@@ -194,8 +201,8 @@ const buildCoverage = (
   const primitives = new Map<string, string[]>();
   for (const file of files) {
     const sites = scanCallSites(file.source);
-    for (const name of sites.commands) recordSource(commands, name, file.path);
-    for (const name of sites.primitives) recordSource(primitives, name, file.path);
+    for (const name of sites.commands) appendSourceInPlace(commands, name, file.path);
+    for (const name of sites.primitives) appendSourceInPlace(primitives, name, file.path);
   }
   return { commands, primitives };
 };
@@ -391,5 +398,8 @@ const invokedDirectly = (): boolean => {
 };
 
 if (invokedDirectly()) {
-  await main();
+  await main().catch((err: unknown) => {
+    process.stderr.write(`audit-browser-surface: ${(err as Error).message}\n`);
+    process.exit(1);
+  });
 }

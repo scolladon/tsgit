@@ -35,6 +35,12 @@ export const writePipelineScenario: Scenario<WritePipelineResult> = {
     const file = inputs.files[0];
     if (file === undefined) throw new Error('write-pipeline: missing seed file');
     const blobBytes = new TextEncoder().encode(file.content);
+    // writeObject treats an empty `id` as "no declared id" (see
+    // `hasDeclaredId` in tooling/../validators.ts) and computes the SHA from
+    // the serialised content; supplying any non-empty branded ObjectId would
+    // trigger OBJECT_HASH_MISMATCH unless we pre-hashed the bytes ourselves,
+    // which the public API does not expose. The cast is the documented
+    // contract, mirrored by test/browser/hash-interop.spec.ts.
     const blobId = await repo.primitives.writeObject({
       type: 'blob',
       id: '' as ObjectId,

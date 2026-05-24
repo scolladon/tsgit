@@ -9,7 +9,7 @@
  *   commands:   revParse
  *   primitives: resolveRef, updateRef, writeSymbolicRef, recordRefUpdate
  */
-import type { ObjectId, RefName } from '../../../src/domain/objects/index.ts';
+import type { RefName } from '../../../src/domain/objects/index.ts';
 import { AUTHOR, FILES, MESSAGES } from '../fixtures.ts';
 import type { Scenario } from './types.ts';
 
@@ -44,7 +44,7 @@ export const refsPipelineScenario: Scenario<RefsPipelineResult> = {
 
     const head = await repo.primitives.resolveRef('HEAD' as RefName);
 
-    await repo.primitives.updateRef(NEW_BRANCH, seed.id as ObjectId, {
+    await repo.primitives.updateRef(NEW_BRANCH, seed.id, {
       expected: 'absent',
       reflogMessage: 'refs-pipeline: create branch',
     });
@@ -56,14 +56,14 @@ export const refsPipelineScenario: Scenario<RefsPipelineResult> = {
     // recordRefUpdate writes a reflog entry alongside a manual ref update.
     // We call updateRef first to actually move the ref, then recordRefUpdate
     // to attach the reflog row — mirroring how commit/merge compose them.
-    await repo.primitives.updateRef(NEW_BRANCH_FOR_REFLOG, seed.id as ObjectId, {
+    await repo.primitives.updateRef(NEW_BRANCH_FOR_REFLOG, seed.id, {
       expected: 'absent',
       reflogMessage: 'refs-pipeline: create',
     });
     await repo.primitives.recordRefUpdate(
       NEW_BRANCH_FOR_REFLOG,
-      seed.id as ObjectId,
-      seed.id as ObjectId,
+      seed.id,
+      seed.id,
       'refs-pipeline: synthetic no-op for reflog',
     );
     // Read the reflog back so the assertion proves recordRefUpdate actually

@@ -250,4 +250,24 @@ describe('tooling/audit-browser-surface (integration)', () => {
       });
     });
   });
+
+  describe('Given a tree with no src/repository.ts', () => {
+    describe('When the audit runs', () => {
+      it('Then the unhandled rejection is converted into a friendly exit-1 error', async () => {
+        // Arrange — skip stageRoot entirely so `src/repository.ts` is absent.
+        await mkdir(path.join(tmpRoot, 'tooling'), { recursive: true });
+        await writeAllowlist(tmpRoot, { commands: [], primitives: [] });
+
+        // Act
+        const sut = await runScript(tmpRoot);
+
+        // Assert — must hit the .catch() in the runAudit dispatch, which
+        // prefixes the message; a raw rethrow would still exit 1 but the
+        // stderr would be a Node stack trace, not the prefixed line.
+        expect(sut.code).toBe(1);
+        expect(sut.stderr).toMatch(/^audit-browser-surface: /m);
+        expect(sut.stderr).toContain('ENOENT');
+      });
+    });
+  });
 });
