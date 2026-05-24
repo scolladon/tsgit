@@ -1,7 +1,7 @@
 /**
  * Shared paren/brace scanner for vitest `it(...)` / `test(...)` blocks.
  *
- * Used by every per-heuristic detector in `scripts/test-pyramid/**`. Strategy
+ * Used by every per-heuristic detector in `tooling/test-pyramid/**`. Strategy
  * mirrors ADR-097's regex/brace approach: locate each top-level test opener,
  * extract the literal title, and slice the body out to the matching close
  * paren. Comments, string literals, and template-literal interpolations
@@ -9,14 +9,18 @@
  * because the audit is documented as regex-only.
  */
 
-// Modifier chain segments whose presence marks a test as skipped. The
-// scanner currently extracts blocks only when the title literal sits in the
-// immediate parens (e.g. `it.skip('title', …)` and `it.each([…])('title',
-// …)`). Two-stage helpers like `it.skipIf(cond)('title', …)` and
-// `it.runIf(cond)('title', …)` are dropped silently by the title extractor
-// because the first `(…)` holds a condition expression, not a literal.
-// That's a known limitation — see BACKLOG 19.3b follow-up.
+// Modifier chain segments whose presence marks a test as skipped.
 const SKIP_MODIFIERS = new Set(['skip', 'todo', 'fails']);
+// Modifier chain segments that wrap the title in a SECOND `(…)` call:
+//   it.each([…])('title', body)
+//   it.skipIf(cond)('title', body)
+//   it.runIf(cond)('title', body)
+// The first parens hold an array / condition; the title sits in the next
+// parens. `isSkipped` semantics for skipIf/runIf are defined in ADR-120:
+// the static scanner cannot evaluate the condition, so these blocks emit
+// `isSkipped: false` (like `each`) unless an explicit `skip`/`todo`/`fails`
+// is also chained.
+const TWO_STAGE_MODIFIERS = new Set(['each', 'skipIf', 'runIf']);
 // `(?<!\.)` excludes method-call sites like `compiled.test(...)` and
 // `it.each(...)` chains entered mid-expression; we only want top-level
 // vitest test openers.
@@ -124,7 +128,7 @@ export const scanItBlocks = (source: string): ReadonlyArray<ItBlock> => {
     const chain = match[2] ?? '';
     const chainKeys = chain.split('.').filter((seg) => seg.length > 0);
     const isSkipped = chainKeys.some((seg) => SKIP_MODIFIERS.has(seg));
-    const isEach = chainKeys.includes('each');
+    const isTwoStage = chainKeys.some((seg) => TWO_STAGE_MODIFIERS.has(seg));
 
     const matchEnd = opener + match[0].length;
     const openParen = matchEnd - 1;
@@ -135,7 +139,7 @@ export const scanItBlocks = (source: string): ReadonlyArray<ItBlock> => {
     let bodyEnd = closeParen;
     let consumedEnd = closeParen + 1;
 
-    if (isEach) {
+    if (isTwoStage) {
       let next = closeParen + 1;
       while (next < source.length && isWhitespace(source[next]!)) next += 1;
       if (source[next] !== '(') {

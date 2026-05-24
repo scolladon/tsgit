@@ -215,29 +215,72 @@ describe('scanItBlocks', () => {
     expect(sut).toEqual([]);
   });
 
-  it('Given an it.skipIf(...) block, When scanned, Then the block is dropped (two-stage call shape unsupported — known limitation, BACKLOG 19.3b)', () => {
+  it('Given an it.skipIf(cond)(...) block, When scanned, Then the inner title is extracted and isSkipped is false', () => {
     // Arrange — conditional skip helpers wrap the title in a second call:
-    // `it.skipIf(cond)('title', body)`. The scanner currently looks for the
-    // title literal in the first `(…)`, which here holds the condition.
-    // Documented limitation; tracked as 19.3b.
-    const source = `it.skipIf(process.platform === 'win32')('Given x, When y, Then z', () => {});`;
+    // `it.skipIf(cond)('title', body)`. The scanner treats it as a two-stage
+    // call like `it.each([…])(…)` and pulls the title from the inner parens.
+    const source = `it.skipIf(process.platform === 'win32')('Given x, When y, Then z', () => { expect(1).toBe(1); });`;
 
     // Act
     const sut = scanItBlocks(source);
 
-    // Assert — block silently dropped; surrounding heuristics never fire on it.
-    expect(sut).toEqual([]);
+    // Assert
+    expect(sut).toHaveLength(1);
+    expect(sut[0]?.title).toBe('Given x, When y, Then z');
+    expect(sut[0]?.isSkipped).toBe(false);
+    expect(sut[0]?.body).toContain('expect(1).toBe(1)');
   });
 
-  it('Given an it.runIf(...) block, When scanned, Then the block is dropped (two-stage call shape unsupported — known limitation, BACKLOG 19.3b)', () => {
+  it('Given an it.runIf(cond)(...) block, When scanned, Then the inner title is extracted and isSkipped is false', () => {
     // Arrange
-    const source = `it.runIf(process.env.CI)('Given x, When y, Then z', () => {});`;
+    const source = `it.runIf(process.env.CI)('Given x, When y, Then z', () => { expect(1).toBe(1); });`;
+
+    // Act
+    const sut = scanItBlocks(source);
+
+    // Assert
+    expect(sut).toHaveLength(1);
+    expect(sut[0]?.title).toBe('Given x, When y, Then z');
+    expect(sut[0]?.isSkipped).toBe(false);
+    expect(sut[0]?.body).toContain('expect(1).toBe(1)');
+  });
+
+  it('Given an it.skipIf(cond) followed by no inner call, When scanned, Then the block is dropped silently', () => {
+    // Arrange — invalid in vitest, but the scanner must not crash and must
+    // still emit the well-formed sibling block.
+    const source = `\nit.skipIf(true);\nit('valid', () => { expect(1).toBe(1); });\n`;
+
+    // Act
+    const sut = scanItBlocks(source);
+
+    // Assert
+    expect(sut).toHaveLength(1);
+    expect(sut[0]?.title).toBe('valid');
+  });
+
+  it('Given an it.runIf(cond)(...) whose inner call never closes, When scanned, Then the block is dropped silently', () => {
+    // Arrange
+    const source = `it.runIf(true)('case %s', (n) => { expect(n).toBeGreaterThan(0);`;
 
     // Act
     const sut = scanItBlocks(source);
 
     // Assert
     expect(sut).toEqual([]);
+  });
+
+  it('Given an it.concurrent.skipIf(cond)(...) block, When scanned, Then the title is extracted and isSkipped is false', () => {
+    // Arrange — concurrent + skipIf chain: title still sits in the second
+    // parens; concurrent alone is not a skip modifier.
+    const source = `it.concurrent.skipIf(false)('Given x, When y, Then z', () => { expect(1).toBe(1); });`;
+
+    // Act
+    const sut = scanItBlocks(source);
+
+    // Assert
+    expect(sut).toHaveLength(1);
+    expect(sut[0]?.title).toBe('Given x, When y, Then z');
+    expect(sut[0]?.isSkipped).toBe(false);
   });
 
   it('Given an it.concurrent.skip(...) block, When scanned, Then isSkipped is true (chain key)', () => {
