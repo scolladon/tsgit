@@ -83,9 +83,9 @@ describe('validateWorkingTreePath', () => {
   });
 
   it('Given a path ending with `/` (trailing slash), When validated, Then rejects with empty-component reason (the endsWith mutant would let this through if startsWith→endsWith got applied)', () => {
-    // `/etc/passwd` doesn't end with `/` so flipping startsWith→endsWith
-    // would accept it. This test pins that the leaf check is on the
-    // START, not the END.
+    // Arrange + Assert — `/etc/passwd` doesn't end with `/` so flipping
+    // startsWith→endsWith would accept it. This test pins that the leaf
+    // check is on the START, not the END.
     expectReject('foo/');
   });
 

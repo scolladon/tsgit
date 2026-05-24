@@ -2,13 +2,15 @@
  * AAA-marker detector.
  *
  * For each non-skipped `it(...)` / `test(...)` block in unit files, asserts
- * that the body contains every line-anchored AAA marker required by the
- * manifest (`heuristics.aaaBody.required` — by default `Arrange` + `Assert`).
+ * that the body contains every AAA marker required by the manifest
+ * (`heuristics.aaaBody.required` — by default `Arrange` + `Assert`).
  *
- * Detection regex: `(?:^|\n)\s*\/\/\s*(Arrange|Act|Assert)\b`. Markers must
- * appear at the start of a line (modulo leading whitespace) — inline
- * `expect(x) // Assert` and markers inside string literals don't satisfy the
- * rule. Case-sensitive: `// arrange` is not honoured (see ADR-112).
+ * Detection: each marker must appear inside a `//`-line-comment at the start
+ * of a line (modulo leading whitespace). Compound forms are honoured —
+ * `// Arrange + Act` matches BOTH `Arrange` and `Act`, and
+ * `// Act + Assert` matches BOTH `Act` and `Assert`. Inline trailing
+ * comments (`expect(x) // Assert`) and markers in string literals don't
+ * satisfy the rule. Case-sensitive: `// arrange` is not honoured (ADR-112).
  *
  * Skipped blocks (`.skip` / `.todo` / `.fails`) are exempted — their bodies
  * are often empty placeholders.
@@ -26,9 +28,9 @@ export interface MissingAaaFinding {
 }
 
 const MARKER_PATTERNS: Readonly<Record<AaaMarker, RegExp>> = {
-  Arrange: /(?:^|\n)\s*\/\/\s*Arrange\b/,
-  Act: /(?:^|\n)\s*\/\/\s*Act\b/,
-  Assert: /(?:^|\n)\s*\/\/\s*Assert\b/,
+  Arrange: /(?:^|\n)[ \t]*\/\/[^\n]*\bArrange\b/,
+  Act: /(?:^|\n)[ \t]*\/\/[^\n]*\bAct\b/,
+  Assert: /(?:^|\n)[ \t]*\/\/[^\n]*\bAssert\b/,
 };
 
 const sortFindings = (

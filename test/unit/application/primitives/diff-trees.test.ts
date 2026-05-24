@@ -66,7 +66,8 @@ describe('diffTrees', () => {
   });
 
   it('Given an already-resolved Tree object passed directly, When diffTrees is called, Then returns the correct diff without invoking readTree', async () => {
-    // Kills the ConditionalExpression mutant at resolveInput's undefined guard.
+    // Arrange — kills the ConditionalExpression mutant at resolveInput's
+    // undefined guard.
     const ctx = await buildSeededContext();
     const emptyId = await writeTree(ctx, []);
     const blob: Blob = {
@@ -82,6 +83,8 @@ describe('diffTrees', () => {
       entries: [{ name: 'f.txt', mode: '100644' as FileMode, id: blobId }],
     };
     const sut = await diffTrees(ctx, treeA, treeB);
+
+    // Assert
     expect(sut.changes.length).toBe(1);
     expect(sut.changes[0]?.type).toBe('add');
   });

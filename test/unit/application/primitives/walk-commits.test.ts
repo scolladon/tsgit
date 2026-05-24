@@ -324,13 +324,17 @@ describe('walkCommits', () => {
   });
 
   it('Given a commit that references a visited parent, When walkCommits is iterated, Then the parent is not re-visited (kills the visited-set short-circuit)', async () => {
-    // Forces the first conjunct of `visited.has || missing.has || until.has`
-    // to actually fire. Built as a diamond so d's two paths both converge on
-    // `a` — visiting `a` twice would cause duplicates.
+    // Arrange — forces the first conjunct of `visited.has || missing.has ||
+    // until.has` to actually fire. Built as a diamond so d's two paths both
+    // converge on `a` — visiting `a` twice would cause duplicates.
     const ctx = await buildSeededContext();
     const { a, d } = await buildDiamond(ctx);
+
+    // Act
     const commits = await collect(walkCommits(ctx, { from: [d] }));
     const aCount = commits.filter((x) => x.id === a).length;
+
+    // Assert
     expect(aCount).toBe(1);
   });
 

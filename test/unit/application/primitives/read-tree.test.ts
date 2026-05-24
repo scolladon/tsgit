@@ -69,9 +69,9 @@ describe('readTree', () => {
   });
 
   it('Given a tag chain at exactly MAX_PEEL_DEPTH (at cap), When readTree is called, Then succeeds', async () => {
-    // Kills the `depth > MAX_PEEL_DEPTH` EqualityOperator `>=` mutant: under
-    // `>=`, depth=5 would trip the guard; under `>`, it's the threshold that
-    // still succeeds.
+    // Arrange — kills the `depth > MAX_PEEL_DEPTH` EqualityOperator `>=`
+    // mutant: under `>=`, depth=5 would trip the guard; under `>`, it's the
+    // threshold that still succeeds.
     const ctx = await buildSeededContext();
     const tree: Tree = { type: 'tree', entries: [], id: '' as ObjectId };
     const treeId = await writeObject(ctx, tree);
@@ -96,6 +96,8 @@ describe('readTree', () => {
       currentType = 'tag';
     }
     const sut = await readTree(ctx, currentId);
+
+    // Assert
     expect(sut.type).toBe('tree');
     expect(sut.id).toBe(treeId);
   });

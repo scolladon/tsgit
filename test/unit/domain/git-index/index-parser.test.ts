@@ -628,9 +628,11 @@ describe('parseIndex', () => {
     // That's exactly 62 bytes for the entry header, 0 for path. But path can't be empty.
     // Use buildTestIndex with 1-char path for a just-fits scenario instead.
     const input = buildTestIndex([{ path: 'a', sha: SHA_A }]);
-    // This should parse successfully
+
+    // Act — this should parse successfully
     const sut = parseIndex(input);
 
+    // Assert
     expect(sut.entries).toHaveLength(1);
     expect(sut.entries[0]?.path).toBe('a');
   });

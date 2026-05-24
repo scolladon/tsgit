@@ -596,9 +596,10 @@ describe('NodeFileSystem', () => {
 
     describe('interpretCreationLstat', () => {
       it('Given ok=true with isSymlink=false, When interpreting, Then returns without throwing', () => {
-        // Act — try/catch + `toBeUndefined` is mutation-tighter than
-        // `not.toThrow()`: a mutant that throws a different-coded error
-        // would slip past `not.toThrow()` only if it doesn't throw at all.
+        // Arrange + Act — try/catch + `toBeUndefined` is mutation-tighter
+        // than `not.toThrow()`: a mutant that throws a different-coded
+        // error would slip past `not.toThrow()` only if it doesn't throw
+        // at all.
         let caught: unknown;
         try {
           interpretCreationLstat({ ok: true, isSymlink: false }, '/x');
