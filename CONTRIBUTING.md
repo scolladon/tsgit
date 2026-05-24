@@ -195,7 +195,7 @@ npm run check:mutation-budgets
 
 **Equivalent mutants.** When a mutant is provably equivalent (the test would pass for both the original and the mutant), annotate the source with `// equivalent-mutant: <why>` on the line above. No catalogue, no allowlist — the annotation is the documentation.
 
-### Testing-pyramid audit (Phases 19.2 + 19.3)
+### Testing-pyramid audit (Phases 19.2 + 19.3 + 19.4)
 
 `npm run check:test-pyramid` (also part of `npm run validate`) counts
 unit/integration/e2e tests, reports their share against an 80/15/5 target
@@ -204,13 +204,37 @@ unit/integration/e2e tests, reports their share against an 80/15/5 target
 alongside `src/` and `test/`; tooling tests are at `tooling/test/{unit,
 integration}/` and are scanned by the same audit globs.
 
-**Report-only (ADR-104, ADR-107)** — never blocks merges:
+**Report-only (ADR-104, ADR-107, ADR-125)** — never blocks merges:
 
 - **Over-mocked integration** — any `test/integration/**` (or
   `tooling/test/integration/**`) file matching
   `\bvi\.(mock|fn|spyOn|stubGlobal|stubEnv)\(`. Use real fixtures (the memory
-  adapter is fine — it's a real class, not a mock). Promotion to gating is
-  19.4's job.
+  adapter is fine — it's a real class, not a mock).
+- **Integration usefulness** — every `test/integration/**/*.test.ts` file
+  must carry a `@proves` JSDoc header declaring `surface`, `bucket`, and
+  `unique`. The audit reports three classes:
+  - `missing` — header absent or grammar-invalid
+  - `duplicate` — two files claim the same `(surface, bucket)` pair without
+    the platform-only exemption (`posix-only/` + `win-only/` with bucket
+    `platform-only` is allowed)
+  - `misplaced` — bucket's directory rule rejects the file's directory
+    (e.g. `real-http` outside `network/`)
+
+  The audit also writes `reports/integration-surfaces.json` — a derived
+  index consumed by browser surface-parity tooling. Ships warn-only;
+  promotion to gating is a follow-up PR after one clean observation cycle.
+
+  Bucket taxonomy (one per file):
+
+  | Bucket | What only this tier can prove |
+  |---|---|
+  | `real-fs` | Real Node `fs` semantics against a tmpdir, OS-agnostic. |
+  | `real-http` | Real HTTP socket against canonical `git-http-backend`. |
+  | `real-process` | Real `child_process.spawn` against canonical `git`. |
+  | `cross-tool-interop` | Bytes on disk round-trip against canonical `git`. |
+  | `platform-only` | Behaviour bound to one OS (POSIX perms, NTFS, etc.). |
+  | `multi-adapter-parity` | End-to-end flow through the memory adapter. |
+  | `coverage-gap` | Code path the unit suite cannot reach. |
 
 **Gating (ADRs 109–116)** — exit code `1` on any finding, fails CI:
 
