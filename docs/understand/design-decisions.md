@@ -166,6 +166,14 @@ ADRs are ordered chronologically in the `adr/` folder. This page groups them by 
 - [ADR-129 — Parity scenarios are additive in 19.5; duplicate browser specs retired in 19.5a](../adr/129-parity-scenarios-additive-no-deletion-in-19-5.md)
 - Design: [`docs/design/phase-19-5-e2e-harness-upgrade.md`](../design/phase-19-5-e2e-harness-upgrade.md)
 
+## Playwright surface coverage audit (Phase 19.5a)
+
+- [ADR-130 — Browser coverage is the union of dedicated specs and parity scenarios](../adr/130-browser-coverage-union-of-specs-and-parity-scenarios.md)
+- [ADR-131 — Browser-surface allowlist format](../adr/131-browser-surface-allowlist-format.md)
+- [ADR-132 — Browser-surface audit is a blocking gate, not warn-only](../adr/132-browser-surface-audit-blocking-gate.md)
+- [ADR-133 — Transport commands and `runHook` are the opening allowlist entries](../adr/133-transport-and-runHook-exemptions.md)
+- Design: [`docs/design/phase-19-5a-playwright-surface-coverage-audit.md`](../design/phase-19-5a-playwright-surface-coverage-audit.md)
+
 ## Reading order tips
 
 - **Onboarding to the codebase?** Read ADR-001, ADR-004, ADR-091 in order. They set the architectural ground rules.

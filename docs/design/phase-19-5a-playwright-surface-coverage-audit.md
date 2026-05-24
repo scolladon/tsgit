@@ -275,8 +275,8 @@ the browser bundle picks them up automatically through the existing
 `tooling/build-parity-bundle.ts` step. The Node and Memory drivers
 discover them via `describe.each(SCENARIOS)`.
 
-Goldens are computed by running the scenario once on Node and
-copying the result into the `expected` literal — same workflow 19.5
+The `expected` golden is computed by running the scenario once on
+Node and copying the result into the literal — same workflow 19.5
 established for `branch-lifecycle` and `init-add-commit-status`.
 
 ### 3.7 Wireit integration

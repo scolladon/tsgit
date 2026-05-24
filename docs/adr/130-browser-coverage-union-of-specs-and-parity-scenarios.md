@@ -46,7 +46,7 @@ scenario's golden cannot express).
 
 - New scenarios become the canonical way to close gaps — one file,
   three drivers covered.
-- The audit doesn't penalise authors for picking the lower-friction
+- The audit doesn't penalize authors for picking the lower-friction
   path. The two test sources stay complementary rather than
   competing for the same surface.
 
