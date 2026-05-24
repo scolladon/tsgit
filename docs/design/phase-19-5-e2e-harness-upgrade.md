@@ -95,21 +95,39 @@ exactly the way users will.
 A **parity scenario** is a single module that exports three things:
 
 ```typescript
-// test/parity/scenarios/<name>.scenario.ts
-// Type-only imports — erased at runtime; same path works for vitest + rollup.
+// test/parity/scenarios/types.ts — shared input shape, generic result shape.
 import type { Repository } from '../../../src/repository.ts';
 import type { AuthorIdentity } from '../../../src/domain/objects/author-identity.ts';
 
 export interface ScenarioInputs {
   // Constants the scenario writes into the working tree before `run` opens
   // the repo. The driver is responsible for materialising them into whichever
-  // FS backs `repo` (Node temp dir, OPFS root, in-memory `/repo`).
+  // FS backs `repo` (Node temp dir, OPFS root, in-memory `/repo`). The
+  // `content` is a `string`; the driver encodes via `TextEncoder` per §3.6.
   readonly files: ReadonlyArray<{ path: string; content: string }>;
   readonly author: AuthorIdentity;
   readonly message: string;
 }
 
-export interface ScenarioResult {
+// Each scenario declares its own structured result shape — `init/add/commit/
+// status` for the round-trip scenario, `branch.create/list/delete` for the
+// branch-lifecycle scenario. The result type is per-scenario so a new
+// scenario can shape its golden however it needs without polluting a shared
+// union. The drivers treat `TResult` as opaque: they only do
+// `expect(actual).toEqual(scenario.EXPECTED)`.
+export interface Scenario<TResult> {
+  readonly name: string;                                       // kebab-case, matches filename
+  readonly INPUTS: ScenarioInputs;                             // structured-cloneable
+  readonly EXPECTED: TResult;                                  // golden, including 40-hex IDs
+  readonly run: (repo: Repository, inputs: ScenarioInputs) => Promise<TResult>;
+}
+```
+
+```typescript
+// test/parity/scenarios/<name>.scenario.ts — example shape.
+import type { Scenario } from './types.ts';
+
+interface InitAddCommitStatusResult {
   readonly init: { initialBranch: string; bare: boolean };
   readonly add: { added: ReadonlyArray<string> };
   readonly commit: { id: string; branch: string | undefined };
@@ -117,34 +135,34 @@ export interface ScenarioResult {
     clean: boolean;
     branch: string | undefined;
     detached: boolean;
-    // Raw arrays (not counts) — for the clean-tree scenarios that ship in
-    // 19.5, both are `[]`, which is exact-equality safe across adapters.
-    // Scenarios that leave a dirty tree must declare the array shape their
-    // expected golden agrees on across all three drivers.
+    // Raw arrays (not counts) — both are `[]` for clean-tree scenarios,
+    // exact-equality safe across adapters. Scenarios that leave a dirty
+    // tree must declare an array shape all three drivers agree on.
     indexChanges: ReadonlyArray<unknown>;
     workingTreeChanges: ReadonlyArray<unknown>;
   };
 }
 
-export const INPUTS: ScenarioInputs;     // UPPER_CASE — matches AUTHOR convention in test/browser/fixtures.ts
-export const EXPECTED: ScenarioResult;   // golden, including the 40-hex commit.id
-// `run` is given an already-opened `Repository` whose backing FS already
-// holds `INPUTS.files`. The driver owns FS staging because each backend
-// stages differently (Node = real fs.writeFile, Memory = MemoryFileSystem
-// seed, Browser = OPFS writable streams).
-export const run: (repo: Repository, inputs: ScenarioInputs) => Promise<ScenarioResult>;
+export const scenario: Scenario<InitAddCommitStatusResult> = {
+  name: 'init-add-commit-status',
+  INPUTS: { /* fixed via fixtures.ts */ },
+  EXPECTED: { /* golden — commit.id is a 40-hex literal */ },
+  run: async (repo, inputs) => { /* uses only the public facade */ },
+};
 ```
 
 The contract:
 
 - `INPUTS` is pure data. Structured-cloneable so it crosses
   `page.evaluate()` without serialization tricks.
-- `EXPECTED` is the golden — including the deterministic `commit.id`.
-- `run` performs the scenario against any `Repository` and returns a
-  `ScenarioResult`. It uses only the public facade — no adapter peeking, no
+- `EXPECTED` is the golden — including the deterministic 40-hex IDs.
+- `run` performs the scenario against any `Repository` and returns
+  `TResult`. It uses only the public facade — no adapter peeking, no
   direct `ctx.*` access.
-
-Adding a new scenario is one file. The runner discovers it automatically.
+- The scenario module's default export is the `Scenario<TResult>` object.
+  A `test/parity/scenarios/index.ts` barrel re-exports them as a
+  `SCENARIOS: ReadonlyArray<Scenario<unknown>>` registry the drivers
+  iterate via `it.each`.
 
 ### 3.2 Three drivers, one scenario
 
