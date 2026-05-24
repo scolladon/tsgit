@@ -194,6 +194,7 @@
     "check:doc-coverage": "wireit",
     "check:doc-typedoc": "wireit",
     "check:test-pyramid": "wireit",
+    "check:parity-fixtures": "wireit",
     "check:mutation-budgets": "wireit",
     "verify:tarball": "wireit",
     "check:size": "wireit",
@@ -516,6 +517,18 @@
         "reports/test-pyramid.md"
       ]
     },
+    "check:parity-fixtures": {
+      "command": "node --experimental-strip-types tooling/audit-parity-fixtures.ts",
+      "files": [
+        "tooling/audit-parity-fixtures.ts",
+        "tooling/parity-fixtures/**/*.ts",
+        "test/parity/scenarios/**/*.ts",
+        "test/parity/fixtures.ts"
+      ],
+      "output": [
+        "reports/parity-fixtures.json"
+      ]
+    },
     "check:mutation-budgets": {
       "command": "node --experimental-strip-types tooling/check-mutation-budgets.ts",
       "files": [
@@ -604,6 +617,7 @@
         "check:doc-coverage",
         "check:doc-typedoc",
         "check:test-pyramid",
+        "check:parity-fixtures",
         "test:coverage",
         "test:integration",
         "test:parity"
