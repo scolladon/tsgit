@@ -72,7 +72,6 @@
     "tooling/test/unit/test-pyramid/render-report.test.ts",
     "tooling/test/unit/test-pyramid/scan-it-blocks.test.ts",
     "tooling/test/unit/test-pyramid/scan-describe-blocks.test.ts",
-    "tooling/test/unit/codemod-gwt-describe-split.test.ts",
     "tooling/test/integration/audit-test-pyramid.test.ts"
   ]
 }
