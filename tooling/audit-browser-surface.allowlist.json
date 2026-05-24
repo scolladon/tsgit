@@ -1,0 +1,31 @@
+{
+  "commands": [
+    {
+      "name": "clone",
+      "reason": "smart-HTTP transport needs an in-page server; deferred to 19.8 (Workers runtime parity bring up an in-process HTTP harness reusable here).",
+      "deferredTo": "19.8"
+    },
+    {
+      "name": "fetch",
+      "reason": "smart-HTTP transport needs an in-page server; deferred to 19.8.",
+      "deferredTo": "19.8"
+    },
+    {
+      "name": "fetchMissing",
+      "reason": "partial-clone lazy fetch uses the same transport path as fetch; deferred with the transport bundle.",
+      "deferredTo": "19.8"
+    },
+    {
+      "name": "push",
+      "reason": "smart-HTTP transport needs an in-page server; deferred to 19.8.",
+      "deferredTo": "19.8"
+    }
+  ],
+  "primitives": [
+    {
+      "name": "runHook",
+      "reason": "browser facade has no HookRunner by adapter design (.git/hooks/* spawn POSIX processes that do not exist in OPFS).",
+      "deferredTo": null
+    }
+  ]
+}

@@ -99,6 +99,7 @@
     "tooling/test/unit/test-pyramid/scan-it-blocks.test.ts",
     "tooling/test/unit/test-pyramid/scan-describe-blocks.test.ts",
     "tooling/test/integration/audit-test-pyramid.test.ts",
+    "tooling/test/integration/audit-browser-surface.test.ts",
     "tooling/test/integration/check-mutation-budgets.test.ts",
     "tooling/test/integration/compute-mutation-scope.test.ts",
     "tooling/test/integration/has-code-changes.test.ts"
