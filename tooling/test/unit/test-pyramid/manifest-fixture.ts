@@ -60,6 +60,7 @@ const DEFAULT_GATING: GatingConfig = {
   aaaBody: false,
   sutNaming: false,
   bareClassToThrow: false,
+  emptyAaaSection: false,
 };
 
 export const makeManifest = (overrides: ManifestOverrides = {}): PyramidManifest => {
@@ -97,6 +98,9 @@ export const makeManifest = (overrides: ManifestOverrides = {}): PyramidManifest
         tier: 'unit',
         regex: bareClassRegex,
         compiledRegex: new RegExp(bareClassRegex, 'g'),
+      },
+      emptyAaaSection: {
+        tier: 'unit',
       },
     },
     gating: { ...DEFAULT_GATING, ...(overrides.gating ?? {}) },

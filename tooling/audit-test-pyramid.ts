@@ -23,6 +23,7 @@ import { tallyTierFiles } from './test-pyramid/count-tier-files.ts';
 import { detectBadTitle } from './test-pyramid/detect-bad-title.ts';
 import { detectBannedSutName } from './test-pyramid/detect-banned-sut-name.ts';
 import { detectBareClassThrow } from './test-pyramid/detect-bare-class-throw.ts';
+import { detectEmptyAaaSection } from './test-pyramid/detect-empty-aaa-section.ts';
 import { detectMissingAaa } from './test-pyramid/detect-missing-aaa.ts';
 import { detectOverMocked } from './test-pyramid/detect-over-mocked.ts';
 import { detectUnderAsserted } from './test-pyramid/detect-under-asserted.ts';
@@ -134,6 +135,7 @@ export const runAudit = async (args: CliArgs): Promise<{
       missingAaa: detectMissingAaa(manifest, files),
       bannedSut: detectBannedSutName(manifest, files),
       bareClassThrow: detectBareClassThrow(manifest, files),
+      emptyAaaSection: detectEmptyAaaSection(manifest, files),
     },
   };
   return { manifest, outcome };
@@ -152,6 +154,7 @@ const FINDING_KEY_BY_GATING: Readonly<Record<GatingKey, keyof AuditOutcome['find
   aaaBody: 'missingAaa',
   sutNaming: 'bannedSut',
   bareClassToThrow: 'bareClassThrow',
+  emptyAaaSection: 'emptyAaaSection',
 };
 
 export const collectGatingViolations = (

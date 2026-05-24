@@ -48,6 +48,9 @@
     "bareClassToThrow": {
       "tier": "unit",
       "regex": "\\.toThrow(?:Error)?\\s*\\(\\s*([A-Z]\\w*)\\s*\\)"
+    },
+    "emptyAaaSection": {
+      "tier": "unit"
     }
   },
   "gating": {
@@ -56,7 +59,8 @@
     "gwtTitle": true,
     "aaaBody": true,
     "sutNaming": true,
-    "bareClassToThrow": true
+    "bareClassToThrow": true,
+    "emptyAaaSection": false
   },
   "excludePaths": [
     "tooling/test/unit/test-pyramid/detect-*.test.ts",

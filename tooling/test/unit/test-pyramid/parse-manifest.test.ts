@@ -51,6 +51,9 @@ const VALID_MANIFEST = {
       tier: 'unit',
       regex: '\\.toThrow(?:Error)?\\s*\\(\\s*([A-Z]\\w*)\\s*\\)',
     },
+    emptyAaaSection: {
+      tier: 'unit',
+    },
   },
 };
 
@@ -1057,6 +1060,56 @@ describe('parseManifest', () => {
       // Assert
       expect(caught?.message).toContain('aaaBody must be an object');
     });
+
+    it('Given emptyAaaSection missing entirely, When parsed, Then throws naming the required key', () => {
+      // Arrange
+      const raw = JSON.stringify(replaceHeuristic(VALID_MANIFEST, 'emptyAaaSection', undefined));
+
+      // Act
+      let caught: Error | undefined;
+      try {
+        parseManifest(raw);
+      } catch (error) {
+        caught = error instanceof Error ? error : undefined;
+      }
+
+      // Assert
+      expect(caught?.message).toContain('heuristics.emptyAaaSection is required');
+    });
+
+    it('Given emptyAaaSection as a non-object, When parsed, Then throws naming emptyAaaSection', () => {
+      // Arrange
+      const raw = JSON.stringify(replaceHeuristic(VALID_MANIFEST, 'emptyAaaSection', 7));
+
+      // Act
+      let caught: Error | undefined;
+      try {
+        parseManifest(raw);
+      } catch (error) {
+        caught = error instanceof Error ? error : undefined;
+      }
+
+      // Assert
+      expect(caught?.message).toContain('emptyAaaSection must be an object');
+    });
+
+    it('Given emptyAaaSection with an unknown tier, When parsed, Then throws naming the tier', () => {
+      // Arrange
+      const raw = JSON.stringify(
+        replaceHeuristic(VALID_MANIFEST, 'emptyAaaSection', { tier: 'ghost' }),
+      );
+
+      // Act
+      let caught: Error | undefined;
+      try {
+        parseManifest(raw);
+      } catch (error) {
+        caught = error instanceof Error ? error : undefined;
+      }
+
+      // Assert
+      expect(caught?.message).toContain('unknown tier "ghost"');
+    });
   });
 
   describe('gating block', () => {
@@ -1075,6 +1128,7 @@ describe('parseManifest', () => {
         aaaBody: false,
         sutNaming: false,
         bareClassToThrow: false,
+        emptyAaaSection: false,
       });
     });
 
@@ -1095,6 +1149,21 @@ describe('parseManifest', () => {
       expect(sut.gating.bareClassToThrow).toBe(false);
       expect(sut.gating.underAssertedUnit).toBe(false);
       expect(sut.gating.overMockedIntegration).toBe(false);
+      expect(sut.gating.emptyAaaSection).toBe(false);
+    });
+
+    it('Given gating.emptyAaaSection set true, When parsed, Then that gate is enabled', () => {
+      // Arrange
+      const raw = JSON.stringify({
+        ...VALID_MANIFEST,
+        gating: { emptyAaaSection: true },
+      });
+
+      // Act
+      const sut = parseManifest(raw);
+
+      // Assert
+      expect(sut.gating.emptyAaaSection).toBe(true);
     });
 
     it('Given gating referencing an unknown heuristic, When parsed, Then throws naming the unknown key', () => {
