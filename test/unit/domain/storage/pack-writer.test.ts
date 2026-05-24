@@ -122,7 +122,6 @@ describe('pack-writer', () => {
 
     it('Given 0 entries, When serializing, Then result.data is just the 12-byte pack header', () => {
       // Arrange
-      // Act
       const sut = serializePackfile([]);
 
       // Assert
@@ -470,8 +469,7 @@ describe('pack-writer', () => {
     });
 
     it('Given any entries, When serializing index then parsing, Then lookupPackIndex finds every entry', () => {
-      // Arrange
-      // Assert
+      // Arrange + Assert
       fc.assert(
         fc.property(arbUniqueIndexEntries(8), (entries) => {
           fc.pre(entries.length > 0);
@@ -489,8 +487,7 @@ describe('pack-writer', () => {
     });
 
     it('Given any pack entries, When serializing, Then CRC-32 matches independently computed value', () => {
-      // Arrange
-      // Assert
+      // Arrange + Assert
       fc.assert(
         fc.property(
           fc.array(
