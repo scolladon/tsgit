@@ -1,3 +1,4 @@
+import type { ChangeEntry } from '../../../src/application/commands/status.ts';
 import { AUTHOR, FILES, MESSAGES } from '../fixtures.ts';
 import type { Scenario } from './types.ts';
 
@@ -9,8 +10,8 @@ interface InitAddCommitStatusResult {
     clean: boolean;
     branch: string | undefined;
     detached: boolean;
-    indexChanges: ReadonlyArray<unknown>;
-    workingTreeChanges: ReadonlyArray<unknown>;
+    indexChanges: ReadonlyArray<ChangeEntry>;
+    workingTreeChanges: ReadonlyArray<ChangeEntry>;
   };
 }
 
@@ -49,8 +50,11 @@ export const initAddCommitStatusScenario: Scenario<InitAddCommitStatusResult> = 
         clean: status.clean,
         branch: status.branch,
         detached: status.detached,
-        indexChanges: status.indexChanges,
-        workingTreeChanges: status.workingTreeChanges,
+        // Defensive copies — the underlying StatusResult arrays are
+        // readonly but `.slice()` keeps the parity object self-contained
+        // and immune to any future repo-internal mutation across scenarios.
+        indexChanges: status.indexChanges.slice(),
+        workingTreeChanges: status.workingTreeChanges.slice(),
       },
     };
   },

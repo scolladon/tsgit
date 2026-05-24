@@ -14,8 +14,21 @@
 import * as path from 'node:path';
 import * as process from 'node:process';
 
-import { rollup } from 'rollup';
-import typescript from '@rollup/plugin-typescript';
+import { rollup, type Plugin } from 'rollup';
+import type {
+  RollupTypescriptOptions,
+} from '@rollup/plugin-typescript';
+import * as typescriptPlugin from '@rollup/plugin-typescript';
+
+// The package ships a dual CJS/ESM build whose .d.ts uses
+// `export default function` — under Node16 module resolution without
+// `esModuleInterop`, TypeScript types the default import as the namespace
+// itself, not the callable. The runtime shape at CJS is the function (see
+// `module.exports = Object.assign(exports.default, exports)`), so a typed
+// `.default` reach-through restores the call shape without a runtime cost.
+const typescript = (typescriptPlugin as unknown as {
+  default: (options?: RollupTypescriptOptions) => Plugin;
+}).default;
 
 const ROOT = process.cwd();
 const ENTRY = path.join(ROOT, 'test/browser/parity-scenarios.bundle.ts');

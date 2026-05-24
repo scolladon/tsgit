@@ -13,12 +13,13 @@
  * boundary; we look it up by `name` inside the page (ADR-127). `inputs` is
  * structured-cloneable and passed across as data.
  */
+import type { Repository } from '../../src/repository.ts';
 import { SCENARIOS } from '../parity/scenarios/index.ts';
 import type { ScenarioInputs } from '../parity/scenarios/types.ts';
 import { expect, test } from './fixtures.ts';
 
 interface BrowserScenario {
-  readonly run: (repo: unknown, inputs: ScenarioInputs) => Promise<unknown>;
+  readonly run: (repo: Repository, inputs: ScenarioInputs) => Promise<unknown>;
 }
 
 interface ParityWindow {
@@ -26,7 +27,7 @@ interface ParityWindow {
   readonly __tsgit: {
     readonly openRepository: (opts: {
       rootHandle: FileSystemDirectoryHandle;
-    }) => Promise<{ dispose: () => Promise<void> }>;
+    }) => Promise<Repository>;
   };
 }
 
@@ -39,6 +40,26 @@ const waitForParityRegistry = async (page: import('@playwright/test').Page): Pro
 
 test.describe('parity', () => {
   test.skip(({ browserName }) => browserName === 'webkit', 'OPFS not exposed in Playwright WebKit');
+
+  // Guard: the browser bundle must register every scenario the Node-side
+  // SCENARIOS list expects. A by-name lookup with a missing or misnamed
+  // entry would otherwise mismatch `run()` against `expected` and silently
+  // hide a parity bug — or worse, blame the wrong adapter.
+  test('Given the browser bundle, When the registry is inspected, Then it exposes exactly the SCENARIOS list', async ({
+    readyPage,
+  }) => {
+    // Arrange
+    await waitForParityRegistry(readyPage);
+
+    // Act
+    const sut = await readyPage.evaluate(() => {
+      const w = window as unknown as ParityWindow;
+      return Object.keys(w.__tsgitParity ?? {}).sort();
+    });
+
+    // Assert
+    expect(sut).toEqual(SCENARIOS.map((scenario) => scenario.name).sort());
+  });
 
   for (const scenario of SCENARIOS) {
     test.describe(`Given the ${scenario.name} scenario`, () => {

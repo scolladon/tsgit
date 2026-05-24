@@ -174,4 +174,53 @@ export const data = { author: AUTHOR, message: 'seed' };
       });
     });
   });
+
+  describe('Given a forbidden pattern inside a same-line block comment', () => {
+    describe('When scanned', () => {
+      it('Then no finding (block-comment span is stripped before matching)', () => {
+        // Arrange
+        const source = "const x = 1; /* Date.now() forbidden */ const y = 2;\n";
+
+        // Act
+        const sut = detectNondeterministic([file('test/parity/scenarios/x.scenario.ts', source)]);
+
+        // Assert
+        expect(sut).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given an offending call mid-line after a statement', () => {
+    describe('When scanned', () => {
+      it('Then a finding flags the line regardless of column position', () => {
+        // Arrange
+        const source = "const x = 1; const t = Date.now();\n";
+
+        // Act
+        const sut = detectNondeterministic([file('test/parity/scenarios/x.scenario.ts', source)]);
+
+        // Assert
+        expect(sut).toEqual([
+          { path: 'test/parity/scenarios/x.scenario.ts', line: 1, kind: 'Date.now' },
+        ]);
+      });
+    });
+  });
+
+  describe('Given two offending calls on the same line', () => {
+    describe('When scanned', () => {
+      it('Then one finding per line (line-granularity, not occurrence count)', () => {
+        // Arrange
+        const source = 'const t = Date.now() + Date.now();\n';
+
+        // Act
+        const sut = detectNondeterministic([file('test/parity/scenarios/x.scenario.ts', source)]);
+
+        // Assert
+        expect(sut).toEqual([
+          { path: 'test/parity/scenarios/x.scenario.ts', line: 1, kind: 'Date.now' },
+        ]);
+      });
+    });
+  });
 });

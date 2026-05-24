@@ -53,9 +53,15 @@ const NEW_DATE_PINNED = /\bnew\s+Date\s*\(\s*(['"])[^'"]*\1\s*\)/;
 // `new Date(<arg>)` — any invocation with at least one character of args.
 const NEW_DATE_ANY = /\bnew\s+Date\s*\(\s*[^)]/;
 
-const stripLineComment = (line: string): string => {
-  const idx = line.indexOf('//');
-  return idx === -1 ? line : line.slice(0, idx);
+// Strip same-line block comments and the slice past a line comment so a
+// scenario file that documents a forbidden API in a comment (e.g.
+// "// Date.now() is forbidden") doesn't false-trigger the audit. Cross-
+// line block comments are out of scope — scenario fixtures are tightly
+// disciplined and don't carry them in practice.
+const stripComments = (line: string): string => {
+  const withoutBlockComments = line.replace(/\/\*[^]*?\*\//g, '');
+  const idx = withoutBlockComments.indexOf('//');
+  return idx === -1 ? withoutBlockComments : withoutBlockComments.slice(0, idx);
 };
 
 const classifyNewDate = (line: string): NondeterministicKind | undefined => {
@@ -73,7 +79,7 @@ export const detectNondeterministic = (
     const lines = file.source.split('\n');
     for (let i = 0; i < lines.length; i++) {
       const raw = lines[i] ?? '';
-      const line = stripLineComment(raw);
+      const line = stripComments(raw);
       if (line.length === 0) continue;
       for (const rule of SIMPLE_PATTERNS) {
         if (rule.regex.test(line)) {

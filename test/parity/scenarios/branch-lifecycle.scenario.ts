@@ -58,11 +58,25 @@ export const branchLifecycleScenario: Scenario<BranchLifecycleResult> = {
     const listAfterCreate = await repo.branch({ kind: 'list' });
     const deleted = await repo.branch({ kind: 'delete', name: 'feature' });
     const listAfterDelete = await repo.branch({ kind: 'list' });
-    if (created.kind !== 'create') throw new Error('branch create did not return create result');
-    if (listAfterCreate.kind !== 'list') throw new Error('branch list did not return list result');
-    if (deleted.kind !== 'delete') throw new Error('branch delete did not return delete result');
+    // The discriminant guards below narrow the BranchResult union and
+    // surface a parity bug as an informative throw — the message names the
+    // expected vs actual kind so a driver's failure points at the wrong-
+    // adapter result, not a generic narrowing failure.
+    if (created.kind !== 'create') {
+      throw new Error(`branch.create expected kind='create' but got kind='${created.kind}'`);
+    }
+    if (listAfterCreate.kind !== 'list') {
+      throw new Error(
+        `branch.list (post-create) expected kind='list' but got kind='${listAfterCreate.kind}'`,
+      );
+    }
+    if (deleted.kind !== 'delete') {
+      throw new Error(`branch.delete expected kind='delete' but got kind='${deleted.kind}'`);
+    }
     if (listAfterDelete.kind !== 'list') {
-      throw new Error('branch list (after delete) did not return list result');
+      throw new Error(
+        `branch.list (post-delete) expected kind='list' but got kind='${listAfterDelete.kind}'`,
+      );
     }
     return {
       seedCommitId: seed.id,
