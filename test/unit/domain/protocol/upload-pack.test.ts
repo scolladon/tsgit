@@ -86,16 +86,14 @@ describe('buildDiscoveryUrl', () => {
   });
 
   it('Given a trailing slash, When buildDiscoveryUrl, Then no double slash', () => {
-    // Arrange
-    // Assert
+    // Arrange + Assert
     expect(buildDiscoveryUrl('https://example.com/repo.git/', 'git-upload-pack')).toBe(
       'https://example.com/repo.git/info/refs?service=git-upload-pack',
     );
   });
 
   it('Given a pre-existing query string, When buildDiscoveryUrl, Then appends with &', () => {
-    // Arrange
-    // Assert
+    // Arrange + Assert
     expect(buildDiscoveryUrl('https://example.com/repo.git?token=xyz', 'git-upload-pack')).toBe(
       'https://example.com/repo.git/info/refs?token=xyz&service=git-upload-pack',
     );
@@ -128,16 +126,14 @@ describe('buildDiscoveryUrl', () => {
   });
 
   it('Given an ftp:// scheme, When buildDiscoveryUrl, Then returns the URL (scheme validated at adapter layer)', () => {
-    // Arrange
-    // Assert
+    // Arrange + Assert
     expect(buildDiscoveryUrl('ftp://example.com/repo', 'git-upload-pack')).toBe(
       'ftp://example.com/repo/info/refs?service=git-upload-pack',
     );
   });
 
   it('Given a URL with no .git suffix, When buildDiscoveryUrl, Then no auto-append', () => {
-    // Arrange
-    // Assert
+    // Arrange + Assert
     expect(buildDiscoveryUrl('https://example.com/repo', 'git-upload-pack')).toBe(
       'https://example.com/repo/info/refs?service=git-upload-pack',
     );

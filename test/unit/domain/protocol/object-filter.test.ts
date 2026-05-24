@@ -98,104 +98,87 @@ describe('parseObjectFilter', () => {
   });
 
   it('Given an empty string, When parsed, Then throws INVALID_FILTER_SPEC (empty)', () => {
-    // Arrange
-    // Assert
+    // Arrange + Assert
     expectInvalid('', 'empty');
   });
 
   it('Given an unknown kind, When parsed, Then throws INVALID_FILTER_SPEC (unknown-kind)', () => {
-    // Arrange
-    // Assert
+    // Arrange + Assert
     expectInvalid('unknown:x', 'unknown-kind');
   });
 
   it('Given "sparse:oid", When parsed, Then throws INVALID_FILTER_SPEC (unknown-kind)', () => {
-    // Arrange
-    // Assert
+    // Arrange + Assert
     expectInvalid('sparse:oid=HEAD', 'unknown-kind');
   });
 
   it('Given "combine:", When parsed, Then throws INVALID_FILTER_SPEC (unknown-kind)', () => {
-    // Arrange
-    // Assert
+    // Arrange + Assert
     expectInvalid('combine:blob:none', 'unknown-kind');
   });
 
   it('Given "blob:all", When parsed, Then throws INVALID_FILTER_SPEC (unknown-kind)', () => {
-    // Arrange
-    // Assert
+    // Arrange + Assert
     expectInvalid('blob:all', 'unknown-kind');
   });
 
   it('Given "blob:limit=" with no number, When parsed, Then throws (bad-blob-limit)', () => {
-    // Arrange
-    // Assert
+    // Arrange + Assert
     expectInvalid('blob:limit=', 'bad-blob-limit');
   });
 
   it('Given a negative blob limit, When parsed, Then throws (bad-blob-limit)', () => {
-    // Arrange
-    // Assert
+    // Arrange + Assert
     expectInvalid('blob:limit=-1', 'bad-blob-limit');
   });
 
   it('Given a fractional blob limit, When parsed, Then throws (bad-blob-limit)', () => {
-    // Arrange
-    // Assert
+    // Arrange + Assert
     expectInvalid('blob:limit=1.5', 'bad-blob-limit');
   });
 
   it('Given a non-numeric blob limit, When parsed, Then throws (bad-blob-limit)', () => {
-    // Arrange
-    // Assert
+    // Arrange + Assert
     expectInvalid('blob:limit=abc', 'bad-blob-limit');
   });
 
   it('Given a bad suffix on a blob limit, When parsed, Then throws (bad-blob-limit)', () => {
-    // Arrange
-    // Assert
+    // Arrange + Assert
     expectInvalid('blob:limit=1x', 'bad-blob-limit');
   });
 
   it('Given a blob limit beyond MAX_SAFE_INTEGER, When parsed, Then throws (bad-blob-limit)', () => {
-    // Arrange
-    // Assert
+    // Arrange + Assert
     expectInvalid('blob:limit=99999999999999999999', 'bad-blob-limit');
   });
 
   it('Given a "g"-scaled limit that overflows safe range, When parsed, Then throws (bad-blob-limit)', () => {
-    // Arrange
-    // Assert
+    // Arrange + Assert
     expectInvalid('blob:limit=9999999999999g', 'bad-blob-limit');
   });
 
   it('Given "tree:" with no depth, When parsed, Then throws (bad-tree-depth)', () => {
-    // Arrange
-    // Assert
+    // Arrange + Assert
     expectInvalid('tree:', 'bad-tree-depth');
   });
 
   it('Given a negative tree depth, When parsed, Then throws (bad-tree-depth)', () => {
-    // Arrange
-    // Assert
+    // Arrange + Assert
     expectInvalid('tree:-1', 'bad-tree-depth');
   });
 
   it('Given a fractional tree depth, When parsed, Then throws (bad-tree-depth)', () => {
-    // Arrange
-    // Assert
+    // Arrange + Assert
     expectInvalid('tree:1.5', 'bad-tree-depth');
   });
 
   it('Given a non-numeric tree depth, When parsed, Then throws (bad-tree-depth)', () => {
-    // Arrange
-    // Assert
+    // Arrange + Assert
     expectInvalid('tree:abc', 'bad-tree-depth');
   });
 
   it('Given a tree depth beyond MAX_SAFE_INTEGER, When parsed, Then throws (bad-tree-depth)', () => {
-    // Arrange
-    // Assert
+    // Arrange + Assert
     expectInvalid('tree:99999999999999999999', 'bad-tree-depth');
   });
 });

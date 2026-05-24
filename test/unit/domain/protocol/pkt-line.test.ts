@@ -191,20 +191,17 @@ describe('encodePktStream', () => {
 
 describe('FLUSH_PKT / DELIM_PKT / RESPONSE_END_PKT constants', () => {
   it('Given FLUSH_PKT, When inspected, Then equals bytesOf("0000")', () => {
-    // Arrange
-    // Assert
+    // Arrange + Assert
     expect(FLUSH_PKT).toEqual(bytesOf('0000'));
   });
 
   it('Given DELIM_PKT, When inspected, Then equals bytesOf("0001")', () => {
-    // Arrange
-    // Assert
+    // Arrange + Assert
     expect(DELIM_PKT).toEqual(bytesOf('0001'));
   });
 
   it('Given RESPONSE_END_PKT, When inspected, Then equals bytesOf("0002")', () => {
-    // Arrange
-    // Assert
+    // Arrange + Assert
     expect(RESPONSE_END_PKT).toEqual(bytesOf('0002'));
   });
 });
