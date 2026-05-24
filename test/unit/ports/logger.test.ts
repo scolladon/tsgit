@@ -52,11 +52,15 @@ describe('wrapLoggerSanitizer — passthrough', () => {
 
         const sut = wrapLoggerSanitizer(inner);
 
-        // Assert
-        expect(sut.warn).toBeDefined();
+        // Assert — only the supplied level is exposed; the wrapper preserves
+        // the optional-method contract by omitting levels that were not
+        // supplied.
+        expect(typeof sut.warn).toBe('function');
         expect(sut.debug).toBeUndefined();
         expect(sut.info).toBeUndefined();
         expect(sut.error).toBeUndefined();
+        sut.warn?.('m');
+        expect(inner.warn).toHaveBeenCalledWith('m', undefined);
       });
     });
   });

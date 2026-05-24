@@ -272,12 +272,13 @@ describe('openRepository — dispose state machine', () => {
 
   describe('Given an opened repo', () => {
     describe('When ctx is inspected', () => {
-      it('Then the promisor port is wired', async () => {
+      it('Then the promisor port is wired and exposes the fetch contract', async () => {
         // Arrange
         const sut = await open();
 
-        // Assert
-        expect(sut.ctx.promisor).toBeDefined();
+        // Assert — the port must expose `.fetch(oids)`; a `{}` mutant on the
+        // construction site would survive a bare `toBeDefined()`.
+        expect(typeof sut.ctx.promisor?.fetch).toBe('function');
       });
     });
   });
@@ -701,8 +702,15 @@ describe('openRepository — ctx fields', () => {
         const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
         const sut = await openRepository({ cwd: '/repo', logger }, makeFallback());
 
-        // Assert
-        expect(sut.ctx.logger).toBeDefined();
+        // Assert — all four levels survive the wrap and forward to the inner sink.
+        sut.ctx.logger?.debug?.('debug-message');
+        sut.ctx.logger?.info?.('info-message');
+        sut.ctx.logger?.warn?.('warn-message');
+        sut.ctx.logger?.error?.('error-message');
+        expect(logger.debug).toHaveBeenCalledWith('debug-message', undefined);
+        expect(logger.info).toHaveBeenCalledWith('info-message', undefined);
+        expect(logger.warn).toHaveBeenCalledWith('warn-message', undefined);
+        expect(logger.error).toHaveBeenCalledWith('error-message', undefined);
       });
     });
   });

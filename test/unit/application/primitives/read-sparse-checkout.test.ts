@@ -329,8 +329,8 @@ describe('primitives/read-sparse-checkout', () => {
           // Act
           const sut = await loadSparseMatcher(ctx);
 
-          // Assert — a matcher is returned, and no warning was logged.
-          expect(sut).toBeDefined();
+          // Assert — a callable matcher is returned, and no warning was logged.
+          expect(typeof sut).toBe('function');
           expect(warn).not.toHaveBeenCalled();
         });
       });

@@ -116,12 +116,18 @@ describe('resolveReflogIdentity', () => {
 
   describe('Given an unconfigured repo', () => {
     describe('When resolving', () => {
-      it('Then it never throws', async () => {
-        // Arrange
+      it('Then it returns a non-empty identity with both name and email', async () => {
+        // Arrange — unconfigured repo must still surface SOME identity so the
+        // ref update can record an author line; the resolver synthesises a
+        // fallback rather than throwing.
         const ctx = createMemoryContext();
 
-        // Act & Assert — resolution must not abort a ref update.
-        await expect(resolveReflogIdentity(ctx)).resolves.toBeDefined();
+        // Act
+        const sut = await resolveReflogIdentity(ctx);
+
+        // Assert — fallback identity has both fields populated.
+        expect(sut.name.length).toBeGreaterThan(0);
+        expect(sut.email.length).toBeGreaterThan(0);
       });
     });
   });

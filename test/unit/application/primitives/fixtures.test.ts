@@ -8,10 +8,12 @@ describe('buildSeededContext', () => {
         // Arrange / Act
         const sut = await buildSeededContext();
 
-        // Assert
+        // Assert — content checks on each field, not bare presence.
         expect(sut.layout.gitDir).toBe('/repo/.git');
-        expect(sut.deltaCache).toBeDefined();
-        expect(sut.hashConfig).toBeDefined();
+        expect(typeof sut.deltaCache.get).toBe('function');
+        expect(typeof sut.deltaCache.set).toBe('function');
+        expect(sut.hashConfig.digestLength).toBe(20);
+        expect(sut.hashConfig.hexLength).toBe(40);
       });
     });
   });

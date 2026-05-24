@@ -101,7 +101,7 @@ describe('readGitignore', () => {
 
   describe('Given a.gitignore of exactly MAX_GITIGNORE_BYTES bytes (boundary)', () => {
     describe('When read', () => {
-      it('Then accepts', async () => {
+      it('Then accepts and the ruleset is the single x-glob rule', async () => {
         // Arrange
         const ctx = await seed();
         const content = 'x'.repeat(MAX_GITIGNORE_BYTES);
@@ -110,8 +110,11 @@ describe('readGitignore', () => {
         // Act
         const sut = await readGitignore(ctx, '');
 
-        // Assert — parser yields rules for non-empty content.
-        expect(sut).toBeDefined();
+        // Assert — the boundary-sized payload is parsed into a one-rule ruleset
+        // (the body is the literal pattern `xx…x`). A bare `toBeDefined()` would
+        // also pass if the parser returned `[]` — this assertion proves the
+        // content actually round-tripped.
+        expect(sut).toHaveLength(1);
       });
     });
   });
