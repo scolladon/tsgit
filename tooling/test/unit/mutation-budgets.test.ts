@@ -44,15 +44,21 @@ const fileResult = (statuses: readonly string[]) => ({
 });
 
 describe('parseManifest', () => {
-  it('Given an empty object, When parsed, Then throws with missing-buckets message', () => {
+  describe("Given an empty object", () => {
+    describe("When parsed", () => {
+      it('Then throws with missing-buckets message', () => {
     // Arrange
     const raw = {};
 
     // Act + Assert
     expect(() => parseManifest(raw)).toThrowError(/manifest invalid: missing buckets array/);
   });
+    });
+  });
 
-  it('Given a manifest with an empty buckets array, When parsed, Then throws (no buckets to enforce)', () => {
+  describe("Given a manifest with an empty buckets array", () => {
+    describe("When parsed", () => {
+      it('Then throws (no buckets to enforce)', () => {
     // Arrange
     const raw = { buckets: [] };
 
@@ -61,8 +67,12 @@ describe('parseManifest', () => {
       /manifest invalid: buckets array must not be empty/,
     );
   });
+    });
+  });
 
-  it('Given a bucket missing the name field, When parsed, Then throws naming the offending bucket', () => {
+  describe("Given a bucket missing the name field", () => {
+    describe("When parsed", () => {
+      it('Then throws naming the offending bucket', () => {
     // Arrange
     const raw = {
       buckets: [{ globs: ['src/x/**'], thresholds: { high: 100, low: 95, break: 90 } }],
@@ -71,8 +81,12 @@ describe('parseManifest', () => {
     // Act + Assert
     expect(() => parseManifest(raw)).toThrowError(/manifest invalid: bucket\[0\] missing name/);
   });
+    });
+  });
 
-  it('Given a bucket with an unknown name, When parsed, Then throws naming the bad value', () => {
+  describe("Given a bucket with an unknown name", () => {
+    describe("When parsed", () => {
+      it('Then throws naming the bad value', () => {
     // Arrange
     const raw = {
       buckets: [
@@ -89,8 +103,12 @@ describe('parseManifest', () => {
       /manifest invalid: bucket\[0\] unknown name "mystery"/,
     );
   });
+    });
+  });
 
-  it('Given a bucket with empty globs, When parsed, Then throws', () => {
+  describe("Given a bucket with empty globs", () => {
+    describe("When parsed", () => {
+      it('Then throws', () => {
     // Arrange
     const raw = {
       buckets: [
@@ -107,8 +125,12 @@ describe('parseManifest', () => {
       /manifest invalid: bucket\[0\] "domain" globs must not be empty/,
     );
   });
+    });
+  });
 
-  it('Given a bucket with break threshold above 100, When parsed, Then throws', () => {
+  describe("Given a bucket with break threshold above 100", () => {
+    describe("When parsed", () => {
+      it('Then throws', () => {
     // Arrange
     const raw = {
       buckets: [
@@ -125,8 +147,12 @@ describe('parseManifest', () => {
       /manifest invalid: bucket\[0\] "domain" threshold break out of range/,
     );
   });
+    });
+  });
 
-  it('Given the canonical 4-bucket manifest, When parsed, Then returns it unchanged', () => {
+  describe("Given the canonical 4-bucket manifest", () => {
+    describe("When parsed", () => {
+      it('Then returns it unchanged', () => {
     // Arrange
     const raw = structuredClone(VALID_MANIFEST);
 
@@ -137,10 +163,14 @@ describe('parseManifest', () => {
     expect(sut.buckets).toHaveLength(4);
     expect(sut.buckets.map((b) => b.name)).toEqual(['domain', 'application', 'adapters', 'infra']);
   });
+    });
+  });
 });
 
 describe('parseReport', () => {
-  it('Given a report with schemaVersion 1.0, When parsed, Then returns it', () => {
+  describe("Given a report with schemaVersion 1.0", () => {
+    describe("When parsed", () => {
+      it('Then returns it', () => {
     // Arrange
     const raw = { ...REPORT_BASE, files: {} };
 
@@ -150,32 +180,48 @@ describe('parseReport', () => {
     // Assert
     expect(sut.schemaVersion).toBe('1.0');
   });
+    });
+  });
 
-  it('Given a report missing schemaVersion, When parsed, Then throws', () => {
+  describe("Given a report missing schemaVersion", () => {
+    describe("When parsed", () => {
+      it('Then throws', () => {
     // Arrange
     const raw = { files: {}, thresholds: REPORT_BASE.thresholds };
 
     // Act + Assert
     expect(() => parseReport(raw)).toThrowError(/report invalid: missing schemaVersion/);
   });
+    });
+  });
 
-  it('Given a report with schemaVersion 99.0, When parsed, Then throws with unsupported-version message', () => {
+  describe("Given a report with schemaVersion 99.0", () => {
+    describe("When parsed", () => {
+      it('Then throws with unsupported-version message', () => {
     // Arrange
     const raw = { ...REPORT_BASE, schemaVersion: '99.0', files: {} };
 
     // Act + Assert
     expect(() => parseReport(raw)).toThrowError(/unsupported mutation-report schemaVersion: 99\.0/);
   });
+    });
+  });
 
-  it('Given a report missing files, When parsed, Then throws', () => {
+  describe("Given a report missing files", () => {
+    describe("When parsed", () => {
+      it('Then throws', () => {
     // Arrange
     const raw = { ...REPORT_BASE };
 
     // Act + Assert
     expect(() => parseReport(raw)).toThrowError(/report invalid: missing files object/);
   });
+    });
+  });
 
-  it('Given a report file with a Pending mutant, When parsed, Then throws (incomplete report)', () => {
+  describe("Given a report file with a Pending mutant", () => {
+    describe("When parsed", () => {
+      it('Then throws (incomplete report)', () => {
     // Arrange
     const raw = {
       ...REPORT_BASE,
@@ -187,8 +233,12 @@ describe('parseReport', () => {
       /report invalid: file "src\/x\.ts" has Pending mutant/,
     );
   });
+    });
+  });
 
-  it('Given a report with an unknown mutant status, When parsed, Then throws (schema-drift sentinel)', () => {
+  describe("Given a report with an unknown mutant status", () => {
+    describe("When parsed", () => {
+      it('Then throws (schema-drift sentinel)', () => {
     // Arrange — Stryker may add new statuses in a future major; the parser
     // must fail loudly rather than silently drop them and let `total` diverge
     // from the sum of named fields.
@@ -202,36 +252,52 @@ describe('parseReport', () => {
       /report invalid: file "src\/x\.ts" has unknown mutant status "Hyperkilled"/,
     );
   });
+    });
+  });
 });
 
 describe('bucketForPath', () => {
   const buckets: readonly BucketDefinition[] = VALID_MANIFEST.buckets;
 
-  it('Given src/domain/objects/blob.ts and the canonical manifest, When looked up, Then returns domain', () => {
+  describe("Given src/domain/objects/blob.ts and the canonical manifest", () => {
+    describe("When looked up", () => {
+      it('Then returns domain', () => {
     // Arrange
     const sut = bucketForPath('src/domain/objects/blob.ts', buckets);
 
     // Assert
     expect(sut).toBe('domain');
   });
+    });
+  });
 
-  it('Given src/repository.ts and the canonical manifest, When looked up, Then returns application', () => {
+  describe("Given src/repository.ts and the canonical manifest", () => {
+    describe("When looked up", () => {
+      it('Then returns application', () => {
     // Arrange
     const sut = bucketForPath('src/repository.ts', buckets);
 
     // Assert
     expect(sut).toBe('application');
   });
+    });
+  });
 
-  it('Given a path matching no glob, When looked up, Then returns null', () => {
+  describe("Given a path matching no glob", () => {
+    describe("When looked up", () => {
+      it('Then returns null', () => {
     // Arrange
     const sut = bucketForPath('src/notabucket/foo.ts', buckets);
 
     // Assert
     expect(sut).toBeNull();
   });
+    });
+  });
 
-  it('Given overlapping globs (synthetic manifest), When looked up, Then first-in-manifest-order wins', () => {
+  describe("Given overlapping globs (synthetic manifest)", () => {
+    describe("When looked up", () => {
+      it('Then first-in-manifest-order wins', () => {
     // Arrange
     const overlapping: readonly BucketDefinition[] = [
       { name: 'domain', globs: ['src/a/**'], thresholds: { high: 100, low: 95, break: 90 } },
@@ -244,12 +310,16 @@ describe('bucketForPath', () => {
     // Assert
     expect(sut).toBe('domain');
   });
+    });
+  });
 });
 
 describe('evaluateBudgets', () => {
   const manifest = parseManifest(structuredClone(VALID_MANIFEST));
 
-  it('Given an empty report, When evaluated, Then every bucket is n/a and ok is true', () => {
+  describe("Given an empty report", () => {
+    describe("When evaluated", () => {
+      it('Then every bucket is n/a and ok is true', () => {
     // Arrange
     const report = parseReport({ ...REPORT_BASE, files: {} });
 
@@ -263,8 +333,12 @@ describe('evaluateBudgets', () => {
     expect(sut.unassignedFiles).toEqual([]);
     expect(sut.overlaps).toEqual([]);
   });
+    });
+  });
 
-  it('Given one domain file with all mutants killed, When evaluated, Then domain passes at 100 and others are n/a', () => {
+  describe("Given one domain file with all mutants killed", () => {
+    describe("When evaluated", () => {
+      it('Then domain passes at 100 and others are n/a', () => {
     // Arrange
     const report = parseReport({
       ...REPORT_BASE,
@@ -285,8 +359,12 @@ describe('evaluateBudgets', () => {
       true,
     );
   });
+    });
+  });
 
-  it('Given an adapters file at 80% killed (below 85 break), When evaluated, Then ok is false and adapters fails', () => {
+  describe("Given an adapters file at 80% killed (below 85 break)", () => {
+    describe("When evaluated", () => {
+      it('Then ok is false and adapters fails', () => {
     // Arrange — 4 killed of 5 = 80%
     const report = parseReport({
       ...REPORT_BASE,
@@ -309,8 +387,12 @@ describe('evaluateBudgets', () => {
     const adapters = sut.results.find((r) => r.bucket === 'adapters');
     expect(adapters).toMatchObject({ status: 'fail', score: 80, threshold: 85 });
   });
+    });
+  });
 
-  it('Given an adapters file at exactly 85% killed, When evaluated, Then adapters passes (>= boundary)', () => {
+  describe("Given an adapters file at exactly 85% killed", () => {
+    describe("When evaluated", () => {
+      it('Then adapters passes (>= boundary)', () => {
     // Arrange — 17 killed of 20 = 85%
     const statuses = [
       ...Array.from({ length: 17 }, () => 'Killed'),
@@ -331,8 +413,12 @@ describe('evaluateBudgets', () => {
     const adapters = sut.results.find((r) => r.bucket === 'adapters');
     expect(adapters).toMatchObject({ status: 'pass', score: 85, threshold: 85 });
   });
+    });
+  });
 
-  it('Given a file matching no bucket, When evaluated, Then unassignedFiles surfaces it and ok is false', () => {
+  describe("Given a file matching no bucket", () => {
+    describe("When evaluated", () => {
+      it('Then unassignedFiles surfaces it and ok is false', () => {
     // Arrange
     const report = parseReport({
       ...REPORT_BASE,
@@ -346,8 +432,12 @@ describe('evaluateBudgets', () => {
     expect(sut.ok).toBe(false);
     expect(sut.unassignedFiles).toEqual(['src/orphan/foo.ts']);
   });
+    });
+  });
 
-  it('Given overlapping bucket globs, When evaluated, Then overlaps surfaces and ok is false', () => {
+  describe("Given overlapping bucket globs", () => {
+    describe("When evaluated", () => {
+      it('Then overlaps surfaces and ok is false', () => {
     // Arrange
     const overlappingManifest = parseManifest({
       buckets: [
@@ -367,8 +457,12 @@ describe('evaluateBudgets', () => {
     expect(sut.ok).toBe(false);
     expect(sut.overlaps).toEqual([{ path: 'src/x/foo.ts', buckets: ['domain', 'application'] }]);
   });
+    });
+  });
 
-  it('Given a domain file with mixed mutant statuses, When evaluated, Then score uses killed/(killed+survived+timeout+noCoverage)', () => {
+  describe("Given a domain file with mixed mutant statuses", () => {
+    describe("When evaluated", () => {
+      it('Then score uses killed/(killed+survived+timeout+noCoverage)', () => {
     // Arrange — 8 killed, 1 survived, 1 noCoverage, 0 timeout, plus 1 Ignored (excluded), 1 CompileError (excluded)
     const statuses = [
       'Killed',
@@ -400,8 +494,12 @@ describe('evaluateBudgets', () => {
     });
     expect(sut.ok).toBe(false); // 80 < 99 break for domain
   });
+    });
+  });
 
-  it('Given multiple buckets each with a file, When evaluated, Then per-bucket aggregation is independent', () => {
+  describe("Given multiple buckets each with a file", () => {
+    describe("When evaluated", () => {
+      it('Then per-bucket aggregation is independent', () => {
     // Arrange
     const report = parseReport({
       ...REPORT_BASE,
@@ -431,6 +529,8 @@ describe('evaluateBudgets', () => {
     });
     expect(sut.results.find((r) => r.bucket === 'infra')).toMatchObject({ status: 'n/a' });
     expect(sut.ok).toBe(false);
+  });
+    });
   });
 });
 

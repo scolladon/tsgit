@@ -72,203 +72,259 @@ const seedTimestampChain = async () => {
 };
 
 describe('log', () => {
-  it('Given three commits, When log, Then returns them in newest-first order', async () => {
-    // Arrange
-    const ctx = await seedThree();
+  describe('Given three commits', () => {
+    describe('When log', () => {
+      it('Then returns them in newest-first order', async () => {
+        // Arrange
+        const ctx = await seedThree();
 
-    // Act
-    const sut = await log(ctx);
+        // Act
+        const sut = await log(ctx);
 
-    // Assert
-    expect(sut.map((e) => e.message)).toEqual(['third', 'second', 'first']);
-  });
-
-  it('Given limit=2, When log, Then yields exactly 2', async () => {
-    // Arrange
-    const ctx = await seedThree();
-
-    // Act
-    const sut = await log(ctx, { limit: 2 });
-
-    // Assert
-    expect(sut).toHaveLength(2);
-  });
-
-  it('Given excluding contains the parent commit, When log, Then commits up to (but not including) the parent are returned', async () => {
-    // Arrange
-    const ctx = await seedThree();
-    const all = await log(ctx);
-    // Exclude the oldest commit (its parents are []); only the newest two should remain.
-    const oldest = all[all.length - 1] as { readonly id: string };
-
-    // Act
-    const sut = await log(ctx, { excluding: [oldest.id] });
-
-    // Assert — the excluded commit is not yielded.
-    expect(sut.find((e) => e.id === oldest.id)).toBeUndefined();
-  });
-
-  it("Given from='main' (ref name, not HEAD), When log, Then resolves the named branch", async () => {
-    // Arrange
-    const ctx = await seedThree();
-
-    // Act
-    const sut = await log(ctx, { from: 'main' });
-
-    // Assert — same shape as default HEAD-driven log; kills `from === 'HEAD'` mutants.
-    expect(sut.length).toBeGreaterThanOrEqual(3);
-  });
-
-  it('Given from is a 40-hex oid, When log, Then walks from that oid directly (no ref lookup)', async () => {
-    // Arrange
-    const ctx = await seedThree();
-    const all = await log(ctx);
-    const oldest = all[all.length - 1] as { readonly id: string };
-
-    // Act — walk from the oldest commit; should yield only itself.
-    const sut = await log(ctx, { from: oldest.id });
-
-    // Assert
-    expect(sut).toHaveLength(1);
-    expect(sut[0]?.id).toBe(oldest.id);
-  });
-
-  it('Given an unborn branch (no commits), When log, Then throws (HEAD ref is missing)', async () => {
-    // Arrange — a fresh init produces an unborn `refs/heads/main`; HEAD points at it but the ref does not exist.
-    const ctx = await seedThree();
-    // Wipe the ref to simulate the unborn-branch state.
-    await ctx.fs.rm(`${ctx.layout.gitDir}/refs/heads/main`);
-
-    // Act
-    let caught: unknown;
-    try {
-      await log(ctx);
-    } catch (err) {
-      caught = err;
-    }
-
-    // Assert
-    expect(caught).toBeDefined();
-  });
-
-  it('Given before strictly above the middle timestamp, When log, Then only commits older than before are yielded', async () => {
-    // Arrange — chain at 1000/2000/3000; threshold 2500s excludes the newest only.
-    const { ctx } = await seedTimestampChain();
-
-    // Act
-    const sut = await log(ctx, { before: new Date(2500 * 1000) });
-
-    // Assert — kills ConditionalExpression true/false, BlockStatement{},
-    // `>=`→`<` (which would yield only `newest`), and `/`→`*` (the huge
-    // millisecond threshold would never exclude anything).
-    expect(sut.map((e) => e.message)).toEqual(['middle', 'oldest']);
-  });
-
-  it('Given before exactly equal to a commit timestamp, When log, Then that commit is excluded (>= boundary)', async () => {
-    // Arrange — threshold 2000s equals the `middle` commit's timestamp.
-    const { ctx } = await seedTimestampChain();
-
-    // Act
-    const sut = await log(ctx, { before: new Date(2000 * 1000) });
-
-    // Assert — `>=` excludes the commit AT the boundary; `>` would keep it.
-    expect(sut.map((e) => e.message)).toEqual(['oldest']);
-  });
-
-  it('Given before is undefined, When log, Then no commit is filtered out', async () => {
-    // Arrange — exercises the `before !== undefined` guard short-circuit.
-    const { ctx } = await seedTimestampChain();
-
-    // Act
-    const sut = await log(ctx);
-
-    // Assert
-    expect(sut.map((e) => e.message)).toEqual(['newest', 'middle', 'oldest']);
-  });
-
-  it('Given excluding is omitted, When log, Then every commit is yielded (default empty exclusion)', async () => {
-    // Arrange
-    const { ctx } = await seedTimestampChain();
-
-    // Act
-    const sut = await log(ctx);
-
-    // Assert — the default `[]` excludes nothing.
-    expect(sut).toHaveLength(3);
-  });
-
-  it('Given from is a branch name whose 40-hex suffix is hex, When log, Then it resolves as a ref not an oid', async () => {
-    // Arrange — branch name = 'r' + <40-hex>; the `^` anchor keeps this off the
-    // oid fast-path. Dropping `^` (`/[0-9a-f]{40}$/`) would match the suffix and
-    // return the 41-char string as an oid, making the walk fail.
-    const ctx = createMemoryContext();
-    const target = await writeCommitAt(ctx, [], 1000, 'target');
-    const decoyOid = await writeCommitAt(ctx, [], 1500, 'decoy');
-    const branchName = `r${decoyOid}`;
-    await seedRepo(ctx, {
-      refs: { 'refs/heads/main': target, [`refs/heads/${branchName}`]: target },
+        // Assert
+        expect(sut.map((e) => e.message)).toEqual(['third', 'second', 'first']);
+      });
     });
-
-    // Act
-    const sut = await log(ctx, { from: branchName });
-
-    // Assert — resolved via the branch ref; mutant would throw on a 41-char oid.
-    expect(sut.map((e) => e.message)).toEqual(['target']);
   });
 
-  it('Given from is a branch name whose 40-hex prefix is hex, When log, Then it resolves as a ref not an oid', async () => {
-    // Arrange — branch name = <40-hex> + 'r'; the `$` anchor keeps this off the
-    // oid fast-path. Dropping `$` (`/^[0-9a-f]{40}/`) would match the prefix and
-    // return the 41-char string as an oid, making the walk fail.
-    const ctx = createMemoryContext();
-    const target = await writeCommitAt(ctx, [], 1000, 'target');
-    const decoyOid = await writeCommitAt(ctx, [], 1500, 'decoy');
-    const branchName = `${decoyOid}r`;
-    await seedRepo(ctx, {
-      refs: { 'refs/heads/main': target, [`refs/heads/${branchName}`]: target },
+  describe('Given limit=2', () => {
+    describe('When log', () => {
+      it('Then yields exactly 2', async () => {
+        // Arrange
+        const ctx = await seedThree();
+
+        // Act
+        const sut = await log(ctx, { limit: 2 });
+
+        // Assert
+        expect(sut).toHaveLength(2);
+      });
     });
-
-    // Act
-    const sut = await log(ctx, { from: branchName });
-
-    // Assert — resolved via the branch ref; mutant would throw on a 41-char oid.
-    expect(sut.map((e) => e.message)).toEqual(['target']);
   });
 
-  it('Given from is a tag short name, When log, Then it resolves via refs/tags/<name>', async () => {
-    // Arrange — only `refs/tags/v1` carries the commit; neither the literal
-    // name nor `refs/heads/v1` exist.
-    const ctx = createMemoryContext();
-    const target = await writeCommitAt(ctx, [], 1000, 'tagged');
-    await seedRepo(ctx, {
-      refs: { 'refs/heads/main': target, 'refs/tags/v1': target },
+  describe('Given excluding contains the parent commit', () => {
+    describe('When log', () => {
+      it('Then commits up to (but not including) the parent are returned', async () => {
+        // Arrange
+        const ctx = await seedThree();
+        const all = await log(ctx);
+        // Exclude the oldest commit (its parents are []); only the newest two should remain.
+        const oldest = all[all.length - 1] as { readonly id: string };
+
+        // Act
+        const sut = await log(ctx, { excluding: [oldest.id] });
+
+        // Assert — the excluded commit is not yielded.
+        expect(sut.find((e) => e.id === oldest.id)).toBeUndefined();
+      });
     });
-
-    // Act
-    const sut = await log(ctx, { from: 'v1' });
-
-    // Assert — kills the `refs/tags/${from}` → `` StringLiteral mutant, which
-    // would drop the only resolvable candidate and throw.
-    expect(sut.map((e) => e.message)).toEqual(['tagged']);
   });
 
-  it('Given excluding is a ref name resolving to a commit, When log, Then that commit is excluded', async () => {
-    // Arrange — chain oldest→middle→newest; exclude the `middle` commit via a
-    // full ref name so the walk stops there.
-    const ctx = createMemoryContext();
-    const c1 = await writeCommitAt(ctx, [], 1000, 'oldest');
-    const c2 = await writeCommitAt(ctx, [c1], 2000, 'middle');
-    const c3 = await writeCommitAt(ctx, [c2], 3000, 'newest');
-    await seedRepo(ctx, {
-      refs: { 'refs/heads/main': c3, 'refs/heads/cut': c2 },
+  describe("Given from='main' (ref name, not HEAD)", () => {
+    describe('When log', () => {
+      it('Then resolves the named branch', async () => {
+        // Arrange
+        const ctx = await seedThree();
+
+        // Act
+        const sut = await log(ctx, { from: 'main' });
+
+        // Assert — same shape as default HEAD-driven log; kills `from === 'HEAD'` mutants.
+        expect(sut.length).toBeGreaterThanOrEqual(3);
+      });
     });
+  });
 
-    // Act
-    const sut = await log(ctx, { excluding: ['refs/heads/cut'] });
+  describe('Given from is a 40-hex oid', () => {
+    describe('When log', () => {
+      it('Then walks from that oid directly (no ref lookup)', async () => {
+        // Arrange
+        const ctx = await seedThree();
+        const all = await log(ctx);
+        const oldest = all[all.length - 1] as { readonly id: string };
 
-    // Assert — `excluding` resolved as a ref name; mutants that treat it as a
-    // raw oid (regex/ConditionalExpression) or skip the resolve (BlockStatement{})
-    // would push the wrong value and yield `middle` + `oldest` too.
-    expect(sut.map((e) => e.message)).toEqual(['newest']);
+        // Act — walk from the oldest commit; should yield only itself.
+        const sut = await log(ctx, { from: oldest.id });
+
+        // Assert
+        expect(sut).toHaveLength(1);
+        expect(sut[0]?.id).toBe(oldest.id);
+      });
+    });
+  });
+
+  describe('Given an unborn branch (no commits)', () => {
+    describe('When log', () => {
+      it('Then throws (HEAD ref is missing)', async () => {
+        // Arrange — a fresh init produces an unborn `refs/heads/main`; HEAD points at it but the ref does not exist.
+        const ctx = await seedThree();
+        // Wipe the ref to simulate the unborn-branch state.
+        await ctx.fs.rm(`${ctx.layout.gitDir}/refs/heads/main`);
+
+        // Act
+        let caught: unknown;
+        try {
+          await log(ctx);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeDefined();
+      });
+    });
+  });
+
+  describe('Given before strictly above the middle timestamp', () => {
+    describe('When log', () => {
+      it('Then only commits older than before are yielded', async () => {
+        // Arrange — chain at 1000/2000/3000; threshold 2500s excludes the newest only.
+        const { ctx } = await seedTimestampChain();
+
+        // Act
+        const sut = await log(ctx, { before: new Date(2500 * 1000) });
+
+        // Assert — kills ConditionalExpression true/false, BlockStatement{},
+        // `>=`→`<` (which would yield only `newest`), and `/`→`*` (the huge
+        // millisecond threshold would never exclude anything).
+        expect(sut.map((e) => e.message)).toEqual(['middle', 'oldest']);
+      });
+    });
+  });
+
+  describe('Given before exactly equal to a commit timestamp', () => {
+    describe('When log', () => {
+      it('Then that commit is excluded (>= boundary)', async () => {
+        // Arrange — threshold 2000s equals the `middle` commit's timestamp.
+        const { ctx } = await seedTimestampChain();
+
+        // Act
+        const sut = await log(ctx, { before: new Date(2000 * 1000) });
+
+        // Assert — `>=` excludes the commit AT the boundary; `>` would keep it.
+        expect(sut.map((e) => e.message)).toEqual(['oldest']);
+      });
+    });
+  });
+
+  describe('Given before is undefined', () => {
+    describe('When log', () => {
+      it('Then no commit is filtered out', async () => {
+        // Arrange — exercises the `before !== undefined` guard short-circuit.
+        const { ctx } = await seedTimestampChain();
+
+        // Act
+        const sut = await log(ctx);
+
+        // Assert
+        expect(sut.map((e) => e.message)).toEqual(['newest', 'middle', 'oldest']);
+      });
+    });
+  });
+
+  describe('Given excluding is omitted', () => {
+    describe('When log', () => {
+      it('Then every commit is yielded (default empty exclusion)', async () => {
+        // Arrange
+        const { ctx } = await seedTimestampChain();
+
+        // Act
+        const sut = await log(ctx);
+
+        // Assert — the default `[]` excludes nothing.
+        expect(sut).toHaveLength(3);
+      });
+    });
+  });
+
+  describe('Given from is a branch name whose 40-hex suffix is hex', () => {
+    describe('When log', () => {
+      it('Then it resolves as a ref not an oid', async () => {
+        // Arrange — branch name = 'r' + <40-hex>; the `^` anchor keeps this off the
+        // oid fast-path. Dropping `^` (`/[0-9a-f]{40}$/`) would match the suffix and
+        // return the 41-char string as an oid, making the walk fail.
+        const ctx = createMemoryContext();
+        const target = await writeCommitAt(ctx, [], 1000, 'target');
+        const decoyOid = await writeCommitAt(ctx, [], 1500, 'decoy');
+        const branchName = `r${decoyOid}`;
+        await seedRepo(ctx, {
+          refs: { 'refs/heads/main': target, [`refs/heads/${branchName}`]: target },
+        });
+
+        // Act
+        const sut = await log(ctx, { from: branchName });
+
+        // Assert — resolved via the branch ref; mutant would throw on a 41-char oid.
+        expect(sut.map((e) => e.message)).toEqual(['target']);
+      });
+    });
+  });
+
+  describe('Given from is a branch name whose 40-hex prefix is hex', () => {
+    describe('When log', () => {
+      it('Then it resolves as a ref not an oid', async () => {
+        // Arrange — branch name = <40-hex> + 'r'; the `$` anchor keeps this off the
+        // oid fast-path. Dropping `$` (`/^[0-9a-f]{40}/`) would match the prefix and
+        // return the 41-char string as an oid, making the walk fail.
+        const ctx = createMemoryContext();
+        const target = await writeCommitAt(ctx, [], 1000, 'target');
+        const decoyOid = await writeCommitAt(ctx, [], 1500, 'decoy');
+        const branchName = `${decoyOid}r`;
+        await seedRepo(ctx, {
+          refs: { 'refs/heads/main': target, [`refs/heads/${branchName}`]: target },
+        });
+
+        // Act
+        const sut = await log(ctx, { from: branchName });
+
+        // Assert — resolved via the branch ref; mutant would throw on a 41-char oid.
+        expect(sut.map((e) => e.message)).toEqual(['target']);
+      });
+    });
+  });
+
+  describe('Given from is a tag short name', () => {
+    describe('When log', () => {
+      it('Then it resolves via refs/tags/<name>', async () => {
+        // Arrange — only `refs/tags/v1` carries the commit; neither the literal
+        // name nor `refs/heads/v1` exist.
+        const ctx = createMemoryContext();
+        const target = await writeCommitAt(ctx, [], 1000, 'tagged');
+        await seedRepo(ctx, {
+          refs: { 'refs/heads/main': target, 'refs/tags/v1': target },
+        });
+
+        // Act
+        const sut = await log(ctx, { from: 'v1' });
+
+        // Assert — kills the `refs/tags/${from}` → `` StringLiteral mutant, which
+        // would drop the only resolvable candidate and throw.
+        expect(sut.map((e) => e.message)).toEqual(['tagged']);
+      });
+    });
+  });
+
+  describe('Given excluding is a ref name resolving to a commit', () => {
+    describe('When log', () => {
+      it('Then that commit is excluded', async () => {
+        // Arrange — chain oldest→middle→newest; exclude the `middle` commit via a
+        // full ref name so the walk stops there.
+        const ctx = createMemoryContext();
+        const c1 = await writeCommitAt(ctx, [], 1000, 'oldest');
+        const c2 = await writeCommitAt(ctx, [c1], 2000, 'middle');
+        const c3 = await writeCommitAt(ctx, [c2], 3000, 'newest');
+        await seedRepo(ctx, {
+          refs: { 'refs/heads/main': c3, 'refs/heads/cut': c2 },
+        });
+
+        // Act
+        const sut = await log(ctx, { excluding: ['refs/heads/cut'] });
+
+        // Assert — `excluding` resolved as a ref name; mutants that treat it as a
+        // raw oid (regex/ConditionalExpression) or skip the resolve (BlockStatement{})
+        // would push the wrong value and yield `middle` + `oldest` too.
+        expect(sut.map((e) => e.message)).toEqual(['newest']);
+      });
+    });
   });
 });

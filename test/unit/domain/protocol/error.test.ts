@@ -23,139 +23,203 @@ import {
 
 describe('domain protocol error', () => {
   describe('factory data', () => {
-    it('Given invalidPktLength("xxxx"), When checking data, Then code is INVALID_PKT_LENGTH and value preserved', () => {
-      // Arrange & Act
-      const sut = invalidPktLength('xxxx');
+    describe('Given invalidPktLength("xxxx")', () => {
+      describe('When checking data', () => {
+        it('Then code is INVALID_PKT_LENGTH and value preserved', () => {
+          // Arrange & Act
+          const sut = invalidPktLength('xxxx');
 
-      // Assert
-      expect(sut.data).toEqual({ code: 'INVALID_PKT_LENGTH', value: 'xxxx' });
-    });
-
-    it('Given pktLengthReserved(1), When checking data, Then code is PKT_LENGTH_RESERVED and value preserved', () => {
-      // Arrange & Act
-      const sut = pktLengthReserved(1);
-
-      // Assert
-      expect(sut.data).toEqual({ code: 'PKT_LENGTH_RESERVED', value: 1 });
-    });
-
-    it('Given pktTooLarge(65521), When checking data, Then code is PKT_TOO_LARGE and value preserved', () => {
-      // Arrange & Act
-      const sut = pktTooLarge(65521);
-
-      // Assert
-      expect(sut.data).toEqual({ code: 'PKT_TOO_LARGE', value: 65521 });
-    });
-
-    it('Given pktTruncated(2), When checking data, Then code is PKT_TRUNCATED and remaining preserved', () => {
-      // Arrange & Act
-      const sut = pktTruncated(2);
-
-      // Assert
-      expect(sut.data).toEqual({ code: 'PKT_TRUNCATED', remaining: 2 });
-    });
-
-    it('Given invalidBaseUrl("fragment"), When checking data, Then code is INVALID_BASE_URL and reason preserved', () => {
-      // Arrange & Act
-      const sut = invalidBaseUrl('fragment');
-
-      // Assert
-      expect(sut.data).toEqual({ code: 'INVALID_BASE_URL', reason: 'fragment' });
-    });
-
-    it('Given missingServiceHeader("git-upload-pack", "git-receive-pack"), When checking data, Then code, expected, actual populated', () => {
-      // Arrange & Act
-      const sut = missingServiceHeader('git-upload-pack', 'git-receive-pack');
-
-      // Assert
-      expect(sut.data).toEqual({
-        code: 'MISSING_SERVICE_HEADER',
-        expected: 'git-upload-pack',
-        actual: 'git-receive-pack',
+          // Assert
+          expect(sut.data).toEqual({ code: 'INVALID_PKT_LENGTH', value: 'xxxx' });
+        });
       });
     });
 
-    it('Given missingCapabilities(), When checking data, Then code is MISSING_CAPABILITIES', () => {
-      // Arrange & Act
-      const sut = missingCapabilities();
+    describe('Given pktLengthReserved(1)', () => {
+      describe('When checking data', () => {
+        it('Then code is PKT_LENGTH_RESERVED and value preserved', () => {
+          // Arrange & Act
+          const sut = pktLengthReserved(1);
 
-      // Assert
-      expect(sut.data).toEqual({ code: 'MISSING_CAPABILITIES' });
+          // Assert
+          expect(sut.data).toEqual({ code: 'PKT_LENGTH_RESERVED', value: 1 });
+        });
+      });
     });
 
-    it('Given invalidRefLine("bad"), When checking data, Then code is INVALID_REF_LINE and line preserved', () => {
-      // Arrange & Act
-      const sut = invalidRefLine('bad');
+    describe('Given pktTooLarge(65521)', () => {
+      describe('When checking data', () => {
+        it('Then code is PKT_TOO_LARGE and value preserved', () => {
+          // Arrange & Act
+          const sut = pktTooLarge(65521);
 
-      // Assert
-      expect(sut.data).toEqual({ code: 'INVALID_REF_LINE', line: 'bad' });
+          // Assert
+          expect(sut.data).toEqual({ code: 'PKT_TOO_LARGE', value: 65521 });
+        });
+      });
     });
 
-    it('Given duplicateRef("refs/heads/main"), When checking data, Then code is DUPLICATE_REF and name preserved', () => {
-      // Arrange & Act
-      const sut = duplicateRef('refs/heads/main');
+    describe('Given pktTruncated(2)', () => {
+      describe('When checking data', () => {
+        it('Then code is PKT_TRUNCATED and remaining preserved', () => {
+          // Arrange & Act
+          const sut = pktTruncated(2);
 
-      // Assert
-      expect(sut.data).toEqual({ code: 'DUPLICATE_REF', name: 'refs/heads/main' });
+          // Assert
+          expect(sut.data).toEqual({ code: 'PKT_TRUNCATED', remaining: 2 });
+        });
+      });
     });
 
-    it('Given invalidSidebandChannel(4), When checking data, Then code is INVALID_SIDEBAND_CHANNEL and channel preserved', () => {
-      // Arrange & Act
-      const sut = invalidSidebandChannel(4);
+    describe('Given invalidBaseUrl("fragment")', () => {
+      describe('When checking data', () => {
+        it('Then code is INVALID_BASE_URL and reason preserved', () => {
+          // Arrange & Act
+          const sut = invalidBaseUrl('fragment');
 
-      // Assert
-      expect(sut.data).toEqual({ code: 'INVALID_SIDEBAND_CHANNEL', channel: 4 });
+          // Assert
+          expect(sut.data).toEqual({ code: 'INVALID_BASE_URL', reason: 'fragment' });
+        });
+      });
     });
 
-    it('Given sidebandFatal("repo not found"), When checking data, Then code is SIDEBAND_FATAL and message preserved', () => {
-      // Arrange & Act
-      const sut = sidebandFatal('repo not found');
+    describe('Given missingServiceHeader("git-upload-pack", "git-receive-pack")', () => {
+      describe('When checking data', () => {
+        it('Then code, expected, actual populated', () => {
+          // Arrange & Act
+          const sut = missingServiceHeader('git-upload-pack', 'git-receive-pack');
 
-      // Assert
-      expect(sut.data).toEqual({ code: 'SIDEBAND_FATAL', message: 'repo not found' });
+          // Assert
+          expect(sut.data).toEqual({
+            code: 'MISSING_SERVICE_HEADER',
+            expected: 'git-upload-pack',
+            actual: 'git-receive-pack',
+          });
+        });
+      });
     });
 
-    it('Given unknownAckStatus("bogus"), When checking data, Then code is UNKNOWN_ACK_STATUS and value preserved', () => {
-      // Arrange & Act
-      const sut = unknownAckStatus('bogus');
+    describe('Given missingCapabilities()', () => {
+      describe('When checking data', () => {
+        it('Then code is MISSING_CAPABILITIES', () => {
+          // Arrange & Act
+          const sut = missingCapabilities();
 
-      // Assert
-      expect(sut.data).toEqual({ code: 'UNKNOWN_ACK_STATUS', value: 'bogus' });
+          // Assert
+          expect(sut.data).toEqual({ code: 'MISSING_CAPABILITIES' });
+        });
+      });
     });
 
-    it('Given invalidReportStatus("weird"), When checking data, Then code is INVALID_REPORT_STATUS and line preserved', () => {
-      // Arrange & Act
-      const sut = invalidReportStatus('weird');
+    describe('Given invalidRefLine("bad")', () => {
+      describe('When checking data', () => {
+        it('Then code is INVALID_REF_LINE and line preserved', () => {
+          // Arrange & Act
+          const sut = invalidRefLine('bad');
 
-      // Assert
-      expect(sut.data).toEqual({ code: 'INVALID_REPORT_STATUS', line: 'weird' });
+          // Assert
+          expect(sut.data).toEqual({ code: 'INVALID_REF_LINE', line: 'bad' });
+        });
+      });
     });
 
-    it('Given emptyWants(), When checking data, Then code is EMPTY_WANTS', () => {
-      // Arrange & Act
-      const sut = emptyWants();
+    describe('Given duplicateRef("refs/heads/main")', () => {
+      describe('When checking data', () => {
+        it('Then code is DUPLICATE_REF and name preserved', () => {
+          // Arrange & Act
+          const sut = duplicateRef('refs/heads/main');
 
-      // Assert
-      expect(sut.data).toEqual({ code: 'EMPTY_WANTS' });
+          // Assert
+          expect(sut.data).toEqual({ code: 'DUPLICATE_REF', name: 'refs/heads/main' });
+        });
+      });
     });
 
-    it('Given emptyReceiveUpdates(), When checking data, Then code is EMPTY_RECEIVE_UPDATES', () => {
-      // Arrange & Act
-      const sut = emptyReceiveUpdates();
+    describe('Given invalidSidebandChannel(4)', () => {
+      describe('When checking data', () => {
+        it('Then code is INVALID_SIDEBAND_CHANNEL and channel preserved', () => {
+          // Arrange & Act
+          const sut = invalidSidebandChannel(4);
 
-      // Assert
-      expect(sut.data).toEqual({ code: 'EMPTY_RECEIVE_UPDATES' });
+          // Assert
+          expect(sut.data).toEqual({ code: 'INVALID_SIDEBAND_CHANNEL', channel: 4 });
+        });
+      });
     });
 
-    it('Given tooManyAdvertisedRefs(count, limit), When checking data, Then code, count, and limit are preserved', () => {
-      // Arrange & Act
-      const sut = tooManyAdvertisedRefs(500_001, 500_000);
+    describe('Given sidebandFatal("repo not found")', () => {
+      describe('When checking data', () => {
+        it('Then code is SIDEBAND_FATAL and message preserved', () => {
+          // Arrange & Act
+          const sut = sidebandFatal('repo not found');
 
-      // Assert
-      expect(sut.data).toEqual({
-        code: 'TOO_MANY_ADVERTISED_REFS',
-        count: 500_001,
-        limit: 500_000,
+          // Assert
+          expect(sut.data).toEqual({ code: 'SIDEBAND_FATAL', message: 'repo not found' });
+        });
+      });
+    });
+
+    describe('Given unknownAckStatus("bogus")', () => {
+      describe('When checking data', () => {
+        it('Then code is UNKNOWN_ACK_STATUS and value preserved', () => {
+          // Arrange & Act
+          const sut = unknownAckStatus('bogus');
+
+          // Assert
+          expect(sut.data).toEqual({ code: 'UNKNOWN_ACK_STATUS', value: 'bogus' });
+        });
+      });
+    });
+
+    describe('Given invalidReportStatus("weird")', () => {
+      describe('When checking data', () => {
+        it('Then code is INVALID_REPORT_STATUS and line preserved', () => {
+          // Arrange & Act
+          const sut = invalidReportStatus('weird');
+
+          // Assert
+          expect(sut.data).toEqual({ code: 'INVALID_REPORT_STATUS', line: 'weird' });
+        });
+      });
+    });
+
+    describe('Given emptyWants()', () => {
+      describe('When checking data', () => {
+        it('Then code is EMPTY_WANTS', () => {
+          // Arrange & Act
+          const sut = emptyWants();
+
+          // Assert
+          expect(sut.data).toEqual({ code: 'EMPTY_WANTS' });
+        });
+      });
+    });
+
+    describe('Given emptyReceiveUpdates()', () => {
+      describe('When checking data', () => {
+        it('Then code is EMPTY_RECEIVE_UPDATES', () => {
+          // Arrange & Act
+          const sut = emptyReceiveUpdates();
+
+          // Assert
+          expect(sut.data).toEqual({ code: 'EMPTY_RECEIVE_UPDATES' });
+        });
+      });
+    });
+
+    describe('Given tooManyAdvertisedRefs(count, limit)', () => {
+      describe('When checking data', () => {
+        it('Then code, count, and limit are preserved', () => {
+          // Arrange & Act
+          const sut = tooManyAdvertisedRefs(500_001, 500_000);
+
+          // Assert
+          expect(sut.data).toEqual({
+            code: 'TOO_MANY_ADVERTISED_REFS',
+            count: 500_001,
+            limit: 500_000,
+          });
+        });
       });
     });
   });
@@ -231,24 +295,25 @@ describe('domain protocol error', () => {
       ],
     ];
 
-    it.each(
-      cases,
-    )('Given protocol error %j, When TsgitError(...).message is read, Then it equals the documented format', (data, expected) => {
-      // Arrange & Act
-      const sut = new TsgitError(data);
+    describe('Given protocol error %j', () => {
+      describe('When TsgitError(...).message is read', () => {
+        it.each(cases)('Then it equals the documented format', (data, expected) => {
+          // Arrange & Act
+          const sut = new TsgitError(data);
 
-      // Assert
-      expect(sut.message).toBe(expected);
-    });
+          // Assert
+          expect(sut.message).toBe(expected);
+        });
+      });
+      describe('When checking .data.code', () => {
+        it.each(cases)('Then it strictly equals the variant literal', (data) => {
+          // Arrange & Act
+          const sut = new TsgitError(data);
 
-    it.each(
-      cases,
-    )('Given protocol error %j, When checking .data.code, Then it strictly equals the variant literal', (data) => {
-      // Arrange & Act
-      const sut = new TsgitError(data);
-
-      // Assert
-      expect(sut.data.code).toBe(data.code);
+          // Assert
+          expect(sut.data.code).toBe(data.code);
+        });
+      });
     });
   });
 });

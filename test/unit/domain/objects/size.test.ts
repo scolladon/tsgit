@@ -55,67 +55,87 @@ const buildTag = (): Tag => ({
 });
 
 describe('payloadByteLength', () => {
-  it('Given a blob, When measured, Then size equals content.byteLength', () => {
-    // Arrange
-    const content = new Uint8Array([1, 2, 3, 4, 5]);
-    const blob = parseBlobContent(DUMMY_ID, content);
+  describe('Given a blob', () => {
+    describe('When measured', () => {
+      it('Then size equals content.byteLength', () => {
+        // Arrange
+        const content = new Uint8Array([1, 2, 3, 4, 5]);
+        const blob = parseBlobContent(DUMMY_ID, content);
 
-    // Act
-    const sut = payloadByteLength(blob, SHA1_CONFIG);
+        // Act
+        const sut = payloadByteLength(blob, SHA1_CONFIG);
 
-    // Assert
-    expect(sut).toBe(content.byteLength);
+        // Assert
+        expect(sut).toBe(content.byteLength);
+      });
+    });
   });
 
-  it('Given an empty blob, When measured, Then size is 0', () => {
-    // Arrange
-    const blob = parseBlobContent(DUMMY_ID, new Uint8Array(0));
+  describe('Given an empty blob', () => {
+    describe('When measured', () => {
+      it('Then size is 0', () => {
+        // Arrange
+        const blob = parseBlobContent(DUMMY_ID, new Uint8Array(0));
 
-    // Act
-    const sut = payloadByteLength(blob, SHA1_CONFIG);
+        // Act
+        const sut = payloadByteLength(blob, SHA1_CONFIG);
 
-    // Assert
-    expect(sut).toBe(0);
+        // Assert
+        expect(sut).toBe(0);
+      });
+    });
   });
 
-  it('Given a tree, When measured, Then size equals the header size of its on-disk encoding', () => {
-    // Arrange — cross-check via `serializeObject` + `parseHeader` so a
-    // type-swap mutant inside `payloadByteLength` cannot pass by routing
-    // through the same serializer.
-    const tree = buildTree();
-    const onDiskBytes = serializeObject(tree, SHA1_CONFIG);
-    const expected = parseHeader(onDiskBytes).size;
+  describe('Given a tree', () => {
+    describe('When measured', () => {
+      it('Then size equals the header size of its on-disk encoding', () => {
+        // Arrange — cross-check via `serializeObject` + `parseHeader` so a
+        // type-swap mutant inside `payloadByteLength` cannot pass by routing
+        // through the same serializer.
+        const tree = buildTree();
+        const onDiskBytes = serializeObject(tree, SHA1_CONFIG);
+        const expected = parseHeader(onDiskBytes).size;
 
-    // Act
-    const sut = payloadByteLength(tree, SHA1_CONFIG);
+        // Act
+        const sut = payloadByteLength(tree, SHA1_CONFIG);
 
-    // Assert
-    expect(sut).toBe(expected);
+        // Assert
+        expect(sut).toBe(expected);
+      });
+    });
   });
 
-  it('Given a commit, When measured, Then size equals the header size of its on-disk encoding', () => {
-    // Arrange
-    const commit = buildCommit();
-    const onDiskBytes = serializeObject(commit, SHA1_CONFIG);
-    const expected = parseHeader(onDiskBytes).size;
+  describe('Given a commit', () => {
+    describe('When measured', () => {
+      it('Then size equals the header size of its on-disk encoding', () => {
+        // Arrange
+        const commit = buildCommit();
+        const onDiskBytes = serializeObject(commit, SHA1_CONFIG);
+        const expected = parseHeader(onDiskBytes).size;
 
-    // Act
-    const sut = payloadByteLength(commit, SHA1_CONFIG);
+        // Act
+        const sut = payloadByteLength(commit, SHA1_CONFIG);
 
-    // Assert
-    expect(sut).toBe(expected);
+        // Assert
+        expect(sut).toBe(expected);
+      });
+    });
   });
 
-  it('Given a tag, When measured, Then size equals the header size of its on-disk encoding', () => {
-    // Arrange
-    const tag = buildTag();
-    const onDiskBytes = serializeObject(tag, SHA1_CONFIG);
-    const expected = parseHeader(onDiskBytes).size;
+  describe('Given a tag', () => {
+    describe('When measured', () => {
+      it('Then size equals the header size of its on-disk encoding', () => {
+        // Arrange
+        const tag = buildTag();
+        const onDiskBytes = serializeObject(tag, SHA1_CONFIG);
+        const expected = parseHeader(onDiskBytes).size;
 
-    // Act
-    const sut = payloadByteLength(tag, SHA1_CONFIG);
+        // Act
+        const sut = payloadByteLength(tag, SHA1_CONFIG);
 
-    // Assert
-    expect(sut).toBe(expected);
+        // Assert
+        expect(sut).toBe(expected);
+      });
+    });
   });
 });

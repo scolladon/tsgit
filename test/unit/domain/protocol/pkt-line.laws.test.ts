@@ -32,54 +32,71 @@ const splitBytes = (buf: Uint8Array, sizes: ReadonlyArray<number>): ReadonlyArra
 };
 
 describe('pkt-line laws', () => {
-  it('Given the property "encodePktLine then decodePktStream round-trips for any payload up to MAX_PKT_LINE_PAYLOAD", When sampled, Then it holds', async () => {
-    // Arrange + Assert
-    await fc.assert(
-      fc.asyncProperty(fc.uint8Array({ minLength: 0, maxLength: 65516 }), async (payloadArr) => {
-        const payload = Uint8Array.from(payloadArr);
-        const encoded = encodePktLine(payload);
-        const decoded = await collect(decodePktStream(asyncOf([encoded])));
-        expect(decoded).toEqual([{ kind: 'data', payload }]);
-      }),
-      { numRuns: 200 },
-    );
+  describe('Given the property "encodePktLine then decodePktStream round-trips for any payload up to MAX_PKT_LINE_PAYLOAD"', () => {
+    describe('When sampled', () => {
+      it('Then it holds', async () => {
+        // Arrange + Assert
+        await fc.assert(
+          fc.asyncProperty(
+            fc.uint8Array({ minLength: 0, maxLength: 65516 }),
+            async (payloadArr) => {
+              const payload = Uint8Array.from(payloadArr);
+              const encoded = encodePktLine(payload);
+              const decoded = await collect(decodePktStream(asyncOf([encoded])));
+              expect(decoded).toEqual([{ kind: 'data', payload }]);
+            },
+          ),
+          { numRuns: 200 },
+        );
+      });
+    });
   });
 
-  it('Given the property "encodePktStream then decode produces N data entries plus a trailing flush", When sampled, Then it holds', async () => {
-    // Arrange + Assert
-    await fc.assert(
-      fc.asyncProperty(
-        fc.array(fc.uint8Array({ minLength: 0, maxLength: 1024 }), { maxLength: 50 }),
-        async (rawPayloads) => {
-          const payloads = rawPayloads.map((p) => Uint8Array.from(p));
-          const encoded = encodePktStream(payloads);
-          const decoded = await collect(decodePktStream(asyncOf([encoded])));
-          expect(decoded.length).toBe(payloads.length + 1);
-          payloads.forEach((p, i) => {
-            expect(decoded[i]).toEqual({ kind: 'data', payload: p });
-          });
-          expect(decoded[payloads.length]).toEqual({ kind: 'flush' });
-        },
-      ),
-      { numRuns: 100 },
-    );
+  describe('Given the property "encodePktStream then decode produces N data entries plus a trailing flush"', () => {
+    describe('When sampled', () => {
+      it('Then it holds', async () => {
+        // Arrange + Assert
+        await fc.assert(
+          fc.asyncProperty(
+            fc.array(fc.uint8Array({ minLength: 0, maxLength: 1024 }), { maxLength: 50 }),
+            async (rawPayloads) => {
+              const payloads = rawPayloads.map((p) => Uint8Array.from(p));
+              const encoded = encodePktStream(payloads);
+              const decoded = await collect(decodePktStream(asyncOf([encoded])));
+              expect(decoded.length).toBe(payloads.length + 1);
+              payloads.forEach((p, i) => {
+                expect(decoded[i]).toEqual({ kind: 'data', payload: p });
+              });
+              expect(decoded[payloads.length]).toEqual({ kind: 'flush' });
+            },
+          ),
+          { numRuns: 100 },
+        );
+      });
+    });
   });
 
-  it('Given the property "chunk re-arrangement is invariant for valid encoded streams", When sampled, Then it holds', async () => {
-    // Arrange + Assert
-    await fc.assert(
-      fc.asyncProperty(
-        fc.array(fc.uint8Array({ minLength: 0, maxLength: 256 }), { maxLength: 8 }),
-        fc.array(fc.integer({ min: 1, max: 64 }), { maxLength: 16 }),
-        async (rawPayloads, sizes) => {
-          const payloads = rawPayloads.map((p) => Uint8Array.from(p));
-          const encoded = encodePktStream(payloads);
-          const oneChunk = await collect(decodePktStream(asyncOf([encoded])));
-          const splitChunks = await collect(decodePktStream(asyncOf(splitBytes(encoded, sizes))));
-          expect(splitChunks).toEqual(oneChunk);
-        },
-      ),
-      { numRuns: 100 },
-    );
+  describe('Given the property "chunk re-arrangement is invariant for valid encoded streams"', () => {
+    describe('When sampled', () => {
+      it('Then it holds', async () => {
+        // Arrange + Assert
+        await fc.assert(
+          fc.asyncProperty(
+            fc.array(fc.uint8Array({ minLength: 0, maxLength: 256 }), { maxLength: 8 }),
+            fc.array(fc.integer({ min: 1, max: 64 }), { maxLength: 16 }),
+            async (rawPayloads, sizes) => {
+              const payloads = rawPayloads.map((p) => Uint8Array.from(p));
+              const encoded = encodePktStream(payloads);
+              const oneChunk = await collect(decodePktStream(asyncOf([encoded])));
+              const splitChunks = await collect(
+                decodePktStream(asyncOf(splitBytes(encoded, sizes))),
+              );
+              expect(splitChunks).toEqual(oneChunk);
+            },
+          ),
+          { numRuns: 100 },
+        );
+      });
+    });
   });
 });

@@ -38,7 +38,7 @@ npm run build         # Compile to dist/
 
 ## Test Conventions
 
-- **Titles:** `Given <context>, When <action>, Then <expected>`
+- **Titles:** Split across the describe/it tree — `describe('Given <context>')` > `describe('When <action>')` > `it('Then <expected>')`. Outer non-GWT describes (e.g. module names) are allowed as transparent wrappers. The 2-level shortcut `describe('Given <context>, When <action>')` > `it('Then <expected>')` is allowed when only one expectation lives under the When.
 - **Body:** AAA — Arrange / Act / Assert with section comments
 - **Variable:** System under test is always named `sut`
 - **Coverage:** 100% line, branch, function, statement

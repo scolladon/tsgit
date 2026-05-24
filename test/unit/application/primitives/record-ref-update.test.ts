@@ -26,106 +26,134 @@ describe('recordRefUpdate', () => {
   });
 
   describe('gate open', () => {
-    it('Given a default-loggable branch ref, When recordRefUpdate, Then an entry is appended', async () => {
-      // Arrange
-      const ctx = createMemoryContext();
+    describe('Given a default-loggable branch ref', () => {
+      describe('When recordRefUpdate', () => {
+        it('Then an entry is appended', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
 
-      // Act
-      await recordRefUpdate(ctx, BRANCH, ZERO_OID, OID_A, 'commit (initial): seed');
+          // Act
+          await recordRefUpdate(ctx, BRANCH, ZERO_OID, OID_A, 'commit (initial): seed');
 
-      // Assert
-      const entries = await readReflog(ctx, BRANCH);
-      expect(entries).toHaveLength(1);
-      expect(entries[0]?.oldId).toBe(ZERO_OID);
-      expect(entries[0]?.newId).toBe(OID_A);
-      expect(entries[0]?.message).toBe('commit (initial): seed');
+          // Assert
+          const entries = await readReflog(ctx, BRANCH);
+          expect(entries).toHaveLength(1);
+          expect(entries[0]?.oldId).toBe(ZERO_OID);
+          expect(entries[0]?.newId).toBe(OID_A);
+          expect(entries[0]?.message).toBe('commit (initial): seed');
+        });
+      });
     });
 
-    it('Given a default-loggable ref, When recordRefUpdate, Then the entry carries the resolved identity', async () => {
-      // Arrange
-      const ctx = createMemoryContext();
-      await seedConfig(ctx, '[user]\n  name = Ada\n  email = ada@example.com\n');
+    describe('Given a default-loggable ref', () => {
+      describe('When recordRefUpdate', () => {
+        it('Then the entry carries the resolved identity', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedConfig(ctx, '[user]\n  name = Ada\n  email = ada@example.com\n');
 
-      // Act
-      await recordRefUpdate(ctx, BRANCH, ZERO_OID, OID_A, 'commit: x');
+          // Act
+          await recordRefUpdate(ctx, BRANCH, ZERO_OID, OID_A, 'commit: x');
 
-      // Assert
-      const entries = await readReflog(ctx, BRANCH);
-      expect(entries[0]?.identity.name).toBe('Ada');
-      expect(entries[0]?.identity.email).toBe('ada@example.com');
+          // Assert
+          const entries = await readReflog(ctx, BRANCH);
+          expect(entries[0]?.identity.name).toBe('Ada');
+          expect(entries[0]?.identity.email).toBe('ada@example.com');
+        });
+      });
     });
   });
 
   describe('gate closed', () => {
-    it('Given a tag ref under default config, When recordRefUpdate, Then no reflog is written', async () => {
-      // Arrange
-      const ctx = createMemoryContext();
+    describe('Given a tag ref under default config', () => {
+      describe('When recordRefUpdate', () => {
+        it('Then no reflog is written', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
 
-      // Act
-      await recordRefUpdate(ctx, TAG, ZERO_OID, OID_A, 'tag: v1.0.0');
+          // Act
+          await recordRefUpdate(ctx, TAG, ZERO_OID, OID_A, 'tag: v1.0.0');
 
-      // Assert
-      expect(await reflogExists(ctx, TAG)).toBe(false);
+          // Assert
+          expect(await reflogExists(ctx, TAG)).toBe(false);
+        });
+      });
     });
 
-    it('Given logAllRefUpdates=false, When recordRefUpdate on a branch, Then no reflog is written', async () => {
-      // Arrange
-      const ctx = createMemoryContext();
-      await seedConfig(ctx, '[core]\n  logallrefupdates = false\n');
+    describe('Given logAllRefUpdates=false', () => {
+      describe('When recordRefUpdate on a branch', () => {
+        it('Then no reflog is written', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedConfig(ctx, '[core]\n  logallrefupdates = false\n');
 
-      // Act
-      await recordRefUpdate(ctx, BRANCH, ZERO_OID, OID_A, 'commit: x');
+          // Act
+          await recordRefUpdate(ctx, BRANCH, ZERO_OID, OID_A, 'commit: x');
 
-      // Assert
-      expect(await reflogExists(ctx, BRANCH)).toBe(false);
+          // Assert
+          expect(await reflogExists(ctx, BRANCH)).toBe(false);
+        });
+      });
     });
   });
 
   describe('existing-log arm', () => {
-    it('Given an existing tag reflog, When recordRefUpdate on that tag, Then it appends despite the non-default prefix', async () => {
-      // Arrange — a tag is not default-loggable, but an existing log keeps
-      // growing. Seed the first entry under `always`, then drop to defaults.
-      const ctx = createMemoryContext();
-      await seedConfig(ctx, '[core]\n  logallrefupdates = always\n');
-      await recordRefUpdate(ctx, TAG, ZERO_OID, OID_A, 'tag: created');
-      await seedConfig(ctx, '[core]\n  bare = false\n');
-      __resetConfigCacheForTests();
+    describe('Given an existing tag reflog', () => {
+      describe('When recordRefUpdate on that tag', () => {
+        it('Then it appends despite the non-default prefix', async () => {
+          // Arrange — a tag is not default-loggable, but an existing log keeps
+          // growing. Seed the first entry under `always`, then drop to defaults.
+          const ctx = createMemoryContext();
+          await seedConfig(ctx, '[core]\n  logallrefupdates = always\n');
+          await recordRefUpdate(ctx, TAG, ZERO_OID, OID_A, 'tag: created');
+          await seedConfig(ctx, '[core]\n  bare = false\n');
+          __resetConfigCacheForTests();
 
-      // Act — default config now; the gate must still pass on the existing file.
-      await recordRefUpdate(ctx, TAG, OID_A, OID_B, 'tag: moved');
+          // Act — default config now; the gate must still pass on the existing file.
+          await recordRefUpdate(ctx, TAG, OID_A, OID_B, 'tag: moved');
 
-      // Assert
-      const entries = await readReflog(ctx, TAG);
-      expect(entries).toHaveLength(2);
-      expect(entries[1]?.message).toBe('tag: moved');
+          // Assert
+          const entries = await readReflog(ctx, TAG);
+          expect(entries).toHaveLength(2);
+          expect(entries[1]?.message).toBe('tag: moved');
+        });
+      });
     });
   });
 
   describe('logAllRefUpdates always', () => {
-    it('Given logAllRefUpdates=always, When recordRefUpdate on a tag, Then the tag is logged', async () => {
-      // Arrange
-      const ctx = createMemoryContext();
-      await seedConfig(ctx, '[core]\n  logallrefupdates = always\n');
+    describe('Given logAllRefUpdates=always', () => {
+      describe('When recordRefUpdate on a tag', () => {
+        it('Then the tag is logged', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedConfig(ctx, '[core]\n  logallrefupdates = always\n');
 
-      // Act
-      await recordRefUpdate(ctx, TAG, ZERO_OID, OID_A, 'tag: v1.0.0');
+          // Act
+          await recordRefUpdate(ctx, TAG, ZERO_OID, OID_A, 'tag: v1.0.0');
 
-      // Assert
-      expect(await reflogExists(ctx, TAG)).toBe(true);
+          // Assert
+          expect(await reflogExists(ctx, TAG)).toBe(true);
+        });
+      });
     });
   });
 
   describe('message sanitising', () => {
-    it('Given a message with embedded line breaks, When recordRefUpdate, Then the stored message is collapsed to one line', async () => {
-      // Arrange
-      const ctx = createMemoryContext();
+    describe('Given a message with embedded line breaks', () => {
+      describe('When recordRefUpdate', () => {
+        it('Then the stored message is collapsed to one line', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
 
-      // Act
-      await recordRefUpdate(ctx, BRANCH, ZERO_OID, OID_A, '  first\nsecond\r\nthird  ');
+          // Act
+          await recordRefUpdate(ctx, BRANCH, ZERO_OID, OID_A, '  first\nsecond\r\nthird  ');
 
-      // Assert
-      const entries = await readReflog(ctx, BRANCH);
-      expect(entries[0]?.message).toBe('first second third');
+          // Assert
+          const entries = await readReflog(ctx, BRANCH);
+          expect(entries[0]?.message).toBe('first second third');
+        });
+      });
     });
   });
 });

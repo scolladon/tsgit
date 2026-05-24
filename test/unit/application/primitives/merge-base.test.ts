@@ -79,150 +79,190 @@ const buildChildAfterParent = async (
 };
 
 describe('mergeBase', () => {
-  it('Given a === b, When mergeBase, Then returns the same oid (self-base shortcut)', async () => {
-    // Arrange
-    const ctx = await buildSeededContext();
-    const [c0] = await buildLinear(ctx, 1);
+  describe('Given a === b', () => {
+    describe('When mergeBase', () => {
+      it('Then returns the same oid (self-base shortcut)', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const [c0] = await buildLinear(ctx, 1);
 
-    // Act
-    const sut = await mergeBase(ctx, c0!, c0!);
+        // Act
+        const sut = await mergeBase(ctx, c0!, c0!);
 
-    // Assert
-    expect(sut).toBe(c0);
+        // Assert
+        expect(sut).toBe(c0);
+      });
+    });
   });
 
-  it('Given a === b where the commit has a lex-smaller parent, When mergeBase, Then returns the commit itself not the parent', async () => {
-    // Arrange — without the `a === b` shortcut the BFS would intersect on both
-    // the commit and its parent and return the lex-smaller (the parent).
-    const ctx = await buildSeededContext();
-    const { child, parent } = await buildChildAfterParent(ctx);
+  describe('Given a === b where the commit has a lex-smaller parent', () => {
+    describe('When mergeBase', () => {
+      it('Then returns the commit itself not the parent', async () => {
+        // Arrange — without the `a === b` shortcut the BFS would intersect on both
+        // the commit and its parent and return the lex-smaller (the parent).
+        const ctx = await buildSeededContext();
+        const { child, parent } = await buildChildAfterParent(ctx);
 
-    // Act
-    const sut = await mergeBase(ctx, child, child);
+        // Act
+        const sut = await mergeBase(ctx, child, child);
 
-    // Assert
-    expect(sut).toBe(child);
-    expect(sut).not.toBe(parent);
+        // Assert
+        expect(sut).toBe(child);
+        expect(sut).not.toBe(parent);
+      });
+    });
   });
 
-  it('Given linear A←B←C←D, When mergeBase(D, B), Then returns B', async () => {
-    // Arrange
-    const ctx = await buildSeededContext();
-    const [, b, , d] = await buildLinear(ctx, 4);
+  describe('Given linear A←B←C←D', () => {
+    describe('When mergeBase(D, B)', () => {
+      it('Then returns B', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const [, b, , d] = await buildLinear(ctx, 4);
 
-    // Act
-    const sut = await mergeBase(ctx, d!, b!);
+        // Act
+        const sut = await mergeBase(ctx, d!, b!);
 
-    // Assert
-    expect(sut).toBe(b);
+        // Assert
+        expect(sut).toBe(b);
+      });
+    });
   });
 
-  it('Given linear A←B←C, When mergeBase(C, A), Then returns A', async () => {
-    // Arrange
-    const ctx = await buildSeededContext();
-    const [a, , c] = await buildLinear(ctx, 3);
+  describe('Given linear A←B←C', () => {
+    describe('When mergeBase(C, A)', () => {
+      it('Then returns A', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const [a, , c] = await buildLinear(ctx, 3);
 
-    // Act
-    const sut = await mergeBase(ctx, c!, a!);
+        // Act
+        const sut = await mergeBase(ctx, c!, a!);
 
-    // Assert
-    expect(sut).toBe(a);
+        // Assert
+        expect(sut).toBe(a);
+      });
+    });
   });
 
-  it('Given a diamond A←{B,C}←D, When mergeBase(B, C), Then returns A', async () => {
-    // Arrange
-    const ctx = await buildSeededContext();
-    const { a, b, c } = await buildDiamond(ctx);
+  describe('Given a diamond A←{B,C}←D', () => {
+    describe('When mergeBase(B, C)', () => {
+      it('Then returns A', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const { a, b, c } = await buildDiamond(ctx);
 
-    // Act
-    const sut = await mergeBase(ctx, b, c);
+        // Act
+        const sut = await mergeBase(ctx, b, c);
 
-    // Assert
-    expect(sut).toBe(a);
+        // Assert
+        expect(sut).toBe(a);
+      });
+    });
   });
 
-  it('Given a diamond top D vs an unrelated commit, When mergeBase, Then returns undefined despite D re-reaching A via both parents', async () => {
-    // Arrange — D's two parents B and C both lead back to A. Advancing the
-    // frontier [B,C] visits A from B then must SKIP A from C (already visited).
-    const ctx = await buildSeededContext();
-    const { d } = await buildDiamond(ctx);
-    const treeId = await emptyTree(ctx);
-    const unrelated = await commitWith(ctx, treeId, 9_000, []);
+  describe('Given a diamond top D vs an unrelated commit', () => {
+    describe('When mergeBase', () => {
+      it('Then returns undefined despite D re-reaching A via both parents', async () => {
+        // Arrange — D's two parents B and C both lead back to A. Advancing the
+        // frontier [B,C] visits A from B then must SKIP A from C (already visited).
+        const ctx = await buildSeededContext();
+        const { d } = await buildDiamond(ctx);
+        const treeId = await emptyTree(ctx);
+        const unrelated = await commitWith(ctx, treeId, 9_000, []);
 
-    // Act
-    const sut = await mergeBase(ctx, d, unrelated);
+        // Act
+        const sut = await mergeBase(ctx, d, unrelated);
 
-    // Assert
-    expect(sut).toBeUndefined();
+        // Assert
+        expect(sut).toBeUndefined();
+      });
+    });
   });
 
-  it('Given two commits sharing two parents, When mergeBase, Then returns the lexicographically smallest common parent', async () => {
-    // Arrange — both M and N have parents [bigger, smaller] in that order, so
-    // the intersection is discovered in insertion order [bigger, smaller];
-    // only sorting yields the documented lex-smallest tie-breaker.
-    const ctx = await buildSeededContext();
-    const treeId = await emptyTree(ctx);
-    const p = await commitWith(ctx, treeId, 100, []);
-    const q = await commitWith(ctx, treeId, 200, []);
-    const [smaller, bigger] = [p, q].sort() as [ObjectId, ObjectId];
-    const m = await commitWith(ctx, treeId, 300, [bigger, smaller]);
-    const n = await commitWith(ctx, treeId, 400, [bigger, smaller]);
+  describe('Given two commits sharing two parents', () => {
+    describe('When mergeBase', () => {
+      it('Then returns the lexicographically smallest common parent', async () => {
+        // Arrange — both M and N have parents [bigger, smaller] in that order, so
+        // the intersection is discovered in insertion order [bigger, smaller];
+        // only sorting yields the documented lex-smallest tie-breaker.
+        const ctx = await buildSeededContext();
+        const treeId = await emptyTree(ctx);
+        const p = await commitWith(ctx, treeId, 100, []);
+        const q = await commitWith(ctx, treeId, 200, []);
+        const [smaller, bigger] = [p, q].sort() as [ObjectId, ObjectId];
+        const m = await commitWith(ctx, treeId, 300, [bigger, smaller]);
+        const n = await commitWith(ctx, treeId, 400, [bigger, smaller]);
 
-    // Act
-    const sut = await mergeBase(ctx, m, n);
+        // Act
+        const sut = await mergeBase(ctx, m, n);
 
-    // Assert
-    expect(sut).toBe(smaller);
-    expect(sut).not.toBe(bigger);
+        // Assert
+        expect(sut).toBe(smaller);
+        expect(sut).not.toBe(bigger);
+      });
+    });
   });
 
-  it('Given a short branch A and a longer unrelated branch, When mergeBase, Then walks the longer branch after the short one is exhausted and returns the shared base', async () => {
-    // Arrange — A side: A0←A1 (2 commits). B side: A0←B1←B2←B3 (shares root A0
-    // but only reached after A's frontier is empty). Proves the loop keeps
-    // advancing the surviving frontier and does not break while B still has work.
-    const ctx = await buildSeededContext();
-    const treeId = await emptyTree(ctx);
-    const a0 = await commitWith(ctx, treeId, 1, []);
-    const a1 = await commitWith(ctx, treeId, 2, [a0]);
-    const b1 = await commitWith(ctx, treeId, 3, [a0]);
-    const b2 = await commitWith(ctx, treeId, 4, [b1]);
-    const b3 = await commitWith(ctx, treeId, 5, [b2]);
+  describe('Given a short branch A and a longer unrelated branch', () => {
+    describe('When mergeBase', () => {
+      it('Then walks the longer branch after the short one is exhausted and returns the shared base', async () => {
+        // Arrange — A side: A0←A1 (2 commits). B side: A0←B1←B2←B3 (shares root A0
+        // but only reached after A's frontier is empty). Proves the loop keeps
+        // advancing the surviving frontier and does not break while B still has work.
+        const ctx = await buildSeededContext();
+        const treeId = await emptyTree(ctx);
+        const a0 = await commitWith(ctx, treeId, 1, []);
+        const a1 = await commitWith(ctx, treeId, 2, [a0]);
+        const b1 = await commitWith(ctx, treeId, 3, [a0]);
+        const b2 = await commitWith(ctx, treeId, 4, [b1]);
+        const b3 = await commitWith(ctx, treeId, 5, [b2]);
 
-    // Act
-    const sut = await mergeBase(ctx, a1, b3);
+        // Act
+        const sut = await mergeBase(ctx, a1, b3);
 
-    // Assert
-    expect(sut).toBe(a0);
+        // Assert
+        expect(sut).toBe(a0);
+      });
+    });
   });
 
-  it('Given two unrelated histories, When mergeBase, Then terminates via the both-frontiers-exhausted break and returns undefined', async () => {
-    // Arrange
-    const ctx = await buildSeededContext();
-    const treeId = await emptyTree(ctx);
-    const x = await commitWith(ctx, treeId, 1, []);
-    const y = await commitWith(ctx, treeId, 2, []);
+  describe('Given two unrelated histories', () => {
+    describe('When mergeBase', () => {
+      it('Then terminates via the both-frontiers-exhausted break and returns undefined', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const treeId = await emptyTree(ctx);
+        const x = await commitWith(ctx, treeId, 1, []);
+        const y = await commitWith(ctx, treeId, 2, []);
 
-    // Act
-    const sut = await mergeBase(ctx, x, y);
+        // Act
+        const sut = await mergeBase(ctx, x, y);
 
-    // Assert
-    expect(sut).toBeUndefined();
+        // Assert
+        expect(sut).toBeUndefined();
+      });
+    });
   });
 
-  it('Given two unrelated multi-commit branches, When mergeBase, Then advancing exhausted frontiers terminates and returns undefined', async () => {
-    // Arrange — both frontiers become empty; the loop must stop once neither
-    // advance produced new commits.
-    const ctx = await buildSeededContext();
-    const treeId = await emptyTree(ctx);
-    const x0 = await commitWith(ctx, treeId, 1, []);
-    const x1 = await commitWith(ctx, treeId, 2, [x0]);
-    const y0 = await commitWith(ctx, treeId, 3, []);
-    const y1 = await commitWith(ctx, treeId, 4, [y0]);
+  describe('Given two unrelated multi-commit branches', () => {
+    describe('When mergeBase', () => {
+      it('Then advancing exhausted frontiers terminates and returns undefined', async () => {
+        // Arrange — both frontiers become empty; the loop must stop once neither
+        // advance produced new commits.
+        const ctx = await buildSeededContext();
+        const treeId = await emptyTree(ctx);
+        const x0 = await commitWith(ctx, treeId, 1, []);
+        const x1 = await commitWith(ctx, treeId, 2, [x0]);
+        const y0 = await commitWith(ctx, treeId, 3, []);
+        const y1 = await commitWith(ctx, treeId, 4, [y0]);
 
-    // Act
-    const sut = await mergeBase(ctx, x1, y1);
+        // Act
+        const sut = await mergeBase(ctx, x1, y1);
 
-    // Assert
-    expect(sut).toBeUndefined();
+        // Assert
+        expect(sut).toBeUndefined();
+      });
+    });
   });
 });

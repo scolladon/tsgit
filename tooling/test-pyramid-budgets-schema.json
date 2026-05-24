@@ -28,7 +28,7 @@
       "properties": {
         "overMockedIntegration": { "$ref": "#/$defs/overMockedHeuristic" },
         "underAssertedUnit": { "$ref": "#/$defs/underAssertedHeuristic" },
-        "gwtTitle": { "$ref": "#/$defs/regexHeuristic" },
+        "gwtTitle": { "$ref": "#/$defs/gwtTitleHeuristic" },
         "aaaBody": { "$ref": "#/$defs/aaaBodyHeuristic" },
         "sutNaming": { "$ref": "#/$defs/sutNamingHeuristic" },
         "bareClassToThrow": { "$ref": "#/$defs/regexHeuristic" },
@@ -97,6 +97,26 @@
       "properties": {
         "tier": { "type": "string", "minLength": 1 },
         "regex": { "type": "string", "minLength": 1 }
+      }
+    },
+    "gwtTitleHeuristic": {
+      "type": "object",
+      "required": [
+        "tier",
+        "describeGiven",
+        "describeWhen",
+        "describeCombined",
+        "itThen",
+        "legacyItGwt"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "tier": { "type": "string", "minLength": 1 },
+        "describeGiven": { "type": "string", "minLength": 1 },
+        "describeWhen": { "type": "string", "minLength": 1 },
+        "describeCombined": { "type": "string", "minLength": 1 },
+        "itThen": { "type": "string", "minLength": 1 },
+        "legacyItGwt": { "type": "string", "minLength": 1 }
       }
     },
     "aaaBodyHeuristic": {

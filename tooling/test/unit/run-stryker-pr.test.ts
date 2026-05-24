@@ -43,7 +43,9 @@ describe('runStrykerPr', () => {
     rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it('Given TSGIT_MUTATE_PATHS_FILE pointing at a file with newline-separated paths, When invoked, Then spawns stryker run --mutate with comma-joined list', async () => {
+  describe("Given TSGIT_MUTATE_PATHS_FILE pointing at a file with newline-separated paths", () => {
+    describe("When invoked", () => {
+      it('Then spawns stryker run --mutate with comma-joined list', async () => {
     // Arrange
     const file = path.join(tmpDir, 'mutate.txt');
     writeFileSync(file, 'src/a.ts\nsrc/b.ts\n');
@@ -61,8 +63,12 @@ describe('runStrykerPr', () => {
     expect(sut).toBe(0);
     expect(calls).toEqual([{ command: 'stryker', args: ['run', '--mutate', 'src/a.ts,src/b.ts'] }]);
   });
+    });
+  });
 
-  it('Given TSGIT_MUTATE_PATHS_FILE pointing at an empty file, When invoked, Then exits 0 without spawning stryker', async () => {
+  describe("Given TSGIT_MUTATE_PATHS_FILE pointing at an empty file", () => {
+    describe("When invoked", () => {
+      it('Then exits 0 without spawning stryker', async () => {
     // Arrange
     const file = path.join(tmpDir, 'mutate.txt');
     writeFileSync(file, '');
@@ -81,8 +87,12 @@ describe('runStrykerPr', () => {
     expect(calls).toHaveLength(0);
     expect(stdoutLines.join('\n')).toMatch(/No src\/ files in/);
   });
+    });
+  });
 
-  it('Given a commas-only path list via --mutate argv, When invoked with no env, Then spawns stryker with that list', async () => {
+  describe("Given a commas-only path list via --mutate argv", () => {
+    describe("When invoked with no env", () => {
+      it('Then spawns stryker with that list', async () => {
     // Arrange
     const calls: SpawnCall[] = [];
 
@@ -100,8 +110,12 @@ describe('runStrykerPr', () => {
       { command: 'stryker', args: ['run', '--mutate', 'src/foo.ts,src/bar.ts'] },
     ]);
   });
+    });
+  });
 
-  it('Given no env and no --mutate argv, When invoked, Then spawns stryker run with no scope (full-tree)', async () => {
+  describe("Given no env and no --mutate argv", () => {
+    describe("When invoked", () => {
+      it('Then spawns stryker run with no scope (full-tree)', async () => {
     // Arrange
     const calls: SpawnCall[] = [];
 
@@ -118,8 +132,12 @@ describe('runStrykerPr', () => {
     expect(calls).toEqual([{ command: 'stryker', args: ['run'] }]);
     expect(stdoutLines.join('\n')).toMatch(/full tree — local-dev fallback/);
   });
+    });
+  });
 
-  it('Given stryker exits with non-zero, When awaited, Then runStrykerPr returns that exit code', async () => {
+  describe("Given stryker exits with non-zero", () => {
+    describe("When awaited", () => {
+      it('Then runStrykerPr returns that exit code', async () => {
     // Arrange
     const calls: SpawnCall[] = [];
 
@@ -134,8 +152,12 @@ describe('runStrykerPr', () => {
     // Assert
     expect(sut).toBe(2);
   });
+    });
+  });
 
-  it('Given the spawned child emits error (e.g. stryker not on PATH), When awaited, Then runStrykerPr returns 1 and logs the error', async () => {
+  describe("Given the spawned child emits error (e.g. stryker not on PATH)", () => {
+    describe("When awaited", () => {
+      it('Then runStrykerPr returns 1 and logs the error', async () => {
     // Arrange
     const calls: SpawnCall[] = [];
 
@@ -151,8 +173,12 @@ describe('runStrykerPr', () => {
     expect(sut).toBe(1);
     expect(stdoutLines.join('\n')).toMatch(/failed to spawn stryker: ENOENT: stryker not found/);
   });
+    });
+  });
 
-  it('Given a non-existent TSGIT_MUTATE_PATHS_FILE, When invoked, Then treats it as empty (exits 0 without spawning)', async () => {
+  describe("Given a non-existent TSGIT_MUTATE_PATHS_FILE", () => {
+    describe("When invoked", () => {
+      it('Then treats it as empty (exits 0 without spawning)', async () => {
     // Arrange — file path that does not exist
     const calls: SpawnCall[] = [];
 
@@ -167,5 +193,7 @@ describe('runStrykerPr', () => {
     // Assert
     expect(sut).toBe(0);
     expect(calls).toHaveLength(0);
+  });
+    });
   });
 });

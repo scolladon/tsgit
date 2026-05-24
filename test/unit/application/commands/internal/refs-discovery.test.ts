@@ -54,58 +54,80 @@ const fakeTransport = (
 };
 
 describe('discoverRefsForService', () => {
-  it.each([
-    ['git-upload-pack', 'application/x-git-upload-pack-advertisement', 'service=git-upload-pack'],
-    [
-      'git-receive-pack',
-      'application/x-git-receive-pack-advertisement',
-      'service=git-receive-pack',
-    ],
-  ] as const)('Given service %s, When discoverRefsForService runs, Then accept=%s and URL carries %s', async (service, expectedAccept, expectedQueryFragment) => {
-    // Arrange — pins the per-service ACCEPT_HEADER map AND the
-    // `${service} discovery returned ${code}` error template; both must be
-    // service-specific so callers can distinguish upload-pack vs receive-pack
-    // failures at the error layer.
-    const ctx = createMemoryContext();
-    const { transport, requests } = fakeTransport(200, advertisementBody(service));
+  describe('Given service %s', () => {
+    describe('When discoverRefsForService runs', () => {
+      it.each([
+        [
+          'git-upload-pack',
+          'application/x-git-upload-pack-advertisement',
+          'service=git-upload-pack',
+        ],
+        [
+          'git-receive-pack',
+          'application/x-git-receive-pack-advertisement',
+          'service=git-receive-pack',
+        ],
+      ] as const)('Then accept=%s and URL carries %s', async (service, expectedAccept, expectedQueryFragment) => {
+        // Arrange — pins the per-service ACCEPT_HEADER map AND the
+        // `${service} discovery returned ${code}` error template; both must be
+        // service-specific so callers can distinguish upload-pack vs receive-pack
+        // failures at the error layer.
+        const ctx = createMemoryContext();
+        const { transport, requests } = fakeTransport(200, advertisementBody(service));
 
-    // Act
-    const sut = await discoverRefsForService(ctx, transport, 'https://example.com/r.git', service);
+        // Act
+        const sut = await discoverRefsForService(
+          ctx,
+          transport,
+          'https://example.com/r.git',
+          service,
+        );
 
-    // Assert — request shape
-    expect(requests).toHaveLength(1);
-    expect(requests[0]?.url).toContain(expectedQueryFragment);
-    expect(requests[0]?.headers.accept).toBe(expectedAccept);
-    // Assert — advertisement round-tripped
-    expect(sut.refs).toHaveLength(1);
-    expect(sut.refs[0]?.name).toBe('refs/heads/main');
+        // Assert — request shape
+        expect(requests).toHaveLength(1);
+        expect(requests[0]?.url).toContain(expectedQueryFragment);
+        expect(requests[0]?.headers.accept).toBe(expectedAccept);
+        // Assert — advertisement round-tripped
+        expect(sut.refs).toHaveLength(1);
+        expect(sut.refs[0]?.name).toBe('refs/heads/main');
+      });
+    });
   });
 
-  it('Given a non-200 response from git-receive-pack, When discoverRefsForService runs, Then HTTP_ERROR reason mentions the service', async () => {
-    // Arrange — kills the StringLiteral mutant on the error message: callers
-    // rely on `${service}` being present so a discovery failure on push is
-    // not mis-attributed to a fetch flow.
-    const ctx = createMemoryContext();
-    const { transport } = fakeTransport(403, new Uint8Array(0));
+  describe('Given a non-200 response from git-receive-pack', () => {
+    describe('When discoverRefsForService runs', () => {
+      it('Then HTTP_ERROR reason mentions the service', async () => {
+        // Arrange — kills the StringLiteral mutant on the error message: callers
+        // rely on `${service}` being present so a discovery failure on push is
+        // not mis-attributed to a fetch flow.
+        const ctx = createMemoryContext();
+        const { transport } = fakeTransport(403, new Uint8Array(0));
 
-    // Act
-    let caught: unknown;
-    try {
-      await discoverRefsForService(ctx, transport, 'https://example.com/r.git', 'git-receive-pack');
-    } catch (err) {
-      caught = err;
-    }
+        // Act
+        let caught: unknown;
+        try {
+          await discoverRefsForService(
+            ctx,
+            transport,
+            'https://example.com/r.git',
+            'git-receive-pack',
+          );
+        } catch (err) {
+          caught = err;
+        }
 
-    // Assert
-    expect(caught).toBeInstanceOf(TsgitError);
-    const data = (caught as TsgitError).data as {
-      code: string;
-      statusCode?: number;
-      reason?: string;
-    };
-    expect(data.code).toBe('HTTP_ERROR');
-    expect(data.statusCode).toBe(403);
-    expect(data.reason).toContain('git-receive-pack');
-    expect(data.reason).toContain('403');
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as {
+          code: string;
+          statusCode?: number;
+          reason?: string;
+        };
+        expect(data.code).toBe('HTTP_ERROR');
+        expect(data.statusCode).toBe(403);
+        expect(data.reason).toContain('git-receive-pack');
+        expect(data.reason).toContain('403');
+      });
+    });
   });
 });

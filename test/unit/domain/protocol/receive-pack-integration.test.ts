@@ -12,45 +12,53 @@ const decodeAll = async (bytes: Uint8Array): Promise<AsyncIterable<PktLine>> =>
   decodePktStream(asyncBytes([bytes]));
 
 describe('receive-pack integration — success', () => {
-  it('Given unpack ok and one ok ref, When parsed end-to-end, Then unpackOk true and refUpdates accepted', async () => {
-    // Arrange
-    const body = buildReceivePackResponseBody({
-      unpackResult: 'ok',
-      refResults: [{ name: 'refs/heads/main', result: 'ok' }],
+  describe('Given unpack ok and one ok ref', () => {
+    describe('When parsed end-to-end', () => {
+      it('Then unpackOk true and refUpdates accepted', async () => {
+        // Arrange
+        const body = buildReceivePackResponseBody({
+          unpackResult: 'ok',
+          refResults: [{ name: 'refs/heads/main', result: 'ok' }],
+        });
+
+        // Act
+        const sut = await parseReceivePackResponse(await decodeAll(body));
+
+        // Assert
+        expect(sut.unpackOk).toBe(true);
+        expect(sut.refUpdates).toEqual([{ name: 'refs/heads/main', accepted: true }]);
+      });
     });
-
-    // Act
-    const sut = await parseReceivePackResponse(await decodeAll(body));
-
-    // Assert
-    expect(sut.unpackOk).toBe(true);
-    expect(sut.refUpdates).toEqual([{ name: 'refs/heads/main', accepted: true }]);
   });
 });
 
 describe('receive-pack integration — partial rejection', () => {
-  it('Given unpack ok with one ok and one ng, When parsed, Then both entries surface with correct accepted/reason', async () => {
-    // Arrange
-    const body = buildReceivePackResponseBody({
-      unpackResult: 'ok',
-      refResults: [
-        { name: 'refs/heads/main', result: 'ok' },
-        { name: 'refs/heads/feature', result: 'pre-receive hook declined' },
-      ],
+  describe('Given unpack ok with one ok and one ng', () => {
+    describe('When parsed', () => {
+      it('Then both entries surface with correct accepted/reason', async () => {
+        // Arrange
+        const body = buildReceivePackResponseBody({
+          unpackResult: 'ok',
+          refResults: [
+            { name: 'refs/heads/main', result: 'ok' },
+            { name: 'refs/heads/feature', result: 'pre-receive hook declined' },
+          ],
+        });
+
+        // Act
+        const sut = await parseReceivePackResponse(await decodeAll(body));
+
+        // Assert
+        expect(sut.unpackOk).toBe(true);
+        expect(sut.refUpdates).toEqual([
+          { name: 'refs/heads/main', accepted: true },
+          {
+            name: 'refs/heads/feature',
+            accepted: false,
+            reason: 'pre-receive hook declined',
+          },
+        ]);
+      });
     });
-
-    // Act
-    const sut = await parseReceivePackResponse(await decodeAll(body));
-
-    // Assert
-    expect(sut.unpackOk).toBe(true);
-    expect(sut.refUpdates).toEqual([
-      { name: 'refs/heads/main', accepted: true },
-      {
-        name: 'refs/heads/feature',
-        accepted: false,
-        reason: 'pre-receive hook declined',
-      },
-    ]);
   });
 });

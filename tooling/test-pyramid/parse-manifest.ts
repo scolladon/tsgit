@@ -33,8 +33,18 @@ export type AaaMarker = 'Arrange' | 'Act' | 'Assert';
 
 export interface GwtTitleHeuristic {
   readonly tier: TierName;
-  readonly regex: string;
-  readonly compiledRegex: RegExp;
+  // Raw patterns kept for diagnostics; compiled forms are the runtime path.
+  readonly describeGiven: string;
+  readonly describeWhen: string;
+  readonly describeCombined: string;
+  readonly itThen: string;
+  readonly legacyItGwt: string;
+  // Compiled stateless RegExps (no `g` flag per ADR-113).
+  readonly describeGivenRe: RegExp;
+  readonly describeWhenRe: RegExp;
+  readonly describeCombinedRe: RegExp;
+  readonly itThenRe: RegExp;
+  readonly legacyItGwtRe: RegExp;
 }
 
 export interface AaaBodyHeuristic {
@@ -214,8 +224,27 @@ const parseGwtTitle = (
     return fail('gwtTitle must be an object');
   }
   const tier = requireTier(raw.tier, 'gwtTitle', tierNames);
-  const regex = requireRegexPattern(raw.regex, 'gwtTitle');
-  return { tier, regex, compiledRegex: compileRegex(regex, 'gwtTitle', '') };
+  const describeGiven = requireRegexPattern(raw.describeGiven, 'gwtTitle.describeGiven');
+  const describeWhen = requireRegexPattern(raw.describeWhen, 'gwtTitle.describeWhen');
+  const describeCombined = requireRegexPattern(
+    raw.describeCombined,
+    'gwtTitle.describeCombined',
+  );
+  const itThen = requireRegexPattern(raw.itThen, 'gwtTitle.itThen');
+  const legacyItGwt = requireRegexPattern(raw.legacyItGwt, 'gwtTitle.legacyItGwt');
+  return {
+    tier,
+    describeGiven,
+    describeWhen,
+    describeCombined,
+    itThen,
+    legacyItGwt,
+    describeGivenRe: compileRegex(describeGiven, 'gwtTitle.describeGiven', ''),
+    describeWhenRe: compileRegex(describeWhen, 'gwtTitle.describeWhen', ''),
+    describeCombinedRe: compileRegex(describeCombined, 'gwtTitle.describeCombined', ''),
+    itThenRe: compileRegex(itThen, 'gwtTitle.itThen', ''),
+    legacyItGwtRe: compileRegex(legacyItGwt, 'gwtTitle.legacyItGwt', ''),
+  };
 };
 
 const parseAaaBody = (

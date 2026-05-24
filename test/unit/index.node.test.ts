@@ -25,86 +25,98 @@ afterEach(async () => {
 });
 
 describe('Node shim — allowInsecureHttp default', () => {
-  it('Given no allowInsecureHttp option, When an http:// request is made, Then the transport rejects with the HTTPS-required reason', async () => {
-    // Arrange — allowInsecure config lets the SSRF wrapper pass the URL through
-    // to the inner NodeHttpTransport, whose own HTTPS guard is what we probe.
-    // Default allowInsecureHttp must be false: kills the L60 BooleanLiteral
-    // `false` → `true` mutant (which would let the http:// request connect and
-    // surface a different — connection — error instead).
-    const sut = await openRepository({
-      cwd: tmpdir,
-      config: {
-        allowInsecure: true,
-        allowPrivateNetworks: true,
-        dnsResolver: async () => ['127.0.0.1'],
-      },
-    });
-
-    try {
-      // Act
-      let thrown: unknown;
-      try {
-        await sut.ctx.transport.request({
-          url: 'http://127.0.0.1:1/',
-          method: 'GET',
-          headers: {},
+  describe('Given no allowInsecureHttp option', () => {
+    describe('When an http:// request is made', () => {
+      it('Then the transport rejects with the HTTPS-required reason', async () => {
+        // Arrange — allowInsecure config lets the SSRF wrapper pass the URL through
+        // to the inner NodeHttpTransport, whose own HTTPS guard is what we probe.
+        // Default allowInsecureHttp must be false: kills the L60 BooleanLiteral
+        // `false` → `true` mutant (which would let the http:// request connect and
+        // surface a different — connection — error instead).
+        const sut = await openRepository({
+          cwd: tmpdir,
+          config: {
+            allowInsecure: true,
+            allowPrivateNetworks: true,
+            dnsResolver: async () => ['127.0.0.1'],
+          },
         });
-      } catch (e) {
-        thrown = e;
-      }
 
-      // Assert — the inner transport's HTTPS guard fired (not a connect error).
-      expect((thrown as { data: { code: string; reason: string } }).data.code).toBe(
-        'NETWORK_ERROR',
-      );
-      expect((thrown as { data: { reason: string } }).data.reason).toContain('HTTPS required');
-    } finally {
-      await sut.dispose();
-    }
+        try {
+          // Act
+          let thrown: unknown;
+          try {
+            await sut.ctx.transport.request({
+              url: 'http://127.0.0.1:1/',
+              method: 'GET',
+              headers: {},
+            });
+          } catch (e) {
+            thrown = e;
+          }
+
+          // Assert — the inner transport's HTTPS guard fired (not a connect error).
+          expect((thrown as { data: { code: string; reason: string } }).data.code).toBe(
+            'NETWORK_ERROR',
+          );
+          expect((thrown as { data: { reason: string } }).data.reason).toContain('HTTPS required');
+        } finally {
+          await sut.dispose();
+        }
+      });
+    });
   });
 });
 
 describe('Node shim — deltaCacheMaxEntries option', () => {
-  it('Given an explicit deltaCacheMaxEntries of 3, When a 4th tiny entry is set, Then the cache evicts down to the cap', async () => {
-    // Arrange — kills the L72 LogicalOperator `??` → `&&` mutant: with `&&`
-    // the supplied cap (3) would be replaced by DEFAULT_DELTA_CACHE_ENTRIES
-    // (65 536), so the 4th entry would NOT trigger eviction.
-    const sut = await openRepository({ cwd: tmpdir, deltaCacheMaxEntries: 3 });
-    const one = new Uint8Array([1]);
+  describe('Given an explicit deltaCacheMaxEntries of 3', () => {
+    describe('When a 4th tiny entry is set', () => {
+      it('Then the cache evicts down to the cap', async () => {
+        // Arrange — kills the L72 LogicalOperator `??` → `&&` mutant: with `&&`
+        // the supplied cap (3) would be replaced by DEFAULT_DELTA_CACHE_ENTRIES
+        // (65 536), so the 4th entry would NOT trigger eviction.
+        const sut = await openRepository({ cwd: tmpdir, deltaCacheMaxEntries: 3 });
+        const one = new Uint8Array([1]);
 
-    try {
-      // Act
-      sut.ctx.deltaCache.set('a', one, 1);
-      sut.ctx.deltaCache.set('b', one, 1);
-      sut.ctx.deltaCache.set('c', one, 1);
-      sut.ctx.deltaCache.set('d', one, 1);
+        try {
+          // Act
+          sut.ctx.deltaCache.set('a', one, 1);
+          sut.ctx.deltaCache.set('b', one, 1);
+          sut.ctx.deltaCache.set('c', one, 1);
+          sut.ctx.deltaCache.set('d', one, 1);
 
-      // Assert
-      expect(sut.ctx.deltaCache.entryCount).toBe(3);
-    } finally {
-      await sut.dispose();
-    }
+          // Assert
+          expect(sut.ctx.deltaCache.entryCount).toBe(3);
+        } finally {
+          await sut.dispose();
+        }
+      });
+    });
   });
 });
 
 describe('Node shim — discoverLayout bare flag', () => {
-  it('Given a cwd whose parent contains a real .git directory, When openRepository runs, Then the discovered layout has bare:false', async () => {
-    // Arrange — a real .git directory so discoverLayout returns its own
-    // object literal (not the synthetic fallback). Kills the L100 BooleanLiteral
-    // `false` → `true` mutant on the discovered layout's `bare` field.
-    await mkdir(path.join(tmpdir, '.git'), { recursive: true });
-    const sub = path.join(tmpdir, 'nested');
-    await mkdir(sub, { recursive: true });
+  describe('Given a cwd whose parent contains a real .git directory', () => {
+    describe('When openRepository runs', () => {
+      it('Then the discovered layout has bare:false', async () => {
+        // Arrange — a real .git directory so discoverLayout returns its own
+        // object literal (not the synthetic fallback). Kills the L100 BooleanLiteral
+        // `false` → `true` mutant on the discovered layout's `bare` field.
+        await mkdir(path.join(tmpdir, '.git'), { recursive: true });
+        const sub = path.join(tmpdir, 'nested');
+        await mkdir(sub, { recursive: true });
 
-    // Act
-    const sut = await openRepository({ cwd: sub });
+        // Act
+        const sut = await openRepository({ cwd: sub });
 
-    try {
-      // Assert — discoverLayout found the parent .git and reported bare:false.
-      expect(sut.ctx.layout.bare).toBe(false);
-      expect(sut.ctx.layout.gitDir).toContain('.git');
-    } finally {
-      await sut.dispose();
-    }
+        try {
+          // Assert — discoverLayout found the parent .git and reported bare:false.
+          expect(sut.ctx.layout.bare).toBe(false);
+          expect(sut.ctx.layout.gitDir).toContain('.git');
+        } finally {
+          await sut.dispose();
+        }
+      });
+    });
   });
 });

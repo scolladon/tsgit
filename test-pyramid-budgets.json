@@ -35,7 +35,11 @@
     },
     "gwtTitle": {
       "tier": "unit",
-      "regex": "^Given .+?, When .+?, Then .+$"
+      "describeGiven": "^Given .+$",
+      "describeWhen": "^When .+$",
+      "describeCombined": "^Given .+?, When .+$",
+      "itThen": "^Then .+$",
+      "legacyItGwt": "^Given .+?, When .+?, Then .+$"
     },
     "aaaBody": {
       "tier": "unit",
@@ -66,6 +70,8 @@
     "tooling/test/unit/test-pyramid/detect-*.test.ts",
     "tooling/test/unit/test-pyramid/parse-manifest.test.ts",
     "tooling/test/unit/test-pyramid/render-report.test.ts",
+    "tooling/test/unit/test-pyramid/scan-it-blocks.test.ts",
+    "tooling/test/unit/test-pyramid/scan-describe-blocks.test.ts",
     "tooling/test/integration/audit-test-pyramid.test.ts"
   ]
 }

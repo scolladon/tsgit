@@ -93,231 +93,282 @@ const onePackedBlob = async (
 };
 
 describe('fetchMissing', () => {
-  it('Given a repo with no [extensions] partialClone, When fetchMissing, Then throws NO_PROMISOR_REMOTE', async () => {
-    // Arrange
-    const ctx: Context = { ...createMemoryContext(), transport: forbiddenTransport() };
-    await seedRepo(ctx, {});
+  describe('Given a repo with no [extensions] partialClone', () => {
+    describe('When fetchMissing', () => {
+      it('Then throws NO_PROMISOR_REMOTE', async () => {
+        // Arrange
+        const ctx: Context = { ...createMemoryContext(), transport: forbiddenTransport() };
+        await seedRepo(ctx, {});
 
-    // Act
-    let caught: unknown;
-    try {
-      await fetchMissing(ctx, { oids: [FAKE_TIP] });
-    } catch (err) {
-      caught = err;
-    }
-
-    // Assert
-    expect(caught).toBeInstanceOf(TsgitError);
-    expect((caught as TsgitError).data.code).toBe('NO_PROMISOR_REMOTE');
-  });
-
-  it('Given a non-partial repo, When the promisor port fetches, Then it reports attempted=false', async () => {
-    // Arrange
-    const ctx: Context = { ...createMemoryContext(), transport: forbiddenTransport() };
-    await seedRepo(ctx, {});
-
-    // Act
-    const sut = await createPromisorRemote(ctx).fetch([FAKE_TIP]);
-
-    // Assert
-    expect(sut).toEqual({ attempted: false, requested: 1, fetched: 0 });
-  });
-
-  it('Given a promisor remote with no url, When fetchMissing, Then throws REMOTE_NOT_CONFIGURED', async () => {
-    // Arrange
-    const ctx: Context = { ...createMemoryContext(), transport: forbiddenTransport() };
-    await seedRepo(ctx, {});
-    await withConfig(ctx, '[extensions]\n\tpartialClone = origin\n');
-
-    // Act
-    let caught: unknown;
-    try {
-      await fetchMissing(ctx, { oids: [FAKE_TIP] });
-    } catch (err) {
-      caught = err;
-    }
-
-    // Assert
-    expect(caught).toBeInstanceOf(TsgitError);
-    const data = (caught as TsgitError).data;
-    expect(data.code).toBe('REMOTE_NOT_CONFIGURED');
-    if (data.code !== 'REMOTE_NOT_CONFIGURED') throw new Error('unreachable');
-    expect(data.remote).toBe('origin');
-  });
-
-  it('Given a promisor remote with an empty url, When fetchMissing, Then throws REMOTE_NOT_CONFIGURED', async () => {
-    // Arrange
-    const ctx: Context = { ...createMemoryContext(), transport: forbiddenTransport() };
-    await seedRepo(ctx, {});
-    await withConfig(ctx, '[extensions]\n\tpartialClone = origin\n[remote "origin"]\n\turl =\n');
-
-    // Act
-    let caught: unknown;
-    try {
-      await fetchMissing(ctx, { oids: [FAKE_TIP] });
-    } catch (err) {
-      caught = err;
-    }
-
-    // Assert
-    expect(caught).toBeInstanceOf(TsgitError);
-    const data = (caught as TsgitError).data;
-    expect(data.code).toBe('REMOTE_NOT_CONFIGURED');
-    if (data.code !== 'REMOTE_NOT_CONFIGURED') throw new Error('unreachable');
-    expect(data.remote).toBe('origin');
-  });
-
-  it('Given an empty oid list, When fetchMissing, Then it is a no-op with no network call', async () => {
-    // Arrange
-    const ctx: Context = { ...createMemoryContext(), transport: forbiddenTransport() };
-    await seedRepo(ctx, {});
-    await withConfig(ctx, PARTIAL_CONFIG);
-
-    // Act
-    const sut = await fetchMissing(ctx, { oids: [] });
-
-    // Assert
-    expect(sut).toEqual({ remote: 'origin', requested: 0, fetched: 0 });
-  });
-
-  it('Given oids already present locally, When fetchMissing, Then they are skipped with no network call', async () => {
-    // Arrange
-    const ctx: Context = { ...createMemoryContext(), transport: forbiddenTransport() };
-    await seedRepo(ctx, {});
-    await withConfig(ctx, PARTIAL_CONFIG);
-    const present = 'c'.repeat(40) as ObjectId;
-    await ctx.fs.write(looseObjectPath(ctx.layout.gitDir, present), new Uint8Array([1]));
-
-    // Act
-    const sut = await fetchMissing(ctx, { oids: [present] });
-
-    // Assert
-    expect(sut).toEqual({ remote: 'origin', requested: 1, fetched: 0 });
-  });
-
-  it('Given a missing oid, When fetchMissing, Then the object is fetched and a promisor pack is written', async () => {
-    // Arrange
-    const base = createMemoryContext();
-    await seedRepo(base, {});
-    await withConfig(base, PARTIAL_CONFIG);
-    const { packBytes, blobId } = await onePackedBlob(base, 'lazy content\n');
-    const { transport, requests } = fakeRemote(packBytes);
-    const ctx: Context = { ...base, transport };
-
-    // Act
-    const sut = await fetchMissing(ctx, { oids: [blobId] });
-
-    // Assert
-    expect(sut).toEqual({ remote: 'origin', requested: 1, fetched: 1 });
-    expect(requests.some((r) => r.url.includes('info/refs'))).toBe(true);
-    expect(requests.some((r) => r.url.includes('git-upload-pack'))).toBe(true);
-    const packSha = await ctx.hash.hashHex(packBytes.subarray(0, -20));
-    const promisorPath = `${ctx.layout.gitDir}/objects/pack/pack-${packSha}.promisor`;
-    expect(await ctx.fs.exists(promisorPath)).toBe(true);
-  });
-
-  it('Given a concurrent identical pack already on disk, When fetchMissing, Then the FILE_EXISTS collision is tolerated', async () => {
-    // Arrange
-    const base = createMemoryContext();
-    await seedRepo(base, {});
-    await withConfig(base, PARTIAL_CONFIG);
-    const { packBytes, blobId } = await onePackedBlob(base, 'collision\n');
-    const { transport } = fakeRemote(packBytes);
-    const ctx: Context = { ...base, transport };
-    const packSha = await ctx.hash.hashHex(packBytes.subarray(0, -20));
-    const packDir = `${ctx.layout.gitDir}/objects/pack`;
-    await ctx.fs.mkdir(packDir);
-    await ctx.fs.writeExclusive(`${packDir}/pack-${packSha}.pack`, packBytes);
-
-    // Act
-    const sut = await fetchMissing(ctx, { oids: [blobId] });
-
-    // Assert — the pre-existing pack made writeExclusive throw FILE_EXISTS,
-    // which fetchMissing swallows: the objects are already on disk.
-    expect(sut).toEqual({ remote: 'origin', requested: 1, fetched: 1 });
-  });
-
-  it('Given a duplicate oid in the list, When fetchMissing, Then it is fetched once', async () => {
-    // Arrange
-    const base = createMemoryContext();
-    await seedRepo(base, {});
-    await withConfig(base, PARTIAL_CONFIG);
-    const { packBytes, blobId } = await onePackedBlob(base, 'deduped\n');
-    const { transport, requests } = fakeRemote(packBytes);
-    const ctx: Context = { ...base, transport };
-
-    // Act — the same missing oid appears twice.
-    const sut = await fetchMissing(ctx, { oids: [blobId, blobId] });
-
-    // Assert — collectMissing de-duplicates, so it is fetched once.
-    expect(sut).toEqual({ remote: 'origin', requested: 2, fetched: 1 });
-    expect(requests.filter((r) => r.method === 'POST')).toHaveLength(1);
-  });
-
-  it('Given a partial repo and a missing object, When the promisor port fetches, Then it reports attempted=true', async () => {
-    // Arrange
-    const base = createMemoryContext();
-    await seedRepo(base, {});
-    await withConfig(base, PARTIAL_CONFIG);
-    const { packBytes, blobId } = await onePackedBlob(base, 'port path\n');
-    const { transport } = fakeRemote(packBytes);
-    const ctx: Context = { ...base, transport };
-
-    // Act
-    const sut = await createPromisorRemote(ctx).fetch([blobId]);
-
-    // Assert
-    expect(sut).toEqual({ attempted: true, requested: 1, fetched: 1 });
-  });
-
-  it('Given fetchPack fails with a non-FILE_EXISTS error, When fetchMissing, Then the error propagates', async () => {
-    // Arrange — discovery succeeds, the upload-pack POST returns 500.
-    const ctx = createMemoryContext();
-    await seedRepo(ctx, {});
-    await withConfig(ctx, PARTIAL_CONFIG);
-    const advertisement = advertisementBytes();
-    const transport: HttpTransport = {
-      request: async (req: HttpRequest): Promise<HttpResponse> => {
-        if (req.url.includes('info/refs')) {
-          return { statusCode: 200, headers: {}, body: streamOf(advertisement.slice()) };
+        // Act
+        let caught: unknown;
+        try {
+          await fetchMissing(ctx, { oids: [FAKE_TIP] });
+        } catch (err) {
+          caught = err;
         }
-        return { statusCode: 500, headers: {}, body: streamOf(new Uint8Array(0)) };
-      },
-    };
 
-    // Act
-    let caught: unknown;
-    try {
-      await fetchMissing({ ...ctx, transport }, { oids: [FAKE_TIP] });
-    } catch (err) {
-      caught = err;
-    }
-
-    // Assert — a non-FILE_EXISTS failure is rethrown, not swallowed.
-    expect(caught).toBeInstanceOf(TsgitError);
-    expect((caught as TsgitError).data.code).toBe('HTTP_ERROR');
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data.code).toBe('NO_PROMISOR_REMOTE');
+      });
+    });
   });
 
-  it('Given a configured auth credential, When fetchMissing, Then the fetch carries it', async () => {
-    // Arrange
-    const base = createMemoryContext();
-    await seedRepo(base, {});
-    await withConfig(base, PARTIAL_CONFIG);
-    const { packBytes, blobId } = await onePackedBlob(base, 'with auth\n');
-    const { transport, requests } = fakeRemote(packBytes);
-    const ctx: Context = {
-      ...base,
-      transport,
-      config: { auth: { type: 'bearer', token: 'sekret' } },
-    };
+  describe('Given a non-partial repo', () => {
+    describe('When the promisor port fetches', () => {
+      it('Then it reports attempted=false', async () => {
+        // Arrange
+        const ctx: Context = { ...createMemoryContext(), transport: forbiddenTransport() };
+        await seedRepo(ctx, {});
 
-    // Act
-    const sut = await fetchMissing(ctx, { oids: [blobId] });
+        // Act
+        const sut = await createPromisorRemote(ctx).fetch([FAKE_TIP]);
 
-    // Assert — the configured credential reached the wire: the `{ auth }`
-    // spread was passed to `withDefaults`, not an empty object.
-    expect(sut).toEqual({ remote: 'origin', requested: 1, fetched: 1 });
-    const post = requests.find((r) => r.method === 'POST');
-    expect(post?.headers?.authorization).toBe('Bearer sekret');
+        // Assert
+        expect(sut).toEqual({ attempted: false, requested: 1, fetched: 0 });
+      });
+    });
+  });
+
+  describe('Given a promisor remote with no url', () => {
+    describe('When fetchMissing', () => {
+      it('Then throws REMOTE_NOT_CONFIGURED', async () => {
+        // Arrange
+        const ctx: Context = { ...createMemoryContext(), transport: forbiddenTransport() };
+        await seedRepo(ctx, {});
+        await withConfig(ctx, '[extensions]\n\tpartialClone = origin\n');
+
+        // Act
+        let caught: unknown;
+        try {
+          await fetchMissing(ctx, { oids: [FAKE_TIP] });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data;
+        expect(data.code).toBe('REMOTE_NOT_CONFIGURED');
+        if (data.code !== 'REMOTE_NOT_CONFIGURED') throw new Error('unreachable');
+        expect(data.remote).toBe('origin');
+      });
+    });
+  });
+
+  describe('Given a promisor remote with an empty url', () => {
+    describe('When fetchMissing', () => {
+      it('Then throws REMOTE_NOT_CONFIGURED', async () => {
+        // Arrange
+        const ctx: Context = { ...createMemoryContext(), transport: forbiddenTransport() };
+        await seedRepo(ctx, {});
+        await withConfig(
+          ctx,
+          '[extensions]\n\tpartialClone = origin\n[remote "origin"]\n\turl =\n',
+        );
+
+        // Act
+        let caught: unknown;
+        try {
+          await fetchMissing(ctx, { oids: [FAKE_TIP] });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data;
+        expect(data.code).toBe('REMOTE_NOT_CONFIGURED');
+        if (data.code !== 'REMOTE_NOT_CONFIGURED') throw new Error('unreachable');
+        expect(data.remote).toBe('origin');
+      });
+    });
+  });
+
+  describe('Given an empty oid list', () => {
+    describe('When fetchMissing', () => {
+      it('Then it is a no-op with no network call', async () => {
+        // Arrange
+        const ctx: Context = { ...createMemoryContext(), transport: forbiddenTransport() };
+        await seedRepo(ctx, {});
+        await withConfig(ctx, PARTIAL_CONFIG);
+
+        // Act
+        const sut = await fetchMissing(ctx, { oids: [] });
+
+        // Assert
+        expect(sut).toEqual({ remote: 'origin', requested: 0, fetched: 0 });
+      });
+    });
+  });
+
+  describe('Given oids already present locally', () => {
+    describe('When fetchMissing', () => {
+      it('Then they are skipped with no network call', async () => {
+        // Arrange
+        const ctx: Context = { ...createMemoryContext(), transport: forbiddenTransport() };
+        await seedRepo(ctx, {});
+        await withConfig(ctx, PARTIAL_CONFIG);
+        const present = 'c'.repeat(40) as ObjectId;
+        await ctx.fs.write(looseObjectPath(ctx.layout.gitDir, present), new Uint8Array([1]));
+
+        // Act
+        const sut = await fetchMissing(ctx, { oids: [present] });
+
+        // Assert
+        expect(sut).toEqual({ remote: 'origin', requested: 1, fetched: 0 });
+      });
+    });
+  });
+
+  describe('Given a missing oid', () => {
+    describe('When fetchMissing', () => {
+      it('Then the object is fetched and a promisor pack is written', async () => {
+        // Arrange
+        const base = createMemoryContext();
+        await seedRepo(base, {});
+        await withConfig(base, PARTIAL_CONFIG);
+        const { packBytes, blobId } = await onePackedBlob(base, 'lazy content\n');
+        const { transport, requests } = fakeRemote(packBytes);
+        const ctx: Context = { ...base, transport };
+
+        // Act
+        const sut = await fetchMissing(ctx, { oids: [blobId] });
+
+        // Assert
+        expect(sut).toEqual({ remote: 'origin', requested: 1, fetched: 1 });
+        expect(requests.some((r) => r.url.includes('info/refs'))).toBe(true);
+        expect(requests.some((r) => r.url.includes('git-upload-pack'))).toBe(true);
+        const packSha = await ctx.hash.hashHex(packBytes.subarray(0, -20));
+        const promisorPath = `${ctx.layout.gitDir}/objects/pack/pack-${packSha}.promisor`;
+        expect(await ctx.fs.exists(promisorPath)).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a concurrent identical pack already on disk', () => {
+    describe('When fetchMissing', () => {
+      it('Then the FILE_EXISTS collision is tolerated', async () => {
+        // Arrange
+        const base = createMemoryContext();
+        await seedRepo(base, {});
+        await withConfig(base, PARTIAL_CONFIG);
+        const { packBytes, blobId } = await onePackedBlob(base, 'collision\n');
+        const { transport } = fakeRemote(packBytes);
+        const ctx: Context = { ...base, transport };
+        const packSha = await ctx.hash.hashHex(packBytes.subarray(0, -20));
+        const packDir = `${ctx.layout.gitDir}/objects/pack`;
+        await ctx.fs.mkdir(packDir);
+        await ctx.fs.writeExclusive(`${packDir}/pack-${packSha}.pack`, packBytes);
+
+        // Act
+        const sut = await fetchMissing(ctx, { oids: [blobId] });
+
+        // Assert — the pre-existing pack made writeExclusive throw FILE_EXISTS,
+        // which fetchMissing swallows: the objects are already on disk.
+        expect(sut).toEqual({ remote: 'origin', requested: 1, fetched: 1 });
+      });
+    });
+  });
+
+  describe('Given a duplicate oid in the list', () => {
+    describe('When fetchMissing', () => {
+      it('Then it is fetched once', async () => {
+        // Arrange
+        const base = createMemoryContext();
+        await seedRepo(base, {});
+        await withConfig(base, PARTIAL_CONFIG);
+        const { packBytes, blobId } = await onePackedBlob(base, 'deduped\n');
+        const { transport, requests } = fakeRemote(packBytes);
+        const ctx: Context = { ...base, transport };
+
+        // Act — the same missing oid appears twice.
+        const sut = await fetchMissing(ctx, { oids: [blobId, blobId] });
+
+        // Assert — collectMissing de-duplicates, so it is fetched once.
+        expect(sut).toEqual({ remote: 'origin', requested: 2, fetched: 1 });
+        expect(requests.filter((r) => r.method === 'POST')).toHaveLength(1);
+      });
+    });
+  });
+
+  describe('Given a partial repo and a missing object', () => {
+    describe('When the promisor port fetches', () => {
+      it('Then it reports attempted=true', async () => {
+        // Arrange
+        const base = createMemoryContext();
+        await seedRepo(base, {});
+        await withConfig(base, PARTIAL_CONFIG);
+        const { packBytes, blobId } = await onePackedBlob(base, 'port path\n');
+        const { transport } = fakeRemote(packBytes);
+        const ctx: Context = { ...base, transport };
+
+        // Act
+        const sut = await createPromisorRemote(ctx).fetch([blobId]);
+
+        // Assert
+        expect(sut).toEqual({ attempted: true, requested: 1, fetched: 1 });
+      });
+    });
+  });
+
+  describe('Given fetchPack fails with a non-FILE_EXISTS error', () => {
+    describe('When fetchMissing', () => {
+      it('Then the error propagates', async () => {
+        // Arrange — discovery succeeds, the upload-pack POST returns 500.
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, {});
+        await withConfig(ctx, PARTIAL_CONFIG);
+        const advertisement = advertisementBytes();
+        const transport: HttpTransport = {
+          request: async (req: HttpRequest): Promise<HttpResponse> => {
+            if (req.url.includes('info/refs')) {
+              return { statusCode: 200, headers: {}, body: streamOf(advertisement.slice()) };
+            }
+            return { statusCode: 500, headers: {}, body: streamOf(new Uint8Array(0)) };
+          },
+        };
+
+        // Act
+        let caught: unknown;
+        try {
+          await fetchMissing({ ...ctx, transport }, { oids: [FAKE_TIP] });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert — a non-FILE_EXISTS failure is rethrown, not swallowed.
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data.code).toBe('HTTP_ERROR');
+      });
+    });
+  });
+
+  describe('Given a configured auth credential', () => {
+    describe('When fetchMissing', () => {
+      it('Then the fetch carries it', async () => {
+        // Arrange
+        const base = createMemoryContext();
+        await seedRepo(base, {});
+        await withConfig(base, PARTIAL_CONFIG);
+        const { packBytes, blobId } = await onePackedBlob(base, 'with auth\n');
+        const { transport, requests } = fakeRemote(packBytes);
+        const ctx: Context = {
+          ...base,
+          transport,
+          config: { auth: { type: 'bearer', token: 'sekret' } },
+        };
+
+        // Act
+        const sut = await fetchMissing(ctx, { oids: [blobId] });
+
+        // Assert — the configured credential reached the wire: the `{ auth }`
+        // spread was passed to `withDefaults`, not an empty object.
+        expect(sut).toEqual({ remote: 'origin', requested: 1, fetched: 1 });
+        const post = requests.find((r) => r.method === 'POST');
+        expect(post?.headers?.authorization).toBe('Bearer sekret');
+      });
+    });
   });
 });

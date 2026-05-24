@@ -8,88 +8,108 @@ const ID_B = 'b'.repeat(40) as ObjectId;
 const MODE: FileMode = FILE_MODE.REGULAR;
 
 describe('primaryPath — per-variant sort key', () => {
-  it('Given AddChange, When primaryPath called, Then returns newPath', () => {
-    // Arrange
-    const change = {
-      type: 'add' as const,
-      newPath: 'added' as FilePath,
-      newId: ID_A,
-      newMode: MODE,
-    };
+  describe('Given AddChange', () => {
+    describe('When primaryPath called', () => {
+      it('Then returns newPath', () => {
+        // Arrange
+        const change = {
+          type: 'add' as const,
+          newPath: 'added' as FilePath,
+          newId: ID_A,
+          newMode: MODE,
+        };
 
-    // Act
-    const sut = primaryPath(change);
+        // Act
+        const sut = primaryPath(change);
 
-    // Assert
-    expect(sut).toBe('added');
+        // Assert
+        expect(sut).toBe('added');
+      });
+    });
   });
 
-  it('Given DeleteChange, When primaryPath called, Then returns oldPath', () => {
-    // Arrange
-    const change = {
-      type: 'delete' as const,
-      oldPath: 'gone' as FilePath,
-      oldId: ID_A,
-      oldMode: MODE,
-    };
+  describe('Given DeleteChange', () => {
+    describe('When primaryPath called', () => {
+      it('Then returns oldPath', () => {
+        // Arrange
+        const change = {
+          type: 'delete' as const,
+          oldPath: 'gone' as FilePath,
+          oldId: ID_A,
+          oldMode: MODE,
+        };
 
-    // Act
-    const sut = primaryPath(change);
+        // Act
+        const sut = primaryPath(change);
 
-    // Assert
-    expect(sut).toBe('gone');
+        // Assert
+        expect(sut).toBe('gone');
+      });
+    });
   });
 
-  it('Given RenameChange, When primaryPath called, Then returns newPath', () => {
-    // Arrange
-    const change = {
-      type: 'rename' as const,
-      oldPath: 'src' as FilePath,
-      newPath: 'dest' as FilePath,
-      id: ID_A,
-      mode: MODE,
-    };
+  describe('Given RenameChange', () => {
+    describe('When primaryPath called', () => {
+      it('Then returns newPath', () => {
+        // Arrange
+        const change = {
+          type: 'rename' as const,
+          oldPath: 'src' as FilePath,
+          newPath: 'dest' as FilePath,
+          id: ID_A,
+          mode: MODE,
+        };
 
-    // Act
-    const sut = primaryPath(change);
+        // Act
+        const sut = primaryPath(change);
 
-    // Assert
-    expect(sut).toBe('dest');
+        // Assert
+        expect(sut).toBe('dest');
+      });
+    });
   });
 
-  it('Given ModifyChange, When primaryPath called, Then returns path', () => {
-    // Arrange
-    const change = {
-      type: 'modify' as const,
-      path: 'changed' as FilePath,
-      oldId: ID_A,
-      newId: ID_B,
-      oldMode: MODE,
-      newMode: MODE,
-    };
+  describe('Given ModifyChange', () => {
+    describe('When primaryPath called', () => {
+      it('Then returns path', () => {
+        // Arrange
+        const change = {
+          type: 'modify' as const,
+          path: 'changed' as FilePath,
+          oldId: ID_A,
+          newId: ID_B,
+          oldMode: MODE,
+          newMode: MODE,
+        };
 
-    // Act
-    const sut = primaryPath(change);
+        // Act
+        const sut = primaryPath(change);
 
-    // Assert
-    expect(sut).toBe('changed');
+        // Assert
+        expect(sut).toBe('changed');
+      });
+    });
   });
 
-  it('Given TypeChangeChange, When primaryPath called, Then returns path', () => {
-    // Arrange
-    const change = {
-      type: 'type-change' as const,
-      path: 'retyped' as FilePath,
-      oldId: ID_A,
-      newId: ID_B,
-      oldMode: FILE_MODE.REGULAR,
-      newMode: FILE_MODE.SYMLINK,
-    };
+  describe('Given TypeChangeChange', () => {
+    describe('When primaryPath called', () => {
+      it('Then returns path', () => {
+        // Arrange
+        const change = {
+          type: 'type-change' as const,
+          path: 'retyped' as FilePath,
+          oldId: ID_A,
+          newId: ID_B,
+          oldMode: FILE_MODE.REGULAR,
+          newMode: FILE_MODE.SYMLINK,
+        };
 
-    // Act
-    const sut = primaryPath(change);
+        // Act
+        const sut = primaryPath(change);
 
-    // Assert
-    expect(sut).toBe('retyped');
+        // Assert
+        expect(sut).toBe('retyped');
+      });
+    });
   });
 });

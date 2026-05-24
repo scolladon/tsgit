@@ -5,72 +5,97 @@ import { assertExhaustiveSwitch } from '../exhaustiveness.js';
 
 describe('merge error', () => {
   describe('factory functions', () => {
-    it("Given invalidMergeTree('too large'), When checking error.data, Then code is 'INVALID_MERGE_TREE' and reason preserved", () => {
-      // Arrange & Act
-      const sut = invalidMergeTree('too large');
+    describe("Given invalidMergeTree('too large')", () => {
+      describe('When checking error.data', () => {
+        it("Then code is 'INVALID_MERGE_TREE' and reason preserved", () => {
+          // Arrange & Act
+          const sut = invalidMergeTree('too large');
 
-      // Assert
-      expect(sut.data).toEqual({
-        code: 'INVALID_MERGE_TREE',
-        reason: 'too large',
+          // Assert
+          expect(sut.data).toEqual({
+            code: 'INVALID_MERGE_TREE',
+            reason: 'too large',
+          });
+        });
       });
     });
 
-    it("Given invalidMergeInput('duplicate conflict path'), When checking error.data, Then code is 'INVALID_MERGE_INPUT' and reason preserved", () => {
-      // Arrange & Act
-      const sut = invalidMergeInput('duplicate conflict path');
+    describe("Given invalidMergeInput('duplicate conflict path')", () => {
+      describe('When checking error.data', () => {
+        it("Then code is 'INVALID_MERGE_INPUT' and reason preserved", () => {
+          // Arrange & Act
+          const sut = invalidMergeInput('duplicate conflict path');
 
-      // Assert
-      expect(sut.data).toEqual({
-        code: 'INVALID_MERGE_INPUT',
-        reason: 'duplicate conflict path',
+          // Assert
+          expect(sut.data).toEqual({
+            code: 'INVALID_MERGE_INPUT',
+            reason: 'duplicate conflict path',
+          });
+        });
       });
     });
   });
 
   describe('TsgitError class', () => {
-    it('Given a merge TsgitError, When checking instanceof Error, Then returns true', () => {
-      // Arrange & Act
-      const sut = invalidMergeTree('bad');
+    describe('Given a merge TsgitError', () => {
+      describe('When checking instanceof Error', () => {
+        it('Then returns true', () => {
+          // Arrange & Act
+          const sut = invalidMergeTree('bad');
 
-      // Assert
-      expect(sut).toBeInstanceOf(Error);
+          // Assert
+          expect(sut).toBeInstanceOf(Error);
+        });
+      });
+      describe('When accessing .name', () => {
+        it("Then equals 'TsgitError'", () => {
+          // Arrange & Act
+          const sut = invalidMergeInput('bad');
+
+          // Assert
+          expect(sut.name).toBe('TsgitError');
+        });
+      });
     });
 
-    it("Given a merge TsgitError, When accessing .name, Then equals 'TsgitError'", () => {
-      // Arrange & Act
-      const sut = invalidMergeInput('bad');
+    describe('Given invalidMergeTree', () => {
+      describe('When accessing .message', () => {
+        it('Then contains code and reason', () => {
+          // Arrange & Act
+          const sut = invalidMergeTree('over MAX_FLAT_TREE_ENTRIES');
 
-      // Assert
-      expect(sut.name).toBe('TsgitError');
+          // Assert
+          expect(sut.message).toContain('INVALID_MERGE_TREE');
+          expect(sut.message).toContain('invalid merge tree: over MAX_FLAT_TREE_ENTRIES');
+        });
+      });
     });
 
-    it('Given invalidMergeTree, When accessing .message, Then contains code and reason', () => {
-      // Arrange & Act
-      const sut = invalidMergeTree('over MAX_FLAT_TREE_ENTRIES');
+    describe('Given invalidMergeInput', () => {
+      describe('When accessing .message', () => {
+        it('Then contains code and reason', () => {
+          // Arrange & Act
+          const sut = invalidMergeInput('oversize content');
 
-      // Assert
-      expect(sut.message).toContain('INVALID_MERGE_TREE');
-      expect(sut.message).toContain('invalid merge tree: over MAX_FLAT_TREE_ENTRIES');
+          // Assert
+          expect(sut.message).toContain('INVALID_MERGE_INPUT');
+          expect(sut.message).toContain('invalid merge input: oversize content');
+        });
+      });
     });
 
-    it('Given invalidMergeInput, When accessing .message, Then contains code and reason', () => {
-      // Arrange & Act
-      const sut = invalidMergeInput('oversize content');
+    describe('Given a merge TsgitError', () => {
+      describe('When switching on data.code in exhaustive switch', () => {
+        it('Then all 29 cases handleable', () => {
+          // Arrange
+          const sut = invalidMergeTree('test');
 
-      // Assert
-      expect(sut.message).toContain('INVALID_MERGE_INPUT');
-      expect(sut.message).toContain('invalid merge input: oversize content');
-    });
-
-    it('Given a merge TsgitError, When switching on data.code in exhaustive switch, Then all 29 cases handleable', () => {
-      // Arrange
-      const sut = invalidMergeTree('test');
-
-      // Act & Assert
-      const data: TsgitErrorData = sut.data;
-      // Assert
-      assertExhaustiveSwitch(data);
+          // Act & Assert
+          const data: TsgitErrorData = sut.data;
+          // Assert
+          assertExhaustiveSwitch(data);
+        });
+      });
     });
   });
 });

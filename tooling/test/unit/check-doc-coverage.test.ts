@@ -16,7 +16,9 @@ import {
 const REPO_ROOT = path.resolve(path.dirname(url.fileURLToPath(import.meta.url)), '../../..');
 
 describe('parseRepositoryInterface', () => {
-  it('Given a Repository interface with three commands and two primitives, When parsed, Then both name sets are returned', () => {
+  describe("Given a Repository interface with three commands and two primitives", () => {
+    describe("When parsed", () => {
+      it('Then both name sets are returned', () => {
     // Arrange
     const source = [
       'interface Repository {',
@@ -41,8 +43,12 @@ describe('parseRepositoryInterface', () => {
       primitives: ['readObject', 'walkCommits'],
     });
   });
+    });
+  });
 
-  it('Given a source with no primitives block, When parsed, Then primitives is empty', () => {
+  describe("Given a source with no primitives block", () => {
+    describe("When parsed", () => {
+      it('Then primitives is empty', () => {
     // Arrange
     const source = [
       'interface Repository {',
@@ -57,8 +63,12 @@ describe('parseRepositoryInterface', () => {
     expect(sut.primitives).toEqual([]);
     expect(sut.commands).toEqual(['add']);
   });
+    });
+  });
 
-  it('Given a source where BindCtx is renamed, When parsed, Then both sets are empty', () => {
+  describe("Given a source where BindCtx is renamed", () => {
+    describe("When parsed", () => {
+      it('Then both sets are empty', () => {
     // Arrange
     const source = [
       'interface Repository {',
@@ -76,8 +86,12 @@ describe('parseRepositoryInterface', () => {
     expect(sut.commands).toEqual([]);
     expect(sut.primitives).toEqual([]);
   });
+    });
+  });
 
-  it('Given the slot names primitives / ctx / dispose at the top level, When parsed, Then they are excluded from commands', () => {
+  describe("Given the slot names primitives / ctx / dispose at the top level", () => {
+    describe("When parsed", () => {
+      it('Then they are excluded from commands', () => {
     // Arrange
     const source = [
       'interface Repository {',
@@ -96,52 +110,76 @@ describe('parseRepositoryInterface', () => {
     // Assert
     expect(sut.commands).toEqual(['add']);
   });
+    });
+  });
 });
 
 describe('kebabCase', () => {
-  it('Given a single-word camel case, When kebab-cased, Then the same lower-case word is returned', () => {
+  describe("Given a single-word camel case", () => {
+    describe("When kebab-cased", () => {
+      it('Then the same lower-case word is returned', () => {
     // Arrange + Act
     const sut = kebabCase('clone');
 
     // Assert
     expect(sut).toBe('clone');
   });
+    });
+  });
 
-  it('Given catFile, When kebab-cased, Then cat-file', () => {
+  describe("Given catFile", () => {
+    describe("When kebab-cased", () => {
+      it('Then cat-file', () => {
     // Arrange + Act
     const sut = kebabCase('catFile');
 
     // Assert
     expect(sut).toBe('cat-file');
   });
+    });
+  });
 
-  it('Given revParse, When kebab-cased, Then rev-parse', () => {
+  describe("Given revParse", () => {
+    describe("When kebab-cased", () => {
+      it('Then rev-parse', () => {
     // Arrange + Act
     const sut = kebabCase('revParse');
 
     // Assert
     expect(sut).toBe('rev-parse');
   });
+    });
+  });
 
-  it('Given fetchMissing, When kebab-cased, Then fetch-missing', () => {
+  describe("Given fetchMissing", () => {
+    describe("When kebab-cased", () => {
+      it('Then fetch-missing', () => {
     // Arrange + Act
     const sut = kebabCase('fetchMissing');
 
     // Assert
     expect(sut).toBe('fetch-missing');
   });
+    });
+  });
 
-  it('Given sparseCheckout, When kebab-cased, Then sparse-checkout', () => {
+  describe("Given sparseCheckout", () => {
+    describe("When kebab-cased", () => {
+      it('Then sparse-checkout', () => {
     // Arrange + Act
     const sut = kebabCase('sparseCheckout');
 
     // Assert
     expect(sut).toBe('sparse-checkout');
   });
+    });
+  });
 });
 
 describe('checkDocsExist', () => {
-  it('Given a docs root with the expected file, When checkDocsExist runs, Then no gaps are returned', () => {
+  describe("Given a docs root with the expected file", () => {
+    describe("When checkDocsExist runs", () => {
+      it('Then no gaps are returned', () => {
     // Arrange
     const expected = path.join('/docs', 'commands', 'clone.md');
     const fileExists = (p: string): boolean => p === expected;
@@ -152,8 +190,12 @@ describe('checkDocsExist', () => {
     // Assert
     expect(sut).toEqual([]);
   });
+    });
+  });
 
-  it('Given a docs root missing the expected file, When checkDocsExist runs, Then one gap is returned with the missing path', () => {
+  describe("Given a docs root missing the expected file", () => {
+    describe("When checkDocsExist runs", () => {
+      it('Then one gap is returned with the missing path', () => {
     // Arrange
     const fileExists = (): boolean => false;
 
@@ -170,8 +212,12 @@ describe('checkDocsExist', () => {
       },
     ]);
   });
+    });
+  });
 
-  it('Given a name in the allowlist, When checkDocsExist runs against a missing file, Then no gap is returned', () => {
+  describe("Given a name in the allowlist", () => {
+    describe("When checkDocsExist runs against a missing file", () => {
+      it('Then no gap is returned', () => {
     // Arrange
     const fileExists = (): boolean => false;
 
@@ -181,8 +227,12 @@ describe('checkDocsExist', () => {
     // Assert
     expect(sut).toEqual([]);
   });
+    });
+  });
 
-  it('Given multiple names, When some are missing and others exist, Then only the missing ones are reported', () => {
+  describe("Given multiple names", () => {
+    describe("When some are missing and others exist", () => {
+      it('Then only the missing ones are reported', () => {
     // Arrange
     const expected = path.join('/docs', 'commands', 'clone.md');
     const fileExists = (p: string): boolean => p === expected;
@@ -193,10 +243,14 @@ describe('checkDocsExist', () => {
     // Assert
     expect(sut.map((g) => g.name)).toEqual(['add', 'commit']);
   });
+    });
+  });
 });
 
 describe('checkIndexRow', () => {
-  it('Given a README containing the expected row, When checkIndexRow runs, Then no gap is returned', () => {
+  describe("Given a README containing the expected row", () => {
+    describe("When checkIndexRow runs", () => {
+      it('Then no gap is returned', () => {
     // Arrange
     const readFile = (): string => '| [`clone`](clone.md) | Clone a remote |';
 
@@ -206,8 +260,12 @@ describe('checkIndexRow', () => {
     // Assert
     expect(sut).toEqual([]);
   });
+    });
+  });
 
-  it('Given a README missing the expected row, When checkIndexRow runs, Then one gap is returned', () => {
+  describe("Given a README missing the expected row", () => {
+    describe("When checkIndexRow runs", () => {
+      it('Then one gap is returned', () => {
     // Arrange
     const readFile = (): string => 'no entries here';
 
@@ -224,8 +282,12 @@ describe('checkIndexRow', () => {
       },
     ]);
   });
+    });
+  });
 
-  it('Given a README that cannot be read, When checkIndexRow runs, Then every name surfaces as an index-row gap', () => {
+  describe("Given a README that cannot be read", () => {
+    describe("When checkIndexRow runs", () => {
+      it('Then every name surfaces as an index-row gap', () => {
     // Arrange
     const readFile = (): string => {
       throw new Error('ENOENT');
@@ -238,8 +300,12 @@ describe('checkIndexRow', () => {
     expect(sut.map((g) => g.name)).toEqual(['clone', 'add']);
     expect(sut.every((g) => g.missing === 'index-row')).toBe(true);
   });
+    });
+  });
 
-  it('Given a name in the allowlist, When checkIndexRow runs against a README missing that row, Then no gap is returned', () => {
+  describe("Given a name in the allowlist", () => {
+    describe("When checkIndexRow runs against a README missing that row", () => {
+      it('Then no gap is returned', () => {
     // Arrange
     const readFile = (): string => '';
 
@@ -249,10 +315,14 @@ describe('checkIndexRow', () => {
     // Assert
     expect(sut).toEqual([]);
   });
+    });
+  });
 });
 
 describe('formatGapStanza', () => {
-  it('Given a missing-file gap, When formatted, Then the stanza names the expected file and index entry', () => {
+  describe("Given a missing-file gap", () => {
+    describe("When formatted", () => {
+      it('Then the stanza names the expected file and index entry', () => {
     // Arrange
     const gap = {
       kind: 'commands' as const,
@@ -269,8 +339,12 @@ describe('formatGapStanza', () => {
     expect(sut).toContain('Surface symbol: repo.clone');
     expect(sut).toContain('[`clone`](clone.md)');
   });
+    });
+  });
 
-  it('Given a primitives gap, When formatted, Then the surface symbol includes the primitives. prefix', () => {
+  describe("Given a primitives gap", () => {
+    describe("When formatted", () => {
+      it('Then the surface symbol includes the primitives. prefix', () => {
     // Arrange
     const gap = {
       kind: 'primitives' as const,
@@ -285,8 +359,12 @@ describe('formatGapStanza', () => {
     // Assert
     expect(sut).toContain('Surface symbol: repo.primitives.readObject');
   });
+    });
+  });
 
-  it('Given a missing-index-row gap, When formatted, Then the stanza names the README and the link target', () => {
+  describe("Given a missing-index-row gap", () => {
+    describe("When formatted", () => {
+      it('Then the stanza names the README and the link target', () => {
     // Arrange
     const gap = {
       kind: 'commands' as const,
@@ -302,28 +380,40 @@ describe('formatGapStanza', () => {
     expect(sut).toContain('missing index row for `clone`');
     expect(sut).toContain('/repo/docs/use/commands/clone.md');
   });
+    });
+  });
 });
 
 describe('runCheck against the real repo', () => {
-  it('Given the live repository.ts + docs tree, When runCheck runs, Then no gaps are reported', () => {
+  describe("Given the live repository.ts + docs tree", () => {
+    describe("When runCheck runs", () => {
+      it('Then no gaps are reported', () => {
     // Arrange + Act
     const sut = runCheck(REPO_ROOT);
 
     // Assert
     expect(sut).toEqual([]);
   });
+    });
+  });
 
-  it('Given a synthesised repository.ts with zero commands and zero primitives, When runCheck runs, Then it throws', () => {
+  describe("Given a synthesised repository.ts with zero commands and zero primitives", () => {
+    describe("When runCheck runs", () => {
+      it('Then it throws', () => {
     // Arrange
     const readSource = (): string => 'interface Repository {}';
 
     // Act + Assert
     expect(() => runCheck('/any/root', readSource)).toThrow(/zero commands AND zero primitives/);
   });
+    });
+  });
 });
 
 describe('parseAllowList', () => {
-  it('Given a valid JSON object with both arrays, When parsed, Then both lists are returned', () => {
+  describe("Given a valid JSON object with both arrays", () => {
+    describe("When parsed", () => {
+      it('Then both lists are returned', () => {
     // Arrange
     const raw = JSON.stringify({ commands: ['clone'], primitives: ['readObject'] });
 
@@ -333,8 +423,12 @@ describe('parseAllowList', () => {
     // Assert
     expect(sut).toEqual({ commands: ['clone'], primitives: ['readObject'] });
   });
+    });
+  });
 
-  it('Given JSON whose commands is a non-array, When parsed, Then commands defaults to empty', () => {
+  describe("Given JSON whose commands is a non-array", () => {
+    describe("When parsed", () => {
+      it('Then commands defaults to empty', () => {
     // Arrange
     const raw = JSON.stringify({ commands: 'oops', primitives: [] });
 
@@ -344,8 +438,12 @@ describe('parseAllowList', () => {
     // Assert
     expect(sut.commands).toEqual([]);
   });
+    });
+  });
 
-  it('Given JSON whose entries contain non-strings, When parsed, Then non-strings are filtered out', () => {
+  describe("Given JSON whose entries contain non-strings", () => {
+    describe("When parsed", () => {
+      it('Then non-strings are filtered out', () => {
     // Arrange
     const raw = JSON.stringify({ commands: ['clone', 42, null, 'add'], primitives: [] });
 
@@ -355,8 +453,12 @@ describe('parseAllowList', () => {
     // Assert
     expect(sut.commands).toEqual(['clone', 'add']);
   });
+    });
+  });
 
-  it('Given malformed JSON, When parsed, Then both lists default to empty', () => {
+  describe("Given malformed JSON", () => {
+    describe("When parsed", () => {
+      it('Then both lists default to empty', () => {
     // Arrange
     const raw = '{ not valid json';
 
@@ -366,8 +468,12 @@ describe('parseAllowList', () => {
     // Assert
     expect(sut).toEqual({ commands: [], primitives: [] });
   });
+    });
+  });
 
-  it('Given JSON parsing to a non-object value (e.g. an array), When parsed, Then both lists default to empty', () => {
+  describe("Given JSON parsing to a non-object value (e.g. an array)", () => {
+    describe("When parsed", () => {
+      it('Then both lists default to empty', () => {
     // Arrange
     const raw = JSON.stringify(['just', 'an', 'array']);
 
@@ -377,8 +483,12 @@ describe('parseAllowList', () => {
     // Assert
     expect(sut).toEqual({ commands: [], primitives: [] });
   });
+    });
+  });
 
-  it('Given JSON parsing to null, When parsed, Then both lists default to empty', () => {
+  describe("Given JSON parsing to null", () => {
+    describe("When parsed", () => {
+      it('Then both lists default to empty', () => {
     // Arrange
     const raw = 'null';
 
@@ -387,5 +497,7 @@ describe('parseAllowList', () => {
 
     // Assert
     expect(sut).toEqual({ commands: [], primitives: [] });
+  });
+    });
   });
 });

@@ -27,6 +27,10 @@ export interface ItBlock {
   readonly title: string;
   readonly body: string;
   readonly isSkipped: boolean;
+  // Offset of the opener within `source` (e.g. start of `it` / `test`).
+  // Used by detect-bad-title to join `it()` records to their describe
+  // ancestors via source-offset containment (ADR-118).
+  readonly openIdx: number;
 }
 
 const lineAt = (source: string, idx: number): number => {
@@ -154,7 +158,7 @@ export const scanItBlocks = (source: string): ReadonlyArray<ItBlock> => {
     if (title === null) continue;
 
     const body = source.slice(afterIdx, bodyEnd);
-    blocks.push({ line: lineAt(source, opener), title, body, isSkipped });
+    blocks.push({ line: lineAt(source, opener), title, body, isSkipped, openIdx: opener });
   }
   return blocks;
 };

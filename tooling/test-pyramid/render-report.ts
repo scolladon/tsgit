@@ -74,7 +74,10 @@ const renderUnderAsserted = (findings: ReadonlyArray<UnderAssertedFinding>): str
 const renderBadTitle = (findings: ReadonlyArray<BadTitleFinding>): string => {
   if (findings.length === 0) return '_none_';
   return findings
-    .map((f) => `- \`${f.path}:${f.line}\` — ${f.reason}: ${f.title}`)
+    .map((f) => {
+      const ancestry = f.ancestors.length === 0 ? '' : ` [under: ${f.ancestors.join(' < ')}]`;
+      return `- \`${f.path}:${f.line}\` — ${f.reason}: ${f.title}${ancestry}`;
+    })
     .join('\n');
 };
 

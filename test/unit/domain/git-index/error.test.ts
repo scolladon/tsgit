@@ -5,60 +5,75 @@ import { assertExhaustiveSwitch } from '../exhaustiveness.js';
 
 describe('git-index error', () => {
   describe('factory functions', () => {
-    it("Given invalidIndexHeader('bad magic'), When checking error.data, Then code is 'INVALID_INDEX_HEADER' and reason matches", () => {
-      // Arrange & Act
-      const sut = invalidIndexHeader('bad magic');
+    describe("Given invalidIndexHeader('bad magic')", () => {
+      describe('When checking error.data', () => {
+        it("Then code is 'INVALID_INDEX_HEADER' and reason matches", () => {
+          // Arrange & Act
+          const sut = invalidIndexHeader('bad magic');
 
-      // Assert
-      expect(sut.data).toEqual({ code: 'INVALID_INDEX_HEADER', reason: 'bad magic' });
+          // Assert
+          expect(sut.data).toEqual({ code: 'INVALID_INDEX_HEADER', reason: 'bad magic' });
+        });
+      });
     });
 
-    it("Given invalidIndexEntry(42, 'truncated'), When checking error.data, Then offset is 42 and reason matches", () => {
-      // Arrange & Act
-      const sut = invalidIndexEntry(42, 'truncated');
+    describe("Given invalidIndexEntry(42, 'truncated')", () => {
+      describe('When checking error.data', () => {
+        it('Then offset is 42 and reason matches', () => {
+          // Arrange & Act
+          const sut = invalidIndexEntry(42, 'truncated');
 
-      // Assert
-      expect(sut.data).toEqual({
-        code: 'INVALID_INDEX_ENTRY',
-        offset: 42,
-        reason: 'truncated',
+          // Assert
+          expect(sut.data).toEqual({
+            code: 'INVALID_INDEX_ENTRY',
+            offset: 42,
+            reason: 'truncated',
+          });
+        });
       });
     });
   });
 
   describe('TsgitError class', () => {
-    it('Given an index TsgitError, When checking instanceof Error, Then returns true', () => {
-      // Arrange & Act
-      const sut = invalidIndexHeader('bad');
+    describe('Given an index TsgitError', () => {
+      describe('When checking instanceof Error', () => {
+        it('Then returns true', () => {
+          // Arrange & Act
+          const sut = invalidIndexHeader('bad');
 
-      // Assert
-      expect(sut).toBeInstanceOf(Error);
-    });
+          // Assert
+          expect(sut).toBeInstanceOf(Error);
+        });
+      });
+      describe('When accessing .name', () => {
+        it("Then equals 'TsgitError'", () => {
+          // Arrange & Act
+          const sut = invalidIndexHeader('bad');
 
-    it("Given an index TsgitError, When accessing .name, Then equals 'TsgitError'", () => {
-      // Arrange & Act
-      const sut = invalidIndexHeader('bad');
+          // Assert
+          expect(sut.name).toBe('TsgitError');
+        });
+      });
+      describe('When accessing .message', () => {
+        it('Then contains the error code', () => {
+          // Arrange & Act
+          const sut = invalidIndexHeader('bad');
 
-      // Assert
-      expect(sut.name).toBe('TsgitError');
-    });
+          // Assert
+          expect(sut.message).toContain('INVALID_INDEX_HEADER');
+        });
+      });
+      describe('When switching on data.code in exhaustive switch', () => {
+        it('Then all 29 cases handleable', () => {
+          // Arrange
+          const sut = invalidIndexHeader('test');
 
-    it('Given an index TsgitError, When accessing .message, Then contains the error code', () => {
-      // Arrange & Act
-      const sut = invalidIndexHeader('bad');
-
-      // Assert
-      expect(sut.message).toContain('INVALID_INDEX_HEADER');
-    });
-
-    it('Given an index TsgitError, When switching on data.code in exhaustive switch, Then all 29 cases handleable', () => {
-      // Arrange
-      const sut = invalidIndexHeader('test');
-
-      // Act & Assert
-      const data: TsgitErrorData = sut.data;
-      // Assert
-      assertExhaustiveSwitch(data);
+          // Act & Assert
+          const data: TsgitErrorData = sut.data;
+          // Assert
+          assertExhaustiveSwitch(data);
+        });
+      });
     });
   });
 });
