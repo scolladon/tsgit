@@ -132,6 +132,12 @@ export const renderMarkdown = (outcome: AuditOutcome): string => {
     sections.push(renderTierTable(tally));
   }
 
+  // Render exclusions BEFORE the findings list so a CI summary truncation
+  // doesn't hide which paths are being silenced by the audit. Reviewers see
+  // the exclusion list right after the tier table.
+  const excluded = renderExcluded(outcome.excludePaths);
+  if (excluded.length > 0) sections.push(excluded);
+
   sections.push('', '## Findings');
   sections.push('', '### Over-mocked integration tests', '', renderOverMocked(findings.overMocked));
   sections.push('', '### Under-asserted unit tests', '', renderUnderAsserted(findings.underAsserted));
@@ -144,9 +150,6 @@ export const renderMarkdown = (outcome: AuditOutcome): string => {
     '',
     renderBareClassThrow(findings.bareClassThrow),
   );
-
-  const excluded = renderExcluded(outcome.excludePaths);
-  if (excluded.length > 0) sections.push(excluded);
 
   const unclassified = renderUnclassified(tally.unclassified);
   if (unclassified.length > 0) sections.push(unclassified);

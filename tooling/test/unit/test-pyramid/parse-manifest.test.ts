@@ -1148,4 +1148,109 @@ describe('parseManifest', () => {
       expect(caught?.message).toContain('gating must be an object');
     });
   });
+
+  describe('excludePaths block', () => {
+    it('Given a manifest without an excludePaths array, When parsed, Then excludePaths defaults to []', () => {
+      // Arrange
+      const raw = JSON.stringify(VALID_MANIFEST);
+
+      // Act
+      const sut = parseManifest(raw);
+
+      // Assert
+      expect(sut.excludePaths).toEqual([]);
+    });
+
+    it('Given excludePaths with valid tooling/test/ entries, When parsed, Then they are returned verbatim', () => {
+      // Arrange
+      const raw = JSON.stringify({
+        ...VALID_MANIFEST,
+        excludePaths: [
+          'tooling/test/unit/test-pyramid/detect-bad-title.test.ts',
+          'tooling/test/integration/audit-test-pyramid.test.ts',
+        ],
+      });
+
+      // Act
+      const sut = parseManifest(raw);
+
+      // Assert
+      expect(sut.excludePaths).toEqual([
+        'tooling/test/unit/test-pyramid/detect-bad-title.test.ts',
+        'tooling/test/integration/audit-test-pyramid.test.ts',
+      ]);
+    });
+
+    it('Given excludePaths as a non-array value, When parsed, Then throws naming excludePaths', () => {
+      // Arrange
+      const raw = JSON.stringify({ ...VALID_MANIFEST, excludePaths: 'tooling/test/x' });
+
+      // Act
+      let caught: Error | undefined;
+      try {
+        parseManifest(raw);
+      } catch (error) {
+        caught = error instanceof Error ? error : undefined;
+      }
+
+      // Assert
+      expect(caught?.message).toContain('excludePaths must be an array');
+    });
+
+    it('Given an excludePaths entry that is an empty string, When parsed, Then throws naming the entry', () => {
+      // Arrange
+      const raw = JSON.stringify({ ...VALID_MANIFEST, excludePaths: [''] });
+
+      // Act
+      let caught: Error | undefined;
+      try {
+        parseManifest(raw);
+      } catch (error) {
+        caught = error instanceof Error ? error : undefined;
+      }
+
+      // Assert
+      expect(caught?.message).toContain('excludePaths entry must be a non-empty string');
+    });
+
+    it('Given an excludePaths entry outside tooling/test/, When parsed, Then throws naming the violating prefix', () => {
+      // Arrange — `src/...` is a real product path; silencing it via excludePaths would gut the lint.
+      const raw = JSON.stringify({
+        ...VALID_MANIFEST,
+        excludePaths: ['src/domain/error.test.ts'],
+      });
+
+      // Act
+      let caught: Error | undefined;
+      try {
+        parseManifest(raw);
+      } catch (error) {
+        caught = error instanceof Error ? error : undefined;
+      }
+
+      // Assert
+      expect(caught?.message).toContain('src/domain/error.test.ts');
+      expect(caught?.message).toContain('tooling/test/');
+    });
+
+    it('Given an excludePaths entry under test/unit/ (not tooling/test/), When parsed, Then throws naming the prefix', () => {
+      // Arrange — adjacent but distinct prefix; documents why the check exists.
+      const raw = JSON.stringify({
+        ...VALID_MANIFEST,
+        excludePaths: ['test/unit/domain/objects/object-id.test.ts'],
+      });
+
+      // Act
+      let caught: Error | undefined;
+      try {
+        parseManifest(raw);
+      } catch (error) {
+        caught = error instanceof Error ? error : undefined;
+      }
+
+      // Assert
+      expect(caught?.message).toContain('test/unit/domain/objects/object-id.test.ts');
+      expect(caught?.message).toContain('tooling/test/');
+    });
+  });
 });

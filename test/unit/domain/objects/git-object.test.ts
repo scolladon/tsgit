@@ -131,7 +131,10 @@ describe('git-object', () => {
       // Assert
       expect(() => parseObject(DUMMY_ID, raw, SHA1_CONFIG)).toThrow(
         expect.objectContaining({
-          data: expect.objectContaining({ code: 'INVALID_OBJECT_HEADER' }),
+          data: expect.objectContaining({
+            code: 'INVALID_OBJECT_HEADER',
+            reason: expect.any(String),
+          }),
         }),
       );
     });

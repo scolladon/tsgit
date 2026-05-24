@@ -9,10 +9,14 @@
  * because the audit is documented as regex-only.
  */
 
-// `skipIf`/`runIf` are conditional skip helpers; `concurrent.skip` chains
-// land here via the chain-key scan. Treat any chain segment matching a
-// skip modifier as a skip.
-const SKIP_MODIFIERS = new Set(['skip', 'todo', 'fails', 'skipIf', 'runIf']);
+// Modifier chain segments whose presence marks a test as skipped. The
+// scanner currently extracts blocks only when the title literal sits in the
+// immediate parens (e.g. `it.skip('title', …)` and `it.each([…])('title',
+// …)`). Two-stage helpers like `it.skipIf(cond)('title', …)` and
+// `it.runIf(cond)('title', …)` are dropped silently by the title extractor
+// because the first `(…)` holds a condition expression, not a literal.
+// That's a known limitation — see BACKLOG 19.3b follow-up.
+const SKIP_MODIFIERS = new Set(['skip', 'todo', 'fails']);
 // `(?<!\.)` excludes method-call sites like `compiled.test(...)` and
 // `it.each(...)` chains entered mid-expression; we only want top-level
 // vitest test openers.

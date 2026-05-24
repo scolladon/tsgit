@@ -44,7 +44,7 @@ describe('object-id', () => {
       // Assert
       expect(() => ObjectId.from(hex)).toThrow(
         expect.objectContaining({
-          data: expect.objectContaining({ code: 'INVALID_OBJECT_ID' }),
+          data: { code: 'INVALID_OBJECT_ID', value: hex },
         }),
       );
     });
@@ -57,7 +57,7 @@ describe('object-id', () => {
       // Assert
       expect(() => ObjectId.from(hex)).toThrow(
         expect.objectContaining({
-          data: expect.objectContaining({ code: 'INVALID_OBJECT_ID' }),
+          data: { code: 'INVALID_OBJECT_ID', value: hex },
         }),
       );
     });
@@ -70,7 +70,7 @@ describe('object-id', () => {
       // Assert
       expect(() => ObjectId.from(hex)).toThrow(
         expect.objectContaining({
-          data: expect.objectContaining({ code: 'INVALID_OBJECT_ID' }),
+          data: { code: 'INVALID_OBJECT_ID', value: hex },
         }),
       );
     });
@@ -83,7 +83,7 @@ describe('object-id', () => {
       // Assert
       expect(() => ObjectId.from(hex)).toThrow(
         expect.objectContaining({
-          data: expect.objectContaining({ code: 'INVALID_OBJECT_ID' }),
+          data: { code: 'INVALID_OBJECT_ID', value: hex },
         }),
       );
     });
@@ -122,7 +122,7 @@ describe('object-id', () => {
       // Assert
       expect(() => ObjectId.fromRaw(bytes)).toThrow(
         expect.objectContaining({
-          data: expect.objectContaining({ code: 'INVALID_OBJECT_ID' }),
+          data: { code: 'INVALID_OBJECT_ID', value: 'raw bytes length 19 is not 20 or 32' },
         }),
       );
     });
@@ -135,7 +135,7 @@ describe('object-id', () => {
       // Assert
       expect(() => ObjectId.fromRaw(bytes)).toThrow(
         expect.objectContaining({
-          data: expect.objectContaining({ code: 'INVALID_OBJECT_ID' }),
+          data: { code: 'INVALID_OBJECT_ID', value: 'raw bytes length 0 is not 20 or 32' },
         }),
       );
     });

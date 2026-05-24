@@ -214,4 +214,66 @@ describe('scanItBlocks', () => {
     // Assert
     expect(sut).toEqual([]);
   });
+
+  it('Given an it.skipIf(...) block, When scanned, Then the block is dropped (two-stage call shape unsupported — known limitation, BACKLOG 19.3b)', () => {
+    // Arrange — conditional skip helpers wrap the title in a second call:
+    // `it.skipIf(cond)('title', body)`. The scanner currently looks for the
+    // title literal in the first `(…)`, which here holds the condition.
+    // Documented limitation; tracked as 19.3b.
+    const source = `it.skipIf(process.platform === 'win32')('Given x, When y, Then z', () => {});`;
+
+    // Act
+    const sut = scanItBlocks(source);
+
+    // Assert — block silently dropped; surrounding heuristics never fire on it.
+    expect(sut).toEqual([]);
+  });
+
+  it('Given an it.runIf(...) block, When scanned, Then the block is dropped (two-stage call shape unsupported — known limitation, BACKLOG 19.3b)', () => {
+    // Arrange
+    const source = `it.runIf(process.env.CI)('Given x, When y, Then z', () => {});`;
+
+    // Act
+    const sut = scanItBlocks(source);
+
+    // Assert
+    expect(sut).toEqual([]);
+  });
+
+  it('Given an it.concurrent.skip(...) block, When scanned, Then isSkipped is true (chain key)', () => {
+    // Arrange
+    const source = `it.concurrent.skip('Given x, When y, Then z', () => {});`;
+
+    // Act
+    const sut = scanItBlocks(source);
+
+    // Assert
+    expect(sut).toHaveLength(1);
+    expect(sut[0]?.isSkipped).toBe(true);
+  });
+
+  it('Given an it.concurrent(...) block (no skip), When scanned, Then isSkipped is false', () => {
+    // Arrange — concurrent alone is NOT a skip modifier; the test runs.
+    const source = `it.concurrent('Given x, When y, Then z', () => { expect(1).toBe(1); });`;
+
+    // Act
+    const sut = scanItBlocks(source);
+
+    // Assert
+    expect(sut).toHaveLength(1);
+    expect(sut[0]?.isSkipped).toBe(false);
+  });
+
+  it('Given a // comment ending at EOF without a trailing newline, When scanned, Then the surrounding it() block is still extracted', () => {
+    // Arrange — kills the regression where findMatchingClose returned -1 on
+    // unterminated // comments, silently dropping the last test in a file.
+    const source = "it('Given x, When y, Then z', () => { expect(1).toBe(1); }); // trailing";
+
+    // Act
+    const sut = scanItBlocks(source);
+
+    // Assert
+    expect(sut).toHaveLength(1);
+    expect(sut[0]?.title).toBe('Given x, When y, Then z');
+  });
 });
