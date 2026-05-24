@@ -18,7 +18,7 @@ interface RefsPipelineResult {
   readonly headResolvesToSeed: boolean;
   readonly newRefResolvesToSeed: boolean;
   readonly symbolicResolvesToSeed: boolean;
-  readonly recordRefUpdateWrote: boolean;
+  readonly recordRefUpdateCreatedReflog: boolean;
   readonly revParseHeadResolvesToSeed: boolean;
 }
 
@@ -34,7 +34,7 @@ export const refsPipelineScenario: Scenario<RefsPipelineResult> = {
     headResolvesToSeed: true,
     newRefResolvesToSeed: true,
     symbolicResolvesToSeed: true,
-    recordRefUpdateWrote: true,
+    recordRefUpdateCreatedReflog: true,
     revParseHeadResolvesToSeed: true,
   },
   run: async (repo, inputs) => {
@@ -66,6 +66,15 @@ export const refsPipelineScenario: Scenario<RefsPipelineResult> = {
       seed.id as ObjectId,
       'refs-pipeline: synthetic no-op for reflog',
     );
+    // Read the reflog back so the assertion proves recordRefUpdate actually
+    // created a `.git/logs/refs/heads/refs-pipeline-reflog` file with at
+    // least one entry — a hardcoded `true` would let a stubbed-out
+    // recordRefUpdate slip through.
+    const reflogProof = await repo.reflog({
+      action: 'exists',
+      ref: NEW_BRANCH_FOR_REFLOG,
+    });
+    const recordRefUpdateCreatedReflog = reflogProof.kind === 'exists' && reflogProof.exists;
 
     // rev-parse only accepts full 40-hex or ref names — short SHA prefix
     // lookup is not implemented; HEAD goes through the ref-resolution path.
@@ -76,7 +85,7 @@ export const refsPipelineScenario: Scenario<RefsPipelineResult> = {
       headResolvesToSeed: head === seed.id,
       newRefResolvesToSeed: newRefTarget === seed.id,
       symbolicResolvesToSeed: symbolicTarget === seed.id,
-      recordRefUpdateWrote: true,
+      recordRefUpdateCreatedReflog,
       revParseHeadResolvesToSeed: fromHead === seed.id,
     };
   },

@@ -120,6 +120,25 @@ describe('scanCallSites', () => {
       });
     });
   });
+
+  describe('Given a source that calls repo.primitives() as if it were a function', () => {
+    describe('When scanned', () => {
+      it('Then the literal name `primitives` is filtered out of commands (TIER1_SKIP)', () => {
+        // Arrange
+        const sut = ['await repo.primitives();', 'await repo.ctx();'].join('\n');
+
+        // Act
+        const actual = scanCallSites(sut);
+
+        // Assert
+        // Both names are in TIER1_SKIP; neither should land in the
+        // commands set. A mutant that drops the skip filter would
+        // surface `primitives` and `ctx` here and fail.
+        expect(actual.commands.size).toBe(0);
+        expect(actual.primitives.size).toBe(0);
+      });
+    });
+  });
 });
 
 describe('parseAllowlist', () => {
@@ -240,6 +259,23 @@ describe('parseAllowlist', () => {
       });
     });
   });
+
+  describe('Given an object with the commands key absent entirely', () => {
+    describe('When parsed', () => {
+      it('Then the commands tier rejection fires (undefined is not an array)', () => {
+        // Arrange
+        const sut = JSON.stringify({ primitives: [] });
+
+        // Act + Assert
+        try {
+          parseAllowlist(sut);
+          expect.unreachable();
+        } catch (err) {
+          expect((err as Error).message).toBe('allowlist.commands: expected an array');
+        }
+      });
+    });
+  });
 });
 
 describe('validateAllowlistNames', () => {
@@ -343,6 +379,12 @@ describe('buildReport', () => {
         });
         expect(sut.gaps.commands).toEqual([]);
         expect(sut.gaps.primitives).toEqual(['walkCommits']);
+        // Lock the covered.primitives shape — a mutant that bypassed the
+        // primitive coverage map would leave this list empty even though
+        // `summary.primitives.covered` accidentally still tallied a 1.
+        expect(sut.covered.primitives).toEqual([
+          { name: 'readObject', sources: ['test/parity/scenarios/bar.scenario.ts'] },
+        ]);
       });
     });
   });
@@ -437,19 +479,45 @@ describe('formatGapMessage', () => {
       });
     });
   });
+
+  describe('Given a report with only primitive gaps', () => {
+    describe('When formatted', () => {
+      it('Then the commands heading is omitted but the primitives one is present', () => {
+        // Arrange
+        const sut = buildReport(
+          { commands: [], primitives: ['runHook'] },
+          [],
+          { commands: [], primitives: [] },
+        );
+
+        // Act
+        const message = formatGapMessage(sut);
+
+        // Assert
+        expect(message).not.toContain('Commands without browser coverage:');
+        expect(message).toContain('Primitives without browser coverage:');
+        expect(message).toContain('  - repo.primitives.runHook');
+      });
+    });
+  });
 });
 
 describe('parseArgs', () => {
   describe('Given no arguments', () => {
     describe('When parsed', () => {
-      it('Then defaults derived from SCRIPT_DIR are returned', () => {
+      it('Then defaults are repoRoot + repoRoot/reports + the allowlist under tooling/', () => {
         // Arrange + Act
         const sut = parseArgs([]);
 
         // Assert
-        expect(sut.root.length).toBeGreaterThan(0);
-        expect(sut.out.endsWith('reports')).toBe(true);
-        expect(sut.allowlist.endsWith('audit-browser-surface.allowlist.json')).toBe(true);
+        // The derived root is set from the script's location; lock the
+        // structural relationship between root, out, and allowlist so a
+        // refactor that detaches `out` from `root` (e.g. hardcoding
+        // `/reports`) fails loudly.
+        expect(sut.out).toBe(`${sut.root}/reports`);
+        expect(sut.allowlist).toBe(
+          `${sut.root}/tooling/audit-browser-surface.allowlist.json`,
+        );
       });
     });
   });

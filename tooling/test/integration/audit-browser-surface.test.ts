@@ -134,6 +134,10 @@ describe('tooling/audit-browser-surface (integration)', () => {
           await readFile(path.join(tmpRoot, 'out', 'browser-surface-coverage.json'), 'utf8'),
         );
         expect(report.gaps.commands).toEqual(['clone']);
+        // Lock that the gap is restricted to the commands tier — a mutation
+        // that incorrectly populated `gaps.primitives` would otherwise be
+        // invisible because the test prints only the commands assertion.
+        expect(report.gaps.primitives).toEqual([]);
       });
     });
   });
@@ -231,7 +235,11 @@ describe('tooling/audit-browser-surface (integration)', () => {
     describe('When the audit runs', () => {
       it('Then exit is 1 with the refactor-warning message', async () => {
         // Arrange
+        // Write a syntactically-trivial but valid allowlist first so the
+        // failure cannot escape via the missing-allowlist path; the
+        // intent is to isolate the parser-shape exit specifically.
         await stageRoot(tmpRoot, 'export const noop = () => undefined;\n');
+        await writeAllowlist(tmpRoot, { commands: [], primitives: [] });
 
         // Act
         const sut = await runScript(tmpRoot);
