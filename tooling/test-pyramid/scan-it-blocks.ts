@@ -9,7 +9,10 @@
  * because the audit is documented as regex-only.
  */
 
-const SKIP_MODIFIERS = new Set(['skip', 'todo', 'fails']);
+// `skipIf`/`runIf` are conditional skip helpers; `concurrent.skip` chains
+// land here via the chain-key scan. Treat any chain segment matching a
+// skip modifier as a skip.
+const SKIP_MODIFIERS = new Set(['skip', 'todo', 'fails', 'skipIf', 'runIf']);
 // `(?<!\.)` excludes method-call sites like `compiled.test(...)` and
 // `it.each(...)` chains entered mid-expression; we only want top-level
 // vitest test openers.
@@ -51,8 +54,9 @@ const findMatchingClose = (source: string, openIdx: number): number => {
     }
     if (c === '/' && source[i + 1] === '/') {
       const nl = source.indexOf('\n', i + 2);
-      if (nl < 0) return -1;
-      i = nl + 1;
+      // EOF without trailing newline: skip to end-of-input rather than
+      // bailing out — the outer `i < source.length` guard will terminate.
+      i = nl < 0 ? source.length : nl + 1;
       continue;
     }
     if (c === '/' && source[i + 1] === '*') {

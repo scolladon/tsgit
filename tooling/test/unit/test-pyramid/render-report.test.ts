@@ -44,6 +44,7 @@ const okOutcome: AuditOutcome = {
     bannedSut: [],
     bareClassThrow: [],
   },
+  excludePaths: [],
 };
 
 const outcomeWithFindings: AuditOutcome = {
@@ -181,6 +182,7 @@ describe('renderMarkdown', () => {
         bannedSut: [],
         bareClassThrow: [],
       },
+      excludePaths: [],
     };
 
     // Act

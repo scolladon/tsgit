@@ -126,9 +126,13 @@ const parseTier = (raw: unknown, index: number): TierDefinition => {
   return { name, glob, target, warnBelow, warnAbove: warnAboveValue };
 };
 
-const compileRegex = (pattern: string, heuristicName: string): RegExp => {
+const compileRegex = (
+  pattern: string,
+  heuristicName: string,
+  flags: string,
+): RegExp => {
   try {
-    return new RegExp(pattern, 'g');
+    return new RegExp(pattern, flags);
   } catch (cause) {
     const message = cause instanceof Error ? cause.message : String(cause);
     return fail(`heuristic regex invalid (${heuristicName}): ${message}`);
@@ -172,7 +176,7 @@ const parseOverMocked = (
   return {
     tier,
     regex,
-    compiledRegex: compileRegex(regex, 'overMockedIntegration'),
+    compiledRegex: compileRegex(regex, 'overMockedIntegration', 'g'),
     threshold,
   };
 };
@@ -205,7 +209,7 @@ const parseGwtTitle = (
   }
   const tier = requireTier(raw.tier, 'gwtTitle', tierNames);
   const regex = requireRegexPattern(raw.regex, 'gwtTitle');
-  return { tier, regex, compiledRegex: compileRegex(regex, 'gwtTitle') };
+  return { tier, regex, compiledRegex: compileRegex(regex, 'gwtTitle', '') };
 };
 
 const parseAaaBody = (
@@ -275,17 +279,24 @@ const parseBareClassThrow = (
   }
   const tier = requireTier(raw.tier, 'bareClassToThrow', tierNames);
   const regex = requireRegexPattern(raw.regex, 'bareClassToThrow');
-  return { tier, regex, compiledRegex: compileRegex(regex, 'bareClassToThrow') };
+  return { tier, regex, compiledRegex: compileRegex(regex, 'bareClassToThrow', 'g') };
 };
 
-const DEFAULT_GATING: GatingConfig = Object.freeze({
+const DEFAULT_GATING: GatingConfig = Object.freeze<GatingConfig>({
   overMockedIntegration: false,
   underAssertedUnit: false,
   gwtTitle: false,
   aaaBody: false,
   sutNaming: false,
   bareClassToThrow: false,
-}) as GatingConfig;
+});
+
+// `excludePaths` is reserved for the audit's own self-test fixtures — files
+// that intentionally embed anti-patterns to exercise the detectors. Restrict
+// patterns to the `tooling/test/` subtree so a stray entry can't silence
+// real product tests. If a future use-case needs broader scope, weigh it in
+// an ADR before relaxing.
+const EXCLUDE_PREFIX = 'tooling/test/';
 
 const parseExcludePaths = (raw: unknown): ReadonlyArray<string> => {
   if (raw === undefined) return [];
@@ -295,19 +306,27 @@ const parseExcludePaths = (raw: unknown): ReadonlyArray<string> => {
     if (typeof entry !== 'string' || entry.length === 0) {
       return fail('excludePaths entry must be a non-empty string');
     }
+    if (!entry.startsWith(EXCLUDE_PREFIX)) {
+      return fail(
+        `excludePaths entry "${entry}" must start with "${EXCLUDE_PREFIX}" (audit self-tests only)`,
+      );
+    }
     out.push(entry);
   }
   return out;
 };
+
+const isGatingKey = (key: string): key is GatingKey =>
+  (GATING_KEYS as ReadonlyArray<string>).includes(key);
 
 const parseGating = (raw: unknown): GatingConfig => {
   if (raw === undefined) return DEFAULT_GATING;
   if (!isObject(raw)) {
     return fail('gating must be an object');
   }
-  const out: Record<string, boolean> = { ...DEFAULT_GATING };
+  const out: Record<GatingKey, boolean> = { ...DEFAULT_GATING };
   for (const [key, value] of Object.entries(raw)) {
-    if (!(GATING_KEYS as ReadonlyArray<string>).includes(key)) {
+    if (!isGatingKey(key)) {
       return fail(`gating references unknown heuristic "${key}"`);
     }
     if (typeof value !== 'boolean') {
@@ -315,7 +334,7 @@ const parseGating = (raw: unknown): GatingConfig => {
     }
     out[key] = value;
   }
-  return out as GatingConfig;
+  return out;
 };
 
 export const parseManifest = (raw: string): PyramidManifest => {

@@ -38,7 +38,9 @@ export const detectBadTitle = (
   files: ReadonlyArray<SourceFile>,
 ): ReadonlyArray<BadTitleFinding> => {
   const heuristic = manifest.heuristics.gwtTitle;
-  const pattern = new RegExp(heuristic.regex);
+  // `gwtTitle.compiledRegex` is parsed without the `g` flag so `.test()` is
+  // stateless across calls (see parse-manifest's `compileRegex`).
+  const pattern = heuristic.compiledRegex;
   const findings: BadTitleFinding[] = [];
   for (const file of files) {
     if (classifyTestFile(manifest, file.path) !== heuristic.tier) continue;

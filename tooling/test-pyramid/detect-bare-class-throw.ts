@@ -34,7 +34,7 @@ export const detectBareClassThrow = (
   files: ReadonlyArray<SourceFile>,
 ): ReadonlyArray<BareClassThrowFinding> => {
   const heuristic = manifest.heuristics.bareClassToThrow;
-  const detector = new RegExp(heuristic.regex, 'g');
+  const detector = heuristic.compiledRegex;
   const findings: BareClassThrowFinding[] = [];
   for (const file of files) {
     if (classifyTestFile(manifest, file.path) !== heuristic.tier) continue;

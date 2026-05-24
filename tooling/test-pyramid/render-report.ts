@@ -23,6 +23,7 @@ export interface AuditFindings {
 export interface AuditOutcome {
   readonly tally: TallyResult;
   readonly findings: AuditFindings;
+  readonly excludePaths: ReadonlyArray<string>;
 }
 
 const STATUS_BADGE: Record<TierStatus, string> = {
@@ -107,6 +108,20 @@ const renderUnclassified = (paths: ReadonlyArray<string>): string => {
   return ['', '## Unclassified', '', ...lines].join('\n');
 };
 
+const renderExcluded = (paths: ReadonlyArray<string>): string => {
+  if (paths.length === 0) return '';
+  const lines = paths.map((p) => `- \`${p}\``);
+  return [
+    '',
+    '## Excluded from heuristics',
+    '',
+    'Self-test fixtures intentionally embed anti-patterns. Listed here so CI',
+    'reviewers can see what is being silenced.',
+    '',
+    ...lines,
+  ].join('\n');
+};
+
 export const renderMarkdown = (outcome: AuditOutcome): string => {
   const { tally, findings } = outcome;
   const sections: string[] = ['# Testing-pyramid audit', ''];
@@ -129,6 +144,9 @@ export const renderMarkdown = (outcome: AuditOutcome): string => {
     '',
     renderBareClassThrow(findings.bareClassThrow),
   );
+
+  const excluded = renderExcluded(outcome.excludePaths);
+  if (excluded.length > 0) sections.push(excluded);
 
   const unclassified = renderUnclassified(tally.unclassified);
   if (unclassified.length > 0) sections.push(unclassified);

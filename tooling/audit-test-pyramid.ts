@@ -27,6 +27,7 @@ import { detectMissingAaa } from './test-pyramid/detect-missing-aaa.ts';
 import { detectOverMocked } from './test-pyramid/detect-over-mocked.ts';
 import { detectUnderAsserted } from './test-pyramid/detect-under-asserted.ts';
 import {
+  GATING_KEYS,
   parseManifest,
   type GatingKey,
   type PyramidManifest,
@@ -125,6 +126,7 @@ export const runAudit = async (args: CliArgs): Promise<{
 
   const outcome: AuditOutcome = {
     tally: tallyTierFiles(manifest, filesForTally),
+    excludePaths: manifest.excludePaths,
     findings: {
       overMocked: detectOverMocked(manifest, files),
       underAsserted: detectUnderAsserted(manifest, files),
@@ -157,10 +159,8 @@ export const collectGatingViolations = (
   outcome: AuditOutcome,
 ): ReadonlyArray<GatingKey> => {
   const out: GatingKey[] = [];
-  for (const [key, enabled] of Object.entries(manifest.gating) as ReadonlyArray<
-    readonly [GatingKey, boolean]
-  >) {
-    if (!enabled) continue;
+  for (const key of GATING_KEYS) {
+    if (!manifest.gating[key]) continue;
     const findingKey = FINDING_KEY_BY_GATING[key];
     if (outcome.findings[findingKey].length > 0) out.push(key);
   }
