@@ -58,26 +58,22 @@ describe('resolvePathspec', () => {
   });
 
   it('Given a pattern with `..`, When resolved, Then throws PATHSPEC_OUTSIDE_REPO', () => {
-    // Arrange
-    // Assert
+    // Arrange + Assert
     expectError(() => resolvePathspec(['../escape']), 'PATHSPEC_OUTSIDE_REPO');
   });
 
   it('Given a `!`-prefixed pattern with `..`, When resolved, Then the body validation still throws', () => {
-    // Arrange
-    // Assert
+    // Arrange + Assert
     expectError(() => resolvePathspec(['!../escape']), 'PATHSPEC_OUTSIDE_REPO');
   });
 
   it('Given an empty pattern (`""`), When resolved, Then throws PATHSPEC_OUTSIDE_REPO via the validator', () => {
-    // Arrange
-    // Assert
+    // Arrange + Assert
     expectError(() => resolvePathspec(['']), 'PATHSPEC_OUTSIDE_REPO');
   });
 
   it('Given a bare `"!"`, When resolved, Then the empty body throws PATHSPEC_OUTSIDE_REPO', () => {
-    // Arrange
-    // Assert
+    // Arrange + Assert
     expectError(() => resolvePathspec(['!']), 'PATHSPEC_OUTSIDE_REPO');
   });
 
@@ -112,18 +108,16 @@ describe('resolvePathspec', () => {
   });
 
   it('Given a pattern with exactly the **-token cap (4 tokens), When resolved, Then accepts (boundary)', () => {
-    // Arrange
+    // Arrange + Assert
     // Kills the `>` → `>=` mutant on the **-cap.
-    // Assert
     expect(() => resolvePathspec(['**/**/**/**'])).not.toThrow();
   });
 
   it('Given a non-negated single-char pattern, When resolved, Then it does NOT throw (the `!`-strip slices only when `raw.startsWith("!")`)', () => {
-    // Arrange
+    // Arrange + Assert
     // Kills L40 StringLiteral `'!'` → `""`: with `startsWith("")` always
     // true, `body` would become `'x'.slice(1)` === `''`, which the
     // working-tree validator rejects with PATHSPEC_OUTSIDE_REPO.
-    // Assert
     expect(() => resolvePathspec(['x'])).not.toThrow();
   });
 
@@ -139,19 +133,17 @@ describe('resolvePathspec', () => {
   });
 
   it('Given ten consecutive `*`, When resolved, Then it throws INVALID_OPTION (counts 5 `**` pairs, over the cap)', () => {
-    // Arrange
+    // Arrange + Assert
     // Kills L66 cond1 `===`→`!==` and cond2 `===`→`!==`: both `!==`
     // mutants undercount `**********` to ≤ 4, so they would NOT throw.
-    // Assert
     const err = expectError(() => resolvePathspec(['**********']), 'INVALID_OPTION');
     expect((err.data as { reason: string }).reason).toMatch(/\*\*-token count/);
   });
 
   it('Given a pattern of isolated single `*` separated by literals, When resolved, Then it does NOT throw (zero `**` pairs)', () => {
-    // Arrange
+    // Arrange + Assert
     // Kills L66 cond1 `===`→`true` and cond2 `===`→`true`: forcing
     // either operand true makes `a*a*a*a*a*` count 5 pairs and throw.
-    // Assert
     expect(() => resolvePathspec(['a*a*a*a*a*'])).not.toThrow();
   });
 });
@@ -160,22 +152,19 @@ const PATTERN_BYTE_LENGTH = (s: string): number => new TextEncoder().encode(s).b
 
 describe('enforceLiteralMustMatch', () => {
   it('Given a literal that appears verbatim in matched, When checked, Then no throw', () => {
-    // Arrange
-    // Assert
+    // Arrange + Assert
     expect(() =>
       enforceLiteralMustMatch([path('src/foo.ts')], [path('src/foo.ts'), path('other')]),
     ).not.toThrow();
   });
 
   it('Given a literal whose descendant appears in matched (literal acts as dir prefix), When checked, Then no throw', () => {
-    // Arrange
-    // Assert
+    // Arrange + Assert
     expect(() => enforceLiteralMustMatch([path('src')], [path('src/foo.ts')])).not.toThrow();
   });
 
   it('Given a literal with no direct or prefix match, When checked, Then throws PATHSPEC_NO_MATCH with the missing literal', () => {
-    // Arrange
-    // Assert
+    // Arrange + Assert
     const err = expectError(
       () => enforceLiteralMustMatch([path('nope.txt')], [path('other.ts')]),
       'PATHSPEC_NO_MATCH',
@@ -184,8 +173,7 @@ describe('enforceLiteralMustMatch', () => {
   });
 
   it('Given multiple literals where one is missing, When checked, Then throws with the missing one', () => {
-    // Arrange
-    // Assert
+    // Arrange + Assert
     const err = expectError(
       () => enforceLiteralMustMatch([path('found'), path('missing')], [path('found/x')]),
       'PATHSPEC_NO_MATCH',
@@ -194,8 +182,7 @@ describe('enforceLiteralMustMatch', () => {
   });
 
   it('Given no literals (empty list), When checked, Then no throw regardless of matched', () => {
-    // Arrange
-    // Assert
+    // Arrange + Assert
     expect(() => enforceLiteralMustMatch([], [])).not.toThrow();
   });
 });

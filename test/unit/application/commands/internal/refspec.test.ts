@@ -7,7 +7,6 @@ import { TsgitError } from '../../../../../src/domain/index.js';
 describe('parseRefspec — happy paths', () => {
   it('Given a short branch name, When parsed, Then both sides expand to refs/heads/<name> with normal force', () => {
     // Arrange
-    // Act
     const sut = parseRefspec('main');
 
     // Assert
@@ -32,7 +31,6 @@ describe('parseRefspec — happy paths', () => {
 
   it('Given a fully-qualified src:dst, When parsed, Then no expansion is applied', () => {
     // Arrange
-    // Act
     const sut = parseRefspec('refs/heads/release:refs/heads/main');
 
     // Assert
@@ -122,8 +120,7 @@ describe('parseRefspec — errors', () => {
   };
 
   it('Given empty input, When parsed, Then throws REFSPEC_INVALID with "must not be empty"', () => {
-    // Arrange
-    // Assert
+    // Arrange + Assert
     assertRefspecInvalid(() => parseRefspec(''), 'must not be empty', '');
   });
 
@@ -149,33 +146,28 @@ describe('parseRefspec — errors', () => {
   });
 
   it('Given a bare "+" (force prefix only), When parsed, Then throws REFSPEC_INVALID', () => {
-    // Arrange
-    // Assert
+    // Arrange + Assert
     assertRefspecInvalid(() => parseRefspec('+'), 'after force prefix', '+');
   });
 
   it('Given a refspec with two colons "a:b:c", When parsed, Then throws REFSPEC_INVALID', () => {
-    // Arrange
-    // Assert
+    // Arrange + Assert
     assertRefspecInvalid(() => parseRefspec('a:b:c'), 'at most one colon', 'a:b:c');
   });
 
   it('Given a refspec ":" (empty src AND empty dst), When parsed, Then throws on empty dst', () => {
-    // Arrange
-    // Assert
+    // Arrange + Assert
     assertRefspecInvalid(() => parseRefspec(':'), 'destination must not be empty', ':');
   });
 
   it('Given a refspec "main:" (empty dst), When parsed, Then throws REFSPEC_INVALID', () => {
-    // Arrange
-    // Assert
+    // Arrange + Assert
     assertRefspecInvalid(() => parseRefspec('main:'), 'destination must not be empty', 'main:');
   });
 
   it('Given a refspec "main:HEAD", When parsed, Then throws REFSPEC_INVALID — HEAD as dst is rejected', () => {
-    // Arrange — pins the canonical-git behavior. Push to HEAD is unsupported;
+    // Arrange + Assert — pins the canonical-git behavior. Push to HEAD is unsupported;
     // catching it here avoids server-side refusal with an opaque message.
-    // Assert
     assertRefspecInvalid(() => parseRefspec('main:HEAD'), 'must not be HEAD', 'main:HEAD');
   });
 });

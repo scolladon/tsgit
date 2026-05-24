@@ -101,7 +101,6 @@ describe('buildRepoIgnorePredicate', () => {
     const sut = await buildRepoIgnorePredicate(ctx);
 
     // Act / Assert
-    // Assert
     expect(await sut('foo.log' as FilePath, false)).toBe(true);
   });
 
@@ -127,7 +126,6 @@ describe('buildRepoIgnorePredicate', () => {
     const sut = await buildRepoIgnorePredicate(ctx);
 
     // Act / Assert
-    // Assert
     expect(await sut('sub/other.log' as FilePath, false)).toBe(true);
   });
 
@@ -138,7 +136,6 @@ describe('buildRepoIgnorePredicate', () => {
     const sut = await buildRepoIgnorePredicate(ctx);
 
     // Act / Assert
-    // Assert
     expect(await sut('build' as FilePath, true)).toBe(true);
     expect(await sut('build' as FilePath, false)).toBe(false);
   });
@@ -197,7 +194,6 @@ describe('buildRepoIgnorePredicate', () => {
     const sut = await buildRepoIgnorePredicate(ctx);
 
     // Act / Assert
-    // Assert
     expect(await sut('secret.txt' as FilePath, false)).toBe(true);
   });
 
