@@ -8,34 +8,34 @@ Convention reminders:
 - Test titles: `Given <ctx>, When <act>, Then <expected>`.
 - Test body: AAA section comments (`// Arrange`, optional `// Act`,
   `// Assert`). SUT variable is `sut`.
-- 100% coverage on `scripts/test-pyramid/**`; scripts excluded from
+- 100% coverage on `tooling/test-pyramid/**`; scripts excluded from
   Stryker (ADR-108).
 
 ## File inventory
 
 | # | Action | Path |
 |---|---|---|
-| 1 | NEW | `scripts/test-pyramid/scan-it-blocks.ts` (extracted from `detect-under-asserted.ts`) |
-| 2 | EDIT | `scripts/test-pyramid/detect-under-asserted.ts` — re-import from scan-it-blocks |
-| 3 | NEW | `scripts/test-pyramid/detect-bad-title.ts` |
-| 4 | NEW | `scripts/test-pyramid/detect-missing-aaa.ts` |
-| 5 | NEW | `scripts/test-pyramid/detect-banned-sut-name.ts` |
-| 6 | NEW | `scripts/test-pyramid/detect-bare-class-throw.ts` |
-| 7 | EDIT | `scripts/test-pyramid/parse-manifest.ts` — new heuristic shapes + gating block |
-| 8 | EDIT | `scripts/test-pyramid/render-report.ts` — sections for new findings |
-| 9 | EDIT | `scripts/test-pyramid/types.ts` — shared finding shapes (or per-file) |
-| 10 | EDIT | `scripts/audit-test-pyramid.ts` — wire new detectors, compute gating exit code, `--report-only` flag |
+| 1 | NEW | `tooling/test-pyramid/scan-it-blocks.ts` (extracted from `detect-under-asserted.ts`) |
+| 2 | EDIT | `tooling/test-pyramid/detect-under-asserted.ts` — re-import from scan-it-blocks |
+| 3 | NEW | `tooling/test-pyramid/detect-bad-title.ts` |
+| 4 | NEW | `tooling/test-pyramid/detect-missing-aaa.ts` |
+| 5 | NEW | `tooling/test-pyramid/detect-banned-sut-name.ts` |
+| 6 | NEW | `tooling/test-pyramid/detect-bare-class-throw.ts` |
+| 7 | EDIT | `tooling/test-pyramid/parse-manifest.ts` — new heuristic shapes + gating block |
+| 8 | EDIT | `tooling/test-pyramid/render-report.ts` — sections for new findings |
+| 9 | EDIT | `tooling/test-pyramid/types.ts` — shared finding shapes (or per-file) |
+| 10 | EDIT | `tooling/audit-test-pyramid.ts` — wire new detectors, compute gating exit code, `--report-only` flag |
 | 11 | EDIT | `test-pyramid-budgets.json` — new heuristic entries + `gating` map |
-| 12 | EDIT | `scripts/test-pyramid-budgets-schema.json` — match new manifest shape |
-| 13 | NEW | `test/unit/scripts/test-pyramid/scan-it-blocks.test.ts` |
-| 14 | EDIT | `test/unit/scripts/test-pyramid/detect-under-asserted.test.ts` — trim scanner cases that moved |
-| 15 | NEW | `test/unit/scripts/test-pyramid/detect-bad-title.test.ts` |
-| 16 | NEW | `test/unit/scripts/test-pyramid/detect-missing-aaa.test.ts` |
-| 17 | NEW | `test/unit/scripts/test-pyramid/detect-banned-sut-name.test.ts` |
-| 18 | NEW | `test/unit/scripts/test-pyramid/detect-bare-class-throw.test.ts` |
-| 19 | EDIT | `test/unit/scripts/test-pyramid/parse-manifest.test.ts` |
-| 20 | EDIT | `test/unit/scripts/test-pyramid/render-report.test.ts` |
-| 21 | EDIT | `test/integration/scripts/audit-test-pyramid.test.ts` — exit-code, `--report-only`, new finding fixtures |
+| 12 | EDIT | `tooling/test-pyramid-budgets-schema.json` — match new manifest shape |
+| 13 | NEW | `tooling/test/unit/test-pyramid/scan-it-blocks.test.ts` |
+| 14 | EDIT | `tooling/test/unit/test-pyramid/detect-under-asserted.test.ts` — trim scanner cases that moved |
+| 15 | NEW | `tooling/test/unit/test-pyramid/detect-bad-title.test.ts` |
+| 16 | NEW | `tooling/test/unit/test-pyramid/detect-missing-aaa.test.ts` |
+| 17 | NEW | `tooling/test/unit/test-pyramid/detect-banned-sut-name.test.ts` |
+| 18 | NEW | `tooling/test/unit/test-pyramid/detect-bare-class-throw.test.ts` |
+| 19 | EDIT | `tooling/test/unit/test-pyramid/parse-manifest.test.ts` |
+| 20 | EDIT | `tooling/test/unit/test-pyramid/render-report.test.ts` |
+| 21 | EDIT | `tooling/test/integration/audit-test-pyramid.test.ts` — exit-code, `--report-only`, new finding fixtures |
 | 22 | CLEANUP | unit tests that fail the gate (small list, mostly title rewrites) |
 | 23 | EDIT | `test-pyramid-budgets.json` — flip `gating.*` to true (last commit) |
 | 24 | EDIT | `README.md`, `CONTRIBUTING.md`, `docs/understand/testing.md` — describe gated heuristics |
@@ -197,7 +197,7 @@ render expressiveness findings in audit report`.
 
 ### Step 9 — Cleanup commits (one per heuristic)
 
-Run `npx tsx scripts/audit-test-pyramid.ts --report-only` locally; for
+Run `npx tsx tooling/audit-test-pyramid.ts --report-only` locally; for
 each finding type, fix the tests in an atomic commit:
 
 - `test(unit): convert non-GWT titles to Given/When/Then`

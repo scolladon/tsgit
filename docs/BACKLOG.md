@@ -218,7 +218,7 @@ Front-loaded. Every Phase 20+ item ships against this harness. Goal: catch regre
 
 - [x] **19.1** Mutation pyramid — per-bucket budgets (domain/application/adapters/infra) + diff-scoped PR gate; per-OS nightly removed (ADR-102 supersedes ADR-055); equivalent-mutant catalogue kept inline-only; docs-only PRs skip code-dependent CI jobs (ADR-103) · ADRs 100–103 · `design/phase-19-1-mutation-pyramid.md`
 - [x] **19.2** Testing-pyramid audit — directory-based classification, 80/15/5 target, report-only · ADRs 104–108 · `design/phase-19-2-testing-pyramid-audit.md`
-- [ ] **19.3** Unit-test expressiveness lint — enforce `Given/When/Then` titles, AAA body comments, `sut` naming; ban `toThrow(Class)` without data assertion.
+- [x] **19.3** Unit-test expressiveness lint — gates GWT titles, AAA body comments, `sut` naming, bare-class `toThrow` ban, and promotes the under-asserted-unit check from 19.2; ships behind a per-heuristic `gating` map with self-test `excludePaths`; tooling moved from `scripts/` to `tooling/` · ADRs 109–113 · `design/phase-19-3-unit-test-expressiveness-lint.md`
 - [ ] **19.4** Integration-test usefulness audit — kill duplicates, promote orphans into surface-parity coverage, document what each one proves.
 - [ ] **19.5** E2E harness upgrade — Playwright is the browser E2E driver. Deterministic fixtures, traces uploaded on failure. Same suite re-runs against the memory adapter for Node × Browser × Memory parity proof.
 - [ ] **19.5a** Playwright surface coverage audit — gap-report every command/primitive without a browser E2E spec; close gaps. CI fails when a new command lands without a matching `test/browser/*.spec.ts`.

@@ -78,7 +78,7 @@ independent of run status.
 
 ### 3.3 Detector
 
-`scripts/test-pyramid/detect-bad-title.ts` — pure function over the parsed
+`tooling/test-pyramid/detect-bad-title.ts` — pure function over the parsed
 `ItBlock` list. Emits `BadTitleFinding { path, line, title, reason }` where
 `reason` is one of `'missing'`, `'malformed'`.
 
@@ -107,7 +107,7 @@ keeps the regex tight. Documented limitation.
 
 ### 4.3 Detector
 
-`scripts/test-pyramid/detect-missing-aaa.ts` — emits
+`tooling/test-pyramid/detect-missing-aaa.ts` — emits
 `MissingAaaFinding { path, line, title, missing: ('Arrange' | 'Assert')[] }`.
 `missing` lists the absent markers so the report tells the developer exactly
 what to add.
@@ -145,7 +145,7 @@ known false negative.
 
 ### 5.3 Detector
 
-`scripts/test-pyramid/detect-banned-sut-name.ts` — emits
+`tooling/test-pyramid/detect-banned-sut-name.ts` — emits
 `BannedSutFinding { path, line, title, alias }`.
 
 ## 6. Heuristic — bare-class `toThrow`
@@ -177,7 +177,7 @@ when the *only* argument is a bare identifier — anything before the closing
 
 ### 6.3 Detector
 
-`scripts/test-pyramid/detect-bare-class-throw.ts` — emits
+`tooling/test-pyramid/detect-bare-class-throw.ts` — emits
 `BareClassThrowFinding { path, line, identifier }`.
 
 ## 7. Manifest extension
@@ -212,13 +212,13 @@ heuristic key gates independently. A heuristic missing from `gating`
 defaults to **false** (report-only) so adding a heuristic doesn't silently
 gate.
 
-JSON Schema (`scripts/test-pyramid-budgets-schema.json`) updated to match.
+JSON Schema (`tooling/test-pyramid-budgets-schema.json`) updated to match.
 Runtime validation in `parse-manifest.ts` extended to validate the new
 shapes — same hand-rolled checker pattern as 19.2.
 
 ## 8. Tooling
 
-### 8.1 Script — `scripts/audit-test-pyramid.ts`
+### 8.1 Script — `tooling/audit-test-pyramid.ts`
 
 The existing entry point gains a new pass: after `runAudit` builds the
 `AuditOutcome`, the runner computes `gatingExitCode` from the manifest's
@@ -249,7 +249,7 @@ scripts/
     render-report.ts                       # (extended — new finding sections)
     types.ts                               # (extended — new finding shapes)
 test-pyramid-budgets.json                  # (extended)
-scripts/test-pyramid-budgets-schema.json   # (extended)
+tooling/test-pyramid-budgets-schema.json   # (extended)
 ```
 
 Each new detector is < 80 lines, pure, independently unit-testable.
@@ -263,7 +263,7 @@ unchanged.
 
 ## 9. Testing strategy
 
-Unit tests live under `test/unit/scripts/test-pyramid/`. Each new detector
+Unit tests live under `test/unit/tooling/test-pyramid/`. Each new detector
 gets its own file, with cases covering:
 
 - **`detect-bad-title.test.ts`** — well-formed GWT, missing `When`, missing
@@ -296,7 +296,7 @@ focused on assertion counting).
 - `--report-only` flag forces exit `0`.
 
 Coverage target: 100% lines/branches/functions/statements on every new file
-under `scripts/test-pyramid/**`. Mutation: scripts excluded per ADR-108
+under `tooling/test-pyramid/**`. Mutation: scripts excluded per ADR-108
 (same posture as 19.2).
 
 ## 10. Repository cleanup (in this PR)
@@ -379,7 +379,7 @@ consequences in the same shape as ADRs 104–108.
 - **Per-`it()` block tier weighting** — same as 19.2; file-count is the
   budgeting granularity for ratio purposes.
 - **AST parser switch** — staying on regex/brace for parity with the rest
-  of `scripts/test-pyramid/**`. Six checks (two from 19.2 + four from
+  of `tooling/test-pyramid/**`. Six checks (two from 19.2 + four from
   19.3) is still tractable. Revisit when 19.4 adds further heuristics or
   when a heuristic genuinely requires control-flow analysis.
 - **`overMockedIntegration` gating** — owned by 19.4.
