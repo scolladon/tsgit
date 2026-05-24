@@ -406,8 +406,7 @@ describe('roundtrip', () => {
   });
 
   it('Given arbitrary entries, When serializing then parsing, Then all entries preserved', () => {
-    // Arrange
-    // Assert
+    // Arrange + Assert
     fc.assert(
       fc.property(
         fc.array(
