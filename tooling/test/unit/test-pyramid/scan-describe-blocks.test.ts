@@ -1,8 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-  type DescribeBlock,
-  scanDescribeBlocks,
-} from '../../../test-pyramid/scan-describe-blocks.js';
+import { scanDescribeBlocks } from '../../../test-pyramid/scan-describe-blocks.js';
 
 describe('Given an empty source', () => {
   describe('When scanDescribeBlocks runs', () => {
@@ -100,6 +97,22 @@ describe('Given a describe.each([...])("title", body) block', () => {
       // Assert
       expect(sut).toHaveLength(1);
       expect(sut[0]?.title).toBe('case %s');
+    });
+  });
+});
+
+describe('Given a describe.each() with a nested describe inside its body', () => {
+  describe('When scanDescribeBlocks runs', () => {
+    it('Then the nested describe is captured (each-body is walked, not skipped)', () => {
+      // Arrange
+      const source =
+        `describe.each([1, 2])('outer %s', () => { describe('inner', () => {}); });`;
+
+      // Act
+      const sut = scanDescribeBlocks(source);
+
+      // Assert
+      expect(sut.map((b) => b.title)).toEqual(['outer %s', 'inner']);
     });
   });
 });

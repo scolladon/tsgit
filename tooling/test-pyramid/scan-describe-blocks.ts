@@ -98,17 +98,15 @@ const extractTitle = (source: string, fromIdx: number): TitleSpan => {
 
 export const scanDescribeBlocks = (source: string): ReadonlyArray<DescribeBlock> => {
   const blocks: DescribeBlock[] = [];
-  // Skipped ranges hold the *second* `(...)` of `describe.each(...)('title',
-  // ...)` so its opening paren isn't re-matched as a fresh describe opener.
-  // Outer-body spans are deliberately NOT skipped — we want nested describes
-  // captured (unlike scanItBlocks, which doesn't enter test bodies).
-  const skippedRanges: Array<readonly [number, number]> = [];
-  const isInSkippedRange = (idx: number): boolean =>
-    skippedRanges.some(([start, end]) => idx >= start && idx < end);
+  // No "consumed/skipped" range tracking: OPENER_RE requires `describe`
+  // before the `(`, and the body of a describe contains arrow-function `(`
+  // and arbitrary call-site `(` — none preceded by `describe`. Nested
+  // describes inside an outer body (including inside the body of a
+  // `describe.each(...)('title', () => {…})`) must be captured.
 
   for (const match of source.matchAll(OPENER_RE)) {
     const opener = match.index ?? -1;
-    if (opener < 0 || isInSkippedRange(opener)) continue;
+    if (opener < 0) continue;
     const chain = match[1] ?? '';
     const chainKeys = chain.split('.').filter((seg) => seg.length > 0);
     const isSkipped = chainKeys.some((seg) => SKIP_MODIFIERS.has(seg));
@@ -131,7 +129,6 @@ export const scanDescribeBlocks = (source: string): ReadonlyArray<DescribeBlock>
       if (innerClose < 0) continue;
       titleStart = innerOpen + 1;
       bodyEnd = innerClose;
-      skippedRanges.push([innerOpen, innerClose + 1]);
     }
 
     const { title } = extractTitle(source, titleStart);

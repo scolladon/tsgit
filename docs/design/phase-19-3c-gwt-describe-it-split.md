@@ -173,7 +173,7 @@ export interface BadTitleFinding {
   readonly path: string;
   readonly line: number;
   readonly title: string;       // leaf it() title
-  readonly ancestors: ReadonlyArray<string>; // GWT-only describe ancestors, outer→inner
+  readonly ancestors: ReadonlyArray<string>; // GWT-only describe ancestors, closest-first (path[0] is innermost)
   readonly reason: BadTitleReason;
 }
 ```

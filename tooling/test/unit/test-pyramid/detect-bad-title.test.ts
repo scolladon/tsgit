@@ -122,7 +122,7 @@ describe('Given a Then-only leaf with no GWT ancestor', () => {
 
 describe('Given a Then-only leaf under describe("When ...") only', () => {
   describe('When scanned', () => {
-    it('Then a given-missing finding is emitted', () => {
+    it('Then a given-missing finding is emitted with the When ancestor in path[0]', () => {
       // Arrange
       const source =
         `describe('When op runs', () => {\n` +
@@ -132,9 +132,10 @@ describe('Given a Then-only leaf under describe("When ...") only', () => {
       // Act
       const sut = at('test/unit/a.test.ts', source);
 
-      // Assert
+      // Assert — ancestors is closest-first; the only entry is the When describe.
       expect(sut).toHaveLength(1);
       expect(sut[0]?.reason).toBe('given-missing');
+      expect(sut[0]?.ancestors).toEqual(['When op runs']);
     });
   });
 });
