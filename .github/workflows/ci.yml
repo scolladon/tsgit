@@ -360,6 +360,29 @@ jobs:
       - run: npm run test:win-integration
 
   # ──────────────────────────────────────────────
+  # Stage 5d: Cross-adapter parity tests (Phase 19.5)
+  # Runs the same parity scenarios against the Node and Memory adapters
+  # and asserts byte-identical results. The Browser side runs through the
+  # `e2e` job below. Any divergence is a parity bug — most likely in
+  # object serialization, hash framing, or author-identity encoding.
+  # ──────────────────────────────────────────────
+
+  parity-tests:
+    needs: [changes, unit-tests]
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/setup
+      - run: npm run test:parity
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: parity-report-node-memory
+          path: reports/parity/
+          retention-days: 14
+
+  # ──────────────────────────────────────────────
   # Stage 6: E2E / Playwright
   # ──────────────────────────────────────────────
 
@@ -379,7 +402,9 @@ jobs:
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: playwright-report-${{ matrix.browser }}
+          # `-ubuntu` suffix is a static literal today; forward-compatible
+          # with 19.8's planned multi-OS expansion (no rename then).
+          name: playwright-report-${{ matrix.browser }}-ubuntu
           path: test-results/
           retention-days: 14
 
