@@ -196,8 +196,7 @@ describe('tag', () => {
       // Arrange
       const content = tagText([`object ${'b'.repeat(40)}`, 'type invalid', 'tag v1.0', '', 'msg']);
 
-      // Act & Assert
-      // Assert
+      // Act + Assert
       expect(() => parseTagContent(DUMMY_ID, content)).toThrow(
         expect.objectContaining({
           data: expect.objectContaining({
@@ -212,8 +211,7 @@ describe('tag', () => {
       // Arrange
       const content = tagText(['type commit', 'tag v1.0', '', 'msg']);
 
-      // Act & Assert
-      // Assert
+      // Act + Assert
       expect(() => parseTagContent(DUMMY_ID, content)).toThrow(
         expect.objectContaining({
           data: expect.objectContaining({
@@ -274,8 +272,7 @@ describe('tag', () => {
       // Arrange
       const content = tagText([`object ${'b'.repeat(40)}`, 'tag v1.0', '', 'msg']);
 
-      // Act & Assert
-      // Assert
+      // Act + Assert
       expect(() => parseTagContent(DUMMY_ID, content)).toThrow(
         expect.objectContaining({
           data: expect.objectContaining({
@@ -290,8 +287,7 @@ describe('tag', () => {
       // Arrange
       const content = tagText([]);
 
-      // Act & Assert
-      // Assert
+      // Act + Assert
       expect(() => parseTagContent(DUMMY_ID, content)).toThrow(
         expect.objectContaining({
           data: expect.objectContaining({
@@ -306,8 +302,7 @@ describe('tag', () => {
       // Arrange
       const content = tagText([`object ${'b'.repeat(40)}`]);
 
-      // Act & Assert
-      // Assert
+      // Act + Assert
       expect(() => parseTagContent(DUMMY_ID, content)).toThrow(
         expect.objectContaining({
           data: expect.objectContaining({
@@ -322,8 +317,7 @@ describe('tag', () => {
       // Arrange
       const content = tagText([`object ${'b'.repeat(40)}`, 'type commit']);
 
-      // Act & Assert
-      // Assert
+      // Act + Assert
       expect(() => parseTagContent(DUMMY_ID, content)).toThrow(
         expect.objectContaining({
           data: expect.objectContaining({
@@ -338,8 +332,7 @@ describe('tag', () => {
       // Arrange
       const content = tagText([`object ${'b'.repeat(40)}`, 'type commit', 'tag ', '', 'msg']);
 
-      // Act & Assert
-      // Assert
+      // Act + Assert
       expect(() => parseTagContent(DUMMY_ID, content)).toThrow(
         expect.objectContaining({
           data: expect.objectContaining({
@@ -354,8 +347,7 @@ describe('tag', () => {
       // Arrange
       const content = tagText([`object ${'b'.repeat(40)}`, 'type commit', 'tag v1\0.0', '', 'msg']);
 
-      // Act & Assert
-      // Assert
+      // Act + Assert
       expect(() => parseTagContent(DUMMY_ID, content)).toThrow(
         expect.objectContaining({
           data: expect.objectContaining({
@@ -378,8 +370,7 @@ describe('tag', () => {
         'msg',
       ]);
 
-      // Act & Assert
-      // Assert
+      // Act + Assert
       expect(() => parseTagContent(DUMMY_ID, content)).toThrow(
         expect.objectContaining({
           data: expect.objectContaining({
@@ -401,8 +392,7 @@ describe('tag', () => {
         'msg',
       ]);
 
-      // Act & Assert
-      // Assert
+      // Act + Assert
       expect(() => parseTagContent(DUMMY_ID, content)).toThrow(
         expect.objectContaining({
           data: expect.objectContaining({

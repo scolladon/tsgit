@@ -123,17 +123,17 @@ describe('git-object', () => {
       expect(sut.type).toBe('tag');
     });
 
-    it('Given raw bytes with invalid header type, When calling parseObject, Then throws INVALID_OBJECT_HEADER', () => {
+    it('Given raw bytes with invalid header type, When calling parseObject, Then throws INVALID_OBJECT_HEADER with the unknown-type reason', () => {
       // Arrange
       const raw = encode('invalid 5\0hello');
 
-      // Act & Assert
-      // Assert
+      // Act & Assert — pin the exact reason string so a StringLiteral
+      // mutant on the template literal at header.ts:27 cannot survive.
       expect(() => parseObject(DUMMY_ID, raw, SHA1_CONFIG)).toThrow(
         expect.objectContaining({
           data: expect.objectContaining({
             code: 'INVALID_OBJECT_HEADER',
-            reason: expect.any(String),
+            reason: 'unknown object type: invalid',
           }),
         }),
       );
@@ -143,8 +143,7 @@ describe('git-object', () => {
       // Arrange
       const raw = encode('blob 999\0short');
 
-      // Act & Assert
-      // Assert
+      // Act + Assert
       expect(() => parseObject(DUMMY_ID, raw, SHA1_CONFIG)).toThrow(
         expect.objectContaining({
           data: expect.objectContaining({

@@ -65,8 +65,7 @@ describe('encoding', () => {
       // Arrange
       const hex = 'abc';
 
-      // Act & Assert
-      // Assert
+      // Act + Assert
       expect(() => hexToBytes(hex)).toThrow('Hex string must have even length');
     });
 
@@ -74,8 +73,7 @@ describe('encoding', () => {
       // Arrange
       const hex = 'zzzz';
 
-      // Act & Assert
-      // Assert
+      // Act + Assert
       expect(() => hexToBytes(hex)).toThrow('Invalid hex character at position 0');
     });
 
@@ -83,8 +81,7 @@ describe('encoding', () => {
       // Arrange
       const hex = 'ABCD';
 
-      // Act & Assert
-      // Assert
+      // Act + Assert
       expect(() => hexToBytes(hex)).toThrow('Invalid hex character at position 0');
     });
 
@@ -92,8 +89,7 @@ describe('encoding', () => {
       // Arrange
       const hex = 'aagb';
 
-      // Act & Assert
-      // Assert
+      // Act + Assert
       expect(() => hexToBytes(hex)).toThrow('Invalid hex character at position 2');
     });
 
@@ -101,8 +97,7 @@ describe('encoding', () => {
       // Arrange — 'az': high='a' (valid), low='z' (invalid)
       const hex = 'az';
 
-      // Act & Assert
-      // Assert
+      // Act + Assert
       expect(() => hexToBytes(hex)).toThrow('Invalid hex character at position 0');
     });
 
@@ -121,8 +116,7 @@ describe('encoding', () => {
       // Arrange — '.' is charCode 46, below '0' (48), and charCode-48 = -2 (not -1)
       const hex = '.0';
 
-      // Act & Assert
-      // Assert
+      // Act + Assert
       expect(() => hexToBytes(hex)).toThrow('Invalid hex character at position 0');
     });
   });

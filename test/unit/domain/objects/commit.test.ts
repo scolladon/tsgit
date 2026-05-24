@@ -296,8 +296,7 @@ describe('commit', () => {
         'msg',
       ]);
 
-      // Act & Assert
-      // Assert
+      // Act + Assert
       expect(() => parseCommitContent(DUMMY_ID, content)).toThrow(
         expect.objectContaining({
           data: expect.objectContaining({
@@ -318,8 +317,7 @@ describe('commit', () => {
         'msg',
       ]);
 
-      // Act & Assert
-      // Assert
+      // Act + Assert
       expect(() => parseCommitContent(DUMMY_ID, content)).toThrow(
         expect.objectContaining({
           data: expect.objectContaining({
@@ -339,8 +337,7 @@ describe('commit', () => {
         'msg',
       ]);
 
-      // Act & Assert
-      // Assert
+      // Act + Assert
       expect(() => parseCommitContent(DUMMY_ID, content)).toThrow(
         expect.objectContaining({
           data: expect.objectContaining({
@@ -406,8 +403,7 @@ describe('commit', () => {
       // Arrange
       const content = commitText(['', 'msg']);
 
-      // Act & Assert
-      // Assert
+      // Act + Assert
       expect(() => parseCommitContent(DUMMY_ID, content)).toThrow(
         expect.objectContaining({
           data: expect.objectContaining({
@@ -422,8 +418,7 @@ describe('commit', () => {
       // Arrange
       const content = commitText([`tree ${'b'.repeat(40)}`, `parent ${'c'.repeat(40)}`, '', 'msg']);
 
-      // Act & Assert
-      // Assert
+      // Act + Assert
       expect(() => parseCommitContent(DUMMY_ID, content)).toThrow(
         expect.objectContaining({
           data: expect.objectContaining({
@@ -438,8 +433,7 @@ describe('commit', () => {
       // Arrange -- no blank line so entire text is treated as headerPart
       const content = commitText([`tree ${'b'.repeat(40)}`, 'author A <a@a.com> 0 +0000']);
 
-      // Act & Assert
-      // Assert
+      // Act + Assert
       expect(() => parseCommitContent(DUMMY_ID, content)).toThrow(
         expect.objectContaining({
           data: expect.objectContaining({
@@ -462,8 +456,7 @@ describe('commit', () => {
         'msg',
       ]);
 
-      // Act & Assert
-      // Assert
+      // Act + Assert
       expect(() => parseCommitContent(DUMMY_ID, content)).toThrow(
         expect.objectContaining({
           data: expect.objectContaining({
@@ -485,8 +478,7 @@ describe('commit', () => {
         'msg',
       ]);
 
-      // Act & Assert
-      // Assert
+      // Act + Assert
       expect(() => parseCommitContent(DUMMY_ID, content)).toThrow(
         expect.objectContaining({
           data: expect.objectContaining({

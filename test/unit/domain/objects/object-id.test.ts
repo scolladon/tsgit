@@ -40,8 +40,7 @@ describe('object-id', () => {
       // Arrange
       const hex = 'xyz';
 
-      // Act & Assert
-      // Assert
+      // Act + Assert
       expect(() => ObjectId.from(hex)).toThrow(
         expect.objectContaining({
           data: { code: 'INVALID_OBJECT_ID', value: hex },
@@ -53,8 +52,7 @@ describe('object-id', () => {
       // Arrange
       const hex = '';
 
-      // Act & Assert
-      // Assert
+      // Act + Assert
       expect(() => ObjectId.from(hex)).toThrow(
         expect.objectContaining({
           data: { code: 'INVALID_OBJECT_ID', value: hex },
@@ -66,8 +64,7 @@ describe('object-id', () => {
       // Arrange
       const hex = 'A'.repeat(40);
 
-      // Act & Assert
-      // Assert
+      // Act + Assert
       expect(() => ObjectId.from(hex)).toThrow(
         expect.objectContaining({
           data: { code: 'INVALID_OBJECT_ID', value: hex },
@@ -79,8 +76,7 @@ describe('object-id', () => {
       // Arrange
       const hex = 'a'.repeat(39);
 
-      // Act & Assert
-      // Assert
+      // Act + Assert
       expect(() => ObjectId.from(hex)).toThrow(
         expect.objectContaining({
           data: { code: 'INVALID_OBJECT_ID', value: hex },
@@ -118,8 +114,7 @@ describe('object-id', () => {
       // Arrange
       const bytes = new Uint8Array(19);
 
-      // Act & Assert
-      // Assert
+      // Act + Assert
       expect(() => ObjectId.fromRaw(bytes)).toThrow(
         expect.objectContaining({
           data: { code: 'INVALID_OBJECT_ID', value: 'raw bytes length 19 is not 20 or 32' },
@@ -131,8 +126,7 @@ describe('object-id', () => {
       // Arrange
       const bytes = new Uint8Array(0);
 
-      // Act & Assert
-      // Assert
+      // Act + Assert
       expect(() => ObjectId.fromRaw(bytes)).toThrow(
         expect.objectContaining({
           data: { code: 'INVALID_OBJECT_ID', value: 'raw bytes length 0 is not 20 or 32' },
@@ -241,8 +235,7 @@ describe('object-id', () => {
       // Arrange
       const name = '';
 
-      // Act & Assert
-      // Assert
+      // Act + Assert
       expect(() => RefName.from(name)).toThrow('RefName must not be empty');
       try {
         RefName.from(name);
@@ -270,8 +263,7 @@ describe('object-id', () => {
       // Arrange
       const path = '';
 
-      // Act & Assert
-      // Assert
+      // Act + Assert
       expect(() => FilePath.from(path)).toThrow('FilePath must not be empty');
       try {
         FilePath.from(path);

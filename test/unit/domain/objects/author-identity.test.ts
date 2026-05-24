@@ -94,8 +94,7 @@ describe('author-identity', () => {
       // Arrange
       const line = 'no opening> 0 +0000';
 
-      // Act & Assert
-      // Assert
+      // Act + Assert
       expect(() => parseIdentity(line)).toThrow(
         expect.objectContaining({
           data: expect.objectContaining({
@@ -110,8 +109,7 @@ describe('author-identity', () => {
       // Arrange
       const line = 'Name <email@test.com> NaN +0000';
 
-      // Act & Assert
-      // Assert
+      // Act + Assert
       expect(() => parseIdentity(line)).toThrow(
         expect.objectContaining({
           data: expect.objectContaining({
@@ -126,8 +124,7 @@ describe('author-identity', () => {
       // Arrange
       const line = 'Alice <a@a.com> 100.5 +0000';
 
-      // Act & Assert
-      // Assert
+      // Act + Assert
       expect(() => parseIdentity(line)).toThrow(
         expect.objectContaining({
           data: expect.objectContaining({
@@ -142,8 +139,7 @@ describe('author-identity', () => {
       // Arrange — above Number.MAX_SAFE_INTEGER
       const line = 'Alice <a@a.com> 9007199254740993 +0000';
 
-      // Act & Assert
-      // Assert
+      // Act + Assert
       expect(() => parseIdentity(line)).toThrow(
         expect.objectContaining({
           data: expect.objectContaining({
@@ -158,8 +154,7 @@ describe('author-identity', () => {
       // Arrange
       const line = 'Alice <a@a.com> 100 abc';
 
-      // Act & Assert
-      // Assert
+      // Act + Assert
       expect(() => parseIdentity(line)).toThrow(
         expect.objectContaining({
           data: expect.objectContaining({
@@ -174,8 +169,7 @@ describe('author-identity', () => {
       // Arrange
       const line = 'Alice <a@a.com> 100 <bad';
 
-      // Act & Assert
-      // Assert
+      // Act + Assert
       expect(() => parseIdentity(line)).toThrow(
         expect.objectContaining({
           data: expect.objectContaining({
@@ -236,8 +230,7 @@ describe('author-identity', () => {
       // Arrange
       const line = 'no brackets here';
 
-      // Act & Assert
-      // Assert
+      // Act + Assert
       expect(() => parseIdentity(line)).toThrow(
         expect.objectContaining({
           data: expect.objectContaining({
@@ -252,8 +245,7 @@ describe('author-identity', () => {
       // Arrange
       const line = 'Name <email>';
 
-      // Act & Assert
-      // Assert
+      // Act + Assert
       expect(() => parseIdentity(line)).toThrow(
         expect.objectContaining({
           data: expect.objectContaining({
@@ -268,8 +260,7 @@ describe('author-identity', () => {
       // Arrange
       const line = 'Name <email> 123';
 
-      // Act & Assert
-      // Assert
+      // Act + Assert
       expect(() => parseIdentity(line)).toThrow(
         expect.objectContaining({
           data: expect.objectContaining({
@@ -591,8 +582,7 @@ describe('author-identity', () => {
         timezoneOffset: '+0000',
       };
 
-      // Act & Assert
-      // Assert
+      // Act + Assert
       expect(() => serializeIdentity(identity)).toThrow(
         expect.objectContaining({
           data: expect.objectContaining({
@@ -612,8 +602,7 @@ describe('author-identity', () => {
         timezoneOffset: '+0000',
       };
 
-      // Act & Assert
-      // Assert
+      // Act + Assert
       expect(() => serializeIdentity(identity)).toThrow(
         expect.objectContaining({
           data: expect.objectContaining({
@@ -633,8 +622,7 @@ describe('author-identity', () => {
         timezoneOffset: 'bad',
       };
 
-      // Act & Assert
-      // Assert
+      // Act + Assert
       expect(() => serializeIdentity(identity)).toThrow(
         expect.objectContaining({
           data: expect.objectContaining({
