@@ -166,6 +166,7 @@
   "scripts": {
     "prepare": "husky",
     "build": "wireit",
+    "build:parity": "wireit",
     "check": "wireit",
     "check:fix": "wireit",
     "check:types": "wireit",
@@ -361,15 +362,30 @@
       ],
       "output": []
     },
+    "build:parity": {
+      "command": "node --experimental-strip-types tooling/build-parity-bundle.ts",
+      "files": [
+        "test/parity/scenarios/**/*.ts",
+        "test/parity/fixtures.ts",
+        "test/browser/parity-scenarios.bundle.ts",
+        "tooling/build-parity-bundle.ts"
+      ],
+      "output": [
+        "test/browser/parity-scenarios.bundle.js",
+        "test/browser/parity-scenarios.bundle.js.map"
+      ]
+    },
     "test:e2e": {
       "command": "npx playwright test",
       "dependencies": [
-        "build"
+        "build",
+        "build:parity"
       ],
       "files": [
         "test/browser/**/*.ts",
         "test/browser/**/*.mjs",
         "test/browser/index.html",
+        "test/browser/parity-scenarios.bundle.js",
         "playwright.config.ts"
       ],
       "output": [
