@@ -11,7 +11,7 @@ import type {
   GatingConfig,
   PyramidManifest,
   TierDefinition,
-} from '../../../../scripts/test-pyramid/parse-manifest.js';
+} from '../../../test-pyramid/parse-manifest.js';
 
 interface ManifestOverrides {
   readonly tiers?: ReadonlyArray<TierDefinition>;

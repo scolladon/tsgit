@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import type { AuditOutcome } from '../../../../scripts/test-pyramid/render-report.js';
-import { renderJson, renderMarkdown } from '../../../../scripts/test-pyramid/render-report.js';
+import type { AuditOutcome } from '../../../test-pyramid/render-report.js';
+import { renderJson, renderMarkdown } from '../../../test-pyramid/render-report.js';
 
 const okOutcome: AuditOutcome = {
   tally: {

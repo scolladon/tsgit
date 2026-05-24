@@ -8,7 +8,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 const execFileAsync = promisify(execFile);
 const REPO_ROOT = path.resolve(import.meta.dirname, '..', '..', '..');
-const SCRIPT = path.join(REPO_ROOT, 'scripts', 'check-mutation-budgets.ts');
+const SCRIPT = path.join(REPO_ROOT, "tooling", 'check-mutation-budgets.ts');
 
 const PASSING_MANIFEST = {
   buckets: [

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { type RawReport, toSnapshotEntries } from '../../../scripts/bench-to-snapshot.js';
+import { type RawReport, toSnapshotEntries } from '../../bench-to-snapshot.js';
 
 describe('toSnapshotEntries', () => {
   it('Given a report with no files, When toSnapshotEntries runs, Then it returns an empty array', () => {

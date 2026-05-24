@@ -11,7 +11,7 @@ import {
   parseAllowList,
   parseRepositoryInterface,
   runCheck,
-} from '../../../scripts/check-doc-coverage.js';
+} from '../../check-doc-coverage.js';
 
 const REPO_ROOT = path.resolve(path.dirname(url.fileURLToPath(import.meta.url)), '../../..');
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { detectUnderAsserted } from '../../../../scripts/test-pyramid/detect-under-asserted.js';
-import type { PyramidManifest } from '../../../../scripts/test-pyramid/parse-manifest.js';
+import { detectUnderAsserted } from '../../../test-pyramid/detect-under-asserted.js';
+import type { PyramidManifest } from '../../../test-pyramid/parse-manifest.js';
 import { makeManifest } from './manifest-fixture.js';
 
 const MANIFEST = makeManifest();

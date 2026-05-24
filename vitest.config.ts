@@ -16,14 +16,14 @@ export default defineConfig({
         extends: true,
         test: {
           name: 'unit',
-          include: ['test/unit/**/*.test.ts'],
+          include: ['test/unit/**/*.test.ts', 'tooling/test/unit/**/*.test.ts'],
         },
       },
       {
         extends: true,
         test: {
           name: 'integration',
-          include: ['test/integration/**/*.test.ts'],
+          include: ['test/integration/**/*.test.ts', 'tooling/test/integration/**/*.test.ts'],
           exclude: [
             // Folder-segregated platform-specific integration suites run in
             // their own CI jobs (posix-integration + win-integration).

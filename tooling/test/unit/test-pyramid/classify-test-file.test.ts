@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { classifyTestFile } from '../../../../scripts/test-pyramid/classify-test-file.js';
-import type { PyramidManifest } from '../../../../scripts/test-pyramid/parse-manifest.js';
+import { classifyTestFile } from '../../../test-pyramid/classify-test-file.js';
+import type { PyramidManifest } from '../../../test-pyramid/parse-manifest.js';
 import { makeManifest } from './manifest-fixture.js';
 
 const MANIFEST = makeManifest();

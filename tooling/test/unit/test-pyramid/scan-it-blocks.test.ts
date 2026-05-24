@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { scanItBlocks } from '../../../../scripts/test-pyramid/scan-it-blocks.js';
+import { scanItBlocks } from '../../../test-pyramid/scan-it-blocks.js';
 
 describe('scanItBlocks', () => {
   it('Given an empty source, When scanned, Then an empty array is returned', () => {

@@ -4,8 +4,8 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import type { SpawnLike } from '../../../scripts/run-stryker-pr.js';
-import { runStrykerPr } from '../../../scripts/run-stryker-pr.js';
+import type { SpawnLike } from '../../run-stryker-pr.js';
+import { runStrykerPr } from '../../run-stryker-pr.js';
 
 interface SpawnCall {
   readonly command: string;

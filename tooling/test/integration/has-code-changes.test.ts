@@ -116,11 +116,11 @@ describe('has-code-changes.sh', () => {
     expect(sut.output).toContain('code=true');
   });
 
-  it('Given a scripts/ change only, When run, Then code=true', async () => {
+  it('Given a tooling/ change only, When run, Then code=true', async () => {
     // Arrange
-    writeRel(ctx.dir, 'scripts/foo.ts', '// script\n');
+    writeRel(ctx.dir, 'tooling/foo.ts', '// tooling\n');
     await ctx.git('add', '.');
-    await ctx.git('commit', '-m', 'scripts');
+    await ctx.git('commit', '-m', 'tooling');
 
     // Act
     const sut = await runScript(ctx, 'HEAD~1');

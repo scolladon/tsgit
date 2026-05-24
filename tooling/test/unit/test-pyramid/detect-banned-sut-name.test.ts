@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { detectBannedSutName } from '../../../../scripts/test-pyramid/detect-banned-sut-name.js';
+import { detectBannedSutName } from '../../../test-pyramid/detect-banned-sut-name.js';
 import { makeManifest } from './manifest-fixture.js';
 
 const MANIFEST = makeManifest();

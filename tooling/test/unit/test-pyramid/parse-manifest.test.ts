@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseManifest } from '../../../../scripts/test-pyramid/parse-manifest.js';
+import { parseManifest } from '../../../test-pyramid/parse-manifest.js';
 
 const VALID_MANIFEST = {
   tiers: [
@@ -89,7 +89,7 @@ describe('parseManifest', () => {
     it('Given a manifest with a $schema field, When parsed, Then $schema is ignored and parsing succeeds', () => {
       // Arrange
       const raw = JSON.stringify({
-        $schema: './scripts/test-pyramid-budgets-schema.json',
+        $schema: './tooling/test-pyramid-budgets-schema.json',
         ...VALID_MANIFEST,
       });
 

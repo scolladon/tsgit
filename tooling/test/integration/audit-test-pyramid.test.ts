@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 const execFileAsync = promisify(execFile);
 const REPO_ROOT = path.resolve(import.meta.dirname, '..', '..', '..');
-const SCRIPT = path.join(REPO_ROOT, 'scripts', 'audit-test-pyramid.ts');
+const SCRIPT = path.join(REPO_ROOT, 'tooling', 'audit-test-pyramid.ts');
 
 interface ManifestOverrides {
   readonly gating?: Record<string, boolean>;
@@ -92,7 +92,7 @@ const writeManifest = async (root: string, manifest: Record<string, unknown>): P
   await writeFile(path.join(root, 'test-pyramid-budgets.json'), JSON.stringify(manifest));
 };
 
-describe('scripts/audit-test-pyramid (integration)', () => {
+describe('tooling/audit-test-pyramid (integration)', () => {
   let tmpRoot: string;
 
   beforeEach(async () => {

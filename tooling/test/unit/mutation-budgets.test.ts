@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import type { BucketDefinition, StrykerMutationReport } from '../../../scripts/mutation-budgets.js';
+import type { BucketDefinition, StrykerMutationReport } from '../../mutation-budgets.js';
 import {
   bucketForPath,
   evaluateBudgets,
   parseManifest,
   parseReport,
-} from '../../../scripts/mutation-budgets.js';
+} from '../../mutation-budgets.js';
 
 const VALID_MANIFEST = {
   buckets: [

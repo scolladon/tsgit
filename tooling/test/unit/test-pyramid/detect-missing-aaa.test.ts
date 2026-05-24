@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { detectMissingAaa } from '../../../../scripts/test-pyramid/detect-missing-aaa.js';
+import { detectMissingAaa } from '../../../test-pyramid/detect-missing-aaa.js';
 import { makeManifest } from './manifest-fixture.js';
 
 const MANIFEST = makeManifest();

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { detectBareClassThrow } from '../../../../scripts/test-pyramid/detect-bare-class-throw.js';
+import { detectBareClassThrow } from '../../../test-pyramid/detect-bare-class-throw.js';
 import { makeManifest } from './manifest-fixture.js';
 
 const MANIFEST = makeManifest();

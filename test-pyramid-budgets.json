@@ -1,16 +1,16 @@
 {
-  "$schema": "./scripts/test-pyramid-budgets-schema.json",
+  "$schema": "./tooling/test-pyramid-budgets-schema.json",
   "tiers": [
     {
       "name": "unit",
-      "glob": "test/unit/**/*.test.ts",
+      "glob": "{test,tooling/test}/unit/**/*.test.ts",
       "target": 80,
       "warnBelow": 75,
       "warnAbove": null
     },
     {
       "name": "integration",
-      "glob": "test/integration/**/*.test.ts",
+      "glob": "{test,tooling/test}/integration/**/*.test.ts",
       "target": 15,
       "warnBelow": 10,
       "warnAbove": 25

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { detectBadTitle } from '../../../../scripts/test-pyramid/detect-bad-title.js';
+import { detectBadTitle } from '../../../test-pyramid/detect-bad-title.js';
 import { makeManifest } from './manifest-fixture.js';
 
 const MANIFEST = makeManifest();

@@ -184,8 +184,8 @@
     "test:mutation:pr": "wireit",
     "test:bench": "wireit",
     "bench:summary": "wireit",
-    "bench:fixture": "node --experimental-strip-types scripts/gen-bench-fixture.ts",
-    "profile": "npm run build && node --experimental-strip-types scripts/profile.ts",
+    "bench:fixture": "node --experimental-strip-types tooling/gen-bench-fixture.ts",
+    "profile": "npm run build && node --experimental-strip-types tooling/profile.ts",
     "docs": "wireit",
     "docs:check": "wireit",
     "docs:json": "wireit",
@@ -392,14 +392,14 @@
       ]
     },
     "test:mutation:pr": {
-      "command": "node --experimental-strip-types scripts/run-stryker-pr.ts",
+      "command": "node --experimental-strip-types tooling/run-stryker-pr.ts",
       "dependencies": [
         "test:unit"
       ],
       "files": [
         "src/**/*.ts",
         "test/unit/**/*.ts",
-        "scripts/run-stryker-pr.ts",
+        "tooling/run-stryker-pr.ts",
         "stryker.config.json",
         "vitest.config.ts"
       ],
@@ -422,12 +422,12 @@
       ]
     },
     "bench:summary": {
-      "command": "node --experimental-strip-types scripts/bench-summarize.ts",
+      "command": "node --experimental-strip-types tooling/bench-summarize.ts",
       "dependencies": [
         "test:bench"
       ],
       "files": [
-        "scripts/bench-summarize.ts",
+        "tooling/bench-summarize.ts",
         "reports/benchmarks/raw.json"
       ],
       "output": [
@@ -472,11 +472,11 @@
       "command": "lychee --config .lychee.toml README.md CONTRIBUTING.md RUNBOOK.md SECURITY.md 'docs/**/*.md'"
     },
     "check:doc-coverage": {
-      "command": "node --experimental-strip-types scripts/check-doc-coverage.ts",
+      "command": "node --experimental-strip-types tooling/check-doc-coverage.ts",
       "files": [
         "src/repository.ts",
-        "scripts/check-doc-coverage.ts",
-        "scripts/check-doc-coverage.allowlist.json",
+        "tooling/check-doc-coverage.ts",
+        "tooling/check-doc-coverage.allowlist.json",
         "docs/use/commands/**/*.md",
         "docs/use/primitives/**/*.md"
       ],
@@ -489,10 +489,10 @@
       ]
     },
     "check:test-pyramid": {
-      "command": "node --experimental-strip-types scripts/audit-test-pyramid.ts",
+      "command": "node --experimental-strip-types tooling/audit-test-pyramid.ts",
       "files": [
-        "scripts/audit-test-pyramid.ts",
-        "scripts/test-pyramid/**/*.ts",
+        "tooling/audit-test-pyramid.ts",
+        "tooling/test-pyramid/**/*.ts",
         "test-pyramid-budgets.json",
         "test/unit/**/*.test.ts",
         "test/integration/**/*.test.ts",
@@ -504,22 +504,22 @@
       ]
     },
     "check:mutation-budgets": {
-      "command": "node --experimental-strip-types scripts/check-mutation-budgets.ts",
+      "command": "node --experimental-strip-types tooling/check-mutation-budgets.ts",
       "files": [
-        "scripts/check-mutation-budgets.ts",
-        "scripts/mutation-budgets.ts",
+        "tooling/check-mutation-budgets.ts",
+        "tooling/mutation-budgets.ts",
         "mutation-budgets.json",
         "reports/mutation/mutation-report.json"
       ],
       "output": []
     },
     "verify:tarball": {
-      "command": "bash scripts/verify-tarball.sh",
+      "command": "bash tooling/verify-tarball.sh",
       "dependencies": [
         "build"
       ],
       "files": [
-        "scripts/verify-tarball.sh",
+        "tooling/verify-tarball.sh",
         "dist/**",
         "package.json",
         "LICENSE",

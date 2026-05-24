@@ -9,7 +9,7 @@
  * branch. ADR-103 documents the incident that motivated this helper.
  *
  * Always use `spawnGitInTmp` instead of calling `execFile('git', ...)` from
- * a `test/integration/scripts/` test.
+ * a `tooling/test/integration/` test.
  */
 
 import { execFile } from 'node:child_process';
@@ -65,7 +65,7 @@ export const assertInitialised = (dir: string): void => {
   const gitDir = path.join(dir, '.git');
   if (!existsSync(gitDir)) {
     throw new Error(
-      `git init did not create ${gitDir}. GIT_DIR may be leaking from the parent env — see test/integration/scripts/_git-tmp.ts.`,
+      `git init did not create ${gitDir}. GIT_DIR may be leaking from the parent env — see tooling/test/integration/_git-tmp.ts.`,
     );
   }
 };

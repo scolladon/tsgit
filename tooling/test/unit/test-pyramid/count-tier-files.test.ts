@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { tallyTierFiles } from '../../../../scripts/test-pyramid/count-tier-files.js';
+import { tallyTierFiles } from '../../../test-pyramid/count-tier-files.js';
 import { makeManifest } from './manifest-fixture.js';
 
 const MANIFEST = makeManifest();
