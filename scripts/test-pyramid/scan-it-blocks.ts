@@ -46,13 +46,26 @@ const findMatchingClose = (source: string, openIdx: number): number => {
         continue;
       }
       if (c === inString) inString = null;
-    } else {
-      if (c === '"' || c === "'" || c === '`') inString = c;
-      else if (c === '(') depth += 1;
-      else if (c === ')') {
-        depth -= 1;
-        if (depth === 0) return i;
-      }
+      i += 1;
+      continue;
+    }
+    if (c === '/' && source[i + 1] === '/') {
+      const nl = source.indexOf('\n', i + 2);
+      if (nl < 0) return -1;
+      i = nl + 1;
+      continue;
+    }
+    if (c === '/' && source[i + 1] === '*') {
+      const end = source.indexOf('*/', i + 2);
+      if (end < 0) return -1;
+      i = end + 2;
+      continue;
+    }
+    if (c === '"' || c === "'" || c === '`') inString = c;
+    else if (c === '(') depth += 1;
+    else if (c === ')') {
+      depth -= 1;
+      if (depth === 0) return i;
     }
     i += 1;
   }

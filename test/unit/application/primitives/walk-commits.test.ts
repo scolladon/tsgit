@@ -287,6 +287,7 @@ describe('walkCommits', () => {
   });
 
   it('Given verifyHash=false and a loose file whose bytes belong to a DIFFERENT commit, When walkCommits is iterated, Then the walk succeeds (threaded verifyHash=false skips hash check)', async () => {
+    // Arrange
     // Kills the `{ verifyHash }` ObjectLiteral `{}` mutant: under `{}`,
     // readObject defaults to verifyHash=true and would throw OBJECT_HASH_MISMATCH
     // before yielding, whereas the correct code forwards verifyHash=false and
@@ -316,6 +317,7 @@ describe('walkCommits', () => {
     await ctx.fs.write(aPath, bBytes);
 
     const commits = await collect(walkCommits(ctx, { from: [commitA], verifyHash: false }));
+    // Assert
     expect(commits.length).toBeGreaterThanOrEqual(1);
     // Parsed content belongs to commitB, not commitA.
     expect(commits[0]?.data.message).toMatch(/impostor/);

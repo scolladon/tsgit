@@ -459,6 +459,7 @@ describe('NodeFileSystem', () => {
 
     describe('isErrnoException', () => {
       it('Given a generic Error without code, When checking, Then returns false', () => {
+        // Arrange
         // Act
         const sut = isErrnoException(new Error('plain'));
 
@@ -467,6 +468,7 @@ describe('NodeFileSystem', () => {
       });
 
       it('Given an errno-like error, When checking, Then returns true', () => {
+        // Arrange
         // Act
         const sut = isErrnoException(makeErrnoError('ENOENT'));
 
@@ -475,6 +477,7 @@ describe('NodeFileSystem', () => {
       });
 
       it('Given a non-Error value, When checking, Then returns false', () => {
+        // Arrange
         // Act
         const sut = isErrnoException('not an error');
 
@@ -485,6 +488,7 @@ describe('NodeFileSystem', () => {
 
     describe('mapErrno', () => {
       it('Given ENOENT, When mapping, Then returns FILE_NOT_FOUND', () => {
+        // Arrange
         // Act
         const sut = mapErrno(makeErrnoError('ENOENT'), '/missing');
 
@@ -493,6 +497,7 @@ describe('NodeFileSystem', () => {
       });
 
       it('Given EEXIST, When mapping, Then returns FILE_EXISTS', () => {
+        // Arrange
         // Act
         const sut = mapErrno(makeErrnoError('EEXIST'), '/existing');
 
@@ -501,6 +506,7 @@ describe('NodeFileSystem', () => {
       });
 
       it('Given ENOTDIR, When mapping, Then returns NOT_A_DIRECTORY', () => {
+        // Arrange
         // Act
         const sut = mapErrno(makeErrnoError('ENOTDIR'), '/not-dir');
 
@@ -509,6 +515,7 @@ describe('NodeFileSystem', () => {
       });
 
       it('Given EACCES, When mapping, Then returns PERMISSION_DENIED', () => {
+        // Arrange
         // Act
         const sut = mapErrno(makeErrnoError('EACCES'), '/locked');
 
@@ -517,6 +524,7 @@ describe('NodeFileSystem', () => {
       });
 
       it('Given EPERM, When mapping, Then returns PERMISSION_DENIED', () => {
+        // Arrange
         // Act
         const sut = mapErrno(makeErrnoError('EPERM'), '/locked');
 
@@ -525,6 +533,7 @@ describe('NodeFileSystem', () => {
       });
 
       it('Given ELOOP, When mapping, Then returns PERMISSION_DENIED (symlink-refusal contract)', () => {
+        // Arrange
         // Act
         const sut = mapErrno(makeErrnoError('ELOOP'), '/looping');
 
@@ -533,6 +542,7 @@ describe('NodeFileSystem', () => {
       });
 
       it('Given EISDIR, When mapping, Then returns PERMISSION_DENIED (open-directory refusal, cross-platform)', () => {
+        // Arrange
         // Act
         const sut = mapErrno(makeErrnoError('EISDIR'), '/some-dir');
 
@@ -544,6 +554,7 @@ describe('NodeFileSystem', () => {
       });
 
       it('Given an unknown errno code, When mapping, Then returns UNSUPPORTED_OPERATION with operation="filesystem" and the code as reason', () => {
+        // Arrange
         // Act
         const sut = mapErrno(makeErrnoError('EOTHER'), '/weird');
 
@@ -571,6 +582,7 @@ describe('NodeFileSystem', () => {
       });
 
       it('Given ENOTEMPTY, When mapping, Then returns DIRECTORY_NOT_EMPTY (non-empty rmdir is distinct from a wrong-shape path)', () => {
+        // Arrange
         // Act
         const sut = mapErrno(makeErrnoError('ENOTEMPTY'), '/non-empty-dir');
 

@@ -1000,6 +1000,7 @@ describe('add', () => {
     const abortedCtx = { ...ctx, signal: controller.signal };
 
     // Act + Assert
+    // Assert
     await expectError(() => add(abortedCtx, ['!a.txt']), 'OPERATION_ABORTED');
   });
 

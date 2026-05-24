@@ -508,6 +508,7 @@ describe('merge.4b conflict persistence', () => {
       caught = err;
     }
     const data = (caught as { data?: { code?: string; operation?: string } })?.data;
+    // Assert
     expect(data?.code).toBe('OPERATION_IN_PROGRESS');
     expect(data?.operation).toBe('merge');
   });
@@ -527,6 +528,7 @@ describe('merge.4b conflict persistence', () => {
       caught = err;
     }
     const data = (caught as { data?: { code?: string; count?: number } })?.data;
+    // Assert
     expect(data?.code).toBe('MERGE_HAS_CONFLICTS');
     expect(data?.count).toBe(1);
   });
@@ -610,6 +612,7 @@ describe('merge.4b conflict persistence', () => {
       };
 
       // Act / Assert
+      // Assert
       await expect(runBounded([1, 2, 3, 4, 5, 6], 2, fn)).rejects.toThrow('boom');
     });
   });
@@ -659,6 +662,7 @@ describe('merge.4b conflict persistence', () => {
       const conflict = { type: conflictType, path: 'x.txt' as never } as never;
 
       // Act / Assert — no throw.
+      // Assert
       expect(() => rejectUnsupportedConflicts([conflict])).not.toThrow();
     });
 
@@ -669,6 +673,7 @@ describe('merge.4b conflict persistence', () => {
       );
 
       // Act / Assert
+      // Assert
       expect(() => rejectUnsupportedConflicts([])).not.toThrow();
     });
   });
@@ -713,6 +718,7 @@ describe('merge.4b conflict persistence', () => {
     const data = (
       caught as { data?: { code?: string; count?: number; paths?: ReadonlyArray<string> } }
     )?.data;
+    // Assert
     expect(data?.code).toBe('MERGE_HAS_CONFLICTS');
     expect(data?.count).toBe(1);
     expect(data?.paths).toEqual(['file-b.txt']);
@@ -736,6 +742,7 @@ describe('merge.4b conflict persistence', () => {
     } catch (err) {
       caught = err;
     }
+    // Assert
     expect((caught as { data?: { code?: string } })?.data?.code).toBe('EMPTY_COMMIT_MESSAGE');
   });
 

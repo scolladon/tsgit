@@ -184,6 +184,7 @@ describe('branch', () => {
     // Act + Assert — must not throw with force.
     const sut = await branch(ctx, { kind: 'create', name: 'feature', force: true });
     if (sut.kind !== 'create') throw new Error('expected create');
+    // Assert
     expect(sut.name).toBe('refs/heads/feature');
   });
 
@@ -217,6 +218,7 @@ describe('branch', () => {
     const { ctx } = await seedWithCommit();
 
     // Act
+    // Assert
     await expectError(
       () => branch(ctx, { kind: 'create', name: 'pin', startPoint: 'no-such' }),
       'BRANCH_NOT_FOUND',
@@ -244,6 +246,7 @@ describe('branch', () => {
 
     // Act + Assert — without force this would BRANCH_EXISTS; with force it succeeds.
     await branch(ctx, { kind: 'rename', from: 'a', to: 'b', force: true });
+    // Assert
     expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/heads/a`)).toBe(false);
   });
 
@@ -254,6 +257,7 @@ describe('branch', () => {
     await branch(ctx, { kind: 'create', name: 'b' });
 
     // Act
+    // Assert
     await expectError(() => branch(ctx, { kind: 'rename', from: 'a', to: 'b' }), 'BRANCH_EXISTS');
   });
 

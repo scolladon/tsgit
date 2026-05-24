@@ -228,6 +228,7 @@ describe('shallow-file', () => {
       } catch (err) {
         caught = err;
       }
+      // Assert
       expect(caught).toBeInstanceOf(TsgitError);
       // We accept either FILE_EXISTS (raw write-exclusive failure surface) or
       // a wrapped lock error. Both indicate the contention path fired.

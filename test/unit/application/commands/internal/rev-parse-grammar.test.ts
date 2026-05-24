@@ -474,6 +474,7 @@ describe('internal/rev-parse-grammar', () => {
       // Arrange / Act / Assert
       // ':' has char code 0x3A, just past the digit range — it must not count
       // as a digit, leaving `~` with no number and triggering the failure.
+      // Assert
       expectError(() => parseExpression('HEAD~:'), 'REVPARSE_UNRESOLVED');
     });
 
@@ -507,6 +508,7 @@ describe('internal/rev-parse-grammar', () => {
       // '2', leaving the cursor on 'z', which is neither '~' nor '^' — the
       // else branch fails. A mutant that over-accepts non-digits would pull
       // 'z' into the number and the parse would succeed instead of throwing.
+      // Assert
       expectError(() => parseExpression('HEAD~2z'), 'REVPARSE_UNRESOLVED');
     });
 

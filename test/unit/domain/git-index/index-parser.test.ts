@@ -679,6 +679,7 @@ describe('parseIndex', () => {
     // Act & Assert
     try {
       parseIndex(buf);
+      // Assert
       expect.fail('should have thrown');
     } catch (e) {
       expect(e).toBeInstanceOf(TsgitError);
