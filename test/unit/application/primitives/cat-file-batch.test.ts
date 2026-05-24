@@ -267,7 +267,6 @@ describe('catFileBatch', () => {
       const sut = catFileBatch(probe, [stored]);
 
       // Act / Assert
-      // Assert
       await expect(collect(sut)).rejects.toBeInstanceOf(RangeError);
     });
   });

@@ -149,7 +149,6 @@ describe('primitives/walk-submodules', () => {
       ['DEL control char', `a${String.fromCharCode(127)}b`],
     ])('Given an unsafe name (%s), When isUnsafeSubmoduleName, Then returns true', (_label, name) => {
       // Arrange
-      // Act
       const sut = isUnsafeSubmoduleName(name);
       // Assert
       expect(sut).toBe(true);
@@ -157,7 +156,6 @@ describe('primitives/walk-submodules', () => {
 
     it('Given a plain name, When isUnsafeSubmoduleName, Then returns false', () => {
       // Arrange
-      // Act
       const sut = isUnsafeSubmoduleName('libfoo');
       // Assert
       expect(sut).toBe(false);
@@ -165,7 +163,6 @@ describe('primitives/walk-submodules', () => {
 
     it('Given a slash-containing name (legitimate for nested module dirs), When isUnsafeSubmoduleName, Then returns false', () => {
       // Arrange
-      // Act
       const sut = isUnsafeSubmoduleName('libs/foo');
       // Assert
       expect(sut).toBe(false);

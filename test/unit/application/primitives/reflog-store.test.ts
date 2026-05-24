@@ -142,7 +142,6 @@ describe('reflog-store', () => {
       const ctx = createMemoryContext();
 
       // Act & Assert
-      // Assert
       expect(await reflogExists(ctx, HEAD)).toBe(false);
     });
 
@@ -152,7 +151,6 @@ describe('reflog-store', () => {
       await appendReflog(ctx, HEAD, entry());
 
       // Act & Assert
-      // Assert
       expect(await reflogExists(ctx, HEAD)).toBe(true);
     });
   });

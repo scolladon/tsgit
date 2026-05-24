@@ -14,8 +14,7 @@ import { buildSeededContext } from './fixtures.js';
 
 describe('composition laws', () => {
   it('Given the law "writeObject ∘ readObject is identity for blobs (property)", When evaluated, Then it holds', async () => {
-    // Arrange
-    // Assert
+    // Arrange + Assert
     await fc.assert(
       fc.asyncProperty(fc.uint8Array({ maxLength: 64 }), async (bytes) => {
         const ctx = await buildSeededContext();
@@ -33,8 +32,7 @@ describe('composition laws', () => {
   });
 
   it('Given the law "updateRef ∘ resolveRef returns the same id", When evaluated, Then it holds', async () => {
-    // Arrange
-    // Assert
+    // Arrange + Assert
     await fc.assert(
       fc.asyncProperty(
         fc.string({ unit: fc.constantFrom(...'0123456789abcdef'), minLength: 40, maxLength: 40 }),
