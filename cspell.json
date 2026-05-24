@@ -8,6 +8,7 @@
     "artefacts",
     "asyncfile",
     "basenames",
+    "capitalised",
     "deinit",
     "disjointness",
     "Disjointness",
