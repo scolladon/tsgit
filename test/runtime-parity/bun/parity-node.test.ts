@@ -8,7 +8,7 @@
  * scenario's golden. A divergence here is most likely Bun's
  * `node:fs` / `node:crypto` polyfill differing from Node's.
  */
-import { expect, test } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -25,11 +25,20 @@ const stageFiles = async (rootDir: string, inputs: ScenarioInputs): Promise<void
   }
 };
 
-for (const scenario of SCENARIOS) {
-  test(`node adapter — ${scenario.name} matches expected golden`, async () => {
-    // Arrange
-    const tmpDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-parity-bun-node-'));
-    try {
+describe.each(SCENARIOS)('Given the $name scenario', (scenario) => {
+  let tmpDir = '';
+
+  beforeEach(async () => {
+    tmpDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-parity-bun-node-'));
+  });
+
+  afterEach(async () => {
+    await rm(tmpDir, { recursive: true, force: true });
+  });
+
+  describe('When the Bun driver runs it against the Node adapter', () => {
+    it('Then the result matches the scenario expected golden', async () => {
+      // Arrange
       await stageFiles(tmpDir, scenario.inputs);
       const repo = await openRepository({ cwd: tmpDir });
 
@@ -38,8 +47,6 @@ for (const scenario of SCENARIOS) {
 
       // Assert
       expect(sut).toEqual(scenario.expected);
-    } finally {
-      await rm(tmpDir, { recursive: true, force: true });
-    }
+    });
   });
-}
+});

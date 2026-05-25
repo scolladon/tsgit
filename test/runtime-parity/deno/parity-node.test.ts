@@ -7,6 +7,10 @@
  * Deno's Node-compat surface), and asserts the result against the
  * scenario's golden. A divergence here is most likely Deno's
  * `node:fs` / `node:crypto` polyfill differing from V8 + libuv.
+ *
+ * Titles use the project's 2-level GWT shortcut (Given+When in the
+ * outer label, Then in the inner `t.step`) because `Deno.test` has no
+ * `describe.each` analogue.
  */
 
 import { assertEquals } from 'jsr:@std/assert@1';
@@ -27,18 +31,20 @@ const stageFiles = async (rootDir: string, inputs: ScenarioInputs): Promise<void
 };
 
 for (const scenario of SCENARIOS) {
-  Deno.test(`node adapter — ${scenario.name} matches expected golden`, async () => {
-    // Arrange
+  Deno.test(`Given the ${scenario.name} scenario, When the Deno driver runs it against the Node adapter`, async (t) => {
     const tmpDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-parity-deno-node-'));
     try {
-      await stageFiles(tmpDir, scenario.inputs);
-      const repo = await openRepository({ cwd: tmpDir });
+      await t.step('Then the result matches the scenario expected golden', async () => {
+        // Arrange
+        await stageFiles(tmpDir, scenario.inputs);
+        const repo = await openRepository({ cwd: tmpDir });
 
-      // Act
-      const sut = await scenario.run(repo, scenario.inputs);
+        // Act
+        const sut = await scenario.run(repo, scenario.inputs);
 
-      // Assert
-      assertEquals(sut, scenario.expected);
+        // Assert
+        assertEquals(sut, scenario.expected);
+      });
     } finally {
       await rm(tmpDir, { recursive: true, force: true });
     }

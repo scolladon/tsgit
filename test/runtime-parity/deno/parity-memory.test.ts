@@ -8,6 +8,10 @@
  * bug — most likely in Deno's Node-compat surface or in a dist-time
  * import resolution.
  *
+ * Titles use the project's 2-level GWT shortcut (Given+When in the
+ * outer label, Then in the inner `t.step`) because `Deno.test` has no
+ * `describe.each` analogue.
+ *
  * See docs/design/phase-19-8-runtime-parity-matrix.md.
  */
 import { assertEquals } from 'jsr:@std/assert@1';
@@ -28,14 +32,16 @@ const stageFiles = (inputs: ScenarioInputs): Readonly<Record<string, Uint8Array>
 };
 
 for (const scenario of SCENARIOS) {
-  Deno.test(`memory adapter — ${scenario.name} matches expected golden`, async () => {
-    // Arrange
-    const repo = await openRepository({ files: stageFiles(scenario.inputs) });
+  Deno.test(`Given the ${scenario.name} scenario, When the Deno driver runs it against the Memory adapter`, async (t) => {
+    await t.step('Then the result matches the scenario expected golden', async () => {
+      // Arrange
+      const repo = await openRepository({ files: stageFiles(scenario.inputs) });
 
-    // Act
-    const sut = await scenario.run(repo, scenario.inputs);
+      // Act
+      const sut = await scenario.run(repo, scenario.inputs);
 
-    // Assert
-    assertEquals(sut, scenario.expected);
+      // Assert
+      assertEquals(sut, scenario.expected);
+    });
   });
 }

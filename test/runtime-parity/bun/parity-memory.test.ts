@@ -8,7 +8,7 @@
  * Bun-vs-V8 difference in Map iteration order or in TypedArray
  * encoding.
  */
-import { expect, test } from 'bun:test';
+import { describe, expect, it } from 'bun:test';
 
 import { openRepository } from '../../../dist/esm/index.default.js';
 import { SCENARIOS } from '../../parity/scenarios/index.ts';
@@ -25,15 +25,17 @@ const stageFiles = (inputs: ScenarioInputs): Readonly<Record<string, Uint8Array>
   return files;
 };
 
-for (const scenario of SCENARIOS) {
-  test(`memory adapter — ${scenario.name} matches expected golden`, async () => {
-    // Arrange
-    const repo = await openRepository({ files: stageFiles(scenario.inputs) });
+describe.each(SCENARIOS)('Given the $name scenario', (scenario) => {
+  describe('When the Bun driver runs it against the Memory adapter', () => {
+    it('Then the result matches the scenario expected golden', async () => {
+      // Arrange
+      const repo = await openRepository({ files: stageFiles(scenario.inputs) });
 
-    // Act
-    const sut = await scenario.run(repo, scenario.inputs);
+      // Act
+      const sut = await scenario.run(repo, scenario.inputs);
 
-    // Assert
-    expect(sut).toEqual(scenario.expected);
+      // Assert
+      expect(sut).toEqual(scenario.expected);
+    });
   });
-}
+});
