@@ -174,6 +174,14 @@ ADRs are ordered chronologically in the `adr/` folder. This page groups them by 
 - [ADR-133 — Transport commands and `runHook` are the opening allowlist entries](../adr/133-transport-and-runHook-exemptions.md)
 - Design: [`docs/design/phase-19-5a-playwright-surface-coverage-audit.md`](../design/phase-19-5a-playwright-surface-coverage-audit.md)
 
+## Write-surface interop audit (Phase 19.7)
+
+- [ADR-137 — Interop suite uses canonical `git`, not snapshots](../adr/137-interop-real-git-over-snapshot.md)
+- [ADR-138 — Interop comparison has three kinds](../adr/138-three-comparison-kinds.md)
+- [ADR-139 — Write-surface audit ships warn-only, promotes after one cycle](../adr/139-write-surface-audit-gating-ramp.md)
+- [ADR-140 — `@writes` JSDoc tag grammar](../adr/140-writes-jsdoc-tag-grammar.md)
+- Design: [`docs/design/phase-19-7-interop-suite.md`](../design/phase-19-7-interop-suite.md)
+
 ## Reading order tips
 
 - **Onboarding to the codebase?** Read ADR-001, ADR-004, ADR-091 in order. They set the architectural ground rules.
