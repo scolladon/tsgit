@@ -89,32 +89,48 @@ Each row maps a tsgit code path to a Git-on-disk format and a
 proposed `surface` identifier (matches the 19.4 surface regex
 `^[a-z][a-zA-Z0-9.-]{1,40}$`).
 
+Final inventory (as shipped — pass 4 reconciles with implementation):
+
 | # | Surface | Source | Format | Kind |
 |---|---|---|---|---|
-| 1 | `looseObject` | `primitives/write-object.ts` + `domain/objects/header.ts` | `<type> <size>\0<payload>` zlib-deflated, filed by SHA | byte-identical |
-| 2 | `tree` | `domain/objects/tree.ts` | sorted entries, raw SHA bytes | byte-identical |
-| 3 | `commit` | `domain/objects/commit.ts` | header lines + blank + message | byte-identical |
-| 4 | `tag` | `domain/objects/tag.ts` | tag header + signature region | byte-identical |
+| 1 | `looseObject` | `primitives/write-object.ts` | `<type> <size>\0<payload>` zlib-deflated, filed by SHA | equivalent-under-readback |
+| 2 | `tree` | `domain/objects/tree.ts` | sorted entries, raw SHA bytes (loose object) | equivalent-under-readback |
+| 3 | `commit` | `domain/objects/commit.ts` | header lines + blank + message (loose object) | equivalent-under-readback |
+| 4 | `tag` | `domain/objects/tag.ts` | tag header + message (loose object) | equivalent-under-readback |
 | 5 | `looseRef` | `domain/refs/loose-ref.ts` | `<sha>\n` in `.git/refs/**` | byte-identical |
 | 6 | `packedRefs` | `domain/refs/packed-refs.ts` | header + sorted ref lines, peel `^` annotations | byte-identical |
 | 7 | `symbolicRef` | `primitives/write-symbolic-ref.ts` | `ref: <target>\n` in `HEAD` etc. | byte-identical |
-| 8 | `index` | `domain/git-index/index-writer.ts` (v2 + v3 paths) | DIRC header + entries + extensions + trailer SHA | byte-identical |
-| 9 | `reflog` | `domain/reflog/reflog-format.ts` + `primitives/reflog-store.ts` | one line per entry in `.git/logs/**` | byte-identical |
-| 10 | `sparseCheckoutFile` | `primitives/write-sparse-checkout.ts` + `domain/sparse/*` | `.git/info/sparse-checkout` pattern list | byte-identical |
+| 8 | `index` | `domain/git-index/index-writer.ts` (v2 + v3 paths) | DIRC header + entries + extensions + trailer SHA | equivalent-under-readback |
+| 9 | `reflog` | `domain/reflog/reflog-format.ts` | one line per entry in `.git/logs/**` | byte-identical |
+| 10 | `sparseCheckoutFile` | `primitives/write-sparse-checkout.ts` | `.git/info/sparse-checkout` pattern list | byte-identical |
 | 11 | `shallowFile` | `primitives/shallow-file.ts` | `.git/shallow` sorted SHA list | byte-identical |
-| 12 | `packfile` | `domain/storage/pack-writer.ts` | v2 packfile (header, objects, trailer SHA) | equivalent-under-readback |
-| 13 | `packIndex` | `domain/storage/pack-index.ts` | pack-index v2 (fanout + SHAs + CRC + offsets) | equivalent-under-readback |
-| 14 | `config` | `primitives/update-config.ts` | git-config text format (`.git/config`) | readback-only |
+| 12 | `packfile` | `domain/storage/pack-writer.ts` (writes both .pack body and .idx body) | v2 packfile + pack-index | equivalent-under-readback |
+| 13 | `config` | `primitives/update-config.ts` | git-config text format (`.git/config`) | readback-only |
 
-Fourteen surfaces. `reflog` is already covered (precedent — the
-existing test needs the new `interopSurface:` key added). The
-other thirteen are this PR's sweep target.
+Thirteen surfaces. Two adjustments from the pass-3 inventory:
 
-`index` is a single surface whose writer module emits both v2 and
-v3 — the interop test parameterises across versions, the audit
-treats it as one declaration. Splitting into `indexV2`/`indexV3`
-would force two `@writes` blocks in one file (forbidden by §3.2),
-or force a refactor that no other consumer needs. Keep it unified.
+- **All loose-object surfaces are `equivalent-under-readback`, not
+  `byte-identical`.** The audit's first run caught this in the
+  `looseObject` test: tsgit uses Node's `deflateSync` default
+  compression level (6), canonical git uses level 1. SHA matches
+  (compression is over the same payload) but disk bytes differ.
+  This is a property of the Git format, not a tsgit bug — the
+  on-disk loose-object spec doesn't pin compression level.
+  Promotion path: pin tsgit to git's level (small product change)
+  would let us tighten to byte-identical, but is out of scope for
+  19.7.
+- **`packIndex` is absorbed into `packfile`.** The .idx writer
+  (`serializePackIndex`) lives in `pack-writer.ts` alongside
+  `serializePackfile`, and ADR-140 forbids two `@writes` tags per
+  file. The single `packfile` surface covers both .pack and .idx
+  emission; the interop test asserts `git fsck` accepts both files
+  together (a malformed .idx would fail fsck just as a malformed
+  .pack would). If we later split the writers into separate files
+  (good factoring), we add the second tag then.
+
+`reflog` was the precedent (its test already existed, retagged in
+place to add `interopSurface: reflog`). The other twelve surfaces
+each ship one new interop test in this PR.
 
 ### 2.3 Why three "kinds"
 
@@ -752,5 +768,12 @@ not user-deliberated — no ADR.
   §11 with the §3.6 decision (audit is static analysis, no
   git-version in report; config kind is `readback-only`, not an
   allowlist case); tidied §5.1 paragraph break.
+- **Pass 4 (post-implementation)** — reconciled inventory with the
+  reality the audit exposed: all loose-object surfaces are
+  `equivalent-under-readback` (zlib level differs between tsgit and
+  canonical git), and `packIndex` is absorbed into `packfile`
+  (they share `pack-writer.ts`, which ADR-140 limits to one tag).
+  Also recorded the trailing-space bug in `serializePackedRefs`
+  that the audit caught — fixed in the same PR.
 
-Converged at pass 3.
+Converged at pass 4 (one post-implementation correction).
