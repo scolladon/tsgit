@@ -22,9 +22,7 @@
     "src/transport/index.ts"
   ],
   "project": ["src/**/*.ts"],
-  "ignore": [
-    "test/runtime-parity/**"
-  ],
+  "ignore": ["test/runtime-parity/**"],
   "ignoreExportsUsedInFile": true,
   "ignoreDependencies": [
     "@arethetypeswrong/cli",
