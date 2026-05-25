@@ -12,16 +12,15 @@ Each step's commit follows conventional commits, scoped to the family being touc
 
 ## Sequencing rationale
 
-1. **Objects first** (small, no shared state) — proves the arbitraries pattern.
-2. **Refs** — single layer of new arbitraries; reuses object-id and ref-name.
-3. **Index** — the highest-value step; requires building `arbGitIndex`. Run mutation testing right after this lands.
-4. **Pathspec** — establishes the `arbPathspecPattern` / `arbCandidatePath` pair reused in step 5.
-5. **Gitignore** — composes on step 4's arbitraries.
-6. **Final sweep** — re-run validate, mutation budgets, doc updates.
+1. **Objects first** (small, no shared state) — proves the arbitraries pattern. Covers `header` and `file-mode`; `tree` already has property tests so we don't touch it.
+2. **Index** — the highest-value step; requires building `arbGitIndex`. Run mutation testing right after this lands.
+3. **Pathspec** — establishes the `arbPathspecPattern` / `arbCandidatePath` pair reused in step 4.
+4. **Gitignore** — composes on step 3's arbitraries.
+5. **Final sweep** — re-run validate, mutation budgets, doc updates.
 
 No step depends on a later step. Each commit leaves the harness green.
 
-## Step 1 — Objects: header, tree, file-mode
+## Step 1 — Objects: header, file-mode
 
 ### 1a. Extend `test/unit/domain/objects/arbitraries.ts`
 
@@ -29,8 +28,6 @@ Add:
 
 - `arbObjectType(): fc.Arbitrary<'blob'|'tree'|'commit'|'tag'>` — `fc.constantFrom`.
 - `arbFileModeEnum(): fc.Arbitrary<FileMode>` — `fc.constantFrom(...Object.values(FILE_MODE))`.
-- `arbTreeName(): fc.Arbitrary<string>` — ASCII letters/digits/`-_.`, length 1–20, never `.`/`..`.
-- `arbTreeEntry(): fc.Arbitrary<TreeEntry>` — record of `{ mode: arbFileModeEnum, name: arbTreeName, id: arbObjectId(40) }`.
 
 No `Bad` arbitraries here; negative properties get their generators inline (they're parser-specific and small).
 
@@ -41,46 +38,19 @@ Two properties:
 - **Round-trip**: `∀ type, size. parseHeader(serializeHeader(type, size)) ≡ { type, size }`. `numRuns: 200`.
 - **No-NUL negative**: `∀ rawBytes without 0x00. parseHeader(rawBytes) throws INVALID_OBJECT_HEADER('missing null terminator')`. `numRuns: 50`, generator filters out arrays containing 0.
 
-### 1c. `tree.properties.test.ts`
-
-Two properties:
-
-- **Round-trip after sort**: `∀ entries. parseTreeContent(id, serializeTreeContent({ entries }), SHA1) .entries ≡ sortTreeEntries(entries)`. Property generates duplicate-free name sets via `fc.uniqueArray(arbTreeEntry, { selector: e => e.name })`. `numRuns: 200`.
-- **Sort canonicalisation**: `∀ entries. serializeTreeContent({ entries: shuffled }) ≡ serializeTreeContent({ entries: sortTreeEntries(entries) })`. `numRuns: 100`.
-
-### 1d. `file-mode.properties.test.ts`
+### 1c. `file-mode.properties.test.ts`
 
 One property:
 
 - `∀ mode ∈ FILE_MODE. normalizeFileMode(mode) === mode` (identity on canonical forms; documents the contract). `numRuns: 50` (small input space).
 
-Commit: `test(domain): property tests for object header/tree/file-mode parsers`.
+Commit: `test(domain): property tests for object header/file-mode parsers`.
 
-Acceptance check before commit: `npm run test:unit -- header.properties tree.properties file-mode.properties`.
+Acceptance check before commit: `npm run test:unit -- header.properties file-mode.properties`.
 
-## Step 2 — Refs: packed-refs
+## Step 2 — Index: the big one
 
-### 2a. `test/unit/domain/refs/arbitraries.ts`
-
-Add:
-
-- `arbPackedRefEntry(): fc.Arbitrary<PackedRefEntry>` — record of `{ name: arbRefName, id: arbObjectId(40) }` (no `peeled` — peeling is exercised only in the peeling round-trip).
-- `arbPeeling(): fc.Arbitrary<'none'|'tags'|'fully'>` — `fc.constantFrom`.
-
-### 2b. `packed-refs.properties.test.ts`
-
-Two properties:
-
-- **Entries round-trip (de-duped by name)**: `∀ entries (unique names). parsePackedRefs(serializePackedRefs({ entries, peeling: 'none', sorted: false })).entries ≡ sortByName(entries)`. `numRuns: 200`.
-- **Peeling round-trip**: `∀ entries, peeling. parsePackedRefs(serializePackedRefs({ entries: [], peeling, sorted: false })).peeling === peeling`. `numRuns: 100`.
-
-Why no negative property: the parser's failure modes (peel-without-ref, malformed sha) are already covered by example tests; their generator would require careful crafting and add little.
-
-Commit: `test(domain): property tests for packed-refs parser`.
-
-## Step 3 — Index: the big one
-
-### 3a. Extend `test/unit/domain/git-index/arbitraries.ts`
+### 2a. Extend `test/unit/domain/git-index/arbitraries.ts`
 
 Add:
 
@@ -91,7 +61,7 @@ Add:
 
 Max entry count is bounded at 12 so a single fast-check run completes in ~50 ms. Entries must have unique paths (the index never has duplicate stage-0 paths — multi-stage is out of scope for 19.6).
 
-### 3b. `index-parser.properties.test.ts`
+### 2b. `index-parser.properties.test.ts`
 
 Three properties:
 
@@ -103,24 +73,24 @@ The round-trip equality uses a deep-equals check via `expect(received).toEqual(e
 
 Commit: `test(domain): property tests for index parser (v2 + v3 round-trip)`.
 
-After this commit: `stryker run --files 'src/domain/git-index/**'` to spot newly killable mutants. Anything new gets a fix-in-source commit before step 4.
+After this commit: `stryker run --files 'src/domain/git-index/**'` to spot newly killable mutants. Anything new gets a fix-in-source commit before step 3.
 
-## Step 4 — Pathspec
+## Step 3 — Pathspec
 
-### 4a. Create `test/unit/domain/pathspec/arbitraries.ts`
+### 3a. Create `test/unit/domain/pathspec/arbitraries.ts`
 
 - `arbLiteralPattern(): fc.Arbitrary<string>` — ASCII letters/digits/`-_.`, 1–10 chars, never starts with `!` or `/`.
 - `arbGlobPattern(): fc.Arbitrary<string>` — literal pattern with one of `*`, `?`, `**` inserted at a random position. Filtered so the result still parses (`compileGlob` is total on safe ASCII).
 - `arbCandidatePath(): fc.Arbitrary<FilePath>` — slash-separated array of literal-pattern strings, 1–4 components, never `.`/`..`. Returns through `FilePath.from`.
 
-### 4b. `compile-pathspec.properties.test.ts`
+### 3b. `compile-pathspec.properties.test.ts`
 
 Two properties:
 
 - **Total compilation**: `∀ patterns (mix of literal + glob, neither starting with `/`). compilePathspec(patterns) returns a Pathspec with patterns.length entries, each with `compiled.test` callable on any FilePath without throwing`. `numRuns: 100`.
 - **Literal-as-directory match**: `∀ literal L, ∀ descendantSuffix. compilePathspec([L]).find(e => e.isLiteral).compiled.test(\`\${L}/\${descendantSuffix}\`) === true`. `numRuns: 100`.
 
-### 4c. `match-pathspec.properties.test.ts`
+### 3c. `match-pathspec.properties.test.ts`
 
 One property:
 
@@ -128,16 +98,16 @@ One property:
 
 Commit: `test(domain): property tests for compile-pathspec and match-pathspec`.
 
-## Step 5 — Gitignore
+## Step 4 — Gitignore
 
-### 5a. Create `test/unit/domain/ignore/arbitraries.ts`
+### 4a. Create `test/unit/domain/ignore/arbitraries.ts`
 
 Reuses pathspec arbitraries. Adds:
 
 - `arbGitignorePattern(): fc.Arbitrary<string>` — pathspec literal/glob, optionally prefixed with `!`, optionally suffixed with `/`.
 - `arbGitignoreText(): fc.Arbitrary<string>` — newline-joined mix of patterns, comment lines (`# …`) and blank lines.
 
-### 5b. `parse-gitignore.properties.test.ts`
+### 4b. `parse-gitignore.properties.test.ts`
 
 Three properties:
 
@@ -145,7 +115,7 @@ Three properties:
 - **Negation count**: `∀ patterns. parseGitignore(patterns.join('\n')).filter(r => r.negated).length === patterns.filter(p => p.startsWith('!')).length`. `numRuns: 100`.
 - **Comment exclusion**: `∀ text whose lines all start with '#'. parseGitignore(text).length === 0`. `numRuns: 100`.
 
-### 5c. `matcher-stack.properties.test.ts`
+### 4c. `matcher-stack.properties.test.ts`
 
 One property:
 
@@ -153,7 +123,7 @@ One property:
 
 Commit: `test(domain): property tests for parse-gitignore and matcher-stack`.
 
-## Step 6 — Final sweep
+## Step 5 — Final sweep
 
 1. `npm run validate` — full harness green.
 2. `stryker run` — kill any new survivors. Document equivalent mutants inline.
@@ -169,11 +139,8 @@ Commit: `test(domain): property tests for parse-gitignore and matcher-stack`.
 
 ```
 test/unit/domain/objects/header.properties.test.ts          NEW
-test/unit/domain/objects/tree.properties.test.ts            NEW
 test/unit/domain/objects/file-mode.properties.test.ts       NEW
 test/unit/domain/objects/arbitraries.ts                     MODIFIED
-test/unit/domain/refs/packed-refs.properties.test.ts        NEW
-test/unit/domain/refs/arbitraries.ts                        MODIFIED
 test/unit/domain/git-index/index-parser.properties.test.ts  NEW
 test/unit/domain/git-index/arbitraries.ts                   MODIFIED
 test/unit/domain/pathspec/compile-pathspec.properties.test.ts NEW
