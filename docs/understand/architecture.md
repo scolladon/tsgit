@@ -120,6 +120,20 @@ crosses the `page.evaluate` boundary by name lookup against
 `window.__tsgitParity`, populated by a small bundled module
 ([ADR-127](../adr/127-parity-scenarios-bundled-not-serialized.md)).
 
+Phase 19.5a closes the loop with a **browser-surface coverage audit**
+(`npm run check:browser-surface`): it parses `src/repository.ts` for
+every bound command / primitive, scans `test/browser/*.spec.ts` and
+`test/parity/scenarios/*.ts` for `repo.<name>(` and
+`repo.primitives.<name>(` call sites, and exits non-zero if any name is
+neither covered nor named in the
+`tooling/audit-browser-surface.allowlist.json` exemption file. The gate
+is blocking ([ADR-132](../adr/132-browser-surface-audit-blocking-gate.md)):
+binary signal, no warn-only grace period. The opening allowlist holds
+the four transport commands (`clone` / `fetch` / `push` /
+`fetchMissing`, deferred to 19.8 with the Workers runtime parity work)
+and `runHook` (structurally Node-only;
+[ADR-133](../adr/133-transport-and-runHook-exemptions.md)).
+
 ## ADRs
 
 For the receipts behind each major design choice, see [`design-decisions.md`](design-decisions.md) — a curated, subsystem-grouped index of the [ADR collection](../adr/).
