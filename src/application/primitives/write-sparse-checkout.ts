@@ -2,6 +2,11 @@
  * Write the `.git/info/sparse-checkout` pattern file. The command tier
  * computes the text (via `serializeCone` or raw non-cone lines); this
  * primitive only persists it (design §7.3).
+ *
+ * @writes
+ *   surface: sparseCheckoutFile
+ *   kind:    byte-identical
+ *   format:  git-sparse-checkout
  */
 import type { Context } from '../../ports/context.js';
 import { sparseCheckoutPath } from './path-layout.js';
