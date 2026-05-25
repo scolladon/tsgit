@@ -1,5 +1,10 @@
+import * as path from 'node:path';
+import * as url from 'node:url';
+
 import { cloudflareTest } from '@cloudflare/vitest-pool-workers';
 import { defineConfig } from 'vitest/config';
+
+const here = path.dirname(url.fileURLToPath(import.meta.url));
 
 /**
  * Runtime-parity driver — Workers project.
@@ -17,10 +22,10 @@ import { defineConfig } from 'vitest/config';
 export default defineConfig({
   plugins: [
     cloudflareTest({
-      wrangler: { configPath: './wrangler.jsonc' },
+      wrangler: { configPath: path.join(here, 'wrangler.jsonc') },
     }),
   ],
   test: {
-    include: ['./parity-*.test.ts'],
+    include: [path.join(here, 'parity-*.test.ts')],
   },
 });

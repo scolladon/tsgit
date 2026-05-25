@@ -44,6 +44,10 @@ playwright-report/
 test/browser/parity-scenarios.bundle.js
 test/browser/parity-scenarios.bundle.js.map
 
+# Runtime-parity matrix caches (Phase 19.8)
+test/runtime-parity/workers/.wrangler/
+test/runtime-parity/workers/.mf/
+
 # MegaLinter
 megalinter-reports/
 

@@ -22,10 +22,14 @@
     "src/transport/index.ts"
   ],
   "project": ["src/**/*.ts"],
+  "ignore": [
+    "test/runtime-parity/**"
+  ],
   "ignoreExportsUsedInFile": true,
   "ignoreDependencies": [
     "@arethetypeswrong/cli",
     "@biomejs/biome",
+    "@cloudflare/workers-types",
     "@commitlint/cli",
     "@ls-lint/ls-lint",
     "@stryker-mutator/core",
@@ -36,7 +40,8 @@
     "lint-staged",
     "minimatch",
     "size-limit",
-    "wireit"
+    "wireit",
+    "wrangler"
   ],
   "ignoreBinaries": [
     "attw",
