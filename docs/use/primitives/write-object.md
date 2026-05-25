@@ -17,6 +17,10 @@ const id = await repo.primitives.writeObject({
 });
 ```
 
+## Interop with canonical git
+
+Equivalent under readback: the on-disk loose-object SHA matches `git hash-object -w`'s for the same content, and `git cat-file -p <sha>` reads the payload back verbatim. The compressed disk bytes themselves differ — Node's zlib default level is 6, git's is 1 — but the spec doesn't pin compression. See [`design/phase-19-7-interop-suite.md`](../../design/phase-19-7-interop-suite.md).
+
 ## See also
 
 - Tier-1: [`commit`](../commands/commit.md), [`add`](../commands/add.md)
