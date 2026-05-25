@@ -83,6 +83,7 @@ test/
 │   └── win-only/               # Real Windows filesystem semantics (8.3 short names, drive letters)
 ├── browser/                    # Playwright × Chromium/Firefox/WebKit — OPFS round-trip, SubtleCrypto, DecompressionStream, command surface (log/branch/checkout/tag), and the cross-adapter parity driver (parity.spec.ts)
 ├── parity/                     # Cross-adapter parity scenarios (Phase 19.5) — one Scenario<TResult> per file, asserted byte-identically by node.test.ts, memory.test.ts, and browser/parity.spec.ts
+├── runtime-parity/             # Cross-runtime parity drivers (Phase 19.8) — runs the same SCENARIOS registry on Deno (deno/), Bun (bun/), and Cloudflare Workers (workers/) against the dist/ artifact
 └── bench/                      # vitest bench scenarios comparing tsgit vs isomorphic-git
 ```
 
@@ -147,7 +148,29 @@ npx playwright install --with-deps chromium             # first-time setup
 npm run test:bench                                      # raw JSON in reports/benchmarks/
 npm run bench:summary                                   # markdown summary
 npm run bench:fixture -- medium                         # pre-warm the scaled-bench fixture
+
+# Runtime-parity matrix (Phase 19.8) — CI-gated; local-optional
+npm run test:parity:deno                                # requires Deno on PATH
+npm run test:parity:bun                                 # requires Bun on PATH
+npm run test:parity:workers                             # uses @cloudflare/vitest-pool-workers (devDep)
 ```
+
+The runtime-parity matrix (Deno + Bun + Cloudflare Workers) runs as
+three blocking jobs in CI on every code-touching PR (ADR-144). It does
+**not** join `npm run validate` (ADR-147): contributors who only edit
+docs or stay within the Node/Browser/Memory adapters never need to
+install Deno or Bun. If you want to validate locally before pushing —
+e.g. you touched `src/index.default.ts` or the Memory adapter — install:
+
+```bash
+curl -fsSL https://deno.land/install.sh | sh        # ~/.deno/bin/deno
+curl -fsSL https://bun.sh/install | bash            # ~/.bun/bin/bun
+# wrangler ships as a devDependency; nothing extra to install for Workers.
+```
+
+Then run any of the three `test:parity:*` recipes above. The Workers
+recipe also serves as the wireit-cached gate for the `parity-workers`
+CI job, so a local green is a strong signal for CI.
 
 Bench scenarios are declared with the `benchScenario` wrapper
 (`test/bench/support/bench-dsl.ts`) so they read with the same

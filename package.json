@@ -180,6 +180,9 @@
     "test:posix-integration": "wireit",
     "test:win-integration": "wireit",
     "test:parity": "wireit",
+    "test:parity:deno": "wireit",
+    "test:parity:bun": "wireit",
+    "test:parity:workers": "wireit",
     "test:e2e": "wireit",
     "test:coverage": "wireit",
     "test:mutation": "wireit",
@@ -361,6 +364,45 @@
         "src/**/*.ts",
         "test/parity/**/*.ts",
         "vitest.config.ts"
+      ],
+      "output": []
+    },
+    "test:parity:deno": {
+      "command": "deno test --no-check --allow-read --allow-write --allow-env --no-prompt --config test/runtime-parity/deno/deno.json test/runtime-parity/deno/",
+      "dependencies": [
+        "build"
+      ],
+      "files": [
+        "dist/esm/**/*.js",
+        "test/runtime-parity/deno/**",
+        "test/parity/scenarios/**/*.ts",
+        "test/parity/fixtures.ts"
+      ],
+      "output": []
+    },
+    "test:parity:bun": {
+      "command": "bun test test/runtime-parity/bun/",
+      "dependencies": [
+        "build"
+      ],
+      "files": [
+        "dist/esm/**/*.js",
+        "test/runtime-parity/bun/**",
+        "test/parity/scenarios/**/*.ts",
+        "test/parity/fixtures.ts"
+      ],
+      "output": []
+    },
+    "test:parity:workers": {
+      "command": "vitest run --config test/runtime-parity/workers/vitest.config.ts",
+      "dependencies": [
+        "build"
+      ],
+      "files": [
+        "dist/esm/**/*.js",
+        "test/runtime-parity/workers/**",
+        "test/parity/scenarios/**/*.ts",
+        "test/parity/fixtures.ts"
       ],
       "output": []
     },
@@ -682,6 +724,8 @@
   "devDependencies": {
     "@arethetypeswrong/cli": "0.18.2",
     "@biomejs/biome": "2.4.15",
+    "@cloudflare/vitest-pool-workers": "0.16.9",
+    "@cloudflare/workers-types": "4.20260525.1",
     "@commitlint/cli": "21.0.1",
     "@commitlint/config-conventional": "21.0.1",
     "@ls-lint/ls-lint": "2.3.1",
@@ -711,6 +755,7 @@
     "typedoc": "0.28.19",
     "typescript": "6.0.3",
     "vitest": "4.1.7",
-    "wireit": "0.14.12"
+    "wireit": "0.14.12",
+    "wrangler": "4.94.0"
   }
 }

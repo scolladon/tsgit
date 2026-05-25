@@ -22,5 +22,6 @@
     "sourceMap": true,
     "outDir": "./dist"
   },
-  "include": ["src/**/*.ts", "test/**/*.ts", "tooling/**/*.ts"]
+  "include": ["src/**/*.ts", "test/**/*.ts", "tooling/**/*.ts"],
+  "exclude": ["test/runtime-parity/**"]
 }
