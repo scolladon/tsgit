@@ -52,28 +52,57 @@ describe('matcher-stack properties', () => {
     });
   });
 
-  describe('Given a stack whose single level is anchored at a non-empty basedir B', () => {
+  describe('Given a stack whose single level is anchored at a multi-segment basedir B', () => {
     describe('When matchInStack is called with a path B/<suffix>', () => {
       it('Then the verdict equals matches(rules, <suffix>, isDir) (relativization invariant)', () => {
-        // Arrange + Act + Assert
-        const arbBasedir = arbLiteralPattern();
+        // Arrange + Act + Assert — `arbCandidatePath` yields multi-segment
+        // basedirs (e.g. `src/foo`) so the `startsWith(prefix)` check inside
+        // `relativize` is exercised with realistic nesting depth.
         fc.assert(
           fc.property(
-            arbBasedir,
+            arbCandidatePath(),
             arbRuleLines,
             arbCandidatePath(),
             fc.boolean(),
             (basedir, rawRules, suffix, isDir) => {
               const rules = parseGitignore(rawRules.join('\n'));
               const fullPath = FilePath.from(`${basedir}/${suffix}`);
-              const stack: ReadonlyArray<IgnoreLevel> = [
-                { basedir: FilePath.from(basedir), rules },
-              ];
+              const stack: ReadonlyArray<IgnoreLevel> = [{ basedir, rules }];
 
               const sut = matchInStack(stack, fullPath, isDir);
               const expected = matches(rules, suffix, isDir);
 
               expect(sut).toBe(expected);
+            },
+          ),
+          { numRuns: 100 },
+        );
+      });
+    });
+  });
+
+  describe('Given a stack whose single level is anchored at basedir B and a path NOT under B', () => {
+    describe('When matchInStack is called', () => {
+      it('Then the verdict is "unset" (relativize skips out-of-scope paths)', () => {
+        // Arrange + Act + Assert — the `relative === undefined` branch in
+        // `relativize` is only reachable when the path does not start with
+        // `basedir + '/'`. This property covers that branch.
+        fc.assert(
+          fc.property(
+            arbLiteralPattern(),
+            arbLiteralPattern(),
+            arbRuleLines,
+            fc.boolean(),
+            (basedirHead, otherHead, rawRules, isDir) => {
+              fc.pre(basedirHead !== otherHead);
+              const rules = parseGitignore(rawRules.join('\n'));
+              const basedir = FilePath.from(basedirHead);
+              const outOfScope = FilePath.from(`${otherHead}/leaf`);
+              const stack: ReadonlyArray<IgnoreLevel> = [{ basedir, rules }];
+
+              const sut = matchInStack(stack, outOfScope, isDir);
+
+              expect(sut).toBe('unset');
             },
           ),
           { numRuns: 100 },

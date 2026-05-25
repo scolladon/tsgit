@@ -63,6 +63,25 @@ describe('parse-gitignore properties', () => {
     });
   });
 
+  describe('Given an arbitrary list of pattern lines', () => {
+    describe('When parsed', () => {
+      it('Then the count of directory-only rules equals the count of input lines ending with `/`', () => {
+        // Arrange + Act + Assert
+        const arbPatternLines = fc.array(arbGitignorePattern(), { minLength: 0, maxLength: 8 });
+        fc.assert(
+          fc.property(arbPatternLines, (patterns) => {
+            const text = patterns.join('\n');
+            const sut = parseGitignore(text);
+            const directoryRules = sut.filter((r) => r.directoryOnly).length;
+            const directoryInputs = patterns.filter((p) => p.endsWith('/')).length;
+            expect(directoryRules).toBe(directoryInputs);
+          }),
+          { numRuns: 100 },
+        );
+      });
+    });
+  });
+
   describe('Given arbitrary text composed only of `#`-prefixed comment lines', () => {
     describe('When parsed', () => {
       it('Then it yields zero rules', () => {
