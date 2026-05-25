@@ -1,0 +1,14 @@
+{
+  "compilerOptions": {
+    "allowImportingTsExtensions": true,
+    "strict": true,
+    "lib": ["ES2023", "DOM"]
+  },
+  "unstable": ["sloppy-imports"],
+  "lint": {
+    "exclude": ["**"]
+  },
+  "fmt": {
+    "exclude": ["**"]
+  }
+}
