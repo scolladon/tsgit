@@ -392,6 +392,13 @@ jobs:
   # memory-only since workerd has no filesystem (ADR-143).
   # ──────────────────────────────────────────────
 
+  # The Deno + Bun jobs deliberately skip `npm install`. The drivers only
+  # resolve relative paths (`dist/esm/**`, `test/parity/scenarios/**`,
+  # `src/domain/objects/index.ts`) — no npm specifiers — so a checkout +
+  # the dist artifact is the entire bill of materials. If a future scenario
+  # gains a package-specifier import, the jobs would fail loudly; the gate
+  # is therefore self-correcting rather than silently fragile.
+
   parity-deno:
     needs: [changes, build]
     if: needs.changes.outputs.code == 'true'
