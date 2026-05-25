@@ -10,11 +10,16 @@
  *   unique:         .git/config readable by git config --list with matching keys
  *   interopSurface: config
  */
-import { execFileSync } from 'node:child_process';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
 import { updateConfigEntries } from '../../src/application/primitives/update-config.js';
-import { GIT_AVAILABLE, initBothRepos, makePeerPair, type PeerPair } from './interop-helpers.js';
+import {
+  GIT_AVAILABLE,
+  initBothRepos,
+  makePeerPair,
+  type PeerPair,
+  runGit,
+} from './interop-helpers.js';
 
 const parseGitConfigList = (raw: string): ReadonlyMap<string, ReadonlyArray<string>> => {
   // `git config --list -z` emits NUL-terminated entries, each newline-
@@ -61,14 +66,7 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
         // Assert — readback agrees on every key
         // `--local` scopes readback to .git/config; otherwise the user's
         // global config bleeds into the result on developer machines.
-        const raw = execFileSync('git', [
-          '-C',
-          pair.ours,
-          'config',
-          '--local',
-          '--list',
-          '-z',
-        ]).toString();
+        const raw = runGit(['-C', pair.ours, 'config', '--local', '--list', '-z']);
         const parsed = parseGitConfigList(raw);
         expect(parsed.get('user.name')).toEqual(['Ada']);
         expect(parsed.get('user.email')).toEqual(['ada@example.com']);

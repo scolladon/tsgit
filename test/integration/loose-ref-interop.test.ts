@@ -10,7 +10,6 @@
  *   unique:         loose ref file byte-identical to git update-ref output
  *   interopSurface: looseRef
  */
-import { execFileSync } from 'node:child_process';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -18,17 +17,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
 import { updateRef } from '../../src/application/primitives/update-ref.js';
 import type { ObjectId, RefName } from '../../src/domain/objects/index.js';
-
-const hasGit = (): boolean => {
-  try {
-    execFileSync('git', ['--version']);
-    return true;
-  } catch {
-    return false;
-  }
-};
-
-const GIT_AVAILABLE = hasGit();
+import { GIT_AVAILABLE, runGit } from './interop-helpers.js';
 
 describe.skipIf(!GIT_AVAILABLE)('loose-ref interop', () => {
   let peer: string;
@@ -48,15 +37,15 @@ describe.skipIf(!GIT_AVAILABLE)('loose-ref interop', () => {
     describe('When tsgit writes refs/heads/<name> and canonical git does the same', () => {
       it('Then the two ref files are byte-identical', async () => {
         // Arrange — peer canonical-git repo with one commit
-        execFileSync('git', ['init', '-q', '-b', 'main', peer]);
-        execFileSync('git', ['-C', peer, 'config', 'user.name', 'Ada']);
-        execFileSync('git', ['-C', peer, 'config', 'user.email', 'ada@example.com']);
-        execFileSync('git', ['-C', peer, 'commit', '-q', '--allow-empty', '-m', 'seed']);
-        const sha = execFileSync('git', ['-C', peer, 'rev-parse', 'HEAD']).toString().trim();
-        execFileSync('git', ['-C', peer, 'update-ref', 'refs/heads/test-ref', sha]);
+        runGit(['init', '-q', '-b', 'main', peer]);
+        runGit(['-C', peer, 'config', 'user.name', 'Ada']);
+        runGit(['-C', peer, 'config', 'user.email', 'ada@example.com']);
+        runGit(['-C', peer, 'commit', '-q', '--allow-empty', '-m', 'seed']);
+        const sha = runGit(['-C', peer, 'rev-parse', 'HEAD']).trim();
+        runGit(['-C', peer, 'update-ref', 'refs/heads/test-ref', sha]);
         // tsgit side: init the directory layout via canonical git, then write
         // the ref via tsgit's primitive.
-        execFileSync('git', ['init', '-q', '-b', 'main', ours]);
+        runGit(['init', '-q', '-b', 'main', ours]);
         const sut = createNodeContext({ workDir: ours });
 
         // Act

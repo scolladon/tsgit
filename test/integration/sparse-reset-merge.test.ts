@@ -11,7 +11,6 @@
  *   bucket:  multi-adapter-parity
  *   unique:  reset and merge keep skip-worktree truthful and status clean under sparse cones
  */
-import { execFileSync } from 'node:child_process';
 import { mkdtemp, rm } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -30,6 +29,7 @@ import { __resetConfigCacheForTests } from '../../src/application/primitives/con
 import { readIndex } from '../../src/application/primitives/read-index.js';
 import type { AuthorIdentity } from '../../src/domain/objects/index.js';
 import { openRepository } from '../../src/index.node.js';
+import { runGit } from './interop-helpers.js';
 
 const author: AuthorIdentity = {
   name: 'Ada',
@@ -132,7 +132,7 @@ describe('integration — sparse reset/merge (memory adapter)', () => {
 
 const findGit = (): string | undefined => {
   try {
-    execFileSync('git', ['--version']);
+    runGit(['--version']);
     return 'git';
   } catch {
     return undefined;
@@ -171,9 +171,9 @@ describe.skipIf(GIT === undefined)('integration — sparse reset interop with ca
 
       // Assert — canonical git still sees the skip-worktree (`S`) bit and
       // reports a clean tree (no phantom deletion of `out/gone.ts`).
-      const lsFiles = execFileSync('git', ['-C', tmpdir, 'ls-files', '-t']).toString();
+      const lsFiles = runGit(['-C', tmpdir, 'ls-files', '-t']);
       expect(lsFiles).toContain('S out/gone.ts');
-      const gitStatus = execFileSync('git', ['-C', tmpdir, 'status', '--porcelain']).toString();
+      const gitStatus = runGit(['-C', tmpdir, 'status', '--porcelain']);
       expect(gitStatus.trim()).toBe('');
     } finally {
       await repo.dispose();

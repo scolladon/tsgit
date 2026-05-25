@@ -12,19 +12,18 @@
  *   bucket:  real-http
  *   unique:  fetch updates refs/remotes/origin/* from canonical git-http-backend
  */
-import { execFileSync, spawn } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { accessSync } from 'node:fs';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import * as http from 'node:http';
 import * as os from 'node:os';
 import * as path from 'node:path';
-
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-
 import { __resetConfigCacheForTests } from '../../../src/application/primitives/config-read.js';
 import { walkCommits } from '../../../src/application/primitives/index.js';
 import type { ObjectId, RefName } from '../../../src/domain/objects/index.js';
 import { openRepository } from '../../../src/index.node.js';
+import { runGit, runGitEnv } from '../interop-helpers.js';
 
 const FIXTURE_DIR = path.resolve(import.meta.dirname, '../../fixtures/clone-source');
 const SOURCE_GIT = path.join(FIXTURE_DIR, 'source.git');
@@ -33,7 +32,7 @@ const HEAD_HISTORY_FILE = path.join(FIXTURE_DIR, 'HEAD-history.txt');
 
 const findGitExecPath = (): string | undefined => {
   try {
-    return execFileSync('git', ['--exec-path']).toString().trim();
+    return runGit(['--exec-path']).trim();
   } catch {
     return undefined;
   }
@@ -75,7 +74,7 @@ const handleRequest = (
   }
   const [pathInfo, queryString = ''] = req.url.split('?', 2);
   const env: NodeJS.ProcessEnv = {
-    ...process.env,
+    ...runGitEnv(),
     PATH_INFO: pathInfo ?? '/',
     QUERY_STRING: queryString,
     REQUEST_METHOD: req.method,

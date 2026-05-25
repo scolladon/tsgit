@@ -11,7 +11,6 @@
  *   unique:         .git/shallow byte-identical to git --depth N clone output
  *   interopSurface: shallowFile
  */
-import { execFileSync } from 'node:child_process';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -19,7 +18,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
 import { readShallow, updateShallow } from '../../src/application/primitives/shallow-file.js';
 import type { ObjectId } from '../../src/domain/objects/index.js';
-import { GIT_AVAILABLE } from './interop-helpers.js';
+import { GIT_AVAILABLE, runGit, runGitEnv } from './interop-helpers.js';
 
 describe.skipIf(!GIT_AVAILABLE)('shallow-file interop', () => {
   let bare: string;
@@ -45,7 +44,7 @@ describe.skipIf(!GIT_AVAILABLE)('shallow-file interop', () => {
         const source = await mkdtemp(path.join(os.tmpdir(), 'tsgit-interop-shallow-source-'));
         try {
           const env = {
-            ...process.env,
+            ...runGitEnv(),
             GIT_AUTHOR_NAME: 'Ada',
             GIT_AUTHOR_EMAIL: 'ada@example.com',
             GIT_AUTHOR_DATE: '1700000000 +0000',
@@ -53,20 +52,18 @@ describe.skipIf(!GIT_AVAILABLE)('shallow-file interop', () => {
             GIT_COMMITTER_EMAIL: 'ada@example.com',
             GIT_COMMITTER_DATE: '1700000000 +0000',
           };
-          execFileSync('git', ['init', '-q', '-b', 'main', '--bare', bare]);
-          execFileSync('git', ['init', '-q', '-b', 'main', source]);
+          runGit(['init', '-q', '-b', 'main', '--bare', bare]);
+          runGit(['init', '-q', '-b', 'main', source]);
           for (let i = 0; i < 5; i += 1) {
             await writeFile(path.join(source, `f${i}.txt`), `${i}\n`);
-            execFileSync('git', ['-C', source, 'add', '.']);
-            execFileSync('git', ['-C', source, 'commit', '-q', '-m', `c${i}`], { env });
+            runGit(['-C', source, 'add', '.']);
+            runGit(['-C', source, 'commit', '-q', '-m', `c${i}`], { env });
           }
-          execFileSync('git', ['-C', source, 'remote', 'add', 'origin', bare]);
-          execFileSync('git', ['-C', source, 'push', '-q', 'origin', 'main']);
-          // Shallow-clone into peer (depth 2 should leave two cut-points)
-          execFileSync('git', ['clone', '-q', '--depth', '2', `file://${bare}`, peer]);
+          runGit(['-C', source, 'remote', 'add', 'origin', bare]);
+          runGit(['-C', source, 'push', '-q', 'origin', 'main']);
+          runGit(['clone', '-q', '--depth', '2', `file://${bare}`, peer]);
           const peerBytes = await readFile(path.join(peer, '.git/shallow'));
-          // Build an ours repo with the same SHAs in .git/shallow via tsgit
-          execFileSync('git', ['init', '-q', '-b', 'main', ours]);
+          runGit(['init', '-q', '-b', 'main', ours]);
           const peerShas = peerBytes
             .toString()
             .split('\n')

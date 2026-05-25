@@ -11,13 +11,18 @@
  *   unique:         git ls-files --stage on tsgit-written index matches canonical
  *   interopSurface: index
  */
-import { execFileSync } from 'node:child_process';
 import { writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
 import { add } from '../../src/application/commands/add.js';
-import { GIT_AVAILABLE, initBothRepos, makePeerPair, type PeerPair } from './interop-helpers.js';
+import {
+  GIT_AVAILABLE,
+  initBothRepos,
+  makePeerPair,
+  type PeerPair,
+  runGit,
+} from './interop-helpers.js';
 
 describe.skipIf(!GIT_AVAILABLE)('index interop', () => {
   let pair: PeerPair;
@@ -40,7 +45,7 @@ describe.skipIf(!GIT_AVAILABLE)('index interop', () => {
           await writeFile(path.join(dir, 'b.txt'), 'b\n');
         }
         // Peer: canonical git stages them
-        execFileSync('git', ['-C', pair.peer, 'add', 'a.txt', 'b.txt']);
+        runGit(['-C', pair.peer, 'add', 'a.txt', 'b.txt']);
         const sut = createNodeContext({ workDir: pair.ours });
 
         // Act — tsgit stages the same files
@@ -48,18 +53,8 @@ describe.skipIf(!GIT_AVAILABLE)('index interop', () => {
 
         // Assert — git ls-files --stage from each side returns identical
         // (mode sha stage\tpath) triples.
-        const peerListing = execFileSync('git', [
-          '-C',
-          pair.peer,
-          'ls-files',
-          '--stage',
-        ]).toString();
-        const oursListing = execFileSync('git', [
-          '-C',
-          pair.ours,
-          'ls-files',
-          '--stage',
-        ]).toString();
+        const peerListing = runGit(['-C', pair.peer, 'ls-files', '--stage']);
+        const oursListing = runGit(['-C', pair.ours, 'ls-files', '--stage']);
         expect(oursListing).toBe(peerListing);
       });
     });

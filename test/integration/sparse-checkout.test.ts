@@ -14,7 +14,6 @@
  *   bucket:  multi-adapter-parity
  *   unique:  cone + non-cone lifecycles, skip-worktree flags, status truthfulness end to end
  */
-import { execFileSync } from 'node:child_process';
 import { mkdtemp, rm } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -35,6 +34,7 @@ import type { AuthorIdentity, ObjectId } from '../../src/domain/objects/index.js
 import { isDirectory } from '../../src/domain/objects/index.js';
 import { openRepository } from '../../src/index.node.js';
 import type { Context } from '../../src/ports/context.js';
+import { runGit } from './interop-helpers.js';
 
 const author: AuthorIdentity = {
   name: 'Ada',
@@ -328,7 +328,7 @@ describe('integration — sparse checkout (memory adapter)', () => {
 
 const findGit = (): string | undefined => {
   try {
-    execFileSync('git', ['--version']);
+    runGit(['--version']);
     return 'git';
   } catch {
     return undefined;
@@ -365,7 +365,7 @@ describe.skipIf(GIT === undefined)(
 
         // Act — narrow the cone so `out/gone.ts` becomes skip-worktree.
         await repo.sparseCheckout({ action: 'set', patterns: ['kept.ts'], cone: true });
-        const lsFiles = execFileSync('git', ['-C', tmpdir, 'ls-files', '-t']).toString();
+        const lsFiles = runGit(['-C', tmpdir, 'ls-files', '-t']);
 
         // Assert — canonical git surfaces the skip-worktree bit as the `S` tag.
         expect(lsFiles).toContain('S out/gone.ts');
@@ -390,9 +390,9 @@ describe.skipIf(GIT === undefined)(
         await repo.sparseCheckout({ action: 'set', patterns: ['src'], cone: true });
 
         // Act — canonical git reads the `.git/info/sparse-checkout` tsgit wrote.
-        const list = execFileSync('git', ['-C', tmpdir, 'sparse-checkout', 'list']).toString();
+        const list = runGit(['-C', tmpdir, 'sparse-checkout', 'list']);
         // `reapply` exercises git's own cone parser against the tsgit-written file.
-        execFileSync('git', ['-C', tmpdir, 'sparse-checkout', 'reapply']);
+        runGit(['-C', tmpdir, 'sparse-checkout', 'reapply']);
 
         // Assert — git's `list` recognises the cone directory tsgit serialised.
         expect(list.trim().split('\n')).toContain('src');

@@ -11,12 +11,17 @@
  *   unique:         loose object readable by git cat-file with matching SHA + content
  *   interopSurface: looseObject
  */
-import { execFileSync } from 'node:child_process';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
 import { writeObject } from '../../src/application/primitives/write-object.js';
 import type { ObjectId } from '../../src/domain/objects/index.js';
-import { GIT_AVAILABLE, initBothRepos, makePeerPair, type PeerPair } from './interop-helpers.js';
+import {
+  GIT_AVAILABLE,
+  initBothRepos,
+  makePeerPair,
+  type PeerPair,
+  runGit,
+} from './interop-helpers.js';
 
 describe.skipIf(!GIT_AVAILABLE)('loose-object interop', () => {
   let pair: PeerPair;
@@ -35,13 +40,9 @@ describe.skipIf(!GIT_AVAILABLE)('loose-object interop', () => {
       it('Then the SHAs match and git cat-file reads the payload back', async () => {
         // Arrange
         const payload = 'hello, interop\n';
-        const peerSha = execFileSync(
-          'git',
-          ['-C', pair.peer, 'hash-object', '-w', '--stdin', '-t', 'blob'],
-          { input: payload },
-        )
-          .toString()
-          .trim();
+        const peerSha = runGit(['-C', pair.peer, 'hash-object', '-w', '--stdin', '-t', 'blob'], {
+          input: payload,
+        }).trim();
         const sut = createNodeContext({ workDir: pair.ours });
 
         // Act
@@ -54,13 +55,7 @@ describe.skipIf(!GIT_AVAILABLE)('loose-object interop', () => {
         // Assert — SHAs match (decompressed payload is byte-identical) and
         // canonical git reads our blob and gets the same payload back.
         expect(oursSha).toBe(peerSha);
-        const readBack = execFileSync('git', [
-          '-C',
-          pair.ours,
-          'cat-file',
-          '-p',
-          oursSha,
-        ]).toString();
+        const readBack = runGit(['-C', pair.ours, 'cat-file', '-p', oursSha]);
         expect(readBack).toBe(payload);
       });
     });

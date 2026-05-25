@@ -10,7 +10,6 @@
  *   unique:         commit object SHA + cat-file readback match canonical git
  *   interopSurface: commit
  */
-import { execFileSync } from 'node:child_process';
 import { writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -19,7 +18,14 @@ import { createCommit } from '../../src/application/primitives/create-commit.js'
 import { writeObject } from '../../src/application/primitives/write-object.js';
 import { writeTree } from '../../src/application/primitives/write-tree.js';
 import { type AuthorIdentity, FILE_MODE, type ObjectId } from '../../src/domain/objects/index.js';
-import { GIT_AVAILABLE, initBothRepos, makePeerPair, type PeerPair } from './interop-helpers.js';
+import {
+  GIT_AVAILABLE,
+  initBothRepos,
+  makePeerPair,
+  type PeerPair,
+  runGit,
+  runGitEnv,
+} from './interop-helpers.js';
 
 const AUTHOR: AuthorIdentity = {
   name: 'Ada',
@@ -45,25 +51,19 @@ describe.skipIf(!GIT_AVAILABLE)('commit interop', () => {
       it('Then the commit SHAs match', async () => {
         // Arrange — produce the tree on both sides
         await writeFile(path.join(pair.peer, 'a.txt'), 'hello\n');
-        execFileSync('git', ['-C', pair.peer, 'add', 'a.txt']);
-        const peerTreeSha = execFileSync('git', ['-C', pair.peer, 'write-tree']).toString().trim();
-        const peerCommitSha = execFileSync(
-          'git',
-          ['-C', pair.peer, 'commit-tree', peerTreeSha, '-m', 'first'],
-          {
-            env: {
-              ...process.env,
-              GIT_AUTHOR_NAME: AUTHOR.name,
-              GIT_AUTHOR_EMAIL: AUTHOR.email,
-              GIT_AUTHOR_DATE: `${AUTHOR.timestamp} ${AUTHOR.timezoneOffset}`,
-              GIT_COMMITTER_NAME: AUTHOR.name,
-              GIT_COMMITTER_EMAIL: AUTHOR.email,
-              GIT_COMMITTER_DATE: `${AUTHOR.timestamp} ${AUTHOR.timezoneOffset}`,
-            },
+        runGit(['-C', pair.peer, 'add', 'a.txt']);
+        const peerTreeSha = runGit(['-C', pair.peer, 'write-tree']).trim();
+        const peerCommitSha = runGit(['-C', pair.peer, 'commit-tree', peerTreeSha, '-m', 'first'], {
+          env: {
+            ...runGitEnv(),
+            GIT_AUTHOR_NAME: AUTHOR.name,
+            GIT_AUTHOR_EMAIL: AUTHOR.email,
+            GIT_AUTHOR_DATE: `${AUTHOR.timestamp} ${AUTHOR.timezoneOffset}`,
+            GIT_COMMITTER_NAME: AUTHOR.name,
+            GIT_COMMITTER_EMAIL: AUTHOR.email,
+            GIT_COMMITTER_DATE: `${AUTHOR.timestamp} ${AUTHOR.timezoneOffset}`,
           },
-        )
-          .toString()
-          .trim();
+        }).trim();
         const sut = createNodeContext({ workDir: pair.ours });
         const blob = await writeObject(sut, {
           type: 'blob',
@@ -83,20 +83,8 @@ describe.skipIf(!GIT_AVAILABLE)('commit interop', () => {
 
         // Assert
         expect(oursCommitSha).toBe(peerCommitSha);
-        const oursOut = execFileSync('git', [
-          '-C',
-          pair.ours,
-          'cat-file',
-          '-p',
-          oursCommitSha,
-        ]).toString();
-        const peerOut = execFileSync('git', [
-          '-C',
-          pair.peer,
-          'cat-file',
-          '-p',
-          peerCommitSha,
-        ]).toString();
+        const oursOut = runGit(['-C', pair.ours, 'cat-file', '-p', oursCommitSha]);
+        const peerOut = runGit(['-C', pair.peer, 'cat-file', '-p', peerCommitSha]);
         expect(oursOut).toBe(peerOut);
       });
     });

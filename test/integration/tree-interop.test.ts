@@ -10,7 +10,6 @@
  *   unique:         tree object SHA + ls-tree readback match canonical git
  *   interopSurface: tree
  */
-import { execFileSync } from 'node:child_process';
 import { writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -18,7 +17,13 @@ import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
 import { writeObject } from '../../src/application/primitives/write-object.js';
 import { writeTree } from '../../src/application/primitives/write-tree.js';
 import { FILE_MODE, type ObjectId } from '../../src/domain/objects/index.js';
-import { GIT_AVAILABLE, initBothRepos, makePeerPair, type PeerPair } from './interop-helpers.js';
+import {
+  GIT_AVAILABLE,
+  initBothRepos,
+  makePeerPair,
+  type PeerPair,
+  runGit,
+} from './interop-helpers.js';
 
 describe.skipIf(!GIT_AVAILABLE)('tree interop', () => {
   let pair: PeerPair;
@@ -38,8 +43,8 @@ describe.skipIf(!GIT_AVAILABLE)('tree interop', () => {
         // Arrange — write two blobs to disk on the peer side and stage them
         await writeFile(path.join(pair.peer, 'a.txt'), 'A\n');
         await writeFile(path.join(pair.peer, 'b.txt'), 'B\n');
-        execFileSync('git', ['-C', pair.peer, 'add', 'a.txt', 'b.txt']);
-        const peerTreeSha = execFileSync('git', ['-C', pair.peer, 'write-tree']).toString().trim();
+        runGit(['-C', pair.peer, 'add', 'a.txt', 'b.txt']);
+        const peerTreeSha = runGit(['-C', pair.peer, 'write-tree']).trim();
         const sut = createNodeContext({ workDir: pair.ours });
 
         // Act — write the two blobs to ours, then build the tree
@@ -61,8 +66,8 @@ describe.skipIf(!GIT_AVAILABLE)('tree interop', () => {
         // Assert — SHA matches, and `git ls-tree` on our object returns the
         // same entries the peer's tree contains.
         expect(oursTreeSha).toBe(peerTreeSha);
-        const ours = execFileSync('git', ['-C', pair.ours, 'ls-tree', oursTreeSha]).toString();
-        const peer = execFileSync('git', ['-C', pair.peer, 'ls-tree', peerTreeSha]).toString();
+        const ours = runGit(['-C', pair.ours, 'ls-tree', oursTreeSha]);
+        const peer = runGit(['-C', pair.peer, 'ls-tree', peerTreeSha]);
         expect(ours).toBe(peer);
       });
     });

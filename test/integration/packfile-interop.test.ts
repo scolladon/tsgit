@@ -13,7 +13,6 @@
  *   unique:         pack + idx accepted by git fsck and readable via cat-file
  *   interopSurface: packfile
  */
-import { execFileSync } from 'node:child_process';
 import { writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -28,7 +27,13 @@ import {
   serializePackfile,
   serializePackIndex,
 } from '../../src/domain/storage/pack-writer.js';
-import { GIT_AVAILABLE, initBothRepos, makePeerPair, type PeerPair } from './interop-helpers.js';
+import {
+  GIT_AVAILABLE,
+  initBothRepos,
+  makePeerPair,
+  type PeerPair,
+  runGit,
+} from './interop-helpers.js';
 
 describe.skipIf(!GIT_AVAILABLE)('packfile + pack-index interop', () => {
   let pair: PeerPair;
@@ -99,16 +104,16 @@ describe.skipIf(!GIT_AVAILABLE)('packfile + pack-index interop', () => {
         idxBytes.set(idxTrailerBytes, idxBody.length);
 
         // Drop both into peer and validate.
-        execFileSync('git', ['-C', pair.peer, 'config', 'gc.auto', '0']);
+        runGit(['-C', pair.peer, 'config', 'gc.auto', '0']);
         const packDir = path.join(pair.peer, '.git/objects/pack');
         await writeFile(path.join(packDir, `pack-${packSha}.pack`), packBytes);
         await writeFile(path.join(packDir, `pack-${packSha}.idx`), idxBytes);
 
         // Assert
-        execFileSync('git', ['-C', pair.peer, 'fsck', '--strict']);
+        runGit(['-C', pair.peer, 'fsck', '--strict']);
         for (let i = 0; i < ids.length; i += 1) {
-          const out = execFileSync('git', ['-C', pair.peer, 'cat-file', '-p', ids[i] as string]);
-          expect(out.toString()).toBe(payloads[i]);
+          const out = runGit(['-C', pair.peer, 'cat-file', '-p', ids[i] as string]);
+          expect(out).toBe(payloads[i]);
         }
         // crc32 is exercised implicitly via fsck; keep an explicit reference
         // so the imports survive code-cleanup passes.
