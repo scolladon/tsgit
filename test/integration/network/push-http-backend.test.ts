@@ -15,15 +15,13 @@
  *   bucket:  real-http
  *   unique:  push advances refs/heads/main on canonical bare repo via receive-pack
  */
-import { execFileSync, spawn } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { accessSync, cpSync } from 'node:fs';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import * as http from 'node:http';
 import * as os from 'node:os';
 import * as path from 'node:path';
-
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-
 import { __resetConfigCacheForTests } from '../../../src/application/primitives/config-read.js';
 import {
   resolveRef,
@@ -39,6 +37,7 @@ import type {
   RefName,
 } from '../../../src/domain/objects/index.js';
 import { openRepository } from '../../../src/index.node.js';
+import { runGit, runGitEnv } from '../interop-helpers.js';
 
 const FIXTURE_DIR = path.resolve(import.meta.dirname, '../../fixtures/clone-source');
 const SOURCE_GIT = path.join(FIXTURE_DIR, 'source.git');
@@ -46,7 +45,7 @@ const HEAD_OID_FILE = path.join(FIXTURE_DIR, 'HEAD-oid.txt');
 
 const findGitExecPath = (): string | undefined => {
   try {
-    return execFileSync('git', ['--exec-path']).toString().trim();
+    return runGit(['--exec-path']).toString().trim();
   } catch {
     return undefined;
   }
@@ -87,7 +86,7 @@ const handleRequest = (
   }
   const [pathInfo, queryString = ''] = req.url.split('?', 2);
   const env: NodeJS.ProcessEnv = {
-    ...process.env,
+    ...runGitEnv(),
     PATH_INFO: pathInfo ?? '/',
     QUERY_STRING: queryString,
     REQUEST_METHOD: req.method,
@@ -177,16 +176,10 @@ describe.skipIf(SKIP_REASON !== false)('push — end-to-end against git-http-bac
     cpSync(SOURCE_GIT, bareRepoPath, { recursive: true });
     // Enable receive-pack over HTTP and allow non-fast-forward + delete
     // operations for the test (the bare side defaults reject them).
-    execFileSync('git', ['-C', bareRepoPath, 'config', 'http.receivepack', 'true']);
-    execFileSync('git', [
-      '-C',
-      bareRepoPath,
-      'config',
-      'receive.denyCurrentBranch',
-      'updateInstead',
-    ]);
-    execFileSync('git', ['-C', bareRepoPath, 'config', 'receive.denyNonFastforwards', 'false']);
-    execFileSync('git', ['-C', bareRepoPath, 'config', 'receive.denyDeletes', 'false']);
+    runGit(['-C', bareRepoPath, 'config', 'http.receivepack', 'true']);
+    runGit(['-C', bareRepoPath, 'config', 'receive.denyCurrentBranch', 'updateInstead']);
+    runGit(['-C', bareRepoPath, 'config', 'receive.denyNonFastforwards', 'false']);
+    runGit(['-C', bareRepoPath, 'config', 'receive.denyDeletes', 'false']);
 
     server = http.createServer((req, res) => {
       handleRequest(GIT_HTTP_BACKEND as string, serverProjectRoot, req, res);
@@ -295,9 +288,7 @@ describe.skipIf(SKIP_REASON !== false)('push — end-to-end against git-http-bac
     });
 
     // Assert — the bare repo's main advanced.
-    const bareTip = execFileSync('git', ['-C', bareRepoPath, 'rev-parse', 'main'])
-      .toString()
-      .trim();
+    const bareTip = runGit(['-C', bareRepoPath, 'rev-parse', 'main']).trim();
     expect(bareTip).toBe(newHead);
 
     // Assert — bare repo can walk the new commit + the original history.

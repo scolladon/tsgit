@@ -1,3 +1,15 @@
+/**
+ * Packfile + pack-index writers. `serializePackfile` emits the v2 pack
+ * body (header + entries) and `serializePackIndex` emits the matching
+ * v2 idx (fanout + sha table + crc32 + offsets + trailer). The packfile
+ * bytes are not bit-exact across writers (deflate level + delta selection
+ * are implementation-defined); fsck acceptance + readback is the contract.
+ *
+ * @writes
+ *   surface: packfile
+ *   kind:    equivalent-under-readback
+ *   format:  git-packfile-v2
+ */
 import { compareBytes, hexToBytes } from '../objects/encoding.js';
 import { crc32 } from './crc32.js';
 import { invalidPackIndex } from './error.js';

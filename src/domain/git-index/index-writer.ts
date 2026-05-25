@@ -1,3 +1,15 @@
+/**
+ * Index writer. Emits the DIRC binary format (v2 + v3) consumed by
+ * canonical git's `git ls-files`, `git diff --cached`, and so on. Bytes
+ * include per-host stat-cache fields (mtime/ctime/dev/ino), so the
+ * contract is equivalence-under-readback rather than byte-identical
+ * across writers.
+ *
+ * @writes
+ *   surface: index
+ *   kind:    equivalent-under-readback
+ *   format:  git-index-dirc
+ */
 import { encode, hexToBytes } from '../objects/encoding.js';
 import type { GitIndex, IndexEntry } from './index-entry.js';
 

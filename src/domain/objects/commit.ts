@@ -1,3 +1,14 @@
+/**
+ * Commit serializer. Produces the canonical Git commit-object payload
+ * (`tree <sha>\nparent <sha>*\nauthor …\ncommitter …\n\n<message>`) that
+ * sits inside a loose commit object. SHA equality is the contract;
+ * disk-bytes vary by zlib compression level (loose object caveat).
+ *
+ * @writes
+ *   surface: commit
+ *   kind:    equivalent-under-readback
+ *   format:  git-commit-object
+ */
 import type { AuthorIdentity } from './author-identity.js';
 import { parseIdentity, serializeIdentity } from './author-identity.js';
 import {

@@ -21,18 +21,17 @@
  *   bucket:  real-http
  *   unique:  shallow clone writes .git/shallow and bounds walkCommits to depth 1
  */
-import { execFileSync, spawn } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { accessSync } from 'node:fs';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import * as http from 'node:http';
 import * as os from 'node:os';
 import * as path from 'node:path';
-
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-
 import { walkCommits } from '../../../src/application/primitives/index.js';
 import type { ObjectId } from '../../../src/domain/objects/object-id.js';
 import { openRepository } from '../../../src/index.node.js';
+import { runGit, runGitEnv } from '../interop-helpers.js';
 
 const FIXTURE_DIR = path.resolve(import.meta.dirname, '../../fixtures/clone-source');
 const SOURCE_GIT = path.join(FIXTURE_DIR, 'source.git');
@@ -40,7 +39,7 @@ const HEAD_OID_FILE = path.join(FIXTURE_DIR, 'HEAD-oid.txt');
 
 const findGitExecPath = (): string | undefined => {
   try {
-    return execFileSync('git', ['--exec-path']).toString().trim();
+    return runGit(['--exec-path']).trim();
   } catch {
     return undefined;
   }
@@ -81,7 +80,7 @@ const handleRequest = (
   }
   const [pathInfo, queryString = ''] = req.url.split('?', 2);
   const env: NodeJS.ProcessEnv = {
-    ...process.env,
+    ...runGitEnv(),
     PATH_INFO: pathInfo ?? '/',
     QUERY_STRING: queryString,
     REQUEST_METHOD: req.method,

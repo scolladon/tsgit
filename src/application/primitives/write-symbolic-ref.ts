@@ -1,3 +1,12 @@
+/**
+ * Symbolic-ref writer. Produces `ref: <target>\n` files (HEAD and friends).
+ * Used by `init`/`clone`/branch-rename to set the initial HEAD pointer.
+ *
+ * @writes
+ *   surface: symbolicRef
+ *   kind:    byte-identical
+ *   format:  git-symbolic-ref
+ */
 import type { RefName } from '../../domain/objects/index.js';
 import { serializeSymbolicRef } from '../../domain/refs/loose-ref.js';
 import { validateRefName } from '../../domain/refs/ref-validation.js';

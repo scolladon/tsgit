@@ -10,14 +10,11 @@
  *   bucket:  real-http
  *   unique:  catFile lazy-fetches omitted blobs from a real promisor remote
  */
-import { execFileSync } from 'node:child_process';
 import { accessSync } from 'node:fs';
 import { cp, mkdtemp, readdir, rm } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
-
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-
 import { TsgitError } from '../../../src/domain/error.js';
 import type { Commit, ObjectId } from '../../../src/domain/objects/index.js';
 import { openRepository } from '../../../src/index.node.js';
@@ -26,6 +23,7 @@ import {
   type GitHttpBackend,
   startGitHttpBackend,
 } from '../../bench/support/http-backend-server.js';
+import { runGit } from '../interop-helpers.js';
 
 const FIXTURE_DIR = path.resolve(import.meta.dirname, '../../fixtures/clone-source');
 const SOURCE_GIT = path.join(FIXTURE_DIR, 'source.git');
@@ -70,8 +68,8 @@ describe.skipIf(SKIP_REASON !== false)('catFile — partial-clone lazy fetch', (
     serveRoot = await mkdtemp(path.join(os.tmpdir(), 'tsgit-cf-serve-'));
     const copy = path.join(serveRoot, 'source.git');
     await cp(SOURCE_GIT, copy, { recursive: true });
-    execFileSync('git', ['-C', copy, 'config', 'uploadpack.allowfilter', 'true']);
-    execFileSync('git', ['-C', copy, 'config', 'uploadpack.allowanysha1inwant', 'true']);
+    runGit(['-C', copy, 'config', 'uploadpack.allowfilter', 'true']);
+    runGit(['-C', copy, 'config', 'uploadpack.allowanysha1inwant', 'true']);
     server = await startGitHttpBackend({ projectRoot: serveRoot });
   });
 

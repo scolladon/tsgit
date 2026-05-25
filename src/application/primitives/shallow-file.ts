@@ -1,11 +1,16 @@
 /**
  * `.git/shallow` reader and writer.
  *
- * when the server emits `shallow <oid>` / `unshallow <oid>`
- * pkt-lines in response to a `deepen <N>` request, the client persists the
- * resulting cut-point set under `.git/shallow`. A subsequent `walkCommits`
- * with `shallow: <readShallow result>` terminates parent traversal at every
+ * When the server emits `shallow <oid>` / `unshallow <oid>` pkt-lines in
+ * response to a `deepen <N>` request, the client persists the resulting
+ * cut-point set under `.git/shallow`. A subsequent `walkCommits` with
+ * `shallow: <readShallow result>` terminates parent traversal at every
  * boundary.
+ *
+ * @writes
+ *   surface: shallowFile
+ *   kind:    byte-identical
+ *   format:  git-shallow-file
  *
  * Format: one oid per line, LF-terminated, sorted lexicographically so a
  * re-read produces a deterministic file. Matches canonical git's

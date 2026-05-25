@@ -1,3 +1,13 @@
+/**
+ * Tag serializer. Produces the canonical annotated-tag payload
+ * (`object <sha>\ntype <type>\ntag <name>\ntagger …\n\n<message>`) inside a
+ * loose tag object.
+ *
+ * @writes
+ *   surface: tag
+ *   kind:    equivalent-under-readback
+ *   format:  git-tag-object
+ */
 import type { AuthorIdentity } from './author-identity.js';
 import { parseIdentity, serializeIdentity } from './author-identity.js';
 import type { ExtraHeader } from './commit.js';

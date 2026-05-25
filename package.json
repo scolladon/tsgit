@@ -197,6 +197,7 @@
     "check:test-pyramid": "wireit",
     "check:parity-fixtures": "wireit",
     "check:browser-surface": "wireit",
+    "check:write-surfaces": "wireit",
     "check:mutation-budgets": "wireit",
     "verify:tarball": "wireit",
     "check:size": "wireit",
@@ -560,6 +561,21 @@
         "reports/browser-surface-coverage.json"
       ]
     },
+    "check:write-surfaces": {
+      "command": "node --experimental-strip-types tooling/audit-write-surfaces.ts",
+      "files": [
+        "src/**/*.ts",
+        "test/integration/**/*.test.ts",
+        "tooling/audit-write-surfaces.ts",
+        "tooling/audit-write-surfaces/**/*.ts",
+        "tooling/audit-write-surfaces.allowlist.json",
+        "tooling/test-pyramid/parse-proves-header.ts",
+        "tooling/test-pyramid/parse-manifest.ts"
+      ],
+      "output": [
+        "reports/write-surface-coverage.json"
+      ]
+    },
     "check:mutation-budgets": {
       "command": "node --experimental-strip-types tooling/check-mutation-budgets.ts",
       "files": [
@@ -650,6 +666,7 @@
         "check:test-pyramid",
         "check:parity-fixtures",
         "check:browser-surface",
+        "check:write-surfaces",
         "test:coverage",
         "test:integration",
         "test:parity"
@@ -682,8 +699,8 @@
     "dependency-cruiser": "17.4.2",
     "fast-check": "4.8.0",
     "husky": "9.1.7",
-    "isomorphic-git": "1.38.1",
-    "jscpd": "4.2.3",
+    "isomorphic-git": "1.38.2",
+    "jscpd": "4.2.4",
     "knip": "6.14.2",
     "lint-staged": "17.0.5",
     "minimatch": "10.2.5",

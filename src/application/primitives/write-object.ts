@@ -1,3 +1,14 @@
+/**
+ * Loose-object writer. Encodes a GitObject as `<type> <size>\0<payload>`,
+ * zlib-deflates it, and files it under `.git/objects/<2>/<38>`. The
+ * resulting file is byte-identical to `git hash-object -w` output for the
+ * same payload.
+ *
+ * @writes
+ *   surface: looseObject
+ *   kind:    equivalent-under-readback
+ *   format:  git-loose-object
+ */
 import { operationAborted, TsgitError } from '../../domain/error.js';
 import { objectHashMismatch } from '../../domain/objects/error.js';
 import { type GitObject, type ObjectId, serializeObject } from '../../domain/objects/index.js';

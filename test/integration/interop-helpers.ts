@@ -1,0 +1,102 @@
+/**
+ * Helpers for write-surface interop tests. Each helper is small and
+ * deliberately inlined-style so the test bodies still read top-down.
+ *
+ * Intentionally NOT under `test/_helpers/` (which is unit-scoped). These
+ * helpers spawn `git` and create on-disk tmpdirs, so they belong with
+ * their integration peers.
+ *
+ * **Isolation discipline (the load-bearing piece).** Every `git`
+ * invocation in this file goes through `runGit`, which spawns git with
+ * **all `GIT_*` env vars stripped** from `process.env`. This is required
+ * because:
+ *
+ *   1. When `npm run validate` runs from inside the husky pre-push hook,
+ *      git invokes the hook with `GIT_DIR`, `GIT_WORK_TREE`,
+ *      `GIT_INDEX_FILE`, etc. set in the environment (documented in
+ *      `man githooks`).
+ *   2. `npm → wireit → vitest → workers` all inherit that env.
+ *   3. `git -C <tmp> <cmd>` only changes the CWD; `GIT_DIR` from env
+ *      takes precedence over the repo at `<tmp>`, so `git -C tmp commit`
+ *      silently lands on the worktree's `.git` instead of `tmp/.git`.
+ *
+ * The fix is to scrub `GIT_*` from the env we pass to spawned `git`.
+ * `GIT_CEILING_DIRECTORIES` is added back as a defence-in-depth guard
+ * against discovery-time walk-up when (rarely) `GIT_DIR` isn't set.
+ */
+import { execFileSync } from 'node:child_process';
+import { mkdtemp, rm } from 'node:fs/promises';
+import * as os from 'node:os';
+import * as path from 'node:path';
+
+const buildSafeEnv = (): NodeJS.ProcessEnv => {
+  const env: NodeJS.ProcessEnv = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (key.startsWith('GIT_')) continue;
+    if (value !== undefined) env[key] = value;
+  }
+  env.GIT_CEILING_DIRECTORIES = os.tmpdir();
+  return env;
+};
+
+const SAFE_ENV: NodeJS.ProcessEnv = buildSafeEnv();
+
+/**
+ * Spawn `git` with a sanitised env (no inherited `GIT_*` from the test
+ * runner's parent). Use this for every git invocation in interop tests.
+ *
+ * For commit/tag operations that need deterministic author/committer
+ * dates, spread `runGitEnv` and add the `GIT_AUTHOR_*` / `GIT_COMMITTER_*`
+ * vars in the call site's own env override.
+ */
+export const runGit = (
+  args: ReadonlyArray<string>,
+  options: { readonly input?: string; readonly env?: NodeJS.ProcessEnv } = {},
+): string => {
+  const env = options.env ?? SAFE_ENV;
+  const opts: { env: NodeJS.ProcessEnv; input?: string } = { env };
+  if (options.input !== undefined) opts.input = options.input;
+  return execFileSync('git', args as string[], opts).toString();
+};
+
+/** Snapshot of the sanitised env, for tests that need to extend it. */
+export const runGitEnv = (): NodeJS.ProcessEnv => ({ ...SAFE_ENV });
+
+export const hasGit = (): boolean => {
+  try {
+    runGit(['--version']);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+export const GIT_AVAILABLE = hasGit();
+
+export interface PeerPair {
+  readonly peer: string;
+  readonly ours: string;
+  readonly dispose: () => Promise<void>;
+}
+
+export const makePeerPair = async (slug: string): Promise<PeerPair> => {
+  const peer = await mkdtemp(path.join(os.tmpdir(), `tsgit-interop-${slug}-peer-`));
+  const ours = await mkdtemp(path.join(os.tmpdir(), `tsgit-interop-${slug}-ours-`));
+  const dispose = async (): Promise<void> => {
+    await rm(peer, { recursive: true, force: true });
+    await rm(ours, { recursive: true, force: true });
+  };
+  return { peer, ours, dispose };
+};
+
+export const initBothRepos = (peer: string, ours: string, branch = 'main'): void => {
+  runGit(['init', '-q', '-b', branch, peer]);
+  runGit(['init', '-q', '-b', branch, ours]);
+  for (const dir of [peer, ours]) {
+    runGit(['-C', dir, 'config', 'user.name', 'Ada']);
+    runGit(['-C', dir, 'config', 'user.email', 'ada@example.com']);
+  }
+};
+
+export const git = (dir: string, ...args: ReadonlyArray<string>): string =>
+  runGit(['-C', dir, ...args]);

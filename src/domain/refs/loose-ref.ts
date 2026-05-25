@@ -1,3 +1,12 @@
+/**
+ * Loose-ref encoder/decoder. Direct refs serialize to `<sha>\n` files under
+ * `.git/refs/**`; symbolic refs serialize to `ref: <target>\n`.
+ *
+ * @writes
+ *   surface: looseRef
+ *   kind:    byte-identical
+ *   format:  git-loose-ref
+ */
 import type { ObjectId, RefName } from '../objects/index.js';
 import { ObjectId as ObjectIdFactory } from '../objects/index.js';
 import { invalidRef } from './error.js';

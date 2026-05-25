@@ -299,6 +299,37 @@ genuinely demonstrating a lint violation.
 tooling/audit-test-pyramid.ts --report-only` to inspect findings without
 the gate triggering. Useful mid-fix; CI never uses the flag.
 
+### Write-surface interop audit (Phase 19.7)
+
+When you add a module under `src/` that emits Git-on-disk bytes (an
+object writer, a refs writer, an index writer, a config writer, …),
+declare its surface with a `@writes` JSDoc tag on the module header:
+
+```ts
+/**
+ * Example writer.
+ *
+ * @writes
+ *   surface: exampleSurface
+ *   kind:    byte-identical | equivalent-under-readback | readback-only
+ *   format:  git-example-format
+ */
+```
+
+Then ship a matching integration test under `test/integration/` whose
+`@proves` block carries `bucket: cross-tool-interop` and
+`interopSurface: <surface name>` (or a comma-list of surface names if
+one test covers multiple). The test invokes canonical `git` to
+produce reference bytes and asserts the contract for the declared kind
+(see `docs/design/phase-19-7-interop-suite.md` §4).
+
+`npm run check:write-surfaces` (also part of `npm run validate`) walks
+both sides and reports gaps, allowlist rot, orphan coverage, and
+malformed headers. Ships warn-only (ADR-139) — promotion to blocking
+is a follow-up PR after one clean observation cycle. Exemptions live
+in `tooling/audit-write-surfaces.allowlist.json` with a written
+`reason` and a `deferredTo` phase tag.
+
 ## Commit Messages
 
 Follow [Conventional Commits](https://www.conventionalcommits.org/):

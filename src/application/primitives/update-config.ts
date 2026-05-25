@@ -1,14 +1,18 @@
-import { invalidOption } from '../../domain/commands/error.js';
-import { TsgitError } from '../../domain/error.js';
-import type { Context } from '../../ports/context.js';
-import { invalidateConfigCache, parseSectionHeader } from './config-read.js';
-
 /**
  * Targeted `.git/config` writer (ADR-082). tsgit has no general INI writer;
  * this performs line surgery that preserves comments, blank lines, key order,
  * casing of unrelated keys, and every other section byte-for-byte. It writes
  * one `key = value` per call under any `[section]` / `[section "subsection"]`.
+ *
+ * @writes
+ *   surface: config
+ *   kind:    readback-only
+ *   format:  git-config-text
  */
+import { invalidOption } from '../../domain/commands/error.js';
+import { TsgitError } from '../../domain/error.js';
+import type { Context } from '../../ports/context.js';
+import { invalidateConfigCache, parseSectionHeader } from './config-read.js';
 
 /**
  * True when `line` is the header for `[section]` / `[section "subsection"]`.
