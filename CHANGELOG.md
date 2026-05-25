@@ -1,5 +1,23 @@
 # Changelog
 
+## [1.3.0](https://github.com/scolladon/tsgit/compare/v1.2.0...v1.3.0) (2026-05-25)
+
+
+### Features
+
+* empty-AAA-section gate + sweep ([#71](https://github.com/scolladon/tsgit/issues/71)) ([62dc683](https://github.com/scolladon/tsgit/commit/62dc683712b066948c106b6dfe3e5ca921ff6e45))
+* **harness:** E2E parity (Node x Browser x Memory) ([#76](https://github.com/scolladon/tsgit/issues/76)) ([75a0cde](https://github.com/scolladon/tsgit/commit/75a0cde6fada0cbe5eb6874f8821bba473580fb0))
+* **harness:** GWT describe/it split + cancel-on-merge CI ([#72](https://github.com/scolladon/tsgit/issues/72)) ([0d97d5c](https://github.com/scolladon/tsgit/commit/0d97d5c1d5b6a4f7584fd6ad330545934fa6ffcc))
+* **harness:** integration-test usefulness audit ([#75](https://github.com/scolladon/tsgit/issues/75)) ([91dfcc6](https://github.com/scolladon/tsgit/commit/91dfcc674ca8fd0bb818b6b9869b1700cf7919b4))
+* **harness:** interop suite harness + GIT_* env isolation ([#79](https://github.com/scolladon/tsgit/issues/79)) ([4911c0d](https://github.com/scolladon/tsgit/commit/4911c0df5c6e8312e9bcb96d0816578cab7974f1))
+* **harness:** Playwright surface coverage audit ([#77](https://github.com/scolladon/tsgit/issues/77)) ([288caf5](https://github.com/scolladon/tsgit/commit/288caf5203cbe3958c8506f5ce1d7ba38c68343a))
+* **harness:** property-based tests for parsers ([#78](https://github.com/scolladon/tsgit/issues/78)) ([69fb435](https://github.com/scolladon/tsgit/commit/69fb4351ae8be2166b13781d5a10382611e054a8))
+* **harness:** runtime parity matrix (Deno + Bun + Cloudflare Workers) ([#80](https://github.com/scolladon/tsgit/issues/80)) ([a0470f7](https://github.com/scolladon/tsgit/commit/a0470f702de0cddd731bde08e628b50f0098871b))
+* **harness:** scanner support for skipIf/runIf two-stage call shapes ([#74](https://github.com/scolladon/tsgit/issues/74)) ([9b109c1](https://github.com/scolladon/tsgit/commit/9b109c1fecccf317fc4b017127fe6bedf849b26c))
+* **harness:** unit-test expressiveness lint ([#70](https://github.com/scolladon/tsgit/issues/70)) ([4db24d2](https://github.com/scolladon/tsgit/commit/4db24d241d8025ef0c5d149b809565903e92e138))
+* **mutation:** mutation pyramid ([#67](https://github.com/scolladon/tsgit/issues/67)) ([b511d7f](https://github.com/scolladon/tsgit/commit/b511d7f482753b4595bd7010f7188a401b0179b6))
+* **scripts:** testing-pyramid audit ([#69](https://github.com/scolladon/tsgit/issues/69)) ([36975ef](https://github.com/scolladon/tsgit/commit/36975ef0687e2240cf6357cc8564285dcdb93804))
+
 ## [1.2.0](https://github.com/scolladon/tsgit/compare/v1.1.0...v1.2.0) (2026-05-23)
 
 
