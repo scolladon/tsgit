@@ -6,7 +6,7 @@
 
 **Lightning-fast git, pure TypeScript, everywhere.**
 
-Pure TypeScript git — Node.js and the browser. Zero native deps. Zero WASM. Stable v1, semver-tracked — see [BACKLOG](docs/BACKLOG.md) for the roadmap.
+Pure TypeScript git — Node.js, browser, Deno, Bun, and Cloudflare Workers. Zero native deps. Zero WASM. Stable v1, semver-tracked — see [BACKLOG](docs/BACKLOG.md) for the roadmap.
 
 ## Install
 
@@ -27,9 +27,12 @@ await repo.dispose();
 
 | Runtime | Import |
 |---|---|
-| Node.js | `@scolladon/tsgit` |
+| Node.js 22+ | `@scolladon/tsgit` |
 | Browser (OPFS) | `@scolladon/tsgit/auto/browser` |
 | In-memory (tests) | `@scolladon/tsgit/auto/memory` |
+| Deno | `npm:@scolladon/tsgit` |
+| Bun | `@scolladon/tsgit` |
+| Cloudflare Workers | `@scolladon/tsgit/auto/memory` |
 
 → [Full quickstart per runtime](docs/get-started/) · [recipes — partial clone, sparse checkout, hooks, …](docs/use/recipes.md)
 
@@ -37,7 +40,7 @@ await repo.dispose();
 
 - Zero runtime dependencies — no transitive surface
 - Pure TypeScript — no native code, no WASM, no `git` binary required
-- Cross-runtime — Node 22+ · Browser (OPFS) · in-memory
+- Cross-runtime — Node 22+ · Deno · Bun · Cloudflare Workers · Browser (OPFS) · in-memory
 - Tree-shakeable — `sideEffects: false`; each primitive is an independent entry
 - CJS + ESM dual-publish, verified by `arethetypeswrong`
 - 21 Tier-1 commands · 20+ AsyncIterable primitives · operator toolkit (`pipe`, `filter`, `map`, …)

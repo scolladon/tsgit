@@ -130,8 +130,8 @@ neither covered nor named in the
 is blocking ([ADR-132](../adr/132-browser-surface-audit-blocking-gate.md)):
 binary signal, no warn-only grace period. The opening allowlist holds
 the four transport commands (`clone` / `fetch` / `push` /
-`fetchMissing`, deferred to 19.8 with the Workers runtime parity work)
-and `runHook` (structurally Node-only;
+`fetchMissing` — exercised by the network integration suite, not the
+browser parity surface) and `runHook` (structurally Node-only;
 [ADR-133](../adr/133-transport-and-runHook-exemptions.md)).
 
 Property-based tests sit alongside the example-based suite as

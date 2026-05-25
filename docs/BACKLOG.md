@@ -13,7 +13,7 @@ Details live in git history, ADRs (`docs/adr/`), and design docs (`docs/design/`
 | **v1.0** — foundation through launch | 0–11 | shipped (`@scolladon/tsgit@1.0.0`) |
 | **v1.x** — semantic completion | 12–17 | shipped |
 | **v1.x** — housekeeping & doc restructure | 18 | shipped (18.3 doc-maintenance harness) |
-| **v2.0** — test base + porcelain completeness + history rewriting | 19–22 | in progress (19.1 shipped) |
+| **v2.0** — test base + porcelain completeness + history rewriting | 19–22 | in progress (19.1–19.8 shipped; wave 0 complete) |
 | **v3.0** — inspection + maintenance & exotic | 23–24 | queued |
 | **v4.0** — transport + signing + perf | 25–26 | queued |
 
@@ -227,12 +227,7 @@ Front-loaded. Every Phase 20+ item ships against this harness. Goal: catch regre
 - [x] **19.5a** Playwright surface coverage audit — `tooling/audit-browser-surface.ts` parses `src/repository.ts`, scans `test/browser/*.spec.ts` + `test/parity/scenarios/*.ts`, exits non-zero on any name without coverage or an allowlist entry; closes 26 gaps via 8 new bundled parity scenarios; opening allowlist holds the four transport commands (deferred to 19.8) + `runHook` (Node-only by adapter design). Blocking gate joined to `validate` per ADR-132 · ADRs 130–133 · `design/phase-19-5a-playwright-surface-coverage-audit.md`
 - [x] **19.6** Property-based tests for parsers — fills the property-test gap on `header`, `file-mode`, `index-parser`, `compile-pathspec`/`match-pathspec`, `parse-gitignore`/`matcher-stack`; `tree`, `refs`, `packfile`, `commit`/`tag`/`object-id`/`author-identity`/`encoding` already covered. New `*.properties.test.ts` siblings co-located with per-family `arbitraries.ts`; tiered `numRuns` budget (200/100/50); 100% mutation score across the six touched parser families · ADRs 134–136 · `design/phase-19-6-property-based-parsers.md`
 - [x] **19.7** Interop suite — every byte-emitting module in `src/` carries a `@writes` JSDoc tag; integration tests with `bucket: cross-tool-interop` + `interopSurface:` claim coverage; new `check:write-surfaces` audit detects gaps + allowlist rot + orphan coverage + malformed headers, ships warn-only per ADR-139; three comparison kinds (`byte-identical`, `equivalent-under-readback`, `readback-only`); 13 surfaces shipped (the inventory dropped from 14 once `packIndex` was absorbed into `packfile` per ADR-140); audit caught two real divergences (loose-object zlib compression level + packed-refs trailing space) — the second fixed in this PR · ADRs 137–140 · `design/phase-19-7-interop-suite.md`
-- [ ] **19.8** Runtime parity matrix — expand CI to exercise Deno + Bun + Cloudflare Workers against the same contract suite:
-  - Deno via npm specifier (`npm:@scolladon/tsgit`)
-  - Bun native runner
-  - Cloudflare Workers via `wrangler dev` + Workers test harness (memory adapter + HTTP transport)
-  - Same scenarios run across all runtimes; failures gate the matrix-wide claim
-  - README opener + Capabilities `Cross-runtime` line restored to include Deno/Bun/Workers once green
+- [x] **19.8** Runtime parity matrix — Deno (`Deno.test`) + Bun (`bun:test`) + Cloudflare Workers (`@cloudflare/vitest-pool-workers` inside `workerd`) drivers iterate the shared `SCENARIOS` registry against the `dist/` artifact; three blocking CI jobs (`parity-deno`, `parity-bun`, `parity-workers`); Workers is memory-adapter-only (no `node:fs` in workerd, ADR-143), Deno + Bun cover Node + Memory; matrix gates the README `Cross-runtime` claim, no `continue-on-error` (ADR-144); CI-only, not in `npm run validate` so contributors don't need Deno/Bun/wrangler locally (ADR-147) · ADRs 141–147 · `design/phase-19-8-runtime-parity-matrix.md`
 
 ADR required for: pyramid ratios, mutation budgets per domain, interop-test scope, runtime-parity contract.
 
