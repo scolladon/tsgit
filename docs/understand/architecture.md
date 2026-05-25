@@ -134,6 +134,14 @@ the four transport commands (`clone` / `fetch` / `push` /
 and `runHook` (structurally Node-only;
 [ADR-133](../adr/133-transport-and-runHook-exemptions.md)).
 
+Property-based tests sit alongside the example-based suite as
+`*.properties.test.ts` siblings co-located with per-family
+`arbitraries.ts` (added in Phase 19.6 across `header`, `file-mode`,
+`index-parser`, `compile-pathspec`/`match-pathspec` and
+`parse-gitignore`/`matcher-stack`). Properties are additive — they
+never replace example tests ([ADR-136](../adr/136-properties-additive-not-replacing-examples.md)) —
+and use a tiered `numRuns` budget (200/100/50, [ADR-135](../adr/135-tiered-numruns-budget.md)).
+
 ## ADRs
 
 For the receipts behind each major design choice, see [`design-decisions.md`](design-decisions.md) — a curated, subsystem-grouped index of the [ADR collection](../adr/).
