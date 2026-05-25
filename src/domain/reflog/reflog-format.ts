@@ -1,3 +1,12 @@
+/**
+ * Reflog line encoder/decoder. One LF-terminated line per entry, written
+ * under `.git/logs/**`. Canonical Git format — no tsgit extensions.
+ *
+ * @writes
+ *   surface: reflog
+ *   kind:    byte-identical
+ *   format:  git-reflog-line
+ */
 import { parseIdentity, serializeIdentity } from '../objects/author-identity.js';
 import { ObjectId } from '../objects/object-id.js';
 import { invalidReflogEntry } from './error.js';

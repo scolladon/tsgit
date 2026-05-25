@@ -5,9 +5,10 @@
  * format against canonical `git` where the binary is available.
  *
  * @proves
- *   surface: reflog
- *   bucket:  cross-tool-interop
- *   unique:  .git/logs/** on-disk format round-trips against canonical git
+ *   surface:        reflog
+ *   bucket:         cross-tool-interop
+ *   unique:         .git/logs/** on-disk format round-trips against canonical git
+ *   interopSurface: reflog
  */
 import { execFileSync } from 'node:child_process';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
