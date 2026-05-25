@@ -383,6 +383,57 @@ jobs:
           retention-days: 14
 
   # ──────────────────────────────────────────────
+  # Stage 5e: Runtime-parity matrix (Phase 19.8)
+  # Runs the shared parity SCENARIOS registry on Deno, Bun, and
+  # Cloudflare Workers against the dist/ artifact produced by `build`.
+  # Failures are blocking — the README `Cross-runtime` claim is gated
+  # on every cell staying green (ADR-144). The dist is consumed via
+  # direct file imports, not `npm:` specifiers (ADR-141). Workers is
+  # memory-only since workerd has no filesystem (ADR-143).
+  # ──────────────────────────────────────────────
+
+  parity-deno:
+    needs: [changes, build]
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      - uses: actions/download-artifact@v7
+        with:
+          name: dist
+          path: dist/
+      - run: deno test --no-check --allow-read --allow-write --allow-env --no-prompt --config test/runtime-parity/deno/deno.json test/runtime-parity/deno/
+
+  parity-bun:
+    needs: [changes, build]
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: oven-sh/setup-bun@v2
+      - uses: actions/download-artifact@v7
+        with:
+          name: dist
+          path: dist/
+      - run: bun test test/runtime-parity/bun/
+
+  parity-workers:
+    needs: [changes, build]
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/setup
+      - uses: actions/download-artifact@v7
+        with:
+          name: dist
+          path: dist/
+      - run: npx vitest run --config test/runtime-parity/workers/vitest.config.ts
+
+  # ──────────────────────────────────────────────
   # Stage 6: E2E / Playwright
   # ──────────────────────────────────────────────
 
