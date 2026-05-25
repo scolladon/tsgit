@@ -1,3 +1,15 @@
+/**
+ * Integration — write-surface audit CLI. Stands up a synthetic src + test
+ * tree in a tmpdir, drives `main()` via the shipped script, and asserts
+ * exit codes + the JSON report content. Covers happy path, warn-only vs
+ * blocking gate, missing interopSurface, allowlist rot, orphan coverage,
+ * and malformed src tag.
+ *
+ * @proves
+ *   surface: writeSurfaceAudit
+ *   bucket:  coverage-gap
+ *   unique:  end-to-end shape of the audit CLI is unit-tier unreachable
+ */
 import { execFile } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
@@ -180,6 +192,7 @@ describe('tooling/audit-write-surfaces (integration)', () => {
         const sut = await runScript(tmpRoot);
 
         // Assert
+        expect(sut.code).toBe(0);
         const report = await readReport(tmpRoot);
         expect(report['summary']).toMatchObject({ malformed: 1 });
         const malformed = report['malformed'] as ReadonlyArray<{ detail: string }>;
