@@ -1,0 +1,7 @@
+# Bun config — runtime-parity driver.
+# Tests import the shared parity registry directly via .ts; Bun's built-in
+# transpiler handles the .ts extension natively without project-wide
+# tsconfig changes. The .ts extension on relative imports is allowed by
+# Bun's loader.
+[test]
+preload = []
