@@ -31,8 +31,8 @@ describe('header properties', () => {
           .uint8Array({ minLength: 1, maxLength: 256 })
           .filter((bytes) => !bytes.includes(0));
         fc.assert(
-          fc.property(arbNoNulBytes, (sut) => {
-            expect(() => parseHeader(sut)).toThrow(
+          fc.property(arbNoNulBytes, (bytes) => {
+            expect(() => parseHeader(bytes)).toThrow(
               expect.objectContaining({
                 data: expect.objectContaining({
                   code: 'INVALID_OBJECT_HEADER',

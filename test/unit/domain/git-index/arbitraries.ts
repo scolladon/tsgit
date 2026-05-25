@@ -140,9 +140,8 @@ function dedupeByPath(entries: ReadonlyArray<IndexEntry>): ReadonlyArray<IndexEn
   const seen = new Set<string>();
   const result: IndexEntry[] = [];
   for (const entry of entries) {
-    const path = entry.path as string;
-    if (seen.has(path)) continue;
-    seen.add(path);
+    if (seen.has(entry.path)) continue;
+    seen.add(entry.path);
     result.push(entry);
   }
   return result;
