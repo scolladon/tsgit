@@ -55,7 +55,7 @@ Grammar rules:
   4–40 chars. Not validated against any taxonomy.
 - A file carries at most one `@writes` block. A file that emits
   two formats must split (good factoring) or pick the primary
-  (one-line `@writes`, paramaterised tests cover the variants —
+  (one-line `@writes`, parameterised tests cover the variants —
   see `index` covering v2 + v3).
 - The block lives within the first JSDoc of the file (parser
   scans up to the first `*/`). Files without `@writes` are
