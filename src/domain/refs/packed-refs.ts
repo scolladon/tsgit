@@ -1,3 +1,13 @@
+/**
+ * Packed-refs serializer/parser. Emits `# pack-refs with: <traits>`
+ * header + one line per ref + optional `^<peeled-sha>` lines for
+ * annotated tags. Round-trips against canonical `git pack-refs --all`.
+ *
+ * @writes
+ *   surface: packedRefs
+ *   kind:    byte-identical
+ *   format:  git-packed-refs
+ */
 import { ObjectId as ObjectIdFactory, RefName as RefNameFactory } from '../objects/index.js';
 import { invalidPackedRefs } from './error.js';
 import type { PackedRefEntry, PackedRefs } from './ref-types.js';
@@ -109,5 +119,8 @@ function buildHeaderLine(refs: PackedRefs): string {
   if (refs.sorted) {
     traits.push('sorted');
   }
-  return traits.length > 0 ? `# pack-refs with: ${traits.join(' ')}` : '# pack-refs with:';
+  // Canonical git emits a trailing space after the trait list (e.g.
+  // `# pack-refs with: peeled fully-peeled sorted `); preserve it so the
+  // file is byte-identical to `git pack-refs --all` output.
+  return traits.length > 0 ? `# pack-refs with: ${traits.join(' ')} ` : '# pack-refs with:';
 }

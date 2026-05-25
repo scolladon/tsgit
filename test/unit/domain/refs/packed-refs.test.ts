@@ -430,7 +430,9 @@ describe('serializePackedRefs', () => {
 
         // Assert
         const headerLine = sut.split('\n')[0];
-        expect(headerLine).toBe('# pack-refs with: peeled fully-peeled');
+        // Canonical git emits a trailing space after the trait list; tsgit
+        // matches that for byte-identical interop (ADR-140).
+        expect(headerLine).toBe('# pack-refs with: peeled fully-peeled ');
       });
     });
   });
