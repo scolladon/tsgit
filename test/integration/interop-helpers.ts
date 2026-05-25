@@ -5,15 +5,34 @@
  * Intentionally NOT under `test/_helpers/` (which is unit-scoped). These
  * helpers spawn `git` and create on-disk tmpdirs, so they belong with
  * their integration peers.
+ *
+ * **Isolation discipline.** Every `git` invocation in this file sets
+ * `GIT_CEILING_DIRECTORIES=/tmp` so canonical git refuses to walk above
+ * the tmpdir when it can't find a `.git` (e.g. if `git init` partially
+ * failed under parallel-test load). Without this guard, `git -C <tmp>
+ * commit` can silently land on the worktree's own `.git` if the
+ * isolation chain breaks. Use the exported `runGit` helper for any
+ * additional invocations in the interop tests themselves.
  */
 import { execFileSync } from 'node:child_process';
 import { mkdtemp, rm } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
+const SAFE_ENV: NodeJS.ProcessEnv = {
+  ...process.env,
+  GIT_CEILING_DIRECTORIES: os.tmpdir(),
+};
+
+export const runGit = (args: ReadonlyArray<string>, options: { input?: string } = {}): string => {
+  const opts: { env: NodeJS.ProcessEnv; input?: string } = { env: SAFE_ENV };
+  if (options.input !== undefined) opts.input = options.input;
+  return execFileSync('git', args as string[], opts).toString();
+};
+
 export const hasGit = (): boolean => {
   try {
-    execFileSync('git', ['--version']);
+    runGit(['--version']);
     return true;
   } catch {
     return false;
@@ -39,14 +58,13 @@ export const makePeerPair = async (slug: string): Promise<PeerPair> => {
 };
 
 export const initBothRepos = (peer: string, ours: string, branch = 'main'): void => {
-  execFileSync('git', ['init', '-q', '-b', branch, peer]);
-  execFileSync('git', ['init', '-q', '-b', branch, ours]);
-  // Identity for any commit operations
+  runGit(['init', '-q', '-b', branch, peer]);
+  runGit(['init', '-q', '-b', branch, ours]);
   for (const dir of [peer, ours]) {
-    execFileSync('git', ['-C', dir, 'config', 'user.name', 'Ada']);
-    execFileSync('git', ['-C', dir, 'config', 'user.email', 'ada@example.com']);
+    runGit(['-C', dir, 'config', 'user.name', 'Ada']);
+    runGit(['-C', dir, 'config', 'user.email', 'ada@example.com']);
   }
 };
 
 export const git = (dir: string, ...args: ReadonlyArray<string>): string =>
-  execFileSync('git', ['-C', dir, ...args]).toString();
+  runGit(['-C', dir, ...args]);

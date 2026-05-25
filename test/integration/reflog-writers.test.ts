@@ -10,7 +10,6 @@
  *   unique:         .git/logs/** on-disk format round-trips against canonical git
  *   interopSurface: reflog
  */
-import { execFileSync } from 'node:child_process';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -29,6 +28,7 @@ import { readReflog } from '../../src/application/primitives/reflog-store.js';
 import type { AuthorIdentity, ObjectId, RefName } from '../../src/domain/objects/index.js';
 import { parseReflog, serializeReflogLine } from '../../src/domain/reflog/reflog-format.js';
 import type { Context } from '../../src/ports/context.js';
+import { GIT_AVAILABLE, runGit } from './interop-helpers.js';
 
 const author: AuthorIdentity = {
   name: 'Ada',
@@ -233,16 +233,7 @@ describe('integration — reflog writers', () => {
   });
 });
 
-const findGit = (): string | undefined => {
-  try {
-    execFileSync('git', ['--version']);
-    return 'git';
-  } catch {
-    return undefined;
-  }
-};
-
-const GIT = findGit();
+const GIT = GIT_AVAILABLE ? 'git' : undefined;
 
 describe.skipIf(GIT === undefined)('integration — reflog interop with canonical git', () => {
   let tmpdir: string;
@@ -257,13 +248,11 @@ describe.skipIf(GIT === undefined)('integration — reflog interop with canonica
 
   it('Given a reflog tsgit writes, When git reflog reads it, Then git parses every entry', async () => {
     // Arrange — a real git repo with one commit, then a tsgit-formatted line
-    execFileSync('git', ['init', '-q', '-b', 'main', tmpdir]);
-    execFileSync('git', ['-C', tmpdir, 'config', 'user.name', 'Ada']);
-    execFileSync('git', ['-C', tmpdir, 'config', 'user.email', 'ada@example.com']);
-    execFileSync('git', ['-C', tmpdir, 'commit', '-q', '--allow-empty', '-m', 'seed']);
-    const headOid = execFileSync('git', ['-C', tmpdir, 'rev-parse', 'HEAD'])
-      .toString()
-      .trim() as ObjectId;
+    runGit(['init', '-q', '-b', 'main', tmpdir]);
+    runGit(['-C', tmpdir, 'config', 'user.name', 'Ada']);
+    runGit(['-C', tmpdir, 'config', 'user.email', 'ada@example.com']);
+    runGit(['-C', tmpdir, 'commit', '-q', '--allow-empty', '-m', 'seed']);
+    const headOid = runGit(['-C', tmpdir, 'rev-parse', 'HEAD']).trim() as ObjectId;
     const line = serializeReflogLine({
       oldId: headOid,
       newId: headOid,
@@ -274,7 +263,7 @@ describe.skipIf(GIT === undefined)('integration — reflog interop with canonica
     // Act — append the tsgit-serialized entry, then ask git to read the log
     const { appendFile } = await import('node:fs/promises');
     await appendFile(path.join(tmpdir, '.git', 'logs', 'HEAD'), line);
-    const reflog = execFileSync('git', ['-C', tmpdir, 'reflog', 'show', 'HEAD']).toString().trim();
+    const reflog = runGit(['-C', tmpdir, 'reflog', 'show', 'HEAD']).trim();
 
     // Assert — git surfaces the tsgit-written entry
     expect(reflog).toContain('reset: moving to HEAD');
@@ -282,11 +271,11 @@ describe.skipIf(GIT === undefined)('integration — reflog interop with canonica
 
   it('Given a reflog git wrote, When readReflog parses it, Then every entry round-trips', async () => {
     // Arrange — git produces a multi-entry HEAD reflog
-    execFileSync('git', ['init', '-q', '-b', 'main', tmpdir]);
-    execFileSync('git', ['-C', tmpdir, 'config', 'user.name', 'Ada']);
-    execFileSync('git', ['-C', tmpdir, 'config', 'user.email', 'ada@example.com']);
-    execFileSync('git', ['-C', tmpdir, 'commit', '-q', '--allow-empty', '-m', 'first']);
-    execFileSync('git', ['-C', tmpdir, 'commit', '-q', '--allow-empty', '-m', 'second']);
+    runGit(['init', '-q', '-b', 'main', tmpdir]);
+    runGit(['-C', tmpdir, 'config', 'user.name', 'Ada']);
+    runGit(['-C', tmpdir, 'config', 'user.email', 'ada@example.com']);
+    runGit(['-C', tmpdir, 'commit', '-q', '--allow-empty', '-m', 'first']);
+    runGit(['-C', tmpdir, 'commit', '-q', '--allow-empty', '-m', 'second']);
 
     // Act
     const raw = await readFile(path.join(tmpdir, '.git', 'logs', 'HEAD'), 'utf8');
