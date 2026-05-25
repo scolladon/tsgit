@@ -1,3 +1,13 @@
+/**
+ * Tree serializer. Produces the canonical sorted-entry binary form
+ * (`<mode> <name>\0<raw-sha>`-per-entry) that lives inside a loose tree
+ * object.
+ *
+ * @writes
+ *   surface: tree
+ *   kind:    equivalent-under-readback
+ *   format:  git-tree-object
+ */
 import { compareBytes, decode, encode, hexToBytes, indexOf } from './encoding.js';
 import { invalidTreeEntry } from './error.js';
 import type { FileMode } from './file-mode.js';
