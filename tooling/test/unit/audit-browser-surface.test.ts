@@ -1,3 +1,5 @@
+import * as path from 'node:path';
+
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -513,10 +515,11 @@ describe('parseArgs', () => {
         // The derived root is set from the script's location; lock the
         // structural relationship between root, out, and allowlist so a
         // refactor that detaches `out` from `root` (e.g. hardcoding
-        // `/reports`) fails loudly.
-        expect(sut.out).toBe(`${sut.root}/reports`);
+        // `/reports`) fails loudly. `path.join` keeps the assertion
+        // portable across POSIX (forward slash) and Windows (backslash).
+        expect(sut.out).toBe(path.join(sut.root, 'reports'));
         expect(sut.allowlist).toBe(
-          `${sut.root}/tooling/audit-browser-surface.allowlist.json`,
+          path.join(sut.root, 'tooling', 'audit-browser-surface.allowlist.json'),
         );
       });
     });
@@ -538,11 +541,14 @@ describe('parseArgs', () => {
         // Act
         const sut = parseArgs(argv);
 
-        // Assert
+        // Assert — `path.resolve` is platform-specific: on POSIX
+        // `/tmp/repo` stays as-is, on Windows it normalises to a drive-
+        // prefixed backslash path. Mirror the resolver in the expectation
+        // so the assertion is portable.
         expect(sut).toEqual({
-          root: '/tmp/repo',
-          out: '/tmp/out',
-          allowlist: '/tmp/allow.json',
+          root: path.resolve('/tmp/repo'),
+          out: path.resolve('/tmp/out'),
+          allowlist: path.resolve('/tmp/allow.json'),
         });
       });
     });
@@ -551,13 +557,18 @@ describe('parseArgs', () => {
   describe('Given --root only', () => {
     describe('When parsed', () => {
       it('Then out and allowlist defaults derive from the supplied root', () => {
-        // Arrange + Act
+        // Arrange
+        const expectedRoot = path.resolve('/tmp/repo');
+
+        // Act
         const sut = parseArgs(['--root', '/tmp/repo']);
 
         // Assert
-        expect(sut.root).toBe('/tmp/repo');
-        expect(sut.out).toBe('/tmp/repo/reports');
-        expect(sut.allowlist).toBe('/tmp/repo/tooling/audit-browser-surface.allowlist.json');
+        expect(sut.root).toBe(expectedRoot);
+        expect(sut.out).toBe(path.join(expectedRoot, 'reports'));
+        expect(sut.allowlist).toBe(
+          path.join(expectedRoot, 'tooling', 'audit-browser-surface.allowlist.json'),
+        );
       });
     });
   });
