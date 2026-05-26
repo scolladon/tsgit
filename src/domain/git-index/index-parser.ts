@@ -95,8 +95,9 @@ export function parseIndex(bytes: Uint8Array): GitIndex {
   }
 
   const extensions = parseExtensions(bytes, offset, view);
+  const trailerSha = bytes.slice(bytes.length - INDEX_CHECKSUM_SIZE);
 
-  return { version: version as 2 | 3, entries, extensions };
+  return { version: version as 2 | 3, entries, extensions, trailerSha };
 }
 
 /**

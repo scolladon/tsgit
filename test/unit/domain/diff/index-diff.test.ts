@@ -50,7 +50,7 @@ function entry(path: string, id: ObjectId, mode: FileMode, stage: 0 | 1 | 2 | 3)
 }
 
 function index(entries: ReadonlyArray<IndexEntry>): GitIndex {
-  return { version: 2, entries, extensions: [] };
+  return { version: 2, entries, extensions: [], trailerSha: new Uint8Array(0) };
 }
 
 function flatTree(pairs: ReadonlyArray<readonly [string, ObjectId, FileMode]>): FlatTree {

@@ -42,6 +42,16 @@ export interface GitIndex {
   readonly version: 2 | 3;
   readonly entries: ReadonlyArray<IndexEntry>;
   readonly extensions: ReadonlyArray<IndexExtension>;
+  /**
+   * Trailing hash bytes (SHA-1: 20 bytes, SHA-256: 32 bytes) that close the
+   * index file format. Read but historically discarded; surfaced here so
+   * `CachingIndexResolver` can use it for the racy-stat fallback path
+   * (compare trailing bytes when `(mtime, size, ino)` match an observed
+   * stat but the underlying file may have been mutated in the racy-stat
+   * window — see design §10.4). Empty (`Uint8Array(0)`) when constructed
+   * from the empty-index defaults in `readIndex` (no underlying file).
+   */
+  readonly trailerSha: Uint8Array;
 }
 
 export interface StatData {

@@ -88,7 +88,12 @@ describe('serializeIndexFixture', () => {
     describe('When serialized', () => {
       it('Then produces a 12-byte header only', () => {
         // Arrange — domain serializeIndex produces DIRC+version+count header for empty index.
-        const index = { version: 2 as const, entries: [], extensions: [] };
+        const index = {
+          version: 2 as const,
+          entries: [],
+          extensions: [],
+          trailerSha: new Uint8Array(0),
+        };
 
         // Act
         const bytes = serializeIndexFixture(index);

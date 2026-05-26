@@ -84,7 +84,12 @@ const writeIndexFile = async (
     flags: { ...STAGE0_FLAGS, stage: e.stage },
     path: e.path as FilePath,
   }));
-  const index: GitIndex = { version: 2, entries: fullEntries, extensions: [] };
+  const index: GitIndex = {
+    version: 2,
+    entries: fullEntries,
+    extensions: [],
+    trailerSha: new Uint8Array(0),
+  };
   const body = serializeIndex(index);
   const trailer = hexToBytes(await ctx.hash.hashHex(body));
   const framed = new Uint8Array(body.length + trailer.length);

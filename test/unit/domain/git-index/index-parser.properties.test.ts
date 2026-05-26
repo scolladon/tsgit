@@ -16,10 +16,15 @@ function withChecksum(data: Uint8Array): Uint8Array {
 }
 
 function expectedRoundTrip(index: GitIndex): GitIndex {
+  // The serialized buffer ends with the 20-byte `CHECKSUM` appended by
+  // `withChecksum`. After re-parsing, `trailerSha` reflects those bytes,
+  // not the original (empty) arbitrary input — adjust the expected value
+  // accordingly so the deep-equal succeeds.
   return {
     version: index.version,
     entries: [...index.entries].sort(compareEntryPath),
     extensions: index.extensions,
+    trailerSha: CHECKSUM,
   };
 }
 

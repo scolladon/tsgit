@@ -10,7 +10,12 @@ import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
 import type { FileMode, FilePath, ObjectId, Tree } from '../../../../src/domain/objects/index.js';
 import { buildSeededContext } from './fixtures.js';
 
-const EMPTY_INDEX: GitIndex = { version: 2, entries: [], extensions: [] };
+const EMPTY_INDEX: GitIndex = {
+  version: 2,
+  entries: [],
+  extensions: [],
+  trailerSha: new Uint8Array(0),
+};
 
 const writeBlob = async (
   ctx: Awaited<ReturnType<typeof buildSeededContext>>,

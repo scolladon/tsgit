@@ -41,7 +41,12 @@ const makeEntry = (path: string, id: ObjectId): IndexEntry => ({
 
 /** Seed `.git/index` with a SHA-1-trailer so `readIndex` accepts it. */
 const seedIndex = async (ctx: Context, entries: ReadonlyArray<IndexEntry>): Promise<void> => {
-  const index: GitIndex = { version: 2, entries: [...entries], extensions: [] };
+  const index: GitIndex = {
+    version: 2,
+    entries: [...entries],
+    extensions: [],
+    trailerSha: new Uint8Array(0),
+  };
   const body = serializeIndex(index);
   const checksum = await ctx.hash.hash(body);
   const bytes = new Uint8Array(body.length + checksum.length);

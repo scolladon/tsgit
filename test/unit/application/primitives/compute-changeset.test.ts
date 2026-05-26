@@ -30,6 +30,7 @@ const makeIndex = (entries: IndexEntry[]): GitIndex => ({
   version: 2,
   entries,
   extensions: [],
+  trailerSha: new Uint8Array(0),
 });
 
 const makeTreeEntry = (

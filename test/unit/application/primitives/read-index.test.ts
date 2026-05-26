@@ -27,7 +27,7 @@ describe('readIndex', () => {
       it('Then round-trips correctly', async () => {
         // Arrange
         const ctx = await buildSeededContext({
-          index: { version: 2, entries: [], extensions: [] },
+          index: { version: 2, entries: [], extensions: [], trailerSha: new Uint8Array(0) },
         });
         const sut = await readIndex(ctx);
         // Assert
@@ -46,7 +46,12 @@ describe('readIndex', () => {
         // integrity-first flow from a no-op path: under a skipped check,
         // parseIndex would succeed.
         const ctx = await buildSeededContext();
-        const body = serializeIndexFixture({ version: 2, entries: [], extensions: [] });
+        const body = serializeIndexFixture({
+          version: 2,
+          entries: [],
+          extensions: [],
+          trailerSha: new Uint8Array(0),
+        });
         const trailer = new Uint8Array(20); // 20 zero bytes — definitely wrong
         const bytes = new Uint8Array(body.length + trailer.length);
         bytes.set(body, 0);
@@ -134,7 +139,7 @@ describe('readIndex', () => {
         // parseIndex runs and returns an empty index.
         const ctx = await buildSeededContext();
         const bytes = await serializeIndexFixtureAsync(
-          { version: 2, entries: [], extensions: [] },
+          { version: 2, entries: [], extensions: [], trailerSha: new Uint8Array(0) },
           ctx,
         );
         await ctx.fs.write('/repo/.git/index', bytes);
