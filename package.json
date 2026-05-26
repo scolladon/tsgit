@@ -704,6 +704,7 @@
         "check:exports",
         "check:security",
         "check:doc-coverage",
+        "check:doc-links",
         "check:doc-typedoc",
         "check:test-pyramid",
         "check:parity-fixtures",
