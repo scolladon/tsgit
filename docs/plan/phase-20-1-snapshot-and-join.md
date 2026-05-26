@@ -27,33 +27,34 @@ wave stalls (per ADR-151).
 
 ## Wave 0 — Harness extension (ADR-161)
 
-### Step 0.1 — Wire doc-links + mutation-budgets into validate
+### Step 0.1 — Wire doc-links into validate (mutation-budgets stays CI-only)
 
-**Goal.** `npm run validate` includes `check:doc-links` and
-`check:mutation-budgets`. Existing scripts already exist; this step
-adds them to the validate chain.
+**Goal.** `npm run validate` includes `check:doc-links`.
+`check:mutation-budgets` does NOT join `validate` — it requires a Stryker
+mutation report that takes 30+ minutes to produce, incompatible with
+keeping `validate` fast. ADR-161 amended on the same commit to reflect
+this. The mutation-budget gate remains enforced via the dedicated CI
+mutation workflow.
 
 Files:
 
-1. `package.json` — extend the `validate` script's dependency list.
-   - Add `check:doc-links` and `check:mutation-budgets` to the
-     concurrently-run check list (around line 693–715 per current state).
-   - If `check:size` would now fail due to anticipated 20.1 bundle
-     impact, bump the size-limit budget here with an inline comment
-     `// 20.1: size optimization deferred to perf phase` (per design
-     §15.6 and review pass 2 D14).
+1. `package.json` — add `check:doc-links` to the `validate` script's
+   wireit `dependencies` array (around line 693–715).
+2. `docs/adr/161-wave-0-harness-extension.md` — already amended in the
+   preceding `docs(adr)` commit to reflect the revised scope.
+3. `docs/spike/phase-20-1-snapshot-join.md`, `docs/design/phase-20-1-snapshot-and-join.md`,
+   `docs/plan/phase-20-1-snapshot-and-join.md` — already amended in the
+   preceding doc commit to reference the revised ADR.
 
 **Tests (existing scripts, no new tests).**
 
 - Run `npm run check:doc-links` standalone — green on the current `docs/`
-  tree (the spike, ADRs, and design doc are already linked correctly).
-- Run `npm run check:mutation-budgets` standalone — green or noisy with
-  pre-existing entries; if noisy due to budget drift, fix or document
-  in this commit.
+  tree (the spike, ADRs, design doc, and plan doc are already linked
+  correctly).
 
-**Verify.** `npm run validate` passes with the new checks in the chain.
+**Verify.** `npm run validate` passes with the new check in the chain.
 
-**Commit.** `chore(harness): wire doc-links + mutation-budgets into validate`.
+**Commit.** `chore(harness): wire doc-links into validate`.
 
 ---
 

@@ -1203,8 +1203,10 @@ existing project convention (no central catalogue per project memory).
 ### 15.6 Validation harness
 
 Every check listed in spike §14.3 must pass on every wave commit. Wave 0
-extends `validate` to include `check:doc-links` and `check:mutation-budgets`
-(ADR-161); subsequent waves must keep both green.
+extends `validate` to include `check:doc-links` (ADR-161, amended).
+`check:mutation-budgets` does NOT join `validate` — it stays as a dedicated
+CI workflow gate (runs after Stryker in the per-PR mutation workflow),
+incompatible with keeping local `validate` fast.
 
 **`check:dead-code` (knip) strategy for Wave 1.** Wave 1 introduces public
 exports (factories, operators, `requireSnapshot`, error classes) that have
@@ -1226,13 +1228,18 @@ open questions.
 **Wave-0 literal `package.json` diff sketch.**
 
 ```diff
-   "validate": "concurrently --kill-others-on-fail --names "
--    "'check check:types check:dead-code …'"
-+    "'check check:types check:dead-code … check:doc-links check:mutation-budgets'"
+   "validate": {
+     "dependencies": [
+       "check",
+       "check:types",
+       … (existing entries) …
++      "check:doc-links"
+     ]
+   }
 ```
 
-Exact line additions land in Wave 0; the design doc commits to the
-intent, not the byte-precise diff.
+`check:mutation-budgets` is intentionally absent from the diff — see ADR-161
+(amended) and §15.6 for the Stryker-dependency rationale.
 
 ## 16. Documentation deliverables
 
@@ -1264,8 +1271,8 @@ build sequence.
 
 Short summary:
 
-- **Wave 0:** `chore(harness): wire doc-links + mutation-budgets into validate`
-  (ADR-161; ships before any snapshot code).
+- **Wave 0:** `chore(harness): wire doc-links into validate`
+  (ADR-161 amended; mutation-budgets stays CI-only; ships before any snapshot code).
 - **Wave 1:** `feat(snapshot): introduce snapshot+join primitive` (ports,
   domain rows, application entries, factory, join, operators, resolvers,
   tests). **No consumer migrated.**
@@ -1403,8 +1410,9 @@ expected to be settled mid-implementation:
 Before each wave merges, `npm run validate` must pass clean — no
 suppressions, no ignore directives. Coverage 100% L/B/F/S on every new
 file. Stryker mutation budget 0 survivors on every new file (with equivalent
-mutants inline-documented). doc-links + mutation-budgets gates green from
-Wave 0 onward.
+mutants inline-documented). doc-links gate green from Wave 0 onward via
+`validate`; mutation-budgets gate green via the dedicated CI mutation
+workflow (per ADR-161 amended).
 
 After Wave 8, the codebase has:
 - `repo.snapshot.*` as the primary multi-source primitive.

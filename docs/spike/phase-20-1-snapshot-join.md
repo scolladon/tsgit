@@ -10,7 +10,7 @@
 > - **H2:** pathspec + excludes composition contract spec'd inline (AND, pathspec first).
 > - **H3:** `WriteEventBus` split into `WriteEventEmitter` (writer side) + `WriteEventStream` (reader side).
 > - **H4:** `StashSnapshot.untracked: TreeSnapshot | null` as property, not method.
-> - **§14:** doc-links + mutation-budgets wired into `validate` (Wave 0 + ADR M).
+> - **§14:** doc-links wired into `validate` (Wave 0 + ADR M, amended); mutation-budgets stays CI-only (incompatible with local validate latency — discovered Wave 0 mid-implementation).
 > - Iteration-stability invariant on `IndexSnapshot`; `WorkdirStat.mtime` aligned with existing `FileStat`.
 > - Test debt enumerated per wave; deprecation env var spec'd; PR-split fallback added.
 > - ADR queue grew from 8 to 14 (added D′ semver-split, I CQS triple-split, J pathspec+excludes, K innerJoin, L deprecation env var, M harness extension).
@@ -835,7 +835,7 @@ internally consistent.
 
 | Wave | Commit topic | Scope |
 |---|---|---|
-| 0 | `chore(harness): wire doc-links + mutation-budgets into validate` | Bring existing scripts into the `npm run validate` chain. Adds ADR M. No code changes to snapshot path. |
+| 0 | `chore(harness): wire doc-links into validate` (mutation-budgets stays CI-only; ADR-161 amended) | Bring existing scripts into the `npm run validate` chain. Adds ADR M. No code changes to snapshot path. |
 | 1 | `feat(snapshot): introduce snapshot+join primitive` | Ports (`IndexResolver`, `TreeResolver`, `WorkdirEnumerator`, `WriteEventEmitter`, `WriteEventStream`, `GenerationView`), domain rows, application entries, snapshot factories, `join`, `innerJoin`, operators, `requireSnapshot` helper, `StashSnapshot`, resolvers, wiring in `repository.ts`. Tests + property tests. **No consumer migrated yet.** Old walkers untouched, still authoritative. |
 | 2 | `refactor(status): use snapshot+join` | Migrate `commands/status.ts`. Delete `walkWorkingTree` calls from this file. Other walkers unchanged. |
 | 3 | `refactor(diff): use snapshot+join` | Migrate `commands/diff.ts` + any diff helpers. |
@@ -1032,10 +1032,11 @@ Still open, to settle during implementation:
 
 ### 14.3 Full `npm run validate` cross-check
 
-The CI gate runs all of these. Wave 0 wires `check:doc-links` and
-`check:mutation-budgets` into the chain (currently they exist as scripts but
-aren't called by `validate` — see `package.json:693-715`). The design must
-pass every check without suppressions or ignore directives.
+Wave 0 wires `check:doc-links` into the `validate` chain. `check:mutation-budgets`
+does NOT join `validate` (ADR-161 amended) — it requires a Stryker mutation
+report, and Stryker is too slow for local `validate` (30+ min); the budget
+gate stays in the dedicated mutation CI workflow. The design must pass every
+locally-wired check without suppressions or ignore directives.
 
 | Check | Status | What this design must satisfy |
 |---|---|---|
@@ -1057,7 +1058,7 @@ pass every check without suppressions or ignore directives.
 | `check:doc-typedoc` | wired | `reports/api.json` regenerated; diff reviewed |
 | `check:parity-fixtures` | wired | Existing parity scenarios still pass after each wave |
 | `check:doc-links` | **wired by Wave 0** | All cross-references resolve (script exists at `package.json:197`; not in validate today) |
-| `check:mutation-budgets` | **wired by Wave 0** | Budgets file updated with entries for `join.ts`, `caching-*-resolver.ts`, `generation-view.ts`, every snapshot impl, every operator. Target: 0 surviving mutants; equivalent mutants inline-documented with `// equivalent-mutant: <why>` |
+| `check:mutation-budgets` | **CI workflow only, not validate** (ADR-161 amended) | Budgets file updated with entries for `join.ts`, `caching-*-resolver.ts`, `generation-view.ts`, every snapshot impl, every operator. Target: 0 surviving mutants; equivalent mutants inline-documented with `// equivalent-mutant: <why>`. Enforced by the dedicated mutation CI workflow (runs after `test:mutation`); local `validate` does NOT invoke it |
 | `test:coverage` | wired | 100% line/branch/function/statement on new code |
 | `test:integration` | wired | New integration tests for caching + invalidation + migration parity |
 | `test:parity` | wired | Memory + Node + browser adapters all pass |
@@ -1106,7 +1107,7 @@ Fourteen decisions are user-shaping and need ADRs per CLAUDE.md §3:
 | J | `excludes` (gitignore-style cascade) sits alongside `paths` (pathspec) on `WorkdirSnapshotOptions`; AND-composed | §4.1, §5.3 |
 | K | Inner-join as a separate `innerJoin()` function rather than overloaded `mode` parameter | §4.4 |
 | L | `TSGIT_SUPPRESS_DEPRECATIONS` env var to silence deprecated-walker warnings; warn-once per call-site | §11 |
-| M | Wave-0 harness extension: wire `check:doc-links` + `check:mutation-budgets` into `npm run validate` | §11, §14.3 |
+| M | Wave-0 harness extension: wire `check:doc-links` into `validate`. `check:mutation-budgets` stays as a CI-workflow-only gate (amended — incompatible with local `validate` latency). | §11, §14.3 |
 
 Each ADR uses `docs/adr/000-template.md`, status `Accepted (at <main-sha>)`,
 sequentially numbered from the next available slot. Land as one commit:
