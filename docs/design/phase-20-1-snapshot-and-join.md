@@ -81,9 +81,10 @@ src/
 │       └── classifiers.ts                           # classifyIndexVsHead, classifyWorkdirVsIndex
 ├── ports/
 │   ├── snapshot-resolvers.ts                        # NEW — IndexResolver, TreeResolver, WorkdirEnumerator
-│   ├── write-event-emitter.ts                       # NEW — WriteEventEmitter (command side)
-│   ├── write-event-stream.ts                        # NEW — WriteEventStream (subscribe side)
-│   └── generation-view.ts                           # NEW — GenerationView (query side)
+│   ├── write-scope.ts                               # NEW — `WriteScope` type (shared source of truth)
+│   ├── write-event-emitter.ts                       # NEW — WriteEventEmitter (command side; imports WriteScope)
+│   ├── write-event-stream.ts                        # NEW — WriteEventStream (subscribe side; imports WriteScope)
+│   └── generation-view.ts                           # NEW — GenerationView (query side; imports WriteScope)
 ├── application/
 │   ├── primitives/
 │   │   ├── snapshot/                                # NEW — application-tier snapshot impls
@@ -130,6 +131,17 @@ src/
 from `application/`, `adapters/`, or `ports/snapshot-resolvers.ts`. Branded
 type imports from `domain/objects/` and `domain/pathspec/` are allowed.
 
+**Naming convention note.** Several folders have an `index.ts` re-export
+façade (`src/application/primitives/snapshot/index.ts`,
+`src/application/primitives/snapshot-operators/index.ts`,
+`src/adapters/snapshot-resolvers/index.ts`). The file at
+`src/adapters/snapshot-resolvers/caching-index-resolver.ts` operates on the
+`.git/index` file. The naming collision is unavoidable (git's "index" is a
+domain term, and `index.ts` is the JS module convention). Imports use the
+explicit filename, never the directory shorthand — `from '.../snapshot/'`
+and `from '.../snapshot/index.js'` resolve identically to the façade, not
+to the index-snapshot module.
+
 ## 5. Ports
 
 All port interfaces are in `src/ports/`. Each one is single-purpose; the
@@ -140,16 +152,27 @@ concrete adapters live in `src/adapters/snapshot-resolvers/`.
 ```typescript
 // src/ports/snapshot-resolvers.ts
 import type { Context } from './context.js'
-import type { ParsedIndex } from '../domain/git-index/index.js'
+import type { GitIndex } from '../domain/git-index/index.js'
+import type { Tree, ObjectId } from '../domain/objects/index.js'
+
+export interface ResolveOptions {
+  /** When true, caching adapters must skip their cache for this call. */
+  readonly bypassCache?: boolean
+}
 
 export interface IndexResolver {
   /**
-   * Resolve the current `.git/index` to a parsed structure.
+   * Resolve the current `.git/index` to its parsed `GitIndex` structure.
    *
    * Implementations are free to cache and to deduplicate concurrent calls.
    * Callers must NOT mutate the returned value; treat as deeply frozen.
+   *
+   * Note: `GitIndex` gains a `trailerSha: Uint8Array` field as part of Wave 1
+   * (small extension to `src/domain/git-index/`). The SHA-1 trailer is already
+   * read for validation in `readIndex`; this surfaces it on the parsed result
+   * so `CachingIndexResolver` can use it for racy-stat invalidation (§10.4).
    */
-  resolve(ctx: Context): Promise<ParsedIndex>
+  resolve(ctx: Context, opts?: ResolveOptions): Promise<GitIndex>
 }
 ```
 
@@ -161,18 +184,22 @@ export interface TreeResolver {
    * Resolve a tree object by its oid. May be cached (LRU). Throws
    * `unexpectedObjectType` if the oid is not a tree.
    */
-  resolve(ctx: Context, treeId: ObjectId): Promise<Tree>
+  resolve(ctx: Context, treeId: ObjectId, opts?: ResolveOptions): Promise<Tree>
 }
 ```
 
 ### 5.3 `WorkdirEnumerator`
 
 ```typescript
+import type { Pathspec } from '../domain/pathspec/index.js'         // from 14.2
+import type { WalkIgnorePredicate } from '../application/primitives/types.js'  // from 14.3
+
 export interface WorkdirEnumOptions {
   readonly paths?: Pathspec
   readonly excludes?: WalkIgnorePredicate
   readonly maxDepth?: number
   readonly maxEntries?: number
+  readonly signal?: AbortSignal
 }
 
 export interface WorkdirEnumerator {
@@ -184,11 +211,23 @@ export interface WorkdirEnumerator {
 }
 ```
 
-### 5.4 `WriteEventEmitter` (command side, ADR-157)
+### 5.4 `WriteScope` (shared type, ADR-157)
+
+```typescript
+// src/ports/write-scope.ts
+/**
+ * Discriminator for write-target categories used across the CQS port triple.
+ * Lives in its own file so neither the emitter, the stream, nor the view
+ * port imports each other's file (preserves the CQS split).
+ */
+export type WriteScope = 'index' | 'refs' | 'objects'
+```
+
+### 5.5 `WriteEventEmitter` (command side, ADR-157)
 
 ```typescript
 // src/ports/write-event-emitter.ts
-export type WriteScope = 'index' | 'refs' | 'objects'
+import type { WriteScope } from './write-scope.js'
 
 export interface WriteEventEmitter {
   /**
@@ -200,11 +239,13 @@ export interface WriteEventEmitter {
 }
 ```
 
-### 5.5 `WriteEventStream` (subscribe side, ADR-157)
+### 5.6 `WriteEventStream` (subscribe side, ADR-157)
 
 ```typescript
 // src/ports/write-event-stream.ts
-export interface Disposable {
+import type { WriteScope } from './write-scope.js'
+
+export interface Disposable {                       // matches TC39 Explicit Resource Management shape
   dispose(): void
 }
 
@@ -217,10 +258,12 @@ export interface WriteEventStream {
 }
 ```
 
-### 5.6 `GenerationView` (query side, ADR-157)
+### 5.7 `GenerationView` (query side, ADR-157)
 
 ```typescript
 // src/ports/generation-view.ts
+import type { WriteScope } from './write-scope.js'
+
 export interface GenerationView {
   /** Monotonic counter; increments per `emit(scope)` event. */
   current(scope: WriteScope): number
@@ -278,6 +321,7 @@ export interface IndexEntryRow {
 ```typescript
 // src/domain/snapshot/workdir-entry-row.ts
 export interface WorkdirStat {
+  readonly mode: FileMode                     // included for chmod-race detection (ADR + review pass 1 H5)
   readonly size: number
   readonly mtimeMs: number
   readonly mtimeNs?: bigint
@@ -287,7 +331,7 @@ export interface WorkdirStat {
 export interface WorkdirEntryRow {
   readonly source: 'workdir'
   readonly path: FilePath
-  readonly mode: FileMode
+  readonly mode: FileMode                     // mirrors stat.mode; surfaced for ergonomic access
   readonly kind: 'file' | 'symlink' | 'directory' | 'submodule'
   readonly stat: WorkdirStat
 }
@@ -295,8 +339,10 @@ export interface WorkdirEntryRow {
 
 `WorkdirStat` aligns with the existing `FileStat` in `src/ports/file-system.ts`
 — `mtimeNs` and `ino` are optional, satisfying the browser adapter constraint.
-Racy-stat detection prefers `mtimeNs` when present, falls back to `mtimeMs`,
-and falls back further to SHA-trailer comparison (see §10.5).
+`mode` is included so race detection covers chmod-only changes (executable
+bit flips, permission tweaks). Racy-stat detection prefers `mtimeNs` when
+present, falls back to `mtimeMs`, and falls back further to SHA-trailer
+comparison (see §10.4) for the index file specifically.
 
 ### 6.4 `SnapshotKind` discriminator
 
@@ -419,6 +465,33 @@ export type WorkdirSnapshot = Snapshot<WorkdirEntry>
 review pass 2). Kind is exposed as a runtime discriminator on the snapshot;
 entries carry their own `source` discriminator inherited from the row.
 
+### 8.0 Iteration stability
+
+Each snapshot handle owns the lifetime of the data it observes. Concretely
+for `IndexSnapshot`:
+
+1. **First call to `.entries()`** invokes `IndexResolver.resolve(ctx)` and
+   stores the returned `GitIndex` reference in a private field on the
+   snapshot handle.
+2. **All subsequent `.entries()` calls on the same handle** stream from
+   that stored reference. They do NOT re-call the resolver, do NOT consult
+   `GenerationView`, and do NOT see updates from subsequent `emit('index')`.
+3. **A new `repo.snapshot.index()` call** returns a fresh handle. That
+   handle's first iteration calls the resolver, sees whatever the cache
+   currently holds (post-invalidation if applicable).
+
+The resolver layer (§10.4) provides freshness for *new* handles; the
+snapshot handle provides consistency for *in-flight* iterations. Two
+independent invariants, no coupling between them.
+
+Same pattern for `TreeSnapshot` (content-addressed; trivially stable) and
+for `WorkdirSnapshot` (per-row lstat is the unit of consistency).
+
+Verified by integration test `test/integration/snapshot-iteration-stability.test.ts`
+(§15.3): open snapshot S, start `for await (const e of S.entries())`,
+mutate index from inside the loop, observe S continues yielding pre-mutation
+rows; a fresh snapshot opened after the mutation yields post-mutation rows.
+
 ### 8.1 `SnapshotOptions`
 
 ```typescript
@@ -437,6 +510,14 @@ export interface SnapshotOptions {
 
   /** Default: false. When true, skips resolver caches for this call. */
   readonly bypassCache?: boolean
+
+  /**
+   * Cancellation signal honored by `snapshot.entries()` and all downstream
+   * operators. If absent, the snapshot inherits `ctx.signal` from the
+   * Context at iteration time. Operator-level `JoinOptions.signal` (§11)
+   * is composed with this — whichever aborts first wins.
+   */
+  readonly signal?: AbortSignal
 }
 ```
 
@@ -459,6 +540,26 @@ export interface WorkdirSnapshotOptions extends SnapshotOptions {
   readonly consistency?: 'eager' | 'verified'
 }
 ```
+
+**Snapshot / enumerator boundary contract (closes review pass 1 H4).** Two
+distinct option shapes serve two distinct layers:
+
+| Option | Owned by | Behavior |
+|---|---|---|
+| `paths` | Enumerator (§5.3 `WorkdirEnumOptions`) | Pathspec inclusion filter; prunes traversal at the source |
+| `excludes` | Enumerator | `.gitignore` cascade; prunes per-directory during walk |
+| `maxDepth` | Enumerator | Directory recursion bound |
+| `maxEntries` | Enumerator | Yield count cap |
+| `consistency` | Snapshot (§8.2) | Selects single-pass vs. two-pass; snapshot wraps the enumerator |
+| `bypassCache` | Snapshot (§8.1) — not consumed by `WorkdirEnumerator` | No-op for workdir (per-row stat cache lives on the row, not on a cache adapter) |
+| `signal` | Both | Snapshot supplies the combined signal to the enumerator |
+| `recurse` | Not used on workdir | Workdir enumeration is inherently recursive; the option is ignored |
+
+`WorkdirSnapshot.entries(opts)` translates: passes `paths`/`excludes`/`maxDepth`/
+`maxEntries`/`signal` straight through to the enumerator; handles `consistency`
+internally (eager = stream as enumerator yields; verified = materialize all
+enumerator output, re-stat each on consumption); ignores `bypassCache` and
+`recurse`.
 
 ## 9. Snapshot factory
 
@@ -525,7 +626,7 @@ export const requireSnapshot = async <T>(
 ): Promise<T> => {
   const value = await promise
   if (value === null) {
-    throw new TsgitError('SNAPSHOT_REQUIRED', { reason: message })
+    throw new SnapshotRequiredError(message)
   }
   return value
 }
@@ -567,7 +668,7 @@ on the row).
 export const createRawIndexResolver = (fs: FileSystem): IndexResolver => ({
   resolve: async (ctx) => {
     const buffer = await fs.readFile(`${ctx.layout.gitDir}/index`)
-    return parseIndex(buffer)            // existing src/domain/git-index/
+    return parseIndex(buffer)            // returns GitIndex (with trailerSha)
   },
 })
 ```
@@ -604,7 +705,7 @@ one underlying `inner.resolve()` (§13.2).
 ```typescript
 // src/adapters/snapshot-resolvers/caching-index-resolver.ts
 interface CacheEntry {
-  readonly parsed: ParsedIndex
+  readonly parsed: GitIndex                       // includes trailerSha (Wave 1 extension)
   readonly observed: FileStat
   cachedGen: number
 }
@@ -625,10 +726,10 @@ export const createCachingIndexResolver = (
   })
 
   return {
-    resolve: async (ctx) => {
+    resolve: async (ctx, opts) => {
       const currentGen = view.current('index')
 
-      if (entry && entry.cachedGen === currentGen && !ctx.bypassCache) {
+      if (entry && entry.cachedGen === currentGen && !opts?.bypassCache) {
         return entry.parsed                          // zero-syscall hit
       }
 
@@ -641,7 +742,7 @@ export const createCachingIndexResolver = (
 
       if (entry && statMatches(stat, entry.observed) && needsRacyCheck(stat, entry.observed)) {
         const trailer = await readTrailer(fs, ctx, 20)
-        if (bytesEqual(trailer, entry.parsed.trailerSha)) {
+        if (bytesEqual(trailer, entry.parsed.trailerSha)) {     // new GitIndex field
           entry.cachedGen = currentGen
           return entry.parsed                        // SHA-trailer-validated hit
         }
@@ -662,10 +763,18 @@ git's rules; see ADR-150).
 
 ### 10.5 `CachingTreeResolver`
 
-Bounded LRU keyed by `ObjectId`. No invalidation logic. Default size: 256
-trees (configurable via `openRepository({ caching: { treeLruSize } })`).
-Lifts the existing pack delta-base cache pattern in
-`src/application/primitives/object-resolver.ts`.
+**Pure bounded LRU keyed by `ObjectId`.** No `WeakRef`, no two-tier policy.
+Single LRU map, configurable max size (default 256 entries), simple O(1)
+get/put with most-recently-used promotion. Lifts the existing pack
+delta-base cache pattern in `src/application/primitives/object-resolver.ts`.
+
+No invalidation logic — trees are content-addressed; same oid → same bytes,
+forever. Cache miss → resolve via `RawTreeResolver`; cache hit → return
+cached value.
+
+Configurable via `openRepository({ caching: { treeLruSize } })`. WeakRef
+optimization deferred to a future perf phase if measurement shows memory
+pressure (per spike §18 open question and review pass 2 D13).
 
 ### 10.6 `FsWorkdirEnumerator`
 
@@ -767,10 +876,49 @@ Rows emit in canonical git path order — tree's sort, treating directories
 as `path/`. Operators that consume row streams MUST preserve order (per
 ADR — runtime check, throws `OrderInvariantViolation` on detected reorder).
 
+### 11.1a Nullable factory return composition
+
+`join`/`innerJoin` accept `Snapshot<E>` instances, NOT `Promise<Snapshot<E> | null>`.
+Compound-state factories (`mergeHead`, `cherryPickHead`, `revertHead`,
+`fetchHead`, `stashEntry`) return promises that resolve to nullable snapshots
+(§9). Callers must await + null-check before passing to join:
+
+```typescript
+// CORRECT:
+const theirs = await repo.snapshot.mergeHead()
+if (theirs === null) return
+const rows = join({ ours: repo.snapshot.head(), theirs })
+
+// or, when absence is an error:
+const theirs = await requireSnapshot(repo.snapshot.mergeHead(), 'no merge')
+const rows = join({ ours: repo.snapshot.head(), theirs })
+```
+
+Passing `Promise<TreeSnapshot | null>` directly into `join` fails type-checking
+— intentional. `EntryOf<S[K]>` cannot infer through a Promise wrapper.
+
 ### 11.2 Concurrency
 
 `JoinOptions.concurrency` is forwarded to operator stages downstream
 (`hashWorkdir`, `loadBlob`). Default: `ctx.concurrency` (existing).
+
+### 11.3 Cancellation
+
+Both the single-source short-circuit and the multi-source `pathMerge`
+honor the union of:
+
+- `ctx.signal` from the Context wired at `repository.ts`,
+- `SnapshotOptions.signal` per individual snapshot (§8.1),
+- `JoinOptions.signal` from the join call.
+
+Internally `join` builds a `combinedSignal` (via `AbortSignal.any([…])` or
+manual wiring on older targets) and passes it to each contributing
+snapshot's `.entries()`. The first abort wins; downstream iterators see
+the abort propagate as `operationAborted()` per existing convention.
+
+Terminal operators (`count`, `toArray`, `first`) honor the same combined
+signal — a `for await … break` inside `first` triggers the iterable's
+cleanup path; an external `signal.abort()` interrupts at the next yield.
 
 ## 12. Operator catalog
 
@@ -794,6 +942,21 @@ export const hashWorkdir = <S extends { workdir?: Snapshot<WorkdirEntry> }>(
   // Concurrency-bounded via a worker pool.
 }
 ```
+
+**Slot-name convention.** `hashWorkdir` operates on the slot literally named
+`workdir` — the convention used across every worked example (status, diff,
+untracked, merge inspection). If a consumer names a workdir-typed slot
+something other than `'workdir'` (e.g., a 4-way merge with
+`workdirOurs`/`workdirTheirs`), they wire two operators with explicit slot
+generics:
+
+```typescript
+hashSlot<S, K extends keyof S>(slot: K, opts?): /* ... */
+```
+
+`hashSlot` is the generic primitive; `hashWorkdir` is the conventional
+wrapper. Wave 1 ships both — `hashWorkdir` for the 95% case,
+`hashSlot('workdir')` as the underlying generic.
 
 ### 12.2 `loadBlob`
 
@@ -863,6 +1026,11 @@ class SnapshotError extends TsgitError {
   readonly cause: Error
 }
 
+class SnapshotRequiredError extends TsgitError {
+  /** Thrown by `requireSnapshot()` when the resolved value is null. */
+  readonly reason: string
+}
+
 class JoinError<S extends { readonly [k: string]: unknown }> extends TsgitError {
   readonly path: FilePath
   readonly source: keyof S & string         // statically narrowed
@@ -871,8 +1039,14 @@ class JoinError<S extends { readonly [k: string]: unknown }> extends TsgitError 
 
 class WorkdirRaceError extends TsgitError {
   readonly path: FilePath
-  readonly observed: WorkdirStat
+  readonly observed: WorkdirStat        // includes mode for chmod-race detection
   readonly current:  WorkdirStat
+}
+
+class UnsupportedOperationError extends TsgitError {
+  /** Thrown by `WorkdirEntry.readLink()` when kind !== 'symlink', etc. */
+  readonly operation: string
+  readonly reason: string
 }
 
 class OrderInvariantViolation extends TsgitError {
@@ -881,6 +1055,12 @@ class OrderInvariantViolation extends TsgitError {
   readonly currentPath: FilePath
 }
 ```
+
+`OrderInvariantViolation` is enforced by an `assertOrdered(operator, prev, curr)`
+helper in `src/application/primitives/snapshot/path-merge.ts`. Each operator
+that yields rows wraps its emission point with this helper; mis-ordered output
+throws immediately, preventing silent corruption downstream. Operators ship
+with a paired unit test that demonstrates the helper fires.
 
 `JoinError<S>` preserves slot-name narrowing through the catch boundary
 (ADR-155). Concrete catch sites can `if (e.source === 'workdir')` and TS
@@ -902,7 +1082,8 @@ export type {
   OuterJoinRow, InnerJoinRow, EntryOf,
   JoinOptions, HashWorkdirOptions, LoadBlobOptions, VerifyRaceAction, DirGroup,
   IndexVsHead, WorkdirVsIndex,
-  SnapshotError, JoinError, WorkdirRaceError, OrderInvariantViolation,
+  SnapshotError, SnapshotRequiredError, JoinError, WorkdirRaceError,
+  UnsupportedOperationError, OrderInvariantViolation,
 }
 
 // Functions
@@ -984,11 +1165,37 @@ generation — `numRuns: 200`; tree-snapshot parity — `numRuns: 50`.
 Stryker budgets file (`scripts/mutation-budgets.yaml`) gets entries for every
 new file. Target: 0 surviving mutants on:
 
-- `join.ts`, `path-merge.ts`, `snapshot-factory.ts`, `tree-snapshot.ts`,
-  `index-snapshot.ts`, `workdir-snapshot.ts`, `stash-snapshot.ts`,
-  `caching-index-resolver.ts`, `caching-tree-resolver.ts`,
-  `single-flight-index-resolver.ts`, `in-memory-write-event-bus.ts`,
-  `counter-generation-view.ts`, every operator.
+**Application primitives (`src/application/primitives/snapshot/`):**
+- `tree-snapshot.ts`, `index-snapshot.ts`, `workdir-snapshot.ts`,
+  `stash-snapshot.ts`, `snapshot-factory.ts`
+- `tree-entry.ts`, `index-entry.ts`, `workdir-entry.ts`
+- `require-snapshot.ts` — small file but the error-message string is
+  mutation-sensitive (CLAUDE.md StringLiteral mutant rule)
+- `join.ts`, `path-merge.ts`
+
+**Operators (`src/application/primitives/snapshot-operators/`):**
+- `hash-workdir.ts`, `load-blob.ts`, `verify-workdir.ts`,
+  `group-by-dir.ts`, `count.ts`, `to-array.ts`, `first.ts`
+
+**Application support:**
+- `src/application/primitives/deprecation.ts` — `process.env.TSGIT_SUPPRESS_DEPRECATIONS === '1'`
+  is exactly the kind of StringLiteral mutant CLAUDE.md flags
+
+**Domain (`src/domain/snapshot/`):**
+- `classifiers.ts` — pure branching logic, branch-coverage hotspot
+
+**Adapters (`src/adapters/snapshot-resolvers/`):**
+- `raw-index-resolver.ts`, `raw-tree-resolver.ts`
+- `single-flight-index-resolver.ts`
+- `caching-index-resolver.ts`, `caching-tree-resolver.ts`
+- `in-memory-write-event-bus.ts`, `counter-generation-view.ts`
+- `fs-workdir-enumerator.ts`
+
+**Rule of inclusion:** any `.ts` file added under
+`src/{domain,application,adapters}/snapshot*/` paths or directly authored as
+part of 20.1 (e.g., the `deprecation.ts` helper) gets a 0-survivor budget
+entry. The budget file's inclusion glob enforces this automatically; we
+audit at PR review.
 
 Equivalent mutants documented inline with `// equivalent-mutant: <why>` per
 existing project convention (no central catalogue per project memory).
@@ -999,21 +1206,54 @@ Every check listed in spike §14.3 must pass on every wave commit. Wave 0
 extends `validate` to include `check:doc-links` and `check:mutation-budgets`
 (ADR-161); subsequent waves must keep both green.
 
+**`check:dead-code` (knip) strategy for Wave 1.** Wave 1 introduces public
+exports (factories, operators, `requireSnapshot`, error classes) that have
+no internal consumer until Waves 2–7. To keep `check:dead-code` green
+during the Wave-1 commit, Wave 1 ships a smoke test that imports every
+new public export — `test/unit/api-surface/snapshot-exports.test.ts`
+— asserting only that imports resolve. The test is purely import-side; it
+adds no behavioral coverage but satisfies knip's reachability analysis
+without an allowlist entry.
+
+**`check:size` posture.** Phase 20.1 does NOT commit to a bundle-size
+constraint. The snapshot+operators surface inflates dist; addressing that
+is in scope for a dedicated performance / bundle-size optimization phase
+(deferred per review pass 2 D14). If `check:size` would fail Wave 1, the
+size-limit budget in `package.json` is bumped as part of Wave 0 with a
+short rationale comment. No ADR is created; the deferral is logged in §18
+open questions.
+
+**Wave-0 literal `package.json` diff sketch.**
+
+```diff
+   "validate": "concurrently --kill-others-on-fail --names "
+-    "'check check:types check:dead-code …'"
++    "'check check:types check:dead-code … check:doc-links check:mutation-budgets'"
+```
+
+Exact line additions land in Wave 0; the design doc commits to the
+intent, not the byte-precise diff.
+
 ## 16. Documentation deliverables
 
 New / updated docs in this PR (per spike §14.4):
 
-| Path | State | Purpose |
-|---|---|---|
-| `docs/use/snapshots.md` | NEW | Primer on snapshots, joins, operators; recommended path for new code |
-| `docs/use/migrate-from-isomorphic-git.md` | UPDATED | Iso-git `walk()` → tsgit snapshot+join recipe (per spike §12) |
-| `docs/use/primitives/walk-tree.md` | UPDATED | Deprecation notice; link to snapshots |
-| `docs/use/primitives/walk-working-tree.md` | UPDATED | Deprecation notice; link to snapshots |
-| `docs/understand/caching.md` | NEW | `WriteEventEmitter` / `WriteEventStream` / `GenerationView` contract; lock-ordering; racy-stat handling |
-| `README.md` | UPDATED | "Primitives" section leads with snapshots+join |
-| `RUNBOOK.md` | UPDATED | `TSGIT_SUPPRESS_DEPRECATIONS` env var documented |
-| `CONTRIBUTING.md` | UPDATED | New testing patterns for the snapshot+join stack |
-| `docs/BACKLOG.md` | UPDATED | Tick 20.1 line `[ ]` → `[x]` in the implementation PR's own commits |
+| Path | State | Owning wave | Purpose |
+|---|---|---|---|
+| `docs/use/snapshots.md` | NEW | Wave 1 | Primer on snapshots, joins, operators; recommended path for new code |
+| `docs/understand/caching.md` | NEW | Wave 1 | `WriteEventEmitter` / `WriteEventStream` / `GenerationView` contract; lock-ordering; racy-stat handling |
+| `docs/use/migrate-from-isomorphic-git.md` | UPDATED | Wave 8 | Iso-git `walk()` → tsgit snapshot+join recipe (per spike §12) |
+| `docs/use/primitives/walk-tree.md` | UPDATED | Wave 8 | Deprecation notice; link to snapshots |
+| `docs/use/primitives/walk-working-tree.md` | UPDATED | Wave 8 | Deprecation notice; link to snapshots |
+| `README.md` | UPDATED | Wave 8 | "Primitives" section leads with snapshots+join |
+| `RUNBOOK.md` | UPDATED | Wave 8 | `TSGIT_SUPPRESS_DEPRECATIONS` env var documented |
+| `CONTRIBUTING.md` | UPDATED | Wave 8 | New testing patterns for the snapshot+join stack |
+| `docs/BACKLOG.md` | UPDATED | Wave 8 | Tick 20.1 line `[ ]` → `[x]` in the implementation PR's own commits |
+
+Wave 1 owns the new primer docs because Wave 1 ships the API users need
+to consult them. Wave 8 (the deprecation wave / PR finalization wave)
+owns updates to existing user-facing docs because that's when the new
+API becomes the recommended path in the published surface.
 
 ## 17. Migration plan
 
@@ -1039,6 +1279,105 @@ Short summary:
 Single PR per ADR-151. PR splits at the last green wave if a later wave
 stalls; Waves 2–7 are individually splittable.
 
+### 17.1 Wave 1 build order (TDD-DAG)
+
+Strict topological order — every step writes tests first, then minimal
+production code to pass, then refactors. Each step is its own atomic
+commit (per CLAUDE.md "atomic, easy-to-review commits").
+
+```
+ 1. src/ports/write-scope.ts                          (type only; no test)
+ 2. src/ports/write-event-emitter.ts                  (interface only)
+ 3. src/ports/write-event-stream.ts                   (interface only)
+ 4. src/ports/generation-view.ts                      (interface only)
+ 5. src/ports/snapshot-resolvers.ts                   (IndexResolver / TreeResolver / WorkdirEnumerator / ResolveOptions)
+ 6. src/domain/snapshot/snapshot-kind.ts              (type only)
+ 7. src/domain/snapshot/tree-entry-row.ts             (type only)
+ 8. src/domain/snapshot/index-entry-row.ts            (types: IndexEntryRow, IndexFlags, IndexCachedStat)
+ 9. src/domain/snapshot/workdir-entry-row.ts          (types: WorkdirEntryRow, WorkdirStat)
+10. src/domain/snapshot/join-row.ts                   (OuterJoinRow, InnerJoinRow, EntryOf)
+11. src/domain/snapshot/classifiers.ts                (pure functions; tested via unit + property)
+12. src/domain/git-index/  ← MODIFIED                 (add trailerSha to GitIndex; update parseIndex/readIndex)
+13. src/application/primitives/snapshot/tree-entry.ts (TreeEntry wraps TreeEntryRow + read())
+14. src/application/primitives/snapshot/index-entry.ts
+15. src/application/primitives/snapshot/workdir-entry.ts (+ hash/read/readLink/verify)
+16. src/application/primitives/snapshot/require-snapshot.ts
+17. src/adapters/snapshot-resolvers/counter-generation-view.ts        (depends on WriteScope)
+18. src/adapters/snapshot-resolvers/in-memory-write-event-bus.ts      (depends on view, WriteScope)
+19. src/adapters/snapshot-resolvers/raw-index-resolver.ts             (depends on FileSystem, GitIndex)
+20. src/adapters/snapshot-resolvers/raw-tree-resolver.ts              (depends on object resolver)
+21. src/adapters/snapshot-resolvers/single-flight-index-resolver.ts   (decorator over Raw)
+22. src/adapters/snapshot-resolvers/caching-index-resolver.ts         (decorator + WriteEventStream + GenerationView)
+23. src/adapters/snapshot-resolvers/caching-tree-resolver.ts          (decorator + LRU)
+24. src/adapters/snapshot-resolvers/fs-workdir-enumerator.ts          (depends on FileSystem, pathspec, ignore)
+25. src/application/primitives/snapshot/tree-snapshot.ts              (uses TreeResolver)
+26. src/application/primitives/snapshot/index-snapshot.ts             (uses IndexResolver; iteration-stability per §8.0)
+27. src/application/primitives/snapshot/workdir-snapshot.ts           (uses WorkdirEnumerator; consistency wrapper)
+28. src/application/primitives/snapshot/stash-snapshot.ts             (trio of TreeSnapshots)
+29. src/application/primitives/snapshot/snapshot-factory.ts           (depends on every snapshot impl + resolvers)
+30. src/application/primitives/snapshot/path-merge.ts                 (k-way merge iterator)
+31. src/application/primitives/snapshot/join.ts                       (join + innerJoin + short-circuit)
+32. src/application/primitives/snapshot-operators/hash-workdir.ts
+33. src/application/primitives/snapshot-operators/load-blob.ts
+34. src/application/primitives/snapshot-operators/verify-workdir.ts
+35. src/application/primitives/snapshot-operators/group-by-dir.ts
+36. src/application/primitives/snapshot-operators/count.ts
+37. src/application/primitives/snapshot-operators/to-array.ts
+38. src/application/primitives/snapshot-operators/first.ts
+39. src/application/primitives/deprecation.ts                          (used in Wave 8; landed early as Wave 1 enabler)
+40. src/repository.ts            ← MODIFIED                            (wires SnapshotFactory into Repository)
+41. src/index.ts, src/index.node.ts ← MODIFIED                         (new exports)
+42. test/integration/snapshot-cache.test.ts                            (caching integration)
+43. test/integration/snapshot-iteration-stability.test.ts              (iteration-stability invariant)
+44. test/integration/workdir-race.test.ts                              (eager + verified consistency)
+45. docs/use/snapshots.md                                              (user-facing primer)
+46. docs/understand/caching.md                                         (CQS + lock-ordering + racy-stat)
+```
+
+Each numbered step is at minimum: one test file (red), one production file
+(green), one refactor pass. Steps with `← MODIFIED` are existing-file edits.
+Property tests (§15.2) land alongside their subject's step. Step ordering
+is enforced by import-graph dependency, not by convention.
+
+Steps 1–11 are pure types — no behavior. Their "test" is `tsc --strict`
+acceptance (covered by `check:types`).
+
+Steps 12 and 39–44 are sequenced last in their group because they bridge
+new code into existing surfaces; landing them too early leaves dangling
+imports.
+
+### 17.2 Wave 2–8 per-wave plan delegation
+
+The plan doc (`docs/plan/phase-20-1-snapshot-and-join.md`) owns the
+BEFORE/AFTER signature contract for each consumer migration. The design
+doc commits to the wave boundaries (§11 of spike) but does not inline
+the per-file diff shape — that is plan-doc-level detail.
+
+For each of Waves 2–7 the plan doc specifies:
+
+- The exact file being migrated (e.g., `src/application/commands/status.ts`).
+- The BEFORE call sites (which old walker, what shape).
+- The AFTER call sites (which snapshot, which join, which operators).
+- The test file fate (rewrite, keep, delete) per the test-debt table (§17.3).
+- The validation checkpoint (full `npm run validate` green before commit).
+- The commit message format (`refactor(<command>): use snapshot+join`).
+
+### 17.3 Test debt by wave (lifted from spike §11)
+
+Per-wave test file fate. Reproduced from spike §11 so the plan doc has a
+single inline source of truth.
+
+| Wave | Test file fate |
+|---|---|
+| 1 | NEW: `test/unit/application/primitives/snapshot/*.test.ts`, `test/unit/adapters/snapshot-resolvers/*.test.ts`, four `*.properties.test.ts` siblings, `test/integration/snapshot-cache.test.ts`, `test/integration/snapshot-iteration-stability.test.ts`, `test/integration/workdir-race.test.ts`, `test/unit/api-surface/snapshot-exports.test.ts` |
+| 2 | `test/unit/application/commands/status.test.ts` — REWRITTEN to assert via snapshot+join (logic identical, surface different) |
+| 3 | `test/unit/application/commands/diff.test.ts` — REWRITTEN |
+| 4 | `test/unit/application/commands/add.test.ts` — REWRITTEN |
+| 5 | `test/unit/application/commands/checkout.test.ts` — REWRITTEN |
+| 6 | `test/unit/application/commands/merge.test.ts` — REWRITTEN |
+| 7 | `test/unit/application/primitives/walk-tree.test.ts` and `walk-working-tree.test.ts` — REPOINTED to test deprecated facades (thin); `walk-submodules.test.ts` — UPDATED for new internals; `enumerate-push-objects.test.ts`, `repository.test.ts`, `test/parity/scenarios/read-pipeline.scenario.ts`, `test/integration/sparse-checkout.test.ts`, `test/integration/network/partial-clone-http-backend.test.ts`, `test/integration/network/cat-file-batch-promisor.test.ts`, `tooling/test/unit/audit-browser-surface.test.ts` — AUDITED for old-walker references and updated |
+| 8 | Facades have minimal smoke tests asserting `@deprecated` JSDoc emits the env-gated warning once |
+
 ## 18. Open implementation questions
 
 These are impl-detail-level — they do not block design freeze. Each is
@@ -1048,12 +1387,16 @@ expected to be settled mid-implementation:
    20.3 per ADR; `IndexSnapshot.toTree()` is not on the 20.1 surface.
 2. **`loadBlob.maxInflightBytes` default** — current proposal: 64 MiB.
    Pinned by ADR before Wave 3 (diff) lands.
-3. **`WeakRef` for snapshot-cache LRU** — WeakRef is universally available.
-   Lean: `WeakRef` for the "last parsed" slot + bounded LRU below it.
-   Locked when caching-tree-resolver lands.
+3. ~~**`WeakRef` for snapshot-cache LRU**~~ — **Resolved (review pass 2 D13):**
+   pure bounded LRU only. WeakRef deferred to a future perf phase if
+   measurement shows memory pressure. See §10.5.
 4. **Operator order-invariant brand type** — `OrderedAsyncIterable<T>` could
    be introduced if review pass on Wave 1 surfaces accidental misuse. Default
    stance: runtime check only.
+5. **Bundle size / `check:size`** — Deferred per review pass 2 D14. 20.1
+   ships without committing to a size constraint; size optimization is a
+   dedicated follow-up phase. Wave 0 bumps the existing size-limit budget
+   if needed to keep CI green (see §15.6).
 
 ## 19. Validation checkpoint
 
