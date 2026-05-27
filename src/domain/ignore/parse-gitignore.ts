@@ -9,6 +9,13 @@ export interface IgnoreRule {
   readonly directoryOnly: boolean;
   /** True when the pattern contains `/` before any `*` (anchored to repo root). */
   readonly anchored: boolean;
+  /**
+   * 1-based source line number this rule was parsed from. Tracks the SOURCE
+   * position (gaps for comment / blank lines), not the rule index. Used by
+   * `isIgnored` and other diagnostic tools that report "this path was ignored
+   * by line N of <file>".
+   */
+  readonly lineNumber: number;
   /** Compiled glob matcher for paths against the pattern. */
   readonly compiled: GlobMatcher;
 }
@@ -79,7 +86,9 @@ export const tokenizeIgnoreLine = (rawLine: string): TokenizedIgnoreLine | undef
 
 export const parseGitignore = (text: string): IgnoreRuleset => {
   const out: IgnoreRule[] = [];
-  for (const rawLine of text.split('\n')) {
+  const lines = text.split('\n');
+  for (let i = 0; i < lines.length; i += 1) {
+    const rawLine = lines[i] as string;
     const tokenized = tokenizeIgnoreLine(rawLine);
     if (tokenized === undefined) continue;
     const { negated, anchored, directoryOnly, cleanPattern } = tokenized;
@@ -88,6 +97,7 @@ export const parseGitignore = (text: string): IgnoreRuleset => {
       negated,
       directoryOnly,
       anchored,
+      lineNumber: i + 1,
       compiled: compileGlob(cleanPattern, { anchored }),
     });
   }

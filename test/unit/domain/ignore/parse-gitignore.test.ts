@@ -342,6 +342,40 @@ describe('parseGitignore', () => {
       });
     });
   });
+
+  describe('Given multiple lines with comments and blanks', () => {
+    describe('When parsed', () => {
+      it('Then every rule carries its 1-based source line number', () => {
+        // Arrange — three rules on lines 3, 4, 5 of the source. Line numbers
+        // are 1-based and track the SOURCE position, not the rule index.
+        const input = '# header\n\n*.log\nbuild/\n!important.log\n# trailing\n';
+
+        // Act
+        const sut = parseGitignore(input);
+
+        // Assert
+        expect(sut[0]?.lineNumber).toBe(3);
+        expect(sut[1]?.lineNumber).toBe(4);
+        expect(sut[2]?.lineNumber).toBe(5);
+      });
+    });
+  });
+
+  describe('Given a single rule on line 1', () => {
+    describe('When parsed', () => {
+      it('Then lineNumber is 1 (kills off-by-one mutants)', () => {
+        // Arrange — the simplest case pins that the parser uses 1-based
+        // indexing, not 0-based.
+        const input = '*.log';
+
+        // Act
+        const sut = parseGitignore(input);
+
+        // Assert
+        expect(sut[0]?.lineNumber).toBe(1);
+      });
+    });
+  });
 });
 
 describe('tokenizeIgnoreLine', () => {

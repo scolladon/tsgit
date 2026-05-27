@@ -28,11 +28,11 @@ export interface IgnoreEvaluator {
 export const buildIgnoreEvaluator = async (ctx: Context): Promise<IgnoreEvaluator> => {
   const base: IgnoreLevel[] = [];
   const global = await readGlobalExcludes(ctx);
-  if (global !== undefined) base.push({ basedir: '', rules: global });
+  if (global !== undefined) base.push({ basedir: '', rules: global, kind: 'global' });
   const info = await readInfoExclude(ctx);
-  if (info !== undefined) base.push({ basedir: '', rules: info });
+  if (info !== undefined) base.push({ basedir: '', rules: info, kind: 'info' });
   const root = await readGitignore(ctx, '');
-  if (root !== undefined) base.push({ basedir: '', rules: root });
+  if (root !== undefined) base.push({ basedir: '', rules: root, kind: 'gitignore' });
   const cache = new Map<FilePath | '', IgnoreRuleset>();
   const loadDirRules = async (dir: FilePath | ''): Promise<IgnoreRuleset> => {
     const cached = cache.get(dir);
