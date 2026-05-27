@@ -598,7 +598,9 @@
     "callsites",
     "Callsite",
     "Callsites",
-    "elementwise"
+    "elementwise",
+    "misbehaviour",
+    "assertable"
   ],
   "ignorePaths": [
     "node_modules",

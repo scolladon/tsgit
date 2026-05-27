@@ -36,6 +36,10 @@ const buildCursors = async <S extends SnapshotMap>(
     const cursor: CursorState<SnapshotEntry> = {
       slot: key,
       iter,
+      // equivalent-mutant: `done: true` here is observably equivalent
+      // because `advanceCursor` immediately overwrites `cursor.current`
+      // via `cursor.current = await cursor.iter.next()` on the next line,
+      // so the initial value is unused.
       current: { value: undefined as never, done: false },
     };
     await advanceCursor(cursor, null);
@@ -49,6 +53,9 @@ const minPath = (cursors: ReadonlyArray<CursorState<SnapshotEntry>>): FilePath |
   for (const cursor of cursors) {
     if (cursor.current.done) continue;
     const path = (cursor.current.value as { readonly path: FilePath }).path;
+    // equivalent-mutant: `path <= min` differs only when path === min;
+    // either branch leaves `min` set to the same value (the existing `min`
+    // or the equal `path`), so the loop's final `min` is identical.
     if (min === null || path < min) min = path;
   }
   return min;

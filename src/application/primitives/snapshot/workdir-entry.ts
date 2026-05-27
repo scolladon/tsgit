@@ -63,6 +63,11 @@ const liveStat = async (ctx: Context, absPath: string): Promise<WorkdirStat> => 
     mode: deriveFileMode(stat),
     size: stat.size,
     mtimeMs: stat.mtimeMs,
+    // equivalent-mutant: this conditional spread feeds the resulting
+    // WorkdirStat into statMatches, which only compares (mode, size,
+    // mtimeMs). Whether mtimeNs is included or omitted has no effect on
+    // the verify() outcome, so flipping the condition or replacing the
+    // truthy branch with `{}` produces observably-equivalent behaviour.
     ...(stat.mtimeNs === undefined ? {} : { mtimeNs: stat.mtimeNs }),
     ino: BigInt(stat.ino),
   };

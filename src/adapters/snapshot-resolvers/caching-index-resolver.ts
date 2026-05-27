@@ -100,11 +100,15 @@ export const createCachingIndexResolver = (
     stat: FileStat,
   ): Promise<boolean> => {
     const trailerSize = cached.parsed.trailerSha.length;
-    // Guard against truncated index: an externally-zeroed file shorter
-    // than the trailer length would pass a negative offset to readSlice,
-    // whose behaviour on negative `position` is adapter-defined and could
-    // spuriously match a residual trailer. Refuse the trust shortcut and
-    // fall through to a fresh parse.
+    // equivalent-mutant: this entire size guard is defence-in-depth. A
+    // cached entry only exists after a successful parseIndex, which
+    // requires the file to be at least 32 bytes (12-byte header + 20-byte
+    // trailer + 0 entries). Combined with `statMatches=true` (the only
+    // gate to reach here), stat.size === observed.size >= 32 > trailerSize.
+    // So neither `trailerSize === 0` nor `stat.size < trailerSize` is
+    // reachable in normal flow. The guard hardens against adapter
+    // misbehaviour on truncated inputs and Stryker correctly flags the
+    // mutants as observably-equivalent under the established invariants.
     if (trailerSize === 0 || stat.size < trailerSize) return false;
     const trailer = await readTrailer(fs, path, trailerSize, stat.size);
     return bytesEqual(trailer, cached.parsed.trailerSha);

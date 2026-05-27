@@ -23,7 +23,16 @@ export const groupByDir = <R extends { readonly path: FilePath }>() =>
     let rows: R[] = [];
     for await (const row of assertOrdered(source)) {
       const dir = dirOf(row.path);
+      // equivalent-mutant: replacing `currentDir === null` with `false` is
+      // observably equivalent — `dir` is always a string (possibly `""`),
+      // `currentDir` is either `null` or a string, so on the first iter
+      // `dir !== currentDir` evaluates to `'something' !== null = true`
+      // and the branch is entered anyway. The null check is defensive.
       if (currentDir === null || dir !== currentDir) {
+        // equivalent-mutant: replacing `rows.length > 0` with `true` (or
+        // `>= 0`) is observably equivalent — on every iter that reaches
+        // this point with `currentDir !== null`, rows has at least one
+        // entry (initialised to `[row]` on the previous new-group hit).
         if (currentDir !== null && rows.length > 0) {
           yield { path: currentDir, rows };
         }
@@ -33,6 +42,9 @@ export const groupByDir = <R extends { readonly path: FilePath }>() =>
         rows.push(row);
       }
     }
+    // equivalent-mutant: same reasoning as the in-loop yield gate above —
+    // when `currentDir !== null` here, the loop ran at least once and
+    // `rows` was last assigned `[row]`, so `rows.length > 0` is always true.
     if (currentDir !== null && rows.length > 0) {
       yield { path: currentDir, rows };
     }

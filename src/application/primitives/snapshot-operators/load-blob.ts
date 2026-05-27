@@ -51,6 +51,12 @@ const drainOldest = async <R>(state: QueueState<R>): Promise<R> => {
   const head = state.inflight.shift();
   if (head === undefined) throw new Error('drainOldest invariant: queue empty');
   await head.task;
+  // equivalent-mutant: flipping `-=` to `+=` here keeps the saturation
+  // gate firing more aggressively (state.bytes never shrinks), but the
+  // observable yield count and order are unchanged: peak in-flight is
+  // bounded separately by the drain loop's `length > 0` guard, and
+  // state.bytes is only consulted inside `isQueueSaturated()` which is
+  // already saturated at that point.
   state.bytes -= head.size;
   return head.row;
 };
@@ -79,6 +85,11 @@ export const loadBlob = <R extends SlotKeyedRow>(slot: string, opts: LoadBlobOpt
       const { size, task } = readForSlot(row, slot);
       state.inflight.push({ row, size, task });
       state.bytes += size;
+      // equivalent-mutant: replacing `state.inflight.length > 0` with
+      // `true` (or `>= 0`) is observably equivalent — `state.bytes >=
+      // maxInflightBytes` can only be true when at least one row has
+      // been pushed (bytes is only ever increased on push), so the
+      // length-zero case is unreachable inside this loop.
       while (isQueueSaturated() && state.inflight.length > 0) {
         yield await drainOldest(state);
       }

@@ -272,6 +272,89 @@ describe('caching-index-resolver — asymmetric mtimeNs presence', () => {
   });
 });
 
+describe('caching-index-resolver — racy vs non-racy with a wrong cached trailer', () => {
+  // These tests use a stub inner that returns a GitIndex whose trailerSha
+  // differs from the on-disk bytes. The behaviour now diverges between the
+  // racy (trailer check fires → mismatch → re-parse) and non-racy (trailer
+  // check skipped → cache reused) paths, which lets us pin the needsRacyCheck
+  // branches.
+
+  const buildSetup = async (
+    statShape: 'ns-both' | 'ns-none',
+  ): Promise<{
+    ctx: Context;
+    view: ReturnType<typeof createCounterGenerationView>;
+    inner: CountingResolver;
+    sut: IndexResolver;
+  }> => {
+    const ctx = await buildSeededContext({ index: sampleIndex([sampleEntry('a.txt')]) });
+    const indexPath = `${ctx.layout.gitDir}/index`;
+    const realStat = await ctx.fs.stat(indexPath);
+    const fakeStat: FileStat = statShape === 'ns-both' ? { ...realStat, mtimeNs: 7n } : realStat;
+    const fs = {
+      ...ctx.fs,
+      stat: async (p: string) => (p === indexPath ? fakeStat : ctx.fs.stat(p)),
+    };
+    const ctxWithFs: Context = { ...ctx, fs };
+    const view = createCounterGenerationView();
+    const { stream } = createInMemoryWriteEventBus(view);
+    // Stub inner returns a GitIndex with a deliberately wrong trailerSha.
+    const wrongTrailer = new Uint8Array(20).fill(0xff);
+    const stubGitIndex: GitIndex = {
+      version: 2,
+      entries: [sampleEntry('a.txt')],
+      extensions: [],
+      trailerSha: wrongTrailer,
+    };
+    let calls = 0;
+    const inner: CountingResolver = {
+      calls: () => calls,
+      resolve: async () => {
+        calls += 1;
+        return stubGitIndex;
+      },
+    };
+    const sut = createCachingIndexResolver(inner, fs, stream, view);
+    return { ctx: ctxWithFs, view, inner, sut };
+  };
+
+  describe('Given a warm cache whose stored trailer DOES NOT match the on-disk trailer, and both stats carry ns (non-racy)', () => {
+    describe('When resolve runs through the stat-validated path', () => {
+      it('Then the cache is reused (needsRacyCheck=false → skip trailer check)', async () => {
+        // Arrange — non-racy path: trailer check is skipped, so even a
+        // wrong cached trailer still leads to cache reuse.
+        const { ctx, view, inner, sut } = await buildSetup('ns-both');
+        await sut.resolve(ctx);
+
+        // Act
+        view.bump('index');
+        await sut.resolve(ctx);
+
+        // Assert — only the initial inner call
+        expect(inner.calls()).toBe(1);
+      });
+    });
+  });
+
+  describe('Given a warm cache whose stored trailer DOES NOT match the on-disk trailer, and both stats lack ns (racy)', () => {
+    describe('When resolve runs through the stat-validated path', () => {
+      it('Then re-parse fires (needsRacyCheck=true → trailer check → mismatch)', async () => {
+        // Arrange — racy path: trailer check fires; cached trailer is all
+        // 0xff while on-disk is the real hash → mismatch → re-parse.
+        const { ctx, view, inner, sut } = await buildSetup('ns-none');
+        await sut.resolve(ctx);
+
+        // Act
+        view.bump('index');
+        await sut.resolve(ctx);
+
+        // Assert
+        expect(inner.calls()).toBe(2);
+      });
+    });
+  });
+});
+
 describe('caching-index-resolver — non-racy size differs forces re-parse', () => {
   describe('Given a warm cache observed with ns and a stat that differs on .size but matches ns', () => {
     describe('When resolve runs through the stat-validated path (non-racy)', () => {

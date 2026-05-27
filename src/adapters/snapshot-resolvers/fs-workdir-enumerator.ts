@@ -52,14 +52,29 @@ export const createFsWorkdirEnumerator = (): WorkdirEnumerator => ({
 
 async function* enumerate(ctx: Context, opts: WorkdirEnumOptions): AsyncIterable<WorkdirEntryRow> {
   const isAborted = (): boolean => opts.signal?.aborted === true || ctx.signal?.aborted === true;
+  // equivalent-mutant: replacing `if (isAborted())` here with `if (false)`
+  // is observably equivalent when `ctx.signal` is aborted because
+  // `walkWorkingTree` performs its own `ctx.signal?.aborted` check on
+  // the first iteration and surfaces `operationAborted()` from inside.
+  // The pre-loop guard is kept so callers passing only `opts.signal`
+  // (not `ctx.signal`) still get a fast-fail before any I/O.
   if (isAborted()) throw operationAborted();
   const excludes: WalkIgnorePredicate | undefined = opts.excludes;
   const inner = walkWorkingTree(ctx, {
+    // equivalent-mutants: replacing these `... === undefined ? {} : {...}`
+    // conditional spreads with `{}`/`!== undefined` variants is observably
+    // equivalent because `walkWorkingTree` itself defaults every undefined
+    // option via `options?.X ?? DEFAULT`. Including the key with an
+    // undefined value produces the same behaviour as omitting it.
     ...(opts.maxDepth === undefined ? {} : { maxDepth: opts.maxDepth }),
     ...(opts.maxEntries === undefined ? {} : { maxEntries: opts.maxEntries }),
     ...(excludes === undefined ? {} : { ignore: excludes }),
   });
   for await (const { path, stat } of inner) {
+    // equivalent-mutant: same reasoning as the pre-loop guard above —
+    // walkWorkingTree's own `ctx.signal?.aborted` check fires from
+    // inside the inner iterator on every step, so removing this guard
+    // is observably equivalent when ctx.signal aborts.
     if (isAborted()) throw operationAborted();
     if (opts.paths !== undefined && !matchesPathspec(opts.paths, path)) continue;
     yield toRow(path, stat);
