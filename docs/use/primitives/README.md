@@ -2,7 +2,7 @@
 
 The composable building blocks every Tier-1 command is built from. Same `Context` users get — you can compose them into custom workflows that don't fit the command surface.
 
-21 primitives bound on `repo.primitives.*`, alphabetical:
+22 primitives bound on `repo.primitives.*`, alphabetical:
 
 | Primitive | Summary |
 |---|---|
@@ -11,6 +11,7 @@ The composable building blocks every Tier-1 command is built from. Same `Context
 | [`diffTrees`](diff-trees.md) | Compare two tree iterables; returns a structured diff. |
 | [`getRepoRoot`](get-repo-root.md) | The repository's working-tree root (`FilePath`). |
 | [`hashBlob`](hash-blob.md) | Compute a blob OID for arbitrary bytes; `{ write: true }` persists the loose object. |
+| [`isIgnored`](is-ignored.md) | Per-path ignore lookup with rule provenance (kind, basedir, line, pattern). |
 | [`mergeBase`](merge-base.md) | Best common ancestor of two commits. |
 | [`readBlob`](read-blob.md) | Read a blob by id; optional `maxBytes` cap. |
 | [`readIndex`](read-index.md) | Read `.git/index` (v2 or v3). |

@@ -173,6 +173,7 @@ describe('openRepository — Repository binding integrity', () => {
             'diffTrees',
             'getRepoRoot',
             'hashBlob',
+            'isIgnored',
             'mergeBase',
             'readBlob',
             'readIndex',
