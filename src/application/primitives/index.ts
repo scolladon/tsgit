@@ -16,6 +16,8 @@ export { enumeratePushObjects } from './enumerate-push-objects.js';
 export { enumerateRefs } from './enumerate-refs.js';
 export type { FetchPackInput, FetchPackResult } from './fetch-pack.js';
 export { fetchPack } from './fetch-pack.js';
+export type { HashBlobOptions } from './hash-blob.js';
+export { hashBlob } from './hash-blob.js';
 export type { MaterializeTreeOpts, MaterializeTreeResult } from './materialize-tree.js';
 export { materializeTree } from './materialize-tree.js';
 export { mergeBase } from './merge-base.js';

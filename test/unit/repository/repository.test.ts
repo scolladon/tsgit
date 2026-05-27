@@ -172,6 +172,7 @@ describe('openRepository — Repository binding integrity', () => {
             'createCommit',
             'diffTrees',
             'getRepoRoot',
+            'hashBlob',
             'mergeBase',
             'readBlob',
             'readIndex',

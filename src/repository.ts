@@ -149,6 +149,7 @@ export interface Repository {
     readonly createCommit: BindCtx<typeof primitives.createCommit>;
     readonly diffTrees: BindCtx<typeof primitives.diffTrees>;
     readonly getRepoRoot: BindCtx<typeof primitives.getRepoRoot>;
+    readonly hashBlob: BindCtx<typeof primitives.hashBlob>;
     readonly mergeBase: BindCtx<typeof primitives.mergeBase>;
     readonly readBlob: BindCtx<typeof primitives.readBlob>;
     readonly readIndex: BindCtx<typeof primitives.readIndex>;
@@ -419,6 +420,10 @@ export const openRepository = async (
         guard();
         return primitives.getRepoRoot(ctx);
       }) as Repository['primitives']['getRepoRoot'],
+      hashBlob: ((content, options) => {
+        guard();
+        return primitives.hashBlob(ctx, content, options);
+      }) as Repository['primitives']['hashBlob'],
       mergeBase: ((a, b) => {
         guard();
         return primitives.mergeBase(ctx, a, b);
