@@ -1,4 +1,9 @@
 import { describe, expect, it } from 'vitest';
+
+import type { IndexEntry } from '../../../src/application/primitives/snapshot/index-entry.js';
+import { requireSnapshot } from '../../../src/application/primitives/snapshot/require-snapshot.js';
+import type { TreeEntry } from '../../../src/application/primitives/snapshot/tree-entry.js';
+import type { WorkdirEntry } from '../../../src/application/primitives/snapshot/workdir-entry.js';
 import type {
   IndexCachedStat,
   IndexEntryRow,
@@ -67,6 +72,19 @@ describe('Given the Step 1.1 type surface', () => {
       };
 
       expect(sut.scope).toBe('index');
+    });
+  });
+
+  describe('When asserting every new application entry surface is importable', () => {
+    it('Then the entry interfaces and requireSnapshot helper resolve', () => {
+      const sut = {
+        treeEntry: undefined as unknown as TreeEntry,
+        indexEntry: undefined as unknown as IndexEntry,
+        workdirEntry: undefined as unknown as WorkdirEntry,
+        require: requireSnapshot,
+      };
+
+      expect(typeof sut.require).toBe('function');
     });
   });
 });
