@@ -115,6 +115,13 @@ if [ -z "$mismatches" ]; then
     echo ""
     echo "No drift detected — commands/primitives changes match their docs."
   } >> "$GITHUB_STEP_SUMMARY"
+  # If a previous CI run on this PR posted a drift comment that has now
+  # been resolved (e.g. the developer added the missing docs in a
+  # follow-up push), delete the stale comment so reviewers see the
+  # current state rather than the historical one.
+  gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" \
+    | jq -r --arg tag "$COMMENT_TAG" '.[] | select(.body | startswith($tag)) | .id' \
+    | xargs -r -I{} gh api -X DELETE "repos/${REPO}/issues/comments/{}"
   exit 0
 fi
 
