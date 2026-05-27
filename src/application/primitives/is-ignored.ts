@@ -16,7 +16,7 @@ import {
 } from '../../domain/ignore/index.js';
 import type { FilePath } from '../../domain/objects/object-id.js';
 import type { Context } from '../../ports/context.js';
-import { buildIgnoreEvaluator } from '../commands/internal/build-ignore-evaluator.js';
+import { buildIgnoreEvaluator } from './internal/ignore-evaluator.js';
 
 export interface IsIgnoredQuery {
   readonly path: FilePath;

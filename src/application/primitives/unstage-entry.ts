@@ -9,8 +9,8 @@ import type { IndexEntry } from '../../domain/git-index/index-entry.js';
 import { NO_PARSER_OFFSET, validateIndexPath } from '../../domain/git-index/path-validator.js';
 import type { FilePath } from '../../domain/objects/object-id.js';
 import type { Context } from '../../ports/context.js';
-import { acquireIndexLock } from '../commands/internal/index-update.js';
-import { assertNotBare, assertRepository } from '../commands/internal/repo-state.js';
+import { acquireIndexLock } from './internal/index-lock.js';
+import { assertNotBare, assertRepository } from './internal/repo-state.js';
 import { readIndex } from './read-index.js';
 
 export interface UnstageEntryOptions {
