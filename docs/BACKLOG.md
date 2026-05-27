@@ -235,7 +235,7 @@ ADR required for: pyramid ratios, mutation budgets per domain, interop-test scop
 
 High-reuse building blocks. Unlocks Phase 21–22.
 
-- [ ] **20.1** Unified `walk({ trees: [TREE, WORKDIR, STAGE], map })` — closes isomorphic-git parity, becomes the spine of inspection commands.
+- [~] **20.1** Snapshot+join surface (`repo.snapshot.head/index/workdir/…` + `join`/`innerJoin` + operators). Wave 1 lands the engine (resolvers, bus + view, snapshot impls, factory, join, operators, deprecation helper, public exports); Waves 2–8 migrate consumers (`status`, `diff`, `add`, `checkout`, `merge`, …) and deprecate the legacy walkers.
 - [ ] **20.2** Standalone primitives — `hashBlob`, `isIgnored`, `updateIndex` granular CRUD.
 - [ ] **20.3** Diff patch-text output (`diff({ format: 'patch' })`); unified-diff serializer in domain.
 - [ ] **20.4** Merge state machine — `abortMerge`, `continueMerge`. Prereq for cherry-pick / rebase conflict flow.

@@ -105,6 +105,17 @@ export const createCachingIndexResolver = (
     return trailerStillMatches(cached, path, stat);
   };
 
+  const safeStat = async (path: string): Promise<FileStat | null> => {
+    try {
+      return await fs.stat(path);
+    } catch (err) {
+      // If the file doesn't exist we still want the inner resolver to handle
+      // the empty-index fallback. Re-throw anything else.
+      if ((err as { data?: { code?: string } }).data?.code === 'FILE_NOT_FOUND') return null;
+      throw err;
+    }
+  };
+
   return {
     resolve: async (ctx, opts) => {
       const currentGen = view.current('index');
@@ -115,15 +126,24 @@ export const createCachingIndexResolver = (
       }
 
       const path = resolveIndexPath(ctx.layout.gitDir);
-      const stat = await fs.stat(path);
+      const stat = await safeStat(path);
 
-      if (!bypass && entry !== null && (await isStatValidatedHit(entry, path, stat))) {
+      if (
+        !bypass &&
+        entry !== null &&
+        stat !== null &&
+        (await isStatValidatedHit(entry, path, stat))
+      ) {
         entry.cachedGen = currentGen;
         return entry.parsed;
       }
 
       const parsed = await inner.resolve(ctx, opts);
-      entry = { parsed, observed: stat, cachedGen: currentGen };
+      if (stat !== null) {
+        entry = { parsed, observed: stat, cachedGen: currentGen };
+      } else {
+        entry = null; // missing index — keep cache empty so next call re-checks fs
+      }
       return parsed;
     },
   };

@@ -593,7 +593,11 @@
     "tmpfs",
     "throughs",
     "reentrancy",
-    "hotspot"
+    "hotspot",
+    "callsite",
+    "callsites",
+    "Callsite",
+    "Callsites"
   ],
   "ignorePaths": [
     "node_modules",

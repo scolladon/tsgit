@@ -1,5 +1,17 @@
+import { createCachingIndexResolver } from './adapters/snapshot-resolvers/caching-index-resolver.js';
+import { createCachingTreeResolver } from './adapters/snapshot-resolvers/caching-tree-resolver.js';
+import { createCounterGenerationView } from './adapters/snapshot-resolvers/counter-generation-view.js';
+import { createFsWorkdirEnumerator } from './adapters/snapshot-resolvers/fs-workdir-enumerator.js';
+import { createInMemoryWriteEventBus } from './adapters/snapshot-resolvers/in-memory-write-event-bus.js';
+import { createRawIndexResolver } from './adapters/snapshot-resolvers/raw-index-resolver.js';
+import { createRawTreeResolver } from './adapters/snapshot-resolvers/raw-tree-resolver.js';
+import { createSingleFlightIndexResolver } from './adapters/snapshot-resolvers/single-flight-index-resolver.js';
 import * as commands from './application/commands/index.js';
 import * as primitives from './application/primitives/index.js';
+import {
+  createSnapshotFactory,
+  type SnapshotFactory,
+} from './application/primitives/snapshot/snapshot-factory.js';
 import { disposeAdapters } from './dispose-adapters.js';
 import { repositoryDisposed } from './domain/commands/error.js';
 import type { Compressor } from './ports/compressor.js';
@@ -155,6 +167,14 @@ export interface Repository {
     readonly writeTree: BindCtx<typeof primitives.writeTree>;
   };
 
+  /**
+   * Lazy snapshot factory wired to the cached resolver stack (Phase 20.1).
+   * Each method returns a `Snapshot` handle that performs no I/O until
+   * iterated; in-flight iterations are isolated from concurrent writes
+   * via the iteration-stability invariant (design §8.0 + ADR-150).
+   */
+  readonly snapshot: SnapshotFactory;
+
   /** The frozen Context backing every binding. Exposed for advanced use. */
   readonly ctx: Context;
 
@@ -165,6 +185,17 @@ export interface Repository {
    */
   readonly dispose: () => Promise<void>;
 }
+
+const buildSnapshotFactory = (ctx: Context): SnapshotFactory => {
+  const view = createCounterGenerationView();
+  const bus = createInMemoryWriteEventBus(view);
+  const indexResolver = createSingleFlightIndexResolver(
+    createCachingIndexResolver(createRawIndexResolver(), ctx.fs, bus.stream, view),
+  );
+  const treeResolver = createCachingTreeResolver(createRawTreeResolver());
+  const workdirEnumerator = createFsWorkdirEnumerator();
+  return createSnapshotFactory({ ctx, indexResolver, treeResolver, workdirEnumerator });
+};
 
 type DisposeState = 'OPEN' | 'DISPOSING' | 'DISPOSED';
 
@@ -267,7 +298,10 @@ export const openRepository = async (
     }
   };
 
+  const snapshot = buildSnapshotFactory(ctx);
+
   const repo: Repository = Object.freeze({
+    snapshot,
     add: ((paths, addOpts) => {
       guard();
       return commands.add(ctx, paths, addOpts);

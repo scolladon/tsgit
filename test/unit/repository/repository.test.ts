@@ -151,6 +151,7 @@ describe('openRepository — Repository binding integrity', () => {
             'reset',
             'revParse',
             'rm',
+            'snapshot',
             'sparseCheckout',
             'status',
             'submodules',
@@ -197,7 +198,7 @@ describe('openRepository — Repository binding integrity', () => {
         const sut = await open();
 
         for (const key of Object.keys(sut)) {
-          if (key === 'ctx' || key === 'primitives') continue;
+          if (key === 'ctx' || key === 'primitives' || key === 'snapshot') continue;
           // Assert
           expect(typeof (sut as unknown as Record<string, unknown>)[key]).toBe('function');
         }
