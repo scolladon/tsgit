@@ -235,7 +235,7 @@ ADR required for: pyramid ratios, mutation budgets per domain, interop-test scop
 
 High-reuse building blocks. Unlocks Phase 21–22.
 
-- [ ] **20.1** Unified `walk({ trees: [TREE, WORKDIR, STAGE], map })` — closes isomorphic-git parity, becomes the spine of inspection commands.
+- [~] **20.1** Snapshot+join surface (`repo.snapshot.head/index/workdir/…` + `join`/`innerJoin` + operators). Wave 1 lands the engine (resolvers, bus + view, snapshot impls, factory, join, operators, deprecation helper, public exports); Waves 2–8 migrate consumers (`status`, `diff`, `add`, `checkout`, `merge`, …) and deprecate the legacy walkers.
 - [ ] **20.2** Standalone primitives — `hashBlob`, `isIgnored`, `updateIndex` granular CRUD.
 - [ ] **20.3** Diff patch-text output (`diff({ format: 'patch' })`); unified-diff serializer in domain.
 - [ ] **20.4** Merge state machine — `abortMerge`, `continueMerge`. Prereq for cherry-pick / rebase conflict flow.
@@ -321,6 +321,48 @@ Runs against a stable surface; instruments every command on medium + large fixtu
 - **ADR per user decision** — when the user weighs in on naming, scope, trade-off, or alternative, capture it as an ADR before moving on.
 - **No phase refs in code** — `§N.M` / `Phase X` / `ADR-NNN` / `BACKLOG` refs do not appear in source or tests. The commit is the join point.
 - **Mutation hardening** — every PR keeps mutation score at or above baseline. Equivalent mutants documented inline with `// equivalent-mutant: <why>`.
+
+---
+
+## Phase 27 — Test base rework (sequenced after Phase 26)
+
+Restructure every test tier around minimal-but-complete coverage instead
+of breadth-of-cases. Each tier optimises for a different target.
+Companion to (not replacement for) the mutation-pyramid harness shipped
+in Phase 19. Starts AFTER Phase 26 lands so 27.4 has the perf data it
+needs to define hot paths.
+
+- [ ] **27.1 Unit — minimise while preserving GWT discipline.** Keep one
+  `it('Then …')` per distinct behaviour. Minimise by collapsing tests
+  that prove the SAME behaviour with different inputs into one
+  parameterised test (`it.each`). Delete strict-subset tests outright.
+  Outcome: 100 % line / branch / function / statement coverage AND
+  only provably-equivalent mutants surviving (documented inline per
+  existing convention). Intention-revealing test titles preserved.
+- [ ] **27.2 Integration — collapse same-scenario-different-input
+  overlap.** Two integration tests overlap when they exercise the same
+  user journey or code path with different fixtures. Such tests merge
+  into one parameterised case; strict-subset tests delete.
+  **Parity cross-products (Node × Memory × Browser × Deno × Bun ×
+  Workers) are NOT overlap** — they prove cross-adapter equivalence
+  and stay distinct.
+- [ ] **27.3 E2E — same overlap definition.** Each Playwright / browser
+  flow asserts a user journey no other E2E flow asserts. Parity
+  cross-products excluded from the overlap audit.
+- [ ] **27.4 Perf — rebuild bench suite around hot paths.** Hot-path
+  list is NOT pre-frozen here; it's derived from the Phase 26 perf
+  pass output (the perf pass produces measurements that pick the
+  hottest operations). Once that list lands as an ADR, hot paths get
+  small / medium / large fixtures; non-hot paths keep medium only.
+  Bench gating only on hot paths.
+
+ADRs required before kick-off:
+- ADR-N: Phase 27 rework rationale + sequencing after Phase 26.
+- ADR-N+1: Unit-tier minimisation policy (GWT preserved, parameterise
+  same-behaviour-different-input cases).
+- ADR-N+2: Overlap definition for integration / E2E + parity carve-out.
+- ADR-N+3: Hot-path picking methodology (Phase-26-data-driven, list
+  refreshed each major version).
 
 ---
 

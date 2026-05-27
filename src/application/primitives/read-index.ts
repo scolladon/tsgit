@@ -12,7 +12,7 @@ import {
 export async function readIndex(ctx: Context): Promise<GitIndex> {
   const path = indexPath(ctx.layout.gitDir);
   if (!(await ctx.fs.exists(path))) {
-    return { version: 2, entries: [], extensions: [] };
+    return { version: 2, entries: [], extensions: [], trailerSha: new Uint8Array(0) };
   }
   // Pre-check against stat to reject oversized files before allocating.
   const stat = await ctx.fs.stat(path);

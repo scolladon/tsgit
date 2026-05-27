@@ -1,5 +1,5 @@
 import { TsgitError } from '../../../domain/error.js';
-import { type GitIndex, type IndexEntry, serializeIndex } from '../../../domain/git-index/index.js';
+import { type IndexEntry, serializeIndex } from '../../../domain/git-index/index.js';
 import type { Context } from '../../../ports/context.js';
 import { indexPath, lockSuffix } from '../../primitives/path-layout.js';
 
@@ -116,8 +116,12 @@ const makeLock = (ctx: Context, lockPath: string, indexFile: string): IndexLock 
     },
     commit: async (entries) => {
       if (committed || released) return;
-      const index: GitIndex = { version: 2, entries: [...entries], extensions: [] };
-      const body = serializeIndex(index);
+      const body = serializeIndex({
+        version: 2,
+        entries: [...entries],
+        extensions: [],
+        trailerSha: new Uint8Array(0),
+      });
       const checksum = await ctx.hash.hash(body);
       const bytes = new Uint8Array(body.length + checksum.length);
       bytes.set(body, 0);

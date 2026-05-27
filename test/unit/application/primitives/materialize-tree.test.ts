@@ -10,7 +10,12 @@ import type { FilePath, ObjectId, TreeEntry } from '../../../../src/domain/objec
 import { recordingProgress } from '../commands/fixtures.js';
 import { buildSeededContext } from './fixtures.js';
 
-const EMPTY_INDEX: GitIndex = { version: 2, entries: [], extensions: [] };
+const EMPTY_INDEX: GitIndex = {
+  version: 2,
+  entries: [],
+  extensions: [],
+  trailerSha: new Uint8Array(0),
+};
 
 const writeBlob = async (
   ctx: Awaited<ReturnType<typeof buildSeededContext>>,

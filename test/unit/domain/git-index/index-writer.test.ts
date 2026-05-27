@@ -101,7 +101,12 @@ describe('serializeIndex', () => {
     describe('When serializing', () => {
       it('Then output is 12-byte header only', () => {
         // Arrange
-        const index: GitIndex = { version: 2, entries: [], extensions: [] };
+        const index: GitIndex = {
+          version: 2,
+          entries: [],
+          extensions: [],
+          trailerSha: new Uint8Array(0),
+        };
 
         // Act
         const sut = serializeIndex(index);
@@ -121,7 +126,12 @@ describe('serializeIndex', () => {
       it('Then roundtrips', () => {
         // Arrange
         const entry = makeEntry('hello.txt');
-        const index: GitIndex = { version: 2, entries: [entry], extensions: [] };
+        const index: GitIndex = {
+          version: 2,
+          entries: [entry],
+          extensions: [],
+          trailerSha: new Uint8Array(0),
+        };
 
         // Act
         const serialized = serializeIndex(index);
@@ -144,6 +154,7 @@ describe('serializeIndex', () => {
           version: 2,
           entries: [makeEntry('c.txt'), makeEntry('a.txt'), makeEntry('b.txt')],
           extensions: [],
+          trailerSha: new Uint8Array(0),
         };
 
         // Act
@@ -166,6 +177,7 @@ describe('serializeIndex', () => {
           version: 2,
           entries: [makeEntry('a/b/c.txt')],
           extensions: [],
+          trailerSha: new Uint8Array(0),
         };
 
         // Act
@@ -187,6 +199,7 @@ describe('serializeIndex', () => {
           version: 2,
           entries: [makeEntry('ab')],
           extensions: [],
+          trailerSha: new Uint8Array(0),
         };
 
         // Act
@@ -209,6 +222,7 @@ describe('serializeIndex', () => {
           version: 2,
           entries: [makeEntry(longPath)],
           extensions: [],
+          trailerSha: new Uint8Array(0),
         };
 
         // Act
@@ -231,6 +245,7 @@ describe('serializeIndex', () => {
           version: 2,
           entries: [],
           extensions: [{ signature: 'TREE', data: extData }],
+          trailerSha: new Uint8Array(0),
         };
 
         // Act
@@ -258,6 +273,7 @@ describe('serializeIndex', () => {
             { signature: 'TREE', data: ext1 },
             { signature: 'REUC', data: ext2 },
           ],
+          trailerSha: new Uint8Array(0),
         };
 
         // Act
@@ -282,6 +298,7 @@ describe('serializeIndex', () => {
           version: 2,
           entries: [makeEntry('same.txt', SHA_A), makeEntry('same.txt', SHA_A)],
           extensions: [],
+          trailerSha: new Uint8Array(0),
         };
 
         // Act
@@ -304,6 +321,7 @@ describe('serializeIndex', () => {
           version: 2,
           entries: [makeEntry('file.txt')],
           extensions: [],
+          trailerSha: new Uint8Array(0),
         };
 
         // Act
@@ -326,7 +344,12 @@ describe('serializeIndex', () => {
           fc.assert(
             fc.property(fc.array(arbIndexEntry(), { minLength: 0, maxLength: 5 }), (entries) => {
               const uniqueEntries = deduplicateByPath(entries);
-              const index: GitIndex = { version: 2, entries: uniqueEntries, extensions: [] };
+              const index: GitIndex = {
+                version: 2,
+                entries: uniqueEntries,
+                extensions: [],
+                trailerSha: new Uint8Array(0),
+              };
               const serialized = serializeIndex(index);
               const parsed = parseIndex(withChecksum(serialized));
 
@@ -345,7 +368,12 @@ describe('serializeIndex', () => {
           // Arrange + Assert
           fc.assert(
             fc.property(arbIndexEntry(), (entry) => {
-              const index: GitIndex = { version: 2, entries: [entry], extensions: [] };
+              const index: GitIndex = {
+                version: 2,
+                entries: [entry],
+                extensions: [],
+                trailerSha: new Uint8Array(0),
+              };
               const serialized = serializeIndex(index);
               const entrySize = serialized.length - 12;
               expect(entrySize % 8).toBe(0);
@@ -369,6 +397,7 @@ describe('serializeIndex — index v3 extended flags', () => {
           version: 2,
           entries: [makeEntry('sparse.txt', SHA_A, SKIP_FLAGS)],
           extensions: [],
+          trailerSha: new Uint8Array(0),
         };
 
         // Act
@@ -390,6 +419,7 @@ describe('serializeIndex — index v3 extended flags', () => {
           version: 3,
           entries: [makeEntry('plain.txt')],
           extensions: [],
+          trailerSha: new Uint8Array(0),
         };
 
         // Act
@@ -411,6 +441,7 @@ describe('serializeIndex — index v3 extended flags', () => {
           version: 3,
           entries: [makeEntry('sparse.txt', SHA_A, SKIP_FLAGS)],
           extensions: [],
+          trailerSha: new Uint8Array(0),
         };
 
         // Act
@@ -433,6 +464,7 @@ describe('serializeIndex — index v3 extended flags', () => {
           version: 3,
           entries: [makeEntry('staged.txt', SHA_A, ITA_FLAGS)],
           extensions: [],
+          trailerSha: new Uint8Array(0),
         };
 
         // Act
@@ -455,6 +487,7 @@ describe('serializeIndex — index v3 extended flags', () => {
           version: 3,
           entries: [makeEntry('sparse.ts', SHA_A, SKIP_FLAGS)],
           extensions: [],
+          trailerSha: new Uint8Array(0),
         };
 
         // Act
@@ -478,6 +511,7 @@ describe('serializeIndex — index v3 extended flags', () => {
           version: 2,
           entries: [makeEntry('a.txt'), makeEntry('b.txt', 'b'.repeat(40) as ObjectId)],
           extensions: [],
+          trailerSha: new Uint8Array(0),
         };
 
         // Act
@@ -490,6 +524,7 @@ describe('serializeIndex — index v3 extended flags', () => {
             (l.path as string) < (r.path as string) ? -1 : 1,
           ),
           extensions: [],
+          trailerSha: CHECKSUM,
         });
       });
     });
@@ -507,6 +542,7 @@ describe('serializeIndex — index v3 extended flags', () => {
             makeEntry('ita.txt', 'c'.repeat(40) as ObjectId, ITA_FLAGS),
           ],
           extensions: [],
+          trailerSha: new Uint8Array(0),
         };
 
         // Act
@@ -520,6 +556,7 @@ describe('serializeIndex — index v3 extended flags', () => {
             (l.path as string) < (r.path as string) ? -1 : 1,
           ),
           extensions: [],
+          trailerSha: CHECKSUM,
         });
       });
     });

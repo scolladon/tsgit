@@ -7,6 +7,7 @@ import type { ProtocolError } from './protocol/error.js';
 import type { ReflogError } from './reflog/error.js';
 import type { RefsError } from './refs/error.js';
 import type { RepositoryError } from './repository/error.js';
+import type { WorkdirStat } from './snapshot/workdir-entry-row.js';
 import type { StorageError } from './storage/error.js';
 
 export type AdapterError =
@@ -40,6 +41,18 @@ export type ApplicationError =
       readonly code: 'PACK_TOO_LARGE';
       readonly objectCount: number;
       readonly limit: number;
+    }
+  | { readonly code: 'SNAPSHOT_REQUIRED'; readonly reason: string }
+  | {
+      readonly code: 'WORKDIR_RACE';
+      readonly path: string;
+      readonly observed: WorkdirStat;
+      readonly current: WorkdirStat;
+    }
+  | {
+      readonly code: 'ORDER_INVARIANT_VIOLATION';
+      readonly previous: string;
+      readonly current: string;
     };
 
 export type TsgitErrorData =
@@ -116,6 +129,18 @@ export const invalidWalkInput = (reason: string): TsgitError =>
   new TsgitError({ code: 'INVALID_WALK_INPUT', reason });
 
 export const operationAborted = (): TsgitError => new TsgitError({ code: 'OPERATION_ABORTED' });
+
+export const snapshotRequired = (reason: string): TsgitError =>
+  new TsgitError({ code: 'SNAPSHOT_REQUIRED', reason });
+
+export const workdirRace = (
+  path: string,
+  observed: WorkdirStat,
+  current: WorkdirStat,
+): TsgitError => new TsgitError({ code: 'WORKDIR_RACE', path, observed, current });
+
+export const orderInvariantViolation = (previous: string, current: string): TsgitError =>
+  new TsgitError({ code: 'ORDER_INVARIANT_VIOLATION', previous, current });
 
 function extractDetail(data: TsgitErrorData): string {
   switch (data.code) {
@@ -320,6 +345,12 @@ function extractDetail(data: TsgitErrorData): string {
       return `invalid object filter "${data.spec}": ${data.reason}`;
     case 'REMOTE_FILTER_UNSUPPORTED':
       return 'remote does not support partial-clone object filtering';
+    case 'SNAPSHOT_REQUIRED':
+      return `snapshot required: ${data.reason}`;
+    case 'WORKDIR_RACE':
+      return `working-tree changed under us at ${basename(data.path)} (observed mtime=${data.observed.mtimeMs} size=${data.observed.size}, current mtime=${data.current.mtimeMs} size=${data.current.size})`;
+    case 'ORDER_INVARIANT_VIOLATION':
+      return `row order broken: ${data.previous} followed by ${data.current}`;
     default: {
       const _exhaustive: never = data;
       return String(_exhaustive);

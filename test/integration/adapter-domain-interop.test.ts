@@ -73,6 +73,7 @@ describe('adapter + domain interop', () => {
       version: 2 as const,
       entries: [],
       extensions: [],
+      trailerSha: new Uint8Array(0),
     };
     const body = serializeIndex(emptyIndex);
     // Append a 20-byte SHA-1 trailer computed via the HashService

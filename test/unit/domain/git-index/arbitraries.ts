@@ -147,6 +147,10 @@ function dedupeByPath(entries: ReadonlyArray<IndexEntry>): ReadonlyArray<IndexEn
   return result;
 }
 
+// Property tests don't exercise the trailerSha field; a placeholder empty
+// Uint8Array satisfies the GitIndex shape without polluting test signal.
+const EMPTY_TRAILER = new Uint8Array(0);
+
 export function arbGitIndexV2(): fc.Arbitrary<GitIndex> {
   return fc
     .array(arbIndexEntryV2(), { minLength: 0, maxLength: 12 })
@@ -155,6 +159,7 @@ export function arbGitIndexV2(): fc.Arbitrary<GitIndex> {
       version: 2 as const,
       entries,
       extensions: [] as ReadonlyArray<never>,
+      trailerSha: EMPTY_TRAILER,
     }));
 }
 
@@ -168,5 +173,6 @@ export function arbGitIndexV3(): fc.Arbitrary<GitIndex> {
       version: 3 as const,
       entries,
       extensions: [] as ReadonlyArray<never>,
+      trailerSha: EMPTY_TRAILER,
     }));
 }
