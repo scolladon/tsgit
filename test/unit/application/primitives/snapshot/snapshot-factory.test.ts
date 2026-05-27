@@ -167,6 +167,48 @@ describe('createSnapshotFactory', () => {
     });
   });
 
+  describe('Given a tag object pointing at a commit, with MERGE_HEAD pointing at the tag', () => {
+    describe('When sut.mergeHead() is iterated', () => {
+      it('Then resolveRef peels the tag to the commit (otherwise treeIdFromCommit would reject)', async () => {
+        // Arrange — build commit → tag → MERGE_HEAD-points-at-tag chain.
+        const ctx = await buildSeededContext();
+        const blobId = await writeBlob(ctx, new Uint8Array([1]));
+        const treeId = await writeTree(ctx, [
+          { name: 't.txt', mode: FILE_MODE.REGULAR as FileMode, id: blobId },
+        ]);
+        const commitId = await writeCommit(ctx, treeId);
+        const tagId = await writeObject(ctx, {
+          type: 'tag',
+          id: '' as ObjectId,
+          data: {
+            object: commitId,
+            objectType: 'commit',
+            tagName: 'v0',
+            tagger: {
+              name: 'a',
+              email: 'b@c',
+              timestamp: 0,
+              timezoneOffset: '+0000',
+            },
+            message: 'tagged',
+            extraHeaders: [],
+          },
+        });
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/MERGE_HEAD`, `${tagId}\n`);
+        const sut = factoryFor(ctx);
+
+        // Act
+        const snapshot = await sut.mergeHead();
+        const rows = snapshot === null ? [] : await collect(snapshot.entries());
+
+        // Assert — successful iteration proves peel:true (raw tag-oid path would
+        // surface as unexpectedObjectType('commit', 'tag', ...) inside the snapshot).
+        expect(snapshot).not.toBeNull();
+        expect(rows.map((r) => r.path)).toEqual(['t.txt']);
+      });
+    });
+  });
+
   describe('Given a repo with no stash ref', () => {
     describe('When sut.stashEntry(0) is awaited', () => {
       it('Then it returns null', async () => {

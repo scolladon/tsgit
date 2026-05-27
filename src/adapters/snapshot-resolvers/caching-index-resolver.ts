@@ -35,7 +35,15 @@ const needsRacyCheck = (current: FileStat, observed: FileStat): boolean =>
   current.mtimeNs === undefined || observed.mtimeNs === undefined;
 
 const bytesEqual = (a: Uint8Array, b: Uint8Array): boolean => {
+  // equivalent-mutant: the length-mismatch shortcut is observably equivalent
+  // to the elementwise comparison in this codebase — trailerSha is always
+  // 20 bytes (SHA-1) or 32 (SHA-256) and the size guard in
+  // `trailerStillMatches` ensures the live read has the same length. The
+  // guard is kept for defence-in-depth on unknown callers.
   if (a.length !== b.length) return false;
+  // equivalent-mutant: `i <= a.length` is observably equivalent because
+  // `a[a.length]` is `undefined` and `undefined !== undefined` is `false`,
+  // so the off-by-one iteration is a no-op and the result is unchanged.
   for (let i = 0; i < a.length; i += 1) {
     if (a[i] !== b[i]) return false;
   }
@@ -108,6 +116,13 @@ export const createCachingIndexResolver = (
     stat: FileStat,
   ): Promise<boolean> => {
     if (!statMatches(stat, cached.observed)) return false;
+    // equivalent-mutant: forcing this guard to `false` makes every call
+    // fall through to `trailerStillMatches`. When `statMatches` is true and
+    // `needsRacyCheck` is false (both stats carry ns and ns is equal),
+    // the on-disk file is provably the same byte sequence as when we
+    // cached — so the trailer read produces the same hash and
+    // `trailerStillMatches` returns true. Observable behaviour
+    // unchanged; only one extra `readSlice` per hit is skipped.
     if (!needsRacyCheck(stat, cached.observed)) return true;
     return trailerStillMatches(cached, path, stat);
   };

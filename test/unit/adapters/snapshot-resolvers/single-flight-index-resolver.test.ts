@@ -84,6 +84,30 @@ describe('createSingleFlightIndexResolver', () => {
     });
   });
 
+  describe('Given a non-bypass call is in flight', () => {
+    describe('When a concurrent bypassCache=true call arrives', () => {
+      it('Then the bypass call skips the dedup gate and triggers a second inner call', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const gate = createGate();
+        const inner = createCountingResolver(async () => {
+          await gate.opened;
+          return EMPTY_INDEX;
+        });
+        const sut = createSingleFlightIndexResolver(inner);
+
+        // Act — start a non-bypass call (blocked on gate), then fire bypass.
+        const slow = sut.resolve(ctx);
+        const bypass = sut.resolve(ctx, { bypassCache: true });
+        gate.open();
+        await Promise.all([slow, bypass]);
+
+        // Assert — both calls reach the inner resolver
+        expect(inner.calls()).toBe(2);
+      });
+    });
+  });
+
   describe('Given the inner resolver rejects', () => {
     describe('When concurrent resolves observe the rejection', () => {
       it('Then all callers see the same rejection and inflight is cleared for retry', async () => {

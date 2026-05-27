@@ -78,6 +78,10 @@ const refIfPresent = async (
   refFile: string,
 ): Promise<TreeSnapshot | null> => {
   const path = `${deps.ctx.layout.gitDir}/${refFile}`;
+  // equivalent-mutant: skipping this fast-exit (mutant: `if (false)`) is
+  // observably equivalent because the try/catch below also returns `null`
+  // when `resolveRef` raises `REF_NOT_FOUND`. The early exit is kept as a
+  // fast path so the absent case does not pay for one ref-store lookup.
   if (!(await deps.ctx.fs.exists(path))) return null;
   try {
     return await treeSnapshotFromRef(deps, refFile as RefName);
@@ -132,12 +136,14 @@ export const createSnapshotFactory = (deps: SnapshotFactoryDeps): SnapshotFactor
     cherryPickHead: compoundFactory(deps, 'CHERRY_PICK_HEAD'),
     revertHead: compoundFactory(deps, 'REVERT_HEAD'),
     fetchHead: compoundFactory(deps, 'FETCH_HEAD'),
+    // Stash log entry parsing (reflog) lives outside Wave 1 scope; the
+    // factory always returns null until a future wave wires walk-reflog
+    // and the index/work/untracked tree triplet. The fs.exists check that
+    // would be needed once parsing lands is intentionally absent — we don't
+    // want a placeholder that pretends to discriminate on filesystem state
+    // while returning the same value either way (Stryker correctly flags
+    // such placeholders as equivalent mutants).
     stashEntry: async (stashIndex) => {
-      const stashPath = `${deps.ctx.layout.gitDir}/refs/stash`;
-      if (!(await deps.ctx.fs.exists(stashPath))) return null;
-      // The stash log entry parsing (reflog) lives outside Wave 1 scope; the
-      // factory returns null when no stash ref exists at all. A future wave
-      // wires this to walk-reflog + parses the index/work/untracked tree triplet.
       void stashIndex;
       return null;
     },

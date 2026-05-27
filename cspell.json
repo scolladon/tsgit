@@ -597,7 +597,8 @@
     "callsite",
     "callsites",
     "Callsite",
-    "Callsites"
+    "Callsites",
+    "elementwise"
   ],
   "ignorePaths": [
     "node_modules",
