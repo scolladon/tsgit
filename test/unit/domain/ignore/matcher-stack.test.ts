@@ -157,9 +157,7 @@ describe('matchInStackVerbose', () => {
   describe('Given an empty stack', () => {
     describe('When called', () => {
       it('Then verdict is "unset" with no level or ruleIndex', () => {
-        // Arrange — empty stack: no rule can fire.
-
-        // Act
+        // Arrange + Act — the empty stack literal is itself the arrangement.
         const sut = matchInStackVerbose([], path('foo.log'), false);
 
         // Assert
