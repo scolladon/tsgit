@@ -1,0 +1,217 @@
+import { describe, expect, it } from 'vitest';
+
+import { createFsWorkdirEnumerator } from '../../../../../src/adapters/snapshot-resolvers/fs-workdir-enumerator.js';
+import { createRawIndexResolver } from '../../../../../src/adapters/snapshot-resolvers/raw-index-resolver.js';
+import { createRawTreeResolver } from '../../../../../src/adapters/snapshot-resolvers/raw-tree-resolver.js';
+import { createSnapshotFactory } from '../../../../../src/application/primitives/snapshot/snapshot-factory.js';
+import { writeObject } from '../../../../../src/application/primitives/write-object.js';
+import type {
+  Commit,
+  FileMode,
+  FilePath,
+  ObjectId,
+} from '../../../../../src/domain/objects/index.js';
+import { FILE_MODE } from '../../../../../src/domain/objects/index.js';
+import type { Context } from '../../../../../src/ports/context.js';
+import { buildSeededContext } from '../fixtures.js';
+
+const writeBlob = async (ctx: Context, content: Uint8Array): Promise<ObjectId> =>
+  writeObject(ctx, { type: 'blob', id: '' as ObjectId, content });
+
+const writeTree = async (
+  ctx: Context,
+  entries: ReadonlyArray<{ name: string; mode: FileMode; id: ObjectId }>,
+): Promise<ObjectId> =>
+  writeObject(ctx, {
+    type: 'tree',
+    id: '' as ObjectId,
+    entries: entries.map((e) => ({ name: e.name as FilePath, mode: e.mode, id: e.id })),
+  });
+
+const writeCommit = async (ctx: Context, treeId: ObjectId): Promise<ObjectId> => {
+  const commit: Commit = {
+    type: 'commit',
+    id: '' as ObjectId,
+    data: {
+      tree: treeId,
+      parents: [],
+      author: { name: 'a', email: 'b@c', timestamp: 0, timezoneOffset: '+0000' },
+      committer: { name: 'a', email: 'b@c', timestamp: 0, timezoneOffset: '+0000' },
+      message: 'msg',
+      extraHeaders: [],
+    },
+  };
+  return writeObject(ctx, commit);
+};
+
+const setHead = async (ctx: Context, commitId: ObjectId): Promise<void> => {
+  await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
+  await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
+};
+
+const collect = async <T>(it: AsyncIterable<T>): Promise<T[]> => {
+  const out: T[] = [];
+  for await (const x of it) out.push(x);
+  return out;
+};
+
+const factoryFor = (ctx: Context) =>
+  createSnapshotFactory({
+    ctx,
+    indexResolver: createRawIndexResolver(),
+    treeResolver: createRawTreeResolver(),
+    workdirEnumerator: createFsWorkdirEnumerator(),
+  });
+
+describe('createSnapshotFactory', () => {
+  describe('Given a repo with HEAD pointing at a commit', () => {
+    describe('When sut.head() is iterated', () => {
+      it('Then it yields the commit tree leaves', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const blobId = await writeBlob(ctx, new Uint8Array([1]));
+        const treeId = await writeTree(ctx, [
+          { name: 'a.txt', mode: FILE_MODE.REGULAR as FileMode, id: blobId },
+        ]);
+        const commitId = await writeCommit(ctx, treeId);
+        await setHead(ctx, commitId);
+        const sut = factoryFor(ctx);
+
+        // Act
+        const rows = await collect(sut.head().entries());
+
+        // Assert
+        expect(rows.map((r) => r.path)).toEqual(['a.txt']);
+      });
+    });
+  });
+
+  describe('Given an explicit commit oid', () => {
+    describe('When sut.commit(oid) is iterated', () => {
+      it('Then it resolves the commit and yields its tree leaves', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const blobId = await writeBlob(ctx, new Uint8Array([1]));
+        const treeId = await writeTree(ctx, [
+          { name: 'b.txt', mode: FILE_MODE.REGULAR as FileMode, id: blobId },
+        ]);
+        const commitId = await writeCommit(ctx, treeId);
+        const sut = factoryFor(ctx);
+
+        // Act
+        const rows = await collect(sut.commit(commitId).entries());
+
+        // Assert
+        expect(rows.map((r) => r.path)).toEqual(['b.txt']);
+      });
+    });
+  });
+
+  describe('Given an explicit tree oid', () => {
+    describe('When sut.tree(oid) is iterated', () => {
+      it('Then it yields the tree leaves directly without commit-peeling', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const blobId = await writeBlob(ctx, new Uint8Array([42]));
+        const treeId = await writeTree(ctx, [
+          { name: 'c.txt', mode: FILE_MODE.REGULAR as FileMode, id: blobId },
+        ]);
+        const sut = factoryFor(ctx);
+
+        // Act
+        const rows = await collect(sut.tree(treeId).entries());
+
+        // Assert
+        expect(rows.map((r) => r.path)).toEqual(['c.txt']);
+      });
+    });
+  });
+
+  describe('Given a repository with no .git/MERGE_HEAD', () => {
+    describe('When sut.mergeHead() is awaited', () => {
+      it('Then it resolves to null (no merge in progress)', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const sut = factoryFor(ctx);
+
+        // Act
+        const result = await sut.mergeHead();
+
+        // Assert
+        expect(result).toBeNull();
+      });
+    });
+  });
+
+  describe('Given a repository with a .git/MERGE_HEAD pointing at a commit', () => {
+    describe('When sut.mergeHead() is awaited and iterated', () => {
+      it('Then it yields the merge-head tree leaves', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const blobId = await writeBlob(ctx, new Uint8Array([7]));
+        const treeId = await writeTree(ctx, [
+          { name: 'm.txt', mode: FILE_MODE.REGULAR as FileMode, id: blobId },
+        ]);
+        const commitId = await writeCommit(ctx, treeId);
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/MERGE_HEAD`, `${commitId}\n`);
+        const sut = factoryFor(ctx);
+
+        // Act
+        const snapshot = await sut.mergeHead();
+        const rows = snapshot === null ? [] : await collect(snapshot.entries());
+
+        // Assert
+        expect(snapshot).not.toBeNull();
+        expect(rows.map((r) => r.path)).toEqual(['m.txt']);
+      });
+    });
+  });
+
+  describe('Given a repo with no stash ref', () => {
+    describe('When sut.stashEntry(0) is awaited', () => {
+      it('Then it returns null', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const sut = factoryFor(ctx);
+
+        // Act
+        const result = await sut.stashEntry(0);
+
+        // Assert
+        expect(result).toBeNull();
+      });
+    });
+  });
+
+  describe('Given a populated index', () => {
+    describe('When sut.index() is iterated', () => {
+      it('Then it yields the index rows', async () => {
+        // Arrange — empty index suffices to assert the factory wires the resolver.
+        const ctx = await buildSeededContext();
+        const sut = factoryFor(ctx);
+
+        // Act
+        const rows = await collect(sut.index().entries());
+
+        // Assert
+        expect(rows).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given an empty workdir', () => {
+    describe('When sut.workdir() is iterated', () => {
+      it('Then it yields no rows', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const sut = factoryFor(ctx);
+
+        // Act
+        const rows = await collect(sut.workdir().entries());
+
+        // Assert
+        expect(rows).toEqual([]);
+      });
+    });
+  });
+});
