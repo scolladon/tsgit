@@ -148,6 +148,33 @@ describe('hashBlob', () => {
     });
   });
 
+  describe('Given content larger than MAX_WORKING_TREE_BLOB_BYTES', () => {
+    describe('When hashBlob is called', () => {
+      it('Then it throws WORKING_TREE_FILE_TOO_LARGE before any hashing or fs work', async () => {
+        // Arrange — fabricate a buffer ONE byte past the cap via a typed-array
+        // view that does not actually allocate the full payload (subarray
+        // shares its parent's backing store via byteOffset).
+        const { MAX_WORKING_TREE_BLOB_BYTES } = await import(
+          '../../../../src/application/primitives/types.js'
+        );
+        const huge = new Uint8Array(MAX_WORKING_TREE_BLOB_BYTES + 1);
+        const ctx = await buildSeededContext();
+
+        // Act
+        let caught: unknown;
+        try {
+          await hashBlob(ctx, huge);
+          expect.unreachable();
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data.code).toBe('WORKING_TREE_FILE_TOO_LARGE');
+      });
+    });
+  });
+
   describe('Given a non-aborted then aborted signal between hash and write', () => {
     describe('When write: true is passed', () => {
       it('Then writeObject re-checks the signal and throws OPERATION_ABORTED', async () => {

@@ -5,7 +5,10 @@ import { readIndex } from '../../../../src/application/primitives/read-index.js'
 import { setEntryFlags } from '../../../../src/application/primitives/set-entry-flags.js';
 import { stageEntry } from '../../../../src/application/primitives/stage-entry.js';
 import { TsgitError } from '../../../../src/domain/error.js';
+import { type IndexEntry, STAGE0_FLAGS } from '../../../../src/domain/git-index/index.js';
+import type { FileMode, ObjectId } from '../../../../src/domain/objects/index.js';
 import type { FilePath } from '../../../../src/domain/objects/object-id.js';
+import { buildSeededContext } from './fixtures.js';
 
 afterEach(() => __resetConfigCacheForTests());
 
@@ -143,6 +146,57 @@ describe('setEntryFlags', () => {
 
         // Assert
         expect((caught as TsgitError).data.code).toBe('BARE_REPOSITORY');
+      });
+    });
+  });
+
+  describe('Given a conflict file with stages 1, 2, and 3 (no stage-0)', () => {
+    describe('When setEntryFlags is called', () => {
+      it('Then every matching stage is updated and the lowest stage is returned', async () => {
+        // Arrange — pre-seed three conflict stages with assumeValid=false.
+        // Setting assumeValid=true must propagate across all three; the
+        // return value must be the LOWEST stage (1) per pickUserFacingEntry.
+        const conflictPath = 'conflict.txt' as FilePath;
+        const entryAt = (stage: 1 | 2 | 3): IndexEntry => ({
+          ctimeSeconds: 0,
+          ctimeNanoseconds: 0,
+          mtimeSeconds: 0,
+          mtimeNanoseconds: 0,
+          dev: 0,
+          ino: 0,
+          mode: '100644' as FileMode,
+          uid: 0,
+          gid: 0,
+          fileSize: 0,
+          id: 'e69de29bb2d1d6434b8b29ae775ad8c2e48c5391' as ObjectId,
+          flags: { ...STAGE0_FLAGS, stage },
+          path: conflictPath,
+        });
+        // Reverse-insert stages so the lowest is NOT the first in the array —
+        // pins that pickUserFacingEntry's `< best.flags.stage` loop actually
+        // walks every entry, not just returns entries[0].
+        const ctx = await buildSeededContext({
+          index: {
+            version: 2,
+            entries: [entryAt(3), entryAt(2), entryAt(1)],
+            extensions: [],
+            trailerSha: new Uint8Array(0),
+          },
+        });
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
+
+        // Act
+        const sut = await setEntryFlags(ctx, conflictPath, { assumeValid: true });
+
+        // Assert
+        expect(sut.flags.stage).toBe(1);
+        expect(sut.flags.assumeValid).toBe(true);
+        const reread = await readIndex(ctx);
+        const conflictEntries = reread.entries.filter((e) => e.path === conflictPath);
+        expect(conflictEntries).toHaveLength(3);
+        for (const entry of conflictEntries) {
+          expect(entry.flags.assumeValid).toBe(true);
+        }
       });
     });
   });

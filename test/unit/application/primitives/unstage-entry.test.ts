@@ -5,7 +5,10 @@ import { readIndex } from '../../../../src/application/primitives/read-index.js'
 import { stageEntry } from '../../../../src/application/primitives/stage-entry.js';
 import { unstageEntry } from '../../../../src/application/primitives/unstage-entry.js';
 import type { TsgitError } from '../../../../src/domain/error.js';
+import { type IndexEntry, STAGE0_FLAGS } from '../../../../src/domain/git-index/index.js';
+import type { FileMode, ObjectId } from '../../../../src/domain/objects/index.js';
 import type { FilePath } from '../../../../src/domain/objects/object-id.js';
+import { buildSeededContext } from './fixtures.js';
 
 afterEach(() => __resetConfigCacheForTests());
 
@@ -113,6 +116,49 @@ describe('unstageEntry', () => {
 
         // Assert
         expect((caught as TsgitError).data.code).toBe('BARE_REPOSITORY');
+      });
+    });
+  });
+
+  describe('Given a conflict file with stage-1, stage-2, and stage-3 entries', () => {
+    describe('When unstageEntry is called', () => {
+      it('Then all three stages are removed (every-stage filter)', async () => {
+        // Arrange — pre-seed an index with three stages for the same path,
+        // pinning that the filter `entry.path !== path` strips every stage,
+        // not just stage-0.
+        const conflictPath = 'conflict.txt' as FilePath;
+        const entryAt = (stage: 1 | 2 | 3): IndexEntry => ({
+          ctimeSeconds: 0,
+          ctimeNanoseconds: 0,
+          mtimeSeconds: 0,
+          mtimeNanoseconds: 0,
+          dev: 0,
+          ino: 0,
+          mode: '100644' as FileMode,
+          uid: 0,
+          gid: 0,
+          fileSize: 0,
+          id: 'e69de29bb2d1d6434b8b29ae775ad8c2e48c5391' as ObjectId,
+          flags: { ...STAGE0_FLAGS, stage },
+          path: conflictPath,
+        });
+        const ctx = await buildSeededContext({
+          index: {
+            version: 2,
+            entries: [entryAt(1), entryAt(2), entryAt(3)],
+            extensions: [],
+            trailerSha: new Uint8Array(0),
+          },
+        });
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
+
+        // Act
+        const sut = await unstageEntry(ctx, conflictPath);
+
+        // Assert
+        expect(sut.removed).toBe(true);
+        const reread = await readIndex(ctx);
+        expect(reread.entries.filter((e) => e.path === conflictPath)).toEqual([]);
       });
     });
   });

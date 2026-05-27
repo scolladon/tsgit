@@ -236,7 +236,7 @@ ADR required for: pyramid ratios, mutation budgets per domain, interop-test scop
 High-reuse building blocks. Unlocks Phase 21–22.
 
 - [~] **20.1** Snapshot+join surface (`repo.snapshot.head/index/workdir/…` + `join`/`innerJoin` + operators). Wave 1 lands the engine (resolvers, bus + view, snapshot impls, factory, join, operators, deprecation helper, public exports); Waves 2–8 migrate consumers (`status`, `diff`, `add`, `checkout`, `merge`, …) and deprecate the legacy walkers.
-- [ ] **20.2** Standalone primitives — `hashBlob`, `isIgnored`, `updateIndex` granular CRUD.
+- [x] **20.2** Standalone primitives — `hashBlob`, `isIgnored`, plus granular index CRUD (`stageEntry`, `unstageEntry`, `setEntryFlags`) · ADRs 162–165 · `design/phase-20-2-standalone-primitives.md`
 - [ ] **20.3** Diff patch-text output (`diff({ format: 'patch' })`); unified-diff serializer in domain.
 - [ ] **20.4** Merge state machine — `abortMerge`, `continueMerge`. Prereq for cherry-pick / rebase conflict flow.
 - [ ] **20.5** `remote` CRUD porcelain (`add`/`remove`/`rename`/`set-url`/`show`) on `repo.*`.

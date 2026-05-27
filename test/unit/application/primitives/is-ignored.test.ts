@@ -117,8 +117,11 @@ describe('isIgnored', () => {
         // Act
         const [sut] = await isIgnored(ctx, [{ path: path('build') }]);
 
-        // Assert
+        // Assert — pins both the verdict AND the absence of source: a mutant
+        // that returns a stale source from a prior iteration would survive
+        // a verdict-only assertion.
         expect(sut?.ignored).toBe(false);
+        expect(sut?.source).toBeUndefined();
       });
     });
   });

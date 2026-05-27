@@ -79,19 +79,26 @@ export const isIgnored = async (
     await ensureAncestorRules(query.path);
     const isDir = query.isDirectory === true;
     const match = matchInStackVerbose(stack, query.path, isDir);
-    if (match.verdict !== 'ignored') {
+    // Treat anything except an explicit "ignored" verdict as not ignored —
+    // `'unset'` and `'unignored'` both collapse to no `source` per ADR-163.
+    // `match.level` and `match.ruleIndex` are only populated when verdict !==
+    // 'unset', but we narrow on the actual values rather than the verdict so
+    // a future refactor of `VerboseMatch` cannot silently break the cast path.
+    if (match.verdict !== 'ignored' || match.level === undefined || match.ruleIndex === undefined) {
       results.push({ path: query.path, ignored: false });
       continue;
     }
-    const level = match.level as IgnoreLevel;
-    const ruleIndex = match.ruleIndex as number;
-    const rule = level.rules[ruleIndex] as IgnoreLevel['rules'][number];
+    const rule = match.level.rules[match.ruleIndex];
+    if (rule === undefined) {
+      results.push({ path: query.path, ignored: false });
+      continue;
+    }
     results.push({
       path: query.path,
       ignored: true,
       source: {
-        kind: level.kind ?? 'gitignore',
-        basedir: level.basedir,
+        kind: match.level.kind ?? 'gitignore',
+        basedir: match.level.basedir,
         line: rule.lineNumber,
         pattern: rule.pattern,
       },
