@@ -40,14 +40,55 @@ fi
 changed=$(git diff --name-only "$BASE_SHA...$HEAD_SHA")
 mismatches=""
 
+# Composite-doc allowlist: maps `<src-prefix>` → `<composite-doc>`. When a
+# source file under <src-prefix> changes AND <composite-doc> is in the PR's
+# changed set (or already covered in the funnel README), suppress the
+# per-file mismatch. See `docs-pr-gate.allowlist.txt` for the rationale.
+allowlist_file="$(dirname "$0")/docs-pr-gate.allowlist.txt"
+allowlist_entries=""
+if [ -f "$allowlist_file" ]; then
+  allowlist_entries=$(grep -v '^[[:space:]]*#' "$allowlist_file" | grep -v '^[[:space:]]*$' || true)
+fi
+
+is_allowlisted() {
+  local src="$1"
+  local prefix doc
+  if [ -z "$allowlist_entries" ]; then
+    return 1
+  fi
+  while IFS=' ' read -r prefix doc; do
+    case "$src" in
+      "${prefix}"*)
+        if echo "$changed" | grep -qxF "$doc"; then
+          return 0
+        fi
+        ;;
+    esac
+  done <<< "$allowlist_entries"
+  return 1
+}
+
 while IFS= read -r src; do
   case "$src" in
     src/application/commands/*.ts | src/application/primitives/*.ts) ;;
     *) continue ;;
   esac
+  # Skip nested `internal/` helpers (per-feature implementation pieces, not
+  # user-facing commands/primitives). The gate's bash case glob otherwise
+  # matches deeper paths like `commands/internal/foo.ts` against
+  # `commands/*.ts`, surfacing internal-only files as missing docs.
+  case "$src" in
+    src/application/commands/internal/* | src/application/primitives/internal/*)
+      continue
+      ;;
+  esac
   case "$src" in
     *.test.ts) continue ;;
   esac
+
+  if is_allowlisted "$src"; then
+    continue
+  fi
 
   kind="commands"
   case "$src" in

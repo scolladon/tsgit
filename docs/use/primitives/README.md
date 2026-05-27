@@ -29,6 +29,21 @@ The composable building blocks every Tier-1 command is built from. Same `Context
 
 For internal building blocks referenced from command pages (`materializeTree`, `fetchPack`, `buildPack`, etc.) see [`internals.md`](internals.md).
 
+## Snapshot + join surface (Phase 20.1)
+
+The lazy, atomic-iteration query stack — `repo.snapshot.*` + `join` / `innerJoin` + operators — is documented as a unified primer instead of one page per primitive: the pieces compose into a single user-facing surface and the operator catalogue is the relevant unit. See [`snapshots.md`](../snapshots.md) (mental model + worked examples) and [`caching.md`](../../understand/caching.md) (cache protocol, lock-ordering, racy-stat handling).
+
+| Building block | Primer section |
+|---|---|
+| `repo.snapshot.{head,commit,tree,index,workdir,mergeHead,…}` | [The factory](../snapshots.md#the-factory) |
+| `Snapshot<E>` / `TreeSnapshot` / `IndexSnapshot` / `WorkdirSnapshot` / `StashSnapshot` | [Mental model](../snapshots.md#mental-model) |
+| `TreeEntry` / `IndexEntry` / `WorkdirEntry` | inherited from the row + I/O methods (`read`, `hash`, `readLink`, `verify`) |
+| `requireSnapshot` (unwrap nullable factory return) | [Working with `null`-returning factories](../snapshots.md#working-with-null-returning-factories) |
+| `join({ … })` / `innerJoin({ … })` / `path-merge` | [Worked examples](../snapshots.md#worked-example--status) |
+| `hashSlot` / `hashWorkdir` / `loadBlob` / `verifyWorkdir` / `groupByDir` | [Operators](../snapshots.md#operators) |
+| `count` / `toArray` / `first` (terminals) | [Operators](../snapshots.md#operators) |
+| `warnDeprecated` (legacy-walker cleanup helper) | governed by `TSGIT_SUPPRESS_DEPRECATIONS=1` — see [`caching.md`](../../understand/caching.md#disabling-deprecation-warnings) |
+
 ## Composition pattern
 
 Every walker is a real `AsyncIterable`. The operator toolkit (`pipe`, `filter`, `map`, `flatMap`, `take`, `find`, `groupBy`, `toArray`) composes against them directly:

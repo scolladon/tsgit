@@ -1,0 +1,20 @@
+# docs-pr-gate composite-doc allowlist
+#
+# Each line is `<src-prefix> <doc-path>` (space-separated). When a PR
+# touches a `src/application/{commands,primitives}/…` file under one of
+# these prefixes AND the matching <doc-path> is also touched (or is
+# already present in `docs/use/primitives/README.md` as a row), the
+# gate suppresses the per-file mismatch.
+#
+# Use this when a multi-file primitive ships as a single composite user-
+# facing surface (mental-model primer + operator catalogue) rather than
+# one page per file. Document the exemption inline here so reviewers can
+# audit the trade-off.
+#
+# Lines beginning with `#` are comments; blank lines are ignored.
+
+# Phase 20.1 — snapshot+join engine. The ~20 building blocks compose
+# into `repo.snapshot.*` + `join`/`innerJoin` + the operator catalogue,
+# all documented in docs/use/snapshots.md + docs/understand/caching.md.
+src/application/primitives/snapshot/ docs/use/snapshots.md
+src/application/primitives/snapshot-operators/ docs/use/snapshots.md
