@@ -39,8 +39,7 @@ import type {
 describe('Given the Step 1.1 type surface', () => {
   describe('When asserting every new domain row type is importable', () => {
     it('Then the imports resolve and the type names are non-empty strings', () => {
-      // Types vanish at runtime, so we assert their declared names exist as
-      // type-level identifiers by constructing concrete witnesses below.
+      // Arrange — types vanish at runtime; construct concrete witnesses for each.
       const sut = {
         snapshotKind: 'tree' satisfies SnapshotKind,
         treeRow: undefined as unknown as TreeEntryRow,
@@ -51,12 +50,17 @@ describe('Given the Step 1.1 type surface', () => {
         workdirStat: undefined as unknown as WorkdirStat,
       };
 
-      expect(sut.snapshotKind).toBe('tree');
+      // Act
+      const observed = sut.snapshotKind;
+
+      // Assert
+      expect(observed).toBe('tree');
     });
   });
 
   describe('When asserting every new port interface is importable', () => {
     it('Then the imports resolve and concrete witnesses can be typed', () => {
+      // Arrange
       const sut = {
         scope: 'index' satisfies WriteScope,
         emitter: undefined as unknown as WriteEventEmitter,
@@ -71,12 +75,17 @@ describe('Given the Step 1.1 type surface', () => {
         ignorePredicate: undefined as unknown as WalkIgnorePredicate,
       };
 
-      expect(sut.scope).toBe('index');
+      // Act
+      const observed = sut.scope;
+
+      // Assert
+      expect(observed).toBe('index');
     });
   });
 
   describe('When asserting every new application entry surface is importable', () => {
     it('Then the entry interfaces and requireSnapshot helper resolve', () => {
+      // Arrange
       const sut = {
         treeEntry: undefined as unknown as TreeEntry,
         indexEntry: undefined as unknown as IndexEntry,
@@ -84,7 +93,11 @@ describe('Given the Step 1.1 type surface', () => {
         require: requireSnapshot,
       };
 
-      expect(typeof sut.require).toBe('function');
+      // Act
+      const observed = typeof sut.require;
+
+      // Assert
+      expect(observed).toBe('function');
     });
   });
 });

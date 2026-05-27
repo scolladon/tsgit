@@ -62,8 +62,8 @@ describe('createWorkdirEntry', () => {
         // Arrange
         const ctx = await buildSeededContext();
         const content = new TextEncoder().encode('hash me');
-        const { stat } = await seedFile(ctx, 'hashme.txt', content);
-        const sut = createWorkdirEntry(ctx, makeFileRow('hashme.txt' as FilePath, stat));
+        const { stat } = await seedFile(ctx, 'hash-me.txt', content);
+        const sut = createWorkdirEntry(ctx, makeFileRow('hash-me.txt' as FilePath, stat));
 
         // Act
         const oid = await sut.hash();
@@ -147,7 +147,7 @@ describe('createWorkdirEntry', () => {
         // Arrange
         const ctx = await buildSeededContext();
         const linkAbs = `${ctx.layout.workDir}/link`;
-        await ctx.fs.symlink('targetpath', linkAbs);
+        await ctx.fs.symlink('target-path', linkAbs);
         const live = await ctx.fs.lstat(linkAbs);
         const stat: WorkdirStat = {
           mode: '120000' as FileMode,
@@ -169,7 +169,7 @@ describe('createWorkdirEntry', () => {
         const target = await sut.readLink();
 
         // Assert
-        expect(target).toBe('targetpath');
+        expect(target).toBe('target-path');
       });
     });
   });
