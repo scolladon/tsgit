@@ -91,7 +91,7 @@ describe('hashSlot / hashWorkdir', () => {
           }
         };
         await expect(iterate()).rejects.toMatchObject({
-          data: { code: 'ORDER_INVARIANT_VIOLATION' },
+          data: { code: 'ORDER_INVARIANT_VIOLATION', previous: 'z', current: 'a' },
         });
       });
     });
@@ -345,6 +345,108 @@ describe('terminals', () => {
         await expect(count(sut, { signal: controller.signal })).rejects.toMatchObject({
           data: { code: 'OPERATION_ABORTED' },
         });
+      });
+    });
+
+    describe('When toArray is awaited', () => {
+      it('Then it throws OPERATION_ABORTED', async () => {
+        // Arrange
+        const controller = new AbortController();
+        controller.abort();
+        const sut = stream([{ path: 'a' as FilePath } as Row]);
+
+        // Act + Assert
+        await expect(toArray(sut, { signal: controller.signal })).rejects.toMatchObject({
+          data: { code: 'OPERATION_ABORTED' },
+        });
+      });
+    });
+
+    describe('When first is awaited on a non-empty stream', () => {
+      it('Then it throws OPERATION_ABORTED', async () => {
+        // Arrange
+        const controller = new AbortController();
+        controller.abort();
+        const sut = stream([{ path: 'a' as FilePath } as Row]);
+
+        // Act + Assert
+        await expect(first(sut, { signal: controller.signal })).rejects.toMatchObject({
+          data: { code: 'OPERATION_ABORTED' },
+        });
+      });
+    });
+  });
+});
+
+describe('Given a pre-aborted signal forwarded to hashSlot', () => {
+  describe('When iterated', () => {
+    it('Then it throws OPERATION_ABORTED', async () => {
+      // Arrange
+      const controller = new AbortController();
+      controller.abort();
+      const sut = hashSlot<Row>('workdir', { signal: controller.signal })(
+        stream([{ path: 'a' as FilePath, workdir: { hash: async () => 'a' as ObjectId } }]),
+      );
+
+      // Act + Assert
+      const iterate = async (): Promise<void> => {
+        for await (const _ of sut) {
+          // consume
+        }
+      };
+      await expect(iterate()).rejects.toMatchObject({
+        data: { code: 'OPERATION_ABORTED' },
+      });
+    });
+  });
+});
+
+describe('Given a pre-aborted signal forwarded to loadBlob', () => {
+  describe('When iterated', () => {
+    it('Then it throws OPERATION_ABORTED', async () => {
+      // Arrange
+      const controller = new AbortController();
+      controller.abort();
+      const sut = loadBlob<Row>('workdir', { signal: controller.signal })(
+        stream([
+          {
+            path: 'a' as FilePath,
+            workdir: { stat: { size: 0 }, read: async () => new Uint8Array() },
+          },
+        ]),
+      );
+
+      // Act + Assert
+      const iterate = async (): Promise<void> => {
+        for await (const _ of sut) {
+          // consume
+        }
+      };
+      await expect(iterate()).rejects.toMatchObject({
+        data: { code: 'OPERATION_ABORTED' },
+      });
+    });
+  });
+});
+
+describe('Given a pre-aborted signal forwarded to verifyWorkdir', () => {
+  describe('When iterated', () => {
+    it('Then it throws OPERATION_ABORTED', async () => {
+      // Arrange
+      const controller = new AbortController();
+      controller.abort();
+      const sut = verifyWorkdir<Row>({ signal: controller.signal })(
+        stream([{ path: 'a' as FilePath, workdir: { verify: async () => undefined } }]),
+      );
+
+      // Act + Assert
+      const iterate = async (): Promise<void> => {
+        for await (const _ of sut) {
+          // consume
+        }
+      };
+      await expect(iterate()).rejects.toMatchObject({
+        data: { code: 'OPERATION_ABORTED' },
       });
     });
   });

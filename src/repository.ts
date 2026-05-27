@@ -186,6 +186,22 @@ export interface Repository {
   readonly dispose: () => Promise<void>;
 }
 
+/**
+ * Wave 1 snapshot wiring: bus + view + decorator stack + factory.
+ *
+ * Note on `bus.emitter`: Wave 1 lands the bus but does NOT yet route
+ * `emit('index')` from write primitives (`commands/add`, `commands/commit`,
+ * …). That migration is Wave 2 work — each write primitive will gain the
+ * emitter as a dependency and invoke `emit(scope)` AFTER the durable
+ * write but BEFORE releasing the per-scope lock (the protocol documented
+ * in `docs/understand/caching.md`).
+ *
+ * Until Wave 2 lands, the generation counter stays at 0 and the
+ * tier-1 fast path in `CachingIndexResolver` is permanently inactive.
+ * Behaviour remains correct: cache hits are still validated via tier-2
+ * (stat) and tier-3 (SHA-trailer) on every call. Wave 2 will activate
+ * the zero-syscall fast path described in ADR-150.
+ */
 const buildSnapshotFactory = (ctx: Context): SnapshotFactory => {
   const view = createCounterGenerationView();
   const bus = createInMemoryWriteEventBus(view);

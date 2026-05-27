@@ -10,6 +10,7 @@ describe('warnDeprecated', () => {
     _resetDeprecationState();
   });
   afterEach(() => {
+    vi.unstubAllEnvs();
     vi.restoreAllMocks();
   });
 
@@ -46,24 +47,15 @@ describe('warnDeprecated', () => {
   describe('Given TSGIT_SUPPRESS_DEPRECATIONS=1', () => {
     describe('When warnDeprecated is called', () => {
       it('Then console.warn is never invoked (suppression honors the EXACT env var name)', () => {
-        // Arrange
-        const original = process.env['TSGIT_SUPPRESS_DEPRECATIONS'];
-        process.env['TSGIT_SUPPRESS_DEPRECATIONS'] = '1';
+        // Arrange — vi.stubEnv is auto-restored by vi.restoreAllMocks() in afterEach.
+        vi.stubEnv('TSGIT_SUPPRESS_DEPRECATIONS', '1');
         const spy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
 
         // Act
         warnDeprecated('walkTree', 'msg');
 
         // Assert
-        try {
-          expect(spy).not.toHaveBeenCalled();
-        } finally {
-          if (original === undefined) {
-            delete process.env['TSGIT_SUPPRESS_DEPRECATIONS'];
-          } else {
-            process.env['TSGIT_SUPPRESS_DEPRECATIONS'] = original;
-          }
-        }
+        expect(spy).not.toHaveBeenCalled();
       });
     });
   });

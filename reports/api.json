@@ -68526,7 +68526,16 @@
 		},
 		{
 			"kind": "text",
-			"text": ", …)\n- Type-safe — branded "
+			"text": ", …)\n- Snapshot+join surface — query tree / index / workdir / stash through one lazy, atomic-iteration pipeline ([primer]("
+		},
+		{
+			"kind": "relative-link",
+			"text": "docs/use/snapshots.md",
+			"target": 17
+		},
+		{
+			"kind": "text",
+			"text": "))\n- Type-safe — branded "
 		},
 		{
 			"kind": "code",
@@ -68571,7 +68580,7 @@
 		{
 			"kind": "relative-link",
 			"text": "docs/use/commands/",
-			"target": 17
+			"target": 18
 		},
 		{
 			"kind": "text",
@@ -68580,7 +68589,16 @@
 		{
 			"kind": "relative-link",
 			"text": "docs/use/primitives/",
-			"target": 18
+			"target": 19
+		},
+		{
+			"kind": "text",
+			"text": ") · [snapshots]("
+		},
+		{
+			"kind": "relative-link",
+			"text": "docs/use/snapshots.md",
+			"target": 17
 		},
 		{
 			"kind": "text",
@@ -68589,7 +68607,7 @@
 		{
 			"kind": "relative-link",
 			"text": "docs/use/errors.md",
-			"target": 19
+			"target": 20
 		},
 		{
 			"kind": "text",
@@ -68607,7 +68625,7 @@
 		{
 			"kind": "relative-link",
 			"text": "docs/use/",
-			"target": 20
+			"target": 21
 		},
 		{
 			"kind": "text",
@@ -68616,7 +68634,7 @@
 		{
 			"kind": "relative-link",
 			"text": "docs/understand/",
-			"target": 21
+			"target": 22
 		},
 		{
 			"kind": "text",
@@ -68625,7 +68643,7 @@
 		{
 			"kind": "relative-link",
 			"text": "CONTRIBUTING.md",
-			"target": 22
+			"target": 23
 		},
 		{
 			"kind": "text",
@@ -68634,7 +68652,7 @@
 		{
 			"kind": "relative-link",
 			"text": "LICENSE",
-			"target": 23
+			"target": 24
 		},
 		{
 			"kind": "text",
@@ -86661,15 +86679,16 @@
 			"14": "docs/BACKLOG.md",
 			"15": "docs/get-started/",
 			"16": "docs/use/recipes.md",
-			"17": "docs/use/commands/",
-			"18": "docs/use/primitives/",
-			"19": "docs/use/errors.md",
-			"20": "docs/use/",
-			"21": "docs/understand/",
-			"22": "CONTRIBUTING.md",
-			"23": "LICENSE",
-			"24": "README.md",
-			"25": ""
+			"17": "docs/use/snapshots.md",
+			"18": "docs/use/commands/",
+			"19": "docs/use/primitives/",
+			"20": "docs/use/errors.md",
+			"21": "docs/use/",
+			"22": "docs/understand/",
+			"23": "CONTRIBUTING.md",
+			"24": "LICENSE",
+			"25": "README.md",
+			"26": ""
 		},
 		"reflections": {
 			"1": 1,
@@ -86685,8 +86704,8 @@
 			"11": 269,
 			"12": 270,
 			"13": 271,
-			"24": 0,
-			"25": 0
+			"25": 0,
+			"26": 0
 		}
 	}
 }

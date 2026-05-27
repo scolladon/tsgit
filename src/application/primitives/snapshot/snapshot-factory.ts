@@ -1,3 +1,4 @@
+import { TsgitError } from '../../../domain/error.js';
 import { unexpectedObjectType } from '../../../domain/objects/error.js';
 import type { ObjectId, RefName } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
@@ -64,13 +65,26 @@ const treeSnapshotFromRef = async (
   return lazyTree(deps, treeId);
 };
 
+/**
+ * Codes that may surface when a ref file disappears between the
+ * `fs.exists` probe and the subsequent `resolveRef` read (the TOCTOU
+ * window is narrow but non-zero). Either way the caller's contract is
+ * `null` — "no compound state of that kind exists right now."
+ */
+const REF_DISAPPEARED_CODES = new Set(['FILE_NOT_FOUND', 'REF_NOT_FOUND']);
+
 const refIfPresent = async (
   deps: SnapshotFactoryDeps,
   refFile: string,
 ): Promise<TreeSnapshot | null> => {
   const path = `${deps.ctx.layout.gitDir}/${refFile}`;
   if (!(await deps.ctx.fs.exists(path))) return null;
-  return treeSnapshotFromRef(deps, refFile as RefName);
+  try {
+    return await treeSnapshotFromRef(deps, refFile as RefName);
+  } catch (err) {
+    if (err instanceof TsgitError && REF_DISAPPEARED_CODES.has(err.data.code)) return null;
+    throw err;
+  }
 };
 
 const compoundFactory =

@@ -12,6 +12,11 @@ import type { IndexResolver, ResolveOptions } from '../../ports/snapshot-resolve
  * concurrent readers would otherwise each pay the parse cost during the
  * cache-warm window. De-duplicating to one inner call is the standard
  * single-flight idiom (see design §10.3).
+ *
+ * `bypassCache` opts out of the dedup gate entirely. A caller that asks to
+ * skip the cache wants a fresh parse — joining an already-in-flight
+ * non-bypass promise would silently return the (potentially stale) cached
+ * result, defeating the bypass guarantee.
  */
 export const createSingleFlightIndexResolver = (inner: IndexResolver): IndexResolver => {
   let inflight: Promise<GitIndex> | null = null;
@@ -25,6 +30,9 @@ export const createSingleFlightIndexResolver = (inner: IndexResolver): IndexReso
   };
 
   return {
-    resolve: (ctx, opts) => inflight ?? run(ctx, opts),
+    resolve: (ctx, opts) => {
+      if (opts?.bypassCache === true) return inner.resolve(ctx, opts);
+      return inflight ?? run(ctx, opts);
+    },
   };
 };

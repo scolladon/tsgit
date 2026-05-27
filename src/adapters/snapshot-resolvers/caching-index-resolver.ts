@@ -1,4 +1,5 @@
 import { indexPath as resolveIndexPath } from '../../application/primitives/path-layout.js';
+import { TsgitError } from '../../domain/error.js';
 import type { GitIndex } from '../../domain/git-index/index-entry.js';
 import type { FileStat, FileSystem } from '../../ports/file-system.js';
 import type { GenerationView } from '../../ports/generation-view.js';
@@ -90,8 +91,14 @@ export const createCachingIndexResolver = (
     path: string,
     stat: FileStat,
   ): Promise<boolean> => {
-    if (cached.parsed.trailerSha.length === 0) return false;
-    const trailer = await readTrailer(fs, path, cached.parsed.trailerSha.length, stat.size);
+    const trailerSize = cached.parsed.trailerSha.length;
+    // Guard against truncated index: an externally-zeroed file shorter
+    // than the trailer length would pass a negative offset to readSlice,
+    // whose behaviour on negative `position` is adapter-defined and could
+    // spuriously match a residual trailer. Refuse the trust shortcut and
+    // fall through to a fresh parse.
+    if (trailerSize === 0 || stat.size < trailerSize) return false;
+    const trailer = await readTrailer(fs, path, trailerSize, stat.size);
     return bytesEqual(trailer, cached.parsed.trailerSha);
   };
 
@@ -110,8 +117,10 @@ export const createCachingIndexResolver = (
       return await fs.stat(path);
     } catch (err) {
       // If the file doesn't exist we still want the inner resolver to handle
-      // the empty-index fallback. Re-throw anything else.
-      if ((err as { data?: { code?: string } }).data?.code === 'FILE_NOT_FOUND') return null;
+      // the empty-index fallback. Re-throw anything else — using
+      // `instanceof TsgitError` keeps us from accidentally swallowing
+      // unrelated objects with a shape that happens to carry `.data.code`.
+      if (err instanceof TsgitError && err.data.code === 'FILE_NOT_FOUND') return null;
       throw err;
     }
   };

@@ -4,6 +4,7 @@ import { createCachingIndexResolver } from '../../../../src/adapters/snapshot-re
 import { createCounterGenerationView } from '../../../../src/adapters/snapshot-resolvers/counter-generation-view.js';
 import { createInMemoryWriteEventBus } from '../../../../src/adapters/snapshot-resolvers/in-memory-write-event-bus.js';
 import { createRawIndexResolver } from '../../../../src/adapters/snapshot-resolvers/raw-index-resolver.js';
+import { networkError } from '../../../../src/domain/error.js';
 import type { GitIndex, IndexEntry } from '../../../../src/domain/git-index/index-entry.js';
 import { STAGE0_FLAGS } from '../../../../src/domain/git-index/index-entry.js';
 import { FILE_MODE, FilePath, type ObjectId } from '../../../../src/domain/objects/index.js';
@@ -200,6 +201,30 @@ describe('createCachingIndexResolver', () => {
         // Assert — inner was invoked a second time AND the cache returned the new content.
         expect(inner.calls()).toBe(2);
         expect(reparsed.entries[0]?.path).toBe('z.txt');
+      });
+    });
+  });
+
+  describe('Given fs.stat throws a non-FILE_NOT_FOUND error', () => {
+    describe('When resolve is called', () => {
+      it('Then the error propagates (safeStat re-throws unrelated errors)', async () => {
+        // Arrange
+        const ctx = await buildSeededContext({ index: sampleIndex([sampleEntry('a.txt')]) });
+        const failure = networkError('disk unavailable');
+        const failingFs = {
+          ...ctx.fs,
+          stat: async (_p: string) => {
+            throw failure;
+          },
+        };
+        const failingCtx: Context = { ...ctx, fs: failingFs };
+        const view = createCounterGenerationView();
+        const { stream } = createInMemoryWriteEventBus(view);
+        const inner = wrapCounting(createRawIndexResolver());
+        const sut = createCachingIndexResolver(inner, failingFs, stream, view);
+
+        // Act + Assert
+        await expect(sut.resolve(failingCtx)).rejects.toBe(failure);
       });
     });
   });

@@ -137,7 +137,7 @@ describe('assertOrdered', () => {
 
   describe('Given a stream with a descending path', () => {
     describe('When assertOrdered observes the reorder', () => {
-      it('Then it throws ORDER_INVARIANT_VIOLATION', async () => {
+      it('Then it throws ORDER_INVARIANT_VIOLATION pinned to the offending pair', async () => {
         // Arrange
         const rows = [treeRow('z.txt'), treeRow('a.txt')];
         const sut = assertOrdered(
@@ -153,7 +153,7 @@ describe('assertOrdered', () => {
           }
         };
         await expect(iterate()).rejects.toMatchObject({
-          data: { code: 'ORDER_INVARIANT_VIOLATION' },
+          data: { code: 'ORDER_INVARIANT_VIOLATION', previous: 'z.txt', current: 'a.txt' },
         });
       });
     });

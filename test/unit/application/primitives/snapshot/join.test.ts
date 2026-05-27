@@ -114,4 +114,54 @@ describe('join with a pre-aborted signal', () => {
       });
     });
   });
+
+  describe('Given a two-source join and an already-aborted signal', () => {
+    describe('When iterated', () => {
+      it('Then the signal is forwarded to pathMerge and OPERATION_ABORTED is raised', async () => {
+        // Arrange
+        const controller = new AbortController();
+        controller.abort();
+        const sut = join(
+          { head: stubSnapshot([row('a')]), index: stubSnapshot([row('b')]) },
+          { signal: controller.signal },
+        );
+
+        // Act + Assert
+        const iterate = async (): Promise<void> => {
+          for await (const _ of sut) {
+            // consume
+          }
+        };
+        await expect(iterate()).rejects.toMatchObject({
+          data: { code: 'OPERATION_ABORTED' },
+        });
+      });
+    });
+  });
+});
+
+describe('innerJoin with a pre-aborted signal', () => {
+  describe('Given two sources and an already-aborted signal', () => {
+    describe('When iterated', () => {
+      it('Then it throws OPERATION_ABORTED (signal forwarded through innerJoin)', async () => {
+        // Arrange
+        const controller = new AbortController();
+        controller.abort();
+        const sut = innerJoin(
+          { head: stubSnapshot([row('shared')]), index: stubSnapshot([row('shared')]) },
+          { signal: controller.signal },
+        );
+
+        // Act + Assert
+        const iterate = async (): Promise<void> => {
+          for await (const _ of sut) {
+            // consume
+          }
+        };
+        await expect(iterate()).rejects.toMatchObject({
+          data: { code: 'OPERATION_ABORTED' },
+        });
+      });
+    });
+  });
 });
