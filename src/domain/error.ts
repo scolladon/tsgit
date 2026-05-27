@@ -48,6 +48,11 @@ export type ApplicationError =
       readonly path: string;
       readonly observed: WorkdirStat;
       readonly current: WorkdirStat;
+    }
+  | {
+      readonly code: 'ORDER_INVARIANT_VIOLATION';
+      readonly previous: string;
+      readonly current: string;
     };
 
 export type TsgitErrorData =
@@ -133,6 +138,9 @@ export const workdirRace = (
   observed: WorkdirStat,
   current: WorkdirStat,
 ): TsgitError => new TsgitError({ code: 'WORKDIR_RACE', path, observed, current });
+
+export const orderInvariantViolation = (previous: string, current: string): TsgitError =>
+  new TsgitError({ code: 'ORDER_INVARIANT_VIOLATION', previous, current });
 
 function extractDetail(data: TsgitErrorData): string {
   switch (data.code) {
@@ -341,6 +349,8 @@ function extractDetail(data: TsgitErrorData): string {
       return `snapshot required: ${data.reason}`;
     case 'WORKDIR_RACE':
       return `working-tree changed under us at ${basename(data.path)} (observed mtime=${data.observed.mtimeMs} size=${data.observed.size}, current mtime=${data.current.mtimeMs} size=${data.current.size})`;
+    case 'ORDER_INVARIANT_VIOLATION':
+      return `row order broken: ${data.previous} followed by ${data.current}`;
     default: {
       const _exhaustive: never = data;
       return String(_exhaustive);

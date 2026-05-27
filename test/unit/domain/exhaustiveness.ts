@@ -121,6 +121,7 @@ export function assertExhaustiveSwitch(data: TsgitErrorData): void {
     case 'REMOTE_FILTER_UNSUPPORTED':
     case 'SNAPSHOT_REQUIRED':
     case 'WORKDIR_RACE':
+    case 'ORDER_INVARIANT_VIOLATION':
       return;
     default: {
       const _exhaustive: never = data;
