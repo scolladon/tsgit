@@ -14,10 +14,15 @@ import type { Context } from '../../ports/context.js';
 import { readConfig } from '../primitives/config-read.js';
 import { enumerateRefs } from '../primitives/enumerate-refs.js';
 import { assertRepository } from '../primitives/internal/repo-state.js';
+import { getRefStore } from '../primitives/ref-store.js';
 import { type ConfigOperation, updateConfigOperations } from '../primitives/update-config.js';
 import { updateRef } from '../primitives/update-ref.js';
 import { parseRefspec } from './internal/refspec.js';
-import { listBranchReferrers, validateRemoteName } from './internal/remote-config.js';
+import {
+  listBranchReferrers,
+  rewriteDefaultFetchRefspecs,
+  validateRemoteName,
+} from './internal/remote-config.js';
 
 const FORBIDDEN_URL_CHARS = /[\n\r\0]/;
 
@@ -204,13 +209,98 @@ const removeRemote = async (
   };
 };
 
+/**
+ * Move one loose tracking ref from `refs/remotes/<from>/...` to
+ * `refs/remotes/<to>/...`, preserving the OID. Reuses `updateRef`'s
+ * atomic write + delete so the move is two atomic steps with no third
+ * actor able to observe an "in both places" state (per the per-Context
+ * single-thread invariant).
+ */
+const moveTrackingRef = async (
+  ctx: Context,
+  source: RefName,
+  target: RefName,
+  reflogMessage: string,
+): Promise<void> => {
+  const store = getRefStore(ctx);
+  const direct = await store.resolveDirect(source);
+  if (direct.kind !== 'direct') {
+    // Either packed-only (filtered out upstream — but defence-in-depth)
+    // or a symbolic ref under refs/remotes/* (rare). Fall through to the
+    // standard "not loose" error from updateRef when callers want to delete.
+    return;
+  }
+  await updateRef(ctx, target, direct.id, { expected: 'absent', reflogMessage });
+  await updateRef(ctx, source, ZERO_OID, { delete: true });
+};
+
 const renameRemote = async (
-  _ctx: Context,
+  ctx: Context,
   action: { readonly from: string; readonly to: string },
 ): Promise<RemoteResult> => {
   validateRemoteName(action.from);
   validateRemoteName(action.to);
-  return notYetImplemented('rename');
+  if (action.from === action.to) {
+    throw invalidOption('remote.rename', 'from and to must differ');
+  }
+  const config = await readConfig(ctx);
+  const fromEntry = config.remote?.get(action.from);
+  if (fromEntry === undefined) throw remoteNotConfigured(action.from);
+  if (config.remote?.has(action.to) === true) throw remoteExists(action.to);
+  const trackingRefs = await listTrackingRefs(ctx, action.from);
+  const referrers = listBranchReferrers(config, action.from);
+  // Move tracking refs first (ADR-178 §recoverability).
+  const reflogMessage = `remote: renamed ${action.from} to ${action.to}`;
+  const moved: RefName[] = [];
+  for (const source of trackingRefs) {
+    const suffix = source.slice(`refs/remotes/${action.from}/`.length);
+    const target = `refs/remotes/${action.to}/${suffix}` as RefName;
+    await moveTrackingRef(ctx, source, target, reflogMessage);
+    moved.push(target);
+  }
+  // Config rewrite: rename the section, replace the canonical refspec
+  // (custom ones preserved), update branch referrers.
+  const rewrittenSpecs = rewriteDefaultFetchRefspecs(fromEntry.fetch ?? [], action.from, action.to);
+  const ops: ConfigOperation[] = [
+    { kind: 'renameSection', section: 'remote', from: action.from, to: action.to },
+  ];
+  // Wipe the existing fetch entries on the (renamed) section and re-emit
+  // every rewritten spec via `appendEntry` so order is preserved and each
+  // spec produces its own line (`set` would collapse them).
+  if (rewrittenSpecs.length > 0) {
+    ops.push({
+      kind: 'removeEntry',
+      section: 'remote',
+      subsection: action.to,
+      key: 'fetch',
+    });
+    for (const spec of rewrittenSpecs) {
+      ops.push({
+        kind: 'appendEntry',
+        section: 'remote',
+        subsection: action.to,
+        key: 'fetch',
+        value: spec,
+      });
+    }
+  }
+  for (const referrer of referrers) {
+    ops.push({
+      kind: 'set',
+      section: 'branch',
+      subsection: referrer.branch,
+      key: 'remote',
+      value: action.to,
+    });
+  }
+  await updateConfigOperations(ctx, ops);
+  return {
+    kind: 'rename',
+    from: action.from,
+    to: action.to,
+    movedTrackingRefs: moved,
+    rewrittenBranches: referrers.map((r) => r.ref),
+  };
 };
 
 const setRemoteUrl = async (

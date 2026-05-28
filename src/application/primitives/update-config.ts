@@ -315,6 +315,18 @@ export type ConfigOperation =
       readonly value: string;
     }
   | {
+      /**
+       * Insert a fresh `key = value` line after the section header WITHOUT
+       * replacing any existing entry with the same key. Use for multi-value
+       * keys (`fetch`) where every call must yield an additional line.
+       */
+      readonly kind: 'appendEntry';
+      readonly section: string;
+      readonly subsection?: string;
+      readonly key: string;
+      readonly value: string;
+    }
+  | {
       readonly kind: 'removeEntry';
       readonly section: string;
       readonly subsection?: string;
@@ -332,6 +344,9 @@ const applyOperation = (text: string, op: ConfigOperation): string => {
   if (op.kind === 'set') {
     return setConfigEntry(text, op.section, op.subsection, op.key, op.value);
   }
+  if (op.kind === 'appendEntry') {
+    return appendConfigEntry(text, op.section, op.subsection, op.key, op.value);
+  }
   if (op.kind === 'removeEntry') {
     return removeConfigEntry(text, op.section, op.subsection, op.key);
   }
@@ -339,6 +354,32 @@ const applyOperation = (text: string, op: ConfigOperation): string => {
     return removeConfigSection(text, op.section, op.subsection);
   }
   return renameConfigSection(text, op.section, op.from, op.to);
+};
+
+/**
+ * Insert `\tkey = value` immediately after the section header WITHOUT
+ * looking for an existing entry. Creates the section if absent. Use when
+ * the caller wants multi-value semantics (e.g. multiple `fetch =` lines
+ * under one `[remote "..."]`); `setConfigEntry` would replace.
+ */
+export const appendConfigEntry = (
+  text: string,
+  section: string,
+  subsection: string | undefined,
+  key: string,
+  value: string,
+): string => {
+  rejectSection(section);
+  rejectControlChars('key', key);
+  rejectControlChars('value', value);
+  if (subsection !== undefined) rejectSubsection(subsection);
+  const lines = text.split('\n');
+  const headerIndex = findSectionHeader(lines, section, subsection);
+  if (headerIndex === -1) {
+    const prefix = text === '' ? '' : text.endsWith('\n') ? text : `${text}\n`;
+    return `${prefix}${renderSectionHeader(section, subsection)}\n${renderEntry(key, value)}\n`;
+  }
+  return insertAfter(lines, headerIndex, renderEntry(key, value)).join('\n');
 };
 
 /**

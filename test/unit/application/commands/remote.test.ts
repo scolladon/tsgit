@@ -537,4 +537,200 @@ describe('application/commands/remote', () => {
       });
     });
   });
+
+  describe('rename', () => {
+    describe('Given an unknown `from`', () => {
+      describe('When rename runs', () => {
+        it('Then it throws REMOTE_NOT_CONFIGURED', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx);
+          let caught: unknown;
+
+          // Act
+          try {
+            await remote(ctx, { kind: 'rename', from: 'missing', to: 'new' });
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect((caught as TsgitError).data.code).toBe('REMOTE_NOT_CONFIGURED');
+        });
+      });
+    });
+
+    describe('Given to equals from', () => {
+      describe('When rename runs', () => {
+        it('Then it throws INVALID_OPTION', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, '[remote "origin"]\n\turl = u\n');
+          let caught: unknown;
+
+          // Act
+          try {
+            await remote(ctx, { kind: 'rename', from: 'origin', to: 'origin' });
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect((caught as TsgitError).data.code).toBe('INVALID_OPTION');
+        });
+      });
+    });
+
+    describe('Given an existing `to`', () => {
+      describe('When rename runs', () => {
+        it('Then it throws REMOTE_EXISTS', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, '[remote "origin"]\n\turl = a\n[remote "upstream"]\n\turl = b\n');
+          let caught: unknown;
+
+          // Act
+          try {
+            await remote(ctx, { kind: 'rename', from: 'origin', to: 'upstream' });
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect((caught as TsgitError).data.code).toBe('REMOTE_EXISTS');
+        });
+      });
+    });
+
+    describe('Given the canonical default refspec', () => {
+      describe('When rename runs', () => {
+        it('Then it is rewritten for the new name', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(
+            ctx,
+            '[remote "origin"]\n\turl = u\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n',
+          );
+
+          // Act
+          await remote(ctx, { kind: 'rename', from: 'origin', to: 'upstream' });
+
+          // Assert
+          const written = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
+          expect(written).toContain('[remote "upstream"]');
+          expect(written).toContain('fetch = +refs/heads/*:refs/remotes/upstream/*');
+          expect(written).not.toContain('refs/remotes/origin/');
+        });
+      });
+    });
+
+    describe('Given a custom (non-canonical) fetch refspec', () => {
+      describe('When rename runs', () => {
+        it('Then the refspec is preserved verbatim', async () => {
+          // Arrange — note: leading `+` missing, so the canonical heuristic does NOT match.
+          const ctx = createMemoryContext();
+          await seed(
+            ctx,
+            '[remote "origin"]\n\turl = u\n\tfetch = refs/heads/release:refs/remotes/origin/release\n',
+          );
+
+          // Act
+          await remote(ctx, { kind: 'rename', from: 'origin', to: 'upstream' });
+
+          // Assert
+          const written = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
+          expect(written).toContain('fetch = refs/heads/release:refs/remotes/origin/release');
+        });
+      });
+    });
+
+    describe('Given a mixed list (canonical and custom refspecs)', () => {
+      describe('When rename runs', () => {
+        it('Then only the canonical entry is rewritten', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(
+            ctx,
+            '[remote "origin"]\n\turl = u\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n\tfetch = +refs/heads/release:refs/remotes/origin/release\n',
+          );
+
+          // Act
+          await remote(ctx, { kind: 'rename', from: 'origin', to: 'upstream' });
+
+          // Assert
+          const written = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
+          expect(written).toContain('fetch = +refs/heads/*:refs/remotes/upstream/*');
+          expect(written).toContain('fetch = +refs/heads/release:refs/remotes/origin/release');
+        });
+      });
+    });
+
+    describe('Given tracking refs under the old name', () => {
+      describe('When rename runs', () => {
+        it('Then they are moved with the same OIDs', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, '[remote "origin"]\n\turl = u\n');
+          const oid = 'a'.repeat(40);
+          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/remotes/origin/main`, `${oid}\n`);
+
+          // Act
+          const sut = await remote(ctx, { kind: 'rename', from: 'origin', to: 'upstream' });
+
+          // Assert
+          if (sut.kind !== 'rename') throw new Error('unreachable');
+          expect(sut.movedTrackingRefs).toEqual(['refs/remotes/upstream/main']);
+          expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/remotes/origin/main`)).toBe(false);
+          const moved = (
+            await ctx.fs.readUtf8(`${ctx.layout.gitDir}/refs/remotes/upstream/main`)
+          ).trim();
+          expect(moved).toBe(oid);
+        });
+      });
+    });
+
+    describe('Given a branch tracking the renamed remote', () => {
+      describe('When rename runs', () => {
+        it('Then branch.<X>.remote is rewritten to the new name', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(
+            ctx,
+            '[remote "origin"]\n\turl = u\n[branch "main"]\n\tremote = origin\n\tmerge = refs/heads/main\n',
+          );
+
+          // Act
+          const sut = await remote(ctx, { kind: 'rename', from: 'origin', to: 'upstream' });
+
+          // Assert
+          if (sut.kind !== 'rename') throw new Error('unreachable');
+          expect(sut.rewrittenBranches).toEqual(['refs/heads/main']);
+          const written = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
+          expect(written).toContain('remote = upstream');
+          expect(written).not.toContain('remote = origin');
+        });
+      });
+    });
+
+    describe('Given an invalid `to` name', () => {
+      describe('When rename runs', () => {
+        it('Then it throws REMOTE_NAME_INVALID', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, '[remote "origin"]\n\turl = u\n');
+          let caught: unknown;
+
+          // Act
+          try {
+            await remote(ctx, { kind: 'rename', from: 'origin', to: 'a"b' });
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect((caught as TsgitError).data.code).toBe('REMOTE_NAME_INVALID');
+        });
+      });
+    });
+  });
 });
