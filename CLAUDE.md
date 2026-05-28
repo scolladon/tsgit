@@ -109,77 +109,127 @@ If the work touches a parser/decoder/matcher and the diff lands without a `*.pro
 
 ## Development Workflow (MANDATORY)
 
-Every feature follows this sequence. No exceptions. No skipping steps. When the user says **"apply the workflow"** (or any equivalent — "do the workflow", "follow our process", "the usual flow"), run the 8 steps below **in order**, top to bottom, without abbreviation.
+Every feature follows this sequence. No exceptions. No skipping steps. When the user says **"apply the workflow"** (or any equivalent — "do the workflow", "follow our process", "the usual flow"), the orchestrator (this session) **delegates each phase to a dedicated subagent** and itself only handles ADR conversations with the user + final cleanup. The orchestrator's context never holds source code; it reads design.md, plan.md, the mutation report, and the PR URL.
 
-### 1. Branch
+### Subagent map
 
-Create a fresh branch off `main`, named with a conventional-commit type prefix: `feat/<topic>`, `fix/<topic>`, `ci/<topic>`, `chore/<topic>`, `docs/<topic>`. Never commit directly to `main`.
+| Phase | Agent | Model | Self-loop contract |
+|---|---|---|---|
+| 1. Branch | orchestrator | — | one-shot worktree + branch |
+| 2. Design | subagent | opus | self-review until convergence, ≤3 passes |
+| 3. ADR | orchestrator (with user) | opus | one ADR per user-driven decision |
+| 4. Plan | subagent | opus | self-review until convergence, ≤3 passes |
+| 5. Implementation | subagent (single, runs all slices) | opus | TDD per slice, `npm run validate` before each commit, escalate to orchestrator on a blocker |
+| 6. Review × 3 | three subagents in parallel | opus | each fixes its OWN findings until self-review converges, runs `npm run validate` after each batch |
+| 7. Mutation | subagent | sonnet | iterate until 0 killable mutants, document equivalents inline |
+| 8. Harness + PR | subagent | haiku | run validate, flip BACKLOG, update README/RUNBOOK/CONTRIBUTING/docs, push, `gh pr create` |
 
-### 2. Design (`docs/design/<topic>.md`)
+There is no "effort" knob in the Agent tool — only `model`. Depth comes from model choice + the prompt instructions in each phase below. Don't burn an Opus on Phase 7 or 8; don't burn a Haiku on Phase 2 or 5.
 
-Write the first draft, then **self-review until convergence, max three times**, fixing every gap each pass. Stop as soon as a pass produces no changes (converged) — don't burn extra passes just to hit the cap. The design covers:
+### 1. Branch (orchestrator)
+
+Create a fresh branch off `main` via `git worktree add`, named with a conventional-commit type prefix: `feat/<topic>`, `fix/<topic>`, `ci/<topic>`, `chore/<topic>`, `docs/<topic>`. Never commit directly to `main`. `npm install` inside the worktree.
+
+### 2. Design — `docs/design/<topic>.md` (Opus subagent)
+
+Spawn one Opus subagent. Brief: the backlog item, the existing related design docs, the codebase patterns it must follow (hex architecture, types, conventions).
+
+**Subagent contract** — produce the draft, then self-review until convergence (max 3 passes). Each pass fixes every gap; stop the moment a pass yields no changes. The design covers:
 - TypeScript types and interfaces
 - Binary/wire format details (if applicable)
 - Function signatures and contracts
 - Module structure and file layout
 - Testing strategy (unit, property-based, interop)
-- Key design decisions with rationale
+- Key design decisions with rationale + alternatives considered
 
-Commit when stable: `docs(design): <topic>`.
+Subagent commits `docs(design): <topic>` and returns the final doc path. Orchestrator reads only the final doc.
 
-### 3. ADR (`docs/adr/NNN-<title>.md`) — for every choice made with the user
+### 3. ADR — `docs/adr/NNN-<title>.md` (orchestrator with user)
 
-Whenever a decision was reached in conversation with the user — naming, scoping, library selection, trade-off, anything they weighed in on — capture it as an ADR **before** moving on. This rule is stronger than "when choosing between alternatives": if the user's input shaped the choice, an ADR records it so the rationale survives the conversation. Mechanics:
+The orchestrator handles ADRs because they require user judgment on alternatives. Whenever a decision was reached in conversation with the user — naming, scoping, library selection, trade-off, anything they weighed in on — capture it as an ADR **before** moving on. Mechanics:
 - Use the template at `docs/adr/000-template.md`
-- Number sequentially: `docs/adr/NNN-title.md`
+- Number sequentially
 - Status: `Accepted (at <main-sha>)`
-- Document context, decision, consequences (positive, negative, neutral), and the alternatives considered.
+- Document context, decision, consequences (positive, negative, neutral), alternatives considered
 
 Commit: `docs(adr): NNN <title>`.
 
-### 4. Plan (`docs/plan/<topic>.md`)
+### 4. Plan — `docs/plan/<topic>.md` (Opus subagent)
 
-Derive the plan from the design and ADRs. **Self-review until convergence, max three times**, fixing every issue each pass. Stop as soon as a pass yields no changes. Plan contents:
+Spawn one Opus subagent. Brief: the design doc + the relevant ADRs.
+
+**Subagent contract** — produce the plan, then self-review until convergence (max 3 passes). Plan contents:
 - Ordered list of files to create/modify
-- Each step: what to test first, what to implement, what to verify
-- Dependencies between steps
+- Each step: what to test first (Red), what to implement (Green), what to verify
+- Dependency graph between slices (which are parallel-safe)
 
-Commit: `docs(plan): <topic>`.
+Subagent commits `docs(plan): <topic>` and returns the final doc path.
 
-### 5. Implement (TDD, agent teams)
+### 5. Implementation — TDD, all slices in ONE subagent (Opus)
 
-Follow the plan step by step. Use parallel agent teams (typescript-reviewer, test-review, security-reviewer, planner, refactor-cleaner, etc.) where it accelerates the work or improves quality. Write **atomic, easy-to-review commits** — one concept per commit, conventional-commit subjects.
+Spawn ONE Opus subagent for the whole implementation. Brief: the design doc, the plan, the relevant ADRs.
 
-For each unit of work:
+**Subagent contract** — execute every slice top-to-bottom:
 - **Red**: write the test first; it must fail.
 - **Green**: write minimal code to pass.
 - **Refactor**: clean up while keeping tests green.
-- Run `npm run validate` before committing.
+- Run `npm run validate` before each commit; commit one atomic conventional-commit per slice.
+- On a blocker the subagent cannot resolve (design hits a wall, ADR-level decision needed, ambiguous spec), it MUST escalate to the orchestrator with a specific question — never spin or silently give up.
+- Returns the commit list when done.
 
-### 6. Review the implementation three times
+Do NOT split implementation across multiple subagents; the slice split exists for plan-level atomicity, not for orchestrator round-trips. One session per phase keeps the cache warm and the context coherent.
 
-After implementation, run **three review passes** on the diff — code quality, performance, security, tests — fixing every finding each pass. Prefer the parallel-agent pattern (code-reviewer + security-reviewer + test-review + perf review in parallel), the same way the Phase 11 launch finalization did. The three passes ensure findings introduced by an earlier round of fixes get caught too.
+### 6. Review × 3 — three Opus subagents in parallel, fix-all-until-converged
 
-### 7. Engineering harness green + mutation testing
+Spawn three Opus subagents in parallel:
+- **typescript-reviewer** — types, correctness, bugs, project conventions, immutability
+- **security-reviewer** — config/path/url injection, traversal, SSRF, resource exhaustion, cache poisoning
+- **test-review** — mutation gaps, coverage holes, isolation, GWT/AAA conventions
 
-- `npm run validate` — every check passes (lint, types, dead-code, duplicates, filesystem, architecture, spelling, deps, security, size, exports, 100% coverage on lines/branches/functions/statements, integration tests).
-- `stryker run` — kill every killable mutant. Provably-equivalent mutants are accepted only when documented inline with a `// equivalent-mutant: <why>` comment.
+**Subagent contract (each)** — review the diff, fix every finding it identifies (not just report — actually apply Edits), run `npm run validate` after each fix batch, self-review until its own next pass yields zero findings or the convergence cap (3) is hit. Returns: "applied N fixes, here's the list, final state validate-green".
 
-### 8. Docs refresh, push, open PR
+**Exception:** for HIGH/CRITICAL security findings, the security subagent surfaces the fix diff to the orchestrator BEFORE committing — the orchestrator confirms or revises. MEDIUM/LOW security findings + all other reviewers' findings: fix-all-then-converge, no orchestrator round-trip.
 
-Update `README.md`, `RUNBOOK.md`, `CONTRIBUTING.md`, the relevant pages under `docs/get-started/` · `docs/use/` · `docs/understand/`, and any phase design docs that the implementation invalidated. **Flip every relevant `docs/BACKLOG.md` entry (`[ ]` / `[~]` → `[x]`) inside the PR's own commits** — never as a follow-up after merge. The squash-merge that closes the PR is what flips the line in `main`, so the tick must travel with the implementation, not chase it. Push the branch, open a PR with a thorough body (summary + test plan), and let CI exercise the full pipeline. Squash-merge on green. Cleanup: `git worktree remove`, `git branch -D`.
+### 7. Mutation testing — Sonnet subagent
+
+Spawn one Sonnet subagent. Brief: `stryker run` output / report file path.
+
+**Subagent contract** — iterate per surviving mutant: read it, kill it with a test, or document it inline as `// equivalent-mutant: <why>` when provably equivalent. Re-run `stryker` until 0 killable survivors. Commit each kill as `test(mutation): <module>`. Returns: "0 killable mutants, N equivalents documented".
+
+### 8. Docs refresh + PR — Haiku subagent
+
+Spawn one Haiku subagent. Brief: the design doc + the commit list.
+
+**Subagent contract** — update `README.md`, `RUNBOOK.md`, `CONTRIBUTING.md`, the relevant pages under `docs/get-started/` · `docs/use/` · `docs/understand/`, and any phase design docs that the implementation invalidated. Flip every relevant `docs/BACKLOG.md` entry (`[ ]` / `[~]` → `[x]`) inside the PR's own commits — never as a follow-up after merge. Push the branch, open a PR with `gh pr create` (thorough body: summary + test plan). Returns the PR URL.
+
+The orchestrator handles squash-merge on green CI + worktree cleanup (`git worktree remove`, `git branch -D`) after the user confirms the merge.
 
 ### Workflow summary
 
 ```
-branch → design (until convergence, max ×3) → adr (every user-made choice) →
-plan (until convergence, max ×3) → implement (TDD, agent teams, atomic commits) →
-review ×3 → harness green + kill mutants → docs refresh + push + PR
+branch (orch)
+  → design subagent (opus, self-review ≤×3)
+  → ADR (orch + user)
+  → plan subagent (opus, self-review ≤×3, takes design as input)
+  → implementation subagent (opus, all slices, TDD, escalation contract)
+  → review × 3 subagents (opus, parallel, fix-all-until-converged)
+  → mutation subagent (sonnet, until 0 killable)
+  → docs + PR subagent (haiku)
+  → orch: squash-merge + worktree cleanup
 ```
 
-Design and plan: stop the moment a review pass produces no changes — convergence wins; the `×3` is a ceiling, not a quota. Implementation review keeps the fixed three-pass cadence because each pass can introduce new findings that need re-review.
+Design and plan: stop the moment a self-review pass produces no changes — convergence wins; ×3 is a ceiling, not a quota. Implementation reviews keep the convergence loop (each fix can introduce a new finding).
 
-**Never skip design. Never code without a plan. Never decide with the user without an ADR. Never push without three review passes.**
+**Never skip design. Never code without a plan. Never decide with the user without an ADR. Never push without the three review subagents.**
+
+### Escalation contract (every subagent)
+
+A subagent MUST escalate to the orchestrator when:
+- A decision requires the user's judgment (ADR-level choice).
+- It cannot make `npm run validate` green after 3 fix attempts.
+- It discovers the design or plan is wrong and needs a revision.
+
+Escalation = return a structured message: "blocked at <slice/finding>, reason: <one line>, candidates: <≤3 options>". Never spin, never silently abandon.
 
 ## Docs
 
