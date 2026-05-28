@@ -5,6 +5,7 @@ import {
   clearMergeState,
   readMergeHead,
   readMergeMsg,
+  readOrigHead,
   writeMergeHead,
   writeMergeMsg,
   writeOrigHead,
@@ -177,6 +178,85 @@ describe('merge-state', () => {
           let caught: unknown;
           try {
             await readMergeHead(ctx);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          const data = (caught as { data?: { code?: string; value?: string } })?.data;
+          expect(data?.code).toBe('INVALID_OBJECT_ID');
+          expect(data?.value).toBe('not-a-hex-oid');
+        });
+      });
+    });
+  });
+
+  describe('readOrigHead', () => {
+    describe('Given no ORIG_HEAD file', () => {
+      describe('When readOrigHead is called', () => {
+        it('Then returns undefined', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await init(ctx);
+
+          // Act
+          const sut = await readOrigHead(ctx);
+
+          // Assert
+          expect(sut).toBeUndefined();
+        });
+      });
+    });
+
+    describe('Given a written ORIG_HEAD', () => {
+      describe('When readOrigHead is called', () => {
+        it('Then returns the recorded ObjectId without the trailing newline', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await init(ctx);
+          const preMergeHead = 'e'.repeat(40) as ObjectId;
+          await writeOrigHead(ctx, preMergeHead);
+
+          // Act
+          const sut = await readOrigHead(ctx);
+
+          // Assert
+          expect(sut).toBe(preMergeHead);
+        });
+      });
+    });
+
+    describe('Given a whitespace-only ORIG_HEAD', () => {
+      describe('When readOrigHead is called', () => {
+        it('Then returns undefined (defensive: treats as absent)', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await init(ctx);
+          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/ORIG_HEAD`, '   \n');
+
+          // Act
+          const sut = await readOrigHead(ctx);
+
+          // Assert
+          expect(sut).toBeUndefined();
+        });
+      });
+    });
+
+    describe('Given a malformed (non-hex) ORIG_HEAD', () => {
+      describe('When readOrigHead is called', () => {
+        it('Then throws INVALID_OBJECT_ID with the offending value', async () => {
+          // Arrange — a corrupt ORIG_HEAD must NOT silently route abortMerge
+          // to an invalid commit. The factory rejection guards downstream
+          // consumers that resolve to a tree.
+          const ctx = createMemoryContext();
+          await init(ctx);
+          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/ORIG_HEAD`, 'not-a-hex-oid\n');
+
+          // Act
+          let caught: unknown;
+          try {
+            await readOrigHead(ctx);
           } catch (err) {
             caught = err;
           }
