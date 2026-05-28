@@ -442,6 +442,8 @@
     "retagging",
     "centralises",
     "centralise",
+    "centralised",
+    "Centralised",
     "Operationalised",
     "operationalise",
     "Unrecognised",
@@ -626,7 +628,15 @@
     "pushurl",
     "tagopt",
     "bikesheds",
-    "threadedness"
+    "threadedness",
+    "worklog",
+    "alnum",
+    "unsuffixed",
+    "Unsuffixed",
+    "Verbing",
+    "gpgsign",
+    "alphabetised",
+    "signingkey"
   ],
   "ignorePaths": [
     "node_modules",
