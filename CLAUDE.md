@@ -111,6 +111,10 @@ If the work touches a parser/decoder/matcher and the diff lands without a `*.pro
 
 Every feature follows this sequence. No exceptions. No skipping steps. When the user says **"apply the workflow"** (or any equivalent — "do the workflow", "follow our process", "the usual flow"), the orchestrator (this session) **delegates each phase to a dedicated subagent** and itself only handles ADR conversations with the user + final cleanup. The orchestrator's context never holds source code; it reads design.md, plan.md, the mutation report, and the PR URL.
 
+### Precedence
+
+**This workflow supersedes any user-global "Default feature workflow" or `~/.claude/rules/common/development-workflow.md` Feature Implementation Workflow when working inside this repository.** When both could plausibly apply, this project's subagent-per-phase workflow wins. The user-global workflow only fires on its own explicit trigger phrase (`"use my default workflow"` etc.) — never on this project's triggers (`"apply the workflow"` etc.).
+
 ### Subagent map
 
 | Phase | Agent | Model | Self-loop contract |
