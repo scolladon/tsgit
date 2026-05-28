@@ -2,7 +2,9 @@
 
 ## Status
 
-Proposed
+Superseded by [ADR-181](181-nested-namespace-porcelain.md).
+
+The action-discriminator shape recorded here was the right call at the time `repo.remote` shipped, given the CRUD-family precedent established by `repo.branch` / `repo.tag` / `repo.sparseCheckout`. ADR-181 re-evaluates the surface against the Phase 20.6 `repo.config` design and adopts the nested-namespace shape (`repo.remote.add(...)`, etc.) on UX grounds (autocomplete drill-down, CLI mirror, low-friction action growth). Backlog item 20.8 migrates every existing CRUD-family porcelain — including `repo.remote` — to the new shape; this ADR will be marked Deprecated when that migration lands.
 
 ## Context
 
