@@ -5,8 +5,8 @@ import {
 } from '../../../domain/commands/error.js';
 import { TsgitError } from '../../../domain/error.js';
 import type { Context } from '../../../ports/context.js';
-import type { IniSection } from '../../primitives/config-read.js';
-import { parseIniSections } from '../../primitives/config-read.js';
+import type { IniSection } from '../config-read.js';
+import { parseIniSections } from '../config-read.js';
 
 /**
  * Canonical read precedence: later scopes override earlier ones for a given

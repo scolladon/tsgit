@@ -1,5 +1,5 @@
 import type { ConfigScope, ParsedConfigKey } from '../../../domain/commands/config-key.js';
-import type { IniSection } from '../../primitives/config-read.js';
+import type { IniSection } from '../config-read.js';
 
 /**
  * Render a fully-qualified key string from a config section header + raw entry

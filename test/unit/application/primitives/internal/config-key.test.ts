@@ -1,11 +1,10 @@
 import { describe, expect, it } from 'vitest';
-
+import type { IniSection } from '../../../../../src/application/primitives/config-read.js';
 import {
   collectScopedValues,
   collectValues,
   qualifyKey,
-} from '../../../../../src/application/commands/internal/config-key.js';
-import type { IniSection } from '../../../../../src/application/primitives/config-read.js';
+} from '../../../../../src/application/primitives/internal/config-key.js';
 
 const section = (
   s: string,

@@ -1,13 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { BrowserFileSystem } from '../../../../../src/adapters/browser/browser-file-system.js';
 import { createMemoryContext } from '../../../../../src/adapters/memory/memory-adapter.js';
+import type { IniSection } from '../../../../../src/application/primitives/config-read.js';
 import {
   isWorktreeScopeActive,
   mergeConfigsByScope,
   resolveScopePath,
   SCOPE_ORDER,
-} from '../../../../../src/application/commands/internal/config-scope.js';
-import type { IniSection } from '../../../../../src/application/primitives/config-read.js';
+} from '../../../../../src/application/primitives/internal/config-scope.js';
 import type { TsgitError } from '../../../../../src/domain/error.js';
 import type { Context } from '../../../../../src/ports/context.js';
 

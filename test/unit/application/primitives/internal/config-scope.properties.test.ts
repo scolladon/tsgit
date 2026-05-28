@@ -1,8 +1,7 @@
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
-
-import { mergeConfigsByScope } from '../../../../../src/application/commands/internal/config-scope.js';
 import type { IniSection } from '../../../../../src/application/primitives/config-read.js';
+import { mergeConfigsByScope } from '../../../../../src/application/primitives/internal/config-scope.js';
 import type { ConfigScope } from '../../../../../src/domain/commands/config-key.js';
 
 const arbScope = (): fc.Arbitrary<ConfigScope> =>
