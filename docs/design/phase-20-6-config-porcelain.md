@@ -874,33 +874,60 @@ signature as `{ ctx, key, value, scope? }` — i.e. Context-aware,
 async, performing I/O. This collides with the existing pure functions
 of the same name.
 
-**OPEN — naming resolution.** Three reasonable resolutions exist:
+#### 9.2.1 Naming convention — `*InText` suffix (ADR-188)
 
-- **A**: rename the existing pure functions to `*Text` suffix
-  (`setConfigEntryText`, …) and let the new Context-aware primitives
-  take the clean names. Migrate Phase 20.5 `repo.remote` and other
-  internal callers to either the new Context-aware primitive or the
-  `*Text` alias.
-- **B**: name the new Context-aware primitives differently
-  (`writeConfigValue` / `eraseConfigValue` / …), leaving the existing
-  pure functions untouched. Diverges from ADR-187's literal naming.
-- **C**: drop the existing pure functions from the public primitive
-  surface (mark internal); the new Context-aware primitives take the
-  clean public names. Existing internal callers (`update-config.ts`
-  itself, `commands/remote.ts`) keep using them via relative imports.
+ADR-188 resolves the collision: the existing pure text-transform
+helpers gain an `*InText` suffix; the unsuffixed names are freed for
+the new Context-aware I/O primitives.
 
-This is a tactical decision but it has user-visible consequences
-(public primitive names + internal call-site churn). It is escalated
-to the orchestrator + user as an ADR candidate; the plan-phase
-subagent should not start implementation until the naming question
-is resolved.
+**Convention.** `*InText` suffix = pure synchronous text-transform
+(`(text, …) → newText`, no I/O). Unsuffixed = Context-aware async
+I/O-performing primitive (`({ ctx, …, scope? }) → Promise<…>`).
 
-Assuming resolution (placeholder: option A or C), the primitive index
-gains:
+**Rename table (cross-ref ADR-188).**
+
+| Old name (pure text-transform) | New name (pure text-transform) | New name (I/O, ADR-187) |
+|---|---|---|
+| `setConfigEntry` | `setConfigEntryInText` | `setConfigEntry` |
+| `setCoreConfigEntry` | `setCoreConfigEntryInText` | (no I/O peer — composes `setConfigEntry`) |
+| `renameConfigSection` | `renameConfigSectionInText` | `renameConfigSection` |
+| `removeConfigSection` | `removeConfigSectionInText` | `removeConfigSection` |
+| `applyConfigOp` | `applyConfigOpInText` | (no I/O peer — orchestrator only) |
+
+Implementation notes:
+
+- The orchestrator currently lives as the file-private helper
+  `applyOperation` (line 343 of `update-config.ts`). The
+  `applyConfigOpInText` row in the table covers that symbol; the
+  rename slice promotes it (or its replacement) to a clear
+  `applyConfigOpInText` name and exports it for callers that hold
+  text and want the dispatch.
+- `removeConfigEntry` and `appendConfigEntry` are also pure
+  text-transform helpers defined in `update-config.ts` but NOT
+  re-exported through `primitives/index.ts` today. They follow the
+  same convention if/when promoted (`removeConfigEntryInText`,
+  `appendConfigEntryInText`); no action required in this phase
+  beyond the rename slice (§14 slice 6a) keeping the convention
+  consistent for any helper it touches.
+- The new Context-aware `setConfigEntry({ ctx, key, value, scope? })`
+  composes `setConfigEntryInText` after reading the targeted scope's
+  file; the I/O primitive owns the I/O, the `*InText` helper owns
+  the textual surgery.
+
+Post-rename, the primitive index exports:
 
 ```typescript
-// New Context-aware primitives matching the porcelain surface
-// (subject to the naming resolution above):
+// Renamed pure text-transform helpers (ADR-188):
+export {
+  setConfigEntryInText,       // RENAMED from setConfigEntry
+  setCoreConfigEntryInText,   // RENAMED from setCoreConfigEntry
+  renameConfigSectionInText,  // RENAMED from renameConfigSection (was internal-only)
+  removeConfigSectionInText,  // RENAMED from removeConfigSection (was internal-only)
+  applyConfigOpInText,        // RENAMED from applyOperation (was internal-only); now exported
+} from './update-config.js';
+
+// New Context-aware I/O primitives matching the porcelain surface
+// (names freed by ADR-188):
 export {
   setConfigEntry,             // NEW — { ctx, key, value, scope? }; uses the quoting writer
   unsetConfigEntry,           // NEW — { ctx, key, scope? }; idempotent
@@ -919,8 +946,7 @@ export {
 
 Plus the existing exports (`invalidateConfigCache`, `readConfig`,
 `updateConfigEntries`, `updateConfigOperations`, `updateCoreConfig`,
-`setCoreConfigEntry`, the `ConfigEntry` type, and the existing pure
-text-transform functions under their resolved-by-ADR names) remain.
+the `ConfigEntry` type) remain unchanged.
 
 The new Context-aware `setConfigEntry({ ctx, key, value, scope? })`:
 1. parses `key` via `parseConfigKey`,
@@ -1211,17 +1237,39 @@ coarse — the plan-phase subagent will detail it.
    `update-config.ts` per ADR-186 + round-trip property tests.
    Existing writers inherit; Phase 20.5 `repo.remote` parity tests
    should pass unchanged.
+6a. **Text-helper rename (`*InText` suffix) — ADR-188.** Mechanical
+   rename of the pure text-transform helpers in `update-config.ts`
+   plus their re-exports and call sites, freeing the unsuffixed names
+   for the new I/O primitives in slices 8–9. Per §9.2.1:
+   - `setConfigEntry` → `setConfigEntryInText`
+   - `setCoreConfigEntry` → `setCoreConfigEntryInText`
+   - `renameConfigSection` → `renameConfigSectionInText`
+   - `removeConfigSection` → `removeConfigSectionInText`
+   - `applyOperation` (file-private orchestrator) → `applyConfigOpInText`
+     (promoted and exported)
+
+   Internal callers (`updateConfigEntries`, `updateConfigOperations`,
+   `updateCoreConfig`, Phase 20.5 `repo.remote` composition, tests)
+   update mechanically. Re-exports in
+   `src/application/primitives/index.ts` rename in step. No
+   behavioural change; existing tests continue to pass under the new
+   names. This slice MUST land before slices 8–9 so the I/O primitives
+   can take the freed names.
 7. **Primitive readers** — extend
    `src/application/primitives/config-read.ts` with
    `readConfigSections` + `getConfigValue` + `getAllConfigValues`
    (each accepting an optional `scope?`). Per-scope cache wiring.
    Tests for each.
-8. **Existing `setConfigEntry` audit** — add `scope?: ConfigScope`
-   parameter; route the read-modify-write loop to the resolved scope
-   path. Tests for each scope.
-9. **New primitives** — `unsetConfigEntry` / `unsetAllConfigEntries`
-   in `update-config.ts`; `renameConfigSection` and
-   `removeConfigSection` promoted (gain `scope?`). Tests.
+8. **New I/O `setConfigEntry` primitive** — introduce the
+   Context-aware async `setConfigEntry({ ctx, key, value, scope? })`
+   in `update-config.ts` (name freed by slice 6a). Internally composes
+   `setConfigEntryInText`; routes the read-modify-write loop to the
+   resolved scope path. Tests for each scope.
+9. **New I/O primitives** — `unsetConfigEntry` /
+   `unsetAllConfigEntries` in `update-config.ts`; new Context-aware
+   `renameConfigSection` and `removeConfigSection` (names freed by
+   slice 6a; each composes the matching `*InText` helper and accepts
+   `scope?`). Tests.
 10. **Porcelain read methods** — `configGet` / `configGetAll` /
     `configGetRegexp` / `configList` in
     `src/application/commands/config.ts`. Tests.
@@ -1353,3 +1401,32 @@ Sections rewritten:
   §Negative).
 
 No new diffs in this pass. Converged.
+
+### Pass 7 — absorbed ADR-188 (text-helper `*InText` rename)
+
+- §9.2 — replaced the "OPEN — naming resolution" escalation
+  sub-section with §9.2.1 "Naming convention — `*InText` suffix
+  (ADR-188)" that locks the rename table and the convention
+  (`*InText` = pure text-transform; unsuffixed = I/O primitive).
+  Cross-referenced ADR-188.
+- §9.2 — updated the post-rename primitive index export block to
+  list both the renamed `*InText` helpers and the new I/O primitives
+  under their now-free names.
+- §14 — inserted slice 6a (text-helper rename), positioned BEFORE
+  slices 8–9 (which now introduce the new I/O `setConfigEntry` and
+  the other I/O primitives under the freed names). Slices 8–9
+  rephrased to reflect that they own the new I/O surface, not an
+  audit of the (now-renamed) text-transform helper.
+
+Symbol verification (against `update-config.ts` at `ab51e0a`): the
+five rows in the rename table cover `setConfigEntry`,
+`setCoreConfigEntry`, `renameConfigSection`, `removeConfigSection`,
+and the file-private `applyOperation` orchestrator (renamed and
+promoted to `applyConfigOpInText`). `removeConfigEntry` and
+`appendConfigEntry` are also pure text-transform helpers in the
+same file but are not currently re-exported from `primitives/index.ts`
+and are not in scope for this phase; §9.2.1 notes the convention
+applies to them if/when promoted.
+
+No further passes anticipated — the absorption is mechanical and
+the convention is locked by ADR-188.
