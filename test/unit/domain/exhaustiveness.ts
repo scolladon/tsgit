@@ -101,6 +101,7 @@ export function assertExhaustiveSwitch(data: TsgitErrorData): void {
     case 'REVPARSE_UNRESOLVED':
     case 'EMPTY_PATHSPEC':
     case 'OPERATION_IN_PROGRESS':
+    case 'NO_OPERATION_IN_PROGRESS':
     case 'MAX_REFSPECS_EXCEEDED':
     case 'REMOTE_NOT_CONFIGURED':
     case 'NO_PROMISOR_REMOTE':

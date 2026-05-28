@@ -1,15 +1,17 @@
 # Commands — Tier-1 reference
 
-Every method bound on a `Repository` handle. 21 entries, alphabetical.
+Every method bound on a `Repository` handle. 23 entries, alphabetical.
 
 | Command | Summary |
 |---|---|
+| [`abortMerge`](abort-merge.md) | End an in-progress merge by hard-resetting HEAD/index/workdir to `ORIG_HEAD` and clearing merge state. |
 | [`add`](add.md) | Stage paths into `.git/index`. Literal paths or `all: true` bulk mode. |
 | [`branch`](branch.md) | List, create, or delete branches. |
 | [`catFile`](cat-file.md) | Batch read of git objects in strict input order. |
 | [`checkout`](checkout.md) | Switch branches or restore working-tree files. |
 | [`clone`](clone.md) | Clone a remote repository over smart-HTTP (full / shallow / partial). |
 | [`commit`](commit.md) | Create a commit from the current index. |
+| [`continueMerge`](continue-merge.md) | Finalise an in-progress merge as a two-parent commit (delegates to `commit`). |
 | [`diff`](diff.md) | Compare two tree-like targets; returns a `TreeDiff` object. |
 | [`fetch`](fetch.md) | Fetch refs and objects from a remote. |
 | [`fetchMissing`](fetch-missing.md) | Prefetch promisor-remote objects in batch (partial clone). |
