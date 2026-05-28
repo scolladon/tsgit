@@ -131,12 +131,14 @@ describe('openRepository — Repository binding integrity', () => {
         // Assert
         expect(Object.keys(sut).sort()).toEqual(
           [
+            'abortMerge',
             'add',
             'branch',
             'catFile',
             'checkout',
             'clone',
             'commit',
+            'continueMerge',
             'ctx',
             'diff',
             'dispose',
@@ -359,6 +361,66 @@ describe('openRepository — dispose state machine', () => {
           const data = (err as TsgitError).data;
           expect(data.code).toBe('REPOSITORY_DISPOSED');
         }
+      });
+    });
+  });
+
+  describe('Given a Repository handle', () => {
+    describe('When abortMerge is accessed', () => {
+      it('Then it is a function bound to ctx', async () => {
+        // Arrange
+        const sut = await open();
+
+        // Assert
+        expect(typeof sut.abortMerge).toBe('function');
+      });
+    });
+    describe('When continueMerge is accessed', () => {
+      it('Then it is a function bound to ctx', async () => {
+        // Arrange
+        const sut = await open();
+
+        // Assert
+        expect(typeof sut.continueMerge).toBe('function');
+      });
+    });
+  });
+
+  describe('Given a disposed Repository', () => {
+    describe('When abortMerge is invoked', () => {
+      it('Then throws REPOSITORY_DISPOSED', async () => {
+        // Arrange
+        const sut = await open();
+        await sut.dispose();
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut.abortMerge();
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data.code).toBe('REPOSITORY_DISPOSED');
+      });
+    });
+    describe('When continueMerge is invoked', () => {
+      it('Then throws REPOSITORY_DISPOSED', async () => {
+        // Arrange
+        const sut = await open();
+        await sut.dispose();
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut.continueMerge();
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data.code).toBe('REPOSITORY_DISPOSED');
       });
     });
   });

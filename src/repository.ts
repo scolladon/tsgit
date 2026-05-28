@@ -121,12 +121,14 @@ export interface RuntimeFallback {
  */
 export interface Repository {
   // Tier-1 commands (18) — bound to ctx.
+  readonly abortMerge: BindCtx<typeof commands.abortMerge>;
   readonly add: BindCtx<typeof commands.add>;
   readonly branch: BindCtx<typeof commands.branch>;
   readonly catFile: BindCtx<typeof commands.catFile>;
   readonly checkout: BindCtx<typeof commands.checkout>;
   readonly clone: BindCtx<typeof commands.clone>;
   readonly commit: BindCtx<typeof commands.commit>;
+  readonly continueMerge: BindCtx<typeof commands.continueMerge>;
   // `diff` is overloaded on `format`; `BindCtx` only captures the last overload
   // (a TypeScript limitation), so the binding is written by hand to preserve
   // both narrowing paths.
@@ -330,6 +332,10 @@ export const openRepository = async (
 
   const repo: Repository = Object.freeze({
     snapshot,
+    abortMerge: (() => {
+      guard();
+      return commands.abortMerge(ctx);
+    }) as Repository['abortMerge'],
     add: ((paths, addOpts) => {
       guard();
       return commands.add(ctx, paths, addOpts);
@@ -354,6 +360,10 @@ export const openRepository = async (
       guard();
       return commands.commit(ctx, commitOpts);
     }) as Repository['commit'],
+    continueMerge: ((opts) => {
+      guard();
+      return commands.continueMerge(ctx, opts);
+    }) as Repository['continueMerge'],
     // Overload-preserving binding. The inner cast to `commands.DiffOptions`
     // forwards to the implementation signature; the outer cast restores the
     // public overloads so callers narrow on `format`.
