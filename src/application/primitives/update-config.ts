@@ -141,7 +141,7 @@ const rejectSection = (section: string): void => {
  *   inserted right after the header;
  * - no such section ⇒ `[section]\n\t<key> = <value>\n` is appended.
  */
-export const setConfigEntry = (
+export const setConfigEntryInText = (
   text: string,
   section: string,
   subsection: string | undefined,
@@ -165,9 +165,9 @@ export const setConfigEntry = (
   return insertAfter(lines, headerIndex, renderEntry(key, value)).join('\n');
 };
 
-/** `setConfigEntry` bound to the `[core]` section — kept for legacy callers. */
-export const setCoreConfigEntry = (text: string, key: string, value: string): string =>
-  setConfigEntry(text, 'core', undefined, key, value);
+/** `setConfigEntryInText` bound to the `[core]` section — kept for legacy callers. */
+export const setCoreConfigEntryInText = (text: string, key: string, value: string): string =>
+  setConfigEntryInText(text, 'core', undefined, key, value);
 
 /**
  * Remove every `key = value` line for `key` from the section
@@ -209,7 +209,7 @@ export const removeConfigEntry = (
  * the dropped section is also dropped so a removed section at the end
  * of the file does not leave a stray trailing newline.
  */
-export const removeConfigSection = (
+export const removeConfigSectionInText = (
   text: string,
   section: string,
   subsection: string | undefined,
@@ -244,9 +244,9 @@ export const removeConfigSection = (
  * `[section "toSubsection"]`. Body lines are not touched; other section
  * families (e.g. `[branch "fromSubsection"]` when family is `remote`)
  * are preserved. The new subsection name is validated with the same
- * line-surgery rules as `setConfigEntry`.
+ * line-surgery rules as `setConfigEntryInText`.
  */
-export const renameConfigSection = (
+export const renameConfigSectionInText = (
   text: string,
   section: string,
   fromSubsection: string,
@@ -273,7 +273,7 @@ export interface ConfigEntry {
 
 /**
  * Read `${gitDir}/config` (a missing file is treated as `''`), fold
- * `setConfigEntry` over `entries`, write the result, and invalidate the
+ * `setConfigEntryInText` over `entries`, write the result, and invalidate the
  * per-`Context` `readConfig` cache so a later read sees the new values.
  */
 export const updateConfigEntries = async (
@@ -283,7 +283,8 @@ export const updateConfigEntries = async (
   const path = `${ctx.layout.gitDir}/config`;
   const original = await readConfigText(ctx, path);
   const updated = entries.reduce(
-    (text, entry) => setConfigEntry(text, entry.section, entry.subsection, entry.key, entry.value),
+    (text, entry) =>
+      setConfigEntryInText(text, entry.section, entry.subsection, entry.key, entry.value),
     original,
   );
   await ctx.fs.writeUtf8(path, updated);
@@ -340,9 +341,9 @@ export type ConfigOperation =
       readonly to: string;
     };
 
-const applyOperation = (text: string, op: ConfigOperation): string => {
+export const applyConfigOpInText = (text: string, op: ConfigOperation): string => {
   if (op.kind === 'set') {
-    return setConfigEntry(text, op.section, op.subsection, op.key, op.value);
+    return setConfigEntryInText(text, op.section, op.subsection, op.key, op.value);
   }
   if (op.kind === 'appendEntry') {
     return appendConfigEntry(text, op.section, op.subsection, op.key, op.value);
@@ -351,9 +352,9 @@ const applyOperation = (text: string, op: ConfigOperation): string => {
     return removeConfigEntry(text, op.section, op.subsection, op.key);
   }
   if (op.kind === 'removeSection') {
-    return removeConfigSection(text, op.section, op.subsection);
+    return removeConfigSectionInText(text, op.section, op.subsection);
   }
-  return renameConfigSection(text, op.section, op.from, op.to);
+  return renameConfigSectionInText(text, op.section, op.from, op.to);
 };
 
 /**
@@ -416,7 +417,7 @@ export const updateConfigOperations = async (
 ): Promise<void> => {
   const path = `${ctx.layout.gitDir}/config`;
   const original = await readConfigText(ctx, path);
-  const updated = ops.reduce(applyOperation, original);
+  const updated = ops.reduce(applyConfigOpInText, original);
   await ctx.fs.writeUtf8(path, updated);
   invalidateConfigCache(ctx);
 };

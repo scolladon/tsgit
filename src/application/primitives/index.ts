@@ -60,8 +60,9 @@ export type { UnstageEntryOptions } from './unstage-entry.js';
 export { unstageEntry } from './unstage-entry.js';
 export type { ConfigEntry } from './update-config.js';
 export {
-  setConfigEntry,
-  setCoreConfigEntry,
+  applyConfigOpInText,
+  setConfigEntryInText,
+  setCoreConfigEntryInText,
   updateConfigEntries,
   updateCoreConfig,
 } from './update-config.js';

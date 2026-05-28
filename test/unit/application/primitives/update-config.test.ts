@@ -8,10 +8,10 @@ import {
   appendConfigEntry,
   type ConfigOperation,
   removeConfigEntry,
-  removeConfigSection,
-  renameConfigSection,
-  setConfigEntry,
-  setCoreConfigEntry,
+  removeConfigSectionInText,
+  renameConfigSectionInText,
+  setConfigEntryInText,
+  setCoreConfigEntryInText,
   updateConfigEntries,
   updateConfigOperations,
   updateCoreConfig,
@@ -30,15 +30,15 @@ describe('primitives/update-config', () => {
     __resetConfigCacheForTests();
   });
 
-  describe('setCoreConfigEntry', () => {
+  describe('setCoreConfigEntryInText', () => {
     describe('Given a [core] section with the key present', () => {
-      describe('When setCoreConfigEntry', () => {
+      describe('When setCoreConfigEntryInText', () => {
         it('Then the existing value is replaced', () => {
           // Arrange
           const text = '[core]\n\tsparseCheckout = false\n';
 
           // Act
-          const sut = setCoreConfigEntry(text, 'sparseCheckout', 'true');
+          const sut = setCoreConfigEntryInText(text, 'sparseCheckout', 'true');
 
           // Assert — the value flips; the line is rewritten with a tab indent.
           expect(sut).toBe('[core]\n\tsparseCheckout = true\n');
@@ -47,13 +47,13 @@ describe('primitives/update-config', () => {
     });
 
     describe('Given a [core] section without the key', () => {
-      describe('When setCoreConfigEntry', () => {
+      describe('When setCoreConfigEntryInText', () => {
         it('Then the key is inserted right after the header', () => {
           // Arrange
           const text = '[core]\n\tbare = false\n';
 
           // Act
-          const sut = setCoreConfigEntry(text, 'sparseCheckout', 'true');
+          const sut = setCoreConfigEntryInText(text, 'sparseCheckout', 'true');
 
           // Assert — inserted immediately after `[core]`, before the existing key.
           expect(sut).toBe('[core]\n\tsparseCheckout = true\n\tbare = false\n');
@@ -62,13 +62,13 @@ describe('primitives/update-config', () => {
     });
 
     describe('Given a config with no [core] section', () => {
-      describe('When setCoreConfigEntry', () => {
+      describe('When setCoreConfigEntryInText', () => {
         it('Then a [core] section is appended', () => {
           // Arrange
           const text = '[user]\n\tname = Ada\n';
 
           // Act
-          const sut = setCoreConfigEntry(text, 'sparseCheckout', 'true');
+          const sut = setCoreConfigEntryInText(text, 'sparseCheckout', 'true');
 
           // Assert — the new section is appended at the end of the file.
           expect(sut).toBe('[user]\n\tname = Ada\n[core]\n\tsparseCheckout = true\n');
@@ -77,13 +77,13 @@ describe('primitives/update-config', () => {
     });
 
     describe('Given an empty config text and no [core]', () => {
-      describe('When setCoreConfigEntry', () => {
+      describe('When setCoreConfigEntryInText', () => {
         it('Then only the [core] section is produced (no leading blank line)', () => {
           // Arrange — empty input must not yield a stray leading newline.
           const text = '';
 
           // Act
-          const sut = setCoreConfigEntry(text, 'sparseCheckout', 'true');
+          const sut = setCoreConfigEntryInText(text, 'sparseCheckout', 'true');
 
           // Assert
           expect(sut).toBe('[core]\n\tsparseCheckout = true\n');
@@ -92,13 +92,13 @@ describe('primitives/update-config', () => {
     });
 
     describe('Given a config with no [core] and no trailing newline', () => {
-      describe('When setCoreConfigEntry', () => {
+      describe('When setCoreConfigEntryInText', () => {
         it('Then a newline is inserted before the appended section', () => {
           // Arrange — the prefix branch must add the missing `\n` separator.
           const text = '[user]\n\tname = Ada';
 
           // Act
-          const sut = setCoreConfigEntry(text, 'sparseCheckout', 'true');
+          const sut = setCoreConfigEntryInText(text, 'sparseCheckout', 'true');
 
           // Assert
           expect(sut).toBe('[user]\n\tname = Ada\n[core]\n\tsparseCheckout = true\n');
@@ -107,14 +107,14 @@ describe('primitives/update-config', () => {
     });
 
     describe('Given a [core] key whose name differs only in case', () => {
-      describe('When setCoreConfigEntry', () => {
+      describe('When setCoreConfigEntryInText', () => {
         it('Then the existing line is replaced (case-insensitive match)', () => {
           // Arrange — git keys are case-insensitive; an upper-cased on-disk key
           // must still be matched and replaced, not duplicated.
           const text = '[core]\n\tSPARSECHECKOUT = false\n';
 
           // Act
-          const sut = setCoreConfigEntry(text, 'sparseCheckout', 'true');
+          const sut = setCoreConfigEntryInText(text, 'sparseCheckout', 'true');
 
           // Assert — the line is replaced (re-rendered with the passed-in casing).
           expect(sut).toBe('[core]\n\tsparseCheckout = true\n');
@@ -123,7 +123,7 @@ describe('primitives/update-config', () => {
     });
 
     describe('Given other sections, comments and blank lines around [core]', () => {
-      describe('When setCoreConfigEntry replaces a key', () => {
+      describe('When setCoreConfigEntryInText replaces a key', () => {
         it('Then everything else is byte-preserved', () => {
           // Arrange — comments, a blank line, an unrelated section, and unrelated
           // [core] keys (with their own casing/spacing) must survive verbatim.
@@ -131,7 +131,7 @@ describe('primitives/update-config', () => {
             '# top comment\n[user]\n\tname = Ada\n\n[core]\n\t; core comment\n\tBARE = false\n\tsparseCheckout = false\n[remote "origin"]\n\turl = u\n';
 
           // Act
-          const sut = setCoreConfigEntry(text, 'sparseCheckout', 'true');
+          const sut = setCoreConfigEntryInText(text, 'sparseCheckout', 'true');
 
           // Assert — only the sparseCheckout value changed.
           expect(sut).toBe(
@@ -142,14 +142,14 @@ describe('primitives/update-config', () => {
     });
 
     describe('Given a key only present under a section after [core]', () => {
-      describe('When setCoreConfigEntry', () => {
+      describe('When setCoreConfigEntryInText', () => {
         it('Then it is inserted under [core], not matched in the later section', () => {
           // Arrange — `sparseCheckout` lives under `[other]`; the section scan must
           // stop at the `[other]` header and not reach into it.
           const text = '[core]\n\tbare = false\n[other]\n\tsparseCheckout = false\n';
 
           // Act
-          const sut = setCoreConfigEntry(text, 'sparseCheckout', 'true');
+          const sut = setCoreConfigEntryInText(text, 'sparseCheckout', 'true');
 
           // Assert — inserted under [core]; the [other] line is untouched.
           expect(sut).toBe(
@@ -160,14 +160,14 @@ describe('primitives/update-config', () => {
     });
 
     describe('Given a `[core "sub"]` subsection', () => {
-      describe('When setCoreConfigEntry', () => {
+      describe('When setCoreConfigEntryInText', () => {
         it('Then the subsection is NOT treated as [core]', () => {
           // Arrange — a `[core "x"]` header must not satisfy the `[core]` match;
           // with no plain `[core]`, a new one is appended.
           const text = '[core "sub"]\n\tsparseCheckout = false\n';
 
           // Act
-          const sut = setCoreConfigEntry(text, 'sparseCheckout', 'true');
+          const sut = setCoreConfigEntryInText(text, 'sparseCheckout', 'true');
 
           // Assert — the subsection survives; a real [core] is appended.
           expect(sut).toBe(
@@ -178,14 +178,14 @@ describe('primitives/update-config', () => {
     });
 
     describe('Given an explicitly empty `[core ""]` header', () => {
-      describe('When setCoreConfigEntry', () => {
+      describe('When setCoreConfigEntryInText', () => {
         it('Then it is treated as the [core] section', () => {
           // Arrange — git writes `[core ""]` for an empty subsection; it is the
           // core section and must be edited in place.
           const text = '[core ""]\n\tbare = false\n';
 
           // Act
-          const sut = setCoreConfigEntry(text, 'sparseCheckout', 'true');
+          const sut = setCoreConfigEntryInText(text, 'sparseCheckout', 'true');
 
           // Assert — the key is inserted under the `[core ""]` header.
           expect(sut).toBe('[core ""]\n\tsparseCheckout = true\n\tbare = false\n');
@@ -194,7 +194,7 @@ describe('primitives/update-config', () => {
     });
 
     describe('Given a [core] body line lacking `=` whose text would key-match after dropping its last char', () => {
-      describe('When setCoreConfigEntry', () => {
+      describe('When setCoreConfigEntryInText', () => {
         it('Then the `=`-less line is not mistaken for the key', () => {
           // Arrange — `sparseCheckoutX` has no `=`. Without the `indexOf('=') === -1`
           // guard, `slice(0, -1)` would yield `sparseCheckout` and falsely match the
@@ -202,7 +202,7 @@ describe('primitives/update-config', () => {
           const text = '[core]\n\tsparseCheckoutX\n';
 
           // Act
-          const sut = setCoreConfigEntry(text, 'sparseCheckout', 'true');
+          const sut = setCoreConfigEntryInText(text, 'sparseCheckout', 'true');
 
           // Assert — the key is inserted after the header; the `=`-less line survives.
           expect(sut).toBe('[core]\n\tsparseCheckout = true\n\tsparseCheckoutX\n');
@@ -211,13 +211,13 @@ describe('primitives/update-config', () => {
     });
 
     describe('Given a [core] header line with surrounding whitespace', () => {
-      describe('When setCoreConfigEntry', () => {
+      describe('When setCoreConfigEntryInText', () => {
         it('Then it is still recognized as [core]', () => {
           // Arrange — `  [core]  ` trims to `[core]`; the trimmed compare must match.
           const text = '  [core]  \n\tbare = false\n';
 
           // Act
-          const sut = setCoreConfigEntry(text, 'sparseCheckout', 'true');
+          const sut = setCoreConfigEntryInText(text, 'sparseCheckout', 'true');
 
           // Assert — the original header line is preserved verbatim.
           expect(sut).toBe('  [core]  \n\tsparseCheckout = true\n\tbare = false\n');
@@ -226,7 +226,7 @@ describe('primitives/update-config', () => {
     });
 
     describe('Given a key under a later section whose header is indented', () => {
-      describe('When setCoreConfigEntry', () => {
+      describe('When setCoreConfigEntryInText', () => {
         it('Then the section scan stops at the trimmed header (does not reach into it)', () => {
           // Arrange — `  [other]  ` is a real section header only after trimming.
           // Without the trim, the scan would not see it as a boundary and would
@@ -234,7 +234,7 @@ describe('primitives/update-config', () => {
           const text = '[core]\n\tbare = false\n  [other]  \n\tsparseCheckout = false\n';
 
           // Act
-          const sut = setCoreConfigEntry(text, 'sparseCheckout', 'true');
+          const sut = setCoreConfigEntryInText(text, 'sparseCheckout', 'true');
 
           // Assert — inserted under [core]; the `[other]` line is byte-preserved.
           expect(sut).toBe(
@@ -245,7 +245,7 @@ describe('primitives/update-config', () => {
     });
 
     describe('Given a [core] body line that starts with `[` but has no closing `]`', () => {
-      describe('When setCoreConfigEntry replaces a later key', () => {
+      describe('When setCoreConfigEntryInText replaces a later key', () => {
         it('Then that line is not treated as a section boundary', () => {
           // Arrange — `[not-a-header` starts with `[` yet is not a real header (no `]`).
           // The scan must require BOTH brackets, else it stops here and inserts a
@@ -253,7 +253,7 @@ describe('primitives/update-config', () => {
           const text = '[core]\n\t[not-a-header\n\tsparseCheckout = false\n';
 
           // Act
-          const sut = setCoreConfigEntry(text, 'sparseCheckout', 'true');
+          const sut = setCoreConfigEntryInText(text, 'sparseCheckout', 'true');
 
           // Assert — the existing `sparseCheckout` line is replaced in place.
           expect(sut).toBe('[core]\n\t[not-a-header\n\tsparseCheckout = true\n');
@@ -262,7 +262,7 @@ describe('primitives/update-config', () => {
     });
 
     describe('Given a [core] body line that ends with `]` but does not start with `[`', () => {
-      describe('When setCoreConfigEntry replaces a later key', () => {
+      describe('When setCoreConfigEntryInText replaces a later key', () => {
         it('Then that line is not treated as a section boundary', () => {
           // Arrange — `not-a-header]` ends with `]` yet is not a real header (no `[`).
           // The scan must require BOTH brackets, else it stops here and inserts a
@@ -270,7 +270,7 @@ describe('primitives/update-config', () => {
           const text = '[core]\n\tnot-a-header]\n\tsparseCheckout = false\n';
 
           // Act
-          const sut = setCoreConfigEntry(text, 'sparseCheckout', 'true');
+          const sut = setCoreConfigEntryInText(text, 'sparseCheckout', 'true');
 
           // Assert — the existing `sparseCheckout` line is replaced in place.
           expect(sut).toBe('[core]\n\tnot-a-header]\n\tsparseCheckout = true\n');
@@ -279,14 +279,14 @@ describe('primitives/update-config', () => {
     });
 
     describe('Given a `[Core]` header (mixed case)', () => {
-      describe('When setCoreConfigEntry', () => {
+      describe('When setCoreConfigEntryInText', () => {
         it('Then it is matched and updated in place (no duplicate section)', () => {
           // Arrange — git section names are case-insensitive; a `[Core]` header
           // must be edited in place, not joined by an appended duplicate `[core]`.
           const text = '[Core]\n\tsparseCheckout = false\n';
 
           // Act
-          const sut = setCoreConfigEntry(text, 'sparseCheckout', 'true');
+          const sut = setCoreConfigEntryInText(text, 'sparseCheckout', 'true');
 
           // Assert — the existing line is replaced; no second `[core]` appears.
           expect(sut).toBe('[Core]\n\tsparseCheckout = true\n');
@@ -295,13 +295,13 @@ describe('primitives/update-config', () => {
     });
 
     describe('Given a `[CORE]` header (upper case)', () => {
-      describe('When setCoreConfigEntry', () => {
+      describe('When setCoreConfigEntryInText', () => {
         it('Then it is matched and updated in place (no duplicate section)', () => {
           // Arrange — an all-caps header is still the core section.
           const text = '[CORE]\n\tbare = false\n';
 
           // Act
-          const sut = setCoreConfigEntry(text, 'sparseCheckout', 'true');
+          const sut = setCoreConfigEntryInText(text, 'sparseCheckout', 'true');
 
           // Assert — the key is inserted under `[CORE]`; no appended `[core]`.
           expect(sut).toBe('[CORE]\n\tsparseCheckout = true\n\tbare = false\n');
@@ -310,14 +310,14 @@ describe('primitives/update-config', () => {
     });
 
     describe('Given a `[Core "sub"]` subsection (mixed case)', () => {
-      describe('When setCoreConfigEntry', () => {
+      describe('When setCoreConfigEntryInText', () => {
         it('Then the subsection is NOT treated as [core]', () => {
           // Arrange — case-insensitivity must not bleed into the subsection: a
           // `[Core "sub"]` header still must not satisfy the plain `[core]` match.
           const text = '[Core "sub"]\n\tsparseCheckout = false\n';
 
           // Act
-          const sut = setCoreConfigEntry(text, 'sparseCheckout', 'true');
+          const sut = setCoreConfigEntryInText(text, 'sparseCheckout', 'true');
 
           // Assert — the subsection survives; a real [core] is appended.
           expect(sut).toBe(
@@ -328,7 +328,7 @@ describe('primitives/update-config', () => {
     });
 
     describe('Given a key containing a newline', () => {
-      describe('When setCoreConfigEntry', () => {
+      describe('When setCoreConfigEntryInText', () => {
         it('Then it throws INVALID_OPTION', () => {
           // Arrange — a `\n` in the key would let line surgery splice a forged
           // section into `.git/config`.
@@ -336,7 +336,7 @@ describe('primitives/update-config', () => {
 
           // Act
           try {
-            setCoreConfigEntry('[core]\n', 'spar\nseCheckout', 'true');
+            setCoreConfigEntryInText('[core]\n', 'spar\nseCheckout', 'true');
           } catch (err) {
             caught = err;
           }
@@ -354,14 +354,14 @@ describe('primitives/update-config', () => {
     });
 
     describe('Given a value containing a newline', () => {
-      describe('When setCoreConfigEntry', () => {
+      describe('When setCoreConfigEntryInText', () => {
         it('Then it throws INVALID_OPTION', () => {
           // Arrange — a `\n` in the value would inject a fake config section.
           let caught: unknown;
 
           // Act
           try {
-            setCoreConfigEntry('[core]\n', 'sparseCheckout', 'true\n[remote "evil"]');
+            setCoreConfigEntryInText('[core]\n', 'sparseCheckout', 'true\n[remote "evil"]');
           } catch (err) {
             caught = err;
           }
@@ -379,14 +379,14 @@ describe('primitives/update-config', () => {
     });
 
     describe('Given a value containing a carriage return', () => {
-      describe('When setCoreConfigEntry', () => {
+      describe('When setCoreConfigEntryInText', () => {
         it('Then it throws INVALID_OPTION', () => {
           // Arrange — `\r` is rejected alongside `\n` so a CRLF-style splice fails too.
           let caught: unknown;
 
           // Act
           try {
-            setCoreConfigEntry('[core]\n', 'sparseCheckout', 'true\r[evil]');
+            setCoreConfigEntryInText('[core]\n', 'sparseCheckout', 'true\r[evil]');
           } catch (err) {
             caught = err;
           }
@@ -399,14 +399,14 @@ describe('primitives/update-config', () => {
     });
 
     describe('Given a value containing a NUL byte', () => {
-      describe('When setCoreConfigEntry', () => {
+      describe('When setCoreConfigEntryInText', () => {
         it('Then it throws INVALID_OPTION', () => {
           // Arrange — `\0` is rejected so a NUL-bearing value cannot reach the file.
           let caught: unknown;
 
           // Act
           try {
-            setCoreConfigEntry('[core]\n', 'sparseCheckout', 'true\0x');
+            setCoreConfigEntryInText('[core]\n', 'sparseCheckout', 'true\0x');
           } catch (err) {
             caught = err;
           }
@@ -557,12 +557,12 @@ describe('primitives/update-config', () => {
     });
   });
 
-  describe('setConfigEntry', () => {
+  describe('setConfigEntryInText', () => {
     describe('Given no matching section', () => {
-      describe('When setConfigEntry', () => {
+      describe('When setConfigEntryInText', () => {
         it('Then the section is appended', () => {
           // Arrange & Act
-          const sut = setConfigEntry('', 'extensions', undefined, 'partialClone', 'origin');
+          const sut = setConfigEntryInText('', 'extensions', undefined, 'partialClone', 'origin');
 
           // Assert
           expect(sut).toBe('[extensions]\n\tpartialClone = origin\n');
@@ -571,10 +571,10 @@ describe('primitives/update-config', () => {
     });
 
     describe('Given a subsection', () => {
-      describe('When setConfigEntry', () => {
+      describe('When setConfigEntryInText', () => {
         it('Then the subsectioned header is rendered', () => {
           // Arrange & Act
-          const sut = setConfigEntry('', 'remote', 'origin', 'url', 'https://e/r.git');
+          const sut = setConfigEntryInText('', 'remote', 'origin', 'url', 'https://e/r.git');
 
           // Assert
           expect(sut).toBe('[remote "origin"]\n\turl = https://e/r.git\n');
@@ -583,13 +583,13 @@ describe('primitives/update-config', () => {
     });
 
     describe('Given an existing section without the key', () => {
-      describe('When setConfigEntry', () => {
+      describe('When setConfigEntryInText', () => {
         it('Then the key is inserted after the header', () => {
           // Arrange
           const text = '[remote "origin"]\n\turl = https://e/r.git\n';
 
           // Act
-          const sut = setConfigEntry(text, 'remote', 'origin', 'promisor', 'true');
+          const sut = setConfigEntryInText(text, 'remote', 'origin', 'promisor', 'true');
 
           // Assert
           expect(sut).toBe('[remote "origin"]\n\tpromisor = true\n\turl = https://e/r.git\n');
@@ -598,13 +598,13 @@ describe('primitives/update-config', () => {
     });
 
     describe('Given an existing key', () => {
-      describe('When setConfigEntry', () => {
+      describe('When setConfigEntryInText', () => {
         it('Then its value is replaced', () => {
           // Arrange
           const text = '[remote "origin"]\n\tpromisor = false\n';
 
           // Act
-          const sut = setConfigEntry(text, 'remote', 'origin', 'promisor', 'true');
+          const sut = setConfigEntryInText(text, 'remote', 'origin', 'promisor', 'true');
 
           // Assert
           expect(sut).toBe('[remote "origin"]\n\tpromisor = true\n');
@@ -613,13 +613,13 @@ describe('primitives/update-config', () => {
     });
 
     describe('Given a subsection differing only in case', () => {
-      describe('When setConfigEntry', () => {
+      describe('When setConfigEntryInText', () => {
         it('Then it is NOT matched (case-sensitive)', () => {
           // Arrange
           const text = '[remote "Origin"]\n\turl = old\n';
 
           // Act
-          const sut = setConfigEntry(text, 'remote', 'origin', 'promisor', 'true');
+          const sut = setConfigEntryInText(text, 'remote', 'origin', 'promisor', 'true');
 
           // Assert
           expect(sut).toBe(
@@ -630,13 +630,13 @@ describe('primitives/update-config', () => {
     });
 
     describe('Given a section header differing only in case', () => {
-      describe('When setConfigEntry', () => {
+      describe('When setConfigEntryInText', () => {
         it('Then it IS matched (case-insensitive)', () => {
           // Arrange
           const text = '[EXTENSIONS]\n\tpartialClone = a\n';
 
           // Act
-          const sut = setConfigEntry(text, 'extensions', undefined, 'partialClone', 'b');
+          const sut = setConfigEntryInText(text, 'extensions', undefined, 'partialClone', 'b');
 
           // Assert
           expect(sut).toBe('[EXTENSIONS]\n\tpartialClone = b\n');
@@ -645,12 +645,12 @@ describe('primitives/update-config', () => {
     });
 
     describe('Given a subsection containing a newline', () => {
-      describe('When setConfigEntry', () => {
+      describe('When setConfigEntryInText', () => {
         it('Then it throws INVALID_OPTION', () => {
           // Arrange
           let caught: unknown;
           try {
-            setConfigEntry('', 'remote', 'ori\ngin', 'url', 'u');
+            setConfigEntryInText('', 'remote', 'ori\ngin', 'url', 'u');
           } catch (err) {
             caught = err;
           }
@@ -663,12 +663,12 @@ describe('primitives/update-config', () => {
     });
 
     describe('Given a subsection containing a quote', () => {
-      describe('When setConfigEntry', () => {
+      describe('When setConfigEntryInText', () => {
         it('Then it throws INVALID_OPTION', () => {
           // Arrange
           let caught: unknown;
           try {
-            setConfigEntry('', 'remote', 'ori"gin', 'url', 'u');
+            setConfigEntryInText('', 'remote', 'ori"gin', 'url', 'u');
           } catch (err) {
             caught = err;
           }
@@ -685,12 +685,12 @@ describe('primitives/update-config', () => {
     });
 
     describe('Given a section name containing a bracket', () => {
-      describe('When setConfigEntry', () => {
+      describe('When setConfigEntryInText', () => {
         it('Then it throws INVALID_OPTION', () => {
           // Arrange
           let caught: unknown;
           try {
-            setConfigEntry('', 'core]\n[evil', undefined, 'k', 'v');
+            setConfigEntryInText('', 'core]\n[evil', undefined, 'k', 'v');
           } catch (err) {
             caught = err;
           }
@@ -861,15 +861,15 @@ describe('primitives/update-config', () => {
     });
   });
 
-  describe('removeConfigSection', () => {
+  describe('removeConfigSectionInText', () => {
     describe('Given a section that is the last block', () => {
-      describe('When removeConfigSection', () => {
+      describe('When removeConfigSectionInText', () => {
         it('Then the header and body are gone', () => {
           // Arrange
           const text = '[remote "origin"]\n\turl = u\n\tfetch = +A:B\n';
 
           // Act
-          const sut = removeConfigSection(text, 'remote', 'origin');
+          const sut = removeConfigSectionInText(text, 'remote', 'origin');
 
           // Assert
           expect(sut).toBe('');
@@ -878,13 +878,13 @@ describe('primitives/update-config', () => {
     });
 
     describe('Given a section followed by another section', () => {
-      describe('When removeConfigSection', () => {
+      describe('When removeConfigSectionInText', () => {
         it('Then the following section is preserved byte-for-byte', () => {
           // Arrange
           const text = '[remote "origin"]\n\turl = O\n[remote "upstream"]\n\turl = U\n';
 
           // Act
-          const sut = removeConfigSection(text, 'remote', 'origin');
+          const sut = removeConfigSectionInText(text, 'remote', 'origin');
 
           // Assert
           expect(sut).toBe('[remote "upstream"]\n\turl = U\n');
@@ -893,13 +893,13 @@ describe('primitives/update-config', () => {
     });
 
     describe('Given a section preceded by another section', () => {
-      describe('When removeConfigSection', () => {
+      describe('When removeConfigSectionInText', () => {
         it('Then the preceding section is preserved', () => {
           // Arrange
           const text = '[core]\n\tbare = false\n[remote "origin"]\n\turl = u\n';
 
           // Act
-          const sut = removeConfigSection(text, 'remote', 'origin');
+          const sut = removeConfigSectionInText(text, 'remote', 'origin');
 
           // Assert
           expect(sut).toBe('[core]\n\tbare = false\n');
@@ -908,13 +908,13 @@ describe('primitives/update-config', () => {
     });
 
     describe('Given no matching section', () => {
-      describe('When removeConfigSection', () => {
+      describe('When removeConfigSectionInText', () => {
         it('Then the text is byte-identical', () => {
           // Arrange
           const text = '[core]\n\tbare = false\n';
 
           // Act
-          const sut = removeConfigSection(text, 'remote', 'origin');
+          const sut = removeConfigSectionInText(text, 'remote', 'origin');
 
           // Assert
           expect(sut).toBe(text);
@@ -923,14 +923,14 @@ describe('primitives/update-config', () => {
     });
 
     describe('Given two matching section blocks (corrupt config)', () => {
-      describe('When removeConfigSection', () => {
+      describe('When removeConfigSectionInText', () => {
         it('Then every occurrence is removed', () => {
           // Arrange — two `[remote "origin"]` headers from a manually-edited file.
           const text =
             '[remote "origin"]\n\turl = A\n[core]\n\tbare = false\n[remote "origin"]\n\turl = B\n';
 
           // Act
-          const sut = removeConfigSection(text, 'remote', 'origin');
+          const sut = removeConfigSectionInText(text, 'remote', 'origin');
 
           // Assert
           expect(sut).toBe('[core]\n\tbare = false\n');
@@ -939,13 +939,13 @@ describe('primitives/update-config', () => {
     });
 
     describe('Given a section without a subsection', () => {
-      describe('When removeConfigSection (no subsection)', () => {
+      describe('When removeConfigSectionInText (no subsection)', () => {
         it('Then it removes the matching plain section', () => {
           // Arrange
           const text = '[core]\n\tbare = false\n[user]\n\tname = Ada\n';
 
           // Act
-          const sut = removeConfigSection(text, 'core', undefined);
+          const sut = removeConfigSectionInText(text, 'core', undefined);
 
           // Assert
           expect(sut).toBe('[user]\n\tname = Ada\n');
@@ -954,13 +954,13 @@ describe('primitives/update-config', () => {
     });
 
     describe('Given a section followed by another section with no trailing newline', () => {
-      describe('When removeConfigSection drops the first', () => {
+      describe('When removeConfigSectionInText drops the first', () => {
         it('Then the output has no trailing newline either', () => {
           // Arrange — proves the `endedWithNewline` branch flips correctly.
           const text = '[remote "origin"]\n\turl = u\n[core]\n\tbare = false';
 
           // Act
-          const sut = removeConfigSection(text, 'remote', 'origin');
+          const sut = removeConfigSectionInText(text, 'remote', 'origin');
 
           // Assert
           expect(sut).toBe('[core]\n\tbare = false');
@@ -969,12 +969,12 @@ describe('primitives/update-config', () => {
     });
 
     describe('Given a section name containing a bracket', () => {
-      describe('When removeConfigSection', () => {
+      describe('When removeConfigSectionInText', () => {
         it('Then it throws INVALID_OPTION', () => {
           // Arrange
           let caught: unknown;
           try {
-            removeConfigSection('', 'core]\n[evil', undefined);
+            removeConfigSectionInText('', 'core]\n[evil', undefined);
           } catch (err) {
             caught = err;
           }
@@ -986,12 +986,12 @@ describe('primitives/update-config', () => {
     });
 
     describe('Given a subsection containing a quote', () => {
-      describe('When removeConfigSection', () => {
+      describe('When removeConfigSectionInText', () => {
         it('Then it throws INVALID_OPTION', () => {
           // Arrange
           let caught: unknown;
           try {
-            removeConfigSection('', 'remote', 'a"b');
+            removeConfigSectionInText('', 'remote', 'a"b');
           } catch (err) {
             caught = err;
           }
@@ -1039,15 +1039,15 @@ describe('primitives/update-config', () => {
     });
   });
 
-  describe('renameConfigSection', () => {
+  describe('renameConfigSectionInText', () => {
     describe('Given a section block matching `from`', () => {
-      describe('When renameConfigSection', () => {
+      describe('When renameConfigSectionInText', () => {
         it('Then the header subsection becomes `to` and the body is preserved', () => {
           // Arrange
           const text = '[remote "old"]\n\turl = u\n\tfetch = +A:B\n';
 
           // Act
-          const sut = renameConfigSection(text, 'remote', 'old', 'new');
+          const sut = renameConfigSectionInText(text, 'remote', 'old', 'new');
 
           // Assert
           expect(sut).toBe('[remote "new"]\n\turl = u\n\tfetch = +A:B\n');
@@ -1056,14 +1056,14 @@ describe('primitives/update-config', () => {
     });
 
     describe('Given the section is one of several', () => {
-      describe('When renameConfigSection', () => {
+      describe('When renameConfigSectionInText', () => {
         it('Then unrelated sections are preserved', () => {
           // Arrange
           const text =
             '[core]\n\tbare = false\n[remote "old"]\n\turl = u\n[remote "other"]\n\turl = o\n';
 
           // Act
-          const sut = renameConfigSection(text, 'remote', 'old', 'new');
+          const sut = renameConfigSectionInText(text, 'remote', 'old', 'new');
 
           // Assert
           expect(sut).toBe(
@@ -1074,13 +1074,13 @@ describe('primitives/update-config', () => {
     });
 
     describe('Given no matching section', () => {
-      describe('When renameConfigSection', () => {
+      describe('When renameConfigSectionInText', () => {
         it('Then the text is byte-identical', () => {
           // Arrange
           const text = '[remote "other"]\n\turl = o\n';
 
           // Act
-          const sut = renameConfigSection(text, 'remote', 'old', 'new');
+          const sut = renameConfigSectionInText(text, 'remote', 'old', 'new');
 
           // Assert
           expect(sut).toBe(text);
@@ -1089,13 +1089,13 @@ describe('primitives/update-config', () => {
     });
 
     describe('Given the same section name twice', () => {
-      describe('When renameConfigSection', () => {
+      describe('When renameConfigSectionInText', () => {
         it('Then every occurrence is renamed', () => {
           // Arrange
           const text = '[remote "old"]\n\turl = A\n[remote "old"]\n\turl = B\n';
 
           // Act
-          const sut = renameConfigSection(text, 'remote', 'old', 'new');
+          const sut = renameConfigSectionInText(text, 'remote', 'old', 'new');
 
           // Assert
           expect(sut).toBe('[remote "new"]\n\turl = A\n[remote "new"]\n\turl = B\n');
@@ -1104,13 +1104,13 @@ describe('primitives/update-config', () => {
     });
 
     describe('Given a section with the `from` name in a different section family', () => {
-      describe('When renameConfigSection', () => {
+      describe('When renameConfigSectionInText', () => {
         it('Then only the targeted family is renamed', () => {
           // Arrange — `[branch "old"]` must NOT be renamed when family is `remote`.
           const text = '[branch "old"]\n\tmerge = m\n[remote "old"]\n\turl = u\n';
 
           // Act
-          const sut = renameConfigSection(text, 'remote', 'old', 'new');
+          const sut = renameConfigSectionInText(text, 'remote', 'old', 'new');
 
           // Assert
           expect(sut).toBe('[branch "old"]\n\tmerge = m\n[remote "new"]\n\turl = u\n');
@@ -1119,12 +1119,12 @@ describe('primitives/update-config', () => {
     });
 
     describe('Given a target subsection containing a newline', () => {
-      describe('When renameConfigSection', () => {
+      describe('When renameConfigSectionInText', () => {
         it('Then it throws INVALID_OPTION', () => {
           // Arrange
           let caught: unknown;
           try {
-            renameConfigSection('', 'remote', 'old', 'ne\nw');
+            renameConfigSectionInText('', 'remote', 'old', 'ne\nw');
           } catch (err) {
             caught = err;
           }
