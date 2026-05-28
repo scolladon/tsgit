@@ -19,6 +19,7 @@ import {
   maxRefspecsExceeded,
   mergeHasConflicts,
   nonFastForward,
+  noOperationInProgress,
   nothingToCommit,
   operationInProgress,
   pathspecNoMatch,
@@ -436,6 +437,28 @@ describe('domain commands error — factory data', () => {
     });
   });
 
+  describe('Given the noOperationInProgress error helper', () => {
+    describe('When called with operation=merge', () => {
+      it('Then data matches expected shape', () => {
+        // Arrange + Assert
+        expect(noOperationInProgress('merge').data).toEqual({
+          code: 'NO_OPERATION_IN_PROGRESS',
+          operation: 'merge',
+        });
+      });
+    });
+
+    describe('When called with operation=rebase', () => {
+      it('Then operation discriminator is preserved', () => {
+        // Arrange + Assert
+        expect(noOperationInProgress('rebase').data).toEqual({
+          code: 'NO_OPERATION_IN_PROGRESS',
+          operation: 'rebase',
+        });
+      });
+    });
+  });
+
   describe('Given the maxRefspecsExceeded error helper', () => {
     describe('When called', () => {
       it('Then data matches expected shape', () => {
@@ -787,6 +810,14 @@ describe('domain commands error — extractDetail message formatting', () => {
     [
       { code: 'OPERATION_IN_PROGRESS', operation: 'merge' },
       'OPERATION_IN_PROGRESS: merge in progress; complete or abort it before running this command',
+    ],
+    [
+      { code: 'NO_OPERATION_IN_PROGRESS', operation: 'merge' },
+      'NO_OPERATION_IN_PROGRESS: no merge in progress',
+    ],
+    [
+      { code: 'NO_OPERATION_IN_PROGRESS', operation: 'rebase' },
+      'NO_OPERATION_IN_PROGRESS: no rebase in progress',
     ],
     [
       { code: 'MAX_REFSPECS_EXCEEDED', count: 2000, limit: 1024 },

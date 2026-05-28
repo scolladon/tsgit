@@ -52,6 +52,22 @@ export const readMergeHead = async (ctx: Context): Promise<ObjectId | undefined>
 };
 
 /**
+ * Read `.git/ORIG_HEAD` and return the recorded pre-merge ObjectId,
+ * or `undefined` when the file is absent. Used by `abortMerge` to
+ * restore the working tree, index, and branch ref to the pre-merge
+ * commit. Validation via the ObjectId factory rejects a corrupt
+ * `ORIG_HEAD` (mid-write crash) with `INVALID_OBJECT_ID`.
+ */
+export const readOrigHead = async (ctx: Context): Promise<ObjectId | undefined> => {
+  const path = origHeadPath(ctx);
+  if (!(await ctx.fs.exists(path))) return undefined;
+  const content = await ctx.fs.readUtf8(path);
+  const trimmed = content.trim();
+  if (trimmed.length === 0) return undefined;
+  return ObjectIdFactory.from(trimmed);
+};
+
+/**
  * Read `.git/MERGE_MSG` and return its content, or `undefined` when
  * the file is absent. Used by `commit` as the default message when
  * resolving a merge.

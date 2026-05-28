@@ -643,7 +643,7 @@ Before any state-mutating command, `internal/repo-state.assertNoPendingOperation
 - `REVERT_HEAD` — v2 revert
 - `REBASE_HEAD` — v2 rebase
 
-If any exists → `OPERATION_IN_PROGRESS` with `{ operation }`. Commands that legitimately resume an operation (`commit` after merge-conflict resolution, `merge --abort` if/when added) bypass the check explicitly.
+If any exists → `OPERATION_IN_PROGRESS` with `{ operation }`. Commands that legitimately resume or end an operation bypass the check explicitly: `commit` after merge-conflict resolution, `continueMerge` (delegates to `commit`), and `abortMerge` (inlines the hard-reset machinery to skip the guard). The inverse code — `NO_OPERATION_IN_PROGRESS` — fires when a state-machine end command runs without the matching marker on disk (Phase 20.4).
 
 Applied by: `add`, `commit`, `branch.create`, `branch.delete`, `branch.rename`, `tag.create`, `tag.delete`, `checkout`, `clone` (target dir), `merge`, `pull` (v2), `reset`. NOT applied by: `status`, `log`, `diff`, `revParse`, `branch.list`, `tag.list`, `fetch`, `push` (read-only or remote-only).
 

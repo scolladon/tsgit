@@ -313,6 +313,8 @@ function extractDetail(data: TsgitErrorData): string {
       return 'pathspec is empty (use "." to mean "all paths")';
     case 'OPERATION_IN_PROGRESS':
       return `${data.operation} in progress; complete or abort it before running this command`;
+    case 'NO_OPERATION_IN_PROGRESS':
+      return `no ${data.operation} in progress`;
     case 'MAX_REFSPECS_EXCEEDED':
       return `${data.count} refspecs exceeds limit ${data.limit}`;
     case 'REMOTE_NOT_CONFIGURED':

@@ -52,6 +52,10 @@ export type CommandError =
       readonly code: 'OPERATION_IN_PROGRESS';
       readonly operation: 'merge' | 'rebase' | 'cherry-pick' | 'revert';
     }
+  | {
+      readonly code: 'NO_OPERATION_IN_PROGRESS';
+      readonly operation: 'merge' | 'rebase' | 'cherry-pick' | 'revert';
+    }
   | { readonly code: 'MAX_REFSPECS_EXCEEDED'; readonly count: number; readonly limit: number }
   | { readonly code: 'REMOTE_NOT_CONFIGURED'; readonly remote: string }
   | { readonly code: 'INVALID_OPTION'; readonly option: string; readonly reason: string }
@@ -204,6 +208,10 @@ export const emptyPathspec = (): TsgitError => new TsgitError({ code: 'EMPTY_PAT
 export const operationInProgress = (
   operation: 'merge' | 'rebase' | 'cherry-pick' | 'revert',
 ): TsgitError => new TsgitError({ code: 'OPERATION_IN_PROGRESS', operation });
+
+export const noOperationInProgress = (
+  operation: 'merge' | 'rebase' | 'cherry-pick' | 'revert',
+): TsgitError => new TsgitError({ code: 'NO_OPERATION_IN_PROGRESS', operation });
 
 export const maxRefspecsExceeded = (count: number, limit: number): TsgitError =>
   new TsgitError({ code: 'MAX_REFSPECS_EXCEEDED', count, limit });
