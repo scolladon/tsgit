@@ -288,10 +288,11 @@
       "output": []
     },
     "check:deps": {
-      "command": "npm outdated",
+      "command": "node tooling/check-deps.mjs",
       "files": [
         "package.json",
-        "package-lock.json"
+        "package-lock.json",
+        "tooling/check-deps.mjs"
       ],
       "output": []
     },
@@ -726,7 +727,7 @@
     "@arethetypeswrong/cli": "0.18.2",
     "@biomejs/biome": "2.4.16",
     "@cloudflare/vitest-pool-workers": "0.16.10",
-    "@cloudflare/workers-types": "4.20260527.1",
+    "@cloudflare/workers-types": "4.20260528.1",
     "@commitlint/cli": "21.0.1",
     "@commitlint/config-conventional": "21.0.1",
     "@ls-lint/ls-lint": "2.3.1",
