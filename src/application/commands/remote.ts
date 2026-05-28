@@ -8,11 +8,22 @@
  *       · 178 (rename refspec rule) · 179 (set-url --push) · 180 (show
  *       local-only).
  */
+import { invalidOption, remoteExists } from '../../domain/commands/error.js';
 import type { ObjectId, RefName } from '../../domain/objects/object-id.js';
 import type { Context } from '../../ports/context.js';
 import { readConfig } from '../primitives/config-read.js';
 import { assertRepository } from '../primitives/internal/repo-state.js';
+import { type ConfigOperation, updateConfigOperations } from '../primitives/update-config.js';
+import { parseRefspec } from './internal/refspec.js';
 import { validateRemoteName } from './internal/remote-config.js';
+
+const FORBIDDEN_URL_CHARS = /[\n\r\0]/;
+
+const assertUrlSafe = (url: string): void => {
+  if (FORBIDDEN_URL_CHARS.test(url)) {
+    throw invalidOption('remote.url', 'url must not contain a newline or NUL');
+  }
+};
 
 /** Compact view of a remote pulled from `.git/config`. */
 export interface RemoteInfo {
@@ -118,11 +129,37 @@ const notYetImplemented = (action: string): never => {
 };
 
 const addRemote = async (
-  _ctx: Context,
+  ctx: Context,
   action: { readonly name: string; readonly url: string; readonly fetch?: string },
 ): Promise<RemoteResult> => {
   validateRemoteName(action.name);
-  return notYetImplemented('add');
+  assertUrlSafe(action.url);
+  const config = await readConfig(ctx);
+  if (config.remote?.has(action.name) === true) throw remoteExists(action.name);
+  const fetchSpec = action.fetch ?? `+refs/heads/*:refs/remotes/${action.name}/*`;
+  // parseRefspec throws REFSPEC_INVALID on bad input — the same code
+  // `fetch`/`push` consumers raise, so callers get one consistent shape.
+  parseRefspec(fetchSpec);
+  const ops: ReadonlyArray<ConfigOperation> = [
+    { kind: 'set', section: 'remote', subsection: action.name, key: 'url', value: action.url },
+    {
+      kind: 'set',
+      section: 'remote',
+      subsection: action.name,
+      key: 'fetch',
+      value: fetchSpec,
+    },
+  ];
+  await updateConfigOperations(ctx, ops);
+  return {
+    kind: 'add',
+    remote: {
+      name: action.name,
+      url: action.url,
+      pushUrl: undefined,
+      fetchRefspecs: [fetchSpec],
+    },
+  };
 };
 
 const removeRemote = async (
