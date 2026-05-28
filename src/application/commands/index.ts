@@ -39,6 +39,13 @@ export {
   type ReflogShowEntry,
   reflog,
 } from './reflog.js';
+export {
+  type RemoteAction,
+  type RemoteInfo,
+  type RemoteResult,
+  type RemoteShow,
+  remote,
+} from './remote.js';
 export { type ResetMode, type ResetOptions, type ResetResult, reset } from './reset.js';
 export { revParse } from './rev-parse.js';
 export { type RmOptions, type RmResult, rm } from './rm.js';

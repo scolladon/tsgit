@@ -19,6 +19,8 @@ export interface ParsedConfig {
     string,
     {
       readonly url?: string;
+      /** `remote.<name>.pushurl` — push-only URL; `push` reads `pushUrl ?? url`. */
+      readonly pushUrl?: string;
       readonly fetch?: ReadonlyArray<string>;
       /** `remote.<name>.promisor` — true when this is a partial-clone promisor remote. */
       readonly promisor?: boolean;
@@ -220,7 +222,13 @@ interface MutableParsedConfig {
   user?: { name?: string; email?: string };
   remote?: Map<
     string,
-    { url?: string; fetch?: string[]; promisor?: boolean; partialCloneFilter?: string }
+    {
+      url?: string;
+      pushUrl?: string;
+      fetch?: string[];
+      promisor?: boolean;
+      partialCloneFilter?: string;
+    }
   >;
   branch?: Map<string, { remote?: string; merge?: string }>;
   extensions?: { partialClone?: string };
@@ -298,41 +306,48 @@ const mergeUser = (acc: { user?: { name?: string; email?: string } }, sec: IniSe
   }
 };
 
+interface MutableRemote {
+  url?: string;
+  pushUrl?: string;
+  fetch?: string[];
+  promisor?: boolean;
+  partialCloneFilter?: string;
+}
+
+const applyRemoteEntry = (acc: MutableRemote, key: string, value: string): void => {
+  // Git config keys are case-insensitive — compare on the lower-cased key.
+  const lowered = key.toLowerCase();
+  if (lowered === 'url') acc.url = value;
+  else if (lowered === 'pushurl') acc.pushUrl = value;
+  else if (lowered === 'fetch') {
+    acc.fetch ??= [];
+    acc.fetch.push(value);
+  } else if (lowered === 'promisor') acc.promisor = parseGitBoolean(value);
+  else if (lowered === 'partialclonefilter') acc.partialCloneFilter = value;
+};
+
+const compactRemote = (mutable: MutableRemote): MutableRemote => {
+  const merged: MutableRemote = {};
+  if (mutable.url !== undefined) merged.url = mutable.url;
+  if (mutable.pushUrl !== undefined) merged.pushUrl = mutable.pushUrl;
+  if (mutable.fetch !== undefined && mutable.fetch.length > 0) merged.fetch = mutable.fetch;
+  if (mutable.promisor !== undefined) merged.promisor = mutable.promisor;
+  if (mutable.partialCloneFilter !== undefined) {
+    merged.partialCloneFilter = mutable.partialCloneFilter;
+  }
+  return merged;
+};
+
 const mergeRemote = (
-  acc: {
-    remote?: Map<
-      string,
-      { url?: string; fetch?: string[]; promisor?: boolean; partialCloneFilter?: string }
-    >;
-  },
+  acc: { remote?: Map<string, MutableRemote> },
   name: string,
   sec: IniSection,
 ): void => {
   acc.remote ??= new Map();
   const current = acc.remote.get(name) ?? {};
-  const fetch = current.fetch ? [...current.fetch] : [];
-  let url = current.url;
-  let promisor = current.promisor;
-  let partialCloneFilter = current.partialCloneFilter;
-  for (const { key, value } of sec.entries) {
-    // Git config keys are case-insensitive — compare on the lower-cased key.
-    const lowered = key.toLowerCase();
-    if (lowered === 'url') url = value;
-    else if (lowered === 'fetch') fetch.push(value);
-    else if (lowered === 'promisor') promisor = parseGitBoolean(value);
-    else if (lowered === 'partialclonefilter') partialCloneFilter = value;
-  }
-  const merged: {
-    url?: string;
-    fetch?: string[];
-    promisor?: boolean;
-    partialCloneFilter?: string;
-  } = {};
-  if (url !== undefined) merged.url = url;
-  if (fetch.length > 0) merged.fetch = fetch;
-  if (promisor !== undefined) merged.promisor = promisor;
-  if (partialCloneFilter !== undefined) merged.partialCloneFilter = partialCloneFilter;
-  acc.remote.set(name, merged);
+  const mutable: MutableRemote = { ...current, fetch: current.fetch ? [...current.fetch] : [] };
+  for (const { key, value } of sec.entries) applyRemoteEntry(mutable, key, value);
+  acc.remote.set(name, compactRemote(mutable));
 };
 
 const mergeBranch = (
@@ -408,6 +423,7 @@ const finalize = (acc: MutableParsedConfig): ParsedConfig => {
       string,
       {
         url?: string;
+        pushUrl?: string;
         fetch?: ReadonlyArray<string>;
         promisor?: boolean;
         partialCloneFilter?: string;

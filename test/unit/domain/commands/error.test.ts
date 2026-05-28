@@ -26,6 +26,8 @@ import {
   pathspecOutsideRepo,
   pushRejected,
   remoteAdvertisesNoRefs,
+  remoteExists,
+  remoteNameInvalid,
   remoteNotConfigured,
   repositoryDisposed,
   revparseAmbiguous,
@@ -484,6 +486,31 @@ describe('domain commands error — factory data', () => {
     });
   });
 
+  describe('Given the remoteExists error helper', () => {
+    describe('When called', () => {
+      it('Then data carries the remote name and the REMOTE_EXISTS code', () => {
+        // Arrange + Assert
+        expect(remoteExists('origin').data).toEqual({
+          code: 'REMOTE_EXISTS',
+          remote: 'origin',
+        });
+      });
+    });
+  });
+
+  describe('Given the remoteNameInvalid error helper', () => {
+    describe('When called with a printable reason', () => {
+      it('Then data carries the verbatim name and reason', () => {
+        // Arrange + Assert
+        expect(remoteNameInvalid('a\rb', 'control char').data).toEqual({
+          code: 'REMOTE_NAME_INVALID',
+          name: 'a\\x0Db',
+          reason: 'control char',
+        });
+      });
+    });
+  });
+
   describe('Given a printable reason', () => {
     describe('When invalidOption', () => {
       it('Then data carries the verbatim option name and sanitized reason', () => {
@@ -826,6 +853,11 @@ describe('domain commands error — extractDetail message formatting', () => {
     [
       { code: 'REMOTE_NOT_CONFIGURED', remote: 'upstream' },
       'REMOTE_NOT_CONFIGURED: remote not configured: upstream',
+    ],
+    [{ code: 'REMOTE_EXISTS', remote: 'origin' }, 'REMOTE_EXISTS: remote already exists: origin'],
+    [
+      { code: 'REMOTE_NAME_INVALID', name: 'bad\\x0Aname', reason: 'has newline' },
+      'REMOTE_NAME_INVALID: invalid remote name "bad\\x0Aname": has newline',
     ],
     [
       { code: 'INVALID_OPTION', option: 'cwd', reason: 'must be absolute' },

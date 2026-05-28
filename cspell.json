@@ -622,7 +622,11 @@
     "noprefix",
     "trippable",
     "organised",
-    "goldens"
+    "goldens",
+    "pushurl",
+    "tagopt",
+    "bikesheds",
+    "threadedness"
   ],
   "ignorePaths": [
     "node_modules",

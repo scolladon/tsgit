@@ -5,9 +5,15 @@ import {
   readConfig,
 } from '../../../../src/application/primitives/config-read.js';
 import {
+  appendConfigEntry,
+  type ConfigOperation,
+  removeConfigEntry,
+  removeConfigSection,
+  renameConfigSection,
   setConfigEntry,
   setCoreConfigEntry,
   updateConfigEntries,
+  updateConfigOperations,
   updateCoreConfig,
 } from '../../../../src/application/primitives/update-config.js';
 import { TsgitError } from '../../../../src/domain/error.js';
@@ -743,6 +749,607 @@ describe('primitives/update-config', () => {
           // Assert
           const reread = await readConfig(ctx);
           expect(reread.extensions?.partialClone).toBe('origin');
+        });
+      });
+    });
+  });
+
+  describe('removeConfigEntry', () => {
+    describe('Given a section with the key present', () => {
+      describe('When removeConfigEntry', () => {
+        it('Then only the matching key line is removed', () => {
+          // Arrange
+          const text = '[remote "origin"]\n\turl = https://e.com/r\n\tfetch = +A:B\n';
+
+          // Act
+          const sut = removeConfigEntry(text, 'remote', 'origin', 'url');
+
+          // Assert — header + fetch line preserved.
+          expect(sut).toBe('[remote "origin"]\n\tfetch = +A:B\n');
+        });
+      });
+    });
+
+    describe('Given a section without the key', () => {
+      describe('When removeConfigEntry', () => {
+        it('Then the text is byte-identical', () => {
+          // Arrange
+          const text = '[remote "origin"]\n\tfetch = +A:B\n';
+
+          // Act
+          const sut = removeConfigEntry(text, 'remote', 'origin', 'url');
+
+          // Assert
+          expect(sut).toBe(text);
+        });
+      });
+    });
+
+    describe('Given no matching section', () => {
+      describe('When removeConfigEntry', () => {
+        it('Then the text is byte-identical', () => {
+          // Arrange
+          const text = '[core]\n\tbare = false\n';
+
+          // Act
+          const sut = removeConfigEntry(text, 'remote', 'origin', 'url');
+
+          // Assert
+          expect(sut).toBe(text);
+        });
+      });
+    });
+
+    describe('Given the key appearing twice in one section', () => {
+      describe('When removeConfigEntry', () => {
+        it('Then every occurrence is removed (--unset-all semantics)', () => {
+          // Arrange — two `fetch =` lines, both must go.
+          const text = '[remote "origin"]\n\tfetch = +A:B\n\tfetch = +C:D\n\turl = u\n';
+
+          // Act
+          const sut = removeConfigEntry(text, 'remote', 'origin', 'fetch');
+
+          // Assert
+          expect(sut).toBe('[remote "origin"]\n\turl = u\n');
+        });
+      });
+    });
+
+    describe('Given the same key in two different sections', () => {
+      describe('When removeConfigEntry targets one section', () => {
+        it('Then the other section is preserved byte-for-byte', () => {
+          // Arrange
+          const text = '[remote "origin"]\n\turl = O\n[remote "upstream"]\n\turl = U\n';
+
+          // Act
+          const sut = removeConfigEntry(text, 'remote', 'origin', 'url');
+
+          // Assert
+          expect(sut).toBe('[remote "origin"]\n[remote "upstream"]\n\turl = U\n');
+        });
+      });
+    });
+
+    describe('Given a key match with different casing', () => {
+      describe('When removeConfigEntry', () => {
+        it('Then the key is matched case-insensitively (git semantics)', () => {
+          // Arrange
+          const text = '[remote "origin"]\n\tURL = up\n';
+
+          // Act
+          const sut = removeConfigEntry(text, 'remote', 'origin', 'url');
+
+          // Assert — case-insensitive match removed the entry.
+          expect(sut).toBe('[remote "origin"]\n');
+        });
+      });
+    });
+
+    describe('Given the key in a different section', () => {
+      describe('When removeConfigEntry targets a section that has no such key', () => {
+        it('Then the key line in the OTHER section is untouched', () => {
+          // Arrange — `url` lives only in the second `[remote "B"]` block.
+          const text = '[remote "A"]\n\tfetch = +x:y\n[remote "B"]\n\turl = u\n';
+
+          // Act
+          const sut = removeConfigEntry(text, 'remote', 'A', 'url');
+
+          // Assert — the unrelated section is preserved verbatim.
+          expect(sut).toBe(text);
+        });
+      });
+    });
+  });
+
+  describe('removeConfigSection', () => {
+    describe('Given a section that is the last block', () => {
+      describe('When removeConfigSection', () => {
+        it('Then the header and body are gone', () => {
+          // Arrange
+          const text = '[remote "origin"]\n\turl = u\n\tfetch = +A:B\n';
+
+          // Act
+          const sut = removeConfigSection(text, 'remote', 'origin');
+
+          // Assert
+          expect(sut).toBe('');
+        });
+      });
+    });
+
+    describe('Given a section followed by another section', () => {
+      describe('When removeConfigSection', () => {
+        it('Then the following section is preserved byte-for-byte', () => {
+          // Arrange
+          const text = '[remote "origin"]\n\turl = O\n[remote "upstream"]\n\turl = U\n';
+
+          // Act
+          const sut = removeConfigSection(text, 'remote', 'origin');
+
+          // Assert
+          expect(sut).toBe('[remote "upstream"]\n\turl = U\n');
+        });
+      });
+    });
+
+    describe('Given a section preceded by another section', () => {
+      describe('When removeConfigSection', () => {
+        it('Then the preceding section is preserved', () => {
+          // Arrange
+          const text = '[core]\n\tbare = false\n[remote "origin"]\n\turl = u\n';
+
+          // Act
+          const sut = removeConfigSection(text, 'remote', 'origin');
+
+          // Assert
+          expect(sut).toBe('[core]\n\tbare = false\n');
+        });
+      });
+    });
+
+    describe('Given no matching section', () => {
+      describe('When removeConfigSection', () => {
+        it('Then the text is byte-identical', () => {
+          // Arrange
+          const text = '[core]\n\tbare = false\n';
+
+          // Act
+          const sut = removeConfigSection(text, 'remote', 'origin');
+
+          // Assert
+          expect(sut).toBe(text);
+        });
+      });
+    });
+
+    describe('Given two matching section blocks (corrupt config)', () => {
+      describe('When removeConfigSection', () => {
+        it('Then every occurrence is removed', () => {
+          // Arrange — two `[remote "origin"]` headers from a manually-edited file.
+          const text =
+            '[remote "origin"]\n\turl = A\n[core]\n\tbare = false\n[remote "origin"]\n\turl = B\n';
+
+          // Act
+          const sut = removeConfigSection(text, 'remote', 'origin');
+
+          // Assert
+          expect(sut).toBe('[core]\n\tbare = false\n');
+        });
+      });
+    });
+
+    describe('Given a section without a subsection', () => {
+      describe('When removeConfigSection (no subsection)', () => {
+        it('Then it removes the matching plain section', () => {
+          // Arrange
+          const text = '[core]\n\tbare = false\n[user]\n\tname = Ada\n';
+
+          // Act
+          const sut = removeConfigSection(text, 'core', undefined);
+
+          // Assert
+          expect(sut).toBe('[user]\n\tname = Ada\n');
+        });
+      });
+    });
+
+    describe('Given a section followed by another section with no trailing newline', () => {
+      describe('When removeConfigSection drops the first', () => {
+        it('Then the output has no trailing newline either', () => {
+          // Arrange — proves the `endedWithNewline` branch flips correctly.
+          const text = '[remote "origin"]\n\turl = u\n[core]\n\tbare = false';
+
+          // Act
+          const sut = removeConfigSection(text, 'remote', 'origin');
+
+          // Assert
+          expect(sut).toBe('[core]\n\tbare = false');
+        });
+      });
+    });
+
+    describe('Given a section name containing a bracket', () => {
+      describe('When removeConfigSection', () => {
+        it('Then it throws INVALID_OPTION', () => {
+          // Arrange
+          let caught: unknown;
+          try {
+            removeConfigSection('', 'core]\n[evil', undefined);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect((caught as TsgitError).data.code).toBe('INVALID_OPTION');
+        });
+      });
+    });
+
+    describe('Given a subsection containing a quote', () => {
+      describe('When removeConfigSection', () => {
+        it('Then it throws INVALID_OPTION', () => {
+          // Arrange
+          let caught: unknown;
+          try {
+            removeConfigSection('', 'remote', 'a"b');
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect((caught as TsgitError).data.code).toBe('INVALID_OPTION');
+        });
+      });
+    });
+  });
+
+  describe('removeConfigEntry validation', () => {
+    describe('Given a section name containing a bracket', () => {
+      describe('When removeConfigEntry', () => {
+        it('Then it throws INVALID_OPTION', () => {
+          // Arrange
+          let caught: unknown;
+          try {
+            removeConfigEntry('', 'core]\n[evil', undefined, 'k');
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect((caught as TsgitError).data.code).toBe('INVALID_OPTION');
+        });
+      });
+    });
+
+    describe('Given a key containing a newline', () => {
+      describe('When removeConfigEntry', () => {
+        it('Then it throws INVALID_OPTION', () => {
+          // Arrange
+          let caught: unknown;
+          try {
+            removeConfigEntry('', 'remote', 'origin', 'k\ney');
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect((caught as TsgitError).data.code).toBe('INVALID_OPTION');
+        });
+      });
+    });
+  });
+
+  describe('renameConfigSection', () => {
+    describe('Given a section block matching `from`', () => {
+      describe('When renameConfigSection', () => {
+        it('Then the header subsection becomes `to` and the body is preserved', () => {
+          // Arrange
+          const text = '[remote "old"]\n\turl = u\n\tfetch = +A:B\n';
+
+          // Act
+          const sut = renameConfigSection(text, 'remote', 'old', 'new');
+
+          // Assert
+          expect(sut).toBe('[remote "new"]\n\turl = u\n\tfetch = +A:B\n');
+        });
+      });
+    });
+
+    describe('Given the section is one of several', () => {
+      describe('When renameConfigSection', () => {
+        it('Then unrelated sections are preserved', () => {
+          // Arrange
+          const text =
+            '[core]\n\tbare = false\n[remote "old"]\n\turl = u\n[remote "other"]\n\turl = o\n';
+
+          // Act
+          const sut = renameConfigSection(text, 'remote', 'old', 'new');
+
+          // Assert
+          expect(sut).toBe(
+            '[core]\n\tbare = false\n[remote "new"]\n\turl = u\n[remote "other"]\n\turl = o\n',
+          );
+        });
+      });
+    });
+
+    describe('Given no matching section', () => {
+      describe('When renameConfigSection', () => {
+        it('Then the text is byte-identical', () => {
+          // Arrange
+          const text = '[remote "other"]\n\turl = o\n';
+
+          // Act
+          const sut = renameConfigSection(text, 'remote', 'old', 'new');
+
+          // Assert
+          expect(sut).toBe(text);
+        });
+      });
+    });
+
+    describe('Given the same section name twice', () => {
+      describe('When renameConfigSection', () => {
+        it('Then every occurrence is renamed', () => {
+          // Arrange
+          const text = '[remote "old"]\n\turl = A\n[remote "old"]\n\turl = B\n';
+
+          // Act
+          const sut = renameConfigSection(text, 'remote', 'old', 'new');
+
+          // Assert
+          expect(sut).toBe('[remote "new"]\n\turl = A\n[remote "new"]\n\turl = B\n');
+        });
+      });
+    });
+
+    describe('Given a section with the `from` name in a different section family', () => {
+      describe('When renameConfigSection', () => {
+        it('Then only the targeted family is renamed', () => {
+          // Arrange — `[branch "old"]` must NOT be renamed when family is `remote`.
+          const text = '[branch "old"]\n\tmerge = m\n[remote "old"]\n\turl = u\n';
+
+          // Act
+          const sut = renameConfigSection(text, 'remote', 'old', 'new');
+
+          // Assert
+          expect(sut).toBe('[branch "old"]\n\tmerge = m\n[remote "new"]\n\turl = u\n');
+        });
+      });
+    });
+
+    describe('Given a target subsection containing a newline', () => {
+      describe('When renameConfigSection', () => {
+        it('Then it throws INVALID_OPTION', () => {
+          // Arrange
+          let caught: unknown;
+          try {
+            renameConfigSection('', 'remote', 'old', 'ne\nw');
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as TsgitError).data.code).toBe('INVALID_OPTION');
+        });
+      });
+    });
+  });
+
+  describe('appendConfigEntry', () => {
+    describe('Given an existing section with one prior entry for the key', () => {
+      describe('When appendConfigEntry', () => {
+        it('Then the new entry is inserted AFTER the existing one (order preserved)', () => {
+          // Arrange
+          const text = '[remote "r"]\n\tfetch = A\n';
+
+          // Act
+          const sut = appendConfigEntry(text, 'remote', 'r', 'fetch', 'B');
+
+          // Assert
+          expect(sut).toBe('[remote "r"]\n\tfetch = A\n\tfetch = B\n');
+        });
+      });
+    });
+
+    describe('Given an existing section with NO prior matching key', () => {
+      describe('When appendConfigEntry', () => {
+        it('Then the entry is inserted directly after the header', () => {
+          // Arrange
+          const text = '[remote "r"]\n\turl = u\n';
+
+          // Act
+          const sut = appendConfigEntry(text, 'remote', 'r', 'fetch', 'A');
+
+          // Assert
+          expect(sut).toBe('[remote "r"]\n\tfetch = A\n\turl = u\n');
+        });
+      });
+    });
+
+    describe('Given a section is followed by another section', () => {
+      describe('When appendConfigEntry', () => {
+        it('Then a matching key in the LATER section is NOT considered', () => {
+          // Arrange — `fetch = X` lives in the SECOND section; appending to
+          // the first must insert under the first's header, not after the
+          // unrelated later section's entry.
+          const text = '[remote "r"]\n\turl = u\n[remote "other"]\n\tfetch = X\n';
+
+          // Act
+          const sut = appendConfigEntry(text, 'remote', 'r', 'fetch', 'A');
+
+          // Assert
+          expect(sut).toBe('[remote "r"]\n\tfetch = A\n\turl = u\n[remote "other"]\n\tfetch = X\n');
+        });
+      });
+    });
+
+    describe('Given no matching section', () => {
+      describe('When appendConfigEntry', () => {
+        it('Then the section is created and the entry appended', () => {
+          // Arrange
+          const text = '[core]\n\tbare = false\n';
+
+          // Act
+          const sut = appendConfigEntry(text, 'remote', 'r', 'fetch', 'A');
+
+          // Assert
+          expect(sut).toBe('[core]\n\tbare = false\n[remote "r"]\n\tfetch = A\n');
+        });
+      });
+    });
+
+    describe('Given a key containing a newline', () => {
+      describe('When appendConfigEntry', () => {
+        it('Then it throws INVALID_OPTION', () => {
+          // Arrange
+          let caught: unknown;
+          try {
+            appendConfigEntry('', 'remote', 'r', 'k\ney', 'v');
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect((caught as TsgitError).data.code).toBe('INVALID_OPTION');
+        });
+      });
+    });
+  });
+
+  describe('updateConfigOperations', () => {
+    describe('Given a set and a removeEntry op', () => {
+      describe('When updateConfigOperations', () => {
+        it('Then both effects land in one write', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, '[remote "origin"]\n\turl = u\n\tfetch = +A:B\n');
+          const ops: ReadonlyArray<ConfigOperation> = [
+            { kind: 'set', section: 'core', key: 'bare', value: 'false' },
+            { kind: 'removeEntry', section: 'remote', subsection: 'origin', key: 'fetch' },
+          ];
+
+          // Act
+          await updateConfigOperations(ctx, ops);
+
+          // Assert
+          const written = await ctx.fs.readUtf8(configPath(ctx));
+          expect(written).toContain('[core]');
+          expect(written).toContain('bare = false');
+          expect(written).toContain('[remote "origin"]');
+          expect(written).toContain('url = u');
+          expect(written).not.toContain('fetch = +A:B');
+        });
+      });
+    });
+
+    describe('Given a removeSection followed by a set against the same section', () => {
+      describe('When updateConfigOperations', () => {
+        it('Then the new section is present', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, '[remote "origin"]\n\turl = old\n');
+          const ops: ReadonlyArray<ConfigOperation> = [
+            { kind: 'removeSection', section: 'remote', subsection: 'origin' },
+            { kind: 'set', section: 'remote', subsection: 'origin', key: 'url', value: 'new' },
+          ];
+
+          // Act
+          await updateConfigOperations(ctx, ops);
+
+          // Assert
+          const written = await ctx.fs.readUtf8(configPath(ctx));
+          expect(written).toContain('[remote "origin"]');
+          expect(written).toContain('url = new');
+          expect(written).not.toContain('url = old');
+        });
+      });
+    });
+
+    describe('Given a renameSection op', () => {
+      describe('When updateConfigOperations', () => {
+        it('Then the section is renamed and body preserved', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, '[remote "old"]\n\turl = u\n');
+          const ops: ReadonlyArray<ConfigOperation> = [
+            { kind: 'renameSection', section: 'remote', from: 'old', to: 'new' },
+          ];
+
+          // Act
+          await updateConfigOperations(ctx, ops);
+
+          // Assert
+          const written = await ctx.fs.readUtf8(configPath(ctx));
+          expect(written).toContain('[remote "new"]');
+          expect(written).toContain('url = u');
+          expect(written).not.toContain('[remote "old"]');
+        });
+      });
+    });
+
+    describe('Given an empty batch', () => {
+      describe('When updateConfigOperations', () => {
+        it('Then the on-disk text is unchanged', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          const initial = '[core]\n\tbare = false\n';
+          await seed(ctx, initial);
+
+          // Act
+          await updateConfigOperations(ctx, []);
+
+          // Assert
+          const written = await ctx.fs.readUtf8(configPath(ctx));
+          expect(written).toBe(initial);
+        });
+      });
+    });
+
+    describe('Given two appendEntry ops under the same section', () => {
+      describe('When updateConfigOperations runs them in order', () => {
+        it('Then on-disk order matches the call order (A before B)', async () => {
+          // Arrange — order preservation is load-bearing for `remote rename`
+          // when a remote carries multiple fetch refspecs; reversing would
+          // change `.git/config`'s byte layout.
+          const ctx = createMemoryContext();
+          await seed(ctx, '');
+          const ops: ReadonlyArray<ConfigOperation> = [
+            { kind: 'appendEntry', section: 'remote', subsection: 'r', key: 'fetch', value: 'A' },
+            { kind: 'appendEntry', section: 'remote', subsection: 'r', key: 'fetch', value: 'B' },
+          ];
+
+          // Act
+          await updateConfigOperations(ctx, ops);
+
+          // Assert
+          const written = await ctx.fs.readUtf8(configPath(ctx));
+          const aAt = written.indexOf('fetch = A');
+          const bAt = written.indexOf('fetch = B');
+          expect(aAt).toBeGreaterThan(-1);
+          expect(bAt).toBeGreaterThan(-1);
+          expect(aAt).toBeLessThan(bAt);
+        });
+      });
+    });
+
+    describe('Given a config cached by readConfig', () => {
+      describe('When updateConfigOperations writes', () => {
+        it('Then a later readConfig sees the new state', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, '[remote "origin"]\n\turl = u\n');
+          await readConfig(ctx);
+
+          // Act
+          await updateConfigOperations(ctx, [
+            { kind: 'removeSection', section: 'remote', subsection: 'origin' },
+          ]);
+
+          // Assert
+          const reread = await readConfig(ctx);
+          expect(reread.remote).toBeUndefined();
         });
       });
     });

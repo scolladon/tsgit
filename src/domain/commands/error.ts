@@ -58,6 +58,8 @@ export type CommandError =
     }
   | { readonly code: 'MAX_REFSPECS_EXCEEDED'; readonly count: number; readonly limit: number }
   | { readonly code: 'REMOTE_NOT_CONFIGURED'; readonly remote: string }
+  | { readonly code: 'REMOTE_EXISTS'; readonly remote: string }
+  | { readonly code: 'REMOTE_NAME_INVALID'; readonly name: string; readonly reason: string }
   | { readonly code: 'INVALID_OPTION'; readonly option: string; readonly reason: string }
   | { readonly code: 'REPOSITORY_DISPOSED' }
   | {
@@ -218,6 +220,16 @@ export const maxRefspecsExceeded = (count: number, limit: number): TsgitError =>
 
 export const remoteNotConfigured = (remote: string): TsgitError =>
   new TsgitError({ code: 'REMOTE_NOT_CONFIGURED', remote });
+
+export const remoteExists = (remote: string): TsgitError =>
+  new TsgitError({ code: 'REMOTE_EXISTS', remote });
+
+export const remoteNameInvalid = (name: string, reason: string): TsgitError =>
+  new TsgitError({
+    code: 'REMOTE_NAME_INVALID',
+    name: sanitizeForDisplay(name),
+    reason: sanitizeForDisplay(reason),
+  });
 
 export const invalidOption = (option: string, reason: string): TsgitError =>
   new TsgitError({ code: 'INVALID_OPTION', option, reason: sanitizeForDisplay(reason) });

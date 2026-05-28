@@ -1,6 +1,6 @@
 # Commands — Tier-1 reference
 
-Every method bound on a `Repository` handle. 23 entries, alphabetical.
+Every method bound on a `Repository` handle. 24 entries, alphabetical.
 
 | Command | Summary |
 |---|---|
@@ -20,6 +20,7 @@ Every method bound on a `Repository` handle. 23 entries, alphabetical.
 | [`merge`](merge.md) | Three-way merge with conflict materialisation. |
 | [`push`](push.md) | Push refs and objects to a remote. |
 | [`reflog`](reflog.md) | Show, query, delete, or expire reflog entries. |
+| [`remote`](remote.md) | CRUD porcelain for `[remote "<name>"]` config + tracking refs. |
 | [`reset`](reset.md) | Move HEAD with `soft` / `mixed` / `hard` semantics. |
 | [`revParse`](rev-parse.md) | Resolve revision expressions to `ObjectId`. |
 | [`rm`](rm.md) | Remove files from the index (and optionally the working tree). |

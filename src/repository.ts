@@ -143,6 +143,7 @@ export interface Repository {
   readonly merge: BindCtx<typeof commands.merge>;
   readonly push: BindCtx<typeof commands.push>;
   readonly reflog: BindCtx<typeof commands.reflog>;
+  readonly remote: BindCtx<typeof commands.remote>;
   readonly reset: BindCtx<typeof commands.reset>;
   readonly revParse: BindCtx<typeof commands.revParse>;
   readonly rm: BindCtx<typeof commands.rm>;
@@ -402,6 +403,10 @@ export const openRepository = async (
       guard();
       return commands.reflog(ctx, reflogOpts);
     }) as Repository['reflog'],
+    remote: ((remoteAction) => {
+      guard();
+      return commands.remote(ctx, remoteAction);
+    }) as Repository['remote'],
     reset: ((resetOpts) => {
       guard();
       return commands.reset(ctx, resetOpts);

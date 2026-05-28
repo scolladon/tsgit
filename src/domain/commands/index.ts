@@ -20,6 +20,8 @@ export {
   pathspecOutsideRepo,
   pushRejected,
   remoteAdvertisesNoRefs,
+  remoteExists,
+  remoteNameInvalid,
   remoteNotConfigured,
   revparseAmbiguous,
   revparseUnresolved,

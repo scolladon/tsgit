@@ -263,6 +263,64 @@ describe('push — config + refspec guards', () => {
     });
   });
 
+  describe('Given a remote with pushurl set', () => {
+    describe('When push runs', () => {
+      it('Then it resolves the push URL from pushurl (overrides url)', async () => {
+        // Arrange — pushurl points at a different host than url; the
+        // transport should be hit on the pushurl host.
+        const ctx = createMemoryContext();
+        const parent = await seedCommit(ctx, [], 'p');
+        const tip = await seedCommit(ctx, [parent.id], 't');
+        await seedRepo(ctx, { refs: { 'refs/heads/main': tip.id } });
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          '[remote "origin"]\n  url = https://fetch.example.com/r.git\n  pushurl = https://push.example.com/r.git\n',
+        );
+        const { transport, requests } = fakeServer({
+          url: 'https://push.example.com/r.git',
+          advertisedRefs: [{ name: 'refs/heads/main', id: parent.id }],
+          reportStatus: { unpack: 'ok', refs: [{ name: 'refs/heads/main', status: 'ok' }] },
+        });
+
+        // Act
+        await push({ ...ctx, transport });
+
+        // Assert — every discovery + receive-pack hit landed on the push URL.
+        expect(requests.length).toBeGreaterThan(0);
+        for (const req of requests) {
+          expect(req.url.startsWith('https://push.example.com/r.git')).toBe(true);
+        }
+      });
+    });
+  });
+
+  describe('Given a remote with only url (no pushurl)', () => {
+    describe('When push runs', () => {
+      it('Then it falls back to url', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const parent = await seedCommit(ctx, [], 'p');
+        const tip = await seedCommit(ctx, [parent.id], 't');
+        await seedRepo(ctx, { refs: { 'refs/heads/main': tip.id } });
+        await writeOriginConfig(ctx);
+        const { transport, requests } = fakeServer({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [{ name: 'refs/heads/main', id: parent.id }],
+          reportStatus: { unpack: 'ok', refs: [{ name: 'refs/heads/main', status: 'ok' }] },
+        });
+
+        // Act
+        await push({ ...ctx, transport });
+
+        // Assert
+        expect(requests.length).toBeGreaterThan(0);
+        for (const req of requests) {
+          expect(req.url.startsWith('https://example.com/r.git')).toBe(true);
+        }
+      });
+    });
+  });
+
   describe('Given a detached HEAD and no refspec', () => {
     describe('When push runs', () => {
       it('Then throws INVALID_OPTION (no-default-refspec)', async () => {
