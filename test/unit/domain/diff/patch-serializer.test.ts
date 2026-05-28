@@ -48,6 +48,47 @@ const modifyFile = (
   newContent: utf8.encode(newContent),
 });
 
+const modeChangeOnly = (
+  path: string,
+  content: string,
+  oldMode: typeof FILE_MODE.REGULAR | typeof FILE_MODE.EXECUTABLE,
+  newMode: typeof FILE_MODE.REGULAR | typeof FILE_MODE.EXECUTABLE,
+): PatchFile => ({
+  change: {
+    type: 'modify',
+    path: path as FilePath,
+    oldId: OID_A,
+    newId: OID_A,
+    oldMode,
+    newMode,
+  },
+  oldContent: utf8.encode(content),
+  newContent: utf8.encode(content),
+});
+
+const typeChangeFile = (path: string, oldText: string, newText: string): PatchFile => ({
+  change: {
+    type: 'type-change',
+    path: path as FilePath,
+    oldId: OID_A,
+    newId: OID_B,
+    oldMode: FILE_MODE.REGULAR,
+    newMode: FILE_MODE.SYMLINK,
+  },
+  oldContent: utf8.encode(oldText),
+  newContent: utf8.encode(newText),
+});
+
+const renameFile = (oldPath: string, newPath: string): PatchFile => ({
+  change: {
+    type: 'rename',
+    oldPath: oldPath as FilePath,
+    newPath: newPath as FilePath,
+    id: OID_A,
+    mode: FILE_MODE.REGULAR,
+  },
+});
+
 describe('patch-serializer', () => {
   describe('Given an empty PatchFile array', () => {
     describe('When renderPatch is called', () => {
@@ -541,6 +582,224 @@ describe('patch-serializer', () => {
         // Assert
         expect((caught as { data?: { code?: string } } | undefined)?.data?.code).toBe(
           'INVALID_DIFF_INPUT',
+        );
+      });
+    });
+  });
+
+  describe('Given a modify with content change AND mode flip', () => {
+    describe('When renderPatch is called', () => {
+      it('Then emits old mode + new mode + index (no trailing mode) + hunks', () => {
+        // Arrange
+        const sut = renderPatch;
+        const file: PatchFile = {
+          change: {
+            type: 'modify',
+            path: 'foo.sh' as FilePath,
+            oldId: OID_A,
+            newId: OID_B,
+            oldMode: FILE_MODE.REGULAR,
+            newMode: FILE_MODE.EXECUTABLE,
+          },
+          oldContent: utf8.encode('old\n'),
+          newContent: utf8.encode('new\n'),
+        };
+
+        // Act
+        const result = sut([file]);
+
+        // Assert
+        expect(result).toBe(
+          [
+            'diff --git a/foo.sh b/foo.sh',
+            'old mode 100644',
+            'new mode 100755',
+            'index aaaaaaa..bbbbbbb',
+            '--- a/foo.sh',
+            '+++ b/foo.sh',
+            '@@ -1 +1 @@',
+            '-old',
+            '+new',
+            '',
+          ].join('\n'),
+        );
+      });
+    });
+  });
+
+  describe('Given a mode-only modify (content identical)', () => {
+    describe('When renderPatch is called', () => {
+      it('Then emits old mode + new mode + index only (no --- / +++ / hunks)', () => {
+        // Arrange
+        const sut = renderPatch;
+        const file = modeChangeOnly('foo.sh', 'echo hi\n', FILE_MODE.REGULAR, FILE_MODE.EXECUTABLE);
+
+        // Act
+        const result = sut([file]);
+
+        // Assert
+        expect(result).toBe(
+          [
+            'diff --git a/foo.sh b/foo.sh',
+            'old mode 100644',
+            'new mode 100755',
+            'index aaaaaaa..aaaaaaa',
+            '',
+          ].join('\n'),
+        );
+      });
+    });
+  });
+
+  describe('Given a type change from regular to symlink', () => {
+    describe('When renderPatch is called', () => {
+      it('Then emits old mode 100644, new mode 120000, index, and content hunk', () => {
+        // Arrange
+        const sut = renderPatch;
+        const file = typeChangeFile('foo', 'old contents\n', '/some/symlink/target');
+
+        // Act
+        const result = sut([file]);
+
+        // Assert
+        expect(result).toBe(
+          [
+            'diff --git a/foo b/foo',
+            'old mode 100644',
+            'new mode 120000',
+            'index aaaaaaa..bbbbbbb',
+            '--- a/foo',
+            '+++ b/foo',
+            '@@ -1 +1 @@',
+            '-old contents',
+            '+/some/symlink/target',
+            '\\ No newline at end of file',
+            '',
+          ].join('\n'),
+        );
+      });
+    });
+  });
+
+  describe('Given a pure rename change', () => {
+    describe('When renderPatch is called', () => {
+      it('Then emits similarity index 100% + rename from + rename to (no hunks)', () => {
+        // Arrange
+        const sut = renderPatch;
+        const file = renameFile('old/path.txt', 'new/path.txt');
+
+        // Act
+        const result = sut([file]);
+
+        // Assert
+        expect(result).toBe(
+          [
+            'diff --git a/old/path.txt b/new/path.txt',
+            'similarity index 100%',
+            'rename from old/path.txt',
+            'rename to new/path.txt',
+            '',
+          ].join('\n'),
+        );
+      });
+    });
+  });
+
+  describe('Given a binary modify change', () => {
+    describe('When renderPatch is called', () => {
+      it('Then emits the Binary files ... differ block', () => {
+        // Arrange — NUL byte in content triggers isBinary
+        const sut = renderPatch;
+        const oldBytes = new Uint8Array([0x01, 0x00, 0x02, 0x03]);
+        const newBytes = new Uint8Array([0x01, 0x00, 0x02, 0x04]);
+        const file: PatchFile = {
+          change: {
+            type: 'modify',
+            path: 'logo.png' as FilePath,
+            oldId: OID_A,
+            newId: OID_B,
+            oldMode: FILE_MODE.REGULAR,
+            newMode: FILE_MODE.REGULAR,
+          },
+          oldContent: oldBytes,
+          newContent: newBytes,
+        };
+
+        // Act
+        const result = sut([file]);
+
+        // Assert
+        expect(result).toBe(
+          [
+            'diff --git a/logo.png b/logo.png',
+            'index aaaaaaa..bbbbbbb 100644',
+            'Binary files a/logo.png and b/logo.png differ',
+            '',
+          ].join('\n'),
+        );
+      });
+    });
+  });
+
+  describe('Given a binary add change', () => {
+    describe('When renderPatch is called', () => {
+      it('Then emits Binary files /dev/null and b/X differ', () => {
+        // Arrange
+        const sut = renderPatch;
+        const file: PatchFile = {
+          change: {
+            type: 'add',
+            newPath: 'logo.png' as FilePath,
+            newId: OID_B,
+            newMode: FILE_MODE.REGULAR,
+          },
+          newContent: new Uint8Array([0x00, 0x01, 0x02]),
+        };
+
+        // Act
+        const result = sut([file]);
+
+        // Assert
+        expect(result).toBe(
+          [
+            'diff --git a/logo.png b/logo.png',
+            'new file mode 100644',
+            'index 0000000..bbbbbbb',
+            'Binary files /dev/null and b/logo.png differ',
+            '',
+          ].join('\n'),
+        );
+      });
+    });
+  });
+
+  describe('Given a binary delete change', () => {
+    describe('When renderPatch is called', () => {
+      it('Then emits Binary files a/X and /dev/null differ', () => {
+        // Arrange
+        const sut = renderPatch;
+        const file: PatchFile = {
+          change: {
+            type: 'delete',
+            oldPath: 'logo.png' as FilePath,
+            oldId: OID_A,
+            oldMode: FILE_MODE.REGULAR,
+          },
+          oldContent: new Uint8Array([0x00, 0x01, 0x02]),
+        };
+
+        // Act
+        const result = sut([file]);
+
+        // Assert
+        expect(result).toBe(
+          [
+            'diff --git a/logo.png b/logo.png',
+            'deleted file mode 100644',
+            'index aaaaaaa..0000000',
+            'Binary files a/logo.png and /dev/null differ',
+            '',
+          ].join('\n'),
         );
       });
     });

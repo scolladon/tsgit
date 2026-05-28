@@ -1,6 +1,6 @@
-import type { DiffChange } from './diff-change.js';
+import type { DiffChange, ModifyChange, TypeChangeChange } from './diff-change.js';
 import { invalidDiffInput } from './error.js';
-import { diffLines, type LineHunk, splitLines } from './line-diff.js';
+import { diffLines, isBinary, type LineHunk, splitLines } from './line-diff.js';
 
 export interface PatchFile {
   readonly change: DiffChange;
@@ -334,15 +334,53 @@ function renderDeleteBlock(file: PatchFile, prefix: PatchPathPrefix): string[] {
   return out;
 }
 
-function renderModifyBlock(
-  file: PatchFile,
+interface SameKindChange {
+  readonly path: string;
+  readonly oldId: string;
+  readonly newId: string;
+  readonly oldMode: string;
+  readonly newMode: string;
+}
+
+function changeToCommon(change: ModifyChange | TypeChangeChange): SameKindChange {
+  return {
+    path: change.path,
+    oldId: change.oldId,
+    newId: change.newId,
+    oldMode: change.oldMode,
+    newMode: change.newMode,
+  };
+}
+
+function modePreamble(common: SameKindChange): string[] {
+  if (common.oldMode === common.newMode) {
+    return [`index ${shortOid(common.oldId)}..${shortOid(common.newId)} ${common.newMode}`];
+  }
+  return [
+    `old mode ${common.oldMode}`,
+    `new mode ${common.newMode}`,
+    `index ${shortOid(common.oldId)}..${shortOid(common.newId)}`,
+  ];
+}
+
+function renderBinaryBody(
+  common: SameKindChange,
   prefix: PatchPathPrefix,
+  oldBytes: Uint8Array,
+  newBytes: Uint8Array,
+): string[] {
+  const oldLabel = oldBytes.length === 0 ? '/dev/null' : `${prefix.old}${common.path}`;
+  const newLabel = newBytes.length === 0 ? '/dev/null' : `${prefix.new}${common.path}`;
+  return [`Binary files ${oldLabel} and ${newLabel} differ`];
+}
+
+function renderTextBody(
+  common: SameKindChange,
+  prefix: PatchPathPrefix,
+  oldBytes: Uint8Array,
+  newBytes: Uint8Array,
   contextLines: number,
 ): string[] {
-  const change = file.change;
-  if (change.type !== 'modify') return [];
-  const oldBytes = file.oldContent ?? new Uint8Array(0);
-  const newBytes = file.newContent ?? new Uint8Array(0);
   const oldSplit = splitContentLines(oldBytes);
   const newSplit = splitContentLines(newBytes);
   const edits = buildEdits(oldSplit.lines, newSplit.lines, oldBytes, newBytes);
@@ -352,12 +390,9 @@ function renderModifyBlock(
     oldHasTrailingNewline: oldSplit.hasTrailingNewline,
     newHasTrailingNewline: newSplit.hasTrailingNewline,
   });
-
   const out: string[] = [];
-  out.push(diffGitHeader(change.path, change.path, prefix));
-  out.push(`index ${shortOid(change.oldId)}..${shortOid(change.newId)} ${change.newMode}`);
-  out.push(`--- ${prefix.old}${change.path}`);
-  out.push(`+++ ${prefix.new}${change.path}`);
+  out.push(`--- ${prefix.old}${common.path}`);
+  out.push(`+++ ${prefix.new}${common.path}`);
   for (const hunk of hunks) {
     out.push(formatHunkHeader(hunk.oldStart, hunk.oldLen, hunk.newStart, hunk.newLen));
     for (const line of renderHunkBody(hunk.body)) out.push(line);
@@ -365,17 +400,106 @@ function renderModifyBlock(
   return out;
 }
 
-function renderFile(file: PatchFile, prefix: PatchPathPrefix, contextLines: number): string[] {
-  switch (file.change.type) {
-    case 'add':
-      return renderAddBlock(file, prefix);
-    case 'delete':
-      return renderDeleteBlock(file, prefix);
-    case 'modify':
-      return renderModifyBlock(file, prefix, contextLines);
-    default:
-      return [];
+function renderSameKindBlock(
+  common: SameKindChange,
+  prefix: PatchPathPrefix,
+  oldBytes: Uint8Array,
+  newBytes: Uint8Array,
+  contextLines: number,
+): string[] {
+  const out: string[] = [];
+  out.push(diffGitHeader(common.path, common.path, prefix));
+  for (const line of modePreamble(common)) out.push(line);
+  if (common.oldId === common.newId) return out;
+  if (isBinary(oldBytes) || isBinary(newBytes)) {
+    for (const line of renderBinaryBody(common, prefix, oldBytes, newBytes)) out.push(line);
+    return out;
   }
+  for (const line of renderTextBody(common, prefix, oldBytes, newBytes, contextLines))
+    out.push(line);
+  return out;
+}
+
+function renderModifyBlock(
+  file: PatchFile,
+  prefix: PatchPathPrefix,
+  contextLines: number,
+): string[] {
+  const change = file.change;
+  if (change.type !== 'modify') return [];
+  return renderSameKindBlock(
+    changeToCommon(change),
+    prefix,
+    file.oldContent ?? new Uint8Array(0),
+    file.newContent ?? new Uint8Array(0),
+    contextLines,
+  );
+}
+
+function renderTypeChangeBlock(
+  file: PatchFile,
+  prefix: PatchPathPrefix,
+  contextLines: number,
+): string[] {
+  const change = file.change;
+  if (change.type !== 'type-change') return [];
+  return renderSameKindBlock(
+    changeToCommon(change),
+    prefix,
+    file.oldContent ?? new Uint8Array(0),
+    file.newContent ?? new Uint8Array(0),
+    contextLines,
+  );
+}
+
+function renderRenameBlock(file: PatchFile, prefix: PatchPathPrefix): string[] {
+  const change = file.change;
+  if (change.type !== 'rename') return [];
+  return [
+    diffGitHeader(change.oldPath, change.newPath, prefix),
+    'similarity index 100%',
+    `rename from ${change.oldPath}`,
+    `rename to ${change.newPath}`,
+  ];
+}
+
+function renderAddBinary(file: PatchFile, prefix: PatchPathPrefix): string[] {
+  const change = file.change;
+  if (change.type !== 'add') return [];
+  return [
+    diffGitHeader(change.newPath, change.newPath, prefix),
+    `new file mode ${change.newMode}`,
+    `index ${ZERO_OID_ABBREV}..${shortOid(change.newId)}`,
+    `Binary files /dev/null and ${prefix.new}${change.newPath} differ`,
+  ];
+}
+
+function renderDeleteBinary(file: PatchFile, prefix: PatchPathPrefix): string[] {
+  const change = file.change;
+  if (change.type !== 'delete') return [];
+  return [
+    diffGitHeader(change.oldPath, change.oldPath, prefix),
+    `deleted file mode ${change.oldMode}`,
+    `index ${shortOid(change.oldId)}..${ZERO_OID_ABBREV}`,
+    `Binary files ${prefix.old}${change.oldPath} and /dev/null differ`,
+  ];
+}
+
+function renderFile(file: PatchFile, prefix: PatchPathPrefix, contextLines: number): string[] {
+  if (file.change.type === 'add') {
+    const newBytes = file.newContent ?? new Uint8Array(0);
+    if (isBinary(newBytes)) return renderAddBinary(file, prefix);
+    return renderAddBlock(file, prefix);
+  }
+  if (file.change.type === 'delete') {
+    const oldBytes = file.oldContent ?? new Uint8Array(0);
+    if (isBinary(oldBytes)) return renderDeleteBinary(file, prefix);
+    return renderDeleteBlock(file, prefix);
+  }
+  if (file.change.type === 'modify') return renderModifyBlock(file, prefix, contextLines);
+  if (file.change.type === 'type-change') return renderTypeChangeBlock(file, prefix, contextLines);
+  if (file.change.type === 'rename') return renderRenameBlock(file, prefix);
+  return [];
 }
 
 function resolveContextLines(value: number | undefined): number {
