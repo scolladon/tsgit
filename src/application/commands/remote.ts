@@ -304,11 +304,25 @@ const renameRemote = async (
 };
 
 const setRemoteUrl = async (
-  _ctx: Context,
+  ctx: Context,
   action: { readonly name: string; readonly url: string; readonly push?: boolean },
 ): Promise<RemoteResult> => {
   validateRemoteName(action.name);
-  return notYetImplemented('setUrl');
+  assertUrlSafe(action.url);
+  const config = await readConfig(ctx);
+  if (config.remote?.has(action.name) !== true) throw remoteNotConfigured(action.name);
+  const key = action.push === true ? 'pushurl' : 'url';
+  await updateConfigOperations(ctx, [
+    {
+      kind: 'set',
+      section: 'remote',
+      subsection: action.name,
+      key,
+      value: action.url,
+    },
+  ]);
+  const refreshed = (await readConfig(ctx)).remote?.get(action.name);
+  return { kind: 'setUrl', remote: toRemoteInfo(action.name, refreshed) };
 };
 
 const showRemote = async (

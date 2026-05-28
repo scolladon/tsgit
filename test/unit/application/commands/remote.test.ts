@@ -733,4 +733,125 @@ describe('application/commands/remote', () => {
       });
     });
   });
+
+  describe('setUrl', () => {
+    describe('Given an unknown remote', () => {
+      describe('When setUrl runs', () => {
+        it('Then it throws REMOTE_NOT_CONFIGURED', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx);
+          let caught: unknown;
+
+          // Act
+          try {
+            await remote(ctx, { kind: 'setUrl', name: 'origin', url: 'x' });
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect((caught as TsgitError).data.code).toBe('REMOTE_NOT_CONFIGURED');
+        });
+      });
+    });
+
+    describe('Given a known remote and a new url', () => {
+      describe('When setUrl({ url }) runs', () => {
+        it('Then remote.<n>.url is replaced and pushurl is untouched', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, '[remote "origin"]\n\turl = old\n\tpushurl = pold\n');
+
+          // Act
+          const sut = await remote(ctx, {
+            kind: 'setUrl',
+            name: 'origin',
+            url: 'new',
+          });
+
+          // Assert
+          if (sut.kind !== 'setUrl') throw new Error('unreachable');
+          expect(sut.remote.url).toBe('new');
+          expect(sut.remote.pushUrl).toBe('pold');
+          const written = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
+          expect(written).toContain('url = new');
+          expect(written).toContain('pushurl = pold');
+          expect(written).not.toContain('url = old');
+        });
+      });
+    });
+
+    describe('Given a known remote and { push: true }', () => {
+      describe('When setUrl({ url, push: true }) runs', () => {
+        it('Then remote.<n>.pushurl is replaced and url is untouched', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, '[remote "origin"]\n\turl = u\n');
+
+          // Act
+          const sut = await remote(ctx, {
+            kind: 'setUrl',
+            name: 'origin',
+            url: 'pnew',
+            push: true,
+          });
+
+          // Assert
+          if (sut.kind !== 'setUrl') throw new Error('unreachable');
+          expect(sut.remote.pushUrl).toBe('pnew');
+          expect(sut.remote.url).toBe('u');
+          const written = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
+          expect(written).toContain('pushurl = pnew');
+          expect(written).toContain('url = u');
+        });
+      });
+    });
+
+    describe('Given a url with a newline', () => {
+      describe('When setUrl runs', () => {
+        it('Then it throws INVALID_OPTION', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, '[remote "origin"]\n\turl = u\n');
+          let caught: unknown;
+
+          // Act
+          try {
+            await remote(ctx, {
+              kind: 'setUrl',
+              name: 'origin',
+              url: 'bad\nurl',
+            });
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect((caught as TsgitError).data.code).toBe('INVALID_OPTION');
+        });
+      });
+    });
+
+    describe('Given an invalid remote name', () => {
+      describe('When setUrl runs', () => {
+        it('Then it throws REMOTE_NAME_INVALID', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx);
+          let caught: unknown;
+
+          // Act
+          try {
+            await remote(ctx, { kind: 'setUrl', name: '', url: 'u' });
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect((caught as TsgitError).data.code).toBe('REMOTE_NAME_INVALID');
+        });
+      });
+    });
+  });
 });
