@@ -9,7 +9,13 @@ export {
 export { type CheckoutOptions, type CheckoutResult, checkout } from './checkout.js';
 export { type CloneOptions, type CloneResult, clone } from './clone.js';
 export { type CommitOptions, type CommitResult, commit } from './commit.js';
-export { type DiffOptions, diff } from './diff.js';
+export {
+  type DiffFormat,
+  type DiffOptions,
+  type DiffResult,
+  diff,
+  type PatchResult,
+} from './diff.js';
 export { type FetchOptions, type FetchResult, fetch } from './fetch.js';
 export {
   createPromisorRemote,

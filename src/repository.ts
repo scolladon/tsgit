@@ -14,6 +14,7 @@ import {
 } from './application/primitives/snapshot/snapshot-factory.js';
 import { disposeAdapters } from './dispose-adapters.js';
 import { repositoryDisposed } from './domain/commands/error.js';
+import type { TreeDiff } from './domain/diff/index.js';
 import type { Compressor } from './ports/compressor.js';
 import type { Context, RepositoryConfig } from './ports/context.js';
 import type { FileSystem } from './ports/file-system.js';
@@ -126,7 +127,13 @@ export interface Repository {
   readonly checkout: BindCtx<typeof commands.checkout>;
   readonly clone: BindCtx<typeof commands.clone>;
   readonly commit: BindCtx<typeof commands.commit>;
-  readonly diff: BindCtx<typeof commands.diff>;
+  // `diff` is overloaded on `format`; `BindCtx` only captures the last overload
+  // (a TypeScript limitation), so the binding is written by hand to preserve
+  // both narrowing paths.
+  readonly diff: {
+    (opts?: commands.DiffOptions & { format?: 'tree' }): Promise<TreeDiff>;
+    (opts: commands.DiffOptions & { format: 'patch' }): Promise<commands.PatchResult>;
+  };
   readonly fetch: BindCtx<typeof commands.fetch>;
   readonly fetchMissing: BindCtx<typeof commands.fetchMissing>;
   readonly init: BindCtx<typeof commands.init>;
@@ -347,9 +354,15 @@ export const openRepository = async (
       guard();
       return commands.commit(ctx, commitOpts);
     }) as Repository['commit'],
-    diff: ((diffOpts) => {
+    // Overload-preserving binding. The inner cast to `commands.DiffOptions`
+    // forwards to the implementation signature; the outer cast restores the
+    // public overloads so callers narrow on `format`.
+    diff: ((diffOpts?: commands.DiffOptions) => {
       guard();
-      return commands.diff(ctx, diffOpts);
+      return (commands.diff as (c: Context, o: commands.DiffOptions) => Promise<unknown>)(
+        ctx,
+        diffOpts ?? {},
+      );
     }) as Repository['diff'],
     fetch: ((fetchOpts) => {
       guard();
