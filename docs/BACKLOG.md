@@ -237,7 +237,7 @@ High-reuse building blocks. Unlocks Phase 21–22.
 
 - [~] **20.1** Snapshot+join surface (`repo.snapshot.head/index/workdir/…` + `join`/`innerJoin` + operators). Wave 1 lands the engine (resolvers, bus + view, snapshot impls, factory, join, operators, deprecation helper, public exports); Waves 2–8 migrate consumers (`status`, `diff`, `add`, `checkout`, `merge`, …) and deprecate the legacy walkers.
 - [x] **20.2** Standalone primitives — `hashBlob`, `isIgnored`, plus granular index CRUD (`stageEntry`, `unstageEntry`, `setEntryFlags`) · ADRs 162–165 · `design/phase-20-2-standalone-primitives.md`
-- [ ] **20.3** Diff patch-text output (`diff({ format: 'patch' })`); unified-diff serializer in domain.
+- [x] **20.3** Diff patch-text output (`diff({ format: 'patch' })`); unified-diff serializer in domain. Reuses Myers (`diffLines`) for hunk grouping; canonical headers for add/delete/modify/rename/type-change/binary; OID abbrev=7, default context=3. Byte-parity with `git diff` double-pinned (live + frozen golden). · ADRs 166–169 · `design/phase-20-3-diff-patch-format.md`
 - [ ] **20.4** Merge state machine — `abortMerge`, `continueMerge`. Prereq for cherry-pick / rebase conflict flow.
 - [ ] **20.5** `remote` CRUD porcelain (`add`/`remove`/`rename`/`set-url`/`show`) on `repo.*`.
 - [ ] **20.6** `config` porcelain on `repo.*` (read/write user-facing); promote primitive-tier `setConfigEntry`.

@@ -234,3 +234,25 @@ for await (const commit of blobs) {
 ```
 
 Back-pressure is native — walkers advance only when the consumer pulls. Memory stays bounded across arbitrarily large repos.
+
+## Render a patch
+
+`repo.diff({ format: 'patch' })` returns canonical unified-diff text plus
+the structured `TreeDiff`. The text is byte-identical to
+`git diff --no-ext-diff --no-color`, so it pipes directly into `patch(1)`
+or any review UI that consumes git's diff format:
+
+```ts
+const patch = await repo.diff({
+  from: 'HEAD~1',
+  to: 'HEAD',
+  format: 'patch',
+});
+
+console.log(`Changed files: ${patch.diff.changes.length}`);
+process.stdout.write(patch.text);
+```
+
+Bundling the structured view inside `PatchResult` removes the two-call
+pattern (`diff` + `diff({ format: 'patch' })`) every UI consumer would
+otherwise need; the `TreeDiff` came for free on the way to the text.
