@@ -25,7 +25,7 @@ If the resolution is ambiguous (e.g. backlog ID not found, file unreadable), STO
 
 Print one line so the user can confirm: `Resolved input → topic: <slug>, brief: <one-line summary>`.
 
-## Step 1 — Branch + Serena activation (orchestrator)
+## Step 1 — Branch (orchestrator)
 
 ```bash
 git worktree add ../tsgit-<slug> -b feat/<slug>
@@ -33,10 +33,7 @@ cd ../tsgit-<slug>
 npm install
 ```
 
-Then activate Serena on the worktree (MCP server state persists across the session, so this single activation is inherited by every spawned subagent):
-
-- `mcp__serena__activate_project` with the absolute path of `../tsgit-<slug>`.
-- `mcp__serena__initial_instructions` to load the manual.
+The orchestrator does NOT activate Serena. Every spawned subagent activates Serena on its own worktree at the start of its turn (see "Standard subagent preamble" below). Rationale: Serena's LSP delivers diagnostics into the context that issued `activate_project` — if the orchestrator activates, intermediate-state errors from subagent edits roll up into the orchestrator's reminder stream instead of staying inside the subagent's loop where they can be handled. Per-subagent activation keeps each phase's diagnostic stream scoped to the agent doing the work.
 
 If the branch already exists or the worktree path collides, STOP and ask the user.
 
@@ -45,7 +42,9 @@ If the branch already exists or the worktree path collides, STOP and ask the use
 Every subagent prompt MUST open with these two lines verbatim (substitute `<worktree-abs-path>` with the path created in Step 1):
 
 > **Working directory:** `<worktree-abs-path>` — all reads/writes happen here.
-> **Serena:** the session has already activated Serena on this worktree. Use Serena's symbol tools (`find_symbol`, `find_referencing_symbols`, `get_symbols_overview`, `replace_symbol_body`, `insert_after_symbol`) as the default for navigating and editing source. Verify with `mcp__serena__get_current_config` if anything looks off; re-activate with `mcp__serena__activate_project` only on mismatch. Fall back to `Read` / `Edit` / `Grep` for non-code files (markdown, JSON, generated artefacts).
+> **Activate Serena before any code work:** call `mcp__serena__activate_project` with this directory's absolute path, then `mcp__serena__initial_instructions`. Use Serena's symbol tools (`find_symbol`, `find_referencing_symbols`, `get_symbols_overview`, `replace_symbol_body`, `insert_after_symbol`) as the default for navigating and editing source; fall back to `Read` / `Edit` / `Grep` only for non-code files (markdown, JSON, generated artefacts).
+
+Cost: a single `activate_project` call per subagent (~50 ms). Benefit: every LSP diagnostic stays in the subagent's context — the orchestrator never sees mid-slice noise.
 
 ## Step 2 — Design subagent (Opus)
 

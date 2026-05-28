@@ -132,20 +132,20 @@ There is no "effort" knob in the Agent tool — only `model`. Depth comes from m
 
 ### Serena activation model
 
-The MCP server process is shared across the entire Claude Code session — orchestrator and every spawned subagent hit the same server, so its "active project" state persists across phases. The orchestrator activates Serena **once** on the worktree path right after `npm install` in Step 1; subagents inherit that state and just use the symbol tools.
+Each spawned subagent activates Serena on the worktree **at the start of its own turn**. The orchestrator does NOT activate Serena. Rationale: Serena's LSP runs in a shared MCP process and delivers diagnostics into the context that issued the activation — if the orchestrator activates, the LSP's intermediate-state errors from a subagent's edits roll up into the orchestrator's reminder stream instead of staying inside the subagent's loop where they belong. Per-subagent activation keeps each phase's diagnostic stream scoped to the agent doing the work.
 
-**Orchestrator (Step 1 only):**
-- `mcp__serena__activate_project` with the worktree's absolute path.
-- `mcp__serena__initial_instructions` to load the manual.
+**Orchestrator:** does NOT call `mcp__serena__activate_project`. Stays out of Serena's MCP state entirely. The orchestrator reads only markdown (design / plan / ADRs) and runs git; it never edits source code, so it has nothing to gain from symbol tools.
 
 **Standard subagent preamble** (Steps 2, 4, 5, 6, 7, 8 — every spawned subagent prompt MUST open with these lines, with `<worktree-abs-path>` substituted):
 
 > **Working directory:** `<worktree-abs-path>` — all reads/writes happen here.
-> **Serena:** the session has already activated Serena on this worktree. Use Serena's symbol tools (`find_symbol`, `find_referencing_symbols`, `get_symbols_overview`, `replace_symbol_body`, `insert_after_symbol`) as the default for navigating and editing source. Verify with `mcp__serena__get_current_config` if anything looks off and re-activate with `mcp__serena__activate_project` only on mismatch. Fall back to `Read` / `Edit` / `Grep` for non-code files (markdown, JSON, generated artefacts).
+> **Activate Serena before any code work:** call `mcp__serena__activate_project` with this directory's absolute path, then `mcp__serena__initial_instructions`. Use Serena's symbol tools (`find_symbol`, `find_referencing_symbols`, `get_symbols_overview`, `replace_symbol_body`, `insert_after_symbol`) as the default for navigating and editing source; fall back to `Read` / `Edit` / `Grep` only for non-code files (markdown, JSON, generated artefacts).
+
+Cost: a single `activate_project` call per subagent (~50 ms). Benefit: every LSP diagnostic stays in the subagent's context — the orchestrator never sees mid-slice noise.
 
 ### 1. Branch (orchestrator)
 
-Create a fresh branch off `main` via `git worktree add`, named with a conventional-commit type prefix: `feat/<topic>`, `fix/<topic>`, `ci/<topic>`, `chore/<topic>`, `docs/<topic>`. Never commit directly to `main`. `npm install` inside the worktree. Then activate Serena on the worktree path (see "Serena activation model" above) so every downstream subagent inherits the active project.
+Create a fresh branch off `main` via `git worktree add`, named with a conventional-commit type prefix: `feat/<topic>`, `fix/<topic>`, `ci/<topic>`, `chore/<topic>`, `docs/<topic>`. Never commit directly to `main`. `npm install` inside the worktree. The orchestrator does NOT activate Serena — every subagent activates Serena on entry (see "Serena activation model" above).
 
 ### 2. Design — `docs/design/<topic>.md` (Opus subagent)
 
