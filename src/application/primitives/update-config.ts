@@ -169,6 +169,100 @@ export const setConfigEntry = (
 export const setCoreConfigEntry = (text: string, key: string, value: string): string =>
   setConfigEntry(text, 'core', undefined, key, value);
 
+/**
+ * Remove every `key = value` line for `key` from the section
+ * `[section]` / `[section "subsection"]`. No-op when the section or key
+ * is absent. Mirrors `git config --unset-all`: when the key appears more
+ * than once in the section (e.g. multiple `fetch =` lines), every
+ * occurrence is removed.
+ */
+export const removeConfigEntry = (
+  text: string,
+  section: string,
+  subsection: string | undefined,
+  key: string,
+): string => {
+  rejectSection(section);
+  if (subsection !== undefined) rejectSubsection(subsection);
+  rejectControlChars('key', key);
+  const lines = text.split('\n');
+  const out: string[] = [];
+  let inTarget = false;
+  for (const line of lines) {
+    if (isSectionHeader(line)) {
+      inTarget = matchesSection(line, section, subsection);
+      out.push(line);
+      continue;
+    }
+    if (inTarget && isKeyLine(line, key)) continue;
+    out.push(line);
+  }
+  return out.join('\n');
+};
+
+/**
+ * Remove the header + body of every `[section]` / `[section "subsection"]`
+ * block matching the target. Header and body are gone; following sections
+ * are preserved byte-for-byte. No-op when no matching section exists.
+ *
+ * Trailing blank line cleanup: the final `\n` separator that introduced
+ * the dropped section is also dropped so a removed section at the end
+ * of the file does not leave a stray trailing newline.
+ */
+export const removeConfigSection = (
+  text: string,
+  section: string,
+  subsection: string | undefined,
+): string => {
+  rejectSection(section);
+  if (subsection !== undefined) rejectSubsection(subsection);
+  const lines = text.split('\n');
+  const out: string[] = [];
+  let skipping = false;
+  for (const line of lines) {
+    if (isSectionHeader(line)) {
+      skipping = matchesSection(line, section, subsection);
+      if (skipping) continue;
+      out.push(line);
+      continue;
+    }
+    if (skipping) continue;
+    out.push(line);
+  }
+  // Preserve the file-level trailing newline: when the original ended in
+  // `\n` (so split yielded a trailing '') AND that '' was consumed inside
+  // a dropped section, the join loses one trailing `\n`. Restore it so a
+  // non-empty result ends with `\n` exactly when the original did.
+  const endedWithNewline = lines[lines.length - 1] === '';
+  const outEndsWithNewline = out.length > 0 && out[out.length - 1] === '';
+  if (endedWithNewline && !outEndsWithNewline && out.length > 0) out.push('');
+  return out.join('\n');
+};
+
+/**
+ * Rename every `[section "fromSubsection"]` header line to
+ * `[section "toSubsection"]`. Body lines are not touched; other section
+ * families (e.g. `[branch "fromSubsection"]` when family is `remote`)
+ * are preserved. The new subsection name is validated with the same
+ * line-surgery rules as `setConfigEntry`.
+ */
+export const renameConfigSection = (
+  text: string,
+  section: string,
+  fromSubsection: string,
+  toSubsection: string,
+): string => {
+  rejectSection(section);
+  rejectSubsection(fromSubsection);
+  rejectSubsection(toSubsection);
+  const lines = text.split('\n');
+  const renamed = lines.map((line) => {
+    if (!matchesSection(line, section, fromSubsection)) return line;
+    return renderSectionHeader(section, toSubsection);
+  });
+  return renamed.join('\n');
+};
+
 /** One `key = value` write under `[section]` / `[section "subsection"]`. */
 export interface ConfigEntry {
   readonly section: string;
@@ -205,6 +299,62 @@ export const updateCoreConfig = async (
     ctx,
     Object.entries(entries).map(([key, value]) => ({ section: 'core', key, value })),
   );
+};
+
+/**
+ * Mixed-operation batch entry. Folded over the on-disk text in order in
+ * a single `writeUtf8`. Use this when `remote` CRUD needs a section-
+ * remove paired with branch-referrer key removals in one atomic write.
+ */
+export type ConfigOperation =
+  | {
+      readonly kind: 'set';
+      readonly section: string;
+      readonly subsection?: string;
+      readonly key: string;
+      readonly value: string;
+    }
+  | {
+      readonly kind: 'removeEntry';
+      readonly section: string;
+      readonly subsection?: string;
+      readonly key: string;
+    }
+  | { readonly kind: 'removeSection'; readonly section: string; readonly subsection?: string }
+  | {
+      readonly kind: 'renameSection';
+      readonly section: string;
+      readonly from: string;
+      readonly to: string;
+    };
+
+const applyOperation = (text: string, op: ConfigOperation): string => {
+  if (op.kind === 'set') {
+    return setConfigEntry(text, op.section, op.subsection, op.key, op.value);
+  }
+  if (op.kind === 'removeEntry') {
+    return removeConfigEntry(text, op.section, op.subsection, op.key);
+  }
+  if (op.kind === 'removeSection') {
+    return removeConfigSection(text, op.section, op.subsection);
+  }
+  return renameConfigSection(text, op.section, op.from, op.to);
+};
+
+/**
+ * Apply a sequence of mixed ops to `${gitDir}/config` (missing → `''`),
+ * write the result, and invalidate the `readConfig` cache. The whole
+ * sequence lands in one `writeUtf8`.
+ */
+export const updateConfigOperations = async (
+  ctx: Context,
+  ops: ReadonlyArray<ConfigOperation>,
+): Promise<void> => {
+  const path = `${ctx.layout.gitDir}/config`;
+  const original = await readConfigText(ctx, path);
+  const updated = ops.reduce(applyOperation, original);
+  await ctx.fs.writeUtf8(path, updated);
+  invalidateConfigCache(ctx);
 };
 
 /**

@@ -1491,6 +1491,59 @@ describe('primitives/config-read', () => {
       });
     });
 
+    describe('Given a [remote] pushurl set', () => {
+      describe('When readConfig', () => {
+        it('Then pushUrl is parsed alongside url', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(
+            ctx,
+            '[remote "origin"]\n\turl = https://e.com/r.git\n\tpushurl = git@e.com:r.git\n',
+          );
+
+          // Act
+          const sut = await readConfig(ctx);
+
+          // Assert
+          const remote = sut.remote?.get('origin');
+          expect(remote?.url).toBe('https://e.com/r.git');
+          expect(remote?.pushUrl).toBe('git@e.com:r.git');
+        });
+      });
+    });
+
+    describe('Given a [remote] without pushurl', () => {
+      describe('When readConfig', () => {
+        it('Then pushUrl stays undefined', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, '[remote "origin"]\n\turl = https://e.com/r.git\n');
+
+          // Act
+          const sut = await readConfig(ctx);
+
+          // Assert
+          expect(sut.remote?.get('origin')?.pushUrl).toBeUndefined();
+        });
+      });
+    });
+
+    describe('Given a [remote] PUSHURL upper-cased', () => {
+      describe('When readConfig', () => {
+        it('Then it is parsed (case-insensitive key)', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, '[remote "origin"]\n\tPUSHURL = git@e.com:r.git\n');
+
+          // Act
+          const sut = await readConfig(ctx);
+
+          // Assert
+          expect(sut.remote?.get('origin')?.pushUrl).toBe('git@e.com:r.git');
+        });
+      });
+    });
+
     describe('Given a partialclone key under a non-extensions section', () => {
       describe('When readConfig', () => {
         it('Then extensions stays undefined', async () => {
