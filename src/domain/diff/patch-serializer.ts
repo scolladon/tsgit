@@ -1,5 +1,6 @@
 import type { DiffChange } from './diff-change.js';
-import { splitLines } from './line-diff.js';
+import { invalidDiffInput } from './error.js';
+import { diffLines, type LineHunk, splitLines } from './line-diff.js';
 
 export interface PatchFile {
   readonly change: DiffChange;
@@ -20,6 +21,7 @@ export interface PatchOptions {
 const OID_ABBREV_LENGTH = 7;
 const ZERO_OID_ABBREV = '0000000';
 const DEFAULT_PREFIX: PatchPathPrefix = { old: 'a/', new: 'b/' };
+const DEFAULT_CONTEXT_LINES = 3;
 const NO_NEWLINE_MARKER = '\\ No newline at end of file';
 const NEWLINE_CODE = 0x0a;
 
@@ -54,6 +56,250 @@ function diffGitHeader(oldPath: string, newPath: string, prefix: PatchPathPrefix
   return `diff --git ${prefix.old}${oldPath} ${prefix.new}${newPath}`;
 }
 
+function formatHunkHeader(
+  oldStart: number,
+  oldLen: number,
+  newStart: number,
+  newLen: number,
+): string {
+  const oldRange = oldLen === 1 ? `${oldStart}` : `${oldStart},${oldLen}`;
+  const newRange = newLen === 1 ? `${newStart}` : `${newStart},${newLen}`;
+  return `@@ -${oldRange} +${newRange} @@`;
+}
+
+type EditKind = 'context' | 'delete' | 'insert';
+
+interface Edit {
+  readonly kind: EditKind;
+  readonly oldIndex: number;
+  readonly newIndex: number;
+  readonly text: string;
+}
+
+interface BodyLine {
+  readonly kind: EditKind;
+  readonly text: string;
+  readonly trailingNoNewline: boolean;
+}
+
+interface OutputHunk {
+  readonly oldStart: number;
+  readonly oldLen: number;
+  readonly newStart: number;
+  readonly newLen: number;
+  readonly body: ReadonlyArray<BodyLine>;
+}
+
+function commonEditsFrom(hunk: LineHunk, oldLines: ReadonlyArray<string>): Edit[] {
+  const edits: Edit[] = [];
+  for (let i = hunk.oursStart; i < hunk.oursEnd; i++) {
+    edits.push({
+      kind: 'context',
+      oldIndex: i,
+      newIndex: hunk.theirsStart + (i - hunk.oursStart),
+      text: oldLines[i] ?? '',
+    });
+  }
+  return edits;
+}
+
+function deleteEditsFrom(hunk: LineHunk, oldLines: ReadonlyArray<string>): Edit[] {
+  const edits: Edit[] = [];
+  for (let i = hunk.oursStart; i < hunk.oursEnd; i++) {
+    edits.push({
+      kind: 'delete',
+      oldIndex: i,
+      newIndex: hunk.theirsStart,
+      text: oldLines[i] ?? '',
+    });
+  }
+  return edits;
+}
+
+function insertEditsFrom(hunk: LineHunk, newLines: ReadonlyArray<string>): Edit[] {
+  const edits: Edit[] = [];
+  for (let i = hunk.theirsStart; i < hunk.theirsEnd; i++) {
+    edits.push({
+      kind: 'insert',
+      oldIndex: hunk.oursEnd,
+      newIndex: i,
+      text: newLines[i] ?? '',
+    });
+  }
+  return edits;
+}
+
+function editsFromHunk(
+  hunk: LineHunk,
+  oldLines: ReadonlyArray<string>,
+  newLines: ReadonlyArray<string>,
+): Edit[] {
+  if (hunk.kind === 'common') return commonEditsFrom(hunk, oldLines);
+  if (hunk.kind === 'ours-only') return deleteEditsFrom(hunk, oldLines);
+  return insertEditsFrom(hunk, newLines);
+}
+
+function buildEdits(
+  oldLines: ReadonlyArray<string>,
+  newLines: ReadonlyArray<string>,
+  oldBytes: Uint8Array,
+  newBytes: Uint8Array,
+): ReadonlyArray<Edit> {
+  const ld = diffLines(oldBytes, newBytes);
+  const edits: Edit[] = [];
+  for (const hunk of ld.hunks) {
+    for (const edit of editsFromHunk(hunk, oldLines, newLines)) edits.push(edit);
+  }
+  return edits;
+}
+
+function isChange(kind: EditKind): boolean {
+  return kind !== 'context';
+}
+
+interface Group {
+  readonly first: number;
+  readonly last: number;
+}
+
+function groupChangeIndices(edits: ReadonlyArray<Edit>, minGap: number): ReadonlyArray<Group> {
+  const groups: Group[] = [];
+  edits.forEach((edit, idx) => {
+    if (!isChange(edit.kind)) return;
+    const last = groups[groups.length - 1];
+    if (last !== undefined && idx - last.last <= minGap) {
+      groups[groups.length - 1] = { first: last.first, last: idx };
+    } else {
+      groups.push({ first: idx, last: idx });
+    }
+  });
+  return groups;
+}
+
+interface HunkRange {
+  readonly oldStart: number;
+  readonly oldLen: number;
+  readonly newStart: number;
+  readonly newLen: number;
+  readonly lastOldIdx: number;
+  readonly lastNewIdx: number;
+}
+
+function computeRange(slice: ReadonlyArray<Edit>): HunkRange {
+  let oldStart = 0;
+  let newStart = 0;
+  let oldLen = 0;
+  let newLen = 0;
+  let firstOldSeen = false;
+  let firstNewSeen = false;
+  let lastOldIdx = -1;
+  let lastNewIdx = -1;
+  for (const edit of slice) {
+    const touchesOld = edit.kind !== 'insert';
+    const touchesNew = edit.kind !== 'delete';
+    if (touchesOld) {
+      if (!firstOldSeen) {
+        oldStart = edit.oldIndex + 1;
+        firstOldSeen = true;
+      }
+      oldLen++;
+      lastOldIdx = edit.oldIndex;
+    }
+    if (touchesNew) {
+      if (!firstNewSeen) {
+        newStart = edit.newIndex + 1;
+        firstNewSeen = true;
+      }
+      newLen++;
+      lastNewIdx = edit.newIndex;
+    }
+  }
+  if (oldLen === 0) oldStart = slice[0]?.oldIndex ?? 0;
+  if (newLen === 0) newStart = slice[0]?.newIndex ?? 0;
+  return { oldStart, oldLen, newStart, newLen, lastOldIdx, lastNewIdx };
+}
+
+interface NoNewlineCtx {
+  readonly lastOldIdx: number;
+  readonly lastNewIdx: number;
+  readonly oldTotal: number;
+  readonly newTotal: number;
+  readonly oldHasTrailingNewline: boolean;
+  readonly newHasTrailingNewline: boolean;
+}
+
+function trailingNoNewline(edit: Edit, ctx: NoNewlineCtx): boolean {
+  const isLastOld =
+    edit.kind !== 'insert' &&
+    edit.oldIndex === ctx.lastOldIdx &&
+    ctx.lastOldIdx === ctx.oldTotal - 1;
+  const isLastNew =
+    edit.kind !== 'delete' &&
+    edit.newIndex === ctx.lastNewIdx &&
+    ctx.lastNewIdx === ctx.newTotal - 1;
+  if (edit.kind === 'context') {
+    return (isLastOld && !ctx.oldHasTrailingNewline) || (isLastNew && !ctx.newHasTrailingNewline);
+  }
+  if (edit.kind === 'delete') return isLastOld && !ctx.oldHasTrailingNewline;
+  return isLastNew && !ctx.newHasTrailingNewline;
+}
+
+function buildHunkFromGroup(
+  group: Group,
+  edits: ReadonlyArray<Edit>,
+  contextLines: number,
+  noNewlineCtx: Omit<NoNewlineCtx, 'lastOldIdx' | 'lastNewIdx'>,
+): OutputHunk {
+  const startIdx = Math.max(0, group.first - contextLines);
+  const endIdx = Math.min(edits.length, group.last + contextLines + 1);
+  const slice = edits.slice(startIdx, endIdx);
+  const range = computeRange(slice);
+  const fullCtx: NoNewlineCtx = {
+    ...noNewlineCtx,
+    lastOldIdx: range.lastOldIdx,
+    lastNewIdx: range.lastNewIdx,
+  };
+  const body: BodyLine[] = slice.map((edit) => ({
+    kind: edit.kind,
+    text: edit.text,
+    trailingNoNewline: trailingNoNewline(edit, fullCtx),
+  }));
+  return {
+    oldStart: range.oldStart,
+    oldLen: range.oldLen,
+    newStart: range.newStart,
+    newLen: range.newLen,
+    body,
+  };
+}
+
+function groupHunks(
+  edits: ReadonlyArray<Edit>,
+  contextLines: number,
+  noNewlineCtx: Omit<NoNewlineCtx, 'lastOldIdx' | 'lastNewIdx'>,
+): ReadonlyArray<OutputHunk> {
+  if (edits.length === 0) return [];
+  const minGap = 2 * contextLines + 1;
+  const groups = groupChangeIndices(edits, minGap);
+  if (groups.length === 0) return [];
+  return groups.map((group) => buildHunkFromGroup(group, edits, contextLines, noNewlineCtx));
+}
+
+function prefixOf(kind: EditKind): string {
+  if (kind === 'context') return ' ';
+  if (kind === 'delete') return '-';
+  return '+';
+}
+
+function renderHunkBody(body: ReadonlyArray<BodyLine>): string[] {
+  const out: string[] = [];
+  for (const line of body) {
+    out.push(`${prefixOf(line.kind)}${line.text}`);
+    if (line.trailingNoNewline) out.push(NO_NEWLINE_MARKER);
+  }
+  return out;
+}
+
 function renderAddBlock(file: PatchFile, prefix: PatchPathPrefix): string[] {
   const change = file.change;
   if (change.type !== 'add') return [];
@@ -66,9 +312,7 @@ function renderAddBlock(file: PatchFile, prefix: PatchPathPrefix): string[] {
   out.push(`+++ ${prefix.new}${change.newPath}`);
   if (split.lines.length === 0) return out;
   out.push(formatHunkHeader(0, 0, 1, split.lines.length));
-  for (const line of split.lines) {
-    out.push(`+${line}`);
-  }
+  for (const line of split.lines) out.push(`+${line}`);
   if (!split.hasTrailingNewline) out.push(NO_NEWLINE_MARKER);
   return out;
 }
@@ -85,41 +329,70 @@ function renderDeleteBlock(file: PatchFile, prefix: PatchPathPrefix): string[] {
   out.push('+++ /dev/null');
   if (split.lines.length === 0) return out;
   out.push(formatHunkHeader(1, split.lines.length, 0, 0));
-  for (const line of split.lines) {
-    out.push(`-${line}`);
-  }
+  for (const line of split.lines) out.push(`-${line}`);
   if (!split.hasTrailingNewline) out.push(NO_NEWLINE_MARKER);
   return out;
 }
 
-function formatHunkHeader(
-  oldStart: number,
-  oldLen: number,
-  newStart: number,
-  newLen: number,
-): string {
-  const oldRange = oldLen === 1 ? `${oldStart}` : `${oldStart},${oldLen}`;
-  const newRange = newLen === 1 ? `${newStart}` : `${newStart},${newLen}`;
-  return `@@ -${oldRange} +${newRange} @@`;
+function renderModifyBlock(
+  file: PatchFile,
+  prefix: PatchPathPrefix,
+  contextLines: number,
+): string[] {
+  const change = file.change;
+  if (change.type !== 'modify') return [];
+  const oldBytes = file.oldContent ?? new Uint8Array(0);
+  const newBytes = file.newContent ?? new Uint8Array(0);
+  const oldSplit = splitContentLines(oldBytes);
+  const newSplit = splitContentLines(newBytes);
+  const edits = buildEdits(oldSplit.lines, newSplit.lines, oldBytes, newBytes);
+  const hunks = groupHunks(edits, contextLines, {
+    oldTotal: oldSplit.lines.length,
+    newTotal: newSplit.lines.length,
+    oldHasTrailingNewline: oldSplit.hasTrailingNewline,
+    newHasTrailingNewline: newSplit.hasTrailingNewline,
+  });
+
+  const out: string[] = [];
+  out.push(diffGitHeader(change.path, change.path, prefix));
+  out.push(`index ${shortOid(change.oldId)}..${shortOid(change.newId)} ${change.newMode}`);
+  out.push(`--- ${prefix.old}${change.path}`);
+  out.push(`+++ ${prefix.new}${change.path}`);
+  for (const hunk of hunks) {
+    out.push(formatHunkHeader(hunk.oldStart, hunk.oldLen, hunk.newStart, hunk.newLen));
+    for (const line of renderHunkBody(hunk.body)) out.push(line);
+  }
+  return out;
 }
 
-function renderFile(file: PatchFile, prefix: PatchPathPrefix): string[] {
+function renderFile(file: PatchFile, prefix: PatchPathPrefix, contextLines: number): string[] {
   switch (file.change.type) {
     case 'add':
       return renderAddBlock(file, prefix);
     case 'delete':
       return renderDeleteBlock(file, prefix);
+    case 'modify':
+      return renderModifyBlock(file, prefix, contextLines);
     default:
       return [];
   }
 }
 
+function resolveContextLines(value: number | undefined): number {
+  if (value === undefined) return DEFAULT_CONTEXT_LINES;
+  if (!Number.isInteger(value) || value < 0) {
+    throw invalidDiffInput(`contextLines must be a non-negative integer; got ${value}`);
+  }
+  return value;
+}
+
 export function renderPatch(files: ReadonlyArray<PatchFile>, opts?: PatchOptions): string {
+  const contextLines = resolveContextLines(opts?.contextLines);
   if (files.length === 0) return '';
   const prefix = opts?.pathPrefix ?? DEFAULT_PREFIX;
   const lines: string[] = [];
   for (const file of files) {
-    const block = renderFile(file, prefix);
+    const block = renderFile(file, prefix, contextLines);
     for (const line of block) lines.push(line);
   }
   if (lines.length === 0) return '';
