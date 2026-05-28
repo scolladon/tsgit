@@ -74,7 +74,7 @@ describe('continueMerge', () => {
 
   describe('Given a bare repo', () => {
     describe('When continueMerge runs', () => {
-      it('Then throws BARE_REPOSITORY', async () => {
+      it('Then throws BARE_REPOSITORY with operation=merge --continue', async () => {
         // Arrange
         const ctx = createMemoryContext();
         await init(ctx, { bare: true });
@@ -88,7 +88,9 @@ describe('continueMerge', () => {
         }
 
         // Assert
-        expect((caught as { data?: { code?: string } })?.data?.code).toBe('BARE_REPOSITORY');
+        const data = (caught as { data?: { code?: string; operation?: string } })?.data;
+        expect(data?.code).toBe('BARE_REPOSITORY');
+        expect(data?.operation).toBe('merge --continue');
       });
     });
   });

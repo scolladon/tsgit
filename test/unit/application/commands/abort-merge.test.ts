@@ -70,7 +70,7 @@ describe('abortMerge', () => {
 
   describe('Given a bare repo', () => {
     describe('When abortMerge runs', () => {
-      it('Then throws BARE_REPOSITORY', async () => {
+      it('Then throws BARE_REPOSITORY with operation=merge --abort', async () => {
         // Arrange
         const ctx = createMemoryContext();
         await init(ctx, { bare: true });
@@ -83,8 +83,10 @@ describe('abortMerge', () => {
           caught = err;
         }
 
-        // Assert
-        expect((caught as { data?: { code?: string } })?.data?.code).toBe('BARE_REPOSITORY');
+        // Assert — operation label is part of the surfaced error contract.
+        const data = (caught as { data?: { code?: string; operation?: string } })?.data;
+        expect(data?.code).toBe('BARE_REPOSITORY');
+        expect(data?.operation).toBe('merge --abort');
       });
     });
   });
@@ -142,7 +144,7 @@ describe('abortMerge', () => {
 
   describe('Given a synthetic detached HEAD with MERGE_HEAD on disk', () => {
     describe('When abortMerge runs', () => {
-      it('Then throws UNSUPPORTED_OPERATION', async () => {
+      it('Then throws UNSUPPORTED_OPERATION with operation=merge --abort and a detached-HEAD reason', async () => {
         // Arrange — produce a real conflict to write MERGE_HEAD + ORIG_HEAD,
         // then detach HEAD so the symbolic-HEAD guard inside abortMerge fires.
         const ctx = createMemoryContext();
@@ -158,8 +160,12 @@ describe('abortMerge', () => {
           caught = err;
         }
 
-        // Assert
-        expect((caught as { data?: { code?: string } })?.data?.code).toBe('UNSUPPORTED_OPERATION');
+        // Assert — full error payload, not just the code.
+        const data = (caught as { data?: { code?: string; operation?: string; reason?: string } })
+          ?.data;
+        expect(data?.code).toBe('UNSUPPORTED_OPERATION');
+        expect(data?.operation).toBe('merge --abort');
+        expect(data?.reason).toContain('detached HEAD');
       });
     });
   });
@@ -290,6 +296,87 @@ describe('abortMerge', () => {
 
         // Assert
         expect(sut.branch).toBe(MAIN);
+      });
+
+      it('Then a clean-path file dirtied after the conflict is rewritten to the pre-merge content (forceRewriteAll)', async () => {
+        // Arrange — produce a conflict, then mutate a NON-conflicting path
+        // (one whose stage-0 index entry already matches the target tree).
+        // Without `forceRewriteAll: true` the index→target diff would skip
+        // this path and the dirty bytes would survive the abort.
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/conflict.txt`, 'base\n');
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/clean.txt`, 'shared\n');
+        await add(ctx, ['conflict.txt', 'clean.txt']);
+        await commit(ctx, { message: 'base', author });
+        await branch(ctx, { kind: 'create', name: 'feature' });
+        await checkout(ctx, { target: 'feature' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/conflict.txt`, 'FEATURE\n');
+        await add(ctx, ['conflict.txt']);
+        await commit(ctx, { message: 'on-feature', author });
+        await checkout(ctx, { target: 'main' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/conflict.txt`, 'MAIN\n');
+        await add(ctx, ['conflict.txt']);
+        await commit(ctx, { message: 'on-main', author });
+        await merge(ctx, { target: 'feature', author });
+        // Dirty the non-conflicting path's working-tree bytes. Its index
+        // entry remains stage-0 matching the pre-merge tree's blob.
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/clean.txt`, 'DIRTY\n');
+
+        // Act
+        await abortMerge(ctx);
+
+        // Assert — clean.txt restored from ORIG_HEAD's tree.
+        const sut = await ctx.fs.readUtf8(`${ctx.layout.workDir}/clean.txt`);
+        expect(sut).toBe('shared\n');
+      });
+
+      it('Then the index lock is released so a follow-up index write can proceed', async () => {
+        // Arrange — happy-path abort holds .git/index.lock during materialize.
+        // A dropped `finally { await lock.release(); }` would leak the lock
+        // file and the follow-up add would surface RESOURCE_LOCKED.
+        const ctx = createMemoryContext();
+        await setupConflictingMerge(ctx);
+        await merge(ctx, { target: 'feature', author });
+
+        // Act
+        await abortMerge(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/follow-up.txt`, 'x\n');
+
+        // Assert — the follow-up add succeeds; lock was released.
+        await expect(add(ctx, ['follow-up.txt'])).resolves.toBeDefined();
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/index.lock`)).toBe(false);
+      });
+
+      it('Then the index lock is released even when materializeTree fails mid-write', async () => {
+        // Arrange — patch fs.write to throw inside materializeTree's path
+        // write so the try block aborts after the lock is held. A missing
+        // `finally { await lock.release(); }` would leave .git/index.lock
+        // on disk and surface RESOURCE_LOCKED on the next mutation.
+        const ctx = createMemoryContext();
+        await setupConflictingMerge(ctx);
+        await merge(ctx, { target: 'feature', author });
+        const originalWrite = ctx.fs.write.bind(ctx.fs);
+        let failOnce = true;
+        (ctx.fs as { write: typeof originalWrite }).write = async (p, data) => {
+          if (failOnce && p === `${ctx.layout.workDir}/file.txt`) {
+            failOnce = false;
+            throw new Error('injected working-tree write failure');
+          }
+          return originalWrite(p, data);
+        };
+
+        // Act — abort throws because materializeTree's working-tree write fails.
+        let caught: unknown;
+        try {
+          await abortMerge(ctx);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert — the throw propagated AND the lock was released.
+        expect(caught).toBeDefined();
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/index.lock`)).toBe(false);
       });
 
       it('Then the post-abort tree matches the pre-merge HEAD tree', async () => {
