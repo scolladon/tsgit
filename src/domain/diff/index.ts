@@ -43,10 +43,11 @@ export {
 // Mode-kind helpers (shared with merge)
 export type { ModeKind } from './mode-kind.js';
 export { isSameKind, kindOf } from './mode-kind.js';
-
+// Patch serializer
+export type { PatchFile, PatchOptions, PatchPathPrefix } from './patch-serializer.js';
+export { renderPatch } from './patch-serializer.js';
 // Path comparison
 export { comparePaths, sortByPath } from './path-compare.js';
-
 // Rename detection
 export type { RenameDetectOptions } from './rename-detect.js';
 export { detectRenames } from './rename-detect.js';

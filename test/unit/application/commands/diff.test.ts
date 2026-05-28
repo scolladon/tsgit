@@ -334,4 +334,136 @@ describe('diff', () => {
       });
     });
   });
+
+  describe('Given format=patch and a modified file', () => {
+    describe('When diff', () => {
+      it('Then returns PatchResult with canonical text and the structured diff', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a1\n');
+        await add(ctx, ['a.txt']);
+        const c1 = await commit(ctx, { message: 'first', author });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a2\n');
+        await add(ctx, ['a.txt']);
+        const c2 = await commit(ctx, { message: 'second', author });
+
+        // Act
+        const sut = await diff(ctx, { from: c1.id, to: c2.id, format: 'patch' });
+
+        // Assert
+        expect(sut.format).toBe('patch');
+        expect(sut.diff.changes).toHaveLength(1);
+        expect(sut.text).toContain('diff --git a/a.txt b/a.txt');
+        expect(sut.text).toContain('--- a/a.txt');
+        expect(sut.text).toContain('+++ b/a.txt');
+        expect(sut.text).toContain('-a1');
+        expect(sut.text).toContain('+a2');
+      });
+    });
+  });
+
+  describe('Given format=patch and an added file', () => {
+    describe('When diff', () => {
+      it('Then text contains the new file mode block', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const c0 = await commit(ctx, { message: 'empty', author, allowEmpty: true });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/fresh.txt`, 'hello\n');
+        await add(ctx, ['fresh.txt']);
+        const c1 = await commit(ctx, { message: 'add fresh', author });
+
+        // Act
+        const sut = await diff(ctx, { from: c0.id, to: c1.id, format: 'patch' });
+
+        // Assert
+        expect(sut.text).toContain('new file mode 100644');
+        expect(sut.text).toContain('--- /dev/null');
+        expect(sut.text).toContain('+++ b/fresh.txt');
+        expect(sut.text).toContain('+hello');
+      });
+    });
+  });
+
+  describe('Given format=patch and pathPrefix omitting prefixes', () => {
+    describe('When diff', () => {
+      it('Then headers use bare paths', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a1\n');
+        await add(ctx, ['a.txt']);
+        const c1 = await commit(ctx, { message: 'first', author });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a2\n');
+        await add(ctx, ['a.txt']);
+        const c2 = await commit(ctx, { message: 'second', author });
+
+        // Act
+        const sut = await diff(ctx, {
+          from: c1.id,
+          to: c2.id,
+          format: 'patch',
+          pathPrefix: { old: '', new: '' },
+        });
+
+        // Assert
+        expect(sut.text).toContain('diff --git a.txt a.txt');
+        expect(sut.text).toContain('--- a.txt');
+        expect(sut.text).toContain('+++ a.txt');
+      });
+    });
+  });
+
+  describe('Given format=patch and contextLines=0', () => {
+    describe('When diff with a multi-line modify', () => {
+      it('Then hunk has no equal context lines', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/x.txt`, '1\n2\n3\n4\n5\n');
+        await add(ctx, ['x.txt']);
+        const c1 = await commit(ctx, { message: 'first', author });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/x.txt`, '1\n2\nTHREE\n4\n5\n');
+        await add(ctx, ['x.txt']);
+        const c2 = await commit(ctx, { message: 'second', author });
+
+        // Act
+        const sut = await diff(ctx, {
+          from: c1.id,
+          to: c2.id,
+          format: 'patch',
+          contextLines: 0,
+        });
+
+        // Assert
+        expect(sut.text).toContain('@@ -3 +3 @@');
+        expect(sut.text).not.toContain(' 2');
+        expect(sut.text).not.toContain(' 4');
+      });
+    });
+  });
+
+  describe('Given format=patch and a deleted file', () => {
+    describe('When diff', () => {
+      it('Then text contains the deleted file mode block', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/gone.txt`, 'bye\n');
+        await add(ctx, ['gone.txt']);
+        const c1 = await commit(ctx, { message: 'add', author });
+        await rm(ctx, ['gone.txt']);
+        const c2 = await commit(ctx, { message: 'remove', author });
+
+        // Act
+        const sut = await diff(ctx, { from: c1.id, to: c2.id, format: 'patch' });
+
+        // Assert
+        expect(sut.text).toContain('deleted file mode 100644');
+        expect(sut.text).toContain('+++ /dev/null');
+        expect(sut.text).toContain('-bye');
+      });
+    });
+  });
 });

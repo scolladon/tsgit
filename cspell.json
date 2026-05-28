@@ -609,7 +609,14 @@
     "bitfield",
     "amortises",
     "organisation",
-    "realised"
+    "realised",
+    "numstat",
+    "shortstat",
+    "dirstat",
+    "noprefix",
+    "trippable",
+    "organised",
+    "goldens"
   ],
   "ignorePaths": [
     "node_modules",
