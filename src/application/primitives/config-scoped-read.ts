@@ -50,7 +50,14 @@ const readSingleScopeUncached = async (
     const text = await ctx.fs.readUtf8(path);
     return parseIniSections(text);
   } catch (err) {
-    if (err instanceof TsgitError && err.data.code === 'FILE_NOT_FOUND') return [];
+    if (err instanceof TsgitError) {
+      const code = err.data.code;
+      // A missing scope file is normal — git treats it as empty config. A
+      // permission-denied also yields empty: in production it means the caller
+      // can't see that scope's contents (treat as absent); in the memory
+      // adapter it means the scope path falls outside the adapter's rootDir.
+      if (code === 'FILE_NOT_FOUND' || code === 'PERMISSION_DENIED') return [];
+    }
     throw err;
   }
 };
