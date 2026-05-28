@@ -854,4 +854,128 @@ describe('application/commands/remote', () => {
       });
     });
   });
+
+  describe('show', () => {
+    describe('Given an unknown remote', () => {
+      describe('When show runs', () => {
+        it('Then it throws REMOTE_NOT_CONFIGURED', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx);
+          let caught: unknown;
+
+          // Act
+          try {
+            await remote(ctx, { kind: 'show', name: 'origin' });
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect((caught as TsgitError).data.code).toBe('REMOTE_NOT_CONFIGURED');
+        });
+      });
+    });
+
+    describe('Given a remote with tracking refs and tracking branches', () => {
+      describe('When show runs', () => {
+        it('Then trackingRefs and trackedBy reflect them', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(
+            ctx,
+            '[remote "origin"]\n\turl = https://e.com/r.git\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n[branch "main"]\n\tremote = origin\n\tmerge = refs/heads/main\n',
+          );
+          const oid = 'a'.repeat(40);
+          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/remotes/origin/main`, `${oid}\n`);
+
+          // Act
+          const sut = await remote(ctx, { kind: 'show', name: 'origin' });
+
+          // Assert
+          if (sut.kind !== 'show') throw new Error('unreachable');
+          expect(sut.remote.url).toBe('https://e.com/r.git');
+          expect(sut.remote.fetchRefspecs).toEqual(['+refs/heads/*:refs/remotes/origin/*']);
+          expect(sut.remote.trackingRefs.size).toBe(1);
+          expect(sut.remote.trackingRefs.get('refs/remotes/origin/main' as never)).toBe(oid);
+          expect(sut.remote.trackedBy).toEqual([
+            { branch: 'refs/heads/main', merge: 'refs/heads/main' },
+          ]);
+        });
+      });
+    });
+
+    describe('Given a remote with pushurl set', () => {
+      describe('When show runs', () => {
+        it('Then pushUrl is populated', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, '[remote "origin"]\n\turl = u\n\tpushurl = p\n');
+
+          // Act
+          const sut = await remote(ctx, { kind: 'show', name: 'origin' });
+
+          // Assert
+          if (sut.kind !== 'show') throw new Error('unreachable');
+          expect(sut.remote.pushUrl).toBe('p');
+        });
+      });
+    });
+
+    describe('Given a remote with no tracking refs', () => {
+      describe('When show runs', () => {
+        it('Then trackingRefs is an empty Map', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, '[remote "origin"]\n\turl = u\n');
+
+          // Act
+          const sut = await remote(ctx, { kind: 'show', name: 'origin' });
+
+          // Assert
+          if (sut.kind !== 'show') throw new Error('unreachable');
+          expect(sut.remote.trackingRefs.size).toBe(0);
+          expect(sut.remote.trackedBy).toEqual([]);
+        });
+      });
+    });
+
+    describe('Given a remote tracked by a branch with no merge', () => {
+      describe('When show runs', () => {
+        it('Then trackedBy[i].merge is undefined', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, '[remote "origin"]\n\turl = u\n[branch "main"]\n\tremote = origin\n');
+
+          // Act
+          const sut = await remote(ctx, { kind: 'show', name: 'origin' });
+
+          // Assert
+          if (sut.kind !== 'show') throw new Error('unreachable');
+          expect(sut.remote.trackedBy).toEqual([{ branch: 'refs/heads/main', merge: undefined }]);
+        });
+      });
+    });
+
+    describe('Given an invalid remote name', () => {
+      describe('When show runs', () => {
+        it('Then it throws REMOTE_NAME_INVALID', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx);
+          let caught: unknown;
+
+          // Act
+          try {
+            await remote(ctx, { kind: 'show', name: '' });
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect((caught as TsgitError).data.code).toBe('REMOTE_NAME_INVALID');
+        });
+      });
+    });
+  });
 });

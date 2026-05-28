@@ -129,12 +129,6 @@ const compareByteWise = (left: string, right: string): number => {
   return 0;
 };
 
-// --- Placeholder bodies for actions implemented in later slices. ---
-
-const notYetImplemented = (action: string): never => {
-  throw new Error(`remote action not yet implemented: ${action}`);
-};
-
 const addRemote = async (
   ctx: Context,
   action: { readonly name: string; readonly url: string; readonly fetch?: string },
@@ -326,9 +320,28 @@ const setRemoteUrl = async (
 };
 
 const showRemote = async (
-  _ctx: Context,
+  ctx: Context,
   action: { readonly name: string },
 ): Promise<RemoteResult> => {
   validateRemoteName(action.name);
-  return notYetImplemented('show');
+  const config = await readConfig(ctx);
+  const entry = config.remote?.get(action.name);
+  if (entry === undefined) throw remoteNotConfigured(action.name);
+  const trackingRefNames = await listTrackingRefs(ctx, action.name);
+  const store = getRefStore(ctx);
+  const trackingRefs = new Map<RefName, ObjectId>();
+  for (const refName of trackingRefNames) {
+    const direct = await store.resolveDirect(refName);
+    if (direct.kind === 'direct') trackingRefs.set(refName, direct.id);
+  }
+  const referrers = listBranchReferrers(config, action.name);
+  const base = toRemoteInfo(action.name, entry);
+  return {
+    kind: 'show',
+    remote: {
+      ...base,
+      trackingRefs,
+      trackedBy: referrers.map((r) => ({ branch: r.ref, merge: r.merge })),
+    },
+  };
 };
