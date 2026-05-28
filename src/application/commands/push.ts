@@ -150,8 +150,10 @@ const resolveRemoteUrl = async (ctx: Context, remoteName: string): Promise<strin
   }
   const config = await readConfig(ctx);
   const remote = config.remote?.get(remoteName);
-  if (remote?.url === undefined) throw remoteNotConfigured(remoteName);
-  return remote.url;
+  // `pushurl` overrides `url` for push (canonical-git parity).
+  const url = remote?.pushUrl ?? remote?.url;
+  if (url === undefined) throw remoteNotConfigured(remoteName);
+  return url;
 };
 
 const resolveRefspecsInput = async (
