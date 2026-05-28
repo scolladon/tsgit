@@ -773,6 +773,350 @@ describe('patch-serializer', () => {
     });
   });
 
+  describe('Given a modify whose contents are byte-identical (synthetic — caller passed identical bytes with different ids)', () => {
+    describe('When renderPatch is called', () => {
+      it('Then emits header + index + --- + +++ with no hunks (groups.length === 0 path)', () => {
+        // Arrange — ids differ but bytes match: renderTextBody → groupHunks
+        // sees no change edits, returns no hunks. Exercises the `groups.length
+        // === 0` early-return.
+        const sut = renderPatch;
+        const file = modifyFile('foo.txt', 'same\n', 'same\n');
+
+        // Act
+        const result = sut([file]);
+
+        // Assert — body is the header + index + --- + +++ + EOF.
+        expect(result).toBe(
+          [
+            'diff --git a/foo.txt b/foo.txt',
+            'index aaaaaaa..bbbbbbb 100644',
+            '--- a/foo.txt',
+            '+++ b/foo.txt',
+            '',
+          ].join('\n'),
+        );
+      });
+    });
+  });
+
+  describe('Given a modify whose oldId and newId differ AND both contents are empty', () => {
+    describe('When renderPatch is called', () => {
+      it('Then emits header + index + --- + +++ with no hunks (edits.length === 0 path)', () => {
+        // Arrange — empty/empty drives diffLines to produce a single
+        // zero-range "common" hunk, so the edit stream is empty.
+        const sut = renderPatch;
+        const file = modifyFile('foo.txt', '', '');
+
+        // Act
+        const result = sut([file]);
+
+        // Assert
+        expect(result).toBe(
+          [
+            'diff --git a/foo.txt b/foo.txt',
+            'index aaaaaaa..bbbbbbb 100644',
+            '--- a/foo.txt',
+            '+++ b/foo.txt',
+            '',
+          ].join('\n'),
+        );
+      });
+    });
+  });
+
+  describe('Given an add PatchFile with no newContent', () => {
+    describe('When renderPatch is called', () => {
+      it('Then treats it as an empty add', () => {
+        // Arrange
+        const sut = renderPatch;
+        const file: PatchFile = {
+          change: {
+            type: 'add',
+            newPath: 'empty.txt' as FilePath,
+            newId: OID_A,
+            newMode: FILE_MODE.REGULAR,
+          },
+        };
+
+        // Act
+        const result = sut([file]);
+
+        // Assert
+        expect(result).toBe(
+          [
+            'diff --git a/empty.txt b/empty.txt',
+            'new file mode 100644',
+            'index 0000000..aaaaaaa',
+            '--- /dev/null',
+            '+++ b/empty.txt',
+            '',
+          ].join('\n'),
+        );
+      });
+    });
+  });
+
+  describe('Given a delete PatchFile with no oldContent', () => {
+    describe('When renderPatch is called', () => {
+      it('Then treats it as an empty delete', () => {
+        // Arrange
+        const sut = renderPatch;
+        const file: PatchFile = {
+          change: {
+            type: 'delete',
+            oldPath: 'empty.txt' as FilePath,
+            oldId: OID_A,
+            oldMode: FILE_MODE.REGULAR,
+          },
+        };
+
+        // Act
+        const result = sut([file]);
+
+        // Assert
+        expect(result).toBe(
+          [
+            'diff --git a/empty.txt b/empty.txt',
+            'deleted file mode 100644',
+            'index aaaaaaa..0000000',
+            '--- a/empty.txt',
+            '+++ /dev/null',
+            '',
+          ].join('\n'),
+        );
+      });
+    });
+  });
+
+  describe('Given a modify PatchFile with no oldContent provided', () => {
+    describe('When renderPatch is called', () => {
+      it('Then treats the missing side as empty bytes', () => {
+        // Arrange — exercises the `file.oldContent ?? new Uint8Array(0)`
+        // fallback in renderFile.
+        const sut = renderPatch;
+        const file: PatchFile = {
+          change: {
+            type: 'modify',
+            path: 'foo.txt' as FilePath,
+            oldId: OID_A,
+            newId: OID_B,
+            oldMode: FILE_MODE.REGULAR,
+            newMode: FILE_MODE.REGULAR,
+          },
+          newContent: utf8.encode('hi\n'),
+        };
+
+        // Act
+        const result = sut([file]);
+
+        // Assert — old side acts like an empty file; one `+hi` line emitted.
+        expect(result).toBe(
+          [
+            'diff --git a/foo.txt b/foo.txt',
+            'index aaaaaaa..bbbbbbb 100644',
+            '--- a/foo.txt',
+            '+++ b/foo.txt',
+            '@@ -0,0 +1 @@',
+            '+hi',
+            '',
+          ].join('\n'),
+        );
+      });
+    });
+  });
+
+  describe('Given a modify PatchFile with no newContent provided', () => {
+    describe('When renderPatch is called', () => {
+      it('Then treats the missing side as empty bytes', () => {
+        // Arrange — exercises the `file.newContent ?? new Uint8Array(0)`
+        // fallback in renderFile.
+        const sut = renderPatch;
+        const file: PatchFile = {
+          change: {
+            type: 'modify',
+            path: 'foo.txt' as FilePath,
+            oldId: OID_A,
+            newId: OID_B,
+            oldMode: FILE_MODE.REGULAR,
+            newMode: FILE_MODE.REGULAR,
+          },
+          oldContent: utf8.encode('bye\n'),
+        };
+
+        // Act
+        const result = sut([file]);
+
+        // Assert
+        expect(result).toBe(
+          [
+            'diff --git a/foo.txt b/foo.txt',
+            'index aaaaaaa..bbbbbbb 100644',
+            '--- a/foo.txt',
+            '+++ b/foo.txt',
+            '@@ -1 +0,0 @@',
+            '-bye',
+            '',
+          ].join('\n'),
+        );
+      });
+    });
+  });
+
+  describe('Given a modify whose old side is empty and new side is binary (synthetic edge case)', () => {
+    describe('When renderPatch is called', () => {
+      it('Then emits Binary files /dev/null and b/X differ', () => {
+        // Arrange — renderBinaryBody substitutes /dev/null on the empty side.
+        const sut = renderPatch;
+        const file: PatchFile = {
+          change: {
+            type: 'modify',
+            path: 'logo.png' as FilePath,
+            oldId: OID_A,
+            newId: OID_B,
+            oldMode: FILE_MODE.REGULAR,
+            newMode: FILE_MODE.REGULAR,
+          },
+          oldContent: new Uint8Array(0),
+          newContent: new Uint8Array([0x00, 0x01, 0x02]),
+        };
+
+        // Act
+        const result = sut([file]);
+
+        // Assert
+        expect(result).toBe(
+          [
+            'diff --git a/logo.png b/logo.png',
+            'index aaaaaaa..bbbbbbb 100644',
+            'Binary files /dev/null and b/logo.png differ',
+            '',
+          ].join('\n'),
+        );
+      });
+    });
+  });
+
+  describe('Given a modify whose new side is empty and old side is binary (synthetic edge case)', () => {
+    describe('When renderPatch is called', () => {
+      it('Then emits Binary files a/X and /dev/null differ', () => {
+        // Arrange — symmetric of the above; exercises the `newBytes.length === 0` branch.
+        const sut = renderPatch;
+        const file: PatchFile = {
+          change: {
+            type: 'modify',
+            path: 'logo.png' as FilePath,
+            oldId: OID_A,
+            newId: OID_B,
+            oldMode: FILE_MODE.REGULAR,
+            newMode: FILE_MODE.REGULAR,
+          },
+          oldContent: new Uint8Array([0x00, 0x01, 0x02]),
+          newContent: new Uint8Array(0),
+        };
+
+        // Act
+        const result = sut([file]);
+
+        // Assert
+        expect(result).toBe(
+          [
+            'diff --git a/logo.png b/logo.png',
+            'index aaaaaaa..bbbbbbb 100644',
+            'Binary files a/logo.png and /dev/null differ',
+            '',
+          ].join('\n'),
+        );
+      });
+    });
+  });
+
+  describe('Given a modify where only the new side lacks trailing LF AND has context lines around the change', () => {
+    describe('When renderPatch is called', () => {
+      it('Then emits the no-newline marker after the final context line of the new side', () => {
+        // Arrange — change line 1, keep lines 2-3 as context. Last context
+        // line on both sides is `c`, with no trailing LF on either side. The
+        // `context`-kind branch of trailingNoNewline must emit the marker.
+        const sut = renderPatch;
+        const file = modifyFile('foo.txt', 'a\nb\nc', 'A\nb\nc');
+
+        // Act
+        const result = sut([file]);
+
+        // Assert
+        expect(result).toBe(
+          [
+            'diff --git a/foo.txt b/foo.txt',
+            'index aaaaaaa..bbbbbbb 100644',
+            '--- a/foo.txt',
+            '+++ b/foo.txt',
+            '@@ -1,3 +1,3 @@',
+            '-a',
+            '+A',
+            ' b',
+            ' c',
+            '\\ No newline at end of file',
+            '',
+          ].join('\n'),
+        );
+      });
+    });
+  });
+
+  describe('Given a pure insertion at the end with contextLines=0', () => {
+    describe('When renderPatch is called', () => {
+      it('Then emits a hunk with oldLen=0 anchored at the prior line', () => {
+        // Arrange — appending `b` after the only line `a`. With contextLines=0
+        // the slice carries one insert; oldLen=0 forces the zero-length-anchor
+        // branch in computeRange.
+        const sut = renderPatch;
+        const file = modifyFile('foo.txt', 'a\n', 'a\nb\n');
+
+        // Act
+        const result = sut([file], { contextLines: 0 });
+
+        // Assert
+        expect(result).toBe(
+          [
+            'diff --git a/foo.txt b/foo.txt',
+            'index aaaaaaa..bbbbbbb 100644',
+            '--- a/foo.txt',
+            '+++ b/foo.txt',
+            '@@ -1,0 +2 @@',
+            '+b',
+            '',
+          ].join('\n'),
+        );
+      });
+    });
+  });
+
+  describe('Given a pure deletion at the end with contextLines=0', () => {
+    describe('When renderPatch is called', () => {
+      it('Then emits a hunk with newLen=0 anchored at the prior line', () => {
+        // Arrange — symmetric to the insertion case: forces newLen=0 in
+        // computeRange.
+        const sut = renderPatch;
+        const file = modifyFile('foo.txt', 'a\nb\n', 'a\n');
+
+        // Act
+        const result = sut([file], { contextLines: 0 });
+
+        // Assert
+        expect(result).toBe(
+          [
+            'diff --git a/foo.txt b/foo.txt',
+            'index aaaaaaa..bbbbbbb 100644',
+            '--- a/foo.txt',
+            '+++ b/foo.txt',
+            '@@ -2 +1,0 @@',
+            '-b',
+            '',
+          ].join('\n'),
+        );
+      });
+    });
+  });
+
   describe('Given a binary delete change', () => {
     describe('When renderPatch is called', () => {
       it('Then emits Binary files a/X and /dev/null differ', () => {

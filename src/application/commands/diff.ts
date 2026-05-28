@@ -1,12 +1,12 @@
-import type { DiffChange, PatchFile, PatchPathPrefix, TreeDiff } from '../../domain/diff/index.js';
+import type { PatchPathPrefix, TreeDiff } from '../../domain/diff/index.js';
 import { renderPatch } from '../../domain/diff/index.js';
 import type { ObjectId } from '../../domain/objects/index.js';
 import { validateRefName } from '../../domain/refs/index.js';
 import type { Context } from '../../ports/context.js';
 import { diffTrees } from '../primitives/diff-trees.js';
-import { readBlob } from '../primitives/read-blob.js';
 import { readObject } from '../primitives/read-object.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
+import { materialisePatchFiles } from './internal/materialise-patch-files.js';
 import { assertRepository } from './internal/repo-state.js';
 
 export type DiffFormat = 'tree' | 'patch';
@@ -77,34 +77,3 @@ const resolveTreeId = async (ctx: Context, target: string): Promise<ObjectId> =>
   // single place that validates the resolved id is tree-shaped.
   return id;
 };
-
-async function materialisePatchFiles(
-  ctx: Context,
-  changes: ReadonlyArray<DiffChange>,
-): Promise<ReadonlyArray<PatchFile>> {
-  return Promise.all(changes.map((change) => materialiseOne(ctx, change)));
-}
-
-async function materialiseOne(ctx: Context, change: DiffChange): Promise<PatchFile> {
-  if (change.type === 'add') {
-    const blob = await readBlob(ctx, change.newId);
-    return { change, newContent: blob.content };
-  }
-  if (change.type === 'delete') {
-    const blob = await readBlob(ctx, change.oldId);
-    return { change, oldContent: blob.content };
-  }
-  if (change.type === 'rename') {
-    return { change };
-  }
-  // modify or type-change — load both sides (skip when ids match to avoid I/O).
-  if (change.oldId === change.newId) {
-    const blob = await readBlob(ctx, change.oldId);
-    return { change, oldContent: blob.content, newContent: blob.content };
-  }
-  const [oldBlob, newBlob] = await Promise.all([
-    readBlob(ctx, change.oldId),
-    readBlob(ctx, change.newId),
-  ]);
-  return { change, oldContent: oldBlob.content, newContent: newBlob.content };
-}
