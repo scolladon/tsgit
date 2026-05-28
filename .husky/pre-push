@@ -1,2 +1,2 @@
 npm outdated || true
-npm run validate
+npm run prepush

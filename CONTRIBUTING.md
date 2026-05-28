@@ -398,7 +398,7 @@ Before any PR can merge, all of these must pass:
 - [ ] `npm run check:duplicates` — jscpd (no copy-paste)
 - [ ] `npm run check:filesystem` — ls-lint (naming conventions)
 - [ ] `npm run check:doc-coverage` — every `repo.*` and `repo.primitives.*` has a docs page
-- [ ] `npm run check:doc-typedoc` — committed `reports/api.json` matches the regenerated snapshot
+- [ ] `npm run check:doc-typedoc` — committed `reports/api.json` matches the regenerated snapshot. **Scoped to `npm run prepush` (and CI), NOT `npm run validate`** — the typedoc regen costs ~10 s + a multi-MB diff on every export-touching change, so it runs at push time instead of every inner-loop check. If the pre-push hook fails because `reports/api.json` is stale, run `npm run docs:json && git add reports/api.json && git commit --amend` (or a fresh commit), then push again.
 - [ ] `npm run check:doc-links` — markdown links resolve (requires `lychee` locally; `brew install lychee` / `cargo install lychee`)
 - [ ] `npm run test:coverage` — 100% on all KPIs
 - [ ] `npm run test:mutation` — Stryker (target 0 survivors)
