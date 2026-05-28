@@ -138,6 +138,7 @@ describe('openRepository — Repository binding integrity', () => {
             'checkout',
             'clone',
             'commit',
+            'config',
             'continueMerge',
             'ctx',
             'diff',
@@ -206,9 +207,18 @@ describe('openRepository — Repository binding integrity', () => {
         const sut = await open();
 
         for (const key of Object.keys(sut)) {
-          if (key === 'ctx' || key === 'primitives' || key === 'snapshot') continue;
+          if (key === 'ctx' || key === 'primitives' || key === 'snapshot' || key === 'config') {
+            continue;
+          }
           // Assert
           expect(typeof (sut as unknown as Record<string, unknown>)[key]).toBe('function');
+        }
+        // `repo.config` is the nested-namespace dispatcher; assert it is a
+        // frozen object whose nine methods are all functions.
+        expect(typeof sut.config).toBe('object');
+        expect(Object.isFrozen(sut.config)).toBe(true);
+        for (const key of Object.keys(sut.config)) {
+          expect(typeof (sut.config as unknown as Record<string, unknown>)[key]).toBe('function');
         }
         for (const key of Object.keys(sut.primitives)) {
           expect(typeof (sut.primitives as unknown as Record<string, unknown>)[key]).toBe(

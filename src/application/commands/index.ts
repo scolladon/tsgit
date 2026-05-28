@@ -60,6 +60,7 @@ export {
   fetchMissing,
 } from './fetch-missing.js';
 export { type InitOptions, type InitResult, init } from './init.js';
+export { bindConfigNamespace, type ConfigNamespace } from './internal/config-namespace.js';
 export { type LogEntry, type LogOptions, log } from './log.js';
 export { type MergeOptions, type MergeResult, merge } from './merge.js';
 export { type PushOptions, type PushResult, push } from './push.js';

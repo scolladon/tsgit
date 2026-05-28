@@ -128,6 +128,8 @@ export interface Repository {
   readonly checkout: BindCtx<typeof commands.checkout>;
   readonly clone: BindCtx<typeof commands.clone>;
   readonly commit: BindCtx<typeof commands.commit>;
+  /** Nested `repo.config.{get,set,unset,unsetAll,getAll,getRegexp,list,renameSection,removeSection}` (ADR-181). */
+  readonly config: commands.ConfigNamespace;
   readonly continueMerge: BindCtx<typeof commands.continueMerge>;
   // `diff` is overloaded on `format`; `BindCtx` only captures the last overload
   // (a TypeScript limitation), so the binding is written by hand to preserve
@@ -361,6 +363,7 @@ export const openRepository = async (
       guard();
       return commands.commit(ctx, commitOpts);
     }) as Repository['commit'],
+    config: commands.bindConfigNamespace(ctx, guard),
     continueMerge: ((opts) => {
       guard();
       return commands.continueMerge(ctx, opts);
