@@ -150,6 +150,7 @@ describe('openRepository — Repository binding integrity', () => {
             'primitives',
             'push',
             'reflog',
+            'remote',
             'reset',
             'revParse',
             'rm',
