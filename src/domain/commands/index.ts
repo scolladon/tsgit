@@ -12,6 +12,7 @@ export {
   maxRefspecsExceeded,
   mergeHasConflicts,
   nonFastForward,
+  noOperationInProgress,
   noPromisorRemote,
   nothingToCommit,
   operationInProgress,
