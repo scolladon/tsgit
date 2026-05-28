@@ -761,7 +761,7 @@ describe('application/commands/remote', () => {
         it('Then remote.<n>.url is replaced and pushurl is untouched', async () => {
           // Arrange
           const ctx = createMemoryContext();
-          await seed(ctx, '[remote "origin"]\n\turl = old\n\tpushurl = pold\n');
+          await seed(ctx, '[remote "origin"]\n\turl = old\n\tpushurl = push-old\n');
 
           // Act
           const sut = await remote(ctx, {
@@ -773,10 +773,10 @@ describe('application/commands/remote', () => {
           // Assert
           if (sut.kind !== 'setUrl') throw new Error('unreachable');
           expect(sut.remote.url).toBe('new');
-          expect(sut.remote.pushUrl).toBe('pold');
+          expect(sut.remote.pushUrl).toBe('push-old');
           const written = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
           expect(written).toContain('url = new');
-          expect(written).toContain('pushurl = pold');
+          expect(written).toContain('pushurl = push-old');
           expect(written).not.toContain('url = old');
         });
       });
@@ -793,16 +793,16 @@ describe('application/commands/remote', () => {
           const sut = await remote(ctx, {
             kind: 'setUrl',
             name: 'origin',
-            url: 'pnew',
+            url: 'push-new',
             push: true,
           });
 
           // Assert
           if (sut.kind !== 'setUrl') throw new Error('unreachable');
-          expect(sut.remote.pushUrl).toBe('pnew');
+          expect(sut.remote.pushUrl).toBe('push-new');
           expect(sut.remote.url).toBe('u');
           const written = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
-          expect(written).toContain('pushurl = pnew');
+          expect(written).toContain('pushurl = push-new');
           expect(written).toContain('url = u');
         });
       });

@@ -502,9 +502,9 @@ describe('domain commands error — factory data', () => {
     describe('When called with a printable reason', () => {
       it('Then data carries the verbatim name and reason', () => {
         // Arrange + Assert
-        expect(remoteNameInvalid('o\rrigin', 'control char').data).toEqual({
+        expect(remoteNameInvalid('a\rb', 'control char').data).toEqual({
           code: 'REMOTE_NAME_INVALID',
-          name: 'o\\x0Drigin',
+          name: 'a\\x0Db',
           reason: 'control char',
         });
       });
