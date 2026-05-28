@@ -7,13 +7,17 @@ import { remoteNameInvalid } from '../../../domain/commands/error.js';
 import type { RefName } from '../../../domain/objects/object-id.js';
 import type { ParsedConfig } from '../../primitives/config-read.js';
 
-const FORBIDDEN_NAME_CHARS = /[\n\r\0"\\\]]/;
+// Bans the line-surgery hard chars plus `/` (matches canonical git's
+// `check_refname_format` rejection — a remote with a slash creates
+// `refs/remotes/<a>/<b>/...` which collides with a sibling remote `a/b`'s
+// tracking-ref prefix) and `\t` (the reflog field separator).
+const FORBIDDEN_NAME_CHARS = /[\n\r\t\0"\\\]/]/;
 
 /**
- * Validate a remote subsection name. Rejects the empty string and the
- * line-surgery hard bans (`\n`, `\r`, `\0`, `"`, `\\`, `]`). Returns the
- * verbatim name on success — exporting the validator instead of inlining
- * each guard keeps every action's preconditions in a single source.
+ * Validate a remote subsection name. Rejects the empty string and any of
+ * `\n` / `\r` / `\t` / `\0` / `"` / `\\` / `]` / `/`. Returns the verbatim
+ * name on success — exporting the validator keeps every action's
+ * preconditions in a single source.
  */
 export const validateRemoteName = (name: string): string => {
   if (name === '') {
@@ -22,7 +26,7 @@ export const validateRemoteName = (name: string): string => {
   if (FORBIDDEN_NAME_CHARS.test(name)) {
     throw remoteNameInvalid(
       name,
-      'name must not contain a newline, NUL, bracket, quote, or backslash',
+      'name must not contain a newline, tab, NUL, slash, bracket, quote, or backslash',
     );
   }
   return name;

@@ -349,11 +349,17 @@ Two new domain codes land alongside the existing `REMOTE_NOT_CONFIGURED`:
     readonly reason: string }
 ```
 
-`REMOTE_NAME_INVALID` covers the line-surgery hard bans
-(`\n` / `\r` / `\0` / `"` / `\\` / `]`) plus the empty string.
+`REMOTE_NAME_INVALID` covers the empty string plus the line-surgery
+hard bans (`\n` / `\r` / `\t` / `\0` / `"` / `\\` / `]`) plus `/`.
 `REMOTE_EXISTS` is the symmetric "you tried to add or rename onto a
 slot that is already taken" code. Both have factory functions
 (`remoteExists`, `remoteNameInvalid`).
+
+The slash ban mirrors canonical git's `check_refname_format` (a
+remote `a/b` collides with the tracking-ref prefix of remote `a`,
+producing cross-remote ref deletion under `remove`/`rename`); the
+tab ban prevents corruption of the reflog format (tab is the
+field separator).
 
 The existing `REMOTE_NOT_CONFIGURED` is reused unchanged for
 `remove` / `rename` / `setUrl` / `show` against a missing name.
