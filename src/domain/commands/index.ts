@@ -1,4 +1,5 @@
 export type { ConfigKey, ConfigScope, ParsedConfigKey } from './config-key.js';
+export { parseConfigKey } from './config-key.js';
 export type { CommandError } from './error.js';
 export {
   authorUnconfigured,
