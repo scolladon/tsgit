@@ -327,4 +327,214 @@ describe('application/commands/remote', () => {
       });
     });
   });
+
+  describe('remove', () => {
+    describe('Given an unknown remote', () => {
+      describe('When remove runs', () => {
+        it('Then it throws REMOTE_NOT_CONFIGURED', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx);
+          let caught: unknown;
+
+          // Act
+          try {
+            await remote(ctx, { kind: 'remove', name: 'origin' });
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect((caught as TsgitError).data.code).toBe('REMOTE_NOT_CONFIGURED');
+        });
+      });
+    });
+
+    describe('Given a configured remote with no tracking refs', () => {
+      describe('When remove runs', () => {
+        it('Then the config block is gone and removedTrackingRefs is empty', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(
+            ctx,
+            '[remote "origin"]\n\turl = https://e.com/r.git\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n',
+          );
+
+          // Act
+          const sut = await remote(ctx, { kind: 'remove', name: 'origin' });
+
+          // Assert
+          expect(sut.kind).toBe('remove');
+          if (sut.kind !== 'remove') throw new Error('unreachable');
+          expect(sut.name).toBe('origin');
+          expect(sut.removedTrackingRefs).toEqual([]);
+          expect(sut.clearedBranches).toEqual([]);
+          const written = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
+          expect(written).not.toContain('[remote "origin"]');
+        });
+      });
+    });
+
+    describe('Given a configured remote with two tracking refs', () => {
+      describe('When remove runs', () => {
+        it('Then both refs are deleted and reported', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, '[remote "origin"]\n\turl = u\n');
+          await ctx.fs.writeUtf8(
+            `${ctx.layout.gitDir}/refs/remotes/origin/main`,
+            `${'a'.repeat(40)}\n`,
+          );
+          await ctx.fs.writeUtf8(
+            `${ctx.layout.gitDir}/refs/remotes/origin/dev`,
+            `${'b'.repeat(40)}\n`,
+          );
+
+          // Act
+          const sut = await remote(ctx, { kind: 'remove', name: 'origin' });
+
+          // Assert
+          if (sut.kind !== 'remove') throw new Error('unreachable');
+          expect([...sut.removedTrackingRefs].sort()).toEqual([
+            'refs/remotes/origin/dev',
+            'refs/remotes/origin/main',
+          ]);
+          expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/remotes/origin/main`)).toBe(false);
+          expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/remotes/origin/dev`)).toBe(false);
+        });
+      });
+    });
+
+    describe('Given branches tracking the removed remote', () => {
+      describe('When remove runs', () => {
+        it('Then branch.<X>.remote and branch.<X>.merge are cleared', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(
+            ctx,
+            '[remote "origin"]\n\turl = u\n[branch "main"]\n\tremote = origin\n\tmerge = refs/heads/main\n',
+          );
+
+          // Act
+          const sut = await remote(ctx, { kind: 'remove', name: 'origin' });
+
+          // Assert
+          if (sut.kind !== 'remove') throw new Error('unreachable');
+          expect(sut.clearedBranches).toEqual(['refs/heads/main']);
+          const written = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
+          expect(written).not.toContain('remote = origin');
+          expect(written).not.toContain('merge = refs/heads/main');
+        });
+      });
+    });
+
+    describe('Given a branch tracking a different remote', () => {
+      describe('When remove runs', () => {
+        it('Then the other branch is not cleared', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(
+            ctx,
+            '[remote "origin"]\n\turl = u\n[branch "main"]\n\tremote = other\n\tmerge = refs/heads/main\n',
+          );
+
+          // Act
+          const sut = await remote(ctx, { kind: 'remove', name: 'origin' });
+
+          // Assert
+          if (sut.kind !== 'remove') throw new Error('unreachable');
+          expect(sut.clearedBranches).toEqual([]);
+          const written = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
+          expect(written).toContain('remote = other');
+        });
+      });
+    });
+
+    describe('Given a branch tracking the remote without a paired merge', () => {
+      describe('When remove runs', () => {
+        it('Then only branch.<X>.remote is cleared (merge already absent)', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, '[remote "origin"]\n\turl = u\n[branch "main"]\n\tremote = origin\n');
+
+          // Act
+          const sut = await remote(ctx, { kind: 'remove', name: 'origin' });
+
+          // Assert
+          if (sut.kind !== 'remove') throw new Error('unreachable');
+          expect(sut.clearedBranches).toEqual(['refs/heads/main']);
+          const written = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
+          expect(written).not.toContain('remote = origin');
+        });
+      });
+    });
+
+    describe('Given two branches tracking the same remote', () => {
+      describe('When remove runs', () => {
+        it('Then both are cleared', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(
+            ctx,
+            '[remote "origin"]\n\turl = u\n[branch "main"]\n\tremote = origin\n\tmerge = refs/heads/main\n[branch "dev"]\n\tremote = origin\n\tmerge = refs/heads/dev\n',
+          );
+
+          // Act
+          const sut = await remote(ctx, { kind: 'remove', name: 'origin' });
+
+          // Assert
+          if (sut.kind !== 'remove') throw new Error('unreachable');
+          expect([...sut.clearedBranches].sort()).toEqual(['refs/heads/dev', 'refs/heads/main']);
+        });
+      });
+    });
+
+    describe('Given a tracking ref with a reflog file', () => {
+      describe('When remove runs', () => {
+        it('Then the reflog file is gone', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, '[remote "origin"]\n\turl = u\n');
+          await ctx.fs.writeUtf8(
+            `${ctx.layout.gitDir}/refs/remotes/origin/main`,
+            `${'a'.repeat(40)}\n`,
+          );
+          // Reflog entry (synthetic — one line is enough; the parser is forgiving).
+          await ctx.fs.writeUtf8(
+            `${ctx.layout.gitDir}/logs/refs/remotes/origin/main`,
+            `${'0'.repeat(40)} ${'a'.repeat(40)} Tester <t@e.com> 1700000000 +0000\tfetch\n`,
+          );
+
+          // Act
+          await remote(ctx, { kind: 'remove', name: 'origin' });
+
+          // Assert
+          expect(await ctx.fs.exists(`${ctx.layout.gitDir}/logs/refs/remotes/origin/main`)).toBe(
+            false,
+          );
+        });
+      });
+    });
+
+    describe('Given an invalid remote name', () => {
+      describe('When remove runs', () => {
+        it('Then it throws REMOTE_NAME_INVALID', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx);
+          let caught: unknown;
+
+          // Act
+          try {
+            await remote(ctx, { kind: 'remove', name: '' });
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect((caught as TsgitError).data.code).toBe('REMOTE_NAME_INVALID');
+        });
+      });
+    });
+  });
 });

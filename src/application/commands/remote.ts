@@ -8,14 +8,16 @@
  *       · 178 (rename refspec rule) · 179 (set-url --push) · 180 (show
  *       local-only).
  */
-import { invalidOption, remoteExists } from '../../domain/commands/error.js';
-import type { ObjectId, RefName } from '../../domain/objects/object-id.js';
+import { invalidOption, remoteExists, remoteNotConfigured } from '../../domain/commands/error.js';
+import { type ObjectId, type RefName, ZERO_OID } from '../../domain/objects/object-id.js';
 import type { Context } from '../../ports/context.js';
 import { readConfig } from '../primitives/config-read.js';
+import { enumerateRefs } from '../primitives/enumerate-refs.js';
 import { assertRepository } from '../primitives/internal/repo-state.js';
 import { type ConfigOperation, updateConfigOperations } from '../primitives/update-config.js';
+import { updateRef } from '../primitives/update-ref.js';
 import { parseRefspec } from './internal/refspec.js';
-import { validateRemoteName } from './internal/remote-config.js';
+import { listBranchReferrers, validateRemoteName } from './internal/remote-config.js';
 
 const FORBIDDEN_URL_CHARS = /[\n\r\0]/;
 
@@ -162,12 +164,44 @@ const addRemote = async (
   };
 };
 
+const listTrackingRefs = async (ctx: Context, name: string): Promise<ReadonlyArray<RefName>> => {
+  const prefix = `refs/remotes/${name}/`;
+  const all = await enumerateRefs(ctx);
+  return all.filter((ref): ref is RefName => ref.startsWith(prefix));
+};
+
 const removeRemote = async (
-  _ctx: Context,
+  ctx: Context,
   action: { readonly name: string },
 ): Promise<RemoteResult> => {
   validateRemoteName(action.name);
-  return notYetImplemented('remove');
+  const config = await readConfig(ctx);
+  if (config.remote?.has(action.name) !== true) throw remoteNotConfigured(action.name);
+  const trackingRefs = await listTrackingRefs(ctx, action.name);
+  const referrers = listBranchReferrers(config, action.name);
+  // Delete tracking refs first — recoverable if we crash before the
+  // config rewrite (ADR-177). `updateRef` cleans the reflog file too.
+  for (const ref of trackingRefs) {
+    await updateRef(ctx, ref, ZERO_OID, { delete: true });
+  }
+  // Rewrite config: drop the [remote "<name>"] section AND clear every
+  // paired branch.<X>.remote / branch.<X>.merge key.
+  const ops: ConfigOperation[] = [
+    { kind: 'removeSection', section: 'remote', subsection: action.name },
+  ];
+  for (const referrer of referrers) {
+    ops.push(
+      { kind: 'removeEntry', section: 'branch', subsection: referrer.branch, key: 'remote' },
+      { kind: 'removeEntry', section: 'branch', subsection: referrer.branch, key: 'merge' },
+    );
+  }
+  await updateConfigOperations(ctx, ops);
+  return {
+    kind: 'remove',
+    name: action.name,
+    removedTrackingRefs: trackingRefs,
+    clearedBranches: referrers.map((r) => r.ref),
+  };
 };
 
 const renameRemote = async (
