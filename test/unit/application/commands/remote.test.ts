@@ -646,8 +646,10 @@ describe('application/commands/remote', () => {
 
     describe('Given a mixed list (canonical and custom refspecs)', () => {
       describe('When rename runs', () => {
-        it('Then only the canonical entry is rewritten', async () => {
-          // Arrange
+        it('Then only the canonical entry is rewritten AND refspec order is preserved', async () => {
+          // Arrange — order matters: the canonical-first/custom-second
+          // arrangement must survive the rename so `.git/config` byte
+          // layout matches canonical git.
           const ctx = createMemoryContext();
           await seed(
             ctx,
@@ -657,10 +659,15 @@ describe('application/commands/remote', () => {
           // Act
           await remote(ctx, { kind: 'rename', from: 'origin', to: 'upstream' });
 
-          // Assert
+          // Assert — both refspecs present in the original order.
           const written = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
-          expect(written).toContain('fetch = +refs/heads/*:refs/remotes/upstream/*');
-          expect(written).toContain('fetch = +refs/heads/release:refs/remotes/origin/release');
+          const canonicalAt = written.indexOf('fetch = +refs/heads/*:refs/remotes/upstream/*');
+          const customAt = written.indexOf(
+            'fetch = +refs/heads/release:refs/remotes/origin/release',
+          );
+          expect(canonicalAt).toBeGreaterThan(-1);
+          expect(customAt).toBeGreaterThan(-1);
+          expect(canonicalAt).toBeLessThan(customAt);
         });
       });
     });
@@ -708,6 +715,37 @@ describe('application/commands/remote', () => {
           const written = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
           expect(written).toContain('remote = upstream');
           expect(written).not.toContain('remote = origin');
+        });
+      });
+    });
+
+    describe('Given a packed-only tracking ref under the old name', () => {
+      describe('When rename runs', () => {
+        it('Then it throws UNSUPPORTED_OPERATION before touching anything', async () => {
+          // Arrange — write a `packed-refs` file that names
+          // refs/remotes/origin/main; no loose file exists. `enumerateRefs`
+          // surfaces the packed entry, and the move must reject early.
+          const ctx = createMemoryContext();
+          await seed(ctx, '[remote "origin"]\n\turl = u\n');
+          const oid = 'a'.repeat(40);
+          await ctx.fs.writeUtf8(
+            `${ctx.layout.gitDir}/packed-refs`,
+            `# pack-refs with: peeled fully-peeled sorted\n${oid} refs/remotes/origin/main\n`,
+          );
+
+          // Act
+          let caught: unknown;
+          try {
+            await remote(ctx, { kind: 'rename', from: 'origin', to: 'upstream' });
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert — the new ref must NOT exist (no partial move).
+          expect((caught as TsgitError).data.code).toBe('UNSUPPORTED_OPERATION');
+          expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/remotes/upstream/main`)).toBe(
+            false,
+          );
         });
       });
     });

@@ -357,10 +357,11 @@ const applyOperation = (text: string, op: ConfigOperation): string => {
 };
 
 /**
- * Insert `\tkey = value` immediately after the section header WITHOUT
- * looking for an existing entry. Creates the section if absent. Use when
- * the caller wants multi-value semantics (e.g. multiple `fetch =` lines
- * under one `[remote "..."]`); `setConfigEntry` would replace.
+ * Insert `\tkey = value` after the LAST existing matching key inside the
+ * section (or after the section header when none exists). Preserves
+ * insertion order across repeated `appendEntry` calls — `fetch = A`
+ * followed by `fetch = B` produces `A` then `B`, not `B` then `A`.
+ * Creates the section if absent.
  */
 export const appendConfigEntry = (
   text: string,
@@ -379,7 +380,29 @@ export const appendConfigEntry = (
     const prefix = text === '' ? '' : text.endsWith('\n') ? text : `${text}\n`;
     return `${prefix}${renderSectionHeader(section, subsection)}\n${renderEntry(key, value)}\n`;
   }
-  return insertAfter(lines, headerIndex, renderEntry(key, value)).join('\n');
+  const insertAt = findLastKeyInSection(lines, headerIndex, key);
+  return insertAfter(lines, insertAt, renderEntry(key, value)).join('\n');
+};
+
+/**
+ * Within the section that starts at `headerIndex`, the index of the LAST
+ * `key =` line, or `headerIndex` when no such line exists. The scan stops
+ * at the next section header so a later section's `key` line is never
+ * matched. `appendConfigEntry` uses this to preserve insertion order
+ * across repeated appends.
+ */
+const findLastKeyInSection = (
+  lines: ReadonlyArray<string>,
+  headerIndex: number,
+  key: string,
+): number => {
+  let last = headerIndex;
+  for (let i = headerIndex + 1; i < lines.length; i += 1) {
+    const line = lines[i] as string;
+    if (isSectionHeader(line)) return last;
+    if (isKeyLine(line, key)) last = i;
+  }
+  return last;
 };
 
 /**

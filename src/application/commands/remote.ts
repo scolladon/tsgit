@@ -9,6 +9,7 @@
  *       local-only).
  */
 import { invalidOption, remoteExists, remoteNotConfigured } from '../../domain/commands/error.js';
+import { unsupportedOperation } from '../../domain/error.js';
 import { type ObjectId, type RefName, ZERO_OID } from '../../domain/objects/object-id.js';
 import type { Context } from '../../ports/context.js';
 import { readConfig } from '../primitives/config-read.js';
@@ -218,11 +219,15 @@ const moveTrackingRef = async (
 ): Promise<void> => {
   const store = getRefStore(ctx);
   const direct = await store.resolveDirect(source);
-  if (direct.kind !== 'direct') {
-    // Either packed-only (filtered out upstream — but defence-in-depth)
-    // or a symbolic ref under refs/remotes/* (rare). Fall through to the
-    // standard "not loose" error from updateRef when callers want to delete.
-    return;
+  if (direct.kind !== 'direct') return;
+  // Packed-only refs must surface BEFORE the target write — otherwise the
+  // subsequent delete throws and leaves a partial move (target written,
+  // source still packed). Mirrors `remove`'s packed-only error path.
+  if (!(await store.isLoose(source))) {
+    throw unsupportedOperation(
+      'rename-packed-tracking-ref',
+      `cannot rename packed-only ref ${source} — run \`git pack-refs --unpack\` and retry`,
+    );
   }
   await updateRef(ctx, target, direct.id, { expected: 'absent', reflogMessage });
   await updateRef(ctx, source, ZERO_OID, { delete: true });

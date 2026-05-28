@@ -1140,6 +1140,33 @@ describe('primitives/update-config', () => {
       });
     });
 
+    describe('Given two appendEntry ops under the same section', () => {
+      describe('When updateConfigOperations runs them in order', () => {
+        it('Then on-disk order matches the call order (A before B)', async () => {
+          // Arrange — order preservation is load-bearing for `remote rename`
+          // when a remote carries multiple fetch refspecs; reversing would
+          // change `.git/config`'s byte layout.
+          const ctx = createMemoryContext();
+          await seed(ctx, '');
+          const ops: ReadonlyArray<ConfigOperation> = [
+            { kind: 'appendEntry', section: 'remote', subsection: 'r', key: 'fetch', value: 'A' },
+            { kind: 'appendEntry', section: 'remote', subsection: 'r', key: 'fetch', value: 'B' },
+          ];
+
+          // Act
+          await updateConfigOperations(ctx, ops);
+
+          // Assert
+          const written = await ctx.fs.readUtf8(configPath(ctx));
+          const aAt = written.indexOf('fetch = A');
+          const bAt = written.indexOf('fetch = B');
+          expect(aAt).toBeGreaterThan(-1);
+          expect(bAt).toBeGreaterThan(-1);
+          expect(aAt).toBeLessThan(bAt);
+        });
+      });
+    });
+
     describe('Given a config cached by readConfig', () => {
       describe('When updateConfigOperations writes', () => {
         it('Then a later readConfig sees the new state', async () => {
