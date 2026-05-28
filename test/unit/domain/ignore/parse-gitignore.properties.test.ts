@@ -105,4 +105,27 @@ describe('parse-gitignore properties', () => {
       });
     });
   });
+
+  describe('Given arbitrary `.gitignore` text', () => {
+    describe('When parsed', () => {
+      it('Then every rule lineNumber falls within [1, sourceLineCount] and is strictly ascending', () => {
+        // Arrange + Act + Assert — line numbers are 1-based source positions,
+        // not rule indices: skipped (comment/blank) lines leave gaps.
+        fc.assert(
+          fc.property(arbGitignoreText(), (text) => {
+            const sut = parseGitignore(text);
+            const sourceLineCount = text.split('\n').length;
+            let previous = 0;
+            for (const rule of sut) {
+              expect(rule.lineNumber).toBeGreaterThanOrEqual(1);
+              expect(rule.lineNumber).toBeLessThanOrEqual(sourceLineCount);
+              expect(rule.lineNumber).toBeGreaterThan(previous);
+              previous = rule.lineNumber;
+            }
+          }),
+          { numRuns: 200 },
+        );
+      });
+    });
+  });
 });

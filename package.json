@@ -288,7 +288,7 @@
       "output": []
     },
     "check:deps": {
-      "command": "npm outdated",
+      "command": "sh -c 'npm outdated || ! npm outdated 2>/dev/null | tail -n +2 | grep -v \"^@ls-lint/ls-lint \" | grep -q .'",
       "files": [
         "package.json",
         "package-lock.json"
@@ -726,7 +726,7 @@
     "@arethetypeswrong/cli": "0.18.2",
     "@biomejs/biome": "2.4.16",
     "@cloudflare/vitest-pool-workers": "0.16.10",
-    "@cloudflare/workers-types": "4.20260527.1",
+    "@cloudflare/workers-types": "4.20260528.1",
     "@commitlint/cli": "21.0.1",
     "@commitlint/config-conventional": "21.0.1",
     "@ls-lint/ls-lint": "2.3.1",

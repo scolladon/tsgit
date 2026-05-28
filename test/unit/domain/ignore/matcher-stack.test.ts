@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { type IgnoreLevel, matchInStack } from '../../../../src/domain/ignore/matcher-stack.js';
+import {
+  type IgnoreLevel,
+  matchInStack,
+  matchInStackVerbose,
+} from '../../../../src/domain/ignore/matcher-stack.js';
 import { parseGitignore } from '../../../../src/domain/ignore/parse-gitignore.js';
 import type { FilePath } from '../../../../src/domain/objects/object-id.js';
 
@@ -144,6 +148,131 @@ describe('matchInStack', () => {
 
         // Assert
         expect(matchInStack(stack, path('build'), true)).toBe('ignored');
+      });
+    });
+  });
+});
+
+describe('matchInStackVerbose', () => {
+  describe('Given an empty stack', () => {
+    describe('When called', () => {
+      it('Then verdict is "unset" with no level or ruleIndex', () => {
+        // Arrange + Act — the empty stack literal is itself the arrangement.
+        const sut = matchInStackVerbose([], path('foo.log'), false);
+
+        // Assert
+        expect(sut.verdict).toBe('unset');
+        expect(sut.level).toBeUndefined();
+        expect(sut.ruleIndex).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a single root level with `*.log`', () => {
+    describe('When matched against `foo.log`', () => {
+      it('Then verdict is "ignored" with level + ruleIndex 0', () => {
+        // Arrange
+        const root = level('', '*.log');
+        const stack = [root];
+
+        // Act
+        const sut = matchInStackVerbose(stack, path('foo.log'), false);
+
+        // Assert
+        expect(sut.verdict).toBe('ignored');
+        expect(sut.level).toBe(root);
+        expect(sut.ruleIndex).toBe(0);
+      });
+    });
+  });
+
+  describe('Given two root levels where the later level negates an earlier ignore', () => {
+    describe('When matched', () => {
+      it('Then verdict "unignored" with the later level + ruleIndex 0', () => {
+        // Arrange — global excludes `*.log`; repo-root `.gitignore` re-includes `keep.log`.
+        const globalLevel = level('', '*.log');
+        const repoLevel = level('', '!keep.log');
+        const stack = [globalLevel, repoLevel];
+
+        // Act
+        const sut = matchInStackVerbose(stack, path('keep.log'), false);
+
+        // Assert
+        expect(sut.verdict).toBe('unignored');
+        expect(sut.level).toBe(repoLevel);
+        expect(sut.ruleIndex).toBe(0);
+      });
+    });
+  });
+
+  describe('Given a level at basedir "sub"', () => {
+    describe('When matched against `sub/foo.log`', () => {
+      it('Then the rule applies and `level` is the nested level', () => {
+        // Arrange — rule is `*.log` relative to `sub/`.
+        const nested = level('sub', '*.log');
+        const stack = [nested];
+
+        // Act
+        const sut = matchInStackVerbose(stack, path('sub/foo.log'), false);
+
+        // Assert
+        expect(sut.verdict).toBe('ignored');
+        expect(sut.level).toBe(nested);
+        expect(sut.ruleIndex).toBe(0);
+      });
+    });
+    describe('When matched against `other/foo.log`', () => {
+      it('Then the rule does NOT apply and the result is "unset"', () => {
+        // Arrange
+        const nested = level('sub', '*.log');
+        const stack = [nested];
+
+        // Act
+        const sut = matchInStackVerbose(stack, path('other/foo.log'), false);
+
+        // Assert
+        expect(sut.verdict).toBe('unset');
+        expect(sut.level).toBeUndefined();
+        expect(sut.ruleIndex).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a multi-level stack where NO level matches', () => {
+    describe('When called', () => {
+      it('Then result is fully empty (kills initialiser mutants)', () => {
+        // Arrange — two non-matching levels; both `level` and `ruleIndex`
+        // must remain undefined.
+        const stack = [level('', '*.tmp'), level('sub', '*.cache')];
+
+        // Act
+        const sut = matchInStackVerbose(stack, path('keep.ts'), false);
+
+        // Assert
+        expect(sut.verdict).toBe('unset');
+        expect(sut.level).toBeUndefined();
+        expect(sut.ruleIndex).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a level kind tag', () => {
+    describe('When passed to IgnoreLevel', () => {
+      it('Then the kind round-trips through the verbose match', () => {
+        // Arrange — an `info` excludes file shape: same basedir as global / repo
+        // but distinguishable by the kind tag.
+        const info: IgnoreLevel = {
+          basedir: '',
+          rules: parseGitignore('secret.txt'),
+          kind: 'info',
+        };
+
+        // Act
+        const sut = matchInStackVerbose([info], path('secret.txt'), false);
+
+        // Assert
+        expect(sut.verdict).toBe('ignored');
+        expect(sut.level?.kind).toBe('info');
       });
     });
   });

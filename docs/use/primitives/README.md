@@ -2,7 +2,7 @@
 
 The composable building blocks every Tier-1 command is built from. Same `Context` users get — you can compose them into custom workflows that don't fit the command surface.
 
-20 primitives bound on `repo.primitives.*`, alphabetical:
+25 primitives bound on `repo.primitives.*`, alphabetical:
 
 | Primitive | Summary |
 |---|---|
@@ -10,6 +10,8 @@ The composable building blocks every Tier-1 command is built from. Same `Context
 | [`createCommit`](create-commit.md) | Create a commit object from tree + parents. |
 | [`diffTrees`](diff-trees.md) | Compare two tree iterables; returns a structured diff. |
 | [`getRepoRoot`](get-repo-root.md) | The repository's working-tree root (`FilePath`). |
+| [`hashBlob`](hash-blob.md) | Compute a blob OID for arbitrary bytes; `{ write: true }` persists the loose object. |
+| [`isIgnored`](is-ignored.md) | Per-path ignore lookup with rule provenance (kind, basedir, line, pattern). |
 | [`mergeBase`](merge-base.md) | Best common ancestor of two commits. |
 | [`readBlob`](read-blob.md) | Read a blob by id; optional `maxBytes` cap. |
 | [`readIndex`](read-index.md) | Read `.git/index` (v2 or v3). |
@@ -18,6 +20,9 @@ The composable building blocks every Tier-1 command is built from. Same `Context
 | [`recordRefUpdate`](record-ref-update.md) | Atomic ref CRUD + reflog write. |
 | [`resolveRef`](resolve-ref.md) | Resolve a ref name to an `ObjectId`. |
 | [`runHook`](run-hook.md) | Execute a `.git/hooks/<name>` script (Node only). |
+| [`setEntryFlags`](set-entry-flags.md) | Flip `assumeValid` / `skipWorktree` / `intentToAdd` on a tracked path. |
+| [`stageEntry`](stage-entry.md) | Stage one entry from bytes or a known OID; atomic under the index lock. |
+| [`unstageEntry`](unstage-entry.md) | Drop a single tracked entry (no working-tree side-effect). |
 | [`updateRef`](update-ref.md) | Convenience wrapper around `recordRefUpdate`. |
 | [`walkCommits`](walk-commits.md) | `AsyncIterable<Commit>` walker (any parent ordering). |
 | [`walkSubmodules`](walk-submodules.md) | `AsyncIterable<SubmoduleEntry>` walker. |

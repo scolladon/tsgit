@@ -600,7 +600,16 @@
     "Callsites",
     "elementwise",
     "misbehaviour",
-    "assertable"
+    "assertable",
+    "uploaders",
+    "specialised",
+    "Optimising",
+    "cacheinfo",
+    "touchpoints",
+    "bitfield",
+    "amortises",
+    "organisation",
+    "realised"
   ],
   "ignorePaths": [
     "node_modules",

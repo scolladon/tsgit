@@ -11,16 +11,16 @@
  */
 import { operationAborted, TsgitError } from '../../domain/error.js';
 import { objectHashMismatch } from '../../domain/objects/error.js';
-import { type GitObject, type ObjectId, serializeObject } from '../../domain/objects/index.js';
+import type { GitObject, ObjectId } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
+import { serializeAndHash } from './internal/serialize-and-hash.js';
 import { looseObjectPath, objectsDir } from './path-layout.js';
 import { hasDeclaredId } from './validators.js';
 
 export async function writeObject(ctx: Context, object: GitObject): Promise<ObjectId> {
   if (ctx.signal?.aborted) throw operationAborted();
 
-  const bytes = serializeObject(object, ctx.hashConfig);
-  const computed = (await ctx.hash.hashHex(bytes)) as ObjectId;
+  const { bytes, id: computed } = await serializeAndHash(ctx, object);
 
   const declaredId = object.id as string;
   if (hasDeclaredId(declaredId) && declaredId !== computed) {

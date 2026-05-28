@@ -16,6 +16,14 @@ export { enumeratePushObjects } from './enumerate-push-objects.js';
 export { enumerateRefs } from './enumerate-refs.js';
 export type { FetchPackInput, FetchPackResult } from './fetch-pack.js';
 export { fetchPack } from './fetch-pack.js';
+export type { HashBlobOptions } from './hash-blob.js';
+export { hashBlob } from './hash-blob.js';
+export type {
+  IsIgnoredMatch,
+  IsIgnoredMatchSource,
+  IsIgnoredQuery,
+} from './is-ignored.js';
+export { isIgnored } from './is-ignored.js';
 export type { MaterializeTreeOpts, MaterializeTreeResult } from './materialize-tree.js';
 export { materializeTree } from './materialize-tree.js';
 export { mergeBase } from './merge-base.js';
@@ -41,9 +49,15 @@ export {
 } from './reflog-store.js';
 export { resolveRef } from './resolve-ref.js';
 export { type HookInput, runHook } from './run-hook.js';
+export type { SetEntryFlagsOptions } from './set-entry-flags.js';
+export { setEntryFlags } from './set-entry-flags.js';
 export { readShallow, updateShallow } from './shallow-file.js';
+export type { StageEntryOptions, StageEntrySource } from './stage-entry.js';
+export { stageEntry } from './stage-entry.js';
 export { synthesizeTreeFromIndex } from './synthesize-tree-from-index.js';
 export type * from './types.js';
+export type { UnstageEntryOptions } from './unstage-entry.js';
+export { unstageEntry } from './unstage-entry.js';
 export type { ConfigEntry } from './update-config.js';
 export {
   setConfigEntry,

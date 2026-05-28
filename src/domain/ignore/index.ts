@@ -1,5 +1,10 @@
-export { type MatchResult, matches } from './match.js';
-export { type IgnoreLevel, matchInStack } from './matcher-stack.js';
+export { type MatchResult, matches, matchesVerbose, type VerboseLevelMatch } from './match.js';
+export {
+  type IgnoreLevel,
+  matchInStack,
+  matchInStackVerbose,
+  type VerboseMatch,
+} from './matcher-stack.js';
 export {
   type IgnoreRule,
   type IgnoreRuleset,
