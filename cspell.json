@@ -636,7 +636,9 @@
     "Verbing",
     "gpgsign",
     "alphabetised",
-    "signingkey"
+    "signingkey",
+    "multivar",
+    "unquoter"
   ],
   "ignorePaths": [
     "node_modules",

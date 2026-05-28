@@ -46,8 +46,35 @@ const isKeyLine = (line: string, key: string): boolean => {
   return line.slice(0, eqAt).trim().toLowerCase() === key.toLowerCase();
 };
 
+/**
+ * True when `value` needs to be wrapped in double quotes to survive a parser
+ * round-trip: `#`/`;` would start inline comments, leading/trailing whitespace
+ * would be trimmed, embedded `"`/`\`/`\n` would either break the quoting
+ * grammar (`"`/`\`) or splice a forged line (`\n`).
+ */
+const needsQuote = (value: string): boolean =>
+  value.includes('#') ||
+  value.includes(';') ||
+  /^[ \t]/.test(value) ||
+  /[ \t]$/.test(value) ||
+  value.includes('"') ||
+  value.includes('\\') ||
+  value.includes('\n');
+
+/**
+ * Render a value for emission inside a `key = value` line. Plain values pass
+ * through verbatim; values needing quoting are wrapped in `"..."` with `\\`,
+ * `"`, and `\n` escaped. The escape order matters — backslashes MUST be
+ * escaped first so a later replace does not double-escape them.
+ */
+const renderValue = (value: string): string => {
+  if (!needsQuote(value)) return value;
+  const escaped = value.replaceAll('\\', '\\\\').replaceAll('"', '\\"').replaceAll('\n', '\\n');
+  return `"${escaped}"`;
+};
+
 /** Render `key = value` indented with a tab — git's own section-body style. */
-const renderEntry = (key: string, value: string): string => `\t${key} = ${value}`;
+const renderEntry = (key: string, value: string): string => `\t${key} = ${renderValue(value)}`;
 
 /** Render a `[section]` / `[section "subsection"]` header line. */
 const renderSectionHeader = (section: string, subsection: string | undefined): string =>
@@ -98,12 +125,26 @@ const insertAfter = (
 ): ReadonlyArray<string> => [...lines.slice(0, at + 1), entry, ...lines.slice(at + 1)];
 
 /**
- * Reject a `key`/`value`/`subsection` carrying a `\n`, `\r`, or `\0` — those
- * would let line surgery splice a forged config section into `.git/config`.
+ * Reject a `key`/`subsection` carrying a `\n`, `\r`, or `\0` — those would let
+ * line surgery splice a forged config section into `.git/config`. Values get a
+ * more permissive variant (`rejectValueControlChars`) that accepts `\n`/`\t`
+ * because the quoting writer escapes them to `\\n`/`\\t` on write.
  */
-const rejectControlChars = (field: 'key' | 'value' | 'subsection', text: string): void => {
+const rejectControlChars = (field: 'key' | 'subsection', text: string): void => {
   if (/[\n\r\0]/.test(text)) {
     throw invalidOption('config', `${field} must not contain a newline or NUL`);
+  }
+};
+
+/**
+ * Reject value-side control chars that the writer cannot escape: NUL (no
+ * canonical-git escape) and `\r` (rejected to match `git_config_set_multivar_in_file`
+ * which similarly bans CR). `\n` and `\t` are ACCEPTED — the quoting writer
+ * escapes them to `\\n`/`\\t` so a round-trip through the parser is safe.
+ */
+const rejectValueControlChars = (value: string): void => {
+  if (/[\r\0]/.test(value)) {
+    throw invalidOption('config', 'value must not contain a carriage return or NUL');
   }
 };
 
@@ -150,7 +191,7 @@ export const setConfigEntryInText = (
 ): string => {
   rejectSection(section);
   rejectControlChars('key', key);
-  rejectControlChars('value', value);
+  rejectValueControlChars(value);
   if (subsection !== undefined) rejectSubsection(subsection);
   const lines = text.split('\n');
   const headerIndex = findSectionHeader(lines, section, subsection);
@@ -373,7 +414,7 @@ export const appendConfigEntry = (
 ): string => {
   rejectSection(section);
   rejectControlChars('key', key);
-  rejectControlChars('value', value);
+  rejectValueControlChars(value);
   if (subsection !== undefined) rejectSubsection(subsection);
   const lines = text.split('\n');
   const headerIndex = findSectionHeader(lines, section, subsection);

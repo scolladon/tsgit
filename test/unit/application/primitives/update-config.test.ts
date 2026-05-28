@@ -355,25 +355,17 @@ describe('primitives/update-config', () => {
 
     describe('Given a value containing a newline', () => {
       describe('When setCoreConfigEntryInText', () => {
-        it('Then it throws INVALID_OPTION', () => {
-          // Arrange — a `\n` in the value would inject a fake config section.
-          let caught: unknown;
+        it('Then the line is double-quoted with the newline escaped (no fake section injected)', () => {
+          // Arrange & Act — `\n` is escaped to literal `\n` inside the quoted value;
+          // no raw newline reaches disk, so the on-disk text cannot host an injected section.
+          const sut = setCoreConfigEntryInText(
+            '[core]\n',
+            'sparseCheckout',
+            'true\n[remote "evil"]',
+          );
 
-          // Act
-          try {
-            setCoreConfigEntryInText('[core]\n', 'sparseCheckout', 'true\n[remote "evil"]');
-          } catch (err) {
-            caught = err;
-          }
-
-          // Assert
-          expect(caught).toBeInstanceOf(TsgitError);
-          const data = (caught as TsgitError).data;
-          expect(data.code).toBe('INVALID_OPTION');
-          if (data.code === 'INVALID_OPTION') {
-            expect(data.option).toBe('config');
-            expect(data.reason).toBe('value must not contain a newline or NUL');
-          }
+          // Assert — exactly one logical line, and the `[remote "evil"]` token is inside the quoted value.
+          expect(sut).toBe('[core]\n\tsparseCheckout = "true\\n[remote \\"evil\\"]"\n');
         });
       });
     });
@@ -702,6 +694,150 @@ describe('primitives/update-config', () => {
           if (data.code !== 'INVALID_OPTION') throw new Error('unreachable');
           expect(data.option).toBe('config');
           expect(data.reason).toContain('section');
+        });
+      });
+    });
+
+    describe('Given a value containing #', () => {
+      describe('When setConfigEntryInText', () => {
+        it('Then the rendered line is double-quoted', () => {
+          // Arrange & Act — `#` would start an inline comment unquoted, so the writer must quote.
+          const sut = setConfigEntryInText('', 'pager', undefined, 'log', 'less # paginate');
+
+          // Assert
+          expect(sut).toBe('[pager]\n\tlog = "less # paginate"\n');
+        });
+      });
+    });
+
+    describe('Given a value containing ;', () => {
+      describe('When setConfigEntryInText', () => {
+        it('Then the rendered line is double-quoted', () => {
+          // Arrange & Act — `;` is the second comment delimiter.
+          const sut = setConfigEntryInText('', 'pager', undefined, 'log', 'less ; paginate');
+
+          // Assert
+          expect(sut).toBe('[pager]\n\tlog = "less ; paginate"\n');
+        });
+      });
+    });
+
+    describe('Given a value with a leading space', () => {
+      describe('When setConfigEntryInText', () => {
+        it('Then the rendered line is double-quoted', () => {
+          // Arrange & Act — leading whitespace would be trimmed by the parser without quotes.
+          const sut = setConfigEntryInText('', 'user', undefined, 'name', ' Ada');
+
+          // Assert
+          expect(sut).toBe('[user]\n\tname = " Ada"\n');
+        });
+      });
+    });
+
+    describe('Given a value with a leading tab', () => {
+      describe('When setConfigEntryInText', () => {
+        it('Then the rendered line is double-quoted', () => {
+          // Arrange & Act
+          const sut = setConfigEntryInText('', 'user', undefined, 'name', '\tAda');
+
+          // Assert
+          expect(sut).toBe('[user]\n\tname = "\tAda"\n');
+        });
+      });
+    });
+
+    describe('Given a value with a trailing space', () => {
+      describe('When setConfigEntryInText', () => {
+        it('Then the rendered line is double-quoted', () => {
+          // Arrange & Act
+          const sut = setConfigEntryInText('', 'user', undefined, 'name', 'Ada ');
+
+          // Assert
+          expect(sut).toBe('[user]\n\tname = "Ada "\n');
+        });
+      });
+    });
+
+    describe('Given a value with a trailing tab', () => {
+      describe('When setConfigEntryInText', () => {
+        it('Then the rendered line is double-quoted', () => {
+          // Arrange & Act
+          const sut = setConfigEntryInText('', 'user', undefined, 'name', 'Ada\t');
+
+          // Assert
+          expect(sut).toBe('[user]\n\tname = "Ada\t"\n');
+        });
+      });
+    });
+
+    describe('Given a value containing an embedded "', () => {
+      describe('When setConfigEntryInText', () => {
+        it('Then the quote is escaped inside a double-quoted line', () => {
+          // Arrange & Act
+          const sut = setConfigEntryInText('', 'user', undefined, 'name', 'Ada "Lovelace"');
+
+          // Assert
+          expect(sut).toBe('[user]\n\tname = "Ada \\"Lovelace\\""\n');
+        });
+      });
+    });
+
+    describe('Given a value containing an embedded \\', () => {
+      describe('When setConfigEntryInText', () => {
+        it('Then the backslash is escaped inside a double-quoted line', () => {
+          // Arrange & Act
+          const sut = setConfigEntryInText('', 'core', undefined, 'editor', 'C:\\bin\\vim');
+
+          // Assert
+          expect(sut).toBe('[core]\n\teditor = "C:\\\\bin\\\\vim"\n');
+        });
+      });
+    });
+
+    describe('Given a value containing an embedded newline', () => {
+      describe('When setConfigEntryInText', () => {
+        it('Then the newline is escaped as a literal \\n inside a double-quoted line', () => {
+          // Arrange & Act — the writer never emits a raw `\n` inside a value (would forge a config line).
+          const sut = setConfigEntryInText('', 'alias', undefined, 'lg', 'log\nshort');
+
+          // Assert
+          expect(sut).toBe('[alias]\n\tlg = "log\\nshort"\n');
+        });
+      });
+    });
+
+    describe('Given a plain alphanumeric value', () => {
+      describe('When setConfigEntryInText', () => {
+        it('Then no quotes are added (backward-compatible)', () => {
+          // Arrange & Act — values that do not trigger any quoting rule must render verbatim.
+          const sut = setConfigEntryInText('', 'user', undefined, 'name', 'Ada');
+
+          // Assert
+          expect(sut).toBe('[user]\n\tname = Ada\n');
+        });
+      });
+    });
+
+    describe('Given a value containing only an embedded tab (no other trigger)', () => {
+      describe('When setConfigEntryInText', () => {
+        it('Then the value is emitted verbatim (no quotes)', () => {
+          // Arrange & Act — embedded tabs (not leading/trailing) survive a round-trip without quoting.
+          const sut = setConfigEntryInText('', 'user', undefined, 'name', 'A\tB');
+
+          // Assert
+          expect(sut).toBe('[user]\n\tname = A\tB\n');
+        });
+      });
+    });
+
+    describe('Given a value with both embedded \\n and embedded \\', () => {
+      describe('When setConfigEntryInText', () => {
+        it('Then both are escaped (backslashes first, then newlines)', () => {
+          // Arrange & Act — escape order matters: replacing `\n` before `\\` would double-escape backslashes.
+          const sut = setConfigEntryInText('', 'alias', undefined, 'lg', 'a\\b\nc');
+
+          // Assert
+          expect(sut).toBe('[alias]\n\tlg = "a\\\\b\\nc"\n');
         });
       });
     });

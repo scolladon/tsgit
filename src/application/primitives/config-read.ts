@@ -171,6 +171,13 @@ const indexOfUnquoted = (line: string, ch: string): number => {
   // Stryker disable next-line EqualityOperator: equivalent — at `i === line.length` `line[i]` is `undefined`, matching neither `'"'` nor `ch`, so the extra iteration is a no-op and the return value is unchanged.
   for (let i = 0; i < line.length; i += 1) {
     const c = line[i];
+    // Inside a quoted span, `\` escapes the next byte — skip it so a `\"`
+    // is not treated as the closing quote (matches canonical git's parser
+    // and lets a value like `"foo\"#bar"` survive `stripInlineComment`).
+    if (inQuotes && c === '\\') {
+      i += 1;
+      continue;
+    }
     if (c === '"') inQuotes = !inQuotes;
     else if (!inQuotes && c === ch) return i;
   }
