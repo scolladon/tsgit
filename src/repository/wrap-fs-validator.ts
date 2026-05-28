@@ -16,11 +16,16 @@ import type { FileSystem } from '../ports/file-system.js';
  * `read`/`readUtf8`; that level of trust is delegated to the caller's choice
  * of FS implementation.
  */
-export const wrapFsValidator = (fs: FileSystem, cwd: string): FileSystem => {
+export const wrapFsValidator = (
+  fs: FileSystem,
+  cwd: string,
+  allowExternalPaths: ReadonlyArray<string> = [],
+): FileSystem => {
+  const allowSet = new Set(allowExternalPaths);
   const guard = (path: string): void => {
-    if (!isContainedIn(path, cwd)) {
-      throw pathspecOutsideRepo(path as FilePath);
-    }
+    if (isContainedIn(path, cwd)) return;
+    if (allowSet.has(path)) return;
+    throw pathspecOutsideRepo(path as FilePath);
   };
   return {
     read: (p) => {

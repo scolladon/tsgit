@@ -33,6 +33,30 @@ import { wrapFsValidator } from './repository/wrap-fs-validator.js';
 import { wrapTransportValidator } from './repository/wrap-transport-validator.js';
 
 /**
+ * Compute the four config-scope paths that the FS validator must let escape
+ * the workDir guard. Each adapter call is wrapped because the browser adapter
+ * throws `UNSUPPORTED_OPERATION` on these methods — a thrown method just
+ * means the scope is unavailable on this adapter, not a fatal error.
+ */
+const computeConfigScopePaths = (fs: FileSystem): ReadonlyArray<string> => {
+  const paths: string[] = [];
+  const safe = (fn: () => string): string | undefined => {
+    try {
+      return fn();
+    } catch {
+      return undefined;
+    }
+  };
+  const home = safe(() => fs.homedir());
+  const xdg = safe(() => fs.xdgConfigHome());
+  const system = safe(() => fs.systemConfigPath());
+  if (home !== undefined) paths.push(`${home}/.gitconfig`);
+  if (xdg !== undefined) paths.push(`${xdg}/git/config`);
+  if (system !== undefined && system.length > 0) paths.push(system);
+  return paths;
+};
+
+/**
  * Helper that strips the leading `Context` parameter from a function type so
  * the bound version on `Repository` exposes the user-facing signature.
  */
@@ -253,7 +277,11 @@ export const openRepository = async (
       ? detected
       : {
           ...detected,
-          fs: wrapFsValidator(detected.fs, fallback.layout.workDir),
+          fs: wrapFsValidator(
+            detected.fs,
+            fallback.layout.workDir,
+            computeConfigScopePaths(detected.fs),
+          ),
           transport: wrapTransportValidator(detected.transport, opts.config),
         };
   const config = opts.config !== undefined ? deepFreeze({ ...opts.config }) : undefined;
