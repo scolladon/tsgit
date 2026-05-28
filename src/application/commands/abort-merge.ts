@@ -35,7 +35,11 @@ export const abortMerge = async (ctx: Context): Promise<AbortMergeResult> => {
   await assertRepository(ctx);
   await assertNotBare(ctx, 'merge --abort');
   const mergeHead = await readMergeHead(ctx);
-  // Stryker disable next-line ConditionalExpression: equivalent — removing this throw still surfaces `NO_OPERATION_IN_PROGRESS` two lines down (when `MERGE_HEAD` is absent, `ORIG_HEAD` is also absent in any well-formed state, so the next guard fires identically). The early throw is a clarity-first guard, not load-bearing.
+  // Load-bearing under the ADR-027 write order: `merge`'s conflict path
+  // writes `ORIG_HEAD` *before* `MERGE_HEAD`. A crash between the two leaves
+  // `ORIG_HEAD` on disk with `MERGE_HEAD` absent — without this guard,
+  // `abortMerge` would silently hard-reset to `ORIG_HEAD` instead of
+  // surfacing the inconsistent state to the caller.
   if (mergeHead === undefined) throw noOperationInProgress('merge');
   const origHead = await readOrigHead(ctx);
   if (origHead === undefined) throw noOperationInProgress('merge');
@@ -69,7 +73,7 @@ const resetToOrigHead = async (ctx: Context, origHead: ObjectId): Promise<void> 
       currentIndex,
       force: true,
       forceRewriteAll: true,
-      // Stryker disable next-line ObjectLiteral: equivalent — sparse-matcher path is unobservable without a sparse-checkout fixture in abort tests; the matcher itself is covered by `read-sparse-checkout.test.ts` and the wiring mirrors reset/checkout which carry their own sparse fixtures (sparse-reset-merge.test.ts).
+      // equivalent-mutant: sparse-matcher path is unobservable without a sparse-checkout fixture in abort tests; the matcher itself is covered by `read-sparse-checkout.test.ts` and the wiring mirrors reset/checkout which carry their own sparse fixtures (sparse-reset-merge.test.ts).
       ...(matcher !== undefined ? { sparse: matcher } : {}),
     });
     await lock.commit(result.newIndexEntries);

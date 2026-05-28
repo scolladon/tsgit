@@ -11,6 +11,7 @@ import { readIndex } from '../../../../src/application/primitives/read-index.js'
 import { readObject } from '../../../../src/application/primitives/read-object.js';
 import { readReflog } from '../../../../src/application/primitives/reflog-store.js';
 import { resolveRef } from '../../../../src/application/primitives/resolve-ref.js';
+import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import type { AuthorIdentity, ObjectId, RefName } from '../../../../src/domain/objects/index.js';
 
 const author: AuthorIdentity = {
@@ -117,6 +118,40 @@ describe('abortMerge', () => {
     });
   });
 
+  describe('Given ORIG_HEAD exists but MERGE_HEAD is absent (ADR-027 crash window)', () => {
+    describe('When abortMerge runs', () => {
+      it('Then throws NO_OPERATION_IN_PROGRESS(merge) without resetting HEAD', async () => {
+        // Arrange — simulate the partial state from a crash between
+        // `merge`'s ORIG_HEAD write and its MERGE_HEAD write (write order
+        // is ORIG_HEAD → MERGE_HEAD per ADR-027). Without the explicit
+        // MERGE_HEAD guard, abortMerge would silently hard-reset to a stale
+        // ORIG_HEAD instead of surfacing the inconsistent state.
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
+        await add(ctx, ['a.txt']);
+        const seed = await commit(ctx, { message: 'first', author });
+        // Synthesize the crash-window state: ORIG_HEAD present, no MERGE_HEAD.
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/ORIG_HEAD`, `${seed.id}\n`);
+
+        // Act
+        let caught: unknown;
+        try {
+          await abortMerge(ctx);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert — surfaces the inconsistency; HEAD still points at the
+        // seed commit (no silent reset happened).
+        const data = (caught as { data?: { code?: string; operation?: string } })?.data;
+        expect(data?.code).toBe('NO_OPERATION_IN_PROGRESS');
+        expect(data?.operation).toBe('merge');
+        expect(await resolveRef(ctx, MAIN)).toBe(seed.id);
+      });
+    });
+  });
+
   describe('Given MERGE_HEAD exists but ORIG_HEAD is absent', () => {
     describe('When abortMerge runs', () => {
       it('Then throws NO_OPERATION_IN_PROGRESS(merge)', async () => {
@@ -138,6 +173,39 @@ describe('abortMerge', () => {
         const data = (caught as { data?: { code?: string; operation?: string } })?.data;
         expect(data?.code).toBe('NO_OPERATION_IN_PROGRESS');
         expect(data?.operation).toBe('merge');
+      });
+    });
+  });
+
+  describe('Given a synthetic ORIG_HEAD pointing at a blob (not a commit)', () => {
+    describe('When abortMerge runs', () => {
+      it('Then throws UNEXPECTED_OBJECT_TYPE with expected=commit', async () => {
+        // Arrange — produce a real merge state, then overwrite ORIG_HEAD with
+        // a blob's OID. This exercises the `commit.type !== 'commit'` guard
+        // inside resetToOrigHead — without it, materializeTree would surface
+        // a less specific error.
+        const ctx = createMemoryContext();
+        await setupConflictingMerge(ctx);
+        await merge(ctx, { target: 'feature', author });
+        const blobId = await writeObject(ctx, {
+          type: 'blob',
+          content: new TextEncoder().encode('not a commit'),
+          id: '' as ObjectId,
+        });
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/ORIG_HEAD`, `${blobId}\n`);
+
+        // Act
+        let caught: unknown;
+        try {
+          await abortMerge(ctx);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        const data = (caught as { data?: { code?: string; expected?: string } })?.data;
+        expect(data?.code).toBe('UNEXPECTED_OBJECT_TYPE');
+        expect(data?.expected).toBe('commit');
       });
     });
   });

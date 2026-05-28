@@ -38,12 +38,9 @@ export const continueMerge = async (
   return commit(ctx, buildCommitOptions(opts));
 };
 
-const buildCommitOptions = (opts: ContinueMergeOptions): CommitOptions => {
-  const out: { -readonly [K in keyof CommitOptions]?: CommitOptions[K] } = {
-    message: opts.message ?? '',
-  };
-  if (opts.author !== undefined) out.author = opts.author;
-  if (opts.committer !== undefined) out.committer = opts.committer;
-  if (opts.noVerify !== undefined) out.noVerify = opts.noVerify;
-  return out as CommitOptions;
-};
+const buildCommitOptions = (opts: ContinueMergeOptions): CommitOptions => ({
+  message: opts.message ?? '',
+  ...(opts.author !== undefined && { author: opts.author }),
+  ...(opts.committer !== undefined && { committer: opts.committer }),
+  ...(opts.noVerify !== undefined && { noVerify: opts.noVerify }),
+});

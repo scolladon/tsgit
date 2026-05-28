@@ -112,6 +112,12 @@ describe('integration — merge state machine via openRepository', () => {
         expect(result.parents).toHaveLength(2);
         expect(result.parents).toContain(conflict.mergeHead);
         expect(result.parents).toContain(conflict.origHead);
+
+        // No state pollution — a follow-up mutation must not trip
+        // assertNoPendingOperation. If MERGE_HEAD survived, this add would
+        // surface OPERATION_IN_PROGRESS.
+        await writeFileAt(workDir, 'follow-up.txt', 'x\n');
+        await repo.add(['follow-up.txt']);
       } finally {
         await repo.dispose();
       }

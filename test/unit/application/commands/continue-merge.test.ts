@@ -230,31 +230,43 @@ describe('continueMerge', () => {
 
   describe('Given a resolved merge with explicit author and committer', () => {
     describe('When continueMerge runs', () => {
-      it('Then the commit object carries the explicit identities', async () => {
-        // Arrange
+      it('Then the commit object carries the distinct author and committer identities', async () => {
+        // Arrange — distinct author and committer so dropping the committer
+        // forward would let `commit` derive committer-from-author and the
+        // assertion below would fail. Mutation-resistant: the commit field
+        // values must come from the *forwarded* options, not from the
+        // author fallback.
         const ctx = createMemoryContext();
         await setupConflictingMerge(ctx);
         await merge(ctx, { target: 'feature', author });
         await resolveAndStage(ctx);
-        const explicit: AuthorIdentity = {
+        const explicitAuthor: AuthorIdentity = {
           name: 'Bob',
           email: 'bob@example.com',
           timestamp: 1_800_000_000,
           timezoneOffset: '+0100',
         };
+        const explicitCommitter: AuthorIdentity = {
+          name: 'Carol',
+          email: 'carol@example.com',
+          timestamp: 1_900_000_000,
+          timezoneOffset: '+0200',
+        };
 
         // Act
         const sut = await continueMerge(ctx, {
           message: 'resolved',
-          author: explicit,
-          committer: explicit,
+          author: explicitAuthor,
+          committer: explicitCommitter,
         });
 
-        // Assert
+        // Assert — both fields distinguishable in the commit object.
         const obj = await readObject(ctx, sut.id);
         if (obj.type !== 'commit') throw new Error('expected commit');
         expect(obj.data.author.name).toBe('Bob');
-        expect(obj.data.committer.email).toBe('bob@example.com');
+        expect(obj.data.author.email).toBe('bob@example.com');
+        expect(obj.data.committer.name).toBe('Carol');
+        expect(obj.data.committer.email).toBe('carol@example.com');
       });
     });
   });
