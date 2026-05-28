@@ -130,9 +130,22 @@ Every feature follows this sequence. No exceptions. No skipping steps. When the 
 
 There is no "effort" knob in the Agent tool — only `model`. Depth comes from model choice + the prompt instructions in each phase below. Don't burn an Opus on Phase 7 or 8; don't burn a Haiku on Phase 2 or 5.
 
+### Serena activation model
+
+The MCP server process is shared across the entire Claude Code session — orchestrator and every spawned subagent hit the same server, so its "active project" state persists across phases. The orchestrator activates Serena **once** on the worktree path right after `npm install` in Step 1; subagents inherit that state and just use the symbol tools.
+
+**Orchestrator (Step 1 only):**
+- `mcp__serena__activate_project` with the worktree's absolute path.
+- `mcp__serena__initial_instructions` to load the manual.
+
+**Standard subagent preamble** (Steps 2, 4, 5, 6, 7, 8 — every spawned subagent prompt MUST open with these lines, with `<worktree-abs-path>` substituted):
+
+> **Working directory:** `<worktree-abs-path>` — all reads/writes happen here.
+> **Serena:** the session has already activated Serena on this worktree. Use Serena's symbol tools (`find_symbol`, `find_referencing_symbols`, `get_symbols_overview`, `replace_symbol_body`, `insert_after_symbol`) as the default for navigating and editing source. Verify with `mcp__serena__get_current_config` if anything looks off and re-activate with `mcp__serena__activate_project` only on mismatch. Fall back to `Read` / `Edit` / `Grep` for non-code files (markdown, JSON, generated artefacts).
+
 ### 1. Branch (orchestrator)
 
-Create a fresh branch off `main` via `git worktree add`, named with a conventional-commit type prefix: `feat/<topic>`, `fix/<topic>`, `ci/<topic>`, `chore/<topic>`, `docs/<topic>`. Never commit directly to `main`. `npm install` inside the worktree.
+Create a fresh branch off `main` via `git worktree add`, named with a conventional-commit type prefix: `feat/<topic>`, `fix/<topic>`, `ci/<topic>`, `chore/<topic>`, `docs/<topic>`. Never commit directly to `main`. `npm install` inside the worktree. Then activate Serena on the worktree path (see "Serena activation model" above) so every downstream subagent inherits the active project.
 
 ### 2. Design — `docs/design/<topic>.md` (Opus subagent)
 
