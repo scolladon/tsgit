@@ -1491,3 +1491,164 @@ describe('primitives/update-config', () => {
     });
   });
 });
+
+import { setConfigEntry } from '../../../../src/application/primitives/update-config.js';
+
+describe('setConfigEntry (I/O)', () => {
+  describe('Given a missing local config, When setConfigEntry runs', () => {
+    it('Then the file is created with the new entry', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+
+      // Act
+      await setConfigEntry({ ctx, key: 'user.name', value: 'Ada' });
+
+      // Assert
+      const text = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
+      expect(text).toBe('[user]\n\tname = Ada\n');
+    });
+  });
+
+  describe('Given an existing user.name = Ada, When setConfigEntry overwrites with Bob', () => {
+    it('Then the entry is replaced in place (no duplicate)', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[user]\n\tname = Ada\n');
+
+      // Act
+      await setConfigEntry({ ctx, key: 'user.name', value: 'Bob' });
+
+      // Assert
+      const text = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
+      expect(text).toBe('[user]\n\tname = Bob\n');
+    });
+  });
+
+  describe('Given a value containing a `#`, When setConfigEntry runs', () => {
+    it('Then the writer quotes it so it round-trips through the reader', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+
+      // Act
+      await setConfigEntry({ ctx, key: 'pager.log', value: 'less -R # paginate' });
+
+      // Assert
+      const text = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
+      expect(text).toContain('"less -R # paginate"');
+    });
+  });
+
+  describe('Given a key that fails parseConfigKey, When setConfigEntry is called', () => {
+    it('Then no I/O happens and CONFIG_KEY_INVALID is thrown', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      const writeSpy = vi.spyOn(ctx.fs, 'writeUtf8');
+      let caught: TsgitError | undefined;
+
+      // Act
+      try {
+        await setConfigEntry({ ctx, key: '1bad.name', value: 'x' });
+      } catch (err) {
+        caught = err as TsgitError;
+      }
+
+      // Assert
+      expect(caught?.data.code).toBe('CONFIG_KEY_INVALID');
+      expect(writeSpy).toHaveBeenCalledTimes(0);
+    });
+  });
+
+  describe('Given a value containing a NUL byte, When setConfigEntry runs', () => {
+    it('Then no I/O happens and CONFIG_VALUE_INVALID is thrown with the NUL position', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      const writeSpy = vi.spyOn(ctx.fs, 'writeUtf8');
+      let caught: TsgitError | undefined;
+
+      // Act
+      try {
+        await setConfigEntry({ ctx, key: 'user.name', value: 'ab\x00cd' });
+      } catch (err) {
+        caught = err as TsgitError;
+      }
+
+      // Assert
+      expect(caught?.data).toEqual({
+        code: 'CONFIG_VALUE_INVALID',
+        key: 'user.name',
+        reason: 'control-character',
+        position: 2,
+      });
+      expect(writeSpy).toHaveBeenCalledTimes(0);
+    });
+  });
+
+  describe('Given a value containing a CR byte, When setConfigEntry runs', () => {
+    it('Then it throws CONFIG_VALUE_INVALID at the CR position', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      let caught: TsgitError | undefined;
+
+      // Act
+      try {
+        await setConfigEntry({ ctx, key: 'user.name', value: 'x\ry' });
+      } catch (err) {
+        caught = err as TsgitError;
+      }
+
+      // Assert
+      expect((caught?.data as { reason: string; position: number }).reason).toBe(
+        'control-character',
+      );
+      expect((caught?.data as { reason: string; position: number }).position).toBe(1);
+    });
+  });
+
+  describe('Given a value containing a newline, When setConfigEntry runs', () => {
+    it('Then the call succeeds (writer quotes and escapes \\n)', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+
+      // Act + Assert (no throw)
+      await expect(
+        setConfigEntry({ ctx, key: 'user.name', value: 'a\nb' }),
+      ).resolves.toBeUndefined();
+    });
+  });
+
+  describe('Given a value containing a tab, When setConfigEntry runs', () => {
+    it('Then the call succeeds verbatim', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+
+      // Act + Assert (no throw)
+      await expect(
+        setConfigEntry({ ctx, key: 'user.name', value: 'a\tb' }),
+      ).resolves.toBeUndefined();
+    });
+  });
+
+  describe('Given scope: worktree without extensions.worktreeConfig, When setConfigEntry runs', () => {
+    it('Then it throws CONFIG_SCOPE_NOT_AVAILABLE and no I/O happens', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      const writeSpy = vi.spyOn(ctx.fs, 'writeUtf8');
+      let caught: TsgitError | undefined;
+
+      // Act
+      try {
+        await setConfigEntry({ ctx, key: 'user.name', value: 'x', scope: 'worktree' });
+      } catch (err) {
+        caught = err as TsgitError;
+      }
+
+      // Assert
+      expect(caught?.data).toEqual({
+        code: 'CONFIG_SCOPE_NOT_AVAILABLE',
+        scope: 'worktree',
+        reason: 'worktree-extension-unset',
+      });
+      expect(writeSpy).toHaveBeenCalledTimes(0);
+    });
+  });
+});

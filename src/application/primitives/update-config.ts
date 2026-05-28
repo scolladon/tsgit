@@ -9,10 +9,14 @@
  *   kind:    readback-only
  *   format:  git-config-text
  */
-import { invalidOption } from '../../domain/commands/error.js';
+import type { ConfigScope } from '../../domain/commands/config-key.js';
+import { parseConfigKey } from '../../domain/commands/config-key.js';
+import { configValueInvalid, invalidOption } from '../../domain/commands/error.js';
 import { TsgitError } from '../../domain/error.js';
 import type { Context } from '../../ports/context.js';
 import { invalidateConfigCache, parseSectionHeader } from './config-read.js';
+import { invalidateScopedConfigCache } from './config-scoped-read.js';
+import { resolveScopePath } from './internal/config-scope.js';
 
 /**
  * True when `line` is the header for `[section]` / `[section "subsection"]`.
@@ -475,4 +479,71 @@ const readConfigText = async (ctx: Context, path: string): Promise<string> => {
     if (err instanceof TsgitError && err.data.code === 'FILE_NOT_FOUND') return '';
     throw err;
   }
+};
+
+/**
+ * Validate a value-side string before writing. Rejects control characters
+ * the writer's quoting grammar cannot represent: NUL, CR, and the other
+ * non-newline / non-tab C0/C1 controls. `\n` and `\t` are accepted because
+ * `renderValue` escapes them to `\\n` / `\\t` on write.
+ */
+const assertValueSafe = (key: string, value: string): void => {
+  for (let i = 0; i < value.length; i += 1) {
+    const code = value.charCodeAt(i);
+    if (code === 0x09 || code === 0x0a) continue;
+    if (code < 0x20 || code === 0x7f) {
+      throw configValueInvalid(key, i);
+    }
+  }
+};
+
+/**
+ * Read-modify-write the config file for a given scope. The `transform` is a
+ * pure text function (e.g. `setConfigEntryInText`) — this helper handles the
+ * I/O, the missing-file → `''` fallback, the post-write cache invalidation,
+ * and the scope-path resolution.
+ */
+const readModifyWriteScopedConfig = async (
+  ctx: Context,
+  scope: ConfigScope,
+  transform: (text: string) => string,
+): Promise<void> => {
+  const path = await resolveScopePath(ctx, scope);
+  const before = await readConfigText(ctx, path);
+  const after = transform(before);
+  await ctx.fs.writeUtf8(path, after);
+  invalidateConfigCache(ctx);
+  invalidateScopedConfigCache(ctx);
+};
+
+/**
+ * Write a single `key = value` entry into the config file for the given scope
+ * (default `'local'`). Re-runs of the same call with a different value
+ * overwrite the existing entry in place (preserving comments and surrounding
+ * content). The key is validated via `parseConfigKey` (throws
+ * `CONFIG_KEY_INVALID` on a malformed input) and the value is validated by
+ * `assertValueSafe` (throws `CONFIG_VALUE_INVALID` on a banned control char)
+ * BEFORE any I/O — a rejected input never touches the file system.
+ *
+ * The branding on `ConfigKey` is enforced at the type level; this primitive
+ * accepts a raw string and parses it internally so it can be used directly
+ * from porcelain wrappers that hold un-branded callers' input.
+ */
+export const setConfigEntry = async ({
+  ctx,
+  key,
+  value,
+  scope,
+}: {
+  readonly ctx: Context;
+  readonly key: string;
+  readonly value: string;
+  readonly scope?: ConfigScope;
+}): Promise<void> => {
+  const parsed = parseConfigKey(key);
+  assertValueSafe(key, value);
+  const targetScope: ConfigScope = scope ?? 'local';
+  await readModifyWriteScopedConfig(ctx, targetScope, (text) =>
+    setConfigEntryInText(text, parsed.section, parsed.subsection, parsed.name, value),
+  );
 };
