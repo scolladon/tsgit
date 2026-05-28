@@ -11,6 +11,7 @@ Every method bound on a `Repository` handle. 24 entries, alphabetical.
 | [`checkout`](checkout.md) | Switch branches or restore working-tree files. |
 | [`clone`](clone.md) | Clone a remote repository over smart-HTTP (full / shallow / partial). |
 | [`commit`](commit.md) | Create a commit from the current index. |
+| [`config`](config.md) | Read and write git config across all four scopes (`system`/`global`/`local`/`worktree`). Nested-namespace surface (`repo.config.get/set/...`). |
 | [`continueMerge`](continue-merge.md) | Finalise an in-progress merge as a two-parent commit (delegates to `commit`). |
 | [`diff`](diff.md) | Compare two tree-like targets; returns a `TreeDiff` object. |
 | [`fetch`](fetch.md) | Fetch refs and objects from a remote. |
