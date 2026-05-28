@@ -29,6 +29,45 @@ async function writeBlob(
 }
 
 describe('materialisePatchFiles', () => {
+  describe('Given more changes than the concurrency cap', () => {
+    describe('When materialisePatchFiles is called', () => {
+      it('Then in-flight reads stay bounded at 32', async () => {
+        // Arrange — 80 add changes; expect peak concurrency ≤ 32.
+        const ctx = createMemoryContext();
+        const changes: AddChange[] = [];
+        for (let i = 0; i < 80; i++) {
+          const oid = await writeBlob(ctx, `body-${i}\n`);
+          changes.push({
+            type: 'add',
+            newPath: `f${i}.txt` as FilePath,
+            newId: oid,
+            newMode: FILE_MODE.REGULAR,
+          });
+        }
+        const originalRead = ctx.fs.read.bind(ctx.fs);
+        let inFlight = 0;
+        let peak = 0;
+        vi.spyOn(ctx.fs, 'read').mockImplementation(async (path: string) => {
+          inFlight++;
+          peak = Math.max(peak, inFlight);
+          try {
+            return await originalRead(path);
+          } finally {
+            inFlight--;
+          }
+        });
+
+        // Act
+        const sut = await materialisePatchFiles(ctx, changes);
+
+        // Assert — every result hydrated, peak in-flight obeyed the bound.
+        expect(sut).toHaveLength(80);
+        expect(peak).toBeGreaterThan(0);
+        expect(peak).toBeLessThanOrEqual(32);
+      });
+    });
+  });
+
   describe('Given a list of mixed change types', () => {
     describe('When materialisePatchFiles is called', () => {
       it('Then each entry carries the blob bytes appropriate to its kind', async () => {

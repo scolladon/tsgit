@@ -773,6 +773,126 @@ describe('patch-serializer', () => {
     });
   });
 
+  describe('Given a path containing an embedded newline', () => {
+    describe('When renderPatch is called', () => {
+      it('Then throws INVALID_DIFF_INPUT', () => {
+        // Arrange — defence-in-depth: tree-object parsers accept arbitrary
+        // non-`/` bytes in entry names, so a hostile remote could ship a
+        // path containing `\n`. The serializer must refuse to render it
+        // because the resulting headers would smuggle forged hunks past
+        // any downstream parser.
+        const sut = renderPatch;
+        const file = addFile('evil\nindex 0000000..deadbeef', 'hi\n');
+
+        // Act
+        let caught: unknown;
+        try {
+          sut([file]);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as { data?: { code?: string } } | undefined)?.data?.code).toBe(
+          'INVALID_DIFF_INPUT',
+        );
+      });
+    });
+  });
+
+  describe('Given a path containing a NUL byte', () => {
+    describe('When renderPatch is called', () => {
+      it('Then throws INVALID_DIFF_INPUT', () => {
+        // Arrange
+        const sut = renderPatch;
+        const file = addFile('evil\x00path', 'hi\n');
+
+        // Act
+        let caught: unknown;
+        try {
+          sut([file]);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as { data?: { code?: string } } | undefined)?.data?.code).toBe(
+          'INVALID_DIFF_INPUT',
+        );
+      });
+    });
+  });
+
+  describe('Given a pathPrefix containing a newline', () => {
+    describe('When renderPatch is called', () => {
+      it('Then throws INVALID_DIFF_INPUT', () => {
+        // Arrange — covers the prefix-injection vector independently of the
+        // change-path one.
+        const sut = renderPatch;
+        const file = addFile('ok.txt', 'hi\n');
+
+        // Act
+        let caught: unknown;
+        try {
+          sut([file], { pathPrefix: { old: 'a/', new: 'b/\nrename from /etc/passwd' } });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as { data?: { code?: string } } | undefined)?.data?.code).toBe(
+          'INVALID_DIFF_INPUT',
+        );
+      });
+    });
+  });
+
+  describe('Given a delete change with an unsafe path', () => {
+    describe('When renderPatch is called', () => {
+      it('Then throws INVALID_DIFF_INPUT', () => {
+        // Arrange — covers the `delete` branch of assertSafePaths.
+        const sut = renderPatch;
+        const file = deleteFile('bad\nindex deadbeef', 'x\n');
+
+        // Act
+        let caught: unknown;
+        try {
+          sut([file]);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as { data?: { code?: string } } | undefined)?.data?.code).toBe(
+          'INVALID_DIFF_INPUT',
+        );
+      });
+    });
+  });
+
+  describe('Given a rename change with an unsafe newPath', () => {
+    describe('When renderPatch is called', () => {
+      it('Then throws INVALID_DIFF_INPUT', () => {
+        // Arrange — covers the `rename` branch of assertSafePaths.
+        const sut = renderPatch;
+        const file = renameFile('old.txt', 'new\nindex forged');
+
+        // Act
+        let caught: unknown;
+        try {
+          sut([file]);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as { data?: { code?: string } } | undefined)?.data?.code).toBe(
+          'INVALID_DIFF_INPUT',
+        );
+      });
+    });
+  });
+
   describe('Given a modify whose contents are byte-identical (synthetic — caller passed identical bytes with different ids)', () => {
     describe('When renderPatch is called', () => {
       it('Then emits header + index + --- + +++ with no hunks (groups.length === 0 path)', () => {

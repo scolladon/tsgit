@@ -34,6 +34,41 @@ const NEWLINE_CODE = 0x0a;
 
 const decoder = new TextDecoder('utf-8', { fatal: false });
 
+/**
+ * Reject paths and path-prefixes that would break the unified-diff grammar.
+ * Tree-object parsers accept any non-`/` byte sequence as an entry name, so
+ * a malicious tree could carry a path containing `\n` or `\0`. Without this
+ * guard the rendered headers would smuggle extra lines into the document
+ * that downstream patch parsers would interpret as forged hunks.
+ */
+function rejectUnsafePathChars(label: string, value: string): void {
+  for (let i = 0; i < value.length; i++) {
+    const code = value.charCodeAt(i);
+    if (code === 0x0a || code === 0x0d || code === 0x00) {
+      throw invalidDiffInput(`${label} contains control character (code ${code}) at index ${i}`);
+    }
+  }
+}
+
+function assertSafePaths(change: DiffChange, prefix: PatchPathPrefix): void {
+  rejectUnsafePathChars('pathPrefix.old', prefix.old);
+  rejectUnsafePathChars('pathPrefix.new', prefix.new);
+  if (change.type === 'rename') {
+    rejectUnsafePathChars('oldPath', change.oldPath);
+    rejectUnsafePathChars('newPath', change.newPath);
+    return;
+  }
+  if (change.type === 'add') {
+    rejectUnsafePathChars('newPath', change.newPath);
+    return;
+  }
+  if (change.type === 'delete') {
+    rejectUnsafePathChars('oldPath', change.oldPath);
+    return;
+  }
+  rejectUnsafePathChars('path', change.path);
+}
+
 interface SplitContent {
   readonly lines: ReadonlyArray<string>;
   readonly hasTrailingNewline: boolean;
@@ -509,6 +544,7 @@ export function renderPatch(files: ReadonlyArray<PatchFile>, opts?: PatchOptions
   const contextLines = resolveContextLines(opts?.contextLines);
   if (files.length === 0) return '';
   const prefix = opts?.pathPrefix ?? DEFAULT_PREFIX;
+  for (const file of files) assertSafePaths(file.change, prefix);
   const lines: string[] = [];
   for (const file of files) {
     const block = renderFile(file, prefix, contextLines);
