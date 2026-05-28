@@ -5,6 +5,7 @@ import {
   readConfig,
 } from '../../../../src/application/primitives/config-read.js';
 import {
+  appendConfigEntry,
   type ConfigOperation,
   removeConfigEntry,
   removeConfigSection,
@@ -951,6 +952,91 @@ describe('primitives/update-config', () => {
         });
       });
     });
+
+    describe('Given a section followed by another section with no trailing newline', () => {
+      describe('When removeConfigSection drops the first', () => {
+        it('Then the output has no trailing newline either', () => {
+          // Arrange — proves the `endedWithNewline` branch flips correctly.
+          const text = '[remote "origin"]\n\turl = u\n[core]\n\tbare = false';
+
+          // Act
+          const sut = removeConfigSection(text, 'remote', 'origin');
+
+          // Assert
+          expect(sut).toBe('[core]\n\tbare = false');
+        });
+      });
+    });
+
+    describe('Given a section name containing a bracket', () => {
+      describe('When removeConfigSection', () => {
+        it('Then it throws INVALID_OPTION', () => {
+          // Arrange
+          let caught: unknown;
+          try {
+            removeConfigSection('', 'core]\n[evil', undefined);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect((caught as TsgitError).data.code).toBe('INVALID_OPTION');
+        });
+      });
+    });
+
+    describe('Given a subsection containing a quote', () => {
+      describe('When removeConfigSection', () => {
+        it('Then it throws INVALID_OPTION', () => {
+          // Arrange
+          let caught: unknown;
+          try {
+            removeConfigSection('', 'remote', 'a"b');
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect((caught as TsgitError).data.code).toBe('INVALID_OPTION');
+        });
+      });
+    });
+  });
+
+  describe('removeConfigEntry validation', () => {
+    describe('Given a section name containing a bracket', () => {
+      describe('When removeConfigEntry', () => {
+        it('Then it throws INVALID_OPTION', () => {
+          // Arrange
+          let caught: unknown;
+          try {
+            removeConfigEntry('', 'core]\n[evil', undefined, 'k');
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect((caught as TsgitError).data.code).toBe('INVALID_OPTION');
+        });
+      });
+    });
+
+    describe('Given a key containing a newline', () => {
+      describe('When removeConfigEntry', () => {
+        it('Then it throws INVALID_OPTION', () => {
+          // Arrange
+          let caught: unknown;
+          try {
+            removeConfigEntry('', 'remote', 'origin', 'k\ney');
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect((caught as TsgitError).data.code).toBe('INVALID_OPTION');
+        });
+      });
+    });
   });
 
   describe('renameConfigSection', () => {
@@ -1045,6 +1131,87 @@ describe('primitives/update-config', () => {
 
           // Assert
           expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as TsgitError).data.code).toBe('INVALID_OPTION');
+        });
+      });
+    });
+  });
+
+  describe('appendConfigEntry', () => {
+    describe('Given an existing section with one prior entry for the key', () => {
+      describe('When appendConfigEntry', () => {
+        it('Then the new entry is inserted AFTER the existing one (order preserved)', () => {
+          // Arrange
+          const text = '[remote "r"]\n\tfetch = A\n';
+
+          // Act
+          const sut = appendConfigEntry(text, 'remote', 'r', 'fetch', 'B');
+
+          // Assert
+          expect(sut).toBe('[remote "r"]\n\tfetch = A\n\tfetch = B\n');
+        });
+      });
+    });
+
+    describe('Given an existing section with NO prior matching key', () => {
+      describe('When appendConfigEntry', () => {
+        it('Then the entry is inserted directly after the header', () => {
+          // Arrange
+          const text = '[remote "r"]\n\turl = u\n';
+
+          // Act
+          const sut = appendConfigEntry(text, 'remote', 'r', 'fetch', 'A');
+
+          // Assert
+          expect(sut).toBe('[remote "r"]\n\tfetch = A\n\turl = u\n');
+        });
+      });
+    });
+
+    describe('Given a section is followed by another section', () => {
+      describe('When appendConfigEntry', () => {
+        it('Then a matching key in the LATER section is NOT considered', () => {
+          // Arrange — `fetch = X` lives in the SECOND section; appending to
+          // the first must insert under the first's header, not after the
+          // unrelated later section's entry.
+          const text = '[remote "r"]\n\turl = u\n[remote "other"]\n\tfetch = X\n';
+
+          // Act
+          const sut = appendConfigEntry(text, 'remote', 'r', 'fetch', 'A');
+
+          // Assert
+          expect(sut).toBe('[remote "r"]\n\tfetch = A\n\turl = u\n[remote "other"]\n\tfetch = X\n');
+        });
+      });
+    });
+
+    describe('Given no matching section', () => {
+      describe('When appendConfigEntry', () => {
+        it('Then the section is created and the entry appended', () => {
+          // Arrange
+          const text = '[core]\n\tbare = false\n';
+
+          // Act
+          const sut = appendConfigEntry(text, 'remote', 'r', 'fetch', 'A');
+
+          // Assert
+          expect(sut).toBe('[core]\n\tbare = false\n[remote "r"]\n\tfetch = A\n');
+        });
+      });
+    });
+
+    describe('Given a key containing a newline', () => {
+      describe('When appendConfigEntry', () => {
+        it('Then it throws INVALID_OPTION', () => {
+          // Arrange
+          let caught: unknown;
+          try {
+            appendConfigEntry('', 'remote', 'r', 'k\ney', 'v');
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
           expect((caught as TsgitError).data.code).toBe('INVALID_OPTION');
         });
       });
