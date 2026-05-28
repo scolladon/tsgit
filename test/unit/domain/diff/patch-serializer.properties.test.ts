@@ -85,6 +85,73 @@ function parsePatch(text: string): ReadonlyArray<ParsedHunk> {
   return hunks;
 }
 
+function arbPath(): fc.Arbitrary<string> {
+  return fc
+    .array(fc.integer({ min: 0x61, max: 0x7a }), { minLength: 1, maxLength: 6 })
+    .map((codes) => String.fromCharCode(...codes));
+}
+
+function arbAddFile(): fc.Arbitrary<PatchFile> {
+  return fc.tuple(arbPath(), arbTextStream()).map(([path, content]) => ({
+    change: {
+      type: 'add',
+      newPath: path as FilePath,
+      newId: OID_A,
+      newMode: FILE_MODE.REGULAR,
+    },
+    newContent: utf8.encode(content),
+  }));
+}
+
+function arbDeleteFile(): fc.Arbitrary<PatchFile> {
+  return fc.tuple(arbPath(), arbTextStream()).map(([path, content]) => ({
+    change: {
+      type: 'delete',
+      oldPath: path as FilePath,
+      oldId: OID_A,
+      oldMode: FILE_MODE.REGULAR,
+    },
+    oldContent: utf8.encode(content),
+  }));
+}
+
+function arbRenameFile(): fc.Arbitrary<PatchFile> {
+  return fc.tuple(arbPath(), arbPath()).map(([oldPath, newPath]) => ({
+    change: {
+      type: 'rename',
+      oldPath: oldPath as FilePath,
+      newPath: newPath as FilePath,
+      id: OID_A,
+      mode: FILE_MODE.REGULAR,
+    },
+  }));
+}
+
+function arbBinaryAddFile(): fc.Arbitrary<PatchFile> {
+  return fc
+    .tuple(arbPath(), fc.uint8Array({ minLength: 1, maxLength: 16 }))
+    .map(([path, bytes]) => {
+      // Force a NUL byte at the front so isBinary() triggers regardless of
+      // what fast-check picks for the rest of the payload.
+      const withNul = new Uint8Array(bytes.length + 1);
+      withNul[0] = 0x00;
+      withNul.set(bytes, 1);
+      return {
+        change: {
+          type: 'add',
+          newPath: path as FilePath,
+          newId: OID_A,
+          newMode: FILE_MODE.REGULAR,
+        },
+        newContent: withNul,
+      };
+    });
+}
+
+function arbAnyShape(): fc.Arbitrary<PatchFile> {
+  return fc.oneof(arbAddFile(), arbDeleteFile(), arbRenameFile(), arbBinaryAddFile());
+}
+
 describe('patch-serializer (properties)', () => {
   describe('Given two arbitrary ASCII text streams', () => {
     describe('When renderPatch emits a modify block', () => {
@@ -103,6 +170,66 @@ describe('patch-serializer (properties)', () => {
               expect(hunk.oldLen).toBe(hunk.body.contextLines + hunk.body.deleteLines);
               expect(hunk.newLen).toBe(hunk.body.contextLines + hunk.body.insertLines);
             }
+          }),
+          { numRuns: 100 },
+        );
+      });
+    });
+  });
+
+  describe('Given any single DiffChange shape (add, delete, rename, or binary add)', () => {
+    describe('When renderPatch is called', () => {
+      it('Then the text always starts with `diff --git ` and ends with `\\n`', () => {
+        fc.assert(
+          fc.property(arbAnyShape(), (file) => {
+            // Act
+            const sut = renderPatch([file]);
+
+            // Assert — invariants every file-class shares.
+            expect(sut.startsWith('diff --git ')).toBe(true);
+            expect(sut.endsWith('\n')).toBe(true);
+          }),
+          { numRuns: 100 },
+        );
+      });
+    });
+  });
+
+  describe('Given a pure rename DiffChange', () => {
+    describe('When renderPatch is called', () => {
+      it('Then the body carries exactly the four expected header lines', () => {
+        fc.assert(
+          fc.property(arbRenameFile(), (file) => {
+            // Act
+            const sut = renderPatch([file]);
+
+            // Assert — rename grammar is fixed: similarity index 100% +
+            // rename from + rename to. No --- / +++ / hunks.
+            expect(sut).toContain('similarity index 100%');
+            expect(sut).toContain('rename from ');
+            expect(sut).toContain('rename to ');
+            expect(sut).not.toContain('\n--- ');
+            expect(sut).not.toContain('\n+++ ');
+            expect(sut).not.toContain('@@ ');
+          }),
+          { numRuns: 100 },
+        );
+      });
+    });
+  });
+
+  describe('Given a binary add DiffChange', () => {
+    describe('When renderPatch is called', () => {
+      it('Then the body carries the Binary files /dev/null and b/X differ line', () => {
+        fc.assert(
+          fc.property(arbBinaryAddFile(), (file) => {
+            // Act
+            const sut = renderPatch([file]);
+
+            // Assert — no hunk markers ever escape into a binary block.
+            expect(sut).toContain('Binary files /dev/null and b/');
+            expect(sut).toContain(' differ');
+            expect(sut).not.toContain('@@ ');
           }),
           { numRuns: 100 },
         );

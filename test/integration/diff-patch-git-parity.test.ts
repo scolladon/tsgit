@@ -3,15 +3,22 @@
  *
  * Spawns a real `git` to capture the canonical patch for a handful of
  * representative file-class scenarios, then asserts byte-equality with
- * `repo.diff({ format: 'patch' })`'s output. Skips silently when `git` is
- * not on PATH (CI always has git; local devs may not).
+ * `repo.diff({ format: 'patch' })`'s output. **Double-pinned:** the
+ * test also asserts equality against a frozen golden fixture committed
+ * under `fixtures/diff-patch/`, so a future git upgrade that changes
+ * its default output produces a visible diff against the fixture even
+ * when tsgit and the new git drift together.
+ *
+ * Skips silently when `git` is not on PATH (CI always has git; local devs may not).
  *
  * @proves
  *   surface: diff:patch
  *   bucket:  cross-tool-interop
- *   unique:  patch-text serializer's byte-output matches upstream git's
+ *   unique:  patch-text serializer's byte-output matches upstream git's and a frozen golden
  */
-import { writeFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
+import * as path from 'node:path';
+import * as url from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../src/adapters/memory/memory-adapter.js';
 import { add } from '../../src/application/commands/add.js';
@@ -21,6 +28,15 @@ import { init } from '../../src/application/commands/init.js';
 import { rm } from '../../src/application/commands/rm.js';
 import type { AuthorIdentity } from '../../src/domain/objects/index.js';
 import { GIT_AVAILABLE, git, makePeerPair, runGit, runGitEnv } from './interop-helpers.js';
+
+const fixturesDir = path.join(
+  path.dirname(url.fileURLToPath(import.meta.url)),
+  'fixtures',
+  'diff-patch',
+);
+
+const loadGolden = (name: string): Promise<string> =>
+  readFile(path.join(fixturesDir, `${name}.golden.patch`), 'utf-8');
 
 const author: AuthorIdentity = {
   name: 'Ada',
@@ -43,7 +59,7 @@ const gitDeterministicEnv = (): NodeJS.ProcessEnv => ({
 });
 
 describe.skipIf(!GIT_AVAILABLE)('integration — diff patch git parity', () => {
-  it('Given a single-line modify, When tsgit emits the patch, Then it matches `git diff` byte-for-byte', async () => {
+  it('Given a single-line modify, When tsgit emits the patch, Then it matches `git diff` byte-for-byte AND the frozen golden', async () => {
     // Arrange — build the same history in a tmp `git` repo and in tsgit.
     const pair = await makePeerPair('diff-patch-modify');
     try {
@@ -54,7 +70,8 @@ describe.skipIf(!GIT_AVAILABLE)('integration — diff patch git parity', () => {
       await writeFsFile(pair.peer, 'a.txt', 'new\n');
       runGit(['-C', pair.peer, 'add', 'a.txt']);
       runGit(['-C', pair.peer, 'commit', '-q', '-m', 'second'], { env: gitDeterministicEnv() });
-      const expected = git(pair.peer, 'diff', '--no-ext-diff', '--no-color', 'HEAD~1', 'HEAD');
+      const live = git(pair.peer, 'diff', '--no-ext-diff', '--no-color', 'HEAD~1', 'HEAD');
+      const golden = await loadGolden('modify-single-line');
 
       const ctx = createMemoryContext();
       await init(ctx);
@@ -68,15 +85,19 @@ describe.skipIf(!GIT_AVAILABLE)('integration — diff patch git parity', () => {
       // Act
       const sut = await diff(ctx, { from: c1.id, to: c2.id, format: 'patch' });
 
-      // Assert
-      expect(sut.text).toBe(expected);
+      // Assert — double pin: actual matches live git AND matches the frozen
+      // golden. If live drifts (new git version) the golden still catches it.
+      expect(sut.text).toBe(live);
+      expect(sut.text).toBe(golden);
     } finally {
       await pair.dispose();
     }
   });
 
-  it('Given an added file then a deleted file, When tsgit emits the combined patch, Then headers match git', async () => {
-    // Arrange — first commit adds two files; second deletes one.
+  it('Given an added file then a deleted file, When tsgit emits the combined patch, Then headers match git AND the frozen golden', async () => {
+    // Arrange — first commit adds two files; second deletes one. The
+    // `keep.txt` shared between the two endpoints contributes nothing to the
+    // diff; `fresh.txt` (added between the endpoints) is the only entry.
     const pair = await makePeerPair('diff-patch-add-delete');
     try {
       runGit(['init', '-q', '-b', 'main', pair.peer]);
@@ -89,7 +110,8 @@ describe.skipIf(!GIT_AVAILABLE)('integration — diff patch git parity', () => {
       runGit(['-C', pair.peer, 'commit', '-q', '-m', 'second'], { env: gitDeterministicEnv() });
       runGit(['-C', pair.peer, 'rm', '-q', 'gone.txt']);
       runGit(['-C', pair.peer, 'commit', '-q', '-m', 'third'], { env: gitDeterministicEnv() });
-      const expected = git(pair.peer, 'diff', '--no-ext-diff', '--no-color', 'HEAD~2', 'HEAD');
+      const live = git(pair.peer, 'diff', '--no-ext-diff', '--no-color', 'HEAD~2', 'HEAD');
+      const golden = await loadGolden('add-and-delete');
 
       const ctx = createMemoryContext();
       await init(ctx);
@@ -106,8 +128,9 @@ describe.skipIf(!GIT_AVAILABLE)('integration — diff patch git parity', () => {
       // Act
       const sut = await diff(ctx, { from: c1.id, to: c3.id, format: 'patch' });
 
-      // Assert
-      expect(sut.text).toBe(expected);
+      // Assert — double pin against live git + frozen golden.
+      expect(sut.text).toBe(live);
+      expect(sut.text).toBe(golden);
     } finally {
       await pair.dispose();
     }

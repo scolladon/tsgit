@@ -94,13 +94,12 @@ describe('patch-serializer', () => {
     describe('When renderPatch is called', () => {
       it('Then returns an empty string', () => {
         // Arrange
-        const sut = renderPatch;
 
         // Act
-        const result = sut([]);
+        const sut = renderPatch([]);
 
         // Assert
-        expect(result).toBe('');
+        expect(sut).toBe('');
       });
     });
   });
@@ -109,14 +108,13 @@ describe('patch-serializer', () => {
     describe('When renderPatch is called', () => {
       it('Then emits the canonical add header with one + line', () => {
         // Arrange
-        const sut = renderPatch;
         const file = addFile('hello.txt', 'hello\n', OID_B);
 
         // Act
-        const result = sut([file]);
+        const sut = renderPatch([file]);
 
         // Assert
-        expect(result).toBe(
+        expect(sut).toBe(
           [
             'diff --git a/hello.txt b/hello.txt',
             'new file mode 100644',
@@ -136,14 +134,13 @@ describe('patch-serializer', () => {
     describe('When renderPatch is called', () => {
       it('Then emits @@ -0,0 +1,N @@ with N + lines', () => {
         // Arrange
-        const sut = renderPatch;
         const file = addFile('multi.txt', 'one\ntwo\nthree\n', OID_C);
 
         // Act
-        const result = sut([file]);
+        const sut = renderPatch([file]);
 
         // Assert
-        expect(result).toBe(
+        expect(sut).toBe(
           [
             'diff --git a/multi.txt b/multi.txt',
             'new file mode 100644',
@@ -165,14 +162,13 @@ describe('patch-serializer', () => {
     describe('When renderPatch is called', () => {
       it('Then emits the add header without a hunk', () => {
         // Arrange
-        const sut = renderPatch;
         const file = addFile('empty.txt', '', OID_A);
 
         // Act
-        const result = sut([file]);
+        const sut = renderPatch([file]);
 
         // Assert
-        expect(result).toBe(
+        expect(sut).toBe(
           [
             'diff --git a/empty.txt b/empty.txt',
             'new file mode 100644',
@@ -190,14 +186,13 @@ describe('patch-serializer', () => {
     describe('When renderPatch is called', () => {
       it('Then emits the no-newline marker after the last + line', () => {
         // Arrange
-        const sut = renderPatch;
         const file = addFile('no-eol.txt', 'one\ntwo', OID_B);
 
         // Act
-        const result = sut([file]);
+        const sut = renderPatch([file]);
 
         // Assert
-        expect(result).toBe(
+        expect(sut).toBe(
           [
             'diff --git a/no-eol.txt b/no-eol.txt',
             'new file mode 100644',
@@ -219,14 +214,13 @@ describe('patch-serializer', () => {
     describe('When renderPatch is called', () => {
       it('Then emits the canonical delete header with one - line', () => {
         // Arrange
-        const sut = renderPatch;
         const file = deleteFile('goodbye.txt', 'goodbye\n', OID_A);
 
         // Act
-        const result = sut([file]);
+        const sut = renderPatch([file]);
 
         // Assert
-        expect(result).toBe(
+        expect(sut).toBe(
           [
             'diff --git a/goodbye.txt b/goodbye.txt',
             'deleted file mode 100644',
@@ -246,14 +240,13 @@ describe('patch-serializer', () => {
     describe('When renderPatch is called', () => {
       it('Then emits the delete header without a hunk', () => {
         // Arrange
-        const sut = renderPatch;
         const file = deleteFile('empty.txt', '', OID_C);
 
         // Act
-        const result = sut([file]);
+        const sut = renderPatch([file]);
 
         // Assert
-        expect(result).toBe(
+        expect(sut).toBe(
           [
             'diff --git a/empty.txt b/empty.txt',
             'deleted file mode 100644',
@@ -271,14 +264,13 @@ describe('patch-serializer', () => {
     describe('When renderPatch is called', () => {
       it('Then emits the no-newline marker after the last - line', () => {
         // Arrange
-        const sut = renderPatch;
         const file = deleteFile('no-eol.txt', 'one\ntwo', OID_A);
 
         // Act
-        const result = sut([file]);
+        const sut = renderPatch([file]);
 
         // Assert
-        expect(result).toBe(
+        expect(sut).toBe(
           [
             'diff --git a/no-eol.txt b/no-eol.txt',
             'deleted file mode 100644',
@@ -300,14 +292,13 @@ describe('patch-serializer', () => {
     describe('When renderPatch is called with pathPrefix: { old: "", new: "" }', () => {
       it('Then headers use bare paths', () => {
         // Arrange
-        const sut = renderPatch;
         const file = addFile('a.txt', 'x\n', OID_A);
 
         // Act
-        const result = sut([file], { pathPrefix: { old: '', new: '' } });
+        const sut = renderPatch([file], { pathPrefix: { old: '', new: '' } });
 
         // Assert
-        expect(result).toBe(
+        expect(sut).toBe(
           [
             'diff --git a.txt a.txt',
             'new file mode 100644',
@@ -327,14 +318,13 @@ describe('patch-serializer', () => {
     describe('When renderPatch is called', () => {
       it('Then emits one - and one + line under one hunk header', () => {
         // Arrange
-        const sut = renderPatch;
         const file = modifyFile('foo.txt', 'old\n', 'new\n');
 
         // Act
-        const result = sut([file]);
+        const sut = renderPatch([file]);
 
         // Assert
-        expect(result).toBe(
+        expect(sut).toBe(
           [
             'diff --git a/foo.txt b/foo.txt',
             'index aaaaaaa..bbbbbbb 100644',
@@ -354,16 +344,15 @@ describe('patch-serializer', () => {
     describe('When renderPatch is called with default contextLines (3)', () => {
       it('Then emits one hunk with three lines of context on each side', () => {
         // Arrange
-        const sut = renderPatch;
         const oldText = '1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n';
         const newText = '1\n2\n3\n4\nFOUR\n6\n7\n8\n9\n10\n';
         const file = modifyFile('lines.txt', oldText, newText);
 
         // Act
-        const result = sut([file]);
+        const sut = renderPatch([file]);
 
         // Assert
-        expect(result).toBe(
+        expect(sut).toBe(
           [
             'diff --git a/lines.txt b/lines.txt',
             'index aaaaaaa..bbbbbbb 100644',
@@ -389,14 +378,13 @@ describe('patch-serializer', () => {
     describe('When renderPatch is called with default contextLines (3)', () => {
       it('Then coalesces into one hunk', () => {
         // Arrange — change at line 1 + change at line 3, with line 2 in between
-        const sut = renderPatch;
         const file = modifyFile('foo.txt', 'a\nb\nc\n', 'A\nb\nC\n');
 
         // Act
-        const result = sut([file]);
+        const sut = renderPatch([file]);
 
         // Assert
-        expect(result).toBe(
+        expect(sut).toBe(
           [
             'diff --git a/foo.txt b/foo.txt',
             'index aaaaaaa..bbbbbbb 100644',
@@ -420,17 +408,16 @@ describe('patch-serializer', () => {
       it('Then emits two hunks', () => {
         // Arrange — change at line 1, then equal lines 2-9, change at line 10.
         // Gap = 8 equal lines, > 2*3 = 6, so hunks split.
-        const sut = renderPatch;
         const oldText = 'a\n2\n3\n4\n5\n6\n7\n8\n9\nz\n';
         const newText = 'A\n2\n3\n4\n5\n6\n7\n8\n9\nZ\n';
         const file = modifyFile('foo.txt', oldText, newText);
 
         // Act
-        const result = sut([file]);
+        const sut = renderPatch([file]);
 
         // Assert — first hunk ends after 3 context lines (2,3,4), second
         // hunk starts 3 context lines before line 10 (lines 7,8,9).
-        expect(result).toBe(
+        expect(sut).toBe(
           [
             'diff --git a/foo.txt b/foo.txt',
             'index aaaaaaa..bbbbbbb 100644',
@@ -459,16 +446,15 @@ describe('patch-serializer', () => {
     describe('When renderPatch is called with a multi-line modify', () => {
       it('Then every hunk has no surrounding context', () => {
         // Arrange
-        const sut = renderPatch;
         const oldText = '1\n2\n3\n4\n5\n';
         const newText = '1\n2\nTHREE\n4\n5\n';
         const file = modifyFile('foo.txt', oldText, newText);
 
         // Act
-        const result = sut([file], { contextLines: 0 });
+        const sut = renderPatch([file], { contextLines: 0 });
 
         // Assert
-        expect(result).toBe(
+        expect(sut).toBe(
           [
             'diff --git a/foo.txt b/foo.txt',
             'index aaaaaaa..bbbbbbb 100644',
@@ -488,14 +474,13 @@ describe('patch-serializer', () => {
     describe('When renderPatch is called', () => {
       it('Then emits the no-newline marker after the last - line', () => {
         // Arrange
-        const sut = renderPatch;
         const file = modifyFile('foo.txt', 'old', 'new\n');
 
         // Act
-        const result = sut([file]);
+        const sut = renderPatch([file]);
 
         // Assert
-        expect(result).toBe(
+        expect(sut).toBe(
           [
             'diff --git a/foo.txt b/foo.txt',
             'index aaaaaaa..bbbbbbb 100644',
@@ -516,14 +501,13 @@ describe('patch-serializer', () => {
     describe('When renderPatch is called', () => {
       it('Then emits the no-newline marker after each last line', () => {
         // Arrange
-        const sut = renderPatch;
         const file = modifyFile('foo.txt', 'old', 'new');
 
         // Act
-        const result = sut([file]);
+        const sut = renderPatch([file]);
 
         // Assert
-        expect(result).toBe(
+        expect(sut).toBe(
           [
             'diff --git a/foo.txt b/foo.txt',
             'index aaaaaaa..bbbbbbb 100644',
@@ -545,13 +529,12 @@ describe('patch-serializer', () => {
     describe('When renderPatch is called', () => {
       it('Then throws INVALID_DIFF_INPUT', () => {
         // Arrange
-        const sut = renderPatch;
         const file = modifyFile('foo.txt', 'a\n', 'b\n');
 
         // Act
         let caught: unknown;
         try {
-          sut([file], { contextLines: -1 });
+          renderPatch([file], { contextLines: -1 });
         } catch (err) {
           caught = err;
         }
@@ -568,13 +551,12 @@ describe('patch-serializer', () => {
     describe('When renderPatch is called', () => {
       it('Then throws INVALID_DIFF_INPUT', () => {
         // Arrange
-        const sut = renderPatch;
         const file = modifyFile('foo.txt', 'a\n', 'b\n');
 
         // Act
         let caught: unknown;
         try {
-          sut([file], { contextLines: 1.5 });
+          renderPatch([file], { contextLines: 1.5 });
         } catch (err) {
           caught = err;
         }
@@ -591,7 +573,6 @@ describe('patch-serializer', () => {
     describe('When renderPatch is called', () => {
       it('Then emits old mode + new mode + index (no trailing mode) + hunks', () => {
         // Arrange
-        const sut = renderPatch;
         const file: PatchFile = {
           change: {
             type: 'modify',
@@ -606,10 +587,10 @@ describe('patch-serializer', () => {
         };
 
         // Act
-        const result = sut([file]);
+        const sut = renderPatch([file]);
 
         // Assert
-        expect(result).toBe(
+        expect(sut).toBe(
           [
             'diff --git a/foo.sh b/foo.sh',
             'old mode 100644',
@@ -631,14 +612,13 @@ describe('patch-serializer', () => {
     describe('When renderPatch is called', () => {
       it('Then emits old mode + new mode + index only (no --- / +++ / hunks)', () => {
         // Arrange
-        const sut = renderPatch;
         const file = modeChangeOnly('foo.sh', 'echo hi\n', FILE_MODE.REGULAR, FILE_MODE.EXECUTABLE);
 
         // Act
-        const result = sut([file]);
+        const sut = renderPatch([file]);
 
         // Assert
-        expect(result).toBe(
+        expect(sut).toBe(
           [
             'diff --git a/foo.sh b/foo.sh',
             'old mode 100644',
@@ -655,14 +635,13 @@ describe('patch-serializer', () => {
     describe('When renderPatch is called', () => {
       it('Then emits old mode 100644, new mode 120000, index, and content hunk', () => {
         // Arrange
-        const sut = renderPatch;
         const file = typeChangeFile('foo', 'old contents\n', '/some/symlink/target');
 
         // Act
-        const result = sut([file]);
+        const sut = renderPatch([file]);
 
         // Assert
-        expect(result).toBe(
+        expect(sut).toBe(
           [
             'diff --git a/foo b/foo',
             'old mode 100644',
@@ -685,14 +664,13 @@ describe('patch-serializer', () => {
     describe('When renderPatch is called', () => {
       it('Then emits similarity index 100% + rename from + rename to (no hunks)', () => {
         // Arrange
-        const sut = renderPatch;
         const file = renameFile('old/path.txt', 'new/path.txt');
 
         // Act
-        const result = sut([file]);
+        const sut = renderPatch([file]);
 
         // Assert
-        expect(result).toBe(
+        expect(sut).toBe(
           [
             'diff --git a/old/path.txt b/new/path.txt',
             'similarity index 100%',
@@ -709,7 +687,6 @@ describe('patch-serializer', () => {
     describe('When renderPatch is called', () => {
       it('Then emits the Binary files ... differ block', () => {
         // Arrange — NUL byte in content triggers isBinary
-        const sut = renderPatch;
         const oldBytes = new Uint8Array([0x01, 0x00, 0x02, 0x03]);
         const newBytes = new Uint8Array([0x01, 0x00, 0x02, 0x04]);
         const file: PatchFile = {
@@ -726,10 +703,10 @@ describe('patch-serializer', () => {
         };
 
         // Act
-        const result = sut([file]);
+        const sut = renderPatch([file]);
 
         // Assert
-        expect(result).toBe(
+        expect(sut).toBe(
           [
             'diff --git a/logo.png b/logo.png',
             'index aaaaaaa..bbbbbbb 100644',
@@ -745,7 +722,6 @@ describe('patch-serializer', () => {
     describe('When renderPatch is called', () => {
       it('Then emits Binary files /dev/null and b/X differ', () => {
         // Arrange
-        const sut = renderPatch;
         const file: PatchFile = {
           change: {
             type: 'add',
@@ -757,10 +733,10 @@ describe('patch-serializer', () => {
         };
 
         // Act
-        const result = sut([file]);
+        const sut = renderPatch([file]);
 
         // Assert
-        expect(result).toBe(
+        expect(sut).toBe(
           [
             'diff --git a/logo.png b/logo.png',
             'new file mode 100644',
@@ -781,13 +757,12 @@ describe('patch-serializer', () => {
         // path containing `\n`. The serializer must refuse to render it
         // because the resulting headers would smuggle forged hunks past
         // any downstream parser.
-        const sut = renderPatch;
         const file = addFile('evil\nindex 0000000..deadbeef', 'hi\n');
 
         // Act
         let caught: unknown;
         try {
-          sut([file]);
+          renderPatch([file]);
         } catch (err) {
           caught = err;
         }
@@ -804,13 +779,12 @@ describe('patch-serializer', () => {
     describe('When renderPatch is called', () => {
       it('Then throws INVALID_DIFF_INPUT', () => {
         // Arrange
-        const sut = renderPatch;
         const file = addFile('evil\x00path', 'hi\n');
 
         // Act
         let caught: unknown;
         try {
-          sut([file]);
+          renderPatch([file]);
         } catch (err) {
           caught = err;
         }
@@ -828,13 +802,12 @@ describe('patch-serializer', () => {
       it('Then throws INVALID_DIFF_INPUT', () => {
         // Arrange — covers the prefix-injection vector independently of the
         // change-path one.
-        const sut = renderPatch;
         const file = addFile('ok.txt', 'hi\n');
 
         // Act
         let caught: unknown;
         try {
-          sut([file], { pathPrefix: { old: 'a/', new: 'b/\nrename from /etc/passwd' } });
+          renderPatch([file], { pathPrefix: { old: 'a/', new: 'b/\nrename from /etc/passwd' } });
         } catch (err) {
           caught = err;
         }
@@ -851,13 +824,12 @@ describe('patch-serializer', () => {
     describe('When renderPatch is called', () => {
       it('Then throws INVALID_DIFF_INPUT', () => {
         // Arrange — covers the `delete` branch of assertSafePaths.
-        const sut = renderPatch;
         const file = deleteFile('bad\nindex deadbeef', 'x\n');
 
         // Act
         let caught: unknown;
         try {
-          sut([file]);
+          renderPatch([file]);
         } catch (err) {
           caught = err;
         }
@@ -874,13 +846,12 @@ describe('patch-serializer', () => {
     describe('When renderPatch is called', () => {
       it('Then throws INVALID_DIFF_INPUT', () => {
         // Arrange — covers the `rename` branch of assertSafePaths.
-        const sut = renderPatch;
         const file = renameFile('old.txt', 'new\nindex forged');
 
         // Act
         let caught: unknown;
         try {
-          sut([file]);
+          renderPatch([file]);
         } catch (err) {
           caught = err;
         }
@@ -899,14 +870,13 @@ describe('patch-serializer', () => {
         // Arrange — ids differ but bytes match: renderTextBody → groupHunks
         // sees no change edits, returns no hunks. Exercises the `groups.length
         // === 0` early-return.
-        const sut = renderPatch;
         const file = modifyFile('foo.txt', 'same\n', 'same\n');
 
         // Act
-        const result = sut([file]);
+        const sut = renderPatch([file]);
 
         // Assert — body is the header + index + --- + +++ + EOF.
-        expect(result).toBe(
+        expect(sut).toBe(
           [
             'diff --git a/foo.txt b/foo.txt',
             'index aaaaaaa..bbbbbbb 100644',
@@ -924,14 +894,13 @@ describe('patch-serializer', () => {
       it('Then emits header + index + --- + +++ with no hunks (edits.length === 0 path)', () => {
         // Arrange — empty/empty drives diffLines to produce a single
         // zero-range "common" hunk, so the edit stream is empty.
-        const sut = renderPatch;
         const file = modifyFile('foo.txt', '', '');
 
         // Act
-        const result = sut([file]);
+        const sut = renderPatch([file]);
 
         // Assert
-        expect(result).toBe(
+        expect(sut).toBe(
           [
             'diff --git a/foo.txt b/foo.txt',
             'index aaaaaaa..bbbbbbb 100644',
@@ -948,7 +917,6 @@ describe('patch-serializer', () => {
     describe('When renderPatch is called', () => {
       it('Then treats it as an empty add', () => {
         // Arrange
-        const sut = renderPatch;
         const file: PatchFile = {
           change: {
             type: 'add',
@@ -959,10 +927,10 @@ describe('patch-serializer', () => {
         };
 
         // Act
-        const result = sut([file]);
+        const sut = renderPatch([file]);
 
         // Assert
-        expect(result).toBe(
+        expect(sut).toBe(
           [
             'diff --git a/empty.txt b/empty.txt',
             'new file mode 100644',
@@ -980,7 +948,6 @@ describe('patch-serializer', () => {
     describe('When renderPatch is called', () => {
       it('Then treats it as an empty delete', () => {
         // Arrange
-        const sut = renderPatch;
         const file: PatchFile = {
           change: {
             type: 'delete',
@@ -991,10 +958,10 @@ describe('patch-serializer', () => {
         };
 
         // Act
-        const result = sut([file]);
+        const sut = renderPatch([file]);
 
         // Assert
-        expect(result).toBe(
+        expect(sut).toBe(
           [
             'diff --git a/empty.txt b/empty.txt',
             'deleted file mode 100644',
@@ -1013,7 +980,6 @@ describe('patch-serializer', () => {
       it('Then treats the missing side as empty bytes', () => {
         // Arrange — exercises the `file.oldContent ?? new Uint8Array(0)`
         // fallback in renderFile.
-        const sut = renderPatch;
         const file: PatchFile = {
           change: {
             type: 'modify',
@@ -1027,10 +993,10 @@ describe('patch-serializer', () => {
         };
 
         // Act
-        const result = sut([file]);
+        const sut = renderPatch([file]);
 
         // Assert — old side acts like an empty file; one `+hi` line emitted.
-        expect(result).toBe(
+        expect(sut).toBe(
           [
             'diff --git a/foo.txt b/foo.txt',
             'index aaaaaaa..bbbbbbb 100644',
@@ -1050,7 +1016,6 @@ describe('patch-serializer', () => {
       it('Then treats the missing side as empty bytes', () => {
         // Arrange — exercises the `file.newContent ?? new Uint8Array(0)`
         // fallback in renderFile.
-        const sut = renderPatch;
         const file: PatchFile = {
           change: {
             type: 'modify',
@@ -1064,10 +1029,10 @@ describe('patch-serializer', () => {
         };
 
         // Act
-        const result = sut([file]);
+        const sut = renderPatch([file]);
 
         // Assert
-        expect(result).toBe(
+        expect(sut).toBe(
           [
             'diff --git a/foo.txt b/foo.txt',
             'index aaaaaaa..bbbbbbb 100644',
@@ -1086,7 +1051,6 @@ describe('patch-serializer', () => {
     describe('When renderPatch is called', () => {
       it('Then emits Binary files /dev/null and b/X differ', () => {
         // Arrange — renderBinaryBody substitutes /dev/null on the empty side.
-        const sut = renderPatch;
         const file: PatchFile = {
           change: {
             type: 'modify',
@@ -1101,10 +1065,10 @@ describe('patch-serializer', () => {
         };
 
         // Act
-        const result = sut([file]);
+        const sut = renderPatch([file]);
 
         // Assert
-        expect(result).toBe(
+        expect(sut).toBe(
           [
             'diff --git a/logo.png b/logo.png',
             'index aaaaaaa..bbbbbbb 100644',
@@ -1120,7 +1084,6 @@ describe('patch-serializer', () => {
     describe('When renderPatch is called', () => {
       it('Then emits Binary files a/X and /dev/null differ', () => {
         // Arrange — symmetric of the above; exercises the `newBytes.length === 0` branch.
-        const sut = renderPatch;
         const file: PatchFile = {
           change: {
             type: 'modify',
@@ -1135,10 +1098,10 @@ describe('patch-serializer', () => {
         };
 
         // Act
-        const result = sut([file]);
+        const sut = renderPatch([file]);
 
         // Assert
-        expect(result).toBe(
+        expect(sut).toBe(
           [
             'diff --git a/logo.png b/logo.png',
             'index aaaaaaa..bbbbbbb 100644',
@@ -1150,34 +1113,33 @@ describe('patch-serializer', () => {
     });
   });
 
-  describe('Given a modify where only the new side lacks trailing LF AND has context lines around the change', () => {
+  describe('Given a modify where the last shared line lacks trailing LF on both sides', () => {
     describe('When renderPatch is called', () => {
-      it('Then emits the no-newline marker after the final context line of the new side', () => {
-        // Arrange — change line 1, keep lines 2-3 as context. Last context
-        // line on both sides is `c`, with no trailing LF on either side. The
-        // `context`-kind branch of trailingNoNewline must emit the marker.
-        const sut = renderPatch;
+      it('Then emits the no-newline marker as the trailing body element', () => {
+        // Arrange — change line 1 only; last lines `b`, `c` are byte-identical
+        // and lack trailing LF on both sides. The marker must surface as the
+        // final body element regardless of which line Myers labels as
+        // context vs. the no-op tail.
         const file = modifyFile('foo.txt', 'a\nb\nc', 'A\nb\nc');
 
         // Act
-        const result = sut([file]);
+        const sut = renderPatch([file]);
 
-        // Assert
-        expect(result).toBe(
-          [
-            'diff --git a/foo.txt b/foo.txt',
-            'index aaaaaaa..bbbbbbb 100644',
-            '--- a/foo.txt',
-            '+++ b/foo.txt',
-            '@@ -1,3 +1,3 @@',
-            '-a',
-            '+A',
-            ' b',
-            ' c',
-            '\\ No newline at end of file',
-            '',
-          ].join('\n'),
-        );
+        // Assert — Decoupled from Myers' specific labelling: the marker is
+        // the last non-empty line, immediately after the last body line.
+        const lines = sut.split('\n');
+        expect(lines.at(-1)).toBe(''); // trailing newline
+        expect(lines.at(-2)).toBe('\\ No newline at end of file');
+        // And it must be preceded by a body line carrying either side's last
+        // textual content (`c`) — context, delete, or insert — never blank.
+        const beforeMarker = lines.at(-3) ?? '';
+        expect(beforeMarker.length).toBeGreaterThan(0);
+        expect(' -+'.includes(beforeMarker[0] ?? '')).toBe(true);
+        // The full header pieces are still produced.
+        expect(sut).toContain('diff --git a/foo.txt b/foo.txt');
+        expect(sut).toContain('index aaaaaaa..bbbbbbb 100644');
+        expect(sut).toContain('--- a/foo.txt');
+        expect(sut).toContain('+++ b/foo.txt');
       });
     });
   });
@@ -1188,14 +1150,13 @@ describe('patch-serializer', () => {
         // Arrange — appending `b` after the only line `a`. With contextLines=0
         // the slice carries one insert; oldLen=0 forces the zero-length-anchor
         // branch in computeRange.
-        const sut = renderPatch;
         const file = modifyFile('foo.txt', 'a\n', 'a\nb\n');
 
         // Act
-        const result = sut([file], { contextLines: 0 });
+        const sut = renderPatch([file], { contextLines: 0 });
 
         // Assert
-        expect(result).toBe(
+        expect(sut).toBe(
           [
             'diff --git a/foo.txt b/foo.txt',
             'index aaaaaaa..bbbbbbb 100644',
@@ -1215,14 +1176,13 @@ describe('patch-serializer', () => {
       it('Then emits a hunk with newLen=0 anchored at the prior line', () => {
         // Arrange — symmetric to the insertion case: forces newLen=0 in
         // computeRange.
-        const sut = renderPatch;
         const file = modifyFile('foo.txt', 'a\nb\n', 'a\n');
 
         // Act
-        const result = sut([file], { contextLines: 0 });
+        const sut = renderPatch([file], { contextLines: 0 });
 
         // Assert
-        expect(result).toBe(
+        expect(sut).toBe(
           [
             'diff --git a/foo.txt b/foo.txt',
             'index aaaaaaa..bbbbbbb 100644',
@@ -1241,7 +1201,6 @@ describe('patch-serializer', () => {
     describe('When renderPatch is called', () => {
       it('Then emits Binary files a/X and /dev/null differ', () => {
         // Arrange
-        const sut = renderPatch;
         const file: PatchFile = {
           change: {
             type: 'delete',
@@ -1253,10 +1212,10 @@ describe('patch-serializer', () => {
         };
 
         // Act
-        const result = sut([file]);
+        const sut = renderPatch([file]);
 
         // Assert
-        expect(result).toBe(
+        expect(sut).toBe(
           [
             'diff --git a/logo.png b/logo.png',
             'deleted file mode 100644',

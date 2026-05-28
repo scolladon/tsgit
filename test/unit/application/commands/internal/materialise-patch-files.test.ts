@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+// `vi` is still used by the bounded-concurrency test below.
 import { createMemoryContext } from '../../../../../src/adapters/memory/memory-adapter.js';
 import {
   materialiseOne,
@@ -119,11 +120,10 @@ describe('materialisePatchFiles', () => {
 describe('materialiseOne', () => {
   describe('Given a modify change whose oldId equals newId (mode-only)', () => {
     describe('When materialiseOne is called', () => {
-      it('Then it loads the blob exactly once and aliases both sides to the same bytes', async () => {
+      it('Then both content fields alias the same Uint8Array reference', async () => {
         // Arrange
         const ctx = createMemoryContext();
         const oid = await writeBlob(ctx, 'echo hi\n');
-        const spy = vi.spyOn(ctx.fs, 'read');
         const change: ModifyChange = {
           type: 'modify',
           path: 'foo.sh' as FilePath,
@@ -136,11 +136,12 @@ describe('materialiseOne', () => {
         // Act
         const sut = await materialiseOne(ctx, change);
 
-        // Assert — single readFile call (the short-circuit branch) + the two
-        // content fields point at the same payload.
-        expect(spy).toHaveBeenCalledTimes(1);
+        // Assert — reference identity proves the short-circuit ran without
+        // coupling to a specific number of internal readBlob calls. A future
+        // refactor that batches reads (e.g. via catFileBatch) keeps the
+        // aliasing semantics that consumers actually depend on.
+        expect(sut.oldContent).toBe(sut.newContent);
         expect(sut.oldContent).toEqual(utf8.encode('echo hi\n'));
-        expect(sut.newContent).toEqual(utf8.encode('echo hi\n'));
       });
     });
   });
