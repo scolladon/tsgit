@@ -12,7 +12,7 @@
  * Skips silently when `git` is not on PATH (CI always has git; local devs may not).
  *
  * @proves
- *   surface: diff:patch
+ *   surface: diff.patch
  *   bucket:  cross-tool-interop
  *   unique:  patch-text serializer's byte-output matches upstream git's and a frozen golden
  */

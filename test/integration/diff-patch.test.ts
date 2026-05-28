@@ -5,9 +5,9 @@
  * `repo.diff` with the new patch-text envelope → canonical golden text.
  *
  * @proves
- *   surface: diff:patch
- *   bucket:  user-flow
- *   unique:  diff command emits canonical unified-diff text matching git's grammar
+ *   surface: diff.patch
+ *   bucket:  coverage-gap
+ *   unique:  diff command threads TreeDiff through readBlob into the patch serializer end-to-end
  */
 import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../src/adapters/memory/memory-adapter.js';

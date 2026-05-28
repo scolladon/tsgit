@@ -182,8 +182,11 @@ describe('patch-serializer (properties)', () => {
       it('Then the text always starts with `diff --git ` and ends with `\\n`', () => {
         fc.assert(
           fc.property(arbAnyShape(), (file) => {
+            // Arrange — fast-check supplied file
+            const input = [file];
+
             // Act
-            const sut = renderPatch([file]);
+            const sut = renderPatch(input);
 
             // Assert — invariants every file-class shares.
             expect(sut.startsWith('diff --git ')).toBe(true);
@@ -200,8 +203,11 @@ describe('patch-serializer (properties)', () => {
       it('Then the body carries exactly the four expected header lines', () => {
         fc.assert(
           fc.property(arbRenameFile(), (file) => {
+            // Arrange — fast-check supplied file
+            const input = [file];
+
             // Act
-            const sut = renderPatch([file]);
+            const sut = renderPatch(input);
 
             // Assert — rename grammar is fixed: similarity index 100% +
             // rename from + rename to. No --- / +++ / hunks.
@@ -223,8 +229,11 @@ describe('patch-serializer (properties)', () => {
       it('Then the body carries the Binary files /dev/null and b/X differ line', () => {
         fc.assert(
           fc.property(arbBinaryAddFile(), (file) => {
+            // Arrange — fast-check supplied file
+            const input = [file];
+
             // Act
-            const sut = renderPatch([file]);
+            const sut = renderPatch(input);
 
             // Assert — no hunk markers ever escape into a binary block.
             expect(sut).toContain('Binary files /dev/null and b/');

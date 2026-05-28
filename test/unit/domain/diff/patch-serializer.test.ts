@@ -93,10 +93,11 @@ describe('patch-serializer', () => {
   describe('Given an empty PatchFile array', () => {
     describe('When renderPatch is called', () => {
       it('Then returns an empty string', () => {
-        // Arrange
+        // Arrange — no PatchFile entries; nothing to materialise.
+        const files: ReadonlyArray<PatchFile> = [];
 
         // Act
-        const sut = renderPatch([]);
+        const sut = renderPatch(files);
 
         // Assert
         expect(sut).toBe('');
