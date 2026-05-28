@@ -11,11 +11,17 @@
  */
 import type { ConfigScope } from '../../domain/commands/config-key.js';
 import { parseConfigKey } from '../../domain/commands/config-key.js';
-import { configValueInvalid, invalidOption } from '../../domain/commands/error.js';
+import {
+  configMultipleValues,
+  configSectionNotFound,
+  configValueInvalid,
+  invalidOption,
+} from '../../domain/commands/error.js';
 import { TsgitError } from '../../domain/error.js';
 import type { Context } from '../../ports/context.js';
-import { invalidateConfigCache, parseSectionHeader } from './config-read.js';
+import { invalidateConfigCache, parseIniSections, parseSectionHeader } from './config-read.js';
 import { invalidateScopedConfigCache } from './config-scoped-read.js';
+import { collectValues } from './internal/config-key.js';
 import { resolveScopePath } from './internal/config-scope.js';
 
 /**
@@ -546,4 +552,178 @@ export const setConfigEntry = async ({
   await readModifyWriteScopedConfig(ctx, targetScope, (text) =>
     setConfigEntryInText(text, parsed.section, parsed.subsection, parsed.name, value),
   );
+};
+
+/**
+ * Remove a single `key = value` entry from the given scope. Idempotent — if
+ * the key is absent the call is a no-op (no I/O). If the key appears more
+ * than once in the targeted scope, throws `CONFIG_MULTIPLE_VALUES` with
+ * `requested: 'remove'` (the caller should use `unsetAllConfigEntries` to
+ * clear every occurrence).
+ */
+export const unsetConfigEntry = async ({
+  ctx,
+  key,
+  scope,
+}: {
+  readonly ctx: Context;
+  readonly key: string;
+  readonly scope?: ConfigScope;
+}): Promise<void> => {
+  const parsed = parseConfigKey(key);
+  const targetScope: ConfigScope = scope ?? 'local';
+  const path = await resolveScopePath(ctx, targetScope);
+  const text = await readConfigText(ctx, path);
+  const sections = parseIniSections(text);
+  const matches = collectValues(sections, parsed);
+  if (matches.length === 0) return;
+  if (matches.length > 1) {
+    throw configMultipleValues(key, matches.length, 'remove', targetScope);
+  }
+  const after = removeConfigEntry(text, parsed.section, parsed.subsection, parsed.name);
+  await ctx.fs.writeUtf8(path, after);
+  invalidateConfigCache(ctx);
+  invalidateScopedConfigCache(ctx);
+};
+
+/**
+ * Remove every occurrence of `key` from the targeted scope. Idempotent — a
+ * missing key produces no I/O. Unlike `unsetConfigEntry`, multi-valued keys
+ * are explicitly supported: all matching lines are removed in a single
+ * read-modify-write pass.
+ */
+export const unsetAllConfigEntries = async ({
+  ctx,
+  key,
+  scope,
+}: {
+  readonly ctx: Context;
+  readonly key: string;
+  readonly scope?: ConfigScope;
+}): Promise<void> => {
+  const parsed = parseConfigKey(key);
+  const targetScope: ConfigScope = scope ?? 'local';
+  const path = await resolveScopePath(ctx, targetScope);
+  const text = await readConfigText(ctx, path);
+  const sections = parseIniSections(text);
+  const matches = collectValues(sections, parsed);
+  if (matches.length === 0) return;
+  const after = removeConfigEntry(text, parsed.section, parsed.subsection, parsed.name);
+  await ctx.fs.writeUtf8(path, after);
+  invalidateConfigCache(ctx);
+  invalidateScopedConfigCache(ctx);
+};
+
+/**
+ * Split a dotted section name into `(section, subsection)`. v1 only supports
+ * rename/remove on sections that carry an explicit subsection — top-level
+ * sections (e.g. `[user]`) cannot be renamed by canonical git either.
+ */
+const parseSectionName = (
+  name: string,
+): { readonly section: string; readonly subsection: string } => {
+  const dot = name.indexOf('.');
+  if (dot === -1 || dot === 0 || dot === name.length - 1) {
+    throw invalidOption(
+      'config',
+      `section name must be of the form "<section>.<subsection>": ${name}`,
+    );
+  }
+  const section = name.slice(0, dot);
+  const subsection = name.slice(dot + 1);
+  if (subsection.length === 0) {
+    throw invalidOption(
+      'config',
+      `section name must be of the form "<section>.<subsection>": ${name}`,
+    );
+  }
+  return { section, subsection };
+};
+
+const sectionExists = (
+  sections: ReadonlyArray<{
+    readonly section: string;
+    readonly subsection: string | undefined;
+  }>,
+  section: string,
+  subsection: string,
+): boolean => {
+  const lowerSection = section.toLowerCase();
+  for (const s of sections) {
+    if (s.section.toLowerCase() !== lowerSection) continue;
+    if (s.subsection === subsection) return true;
+  }
+  return false;
+};
+
+/**
+ * Rename `[<section> "<oldSubsection>"]` to `[<section> "<newSubsection>"]`.
+ * Both inputs are dotted (`'remote.origin'`). The two section families MUST
+ * match — renaming across families (e.g. `remote.origin` → `branch.main`) is
+ * rejected with `INVALID_OPTION`. Throws `CONFIG_SECTION_NOT_FOUND` if the
+ * source section does not exist in the targeted scope.
+ */
+export const renameConfigSection = async ({
+  ctx,
+  oldName,
+  newName,
+  scope,
+}: {
+  readonly ctx: Context;
+  readonly oldName: string;
+  readonly newName: string;
+  readonly scope?: ConfigScope;
+}): Promise<void> => {
+  const oldParts = parseSectionName(oldName);
+  const newParts = parseSectionName(newName);
+  if (oldParts.section.toLowerCase() !== newParts.section.toLowerCase()) {
+    throw invalidOption(
+      'config',
+      `cannot rename across section families: ${oldParts.section} → ${newParts.section}`,
+    );
+  }
+  const targetScope: ConfigScope = scope ?? 'local';
+  const path = await resolveScopePath(ctx, targetScope);
+  const text = await readConfigText(ctx, path);
+  const sections = parseIniSections(text);
+  if (!sectionExists(sections, oldParts.section, oldParts.subsection)) {
+    throw configSectionNotFound(oldName, targetScope);
+  }
+  const after = renameConfigSectionInText(
+    text,
+    oldParts.section,
+    oldParts.subsection,
+    newParts.subsection,
+  );
+  await ctx.fs.writeUtf8(path, after);
+  invalidateConfigCache(ctx);
+  invalidateScopedConfigCache(ctx);
+};
+
+/**
+ * Delete `[<section> "<subsection>"]` and its body. `sectionName` is dotted
+ * (`'remote.origin'`). Throws `CONFIG_SECTION_NOT_FOUND` when the section is
+ * absent in the targeted scope.
+ */
+export const removeConfigSection = async ({
+  ctx,
+  sectionName,
+  scope,
+}: {
+  readonly ctx: Context;
+  readonly sectionName: string;
+  readonly scope?: ConfigScope;
+}): Promise<void> => {
+  const parts = parseSectionName(sectionName);
+  const targetScope: ConfigScope = scope ?? 'local';
+  const path = await resolveScopePath(ctx, targetScope);
+  const text = await readConfigText(ctx, path);
+  const sections = parseIniSections(text);
+  if (!sectionExists(sections, parts.section, parts.subsection)) {
+    throw configSectionNotFound(sectionName, targetScope);
+  }
+  const after = removeConfigSectionInText(text, parts.section, parts.subsection);
+  await ctx.fs.writeUtf8(path, after);
+  invalidateConfigCache(ctx);
+  invalidateScopedConfigCache(ctx);
 };

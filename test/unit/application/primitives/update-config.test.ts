@@ -1492,7 +1492,13 @@ describe('primitives/update-config', () => {
   });
 });
 
-import { setConfigEntry } from '../../../../src/application/primitives/update-config.js';
+import {
+  removeConfigSection,
+  renameConfigSection,
+  setConfigEntry,
+  unsetAllConfigEntries,
+  unsetConfigEntry,
+} from '../../../../src/application/primitives/update-config.js';
 
 describe('setConfigEntry (I/O)', () => {
   describe('Given a missing local config, When setConfigEntry runs', () => {
@@ -1649,6 +1655,268 @@ describe('setConfigEntry (I/O)', () => {
         reason: 'worktree-extension-unset',
       });
       expect(writeSpy).toHaveBeenCalledTimes(0);
+    });
+  });
+});
+
+describe('unsetConfigEntry (I/O)', () => {
+  describe('Given user.name = Ada in local, When unsetConfigEntry runs', () => {
+    it('Then the key line is gone', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[user]\n\tname = Ada\n');
+
+      // Act
+      await unsetConfigEntry({ ctx, key: 'user.name' });
+
+      // Assert
+      const text = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
+      expect(text).not.toContain('Ada');
+    });
+  });
+
+  describe('Given user.name absent, When unsetConfigEntry runs', () => {
+    it('Then no I/O happens (idempotent)', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      const writeSpy = vi.spyOn(ctx.fs, 'writeUtf8');
+
+      // Act
+      await unsetConfigEntry({ ctx, key: 'user.name' });
+
+      // Assert
+      expect(writeSpy).toHaveBeenCalledTimes(0);
+    });
+  });
+
+  describe('Given a multi-valued key, When unsetConfigEntry runs', () => {
+    it('Then it throws CONFIG_MULTIPLE_VALUES with requested=remove', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[user]\n\tname = Ada\n\tname = Bob\n');
+      let caught: TsgitError | undefined;
+
+      // Act
+      try {
+        await unsetConfigEntry({ ctx, key: 'user.name' });
+      } catch (err) {
+        caught = err as TsgitError;
+      }
+
+      // Assert
+      expect(caught?.data).toEqual({
+        code: 'CONFIG_MULTIPLE_VALUES',
+        key: 'user.name',
+        count: 2,
+        requested: 'remove',
+        scope: 'local',
+      });
+    });
+  });
+
+  describe('Given an invalid key, When unsetConfigEntry runs', () => {
+    it('Then it throws CONFIG_KEY_INVALID and no I/O happens', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      const writeSpy = vi.spyOn(ctx.fs, 'writeUtf8');
+      let caught: TsgitError | undefined;
+
+      // Act
+      try {
+        await unsetConfigEntry({ ctx, key: '1bad.name' });
+      } catch (err) {
+        caught = err as TsgitError;
+      }
+
+      // Assert
+      expect(caught?.data.code).toBe('CONFIG_KEY_INVALID');
+      expect(writeSpy).toHaveBeenCalledTimes(0);
+    });
+  });
+});
+
+describe('unsetAllConfigEntries (I/O)', () => {
+  describe('Given a multi-valued key, When unsetAllConfigEntries runs', () => {
+    it('Then every matching line is removed', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await ctx.fs.writeUtf8(
+        `${ctx.layout.gitDir}/config`,
+        '[remote "origin"]\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n\tfetch = +refs/tags/*:refs/tags/*\n',
+      );
+
+      // Act
+      await unsetAllConfigEntries({ ctx, key: 'remote.origin.fetch' });
+
+      // Assert
+      const text = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
+      expect(text).not.toContain('fetch =');
+    });
+  });
+
+  describe('Given the key absent, When unsetAllConfigEntries runs', () => {
+    it('Then no I/O happens', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      const writeSpy = vi.spyOn(ctx.fs, 'writeUtf8');
+
+      // Act
+      await unsetAllConfigEntries({ ctx, key: 'user.email' });
+
+      // Assert
+      expect(writeSpy).toHaveBeenCalledTimes(0);
+    });
+  });
+});
+
+describe('renameConfigSection (I/O)', () => {
+  describe('Given [remote "origin"], When renamed to remote.upstream', () => {
+    it('Then the section header is rewritten', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await ctx.fs.writeUtf8(
+        `${ctx.layout.gitDir}/config`,
+        '[remote "origin"]\n\turl = git@example.com:r.git\n',
+      );
+
+      // Act
+      await renameConfigSection({
+        ctx,
+        oldName: 'remote.origin',
+        newName: 'remote.upstream',
+      });
+
+      // Assert
+      const text = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
+      expect(text).toContain('[remote "upstream"]');
+      expect(text).not.toContain('[remote "origin"]');
+    });
+  });
+
+  describe('Given a missing section, When renameConfigSection runs', () => {
+    it('Then it throws CONFIG_SECTION_NOT_FOUND', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      let caught: TsgitError | undefined;
+
+      // Act
+      try {
+        await renameConfigSection({
+          ctx,
+          oldName: 'remote.origin',
+          newName: 'remote.upstream',
+        });
+      } catch (err) {
+        caught = err as TsgitError;
+      }
+
+      // Assert
+      expect(caught?.data).toEqual({
+        code: 'CONFIG_SECTION_NOT_FOUND',
+        name: 'remote.origin',
+        scope: 'local',
+      });
+    });
+  });
+
+  describe('Given a cross-family rename (remote.origin → branch.main), When renameConfigSection runs', () => {
+    it('Then it throws INVALID_OPTION', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      let caught: TsgitError | undefined;
+
+      // Act
+      try {
+        await renameConfigSection({
+          ctx,
+          oldName: 'remote.origin',
+          newName: 'branch.main',
+        });
+      } catch (err) {
+        caught = err as TsgitError;
+      }
+
+      // Assert
+      expect(caught?.data.code).toBe('INVALID_OPTION');
+    });
+  });
+
+  describe('Given oldName with no subsection (just "user"), When renameConfigSection runs', () => {
+    it('Then it throws INVALID_OPTION', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      let caught: TsgitError | undefined;
+
+      // Act
+      try {
+        await renameConfigSection({ ctx, oldName: 'user', newName: 'user.x' });
+      } catch (err) {
+        caught = err as TsgitError;
+      }
+
+      // Assert
+      expect(caught?.data.code).toBe('INVALID_OPTION');
+    });
+  });
+});
+
+describe('removeConfigSection (I/O)', () => {
+  describe('Given [remote "origin"] present, When removeConfigSection runs', () => {
+    it('Then the block is gone', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await ctx.fs.writeUtf8(
+        `${ctx.layout.gitDir}/config`,
+        '[remote "origin"]\n\turl = x\n[user]\n\tname = Ada\n',
+      );
+
+      // Act
+      await removeConfigSection({ ctx, sectionName: 'remote.origin' });
+
+      // Assert
+      const text = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
+      expect(text).not.toContain('[remote "origin"]');
+      expect(text).toContain('[user]');
+    });
+  });
+
+  describe('Given the section absent, When removeConfigSection runs', () => {
+    it('Then it throws CONFIG_SECTION_NOT_FOUND', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      let caught: TsgitError | undefined;
+
+      // Act
+      try {
+        await removeConfigSection({ ctx, sectionName: 'remote.origin' });
+      } catch (err) {
+        caught = err as TsgitError;
+      }
+
+      // Assert
+      expect(caught?.data).toEqual({
+        code: 'CONFIG_SECTION_NOT_FOUND',
+        name: 'remote.origin',
+        scope: 'local',
+      });
+    });
+  });
+
+  describe('Given a malformed sectionName (no dot), When removeConfigSection runs', () => {
+    it('Then it throws INVALID_OPTION', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      let caught: TsgitError | undefined;
+
+      // Act
+      try {
+        await removeConfigSection({ ctx, sectionName: 'remote' });
+      } catch (err) {
+        caught = err as TsgitError;
+      }
+
+      // Assert
+      expect(caught?.data.code).toBe('INVALID_OPTION');
     });
   });
 });

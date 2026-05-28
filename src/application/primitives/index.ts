@@ -67,9 +67,13 @@ export { unstageEntry } from './unstage-entry.js';
 export type { ConfigEntry } from './update-config.js';
 export {
   applyConfigOpInText,
+  removeConfigSection,
+  renameConfigSection,
   setConfigEntry,
   setConfigEntryInText,
   setCoreConfigEntryInText,
+  unsetAllConfigEntries,
+  unsetConfigEntry,
   updateConfigEntries,
   updateCoreConfig,
 } from './update-config.js';
