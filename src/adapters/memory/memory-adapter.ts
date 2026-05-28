@@ -21,16 +21,25 @@ export interface MemoryAdapterOptions {
   readonly homeDir?: string;
   /** Optional hook runner exposed via `ctx.hooks` (default: undefined — hooks inert). */
   readonly hooks?: HookRunner;
+  /** Override for `fs.homedir()` (default: `'/home/user'`). */
+  readonly home?: string;
+  /** Override for `fs.xdgConfigHome()` (default: `'/home/user/.config'`). */
+  readonly xdg?: string;
+  /** Override for `fs.systemConfigPath()` (default: `'/etc/gitconfig'`). */
+  readonly systemConfig?: string;
 }
 
 const DEFAULT_WORK_DIR = '/repo';
 const DEFAULT_GIT_DIR = '/repo/.git';
 
 export function createMemoryContext(options: MemoryAdapterOptions = {}): Context {
-  const fsOptions: MemoryFileSystemOptions =
-    options.files === undefined
-      ? { rootDir: DEFAULT_WORK_DIR }
-      : { rootDir: DEFAULT_WORK_DIR, files: options.files };
+  const fsOptions: MemoryFileSystemOptions = {
+    rootDir: DEFAULT_WORK_DIR,
+    ...(options.files !== undefined ? { files: options.files } : {}),
+    ...(options.home !== undefined ? { home: options.home } : {}),
+    ...(options.xdg !== undefined ? { xdg: options.xdg } : {}),
+    ...(options.systemConfig !== undefined ? { systemConfig: options.systemConfig } : {}),
+  };
   const fs = new MemoryFileSystem(fsOptions);
   const algorithm = options.algorithm ?? 'sha1';
   const hash = new MemoryHashService(algorithm);

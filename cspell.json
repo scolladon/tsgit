@@ -638,7 +638,8 @@
     "alphabetised",
     "signingkey",
     "multivar",
-    "unquoter"
+    "unquoter",
+    "worktreeconfig"
   ],
   "ignorePaths": [
     "node_modules",
