@@ -104,6 +104,8 @@ export function assertExhaustiveSwitch(data: TsgitErrorData): void {
     case 'NO_OPERATION_IN_PROGRESS':
     case 'MAX_REFSPECS_EXCEEDED':
     case 'REMOTE_NOT_CONFIGURED':
+    case 'REMOTE_EXISTS':
+    case 'REMOTE_NAME_INVALID':
     case 'NO_PROMISOR_REMOTE':
     case 'REFSPEC_INVALID':
     case 'INVALID_OPTION':
