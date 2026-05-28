@@ -1,5 +1,7 @@
 import * as fs from 'node:fs';
 import type * as fsPromises from 'node:fs/promises';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import {
   directoryNotEmpty,
   fileExists,
@@ -765,5 +767,23 @@ export class NodeFileSystem implements FileSystem {
       if (isErrnoException(err)) throw mapErrno(err, path);
       throw err;
     }
+  }
+
+  homedir(): string {
+    return os.homedir();
+  }
+
+  xdgConfigHome(): string {
+    const explicit = process.env['XDG_CONFIG_HOME'];
+    if (explicit !== undefined && explicit.length > 0) return explicit;
+    return path.join(os.homedir(), '.config');
+  }
+
+  systemConfigPath(): string {
+    if (process.platform === 'win32') {
+      const programData = process.env['ProgramData'] ?? 'C:\\ProgramData';
+      return `${programData}\\Git\\config`;
+    }
+    return '/etc/gitconfig';
   }
 }

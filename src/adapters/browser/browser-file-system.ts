@@ -192,6 +192,18 @@ export class BrowserFileSystem implements FileSystem {
     throw unsupportedOperation('openWithNoFollow', 'browser FS does not support O_NOFOLLOW');
   }
 
+  homedir(): string {
+    throw unsupportedOperation('homedir', 'browser adapter has no concept of a home directory');
+  }
+
+  xdgConfigHome(): string {
+    throw unsupportedOperation('xdgConfigHome', 'browser adapter has no XDG config home');
+  }
+
+  systemConfigPath(): string {
+    throw unsupportedOperation('systemConfigPath', 'browser adapter has no system config path');
+  }
+
   private splitPath(path: string): string[] {
     const normalized = path.replace(/^\/+/, '');
     const segments = normalized.split('/').filter((s) => s !== '' && s !== '.');

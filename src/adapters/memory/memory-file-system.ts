@@ -8,9 +8,16 @@ import {
 } from '../../domain/index.js';
 import type { DirEntry, FileHandle, FileStat, FileSystem } from '../../ports/file-system.js';
 
+const DEFAULT_HOME = '/home/user';
+const DEFAULT_XDG_CONFIG_HOME = '/home/user/.config';
+const DEFAULT_SYSTEM_CONFIG = '/etc/gitconfig';
+
 export interface MemoryFileSystemOptions {
   readonly rootDir: string;
   readonly files?: Readonly<Record<string, Uint8Array>>;
+  readonly home?: string;
+  readonly xdg?: string;
+  readonly systemConfig?: string;
 }
 
 interface Timestamps {
@@ -26,9 +33,15 @@ export class MemoryFileSystem implements FileSystem {
   private readonly symlinks = new Map<string, string>();
   private readonly times = new Map<string, Timestamps>();
   private readonly rootDir: string;
+  private readonly homePath: string;
+  private readonly xdgPath: string;
+  private readonly systemPath: string;
 
   constructor(options: MemoryFileSystemOptions) {
     this.rootDir = options.rootDir;
+    this.homePath = options.home ?? DEFAULT_HOME;
+    this.xdgPath = options.xdg ?? DEFAULT_XDG_CONFIG_HOME;
+    this.systemPath = options.systemConfig ?? DEFAULT_SYSTEM_CONFIG;
     this.directories.add(this.rootDir);
     for (const [key, value] of Object.entries(options.files ?? {})) {
       const normalized = this.resolve(key);
@@ -37,6 +50,10 @@ export class MemoryFileSystem implements FileSystem {
       this.ensureParentDirs(normalized);
     }
   }
+
+  homedir = (): string => this.homePath;
+  xdgConfigHome = (): string => this.xdgPath;
+  systemConfigPath = (): string => this.systemPath;
 
   read = async (path: string): Promise<Uint8Array> => {
     const normalized = this.resolve(path);

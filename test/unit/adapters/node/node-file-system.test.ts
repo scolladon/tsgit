@@ -1220,3 +1220,173 @@ describe('NodeFileSystem', () => {
     });
   });
 });
+
+describe('NodeFileSystem config-path capabilities', () => {
+  describe('Given the homedir() method', () => {
+    describe('When called', () => {
+      it('Then returns the value reported by os.homedir()', async () => {
+        // Arrange
+        const tmp = await fsPromises.mkdtemp(nodePath.join(os.tmpdir(), 'tsgit-fs-'));
+        try {
+          const fs = new NodeFileSystem(tmp, posixPolicy);
+
+          // Act
+          const sut = fs.homedir();
+
+          // Assert
+          expect(sut).toBe(os.homedir());
+        } finally {
+          await fsPromises.rm(tmp, { recursive: true, force: true });
+        }
+      });
+    });
+  });
+
+  describe('Given the xdgConfigHome() method', () => {
+    describe('When $XDG_CONFIG_HOME is set to "/custom/cfg"', () => {
+      it('Then returns "/custom/cfg"', async () => {
+        // Arrange
+        const tmp = await fsPromises.mkdtemp(nodePath.join(os.tmpdir(), 'tsgit-fs-'));
+        const prior = process.env['XDG_CONFIG_HOME'];
+        try {
+          process.env['XDG_CONFIG_HOME'] = '/custom/cfg';
+          const fs = new NodeFileSystem(tmp, posixPolicy);
+
+          // Act
+          const sut = fs.xdgConfigHome();
+
+          // Assert
+          expect(sut).toBe('/custom/cfg');
+        } finally {
+          if (prior === undefined) delete process.env['XDG_CONFIG_HOME'];
+          else process.env['XDG_CONFIG_HOME'] = prior;
+          await fsPromises.rm(tmp, { recursive: true, force: true });
+        }
+      });
+    });
+
+    describe('When $XDG_CONFIG_HOME is unset', () => {
+      it('Then returns "<homedir>/.config"', async () => {
+        // Arrange
+        const tmp = await fsPromises.mkdtemp(nodePath.join(os.tmpdir(), 'tsgit-fs-'));
+        const prior = process.env['XDG_CONFIG_HOME'];
+        try {
+          delete process.env['XDG_CONFIG_HOME'];
+          const fs = new NodeFileSystem(tmp, posixPolicy);
+
+          // Act
+          const sut = fs.xdgConfigHome();
+
+          // Assert
+          expect(sut).toBe(nodePath.join(os.homedir(), '.config'));
+        } finally {
+          if (prior !== undefined) process.env['XDG_CONFIG_HOME'] = prior;
+          await fsPromises.rm(tmp, { recursive: true, force: true });
+        }
+      });
+    });
+
+    describe('When $XDG_CONFIG_HOME is set to the empty string', () => {
+      it('Then falls back to "<homedir>/.config" (treats empty as unset)', async () => {
+        // Arrange
+        const tmp = await fsPromises.mkdtemp(nodePath.join(os.tmpdir(), 'tsgit-fs-'));
+        const prior = process.env['XDG_CONFIG_HOME'];
+        try {
+          process.env['XDG_CONFIG_HOME'] = '';
+          const fs = new NodeFileSystem(tmp, posixPolicy);
+
+          // Act
+          const sut = fs.xdgConfigHome();
+
+          // Assert
+          expect(sut).toBe(nodePath.join(os.homedir(), '.config'));
+        } finally {
+          if (prior === undefined) delete process.env['XDG_CONFIG_HOME'];
+          else process.env['XDG_CONFIG_HOME'] = prior;
+          await fsPromises.rm(tmp, { recursive: true, force: true });
+        }
+      });
+    });
+  });
+
+  describe('Given the systemConfigPath() method', () => {
+    describe('When process.platform is a POSIX value (linux/darwin)', () => {
+      it('Then returns "/etc/gitconfig"', async () => {
+        // Arrange
+        const tmp = await fsPromises.mkdtemp(nodePath.join(os.tmpdir(), 'tsgit-fs-'));
+        const priorPlatform = process.platform;
+        try {
+          Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
+          const fs = new NodeFileSystem(tmp, posixPolicy);
+
+          // Act
+          const sut = fs.systemConfigPath();
+
+          // Assert
+          expect(sut).toBe('/etc/gitconfig');
+        } finally {
+          Object.defineProperty(process, 'platform', {
+            value: priorPlatform,
+            configurable: true,
+          });
+          await fsPromises.rm(tmp, { recursive: true, force: true });
+        }
+      });
+    });
+
+    describe('When process.platform is "win32" and $ProgramData is set', () => {
+      it('Then returns "<ProgramData>\\Git\\config"', async () => {
+        // Arrange
+        const tmp = await fsPromises.mkdtemp(nodePath.join(os.tmpdir(), 'tsgit-fs-'));
+        const priorPlatform = process.platform;
+        const priorProgramData = process.env['ProgramData'];
+        try {
+          Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+          process.env['ProgramData'] = 'D:\\PD';
+          const fs = new NodeFileSystem(tmp, windowsPolicy);
+
+          // Act
+          const sut = fs.systemConfigPath();
+
+          // Assert
+          expect(sut).toBe('D:\\PD\\Git\\config');
+        } finally {
+          Object.defineProperty(process, 'platform', {
+            value: priorPlatform,
+            configurable: true,
+          });
+          if (priorProgramData === undefined) delete process.env['ProgramData'];
+          else process.env['ProgramData'] = priorProgramData;
+          await fsPromises.rm(tmp, { recursive: true, force: true });
+        }
+      });
+    });
+
+    describe('When process.platform is "win32" and $ProgramData is unset', () => {
+      it('Then falls back to "C:\\ProgramData\\Git\\config"', async () => {
+        // Arrange
+        const tmp = await fsPromises.mkdtemp(nodePath.join(os.tmpdir(), 'tsgit-fs-'));
+        const priorPlatform = process.platform;
+        const priorProgramData = process.env['ProgramData'];
+        try {
+          Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+          delete process.env['ProgramData'];
+          const fs = new NodeFileSystem(tmp, windowsPolicy);
+
+          // Act
+          const sut = fs.systemConfigPath();
+
+          // Assert
+          expect(sut).toBe('C:\\ProgramData\\Git\\config');
+        } finally {
+          Object.defineProperty(process, 'platform', {
+            value: priorPlatform,
+            configurable: true,
+          });
+          if (priorProgramData !== undefined) process.env['ProgramData'] = priorProgramData;
+          await fsPromises.rm(tmp, { recursive: true, force: true });
+        }
+      });
+    });
+  });
+});

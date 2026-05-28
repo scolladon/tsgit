@@ -151,6 +151,9 @@ export function instrumentedContext(base: Context): InstrumentedContext {
       record('openWithNoFollow', p);
       return base.fs.openWithNoFollow(p, m);
     },
+    homedir: () => base.fs.homedir(),
+    xdgConfigHome: () => base.fs.xdgConfigHome(),
+    systemConfigPath: () => base.fs.systemConfigPath(),
   };
 
   const ctx: Context = {

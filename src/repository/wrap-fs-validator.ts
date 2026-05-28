@@ -108,6 +108,9 @@ export const wrapFsValidator = (fs: FileSystem, cwd: string): FileSystem => {
       guard(p);
       return fs.openWithNoFollow(p, mode);
     },
+    homedir: () => fs.homedir(),
+    xdgConfigHome: () => fs.xdgConfigHome(),
+    systemConfigPath: () => fs.systemConfigPath(),
   };
 };
 

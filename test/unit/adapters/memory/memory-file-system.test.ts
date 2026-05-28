@@ -948,3 +948,69 @@ describe('MemoryFileSystem', () => {
     });
   });
 });
+
+describe('MemoryFileSystem config-path capabilities', () => {
+  describe('Given a MemoryFileSystem constructed without overrides', () => {
+    describe('When homedir() is called', () => {
+      it('Then returns the default "/home/user"', () => {
+        // Arrange
+        const sut = new MemoryFileSystem({ rootDir: '/repo' });
+
+        // Act + Assert
+        expect(sut.homedir()).toBe('/home/user');
+      });
+    });
+
+    describe('When xdgConfigHome() is called', () => {
+      it('Then returns the default "/home/user/.config"', () => {
+        // Arrange
+        const sut = new MemoryFileSystem({ rootDir: '/repo' });
+
+        // Act + Assert
+        expect(sut.xdgConfigHome()).toBe('/home/user/.config');
+      });
+    });
+
+    describe('When systemConfigPath() is called', () => {
+      it('Then returns the default "/etc/gitconfig"', () => {
+        // Arrange
+        const sut = new MemoryFileSystem({ rootDir: '/repo' });
+
+        // Act + Assert
+        expect(sut.systemConfigPath()).toBe('/etc/gitconfig');
+      });
+    });
+  });
+
+  describe('Given a MemoryFileSystem constructed with all three overrides', () => {
+    describe('When the three methods are called', () => {
+      it('Then each returns the injected value', () => {
+        // Arrange
+        const sut = new MemoryFileSystem({
+          rootDir: '/repo',
+          home: '/u/ada',
+          xdg: '/cfg',
+          systemConfig: '/opt/etc/gitconfig',
+        });
+
+        // Act + Assert
+        expect(sut.homedir()).toBe('/u/ada');
+        expect(sut.xdgConfigHome()).toBe('/cfg');
+        expect(sut.systemConfigPath()).toBe('/opt/etc/gitconfig');
+      });
+    });
+  });
+
+  describe('Given partial overrides (home only)', () => {
+    describe('When xdgConfigHome() is called', () => {
+      it('Then still returns the default (overrides are independent)', () => {
+        // Arrange
+        const sut = new MemoryFileSystem({ rootDir: '/repo', home: '/u/x' });
+
+        // Act + Assert
+        expect(sut.homedir()).toBe('/u/x');
+        expect(sut.xdgConfigHome()).toBe('/home/user/.config');
+      });
+    });
+  });
+});
