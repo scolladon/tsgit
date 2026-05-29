@@ -38,7 +38,7 @@ export const diffPipelineScenario: Scenario<DiffPipelineResult> = {
 
     const diff = await repo.diff({ from: first.id, to: second.id });
     const diffTrees = await repo.primitives.diffTrees(first.id, second.id);
-    const mergeBase = await repo.primitives.mergeBase(first.id, second.id);
+    const [mergeBase] = await repo.primitives.mergeBase([first.id, second.id]);
 
     const addedPaths = (changes: ReadonlyArray<{ readonly type: string }>): ReadonlyArray<string> =>
       changes
