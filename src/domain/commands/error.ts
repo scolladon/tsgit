@@ -122,7 +122,34 @@ export type CommandError =
       readonly scope: ConfigScope;
       readonly reason: 'browser-adapter' | 'worktree-extension-unset';
     }
-  | { readonly code: 'CONFIG_SYSTEM_PATH_UNRESOLVED' };
+  | { readonly code: 'CONFIG_SYSTEM_PATH_UNRESOLVED' }
+  | {
+      readonly code: 'MV_SOURCE_NOT_TRACKED';
+      readonly source: FilePath;
+      readonly destination: FilePath;
+    }
+  | { readonly code: 'MV_BAD_SOURCE'; readonly source: FilePath; readonly destination: FilePath }
+  | {
+      readonly code: 'MV_DESTINATION_EXISTS';
+      readonly source: FilePath;
+      readonly destination: FilePath;
+    }
+  | { readonly code: 'MV_INTO_SELF'; readonly source: FilePath; readonly destination: FilePath }
+  | {
+      readonly code: 'MV_DESTINATION_NOT_DIRECTORY';
+      readonly source: FilePath;
+      readonly destination: FilePath;
+    }
+  | {
+      readonly code: 'MV_DESTINATION_DIRECTORY_MISSING';
+      readonly source: FilePath;
+      readonly destination: FilePath;
+    }
+  | {
+      readonly code: 'MV_MULTIPLE_SOURCES_SAME_TARGET';
+      readonly source: FilePath;
+      readonly destination: FilePath;
+    };
 
 const sanitizeForDisplay = (s: string): string => {
   let out = '';
@@ -354,3 +381,30 @@ export const configScopeNotAvailable = (
 
 export const configSystemPathUnresolved = (): TsgitError =>
   new TsgitError({ code: 'CONFIG_SYSTEM_PATH_UNRESOLVED' });
+
+// `mv` refusal factories. `source`/`destination` are already
+// `validateWorkingTreePath`-checked (no control chars, no traversal) before any
+// of these is constructed, so they are embedded verbatim — matching git, which
+// prints the full relative paths in `source=…, destination=…`.
+export const mvSourceNotTracked = (source: FilePath, destination: FilePath): TsgitError =>
+  new TsgitError({ code: 'MV_SOURCE_NOT_TRACKED', source, destination });
+
+export const mvBadSource = (source: FilePath, destination: FilePath): TsgitError =>
+  new TsgitError({ code: 'MV_BAD_SOURCE', source, destination });
+
+export const mvDestinationExists = (source: FilePath, destination: FilePath): TsgitError =>
+  new TsgitError({ code: 'MV_DESTINATION_EXISTS', source, destination });
+
+export const mvIntoSelf = (source: FilePath, destination: FilePath): TsgitError =>
+  new TsgitError({ code: 'MV_INTO_SELF', source, destination });
+
+export const mvDestinationNotDirectory = (source: FilePath, destination: FilePath): TsgitError =>
+  new TsgitError({ code: 'MV_DESTINATION_NOT_DIRECTORY', source, destination });
+
+export const mvDestinationDirectoryMissing = (
+  source: FilePath,
+  destination: FilePath,
+): TsgitError => new TsgitError({ code: 'MV_DESTINATION_DIRECTORY_MISSING', source, destination });
+
+export const mvMultipleSourcesSameTarget = (source: FilePath, destination: FilePath): TsgitError =>
+  new TsgitError({ code: 'MV_MULTIPLE_SOURCES_SAME_TARGET', source, destination });

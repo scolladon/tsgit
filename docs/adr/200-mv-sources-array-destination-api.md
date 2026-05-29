@@ -17,7 +17,7 @@ considered:
 3. `(paths: ReadonlyArray<string>)` — trailing element is the destination,
    mirroring the CLI's positional parsing.
 
-Forces: the repo's command surface already standardises on
+Forces: the repo's command surface already uses
 `ReadonlyArray<string>` for multi-path commands (`rm`, `add`), and on a
 two-argument `(old, new)` form for renames (`branch.rename`, `remote.rename`,
 `config.renameSection`). Object Calisthenics in this codebase discourages

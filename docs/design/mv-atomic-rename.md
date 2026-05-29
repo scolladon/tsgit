@@ -19,8 +19,8 @@ In scope (faithful to `git mv`):
 - **Move into a directory** — `mv(['a.txt','b.txt'], 'dir')` → `dir/a.txt`,
   `dir/b.txt`. Directory-mode triggers on: dest is an existing directory, dest
   ends with `/`, or there is more than one source.
-- **Directory rename** — `mv(['olddir'], 'newdir')` reparents every tracked
-  entry under `olddir/` and renames the working-tree directory in one
+- **Directory rename** — `mv(['old'], 'new')` reparents every tracked
+  entry under `old/` and renames the working-tree directory in one
   `fs.rename`.
 - **`force`** (`-f`) — overwrite an existing destination.
 - **`dryRun`** (`-n`) — validate and report, mutate nothing.
@@ -150,7 +150,7 @@ in `domain/error.ts`'s `extractDetail`. Messages render faithfully, e.g.:
 - `MV_BAD_SOURCE: bad source, source=a.txt, destination=z.txt`
 - `MV_INTO_SELF: can not move directory into itself, source=a.txt, destination=a.txt`
 - `MV_DESTINATION_NOT_DIRECTORY: destination 'nope.txt' is not a directory, source=a.txt`
-- `MV_DESTINATION_DIRECTORY_MISSING: destination directory does not exist, source=a.txt, destination=missingdir/`
+- `MV_DESTINATION_DIRECTORY_MISSING: destination directory does not exist, source=a.txt, destination=missing/`
 - `MV_MULTIPLE_SOURCES_SAME_TARGET: multiple sources for the same target, source=a.txt, destination=d/a.txt`
 
 (git emits two near-identical phrasings for a colliding destination —
@@ -251,7 +251,7 @@ Order matches git's precedence (verified):
 5. **destination exists** — `target` tracked in `byPath` **or**
    `lstat(workdir/target)` succeeds. `force` suppresses this **only for a file
    source**; a **directory** source is refused regardless of `force` (verified:
-   `git mv -f dir existingfile` still fails "destination already exists"). So:
+   `git mv -f dir existing-file` still fails "destination already exists"). So:
    `kind==='file' && force` → allowed; otherwise → `skip:'destination-exists'`.
 6. Return `{ ok, kind, entries }` where `entries` are the source entries to
    repath (`[byPath.get(source)]` for a file; all `${source}/`-prefixed entries
@@ -383,6 +383,6 @@ matching the `reset-rm-reflog` style.
    real `git mv` flags with observable semantics; `--verbose` is subsumed by the
    structured result.
 6. **Pre-check destination parent dir** → clean domain error instead of leaking
-   `fs.rename` ENOENT. Behaviourally faithful (refuse, no auto-create);
+   `fs.rename` ENOENT. Faithful in behaviour (refuse, no auto-create);
    documented divergence in error *surface* only.
 ```

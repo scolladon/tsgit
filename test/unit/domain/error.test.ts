@@ -14,6 +14,13 @@ import {
   fileNotFound,
   hashFailed,
   httpError,
+  mvBadSource,
+  mvDestinationDirectoryMissing,
+  mvDestinationExists,
+  mvDestinationNotDirectory,
+  mvIntoSelf,
+  mvMultipleSourcesSameTarget,
+  mvSourceNotTracked,
   networkError,
   notADirectory,
   noUpstreamConfigured,
@@ -21,7 +28,7 @@ import {
   type TsgitError,
   unsupportedOperation,
 } from '../../../src/domain/index.js';
-import type { RefName } from '../../../src/domain/objects/index.js';
+import type { FilePath, RefName } from '../../../src/domain/objects/index.js';
 
 describe('domain error — AdapterError', () => {
   describe('factory functions', () => {
@@ -773,6 +780,139 @@ describe('domain error — AdapterError', () => {
           // Assert
           expect(sut.message).toBe(
             'PACK_TOO_LARGE: pack contains 100000000 objects, exceeds limit 50000000',
+          );
+        });
+      });
+    });
+  });
+
+  describe('CommandError — mv refusals', () => {
+    describe("Given mvSourceNotTracked('u.txt', 'd/u.txt')", () => {
+      describe('When checking data and message', () => {
+        it('Then code/source/destination and the faithful message render', () => {
+          // Arrange & Act
+          const sut = mvSourceNotTracked('u.txt' as FilePath, 'd/u.txt' as FilePath);
+
+          // Assert
+          expect(sut.data).toEqual({
+            code: 'MV_SOURCE_NOT_TRACKED',
+            source: 'u.txt',
+            destination: 'd/u.txt',
+          });
+          expect(sut.message).toBe(
+            'MV_SOURCE_NOT_TRACKED: not under version control, source=u.txt, destination=d/u.txt',
+          );
+        });
+      });
+    });
+
+    describe("Given mvBadSource('a.txt', 'z.txt')", () => {
+      describe('When checking data and message', () => {
+        it('Then code/source/destination and the faithful message render', () => {
+          // Arrange & Act
+          const sut = mvBadSource('a.txt' as FilePath, 'z.txt' as FilePath);
+
+          // Assert
+          expect(sut.data).toEqual({
+            code: 'MV_BAD_SOURCE',
+            source: 'a.txt',
+            destination: 'z.txt',
+          });
+          expect(sut.message).toBe('MV_BAD_SOURCE: bad source, source=a.txt, destination=z.txt');
+        });
+      });
+    });
+
+    describe("Given mvDestinationExists('a.txt', 'keep.txt')", () => {
+      describe('When checking data and message', () => {
+        it('Then code/source/destination and the faithful message render', () => {
+          // Arrange & Act
+          const sut = mvDestinationExists('a.txt' as FilePath, 'keep.txt' as FilePath);
+
+          // Assert
+          expect(sut.data).toEqual({
+            code: 'MV_DESTINATION_EXISTS',
+            source: 'a.txt',
+            destination: 'keep.txt',
+          });
+          expect(sut.message).toBe(
+            'MV_DESTINATION_EXISTS: destination exists, source=a.txt, destination=keep.txt',
+          );
+        });
+      });
+    });
+
+    describe("Given mvIntoSelf('a.txt', 'a.txt')", () => {
+      describe('When checking data and message', () => {
+        it('Then code/source/destination and the faithful message render', () => {
+          // Arrange & Act
+          const sut = mvIntoSelf('a.txt' as FilePath, 'a.txt' as FilePath);
+
+          // Assert
+          expect(sut.data).toEqual({
+            code: 'MV_INTO_SELF',
+            source: 'a.txt',
+            destination: 'a.txt',
+          });
+          expect(sut.message).toBe(
+            'MV_INTO_SELF: can not move directory into itself, source=a.txt, destination=a.txt',
+          );
+        });
+      });
+    });
+
+    describe("Given mvDestinationNotDirectory('a.txt', 'nope.txt')", () => {
+      describe('When checking data and message', () => {
+        it('Then the message names the destination and omits the source=…,destination=… suffix', () => {
+          // Arrange & Act
+          const sut = mvDestinationNotDirectory('a.txt' as FilePath, 'nope.txt' as FilePath);
+
+          // Assert
+          expect(sut.data).toEqual({
+            code: 'MV_DESTINATION_NOT_DIRECTORY',
+            source: 'a.txt',
+            destination: 'nope.txt',
+          });
+          expect(sut.message).toBe(
+            "MV_DESTINATION_NOT_DIRECTORY: destination 'nope.txt' is not a directory, source=a.txt",
+          );
+        });
+      });
+    });
+
+    describe("Given mvDestinationDirectoryMissing('a.txt', 'missing/')", () => {
+      describe('When checking data and message', () => {
+        it('Then code/source/destination and the faithful message render', () => {
+          // Arrange & Act
+          const sut = mvDestinationDirectoryMissing('a.txt' as FilePath, 'missing/' as FilePath);
+
+          // Assert
+          expect(sut.data).toEqual({
+            code: 'MV_DESTINATION_DIRECTORY_MISSING',
+            source: 'a.txt',
+            destination: 'missing/',
+          });
+          expect(sut.message).toBe(
+            'MV_DESTINATION_DIRECTORY_MISSING: destination directory does not exist, source=a.txt, destination=missing/',
+          );
+        });
+      });
+    });
+
+    describe("Given mvMultipleSourcesSameTarget('a.txt', 'd/a.txt')", () => {
+      describe('When checking data and message', () => {
+        it('Then code/source/destination and the faithful message render', () => {
+          // Arrange & Act
+          const sut = mvMultipleSourcesSameTarget('a.txt' as FilePath, 'd/a.txt' as FilePath);
+
+          // Assert
+          expect(sut.data).toEqual({
+            code: 'MV_MULTIPLE_SOURCES_SAME_TARGET',
+            source: 'a.txt',
+            destination: 'd/a.txt',
+          });
+          expect(sut.message).toBe(
+            'MV_MULTIPLE_SOURCES_SAME_TARGET: multiple sources for the same target, source=a.txt, destination=d/a.txt',
           );
         });
       });

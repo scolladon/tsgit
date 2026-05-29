@@ -375,6 +375,20 @@ function extractDetail(data: TsgitErrorData): string {
       return `config scope not available: ${data.scope} (${data.reason})`;
     case 'CONFIG_SYSTEM_PATH_UNRESOLVED':
       return 'config system path could not be resolved on this platform';
+    case 'MV_SOURCE_NOT_TRACKED':
+      return `not under version control, source=${data.source}, destination=${data.destination}`;
+    case 'MV_BAD_SOURCE':
+      return `bad source, source=${data.source}, destination=${data.destination}`;
+    case 'MV_DESTINATION_EXISTS':
+      return `destination exists, source=${data.source}, destination=${data.destination}`;
+    case 'MV_INTO_SELF':
+      return `can not move directory into itself, source=${data.source}, destination=${data.destination}`;
+    case 'MV_DESTINATION_NOT_DIRECTORY':
+      return `destination '${data.destination}' is not a directory, source=${data.source}`;
+    case 'MV_DESTINATION_DIRECTORY_MISSING':
+      return `destination directory does not exist, source=${data.source}, destination=${data.destination}`;
+    case 'MV_MULTIPLE_SOURCES_SAME_TARGET':
+      return `multiple sources for the same target, source=${data.source}, destination=${data.destination}`;
     default: {
       const _exhaustive: never = data;
       return String(_exhaustive);
