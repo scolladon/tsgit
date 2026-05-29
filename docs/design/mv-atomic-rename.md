@@ -102,62 +102,63 @@ Facade binding: `repo.mv(sources, destination, opts?)` (the `Context` is bound),
 identical to how `repo.rm`/`repo.add` are bound in `repository.ts`.
 
 **Why `(sources[], destination)` and not a trailing-element array or an
-overload** — decided by ADR (see ADR conversation). Recommendation: an explicit
-`sources` array + separate `destination`, uniform with `rm`/`add` taking
-`ReadonlyArray<string>`, and matching the two-arg rename precedent
-(`branch.rename(old, new)`, `remote.rename(old, new)`,
-`config.renameSection(old, new)`). A single rename reads
-`mv(['a.txt'], 'b.txt')`.
+overload** — fixed by ADR-200: an explicit `sources` array + separate
+`destination`, uniform with `rm`/`add` taking `ReadonlyArray<string>`, and
+matching the two-arg rename precedent (`branch.rename(old, new)`,
+`remote.rename(old, new)`, `config.renameSection(old, new)`). A single rename
+reads `mv(['a.txt'], 'b.txt')`.
 
 ## Errors
 
-git's `mv` refusals share a `source=…, destination=…` shape with a leading
-reason phrase. We model them with **one consolidated `CommandError` variant**
-carrying a `reason` discriminator — mirroring the existing `CONFIG_KEY_INVALID`
-(`reason: 'empty-section' | …`) precedent — rather than six separate codes.
-This keeps the `CommandError` union small while preserving git-faithful,
-reason-specific messages. (Final taxonomy is an ADR decision.)
+Per ADR-202, each refusal is its own **granular `CommandError` code** (callers
+match a single `code`, no nested `reason` narrowing). Seven codes, each
+carrying `source` and `destination` (`FilePath`):
 
 ```ts
-| {
-    readonly code: 'MV_REFUSED';
-    readonly reason:
-      | 'source-not-tracked'           // git: "not under version control"
-      | 'bad-source'                   // git: "bad source"
-      | 'destination-exists'           // git: "destination exists"
-      | 'into-self'                    // git: "can not move directory into itself"
-      | 'destination-not-directory'    // git: "destination 'X' is not a directory"
-      | 'destination-directory-missing'// git: "destination directory does not exist"
-      | 'multiple-sources-for-same-target';// git: "multiple sources for the same target"
-    readonly source: FilePath;
-    readonly destination: FilePath;
-  }
+| { readonly code: 'MV_SOURCE_NOT_TRACKED';            // git: "not under version control"
+    readonly source: FilePath; readonly destination: FilePath }
+| { readonly code: 'MV_BAD_SOURCE';                    // git: "bad source"
+    readonly source: FilePath; readonly destination: FilePath }
+| { readonly code: 'MV_DESTINATION_EXISTS';            // git: "destination exists"
+    readonly source: FilePath; readonly destination: FilePath }
+| { readonly code: 'MV_INTO_SELF';                     // git: "can not move directory into itself"
+    readonly source: FilePath; readonly destination: FilePath }
+| { readonly code: 'MV_DESTINATION_NOT_DIRECTORY';     // git: "destination 'X' is not a directory"
+    readonly source: FilePath; readonly destination: FilePath }
+| { readonly code: 'MV_DESTINATION_DIRECTORY_MISSING'; // git: "destination directory does not exist"
+    readonly source: FilePath; readonly destination: FilePath }
+| { readonly code: 'MV_MULTIPLE_SOURCES_SAME_TARGET';  // git: "multiple sources for the same target"
+    readonly source: FilePath; readonly destination: FilePath }
 ```
 
-The last three reasons (`destination-not-directory`,
-`destination-directory-missing`, `multiple-sources-for-same-target`) are
+The last three codes (`MV_DESTINATION_NOT_DIRECTORY`,
+`MV_DESTINATION_DIRECTORY_MISSING`, `MV_MULTIPLE_SOURCES_SAME_TARGET`) are
 **structural** — they describe the request as a whole, not one source pair — so
 they are always thrown, never collected into `skipped`, even under
-`skipErrors`. The first four are per-source and skippable.
+`skipErrors`. The first four are per-source and skippable; when skipped they map
+into `MvResult.skipped[].reason` as the kebab-case `MvSkipReason`
+(`'source-not-tracked' | 'bad-source' | 'destination-exists' | 'into-self'`) —
+result *data* keeps its own vocabulary, distinct from the SCREAMING_SNAKE error
+codes (ADR-202).
 
-Factory `mvRefused(reason, source, destination)` in `domain/commands/error.ts`;
-exhaustive message arm in `domain/error.ts`'s `extractDetail`. Messages render
-faithfully, e.g.:
+One factory per code in `domain/commands/error.ts`
+(`mvSourceNotTracked(source, destination)`, …); one exhaustive message arm each
+in `domain/error.ts`'s `extractDetail`. Messages render faithfully, e.g.:
 
-- `MV_REFUSED: destination exists, source=a.txt, destination=keep.txt`
-- `MV_REFUSED: not under version control, source=u.txt, destination=d/u.txt`
-- `MV_REFUSED: bad source, source=a.txt, destination=z.txt`
-- `MV_REFUSED: can not move directory into itself, source=a.txt, destination=a.txt`
-- `MV_REFUSED: destination 'nope.txt' is not a directory, source=a.txt`
-- `MV_REFUSED: destination directory does not exist, source=a.txt, destination=missingdir/`
-- `MV_REFUSED: multiple sources for the same target, source=a.txt, destination=d/a.txt`
+- `MV_DESTINATION_EXISTS: destination exists, source=a.txt, destination=keep.txt`
+- `MV_SOURCE_NOT_TRACKED: not under version control, source=u.txt, destination=d/u.txt`
+- `MV_BAD_SOURCE: bad source, source=a.txt, destination=z.txt`
+- `MV_INTO_SELF: can not move directory into itself, source=a.txt, destination=a.txt`
+- `MV_DESTINATION_NOT_DIRECTORY: destination 'nope.txt' is not a directory, source=a.txt`
+- `MV_DESTINATION_DIRECTORY_MISSING: destination directory does not exist, source=a.txt, destination=missingdir/`
+- `MV_MULTIPLE_SOURCES_SAME_TARGET: multiple sources for the same target, source=a.txt, destination=d/a.txt`
 
 (git emits two near-identical phrasings for a colliding destination —
 `destination exists` from the file-rename path and `destination already exists`
-from the directory path. tsgit unifies both to `destination exists`; the
-`reason`, `source`, and `destination` data are identical, only git's internal
-wording differs between code paths. Documented wording unification, not a
-behavioural divergence.)
+from the directory path. tsgit unifies both under `MV_DESTINATION_EXISTS` with
+the `destination exists` message; the `source`/`destination` data are identical,
+only git's internal wording differs between code paths. Documented wording
+unification, not a behavioural divergence.)
 
 Existing codes reused: `EMPTY_PATHSPEC` (zero sources), `BARE_REPOSITORY`
 (via `assertNotBare(ctx, 'mv')`), `OPERATION_IN_PROGRESS` (via
@@ -169,7 +170,7 @@ Existing codes reused: `EMPTY_PATHSPEC` (zero sources), `BARE_REPOSITORY`
 *parent directory* is missing **without** a trailing slash, git lets the OS
 `rename(2)` fail (`renaming 'a.txt' failed: No such file or directory`). tsgit
 pre-checks the destination parent and raises the clean
-`MV_REFUSED{reason:'destination-directory-missing'}` instead — the *behaviour*
+`MV_DESTINATION_DIRECTORY_MISSING` instead — the *behaviour*
 is identical (refuse; never auto-create destination directories), only the error
 surface is the library's uniform domain error rather than a leaked OS errno.
 This honours the repo's "no raw OS errors escape" invariant while preserving
@@ -205,10 +206,10 @@ mv(ctx, sources, destination, opts):
         // → { ok, kind: 'file'|'directory', entries } | { skip: MvSkipReason } | throw
       if verdict.skip:
         if opts.skipErrors: skipped.push({source, reason: verdict.skip}); continue
-        else: throw mvRefused(verdict.skip, source, target)
+        else: throw errorFor(verdict.skip, source, target)  // granular code per reason
       // record plan (pure; mutate maps only after the full loop succeeds)
       plan += { source, target, kind, entries }
-    assertNoTargetCollision(plan)            // throws multiple-sources-for-same-target
+    assertNoTargetCollision(plan)            // throws MV_MULTIPLE_SOURCES_SAME_TARGET
     if opts.dryRun:
       return { moved: plannedMoves.sort(byFrom), skipped }
     // EXECUTE — index first into the in-memory map, then working tree, then commit:
@@ -277,11 +278,10 @@ git does **not** de-duplicate sources. Two sources that map to the same target
 (`mv(['a.txt','a.txt'], 'dd')` → both `dd/a.txt`; or `mv(['x/f','y/f'],'dd')`)
 are refused with `multiple sources for the same target`. After planning every
 (source → target) pair against the **original** `byPath`, a pass detects any two
-moves sharing a `to` and throws
-`MV_REFUSED{reason:'multiple-sources-for-same-target'}` (structural — always
-thrown). Note that `mv(['a.txt','a.txt'], 'b.txt')` never reaches this check:
-two sources force dir-mode, and `b.txt` not being a directory raises
-`destination-not-directory` first — matching git's precedence exactly.
+moves sharing a `to` and throws `MV_MULTIPLE_SOURCES_SAME_TARGET` (structural —
+always thrown). Note that `mv(['a.txt','a.txt'], 'b.txt')` never reaches this
+check: two sources force dir-mode, and `b.txt` not being a directory raises
+`MV_DESTINATION_NOT_DIRECTORY` first — matching git's precedence exactly.
 
 ### Helpers
 
@@ -314,8 +314,8 @@ partial-write.
 ```
 src/application/commands/mv.ts                 # new — the command
 src/application/commands/internal/working-tree.ts   # +renameInWorkingTree
-src/domain/commands/error.ts                   # +MV_REFUSED variant + mvRefused()
-src/domain/error.ts                            # +MV_REFUSED message arm
+src/domain/commands/error.ts                   # +7 granular MV_* variants + factories
+src/domain/error.ts                            # +7 MV_* message arms
 src/application/commands/index.ts              # export { mv, MvOptions, ... }
 src/repository.ts                              # Repository.mv binding + interface
 ```
@@ -373,14 +373,15 @@ matching the `reset-rm-reflog` style.
 2. **Validate-all-then-execute (atomic planning)** — matches git's default
    die-on-first-bad. Alternative (move eagerly per source) breaks atomicity.
    `skipErrors` is the opt-out, faithful to `-k`.
-3. **Consolidated `MV_REFUSED{reason}`** vs six codes — mirrors
-   `CONFIG_KEY_INVALID`; smaller union; reason-specific messages preserved.
-   (ADR.)
-4. **`(sources[], destination)` API** vs trailing-element / overload — uniform
-   with rm/add + rename precedent. (ADR.)
-5. **Options shipped: `force` + `dryRun` + `skipErrors`** — the three real
-   `git mv` flags with observable semantics; `--verbose` is subsumed by the
-   structured result. (ADR — scope.)
+3. **Granular per-reason `MV_*` codes** (ADR-202) — seven distinct codes, one
+   per refusal, each `{source, destination}`. Chosen over a consolidated
+   `MV_REFUSED{reason}` so callers match a single `code`; trade-off is a larger
+   `CommandError` union.
+4. **`(sources[], destination)` API** (ADR-200) vs trailing-element / overload —
+   uniform with rm/add + the `(old,new)` rename precedent.
+5. **Options shipped: `force` + `dryRun` + `skipErrors`** (ADR-201) — the three
+   real `git mv` flags with observable semantics; `--verbose` is subsumed by the
+   structured result.
 6. **Pre-check destination parent dir** → clean domain error instead of leaking
    `fs.rename` ENOENT. Behaviourally faithful (refuse, no auto-create);
    documented divergence in error *surface* only.
