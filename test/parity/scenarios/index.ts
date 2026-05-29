@@ -1,4 +1,5 @@
 import { branchLifecycleScenario } from './branch-lifecycle.scenario.ts';
+import { configScenario } from './config.scenario.ts';
 import { diffPipelineScenario } from './diff-pipeline.scenario.ts';
 import { initAddCommitStatusScenario } from './init-add-commit-status.scenario.ts';
 import { mergeAbortScenario } from './merge-abort.scenario.ts';
@@ -29,4 +30,5 @@ export const SCENARIOS: ReadonlyArray<Scenario<unknown>> = [
   submodulesEmptyScenario,
   phase202PrimitivesScenario,
   remoteCrudScenario,
+  configScenario,
 ];
