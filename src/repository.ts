@@ -168,6 +168,7 @@ export interface Repository {
   readonly init: BindCtx<typeof commands.init>;
   readonly log: BindCtx<typeof commands.log>;
   readonly merge: BindCtx<typeof commands.merge>;
+  readonly mv: BindCtx<typeof commands.mv>;
   readonly pull: BindCtx<typeof commands.pull>;
   readonly push: BindCtx<typeof commands.push>;
   readonly reflog: BindCtx<typeof commands.reflog>;
@@ -428,6 +429,10 @@ export const openRepository = async (
       guard();
       return commands.merge(ctx, mergeOpts);
     }) as Repository['merge'],
+    mv: ((sources, destination, mvOpts) => {
+      guard();
+      return commands.mv(ctx, sources, destination, mvOpts);
+    }) as Repository['mv'],
     pull: ((pullOpts) => {
       guard();
       return commands.pull(ctx, pullOpts);

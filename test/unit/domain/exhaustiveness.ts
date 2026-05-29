@@ -132,6 +132,14 @@ export function assertExhaustiveSwitch(data: TsgitErrorData): void {
     case 'CONFIG_SECTION_NOT_FOUND':
     case 'CONFIG_SCOPE_NOT_AVAILABLE':
     case 'CONFIG_SYSTEM_PATH_UNRESOLVED':
+    case 'MV_SOURCE_NOT_TRACKED':
+    case 'MV_BAD_SOURCE':
+    case 'MV_DESTINATION_EXISTS':
+    case 'MV_INTO_SELF':
+    case 'MV_DESTINATION_NOT_DIRECTORY':
+    case 'MV_DESTINATION_DIRECTORY_MISSING':
+    case 'MV_MULTIPLE_SOURCES_SAME_TARGET':
+    case 'MV_OVERLAPPING_SOURCES':
       return;
     default: {
       const _exhaustive: never = data;

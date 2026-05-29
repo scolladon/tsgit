@@ -19,6 +19,7 @@ Every method bound on a `Repository` handle. 24 entries, alphabetical.
 | [`init`](init.md) | Initialize a fresh repository. |
 | [`log`](log.md) | Walk first-parent commit history. |
 | [`merge`](merge.md) | Three-way merge with conflict materialisation. |
+| [`mv`](mv.md) | Rename/move tracked paths in the index and working tree. |
 | [`pull`](pull.md) | Fetch a remote branch and merge it into the current branch. |
 | [`push`](push.md) | Push refs and objects to a remote. |
 | [`reflog`](reflog.md) | Show, query, delete, or expire reflog entries. |

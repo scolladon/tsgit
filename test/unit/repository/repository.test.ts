@@ -148,6 +148,7 @@ describe('openRepository — Repository binding integrity', () => {
             'init',
             'log',
             'merge',
+            'mv',
             'primitives',
             'pull',
             'push',

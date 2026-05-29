@@ -1,5 +1,5 @@
 import { checkoutOverwriteDirty } from '../../../domain/commands/error.js';
-import { TsgitError } from '../../../domain/error.js';
+import { dirname, TsgitError } from '../../../domain/error.js';
 import { unsupportedOperation } from '../../../domain/index.js';
 import type { FileMode } from '../../../domain/objects/file-mode.js';
 import type { FilePath } from '../../../domain/objects/object-id.js';
@@ -99,4 +99,39 @@ export const removeFile = async (ctx: Context, rawPath: string): Promise<void> =
     throw checkoutOverwriteDirty([path]);
   }
   await ctx.fs.rm(full);
+};
+
+/**
+ * Move a working-tree path. Validates both ends (rejecting `..`, `.git`,
+ * absolute paths, etc.) then relocates the node — carrying any untracked
+ * contents along, faithful to `git mv`.
+ *
+ * A directory is moved by recursing into its entries and renaming each leaf
+ * (file or symlink), then removing the emptied source directory. `ctx.fs.rename`
+ * is not used directly on a directory because only the Node adapter renames
+ * directories natively — the memory and OPFS adapters are file-oriented, so a
+ * leaf-by-leaf move is the portable, adapter-agnostic primitive. Each leaf's
+ * destination parent is created first (`fs.rename` does not create parents).
+ */
+export const renameInWorkingTree = async (
+  ctx: Context,
+  rawFrom: string,
+  rawTo: string,
+): Promise<void> => {
+  const from = validatePath(rawFrom);
+  const to = validatePath(rawTo);
+  await moveNode(ctx, repoPath(ctx, from), repoPath(ctx, to));
+};
+
+const moveNode = async (ctx: Context, fromAbs: string, toAbs: string): Promise<void> => {
+  const stat = await ctx.fs.lstat(fromAbs);
+  if (stat.isDirectory && !stat.isSymbolicLink) {
+    for (const child of await ctx.fs.readdir(fromAbs)) {
+      await moveNode(ctx, `${fromAbs}/${child.name}`, `${toAbs}/${child.name}`);
+    }
+    await ctx.fs.rm(fromAbs);
+    return;
+  }
+  await ctx.fs.mkdir(dirname(toAbs));
+  await ctx.fs.rename(fromAbs, toAbs);
 };

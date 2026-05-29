@@ -92,6 +92,17 @@ export function basename(path: string): string {
   return path;
 }
 
+/**
+ * The directory portion of a POSIX repo-relative path: everything before the
+ * final `/`. A path with no `/` (a root-level leaf) yields `''`. Unlike
+ * `basename`, this is POSIX-only (`/` separator) — working-tree paths are always
+ * normalised to POSIX before reaching it.
+ */
+export function dirname(path: string): string {
+  const slash = path.lastIndexOf('/');
+  return slash === -1 ? '' : path.slice(0, slash);
+}
+
 export const fileNotFound = (path: string): TsgitError =>
   new TsgitError({ code: 'FILE_NOT_FOUND', path });
 
@@ -375,6 +386,22 @@ function extractDetail(data: TsgitErrorData): string {
       return `config scope not available: ${data.scope} (${data.reason})`;
     case 'CONFIG_SYSTEM_PATH_UNRESOLVED':
       return 'config system path could not be resolved on this platform';
+    case 'MV_SOURCE_NOT_TRACKED':
+      return `not under version control, source=${data.source}, destination=${data.destination}`;
+    case 'MV_BAD_SOURCE':
+      return `bad source, source=${data.source}, destination=${data.destination}`;
+    case 'MV_DESTINATION_EXISTS':
+      return `destination exists, source=${data.source}, destination=${data.destination}`;
+    case 'MV_INTO_SELF':
+      return `can not move directory into itself, source=${data.source}, destination=${data.destination}`;
+    case 'MV_DESTINATION_NOT_DIRECTORY':
+      return `destination '${data.destination}' is not a directory, source=${data.source}`;
+    case 'MV_DESTINATION_DIRECTORY_MISSING':
+      return `destination directory does not exist, source=${data.source}, destination=${data.destination}`;
+    case 'MV_MULTIPLE_SOURCES_SAME_TARGET':
+      return `multiple sources for the same target, source=${data.source}, destination=${data.destination}`;
+    case 'MV_OVERLAPPING_SOURCES':
+      return `cannot move both '${data.child}' and its parent directory '${data.parent}'`;
     default: {
       const _exhaustive: never = data;
       return String(_exhaustive);
