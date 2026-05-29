@@ -5,6 +5,7 @@ import { initAddCommitStatusScenario } from './init-add-commit-status.scenario.t
 import { mergeAbortScenario } from './merge-abort.scenario.ts';
 import { mergeContinueScenario } from './merge-continue.scenario.ts';
 import { mergeFfScenario } from './merge-ff.scenario.ts';
+import { mvScenario } from './mv.scenario.ts';
 import { phase202PrimitivesScenario } from './phase-20-2-primitives.scenario.ts';
 import { readPipelineScenario } from './read-pipeline.scenario.ts';
 import { refsPipelineScenario } from './refs-pipeline.scenario.ts';
@@ -26,6 +27,7 @@ export const SCENARIOS: ReadonlyArray<Scenario<unknown>> = [
   mergeFfScenario,
   mergeAbortScenario,
   mergeContinueScenario,
+  mvScenario,
   sparseCheckoutScenario,
   submodulesEmptyScenario,
   phase202PrimitivesScenario,
