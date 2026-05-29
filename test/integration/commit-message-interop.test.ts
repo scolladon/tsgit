@@ -16,7 +16,7 @@ import { mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import type { AuthorIdentity } from '../../src/domain/objects/index.js';
 import { openRepository } from '../../src/index.node.js';
 import { GIT_AVAILABLE, runGit, runGitEnv } from './interop-helpers.js';
@@ -102,17 +102,6 @@ const commitBothWays = async (message: string): Promise<CommitComparison> => {
 };
 
 describe.skipIf(!GIT_AVAILABLE)('commit message interop', () => {
-  let tmpProbe: string;
-
-  beforeEach(async () => {
-    // Touch a tmpdir so a failure to allocate surfaces here, not mid-assert.
-    tmpProbe = await mkdtemp(path.join(os.tmpdir(), 'tsgit-commit-message-probe-'));
-  });
-
-  afterEach(async () => {
-    await rm(tmpProbe, { recursive: true, force: true });
-  });
-
   for (const { label, message } of MESSAGE_SHAPES) {
     describe(`Given a message with ${label}, When the commit porcelain and canonical git commit it`, () => {
       it('Then the commit-object SHAs match', async () => {
