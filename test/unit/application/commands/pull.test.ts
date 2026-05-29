@@ -5,6 +5,7 @@ import { add } from '../../../../src/application/commands/add.js';
 import { branchCreate } from '../../../../src/application/commands/branch.js';
 import { checkout } from '../../../../src/application/commands/checkout.js';
 import { commit } from '../../../../src/application/commands/commit.js';
+import { continueMerge } from '../../../../src/application/commands/continue-merge.js';
 import { init } from '../../../../src/application/commands/init.js';
 import { pull } from '../../../../src/application/commands/pull.js';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
@@ -224,6 +225,41 @@ describe('pull', () => {
         await abortMerge(ctx);
         expect(await ctx.fs.exists(`${ctx.layout.gitDir}/MERGE_HEAD`)).toBe(false);
         expect(await resolveRef(ctx, 'refs/heads/main' as RefName)).toBe(x);
+      });
+    });
+  });
+
+  describe('Given a pull conflict resolved by the caller', () => {
+    describe('When continueMerge finalises it', () => {
+      it('Then a two-parent merge commit is produced (20.4 state machine composes)', async () => {
+        // Arrange — diverged same-path edits → pull conflict.
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await commitFile(ctx, 'a.txt', 'base\n', 'A');
+        await branchCreate(ctx, { name: 'feature' });
+        await checkout(ctx, { target: 'feature' });
+        const b = await commitFile(ctx, 'a.txt', 'theirs\n', 'B');
+        await checkout(ctx, { target: 'main' });
+        const x = await commitFile(ctx, 'a.txt', 'ours\n', 'X');
+        await seedConfig(ctx, { url: REMOTE_URL, upstream: true });
+        const { transport } = buildPullRemote(
+          [{ name: 'refs/heads/main', id: b }],
+          await emptyPack(ctx),
+        );
+        const conflicted = await pull(withTransport(ctx, transport), { author });
+        expect(conflicted.merge.kind).toBe('conflict');
+
+        // Act — resolve the file, stage it, and continue.
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'resolved\n');
+        await add(ctx, ['a.txt']);
+        const result = await continueMerge(ctx, { message: 'resolve pull', author });
+
+        // Assert — the merge commit has both ours (X) and theirs (B) as parents.
+        const obj = await readObject(ctx, result.id);
+        expect(obj.type).toBe('commit');
+        if (obj.type === 'commit') {
+          expect(obj.data.parents).toEqual([x, b]);
+        }
       });
     });
   });
