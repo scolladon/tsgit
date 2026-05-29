@@ -645,7 +645,12 @@
     "unquoter",
     "worktreeconfig",
     "prepush",
-    "getregexp"
+    "getregexp",
+    "gitrevisions",
+    "DWIM",
+    "typechecks",
+    "sometag",
+    "noff"
   ],
   "ignorePaths": [
     "node_modules",
