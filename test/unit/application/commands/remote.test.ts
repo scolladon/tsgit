@@ -1,7 +1,14 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { init } from '../../../../src/application/commands/init.js';
-import { remote } from '../../../../src/application/commands/remote.js';
+import {
+  remoteAdd,
+  remoteList,
+  remoteRemove,
+  remoteRename,
+  remoteSetUrl,
+  remoteShow,
+} from '../../../../src/application/commands/remote.js';
 import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
 import { TsgitError } from '../../../../src/domain/error.js';
 import type { Context } from '../../../../src/ports/context.js';
@@ -21,7 +28,7 @@ describe('application/commands/remote', () => {
 
   describe('list', () => {
     describe('Given a non-repository', () => {
-      describe('When remote({ kind: list }) runs', () => {
+      describe('When remoteList runs', () => {
         it('Then it throws NOT_A_REPOSITORY', async () => {
           // Arrange
           const ctx = createMemoryContext();
@@ -29,7 +36,7 @@ describe('application/commands/remote', () => {
 
           // Act
           try {
-            await remote(ctx, { kind: 'list' });
+            await remoteList(ctx);
           } catch (err) {
             caught = err;
           }
@@ -42,23 +49,23 @@ describe('application/commands/remote', () => {
     });
 
     describe('Given an initialized repo with no remotes', () => {
-      describe('When remote({ kind: list }) runs', () => {
+      describe('When remoteList runs', () => {
         it('Then it returns an empty list', async () => {
           // Arrange
           const ctx = createMemoryContext();
           await seed(ctx);
 
           // Act
-          const sut = await remote(ctx, { kind: 'list' });
+          const sut = await remoteList(ctx);
 
           // Assert
-          expect(sut).toEqual({ kind: 'list', remotes: [] });
+          expect(sut).toEqual({ remotes: [] });
         });
       });
     });
 
     describe('Given a single remote origin', () => {
-      describe('When remote({ kind: list }) runs', () => {
+      describe('When remoteList runs', () => {
         it('Then it returns the entry with url and fetch refspec', async () => {
           // Arrange
           const ctx = createMemoryContext();
@@ -68,11 +75,10 @@ describe('application/commands/remote', () => {
           );
 
           // Act
-          const sut = await remote(ctx, { kind: 'list' });
+          const sut = await remoteList(ctx);
 
           // Assert
           expect(sut).toEqual({
-            kind: 'list',
             remotes: [
               {
                 name: 'origin',
@@ -87,7 +93,7 @@ describe('application/commands/remote', () => {
     });
 
     describe('Given a remote with both url and pushurl', () => {
-      describe('When remote({ kind: list }) runs', () => {
+      describe('When remoteList runs', () => {
         it('Then pushUrl is populated', async () => {
           // Arrange
           const ctx = createMemoryContext();
@@ -97,17 +103,33 @@ describe('application/commands/remote', () => {
           );
 
           // Act
-          const sut = await remote(ctx, { kind: 'list' });
+          const sut = await remoteList(ctx);
 
-          // Assert
-          if (sut.kind !== 'list') throw new Error('unreachable');
+          // Assert — no `fetch` key, so the refspec list defaults to empty.
           expect(sut.remotes[0]?.pushUrl).toBe('git@e.com:r.git');
+          expect(sut.remotes[0]?.fetchRefspecs).toEqual([]);
+        });
+      });
+    });
+
+    describe('Given a remote section with no url key', () => {
+      describe('When remoteList runs', () => {
+        it('Then the url defaults to an empty string', async () => {
+          // Arrange — a `[remote]` block carrying only a fetch refspec.
+          const ctx = createMemoryContext();
+          await seed(ctx, '[remote "origin"]\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n');
+
+          // Act
+          const sut = await remoteList(ctx);
+
+          // Assert — the missing url falls back to '' (not undefined).
+          expect(sut.remotes[0]?.url).toBe('');
         });
       });
     });
 
     describe('Given multiple remotes', () => {
-      describe('When remote({ kind: list }) runs', () => {
+      describe('When remoteList runs', () => {
         it('Then they come back sorted by name byte-wise', async () => {
           // Arrange — write in non-sorted order to prove the sort.
           const ctx = createMemoryContext();
@@ -117,10 +139,9 @@ describe('application/commands/remote', () => {
           );
 
           // Act
-          const sut = await remote(ctx, { kind: 'list' });
+          const sut = await remoteList(ctx);
 
           // Assert
-          if (sut.kind !== 'list') throw new Error('unreachable');
           expect(sut.remotes.map((r) => r.name)).toEqual(['alpha', 'mid', 'zeta']);
         });
       });
@@ -129,22 +150,19 @@ describe('application/commands/remote', () => {
 
   describe('add', () => {
     describe('Given a new name and url', () => {
-      describe('When remote({ kind: add }) runs', () => {
+      describe('When remoteAdd runs', () => {
         it('Then the [remote] block is written with the canonical default fetch refspec', async () => {
           // Arrange
           const ctx = createMemoryContext();
           await seed(ctx);
 
           // Act
-          const sut = await remote(ctx, {
-            kind: 'add',
+          const sut = await remoteAdd(ctx, {
             name: 'upstream',
             url: 'https://e.com/up.git',
           });
 
           // Assert — result payload reflects what was written.
-          expect(sut.kind).toBe('add');
-          if (sut.kind !== 'add') throw new Error('unreachable');
           expect(sut.remote.name).toBe('upstream');
           expect(sut.remote.url).toBe('https://e.com/up.git');
           expect(sut.remote.fetchRefspecs).toEqual(['+refs/heads/*:refs/remotes/upstream/*']);
@@ -158,22 +176,20 @@ describe('application/commands/remote', () => {
     });
 
     describe('Given a custom fetch refspec', () => {
-      describe('When remote({ kind: add, fetch }) runs', () => {
+      describe('When remoteAdd runs with a fetch refspec', () => {
         it('Then the custom refspec is written verbatim', async () => {
           // Arrange
           const ctx = createMemoryContext();
           await seed(ctx);
 
           // Act
-          const sut = await remote(ctx, {
-            kind: 'add',
+          const sut = await remoteAdd(ctx, {
             name: 'upstream',
             url: 'https://e.com/u.git',
             fetch: '+refs/heads/release:refs/remotes/upstream/release',
           });
 
           // Assert
-          if (sut.kind !== 'add') throw new Error('unreachable');
           expect(sut.remote.fetchRefspecs).toEqual([
             '+refs/heads/release:refs/remotes/upstream/release',
           ]);
@@ -185,7 +201,7 @@ describe('application/commands/remote', () => {
     });
 
     describe('Given an already-configured remote name', () => {
-      describe('When remote({ kind: add }) runs with the same name', () => {
+      describe('When remoteAdd runs with the same name', () => {
         it('Then it throws REMOTE_EXISTS', async () => {
           // Arrange
           const ctx = createMemoryContext();
@@ -194,8 +210,7 @@ describe('application/commands/remote', () => {
 
           // Act
           try {
-            await remote(ctx, {
-              kind: 'add',
+            await remoteAdd(ctx, {
               name: 'origin',
               url: 'https://e.com/new.git',
             });
@@ -214,7 +229,7 @@ describe('application/commands/remote', () => {
     });
 
     describe('Given an empty name', () => {
-      describe('When remote({ kind: add }) runs', () => {
+      describe('When remoteAdd runs', () => {
         it('Then it throws REMOTE_NAME_INVALID', async () => {
           // Arrange
           const ctx = createMemoryContext();
@@ -223,7 +238,7 @@ describe('application/commands/remote', () => {
 
           // Act
           try {
-            await remote(ctx, { kind: 'add', name: '', url: 'u' });
+            await remoteAdd(ctx, { name: '', url: 'u' });
           } catch (err) {
             caught = err;
           }
@@ -235,7 +250,7 @@ describe('application/commands/remote', () => {
     });
 
     describe('Given a name with a newline', () => {
-      describe('When remote({ kind: add }) runs', () => {
+      describe('When remoteAdd runs', () => {
         it('Then it throws REMOTE_NAME_INVALID', async () => {
           // Arrange
           const ctx = createMemoryContext();
@@ -244,7 +259,7 @@ describe('application/commands/remote', () => {
 
           // Act
           try {
-            await remote(ctx, { kind: 'add', name: 'a\nb', url: 'u' });
+            await remoteAdd(ctx, { name: 'a\nb', url: 'u' });
           } catch (err) {
             caught = err;
           }
@@ -256,7 +271,7 @@ describe('application/commands/remote', () => {
     });
 
     describe('Given a name with a closing bracket', () => {
-      describe('When remote({ kind: add }) runs', () => {
+      describe('When remoteAdd runs', () => {
         it('Then it throws REMOTE_NAME_INVALID', async () => {
           // Arrange
           const ctx = createMemoryContext();
@@ -265,7 +280,7 @@ describe('application/commands/remote', () => {
 
           // Act
           try {
-            await remote(ctx, { kind: 'add', name: 'a]b', url: 'u' });
+            await remoteAdd(ctx, { name: 'a]b', url: 'u' });
           } catch (err) {
             caught = err;
           }
@@ -277,7 +292,7 @@ describe('application/commands/remote', () => {
     });
 
     describe('Given a url containing a newline', () => {
-      describe('When remote({ kind: add }) runs', () => {
+      describe('When remoteAdd runs', () => {
         it('Then it throws INVALID_OPTION', async () => {
           // Arrange
           const ctx = createMemoryContext();
@@ -286,8 +301,7 @@ describe('application/commands/remote', () => {
 
           // Act
           try {
-            await remote(ctx, {
-              kind: 'add',
+            await remoteAdd(ctx, {
               name: 'origin',
               url: 'https://e.com/\nrest',
             });
@@ -296,13 +310,17 @@ describe('application/commands/remote', () => {
           }
 
           // Assert
-          expect((caught as TsgitError).data.code).toBe('INVALID_OPTION');
+          const data = (caught as TsgitError).data;
+          expect(data.code).toBe('INVALID_OPTION');
+          if (data.code !== 'INVALID_OPTION') throw new Error('unreachable');
+          expect(data.option).toBe('remote.url');
+          expect(data.reason).toContain('newline');
         });
       });
     });
 
     describe('Given a malformed custom fetch refspec', () => {
-      describe('When remote({ kind: add, fetch }) runs', () => {
+      describe('When remoteAdd runs with a fetch refspec', () => {
         it('Then it throws REFSPEC_INVALID', async () => {
           // Arrange
           const ctx = createMemoryContext();
@@ -311,8 +329,7 @@ describe('application/commands/remote', () => {
 
           // Act
           try {
-            await remote(ctx, {
-              kind: 'add',
+            await remoteAdd(ctx, {
               name: 'origin',
               url: 'u',
               fetch: '',
@@ -330,7 +347,7 @@ describe('application/commands/remote', () => {
 
   describe('remove', () => {
     describe('Given an unknown remote', () => {
-      describe('When remove runs', () => {
+      describe('When remoteRemove runs', () => {
         it('Then it throws REMOTE_NOT_CONFIGURED', async () => {
           // Arrange
           const ctx = createMemoryContext();
@@ -339,7 +356,7 @@ describe('application/commands/remote', () => {
 
           // Act
           try {
-            await remote(ctx, { kind: 'remove', name: 'origin' });
+            await remoteRemove(ctx, { name: 'origin' });
           } catch (err) {
             caught = err;
           }
@@ -351,7 +368,7 @@ describe('application/commands/remote', () => {
     });
 
     describe('Given a configured remote with no tracking refs', () => {
-      describe('When remove runs', () => {
+      describe('When remoteRemove runs', () => {
         it('Then the config block is gone and removedTrackingRefs is empty', async () => {
           // Arrange
           const ctx = createMemoryContext();
@@ -361,11 +378,9 @@ describe('application/commands/remote', () => {
           );
 
           // Act
-          const sut = await remote(ctx, { kind: 'remove', name: 'origin' });
+          const sut = await remoteRemove(ctx, { name: 'origin' });
 
           // Assert
-          expect(sut.kind).toBe('remove');
-          if (sut.kind !== 'remove') throw new Error('unreachable');
           expect(sut.name).toBe('origin');
           expect(sut.removedTrackingRefs).toEqual([]);
           expect(sut.clearedBranches).toEqual([]);
@@ -376,7 +391,7 @@ describe('application/commands/remote', () => {
     });
 
     describe('Given a configured remote with two tracking refs', () => {
-      describe('When remove runs', () => {
+      describe('When remoteRemove runs', () => {
         it('Then both refs are deleted and reported', async () => {
           // Arrange
           const ctx = createMemoryContext();
@@ -391,10 +406,9 @@ describe('application/commands/remote', () => {
           );
 
           // Act
-          const sut = await remote(ctx, { kind: 'remove', name: 'origin' });
+          const sut = await remoteRemove(ctx, { name: 'origin' });
 
           // Assert
-          if (sut.kind !== 'remove') throw new Error('unreachable');
           expect([...sut.removedTrackingRefs].sort()).toEqual([
             'refs/remotes/origin/dev',
             'refs/remotes/origin/main',
@@ -406,7 +420,7 @@ describe('application/commands/remote', () => {
     });
 
     describe('Given branches tracking the removed remote', () => {
-      describe('When remove runs', () => {
+      describe('When remoteRemove runs', () => {
         it('Then branch.<X>.remote and branch.<X>.merge are cleared', async () => {
           // Arrange
           const ctx = createMemoryContext();
@@ -416,10 +430,9 @@ describe('application/commands/remote', () => {
           );
 
           // Act
-          const sut = await remote(ctx, { kind: 'remove', name: 'origin' });
+          const sut = await remoteRemove(ctx, { name: 'origin' });
 
           // Assert
-          if (sut.kind !== 'remove') throw new Error('unreachable');
           expect(sut.clearedBranches).toEqual(['refs/heads/main']);
           const written = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
           expect(written).not.toContain('remote = origin');
@@ -429,7 +442,7 @@ describe('application/commands/remote', () => {
     });
 
     describe('Given a branch tracking a different remote', () => {
-      describe('When remove runs', () => {
+      describe('When remoteRemove runs', () => {
         it('Then the other branch is not cleared', async () => {
           // Arrange
           const ctx = createMemoryContext();
@@ -439,10 +452,9 @@ describe('application/commands/remote', () => {
           );
 
           // Act
-          const sut = await remote(ctx, { kind: 'remove', name: 'origin' });
+          const sut = await remoteRemove(ctx, { name: 'origin' });
 
           // Assert
-          if (sut.kind !== 'remove') throw new Error('unreachable');
           expect(sut.clearedBranches).toEqual([]);
           const written = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
           expect(written).toContain('remote = other');
@@ -451,17 +463,16 @@ describe('application/commands/remote', () => {
     });
 
     describe('Given a branch tracking the remote without a paired merge', () => {
-      describe('When remove runs', () => {
+      describe('When remoteRemove runs', () => {
         it('Then only branch.<X>.remote is cleared (merge already absent)', async () => {
           // Arrange
           const ctx = createMemoryContext();
           await seed(ctx, '[remote "origin"]\n\turl = u\n[branch "main"]\n\tremote = origin\n');
 
           // Act
-          const sut = await remote(ctx, { kind: 'remove', name: 'origin' });
+          const sut = await remoteRemove(ctx, { name: 'origin' });
 
           // Assert
-          if (sut.kind !== 'remove') throw new Error('unreachable');
           expect(sut.clearedBranches).toEqual(['refs/heads/main']);
           const written = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
           expect(written).not.toContain('remote = origin');
@@ -470,7 +481,7 @@ describe('application/commands/remote', () => {
     });
 
     describe('Given two branches tracking the same remote', () => {
-      describe('When remove runs', () => {
+      describe('When remoteRemove runs', () => {
         it('Then both are cleared', async () => {
           // Arrange
           const ctx = createMemoryContext();
@@ -480,17 +491,16 @@ describe('application/commands/remote', () => {
           );
 
           // Act
-          const sut = await remote(ctx, { kind: 'remove', name: 'origin' });
+          const sut = await remoteRemove(ctx, { name: 'origin' });
 
           // Assert
-          if (sut.kind !== 'remove') throw new Error('unreachable');
           expect([...sut.clearedBranches].sort()).toEqual(['refs/heads/dev', 'refs/heads/main']);
         });
       });
     });
 
     describe('Given a tracking ref with a reflog file', () => {
-      describe('When remove runs', () => {
+      describe('When remoteRemove runs', () => {
         it('Then the reflog file is gone', async () => {
           // Arrange
           const ctx = createMemoryContext();
@@ -506,7 +516,7 @@ describe('application/commands/remote', () => {
           );
 
           // Act
-          await remote(ctx, { kind: 'remove', name: 'origin' });
+          await remoteRemove(ctx, { name: 'origin' });
 
           // Assert
           expect(await ctx.fs.exists(`${ctx.layout.gitDir}/logs/refs/remotes/origin/main`)).toBe(
@@ -517,7 +527,7 @@ describe('application/commands/remote', () => {
     });
 
     describe('Given an invalid remote name', () => {
-      describe('When remove runs', () => {
+      describe('When remoteRemove runs', () => {
         it('Then it throws REMOTE_NAME_INVALID', async () => {
           // Arrange
           const ctx = createMemoryContext();
@@ -526,7 +536,7 @@ describe('application/commands/remote', () => {
 
           // Act
           try {
-            await remote(ctx, { kind: 'remove', name: '' });
+            await remoteRemove(ctx, { name: '' });
           } catch (err) {
             caught = err;
           }
@@ -540,7 +550,7 @@ describe('application/commands/remote', () => {
 
   describe('rename', () => {
     describe('Given an unknown `from`', () => {
-      describe('When rename runs', () => {
+      describe('When remoteRename runs', () => {
         it('Then it throws REMOTE_NOT_CONFIGURED', async () => {
           // Arrange
           const ctx = createMemoryContext();
@@ -549,7 +559,7 @@ describe('application/commands/remote', () => {
 
           // Act
           try {
-            await remote(ctx, { kind: 'rename', from: 'missing', to: 'new' });
+            await remoteRename(ctx, { from: 'missing', to: 'new' });
           } catch (err) {
             caught = err;
           }
@@ -561,7 +571,7 @@ describe('application/commands/remote', () => {
     });
 
     describe('Given to equals from', () => {
-      describe('When rename runs', () => {
+      describe('When remoteRename runs', () => {
         it('Then it throws INVALID_OPTION', async () => {
           // Arrange
           const ctx = createMemoryContext();
@@ -570,19 +580,23 @@ describe('application/commands/remote', () => {
 
           // Act
           try {
-            await remote(ctx, { kind: 'rename', from: 'origin', to: 'origin' });
+            await remoteRename(ctx, { from: 'origin', to: 'origin' });
           } catch (err) {
             caught = err;
           }
 
           // Assert
-          expect((caught as TsgitError).data.code).toBe('INVALID_OPTION');
+          const data = (caught as TsgitError).data;
+          expect(data.code).toBe('INVALID_OPTION');
+          if (data.code !== 'INVALID_OPTION') throw new Error('unreachable');
+          expect(data.option).toBe('remote.rename');
+          expect(data.reason).toContain('differ');
         });
       });
     });
 
     describe('Given an existing `to`', () => {
-      describe('When rename runs', () => {
+      describe('When remoteRename runs', () => {
         it('Then it throws REMOTE_EXISTS', async () => {
           // Arrange
           const ctx = createMemoryContext();
@@ -591,7 +605,7 @@ describe('application/commands/remote', () => {
 
           // Act
           try {
-            await remote(ctx, { kind: 'rename', from: 'origin', to: 'upstream' });
+            await remoteRename(ctx, { from: 'origin', to: 'upstream' });
           } catch (err) {
             caught = err;
           }
@@ -603,7 +617,7 @@ describe('application/commands/remote', () => {
     });
 
     describe('Given the canonical default refspec', () => {
-      describe('When rename runs', () => {
+      describe('When remoteRename runs', () => {
         it('Then it is rewritten for the new name', async () => {
           // Arrange
           const ctx = createMemoryContext();
@@ -613,7 +627,7 @@ describe('application/commands/remote', () => {
           );
 
           // Act
-          await remote(ctx, { kind: 'rename', from: 'origin', to: 'upstream' });
+          await remoteRename(ctx, { from: 'origin', to: 'upstream' });
 
           // Assert
           const written = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
@@ -625,7 +639,7 @@ describe('application/commands/remote', () => {
     });
 
     describe('Given a custom (non-canonical) fetch refspec', () => {
-      describe('When rename runs', () => {
+      describe('When remoteRename runs', () => {
         it('Then the refspec is preserved verbatim', async () => {
           // Arrange — note: leading `+` missing, so the canonical heuristic does NOT match.
           const ctx = createMemoryContext();
@@ -635,7 +649,7 @@ describe('application/commands/remote', () => {
           );
 
           // Act
-          await remote(ctx, { kind: 'rename', from: 'origin', to: 'upstream' });
+          await remoteRename(ctx, { from: 'origin', to: 'upstream' });
 
           // Assert
           const written = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
@@ -645,7 +659,7 @@ describe('application/commands/remote', () => {
     });
 
     describe('Given a mixed list (canonical and custom refspecs)', () => {
-      describe('When rename runs', () => {
+      describe('When remoteRename runs', () => {
         it('Then only the canonical entry is rewritten AND refspec order is preserved', async () => {
           // Arrange — order matters: the canonical-first/custom-second
           // arrangement must survive the rename so `.git/config` byte
@@ -657,7 +671,7 @@ describe('application/commands/remote', () => {
           );
 
           // Act
-          await remote(ctx, { kind: 'rename', from: 'origin', to: 'upstream' });
+          await remoteRename(ctx, { from: 'origin', to: 'upstream' });
 
           // Assert — both refspecs present in the original order.
           const written = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
@@ -673,7 +687,7 @@ describe('application/commands/remote', () => {
     });
 
     describe('Given tracking refs under the old name', () => {
-      describe('When rename runs', () => {
+      describe('When remoteRename runs', () => {
         it('Then they are moved with the same OIDs', async () => {
           // Arrange
           const ctx = createMemoryContext();
@@ -682,22 +696,30 @@ describe('application/commands/remote', () => {
           await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/remotes/origin/main`, `${oid}\n`);
 
           // Act
-          const sut = await remote(ctx, { kind: 'rename', from: 'origin', to: 'upstream' });
+          const sut = await remoteRename(ctx, { from: 'origin', to: 'upstream' });
 
           // Assert
-          if (sut.kind !== 'rename') throw new Error('unreachable');
           expect(sut.movedTrackingRefs).toEqual(['refs/remotes/upstream/main']);
           expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/remotes/origin/main`)).toBe(false);
           const moved = (
             await ctx.fs.readUtf8(`${ctx.layout.gitDir}/refs/remotes/upstream/main`)
           ).trim();
           expect(moved).toBe(oid);
+          // The source had no fetch refspec, so the renamed section gets none
+          // either — the empty-spec path writes no `fetch` line.
+          const written = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
+          expect(written).not.toContain('fetch');
+          // The move records the rename reflog message on the new ref.
+          const movedLog = await ctx.fs.readUtf8(
+            `${ctx.layout.gitDir}/logs/refs/remotes/upstream/main`,
+          );
+          expect(movedLog).toContain('remote: renamed origin to upstream');
         });
       });
     });
 
     describe('Given a branch tracking the renamed remote', () => {
-      describe('When rename runs', () => {
+      describe('When remoteRename runs', () => {
         it('Then branch.<X>.remote is rewritten to the new name', async () => {
           // Arrange
           const ctx = createMemoryContext();
@@ -707,10 +729,9 @@ describe('application/commands/remote', () => {
           );
 
           // Act
-          const sut = await remote(ctx, { kind: 'rename', from: 'origin', to: 'upstream' });
+          const sut = await remoteRename(ctx, { from: 'origin', to: 'upstream' });
 
           // Assert
-          if (sut.kind !== 'rename') throw new Error('unreachable');
           expect(sut.rewrittenBranches).toEqual(['refs/heads/main']);
           const written = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
           expect(written).toContain('remote = upstream');
@@ -720,7 +741,7 @@ describe('application/commands/remote', () => {
     });
 
     describe('Given a packed-only tracking ref under the old name', () => {
-      describe('When rename runs', () => {
+      describe('When remoteRename runs', () => {
         it('Then it throws UNSUPPORTED_OPERATION before touching anything', async () => {
           // Arrange — write a `packed-refs` file that names
           // refs/remotes/origin/main; no loose file exists. `enumerateRefs`
@@ -736,13 +757,17 @@ describe('application/commands/remote', () => {
           // Act
           let caught: unknown;
           try {
-            await remote(ctx, { kind: 'rename', from: 'origin', to: 'upstream' });
+            await remoteRename(ctx, { from: 'origin', to: 'upstream' });
           } catch (err) {
             caught = err;
           }
 
           // Assert — the new ref must NOT exist (no partial move).
-          expect((caught as TsgitError).data.code).toBe('UNSUPPORTED_OPERATION');
+          const data = (caught as TsgitError).data;
+          expect(data.code).toBe('UNSUPPORTED_OPERATION');
+          if (data.code !== 'UNSUPPORTED_OPERATION') throw new Error('unreachable');
+          expect(data.operation).toBe('rename-packed-tracking-ref');
+          expect(data.reason).toContain('packed-only ref refs/remotes/origin/main');
           expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/remotes/upstream/main`)).toBe(
             false,
           );
@@ -751,7 +776,7 @@ describe('application/commands/remote', () => {
     });
 
     describe('Given an invalid `to` name', () => {
-      describe('When rename runs', () => {
+      describe('When remoteRename runs', () => {
         it('Then it throws REMOTE_NAME_INVALID', async () => {
           // Arrange
           const ctx = createMemoryContext();
@@ -760,7 +785,7 @@ describe('application/commands/remote', () => {
 
           // Act
           try {
-            await remote(ctx, { kind: 'rename', from: 'origin', to: 'a"b' });
+            await remoteRename(ctx, { from: 'origin', to: 'a"b' });
           } catch (err) {
             caught = err;
           }
@@ -774,7 +799,7 @@ describe('application/commands/remote', () => {
 
   describe('setUrl', () => {
     describe('Given an unknown remote', () => {
-      describe('When setUrl runs', () => {
+      describe('When remoteSetUrl runs', () => {
         it('Then it throws REMOTE_NOT_CONFIGURED', async () => {
           // Arrange
           const ctx = createMemoryContext();
@@ -783,7 +808,7 @@ describe('application/commands/remote', () => {
 
           // Act
           try {
-            await remote(ctx, { kind: 'setUrl', name: 'origin', url: 'x' });
+            await remoteSetUrl(ctx, { name: 'origin', url: 'x' });
           } catch (err) {
             caught = err;
           }
@@ -795,21 +820,19 @@ describe('application/commands/remote', () => {
     });
 
     describe('Given a known remote and a new url', () => {
-      describe('When setUrl({ url }) runs', () => {
+      describe('When remoteSetUrl runs', () => {
         it('Then remote.<n>.url is replaced and pushurl is untouched', async () => {
           // Arrange
           const ctx = createMemoryContext();
           await seed(ctx, '[remote "origin"]\n\turl = old\n\tpushurl = push-old\n');
 
           // Act
-          const sut = await remote(ctx, {
-            kind: 'setUrl',
+          const sut = await remoteSetUrl(ctx, {
             name: 'origin',
             url: 'new',
           });
 
           // Assert
-          if (sut.kind !== 'setUrl') throw new Error('unreachable');
           expect(sut.remote.url).toBe('new');
           expect(sut.remote.pushUrl).toBe('push-old');
           const written = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
@@ -821,22 +844,20 @@ describe('application/commands/remote', () => {
     });
 
     describe('Given a known remote and { push: true }', () => {
-      describe('When setUrl({ url, push: true }) runs', () => {
+      describe('When remoteSetUrl runs with push: true', () => {
         it('Then remote.<n>.pushurl is replaced and url is untouched', async () => {
           // Arrange
           const ctx = createMemoryContext();
           await seed(ctx, '[remote "origin"]\n\turl = u\n');
 
           // Act
-          const sut = await remote(ctx, {
-            kind: 'setUrl',
+          const sut = await remoteSetUrl(ctx, {
             name: 'origin',
             url: 'push-new',
             push: true,
           });
 
           // Assert
-          if (sut.kind !== 'setUrl') throw new Error('unreachable');
           expect(sut.remote.pushUrl).toBe('push-new');
           expect(sut.remote.url).toBe('u');
           const written = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
@@ -847,7 +868,7 @@ describe('application/commands/remote', () => {
     });
 
     describe('Given a url with a newline', () => {
-      describe('When setUrl runs', () => {
+      describe('When remoteSetUrl runs', () => {
         it('Then it throws INVALID_OPTION', async () => {
           // Arrange
           const ctx = createMemoryContext();
@@ -856,8 +877,7 @@ describe('application/commands/remote', () => {
 
           // Act
           try {
-            await remote(ctx, {
-              kind: 'setUrl',
+            await remoteSetUrl(ctx, {
               name: 'origin',
               url: 'bad\nurl',
             });
@@ -866,13 +886,17 @@ describe('application/commands/remote', () => {
           }
 
           // Assert
-          expect((caught as TsgitError).data.code).toBe('INVALID_OPTION');
+          const data = (caught as TsgitError).data;
+          expect(data.code).toBe('INVALID_OPTION');
+          if (data.code !== 'INVALID_OPTION') throw new Error('unreachable');
+          expect(data.option).toBe('remote.url');
+          expect(data.reason).toContain('newline');
         });
       });
     });
 
     describe('Given an invalid remote name', () => {
-      describe('When setUrl runs', () => {
+      describe('When remoteSetUrl runs', () => {
         it('Then it throws REMOTE_NAME_INVALID', async () => {
           // Arrange
           const ctx = createMemoryContext();
@@ -881,7 +905,7 @@ describe('application/commands/remote', () => {
 
           // Act
           try {
-            await remote(ctx, { kind: 'setUrl', name: '', url: 'u' });
+            await remoteSetUrl(ctx, { name: '', url: 'u' });
           } catch (err) {
             caught = err;
           }
@@ -895,7 +919,7 @@ describe('application/commands/remote', () => {
 
   describe('show', () => {
     describe('Given an unknown remote', () => {
-      describe('When show runs', () => {
+      describe('When remoteShow runs', () => {
         it('Then it throws REMOTE_NOT_CONFIGURED', async () => {
           // Arrange
           const ctx = createMemoryContext();
@@ -904,7 +928,7 @@ describe('application/commands/remote', () => {
 
           // Act
           try {
-            await remote(ctx, { kind: 'show', name: 'origin' });
+            await remoteShow(ctx, { name: 'origin' });
           } catch (err) {
             caught = err;
           }
@@ -916,7 +940,7 @@ describe('application/commands/remote', () => {
     });
 
     describe('Given a remote with tracking refs and tracking branches', () => {
-      describe('When show runs', () => {
+      describe('When remoteShow runs', () => {
         it('Then trackingRefs and trackedBy reflect them', async () => {
           // Arrange
           const ctx = createMemoryContext();
@@ -928,10 +952,9 @@ describe('application/commands/remote', () => {
           await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/remotes/origin/main`, `${oid}\n`);
 
           // Act
-          const sut = await remote(ctx, { kind: 'show', name: 'origin' });
+          const sut = await remoteShow(ctx, { name: 'origin' });
 
           // Assert
-          if (sut.kind !== 'show') throw new Error('unreachable');
           expect(sut.remote.url).toBe('https://e.com/r.git');
           expect(sut.remote.fetchRefspecs).toEqual(['+refs/heads/*:refs/remotes/origin/*']);
           expect(sut.remote.trackingRefs.size).toBe(1);
@@ -944,34 +967,32 @@ describe('application/commands/remote', () => {
     });
 
     describe('Given a remote with pushurl set', () => {
-      describe('When show runs', () => {
+      describe('When remoteShow runs', () => {
         it('Then pushUrl is populated', async () => {
           // Arrange
           const ctx = createMemoryContext();
           await seed(ctx, '[remote "origin"]\n\turl = u\n\tpushurl = p\n');
 
           // Act
-          const sut = await remote(ctx, { kind: 'show', name: 'origin' });
+          const sut = await remoteShow(ctx, { name: 'origin' });
 
           // Assert
-          if (sut.kind !== 'show') throw new Error('unreachable');
           expect(sut.remote.pushUrl).toBe('p');
         });
       });
     });
 
     describe('Given a remote with no tracking refs', () => {
-      describe('When show runs', () => {
+      describe('When remoteShow runs', () => {
         it('Then trackingRefs is an empty Map', async () => {
           // Arrange
           const ctx = createMemoryContext();
           await seed(ctx, '[remote "origin"]\n\turl = u\n');
 
           // Act
-          const sut = await remote(ctx, { kind: 'show', name: 'origin' });
+          const sut = await remoteShow(ctx, { name: 'origin' });
 
           // Assert
-          if (sut.kind !== 'show') throw new Error('unreachable');
           expect(sut.remote.trackingRefs.size).toBe(0);
           expect(sut.remote.trackedBy).toEqual([]);
         });
@@ -979,24 +1000,23 @@ describe('application/commands/remote', () => {
     });
 
     describe('Given a remote tracked by a branch with no merge', () => {
-      describe('When show runs', () => {
+      describe('When remoteShow runs', () => {
         it('Then trackedBy[i].merge is undefined', async () => {
           // Arrange
           const ctx = createMemoryContext();
           await seed(ctx, '[remote "origin"]\n\turl = u\n[branch "main"]\n\tremote = origin\n');
 
           // Act
-          const sut = await remote(ctx, { kind: 'show', name: 'origin' });
+          const sut = await remoteShow(ctx, { name: 'origin' });
 
           // Assert
-          if (sut.kind !== 'show') throw new Error('unreachable');
           expect(sut.remote.trackedBy).toEqual([{ branch: 'refs/heads/main', merge: undefined }]);
         });
       });
     });
 
     describe('Given an invalid remote name', () => {
-      describe('When show runs', () => {
+      describe('When remoteShow runs', () => {
         it('Then it throws REMOTE_NAME_INVALID', async () => {
           // Arrange
           const ctx = createMemoryContext();
@@ -1005,7 +1025,7 @@ describe('application/commands/remote', () => {
 
           // Act
           try {
-            await remote(ctx, { kind: 'show', name: '' });
+            await remoteShow(ctx, { name: '' });
           } catch (err) {
             caught = err;
           }

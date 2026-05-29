@@ -131,9 +131,9 @@ await git.branch({ fs, dir: '.', ref: 'feature' });
 await git.deleteBranch({ fs, dir: '.', ref: 'feature' });
 
 // tsgit
-const list = await repo.branch({ kind: 'list' });
-await repo.branch({ kind: 'create', name: 'feature' });
-await repo.branch({ kind: 'delete', name: 'feature' });
+const list = await repo.branch.list();
+await repo.branch.create({ name: 'feature' });
+await repo.branch.delete({ name: 'feature' });
 ```
 
 ### `git.checkout` → `repo.checkout`
@@ -184,8 +184,8 @@ await git.tag({ fs, dir: '.', ref: 'v1.0.0' });
 const tags = await git.listTags({ fs, dir: '.' });
 
 // tsgit
-await repo.tag({ kind: 'create', name: 'v1.0.0' });
-const tags = await repo.tag({ kind: 'list' });
+await repo.tag.create({ name: 'v1.0.0' });
+const tags = await repo.tag.list();
 ```
 
 ### `git.push` → `repo.push`

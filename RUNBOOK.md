@@ -539,12 +539,12 @@ working tree. Excluded files keep their index entry, marked **skip-worktree**
 (a git index v3 extended flag), so `commit` still records the whole tree.
 Operator-visible behaviour:
 
-- **Subcommands.** `{ action: 'set', patterns }` enables sparse checkout and
+- **Methods.** `sparseCheckout.set({ patterns })` enables sparse checkout and
   restricts the tree to `patterns`; `add` widens it with more patterns;
   `list` returns `{ cone, patterns }`; `reapply` re-applies the on-disk
   patterns; `disable` turns sparse checkout off and re-materialises every
-  file. `set`/`add`/`reapply`/`disable` return `{ kind: 'applied',
-  materialized, removed, retained }` counts.
+  file. `set`/`add`/`reapply`/`disable` return
+  `{ cone, materialized, removed, retained }` counts.
 - **Pattern modes.** Cone (the default) takes a directory list; non-cone
   (`{ cone: false }`) takes `.gitignore`-style patterns, last-match wins.
   `core.sparseCheckout` / `core.sparseCheckoutCone` gate the feature and are

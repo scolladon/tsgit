@@ -147,7 +147,8 @@ export interface Repository {
   // Tier-1 commands (18) — bound to ctx.
   readonly abortMerge: BindCtx<typeof commands.abortMerge>;
   readonly add: BindCtx<typeof commands.add>;
-  readonly branch: BindCtx<typeof commands.branch>;
+  /** Nested `repo.branch.{list,create,delete,rename}` namespace. */
+  readonly branch: commands.BranchNamespace;
   readonly catFile: BindCtx<typeof commands.catFile>;
   readonly checkout: BindCtx<typeof commands.checkout>;
   readonly clone: BindCtx<typeof commands.clone>;
@@ -169,14 +170,17 @@ export interface Repository {
   readonly merge: BindCtx<typeof commands.merge>;
   readonly push: BindCtx<typeof commands.push>;
   readonly reflog: BindCtx<typeof commands.reflog>;
-  readonly remote: BindCtx<typeof commands.remote>;
+  /** Nested `repo.remote.{list,add,remove,rename,setUrl,show}` namespace. */
+  readonly remote: commands.RemoteNamespace;
   readonly reset: BindCtx<typeof commands.reset>;
   readonly revParse: BindCtx<typeof commands.revParse>;
   readonly rm: BindCtx<typeof commands.rm>;
-  readonly sparseCheckout: BindCtx<typeof commands.sparseCheckout>;
+  /** Nested `repo.sparseCheckout.{list,set,add,reapply,disable}` namespace. */
+  readonly sparseCheckout: commands.SparseCheckoutNamespace;
   readonly status: BindCtx<typeof commands.status>;
   readonly submodules: BindCtx<typeof commands.submodules>;
-  readonly tag: BindCtx<typeof commands.tag>;
+  /** Nested `repo.tag.{list,create,delete}` namespace. */
+  readonly tag: commands.TagNamespace;
 
   // Tier-2 primitives (16) — bound under.primitives.* to keep the top-level
   // surface focused on user-facing commands.
@@ -371,10 +375,7 @@ export const openRepository = async (
       guard();
       return commands.add(ctx, paths, addOpts);
     }) as Repository['add'],
-    branch: ((action) => {
-      guard();
-      return commands.branch(ctx, action);
-    }) as Repository['branch'],
+    branch: commands.bindBranchNamespace(ctx, guard),
     checkout: ((checkoutOpts) => {
       guard();
       return commands.checkout(ctx, checkoutOpts);
@@ -434,10 +435,7 @@ export const openRepository = async (
       guard();
       return commands.reflog(ctx, reflogOpts);
     }) as Repository['reflog'],
-    remote: ((remoteAction) => {
-      guard();
-      return commands.remote(ctx, remoteAction);
-    }) as Repository['remote'],
+    remote: commands.bindRemoteNamespace(ctx, guard),
     reset: ((resetOpts) => {
       guard();
       return commands.reset(ctx, resetOpts);
@@ -450,10 +448,7 @@ export const openRepository = async (
       guard();
       return commands.rm(ctx, paths, rmOpts);
     }) as Repository['rm'],
-    sparseCheckout: ((action) => {
-      guard();
-      return commands.sparseCheckout(ctx, action);
-    }) as Repository['sparseCheckout'],
+    sparseCheckout: commands.bindSparseCheckoutNamespace(ctx, guard),
     status: (() => {
       guard();
       return commands.status(ctx);
@@ -462,10 +457,7 @@ export const openRepository = async (
       guard();
       return commands.submodules(ctx, opts);
     }) as Repository['submodules'],
-    tag: ((action) => {
-      guard();
-      return commands.tag(ctx, action);
-    }) as Repository['tag'],
+    tag: commands.bindTagNamespace(ctx, guard),
     primitives: Object.freeze({
       catFileBatch: ((ids, options) => {
         guard();

@@ -1,9 +1,10 @@
 /**
- * Tier-1 `sparseCheckout` command — git-parity sparse-checkout management.
- * One command, discriminated `action` (`list` / `set` / `add` / `reapply` /
- * `disable`), mirroring `reflog` / `branch` (design §10, ADR-071).
+ * `sparseCheckout` porcelain — git-parity sparse-checkout management, exposed
+ * as the `repo.sparseCheckout.*` nested namespace (`list` / `set` / `add` /
+ * `reapply` / `disable`). Each verb is a Context-aware function; the namespace
+ * binder lives in `internal/sparse-checkout-namespace.ts`.
  *
- * Persistence ordering: a mutating action computes its matcher in memory, runs
+ * Persistence ordering: a mutating verb computes its matcher in memory, runs
  * `applySparseCheckout` FIRST, and only AFTER a successful apply persists the
  * pattern file and config — a failed apply leaves `.git` untouched.
  */
@@ -33,59 +34,57 @@ import {
   assertRepository,
 } from './internal/repo-state.js';
 
-export type SparseCheckoutAction =
-  | { readonly action: 'list' }
-  | {
-      readonly action: 'set';
-      readonly patterns: ReadonlyArray<string>;
-      readonly cone?: boolean;
-      readonly force?: boolean;
-    }
-  | { readonly action: 'add'; readonly patterns: ReadonlyArray<string>; readonly force?: boolean }
-  | { readonly action: 'reapply'; readonly force?: boolean }
-  | { readonly action: 'disable'; readonly force?: boolean };
+export interface SparseCheckoutListResult {
+  readonly cone: boolean;
+  readonly patterns: ReadonlyArray<string>;
+}
 
-export type SparseCheckoutResult =
-  | { readonly kind: 'list'; readonly cone: boolean; readonly patterns: ReadonlyArray<string> }
-  | {
-      readonly kind: 'applied';
-      readonly cone: boolean;
-      readonly materialized: number;
-      readonly removed: number;
-      readonly retained: ReadonlyArray<FilePath>;
-    };
+export interface SparseCheckoutAppliedResult {
+  readonly cone: boolean;
+  readonly materialized: number;
+  readonly removed: number;
+  readonly retained: ReadonlyArray<FilePath>;
+}
 
-/** Sparse checkout needs a worktree and a quiet repo — gate every action. */
+export interface SparseCheckoutSetInput {
+  readonly patterns: ReadonlyArray<string>;
+  readonly cone?: boolean;
+  readonly force?: boolean;
+}
+
+export interface SparseCheckoutAddInput {
+  readonly patterns: ReadonlyArray<string>;
+  readonly force?: boolean;
+}
+
+export interface SparseCheckoutReapplyInput {
+  readonly force?: boolean;
+}
+
+export interface SparseCheckoutDisableInput {
+  readonly force?: boolean;
+}
+
+/** Sparse checkout needs a worktree and a quiet repo — gate every verb. */
 const assertSparseReady = async (ctx: Context): Promise<void> => {
   await assertRepository(ctx);
   await assertNotBare(ctx, 'sparse-checkout');
   await assertNoPendingOperation(ctx);
 };
 
-export const sparseCheckout = async (
-  ctx: Context,
-  opts: SparseCheckoutAction,
-): Promise<SparseCheckoutResult> => {
-  await assertSparseReady(ctx);
-  if (opts.action === 'list') return runList(ctx);
-  if (opts.action === 'set') return runSet(ctx, opts);
-  if (opts.action === 'add') return runAdd(ctx, opts);
-  if (opts.action === 'reapply') return runReapply(ctx, opts);
-  return runDisable(ctx, opts);
-};
-
 /** Map a parsed spec onto the `list` output: sorted recursive dirs / raw lines. */
-const specToList = (spec: SparseSpec): SparseCheckoutResult => {
+const specToList = (spec: SparseSpec): SparseCheckoutListResult => {
   if (spec.mode === 'cone') {
-    return { kind: 'list', cone: true, patterns: [...spec.recursive].sort() };
+    return { cone: true, patterns: [...spec.recursive].sort() };
   }
-  return { kind: 'list', cone: false, patterns: spec.rules.map((rule) => rule.source) };
+  return { cone: false, patterns: spec.rules.map((rule) => rule.source) };
 };
 
-const runList = async (ctx: Context): Promise<SparseCheckoutResult> => {
+export const sparseCheckoutList = async (ctx: Context): Promise<SparseCheckoutListResult> => {
+  await assertSparseReady(ctx);
   const config = await readConfig(ctx);
   if (config.core?.sparseCheckout !== true) {
-    return { kind: 'list', cone: false, patterns: [] };
+    return { cone: false, patterns: [] };
   }
   const coneRequested = config.core.sparseCheckoutCone === true;
   const text = (await readSparsePatternText(ctx)) ?? '';
@@ -107,7 +106,7 @@ const applyAndPersist = async (
   spec: SparseSpec,
   text: string,
   force: boolean | undefined,
-): Promise<SparseCheckoutResult> => {
+): Promise<SparseCheckoutAppliedResult> => {
   const applied = await applySparseCheckout(ctx, applyOpts(buildSparseMatcher(spec), force));
   await writeSparsePatternText(ctx, text);
   await updateCoreConfig(ctx, {
@@ -117,24 +116,26 @@ const applyAndPersist = async (
   return toApplied(spec.mode === 'cone', applied);
 };
 
-const runSet = async (
+export const sparseCheckoutSet = async (
   ctx: Context,
-  opts: Extract<SparseCheckoutAction, { action: 'set' }>,
-): Promise<SparseCheckoutResult> => {
-  if (opts.patterns.length === 0) {
+  input: SparseCheckoutSetInput,
+): Promise<SparseCheckoutAppliedResult> => {
+  await assertSparseReady(ctx);
+  if (input.patterns.length === 0) {
     throw invalidOption('patterns', 'set requires at least one pattern');
   }
   const config = await readConfig(ctx);
-  const useCone = opts.cone ?? config.core?.sparseCheckoutCone ?? true;
-  const { spec, text } = buildSpecAndText(useCone, opts.patterns);
-  return applyAndPersist(ctx, spec, text, opts.force);
+  const useCone = input.cone ?? config.core?.sparseCheckoutCone ?? true;
+  const { spec, text } = buildSpecAndText(useCone, input.patterns);
+  return applyAndPersist(ctx, spec, text, input.force);
 };
 
-const runAdd = async (
+export const sparseCheckoutAdd = async (
   ctx: Context,
-  opts: Extract<SparseCheckoutAction, { action: 'add' }>,
-): Promise<SparseCheckoutResult> => {
-  if (opts.patterns.length === 0) {
+  input: SparseCheckoutAddInput,
+): Promise<SparseCheckoutAppliedResult> => {
+  await assertSparseReady(ctx);
+  if (input.patterns.length === 0) {
     throw invalidOption('patterns', 'add requires at least one pattern');
   }
   const config = await readConfig(ctx);
@@ -143,28 +144,30 @@ const runAdd = async (
   }
   const useCone = config.core.sparseCheckoutCone === true;
   const existing = (await readSparsePatternText(ctx)) ?? '';
-  const { spec, text } = combineSpecAndText(useCone, existing, opts.patterns);
-  return applyAndPersist(ctx, spec, text, opts.force);
+  const { spec, text } = combineSpecAndText(useCone, existing, input.patterns);
+  return applyAndPersist(ctx, spec, text, input.force);
 };
 
-const runReapply = async (
+export const sparseCheckoutReapply = async (
   ctx: Context,
-  opts: Extract<SparseCheckoutAction, { action: 'reapply' }>,
-): Promise<SparseCheckoutResult> => {
+  input?: SparseCheckoutReapplyInput,
+): Promise<SparseCheckoutAppliedResult> => {
+  await assertSparseReady(ctx);
   const matcher = await loadSparseMatcher(ctx);
   if (matcher === undefined) {
     throw invalidOption('action', 'reapply requires sparse checkout to be enabled');
   }
   const config = await readConfig(ctx);
-  const applied = await applySparseCheckout(ctx, applyOpts(matcher, opts.force));
+  const applied = await applySparseCheckout(ctx, applyOpts(matcher, input?.force));
   return toApplied(config.core?.sparseCheckoutCone === true, applied);
 };
 
-const runDisable = async (
+export const sparseCheckoutDisable = async (
   ctx: Context,
-  opts: Extract<SparseCheckoutAction, { action: 'disable' }>,
-): Promise<SparseCheckoutResult> => {
-  const applied = await applySparseCheckout(ctx, applyOpts(undefined, opts.force));
+  input?: SparseCheckoutDisableInput,
+): Promise<SparseCheckoutAppliedResult> => {
+  await assertSparseReady(ctx);
+  const applied = await applySparseCheckout(ctx, applyOpts(undefined, input?.force));
   await updateCoreConfig(ctx, { sparseCheckout: 'false' });
   return toApplied(false, applied);
 };
@@ -204,8 +207,10 @@ const combineSpecAndText = (
   return { spec: parseSparseCheckout(text, false).spec, text };
 };
 
-const toApplied = (cone: boolean, applied: ApplySparseCheckoutResult): SparseCheckoutResult => ({
-  kind: 'applied',
+const toApplied = (
+  cone: boolean,
+  applied: ApplySparseCheckoutResult,
+): SparseCheckoutAppliedResult => ({
   cone,
   materialized: applied.materialized,
   removed: applied.removed,

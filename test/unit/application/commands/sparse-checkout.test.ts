@@ -2,8 +2,11 @@ import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { init } from '../../../../src/application/commands/init.js';
 import {
-  type SparseCheckoutResult,
-  sparseCheckout,
+  sparseCheckoutAdd,
+  sparseCheckoutDisable,
+  sparseCheckoutList,
+  sparseCheckoutReapply,
+  sparseCheckoutSet,
 } from '../../../../src/application/commands/sparse-checkout.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { TsgitError } from '../../../../src/domain/error.js';
@@ -117,7 +120,7 @@ describe('sparseCheckout command', () => {
           const ctx = createMemoryContext();
 
           // Act
-          const err = await expectError(() => sparseCheckout(ctx, { action: 'list' }));
+          const err = await expectError(() => sparseCheckoutList(ctx));
 
           // Assert
           expect(err.data.code).toBe('NOT_A_REPOSITORY');
@@ -134,7 +137,7 @@ describe('sparseCheckout command', () => {
           await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tbare = true\n');
 
           // Act
-          const err = await expectError(() => sparseCheckout(ctx, { action: 'list' }));
+          const err = await expectError(() => sparseCheckoutList(ctx));
 
           // Assert
           expect(err.data).toEqual({ code: 'BARE_REPOSITORY', operation: 'sparse-checkout' });
@@ -150,7 +153,7 @@ describe('sparseCheckout command', () => {
           await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/MERGE_HEAD`, `${'a'.repeat(40)}\n`);
 
           // Act
-          const err = await expectError(() => sparseCheckout(ctx, { action: 'list' }));
+          const err = await expectError(() => sparseCheckoutList(ctx));
 
           // Assert
           expect(err.data).toEqual({ code: 'OPERATION_IN_PROGRESS', operation: 'merge' });
@@ -167,10 +170,10 @@ describe('sparseCheckout command', () => {
           const ctx = await seedRepoWithTree();
 
           // Act
-          const sut = await sparseCheckout(ctx, { action: 'list' });
+          const sut = await sparseCheckoutList(ctx);
 
           // Assert
-          expect(sut).toEqual({ kind: 'list', cone: false, patterns: [] });
+          expect(sut).toEqual({ cone: false, patterns: [] });
         });
       });
     });
@@ -180,13 +183,13 @@ describe('sparseCheckout command', () => {
         it('Then returns the sorted recursive directories', async () => {
           // Arrange — enable via a cone `set`, then list.
           const ctx = await seedRepoWithTree();
-          await sparseCheckout(ctx, { action: 'set', patterns: ['src/app', 'docs'], cone: true });
+          await sparseCheckoutSet(ctx, { patterns: ['src/app', 'docs'], cone: true });
 
           // Act
-          const sut = await sparseCheckout(ctx, { action: 'list' });
+          const sut = await sparseCheckoutList(ctx);
 
           // Assert — recursive dirs only, sorted; parent `src` excluded.
-          expect(sut).toEqual({ kind: 'list', cone: true, patterns: ['docs', 'src/app'] });
+          expect(sut).toEqual({ cone: true, patterns: ['docs', 'src/app'] });
         });
       });
     });
@@ -196,17 +199,13 @@ describe('sparseCheckout command', () => {
         it('Then returns the raw pattern lines verbatim', async () => {
           // Arrange
           const ctx = await seedRepoWithTree();
-          await sparseCheckout(ctx, {
-            action: 'set',
-            patterns: ['/src/', '!/src/app/'],
-            cone: false,
-          });
+          await sparseCheckoutSet(ctx, { patterns: ['/src/', '!/src/app/'], cone: false });
 
           // Act
-          const sut = await sparseCheckout(ctx, { action: 'list' });
+          const sut = await sparseCheckoutList(ctx);
 
           // Assert
-          expect(sut).toEqual({ kind: 'list', cone: false, patterns: ['/src/', '!/src/app/'] });
+          expect(sut).toEqual({ cone: false, patterns: ['/src/', '!/src/app/'] });
         });
       });
     });
@@ -219,10 +218,10 @@ describe('sparseCheckout command', () => {
           await enableSparse(ctx, false);
 
           // Act
-          const sut = await sparseCheckout(ctx, { action: 'list' });
+          const sut = await sparseCheckoutList(ctx);
 
           // Assert — the absent file is treated as empty text.
-          expect(sut).toEqual({ kind: 'list', cone: false, patterns: [] });
+          expect(sut).toEqual({ cone: false, patterns: [] });
         });
       });
     });
@@ -237,10 +236,10 @@ describe('sparseCheckout command', () => {
           await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/info/sparse-checkout`, '/*\n!/*/\n/src/\n');
 
           // Act
-          const sut = await sparseCheckout(ctx, { action: 'list' });
+          const sut = await sparseCheckoutList(ctx);
 
           // Assert — non-cone: raw pattern lines, `cone:false` (blank line dropped).
-          expect(sut).toEqual({ kind: 'list', cone: false, patterns: ['/*', '!/*/', '/src/'] });
+          expect(sut).toEqual({ cone: false, patterns: ['/*', '!/*/', '/src/'] });
         });
       });
     });
@@ -257,10 +256,10 @@ describe('sparseCheckout command', () => {
           );
 
           // Act
-          const sut = await sparseCheckout(ctx, { action: 'list' });
+          const sut = await sparseCheckoutList(ctx);
 
           // Assert — output is sorted regardless of file order.
-          expect(sut).toEqual({ kind: 'list', cone: true, patterns: ['docs', 'src'] });
+          expect(sut).toEqual({ cone: true, patterns: ['docs', 'src'] });
         });
       });
     });
@@ -274,7 +273,7 @@ describe('sparseCheckout command', () => {
           const ctx = await seedRepoWithTree();
 
           // Act
-          const err = await expectError(() => sparseCheckout(ctx, { action: 'set', patterns: [] }));
+          const err = await expectError(() => sparseCheckoutSet(ctx, { patterns: [] }));
 
           // Assert — try/catch + direct `.data` field assertions.
           expect(err.data.code).toBe('INVALID_OPTION');
@@ -293,11 +292,10 @@ describe('sparseCheckout command', () => {
           const ctx = await seedRepoWithTree();
 
           // Act
-          const sut = await sparseCheckout(ctx, { action: 'set', patterns: ['docs'], cone: true });
+          const sut = await sparseCheckoutSet(ctx, { patterns: ['docs'], cone: true });
 
           // Assert — neither src file is navigable from `docs`; both removed.
           expect(sut).toEqual({
-            kind: 'applied',
             cone: true,
             materialized: 0,
             removed: 2,
@@ -317,14 +315,10 @@ describe('sparseCheckout command', () => {
           const ctx = await seedRepoWithTree();
 
           // Act — `src` becomes a parent dir; its direct file `src/util.ts` is in.
-          const sut = await sparseCheckout(ctx, {
-            action: 'set',
-            patterns: ['src/app'],
-            cone: true,
-          });
+          const sut = await sparseCheckoutSet(ctx, { patterns: ['src/app'], cone: true });
 
           // Assert — only docs/guide.md leaves the working tree.
-          expect((sut as Extract<SparseCheckoutResult, { kind: 'applied' }>).removed).toBe(1);
+          expect(sut.removed).toBe(1);
           expect(await fileExists(ctx, 'src/util.ts')).toBe(true);
           expect(await fileExists(ctx, 'src/app/main.ts')).toBe(true);
           expect(await fileExists(ctx, 'docs/guide.md')).toBe(false);
@@ -339,7 +333,7 @@ describe('sparseCheckout command', () => {
           const ctx = await seedRepoWithTree();
 
           // Act
-          await sparseCheckout(ctx, { action: 'set', patterns: ['src/app'], cone: true });
+          await sparseCheckoutSet(ctx, { patterns: ['src/app'], cone: true });
 
           // Assert
           const config = await readConfigText(ctx);
@@ -357,15 +351,10 @@ describe('sparseCheckout command', () => {
           const ctx = await seedRepoWithTree();
 
           // Act
-          const sut = await sparseCheckout(ctx, {
-            action: 'set',
-            patterns: ['/src/'],
-            cone: false,
-          });
+          const sut = await sparseCheckoutSet(ctx, { patterns: ['/src/'], cone: false });
 
           // Assert — `/src/` recursively covers both src files; docs excluded.
           expect(sut).toEqual({
-            kind: 'applied',
             cone: false,
             materialized: 0,
             removed: 1,
@@ -386,10 +375,10 @@ describe('sparseCheckout command', () => {
           const ctx = await seedRepoWithTree();
 
           // Act — omit `cone`; the default for a fresh enable is cone mode.
-          const sut = await sparseCheckout(ctx, { action: 'set', patterns: ['src/app'] });
+          const sut = await sparseCheckoutSet(ctx, { patterns: ['src/app'] });
 
           // Assert
-          expect((sut as Extract<SparseCheckoutResult, { kind: 'applied' }>).cone).toBe(true);
+          expect(sut.cone).toBe(true);
           expect(await readConfigText(ctx)).toContain('sparseCheckoutCone = true');
         });
       });
@@ -400,13 +389,13 @@ describe('sparseCheckout command', () => {
         it('Then the prior cone mode is reused', async () => {
           // Arrange — first establish non-cone mode.
           const ctx = await seedRepoWithTree();
-          await sparseCheckout(ctx, { action: 'set', patterns: ['/src/'], cone: false });
+          await sparseCheckoutSet(ctx, { patterns: ['/src/'], cone: false });
 
           // Act — re-set without a cone flag: it must reuse the recorded false.
-          const sut = await sparseCheckout(ctx, { action: 'set', patterns: ['/docs/'] });
+          const sut = await sparseCheckoutSet(ctx, { patterns: ['/docs/'] });
 
           // Assert
-          expect((sut as Extract<SparseCheckoutResult, { kind: 'applied' }>).cone).toBe(false);
+          expect(sut.cone).toBe(false);
         });
       });
     });
@@ -421,7 +410,7 @@ describe('sparseCheckout command', () => {
 
           // Act
           const err = await expectError(() =>
-            sparseCheckout(ctx, { action: 'set', patterns: ['src/app'], cone: true }),
+            sparseCheckoutSet(ctx, { patterns: ['src/app'], cone: true }),
           );
 
           // Assert — apply failed before any persistence: `.git` unchanged.
@@ -442,14 +431,13 @@ describe('sparseCheckout command', () => {
           const ctx = await seedRepoWithTree();
 
           // Act
-          const sut = await sparseCheckout(ctx, {
-            action: 'set',
+          const sut = await sparseCheckoutSet(ctx, {
             patterns: ['/*', '!/*/', '/src/'],
             cone: false,
           });
 
           // Assert — non-cone is preserved end to end.
-          expect((sut as Extract<SparseCheckoutResult, { kind: 'applied' }>).cone).toBe(false);
+          expect(sut.cone).toBe(false);
           expect(await readConfigText(ctx)).toContain('sparseCheckoutCone = false');
         });
       });
@@ -463,10 +451,10 @@ describe('sparseCheckout command', () => {
           // Arrange — sparse enabled so the empty-pattern guard, not the
           // sparse-disabled guard, is the one that fires.
           const ctx = await seedRepoWithTree();
-          await sparseCheckout(ctx, { action: 'set', patterns: ['src/app'], cone: true });
+          await sparseCheckoutSet(ctx, { patterns: ['src/app'], cone: true });
 
           // Act
-          const err = await expectError(() => sparseCheckout(ctx, { action: 'add', patterns: [] }));
+          const err = await expectError(() => sparseCheckoutAdd(ctx, { patterns: [] }));
 
           // Assert — try/catch + direct `.data` field assertions.
           expect(err.data.code).toBe('INVALID_OPTION');
@@ -485,9 +473,7 @@ describe('sparseCheckout command', () => {
           const ctx = await seedRepoWithTree();
 
           // Act
-          const err = await expectError(() =>
-            sparseCheckout(ctx, { action: 'add', patterns: ['docs'] }),
-          );
+          const err = await expectError(() => sparseCheckoutAdd(ctx, { patterns: ['docs'] }));
 
           // Assert
           expect(err.data.code).toBe('INVALID_OPTION');
@@ -504,14 +490,14 @@ describe('sparseCheckout command', () => {
         it('Then the new directory is folded into the cone and materialised', async () => {
           // Arrange — start with only src/app; docs is excluded.
           const ctx = await seedRepoWithTree();
-          await sparseCheckout(ctx, { action: 'set', patterns: ['src/app'], cone: true });
+          await sparseCheckoutSet(ctx, { patterns: ['src/app'], cone: true });
           expect(await fileExists(ctx, 'docs/guide.md')).toBe(false);
 
           // Act — add docs.
-          const sut = await sparseCheckout(ctx, { action: 'add', patterns: ['docs'] });
+          const sut = await sparseCheckoutAdd(ctx, { patterns: ['docs'] });
 
           // Assert — docs/guide.md re-materialised; cone file now lists docs.
-          expect((sut as Extract<SparseCheckoutResult, { kind: 'applied' }>).materialized).toBe(1);
+          expect(sut.materialized).toBe(1);
           expect(await fileExists(ctx, 'docs/guide.md')).toBe(true);
           expect(await readSparseFile(ctx)).toBe('/*\n!/*/\n/docs/\n/src/\n!/src/*/\n/src/app/\n');
         });
@@ -531,11 +517,11 @@ describe('sparseCheckout command', () => {
           await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/info/sparse-checkout`, '*.ts\n');
 
           // Act — add `docs`.
-          const sut = await sparseCheckout(ctx, { action: 'add', patterns: ['docs'] });
+          const sut = await sparseCheckoutAdd(ctx, { patterns: ['docs'] });
 
           // Assert — the rewritten file is a clean cone built from `docs` only;
           // the prior `*.ts` line is gone. `docs/guide.md` is materialised.
-          expect((sut as Extract<SparseCheckoutResult, { kind: 'applied' }>).cone).toBe(true);
+          expect(sut.cone).toBe(true);
           expect(await readSparseFile(ctx)).toBe('/*\n!/*/\n/docs/\n');
           expect(await fileExists(ctx, 'docs/guide.md')).toBe(true);
           // src files fall outside the rebuilt `docs`-only cone — removed.
@@ -549,10 +535,10 @@ describe('sparseCheckout command', () => {
         it('Then the new pattern lines are appended to the file', async () => {
           // Arrange
           const ctx = await seedRepoWithTree();
-          await sparseCheckout(ctx, { action: 'set', patterns: ['/src/'], cone: false });
+          await sparseCheckoutSet(ctx, { patterns: ['/src/'], cone: false });
 
           // Act
-          await sparseCheckout(ctx, { action: 'add', patterns: ['/docs/'] });
+          await sparseCheckoutAdd(ctx, { patterns: ['/docs/'] });
 
           // Assert — appended verbatim.
           expect(await readSparseFile(ctx)).toBe('/src/\n/docs/');
@@ -569,7 +555,7 @@ describe('sparseCheckout command', () => {
           await enableSparse(ctx, false);
 
           // Act
-          await sparseCheckout(ctx, { action: 'add', patterns: ['/docs/'] });
+          await sparseCheckoutAdd(ctx, { patterns: ['/docs/'] });
 
           // Assert — empty existing text means the file is exactly the added lines,
           // with no leading blank line from a `['', ...]` join.
@@ -583,14 +569,14 @@ describe('sparseCheckout command', () => {
         it('Then it stays non-cone', async () => {
           // Arrange — non-cone mode whose file is already the cone header.
           const ctx = await seedRepoWithTree();
-          await sparseCheckout(ctx, { action: 'set', patterns: ['/*', '!/*/'], cone: false });
+          await sparseCheckoutSet(ctx, { patterns: ['/*', '!/*/'], cone: false });
 
           // Act — appending `/src/` makes the combined text a full cone-file shape;
           // the command must still treat it as non-cone, not switch interpretation.
-          const sut = await sparseCheckout(ctx, { action: 'add', patterns: ['/src/'] });
+          const sut = await sparseCheckoutAdd(ctx, { patterns: ['/src/'] });
 
           // Assert
-          expect((sut as Extract<SparseCheckoutResult, { kind: 'applied' }>).cone).toBe(false);
+          expect(sut.cone).toBe(false);
           expect(await readConfigText(ctx)).toContain('sparseCheckoutCone = false');
         });
       });
@@ -605,7 +591,7 @@ describe('sparseCheckout command', () => {
           const ctx = await seedRepoWithTree();
 
           // Act
-          const err = await expectError(() => sparseCheckout(ctx, { action: 'reapply' }));
+          const err = await expectError(() => sparseCheckoutReapply(ctx));
 
           // Assert
           expect(err.data.code).toBe('INVALID_OPTION');
@@ -622,15 +608,14 @@ describe('sparseCheckout command', () => {
         it('Then the on-disk patterns are re-enforced', async () => {
           // Arrange — set the cone, then a user re-creates an excluded file.
           const ctx = await seedRepoWithTree();
-          await sparseCheckout(ctx, { action: 'set', patterns: ['src/app'], cone: true });
+          await sparseCheckoutSet(ctx, { patterns: ['src/app'], cone: true });
           await seedWorkFile(ctx, 'docs/guide.md', 'ccc');
 
           // Act
-          const sut = await sparseCheckout(ctx, { action: 'reapply' });
+          const sut = await sparseCheckoutReapply(ctx);
 
           // Assert — the stray excluded file is removed again; cone flag preserved.
           expect(sut).toEqual({
-            kind: 'applied',
             cone: true,
             materialized: 0,
             removed: 1,
@@ -646,13 +631,13 @@ describe('sparseCheckout command', () => {
         it('Then the result reports cone false and no file is rewritten', async () => {
           // Arrange
           const ctx = await seedRepoWithTree();
-          await sparseCheckout(ctx, { action: 'set', patterns: ['/src/'], cone: false });
+          await sparseCheckoutSet(ctx, { patterns: ['/src/'], cone: false });
 
           // Act
-          const sut = await sparseCheckout(ctx, { action: 'reapply' });
+          const sut = await sparseCheckoutReapply(ctx);
 
           // Assert
-          expect((sut as Extract<SparseCheckoutResult, { kind: 'applied' }>).cone).toBe(false);
+          expect(sut.cone).toBe(false);
           expect(await readSparseFile(ctx)).toBe('/src/');
         });
       });
@@ -665,15 +650,14 @@ describe('sparseCheckout command', () => {
         it('Then every file is re-materialised and config flips to false', async () => {
           // Arrange — narrow to the docs cone (both src files excluded), then disable.
           const ctx = await seedRepoWithTree();
-          await sparseCheckout(ctx, { action: 'set', patterns: ['docs'], cone: true });
+          await sparseCheckoutSet(ctx, { patterns: ['docs'], cone: true });
           expect(await fileExists(ctx, 'src/util.ts')).toBe(false);
 
           // Act
-          const sut = await sparseCheckout(ctx, { action: 'disable' });
+          const sut = await sparseCheckoutDisable(ctx);
 
           // Assert — both src files back on disk; sparse off.
           expect(sut).toEqual({
-            kind: 'applied',
             cone: false,
             materialized: 2,
             removed: 0,
@@ -691,10 +675,10 @@ describe('sparseCheckout command', () => {
         it('Then the pattern file is kept on disk', async () => {
           // Arrange
           const ctx = await seedRepoWithTree();
-          await sparseCheckout(ctx, { action: 'set', patterns: ['src/app'], cone: true });
+          await sparseCheckoutSet(ctx, { patterns: ['src/app'], cone: true });
 
           // Act
-          await sparseCheckout(ctx, { action: 'disable' });
+          await sparseCheckoutDisable(ctx);
 
           // Assert — git keeps the file so a later `reapply` can reuse it.
           expect(await ctx.fs.exists(`${ctx.layout.gitDir}/info/sparse-checkout`)).toBe(true);
@@ -712,10 +696,10 @@ describe('sparseCheckout command', () => {
           await seedWorkFile(ctx, 'docs/guide.md', 'edited');
 
           // Act
-          const sut = await sparseCheckout(ctx, { action: 'set', patterns: ['src'], cone: true });
+          const sut = await sparseCheckoutSet(ctx, { patterns: ['src'], cone: true });
 
           // Assert — the dirty excludee is left on disk and surfaced in `retained`.
-          const applied = sut as Extract<SparseCheckoutResult, { kind: 'applied' }>;
+          const applied = sut;
           expect(applied.retained).toEqual(['docs/guide.md']);
           expect(await fileExists(ctx, 'docs/guide.md')).toBe(true);
         });
@@ -730,15 +714,10 @@ describe('sparseCheckout command', () => {
           await seedWorkFile(ctx, 'docs/guide.md', 'edited');
 
           // Act
-          const sut = await sparseCheckout(ctx, {
-            action: 'set',
-            patterns: ['src'],
-            cone: true,
-            force: true,
-          });
+          const sut = await sparseCheckoutSet(ctx, { patterns: ['src'], cone: true, force: true });
 
           // Assert — `force` overrides the retain policy.
-          const applied = sut as Extract<SparseCheckoutResult, { kind: 'applied' }>;
+          const applied = sut;
           expect(applied.retained).toEqual([]);
           expect(await fileExists(ctx, 'docs/guide.md')).toBe(false);
         });

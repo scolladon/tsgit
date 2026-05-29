@@ -11,8 +11,7 @@ import type { Scenario } from './types.ts';
 
 interface SparseCheckoutResult {
   readonly seedCommitId: string;
-  readonly setKind: string;
-  readonly listKind: string;
+  readonly setCone: boolean;
   readonly listCone: boolean;
   readonly listPatterns: ReadonlyArray<string>;
 }
@@ -22,8 +21,7 @@ export const sparseCheckoutScenario: Scenario<SparseCheckoutResult> = {
   inputs: { files: [FILES.helloA], author: AUTHOR, message: MESSAGES.seed },
   expected: {
     seedCommitId: '87863a6f57aeedd577100911fadbc21ff1062bec',
-    setKind: 'applied',
-    listKind: 'list',
+    setCone: false,
     listCone: false,
     listPatterns: ['/a.txt'],
   },
@@ -34,20 +32,15 @@ export const sparseCheckoutScenario: Scenario<SparseCheckoutResult> = {
 
     // Non-cone mode accepts arbitrary path patterns; pin the single tracked
     // file so the result is a deterministic single-line spec.
-    const setResult = await repo.sparseCheckout({
-      action: 'set',
+    const setResult = await repo.sparseCheckout.set({
       patterns: ['/a.txt'],
       cone: false,
     });
-    const listResult = await repo.sparseCheckout({ action: 'list' });
+    const listResult = await repo.sparseCheckout.list();
 
-    if (listResult.kind !== 'list') {
-      throw new Error(`sparse-checkout expected list kind but got ${listResult.kind}`);
-    }
     return {
       seedCommitId: seed.id,
-      setKind: setResult.kind,
-      listKind: listResult.kind,
+      setCone: setResult.cone,
       listCone: listResult.cone,
       listPatterns: listResult.patterns.slice(),
     };

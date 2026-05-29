@@ -392,12 +392,12 @@ describe('add', () => {
         // Arrange — a cone-mode `set` keeping only `src/` turns `docs/b.txt` into a
         // skip-worktree entry, absent from disk. `add --all`'s post-walk removal
         // pass must skip it: staging its removal would silently un-sparse it.
-        const { sparseCheckout } = await import(
+        const { sparseCheckoutSet } = await import(
           '../../../../src/application/commands/sparse-checkout.js'
         );
         const ctx = await seedFreshRepo({ 'src/a.txt': 'a', 'docs/b.txt': 'b' });
         await add(ctx, [], { all: true });
-        await sparseCheckout(ctx, { action: 'set', patterns: ['src'], cone: true });
+        await sparseCheckoutSet(ctx, { patterns: ['src'], cone: true });
 
         // Act
         const sut = await add(ctx, [], { all: true });

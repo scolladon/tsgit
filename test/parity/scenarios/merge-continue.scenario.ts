@@ -44,7 +44,7 @@ export const mergeContinueScenario: Scenario<MergeContinueResult> = {
     await repo.add(['a.txt']);
     const seed = await repo.commit({ message: inputs.message, author: inputs.author });
 
-    await repo.branch({ kind: 'create', name: 'feature' });
+    await repo.branch.create({ name: 'feature' });
     await repo.checkout({ target: 'feature' });
     const ctx = repo.ctx;
     await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'FEATURE\n');

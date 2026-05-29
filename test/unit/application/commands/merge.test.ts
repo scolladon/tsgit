@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { add } from '../../../../src/application/commands/add.js';
-import { branch } from '../../../../src/application/commands/branch.js';
+import { branchCreate } from '../../../../src/application/commands/branch.js';
 import { checkout } from '../../../../src/application/commands/checkout.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
@@ -68,7 +68,7 @@ describe('merge', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
         await add(ctx, ['a.txt']);
         await commit(ctx, { message: 'first', author });
-        await branch(ctx, { kind: 'create', name: 'feature' });
+        await branchCreate(ctx, { name: 'feature' });
         await checkout(ctx, { target: 'feature' });
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.txt`, 'b');
         await add(ctx, ['b.txt']);
@@ -96,7 +96,7 @@ describe('merge', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
         await add(ctx, ['a.txt']);
         await commit(ctx, { message: 'first', author });
-        await branch(ctx, { kind: 'create', name: 'feature' });
+        await branchCreate(ctx, { name: 'feature' });
         await checkout(ctx, { target: 'feature' });
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.txt`, 'b');
         await add(ctx, ['b.txt']);
@@ -132,7 +132,7 @@ describe('merge', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
         await add(ctx, ['a.txt']);
         await commit(ctx, { message: 'base', author });
-        await branch(ctx, { kind: 'create', name: 'feature' });
+        await branchCreate(ctx, { name: 'feature' });
         await checkout(ctx, { target: 'feature' });
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.txt`, 'b');
         await add(ctx, ['b.txt']);
@@ -168,7 +168,7 @@ describe('merge', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'line1\nline2\nline3\n');
         await add(ctx, ['file.txt']);
         await commit(ctx, { message: 'base', author });
-        await branch(ctx, { kind: 'create', name: 'feature' });
+        await branchCreate(ctx, { name: 'feature' });
         await checkout(ctx, { target: 'feature' });
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'line1\nline2\nFEATURE\n');
         await add(ctx, ['file.txt']);
@@ -205,7 +205,7 @@ describe('merge', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'shared\n');
         await add(ctx, ['file.txt']);
         const baseCommit = await commit(ctx, { message: 'base', author });
-        await branch(ctx, { kind: 'create', name: 'feature' });
+        await branchCreate(ctx, { name: 'feature' });
         await checkout(ctx, { target: 'feature' });
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'FEATURE-CHANGE\n');
         await add(ctx, ['file.txt']);
@@ -249,7 +249,7 @@ describe('merge', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.txt`, 'b');
         await add(ctx, ['a.txt', 'b.txt']);
         await commit(ctx, { message: 'base', author });
-        await branch(ctx, { kind: 'create', name: 'feature' });
+        await branchCreate(ctx, { name: 'feature' });
         await checkout(ctx, { target: 'feature' });
         // Remove a.txt by re-staging an empty list — use rm command surface.
         const { rm } = await import('../../../../src/application/commands/rm.js');
@@ -290,7 +290,7 @@ describe('merge', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/src/base.ts`, 'base');
         await add(ctx, ['src/base.ts']);
         await commit(ctx, { message: 'base', author });
-        await branch(ctx, { kind: 'create', name: 'feature' });
+        await branchCreate(ctx, { name: 'feature' });
         await checkout(ctx, { target: 'feature' });
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/src/feature/a.ts`, 'a');
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/lib/x.ts`, 'x');
@@ -395,7 +395,7 @@ describe('merge', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
         await add(ctx, ['a.txt']);
         await commit(ctx, { message: 'base', author });
-        await branch(ctx, { kind: 'create', name: 'feature' });
+        await branchCreate(ctx, { name: 'feature' });
         await checkout(ctx, { target: 'feature' });
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.txt`, 'b');
         await add(ctx, ['b.txt']);
@@ -428,7 +428,7 @@ describe('merge.4b conflict persistence', () => {
     await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'base\n');
     await add(ctx, ['file.txt']);
     await commit(ctx, { message: 'base', author });
-    await branch(ctx, { kind: 'create', name: 'feature' });
+    await branchCreate(ctx, { name: 'feature' });
     await checkout(ctx, { target: 'feature' });
     await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'FEATURE\n');
     await add(ctx, ['file.txt']);
@@ -772,7 +772,7 @@ describe('merge.4b conflict persistence', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file-b.txt`, 'base-b\n');
         await add(ctx, ['file-a.txt', 'file-b.txt']);
         await commit(ctx, { message: 'base', author });
-        await branch(ctx, { kind: 'create', name: 'feature' });
+        await branchCreate(ctx, { name: 'feature' });
         await checkout(ctx, { target: 'feature' });
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file-a.txt`, 'FEAT-A\n');
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file-b.txt`, 'FEAT-B\n');
@@ -878,7 +878,7 @@ describe('merge — bounded blob reads', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'base\n');
         await add(ctx, ['file.txt']);
         await commit(ctx, { message: 'base', author });
-        await branch(ctx, { kind: 'create', name: 'feature' });
+        await branchCreate(ctx, { name: 'feature' });
         await checkout(ctx, { target: 'feature' });
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'FEATURE\n');
         await add(ctx, ['file.txt']);
@@ -990,7 +990,7 @@ describe('merge — progress reporting', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
         await add(ctx, ['a.txt']);
         await commit(ctx, { message: 'base', author });
-        await branch(ctx, { kind: 'create', name: 'feature' });
+        await branchCreate(ctx, { name: 'feature' });
         await checkout(ctx, { target: 'feature' });
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.txt`, 'b');
         await add(ctx, ['b.txt']);
@@ -1077,7 +1077,7 @@ describe('merge — guard rails', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
         await add(ctx, ['a.txt']);
         await commit(ctx, { message: 'first', author });
-        await branch(ctx, { kind: 'create', name: 'old' });
+        await branchCreate(ctx, { name: 'old' });
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.txt`, 'b');
         await add(ctx, ['b.txt']);
         const second = await commit(ctx, { message: 'second', author });
@@ -1102,7 +1102,7 @@ describe('merge — guard rails', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
         await add(ctx, ['a.txt']);
         await commit(ctx, { message: 'base', author });
-        await branch(ctx, { kind: 'create', name: 'feature' });
+        await branchCreate(ctx, { name: 'feature' });
         await checkout(ctx, { target: 'feature' });
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.txt`, 'b');
         await add(ctx, ['b.txt']);
@@ -1135,7 +1135,7 @@ describe('merge — guard rails', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'base\n');
         await add(ctx, ['file.txt']);
         await commit(ctx, { message: 'base', author });
-        await branch(ctx, { kind: 'create', name: 'feature' });
+        await branchCreate(ctx, { name: 'feature' });
         await checkout(ctx, { target: 'feature' });
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'FEATURE\n');
         await add(ctx, ['file.txt']);
@@ -1170,7 +1170,7 @@ describe('merge — guard rails', () => {
         await add(ctx, ['a.txt']);
         await commit(ctx, { message: 'base', author });
         const preMain = await resolveRef(ctx, 'refs/heads/main' as RefName);
-        await branch(ctx, { kind: 'create', name: 'feature' });
+        await branchCreate(ctx, { name: 'feature' });
         await checkout(ctx, { target: 'feature' });
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.txt`, 'b');
         await add(ctx, ['b.txt']);
@@ -1221,7 +1221,7 @@ describe('merge — updateRef CAS guard', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
         await add(ctx, ['a.txt']);
         await commit(ctx, { message: 'first', author });
-        await branch(ctx, { kind: 'create', name: 'feature' });
+        await branchCreate(ctx, { name: 'feature' });
         await checkout(ctx, { target: 'feature' });
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.txt`, 'b');
         await add(ctx, ['b.txt']);
@@ -1252,7 +1252,7 @@ describe('merge — updateRef CAS guard', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
         await add(ctx, ['a.txt']);
         await commit(ctx, { message: 'base', author });
-        await branch(ctx, { kind: 'create', name: 'feature' });
+        await branchCreate(ctx, { name: 'feature' });
         await checkout(ctx, { target: 'feature' });
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.txt`, 'b');
         await add(ctx, ['b.txt']);
@@ -1289,7 +1289,7 @@ describe('merge — updateRef CAS guard', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'base\n');
         await add(ctx, ['file.txt']);
         await commit(ctx, { message: 'base', author });
-        await branch(ctx, { kind: 'create', name: 'feature' });
+        await branchCreate(ctx, { name: 'feature' });
         await checkout(ctx, { target: 'feature' });
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'FEATURE\n');
         await add(ctx, ['file.txt']);
@@ -2277,7 +2277,7 @@ describe('merge — sparse checkout', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/docs/b.txt`, 'shared-b\n');
         await add(ctx, ['src/a.txt', 'docs/b.txt']);
         await commit(ctx, { message: 'base', author });
-        await branch(ctx, { kind: 'create', name: 'feature' });
+        await branchCreate(ctx, { name: 'feature' });
         await checkout(ctx, { target: 'feature' });
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/src/a.txt`, 'FEATURE-a\n');
         await add(ctx, ['src/a.txt']);

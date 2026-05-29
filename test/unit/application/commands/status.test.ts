@@ -164,7 +164,7 @@ describe('status', () => {
   // only `src/` — `docs/b.txt` becomes a skip-worktree index entry, absent
   // from disk.
   const seedSparseRepo = async () => {
-    const { sparseCheckout } = await import(
+    const { sparseCheckoutSet } = await import(
       '../../../../src/application/commands/sparse-checkout.js'
     );
     const ctx = createMemoryContext();
@@ -173,7 +173,7 @@ describe('status', () => {
     await ctx.fs.writeUtf8(`${ctx.layout.workDir}/docs/b.txt`, 'b');
     await add(ctx, ['src/a.txt', 'docs/b.txt']);
     await commit(ctx, { message: 'first', author });
-    await sparseCheckout(ctx, { action: 'set', patterns: ['src'], cone: true });
+    await sparseCheckoutSet(ctx, { patterns: ['src'], cone: true });
     return ctx;
   };
 

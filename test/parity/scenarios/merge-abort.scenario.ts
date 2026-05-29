@@ -46,7 +46,7 @@ export const mergeAbortScenario: Scenario<MergeAbortResult> = {
     await repo.add(['a.txt']);
     const seed = await repo.commit({ message: inputs.message, author: inputs.author });
 
-    await repo.branch({ kind: 'create', name: 'feature' });
+    await repo.branch.create({ name: 'feature' });
     await repo.checkout({ target: 'feature' });
     // Overwrite the seed file on the feature branch.
     const ctx = repo.ctx;

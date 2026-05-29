@@ -142,27 +142,25 @@ Approxidate parser accepts `now`, `yesterday`, `<N>.days.ago`, `YYYY-MM-DD`, `YY
 
 ```ts
 // Restrict the working tree to two directories (cone mode — the default)
-const applied = await repo.sparseCheckout({
-  action: 'set',
+const applied = await repo.sparseCheckout.set({
   patterns: ['src/app', 'docs'],
 });
 console.log(applied.materialized, 'files written');
 console.log(applied.removed, 'files removed');
 
 // Widen
-await repo.sparseCheckout({ action: 'add', patterns: ['src/lib'] });
+await repo.sparseCheckout.add({ patterns: ['src/lib'] });
 
 // `.gitignore`-style non-cone mode
-await repo.sparseCheckout({
-  action: 'set',
+await repo.sparseCheckout.set({
   cone: false,
   patterns: ['*.ts', '!*.test.ts'],
 });
 
 // Inspect / re-apply / disable
-const { cone, patterns } = await repo.sparseCheckout({ action: 'list' });
-await repo.sparseCheckout({ action: 'reapply' });
-await repo.sparseCheckout({ action: 'disable' });
+const { cone, patterns } = await repo.sparseCheckout.list();
+await repo.sparseCheckout.reapply();
+await repo.sparseCheckout.disable();
 ```
 
 Excluded files stay in the index (marked `skip-worktree`) — `commit` still records the whole tree, `status` does not report the absences as deletions. `checkout` honours the cone on branch switch. Dirty out-of-cone files are retained, not discarded, unless `force: true`.

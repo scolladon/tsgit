@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { add } from '../../../../src/application/commands/add.js';
-import { branch } from '../../../../src/application/commands/branch.js';
+import { branchCreate } from '../../../../src/application/commands/branch.js';
 import { checkout } from '../../../../src/application/commands/checkout.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { continueMerge } from '../../../../src/application/commands/continue-merge.js';
@@ -31,7 +31,7 @@ const setupConflictingMerge = async (
   await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'base\n');
   await add(ctx, ['file.txt']);
   await commit(ctx, { message: 'base', author });
-  await branch(ctx, { kind: 'create', name: 'feature' });
+  await branchCreate(ctx, { name: 'feature' });
   await checkout(ctx, { target: 'feature' });
   await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'FEATURE\n');
   await add(ctx, ['file.txt']);

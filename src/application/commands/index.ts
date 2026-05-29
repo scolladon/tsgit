@@ -1,6 +1,19 @@
 export { type AbortMergeResult, abortMerge } from './abort-merge.js';
 export { type AddOptions, type AddResult, add } from './add.js';
-export { type BranchAction, type BranchInfo, type BranchResult, branch } from './branch.js';
+export {
+  type BranchCreateInput,
+  type BranchCreateResult,
+  type BranchDeleteInput,
+  type BranchDeleteResult,
+  type BranchInfo,
+  type BranchListResult,
+  type BranchRenameInput,
+  type BranchRenameResult,
+  branchCreate,
+  branchDelete,
+  branchList,
+  branchRename,
+} from './branch.js';
 export {
   type CatFileBatchEntry,
   type CatFileInput,
@@ -60,7 +73,14 @@ export {
   fetchMissing,
 } from './fetch-missing.js';
 export { type InitOptions, type InitResult, init } from './init.js';
+export { type BranchNamespace, bindBranchNamespace } from './internal/branch-namespace.js';
 export { bindConfigNamespace, type ConfigNamespace } from './internal/config-namespace.js';
+export { bindRemoteNamespace, type RemoteNamespace } from './internal/remote-namespace.js';
+export {
+  bindSparseCheckoutNamespace,
+  type SparseCheckoutNamespace,
+} from './internal/sparse-checkout-namespace.js';
+export { bindTagNamespace, type TagNamespace } from './internal/tag-namespace.js';
 export { type LogEntry, type LogOptions, log } from './log.js';
 export { type MergeOptions, type MergeResult, merge } from './merge.js';
 export { type PushOptions, type PushResult, push } from './push.js';
@@ -71,19 +91,41 @@ export {
   reflog,
 } from './reflog.js';
 export {
-  type RemoteAction,
+  type RemoteAddInput,
+  type RemoteAddResult,
   type RemoteInfo,
-  type RemoteResult,
+  type RemoteListResult,
+  type RemoteRemoveInput,
+  type RemoteRemoveResult,
+  type RemoteRenameInput,
+  type RemoteRenameResult,
+  type RemoteSetUrlInput,
+  type RemoteSetUrlResult,
   type RemoteShow,
-  remote,
+  type RemoteShowInput,
+  type RemoteShowResult,
+  remoteAdd,
+  remoteList,
+  remoteRemove,
+  remoteRename,
+  remoteSetUrl,
+  remoteShow,
 } from './remote.js';
 export { type ResetMode, type ResetOptions, type ResetResult, reset } from './reset.js';
 export { revParse } from './rev-parse.js';
 export { type RmOptions, type RmResult, rm } from './rm.js';
 export {
-  type SparseCheckoutAction,
-  type SparseCheckoutResult,
-  sparseCheckout,
+  type SparseCheckoutAddInput,
+  type SparseCheckoutAppliedResult,
+  type SparseCheckoutDisableInput,
+  type SparseCheckoutListResult,
+  type SparseCheckoutReapplyInput,
+  type SparseCheckoutSetInput,
+  sparseCheckoutAdd,
+  sparseCheckoutDisable,
+  sparseCheckoutList,
+  sparseCheckoutReapply,
+  sparseCheckoutSet,
 } from './sparse-checkout.js';
 export { type ChangeEntry, type ChangeKind, type StatusResult, status } from './status.js';
 export {
@@ -92,4 +134,14 @@ export {
   type SubmodulesResult,
   submodules,
 } from './submodules.js';
-export { type TagAction, type TagInfo, type TagResult, tag } from './tag.js';
+export {
+  type TagCreateInput,
+  type TagCreateResult,
+  type TagDeleteInput,
+  type TagDeleteResult,
+  type TagInfo,
+  type TagListResult,
+  tagCreate,
+  tagDelete,
+  tagList,
+} from './tag.js';

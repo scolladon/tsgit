@@ -20,11 +20,17 @@ import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../src/adapters/memory/memory-adapter.js';
 import { add } from '../../src/application/commands/add.js';
-import { branch } from '../../src/application/commands/branch.js';
+import { branchCreate } from '../../src/application/commands/branch.js';
 import { checkout } from '../../src/application/commands/checkout.js';
 import { commit } from '../../src/application/commands/commit.js';
 import { init } from '../../src/application/commands/init.js';
-import { sparseCheckout } from '../../src/application/commands/sparse-checkout.js';
+import {
+  sparseCheckoutAdd,
+  sparseCheckoutDisable,
+  sparseCheckoutList,
+  sparseCheckoutReapply,
+  sparseCheckoutSet,
+} from '../../src/application/commands/sparse-checkout.js';
 import { status } from '../../src/application/commands/status.js';
 import { __resetConfigCacheForTests } from '../../src/application/primitives/config-read.js';
 import { readIndex } from '../../src/application/primitives/read-index.js';
@@ -104,14 +110,10 @@ describe('integration — sparse checkout (memory adapter)', () => {
     const sut = await seedRepo(tree);
 
     // Act — narrow the cone to `src/app` only.
-    const setResult = await sparseCheckout(sut, {
-      action: 'set',
-      patterns: ['src/app'],
-      cone: true,
-    });
+    const setResult = await sparseCheckoutSet(sut, { patterns: ['src/app'], cone: true });
 
     // Assert — only in-cone files materialise; the root file is always in.
-    expect(setResult.kind).toBe('applied');
+    expect(setResult.cone).toBe(true);
     expect(await filesOnDisk(sut, allPaths)).toEqual([
       'README.md',
       'src/app/main.ts',
@@ -138,8 +140,8 @@ describe('integration — sparse checkout (memory adapter)', () => {
     expect(await treePaths(sut, committed.id)).toEqual([...allPaths].sort());
 
     // Act — reapply is idempotent; disk and flags are unchanged.
-    const reapplyResult = await sparseCheckout(sut, { action: 'reapply' });
-    expect(reapplyResult.kind).toBe('applied');
+    const reapplyResult = await sparseCheckoutReapply(sut);
+    expect(reapplyResult.cone).toBe(true);
     expect(await filesOnDisk(sut, allPaths)).toEqual([
       'README.md',
       'src/app/main.ts',
@@ -148,10 +150,10 @@ describe('integration — sparse checkout (memory adapter)', () => {
     expect(await skipWorktreePaths(sut)).toEqual(['docs/guide.md', 'src/lib/core.ts']);
 
     // Act — disable restores every file and clears every skip-worktree bit.
-    const disableResult = await sparseCheckout(sut, { action: 'disable' });
+    const disableResult = await sparseCheckoutDisable(sut);
 
     // Assert — full materialization, no skip-worktree entries, index back to v2.
-    expect(disableResult.kind).toBe('applied');
+    expect(disableResult.cone).toBe(false);
     expect(await filesOnDisk(sut, allPaths)).toEqual([...allPaths].sort());
     expect(await skipWorktreePaths(sut)).toEqual([]);
     expect((await readIndex(sut)).version).toBe(2);
@@ -171,20 +173,19 @@ describe('integration — sparse checkout (memory adapter)', () => {
 
     // Act — `*.ts` everywhere, but exclude `src/vendor/`; also keep `keep/`.
     const patterns = ['*.ts', '!/src/vendor/', '/keep/'];
-    const setResult = await sparseCheckout(sut, { action: 'set', patterns, cone: false });
+    const setResult = await sparseCheckoutSet(sut, { patterns, cone: false });
 
     // Assert — non-cone last-match-wins: `.ts` minus the vendor subtree, plus keep/.
-    expect(setResult.kind).toBe('applied');
-    if (setResult.kind === 'applied') expect(setResult.cone).toBe(false);
+    expect(setResult.cone).toBe(false);
     expect(await filesOnDisk(sut, allPaths)).toEqual(['keep/data.ts', 'src/app.ts']);
     // `README.md` and `src/app.js` (no `.ts`) and `src/vendor/lib.ts` (negated) are out.
     expect(await skipWorktreePaths(sut)).toEqual(['README.md', 'src/app.js', 'src/vendor/lib.ts']);
 
     // Act — `list` returns the raw pattern lines verbatim, in file order.
-    const listResult = await sparseCheckout(sut, { action: 'list' });
+    const listResult = await sparseCheckoutList(sut);
 
     // Assert.
-    expect(listResult).toEqual({ kind: 'list', cone: false, patterns });
+    expect(listResult).toEqual({ cone: false, patterns });
   });
 
   it('Given a sparse cone repo, When checkout switches branch, Then only in-cone files of the new tree materialise', async () => {
@@ -194,7 +195,7 @@ describe('integration — sparse checkout (memory adapter)', () => {
       'src/app/main.ts': 'export const main = 1;\n',
       'src/lib/core.ts': 'export const core = 1;\n',
     });
-    await branch(sut, { kind: 'create', name: 'feature', startPoint: 'main' });
+    await branchCreate(sut, { name: 'feature', startPoint: 'main' });
     await checkout(sut, { target: 'feature' });
     await sut.fs.writeUtf8(`${sut.layout.workDir}/src/app/extra.ts`, 'export const extra = 2;\n');
     await sut.fs.writeUtf8(`${sut.layout.workDir}/src/lib/helper.ts`, 'export const helper = 2;\n');
@@ -203,7 +204,7 @@ describe('integration — sparse checkout (memory adapter)', () => {
     await checkout(sut, { target: 'main' });
 
     // Act — narrow to `src/app`, then switch to the feature branch.
-    await sparseCheckout(sut, { action: 'set', patterns: ['src/app'], cone: true });
+    await sparseCheckoutSet(sut, { patterns: ['src/app'], cone: true });
     await checkout(sut, { target: 'feature' });
 
     // Assert — only in-cone files of the feature tree are on disk.
@@ -237,7 +238,7 @@ describe('integration — sparse checkout (memory adapter)', () => {
     };
     const allPaths = Object.keys(tree);
     const sut = await seedRepo(tree);
-    await sparseCheckout(sut, { action: 'set', patterns: ['src/app'], cone: true });
+    await sparseCheckoutSet(sut, { patterns: ['src/app'], cone: true });
 
     // Act — bulk add over the sparse worktree.
     const sparseAdd = await add(sut, [], { all: true });
@@ -250,7 +251,7 @@ describe('integration — sparse checkout (memory adapter)', () => {
     expect((await status(sut)).clean).toBe(true);
 
     // Act — disable, then add --all again.
-    await sparseCheckout(sut, { action: 'disable' });
+    await sparseCheckoutDisable(sut);
     const normalAdd = await add(sut, [], { all: true });
 
     // Assert — no skip-worktree entries remain; add --all behaves normally.
@@ -272,31 +273,22 @@ describe('integration — sparse checkout (memory adapter)', () => {
     await sut.fs.writeUtf8(`${sut.layout.workDir}/src/lib/core.ts`, 'export const core = 999;\n');
 
     // Act — narrow to `src/app`; `src/lib/core.ts` is dirty and out of cone.
-    const retainResult = await sparseCheckout(sut, {
-      action: 'set',
-      patterns: ['src/app'],
-      cone: true,
-    });
+    const retainResult = await sparseCheckoutSet(sut, { patterns: ['src/app'], cone: true });
 
     // Assert — the dirty file is retained: surfaced, on disk, NOT skip-worktree.
-    expect(retainResult.kind).toBe('applied');
-    if (retainResult.kind === 'applied') {
-      expect(retainResult.retained).toEqual(['src/lib/core.ts']);
-    }
+    expect(retainResult.retained).toEqual(['src/lib/core.ts']);
     expect(await sut.fs.exists(`${sut.layout.workDir}/src/lib/core.ts`)).toBe(true);
     expect(await skipWorktreePaths(sut)).toEqual([]);
 
     // Act — re-run the same `set` with `force: true`.
-    const forceResult = await sparseCheckout(sut, {
-      action: 'set',
+    const forceResult = await sparseCheckoutSet(sut, {
       patterns: ['src/app'],
       cone: true,
       force: true,
     });
 
     // Assert — force discards the local change: file gone, entry skip-worktree.
-    expect(forceResult.kind).toBe('applied');
-    if (forceResult.kind === 'applied') expect(forceResult.retained).toEqual([]);
+    expect(forceResult.retained).toEqual([]);
     expect(await sut.fs.exists(`${sut.layout.workDir}/src/lib/core.ts`)).toBe(false);
     expect(await skipWorktreePaths(sut)).toEqual(['src/lib/core.ts']);
   });
@@ -310,19 +302,19 @@ describe('integration — sparse checkout (memory adapter)', () => {
     };
     const allPaths = Object.keys(tree);
     const sut = await seedRepo(tree);
-    await sparseCheckout(sut, { action: 'set', patterns: ['src/app'], cone: true });
+    await sparseCheckoutSet(sut, { patterns: ['src/app'], cone: true });
 
     // Act — fold `docs` into the cone.
-    const addResult = await sparseCheckout(sut, { action: 'add', patterns: ['docs'] });
+    const addResult = await sparseCheckoutAdd(sut, { patterns: ['docs'] });
 
     // Assert — `docs/` is now materialised; only `src/lib` stays excluded.
-    expect(addResult.kind).toBe('applied');
+    expect(addResult.materialized).toBe(1);
     expect(await filesOnDisk(sut, allPaths)).toEqual(['docs/guide.md', 'src/app/main.ts']);
     expect(await skipWorktreePaths(sut)).toEqual(['src/lib/core.ts']);
 
     // `list` (cone) returns the sorted recursive directory set.
-    const listResult = await sparseCheckout(sut, { action: 'list' });
-    expect(listResult).toEqual({ kind: 'list', cone: true, patterns: ['docs', 'src/app'] });
+    const listResult = await sparseCheckoutList(sut);
+    expect(listResult).toEqual({ cone: true, patterns: ['docs', 'src/app'] });
   });
 });
 
@@ -364,7 +356,7 @@ describe.skipIf(GIT === undefined)(
         await repo.commit({ message: 'seed', author });
 
         // Act — narrow the cone so `out/gone.ts` becomes skip-worktree.
-        await repo.sparseCheckout({ action: 'set', patterns: ['kept.ts'], cone: true });
+        await repo.sparseCheckout.set({ patterns: ['kept.ts'], cone: true });
         const lsFiles = runGit(['-C', tmpdir, 'ls-files', '-t']);
 
         // Assert — canonical git surfaces the skip-worktree bit as the `S` tag.
@@ -387,7 +379,7 @@ describe.skipIf(GIT === undefined)(
         await writeFile(path.join(tmpdir, 'docs', 'guide.md'), '# guide\n');
         await repo.add(['src/main.ts', 'docs/guide.md']);
         await repo.commit({ message: 'seed', author });
-        await repo.sparseCheckout({ action: 'set', patterns: ['src'], cone: true });
+        await repo.sparseCheckout.set({ patterns: ['src'], cone: true });
 
         // Act — canonical git reads the `.git/info/sparse-checkout` tsgit wrote.
         const list = runGit(['-C', tmpdir, 'sparse-checkout', 'list']);
