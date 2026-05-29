@@ -63,6 +63,50 @@ describe('parseRepositoryInterface', () => {
       });
     });
   });
+
+  describe('Given a Repository interface that binds a nested-namespace command', () => {
+    describe('When parsed', () => {
+      it('Then the namespace name is captured into commands alongside flat BindCtx bindings', () => {
+        // Arrange
+        const sut = [
+          'interface Repository {',
+          '  readonly add: BindCtx<typeof commands.add>;',
+          '  readonly config: commands.ConfigNamespace;',
+          '  readonly remote: commands.RemoteNamespace;',
+          '}',
+        ].join('\n');
+
+        // Act
+        const actual = parseRepositoryInterface(sut);
+
+        // Assert
+        expect(actual.commands).toEqual(['add', 'config', 'remote']);
+      });
+    });
+  });
+
+  describe('Given a tier-1 binding typed commands.Foo without the Namespace suffix', () => {
+    describe('When parsed', () => {
+      it('Then it is not captured as a command (the Namespace suffix is required)', () => {
+        // Arrange
+        const sut = [
+          'interface Repository {',
+          '  readonly add: BindCtx<typeof commands.add>;',
+          '  readonly bogus: commands.Foo;',
+          '}',
+        ].join('\n');
+
+        // Act
+        const actual = parseRepositoryInterface(sut);
+
+        // Assert
+        // `commands.Foo` is not a `commands.\w+Namespace` shape — a mutant
+        // that drops or generalises the `Namespace` suffix would surface
+        // `bogus` here and fail.
+        expect(actual.commands).toEqual(['add']);
+      });
+    });
+  });
 });
 
 describe('scanCallSites', () => {
@@ -138,6 +182,76 @@ describe('scanCallSites', () => {
         // surface `primitives` and `ctx` here and fail.
         expect(actual.commands.size).toBe(0);
         expect(actual.primitives.size).toBe(0);
+      });
+    });
+  });
+
+  describe('Given a source with a dotted namespace invocation', () => {
+    describe('When scanned', () => {
+      it('Then the namespace name is recorded as a covered command', () => {
+        // Arrange
+        const sut = [
+          'await repo.config.get({ key: "user.name", scope: "local" });',
+          'await repo.remote.add({ name: "origin", url: "u" });',
+        ].join('\n');
+
+        // Act
+        const actual = scanCallSites(sut);
+
+        // Assert
+        expect([...actual.commands].sort()).toEqual(['config', 'remote']);
+      });
+    });
+  });
+
+  describe('Given a dotted invocation on repo.primitives', () => {
+    describe('When scanned', () => {
+      it('Then primitives is filtered from commands while the method lands in primitives', () => {
+        // Arrange
+        const sut = 'await repo.primitives.readObject(id);';
+
+        // Act
+        const actual = scanCallSites(sut);
+
+        // Assert
+        // The namespace-call loop captures `primitives` as the first segment;
+        // TIER1_SKIP must drop it. A mutant removing that skip guard would
+        // surface `primitives` in commands and fail.
+        expect(actual.commands.size).toBe(0);
+        expect([...actual.primitives]).toEqual(['readObject']);
+      });
+    });
+  });
+
+  describe('Given a dotted invocation with a mismatched receiver', () => {
+    describe('When scanned', () => {
+      it('Then mockRepo.config.get does not count as repo.config coverage', () => {
+        // Arrange
+        const sut = 'await mockRepo.config.get({ key: "x" });';
+
+        // Act
+        const actual = scanCallSites(sut);
+
+        // Assert
+        expect(actual.commands.size).toBe(0);
+      });
+    });
+  });
+
+  describe('Given a dotted invocation on a non-command namespace-like member', () => {
+    describe('When scanned', () => {
+      it('Then the first segment is recorded permissively (report is bound-driven)', () => {
+        // Arrange
+        const sut = 'await repo.snapshot.head();';
+
+        // Act
+        const actual = scanCallSites(sut);
+
+        // Assert
+        // `snapshot` is not a bound command, so this extra coverage key is
+        // inert in the report — but the scanner stays permissive (it records
+        // every dotted first segment that is not in TIER1_SKIP).
+        expect([...actual.commands]).toEqual(['snapshot']);
       });
     });
   });

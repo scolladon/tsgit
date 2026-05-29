@@ -134,6 +134,16 @@ the four transport commands (`clone` / `fetch` / `push` /
 browser parity surface) and `runHook` (structurally Node-only;
 [ADR-133](../adr/133-transport-and-runHook-exemptions.md)).
 
+The audit is **namespace-aware**: nested-namespace commands bound as
+`readonly X: commands.XNamespace` (`config`, `remote`, `branch`, `tag`,
+`sparseCheckout`) are parsed as tier-1 commands, and dotted
+`repo.<namespace>.<verb>(` call sites count as coverage at namespace
+granularity — one verb call covers the namespace, mirroring how the
+doc-coverage audit maps one page per namespace. `config` carries a
+dedicated parity scenario rather than an allowlist entry, because
+local-scope config is fully browser-capable
+([ADR-195](../adr/195-config-parity-scenario-over-allowlist.md)).
+
 Property-based tests sit alongside the example-based suite as
 `*.properties.test.ts` siblings co-located with per-family
 `arbitraries.ts` (added in Phase 19.6 across `header`, `file-mode`,

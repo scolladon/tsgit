@@ -24,11 +24,20 @@ const SCRIPT_DIR = path.dirname(url.fileURLToPath(import.meta.url));
 const DEFAULT_ROOT = path.resolve(SCRIPT_DIR, '..');
 
 const TIER1_RE = /^ {2}readonly (\w+):\s*BindCtx</gm;
+// Nested-namespace command bindings (`repo.config`, `repo.remote`, …) are not
+// `BindCtx<…>` — they are typed `commands.XNamespace`. Capture them so the
+// namespaced CRUD families stay browser-surface-enforced alongside flat
+// commands. Kept identical to tooling/check-doc-coverage.ts so both audits
+// parse src/repository.ts the same way.
+const TIER1_NAMESPACE_RE = /^ {2}readonly (\w+):\s*commands\.\w+Namespace/gm;
 const TIER2_RE = /^ {4}readonly (\w+):\s*BindCtx</gm;
 const TIER1_SKIP = new Set(['primitives', 'ctx', 'dispose']);
 
 const COMMAND_CALL_RE = /\brepo\.([a-zA-Z][\w]*)\s*\(/g;
 const PRIMITIVE_CALL_RE = /\brepo\.primitives\.([a-zA-Z][\w]*)\s*\(/g;
+// Dotted namespace invocations (`repo.config.get(`, `repo.remote.add(`): the
+// first segment is the bound namespace name; one verb call covers it.
+const NAMESPACE_CALL_RE = /\brepo\.([a-zA-Z][\w]*)\.[a-zA-Z][\w]*\s*\(/g;
 
 const COVERAGE_DIRS: ReadonlyArray<string> = ['test/browser', 'test/parity/scenarios'];
 
@@ -93,7 +102,9 @@ const matchAll = (re: RegExp, source: string): ReadonlyArray<string> => {
 export const parseRepositoryInterface = (
   source: string,
 ): { readonly commands: ReadonlyArray<string>; readonly primitives: ReadonlyArray<string> } => {
-  const tier1 = matchAll(TIER1_RE, source).filter((name) => !TIER1_SKIP.has(name));
+  const tier1Bound = matchAll(TIER1_RE, source);
+  const tier1Namespaces = matchAll(TIER1_NAMESPACE_RE, source);
+  const tier1 = [...tier1Bound, ...tier1Namespaces].filter((name) => !TIER1_SKIP.has(name));
   const tier2 = matchAll(TIER2_RE, source);
   return { commands: tier1, primitives: tier2 };
 };
@@ -104,6 +115,10 @@ export const scanCallSites = (
   const primitives = new Set(matchAll(PRIMITIVE_CALL_RE, source));
   const commands = new Set<string>();
   for (const name of matchAll(COMMAND_CALL_RE, source)) {
+    if (TIER1_SKIP.has(name)) continue;
+    commands.add(name);
+  }
+  for (const name of matchAll(NAMESPACE_CALL_RE, source)) {
     if (TIER1_SKIP.has(name)) continue;
     commands.add(name);
   }

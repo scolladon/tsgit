@@ -251,6 +251,80 @@ describe('tooling/audit-browser-surface (integration)', () => {
     });
   });
 
+  const NAMESPACE_STUB = [
+    'interface Repository {',
+    '  readonly add: BindCtx<typeof commands.add>;',
+    '  readonly config: commands.ConfigNamespace;',
+    '  readonly primitives: {',
+    '    readonly readObject: BindCtx<typeof primitives.readObject>;',
+    '    readonly runHook: BindCtx<typeof primitives.runHook>;',
+    '  };',
+    '  readonly ctx: Context;',
+    '  readonly dispose: () => Promise<void>;',
+    '}',
+    '',
+  ].join('\n');
+
+  describe('Given a namespaced command bound and a dotted call site covering it', () => {
+    describe('When the audit runs', () => {
+      it('Then the namespace is reported covered and exit is 0', async () => {
+        // Arrange
+        await stageRoot(tmpRoot, NAMESPACE_STUB);
+        await writeFile(
+          path.join(tmpRoot, 'test', 'browser', 'one.spec.ts'),
+          'await repo.add(["a.txt"]);\nawait repo.config.get({ key: "user.name" });\nawait repo.primitives.readObject(id);\n',
+        );
+        await writeAllowlist(tmpRoot, {
+          commands: [],
+          primitives: [{ name: 'runHook', reason: 'browser has no hook runner', deferredTo: null }],
+        });
+
+        // Act
+        const sut = await runScript(tmpRoot);
+
+        // Assert
+        expect(sut.code).toBe(0);
+        const report = JSON.parse(
+          await readFile(path.join(tmpRoot, 'out', 'browser-surface-coverage.json'), 'utf8'),
+        );
+        const covered = report.covered.commands.find(
+          (entry: { name: string }) => entry.name === 'config',
+        );
+        expect(covered).toBeDefined();
+        expect(covered.sources).toEqual(['test/browser/one.spec.ts']);
+        expect(report.gaps.commands).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a namespaced command bound with no dotted call site', () => {
+    describe('When the audit runs', () => {
+      it('Then the namespace is reported as a gap and exit is 1', async () => {
+        // Arrange
+        await stageRoot(tmpRoot, NAMESPACE_STUB);
+        await writeFile(
+          path.join(tmpRoot, 'test', 'browser', 'one.spec.ts'),
+          'await repo.add(["a.txt"]);\nawait repo.primitives.readObject(id);\n',
+        );
+        await writeAllowlist(tmpRoot, {
+          commands: [],
+          primitives: [{ name: 'runHook', reason: 'browser has no hook runner', deferredTo: null }],
+        });
+
+        // Act
+        const sut = await runScript(tmpRoot);
+
+        // Assert — the namespace is now gate-enforced, not invisible.
+        expect(sut.code).toBe(1);
+        expect(sut.stderr).toContain('  - repo.config');
+        const report = JSON.parse(
+          await readFile(path.join(tmpRoot, 'out', 'browser-surface-coverage.json'), 'utf8'),
+        );
+        expect(report.gaps.commands).toEqual(['config']);
+      });
+    });
+  });
+
   describe('Given a tree with no src/repository.ts', () => {
     describe('When the audit runs', () => {
       it('Then the unhandled rejection is converted into a friendly exit-1 error', async () => {
