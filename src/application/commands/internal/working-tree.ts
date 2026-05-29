@@ -1,5 +1,5 @@
 import { checkoutOverwriteDirty } from '../../../domain/commands/error.js';
-import { TsgitError } from '../../../domain/error.js';
+import { dirname, TsgitError } from '../../../domain/error.js';
 import { unsupportedOperation } from '../../../domain/index.js';
 import type { FileMode } from '../../../domain/objects/file-mode.js';
 import type { FilePath } from '../../../domain/objects/object-id.js';
@@ -132,11 +132,6 @@ const moveNode = async (ctx: Context, fromAbs: string, toAbs: string): Promise<v
     await ctx.fs.rm(fromAbs);
     return;
   }
-  await ctx.fs.mkdir(parentDir(toAbs));
+  await ctx.fs.mkdir(dirname(toAbs));
   await ctx.fs.rename(fromAbs, toAbs);
-};
-
-const parentDir = (path: string): string => {
-  const slash = path.lastIndexOf('/');
-  return slash === -1 ? path : path.slice(0, slash);
 };

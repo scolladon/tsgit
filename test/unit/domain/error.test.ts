@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   basename,
+  dirname,
   invalidWalkInput,
   operationAborted,
   TsgitError as TsgitErrorClass,
@@ -729,6 +730,45 @@ describe('domain error — AdapterError', () => {
 
           // Assert
           expect(sut).toBe('foo');
+        });
+      });
+    });
+  });
+
+  describe('dirname helper', () => {
+    describe("Given a slash-less path 'abc'", () => {
+      describe('When dirname', () => {
+        it("Then returns '' (no parent)", () => {
+          // Arrange & Act — multi-char so the `=== -1` and `-1` mutants (which
+          // would slice off the last char → 'ab') are distinguishable from ''.
+          const sut = dirname('abc');
+
+          // Assert
+          expect(sut).toBe('');
+        });
+      });
+    });
+
+    describe("Given a nested path 'a/b/c'", () => {
+      describe('When dirname', () => {
+        it("Then returns the parent 'a/b'", () => {
+          // Arrange & Act
+          const sut = dirname('a/b/c');
+
+          // Assert
+          expect(sut).toBe('a/b');
+        });
+      });
+    });
+
+    describe("Given a root-level absolute leaf '/leaf'", () => {
+      describe('When dirname', () => {
+        it("Then returns '' (slash at index 0)", () => {
+          // Arrange & Act
+          const sut = dirname('/leaf');
+
+          // Assert
+          expect(sut).toBe('');
         });
       });
     });
