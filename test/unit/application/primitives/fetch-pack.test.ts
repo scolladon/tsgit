@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { fetchPack } from '../../../../src/application/primitives/fetch-pack.js';
+import { readObject } from '../../../../src/application/primitives/read-object.js';
 import { TsgitError } from '../../../../src/domain/index.js';
 import { hexToBytes } from '../../../../src/domain/objects/encoding.js';
 import type { ObjectId } from '../../../../src/domain/objects/object-id.js';
@@ -268,6 +269,42 @@ describe('fetchPack', () => {
           expect(requests).toHaveLength(1);
           expect(requests[0]?.url).toBe(UPLOAD_PACK_URL);
           expect(requests[0]?.method).toBe('POST');
+        });
+      });
+    });
+
+    describe('Given a Context whose pack-registry was populated before the fetch', () => {
+      describe('When fetchPack writes a pack and the object is read back', () => {
+        it('Then the freshly-written object is readable (registry refreshed)', async () => {
+          // Arrange — a prior failed read caches an empty pack-registry scan for
+          // this Context. Without the post-write refresh, the just-fetched pack
+          // would stay invisible (the failure `pull`'s merge step hit).
+          const ctx = createMemoryContext();
+          await ctx.fs.mkdir(`${ctx.layout.gitDir}/objects/pack`);
+          const { packBytes, blobId } = await buildSingleBlobPack(ctx, 'fresh after fetch\n');
+          let pre: unknown;
+          try {
+            await readObject(ctx, blobId);
+          } catch (err) {
+            pre = err;
+          }
+          expect((pre as { data?: { code?: string } })?.data?.code).toBe('OBJECT_NOT_FOUND');
+          const body = buildUploadPackResponseBody({ packBytes, sideBand: true });
+          const { transport } = captureRequests(body);
+
+          // Act
+          await fetchPack(ctx, transport, {
+            wants: [blobId],
+            haves: [],
+            capabilities: ['side-band-64k', 'ofs-delta'],
+            url: REMOTE_URL,
+            progressOp: 'test:write-objects',
+          });
+          const sut = await readObject(ctx, blobId);
+
+          // Assert
+          expect(sut.type).toBe('blob');
+          expect(sut.id).toBe(blobId);
         });
       });
     });
