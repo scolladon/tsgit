@@ -68,7 +68,9 @@ does (`merge feature: …`); a single replaceable prefix reproduces both shapes.
 
 ### Neutral
 
-- `merge.resolveTarget` remains OID/local-branch only; merging an arbitrary ref
-  by name (`merge('origin/main')`) is left as a separate future improvement.
+- Broadening `merge.resolveTarget` to accept arbitrary refs (`merge('origin/main')`)
+  is decided **alongside** this ADR in [ADR-199](199-merge-resolve-target-gitrevisions-dwim.md)
+  (user directive). `pull`'s internal wiring still passes a resolved OID and
+  stays decoupled from merge's resolver.
 - Both reflog substitution sites need isolated tests so each is independently
   proven (mutation-resistance).

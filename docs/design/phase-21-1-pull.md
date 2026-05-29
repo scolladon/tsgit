@@ -161,7 +161,9 @@ paths (working-tree materialisation tracks Phase 20.1, still `[~]`). `pull`
 delegates integration to `merge`, so it inherits this contract **exactly** — no
 better, no worse than a direct `merge`. Documented, not a pull bug.
 
-## 5. `merge` change — additive `reflogLabel`
+## 5. `merge` changes
+
+### 5.1 Additive `reflogLabel`
 
 To reproduce git's `pull:`-prefixed reflog while keeping `merge` as the single
 integration engine, `MergeOptions` gains one optional field:
@@ -194,9 +196,54 @@ direct merge does (`merge feature: …`). A single replaceable prefix reproduces
 both observed shapes. The field is the library analogue of
 `GIT_REFLOG_ACTION` — a principled, faithful knob, not a pull-specific hack.
 
-`merge`'s `resolveTarget` is **not** touched: `pull` passes a resolved 40-hex
-OID, which `resolveTarget` already accepts. Broadening `resolveTarget` to accept
-arbitrary refs (e.g. `origin/main`) is a separate, out-of-scope improvement.
+### 5.2 Broaden `resolveTarget` to gitrevisions ref-DWIM
+
+Stock `git merge <commit-ish>` accepts any ref the gitrevisions DWIM rules
+resolve — `git merge origin/main`, `git merge v1.0`, `git merge refs/...`.
+tsgit's `resolveTarget` currently only matches a 40-hex OID or `refs/heads/<x>`,
+so `merge({ target: 'origin/main' })` fails (it probes `refs/heads/origin/main`).
+This is broadened to the gitrevisions ref-DWIM ladder, **reusing** the exact
+candidate sequence `rev-parse` already applies (consistency + DRY), plus tag
+peeling:
+
+```ts
+export const resolveTarget = async (ctx: Context, target: string): Promise<ObjectId> => {
+  if (/^[0-9a-f]{40}$/.test(target)) return target as ObjectId;        // unchanged
+  for (const candidate of refCandidates(target)) {                     // shared ladder
+    try {
+      return await resolveRef(ctx, candidate, { peel: true });         // peel annotated tags → commit
+    } catch {
+      // try the next candidate
+    }
+  }
+  throw refNotFound(target as RefName);
+};
+```
+
+`refCandidates(base)` — `[base, refs/heads/base, refs/tags/base, refs/remotes/base]`
+— is **extracted** from `rev-parse.ts` (where it is currently a private const)
+into a shared pure helper `src/domain/refs/ref-candidates.ts`, imported by both
+`rev-parse.ts` and `merge.ts`. One ref-resolution order across tsgit; no
+duplication.
+
+`{ peel: true }` follows an annotated-tag chain to its underlying object so
+`merge('sometag')` merges the tagged commit (faithful). A target that resolves
+to a tree/blob still fails downstream in `getTree` (`UNEXPECTED_OBJECT_TYPE`,
+git's "not something we can merge").
+
+Bounded: the 40-hex direct path is unchanged (pull passes a commit OID);
+revision **operators** (`~`, `^`, `@{…}`) remain `rev-parse`-only — a caller
+wanting those resolves via `revParse` first. The candidate ladder matches
+`rev-parse`'s existing order (heads before tags), a minor, pre-existing
+deviation from strict gitrevisions precedence, kept for tsgit-internal
+consistency.
+
+### 5.3 `pull` still passes a resolved OID
+
+Independently of 5.2, `pull` resolves the tracking ref → OID itself (early
+`REF_NOT_FOUND` check) and passes the OID to `merge` (ADR-197). The 5.2
+broadening benefits **direct** `merge` callers; `pull`'s wiring stays decoupled
+from merge's resolver order.
 
 ## 6. `clone` change — write upstream tracking config
 
@@ -255,12 +302,18 @@ via `RefName.from('HEAD')` for the detached fallback.
 
 ```
 src/application/commands/pull.ts          NEW  — PullOptions, PullResult, pull()
-src/application/commands/merge.ts          EDIT — MergeOptions.reflogLabel + 2 reflog sites
+src/domain/refs/ref-candidates.ts          NEW  — shared gitrevisions DWIM ladder (pure)
+src/application/commands/merge.ts          EDIT — MergeOptions.reflogLabel + 2 reflog sites; resolveTarget DWIM + peel
+src/application/commands/rev-parse.ts      EDIT — import refCandidates from the shared helper (drop private const)
 src/application/commands/clone.ts          EDIT — writeCloneConfig (subsumes writePromisorConfig)
 src/application/commands/index.ts          EDIT — export { PullOptions, PullResult, pull }
 src/domain/commands/error.ts               EDIT — NO_UPSTREAM_CONFIGURED + factory
 src/repository.ts                          EDIT — Repository.pull binding (guarded)
 ```
+
+`ref-candidates.ts` lives in `domain/refs/` because it is a pure string→string[]
+function over ref-name grammar with zero platform/ctx dependency — domain-fit,
+importable by both commands.
 
 `pull.ts` follows the small-function / early-return / immutable conventions:
 guard helpers, a pure `resolveUpstream(config, currentBranch, opts)` returning
@@ -335,6 +388,15 @@ per CLAUDE.md), never bare `toThrow(ErrorClass)`.
   `pull: Merge made by the 'tsgit' strategy.` (FF + merge-commit sites, isolated
   tests so each site's substitution is independently proven).
 
+`resolveTarget` DWIM (in `merge.test.ts`, exported helper already tested
+directly):
+- `merge({ target: 'origin/main' })` resolves via `refs/remotes/origin/main`
+  and merges (the user's headline case);
+- bare branch name still resolves `refs/heads/<x>` (regression-pin);
+- annotated tag name peels to its commit (`{ peel: true }` path);
+- unknown name → `REF_NOT_FOUND` (try/catch + `.data` assertion);
+- `ref-candidates.ts` gets its own pure unit test (each candidate in order).
+
 ### 9.3 `clone` config unit coverage (in `clone.test.ts`)
 
 - normal clone → `remote.origin.url` + `remote.origin.fetch` +
@@ -375,11 +437,14 @@ example sweep than a property.
    writes upstream — most git-faithful on both ends; closes the latent
    normal-clone `[remote "origin"]` gap.
 2. **OID passthrough + additive `merge.reflogLabel`** for the most git-faithful
-   reflog/message (ADR-197). Alternatives: OID-only (reflog shows raw oid);
-   broaden `merge.resolveTarget`. Chosen: pull resolves the tip to an OID,
-   passes a faithful commit message, and a `reflogLabel` so the reflog reads
-   `pull:` exactly like git — merge stays the single integration engine.
-3. **Omit `rebase` until 22.3** (ADR-198). Alternative: present-but-throws.
+   reflog/message (ADR-197). pull resolves the tip to an OID, passes a faithful
+   commit message, and a `reflogLabel` so the reflog reads `pull:` exactly like
+   git — merge stays the single integration engine.
+3. **Broaden `merge.resolveTarget` to gitrevisions ref-DWIM** (ADR-199). Chosen
+   alongside ADR-197 (user directive): `merge({ target: 'origin/main' })` now
+   resolves like `git merge origin/main`, reusing rev-parse's candidate ladder
+   (extracted to a shared helper) + tag peeling.
+4. **Omit `rebase` until 22.3** (ADR-198). Alternative: present-but-throws.
    Chosen: omit — YAGNI, no dead path, add it with the feature.
 
 ## 11. Out of scope
@@ -387,7 +452,8 @@ example sweep than a property.
 - `--rebase` integration (22.3).
 - Working-tree materialisation on FF/clean merge (20.1).
 - `FETCH_HEAD` authoring (pull resolves the tracking ref directly).
-- Broadening `merge.resolveTarget` to accept arbitrary refs.
+- Revision **operators** in `merge.resolveTarget` (`~`, `^`, `@{…}`) — ref-DWIM
+  only; operators stay `rev-parse`-only (§5.2).
 - Multi-ref / multi-remote pulls, `pull --all`, tag-following nuances.
 - git's "non-default remote requires explicit branch" arg-parsing nicety: pull
   defaults `branch` from `branch.<cur>.merge` regardless of which remote is
