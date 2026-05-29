@@ -20,7 +20,7 @@ import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../src/adapters/memory/memory-adapter.js';
 import { add } from '../../src/application/commands/add.js';
-import { branch } from '../../src/application/commands/branch.js';
+import { branchCreate } from '../../src/application/commands/branch.js';
 import { checkout } from '../../src/application/commands/checkout.js';
 import { commit } from '../../src/application/commands/commit.js';
 import { init } from '../../src/application/commands/init.js';
@@ -194,7 +194,7 @@ describe('integration — sparse checkout (memory adapter)', () => {
       'src/app/main.ts': 'export const main = 1;\n',
       'src/lib/core.ts': 'export const core = 1;\n',
     });
-    await branch(sut, { kind: 'create', name: 'feature', startPoint: 'main' });
+    await branchCreate(sut, { name: 'feature', startPoint: 'main' });
     await checkout(sut, { target: 'feature' });
     await sut.fs.writeUtf8(`${sut.layout.workDir}/src/app/extra.ts`, 'export const extra = 2;\n');
     await sut.fs.writeUtf8(`${sut.layout.workDir}/src/lib/helper.ts`, 'export const helper = 2;\n');

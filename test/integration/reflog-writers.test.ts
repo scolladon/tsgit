@@ -16,7 +16,7 @@ import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../src/adapters/memory/memory-adapter.js';
 import { add } from '../../src/application/commands/add.js';
-import { branch } from '../../src/application/commands/branch.js';
+import { branchCreate, branchDelete, branchRename } from '../../src/application/commands/branch.js';
 import { checkout } from '../../src/application/commands/checkout.js';
 import { commit } from '../../src/application/commands/commit.js';
 import { init } from '../../src/application/commands/init.js';
@@ -93,7 +93,7 @@ describe('integration — reflog writers', () => {
     await commit(ctx, { message: 'first', author });
 
     // Act
-    await branch(ctx, { kind: 'create', name: 'feature', startPoint: 'main' });
+    await branchCreate(ctx, { name: 'feature', startPoint: 'main' });
 
     // Assert
     const log = await readReflog(ctx, 'refs/heads/feature' as RefName);
@@ -111,7 +111,7 @@ describe('integration — reflog writers', () => {
     expect(before).toHaveLength(2);
 
     // Act
-    await branch(ctx, { kind: 'rename', from: 'main', to: 'trunk' });
+    await branchRename(ctx, { from: 'main', to: 'trunk' });
 
     // Assert — source log is gone, history survived on the target
     expect(await readReflog(ctx, MAIN)).toEqual([]);
@@ -127,11 +127,11 @@ describe('integration — reflog writers', () => {
     // Arrange
     const ctx = await seed();
     await commit(ctx, { message: 'first', author });
-    await branch(ctx, { kind: 'create', name: 'feature', startPoint: 'main' });
+    await branchCreate(ctx, { name: 'feature', startPoint: 'main' });
     expect(await readReflog(ctx, 'refs/heads/feature' as RefName)).toHaveLength(1);
 
     // Act
-    await branch(ctx, { kind: 'delete', name: 'feature' });
+    await branchDelete(ctx, { name: 'feature' });
 
     // Assert
     expect(await ctx.fs.exists(`${ctx.layout.gitDir}/logs/refs/heads/feature`)).toBe(false);
@@ -141,7 +141,7 @@ describe('integration — reflog writers', () => {
     // Arrange
     const ctx = await seed();
     await commit(ctx, { message: 'first', author });
-    await branch(ctx, { kind: 'create', name: 'feature', startPoint: 'main' });
+    await branchCreate(ctx, { name: 'feature', startPoint: 'main' });
 
     // Act
     await checkout(ctx, { target: 'feature' });
@@ -185,7 +185,7 @@ describe('integration — reflog writers', () => {
     // Arrange
     const ctx = await seed();
     await commit(ctx, { message: 'first', author });
-    await branch(ctx, { kind: 'create', name: 'feature', startPoint: 'main' });
+    await branchCreate(ctx, { name: 'feature', startPoint: 'main' });
     await checkout(ctx, { target: 'feature' });
     await stageFile(ctx, 'b.txt', 'b');
     await commit(ctx, { message: 'on feature', author });
@@ -203,7 +203,7 @@ describe('integration — reflog writers', () => {
     // Arrange
     const ctx = await seed({ 'a.txt': 'a' });
     await commit(ctx, { message: 'first', author });
-    await branch(ctx, { kind: 'create', name: 'feature', startPoint: 'main' });
+    await branchCreate(ctx, { name: 'feature', startPoint: 'main' });
     await checkout(ctx, { target: 'feature' });
     await stageFile(ctx, 'feature.txt', 'f');
     await commit(ctx, { message: 'on feature', author });

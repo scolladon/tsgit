@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { add } from '../../../../src/application/commands/add.js';
-import { branch, compareRefName } from '../../../../src/application/commands/branch.js';
+import {
+  branchCreate,
+  branchDelete,
+  branchList,
+  branchRename,
+  compareRefName,
+} from '../../../../src/application/commands/branch.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
 import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
@@ -46,10 +52,9 @@ describe('branch', () => {
         const { ctx } = await seedWithCommit();
 
         // Act
-        const sut = await branch(ctx, { kind: 'list' });
+        const sut = await branchList(ctx);
 
         // Assert
-        if (sut.kind !== 'list') throw new Error('expected list');
         expect(sut.branches.map((b) => b.name)).toContain('refs/heads/main');
         expect(sut.branches.find((b) => b.name === 'refs/heads/main')?.current).toBe(true);
       });
@@ -63,10 +68,9 @@ describe('branch', () => {
         const { ctx, commitId } = await seedWithCommit();
 
         // Act
-        const sut = await branch(ctx, { kind: 'create', name: 'feature' });
+        const sut = await branchCreate(ctx, { name: 'feature' });
 
         // Assert
-        if (sut.kind !== 'create') throw new Error('expected create');
         expect(sut.id).toBe(commitId);
         expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/heads/feature`)).toBe(true);
       });
@@ -78,10 +82,10 @@ describe('branch', () => {
       it('Then throws BRANCH_EXISTS', async () => {
         // Arrange
         const { ctx } = await seedWithCommit();
-        await branch(ctx, { kind: 'create', name: 'feature' });
+        await branchCreate(ctx, { name: 'feature' });
 
         // Assert
-        await expectError(() => branch(ctx, { kind: 'create', name: 'feature' }), 'BRANCH_EXISTS');
+        await expectError(() => branchCreate(ctx, { name: 'feature' }), 'BRANCH_EXISTS');
       });
     });
   });
@@ -91,10 +95,10 @@ describe('branch', () => {
       it('Then it is removed', async () => {
         // Arrange
         const { ctx } = await seedWithCommit();
-        await branch(ctx, { kind: 'create', name: 'feature' });
+        await branchCreate(ctx, { name: 'feature' });
 
         // Act
-        await branch(ctx, { kind: 'delete', name: 'feature' });
+        await branchDelete(ctx, { name: 'feature' });
 
         // Assert
         expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/heads/feature`)).toBe(false);
@@ -110,7 +114,7 @@ describe('branch', () => {
 
         // Assert
         await expectError(
-          () => branch(ctx, { kind: 'delete', name: 'main' }),
+          () => branchDelete(ctx, { name: 'main' }),
           'CANNOT_DELETE_CHECKED_OUT_BRANCH',
         );
       });
@@ -124,7 +128,7 @@ describe('branch', () => {
         const { ctx } = await seedWithCommit();
 
         // Assert
-        await expectError(() => branch(ctx, { kind: 'delete', name: 'ghost' }), 'BRANCH_NOT_FOUND');
+        await expectError(() => branchDelete(ctx, { name: 'ghost' }), 'BRANCH_NOT_FOUND');
       });
     });
   });
@@ -136,10 +140,10 @@ describe('branch', () => {
         const { ctx } = await seedWithCommit();
 
         // Act
-        const sut = await branch(ctx, { kind: 'rename', from: 'main', to: 'trunk' });
+        const sut = await branchRename(ctx, { from: 'main', to: 'trunk' });
 
         // Assert
-        if (sut.kind !== 'rename') throw new Error('expected rename');
+        expect(sut).toEqual({ from: 'refs/heads/main', to: 'refs/heads/trunk' });
         expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/heads/main`)).toBe(false);
         expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/heads/trunk`)).toBe(true);
         const head = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/HEAD`);
@@ -157,7 +161,7 @@ describe('branch', () => {
         expect(before).toHaveLength(1);
 
         // Act
-        await branch(ctx, { kind: 'rename', from: 'main', to: 'trunk' });
+        await branchRename(ctx, { from: 'main', to: 'trunk' });
 
         // Assert — the moved history precedes the rename entry on the new ref,
         // and the source reflog file no longer exists.
@@ -189,7 +193,7 @@ describe('branch', () => {
         expect(await reflogExists(ctx, 'refs/heads/main' as RefName)).toBe(false);
 
         // Act
-        await branch(ctx, { kind: 'rename', from: 'main', to: 'trunk' });
+        await branchRename(ctx, { from: 'main', to: 'trunk' });
 
         // Assert — no source history to move, so the target has no reflog file.
         expect(await reflogExists(ctx, 'refs/heads/trunk' as RefName)).toBe(false);
@@ -203,10 +207,10 @@ describe('branch', () => {
       it('Then HEAD is unchanged (only the renamed-current branch updates HEAD)', async () => {
         // Arrange
         const { ctx } = await seedWithCommit();
-        await branch(ctx, { kind: 'create', name: 'other' });
+        await branchCreate(ctx, { name: 'other' });
 
         // Act
-        await branch(ctx, { kind: 'rename', from: 'other', to: 'renamed' });
+        await branchRename(ctx, { from: 'other', to: 'renamed' });
 
         // Assert
         const head = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/HEAD`);
@@ -221,11 +225,10 @@ describe('branch', () => {
       it('Then it overwrites without throwing', async () => {
         // Arrange
         const { ctx } = await seedWithCommit();
-        await branch(ctx, { kind: 'create', name: 'feature' });
+        await branchCreate(ctx, { name: 'feature' });
 
         // Act + Assert — must not throw with force.
-        const sut = await branch(ctx, { kind: 'create', name: 'feature', force: true });
-        if (sut.kind !== 'create') throw new Error('expected create');
+        const sut = await branchCreate(ctx, { name: 'feature', force: true });
         // Assert
         expect(sut.name).toBe('refs/heads/feature');
       });
@@ -239,10 +242,9 @@ describe('branch', () => {
         const { ctx, commitId } = await seedWithCommit();
 
         // Act
-        const sut = await branch(ctx, { kind: 'create', name: 'pin', startPoint: commitId });
+        const sut = await branchCreate(ctx, { name: 'pin', startPoint: commitId });
 
         // Assert
-        if (sut.kind !== 'create') throw new Error('expected create');
         expect(sut.id).toBe(commitId);
       });
     });
@@ -253,13 +255,12 @@ describe('branch', () => {
       it('Then resolves and pins to that branch tip', async () => {
         // Arrange
         const { ctx, commitId } = await seedWithCommit();
-        await branch(ctx, { kind: 'create', name: 'feature' });
+        await branchCreate(ctx, { name: 'feature' });
 
         // Act
-        const sut = await branch(ctx, { kind: 'create', name: 'pin', startPoint: 'feature' });
+        const sut = await branchCreate(ctx, { name: 'pin', startPoint: 'feature' });
 
         // Assert
-        if (sut.kind !== 'create') throw new Error('expected create');
         expect(sut.id).toBe(commitId);
       });
     });
@@ -273,7 +274,7 @@ describe('branch', () => {
 
         // Assert
         await expectError(
-          () => branch(ctx, { kind: 'create', name: 'pin', startPoint: 'no-such' }),
+          () => branchCreate(ctx, { name: 'pin', startPoint: 'no-such' }),
           'BRANCH_NOT_FOUND',
         );
       });
@@ -288,10 +289,9 @@ describe('branch', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
 
         // Act
-        const sut = await branch(ctx, { kind: 'list' });
+        const sut = await branchList(ctx);
 
         // Assert
-        if (sut.kind !== 'list') throw new Error('expected list');
         expect(sut.branches).toEqual([]);
       });
     });
@@ -302,11 +302,11 @@ describe('branch', () => {
       it('Then force overrides the BRANCH_EXISTS guard', async () => {
         // Arrange — kills `force === true ? {} : { expected: 'absent' }` mutants on rename.
         const { ctx } = await seedWithCommit();
-        await branch(ctx, { kind: 'create', name: 'a' });
-        await branch(ctx, { kind: 'create', name: 'b' });
+        await branchCreate(ctx, { name: 'a' });
+        await branchCreate(ctx, { name: 'b' });
 
         // Act + Assert — without force this would BRANCH_EXISTS; with force it succeeds.
-        await branch(ctx, { kind: 'rename', from: 'a', to: 'b', force: true });
+        await branchRename(ctx, { from: 'a', to: 'b', force: true });
         // Assert
         expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/heads/a`)).toBe(false);
       });
@@ -318,14 +318,11 @@ describe('branch', () => {
       it('Then throws BRANCH_EXISTS', async () => {
         // Arrange
         const { ctx } = await seedWithCommit();
-        await branch(ctx, { kind: 'create', name: 'a' });
-        await branch(ctx, { kind: 'create', name: 'b' });
+        await branchCreate(ctx, { name: 'a' });
+        await branchCreate(ctx, { name: 'b' });
 
         // Assert
-        await expectError(
-          () => branch(ctx, { kind: 'rename', from: 'a', to: 'b' }),
-          'BRANCH_EXISTS',
-        );
+        await expectError(() => branchRename(ctx, { from: 'a', to: 'b' }), 'BRANCH_EXISTS');
       });
     });
   });
@@ -336,13 +333,12 @@ describe('branch', () => {
         // Arrange — `nested/leaf` creates a `nested` DIRECTORY entry under refs/heads;
         // resolveRef on that directory would throw if the `!entry.isFile` skip is removed.
         const { ctx } = await seedWithCommit();
-        await branch(ctx, { kind: 'create', name: 'nested/leaf' });
+        await branchCreate(ctx, { name: 'nested/leaf' });
 
         // Act
-        const sut = await branch(ctx, { kind: 'list' });
+        const sut = await branchList(ctx);
 
         // Assert
-        if (sut.kind !== 'list') throw new Error('expected list');
         expect(sut.branches.map((b) => b.name)).toEqual(['refs/heads/main']);
       });
     });
@@ -353,13 +349,12 @@ describe('branch', () => {
       it('Then that branch is current=false', async () => {
         // Arrange — kills `name === currentTarget -> true` (every branch flagged current).
         const { ctx } = await seedWithCommit();
-        await branch(ctx, { kind: 'create', name: 'feature' });
+        await branchCreate(ctx, { name: 'feature' });
 
         // Act
-        const sut = await branch(ctx, { kind: 'list' });
+        const sut = await branchList(ctx);
 
         // Assert
-        if (sut.kind !== 'list') throw new Error('expected list');
         expect(sut.branches.find((b) => b.name === 'refs/heads/feature')?.current).toBe(false);
       });
     });
@@ -377,14 +372,13 @@ describe('branch', () => {
         // produces a provably wrong order, killing both ConditionalExpression
         // mutants on the comparator.
         const { ctx } = await seedWithCommit();
-        await branch(ctx, { kind: 'create', name: 'xray' });
-        await branch(ctx, { kind: 'create', name: 'beta' });
+        await branchCreate(ctx, { name: 'xray' });
+        await branchCreate(ctx, { name: 'beta' });
 
         // Act
-        const sut = await branch(ctx, { kind: 'list' });
+        const sut = await branchList(ctx);
 
         // Assert — ascending: beta < main < xray.
-        if (sut.kind !== 'list') throw new Error('expected list');
         expect(sut.branches.map((b) => b.name)).toEqual([
           'refs/heads/beta',
           'refs/heads/main',
@@ -413,7 +407,7 @@ describe('branch', () => {
         // Act
         let caught: unknown;
         try {
-          await branch(failingCtx, { kind: 'create', name: 'feature' });
+          await branchCreate(failingCtx, { name: 'feature' });
         } catch (err) {
           caught = err;
         }
@@ -443,7 +437,7 @@ describe('branch', () => {
 
         // Act
         const err = await expectError(
-          () => branch(failingCtx, { kind: 'create', name: 'feature' }),
+          () => branchCreate(failingCtx, { name: 'feature' }),
           'NETWORK_ERROR',
         );
 
@@ -472,7 +466,7 @@ describe('branch', () => {
         // Act
         let caught: unknown;
         try {
-          await branch(failingCtx, { kind: 'rename', from: 'main', to: 'trunk' });
+          await branchRename(failingCtx, { from: 'main', to: 'trunk' });
         } catch (err) {
           caught = err;
         }
@@ -502,7 +496,7 @@ describe('branch', () => {
 
         // Act
         const err = await expectError(
-          () => branch(failingCtx, { kind: 'rename', from: 'main', to: 'trunk' }),
+          () => branchRename(failingCtx, { from: 'main', to: 'trunk' }),
           'NETWORK_ERROR',
         );
 
@@ -521,7 +515,7 @@ describe('branch', () => {
 
         // Assert
         await expectError(
-          () => branch(ctx, { kind: 'create', name: 'pin', startPoint: `${commitId}f` }),
+          () => branchCreate(ctx, { name: 'pin', startPoint: `${commitId}f` }),
           'BRANCH_NOT_FOUND',
         );
       });
@@ -536,7 +530,7 @@ describe('branch', () => {
 
         // Assert
         await expectError(
-          () => branch(ctx, { kind: 'create', name: 'pin', startPoint: `f${commitId}` }),
+          () => branchCreate(ctx, { name: 'pin', startPoint: `f${commitId}` }),
           'BRANCH_NOT_FOUND',
         );
       });
@@ -604,13 +598,12 @@ describe('branch', () => {
         await add(ctx, ['a.txt']);
         const second = await commit(ctx, { message: 'second', author });
         expect(second.id).not.toBe(first);
-        await branch(ctx, { kind: 'create', name: 'HEAD', startPoint: first });
+        await branchCreate(ctx, { name: 'HEAD', startPoint: first });
 
         // Act — default startPoint ('HEAD') must resolve the symbolic HEAD -> second.
-        const sut = await branch(ctx, { kind: 'create', name: 'probe' });
+        const sut = await branchCreate(ctx, { name: 'probe' });
 
         // Assert
-        if (sut.kind !== 'create') throw new Error('expected create');
         expect(sut.id).toBe(second.id);
       });
     });

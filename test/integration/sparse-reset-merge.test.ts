@@ -17,7 +17,7 @@ import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../src/adapters/memory/memory-adapter.js';
 import { add } from '../../src/application/commands/add.js';
-import { branch } from '../../src/application/commands/branch.js';
+import { branchCreate } from '../../src/application/commands/branch.js';
 import { checkout } from '../../src/application/commands/checkout.js';
 import { commit } from '../../src/application/commands/commit.js';
 import { init } from '../../src/application/commands/init.js';
@@ -100,7 +100,7 @@ describe('integration — sparse reset/merge (memory adapter)', () => {
     await ctx.fs.writeUtf8(`${ctx.layout.workDir}/docs/guide.md`, '# guide\n');
     await add(ctx, ['src/app/main.ts', 'docs/guide.md']);
     await commit(ctx, { message: 'seed', author });
-    await branch(ctx, { kind: 'create', name: 'feature' });
+    await branchCreate(ctx, { name: 'feature' });
     await checkout(ctx, { target: 'feature' });
     await ctx.fs.writeUtf8(`${ctx.layout.workDir}/src/app/main.ts`, 'FEATURE\n');
     await add(ctx, ['src/app/main.ts']);

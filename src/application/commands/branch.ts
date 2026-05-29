@@ -1,3 +1,9 @@
+/**
+ * `branch` porcelain — manage `refs/heads/*`, exposed as the `repo.branch.*`
+ * nested namespace (`list` / `create` / `delete` / `rename`). Each verb is a
+ * Context-aware function; the namespace binder lives in
+ * `internal/branch-namespace.ts`.
+ */
 import { TsgitError } from '../../domain/error.js';
 import { branchExists, branchNotFound, cannotDeleteCheckedOutBranch } from '../../domain/index.js';
 import type { ObjectId, RefName } from '../../domain/objects/index.js';
@@ -10,47 +16,50 @@ import { updateRef } from '../primitives/update-ref.js';
 import { writeSymbolicRef } from '../primitives/write-symbolic-ref.js';
 import { assertRepository, readHeadRaw } from './internal/repo-state.js';
 
-export type BranchAction =
-  | { readonly kind: 'list' }
-  | {
-      readonly kind: 'create';
-      readonly name: string;
-      readonly startPoint?: string;
-      readonly force?: boolean;
-    }
-  | { readonly kind: 'delete'; readonly name: string; readonly force?: boolean }
-  | {
-      readonly kind: 'rename';
-      readonly from: string;
-      readonly to: string;
-      readonly force?: boolean;
-    };
-
 export interface BranchInfo {
   readonly name: RefName;
   readonly id: ObjectId;
   readonly current: boolean;
 }
 
-export type BranchResult =
-  | { readonly kind: 'list'; readonly branches: ReadonlyArray<BranchInfo> }
-  | { readonly kind: 'create'; readonly name: RefName; readonly id: ObjectId }
-  | { readonly kind: 'delete'; readonly name: RefName }
-  | { readonly kind: 'rename'; readonly from: RefName; readonly to: RefName };
+export interface BranchListResult {
+  readonly branches: ReadonlyArray<BranchInfo>;
+}
+
+export interface BranchCreateInput {
+  readonly name: string;
+  readonly startPoint?: string;
+  readonly force?: boolean;
+}
+export interface BranchCreateResult {
+  readonly name: RefName;
+  readonly id: ObjectId;
+}
+
+export interface BranchDeleteInput {
+  readonly name: string;
+  readonly force?: boolean;
+}
+export interface BranchDeleteResult {
+  readonly name: RefName;
+}
+
+export interface BranchRenameInput {
+  readonly from: string;
+  readonly to: string;
+  readonly force?: boolean;
+}
+export interface BranchRenameResult {
+  readonly from: RefName;
+  readonly to: RefName;
+}
 
 const HEADS_PREFIX = 'refs/heads/';
 
-export const branch = async (ctx: Context, action: BranchAction): Promise<BranchResult> => {
+export const branchList = async (ctx: Context): Promise<BranchListResult> => {
   await assertRepository(ctx);
-  if (action.kind === 'list') return listBranches(ctx);
-  if (action.kind === 'create') return createBranch(ctx, action);
-  if (action.kind === 'delete') return deleteBranch(ctx, action);
-  return renameBranch(ctx, action);
-};
-
-const listBranches = async (ctx: Context): Promise<BranchResult> => {
   const headsDir = `${ctx.layout.gitDir}/refs/heads`;
-  if (!(await ctx.fs.exists(headsDir))) return { kind: 'list', branches: [] };
+  if (!(await ctx.fs.exists(headsDir))) return { branches: [] };
   const head = await readHeadRaw(ctx);
   const currentTarget =
     head.kind === 'symbolic' && head.target.startsWith(HEADS_PREFIX) ? head.target : undefined;
@@ -63,12 +72,12 @@ const listBranches = async (ctx: Context): Promise<BranchResult> => {
     branches.push({ name, id, current: name === currentTarget });
   }
   branches.sort((a, b) => compareRefName(a.name, b.name));
-  return { kind: 'list', branches };
+  return { branches };
 };
 
 /**
  * Total order over ref names: `-1` / `0` / `1`. Exported for direct unit
- * testing of the equal-keys (`0`) case, which `listBranches` cannot exercise
+ * testing of the equal-keys (`0`) case, which `branchList` cannot exercise
  * because directory entries are unique. A code-unit comparison (not
  * `localeCompare`) matches Git's byte-wise ref ordering.
  */
@@ -80,12 +89,13 @@ export const compareRefName = (left: RefName, right: RefName): number => {
   return 0;
 };
 
-const createBranch = async (
+export const branchCreate = async (
   ctx: Context,
-  action: { readonly name: string; readonly startPoint?: string; readonly force?: boolean },
-): Promise<BranchResult> => {
-  const name = validateRefName(`${HEADS_PREFIX}${action.name}`);
-  const startPoint = action.startPoint ?? 'HEAD';
+  input: BranchCreateInput,
+): Promise<BranchCreateResult> => {
+  await assertRepository(ctx);
+  const name = validateRefName(`${HEADS_PREFIX}${input.name}`);
+  const startPoint = input.startPoint ?? 'HEAD';
   const target = await resolveBranchTarget(ctx, startPoint);
   const reflogMessage = `branch: Created from ${startPoint}`;
   try {
@@ -93,7 +103,7 @@ const createBranch = async (
       ctx,
       name,
       target,
-      action.force === true ? { reflogMessage } : { expected: 'absent', reflogMessage },
+      input.force === true ? { reflogMessage } : { expected: 'absent', reflogMessage },
     );
   } catch (err) {
     if (err instanceof TsgitError && err.data.code === 'REF_UPDATE_CONFLICT') {
@@ -101,14 +111,15 @@ const createBranch = async (
     }
     throw err;
   }
-  return { kind: 'create', name, id: target };
+  return { name, id: target };
 };
 
-const deleteBranch = async (
+export const branchDelete = async (
   ctx: Context,
-  action: { readonly name: string; readonly force?: boolean },
-): Promise<BranchResult> => {
-  const name = validateRefName(`${HEADS_PREFIX}${action.name}`);
+  input: BranchDeleteInput,
+): Promise<BranchDeleteResult> => {
+  await assertRepository(ctx);
+  const name = validateRefName(`${HEADS_PREFIX}${input.name}`);
   const head = await readHeadRaw(ctx);
   if (head.kind === 'symbolic' && head.target === name) {
     throw cannotDeleteCheckedOutBranch(name);
@@ -117,15 +128,16 @@ const deleteBranch = async (
     throw branchNotFound(name);
   }
   await updateRef(ctx, name, ZERO_OID, { delete: true });
-  return { kind: 'delete', name };
+  return { name };
 };
 
-const renameBranch = async (
+export const branchRename = async (
   ctx: Context,
-  action: { readonly from: string; readonly to: string; readonly force?: boolean },
-): Promise<BranchResult> => {
-  const from = validateRefName(`${HEADS_PREFIX}${action.from}`);
-  const to = validateRefName(`${HEADS_PREFIX}${action.to}`);
+  input: BranchRenameInput,
+): Promise<BranchRenameResult> => {
+  await assertRepository(ctx);
+  const from = validateRefName(`${HEADS_PREFIX}${input.from}`);
+  const to = validateRefName(`${HEADS_PREFIX}${input.to}`);
   const id = await resolveRef(ctx, from);
   const reflogMessage = `branch: renamed ${from} to ${to}`;
   // Capture the source log before any write so the rename preserves history.
@@ -135,7 +147,7 @@ const renameBranch = async (
       ctx,
       to,
       id,
-      action.force === true ? { reflogMessage } : { expected: 'absent', reflogMessage },
+      input.force === true ? { reflogMessage } : { expected: 'absent', reflogMessage },
     );
   } catch (err) {
     if (err instanceof TsgitError && err.data.code === 'REF_UPDATE_CONFLICT') {
@@ -154,7 +166,7 @@ const renameBranch = async (
   if (head.kind === 'symbolic' && head.target === from) {
     await writeSymbolicRef(ctx, 'HEAD' as RefName, to);
   }
-  return { kind: 'rename', from, to };
+  return { from, to };
 };
 
 const resolveBranchTarget = async (ctx: Context, startPoint: string): Promise<ObjectId> => {

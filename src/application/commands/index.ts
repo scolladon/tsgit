@@ -1,6 +1,19 @@
 export { type AbortMergeResult, abortMerge } from './abort-merge.js';
 export { type AddOptions, type AddResult, add } from './add.js';
-export { type BranchAction, type BranchInfo, type BranchResult, branch } from './branch.js';
+export {
+  type BranchCreateInput,
+  type BranchCreateResult,
+  type BranchDeleteInput,
+  type BranchDeleteResult,
+  type BranchInfo,
+  type BranchListResult,
+  type BranchRenameInput,
+  type BranchRenameResult,
+  branchCreate,
+  branchDelete,
+  branchList,
+  branchRename,
+} from './branch.js';
 export {
   type CatFileBatchEntry,
   type CatFileInput,
@@ -60,6 +73,7 @@ export {
   fetchMissing,
 } from './fetch-missing.js';
 export { type InitOptions, type InitResult, init } from './init.js';
+export { type BranchNamespace, bindBranchNamespace } from './internal/branch-namespace.js';
 export { bindConfigNamespace, type ConfigNamespace } from './internal/config-namespace.js';
 export { bindRemoteNamespace, type RemoteNamespace } from './internal/remote-namespace.js';
 export { type LogEntry, type LogOptions, log } from './log.js';

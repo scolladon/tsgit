@@ -147,7 +147,8 @@ export interface Repository {
   // Tier-1 commands (18) — bound to ctx.
   readonly abortMerge: BindCtx<typeof commands.abortMerge>;
   readonly add: BindCtx<typeof commands.add>;
-  readonly branch: BindCtx<typeof commands.branch>;
+  /** Nested `repo.branch.{list,create,delete,rename}` namespace. */
+  readonly branch: commands.BranchNamespace;
   readonly catFile: BindCtx<typeof commands.catFile>;
   readonly checkout: BindCtx<typeof commands.checkout>;
   readonly clone: BindCtx<typeof commands.clone>;
@@ -372,10 +373,7 @@ export const openRepository = async (
       guard();
       return commands.add(ctx, paths, addOpts);
     }) as Repository['add'],
-    branch: ((action) => {
-      guard();
-      return commands.branch(ctx, action);
-    }) as Repository['branch'],
+    branch: commands.bindBranchNamespace(ctx, guard),
     checkout: ((checkoutOpts) => {
       guard();
       return commands.checkout(ctx, checkoutOpts);

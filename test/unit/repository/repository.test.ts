@@ -206,7 +206,7 @@ describe('openRepository — Repository binding integrity', () => {
         // Arrange
         const sut = await open();
         // CRUD-family bindings are nested-namespace objects, not functions.
-        const namespaceKeys = new Set(['config', 'remote']);
+        const namespaceKeys = new Set(['config', 'remote', 'branch']);
         const nonFunctionKeys = new Set(['ctx', 'primitives', 'snapshot', ...namespaceKeys]);
 
         for (const key of Object.keys(sut)) {

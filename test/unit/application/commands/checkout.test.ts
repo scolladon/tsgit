@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { add } from '../../../../src/application/commands/add.js';
-import { branch } from '../../../../src/application/commands/branch.js';
+import { branchCreate } from '../../../../src/application/commands/branch.js';
 import { checkout } from '../../../../src/application/commands/checkout.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
@@ -21,7 +21,7 @@ const seedWithBranches = async () => {
   await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
   await add(ctx, ['a.txt']);
   const c = await commit(ctx, { message: 'first', author });
-  await branch(ctx, { kind: 'create', name: 'feature' });
+  await branchCreate(ctx, { name: 'feature' });
   return { ctx, commitId: c.id };
 };
 
@@ -360,7 +360,7 @@ describe('checkout', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/base.txt`, 'base');
         await add(ctx, ['base.txt']);
         await commit(ctx, { message: 'base', author });
-        await branch(ctx, { kind: 'create', name: 'feature' });
+        await branchCreate(ctx, { name: 'feature' });
         await checkout(ctx, { target: 'feature' });
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/collide.txt`, 'from-feature');
         await add(ctx, ['collide.txt']);
@@ -795,7 +795,7 @@ describe('checkout — mutation hardening', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/base.txt`, 'b');
         await add(ctx, ['base.txt']);
         await commit(ctx, { message: 'base', author });
-        await branch(ctx, { kind: 'create', name: 'origin-pt' });
+        await branchCreate(ctx, { name: 'origin-pt' });
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/extra.txt`, 'e');
         await add(ctx, ['extra.txt']);
         const withExtra = await commit(ctx, { message: 'with extra', author });
@@ -865,7 +865,7 @@ describe('checkout — mutation hardening', () => {
         await add(ctx, ['a.txt']);
         const c = await commit(ctx, { message: 'first', author });
         const hexBranch = 'b'.repeat(40); // branch name = 40 hex chars
-        await branch(ctx, { kind: 'create', name: hexBranch });
+        await branchCreate(ctx, { name: hexBranch });
         const fullRefPath = `refs/heads/${hexBranch}`;
 
         // Act — target is the full ref path ending in a 40-hex run.
@@ -893,7 +893,7 @@ describe('checkout — mutation hardening', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a-content');
         await add(ctx, ['a.txt']);
         await commit(ctx, { message: 'a-only', author });
-        await branch(ctx, { kind: 'create', name: 'feature' });
+        await branchCreate(ctx, { name: 'feature' });
         // Advance main: drop a.txt, add b.txt.
         const { rm } = await import('../../../../src/application/commands/rm.js');
         await rm(ctx, ['a.txt']);
@@ -1228,7 +1228,7 @@ describe('checkout — sparse checkout', () => {
     await ctx.fs.writeUtf8(`${ctx.layout.workDir}/docs/b.txt`, 'b');
     await add(ctx, ['src/a.txt', 'docs/b.txt']);
     await commit(ctx, { message: 'first', author });
-    await branch(ctx, { kind: 'create', name: 'feature' });
+    await branchCreate(ctx, { name: 'feature' });
     return ctx;
   };
 
@@ -1276,7 +1276,7 @@ describe('checkout — sparse checkout', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/docs/b.txt`, 'b');
         await add(ctx, ['src/a.txt', 'docs/b.txt']);
         await commit(ctx, { message: 'first', author });
-        await branch(ctx, { kind: 'create', name: 'feature' });
+        await branchCreate(ctx, { name: 'feature' });
 
         // Act
         const sut = await checkout(ctx, { target: 'feature' });
@@ -1306,7 +1306,7 @@ describe('checkout — sparse checkout', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/docs/b.txt`, 'b');
         await add(ctx, ['src/a.txt', 'docs/b.txt']);
         await commit(ctx, { message: 'first', author });
-        await branch(ctx, { kind: 'create', name: 'feature' });
+        await branchCreate(ctx, { name: 'feature' });
         await checkout(ctx, { target: 'feature' });
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/docs/b.txt`, 'b-on-feature');
         await add(ctx, ['docs/b.txt']);
@@ -1345,7 +1345,7 @@ describe('checkout — progress reporting', () => {
     await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
     await add(ctx, ['a.txt']);
     await commit(ctx, { message: 'first', author });
-    await branch(ctx, { kind: 'create', name: 'feature' });
+    await branchCreate(ctx, { name: 'feature' });
     return ctx;
   };
 
