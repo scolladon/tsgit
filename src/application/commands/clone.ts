@@ -160,25 +160,27 @@ const fetchAndPropagate = async (
   }
   const fetchedRefs = await writeFetchedRefs(ctx, advertisement, opts.url);
   const head = await applyRemoteHead(ctx, advertisement, opts.url);
-  if (filterSpec !== undefined) {
-    await writePromisorConfig(ctx, opts.url, filterSpec);
-  }
+  await writeCloneConfig(ctx, opts.url, headTrackedBranch(advertisement), filterSpec);
   return { path: gitDir, head, fetchedRefs };
 };
 
 /**
- * Persist the promisor-remote config block for a partial clone: bump
- * `core.repositoryformatversion` to 1 (extensions require config format v1),
- * register `origin` as the promisor remote, and record the filter that was
- * applied. See `docs/design/partial-clone.md` §7.3.
+ * Persist the clone's config, mirroring stock git:
+ *
+ *  - `[remote "origin"]` url + default fetch refspec — written for EVERY clone
+ *    (without it, `fetch`/`pull` after a normal clone would have no remote URL).
+ *  - `[branch "<head>"]` remote/merge upstream — written for non-detached clones
+ *    (a detached clone has no head branch to track).
+ *  - partial-clone extras (`repositoryformatversion = 1`, promisor, filter,
+ *    `extensions.partialClone`) layered on top when a filter was applied.
  */
-const writePromisorConfig = async (
+const writeCloneConfig = async (
   ctx: Context,
   url: string,
-  filterSpec: string,
+  headBranch: string | undefined,
+  filterSpec: string | undefined,
 ): Promise<void> => {
   await updateConfigEntries(ctx, [
-    { section: 'core', key: 'repositoryformatversion', value: '1' },
     { section: 'remote', subsection: 'origin', key: 'url', value: url },
     {
       section: 'remote',
@@ -186,9 +188,25 @@ const writePromisorConfig = async (
       key: 'fetch',
       value: '+refs/heads/*:refs/remotes/origin/*',
     },
-    { section: 'remote', subsection: 'origin', key: 'promisor', value: 'true' },
-    { section: 'remote', subsection: 'origin', key: 'partialclonefilter', value: filterSpec },
-    { section: 'extensions', key: 'partialClone', value: 'origin' },
+    ...(headBranch !== undefined
+      ? [
+          { section: 'branch', subsection: headBranch, key: 'remote', value: 'origin' },
+          {
+            section: 'branch',
+            subsection: headBranch,
+            key: 'merge',
+            value: `refs/heads/${headBranch}`,
+          },
+        ]
+      : []),
+    ...(filterSpec !== undefined
+      ? [
+          { section: 'core', key: 'repositoryformatversion', value: '1' },
+          { section: 'remote', subsection: 'origin', key: 'promisor', value: 'true' },
+          { section: 'remote', subsection: 'origin', key: 'partialclonefilter', value: filterSpec },
+          { section: 'extensions', key: 'partialClone', value: 'origin' },
+        ]
+      : []),
   ]);
 };
 

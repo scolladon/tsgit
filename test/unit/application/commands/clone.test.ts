@@ -819,15 +819,19 @@ describe('clone — partial clone', () => {
         expect(remote?.promisor).toBe(true);
         expect(remote?.partialCloneFilter).toBe('blob:none');
         expect(parsed.extensions?.partialClone).toBe('origin');
+        expect(parsed.branch?.get('main')).toEqual({
+          remote: 'origin',
+          merge: 'refs/heads/main',
+        });
         const packDir = await ctx.fs.readdir(`${ctx.layout.gitDir}/objects/pack`);
         expect(packDir.some((e) => e.name.endsWith('.promisor'))).toBe(true);
       });
     });
   });
 
-  describe('Given no filter', () => {
+  describe('Given a normal (non-partial) clone', () => {
     describe('When clone', () => {
-      it('Then no [extensions] or [remote] section is written', async () => {
+      it('Then writes [remote "origin"] and [branch "main"] upstream, but no [extensions]', async () => {
         // Arrange
         const ctx = createMemoryContext();
         const { packBytes, blobId } = await buildPackFromSingleBlob(ctx, 'plain clone\n');
@@ -842,9 +846,44 @@ describe('clone — partial clone', () => {
         await clone(withTransport(ctx, transport), { url: REMOTE_URL });
 
         // Assert
+        const parsed = await readConfig(ctx);
+        const remote = parsed.remote?.get('origin');
+        expect(remote?.url).toBe(REMOTE_URL);
+        expect(remote?.fetch).toEqual(['+refs/heads/*:refs/remotes/origin/*']);
+        expect(remote?.promisor).toBeUndefined();
+        expect(parsed.branch?.get('main')).toEqual({
+          remote: 'origin',
+          merge: 'refs/heads/main',
+        });
         const config = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
         expect(config).not.toContain('[extensions]');
-        expect(config).not.toContain('[remote');
+      });
+    });
+  });
+
+  describe('Given a detached clone (no symref=HEAD)', () => {
+    describe('When clone', () => {
+      it('Then writes the remote block but no [branch] upstream', async () => {
+        // Arrange — server advertises HEAD directly; clone cannot name a head branch.
+        const ctx = createMemoryContext();
+        const { packBytes, blobId } = await buildPackFromSingleBlob(ctx, 'detached config\n');
+        const transport = buildCloneRemote({
+          capabilities: ['side-band-64k'],
+          refs: [
+            { name: 'HEAD', id: blobId },
+            { name: 'refs/heads/main', id: blobId },
+          ],
+          head: 'HEAD',
+          packBytes,
+        });
+
+        // Act
+        await clone(withTransport(ctx, transport), { url: REMOTE_URL });
+
+        // Assert
+        const parsed = await readConfig(ctx);
+        expect(parsed.remote?.get('origin')?.url).toBe(REMOTE_URL);
+        expect(parsed.branch).toBeUndefined();
       });
     });
   });
