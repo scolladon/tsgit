@@ -30,7 +30,7 @@ This phase fixes (1) for the two-commit case and adds the multi-result/n-commit 
 
 Git defines a *merge base* of commits as a best common ancestor: a common ancestor that is **not reachable from any other common ancestor**. The set of best common ancestors is the set of LCAs under the reachability partial order.
 
-- `git merge-base A B` → one best common ancestor (Git's choice among ties is date-driven; we pick the lexicographically smallest oid — see ADR on tie-breaking). Exit 1 / no output when unrelated.
+- `git merge-base A B` → one best common ancestor (Git's choice among ties is date-driven; we pick the lexicographically smallest oid for determinism, inheriting the prior implementation's tie-break). Exit 1 / no output when unrelated.
 - `git merge-base --all A B` → all best common ancestors.
 - `git merge-base --octopus C1 C2 … Cn` → fold: start with `{C1}`; for each subsequent `Ci`, replace the accumulator with the union of `merge-base --all (Ci, r)` over every `r` in the accumulator; finally remove redundant entries. Print the first (or all, with `--all`). Empty when the commits share no common ancestor.
 
@@ -50,110 +50,140 @@ Git defines a *merge base* of commits as a best common ancestor: a common ancest
 
 `D` has parents `{B, C}`; `E` has parents `{C, B}`. Common ancestors of `D` and `E` are `{B, C, A}`. `A` is reachable from both `B` and `C`, so `A` is redundant. The best common ancestors are **`{B, C}`** — two LCAs. `git merge-base --all D E` prints both; plain `git merge-base D E` prints one.
 
-## Algorithm
+## Algorithm (per ADR-190)
 
-We compute *all* best common ancestors with a two-step, reachability-based method:
+We implement Git's **paint-down-to-common** mechanism faithfully — date-ordered priority queue, flag painting, `STALE` pruning, then `remove_redundant`.
 
-1. **Collect common ancestors.** For the two-commit case, `commonAncestors = ancestors(a) ∩ ancestors(b)`, where `ancestors(x)` is the set of commits reachable from `x` including `x` itself (walk parents, skip non-commits, dedupe via a visited `Set`).
-2. **Remove redundant.** A common ancestor `x` is redundant when some *other* common ancestor `y` reaches `x` (i.e. `x ∈ ancestors(y)`). The survivors — the maximal elements under reachability — are the merge bases.
+### `paintDownToCommon(read, one, twos) → ObjectId[]`
 
-`remove-redundant` operates on the deduped common-ancestor set and is implemented by walking each common ancestor's **parent chain** (strict ancestors — the start commit itself is never marked) and marking every *other* common ancestor it reaches as redundant; the unmarked commons are returned, sorted lexicographically for deterministic output.
+- Flags live in a per-call `Map<ObjectId, number>` with bits `PARENT1=1`, `PARENT2=2`, `STALE=4`, `RESULT=8` — no global object-flag mutation, so each paint is isolated and needs no mark-clearing.
+- A priority queue ordered by **committer timestamp descending** (newest first), oid ascending as a deterministic tie-break. Implemented as an insertion-sorted array (`pop` = shift front); a binary heap is a behaviour-preserving swap deferred to the v2 perf phase.
+- Paint `one` with `PARENT1` and every `twos[i]` with `PARENT2`; enqueue all. With `twos` empty, return `[one]` immediately (single-commit base = itself).
+- While the queue holds a **non-stale** commit: pop the newest; let `flags = its (PARENT1|PARENT2|STALE)`. If `flags === (PARENT1|PARENT2)` and not yet `RESULT`, record it as a result and OR `STALE` into `flags`. For each parent, if it does not already carry all bits in `flags`, OR them in and enqueue it.
+- Return the recorded result oids (common ancestors; possibly still redundant in criss-cross).
 
-The `a === b` fast-path in the legacy `mergeBase` becomes unnecessary: `mergeBases(a, a)` intersects `ancestors(a)` with itself, and `removeRedundant` keeps only `a` (every other ancestor is reachable from `a`'s parent chain). The self-base result falls out of the reduce, so the explicit shortcut is dropped.
+### `removeRedundant(read, commits) → ObjectId[]`
 
-This is **results-faithful** to Git (same set of best common ancestors) while diverging from Git's internal *mechanism* (Git uses a commit-date priority queue with `STALE` flag propagation for early termination). The divergence and its performance consequence are captured in an ADR. Rationale for the simpler mechanism: tsgit has no commit-date priority-queue infrastructure today, the existing `mergeBase` already walks ancestry without dates, and full-reachability + reduce is far easier to drive to 100% coverage and zero surviving mutants.
+Operates over the deduped set. For each candidate `i`, re-paint `i` as `PARENT1` and the remaining candidates as `PARENT2` down to common (a bounded paint): if candidate `i` ends up flagged `PARENT2` it is reachable from another and is redundant; any other candidate flagged `PARENT1` is reachable from `i` and is redundant. Survivors — the maximal elements under reachability — are returned, sorted lexicographically.
+
+### `mergeBasesMany(read, one, twos) → ObjectId[]`
+
+`paintDownToCommon`, then `removeRedundant` only when more than one result (matches Git's `get_merge_bases_many_0`). Handles both the two-commit case (`twos = [b]`) and the non-octopus n-commit case (`twos = commits[1..]`, all painted `PARENT2` together) — the latter falls out for free now that the faithful paint accepts a `twos` array.
 
 ### Octopus fold
 
 ```
-octopusMergeBases(commits):
+octopusMergeBases(read, commits):
   acc = [commits[0]]
   for c in commits[1..]:
-    acc = flatten( allMergeBases(c, r) for r in acc )
-  return removeRedundant(acc)          // dedupe + drop ancestors-of-others
+    acc = flatten( mergeBasesMany(read, c, [r]) for r in acc )
+  return removeRedundant(read, acc)     // collapse dups + drop ancestors-of-others
 ```
 
-Matches Git's `get_octopus_merge_bases` followed by `reduce_heads`. Folding pairwise `allMergeBases` keeps a single core routine.
+Matches Git's `get_octopus_merge_bases` followed by `reduce_heads`. `removeRedundant` works over a `Set`, so duplicate oids accumulated across fold steps collapse.
 
-## API surface
+### Commit reads
 
-> The exact shape is the load-bearing decision of this phase and is settled by ADR before implementation. The design records the **recommended** shape; if the user's ADR choice differs, this section is revised to match before planning.
+Reads are memoized in a per-invocation `Map<ObjectId, Commit | undefined>` (`undefined` = parsed-but-not-a-commit) so the repeated paints in `removeRedundant` and the octopus fold never re-read an object. Non-commit oids contribute no parents and are never enqueued past themselves.
 
-**Recommended (Option A):** keep the existing entry point, add two siblings.
+The `a === b` self-base shortcut is dropped: `mergeBase([a, a])` reduces to `{a}` through the core, so the special case is redundant (ADR-191).
+
+## API surface (per ADR-189)
+
+A single, breaking, array-returning function whose two flags mirror the Git CLI:
 
 ```ts
-// unchanged — single best base of two commits (now computed via the
-// reduce algorithm, so it is correct in criss-cross cases too)
-mergeBase(ctx: Context, a: ObjectId, b: ObjectId): Promise<ObjectId | undefined>
-
-// all best common ancestors of two commits (`--all`)
-mergeBases(ctx: Context, a: ObjectId, b: ObjectId): Promise<readonly ObjectId[]>
-
-// octopus base(s) of N commits (`--octopus`), all reduced bases
-octopusMergeBases(ctx: Context, commits: readonly ObjectId[]): Promise<readonly ObjectId[]>
+mergeBase(
+  ctx: Context,
+  commits: readonly ObjectId[],
+  options?: { readonly all?: boolean; readonly octopus?: boolean },
+): Promise<readonly ObjectId[]>
 ```
 
-- `mergeBase` is refactored to delegate to the shared core: `mergeBases(a,b)` then lexicographically-smallest or `undefined`. This *fixes* its criss-cross non-optimality as a side effect; existing linear/diamond tests (single LCA) are unaffected.
-- `mergeBases` returns `[]` for unrelated histories.
-- `octopusMergeBases([])` is rejected with `invalidWalkInput` (Git errors on no commits). `octopusMergeBases([c])` returns `[c]` (octopus of a single commit is itself). `octopusMergeBases([a,b])` equals `mergeBases(a,b)`.
-- Callers wanting Git's "octopus prints first" take `result[0]`.
+Behaviour:
 
-Return type is `readonly ObjectId[]` (immutable), sorted lexicographically for determinism.
+- Empty `commits` → throws `invalidWalkInput` (Git errors with no commits).
+- `commits[0]` is `one`, `commits[1..]` the others.
+- **Default** (`all` falsy, no octopus): `mergeBasesMany(one, rest)`, truncated to the lexicographically smallest single base — `[]` or `[base]`. Mirrors `git merge-base` printing the first.
+- **`all: true`**: the full reduced LCA set, sorted lexicographically (`git merge-base --all`).
+- **`octopus: true`**: iterative fold over all commits (`git merge-base --octopus`); `all` controls truncation as above.
+- `mergeBase([a, a])` → `[a]`; `mergeBase([c])` → `[c]`; unrelated histories → `[]`.
+- Return is always `readonly ObjectId[]`, sorted lexicographically for determinism.
+
+The single consumer, `application/commands/merge.ts`, migrates to:
+
+```ts
+const [base] = await mergeBase(ctx, [ourId, theirId]); // base: ObjectId | undefined
+```
+
+`base` stays `ObjectId | undefined`, so the downstream `=== ourId` / `=== theirId` branches are untouched.
 
 ### `repository.ts` binding
 
-Bind the two new primitives under `repo.primitives.*` alongside the existing `mergeBase`, following the established `BindCtx<typeof primitives.X>` + `guard()` pattern:
+The existing `repo.primitives.mergeBase` binding is rewritten to the new signature (same `BindCtx<typeof primitives.mergeBase>` + `guard()` pattern); no new entries are added to the primitives surface.
 
 ```ts
-readonly mergeBases: BindCtx<typeof primitives.mergeBases>;
-readonly octopusMergeBases: BindCtx<typeof primitives.octopusMergeBases>;
+mergeBase: ((commits, options) => {
+  guard();
+  return primitives.mergeBase(ctx, commits, options);
+}) as Repository['primitives']['mergeBase'],
 ```
-
-Export both from `src/application/primitives/index.ts`.
 
 ## Module structure
 
-Single file `src/application/primitives/merge-base.ts` grows three internal helpers and two new exports:
+Single file `src/application/primitives/merge-base.ts`, fully rewritten around the faithful core:
 
-- `collectAncestors(ctx, root): Promise<Set<ObjectId>>` — reachable-set walk (extracted; reused by the existing frontier logic and the new reduce).
-- `removeRedundant(ctx, commits): Promise<readonly ObjectId[]>` — drop commits reachable from another in the set; operates over a `Set` so it also collapses duplicate oids accumulated across octopus fold steps.
-- `allMergeBases(ctx, a, b): Promise<readonly ObjectId[]>` — intersect ancestor sets, then `removeRedundant`. Backing routine for both public exports.
-- Public `mergeBase` (delegates), `mergeBases` (= `allMergeBases`), `octopusMergeBases` (fold + reduce).
+- Flag constants `PARENT1 / PARENT2 / STALE / RESULT`.
+- `readCommit(ctx, cache, id): Promise<Commit | undefined>` — memoized read; `undefined` for non-commits.
+- An insertion-sorted priority queue (date-desc, oid-asc tie-break) — small local helper, not exported.
+- `paintDownToCommon(read, one, twos): Promise<ObjectId[]>`.
+- `removeRedundant(read, commits): Promise<readonly ObjectId[]>`.
+- `mergeBasesMany(read, one, twos): Promise<readonly ObjectId[]>` — paint + conditional reduce.
+- `octopusMergeBases(read, commits): Promise<readonly ObjectId[]>` — fold + reduce.
+- Public `mergeBase` — validate, build the read cache, dispatch octopus vs many, sort, truncate per `all`.
 
-Each function stays under the 20-line ceiling; deep nesting avoided via early returns and `Set`/array helpers.
+The legacy `advanceFrontier` / `intersection` helpers and the `a === b` shortcut are deleted (ADR-191). Each function stays under the 20-line ceiling via early returns and array/`Set`/`Map` helpers.
 
 ## Testing strategy
 
 ### Example unit tests (`merge-base.test.ts`, extended)
 
-Reuse the existing `buildLinear` / `buildDiamond` / `commitWith` fixtures. New cases:
+Reuse the existing `buildLinear` / `buildDiamond` / `commitWith` fixtures; add a `buildCrissCross` fixture for the D/E figure. All cases call the unified `mergeBase(ctx, commits, opts?)`. Existing single-base cases are rewritten from `mergeBase(ctx, a, b)` to `mergeBase(ctx, [a, b])` asserting a one-element array.
 
-- **`mergeBases` — linear**: `mergeBases(C, A)` → `[A]` (single LCA still a one-element array).
-- **`mergeBases` — diamond**: `mergeBases(B, C)` → `[A]`.
-- **`mergeBases` — criss-cross**: build the D/E figure above → `[B, C]` sorted; assert both present and `A` absent (kills the "forgot to remove redundant" mutant and the "returns only one" mutant).
-- **`mergeBases` — unrelated**: → `[]`.
-- **`mergeBase` still correct**: re-assert the existing single-base cases now route through the new core (no behavior change on linear/diamond); add a criss-cross case proving `mergeBase` returns a best base (one of `{B,C}`, the lex-min), not the redundant `A`.
-- **`octopusMergeBases` — three linear branches** off a shared root → the shared base.
-- **`octopusMergeBases` — single commit** `[c]` → `[c]`.
-- **`octopusMergeBases` — empty** `[]` → throws `invalidWalkInput`, asserting `.data.code === 'INVALID_WALK_INPUT'` and the `reason` string (specific assertion per mutation-resistance rules).
-- **`octopusMergeBases` — unrelated** → `[]`.
-- **`octopusMergeBases` reduces** — three commits whose pairwise bases include a redundant ancestor; assert the redundant one is dropped.
+- **default — self**: `mergeBase([a, a])` → `[a]`.
+- **default — single commit**: `mergeBase([c])` → `[c]`.
+- **default — linear**: `mergeBase([C, A])` → `[A]`; `mergeBase([D, B])` → `[B]`.
+- **default — diamond**: `mergeBase([B, C])` → `[A]`.
+- **default — child-after-parent self-base**: the existing lex-smaller-parent case → `[child]`, not `[parent]` (proves the reduce keeps the maximal element).
+- **default — criss-cross truncates**: `mergeBase([D, E])` → `[min(B, C)]` (single, lex-min — proves default truncation past the redundant `A`).
+- **`all: true` — criss-cross**: `mergeBase([D, E], { all: true })` → `[B, C]` sorted; assert both present and `A` absent (kills "forgot remove-redundant" and "returns only one").
+- **`all: true` — linear**: `mergeBase([C, A], { all: true })` → `[A]`.
+- **unrelated**: `mergeBase([x, y])` → `[]`; same with `{ all: true }` → `[]` (both-frontiers-stale exit).
+- **empty input**: `mergeBase([])` → throws; try/catch asserting `.data.code === 'INVALID_WALK_INPUT'` and the `reason` string.
+- **non-commit oid**: an input oid pointing at a blob contributes no parents → no spurious base.
+- **octopus — three branches** off a shared root: `mergeBase([a, b, c], { octopus: true })` → `[root]`.
+- **octopus — single / two**: `mergeBase([c], { octopus: true })` → `[c]`; `mergeBase([a, b], { octopus: true })` equals the two-commit default-`all` set.
+- **octopus — `all` truncation**: octopus over commits with >1 base → default returns lex-min single, `{ all: true }` returns all.
+- **octopus — unrelated**: → `[]`.
+- **STALE-pruning isolation**: a topology where a deeper common ancestor must be pruned via `STALE` (e.g. base + its parent both common) → only the lower base returned, proving the `STALE`-propagation guard.
+- **date-ordering isolation**: two candidate bases with distinct committer timestamps where pop-order matters for early termination — asserts the same result regardless, and that the queue exits via `queue_has_nonstale`.
 
-Error assertions use try/catch + direct `.data` inspection (not bare `toThrow(Class)`), per the mutation-resistant patterns in `CLAUDE.md`. Guard clauses (empty-input, non-commit skip) get isolated tests.
+Error assertions use try/catch + direct `.data` inspection (not bare `toThrow(Class)`). Guard clauses (empty-input, non-commit skip, `STALE` propagation, the `(flags & f) === f` parent skip, the `RESULT`-already-set skip) each get an isolated test so no single guard's mutant survives.
 
 ### Property-based tests (`merge-base.properties.test.ts`)
 
-merge-base is a **compositional aggregator over a DAG** — lens 2 ("compositional matcher/aggregator") and lens 3 ("total function over a grammar") of the property-testing checklist apply. Properties over arbitrary small random DAGs (generated via a `fast-check` arbitrary that emits a topologically-ordered list of commits with random in-DAG parents):
+merge-base is a **compositional aggregator over a DAG** — lens 2 ("compositional matcher/aggregator") and lens 3 ("total function over a grammar") of the property-testing checklist apply. Properties run against arbitrary small random DAGs (a `fast-check` arbitrary emits a topologically-ordered list of commits with random in-DAG parents and assorted committer timestamps). All use the `{ all: true }` set form unless noted:
 
-1. **Symmetry**: `mergeBases(a, b)` as a set equals `mergeBases(b, a)`.
-2. **Self**: `mergeBases(a, a)` = `[a]`.
+1. **Symmetry**: `mergeBase([a, b], { all: true })` as a set equals `mergeBase([b, a], { all: true })`.
+2. **Self**: `mergeBase([a, a], { all: true })` = `[a]`.
 3. **Common-ancestor soundness**: every returned base is an ancestor of both inputs.
 4. **Maximality (no redundancy)**: no returned base is an ancestor of another returned base.
-5. **Completeness vs. brute force**: the result set equals an independent O(V²) oracle (all-common-ancestors minus any reachable-from-another) — the oracle is structurally different from the production walk (it materializes full ancestor sets per node up-front), so it is not a tautology.
-6. **Octopus reduces to pairwise**: `octopusMergeBases([a, b])` as a set equals `mergeBases(a, b)`.
+5. **Completeness vs. independent oracle**: the result set equals a brute-force oracle that materializes the full transitive-closure ancestor matrix per node and selects the maximal common elements. The oracle's mechanism (precomputed closure matrix) is structurally distinct from the production date-PQ paint, so it is not a tautology; properties 1–4 are pure invariants and carry the load if 5 is ever weakened.
+6. **Octopus reduces to pairwise**: `mergeBase([a, b], { octopus: true, all: true })` as a set equals `mergeBase([a, b], { all: true })`.
 7. **Octopus membership**: every octopus base is a common ancestor of *all* inputs.
+8. **Date-order invariance**: shuffling input committer timestamps (re-minting commits with permuted dates but identical topology) leaves the result set unchanged — proves the PQ ordering is a performance device, not a correctness dependency.
 
-`numRuns`: 100 (composition/invariant tier) for 1–5; 50 for the filter-heavy octopus properties 6–7. Per-family DAG arbitrary lives in `arbitraries.ts` in the same directory. No committed seed.
+`numRuns`: 100 (composition/invariant tier) for 1–5, 8; 50 for the filter-heavy octopus properties 6–7. Per-family DAG arbitrary lives in `arbitraries.ts` in the same directory. No committed seed.
 
 The example tests stay (they pin literal small topologies and the error contract); the properties prove the grammar-level invariants the examples can't enumerate.
 
@@ -162,15 +192,16 @@ The example tests stay (they pin literal small topologies and the error contract
 - 100% line/branch/function/statement.
 - Target 0 surviving mutants. Anticipated equivalent-mutant risk: loop bounds in the ancestor walk where out-of-range yields `undefined` — documented inline only if proven equivalent.
 
-## Key design decisions (→ ADRs)
+## Key design decisions (settled by ADR)
 
-1. **API surface shape** — Option A (two new fns + unchanged `mergeBase`) vs. Option B (one array fn with an `octopus` option) vs. Option C (breaking: single `mergeBase(commits, opts)` returning an array). *Recommendation: A.*
-2. **Algorithm mechanism** — full-reachability + remove-redundant (simple, no early termination) vs. Git's date-ordered paint-down-to-common (faithful mechanism, early termination, materially more code). *Recommendation: full-reachability + remove-redundant; results stay Git-faithful.*
-3. **Refactor `mergeBase` to delegate** — yes (fixes criss-cross non-optimality, DRY) vs. leave the legacy BFS in place for its early-termination fast path. *Recommendation: delegate.*
+1. **API surface shape** — single breaking `mergeBase(commits, opts)` returning an array (ADR-189; option C chosen over the non-breaking A/B).
+2. **Algorithm mechanism** — Git's date-ordered paint-down-to-common + `remove_redundant`, faithful to mechanism, not just results (ADR-190, chosen over full-reachability+reduce).
+3. **Single-base path** — routed through the one unified core; legacy bidirectional BFS and the `a === b` shortcut deleted (ADR-191).
 
-Tie-breaking (lex-min for the singular `mergeBase`) inherits the existing decision and is not re-litigated.
+Tie-breaking (lex-min for the truncated single-base case) inherits the prior implementation and is not re-litigated.
 
 ## Alternatives considered
 
-- **Date-ordered priority queue (Git's real mechanism).** Rejected for now: no PQ/date infra, much harder to reach zero mutants on the date/STALE logic. Captured as an ADR alternative; can be revisited under the v2 perf phase if merge-base shows up in profiles.
-- **`get_merge_bases_many` (asymmetric one-vs-rest) for non-octopus N>2.** Rejected: surprising semantics, not requested by the backlog. The two useful operations are two-commit `--all` and octopus.
+- **Full-reachability + remove-redundant.** Simpler and results-faithful, but no early termination. Rejected (ADR-190) in favour of Git's actual mechanism.
+- **Non-breaking API (A/B).** Rejected (ADR-189) — option C gives a single function with a 1:1 flag map and the array return is honest about multiplicity.
+- **Binary-heap priority queue.** Deferred to the v2 perf phase; an insertion-sorted array gives identical pop order and results, with fewer branches to drive to zero mutants.
