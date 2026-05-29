@@ -247,6 +247,23 @@ switch (result.kind) {
 
 Conflicting merges **return** a discriminated `'conflict'` result rather than throwing. Callers that handled the `MERGE_HAS_CONFLICTS` error code in pre-1.x builds should switch to the result discriminator. `commit` honours `.git/MERGE_HEAD` automatically.
 
+### `git.pull` → `repo.pull`
+
+```ts
+// isomorphic-git
+await git.pull({ fs, http, dir: '.', ref: 'main', author: { name: 'A', email: 'a@b' } });
+
+// tsgit — upstream resolved from clone-written tracking config
+const { fetch, merge } = await repo.pull({
+  author: { name: 'A', email: 'a@b', timestamp: 0, timezoneOffset: '+0000' },
+});
+
+// Explicit remote + branch (no upstream configured)
+await repo.pull({ remote: 'origin', branch: 'main' });
+```
+
+`pull` is `fetch` + `merge`; it returns both results (`{ fetch, merge }`) and, like `merge`, surfaces conflicts via `merge.kind === 'conflict'` rather than throwing — resolve and `continueMerge`, or `abortMerge`. `rebase` mode arrives with `rebase` itself.
+
 ### `git.readBlob` → `repo.primitives.readBlob`
 
 ```ts
