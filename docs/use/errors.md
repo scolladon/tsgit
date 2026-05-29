@@ -71,8 +71,8 @@ Codes are grouped by domain. Within each group, alphabetical.
 
 | Code | Payload | Raised when |
 |---|---|---|
-| `BRANCH_EXISTS` | `name` | `branch({ kind: 'create' })` without `force` against an existing branch. |
-| `BRANCH_NOT_FOUND` | `name` | `branch({ kind: 'delete' })` against an unknown branch. |
+| `BRANCH_EXISTS` | `name` | `branch.create(...)` without `force` against an existing branch. |
+| `BRANCH_NOT_FOUND` | `name` | `branch.delete(...)` against an unknown branch. |
 | `CANNOT_DELETE_CHECKED_OUT_BRANCH` | `name` | Attempt to delete the branch HEAD points at. |
 | `DUPLICATE_REF` | `name` | Packed-refs file lists the same name twice. |
 | `INVALID_PACKED_REFS` | `reason` | `.git/packed-refs` malformed. |
@@ -88,8 +88,8 @@ Codes are grouped by domain. Within each group, alphabetical.
 | `REFLOG_NOT_FOUND` | `ref` | Ref has no reflog. |
 | `REVPARSE_AMBIGUOUS` | `expression, candidates` | Short oid matched multiple objects. |
 | `REVPARSE_UNRESOLVED` | `expression, reason` | Revision expression could not resolve. |
-| `TAG_EXISTS` | `name` | `tag({ kind: 'create' })` without `force` against an existing tag. |
-| `TAG_NOT_FOUND` | `name` | `tag({ kind: 'delete' })` against an unknown tag. |
+| `TAG_EXISTS` | `name` | `tag.create(...)` without `force` against an existing tag. |
+| `TAG_NOT_FOUND` | `name` | `tag.delete(...)` against an unknown tag. |
 
 ### Index, working tree, sparse, ignore
 

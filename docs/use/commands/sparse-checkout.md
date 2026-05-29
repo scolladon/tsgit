@@ -5,25 +5,43 @@ Materialise a subset of the tracked tree into the working tree. Excluded files s
 ## Signature
 
 ```ts
-repo.sparseCheckout(action: SparseCheckoutAction): Promise<SparseCheckoutResult>;
+interface SparseCheckoutListResult {
+  readonly cone: boolean;
+  readonly patterns: ReadonlyArray<string>;
+}
+interface SparseCheckoutAppliedResult {
+  readonly cone: boolean;
+  readonly materialized: number;
+  readonly removed: number;
+  readonly retained: ReadonlyArray<FilePath>;
+}
 
-type SparseCheckoutAction =
-  | { action: 'list' }
-  | { action: 'set'; patterns: ReadonlyArray<string>; cone?: boolean; force?: boolean }
-  | { action: 'add'; patterns: ReadonlyArray<string>; force?: boolean }
-  | { action: 'reapply'; force?: boolean }
-  | { action: 'disable'; force?: boolean };
+interface SparseCheckoutNamespace {
+  list(): Promise<SparseCheckoutListResult>;
+  set(input: {
+    patterns: ReadonlyArray<string>;
+    cone?: boolean;
+    force?: boolean;
+  }): Promise<SparseCheckoutAppliedResult>;
+  add(input: { patterns: ReadonlyArray<string>; force?: boolean }): Promise<SparseCheckoutAppliedResult>;
+  reapply(input?: { force?: boolean }): Promise<SparseCheckoutAppliedResult>;
+  disable(input?: { force?: boolean }): Promise<SparseCheckoutAppliedResult>;
+}
+
+repo.sparseCheckout: SparseCheckoutNamespace;
 ```
 
-## Actions
+The four mutating methods share `SparseCheckoutAppliedResult`; `list` returns the pattern view. No discriminator to narrow on at the call site (ADR-181, ADR-192).
 
-| Action | Meaning |
+## Methods
+
+| Method | Meaning |
 |---|---|
-| `list` | Return the active patterns and the mode (`cone` vs non-cone). |
-| `set` | Replace patterns. `cone: false` switches to non-cone (`.gitignore`-style); default is cone (directory list, O(1) membership). |
-| `add` | Widen the cone with more directories. |
-| `reapply` | Re-run materialisation against the on-disk patterns (e.g. after hand-editing `.git/info/sparse-checkout`). |
-| `disable` | Turn sparse off; restore every file. |
+| `list()` | Return the active patterns and the mode (`cone` vs non-cone). |
+| `set({ patterns, cone?, force? })` | Replace patterns. `cone: false` switches to non-cone (`.gitignore`-style); default is cone (directory list, O(1) membership). |
+| `add({ patterns, force? })` | Widen the cone with more directories. |
+| `reapply({ force? }?)` | Re-run materialisation against the on-disk patterns (e.g. after hand-editing `.git/info/sparse-checkout`). |
+| `disable({ force? }?)` | Turn sparse off; restore every file. |
 
 ## Behaviour
 
@@ -37,18 +55,18 @@ type SparseCheckoutAction =
 
 ```ts
 // Restrict the working tree to two directories (cone mode)
-const applied = await repo.sparseCheckout({ action: 'set', patterns: ['src/app', 'docs'] });
+const applied = await repo.sparseCheckout.set({ patterns: ['src/app', 'docs'] });
 console.log(applied.materialized, applied.removed);
 
 // Widen
-await repo.sparseCheckout({ action: 'add', patterns: ['src/lib'] });
+await repo.sparseCheckout.add({ patterns: ['src/lib'] });
 
 // Inspect
-const { cone, patterns } = await repo.sparseCheckout({ action: 'list' });
+const { cone, patterns } = await repo.sparseCheckout.list();
 
 // Re-apply after a manual edit, or disable entirely
-await repo.sparseCheckout({ action: 'reapply' });
-await repo.sparseCheckout({ action: 'disable' });
+await repo.sparseCheckout.reapply();
+await repo.sparseCheckout.disable();
 ```
 
 ## Throws
@@ -61,4 +79,4 @@ await repo.sparseCheckout({ action: 'disable' });
 
 - Primitives: [`loadSparseMatcher`](../primitives/internals.md#loadsparsematcher), [`readSparsePatternText`](../primitives/internals.md#readsparsepatterntext), [`writeSparsePatternText`](../primitives/internals.md#writesparsepatterntext), [`materializeTree`](../primitives/internals.md#materializetree)
 - Related commands: [`checkout`](checkout.md), [`reset`](reset.md), [`status`](status.md)
-- ADRs: [069](../../adr/069-skip-worktree-index-v3.md), [070](../../adr/070-cone-and-non-cone.md), [071](../../adr/071-sparse-command-shape.md), [072](../../adr/072-sparse-dirty-file-policy.md), [073](../../adr/073-sparse-integration-scope.md), [074](../../adr/074-minimal-config-writer.md), [077](../../adr/077-linear-glob-matcher.md)
+- ADRs: [181](../../adr/181-nested-namespace-porcelain.md), [192](../../adr/192-crud-namespace-per-verb-results.md), [193](../../adr/193-no-transition-shim-hard-remove-callable.md) (namespace shape) · [069](../../adr/069-skip-worktree-index-v3.md), [070](../../adr/070-cone-and-non-cone.md), [071](../../adr/071-sparse-command-shape.md), [072](../../adr/072-sparse-dirty-file-policy.md), [073](../../adr/073-sparse-integration-scope.md), [074](../../adr/074-minimal-config-writer.md), [077](../../adr/077-linear-glob-matcher.md)
