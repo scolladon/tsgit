@@ -25,7 +25,7 @@ If the resolution is ambiguous (e.g. backlog ID not found, file unreadable), STO
 
 Print one line so the user can confirm: `Resolved input → topic: <slug>, brief: <one-line summary>`.
 
-## Step 1 — Branch + Serena activation
+## Step 1 — Branch
 
 ```bash
 git worktree add ../tsgit-<slug> -b feat/<slug>
@@ -33,12 +33,7 @@ cd ../tsgit-<slug>
 npm install
 ```
 
-Then activate Serena on the worktree:
-
-- `mcp__serena__activate_project` with the absolute path of `../tsgit-<slug>`.
-- `mcp__serena__initial_instructions` to load the manual.
-
-Use Serena's symbol tools (`find_symbol`, `find_referencing_symbols`, `get_symbols_overview`, `replace_symbol_body`, `insert_after_symbol`, `insert_before_symbol`, `replace_content`) as the default for navigating and editing source. Fall back to `Read` / `Edit` / `Grep` only for non-code files (markdown, JSON, generated artefacts).
+The TypeScript LSP tool is available for code navigation — no activation step needed; the LSP server starts on first use. Use it as the default for navigating source (`goToDefinition`, `findReferences`, `goToImplementation`, `documentSymbol`, `workspaceSymbol`, `hover`, call-hierarchy ops). Apply edits with `Edit` / `Write`; use `Read` / `Grep` for non-code files (markdown, JSON, generated artefacts).
 
 If the branch already exists or the worktree path collides, STOP and ask the user.
 
@@ -72,7 +67,7 @@ Execute every slice from the plan top-to-bottom:
 - Run `npm run validate` before each commit. NEVER commit on a red validate.
 - One slice = one atomic conventional-commit.
 
-Use Serena's symbol tools (`replace_symbol_body`, `insert_after_symbol`, …) for source edits where they fit. Never `--no-verify` the hook. Never insert `// @ts-ignore`, `// eslint-disable`, `// v8 ignore`, `// stryker-disable`, or `// biome-ignore`.
+Use the TypeScript LSP tool (`goToDefinition`, `findReferences`, `documentSymbol`, …) to navigate before editing; apply edits with `Edit` / `Write`. Never `--no-verify` the hook. Never insert `// @ts-ignore`, `// eslint-disable`, `// v8 ignore`, `// stryker-disable`, or `// biome-ignore`.
 
 If blocked (design hits a wall, ADR-level decision needed, ambiguous spec): surface to the user with `{ slice, reason, ≤3 candidate options }`. Never spin, never silently abandon.
 

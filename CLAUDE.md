@@ -121,7 +121,7 @@ Earlier iterations of this workflow used a subagent-per-phase model. It failed i
 
 1. **Context loss.** Each subagent boots cold and has to re-read the design / plan / ADRs from scratch — repeating work the orchestrator already did.
 2. **Hidden execution.** Subagents run in their own context. When they stall, fail a validate, or pick a debatable resolution, the user only learns at return time. Mid-flight steering is impossible.
-3. **LSP/MCP scope mismatch.** Serena's LSP delivers diagnostics to whichever context called `activate_project`. Routing in a shared MCP server is asymmetric — diagnostics from subagent edits ended up surfacing in the orchestrator's reminder stream as if they were tool rejections, leaving the orchestrator unable to tell whether the subagent was making progress or stuck.
+3. **LSP scope mismatch.** LSP diagnostics surface in whichever context owns the tool call. With subagents, diagnostics from a subagent's edits leaked into the orchestrator's reminder stream as if they were tool rejections, leaving the orchestrator unable to tell whether the subagent was making progress or stuck.
 
 Running every phase in the current session removes all three failure modes: shared context across phases, every action visible, all diagnostics scoped to the one agent doing the work.
 
@@ -129,7 +129,7 @@ Running every phase in the current session removes all three failure modes: shar
 
 | Phase | What happens | Self-loop contract |
 |---|---|---|
-| 1. Branch | `git worktree add` + `npm install` + activate Serena on the worktree | one-shot |
+| 1. Branch | `git worktree add` + `npm install` on the worktree | one-shot |
 | 2. Design | write `docs/design/<topic>.md` in-thread; self-review until convergence (≤3 passes) | stop the moment a pass yields zero diffs |
 | 3. ADR | surface decisions to user; write `docs/adr/NNN-<title>.md` per accepted decision | one ADR per user-driven decision |
 | 4. Plan | write `docs/plan/<topic>.md` in-thread; self-review until convergence (≤3 passes) | stop the moment a pass yields zero diffs |
@@ -138,20 +138,15 @@ Running every phase in the current session removes all three failure modes: shar
 | 7. Mutation | `npm run test:mutation`; per surviving mutant kill with a test or annotate `// equivalent-mutant: <why>`; re-run until 0 killable | one kill = one `test(mutation): <module>` commit |
 | 8. Docs + PR | update `README.md`, `RUNBOOK.md`, `CONTRIBUTING.md`, the relevant `docs/get-started/` · `docs/use/` · `docs/understand/` pages; flip `docs/BACKLOG.md` entry; push; `gh pr create` | thorough PR body (summary + test plan) |
 
-### Serena activation
+### Code navigation (TypeScript LSP)
 
-Activate Serena once at the start of Step 1 (after `npm install`) on the worktree's absolute path:
+Use the TypeScript LSP tool as the default for navigating source: `goToDefinition`, `findReferences`, `goToImplementation`, `documentSymbol`, `workspaceSymbol`, `hover`, and the call-hierarchy ops (`prepareCallHierarchy`, `incomingCalls`, `outgoingCalls`). No activation step is needed — the LSP server starts on first use. Apply edits with `Edit` / `Write`. Use `Read` / `Grep` for non-code files (markdown, JSON, generated artefacts).
 
-- `mcp__serena__activate_project` with the worktree's absolute path.
-- `mcp__serena__initial_instructions` to load the manual.
-
-Use Serena's symbol tools (`find_symbol`, `find_referencing_symbols`, `get_symbols_overview`, `replace_symbol_body`, `insert_after_symbol`, `insert_before_symbol`, `replace_content`) as the default for navigating and editing source. Fall back to `Read` / `Edit` / `Grep` only for non-code files (markdown, JSON, generated artefacts).
-
-All LSP diagnostics now stay in this one session — no cross-context routing.
+All LSP diagnostics stay in this one session — no cross-context routing.
 
 ### 1. Branch
 
-Create a fresh branch off `main` via `git worktree add`, named with a conventional-commit type prefix: `feat/<topic>`, `fix/<topic>`, `ci/<topic>`, `chore/<topic>`, `docs/<topic>`. Never commit directly to `main`. `npm install` inside the worktree. Activate Serena.
+Create a fresh branch off `main` via `git worktree add`, named with a conventional-commit type prefix: `feat/<topic>`, `fix/<topic>`, `ci/<topic>`, `chore/<topic>`, `docs/<topic>`. Never commit directly to `main`. `npm install` inside the worktree. The TypeScript LSP tool is available for code navigation — no activation step needed.
 
 ### 2. Design — `docs/design/<topic>.md`
 
@@ -227,7 +222,7 @@ The user handles squash-merge on green CI; this session handles worktree cleanup
 ### Workflow summary
 
 ```
-branch (worktree + npm install + activate Serena)
+branch (worktree + npm install)
   → design (in-thread, self-review ≤×3)
   → ADR (in-thread + user)
   → plan (in-thread, self-review ≤×3)
