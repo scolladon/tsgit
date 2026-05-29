@@ -28,6 +28,8 @@ import {
   type ObjectId,
   type RefName,
 } from '../../domain/objects/index.js';
+import { refNotFound } from '../../domain/refs/error.js';
+import { refCandidates } from '../../domain/refs/index.js';
 import type { SparseMatcher } from '../../domain/sparse/index.js';
 import type { Context } from '../../ports/context.js';
 import { readConfig } from '../primitives/config-read.js';
@@ -683,7 +685,16 @@ export const resolveMergeCommitter = (
 /** Resolve a merge target (40-hex oid or branch name). Exported for direct unit testing. */
 export const resolveTarget = async (ctx: Context, target: string): Promise<ObjectId> => {
   if (/^[0-9a-f]{40}$/.test(target)) return target as ObjectId;
-  return resolveRef(ctx, `refs/heads/${target}` as RefName);
+  // gitrevisions ref-DWIM: try each candidate namespace in priority order,
+  // peeling annotated tags to their underlying commit (git merge <commit-ish>).
+  for (const candidate of refCandidates(target)) {
+    try {
+      return await resolveRef(ctx, candidate, { peel: true });
+    } catch {
+      // Not this candidate — fall through to the next namespace.
+    }
+  }
+  throw refNotFound(target as RefName);
 };
 
 const getTree = async (ctx: Context, commitId: ObjectId): Promise<ObjectId> => {
