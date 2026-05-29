@@ -175,7 +175,8 @@ export interface Repository {
   readonly reset: BindCtx<typeof commands.reset>;
   readonly revParse: BindCtx<typeof commands.revParse>;
   readonly rm: BindCtx<typeof commands.rm>;
-  readonly sparseCheckout: BindCtx<typeof commands.sparseCheckout>;
+  /** Nested `repo.sparseCheckout.{list,set,add,reapply,disable}` namespace. */
+  readonly sparseCheckout: commands.SparseCheckoutNamespace;
   readonly status: BindCtx<typeof commands.status>;
   readonly submodules: BindCtx<typeof commands.submodules>;
   /** Nested `repo.tag.{list,create,delete}` namespace. */
@@ -447,10 +448,7 @@ export const openRepository = async (
       guard();
       return commands.rm(ctx, paths, rmOpts);
     }) as Repository['rm'],
-    sparseCheckout: ((action) => {
-      guard();
-      return commands.sparseCheckout(ctx, action);
-    }) as Repository['sparseCheckout'],
+    sparseCheckout: commands.bindSparseCheckoutNamespace(ctx, guard),
     status: (() => {
       guard();
       return commands.status(ctx);

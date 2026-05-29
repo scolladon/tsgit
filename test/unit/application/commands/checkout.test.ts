@@ -1316,10 +1316,10 @@ describe('checkout — sparse checkout', () => {
           (e) => e.path === 'docs/b.txt',
         )?.id;
         await checkout(ctx, { target: 'main' });
-        const { sparseCheckout } = await import(
+        const { sparseCheckoutSet } = await import(
           '../../../../src/application/commands/sparse-checkout.js'
         );
-        await sparseCheckout(ctx, { action: 'set', patterns: ['src'], cone: true });
+        await sparseCheckoutSet(ctx, { patterns: ['src'], cone: true });
         const mainDocsId = (await readIndex(ctx)).entries.find((e) => e.path === 'docs/b.txt')?.id;
 
         // Act — switch to feature: in-pattern `src/a.txt` is byte-identical, so

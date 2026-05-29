@@ -206,7 +206,7 @@ describe('openRepository — Repository binding integrity', () => {
         // Arrange
         const sut = await open();
         // CRUD-family bindings are nested-namespace objects, not functions.
-        const namespaceKeys = new Set(['config', 'remote', 'branch', 'tag']);
+        const namespaceKeys = new Set(['config', 'remote', 'branch', 'tag', 'sparseCheckout']);
         const nonFunctionKeys = new Set(['ctx', 'primitives', 'snapshot', ...namespaceKeys]);
 
         for (const key of Object.keys(sut)) {
@@ -580,10 +580,10 @@ describe('openRepository — round-trip via memory adapter', () => {
         await sut.init();
 
         // Act
-        const result = await sut.sparseCheckout({ action: 'list' });
+        const result = await sut.sparseCheckout.list();
 
         // Assert
-        expect(result).toEqual({ kind: 'list', cone: false, patterns: [] });
+        expect(result).toEqual({ cone: false, patterns: [] });
       });
     });
   });

@@ -23,7 +23,7 @@ import { commit } from '../../src/application/commands/commit.js';
 import { init } from '../../src/application/commands/init.js';
 import { merge } from '../../src/application/commands/merge.js';
 import { reset } from '../../src/application/commands/reset.js';
-import { sparseCheckout } from '../../src/application/commands/sparse-checkout.js';
+import { sparseCheckoutSet } from '../../src/application/commands/sparse-checkout.js';
 import { status } from '../../src/application/commands/status.js';
 import { __resetConfigCacheForTests } from '../../src/application/primitives/config-read.js';
 import { readIndex } from '../../src/application/primitives/read-index.js';
@@ -54,7 +54,7 @@ describe('integration — sparse reset/merge (memory adapter)', () => {
     await ctx.fs.writeUtf8(`${ctx.layout.workDir}/docs/guide.md`, '# guide\n');
     await add(ctx, ['src/app/main.ts', 'docs/guide.md']);
     const seed = await commit(ctx, { message: 'seed', author });
-    await sparseCheckout(ctx, { action: 'set', patterns: ['src/app'], cone: true });
+    await sparseCheckoutSet(ctx, { patterns: ['src/app'], cone: true });
     expect(await ctx.fs.exists(`${ctx.layout.workDir}/docs/guide.md`)).toBe(false);
 
     // Act
@@ -74,7 +74,7 @@ describe('integration — sparse reset/merge (memory adapter)', () => {
     await ctx.fs.writeUtf8(`${ctx.layout.workDir}/docs/guide.md`, '# guide\n');
     await add(ctx, ['src/app/main.ts', 'docs/guide.md']);
     const seed = await commit(ctx, { message: 'seed', author });
-    await sparseCheckout(ctx, { action: 'set', patterns: ['src/app'], cone: true });
+    await sparseCheckoutSet(ctx, { patterns: ['src/app'], cone: true });
     await ctx.fs.writeUtf8(`${ctx.layout.workDir}/src/app/main.ts`, 'LOCAL EDIT\n');
 
     // Act
@@ -109,7 +109,7 @@ describe('integration — sparse reset/merge (memory adapter)', () => {
     await ctx.fs.writeUtf8(`${ctx.layout.workDir}/src/app/main.ts`, 'MAIN\n');
     await add(ctx, ['src/app/main.ts']);
     await commit(ctx, { message: 'on-main', author });
-    await sparseCheckout(ctx, { action: 'set', patterns: ['src/app'], cone: true });
+    await sparseCheckoutSet(ctx, { patterns: ['src/app'], cone: true });
     expect(await ctx.fs.exists(`${ctx.layout.workDir}/docs/guide.md`)).toBe(false);
 
     // Act
@@ -164,7 +164,7 @@ describe.skipIf(GIT === undefined)('integration — sparse reset interop with ca
       await writeFile(path.join(tmpdir, 'out', 'gone.ts'), 'export const gone = 2;\n');
       await repo.add(['kept.ts', 'out/gone.ts']);
       const seed = await repo.commit({ message: 'seed', author });
-      await repo.sparseCheckout({ action: 'set', patterns: ['kept.ts'], cone: true });
+      await repo.sparseCheckout.set({ patterns: ['kept.ts'], cone: true });
 
       // Act — tsgit rebuilds the index from the same commit.
       await repo.reset({ mode: 'mixed', target: seed.id });

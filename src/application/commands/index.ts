@@ -76,6 +76,10 @@ export { type InitOptions, type InitResult, init } from './init.js';
 export { type BranchNamespace, bindBranchNamespace } from './internal/branch-namespace.js';
 export { bindConfigNamespace, type ConfigNamespace } from './internal/config-namespace.js';
 export { bindRemoteNamespace, type RemoteNamespace } from './internal/remote-namespace.js';
+export {
+  bindSparseCheckoutNamespace,
+  type SparseCheckoutNamespace,
+} from './internal/sparse-checkout-namespace.js';
 export { bindTagNamespace, type TagNamespace } from './internal/tag-namespace.js';
 export { type LogEntry, type LogOptions, log } from './log.js';
 export { type MergeOptions, type MergeResult, merge } from './merge.js';
@@ -111,9 +115,17 @@ export { type ResetMode, type ResetOptions, type ResetResult, reset } from './re
 export { revParse } from './rev-parse.js';
 export { type RmOptions, type RmResult, rm } from './rm.js';
 export {
-  type SparseCheckoutAction,
-  type SparseCheckoutResult,
-  sparseCheckout,
+  type SparseCheckoutAddInput,
+  type SparseCheckoutAppliedResult,
+  type SparseCheckoutDisableInput,
+  type SparseCheckoutListResult,
+  type SparseCheckoutReapplyInput,
+  type SparseCheckoutSetInput,
+  sparseCheckoutAdd,
+  sparseCheckoutDisable,
+  sparseCheckoutList,
+  sparseCheckoutReapply,
+  sparseCheckoutSet,
 } from './sparse-checkout.js';
 export { type ChangeEntry, type ChangeKind, type StatusResult, status } from './status.js';
 export {
