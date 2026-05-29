@@ -112,6 +112,29 @@ describe('parseRepositoryInterface', () => {
   });
     });
   });
+
+  describe('Given nested-namespace command bindings', () => {
+    describe('When parsed', () => {
+      it('Then commands.*Namespace bindings join the flat commands', () => {
+        // Arrange — `config`/`remote` are namespace objects, not BindCtx<…>;
+        // `snapshot` is a non-commands namespace type and must NOT be captured.
+        const source = [
+          'interface Repository {',
+          '  readonly add: BindCtx<typeof commands.add>;',
+          '  readonly config: commands.ConfigNamespace;',
+          '  readonly remote: commands.RemoteNamespace;',
+          '  readonly snapshot: SnapshotFactory;',
+          '}',
+        ].join('\n');
+
+        // Act
+        const sut = parseRepositoryInterface(source);
+
+        // Assert
+        expect(sut.commands).toEqual(['add', 'config', 'remote']);
+      });
+    });
+  });
 });
 
 describe('kebabCase', () => {

@@ -15,6 +15,10 @@ const __dirname = path.dirname(url.fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
 
 const TIER1_RE = /^ {2}readonly (\w+):\s*BindCtx</gm;
+// Nested-namespace command bindings (`repo.config`, `repo.remote`, …) are not
+// `BindCtx<…>` — they are typed `commands.XNamespace`. Capture them so the
+// namespaced CRUD families stay doc-coverage-enforced alongside flat commands.
+const TIER1_NAMESPACE_RE = /^ {2}readonly (\w+):\s*commands\.\w+Namespace/gm;
 const TIER2_RE = /^ {4}readonly (\w+):\s*BindCtx</gm;
 const TIER1_SKIP = new Set(['primitives', 'ctx', 'dispose']);
 
@@ -44,9 +48,12 @@ const matchAll = (re: RegExp, source: string): ReadonlyArray<string> => {
 export const parseRepositoryInterface = (
   source: string,
 ): { commands: ReadonlyArray<string>; primitives: ReadonlyArray<string> } => {
-  const tier1 = matchAll(new RegExp(TIER1_RE.source, TIER1_RE.flags), source).filter(
-    (name) => !TIER1_SKIP.has(name),
+  const tier1Bound = matchAll(new RegExp(TIER1_RE.source, TIER1_RE.flags), source);
+  const tier1Namespaces = matchAll(
+    new RegExp(TIER1_NAMESPACE_RE.source, TIER1_NAMESPACE_RE.flags),
+    source,
   );
+  const tier1 = [...tier1Bound, ...tier1Namespaces].filter((name) => !TIER1_SKIP.has(name));
   const tier2 = matchAll(new RegExp(TIER2_RE.source, TIER2_RE.flags), source);
   return { commands: tier1, primitives: tier2 };
 };
