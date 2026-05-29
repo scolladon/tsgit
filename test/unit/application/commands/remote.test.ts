@@ -105,8 +105,25 @@ describe('application/commands/remote', () => {
           // Act
           const sut = await remoteList(ctx);
 
-          // Assert
+          // Assert — no `fetch` key, so the refspec list defaults to empty.
           expect(sut.remotes[0]?.pushUrl).toBe('git@e.com:r.git');
+          expect(sut.remotes[0]?.fetchRefspecs).toEqual([]);
+        });
+      });
+    });
+
+    describe('Given a remote section with no url key', () => {
+      describe('When remoteList runs', () => {
+        it('Then the url defaults to an empty string', async () => {
+          // Arrange — a `[remote]` block carrying only a fetch refspec.
+          const ctx = createMemoryContext();
+          await seed(ctx, '[remote "origin"]\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n');
+
+          // Act
+          const sut = await remoteList(ctx);
+
+          // Assert — the missing url falls back to '' (not undefined).
+          expect(sut.remotes[0]?.url).toBe('');
         });
       });
     });
@@ -293,7 +310,11 @@ describe('application/commands/remote', () => {
           }
 
           // Assert
-          expect((caught as TsgitError).data.code).toBe('INVALID_OPTION');
+          const data = (caught as TsgitError).data;
+          expect(data.code).toBe('INVALID_OPTION');
+          if (data.code !== 'INVALID_OPTION') throw new Error('unreachable');
+          expect(data.option).toBe('remote.url');
+          expect(data.reason).toContain('newline');
         });
       });
     });
@@ -565,7 +586,11 @@ describe('application/commands/remote', () => {
           }
 
           // Assert
-          expect((caught as TsgitError).data.code).toBe('INVALID_OPTION');
+          const data = (caught as TsgitError).data;
+          expect(data.code).toBe('INVALID_OPTION');
+          if (data.code !== 'INVALID_OPTION') throw new Error('unreachable');
+          expect(data.option).toBe('remote.rename');
+          expect(data.reason).toContain('differ');
         });
       });
     });
@@ -680,6 +705,15 @@ describe('application/commands/remote', () => {
             await ctx.fs.readUtf8(`${ctx.layout.gitDir}/refs/remotes/upstream/main`)
           ).trim();
           expect(moved).toBe(oid);
+          // The source had no fetch refspec, so the renamed section gets none
+          // either — the empty-spec path writes no `fetch` line.
+          const written = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
+          expect(written).not.toContain('fetch');
+          // The move records the rename reflog message on the new ref.
+          const movedLog = await ctx.fs.readUtf8(
+            `${ctx.layout.gitDir}/logs/refs/remotes/upstream/main`,
+          );
+          expect(movedLog).toContain('remote: renamed origin to upstream');
         });
       });
     });
@@ -729,7 +763,11 @@ describe('application/commands/remote', () => {
           }
 
           // Assert — the new ref must NOT exist (no partial move).
-          expect((caught as TsgitError).data.code).toBe('UNSUPPORTED_OPERATION');
+          const data = (caught as TsgitError).data;
+          expect(data.code).toBe('UNSUPPORTED_OPERATION');
+          if (data.code !== 'UNSUPPORTED_OPERATION') throw new Error('unreachable');
+          expect(data.operation).toBe('rename-packed-tracking-ref');
+          expect(data.reason).toContain('packed-only ref refs/remotes/origin/main');
           expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/remotes/upstream/main`)).toBe(
             false,
           );
@@ -848,7 +886,11 @@ describe('application/commands/remote', () => {
           }
 
           // Assert
-          expect((caught as TsgitError).data.code).toBe('INVALID_OPTION');
+          const data = (caught as TsgitError).data;
+          expect(data.code).toBe('INVALID_OPTION');
+          if (data.code !== 'INVALID_OPTION') throw new Error('unreachable');
+          expect(data.option).toBe('remote.url');
+          expect(data.reason).toContain('newline');
         });
       });
     });

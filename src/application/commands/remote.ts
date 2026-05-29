@@ -114,12 +114,6 @@ const toRemoteInfo = (
   fetchRefspecs: entry?.fetch ?? [],
 });
 
-const compareByteWise = (left: string, right: string): number => {
-  if (left < right) return -1;
-  if (left > right) return 1;
-  return 0;
-};
-
 export const remoteList = async (ctx: Context): Promise<RemoteListResult> => {
   await assertRepository(ctx);
   const config = await readConfig(ctx);
@@ -128,7 +122,10 @@ export const remoteList = async (ctx: Context): Promise<RemoteListResult> => {
   for (const [name, entry] of config.remote) {
     remotes.push(toRemoteInfo(name, entry));
   }
-  remotes.sort((left, right) => compareByteWise(left.name, right.name));
+  // config.remote keys are distinct, so the equal case is unreachable: a
+  // binary -1/1 comparator suffices and `<` vs `<=` are indistinguishable.
+  // Stryker disable next-line EqualityOperator: equivalent — names are distinct, so < and <= behave identically
+  remotes.sort((left, right) => (left.name < right.name ? -1 : 1));
   return { remotes };
 };
 
@@ -266,6 +263,7 @@ export const remoteRename = async (
   // Wipe the existing fetch entries on the (renamed) section and re-emit
   // every rewritten spec via `appendEntry` so order is preserved and each
   // spec produces its own line (`set` would collapse them).
+  // Stryker disable next-line EqualityOperator,ConditionalExpression: equivalent — when rewrittenSpecs is empty (no fetch refspec) the block is a no-op: removeEntry on an absent fetch key plus an empty append loop
   if (rewrittenSpecs.length > 0) {
     ops.push({
       kind: 'removeEntry',
