@@ -189,7 +189,7 @@ describe('pull', () => {
           const obj = await readObject(ctx, sut.merge.id);
           expect(obj.type).toBe('commit');
           if (obj.type === 'commit') {
-            expect(obj.data.message).toBe(`Merge branch 'main' of ${REMOTE_URL}`);
+            expect(obj.data.message).toBe(`Merge branch 'main' of ${REMOTE_URL}\n`);
           }
         }
         expect(await reflogMessages(ctx, 'refs/heads/main')).toContain(
@@ -518,7 +518,7 @@ describe('pull', () => {
         if (sut.merge.kind === 'merge') {
           const obj = await readObject(ctx, sut.merge.id);
           if (obj.type === 'commit') {
-            expect(obj.data.message).toBe('custom pull message');
+            expect(obj.data.message).toBe('custom pull message\n');
           }
         }
       });

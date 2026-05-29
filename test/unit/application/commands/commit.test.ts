@@ -230,7 +230,7 @@ describe('commit', () => {
         // Assert — kills the LogicalOperator mutant (`||` → `&&`) in resolveCommitMessage.
         const obj = await readObject(ctx, sut.id);
         if (obj.type !== 'commit') throw new Error('expected a commit object');
-        expect(obj.data.message).toBe('explicit message');
+        expect(obj.data.message).toBe('explicit message\n');
       });
     });
   });
@@ -268,7 +268,7 @@ describe('commit', () => {
         // resolveCommitMessage guard to `false` (which would route to MERGE_MSG).
         const obj = await readObject(ctx, sut.id);
         if (obj.type !== 'commit') throw new Error('expected a commit object');
-        expect(obj.data.message).toBe('plain message');
+        expect(obj.data.message).toBe('plain message\n');
       });
     });
   });
@@ -453,7 +453,7 @@ describe('commit — hooks', () => {
         const obj = await readObject(ctx, sut.id);
         expect(obj.type).toBe('commit');
         if (obj.type === 'commit') {
-          expect(obj.data.message).toBe('rewritten subject');
+          expect(obj.data.message).toBe('rewritten subject\n');
         }
       });
     });

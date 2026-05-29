@@ -20,7 +20,7 @@ export const sparseCheckoutScenario: Scenario<SparseCheckoutResult> = {
   name: 'sparse-checkout',
   inputs: { files: [FILES.helloA], author: AUTHOR, message: MESSAGES.seed },
   expected: {
-    seedCommitId: '87863a6f57aeedd577100911fadbc21ff1062bec',
+    seedCommitId: 'fa8b886eee0d470d870e786878657cac05d686e6',
     setCone: false,
     listCone: false,
     listPatterns: ['/a.txt'],

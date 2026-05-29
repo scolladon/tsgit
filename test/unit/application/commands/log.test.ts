@@ -82,7 +82,7 @@ describe('log', () => {
         const sut = await log(ctx);
 
         // Assert
-        expect(sut.map((e) => e.message)).toEqual(['third', 'second', 'first']);
+        expect(sut.map((e) => e.message)).toEqual(['third\n', 'second\n', 'first\n']);
       });
     });
   });

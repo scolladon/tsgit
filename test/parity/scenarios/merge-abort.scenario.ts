@@ -32,14 +32,14 @@ export const mergeAbortScenario: Scenario<MergeAbortResult> = {
     message: 'seed commit',
   },
   expected: {
-    seedCommitId: '16b29ce177c8b749666b19461fabf80c5875d411',
-    mainTipId: '687afb9b0d26420e00ad01df2512550c03db3043',
-    featureTipId: 'b6e273eaa47d481207f255bbe38fe412bbed46e1',
+    seedCommitId: '050acef8d74a2991766ab2c8b4b07f1a6b970c2c',
+    mainTipId: '7408810a6beb372a803f390eea727fe22ac23f01',
+    featureTipId: 'de3648ccf0e9e5d2601b5abe99f0ab45361cbaa4',
     mergeKind: 'conflict',
-    mergeHead: 'b6e273eaa47d481207f255bbe38fe412bbed46e1',
-    origHead: '687afb9b0d26420e00ad01df2512550c03db3043',
+    mergeHead: 'de3648ccf0e9e5d2601b5abe99f0ab45361cbaa4',
+    origHead: '7408810a6beb372a803f390eea727fe22ac23f01',
     abortedBranch: 'refs/heads/main',
-    abortedOrigHead: '687afb9b0d26420e00ad01df2512550c03db3043',
+    abortedOrigHead: '7408810a6beb372a803f390eea727fe22ac23f01',
   },
   run: async (repo, inputs) => {
     await repo.init();

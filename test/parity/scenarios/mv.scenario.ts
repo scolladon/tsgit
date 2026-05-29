@@ -30,7 +30,7 @@ export const mvScenario: Scenario<MvScenarioResult> = {
     // value; divergence proves a parity bug in the index repath or tree build.
     // The mv'd *tree* is byte-identical to canonical git (verified out-of-band);
     // this commit id is the tsgit cross-adapter baseline.
-    commitId: '910b35b9bbaf6163ca92b20b6bc95ffc9de4cef2',
+    commitId: 'ac27f9bfa53da1f6ebe70e23ca2e57e623d3cbdb',
     clean: true,
   },
   run: async (repo, inputs) => {

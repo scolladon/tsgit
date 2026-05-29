@@ -1,5 +1,6 @@
 import { authorUnconfigured, emptyCommitMessage } from '../../../domain/commands/error.js';
 import type { AuthorIdentity } from '../../../domain/objects/index.js';
+import { stripspace } from '../../../domain/objects/index.js';
 
 const MARKER_LABEL_MAX = 200;
 
@@ -37,14 +38,17 @@ export const resolveCommitter = (input: ResolveCommitterInput): AuthorIdentity =
 };
 
 /**
- * Trim a commit message. Throws `EMPTY_COMMIT_MESSAGE` when `allowEmpty` is
- * false and the trimmed result is empty (matches `git commit` default; the
+ * Normalize a commit message with git's `stripspace` (the `whitespace` cleanup
+ * mode `git commit -m` applies): strip per-line trailing whitespace, collapse
+ * blank-line runs, drop leading/trailing blanks, and guarantee a single
+ * trailing newline. Throws `EMPTY_COMMIT_MESSAGE` when `allowEmpty` is false and
+ * the cleaned result is empty (matches `git commit` default; the
  * `--allow-empty-message` flag flips the option).
  */
 export const sanitizeMessage = (raw: string, opts: { readonly allowEmpty: boolean }): string => {
-  const trimmed = raw.trim();
-  if (trimmed === '' && !opts.allowEmpty) throw emptyCommitMessage();
-  return trimmed;
+  const cleaned = stripspace(raw);
+  if (cleaned === '' && !opts.allowEmpty) throw emptyCommitMessage();
+  return cleaned;
 };
 
 /**

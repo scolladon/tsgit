@@ -234,7 +234,7 @@ describe('merge', () => {
         const main = await resolveRef(ctx, 'refs/heads/main' as RefName);
         const mainHeadCommit = await readObject(ctx, main);
         if (mainHeadCommit.type !== 'commit') throw new Error('not a commit');
-        expect(mainHeadCommit.data.message).toBe('on-main'); // still pre-merge tip
+        expect(mainHeadCommit.data.message).toBe('on-main\n'); // still pre-merge tip
         expect(mainHeadCommit.data.parents).toHaveLength(1); // not a merge commit
       });
     });
@@ -513,7 +513,7 @@ describe('merge.4b conflict persistence', () => {
 
         // Assert
         const sut = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/MERGE_MSG`);
-        expect(sut).toBe('Merge feature into main');
+        expect(sut).toBe('Merge feature into main\n');
       });
     });
   });
@@ -856,7 +856,7 @@ describe('merge.4b conflict persistence', () => {
         );
         const commitObj = await readObject(ctx, sut.id);
         if (commitObj.type !== 'commit') throw new Error('not a commit');
-        expect(commitObj.data.message).toBe('Merge feature');
+        expect(commitObj.data.message).toBe('Merge feature\n');
       });
     });
   });

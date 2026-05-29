@@ -22,10 +22,10 @@ export const mergeFfScenario: Scenario<MergeFfResult> = {
   name: 'merge-ff',
   inputs: { files: [FILES.helloA, FILES.helloB], author: AUTHOR, message: MESSAGES.seed },
   expected: {
-    seedCommitId: '87863a6f57aeedd577100911fadbc21ff1062bec',
-    featureCommitId: '586525f8c235257666a390351b8d572d8da0a1d0',
+    seedCommitId: 'fa8b886eee0d470d870e786878657cac05d686e6',
+    featureCommitId: 'aaf0bbab5773df6abf0967d92199c55c1be97162',
     mergeKind: 'fast-forward',
-    mergeId: '586525f8c235257666a390351b8d572d8da0a1d0',
+    mergeId: 'aaf0bbab5773df6abf0967d92199c55c1be97162',
     mergeBranch: 'refs/heads/main',
   },
   run: async (repo, inputs) => {

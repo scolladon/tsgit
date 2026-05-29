@@ -22,7 +22,7 @@ export const submodulesEmptyScenario: Scenario<SubmodulesEmptyResult> = {
   name: 'submodules-empty',
   inputs: { files: [FILES.helloA], author: AUTHOR, message: MESSAGES.seed },
   expected: {
-    seedCommitId: '87863a6f57aeedd577100911fadbc21ff1062bec',
+    seedCommitId: 'fa8b886eee0d470d870e786878657cac05d686e6',
     submodulesKind: 'list',
     submodulesEntries: [],
     walkSubmodulesCount: 0,

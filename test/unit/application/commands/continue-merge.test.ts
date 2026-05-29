@@ -161,7 +161,7 @@ describe('continueMerge', () => {
         const obj = await readObject(ctx, sut.id);
         expect(obj.type).toBe('commit');
         if (obj.type === 'commit') {
-          expect(obj.data.message).toBe('Merge feature into main');
+          expect(obj.data.message).toBe('Merge feature into main\n');
         }
       });
     });
@@ -186,7 +186,7 @@ describe('continueMerge', () => {
         // Assert
         const obj = await readObject(ctx, sut.id);
         if (obj.type === 'commit') {
-          expect(obj.data.message).toBe('resolved by user');
+          expect(obj.data.message).toBe('resolved by user\n');
         } else {
           throw new Error('expected commit');
         }
