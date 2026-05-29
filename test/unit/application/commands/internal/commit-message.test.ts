@@ -149,14 +149,16 @@ describe('internal/commit-message', () => {
   describe('sanitizeMessage', () => {
     describe("Given '   leading + trailing whitespace   \\\\n\\\\n' with allowEmpty=false", () => {
       describe('When sanitizeMessage', () => {
-        it('Then returns trimmed', () => {
+        it('Then strips trailing whitespace and blank lines, keeps leading whitespace and a single newline', () => {
           // Arrange
           const sut = sanitizeMessage('   leading + trailing whitespace   \n\n', {
             allowEmpty: false,
           });
 
-          // Assert
-          expect(sut).toBe('leading + trailing whitespace');
+          // Assert — git stripspace keeps leading whitespace on a content line,
+          // strips per-line trailing whitespace + trailing blanks, and ensures
+          // exactly one trailing newline.
+          expect(sut).toBe('   leading + trailing whitespace\n');
         });
       });
     });

@@ -102,7 +102,7 @@ describe('Node openRepository — git hooks end to end', () => {
       const obj = await repo.primitives.readObject(result.id);
       expect(obj.type).toBe('commit');
       if (obj.type === 'commit') {
-        expect(obj.data.message).toBe('rewritten by hook');
+        expect(obj.data.message).toBe('rewritten by hook\n');
       }
     } finally {
       await repo.dispose();

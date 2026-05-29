@@ -23,20 +23,20 @@ export const branchLifecycleScenario: Scenario<BranchLifecycleResult> = {
     message: MESSAGES.seed,
   },
   expected: {
-    seedCommitId: '87863a6f57aeedd577100911fadbc21ff1062bec',
+    seedCommitId: 'fa8b886eee0d470d870e786878657cac05d686e6',
     created: {
       name: 'refs/heads/feature',
-      id: '87863a6f57aeedd577100911fadbc21ff1062bec',
+      id: 'fa8b886eee0d470d870e786878657cac05d686e6',
     },
     listAfterCreate: [
       {
         name: 'refs/heads/feature',
-        id: '87863a6f57aeedd577100911fadbc21ff1062bec',
+        id: 'fa8b886eee0d470d870e786878657cac05d686e6',
         current: false,
       },
       {
         name: 'refs/heads/main',
-        id: '87863a6f57aeedd577100911fadbc21ff1062bec',
+        id: 'fa8b886eee0d470d870e786878657cac05d686e6',
         current: true,
       },
     ],
@@ -44,7 +44,7 @@ export const branchLifecycleScenario: Scenario<BranchLifecycleResult> = {
     listAfterDelete: [
       {
         name: 'refs/heads/main',
-        id: '87863a6f57aeedd577100911fadbc21ff1062bec',
+        id: 'fa8b886eee0d470d870e786878657cac05d686e6',
         current: true,
       },
     ],

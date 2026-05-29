@@ -28,7 +28,7 @@ export const initAddCommitStatusScenario: Scenario<InitAddCommitStatusResult> = 
     // 40-hex golden — Node baseline. Memory and Browser drivers assert the
     // same value; divergence proves a parity bug in object serialization,
     // hash framing, or author identity encoding (ADR-128).
-    commit: { id: '87863a6f57aeedd577100911fadbc21ff1062bec', branch: 'refs/heads/main' },
+    commit: { id: 'fa8b886eee0d470d870e786878657cac05d686e6', branch: 'refs/heads/main' },
     status: {
       clean: true,
       branch: 'refs/heads/main',

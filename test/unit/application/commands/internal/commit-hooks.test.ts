@@ -131,8 +131,9 @@ describe('commands/internal commit-hooks applyCommitMsgHook', () => {
         // Act
         const result = await applyCommitMsgHook(ctx, '  spaced  ', opts);
 
-        // Assert — the round-trip re-sanitises (trims) the message.
-        expect(result).toBe('spaced');
+        // Assert — the round-trip re-sanitises (stripspace) the message: trailing
+        // whitespace + blank lines go, leading whitespace and a single newline stay.
+        expect(result).toBe('  spaced\n');
       });
     });
   });
@@ -147,7 +148,7 @@ describe('commands/internal commit-hooks applyCommitMsgHook', () => {
         const result = await applyCommitMsgHook(ctx, 'original', opts);
 
         // Assert
-        expect(result).toBe('rewritten by hook');
+        expect(result).toBe('rewritten by hook\n');
       });
     });
   });

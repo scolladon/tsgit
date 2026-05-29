@@ -12,6 +12,8 @@
     "repath",
     "repathed",
     "stripspace",
+    "strbuf",
+    "isspace",
     "dups",
     "maximality",
     "nonstale",

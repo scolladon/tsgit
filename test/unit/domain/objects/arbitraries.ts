@@ -26,3 +26,23 @@ export function arbFileModeEnum(): fc.Arbitrary<FileMode> {
     FILE_MODE.GITLINK,
   );
 }
+
+// A single raw line: arbitrary ASCII body (may be empty -> a blank line, may
+// carry the comment char and internal spaces) followed by trailing ASCII
+// whitespace noise (every git `isspace` kind). Joining an array of these with
+// '\n' yields messages that exercise stripspace's collapse / drop / strip
+// paths: blank runs, leading/trailing blanks, and per-line trailing whitespace.
+function arbRawLine(): fc.Arbitrary<string> {
+  const bodyChars = fc.constantFrom('a', 'b', 'c', '#', 'x', '.', ' ');
+  const wsChars = fc.constantFrom(' ', '\t', '\v', '\f', '\r');
+  return fc
+    .tuple(
+      fc.array(bodyChars, { maxLength: 8 }).map((chars) => chars.join('')),
+      fc.array(wsChars, { maxLength: 3 }).map((chars) => chars.join('')),
+    )
+    .map(([body, trailingWs]) => body + trailingWs);
+}
+
+export function arbCommitMessage(): fc.Arbitrary<string> {
+  return fc.array(arbRawLine(), { maxLength: 10 }).map((lines) => lines.join('\n'));
+}

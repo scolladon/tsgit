@@ -29,14 +29,14 @@ export const mergeContinueScenario: Scenario<MergeContinueResult> = {
     message: 'seed commit',
   },
   expected: {
-    seedCommitId: '16b29ce177c8b749666b19461fabf80c5875d411',
-    mainTipId: '687afb9b0d26420e00ad01df2512550c03db3043',
-    featureTipId: 'b6e273eaa47d481207f255bbe38fe412bbed46e1',
+    seedCommitId: '050acef8d74a2991766ab2c8b4b07f1a6b970c2c',
+    mainTipId: '7408810a6beb372a803f390eea727fe22ac23f01',
+    featureTipId: 'de3648ccf0e9e5d2601b5abe99f0ab45361cbaa4',
     mergeKind: 'conflict',
-    resolvedCommitId: '32c49415f1a4eb29cdd2a1122aa9f1a1d7903f88',
+    resolvedCommitId: 'c31cfb8215f2e29aa50d061134ebcfad13c51019',
     resolvedParents: [
-      '687afb9b0d26420e00ad01df2512550c03db3043',
-      'b6e273eaa47d481207f255bbe38fe412bbed46e1',
+      '7408810a6beb372a803f390eea727fe22ac23f01',
+      'de3648ccf0e9e5d2601b5abe99f0ab45361cbaa4',
     ],
   },
   run: async (repo, inputs) => {

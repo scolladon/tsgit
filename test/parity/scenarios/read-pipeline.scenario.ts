@@ -31,7 +31,7 @@ export const readPipelineScenario: Scenario<ReadPipelineResult> = {
   name: 'read-pipeline',
   inputs: { files: [FILES.helloA], author: AUTHOR, message: MESSAGES.seed },
   expected: {
-    commitId: '87863a6f57aeedd577100911fadbc21ff1062bec',
+    commitId: 'fa8b886eee0d470d870e786878657cac05d686e6',
     readObjectType: 'commit',
     readTreeEntryCount: 1,
     readIndexEntryCount: 1,

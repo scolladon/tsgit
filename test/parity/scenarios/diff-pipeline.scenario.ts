@@ -23,11 +23,11 @@ export const diffPipelineScenario: Scenario<DiffPipelineResult> = {
   name: 'diff-pipeline',
   inputs: { files: [FILES.helloA, FILES.helloB], author: AUTHOR, message: MESSAGES.seed },
   expected: {
-    firstCommitId: '87863a6f57aeedd577100911fadbc21ff1062bec',
-    secondCommitId: '586525f8c235257666a390351b8d572d8da0a1d0',
+    firstCommitId: 'fa8b886eee0d470d870e786878657cac05d686e6',
+    secondCommitId: 'aaf0bbab5773df6abf0967d92199c55c1be97162',
     diffAddedPaths: ['b.txt'],
     diffTreesAddedPaths: ['b.txt'],
-    mergeBaseId: '87863a6f57aeedd577100911fadbc21ff1062bec',
+    mergeBaseId: 'fa8b886eee0d470d870e786878657cac05d686e6',
   },
   run: async (repo, inputs) => {
     await repo.init();

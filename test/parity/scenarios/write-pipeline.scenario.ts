@@ -27,6 +27,9 @@ export const writePipelineScenario: Scenario<WritePipelineResult> = {
   expected: {
     blobId: '74614c9224e259adae80b04d6a0e3f483407324d',
     treeId: '3a854a72e3d92d84858c79cdb3030c430e38cd86',
+    // Verbatim primitive: createCommit does NOT stripspace, so the unnormalized
+    // 'seed commit' message (no trailing newline) yields a different id than the
+    // porcelain's faithful commit — this is the intended primitive contract.
     commitId: '87863a6f57aeedd577100911fadbc21ff1062bec',
   },
   run: async (repo, inputs) => {
