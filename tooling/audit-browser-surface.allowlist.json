@@ -16,6 +16,11 @@
       "deferredTo": "19.8"
     },
     {
+      "name": "pull",
+      "reason": "pull = fetch + merge; its fetch step needs the same in-page smart-HTTP server as clone/fetch/push; deferred to 19.8.",
+      "deferredTo": "19.8"
+    },
+    {
       "name": "push",
       "reason": "smart-HTTP transport needs an in-page server; deferred to 19.8.",
       "deferredTo": "19.8"
