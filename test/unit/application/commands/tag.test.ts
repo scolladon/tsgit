@@ -3,7 +3,7 @@ import { createMemoryContext } from '../../../../src/adapters/memory/memory-adap
 import { add } from '../../../../src/application/commands/add.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
-import { tag } from '../../../../src/application/commands/tag.js';
+import { tagCreate, tagDelete, tagList } from '../../../../src/application/commands/tag.js';
 import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
 import { readReflog } from '../../../../src/application/primitives/reflog-store.js';
 import { TsgitError } from '../../../../src/domain/index.js';
@@ -33,10 +33,9 @@ describe('tag', () => {
         const { ctx, commitId } = await seedWithCommit();
 
         // Act
-        const sut = await tag(ctx, { kind: 'create', name: 'v1.0' });
+        const sut = await tagCreate(ctx, { name: 'v1.0' });
 
         // Assert
-        if (sut.kind !== 'create') throw new Error('expected create');
         expect(sut.id).toBe(commitId);
       });
     });
@@ -47,12 +46,12 @@ describe('tag', () => {
       it('Then throws TAG_EXISTS', async () => {
         // Arrange
         const { ctx } = await seedWithCommit();
-        await tag(ctx, { kind: 'create', name: 'v1.0' });
+        await tagCreate(ctx, { name: 'v1.0' });
 
         // Act
         let caught: unknown;
         try {
-          await tag(ctx, { kind: 'create', name: 'v1.0' });
+          await tagCreate(ctx, { name: 'v1.0' });
         } catch (err) {
           caught = err;
         }
@@ -69,10 +68,10 @@ describe('tag', () => {
       it('Then ref is removed', async () => {
         // Arrange
         const { ctx } = await seedWithCommit();
-        await tag(ctx, { kind: 'create', name: 'v1.0' });
+        await tagCreate(ctx, { name: 'v1.0' });
 
         // Act
-        await tag(ctx, { kind: 'delete', name: 'v1.0' });
+        await tagDelete(ctx, { name: 'v1.0' });
 
         // Assert
         expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/tags/v1.0`)).toBe(false);
@@ -89,7 +88,7 @@ describe('tag', () => {
         // Act
         let caught: unknown;
         try {
-          await tag(ctx, { kind: 'delete', name: 'ghost' });
+          await tagDelete(ctx, { name: 'ghost' });
         } catch (err) {
           caught = err;
         }
@@ -106,14 +105,13 @@ describe('tag', () => {
       it('Then returns them sorted', async () => {
         // Arrange
         const { ctx } = await seedWithCommit();
-        await tag(ctx, { kind: 'create', name: 'v2.0' });
-        await tag(ctx, { kind: 'create', name: 'v1.0' });
+        await tagCreate(ctx, { name: 'v2.0' });
+        await tagCreate(ctx, { name: 'v1.0' });
 
         // Act
-        const sut = await tag(ctx, { kind: 'list' });
+        const sut = await tagList(ctx);
 
         // Assert
-        if (sut.kind !== 'list') throw new Error('expected list');
         expect(sut.tags.map((t) => t.name)).toEqual(['refs/tags/v1.0', 'refs/tags/v2.0']);
       });
     });
@@ -126,10 +124,9 @@ describe('tag', () => {
         const { ctx, commitId } = await seedWithCommit();
 
         // Act
-        const sut = await tag(ctx, { kind: 'create', name: 'pin', target: commitId });
+        const sut = await tagCreate(ctx, { name: 'pin', target: commitId });
 
         // Assert
-        if (sut.kind !== 'create') throw new Error('expected create');
         expect(sut.id).toBe(commitId);
       });
     });
@@ -142,10 +139,9 @@ describe('tag', () => {
         const { ctx, commitId } = await seedWithCommit();
 
         // Act
-        const sut = await tag(ctx, { kind: 'create', name: 'pin', target: 'refs/heads/main' });
+        const sut = await tagCreate(ctx, { name: 'pin', target: 'refs/heads/main' });
 
         // Assert
-        if (sut.kind !== 'create') throw new Error('expected create');
         expect(sut.id).toBe(commitId);
       });
     });
@@ -156,17 +152,14 @@ describe('tag', () => {
       it('Then the second create overwrites the ref (commit oid is unchanged)', async () => {
         // Arrange — seed a commit and tag it once.
         const { ctx } = await seedWithCommit();
-        const first = await tag(ctx, { kind: 'create', name: 'v1.0' });
-        if (first.kind !== 'create') throw new Error('expected create result');
+        const first = await tagCreate(ctx, { name: 'v1.0' });
 
         // Act — second create with force MUST NOT throw and MUST end pointing
         // at the same commit oid (no rewrite of the underlying ref target).
-        const sut = await tag(ctx, { kind: 'create', name: 'v1.0', force: true });
+        const sut = await tagCreate(ctx, { name: 'v1.0', force: true });
 
-        // Assert — discriminated-union narrow first, then check the fields
-        // that prove the ref was rewritten in place (full name + same oid).
-        expect(sut.kind).toBe('create');
-        if (sut.kind !== 'create') throw new Error('expected create result');
+        // Assert — the fields that prove the ref was rewritten in place
+        // (full name + same oid).
         expect(sut.name).toBe('refs/tags/v1.0');
         expect(sut.id).toBe(first.id);
       });
@@ -181,10 +174,9 @@ describe('tag', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
 
         // Act
-        const sut = await tag(ctx, { kind: 'list' });
+        const sut = await tagList(ctx);
 
         // Assert
-        if (sut.kind !== 'list') throw new Error('expected list');
         expect(sut.tags).toEqual([]);
       });
     });
@@ -195,14 +187,13 @@ describe('tag', () => {
       it('Then non-file entries are skipped', async () => {
         // Arrange — a file tag plus a directory entry sharing the refs/tags namespace
         const { ctx } = await seedWithCommit();
-        await tag(ctx, { kind: 'create', name: 'v1.0' });
+        await tagCreate(ctx, { name: 'v1.0' });
         await ctx.fs.mkdir(`${ctx.layout.gitDir}/refs/tags/group`);
 
         // Act — must not throw: the directory entry is filtered out before resolveRef
-        const sut = await tag(ctx, { kind: 'list' });
+        const sut = await tagList(ctx);
 
         // Assert — only the file tag is listed; the directory is not resolved as a ref
-        if (sut.kind !== 'list') throw new Error('expected list');
         expect(sut.tags.map((t) => t.name)).toEqual(['refs/tags/v1.0']);
       });
     });
@@ -213,16 +204,15 @@ describe('tag', () => {
       it('Then returns them in strict ascending order', async () => {
         // Arrange — insertion order v3, v1, v2 so readdir yields an unsorted array
         const { ctx } = await seedWithCommit();
-        await tag(ctx, { kind: 'create', name: 'v3.0' });
-        await tag(ctx, { kind: 'create', name: 'v1.0' });
-        await tag(ctx, { kind: 'create', name: 'v2.0' });
+        await tagCreate(ctx, { name: 'v3.0' });
+        await tagCreate(ctx, { name: 'v1.0' });
+        await tagCreate(ctx, { name: 'v2.0' });
 
         // Act
-        const sut = await tag(ctx, { kind: 'list' });
+        const sut = await tagList(ctx);
 
         // Assert — comparator must order ascending; an always-(-1)/always-(1) comparator
         // would leave [v3,v1,v2] or reverse it to [v2,v1,v3], neither matching this.
-        if (sut.kind !== 'list') throw new Error('expected list');
         expect(sut.tags.map((t) => t.name)).toEqual([
           'refs/tags/v1.0',
           'refs/tags/v2.0',
@@ -243,7 +233,7 @@ describe('tag', () => {
         // Act
         let caught: unknown;
         try {
-          await tag(ctx, { kind: 'create', name: 'pin', target });
+          await tagCreate(ctx, { name: 'pin', target });
         } catch (err) {
           caught = err;
         }
@@ -266,7 +256,7 @@ describe('tag', () => {
         // Act
         let caught: unknown;
         try {
-          await tag(ctx, { kind: 'create', name: 'pin', target });
+          await tagCreate(ctx, { name: 'pin', target });
         } catch (err) {
           caught = err;
         }
@@ -288,7 +278,7 @@ describe('tag', () => {
         // Act
         let caught: unknown;
         try {
-          await tag(ctx, { kind: 'create', name: 'locked' });
+          await tagCreate(ctx, { name: 'locked' });
         } catch (err) {
           caught = err;
         }
@@ -313,7 +303,7 @@ describe('tag', () => {
         __resetConfigCacheForTests();
 
         // Act
-        await tag(ctx, { kind: 'create', name: 'v1.0' });
+        await tagCreate(ctx, { name: 'v1.0' });
 
         // Assert
         const entries = await readReflog(ctx, 'refs/tags/v1.0' as RefName);
@@ -342,7 +332,7 @@ describe('tag', () => {
         // Act
         let caught: unknown;
         try {
-          await tag(failingCtx, { kind: 'create', name: 'v9.9' });
+          await tagCreate(failingCtx, { name: 'v9.9' });
         } catch (err) {
           caught = err;
         }

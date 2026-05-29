@@ -178,7 +178,8 @@ export interface Repository {
   readonly sparseCheckout: BindCtx<typeof commands.sparseCheckout>;
   readonly status: BindCtx<typeof commands.status>;
   readonly submodules: BindCtx<typeof commands.submodules>;
-  readonly tag: BindCtx<typeof commands.tag>;
+  /** Nested `repo.tag.{list,create,delete}` namespace. */
+  readonly tag: commands.TagNamespace;
 
   // Tier-2 primitives (16) — bound under.primitives.* to keep the top-level
   // surface focused on user-facing commands.
@@ -458,10 +459,7 @@ export const openRepository = async (
       guard();
       return commands.submodules(ctx, opts);
     }) as Repository['submodules'],
-    tag: ((action) => {
-      guard();
-      return commands.tag(ctx, action);
-    }) as Repository['tag'],
+    tag: commands.bindTagNamespace(ctx, guard),
     primitives: Object.freeze({
       catFileBatch: ((ids, options) => {
         guard();

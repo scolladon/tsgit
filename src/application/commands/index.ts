@@ -76,6 +76,7 @@ export { type InitOptions, type InitResult, init } from './init.js';
 export { type BranchNamespace, bindBranchNamespace } from './internal/branch-namespace.js';
 export { bindConfigNamespace, type ConfigNamespace } from './internal/config-namespace.js';
 export { bindRemoteNamespace, type RemoteNamespace } from './internal/remote-namespace.js';
+export { bindTagNamespace, type TagNamespace } from './internal/tag-namespace.js';
 export { type LogEntry, type LogOptions, log } from './log.js';
 export { type MergeOptions, type MergeResult, merge } from './merge.js';
 export { type PushOptions, type PushResult, push } from './push.js';
@@ -121,4 +122,14 @@ export {
   type SubmodulesResult,
   submodules,
 } from './submodules.js';
-export { type TagAction, type TagInfo, type TagResult, tag } from './tag.js';
+export {
+  type TagCreateInput,
+  type TagCreateResult,
+  type TagDeleteInput,
+  type TagDeleteResult,
+  type TagInfo,
+  type TagListResult,
+  tagCreate,
+  tagDelete,
+  tagList,
+} from './tag.js';

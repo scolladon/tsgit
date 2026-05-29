@@ -22,7 +22,7 @@ import { commit } from '../../src/application/commands/commit.js';
 import { init } from '../../src/application/commands/init.js';
 import { merge } from '../../src/application/commands/merge.js';
 import { reset } from '../../src/application/commands/reset.js';
-import { tag } from '../../src/application/commands/tag.js';
+import { tagCreate } from '../../src/application/commands/tag.js';
 import { __resetConfigCacheForTests } from '../../src/application/primitives/config-read.js';
 import { readReflog } from '../../src/application/primitives/reflog-store.js';
 import type { AuthorIdentity, ObjectId, RefName } from '../../src/domain/objects/index.js';
@@ -225,7 +225,7 @@ describe('integration — reflog writers', () => {
     await commit(ctx, { message: 'first', author });
 
     // Act
-    await tag(ctx, { kind: 'create', name: 'v1' });
+    await tagCreate(ctx, { name: 'v1' });
 
     // Assert — refs/tags/* is not default-loggable
     expect(await ctx.fs.exists(`${ctx.layout.gitDir}/logs/refs/tags/v1`)).toBe(false);
