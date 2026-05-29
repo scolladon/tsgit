@@ -12,6 +12,7 @@ import { readObject } from '../../../../src/application/primitives/read-object.j
 import { readReflog } from '../../../../src/application/primitives/reflog-store.js';
 import { resolveRef } from '../../../../src/application/primitives/resolve-ref.js';
 import { updateConfigEntries } from '../../../../src/application/primitives/update-config.js';
+import { updateRef } from '../../../../src/application/primitives/update-ref.js';
 import type { AuthorIdentity, ObjectId, RefName } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
 import type {
@@ -395,8 +396,9 @@ describe('pull', () => {
           caught = err;
         }
 
-        // Assert
+        // Assert — the guard names the `pull` operation and fires before any fetch.
         expect((caught as { data?: { code?: string } })?.data?.code).toBe('BARE_REPOSITORY');
+        expect((caught as { data?: { operation?: string } })?.data?.operation).toBe('pull');
         expect(requests).toHaveLength(0);
       });
     });
@@ -517,6 +519,118 @@ describe('pull', () => {
           const obj = await readObject(ctx, sut.merge.id);
           if (obj.type === 'commit') {
             expect(obj.data.message).toBe('custom pull message');
+          }
+        }
+      });
+    });
+  });
+
+  describe('Given a depth argument', () => {
+    describe('When pull', () => {
+      it('Then forwards a deepen request to the fetch step', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const a = await commitFile(ctx, 'a.txt', 'a', 'A');
+        await seedConfig(ctx, { url: REMOTE_URL, upstream: true });
+        const { transport, requests } = buildPullRemote(
+          [{ name: 'refs/heads/main', id: a }],
+          await emptyPack(ctx),
+        );
+
+        // Act
+        await pull(withTransport(ctx, transport), { depth: 1 });
+
+        // Assert — the upload-pack POST body carries `deepen 1`.
+        const post = requests.find((r) => r.method === 'POST' && !r.url.includes('/info/refs'));
+        const decoded = new TextDecoder().decode(post?.body);
+        expect(decoded).toContain('deepen 1');
+      });
+    });
+  });
+
+  describe('Given prune', () => {
+    describe('When pull', () => {
+      it('Then forwards prune to the fetch step (stale remote-tracking ref removed)', async () => {
+        // Arrange — a stale origin ref the advertisement no longer carries.
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const a = await commitFile(ctx, 'a.txt', 'a', 'A');
+        await updateRef(ctx, 'refs/remotes/origin/stale' as RefName, a, { reflogMessage: 'seed' });
+        await seedConfig(ctx, { url: REMOTE_URL, upstream: true });
+        const { transport } = buildPullRemote(
+          [{ name: 'refs/heads/main', id: a }],
+          await emptyPack(ctx),
+        );
+
+        // Act
+        const sut = await pull(withTransport(ctx, transport), { prune: true });
+
+        // Assert
+        expect(sut.fetch.prunedRefs).toContain('refs/remotes/origin/stale');
+      });
+    });
+  });
+
+  describe('Given noFastForward over a history that would fast-forward', () => {
+    describe('When pull', () => {
+      it('Then forwards noFastForward to merge (forces a merge commit)', async () => {
+        // Arrange — main at A, B is A's child; remote main → B would fast-forward.
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await commitFile(ctx, 'a.txt', 'a', 'A');
+        await branchCreate(ctx, { name: 'feature' });
+        await checkout(ctx, { target: 'feature' });
+        const b = await commitFile(ctx, 'b.txt', 'b', 'B');
+        await checkout(ctx, { target: 'main' });
+        await seedConfig(ctx, { url: REMOTE_URL, upstream: true });
+        const { transport } = buildPullRemote(
+          [{ name: 'refs/heads/main', id: b }],
+          await emptyPack(ctx),
+        );
+
+        // Act
+        const sut = await pull(withTransport(ctx, transport), { noFastForward: true, author });
+
+        // Assert — a true merge commit, not a fast-forward.
+        expect(sut.merge.kind).toBe('merge');
+      });
+    });
+  });
+
+  describe('Given a distinct committer', () => {
+    describe('When pull over a true merge', () => {
+      it('Then forwards the committer to the merge commit', async () => {
+        // Arrange — diverged distinct files → true merge.
+        const committer: AuthorIdentity = {
+          name: 'Bob',
+          email: 'bob@example.com',
+          timestamp: 1_700_000_500,
+          timezoneOffset: '+0000',
+        };
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await commitFile(ctx, 'a.txt', 'a', 'A');
+        await branchCreate(ctx, { name: 'feature' });
+        await checkout(ctx, { target: 'feature' });
+        const b = await commitFile(ctx, 'b.txt', 'b', 'B');
+        await checkout(ctx, { target: 'main' });
+        await commitFile(ctx, 'c.txt', 'c', 'X');
+        await seedConfig(ctx, { url: REMOTE_URL, upstream: true });
+        const { transport } = buildPullRemote(
+          [{ name: 'refs/heads/main', id: b }],
+          await emptyPack(ctx),
+        );
+
+        // Act
+        const sut = await pull(withTransport(ctx, transport), { author, committer });
+
+        // Assert
+        expect(sut.merge.kind).toBe('merge');
+        if (sut.merge.kind === 'merge') {
+          const obj = await readObject(ctx, sut.merge.id);
+          if (obj.type === 'commit') {
+            expect(obj.data.committer.name).toBe('Bob');
           }
         }
       });

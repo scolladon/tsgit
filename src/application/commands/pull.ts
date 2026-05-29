@@ -94,7 +94,9 @@ export const pull = async (ctx: Context, opts: PullOptions = {}): Promise<PullRe
 
   const fetchResult = await fetch(ctx, {
     remote,
+    // Stryker disable next-line ConditionalExpression: equivalent — the always-true mutant forwards `{ prune: opts.prune }` with `prune: undefined`, which `fetch` reads as `=== true` (false) — identical to omitting the key. The drop direction + the `!==` flip are killed by the prune-forwarding test.
     ...(opts.prune !== undefined ? { prune: opts.prune } : {}),
+    // Stryker disable next-line ConditionalExpression: equivalent — the always-true mutant forwards `{ depth: opts.depth }` with `depth: undefined`, which `fetchPack` gates on `!== undefined` — identical to omitting the key. The drop direction + the `!==` flip are killed by the depth-forwarding test.
     ...(opts.depth !== undefined ? { depth: opts.depth } : {}),
   });
 
@@ -104,9 +106,13 @@ export const pull = async (ctx: Context, opts: PullOptions = {}): Promise<PullRe
     target: tip,
     message: opts.message ?? `Merge branch '${branch}' of ${fetchResult.url}`,
     reflogLabel: 'pull',
+    // Stryker disable next-line ConditionalExpression: equivalent — the always-true mutant forwards `{ fastForwardOnly: undefined }`, which `merge` reads as `=== true` (false) — identical to omitting it. The drop direction + the `!==` flip are killed by the fastForwardOnly test.
     ...(opts.fastForwardOnly !== undefined ? { fastForwardOnly: opts.fastForwardOnly } : {}),
+    // Stryker disable next-line ConditionalExpression: equivalent — the always-true mutant forwards `{ noFastForward: undefined }`, which `merge` reads as `!== true` (so a fast-forward proceeds) — identical to omitting it. The drop direction + the `!==` flip are killed by the noFastForward test.
     ...(opts.noFastForward !== undefined ? { noFastForward: opts.noFastForward } : {}),
+    // Stryker disable next-line ConditionalExpression: equivalent — the always-true mutant forwards `{ author: undefined }`, which `merge` resolves as `opts.author ?? config` — identical to omitting it. The drop direction + the `!==` flip are killed by the author-bearing merge tests.
     ...(opts.author !== undefined ? { author: opts.author } : {}),
+    // Stryker disable next-line ConditionalExpression: equivalent — the always-true mutant forwards `{ committer: undefined }`, which `merge` resolves as `opts.committer ?? author` — identical to omitting it. The drop direction + the `!==` flip are killed by the committer-forwarding test.
     ...(opts.committer !== undefined ? { committer: opts.committer } : {}),
   });
 
