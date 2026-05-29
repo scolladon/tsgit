@@ -37,7 +37,7 @@ const COMMAND_CALL_RE = /\brepo\.([a-zA-Z][\w]*)\s*\(/g;
 const PRIMITIVE_CALL_RE = /\brepo\.primitives\.([a-zA-Z][\w]*)\s*\(/g;
 // Dotted namespace invocations (`repo.config.get(`, `repo.remote.add(`): the
 // first segment is the bound namespace name; one verb call covers it.
-const NAMESPACE_CALL_RE = /\brepo\.([a-zA-Z]\w*)\.[a-zA-Z]\w*\s*\(/g;
+const NAMESPACE_CALL_RE = /\brepo\.([a-zA-Z][\w]*)\.[a-zA-Z][\w]*\s*\(/g;
 
 const COVERAGE_DIRS: ReadonlyArray<string> = ['test/browser', 'test/parity/scenarios'];
 
