@@ -357,6 +357,22 @@ function extractDetail(data: TsgitErrorData): string {
       return `working-tree changed under us at ${basename(data.path)} (observed mtime=${data.observed.mtimeMs} size=${data.observed.size}, current mtime=${data.current.mtimeMs} size=${data.current.size})`;
     case 'ORDER_INVARIANT_VIOLATION':
       return `row order broken: ${data.previous} followed by ${data.current}`;
+    case 'CONFIG_KEY_INVALID':
+      return data.position === undefined
+        ? `invalid config key "${data.key}": ${data.reason}`
+        : `invalid config key "${data.key}": ${data.reason} at position ${data.position}`;
+    case 'CONFIG_VALUE_INVALID':
+      return `invalid config value for "${data.key}": ${data.reason} at position ${data.position}`;
+    case 'CONFIG_MULTIPLE_VALUES':
+      return data.scope === undefined
+        ? `config key "${data.key}" has ${data.count} values (${data.requested} requires single)`
+        : `config key "${data.key}" has ${data.count} values in scope ${data.scope} (${data.requested} requires single)`;
+    case 'CONFIG_SECTION_NOT_FOUND':
+      return `config section not found in scope ${data.scope}: ${data.name}`;
+    case 'CONFIG_SCOPE_NOT_AVAILABLE':
+      return `config scope not available: ${data.scope} (${data.reason})`;
+    case 'CONFIG_SYSTEM_PATH_UNRESOLVED':
+      return 'config system path could not be resolved on this platform';
     default: {
       const _exhaustive: never = data;
       return String(_exhaustive);

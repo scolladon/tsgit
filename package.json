@@ -209,6 +209,7 @@
     "check:architecture": "wireit",
     "check:spelling": "wireit",
     "validate": "wireit",
+    "prepush": "wireit",
     "upgrade": "npm update && npm install && npm run validate"
   },
   "wireit": {
@@ -705,7 +706,6 @@
         "check:security",
         "check:doc-coverage",
         "check:doc-links",
-        "check:doc-typedoc",
         "check:test-pyramid",
         "check:parity-fixtures",
         "check:browser-surface",
@@ -713,6 +713,12 @@
         "test:coverage",
         "test:integration",
         "test:parity"
+      ]
+    },
+    "prepush": {
+      "dependencies": [
+        "validate",
+        "check:doc-typedoc"
       ]
     }
   },

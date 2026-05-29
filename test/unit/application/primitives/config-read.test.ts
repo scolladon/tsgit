@@ -7,6 +7,13 @@ import {
   parseIniSections,
   readConfig,
 } from '../../../../src/application/primitives/config-read.js';
+import {
+  __resetSectionsCacheForTests,
+  getAllConfigValues,
+  getConfigValue,
+  invalidateScopedConfigCache,
+  readConfigSections,
+} from '../../../../src/application/primitives/config-scoped-read.js';
 import { TsgitError } from '../../../../src/domain/error.js';
 import type { Context } from '../../../../src/ports/context.js';
 
@@ -1649,6 +1656,164 @@ describe('primitives/config-read parseIniSections', () => {
         // Assert
         expect(sut).toEqual([]);
       });
+    });
+  });
+});
+
+describe('readConfigSections / getConfigValue / getAllConfigValues', () => {
+  beforeEach(() => {
+    __resetConfigCacheForTests();
+    __resetSectionsCacheForTests();
+  });
+
+  describe('Given a local config with one [user] section, When readConfigSections runs for scope local', () => {
+    it('Then returns one tagged section', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await seed(ctx, '[user]\n\tname = ada\n');
+
+      // Act
+      const sut = await readConfigSections({ ctx, scope: 'local' });
+
+      // Assert
+      expect(sut).toHaveLength(1);
+      expect(sut[0]?.scope).toBe('local');
+      expect(sut[0]?.section.section).toBe('user');
+    });
+  });
+
+  describe('Given an absent local config, When readConfigSections runs for scope local', () => {
+    it('Then returns an empty array (missing file is not an error)', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+
+      // Act
+      const sut = await readConfigSections({ ctx, scope: 'local' });
+
+      // Assert
+      expect(sut).toEqual([]);
+    });
+  });
+
+  describe('Given two consecutive readConfigSections calls for the same scope, When the second runs', () => {
+    it('Then fs.readUtf8 is called exactly once (cache hit)', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await seed(ctx, '[user]\n\tname = ada\n');
+      const spy = vi.spyOn(ctx.fs, 'readUtf8');
+
+      // Act
+      await readConfigSections({ ctx, scope: 'local' });
+      await readConfigSections({ ctx, scope: 'local' });
+
+      // Assert
+      expect(spy).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('Given a scoped-cache invalidation between two calls, When the second readConfigSections runs', () => {
+    it('Then fs.readUtf8 is called twice (cache miss after invalidate)', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await seed(ctx, '[user]\n\tname = ada\n');
+      const spy = vi.spyOn(ctx.fs, 'readUtf8');
+
+      // Act
+      await readConfigSections({ ctx, scope: 'local' });
+      invalidateScopedConfigCache(ctx);
+      await readConfigSections({ ctx, scope: 'local' });
+
+      // Assert
+      expect(spy).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe('Given getConfigValue with the key present once, When called', () => {
+    it('Then returns { key, value, scope: local }', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await seed(ctx, '[user]\n\tname = ada\n');
+
+      // Act
+      const sut = await getConfigValue({ ctx, key: 'user.name', scope: 'local' });
+
+      // Assert
+      expect(sut).toEqual({ key: 'user.name', value: 'ada', scope: 'local' });
+    });
+  });
+
+  describe('Given getConfigValue with the key absent, When called', () => {
+    it('Then returns { key, value: undefined } (no scope)', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+
+      // Act
+      const sut = await getConfigValue({ ctx, key: 'user.name', scope: 'local' });
+
+      // Assert
+      expect(sut).toEqual({ key: 'user.name', value: undefined });
+    });
+  });
+
+  describe('Given getConfigValue with the key appearing twice in local, When called', () => {
+    it('Then throws CONFIG_MULTIPLE_VALUES with requested=read, count=2, scope=local', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await seed(ctx, '[user]\n\tname = ada\n\tname = bob\n');
+      let caught: TsgitError | undefined;
+
+      // Act
+      try {
+        await getConfigValue({ ctx, key: 'user.name', scope: 'local' });
+      } catch (err) {
+        caught = err as TsgitError;
+      }
+
+      // Assert
+      expect(caught?.data).toEqual({
+        code: 'CONFIG_MULTIPLE_VALUES',
+        key: 'user.name',
+        count: 2,
+        requested: 'read',
+        scope: 'local',
+      });
+    });
+  });
+
+  describe('Given getAllConfigValues for a multi-valued key, When called', () => {
+    it('Then returns all values in physical order tagged with their scope', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await seed(
+        ctx,
+        '[remote "origin"]\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n\tfetch = +refs/tags/*:refs/tags/*\n',
+      );
+
+      // Act
+      const sut = await getAllConfigValues({
+        ctx,
+        key: 'remote.origin.fetch',
+        scope: 'local',
+      });
+
+      // Assert
+      expect(sut.values).toEqual([
+        { value: '+refs/heads/*:refs/remotes/origin/*', scope: 'local' },
+        { value: '+refs/tags/*:refs/tags/*', scope: 'local' },
+      ]);
+    });
+  });
+
+  describe('Given getAllConfigValues for an absent key, When called', () => {
+    it('Then returns { key, values: [] }', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+
+      // Act
+      const sut = await getAllConfigValues({ ctx, key: 'user.email', scope: 'local' });
+
+      // Assert
+      expect(sut).toEqual({ key: 'user.email', values: [] });
     });
   });
 });

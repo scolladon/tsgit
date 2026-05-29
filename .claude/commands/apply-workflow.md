@@ -1,9 +1,9 @@
 ---
-description: Run the subagent-per-phase tsgit workflow on a backlog item, PRD file, or free-text feature description.
+description: Run the in-session tsgit workflow on a backlog item, PRD file, or free-text feature description. Every phase runs in this session — no subagents.
 argument-hint: <backlog-id | docs/prd/file.md | "feature description">
 ---
 
-You are the orchestrator for tsgit's subagent-per-phase development workflow (see `CLAUDE.md` §"Development Workflow"). Run the workflow on the input below. Your context must never hold source code — every phase delegates to a subagent. You only handle: branch creation, ADR conversations with the user, security HIGH/CRITICAL gates, and final cleanup.
+You are running tsgit's in-session development workflow (see `CLAUDE.md` §"Development Workflow"). Run the workflow on the input below **in this session, in-thread**. Do NOT spawn subagents (no `Agent` tool calls). Every phase — design, ADR, plan, implementation, review, mutation, docs, PR — happens here. The user sees every action as it happens.
 
 ## Input
 
@@ -21,11 +21,11 @@ Inspect the argument and decide which of three input forms it is:
 
 3. **Free-text description** — anything else. Treat as the design brief verbatim. The topic-slug is your kebab-case summary of the request (≤6 words).
 
-If the resolution is ambiguous (e.g. backlog ID not found, file unreadable), STOP and ask the user. Do NOT spawn any subagent before resolution succeeds.
+If the resolution is ambiguous (e.g. backlog ID not found, file unreadable), STOP and ask the user.
 
 Print one line so the user can confirm: `Resolved input → topic: <slug>, brief: <one-line summary>`.
 
-## Step 1 — Branch (orchestrator)
+## Step 1 — Branch + Serena activation
 
 ```bash
 git worktree add ../tsgit-<slug> -b feat/<slug>
@@ -33,73 +33,76 @@ cd ../tsgit-<slug>
 npm install
 ```
 
+Then activate Serena on the worktree:
+
+- `mcp__serena__activate_project` with the absolute path of `../tsgit-<slug>`.
+- `mcp__serena__initial_instructions` to load the manual.
+
+Use Serena's symbol tools (`find_symbol`, `find_referencing_symbols`, `get_symbols_overview`, `replace_symbol_body`, `insert_after_symbol`, `insert_before_symbol`, `replace_content`) as the default for navigating and editing source. Fall back to `Read` / `Edit` / `Grep` only for non-code files (markdown, JSON, generated artefacts).
+
 If the branch already exists or the worktree path collides, STOP and ask the user.
 
-## Step 2 — Design subagent (Opus)
+## Step 2 — Design
 
-Spawn ONE Opus subagent with this brief:
+Write `docs/design/<slug>.md` directly. Read the existing related design docs (`docs/design/`), ADRs (`docs/adr/`), and the codebase patterns it must follow (hexagonal architecture, branded types, GWT/AAA test conventions, 100% coverage, mutation-resistant tests — all per `CLAUDE.md`).
 
-- The topic slug + the resolved design brief (backlog text / PRD content / free text).
-- Pointers to the related existing design docs (`docs/design/`), ADRs (`docs/adr/`), and the patterns it must follow (hexagonal architecture, branded types, GWT/AAA test conventions, 100% coverage, mutation-resistant tests — all per `CLAUDE.md`).
-- The contract: produce `docs/design/<slug>.md`, self-review until convergence (max 3 passes), commit as `docs(design): <slug>`, return the final doc path.
+Self-review until convergence (max 3 passes — stop the moment a pass yields no changes). Commit: `docs(design): <slug>`.
 
-Wait for completion. Read the returned doc path's contents.
-
-## Step 3 — ADR conversation (orchestrator with user)
+## Step 3 — ADR conversation
 
 For every load-bearing choice the design makes that's not pre-decided by existing ADRs:
-- Surface the alternatives to the user, ≤3 options each.
+- Surface the alternatives to the user (≤3 options each).
 - Capture the user's decision as `docs/adr/NNN-<title>.md` using `docs/adr/000-template.md`.
 - Number sequentially after the highest existing ADR.
 - Commit each as `docs(adr): NNN <title>`.
 
-If the design has no user-judgment decisions (everything is pre-decided or mechanical), skip to Step 4 without inventing questions.
+If the design has no user-judgment decisions, skip to Step 4 without inventing questions. If user decisions deviate from the design's recommendations, revise the design doc to absorb them in a follow-up `docs(design): revise <slug> against ADRs <range>` commit BEFORE moving to Step 4.
 
-## Step 4 — Plan subagent (Opus)
+## Step 4 — Plan
 
-Spawn ONE Opus subagent with:
-- The design doc path + the new ADR paths.
-- The contract: produce `docs/plan/<slug>.md`, self-review until convergence (max 3 passes), commit as `docs(plan): <slug>`, return the final doc path.
+Write `docs/plan/<slug>.md` directly. The plan is the implementation script — per-slice TDD steps the next phase reads top-to-bottom. Self-review until convergence (max 3 passes). Commit: `docs(plan): <slug>`.
 
-Wait for completion. Read the returned doc.
+## Step 5 — Implementation
 
-## Step 5 — Implementation subagent (Opus, single, all slices)
+Execute every slice from the plan top-to-bottom:
 
-Spawn ONE Opus subagent with:
-- The design doc + plan + relevant ADRs.
-- The contract: execute every slice top-to-bottom, TDD per slice (Red → Green → Refactor), run `npm run validate` before each commit, one atomic conventional-commit per slice.
-- Escalation rule: if blocked, escalate with `{slice, reason, ≤3 candidate options}`. Never spin or silently abandon.
+- **Red**: write the test first; run it with `npx vitest run <file>`; it must fail for the stated reason.
+- **Green**: write minimal code to pass; re-run the test file.
+- **Refactor**: clean up while keeping tests green.
+- Run `npm run validate` before each commit. NEVER commit on a red validate.
+- One slice = one atomic conventional-commit.
 
-Wait for completion. If escalated: surface to the user, resolve, re-spawn with the resolution as added context. If done: read the commit list.
+Use Serena's symbol tools (`replace_symbol_body`, `insert_after_symbol`, …) for source edits where they fit. Never `--no-verify` the hook. Never insert `// @ts-ignore`, `// eslint-disable`, `// v8 ignore`, `// stryker-disable`, or `// biome-ignore`.
 
-## Step 6 — Review subagents × 3 (Opus, parallel, fix-all-until-converged)
+If blocked (design hits a wall, ADR-level decision needed, ambiguous spec): surface to the user with `{ slice, reason, ≤3 candidate options }`. Never spin, never silently abandon.
 
-Spawn three Opus subagents in parallel via a single message with three Agent tool calls:
+## Step 6 — Review × 3 (sequential, in-thread)
 
-1. **typescript-reviewer** — types, correctness, bugs, conventions, immutability.
-2. **security-reviewer** — config/path/URL injection, traversal, SSRF, resource exhaustion, cache poisoning.
-3. **test-review** (general-purpose) — mutation gaps, coverage holes, isolation, GWT/AAA conventions.
+Run three review passes in this order:
 
-Each subagent's contract: review the diff, apply fixes for every finding it identifies, run `npm run validate` after each fix batch, self-review until its own pass yields zero findings (max 3 cycles). Returns "applied N fixes, list, final validate state".
+1. **TypeScript review** — types, correctness, bugs, project conventions, immutability.
+2. **Security review** — config/path/URL injection, traversal, SSRF, resource exhaustion, cache poisoning.
+3. **Test review** — mutation gaps, coverage holes, isolation, GWT/AAA conventions.
 
-**Security gate:** the security subagent surfaces HIGH/CRITICAL findings to YOU (the orchestrator) BEFORE committing fixes. You confirm or revise with the user. MEDIUM/LOW security findings + all typescript/test findings: fix-all-then-converge, no orchestrator round-trip.
+For each: read the branch's diff (`git diff main...HEAD`), identify every finding, **apply fixes directly**, run `npm run validate` after each fix batch, self-review until the next pass yields zero findings (max 3 cycles per reviewer).
 
-## Step 7 — Mutation subagent (Sonnet)
+**Security gate:** for HIGH/CRITICAL security findings, surface the fix diff to the user BEFORE committing. MEDIUM/LOW security findings + all typescript/test findings: fix-all-then-converge, no user round-trip.
 
-Spawn ONE Sonnet subagent with:
-- The contract: run `npm run test:mutation` (or `stryker run`), iterate per surviving mutant — kill it with a new test, or document it inline as `// equivalent-mutant: <why>` when provably equivalent. Re-run until 0 killable survivors. Commit each kill as `test(mutation): <module>`. Return the final mutant report.
+Commit fixes per reviewer as conventional commits (e.g. `refactor(config): apply typescript-review fixes`, `fix(security): tighten path validator`, `test(coverage): close gap surfaced by test-review`).
 
-If the project has no mutation config or the run is intractable (>30min), the subagent reports back; you decide with the user whether to skip.
+## Step 7 — Mutation testing
 
-## Step 8 — Docs + PR subagent (Haiku)
+Run `npm run test:mutation` (or `stryker run`). Per surviving mutant: kill it with a new test, or document it inline as `// equivalent-mutant: <why>` when provably equivalent. Re-run until 0 killable survivors. Commit each kill as `test(mutation): <module>`.
 
-Spawn ONE Haiku subagent with:
-- The design + plan + commit list.
-- The contract: update `README.md`, `RUNBOOK.md`, `CONTRIBUTING.md`, and the relevant `docs/get-started/` / `docs/use/` / `docs/understand/` pages. Flip the `docs/BACKLOG.md` entry (`[ ]` / `[~]` → `[x]`) inside this PR's commits. Push the branch with `-u origin`. Run `gh pr create` with a thorough body (summary + test plan). Return the PR URL.
+If the project has no mutation config or the run is intractable (>30 min), surface to the user.
 
-## Step 9 — Cleanup (orchestrator)
+## Step 8 — Docs refresh + PR
 
-Surface the PR URL to the user. Wait for confirmation that CI is green and the PR is squash-merged. Then:
+Update `README.md`, `RUNBOOK.md`, `CONTRIBUTING.md`, and the relevant `docs/get-started/` / `docs/use/` / `docs/understand/` pages. Flip the `docs/BACKLOG.md` entry (`[ ]` / `[~]` → `[x]`) inside this PR's commits. Push the branch with `-u origin`. Run `gh pr create` with a thorough body (summary + test plan).
+
+## Step 9 — Cleanup
+
+Surface the PR URL. Wait for confirmation that CI is green and the PR is squash-merged. Then:
 
 ```bash
 git worktree remove ../tsgit-<slug>
@@ -108,10 +111,11 @@ git branch -D feat/<slug>
 
 ## Hard rules
 
-- Never load source code into the orchestrator's context — every code touch goes through a subagent.
-- Never skip the ADR step when user-judgment was required to disambiguate the design.
-- Never spawn the review subagents in series — they MUST run in parallel (single message, three Agent tool calls).
-- Never use the Haiku for design/plan/implementation/review; never use the Opus for harness/PR-open.
-- If at any phase the subagent escalates, do NOT retry blindly — surface to the user with the candidate options.
+- **NEVER spawn subagents.** The whole workflow runs in this session. The user sees every action, can interrupt at any point, can steer mid-flight.
+- **Never skip the ADR step** when user-judgment was required to disambiguate the design.
+- **Never skip the three review passes** before pushing.
+- **Never `--no-verify` the commit hook**, never use ignore directives.
+- **Never include phase/ADR refs inside source or test code** (`§X.Y.Z`, `Phase N`, `ADR-NNN`, `BACKLOG 20.6` etc.). Those belong in the design doc and PR body. Source code is silent about its provenance.
+- **Be git-faithful** unless an ADR explicitly diverges.
 
-When done, your final message to the user is the PR URL + a one-line summary of what shipped.
+When done, the final message to the user is the PR URL + a one-line summary of what shipped.

@@ -9,6 +9,12 @@ import {
   type CommandError,
   cannotDeleteCheckedOutBranch,
   checkoutOverwriteDirty,
+  configKeyInvalid,
+  configMultipleValues,
+  configScopeNotAvailable,
+  configSectionNotFound,
+  configSystemPathUnresolved,
+  configValueInvalid,
   emptyCommitMessage,
   emptyPathspec,
   gitignoreFileTooLarge,
@@ -742,6 +748,194 @@ describe('sanitize helper', () => {
   });
 });
 
+describe('domain commands error — config factory data', () => {
+  describe('Given the configKeyInvalid helper', () => {
+    describe('When called with reason="empty-section" and no position', () => {
+      it('Then data omits the position field', () => {
+        // Arrange + Act
+        const sut = configKeyInvalid('.name', 'empty-section');
+
+        // Assert
+        expect(sut.data).toEqual({
+          code: 'CONFIG_KEY_INVALID',
+          key: '.name',
+          reason: 'empty-section',
+        });
+        expect(sut.data).not.toHaveProperty('position');
+      });
+    });
+
+    describe('When called with reason="missing-name" and no position', () => {
+      it('Then data omits the position field', () => {
+        // Arrange + Act
+        const sut = configKeyInvalid('user.', 'missing-name');
+
+        // Assert
+        expect(sut.data).toEqual({
+          code: 'CONFIG_KEY_INVALID',
+          key: 'user.',
+          reason: 'missing-name',
+        });
+        expect(sut.data).not.toHaveProperty('position');
+      });
+    });
+
+    describe('When called with reason="bad-character" and a position', () => {
+      it('Then data carries the exact position number', () => {
+        // Arrange + Act
+        const sut = configKeyInvalid('1user.name', 'bad-character', 0);
+
+        // Assert
+        expect(sut.data).toEqual({
+          code: 'CONFIG_KEY_INVALID',
+          key: '1user.name',
+          reason: 'bad-character',
+          position: 0,
+        });
+      });
+    });
+
+    describe('When called with a key containing a control character', () => {
+      it('Then the key is sanitized for display', () => {
+        // Arrange + Act
+        const sut = configKeyInvalid('user.\x07name', 'bad-character', 5);
+
+        // Assert
+        expect(sut.data).toEqual({
+          code: 'CONFIG_KEY_INVALID',
+          key: 'user.\\x07name',
+          reason: 'bad-character',
+          position: 5,
+        });
+      });
+    });
+  });
+
+  describe('Given the configValueInvalid helper', () => {
+    describe('When called', () => {
+      it('Then data carries the sanitized key, reason, and exact position', () => {
+        // Arrange + Act
+        const sut = configValueInvalid('user.name', 3);
+
+        // Assert
+        expect(sut.data).toEqual({
+          code: 'CONFIG_VALUE_INVALID',
+          key: 'user.name',
+          reason: 'control-character',
+          position: 3,
+        });
+      });
+    });
+  });
+
+  describe('Given the configMultipleValues helper', () => {
+    describe('When called without a scope and requested="read"', () => {
+      it('Then data omits the scope field', () => {
+        // Arrange + Act
+        const sut = configMultipleValues('remote.origin.fetch', 2, 'read');
+
+        // Assert
+        expect(sut.data).toEqual({
+          code: 'CONFIG_MULTIPLE_VALUES',
+          key: 'remote.origin.fetch',
+          count: 2,
+          requested: 'read',
+        });
+        expect(sut.data).not.toHaveProperty('scope');
+      });
+    });
+
+    describe('When called with a scope and requested="overwrite"', () => {
+      it('Then data carries every field', () => {
+        // Arrange + Act
+        const sut = configMultipleValues('remote.origin.fetch', 3, 'overwrite', 'local');
+
+        // Assert
+        expect(sut.data).toEqual({
+          code: 'CONFIG_MULTIPLE_VALUES',
+          key: 'remote.origin.fetch',
+          count: 3,
+          requested: 'overwrite',
+          scope: 'local',
+        });
+      });
+    });
+
+    describe('When called with requested="remove"', () => {
+      it('Then the requested literal round-trips', () => {
+        // Arrange + Act
+        const sut = configMultipleValues('user.email', 4, 'remove');
+
+        // Assert
+        expect(sut.data).toEqual({
+          code: 'CONFIG_MULTIPLE_VALUES',
+          key: 'user.email',
+          count: 4,
+          requested: 'remove',
+        });
+      });
+    });
+  });
+
+  describe('Given the configSectionNotFound helper', () => {
+    describe('When called', () => {
+      it('Then data carries the sanitized name and scope', () => {
+        // Arrange + Act
+        const sut = configSectionNotFound('remote.\x07origin', 'global');
+
+        // Assert
+        expect(sut.data).toEqual({
+          code: 'CONFIG_SECTION_NOT_FOUND',
+          name: 'remote.\\x07origin',
+          scope: 'global',
+        });
+      });
+    });
+  });
+
+  describe('Given the configScopeNotAvailable helper', () => {
+    describe('When called with reason="browser-adapter"', () => {
+      it('Then data round-trips with the browser-adapter reason', () => {
+        // Arrange + Act
+        const sut = configScopeNotAvailable('global', 'browser-adapter');
+
+        // Assert
+        expect(sut.data).toEqual({
+          code: 'CONFIG_SCOPE_NOT_AVAILABLE',
+          scope: 'global',
+          reason: 'browser-adapter',
+        });
+      });
+    });
+
+    describe('When called with reason="worktree-extension-unset"', () => {
+      it('Then data round-trips with the worktree-extension-unset reason', () => {
+        // Arrange + Act
+        const sut = configScopeNotAvailable('worktree', 'worktree-extension-unset');
+
+        // Assert
+        expect(sut.data).toEqual({
+          code: 'CONFIG_SCOPE_NOT_AVAILABLE',
+          scope: 'worktree',
+          reason: 'worktree-extension-unset',
+        });
+      });
+    });
+  });
+
+  describe('Given the configSystemPathUnresolved helper', () => {
+    describe('When called', () => {
+      it('Then data carries only the code', () => {
+        // Arrange + Act
+        const sut = configSystemPathUnresolved();
+
+        // Assert
+        expect(sut.data).toEqual({ code: 'CONFIG_SYSTEM_PATH_UNRESOLVED' });
+      });
+    });
+  });
+});
+
 describe('domain commands error — extractDetail message formatting', () => {
   type Case = readonly [CommandError, string];
   const cases: ReadonlyArray<Case> = [
@@ -913,6 +1107,52 @@ describe('domain commands error — extractDetail message formatting', () => {
     [
       { code: 'HOOK_FAILED', hook: 'pre-commit', exitCode: 1, stderr: 'lint failed' },
       'HOOK_FAILED: hook pre-commit failed with exit code 1',
+    ],
+    [
+      { code: 'CONFIG_KEY_INVALID', key: '.name', reason: 'empty-section' },
+      'CONFIG_KEY_INVALID: invalid config key ".name": empty-section',
+    ],
+    [
+      { code: 'CONFIG_KEY_INVALID', key: '1user.name', reason: 'bad-character', position: 0 },
+      'CONFIG_KEY_INVALID: invalid config key "1user.name": bad-character at position 0',
+    ],
+    [
+      { code: 'CONFIG_VALUE_INVALID', key: 'user.name', reason: 'control-character', position: 3 },
+      'CONFIG_VALUE_INVALID: invalid config value for "user.name": control-character at position 3',
+    ],
+    [
+      { code: 'CONFIG_MULTIPLE_VALUES', key: 'remote.origin.fetch', count: 2, requested: 'read' },
+      'CONFIG_MULTIPLE_VALUES: config key "remote.origin.fetch" has 2 values (read requires single)',
+    ],
+    [
+      {
+        code: 'CONFIG_MULTIPLE_VALUES',
+        key: 'remote.origin.fetch',
+        count: 3,
+        requested: 'overwrite',
+        scope: 'local',
+      },
+      'CONFIG_MULTIPLE_VALUES: config key "remote.origin.fetch" has 3 values in scope local (overwrite requires single)',
+    ],
+    [
+      { code: 'CONFIG_SECTION_NOT_FOUND', name: 'remote', scope: 'global' },
+      'CONFIG_SECTION_NOT_FOUND: config section not found in scope global: remote',
+    ],
+    [
+      { code: 'CONFIG_SCOPE_NOT_AVAILABLE', scope: 'global', reason: 'browser-adapter' },
+      'CONFIG_SCOPE_NOT_AVAILABLE: config scope not available: global (browser-adapter)',
+    ],
+    [
+      {
+        code: 'CONFIG_SCOPE_NOT_AVAILABLE',
+        scope: 'worktree',
+        reason: 'worktree-extension-unset',
+      },
+      'CONFIG_SCOPE_NOT_AVAILABLE: config scope not available: worktree (worktree-extension-unset)',
+    ],
+    [
+      { code: 'CONFIG_SYSTEM_PATH_UNRESOLVED' },
+      'CONFIG_SYSTEM_PATH_UNRESOLVED: config system path could not be resolved on this platform',
     ],
   ];
 

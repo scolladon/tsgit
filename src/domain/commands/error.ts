@@ -2,6 +2,7 @@ import { TsgitError } from '../error.js';
 import type { HookName } from '../hooks/index.js';
 import type { FilePath, ObjectId, RefName } from '../objects/object-id.js';
 import type { ReceivePackResponse as ReportStatus } from '../protocol/receive-pack.js';
+import type { ConfigScope } from './config-key.js';
 
 export type CommandError =
   | { readonly code: 'WORKING_TREE_DIRTY'; readonly paths: ReadonlyArray<FilePath> }
@@ -90,7 +91,37 @@ export type CommandError =
       readonly hook: HookName;
       readonly exitCode: number;
       readonly stderr: string;
-    };
+    }
+  | {
+      readonly code: 'CONFIG_KEY_INVALID';
+      readonly key: string;
+      readonly reason: 'empty-section' | 'missing-name' | 'bad-character';
+      readonly position?: number;
+    }
+  | {
+      readonly code: 'CONFIG_VALUE_INVALID';
+      readonly key: string;
+      readonly reason: 'control-character';
+      readonly position: number;
+    }
+  | {
+      readonly code: 'CONFIG_MULTIPLE_VALUES';
+      readonly key: string;
+      readonly count: number;
+      readonly requested: 'read' | 'overwrite' | 'remove';
+      readonly scope?: ConfigScope;
+    }
+  | {
+      readonly code: 'CONFIG_SECTION_NOT_FOUND';
+      readonly name: string;
+      readonly scope: ConfigScope;
+    }
+  | {
+      readonly code: 'CONFIG_SCOPE_NOT_AVAILABLE';
+      readonly scope: ConfigScope;
+      readonly reason: 'browser-adapter' | 'worktree-extension-unset';
+    }
+  | { readonly code: 'CONFIG_SYSTEM_PATH_UNRESOLVED' };
 
 const sanitizeForDisplay = (s: string): string => {
   let out = '';
@@ -273,3 +304,49 @@ export const hookFailed = (hook: HookName, exitCode: number, stderr: string): Ts
     exitCode,
     stderr: sanitizeForDisplay(stderr).slice(0, MAX_HOOK_STDERR_IN_ERROR),
   });
+
+export const configKeyInvalid = (
+  key: string,
+  reason: 'empty-section' | 'missing-name' | 'bad-character',
+  position?: number,
+): TsgitError =>
+  new TsgitError(
+    position === undefined
+      ? { code: 'CONFIG_KEY_INVALID', key: sanitizeForDisplay(key), reason }
+      : { code: 'CONFIG_KEY_INVALID', key: sanitizeForDisplay(key), reason, position },
+  );
+
+export const configValueInvalid = (key: string, position: number): TsgitError =>
+  new TsgitError({
+    code: 'CONFIG_VALUE_INVALID',
+    key: sanitizeForDisplay(key),
+    reason: 'control-character',
+    position,
+  });
+
+export const configMultipleValues = (
+  key: string,
+  count: number,
+  requested: 'read' | 'overwrite' | 'remove',
+  scope?: ConfigScope,
+): TsgitError =>
+  new TsgitError(
+    scope === undefined
+      ? { code: 'CONFIG_MULTIPLE_VALUES', key: sanitizeForDisplay(key), count, requested }
+      : { code: 'CONFIG_MULTIPLE_VALUES', key: sanitizeForDisplay(key), count, requested, scope },
+  );
+
+export const configSectionNotFound = (name: string, scope: ConfigScope): TsgitError =>
+  new TsgitError({
+    code: 'CONFIG_SECTION_NOT_FOUND',
+    name: sanitizeForDisplay(name),
+    scope,
+  });
+
+export const configScopeNotAvailable = (
+  scope: ConfigScope,
+  reason: 'browser-adapter' | 'worktree-extension-unset',
+): TsgitError => new TsgitError({ code: 'CONFIG_SCOPE_NOT_AVAILABLE', scope, reason });
+
+export const configSystemPathUnresolved = (): TsgitError =>
+  new TsgitError({ code: 'CONFIG_SYSTEM_PATH_UNRESOLVED' });

@@ -145,4 +145,33 @@ export interface FileSystem {
    * Throws `PERMISSION_DENIED` if the leaf is a symlink.
    */
   readonly openWithNoFollow: (path: string, mode: 'read' | 'write') => Promise<FileHandle>;
+
+  /**
+   * Absolute path to the current user's home directory.
+   *
+   * - Node: `os.homedir()`.
+   * - Memory: a fixed value injected via constructor options (default `'/home/user'`).
+   * - Browser: throws `UNSUPPORTED_OPERATION` (no concept of a home directory).
+   */
+  readonly homedir: () => string;
+
+  /**
+   * Absolute path to the user's XDG config home — `$XDG_CONFIG_HOME` when set
+   * and non-empty, otherwise `<homedir>/.config`.
+   *
+   * - Node: reads `process.env.XDG_CONFIG_HOME`, falls back to `<homedir>/.config`.
+   * - Memory: fixed value injected via constructor options.
+   * - Browser: throws `UNSUPPORTED_OPERATION`.
+   */
+  readonly xdgConfigHome: () => string;
+
+  /**
+   * Absolute path to the platform's system git config file.
+   *
+   * - Node POSIX: `/etc/gitconfig`.
+   * - Node Windows: `<ProgramData>\Git\config` (ProgramData from env, default `C:\ProgramData`).
+   * - Memory: fixed value injected via constructor options.
+   * - Browser: throws `UNSUPPORTED_OPERATION`.
+   */
+  readonly systemConfigPath: () => string;
 }

@@ -7,8 +7,14 @@ export { buildPack } from './build-pack.js';
 export { catFileBatch } from './cat-file-batch.js';
 export type { Changeset, ChangesetEntry, ChangesetStats } from './compute-changeset.js';
 export { computeChangeset } from './compute-changeset.js';
-export type { ParsedConfig } from './config-read.js';
-export { invalidateConfigCache, readConfig } from './config-read.js';
+export type { IniSection, ParsedConfig } from './config-read.js';
+export { invalidateConfigCache, parseIniSections, readConfig } from './config-read.js';
+export {
+  getAllConfigValues,
+  getConfigValue,
+  invalidateScopedConfigCache,
+  readConfigSections,
+} from './config-scoped-read.js';
 export { createCommit } from './create-commit.js';
 export { diffTrees } from './diff-trees.js';
 export type { EnumeratePushObjectsInput } from './enumerate-push-objects.js';
@@ -60,8 +66,14 @@ export type { UnstageEntryOptions } from './unstage-entry.js';
 export { unstageEntry } from './unstage-entry.js';
 export type { ConfigEntry } from './update-config.js';
 export {
+  applyConfigOpInText,
+  removeConfigSection,
+  renameConfigSection,
   setConfigEntry,
-  setCoreConfigEntry,
+  setConfigEntryInText,
+  setCoreConfigEntryInText,
+  unsetAllConfigEntries,
+  unsetConfigEntry,
   updateConfigEntries,
   updateCoreConfig,
 } from './update-config.js';

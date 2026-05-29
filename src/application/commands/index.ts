@@ -11,6 +11,36 @@ export { type CheckoutOptions, type CheckoutResult, checkout } from './checkout.
 export { type CloneOptions, type CloneResult, clone } from './clone.js';
 export { type CommitOptions, type CommitResult, commit } from './commit.js';
 export {
+  type ConfigEntryView,
+  type ConfigGetAllInput,
+  type ConfigGetAllResult,
+  type ConfigGetInput,
+  type ConfigGetRegexpInput,
+  type ConfigGetRegexpResult,
+  type ConfigGetResult,
+  type ConfigListInput,
+  type ConfigListResult,
+  type ConfigRemoveSectionInput,
+  type ConfigRemoveSectionResult,
+  type ConfigRenameSectionInput,
+  type ConfigRenameSectionResult,
+  type ConfigSetInput,
+  type ConfigSetResult,
+  type ConfigUnsetAllInput,
+  type ConfigUnsetAllResult,
+  type ConfigUnsetInput,
+  type ConfigUnsetResult,
+  configGet,
+  configGetAll,
+  configGetRegexp,
+  configList,
+  configRemoveSection,
+  configRenameSection,
+  configSet,
+  configUnset,
+  configUnsetAll,
+} from './config.js';
+export {
   type ContinueMergeOptions,
   type ContinueMergeResult,
   continueMerge,
@@ -30,6 +60,7 @@ export {
   fetchMissing,
 } from './fetch-missing.js';
 export { type InitOptions, type InitResult, init } from './init.js';
+export { bindConfigNamespace, type ConfigNamespace } from './internal/config-namespace.js';
 export { type LogEntry, type LogOptions, log } from './log.js';
 export { type MergeOptions, type MergeResult, merge } from './merge.js';
 export { type PushOptions, type PushResult, push } from './push.js';
