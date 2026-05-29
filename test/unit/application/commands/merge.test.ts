@@ -20,6 +20,7 @@ import {
 } from '../../../../src/application/commands/merge.js';
 import { readBlob } from '../../../../src/application/primitives/read-blob.js';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
+import { readReflog } from '../../../../src/application/primitives/reflog-store.js';
 import { resolveRef } from '../../../../src/application/primitives/resolve-ref.js';
 import { updateRef } from '../../../../src/application/primitives/update-ref.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
@@ -1391,6 +1392,83 @@ describe('resolveTarget (direct)', () => {
         }
         // Assert
         expect((caught as { data?: { code?: string } })?.data?.code).toBe('REF_NOT_FOUND');
+      });
+    });
+  });
+});
+
+describe('merge — reflogLabel', () => {
+  const seedFastForward = async () => {
+    const ctx = createMemoryContext();
+    await init(ctx);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
+    await add(ctx, ['a.txt']);
+    await commit(ctx, { message: 'first', author });
+    await branchCreate(ctx, { name: 'feature' });
+    await checkout(ctx, { target: 'feature' });
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.txt`, 'b');
+    await add(ctx, ['b.txt']);
+    await commit(ctx, { message: 'second', author });
+    await checkout(ctx, { target: 'main' });
+    return ctx;
+  };
+
+  describe('Given no reflogLabel and a fast-forward', () => {
+    describe('When merge', () => {
+      it('Then the branch reflog records the default "merge <target>" prefix', async () => {
+        // Arrange
+        const ctx = await seedFastForward();
+
+        // Act
+        await merge(ctx, { target: 'feature' });
+
+        // Assert
+        const messages = (await readReflog(ctx, 'refs/heads/main' as RefName)).map(
+          (e) => e.message,
+        );
+        expect(messages).toContain('merge feature: Fast-forward');
+      });
+    });
+  });
+
+  describe('Given reflogLabel "pull" and a fast-forward', () => {
+    describe('When merge', () => {
+      it('Then the branch reflog records "pull: Fast-forward"', async () => {
+        // Arrange
+        const ctx = await seedFastForward();
+
+        // Act
+        await merge(ctx, { target: 'feature', reflogLabel: 'pull' });
+
+        // Assert
+        const messages = (await readReflog(ctx, 'refs/heads/main' as RefName)).map(
+          (e) => e.message,
+        );
+        expect(messages).toContain('pull: Fast-forward');
+      });
+    });
+  });
+
+  describe('Given reflogLabel "pull" and a forced merge commit', () => {
+    describe('When merge', () => {
+      it('Then the branch reflog records "pull: Merge made by the \'tsgit\' strategy."', async () => {
+        // Arrange
+        const ctx = await seedFastForward();
+
+        // Act
+        await merge(ctx, {
+          target: 'feature',
+          noFastForward: true,
+          message: 'merge',
+          author,
+          reflogLabel: 'pull',
+        });
+
+        // Assert
+        const messages = (await readReflog(ctx, 'refs/heads/main' as RefName)).map(
+          (e) => e.message,
+        );
+        expect(messages).toContain("pull: Merge made by the 'tsgit' strategy.");
       });
     });
   });
