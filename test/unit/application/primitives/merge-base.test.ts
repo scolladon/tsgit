@@ -361,6 +361,39 @@ describe('mergeBase', () => {
     });
   });
 
+  describe('Given two sibling commits sharing the same committer timestamp', () => {
+    describe('When mergeBase([B, C])', () => {
+      it('Then the queue tie-breaks by oid and still returns [A]', async () => {
+        // Arrange — B and C share committer timestamp 200 (forcing the queue's
+        // oid tie-break) but carry distinct messages so they stay distinct oids.
+        const ctx = await buildSeededContext();
+        const treeId = await emptyTree(ctx);
+        const a = await commitWith(ctx, treeId, 100, []);
+        const sameTs = { ...AUTHOR, timestamp: 200 };
+        const b = await createCommit(ctx, {
+          tree: treeId,
+          parents: [a],
+          author: sameTs,
+          committer: sameTs,
+          message: 'branch-b',
+        });
+        const c = await createCommit(ctx, {
+          tree: treeId,
+          parents: [a],
+          author: sameTs,
+          committer: sameTs,
+          message: 'branch-c',
+        });
+
+        // Act
+        const sut = await mergeBase(ctx, [b, c]);
+
+        // Assert
+        expect(sut).toEqual([a]);
+      });
+    });
+  });
+
   describe('Given three branches off a shared root', () => {
     describe('When mergeBase([b, c, d], { octopus: true })', () => {
       it('Then returns the shared root', async () => {
