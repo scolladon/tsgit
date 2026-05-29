@@ -18,19 +18,16 @@ const TRAILING_ASCII_WHITESPACE = /[ \t\v\f\r]+$/;
 
 export const stripspace = (message: string): string => {
   const lines: string[] = [];
-  let blankPending = false;
-  for (const line of message.split('\n')) {
-    const cleaned = line.replace(TRAILING_ASCII_WHITESPACE, '');
-    if (cleaned.length === 0) {
-      blankPending = true;
-      continue;
-    }
-    // A blank line only survives as a single separator between content lines;
-    // leading blanks never flush because no content has been emitted yet.
-    if (blankPending && lines.length > 0) lines.push('');
-    blankPending = false;
-    lines.push(cleaned);
+  for (const raw of message.split('\n')) {
+    const line = raw.replace(TRAILING_ASCII_WHITESPACE, '');
+    const previous = lines[lines.length - 1];
+    // Drop leading blanks (nothing emitted yet) and collapse a run of blanks to
+    // one; a blank only survives as a single separator between content lines.
+    if (line === '' && (lines.length === 0 || previous === '')) continue;
+    lines.push(line);
   }
-  if (lines.length === 0) return '';
-  return `${lines.join('\n')}\n`;
+  // Collapse guarantees at most one trailing blank; drop it, then re-terminate
+  // with exactly one newline (an all-blank message yields the empty string).
+  if (lines[lines.length - 1] === '') lines.pop();
+  return lines.length === 0 ? '' : `${lines.join('\n')}\n`;
 };
