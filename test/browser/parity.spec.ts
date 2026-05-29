@@ -80,7 +80,20 @@ test.describe('parity', () => {
             const rootHandle = await navigator.storage.getDirectory();
             const encoder = new TextEncoder();
             for (const file of inputs.files) {
-              const handle = await rootHandle.getFileHandle(file.path, { create: true });
+              // OPFS getFileHandle rejects a name containing '/', so walk the
+              // path segment-by-segment, creating intermediate directories,
+              // before writing the leaf. Supports nested seed files (e.g.
+              // 'dir/keep.txt'), not just root-level ones.
+              const segments = file.path.split('/');
+              const leaf = segments.pop();
+              if (leaf === undefined || leaf === '') {
+                throw new Error(`invalid seed path: ${file.path}`);
+              }
+              let dir = rootHandle;
+              for (const segment of segments) {
+                dir = await dir.getDirectoryHandle(segment, { create: true });
+              }
+              const handle = await dir.getFileHandle(leaf, { create: true });
               const writable = await handle.createWritable();
               await writable.write(encoder.encode(file.content));
               await writable.close();
