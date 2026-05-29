@@ -8,7 +8,7 @@ import {
 import { parseApproxidate } from '../../domain/reflog/approxidate.js';
 import { reflogEntryOutOfRange } from '../../domain/reflog/error.js';
 import type { ReflogEntry } from '../../domain/reflog/reflog-entry.js';
-import { validateRefName } from '../../domain/refs/index.js';
+import { refCandidates, validateRefName } from '../../domain/refs/index.js';
 import type { Context } from '../../ports/context.js';
 import { readIndex } from '../primitives/read-index.js';
 import { readObject } from '../primitives/read-object.js';
@@ -59,14 +59,6 @@ const resolveBase = async (ctx: Context, base: string): Promise<ObjectId> => {
   }
   throw objectNotFound(base as ObjectId);
 };
-
-/** Candidate ref names a short base may stand for, in resolution priority order. */
-const refCandidates = (base: string): ReadonlyArray<RefName | 'HEAD'> => [
-  base as RefName,
-  `refs/heads/${base}` as RefName,
-  `refs/tags/${base}` as RefName,
-  `refs/remotes/${base}` as RefName,
-];
 
 /** Resolve `<base>@{<selector>}` through the reflog of the base ref. */
 const resolveReflogBase = async (

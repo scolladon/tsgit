@@ -83,6 +83,7 @@ export {
 export { bindTagNamespace, type TagNamespace } from './internal/tag-namespace.js';
 export { type LogEntry, type LogOptions, log } from './log.js';
 export { type MergeOptions, type MergeResult, merge } from './merge.js';
+export { type PullOptions, type PullResult, pull } from './pull.js';
 export { type PushOptions, type PushResult, push } from './push.js';
 export {
   type ReflogAction,

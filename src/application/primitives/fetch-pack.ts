@@ -35,6 +35,7 @@ import {
 import { readableStreamToAsyncIterable } from '../../operators/readable-stream.js';
 import type { Context } from '../../ports/context.js';
 import type { HttpTransport } from '../../ports/http-transport.js';
+import { refreshPackRegistry } from './read-object.js';
 
 const TEXT_ENCODER = new TextEncoder();
 const PACK_HEADER_BYTES = 12;
@@ -136,6 +137,9 @@ export const fetchPack = async (
       entries.length,
       input.promisor === true,
     );
+    // Drop the per-Context pack-registry cache so reads through this same
+    // handle (e.g. a follow-up merge in `pull`) see the just-written pack.
+    refreshPackRegistry(ctx);
     return {
       ...written,
       shallow: download.shallow,

@@ -27,6 +27,7 @@ import {
   nonFastForward,
   noOperationInProgress,
   nothingToCommit,
+  noUpstreamConfigured,
   operationInProgress,
   pathspecNoMatch,
   pathspecOutsideRepo,
@@ -151,6 +152,18 @@ describe('domain commands error — factory data', () => {
         expect(branchNotFound('refs/heads/x' as RefName).data).toEqual({
           code: 'BRANCH_NOT_FOUND',
           name: 'refs/heads/x',
+        });
+      });
+    });
+  });
+
+  describe('Given the noUpstreamConfigured error helper', () => {
+    describe('When called', () => {
+      it('Then data matches expected shape', () => {
+        // Arrange + Assert
+        expect(noUpstreamConfigured('refs/heads/main' as RefName).data).toEqual({
+          code: 'NO_UPSTREAM_CONFIGURED',
+          branch: 'refs/heads/main',
         });
       });
     });

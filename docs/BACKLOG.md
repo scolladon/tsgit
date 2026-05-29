@@ -249,7 +249,7 @@ High-reuse building blocks. Unlocks Phase 21–22.
 
 Composition on Phase 20.
 
-- [ ] **21.1** `pull` — `fetch` + `merge` (or `rebase` once 22 lands). Refactor opportunity: `pull` is the test that 20.4 + 22.3 compose cleanly.
+- [x] **21.1** `pull` — `fetch` + `merge` on `repo.*`. Strict upstream resolution (`opts.remote ?? branch.<cur>.remote ?? origin`; `opts.branch ?? branch.<cur>.merge`), and `clone` now writes `[remote "origin"]` + `[branch "<head>"]` tracking config for every clone (ADR-196). pull resolves the tracking ref → OID and delegates to `merge` with a faithful `Merge branch '<x>' of <url>` message + a new `merge` `reflogLabel` so the reflog reads `pull:` exactly like git (ADR-197). `merge.resolveTarget` broadened to gitrevisions ref-DWIM (`origin/main`, tags) via a shared `refCandidates` ladder + tag peeling (ADR-199). `rebase` mode omitted until 22.3 (ADR-198). Conflicts compose with the 20.4 state machine (abort/continue) unchanged. Also fixed a latent fetch bug: the per-`Context` pack registry was not refreshed after a pack write. · ADRs 196–199 · `design/phase-21-1-pull.md`
 - [ ] **21.2** `mv` — atomic rename in index + working tree.
 - [ ] **21.3** `stash` — `push`/`pop`/`list`/`drop`/`apply`. Introduces working-tree snapshot infra reused by 22.
 
@@ -293,7 +293,7 @@ v3.0 ships when 24.7 lands. Perf pass covered in **26**.
 
 - [ ] **25.1** SSH transport — new port; key resolution delegated, browser stays inert.
 - [ ] **25.2** GPG signing — new port; signed commits (`-S`), signed tags, signed pushes.
-- [ ] **25.3** Smart-HTTP v2.
+- [ ] **25.3** Smart-HTTP v2. Must deliver **incremental fetch negotiation**: tsgit's v1 upload-pack client strips `multi_ack_detailed` and runs a single round, so it cannot fetch new objects when the client holds a base (`want C1 / have C0 / done` returns no pack — `clone` and no-op fetch work, "remote advanced → fetch new" does not). v2's `fetch` command (`ack`/`ready`/`done`) subsumes this; alternatively a focused v1 `multi_ack_detailed` round can be hoisted earlier if real incremental `fetch`/`pull` is needed before v2. Surfaced by 21.1 — `pull`'s over-the-wire fast-forward/merge composes for free once this lands (no `pull` change); FF/merge/conflict are unit-proven against a local graph until then.
 - [ ] **25.4** Submodule write side — `add`/`init`/`update`/`sync`/`deinit`.
 - [ ] **25.5** Hook coverage parity — `post-commit`, `post-merge`, `post-checkout`, `prepare-commit-msg`, `pre-rebase`, `post-rewrite`, server-side hooks.
 

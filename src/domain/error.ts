@@ -319,6 +319,8 @@ function extractDetail(data: TsgitErrorData): string {
       return `${data.count} refspecs exceeds limit ${data.limit}`;
     case 'REMOTE_NOT_CONFIGURED':
       return `remote not configured: ${data.remote}`;
+    case 'NO_UPSTREAM_CONFIGURED':
+      return `no upstream configured for ${data.branch}`;
     case 'REMOTE_EXISTS':
       return `remote already exists: ${data.remote}`;
     case 'REMOTE_NAME_INVALID':

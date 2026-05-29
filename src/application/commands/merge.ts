@@ -28,6 +28,8 @@ import {
   type ObjectId,
   type RefName,
 } from '../../domain/objects/index.js';
+import { refNotFound } from '../../domain/refs/error.js';
+import { refCandidates } from '../../domain/refs/index.js';
 import type { SparseMatcher } from '../../domain/sparse/index.js';
 import type { Context } from '../../ports/context.js';
 import { readConfig } from '../primitives/config-read.js';
@@ -58,6 +60,12 @@ export interface MergeOptions {
   readonly noFastForward?: boolean;
   readonly author?: AuthorIdentity;
   readonly committer?: AuthorIdentity;
+  /**
+   * Reflog action prefix, mirroring git's GIT_REFLOG_ACTION. Replaces the
+   * default `merge <target>` prefix in the fast-forward and merge-commit reflog
+   * messages (e.g. `pull` → `pull: Fast-forward`). Defaults to `merge <target>`.
+   */
+  readonly reflogLabel?: string;
 }
 
 export interface MergeConflictDescriptor {
@@ -112,7 +120,7 @@ export const merge = async (ctx: Context, opts: MergeOptions): Promise<MergeResu
     if (opts.noFastForward !== true) {
       await updateRef(ctx, head.target, theirId, {
         expected: ourId,
-        reflogMessage: `merge ${opts.target}: Fast-forward`,
+        reflogMessage: `${opts.reflogLabel ?? `merge ${opts.target}`}: Fast-forward`,
       });
       return { kind: 'fast-forward', id: theirId, branch: head.target };
     }
@@ -172,7 +180,7 @@ const commitCleanMerge = async (
   const id = await createCommit(ctx, commitData);
   await updateRef(ctx, branchName, id, {
     expected: ourId,
-    reflogMessage: `merge ${opts.target}: Merge made by the 'tsgit' strategy.`,
+    reflogMessage: `${opts.reflogLabel ?? `merge ${opts.target}`}: Merge made by the 'tsgit' strategy.`,
   });
   return { kind: 'merge', id, branch: branchName, parents: [ourId, theirId] };
 };
@@ -683,7 +691,16 @@ export const resolveMergeCommitter = (
 /** Resolve a merge target (40-hex oid or branch name). Exported for direct unit testing. */
 export const resolveTarget = async (ctx: Context, target: string): Promise<ObjectId> => {
   if (/^[0-9a-f]{40}$/.test(target)) return target as ObjectId;
-  return resolveRef(ctx, `refs/heads/${target}` as RefName);
+  // gitrevisions ref-DWIM: try each candidate namespace in priority order,
+  // peeling annotated tags to their underlying commit (git merge <commit-ish>).
+  for (const candidate of refCandidates(target)) {
+    try {
+      return await resolveRef(ctx, candidate, { peel: true });
+    } catch {
+      // Not this candidate — fall through to the next namespace.
+    }
+  }
+  throw refNotFound(target as RefName);
 };
 
 const getTree = async (ctx: Context, commitId: ObjectId): Promise<ObjectId> => {

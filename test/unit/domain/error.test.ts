@@ -16,10 +16,12 @@ import {
   httpError,
   networkError,
   notADirectory,
+  noUpstreamConfigured,
   permissionDenied,
   type TsgitError,
   unsupportedOperation,
 } from '../../../src/domain/index.js';
+import type { RefName } from '../../../src/domain/objects/index.js';
 
 describe('domain error — AdapterError', () => {
   describe('factory functions', () => {
@@ -284,6 +286,18 @@ describe('domain error — AdapterError', () => {
 
           // Assert
           expect(sut.message).toContain('hash computation failed: subtle.digest threw');
+        });
+      });
+    });
+
+    describe('Given NO_UPSTREAM_CONFIGURED', () => {
+      describe('When reading message', () => {
+        it('Then names the branch with no tracking information', () => {
+          // Arrange & Act
+          const sut = noUpstreamConfigured('refs/heads/main' as RefName);
+
+          // Assert
+          expect(sut.message).toContain('no upstream configured for refs/heads/main');
         });
       });
     });

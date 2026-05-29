@@ -28,6 +28,17 @@ function getPackRegistry(ctx: Context): PackRegistry {
   return registry;
 }
 
+/**
+ * Drop the per-Context pack-registry's cached `.idx` scan so the next read
+ * re-scans `objects/pack/`. MUST be called after a pack is written into a live
+ * Context (e.g. `fetchPack`), otherwise objects delivered by that pack are
+ * invisible to subsequent reads through the same handle — the failure `pull`
+ * exposed when its `merge` step could not see freshly-fetched commits.
+ */
+export function refreshPackRegistry(ctx: Context): void {
+  registryCache.get(ctx)?.refresh();
+}
+
 function getInflight(ctx: Context): Map<string, Promise<boolean>> {
   let inflight = inflightCache.get(ctx);
   if (inflight === undefined) {

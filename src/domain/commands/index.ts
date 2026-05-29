@@ -23,6 +23,7 @@ export {
   noOperationInProgress,
   noPromisorRemote,
   nothingToCommit,
+  noUpstreamConfigured,
   operationInProgress,
   pathspecNoMatch,
   pathspecOutsideRepo,
