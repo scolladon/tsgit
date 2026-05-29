@@ -26,7 +26,7 @@ The design doc recommended (1) for union compactness. The user chose (2).
 
 ## Decision
 
-Use seven granular `CommandError` codes, each carrying `source` and
+Use granular `CommandError` codes — one per refusal. Most carry `source` and
 `destination` (`FilePath`):
 
 - `MV_SOURCE_NOT_TRACKED` — git "not under version control"
@@ -36,6 +36,7 @@ Use seven granular `CommandError` codes, each carrying `source` and
 - `MV_DESTINATION_NOT_DIRECTORY` — git "destination 'X' is not a directory"
 - `MV_DESTINATION_DIRECTORY_MISSING` — git "destination directory does not exist"
 - `MV_MULTIPLE_SOURCES_SAME_TARGET` — git "multiple sources for the same target"
+- `MV_OVERLAPPING_SOURCES` — git "cannot move both 'a/b' and its parent directory 'a'" (carries `child`/`parent` instead of `source`/`destination`)
 
 The first four are *per-source* and skippable under `skipErrors` (mapped into
 `MvResult.skipped[].reason`); the last three are *structural* and always thrown.

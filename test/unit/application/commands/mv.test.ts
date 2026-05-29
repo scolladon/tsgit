@@ -435,6 +435,23 @@ describe('mv', () => {
     });
   });
 
+  describe('Given a directory and something inside it as two sources', () => {
+    describe('When mv', () => {
+      it('Then throws MV_OVERLAPPING_SOURCES naming the child and its parent', async () => {
+        // Arrange — `a` (dir) and `a/b` (its subdir) both listed as sources.
+        const ctx = await seedAndStage({ 'a/b/x.txt': '1', 'a/y.txt': '2', 'dir/keep.txt': 'k' });
+
+        // Act / Assert
+        const err = await expectError(() => mv(ctx, ['a', 'a/b'], 'dir'), 'MV_OVERLAPPING_SOURCES');
+        if (err.data.code !== 'MV_OVERLAPPING_SOURCES') throw new Error('unexpected shape');
+        expect(err.data.child).toBe('a/b');
+        expect(err.data.parent).toBe('a');
+        // Atomic — nothing moved.
+        expect(await exists(ctx, 'a/b/x.txt')).toBe(true);
+      });
+    });
+  });
+
   describe('Given one bad source among good ones without skipErrors', () => {
     describe('When mv', () => {
       it('Then it aborts atomically — no working-tree mutation, index unchanged', async () => {

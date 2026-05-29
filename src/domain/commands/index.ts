@@ -25,6 +25,7 @@ export {
   mvDestinationNotDirectory,
   mvIntoSelf,
   mvMultipleSourcesSameTarget,
+  mvOverlappingSources,
   mvSourceNotTracked,
   nonFastForward,
   noOperationInProgress,

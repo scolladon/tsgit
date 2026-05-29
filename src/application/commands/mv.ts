@@ -5,6 +5,7 @@ import {
   mvDestinationNotDirectory,
   mvIntoSelf,
   mvMultipleSourcesSameTarget,
+  mvOverlappingSources,
   mvSourceNotTracked,
 } from '../../domain/commands/error.js';
 import { basename, dirname, TsgitError } from '../../domain/error.js';
@@ -89,6 +90,7 @@ export const mv = async (
   const validatedSources = sources.map((source) => validatePath(source));
   const [firstSource] = validatedSources;
   if (firstSource === undefined) throw emptyPathspec();
+  assertNoOverlappingSources(validatedSources);
   const destNoSlash = validatePath(stripTrailingSlash(destination));
 
   const lock = await acquireIndexLock(
@@ -237,6 +239,19 @@ const destinationFree = async (
   // `force` overwrites only a file source; a directory source over an existing
   // path is always refused (verified against git: `mv -f dir present-file` fails).
   return kind === 'file' && force;
+};
+
+// Refuse moving both a directory and something inside it (`mv a a/b dir`) — the
+// shared subtree would be relocated twice. Faithful to git's
+// "cannot move both 'a/b' and its parent directory 'a'".
+const assertNoOverlappingSources = (sources: ReadonlyArray<FilePath>): void => {
+  for (const parent of sources) {
+    for (const child of sources) {
+      if (child !== parent && child.startsWith(`${parent}/`)) {
+        throw mvOverlappingSources(child, parent);
+      }
+    }
+  }
 };
 
 const assertNoTargetCollision = (planned: ReadonlyArray<PlanItem>): void => {

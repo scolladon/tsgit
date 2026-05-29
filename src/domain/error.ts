@@ -400,6 +400,8 @@ function extractDetail(data: TsgitErrorData): string {
       return `destination directory does not exist, source=${data.source}, destination=${data.destination}`;
     case 'MV_MULTIPLE_SOURCES_SAME_TARGET':
       return `multiple sources for the same target, source=${data.source}, destination=${data.destination}`;
+    case 'MV_OVERLAPPING_SOURCES':
+      return `cannot move both '${data.child}' and its parent directory '${data.parent}'`;
     default: {
       const _exhaustive: never = data;
       return String(_exhaustive);

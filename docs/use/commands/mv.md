@@ -79,6 +79,7 @@ const { moved, skipped } = await repo.mv(['a.txt', 'ghost.txt'], 'dir', { skipEr
 - `MV_DESTINATION_NOT_DIRECTORY` — multiple sources but the destination is not a directory.
 - `MV_DESTINATION_DIRECTORY_MISSING` — the destination directory does not exist (`mv` never creates it).
 - `MV_MULTIPLE_SOURCES_SAME_TARGET` — two sources resolve to the same destination path.
+- `MV_OVERLAPPING_SOURCES` — a source is a directory containing another source (`mv a a/b dir`).
 - `EMPTY_PATHSPEC` — no sources were given.
 - `BARE_REPOSITORY` — `mv` is not valid in a bare repository.
 

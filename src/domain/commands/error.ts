@@ -149,6 +149,11 @@ export type CommandError =
       readonly code: 'MV_MULTIPLE_SOURCES_SAME_TARGET';
       readonly source: FilePath;
       readonly destination: FilePath;
+    }
+  | {
+      readonly code: 'MV_OVERLAPPING_SOURCES';
+      readonly child: FilePath;
+      readonly parent: FilePath;
     };
 
 const sanitizeForDisplay = (s: string): string => {
@@ -408,3 +413,6 @@ export const mvDestinationDirectoryMissing = (
 
 export const mvMultipleSourcesSameTarget = (source: FilePath, destination: FilePath): TsgitError =>
   new TsgitError({ code: 'MV_MULTIPLE_SOURCES_SAME_TARGET', source, destination });
+
+export const mvOverlappingSources = (child: FilePath, parent: FilePath): TsgitError =>
+  new TsgitError({ code: 'MV_OVERLAPPING_SOURCES', child, parent });

@@ -20,6 +20,7 @@ import {
   mvDestinationNotDirectory,
   mvIntoSelf,
   mvMultipleSourcesSameTarget,
+  mvOverlappingSources,
   mvSourceNotTracked,
   networkError,
   notADirectory,
@@ -913,6 +914,21 @@ describe('domain error — AdapterError', () => {
           });
           expect(sut.message).toBe(
             'MV_MULTIPLE_SOURCES_SAME_TARGET: multiple sources for the same target, source=a.txt, destination=d/a.txt',
+          );
+        });
+      });
+    });
+
+    describe("Given mvOverlappingSources('a/b', 'a')", () => {
+      describe('When checking data and message', () => {
+        it('Then code/child/parent and the faithful message render', () => {
+          // Arrange & Act
+          const sut = mvOverlappingSources('a/b' as FilePath, 'a' as FilePath);
+
+          // Assert
+          expect(sut.data).toEqual({ code: 'MV_OVERLAPPING_SOURCES', child: 'a/b', parent: 'a' });
+          expect(sut.message).toBe(
+            "MV_OVERLAPPING_SOURCES: cannot move both 'a/b' and its parent directory 'a'",
           );
         });
       });

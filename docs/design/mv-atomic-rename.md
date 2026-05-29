@@ -129,7 +129,13 @@ carrying `source` and `destination` (`FilePath`):
     readonly source: FilePath; readonly destination: FilePath }
 | { readonly code: 'MV_MULTIPLE_SOURCES_SAME_TARGET';  // git: "multiple sources for the same target"
     readonly source: FilePath; readonly destination: FilePath }
+| { readonly code: 'MV_OVERLAPPING_SOURCES';           // git: "cannot move both 'a/b' and its parent directory 'a'"
+    readonly child: FilePath; readonly parent: FilePath }
 ```
+
+`MV_OVERLAPPING_SOURCES` is structural: when one source is an ancestor
+directory of another (`mv a a/b dir`), the shared subtree would be relocated
+twice, so the whole call is refused up front (atomic), faithful to git.
 
 The last three codes (`MV_DESTINATION_NOT_DIRECTORY`,
 `MV_DESTINATION_DIRECTORY_MISSING`, `MV_MULTIPLE_SOURCES_SAME_TARGET`) are
