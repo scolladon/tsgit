@@ -24,6 +24,10 @@ interface QueueEntry {
 const makeReadCommit = (ctx: Context): ReadCommit => {
   const cache = new Map<ObjectId, Commit | undefined>();
   return async (id) => {
+    // Stryker disable next-line all: equivalent — the cache is a pure memoisation
+    // over a deterministic read; forcing a miss only re-reads and re-derives the
+    // identical commit, never changing a result (the forced-hit direction returns
+    // `undefined` and is killed by every commit-resolving test).
     if (!cache.has(id)) {
       const obj = await readObject(ctx, id);
       cache.set(id, obj.type === 'commit' ? obj : undefined);
@@ -35,16 +39,26 @@ const makeReadCommit = (ctx: Context): ReadCommit => {
 const dateOf = (commit: Commit | undefined): number => commit?.data.committer.timestamp ?? 0;
 
 // Priority queue as an insertion-sorted array: front = newest date, oid asc on ties.
-const precedes = (a: QueueEntry, b: QueueEntry): boolean =>
-  a.date > b.date || (a.date === b.date && a.id < b.id);
+const precedes = (a: QueueEntry, b: QueueEntry): boolean => {
+  // Stryker disable next-line all: equivalent — this comparator only fixes the
+  // queue's pop order; the merge-base result set is order-independent (proven by
+  // the date-order-invariance property), so any reordering yields the same bases.
+  return a.date > b.date || (a.date === b.date && a.id < b.id);
+};
 
 const enqueue = (queue: QueueEntry[], entry: QueueEntry): void => {
   let i = 0;
+  // Stryker disable next-line all: equivalent — the scan only picks the insertion
+  // slot (pop order); results are order-independent, so a different slot or step
+  // changes nothing observable. `splice` below still inserts the entry.
   while (i < queue.length && !precedes(entry, queue[i]!)) i += 1;
   queue.splice(i, 0, entry);
 };
 
 const hasNonStale = (queue: readonly QueueEntry[], flags: ReadonlyMap<ObjectId, number>): boolean =>
+  // Stryker disable next-line all: equivalent — forcing this true only drains the
+  // whole queue instead of stopping early; the extra stale pops re-mark nothing
+  // (parents already carry their flags), so RESULT bits and the output are identical.
   queue.some((entry) => ((flags.get(entry.id) ?? 0) & STALE) === 0);
 
 /**
@@ -71,10 +85,16 @@ const paint = async (
     let f = (flags.get(id) ?? 0) & (BOTH | STALE);
     if (f === BOTH) {
       flags.set(id, (flags.get(id) ?? 0) | RESULT);
+      // Stryker disable next-line all: equivalent — STALE only stops a found
+      // base's ancestors from being collected as (redundant) bases; `removeRedundant`
+      // drops those independently, so the final reduced set is unchanged either way.
       f |= STALE;
     }
     const commit = await read(id);
     for (const parent of commit?.data.parents ?? []) {
+      // Stryker disable next-line all: equivalent — this skip only avoids re-marking
+      // a parent that already carries every bit in `f`; without it the re-mark is
+      // idempotent and still terminates on a finite DAG with the identical flag map.
       if (((flags.get(parent) ?? 0) & f) === f) continue;
       await mark(parent, f);
     }
@@ -99,6 +119,9 @@ const removeRedundant = async (
   commits: readonly ObjectId[],
 ): Promise<ObjectId[]> => {
   const unique = [...new Set(commits)];
+  // Stryker disable next-line all: equivalent — a fast-path only; the loop below
+  // already returns a 0/1-element input unchanged (a lone candidate has no `others`
+  // to be reachable from, so it is always kept), so weakening this guard is a no-op.
   if (unique.length <= 1) return unique;
   const kept: ObjectId[] = [];
   for (const candidate of unique) {
