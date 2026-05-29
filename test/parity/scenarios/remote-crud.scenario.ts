@@ -44,32 +44,25 @@ export const remoteCrudScenario: Scenario<RemoteCrudResult> = {
     await repo.init();
 
     // 1) add origin.
-    const added = await repo.remote({
-      kind: 'add',
+    const added = await repo.remote.add({
       name: 'origin',
       url: 'https://example.com/r.git',
     });
-    if (added.kind !== 'add') throw new Error(`remote.add: expected kind='add'`);
 
     // 2) setUrl --push.
-    await repo.remote({
-      kind: 'setUrl',
+    await repo.remote.setUrl({
       name: 'origin',
       url: 'git@example.com:r.git',
       push: true,
     });
-    const afterSet = await repo.remote({ kind: 'show', name: 'origin' });
-    if (afterSet.kind !== 'show') throw new Error(`remote.show: expected kind='show'`);
+    const afterSet = await repo.remote.show({ name: 'origin' });
 
     // 3) rename origin → upstream.
-    const renamed = await repo.remote({
-      kind: 'rename',
+    const renamed = await repo.remote.rename({
       from: 'origin',
       to: 'upstream',
     });
-    if (renamed.kind !== 'rename') throw new Error(`remote.rename: expected kind='rename'`);
-    const listAfter = await repo.remote({ kind: 'list' });
-    if (listAfter.kind !== 'list') throw new Error(`remote.list: expected kind='list'`);
+    const listAfter = await repo.remote.list();
 
     const upstream = listAfter.remotes[0];
     if (upstream === undefined) {
@@ -77,9 +70,8 @@ export const remoteCrudScenario: Scenario<RemoteCrudResult> = {
     }
 
     // 4) remove upstream.
-    await repo.remote({ kind: 'remove', name: 'upstream' });
-    const finalList = await repo.remote({ kind: 'list' });
-    if (finalList.kind !== 'list') throw new Error(`remote.list (final): expected kind='list'`);
+    await repo.remote.remove({ name: 'upstream' });
+    const finalList = await repo.remote.list();
 
     return {
       addedUrl: added.remote.url,

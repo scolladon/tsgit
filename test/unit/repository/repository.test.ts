@@ -205,20 +205,23 @@ describe('openRepository — Repository binding integrity', () => {
       it('Then each is a function', async () => {
         // Arrange
         const sut = await open();
+        // CRUD-family bindings are nested-namespace objects, not functions.
+        const namespaceKeys = new Set(['config', 'remote']);
+        const nonFunctionKeys = new Set(['ctx', 'primitives', 'snapshot', ...namespaceKeys]);
 
         for (const key of Object.keys(sut)) {
-          if (key === 'ctx' || key === 'primitives' || key === 'snapshot' || key === 'config') {
-            continue;
-          }
+          if (nonFunctionKeys.has(key)) continue;
           // Assert
           expect(typeof (sut as unknown as Record<string, unknown>)[key]).toBe('function');
         }
-        // `repo.config` is the nested-namespace dispatcher; assert it is a
-        // frozen object whose nine methods are all functions.
-        expect(typeof sut.config).toBe('object');
-        expect(Object.isFrozen(sut.config)).toBe(true);
-        for (const key of Object.keys(sut.config)) {
-          expect(typeof (sut.config as unknown as Record<string, unknown>)[key]).toBe('function');
+        // Each namespace is a frozen object whose methods are all functions.
+        for (const ns of namespaceKeys) {
+          const namespace = (sut as unknown as Record<string, Record<string, unknown>>)[ns];
+          expect(typeof namespace).toBe('object');
+          expect(Object.isFrozen(namespace)).toBe(true);
+          for (const key of Object.keys(namespace as object)) {
+            expect(typeof (namespace as Record<string, unknown>)[key]).toBe('function');
+          }
         }
         for (const key of Object.keys(sut.primitives)) {
           expect(typeof (sut.primitives as unknown as Record<string, unknown>)[key]).toBe(

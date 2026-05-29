@@ -61,6 +61,7 @@ export {
 } from './fetch-missing.js';
 export { type InitOptions, type InitResult, init } from './init.js';
 export { bindConfigNamespace, type ConfigNamespace } from './internal/config-namespace.js';
+export { bindRemoteNamespace, type RemoteNamespace } from './internal/remote-namespace.js';
 export { type LogEntry, type LogOptions, log } from './log.js';
 export { type MergeOptions, type MergeResult, merge } from './merge.js';
 export { type PushOptions, type PushResult, push } from './push.js';
@@ -71,11 +72,25 @@ export {
   reflog,
 } from './reflog.js';
 export {
-  type RemoteAction,
+  type RemoteAddInput,
+  type RemoteAddResult,
   type RemoteInfo,
-  type RemoteResult,
+  type RemoteListResult,
+  type RemoteRemoveInput,
+  type RemoteRemoveResult,
+  type RemoteRenameInput,
+  type RemoteRenameResult,
+  type RemoteSetUrlInput,
+  type RemoteSetUrlResult,
   type RemoteShow,
-  remote,
+  type RemoteShowInput,
+  type RemoteShowResult,
+  remoteAdd,
+  remoteList,
+  remoteRemove,
+  remoteRename,
+  remoteSetUrl,
+  remoteShow,
 } from './remote.js';
 export { type ResetMode, type ResetOptions, type ResetResult, reset } from './reset.js';
 export { revParse } from './rev-parse.js';
