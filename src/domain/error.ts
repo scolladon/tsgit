@@ -92,6 +92,17 @@ export function basename(path: string): string {
   return path;
 }
 
+/**
+ * The directory portion of a POSIX repo-relative path: everything before the
+ * final `/`. A path with no `/` (a root-level leaf) yields `''`. Unlike
+ * `basename`, this is POSIX-only (`/` separator) — working-tree paths are always
+ * normalised to POSIX before reaching it.
+ */
+export function dirname(path: string): string {
+  const slash = path.lastIndexOf('/');
+  return slash === -1 ? '' : path.slice(0, slash);
+}
+
 export const fileNotFound = (path: string): TsgitError =>
   new TsgitError({ code: 'FILE_NOT_FOUND', path });
 
