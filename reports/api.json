@@ -29596,39 +29596,47 @@
 								"summary": [
 									{
 										"kind": "text",
-										"text": "Compute a merge base — the first commit reachable from BOTH "
+										"text": "Compute merge bases — the best common ancestors of the given commits.\n\n"
 									},
 									{
 										"kind": "code",
-										"text": "`a`"
+										"text": "`commits[0]`"
 									},
 									{
 										"kind": "text",
-										"text": " and "
+										"text": " is "
 									},
 									{
 										"kind": "code",
-										"text": "`b`"
+										"text": "`one`"
 									},
 									{
 										"kind": "text",
-										"text": ".\n\nAlgorithm: bidirectional BFS with two visited sets. After each layer\nadvance, check the intersection. When non-empty, return the\nlexicographically smallest oid (deterministic tie-breaker).\n\nReturns "
+										"text": ", the rest are the others. Returns the lexicographically\nsmallest single base by default; the full reduced set with "
 									},
 									{
 										"kind": "code",
-										"text": "`undefined`"
+										"text": "`{ all: true }`"
 									},
 									{
 										"kind": "text",
-										"text": " for unrelated histories. Documented limitation: cherry-picks\nand criss-cross merges may yield non-optimal bases — "
+										"text": ";\nthe octopus fold with "
 									},
 									{
 										"kind": "code",
-										"text": "`recursive`"
+										"text": "`{ octopus: true }`"
 									},
 									{
 										"kind": "text",
-										"text": "-strategy\nmulti-base resolution is v2."
+										"text": ". Unrelated histories yield "
+									},
+									{
+										"kind": "code",
+										"text": "`[]`"
+									},
+									{
+										"kind": "text",
+										"text": "."
 									}
 								]
 							},
@@ -29648,27 +29656,40 @@
 								},
 								{
 									"id": 1338,
-									"name": "a",
+									"name": "commits",
 									"variant": "param",
 									"kind": 32768,
 									"flags": {},
 									"type": {
-										"type": "reference",
-										"target": 411,
-										"name": "ObjectId",
-										"package": "@scolladon/tsgit"
+										"type": "typeOperator",
+										"operator": "readonly",
+										"target": {
+											"type": "array",
+											"elementType": {
+												"type": "reference",
+												"target": 411,
+												"name": "ObjectId",
+												"package": "@scolladon/tsgit"
+											}
+										}
 									}
 								},
 								{
 									"id": 1339,
-									"name": "b",
+									"name": "options",
 									"variant": "param",
 									"kind": 32768,
-									"flags": {},
+									"flags": {
+										"isOptional": true
+									},
 									"type": {
 										"type": "reference",
-										"target": 411,
-										"name": "ObjectId",
+										"target": {
+											"packageName": "@scolladon/tsgit",
+											"packagePath": "src/application/primitives/merge-base.ts",
+											"qualifiedName": "MergeBaseOptions"
+										},
+										"name": "MergeBaseOptions",
 										"package": "@scolladon/tsgit"
 									}
 								}
@@ -29682,19 +29703,17 @@
 								},
 								"typeArguments": [
 									{
-										"type": "union",
-										"types": [
-											{
+										"type": "typeOperator",
+										"operator": "readonly",
+										"target": {
+											"type": "array",
+											"elementType": {
 												"type": "reference",
 												"target": 411,
 												"name": "ObjectId",
 												"package": "@scolladon/tsgit"
-											},
-											{
-												"type": "intrinsic",
-												"name": "undefined"
 											}
-										]
+										}
 									}
 								],
 								"name": "Promise",
@@ -76469,23 +76488,34 @@
 																		"elements": [
 																			{
 																				"type": "namedTupleMember",
-																				"name": "a",
+																				"name": "commits",
 																				"isOptional": false,
 																				"element": {
-																					"type": "reference",
-																					"target": 411,
-																					"name": "ObjectId",
-																					"package": "@scolladon/tsgit"
+																					"type": "typeOperator",
+																					"operator": "readonly",
+																					"target": {
+																						"type": "array",
+																						"elementType": {
+																							"type": "reference",
+																							"target": 411,
+																							"name": "ObjectId",
+																							"package": "@scolladon/tsgit"
+																						}
+																					}
 																				}
 																			},
 																			{
 																				"type": "namedTupleMember",
-																				"name": "b",
-																				"isOptional": false,
+																				"name": "options",
+																				"isOptional": true,
 																				"element": {
 																					"type": "reference",
-																					"target": 411,
-																					"name": "ObjectId",
+																					"target": {
+																						"packageName": "@scolladon/tsgit",
+																						"packagePath": "src/application/primitives/merge-base.ts",
+																						"qualifiedName": "MergeBaseOptions"
+																					},
+																					"name": "MergeBaseOptions",
 																					"package": "@scolladon/tsgit"
 																				}
 																			}
@@ -86895,12 +86925,12 @@
 		"1338": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/application/primitives/merge-base.ts",
-			"qualifiedName": "a"
+			"qualifiedName": "commits"
 		},
 		"1339": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/application/primitives/merge-base.ts",
-			"qualifiedName": "b"
+			"qualifiedName": "options"
 		},
 		"1340": {
 			"packageName": "@scolladon/tsgit",

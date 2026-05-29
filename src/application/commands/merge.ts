@@ -106,7 +106,7 @@ export const merge = async (ctx: Context, opts: MergeOptions): Promise<MergeResu
   const theirId = await resolveTarget(ctx, opts.target);
   // Stryker disable next-line ConditionalExpression: equivalent — when ourId===theirId, mergeBase returns that same commit, so the `base === theirId` check below yields the identical up-to-date result.
   if (ourId === theirId) return { kind: 'up-to-date', id: ourId };
-  const base = await mergeBase(ctx, ourId, theirId);
+  const [base] = await mergeBase(ctx, [ourId, theirId]);
   if (base === theirId) return { kind: 'up-to-date', id: ourId };
   if (base === ourId) {
     if (opts.noFastForward !== true) {

@@ -12,7 +12,7 @@ The composable building blocks every Tier-1 command is built from. Same `Context
 | [`getRepoRoot`](get-repo-root.md) | The repository's working-tree root (`FilePath`). |
 | [`hashBlob`](hash-blob.md) | Compute a blob OID for arbitrary bytes; `{ write: true }` persists the loose object. |
 | [`isIgnored`](is-ignored.md) | Per-path ignore lookup with rule provenance (kind, basedir, line, pattern). |
-| [`mergeBase`](merge-base.md) | Best common ancestor of two commits. |
+| [`mergeBase`](merge-base.md) | Best common ancestor(s) of commits; supports `--all` and `--octopus`. |
 | [`readBlob`](read-blob.md) | Read a blob by id; optional `maxBytes` cap. |
 | [`readIndex`](read-index.md) | Read `.git/index` (v2 or v3). |
 | [`readObject`](read-object.md) | Read any git object by id; transparent partial-clone lazy-fetch. |

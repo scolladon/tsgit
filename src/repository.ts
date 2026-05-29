@@ -491,9 +491,9 @@ export const openRepository = async (
         guard();
         return primitives.isIgnored(ctx, queries);
       }) as Repository['primitives']['isIgnored'],
-      mergeBase: ((a, b) => {
+      mergeBase: ((commits, options) => {
         guard();
-        return primitives.mergeBase(ctx, a, b);
+        return primitives.mergeBase(ctx, commits, options);
       }) as Repository['primitives']['mergeBase'],
       readBlob: ((id, options) => {
         guard();
