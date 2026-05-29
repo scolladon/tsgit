@@ -24,12 +24,11 @@ interface QueueEntry {
 const makeReadCommit = (ctx: Context): ReadCommit => {
   const cache = new Map<ObjectId, Commit | undefined>();
   return async (id) => {
-    const cached = cache.get(id);
-    if (cached !== undefined || cache.has(id)) return cached;
-    const obj = await readObject(ctx, id);
-    const commit = obj.type === 'commit' ? obj : undefined;
-    cache.set(id, commit);
-    return commit;
+    if (!cache.has(id)) {
+      const obj = await readObject(ctx, id);
+      cache.set(id, obj.type === 'commit' ? obj : undefined);
+    }
+    return cache.get(id);
   };
 };
 
@@ -89,23 +88,25 @@ const collectResults = (flags: ReadonlyMap<ObjectId, number>): ObjectId[] => {
   return out;
 };
 
-/** Drop commits reachable from another in the set (Git's `remove_redundant`). */
+/**
+ * Drop commits reachable from another in the set (Git's `remove_redundant`).
+ * A candidate is redundant iff it is an ancestor of another: painting it as
+ * PARENT1 against the rest as PARENT2, it picks up PARENT2 exactly when some
+ * other commit reaches down to it.
+ */
 const removeRedundant = async (
   read: ReadCommit,
   commits: readonly ObjectId[],
 ): Promise<ObjectId[]> => {
   const unique = [...new Set(commits)];
   if (unique.length <= 1) return unique;
-  const redundant = new Set<ObjectId>();
+  const kept: ObjectId[] = [];
   for (const candidate of unique) {
-    if (redundant.has(candidate)) continue;
-    const others = unique.filter((o) => o !== candidate && !redundant.has(o));
-    if (others.length === 0) continue;
+    const others = unique.filter((o) => o !== candidate);
     const flags = await paint(read, candidate, others);
-    if (((flags.get(candidate) ?? 0) & PARENT2) !== 0) redundant.add(candidate);
-    for (const other of others) if (((flags.get(other) ?? 0) & PARENT1) !== 0) redundant.add(other);
+    if (((flags.get(candidate) ?? 0) & PARENT2) === 0) kept.push(candidate);
   }
-  return unique.filter((c) => !redundant.has(c));
+  return kept;
 };
 
 const mergeBasesMany = async (
@@ -115,7 +116,7 @@ const mergeBasesMany = async (
 ): Promise<ObjectId[]> => {
   if (twos.length === 0) return [one];
   const results = collectResults(await paint(read, one, twos));
-  return results.length > 1 ? removeRedundant(read, results) : results;
+  return removeRedundant(read, results);
 };
 
 const octopusMergeBases = async (

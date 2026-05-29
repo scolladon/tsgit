@@ -446,4 +446,23 @@ describe('mergeBase', () => {
       });
     });
   });
+
+  describe('Given an octopus fold that accumulates a redundant ancestor', () => {
+    describe('When mergeBase([X, E, Q], { octopus: true, all: true })', () => {
+      it('Then drops the root ancestor and keeps only the lower base Q', async () => {
+        // Arrange — X and E criss-cross over {B, C}; folding against C makes the
+        // accumulator hold {root, C}, where root is an ancestor of C. The final
+        // reduce must drop root and keep C.
+        const ctx = await buildSeededContext();
+        const { a, c, d, e } = await buildCrissCross(ctx);
+
+        // Act
+        const sut = await mergeBase(ctx, [d, e, c], { octopus: true, all: true });
+
+        // Assert
+        expect(sut).toEqual([c]);
+        expect(sut).not.toContain(a);
+      });
+    });
+  });
 });
