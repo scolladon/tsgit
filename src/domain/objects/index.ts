@@ -8,6 +8,8 @@ export { parseBlobContent, serializeBlobContent } from './blob.js';
 // Commit
 export type { Commit, CommitData, ExtraHeader } from './commit.js';
 export { parseCommitContent, serializeCommitContent } from './commit.js';
+// Commit message
+export { stripspace } from './commit-message.js';
 // Encoding (public subset)
 export { bytesToHex, compareBytes, hexToBytes } from './encoding.js';
 // Errors
