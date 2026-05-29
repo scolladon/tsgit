@@ -2,9 +2,9 @@
 
 ## Status
 
-Superseded by [ADR-181](181-nested-namespace-porcelain.md).
+Deprecated (at `2a54c19`). Superseded by [ADR-181](181-nested-namespace-porcelain.md); the action-discriminator shape it records was removed by the backlog 20.8 migration ([ADR-192](192-crud-namespace-per-verb-results.md), [ADR-193](193-no-transition-shim-hard-remove-callable.md)).
 
-The action-discriminator shape recorded here was the right call at the time `repo.remote` shipped, given the CRUD-family precedent established by `repo.branch` / `repo.tag` / `repo.sparseCheckout`. ADR-181 re-evaluates the surface against the Phase 20.6 `repo.config` design and adopts the nested-namespace shape (`repo.remote.add(...)`, etc.) on UX grounds (autocomplete drill-down, CLI mirror, low-friction action growth). Backlog item 20.8 migrates every existing CRUD-family porcelain — including `repo.remote` — to the new shape; this ADR will be marked Deprecated when that migration lands.
+The action-discriminator shape recorded here was the right call at the time `repo.remote` shipped, given the CRUD-family precedent established by `repo.branch` / `repo.tag` / `repo.sparseCheckout`. ADR-181 re-evaluates the surface against the Phase 20.6 `repo.config` design and adopts the nested-namespace shape (`repo.remote.add(...)`, etc.) on UX grounds (autocomplete drill-down, CLI mirror, low-friction action growth). Backlog item 20.8 migrated every existing CRUD-family porcelain — including `repo.remote` — to the new shape and hard-removed the callable discriminator form (ADR-193); this ADR is Deprecated as of that landing.
 
 ## Context
 
