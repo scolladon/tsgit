@@ -257,6 +257,8 @@ const createStashCommits = async (
   return { stash, message: wipMsg };
 };
 
+export type { StashDropResult } from '../primitives/stash-ref.js';
+
 export type StashListEntry = StashStackEntry;
 export interface StashListResult {
   readonly entries: ReadonlyArray<StashListEntry>;

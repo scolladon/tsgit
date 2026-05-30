@@ -1,6 +1,6 @@
 # Commands — Tier-1 reference
 
-Every method bound on a `Repository` handle. 24 entries, alphabetical.
+Every method bound on a `Repository` handle. 25 entries, alphabetical.
 
 | Command | Summary |
 |---|---|
@@ -28,6 +28,7 @@ Every method bound on a `Repository` handle. 24 entries, alphabetical.
 | [`revParse`](rev-parse.md) | Resolve revision expressions to `ObjectId`. |
 | [`rm`](rm.md) | Remove files from the index (and optionally the working tree). |
 | [`sparseCheckout`](sparse-checkout.md) | Materialise a subset of the tree (cone / non-cone). |
+| [`stash`](stash.md) | Save working-tree + index changes on a stack and restore them later. |
 | [`status`](status.md) | Compare working tree, index, and HEAD. |
 | [`submodules`](submodules.md) | Walk submodules pinned at a tree-ish. |
 | [`tag`](tag.md) | List, create, or delete tags. |
