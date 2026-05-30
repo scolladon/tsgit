@@ -5,6 +5,8 @@ export { buildIndexFromTree } from './build-index-from-tree.js';
 export type { BuildPackInput, BuildPackResult } from './build-pack.js';
 export { buildPack } from './build-pack.js';
 export { catFileBatch } from './cat-file-batch.js';
+export type { WorkingTreeComparison } from './compare-working-tree-entry.js';
+export { compareWorkingTreeEntry } from './compare-working-tree-entry.js';
 export type { Changeset, ChangesetEntry, ChangesetStats } from './compute-changeset.js';
 export { computeChangeset } from './compute-changeset.js';
 export type { IniSection, ParsedConfig } from './config-read.js';
