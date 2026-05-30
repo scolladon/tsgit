@@ -15,17 +15,22 @@ green before every commit.
 
 Sequential order: 1 → 2 → 3 → 4 → 5 → 7 → 8.
 
-## Slice 1 — extract `deriveWorkingMode` atom
+## Slice 1 — extract `deriveWorkingMode` atom (into domain)
 
-**Files:** `src/application/commands/internal/working-tree.ts` (add export),
-`src/application/commands/add.ts` (import it).
+**Files:** `src/domain/objects/file-mode.ts` (add export),
+`src/domain/objects/index.ts` (barrel if needed),
+`src/application/commands/add.ts` (import it). Domain placement is required: a
+*primitive* (`compareWorkingTreeEntry`) must import it, and primitives may not
+import `application/commands/`.
 
-- **Red:** in the internal working-tree unit test, assert `deriveWorkingMode`
-  maps `isSymbolicLink → '120000'`, `mode & 0o111 → '100755'`, else `'100644'`.
-- **Green:** move the inlined derivation out of `add.ts` into `working-tree.ts`;
-  `add` imports it. Pure move — `add`'s tests are the safety net.
-- **Verify:** `npx vitest run` add + working-tree tests; `npm run validate`.
-- **Commit:** `refactor(working-tree): extract deriveWorkingMode atom`
+- **Red:** `file-mode.test.ts` — `deriveWorkingMode` maps
+  `{isSymbolicLink:true} → '120000'`, `{mode:0o755} → '100755'`,
+  `{mode:0o644} → '100644'`.
+- **Green:** add pure `deriveWorkingMode({ isSymbolicLink, mode }): FileMode` to
+  `file-mode.ts`; `add` drops its inline copy and imports it. `add`'s tests are
+  the safety net.
+- **Verify:** `npx vitest run` add + file-mode tests; `npm run validate`.
+- **Commit:** `refactor(file-mode): extract deriveWorkingMode atom`
 
 ## Slice 2 — `compareWorkingTreeEntry` primitive
 

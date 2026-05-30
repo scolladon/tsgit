@@ -132,15 +132,19 @@ Notes:
   **uncapped** `serializeAndHash` core (not `hashBlob`, whose write-time
   `MAX_WORKING_TREE_BLOB_BYTES` cap would make the read-only comparison throw on a
   huge working file where `status` currently does not — behaviour preservation).
-- **Shared atoms** (moved out of `add.ts`, which now imports them) into
-  `internal/working-tree.ts`:
-  - `deriveWorkingMode(stat): FileMode` — `isSymbolicLink ? 120000 :
-    (mode & 0o111) ? 100755 : 100644`.
-  - `readWorkingTreeContent(ctx, path, stat): Uint8Array` — symlink-aware
-    (`readlink` target bytes vs `readFile`), with the existing size cap.
-  - loose-object hashing is the existing **uncapped** `serializeAndHash` core
-    (the helper `hashBlob` wraps) — the comparison path must not inherit `add`'s
-    write-time size cap.
+- **Shared atom** `deriveWorkingMode({ isSymbolicLink, mode }): FileMode`
+  (`isSymbolicLink ? 120000 : (mode & 0o111) ? 100755 : 100644`) lives in
+  **`domain/objects/file-mode.ts`** — a pure domain helper, so a *primitive* may
+  import it (the `primitives-cannot-import-commands` dependency rule forbids
+  pulling it from `commands/internal/`). `add.ts` drops its inline copy and
+  imports this.
+- **Reads stay per-intent** (not shared): `add`'s read is **size-capped**
+  (write path — `MAX_WORKING_TREE_BLOB_BYTES`); `compareWorkingTreeEntry` does
+  its own **uncapped** symlink-aware read (`readlink` target bytes vs `read`) so
+  it preserves `status`'s current uncapped behaviour. Sharing the read would force
+  the cap onto the comparison path.
+- **Hashing:** the existing **uncapped** `serializeAndHash` core (the helper
+  `hashBlob` wraps) — the comparison path must not inherit `add`'s write-time cap.
 - **`status` migration:** replace inline `isModified` with
   `compareWorkingTreeEntry`; `absent → deleted`, `modified → modified`,
   `unchanged → omit`. `status` becomes mode-aware (faithfulness upgrade — its
