@@ -1143,9 +1143,10 @@ describe('revParse', () => {
     describe('Given a base whose reflog lives on a later candidate than the resolving ref', () => {
       describe('When revParse(<base>@{0})', () => {
         it('Then the reflog-file candidate wins', async () => {
-          // Arrange — base `v1`: the candidate ladder is [v1, refs/heads/v1,
-          // refs/tags/v1, refs/remotes/v1]. A branch resolves at refs/heads/v1, but
-          // the only reflog FILE is at refs/tags/v1. canonicalizeRef's first loop
+          // Arrange — base `v1`: the candidate ladder is [v1, refs/v1,
+          // refs/tags/v1, refs/heads/v1, refs/remotes/v1, refs/remotes/v1/HEAD].
+          // A branch resolves at refs/heads/v1, but the only reflog FILE is at
+          // refs/tags/v1. canonicalizeRef's first loop
           // (reflog-file search) must win over the second loop (ref resolution),
           // otherwise the empty refs/heads/v1 log throws REVPARSE_UNRESOLVED.
           const ctx = createMemoryContext();
