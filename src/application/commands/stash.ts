@@ -50,6 +50,7 @@ import {
   type StashStackEntry,
 } from '../primitives/stash-ref.js';
 import { synthesizeTreeFromIndex } from '../primitives/synthesize-tree-from-index.js';
+import { MAX_WORKING_TREE_BLOB_BYTES } from '../primitives/types.js';
 import { walkWorkingTree } from '../primitives/walk-working-tree.js';
 import { buildRepoIgnorePredicate } from './internal/build-ignore-evaluator.js';
 import { acquireIndexLock } from './internal/index-update.js';
@@ -368,7 +369,10 @@ const untrackedOverwrites = async (
 const restoreUntracked = async (ctx: Context, uTree: ObjectId): Promise<void> => {
   const flat = await flattenTree(ctx, uTree);
   for (const [path, entry] of flat.entries) {
-    const blob = await readBlob(ctx, entry.id);
+    // Cap the read so a hostile crafted `refs/stash` cannot load an unbounded
+    // untracked blob (a tsgit-created stash never exceeds this — push hashes
+    // working files under the same limit).
+    const blob = await readBlob(ctx, entry.id, { maxBytes: MAX_WORKING_TREE_BLOB_BYTES });
     await writeWorkingTreeFile(ctx, path, blob.content);
   }
 };
