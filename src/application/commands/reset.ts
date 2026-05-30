@@ -1,3 +1,15 @@
+/**
+ * `reset` porcelain — move HEAD and (per mode) the index and working tree to a
+ * target commit, faithful to `git reset --soft|--mixed|--hard`. The resulting
+ * HEAD, index, and working tree read back (via `git rev-parse` /
+ * `git ls-files --stage`) match canonical git; raw index bytes differ only by
+ * per-host stat-cache fields.
+ *
+ * @writes
+ *   surface: reset
+ *   kind:    equivalent-under-readback
+ *   format:  git-index-tree-state
+ */
 import { revparseUnresolved } from '../../domain/commands/error.js';
 import { unexpectedObjectType } from '../../domain/objects/error.js';
 import type { ObjectId, RefName } from '../../domain/objects/index.js';
