@@ -113,9 +113,11 @@ describe('stash-ref primitive', () => {
         // refs/stash still points at the unchanged tip W2.
         const tip = await getRefStore(ctx).resolveDirect(STASH_REF);
         expect(tip).toEqual({ kind: 'direct', id: W2 });
-        // The entry that followed the dropped one (W2) now chains from W0.
+        // The entry that followed the dropped one (W2) now chains from W0;
+        // the entry BEFORE it keeps its original oldId (only `following` is rewritten).
         const reflog = await readReflog(ctx, STASH_REF);
         expect(reflog.map((e) => e.newId)).toEqual([W0, W2]);
+        expect(reflog[0]?.oldId).toBe(ZERO_OID);
         expect(reflog[1]?.oldId).toBe(W0);
       });
     });

@@ -330,6 +330,38 @@ describe('createSnapshotFactory', () => {
     });
   });
 
+  describe('Given a two-entry stash stack', () => {
+    describe('When sut.stashEntry(1) is awaited (the older entry)', () => {
+      it('Then it resolves the older entry, not the newest', async () => {
+        // Arrange — newer entry holds `new.txt`, older holds `old.txt`.
+        const ctx = await buildSeededContext();
+        const oldBlob = await writeBlob(ctx, new Uint8Array([1]));
+        const newBlob = await writeBlob(ctx, new Uint8Array([2]));
+        const baseTree = await writeTree(ctx, []);
+        const oldTree = await writeTree(ctx, [
+          { name: 'old.txt', mode: FILE_MODE.REGULAR as FileMode, id: oldBlob },
+        ]);
+        const newTree = await writeTree(ctx, [
+          { name: 'new.txt', mode: FILE_MODE.REGULAR as FileMode, id: newBlob },
+        ]);
+        const b = await writeCommitWithParents(ctx, baseTree, []);
+        const olderW = await writeCommitWithParents(ctx, oldTree, [b, b]);
+        const newerW = await writeCommitWithParents(ctx, newTree, [b, b]);
+        await pushStashRef(ctx, olderW, 'WIP on main: 000 older');
+        await pushStashRef(ctx, newerW, 'WIP on main: 111 newer');
+        const sut = factoryFor(ctx);
+
+        // Act
+        const entry = await sut.stashEntry(1);
+
+        // Assert — index 1 is the older push (old.txt), not the newest (new.txt).
+        expect(entry).not.toBeNull();
+        if (entry === null) return;
+        expect((await collect(entry.workdir.entries())).map((r) => r.path)).toEqual(['old.txt']);
+      });
+    });
+  });
+
   describe('Given a populated index', () => {
     describe('When sut.index() is iterated', () => {
       it('Then it yields the index rows', async () => {

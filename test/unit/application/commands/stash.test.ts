@@ -229,9 +229,10 @@ describe('stash push', () => {
         if (sut.kind !== 'saved') throw new Error('expected saved');
         const w = await commitOf(ctx, sut.stash);
         expect(w.parents).toHaveLength(3);
-        expect(
-          await treeContent(ctx, (await commitOf(ctx, w.parents[2] as ObjectId)).tree, 'new.txt'),
-        ).toBe('untracked\n');
+        const uTree = (await commitOf(ctx, w.parents[2] as ObjectId)).tree;
+        expect(await treeContent(ctx, uTree, 'new.txt')).toBe('untracked\n');
+        // The untracked commit holds ONLY untracked files — the tracked `a.txt` is excluded.
+        expect(await treeContent(ctx, uTree, 'a.txt')).toBe('<absent>');
         expect(await ctx.fs.exists(`${ctx.layout.workDir}/new.txt`)).toBe(false);
       });
     });
@@ -599,6 +600,62 @@ describe('stash pop', () => {
         // Assert
         expect(sut.kind).toBe('conflict');
         expect((await stashList(ctx)).entries).toHaveLength(1);
+      });
+    });
+  });
+});
+
+const makeBare = async (): Promise<Context> => {
+  const ctx = createMemoryContext();
+  await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
+  await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n  bare = true\n');
+  return ctx;
+};
+
+const codeAndOp = async (p: Promise<unknown>): Promise<{ code?: string; operation?: string }> => {
+  try {
+    await p;
+    return {};
+  } catch (err) {
+    return (err as { data?: { code?: string; operation?: string } }).data ?? {};
+  }
+};
+
+describe('stash on a bare repository', () => {
+  describe('Given a bare repo', () => {
+    describe('When push runs', () => {
+      it('Then it throws BARE_REPOSITORY with operation=stash', async () => {
+        // Arrange
+        const ctx = await makeBare();
+
+        // Act + Assert
+        const data = await codeAndOp(stashPush(ctx, {}));
+        expect(data.code).toBe('BARE_REPOSITORY');
+        expect(data.operation).toBe('stash');
+      });
+    });
+
+    describe('When apply runs', () => {
+      it('Then it throws BARE_REPOSITORY with operation=stash apply', async () => {
+        // Arrange
+        const ctx = await makeBare();
+
+        // Act + Assert
+        const data = await codeAndOp(stashApply(ctx, {}));
+        expect(data.code).toBe('BARE_REPOSITORY');
+        expect(data.operation).toBe('stash apply');
+      });
+    });
+
+    describe('When drop runs', () => {
+      it('Then it throws BARE_REPOSITORY with operation=stash drop', async () => {
+        // Arrange
+        const ctx = await makeBare();
+
+        // Act + Assert
+        const data = await codeAndOp(stashDrop(ctx, {}));
+        expect(data.code).toBe('BARE_REPOSITORY');
+        expect(data.operation).toBe('stash drop');
       });
     });
   });

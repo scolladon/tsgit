@@ -252,9 +252,129 @@ describe('applyMergeToWorktree', () => {
     });
   });
 
+  describe('Given an untracked working file at a path the merge adds', () => {
+    describe('When the merge is applied', () => {
+      it('Then it refuses with would-overwrite (clobber guard)', async () => {
+        // Arrange — theirs adds `new`; an untracked `new` already sits on disk.
+        const ctx = await buildSeededContext();
+        const v1 = await writeBlob(ctx, 'added\n');
+        const base = await treeWith(ctx, []);
+        const theirs = await treeWith(ctx, [
+          { name: 'new' as FilePath, id: v1, mode: FILE_MODE.REGULAR },
+        ]);
+        await ctx.fs.write(`${ctx.layout.workDir}/new`, new TextEncoder().encode('in the way\n'));
+
+        // Act
+        const sut = await applyMergeToWorktree(ctx, {
+          baseTree: base,
+          oursTree: base,
+          theirsTree: theirs,
+          currentIndex: index([]),
+        });
+
+        // Assert
+        expect(sut.kind).toBe('would-overwrite');
+        if (sut.kind === 'would-overwrite') expect(sut.paths).toEqual(['new']);
+        expect(await readWork(ctx, 'new')).toBe('in the way\n');
+      });
+    });
+  });
+
+  describe('Given ours modified a file that theirs deleted', () => {
+    describe('When the merge is applied', () => {
+      it('Then it is a modify-delete conflict keeping the surviving content', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const b = await writeBlob(ctx, 'base\n');
+        const o = await writeBlob(ctx, 'mine\n');
+        const base = await treeWith(ctx, [
+          { name: 'a' as FilePath, id: b, mode: FILE_MODE.REGULAR },
+        ]);
+        const ours = await treeWith(ctx, [
+          { name: 'a' as FilePath, id: o, mode: FILE_MODE.REGULAR },
+        ]);
+        const theirs = await treeWith(ctx, []);
+        await ctx.fs.write(`${ctx.layout.workDir}/a`, new TextEncoder().encode('mine\n'));
+
+        // Act
+        const sut = await applyMergeToWorktree(ctx, {
+          baseTree: base,
+          oursTree: ours,
+          theirsTree: theirs,
+          currentIndex: index([indexEntry('a', o)]),
+        });
+
+        // Assert
+        expect(sut.kind).toBe('conflict');
+        if (sut.kind !== 'conflict') return;
+        expect(sut.conflicts[0]?.type).toBe('modify-delete');
+        expect(await readWork(ctx, 'a')).toBe('mine\n');
+      });
+    });
+  });
+
+  describe('Given a conflict alongside a clean change and a clean deletion', () => {
+    describe('When the merge is applied', () => {
+      it('Then markers + clean writes + deletion all land and the index sorts by path', async () => {
+        // Arrange — a conflicts; b is cleanly taken from theirs; c is cleanly deleted.
+        const ctx = await buildSeededContext();
+        const aBase = await writeBlob(ctx, 'a-base\n');
+        const aOurs = await writeBlob(ctx, 'a-ours\n');
+        const aTheirs = await writeBlob(ctx, 'a-theirs\n');
+        const bId = await writeBlob(ctx, 'b\n');
+        const bNew = await writeBlob(ctx, 'b-new\n');
+        const cId = await writeBlob(ctx, 'c\n');
+        const reg = FILE_MODE.REGULAR;
+        const base = await treeWith(ctx, [
+          { name: 'a' as FilePath, id: aBase, mode: reg },
+          { name: 'b' as FilePath, id: bId, mode: reg },
+          { name: 'c' as FilePath, id: cId, mode: reg },
+        ]);
+        const ours = await treeWith(ctx, [
+          { name: 'a' as FilePath, id: aOurs, mode: reg },
+          { name: 'b' as FilePath, id: bId, mode: reg },
+          { name: 'c' as FilePath, id: cId, mode: reg },
+        ]);
+        const theirs = await treeWith(ctx, [
+          { name: 'a' as FilePath, id: aTheirs, mode: reg },
+          { name: 'b' as FilePath, id: bNew, mode: reg },
+        ]);
+        for (const [p, c] of [
+          ['a', 'a-ours\n'],
+          ['b', 'b\n'],
+          ['c', 'c\n'],
+        ] as const) {
+          await ctx.fs.write(`${ctx.layout.workDir}/${p}`, new TextEncoder().encode(c));
+        }
+
+        // Act
+        const sut = await applyMergeToWorktree(ctx, {
+          baseTree: base,
+          oursTree: ours,
+          theirsTree: theirs,
+          currentIndex: index([indexEntry('a', aOurs), indexEntry('b', bId), indexEntry('c', cId)]),
+        });
+
+        // Assert
+        expect(sut.kind).toBe('conflict');
+        if (sut.kind !== 'conflict') return;
+        expect(await readWork(ctx, 'a')).toContain('<<<<<<<');
+        expect(await readWork(ctx, 'b')).toBe('b-new\n');
+        expect(await ctx.fs.exists(`${ctx.layout.workDir}/c`)).toBe(false);
+        // Index: a unmerged (1/2/3), b staged (0), sorted a-before-b.
+        const aStages = sut.indexEntries.filter((e) => e.path === 'a').map((e) => e.flags.stage);
+        expect(aStages).toEqual([1, 2, 3]);
+        const paths = sut.indexEntries.map((e) => e.path);
+        const posA = paths.findIndex((p) => p === 'a');
+        const posB = paths.findIndex((p) => p === 'b');
+        expect(posA).toBeLessThan(posB);
+      });
+    });
+  });
+
   describe('Given a gitlink that diverges on both sides', () => {
     describe('When the merge is applied', () => {
-      it('Then the unsupported conflict type is rejected', async () => {
+      it('Then it rejects with UNSUPPORTED_OPERATION naming the gitlink type', async () => {
         // Arrange
         const ctx = await buildSeededContext();
         const g0 = '0'.repeat(40) as ObjectId;
@@ -278,7 +398,14 @@ describe('applyMergeToWorktree', () => {
           currentIndex: index([indexEntry('m', g1, FILE_MODE.GITLINK)]),
         });
 
-        // Assert
+        // Assert — pin code + operation + reason so the reject literals are killed.
+        await act.catch((err: TsgitError) => {
+          expect(err.data.code).toBe('UNSUPPORTED_OPERATION');
+          if (err.data.code === 'UNSUPPORTED_OPERATION') {
+            expect(err.data.operation).toBe('apply-merge');
+            expect(err.data.reason).toContain('gitlink');
+          }
+        });
         await expect(act).rejects.toBeInstanceOf(TsgitError);
       });
     });

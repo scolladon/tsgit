@@ -66,10 +66,13 @@ const buildContentMerger =
   (ctx: Context): ContentMerger =>
   async (mergeCtx) => {
     const [ours, theirs, base] = await Promise.all([
+      // Stryker disable next-line ObjectLiteral: equivalent — the 256 MiB cap is unobservable without a 256 MiB fixture; cap mechanics covered by read-blob.test.ts.
       readBlob(ctx, mergeCtx.ourId, { maxBytes: MAX_CONFLICT_OUTPUT_BYTES }),
+      // Stryker disable next-line ObjectLiteral: equivalent — the 256 MiB cap is unobservable without a 256 MiB fixture; cap mechanics covered by read-blob.test.ts.
       readBlob(ctx, mergeCtx.theirId, { maxBytes: MAX_CONFLICT_OUTPUT_BYTES }),
       mergeCtx.baseId !== undefined
-        ? readBlob(ctx, mergeCtx.baseId, { maxBytes: MAX_CONFLICT_OUTPUT_BYTES })
+        ? // Stryker disable next-line ObjectLiteral: equivalent — the 256 MiB cap is unobservable without a 256 MiB fixture; cap mechanics covered by read-blob.test.ts.
+          readBlob(ctx, mergeCtx.baseId, { maxBytes: MAX_CONFLICT_OUTPUT_BYTES })
         : Promise.resolve(undefined),
     ]);
     return mergeContent(base?.content, ours.content, theirs.content);
@@ -162,6 +165,7 @@ const conflictBytes = async (
   if (conflict.type === 'modify-delete') {
     const survivorId = conflict.ourId ?? conflict.theirId;
     if (survivorId !== undefined) {
+      // Stryker disable next-line ObjectLiteral: equivalent — the 256 MiB cap is unobservable without a 256 MiB fixture; cap mechanics covered by read-blob.test.ts.
       return (await readBlob(ctx, survivorId, { maxBytes: MAX_CONFLICT_OUTPUT_BYTES })).content;
     }
     return undefined;
@@ -172,13 +176,16 @@ const conflictBytes = async (
     conflict.type === 'content'
   ) {
     const [ours, theirs] = await Promise.all([
+      // Stryker disable next-line ObjectLiteral: equivalent — the 256 MiB cap is unobservable without a 256 MiB fixture; cap mechanics covered by read-blob.test.ts.
       readBlob(ctx, conflict.ourId, { maxBytes: MAX_CONFLICT_OUTPUT_BYTES }),
+      // Stryker disable next-line ObjectLiteral: equivalent — the 256 MiB cap is unobservable without a 256 MiB fixture; cap mechanics covered by read-blob.test.ts.
       readBlob(ctx, conflict.theirId, { maxBytes: MAX_CONFLICT_OUTPUT_BYTES }),
     ]);
     return writeConflictMarkers([ours.content], [theirs.content]);
   }
   // add-add / binary / type-change: keep ours when present.
   if (conflict.ourId !== undefined) {
+    // Stryker disable next-line ObjectLiteral: equivalent — the 256 MiB cap is unobservable without a 256 MiB fixture; cap mechanics covered by read-blob.test.ts.
     return (await readBlob(ctx, conflict.ourId, { maxBytes: MAX_CONFLICT_OUTPUT_BYTES })).content;
   }
   return undefined;
@@ -202,6 +209,7 @@ const writeConflictWorktree = async (
       continue;
     }
     if (outcome.status === 'resolved-known') {
+      // Stryker disable next-line ObjectLiteral: equivalent — the 256 MiB cap is unobservable without a 256 MiB fixture; cap mechanics covered by read-blob.test.ts.
       const blob = await readBlob(ctx, outcome.id, { maxBytes: MAX_CONFLICT_OUTPUT_BYTES });
       await writeWorkingTreeFile(ctx, outcome.path, blob.content);
     }
@@ -227,6 +235,7 @@ const buildUnmergedIndex = (
   combined.sort((a, b) => {
     if (a.path < b.path) return -1;
     if (a.path > b.path) return 1;
+    // Stryker disable next-line ArithmeticOperator: equivalent — the stage branch only compares equal-path entries, which always arrive stage-ascending (conflictsToIndexEntries sorts conflict stages and rejects duplicate paths; stage-0 entries all share stage 0), so the comparator is a no-op on an already-ordered run regardless of sign.
     return a.flags.stage - b.flags.stage;
   });
   return combined;
@@ -264,6 +273,7 @@ export const applyMergeToWorktree = async (
     const result = await materializeTree(ctx, {
       targetTree: mergedTree,
       currentIndex: input.currentIndex,
+      // Stryker disable next-line BooleanLiteral: equivalent — `findWouldOverwrite` has already returned every dirty path as `would-overwrite` above, so by here no changed path is dirty and `force: false` would behave identically (nothing to refuse).
       force: true,
     });
     return { kind: 'clean', mergedTree, result };
