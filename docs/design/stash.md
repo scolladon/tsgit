@@ -14,8 +14,9 @@ the working-tree snapshot infra Phase 22 (cherry-pick / revert / rebase) reuses.
 
 Non-goals (deferred — see §11): patch mode (`-p`), pathspec-limited push,
 `stash clear`, `stash branch`, `stash show`, `stash create`/`store` plumbing.
-The shared ref-DWIM ladder gap that blocks `rev-parse stash@{N}` is a separate
-faithfulness fix (§12), tracked as decision §10.5 — stash does not depend on it.
+The shared ref-DWIM ladder gap that blocks `rev-parse stash@{N}` is fixed in this
+PR as a separate `fix(rev-parse)` slice (§12 / ADR-216) — stash's own verbs stay
+index-typed and do not depend on it.
 
 ## 2. Faithful data model (git on-disk, not invented)
 
@@ -285,27 +286,32 @@ payload is user-derived). Error assertions in tests must assert `.data` fields
   clean working tree, and a clean `apply` round-trip. Co-refusal proof for
   unborn-HEAD push and `STASH_APPLY_WOULD_OVERWRITE`.
 
-## 10. Key design decisions (→ ADRs)
+## 10. Key design decisions (resolved)
 
-1. **v1 scope** — which verbs/flags ship vs defer (§11). (ADR)
-2. **Apply/pop conflict handling** — faithful markers + unmerged index vs
-   clean-only-refuse vs middle (overwrite-guard + content markers). (ADR)
-3. **Selector form** — numeric `index` vs `stash@{N}` string vs both. (ADR)
-4. **Reuse architecture** — extract `applyMergeToWorktree` primitive (shared with
-   Phase 22) vs inline in stash vs refactor `merge.ts`. (ADR)
-5. **`refCandidates` faithfulness gap** (§12) — fix the shared ladder in this PR
-   (additive `refs/<name>`, enabling `rev-parse stash@{N}`) vs defer to a
-   dedicated backlog item. Stash does not depend on the outcome. (ADR)
+1. **API surface** → nested namespace `repo.stash.*` (ADR-210).
+2. **v1 scope** → 5 verbs + `-m` + `-u` + `--keep-index` + `--index`; patch /
+   pathspec / clear / branch / show / create-store deferred (ADR-211).
+3. **Apply/pop conflict handling** → faithful markers + stage-1/2/3 unmerged
+   index + upfront overwrite guard; conflict is a result, pop retains on conflict
+   (ADR-212).
+4. **Selector form** → numeric `index` (default 0); `stash@{N}` string deferred
+   (ADR-213).
+5. **Reflog creation** → `stash-ref` force-creates the `refs/stash` reflog;
+   `drop` rewrites the stack directly (ADR-214).
+6. **Reuse architecture** → extract `applyMergeToWorktree` primitive shared with
+   Phase 22; `merge.ts` unchanged this phase (ADR-215).
+7. **`refCandidates` faithfulness gap** (§12) → **full** gitrevisions fix in this
+   PR (add `refs/<name>`, swap heads↔tags, add `refs/remotes/<name>/HEAD`);
+   unlocks `rev-parse stash@{N}` (ADR-216). Stash verbs stay index-typed
+   regardless.
 
 ## 11. Deferred (explicitly out of scope for 21.3)
 
 - Patch mode (`stash -p`), pathspec-limited push (`stash push -- <paths>`).
 - `stash clear`, `stash branch <name>`, `stash show`, `stash create`/`store`.
-- `rev-parse stash@{N}` via a faithfulness fix to the shared `refCandidates`
-  ladder (`src/domain/refs/ref-candidates.ts`). That ladder currently diverges
-  from gitrevisions in three ways — see §12. Stash does **not** depend on it
-  (it owns a reflog-index reader for drop/pop regardless); whether the ladder
-  fix ships in this PR or as a separate item is an open decision (§10).
+- The `stash@{N}` **string** selector at the stash verb API (the verbs take a
+  numeric `index`; ADR-213). `rev-parse stash@{N}` itself **does** ship via the
+  §12 ladder fix (ADR-216).
 - `--index` reinstatement of *conflicted* staged state (v1 `restoreIndex` only
   applies on a clean merge).
 
@@ -327,16 +333,25 @@ So it is a genuine gap, not an intentional design. The faithful fix lands in
 that one shared helper and flows automatically to both consumers (`rev-parse`
 and `merge`'s `resolveTarget`). Two parts, different risk:
 
-- **Additive** — insert `refs/<name>` (rule 2). Low risk: it only newly-resolves
-  names that fail today (e.g. `stash`); it sits below the verbatim candidate so
-  no currently-resolving name changes meaning.
-- **Order/coverage** — swap heads↔tags to match git, add rule 6. Behavioural:
-  could shift resolution of a name that is *both* a tag and a branch, touching
-  existing `rev-parse`/`merge` tests.
+**Decided (ADR-216): the full fix ships in this PR** as a `fix(rev-parse)` slice
+in the one shared helper:
 
-Recommendation: stash stays self-contained (§3.1); the ladder fix is tracked as
-its own decision (§10 item 5) — ship the additive part as a small
-`fix(rev-parse)` slice in this PR, or carve a dedicated backlog item. Stash does
-not block on it either way.
+```
+refCandidates(base) = [
+  base,                        // rule 1 — verbatim (full paths, HEAD, refs/stash)
+  `refs/${base}`,              // rule 2 — NEW
+  `refs/tags/${base}`,         // rule 3 — now before heads
+  `refs/heads/${base}`,        // rule 4 — now after tags
+  `refs/remotes/${base}`,      // rule 5
+  `refs/remotes/${base}/HEAD`, // rule 6 — NEW
+]
+```
+
+Both consumers (`rev-parse`, `merge`'s `resolveTarget`) inherit the fix; it
+unlocks `rev-parse stash@{N}` / `merge stash`. The heads↔tags swap is
+behavioural — a name that is both a tag and a branch now resolves to the tag
+first (like git), so existing `rev-parse`/`merge` resolution-order tests are
+updated to match. Stash's own verbs stay index-typed (ADR-213) and do not depend
+on this slice.
 ```
 
