@@ -96,6 +96,26 @@ describe('stash push', () => {
     });
   });
 
+  describe('Given a tracked file deleted from the working tree', () => {
+    describe('When push runs', () => {
+      it('Then the deletion is stashed (absent from the W tree) and the file is restored', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await ctx.fs.rm(`${ctx.layout.workDir}/a.txt`);
+
+        // Act
+        const sut = await stashPush(ctx, {});
+
+        // Assert
+        if (sut.kind !== 'saved') throw new Error('expected saved');
+        const w = await commitOf(ctx, sut.stash);
+        // The W tree drops the deleted path; the reset restores it from HEAD.
+        expect(await treeContent(ctx, w.tree, 'a.txt')).toBe('<absent>');
+        expect(await read(ctx, 'a.txt')).toBe('committed\n');
+      });
+    });
+  });
+
   describe('Given an unstaged change saved as a stash', () => {
     describe('When the W commit is inspected', () => {
       it('Then it has [base, index] parents and its tree carries the modified content', async () => {
