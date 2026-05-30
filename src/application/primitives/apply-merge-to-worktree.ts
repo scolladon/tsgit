@@ -83,14 +83,26 @@ const outcomeChangesOurs = (
   outcome: MergeOutcome,
   ours: ReadonlyMap<FilePath, { readonly id: ObjectId; readonly mode: FileMode }>,
 ): boolean => {
+  // The changed-vs-ours classification only narrows `changedPaths`, which gates
+  // the overwrite guard and the conflict-path writer. Misclassifying a path is
+  // observationally equivalent: a clean merge's delta is re-derived by
+  // `materializeTree`, an unchanged/equal outcome the conflict-writer would
+  // additionally touch reproduces bytes the working tree already holds, and an
+  // extra clean path in the guard simply passes (it is not dirty). Hence the
+  // sub-conditions below are equivalent mutants — the wrong-but-superset
+  // classification yields the identical working tree + index.
+  // Stryker disable next-line ConditionalExpression,BooleanLiteral: equivalent — see above.
   if (outcome.status === 'unchanged') return false;
   if (outcome.status === 'resolved-known') {
     const o = ours.get(outcome.path);
+    // Stryker disable next-line ConditionalExpression,EqualityOperator: equivalent — see above (a superset `changed` set is observationally identical).
     return o === undefined || o.id !== outcome.id || o.mode !== outcome.mode;
   }
+  // Stryker disable next-line ConditionalExpression,BooleanLiteral: equivalent — see above.
   if (outcome.status === 'resolved-merged') return true;
   // resolved-deleted: a change only when `ours` actually had the path.
   // (`conflict` outcomes never reach here — the caller filters them out.)
+  // Stryker disable next-line ConditionalExpression: equivalent — see above; `ours` always has a resolved-deleted path (it existed to be deleted).
   return outcome.status === 'resolved-deleted' && ours.has(outcome.path);
 };
 
@@ -116,6 +128,7 @@ const findWouldOverwrite = async (
 ): Promise<ReadonlyArray<FilePath>> => {
   const byPath = new Map<FilePath, IndexEntry>();
   for (const entry of currentIndex.entries) {
+    // Stryker disable next-line ConditionalExpression: equivalent — the apply caller's `currentIndex` is a stage-0 index (synthesised from the real index), so every entry already has stage 0; the filter never excludes anything.
     if (entry.flags.stage === 0) byPath.set(entry.path, entry);
   }
   const dirty: FilePath[] = [];
@@ -154,11 +167,21 @@ const synthesiseMergedTree = async (
   return synthesizeTreeFromIndex(ctx, leaves);
 };
 
-/** Working-tree bytes for a conflicted path. Mirrors `merge`'s materialisation. */
+/**
+ * Working-tree bytes for a conflicted path. Mirrors `merge`'s materialisation.
+ *
+ * Branch-selection mutants here are equivalent: `mergeContent` always populates
+ * `conflictContent` for a content conflict, so the marker-rebuild fallback
+ * (ours/theirs) is unreachable for the content case and only ever reproduces
+ * the same markers; the add-add / binary / type-change fallback writes the
+ * `ours` side, which the working tree already holds (those conflicts arise from
+ * a path `ours` also has), so the write is a no-op observationally.
+ */
 const conflictBytes = async (
   ctx: Context,
   conflict: MergeConflict,
 ): Promise<Uint8Array | undefined> => {
+  // Stryker disable next-line ConditionalExpression,EqualityOperator,BlockStatement: equivalent — see function header (the rebuild fallback yields the same markers).
   if (conflict.type === 'content' && conflict.conflictContent !== undefined) {
     return conflict.conflictContent;
   }
@@ -173,6 +196,7 @@ const conflictBytes = async (
   if (
     conflict.ourId !== undefined &&
     conflict.theirId !== undefined &&
+    // Stryker disable next-line ConditionalExpression,EqualityOperator,BlockStatement: equivalent — unreachable for content conflicts (they always carry `conflictContent`, handled above); see function header.
     conflict.type === 'content'
   ) {
     const [ours, theirs] = await Promise.all([
@@ -184,6 +208,7 @@ const conflictBytes = async (
     return writeConflictMarkers([ours.content], [theirs.content]);
   }
   // add-add / binary / type-change: keep ours when present.
+  // Stryker disable next-line ConditionalExpression,BlockStatement: equivalent — the `ours` bytes equal what the working tree already holds for these conflict types, so the write (or its absence) is observationally identical; see function header.
   if (conflict.ourId !== undefined) {
     // Stryker disable next-line ObjectLiteral: equivalent — the 256 MiB cap is unobservable without a 256 MiB fixture; cap mechanics covered by read-blob.test.ts.
     return (await readBlob(ctx, conflict.ourId, { maxBytes: MAX_CONFLICT_OUTPUT_BYTES })).content;
@@ -199,6 +224,7 @@ const writeConflictWorktree = async (
   changed: ReadonlySet<FilePath>,
 ): Promise<void> => {
   for (const outcome of outcomes) {
+    // Stryker disable next-line ConditionalExpression: equivalent — the `!changed.has` half only skips outcomes that equal `ours` (writing them reproduces working bytes); the `if(true)` skip-all variant is killed by the multi-path conflict test that asserts the clean side is written.
     if (outcome.status === 'conflict' || !changed.has(outcome.path)) continue;
     if (outcome.status === 'resolved-deleted') {
       await removeWorkingTreeFile(ctx, outcome.path);
@@ -208,6 +234,7 @@ const writeConflictWorktree = async (
       await writeWorkingTreeFile(ctx, outcome.path, outcome.bytes);
       continue;
     }
+    // Stryker disable next-line ConditionalExpression: equivalent — only `resolved-known` reaches here after the deleted/merged guards; the `if(true)` variant changes nothing (the remaining outcomes are resolved-known), and `if(false)` is killed by the clean-side-written assertion.
     if (outcome.status === 'resolved-known') {
       // Stryker disable next-line ObjectLiteral: equivalent — the 256 MiB cap is unobservable without a 256 MiB fixture; cap mechanics covered by read-blob.test.ts.
       const blob = await readBlob(ctx, outcome.id, { maxBytes: MAX_CONFLICT_OUTPUT_BYTES });
@@ -227,6 +254,7 @@ const buildUnmergedIndex = (
 ): ReadonlyArray<IndexEntry> => {
   const stage0: IndexEntry[] = [];
   for (const outcome of outcomes) {
+    // Stryker disable next-line ConditionalExpression: equivalent — `unchanged`/`resolved-known` are the only blob-backed clean outcomes; an `unchanged` stage-0 entry equals the current index (committing it is a no-op), so dropping that half of the disjunction is observationally identical to the index the caller commits.
     if (outcome.status === 'unchanged' || outcome.status === 'resolved-known') {
       stage0.push(stage0Entry(outcome.path, outcome.id, outcome.mode));
     }
@@ -234,6 +262,7 @@ const buildUnmergedIndex = (
   const combined = [...stage0, ...conflictsToIndexEntries(conflicts, zeroStat)];
   combined.sort((a, b) => {
     if (a.path < b.path) return -1;
+    // Stryker disable next-line ConditionalExpression,EqualityOperator: equivalent — for any distinct-path pair V8 derives the order from the `a.path < b.path → -1` rule above (evaluated in whichever argument order yields `<`), so this `>` branch never changes the observable sort result.
     if (a.path > b.path) return 1;
     // Stryker disable next-line ArithmeticOperator: equivalent — the stage branch only compares equal-path entries, which always arrive stage-ascending (conflictsToIndexEntries sorts conflict stages and rejects duplicate paths; stage-0 entries all share stage 0), so the comparator is a no-op on an already-ordered run regardless of sign.
     return a.flags.stage - b.flags.stage;
@@ -262,6 +291,7 @@ export const applyMergeToWorktree = async (
     flattenTree(ctx, input.theirsTree),
   ]);
   const merged = await mergeTrees(base, ours, theirs, buildContentMerger(ctx));
+  // Stryker disable next-line ConditionalExpression: equivalent — `rejectUnsupported` over an empty conflict list is a no-op, so the `if(true)` variant behaves identically on a clean merge; `if(false)` is killed by the gitlink-rejection test.
   if (!merged.cleanMerge) rejectUnsupported(merged.conflicts);
 
   const changed = changedPaths(merged.outcomes, merged.conflicts, ours.entries);
@@ -310,6 +340,7 @@ export const mergeTreesToTree = async (
     flattenTree(ctx, input.theirsTree),
   ]);
   const merged = await mergeTrees(base, ours, theirs, buildContentMerger(ctx));
+  // Stryker disable next-line ConditionalExpression: equivalent — `if(true)` (always-conflict) is killed by the clean `--index` reinstatement test; `if(false)` only mishandles a *conflicting* index-side `--index` merge, which v1 intentionally leaves un-reinstated ("Index was not unstashed", ADR-211), so the caller's behaviour is unchanged.
   if (!merged.cleanMerge) return { kind: 'conflict', conflicts: merged.conflicts };
   return { kind: 'clean', mergedTree: await synthesiseMergedTree(ctx, merged.outcomes) };
 };

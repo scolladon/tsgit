@@ -326,25 +326,33 @@ describe('applyMergeToWorktree', () => {
         const bId = await writeBlob(ctx, 'b\n');
         const bNew = await writeBlob(ctx, 'b-new\n');
         const cId = await writeBlob(ctx, 'c\n');
+        // d is a clean line-merge (ours edits line 1, theirs edits line 3) → resolved-merged.
+        const dBase = await writeBlob(ctx, 'd1\nd2\nd3\n');
+        const dOurs = await writeBlob(ctx, 'D1\nd2\nd3\n');
+        const dTheirs = await writeBlob(ctx, 'd1\nd2\nD3\n');
         const reg = FILE_MODE.REGULAR;
         const base = await treeWith(ctx, [
           { name: 'a' as FilePath, id: aBase, mode: reg },
           { name: 'b' as FilePath, id: bId, mode: reg },
           { name: 'c' as FilePath, id: cId, mode: reg },
+          { name: 'd' as FilePath, id: dBase, mode: reg },
         ]);
         const ours = await treeWith(ctx, [
           { name: 'a' as FilePath, id: aOurs, mode: reg },
           { name: 'b' as FilePath, id: bId, mode: reg },
           { name: 'c' as FilePath, id: cId, mode: reg },
+          { name: 'd' as FilePath, id: dOurs, mode: reg },
         ]);
         const theirs = await treeWith(ctx, [
           { name: 'a' as FilePath, id: aTheirs, mode: reg },
           { name: 'b' as FilePath, id: bNew, mode: reg },
+          { name: 'd' as FilePath, id: dTheirs, mode: reg },
         ]);
         for (const [p, c] of [
           ['a', 'a-ours\n'],
           ['b', 'b\n'],
           ['c', 'c\n'],
+          ['d', 'D1\nd2\nd3\n'],
         ] as const) {
           await ctx.fs.write(`${ctx.layout.workDir}/${p}`, new TextEncoder().encode(c));
         }
@@ -354,7 +362,12 @@ describe('applyMergeToWorktree', () => {
           baseTree: base,
           oursTree: ours,
           theirsTree: theirs,
-          currentIndex: index([indexEntry('a', aOurs), indexEntry('b', bId), indexEntry('c', cId)]),
+          currentIndex: index([
+            indexEntry('a', aOurs),
+            indexEntry('b', bId),
+            indexEntry('c', cId),
+            indexEntry('d', dOurs),
+          ]),
         });
 
         // Assert
@@ -363,6 +376,8 @@ describe('applyMergeToWorktree', () => {
         expect(await readWork(ctx, 'a')).toContain('<<<<<<<');
         expect(await readWork(ctx, 'b')).toBe('b-new\n');
         expect(await ctx.fs.exists(`${ctx.layout.workDir}/c`)).toBe(false);
+        // d cleanly line-merged in the conflict path (resolved-merged → bytes written).
+        expect(await readWork(ctx, 'd')).toBe('D1\nd2\nD3\n');
         // Index: a unmerged (1/2/3), b staged (0), sorted a-before-b.
         const aStages = sut.indexEntries.filter((e) => e.path === 'a').map((e) => e.flags.stage);
         expect(aStages).toEqual([1, 2, 3]);
