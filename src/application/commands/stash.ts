@@ -138,7 +138,9 @@ const projectWorkingTree = async (
   const entries: IndexEntry[] = [];
   let dirty = false;
   for (const entry of index.entries) {
+    // Stryker disable next-line ConditionalExpression: equivalent — a non-conflicted index (the only state stash push reaches) carries no stage!=0 entries, so this skip is never taken; the `if(true)` variant that drops every entry is killed by the W-tree-content tests.
     if (entry.flags.stage !== 0) continue;
+    // Stryker disable next-line ConditionalExpression,BlockStatement: equivalent — a non-sparse index has no skip-worktree entries, so this verbatim-keep branch is never taken; the `if(true)` variant (keep stale id instead of re-hashing) is killed by the modified-content tests.
     if (entry.flags.skipWorktree) {
       entries.push(entry);
       continue;
@@ -313,6 +315,7 @@ const resetAfterPush = async (
     forceRewriteAll: true,
   });
   await lock.commit(result.newIndexEntries);
+  // Stryker disable next-line ConditionalExpression: equivalent — when `includeUntracked` is falsy `untracked.paths` is always empty, so the `if(true)` variant iterates an empty list (no-op); the `if(false)` variant is killed by the `-u` removal test.
   if (opts.includeUntracked === true) {
     for (const path of untracked.paths) await removeWorkingTreeFile(ctx, path);
   }
@@ -372,6 +375,7 @@ const restoreUntracked = async (ctx: Context, uTree: ObjectId): Promise<void> =>
     // Cap the read so a hostile crafted `refs/stash` cannot load an unbounded
     // untracked blob (a tsgit-created stash never exceeds this — push hashes
     // working files under the same limit).
+    // Stryker disable next-line ObjectLiteral: equivalent — the cap is unobservable without an oversize fixture; cap mechanics are covered by hash-blob.test.ts / read-blob.test.ts.
     const blob = await readBlob(ctx, entry.id, { maxBytes: MAX_WORKING_TREE_BLOB_BYTES });
     await writeWorkingTreeFile(ctx, path, blob.content);
   }

@@ -768,3 +768,29 @@ describe('stash pop — selector', () => {
     });
   });
 });
+
+describe('stash push — ignored files', () => {
+  describe('Given a gitignored file with includeUntracked', () => {
+    describe('When push runs', () => {
+      it('Then the ignored file is neither stashed nor removed', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await write(ctx, '.gitignore', 'ignored.txt\n');
+        await write(ctx, 'ignored.txt', 'secret\n');
+        await write(ctx, 'tracked-untracked.txt', 'keep\n');
+
+        // Act
+        const sut = await stashPush(ctx, { includeUntracked: true });
+
+        // Assert
+        if (sut.kind !== 'saved') throw new Error('expected saved');
+        const u = (await commitOf(ctx, (await commitOf(ctx, sut.stash)).parents[2] as ObjectId))
+          .tree;
+        expect(await treeContent(ctx, u, 'tracked-untracked.txt')).toBe('keep\n');
+        // The ignored file is excluded from the stash and left on disk.
+        expect(await treeContent(ctx, u, 'ignored.txt')).toBe('<absent>');
+        expect(await read(ctx, 'ignored.txt')).toBe('secret\n');
+      });
+    });
+  });
+});

@@ -6,7 +6,12 @@
 import type { FilePath } from '../../../domain/objects/object-id.js';
 import type { Context } from '../../../ports/context.js';
 
-const parentDir = (fullPath: string): string | undefined => {
+/**
+ * The parent directory of an absolute path, or `undefined` when there is none
+ * to create (no slash, or a root-level path like `/foo`). Exported for direct
+ * unit testing of the boundary.
+ */
+export const parentDir = (fullPath: string): string | undefined => {
   const lastSlash = fullPath.lastIndexOf('/');
   if (lastSlash <= 0) return undefined;
   return fullPath.slice(0, lastSlash);

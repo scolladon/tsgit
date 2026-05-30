@@ -280,35 +280,37 @@ describe('applyMergeToWorktree', () => {
     });
   });
 
-  describe('Given ours modified a file that theirs deleted', () => {
+  describe('Given ours deleted a file that theirs modified', () => {
     describe('When the merge is applied', () => {
-      it('Then it is a modify-delete conflict keeping the surviving content', async () => {
-        // Arrange
+      it('Then it is a modify-delete conflict that restores the surviving (theirs) content', async () => {
+        // Arrange — ours deletes `a` (so it is absent on disk); theirs modifies it.
+        // The surviving content must be WRITTEN, which is only observable because the
+        // working file starts absent.
         const ctx = await buildSeededContext();
         const b = await writeBlob(ctx, 'base\n');
-        const o = await writeBlob(ctx, 'mine\n');
+        const t = await writeBlob(ctx, 'theirs\n');
         const base = await treeWith(ctx, [
           { name: 'a' as FilePath, id: b, mode: FILE_MODE.REGULAR },
         ]);
-        const ours = await treeWith(ctx, [
-          { name: 'a' as FilePath, id: o, mode: FILE_MODE.REGULAR },
+        const ours = await treeWith(ctx, []);
+        const theirs = await treeWith(ctx, [
+          { name: 'a' as FilePath, id: t, mode: FILE_MODE.REGULAR },
         ]);
-        const theirs = await treeWith(ctx, []);
-        await ctx.fs.write(`${ctx.layout.workDir}/a`, new TextEncoder().encode('mine\n'));
+        // ours deleted `a`, so the working tree has no `a`.
 
         // Act
         const sut = await applyMergeToWorktree(ctx, {
           baseTree: base,
           oursTree: ours,
           theirsTree: theirs,
-          currentIndex: index([indexEntry('a', o)]),
+          currentIndex: index([]),
         });
 
         // Assert
         expect(sut.kind).toBe('conflict');
         if (sut.kind !== 'conflict') return;
         expect(sut.conflicts[0]?.type).toBe('modify-delete');
-        expect(await readWork(ctx, 'a')).toBe('mine\n');
+        expect(await readWork(ctx, 'a')).toBe('theirs\n');
       });
     });
   });
