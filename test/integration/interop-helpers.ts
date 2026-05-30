@@ -100,3 +100,47 @@ export const initBothRepos = (peer: string, ours: string, branch = 'main'): void
 
 export const git = (dir: string, ...args: ReadonlyArray<string>): string =>
   runGit(['-C', dir, ...args]);
+
+/**
+ * `git ls-files --stage` — the host-independent (mode sha stage\tpath)
+ * listing. Stat-cache fields differ per host, so this readback (not raw
+ * index bytes) is how two writers' indexes are compared.
+ */
+export const lsStage = (dir: string): string => git(dir, 'ls-files', '--stage');
+
+/**
+ * `git write-tree` — materialise the index to a tree id. Reads whichever
+ * `.git/index` the directory holds (tsgit's or canonical git's), so equal
+ * ids across two repos is the stat-independent state-equivalence proof.
+ */
+export const writeTreeOf = (dir: string): string => git(dir, 'write-tree').trim();
+
+export interface GitRunResult {
+  readonly ok: boolean;
+  readonly stdout: string;
+  readonly stderr: string;
+}
+
+/**
+ * Run `git` without throwing on a non-zero exit — for co-refusal assertions
+ * (proving canonical git refuses exactly where tsgit does). Keeps the same
+ * `SAFE_ENV` scrubbing as `runGit`; never shells through a string.
+ */
+export const tryRunGit = (
+  args: ReadonlyArray<string>,
+  options: { readonly env?: NodeJS.ProcessEnv } = {},
+): GitRunResult => {
+  try {
+    return { ok: true, stdout: runGit(args, options), stderr: '' };
+  } catch (error) {
+    const failure = error as {
+      readonly stdout?: Buffer | string;
+      readonly stderr?: Buffer | string;
+    };
+    return {
+      ok: false,
+      stdout: failure.stdout?.toString() ?? '',
+      stderr: failure.stderr?.toString() ?? '',
+    };
+  }
+};

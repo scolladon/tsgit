@@ -28,8 +28,8 @@ export const mvScenario: Scenario<MvScenarioResult> = {
     intoDirMoved: [{ from: 'b.txt', to: 'dir/b.txt' }],
     // 40-hex golden — Node baseline. Memory and Browser drivers assert the same
     // value; divergence proves a parity bug in the index repath or tree build.
-    // The mv'd *tree* is byte-identical to canonical git (verified out-of-band);
-    // this commit id is the tsgit cross-adapter baseline.
+    // The mv'd *tree* is pinned byte-identical to canonical `git mv` by
+    // `test/integration/mv-interop.test.ts`; this commit id is the cross-adapter baseline.
     commitId: 'ac27f9bfa53da1f6ebe70e23ca2e57e623d3cbdb',
     clean: true,
   },

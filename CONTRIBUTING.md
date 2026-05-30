@@ -346,6 +346,20 @@ one test covers multiple). The test invokes canonical `git` to
 produce reference bytes and asserts the contract for the declared kind
 (see `docs/design/phase-19-7-interop-suite.md` §4).
 
+**Composite porcelain (`mv`, `add`, `rm`, `reset`, …)** are *also* `@writes`
+surfaces, even though they define no new on-disk format — they compose the
+primitive writers, and their end-to-end faithfulness to `git` is what the
+cross-adapter parity goldens (tsgit-computed) cannot vouch for (ADR-204). Tag
+the command module (`src/application/commands/<cmd>.ts`) with
+`surface: <cmd>`, `kind: equivalent-under-readback`, `format:
+git-index-tree-state`, and ship `<cmd>-interop.test.ts`. The comparison is the
+host-independent **readback** of each side — `git ls-files --stage` (index),
+`git write-tree` (tree), `git rev-parse HEAD` (ref) — never raw `.git/index`
+bytes (stat-cache fields are per-host). Drive the command through the
+`openRepository` facade, not the primitives, and prove refusals symmetrically
+(`tryRunGit` confirms git also refuses, with no mutation on either side). See
+`docs/design/porcelain-interop-harness.md`.
+
 `npm run check:write-surfaces` (also part of `npm run validate`) walks
 both sides and reports gaps, allowlist rot, orphan coverage, and
 malformed headers. Ships warn-only (ADR-139) — promotion to blocking

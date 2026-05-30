@@ -1,3 +1,14 @@
+/**
+ * `rm` porcelain — remove tracked paths from the index (and the working tree
+ * unless `cached`), faithful to `git rm`. The resulting index + tree read back
+ * (via `git ls-files --stage` / `git write-tree`) match canonical git; raw
+ * index bytes differ only by per-host stat-cache fields.
+ *
+ * @writes
+ *   surface: rm
+ *   kind:    equivalent-under-readback
+ *   format:  git-index-tree-state
+ */
 import { TsgitError } from '../../domain/error.js';
 import type { IndexEntry } from '../../domain/git-index/index.js';
 import { emptyPathspec } from '../../domain/index.js';

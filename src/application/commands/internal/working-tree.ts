@@ -129,7 +129,10 @@ const moveNode = async (ctx: Context, fromAbs: string, toAbs: string): Promise<v
     for (const child of await ctx.fs.readdir(fromAbs)) {
       await moveNode(ctx, `${fromAbs}/${child.name}`, `${toAbs}/${child.name}`);
     }
-    await ctx.fs.rm(fromAbs);
+    // The loop emptied the directory; remove the shell. `rm` is leaf-only per
+    // the port (the Node adapter throws EISDIR on a directory), so the
+    // directory-capable `rmRecursive` is the portable removal here.
+    await ctx.fs.rmRecursive(fromAbs);
     return;
   }
   await ctx.fs.mkdir(dirname(toAbs));

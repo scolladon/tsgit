@@ -182,6 +182,16 @@ ADRs are ordered chronologically in the `adr/` folder. This page groups them by 
 - [ADR-140 — `@writes` JSDoc tag grammar](../adr/140-writes-jsdoc-tag-grammar.md)
 - Design: [`docs/design/phase-19-7-interop-suite.md`](../design/phase-19-7-interop-suite.md)
 
+## Porcelain interop harness
+
+- [ADR-204 — Model write porcelain as `@writes` surfaces](../adr/204-porcelain-commands-as-write-surfaces.md)
+- [ADR-205 — Porcelain interop scope: `mv`, `add`, `rm`, `reset`](../adr/205-porcelain-interop-scope-mv-add-rm-reset.md)
+- Design: [`docs/design/porcelain-interop-harness.md`](../design/porcelain-interop-harness.md)
+- Composite commands (`mv`/`add`/`rm`/`reset`) are now pinned to canonical `git`
+  via the index/tree/HEAD readback, closing the gap where a porcelain divergence
+  could pass cross-adapter parity yet differ from real git. The harness caught a
+  shipped `repo.mv` directory-rename `EISDIR` bug on the Node adapter.
+
 ## Reading order tips
 
 - **Onboarding to the codebase?** Read ADR-001, ADR-004, ADR-091 in order. They set the architectural ground rules.

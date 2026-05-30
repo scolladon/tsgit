@@ -1,3 +1,14 @@
+/**
+ * `add` porcelain — stage working-tree paths into the index, faithful to
+ * `git add`. The resulting index + tree read back (via `git ls-files --stage`
+ * / `git write-tree`) match canonical git; raw index bytes differ only by
+ * per-host stat-cache fields.
+ *
+ * @writes
+ *   surface: add
+ *   kind:    equivalent-under-readback
+ *   format:  git-index-tree-state
+ */
 import { invalidOption, workingTreeFileTooLarge } from '../../domain/commands/error.js';
 import { operationAborted, TsgitError } from '../../domain/error.js';
 import { type IndexEntry, STAGE0_FLAGS } from '../../domain/git-index/index.js';

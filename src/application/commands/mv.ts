@@ -1,3 +1,14 @@
+/**
+ * `mv` porcelain — rename/move tracked paths in the index and working tree,
+ * faithful to `git mv`. The resulting index + tree read back (via
+ * `git ls-files --stage` / `git write-tree`) match canonical git; raw index
+ * bytes differ only by per-host stat-cache fields.
+ *
+ * @writes
+ *   surface: mv
+ *   kind:    equivalent-under-readback
+ *   format:  git-index-tree-state
+ */
 import {
   mvBadSource,
   mvDestinationDirectoryMissing,
