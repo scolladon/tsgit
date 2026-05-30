@@ -87,6 +87,72 @@ describe('applyMergeToWorktree', () => {
     });
   });
 
+  describe('Given non-overlapping edits on both sides', () => {
+    describe('When the merge is applied', () => {
+      it('Then it cleanly line-merges and writes the combined content', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const b = await writeBlob(ctx, 'a\nb\nc\n');
+        const o = await writeBlob(ctx, 'A\nb\nc\n');
+        const t = await writeBlob(ctx, 'a\nb\nC\n');
+        const base = await treeWith(ctx, [
+          { name: 'f' as FilePath, id: b, mode: FILE_MODE.REGULAR },
+        ]);
+        const ours = await treeWith(ctx, [
+          { name: 'f' as FilePath, id: o, mode: FILE_MODE.REGULAR },
+        ]);
+        const theirs = await treeWith(ctx, [
+          { name: 'f' as FilePath, id: t, mode: FILE_MODE.REGULAR },
+        ]);
+        await ctx.fs.write(`${ctx.layout.workDir}/f`, new TextEncoder().encode('A\nb\nc\n'));
+
+        // Act
+        const sut = await applyMergeToWorktree(ctx, {
+          baseTree: base,
+          oursTree: ours,
+          theirsTree: theirs,
+          currentIndex: index([indexEntry('f', o)]),
+        });
+
+        // Assert
+        expect(sut.kind).toBe('clean');
+        expect(await readWork(ctx, 'f')).toBe('A\nb\nC\n');
+      });
+    });
+  });
+
+  describe('Given a file the stash deletes', () => {
+    describe('When the merge is applied', () => {
+      it('Then it cleanly removes the file from the working tree', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const x = await writeBlob(ctx, 'x\n');
+        const y = await writeBlob(ctx, 'y\n');
+        const base = await treeWith(ctx, [
+          { name: 'a' as FilePath, id: x, mode: FILE_MODE.REGULAR },
+          { name: 'b' as FilePath, id: y, mode: FILE_MODE.REGULAR },
+        ]);
+        const theirs = await treeWith(ctx, [
+          { name: 'a' as FilePath, id: x, mode: FILE_MODE.REGULAR },
+        ]);
+        await ctx.fs.write(`${ctx.layout.workDir}/a`, new TextEncoder().encode('x\n'));
+        await ctx.fs.write(`${ctx.layout.workDir}/b`, new TextEncoder().encode('y\n'));
+
+        // Act
+        const sut = await applyMergeToWorktree(ctx, {
+          baseTree: base,
+          oursTree: base,
+          theirsTree: theirs,
+          currentIndex: index([indexEntry('a', x), indexEntry('b', y)]),
+        });
+
+        // Assert
+        expect(sut.kind).toBe('clean');
+        expect(await ctx.fs.exists(`${ctx.layout.workDir}/b`)).toBe(false);
+      });
+    });
+  });
+
   describe('Given a stash whose tree equals ours', () => {
     describe('When the merge is applied', () => {
       it('Then it is clean and nothing is written', async () => {
