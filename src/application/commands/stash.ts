@@ -9,15 +9,19 @@
  *   kind:    equivalent-under-readback
  *   format:  git-index-tree-state
  */
-import { noInitialCommit } from '../../domain/commands/error.js';
+import { noInitialCommit, stashApplyWouldOverwrite } from '../../domain/commands/error.js';
 import { TsgitError } from '../../domain/error.js';
 import type { GitIndex, IndexEntry } from '../../domain/git-index/index.js';
-import { unexpectedObjectType } from '../../domain/objects/error.js';
+import type { ConflictType } from '../../domain/merge/index.js';
+import { invalidCommit, unexpectedObjectType } from '../../domain/objects/error.js';
 import { deriveWorkingMode, type FilePath, type ObjectId } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
 import type { FileStat } from '../../ports/file-system.js';
+import { applyMergeToWorktree, mergeTreesToTree } from '../primitives/apply-merge-to-worktree.js';
+import { buildIndexFromTree } from '../primitives/build-index-from-tree.js';
 import { compareWorkingTreeEntry } from '../primitives/compare-working-tree-entry.js';
 import { createCommit } from '../primitives/create-commit.js';
+import { flattenTree } from '../primitives/flatten-tree.js';
 import { hashBlob } from '../primitives/hash-blob.js';
 import {
   assertNoPendingOperation,
@@ -27,8 +31,12 @@ import {
   readHeadRaw,
 } from '../primitives/internal/repo-state.js';
 import { stage0Entry } from '../primitives/internal/synthetic-index-entry.js';
-import { removeWorkingTreeFile } from '../primitives/internal/write-working-tree-file.js';
+import {
+  removeWorkingTreeFile,
+  writeWorkingTreeFile,
+} from '../primitives/internal/write-working-tree-file.js';
 import { materializeTree } from '../primitives/materialize-tree.js';
+import { readBlob } from '../primitives/read-blob.js';
 import { readIndex } from '../primitives/read-index.js';
 import { readObject } from '../primitives/read-object.js';
 import { resolveReflogIdentity } from '../primitives/reflog-identity.js';
@@ -37,6 +45,7 @@ import {
   dropStashEntry,
   pushStashRef,
   readStashStack,
+  resolveStashEntry,
   type StashDropResult,
   type StashStackEntry,
 } from '../primitives/stash-ref.js';
@@ -62,6 +71,8 @@ export interface StashPushInput {
 export type StashPushResult =
   | { readonly kind: 'saved'; readonly stash: ObjectId; readonly message: string }
   | { readonly kind: 'no-local-changes' };
+
+const REASON_NOT_A_STASH_COMMIT = 'ref does not point at a stash commit';
 
 interface BaseState {
   readonly b: ObjectId;
@@ -297,4 +308,153 @@ const resetAfterPush = async (
   if (opts.includeUntracked === true) {
     for (const path of untracked.paths) await removeWorkingTreeFile(ctx, path);
   }
+};
+
+export interface StashApplyInput {
+  readonly index?: number;
+  readonly restoreIndex?: boolean;
+}
+
+export interface StashConflict {
+  readonly path: FilePath;
+  readonly type: ConflictType;
+}
+
+export type StashApplyResult =
+  | { readonly kind: 'applied'; readonly stash: ObjectId }
+  | { readonly kind: 'conflict'; readonly conflicts: ReadonlyArray<StashConflict> };
+
+interface StashParents {
+  readonly base: ObjectId;
+  readonly indexParent: ObjectId;
+  readonly untrackedParent: ObjectId | undefined;
+  readonly wTree: ObjectId;
+}
+
+/** Parse a W commit's parents into the stash trio's commit oids. */
+const parseStashCommit = async (ctx: Context, w: ObjectId): Promise<StashParents> => {
+  const obj = await readObject(ctx, w);
+  if (obj.type !== 'commit') throw unexpectedObjectType('commit', obj.type, w);
+  const [base, indexParent, untrackedParent] = obj.data.parents;
+  // A well-formed stash W always has at least [base, index] parents; fewer means
+  // the ref points at a non-stash commit.
+  if (base === undefined || indexParent === undefined) {
+    throw invalidCommit(REASON_NOT_A_STASH_COMMIT);
+  }
+  return { base, indexParent, untrackedParent, wTree: obj.data.tree };
+};
+
+/** Untracked paths whose restoration would overwrite an existing working file. */
+const untrackedOverwrites = async (
+  ctx: Context,
+  uTree: ObjectId,
+): Promise<ReadonlyArray<FilePath>> => {
+  const flat = await flattenTree(ctx, uTree);
+  const clobbered: FilePath[] = [];
+  for (const path of flat.entries.keys()) {
+    if (await ctx.fs.exists(`${ctx.layout.workDir}/${path}`)) clobbered.push(path);
+  }
+  return clobbered;
+};
+
+/** Check out the untracked tree into the working tree (clean-apply path only). */
+const restoreUntracked = async (ctx: Context, uTree: ObjectId): Promise<void> => {
+  const flat = await flattenTree(ctx, uTree);
+  for (const [path, entry] of flat.entries) {
+    const blob = await readBlob(ctx, entry.id);
+    await writeWorkingTreeFile(ctx, path, blob.content);
+  }
+};
+
+/** Reinstate the staged state (`--index`) when the index-side 3-way merge is clean. */
+const reinstateIndex = async (
+  ctx: Context,
+  lock: Awaited<ReturnType<typeof acquireIndexLock>>,
+  args: {
+    readonly bTree: ObjectId;
+    readonly cTree: ObjectId;
+    readonly indexParent: ObjectId;
+    readonly currentIndex: GitIndex;
+  },
+): Promise<void> => {
+  const iTree = await commitTreeOf(ctx, args.indexParent);
+  const merged = await mergeTreesToTree(ctx, {
+    baseTree: args.bTree,
+    oursTree: args.cTree,
+    theirsTree: iTree,
+  });
+  if (merged.kind !== 'clean') return;
+  const entries = await buildIndexFromTree(ctx, {
+    targetTree: merged.mergedTree,
+    currentIndex: args.currentIndex,
+  });
+  await lock.commit(entries);
+};
+
+/** Apply `stash@{index}` (default newest) onto the working tree via a 3-way merge. */
+export const stashApply = async (
+  ctx: Context,
+  input: StashApplyInput = {},
+): Promise<StashApplyResult> => {
+  await assertRepository(ctx);
+  await assertNotBare(ctx, 'stash apply');
+  await assertNoPendingOperation(ctx);
+  const w = await resolveStashEntry(ctx, input.index ?? 0);
+  const parsed = await parseStashCommit(ctx, w);
+  const bTree = await commitTreeOf(ctx, parsed.base);
+  const uTree =
+    parsed.untrackedParent !== undefined
+      ? await commitTreeOf(ctx, parsed.untrackedParent)
+      : undefined;
+
+  const lock = await acquireIndexLock(ctx);
+  try {
+    const currentIndex = await readIndex(ctx);
+    const cTree = await synthesizeTreeFromIndex(ctx, currentIndex.entries);
+    if (uTree !== undefined) {
+      const clobbered = await untrackedOverwrites(ctx, uTree);
+      if (clobbered.length > 0) throw stashApplyWouldOverwrite(clobbered);
+    }
+    const result = await applyMergeToWorktree(ctx, {
+      baseTree: bTree,
+      oursTree: cTree,
+      theirsTree: parsed.wTree,
+      currentIndex,
+    });
+    if (result.kind === 'would-overwrite') throw stashApplyWouldOverwrite(result.paths);
+    if (result.kind === 'conflict') {
+      await lock.commit(result.indexEntries);
+      return {
+        kind: 'conflict',
+        conflicts: result.conflicts.map((c) => ({ path: c.path, type: c.type })),
+      };
+    }
+    if (input.restoreIndex === true) {
+      await reinstateIndex(ctx, lock, {
+        bTree,
+        cTree,
+        indexParent: parsed.indexParent,
+        currentIndex,
+      });
+    }
+    if (uTree !== undefined) await restoreUntracked(ctx, uTree);
+    return { kind: 'applied', stash: w };
+  } finally {
+    await lock.release();
+  }
+};
+
+export type StashPopResult =
+  | { readonly kind: 'applied'; readonly stash: ObjectId; readonly dropped: ObjectId }
+  | { readonly kind: 'conflict'; readonly conflicts: ReadonlyArray<StashConflict> };
+
+/** Apply `stash@{index}` then drop it; on conflict the stash is retained. */
+export const stashPop = async (
+  ctx: Context,
+  input: StashApplyInput = {},
+): Promise<StashPopResult> => {
+  const applied = await stashApply(ctx, input);
+  if (applied.kind === 'conflict') return applied;
+  const dropped = await stashDrop(ctx, { index: input.index ?? 0 });
+  return { kind: 'applied', stash: applied.stash, dropped: dropped.dropped };
 };

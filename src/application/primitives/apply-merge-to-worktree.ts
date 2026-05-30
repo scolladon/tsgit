@@ -275,3 +275,31 @@ export const applyMergeToWorktree = async (
     indexEntries: buildUnmergedIndex(merged.outcomes, merged.conflicts),
   };
 };
+
+export type MergeTreesResult =
+  | { readonly kind: 'clean'; readonly mergedTree: ObjectId }
+  | { readonly kind: 'conflict'; readonly conflicts: ReadonlyArray<MergeConflict> };
+
+/**
+ * Pure tree-level 3-way merge: produce the merged tree without touching the
+ * working tree or index. Used by `stash apply --index` to reinstate the staged
+ * state. A conflicting merge yields `{ kind: 'conflict' }` (the caller leaves
+ * the index untouched — git's "Index was not unstashed").
+ */
+export const mergeTreesToTree = async (
+  ctx: Context,
+  input: {
+    readonly baseTree: ObjectId | undefined;
+    readonly oursTree: ObjectId;
+    readonly theirsTree: ObjectId;
+  },
+): Promise<MergeTreesResult> => {
+  const [base, ours, theirs] = await Promise.all([
+    input.baseTree !== undefined ? flattenTree(ctx, input.baseTree) : Promise.resolve(undefined),
+    flattenTree(ctx, input.oursTree),
+    flattenTree(ctx, input.theirsTree),
+  ]);
+  const merged = await mergeTrees(base, ours, theirs, buildContentMerger(ctx));
+  if (!merged.cleanMerge) return { kind: 'conflict', conflicts: merged.conflicts };
+  return { kind: 'clean', mergedTree: await synthesiseMergedTree(ctx, merged.outcomes) };
+};

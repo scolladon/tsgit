@@ -3,11 +3,18 @@ import { createMemoryContext } from '../../../../src/adapters/memory/memory-adap
 import { add } from '../../../../src/application/commands/add.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
-import { stashDrop, stashList, stashPush } from '../../../../src/application/commands/stash.js';
+import {
+  stashApply,
+  stashDrop,
+  stashList,
+  stashPop,
+  stashPush,
+} from '../../../../src/application/commands/stash.js';
 import { flattenTree } from '../../../../src/application/primitives/flatten-tree.js';
 import { readIndex } from '../../../../src/application/primitives/read-index.js';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
-import { readStashStack } from '../../../../src/application/primitives/stash-ref.js';
+import { pushStashRef, readStashStack } from '../../../../src/application/primitives/stash-ref.js';
+import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { TsgitError } from '../../../../src/domain/error.js';
 import type { AuthorIdentity, FilePath, ObjectId } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
@@ -341,6 +348,237 @@ describe('stash drop', () => {
           expect(err.data).toEqual({ code: 'STASH_NOT_FOUND', index: 9, stackSize: 1 });
         });
         await expect(act).rejects.toBeInstanceOf(TsgitError);
+      });
+    });
+  });
+});
+
+const commit2 = async (ctx: Context, content: string, message: string): Promise<void> => {
+  await write(ctx, 'a.txt', content);
+  await add(ctx, ['a.txt']);
+  await commit(ctx, { message, author });
+};
+
+describe('stash apply', () => {
+  describe('Given a stash of an unstaged change applied onto a clean tree', () => {
+    describe('When apply runs', () => {
+      it('Then the change returns to the working tree and stays unstaged', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await write(ctx, 'a.txt', 'modified\n');
+        const saved = await stashPush(ctx, {});
+        if (saved.kind !== 'saved') throw new Error('expected saved');
+
+        // Act
+        const sut = await stashApply(ctx, {});
+
+        // Assert
+        expect(sut).toEqual({ kind: 'applied', stash: saved.stash });
+        expect(await read(ctx, 'a.txt')).toBe('modified\n');
+        // Index still at HEAD → the change is unstaged.
+        const idx = await readIndex(ctx);
+        const entry = idx.entries.find((e) => e.path === 'a.txt');
+        const blob = await readObject(ctx, entry?.id as ObjectId);
+        expect(blob.type === 'blob' && new TextDecoder().decode(blob.content)).toBe('committed\n');
+        // Stash retained after apply.
+        expect((await stashList(ctx)).entries).toHaveLength(1);
+      });
+    });
+  });
+
+  describe('Given a stash of a staged change applied with restoreIndex', () => {
+    describe('When apply runs', () => {
+      it('Then the staged content is reinstated in the index', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await write(ctx, 'a.txt', 'staged\n');
+        await add(ctx, ['a.txt']);
+        await stashPush(ctx, {});
+
+        // Act
+        await stashApply(ctx, { restoreIndex: true });
+
+        // Assert
+        const idx = await readIndex(ctx);
+        const entry = idx.entries.find((e) => e.path === 'a.txt');
+        const blob = await readObject(ctx, entry?.id as ObjectId);
+        expect(blob.type === 'blob' && new TextDecoder().decode(blob.content)).toBe('staged\n');
+      });
+    });
+  });
+
+  describe('Given an empty stack', () => {
+    describe('When apply runs', () => {
+      it('Then it throws STASH_NOT_FOUND', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+
+        // Act
+        const act = stashApply(ctx, {});
+
+        // Assert
+        await act.catch((err: TsgitError) => {
+          expect(err.data).toEqual({ code: 'STASH_NOT_FOUND', index: 0, stackSize: 0 });
+        });
+        await expect(act).rejects.toBeInstanceOf(TsgitError);
+      });
+    });
+  });
+
+  describe('Given refs/stash points at a non-stash commit (single parent)', () => {
+    describe('When apply runs', () => {
+      it('Then it refuses with INVALID_COMMIT', async () => {
+        // Arrange — push a malformed W with only a [base] parent.
+        const ctx = await setupRepo();
+        const baseCommit = await commitFile(ctx, 'b.txt', 'x\n', 'second');
+        const malformed = await writeObject(ctx, {
+          type: 'commit',
+          id: '' as ObjectId,
+          data: {
+            tree: (await commitOf(ctx, baseCommit.id)).tree,
+            parents: [baseCommit.id],
+            author,
+            committer: author,
+            message: 'not a stash',
+            extraHeaders: [],
+          },
+        });
+        await pushStashRef(ctx, malformed, 'bogus');
+
+        // Act
+        const act = stashApply(ctx, {});
+
+        // Assert
+        await act.catch((err: TsgitError) => {
+          expect(err.data.code).toBe('INVALID_COMMIT');
+        });
+        await expect(act).rejects.toBeInstanceOf(TsgitError);
+      });
+    });
+  });
+
+  describe('Given the working tree diverged on the stashed path', () => {
+    describe('When apply runs and the merge conflicts', () => {
+      it('Then markers are written, the index is unmerged, and the stash is retained', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await write(ctx, 'a.txt', 'stashed\n');
+        await stashPush(ctx, {});
+        await commit2(ctx, 'current\n', 'diverge');
+
+        // Act
+        const sut = await stashApply(ctx, {});
+
+        // Assert
+        expect(sut.kind).toBe('conflict');
+        if (sut.kind !== 'conflict') return;
+        expect(sut.conflicts.map((c) => c.path)).toEqual(['a.txt']);
+        expect(await read(ctx, 'a.txt')).toContain('<<<<<<<');
+        const idx = await readIndex(ctx);
+        expect(idx.entries.filter((e) => e.path === 'a.txt').map((e) => e.flags.stage)).toEqual([
+          1, 2, 3,
+        ]);
+        expect((await stashList(ctx)).entries).toHaveLength(1);
+      });
+    });
+  });
+
+  describe('Given a dirty working file on the stashed path', () => {
+    describe('When apply runs', () => {
+      it('Then it refuses with STASH_APPLY_WOULD_OVERWRITE and writes nothing', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await write(ctx, 'a.txt', 'stashed\n');
+        await stashPush(ctx, {});
+        await write(ctx, 'a.txt', 'local edit\n');
+
+        // Act
+        const act = stashApply(ctx, {});
+
+        // Assert
+        await act.catch((err: TsgitError) => {
+          expect(err.data).toEqual({ code: 'STASH_APPLY_WOULD_OVERWRITE', paths: ['a.txt'] });
+        });
+        await expect(act).rejects.toBeInstanceOf(TsgitError);
+        expect(await read(ctx, 'a.txt')).toBe('local edit\n');
+      });
+    });
+  });
+
+  describe('Given an include-untracked stash applied onto a clean tree', () => {
+    describe('When apply runs', () => {
+      it('Then the untracked file is restored', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await write(ctx, 'new.txt', 'untracked\n');
+        await stashPush(ctx, { includeUntracked: true });
+
+        // Act
+        await stashApply(ctx, {});
+
+        // Assert
+        expect(await read(ctx, 'new.txt')).toBe('untracked\n');
+      });
+    });
+  });
+
+  describe('Given an untracked file already present at a stashed untracked path', () => {
+    describe('When apply runs', () => {
+      it('Then it refuses with STASH_APPLY_WOULD_OVERWRITE', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await write(ctx, 'new.txt', 'untracked\n');
+        await stashPush(ctx, { includeUntracked: true });
+        await write(ctx, 'new.txt', 'in the way\n');
+
+        // Act
+        const act = stashApply(ctx, {});
+
+        // Assert
+        await act.catch((err: TsgitError) => {
+          expect(err.data).toEqual({ code: 'STASH_APPLY_WOULD_OVERWRITE', paths: ['new.txt'] });
+        });
+        await expect(act).rejects.toBeInstanceOf(TsgitError);
+      });
+    });
+  });
+});
+
+describe('stash pop', () => {
+  describe('Given a clean apply', () => {
+    describe('When pop runs', () => {
+      it('Then the change is applied and the stash is dropped', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await write(ctx, 'a.txt', 'modified\n');
+        await stashPush(ctx, {});
+
+        // Act
+        const sut = await stashPop(ctx, {});
+
+        // Assert
+        expect(sut.kind).toBe('applied');
+        expect(await read(ctx, 'a.txt')).toBe('modified\n');
+        expect((await stashList(ctx)).entries).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a conflicting apply', () => {
+    describe('When pop runs', () => {
+      it('Then the conflict is reported and the stash is retained', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await write(ctx, 'a.txt', 'stashed\n');
+        await stashPush(ctx, {});
+        await commit2(ctx, 'current\n', 'diverge');
+
+        // Act
+        const sut = await stashPop(ctx, {});
+
+        // Assert
+        expect(sut.kind).toBe('conflict');
+        expect((await stashList(ctx)).entries).toHaveLength(1);
       });
     });
   });
