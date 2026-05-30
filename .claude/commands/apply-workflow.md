@@ -85,17 +85,35 @@ For each: read the branch's diff (`git diff main...HEAD`), identify every findin
 
 Commit fixes per reviewer as conventional commits (e.g. `refactor(config): apply typescript-review fixes`, `fix(security): tighten path validator`, `test(coverage): close gap surfaced by test-review`).
 
-## Step 7 — Mutation testing
+## Step 7 — Architecture refactor + scoped re-review (in-thread)
+
+Implementation and the three reviews are scoped to the diff. This pass widens the lens: with the feature landed, look across the **whole codebase** for structural gains the scoped passes can't see — duplication that now warrants centralizing, a responsibility sitting in the wrong layer, the Nth consumer of a pattern that should become a shared primitive/port. Improve SOLID / hexagonal layering / SoC / DRY; stay bounded by YAGNI + KISS — no speculative abstraction.
+
+Discovery is **seeded by the feature's diff** and radiates only as far as the feature's concerns reach.
+
+**Contract:**
+
+- **Behavior-preserving:** tests change only mechanically (moved/renamed). `npm run validate` stays green throughout. No public-API behavior change.
+- **Bounded blast radius:** every change traces back to the feature's concerns. A cross-cutting opportunity unrelated to the feature is *not* done here — log it as a `docs/BACKLOG.md` follow-up entry.
+- **May be a no-op:** if the code is already in good shape, the step still emits a 1–3 line written justification of what was considered and why nothing changed. A silent skip is not allowed.
+- **May defer:** follow-ups recorded explicitly (backlog), left for a dedicated step; this pass never balloons the PR.
+- **Atomic commits:** each refactor lands as its own `refactor(<scope>): <what>` commit, separate from the feature commits.
+
+Then **re-review**, scoped to *only* the refactor diff (`git diff` of the `refactor(...)` commits), through the same three lenses (typescript / security / tests), fix-all-until-converged (≤3 cycles), re-validate. Findings that imply *further* refactoring become follow-ups, not another refactor loop.
+
+**Why here (before mutation):** mutation testing scores test strength against the *final* code shape. Refactoring after mutation would invalidate the run and force a costly redo. Refactor → re-review → green validate → then mutation.
+
+## Step 8 — Mutation testing
 
 Run `npm run test:mutation` (or `stryker run`). Per surviving mutant: kill it with a new test, or document it inline as `// equivalent-mutant: <why>` when provably equivalent. Re-run until 0 killable survivors. Commit each kill as `test(mutation): <module>`.
 
 If the project has no mutation config or the run is intractable (>30 min), surface to the user.
 
-## Step 8 — Docs refresh + PR
+## Step 9 — Docs refresh + PR
 
 Update `README.md`, `RUNBOOK.md`, `CONTRIBUTING.md`, and the relevant `docs/get-started/` / `docs/use/` / `docs/understand/` pages. Flip the `docs/BACKLOG.md` entry (`[ ]` / `[~]` → `[x]`) inside this PR's commits. Push the branch with `-u origin`. Run `gh pr create` with a thorough body (summary + test plan).
 
-## Step 9 — Cleanup
+## Step 10 — Cleanup
 
 Surface the PR URL. Wait for confirmation that CI is green and the PR is squash-merged. Then:
 
@@ -109,6 +127,7 @@ git branch -D feat/<slug>
 - **NEVER spawn subagents.** The whole workflow runs in this session. The user sees every action, can interrupt at any point, can steer mid-flight.
 - **Never skip the ADR step** when user-judgment was required to disambiguate the design.
 - **Never skip the three review passes** before pushing.
+- **Never skip the architecture refactor pass** (Step 7). It may be a no-op, but a no-op must carry a written justification — never a silent skip. Refactor commits are atomic and behavior-preserving, and are re-reviewed before mutation.
 - **Never `--no-verify` the commit hook**, never use ignore directives.
 - **Never include phase/ADR refs inside source or test code** (`§X.Y.Z`, `Phase N`, `ADR-NNN`, `BACKLOG 20.6` etc.). Those belong in the design doc and PR body. Source code is silent about its provenance.
 - **Be git-faithful** unless an ADR explicitly diverges.
