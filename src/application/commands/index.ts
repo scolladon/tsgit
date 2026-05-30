@@ -80,6 +80,7 @@ export {
   bindSparseCheckoutNamespace,
   type SparseCheckoutNamespace,
 } from './internal/sparse-checkout-namespace.js';
+export { bindStashNamespace, type StashNamespace } from './internal/stash-namespace.js';
 export { bindTagNamespace, type TagNamespace } from './internal/tag-namespace.js';
 export { type LogEntry, type LogOptions, log } from './log.js';
 export { type MergeOptions, type MergeResult, merge } from './merge.js';
@@ -136,6 +137,23 @@ export {
   sparseCheckoutReapply,
   sparseCheckoutSet,
 } from './sparse-checkout.js';
+export {
+  type StashApplyInput,
+  type StashApplyResult,
+  type StashConflict,
+  type StashDropInput,
+  type StashDropResult,
+  type StashListEntry,
+  type StashListResult,
+  type StashPopResult,
+  type StashPushInput,
+  type StashPushResult,
+  stashApply,
+  stashDrop,
+  stashList,
+  stashPop,
+  stashPush,
+} from './stash.js';
 export { type ChangeEntry, type ChangeKind, type StatusResult, status } from './status.js';
 export {
   type SubmoduleEntry,

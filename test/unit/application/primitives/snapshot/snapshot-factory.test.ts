@@ -4,6 +4,7 @@ import { createFsWorkdirEnumerator } from '../../../../../src/adapters/snapshot-
 import { createRawIndexResolver } from '../../../../../src/adapters/snapshot-resolvers/raw-index-resolver.js';
 import { createRawTreeResolver } from '../../../../../src/adapters/snapshot-resolvers/raw-tree-resolver.js';
 import { createSnapshotFactory } from '../../../../../src/application/primitives/snapshot/snapshot-factory.js';
+import { pushStashRef } from '../../../../../src/application/primitives/stash-ref.js';
 import { writeObject } from '../../../../../src/application/primitives/write-object.js';
 import type {
   Commit,
@@ -35,6 +36,26 @@ const writeCommit = async (ctx: Context, treeId: ObjectId): Promise<ObjectId> =>
     data: {
       tree: treeId,
       parents: [],
+      author: { name: 'a', email: 'b@c', timestamp: 0, timezoneOffset: '+0000' },
+      committer: { name: 'a', email: 'b@c', timestamp: 0, timezoneOffset: '+0000' },
+      message: 'msg',
+      extraHeaders: [],
+    },
+  };
+  return writeObject(ctx, commit);
+};
+
+const writeCommitWithParents = async (
+  ctx: Context,
+  treeId: ObjectId,
+  parents: ReadonlyArray<ObjectId>,
+): Promise<ObjectId> => {
+  const commit: Commit = {
+    type: 'commit',
+    id: '' as ObjectId,
+    data: {
+      tree: treeId,
+      parents: [...parents],
       author: { name: 'a', email: 'b@c', timestamp: 0, timezoneOffset: '+0000' },
       committer: { name: 'a', email: 'b@c', timestamp: 0, timezoneOffset: '+0000' },
       message: 'msg',
@@ -221,6 +242,122 @@ describe('createSnapshotFactory', () => {
 
         // Assert
         expect(result).toBeNull();
+      });
+    });
+  });
+
+  describe('Given a tracked-only stash (W with [base, index] parents)', () => {
+    describe('When sut.stashEntry(0) is awaited and iterated', () => {
+      it('Then the trio exposes the index + workdir trees and untracked is null', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const iBlob = await writeBlob(ctx, new Uint8Array([1]));
+        const wBlob = await writeBlob(ctx, new Uint8Array([2]));
+        const baseTree = await writeTree(ctx, []);
+        const iTree = await writeTree(ctx, [
+          { name: 'i.txt', mode: FILE_MODE.REGULAR as FileMode, id: iBlob },
+        ]);
+        const wTree = await writeTree(ctx, [
+          { name: 'w.txt', mode: FILE_MODE.REGULAR as FileMode, id: wBlob },
+        ]);
+        const b = await writeCommitWithParents(ctx, baseTree, []);
+        const i = await writeCommitWithParents(ctx, iTree, [b]);
+        const w = await writeCommitWithParents(ctx, wTree, [b, i]);
+        await pushStashRef(ctx, w, 'WIP on main: 000 x');
+        const sut = factoryFor(ctx);
+
+        // Act
+        const entry = await sut.stashEntry(0);
+
+        // Assert
+        expect(entry).not.toBeNull();
+        if (entry === null) return;
+        expect(entry.kind).toBe('stash');
+        expect(entry.untracked).toBeNull();
+        expect((await collect(entry.index.entries())).map((r) => r.path)).toEqual(['i.txt']);
+        expect((await collect(entry.workdir.entries())).map((r) => r.path)).toEqual(['w.txt']);
+      });
+    });
+  });
+
+  describe('Given an include-untracked stash (W with [base, index, untracked] parents)', () => {
+    describe('When sut.stashEntry(0) is awaited and iterated', () => {
+      it('Then the untracked tree is exposed', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const uBlob = await writeBlob(ctx, new Uint8Array([3]));
+        const baseTree = await writeTree(ctx, []);
+        const uTree = await writeTree(ctx, [
+          { name: 'u.txt', mode: FILE_MODE.REGULAR as FileMode, id: uBlob },
+        ]);
+        const b = await writeCommitWithParents(ctx, baseTree, []);
+        const i = await writeCommitWithParents(ctx, baseTree, [b]);
+        const u = await writeCommitWithParents(ctx, uTree, []);
+        const w = await writeCommitWithParents(ctx, baseTree, [b, i, u]);
+        await pushStashRef(ctx, w, 'WIP on main: 000 x');
+        const sut = factoryFor(ctx);
+
+        // Act
+        const entry = await sut.stashEntry(0);
+
+        // Assert
+        expect(entry).not.toBeNull();
+        if (entry === null) return;
+        expect(entry.untracked).not.toBeNull();
+        if (entry.untracked === null) return;
+        expect((await collect(entry.untracked.entries())).map((r) => r.path)).toEqual(['u.txt']);
+      });
+    });
+  });
+
+  describe('Given a single-entry stash stack', () => {
+    describe('When sut.stashEntry(5) is awaited (out of range)', () => {
+      it('Then it returns null', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const tree = await writeTree(ctx, []);
+        const b = await writeCommitWithParents(ctx, tree, []);
+        const w = await writeCommitWithParents(ctx, tree, [b, b]);
+        await pushStashRef(ctx, w, 'WIP on main: 000 x');
+        const sut = factoryFor(ctx);
+
+        // Act
+        const result = await sut.stashEntry(5);
+
+        // Assert
+        expect(result).toBeNull();
+      });
+    });
+  });
+
+  describe('Given a two-entry stash stack', () => {
+    describe('When sut.stashEntry(1) is awaited (the older entry)', () => {
+      it('Then it resolves the older entry, not the newest', async () => {
+        // Arrange — newer entry holds `new.txt`, older holds `old.txt`.
+        const ctx = await buildSeededContext();
+        const oldBlob = await writeBlob(ctx, new Uint8Array([1]));
+        const newBlob = await writeBlob(ctx, new Uint8Array([2]));
+        const baseTree = await writeTree(ctx, []);
+        const oldTree = await writeTree(ctx, [
+          { name: 'old.txt', mode: FILE_MODE.REGULAR as FileMode, id: oldBlob },
+        ]);
+        const newTree = await writeTree(ctx, [
+          { name: 'new.txt', mode: FILE_MODE.REGULAR as FileMode, id: newBlob },
+        ]);
+        const b = await writeCommitWithParents(ctx, baseTree, []);
+        const olderW = await writeCommitWithParents(ctx, oldTree, [b, b]);
+        const newerW = await writeCommitWithParents(ctx, newTree, [b, b]);
+        await pushStashRef(ctx, olderW, 'WIP on main: 000 older');
+        await pushStashRef(ctx, newerW, 'WIP on main: 111 newer');
+        const sut = factoryFor(ctx);
+
+        // Act
+        const entry = await sut.stashEntry(1);
+
+        // Assert — index 1 is the older push (old.txt), not the newest (new.txt).
+        expect(entry).not.toBeNull();
+        if (entry === null) return;
+        expect((await collect(entry.workdir.entries())).map((r) => r.path)).toEqual(['old.txt']);
       });
     });
   });

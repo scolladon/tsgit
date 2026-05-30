@@ -408,6 +408,12 @@ function extractDetail(data: TsgitErrorData): string {
       return `cannot remove ${data.paths.length} file(s) with local modifications (use --cached to keep the file, or -f to force removal)`;
     case 'RM_STAGED_AND_LOCAL_CHANGES':
       return `cannot remove ${data.paths.length} file(s) with staged content different from both the file and HEAD (use -f to force removal)`;
+    case 'NO_INITIAL_COMMIT':
+      return 'you do not have the initial commit yet';
+    case 'STASH_NOT_FOUND':
+      return `stash@{${data.index}} is not a valid stash reference (stack size ${data.stackSize})`;
+    case 'STASH_APPLY_WOULD_OVERWRITE':
+      return `cannot apply stash: ${data.paths.length} local change(s) would be overwritten`;
     default: {
       const _exhaustive: never = data;
       return String(_exhaustive);

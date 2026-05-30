@@ -136,7 +136,7 @@ browser parity surface) and `runHook` (structurally Node-only;
 
 The audit is **namespace-aware**: nested-namespace commands bound as
 `readonly X: commands.XNamespace` (`config`, `remote`, `branch`, `tag`,
-`sparseCheckout`) are parsed as tier-1 commands, and dotted
+`sparseCheckout`, `stash`) are parsed as tier-1 commands, and dotted
 `repo.<namespace>.<verb>(` call sites count as coverage at namespace
 granularity — one verb call covers the namespace, mirroring how the
 doc-coverage audit maps one page per namespace. `config` carries a

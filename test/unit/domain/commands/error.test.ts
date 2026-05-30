@@ -24,6 +24,7 @@ import {
   MAX_HOOK_STDERR_IN_ERROR,
   maxRefspecsExceeded,
   mergeHasConflicts,
+  noInitialCommit,
   nonFastForward,
   noOperationInProgress,
   nothingToCommit,
@@ -41,6 +42,8 @@ import {
   revparseUnresolved,
   sanitize,
   sparsePatternFileTooLarge,
+  stashApplyWouldOverwrite,
+  stashNotFound,
   tagExists,
   tagNotFound,
   targetDirectoryNotEmpty,
@@ -80,6 +83,40 @@ describe('domain commands error — factory data', () => {
         expect(pathspecNoMatch('*.zzz').data).toEqual({
           code: 'PATHSPEC_NO_MATCH',
           pattern: '*.zzz',
+        });
+      });
+    });
+  });
+
+  describe('Given the noInitialCommit error helper', () => {
+    describe('When called', () => {
+      it('Then data matches expected shape', () => {
+        // Arrange + Assert
+        expect(noInitialCommit().data).toEqual({ code: 'NO_INITIAL_COMMIT' });
+      });
+    });
+  });
+
+  describe('Given the stashNotFound error helper', () => {
+    describe('When called', () => {
+      it('Then data carries the requested index and stack size', () => {
+        // Arrange + Assert
+        expect(stashNotFound(2, 1).data).toEqual({
+          code: 'STASH_NOT_FOUND',
+          index: 2,
+          stackSize: 1,
+        });
+      });
+    });
+  });
+
+  describe('Given the stashApplyWouldOverwrite error helper', () => {
+    describe('When called', () => {
+      it('Then data carries the overwrite-blocked paths', () => {
+        // Arrange + Assert
+        expect(stashApplyWouldOverwrite(['a' as FilePath, 'b' as FilePath]).data).toEqual({
+          code: 'STASH_APPLY_WOULD_OVERWRITE',
+          paths: ['a', 'b'],
         });
       });
     });
@@ -1166,6 +1203,15 @@ describe('domain commands error — extractDetail message formatting', () => {
     [
       { code: 'CONFIG_SYSTEM_PATH_UNRESOLVED' },
       'CONFIG_SYSTEM_PATH_UNRESOLVED: config system path could not be resolved on this platform',
+    ],
+    [{ code: 'NO_INITIAL_COMMIT' }, 'NO_INITIAL_COMMIT: you do not have the initial commit yet'],
+    [
+      { code: 'STASH_NOT_FOUND', index: 2, stackSize: 1 },
+      'STASH_NOT_FOUND: stash@{2} is not a valid stash reference (stack size 1)',
+    ],
+    [
+      { code: 'STASH_APPLY_WOULD_OVERWRITE', paths: ['a' as FilePath, 'b' as FilePath] },
+      'STASH_APPLY_WOULD_OVERWRITE: cannot apply stash: 2 local change(s) would be overwritten',
     ],
   ];
 
