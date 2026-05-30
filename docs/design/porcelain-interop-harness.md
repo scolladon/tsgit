@@ -26,22 +26,25 @@ In scope:
 - A reusable **porcelain interop harness** in `test/integration/interop-helpers.ts`:
   read-back helpers (`lsStage`, `writeTreeOf`) and a non-throwing git runner
   (`tryRunGit`) for co-refusal assertions.
-- `test/integration/mv-interop.test.ts` — pins `repo.mv` to `git mv` across
-  rename, move-into-dir, directory-subtree, force-overwrite, the
-  unstaged-edit-travels invariant, and three refusals.
+- Four `<cmd>-interop.test.ts` files pinning the most-used state-mutating
+  porcelain to canonical `git` (ADR-205): **`mv`**, **`add`**, **`rm`**,
+  **`reset`**.
 - Make porcelain faithfulness **machine-tracked** by the write-surface audit:
-  declare `mv` as a write surface so `audit-write-surfaces` reports it covered
-  (not orphan) — see ADR-204.
+  declare each command as a `@writes` surface so `audit-write-surfaces` reports
+  it covered (not orphan) — see ADR-204.
 - Reword the `mv.scenario.ts` golden comment: the tree id is now machine-pinned
   to canonical git by the interop sibling, not "verified out-of-band".
 
 Out of scope (future, same pattern):
 
-- Retrofitting other composite porcelain (`add`, `rm`, `reset`, `stash`, …).
-  `commit` is already pinned (`commit-message-interop.test.ts`). Each future
-  porcelain adds its own `@writes` tag + `*-interop.test.ts` as it lands.
+- `commit` — already pinned (`commit-message-interop.test.ts`).
+- `stash` (21.3) and history-rewriting porcelain (22.x) — adopt the same pattern
+  when they land.
 - Network porcelain (`clone`/`fetch`/`pull`/`push`) — covered by the
   `network/*-http-backend.test.ts` suite, a different bucket.
+- `index-interop.test.ts` is **not** retargeted: it remains the `index` byte-format
+  proof (it uses `add` as a vehicle, but `add`'s command behaviour gets its own
+  test).
 
 ## The cross-tool readback technique
 
@@ -97,6 +100,9 @@ Each case seeds identical files **staged** on both sides (`git add` peer /
 `repo.add` ours — `git mv` operates on the index, so no seed commit is needed),
 runs the move both ways, then compares.
 
+> The three retrofit matrices (`add` / `rm` / `reset`) follow this same
+> seed-both-ways-then-compare shape and live in their own files; see below.
+
 Happy paths (assert `lsStage` equal ∧ `writeTreeOf` equal ∧ worktree ∧ the
 porcelain `moved` report):
 
@@ -125,13 +131,60 @@ Refusal cases assert the `.data.code` directly (try/catch, not
 **pre-move** `lsStage` equals the **post-refusal** `lsStage` on the tsgit side
 (no partial mutation).
 
+## Test matrix — `add-interop.test.ts`
+
+Seed identical untracked files on both sides; stage via `repo.add` / `git add`;
+compare `lsStage` ∧ `writeTreeOf`.
+
+1. **New file** — `add(['a.txt'])` vs `git add a.txt`.
+2. **Subdirectory pathspec** — `add(['sub'])` stages every file under `sub/`.
+3. **Re-stage after edit** — stage, edit the working copy, `add` again; the blob
+   id advances to the new content (matches git).
+
+(Executable-bit and symlink staging are POSIX-mode-dependent — left to the
+`posix-only/` suite, not this portable file.)
+
+## Test matrix — `rm-interop.test.ts`
+
+Seed a tracked file (stage on both), then remove both ways; compare `lsStage`
+(entry gone) ∧ working-tree presence.
+
+1. **Tracked removal** — `rm(['a.txt'])` drops the index entry **and** deletes
+   the working file, matching `git rm a.txt`.
+2. **`--cached`** — `rm(['a.txt'], { cached: true })` drops the index entry but
+   leaves the working file, matching `git rm --cached a.txt`.
+3. **Refusal — untracked path** — `rm(['ghost.txt'])` throws (`PATHSPEC_NO_MATCH`)
+   and `git rm ghost.txt` exits non-zero; neither side mutates (`lsStage`
+   unchanged).
+
+## Test matrix — `reset-interop.test.ts`
+
+Reset needs a committed history with **matching SHAs** on both sides, so the
+seed commits with a pinned author/committer identity (commit ids are already
+proven SHA-equal by `commit-interop.test.ts`). Seed: commit `C0` (`a=v0`), then
+commit `C1` (`a=v1` + new `b`). Reset each mode to `C0` and compare against
+`git reset --<mode> <C0>`:
+
+1. **`--soft`** — HEAD → `C0`; index + working tree untouched. Compare
+   `rev-parse HEAD` ∧ `lsStage` (still `C1`'s index) ∧ working tree.
+2. **`--mixed`** — HEAD → `C0`; index rebuilt from `C0`'s tree; working tree
+   untouched (`b` still on disk, now untracked). Compare `rev-parse HEAD` ∧
+   `lsStage` ∧ `b` present on disk.
+3. **`--hard`** — HEAD → `C0`; index **and** working tree reset (`b` deleted,
+   `a` back to `v0`). Compare `rev-parse HEAD` ∧ `lsStage` ∧ working tree
+   (`a` content = `v0`, `b` absent).
+
+`rev-parse HEAD` is read back by canonical git on both sides — the reset must
+land HEAD on the same commit id, not merely "a" commit.
+
 ## Surface declaration (audit integration)
 
 `audit-write-surfaces` couples every `@writes` surface to a `cross-tool-interop`
 test naming it via `interopSurface:`. A `cross-tool-interop` test that names a
 surface no `@writes` declares is reported as **orphan coverage**. To keep the
-audit clean *and* make porcelain faithfulness durable, `mv` becomes a declared
-write surface — a top-of-file JSDoc on `src/application/commands/mv.ts`:
+audit clean *and* make porcelain faithfulness durable, each command becomes a
+declared write surface — a top-of-file JSDoc on its command module (none of the
+four currently has one; they start with imports). For `mv`:
 
 ```ts
 /**
@@ -145,12 +198,17 @@ write surface — a top-of-file JSDoc on `src/application/commands/mv.ts`:
  */
 ```
 
-`kind: equivalent-under-readback` — the resulting index + tree read back (via
-`ls-files --stage` / `write-tree`) match git; raw index bytes differ by
-stat-cache. `format: git-index-tree-state` names the composite readback state
-(no single new byte format — that is the point of a porcelain surface).
+The same block (with `surface: add` / `rm` / `reset`) is added to each command
+module. All four share `kind: equivalent-under-readback` (the resulting index +
+tree read back via `ls-files --stage` / `write-tree` match git; raw index bytes
+differ by stat-cache) and `format: git-index-tree-state` (the composite readback
+state — no single new byte format, which is the point of a porcelain surface;
+format labels are not required unique).
 
-The new test header:
+The parser requires the `@writes` block to be the **first** JSDoc at byte 0, so
+each command file gains a leading module-doc comment before its imports.
+
+Each new test header, e.g. `mv-interop.test.ts`:
 
 ```ts
 /**
@@ -164,32 +222,39 @@ The new test header:
 
 This widens `@writes` from "module defines a byte format" to "module owns a
 write surface that must be pinned to canonical git" — the composite-porcelain
-case. Recorded in ADR-204.
+case. Recorded in ADR-204; scope in ADR-205.
 
 ## Testing strategy
 
-- **Interop (this PR):** `mv-interop.test.ts` is the deliverable — it *is* the
-  test. `describe.skipIf(!GIT_AVAILABLE)` mirrors the suite (skips where git is
-  absent, e.g. a hermetic CI shard).
+- **Interop (this PR):** the four `<cmd>-interop.test.ts` files *are* the
+  deliverable. Each is `describe.skipIf(!GIT_AVAILABLE)` so it mirrors the suite
+  (skips where git is absent, e.g. a hermetic CI shard).
 - **Unit:** the new `interop-helpers.ts` functions are exercised transitively by
-  the interop test. `tryRunGit`'s failure branch is covered by refusal cases 6–8
-  (git exits non-zero); its success branch by every happy path. No separate unit
-  test — interop helpers have always been integration-scoped (the module doc
+  the interop tests. `tryRunGit`'s failure branch is covered by every refusal
+  case (git exits non-zero); its success branch by every happy path. No separate
+  unit test — interop helpers have always been integration-scoped (the module doc
   says so), and `runGit`/`hasGit`/`makePeerPair` carry no unit tests today.
+- **Coverage gate unaffected:** the only `src/` change is four `@writes` JSDoc
+  blocks (comments). `test:coverage` measures `src/` and is untouched; the new
+  helpers live under `test/` and run in `test:integration`.
 - **No property test:** the harness is I/O orchestration against a real
   subprocess — explicitly *not* a parser/matcher/round-trip per the property-test
   guidance. The four lenses don't fit.
 - **Mutation:** refusal cases assert `.data.code` (StringLiteral-mutant
-  resistant); guard conditions (each `MV_*` path) get an isolated case.
+  resistant); each guard condition (per `MV_*` path, `PATHSPEC_NO_MATCH`) gets an
+  isolated case. No new `src/` logic is added, so the PR introduces no new
+  mutants.
 
 ## Key design decisions
 
 1. **Readback over byte-equality** — compare `git ls-files --stage` /
    `git write-tree` of each side, not raw `.git/index` bytes. Forced by
    per-host stat-cache fields. (Pre-decided by `index-interop.test.ts`.)
-2. **Seed by staging, not committing** — `git mv` works off the index; staging
-   is sufficient and faster. A seed commit would only add a constant SHA with no
-   extra faithfulness signal.
+2. **Seed by staging where the command works off the index** — `mv`/`add`/`rm`
+   operate on the index, so staging is sufficient and faster; a seed commit would
+   only add a constant SHA with no extra faithfulness signal. `reset` is the
+   exception — it targets a commit, so it seeds two pinned-identity commits whose
+   SHAs match git's (proven by `commit-interop.test.ts`).
 3. **Drive the porcelain facade, not primitives** — `openRepository().mv(...)`.
    The whole point is to exercise the orchestration layer the parity goldens
    can't vouch for against canonical git.
