@@ -157,7 +157,10 @@ export type CommandError =
     }
   | { readonly code: 'RM_STAGED_CHANGES'; readonly paths: ReadonlyArray<FilePath> }
   | { readonly code: 'RM_LOCAL_MODIFICATIONS'; readonly paths: ReadonlyArray<FilePath> }
-  | { readonly code: 'RM_STAGED_AND_LOCAL_CHANGES'; readonly paths: ReadonlyArray<FilePath> };
+  | { readonly code: 'RM_STAGED_AND_LOCAL_CHANGES'; readonly paths: ReadonlyArray<FilePath> }
+  | { readonly code: 'NO_INITIAL_COMMIT' }
+  | { readonly code: 'STASH_NOT_FOUND'; readonly index: number; readonly stackSize: number }
+  | { readonly code: 'STASH_APPLY_WOULD_OVERWRITE'; readonly paths: ReadonlyArray<FilePath> };
 
 const sanitizeForDisplay = (s: string): string => {
   let out = '';
@@ -432,3 +435,16 @@ export const rmLocalModifications = (paths: ReadonlyArray<FilePath>): TsgitError
 
 export const rmStagedAndLocalChanges = (paths: ReadonlyArray<FilePath>): TsgitError =>
   new TsgitError({ code: 'RM_STAGED_AND_LOCAL_CHANGES', paths });
+
+// `stash` errors. `NO_INITIAL_COMMIT` mirrors git's refusal to stash on an
+// unborn branch; `STASH_NOT_FOUND` carries the selector index + stack size so
+// callers can render `stash@{index}`; `STASH_APPLY_WOULD_OVERWRITE` mirrors
+// git's pre-merge "local changes would be overwritten" abort. `paths` are
+// pathspec-validated index paths, embedded verbatim like `rm`/`mv`.
+export const noInitialCommit = (): TsgitError => new TsgitError({ code: 'NO_INITIAL_COMMIT' });
+
+export const stashNotFound = (index: number, stackSize: number): TsgitError =>
+  new TsgitError({ code: 'STASH_NOT_FOUND', index, stackSize });
+
+export const stashApplyWouldOverwrite = (paths: ReadonlyArray<FilePath>): TsgitError =>
+  new TsgitError({ code: 'STASH_APPLY_WOULD_OVERWRITE', paths });
