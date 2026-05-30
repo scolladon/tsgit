@@ -8,10 +8,11 @@ import type {
   WorkdirEnumerator,
 } from '../../../ports/snapshot-resolvers.js';
 import { readObject } from '../read-object.js';
+import { readReflog } from '../reflog-store.js';
 import { resolveRef } from '../resolve-ref.js';
 import { createIndexSnapshot } from './index-snapshot.js';
 import type { IndexSnapshot, SnapshotOptions, TreeSnapshot, WorkdirSnapshot } from './snapshot.js';
-import type { StashSnapshot } from './stash-snapshot.js';
+import { createStashSnapshot, type StashSnapshot } from './stash-snapshot.js';
 import { createTreeSnapshot } from './tree-snapshot.js';
 import { createWorkdirSnapshot, type WorkdirSnapshotOptions } from './workdir-snapshot.js';
 
@@ -136,16 +137,45 @@ export const createSnapshotFactory = (deps: SnapshotFactoryDeps): SnapshotFactor
     cherryPickHead: compoundFactory(deps, 'CHERRY_PICK_HEAD'),
     revertHead: compoundFactory(deps, 'REVERT_HEAD'),
     fetchHead: compoundFactory(deps, 'FETCH_HEAD'),
-    // Stash log entry parsing (reflog) lives outside Wave 1 scope; the
-    // factory always returns null until a future wave wires walk-reflog
-    // and the index/work/untracked tree triplet. The fs.exists check that
-    // would be needed once parsing lands is intentionally absent — we don't
-    // want a placeholder that pretends to discriminate on filesystem state
-    // while returning the same value either way (Stryker correctly flags
-    // such placeholders as equivalent mutants).
-    stashEntry: async (stashIndex) => {
-      void stashIndex;
-      return null;
-    },
+    stashEntry: (stashIndex) => stashEntry(deps, stashIndex),
   };
+};
+
+const STASH_REF = 'refs/stash' as RefName;
+
+const commitTree = async (ctx: Context, commitOid: ObjectId): Promise<ObjectId> => {
+  const obj = await readObject(ctx, commitOid);
+  if (obj.type !== 'commit') throw unexpectedObjectType('commit', obj.type, commitOid);
+  return obj.data.tree;
+};
+
+/**
+ * Parse the stash entry at stack index `stashIndex` (0 = newest) into its
+ * `StashSnapshot` trio. Resolves the W commit from the `refs/stash` reflog and
+ * reads W's parents to locate the trees — `W^{tree}` (workdir), `W^2^{tree}`
+ * (index), and `W^3^{tree}` (untracked, present only on an `--include-untracked`
+ * stash). Returns `null` when the stash ref / reflog is absent or the index is
+ * out of range. Tree iteration is deferred until a snapshot is iterated.
+ */
+const stashEntry = async (
+  deps: SnapshotFactoryDeps,
+  stashIndex: number,
+): Promise<StashSnapshot | null> => {
+  const stored = await readReflog(deps.ctx, STASH_REF);
+  const reflog = stored[stored.length - 1 - stashIndex];
+  if (reflog === undefined) return null;
+  const wObj = await readObject(deps.ctx, reflog.newId);
+  if (wObj.type !== 'commit') throw unexpectedObjectType('commit', wObj.type, reflog.newId);
+  const [, indexParent, untrackedParent] = wObj.data.parents;
+  if (indexParent === undefined) return null;
+  const indexTree = await commitTree(deps.ctx, indexParent);
+  const untracked =
+    untrackedParent !== undefined
+      ? lazyTree(deps, await commitTree(deps.ctx, untrackedParent))
+      : null;
+  return createStashSnapshot({
+    index: lazyTree(deps, indexTree),
+    workdir: lazyTree(deps, wObj.data.tree),
+    untracked,
+  });
 };
