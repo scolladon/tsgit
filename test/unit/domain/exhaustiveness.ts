@@ -140,6 +140,9 @@ export function assertExhaustiveSwitch(data: TsgitErrorData): void {
     case 'MV_DESTINATION_DIRECTORY_MISSING':
     case 'MV_MULTIPLE_SOURCES_SAME_TARGET':
     case 'MV_OVERLAPPING_SOURCES':
+    case 'RM_STAGED_CHANGES':
+    case 'RM_LOCAL_MODIFICATIONS':
+    case 'RM_STAGED_AND_LOCAL_CHANGES':
       return;
     default: {
       const _exhaustive: never = data;

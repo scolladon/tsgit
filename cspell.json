@@ -659,7 +659,10 @@
     "DWIM",
     "typechecks",
     "sometag",
-    "noff"
+    "noff",
+    "mutualize",
+    "mutualized",
+    "mutualization"
   ],
   "ignorePaths": [
     "node_modules",

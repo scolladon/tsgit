@@ -1,14 +1,31 @@
 import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { add } from '../../../../src/application/commands/add.js';
+import { commit } from '../../../../src/application/commands/commit.js';
 import { rm } from '../../../../src/application/commands/rm.js';
+import { readIndex } from '../../../../src/application/primitives/read-index.js';
+import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { fileNotFound, TsgitError } from '../../../../src/domain/index.js';
+import type { AuthorIdentity, ObjectId } from '../../../../src/domain/objects/index.js';
+import type { Context } from '../../../../src/ports/context.js';
 import { seedRepo } from './fixtures.js';
 
+const AUTHOR: AuthorIdentity = {
+  name: 'Ada',
+  email: 'ada@example.com',
+  timestamp: 1_700_000_000,
+  timezoneOffset: '+0000',
+};
+
+const work = (ctx: Context, name: string): string => `${ctx.layout.workDir}/${name}`;
+
+// Stage AND commit, so the index matches HEAD and the working tree matches the
+// index — a clean state `git rm` removes without engaging the safety valve.
 const seedAndStage = async (workingTree: Readonly<Record<string, string>>) => {
   const ctx = createMemoryContext();
   await seedRepo(ctx, { workingTree });
   await add(ctx, Object.keys(workingTree));
+  await commit(ctx, { message: 'seed', author: AUTHOR });
   return ctx;
 };
 
@@ -22,6 +39,29 @@ const expectError = async (fn: () => Promise<unknown>, code: string): Promise<Ts
   expect(caught).toBeInstanceOf(TsgitError);
   expect((caught as TsgitError).data.code).toBe(code);
   return caught as TsgitError;
+};
+
+// Committed `a.txt`, then a staged edit (index ≠ HEAD, working tree == index).
+const seedStaged = async (): Promise<Context> => {
+  const ctx = await seedAndStage({ 'a.txt': 'v1\n' });
+  await ctx.fs.writeUtf8(work(ctx, 'a.txt'), 'v2\n');
+  await add(ctx, ['a.txt']);
+  return ctx;
+};
+
+// Committed `a.txt`, then an unstaged working edit (working tree ≠ index == HEAD).
+const seedLocal = async (): Promise<Context> => {
+  const ctx = await seedAndStage({ 'a.txt': 'v1\n' });
+  await ctx.fs.writeUtf8(work(ctx, 'a.txt'), 'v2\n');
+  return ctx;
+};
+
+// Committed `a.txt`, a staged edit, then a further unstaged edit
+// (working tree ≠ index ≠ HEAD).
+const seedBoth = async (): Promise<Context> => {
+  const ctx = await seedStaged();
+  await ctx.fs.writeUtf8(work(ctx, 'a.txt'), 'v3\n');
+  return ctx;
 };
 
 describe('rm', () => {
@@ -257,11 +297,13 @@ describe('rm', () => {
   describe('Given cached=false and a working file that vanishes during removeFile', () => {
     describe('When rm', () => {
       it('Then the FILE_NOT_FOUND race is tolerated', async () => {
-        // Arrange — a tracked file whose ctx.fs.rm throws FILE_NOT_FOUND, simulating
-        // the working copy disappearing mid-remove. lstat still succeeds.
+        // Arrange — a committed (clean) tracked file whose ctx.fs.rm throws
+        // FILE_NOT_FOUND, simulating the working copy disappearing mid-remove.
+        // lstat still succeeds, so the file passes the safety valve.
         const ctx = createMemoryContext();
         await seedRepo(ctx, { workingTree: { 'a.txt': 'a' } });
         await add(ctx, ['a.txt']);
+        await commit(ctx, { message: 'seed', author: AUTHOR });
         const workFile = `${ctx.layout.workDir}/a.txt`;
         const racingCtx = {
           ...ctx,
@@ -388,6 +430,295 @@ describe('rm', () => {
         expect(await ctx.fs.exists(`${ctx.layout.gitDir}/index.lock`)).toBe(false);
         const sut = await rm(ctx, ['b.txt']);
         expect(sut.removed).toEqual(['b.txt']);
+      });
+    });
+  });
+
+  describe('Given a path with staged changes (index differs from HEAD)', () => {
+    describe('When rm without an override', () => {
+      it('Then it refuses with RM_STAGED_CHANGES and removes nothing', async () => {
+        // Arrange
+        const ctx = await seedStaged();
+
+        // Act
+        const err = await expectError(() => rm(ctx, ['a.txt']), 'RM_STAGED_CHANGES');
+
+        // Assert — the refused path travels with the error and nothing was removed.
+        if (err.data.code !== 'RM_STAGED_CHANGES') throw new Error('unexpected error shape');
+        expect(err.data.paths).toEqual(['a.txt']);
+        expect(err.message).toContain('changes staged in the index');
+        expect(await ctx.fs.exists(work(ctx, 'a.txt'))).toBe(true);
+        const index = await readIndex(ctx);
+        expect(index.entries.map((e) => e.path)).toContain('a.txt');
+      });
+    });
+
+    describe('When rm --cached', () => {
+      it('Then --cached suppresses the staged valve and the index entry is dropped', async () => {
+        // Arrange
+        const ctx = await seedStaged();
+
+        // Act
+        const sut = await rm(ctx, ['a.txt'], { cached: true });
+
+        // Assert — index entry gone, working file kept (git rm --cached semantics).
+        expect(sut.removed).toEqual(['a.txt']);
+        expect(await ctx.fs.exists(work(ctx, 'a.txt'))).toBe(true);
+      });
+    });
+
+    describe('When rm --force', () => {
+      it('Then force suppresses the valve and removes index entry and working file', async () => {
+        // Arrange
+        const ctx = await seedStaged();
+
+        // Act
+        const sut = await rm(ctx, ['a.txt'], { force: true });
+
+        // Assert
+        expect(sut.removed).toEqual(['a.txt']);
+        expect(await ctx.fs.exists(work(ctx, 'a.txt'))).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a path with a staged mode-only change (same blob, different mode)', () => {
+    describe('When rm without an override', () => {
+      it('Then it refuses with RM_STAGED_CHANGES on the mode difference alone', async () => {
+        // Arrange — commit a symlink, then replace it with a regular file holding
+        // the identical bytes (the link target). The blob id is unchanged, but the
+        // index mode (100644) now differs from HEAD's (120000): a staged mode-only
+        // change, with the working file matching the index (no local change).
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, {});
+        await ctx.fs.symlink('payload', work(ctx, 'link'));
+        await add(ctx, ['link']);
+        await commit(ctx, { message: 'seed', author: AUTHOR });
+        await ctx.fs.rm(work(ctx, 'link'));
+        await ctx.fs.writeUtf8(work(ctx, 'link'), 'payload');
+        await add(ctx, ['link']);
+
+        // Act
+        const err = await expectError(() => rm(ctx, ['link']), 'RM_STAGED_CHANGES');
+
+        // Assert
+        if (err.data.code !== 'RM_STAGED_CHANGES') throw new Error('unexpected error shape');
+        expect(err.data.paths).toEqual(['link']);
+      });
+    });
+  });
+
+  describe('Given a path with local modifications (working tree differs from index)', () => {
+    describe('When rm without an override', () => {
+      it('Then it refuses with RM_LOCAL_MODIFICATIONS and removes nothing', async () => {
+        // Arrange
+        const ctx = await seedLocal();
+
+        // Act
+        const err = await expectError(() => rm(ctx, ['a.txt']), 'RM_LOCAL_MODIFICATIONS');
+
+        // Assert
+        if (err.data.code !== 'RM_LOCAL_MODIFICATIONS') throw new Error('unexpected error shape');
+        expect(err.data.paths).toEqual(['a.txt']);
+        expect(err.message).toContain('local modifications');
+        expect(await ctx.fs.exists(work(ctx, 'a.txt'))).toBe(true);
+        const index = await readIndex(ctx);
+        expect(index.entries.map((e) => e.path)).toContain('a.txt');
+      });
+    });
+
+    describe('When rm --cached', () => {
+      it('Then --cached suppresses the local valve and drops the index entry', async () => {
+        // Arrange
+        const ctx = await seedLocal();
+
+        // Act
+        const sut = await rm(ctx, ['a.txt'], { cached: true });
+
+        // Assert
+        expect(sut.removed).toEqual(['a.txt']);
+        expect(await ctx.fs.exists(work(ctx, 'a.txt'))).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a path with both staged and local changes', () => {
+    describe('When rm without an override', () => {
+      it('Then it refuses with RM_STAGED_AND_LOCAL_CHANGES and removes nothing', async () => {
+        // Arrange
+        const ctx = await seedBoth();
+
+        // Act
+        const err = await expectError(() => rm(ctx, ['a.txt']), 'RM_STAGED_AND_LOCAL_CHANGES');
+
+        // Assert
+        if (err.data.code !== 'RM_STAGED_AND_LOCAL_CHANGES') {
+          throw new Error('unexpected error shape');
+        }
+        expect(err.data.paths).toEqual(['a.txt']);
+        expect(err.message).toContain('staged content different from both');
+        expect(await ctx.fs.exists(work(ctx, 'a.txt'))).toBe(true);
+      });
+    });
+
+    describe('When rm --cached', () => {
+      it('Then --cached does NOT suppress the both-valve (git requires -f)', async () => {
+        // Arrange
+        const ctx = await seedBoth();
+
+        // Act / Assert — unlike the staged-only and local-only cases, --cached
+        // still refuses when a path is dirty in both index and working tree.
+        const err = await expectError(
+          () => rm(ctx, ['a.txt'], { cached: true }),
+          'RM_STAGED_AND_LOCAL_CHANGES',
+        );
+        if (err.data.code !== 'RM_STAGED_AND_LOCAL_CHANGES') {
+          throw new Error('unexpected error shape');
+        }
+        expect(err.data.paths).toEqual(['a.txt']);
+      });
+    });
+
+    describe('When rm --force', () => {
+      it('Then force removes it', async () => {
+        // Arrange
+        const ctx = await seedBoth();
+
+        // Act
+        const sut = await rm(ctx, ['a.txt'], { force: true });
+
+        // Assert
+        expect(sut.removed).toEqual(['a.txt']);
+        expect(await ctx.fs.exists(work(ctx, 'a.txt'))).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a staged-but-never-committed file (unborn HEAD)', () => {
+    describe('When rm without an override', () => {
+      it('Then it refuses with RM_STAGED_CHANGES (the path is absent from HEAD)', async () => {
+        // Arrange — staged, never committed: index has the entry, HEAD has nothing.
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, { workingTree: { 'a.txt': 'a' } });
+        await add(ctx, ['a.txt']);
+
+        // Act
+        const err = await expectError(() => rm(ctx, ['a.txt']), 'RM_STAGED_CHANGES');
+
+        // Assert
+        if (err.data.code !== 'RM_STAGED_CHANGES') throw new Error('unexpected error shape');
+        expect(err.data.paths).toEqual(['a.txt']);
+      });
+    });
+  });
+
+  describe('Given a clean committed file whose working copy was deleted', () => {
+    describe('When rm', () => {
+      it('Then an absent working file skips the valve and the index entry is removed', async () => {
+        // Arrange — committed clean, then the working file is deleted. The valve
+        // never refuses an absent file (the removal is what git wants).
+        const ctx = await seedAndStage({ 'a.txt': 'a' });
+        await ctx.fs.rm(work(ctx, 'a.txt'));
+
+        // Act
+        const sut = await rm(ctx, ['a.txt'], { cached: true });
+
+        // Assert
+        expect(sut.removed).toEqual(['a.txt']);
+      });
+    });
+  });
+
+  describe('Given HEAD resolves to a non-commit object', () => {
+    describe('When rm runs the safety valve', () => {
+      it('Then it throws UNEXPECTED_OBJECT_TYPE expected=commit', async () => {
+        // Arrange — detach HEAD onto a blob oid, then stage a file so the valve
+        // reads HEAD's tree and finds a non-commit there.
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, {});
+        const blobId = await writeObject(ctx, {
+          type: 'blob',
+          content: new TextEncoder().encode('not-a-commit'),
+          id: '' as ObjectId,
+        });
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, `${blobId}\n`);
+        await ctx.fs.writeUtf8(work(ctx, 'a.txt'), 'a');
+        await add(ctx, ['a.txt']);
+
+        // Act
+        const err = await expectError(() => rm(ctx, ['a.txt']), 'UNEXPECTED_OBJECT_TYPE');
+
+        // Assert
+        if (err.data.code !== 'UNEXPECTED_OBJECT_TYPE') throw new Error('unexpected error shape');
+        expect(err.data.expected).toBe('commit');
+      });
+    });
+  });
+
+  describe('Given resolving HEAD throws a non-REF_NOT_FOUND error (a ref cycle)', () => {
+    describe('When rm runs the safety valve', () => {
+      it('Then the error propagates rather than being swallowed as an unborn HEAD', async () => {
+        // Arrange — a tracked file plus a HEAD → main → loop → main symref cycle, so
+        // resolveRef('HEAD') throws REF_CYCLE_DETECTED (not REF_NOT_FOUND). The valve
+        // must re-throw it, not treat it as an unborn HEAD.
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, { workingTree: { 'a.txt': 'a' } });
+        await add(ctx, ['a.txt']);
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, 'ref: refs/heads/loop\n');
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/loop`, 'ref: refs/heads/main\n');
+
+        // Act
+        const err = await expectError(() => rm(ctx, ['a.txt']), 'REF_CYCLE_DETECTED');
+
+        // Assert — kills the catch's `{}` body and `true` condition mutants, which
+        // would swallow the cycle error and mis-classify the file as staged.
+        expect(err.data.code).toBe('REF_CYCLE_DETECTED');
+      });
+    });
+  });
+
+  describe('Given two paths refused as staged-only and local-only (no both)', () => {
+    describe('When rm without an override', () => {
+      it('Then staged-only takes precedence over local-only', async () => {
+        // Arrange — `staged.txt` is staged-only; `local.txt` is local-only.
+        const ctx = await seedAndStage({ 'staged.txt': 's1\n', 'local.txt': 'l1\n' });
+        await ctx.fs.writeUtf8(work(ctx, 'staged.txt'), 's2\n');
+        await add(ctx, ['staged.txt']);
+        await ctx.fs.writeUtf8(work(ctx, 'local.txt'), 'l2\n');
+
+        // Act — precedence is staged → local, so the staged refusal surfaces.
+        const err = await expectError(() => rm(ctx, ['*.txt']), 'RM_STAGED_CHANGES');
+
+        // Assert
+        if (err.data.code !== 'RM_STAGED_CHANGES') throw new Error('unexpected error shape');
+        expect(err.data.paths).toEqual(['staged.txt']);
+        expect(await ctx.fs.exists(work(ctx, 'staged.txt'))).toBe(true);
+        expect(await ctx.fs.exists(work(ctx, 'local.txt'))).toBe(true);
+      });
+    });
+  });
+
+  describe('Given two paths refused in different categories (staged-only and both)', () => {
+    describe('When rm without an override', () => {
+      it('Then it throws by precedence (both wins) and removes nothing', async () => {
+        // Arrange — `staged.txt` is staged-only; `both.txt` is staged + local.
+        const ctx = await seedAndStage({ 'staged.txt': 's1\n', 'both.txt': 'b1\n' });
+        await ctx.fs.writeUtf8(work(ctx, 'staged.txt'), 's2\n');
+        await ctx.fs.writeUtf8(work(ctx, 'both.txt'), 'b2\n');
+        await add(ctx, ['staged.txt', 'both.txt']);
+        await ctx.fs.writeUtf8(work(ctx, 'both.txt'), 'b3\n');
+
+        // Act — the strongest required override (both → -f only) surfaces first.
+        const err = await expectError(() => rm(ctx, ['*.txt']), 'RM_STAGED_AND_LOCAL_CHANGES');
+
+        // Assert — nothing removed; both files still present.
+        if (err.data.code !== 'RM_STAGED_AND_LOCAL_CHANGES') {
+          throw new Error('unexpected error shape');
+        }
+        expect(err.data.paths).toEqual(['both.txt']);
+        expect(await ctx.fs.exists(work(ctx, 'staged.txt'))).toBe(true);
+        expect(await ctx.fs.exists(work(ctx, 'both.txt'))).toBe(true);
       });
     });
   });

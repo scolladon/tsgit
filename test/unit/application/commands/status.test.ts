@@ -528,4 +528,25 @@ describe('status — progress reporting', () => {
       });
     });
   });
+
+  describe('Given a tracked symlink replaced by a regular file with identical bytes', () => {
+    describe('When status', () => {
+      it('Then it reports the path modified on the mode change (content identical)', async () => {
+        // Arrange — the symlink blob is its target string; a regular file holding
+        // those same bytes hashes identically, so only a mode-aware check differs.
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.symlink('target-content', `${ctx.layout.workDir}/link`);
+        await add(ctx, ['link']);
+        await ctx.fs.rm(`${ctx.layout.workDir}/link`);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/link`, 'target-content');
+
+        // Act
+        const sut = await status(ctx);
+
+        // Assert
+        expect(sut.workingTreeChanges).toContainEqual({ kind: 'modified', path: 'link' });
+      });
+    });
+  });
 });

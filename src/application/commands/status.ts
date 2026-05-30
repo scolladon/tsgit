@@ -1,13 +1,13 @@
 import type { IndexEntry } from '../../domain/git-index/index.js';
-import type { ObjectId, RefName } from '../../domain/objects/index.js';
+import type { RefName } from '../../domain/objects/index.js';
 import type { FilePath } from '../../domain/objects/object-id.js';
 import type { Context } from '../../ports/context.js';
+import { compareWorkingTreeEntry } from '../primitives/compare-working-tree-entry.js';
 import { readIndex } from '../primitives/read-index.js';
 import { walkWorkingTree } from '../primitives/walk-working-tree.js';
 import { buildRepoIgnorePredicate } from './internal/build-ignore-evaluator.js';
 import { createGranularityTracker } from './internal/progress-tracker.js';
 import { assertRepository, readHeadRaw } from './internal/repo-state.js';
-import { readFile, validatePath } from './internal/working-tree.js';
 
 export type ChangeKind = 'modified' | 'added' | 'deleted' | 'untracked';
 
@@ -52,8 +52,8 @@ export const status = async (ctx: Context): Promise<StatusResult> => {
     const tracker = createGranularityTracker(ctx.progress, STATUS_SCAN_OP, STATUS_SCAN_GRANULARITY);
     // Pass 1: index entries vs. working tree.
     const settled = await Promise.all(
-      Array.from(indexByPath).map(async ([path, entry]) => {
-        const result = await classifyEntry(ctx, path, entry);
+      Array.from(indexByPath.values()).map(async (entry) => {
+        const result = await classifyEntry(ctx, entry);
         tracker.tick();
         return result;
       }),
@@ -92,34 +92,13 @@ export const status = async (ctx: Context): Promise<StatusResult> => {
 // Stryker disable next-line EqualityOperator: equivalent — `untracked` is built solely from `walkWorkingTree`, which yields each filesystem path exactly once, so `a.path` and `b.path` are never equal during this sort. For two distinct paths `a.path < b.path` and `a.path <= b.path` always agree, so the mutated comparator produces an identical ordering.
 const byPathAscending = (a: ChangeEntry, b: ChangeEntry): number => (a.path < b.path ? -1 : 1);
 
-const classifyEntry = async (
-  ctx: Context,
-  path: FilePath,
-  entry: IndexEntry,
-): Promise<ChangeEntry | undefined> => {
+const classifyEntry = async (ctx: Context, entry: IndexEntry): Promise<ChangeEntry | undefined> => {
   // A skip-worktree entry is intentionally absent from the working tree;
   // reporting its absence as `deleted` would make a sparse repo permanently
   // dirty. It stays in `indexByPath` so pass 2 still treats the path as tracked.
   if (entry.flags.skipWorktree) return undefined;
-  const stat = await ctx.fs.lstat(`${ctx.layout.workDir}/${path}`).catch(() => undefined);
-  if (stat === undefined) return { kind: 'deleted', path };
-  if (await isModified(ctx, path, entry)) return { kind: 'modified', path };
+  const comparison = await compareWorkingTreeEntry(ctx, entry);
+  if (comparison === 'absent') return { kind: 'deleted', path: entry.path };
+  if (comparison === 'modified') return { kind: 'modified', path: entry.path };
   return undefined;
-};
-
-const HEADER_ENCODER = new TextEncoder();
-
-const isModified = async (ctx: Context, path: FilePath, entry: IndexEntry): Promise<boolean> => {
-  try {
-    const bytes = await readFile(ctx, validatePath(path));
-    // Hash the blob bytes WITHOUT persisting — `status` is a read-only query.
-    const header = HEADER_ENCODER.encode(`blob ${bytes.byteLength}\0`);
-    const buf = new Uint8Array(header.byteLength + bytes.byteLength);
-    buf.set(header, 0);
-    buf.set(bytes, header.byteLength);
-    const tempId = (await ctx.hash.hashHex(buf)) as ObjectId;
-    return tempId !== entry.id;
-  } catch {
-    return true;
-  }
 };

@@ -148,4 +148,126 @@ describe.skipIf(!GIT_AVAILABLE)('rm porcelain interop', () => {
       });
     });
   });
+
+  const writeBoth = async (name: string, content: string): Promise<void> => {
+    await writeFile(path.join(pair.peer, name), content);
+    await writeFile(path.join(pair.ours, name), content);
+  };
+  const stageBoth = async (name: string): Promise<void> => {
+    runGit(['-C', pair.peer, 'add', name]);
+    await repo.add([name]);
+  };
+  const repoRmCode = async (
+    paths: ReadonlyArray<string>,
+    opts?: { cached?: boolean; force?: boolean },
+  ): Promise<string> => {
+    try {
+      await repo.rm(paths, opts);
+      return '';
+    } catch (error) {
+      return (error as TsgitError).data.code;
+    }
+  };
+
+  describe('Given a path with staged changes in both repos', () => {
+    describe('When repo.rm and git rm try to remove it', () => {
+      it('Then both refuse and the index + working tree are unchanged and identical', async () => {
+        // Arrange
+        await seedCommitted('a.txt', 'one\n');
+        await writeBoth('a.txt', 'two\n');
+        await stageBoth('a.txt');
+        const before = lsStage(pair.ours);
+
+        // Act
+        const peerRun = tryRunGit(['-C', pair.peer, 'rm', 'a.txt']);
+        const code = await repoRmCode(['a.txt']);
+
+        // Assert
+        expect(peerRun.ok).toBe(false);
+        expect(code).toBe('RM_STAGED_CHANGES');
+        expect(lsStage(pair.ours)).toBe(before);
+        expect(lsStage(pair.ours)).toBe(lsStage(pair.peer));
+        await expect(pathExists(pair.ours, 'a.txt')).resolves.toBe(true);
+      });
+    });
+
+    describe('When both pass --cached', () => {
+      it('Then both drop the index entry and keep the working file, identically', async () => {
+        // Arrange
+        await seedCommitted('a.txt', 'one\n');
+        await writeBoth('a.txt', 'two\n');
+        await stageBoth('a.txt');
+
+        // Act — --cached suppresses the staged-only valve in git and tsgit alike.
+        await repo.rm(['a.txt'], { cached: true });
+        runGit(['-C', pair.peer, 'rm', '--cached', 'a.txt']);
+
+        // Assert
+        expect(lsStage(pair.ours)).toBe(lsStage(pair.peer));
+        await expect(pathExists(pair.ours, 'a.txt')).resolves.toBe(true);
+      });
+    });
+  });
+
+  describe('Given a path with local modifications in both repos', () => {
+    describe('When repo.rm and git rm try to remove it', () => {
+      it('Then both refuse and the index + working tree are unchanged and identical', async () => {
+        // Arrange
+        await seedCommitted('a.txt', 'one\n');
+        await writeBoth('a.txt', 'local\n');
+        const before = lsStage(pair.ours);
+
+        // Act
+        const peerRun = tryRunGit(['-C', pair.peer, 'rm', 'a.txt']);
+        const code = await repoRmCode(['a.txt']);
+
+        // Assert
+        expect(peerRun.ok).toBe(false);
+        expect(code).toBe('RM_LOCAL_MODIFICATIONS');
+        expect(lsStage(pair.ours)).toBe(before);
+        expect(lsStage(pair.ours)).toBe(lsStage(pair.peer));
+        await expect(pathExists(pair.ours, 'a.txt')).resolves.toBe(true);
+      });
+    });
+  });
+
+  describe('Given a path with both staged and local changes in both repos', () => {
+    describe('When repo.rm and git rm try to remove it (plain, then --cached)', () => {
+      it('Then both refuse plain and refuse --cached (only -f would force)', async () => {
+        // Arrange
+        await seedCommitted('a.txt', 'one\n');
+        await writeBoth('a.txt', 'two\n');
+        await stageBoth('a.txt');
+        await writeBoth('a.txt', 'three\n');
+        const before = lsStage(pair.ours);
+
+        // Act / Assert — plain refuses
+        expect(tryRunGit(['-C', pair.peer, 'rm', 'a.txt']).ok).toBe(false);
+        expect(await repoRmCode(['a.txt'])).toBe('RM_STAGED_AND_LOCAL_CHANGES');
+        // --cached still refuses (unlike the staged-only / local-only cases)
+        expect(tryRunGit(['-C', pair.peer, 'rm', '--cached', 'a.txt']).ok).toBe(false);
+        expect(await repoRmCode(['a.txt'], { cached: true })).toBe('RM_STAGED_AND_LOCAL_CHANGES');
+        expect(lsStage(pair.ours)).toBe(before);
+        expect(lsStage(pair.ours)).toBe(lsStage(pair.peer));
+      });
+    });
+
+    describe('When both pass -f / force', () => {
+      it('Then both remove the index entry and working file, identically', async () => {
+        // Arrange
+        await seedCommitted('a.txt', 'one\n');
+        await writeBoth('a.txt', 'two\n');
+        await stageBoth('a.txt');
+        await writeBoth('a.txt', 'three\n');
+
+        // Act
+        await repo.rm(['a.txt'], { force: true });
+        runGit(['-C', pair.peer, 'rm', '-f', 'a.txt']);
+
+        // Assert
+        expect(lsStage(pair.ours)).toBe(lsStage(pair.peer));
+        await expect(pathExists(pair.ours, 'a.txt')).resolves.toBe(false);
+      });
+    });
+  });
 });

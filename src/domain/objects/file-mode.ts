@@ -29,3 +29,18 @@ export function normalizeFileMode(mode: string): FileMode {
 export function isDirectory(mode: FileMode): boolean {
   return mode === FILE_MODE.DIRECTORY;
 }
+
+/**
+ * Derive a working-tree file's git mode from its `lstat`. A symbolic link is
+ * `120000` regardless of its permission bits; a regular file is `100755` when
+ * any of the `0o111` execute bits is set, else `100644`. This is the single
+ * definition staging and the working-tree comparison both use, so an added file
+ * and a later modified-check agree on the mode.
+ */
+export function deriveWorkingMode(stat: {
+  readonly isSymbolicLink: boolean;
+  readonly mode: number;
+}): FileMode {
+  if (stat.isSymbolicLink) return FILE_MODE.SYMLINK;
+  return (stat.mode & 0o111) !== 0 ? FILE_MODE.EXECUTABLE : FILE_MODE.REGULAR;
+}

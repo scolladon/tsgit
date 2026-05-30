@@ -16,9 +16,15 @@
 import { checkoutOverwriteDirty } from '../../domain/commands/error.js';
 import { TsgitError } from '../../domain/error.js';
 import { type IndexEntry, STAGE0_FLAGS } from '../../domain/git-index/index.js';
-import { FILE_MODE, type FileMode, type FilePath } from '../../domain/objects/index.js';
+import {
+  FILE_MODE,
+  type FileMode,
+  type FilePath,
+  type ObjectId,
+} from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
 import type { Changeset, ChangesetEntry } from './compute-changeset.js';
+import { serializeAndHash } from './internal/serialize-and-hash.js';
 import { readBlob } from './read-blob.js';
 
 export interface ApplyChangesetOpts {
@@ -55,13 +61,11 @@ const blobMatches = async (ctx: Context, absPath: string, expectedId: string): P
     // clobbering an unreadable file.
     throw err;
   }
-  // Compute the loose-object content hash with the `blob <size>\0` header
-  // so it matches what git stored.
-  const header = new TextEncoder().encode(`blob ${bytes.length}\0`);
-  const combined = new Uint8Array(header.length + bytes.length);
-  combined.set(header, 0);
-  combined.set(bytes, header.length);
-  const id = await ctx.hash.hashHex(combined);
+  // Compute the loose-object content hash via the shared serialise+hash core
+  // (the `blob <size>\0` header git stored), so this matches `writeObject` /
+  // `hashBlob` byte-for-byte. Uncapped: a read-only dirty check never throws on
+  // a large working file.
+  const { id } = await serializeAndHash(ctx, { type: 'blob', id: '' as ObjectId, content: bytes });
   return id === expectedId;
 };
 

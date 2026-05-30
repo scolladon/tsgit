@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { TsgitError } from '../../../../src/domain/objects/error.js';
 import {
+  deriveWorkingMode,
   isDirectory,
   normalizeFileMode,
   validateFileMode,
@@ -210,6 +211,56 @@ describe('file-mode', () => {
 
           // Assert
           expect(sut).toBe(false);
+        });
+      });
+    });
+  });
+
+  describe('deriveWorkingMode', () => {
+    describe('Given a symbolic link (even with executable bits set)', () => {
+      describe('When deriving the working mode', () => {
+        it("Then returns '120000' (SYMLINK), the link check taking precedence", () => {
+          // Arrange & Act
+          const sut = deriveWorkingMode({ isSymbolicLink: true, mode: 0o777 });
+
+          // Assert
+          expect(sut).toBe('120000');
+        });
+      });
+    });
+
+    describe('Given a regular file with an owner-execute bit', () => {
+      describe('When deriving the working mode', () => {
+        it("Then returns '100755' (EXECUTABLE)", () => {
+          // Arrange & Act
+          const sut = deriveWorkingMode({ isSymbolicLink: false, mode: 0o744 });
+
+          // Assert
+          expect(sut).toBe('100755');
+        });
+      });
+    });
+
+    describe('Given a regular file with a group/other-only execute bit', () => {
+      describe('When deriving the working mode', () => {
+        it("Then returns '100755' (any of the 0o111 bits counts)", () => {
+          // Arrange & Act
+          const sut = deriveWorkingMode({ isSymbolicLink: false, mode: 0o641 });
+
+          // Assert
+          expect(sut).toBe('100755');
+        });
+      });
+    });
+
+    describe('Given a regular file with no execute bits', () => {
+      describe('When deriving the working mode', () => {
+        it("Then returns '100644' (REGULAR)", () => {
+          // Arrange & Act
+          const sut = deriveWorkingMode({ isSymbolicLink: false, mode: 0o644 });
+
+          // Assert
+          expect(sut).toBe('100644');
         });
       });
     });

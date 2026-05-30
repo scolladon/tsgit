@@ -402,6 +402,12 @@ function extractDetail(data: TsgitErrorData): string {
       return `multiple sources for the same target, source=${data.source}, destination=${data.destination}`;
     case 'MV_OVERLAPPING_SOURCES':
       return `cannot move both '${data.child}' and its parent directory '${data.parent}'`;
+    case 'RM_STAGED_CHANGES':
+      return `cannot remove ${data.paths.length} file(s) with changes staged in the index (use --cached to keep the file, or -f to force removal)`;
+    case 'RM_LOCAL_MODIFICATIONS':
+      return `cannot remove ${data.paths.length} file(s) with local modifications (use --cached to keep the file, or -f to force removal)`;
+    case 'RM_STAGED_AND_LOCAL_CHANGES':
+      return `cannot remove ${data.paths.length} file(s) with staged content different from both the file and HEAD (use -f to force removal)`;
     default: {
       const _exhaustive: never = data;
       return String(_exhaustive);
