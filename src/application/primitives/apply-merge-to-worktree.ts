@@ -18,12 +18,7 @@
  */
 import { conflictsToIndexEntries } from '../../domain/diff/index.js';
 import { unsupportedOperation } from '../../domain/error.js';
-import {
-  type GitIndex,
-  type IndexEntry,
-  STAGE0_FLAGS,
-  type StatData,
-} from '../../domain/git-index/index.js';
+import type { GitIndex, IndexEntry } from '../../domain/git-index/index.js';
 import {
   type ConflictType,
   type ContentMerger,
@@ -38,6 +33,7 @@ import type { FileMode, FilePath, ObjectId } from '../../domain/objects/index.js
 import type { Context } from '../../ports/context.js';
 import { compareWorkingTreeEntry } from './compare-working-tree-entry.js';
 import { flattenTree } from './flatten-tree.js';
+import { stage0Entry, zeroStat } from './internal/synthetic-index-entry.js';
 import { removeWorkingTreeFile, writeWorkingTreeFile } from './internal/write-working-tree-file.js';
 import { type MaterializeTreeResult, materializeTree } from './materialize-tree.js';
 import { readBlob } from './read-blob.js';
@@ -132,26 +128,6 @@ const findWouldOverwrite = async (
   }
   return dirty;
 };
-
-const zeroStat = (mode: FileMode): StatData => ({
-  ctimeSeconds: 0,
-  ctimeNanoseconds: 0,
-  mtimeSeconds: 0,
-  mtimeNanoseconds: 0,
-  dev: 0,
-  ino: 0,
-  mode,
-  uid: 0,
-  gid: 0,
-  fileSize: 0,
-});
-
-const stage0Entry = (path: FilePath, id: ObjectId, mode: FileMode): IndexEntry => ({
-  ...zeroStat(mode),
-  id,
-  flags: STAGE0_FLAGS,
-  path,
-});
 
 /** Write the clean outcomes' merged blobs and synthesise the merged root tree. */
 const synthesiseMergedTree = async (

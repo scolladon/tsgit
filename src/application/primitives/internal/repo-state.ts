@@ -11,7 +11,7 @@ import { readConfig } from '../config-read.js';
 const HEAD_REF = RefName.from('HEAD');
 
 /** Discriminated union returned by `readHeadRaw`. */
-type HeadState =
+export type HeadState =
   | { readonly kind: 'symbolic'; readonly target: RefName }
   | { readonly kind: 'direct'; readonly id: ObjectId };
 

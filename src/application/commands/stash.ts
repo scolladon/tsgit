@@ -1,0 +1,269 @@
+/**
+ * `stash` porcelain — save the working tree + index onto the `refs/stash`
+ * stack and restore it later, faithful to `git stash`. The saved W/I/U commit
+ * trio, the reflog stack, and the post-push clean working tree read back
+ * identically to canonical git.
+ *
+ * @writes
+ *   surface: stash
+ *   kind:    equivalent-under-readback
+ *   format:  git-index-tree-state
+ */
+import { noInitialCommit } from '../../domain/commands/error.js';
+import { TsgitError } from '../../domain/error.js';
+import type { GitIndex, IndexEntry } from '../../domain/git-index/index.js';
+import { unexpectedObjectType } from '../../domain/objects/error.js';
+import { deriveWorkingMode, type FilePath, type ObjectId } from '../../domain/objects/index.js';
+import type { Context } from '../../ports/context.js';
+import type { FileStat } from '../../ports/file-system.js';
+import { compareWorkingTreeEntry } from '../primitives/compare-working-tree-entry.js';
+import { createCommit } from '../primitives/create-commit.js';
+import { hashBlob } from '../primitives/hash-blob.js';
+import {
+  assertNoPendingOperation,
+  assertNotBare,
+  assertRepository,
+  type HeadState,
+  readHeadRaw,
+} from '../primitives/internal/repo-state.js';
+import { stage0Entry } from '../primitives/internal/synthetic-index-entry.js';
+import { removeWorkingTreeFile } from '../primitives/internal/write-working-tree-file.js';
+import { materializeTree } from '../primitives/materialize-tree.js';
+import { readIndex } from '../primitives/read-index.js';
+import { readObject } from '../primitives/read-object.js';
+import { resolveReflogIdentity } from '../primitives/reflog-identity.js';
+import { resolveRef } from '../primitives/resolve-ref.js';
+import { pushStashRef } from '../primitives/stash-ref.js';
+import { synthesizeTreeFromIndex } from '../primitives/synthesize-tree-from-index.js';
+import { walkWorkingTree } from '../primitives/walk-working-tree.js';
+import { buildRepoIgnorePredicate } from './internal/build-ignore-evaluator.js';
+import { acquireIndexLock } from './internal/index-update.js';
+import {
+  indexMessage,
+  onMessage,
+  stashBranchLabel,
+  subjectOf,
+  untrackedMessage,
+  wipMessage,
+} from './internal/stash-message.js';
+
+export interface StashPushInput {
+  readonly message?: string;
+  readonly includeUntracked?: boolean;
+  readonly keepIndex?: boolean;
+}
+
+export type StashPushResult =
+  | { readonly kind: 'saved'; readonly stash: ObjectId; readonly message: string }
+  | { readonly kind: 'no-local-changes' };
+
+interface BaseState {
+  readonly b: ObjectId;
+  readonly bTree: ObjectId;
+  readonly branchRef: string | undefined;
+}
+
+const commitTreeOf = async (ctx: Context, commitId: ObjectId): Promise<ObjectId> => {
+  const obj = await readObject(ctx, commitId);
+  if (obj.type !== 'commit') throw unexpectedObjectType('commit', obj.type, commitId);
+  return obj.data.tree;
+};
+
+const commitMessageOf = async (ctx: Context, commitId: ObjectId): Promise<string> => {
+  const obj = await readObject(ctx, commitId);
+  if (obj.type !== 'commit') return '';
+  return obj.data.message;
+};
+
+/** Resolve HEAD to its commit + tree, or refuse on an unborn branch. */
+const resolveBase = async (ctx: Context, head: HeadState): Promise<BaseState> => {
+  if (head.kind === 'direct') {
+    return { b: head.id, bTree: await commitTreeOf(ctx, head.id), branchRef: undefined };
+  }
+  try {
+    const b = await resolveRef(ctx, head.target);
+    return { b, bTree: await commitTreeOf(ctx, b), branchRef: head.target };
+  } catch (err) {
+    if (err instanceof TsgitError && err.data.code === 'REF_NOT_FOUND') throw noInitialCommit();
+    throw err;
+  }
+};
+
+const hashFileAt = async (
+  ctx: Context,
+  path: FilePath,
+  stat: FileStat,
+): Promise<{ readonly id: ObjectId; readonly mode: ReturnType<typeof deriveWorkingMode> }> => {
+  const abs = `${ctx.layout.workDir}/${path}`;
+  const content = stat.isSymbolicLink
+    ? new TextEncoder().encode(await ctx.fs.readlink(abs))
+    : await ctx.fs.read(abs);
+  const id = await hashBlob(ctx, content, { write: true });
+  return { id, mode: deriveWorkingMode(stat) };
+};
+
+interface WorkingTreeProjection {
+  readonly entries: ReadonlyArray<IndexEntry>;
+  readonly dirty: boolean;
+}
+
+/** Project the index's stage-0 entries onto their working-tree content (the W tree). */
+const projectWorkingTree = async (
+  ctx: Context,
+  index: GitIndex,
+): Promise<WorkingTreeProjection> => {
+  const entries: IndexEntry[] = [];
+  let dirty = false;
+  for (const entry of index.entries) {
+    if (entry.flags.stage !== 0) continue;
+    if (entry.flags.skipWorktree) {
+      entries.push(entry);
+      continue;
+    }
+    const cmp = await compareWorkingTreeEntry(ctx, entry);
+    if (cmp === 'absent') {
+      dirty = true;
+      continue;
+    }
+    if (cmp === 'unchanged') {
+      entries.push(entry);
+      continue;
+    }
+    dirty = true;
+    const stat = await ctx.fs.lstat(`${ctx.layout.workDir}/${entry.path}`);
+    const { id, mode } = await hashFileAt(ctx, entry.path, stat);
+    entries.push(stage0Entry(entry.path, id, mode));
+  }
+  return { entries, dirty };
+};
+
+interface UntrackedProjection {
+  readonly paths: ReadonlyArray<FilePath>;
+  readonly entries: ReadonlyArray<IndexEntry>;
+}
+
+/** Collect the untracked (non-ignored) working files as synthetic index entries. */
+const collectUntracked = async (ctx: Context, index: GitIndex): Promise<UntrackedProjection> => {
+  const tracked = new Set(index.entries.map((e) => e.path));
+  const ignore = await buildRepoIgnorePredicate(ctx);
+  const paths: FilePath[] = [];
+  const entries: IndexEntry[] = [];
+  for await (const { path, stat } of walkWorkingTree(ctx, { ignore })) {
+    if (tracked.has(path)) continue;
+    const { id, mode } = await hashFileAt(ctx, path, stat);
+    entries.push(stage0Entry(path, id, mode));
+    paths.push(path);
+  }
+  return { paths, entries };
+};
+
+export const stashPush = async (
+  ctx: Context,
+  opts: StashPushInput = {},
+): Promise<StashPushResult> => {
+  await assertRepository(ctx);
+  await assertNotBare(ctx, 'stash');
+  await assertNoPendingOperation(ctx);
+  const head = await readHeadRaw(ctx);
+  const base = await resolveBase(ctx, head);
+
+  const lock = await acquireIndexLock(ctx);
+  try {
+    const index = await readIndex(ctx);
+    const iTree = await synthesizeTreeFromIndex(ctx, index.entries);
+    const working = await projectWorkingTree(ctx, index);
+    const untracked = opts.includeUntracked
+      ? await collectUntracked(ctx, index)
+      : { paths: [], entries: [] };
+
+    const stagedDirty = iTree !== base.bTree;
+    const hasUntracked = untracked.paths.length > 0;
+    if (!stagedDirty && !working.dirty && !hasUntracked) {
+      return { kind: 'no-local-changes' };
+    }
+
+    const w = await createStashCommits(ctx, { base, iTree, working, untracked, opts });
+    await pushStashRef(ctx, w.stash, w.message);
+    await resetAfterPush(ctx, lock, { base, iTree, untracked, opts });
+    return { kind: 'saved', stash: w.stash, message: w.message };
+  } finally {
+    await lock.release();
+  }
+};
+
+interface CommitInputs {
+  readonly base: BaseState;
+  readonly iTree: ObjectId;
+  readonly working: WorkingTreeProjection;
+  readonly untracked: UntrackedProjection;
+  readonly opts: StashPushInput;
+}
+
+/** Build the index/untracked/WIP commit trio and return the W commit + its message. */
+const createStashCommits = async (
+  ctx: Context,
+  inputs: CommitInputs,
+): Promise<{ readonly stash: ObjectId; readonly message: string }> => {
+  const { base, iTree, working, untracked, opts } = inputs;
+  const identity = await resolveReflogIdentity(ctx);
+  const branch = stashBranchLabel(base.branchRef);
+  const abbrev = base.b.slice(0, 7);
+  const subject = subjectOf(await commitMessageOf(ctx, base.b));
+  const wipMsg =
+    opts.message !== undefined
+      ? onMessage(branch, opts.message)
+      : wipMessage(branch, abbrev, subject);
+
+  const mkCommit = (
+    tree: ObjectId,
+    parents: ReadonlyArray<ObjectId>,
+    message: string,
+  ): Promise<ObjectId> =>
+    createCommit(ctx, {
+      tree,
+      parents,
+      author: identity,
+      committer: identity,
+      message,
+      extraHeaders: [],
+    });
+
+  const i = await mkCommit(iTree, [base.b], indexMessage(branch, abbrev, subject));
+  const wTree = await synthesizeTreeFromIndex(ctx, working.entries);
+  if (untracked.paths.length === 0) {
+    const stash = await mkCommit(wTree, [base.b, i], wipMsg);
+    return { stash, message: wipMsg };
+  }
+  const uTree = await synthesizeTreeFromIndex(ctx, untracked.entries);
+  const u = await mkCommit(uTree, [], untrackedMessage(branch, abbrev, subject));
+  const stash = await mkCommit(wTree, [base.b, i, u], wipMsg);
+  return { stash, message: wipMsg };
+};
+
+interface ResetInputs {
+  readonly base: BaseState;
+  readonly iTree: ObjectId;
+  readonly untracked: UntrackedProjection;
+  readonly opts: StashPushInput;
+}
+
+/** Reset the working tree + index to HEAD (or the index tree under `--keep-index`). */
+const resetAfterPush = async (
+  ctx: Context,
+  lock: Awaited<ReturnType<typeof acquireIndexLock>>,
+  inputs: ResetInputs,
+): Promise<void> => {
+  const { base, iTree, untracked, opts } = inputs;
+  const currentIndex = await readIndex(ctx);
+  const target = opts.keepIndex === true ? iTree : base.bTree;
+  const result = await materializeTree(ctx, {
+    targetTree: target,
+    currentIndex,
+    force: true,
+    forceRewriteAll: true,
+  });
+  await lock.commit(result.newIndexEntries);
+  if (opts.includeUntracked === true) {
+    for (const path of untracked.paths) await removeWorkingTreeFile(ctx, path);
+  }
+};
