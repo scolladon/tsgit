@@ -179,7 +179,7 @@ const conflictBytes = async (
   ctx: Context,
   conflict: MergeConflict,
 ): Promise<Uint8Array | undefined> => {
-  // Stryker disable next-line ConditionalExpression,EqualityOperator,BlockStatement: equivalent — see function header (the add-add/binary fallback writes `ours`, which the working tree already holds).
+  // Stryker disable next-line ConditionalExpression,EqualityOperator,BlockStatement,LogicalOperator: equivalent — `conflictContent` is populated iff the conflict is `content`, so the two operands are correlated and `&&` vs `||` selects the same conflicts; the add-add/binary fallback writes `ours`, which the working tree already holds (see function header).
   if (conflict.type === 'content' && conflict.conflictContent !== undefined) {
     return conflict.conflictContent;
   }
