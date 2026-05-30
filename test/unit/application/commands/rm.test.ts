@@ -652,6 +652,27 @@ describe('rm', () => {
     });
   });
 
+  describe('Given two paths refused as staged-only and local-only (no both)', () => {
+    describe('When rm without an override', () => {
+      it('Then staged-only takes precedence over local-only', async () => {
+        // Arrange — `staged.txt` is staged-only; `local.txt` is local-only.
+        const ctx = await seedAndStage({ 'staged.txt': 's1\n', 'local.txt': 'l1\n' });
+        await ctx.fs.writeUtf8(work(ctx, 'staged.txt'), 's2\n');
+        await add(ctx, ['staged.txt']);
+        await ctx.fs.writeUtf8(work(ctx, 'local.txt'), 'l2\n');
+
+        // Act — precedence is staged → local, so the staged refusal surfaces.
+        const err = await expectError(() => rm(ctx, ['*.txt']), 'RM_STAGED_CHANGES');
+
+        // Assert
+        if (err.data.code !== 'RM_STAGED_CHANGES') throw new Error('unexpected error shape');
+        expect(err.data.paths).toEqual(['staged.txt']);
+        expect(await ctx.fs.exists(work(ctx, 'staged.txt'))).toBe(true);
+        expect(await ctx.fs.exists(work(ctx, 'local.txt'))).toBe(true);
+      });
+    });
+  });
+
   describe('Given two paths refused in different categories (staged-only and both)', () => {
     describe('When rm without an override', () => {
       it('Then it throws by precedence (both wins) and removes nothing', async () => {
