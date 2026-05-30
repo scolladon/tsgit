@@ -60,6 +60,9 @@ const setupRepo = async (): Promise<Context> => {
   return ctx;
 };
 
+const headId = async (ctx: Context): Promise<ObjectId> =>
+  (await ctx.fs.readUtf8(`${ctx.layout.gitDir}/refs/heads/main`)).trim() as ObjectId;
+
 describe('stash push', () => {
   describe('Given a clean working tree', () => {
     describe('When push runs', () => {
@@ -145,11 +148,10 @@ describe('stash push', () => {
         // Act
         await stashPush(ctx, {});
 
-        // Assert
+        // Assert — full message pins the 7-char abbrev exactly.
+        const head = await headId(ctx);
         const stack = await readStashStack(ctx);
-        const message = stack[0]?.message ?? '';
-        expect(message.startsWith('WIP on main: ')).toBe(true);
-        expect(message.endsWith(' initial commit')).toBe(true);
+        expect(stack[0]?.message).toBe(`WIP on main: ${head.slice(0, 7)} initial commit`);
       });
     });
   });
@@ -185,7 +187,10 @@ describe('stash push', () => {
         // Assert
         if (sut.kind !== 'saved') throw new Error('expected saved');
         const w = await commitOf(ctx, sut.stash);
+        // The index commit's parent is the base (HEAD) commit.
+        expect(w.parents[0]).toBe(await headId(ctx));
         const indexCommit = await commitOf(ctx, w.parents[1] as ObjectId);
+        expect(indexCommit.parents).toEqual([await headId(ctx)]);
         expect(await treeContent(ctx, indexCommit.tree, 'a.txt')).toBe('staged\n');
         // Index reset to HEAD: working file restored to committed content.
         expect(await read(ctx, 'a.txt')).toBe('committed\n');
@@ -656,6 +661,109 @@ describe('stash on a bare repository', () => {
         const data = await codeAndOp(stashDrop(ctx, {}));
         expect(data.code).toBe('BARE_REPOSITORY');
         expect(data.operation).toBe('stash drop');
+      });
+    });
+  });
+});
+
+describe('stash push — HEAD resolution errors', () => {
+  describe('Given a cyclic HEAD ref chain', () => {
+    describe('When push runs', () => {
+      it('Then the underlying ref error is re-thrown, not mapped to NO_INITIAL_COMMIT', async () => {
+        // Arrange — HEAD → main → main (self-cycle).
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, 'ref: refs/heads/main\n');
+
+        // Act + Assert
+        const data = await codeAndOp(stashPush(ctx, {}));
+        expect(data.code).not.toBe('NO_INITIAL_COMMIT');
+        expect(data.code).toBe('REF_CYCLE_DETECTED');
+      });
+    });
+  });
+});
+
+describe('stash lock hygiene', () => {
+  describe('Given a no-op push on a clean tree', () => {
+    describe('When a real push follows on the same repo', () => {
+      it('Then the second push succeeds (the first released the index lock)', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        expect((await stashPush(ctx, {})).kind).toBe('no-local-changes');
+
+        // Act
+        await write(ctx, 'a.txt', 'modified\n');
+        const sut = await stashPush(ctx, {});
+
+        // Assert
+        expect(sut.kind).toBe('saved');
+      });
+    });
+  });
+
+  describe('Given a clean apply', () => {
+    describe('When a push follows on the same repo', () => {
+      it('Then the push succeeds (apply released the index lock)', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await write(ctx, 'a.txt', 'modified\n');
+        await stashPush(ctx, {});
+        expect((await stashApply(ctx, {})).kind).toBe('applied');
+
+        // Act — index lock must be free for this push.
+        await write(ctx, 'a.txt', 'again\n');
+        const sut = await stashPush(ctx, {});
+
+        // Assert
+        expect(sut.kind).toBe('saved');
+      });
+    });
+  });
+});
+
+describe('stash apply — index staging', () => {
+  describe('Given a staged change applied without restoreIndex', () => {
+    describe('When apply runs', () => {
+      it('Then the change returns unstaged (the index is NOT reinstated)', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await write(ctx, 'a.txt', 'staged\n');
+        await add(ctx, ['a.txt']);
+        await stashPush(ctx, {});
+
+        // Act — no restoreIndex.
+        await stashApply(ctx, {});
+
+        // Assert — working tree carries the change, but the index stays at HEAD.
+        expect(await read(ctx, 'a.txt')).toBe('staged\n');
+        const idx = await readIndex(ctx);
+        const entry = idx.entries.find((e) => e.path === 'a.txt');
+        const blob = await readObject(ctx, entry?.id as ObjectId);
+        expect(blob.type === 'blob' && new TextDecoder().decode(blob.content)).toBe('committed\n');
+      });
+    });
+  });
+});
+
+describe('stash pop — selector', () => {
+  describe('Given a two-entry stack', () => {
+    describe('When pop targets index 1', () => {
+      it('Then the older entry is applied and dropped, leaving the newer', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        const older = await pushChange(ctx, 'older\n');
+        const newer = await pushChange(ctx, 'newer\n');
+
+        // Act
+        const sut = await stashPop(ctx, { index: 1 });
+
+        // Assert — older applied to the working tree + dropped; newer remains at index 0.
+        expect(sut.kind).toBe('applied');
+        if (sut.kind === 'applied') expect(sut.dropped).toBe(older);
+        expect(await read(ctx, 'a.txt')).toBe('older\n');
+        const stack = await stashList(ctx);
+        expect(stack.entries.map((e) => e.stash)).toEqual([newer]);
       });
     });
   });
