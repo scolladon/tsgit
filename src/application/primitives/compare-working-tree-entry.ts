@@ -28,9 +28,15 @@ export const compareWorkingTreeEntry = async (
   const stat = await ctx.fs.lstat(absPath).catch(() => undefined);
   if (stat === undefined) return 'absent';
   if (deriveWorkingMode(stat) !== entry.mode) return 'modified';
-  const content = stat.isSymbolicLink
-    ? LINK_ENCODER.encode(await ctx.fs.readlink(absPath))
-    : await ctx.fs.read(absPath);
-  const { id } = await serializeAndHash(ctx, { type: 'blob', id: '' as ObjectId, content });
-  return id === entry.id ? 'unchanged' : 'modified';
+  try {
+    const content = stat.isSymbolicLink
+      ? LINK_ENCODER.encode(await ctx.fs.readlink(absPath))
+      : await ctx.fs.read(absPath);
+    const { id } = await serializeAndHash(ctx, { type: 'blob', id: '' as ObjectId, content });
+    return id === entry.id ? 'unchanged' : 'modified';
+  } catch {
+    // The file exists (lstat succeeded) but cannot be read/hashed — never report
+    // an unverifiable file as `unchanged`; treat it as modified (dirty).
+    return 'modified';
+  }
 };

@@ -101,6 +101,32 @@ describe('compareWorkingTreeEntry', () => {
     });
   });
 
+  describe('Given a staged file that exists but cannot be read', () => {
+    describe('When comparing the entry to the working tree', () => {
+      it("Then returns 'modified' (an unverifiable file is never reported unchanged)", async () => {
+        // Arrange — lstat succeeds (mode matches) but read throws, so the content
+        // hash cannot be computed.
+        const { ctx, entry } = await seedFile('a.txt', 'hello\n');
+        const failingReadCtx: Context = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            read: async (path: string) => {
+              if (path === work(ctx, 'a.txt')) throw new Error('simulated read failure');
+              return ctx.fs.read(path);
+            },
+          },
+        };
+
+        // Act
+        const sut = await compareWorkingTreeEntry(failingReadCtx, entry);
+
+        // Assert
+        expect(sut).toBe('modified');
+      });
+    });
+  });
+
   describe('Given a staged symlink whose target is untouched', () => {
     describe('When comparing the entry to the working tree', () => {
       it("Then returns 'unchanged'", async () => {
