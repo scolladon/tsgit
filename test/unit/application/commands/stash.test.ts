@@ -3,7 +3,7 @@ import { createMemoryContext } from '../../../../src/adapters/memory/memory-adap
 import { add } from '../../../../src/application/commands/add.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
-import { stashPush } from '../../../../src/application/commands/stash.js';
+import { stashDrop, stashList, stashPush } from '../../../../src/application/commands/stash.js';
 import { flattenTree } from '../../../../src/application/primitives/flatten-tree.js';
 import { readIndex } from '../../../../src/application/primitives/read-index.js';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
@@ -242,6 +242,103 @@ describe('stash push', () => {
         // Assert
         await act.catch((err: TsgitError) => {
           expect(err.data).toEqual({ code: 'NO_INITIAL_COMMIT' });
+        });
+        await expect(act).rejects.toBeInstanceOf(TsgitError);
+      });
+    });
+  });
+});
+
+const pushChange = async (ctx: Context, content: string): Promise<ObjectId> => {
+  await write(ctx, 'a.txt', content);
+  const result = await stashPush(ctx, {});
+  if (result.kind !== 'saved') throw new Error('expected saved');
+  return result.stash;
+};
+
+describe('stash list', () => {
+  describe('Given an empty stack', () => {
+    describe('When list runs', () => {
+      it('Then it yields no entries', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+
+        // Act
+        const sut = await stashList(ctx);
+
+        // Assert
+        expect(sut).toEqual({ entries: [] });
+      });
+    });
+  });
+
+  describe('Given two stashes', () => {
+    describe('When list runs', () => {
+      it('Then entries are newest-first with stash@{N} selectors', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        const first = await pushChange(ctx, 'one\n');
+        const second = await pushChange(ctx, 'two\n');
+
+        // Act
+        const sut = await stashList(ctx);
+
+        // Assert
+        expect(sut.entries.map((e) => e.selector)).toEqual(['stash@{0}', 'stash@{1}']);
+        expect(sut.entries.map((e) => e.stash)).toEqual([second, first]);
+      });
+    });
+  });
+});
+
+describe('stash drop', () => {
+  describe('Given a three-entry stack', () => {
+    describe('When the middle entry is dropped', () => {
+      it('Then it is removed and the stack re-indexes', async () => {
+        // Arrange — newest-first after pushes: third@0, second@1, first@2
+        const ctx = await setupRepo();
+        const first = await pushChange(ctx, 'one\n');
+        const second = await pushChange(ctx, 'two\n');
+        const third = await pushChange(ctx, 'three\n');
+
+        // Act
+        const sut = await stashDrop(ctx, { index: 1 });
+
+        // Assert
+        expect(sut).toEqual({ dropped: second, remaining: 2 });
+        expect((await stashList(ctx)).entries.map((e) => e.stash)).toEqual([third, first]);
+      });
+    });
+  });
+
+  describe('Given a single-entry stack', () => {
+    describe('When the only entry is dropped', () => {
+      it('Then the stack is emptied', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await pushChange(ctx, 'one\n');
+
+        // Act
+        const sut = await stashDrop(ctx, {});
+
+        // Assert
+        expect(sut.remaining).toBe(0);
+        expect((await stashList(ctx)).entries).toEqual([]);
+      });
+    });
+
+    describe('When an out-of-range entry is dropped', () => {
+      it('Then it throws STASH_NOT_FOUND', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await pushChange(ctx, 'one\n');
+
+        // Act
+        const act = stashDrop(ctx, { index: 9 });
+
+        // Assert
+        await act.catch((err: TsgitError) => {
+          expect(err.data).toEqual({ code: 'STASH_NOT_FOUND', index: 9, stackSize: 1 });
         });
         await expect(act).rejects.toBeInstanceOf(TsgitError);
       });

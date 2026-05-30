@@ -33,7 +33,13 @@ import { readIndex } from '../primitives/read-index.js';
 import { readObject } from '../primitives/read-object.js';
 import { resolveReflogIdentity } from '../primitives/reflog-identity.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
-import { pushStashRef } from '../primitives/stash-ref.js';
+import {
+  dropStashEntry,
+  pushStashRef,
+  readStashStack,
+  type StashDropResult,
+  type StashStackEntry,
+} from '../primitives/stash-ref.js';
 import { synthesizeTreeFromIndex } from '../primitives/synthesize-tree-from-index.js';
 import { walkWorkingTree } from '../primitives/walk-working-tree.js';
 import { buildRepoIgnorePredicate } from './internal/build-ignore-evaluator.js';
@@ -238,6 +244,31 @@ const createStashCommits = async (
   const u = await mkCommit(uTree, [], untrackedMessage(branch, abbrev, subject));
   const stash = await mkCommit(wTree, [base.b, i, u], wipMsg);
   return { stash, message: wipMsg };
+};
+
+export type StashListEntry = StashStackEntry;
+export interface StashListResult {
+  readonly entries: ReadonlyArray<StashListEntry>;
+}
+
+/** List the stash stack, newest-first (`stash@{0}` first). */
+export const stashList = async (ctx: Context): Promise<StashListResult> => {
+  await assertRepository(ctx);
+  return { entries: await readStashStack(ctx) };
+};
+
+export interface StashDropInput {
+  readonly index?: number;
+}
+
+/** Drop `stash@{index}` (default newest) from the stack. */
+export const stashDrop = async (
+  ctx: Context,
+  input: StashDropInput = {},
+): Promise<StashDropResult> => {
+  await assertRepository(ctx);
+  await assertNotBare(ctx, 'stash drop');
+  return dropStashEntry(ctx, input.index ?? 0);
 };
 
 interface ResetInputs {
