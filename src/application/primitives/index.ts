@@ -24,6 +24,7 @@ export { enumeratePushObjects } from './enumerate-push-objects.js';
 export { enumerateRefs } from './enumerate-refs.js';
 export type { FetchPackInput, FetchPackResult } from './fetch-pack.js';
 export { fetchPack } from './fetch-pack.js';
+export { flattenTree } from './flatten-tree.js';
 export type { HashBlobOptions } from './hash-blob.js';
 export { hashBlob } from './hash-blob.js';
 export type {

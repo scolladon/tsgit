@@ -2,12 +2,10 @@
  * Flatten a nested `Tree` object into the `FlatTree` shape that the
  * `mergeTrees` domain primitive consumes.
  *
- * @internal Currently consumed only by `merge.ts`'s clean-merge tree
- * walk. Not exported from the primitives barrel — the function exists
- * to bridge `walkTree`'s iterator into the `FlatTree` Map that
- * `mergeTrees` expects, and the merge command is the only user with
- * that need today. Promote to the public surface if a second caller
- * appears.
+ * Bridges `walkTree`'s iterator into the `FlatTree` Map of
+ * `path → { id, mode }`. Consumed by `merge.ts`'s clean-merge tree walk
+ * and by `rm`'s HEAD-vs-index staged-change check (the safety valve), so
+ * it is exported from the primitives barrel.
  *
  * Pure with respect to the working tree — only reads git objects via
  * `walkTree`.
