@@ -27,7 +27,6 @@ import {
   type MergeOutcome,
   mergeContent,
   mergeTrees,
-  writeConflictMarkers,
 } from '../../domain/merge/index.js';
 import type { FileMode, FilePath, ObjectId } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
@@ -170,18 +169,17 @@ const synthesiseMergedTree = async (
 /**
  * Working-tree bytes for a conflicted path. Mirrors `merge`'s materialisation.
  *
- * Branch-selection mutants here are equivalent: `mergeContent` always populates
- * `conflictContent` for a content conflict, so the marker-rebuild fallback
- * (ours/theirs) is unreachable for the content case and only ever reproduces
- * the same markers; the add-add / binary / type-change fallback writes the
- * `ours` side, which the working tree already holds (those conflicts arise from
- * a path `ours` also has), so the write is a no-op observationally.
+ * `mergeContent` always populates `conflictContent` for a content conflict, so
+ * the content case is handled by the first branch. The add-add / binary /
+ * type-change fallback writes the `ours` side, which the working tree already
+ * holds (those conflicts arise from a path `ours` also has), so that write is a
+ * no-op observationally — hence its branch-selection mutants are equivalent.
  */
 const conflictBytes = async (
   ctx: Context,
   conflict: MergeConflict,
 ): Promise<Uint8Array | undefined> => {
-  // Stryker disable next-line ConditionalExpression,EqualityOperator,BlockStatement: equivalent — see function header (the rebuild fallback yields the same markers).
+  // Stryker disable next-line ConditionalExpression,EqualityOperator,BlockStatement: equivalent — see function header (the add-add/binary fallback writes `ours`, which the working tree already holds).
   if (conflict.type === 'content' && conflict.conflictContent !== undefined) {
     return conflict.conflictContent;
   }
@@ -192,20 +190,6 @@ const conflictBytes = async (
       return (await readBlob(ctx, survivorId, { maxBytes: MAX_CONFLICT_OUTPUT_BYTES })).content;
     }
     return undefined;
-  }
-  if (
-    conflict.ourId !== undefined &&
-    conflict.theirId !== undefined &&
-    // Stryker disable next-line ConditionalExpression,EqualityOperator,BlockStatement: equivalent — unreachable for content conflicts (they always carry `conflictContent`, handled above); see function header.
-    conflict.type === 'content'
-  ) {
-    const [ours, theirs] = await Promise.all([
-      // Stryker disable next-line ObjectLiteral: equivalent — the 256 MiB cap is unobservable without a 256 MiB fixture; cap mechanics covered by read-blob.test.ts.
-      readBlob(ctx, conflict.ourId, { maxBytes: MAX_CONFLICT_OUTPUT_BYTES }),
-      // Stryker disable next-line ObjectLiteral: equivalent — the 256 MiB cap is unobservable without a 256 MiB fixture; cap mechanics covered by read-blob.test.ts.
-      readBlob(ctx, conflict.theirId, { maxBytes: MAX_CONFLICT_OUTPUT_BYTES }),
-    ]);
-    return writeConflictMarkers([ours.content], [theirs.content]);
   }
   // add-add / binary / type-change: keep ours when present.
   // Stryker disable next-line ConditionalExpression,BlockStatement: equivalent — the `ours` bytes equal what the working tree already holds for these conflict types, so the write (or its absence) is observationally identical; see function header.
