@@ -26,6 +26,7 @@ export {
 } from './error.js';
 export type { FileMode } from './file-mode.js';
 export {
+  deriveWorkingMode,
   FILE_MODE,
   isDirectory,
   normalizeFileMode,

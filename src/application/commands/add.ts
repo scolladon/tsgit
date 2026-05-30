@@ -13,7 +13,7 @@ import { invalidOption, workingTreeFileTooLarge } from '../../domain/commands/er
 import { operationAborted, TsgitError } from '../../domain/error.js';
 import { type IndexEntry, STAGE0_FLAGS } from '../../domain/git-index/index.js';
 import { emptyPathspec, pathspecNoMatch } from '../../domain/index.js';
-import type { FileMode, ObjectId } from '../../domain/objects/index.js';
+import { deriveWorkingMode, type FileMode, type ObjectId } from '../../domain/objects/index.js';
 import type { FilePath } from '../../domain/objects/object-id.js';
 import { matchesPathspec, type Pathspec } from '../../domain/pathspec/index.js';
 import type { Context } from '../../ports/context.js';
@@ -355,11 +355,7 @@ const stageFromStat = async (
   if (fresh.size > MAX_WORKING_TREE_BLOB_BYTES) {
     throw workingTreeFileTooLarge(path, fresh.size, MAX_WORKING_TREE_BLOB_BYTES);
   }
-  const mode: FileMode = fresh.isSymbolicLink
-    ? '120000'
-    : (fresh.mode & 0o111) !== 0
-      ? '100755'
-      : '100644';
+  const mode: FileMode = deriveWorkingMode(fresh);
   const bytes = await readContent(ctx, path, fresh);
   const id = (await writeObject(ctx, {
     type: 'blob',
