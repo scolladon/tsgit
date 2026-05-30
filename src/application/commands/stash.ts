@@ -78,6 +78,7 @@ interface BaseState {
   readonly b: ObjectId;
   readonly bTree: ObjectId;
   readonly branchRef: string | undefined;
+  readonly subject: string;
 }
 
 const commitTreeOf = async (ctx: Context, commitId: ObjectId): Promise<ObjectId> => {
@@ -86,24 +87,28 @@ const commitTreeOf = async (ctx: Context, commitId: ObjectId): Promise<ObjectId>
   return obj.data.tree;
 };
 
-const commitMessageOf = async (ctx: Context, commitId: ObjectId): Promise<string> => {
-  const obj = await readObject(ctx, commitId);
-  if (obj.type !== 'commit') return '';
-  return obj.data.message;
-};
-
-/** Resolve HEAD to its commit + tree, or refuse on an unborn branch. */
-const resolveBase = async (ctx: Context, head: HeadState): Promise<BaseState> => {
-  if (head.kind === 'direct') {
-    return { b: head.id, bTree: await commitTreeOf(ctx, head.id), branchRef: undefined };
-  }
+/** Resolve HEAD to its commit oid, or refuse on an unborn branch. */
+const resolveHeadCommit = async (ctx: Context, head: HeadState): Promise<ObjectId> => {
+  if (head.kind === 'direct') return head.id;
   try {
-    const b = await resolveRef(ctx, head.target);
-    return { b, bTree: await commitTreeOf(ctx, b), branchRef: head.target };
+    return await resolveRef(ctx, head.target);
   } catch (err) {
     if (err instanceof TsgitError && err.data.code === 'REF_NOT_FOUND') throw noInitialCommit();
     throw err;
   }
+};
+
+/** Resolve HEAD to the base commit's id, tree, branch label, and subject (one read). */
+const resolveBase = async (ctx: Context, head: HeadState): Promise<BaseState> => {
+  const b = await resolveHeadCommit(ctx, head);
+  const obj = await readObject(ctx, b);
+  if (obj.type !== 'commit') throw unexpectedObjectType('commit', obj.type, b);
+  return {
+    b,
+    bTree: obj.data.tree,
+    branchRef: head.kind === 'symbolic' ? head.target : undefined,
+    subject: subjectOf(obj.data.message),
+  };
 };
 
 const hashFileAt = async (
@@ -225,7 +230,7 @@ const createStashCommits = async (
   const identity = await resolveReflogIdentity(ctx);
   const branch = stashBranchLabel(base.branchRef);
   const abbrev = base.b.slice(0, 7);
-  const subject = subjectOf(await commitMessageOf(ctx, base.b));
+  const subject = base.subject;
   const wipMsg =
     opts.message !== undefined
       ? onMessage(branch, opts.message)
