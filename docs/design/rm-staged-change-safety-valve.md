@@ -102,9 +102,10 @@ rm(ctx, paths, opts):
     head ← headEntries(ctx)                   // Map<path,{id,mode}>; unborn ⇒ ∅
     buckets = { both:[], staged:[], local:[] }
     for entry in matched:
-      if not (await workFileExists(ctx, entry.path)): continue   // absent ⇒ safe
+      worktree ← await compareWorkingTreeEntry(ctx, entry)  // 'absent'|'unchanged'|'modified'
+      if worktree === 'absent': continue                    // missing work file ⇒ safe
       staged ← headMissing(entry) or head.id≠entry.id or head.mode≠entry.mode
-      local  ← await workDiffersFromIndex(ctx, entry)            // content vs index.id
+      local  ← worktree === 'modified'                       // content OR mode vs index entry
       if staged and local:        buckets.both.push(path)
       elif staged and not cached: buckets.staged.push(path)      // --cached suppresses
       elif local  and not cached: buckets.local.push(path)
@@ -120,33 +121,50 @@ Notes:
 - `force` short-circuits the entire valve (no HEAD read, no work hashing) — cheap
   and matches git's `if (!force) check_local_mod(...)`.
 
-## Implementation / reuse
+## Implementation / reuse — mutualized comparison layer (ADR-209)
 
+- **Shared primitive** `primitives/compare-working-tree-entry.ts`:
+  `compareWorkingTreeEntry(ctx, entry): Promise<'absent' | 'unchanged' |
+  'modified'>` — the single source of truth for "is this index entry dirty in the
+  working tree?". `absent` = no working file; `modified` =
+  `deriveWorkingMode(stat) ≠ entry.mode` **or** `serializeAndHash(read) ≠ entry.id`
+  (content+mode, ADR-208). Consumed by `status` and `rm`. The hash uses the
+  **uncapped** `serializeAndHash` core (not `hashBlob`, whose write-time
+  `MAX_WORKING_TREE_BLOB_BYTES` cap would make the read-only comparison throw on a
+  huge working file where `status` currently does not — behaviour preservation).
+- **Shared atoms** (moved out of `add.ts`, which now imports them) into
+  `internal/working-tree.ts`:
+  - `deriveWorkingMode(stat): FileMode` — `isSymbolicLink ? 120000 :
+    (mode & 0o111) ? 100755 : 100644`.
+  - `readWorkingTreeContent(ctx, path, stat): Uint8Array` — symlink-aware
+    (`readlink` target bytes vs `readFile`), with the existing size cap.
+  - loose-object hashing is the existing **uncapped** `serializeAndHash` core
+    (the helper `hashBlob` wraps) — the comparison path must not inherit `add`'s
+    write-time size cap.
+- **`status` migration:** replace inline `isModified` with
+  `compareWorkingTreeEntry`; `absent → deleted`, `modified → modified`,
+  `unchanged → omit`. `status` becomes mode-aware (faithfulness upgrade — its
+  tests gain a mode-only-change case).
+- **`apply-changeset` (checkout/merge):** NOT migrated onto the primitive — it
+  compares to a changeset id, not an index entry. It adopts the same uncapped
+  `serializeAndHash` core (dropping its inline header+hash in `blobMatches`,
+  behaviour-preserving — no cap, no read-semantics change) and keeps its
+  changeset-compare semantics (ADR-209 boundary).
 - **HEAD tree map:** `resolveRef(ctx, 'HEAD')` → `readObject` (commit) →
   `commit.data.tree` → `flattenTree(ctx, treeId)` ⇒ `Map<FilePath,{id,mode}>`.
   `flattenTree` is currently `@internal` (only `merge` uses it); rm is the
-  "second caller" its doc anticipates — **promote it to the primitives barrel**
-  (`primitives/index.ts`). Unborn HEAD (`resolveRef` throws `REF_NOT_FOUND`) ⇒
-  empty map ⇒ every tracked entry is `staged` (matches git: pre-first-commit
-  `rm` of a staged file refuses with "changes staged in the index").
-- **work-vs-index:** extract `status.ts`'s `isModified` content-hash into a
-  shared `internal/working-tree-diff.ts` helper (`workDiffersFromIndex(ctx,
-  entry)`) and have both `status` and `rm` call it (DRY). The helper hashes the
-  working bytes without persisting and compares to `entry.id`. **rm gates on
-  file-existence first**, so unlike `status` it never treats a missing file as
-  modified.
-- **work-file-exists:** `ctx.fs.lstat(workPath).catch(()=>undefined) !==
-  undefined`.
+  "second caller" its doc anticipates — **promote it to the primitives barrel**.
+  Unborn HEAD (`resolveRef` throws `REF_NOT_FOUND`) ⇒ empty map ⇒ every tracked
+  entry is `staged` (matches git: pre-first-commit `rm` of a staged file refuses
+  with "changes staged in the index").
 
 ## Faithfulness boundaries (→ ADR consequences)
 
-- **Working-tree-only *mode* change** (`chmod +x` with no `git add`): git refuses
-  with "local modifications" via `ie_match_stat` mode bits. tsgit's `local`
-  detection is **content-only** (the same basis `status` uses), so this narrow
-  case is not detected. Rationale: cross-adapter mode fidelity is unreliable
-  (memory/OPFS do not surface an executable bit), and the project's faithfulness
-  target is **cross-adapter readback equivalence**, not host-mode parity. Staged
-  mode changes (index vs HEAD) *are* detected — tsgit tracks index mode exactly.
+- **Working-tree mode** *is* compared (ADR-208): a `chmod +x` with no `git add`
+  is detected as a local modification, matching git. On memory/OPFS the exec bit
+  is not represented, so the mode comparison is a consistent no-op there (no false
+  positives); the faithfulness gain is realised on Node. Staged mode changes
+  (index vs HEAD) are detected on every adapter (index mode is tracked exactly).
 - **`intentToAdd` (`git add -N`) entries:** git has a special-case (an i-t-a
   entry is not bucketed as `staged` under `--cached`). tsgit models the flag but
   treats i-t-a like any staged entry in the valve for now (YAGNI — no backlog
@@ -154,6 +172,12 @@ Notes:
 
 ## Testing strategy
 
+- **Unit (`compare-working-tree-entry.test.ts`)** — the new primitive in
+  isolation: `absent` (no file), `unchanged` (same content+mode), `modified` by
+  content, `modified` by mode (`chmod +x`, content same), symlink target change,
+  symlink↔regular flip. Each branch its own test.
+- **Unit (`status.test.ts`)** — extend with a mode-only-change case now reported
+  as `modified`; confirm existing content/deleted/untracked cases still hold.
 - **Unit (`rm.test.ts`)** — one isolated test per valve branch (per the
   guard-clause rule: each `staged` / `local` / `cached` / `force` condition gets
   its own test that triggers it alone):
@@ -182,13 +206,18 @@ Notes:
 
 ## Key decisions
 
-1. **Full valve, not staged-only** — faithfulness; staged-only diverges for the
-   `both` and `local-only` cases. (ADR.)
-2. **Three granular `RM_*` codes + atomic precedence throw** — mirrors `MV_*`;
-   lets tests assert the exact category. (ADR.)
-3. **`local` detection is content-only** — cross-adapter consistency; documents
-   the working-tree-mode-only gap. (ADR consequence.)
-4. **Promote `flattenTree` to the primitives barrel** — rm is the anticipated
+1. **Full valve, not staged-only** (ADR-207) — faithfulness; staged-only diverges
+   for the `both` and `local-only` cases.
+2. **Three granular `RM_*` codes + atomic precedence throw** (ADR-202 precedent) —
+   mirrors `MV_*`; lets tests assert the exact category.
+3. **`local` detection is content + working-tree mode** (ADR-208) — faithful to
+   git's mode-aware check; consistent no-op on adapters without an exec bit.
+4. **Mutualize the work-vs-index comparison into one primitive** (ADR-209) —
+   `compareWorkingTreeEntry` is the single source of truth; `status` migrates onto
+   it (now mode-aware), `rm` consumes it, atoms (`deriveWorkingMode`,
+   `readWorkingTreeContent`, `hashBlob`) shared; `apply-changeset` shares the
+   `hashBlob` atom only (different compare target).
+5. **Promote `flattenTree` to the primitives barrel** — rm is the anticipated
    second caller; no new HEAD-tree-flattening code.
-5. **Add `force` to `RmOptions`; reuse `cached`** — the two overrides the backlog
+6. **Add `force` to `RmOptions`; reuse `cached`** — the two overrides the backlog
    names; no `dryRun`/`skipErrors` (YAGNI — git `rm` refusal is atomic, no `-k`).
