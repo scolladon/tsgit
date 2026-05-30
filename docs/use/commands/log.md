@@ -28,6 +28,7 @@ interface LogEntry {
 
 - **First-parent walk:** for merge commits, only the first parent is followed. Use [`walkCommits`](../primitives/walk-commits.md) for arbitrary parent ordering.
 - **Order:** newest first.
+- **Message:** the raw commit-object body, returned verbatim. Since the `commit` porcelain applies git's `stripspace` normalization, a message written via [`repo.commit`](commit.md) ends with exactly one trailing `\n` (e.g. `'fix bug\n'`). Trim it yourself if you need the bare subject.
 
 ## Examples
 

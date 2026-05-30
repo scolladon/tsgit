@@ -98,7 +98,9 @@ test.describe('surface parity', () => {
       });
 
       await test.step('log returns both commits newest-first', () => {
-        expect(entries.map((entry) => entry.message)).toEqual(['second commit', 'seed commit']);
+        // repo.log() returns the raw commit-object body verbatim; the commit
+        // porcelain's stripspace normalization guarantees exactly one trailing \n.
+        expect(entries.map((entry) => entry.message)).toEqual(['second commit\n', 'seed commit\n']);
       });
 
       await test.step('the newer commit links the older as its only parent', () => {
