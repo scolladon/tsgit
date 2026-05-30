@@ -446,6 +446,7 @@ describe('rm', () => {
         // Assert — the refused path travels with the error and nothing was removed.
         if (err.data.code !== 'RM_STAGED_CHANGES') throw new Error('unexpected error shape');
         expect(err.data.paths).toEqual(['a.txt']);
+        expect(err.message).toContain('changes staged in the index');
         expect(await ctx.fs.exists(work(ctx, 'a.txt'))).toBe(true);
         const index = await readIndex(ctx);
         expect(index.entries.map((e) => e.path)).toContain('a.txt');
@@ -519,6 +520,7 @@ describe('rm', () => {
         // Assert
         if (err.data.code !== 'RM_LOCAL_MODIFICATIONS') throw new Error('unexpected error shape');
         expect(err.data.paths).toEqual(['a.txt']);
+        expect(err.message).toContain('local modifications');
         expect(await ctx.fs.exists(work(ctx, 'a.txt'))).toBe(true);
         const index = await readIndex(ctx);
         expect(index.entries.map((e) => e.path)).toContain('a.txt');
@@ -554,6 +556,7 @@ describe('rm', () => {
           throw new Error('unexpected error shape');
         }
         expect(err.data.paths).toEqual(['a.txt']);
+        expect(err.message).toContain('staged content different from both');
         expect(await ctx.fs.exists(work(ctx, 'a.txt'))).toBe(true);
       });
     });
@@ -648,6 +651,29 @@ describe('rm', () => {
         // Assert
         if (err.data.code !== 'UNEXPECTED_OBJECT_TYPE') throw new Error('unexpected error shape');
         expect(err.data.expected).toBe('commit');
+      });
+    });
+  });
+
+  describe('Given resolving HEAD throws a non-REF_NOT_FOUND error (a ref cycle)', () => {
+    describe('When rm runs the safety valve', () => {
+      it('Then the error propagates rather than being swallowed as an unborn HEAD', async () => {
+        // Arrange — a tracked file plus a HEAD → main → loop → main symref cycle, so
+        // resolveRef('HEAD') throws REF_CYCLE_DETECTED (not REF_NOT_FOUND). The valve
+        // must re-throw it, not treat it as an unborn HEAD.
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, { workingTree: { 'a.txt': 'a' } });
+        await add(ctx, ['a.txt']);
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, 'ref: refs/heads/loop\n');
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/loop`, 'ref: refs/heads/main\n');
+
+        // Act
+        const err = await expectError(() => rm(ctx, ['a.txt']), 'REF_CYCLE_DETECTED');
+
+        // Assert — kills the catch's `{}` body and `true` condition mutants, which
+        // would swallow the cycle error and mis-classify the file as staged.
+        expect(err.data.code).toBe('REF_CYCLE_DETECTED');
       });
     });
   });
