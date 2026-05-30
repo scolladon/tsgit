@@ -154,7 +154,10 @@ export type CommandError =
       readonly code: 'MV_OVERLAPPING_SOURCES';
       readonly child: FilePath;
       readonly parent: FilePath;
-    };
+    }
+  | { readonly code: 'RM_STAGED_CHANGES'; readonly paths: ReadonlyArray<FilePath> }
+  | { readonly code: 'RM_LOCAL_MODIFICATIONS'; readonly paths: ReadonlyArray<FilePath> }
+  | { readonly code: 'RM_STAGED_AND_LOCAL_CHANGES'; readonly paths: ReadonlyArray<FilePath> };
 
 const sanitizeForDisplay = (s: string): string => {
   let out = '';
@@ -416,3 +419,16 @@ export const mvMultipleSourcesSameTarget = (source: FilePath, destination: FileP
 
 export const mvOverlappingSources = (child: FilePath, parent: FilePath): TsgitError =>
   new TsgitError({ code: 'MV_OVERLAPPING_SOURCES', child, parent });
+
+// `rm` safety-valve refusals (faithful to `git rm`'s `check_local_mod`). `paths`
+// are already pathspec-validated index paths, embedded verbatim. The override per
+// category: `RM_STAGED_CHANGES` / `RM_LOCAL_MODIFICATIONS` accept `--cached` or
+// `-f`; `RM_STAGED_AND_LOCAL_CHANGES` accepts only `-f`.
+export const rmStagedChanges = (paths: ReadonlyArray<FilePath>): TsgitError =>
+  new TsgitError({ code: 'RM_STAGED_CHANGES', paths });
+
+export const rmLocalModifications = (paths: ReadonlyArray<FilePath>): TsgitError =>
+  new TsgitError({ code: 'RM_LOCAL_MODIFICATIONS', paths });
+
+export const rmStagedAndLocalChanges = (paths: ReadonlyArray<FilePath>): TsgitError =>
+  new TsgitError({ code: 'RM_STAGED_AND_LOCAL_CHANGES', paths });

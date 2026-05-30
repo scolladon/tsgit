@@ -1,21 +1,35 @@
 /**
  * `rm` porcelain — remove tracked paths from the index (and the working tree
- * unless `cached`), faithful to `git rm`. The resulting index + tree read back
- * (via `git ls-files --stage` / `git write-tree`) match canonical git; raw
- * index bytes differ only by per-host stat-cache fields.
+ * unless `cached`), faithful to `git rm`. Before removing, the same safety valve
+ * `git rm` runs (`check_local_mod`) refuses paths whose removal would lose
+ * un-recoverable changes, unless `force` (or, per category, `cached`) overrides.
+ * The resulting index + tree read back (via `git ls-files --stage` /
+ * `git write-tree`) match canonical git; raw index bytes differ only by per-host
+ * stat-cache fields.
  *
  * @writes
  *   surface: rm
  *   kind:    equivalent-under-readback
  *   format:  git-index-tree-state
  */
+import {
+  rmLocalModifications,
+  rmStagedAndLocalChanges,
+  rmStagedChanges,
+} from '../../domain/commands/error.js';
+import type { FlatTreeEntry } from '../../domain/diff/flat-tree.js';
 import { TsgitError } from '../../domain/error.js';
 import type { IndexEntry } from '../../domain/git-index/index.js';
 import { emptyPathspec } from '../../domain/index.js';
+import { unexpectedObjectType } from '../../domain/objects/error.js';
 import type { FilePath } from '../../domain/objects/object-id.js';
 import { matchesPathspec } from '../../domain/pathspec/index.js';
 import type { Context } from '../../ports/context.js';
+import { compareWorkingTreeEntry } from '../primitives/compare-working-tree-entry.js';
+import { flattenTree } from '../primitives/flatten-tree.js';
 import { readIndex } from '../primitives/read-index.js';
+import { readObject } from '../primitives/read-object.js';
+import { resolveRef } from '../primitives/resolve-ref.js';
 import { acquireIndexLock } from './internal/index-update.js';
 import {
   assertNoPendingOperation,
@@ -33,6 +47,8 @@ const isIndexMissingCode = (code: string): boolean =>
 
 export interface RmOptions {
   readonly cached?: boolean;
+  /** Override the safety valve (`-f`) — remove even staged / locally-modified paths. */
+  readonly force?: boolean;
   readonly breakStaleLockMs?: number;
 }
 
@@ -68,10 +84,17 @@ export const rm = async (
     const byPath = new Map<FilePath, IndexEntry>();
     for (const entry of index.entries) byPath.set(entry.path, entry);
     const removed: FilePath[] = [];
-    for (const [path] of byPath) {
-      if (matchesPathspec(matcher, path)) removed.push(path);
+    const removedEntries: IndexEntry[] = [];
+    for (const [path, entry] of byPath) {
+      if (matchesPathspec(matcher, path)) {
+        removed.push(path);
+        removedEntries.push(entry);
+      }
     }
     enforceLiteralMustMatch(literalMustMatch, removed);
+    if (opts.force !== true) {
+      await enforceSafetyValve(ctx, removedEntries, opts.cached === true);
+    }
     for (const path of removed) byPath.delete(path);
     if (!opts.cached) {
       for (const path of removed) {
@@ -87,4 +110,57 @@ export const rm = async (
   } finally {
     await lock.release();
   }
+};
+
+/**
+ * `git rm`'s `check_local_mod` valve. Validates every matched entry up front and
+ * removes nothing if any path is refused. A path whose working file is absent is
+ * never refused (the deletion is the goal). For a present file:
+ * `staged` = index `(id, mode)` differs from HEAD; `local` = working file differs
+ * from the index entry. `--cached` (`cached`) suppresses the staged-only and
+ * local-only categories but not the combined one — faithful to git.
+ */
+const enforceSafetyValve = async (
+  ctx: Context,
+  entries: ReadonlyArray<IndexEntry>,
+  cached: boolean,
+): Promise<void> => {
+  const head = await headTreeEntries(ctx);
+  const both: FilePath[] = [];
+  const stagedOnly: FilePath[] = [];
+  const localOnly: FilePath[] = [];
+  for (const entry of entries) {
+    const worktree = await compareWorkingTreeEntry(ctx, entry);
+    if (worktree === 'absent') continue;
+    const local = worktree === 'modified';
+    const staged = isStaged(head, entry);
+    if (staged && local) both.push(entry.path);
+    else if (staged && !cached) stagedOnly.push(entry.path);
+    else if (local && !cached) localOnly.push(entry.path);
+  }
+  // Precedence: surface the strongest required override first (`both` needs `-f`).
+  if (both.length > 0) throw rmStagedAndLocalChanges(both);
+  if (stagedOnly.length > 0) throw rmStagedChanges(stagedOnly);
+  if (localOnly.length > 0) throw rmLocalModifications(localOnly);
+};
+
+const isStaged = (head: ReadonlyMap<FilePath, FlatTreeEntry>, entry: IndexEntry): boolean => {
+  const headEntry = head.get(entry.path);
+  // Absent from HEAD (newly added / never committed) counts as staged, as does a
+  // blob-id or mode difference.
+  return headEntry === undefined || headEntry.id !== entry.id || headEntry.mode !== entry.mode;
+};
+
+const headTreeEntries = async (ctx: Context): Promise<ReadonlyMap<FilePath, FlatTreeEntry>> => {
+  const commitId = await resolveRef(ctx, 'HEAD').catch((err: unknown) => {
+    // An unborn HEAD (no commits yet) has no tree — every entry is then staged.
+    if (err instanceof TsgitError && err.data.code === 'REF_NOT_FOUND') return undefined;
+    throw err;
+  });
+  if (commitId === undefined) return new Map();
+  const commit = await readObject(ctx, commitId);
+  if (commit.type !== 'commit') {
+    throw unexpectedObjectType('commit', commit.type, commitId);
+  }
+  return (await flattenTree(ctx, commit.data.tree)).entries;
 };
