@@ -16,7 +16,7 @@ export const arbSubject = (): fc.Arbitrary<string> =>
 
 export const arbTodoEntry = (): fc.Arbitrary<TodoEntry> =>
   fc.record({
-    command: fc.constant<'pick'>('pick'),
+    command: fc.constantFrom<TodoEntry['command']>('pick', 'revert'),
     oid: arbOid(),
     subject: arbSubject(),
   });

@@ -34,6 +34,7 @@ import {
   assertRepository,
   readHeadRaw,
 } from './internal/repo-state.js';
+import { clearRevertHead, readRevertHead } from './internal/revert-state.js';
 
 export interface CommitOptions {
   readonly message: string;
@@ -64,11 +65,12 @@ export interface CommitResult {
 export const commit = async (ctx: Context, opts: CommitOptions): Promise<CommitResult> => {
   await assertRepository(ctx);
   await assertNotBare(ctx, 'commit');
-  // Resolving a conflicted merge / cherry-pick IS the legitimate way to clear
-  // its marker — skip that marker's check. All other in-progress operations
-  // still block. A cherry-pick resolution stays single-parent (no MERGE_HEAD).
+  // Resolving a conflicted merge / cherry-pick / revert IS the legitimate way to
+  // clear its marker — skip that marker's check. All other in-progress operations
+  // still block. A cherry-pick / revert resolution stays single-parent (no
+  // MERGE_HEAD).
   const markers = await readPendingMarkers(ctx);
-  const { mergeHead, cherryPickHead } = markers;
+  const { mergeHead, cherryPickHead, revertHead } = markers;
   const pendingExcept = pendingExceptOf(markers);
   await assertNoPendingOperation(ctx, pendingExcept !== undefined ? { except: pendingExcept } : {});
   const noVerify = opts.noVerify ?? false;
@@ -78,7 +80,7 @@ export const commit = async (ctx: Context, opts: CommitOptions): Promise<CommitR
   const resolved = await resolveCommitMessage(
     ctx,
     opts,
-    mergeHead !== undefined || cherryPickHead !== undefined,
+    mergeHead !== undefined || cherryPickHead !== undefined || revertHead !== undefined,
   );
   const config = await readConfig(ctx);
   const configUser = toAuthor(config.user);
@@ -135,15 +137,21 @@ export const commit = async (ctx: Context, opts: CommitOptions): Promise<CommitR
 interface PendingMarkers {
   readonly mergeHead: ObjectId | undefined;
   readonly cherryPickHead: ObjectId | undefined;
+  readonly revertHead: ObjectId | undefined;
 }
 
 const readPendingMarkers = async (ctx: Context): Promise<PendingMarkers> => ({
   mergeHead: await readMergeHead(ctx),
   cherryPickHead: await readCherryPickHead(ctx),
+  revertHead: await readRevertHead(ctx),
 });
 
-const pendingExceptOf = (m: PendingMarkers): 'merge' | 'cherry-pick' | undefined =>
-  m.mergeHead !== undefined ? 'merge' : m.cherryPickHead !== undefined ? 'cherry-pick' : undefined;
+const pendingExceptOf = (m: PendingMarkers): 'merge' | 'cherry-pick' | 'revert' | undefined => {
+  if (m.mergeHead !== undefined) return 'merge';
+  if (m.cherryPickHead !== undefined) return 'cherry-pick';
+  if (m.revertHead !== undefined) return 'revert';
+  return undefined;
+};
 
 /** Clear the resolved operation's on-disk state after its commit lands. */
 const clearResolvedState = async (ctx: Context, m: PendingMarkers): Promise<void> => {
@@ -153,6 +161,11 @@ const clearResolvedState = async (ctx: Context, m: PendingMarkers): Promise<void
   }
   if (m.cherryPickHead !== undefined) {
     await clearCherryPickHead(ctx);
+    await clearMergeMsg(ctx);
+    return;
+  }
+  if (m.revertHead !== undefined) {
+    await clearRevertHead(ctx);
     await clearMergeMsg(ctx);
   }
 };

@@ -126,6 +126,7 @@ Codes are grouped by domain. Within each group, alphabetical.
 |---|---|---|
 | `AUTHOR_UNCONFIGURED` | — | No `user.name` / `user.email` and no caller override. |
 | `CHERRY_PICK_MERGE_NO_MAINLINE` | `commit` | `cherryPick` of a merge commit (≥2 parents) without a chosen mainline (`-m`). |
+| `REVERT_MERGE_NO_MAINLINE` | `commit` | `revert` of a merge commit (≥2 parents) without a chosen mainline (`-m`). |
 | `EMPTY_COMMIT_MESSAGE` | — | `commit({ message: '' })`. |
 | `EMPTY_PATHSPEC` | — | Path-based command called with empty `paths` and no bulk flag. |
 | `INVALID_COMMIT` | `reason` | Commit object failed validation. |

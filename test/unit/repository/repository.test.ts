@@ -157,6 +157,7 @@ describe('openRepository — Repository binding integrity', () => {
             'remote',
             'reset',
             'revParse',
+            'revert',
             'rm',
             'snapshot',
             'sparseCheckout',
@@ -218,6 +219,7 @@ describe('openRepository — Repository binding integrity', () => {
           'sparseCheckout',
           'stash',
           'cherryPick',
+          'revert',
         ]);
         const nonFunctionKeys = new Set(['ctx', 'primitives', 'snapshot', ...namespaceKeys]);
 

@@ -27,6 +27,7 @@ Every method bound on a `Repository` handle. 29 entries, alphabetical.
 | [`remote`](remote.md) | CRUD porcelain for `[remote "<name>"]` config + tracking refs. |
 | [`reset`](reset.md) | Move HEAD with `soft` / `mixed` / `hard` semantics. |
 | [`revParse`](rev-parse.md) | Resolve revision expressions to `ObjectId`. |
+| [`revert`](revert.md) | Record new commits that undo earlier commits (inverse of cherry-pick). |
 | [`rm`](rm.md) | Remove files from the index (and optionally the working tree). |
 | [`sparseCheckout`](sparse-checkout.md) | Materialise a subset of the tree (cone / non-cone). |
 | [`stash`](stash.md) | Save working-tree + index changes on a stack and restore them later. |

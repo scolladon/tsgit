@@ -127,6 +127,29 @@ describe('sequencer-state', () => {
       });
     });
 
+    describe('When revert-keyword entries are written then read', () => {
+      it('Then writes revert lines and reads them back preserving the command', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const entries = [
+          { command: 'revert' as const, oid: OID_A, subject: 'Revert "c1"' },
+          { command: 'revert' as const, oid: OID_B, subject: 'Revert "c2"' },
+        ];
+
+        // Act
+        await writeSequencerTodo(ctx, entries);
+
+        // Assert
+        expect(await ctx.fs.readUtf8(seqPath(ctx, 'todo'))).toBe(
+          `revert ${OID_A} Revert "c1"\nrevert ${OID_B} Revert "c2"\n`,
+        );
+        expect(await readSequencerTodo(ctx)).toEqual([
+          { command: 'revert', oid: OID_A, subject: 'Revert "c1"' },
+          { command: 'revert', oid: OID_B, subject: 'Revert "c2"' },
+        ]);
+      });
+    });
+
     describe("When the todo holds git's abbreviated oids", () => {
       it('Then read resolves them against the object store', async () => {
         // Arrange

@@ -14,7 +14,12 @@
  */
 import { invalidSequencerTodo } from '../../../domain/commands/error.js';
 import type { ObjectId } from '../../../domain/objects/index.js';
-import { parseTodo, serializeTodo, type TodoEntry } from '../../../domain/sequencer/index.js';
+import {
+  parseTodo,
+  serializeTodo,
+  type TodoCommand,
+  type TodoEntry,
+} from '../../../domain/sequencer/index.js';
 import type { Context } from '../../../ports/context.js';
 import { parseIniSections } from '../../primitives/config-read.js';
 import { resolveOidPrefix } from '../../primitives/resolve-oid-prefix.js';
@@ -27,7 +32,7 @@ export interface SequencerOpts {
 }
 
 export interface ResolvedTodoEntry {
-  readonly command: 'pick';
+  readonly command: TodoCommand;
   readonly oid: ObjectId;
   readonly subject: string;
 }
@@ -71,7 +76,7 @@ export const readSequencerTodo = async (
   for (const entry of parsed) {
     const oid = await resolveOidPrefix(ctx, entry.oid);
     if (oid === undefined) throw invalidSequencerTodo(`cannot resolve commit ${entry.oid}`);
-    resolved.push({ command: 'pick', oid, subject: entry.subject });
+    resolved.push({ command: entry.command, oid, subject: entry.subject });
   }
   return resolved;
 };

@@ -167,7 +167,8 @@ export type CommandError =
       readonly candidates: ReadonlyArray<ObjectId>;
     }
   | { readonly code: 'INVALID_SEQUENCER_TODO'; readonly reason: string }
-  | { readonly code: 'CHERRY_PICK_MERGE_NO_MAINLINE'; readonly commit: ObjectId };
+  | { readonly code: 'CHERRY_PICK_MERGE_NO_MAINLINE'; readonly commit: ObjectId }
+  | { readonly code: 'REVERT_MERGE_NO_MAINLINE'; readonly commit: ObjectId };
 
 const sanitizeForDisplay = (s: string): string => {
   let out = '';
@@ -473,3 +474,8 @@ export const invalidSequencerTodo = (reason: string): TsgitError =>
 // 40-hex oid, embedded verbatim.
 export const cherryPickMergeNoMainline = (commit: ObjectId): TsgitError =>
   new TsgitError({ code: 'CHERRY_PICK_MERGE_NO_MAINLINE', commit });
+
+// Reverting a merge commit with no chosen mainline (`-m`). `commit` is a
+// validated 40-hex oid, embedded verbatim.
+export const revertMergeNoMainline = (commit: ObjectId): TsgitError =>
+  new TsgitError({ code: 'REVERT_MERGE_NO_MAINLINE', commit });

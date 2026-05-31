@@ -150,12 +150,11 @@ describe('add', () => {
     describe('When add runs', () => {
       it.each([
         ['REBASE_HEAD', 'rebase'],
-        ['REVERT_HEAD', 'revert'],
-      ])('Then throws OPERATION_IN_PROGRESS with operation=%s (merge + cherry-pick excepted)', async (markerFile, expectedOp) => {
-        // Arrange — exactly one still-blocking marker present. `merge` and
-        // `cherry-pick` are excepted (add stages their conflict resolution);
-        // others must still block. Kills the mutant that widens the exception
-        // list to include `rebase` / `revert`.
+      ])('Then throws OPERATION_IN_PROGRESS with operation=%s (merge + cherry-pick + revert excepted)', async (markerFile, expectedOp) => {
+        // Arrange — exactly one still-blocking marker present. `merge`,
+        // `cherry-pick` and `revert` are excepted (add stages their conflict
+        // resolution); `rebase` must still block. Kills the mutant that widens
+        // the exception list to include `rebase`.
         const ctx = await seedFreshRepo({ 'a.txt': 'a' });
         await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/${markerFile}`, 'oid\n');
 
@@ -170,6 +169,22 @@ describe('add', () => {
         // Assert
         expect(data?.code).toBe('OPERATION_IN_PROGRESS');
         expect(data?.operation).toBe(expectedOp);
+      });
+    });
+  });
+
+  describe('Given a revert in progress (.git/REVERT_HEAD)', () => {
+    describe('When add runs to stage the resolution', () => {
+      it('Then it is allowed (like a merge / cherry-pick resolution)', async () => {
+        // Arrange
+        const ctx = await seedFreshRepo({ 'a.txt': 'a' });
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/REVERT_HEAD`, 'oid\n');
+
+        // Act
+        const sut = await add(ctx, ['a.txt']);
+
+        // Assert
+        expect(sut.added).toEqual(['a.txt']);
       });
     });
   });

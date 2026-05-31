@@ -38,6 +38,7 @@ import {
   remoteNameInvalid,
   remoteNotConfigured,
   repositoryDisposed,
+  revertMergeNoMainline,
   revparseAmbiguous,
   revparseUnresolved,
   sanitize,
@@ -118,6 +119,21 @@ describe('domain commands error — factory data', () => {
           code: 'STASH_APPLY_WOULD_OVERWRITE',
           paths: ['a', 'b'],
         });
+      });
+    });
+  });
+
+  describe('Given the revertMergeNoMainline error helper', () => {
+    describe('When called with a merge commit oid', () => {
+      it('Then data carries the code and the offending commit', () => {
+        // Arrange + Act
+        const sut = revertMergeNoMainline(OID1);
+
+        // Assert
+        expect(sut.data).toEqual({ code: 'REVERT_MERGE_NO_MAINLINE', commit: OID1 });
+        expect(sut.message).toBe(
+          `REVERT_MERGE_NO_MAINLINE: commit ${OID1} is a merge but no -m option was given`,
+        );
       });
     });
   });
