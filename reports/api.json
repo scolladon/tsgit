@@ -24511,7 +24511,15 @@
 									},
 									{
 										"kind": "text",
-										"text": ", or the current HEAD for a lone pick), and\nclear all state. Refuses when nothing is in progress."
+										"text": ", or the current HEAD for a lone pick), and\nclear all state. The branch update records git's faithful\n"
+									},
+									{
+										"kind": "code",
+										"text": "`reset: moving to <oid>`"
+									},
+									{
+										"kind": "text",
+										"text": " reflog. Refuses when nothing is in progress."
 									}
 								]
 							},
