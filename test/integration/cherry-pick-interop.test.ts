@@ -225,8 +225,9 @@ describe.skipIf(!GIT_AVAILABLE)('cherry-pick interop', () => {
       await repo.dispose();
 
       // Assert — git's literal format (oracle) + byte-identical tsgit parity
-      expect(topReflog(pair.peer)).toBe(`reset: moving to ${pre}`);
-      expect(topReflog(pair.ours)).toBe(topReflog(pair.peer));
+      const peerReflog = topReflog(pair.peer);
+      expect(peerReflog).toBe(`reset: moving to ${pre}`);
+      expect(topReflog(pair.ours)).toBe(peerReflog);
     });
   });
 });
