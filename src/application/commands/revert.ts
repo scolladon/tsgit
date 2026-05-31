@@ -46,6 +46,7 @@ import { resolveCommitIsh } from './internal/commit-ish.js';
 import { resolveCommitter, sanitizeMessage, stripComments } from './internal/commit-message.js';
 import { acquireIndexLock } from './internal/index-update.js';
 import { clearMergeMsg, readMergeMsg, writeMergeMsg } from './internal/merge-state.js';
+import { hardResetWorktreeToCommit } from './internal/reset-worktree.js';
 import {
   clearRevertHead,
   readRevertHead,
@@ -487,4 +488,66 @@ export const revertContinue = async (ctx: Context): Promise<RevertResult> => {
   return result.kind === 'reverted'
     ? { kind: 'reverted', commits: [...applied, ...result.commits] }
     : result;
+};
+
+export interface RevertAbortResult {
+  readonly head: ObjectId;
+  readonly branch: RefName;
+}
+
+/** Read the symbolic HEAD branch, refusing a detached HEAD for `verb`. */
+const requireSymbolicHead = async (ctx: Context, verb: string): Promise<RefName> => {
+  const head = await readHeadRaw(ctx);
+  if (head.kind !== 'symbolic') {
+    throw unsupportedOperation(verb, 'cannot run with detached HEAD');
+  }
+  return head.target;
+};
+
+/**
+ * Drop the in-progress revert: hard-reset to HEAD (discarding its half-applied
+ * state), then resume the remaining sequencer reverts (if any).
+ */
+export const revertSkip = async (ctx: Context): Promise<RevertResult> => {
+  await assertRepository(ctx);
+  await assertNotBare(ctx, 'revert --skip');
+  const source = await readRevertHead(ctx);
+  const todoOnDisk = await readSequencerTodo(ctx);
+  if (source === undefined && (todoOnDisk === undefined || todoOnDisk.length === 0)) {
+    throw noOperationInProgress('revert');
+  }
+  const branch = await requireSymbolicHead(ctx, 'revert --skip');
+  const ourId = await resolveRef(ctx, branch);
+  await hardResetWorktreeToCommit(ctx, ourId);
+  await clearRevertHead(ctx);
+  await clearMergeMsg(ctx);
+  const rest = (todoOnDisk ?? []).slice(1).map((e) => e.oid);
+  if (rest.length === 0) {
+    await clearSequencer(ctx);
+    return { kind: 'reverted', commits: [] };
+  }
+  const sequenceHead = (await readSequencerHead(ctx)) ?? ourId;
+  return runSequence(ctx, rest, branch, ourId, { multiPick: true, sequenceHead, onEmpty: 'stop' });
+};
+
+/**
+ * Abort the revert: hard-reset the working tree, index, and branch to the
+ * pre-sequence HEAD (sequencer `head`, or the current HEAD for a lone revert),
+ * and clear all state. The branch update records git's faithful
+ * `reset: moving to <oid>` reflog. Refuses when nothing is in progress.
+ */
+export const revertAbort = async (ctx: Context): Promise<RevertAbortResult> => {
+  await assertRepository(ctx);
+  await assertNotBare(ctx, 'revert --abort');
+  const source = await readRevertHead(ctx);
+  const seqHead = await readSequencerHead(ctx);
+  if (source === undefined && seqHead === undefined) throw noOperationInProgress('revert');
+  const branch = await requireSymbolicHead(ctx, 'revert --abort');
+  const target = seqHead ?? (await resolveRef(ctx, branch));
+  await hardResetWorktreeToCommit(ctx, target);
+  await updateRef(ctx, branch, target, { reflogMessage: `reset: moving to ${target}` });
+  await clearRevertHead(ctx);
+  await clearMergeMsg(ctx);
+  await clearSequencer(ctx);
+  return { head: target, branch };
 };
