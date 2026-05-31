@@ -1,5 +1,16 @@
 # Contributing to tsgit
 
+## Git-faithfulness (prime directive)
+
+tsgit replicates canonical git's **observable behaviour byte-for-byte** — object
+SHAs, ref & reflog contents, on-disk state files, refusal conditions, and message
+formats. **Match git by default.** When in doubt, verify against real `git`
+(scrubbed `GIT_*`, signing off) rather than guessing its behaviour, and pin the
+result with a cross-tool interop test (see [Write-surface interop
+audit](#write-surface-interop-audit-phase-197)). A deliberate divergence is
+permitted only when it carries its own ADR recording what diverges and why. This is
+the project's prime directive — see [ADR-226](docs/adr/226-git-faithfulness-prime-directive.md).
+
 ## Development Workflow
 
 1. Create a branch from `main`

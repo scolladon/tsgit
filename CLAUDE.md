@@ -4,6 +4,10 @@
 
 A pure TypeScript git library. Lightning-fast, portable (Node.js + browser), zero dependencies.
 
+## Git-faithfulness (prime directive)
+
+Replicate canonical git's **observable behaviour byte-for-byte** — object SHAs, ref & reflog contents, on-disk state files (`sequencer/`, `MERGE_HEAD`, `CHERRY_PICK_HEAD`, …), refusal conditions, and message formats — **unless an ADR explicitly diverges and says why**. This is a project-wide invariant, not scoped to any workflow: it binds every change. Verify against real `git` (scrubbed `GIT_*`, signing off) rather than guessing; pin the result with a cross-tool interop test. Enforced by the interop harness + parity goldens + write-surface audit. See [ADR-226](docs/adr/226-git-faithfulness-prime-directive.md).
+
 ## Architecture
 
 Hexagonal architecture with tiered application layer:

@@ -17,6 +17,7 @@
 ## Checklist
 
 - [ ] Follows conventional commits
+- [ ] Faithful to canonical git (or divergence recorded in an ADR)
 - [ ] No `any` types without justification
 - [ ] Kebab-case file names
 - [ ] Domain layer has no outward imports
