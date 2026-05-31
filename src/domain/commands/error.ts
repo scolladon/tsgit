@@ -160,7 +160,12 @@ export type CommandError =
   | { readonly code: 'RM_STAGED_AND_LOCAL_CHANGES'; readonly paths: ReadonlyArray<FilePath> }
   | { readonly code: 'NO_INITIAL_COMMIT' }
   | { readonly code: 'STASH_NOT_FOUND'; readonly index: number; readonly stackSize: number }
-  | { readonly code: 'STASH_APPLY_WOULD_OVERWRITE'; readonly paths: ReadonlyArray<FilePath> };
+  | { readonly code: 'STASH_APPLY_WOULD_OVERWRITE'; readonly paths: ReadonlyArray<FilePath> }
+  | {
+      readonly code: 'AMBIGUOUS_OID_PREFIX';
+      readonly prefix: string;
+      readonly candidates: ReadonlyArray<ObjectId>;
+    };
 
 const sanitizeForDisplay = (s: string): string => {
   let out = '';
@@ -448,3 +453,11 @@ export const stashNotFound = (index: number, stackSize: number): TsgitError =>
 
 export const stashApplyWouldOverwrite = (paths: ReadonlyArray<FilePath>): TsgitError =>
   new TsgitError({ code: 'STASH_APPLY_WOULD_OVERWRITE', paths });
+
+// Abbreviated-oid resolution. `candidates` is capped by the caller so a hostile
+// near-collision cannot inflate the thrown error payload; `prefix` is the
+// validated 4–39-hex query, embedded verbatim.
+export const ambiguousOidPrefix = (
+  prefix: string,
+  candidates: ReadonlyArray<ObjectId>,
+): TsgitError => new TsgitError({ code: 'AMBIGUOUS_OID_PREFIX', prefix, candidates });

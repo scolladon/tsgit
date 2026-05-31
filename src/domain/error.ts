@@ -414,6 +414,8 @@ function extractDetail(data: TsgitErrorData): string {
       return `stash@{${data.index}} is not a valid stash reference (stack size ${data.stackSize})`;
     case 'STASH_APPLY_WOULD_OVERWRITE':
       return `cannot apply stash: ${data.paths.length} local change(s) would be overwritten`;
+    case 'AMBIGUOUS_OID_PREFIX':
+      return `short object id ${data.prefix} is ambiguous (${data.candidates.length} candidates)`;
     default: {
       const _exhaustive: never = data;
       return String(_exhaustive);

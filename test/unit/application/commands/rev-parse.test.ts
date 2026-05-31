@@ -157,6 +157,47 @@ describe('revParse', () => {
     });
   });
 
+  describe('Given an abbreviated oid matching a unique object', () => {
+    describe('When revParse', () => {
+      it('Then resolves it to the full object id', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, {});
+        const oid = await writeBlob(ctx, 'abbrev-target');
+
+        // Act
+        const sut = await revParse(ctx, oid.slice(0, 7));
+
+        // Assert
+        expect(sut).toBe(oid);
+      });
+    });
+  });
+
+  describe('Given an abbreviated oid matching two objects', () => {
+    describe('When revParse', () => {
+      it('Then throws AMBIGUOUS_OID_PREFIX', async () => {
+        // Arrange — two loose objects sharing prefix 'abcdef'
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, {});
+        for (const tail of ['0'.repeat(34), '1'.repeat(34)]) {
+          await ctx.fs.write(`${ctx.layout.gitDir}/objects/ab/cdef${tail}`, new Uint8Array([1]));
+        }
+
+        // Act
+        let caught: unknown;
+        try {
+          await revParse(ctx, 'abcdef');
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data.code).toBe('AMBIGUOUS_OID_PREFIX');
+      });
+    });
+  });
+
   describe('Given a 41-char string of 40 hex plus a trailing extra char', () => {
     describe('When revParse', () => {
       it('Then the hex regex rejects it (anchored end)', async () => {
