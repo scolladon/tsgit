@@ -136,6 +136,7 @@ describe('openRepository — Repository binding integrity', () => {
             'branch',
             'catFile',
             'checkout',
+            'cherryPick',
             'clone',
             'commit',
             'config',
@@ -216,6 +217,7 @@ describe('openRepository — Repository binding integrity', () => {
           'tag',
           'sparseCheckout',
           'stash',
+          'cherryPick',
         ]);
         const nonFunctionKeys = new Set(['ctx', 'primitives', 'snapshot', ...namespaceKeys]);
 

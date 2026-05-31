@@ -19,7 +19,7 @@ const registryCache = new WeakMap<Context, PackRegistry>();
  */
 const inflightCache = new WeakMap<Context, Map<string, Promise<boolean>>>();
 
-function getPackRegistry(ctx: Context): PackRegistry {
+export function getPackRegistry(ctx: Context): PackRegistry {
   let registry = registryCache.get(ctx);
   if (registry === undefined) {
     registry = createPackRegistry(ctx);

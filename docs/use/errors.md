@@ -71,6 +71,7 @@ Codes are grouped by domain. Within each group, alphabetical.
 
 | Code | Payload | Raised when |
 |---|---|---|
+| `AMBIGUOUS_OID_PREFIX` | `prefix, candidates` | An abbreviated object-id prefix matched more than one object. |
 | `BRANCH_EXISTS` | `name` | `branch.create(...)` without `force` against an existing branch. |
 | `BRANCH_NOT_FOUND` | `name` | `branch.delete(...)` against an unknown branch. |
 | `CANNOT_DELETE_CHECKED_OUT_BRANCH` | `name` | Attempt to delete the branch HEAD points at. |
@@ -124,11 +125,13 @@ Codes are grouped by domain. Within each group, alphabetical.
 | Code | Payload | Raised when |
 |---|---|---|
 | `AUTHOR_UNCONFIGURED` | — | No `user.name` / `user.email` and no caller override. |
+| `CHERRY_PICK_MERGE_NO_MAINLINE` | `commit` | `cherryPick` of a merge commit (≥2 parents) without a chosen mainline (`-m`). |
 | `EMPTY_COMMIT_MESSAGE` | — | `commit({ message: '' })`. |
 | `EMPTY_PATHSPEC` | — | Path-based command called with empty `paths` and no bulk flag. |
 | `INVALID_COMMIT` | `reason` | Commit object failed validation. |
 | `INVALID_IDENTITY` | `reason` | Author / committer identity malformed. |
 | `INVALID_OPTION` | `option, reason` | Caller passed an incompatible option combination. |
+| `INVALID_SEQUENCER_TODO` | `reason` | A `.git/sequencer/todo` line could not be parsed or its commit could not be resolved. |
 | `INVALID_TAG` | `reason` | Tag object failed validation. |
 | `NOTHING_TO_COMMIT` | — | `commit` called when the index matches HEAD's tree (no changes to commit). |
 | `OPERATION_IN_PROGRESS` | `operation` | Another long-running operation (merge / rebase / cherry-pick) is pending. |

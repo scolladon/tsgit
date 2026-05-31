@@ -432,11 +432,22 @@ describe('internal/rev-parse-grammar', () => {
       });
     });
 
-    describe("Given 'abc' (3 hex chars, looks like a prefix but too short)", () => {
+    describe("Given 'abc' (3 hex chars, shorter than git's min abbreviation)", () => {
       describe('When parseExpression', () => {
         it('Then throws REVPARSE_UNRESOLVED', () => {
           // Arrange + Assert
           expectError(() => parseExpression('abc'), 'REVPARSE_UNRESOLVED');
+        });
+      });
+    });
+
+    describe("Given 'abcd' (4 hex chars, the minimum abbreviation length)", () => {
+      describe('When parseExpression', () => {
+        it('Then accepted as ref-or-hex (resolveBase tries ref then abbreviated oid)', () => {
+          // Arrange
+          const sut = parseExpression('abcd');
+          // Assert
+          expect(sut).toEqual({ kind: 'ref-or-hex', base: 'abcd', operations: [] });
         });
       });
     });

@@ -89,3 +89,11 @@ export const clearMergeState = async (ctx: Context): Promise<void> => {
     }
   }
 };
+
+/** Delete `.git/MERGE_MSG` only (cherry-pick / revert resolution). Idempotent. */
+export const clearMergeMsg = async (ctx: Context): Promise<void> => {
+  const path = mergeMsgPath(ctx);
+  if (await ctx.fs.exists(path)) {
+    await ctx.fs.rm(path);
+  }
+};

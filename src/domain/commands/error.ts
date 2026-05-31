@@ -160,7 +160,14 @@ export type CommandError =
   | { readonly code: 'RM_STAGED_AND_LOCAL_CHANGES'; readonly paths: ReadonlyArray<FilePath> }
   | { readonly code: 'NO_INITIAL_COMMIT' }
   | { readonly code: 'STASH_NOT_FOUND'; readonly index: number; readonly stackSize: number }
-  | { readonly code: 'STASH_APPLY_WOULD_OVERWRITE'; readonly paths: ReadonlyArray<FilePath> };
+  | { readonly code: 'STASH_APPLY_WOULD_OVERWRITE'; readonly paths: ReadonlyArray<FilePath> }
+  | {
+      readonly code: 'AMBIGUOUS_OID_PREFIX';
+      readonly prefix: string;
+      readonly candidates: ReadonlyArray<ObjectId>;
+    }
+  | { readonly code: 'INVALID_SEQUENCER_TODO'; readonly reason: string }
+  | { readonly code: 'CHERRY_PICK_MERGE_NO_MAINLINE'; readonly commit: ObjectId };
 
 const sanitizeForDisplay = (s: string): string => {
   let out = '';
@@ -448,3 +455,21 @@ export const stashNotFound = (index: number, stackSize: number): TsgitError =>
 
 export const stashApplyWouldOverwrite = (paths: ReadonlyArray<FilePath>): TsgitError =>
   new TsgitError({ code: 'STASH_APPLY_WOULD_OVERWRITE', paths });
+
+// Abbreviated-oid resolution. `candidates` is capped by the caller so a hostile
+// near-collision cannot inflate the thrown error payload; `prefix` is the
+// validated 4–39-hex query, embedded verbatim.
+export const ambiguousOidPrefix = (
+  prefix: string,
+  candidates: ReadonlyArray<ObjectId>,
+): TsgitError => new TsgitError({ code: 'AMBIGUOUS_OID_PREFIX', prefix, candidates });
+
+// Corrupt `.git/sequencer/todo` line. `reason` embeds the offending line
+// (sanitised — a mid-write crash can leave control bytes behind).
+export const invalidSequencerTodo = (reason: string): TsgitError =>
+  new TsgitError({ code: 'INVALID_SEQUENCER_TODO', reason: sanitizeForDisplay(reason) });
+
+// Picking a merge commit with no chosen mainline (`-m`). `commit` is a validated
+// 40-hex oid, embedded verbatim.
+export const cherryPickMergeNoMainline = (commit: ObjectId): TsgitError =>
+  new TsgitError({ code: 'CHERRY_PICK_MERGE_NO_MAINLINE', commit });

@@ -1,4 +1,5 @@
 import { branchLifecycleScenario } from './branch-lifecycle.scenario.ts';
+import { cherryPickScenario } from './cherry-pick.scenario.ts';
 import { configScenario } from './config.scenario.ts';
 import { diffPipelineScenario } from './diff-pipeline.scenario.ts';
 import { initAddCommitStatusScenario } from './init-add-commit-status.scenario.ts';
@@ -35,4 +36,5 @@ export const SCENARIOS: ReadonlyArray<Scenario<unknown>> = [
   remoteCrudScenario,
   configScenario,
   stashScenario,
+  cherryPickScenario,
 ];

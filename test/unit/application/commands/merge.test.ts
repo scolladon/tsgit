@@ -14,7 +14,6 @@ import {
   removeWorkingTreeFile,
   resolveMergeAuthor,
   resolveMergeCommitter,
-  resolveTarget,
   writeNestedTree,
   writeOutcomeToTree,
 } from '../../../../src/application/commands/merge.js';
@@ -22,7 +21,6 @@ import { readBlob } from '../../../../src/application/primitives/read-blob.js';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
 import { readReflog } from '../../../../src/application/primitives/reflog-store.js';
 import { resolveRef } from '../../../../src/application/primitives/resolve-ref.js';
-import { updateRef } from '../../../../src/application/primitives/update-ref.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import type { MergeConflict, MergeOutcome } from '../../../../src/domain/merge/index.js';
 import type {
@@ -30,7 +28,6 @@ import type {
   FilePath,
   ObjectId,
   RefName,
-  Tag,
   Tree,
 } from '../../../../src/domain/objects/index.js';
 import { FILE_MODE } from '../../../../src/domain/objects/index.js';
@@ -1329,74 +1326,6 @@ describe('merge — updateRef CAS guard', () => {
   });
 });
 
-describe('resolveTarget (direct)', () => {
-  describe('Given an exact 40-hex object id', () => {
-    describe('When resolveTarget is called', () => {
-      it('Then returns it verbatim as an ObjectId', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await init(ctx);
-        const id = 'a'.repeat(40);
-
-        // Act
-        const sut = await resolveTarget(ctx, id);
-
-        // Assert
-        expect(sut).toBe(id);
-      });
-    });
-  });
-
-  describe('Given a 40-hex id with a leading non-hex char', () => {
-    describe('When resolveTarget is called', () => {
-      it('Then it is NOT treated as an oid (anchored ^ regex)', async () => {
-        // Arrange — `z` + 40 hex: a substring matches but the anchored regex must
-        // reject it, so resolveTarget falls through to a branch-name lookup.
-        const ctx = createMemoryContext();
-        await init(ctx);
-        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
-        await add(ctx, ['a.txt']);
-        await commit(ctx, { message: 'm', author });
-        const target = `z${'a'.repeat(40)}`;
-
-        // Act / Assert — resolves as `refs/heads/<target>`, which does not exist.
-        let caught: unknown;
-        try {
-          await resolveTarget(ctx, target);
-        } catch (err) {
-          caught = err;
-        }
-        // Assert
-        expect((caught as { data?: { code?: string } })?.data?.code).toBe('REF_NOT_FOUND');
-      });
-    });
-  });
-
-  describe('Given a 40-hex id with a trailing extra char', () => {
-    describe('When resolveTarget is called', () => {
-      it('Then it is NOT treated as an oid (anchored $ regex)', async () => {
-        // Arrange — 40 hex + `0`: 41 chars; the anchored `$` must reject it.
-        const ctx = createMemoryContext();
-        await init(ctx);
-        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
-        await add(ctx, ['a.txt']);
-        await commit(ctx, { message: 'm', author });
-        const target = `${'a'.repeat(40)}0`;
-
-        // Act / Assert
-        let caught: unknown;
-        try {
-          await resolveTarget(ctx, target);
-        } catch (err) {
-          caught = err;
-        }
-        // Assert
-        expect((caught as { data?: { code?: string } })?.data?.code).toBe('REF_NOT_FOUND');
-      });
-    });
-  });
-});
-
 describe('merge — reflogLabel', () => {
   const seedFastForward = async () => {
     const ctx = createMemoryContext();
@@ -1469,106 +1398,6 @@ describe('merge — reflogLabel', () => {
           (e) => e.message,
         );
         expect(messages).toContain("pull: Merge made by the 'tsgit' strategy.");
-      });
-    });
-  });
-});
-
-describe('resolveTarget (gitrevisions ref-DWIM)', () => {
-  describe('Given a remote-tracking ref and the short name origin/<branch>', () => {
-    describe('When resolveTarget is called', () => {
-      it('Then resolves via refs/remotes/<base>', async () => {
-        // Arrange — seed refs/remotes/origin/main → a real commit.
-        const ctx = createMemoryContext();
-        await init(ctx);
-        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
-        await add(ctx, ['a.txt']);
-        const c = await commit(ctx, { message: 'm', author });
-        await updateRef(ctx, 'refs/remotes/origin/main' as RefName, c.id, {
-          reflogMessage: 'seed',
-        });
-
-        // Act
-        const sut = await resolveTarget(ctx, 'origin/main');
-
-        // Assert
-        expect(sut).toBe(c.id);
-      });
-    });
-  });
-
-  describe('Given a bare branch name with a same-named remote-tracking ref absent', () => {
-    describe('When resolveTarget is called', () => {
-      it('Then still resolves via refs/heads/<base> (regression)', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await init(ctx);
-        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
-        await add(ctx, ['a.txt']);
-        await commit(ctx, { message: 'm', author });
-        await branchCreate(ctx, { name: 'feature' });
-        const head = await resolveRef(ctx, 'refs/heads/feature' as RefName);
-
-        // Act
-        const sut = await resolveTarget(ctx, 'feature');
-
-        // Assert
-        expect(sut).toBe(head);
-      });
-    });
-  });
-
-  describe('Given an annotated tag pointing to a commit', () => {
-    describe('When resolveTarget is called by the tag short name', () => {
-      it('Then peels the tag to its commit', async () => {
-        // Arrange — annotated tag object (NOT a lightweight tag) under refs/tags/v1.
-        const ctx = createMemoryContext();
-        await init(ctx);
-        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
-        await add(ctx, ['a.txt']);
-        const c = await commit(ctx, { message: 'm', author });
-        const tag: Tag = {
-          type: 'tag',
-          id: '' as ObjectId,
-          data: {
-            object: c.id,
-            objectType: 'commit',
-            tagName: 'v1',
-            tagger: { name: 'a', email: 'a@a', timestamp: 0, timezoneOffset: '+0000' },
-            message: 'v1',
-            extraHeaders: [],
-          },
-        };
-        const tagId = await writeObject(ctx, tag);
-        await updateRef(ctx, 'refs/tags/v1' as RefName, tagId, { reflogMessage: 'seed' });
-
-        // Act
-        const sut = await resolveTarget(ctx, 'v1');
-
-        // Assert — peeled to the commit, NOT the tag object id.
-        expect(sut).toBe(c.id);
-        expect(sut).not.toBe(tagId);
-      });
-    });
-  });
-
-  describe('Given a name resolvable by none of the candidates', () => {
-    describe('When resolveTarget is called', () => {
-      it('Then throws REF_NOT_FOUND', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await init(ctx);
-
-        // Act
-        let caught: unknown;
-        try {
-          await resolveTarget(ctx, 'origin/nope');
-        } catch (err) {
-          caught = err;
-        }
-
-        // Assert
-        expect((caught as { data?: { code?: string } })?.data?.code).toBe('REF_NOT_FOUND');
       });
     });
   });

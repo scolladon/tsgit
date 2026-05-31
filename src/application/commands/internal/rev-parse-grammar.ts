@@ -52,7 +52,10 @@ export type RevExpression =
 
 const VALID_PEEL_TARGETS = new Set<string>(['commit', 'tree', 'blob', 'tag']);
 const INDEX_STAGE_PATTERN = /^:(\d):(.+)$/;
-const SHORT_HEX_PATTERN = /^[0-9a-f]{1,6}$/;
+// Reject only 1–3 hex chars: shorter than git's minimum abbreviation (4), so
+// they can never resolve as an abbreviated object id. 4+ hex chars are accepted
+// and routed through `resolveBase`, which tries refs then `resolveOidPrefix`.
+const SHORT_HEX_PATTERN = /^[0-9a-f]{1,3}$/;
 
 const fail = (raw: string): never => {
   throw revparseUnresolved(raw);

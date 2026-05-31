@@ -14,6 +14,7 @@ import { readIndex } from '../primitives/read-index.js';
 import { readObject } from '../primitives/read-object.js';
 import { getRefStore } from '../primitives/ref-store.js';
 import { readReflog, reflogExists } from '../primitives/reflog-store.js';
+import { resolveOidPrefix } from '../primitives/resolve-oid-prefix.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
 import { assertRepository } from './internal/repo-state.js';
 import {
@@ -57,6 +58,10 @@ const resolveBase = async (ctx: Context, base: string): Promise<ObjectId> => {
       // continue
     }
   }
+  // Not a ref — try as an abbreviated object id (git's get_oid fallback).
+  // Throws AMBIGUOUS_OID_PREFIX when the prefix matches more than one object.
+  const byPrefix = await resolveOidPrefix(ctx, base);
+  if (byPrefix !== undefined) return byPrefix;
   throw objectNotFound(base as ObjectId);
 };
 
