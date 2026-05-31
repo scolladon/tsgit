@@ -121,12 +121,10 @@ Surface the PR URL and the CI result. Once CI is green — ignore the non-blocki
 gh pr merge <#> --squash --delete-branch --admin
 ```
 
-**Always pass `--delete-branch`** so the remote branch is removed as part of the merge. `--admin` is required because the `main` ruleset blocks normal merges. Then update `main` and drop the local worktree + branch:
+**Always pass `--delete-branch`** so the remote branch is removed as part of the merge. `--admin` is required because the `main` ruleset blocks normal merges. Then run `git sync` from the main worktree — it fetches + prunes, fast-forwards `main`, and removes every local branch whose upstream is now `[gone]` together with its worktree:
 
 ```bash
-git checkout main && git pull --ff-only
-git worktree remove ../tsgit-<slug>
-git branch -D feat/<slug>
+git checkout main && git sync
 ```
 
 ## Hard rules
