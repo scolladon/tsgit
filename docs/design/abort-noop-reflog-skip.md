@@ -105,7 +105,7 @@ unreachable on the abort paths (the branch ref is always loose mid-sequence). Th
 `delete` returns earlier and is unaffected.
 
 **Why central, not abort-path-only.** The same no-op is reachable from every
-`updateRef` caller. Centralising in `updateRef` fixes both abort paths *and* the
+`updateRef` caller. A single central fix in `updateRef` covers both abort paths *and* the
 audited siblings (`merge --abort` — always no-move; `reset --hard HEAD` symbolic;
 an up-to-date `fetch`/`push` tracking-ref update) in one behaviour-preserving
 change, and keeps the move cases byte-identical. An abort-path-only guard would
