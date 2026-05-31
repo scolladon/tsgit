@@ -5,6 +5,7 @@ import { branchCreate } from '../../../../src/application/commands/branch.js';
 import { checkout } from '../../../../src/application/commands/checkout.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
+import { bindRevertNamespace } from '../../../../src/application/commands/internal/revert-namespace.js';
 import { merge } from '../../../../src/application/commands/merge.js';
 import {
   revertAbort,
@@ -850,6 +851,32 @@ describe('revert abort', () => {
 
         // Assert
         expect(code).toBe('UNSUPPORTED_OPERATION');
+      });
+    });
+  });
+});
+
+describe('bindRevertNamespace', () => {
+  describe('Given the bound namespace', () => {
+    describe('When each verb is called', () => {
+      it('Then it runs the guard and forwards to the command', async () => {
+        // Arrange
+        const { ctx } = await seedLinear();
+        let guarded = 0;
+        const ns = bindRevertNamespace(ctx, () => {
+          guarded += 1;
+        });
+
+        // Act
+        const run = await ns.run({ commits: ['HEAD'] });
+
+        // Assert — run forwarded; the other verbs forward + throw (nothing in progress)
+        expect(run.kind).toBe('reverted');
+        await expect(ns.continue()).rejects.toThrow();
+        await expect(ns.skip()).rejects.toThrow();
+        await expect(ns.abort()).rejects.toThrow();
+        expect(guarded).toBe(4);
+        expect(Object.isFrozen(ns)).toBe(true);
       });
     });
   });

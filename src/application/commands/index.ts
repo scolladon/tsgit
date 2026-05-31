@@ -93,6 +93,10 @@ export {
 export { bindConfigNamespace, type ConfigNamespace } from './internal/config-namespace.js';
 export { bindRemoteNamespace, type RemoteNamespace } from './internal/remote-namespace.js';
 export {
+  bindRevertNamespace,
+  type RevertNamespace,
+} from './internal/revert-namespace.js';
+export {
   bindSparseCheckoutNamespace,
   type SparseCheckoutNamespace,
 } from './internal/sparse-checkout-namespace.js';
@@ -139,6 +143,17 @@ export {
 } from './remote.js';
 export { type ResetMode, type ResetOptions, type ResetResult, reset } from './reset.js';
 export { revParse } from './rev-parse.js';
+export {
+  type RevertAbortResult,
+  type RevertConflict,
+  type RevertedCommit,
+  type RevertResult,
+  type RevertRunInput,
+  revertAbort,
+  revertContinue,
+  revertRun,
+  revertSkip,
+} from './revert.js';
 export { type RmOptions, type RmResult, rm } from './rm.js';
 export {
   type SparseCheckoutAddInput,

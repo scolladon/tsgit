@@ -12,6 +12,7 @@ import { readPipelineScenario } from './read-pipeline.scenario.ts';
 import { refsPipelineScenario } from './refs-pipeline.scenario.ts';
 import { remoteCrudScenario } from './remote-crud.scenario.ts';
 import { resetRmReflogScenario } from './reset-rm-reflog.scenario.ts';
+import { revertScenario } from './revert.scenario.ts';
 import { sparseCheckoutScenario } from './sparse-checkout.scenario.ts';
 import { stashScenario } from './stash.scenario.ts';
 import { submodulesEmptyScenario } from './submodules-empty.scenario.ts';
@@ -37,4 +38,5 @@ export const SCENARIOS: ReadonlyArray<Scenario<unknown>> = [
   configScenario,
   stashScenario,
   cherryPickScenario,
+  revertScenario,
 ];

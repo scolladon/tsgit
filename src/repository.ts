@@ -177,6 +177,8 @@ export interface Repository {
   /** Nested `repo.remote.{list,add,remove,rename,setUrl,show}` namespace. */
   readonly remote: commands.RemoteNamespace;
   readonly reset: BindCtx<typeof commands.reset>;
+  /** Nested `repo.revert.{run,continue,skip,abort}` namespace. */
+  readonly revert: commands.RevertNamespace;
   readonly revParse: BindCtx<typeof commands.revParse>;
   readonly rm: BindCtx<typeof commands.rm>;
   /** Nested `repo.sparseCheckout.{list,set,add,reapply,disable}` namespace. */
@@ -455,6 +457,7 @@ export const openRepository = async (
       guard();
       return commands.reset(ctx, resetOpts);
     }) as Repository['reset'],
+    revert: commands.bindRevertNamespace(ctx, guard),
     revParse: ((expression) => {
       guard();
       return commands.revParse(ctx, expression);
