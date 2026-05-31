@@ -28,8 +28,6 @@ import {
   type ObjectId,
   type RefName,
 } from '../../domain/objects/index.js';
-import { refNotFound } from '../../domain/refs/error.js';
-import { refCandidates } from '../../domain/refs/index.js';
 import type { SparseMatcher } from '../../domain/sparse/index.js';
 import type { Context } from '../../ports/context.js';
 import { readConfig } from '../primitives/config-read.js';
@@ -43,6 +41,7 @@ import { resolveRef } from '../primitives/resolve-ref.js';
 import { updateRef } from '../primitives/update-ref.js';
 import { writeObject } from '../primitives/write-object.js';
 import { writeTree } from '../primitives/write-tree.js';
+import { resolveCommitIsh } from './internal/commit-ish.js';
 import { resolveAuthor, resolveCommitter, sanitizeMessage } from './internal/commit-message.js';
 import { acquireIndexLock } from './internal/index-update.js';
 import { writeMergeHead, writeMergeMsg, writeOrigHead } from './internal/merge-state.js';
@@ -111,7 +110,7 @@ export const merge = async (ctx: Context, opts: MergeOptions): Promise<MergeResu
     throw unsupportedOperation('merge', 'cannot merge with detached HEAD');
   }
   const ourId = await resolveRef(ctx, head.target);
-  const theirId = await resolveTarget(ctx, opts.target);
+  const theirId = await resolveCommitIsh(ctx, opts.target);
   // Stryker disable next-line ConditionalExpression: equivalent — when ourId===theirId, mergeBase returns that same commit, so the `base === theirId` check below yields the identical up-to-date result.
   if (ourId === theirId) return { kind: 'up-to-date', id: ourId };
   const [base] = await mergeBase(ctx, [ourId, theirId]);
@@ -686,21 +685,6 @@ export const resolveMergeCommitter = (
   } = { author };
   if (opts.committer !== undefined) committerInput.explicit = opts.committer;
   return resolveCommitter(committerInput);
-};
-
-/** Resolve a merge target (40-hex oid or branch name). Exported for direct unit testing. */
-export const resolveTarget = async (ctx: Context, target: string): Promise<ObjectId> => {
-  if (/^[0-9a-f]{40}$/.test(target)) return target as ObjectId;
-  // gitrevisions ref-DWIM: try each candidate namespace in priority order,
-  // peeling annotated tags to their underlying commit (git merge <commit-ish>).
-  for (const candidate of refCandidates(target)) {
-    try {
-      return await resolveRef(ctx, candidate, { peel: true });
-    } catch {
-      // Not this candidate — fall through to the next namespace.
-    }
-  }
-  throw refNotFound(target as RefName);
 };
 
 const getTree = async (ctx: Context, commitId: ObjectId): Promise<ObjectId> => {
