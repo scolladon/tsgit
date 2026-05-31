@@ -269,6 +269,9 @@ const runSequence = async (
 
 /** git's `-x` footer: a blank line then `(cherry picked from commit <full-oid>)`. */
 const appendCherryPickOrigin = (message: string, source: ObjectId): string =>
+  // equivalent-mutant (`/\s$/`): a commit message is always stripspace'd, so it ends
+  // in exactly one trailing LF — greedy `\s+$` and single-char `\s$` strip the same
+  // one character. `/\S+$/` (strip the last word) is killed by the -x message test.
   `${message.replace(/\s+$/, '')}\n\n(cherry picked from commit ${source})`;
 
 /** The message a pick will commit: the source message, optionally `-x`-stamped. */
@@ -374,6 +377,9 @@ const persistStop = async (
   await writeCherryPickHead(ctx, source);
   const draft = messageDraft(cData.message, source, opts.recordOrigin);
   const message =
+    // equivalent-mutant (`>= 0`): a conflict outcome always carries at least one
+    // conflict, so `length > 0` and `length >= 0` are indistinguishable here; the
+    // `!== undefined` guard is what separates the conflict path from the empty stop.
     conflicts !== undefined && conflicts.length > 0
       ? conflictMergeMsg(
           draft,
