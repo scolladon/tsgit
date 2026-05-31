@@ -1,6 +1,6 @@
 # Commands — Tier-1 reference
 
-Every method bound on a `Repository` handle. 26 entries, alphabetical.
+Every method bound on a `Repository` handle. 29 entries, alphabetical.
 
 | Command | Summary |
 |---|---|

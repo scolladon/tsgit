@@ -58,6 +58,23 @@ type CherryPickResult =
   git's `require_clean_work_tree`), and an operation already in progress
   (`OPERATION_IN_PROGRESS`).
 
+## Throws
+
+- `UNSUPPORTED_OPERATION` — `run`/`continue`/`skip`/`abort` with a detached HEAD.
+- `NO_INITIAL_COMMIT` — `run` on an unborn branch (no commit yet).
+- `WORKING_TREE_DIRTY` — `run` against a dirty index / working tree
+  (git's `require_clean_work_tree`).
+- `OPERATION_IN_PROGRESS` — another operation (merge / rebase / cherry-pick)
+  is already pending.
+- `NO_OPERATION_IN_PROGRESS` — `continue`/`skip`/`abort` with nothing in progress.
+- `INVALID_OPTION` — an unsupported revision form (`A...B`, `^`-exclusion).
+- `CHERRY_PICK_MERGE_NO_MAINLINE` — picking a merge commit (≥2 parents) without `-m`.
+- `AMBIGUOUS_OID_PREFIX` — an abbreviated commit-ish matched more than one object.
+- `INVALID_SEQUENCER_TODO` — a corrupt `.git/sequencer/todo` on resume.
+- `MERGE_HAS_CONFLICTS` — `continue` while the index still has unmerged entries.
+
+See [`../errors.md`](../errors.md) for the canonical `TsgitError.data.code` list.
+
 ## See also
 
 - Primitives: [`mergeBase`](../primitives/merge-base.md), [`readObject`](../primitives/read-object.md)
