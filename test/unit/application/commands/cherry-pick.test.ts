@@ -4,8 +4,10 @@ import { add } from '../../../../src/application/commands/add.js';
 import { branchCreate } from '../../../../src/application/commands/branch.js';
 import { checkout } from '../../../../src/application/commands/checkout.js';
 import {
+  cherryPickAbort,
   cherryPickContinue,
   cherryPickRun,
+  cherryPickSkip,
 } from '../../../../src/application/commands/cherry-pick.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
@@ -269,6 +271,131 @@ describe('cherryPickRun — ranges and the sequencer', () => {
         // Assert
         expect(sut.kind).toBe('picked');
         expect(await ctx.fs.readUtf8(work(ctx, 'g.txt'))).toBe('g\n');
+      });
+    });
+  });
+});
+
+describe('cherryPickAbort', () => {
+  describe('Given a stopped range', () => {
+    describe('When abort', () => {
+      it('Then resets HEAD, working tree, and index to the pre-sequence commit and clears state', async () => {
+        // Arrange
+        const { ctx, base } = await seedRange();
+        const preSeq = await resolveRef(ctx, 'refs/heads/main' as RefName);
+        await cherryPickRun(ctx, { commits: [`${base}..feature`] });
+
+        // Act
+        const sut = await cherryPickAbort(ctx);
+
+        // Assert
+        expect(sut.head).toBe(preSeq);
+        expect(await resolveRef(ctx, 'refs/heads/main' as RefName)).toBe(preSeq);
+        expect(await ctx.fs.readUtf8(work(ctx, 'f.txt'))).toBe('l1\nMAIN\n'); // restored
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/sequencer`)).toBe(false);
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/CHERRY_PICK_HEAD`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a single conflicted pick', () => {
+    describe('When abort', () => {
+      it('Then resets to HEAD and clears CHERRY_PICK_HEAD', async () => {
+        // Arrange
+        const { ctx } = await seedConflictPick();
+        const headBefore = await resolveRef(ctx, 'refs/heads/main' as RefName);
+
+        // Act
+        const sut = await cherryPickAbort(ctx);
+
+        // Assert
+        expect(sut.head).toBe(headBefore);
+        expect(await ctx.fs.readUtf8(work(ctx, 'f.txt'))).toBe('l1\nMAIN\n');
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/CHERRY_PICK_HEAD`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given nothing in progress', () => {
+    describe('When abort', () => {
+      it('Then refuses with NO_OPERATION_IN_PROGRESS', async () => {
+        // Arrange
+        const { ctx } = await seedFeature();
+
+        // Act
+        const code = await codeOf(() => cherryPickAbort(ctx));
+
+        // Assert
+        expect(code).toBe('NO_OPERATION_IN_PROGRESS');
+      });
+    });
+  });
+
+  describe('Given a detached HEAD mid cherry-pick', () => {
+    describe('When abort', () => {
+      it('Then refuses with UNSUPPORTED_OPERATION', async () => {
+        // Arrange
+        const { ctx, feature } = await seedConflictPick();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, `${feature}\n`);
+
+        // Act
+        const code = await codeOf(() => cherryPickAbort(ctx));
+
+        // Assert
+        expect(code).toBe('UNSUPPORTED_OPERATION');
+      });
+    });
+  });
+});
+
+describe('cherryPickSkip', () => {
+  describe('Given a stopped range', () => {
+    describe('When skip', () => {
+      it('Then drops the current pick and applies the remaining ones', async () => {
+        // Arrange
+        const { ctx, base } = await seedRange();
+        await cherryPickRun(ctx, { commits: [`${base}..feature`] }); // conflict on c1
+
+        // Act
+        const sut = await cherryPickSkip(ctx);
+
+        // Assert
+        expect(sut.kind).toBe('picked');
+        expect(await ctx.fs.readUtf8(work(ctx, 'g.txt'))).toBe('g\n'); // c2 applied
+        expect(await ctx.fs.readUtf8(work(ctx, 'f.txt'))).toBe('l1\nMAIN\n'); // c1 dropped
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/sequencer`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a single conflicted pick', () => {
+    describe('When skip', () => {
+      it('Then drops it and applies nothing', async () => {
+        // Arrange
+        const { ctx } = await seedConflictPick();
+
+        // Act
+        const sut = await cherryPickSkip(ctx);
+
+        // Assert
+        expect(sut.kind).toBe('picked');
+        if (sut.kind === 'picked') expect(sut.commits).toHaveLength(0);
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/CHERRY_PICK_HEAD`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given nothing in progress', () => {
+    describe('When skip', () => {
+      it('Then refuses with NO_OPERATION_IN_PROGRESS', async () => {
+        // Arrange
+        const { ctx } = await seedFeature();
+
+        // Act
+        const code = await codeOf(() => cherryPickSkip(ctx));
+
+        // Assert
+        expect(code).toBe('NO_OPERATION_IN_PROGRESS');
       });
     });
   });

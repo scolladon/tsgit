@@ -31,8 +31,10 @@ import {
   assertRepository,
   readHeadRaw,
 } from '../primitives/internal/repo-state.js';
+import { materializeTree } from '../primitives/materialize-tree.js';
 import { readIndex } from '../primitives/read-index.js';
 import { readObject } from '../primitives/read-object.js';
+import { loadSparseMatcher } from '../primitives/read-sparse-checkout.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
 import { synthesizeTreeFromIndex } from '../primitives/synthesize-tree-from-index.js';
 import { updateRef } from '../primitives/update-ref.js';
@@ -555,4 +557,95 @@ export const cherryPickContinue = async (
   return result.kind === 'picked'
     ? { kind: 'picked', commits: [...applied, ...result.commits] }
     : result;
+};
+
+export interface CherryPickAbortResult {
+  readonly head: ObjectId;
+  readonly branch: RefName;
+}
+
+/**
+ * Hard-reset the working tree + index to `commitId`'s tree (sparse-aware,
+ * `force + forceRewriteAll`), so a half-applied pick / conflict is discarded.
+ * Inlined (not delegated to `reset`) so it can run while a pick marker exists.
+ */
+const resetWorktreeAndIndex = async (ctx: Context, commitId: ObjectId): Promise<void> => {
+  const matcher = await loadSparseMatcher(ctx);
+  const cData = await readCommitData(ctx, commitId);
+  const lock = await acquireIndexLock(ctx);
+  try {
+    const currentIndex = await readIndex(ctx);
+    const result = await materializeTree(ctx, {
+      targetTree: cData.tree,
+      currentIndex,
+      force: true,
+      forceRewriteAll: true,
+      ...(matcher !== undefined ? { sparse: matcher } : {}),
+    });
+    await lock.commit(result.newIndexEntries);
+  } finally {
+    await lock.release();
+  }
+};
+
+/** Read the symbolic HEAD branch, refusing a detached HEAD for `verb`. */
+const requireSymbolicHead = async (ctx: Context, verb: string): Promise<RefName> => {
+  const head = await readHeadRaw(ctx);
+  if (head.kind !== 'symbolic') {
+    throw unsupportedOperation(verb, 'cannot run with detached HEAD');
+  }
+  return head.target;
+};
+
+/**
+ * Drop the in-progress pick: hard-reset to HEAD (discarding its half-applied
+ * state), then resume the remaining sequencer picks (if any).
+ */
+export const cherryPickSkip = async (
+  ctx: Context,
+  input: CherryPickContinueInput = {},
+): Promise<CherryPickResult> => {
+  await assertRepository(ctx);
+  await assertNotBare(ctx, 'cherry-pick --skip');
+  const source = await readCherryPickHead(ctx);
+  const todoOnDisk = await readSequencerTodo(ctx);
+  if (source === undefined && (todoOnDisk === undefined || todoOnDisk.length === 0)) {
+    throw noOperationInProgress('cherry-pick');
+  }
+  const branch = await requireSymbolicHead(ctx, 'cherry-pick --skip');
+  const ourId = await resolveRef(ctx, branch);
+  const opts = await resolveResumeOpts(ctx, input);
+  await resetWorktreeAndIndex(ctx, ourId);
+  await clearCherryPickHead(ctx);
+  await clearMergeMsg(ctx);
+  const rest = (todoOnDisk ?? []).slice(source !== undefined ? 1 : 0).map((e) => e.oid);
+  if (rest.length === 0) {
+    await clearSequencer(ctx);
+    return { kind: 'picked', commits: [] };
+  }
+  const sequenceHead = (await readSequencerHead(ctx)) ?? ourId;
+  return runSequence(ctx, rest, branch, ourId, opts, { multiPick: true, sequenceHead });
+};
+
+/**
+ * Abort the cherry-pick: hard-reset the working tree, index, and branch to the
+ * pre-sequence HEAD (sequencer `head`, or the current HEAD for a lone pick), and
+ * clear all state. Refuses when nothing is in progress.
+ */
+export const cherryPickAbort = async (ctx: Context): Promise<CherryPickAbortResult> => {
+  await assertRepository(ctx);
+  await assertNotBare(ctx, 'cherry-pick --abort');
+  const source = await readCherryPickHead(ctx);
+  const seqHead = await readSequencerHead(ctx);
+  if (source === undefined && seqHead === undefined) {
+    throw noOperationInProgress('cherry-pick');
+  }
+  const branch = await requireSymbolicHead(ctx, 'cherry-pick --abort');
+  const target = seqHead ?? (await resolveRef(ctx, branch));
+  await resetWorktreeAndIndex(ctx, target);
+  await updateRef(ctx, branch, target, { reflogMessage: 'cherry-pick: aborted' });
+  await clearCherryPickHead(ctx);
+  await clearMergeMsg(ctx);
+  await clearSequencer(ctx);
+  return { head: target, branch };
 };
