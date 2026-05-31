@@ -36,12 +36,36 @@ See [`../use/commands/`](../use/commands/) and [`../use/primitives/`](../use/pri
 
 | Principle | Application |
 |---|---|
+| **Git-faithfulness (prime directive)** | Replicate canonical git's observable behaviour byte-for-byte — object SHAs, ref & reflog contents, on-disk state files, refusal conditions, message formats — unless an ADR explicitly diverges. See [Git-faithfulness](#git-faithfulness) below and [ADR-226](../adr/226-git-faithfulness-prime-directive.md). |
 | **FP-first** | Pure functions, immutable data, function composition. |
 | **Hexagonal** | Domain isolated from infrastructure via ports. |
 | **Object Calisthenics for the domain** | Branded types for domain concepts; no primitives crossing boundaries. |
 | **KISS** | Simple over clever. Profile first, optimise second. |
 | **YAGNI** | Smallest useful API. No speculative features. |
 | **Composition over reimplementation** | New commands MUST build on existing primitives. |
+
+## Git-faithfulness
+
+The prime directive ([ADR-226](../adr/226-git-faithfulness-prime-directive.md)):
+tsgit replicates canonical git's **observable behaviour byte-for-byte** — object
+SHAs, ref & reflog contents, on-disk state files (`sequencer/`, `MERGE_HEAD`,
+`CHERRY_PICK_HEAD`, …), refusal conditions, and message formats — **unless an ADR
+explicitly diverges and says why.**
+
+It is enforced mechanically, not by review opinion — a divergence fails the build:
+
+- **Cross-tool interop** (`test/integration/*-interop.test.ts`) invokes real `git`
+  and asserts byte-parity ([ADR-137](../adr/137-interop-real-git-over-snapshot.md)).
+- **Cross-adapter parity goldens** use the 40-hex commit id as the load-bearing
+  signal ([ADR-128](../adr/128-golden-commit-id-as-parity-signal.md)).
+- **The write-surface audit** forces every write surface to ship interop coverage
+  ([ADR-204](../adr/204-porcelain-commands-as-write-surfaces.md)).
+
+When in doubt, verify against real `git` (scrubbed `GIT_*`, signing off) rather than
+guessing its behaviour. A deliberate divergence is permitted only when it
+carries its own ADR recording what diverges and why
+([ADR-206](../adr/206-log-message-returns-raw-body-with-trailing-newline.md) is the
+template: a conscious, documented, interop-pinned divergence).
 
 ## Context
 

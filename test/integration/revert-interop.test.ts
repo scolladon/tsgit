@@ -31,6 +31,7 @@ import {
   type PeerPair,
   runGit,
   runGitEnv,
+  topReflogSubject,
   tryRunGit,
   writeTreeOf,
 } from './interop-helpers.js';
@@ -166,6 +167,33 @@ describe.skipIf(!GIT_AVAILABLE)('revert interop', () => {
       expect(done.kind).toBe('reverted');
       expect(hasState(dir, 'REVERT_HEAD')).toBe(false);
       await repo.dispose();
+    });
+  });
+
+  describe('Given a lone revert conflict aborted (no move)', () => {
+    it('Then tsgit and git agree: branch reflog unchanged, HEAD records `reset: moving to`', async () => {
+      // Arrange — reverting c3 alone conflicts (c4 re-touched line 1) and never
+      // moves the branch; the seed is git-built + date-pinned on both repos.
+      const { c3 } = buildRevertConflictRange(pair.peer);
+      buildRevertConflictRange(pair.ours);
+      const pre = git(pair.peer, 'rev-parse', 'refs/heads/main').trim();
+      expect(git(pair.ours, 'rev-parse', 'refs/heads/main').trim()).toBe(pre);
+      const branchTop = topReflogSubject(pair.peer, 'refs/heads/main');
+      tryRunGit(['-C', pair.peer, '-c', 'core.editor=true', 'revert', '--no-edit', c3]);
+      const repo = await openRepository({ cwd: pair.ours });
+      const stop = await repo.revert.run({ commits: [c3] });
+      expect(stop.kind).toBe('conflict');
+
+      // Act — abort on both tools; the branch stays at `pre` (no move)
+      runGit(['-C', pair.peer, 'revert', '--abort']);
+      await repo.revert.abort();
+      await repo.dispose();
+
+      // Assert — git writes no branch entry on a no-move, but logs HEAD; tsgit matches
+      expect(topReflogSubject(pair.peer, 'refs/heads/main')).toBe(branchTop);
+      expect(topReflogSubject(pair.ours, 'refs/heads/main')).toBe(branchTop);
+      expect(topReflogSubject(pair.peer, 'HEAD')).toBe(`reset: moving to ${pre}`);
+      expect(topReflogSubject(pair.ours, 'HEAD')).toBe(topReflogSubject(pair.peer, 'HEAD'));
     });
   });
 

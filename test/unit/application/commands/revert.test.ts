@@ -771,10 +771,12 @@ describe('revert skip', () => {
 describe('revert abort', () => {
   describe('Given a lone single-revert conflict', () => {
     describe('When abort runs', () => {
-      it('Then hard-resets to HEAD with a `reset: moving to` reflog and clears state', async () => {
-        // Arrange
+      it('Then HEAD records `reset: moving to`, the branch reflog is unchanged (no-move skip), and state is cleared', async () => {
+        // Arrange — a lone conflict never moves the branch, so the abort reset is a
+        // no-op on it: git records `reset: moving to <oid>` on the HEAD symref only.
         const { ctx, c2 } = await seedConflictStop();
         const head = await resolveRef(ctx, 'refs/heads/main' as RefName);
+        const branchBefore = (await readReflog(ctx, 'refs/heads/main' as RefName)).at(-1)?.message;
 
         // Act
         const sut = await revertAbort(ctx);
@@ -782,8 +784,11 @@ describe('revert abort', () => {
         // Assert
         expect(sut.head).toBe(head);
         expect(sut.branch).toBe('refs/heads/main');
-        const reflog = await readReflog(ctx, 'refs/heads/main' as RefName);
-        expect(reflog.at(-1)?.message).toBe(`reset: moving to ${head}`);
+        const headLog = await readReflog(ctx, 'HEAD' as RefName);
+        expect(headLog.at(-1)?.message).toBe(`reset: moving to ${head}`);
+        const branchLog = await readReflog(ctx, 'refs/heads/main' as RefName);
+        expect(branchLog.at(-1)?.message).toBe(branchBefore);
+        expect(branchLog.at(-1)?.message).not.toBe(`reset: moving to ${head}`);
         expect(await ctx.fs.readUtf8(work(ctx, 'f.txt'))).toBe('a\nB3\nc\n'); // markers gone
         expect(await exists(ctx, 'REVERT_HEAD')).toBe(false);
         expect(await exists(ctx, 'MERGE_MSG')).toBe(false);

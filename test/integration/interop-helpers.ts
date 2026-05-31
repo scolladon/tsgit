@@ -115,6 +115,15 @@ export const lsStage = (dir: string): string => git(dir, 'ls-files', '--stage');
  */
 export const writeTreeOf = (dir: string): string => git(dir, 'write-tree').trim();
 
+/**
+ * Newest reflog subject (`%gs`) for `ref` — reads whichever `.git/logs` the
+ * directory holds (tsgit's or canonical git's), so it doubles as a cross-tool
+ * reflog-parity probe (`'refs/heads/main'` for the branch, `'HEAD'` for the
+ * symref log-only path).
+ */
+export const topReflogSubject = (dir: string, ref: string): string =>
+  git(dir, 'log', '-g', '--format=%gs', ref).split('\n')[0] ?? '';
+
 export interface GitRunResult {
   readonly ok: boolean;
   readonly stdout: string;

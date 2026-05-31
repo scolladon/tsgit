@@ -206,6 +206,26 @@ describe('cherryPickRun — merge commits', () => {
         expect(todo.length).toBeGreaterThan(0);
       });
     });
+
+    describe('When abort runs (sequencer present, no CHERRY_PICK_HEAD)', () => {
+      it('Then it resets to the pre-sequence HEAD and clears the sequencer', async () => {
+        // Arrange — `base..feature` commits c1 onto main, then stops at the merge
+        // with the sequencer persisted and no CHERRY_PICK_HEAD (the merge never
+        // started). `base` is the pre-sequence HEAD the abort must rewind to.
+        const { ctx, base } = await seedMerge();
+        await codeOf(() => cherryPickRun(ctx, { commits: [`${base}..feature`] }));
+
+        // Act
+        const sut = await cherryPickAbort(ctx);
+
+        // Assert
+        expect(sut.head).toBe(base);
+        expect(await resolveRef(ctx, 'refs/heads/main' as RefName)).toBe(base);
+        expect(await ctx.fs.exists(work(ctx, 'f1.txt'))).toBe(false); // the committed c1 pick undone
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/sequencer`)).toBe(false);
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/CHERRY_PICK_HEAD`)).toBe(false);
+      });
+    });
   });
 
   describe('Given a merge-stopped range', () => {
@@ -1224,17 +1244,23 @@ describe('cherryPick — observable surfaces', () => {
 
   describe('Given a stopped lone pick', () => {
     describe('When abort runs', () => {
-      it('Then the branch reflog records the faithful `reset: moving to` move', async () => {
-        // Arrange
+      it('Then HEAD records `reset: moving to` and the branch reflog is unchanged (no-move skip)', async () => {
+        // Arrange — a lone conflict never moves the branch, so the abort reset is a
+        // no-op on it: git records `reset: moving to <oid>` on the HEAD symref only.
         const { ctx } = await seedConflictPick();
         const head = await resolveRef(ctx, 'refs/heads/main' as RefName);
+        const branchBefore = (await readReflog(ctx, 'refs/heads/main' as RefName)).at(-1)?.message;
 
         // Act
-        await cherryPickAbort(ctx);
+        const sut = await cherryPickAbort(ctx);
 
-        // Assert
-        const sut = await readReflog(ctx, 'refs/heads/main' as RefName);
-        expect(sut.at(-1)?.message).toBe(`reset: moving to ${head}`);
+        // Assert — the branch did not move, so it is the unchanged head
+        expect(sut.head).toBe(head);
+        const headLog = await readReflog(ctx, 'HEAD' as RefName);
+        expect(headLog.at(-1)?.message).toBe(`reset: moving to ${head}`);
+        const branchLog = await readReflog(ctx, 'refs/heads/main' as RefName);
+        expect(branchLog.at(-1)?.message).toBe(branchBefore);
+        expect(branchLog.at(-1)?.message).not.toBe(`reset: moving to ${head}`);
       });
     });
 

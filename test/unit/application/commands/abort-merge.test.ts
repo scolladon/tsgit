@@ -22,6 +22,7 @@ const author: AuthorIdentity = {
 };
 
 const MAIN = 'refs/heads/main' as RefName;
+const HEAD = 'HEAD' as RefName;
 
 interface ConflictFixture {
   readonly preMergeMain: ObjectId;
@@ -326,18 +327,23 @@ describe('abortMerge', () => {
         expect(raw.trim()).toBe(preMergeMain);
       });
 
-      it('Then the branch reflog records `merge: aborted`', async () => {
-        // Arrange
+      it('Then HEAD records `merge: aborted` and the branch reflog is left unchanged (no-move skip)', async () => {
+        // Arrange — a conflicted merge never moves HEAD, so the abort reset is a
+        // no-op on the branch: git records the entry on the HEAD symref only.
         const ctx = createMemoryContext();
         await setupConflictingMerge(ctx);
         await merge(ctx, { target: 'feature', author });
+        const branchBefore = (await readReflog(ctx, MAIN)).at(-1)?.message;
 
         // Act
         await abortMerge(ctx);
 
         // Assert
-        const sut = await readReflog(ctx, MAIN);
+        const sut = await readReflog(ctx, HEAD);
         expect(sut.at(-1)?.message).toBe('merge: aborted');
+        const branchAfter = await readReflog(ctx, MAIN);
+        expect(branchAfter.at(-1)?.message).toBe(branchBefore);
+        expect(branchAfter.at(-1)?.message).not.toBe('merge: aborted');
       });
 
       it('Then result.origHead matches the on-disk ORIG_HEAD value', async () => {

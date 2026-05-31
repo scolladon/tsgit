@@ -218,6 +218,38 @@ describe('updateRef', () => {
       });
     });
 
+    describe('Given an existing branch updated to the same id (no move)', () => {
+      describe('When updateRef is called', () => {
+        it('Then no branch reflog entry is appended', async () => {
+          // Arrange
+          const ctx = await buildSeededContext({ refs: [{ name: MAIN, id: ID_A }] });
+          // Act
+          await updateRef(ctx, MAIN, ID_A, { reflogMessage: 'reset: moving to a' });
+          // Assert
+          const sut = await readReflog(ctx, MAIN);
+          expect(sut).toEqual([]);
+        });
+      });
+    });
+
+    describe('Given HEAD targets a branch updated to the same id (no move)', () => {
+      describe('When updateRef is called', () => {
+        it('Then HEAD still records the move (symref log is unconditional)', async () => {
+          // Arrange
+          const ctx = await buildSeededContext({ refs: [{ name: MAIN, id: ID_A }] });
+          await writeSymbolicRef(ctx, HEAD, MAIN);
+          // Act
+          await updateRef(ctx, MAIN, ID_A, { reflogMessage: 'reset: moving to a' });
+          // Assert
+          const sut = await readReflog(ctx, HEAD);
+          expect(sut).toHaveLength(1);
+          expect(sut[0]?.oldId).toBe(ID_A);
+          expect(sut[0]?.newId).toBe(ID_A);
+          expect(sut[0]?.message).toBe('reset: moving to a');
+        });
+      });
+    });
+
     describe('Given HEAD symbolically points at the updated branch', () => {
       describe('When updateRef is called', () => {
         it('Then a second entry is appended to HEAD', async () => {

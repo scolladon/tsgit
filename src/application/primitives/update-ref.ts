@@ -44,7 +44,12 @@ export async function updateRef(
   const oldId = current.kind === 'direct' ? current.id : ZERO_OID;
   const content = new TextEncoder().encode(`${newId}\n`);
   await atomicWriteRef(ctx, name, refPath, content);
-  await recordRefUpdate(ctx, name, oldId, newId, options.reflogMessage);
+  // A no-op update (old === new) records no entry on the direct ref — git's ref
+  // backend skips the reflog when the value is unchanged. The coupled HEAD is the
+  // symref log-only path, which logs unconditionally (e.g. `reset: moving to`).
+  if (oldId !== newId) {
+    await recordRefUpdate(ctx, name, oldId, newId, options.reflogMessage);
+  }
   await logCoupledHead(ctx, store, name, oldId, newId, options.reflogMessage);
 }
 
