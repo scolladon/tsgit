@@ -521,16 +521,19 @@ describe('reset', () => {
         expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/HEAD`)).toBe(`${c1}\n`);
       });
 
-      it('Then HEAD records `reset: moving to <target>`', async () => {
+      it('Then HEAD records exactly one `reset: moving to <target>` entry', async () => {
         // Arrange — detached at c2, resetting to c1 is a real move.
         const { ctx, c1, c2 } = await seedTwoCommits();
         await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, `${c2}\n`);
+        const before = await readReflog(ctx, HEAD);
 
         // Act
         await reset(ctx, { mode: 'soft', target: c1 });
 
-        // Assert — the move records the faithful message on the HEAD reflog.
+        // Assert — the move records the faithful message, once (no coupled-HEAD
+        // double-log on the direct detached write).
         const sut = await readReflog(ctx, HEAD);
+        expect(sut.length).toBe(before.length + 1);
         expect(sut.at(-1)?.message).toBe(`reset: moving to ${c1}`);
       });
     });
