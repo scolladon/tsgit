@@ -166,7 +166,8 @@ export type CommandError =
       readonly prefix: string;
       readonly candidates: ReadonlyArray<ObjectId>;
     }
-  | { readonly code: 'INVALID_SEQUENCER_TODO'; readonly reason: string };
+  | { readonly code: 'INVALID_SEQUENCER_TODO'; readonly reason: string }
+  | { readonly code: 'CHERRY_PICK_MERGE_NO_MAINLINE'; readonly commit: ObjectId };
 
 const sanitizeForDisplay = (s: string): string => {
   let out = '';
@@ -467,3 +468,8 @@ export const ambiguousOidPrefix = (
 // (sanitised — a mid-write crash can leave control bytes behind).
 export const invalidSequencerTodo = (reason: string): TsgitError =>
   new TsgitError({ code: 'INVALID_SEQUENCER_TODO', reason: sanitizeForDisplay(reason) });
+
+// Picking a merge commit with no chosen mainline (`-m`). `commit` is a validated
+// 40-hex oid, embedded verbatim.
+export const cherryPickMergeNoMainline = (commit: ObjectId): TsgitError =>
+  new TsgitError({ code: 'CHERRY_PICK_MERGE_NO_MAINLINE', commit });

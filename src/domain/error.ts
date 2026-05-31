@@ -418,6 +418,8 @@ function extractDetail(data: TsgitErrorData): string {
       return `short object id ${data.prefix} is ambiguous (${data.candidates.length} candidates)`;
     case 'INVALID_SEQUENCER_TODO':
       return `invalid sequencer todo: ${data.reason}`;
+    case 'CHERRY_PICK_MERGE_NO_MAINLINE':
+      return `commit ${data.commit} is a merge but no -m option was given`;
     default: {
       const _exhaustive: never = data;
       return String(_exhaustive);

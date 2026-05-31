@@ -12,6 +12,7 @@ import {
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
 import { writeMergeHead } from '../../../../src/application/commands/internal/merge-state.js';
+import { merge } from '../../../../src/application/commands/merge.js';
 import { createCommit } from '../../../../src/application/primitives/create-commit.js';
 import { readIndex } from '../../../../src/application/primitives/read-index.js';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
@@ -136,6 +137,109 @@ const seedRange = async (): Promise<{
   await commit(ctx, { message: 'main change', author: MAIN_AUTHOR });
   return { ctx, base: base.id, c1: c1.id, feature: feature.id };
 };
+
+/** A repo where `feature` contains a merge commit, then a post-merge commit. */
+const seedMerge = async (): Promise<{
+  ctx: Context;
+  mergeId: ObjectId;
+  base: ObjectId;
+}> => {
+  const ctx = createMemoryContext();
+  await init(ctx);
+  await setUser(ctx);
+  await ctx.fs.writeUtf8(work(ctx, 'base.txt'), 'base\n');
+  await add(ctx, ['base.txt']);
+  const base = await commit(ctx, { message: 'base', author: MAIN_AUTHOR });
+  await branchCreate(ctx, { name: 'feature' });
+  await checkout(ctx, { target: 'feature' });
+  await ctx.fs.writeUtf8(work(ctx, 'f1.txt'), 'f1\n');
+  await add(ctx, ['f1.txt']);
+  await commit(ctx, { message: 'c1', author: FEAT_AUTHOR });
+  await branchCreate(ctx, { name: 'side', startPoint: base.id });
+  await checkout(ctx, { target: 'side' });
+  await ctx.fs.writeUtf8(work(ctx, 's1.txt'), 's1\n');
+  await add(ctx, ['s1.txt']);
+  await commit(ctx, { message: 's1', author: FEAT_AUTHOR });
+  await checkout(ctx, { target: 'feature' });
+  const m = await merge(ctx, { target: 'side' });
+  if (m.kind !== 'merge') throw new Error('seed: expected a merge commit');
+  await ctx.fs.writeUtf8(work(ctx, 'f2.txt'), 'f2\n');
+  await add(ctx, ['f2.txt']);
+  await commit(ctx, { message: 'c2 post-merge', author: FEAT_AUTHOR });
+  await checkout(ctx, { target: 'main' });
+  return { ctx, mergeId: m.id, base: base.id };
+};
+
+describe('cherryPickRun — merge commits', () => {
+  describe('Given a single merge commit to pick', () => {
+    describe('When run without -m', () => {
+      it('Then refuses with CHERRY_PICK_MERGE_NO_MAINLINE and persists no state', async () => {
+        // Arrange
+        const { ctx, mergeId } = await seedMerge();
+
+        // Act
+        const code = await codeOf(() => cherryPickRun(ctx, { commits: [mergeId] }));
+
+        // Assert
+        expect(code).toBe('CHERRY_PICK_MERGE_NO_MAINLINE');
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/CHERRY_PICK_HEAD`)).toBe(false);
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/sequencer`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a range containing a merge commit', () => {
+    describe('When run', () => {
+      it('Then applies the earlier picks, stops at the merge with sequencer state (no CHERRY_PICK_HEAD)', async () => {
+        // Arrange
+        const { ctx, base } = await seedMerge();
+
+        // Act
+        const code = await codeOf(() => cherryPickRun(ctx, { commits: [`${base}..feature`] }));
+
+        // Assert
+        expect(code).toBe('CHERRY_PICK_MERGE_NO_MAINLINE');
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/CHERRY_PICK_HEAD`)).toBe(false);
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/sequencer/head`)).toBe(true);
+        const todo = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/sequencer/todo`);
+        expect(todo.length).toBeGreaterThan(0);
+      });
+    });
+  });
+
+  describe('Given a merge-stopped range', () => {
+    describe('When skip drops the merge', () => {
+      it('Then it resumes and applies the post-merge pick', async () => {
+        // Arrange
+        const { ctx, base } = await seedMerge();
+        await codeOf(() => cherryPickRun(ctx, { commits: [`${base}..feature`] }));
+
+        // Act
+        const sut = await cherryPickSkip(ctx);
+
+        // Assert
+        expect(sut.kind).toBe('picked');
+        expect(await ctx.fs.readUtf8(work(ctx, 'f2.txt'))).toBe('f2\n'); // post-merge pick applied
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/sequencer`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given --no-commit and a merge commit', () => {
+    describe('When run', () => {
+      it('Then refuses with CHERRY_PICK_MERGE_NO_MAINLINE', async () => {
+        // Arrange
+        const { ctx, mergeId } = await seedMerge();
+
+        // Act
+        const code = await codeOf(() => cherryPickRun(ctx, { commits: [mergeId], noCommit: true }));
+
+        // Assert
+        expect(code).toBe('CHERRY_PICK_MERGE_NO_MAINLINE');
+      });
+    });
+  });
+});
 
 describe('cherryPickRun — ranges and the sequencer', () => {
   describe('Given a clean A..B range', () => {

@@ -7,6 +7,7 @@
  * dedicated `CHERRY_PICK_HEAD` state (distinct from the merge machine).
  */
 import {
+  cherryPickMergeNoMainline,
   invalidOption,
   mergeHasConflicts,
   noInitialCommit,
@@ -117,6 +118,9 @@ const treeOf = async (ctx: Context, commitId: ObjectId): Promise<ObjectId> =>
 
 const subjectOf = (message: string): string => message.split('\n')[0] as string;
 
+/** A merge commit (≥2 parents) cannot be picked without a chosen mainline (`-m`). */
+const isMergeCommit = (cData: CommitData): boolean => cData.parents.length >= 2;
+
 const toConflictList = (
   conflicts: ReadonlyArray<MergeConflict>,
 ): ReadonlyArray<CherryPickConflict> => conflicts.map((c) => ({ path: c.path, type: c.type }));
@@ -220,6 +224,13 @@ const runSequence = async (
   for (let i = 0; i < todo.length; i += 1) {
     const source = todo[i] as ObjectId;
     const cData = await readCommitData(ctx, source);
+    if (isMergeCommit(cData)) {
+      // Partial-apply: earlier picks are already committed. Stop AT the merge —
+      // the sequencer keeps it as todo[0] (no CHERRY_PICK_HEAD, since it never
+      // started). The user resolves with `skip` or `abort`.
+      if (seq.multiPick) await writeSequencerStop(ctx, seq, todo.slice(i), ourId, opts);
+      throw cherryPickMergeNoMainline(source);
+    }
     const outcome = await applyOnePick(ctx, source, cData, branch, ourId, opts);
     if (outcome.kind === 'committed') {
       applied.push({ source, created: outcome.id });
@@ -382,6 +393,7 @@ const runNoCommit = async (
     for (let i = 0; i < todo.length; i += 1) {
       const source = todo[i] as ObjectId;
       const cData = await readCommitData(ctx, source);
+      if (isMergeCommit(cData)) throw cherryPickMergeNoMainline(source);
       const parentId = cData.parents[0];
       const baseTree = parentId !== undefined ? await treeOf(ctx, parentId) : undefined;
       const oursTree = await synthesizeTreeFromIndex(ctx, currentIndex.entries);
@@ -618,7 +630,9 @@ export const cherryPickSkip = async (
   await resetWorktreeAndIndex(ctx, ourId);
   await clearCherryPickHead(ctx);
   await clearMergeMsg(ctx);
-  const rest = (todoOnDisk ?? []).slice(source !== undefined ? 1 : 0).map((e) => e.oid);
+  // Skip always drops the current instruction (todo[0]) — whether it stopped as a
+  // conflict (CHERRY_PICK_HEAD set) or a merge (no head). Resume the rest.
+  const rest = (todoOnDisk ?? []).slice(1).map((e) => e.oid);
   if (rest.length === 0) {
     await clearSequencer(ctx);
     return { kind: 'picked', commits: [] };
