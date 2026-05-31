@@ -7,6 +7,7 @@ import {
 } from '../../../../src/domain/sequencer/index.js';
 
 const pick = (oid: string, subject: string): TodoEntry => ({ command: 'pick', oid, subject });
+const revert = (oid: string, subject: string): TodoEntry => ({ command: 'revert', oid, subject });
 
 describe('sequencer todo', () => {
   describe('Given serializeTodo', () => {
@@ -45,6 +46,32 @@ describe('sequencer todo', () => {
         expect(sut).toBe(`pick ${full} c1\n`);
       });
     });
+
+    describe('When given revert entries', () => {
+      it('Then emits one `revert <oid> <subject>` line per entry', () => {
+        // Arrange
+        const entries = [revert('9dac856', 'Revert "A"'), revert('335bfa5', 'Revert "B"')];
+
+        // Act
+        const sut = serializeTodo(entries);
+
+        // Assert
+        expect(sut).toBe('revert 9dac856 Revert "A"\nrevert 335bfa5 Revert "B"\n');
+      });
+    });
+
+    describe('When given a mix of pick and revert entries', () => {
+      it('Then emits each entry with its own command keyword', () => {
+        // Arrange
+        const entries = [pick('aaaaaaa', 'p'), revert('bbbbbbb', 'r')];
+
+        // Act
+        const sut = serializeTodo(entries);
+
+        // Assert
+        expect(sut).toBe('pick aaaaaaa p\nrevert bbbbbbb r\n');
+      });
+    });
   });
 
   describe('Given parseTodo', () => {
@@ -71,6 +98,32 @@ describe('sequencer todo', () => {
 
         // Assert
         expect(sut).toEqual([pick('aaaaaaa', 'one'), pick('bbbbbbb', 'two')]);
+      });
+    });
+
+    describe('When given revert instruction lines', () => {
+      it('Then parses the revert command keyword', () => {
+        // Arrange
+        const text = 'revert f4cb28d Revert "c1"\nrevert 0a4f2a3 Revert "c2"\n';
+
+        // Act
+        const sut = parseTodo(text);
+
+        // Assert
+        expect(sut).toEqual([revert('f4cb28d', 'Revert "c1"'), revert('0a4f2a3', 'Revert "c2"')]);
+      });
+    });
+
+    describe('When given a mix of pick and revert lines', () => {
+      it('Then preserves each line’s command', () => {
+        // Arrange
+        const text = 'pick aaaaaaa p\nrevert bbbbbbb r\n';
+
+        // Act
+        const sut = parseTodo(text);
+
+        // Assert
+        expect(sut).toEqual([pick('aaaaaaa', 'p'), revert('bbbbbbb', 'r')]);
       });
     });
 
