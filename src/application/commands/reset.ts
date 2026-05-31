@@ -71,17 +71,15 @@ export const reset = async (ctx: Context, opts: ResetOptions): Promise<ResetResu
   }
 
   const head = await readHeadRaw(ctx);
-  const reflogMessage = `reset: moving to ${opts.target}`;
-  if (head.kind === 'symbolic') {
-    await updateRef(ctx, head.target, id, { reflogMessage });
-    return { mode: opts.mode, id, branch: head.target };
-  }
-  // Route the detached-HEAD write through the canonical ref-writer so it inherits
-  // the no-move reflog skip: a detached HEAD is a direct ref under git's
-  // needs-commit semantics, so `reset --hard HEAD` (oid unchanged) records no
-  // reflog entry, while a real move records `reset: moving to <target>`.
-  await updateRef(ctx, 'HEAD' as RefName, id, { reflogMessage });
-  return { mode: opts.mode, id, branch: undefined };
+  // A symbolic HEAD updates its branch (the HEAD coupling logs the symref-split);
+  // a detached HEAD writes HEAD directly. Both route through the canonical
+  // ref-writer, which skips the reflog on a no-move — git's needs-commit semantics,
+  // so `reset --hard HEAD` records no entry while a real move records the message.
+  const branch = head.kind === 'symbolic' ? head.target : undefined;
+  await updateRef(ctx, branch ?? ('HEAD' as RefName), id, {
+    reflogMessage: `reset: moving to ${opts.target}`,
+  });
+  return { mode: opts.mode, id, branch };
 };
 
 const rebuildIndexFromCommit = async (ctx: Context, commitId: ObjectId): Promise<void> => {
