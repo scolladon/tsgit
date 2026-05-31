@@ -64,7 +64,7 @@ import {
 import { revParse } from './rev-parse.js';
 
 export interface CherryPickRunInput {
-  /** Revisions to pick, in argument order (single commit-ish each; ranges in a later phase). */
+  /** Revisions to pick, in argument order — a commit-ish or an `A..B` range each. */
   readonly commits: ReadonlyArray<string>;
   /** -x: append `(cherry picked from commit <oid>)` to each commit message. */
   readonly recordOrigin?: boolean;
