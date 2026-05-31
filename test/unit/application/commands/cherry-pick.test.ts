@@ -1224,17 +1224,22 @@ describe('cherryPick — observable surfaces', () => {
 
   describe('Given a stopped lone pick', () => {
     describe('When abort runs', () => {
-      it('Then the branch reflog records the faithful `reset: moving to` move', async () => {
-        // Arrange
+      it('Then HEAD records `reset: moving to` and the branch reflog is unchanged (no-move skip)', async () => {
+        // Arrange — a lone conflict never moves the branch, so the abort reset is a
+        // no-op on it: git records `reset: moving to <oid>` on the HEAD symref only.
         const { ctx } = await seedConflictPick();
         const head = await resolveRef(ctx, 'refs/heads/main' as RefName);
+        const branchBefore = (await readReflog(ctx, 'refs/heads/main' as RefName)).at(-1)?.message;
 
         // Act
         await cherryPickAbort(ctx);
 
         // Assert
-        const sut = await readReflog(ctx, 'refs/heads/main' as RefName);
-        expect(sut.at(-1)?.message).toBe(`reset: moving to ${head}`);
+        const headLog = await readReflog(ctx, 'HEAD' as RefName);
+        expect(headLog.at(-1)?.message).toBe(`reset: moving to ${head}`);
+        const branchLog = await readReflog(ctx, 'refs/heads/main' as RefName);
+        expect(branchLog.at(-1)?.message).toBe(branchBefore);
+        expect(branchLog.at(-1)?.message).not.toBe(`reset: moving to ${head}`);
       });
     });
 
