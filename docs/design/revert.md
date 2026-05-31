@@ -88,7 +88,7 @@ i.e. `revertMessage(C)` (§4) + the shared `conflictMergeMsg` block (one
 `"#\t<path>\n"` per conflicted path, literal TAB) — the **same**
 `conflictMergeMsg` helper cherry-pick uses (`cherry-pick-state.ts`).
 
-### 2.4 Empty-revert semantics (the key divergence — ADR)
+### 2.4 Empty-revert semantics (the key divergence — ADR-223)
 
 `git revert` has **no `--allow-empty`**. A revert whose reverse-merge yields the
 current tree unchanged (`mergedTree === oursTree`) is **empty**. Verified git
@@ -122,7 +122,7 @@ Two consequences vs cherry-pick: (a) the resolved-revert reflog is **plain
 `commit:`** (cherry-pick uses `commit (cherry-pick):`), so `commit.ts` needs **no
 reflog change** for the revert path — the default `commit:` branch is already
 correct; (b) `abort` writes git's `reset: moving to <oid>` (cherry-pick's tsgit
-code emits a non-faithful `cherry-pick: aborted`; revert is faithful — see ADR).
+code emits a non-faithful `cherry-pick: aborted`; revert is faithful — see ADR-224).
 
 ## 3. API surface — nested namespace `repo.revert.*`
 
@@ -270,7 +270,7 @@ The deltas:
   `REVERT_HEAD` + `MERGE_MSG`, drop todo[0], `runSequence(rest, onEmpty:'stop')`.
 - **`abort`** — identical reset to cherry-pick (`hardResetWorktreeToCommit` to
   the sequencer `head` / current HEAD), but the reflog is git-faithful
-  **`reset: moving to <full-oid>`** (ADR), then clear all state.
+  **`reset: moving to <full-oid>`** (ADR-224), then clear all state.
 - **`runNoCommit`** — `-n`: accumulate reverse merges into the index across the
   list, no commit, no state, even on conflict; merge / would-overwrite throw as
   in cherry-pick.
@@ -419,9 +419,9 @@ ternary creep).
 1. **Namespace `repo.revert.{run,continue,skip,abort}`**, run verb `run`
    (ADR-193 / 210 / 217 lineage) — pre-decided, no new ADR.
 2. **Empty-revert semantics** — git-faithful markerless stop + drop-on-continue,
-   no `--allow-empty` flag (§2.4). *Load-bearing → ADR.*
-3. **`abort` reflog** — git-faithful `reset: moving to <oid>` vs tsgit-cherry-
-   pick-consistent `revert: aborted` (§2.5). *→ ADR.*
+   no `--allow-empty` flag (§2.4). *Load-bearing → ADR-223.*
+3. **`abort` reflog** — git-faithful `reset: moving to <oid>` over tsgit-cherry-
+   pick-consistent `revert: aborted` (§2.5). *→ ADR-224.*
 4. **Sequencer todo grammar generalised** to `pick | revert` (§6) — the
    bidirectional cross-tool sequencer requires the real keyword; behaviour-
    preserving for cherry-pick. Mechanical, no user judgment.
