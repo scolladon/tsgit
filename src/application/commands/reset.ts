@@ -19,7 +19,6 @@ import { materializeTree } from '../primitives/materialize-tree.js';
 import { readIndex } from '../primitives/read-index.js';
 import { readObject } from '../primitives/read-object.js';
 import { loadSparseMatcher } from '../primitives/read-sparse-checkout.js';
-import { recordRefUpdate } from '../primitives/record-ref-update.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
 import { updateRef } from '../primitives/update-ref.js';
 import { acquireIndexLock } from './internal/index-update.js';
@@ -77,8 +76,11 @@ export const reset = async (ctx: Context, opts: ResetOptions): Promise<ResetResu
     await updateRef(ctx, head.target, id, { reflogMessage });
     return { mode: opts.mode, id, branch: head.target };
   }
-  await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, `${id}\n`);
-  await recordRefUpdate(ctx, 'HEAD' as RefName, head.id, id, reflogMessage);
+  // Route the detached-HEAD write through the canonical ref-writer so it inherits
+  // the no-move reflog skip: a detached HEAD is a direct ref under git's
+  // needs-commit semantics, so `reset --hard HEAD` (oid unchanged) records no
+  // reflog entry, while a real move records `reset: moving to <target>`.
+  await updateRef(ctx, 'HEAD' as RefName, id, { reflogMessage });
   return { mode: opts.mode, id, branch: undefined };
 };
 

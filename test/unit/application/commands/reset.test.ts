@@ -6,7 +6,10 @@ import { init } from '../../../../src/application/commands/init.js';
 import { reset } from '../../../../src/application/commands/reset.js';
 import { rm } from '../../../../src/application/commands/rm.js';
 import { readIndex } from '../../../../src/application/primitives/read-index.js';
-import type { AuthorIdentity, ObjectId } from '../../../../src/domain/objects/index.js';
+import { readReflog } from '../../../../src/application/primitives/reflog-store.js';
+import type { AuthorIdentity, ObjectId, RefName } from '../../../../src/domain/objects/index.js';
+
+const HEAD = 'HEAD' as RefName;
 
 const author: AuthorIdentity = {
   name: 'Ada',
@@ -501,7 +504,7 @@ describe('reset', () => {
   });
 
   describe('Given a detached HEAD', () => {
-    describe('When reset', () => {
+    describe('When reset moves the detached HEAD', () => {
       it('Then the HEAD file is rewritten to "<id>\\n" and branch is undefined', async () => {
         // Arrange — detach HEAD onto c2 by overwriting the HEAD file with a raw oid.
         const { ctx, c1, c2 } = await seedTwoCommits();
@@ -510,13 +513,43 @@ describe('reset', () => {
         // Act
         const sut = await reset(ctx, { mode: 'soft', target: c1 });
 
-        // Assert — the detached-HEAD branch writes `${gitDir}/HEAD` with `${id}\n`.
-        // Killing L64 BlockStatement: a skipped write would leave HEAD at c2.
-        // Killing L65 path literal: an empty path would leave HEAD at c2.
-        // Killing L65 content literal: empty content would make headRaw === ''.
+        // Assert — the detached path routes through `updateRef('HEAD', …)`, which
+        // writes `${gitDir}/HEAD` with `${id}\n`. An emptied `'HEAD'` ref-name or a
+        // skipped write would leave HEAD at c2.
         expect(sut.branch).toBeUndefined();
         expect(sut.id).toBe(c1);
         expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/HEAD`)).toBe(`${c1}\n`);
+      });
+
+      it('Then HEAD records `reset: moving to <target>`', async () => {
+        // Arrange — detached at c2, resetting to c1 is a real move.
+        const { ctx, c1, c2 } = await seedTwoCommits();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, `${c2}\n`);
+
+        // Act
+        await reset(ctx, { mode: 'soft', target: c1 });
+
+        // Assert — the move records the faithful message on the HEAD reflog.
+        const sut = await readReflog(ctx, HEAD);
+        expect(sut.at(-1)?.message).toBe(`reset: moving to ${c1}`);
+      });
+    });
+
+    describe('When reset is a no-move (target equals the detached oid)', () => {
+      it('Then no HEAD reflog entry is appended', async () => {
+        // Arrange — detached at c2, capture the HEAD reflog tip before the reset.
+        const { ctx, c2 } = await seedTwoCommits();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, `${c2}\n`);
+        const before = await readReflog(ctx, HEAD);
+
+        // Act — reset to the same oid: git's needs-commit semantics write nothing.
+        await reset(ctx, { mode: 'soft', target: c2 });
+
+        // Assert — neither length nor tip changed; no spurious `reset: moving to`.
+        const sut = await readReflog(ctx, HEAD);
+        expect(sut.length).toBe(before.length);
+        expect(sut.at(-1)?.message).toBe(before.at(-1)?.message);
+        expect(sut.at(-1)?.message).not.toBe(`reset: moving to ${c2}`);
       });
     });
   });
