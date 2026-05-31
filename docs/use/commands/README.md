@@ -1,6 +1,6 @@
 # Commands — Tier-1 reference
 
-Every method bound on a `Repository` handle. 25 entries, alphabetical.
+Every method bound on a `Repository` handle. 26 entries, alphabetical.
 
 | Command | Summary |
 |---|---|
@@ -9,6 +9,7 @@ Every method bound on a `Repository` handle. 25 entries, alphabetical.
 | [`branch`](branch.md) | List, create, or delete branches. |
 | [`catFile`](cat-file.md) | Batch read of git objects in strict input order. |
 | [`checkout`](checkout.md) | Switch branches or restore working-tree files. |
+| [`cherryPick`](cherry-pick.md) | Apply commits onto HEAD as new single-parent commits (single + `A..B` range), preserving author/message, with a git-faithful resumable sequencer. Nested-namespace surface (`repo.cherryPick.run/continue/skip/abort`). |
 | [`clone`](clone.md) | Clone a remote repository over smart-HTTP (full / shallow / partial). |
 | [`commit`](commit.md) | Create a commit from the current index. |
 | [`config`](config.md) | Read and write git config across all four scopes (`system`/`global`/`local`/`worktree`). Nested-namespace surface (`repo.config.get/set/...`). |

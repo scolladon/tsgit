@@ -21,6 +21,18 @@ export {
   catFile,
 } from './cat-file.js';
 export { type CheckoutOptions, type CheckoutResult, checkout } from './checkout.js';
+export {
+  type CherryPickAbortResult,
+  type CherryPickConflict,
+  type CherryPickContinueInput,
+  type CherryPickedCommit,
+  type CherryPickResult,
+  type CherryPickRunInput,
+  cherryPickAbort,
+  cherryPickContinue,
+  cherryPickRun,
+  cherryPickSkip,
+} from './cherry-pick.js';
 export { type CloneOptions, type CloneResult, clone } from './clone.js';
 export { type CommitOptions, type CommitResult, commit } from './commit.js';
 export {
@@ -74,6 +86,10 @@ export {
 } from './fetch-missing.js';
 export { type InitOptions, type InitResult, init } from './init.js';
 export { type BranchNamespace, bindBranchNamespace } from './internal/branch-namespace.js';
+export {
+  bindCherryPickNamespace,
+  type CherryPickNamespace,
+} from './internal/cherry-pick-namespace.js';
 export { bindConfigNamespace, type ConfigNamespace } from './internal/config-namespace.js';
 export { bindRemoteNamespace, type RemoteNamespace } from './internal/remote-namespace.js';
 export {

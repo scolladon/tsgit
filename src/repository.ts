@@ -151,6 +151,8 @@ export interface Repository {
   readonly branch: commands.BranchNamespace;
   readonly catFile: BindCtx<typeof commands.catFile>;
   readonly checkout: BindCtx<typeof commands.checkout>;
+  /** Nested `repo.cherryPick.{run,continue,skip,abort}` namespace. */
+  readonly cherryPick: commands.CherryPickNamespace;
   readonly clone: BindCtx<typeof commands.clone>;
   readonly commit: BindCtx<typeof commands.commit>;
   /** Nested `repo.config.{get,set,unset,unsetAll,getAll,getRegexp,list,renameSection,removeSection}` (ADR-181). */
@@ -388,6 +390,7 @@ export const openRepository = async (
       guard();
       return commands.catFile(ctx, opts);
     }) as Repository['catFile'],
+    cherryPick: commands.bindCherryPickNamespace(ctx, guard),
     clone: ((cloneOpts) => {
       guard();
       return commands.clone(ctx, cloneOpts);

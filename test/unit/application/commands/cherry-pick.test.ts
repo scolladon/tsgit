@@ -11,6 +11,7 @@ import {
 } from '../../../../src/application/commands/cherry-pick.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
+import { bindCherryPickNamespace } from '../../../../src/application/commands/internal/cherry-pick-namespace.js';
 import { writeMergeHead } from '../../../../src/application/commands/internal/merge-state.js';
 import { merge } from '../../../../src/application/commands/merge.js';
 import { createCommit } from '../../../../src/application/primitives/create-commit.js';
@@ -375,6 +376,32 @@ describe('cherryPickRun — ranges and the sequencer', () => {
         // Assert
         expect(sut.kind).toBe('picked');
         expect(await ctx.fs.readUtf8(work(ctx, 'g.txt'))).toBe('g\n');
+      });
+    });
+  });
+});
+
+describe('bindCherryPickNamespace', () => {
+  describe('Given the bound namespace', () => {
+    describe('When each verb is called', () => {
+      it('Then it runs the guard and forwards to the command', async () => {
+        // Arrange
+        const { ctx, feature } = await seedFeature();
+        let guarded = 0;
+        const ns = bindCherryPickNamespace(ctx, () => {
+          guarded += 1;
+        });
+
+        // Act
+        const run = await ns.run({ commits: [feature] });
+
+        // Assert — run forwarded; the other verbs forward + throw (nothing in progress)
+        expect(run.kind).toBe('picked');
+        await expect(ns.continue()).rejects.toThrow();
+        await expect(ns.skip()).rejects.toThrow();
+        await expect(ns.abort()).rejects.toThrow();
+        expect(guarded).toBe(4);
+        expect(Object.isFrozen(ns)).toBe(true);
       });
     });
   });
