@@ -67,6 +67,9 @@ import { revParse } from './rev-parse.js';
 export interface RevertRunInput {
   /** Revisions to revert, in argument order — a commit-ish each. */
   readonly commits: ReadonlyArray<string>;
+  /** -n / --no-commit: apply each reverse change to the index + working tree
+   *  only; never commit, never persist REVERT_HEAD / sequencer state. */
+  readonly noCommit?: boolean;
 }
 
 export interface RevertedCommit {
@@ -81,6 +84,7 @@ export interface RevertConflict {
 
 export type RevertResult =
   | { readonly kind: 'reverted'; readonly commits: ReadonlyArray<RevertedCommit> }
+  | { readonly kind: 'no-commit'; readonly sources: ReadonlyArray<ObjectId> }
   | {
       readonly kind: 'conflict';
       readonly commit: ObjectId;
@@ -373,6 +377,48 @@ const expandRevisions = async (
   return todo;
 };
 
+/**
+ * `-n` / `--no-commit`: apply each reverse change to the index + working tree,
+ * accumulating across the list, without creating any commit or persisting resume
+ * state — even on conflict (verified against git). There is nothing to continue.
+ */
+const runNoCommit = async (ctx: Context, todo: ReadonlyArray<ObjectId>): Promise<RevertResult> => {
+  const lock = await acquireIndexLock(ctx);
+  try {
+    let currentIndex = await readIndex(ctx);
+    for (let i = 0; i < todo.length; i += 1) {
+      const source = todo[i] as ObjectId;
+      const cData = await readCommitData(ctx, source);
+      if (isMergeCommit(cData)) throw revertMergeNoMainline(source);
+      const parentId = cData.parents[0];
+      const theirsTree =
+        parentId !== undefined ? await treeOf(ctx, parentId) : await emptyTree(ctx);
+      const oursTree = await synthesizeTreeFromIndex(ctx, currentIndex.entries);
+      const res = await applyMergeToWorktree(ctx, {
+        baseTree: cData.tree,
+        oursTree,
+        theirsTree,
+        currentIndex,
+      });
+      if (res.kind === 'would-overwrite') throw workingTreeDirty(res.paths);
+      if (res.kind === 'conflict') {
+        await lock.commit(res.indexEntries);
+        return {
+          kind: 'conflict',
+          commit: source,
+          conflicts: toConflictList(res.conflicts),
+          remaining: todo.length - (i + 1),
+        };
+      }
+      currentIndex = { ...currentIndex, entries: res.result.newIndexEntries };
+    }
+    await lock.commit(currentIndex.entries);
+    return { kind: 'no-commit', sources: todo };
+  } finally {
+    await lock.release();
+  }
+};
+
 export const revertRun = async (ctx: Context, input: RevertRunInput): Promise<RevertResult> => {
   await assertRepository(ctx);
   await assertNotBare(ctx, 'revert');
@@ -384,6 +430,7 @@ export const revertRun = async (ctx: Context, input: RevertRunInput): Promise<Re
   const ourId = await resolveHeadCommit(ctx, head.target);
   const todo = await expandRevisions(ctx, input.commits);
   await assertCleanWorkTree(ctx, await treeOf(ctx, ourId));
+  if (input.noCommit === true) return runNoCommit(ctx, todo);
   const seq: SequenceState = { multiPick: todo.length > 1, sequenceHead: ourId, onEmpty: 'stop' };
   return runSequence(ctx, todo, head.target, ourId, seq);
 };

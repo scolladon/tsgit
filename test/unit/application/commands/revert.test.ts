@@ -854,3 +854,109 @@ describe('revert abort', () => {
     });
   });
 });
+
+describe('revert no-commit (-n)', () => {
+  describe('Given multiple commits reverted with --no-commit', () => {
+    describe('When run', () => {
+      it('Then accumulates the reverse changes in the index/worktree without committing', async () => {
+        // Arrange
+        const { ctx, c2 } = await seedFourFiles();
+        const headBefore = await resolveRef(ctx, 'refs/heads/main' as RefName);
+
+        // Act — revert c3 and c4 (range c2..HEAD), no commit.
+        const sut = await revertRun(ctx, { commits: [`${c2}..HEAD`], noCommit: true });
+
+        // Assert
+        expect(sut.kind).toBe('no-commit');
+        if (sut.kind !== 'no-commit') throw new Error('expected no-commit');
+        expect(sut.sources).toHaveLength(2);
+        expect(await ctx.fs.exists(work(ctx, 'f3.txt'))).toBe(false);
+        expect(await ctx.fs.exists(work(ctx, 'f4.txt'))).toBe(false);
+        expect(await ctx.fs.exists(work(ctx, 'f2.txt'))).toBe(true);
+        // HEAD is unmoved and no new commit was created.
+        expect(await resolveRef(ctx, 'refs/heads/main' as RefName)).toBe(headBefore);
+        expect(await exists(ctx, 'REVERT_HEAD')).toBe(false);
+        expect(await exists(ctx, 'sequencer')).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a conflicting revert with --no-commit', () => {
+    describe('When run', () => {
+      it('Then returns a conflict and persists no resume state', async () => {
+        // Arrange — c3 makes reverting c2 conflict.
+        const { ctx, c2 } = await seedLinear();
+        await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'a\nB3\nc\n');
+        await add(ctx, ['f.txt']);
+        await commit(ctx, { message: 'c3 top', author: MAIN_AUTHOR });
+
+        // Act
+        const sut = await revertRun(ctx, { commits: [c2], noCommit: true });
+
+        // Assert
+        expect(sut.kind).toBe('conflict');
+        expect(await exists(ctx, 'REVERT_HEAD')).toBe(false);
+        expect(await exists(ctx, 'MERGE_MSG')).toBe(false);
+        expect(await exists(ctx, 'sequencer')).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a merge commit reverted with --no-commit', () => {
+    describe('When run', () => {
+      it('Then refuses with REVERT_MERGE_NO_MAINLINE', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await setUser(ctx);
+        await ctx.fs.writeUtf8(work(ctx, 'base.txt'), 'a\n');
+        await add(ctx, ['base.txt']);
+        const base = await commit(ctx, { message: 'c1 base', author: MAIN_AUTHOR });
+        await branchCreate(ctx, { name: 'feature' });
+        await checkout(ctx, { target: 'feature' });
+        await ctx.fs.writeUtf8(work(ctx, 'feat.txt'), 'f\n');
+        await add(ctx, ['feat.txt']);
+        await commit(ctx, { message: 'feat commit', author: MAIN_AUTHOR });
+        await branchCreate(ctx, { name: 'side', startPoint: base.id });
+        await checkout(ctx, { target: 'side' });
+        await ctx.fs.writeUtf8(work(ctx, 'side.txt'), 's\n');
+        await add(ctx, ['side.txt']);
+        await commit(ctx, { message: 'side commit', author: MAIN_AUTHOR });
+        await checkout(ctx, { target: 'feature' });
+        const m = await merge(ctx, { target: 'side' });
+        if (m.kind !== 'merge') throw new Error('seed: expected a merge commit');
+        await checkout(ctx, { target: 'main' });
+
+        // Act
+        const code = await codeOf(() => revertRun(ctx, { commits: [m.id], noCommit: true }));
+
+        // Assert
+        expect(code).toBe('REVERT_MERGE_NO_MAINLINE');
+      });
+    });
+  });
+
+  describe('Given an untracked file the --no-commit revert would re-create', () => {
+    describe('When run', () => {
+      it('Then refuses with WORKING_TREE_DIRTY', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await setUser(ctx);
+        await ctx.fs.writeUtf8(work(ctx, 'gone.txt'), 'v1\n');
+        await ctx.fs.writeUtf8(work(ctx, 'anchor.txt'), 'x\n');
+        await add(ctx, ['gone.txt', 'anchor.txt']);
+        await commit(ctx, { message: 'c1 add gone', author: MAIN_AUTHOR });
+        await rm(ctx, ['gone.txt']);
+        const c2 = await commit(ctx, { message: 'c2 delete gone', author: MAIN_AUTHOR });
+        await ctx.fs.writeUtf8(work(ctx, 'gone.txt'), 'untracked junk\n');
+
+        // Act
+        const code = await codeOf(() => revertRun(ctx, { commits: [c2.id], noCommit: true }));
+
+        // Assert
+        expect(code).toBe('WORKING_TREE_DIRTY');
+      });
+    });
+  });
+});
