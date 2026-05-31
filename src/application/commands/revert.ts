@@ -304,11 +304,10 @@ const runSequence = async (
   for (let i = 0; i < todo.length; i += 1) {
     const source = todo[i] as ObjectId;
     const cData = await readCommitData(ctx, source);
-    const stop: StopContext = { seq, source, cData, remaining: todo.slice(i), currentHead: ourId };
     if (isMergeCommit(cData)) {
       // Partial-apply: earlier reverts are committed. Stop AT the merge, keeping
       // it as todo[0] (no REVERT_HEAD — it never started).
-      if (seq.multiPick) await writeSequencerStop(ctx, seq, stop.remaining, ourId);
+      if (seq.multiPick) await writeSequencerStop(ctx, seq, todo.slice(i), ourId);
       throw revertMergeNoMainline(source);
     }
     const outcome = await applyOneRevert(ctx, source, cData, branch, ourId);
@@ -320,7 +319,13 @@ const runSequence = async (
     // A `continue` that already acknowledged the leading empty drops it and
     // proceeds; a later empty (i > 0) still stops on its own.
     if (outcome.kind === 'empty' && seq.onEmpty === 'drop' && i === 0) continue;
-    return stopRun(ctx, outcome, stop);
+    return stopRun(ctx, outcome, {
+      seq,
+      source,
+      cData,
+      remaining: todo.slice(i),
+      currentHead: ourId,
+    });
   }
   await clearSequencer(ctx);
   return { kind: 'reverted', commits: applied };
