@@ -21,11 +21,10 @@ import { unsupportedOperation } from '../../domain/index.js';
 import type { ConflictType, MergeConflict } from '../../domain/merge/index.js';
 import type { CommitData } from '../../domain/objects/commit.js';
 import { unexpectedObjectType } from '../../domain/objects/error.js';
-import type { AuthorIdentity, FilePath, ObjectId, RefName } from '../../domain/objects/index.js';
+import type { FilePath, ObjectId, RefName } from '../../domain/objects/index.js';
 import type { TodoEntry } from '../../domain/sequencer/index.js';
 import type { Context } from '../../ports/context.js';
 import { applyMergeToWorktree } from '../primitives/apply-merge-to-worktree.js';
-import { readConfig } from '../primitives/config-read.js';
 import { createCommit } from '../primitives/create-commit.js';
 import {
   assertNoPendingOperation,
@@ -43,7 +42,8 @@ import { writeTree } from '../primitives/write-tree.js';
 import { conflictMergeMsg } from './internal/cherry-pick-state.js';
 import { assertCleanWorkTree } from './internal/clean-work-tree.js';
 import { resolveCommitIsh } from './internal/commit-ish.js';
-import { resolveCommitter, sanitizeMessage, stripComments } from './internal/commit-message.js';
+import { sanitizeMessage, stripComments } from './internal/commit-message.js';
+import { resolveCurrentIdentity } from './internal/current-identity.js';
 import { acquireIndexLock } from './internal/index-update.js';
 import { clearMergeMsg, readMergeMsg, writeMergeMsg } from './internal/merge-state.js';
 import { hardResetWorktreeToCommit } from './internal/reset-worktree.js';
@@ -123,22 +123,6 @@ const resolveHeadCommit = async (ctx: Context, branch: RefName): Promise<ObjectI
     if (err instanceof TsgitError && err.data.code === 'REF_NOT_FOUND') throw noInitialCommit();
     throw err;
   }
-};
-
-/** The new revert commit's author AND committer is the current identity (config `user.*`, now). */
-const resolveCurrentIdentity = async (ctx: Context): Promise<AuthorIdentity> => {
-  const config = await readConfig(ctx);
-  const user = config.user;
-  const configUser =
-    user !== undefined
-      ? {
-          name: user.name,
-          email: user.email,
-          timestamp: Math.floor(Date.now() / 1000),
-          timezoneOffset: '+0000',
-        }
-      : undefined;
-  return resolveCommitter(configUser !== undefined ? { configUser } : {});
 };
 
 /** The empty tree (`theirs` of a root-commit revert): materialised so it can be read. */
