@@ -107,6 +107,173 @@ const seedConflictPick = async (): Promise<{ ctx: Context; feature: ObjectId }> 
   return { ctx, feature: feature.id };
 };
 
+/** main: base; feature adds c1 (conflicts) then c2 (g.txt); main diverges. */
+const seedRange = async (): Promise<{
+  ctx: Context;
+  base: ObjectId;
+  c1: ObjectId;
+  feature: ObjectId;
+}> => {
+  const ctx = createMemoryContext();
+  await init(ctx);
+  await setUser(ctx);
+  await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'l1\nl2\n');
+  await add(ctx, ['f.txt']);
+  const base = await commit(ctx, { message: 'base', author: MAIN_AUTHOR });
+  await branchCreate(ctx, { name: 'feature' });
+  await checkout(ctx, { target: 'feature' });
+  await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'l1\nFEAT\n');
+  await add(ctx, ['f.txt']);
+  const c1 = await commit(ctx, { message: 'c1 change', author: FEAT_AUTHOR });
+  await ctx.fs.writeUtf8(work(ctx, 'g.txt'), 'g\n');
+  await add(ctx, ['g.txt']);
+  const feature = await commit(ctx, { message: 'c2 add g', author: FEAT_AUTHOR });
+  await checkout(ctx, { target: 'main' });
+  await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'l1\nMAIN\n');
+  await add(ctx, ['f.txt']);
+  await commit(ctx, { message: 'main change', author: MAIN_AUTHOR });
+  return { ctx, base: base.id, c1: c1.id, feature: feature.id };
+};
+
+describe('cherryPickRun — ranges and the sequencer', () => {
+  describe('Given a clean A..B range', () => {
+    describe('When run', () => {
+      it('Then expands oldest-first, applies each, and leaves no sequencer dir', async () => {
+        // Arrange — feature: c1 (f1), c2 (f2), c3 (f3); main untouched by those files
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await setUser(ctx);
+        await ctx.fs.writeUtf8(work(ctx, 'base.txt'), 'base\n');
+        await add(ctx, ['base.txt']);
+        const base = await commit(ctx, { message: 'base', author: MAIN_AUTHOR });
+        await branchCreate(ctx, { name: 'feature' });
+        await checkout(ctx, { target: 'feature' });
+        for (const name of ['f1', 'f2', 'f3']) {
+          await ctx.fs.writeUtf8(work(ctx, `${name}.txt`), `${name}\n`);
+          await add(ctx, [`${name}.txt`]);
+          await commit(ctx, { message: `add ${name}`, author: FEAT_AUTHOR });
+        }
+        await checkout(ctx, { target: 'main' });
+
+        // Act
+        const sut = await cherryPickRun(ctx, { commits: [`${base.id}..feature`] });
+
+        // Assert
+        expect(sut.kind).toBe('picked');
+        if (sut.kind === 'picked') expect(sut.commits).toHaveLength(3);
+        expect(await ctx.fs.readUtf8(work(ctx, 'f1.txt'))).toBe('f1\n');
+        expect(await ctx.fs.readUtf8(work(ctx, 'f3.txt'))).toBe('f3\n');
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/sequencer`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given an A...B symmetric-difference range', () => {
+    describe('When run', () => {
+      it('Then rejects with INVALID_OPTION', async () => {
+        // Arrange
+        const { ctx } = await seedFeature();
+
+        // Act
+        const code = await codeOf(() => cherryPickRun(ctx, { commits: ['main...feature'] }));
+
+        // Assert
+        expect(code).toBe('INVALID_OPTION');
+      });
+    });
+  });
+
+  describe('Given a ^-exclusion revision form', () => {
+    describe('When run', () => {
+      it('Then rejects with INVALID_OPTION', async () => {
+        // Arrange
+        const { ctx } = await seedFeature();
+
+        // Act
+        const code = await codeOf(() => cherryPickRun(ctx, { commits: ['feature^'] }));
+
+        // Assert
+        expect(code).toBe('INVALID_OPTION');
+      });
+    });
+  });
+
+  describe('Given a range whose first pick conflicts', () => {
+    describe('When run', () => {
+      it('Then writes the git-faithful sequencer dir with the remaining picks', async () => {
+        // Arrange
+        const { ctx, base, c1 } = await seedRange();
+        const mainHead = await resolveRef(ctx, 'refs/heads/main' as RefName);
+
+        // Act
+        const sut = await cherryPickRun(ctx, { commits: [`${base}..feature`] });
+
+        // Assert
+        expect(sut.kind).toBe('conflict');
+        if (sut.kind === 'conflict') {
+          expect(sut.commit).toBe(c1);
+          expect(sut.remaining).toBe(1);
+        }
+        expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/CHERRY_PICK_HEAD`)).toBe(`${c1}\n`);
+        expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/sequencer/head`)).toBe(`${mainHead}\n`);
+        const todo = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/sequencer/todo`);
+        expect(todo.split('\n').filter(Boolean)).toHaveLength(2); // c1 (current) + c2
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/sequencer/abort-safety`)).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a stopped range', () => {
+    describe('When the conflict is resolved and continue runs', () => {
+      it('Then it finishes the remaining picks and clears the sequencer', async () => {
+        // Arrange
+        const { ctx, base } = await seedRange();
+        await cherryPickRun(ctx, { commits: [`${base}..feature`] }); // → conflict on c1
+        await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'l1\nBOTH\n');
+        await add(ctx, ['f.txt']);
+
+        // Act
+        const sut = await cherryPickContinue(ctx);
+
+        // Assert
+        expect(sut.kind).toBe('picked');
+        expect(await ctx.fs.readUtf8(work(ctx, 'g.txt'))).toBe('g\n'); // c2 applied
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/sequencer`)).toBe(false);
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/CHERRY_PICK_HEAD`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a sequencer todo rewritten with git-style abbreviated oids', () => {
+    describe('When continue resumes', () => {
+      it('Then it resolves the abbreviated oids and finishes', async () => {
+        // Arrange — reach a range conflict, then abbreviate the todo to 7-char oids
+        const { ctx, base } = await seedRange();
+        await cherryPickRun(ctx, { commits: [`${base}..feature`] });
+        const todoPath = `${ctx.layout.gitDir}/sequencer/todo`;
+        const abbreviated = (await ctx.fs.readUtf8(todoPath))
+          .split('\n')
+          .filter(Boolean)
+          .map((line) => {
+            const [, oid, ...subj] = line.split(' ');
+            return `pick ${(oid as string).slice(0, 7)} ${subj.join(' ')}`;
+          })
+          .join('\n');
+        await ctx.fs.writeUtf8(todoPath, `${abbreviated}\n`);
+        await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'l1\nBOTH\n');
+        await add(ctx, ['f.txt']);
+
+        // Act
+        const sut = await cherryPickContinue(ctx);
+
+        // Assert
+        expect(sut.kind).toBe('picked');
+        expect(await ctx.fs.readUtf8(work(ctx, 'g.txt'))).toBe('g\n');
+      });
+    });
+  });
+});
+
 describe('cherryPickContinue', () => {
   describe('Given a resolved conflict', () => {
     describe('When continue', () => {
