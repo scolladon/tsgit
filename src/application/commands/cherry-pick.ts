@@ -53,6 +53,9 @@ export interface CherryPickRunInput {
   readonly recordOrigin?: boolean;
   /** --allow-empty: a redundant pick creates an empty commit instead of stopping. */
   readonly allowEmpty?: boolean;
+  /** -n / --no-commit: apply each pick to the index + working tree only; never
+   *  commit, never persist CHERRY_PICK_HEAD / sequencer state. */
+  readonly noCommit?: boolean;
 }
 
 /** Resolved run options threaded through the per-pick helpers. */
@@ -73,6 +76,7 @@ export interface CherryPickConflict {
 
 export type CherryPickResult =
   | { readonly kind: 'picked'; readonly commits: ReadonlyArray<CherryPickedCommit> }
+  | { readonly kind: 'no-commit'; readonly sources: ReadonlyArray<ObjectId> }
   | {
       readonly kind: 'conflict';
       readonly commit: ObjectId;
@@ -96,6 +100,10 @@ const treeOf = async (ctx: Context, commitId: ObjectId): Promise<ObjectId> =>
   (await readCommitData(ctx, commitId)).tree;
 
 const subjectOf = (message: string): string => message.split('\n')[0] as string;
+
+const toConflictList = (
+  conflicts: ReadonlyArray<MergeConflict>,
+): ReadonlyArray<CherryPickConflict> => conflicts.map((c) => ({ path: c.path, type: c.type }));
 
 /** git's `-x` footer: a blank line then `(cherry picked from commit <full-oid>)`. */
 const appendCherryPickOrigin = (message: string, source: ObjectId): string =>
@@ -213,6 +221,52 @@ const persistStop = async (
   await writeMergeMsg(ctx, message);
 };
 
+/**
+ * `-n` / `--no-commit`: apply each pick to the index + working tree, accumulating
+ * across the list, without creating any commit or persisting resume state — even
+ * on conflict (verified against git). There is nothing to `continue`.
+ */
+const runNoCommit = async (
+  ctx: Context,
+  todo: ReadonlyArray<ObjectId>,
+): Promise<CherryPickResult> => {
+  const lock = await acquireIndexLock(ctx);
+  try {
+    // The index lock commits once, so accumulate in memory across picks (the
+    // working tree is written per pick by `applyMergeToWorktree`) and commit the
+    // final accumulated index at the end.
+    let currentIndex = await readIndex(ctx);
+    for (let i = 0; i < todo.length; i += 1) {
+      const source = todo[i] as ObjectId;
+      const cData = await readCommitData(ctx, source);
+      const parentId = cData.parents[0];
+      const baseTree = parentId !== undefined ? await treeOf(ctx, parentId) : undefined;
+      const oursTree = await synthesizeTreeFromIndex(ctx, currentIndex.entries);
+      const res = await applyMergeToWorktree(ctx, {
+        baseTree,
+        oursTree,
+        theirsTree: cData.tree,
+        currentIndex,
+      });
+      if (res.kind === 'would-overwrite') throw workingTreeDirty(res.paths);
+      if (res.kind === 'conflict') {
+        await lock.commit(res.indexEntries);
+        return {
+          kind: 'conflict',
+          commit: source,
+          conflicts: toConflictList(res.conflicts),
+          remaining: todo.length - (i + 1),
+        };
+      }
+      currentIndex = { ...currentIndex, entries: res.result.newIndexEntries };
+    }
+    await lock.commit(currentIndex.entries);
+    return { kind: 'no-commit', sources: todo };
+  } finally {
+    await lock.release();
+  }
+};
+
 export const cherryPickRun = async (
   ctx: Context,
   input: CherryPickRunInput,
@@ -228,6 +282,7 @@ export const cherryPickRun = async (
   const todo: ObjectId[] = [];
   for (const arg of input.commits) todo.push(await resolveCommitIsh(ctx, arg));
   await assertCleanWorkTree(ctx, await treeOf(ctx, ourId));
+  if (input.noCommit === true) return runNoCommit(ctx, todo);
   const opts: PickOptions = {
     recordOrigin: input.recordOrigin ?? false,
     allowEmpty: input.allowEmpty ?? false,
@@ -255,7 +310,7 @@ export const cherryPickRun = async (
       return {
         kind: 'conflict',
         commit: source,
-        conflicts: outcome.conflicts.map((c) => ({ path: c.path, type: c.type })),
+        conflicts: toConflictList(outcome.conflicts),
         remaining,
       };
     }

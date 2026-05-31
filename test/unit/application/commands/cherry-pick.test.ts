@@ -360,6 +360,82 @@ describe('cherryPickRun', () => {
     });
   });
 
+  describe('Given --no-commit (-n) for a single pick', () => {
+    describe('When run', () => {
+      it('Then stages the change, leaves HEAD and state untouched', async () => {
+        // Arrange
+        const { ctx, feature, base } = await seedFeature();
+
+        // Act
+        const sut = await cherryPickRun(ctx, { commits: ['feature'], noCommit: true });
+
+        // Assert
+        expect(sut.kind).toBe('no-commit');
+        if (sut.kind === 'no-commit') expect(sut.sources).toEqual([feature]);
+        const index = await readIndex(ctx);
+        expect(index.entries.some((e) => e.path === 'feat.txt')).toBe(true);
+        expect(await resolveRef(ctx, 'refs/heads/main' as RefName)).toBe(base); // HEAD unmoved
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/CHERRY_PICK_HEAD`)).toBe(false);
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/sequencer`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given --no-commit for a two-pick list', () => {
+    describe('When run', () => {
+      it('Then accumulates both changes in the index without committing', async () => {
+        // Arrange
+        const { ctx, feature, base } = await seedFeature();
+        await checkout(ctx, { target: 'feature' });
+        await ctx.fs.writeUtf8(work(ctx, 'feat2.txt'), 'feat2\n');
+        await add(ctx, ['feat2.txt']);
+        const second = await commit(ctx, { message: 'add feat2', author: FEAT_AUTHOR });
+        await checkout(ctx, { target: 'main' });
+
+        // Act
+        const sut = await cherryPickRun(ctx, { commits: [feature, second.id], noCommit: true });
+
+        // Assert
+        expect(sut.kind).toBe('no-commit');
+        const index = await readIndex(ctx);
+        expect(index.entries.some((e) => e.path === 'feat.txt')).toBe(true);
+        expect(index.entries.some((e) => e.path === 'feat2.txt')).toBe(true);
+        expect(await resolveRef(ctx, 'refs/heads/main' as RefName)).toBe(base);
+      });
+    });
+  });
+
+  describe('Given --no-commit and a conflicting pick', () => {
+    describe('When run', () => {
+      it('Then reports the conflict but persists no resume state', async () => {
+        // Arrange — feature and main change the same line differently
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await setUser(ctx);
+        await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'l1\nl2\n');
+        await add(ctx, ['f.txt']);
+        await commit(ctx, { message: 'base', author: MAIN_AUTHOR });
+        await branchCreate(ctx, { name: 'feature' });
+        await checkout(ctx, { target: 'feature' });
+        await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'l1\nFEAT\n');
+        await add(ctx, ['f.txt']);
+        const feature = await commit(ctx, { message: 'feat change', author: FEAT_AUTHOR });
+        await checkout(ctx, { target: 'main' });
+        await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'l1\nMAIN\n');
+        await add(ctx, ['f.txt']);
+        await commit(ctx, { message: 'main change', author: MAIN_AUTHOR });
+
+        // Act
+        const sut = await cherryPickRun(ctx, { commits: [feature.id], noCommit: true });
+
+        // Assert
+        expect(sut.kind).toBe('conflict');
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/CHERRY_PICK_HEAD`)).toBe(false);
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/sequencer`)).toBe(false);
+      });
+    });
+  });
+
   describe('Given a redundant pick with --allow-empty', () => {
     describe('When run', () => {
       it('Then creates an empty commit instead of stopping', async () => {
