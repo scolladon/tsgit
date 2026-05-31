@@ -108,6 +108,26 @@ describe('cherryPickRun', () => {
     });
   });
 
+  describe('Given recordOrigin (-x)', () => {
+    describe('When run', () => {
+      it('Then appends "(cherry picked from commit <full-oid>)" after a blank line', async () => {
+        // Arrange
+        const { ctx, feature } = await seedFeature();
+
+        // Act
+        const sut = await cherryPickRun(ctx, { commits: ['feature'], recordOrigin: true });
+
+        // Assert
+        expect(sut.kind).toBe('picked');
+        if (sut.kind !== 'picked') return;
+        const data = await readCommit(ctx, sut.commits[0]?.created as ObjectId);
+        expect(data.message).toBe(
+          `add feat\n\nbody line\n\n(cherry picked from commit ${feature})\n`,
+        );
+      });
+    });
+  });
+
   describe('Given two clean picks given as separate arguments', () => {
     describe('When run', () => {
       it('Then both are applied in order onto HEAD', async () => {

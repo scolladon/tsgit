@@ -37,6 +37,8 @@ import { writeMergeMsg } from './internal/merge-state.js';
 export interface CherryPickRunInput {
   /** Revisions to pick, in argument order (single commit-ish each; ranges in a later phase). */
   readonly commits: ReadonlyArray<string>;
+  /** -x: append `(cherry picked from commit <oid>)` to each commit message. */
+  readonly recordOrigin?: boolean;
 }
 
 export interface CherryPickedCommit {
@@ -75,6 +77,14 @@ const treeOf = async (ctx: Context, commitId: ObjectId): Promise<ObjectId> =>
 
 const subjectOf = (message: string): string => message.split('\n')[0] as string;
 
+/** git's `-x` footer: a blank line then `(cherry picked from commit <full-oid>)`. */
+const appendCherryPickOrigin = (message: string, source: ObjectId): string =>
+  `${message.replace(/\s+$/, '')}\n\n(cherry picked from commit ${source})`;
+
+/** The message a pick will commit: the source message, optionally `-x`-stamped. */
+const messageDraft = (message: string, source: ObjectId, recordOrigin: boolean): string =>
+  recordOrigin ? appendCherryPickOrigin(message, source) : message;
+
 /** Resolve the (always symbolic — detached is refused upstream) HEAD branch to
  *  its commit oid, or refuse on an unborn branch. */
 const resolveHeadCommit = async (ctx: Context, branch: RefName): Promise<ObjectId> => {
@@ -105,9 +115,11 @@ const resolvePickCommitter = async (ctx: Context): Promise<AuthorIdentity> => {
 /** Build the new commit: preserved author + message, current committer, single parent. */
 const createPickCommit = async (
   ctx: Context,
+  source: ObjectId,
   cData: CommitData,
   parentId: ObjectId,
   tree: ObjectId,
+  recordOrigin: boolean,
 ): Promise<ObjectId> => {
   const committer = await resolvePickCommitter(ctx);
   return createCommit(ctx, {
@@ -115,7 +127,9 @@ const createPickCommit = async (
     parents: [parentId],
     author: cData.author,
     committer,
-    message: sanitizeMessage(cData.message, { allowEmpty: false }),
+    message: sanitizeMessage(messageDraft(cData.message, source, recordOrigin), {
+      allowEmpty: false,
+    }),
     extraHeaders: [],
   });
 };
@@ -123,9 +137,11 @@ const createPickCommit = async (
 /** Apply one commit's change onto `ourId`, committing it when the merge is clean. */
 const applyOnePick = async (
   ctx: Context,
+  source: ObjectId,
   cData: CommitData,
   branch: RefName,
   ourId: ObjectId,
+  recordOrigin: boolean,
 ): Promise<PickOutcome> => {
   const parentId = cData.parents[0];
   const baseTree = parentId !== undefined ? await treeOf(ctx, parentId) : undefined;
@@ -146,7 +162,7 @@ const applyOnePick = async (
     }
     if (res.mergedTree === oursTree) return { kind: 'empty' };
     await lock.commit(res.result.newIndexEntries);
-    const id = await createPickCommit(ctx, cData, ourId, res.mergedTree);
+    const id = await createPickCommit(ctx, source, cData, ourId, res.mergedTree, recordOrigin);
     await updateRef(ctx, branch, id, {
       expected: ourId,
       reflogMessage: `cherry-pick: ${subjectOf(cData.message)}`,
@@ -163,9 +179,10 @@ const persistStop = async (
   source: ObjectId,
   cData: CommitData,
   conflicts: ReadonlyArray<MergeConflict> | undefined,
+  recordOrigin: boolean,
 ): Promise<void> => {
   await writeCherryPickHead(ctx, source);
-  const draft = cData.message;
+  const draft = messageDraft(cData.message, source, recordOrigin);
   const message =
     conflicts !== undefined && conflicts.length > 0
       ? conflictMergeMsg(
@@ -191,12 +208,13 @@ export const cherryPickRun = async (
   const todo: ObjectId[] = [];
   for (const arg of input.commits) todo.push(await resolveCommitIsh(ctx, arg));
   await assertCleanWorkTree(ctx, await treeOf(ctx, ourId));
+  const recordOrigin = input.recordOrigin ?? false;
 
   const applied: CherryPickedCommit[] = [];
   for (let i = 0; i < todo.length; i += 1) {
     const source = todo[i] as ObjectId;
     const cData = await readCommitData(ctx, source);
-    const outcome = await applyOnePick(ctx, cData, head.target, ourId);
+    const outcome = await applyOnePick(ctx, source, cData, head.target, ourId, recordOrigin);
     if (outcome.kind === 'committed') {
       applied.push({ source, created: outcome.id });
       ourId = outcome.id;
@@ -207,6 +225,7 @@ export const cherryPickRun = async (
       source,
       cData,
       outcome.kind === 'conflict' ? outcome.conflicts : undefined,
+      recordOrigin,
     );
     const remaining = todo.length - (i + 1);
     if (outcome.kind === 'conflict') {
