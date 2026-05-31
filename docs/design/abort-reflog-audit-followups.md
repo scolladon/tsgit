@@ -21,8 +21,10 @@ against real git, no new behaviour invented:
    so the abort is always a no-move) — only the `HEAD` *message text* is left wrong.
 
 Neither item changes any index/tree/HEAD-value observable; both touch reflog
-**message** faithfulness only. The PR adds caller-level gates + cross-tool interop
-pins (real git as oracle, scrubbed `GIT_*`).
+**message** faithfulness only. The PR routes the detached-reset write through the
+central ref-writer (so it inherits 22.2b's no-move gate), aligns the merge-abort
+message, and pins both with cross-tool interop (real git as oracle, scrubbed
+`GIT_*`).
 
 ## What real git writes (verified, not hypothesized)
 
@@ -83,45 +85,48 @@ with the wrong message `merge: aborted` where git writes `reset: moving to HEAD`
 
 ## Decision
 
-### Part 1 — gate the detached-reset `HEAD` reflog at the caller
+### Part 1 — route the detached-reset write through `updateRef` (ADR-227)
 
-Skip `recordRefUpdate` when the oid is unchanged; keep the `HEAD` file write
-unconditional:
+Replace the detached path's direct `writeUtf8` + ungated `recordRefUpdate` with a
+single `updateRef` call, so the no-move skip the symbolic path already inherited
+from 22.2b's central gate now also covers the detached path:
 
 ```ts
-await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, `${id}\n`);
-if (head.id !== id) {
-  await recordRefUpdate(ctx, 'HEAD' as RefName, head.id, id, reflogMessage);
+const head = await readHeadRaw(ctx);
+const reflogMessage = `reset: moving to ${opts.target}`;
+if (head.kind === 'symbolic') {
+  await updateRef(ctx, head.target, id, { reflogMessage });
+  return { mode: opts.mode, id, branch: head.target };
 }
+await updateRef(ctx, 'HEAD' as RefName, id, { reflogMessage });
 return { mode: opts.mode, id, branch: undefined };
 ```
 
-The gate lives in the **caller** (`reset`), not in `recordRefUpdate`. The writer
-cannot distinguish the two `HEAD` semantics — the symref-split *log-only* "keep"
-(which `updateRef`'s `logCoupledHead` relies on) from this direct-`HEAD`
-*needs-commit* "skip" — so a blanket gate in the writer would wrongly drop the
-symbolic `reset: moving to HEAD` that git **does** write. Only the caller knows
-which semantics apply. This mirrors ADR-225's option-A reasoning (the symbolic gate
-lives in `updateRef`, not the writer) and matches the backlog's explicit
-prescription "caller-level gate".
+`updateRef` resolves the current oid (`oldId = head.id` for a detached HEAD), writes
+`.git/HEAD` via `atomicWriteRef` (lock-file + rename — git's own HEAD-update
+mechanism, byte-identical content `${id}\n`), then gates `recordRefUpdate` on
+`oldId !== newId` (the 22.2b rule). `logCoupledHead` re-reads HEAD, finds it
+**direct** (still detached), and early-returns — so no double-log, exactly one
+potential reflog entry: written on a detached move, skipped on a detached no-move.
+This is the faithful behaviour (a detached HEAD is a direct ref → *needs-commit* →
+git writes nothing when `old == new`).
 
-The `writeUtf8` stays unconditional: rewriting `.git/HEAD` with byte-identical
-content (`${id}\n`) on a no-move is observably indistinguishable from git (same 41
-bytes), exactly as ADR-225 kept `atomicWriteRef` unconditional for the symbolic
-path. The oid-based gate (`head.id !== id`, not `opts.target !== 'HEAD'`) is the
-faithful semantics: `reset --hard <oid-equal-to-current>` is just as much a no-move
-as `reset --hard HEAD`, and git skips both.
+**Why B over A (the local caller-gate).** A is `if (head.id !== id) await
+recordRefUpdate(...)` inline in `reset.ts`, keeping the plain `writeUtf8`. It is the
+backlog's literal "caller-level gate" and minimal, but it leaves **two** sites that
+encode the no-move skip (the central `updateRef` gate + this local one) — the rule
+duplicated, easy to drift. B funnels the detached write through the **single**
+canonical ref-writer, so exactly one place owns the no-move rule and the detached
+write gains git-faithful lock-file atomicity for free. The only cost is the write
+mechanism change (`writeUtf8` → `atomicWriteRef`), which is observably equivalent
+(both leave `.git/HEAD` = `${id}\n`) and verified safe: `looseRefPath(gitDir,
+'HEAD')` → `.git/HEAD`, `validateRefName('HEAD')` passes, `logCoupledHead`
+early-returns for a direct HEAD. The oid-based gate is the faithful semantics:
+`reset --hard <oid-equal-to-current>` is as much a no-move as `reset --hard HEAD`,
+and `updateRef`'s `oldId !== newId` skips both.
 
-**Considered alternative — route the detached path through `updateRef(ctx, 'HEAD',
-id, …)`** to inherit the central gate instead of duplicating it. Feasible
-(`looseRefPath(gitDir, 'HEAD')` → `.git/HEAD`, `validateRefName('HEAD')` passes,
-`logCoupledHead` early-returns since `HEAD` is direct, so no double-log), but it
-swaps the detached write mechanism from a plain `writeUtf8` to `atomicWriteRef`
-(lock-file + rename) — a larger, behaviour-adjacent change for a message-only fix,
-and `updateRef` is modelled around branch refs with HEAD coupling, not HEAD-as-the-
-written-ref. Rejected for this PR on KISS/minimal-blast-radius grounds; the
-unification is reconsidered in the architecture-refactor pass (Step 7) and, if not
-taken, logged as a backlog follow-up rather than smuggled into the feature diff.
+This deviates from the backlog's literal wording and ADR-225's option-A leaning, so
+it is recorded as **ADR-227**.
 
 ### Part 2 — align the merge-abort `HEAD` message
 
@@ -170,8 +175,9 @@ holds):
    to.
 2. **Detached move** (`reset-interop.test.ts`): same seed, detached at the tip, then
    `reset --hard <c0>` on both → assert both write the identical
-   `reset: moving to <c0>` `HEAD` entry (guards the gate from over-skipping a real
-   move — kills the `head.id !== id` → `false` mutant).
+   `reset: moving to <c0>` `HEAD` entry (guards the routing from over-skipping a real
+   move; the no-move gate itself — `oldId !== newId` in `updateRef` — is already
+   mutation-pinned by 22.2b's `update-ref.test.ts`).
 3. **Merge abort** (new `merge-abort-interop.test.ts`): build the same conflicting
    merge via real git in both repos (date-pinned, identical SHAs), conflict on both
    (`git merge` / `repo.merge`), abort on both (`git merge --abort` /
@@ -181,11 +187,15 @@ holds):
 ## Test conventions
 
 GWT describe/it split, AAA body, `sut` variable, 100% line/branch/function/
-statement coverage held, 0 killable mutants. Unit tests isolate each gate:
+statement coverage held, 0 killable mutants. Unit tests isolate the observable
+behaviour each command now produces:
 
-- `reset.test.ts` — detached no-move skips the `HEAD` reflog (kill the `head.id !==
-  id` boundary + `!==`→`===` mutants with a paired no-move-skip / move-writes test);
-  detached move still records.
+- `reset.test.ts` — a detached **no-move** `reset` appends **no** `HEAD` reflog
+  entry; a detached **move** `reset` appends `reset: moving to <target>`. These pin
+  the routing + the `'HEAD'`/message literals in `reset.ts`; the no-move gate itself
+  (`oldId !== newId`) lives in `updateRef` and is already mutation-pinned by
+  `update-ref.test.ts` (22.2b). The pre-existing detached-move test keeps its
+  HEAD-file assertion (its stale `writeUtf8` line-number comments are refreshed).
 - `abort-merge.test.ts` — the `HEAD` reflog top reads `reset: moving to HEAD`
   exactly (specific string assertion kills the `StringLiteral` mutant; never a
   type-only check).
@@ -195,16 +205,19 @@ subject, never just "an entry exists".
 
 ## Files touched
 
-- `src/application/commands/reset.ts` — gate the detached-`HEAD` reflog on
-  `head.id !== id`.
+- `src/application/commands/reset.ts` — route the detached path through
+  `updateRef(ctx, 'HEAD', id, …)`; drop the direct `writeUtf8` + `recordRefUpdate`
+  and the now-unused `recordRefUpdate` import.
 - `src/application/commands/abort-merge.ts` — `merge: aborted` →
   `reset: moving to HEAD`.
 - `test/unit/application/commands/reset.test.ts` — detached no-move skip + move
-  records.
+  records; refresh the detached test's stale mutation comments.
 - `test/unit/application/commands/abort-merge.test.ts` — assert the
   `reset: moving to HEAD` `HEAD` reflog message.
 - `test/integration/reset-interop.test.ts` — detached no-move + detached-move
   reflog parity pins.
 - `test/integration/merge-abort-interop.test.ts` (new) — merge-abort `HEAD` message
   parity pin.
+- `docs/adr/227-detached-reset-routes-through-update-ref.md` (new) — the B-over-A
+  decision.
 - `docs/BACKLOG.md` — flip 22.2c to done.
