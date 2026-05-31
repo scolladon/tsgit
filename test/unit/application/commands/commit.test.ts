@@ -100,6 +100,76 @@ describe('commit — cherry-pick resolution', () => {
   });
 });
 
+describe('commit — revert resolution', () => {
+  const seedCommitted = async (): Promise<{ ctx: Context; base: ObjectId }> => {
+    const ctx = await seed({ 'a.txt': 'a\n' });
+    const base = await commit(ctx, { message: 'base', author });
+    return { ctx, base: base.id };
+  };
+
+  describe('Given REVERT_HEAD set and an empty message (MERGE_MSG fallback)', () => {
+    describe('When commit resolves it', () => {
+      it('Then single-parent, comments stripped, state cleared, plain `commit:` reflog', async () => {
+        // Arrange
+        const { ctx, base } = await seedCommitted();
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'reverted\n');
+        await add(ctx, ['a.txt']);
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/REVERT_HEAD`, `${base}\n`);
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/MERGE_MSG`,
+          'Revert "x"\n\n# Conflicts:\n#\ta.txt\n',
+        );
+
+        // Act
+        const sut = await commit(ctx, { message: '', author });
+
+        // Assert
+        expect(sut.parents).toEqual([base]); // REVERT_HEAD NOT a second parent
+        const data = await readObject(ctx, sut.id);
+        if (data.type === 'commit') expect(data.data.message).toBe('Revert "x"\n');
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/REVERT_HEAD`)).toBe(false);
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/MERGE_MSG`)).toBe(false);
+        const reflog = await readReflog(ctx, 'refs/heads/main' as RefName);
+        // git writes a plain `commit:` reflog for a resolved revert (not `commit (revert):`).
+        expect(reflog.some((e) => e.message === 'commit: Revert "x"')).toBe(true);
+        expect(reflog.some((e) => e.message.startsWith('commit (revert)'))).toBe(false);
+      });
+    });
+  });
+
+  describe('Given REVERT_HEAD set and a no-change resolution', () => {
+    describe('When commit runs without allowEmpty', () => {
+      it('Then refuses with NOTHING_TO_COMMIT and keeps REVERT_HEAD', async () => {
+        // Arrange — index still matches HEAD (the revert resolved to nothing).
+        const { ctx, base } = await seedCommitted();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/REVERT_HEAD`, `${base}\n`);
+
+        // Act + Assert
+        await expectError(
+          () => commit(ctx, { message: 'Revert "x"', author }),
+          'NOTHING_TO_COMMIT',
+        );
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/REVERT_HEAD`)).toBe(true);
+      });
+    });
+
+    describe('When commit runs with allowEmpty', () => {
+      it('Then commits the empty revert and clears REVERT_HEAD', async () => {
+        // Arrange
+        const { ctx, base } = await seedCommitted();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/REVERT_HEAD`, `${base}\n`);
+
+        // Act
+        const sut = await commit(ctx, { message: 'Revert "x"', author, allowEmpty: true });
+
+        // Assert
+        expect(sut.parents).toEqual([base]);
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/REVERT_HEAD`)).toBe(false);
+      });
+    });
+  });
+});
+
 describe('commit', () => {
   describe('Given a staged file + explicit author', () => {
     describe('When commit', () => {
