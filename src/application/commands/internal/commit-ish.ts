@@ -12,6 +12,10 @@ import { resolveOidPrefix } from '../../primitives/resolve-oid-prefix.js';
 import { resolveRef } from '../../primitives/resolve-ref.js';
 
 export const resolveCommitIsh = async (ctx: Context, target: string): Promise<ObjectId> => {
+  // equivalent-mutant: the full-40-hex fast path is a pure optimisation. A 40-hex
+  // string never matches a ref candidate, so it falls through to `resolveOidPrefix`,
+  // which returns the same id verbatim (also without an existence check) — every
+  // mutation of this guard yields an identical result via the slower path.
   if (/^[0-9a-f]{40}$/.test(target)) return target as ObjectId;
   // gitrevisions ref-DWIM: try each candidate namespace in priority order,
   // peeling annotated tags to their underlying commit.

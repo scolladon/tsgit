@@ -222,4 +222,54 @@ describe('resolveOidPrefix', () => {
       });
     });
   });
+
+  describe('Given a prefix shorter than the 4-hex minimum', () => {
+    describe('When a loose object shares those leading hex', () => {
+      it('Then returns undefined rather than matching the too-short prefix', async () => {
+        // Arrange — `ab` is below the abbreviation floor; a matching object exists.
+        const ctx = await buildSeededContext();
+        await writeLooseNamed(ctx, `ab${'0'.repeat(38)}`);
+
+        // Act
+        const sut = await resolveOidPrefix(ctx, 'ab');
+
+        // Assert
+        expect(sut).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a fanout directory that does not exist', () => {
+    describe('When resolveOidPrefix scans a 4-hex prefix', () => {
+      it('Then returns undefined without faulting on the absent directory', async () => {
+        // Arrange — nothing was written under objects/ff.
+        const ctx = await buildSeededContext();
+
+        // Act
+        const sut = await resolveOidPrefix(ctx, 'ffff');
+
+        // Assert
+        expect(sut).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given two loose objects in one fanout that differ past the prefix', () => {
+    describe('When resolveOidPrefix scans a prefix matching exactly one', () => {
+      it('Then returns only the matching object (the non-matching name is filtered out)', async () => {
+        // Arrange — both under fanout `cd`, diverging at the third hex.
+        const ctx = await buildSeededContext();
+        const match = `cd11${'0'.repeat(36)}`;
+        const other = `cd22${'0'.repeat(36)}`;
+        await writeLooseNamed(ctx, match);
+        await writeLooseNamed(ctx, other);
+
+        // Act
+        const sut = await resolveOidPrefix(ctx, 'cd11');
+
+        // Assert
+        expect(sut).toBe(match);
+      });
+    });
+  });
 });

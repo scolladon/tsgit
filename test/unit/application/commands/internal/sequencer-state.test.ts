@@ -261,4 +261,65 @@ describe('sequencer-state', () => {
       });
     });
   });
+
+  describe('Given opts written one flag at a time', () => {
+    describe.each([
+      ['no-commit', { noCommit: true, recordOrigin: false, allowEmpty: false }],
+      ['record-origin', { noCommit: false, recordOrigin: true, allowEmpty: false }],
+      ['allow-empty', { noCommit: false, recordOrigin: false, allowEmpty: true }],
+    ])('When only %s is set', (key, opts) => {
+      it(`Then the file holds exactly that one key and round-trips`, async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+
+        // Act
+        await writeSequencerOpts(ctx, opts);
+
+        // Assert — exactly one option line is serialised (kills per-flag guards).
+        expect(await ctx.fs.readUtf8(seqPath(ctx, 'opts'))).toBe(`[options]\n\t${key} = true\n`);
+        expect(await readSequencerOpts(ctx)).toEqual(opts);
+      });
+    });
+  });
+
+  describe('Given an opts file with a non-options section carrying the key', () => {
+    describe('When read', () => {
+      it('Then the key is ignored unless it lives under [options]', async () => {
+        // Arrange — `allow-empty` sits under [core], never under [options].
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(
+          seqPath(ctx, 'opts'),
+          '[core]\n\tallow-empty = true\n[options]\n\tno-commit = true\n',
+        );
+
+        // Act
+        const sut = await readSequencerOpts(ctx);
+
+        // Assert
+        expect(sut).toEqual({ noCommit: true, recordOrigin: false, allowEmpty: false });
+      });
+    });
+  });
+
+  describe('Given a todo referencing an unresolvable oid', () => {
+    describe('When read', () => {
+      it('Then the INVALID_SEQUENCER_TODO reason echoes the unresolved oid', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(seqPath(ctx, 'todo'), 'pick c0ffee00 ghost\n');
+
+        // Act
+        let caught: TsgitError | undefined;
+        try {
+          await readSequencerTodo(ctx);
+        } catch (err) {
+          caught = err as TsgitError;
+        }
+
+        // Assert
+        expect(caught?.data.code).toBe('INVALID_SEQUENCER_TODO');
+        expect((caught?.data as { reason: string }).reason).toContain('c0ffee00');
+      });
+    });
+  });
 });

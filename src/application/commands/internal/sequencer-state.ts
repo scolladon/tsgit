@@ -114,6 +114,9 @@ export const readSequencerOpts = async (ctx: Context): Promise<SequencerOpts> =>
 /** Remove the whole `.git/sequencer/` directory. Idempotent. */
 export const clearSequencer = async (ctx: Context): Promise<void> => {
   const dir = seqDir(ctx);
+  // equivalent-mutant: `rmRecursive` is itself a no-op on an absent path (proven by
+  // the "directory is absent → no-op" test), so the existence guard is a pure
+  // optimisation — removing it leaves the observable result unchanged.
   if (await ctx.fs.exists(dir)) {
     await ctx.fs.rmRecursive(dir);
   }

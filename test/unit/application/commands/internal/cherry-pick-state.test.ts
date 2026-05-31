@@ -148,5 +148,15 @@ describe('cherry-pick-state', () => {
         expect(sut).toBe('subject\n\n# Conflicts:\n#\tf.txt\n');
       });
     });
+
+    describe('When the draft ends with several whitespace characters', () => {
+      it('Then strips the whole trailing run, not just one character', () => {
+        // Arrange + Act — proves the strip is greedy (`\s+$`, not `\s$`).
+        const sut = conflictMergeMsg('subject  \n\n', ['f.txt' as FilePath]);
+
+        // Assert
+        expect(sut).toBe('subject\n\n# Conflicts:\n#\tf.txt\n');
+      });
+    });
   });
 });
