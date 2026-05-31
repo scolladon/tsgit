@@ -1,0 +1,324 @@
+import { describe, expect, it } from 'vitest';
+import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
+import { add } from '../../../../src/application/commands/add.js';
+import { branchCreate } from '../../../../src/application/commands/branch.js';
+import { checkout } from '../../../../src/application/commands/checkout.js';
+import { commit } from '../../../../src/application/commands/commit.js';
+import { init } from '../../../../src/application/commands/init.js';
+import { merge } from '../../../../src/application/commands/merge.js';
+import { revertRun } from '../../../../src/application/commands/revert.js';
+import { rm } from '../../../../src/application/commands/rm.js';
+import { readIndex } from '../../../../src/application/primitives/read-index.js';
+import { readObject } from '../../../../src/application/primitives/read-object.js';
+import { readReflog } from '../../../../src/application/primitives/reflog-store.js';
+import { resolveRef } from '../../../../src/application/primitives/resolve-ref.js';
+import type { TsgitError } from '../../../../src/domain/error.js';
+import type {
+  AuthorIdentity,
+  CommitData,
+  ObjectId,
+  RefName,
+} from '../../../../src/domain/objects/index.js';
+import type { Context } from '../../../../src/ports/context.js';
+
+const MAIN_AUTHOR: AuthorIdentity = {
+  name: 'Main',
+  email: 'main@z',
+  timestamp: 1,
+  timezoneOffset: '+0000',
+};
+
+const work = (ctx: Context, name: string): string => `${ctx.layout.workDir}/${name}`;
+
+const setUser = (ctx: Context): Promise<void> =>
+  ctx.fs.appendUtf8(`${ctx.layout.gitDir}/config`, '\n[user]\n\tname = Vera\n\temail = vera@x\n');
+
+const readCommit = async (ctx: Context, id: ObjectId): Promise<CommitData> => {
+  const obj = await readObject(ctx, id);
+  if (obj.type !== 'commit') throw new Error('not a commit');
+  return obj.data;
+};
+
+const codeOf = async (run: () => Promise<unknown>): Promise<string | undefined> => {
+  try {
+    await run();
+    return undefined;
+  } catch (err) {
+    return (err as TsgitError).data.code;
+  }
+};
+
+const gitDir = (ctx: Context): string => ctx.layout.gitDir;
+const exists = (ctx: Context, rel: string): Promise<boolean> =>
+  ctx.fs.exists(`${gitDir(ctx)}/${rel}`);
+
+/** Linear history on main: c1 base, c2 changes line 2. Returns ctx + ids. */
+const seedLinear = async (): Promise<{ ctx: Context; c1: ObjectId; c2: ObjectId }> => {
+  const ctx = createMemoryContext();
+  await init(ctx);
+  await setUser(ctx);
+  await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'a\nb\nc\n');
+  await add(ctx, ['f.txt']);
+  const c1 = await commit(ctx, { message: 'c1 base', author: MAIN_AUTHOR });
+  await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'a\nB2\nc\n');
+  await add(ctx, ['f.txt']);
+  const c2 = await commit(ctx, { message: 'c2 mid', author: MAIN_AUTHOR });
+  return { ctx, c1: c1.id, c2: c2.id };
+};
+
+describe('revert run', () => {
+  describe('Given a clean single revert of the tip', () => {
+    describe('When revertRun targets HEAD', () => {
+      it('Then creates a single-parent Revert commit authored by the current identity', async () => {
+        // Arrange
+        const { ctx, c1, c2 } = await seedLinear();
+
+        // Act
+        const sut = await revertRun(ctx, { commits: ['HEAD'] });
+
+        // Assert
+        expect(sut.kind).toBe('reverted');
+        if (sut.kind !== 'reverted') throw new Error('expected reverted');
+        expect(sut.commits).toHaveLength(1);
+        const created = sut.commits[0]?.created as ObjectId;
+        expect(sut.commits[0]?.source).toBe(c2);
+        const cData = await readCommit(ctx, created);
+        expect(cData.parents).toEqual([c2]);
+        expect(cData.author.name).toBe('Vera');
+        expect(cData.author.email).toBe('vera@x');
+        expect(cData.committer.name).toBe('Vera');
+        expect(cData.committer.email).toBe('vera@x');
+        expect(cData.message).toBe(`Revert "c2 mid"\n\nThis reverts commit ${c2}.\n`);
+        // the reverse merge restores c1's tree
+        expect(cData.tree).toBe((await readCommit(ctx, c1)).tree);
+        expect(await ctx.fs.readUtf8(work(ctx, 'f.txt'))).toBe('a\nb\nc\n');
+        expect(await resolveRef(ctx, 'refs/heads/main' as RefName)).toBe(created);
+      });
+    });
+
+    describe('When the revert commits cleanly', () => {
+      it('Then records a `revert: Revert "<subject>"` reflog entry', async () => {
+        // Arrange
+        const { ctx } = await seedLinear();
+
+        // Act
+        await revertRun(ctx, { commits: ['HEAD'] });
+
+        // Assert
+        const reflog = await readReflog(ctx, 'refs/heads/main' as RefName);
+        expect(reflog.at(-1)?.message).toBe('revert: Revert "c2 mid"');
+      });
+
+      it('Then leaves no in-progress state', async () => {
+        // Arrange
+        const { ctx } = await seedLinear();
+
+        // Act
+        await revertRun(ctx, { commits: ['HEAD'] });
+
+        // Assert
+        expect(await exists(ctx, 'REVERT_HEAD')).toBe(false);
+        expect(await exists(ctx, 'MERGE_MSG')).toBe(false);
+        expect(await exists(ctx, 'sequencer')).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a revert that conflicts with later history', () => {
+    describe('When the reverse merge cannot apply cleanly', () => {
+      it('Then stops with REVERT_HEAD, the Revert MERGE_MSG, and unmerged index', async () => {
+        // Arrange — c3 changes the same line c2 did, so reverting c2 conflicts.
+        const { ctx, c2 } = await seedLinear();
+        await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'a\nB3\nc\n');
+        await add(ctx, ['f.txt']);
+        await commit(ctx, { message: 'c3 top', author: MAIN_AUTHOR });
+
+        // Act
+        const sut = await revertRun(ctx, { commits: [c2] });
+
+        // Assert
+        expect(sut.kind).toBe('conflict');
+        if (sut.kind !== 'conflict') throw new Error('expected conflict');
+        expect(sut.commit).toBe(c2);
+        expect(sut.remaining).toBe(0);
+        expect(sut.conflicts.map((c) => c.path)).toContain('f.txt');
+        expect(await ctx.fs.readUtf8(`${gitDir(ctx)}/REVERT_HEAD`)).toBe(`${c2}\n`);
+        expect(await ctx.fs.readUtf8(`${gitDir(ctx)}/MERGE_MSG`)).toBe(
+          `Revert "c2 mid"\n\nThis reverts commit ${c2}.\n\n# Conflicts:\n#\tf.txt\n`,
+        );
+        const index = await readIndex(ctx);
+        expect(index.entries.some((e) => e.flags.stage !== 0)).toBe(true);
+        expect(await ctx.fs.readUtf8(work(ctx, 'f.txt'))).toContain('<<<<<<<');
+      });
+    });
+  });
+
+  describe('Given a revert whose change is already undone', () => {
+    describe('When reverting the same commit twice', () => {
+      it('Then the second revert stops empty with no in-progress state', async () => {
+        // Arrange
+        const { ctx, c2 } = await seedLinear();
+        await revertRun(ctx, { commits: [c2] });
+
+        // Act — c2 is already reverted, so reverting it again is a no-op.
+        const sut = await revertRun(ctx, { commits: [c2] });
+
+        // Assert
+        expect(sut.kind).toBe('empty');
+        if (sut.kind !== 'empty') throw new Error('expected empty');
+        expect(sut.commit).toBe(c2);
+        expect(sut.remaining).toBe(0);
+        expect(await exists(ctx, 'REVERT_HEAD')).toBe(false);
+        expect(await exists(ctx, 'MERGE_MSG')).toBe(false);
+        expect(await exists(ctx, 'sequencer')).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a root commit', () => {
+    describe('When reverting it', () => {
+      it('Then deletes every path the root introduced', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await setUser(ctx);
+        await ctx.fs.writeUtf8(work(ctx, 'f1.txt'), '1\n');
+        await ctx.fs.writeUtf8(work(ctx, 'f2.txt'), '2\n');
+        await add(ctx, ['f1.txt', 'f2.txt']);
+        const root = await commit(ctx, { message: 'c1 root', author: MAIN_AUTHOR });
+        await ctx.fs.writeUtf8(work(ctx, 'f3.txt'), '3\n');
+        await add(ctx, ['f3.txt']);
+        await commit(ctx, { message: 'c2 add f3', author: MAIN_AUTHOR });
+
+        // Act
+        const sut = await revertRun(ctx, { commits: [root.id] });
+
+        // Assert
+        expect(sut.kind).toBe('reverted');
+        expect(await ctx.fs.exists(work(ctx, 'f1.txt'))).toBe(false);
+        expect(await ctx.fs.exists(work(ctx, 'f2.txt'))).toBe(false);
+        expect(await ctx.fs.exists(work(ctx, 'f3.txt'))).toBe(true);
+      });
+    });
+  });
+
+  describe('Given an untracked working file the revert would re-create', () => {
+    describe('When the reverse merge would overwrite it', () => {
+      it('Then refuses with WORKING_TREE_DIRTY', async () => {
+        // Arrange — c2 deletes gone.txt; an untracked gone.txt sits on HEAD.
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await setUser(ctx);
+        await ctx.fs.writeUtf8(work(ctx, 'gone.txt'), 'v1\n');
+        await ctx.fs.writeUtf8(work(ctx, 'anchor.txt'), 'x\n');
+        await add(ctx, ['gone.txt', 'anchor.txt']);
+        await commit(ctx, { message: 'c1 add gone', author: MAIN_AUTHOR });
+        await rm(ctx, ['gone.txt']);
+        const c2 = await commit(ctx, { message: 'c2 delete gone', author: MAIN_AUTHOR });
+        await ctx.fs.writeUtf8(work(ctx, 'gone.txt'), 'untracked junk\n');
+
+        // Act
+        const code = await codeOf(() => revertRun(ctx, { commits: [c2.id] }));
+
+        // Assert
+        expect(code).toBe('WORKING_TREE_DIRTY');
+      });
+    });
+  });
+
+  describe('Given a merge commit', () => {
+    describe('When reverting it without a mainline', () => {
+      it('Then refuses with REVERT_MERGE_NO_MAINLINE and persists no state', async () => {
+        // Arrange — build a real two-parent merge commit on a side branch, then
+        // revert it by oid from a clean `main`.
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await setUser(ctx);
+        await ctx.fs.writeUtf8(work(ctx, 'base.txt'), 'a\n');
+        await add(ctx, ['base.txt']);
+        const base = await commit(ctx, { message: 'c1 base', author: MAIN_AUTHOR });
+        await branchCreate(ctx, { name: 'feature' });
+        await checkout(ctx, { target: 'feature' });
+        await ctx.fs.writeUtf8(work(ctx, 'feat.txt'), 'f\n');
+        await add(ctx, ['feat.txt']);
+        await commit(ctx, { message: 'feat commit', author: MAIN_AUTHOR });
+        await branchCreate(ctx, { name: 'side', startPoint: base.id });
+        await checkout(ctx, { target: 'side' });
+        await ctx.fs.writeUtf8(work(ctx, 'side.txt'), 's\n');
+        await add(ctx, ['side.txt']);
+        await commit(ctx, { message: 'side commit', author: MAIN_AUTHOR });
+        await checkout(ctx, { target: 'feature' });
+        const m = await merge(ctx, { target: 'side' });
+        if (m.kind !== 'merge') throw new Error('seed: expected a merge commit');
+        await checkout(ctx, { target: 'main' });
+
+        // Act
+        const code = await codeOf(() => revertRun(ctx, { commits: [m.id] }));
+
+        // Assert
+        expect(code).toBe('REVERT_MERGE_NO_MAINLINE');
+        expect(await exists(ctx, 'REVERT_HEAD')).toBe(false);
+        expect(await exists(ctx, 'sequencer')).toBe(false);
+      });
+    });
+  });
+
+  describe('Given an invalid repository state', () => {
+    describe('When HEAD is detached', () => {
+      it('Then refuses with UNSUPPORTED_OPERATION', async () => {
+        // Arrange
+        const { ctx, c2 } = await seedLinear();
+        await ctx.fs.writeUtf8(`${gitDir(ctx)}/HEAD`, `${c2}\n`);
+
+        // Act
+        const code = await codeOf(() => revertRun(ctx, { commits: [c2] }));
+
+        // Assert
+        expect(code).toBe('UNSUPPORTED_OPERATION');
+      });
+    });
+
+    describe('When the branch is unborn', () => {
+      it('Then refuses with NO_INITIAL_COMMIT', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await setUser(ctx);
+
+        // Act
+        const code = await codeOf(() => revertRun(ctx, { commits: ['HEAD'] }));
+
+        // Assert
+        expect(code).toBe('NO_INITIAL_COMMIT');
+      });
+    });
+
+    describe('When another operation is already in progress', () => {
+      it('Then refuses with OPERATION_IN_PROGRESS', async () => {
+        // Arrange
+        const { ctx, c2 } = await seedLinear();
+        await ctx.fs.writeUtf8(`${gitDir(ctx)}/MERGE_HEAD`, `${c2}\n`);
+
+        // Act
+        const code = await codeOf(() => revertRun(ctx, { commits: [c2] }));
+
+        // Assert
+        expect(code).toBe('OPERATION_IN_PROGRESS');
+      });
+    });
+
+    describe('When the working tree is dirty', () => {
+      it('Then refuses with WORKING_TREE_DIRTY', async () => {
+        // Arrange
+        const { ctx, c2 } = await seedLinear();
+        await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'dirty\n');
+
+        // Act
+        const code = await codeOf(() => revertRun(ctx, { commits: [c2] }));
+
+        // Assert
+        expect(code).toBe('WORKING_TREE_DIRTY');
+      });
+    });
+  });
+});
