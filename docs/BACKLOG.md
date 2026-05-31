@@ -288,8 +288,9 @@ v2.0 ships when 22.4 lands. Perf pass for v2 covered in **26**.
 - [ ] **24.5** `bisect` — binary search.
 - [ ] **24.6** `worktree` — add / list / move / remove (distinct working trees over one gitdir).
 - [ ] **24.7** `notes` — add / read / list / remove on `refs/notes/*`.
+- [ ] **24.8** Custom merge drivers — `.gitattributes` `merge=<driver>` resolution + configurable `[merge "<driver>"]` driver invocation, layered over the built-in 3-way content merge (`domain/merge/`) reused by `merge`/`stash`/`cherry-pick`/`revert`.
 
-v3.0 ships when 24.7 lands. Perf pass covered in **26**.
+v3.0 ships when 24.8 lands. Perf pass covered in **26**.
 
 ---
 
