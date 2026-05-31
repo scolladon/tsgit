@@ -43,7 +43,11 @@ export const abortMerge = async (ctx: Context): Promise<AbortMergeResult> => {
     throw unsupportedOperation('merge --abort', 'cannot abort with detached HEAD');
   }
   await hardResetWorktreeToCommit(ctx, origHead);
-  await updateRef(ctx, head.target, origHead, { reflogMessage: 'merge: aborted' });
+  // git's `merge --abort` delegates to a `reset` whose rev argument is the
+  // symbolic `HEAD`, so the coupled-HEAD reflog reads `reset: moving to HEAD`
+  // (the literal `HEAD`, not the oid). The branch entry is skipped upstream: a
+  // conflicted merge never moved HEAD, so `origHead` equals the current tip.
+  await updateRef(ctx, head.target, origHead, { reflogMessage: 'reset: moving to HEAD' });
   await clearMergeState(ctx);
   return { origHead, branch: head.target };
 };
