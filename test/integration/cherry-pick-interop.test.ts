@@ -33,6 +33,7 @@ import {
   type PeerPair,
   runGit,
   runGitEnv,
+  topReflogSubject,
   tryRunGit,
   writeTreeOf,
 } from './interop-helpers.js';
@@ -80,14 +81,6 @@ const commitShape = (dir: string): { author: string; message: string; parents: n
 /** A blob path resolves in HEAD's tree — proof the pick that introduced it landed. */
 const headHasBlob = (dir: string, rel: string): boolean =>
   git(dir, 'cat-file', '-t', git(dir, 'rev-parse', `HEAD:${rel}`).trim()).trim() === 'blob';
-
-/** Newest reflog subject for `main` — reads whichever `.git/logs` the dir holds (tsgit's or git's). */
-const topReflog = (dir: string): string =>
-  git(dir, 'log', '-g', '--format=%gs', 'refs/heads/main').split('\n')[0] ?? '';
-
-/** Newest reflog subject for `HEAD` — the symref log-only path that records no-move resets. */
-const topHeadReflog = (dir: string): string =>
-  git(dir, 'log', '-g', '--format=%gs', 'HEAD').split('\n')[0] ?? '';
 
 describe.skipIf(!GIT_AVAILABLE)('cherry-pick interop', () => {
   let pair: PeerPair;
@@ -229,9 +222,9 @@ describe.skipIf(!GIT_AVAILABLE)('cherry-pick interop', () => {
       await repo.dispose();
 
       // Assert — git's literal format (oracle) + byte-identical tsgit parity
-      const peerReflog = topReflog(pair.peer);
+      const peerReflog = topReflogSubject(pair.peer, 'refs/heads/main');
       expect(peerReflog).toBe(`reset: moving to ${pre}`);
-      expect(topReflog(pair.ours)).toBe(peerReflog);
+      expect(topReflogSubject(pair.ours, 'refs/heads/main')).toBe(peerReflog);
     });
   });
 
@@ -244,7 +237,7 @@ describe.skipIf(!GIT_AVAILABLE)('cherry-pick interop', () => {
       const pre = git(pair.peer, 'rev-parse', 'refs/heads/main').trim();
       expect(git(pair.ours, 'rev-parse', 'refs/heads/main').trim()).toBe(pre);
       const conflicting = git(pair.peer, 'rev-parse', 'feature~1').trim();
-      const branchTop = topReflog(pair.peer);
+      const branchTop = topReflogSubject(pair.peer, 'refs/heads/main');
       tryRunGit(['-C', pair.peer, '-c', 'core.editor=true', 'cherry-pick', conflicting]);
       const repo = await openRepository({ cwd: pair.ours });
       const stop = await repo.cherryPick.run({ commits: [conflicting] });
@@ -256,10 +249,10 @@ describe.skipIf(!GIT_AVAILABLE)('cherry-pick interop', () => {
       await repo.dispose();
 
       // Assert — git writes no branch entry on a no-move, but logs HEAD; tsgit matches
-      expect(topReflog(pair.peer)).toBe(branchTop);
-      expect(topReflog(pair.ours)).toBe(branchTop);
-      expect(topHeadReflog(pair.peer)).toBe(`reset: moving to ${pre}`);
-      expect(topHeadReflog(pair.ours)).toBe(topHeadReflog(pair.peer));
+      expect(topReflogSubject(pair.peer, 'refs/heads/main')).toBe(branchTop);
+      expect(topReflogSubject(pair.ours, 'refs/heads/main')).toBe(branchTop);
+      expect(topReflogSubject(pair.peer, 'HEAD')).toBe(`reset: moving to ${pre}`);
+      expect(topReflogSubject(pair.ours, 'HEAD')).toBe(topReflogSubject(pair.peer, 'HEAD'));
     });
   });
 });

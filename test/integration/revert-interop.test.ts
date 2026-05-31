@@ -31,6 +31,7 @@ import {
   type PeerPair,
   runGit,
   runGitEnv,
+  topReflogSubject,
   tryRunGit,
   writeTreeOf,
 } from './interop-helpers.js';
@@ -74,14 +75,6 @@ const commitShape = (dir: string): { message: string; parents: number } => {
 
 /** Whether a `.git/<file>` in-progress marker is present. */
 const hasState = (dir: string, file: string): boolean => existsSync(path.join(dir, '.git', file));
-
-/** Newest reflog subject for `main` — reads whichever `.git/logs` the dir holds (tsgit's or git's). */
-const topReflog = (dir: string): string =>
-  git(dir, 'log', '-g', '--format=%gs', 'refs/heads/main').split('\n')[0] ?? '';
-
-/** Newest reflog subject for `HEAD` — the symref log-only path that records no-move resets. */
-const topHeadReflog = (dir: string): string =>
-  git(dir, 'log', '-g', '--format=%gs', 'HEAD').split('\n')[0] ?? '';
 
 describe.skipIf(!GIT_AVAILABLE)('revert interop', () => {
   let pair: PeerPair;
@@ -185,7 +178,7 @@ describe.skipIf(!GIT_AVAILABLE)('revert interop', () => {
       buildRevertConflictRange(pair.ours);
       const pre = git(pair.peer, 'rev-parse', 'refs/heads/main').trim();
       expect(git(pair.ours, 'rev-parse', 'refs/heads/main').trim()).toBe(pre);
-      const branchTop = topReflog(pair.peer);
+      const branchTop = topReflogSubject(pair.peer, 'refs/heads/main');
       tryRunGit(['-C', pair.peer, '-c', 'core.editor=true', 'revert', '--no-edit', c3]);
       const repo = await openRepository({ cwd: pair.ours });
       const stop = await repo.revert.run({ commits: [c3] });
@@ -197,10 +190,10 @@ describe.skipIf(!GIT_AVAILABLE)('revert interop', () => {
       await repo.dispose();
 
       // Assert — git writes no branch entry on a no-move, but logs HEAD; tsgit matches
-      expect(topReflog(pair.peer)).toBe(branchTop);
-      expect(topReflog(pair.ours)).toBe(branchTop);
-      expect(topHeadReflog(pair.peer)).toBe(`reset: moving to ${pre}`);
-      expect(topHeadReflog(pair.ours)).toBe(topHeadReflog(pair.peer));
+      expect(topReflogSubject(pair.peer, 'refs/heads/main')).toBe(branchTop);
+      expect(topReflogSubject(pair.ours, 'refs/heads/main')).toBe(branchTop);
+      expect(topReflogSubject(pair.peer, 'HEAD')).toBe(`reset: moving to ${pre}`);
+      expect(topReflogSubject(pair.ours, 'HEAD')).toBe(topReflogSubject(pair.peer, 'HEAD'));
     });
   });
 
