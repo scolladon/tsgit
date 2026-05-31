@@ -9,11 +9,14 @@
  */
 import {
   invalidOption,
+  mergeHasConflicts,
   noInitialCommit,
+  noOperationInProgress,
   revertMergeNoMainline,
   workingTreeDirty,
 } from '../../domain/commands/error.js';
 import { TsgitError } from '../../domain/error.js';
+import type { IndexEntry } from '../../domain/git-index/index.js';
 import { unsupportedOperation } from '../../domain/index.js';
 import type { ConflictType, MergeConflict } from '../../domain/merge/index.js';
 import type { CommitData } from '../../domain/objects/commit.js';
@@ -33,18 +36,26 @@ import {
 import { readIndex } from '../primitives/read-index.js';
 import { readObject } from '../primitives/read-object.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
+import { synthesizeTreeFromIndex } from '../primitives/synthesize-tree-from-index.js';
 import { updateRef } from '../primitives/update-ref.js';
 import { walkCommits } from '../primitives/walk-commits.js';
 import { writeTree } from '../primitives/write-tree.js';
 import { conflictMergeMsg } from './internal/cherry-pick-state.js';
 import { assertCleanWorkTree } from './internal/clean-work-tree.js';
 import { resolveCommitIsh } from './internal/commit-ish.js';
-import { resolveCommitter, sanitizeMessage } from './internal/commit-message.js';
+import { resolveCommitter, sanitizeMessage, stripComments } from './internal/commit-message.js';
 import { acquireIndexLock } from './internal/index-update.js';
-import { writeMergeMsg } from './internal/merge-state.js';
-import { revertMessage, writeRevertHead } from './internal/revert-state.js';
+import { clearMergeMsg, readMergeMsg, writeMergeMsg } from './internal/merge-state.js';
+import {
+  clearRevertHead,
+  readRevertHead,
+  revertMessage,
+  writeRevertHead,
+} from './internal/revert-state.js';
 import {
   clearSequencer,
+  readSequencerHead,
+  readSequencerTodo,
   writeAbortSafety,
   writeSequencerHead,
   writeSequencerOpts,
@@ -204,6 +215,12 @@ const persistStop = async (
 interface SequenceState {
   readonly multiPick: boolean;
   readonly sequenceHead: ObjectId;
+  /**
+   * What to do when the leading commit reverts empty: `'stop'` (a fresh run —
+   * surface it as `kind:'empty'`) or `'drop'` (a `continue` that acknowledged
+   * the empty — discard it and proceed past it).
+   */
+  readonly onEmpty: 'stop' | 'drop';
 }
 
 /** Read each commit's subject to build `revert <oid> <subject>` todo entries. */
@@ -234,6 +251,36 @@ const writeSequencerStop = async (
   await writeSequencerOpts(ctx, { recordOrigin: false, allowEmpty: false, noCommit: false });
 };
 
+interface StopContext {
+  readonly seq: SequenceState;
+  readonly source: ObjectId;
+  readonly cData: CommitData;
+  readonly remaining: ReadonlyArray<ObjectId>;
+  readonly currentHead: ObjectId;
+}
+
+/** Persist a conflict/empty stop (markers + sequencer for a multi-revert) and shape the result. */
+const stopRun = async (
+  ctx: Context,
+  outcome:
+    | { readonly kind: 'conflict'; readonly conflicts: ReadonlyArray<MergeConflict> }
+    | { readonly kind: 'empty' },
+  stop: StopContext,
+): Promise<RevertResult> => {
+  if (outcome.kind === 'conflict')
+    await persistStop(ctx, stop.source, stop.cData, outcome.conflicts);
+  if (stop.seq.multiPick) await writeSequencerStop(ctx, stop.seq, stop.remaining, stop.currentHead);
+  const remaining = stop.remaining.length - 1;
+  return outcome.kind === 'conflict'
+    ? {
+        kind: 'conflict',
+        commit: stop.source,
+        conflicts: toConflictList(outcome.conflicts),
+        remaining,
+      }
+    : { kind: 'empty', commit: stop.source, remaining };
+};
+
 /**
  * Drive the revert work-list from `startOurId`, committing each clean revert and
  * advancing HEAD. A conflict persists `REVERT_HEAD` + `MERGE_MSG`; an empty revert
@@ -252,10 +299,11 @@ const runSequence = async (
   for (let i = 0; i < todo.length; i += 1) {
     const source = todo[i] as ObjectId;
     const cData = await readCommitData(ctx, source);
+    const stop: StopContext = { seq, source, cData, remaining: todo.slice(i), currentHead: ourId };
     if (isMergeCommit(cData)) {
-      // Partial-apply: earlier reverts are already committed. Stop AT the merge,
-      // keeping it as todo[0] (no REVERT_HEAD — it never started).
-      if (seq.multiPick) await writeSequencerStop(ctx, seq, todo.slice(i), ourId);
+      // Partial-apply: earlier reverts are committed. Stop AT the merge, keeping
+      // it as todo[0] (no REVERT_HEAD — it never started).
+      if (seq.multiPick) await writeSequencerStop(ctx, seq, stop.remaining, ourId);
       throw revertMergeNoMainline(source);
     }
     const outcome = await applyOneRevert(ctx, source, cData, branch, ourId);
@@ -264,17 +312,10 @@ const runSequence = async (
       ourId = outcome.id;
       continue;
     }
-    if (outcome.kind === 'conflict') await persistStop(ctx, source, cData, outcome.conflicts);
-    if (seq.multiPick) await writeSequencerStop(ctx, seq, todo.slice(i), ourId);
-    const remaining = todo.length - (i + 1);
-    return outcome.kind === 'conflict'
-      ? {
-          kind: 'conflict',
-          commit: source,
-          conflicts: toConflictList(outcome.conflicts),
-          remaining,
-        }
-      : { kind: 'empty', commit: source, remaining };
+    // A `continue` that already acknowledged the leading empty drops it and
+    // proceeds; a later empty (i > 0) still stops on its own.
+    if (outcome.kind === 'empty' && seq.onEmpty === 'drop' && i === 0) continue;
+    return stopRun(ctx, outcome, stop);
   }
   await clearSequencer(ctx);
   return { kind: 'reverted', commits: applied };
@@ -342,6 +383,108 @@ export const revertRun = async (ctx: Context, input: RevertRunInput): Promise<Re
   const ourId = await resolveHeadCommit(ctx, head.target);
   const todo = await expandRevisions(ctx, input.commits);
   await assertCleanWorkTree(ctx, await treeOf(ctx, ourId));
-  const seq: SequenceState = { multiPick: todo.length > 1, sequenceHead: ourId };
+  const seq: SequenceState = { multiPick: todo.length > 1, sequenceHead: ourId, onEmpty: 'stop' };
   return runSequence(ctx, todo, head.target, ourId, seq);
+};
+
+const rejectUnmergedIndex = (entries: ReadonlyArray<IndexEntry>): void => {
+  const unmerged = new Set<FilePath>();
+  for (const entry of entries) {
+    if (entry.flags.stage !== 0) unmerged.add(entry.path);
+  }
+  if (unmerged.size > 0) throw mergeHasConflicts(unmerged.size, [...unmerged]);
+};
+
+/**
+ * Commit the resolved revert: single parent, current identity, the `MERGE_MSG`
+ * draft (comments stripped), reflog **`commit: <subject>`** (plain — git writes no
+ * `commit (revert):` prefix, verified).
+ */
+const commitResolvedRevert = async (
+  ctx: Context,
+  ourId: ObjectId,
+  branch: RefName,
+  tree: ObjectId,
+): Promise<ObjectId> => {
+  const identity = await resolveCurrentIdentity(ctx);
+  const message = sanitizeMessage(stripComments((await readMergeMsg(ctx)) ?? ''), {
+    allowEmpty: false,
+  });
+  const id = await createCommit(ctx, {
+    tree,
+    parents: [ourId],
+    author: identity,
+    committer: identity,
+    message,
+    extraHeaders: [],
+  });
+  await updateRef(ctx, branch, id, {
+    expected: ourId,
+    reflogMessage: `commit: ${subjectOf(message)}`,
+  });
+  return id;
+};
+
+/**
+ * Finalise the in-progress conflicted revert from the resolved index. A no-change
+ * resolution re-stops empty, **keeping** `REVERT_HEAD` (git's "nothing to commit"
+ * — the user must `skip` or `commit --allow-empty`).
+ */
+const finaliseInProgressRevert = async (
+  ctx: Context,
+  branch: RefName,
+  ourId: ObjectId,
+): Promise<{ readonly created: ObjectId } | { readonly empty: true }> => {
+  const index = await readIndex(ctx);
+  rejectUnmergedIndex(index.entries);
+  const indexTree = await synthesizeTreeFromIndex(ctx, index.entries);
+  if (indexTree === (await treeOf(ctx, ourId))) return { empty: true };
+  const created = await commitResolvedRevert(ctx, ourId, branch, indexTree);
+  await clearRevertHead(ctx);
+  await clearMergeMsg(ctx);
+  return { created };
+};
+
+/**
+ * Finalise the in-progress conflicted revert (if any) as a single-parent commit,
+ * then resume the remaining sequencer reverts. Refuses when nothing is in progress
+ * or the index is unmerged; a resolution that yields no change re-stops empty.
+ */
+export const revertContinue = async (ctx: Context): Promise<RevertResult> => {
+  await assertRepository(ctx);
+  await assertNotBare(ctx, 'revert --continue');
+  const source = await readRevertHead(ctx);
+  const todoOnDisk = await readSequencerTodo(ctx);
+  if (source === undefined && (todoOnDisk === undefined || todoOnDisk.length === 0)) {
+    throw noOperationInProgress('revert');
+  }
+  const head = await readHeadRaw(ctx);
+  if (head.kind !== 'symbolic') {
+    throw unsupportedOperation('revert --continue', 'cannot continue with detached HEAD');
+  }
+  let ourId = await resolveRef(ctx, head.target);
+  const applied: RevertedCommit[] = [];
+  if (source !== undefined) {
+    const remainingAfter = todoOnDisk !== undefined ? todoOnDisk.length - 1 : 0;
+    const done = await finaliseInProgressRevert(ctx, head.target, ourId);
+    if ('empty' in done) return { kind: 'empty', commit: source, remaining: remainingAfter };
+    applied.push({ source, created: done.created });
+    ourId = done.created;
+  }
+  // A finalised current revert is `todo[0]` — drop it; a markerless stop leaves it.
+  const rest = (todoOnDisk ?? []).slice(source !== undefined ? 1 : 0).map((e) => e.oid);
+  if (rest.length === 0) {
+    await clearSequencer(ctx);
+    return { kind: 'reverted', commits: applied };
+  }
+  const sequenceHead = (await readSequencerHead(ctx)) ?? ourId;
+  const onEmpty = source === undefined ? 'drop' : 'stop';
+  const result = await runSequence(ctx, rest, head.target, ourId, {
+    multiPick: true,
+    sequenceHead,
+    onEmpty,
+  });
+  return result.kind === 'reverted'
+    ? { kind: 'reverted', commits: [...applied, ...result.commits] }
+    : result;
 };

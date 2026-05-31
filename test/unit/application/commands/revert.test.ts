@@ -6,7 +6,7 @@ import { checkout } from '../../../../src/application/commands/checkout.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
 import { merge } from '../../../../src/application/commands/merge.js';
-import { revertRun } from '../../../../src/application/commands/revert.js';
+import { revertContinue, revertRun } from '../../../../src/application/commands/revert.js';
 import { rm } from '../../../../src/application/commands/rm.js';
 import { readIndex } from '../../../../src/application/primitives/read-index.js';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
@@ -489,6 +489,178 @@ describe('revert range and sequencer', () => {
 
         // Assert
         expect(code).toBe('INVALID_OPTION');
+      });
+    });
+  });
+});
+
+/** Seed a stopped single-revert conflict: revert c2 conflicts vs c3 (HEAD). */
+const seedConflictStop = async (): Promise<{ ctx: Context; c2: ObjectId }> => {
+  const { ctx, c2 } = await seedLinear();
+  await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'a\nB3\nc\n');
+  await add(ctx, ['f.txt']);
+  await commit(ctx, { message: 'c3 top', author: MAIN_AUTHOR });
+  const stop = await revertRun(ctx, { commits: [c2] });
+  if (stop.kind !== 'conflict') throw new Error('seed: expected a conflict stop');
+  return { ctx, c2 };
+};
+
+describe('revert continue', () => {
+  describe('Given a resolved single-revert conflict', () => {
+    describe('When continue runs', () => {
+      it('Then commits the resolution with a plain `commit:` reflog and clears the state', async () => {
+        // Arrange
+        const { ctx, c2 } = await seedConflictStop();
+        await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'a\nRESOLVED\nc\n');
+        await add(ctx, ['f.txt']);
+
+        // Act
+        const sut = await revertContinue(ctx);
+
+        // Assert
+        expect(sut.kind).toBe('reverted');
+        if (sut.kind !== 'reverted') throw new Error('expected reverted');
+        expect(sut.commits.map((c) => c.source)).toEqual([c2]);
+        const reflog = await readReflog(ctx, 'refs/heads/main' as RefName);
+        expect(reflog.at(-1)?.message).toBe('commit: Revert "c2 mid"');
+        expect(await exists(ctx, 'REVERT_HEAD')).toBe(false);
+        expect(await exists(ctx, 'MERGE_MSG')).toBe(false);
+        const created = sut.commits[0]?.created as ObjectId;
+        expect((await readCommit(ctx, created)).parents).toHaveLength(1);
+      });
+    });
+  });
+
+  describe('Given a resolved range-revert conflict with more to do', () => {
+    describe('When continue runs', () => {
+      it('Then commits the resolution then reverts the remaining commits', async () => {
+        // Arrange — c2 edits g.txt, c3 edits f.txt, c4 re-edits f.txt so
+        // reverting c3 conflicts. The remaining c2 revert touches only g.txt and
+        // applies cleanly. Range c1..c3 = {c3, c2} newest-first.
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await setUser(ctx);
+        await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'base\n');
+        await ctx.fs.writeUtf8(work(ctx, 'g.txt'), 'g1\n');
+        await add(ctx, ['f.txt', 'g.txt']);
+        const c1 = (await commit(ctx, { message: 'c1 base', author: MAIN_AUTHOR })).id;
+        await ctx.fs.writeUtf8(work(ctx, 'g.txt'), 'g2\n');
+        await add(ctx, ['g.txt']);
+        const c2 = (await commit(ctx, { message: 'c2 edit g', author: MAIN_AUTHOR })).id;
+        await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'f3\n');
+        await add(ctx, ['f.txt']);
+        const c3 = (await commit(ctx, { message: 'c3 edit f', author: MAIN_AUTHOR })).id;
+        await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'f4\n');
+        await add(ctx, ['f.txt']);
+        await commit(ctx, { message: 'c4 re-edit f', author: MAIN_AUTHOR });
+        const stop = await revertRun(ctx, { commits: [`${c1}..${c3}`] });
+        if (stop.kind !== 'conflict') throw new Error('seed: expected a conflict');
+        // Resolve by accepting the c3 revert (f → base): a real tree change, so
+        // the finalised commit is non-empty.
+        await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'base\n');
+        await add(ctx, ['f.txt']);
+
+        // Act
+        const sut = await revertContinue(ctx);
+
+        // Assert
+        expect(sut.kind).toBe('reverted');
+        if (sut.kind !== 'reverted') throw new Error('expected reverted');
+        expect(sut.commits.map((c) => c.source)).toEqual([c3, c2]);
+        expect(await ctx.fs.readUtf8(work(ctx, 'g.txt'))).toBe('g1\n');
+        expect(await exists(ctx, 'sequencer')).toBe(false);
+        expect(await exists(ctx, 'REVERT_HEAD')).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a revert conflict resolved to no net change', () => {
+    describe('When continue runs', () => {
+      it('Then re-stops empty and keeps REVERT_HEAD', async () => {
+        // Arrange — resolve the conflict back to the current HEAD content.
+        const { ctx, c2 } = await seedConflictStop();
+        await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'a\nB3\nc\n');
+        await add(ctx, ['f.txt']);
+
+        // Act
+        const sut = await revertContinue(ctx);
+
+        // Assert
+        expect(sut.kind).toBe('empty');
+        if (sut.kind !== 'empty') throw new Error('expected empty');
+        expect(sut.commit).toBe(c2);
+        expect(await ctx.fs.readUtf8(`${gitDir(ctx)}/REVERT_HEAD`)).toBe(`${c2}\n`);
+      });
+    });
+  });
+
+  describe('Given a multi-revert stopped at an empty commit', () => {
+    describe('When continue runs', () => {
+      it('Then drops the empty revert and finishes, clearing the sequencer', async () => {
+        // Arrange — `revert c2 c2`: first commits, second stops empty.
+        const { ctx, c2 } = await seedLinear();
+        const stop = await revertRun(ctx, { commits: [c2, c2] });
+        if (stop.kind !== 'empty') throw new Error('seed: expected empty stop');
+
+        // Act
+        const sut = await revertContinue(ctx);
+
+        // Assert
+        expect(sut.kind).toBe('reverted');
+        if (sut.kind !== 'reverted') throw new Error('expected reverted');
+        expect(sut.commits).toEqual([]);
+        expect(await exists(ctx, 'sequencer')).toBe(false);
+        expect(await exists(ctx, 'REVERT_HEAD')).toBe(false);
+      });
+    });
+  });
+
+  describe('Given nothing in progress', () => {
+    describe('When continue runs', () => {
+      it('Then refuses with NO_OPERATION_IN_PROGRESS', async () => {
+        // Arrange
+        const { ctx } = await seedLinear();
+
+        // Act
+        const code = await codeOf(() => revertContinue(ctx));
+
+        // Assert
+        expect(code).toBe('NO_OPERATION_IN_PROGRESS');
+      });
+    });
+  });
+
+  describe('Given an unresolved (still-conflicted) index', () => {
+    describe('When continue runs', () => {
+      it('Then refuses with MERGE_HAS_CONFLICTS', async () => {
+        // Arrange — leave the conflict markers / stage>0 entries in place.
+        const { ctx } = await seedConflictStop();
+
+        // Act
+        const code = await codeOf(() => revertContinue(ctx));
+
+        // Assert
+        expect(code).toBe('MERGE_HAS_CONFLICTS');
+      });
+    });
+  });
+
+  describe('Given a detached HEAD', () => {
+    describe('When continue runs', () => {
+      it('Then refuses with UNSUPPORTED_OPERATION', async () => {
+        // Arrange
+        const { ctx, c2 } = await seedConflictStop();
+        await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'a\nRESOLVED\nc\n');
+        await add(ctx, ['f.txt']);
+        const head = await resolveRef(ctx, 'refs/heads/main' as RefName);
+        await ctx.fs.writeUtf8(`${gitDir(ctx)}/HEAD`, `${head}\n`);
+        void c2;
+
+        // Act
+        const code = await codeOf(() => revertContinue(ctx));
+
+        // Assert
+        expect(code).toBe('UNSUPPORTED_OPERATION');
       });
     });
   });
