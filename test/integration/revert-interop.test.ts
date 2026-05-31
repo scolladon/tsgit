@@ -75,6 +75,14 @@ const commitShape = (dir: string): { message: string; parents: number } => {
 /** Whether a `.git/<file>` in-progress marker is present. */
 const hasState = (dir: string, file: string): boolean => existsSync(path.join(dir, '.git', file));
 
+/** Newest reflog subject for `main` — reads whichever `.git/logs` the dir holds (tsgit's or git's). */
+const topReflog = (dir: string): string =>
+  git(dir, 'log', '-g', '--format=%gs', 'refs/heads/main').split('\n')[0] ?? '';
+
+/** Newest reflog subject for `HEAD` — the symref log-only path that records no-move resets. */
+const topHeadReflog = (dir: string): string =>
+  git(dir, 'log', '-g', '--format=%gs', 'HEAD').split('\n')[0] ?? '';
+
 describe.skipIf(!GIT_AVAILABLE)('revert interop', () => {
   let pair: PeerPair;
 
@@ -166,6 +174,33 @@ describe.skipIf(!GIT_AVAILABLE)('revert interop', () => {
       expect(done.kind).toBe('reverted');
       expect(hasState(dir, 'REVERT_HEAD')).toBe(false);
       await repo.dispose();
+    });
+  });
+
+  describe('Given a lone revert conflict aborted (no move)', () => {
+    it('Then tsgit and git agree: branch reflog unchanged, HEAD records `reset: moving to`', async () => {
+      // Arrange — reverting c3 alone conflicts (c4 re-touched line 1) and never
+      // moves the branch; the seed is git-built + date-pinned on both repos.
+      const { c3 } = buildRevertConflictRange(pair.peer);
+      buildRevertConflictRange(pair.ours);
+      const pre = git(pair.peer, 'rev-parse', 'refs/heads/main').trim();
+      expect(git(pair.ours, 'rev-parse', 'refs/heads/main').trim()).toBe(pre);
+      const branchTop = topReflog(pair.peer);
+      tryRunGit(['-C', pair.peer, '-c', 'core.editor=true', 'revert', '--no-edit', c3]);
+      const repo = await openRepository({ cwd: pair.ours });
+      const stop = await repo.revert.run({ commits: [c3] });
+      expect(stop.kind).toBe('conflict');
+
+      // Act — abort on both tools; the branch stays at `pre` (no move)
+      runGit(['-C', pair.peer, 'revert', '--abort']);
+      await repo.revert.abort();
+      await repo.dispose();
+
+      // Assert — git writes no branch entry on a no-move, but logs HEAD; tsgit matches
+      expect(topReflog(pair.peer)).toBe(branchTop);
+      expect(topReflog(pair.ours)).toBe(branchTop);
+      expect(topHeadReflog(pair.peer)).toBe(`reset: moving to ${pre}`);
+      expect(topHeadReflog(pair.ours)).toBe(topHeadReflog(pair.peer));
     });
   });
 

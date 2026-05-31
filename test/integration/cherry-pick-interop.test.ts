@@ -85,6 +85,10 @@ const headHasBlob = (dir: string, rel: string): boolean =>
 const topReflog = (dir: string): string =>
   git(dir, 'log', '-g', '--format=%gs', 'refs/heads/main').split('\n')[0] ?? '';
 
+/** Newest reflog subject for `HEAD` — the symref log-only path that records no-move resets. */
+const topHeadReflog = (dir: string): string =>
+  git(dir, 'log', '-g', '--format=%gs', 'HEAD').split('\n')[0] ?? '';
+
 describe.skipIf(!GIT_AVAILABLE)('cherry-pick interop', () => {
   let pair: PeerPair;
 
@@ -228,6 +232,34 @@ describe.skipIf(!GIT_AVAILABLE)('cherry-pick interop', () => {
       const peerReflog = topReflog(pair.peer);
       expect(peerReflog).toBe(`reset: moving to ${pre}`);
       expect(topReflog(pair.ours)).toBe(peerReflog);
+    });
+  });
+
+  describe('Given a lone cherry-pick conflict aborted (no move)', () => {
+    it('Then tsgit and git agree: branch reflog unchanged, HEAD records `reset: moving to`', async () => {
+      // Arrange — pick the single conflicting commit (no prior pick, so the branch
+      // never moves); the seed is git-built + date-pinned on both repos.
+      buildConflictRange(pair.peer);
+      buildConflictRange(pair.ours);
+      const pre = git(pair.peer, 'rev-parse', 'refs/heads/main').trim();
+      expect(git(pair.ours, 'rev-parse', 'refs/heads/main').trim()).toBe(pre);
+      const conflicting = git(pair.peer, 'rev-parse', 'feature~1').trim();
+      const branchTop = topReflog(pair.peer);
+      tryRunGit(['-C', pair.peer, '-c', 'core.editor=true', 'cherry-pick', conflicting]);
+      const repo = await openRepository({ cwd: pair.ours });
+      const stop = await repo.cherryPick.run({ commits: [conflicting] });
+      expect(stop.kind).toBe('conflict');
+
+      // Act — abort on both tools; the branch stays at `pre` (no move)
+      runGit(['-C', pair.peer, 'cherry-pick', '--abort']);
+      await repo.cherryPick.abort();
+      await repo.dispose();
+
+      // Assert — git writes no branch entry on a no-move, but logs HEAD; tsgit matches
+      expect(topReflog(pair.peer)).toBe(branchTop);
+      expect(topReflog(pair.ours)).toBe(branchTop);
+      expect(topHeadReflog(pair.peer)).toBe(`reset: moving to ${pre}`);
+      expect(topHeadReflog(pair.ours)).toBe(topHeadReflog(pair.peer));
     });
   });
 });
