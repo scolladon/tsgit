@@ -611,7 +611,8 @@ export const cherryPickSkip = async (
 /**
  * Abort the cherry-pick: hard-reset the working tree, index, and branch to the
  * pre-sequence HEAD (sequencer `head`, or the current HEAD for a lone pick), and
- * clear all state. Refuses when nothing is in progress.
+ * clear all state. The branch update records git's faithful
+ * `reset: moving to <oid>` reflog. Refuses when nothing is in progress.
  */
 export const cherryPickAbort = async (ctx: Context): Promise<CherryPickAbortResult> => {
   await assertRepository(ctx);
@@ -624,7 +625,7 @@ export const cherryPickAbort = async (ctx: Context): Promise<CherryPickAbortResu
   const branch = await requireSymbolicHead(ctx, 'cherry-pick --abort');
   const target = seqHead ?? (await resolveRef(ctx, branch));
   await hardResetWorktreeToCommit(ctx, target);
-  await updateRef(ctx, branch, target, { reflogMessage: 'cherry-pick: aborted' });
+  await updateRef(ctx, branch, target, { reflogMessage: `reset: moving to ${target}` });
   await clearCherryPickHead(ctx);
   await clearMergeMsg(ctx);
   await clearSequencer(ctx);
