@@ -113,11 +113,18 @@ If the project has no mutation config or the run is intractable (>30 min), surfa
 
 Update `README.md`, `RUNBOOK.md`, `CONTRIBUTING.md`, and the relevant `docs/get-started/` / `docs/use/` / `docs/understand/` pages. Flip the `docs/BACKLOG.md` entry (`[ ]` / `[~]` → `[x]`) inside this PR's commits. Push the branch with `-u origin`. Run `gh pr create` with a thorough body (summary + test plan).
 
-## Step 10 — Cleanup
+## Step 10 — Merge + cleanup
 
-Surface the PR URL. Wait for confirmation that CI is green and the PR is squash-merged. Then:
+Surface the PR URL and the CI result. Once CI is green — ignore the non-blocking `mutation` / `benchmark-compare` jobs — squash-merge **with branch deletion**:
 
 ```bash
+gh pr merge <#> --squash --delete-branch --admin
+```
+
+**Always pass `--delete-branch`** so the remote branch is removed as part of the merge. `--admin` is required because the `main` ruleset blocks normal merges. Then update `main` and drop the local worktree + branch:
+
+```bash
+git checkout main && git pull --ff-only
 git worktree remove ../tsgit-<slug>
 git branch -D feat/<slug>
 ```
@@ -131,5 +138,6 @@ git branch -D feat/<slug>
 - **Never `--no-verify` the commit hook**, never use ignore directives.
 - **Never include phase/ADR refs inside source or test code** (`§X.Y.Z`, `Phase N`, `ADR-NNN`, `BACKLOG 20.6` etc.). Those belong in the design doc and PR body. Source code is silent about its provenance.
 - **Be git-faithful** unless an ADR explicitly diverges.
+- **Always merge with `--delete-branch`** (`gh pr merge --squash --delete-branch --admin`) so no merged branch lingers on the remote.
 
 When done, the final message to the user is the PR URL + a one-line summary of what shipped.
