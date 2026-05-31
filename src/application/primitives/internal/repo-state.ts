@@ -81,14 +81,17 @@ type PendingOperation = 'merge' | 'rebase' | 'cherry-pick' | 'revert';
  * Catches the four standard markers; first match in PENDING_MARKERS order wins
  * (MERGE_HEAD beats the rest), but the existence checks fan out in parallel.
  *
- * Pass `except` to skip a specific marker — used by `commit` to allow the
- * resolving commit of a conflicted merge (where MERGE_HEAD is expected to
- * exist and the command's purpose is to clear it).
+ * Pass `except` (a single operation or a list) to skip those markers — used by
+ * `commit` to allow the resolving commit of a conflicted merge / cherry-pick,
+ * and by `add` to allow staging the resolution of any in-progress operation.
  */
 export const assertNoPendingOperation = async (
   ctx: Context,
-  options: { readonly except?: PendingOperation } = {},
+  options: { readonly except?: PendingOperation | ReadonlyArray<PendingOperation> } = {},
 ): Promise<void> => {
+  const except = options.except;
+  const isExcepted = (op: PendingOperation): boolean =>
+    Array.isArray(except) ? except.includes(op) : except === op;
   const flags = await Promise.all(
     PENDING_MARKERS.map((m) => ctx.fs.exists(`${ctx.layout.gitDir}/${m.file}`)),
   );
@@ -96,7 +99,7 @@ export const assertNoPendingOperation = async (
   for (let i = 0; i < PENDING_MARKERS.length; i += 1) {
     const marker = PENDING_MARKERS[i];
     if (marker === undefined) continue;
-    if (options.except === marker.operation) continue;
+    if (isExcepted(marker.operation)) continue;
     if (flags[i] === true) throw operationInProgress(marker.operation);
   }
 };

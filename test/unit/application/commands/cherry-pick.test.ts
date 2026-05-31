@@ -3,13 +3,17 @@ import { createMemoryContext } from '../../../../src/adapters/memory/memory-adap
 import { add } from '../../../../src/application/commands/add.js';
 import { branchCreate } from '../../../../src/application/commands/branch.js';
 import { checkout } from '../../../../src/application/commands/checkout.js';
-import { cherryPickRun } from '../../../../src/application/commands/cherry-pick.js';
+import {
+  cherryPickContinue,
+  cherryPickRun,
+} from '../../../../src/application/commands/cherry-pick.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
 import { writeMergeHead } from '../../../../src/application/commands/internal/merge-state.js';
 import { createCommit } from '../../../../src/application/primitives/create-commit.js';
 import { readIndex } from '../../../../src/application/primitives/read-index.js';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
+import { readReflog } from '../../../../src/application/primitives/reflog-store.js';
 import { resolveRef } from '../../../../src/application/primitives/resolve-ref.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { writeTree } from '../../../../src/application/primitives/write-tree.js';
@@ -81,6 +85,105 @@ const seedFeature = async (
   await checkout(ctx, { target: 'main' });
   return { ctx, feature: feature.id, base: base.id };
 };
+
+/** Set up a conflicting cherry-pick already in progress; returns ctx + feature id. */
+const seedConflictPick = async (): Promise<{ ctx: Context; feature: ObjectId }> => {
+  const ctx = createMemoryContext();
+  await init(ctx);
+  await setUser(ctx);
+  await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'l1\nl2\n');
+  await add(ctx, ['f.txt']);
+  await commit(ctx, { message: 'base', author: MAIN_AUTHOR });
+  await branchCreate(ctx, { name: 'feature' });
+  await checkout(ctx, { target: 'feature' });
+  await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'l1\nFEAT\n');
+  await add(ctx, ['f.txt']);
+  const feature = await commit(ctx, { message: 'feat change', author: FEAT_AUTHOR });
+  await checkout(ctx, { target: 'main' });
+  await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'l1\nMAIN\n');
+  await add(ctx, ['f.txt']);
+  await commit(ctx, { message: 'main change', author: MAIN_AUTHOR });
+  await cherryPickRun(ctx, { commits: [feature.id] });
+  return { ctx, feature: feature.id };
+};
+
+describe('cherryPickContinue', () => {
+  describe('Given a resolved conflict', () => {
+    describe('When continue', () => {
+      it('Then commits single-parent with preserved author and "commit (cherry-pick)" reflog', async () => {
+        // Arrange
+        const { ctx, feature } = await seedConflictPick();
+        await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'l1\nBOTH\n');
+        await add(ctx, ['f.txt']);
+
+        // Act
+        const sut = await cherryPickContinue(ctx);
+
+        // Assert
+        expect(sut.kind).toBe('picked');
+        if (sut.kind !== 'picked') return;
+        const data = await readCommit(ctx, sut.commits[0]?.created as ObjectId);
+        expect(data.author).toEqual(FEAT_AUTHOR);
+        expect(data.committer.name).toBe(COMMITTER.name);
+        expect(data.parents).toHaveLength(1);
+        expect(data.message).toBe('feat change\n'); // # Conflicts block stripped
+        expect(sut.commits[0]?.source).toBe(feature);
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/CHERRY_PICK_HEAD`)).toBe(false);
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/MERGE_MSG`)).toBe(false);
+        const reflog = await readReflog(ctx, 'refs/heads/main' as RefName);
+        expect(reflog.some((e) => e.message === 'commit (cherry-pick): feat change')).toBe(true);
+      });
+    });
+  });
+
+  describe('Given no cherry-pick in progress', () => {
+    describe('When continue', () => {
+      it('Then refuses with NO_OPERATION_IN_PROGRESS', async () => {
+        // Arrange
+        const { ctx } = await seedFeature();
+
+        // Act
+        const code = await codeOf(() => cherryPickContinue(ctx));
+
+        // Assert
+        expect(code).toBe('NO_OPERATION_IN_PROGRESS');
+      });
+    });
+  });
+
+  describe('Given the index still has unmerged entries', () => {
+    describe('When continue', () => {
+      it('Then refuses with MERGE_HAS_CONFLICTS', async () => {
+        // Arrange — conflict left unresolved
+        const { ctx } = await seedConflictPick();
+
+        // Act
+        const code = await codeOf(() => cherryPickContinue(ctx));
+
+        // Assert
+        expect(code).toBe('MERGE_HAS_CONFLICTS');
+      });
+    });
+  });
+
+  describe('Given the resolution leaves the tree unchanged', () => {
+    describe('When continue', () => {
+      it('Then re-stops as empty', async () => {
+        // Arrange — resolve back to HEAD's content (no change)
+        const { ctx, feature } = await seedConflictPick();
+        await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'l1\nMAIN\n');
+        await add(ctx, ['f.txt']);
+
+        // Act
+        const sut = await cherryPickContinue(ctx);
+
+        // Assert
+        expect(sut.kind).toBe('empty');
+        if (sut.kind === 'empty') expect(sut.commit).toBe(feature);
+      });
+    });
+  });
+});
 
 describe('cherryPickRun', () => {
   describe('Given a clean single pick', () => {

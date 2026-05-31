@@ -6,8 +6,14 @@
  * `applyMergeToWorktree` primitive. Conflicts and empty picks stop with a
  * dedicated `CHERRY_PICK_HEAD` state (distinct from the merge machine).
  */
-import { noInitialCommit, workingTreeDirty } from '../../domain/commands/error.js';
+import {
+  mergeHasConflicts,
+  noInitialCommit,
+  noOperationInProgress,
+  workingTreeDirty,
+} from '../../domain/commands/error.js';
 import { TsgitError } from '../../domain/error.js';
+import type { IndexEntry } from '../../domain/git-index/index.js';
 import { unsupportedOperation } from '../../domain/index.js';
 import type { ConflictType, MergeConflict } from '../../domain/merge/index.js';
 import type { CommitData } from '../../domain/objects/commit.js';
@@ -26,13 +32,19 @@ import {
 import { readIndex } from '../primitives/read-index.js';
 import { readObject } from '../primitives/read-object.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
+import { synthesizeTreeFromIndex } from '../primitives/synthesize-tree-from-index.js';
 import { updateRef } from '../primitives/update-ref.js';
-import { conflictMergeMsg, writeCherryPickHead } from './internal/cherry-pick-state.js';
+import {
+  clearCherryPickHead,
+  conflictMergeMsg,
+  readCherryPickHead,
+  writeCherryPickHead,
+} from './internal/cherry-pick-state.js';
 import { assertCleanWorkTree } from './internal/clean-work-tree.js';
 import { resolveCommitIsh } from './internal/commit-ish.js';
 import { resolveCommitter, sanitizeMessage } from './internal/commit-message.js';
 import { acquireIndexLock } from './internal/index-update.js';
-import { writeMergeMsg } from './internal/merge-state.js';
+import { clearMergeMsg, readMergeMsg, writeMergeMsg } from './internal/merge-state.js';
 
 export interface CherryPickRunInput {
   /** Revisions to pick, in argument order (single commit-ish each; ranges in a later phase). */
@@ -239,4 +251,79 @@ export const cherryPickRun = async (
     return { kind: 'empty', commit: source, remaining };
   }
   return { kind: 'picked', commits: applied };
+};
+
+export type CherryPickContinueInput = Record<string, never>;
+
+/** Strip `#`-comment lines (git's commit cleanup) — drops the `# Conflicts:` block. */
+const stripComments = (message: string): string =>
+  message
+    .split('\n')
+    .filter((line) => !line.startsWith('#'))
+    .join('\n');
+
+const rejectUnmergedIndex = (entries: ReadonlyArray<IndexEntry>): void => {
+  const unmerged = new Set<FilePath>();
+  for (const entry of entries) {
+    if (entry.flags.stage !== 0) unmerged.add(entry.path);
+  }
+  if (unmerged.size > 0) throw mergeHasConflicts(unmerged.size, [...unmerged]);
+};
+
+/** Commit the resolved pick: single parent, preserved author, MERGE_MSG (comments stripped). */
+const commitResolvedPick = async (
+  ctx: Context,
+  source: ObjectId,
+  ourId: ObjectId,
+  branch: RefName,
+  tree: ObjectId,
+): Promise<ObjectId> => {
+  const cData = await readCommitData(ctx, source);
+  const committer = await resolvePickCommitter(ctx);
+  const message = sanitizeMessage(stripComments((await readMergeMsg(ctx)) ?? ''), {
+    allowEmpty: false,
+  });
+  const id = await createCommit(ctx, {
+    tree,
+    parents: [ourId],
+    author: cData.author,
+    committer,
+    message,
+    extraHeaders: [],
+  });
+  await updateRef(ctx, branch, id, {
+    expected: ourId,
+    reflogMessage: `commit (cherry-pick): ${subjectOf(message)}`,
+  });
+  return id;
+};
+
+/**
+ * Finalise the in-progress conflicted pick as a single-parent commit from the
+ * resolved index. Refuses when no pick is in progress or the index is unmerged.
+ * A resolution that yields no change re-stops as `empty`.
+ */
+export const cherryPickContinue = async (
+  ctx: Context,
+  _input: CherryPickContinueInput = {},
+): Promise<CherryPickResult> => {
+  await assertRepository(ctx);
+  await assertNotBare(ctx, 'cherry-pick --continue');
+  const source = await readCherryPickHead(ctx);
+  if (source === undefined) throw noOperationInProgress('cherry-pick');
+  const head = await readHeadRaw(ctx);
+  if (head.kind !== 'symbolic') {
+    throw unsupportedOperation('cherry-pick --continue', 'cannot continue with detached HEAD');
+  }
+  const ourId = await resolveRef(ctx, head.target);
+  const index = await readIndex(ctx);
+  rejectUnmergedIndex(index.entries);
+  const indexTree = await synthesizeTreeFromIndex(ctx, index.entries);
+  if (indexTree === (await treeOf(ctx, ourId))) {
+    return { kind: 'empty', commit: source, remaining: 0 };
+  }
+  const created = await commitResolvedPick(ctx, source, ourId, head.target, indexTree);
+  await clearCherryPickHead(ctx);
+  await clearMergeMsg(ctx);
+  return { kind: 'picked', commits: [{ source, created }] };
 };

@@ -71,9 +71,9 @@ export const add = async (
   await assertRepository(ctx);
   await assertNotBare(ctx, 'add');
   // Allow `add` during a conflicted merge — staging resolved files IS the
-  // path forward. Other pending operations (rebase / cherry-pick / revert)
-  // still block.
-  await assertNoPendingOperation(ctx, { except: 'merge' });
+  // path forward — same for staging a cherry-pick resolution. Rebase / revert
+  // still block until their commands land.
+  await assertNoPendingOperation(ctx, { except: ['merge', 'cherry-pick'] });
   if (opts.all === true) {
     if (paths.length !== 0) {
       throw invalidOption('all', 'pathspec must be empty when all=true');

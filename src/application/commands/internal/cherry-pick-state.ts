@@ -42,6 +42,9 @@ export const clearCherryPickHead = async (ctx: Context): Promise<void> => {
  * line, then a tab-indented `# Conflicts:` block — byte-faithful to git.
  */
 export const conflictMergeMsg = (draft: string, paths: ReadonlyArray<FilePath>): string => {
+  // Trim the draft's trailing whitespace so a stripspace'd message (which ends
+  // in a single LF) yields exactly one blank line before the block — git's bytes.
+  const body = draft.replace(/\s+$/, '');
   const block = paths.map((p) => `#\t${p}\n`).join('');
-  return `${draft}\n\n# Conflicts:\n${block}`;
+  return `${body}\n\n# Conflicts:\n${block}`;
 };

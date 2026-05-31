@@ -138,5 +138,15 @@ describe('cherry-pick-state', () => {
         expect(sut).toBe('msg\n\n# Conflicts:\n#\ta.txt\n#\tb/c.txt\n');
       });
     });
+
+    describe('When the draft already ends with a trailing newline', () => {
+      it('Then collapses to exactly one blank line before the block (git bytes)', () => {
+        // Arrange + Act — a stripspace'd message ends in a single LF
+        const sut = conflictMergeMsg('subject\n', ['f.txt' as FilePath]);
+
+        // Assert
+        expect(sut).toBe('subject\n\n# Conflicts:\n#\tf.txt\n');
+      });
+    });
   });
 });
