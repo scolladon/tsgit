@@ -137,6 +137,9 @@ const buildRevertCommit = async (
   tree: ObjectId,
 ): Promise<{ readonly id: ObjectId; readonly subject: string }> => {
   const identity = await resolveCurrentIdentity(ctx);
+  // equivalent-mutant (`allowEmpty: false` → `true`): `revertMessage` always
+  // yields a non-empty `Revert "<subject>"` body, so the empty-message guard is
+  // never exercised here — `allowEmpty` true vs false is indistinguishable.
   const message = sanitizeMessage(revertMessage(cData, source), { allowEmpty: false });
   const id = await createCommit(ctx, {
     tree,
@@ -509,11 +512,9 @@ export const revertContinue = async (ctx: Context): Promise<RevertResult> => {
     ourId = done.created;
   }
   // A finalised current revert is `todo[0]` — drop it; a markerless stop leaves it.
+  // An empty `rest` flows through `runSequence` unchanged (it clears the sequencer
+  // and returns `reverted []`), so no separate early-return is needed.
   const rest = (todoOnDisk ?? []).slice(source !== undefined ? 1 : 0).map((e) => e.oid);
-  if (rest.length === 0) {
-    await clearSequencer(ctx);
-    return { kind: 'reverted', commits: applied };
-  }
   const sequenceHead = (await readSequencerHead(ctx)) ?? ourId;
   const onEmpty = source === undefined ? 'drop' : 'stop';
   const result = await runSequence(ctx, rest, head.target, ourId, {
@@ -557,11 +558,9 @@ export const revertSkip = async (ctx: Context): Promise<RevertResult> => {
   await hardResetWorktreeToCommit(ctx, ourId);
   await clearRevertHead(ctx);
   await clearMergeMsg(ctx);
+  // An empty `rest` flows through `runSequence` (clears the sequencer, returns
+  // `reverted []`); no separate early-return is needed.
   const rest = (todoOnDisk ?? []).slice(1).map((e) => e.oid);
-  if (rest.length === 0) {
-    await clearSequencer(ctx);
-    return { kind: 'reverted', commits: [] };
-  }
   const sequenceHead = (await readSequencerHead(ctx)) ?? ourId;
   return runSequence(ctx, rest, branch, ourId, { multiPick: true, sequenceHead, onEmpty: 'stop' });
 };

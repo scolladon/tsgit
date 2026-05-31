@@ -995,3 +995,459 @@ describe('revert no-commit (-n)', () => {
     });
   });
 });
+
+describe('revert observable surfaces', () => {
+  const dataOf = async (run: () => Promise<unknown>): Promise<Record<string, unknown>> => {
+    try {
+      await run();
+      throw new Error('expected a throw');
+    } catch (err) {
+      return (err as TsgitError).data as unknown as Record<string, unknown>;
+    }
+  };
+  const makeBare = async (): Promise<Context> => {
+    const ctx = createMemoryContext();
+    await init(ctx);
+    await ctx.fs.appendUtf8(`${ctx.layout.gitDir}/config`, '\n[core]\n\tbare = true\n');
+    return ctx;
+  };
+
+  describe('Given a bare repository', () => {
+    describe.each([
+      ['run', (ctx: Context) => revertRun(ctx, { commits: ['x'] }), 'revert'],
+      ['continue', (ctx: Context) => revertContinue(ctx), 'revert --continue'],
+      ['skip', (ctx: Context) => revertSkip(ctx), 'revert --skip'],
+      ['abort', (ctx: Context) => revertAbort(ctx), 'revert --abort'],
+    ])('When %s runs', (_verb, call, operation) => {
+      it(`Then it refuses with BARE_REPOSITORY for "${operation}"`, async () => {
+        // Arrange
+        const sut = await makeBare();
+
+        // Act
+        const data = await dataOf(() => call(sut));
+
+        // Assert
+        expect(data.code).toBe('BARE_REPOSITORY');
+        expect(data.operation).toBe(operation);
+      });
+    });
+  });
+
+  describe('Given a detached HEAD', () => {
+    describe('When run', () => {
+      it('Then UNSUPPORTED_OPERATION names the run operation and reason', async () => {
+        // Arrange
+        const { ctx, c2 } = await seedLinear();
+        await ctx.fs.writeUtf8(`${gitDir(ctx)}/HEAD`, `${c2}\n`);
+
+        // Act
+        const data = await dataOf(() => revertRun(ctx, { commits: [c2] }));
+
+        // Assert
+        expect(data.operation).toBe('revert');
+        expect(data.reason).toBe('cannot revert with detached HEAD');
+      });
+    });
+
+    describe('When continue runs mid-revert', () => {
+      it('Then UNSUPPORTED_OPERATION names the continue operation and reason', async () => {
+        // Arrange
+        const { ctx } = await seedConflictStop();
+        const head = await resolveRef(ctx, 'refs/heads/main' as RefName);
+        await ctx.fs.writeUtf8(`${gitDir(ctx)}/HEAD`, `${head}\n`);
+
+        // Act
+        const data = await dataOf(() => revertContinue(ctx));
+
+        // Assert
+        expect(data.operation).toBe('revert --continue');
+        expect(data.reason).toBe('cannot continue with detached HEAD');
+      });
+    });
+
+    describe('When skip runs mid-revert', () => {
+      it('Then UNSUPPORTED_OPERATION names the skip operation and the generic reason', async () => {
+        // Arrange
+        const { ctx } = await seedConflictStop();
+        const head = await resolveRef(ctx, 'refs/heads/main' as RefName);
+        await ctx.fs.writeUtf8(`${gitDir(ctx)}/HEAD`, `${head}\n`);
+
+        // Act
+        const data = await dataOf(() => revertSkip(ctx));
+
+        // Assert
+        expect(data.operation).toBe('revert --skip');
+        expect(data.reason).toBe('cannot run with detached HEAD');
+      });
+    });
+
+    describe('When abort runs mid-revert', () => {
+      it('Then UNSUPPORTED_OPERATION names the abort operation', async () => {
+        // Arrange
+        const { ctx } = await seedConflictStop();
+        const head = await resolveRef(ctx, 'refs/heads/main' as RefName);
+        await ctx.fs.writeUtf8(`${gitDir(ctx)}/HEAD`, `${head}\n`);
+
+        // Act
+        const data = await dataOf(() => revertAbort(ctx));
+
+        // Assert
+        expect(data.operation).toBe('revert --abort');
+        expect(data.reason).toBe('cannot run with detached HEAD');
+      });
+    });
+  });
+
+  describe('Given an unsupported revision form', () => {
+    describe.each([
+      ['symmetric', 'aaaaaaa...bbbbbbb'],
+      ['exclusion', '^aaaaaaa'],
+    ])('When run with %s syntax', (_label, arg) => {
+      it('Then INVALID_OPTION names the `commits` option and echoes the form', async () => {
+        // Arrange
+        const { ctx } = await seedLinear();
+
+        // Act
+        const data = await dataOf(() => revertRun(ctx, { commits: [arg] }));
+
+        // Assert
+        expect(data.code).toBe('INVALID_OPTION');
+        expect(data.option).toBe('commits');
+        expect(data.reason).toContain(arg);
+      });
+    });
+  });
+
+  describe('Given an unresolved index on continue', () => {
+    describe('When continue runs', () => {
+      it('Then MERGE_HAS_CONFLICTS lists the still-conflicted path', async () => {
+        // Arrange — leave the conflict markers / stage>0 entries in place.
+        const { ctx } = await seedConflictStop();
+
+        // Act
+        const data = await dataOf(() => revertContinue(ctx));
+
+        // Assert
+        expect(data.code).toBe('MERGE_HAS_CONFLICTS');
+        expect(data.paths).toContain('f.txt');
+      });
+    });
+  });
+
+  describe('Given a multi-arg revert with two trailing empty reverts', () => {
+    describe('When continue acknowledges the first empty', () => {
+      it('Then it drops only the leading empty and stops again at the next', async () => {
+        // Arrange — `revert c2 c2 c2`: first commits, second stops empty.
+        const { ctx, c2 } = await seedLinear();
+        const first = await revertRun(ctx, { commits: [c2, c2, c2] });
+        if (first.kind !== 'empty') throw new Error('seed: expected an empty stop');
+
+        // Act — continue drops this empty but must stop at the third (also empty).
+        const sut = await revertContinue(ctx);
+
+        // Assert — a faithful drop-then-stop, not a drop-all.
+        expect(sut.kind).toBe('empty');
+        expect(await exists(ctx, 'sequencer')).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a multi-commit revert with --no-commit where the first conflicts', () => {
+    describe('When run', () => {
+      it('Then the conflict reports the remaining count', async () => {
+        // Arrange — revert c2 then c2 with -n; the first conflicts vs c3.
+        const { ctx, c2 } = await seedLinear();
+        await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'a\nB3\nc\n');
+        await add(ctx, ['f.txt']);
+        await commit(ctx, { message: 'c3 top', author: MAIN_AUTHOR });
+
+        // Act
+        const sut = await revertRun(ctx, { commits: [c2, c2], noCommit: true });
+
+        // Assert
+        expect(sut.kind).toBe('conflict');
+        if (sut.kind !== 'conflict') throw new Error('expected conflict');
+        expect(sut.remaining).toBe(1);
+      });
+    });
+  });
+});
+
+describe('revert mutation-hardening surfaces', () => {
+  const dataOf = async (run: () => Promise<unknown>): Promise<Record<string, unknown>> => {
+    try {
+      await run();
+      throw new Error('expected a throw');
+    } catch (err) {
+      return (err as TsgitError).data as unknown as Record<string, unknown>;
+    }
+  };
+
+  describe('Given the branch ref is corrupt', () => {
+    describe('When run resolves HEAD', () => {
+      it('Then it rethrows the resolve error rather than masking it as NO_INITIAL_COMMIT', async () => {
+        // Arrange
+        const { ctx, c2 } = await seedLinear();
+        await ctx.fs.writeUtf8(`${gitDir(ctx)}/refs/heads/main`, 'not-a-valid-oid\n');
+
+        // Act
+        const data = await dataOf(() => revertRun(ctx, { commits: [c2] }));
+
+        // Assert
+        expect(data.code).not.toBe('NO_INITIAL_COMMIT');
+        expect(data.code).toBe('INVALID_OBJECT_ID');
+      });
+    });
+  });
+
+  describe('Given a conflict resolved against an emptied MERGE_MSG', () => {
+    describe('When continue commits the resolution', () => {
+      it('Then it rejects the empty message with EMPTY_COMMIT_MESSAGE', async () => {
+        // Arrange — corrupt MERGE_MSG to comments-only, resolve the index.
+        const { ctx } = await seedConflictStop();
+        await ctx.fs.writeUtf8(`${gitDir(ctx)}/MERGE_MSG`, '# only a comment\n');
+        await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'a\nRESOLVED\nc\n');
+        await add(ctx, ['f.txt']);
+
+        // Act
+        const data = await dataOf(() => revertContinue(ctx));
+
+        // Assert
+        expect(data.code).toBe('EMPTY_COMMIT_MESSAGE');
+      });
+    });
+  });
+
+  describe('Given a markerless sequencer whose leading revert conflicts', () => {
+    describe('When continue runs', () => {
+      it('Then it stops on the conflict rather than dropping it', async () => {
+        // Arrange — a git-style sequencer (no REVERT_HEAD) whose todo[0] revert
+        // conflicts vs later history; continue must stop, not silently drop it.
+        const { ctx, c2 } = await seedLinear();
+        await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'a\nB3\nc\n');
+        await add(ctx, ['f.txt']);
+        const head = (await commit(ctx, { message: 'c3 top', author: MAIN_AUTHOR })).id;
+        await ctx.fs.writeUtf8(`${gitDir(ctx)}/sequencer/head`, `${head}\n`);
+        await ctx.fs.writeUtf8(`${gitDir(ctx)}/sequencer/abort-safety`, `${head}\n`);
+        await ctx.fs.writeUtf8(`${gitDir(ctx)}/sequencer/todo`, `revert ${c2} c2 mid\n`);
+
+        // Act
+        const sut = await revertContinue(ctx);
+
+        // Assert
+        expect(sut.kind).toBe('conflict');
+        if (sut.kind !== 'conflict') throw new Error('expected conflict');
+        expect(sut.commit).toBe(c2);
+        expect(await ctx.fs.readUtf8(`${gitDir(ctx)}/REVERT_HEAD`)).toBe(`${c2}\n`);
+      });
+    });
+  });
+
+  describe('Given a sequencer todo of only comments', () => {
+    describe('When continue runs', () => {
+      it('Then it treats the empty work-list as nothing in progress', async () => {
+        // Arrange — a present-but-effectively-empty todo, no REVERT_HEAD.
+        const { ctx } = await seedLinear();
+        await ctx.fs.writeUtf8(`${gitDir(ctx)}/sequencer/todo`, '# nothing to do\n');
+
+        // Act
+        const code = await codeOf(() => revertContinue(ctx));
+
+        // Assert
+        expect(code).toBe('NO_OPERATION_IN_PROGRESS');
+      });
+    });
+  });
+
+  describe('Given a markerless empty stop', () => {
+    describe('When skip runs', () => {
+      it('Then it drops the empty commit and finishes (no REVERT_HEAD needed)', async () => {
+        // Arrange — `revert c2 c2`: first commits, second stops empty (no REVERT_HEAD).
+        const { ctx, c2 } = await seedLinear();
+        const stop = await revertRun(ctx, { commits: [c2, c2] });
+        if (stop.kind !== 'empty') throw new Error('seed: expected empty stop');
+        expect(await exists(ctx, 'REVERT_HEAD')).toBe(false);
+
+        // Act
+        const sut = await revertSkip(ctx);
+
+        // Assert
+        expect(sut.kind).toBe('reverted');
+        expect(await exists(ctx, 'sequencer')).toBe(false);
+      });
+    });
+  });
+
+  /**
+   * Build a stopped range whose remaining commit reverts empty: `revert c3 c2`
+   * where c3 conflicts (vs c4) and c2 was already reverted (so its re-revert is
+   * empty). Resolving c3 and continuing must STOP again at the empty c2, keeping
+   * the sequencer — proving onEmpty stays `'stop'` for a resumed source-set run
+   * and that the multi-pick sequencer is persisted.
+   */
+  const seedRangeWithTrailingEmpty = async (): Promise<{
+    ctx: Context;
+    c2: ObjectId;
+    c3: ObjectId;
+  }> => {
+    const ctx = createMemoryContext();
+    await init(ctx);
+    await setUser(ctx);
+    await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'base\n');
+    await ctx.fs.writeUtf8(work(ctx, 'g.txt'), 'g1\n');
+    await add(ctx, ['f.txt', 'g.txt']);
+    await commit(ctx, { message: 'c1 base', author: MAIN_AUTHOR });
+    await ctx.fs.writeUtf8(work(ctx, 'g.txt'), 'g2\n');
+    await add(ctx, ['g.txt']);
+    const c2 = (await commit(ctx, { message: 'c2 edit g', author: MAIN_AUTHOR })).id;
+    await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'f3\n');
+    await add(ctx, ['f.txt']);
+    const c3 = (await commit(ctx, { message: 'c3 edit f', author: MAIN_AUTHOR })).id;
+    await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'f4\n');
+    await add(ctx, ['f.txt']);
+    await commit(ctx, { message: 'c4 re-edit f', author: MAIN_AUTHOR });
+    // Revert c2 first so a later revert of it is empty (g already back to g1).
+    await revertRun(ctx, { commits: [c2] });
+    return { ctx, c2, c3 };
+  };
+
+  describe('Given a resolved range whose remaining revert is empty', () => {
+    describe('When continue runs', () => {
+      it('Then it stops at the empty (not drops it) and keeps the sequencer', async () => {
+        // Arrange — `revert c3 c2`: c3 conflicts, c2 is already reverted (empty).
+        const { ctx, c2, c3 } = await seedRangeWithTrailingEmpty();
+        const stop = await revertRun(ctx, { commits: [c3, c2] });
+        if (stop.kind !== 'conflict') throw new Error('seed: expected a conflict');
+        await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'base\n');
+        await add(ctx, ['f.txt']);
+
+        // Act
+        const sut = await revertContinue(ctx);
+
+        // Assert — onEmpty stays 'stop'; the multi-pick sequencer is re-persisted
+        // with c2 alone at todo[0] (proving multiPick stayed true on the resume).
+        expect(sut.kind).toBe('empty');
+        if (sut.kind !== 'empty') throw new Error('expected empty');
+        expect(sut.commit).toBe(c2);
+        expect(await ctx.fs.readUtf8(`${gitDir(ctx)}/sequencer/todo`)).toBe(
+          `revert ${c2} c2 edit g\n`,
+        );
+      });
+    });
+  });
+
+  describe('Given a conflict resolved to no change in a range', () => {
+    describe('When continue runs', () => {
+      it('Then the empty re-stop reports the remaining count from the sequencer', async () => {
+        // Arrange — `revert c3 c2`, resolve c3 back to HEAD so it re-stops empty.
+        const { ctx, c2, c3 } = await seedRangeWithTrailingEmpty();
+        await revertRun(ctx, { commits: [c3, c2] });
+        await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'f4\n'); // == HEAD → empty resolution
+        await add(ctx, ['f.txt']);
+
+        // Act
+        const sut = await revertContinue(ctx);
+
+        // Assert
+        expect(sut.kind).toBe('empty');
+        if (sut.kind !== 'empty') throw new Error('expected empty');
+        expect(sut.commit).toBe(c3);
+        expect(sut.remaining).toBe(1); // c2 still pending after the c3 re-stop
+      });
+    });
+  });
+
+  describe('Given a skip whose resumed revert conflicts again', () => {
+    describe('When skip runs', () => {
+      it('Then the re-stop persists the sequencer for the next continue', async () => {
+        // Arrange — both c2 and c3 conflict; skip c3 → c2 conflicts again.
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await setUser(ctx);
+        await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'a\nb\n');
+        await add(ctx, ['f.txt']);
+        const c1 = (await commit(ctx, { message: 'c1 base', author: MAIN_AUTHOR })).id;
+        await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'B1\nb\n');
+        await add(ctx, ['f.txt']);
+        const c2 = (await commit(ctx, { message: 'c2 line1', author: MAIN_AUTHOR })).id;
+        await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'B1\nB2\n');
+        await add(ctx, ['f.txt']);
+        const c3 = (await commit(ctx, { message: 'c3 line2', author: MAIN_AUTHOR })).id;
+        await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'C1\nC2\n');
+        await add(ctx, ['f.txt']);
+        await commit(ctx, { message: 'c4 both', author: MAIN_AUTHOR });
+        const stop = await revertRun(ctx, { commits: [`${c1}..${c3}`] });
+        if (stop.kind !== 'conflict') throw new Error('seed: expected a conflict');
+
+        // Act — skip c3; the resumed c2 revert conflicts vs c4 too.
+        const sut = await revertSkip(ctx);
+
+        // Assert
+        expect(sut.kind).toBe('conflict');
+        if (sut.kind !== 'conflict') throw new Error('expected conflict');
+        expect(sut.commit).toBe(c2);
+        // The multi-pick sequencer is re-persisted with c2 alone at todo[0].
+        expect(await ctx.fs.readUtf8(`${gitDir(ctx)}/sequencer/todo`)).toBe(
+          `revert ${c2} c2 line1\n`,
+        );
+        expect(await ctx.fs.readUtf8(`${gitDir(ctx)}/REVERT_HEAD`)).toBe(`${c2}\n`);
+      });
+    });
+  });
+
+  describe('Given a skip with a comments-only sequencer todo', () => {
+    describe('When skip runs', () => {
+      it('Then it treats the empty work-list as nothing in progress', async () => {
+        // Arrange — a present-but-effectively-empty todo, no REVERT_HEAD.
+        const { ctx } = await seedLinear();
+        await ctx.fs.writeUtf8(`${gitDir(ctx)}/sequencer/todo`, '# nothing to do\n');
+
+        // Act
+        const code = await codeOf(() => revertSkip(ctx));
+
+        // Assert
+        expect(code).toBe('NO_OPERATION_IN_PROGRESS');
+      });
+    });
+  });
+
+  describe('Given a --no-commit merge revert that throws after acquiring the lock', () => {
+    describe('When a later revert needs the index lock', () => {
+      it('Then it acquires it, proving the finally released the lock on the throw path', async () => {
+        // Arrange — a merge commit reachable by oid, plus a normal HEAD on main.
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await setUser(ctx);
+        await ctx.fs.writeUtf8(work(ctx, 'base.txt'), 'a\n');
+        await add(ctx, ['base.txt']);
+        const c1 = await commit(ctx, { message: 'c1 base', author: MAIN_AUTHOR });
+        await branchCreate(ctx, { name: 'feature' });
+        await checkout(ctx, { target: 'feature' });
+        await ctx.fs.writeUtf8(work(ctx, 'feat.txt'), 'f\n');
+        await add(ctx, ['feat.txt']);
+        await commit(ctx, { message: 'feat commit', author: MAIN_AUTHOR });
+        await branchCreate(ctx, { name: 'side', startPoint: c1.id });
+        await checkout(ctx, { target: 'side' });
+        await ctx.fs.writeUtf8(work(ctx, 'side.txt'), 's\n');
+        await add(ctx, ['side.txt']);
+        await commit(ctx, { message: 'side commit', author: MAIN_AUTHOR });
+        await checkout(ctx, { target: 'feature' });
+        const m = await merge(ctx, { target: 'side' });
+        if (m.kind !== 'merge') throw new Error('seed: expected a merge commit');
+        await checkout(ctx, { target: 'main' });
+        await ctx.fs.writeUtf8(work(ctx, 'main.txt'), 'm\n');
+        await add(ctx, ['main.txt']);
+        await commit(ctx, { message: 'c2 on main', author: MAIN_AUTHOR });
+
+        // Act — the -n merge revert throws (after acquiring the index lock).
+        const merged = await codeOf(() => revertRun(ctx, { commits: [m.id], noCommit: true }));
+        // A later revert must be able to take the lock the first released.
+        const second = await revertRun(ctx, { commits: ['HEAD'] });
+
+        // Assert
+        expect(merged).toBe('REVERT_MERGE_NO_MAINLINE');
+        expect(second.kind).toBe('reverted');
+      });
+    });
+  });
+});
