@@ -1252,9 +1252,10 @@ describe('cherryPick — observable surfaces', () => {
         const branchBefore = (await readReflog(ctx, 'refs/heads/main' as RefName)).at(-1)?.message;
 
         // Act
-        await cherryPickAbort(ctx);
+        const sut = await cherryPickAbort(ctx);
 
-        // Assert
+        // Assert — the branch did not move, so it is the unchanged head
+        expect(sut.head).toBe(head);
         const headLog = await readReflog(ctx, 'HEAD' as RefName);
         expect(headLog.at(-1)?.message).toBe(`reset: moving to ${head}`);
         const branchLog = await readReflog(ctx, 'refs/heads/main' as RefName);

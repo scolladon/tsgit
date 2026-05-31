@@ -339,7 +339,8 @@ describe('abortMerge', () => {
         await abortMerge(ctx);
 
         // Assert
-        expect((await readReflog(ctx, HEAD)).at(-1)?.message).toBe('merge: aborted');
+        const sut = await readReflog(ctx, HEAD);
+        expect(sut.at(-1)?.message).toBe('merge: aborted');
         const branchAfter = await readReflog(ctx, MAIN);
         expect(branchAfter.at(-1)?.message).toBe(branchBefore);
         expect(branchAfter.at(-1)?.message).not.toBe('merge: aborted');
