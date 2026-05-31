@@ -419,7 +419,6 @@ function extractDetail(data: TsgitErrorData): string {
     case 'INVALID_SEQUENCER_TODO':
       return `invalid sequencer todo: ${data.reason}`;
     case 'CHERRY_PICK_MERGE_NO_MAINLINE':
-      return `commit ${data.commit} is a merge but no -m option was given`;
     case 'REVERT_MERGE_NO_MAINLINE':
       return `commit ${data.commit} is a merge but no -m option was given`;
     default: {

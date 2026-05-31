@@ -99,13 +99,25 @@ the `REVERT_MERGE_NO_MAINLINE` arm. There is no equivalent assertion for the
 `CHERRY_PICK_MERGE_NO_MAINLINE` arm survives — no test reads the rendered string,
 only the `.data` shape (asserted via the cherry-pick command tests).
 
-### Decision — mirror the revert helper test
+### Decision — mirror the revert helper test, then DRY the rendering branch
 
 Add a `cherryPickMergeNoMainline` helper test that asserts both `.data` and the
 rendered `.message` (`CHERRY_PICK_MERGE_NO_MAINLINE: commit <oid> is a merge but
 no -m option was given`), mirroring the `revertMergeNoMainline` block. The
-`.message` assertion kills the surviving mutant. Pure test addition; no
-production change.
+`.message` assertion kills the targeted `StringLiteral` mutant.
+
+Mutation testing then surfaced a *second*, pre-existing survivor the backlog did
+not name: a `ConditionalExpression`/fall-through mutant — removing the
+`CHERRY_PICK_MERGE_NO_MAINLINE` case's `return` falls through to the adjacent
+`REVERT_MERGE_NO_MAINLINE` case, which returns the **byte-identical** string, so
+the mutant is provably equivalent. Rather than annotate it with an
+`// equivalent-mutant:` comment, we eliminate it honestly by **merging the two
+identical cases** into one shared-body branch
+(`case CHERRY_PICK_…: case REVERT_…: return …`). This DRYs the duplicated literal,
+mirrors git's own single message for both refusals, keeps the `default` `never`
+exhaustiveness check intact (both codes remain handled), and leaves the region at
+a clean 0-survivor state with no suppression. Both helper tests still assert the
+full, code-prefixed message, so the shared `StringLiteral` mutant stays killed.
 
 ## Test conventions
 
@@ -126,4 +138,6 @@ git as oracle).
   reflog-parity pin.
 - `test/unit/domain/commands/error.test.ts` — add the `cherryPickMergeNoMainline`
   rendered-message assertion.
+- `src/domain/error.ts` — merge the two identical `…_MERGE_NO_MAINLINE` rendering
+  cases into one shared-body branch (kills the equivalent fall-through mutant).
 - `docs/BACKLOG.md` — flip 22.2a; log the no-op reflog-skip follow-up.
