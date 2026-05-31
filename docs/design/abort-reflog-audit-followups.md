@@ -65,7 +65,7 @@ if (head.kind === 'symbolic') {
   return { mode: opts.mode, id, branch: head.target };
 }
 await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, `${id}\n`);
-await recordRefUpdate(ctx, 'HEAD' as RefName, head.id, id, reflogMessage); // UNGATED
+await recordRefUpdate(ctx, 'HEAD' as RefName, head.id, id, reflogMessage); // no gate
 return { mode: opts.mode, id, branch: undefined };
 ```
 
@@ -87,7 +87,7 @@ with the wrong message `merge: aborted` where git writes `reset: moving to HEAD`
 
 ### Part 1 — route the detached-reset write through `updateRef` (ADR-227)
 
-Replace the detached path's direct `writeUtf8` + ungated `recordRefUpdate` with a
+Replace the detached path's direct `writeUtf8` + un-gated `recordRefUpdate` with a
 single `updateRef` call, so the no-move skip the symbolic path already inherited
 from 22.2b's central gate now also covers the detached path:
 
