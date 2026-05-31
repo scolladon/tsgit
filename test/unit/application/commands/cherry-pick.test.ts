@@ -1224,16 +1224,17 @@ describe('cherryPick — observable surfaces', () => {
 
   describe('Given a stopped lone pick', () => {
     describe('When abort runs', () => {
-      it('Then the branch reflog records `cherry-pick: aborted`', async () => {
+      it('Then the branch reflog records the faithful `reset: moving to` move', async () => {
         // Arrange
         const { ctx } = await seedConflictPick();
+        const head = await resolveRef(ctx, 'refs/heads/main' as RefName);
 
         // Act
         await cherryPickAbort(ctx);
 
         // Assert
         const sut = await readReflog(ctx, 'refs/heads/main' as RefName);
-        expect(sut.at(-1)?.message).toBe('cherry-pick: aborted');
+        expect(sut.at(-1)?.message).toBe(`reset: moving to ${head}`);
       });
     });
 

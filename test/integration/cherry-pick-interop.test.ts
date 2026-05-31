@@ -7,7 +7,9 @@
  *     `git cherry-pick --continue`, and a git-started range finished by
  *     `repo.cherryPick.continue` — the proof of a git-byte-faithful,
  *     cross-tool-resumable `.git/sequencer/`;
- *   - merge-commit co-refusal (both tools reject a no-mainline merge pick).
+ *   - merge-commit co-refusal (both tools reject a no-mainline merge pick);
+ *   - abort reflog parity — a range that commits one pick then conflicts, aborted
+ *     by both tools, writes the identical faithful `reset: moving to <oid>` entry.
  *
  * Commit OIDs embed the committer timestamp, so equivalence is asserted via the
  * host-independent tree readback (`git write-tree`) plus the preserved
@@ -78,6 +80,10 @@ const commitShape = (dir: string): { author: string; message: string; parents: n
 /** A blob path resolves in HEAD's tree — proof the pick that introduced it landed. */
 const headHasBlob = (dir: string, rel: string): boolean =>
   git(dir, 'cat-file', '-t', git(dir, 'rev-parse', `HEAD:${rel}`).trim()).trim() === 'blob';
+
+/** Newest reflog subject for `main` — reads whichever `.git/logs` the dir holds (tsgit's or git's). */
+const topReflog = (dir: string): string =>
+  git(dir, 'log', '-g', '--format=%gs', 'refs/heads/main').split('\n')[0] ?? '';
 
 describe.skipIf(!GIT_AVAILABLE)('cherry-pick interop', () => {
   let pair: PeerPair;
@@ -199,6 +205,31 @@ describe.skipIf(!GIT_AVAILABLE)('cherry-pick interop', () => {
       await repo.dispose();
     });
   });
+
+  describe('Given a range cherry-pick aborted mid-sequence', () => {
+    it('Then tsgit and git write the same faithful `reset: moving to` reflog', async () => {
+      // Arrange — identical moving range in both repos; run each to the conflict stop.
+      // The seed is git-built + date-pinned on both, so the pre-sequence oid is shared.
+      buildMovingConflictRange(pair.peer);
+      buildMovingConflictRange(pair.ours);
+      const pre = git(pair.peer, 'rev-parse', 'refs/heads/main').trim();
+      expect(git(pair.ours, 'rev-parse', 'refs/heads/main').trim()).toBe(pre);
+      tryRunGit(['-C', pair.peer, '-c', 'core.editor=true', 'cherry-pick', 'main..feature']);
+      const repo = await openRepository({ cwd: pair.ours });
+      const stop = await repo.cherryPick.run({ commits: ['main..feature'] });
+      expect(stop.kind).toBe('conflict');
+
+      // Act — abort on both tools (first pick committed, so the branch moves back)
+      runGit(['-C', pair.peer, 'cherry-pick', '--abort']);
+      await repo.cherryPick.abort();
+      await repo.dispose();
+
+      // Assert — git's literal format (oracle) + byte-identical tsgit parity
+      const peerReflog = topReflog(pair.peer);
+      expect(peerReflog).toBe(`reset: moving to ${pre}`);
+      expect(topReflog(pair.ours)).toBe(peerReflog);
+    });
+  });
 });
 
 // ── git-CLI scenario builders ───────────────────────────────────────────────
@@ -221,6 +252,31 @@ function buildConflictRange(dir: string): void {
   writeWork(dir, 'f.txt', 'l1\nMAIN\n');
   git(dir, 'add', 'f.txt');
   gitCommit(dir, 'main change');
+}
+
+/**
+ * `main` + a `feature` branch whose first commit (a new file) picks cleanly and
+ * whose second conflicts on f.txt; HEAD left on main. `main..feature` therefore
+ * commits the clean pick (moving the branch) before stopping on the conflict —
+ * so an abort genuinely resets the branch backward, exercising the reflog write.
+ */
+function buildMovingConflictRange(dir: string): void {
+  runGit(['init', '-q', '-b', 'main', dir]);
+  configGit(dir);
+  writeWork(dir, 'f.txt', 'base\n');
+  git(dir, 'add', 'f.txt');
+  gitCommit(dir, 'base');
+  git(dir, 'checkout', '-q', '-b', 'feature');
+  writeWork(dir, 'g.txt', 'g\n');
+  git(dir, 'add', 'g.txt');
+  gitCommit(dir, 'clean add g');
+  writeWork(dir, 'f.txt', 'FEAT\n');
+  git(dir, 'add', 'f.txt');
+  gitCommit(dir, 'conflict f');
+  git(dir, 'checkout', '-q', 'main');
+  writeWork(dir, 'f.txt', 'MAIN\n');
+  git(dir, 'add', 'f.txt');
+  gitCommit(dir, 'main diverge');
 }
 
 /** A repo whose `feature` tip is a merge commit; returns the merge oid. HEAD left on main. */
