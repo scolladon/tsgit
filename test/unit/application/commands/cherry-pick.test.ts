@@ -206,6 +206,26 @@ describe('cherryPickRun — merge commits', () => {
         expect(todo.length).toBeGreaterThan(0);
       });
     });
+
+    describe('When abort runs (sequencer present, no CHERRY_PICK_HEAD)', () => {
+      it('Then it resets to the pre-sequence HEAD and clears the sequencer', async () => {
+        // Arrange — `base..feature` commits c1 onto main, then stops at the merge
+        // with the sequencer persisted and no CHERRY_PICK_HEAD (the merge never
+        // started). `base` is the pre-sequence HEAD the abort must rewind to.
+        const { ctx, base } = await seedMerge();
+        await codeOf(() => cherryPickRun(ctx, { commits: [`${base}..feature`] }));
+
+        // Act
+        const sut = await cherryPickAbort(ctx);
+
+        // Assert
+        expect(sut.head).toBe(base);
+        expect(await resolveRef(ctx, 'refs/heads/main' as RefName)).toBe(base);
+        expect(await ctx.fs.exists(work(ctx, 'f1.txt'))).toBe(false); // the committed c1 pick undone
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/sequencer`)).toBe(false);
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/CHERRY_PICK_HEAD`)).toBe(false);
+      });
+    });
   });
 
   describe('Given a merge-stopped range', () => {
