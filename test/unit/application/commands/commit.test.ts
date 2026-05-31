@@ -5,6 +5,7 @@ import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
 import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
+import { readReflog } from '../../../../src/application/primitives/reflog-store.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { TsgitError } from '../../../../src/domain/index.js';
 import type { AuthorIdentity, ObjectId, RefName } from '../../../../src/domain/objects/index.js';
@@ -40,6 +41,64 @@ const expectError = async (fn: () => Promise<unknown>, code: string): Promise<Ts
   expect((caught as TsgitError).data.code).toBe(code);
   return caught as TsgitError;
 };
+
+describe('commit — cherry-pick resolution', () => {
+  const seedCommitted = async (): Promise<{ ctx: Context; base: ObjectId }> => {
+    const ctx = await seed({ 'a.txt': 'a\n' });
+    const base = await commit(ctx, { message: 'base', author });
+    return { ctx, base: base.id };
+  };
+
+  describe('Given CHERRY_PICK_HEAD set and an empty message (MERGE_MSG fallback)', () => {
+    describe('When commit resolves it', () => {
+      it('Then single-parent, comments stripped, state cleared, cherry-pick reflog', async () => {
+        // Arrange
+        const { ctx, base } = await seedCommitted();
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'resolved\n');
+        await add(ctx, ['a.txt']);
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/CHERRY_PICK_HEAD`, `${base}\n`);
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/MERGE_MSG`,
+          'picked msg\n\n# Conflicts:\n#\ta.txt\n',
+        );
+
+        // Act
+        const sut = await commit(ctx, { message: '', author });
+
+        // Assert
+        expect(sut.parents).toEqual([base]); // CHERRY_PICK_HEAD NOT a second parent
+        const data = await readObject(ctx, sut.id);
+        if (data.type === 'commit') expect(data.data.message).toBe('picked msg\n');
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/CHERRY_PICK_HEAD`)).toBe(false);
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/MERGE_MSG`)).toBe(false);
+        const reflog = await readReflog(ctx, 'refs/heads/main' as RefName);
+        expect(reflog.some((e) => e.message === 'commit (cherry-pick): picked msg')).toBe(true);
+      });
+    });
+  });
+
+  describe('Given CHERRY_PICK_HEAD set and an explicit message', () => {
+    describe('When commit resolves it', () => {
+      it('Then uses the explicit message with a cherry-pick reflog', async () => {
+        // Arrange
+        const { ctx, base } = await seedCommitted();
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'resolved\n');
+        await add(ctx, ['a.txt']);
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/CHERRY_PICK_HEAD`, `${base}\n`);
+
+        // Act
+        const sut = await commit(ctx, { message: 'explicit', author });
+
+        // Assert
+        expect(sut.parents).toEqual([base]);
+        const data = await readObject(ctx, sut.id);
+        if (data.type === 'commit') expect(data.data.message).toBe('explicit\n');
+        const reflog = await readReflog(ctx, 'refs/heads/main' as RefName);
+        expect(reflog.some((e) => e.message === 'commit (cherry-pick): explicit')).toBe(true);
+      });
+    });
+  });
+});
 
 describe('commit', () => {
   describe('Given a staged file + explicit author', () => {

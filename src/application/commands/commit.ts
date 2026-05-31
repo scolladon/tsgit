@@ -14,9 +14,15 @@ import { recordRefUpdate } from '../primitives/record-ref-update.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
 import { updateRef } from '../primitives/update-ref.js';
 import { writeTree } from '../primitives/write-tree.js';
+import { clearCherryPickHead, readCherryPickHead } from './internal/cherry-pick-state.js';
 import { applyCommitMsgHook, runPreCommitHook } from './internal/commit-hooks.js';
 import { resolveAuthor, resolveCommitter, sanitizeMessage } from './internal/commit-message.js';
-import { clearMergeState, readMergeHead, readMergeMsg } from './internal/merge-state.js';
+import {
+  clearMergeMsg,
+  clearMergeState,
+  readMergeHead,
+  readMergeMsg,
+} from './internal/merge-state.js';
 import {
   assertNoPendingOperation,
   assertNotBare,
@@ -53,15 +59,22 @@ export interface CommitResult {
 export const commit = async (ctx: Context, opts: CommitOptions): Promise<CommitResult> => {
   await assertRepository(ctx);
   await assertNotBare(ctx, 'commit');
-  // Resolving the conflicted merge IS the legitimate way to clear MERGE_HEAD —
-  // skip the 'merge' marker check. All other in-progress operations still block.
-  const mergeHead = await readMergeHead(ctx);
-  await assertNoPendingOperation(ctx, mergeHead !== undefined ? { except: 'merge' } : {});
+  // Resolving a conflicted merge / cherry-pick IS the legitimate way to clear
+  // its marker — skip that marker's check. All other in-progress operations
+  // still block. A cherry-pick resolution stays single-parent (no MERGE_HEAD).
+  const markers = await readPendingMarkers(ctx);
+  const { mergeHead, cherryPickHead } = markers;
+  const pendingExcept = pendingExceptOf(markers);
+  await assertNoPendingOperation(ctx, pendingExcept !== undefined ? { except: pendingExcept } : {});
   const noVerify = opts.noVerify ?? false;
   // pre-commit runs before the index is read, so a hook that re-stages files
   // (e.g. a formatter) is reflected in the committed tree.
   await runPreCommitHook(ctx, noVerify);
-  const resolved = await resolveCommitMessage(ctx, opts, mergeHead);
+  const resolved = await resolveCommitMessage(
+    ctx,
+    opts,
+    mergeHead !== undefined || cherryPickHead !== undefined,
+  );
   const config = await readConfig(ctx);
   const configUser = toAuthor(config.user);
   const author = resolveAuthor(buildResolverInput(opts.author, configUser));
@@ -97,7 +110,7 @@ export const commit = async (ctx: Context, opts: CommitOptions): Promise<CommitR
   };
   const id = await createCommit(ctx, commitData);
   const branch = head.kind === 'symbolic' ? head.target : undefined;
-  const reflogMessage = commitReflogMessage(message, parentId, mergeHead);
+  const reflogMessage = commitReflogMessage(message, parentId, mergeHead, cherryPickHead);
   if (branch !== undefined) {
     // Stryker disable next-line ObjectLiteral: equivalent — parentId is read from `branch` itself and the library is single-threaded, so the CAS `expected` always equals the ref's current value; dropping it cannot change the outcome.
     await updateRef(
@@ -110,39 +123,76 @@ export const commit = async (ctx: Context, opts: CommitOptions): Promise<CommitR
     await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, `${id}\n`);
     await recordRefUpdate(ctx, 'HEAD' as RefName, parentId ?? ZERO_OID, id, reflogMessage);
   }
-  if (mergeHead !== undefined) {
-    await clearMergeState(ctx);
-  }
+  await clearResolvedState(ctx, markers);
   return { id, tree: treeId, branch, parents };
 };
+
+interface PendingMarkers {
+  readonly mergeHead: ObjectId | undefined;
+  readonly cherryPickHead: ObjectId | undefined;
+}
+
+const readPendingMarkers = async (ctx: Context): Promise<PendingMarkers> => ({
+  mergeHead: await readMergeHead(ctx),
+  cherryPickHead: await readCherryPickHead(ctx),
+});
+
+const pendingExceptOf = (m: PendingMarkers): 'merge' | 'cherry-pick' | undefined =>
+  m.mergeHead !== undefined ? 'merge' : m.cherryPickHead !== undefined ? 'cherry-pick' : undefined;
+
+/** Clear the resolved operation's on-disk state after its commit lands. */
+const clearResolvedState = async (ctx: Context, m: PendingMarkers): Promise<void> => {
+  if (m.mergeHead !== undefined) {
+    await clearMergeState(ctx);
+    return;
+  }
+  if (m.cherryPickHead !== undefined) {
+    await clearCherryPickHead(ctx);
+    await clearMergeMsg(ctx);
+  }
+};
+
+/** Drop `#`-comment lines — git's commit cleanup, applied to the editor/MERGE_MSG
+ *  default (not to an explicit `-m` message). Strips a cherry-pick `# Conflicts:` block. */
+const stripComments = (message: string): string =>
+  message
+    .split('\n')
+    .filter((line) => !line.startsWith('#'))
+    .join('\n');
 
 const resolveCommitMessage = async (
   ctx: Context,
   opts: CommitOptions,
-  mergeHead: ObjectId | undefined,
+  usePendingDraft: boolean,
 ): Promise<string> => {
-  if (opts.message.length > 0 || mergeHead === undefined) {
+  if (opts.message.length > 0 || !usePendingDraft) {
     return sanitizeMessage(opts.message, { allowEmpty: opts.allowEmptyMessage ?? false });
   }
-  // Resolving a merge with an empty user message — fall back to MERGE_MSG.
+  // Resolving a merge / cherry-pick with an empty user message — fall back to
+  // MERGE_MSG, stripping comment lines as git's editor cleanup does.
   const draft = await readMergeMsg(ctx);
-  return sanitizeMessage(draft ?? '', { allowEmpty: opts.allowEmptyMessage ?? false });
+  return sanitizeMessage(stripComments(draft ?? ''), {
+    allowEmpty: opts.allowEmptyMessage ?? false,
+  });
 };
 
 /**
- * Build the catalogued reflog message for a commit: `commit (initial):` for
- * the first commit on a branch, `commit (merge):` when resolving a conflicted
- * merge, `commit:` otherwise. `<subject>` is the message's first line.
+ * Build the catalogued reflog message for a commit: `commit (initial):` for the
+ * first commit on a branch, `commit (merge):` / `commit (cherry-pick):` when
+ * resolving a conflicted merge / cherry-pick, `commit:` otherwise. `<subject>`
+ * is the message's first line.
  */
 const commitReflogMessage = (
   message: string,
   parentId: ObjectId | undefined,
   mergeHead: ObjectId | undefined,
+  cherryPickHead: ObjectId | undefined,
 ): string => {
   // `split` always yields at least one element, so `[0]` is a string.
   const subject = message.split('\n')[0] as string;
   if (parentId === undefined) return `commit (initial): ${subject}`;
   if (mergeHead !== undefined) return `commit (merge): ${subject}`;
+  if (cherryPickHead !== undefined) return `commit (cherry-pick): ${subject}`;
   return `commit: ${subject}`;
 };
 
