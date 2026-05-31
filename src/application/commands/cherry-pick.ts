@@ -51,6 +51,14 @@ export interface CherryPickRunInput {
   readonly commits: ReadonlyArray<string>;
   /** -x: append `(cherry picked from commit <oid>)` to each commit message. */
   readonly recordOrigin?: boolean;
+  /** --allow-empty: a redundant pick creates an empty commit instead of stopping. */
+  readonly allowEmpty?: boolean;
+}
+
+/** Resolved run options threaded through the per-pick helpers. */
+interface PickOptions {
+  readonly recordOrigin: boolean;
+  readonly allowEmpty: boolean;
 }
 
 export interface CherryPickedCommit {
@@ -131,7 +139,7 @@ const createPickCommit = async (
   cData: CommitData,
   parentId: ObjectId,
   tree: ObjectId,
-  recordOrigin: boolean,
+  opts: PickOptions,
 ): Promise<ObjectId> => {
   const committer = await resolvePickCommitter(ctx);
   return createCommit(ctx, {
@@ -139,7 +147,7 @@ const createPickCommit = async (
     parents: [parentId],
     author: cData.author,
     committer,
-    message: sanitizeMessage(messageDraft(cData.message, source, recordOrigin), {
+    message: sanitizeMessage(messageDraft(cData.message, source, opts.recordOrigin), {
       allowEmpty: false,
     }),
     extraHeaders: [],
@@ -153,7 +161,7 @@ const applyOnePick = async (
   cData: CommitData,
   branch: RefName,
   ourId: ObjectId,
-  recordOrigin: boolean,
+  opts: PickOptions,
 ): Promise<PickOutcome> => {
   const parentId = cData.parents[0];
   const baseTree = parentId !== undefined ? await treeOf(ctx, parentId) : undefined;
@@ -172,9 +180,9 @@ const applyOnePick = async (
       await lock.commit(res.indexEntries);
       return { kind: 'conflict', conflicts: res.conflicts };
     }
-    if (res.mergedTree === oursTree) return { kind: 'empty' };
+    if (res.mergedTree === oursTree && !opts.allowEmpty) return { kind: 'empty' };
     await lock.commit(res.result.newIndexEntries);
-    const id = await createPickCommit(ctx, source, cData, ourId, res.mergedTree, recordOrigin);
+    const id = await createPickCommit(ctx, source, cData, ourId, res.mergedTree, opts);
     await updateRef(ctx, branch, id, {
       expected: ourId,
       reflogMessage: `cherry-pick: ${subjectOf(cData.message)}`,
@@ -191,10 +199,10 @@ const persistStop = async (
   source: ObjectId,
   cData: CommitData,
   conflicts: ReadonlyArray<MergeConflict> | undefined,
-  recordOrigin: boolean,
+  opts: PickOptions,
 ): Promise<void> => {
   await writeCherryPickHead(ctx, source);
-  const draft = messageDraft(cData.message, source, recordOrigin);
+  const draft = messageDraft(cData.message, source, opts.recordOrigin);
   const message =
     conflicts !== undefined && conflicts.length > 0
       ? conflictMergeMsg(
@@ -220,13 +228,16 @@ export const cherryPickRun = async (
   const todo: ObjectId[] = [];
   for (const arg of input.commits) todo.push(await resolveCommitIsh(ctx, arg));
   await assertCleanWorkTree(ctx, await treeOf(ctx, ourId));
-  const recordOrigin = input.recordOrigin ?? false;
+  const opts: PickOptions = {
+    recordOrigin: input.recordOrigin ?? false,
+    allowEmpty: input.allowEmpty ?? false,
+  };
 
   const applied: CherryPickedCommit[] = [];
   for (let i = 0; i < todo.length; i += 1) {
     const source = todo[i] as ObjectId;
     const cData = await readCommitData(ctx, source);
-    const outcome = await applyOnePick(ctx, source, cData, head.target, ourId, recordOrigin);
+    const outcome = await applyOnePick(ctx, source, cData, head.target, ourId, opts);
     if (outcome.kind === 'committed') {
       applied.push({ source, created: outcome.id });
       ourId = outcome.id;
@@ -237,7 +248,7 @@ export const cherryPickRun = async (
       source,
       cData,
       outcome.kind === 'conflict' ? outcome.conflicts : undefined,
-      recordOrigin,
+      opts,
     );
     const remaining = todo.length - (i + 1);
     if (outcome.kind === 'conflict') {
@@ -253,7 +264,10 @@ export const cherryPickRun = async (
   return { kind: 'picked', commits: applied };
 };
 
-export type CherryPickContinueInput = Record<string, never>;
+export interface CherryPickContinueInput {
+  /** --allow-empty: finalise a resolution that yields no change as an empty commit. */
+  readonly allowEmpty?: boolean;
+}
 
 /** Strip `#`-comment lines (git's commit cleanup) — drops the `# Conflicts:` block. */
 const stripComments = (message: string): string =>
@@ -305,7 +319,7 @@ const commitResolvedPick = async (
  */
 export const cherryPickContinue = async (
   ctx: Context,
-  _input: CherryPickContinueInput = {},
+  input: CherryPickContinueInput = {},
 ): Promise<CherryPickResult> => {
   await assertRepository(ctx);
   await assertNotBare(ctx, 'cherry-pick --continue');
@@ -319,7 +333,7 @@ export const cherryPickContinue = async (
   const index = await readIndex(ctx);
   rejectUnmergedIndex(index.entries);
   const indexTree = await synthesizeTreeFromIndex(ctx, index.entries);
-  if (indexTree === (await treeOf(ctx, ourId))) {
+  if (indexTree === (await treeOf(ctx, ourId)) && input.allowEmpty !== true) {
     return { kind: 'empty', commit: source, remaining: 0 };
   }
   const created = await commitResolvedPick(ctx, source, ourId, head.target, indexTree);

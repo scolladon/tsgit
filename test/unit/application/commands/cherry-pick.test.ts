@@ -167,7 +167,7 @@ describe('cherryPickContinue', () => {
   });
 
   describe('Given the resolution leaves the tree unchanged', () => {
-    describe('When continue', () => {
+    describe('When continue without --allow-empty', () => {
       it('Then re-stops as empty', async () => {
         // Arrange — resolve back to HEAD's content (no change)
         const { ctx, feature } = await seedConflictPick();
@@ -180,6 +180,22 @@ describe('cherryPickContinue', () => {
         // Assert
         expect(sut.kind).toBe('empty');
         if (sut.kind === 'empty') expect(sut.commit).toBe(feature);
+      });
+    });
+
+    describe('When continue with --allow-empty', () => {
+      it('Then commits an empty commit', async () => {
+        // Arrange
+        const { ctx } = await seedConflictPick();
+        await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'l1\nMAIN\n');
+        await add(ctx, ['f.txt']);
+
+        // Act
+        const sut = await cherryPickContinue(ctx, { allowEmpty: true });
+
+        // Assert
+        expect(sut.kind).toBe('picked');
+        if (sut.kind === 'picked') expect(sut.commits).toHaveLength(1);
       });
     });
   });
@@ -340,6 +356,28 @@ describe('cherryPickRun', () => {
         // Assert
         expect(sut.kind).toBe('empty');
         if (sut.kind === 'empty') expect(sut.commit).toBe(feature);
+      });
+    });
+  });
+
+  describe('Given a redundant pick with --allow-empty', () => {
+    describe('When run', () => {
+      it('Then creates an empty commit instead of stopping', async () => {
+        // Arrange — pick feature once (clean), capture HEAD
+        const { ctx, feature } = await seedFeature();
+        await cherryPickRun(ctx, { commits: [feature] });
+        const headBefore = await resolveRef(ctx, 'refs/heads/main' as RefName);
+
+        // Act — pick it again with --allow-empty
+        const sut = await cherryPickRun(ctx, { commits: [feature], allowEmpty: true });
+
+        // Assert
+        expect(sut.kind).toBe('picked');
+        if (sut.kind !== 'picked') return;
+        const created = await readCommit(ctx, sut.commits[0]?.created as ObjectId);
+        const parent = await readCommit(ctx, headBefore);
+        expect(created.tree).toBe(parent.tree); // empty: tree unchanged
+        expect(created.parents).toEqual([headBefore]);
       });
     });
   });
