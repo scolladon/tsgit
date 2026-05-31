@@ -147,6 +147,7 @@ export function assertExhaustiveSwitch(data: TsgitErrorData): void {
     case 'STASH_NOT_FOUND':
     case 'STASH_APPLY_WOULD_OVERWRITE':
     case 'AMBIGUOUS_OID_PREFIX':
+    case 'INVALID_SEQUENCER_TODO':
       return;
     default: {
       const _exhaustive: never = data;

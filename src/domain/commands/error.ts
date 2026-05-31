@@ -165,7 +165,8 @@ export type CommandError =
       readonly code: 'AMBIGUOUS_OID_PREFIX';
       readonly prefix: string;
       readonly candidates: ReadonlyArray<ObjectId>;
-    };
+    }
+  | { readonly code: 'INVALID_SEQUENCER_TODO'; readonly reason: string };
 
 const sanitizeForDisplay = (s: string): string => {
   let out = '';
@@ -461,3 +462,8 @@ export const ambiguousOidPrefix = (
   prefix: string,
   candidates: ReadonlyArray<ObjectId>,
 ): TsgitError => new TsgitError({ code: 'AMBIGUOUS_OID_PREFIX', prefix, candidates });
+
+// Corrupt `.git/sequencer/todo` line. `reason` embeds the offending line
+// (sanitised — a mid-write crash can leave control bytes behind).
+export const invalidSequencerTodo = (reason: string): TsgitError =>
+  new TsgitError({ code: 'INVALID_SEQUENCER_TODO', reason: sanitizeForDisplay(reason) });
