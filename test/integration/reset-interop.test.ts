@@ -24,6 +24,7 @@ import {
   type PeerPair,
   runGit,
   runGitEnv,
+  topReflogSubject,
 } from './interop-helpers.js';
 
 const AUTHOR: AuthorIdentity = {
@@ -184,6 +185,52 @@ describe.skipIf(!GIT_AVAILABLE)('reset porcelain interop', () => {
         expect(sut.head).toBe(c0);
         expect(sut.a).toBe('v0\n');
         expect(sut.bExists).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a detached HEAD at the tip', () => {
+    const detachBoth = async (tip: string): Promise<void> => {
+      runGit(['-C', pair.peer, 'checkout', '--detach', tip]);
+      await repo.checkout({ target: tip, detach: true });
+    };
+
+    describe('When reset --hard HEAD is a no-move on both tools', () => {
+      it('Then neither git nor tsgit appends a HEAD reflog entry', async () => {
+        // Arrange — seed, detach to the tip on both, snapshot each HEAD reflog top.
+        await seedTwoCommits();
+        const tip = runGit(['-C', pair.peer, 'rev-parse', 'HEAD']).trim();
+        await detachBoth(tip);
+        const peerBefore = topReflogSubject(pair.peer, 'HEAD');
+        const oursBefore = topReflogSubject(pair.ours, 'HEAD');
+
+        // Act — reset to the same oid: a detached direct-ref no-move writes nothing.
+        runGit(['-C', pair.peer, 'reset', '--hard', 'HEAD']);
+        await repo.reset({ mode: 'hard', target: 'HEAD' });
+
+        // Assert — each tool's HEAD reflog top is unchanged by the reset. The
+        // before/after-per-tool form isolates the gate from any checkout-message
+        // formatting difference between the tools.
+        expect(topReflogSubject(pair.peer, 'HEAD')).toBe(peerBefore);
+        expect(topReflogSubject(pair.ours, 'HEAD')).toBe(oursBefore);
+      });
+    });
+
+    describe('When reset --hard <c0> moves the detached HEAD on both tools', () => {
+      it('Then both append the identical `reset: moving to <c0>` HEAD entry', async () => {
+        // Arrange — seed, detach to the tip on both.
+        const { c0 } = await seedTwoCommits();
+        const tip = runGit(['-C', pair.peer, 'rev-parse', 'HEAD']).trim();
+        await detachBoth(tip);
+
+        // Act — a real move records the faithful message on both tools.
+        runGit(['-C', pair.peer, 'reset', '--hard', c0]);
+        await repo.reset({ mode: 'hard', target: c0 });
+
+        // Assert — guards the routing from over-skipping a real move.
+        const sut = topReflogSubject(pair.ours, 'HEAD');
+        expect(sut).toBe(`reset: moving to ${c0}`);
+        expect(sut).toBe(topReflogSubject(pair.peer, 'HEAD'));
       });
     });
   });
