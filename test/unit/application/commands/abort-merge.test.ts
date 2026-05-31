@@ -327,9 +327,10 @@ describe('abortMerge', () => {
         expect(raw.trim()).toBe(preMergeMain);
       });
 
-      it('Then HEAD records `merge: aborted` and the branch reflog is left unchanged (no-move skip)', async () => {
+      it('Then HEAD records `reset: moving to HEAD` and the branch reflog is left unchanged (no-move skip)', async () => {
         // Arrange — a conflicted merge never moves HEAD, so the abort reset is a
-        // no-op on the branch: git records the entry on the HEAD symref only.
+        // no-op on the branch: git records the entry on the HEAD symref only,
+        // with the faithful `reset: moving to HEAD` message git's reset writes.
         const ctx = createMemoryContext();
         await setupConflictingMerge(ctx);
         await merge(ctx, { target: 'feature', author });
@@ -340,10 +341,10 @@ describe('abortMerge', () => {
 
         // Assert
         const sut = await readReflog(ctx, HEAD);
-        expect(sut.at(-1)?.message).toBe('merge: aborted');
+        expect(sut.at(-1)?.message).toBe('reset: moving to HEAD');
         const branchAfter = await readReflog(ctx, MAIN);
         expect(branchAfter.at(-1)?.message).toBe(branchBefore);
-        expect(branchAfter.at(-1)?.message).not.toBe('merge: aborted');
+        expect(branchAfter.at(-1)?.message).not.toBe('reset: moving to HEAD');
       });
 
       it('Then result.origHead matches the on-disk ORIG_HEAD value', async () => {

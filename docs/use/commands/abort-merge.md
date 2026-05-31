@@ -17,7 +17,7 @@ interface AbortMergeResult {
 
 - **Hard-reset semantics.** The working tree, index, and the current branch ref all move back to `ORIG_HEAD`. Files modified during the merge are overwritten. Pre-merge uncommitted local changes (if any) are lost — canonical git's `--merge` mode that preserves them is out of scope for v1 (ADR-170).
 - **State files.** `MERGE_HEAD` and `MERGE_MSG` are deleted via `clearMergeState`. `ORIG_HEAD` is intentionally preserved — `repo.reset({ mode: 'hard', target: 'ORIG_HEAD' })` remains a meaningful follow-up after abort.
-- **Reflog.** The branch reflog records `merge: aborted`.
+- **Reflog.** A conflicted merge never advanced the branch, so the abort is a no-move reset: the branch reflog gets **no** entry, and the coupled `HEAD` symref records `reset: moving to HEAD` — byte-faithful to `git merge --abort`.
 - **Detached HEAD.** Rejected upstream (`merge` itself rejects starting on detached HEAD), so this command's defensive guard surfaces `UNSUPPORTED_OPERATION` if a synthetic state ever reaches it.
 - **Sparse-aware.** The hard-reset honours an active sparse pattern; excluded paths remain unmaterialised with `skipWorktree: true`.
 
