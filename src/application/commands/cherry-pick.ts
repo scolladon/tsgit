@@ -127,14 +127,23 @@ const toConflictList = (
 
 const RANGE = /^(.+)\.\.(.+)$/;
 
-/** Commits in `from..to`, oldest-first (git's range order). */
+/**
+ * Commits in `from..to`, oldest-first (git's range order) — the set reachable
+ * from `to` minus everything reachable from `from`. `from`'s whole ancestor set
+ * is excluded (not just `from` itself): otherwise a shared root reached down a
+ * divergent branch leaks in, since `until` is membership-only.
+ */
 const expandRange = async (
   ctx: Context,
   from: ObjectId,
   to: ObjectId,
 ): Promise<ReadonlyArray<ObjectId>> => {
+  const excluded = new Set<ObjectId>();
+  for await (const commit of walkCommits(ctx, { from: [from] })) {
+    excluded.add(commit.id);
+  }
   const ids: ObjectId[] = [];
-  for await (const commit of walkCommits(ctx, { from: [to], until: [from] })) {
+  for await (const commit of walkCommits(ctx, { from: [to], until: [...excluded] })) {
     ids.push(commit.id);
   }
   return ids.reverse();

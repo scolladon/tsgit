@@ -330,6 +330,30 @@ describe('cherryPickRun — ranges and the sequencer', () => {
     });
   });
 
+  describe('Given a divergent-branch range main..feature', () => {
+    describe('When run', () => {
+      it('Then excludes the shared merge-base — first pick is c1, not the shared root', async () => {
+        // Arrange — `base` is reachable from both main and feature; git's
+        // `main..feature` excludes it (and everything else reachable from main).
+        const { ctx, c1 } = await seedRange();
+
+        // Act
+        const sut = await cherryPickRun(ctx, { commits: ['main..feature'] });
+
+        // Assert — the sequence starts at c1 (not the parentless root `base`),
+        // with only c2 remaining.
+        expect(sut.kind).toBe('conflict');
+        if (sut.kind === 'conflict') {
+          expect(sut.commit).toBe(c1);
+          expect(sut.remaining).toBe(1);
+        }
+        expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/CHERRY_PICK_HEAD`)).toBe(`${c1}\n`);
+        const todo = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/sequencer/todo`);
+        expect(todo.split('\n').filter(Boolean)).toHaveLength(2); // c1 (current) + c2
+      });
+    });
+  });
+
   describe('Given a stopped range', () => {
     describe('When the conflict is resolved and continue runs', () => {
       it('Then it finishes the remaining picks and clears the sequencer', async () => {
