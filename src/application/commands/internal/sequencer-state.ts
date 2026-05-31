@@ -14,11 +14,11 @@
  */
 import { invalidSequencerTodo } from '../../../domain/commands/error.js';
 import type { ObjectId } from '../../../domain/objects/index.js';
-import { ObjectId as ObjectIdFactory } from '../../../domain/objects/index.js';
 import { parseTodo, serializeTodo, type TodoEntry } from '../../../domain/sequencer/index.js';
 import type { Context } from '../../../ports/context.js';
 import { parseIniSections } from '../../primitives/config-read.js';
 import { resolveOidPrefix } from '../../primitives/resolve-oid-prefix.js';
+import { readOptionalOidFile } from './oid-file.js';
 
 export interface SequencerOpts {
   readonly recordOrigin: boolean;
@@ -38,25 +38,17 @@ const todoPath = (ctx: Context): string => `${seqDir(ctx)}/todo`;
 const abortSafetyPath = (ctx: Context): string => `${seqDir(ctx)}/abort-safety`;
 const optsPath = (ctx: Context): string => `${seqDir(ctx)}/opts`;
 
-/** Read an oid-file (`head` / `abort-safety`), validating via the ObjectId factory. */
-const readOidFile = async (ctx: Context, path: string): Promise<ObjectId | undefined> => {
-  if (!(await ctx.fs.exists(path))) return undefined;
-  const trimmed = (await ctx.fs.readUtf8(path)).trim();
-  if (trimmed.length === 0) return undefined;
-  return ObjectIdFactory.from(trimmed);
-};
-
 export const writeSequencerHead = (ctx: Context, headId: ObjectId): Promise<void> =>
   ctx.fs.writeUtf8(headPath(ctx), `${headId}\n`);
 
 export const readSequencerHead = (ctx: Context): Promise<ObjectId | undefined> =>
-  readOidFile(ctx, headPath(ctx));
+  readOptionalOidFile(ctx, headPath(ctx));
 
 export const writeAbortSafety = (ctx: Context, headId: ObjectId): Promise<void> =>
   ctx.fs.writeUtf8(abortSafetyPath(ctx), `${headId}\n`);
 
 export const readAbortSafety = (ctx: Context): Promise<ObjectId | undefined> =>
-  readOidFile(ctx, abortSafetyPath(ctx));
+  readOptionalOidFile(ctx, abortSafetyPath(ctx));
 
 /** Write the todo work-list. Callers pass full oids; git re-resolves either way. */
 export const writeSequencerTodo = (

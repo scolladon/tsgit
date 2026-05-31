@@ -6,8 +6,8 @@
  * `MERGE_MSG` is shared with the merge machine (`internal/merge-state.ts`).
  */
 import type { FilePath, ObjectId } from '../../../domain/objects/index.js';
-import { ObjectId as ObjectIdFactory } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
+import { readOptionalOidFile } from './oid-file.js';
 
 const cherryPickHeadPath = (ctx: Context): string => `${ctx.layout.gitDir}/CHERRY_PICK_HEAD`;
 
@@ -21,13 +21,8 @@ export const writeCherryPickHead = async (ctx: Context, pickedId: ObjectId): Pro
  * when absent/empty. A corrupt (non-40-hex) value throws `INVALID_OBJECT_ID`
  * via the ObjectId factory — a mid-write crash must not yield a malformed pick.
  */
-export const readCherryPickHead = async (ctx: Context): Promise<ObjectId | undefined> => {
-  const path = cherryPickHeadPath(ctx);
-  if (!(await ctx.fs.exists(path))) return undefined;
-  const trimmed = (await ctx.fs.readUtf8(path)).trim();
-  if (trimmed.length === 0) return undefined;
-  return ObjectIdFactory.from(trimmed);
-};
+export const readCherryPickHead = (ctx: Context): Promise<ObjectId | undefined> =>
+  readOptionalOidFile(ctx, cherryPickHeadPath(ctx));
 
 /** Remove `.git/CHERRY_PICK_HEAD`. Idempotent — missing is not an error. */
 export const clearCherryPickHead = async (ctx: Context): Promise<void> => {

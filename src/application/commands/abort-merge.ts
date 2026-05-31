@@ -1,16 +1,11 @@
 import { noOperationInProgress } from '../../domain/commands/error.js';
 import { unsupportedOperation } from '../../domain/index.js';
-import { unexpectedObjectType } from '../../domain/objects/error.js';
 import type { ObjectId, RefName } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
-import { materializeTree } from '../primitives/materialize-tree.js';
-import { readIndex } from '../primitives/read-index.js';
-import { readObject } from '../primitives/read-object.js';
-import { loadSparseMatcher } from '../primitives/read-sparse-checkout.js';
 import { updateRef } from '../primitives/update-ref.js';
-import { acquireIndexLock } from './internal/index-update.js';
 import { clearMergeState, readMergeHead, readOrigHead } from './internal/merge-state.js';
 import { assertNotBare, assertRepository, readHeadRaw } from './internal/repo-state.js';
+import { hardResetWorktreeToCommit } from './internal/reset-worktree.js';
 
 export interface AbortMergeResult {
   /** The commit `ORIG_HEAD` recorded; HEAD now points at this id. */
@@ -47,37 +42,8 @@ export const abortMerge = async (ctx: Context): Promise<AbortMergeResult> => {
   if (head.kind !== 'symbolic') {
     throw unsupportedOperation('merge --abort', 'cannot abort with detached HEAD');
   }
-  await resetToOrigHead(ctx, origHead);
+  await hardResetWorktreeToCommit(ctx, origHead);
   await updateRef(ctx, head.target, origHead, { reflogMessage: 'merge: aborted' });
   await clearMergeState(ctx);
   return { origHead, branch: head.target };
-};
-
-/**
- * Hard-reset the working tree and index to `origHead`'s tree. Mirrors
- * `reset --hard` semantics: every working-tree file is rewritten
- * (`forceRewriteAll: true`) so dirty noop'd paths don't survive the
- * abort.
- */
-const resetToOrigHead = async (ctx: Context, origHead: ObjectId): Promise<void> => {
-  const matcher = await loadSparseMatcher(ctx);
-  const commit = await readObject(ctx, origHead);
-  if (commit.type !== 'commit') {
-    throw unexpectedObjectType('commit', commit.type, origHead);
-  }
-  const lock = await acquireIndexLock(ctx);
-  try {
-    const currentIndex = await readIndex(ctx);
-    const result = await materializeTree(ctx, {
-      targetTree: commit.data.tree,
-      currentIndex,
-      force: true,
-      forceRewriteAll: true,
-      // equivalent-mutant: sparse-matcher path is unobservable without a sparse-checkout fixture in abort tests; the matcher itself is covered by `read-sparse-checkout.test.ts` and the wiring mirrors reset/checkout which carry their own sparse fixtures (sparse-reset-merge.test.ts).
-      ...(matcher !== undefined ? { sparse: matcher } : {}),
-    });
-    await lock.commit(result.newIndexEntries);
-  } finally {
-    await lock.release();
-  }
 };

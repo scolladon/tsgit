@@ -32,10 +32,8 @@ import {
   assertRepository,
   readHeadRaw,
 } from '../primitives/internal/repo-state.js';
-import { materializeTree } from '../primitives/materialize-tree.js';
 import { readIndex } from '../primitives/read-index.js';
 import { readObject } from '../primitives/read-object.js';
-import { loadSparseMatcher } from '../primitives/read-sparse-checkout.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
 import { synthesizeTreeFromIndex } from '../primitives/synthesize-tree-from-index.js';
 import { updateRef } from '../primitives/update-ref.js';
@@ -48,9 +46,10 @@ import {
 } from './internal/cherry-pick-state.js';
 import { assertCleanWorkTree } from './internal/clean-work-tree.js';
 import { resolveCommitIsh } from './internal/commit-ish.js';
-import { resolveCommitter, sanitizeMessage } from './internal/commit-message.js';
+import { resolveCommitter, sanitizeMessage, stripComments } from './internal/commit-message.js';
 import { acquireIndexLock } from './internal/index-update.js';
 import { clearMergeMsg, readMergeMsg, writeMergeMsg } from './internal/merge-state.js';
+import { hardResetWorktreeToCommit } from './internal/reset-worktree.js';
 import {
   clearSequencer,
   readSequencerHead,
@@ -459,13 +458,6 @@ export interface CherryPickContinueInput {
   readonly allowEmpty?: boolean;
 }
 
-/** Strip `#`-comment lines (git's commit cleanup) — drops the `# Conflicts:` block. */
-const stripComments = (message: string): string =>
-  message
-    .split('\n')
-    .filter((line) => !line.startsWith('#'))
-    .join('\n');
-
 const rejectUnmergedIndex = (entries: ReadonlyArray<IndexEntry>): void => {
   const unmerged = new Set<FilePath>();
   for (const entry of entries) {
@@ -585,30 +577,6 @@ export interface CherryPickAbortResult {
   readonly branch: RefName;
 }
 
-/**
- * Hard-reset the working tree + index to `commitId`'s tree (sparse-aware,
- * `force + forceRewriteAll`), so a half-applied pick / conflict is discarded.
- * Inlined (not delegated to `reset`) so it can run while a pick marker exists.
- */
-const resetWorktreeAndIndex = async (ctx: Context, commitId: ObjectId): Promise<void> => {
-  const matcher = await loadSparseMatcher(ctx);
-  const cData = await readCommitData(ctx, commitId);
-  const lock = await acquireIndexLock(ctx);
-  try {
-    const currentIndex = await readIndex(ctx);
-    const result = await materializeTree(ctx, {
-      targetTree: cData.tree,
-      currentIndex,
-      force: true,
-      forceRewriteAll: true,
-      ...(matcher !== undefined ? { sparse: matcher } : {}),
-    });
-    await lock.commit(result.newIndexEntries);
-  } finally {
-    await lock.release();
-  }
-};
-
 /** Read the symbolic HEAD branch, refusing a detached HEAD for `verb`. */
 const requireSymbolicHead = async (ctx: Context, verb: string): Promise<RefName> => {
   const head = await readHeadRaw(ctx);
@@ -636,7 +604,7 @@ export const cherryPickSkip = async (
   const branch = await requireSymbolicHead(ctx, 'cherry-pick --skip');
   const ourId = await resolveRef(ctx, branch);
   const opts = await resolveResumeOpts(ctx, input);
-  await resetWorktreeAndIndex(ctx, ourId);
+  await hardResetWorktreeToCommit(ctx, ourId);
   await clearCherryPickHead(ctx);
   await clearMergeMsg(ctx);
   // Skip always drops the current instruction (todo[0]) — whether it stopped as a
@@ -665,7 +633,7 @@ export const cherryPickAbort = async (ctx: Context): Promise<CherryPickAbortResu
   }
   const branch = await requireSymbolicHead(ctx, 'cherry-pick --abort');
   const target = seqHead ?? (await resolveRef(ctx, branch));
-  await resetWorktreeAndIndex(ctx, target);
+  await hardResetWorktreeToCommit(ctx, target);
   await updateRef(ctx, branch, target, { reflogMessage: 'cherry-pick: aborted' });
   await clearCherryPickHead(ctx);
   await clearMergeMsg(ctx);

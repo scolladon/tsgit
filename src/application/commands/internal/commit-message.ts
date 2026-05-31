@@ -52,6 +52,18 @@ export const sanitizeMessage = (raw: string, opts: { readonly allowEmpty: boolea
 };
 
 /**
+ * git's editor "commit cleanup" of `#`-comment lines: drop every line that
+ * begins with `#` (e.g. a cherry-pick `# Conflicts:` block, or merge summary
+ * comments). Applied to the MERGE_MSG / editor default, never to an explicit
+ * `-m` message.
+ */
+export const stripComments = (message: string): string =>
+  message
+    .split('\n')
+    .filter((line) => !line.startsWith('#'))
+    .join('\n');
+
+/**
  * Sanitize a label for inclusion in conflict markers (`<<<<<<<` / `>>>>>>>`).
  * Strips bytes outside `0x20`–`0x7E` (escaped as `\xNN`), and truncates to
  * 200 bytes — keeps marker lines on a single line and within sane width.

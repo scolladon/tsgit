@@ -16,7 +16,12 @@ import { updateRef } from '../primitives/update-ref.js';
 import { writeTree } from '../primitives/write-tree.js';
 import { clearCherryPickHead, readCherryPickHead } from './internal/cherry-pick-state.js';
 import { applyCommitMsgHook, runPreCommitHook } from './internal/commit-hooks.js';
-import { resolveAuthor, resolveCommitter, sanitizeMessage } from './internal/commit-message.js';
+import {
+  resolveAuthor,
+  resolveCommitter,
+  sanitizeMessage,
+  stripComments,
+} from './internal/commit-message.js';
 import {
   clearMergeMsg,
   clearMergeState,
@@ -151,14 +156,6 @@ const clearResolvedState = async (ctx: Context, m: PendingMarkers): Promise<void
     await clearMergeMsg(ctx);
   }
 };
-
-/** Drop `#`-comment lines — git's commit cleanup, applied to the editor/MERGE_MSG
- *  default (not to an explicit `-m` message). Strips a cherry-pick `# Conflicts:` block. */
-const stripComments = (message: string): string =>
-  message
-    .split('\n')
-    .filter((line) => !line.startsWith('#'))
-    .join('\n');
 
 const resolveCommitMessage = async (
   ctx: Context,
