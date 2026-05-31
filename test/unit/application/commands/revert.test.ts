@@ -259,10 +259,18 @@ describe('revert run', () => {
         await checkout(ctx, { target: 'main' });
 
         // Act
-        const code = await codeOf(() => revertRun(ctx, { commits: [m.id] }));
+        let caught: TsgitError | undefined;
+        try {
+          await revertRun(ctx, { commits: [m.id] });
+        } catch (err) {
+          caught = err as TsgitError;
+        }
 
-        // Assert
-        expect(code).toBe('REVERT_MERGE_NO_MAINLINE');
+        // Assert — assert the offending commit too (kills the wrong-oid mutant).
+        expect(caught?.data.code).toBe('REVERT_MERGE_NO_MAINLINE');
+        if (caught?.data.code === 'REVERT_MERGE_NO_MAINLINE') {
+          expect(caught.data.commit).toBe(m.id);
+        }
         expect(await exists(ctx, 'REVERT_HEAD')).toBe(false);
         expect(await exists(ctx, 'sequencer')).toBe(false);
       });
