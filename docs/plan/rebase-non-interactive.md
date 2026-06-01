@@ -31,7 +31,7 @@ wiring → interop) so each compiles and tests in isolation.
 <subject>` · `rebase (continue): <subject>` (first commit made by continue) ·
 `rebase (finish): returning to <head-name>` · `rebase (abort): returning to
 <head-name>`. **Branch reflog**: single `rebase (finish): refs/heads/<b> onto
-<onto-fulloid>` on success; **none** on abort.
+<onto-full-oid>` on success; **none** on abort.
 
 **Decision procedure**: `mb = mergeBase([upstream, head])`; `onto === mb` →
 up-to-date no-op (no reflog); else `mb === head` → fast-forward (reflog dance, no
@@ -115,7 +115,7 @@ picks); else replay `(mb..head)` oldest-first minus cherry-equivalents of
 
 ### 8 — cherry-equivalent pre-drop
 - **Red**: a commit whose change is already upstream is absent from the result and
-  unreplayed (no reflog entry); an empty post-merge replay is also dropped.
+  not replayed (no reflog entry); an empty post-merge replay is also dropped.
 - **Green**: build `patchIds(mb..upstream)`; filter `toReplay` by patch-id before
   the loop; in the loop drop a pick whose merged tree == parent tree.
 - `feat(rebase): drop cherry-pick-equivalent commits`
