@@ -190,7 +190,6 @@ const readCurrentFixups = async (
   if (!(await ctx.fs.exists(path))) return undefined;
   const fixups: CurrentFixup[] = [];
   for (const line of (await ctx.fs.readUtf8(path)).split('\n')) {
-    if (line === '') continue;
     const [action, oid] = line.split(' ');
     if ((action === 'squash' || action === 'fixup') && oid !== undefined) {
       fixups.push({ action, oid: oid as ObjectId });
