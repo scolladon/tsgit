@@ -24,6 +24,7 @@ import { materialisePatchFiles } from './materialise-patch-files.js';
 import { readObject } from './read-object.js';
 
 const ENCODER = new TextEncoder();
+const EMPTY = new Uint8Array();
 
 const readCommitData = async (ctx: Context, id: ObjectId): Promise<CommitData> => {
   const obj = await readObject(ctx, id);
@@ -56,11 +57,7 @@ export const computePatchId = async (ctx: Context, commitId: ObjectId): Promise<
   const files = await materialisePatchFiles(ctx, diff.changes);
   const text = renderPatch(files, { contextLines: 3, pathPrefix: { old: 'a/', new: 'b/' } });
   const binaryKey = files
-    .filter(
-      (f) =>
-        isBinary(f.oldContent ?? f.newContent ?? new Uint8Array()) ||
-        isBinary(f.newContent ?? new Uint8Array()),
-    )
+    .filter((f) => isBinary(f.oldContent ?? EMPTY) || isBinary(f.newContent ?? EMPTY))
     .map((f) => oidsOf(f.change))
     .join('');
   return ctx.hash.hashHex(ENCODER.encode(canonicalise(text) + binaryKey));

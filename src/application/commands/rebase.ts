@@ -186,7 +186,6 @@ const replayOne = async (
   ctx: Context,
   cData: CommitData,
   ourId: ObjectId,
-  reflogLabel: string,
 ): Promise<ReplayOutcome> => {
   const parentId = cData.parents[0];
   const baseTree = parentId !== undefined ? await treeOf(ctx, parentId) : undefined;
@@ -218,7 +217,7 @@ const replayOne = async (
     });
     await updateRef(ctx, HEAD, id, {
       expected: ourId,
-      reflogMessage: `rebase (${reflogLabel}): ${subjectOf(cData.message)}`,
+      reflogMessage: `rebase (pick): ${subjectOf(cData.message)}`,
     });
     return { kind: 'committed', id };
   } finally {
@@ -318,7 +317,7 @@ const replayFrom = async (
   for (let i = 0; i < rc.todo.length; i += 1) {
     const source = rc.todo[i]!.oid;
     const cData = await readCommitData(ctx, source);
-    const outcome = await replayOne(ctx, cData, cur, 'pick');
+    const outcome = await replayOne(ctx, cData, cur);
     if (outcome.kind === 'committed') {
       applied.push({ source, created: outcome.id });
       rewritten.push([source, outcome.id]);
