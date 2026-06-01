@@ -550,6 +550,7 @@ export const rebaseAbort = async (ctx: Context): Promise<RebaseAbortResult> => {
 /** Verbs the interactive engine currently implements. */
 const INTERACTIVE_SUPPORTED: ReadonlySet<RebaseTodoAction> = new Set<RebaseTodoAction>([
   'pick',
+  'reword',
   'drop',
 ]);
 
@@ -591,6 +592,9 @@ const planInteractive = async (
   for (const inst of instructions) {
     if (!INTERACTIVE_SUPPORTED.has(inst.action)) {
       throw invalidOption('interactive', `'${inst.action}' is not yet supported`);
+    }
+    if (inst.action === 'reword' && inst.message === undefined) {
+      throw invalidOption('interactive', 'reword requires a message (no editor in a library)');
     }
     const oid = await resolveCommitIsh(ctx, inst.oid);
     if (!candidates.has(oid)) {
@@ -674,6 +678,109 @@ const applyOnto = async (
   }
 };
 
+/** Fast-forward the detached HEAD onto `target` (kept verbatim — its first parent
+ *  is the current HEAD), recording git's `rebase: fast-forward`. */
+const fastForwardOnto = async (ctx: Context, target: ObjectId): Promise<void> => {
+  const from = await resolveRef(ctx, HEAD);
+  await getRefStore(ctx).writeLoose(HEAD, target);
+  await recordRefUpdate(ctx, HEAD, from, target, 'rebase: fast-forward');
+  await hardResetWorktreeToCommit(ctx, target);
+};
+
+/** Create a replayed commit and advance the detached HEAD to it. `parent` is the
+ *  new commit's first parent; `expected` is the current HEAD (which `parent` and
+ *  `expected` differ for a reword amend, where the produced commit sits between). */
+const commitAndAdvance = async (
+  ctx: Context,
+  spec: {
+    readonly tree: ObjectId;
+    readonly parent: ObjectId;
+    readonly expected: ObjectId;
+    readonly author: CommitData['author'];
+    readonly message: string;
+    readonly reflog: string;
+  },
+): Promise<ObjectId> => {
+  const committer = await resolveCurrentIdentity(ctx);
+  const created = await createCommit(ctx, {
+    tree: spec.tree,
+    parents: [spec.parent],
+    author: spec.author,
+    committer,
+    message: spec.message,
+    extraHeaders: [],
+  });
+  await updateRef(ctx, HEAD, created, { expected: spec.expected, reflogMessage: spec.reflog });
+  return created;
+};
+
+/** One processed instruction's outcome. `created` is the final replayed oid. */
+type Step =
+  | { readonly kind: 'conflict'; readonly conflicts: ReadonlyArray<MergeConflict> }
+  | { readonly kind: 'advanced'; readonly created: ObjectId };
+
+/**
+ * `reword`: produce the commit (fast-forward when its parent is HEAD, else a
+ * 3-way cherry-pick labelled `rebase (reword): <orig>`), then amend its message
+ * to the supplied one (`rebase (reword): <new>`) — git's two-step reword.
+ */
+const stepReword = async (
+  ctx: Context,
+  inst: PlannedInstruction,
+  cData: CommitData,
+  head: ObjectId,
+): Promise<Step> => {
+  const message = sanitizeMessage(inst.message as string, { allowEmpty: false });
+  const rewordReflog = `rebase (reword): ${subjectOf(message)}`;
+  if (cData.parents[0] === head) {
+    await fastForwardOnto(ctx, inst.oid);
+    const created = await commitAndAdvance(ctx, {
+      tree: cData.tree,
+      parent: head,
+      expected: inst.oid,
+      author: cData.author,
+      message,
+      reflog: rewordReflog,
+    });
+    return { kind: 'advanced', created };
+  }
+  const outcome = await applyOnto(ctx, cData, head);
+  if (outcome.kind === 'conflict') return { kind: 'conflict', conflicts: outcome.conflicts };
+  const produced = await commitAndAdvance(ctx, {
+    tree: outcome.mergedTree,
+    parent: head,
+    expected: head,
+    author: cData.author,
+    message: cData.message,
+    reflog: `rebase (reword): ${subjectOf(cData.message)}`,
+  });
+  const created = await commitAndAdvance(ctx, {
+    tree: outcome.mergedTree,
+    parent: head,
+    expected: produced,
+    author: cData.author,
+    message,
+    reflog: rewordReflog,
+  });
+  return { kind: 'advanced', created };
+};
+
+/** `pick`: a 3-way cherry-pick onto HEAD (in the loop a pick never fast-forwards
+ *  — the maximal leading fold already absorbed any pick that could). */
+const stepPick = async (ctx: Context, cData: CommitData, head: ObjectId): Promise<Step> => {
+  const outcome = await applyOnto(ctx, cData, head);
+  if (outcome.kind === 'conflict') return { kind: 'conflict', conflicts: outcome.conflicts };
+  const created = await commitAndAdvance(ctx, {
+    tree: outcome.mergedTree,
+    parent: head,
+    expected: head,
+    author: cData.author,
+    message: cData.message,
+    reflog: `rebase (pick): ${subjectOf(cData.message)}`,
+  });
+  return { kind: 'advanced', created };
+};
+
 interface InteractiveContext {
   readonly branch: RefName | undefined;
   readonly onto: ObjectId;
@@ -739,27 +846,17 @@ const replayInteractive = async (
     const inst = ic.todo[i]!;
     if (inst.action === 'drop') continue;
     const cData = await readCommitData(ctx, inst.oid);
-    const outcome = await applyOnto(ctx, cData, head);
-    if (outcome.kind === 'conflict') {
-      await persistInteractiveStop(ctx, ic, i, cData, outcome.conflicts, rewritten);
-      return conflictResult(inst.oid, outcome.conflicts, ic.todo.length - (i + 1));
+    const step =
+      inst.action === 'reword'
+        ? await stepReword(ctx, inst, cData, head)
+        : await stepPick(ctx, cData, head);
+    if (step.kind === 'conflict') {
+      await persistInteractiveStop(ctx, ic, i, cData, step.conflicts, rewritten);
+      return conflictResult(inst.oid, step.conflicts, ic.todo.length - (i + 1));
     }
-    const committer = await resolveCurrentIdentity(ctx);
-    const created = await createCommit(ctx, {
-      tree: outcome.mergedTree,
-      parents: [head],
-      author: cData.author,
-      committer,
-      message: cData.message,
-      extraHeaders: [],
-    });
-    await updateRef(ctx, HEAD, created, {
-      expected: head,
-      reflogMessage: `rebase (pick): ${subjectOf(cData.message)}`,
-    });
-    applied.push({ source: inst.oid, created });
-    rewritten.push([inst.oid, created]);
-    head = created;
+    applied.push({ source: inst.oid, created: step.created });
+    rewritten.push([inst.oid, step.created]);
+    head = step.created;
   }
   await finishRebase(ctx, ic.branch, ic.origHead, head, ic.onto);
   await clearRebaseState(ctx);

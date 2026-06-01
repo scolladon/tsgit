@@ -1012,3 +1012,79 @@ describe('rebaseRun (interactive)', () => {
     });
   });
 });
+
+describe('rebaseRun (interactive reword)', () => {
+  describe('Given a reword whose base fast-forwards', () => {
+    describe('When the tip is reworded after a folded prefix', () => {
+      it('Then it fast-forwards then amends the message (two reflog entries)', async () => {
+        // Arrange
+        const { ctx, base, c1, c2, c3 } = await seedLinear();
+
+        // Act
+        const sut = await rebaseRun(ctx, {
+          upstream: base,
+          interactive: [
+            { action: 'pick', oid: c1 },
+            { action: 'pick', oid: c2 },
+            { action: 'reword', oid: c3, message: 'c3 reworded' },
+          ],
+        });
+
+        // Assert
+        expect(sut.kind).toBe('rebased');
+        const tip = await readCommit(ctx, await mainTipOid(ctx));
+        expect(tip.message).toBe('c3 reworded\n');
+        expect(tip.parents).toEqual([c2]); // base preserved by the fast-forward
+        const head = await reflogMessages(ctx, 'HEAD');
+        expect(head[0]).toBe('rebase (finish): returning to refs/heads/main');
+        expect(head[1]).toBe('rebase (reword): c3 reworded');
+        expect(head[2]).toBe('rebase: fast-forward');
+      });
+    });
+  });
+
+  describe('Given a reword whose base does not fast-forward', () => {
+    describe('When a commit is dropped before the reworded commit', () => {
+      it('Then it cherry-picks (reword:orig) then amends (reword:new)', async () => {
+        // Arrange
+        const { ctx, base, c1, c2, c3 } = await seedLinear();
+
+        // Act
+        const sut = await rebaseRun(ctx, {
+          upstream: base,
+          interactive: [
+            { action: 'drop', oid: c1 },
+            { action: 'pick', oid: c2 },
+            { action: 'reword', oid: c3, message: 'c3 reworded' },
+          ],
+        });
+
+        // Assert
+        expect(sut.kind).toBe('rebased');
+        const tip = await readCommit(ctx, await mainTipOid(ctx));
+        expect(tip.message).toBe('c3 reworded\n');
+        const head = await reflogMessages(ctx, 'HEAD');
+        expect(head[1]).toBe('rebase (reword): c3 reworded'); // the amend
+        expect(head[2]).toBe('rebase (reword): c3 subject'); // the cherry-pick (original subject)
+      });
+    });
+  });
+
+  describe('Given a reword without a message', () => {
+    describe('When the instruction omits the message', () => {
+      it('Then it refuses with INVALID_OPTION', async () => {
+        // Arrange
+        const { ctx, base, c1 } = await seedLinear();
+
+        // Act
+        const sut = await dataReason(() =>
+          rebaseRun(ctx, { upstream: base, interactive: [{ action: 'reword', oid: c1 }] }),
+        );
+
+        // Assert
+        expect(sut.code).toBe('INVALID_OPTION');
+        expect(sut.reason).toContain('reword requires a message');
+      });
+    });
+  });
+});
