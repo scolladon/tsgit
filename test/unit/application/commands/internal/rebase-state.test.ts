@@ -176,6 +176,19 @@ describe('rebase-state', () => {
       });
     });
 
+    describe('When the stop is not an edit (no amend marker)', () => {
+      it('Then no `amend` file is written', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+
+        // Act
+        await writeRebaseStop(ctx, STOP);
+
+        // Assert
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/rebase-merge/amend`)).toBe(false);
+      });
+    });
+
     describe('When rebaseInProgress is queried then the state is cleared', () => {
       it('Then it reports true, and false after the clear', async () => {
         // Arrange
@@ -201,6 +214,37 @@ describe('rebase-state', () => {
         // Assert
         expect(await ctx.fs.exists(`${ctx.layout.gitDir}/rebase-merge`)).toBe(false);
         expect(await readRebaseHead(ctx)).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given an interactive edit stop', () => {
+    const EDIT_STOP = { ...STOP, amend: T2 } as const;
+
+    describe('When writeRebaseStop persists it', () => {
+      it('Then the `amend` file records the commit being amended', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+
+        // Act
+        await writeRebaseStop(ctx, EDIT_STOP);
+
+        // Assert
+        expect(await read(ctx, 'amend')).toBe(`${T2}\n`);
+      });
+    });
+
+    describe('When readRebaseState reads it back', () => {
+      it('Then it surfaces the amend oid (the edit-stop marker)', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await writeRebaseStop(ctx, EDIT_STOP);
+
+        // Act
+        const sut = await readRebaseState(ctx);
+
+        // Assert
+        expect(sut?.amend).toBe(T2);
       });
     });
   });

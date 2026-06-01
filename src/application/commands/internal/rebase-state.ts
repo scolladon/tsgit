@@ -55,6 +55,10 @@ export interface RebaseStop {
    *  writes the backup once and never rewrites it, so `continue`/`skip` re-stops
    *  omit it and leave the existing file untouched. */
   readonly backupHeader?: RebaseBackupHeader;
+  /** The commit being amended — set on an `edit` stop (and a squash/fixup meld).
+   *  Its presence is the marker that distinguishes an `edit` stop (clean index)
+   *  from a conflict stop on `continue`. */
+  readonly amend?: ObjectId;
 }
 
 /** The aggregated read used by `continue` / `skip` / `abort`. */
@@ -67,6 +71,9 @@ export interface RebaseState {
   readonly stoppedSha: ObjectId | undefined;
   readonly author: AuthorIdentity;
   readonly message: string;
+  /** The `amend` marker (edit stop / squash meld), or `undefined` for a plain
+   *  conflict stop — the signal `continue` reads to choose amend-or-skip. */
+  readonly amend?: ObjectId;
 }
 
 const dir = (ctx: Context): string => `${ctx.layout.gitDir}/rebase-merge`;
@@ -98,6 +105,7 @@ export const writeRebaseStop = async (ctx: Context, stop: RebaseStop): Promise<v
   await write('drop_redundant_commits', '');
   await write('no-reschedule-failed-exec', '');
   await write('stopped-sha', `${stop.stoppedSha}\n`);
+  if (stop.amend !== undefined) await write('amend', `${stop.amend}\n`);
   await ctx.fs.writeUtf8(rebaseHeadPath(ctx), `${stop.stoppedSha}\n`);
 };
 
@@ -132,6 +140,7 @@ export const readRebaseState = async (ctx: Context): Promise<RebaseState | undef
   );
   const author = parseAuthorScript(await ctx.fs.readUtf8(file(ctx, 'author-script')));
   const message = await ctx.fs.readUtf8(file(ctx, 'message'));
+  const amend = await readOptionalOidFile(ctx, file(ctx, 'amend'));
   return {
     headName,
     onto,
@@ -141,6 +150,7 @@ export const readRebaseState = async (ctx: Context): Promise<RebaseState | undef
     stoppedSha: await readRebaseHead(ctx),
     author,
     message,
+    ...(amend !== undefined ? { amend } : {}),
   };
 };
 
