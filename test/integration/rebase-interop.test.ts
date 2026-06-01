@@ -256,3 +256,194 @@ function buildCherryEquivalent(dir: string): void {
   gitCommit(dir, 'm2 diverge');
   git(dir, 'checkout', '-q', 'topic');
 }
+
+// ── interactive (`rebase -i`) ───────────────────────────────────────────────
+
+/** base; c1, c2, c3 each adding an independent file. HEAD on main. */
+function buildInteractiveLinear(dir: string): void {
+  runGit(['init', '-q', '-b', 'main', dir]);
+  configGit(dir);
+  writeWork(dir, 'base.txt', 'base\n');
+  git(dir, 'add', 'base.txt');
+  gitCommit(dir, 'base');
+  for (const n of ['1', '2', '3']) {
+    writeWork(dir, `${n}.txt`, `${n}\n`);
+    git(dir, 'add', `${n}.txt`);
+    gitCommit(dir, `c${n} subject`);
+  }
+}
+
+/** Run git's interactive rebase with a scripted todo edit (and optional message editor). */
+const gitRebaseInteractive = (dir: string, perlTodo: string, editor = 'true'): void => {
+  runGit(['-C', dir, 'rebase', '-i', 'HEAD~3'], {
+    env: { ...runGitEnv(), GIT_SEQUENCE_EDITOR: `perl -i -pe '${perlTodo}'`, GIT_EDITOR: editor },
+  });
+};
+
+const oidAt = (dir: string, rev: string): string => git(dir, 'rev-parse', rev).trim();
+
+describe.skipIf(!GIT_AVAILABLE)('rebase interactive interop', () => {
+  let pair: PeerPair;
+  beforeEach(async () => {
+    pair = await makePeerPair('rebase-i');
+  });
+  afterEach(async () => {
+    await pair.dispose();
+  });
+
+  describe('Given a linear history rebased interactively', () => {
+    it('Then dropping a commit matches git: resulting tree + commit count', async () => {
+      // Arrange — identical history; git drops c2 via the scripted todo
+      buildInteractiveLinear(pair.peer);
+      buildInteractiveLinear(pair.ours);
+      gitRebaseInteractive(pair.peer, 's/^pick (.*c2 subject)/drop $1/');
+      const base = oidAt(pair.ours, 'HEAD~3');
+      const [c1, c2, c3] = ['HEAD~2', 'HEAD~1', 'HEAD'].map((r) => oidAt(pair.ours, r));
+      const repo = await openRepository({ cwd: pair.ours });
+
+      // Act
+      const result = await repo.rebase.run({
+        upstream: base,
+        interactive: [
+          { action: 'pick', oid: c1 as string },
+          { action: 'drop', oid: c2 as string },
+          { action: 'pick', oid: c3 as string },
+        ],
+      });
+      await repo.dispose();
+
+      // Assert
+      expect(result.kind).toBe('rebased');
+      expect(writeTreeOf(pair.ours)).toBe(writeTreeOf(pair.peer));
+      expect(commitCount(pair.ours)).toBe(commitCount(pair.peer));
+    });
+
+    it('Then squashing a commit matches git: resulting tree + commit count', async () => {
+      // Arrange
+      buildInteractiveLinear(pair.peer);
+      buildInteractiveLinear(pair.ours);
+      gitRebaseInteractive(pair.peer, 's/^pick (.*c3 subject)/squash $1/');
+      const base = oidAt(pair.ours, 'HEAD~3');
+      const [c1, c2, c3] = ['HEAD~2', 'HEAD~1', 'HEAD'].map((r) => oidAt(pair.ours, r));
+      const repo = await openRepository({ cwd: pair.ours });
+
+      // Act — squash c3 into c2 (default combined message on both)
+      const result = await repo.rebase.run({
+        upstream: base,
+        interactive: [
+          { action: 'pick', oid: c1 as string },
+          { action: 'pick', oid: c2 as string },
+          { action: 'squash', oid: c3 as string },
+        ],
+      });
+      await repo.dispose();
+
+      // Assert
+      expect(result.kind).toBe('rebased');
+      expect(writeTreeOf(pair.ours)).toBe(writeTreeOf(pair.peer));
+      expect(commitCount(pair.ours)).toBe(commitCount(pair.peer));
+    });
+
+    it('Then fixing up a commit matches git: resulting tree + commit count', async () => {
+      // Arrange
+      buildInteractiveLinear(pair.peer);
+      buildInteractiveLinear(pair.ours);
+      gitRebaseInteractive(pair.peer, 's/^pick (.*c3 subject)/fixup $1/');
+      const base = oidAt(pair.ours, 'HEAD~3');
+      const [c1, c2, c3] = ['HEAD~2', 'HEAD~1', 'HEAD'].map((r) => oidAt(pair.ours, r));
+      const repo = await openRepository({ cwd: pair.ours });
+
+      // Act
+      const result = await repo.rebase.run({
+        upstream: base,
+        interactive: [
+          { action: 'pick', oid: c1 as string },
+          { action: 'pick', oid: c2 as string },
+          { action: 'fixup', oid: c3 as string },
+        ],
+      });
+      await repo.dispose();
+
+      // Assert
+      expect(result.kind).toBe('rebased');
+      expect(writeTreeOf(pair.ours)).toBe(writeTreeOf(pair.peer));
+      expect(commitCount(pair.ours)).toBe(commitCount(pair.peer));
+    });
+
+    it('Then an all-pick edit is a byte-identical no-op (HEAD oid unchanged)', async () => {
+      // Arrange — both repos identical; git rebases -i with no edits
+      buildInteractiveLinear(pair.peer);
+      buildInteractiveLinear(pair.ours);
+      const before = oidAt(pair.ours, 'HEAD');
+      gitRebaseInteractive(pair.peer, 's/^x//'); // no-op edit
+      const base = oidAt(pair.ours, 'HEAD~3');
+      const [c1, c2, c3] = ['HEAD~2', 'HEAD~1', 'HEAD'].map((r) => oidAt(pair.ours, r));
+      const repo = await openRepository({ cwd: pair.ours });
+
+      // Act
+      await repo.rebase.run({
+        upstream: base,
+        interactive: [
+          { action: 'pick', oid: c1 as string },
+          { action: 'pick', oid: c2 as string },
+          { action: 'pick', oid: c3 as string },
+        ],
+      });
+      await repo.dispose();
+
+      // Assert — HEAD unchanged on tsgit, and equal to git's (identical history)
+      expect(oidAt(pair.ours, 'HEAD')).toBe(before);
+      expect(oidAt(pair.ours, 'HEAD')).toBe(oidAt(pair.peer, 'HEAD'));
+    });
+  });
+
+  describe('Given an `edit` stop', () => {
+    it('Then a tsgit edit stop is finished by git rebase --continue', async () => {
+      // Arrange — tsgit stops at `edit c2`
+      const dir = pair.ours;
+      buildInteractiveLinear(dir);
+      const base = oidAt(dir, 'HEAD~3');
+      const [c1, c2, c3] = ['HEAD~2', 'HEAD~1', 'HEAD'].map((r) => oidAt(dir, r));
+      const repo = await openRepository({ cwd: dir });
+      const stop = await repo.rebase.run({
+        upstream: base,
+        interactive: [
+          { action: 'pick', oid: c1 as string },
+          { action: 'edit', oid: c2 as string },
+          { action: 'pick', oid: c3 as string },
+        ],
+      });
+      expect(stop.kind).toBe('stopped');
+      await repo.dispose();
+
+      // Act — hand the edit stop to real git
+      runGit(['-C', dir, '-c', 'core.editor=true', 'rebase', '--continue']);
+
+      // Assert — git finished onto main with all three files
+      expect(git(dir, 'rev-parse', '--abbrev-ref', 'HEAD').trim()).toBe('main');
+      expect(commitCount(dir)).toBe(4); // base + c1 + c2 + c3
+    });
+
+    it('Then a git edit stop is finished by repo.rebase.continue', async () => {
+      // Arrange — git stops at `edit c2`
+      const dir = pair.ours;
+      buildInteractiveLinear(dir);
+      tryRunGit(['-C', dir, 'rebase', '-i', 'HEAD~3'], {
+        env: {
+          ...runGitEnv(),
+          GIT_SEQUENCE_EDITOR: "perl -i -pe 's/^pick (.*c2 subject)/edit $1/'",
+          GIT_EDITOR: 'true',
+        },
+      });
+      const repo = await openRepository({ cwd: dir });
+
+      // Act — tsgit reads git's `amend` state and finishes
+      const done = await repo.rebase.continue();
+      await repo.dispose();
+
+      // Assert
+      expect(done.kind).toBe('rebased');
+      expect(commitCount(dir)).toBe(4);
+    });
+  });
+});
