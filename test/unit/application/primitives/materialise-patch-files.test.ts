@@ -1,20 +1,20 @@
 import { describe, expect, it, vi } from 'vitest';
 // `vi` is still used by the bounded-concurrency test below.
-import { createMemoryContext } from '../../../../../src/adapters/memory/memory-adapter.js';
+import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import {
   materialiseOne,
   materialisePatchFiles,
-} from '../../../../../src/application/commands/internal/materialise-patch-files.js';
-import { writeObject } from '../../../../../src/application/primitives/write-object.js';
+} from '../../../../src/application/primitives/materialise-patch-files.js';
+import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import type {
   AddChange,
   DeleteChange,
   ModifyChange,
   RenameChange,
   TypeChangeChange,
-} from '../../../../../src/domain/diff/index.js';
-import type { FilePath, ObjectId } from '../../../../../src/domain/objects/index.js';
-import { FILE_MODE } from '../../../../../src/domain/objects/index.js';
+} from '../../../../src/domain/diff/index.js';
+import type { FilePath, ObjectId } from '../../../../src/domain/objects/index.js';
+import { FILE_MODE } from '../../../../src/domain/objects/index.js';
 
 const utf8 = new TextEncoder();
 

@@ -4,9 +4,9 @@ import type { ObjectId } from '../../domain/objects/index.js';
 import { validateRefName } from '../../domain/refs/index.js';
 import type { Context } from '../../ports/context.js';
 import { diffTrees } from '../primitives/diff-trees.js';
+import { materialisePatchFiles } from '../primitives/materialise-patch-files.js';
 import { readObject } from '../primitives/read-object.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
-import { materialisePatchFiles } from './internal/materialise-patch-files.js';
 import { assertRepository } from './internal/repo-state.js';
 
 export type DiffFormat = 'tree' | 'patch';
