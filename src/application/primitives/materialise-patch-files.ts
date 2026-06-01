@@ -1,6 +1,6 @@
-import type { DiffChange, PatchFile } from '../../../domain/diff/index.js';
-import type { Context } from '../../../ports/context.js';
-import { readBlob } from '../../primitives/read-blob.js';
+import type { DiffChange, PatchFile } from '../../domain/diff/index.js';
+import type { Context } from '../../ports/context.js';
+import { readBlob } from './read-blob.js';
 
 /**
  * Cap on simultaneous `readBlob` calls when hydrating a `TreeDiff` for patch

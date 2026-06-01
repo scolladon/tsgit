@@ -146,29 +146,19 @@ describe('add', () => {
     });
   });
 
-  describe('Given .git/%s exists', () => {
-    describe('When add runs', () => {
-      it.each([
-        ['REBASE_HEAD', 'rebase'],
-      ])('Then throws OPERATION_IN_PROGRESS with operation=%s (merge + cherry-pick + revert excepted)', async (markerFile, expectedOp) => {
-        // Arrange — exactly one still-blocking marker present. `merge`,
-        // `cherry-pick` and `revert` are excepted (add stages their conflict
-        // resolution); `rebase` must still block. Kills the mutant that widens
-        // the exception list to include `rebase`.
+  describe('Given a rebase in progress (.git/REBASE_HEAD)', () => {
+    describe('When add runs to stage the resolution', () => {
+      it('Then it is allowed (like a merge / cherry-pick / revert resolution)', async () => {
+        // Arrange — staging the conflict resolution is the path forward through a
+        // rebase too. Kills the mutant that drops `rebase` from the exception list.
         const ctx = await seedFreshRepo({ 'a.txt': 'a' });
-        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/${markerFile}`, 'oid\n');
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/REBASE_HEAD`, 'oid\n');
 
         // Act
-        let caught: unknown;
-        try {
-          await add(ctx, ['a.txt']);
-        } catch (err) {
-          caught = err;
-        }
-        const data = (caught as { data?: { code?: string; operation?: string } })?.data;
+        const sut = await add(ctx, ['a.txt']);
+
         // Assert
-        expect(data?.code).toBe('OPERATION_IN_PROGRESS');
-        expect(data?.operation).toBe(expectedOp);
+        expect(sut.added).toEqual(['a.txt']);
       });
     });
   });
@@ -597,16 +587,16 @@ describe('add', () => {
 
   describe('Given a rebase in progress (.git/REBASE_HEAD) and all: true', () => {
     describe('When add', () => {
-      it('Then throws OPERATION_IN_PROGRESS with operation=rebase', async () => {
+      it('Then succeeds (rebase is excepted)', async () => {
         // Arrange
         const ctx = await seedFreshRepo({ 'a.txt': 'a' });
-        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/REBASE_HEAD`, 'oid\n');
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/REBASE_HEAD`, `${'a'.repeat(40)}\n`);
 
         // Act
-        const err = await expectError(() => add(ctx, [], { all: true }), 'OPERATION_IN_PROGRESS');
+        const sut = await add(ctx, [], { all: true });
 
-        // Assert — payload pin so the operation identifier is mutation-protected.
-        expect((err.data as { operation: string }).operation).toBe('rebase');
+        // Assert
+        expect(sut.added).toEqual(['a.txt']);
       });
     });
   });

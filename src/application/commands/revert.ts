@@ -39,6 +39,7 @@ import { synthesizeTreeFromIndex } from '../primitives/synthesize-tree-from-inde
 import { updateRef } from '../primitives/update-ref.js';
 import { walkCommits } from '../primitives/walk-commits.js';
 import { writeTree } from '../primitives/write-tree.js';
+import { abortSequencerReset } from './internal/abort-sequencer-reset.js';
 import { conflictMergeMsg } from './internal/cherry-pick-state.js';
 import { assertCleanWorkTree } from './internal/clean-work-tree.js';
 import { resolveCommitIsh } from './internal/commit-ish.js';
@@ -579,10 +580,6 @@ export const revertAbort = async (ctx: Context): Promise<RevertAbortResult> => {
   if (source === undefined && seqHead === undefined) throw noOperationInProgress('revert');
   const branch = await requireSymbolicHead(ctx, 'revert --abort');
   const target = seqHead ?? (await resolveRef(ctx, branch));
-  await hardResetWorktreeToCommit(ctx, target);
-  await updateRef(ctx, branch, target, { reflogMessage: `reset: moving to ${target}` });
-  await clearRevertHead(ctx);
-  await clearMergeMsg(ctx);
-  await clearSequencer(ctx);
+  await abortSequencerReset(ctx, { branch, target, clearHead: clearRevertHead });
   return { head: target, branch };
 };

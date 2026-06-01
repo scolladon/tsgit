@@ -91,6 +91,10 @@ export {
   type CherryPickNamespace,
 } from './internal/cherry-pick-namespace.js';
 export { bindConfigNamespace, type ConfigNamespace } from './internal/config-namespace.js';
+export {
+  bindRebaseNamespace,
+  type RebaseNamespace,
+} from './internal/rebase-namespace.js';
 export { bindRemoteNamespace, type RemoteNamespace } from './internal/remote-namespace.js';
 export {
   bindRevertNamespace,
@@ -114,6 +118,17 @@ export {
 } from './mv.js';
 export { type PullOptions, type PullResult, pull } from './pull.js';
 export { type PushOptions, type PushResult, push } from './push.js';
+export {
+  type RebaseAbortResult,
+  type RebaseConflict,
+  type RebasedCommit,
+  type RebaseResult,
+  type RebaseRunInput,
+  rebaseAbort,
+  rebaseContinue,
+  rebaseRun,
+  rebaseSkip,
+} from './rebase.js';
 export {
   type ReflogAction,
   type ReflogResult,
