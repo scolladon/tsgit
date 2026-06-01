@@ -19,6 +19,7 @@ import {
   parseAuthorScript,
   parseRebaseTodo,
   type RebaseBackupHeader,
+  type RebaseTodoAction,
   type RebaseTodoEntry,
   rebaseTodoBackup,
   serializeAuthorScript,
@@ -30,6 +31,7 @@ import { readOptionalOidFile } from './oid-file.js';
 
 /** A todo/done entry with its oid resolved to a full ObjectId. */
 export interface ResolvedRebaseTodoEntry {
+  readonly action: RebaseTodoAction;
   readonly oid: ObjectId;
   readonly subject: string;
 }
@@ -113,7 +115,7 @@ const resolveEntries = async (
   for (const entry of entries) {
     const oid = await resolveOidPrefix(ctx, entry.oid);
     if (oid === undefined) throw invalidSequencerTodo(`cannot resolve commit ${entry.oid}`);
-    resolved.push({ oid, subject: entry.subject });
+    resolved.push({ action: entry.action, oid, subject: entry.subject });
   }
   return resolved;
 };

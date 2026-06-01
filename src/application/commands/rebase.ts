@@ -20,7 +20,7 @@ import type { ConflictType, MergeConflict } from '../../domain/merge/index.js';
 import type { CommitData } from '../../domain/objects/commit.js';
 import { unexpectedObjectType } from '../../domain/objects/error.js';
 import type { FilePath, ObjectId, RefName } from '../../domain/objects/index.js';
-import type { RebaseBackupHeader } from '../../domain/rebase/index.js';
+import type { RebaseBackupHeader, RebaseTodoAction } from '../../domain/rebase/index.js';
 import type { Context } from '../../ports/context.js';
 import { applyMergeToWorktree } from '../primitives/apply-merge-to-worktree.js';
 import { createCommit } from '../primitives/create-commit.js';
@@ -93,8 +93,10 @@ type ReplayOutcome =
   | { readonly kind: 'conflict'; readonly conflicts: ReadonlyArray<MergeConflict> }
   | { readonly kind: 'empty' };
 
-/** A resolved work-list entry (full oid + subject) threaded through the replay. */
+/** A resolved work-list entry (full oid + subject) threaded through the replay.
+ *  The non-interactive path only ever plans `pick`. */
 interface PlannedPick {
+  readonly action: RebaseTodoAction;
   readonly oid: ObjectId;
   readonly subject: string;
 }
@@ -168,7 +170,11 @@ const buildTodoEntries = async (
 ): Promise<ReadonlyArray<PlannedPick>> => {
   const entries: PlannedPick[] = [];
   for (const oid of oids) {
-    entries.push({ oid, subject: subjectOf((await readCommitData(ctx, oid)).message) });
+    entries.push({
+      action: 'pick',
+      oid,
+      subject: subjectOf((await readCommitData(ctx, oid)).message),
+    });
   }
   return entries;
 };
