@@ -639,6 +639,10 @@ const planInteractive = async (
       action: inst.action,
       oid,
       subject,
+      // equivalent-mutant (`!== undefined` → `true`): the `true` branch spreads
+      // `{ message: undefined }`, and every downstream reader (`inst.message ??
+      // …`, `inst.message !== undefined`) treats an explicit `undefined` exactly
+      // like an absent key — indistinguishable from the `{}` branch.
       ...(inst.message !== undefined ? { message: inst.message } : {}),
     });
   }
@@ -875,6 +879,12 @@ const persistInteractiveStop = async (
     message: fields.message,
     rewritten: fields.rewritten,
     patch: fields.patch,
+    // equivalent-mutant (each `!== undefined` → `true`): when a field is
+    // `undefined` the `true` branch spreads `{ field: undefined }`, which
+    // `writeRebaseStop`'s `if (field !== undefined)` skips exactly like the `{}`
+    // branch — byte-identical on-disk state. The drop-the-field mutants
+    // (`→ false` / object-literal `→ {}`) ARE killed by the conflict-stop bytes
+    // (backup file, current-fixups, rewritten-pending, message-squash assertions).
     ...(ic.backupHeader !== undefined ? { backupHeader: ic.backupHeader } : {}),
     ...(fields.amend !== undefined ? { amend: fields.amend } : {}),
     ...(fields.currentFixups !== undefined ? { currentFixups: fields.currentFixups } : {}),
@@ -943,6 +953,10 @@ const meldGroupMember = async (
   group.members.push({ message: cData.message, skip: inst.action === 'fixup' });
   group.fixups.push({ action: inst.action as 'squash' | 'fixup', oid: inst.oid });
   group.pending.push(inst.oid);
+  // equivalent-mutant (`inst.message !== undefined` → `true`): for a squash with
+  // no message this assigns `group.inline = undefined`, leaving the already-
+  // `undefined` field unchanged. (The `&&` → `||` and outer `→ true` mutants are
+  // killed by the fixup-carrying-an-inline-message test.)
   if (inst.action === 'squash' && inst.message !== undefined) group.inline = inst.message;
   const template = buildCombinedMessage([{ message: group.baseMessage }, ...group.members]);
   const message = isLast
@@ -1107,6 +1121,9 @@ const rebaseContinueInteractive = async (
     // A squash/fixup meld conflicted: commit the resolution as the group commit
     // (replacing the base — its parent), with the cleaned combined message.
     const baseData = await readCommitData(ctx, currentHead);
+    // equivalent-mutant (`allowEmpty: false` → `true`): `state.message` is the
+    // stopped commit's (non-empty) message persisted at the stop, so the cleaned
+    // result is never empty here — the empty-message guard never fires.
     const message = sanitizeMessage(stripComments(state.message), { allowEmpty: false });
     resumeHead = await commitAndAdvance(ctx, {
       tree,
@@ -1133,6 +1150,9 @@ const rebaseContinueInteractive = async (
       rewritten.push([stoppedOid, resumeHead]);
     }
   } else {
+    // equivalent-mutant (`allowEmpty: false` → `true`): `state.message` is the
+    // stopped commit's (non-empty) message persisted at the stop, so the cleaned
+    // result is never empty here — the empty-message guard never fires.
     const message = sanitizeMessage(stripComments(state.message), { allowEmpty: false });
     resumeHead = await commitAndAdvance(ctx, {
       tree,

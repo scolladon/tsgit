@@ -1370,6 +1370,10 @@ describe('rebaseRun (interactive squash / fixup)', () => {
         const tip = await readCommit(ctx, await mainTipOid(ctx));
         expect(tip.message).toBe('c1 subject\n\nc2 subject\n\nc3 subject\n');
         expect(tip.parents).toEqual([base]);
+        // The intermediate group commit (c2) carries the raw, uncleaned
+        // template — only the final member's commit is cleaned.
+        const head = await reflogMessages(ctx, 'HEAD');
+        expect(head[2]).toBe('rebase (squash): # This is a combination of 2 commits.');
       });
     });
   });
@@ -1511,6 +1515,193 @@ describe('rebaseRun (interactive squash / fixup)', () => {
         expect(combined.message).toBe('t1 subject\n\nt2 subject\n');
         expect(combined.parents).toEqual([mainTip]); // group commit replaced t1', not stacked
         expect((await reflogMessages(ctx, 'HEAD'))[1]).toBe('rebase (continue): t1 subject');
+      });
+    });
+  });
+
+  describe('Given a drop before a squash', () => {
+    describe('When the squash becomes the first applied instruction', () => {
+      it('Then it refuses with INVALID_OPTION (no previous commit)', async () => {
+        // Arrange
+        const { ctx, base, c1, c2 } = await seedLinear();
+
+        // Act — dropping c1 leaves the squash with nothing to fold into
+        const sut = await dataReason(() =>
+          rebaseRun(ctx, {
+            upstream: base,
+            interactive: [
+              { action: 'drop', oid: c1 },
+              { action: 'squash', oid: c2 },
+            ],
+          }),
+        );
+
+        // Assert
+        expect(sut.code).toBe('INVALID_OPTION');
+        expect(sut.option).toBe('interactive');
+        expect(sut.reason).toContain("cannot 'squash' without a previous commit");
+      });
+    });
+  });
+
+  describe('Given a leading fixup', () => {
+    describe('When the first non-drop instruction is a fixup', () => {
+      it('Then it refuses with INVALID_OPTION (no previous commit)', async () => {
+        // Arrange
+        const { ctx, base, c1, c2 } = await seedLinear();
+
+        // Act
+        const sut = await dataReason(() =>
+          rebaseRun(ctx, {
+            upstream: base,
+            interactive: [
+              { action: 'fixup', oid: c1 },
+              { action: 'pick', oid: c2 },
+            ],
+          }),
+        );
+
+        // Assert
+        expect(sut.code).toBe('INVALID_OPTION');
+        expect(sut.option).toBe('interactive');
+        expect(sut.reason).toContain("cannot 'fixup' without a previous commit");
+      });
+    });
+  });
+
+  describe('Given a fixup whose meld conflicts', () => {
+    describe('When the stop state is persisted', () => {
+      it('Then message-squash marks the fixup body as skipped', async () => {
+        // Arrange — t1 clean onto main; fixup t2 melds a conflicting f.txt
+        const { ctx, t1, t2, t3 } = await seedTopicConflict();
+
+        // Act
+        const stop = await rebaseRun(ctx, {
+          upstream: 'main',
+          interactive: [
+            { action: 'pick', oid: t1 },
+            { action: 'fixup', oid: t2 },
+            { action: 'drop', oid: t3 },
+          ],
+        });
+
+        // Assert — the fixup member is commented out under the skip header
+        expect(stop.kind).toBe('conflict');
+        expect(await readMerge(ctx, 'current-fixups')).toBe(`fixup ${t2}\n`);
+        expect(await readMerge(ctx, 'message-squash')).toContain(
+          '# The commit message #2 will be skipped:',
+        );
+      });
+    });
+  });
+
+  describe('Given a squash that melds into a folded base', () => {
+    describe('When the meld conflicts before any in-loop pick runs', () => {
+      it('Then rewritten-pending carries the folded base oid', async () => {
+        // Arrange — main: g0→gO; topic off gO adds a (f=A, folds onto gO),
+        // m (f=M), z (f=Z). Squashing z melds it onto the folded a and
+        // conflicts on f.txt (base m vs ours a vs theirs z), so the group's
+        // only pending oid is the folded base itself.
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await setUser(ctx);
+        await writeAddCommit(ctx, 'g.txt', '0\n', 'g0');
+        await writeAddCommit(ctx, 'g.txt', 'O\n', 'gO');
+        await branchCreate(ctx, { name: 'topic' });
+        await checkout(ctx, { target: 'topic' });
+        const a = await writeAddCommit(ctx, 'f.txt', 'A\n', 'A subject');
+        const m = await writeAddCommit(ctx, 'f.txt', 'M\n', 'M subject');
+        const z = await writeAddCommit(ctx, 'f.txt', 'Z\n', 'Z subject');
+
+        // Act
+        const stop = await rebaseRun(ctx, {
+          upstream: 'main',
+          interactive: [
+            { action: 'pick', oid: a },
+            { action: 'drop', oid: m },
+            { action: 'squash', oid: z },
+          ],
+        });
+
+        // Assert — the folded a (verbatim oid) is the lone pending rewrite
+        expect(stop.kind).toBe('conflict');
+        if (stop.kind === 'conflict') expect(stop.commit).toBe(z);
+        expect(await readMerge(ctx, 'current-fixups')).toBe(`squash ${z}\n`);
+        expect((await readMerge(ctx, 'rewritten-pending')).trim()).toBe(a);
+      });
+    });
+  });
+
+  describe('Given a fixup group ended by a trailing pick', () => {
+    describe('When a pick follows the melded fixup', () => {
+      it('Then the group commit takes the cleaned message, not the raw template', async () => {
+        // Arrange
+        const { ctx, base, c1, c2, c3 } = await seedLinear();
+
+        // Act — c1 folds, c2 fixes up into it (the group ends here, before c3)
+        const sut = await rebaseRun(ctx, {
+          upstream: base,
+          interactive: [
+            { action: 'pick', oid: c1 },
+            { action: 'fixup', oid: c2 },
+            { action: 'pick', oid: c3 },
+          ],
+        });
+
+        // Assert — c3's parent is the cleaned group commit (c2's body dropped)
+        expect(sut.kind).toBe('rebased');
+        const tip = await readCommit(ctx, await mainTipOid(ctx));
+        expect(tip.message).toBe('c3 subject\n');
+        const group = await readCommit(ctx, tip.parents[0] as ObjectId);
+        expect(group.message).toBe('c1 subject\n');
+      });
+    });
+  });
+
+  describe('Given a fixup carrying an inline message', () => {
+    describe('When the fixup melds into the base', () => {
+      it('Then the inline message is ignored (only the base message survives)', async () => {
+        // Arrange
+        const { ctx, base, c1, c2 } = await seedLinear();
+
+        // Act
+        const sut = await rebaseRun(ctx, {
+          upstream: base,
+          interactive: [
+            { action: 'pick', oid: c1 },
+            { action: 'fixup', oid: c2, message: 'ignored by fixup' },
+          ],
+        });
+
+        // Assert
+        expect(sut.kind).toBe('rebased');
+        const tip = await readCommit(ctx, await mainTipOid(ctx));
+        expect(tip.message).toBe('c1 subject\n');
+      });
+    });
+  });
+});
+
+describe('rebaseRun (interactive, detached HEAD)', () => {
+  describe('Given a detached HEAD whose interactive replay conflicts', () => {
+    describe('When the conflicting pick stops', () => {
+      it('Then head-name records "detached HEAD"', async () => {
+        // Arrange — detach at the topic tip, then replay its commits onto main
+        const { ctx, t1, t2 } = await seedTopicConflict();
+        await checkout(ctx, { target: t2 });
+
+        // Act — t2 conflicts with main's f.txt
+        const sut = await rebaseRun(ctx, {
+          upstream: 'main',
+          interactive: [
+            { action: 'pick', oid: t1 },
+            { action: 'pick', oid: t2 },
+          ],
+        });
+
+        // Assert
+        expect(sut.kind).toBe('conflict');
+        expect((await readMerge(ctx, 'head-name')).trimEnd()).toBe('detached HEAD');
       });
     });
   });

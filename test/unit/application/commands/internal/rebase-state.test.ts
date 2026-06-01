@@ -314,6 +314,24 @@ describe('rebase-state', () => {
       });
     });
 
+    describe('When current-fixups contains a verb with no oid', () => {
+      it('Then the malformed entry is dropped, keeping only the well-formed one', async () => {
+        // Arrange — a valid member plus a truncated `squash` line (no oid)
+        const ctx = createMemoryContext();
+        await writeRebaseStop(ctx, SQUASH_STOP);
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/rebase-merge/current-fixups`,
+          `squash ${T2}\nsquash\n`,
+        );
+
+        // Act
+        const sut = await readRebaseState(ctx);
+
+        // Assert — only `squash <oid>` survives; the oid-less verb is skipped
+        expect(sut?.currentFixups).toEqual([{ action: 'squash', oid: T2 }]);
+      });
+    });
+
     describe('When the stop has no group (plain conflict)', () => {
       it('Then neither current-fixups nor rewritten-pending is written', async () => {
         // Arrange
