@@ -755,3 +755,260 @@ describe('bindRebaseNamespace', () => {
     });
   });
 });
+
+const dataReason = async (
+  run: () => Promise<unknown>,
+): Promise<{ code: string; reason?: string }> => {
+  try {
+    await run();
+    throw new Error('expected an error');
+  } catch (err) {
+    return (err as TsgitError).data as { code: string; reason?: string };
+  }
+};
+
+/** Linear main: base; c1, c2, c3 each adding an independent file. HEAD on main. */
+const seedLinear = async (): Promise<{
+  ctx: Context;
+  base: ObjectId;
+  c1: ObjectId;
+  c2: ObjectId;
+  c3: ObjectId;
+}> => {
+  const ctx = createMemoryContext();
+  await init(ctx);
+  await setUser(ctx);
+  const base = await writeAddCommit(ctx, 'base.txt', 'base\n', 'base');
+  const c1 = await writeAddCommit(ctx, '1.txt', '1\n', 'c1 subject');
+  const c2 = await writeAddCommit(ctx, '2.txt', '2\n', 'c2 subject');
+  const c3 = await writeAddCommit(ctx, '3.txt', '3\n', 'c3 subject');
+  return { ctx, base, c1, c2, c3 };
+};
+
+/** base f=L; c1 sets f=A; c2 sets f=B — reordering the two conflicts. */
+const seedSameFile = async (): Promise<{
+  ctx: Context;
+  base: ObjectId;
+  c1: ObjectId;
+  c2: ObjectId;
+}> => {
+  const ctx = createMemoryContext();
+  await init(ctx);
+  await setUser(ctx);
+  const base = await writeAddCommit(ctx, 'f.txt', 'L\n', 'base');
+  const c1 = await writeAddCommit(ctx, 'f.txt', 'A\n', 'c1 subject');
+  const c2 = await writeAddCommit(ctx, 'f.txt', 'B\n', 'c2 subject');
+  return { ctx, base, c1, c2 };
+};
+
+const mainTipOid = (ctx: Context): Promise<ObjectId> =>
+  resolveRef(ctx, 'refs/heads/main' as RefName);
+
+describe('rebaseRun (interactive)', () => {
+  describe('Given an all-pick todo onto the fork', () => {
+    describe('When run interactively with no edits', () => {
+      it('Then it is a complete no-op — history oids unchanged, branch reflog untouched', async () => {
+        // Arrange
+        const { ctx, base, c1, c2, c3 } = await seedLinear();
+        const branchBefore = await reflogMessages(ctx, 'refs/heads/main');
+
+        // Act
+        const sut = await rebaseRun(ctx, {
+          upstream: base,
+          interactive: [
+            { action: 'pick', oid: c1 },
+            { action: 'pick', oid: c2 },
+            { action: 'pick', oid: c3 },
+          ],
+        });
+
+        // Assert
+        expect(sut).toEqual({
+          kind: 'rebased',
+          commits: [
+            { source: c1, created: c1 },
+            { source: c2, created: c2 },
+            { source: c3, created: c3 },
+          ],
+        });
+        expect(await mainTipOid(ctx)).toBe(c3);
+        const head = await reflogMessages(ctx, 'HEAD');
+        expect(head[0]).toBe('rebase (finish): returning to refs/heads/main');
+        expect(head[1]).toBe(`rebase (start): checkout ${base}`);
+        // The branch never moved, so the no-op ref update writes no reflog entry.
+        expect(await reflogMessages(ctx, 'refs/heads/main')).toEqual(branchBefore);
+      });
+    });
+  });
+
+  describe('Given a drop instruction', () => {
+    describe('When the tip commit is dropped', () => {
+      it('Then the branch ends at the folded predecessor with a finish reflog', async () => {
+        // Arrange
+        const { ctx, base, c1, c2, c3 } = await seedLinear();
+
+        // Act
+        const sut = await rebaseRun(ctx, {
+          upstream: base,
+          interactive: [
+            { action: 'pick', oid: c1 },
+            { action: 'pick', oid: c2 },
+            { action: 'drop', oid: c3 },
+          ],
+        });
+
+        // Assert
+        expect(sut).toEqual({
+          kind: 'rebased',
+          commits: [
+            { source: c1, created: c1 },
+            { source: c2, created: c2 },
+          ],
+        });
+        expect(await mainTipOid(ctx)).toBe(c2);
+        const branch = await reflogMessages(ctx, 'refs/heads/main');
+        expect(branch[0]).toBe(`rebase (finish): refs/heads/main onto ${base}`);
+      });
+    });
+
+    describe('When a middle commit is dropped', () => {
+      it('Then the survivor after it is cherry-picked onto the kept predecessor', async () => {
+        // Arrange
+        const { ctx, base, c1, c2, c3 } = await seedLinear();
+
+        // Act
+        const sut = await rebaseRun(ctx, {
+          upstream: base,
+          interactive: [
+            { action: 'pick', oid: c1 },
+            { action: 'drop', oid: c2 },
+            { action: 'pick', oid: c3 },
+          ],
+        });
+
+        // Assert
+        expect(sut.kind).toBe('rebased');
+        const tip = await mainTipOid(ctx);
+        const tipData = await readCommit(ctx, tip);
+        expect(tipData.parents).toEqual([c1]); // reparented off c1, skipping c2
+        expect(tipData.message).toBe('c3 subject\n');
+        expect(tip).not.toBe(c3); // new oid (new committer + parent)
+      });
+    });
+  });
+
+  describe('Given a reorder of independent commits', () => {
+    describe('When the two picks are swapped', () => {
+      it('Then both replay cleanly with the new order on a fresh chain', async () => {
+        // Arrange
+        const { ctx, base, c1, c2 } = await seedLinear();
+
+        // Act
+        const sut = await rebaseRun(ctx, {
+          upstream: base,
+          interactive: [
+            { action: 'pick', oid: c2 },
+            { action: 'pick', oid: c1 },
+          ],
+        });
+
+        // Assert — tip is c1 replayed atop a replayed c2
+        expect(sut.kind).toBe('rebased');
+        const tip = await readCommit(ctx, await mainTipOid(ctx));
+        expect(tip.message).toBe('c1 subject\n');
+        const parent = await readCommit(ctx, tip.parents[0] as ObjectId);
+        expect(parent.message).toBe('c2 subject\n');
+      });
+    });
+  });
+
+  describe('Given a reorder that conflicts', () => {
+    describe('When the conflicting pick is applied first', () => {
+      it('Then it stops with a conflict and persists the rebase-merge state', async () => {
+        // Arrange
+        const { ctx, base, c1, c2 } = await seedSameFile();
+
+        // Act
+        const sut = await rebaseRun(ctx, {
+          upstream: base,
+          interactive: [
+            { action: 'pick', oid: c2 },
+            { action: 'pick', oid: c1 },
+          ],
+        });
+
+        // Assert
+        expect(sut.kind).toBe('conflict');
+        if (sut.kind === 'conflict') {
+          expect(sut.commit).toBe(c2);
+          expect(sut.remaining).toBe(1);
+        }
+        expect(await readMerge(ctx, 'done')).toBe(`pick ${c2} # c2 subject\n`);
+        expect(await readMerge(ctx, 'git-rebase-todo')).toBe(`pick ${c1} # c1 subject\n`);
+      });
+    });
+  });
+
+  describe('Given an invalid interactive todo', () => {
+    describe('When every instruction is a drop', () => {
+      it('Then it refuses with INVALID_OPTION (nothing to do)', async () => {
+        // Arrange
+        const { ctx, base, c1, c2, c3 } = await seedLinear();
+
+        // Act
+        const sut = await dataReason(() =>
+          rebaseRun(ctx, {
+            upstream: base,
+            interactive: [
+              { action: 'drop', oid: c1 },
+              { action: 'drop', oid: c2 },
+              { action: 'drop', oid: c3 },
+            ],
+          }),
+        );
+
+        // Assert
+        expect(sut.code).toBe('INVALID_OPTION');
+        expect(sut.reason).toContain('nothing to do');
+      });
+    });
+
+    describe('When an instruction uses an unsupported verb', () => {
+      it('Then it refuses with INVALID_OPTION naming the verb', async () => {
+        // Arrange
+        const { ctx, base, c1, c2 } = await seedLinear();
+
+        // Act
+        const sut = await dataReason(() =>
+          rebaseRun(ctx, {
+            upstream: base,
+            interactive: [
+              { action: 'pick', oid: c1 },
+              { action: 'edit', oid: c2 },
+            ],
+          }),
+        );
+
+        // Assert
+        expect(sut.code).toBe('INVALID_OPTION');
+        expect(sut.reason).toContain("'edit' is not yet supported");
+      });
+    });
+
+    describe('When an instruction names a commit outside the range', () => {
+      it('Then it refuses with INVALID_OPTION (not in the list)', async () => {
+        // Arrange
+        const { ctx, base } = await seedLinear();
+
+        // Act
+        const sut = await dataReason(() =>
+          rebaseRun(ctx, { upstream: base, interactive: [{ action: 'pick', oid: base }] }),
+        );
+
+        // Assert
+        expect(sut.code).toBe('INVALID_OPTION');
+        expect(sut.reason).toContain('is not in the list');
+      });
+    });
+  });
+});

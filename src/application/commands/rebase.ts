@@ -7,6 +7,7 @@
  * Conflicts stop under a byte-faithful `.git/rebase-merge/` state + `REBASE_HEAD`.
  */
 import {
+  invalidOption,
   mergeHasConflicts,
   noInitialCommit,
   noOperationInProgress,
@@ -61,11 +62,26 @@ import { hardResetWorktreeToCommit } from './internal/reset-worktree.js';
 
 const HEAD = 'HEAD' as RefName;
 
+/** The interactive instruction verbs (`git rebase -i`). */
+export type RebaseInteractiveAction = RebaseTodoAction;
+
+/** One post-`$EDITOR` interactive instruction — the edited-todo line as data. */
+export interface RebaseInstruction {
+  readonly action: RebaseInteractiveAction;
+  /** A commit-ish in the `onto..HEAD` range. */
+  readonly oid: string;
+  /** reword: the new message (required). squash: the combined message
+   *  (optional — defaults to git's combination template). Ignored otherwise. */
+  readonly message?: string;
+}
+
 export interface RebaseRunInput {
   /** The fork-point side — a commit-ish (`git rebase <upstream>`). */
   readonly upstream: string;
   /** `--onto <newbase>`: replay onto this base instead of `upstream`. */
   readonly onto?: string;
+  /** Present → interactive: the post-`$EDITOR` instruction list (`git rebase -i`). */
+  readonly interactive?: ReadonlyArray<RebaseInstruction>;
 }
 
 export interface RebasedCommit {
@@ -375,6 +391,17 @@ export const rebaseRun = async (ctx: Context, input: RebaseRunInput): Promise<Re
   if (base === undefined) {
     throw unsupportedOperation('rebase', 'no common ancestor between HEAD and upstream');
   }
+  if (input.interactive !== undefined) {
+    return rebaseRunInteractive(ctx, {
+      instructions: input.interactive,
+      branch,
+      headCommit,
+      upstream,
+      onto,
+      ontoName,
+      base,
+    });
+  }
   if (onto === base) return { kind: 'up-to-date' };
   const toReplay = await commitsToReplay(ctx, base, headCommit);
   const kept = await dropCherryEquivalents(ctx, toReplay, base, upstream);
@@ -516,4 +543,245 @@ export const rebaseAbort = async (ctx: Context): Promise<RebaseAbortResult> => {
   }
   await clearRebaseState(ctx);
   return { head: state.origHead, headName: state.headName };
+};
+
+// ── interactive (`rebase -i`) ───────────────────────────────────────────────
+
+/** Verbs the interactive engine currently implements. */
+const INTERACTIVE_SUPPORTED: ReadonlySet<RebaseTodoAction> = new Set<RebaseTodoAction>([
+  'pick',
+  'drop',
+]);
+
+/** A resolved interactive instruction threaded through the replay. */
+interface PlannedInstruction {
+  readonly action: RebaseTodoAction;
+  readonly oid: ObjectId;
+  readonly subject: string;
+  /** reword/squash message override. */
+  readonly message?: string;
+}
+
+interface InteractivePlan {
+  readonly instructions: ReadonlyArray<RebaseInstruction>;
+  readonly branch: RefName | undefined;
+  readonly headCommit: ObjectId;
+  readonly upstream: ObjectId;
+  readonly onto: ObjectId;
+  readonly ontoName: string;
+  readonly base: ObjectId;
+}
+
+/**
+ * Resolve + validate the supplied todo against the `base..head` candidate set,
+ * surfacing git's refusals before any state change: nothing-to-do (empty or
+ * all-drop), an unsupported verb, and an oid outside the replayed range.
+ */
+const planInteractive = async (
+  ctx: Context,
+  instructions: ReadonlyArray<RebaseInstruction>,
+  base: ObjectId,
+  head: ObjectId,
+): Promise<ReadonlyArray<PlannedInstruction>> => {
+  if (instructions.every((i) => i.action === 'drop')) {
+    throw invalidOption('interactive', 'nothing to do (every instruction drops a commit)');
+  }
+  const candidates = new Set(await commitsToReplay(ctx, base, head));
+  const planned: PlannedInstruction[] = [];
+  for (const inst of instructions) {
+    if (!INTERACTIVE_SUPPORTED.has(inst.action)) {
+      throw invalidOption('interactive', `'${inst.action}' is not yet supported`);
+    }
+    const oid = await resolveCommitIsh(ctx, inst.oid);
+    if (!candidates.has(oid)) {
+      throw invalidOption(
+        'interactive',
+        `commit ${oid} is not in the list of commits to be rebased`,
+      );
+    }
+    const subject = subjectOf((await readCommitData(ctx, oid)).message);
+    planned.push({
+      action: inst.action,
+      oid,
+      subject,
+      ...(inst.message !== undefined ? { message: inst.message } : {}),
+    });
+  }
+  return planned;
+};
+
+/** Count the leading run of `pick` instructions that linearly continue from
+ *  `onto` — git's `skip_unnecessary_picks` fold into the `rebase (start)` entry. */
+const leadingFold = async (
+  ctx: Context,
+  todo: ReadonlyArray<PlannedInstruction>,
+  onto: ObjectId,
+): Promise<number> => {
+  let head = onto;
+  let count = 0;
+  while (count < todo.length && todo[count]!.action === 'pick') {
+    const cData = await readCommitData(ctx, todo[count]!.oid);
+    if (cData.parents[0] !== head) break;
+    head = todo[count]!.oid;
+    count += 1;
+  }
+  return count;
+};
+
+/** Detach HEAD at the folded position and record a single `rebase (start)`. */
+const detachInteractive = async (
+  ctx: Context,
+  fromHead: ObjectId,
+  ontoName: string,
+  foldedHead: ObjectId,
+): Promise<void> => {
+  await getRefStore(ctx).writeLoose(HEAD, foldedHead);
+  await recordRefUpdate(ctx, HEAD, fromHead, foldedHead, `rebase (start): checkout ${ontoName}`);
+  await hardResetWorktreeToCommit(ctx, foldedHead);
+};
+
+/** Apply commit `C`'s diff onto the detached HEAD `ourId` as a 3-way merge,
+ *  WITHOUT committing — the verb decides what to commit. */
+const applyOnto = async (
+  ctx: Context,
+  cData: CommitData,
+  ourId: ObjectId,
+): Promise<
+  | { readonly kind: 'clean'; readonly mergedTree: ObjectId }
+  | { readonly kind: 'conflict'; readonly conflicts: ReadonlyArray<MergeConflict> }
+> => {
+  const parentId = cData.parents[0];
+  const baseTree = parentId !== undefined ? await treeOf(ctx, parentId) : undefined;
+  const oursTree = await treeOf(ctx, ourId);
+  const lock = await acquireIndexLock(ctx);
+  try {
+    const currentIndex = await readIndex(ctx);
+    const res = await applyMergeToWorktree(ctx, {
+      baseTree,
+      oursTree,
+      theirsTree: cData.tree,
+      currentIndex,
+    });
+    if (res.kind === 'would-overwrite') throw workingTreeDirty(res.paths);
+    if (res.kind === 'conflict') {
+      await lock.commit(res.indexEntries);
+      return { kind: 'conflict', conflicts: res.conflicts };
+    }
+    await lock.commit(res.result.newIndexEntries);
+    return { kind: 'clean', mergedTree: res.mergedTree };
+  } finally {
+    await lock.release();
+  }
+};
+
+interface InteractiveContext {
+  readonly branch: RefName | undefined;
+  readonly onto: ObjectId;
+  readonly origHead: ObjectId;
+  readonly todo: ReadonlyArray<PlannedInstruction>;
+  readonly backupHeader: RebaseBackupHeader;
+}
+
+/** Persist a byte-faithful interactive conflict stop. `done` is everything up to
+ *  and including the stopped instruction; `remaining` is the rest. */
+const persistInteractiveStop = async (
+  ctx: Context,
+  ic: InteractiveContext,
+  stopIndex: number,
+  cData: CommitData,
+  conflicts: ReadonlyArray<MergeConflict>,
+  rewritten: ReadonlyArray<readonly [ObjectId, ObjectId]>,
+): Promise<void> => {
+  const stop: RebaseStop = {
+    headName: ic.branch ?? 'detached HEAD',
+    onto: ic.onto,
+    origHead: ic.origHead,
+    done: ic.todo.slice(0, stopIndex + 1),
+    remaining: ic.todo.slice(stopIndex + 1),
+    stoppedSha: ic.todo[stopIndex]!.oid,
+    stoppedAuthor: cData.author,
+    message: conflictMergeMsg(
+      cData.message,
+      conflicts.map((c) => c.path),
+    ),
+    rewritten,
+    patch: await renderCommitPatch(ctx, cData),
+    backupHeader: ic.backupHeader,
+  };
+  await writeRebaseStop(ctx, stop);
+};
+
+const conflictResult = (
+  source: ObjectId,
+  conflicts: ReadonlyArray<MergeConflict>,
+  remaining: number,
+): RebaseResult => ({
+  kind: 'conflict',
+  commit: source,
+  conflicts: conflicts.map((c) => ({ path: c.path, type: c.type })),
+  remaining,
+});
+
+/** Replay the interactive todo from `startHead` (the folded position), threading
+ *  the detached HEAD. Stops on the first conflict; otherwise finishes. */
+const replayInteractive = async (
+  ctx: Context,
+  ic: InteractiveContext,
+  startHead: ObjectId,
+  foldCount: number,
+): Promise<RebaseResult> => {
+  let head = startHead;
+  const applied: RebasedCommit[] = ic.todo
+    .slice(0, foldCount)
+    .map((t) => ({ source: t.oid, created: t.oid }));
+  const rewritten: Array<readonly [ObjectId, ObjectId]> = [];
+  for (let i = foldCount; i < ic.todo.length; i += 1) {
+    const inst = ic.todo[i]!;
+    if (inst.action === 'drop') continue;
+    const cData = await readCommitData(ctx, inst.oid);
+    const outcome = await applyOnto(ctx, cData, head);
+    if (outcome.kind === 'conflict') {
+      await persistInteractiveStop(ctx, ic, i, cData, outcome.conflicts, rewritten);
+      return conflictResult(inst.oid, outcome.conflicts, ic.todo.length - (i + 1));
+    }
+    const committer = await resolveCurrentIdentity(ctx);
+    const created = await createCommit(ctx, {
+      tree: outcome.mergedTree,
+      parents: [head],
+      author: cData.author,
+      committer,
+      message: cData.message,
+      extraHeaders: [],
+    });
+    await updateRef(ctx, HEAD, created, {
+      expected: head,
+      reflogMessage: `rebase (pick): ${subjectOf(cData.message)}`,
+    });
+    applied.push({ source: inst.oid, created });
+    rewritten.push([inst.oid, created]);
+    head = created;
+  }
+  await finishRebase(ctx, ic.branch, ic.origHead, head, ic.onto);
+  await clearRebaseState(ctx);
+  return { kind: 'rebased', commits: applied };
+};
+
+const rebaseRunInteractive = async (ctx: Context, plan: InteractivePlan): Promise<RebaseResult> => {
+  const todo = await planInteractive(ctx, plan.instructions, plan.base, plan.headCommit);
+  const foldCount = await leadingFold(ctx, todo, plan.onto);
+  const foldedHead = foldCount > 0 ? todo[foldCount - 1]!.oid : plan.onto;
+  await writeOrigHead(ctx, plan.headCommit);
+  await detachInteractive(ctx, plan.headCommit, plan.ontoName, foldedHead);
+  const ic: InteractiveContext = {
+    branch: plan.branch,
+    onto: plan.onto,
+    origHead: plan.headCommit,
+    todo,
+    backupHeader: {
+      shortUpstream: shortOid(plan.upstream),
+      shortOrigHead: shortOid(plan.headCommit),
+      shortOnto: shortOid(plan.onto),
+    },
+  };
+  return replayInteractive(ctx, ic, foldedHead, foldCount);
 };
