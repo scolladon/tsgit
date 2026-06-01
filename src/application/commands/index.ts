@@ -122,6 +122,8 @@ export {
   type RebaseAbortResult,
   type RebaseConflict,
   type RebasedCommit,
+  type RebaseInstruction,
+  type RebaseInteractiveAction,
   type RebaseResult,
   type RebaseRunInput,
   rebaseAbort,
