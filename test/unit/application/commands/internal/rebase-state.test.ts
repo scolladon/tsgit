@@ -30,10 +30,10 @@ const STOP = {
   onto: ONTO,
   origHead: ORIG,
   done: [
-    { oid: T1, subject: 't1' },
-    { oid: T2, subject: 't2' },
+    { action: 'pick', oid: T1, subject: 't1' },
+    { action: 'pick', oid: T2, subject: 't2' },
   ],
-  remaining: [{ oid: T3, subject: 't3' }],
+  remaining: [{ action: 'pick', oid: T3, subject: 't3' }],
   stoppedSha: T2,
   stoppedAuthor: ADA,
   message: 't2\n\n# Conflicts:\n#\tf\n',
@@ -165,14 +165,27 @@ describe('rebase-state', () => {
           onto: ONTO,
           origHead: ORIG,
           done: [
-            { oid: T1, subject: 't1' },
-            { oid: T2, subject: 't2' },
+            { action: 'pick', oid: T1, subject: 't1' },
+            { action: 'pick', oid: T2, subject: 't2' },
           ],
-          remaining: [{ oid: T3, subject: 't3' }],
+          remaining: [{ action: 'pick', oid: T3, subject: 't3' }],
           stoppedSha: T2,
           author: ADA,
           message: STOP.message,
         });
+      });
+    });
+
+    describe('When the stop is not an edit (no amend marker)', () => {
+      it('Then no `amend` file is written', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+
+        // Act
+        await writeRebaseStop(ctx, STOP);
+
+        // Assert
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/rebase-merge/amend`)).toBe(false);
       });
     });
 
@@ -201,6 +214,136 @@ describe('rebase-state', () => {
         // Assert
         expect(await ctx.fs.exists(`${ctx.layout.gitDir}/rebase-merge`)).toBe(false);
         expect(await readRebaseHead(ctx)).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given an interactive edit stop', () => {
+    const EDIT_STOP = { ...STOP, amend: T2 } as const;
+
+    describe('When writeRebaseStop persists it', () => {
+      it('Then the `amend` file records the commit being amended', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+
+        // Act
+        await writeRebaseStop(ctx, EDIT_STOP);
+
+        // Assert
+        expect(await read(ctx, 'amend')).toBe(`${T2}\n`);
+      });
+    });
+
+    describe('When readRebaseState reads it back', () => {
+      it('Then it surfaces the amend oid (the edit-stop marker)', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await writeRebaseStop(ctx, EDIT_STOP);
+
+        // Act
+        const sut = await readRebaseState(ctx);
+
+        // Assert
+        expect(sut?.amend).toBe(T2);
+      });
+    });
+  });
+
+  describe('Given a squash/fixup group conflict stop', () => {
+    const SQUASH_STOP = {
+      ...STOP,
+      amend: T1,
+      currentFixups: [
+        { action: 'squash', oid: T2 },
+        { action: 'fixup', oid: T3 },
+      ],
+      rewrittenPending: [T1, T2],
+      messageSquash: '# This is a combination of 3 commits.\n',
+    } as const;
+
+    describe('When writeRebaseStop persists it', () => {
+      it('Then current-fixups lists each group member verb + oid', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+
+        // Act
+        await writeRebaseStop(ctx, SQUASH_STOP);
+
+        // Assert
+        expect(await read(ctx, 'current-fixups')).toBe(`squash ${T2}\nfixup ${T3}\n`);
+      });
+
+      it('Then rewritten-pending lists each already-folded oid', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+
+        // Act
+        await writeRebaseStop(ctx, SQUASH_STOP);
+
+        // Assert
+        expect(await read(ctx, 'rewritten-pending')).toBe(`${T1}\n${T2}\n`);
+      });
+
+      it('Then message-squash backs up the running combined message', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+
+        // Act
+        await writeRebaseStop(ctx, SQUASH_STOP);
+
+        // Assert
+        expect(await read(ctx, 'message-squash')).toBe('# This is a combination of 3 commits.\n');
+      });
+    });
+
+    describe('When readRebaseState reads it back', () => {
+      it('Then it surfaces the group members and the pending oids', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await writeRebaseStop(ctx, SQUASH_STOP);
+
+        // Act
+        const sut = await readRebaseState(ctx);
+
+        // Assert
+        expect(sut?.currentFixups).toEqual([
+          { action: 'squash', oid: T2 },
+          { action: 'fixup', oid: T3 },
+        ]);
+        expect(sut?.rewrittenPending).toEqual([T1, T2]);
+      });
+    });
+
+    describe('When current-fixups contains a verb with no oid', () => {
+      it('Then the malformed entry is dropped, keeping only the well-formed one', async () => {
+        // Arrange — a valid member plus a truncated `squash` line (no oid)
+        const ctx = createMemoryContext();
+        await writeRebaseStop(ctx, SQUASH_STOP);
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/rebase-merge/current-fixups`,
+          `squash ${T2}\nsquash\n`,
+        );
+
+        // Act
+        const sut = await readRebaseState(ctx);
+
+        // Assert — only `squash <oid>` survives; the oid-less verb is skipped
+        expect(sut?.currentFixups).toEqual([{ action: 'squash', oid: T2 }]);
+      });
+    });
+
+    describe('When the stop has no group (plain conflict)', () => {
+      it('Then neither current-fixups nor rewritten-pending is written', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+
+        // Act
+        await writeRebaseStop(ctx, STOP);
+
+        // Assert
+        const base = `${ctx.layout.gitDir}/rebase-merge`;
+        expect(await ctx.fs.exists(`${base}/current-fixups`)).toBe(false);
+        expect(await ctx.fs.exists(`${base}/rewritten-pending`)).toBe(false);
       });
     });
   });

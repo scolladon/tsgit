@@ -19,6 +19,7 @@ import {
   parseAuthorScript,
   parseRebaseTodo,
   type RebaseBackupHeader,
+  type RebaseTodoAction,
   type RebaseTodoEntry,
   rebaseTodoBackup,
   serializeAuthorScript,
@@ -30,8 +31,15 @@ import { readOptionalOidFile } from './oid-file.js';
 
 /** A todo/done entry with its oid resolved to a full ObjectId. */
 export interface ResolvedRebaseTodoEntry {
+  readonly action: RebaseTodoAction;
   readonly oid: ObjectId;
   readonly subject: string;
+}
+
+/** One melded member of an in-flight squash/fixup group (`current-fixups`). */
+export interface CurrentFixup {
+  readonly action: 'squash' | 'fixup';
+  readonly oid: ObjectId;
 }
 
 /** Everything `writeRebaseStop` persists for one conflict stop. */
@@ -53,6 +61,17 @@ export interface RebaseStop {
    *  writes the backup once and never rewrites it, so `continue`/`skip` re-stops
    *  omit it and leave the existing file untouched. */
   readonly backupHeader?: RebaseBackupHeader;
+  /** The commit being amended — set on an `edit` stop (and a squash/fixup meld).
+   *  Its presence is the marker that distinguishes an `edit` stop (clean index)
+   *  from a conflict stop on `continue`. */
+  readonly amend?: ObjectId;
+  /** In-flight squash/fixup group members (`current-fixups`), in meld order. */
+  readonly currentFixups?: ReadonlyArray<CurrentFixup>;
+  /** Original oids already folded into the running squashed commit
+   *  (`rewritten-pending`) — each maps to the final oid when the group ends. */
+  readonly rewrittenPending?: ReadonlyArray<ObjectId>;
+  /** Backup of the running combined message (`message-squash`). */
+  readonly messageSquash?: string;
 }
 
 /** The aggregated read used by `continue` / `skip` / `abort`. */
@@ -65,6 +84,13 @@ export interface RebaseState {
   readonly stoppedSha: ObjectId | undefined;
   readonly author: AuthorIdentity;
   readonly message: string;
+  /** The `amend` marker (edit stop / squash meld), or `undefined` for a plain
+   *  conflict stop — the signal `continue` reads to choose amend-or-skip. */
+  readonly amend?: ObjectId;
+  /** In-flight squash/fixup group members, or `undefined` when not mid-group. */
+  readonly currentFixups?: ReadonlyArray<CurrentFixup>;
+  /** Original oids already folded into the running squashed commit. */
+  readonly rewrittenPending?: ReadonlyArray<ObjectId>;
 }
 
 const dir = (ctx: Context): string => `${ctx.layout.gitDir}/rebase-merge`;
@@ -96,6 +122,14 @@ export const writeRebaseStop = async (ctx: Context, stop: RebaseStop): Promise<v
   await write('drop_redundant_commits', '');
   await write('no-reschedule-failed-exec', '');
   await write('stopped-sha', `${stop.stoppedSha}\n`);
+  if (stop.amend !== undefined) await write('amend', `${stop.amend}\n`);
+  if (stop.currentFixups !== undefined) {
+    await write('current-fixups', stop.currentFixups.map((f) => `${f.action} ${f.oid}\n`).join(''));
+  }
+  if (stop.rewrittenPending !== undefined) {
+    await write('rewritten-pending', stop.rewrittenPending.map((oid) => `${oid}\n`).join(''));
+  }
+  if (stop.messageSquash !== undefined) await write('message-squash', stop.messageSquash);
   await ctx.fs.writeUtf8(rebaseHeadPath(ctx), `${stop.stoppedSha}\n`);
 };
 
@@ -113,7 +147,7 @@ const resolveEntries = async (
   for (const entry of entries) {
     const oid = await resolveOidPrefix(ctx, entry.oid);
     if (oid === undefined) throw invalidSequencerTodo(`cannot resolve commit ${entry.oid}`);
-    resolved.push({ oid, subject: entry.subject });
+    resolved.push({ action: entry.action, oid, subject: entry.subject });
   }
   return resolved;
 };
@@ -130,6 +164,9 @@ export const readRebaseState = async (ctx: Context): Promise<RebaseState | undef
   );
   const author = parseAuthorScript(await ctx.fs.readUtf8(file(ctx, 'author-script')));
   const message = await ctx.fs.readUtf8(file(ctx, 'message'));
+  const amend = await readOptionalOidFile(ctx, file(ctx, 'amend'));
+  const currentFixups = await readCurrentFixups(ctx);
+  const rewrittenPending = await readRewrittenPending(ctx);
   return {
     headName,
     onto,
@@ -139,7 +176,37 @@ export const readRebaseState = async (ctx: Context): Promise<RebaseState | undef
     stoppedSha: await readRebaseHead(ctx),
     author,
     message,
+    ...(amend !== undefined ? { amend } : {}),
+    ...(currentFixups !== undefined ? { currentFixups } : {}),
+    ...(rewrittenPending !== undefined ? { rewrittenPending } : {}),
   };
+};
+
+/** Parse `current-fixups` (`<verb> <oid>` lines), or `undefined` when absent. */
+const readCurrentFixups = async (
+  ctx: Context,
+): Promise<ReadonlyArray<CurrentFixup> | undefined> => {
+  const path = file(ctx, 'current-fixups');
+  if (!(await ctx.fs.exists(path))) return undefined;
+  const fixups: CurrentFixup[] = [];
+  for (const line of (await ctx.fs.readUtf8(path)).split('\n')) {
+    const [action, oid] = line.split(' ');
+    if ((action === 'squash' || action === 'fixup') && oid !== undefined) {
+      fixups.push({ action, oid: oid as ObjectId });
+    }
+  }
+  return fixups;
+};
+
+/** Parse `rewritten-pending` (`<oid>` lines), or `undefined` when absent. */
+const readRewrittenPending = async (ctx: Context): Promise<ReadonlyArray<ObjectId> | undefined> => {
+  const path = file(ctx, 'rewritten-pending');
+  if (!(await ctx.fs.exists(path))) return undefined;
+  const oids: ObjectId[] = [];
+  for (const line of (await ctx.fs.readUtf8(path)).split('\n')) {
+    if (line !== '') oids.push(line as ObjectId);
+  }
+  return oids;
 };
 
 /** Read the accumulated `rewritten-list` old→new pairs (for carry-forward across

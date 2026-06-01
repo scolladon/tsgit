@@ -15,8 +15,14 @@ export const arbSubject = (): fc.Arbitrary<string> =>
     .array(fc.constantFrom(...SUBJECT_CHARS), { minLength: 0, maxLength: 40 })
     .map((a) => a.join(''));
 
+const REBASE_ACTIONS = ['pick', 'reword', 'edit', 'squash', 'fixup', 'drop'] as const;
+
 export const arbRebaseTodoEntry = (): fc.Arbitrary<RebaseTodoEntry> =>
-  fc.record({ oid: arbOid(), subject: arbSubject() });
+  fc.record({
+    action: fc.constantFrom(...REBASE_ACTIONS),
+    oid: arbOid(),
+    subject: arbSubject(),
+  });
 
 export const arbRebaseTodoList = (): fc.Arbitrary<ReadonlyArray<RebaseTodoEntry>> =>
   fc.array(arbRebaseTodoEntry(), { maxLength: 12 });

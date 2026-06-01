@@ -43,7 +43,7 @@ describe('rebase todo-help', () => {
     describe('When the todo has a single pick', () => {
       it('Then assembles the pick line, a blank line, the singular header, and the help body', () => {
         // Arrange
-        const picks = [{ oid: OID_A, subject: 'tc' }];
+        const picks = [{ action: 'pick' as const, oid: OID_A, subject: 'tc' }];
 
         // Act
         const sut = rebaseTodoBackup(picks, {
@@ -63,8 +63,8 @@ describe('rebase todo-help', () => {
       it('Then uses the plural command count', () => {
         // Arrange
         const picks = [
-          { oid: OID_A, subject: 't1' },
-          { oid: OID_B, subject: 't2' },
+          { action: 'pick' as const, oid: OID_A, subject: 't1' },
+          { action: 'pick' as const, oid: OID_B, subject: 't2' },
         ];
 
         // Act

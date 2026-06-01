@@ -3,5 +3,11 @@ export {
   parseAuthorScript,
   serializeAuthorScript,
 } from './author-script.js';
-export { parseRebaseTodo, type RebaseTodoEntry, serializeRebaseTodo } from './todo.js';
+export { buildCombinedMessage, type CombinedMessageEntry } from './squash-message.js';
+export {
+  parseRebaseTodo,
+  type RebaseTodoAction,
+  type RebaseTodoEntry,
+  serializeRebaseTodo,
+} from './todo.js';
 export { type RebaseBackupHeader, rebaseTodoBackup } from './todo-help.js';

@@ -6,7 +6,7 @@ import {
   serializeRebaseTodo,
 } from '../../../../src/domain/rebase/index.js';
 
-const pick = (oid: string, subject: string): RebaseTodoEntry => ({ oid, subject });
+const pick = (oid: string, subject: string): RebaseTodoEntry => ({ action: 'pick', oid, subject });
 
 describe('rebase todo grammar', () => {
   describe('Given serializeRebaseTodo', () => {
@@ -30,6 +30,27 @@ describe('rebase todo grammar', () => {
 
         // Assert
         expect(sut).toBe('pick 9dac856 # t1 subject\npick 335bfa5 # t2 subject\n');
+      });
+    });
+
+    describe('When given the interactive verbs', () => {
+      it('Then emits each verb verbatim', () => {
+        // Arrange
+        const entries: ReadonlyArray<RebaseTodoEntry> = [
+          { action: 'reword', oid: 'aaaaaaa', subject: 'r' },
+          { action: 'edit', oid: 'bbbbbbb', subject: 'e' },
+          { action: 'squash', oid: 'ccccccc', subject: 's' },
+          { action: 'fixup', oid: 'ddddddd', subject: 'f' },
+          { action: 'drop', oid: 'eeeeeee', subject: 'd' },
+        ];
+
+        // Act
+        const sut = serializeRebaseTodo(entries);
+
+        // Assert
+        expect(sut).toBe(
+          'reword aaaaaaa # r\nedit bbbbbbb # e\nsquash ccccccc # s\nfixup ddddddd # f\ndrop eeeeeee # d\n',
+        );
       });
     });
 
@@ -58,6 +79,26 @@ describe('rebase todo grammar', () => {
 
         // Assert
         expect(sut).toEqual([pick('f4cb28d', 'c1'), pick('0a4f2a3', 'c2')]);
+      });
+    });
+
+    describe('When given the interactive verbs', () => {
+      it('Then parses each verb into its action', () => {
+        // Arrange
+        const text =
+          'reword aaaaaaa # r\nedit bbbbbbb # e\nsquash ccccccc # s\nfixup ddddddd # f\ndrop eeeeeee # d\n';
+
+        // Act
+        const sut = parseRebaseTodo(text);
+
+        // Assert
+        expect(sut).toEqual([
+          { action: 'reword', oid: 'aaaaaaa', subject: 'r' },
+          { action: 'edit', oid: 'bbbbbbb', subject: 'e' },
+          { action: 'squash', oid: 'ccccccc', subject: 's' },
+          { action: 'fixup', oid: 'ddddddd', subject: 'f' },
+          { action: 'drop', oid: 'eeeeeee', subject: 'd' },
+        ]);
       });
     });
 
@@ -95,12 +136,13 @@ describe('rebase todo grammar', () => {
       });
     });
 
-    describe('When a non-blank, non-comment line is not a valid pick instruction', () => {
+    describe('When a line uses a git verb outside the supported six', () => {
       it('Then throws INVALID_SEQUENCER_TODO carrying the offending line', () => {
-        // Arrange + Act
+        // Arrange + Act — `reset` is a real `rebase -i` verb (label/reset/merge),
+        // but it is outside tsgit's supported set, so it must be rejected.
         let caught: TsgitError | undefined;
         try {
-          parseRebaseTodo('pick aaaaaaa # ok\nedit bbbbbbb # interactive only\n');
+          parseRebaseTodo('pick aaaaaaa # ok\nreset bbbbbbb # onto a label\n');
         } catch (err) {
           caught = err as TsgitError;
         }
@@ -108,7 +150,7 @@ describe('rebase todo grammar', () => {
         // Assert
         expect(caught?.data.code).toBe('INVALID_SEQUENCER_TODO');
         if (caught?.data.code === 'INVALID_SEQUENCER_TODO') {
-          expect(caught.data.reason).toContain('edit bbbbbbb # interactive only');
+          expect(caught.data.reason).toContain('reset bbbbbbb # onto a label');
         }
       });
     });

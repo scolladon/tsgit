@@ -9,8 +9,8 @@ finish. Commits already present upstream (cherry-pick equivalents) are dropped b
 patch-id. Conflicts stop under a byte-faithful, bidirectionally cross-tool
 resumable `.git/rebase-merge/` state + `.git/REBASE_HEAD`.
 
-Non-interactive only — `pick`/`reword`/`edit`/`squash`/`fixup`/`drop` editing
-(`rebase -i`) is a later phase.
+Interactive editing (`rebase -i`) is supported via the `interactive` field — see
+[Interactive](#interactive-rebase--i) below.
 
 Nested namespace: `repo.rebase.{run, continue, skip, abort}`.
 
@@ -21,6 +21,7 @@ interface RebaseNamespace {
   run(input: {
     upstream: string; // commit-ish: the fork-point side (`git rebase <upstream>`)
     onto?: string; // --onto <newbase>: replay onto this base instead of `upstream`
+    interactive?: ReadonlyArray<RebaseInstruction>; // present → `rebase -i`
   }): Promise<RebaseResult>;
 
   continue(): Promise<RebaseResult>;
@@ -28,10 +29,17 @@ interface RebaseNamespace {
   abort(): Promise<{ head: ObjectId; headName: string }>;
 }
 
+interface RebaseInstruction {
+  action: 'pick' | 'reword' | 'edit' | 'squash' | 'fixup' | 'drop';
+  oid: string; // a commit-ish in the `onto..HEAD` range
+  message?: string; // reword (required) / squash (optional combined message)
+}
+
 type RebaseResult =
   | { kind: 'rebased'; commits: ReadonlyArray<{ source: ObjectId; created: ObjectId }> }
   | { kind: 'up-to-date' }
-  | { kind: 'conflict'; commit: ObjectId; conflicts: ReadonlyArray<{ path: FilePath; type: ConflictType }>; remaining: number };
+  | { kind: 'conflict'; commit: ObjectId; conflicts: ReadonlyArray<{ path: FilePath; type: ConflictType }>; remaining: number }
+  | { kind: 'stopped'; commit: ObjectId; remaining: number }; // an `edit` pause
 ```
 
 ## Behaviour
@@ -68,6 +76,48 @@ type RebaseResult =
   already in progress (`OPERATION_IN_PROGRESS`), an unborn branch
   (`NO_INITIAL_COMMIT`), a bare repository (`BARE_REPOSITORY`).
 
+## Interactive (`rebase -i`)
+
+Passing `interactive` selects the interactive engine: the array **is** the
+post-`$EDITOR` todo (a library has no editor — you supply the edited instruction
+list as data). It is processed top-to-bottom, replacing the default
+pick-everything todo. The non-interactive path (no `interactive` field) is
+unchanged.
+
+```ts
+await repo.rebase.run({
+  upstream: 'HEAD~3',
+  interactive: [
+    { action: 'pick',   oid: a },
+    { action: 'reword', oid: b, message: 'clearer subject' },
+    { action: 'squash', oid: c }, // melds into b's reworded commit
+    { action: 'drop',   oid: d },
+  ],
+});
+```
+
+- **Verbs.** `pick` (replay), `reword` (replay + amend message), `edit` (replay
+  then pause for amending), `squash` (meld into the previous commit, combining
+  messages), `fixup` (meld keeping only the previous message), `drop` (skip).
+- **Messages.** `reword` requires `message`; `squash` takes an optional
+  `message` (the combined message), defaulting to git's combination template.
+- **Fast-forward.** Unchanged leading picks fold into `rebase (start)` and any
+  commit that linearly continues HEAD is fast-forwarded (original oid kept) — an
+  all-`pick` `-i` is a byte-identical no-op, exactly like git.
+- **`edit`.** Returns `{ kind: 'stopped', commit, remaining }` with HEAD detached
+  at the produced commit and an `amend` marker on disk. Amend the tree (e.g.
+  `repo.add(...)`), then `continue()` (an unchanged tree keeps the commit; a
+  changed tree amends it). `skip()` drops the edit; `abort()` unwinds.
+- **squash/fixup chains.** Reproduced faithfully — each member commits with the
+  running combination template, cleaned only at the group's end (ADR-237).
+- **Refusals.** An `oid` outside the replayed range, a leading `squash`/`fixup`
+  (nothing to meld into), an empty/all-`drop` list, or a `reword` without a
+  `message` all throw `INVALID_OPTION`.
+- **Cross-stop messages (limitation).** Inline `reword`/`squash` messages are
+  consumed during the single `run()` pass and are **not** carried across a stop.
+  A `reword`/`squash` scheduled *after* a conflict or `edit` stop replays with
+  its original / default message on `continue()`.
+
 ## Throws
 
 - `WORKING_TREE_DIRTY` — `run` against a dirty index / working tree.
@@ -80,6 +130,8 @@ type RebaseResult =
   (`--root` is not supported in v1).
 - `MERGE_HAS_CONFLICTS` — `continue` while the index still has unmerged entries.
 - `AMBIGUOUS_OID_PREFIX` — an abbreviated `upstream`/`onto` matched more than one object.
+- `INVALID_OPTION` — an interactive todo with an out-of-range `oid`, a leading
+  `squash`/`fixup`, an empty/all-`drop` list, or a `reword` without a `message`.
 
 See [`../errors.md`](../errors.md) for the canonical `TsgitError.data.code` list.
 
