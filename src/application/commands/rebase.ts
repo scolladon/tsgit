@@ -1076,11 +1076,12 @@ const rebaseRunInteractive = async (ctx: Context, plan: InteractivePlan): Promis
   return replayInteractive(ctx, ic, foldedHead, seed);
 };
 
-/** A rebase is interactive when an `amend` marker is present or any instruction
- *  carries a non-`pick` verb — a pure-pick stop resumes through the (identical)
- *  non-interactive path. */
+/** A rebase is interactive when any instruction carries a non-`pick` verb — a
+ *  pure-pick stop resumes through the (identical) non-interactive path. An
+ *  `amend` stop always carries a non-`pick` verb (`edit`/`squash`/`fixup`) in
+ *  its todo, so the verb check subsumes an explicit `amend` test. */
 const isInteractiveState = (state: RebaseState): boolean =>
-  state.amend !== undefined || [...state.done, ...state.remaining].some((e) => e.action !== 'pick');
+  [...state.done, ...state.remaining].some((e) => e.action !== 'pick');
 
 /** Resume an interactive stop: commit the resolution (conflict) or amend/keep
  *  the edit'd commit, then replay the remaining todo. */
@@ -1156,8 +1157,8 @@ const rebaseSkipInteractive = async (ctx: Context, state: RebaseState): Promise<
       : currentHead;
   // An edit stop already committed the edit'd commit, so dropping it moves the
   // detached HEAD back to its parent; a conflict stop never committed, so HEAD
-  // already sits at the last good pick.
-  if (target !== currentHead) await getRefStore(ctx).writeLoose(HEAD, target);
+  // already sits at the last good pick — writing it back to itself is a no-op.
+  await getRefStore(ctx).writeLoose(HEAD, target);
   await hardResetWorktreeToCommit(ctx, target);
   const ic: InteractiveContext = {
     branch: branchOf(state.headName),

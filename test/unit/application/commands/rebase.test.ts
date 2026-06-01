@@ -758,12 +758,12 @@ describe('bindRebaseNamespace', () => {
 
 const dataReason = async (
   run: () => Promise<unknown>,
-): Promise<{ code: string; reason?: string }> => {
+): Promise<{ code: string; reason?: string; option?: string }> => {
   try {
     await run();
     throw new Error('expected an error');
   } catch (err) {
-    return (err as TsgitError).data as { code: string; reason?: string };
+    return (err as TsgitError).data as { code: string; reason?: string; option?: string };
   }
 };
 
@@ -893,6 +893,7 @@ describe('rebaseRun (interactive)', () => {
         expect(tipData.parents).toEqual([c1]); // reparented off c1, skipping c2
         expect(tipData.message).toBe('c3 subject\n');
         expect(tip).not.toBe(c3); // new oid (new committer + parent)
+        expect((await reflogMessages(ctx, 'HEAD'))[1]).toBe('rebase (pick): c3 subject');
       });
     });
   });
@@ -969,6 +970,7 @@ describe('rebaseRun (interactive)', () => {
 
         // Assert
         expect(sut.code).toBe('INVALID_OPTION');
+        expect(sut.option).toBe('interactive');
         expect(sut.reason).toContain('nothing to do');
       });
     });
@@ -985,6 +987,7 @@ describe('rebaseRun (interactive)', () => {
 
         // Assert
         expect(sut.code).toBe('INVALID_OPTION');
+        expect(sut.option).toBe('interactive');
         expect(sut.reason).toContain('is not in the list');
       });
     });
@@ -1061,6 +1064,7 @@ describe('rebaseRun (interactive reword)', () => {
 
         // Assert
         expect(sut.code).toBe('INVALID_OPTION');
+        expect(sut.option).toBe('interactive');
         expect(sut.reason).toContain('reword requires a message');
       });
     });
@@ -1134,6 +1138,8 @@ describe('rebaseRun (interactive edit / continue / skip)', () => {
         const amend = (await readMerge(ctx, 'amend')).trim() as ObjectId;
         expect(amend).not.toBe(c2); // reparented onto base, fresh oid
         expect((await readCommit(ctx, amend)).parents).toEqual([base]);
+        // The non-fast-forward edit produces its commit via a labelled cherry-pick.
+        expect((await reflogMessages(ctx, 'HEAD'))[0]).toBe('rebase (edit): c2 subject');
       });
     });
   });
@@ -1456,6 +1462,7 @@ describe('rebaseRun (interactive squash / fixup)', () => {
 
         // Assert
         expect(sut.code).toBe('INVALID_OPTION');
+        expect(sut.option).toBe('interactive');
         expect(sut.reason).toContain("cannot 'squash' without a previous commit");
       });
     });
@@ -1466,6 +1473,7 @@ describe('rebaseRun (interactive squash / fixup)', () => {
       it('Then it commits the combined group and persists the group state at the stop', async () => {
         // Arrange — t1 clean onto main; squash t2 melds a conflicting f.txt
         const { ctx, t1, t2, t3 } = await seedTopicConflict();
+        const mainTip = await resolveRef(ctx, 'refs/heads/main' as RefName);
         const stop = await rebaseRun(ctx, {
           upstream: 'main',
           interactive: [
@@ -1475,20 +1483,34 @@ describe('rebaseRun (interactive squash / fixup)', () => {
           ],
         });
 
-        // Assert — stopped on the squash meld with the group state on disk
+        // Assert — stopped on the squash meld with the full group state on disk
         expect(stop.kind).toBe('conflict');
-        if (stop.kind === 'conflict') expect(stop.commit).toBe(t2);
+        if (stop.kind === 'conflict') {
+          expect(stop.commit).toBe(t2);
+          expect(stop.remaining).toBe(1); // the trailing `drop t3`
+        }
         expect(await readMerge(ctx, 'current-fixups')).toBe(`squash ${t2}\n`);
+        // The picked t1 (group base) is pending its rewrite to the final group oid.
+        expect((await readMerge(ctx, 'rewritten-pending')).trim()).toMatch(/^[0-9a-f]{40}$/);
+        expect(await readMerge(ctx, 'message-squash')).toContain(
+          '# This is a combination of 2 commits.',
+        );
+        // The backup todo is written once, on the fresh-run stop.
+        const backup = `${ctx.layout.gitDir}/rebase-merge/git-rebase-todo.backup`;
+        expect(await ctx.fs.exists(backup)).toBe(true);
 
         // Resolve, continue
         await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'RESOLVED\n');
         await add(ctx, ['f.txt']);
         const done = await rebaseContinue(ctx);
 
-        // Assert — combined commit carries t1 + t2 messages
+        // Assert — one combined commit (t1 + t2) replacing the base, on main's tip
         expect(done.kind).toBe('rebased');
         const topicTip = await resolveRef(ctx, 'refs/heads/topic' as RefName);
-        expect((await readCommit(ctx, topicTip)).message).toContain('t1 subject');
+        const combined = await readCommit(ctx, topicTip);
+        expect(combined.message).toBe('t1 subject\n\nt2 subject\n');
+        expect(combined.parents).toEqual([mainTip]); // group commit replaced t1', not stacked
+        expect((await reflogMessages(ctx, 'HEAD'))[1]).toBe('rebase (continue): t1 subject');
       });
     });
   });
