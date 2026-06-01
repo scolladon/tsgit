@@ -203,6 +203,12 @@ plus interactive-todo validation, surfaced before any state change:
 `reword` with no `message` is rejected (`INVALID_OPTION`) — there is no editor to
 prompt; a reword with the original message is just a `pick`.
 
+A `reword`/`squash` whose inline message cleans to **empty** is currently rejected
+*mid-replay* (`EMPTY_COMMIT_MESSAGE` from the commit step, after HEAD detaches),
+rather than upfront in `planInteractive` like the other refusals — so it leaves a
+partial, un-abortable rebase. Moving the check upfront (faithful: git refuses an
+empty commit message) is tracked as **22.4a**.
+
 ## Module layout (hexagonal)
 
 Extend, don't fork. New pure-domain grammar + a thin interactive engine beside
