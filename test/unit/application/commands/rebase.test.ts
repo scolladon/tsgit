@@ -5,7 +5,12 @@ import { branchCreate } from '../../../../src/application/commands/branch.js';
 import { checkout } from '../../../../src/application/commands/checkout.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
-import { rebaseRun } from '../../../../src/application/commands/rebase.js';
+import {
+  rebaseAbort,
+  rebaseContinue,
+  rebaseRun,
+  rebaseSkip,
+} from '../../../../src/application/commands/rebase.js';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
 import { readReflog } from '../../../../src/application/primitives/reflog-store.js';
 import { resolveRef } from '../../../../src/application/primitives/resolve-ref.js';
@@ -324,6 +329,149 @@ describe('rebaseRun', () => {
 
         // Act + Assert
         expect(await codeOf(() => rebaseRun(ctx, { upstream: 'main' }))).toBe('BARE_REPOSITORY');
+      });
+    });
+  });
+});
+
+/** base f=l1/l2; topic adds a.txt (t1) then edits f (t2); main edits f conflictingly. */
+const seedConflict = async (): Promise<Context> => {
+  const ctx = createMemoryContext();
+  await init(ctx);
+  await setUser(ctx);
+  await writeAddCommit(ctx, 'f.txt', 'l1\nl2\n', 'base');
+  await branchCreate(ctx, { name: 'topic' });
+  await checkout(ctx, { target: 'topic' });
+  await writeAddCommit(ctx, 'a.txt', 'a\n', 't1');
+  await writeAddCommit(ctx, 'f.txt', 'l1\nTOPIC\n', 't2');
+  await checkout(ctx, { target: 'main' });
+  await writeAddCommit(ctx, 'f.txt', 'l1\nMAIN\n', 'm1');
+  await checkout(ctx, { target: 'topic' });
+  await rebaseRun(ctx, { upstream: 'main' });
+  return ctx;
+};
+
+const headIsSymbolic = async (ctx: Context): Promise<boolean> =>
+  (await ctx.fs.readUtf8(`${ctx.layout.gitDir}/HEAD`)).startsWith('ref:');
+
+describe('rebaseContinue', () => {
+  describe('Given a conflict resolved with `add`', () => {
+    describe('When continued', () => {
+      it('Then it commits the resolution and finishes, reattaching HEAD', async () => {
+        // Arrange
+        const ctx = await seedConflict();
+        await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'l1\nRESOLVED\n');
+        await add(ctx, ['f.txt']);
+
+        // Act
+        const sut = await rebaseContinue(ctx);
+
+        // Assert
+        expect(sut.kind).toBe('rebased');
+        expect(await headIsSymbolic(ctx)).toBe(true);
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/REBASE_HEAD`)).toBe(false);
+        const tip = await readCommit(ctx, await resolveRef(ctx, 'refs/heads/topic' as RefName));
+        expect(tip.author).toEqual(FEAT_AUTHOR);
+        expect(tip.message).toBe('t2\n');
+        const head = await reflogMessages(ctx, 'HEAD');
+        expect(head).toContain('rebase (continue): t2');
+      });
+    });
+  });
+
+  describe('Given an unresolved (still-conflicted) index', () => {
+    describe('When continued', () => {
+      it('Then it refuses with MERGE_HAS_CONFLICTS', async () => {
+        // Arrange
+        const ctx = await seedConflict();
+
+        // Act + Assert
+        expect(await codeOf(() => rebaseContinue(ctx))).toBe('MERGE_HAS_CONFLICTS');
+      });
+    });
+  });
+
+  describe('Given no rebase in progress', () => {
+    describe('When continued', () => {
+      it('Then it refuses with NO_OPERATION_IN_PROGRESS', async () => {
+        // Arrange
+        const { ctx } = await seedDivergent();
+
+        // Act + Assert
+        expect(await codeOf(() => rebaseContinue(ctx))).toBe('NO_OPERATION_IN_PROGRESS');
+      });
+    });
+  });
+});
+
+describe('rebaseSkip', () => {
+  describe('Given a conflicted commit', () => {
+    describe('When skipped', () => {
+      it('Then it drops the commit and finishes with only the clean picks', async () => {
+        // Arrange
+        const ctx = await seedConflict();
+
+        // Act
+        const sut = await rebaseSkip(ctx);
+
+        // Assert
+        expect(sut.kind).toBe('rebased');
+        if (sut.kind === 'rebased') expect(sut.commits.length).toBe(0);
+        expect(await headIsSymbolic(ctx)).toBe(true);
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/REBASE_HEAD`)).toBe(false);
+        // f.txt holds main's version (t2 dropped); a.txt (t1) survived.
+        expect(await ctx.fs.readUtf8(work(ctx, 'f.txt'))).toBe('l1\nMAIN\n');
+        expect(await ctx.fs.exists(work(ctx, 'a.txt'))).toBe(true);
+      });
+    });
+  });
+
+  describe('Given no rebase in progress', () => {
+    describe('When skipped', () => {
+      it('Then it refuses with NO_OPERATION_IN_PROGRESS', async () => {
+        // Arrange
+        const { ctx } = await seedDivergent();
+
+        // Act + Assert
+        expect(await codeOf(() => rebaseSkip(ctx))).toBe('NO_OPERATION_IN_PROGRESS');
+      });
+    });
+  });
+});
+
+describe('rebaseAbort', () => {
+  describe('Given a conflict stop', () => {
+    describe('When aborted', () => {
+      it('Then it restores the pre-rebase tip, reattaches HEAD, and leaves the branch reflog untouched', async () => {
+        // Arrange
+        const ctx = await seedConflict();
+        const branchBefore = await reflogMessages(ctx, 'refs/heads/topic');
+
+        // Act
+        const sut = await rebaseAbort(ctx);
+
+        // Assert
+        expect(sut.headName).toBe('refs/heads/topic');
+        expect(await headIsSymbolic(ctx)).toBe(true);
+        expect(await resolveRef(ctx, 'refs/heads/topic' as RefName)).toBe(sut.head);
+        expect(await ctx.fs.readUtf8(work(ctx, 'f.txt'))).toBe('l1\nTOPIC\n');
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/rebase-merge`)).toBe(false);
+        const head = await reflogMessages(ctx, 'HEAD');
+        expect(head[0]).toBe('rebase (abort): returning to refs/heads/topic');
+        // The branch never moved during the replay → no new branch reflog entry.
+        expect(await reflogMessages(ctx, 'refs/heads/topic')).toEqual(branchBefore);
+      });
+    });
+  });
+
+  describe('Given no rebase in progress', () => {
+    describe('When aborted', () => {
+      it('Then it refuses with NO_OPERATION_IN_PROGRESS', async () => {
+        // Arrange
+        const { ctx } = await seedDivergent();
+
+        // Act + Assert
+        expect(await codeOf(() => rebaseAbort(ctx))).toBe('NO_OPERATION_IN_PROGRESS');
       });
     });
   });

@@ -49,7 +49,10 @@ export interface RebaseStop {
   /** `old new` oid pairs for the picks that committed cleanly before the stop. */
   readonly rewritten: ReadonlyArray<readonly [ObjectId, ObjectId]>;
   readonly patch: string;
-  readonly backupHeader: RebaseBackupHeader;
+  /** Header for `git-rebase-todo.backup`. Set on the initial stop only — git
+   *  writes the backup once and never rewrites it, so `continue`/`skip` re-stops
+   *  omit it and leave the existing file untouched. */
+  readonly backupHeader?: RebaseBackupHeader;
 }
 
 /** The aggregated read used by `continue` / `skip` / `abort`. */
@@ -79,7 +82,9 @@ export const writeRebaseStop = async (ctx: Context, stop: RebaseStop): Promise<v
   await write('onto', `${stop.onto}\n`);
   await write('orig-head', `${stop.origHead}\n`);
   await write('git-rebase-todo', serializeRebaseTodo(stop.remaining));
-  await write('git-rebase-todo.backup', rebaseTodoBackup(fullTodo, stop.backupHeader));
+  if (stop.backupHeader !== undefined) {
+    await write('git-rebase-todo.backup', rebaseTodoBackup(fullTodo, stop.backupHeader));
+  }
   await write('done', serializeRebaseTodo(stop.done));
   await write('message', stop.message);
   await write('author-script', serializeAuthorScript(stop.stoppedAuthor));
@@ -135,6 +140,24 @@ export const readRebaseState = async (ctx: Context): Promise<RebaseState | undef
     author,
     message,
   };
+};
+
+/** Read the accumulated `rewritten-list` old→new pairs (for carry-forward across
+ *  a `continue`/`skip` re-stop). Empty when absent. */
+export const readRewrittenList = async (
+  ctx: Context,
+): Promise<ReadonlyArray<readonly [ObjectId, ObjectId]>> => {
+  const path = file(ctx, 'rewritten-list');
+  if (!(await ctx.fs.exists(path))) return [];
+  const pairs: Array<readonly [ObjectId, ObjectId]> = [];
+  for (const line of (await ctx.fs.readUtf8(path)).split('\n')) {
+    if (line === '') continue;
+    const [oldId, newId] = line.split(' ');
+    if (oldId !== undefined && newId !== undefined) {
+      pairs.push([oldId as ObjectId, newId as ObjectId]);
+    }
+  }
+  return pairs;
 };
 
 /** Remove the whole `.git/rebase-merge/` dir and `.git/REBASE_HEAD`. Idempotent. */
