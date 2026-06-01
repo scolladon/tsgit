@@ -117,7 +117,7 @@ state); unit tests.
 
 `rebase.ts` + unit tests.
 
-- **Red**: reword a fast-forwardable base → `rebase: fast-forward` then
+- **Red**: reword a base that fast-forwards → `rebase: fast-forward` then
   `rebase (reword): <new subj>`; reword after a drop (non-ff) → `rebase (reword):
   <orig subj>` then `rebase (reword): <new subj>`; the commit's message is the
   supplied one, author preserved, single parent, committer = current identity.

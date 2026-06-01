@@ -50,7 +50,7 @@ as refusals (`INVALID_OPTION`) before any state change.
 ### Positive
 
 - One declarative call; matches the four sibling history-rewrite namespaces.
-- No callback/continuation in the public API; deterministic and serialisable.
+- No callback/continuation in the public API; deterministic and plain data.
 - Non-interactive callers are unaffected (additive optional field).
 
 ### Negative
