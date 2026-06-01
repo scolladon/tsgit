@@ -132,6 +132,10 @@ const commitsToReplay = async (
   const excluded = new Set<ObjectId>();
   for await (const c of walkCommits(ctx, { from: [base] })) excluded.add(c.id);
   const ids: ObjectId[] = [];
+  // equivalent-mutant (`until: []`): dropping the exclusion makes this walk yield
+  // `base` + its ancestors too, but `dropCherryEquivalents` feeds the SAME
+  // (mutated) walk for the upstream patch-id side, so those extra commits are
+  // patch-id-dropped right back out — the net replay set is unchanged.
   for await (const c of walkCommits(ctx, { from: [head], until: [...excluded] })) ids.push(c.id);
   return ids.reverse();
 };
@@ -149,7 +153,6 @@ const dropCherryEquivalents = async (
   upstream: ObjectId,
 ): Promise<ReadonlyArray<ObjectId>> => {
   const upstreamCommits = await commitsToReplay(ctx, base, upstream);
-  if (upstreamCommits.length === 0) return toReplay;
   const upstreamPatchIds = new Set<string>();
   for (const oid of upstreamCommits) upstreamPatchIds.add(await computePatchId(ctx, oid));
   const kept: ObjectId[] = [];
@@ -170,7 +173,12 @@ const buildTodoEntries = async (
   return entries;
 };
 
-/** Detach HEAD from its branch onto `onto`, recording git's `rebase (start)` reflog. */
+/**
+ * Detach HEAD onto `onto` — git's `rebase (start): checkout <onto>`. As a real
+ * checkout it also resets the index + working tree to `onto`'s tree, so the
+ * replay begins from a clean `onto` state (a dropped empty pick never commits the
+ * index, so without this a later pick would replay against a stale index).
+ */
 const detachHead = async (
   ctx: Context,
   fromHead: ObjectId,
@@ -179,6 +187,7 @@ const detachHead = async (
 ): Promise<void> => {
   await getRefStore(ctx).writeLoose(HEAD, onto);
   await recordRefUpdate(ctx, HEAD, fromHead, onto, `rebase (start): checkout ${ontoName}`);
+  await hardResetWorktreeToCommit(ctx, onto);
 };
 
 /** Apply one commit onto the detached HEAD `ourId`; commit it when the merge is clean. */
@@ -231,6 +240,8 @@ const renderCommitPatch = async (ctx: Context, cData: CommitData): Promise<strin
   const parentTree = parentId !== undefined ? await treeOf(ctx, parentId) : undefined;
   const diff = await diffTrees(ctx, parentTree, cData.tree);
   const files = await materialisePatchFiles(ctx, diff.changes);
+  // equivalent-mutant (`{}`): `renderPatch`'s defaults are exactly `contextLines:
+  // 3` + `{ old: 'a/', new: 'b/' }`, so passing `{}` produces byte-identical output.
   return renderPatch(files, { contextLines: 3, pathPrefix: { old: 'a/', new: 'b/' } });
 };
 
@@ -277,6 +288,11 @@ const persistStop = async (
     ),
     rewritten,
     patch: await renderCommitPatch(ctx, cData),
+    // equivalent-mutant (`!== undefined` → `true`): on a continue/skip re-stop
+    // `rc.backupHeader` is `undefined`, so the `true` branch spreads
+    // `{ backupHeader: undefined }`, which `writeRebaseStop` skips exactly like
+    // the `{}` branch — indistinguishable. The `false`/object-literal mutants
+    // (which drop the fresh-run backup) are killed by the conflict-stop bytes.
     ...(rc.backupHeader !== undefined ? { backupHeader: rc.backupHeader } : {}),
   };
   await writeRebaseStop(ctx, stop);
@@ -407,6 +423,9 @@ export const rebaseContinue = async (ctx: Context): Promise<RebaseResult> => {
   const currentHead = await resolveRef(ctx, HEAD);
   const tree = await synthesizeTreeFromIndex(ctx, index.entries);
   const committer = await resolveCurrentIdentity(ctx);
+  // equivalent-mutant (`allowEmpty: false` → `true`): the rebase `message` file
+  // carries the replayed commit's subject, so the stripped/sanitised message is
+  // always non-empty here — the empty-message guard is never exercised.
   const message = sanitizeMessage(stripComments(state.message), { allowEmpty: false });
   const resolutionId = await createCommit(ctx, {
     tree,

@@ -58,12 +58,30 @@ const reflogMessages = async (ctx: Context, ref: string): Promise<ReadonlyArray<
   return entries.map((e) => e.message).reverse(); // newest first
 };
 
+const readMerge = (ctx: Context, name: string): Promise<string> =>
+  ctx.fs.readUtf8(`${ctx.layout.gitDir}/rebase-merge/${name}`);
+
 const codeOf = async (run: () => Promise<unknown>): Promise<string | undefined> => {
   try {
     await run();
     return undefined;
   } catch (err) {
     return (err as TsgitError).data.code;
+  }
+};
+
+const dataOf = async (
+  run: () => Promise<unknown>,
+): Promise<{ code: string; operation?: string; paths?: ReadonlyArray<string> }> => {
+  try {
+    await run();
+    throw new Error('expected an error');
+  } catch (err) {
+    return (err as TsgitError).data as {
+      code: string;
+      operation?: string;
+      paths?: ReadonlyArray<string>;
+    };
   }
 };
 
@@ -220,31 +238,63 @@ describe('rebaseRun', () => {
     });
   });
 
-  describe('Given a commit that conflicts on replay', () => {
+  describe('Given a 3-commit topic whose middle commit conflicts on replay', () => {
     describe('When rebased', () => {
-      it('Then it stops with a detached HEAD, REBASE_HEAD and the rebase-merge state', async () => {
-        // Arrange — base has f; topic t1 adds a, t2 edits f; main edits f conflictingly.
+      it('Then it stops detached with byte-faithful rebase-merge state at the conflict', async () => {
+        // Arrange — base f; topic t1 adds a, t2 edits f (conflicts), t3 adds c;
+        // main edits f conflictingly. So t1 replays clean, t2 stops, t3 remains.
         const ctx = createMemoryContext();
         await init(ctx);
         await setUser(ctx);
         await writeAddCommit(ctx, 'f.txt', 'l1\nl2\n', 'base');
         await branchCreate(ctx, { name: 'topic' });
         await checkout(ctx, { target: 'topic' });
-        await writeAddCommit(ctx, 'a.txt', 'a\n', 't1');
+        const t1 = await writeAddCommit(ctx, 'a.txt', 'a\n', 't1');
         const t2 = await writeAddCommit(ctx, 'f.txt', 'l1\nTOPIC\n', 't2');
+        const t3 = await writeAddCommit(ctx, 'c.txt', 'c\n', 't3');
         await checkout(ctx, { target: 'main' });
-        await writeAddCommit(ctx, 'f.txt', 'l1\nMAIN\n', 'm1');
+        const mainTip = await writeAddCommit(ctx, 'f.txt', 'l1\nMAIN\n', 'm1');
         await checkout(ctx, { target: 'topic' });
+        const short = (oid: ObjectId): string => oid.slice(0, 7);
 
         // Act
         const sut = await rebaseRun(ctx, { upstream: 'main' });
 
-        // Assert
+        // Assert — result
         expect(sut.kind).toBe('conflict');
-        if (sut.kind === 'conflict') expect(sut.commit).toBe(t2);
-        expect((await ctx.fs.readUtf8(`${ctx.layout.gitDir}/REBASE_HEAD`)).trim()).toBe(t2);
+        if (sut.kind === 'conflict') {
+          expect(sut.commit).toBe(t2);
+          expect(sut.remaining).toBe(1);
+        }
+        // HEAD detached at the last good pick; REBASE_HEAD + stopped-sha = t2
         expect((await ctx.fs.readUtf8(`${ctx.layout.gitDir}/HEAD`)).startsWith('ref:')).toBe(false);
-        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/rebase-merge`)).toBe(true);
+        expect((await ctx.fs.readUtf8(`${ctx.layout.gitDir}/REBASE_HEAD`)).trim()).toBe(t2);
+        expect(await readMerge(ctx, 'stopped-sha')).toBe(`${t2}\n`);
+        // Byte-faithful state files
+        expect(await readMerge(ctx, 'head-name')).toBe('refs/heads/topic\n');
+        expect(await readMerge(ctx, 'onto')).toBe(`${mainTip}\n`);
+        expect(await readMerge(ctx, 'orig-head')).toBe(`${t3}\n`);
+        expect(await readMerge(ctx, 'git-rebase-todo')).toBe(`pick ${t3} # t3\n`);
+        expect(await readMerge(ctx, 'done')).toBe(`pick ${t1} # t1\npick ${t2} # t2\n`);
+        expect(await readMerge(ctx, 'end')).toBe('3\n');
+        expect(await readMerge(ctx, 'msgnum')).toBe('2\n');
+        expect(await readMerge(ctx, 'message')).toBe('t2\n\n# Conflicts:\n#\tf.txt\n');
+        expect(await readMerge(ctx, 'author-script')).toContain("GIT_AUTHOR_NAME='Feat'");
+        // rewritten-list maps the clean t1 to its replayed oid
+        expect(await readMerge(ctx, 'rewritten-list')).toMatch(
+          new RegExp(`^${t1} [0-9a-f]{40}\\n$`),
+        );
+        // patch is the failed pick's `a/`..`b/` unified diff
+        const patch = await readMerge(ctx, 'patch');
+        expect(patch).toContain('--- a/f.txt');
+        expect(patch).toContain('+++ b/f.txt');
+        expect(patch).toContain('@@');
+        // backup: 7-char abbreviated header + the fixed help block
+        const backup = await readMerge(ctx, 'git-rebase-todo.backup');
+        expect(backup).toContain(
+          `# Rebase ${short(mainTip)}..${short(t3)} onto ${short(mainTip)} (3 commands)\n`,
+        );
+        expect(backup).toContain('# Commands:\n');
       });
     });
   });
@@ -377,16 +427,41 @@ describe('rebaseRun', () => {
       });
     });
 
-    describe('When the repository is bare', () => {
-      it('Then it refuses with BARE_REPOSITORY', async () => {
+    describe('When the branch ref is corrupt (present but not a valid oid)', () => {
+      it('Then the underlying error propagates — it is NOT masked as NO_INITIAL_COMMIT', async () => {
+        // Arrange — a real (non-REF_NOT_FOUND) failure resolving HEAD's branch must
+        // not be swallowed into the unborn-branch path.
+        const { ctx } = await seedDivergent();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/topic`, 'not-a-valid-oid\n');
+
+        // Act
+        const code = await codeOf(() => rebaseRun(ctx, { upstream: 'main' }));
+
+        // Assert
+        expect(code).toBeDefined();
+        expect(code).not.toBe('NO_INITIAL_COMMIT');
+      });
+    });
+
+    describe.each([
+      ['run', (ctx: Context) => rebaseRun(ctx, { upstream: 'main' }), 'rebase'],
+      ['continue', (ctx: Context) => rebaseContinue(ctx), 'rebase --continue'],
+      ['skip', (ctx: Context) => rebaseSkip(ctx), 'rebase --skip'],
+      ['abort', (ctx: Context) => rebaseAbort(ctx), 'rebase --abort'],
+    ])('When %s runs in a bare repository', (_verb, call, operation) => {
+      it(`Then it refuses with BARE_REPOSITORY for "${operation}"`, async () => {
         // Arrange — a fresh repo so the bare config is the first one read (the
         // config cache is keyed on Context identity).
         const ctx = createMemoryContext();
         await init(ctx);
         await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tbare = true\n');
 
-        // Act + Assert
-        expect(await codeOf(() => rebaseRun(ctx, { upstream: 'main' }))).toBe('BARE_REPOSITORY');
+        // Act
+        const data = await dataOf(() => call(ctx));
+
+        // Assert
+        expect(data.code).toBe('BARE_REPOSITORY');
+        expect(data.operation).toBe(operation);
       });
     });
   });
@@ -426,11 +501,17 @@ describe('rebaseContinue', () => {
 
         // Assert
         expect(sut.kind).toBe('rebased');
+        if (sut.kind === 'rebased') {
+          // the resolution of the stopped commit is the single replayed commit
+          expect(sut.commits.length).toBe(1);
+        }
         expect(await headIsSymbolic(ctx)).toBe(true);
         expect(await ctx.fs.exists(`${ctx.layout.gitDir}/REBASE_HEAD`)).toBe(false);
-        const tip = await readCommit(ctx, await resolveRef(ctx, 'refs/heads/topic' as RefName));
+        const tipId = await resolveRef(ctx, 'refs/heads/topic' as RefName);
+        const tip = await readCommit(ctx, tipId);
         expect(tip.author).toEqual(FEAT_AUTHOR);
         expect(tip.message).toBe('t2\n');
+        expect(tip.parents.length).toBe(1); // single-parent on the replayed base
         const head = await reflogMessages(ctx, 'HEAD');
         expect(head).toContain('rebase (continue): t2');
       });
@@ -439,12 +520,16 @@ describe('rebaseContinue', () => {
 
   describe('Given an unresolved (still-conflicted) index', () => {
     describe('When continued', () => {
-      it('Then it refuses with MERGE_HAS_CONFLICTS', async () => {
+      it('Then it refuses with MERGE_HAS_CONFLICTS naming the conflicted path', async () => {
         // Arrange
         const ctx = await seedConflict();
 
-        // Act + Assert
-        expect(await codeOf(() => rebaseContinue(ctx))).toBe('MERGE_HAS_CONFLICTS');
+        // Act
+        const data = await dataOf(() => rebaseContinue(ctx));
+
+        // Assert
+        expect(data.code).toBe('MERGE_HAS_CONFLICTS');
+        expect(data.paths).toContain('f.txt');
       });
     });
   });
@@ -530,6 +615,116 @@ describe('rebaseAbort', () => {
 
         // Act + Assert
         expect(await codeOf(() => rebaseAbort(ctx))).toBe('NO_OPERATION_IN_PROGRESS');
+      });
+    });
+  });
+});
+
+describe('rebase edge cases', () => {
+  describe('Given a commit that becomes empty only after replay (not a patch-id pre-drop)', () => {
+    describe('When rebased', () => {
+      it('Then it is dropped, not committed empty', async () => {
+        // Arrange — topic adds x='v'; main adds x='v' AND y='w' in one commit, so
+        // their patch-ids differ (no pre-drop), yet replaying topic's add onto main
+        // yields no net change → it must drop as empty.
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await setUser(ctx);
+        await writeAddCommit(ctx, 'base.txt', 'base\n', 'base');
+        await branchCreate(ctx, { name: 'topic' });
+        await checkout(ctx, { target: 'topic' });
+        await writeAddCommit(ctx, 'x.txt', 'v\n', 'add x');
+        // A real follow-up commit: the empty `add x` must release its index lock
+        // before this one acquires it, else the replay deadlocks.
+        await writeAddCommit(ctx, 'z.txt', 'z\n', 'add z');
+        await checkout(ctx, { target: 'main' });
+        await ctx.fs.writeUtf8(work(ctx, 'x.txt'), 'v\n');
+        await ctx.fs.writeUtf8(work(ctx, 'y.txt'), 'w\n');
+        await add(ctx, ['x.txt', 'y.txt']);
+        await commit(ctx, { message: 'add x and y', author: FEAT_AUTHOR });
+        await checkout(ctx, { target: 'topic' });
+
+        // Act
+        const sut = await rebaseRun(ctx, { upstream: 'main' });
+
+        // Assert — only `add z` replayed; `add x` dropped as empty
+        expect(sut.kind).toBe('rebased');
+        if (sut.kind === 'rebased') expect(sut.commits.length).toBe(1);
+        expect(await ctx.fs.exists(work(ctx, 'z.txt'))).toBe(true);
+        const head = await reflogMessages(ctx, 'HEAD');
+        expect(head).not.toContain('rebase (pick): add x');
+        expect(head).toContain('rebase (pick): add z');
+      });
+    });
+  });
+
+  describe('Given --onto a base that does not contain the fork point', () => {
+    describe('When rebased', () => {
+      it('Then only upstream..HEAD is replayed — the merge-base commit is excluded', async () => {
+        // Arrange — main: R -> A -> B; topic forks at A and adds t1; newbase forks
+        // at R (before A) and adds n1. `--onto newbase main` must replay only t1,
+        // NOT A (the merge-base), so a.txt never appears on the result.
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await setUser(ctx);
+        const root = await writeAddCommit(ctx, 'base.txt', 'base\n', 'R');
+        await writeAddCommit(ctx, 'a.txt', 'a\n', 'A');
+        await branchCreate(ctx, { name: 'topic' });
+        await checkout(ctx, { target: 'topic' });
+        await writeAddCommit(ctx, 't1.txt', 't1\n', 't1');
+        await checkout(ctx, { target: 'main' });
+        await writeAddCommit(ctx, 'b.txt', 'b\n', 'B');
+        await branchCreate(ctx, { name: 'newbase', startPoint: root });
+        await checkout(ctx, { target: 'newbase' });
+        await writeAddCommit(ctx, 'n1.txt', 'n1\n', 'n1');
+        await checkout(ctx, { target: 'topic' });
+
+        // Act
+        const sut = await rebaseRun(ctx, { upstream: 'main', onto: 'newbase' });
+
+        // Assert — t1 replayed onto newbase; a.txt (from the excluded merge-base) absent
+        expect(sut.kind).toBe('rebased');
+        if (sut.kind === 'rebased') expect(sut.commits.length).toBe(1);
+        expect(await ctx.fs.exists(work(ctx, 't1.txt'))).toBe(true);
+        expect(await ctx.fs.exists(work(ctx, 'n1.txt'))).toBe(true);
+        expect(await ctx.fs.exists(work(ctx, 'a.txt'))).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a continue whose next commit also conflicts', () => {
+    describe('When it re-stops', () => {
+      it('Then the rewritten-list carries every commit replayed so far', async () => {
+        // Arrange — base f=l1/l2/l3; topic t1 adds a, t2 edits l2, t3 edits l3; main
+        // edits both l2 and l3, so t2 conflicts, then (after continue) t3 conflicts.
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await setUser(ctx);
+        const t1 = await (async () => {
+          await writeAddCommit(ctx, 'f.txt', 'l1\nl2\nl3\n', 'base');
+          await branchCreate(ctx, { name: 'topic' });
+          await checkout(ctx, { target: 'topic' });
+          return writeAddCommit(ctx, 'a.txt', 'a\n', 't1');
+        })();
+        await writeAddCommit(ctx, 'f.txt', 'l1\nT2\nl3\n', 't2');
+        await writeAddCommit(ctx, 'f.txt', 'l1\nT2\nT3\n', 't3');
+        await checkout(ctx, { target: 'main' });
+        await writeAddCommit(ctx, 'f.txt', 'l1\nM2\nM3\n', 'm1');
+        await checkout(ctx, { target: 'topic' });
+        const firstStop = await rebaseRun(ctx, { upstream: 'main' });
+        expect(firstStop.kind).toBe('conflict'); // t2 conflicts on line 2
+        await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'l1\nR2\nM3\n');
+        await add(ctx, ['f.txt']);
+
+        // Act — continue commits t2's resolution, then t3 conflicts → re-stop
+        const reStop = await rebaseContinue(ctx);
+
+        // Assert — re-stopped, rewritten-list maps both t1 and t2 to replayed oids
+        expect(reStop.kind).toBe('conflict');
+        const rewritten = await readMerge(ctx, 'rewritten-list');
+        const lines = rewritten.trimEnd().split('\n');
+        expect(lines.length).toBe(2);
+        expect(lines[0]?.startsWith(t1)).toBe(true);
       });
     });
   });
