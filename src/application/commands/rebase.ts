@@ -26,6 +26,7 @@ import {
 } from '../primitives/internal/repo-state.js';
 import { materialisePatchFiles } from '../primitives/materialise-patch-files.js';
 import { mergeBase } from '../primitives/merge-base.js';
+import { computePatchId } from '../primitives/patch-id.js';
 import { readIndex } from '../primitives/read-index.js';
 import { readObject } from '../primitives/read-object.js';
 import { recordRefUpdate } from '../primitives/record-ref-update.js';
@@ -117,6 +118,29 @@ const commitsToReplay = async (
   const ids: ObjectId[] = [];
   for await (const c of walkCommits(ctx, { from: [head], until: [...excluded] })) ids.push(c.id);
   return ids.reverse();
+};
+
+/**
+ * Drop commits whose change is already present upstream — git's default
+ * cherry-pick-equivalent skip. Compared by patch-id against the commits the
+ * upstream introduced since the fork (`base..upstream`); a match is removed
+ * before the replay loop, so it is never attempted (ADR-231).
+ */
+const dropCherryEquivalents = async (
+  ctx: Context,
+  toReplay: ReadonlyArray<ObjectId>,
+  base: ObjectId,
+  upstream: ObjectId,
+): Promise<ReadonlyArray<ObjectId>> => {
+  const upstreamCommits = await commitsToReplay(ctx, base, upstream);
+  if (upstreamCommits.length === 0) return toReplay;
+  const upstreamPatchIds = new Set<string>();
+  for (const oid of upstreamCommits) upstreamPatchIds.add(await computePatchId(ctx, oid));
+  const kept: ObjectId[] = [];
+  for (const oid of toReplay) {
+    if (!upstreamPatchIds.has(await computePatchId(ctx, oid))) kept.push(oid);
+  }
+  return kept;
 };
 
 const buildTodoEntries = async (
@@ -300,7 +324,9 @@ export const rebaseRun = async (ctx: Context, input: RebaseRunInput): Promise<Re
     throw unsupportedOperation('rebase', 'no common ancestor between HEAD and upstream');
   }
   if (onto === base) return { kind: 'up-to-date' };
-  const todo = await buildTodoEntries(ctx, await commitsToReplay(ctx, base, headCommit));
+  const toReplay = await commitsToReplay(ctx, base, headCommit);
+  const kept = await dropCherryEquivalents(ctx, toReplay, base, upstream);
+  const todo = await buildTodoEntries(ctx, kept);
   await writeOrigHead(ctx, headCommit);
   return runSequence(ctx, { branch, upstream, onto, ontoName, origHead: headCommit, todo });
 };

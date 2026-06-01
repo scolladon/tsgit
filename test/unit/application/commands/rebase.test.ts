@@ -243,6 +243,40 @@ describe('rebaseRun', () => {
     });
   });
 
+  describe('Given a topic commit already present upstream (cherry-pick equivalent)', () => {
+    describe('When rebased', () => {
+      it('Then it is pre-dropped before replay, so a would-be conflict never happens', async () => {
+        // Arrange — topic's `dup` edits f a->b; main applies the same a->b patch
+        // then edits b->c. Replaying `dup` onto main WOULD conflict (a->b vs c),
+        // but git drops it by patch-id first, so only the unique `t2` replays.
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await setUser(ctx);
+        await writeAddCommit(ctx, 'f.txt', 'a\n', 'base');
+        await branchCreate(ctx, { name: 'topic' });
+        await checkout(ctx, { target: 'topic' });
+        await writeAddCommit(ctx, 'f.txt', 'b\n', 'dup');
+        const t2 = await writeAddCommit(ctx, 't2.txt', 't2\n', 't2');
+        await checkout(ctx, { target: 'main' });
+        await writeAddCommit(ctx, 'f.txt', 'b\n', 'dup on main');
+        await writeAddCommit(ctx, 'f.txt', 'c\n', 'm2 diverges');
+        await checkout(ctx, { target: 'topic' });
+
+        // Act
+        const sut = await rebaseRun(ctx, { upstream: 'main' });
+
+        // Assert
+        expect(sut.kind).toBe('rebased');
+        if (sut.kind === 'rebased') {
+          expect(sut.commits.map((entry) => entry.source)).toEqual([t2]);
+        }
+        const head = await reflogMessages(ctx, 'HEAD');
+        expect(head).toContain('rebase (pick): t2');
+        expect(head).not.toContain('rebase (pick): dup');
+      });
+    });
+  });
+
   describe('Given refusal conditions', () => {
     describe('When the working tree is dirty', () => {
       it('Then it refuses with WORKING_TREE_DIRTY', async () => {
