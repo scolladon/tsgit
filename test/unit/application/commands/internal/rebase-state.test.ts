@@ -249,6 +249,87 @@ describe('rebase-state', () => {
     });
   });
 
+  describe('Given a squash/fixup group conflict stop', () => {
+    const SQUASH_STOP = {
+      ...STOP,
+      amend: T1,
+      currentFixups: [
+        { action: 'squash', oid: T2 },
+        { action: 'fixup', oid: T3 },
+      ],
+      rewrittenPending: [T1, T2],
+      messageSquash: '# This is a combination of 3 commits.\n',
+    } as const;
+
+    describe('When writeRebaseStop persists it', () => {
+      it('Then current-fixups lists each group member verb + oid', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+
+        // Act
+        await writeRebaseStop(ctx, SQUASH_STOP);
+
+        // Assert
+        expect(await read(ctx, 'current-fixups')).toBe(`squash ${T2}\nfixup ${T3}\n`);
+      });
+
+      it('Then rewritten-pending lists each already-folded oid', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+
+        // Act
+        await writeRebaseStop(ctx, SQUASH_STOP);
+
+        // Assert
+        expect(await read(ctx, 'rewritten-pending')).toBe(`${T1}\n${T2}\n`);
+      });
+
+      it('Then message-squash backs up the running combined message', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+
+        // Act
+        await writeRebaseStop(ctx, SQUASH_STOP);
+
+        // Assert
+        expect(await read(ctx, 'message-squash')).toBe('# This is a combination of 3 commits.\n');
+      });
+    });
+
+    describe('When readRebaseState reads it back', () => {
+      it('Then it surfaces the group members and the pending oids', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await writeRebaseStop(ctx, SQUASH_STOP);
+
+        // Act
+        const sut = await readRebaseState(ctx);
+
+        // Assert
+        expect(sut?.currentFixups).toEqual([
+          { action: 'squash', oid: T2 },
+          { action: 'fixup', oid: T3 },
+        ]);
+        expect(sut?.rewrittenPending).toEqual([T1, T2]);
+      });
+    });
+
+    describe('When the stop has no group (plain conflict)', () => {
+      it('Then neither current-fixups nor rewritten-pending is written', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+
+        // Act
+        await writeRebaseStop(ctx, STOP);
+
+        // Assert
+        const base = `${ctx.layout.gitDir}/rebase-merge`;
+        expect(await ctx.fs.exists(`${base}/current-fixups`)).toBe(false);
+        expect(await ctx.fs.exists(`${base}/rewritten-pending`)).toBe(false);
+      });
+    });
+  });
+
   describe('Given no rebase in progress', () => {
     describe('When readRebaseState is called', () => {
       it('Then it returns undefined', async () => {
