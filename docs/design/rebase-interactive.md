@@ -87,16 +87,17 @@ Let `H` be the running detached HEAD, `C` the instruction's source commit.
 - **`fixup C`** — like `squash` but the combined message keeps the previous
   commit's message (no caller message). Reflog `rebase (fixup): <subject>`.
 
-  **Chains (≥2 consecutive squash/fixup) — ADR-237.** git commits *after each*
-  group member with the *running* (still-templated, comment-prefixed) message
-  and only **cleans** the message when the group ends, so a chain of length _n_
-  leaves _n_ intermediate commits and _n_ reflog entries whose subjects are the
-  template's first line (`rebase (fixup): # This is a combination of N
-  commits.`) until the final, cleaned entry. The reflog subject is whatever the
-  commit's first message line is at commit time. Reproducing those transient
-  comment-message commits byte-for-byte vs collapsing a group into one cleaned
-  commit (faithful *final* tree/message/count/last-reflog, divergent only in the
-  intermediate chain reflog + dangling objects) is the ADR-237 decision.
+  **Chains (≥2 consecutive squash/fixup) — fully faithful (ADR-237).** git
+  commits *after each* group member with the *running* (still-templated,
+  comment-prefixed) message and only **cleans** the message when the group ends,
+  so a chain of length _n_ leaves _n_ intermediate commits and _n_ reflog
+  entries whose subjects are the commit's first message line at commit time
+  (`rebase (fixup): # This is a combination of N commits.`) up to the final,
+  cleaned entry. tsgit reproduces this byte-for-byte: the engine threads a
+  *running combined message* (template form), commits each member as it is
+  processed, and cleans the message only when the next instruction is not a
+  squash/fixup (or the todo ends). `current-fixups` / `message-squash` /
+  `rewritten-pending` track the in-flight group for cross-tool resume.
 - **`drop C`** — skip entirely. No commit, no reflog, no `rewritten-list` entry;
   the line is still written to `done`.
 
