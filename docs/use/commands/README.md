@@ -23,6 +23,7 @@ Every method bound on a `Repository` handle. 29 entries, alphabetical.
 | [`mv`](mv.md) | Rename/move tracked paths in the index and working tree. |
 | [`pull`](pull.md) | Fetch a remote branch and merge it into the current branch. |
 | [`push`](push.md) | Push refs and objects to a remote. |
+| [`rebase`](rebase.md) | Replay the current branch's commits onto another base (non-interactive), preserving authors, dropping cherry-pick equivalents, with a git-faithful resumable `.git/rebase-merge/` state. Nested-namespace surface (`repo.rebase.run/continue/skip/abort`). |
 | [`reflog`](reflog.md) | Show, query, delete, or expire reflog entries. |
 | [`remote`](remote.md) | CRUD porcelain for `[remote "<name>"]` config + tracking refs. |
 | [`reset`](reset.md) | Move HEAD with `soft` / `mixed` / `hard` semantics. |

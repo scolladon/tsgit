@@ -1,0 +1,89 @@
+# `rebase`
+
+Replay the commits unique to the current branch on top of another base, faithful
+to `git rebase` (the **merge backend**, default since git 2.26). HEAD is detached
+at the new base, each commit is replayed as a cherry-pick (3-way merge through the
+shared `applyMergeToWorktree` primitive — **source author preserved, current
+committer**, single parent), then the branch is updated and HEAD reattached at
+finish. Commits already present upstream (cherry-pick equivalents) are dropped by
+patch-id. Conflicts stop under a byte-faithful, bidirectionally cross-tool
+resumable `.git/rebase-merge/` state + `.git/REBASE_HEAD`.
+
+Non-interactive only — `pick`/`reword`/`edit`/`squash`/`fixup`/`drop` editing
+(`rebase -i`) is a later phase.
+
+Nested namespace: `repo.rebase.{run, continue, skip, abort}`.
+
+## Signature
+
+```ts
+interface RebaseNamespace {
+  run(input: {
+    upstream: string; // commit-ish: the fork-point side (`git rebase <upstream>`)
+    onto?: string; // --onto <newbase>: replay onto this base instead of `upstream`
+  }): Promise<RebaseResult>;
+
+  continue(): Promise<RebaseResult>;
+  skip(): Promise<RebaseResult>;
+  abort(): Promise<{ head: ObjectId; headName: string }>;
+}
+
+type RebaseResult =
+  | { kind: 'rebased'; commits: ReadonlyArray<{ source: ObjectId; created: ObjectId }> }
+  | { kind: 'up-to-date' }
+  | { kind: 'conflict'; commit: ObjectId; conflicts: ReadonlyArray<{ path: FilePath; type: ConflictType }>; remaining: number };
+```
+
+## Behaviour
+
+- **Decision.** With `mergeBase = merge-base(upstream, HEAD)`: when `onto ===
+  mergeBase` the branch already sits on `onto` → `{ kind: 'up-to-date' }` (no
+  reflog, no state change); when `mergeBase === HEAD` it **fast-forwards** to
+  `onto` (the rebase reflog dance, zero picks); otherwise it replays
+  `mergeBase..HEAD` oldest-first.
+- **`--onto`.** `run({ upstream: 'main', onto: 'newbase' })` replays
+  `merge-base(main, HEAD)..HEAD` onto `newbase`.
+- **Cherry-pick-equivalent drop.** A commit whose change is already upstream
+  (compared by patch-id against `mergeBase..upstream`) is removed before the
+  replay loop — git's default. It is never reapplied (no `rebase (pick)` reflog).
+- **Reflogs.** `HEAD`: `rebase (start): checkout <onto>` · `rebase (pick):
+  <subject>` per commit · `rebase (continue): <subject>` (the resolved commit) ·
+  `rebase (finish): returning to <branch>`. The branch ref gets a single
+  `rebase (finish): refs/heads/<b> onto <onto-oid>`; abort writes **no** branch
+  entry (the branch never moved during the detached replay).
+- **Conflict.** Returns `{ kind: 'conflict', ... }`, leaving HEAD detached at the
+  last good pick and writing the full `.git/rebase-merge/` state + `REBASE_HEAD`.
+  Resolve with `repo.add(paths)` then `repo.rebase.continue()`.
+- **Resume.** `continue` commits the resolution (preserved author from
+  `author-script`, current committer, `rebase (continue)` reflog) and replays the
+  rest; `skip` discards the conflicted commit and replays the rest; `abort`
+  hard-resets the working tree + index to the pre-rebase tip and reattaches
+  `head-name` (`rebase (abort): returning to <name>`). The `.git/rebase-merge/`
+  state is byte-faithful to git, so a tsgit-started rebase can be finished with
+  `git rebase --continue`, and vice-versa.
+- **Detached HEAD.** Rebasing a detached HEAD records `head-name = detached HEAD`;
+  finish leaves HEAD at the new tip (no `returning to` entry), abort returns HEAD
+  to the original oid.
+- **Refusals.** A dirty index/working tree (`WORKING_TREE_DIRTY`), an operation
+  already in progress (`OPERATION_IN_PROGRESS`), an unborn branch
+  (`NO_INITIAL_COMMIT`), a bare repository (`BARE_REPOSITORY`).
+
+## Throws
+
+- `WORKING_TREE_DIRTY` — `run` against a dirty index / working tree.
+- `OPERATION_IN_PROGRESS` — another operation (merge / cherry-pick / revert /
+  rebase) is already pending.
+- `NO_INITIAL_COMMIT` — `run` on an unborn branch.
+- `BARE_REPOSITORY` — `run`/`continue`/`skip`/`abort` in a bare repository.
+- `NO_OPERATION_IN_PROGRESS` — `continue`/`skip`/`abort` with no rebase in progress.
+- `UNSUPPORTED_OPERATION` — no common ancestor between HEAD and upstream
+  (`--root` is not supported in v1).
+- `MERGE_HAS_CONFLICTS` — `continue` while the index still has unmerged entries.
+- `AMBIGUOUS_OID_PREFIX` — an abbreviated `upstream`/`onto` matched more than one object.
+
+See [`../errors.md`](../errors.md) for the canonical `TsgitError.data.code` list.
+
+## See also
+
+- Building block: [`cherryPick`](cherry-pick.md) (each replay is a cherry-pick)
+- Primitives: [`mergeBase`](../primitives/merge-base.md), [`readObject`](../primitives/read-object.md)
