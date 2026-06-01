@@ -225,12 +225,21 @@ const detachHead = async (
   await hardResetWorktreeToCommit(ctx, onto);
 };
 
-/** Apply one commit onto the detached HEAD `ourId`; commit it when the merge is clean. */
-const replayOne = async (
+/**
+ * Apply commit `C`'s diff onto the running detached HEAD `ourId` as a 3-way merge
+ * under the index lock, WITHOUT committing — the caller decides what to commit.
+ * Shared by the non-interactive replay (`replayOne`) and the interactive engine.
+ * Returns the merged tree (plus `ourId`'s tree, for an empty-change check) or the
+ * conflict set (the unmerged index is left written).
+ */
+const mergeUnderLock = async (
   ctx: Context,
   cData: CommitData,
   ourId: ObjectId,
-): Promise<ReplayOutcome> => {
+): Promise<
+  | { readonly kind: 'clean'; readonly mergedTree: ObjectId; readonly oursTree: ObjectId }
+  | { readonly kind: 'conflict'; readonly conflicts: ReadonlyArray<MergeConflict> }
+> => {
   const parentId = cData.parents[0];
   const baseTree = parentId !== undefined ? await treeOf(ctx, parentId) : undefined;
   const oursTree = await treeOf(ctx, ourId);
@@ -248,25 +257,37 @@ const replayOne = async (
       await lock.commit(res.indexEntries);
       return { kind: 'conflict', conflicts: res.conflicts };
     }
-    if (res.mergedTree === oursTree) return { kind: 'empty' };
     await lock.commit(res.result.newIndexEntries);
-    const committer = await resolveCurrentIdentity(ctx);
-    const id = await createCommit(ctx, {
-      tree: res.mergedTree,
-      parents: [ourId],
-      author: cData.author,
-      committer,
-      message: cData.message,
-      extraHeaders: [],
-    });
-    await updateRef(ctx, HEAD, id, {
-      expected: ourId,
-      reflogMessage: `rebase (pick): ${subjectOf(cData.message)}`,
-    });
-    return { kind: 'committed', id };
+    return { kind: 'clean', mergedTree: res.mergedTree, oursTree };
   } finally {
     await lock.release();
   }
+};
+
+/** Apply one commit onto the detached HEAD `ourId`; commit it (single-parent,
+ *  `rebase (pick)`) when the clean merge changed the tree, else report `empty`. */
+const replayOne = async (
+  ctx: Context,
+  cData: CommitData,
+  ourId: ObjectId,
+): Promise<ReplayOutcome> => {
+  const outcome = await mergeUnderLock(ctx, cData, ourId);
+  if (outcome.kind === 'conflict') return { kind: 'conflict', conflicts: outcome.conflicts };
+  if (outcome.mergedTree === outcome.oursTree) return { kind: 'empty' };
+  const committer = await resolveCurrentIdentity(ctx);
+  const id = await createCommit(ctx, {
+    tree: outcome.mergedTree,
+    parents: [ourId],
+    author: cData.author,
+    committer,
+    message: cData.message,
+    extraHeaders: [],
+  });
+  await updateRef(ctx, HEAD, id, {
+    expected: ourId,
+    reflogMessage: `rebase (pick): ${subjectOf(cData.message)}`,
+  });
+  return { kind: 'committed', id };
 };
 
 /** Render the failed pick's `parent..commit` diff for `.git/rebase-merge/patch`. */
@@ -584,7 +605,8 @@ interface InteractivePlan {
 /**
  * Resolve + validate the supplied todo against the `base..head` candidate set,
  * surfacing git's refusals before any state change: nothing-to-do (empty or
- * all-drop), an unsupported verb, and an oid outside the replayed range.
+ * all-drop), a leading squash/fixup, a reword without a message, and an oid
+ * outside the replayed range.
  */
 const planInteractive = async (
   ctx: Context,
@@ -653,40 +675,6 @@ const detachInteractive = async (
   await hardResetWorktreeToCommit(ctx, foldedHead);
 };
 
-/** Apply commit `C`'s diff onto the detached HEAD `ourId` as a 3-way merge,
- *  WITHOUT committing — the verb decides what to commit. */
-const applyOnto = async (
-  ctx: Context,
-  cData: CommitData,
-  ourId: ObjectId,
-): Promise<
-  | { readonly kind: 'clean'; readonly mergedTree: ObjectId }
-  | { readonly kind: 'conflict'; readonly conflicts: ReadonlyArray<MergeConflict> }
-> => {
-  const parentId = cData.parents[0];
-  const baseTree = parentId !== undefined ? await treeOf(ctx, parentId) : undefined;
-  const oursTree = await treeOf(ctx, ourId);
-  const lock = await acquireIndexLock(ctx);
-  try {
-    const currentIndex = await readIndex(ctx);
-    const res = await applyMergeToWorktree(ctx, {
-      baseTree,
-      oursTree,
-      theirsTree: cData.tree,
-      currentIndex,
-    });
-    if (res.kind === 'would-overwrite') throw workingTreeDirty(res.paths);
-    if (res.kind === 'conflict') {
-      await lock.commit(res.indexEntries);
-      return { kind: 'conflict', conflicts: res.conflicts };
-    }
-    await lock.commit(res.result.newIndexEntries);
-    return { kind: 'clean', mergedTree: res.mergedTree };
-  } finally {
-    await lock.release();
-  }
-};
-
 /** Fast-forward the detached HEAD onto `target` (kept verbatim — its first parent
  *  is the current HEAD), recording git's `rebase: fast-forward`. */
 const fastForwardOnto = async (ctx: Context, target: ObjectId): Promise<void> => {
@@ -747,7 +735,7 @@ const produceOnto = async (
     await fastForwardOnto(ctx, inst.oid);
     return { kind: 'committed', created: inst.oid };
   }
-  const outcome = await applyOnto(ctx, cData, head);
+  const outcome = await mergeUnderLock(ctx, cData, head);
   if (outcome.kind === 'conflict') return { kind: 'conflict', conflicts: outcome.conflicts };
   const created = await commitAndAdvance(ctx, {
     tree: outcome.mergedTree,
@@ -950,7 +938,7 @@ const meldGroupMember = async (
     }
 > => {
   const headData = await readCommitData(ctx, head);
-  const outcome = await applyOnto(ctx, cData, head);
+  const outcome = await mergeUnderLock(ctx, cData, head);
   if (outcome.kind === 'conflict') return { kind: 'conflict', conflicts: outcome.conflicts };
   group.members.push({ message: cData.message, skip: inst.action === 'fixup' });
   group.fixups.push({ action: inst.action as 'squash' | 'fixup', oid: inst.oid });
