@@ -235,9 +235,10 @@ const renderCommitPatch = async (ctx: Context, cData: CommitData): Promise<strin
   return renderPatch(files, { contextLines: 3, pathPrefix: { old: 'a/', new: 'b/' } });
 };
 
-/** The shared context a replay loop needs to stop or finish. */
+/** The shared context a replay loop needs to stop or finish. `branch` is
+ *  `undefined` for a detached-HEAD rebase (head-name = `detached HEAD`). */
 interface ReplayContext {
-  readonly branch: RefName;
+  readonly branch: RefName | undefined;
   readonly onto: ObjectId;
   readonly origHead: ObjectId;
   /** Instructions completed before this loop (a stop's `done` prepends these). */
@@ -264,7 +265,7 @@ const persistStop = async (
   rewritten: ReadonlyArray<readonly [ObjectId, ObjectId]>,
 ): Promise<void> => {
   const stop: RebaseStop = {
-    headName: rc.branch,
+    headName: rc.branch ?? 'detached HEAD',
     onto: rc.onto,
     origHead: rc.origHead,
     done: [...rc.doneBefore, ...rc.todo.slice(0, index + 1)],
@@ -282,14 +283,20 @@ const persistStop = async (
   await writeRebaseStop(ctx, stop);
 };
 
-/** Reattach `branch` to the replayed tip and record git's `rebase (finish)` reflogs. */
+/**
+ * Finish the rebase. For a branch rebase: update the branch to the replayed tip
+ * (single `rebase (finish): … onto` reflog) and reattach HEAD (`returning to
+ * <branch>`). For a detached rebase: HEAD already sits at the replayed tip from
+ * the last pick, so git writes nothing further — a no-op here too.
+ */
 const finishRebase = async (
   ctx: Context,
-  branch: RefName,
+  branch: RefName | undefined,
   origHead: ObjectId,
   newTip: ObjectId,
   onto: ObjectId,
 ): Promise<void> => {
+  if (branch === undefined) return;
   await updateRef(ctx, branch, newTip, {
     expected: origHead,
     reflogMessage: `rebase (finish): ${branch} onto ${onto}`,
@@ -337,11 +344,8 @@ export const rebaseRun = async (ctx: Context, input: RebaseRunInput): Promise<Re
   await assertNotBare(ctx, 'rebase');
   await assertNoPendingOperation(ctx);
   const head = await readHeadRaw(ctx);
-  if (head.kind !== 'symbolic') {
-    throw unsupportedOperation('rebase', 'cannot rebase with detached HEAD');
-  }
-  const branch = head.target;
-  const headCommit = await resolveHeadCommit(ctx, branch);
+  const headCommit = head.kind === 'symbolic' ? await resolveHeadCommit(ctx, head.target) : head.id;
+  const branch = head.kind === 'symbolic' ? head.target : undefined;
   const upstream = await resolveCommitIsh(ctx, input.upstream);
   const onto = input.onto !== undefined ? await resolveCommitIsh(ctx, input.onto) : upstream;
   const ontoName = input.onto ?? input.upstream;
@@ -375,6 +379,10 @@ export interface RebaseAbortResult {
   readonly head: ObjectId;
   readonly headName: string;
 }
+
+/** The branch a stop's `head-name` names, or `undefined` for a detached rebase. */
+const branchOf = (headName: string): RefName | undefined =>
+  headName === 'detached HEAD' ? undefined : (headName as RefName);
 
 const rejectUnmergedIndex = (entries: ReadonlyArray<IndexEntry>): void => {
   const unmerged = new Set<FilePath>();
@@ -415,7 +423,7 @@ export const rebaseContinue = async (ctx: Context): Promise<RebaseResult> => {
   });
   const rewritten = [...(await readRewrittenList(ctx)), [stopped.oid, resolutionId] as const];
   const rc: ReplayContext = {
-    branch: state.headName as RefName,
+    branch: branchOf(state.headName),
     onto: state.onto,
     origHead: state.origHead,
     doneBefore: state.done,
@@ -436,7 +444,7 @@ export const rebaseSkip = async (ctx: Context): Promise<RebaseResult> => {
   const currentHead = await resolveRef(ctx, HEAD);
   await hardResetWorktreeToCommit(ctx, currentHead);
   const rc: ReplayContext = {
-    branch: state.headName as RefName,
+    branch: branchOf(state.headName),
     onto: state.onto,
     origHead: state.origHead,
     doneBefore: state.done,
@@ -458,17 +466,30 @@ export const rebaseAbort = async (ctx: Context): Promise<RebaseAbortResult> => {
   await assertNotBare(ctx, 'rebase --abort');
   const state = await readRebaseState(ctx);
   if (state === undefined) throw noOperationInProgress('rebase');
-  const branch = state.headName as RefName;
+  const branch = branchOf(state.headName);
   const currentHead = await resolveRef(ctx, HEAD);
   await hardResetWorktreeToCommit(ctx, state.origHead);
-  await writeSymbolicRef(ctx, HEAD, branch);
-  await recordRefUpdate(
-    ctx,
-    HEAD,
-    currentHead,
-    state.origHead,
-    `rebase (abort): returning to ${branch}`,
-  );
+  // A branch rebase reattaches HEAD to the ref (`returning to <branch>`); a
+  // detached rebase moves HEAD back to the original oid (`returning to <oid>`).
+  if (branch !== undefined) {
+    await writeSymbolicRef(ctx, HEAD, branch);
+    await recordRefUpdate(
+      ctx,
+      HEAD,
+      currentHead,
+      state.origHead,
+      `rebase (abort): returning to ${branch}`,
+    );
+  } else {
+    await getRefStore(ctx).writeLoose(HEAD, state.origHead);
+    await recordRefUpdate(
+      ctx,
+      HEAD,
+      currentHead,
+      state.origHead,
+      `rebase (abort): returning to ${state.origHead}`,
+    );
+  }
   await clearRebaseState(ctx);
   return { head: state.origHead, headName: state.headName };
 };

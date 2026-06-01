@@ -248,6 +248,63 @@ describe('rebaseRun', () => {
     });
   });
 
+  describe('Given a detached HEAD', () => {
+    describe('When rebased onto main cleanly', () => {
+      it('Then it replays onto main and leaves HEAD detached at the new tip (no finish reflog)', async () => {
+        // Arrange — detach at topic's tip, then rebase onto the advanced main.
+        const { ctx, mainTip } = await seedDivergent();
+        const topicTip = await resolveRef(ctx, 'refs/heads/topic' as RefName);
+        await checkout(ctx, { target: topicTip, detach: true });
+
+        // Act
+        const sut = await rebaseRun(ctx, { upstream: 'main' });
+
+        // Assert
+        expect(sut.kind).toBe('rebased');
+        expect(await headIsSymbolic(ctx)).toBe(false);
+        const tip = await readCommit(ctx, await resolveRef(ctx, 'HEAD' as RefName));
+        const parent = await readCommit(ctx, tip.parents[0] as ObjectId);
+        expect(parent.parents[0]).toBe(mainTip);
+        const head = await reflogMessages(ctx, 'HEAD');
+        expect(head.some((m) => m.startsWith('rebase (finish)'))).toBe(false);
+        expect(head).toContain('rebase (start): checkout main');
+      });
+    });
+  });
+
+  describe('Given a detached-HEAD rebase that conflicts', () => {
+    describe('When aborted', () => {
+      it('Then it returns HEAD to the original detached oid with that reflog', async () => {
+        // Arrange — build the conflict scenario but on a detached HEAD.
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await setUser(ctx);
+        await writeAddCommit(ctx, 'f.txt', 'l1\nl2\n', 'base');
+        await branchCreate(ctx, { name: 'topic' });
+        await checkout(ctx, { target: 'topic' });
+        await writeAddCommit(ctx, 'a.txt', 'a\n', 't1');
+        await writeAddCommit(ctx, 'f.txt', 'l1\nTOPIC\n', 't2');
+        await checkout(ctx, { target: 'main' });
+        await writeAddCommit(ctx, 'f.txt', 'l1\nMAIN\n', 'm1');
+        const topicTip = await resolveRef(ctx, 'refs/heads/topic' as RefName);
+        await checkout(ctx, { target: topicTip, detach: true });
+        const origDetached = await resolveRef(ctx, 'HEAD' as RefName);
+        await rebaseRun(ctx, { upstream: 'main' });
+
+        // Act
+        const sut = await rebaseAbort(ctx);
+
+        // Assert
+        expect(sut.headName).toBe('detached HEAD');
+        expect(sut.head).toBe(origDetached);
+        expect(await headIsSymbolic(ctx)).toBe(false);
+        expect(await resolveRef(ctx, 'HEAD' as RefName)).toBe(origDetached);
+        const head = await reflogMessages(ctx, 'HEAD');
+        expect(head[0]).toBe(`rebase (abort): returning to ${origDetached}`);
+      });
+    });
+  });
+
   describe('Given a topic commit already present upstream (cherry-pick equivalent)', () => {
     describe('When rebased', () => {
       it('Then it is pre-dropped before replay, so a would-be conflict never happens', async () => {
