@@ -53,6 +53,7 @@ import { acquireIndexLock } from './internal/index-update.js';
 import { writeOrigHead } from './internal/merge-state.js';
 import {
   clearRebaseState,
+  type RebaseState,
   type RebaseStop,
   readRebaseState,
   readRewrittenList,
@@ -101,6 +102,13 @@ export type RebaseResult =
       readonly kind: 'conflict';
       readonly commit: ObjectId;
       readonly conflicts: ReadonlyArray<RebaseConflict>;
+      readonly remaining: number;
+    }
+  | {
+      // `edit`: a conflict-free voluntary stop, resumed by `continue` after the
+      // caller amends the tree (or `skip`/`abort`).
+      readonly kind: 'stopped';
+      readonly commit: ObjectId;
       readonly remaining: number;
     };
 
@@ -450,6 +458,7 @@ export const rebaseContinue = async (ctx: Context): Promise<RebaseResult> => {
   await assertNotBare(ctx, 'rebase --continue');
   const state = await readRebaseState(ctx);
   if (state === undefined) throw noOperationInProgress('rebase');
+  if (isInteractiveState(state)) return rebaseContinueInteractive(ctx, state);
   const index = await readIndex(ctx);
   rejectUnmergedIndex(index.entries);
   const stopped = state.done[state.done.length - 1]!;
@@ -492,6 +501,7 @@ export const rebaseSkip = async (ctx: Context): Promise<RebaseResult> => {
   await assertNotBare(ctx, 'rebase --skip');
   const state = await readRebaseState(ctx);
   if (state === undefined) throw noOperationInProgress('rebase');
+  if (isInteractiveState(state)) return rebaseSkipInteractive(ctx, state);
   const currentHead = await resolveRef(ctx, HEAD);
   await hardResetWorktreeToCommit(ctx, currentHead);
   const rc: ReplayContext = {
@@ -551,6 +561,7 @@ export const rebaseAbort = async (ctx: Context): Promise<RebaseAbortResult> => {
 const INTERACTIVE_SUPPORTED: ReadonlySet<RebaseTodoAction> = new Set<RebaseTodoAction>([
   'pick',
   'reword',
+  'edit',
   'drop',
 ]);
 
@@ -714,15 +725,85 @@ const commitAndAdvance = async (
   return created;
 };
 
-/** One processed instruction's outcome. `created` is the final replayed oid. */
+/** One processed instruction's outcome. `created` is the final replayed oid;
+ *  `edit-stop` means the commit was produced and the rebase pauses for amending. */
 type Step =
   | { readonly kind: 'conflict'; readonly conflicts: ReadonlyArray<MergeConflict> }
-  | { readonly kind: 'advanced'; readonly created: ObjectId };
+  | { readonly kind: 'advanced'; readonly created: ObjectId }
+  | { readonly kind: 'edit-stop'; readonly created: ObjectId };
+
+type Produced =
+  | { readonly kind: 'conflict'; readonly conflicts: ReadonlyArray<MergeConflict> }
+  | { readonly kind: 'committed'; readonly created: ObjectId };
+
+/** Produce a commit onto HEAD: fast-forward when its parent is HEAD (oid kept,
+ *  `rebase: fast-forward`), else a 3-way cherry-pick committed with `reflog`. */
+const produceOnto = async (
+  ctx: Context,
+  inst: PlannedInstruction,
+  cData: CommitData,
+  head: ObjectId,
+  reflog: string,
+): Promise<Produced> => {
+  if (cData.parents[0] === head) {
+    await fastForwardOnto(ctx, inst.oid);
+    return { kind: 'committed', created: inst.oid };
+  }
+  const outcome = await applyOnto(ctx, cData, head);
+  if (outcome.kind === 'conflict') return { kind: 'conflict', conflicts: outcome.conflicts };
+  const created = await commitAndAdvance(ctx, {
+    tree: outcome.mergedTree,
+    parent: head,
+    expected: head,
+    author: cData.author,
+    message: cData.message,
+    reflog,
+  });
+  return { kind: 'committed', created };
+};
+
+/** `pick`: produce the commit verbatim (fast-forward or `rebase (pick)`). */
+const stepPick = async (
+  ctx: Context,
+  inst: PlannedInstruction,
+  cData: CommitData,
+  head: ObjectId,
+): Promise<Step> => {
+  const produced = await produceOnto(
+    ctx,
+    inst,
+    cData,
+    head,
+    `rebase (pick): ${subjectOf(cData.message)}`,
+  );
+  if (produced.kind === 'conflict') return { kind: 'conflict', conflicts: produced.conflicts };
+  return { kind: 'advanced', created: produced.created };
+};
+
+/** `edit`: produce the commit, then pause for amending (`amend` marker written). */
+const stepEdit = async (
+  ctx: Context,
+  inst: PlannedInstruction,
+  cData: CommitData,
+  head: ObjectId,
+): Promise<Step> => {
+  const produced = await produceOnto(
+    ctx,
+    inst,
+    cData,
+    head,
+    `rebase (edit): ${subjectOf(cData.message)}`,
+  );
+  if (produced.kind === 'conflict') return { kind: 'conflict', conflicts: produced.conflicts };
+  return { kind: 'edit-stop', created: produced.created };
+};
 
 /**
- * `reword`: produce the commit (fast-forward when its parent is HEAD, else a
- * 3-way cherry-pick labelled `rebase (reword): <orig>`), then amend its message
- * to the supplied one (`rebase (reword): <new>`) — git's two-step reword.
+ * `reword`: produce the commit (fast-forward or a 3-way cherry-pick labelled
+ * `rebase (reword): <orig>`), then amend its message to the supplied one
+ * (`rebase (reword): <new>`) — git's two-step reword. A `reword` reached on a
+ * resume carries no message (not persisted across a stop), so it keeps the
+ * original — see the design's cross-stop-message note.
  */
 const stepReword = async (
   ctx: Context,
@@ -730,92 +811,81 @@ const stepReword = async (
   cData: CommitData,
   head: ObjectId,
 ): Promise<Step> => {
-  const message = sanitizeMessage(inst.message as string, { allowEmpty: false });
-  const rewordReflog = `rebase (reword): ${subjectOf(message)}`;
-  if (cData.parents[0] === head) {
-    await fastForwardOnto(ctx, inst.oid);
-    const created = await commitAndAdvance(ctx, {
-      tree: cData.tree,
-      parent: head,
-      expected: inst.oid,
-      author: cData.author,
-      message,
-      reflog: rewordReflog,
-    });
-    return { kind: 'advanced', created };
-  }
-  const outcome = await applyOnto(ctx, cData, head);
-  if (outcome.kind === 'conflict') return { kind: 'conflict', conflicts: outcome.conflicts };
-  const produced = await commitAndAdvance(ctx, {
-    tree: outcome.mergedTree,
-    parent: head,
-    expected: head,
-    author: cData.author,
-    message: cData.message,
-    reflog: `rebase (reword): ${subjectOf(cData.message)}`,
-  });
+  const message = sanitizeMessage(inst.message ?? cData.message, { allowEmpty: false });
+  const produced = await produceOnto(
+    ctx,
+    inst,
+    cData,
+    head,
+    `rebase (reword): ${subjectOf(cData.message)}`,
+  );
+  if (produced.kind === 'conflict') return { kind: 'conflict', conflicts: produced.conflicts };
+  const producedData = await readCommitData(ctx, produced.created);
   const created = await commitAndAdvance(ctx, {
-    tree: outcome.mergedTree,
-    parent: head,
-    expected: produced,
-    author: cData.author,
+    tree: producedData.tree,
+    parent: producedData.parents[0] as ObjectId,
+    expected: produced.created,
+    author: producedData.author,
     message,
-    reflog: rewordReflog,
+    reflog: `rebase (reword): ${subjectOf(message)}`,
   });
   return { kind: 'advanced', created };
 };
 
-/** `pick`: a 3-way cherry-pick onto HEAD (in the loop a pick never fast-forwards
- *  — the maximal leading fold already absorbed any pick that could). */
-const stepPick = async (ctx: Context, cData: CommitData, head: ObjectId): Promise<Step> => {
-  const outcome = await applyOnto(ctx, cData, head);
-  if (outcome.kind === 'conflict') return { kind: 'conflict', conflicts: outcome.conflicts };
-  const created = await commitAndAdvance(ctx, {
-    tree: outcome.mergedTree,
-    parent: head,
-    expected: head,
-    author: cData.author,
-    message: cData.message,
-    reflog: `rebase (pick): ${subjectOf(cData.message)}`,
-  });
-  return { kind: 'advanced', created };
+const stepInstruction = (
+  ctx: Context,
+  inst: PlannedInstruction,
+  cData: CommitData,
+  head: ObjectId,
+): Promise<Step> => {
+  if (inst.action === 'reword') return stepReword(ctx, inst, cData, head);
+  if (inst.action === 'edit') return stepEdit(ctx, inst, cData, head);
+  return stepPick(ctx, inst, cData, head);
 };
 
+/** The replay context. `doneBefore` are the instructions completed before this
+ *  loop (the folded prefix on a fresh run, the resolved prefix on a resume); a
+ *  re-stop's `done` prepends them. `backupHeader` is set on the fresh run only. */
 interface InteractiveContext {
   readonly branch: RefName | undefined;
   readonly onto: ObjectId;
   readonly origHead: ObjectId;
+  readonly doneBefore: ReadonlyArray<PlannedInstruction>;
   readonly todo: ReadonlyArray<PlannedInstruction>;
-  readonly backupHeader: RebaseBackupHeader;
+  readonly backupHeader?: RebaseBackupHeader;
 }
 
-/** Persist a byte-faithful interactive conflict stop. `done` is everything up to
- *  and including the stopped instruction; `remaining` is the rest. */
+interface StopFields {
+  readonly stoppedSha: ObjectId;
+  readonly author: CommitData['author'];
+  readonly message: string;
+  readonly patch: string;
+  readonly rewritten: ReadonlyArray<readonly [ObjectId, ObjectId]>;
+  readonly amend?: ObjectId;
+}
+
+/** Persist a byte-faithful interactive stop. `done` is `doneBefore` + the
+ *  instructions up to and including the stopped one; `remaining` is the rest. */
 const persistInteractiveStop = async (
   ctx: Context,
   ic: InteractiveContext,
   stopIndex: number,
-  cData: CommitData,
-  conflicts: ReadonlyArray<MergeConflict>,
-  rewritten: ReadonlyArray<readonly [ObjectId, ObjectId]>,
+  fields: StopFields,
 ): Promise<void> => {
-  const stop: RebaseStop = {
+  await writeRebaseStop(ctx, {
     headName: ic.branch ?? 'detached HEAD',
     onto: ic.onto,
     origHead: ic.origHead,
-    done: ic.todo.slice(0, stopIndex + 1),
+    done: [...ic.doneBefore, ...ic.todo.slice(0, stopIndex + 1)],
     remaining: ic.todo.slice(stopIndex + 1),
-    stoppedSha: ic.todo[stopIndex]!.oid,
-    stoppedAuthor: cData.author,
-    message: conflictMergeMsg(
-      cData.message,
-      conflicts.map((c) => c.path),
-    ),
-    rewritten,
-    patch: await renderCommitPatch(ctx, cData),
-    backupHeader: ic.backupHeader,
-  };
-  await writeRebaseStop(ctx, stop);
+    stoppedSha: fields.stoppedSha,
+    stoppedAuthor: fields.author,
+    message: fields.message,
+    rewritten: fields.rewritten,
+    patch: fields.patch,
+    ...(ic.backupHeader !== undefined ? { backupHeader: ic.backupHeader } : {}),
+    ...(fields.amend !== undefined ? { amend: fields.amend } : {}),
+  });
 };
 
 const conflictResult = (
@@ -829,30 +899,51 @@ const conflictResult = (
   remaining,
 });
 
-/** Replay the interactive todo from `startHead` (the folded position), threading
- *  the detached HEAD. Stops on the first conflict; otherwise finishes. */
+interface ReplaySeed {
+  readonly applied: ReadonlyArray<RebasedCommit>;
+  readonly rewritten: ReadonlyArray<readonly [ObjectId, ObjectId]>;
+}
+
+/** Replay `ic.todo` from `startHead`. Stops on the first conflict or `edit`;
+ *  otherwise finishes (updates the branch + reattaches HEAD). */
 const replayInteractive = async (
   ctx: Context,
   ic: InteractiveContext,
   startHead: ObjectId,
-  foldCount: number,
+  seed: ReplaySeed,
 ): Promise<RebaseResult> => {
   let head = startHead;
-  const applied: RebasedCommit[] = ic.todo
-    .slice(0, foldCount)
-    .map((t) => ({ source: t.oid, created: t.oid }));
-  const rewritten: Array<readonly [ObjectId, ObjectId]> = [];
-  for (let i = foldCount; i < ic.todo.length; i += 1) {
+  const applied: RebasedCommit[] = [...seed.applied];
+  const rewritten: Array<readonly [ObjectId, ObjectId]> = [...seed.rewritten];
+  for (let i = 0; i < ic.todo.length; i += 1) {
     const inst = ic.todo[i]!;
     if (inst.action === 'drop') continue;
     const cData = await readCommitData(ctx, inst.oid);
-    const step =
-      inst.action === 'reword'
-        ? await stepReword(ctx, inst, cData, head)
-        : await stepPick(ctx, cData, head);
+    const step = await stepInstruction(ctx, inst, cData, head);
+    const patch = await renderCommitPatch(ctx, cData);
     if (step.kind === 'conflict') {
-      await persistInteractiveStop(ctx, ic, i, cData, step.conflicts, rewritten);
+      await persistInteractiveStop(ctx, ic, i, {
+        stoppedSha: inst.oid,
+        author: cData.author,
+        message: conflictMergeMsg(
+          cData.message,
+          step.conflicts.map((c) => c.path),
+        ),
+        patch,
+        rewritten,
+      });
       return conflictResult(inst.oid, step.conflicts, ic.todo.length - (i + 1));
+    }
+    if (step.kind === 'edit-stop') {
+      await persistInteractiveStop(ctx, ic, i, {
+        stoppedSha: step.created,
+        author: cData.author,
+        message: cData.message,
+        patch,
+        rewritten,
+        amend: step.created,
+      });
+      return { kind: 'stopped', commit: inst.oid, remaining: ic.todo.length - (i + 1) };
     }
     applied.push({ source: inst.oid, created: step.created });
     rewritten.push([inst.oid, step.created]);
@@ -869,16 +960,103 @@ const rebaseRunInteractive = async (ctx: Context, plan: InteractivePlan): Promis
   const foldedHead = foldCount > 0 ? todo[foldCount - 1]!.oid : plan.onto;
   await writeOrigHead(ctx, plan.headCommit);
   await detachInteractive(ctx, plan.headCommit, plan.ontoName, foldedHead);
+  const folded = todo.slice(0, foldCount);
   const ic: InteractiveContext = {
     branch: plan.branch,
     onto: plan.onto,
     origHead: plan.headCommit,
-    todo,
+    doneBefore: folded,
+    todo: todo.slice(foldCount),
     backupHeader: {
       shortUpstream: shortOid(plan.upstream),
       shortOrigHead: shortOid(plan.headCommit),
       shortOnto: shortOid(plan.onto),
     },
   };
-  return replayInteractive(ctx, ic, foldedHead, foldCount);
+  const seed: ReplaySeed = {
+    applied: folded.map((t) => ({ source: t.oid, created: t.oid })),
+    rewritten: [],
+  };
+  return replayInteractive(ctx, ic, foldedHead, seed);
+};
+
+/** A rebase is interactive when an `amend` marker is present or any instruction
+ *  carries a non-`pick` verb — a pure-pick stop resumes through the (identical)
+ *  non-interactive path. */
+const isInteractiveState = (state: RebaseState): boolean =>
+  state.amend !== undefined || [...state.done, ...state.remaining].some((e) => e.action !== 'pick');
+
+/** Resume an interactive stop: commit the resolution (conflict) or amend/keep
+ *  the edit'd commit, then replay the remaining todo. */
+const rebaseContinueInteractive = async (
+  ctx: Context,
+  state: RebaseState,
+): Promise<RebaseResult> => {
+  const ic: InteractiveContext = {
+    branch: branchOf(state.headName),
+    onto: state.onto,
+    origHead: state.origHead,
+    doneBefore: state.done,
+    todo: state.remaining,
+  };
+  const rewritten = [...(await readRewrittenList(ctx))];
+  const index = await readIndex(ctx);
+  rejectUnmergedIndex(index.entries);
+  const tree = await synthesizeTreeFromIndex(ctx, index.entries);
+  const currentHead = await resolveRef(ctx, HEAD);
+  let resumeHead: ObjectId;
+  if (state.amend !== undefined) {
+    const amendCommit = await readCommitData(ctx, state.amend);
+    if (tree === amendCommit.tree) {
+      resumeHead = currentHead; // edit left the tree unchanged — keep the commit
+    } else {
+      resumeHead = await commitAndAdvance(ctx, {
+        tree,
+        parent: amendCommit.parents[0] as ObjectId,
+        expected: currentHead,
+        author: state.author,
+        message: amendCommit.message,
+        reflog: `rebase (continue): ${subjectOf(amendCommit.message)}`,
+      });
+      rewritten.push([state.done[state.done.length - 1]!.oid, resumeHead]);
+    }
+  } else {
+    const message = sanitizeMessage(stripComments(state.message), { allowEmpty: false });
+    resumeHead = await commitAndAdvance(ctx, {
+      tree,
+      parent: currentHead,
+      expected: currentHead,
+      author: state.author,
+      message,
+      reflog: `rebase (continue): ${subjectOf(message)}`,
+    });
+    rewritten.push([state.done[state.done.length - 1]!.oid, resumeHead]);
+  }
+  return replayInteractive(ctx, ic, resumeHead, { applied: [], rewritten });
+};
+
+/** Skip the stopped instruction (drop the edit'd commit, or discard the
+ *  conflicted pick) and replay the remaining todo. */
+const rebaseSkipInteractive = async (ctx: Context, state: RebaseState): Promise<RebaseResult> => {
+  const currentHead = await resolveRef(ctx, HEAD);
+  const target =
+    state.amend !== undefined
+      ? ((await readCommitData(ctx, state.amend)).parents[0] as ObjectId)
+      : currentHead;
+  // An edit stop already committed the edit'd commit, so dropping it moves the
+  // detached HEAD back to its parent; a conflict stop never committed, so HEAD
+  // already sits at the last good pick.
+  if (target !== currentHead) await getRefStore(ctx).writeLoose(HEAD, target);
+  await hardResetWorktreeToCommit(ctx, target);
+  const ic: InteractiveContext = {
+    branch: branchOf(state.headName),
+    onto: state.onto,
+    origHead: state.origHead,
+    doneBefore: state.done,
+    todo: state.remaining,
+  };
+  return replayInteractive(ctx, ic, target, {
+    applied: [],
+    rewritten: await readRewrittenList(ctx),
+  });
 };

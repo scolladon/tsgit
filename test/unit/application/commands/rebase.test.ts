@@ -984,14 +984,14 @@ describe('rebaseRun (interactive)', () => {
             upstream: base,
             interactive: [
               { action: 'pick', oid: c1 },
-              { action: 'edit', oid: c2 },
+              { action: 'squash', oid: c2 },
             ],
           }),
         );
 
         // Assert
         expect(sut.code).toBe('INVALID_OPTION');
-        expect(sut.reason).toContain("'edit' is not yet supported");
+        expect(sut.reason).toContain("'squash' is not yet supported");
       });
     });
 
@@ -1084,6 +1084,229 @@ describe('rebaseRun (interactive reword)', () => {
         // Assert
         expect(sut.code).toBe('INVALID_OPTION');
         expect(sut.reason).toContain('reword requires a message');
+      });
+    });
+  });
+});
+
+/** topic off base: t1 (a.txt clean), t2 (f.txt=TOPIC), t3 (c.txt clean); main
+ *  advances with m1 (f.txt=MAIN) — replaying t2 onto main conflicts. */
+const seedTopicConflict = async (): Promise<{
+  ctx: Context;
+  t1: ObjectId;
+  t2: ObjectId;
+  t3: ObjectId;
+}> => {
+  const ctx = createMemoryContext();
+  await init(ctx);
+  await setUser(ctx);
+  await writeAddCommit(ctx, 'f.txt', 'L\n', 'base');
+  await branchCreate(ctx, { name: 'topic' });
+  await checkout(ctx, { target: 'topic' });
+  const t1 = await writeAddCommit(ctx, 'a.txt', 'a\n', 't1 subject');
+  const t2 = await writeAddCommit(ctx, 'f.txt', 'TOPIC\n', 't2 subject');
+  const t3 = await writeAddCommit(ctx, 'c.txt', 'c\n', 't3 subject');
+  await checkout(ctx, { target: 'main' });
+  await writeAddCommit(ctx, 'f.txt', 'MAIN\n', 'm1');
+  await checkout(ctx, { target: 'topic' });
+  return { ctx, t1, t2, t3 };
+};
+
+describe('rebaseRun (interactive edit / continue / skip)', () => {
+  describe('Given an edit instruction that fast-forwards', () => {
+    describe('When run interactively', () => {
+      it('Then it stops for amending with the amend marker at the edit commit', async () => {
+        // Arrange
+        const { ctx, base, c1, c2 } = await seedLinear();
+
+        // Act
+        const sut = await rebaseRun(ctx, {
+          upstream: base,
+          interactive: [
+            { action: 'edit', oid: c1 },
+            { action: 'pick', oid: c2 },
+          ],
+        });
+
+        // Assert
+        expect(sut).toEqual({ kind: 'stopped', commit: c1, remaining: 1 });
+        expect(await readMerge(ctx, 'amend')).toBe(`${c1}\n`);
+        expect(await resolveRef(ctx, 'HEAD' as RefName)).toBe(c1); // HEAD detached at the edit commit
+      });
+    });
+  });
+
+  describe('Given an edit that does not fast-forward', () => {
+    describe('When a commit is dropped before it', () => {
+      it('Then the produced (cherry-picked) commit is the amend target', async () => {
+        // Arrange
+        const { ctx, base, c1, c2 } = await seedLinear();
+
+        // Act
+        const sut = await rebaseRun(ctx, {
+          upstream: base,
+          interactive: [
+            { action: 'drop', oid: c1 },
+            { action: 'edit', oid: c2 },
+          ],
+        });
+
+        // Assert
+        expect(sut.kind).toBe('stopped');
+        const amend = (await readMerge(ctx, 'amend')).trim() as ObjectId;
+        expect(amend).not.toBe(c2); // reparented onto base, fresh oid
+        expect((await readCommit(ctx, amend)).parents).toEqual([base]);
+      });
+    });
+  });
+
+  describe('Given an edit stop continued with no tree change', () => {
+    describe('When continue is called without staging anything', () => {
+      it('Then no new commit is made and the trailing pick fast-forwards', async () => {
+        // Arrange
+        const { ctx, base, c1, c2 } = await seedLinear();
+        await rebaseRun(ctx, {
+          upstream: base,
+          interactive: [
+            { action: 'edit', oid: c1 },
+            { action: 'pick', oid: c2 },
+          ],
+        });
+
+        // Act
+        const sut = await rebaseContinue(ctx);
+
+        // Assert — both commits keep their original oids (a pure no-op edit)
+        expect(sut.kind).toBe('rebased');
+        expect(await mainTipOid(ctx)).toBe(c2);
+        const head = await reflogMessages(ctx, 'HEAD');
+        expect(head).toContain('rebase: fast-forward'); // c2 fast-forwarded after the edit
+      });
+    });
+  });
+
+  describe('Given an edit stop continued after staging a change', () => {
+    describe('When the working tree is amended then continued', () => {
+      it('Then a new commit replaces the edit commit (rebase (continue) reflog)', async () => {
+        // Arrange
+        const { ctx, base, c1 } = await seedLinear();
+        await rebaseRun(ctx, { upstream: base, interactive: [{ action: 'edit', oid: c1 }] });
+        await ctx.fs.writeUtf8(work(ctx, 'extra.txt'), 'extra\n');
+        await add(ctx, ['extra.txt']);
+
+        // Act
+        const sut = await rebaseContinue(ctx);
+
+        // Assert
+        expect(sut.kind).toBe('rebased');
+        const tip = await mainTipOid(ctx);
+        expect(tip).not.toBe(c1); // amended → new oid
+        const head = await reflogMessages(ctx, 'HEAD');
+        expect(head).toContain('rebase (continue): c1 subject');
+      });
+    });
+  });
+
+  describe('Given an edit stop that is skipped', () => {
+    describe('When skip is called', () => {
+      it('Then the edit commit is dropped and the rest replays onto its parent', async () => {
+        // Arrange
+        const { ctx, base, c1, c2 } = await seedLinear();
+        await rebaseRun(ctx, {
+          upstream: base,
+          interactive: [
+            { action: 'edit', oid: c1 },
+            { action: 'pick', oid: c2 },
+          ],
+        });
+
+        // Act
+        const sut = await rebaseSkip(ctx);
+
+        // Assert — c1 dropped; c2 reparented onto base
+        expect(sut.kind).toBe('rebased');
+        const tip = await readCommit(ctx, await mainTipOid(ctx));
+        expect(tip.message).toBe('c2 subject\n');
+        expect(tip.parents).toEqual([base]);
+      });
+    });
+  });
+
+  describe('Given an interactive rebase with a non-pick verb that conflicts', () => {
+    describe('When the conflict is resolved and continued', () => {
+      it('Then it commits the resolution and replays the remaining drop', async () => {
+        // Arrange
+        const { ctx, t1, t2, t3 } = await seedTopicConflict();
+        const stop = await rebaseRun(ctx, {
+          upstream: 'main',
+          interactive: [
+            { action: 'pick', oid: t1 },
+            { action: 'pick', oid: t2 },
+            { action: 'drop', oid: t3 },
+          ],
+        });
+        expect(stop.kind).toBe('conflict');
+
+        // Resolve the conflict
+        await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'RESOLVED\n');
+        await add(ctx, ['f.txt']);
+
+        // Act
+        const sut = await rebaseContinue(ctx);
+
+        // Assert — t1 + resolved-t2 on main; t3 dropped
+        expect(sut.kind).toBe('rebased');
+        const head = await reflogMessages(ctx, 'HEAD');
+        expect(head[0]).toBe('rebase (finish): returning to refs/heads/topic');
+        expect(head[1]).toBe('rebase (continue): t2 subject');
+      });
+    });
+
+    describe('When the conflict is skipped', () => {
+      it('Then the conflicting commit is discarded and the rest replays', async () => {
+        // Arrange
+        const { ctx, t1, t2, t3 } = await seedTopicConflict();
+        const stop = await rebaseRun(ctx, {
+          upstream: 'main',
+          interactive: [
+            { action: 'pick', oid: t1 },
+            { action: 'pick', oid: t2 },
+            { action: 'drop', oid: t3 },
+          ],
+        });
+        expect(stop.kind).toBe('conflict');
+
+        // Act
+        const sut = await rebaseSkip(ctx);
+
+        // Assert — t2 skipped, t3 dropped, only t1 replayed atop main
+        expect(sut.kind).toBe('rebased');
+        const topicTip = await resolveRef(ctx, 'refs/heads/topic' as RefName);
+        expect((await readCommit(ctx, topicTip)).message).toBe('t1 subject\n'); // t2/t3 gone
+      });
+    });
+  });
+
+  describe('Given a reword scheduled after a stop', () => {
+    describe('When the inline message cannot survive the stop', () => {
+      it('Then the reword keeps the original message (documented limitation)', async () => {
+        // Arrange — edit c1 stops; the reword of c2 is in the remaining todo
+        const { ctx, base, c1, c2 } = await seedLinear();
+        await rebaseRun(ctx, {
+          upstream: base,
+          interactive: [
+            { action: 'edit', oid: c1 },
+            { action: 'reword', oid: c2, message: 'lost across the stop' },
+          ],
+        });
+
+        // Act — continue with no change; the reword replays without its message
+        const sut = await rebaseContinue(ctx);
+
+        // Assert
+        expect(sut.kind).toBe('rebased');
+        const tip = await readCommit(ctx, await mainTipOid(ctx));
+        expect(tip.message).toBe('c2 subject\n'); // original kept, not "lost across the stop"
       });
     });
   });
