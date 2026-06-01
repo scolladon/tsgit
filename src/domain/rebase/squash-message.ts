@@ -11,27 +11,50 @@
  *   # This is the commit message #2:
  *
  *   <message 2>
- *   …
  *
- * The first member is introduced by `the 1st commit message:`, every later
- * member by `the commit message #<k>:`. Each message's trailing newlines are
- * normalised to the single separating newline git writes. The cleaned commit
- * message is obtained by the caller's existing `stripComments` + `stripspace`
- * (the editor "cleanup" git applies on commit), so this module only serialises.
+ *   # The commit message #3 will be skipped:
+ *
+ *   # <message 3, each line commented>
+ *
+ * The first member is introduced by `the 1st commit message:`; a kept (squash)
+ * member by `the commit message #<k>:`; a skipped (fixup) member by `The commit
+ * message #<k> will be skipped:` with its body commented out (so the editor
+ * "cleanup" `stripComments` + `stripspace` drops it). Each message's trailing
+ * newlines are normalised to the single separating newline git writes. The
+ * cleaned commit message is obtained by the caller's `stripComments` +
+ * `stripspace`, so this module only serialises.
  */
+
+/** One group member's message and whether it is a `fixup` (commented/skipped). */
+export interface CombinedMessageEntry {
+  readonly message: string;
+  /** `fixup` members are commented out so the cleaned message drops them. */
+  readonly skip?: boolean;
+}
 
 const normalise = (message: string): string => message.replace(/\n+$/, '');
 
-const blockHeader = (index: number): string =>
-  index === 0 ? '# This is the 1st commit message:' : `# This is the commit message #${index + 1}:`;
+/** Comment every line git-style: `# <line>`, or a bare `#` for a blank line. */
+const commentOut = (message: string): string =>
+  normalise(message)
+    .split('\n')
+    .map((line) => (line === '' ? '#' : `# ${line}`))
+    .join('\n');
 
-export const buildCombinedMessage = (messages: ReadonlyArray<string>): string => {
-  const count = messages.length;
+const blockFor = (entry: CombinedMessageEntry, index: number): string => {
+  if (index === 0) return `# This is the 1st commit message:\n\n${normalise(entry.message)}\n`;
+  if (entry.skip === true) {
+    return `\n# The commit message #${index + 1} will be skipped:\n\n${commentOut(entry.message)}\n`;
+  }
+  return `\n# This is the commit message #${index + 1}:\n\n${normalise(entry.message)}\n`;
+};
+
+export const buildCombinedMessage = (entries: ReadonlyArray<CombinedMessageEntry>): string => {
+  const count = entries.length;
   const plural = count === 1 ? 'commit' : 'commits';
   let out = `# This is a combination of ${count} ${plural}.\n`;
   for (let i = 0; i < count; i += 1) {
-    const lead = i === 0 ? '' : '\n';
-    out += `${lead}${blockHeader(i)}\n\n${normalise(messages[i] as string)}\n`;
+    out += blockFor(entries[i] as CombinedMessageEntry, i);
   }
   return out;
 };

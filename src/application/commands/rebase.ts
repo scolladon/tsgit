@@ -21,7 +21,12 @@ import type { ConflictType, MergeConflict } from '../../domain/merge/index.js';
 import type { CommitData } from '../../domain/objects/commit.js';
 import { unexpectedObjectType } from '../../domain/objects/error.js';
 import type { FilePath, ObjectId, RefName } from '../../domain/objects/index.js';
-import type { RebaseBackupHeader, RebaseTodoAction } from '../../domain/rebase/index.js';
+import {
+  buildCombinedMessage,
+  type CombinedMessageEntry,
+  type RebaseBackupHeader,
+  type RebaseTodoAction,
+} from '../../domain/rebase/index.js';
 import type { Context } from '../../ports/context.js';
 import { applyMergeToWorktree } from '../primitives/apply-merge-to-worktree.js';
 import { createCommit } from '../primitives/create-commit.js';
@@ -557,14 +562,6 @@ export const rebaseAbort = async (ctx: Context): Promise<RebaseAbortResult> => {
 
 // ── interactive (`rebase -i`) ───────────────────────────────────────────────
 
-/** Verbs the interactive engine currently implements. */
-const INTERACTIVE_SUPPORTED: ReadonlySet<RebaseTodoAction> = new Set<RebaseTodoAction>([
-  'pick',
-  'reword',
-  'edit',
-  'drop',
-]);
-
 /** A resolved interactive instruction threaded through the replay. */
 interface PlannedInstruction {
   readonly action: RebaseTodoAction;
@@ -598,12 +595,13 @@ const planInteractive = async (
   if (instructions.every((i) => i.action === 'drop')) {
     throw invalidOption('interactive', 'nothing to do (every instruction drops a commit)');
   }
+  const firstApplied = instructions.find((i) => i.action !== 'drop');
+  if (firstApplied?.action === 'squash' || firstApplied?.action === 'fixup') {
+    throw invalidOption('interactive', `cannot '${firstApplied.action}' without a previous commit`);
+  }
   const candidates = new Set(await commitsToReplay(ctx, base, head));
   const planned: PlannedInstruction[] = [];
   for (const inst of instructions) {
-    if (!INTERACTIVE_SUPPORTED.has(inst.action)) {
-      throw invalidOption('interactive', `'${inst.action}' is not yet supported`);
-    }
     if (inst.action === 'reword' && inst.message === undefined) {
       throw invalidOption('interactive', 'reword requires a message (no editor in a library)');
     }
@@ -862,6 +860,12 @@ interface StopFields {
   readonly patch: string;
   readonly rewritten: ReadonlyArray<readonly [ObjectId, ObjectId]>;
   readonly amend?: ObjectId;
+  readonly currentFixups?: ReadonlyArray<{
+    readonly action: 'squash' | 'fixup';
+    readonly oid: ObjectId;
+  }>;
+  readonly rewrittenPending?: ReadonlyArray<ObjectId>;
+  readonly messageSquash?: string;
 }
 
 /** Persist a byte-faithful interactive stop. `done` is `doneBefore` + the
@@ -885,8 +889,31 @@ const persistInteractiveStop = async (
     patch: fields.patch,
     ...(ic.backupHeader !== undefined ? { backupHeader: ic.backupHeader } : {}),
     ...(fields.amend !== undefined ? { amend: fields.amend } : {}),
+    ...(fields.currentFixups !== undefined ? { currentFixups: fields.currentFixups } : {}),
+    ...(fields.rewrittenPending !== undefined ? { rewrittenPending: fields.rewrittenPending } : {}),
+    ...(fields.messageSquash !== undefined ? { messageSquash: fields.messageSquash } : {}),
   });
 };
+
+/** Whether the instruction at `index + 1` continues a squash/fixup group. */
+const meldContinues = (todo: ReadonlyArray<PlannedInstruction>, index: number): boolean => {
+  const next = todo[index + 1];
+  return next !== undefined && (next.action === 'squash' || next.action === 'fixup');
+};
+
+/** The mutable squash/fixup group accumulator threaded through the replay. */
+interface MeldGroup {
+  /** The group's base commit's original message (the `# 1st commit message`). */
+  baseMessage: string;
+  /** Each melded member, kept (squash) or skipped (fixup), for the template. */
+  members: CombinedMessageEntry[];
+  /** The melded members' verbs + oids, for `current-fixups`. */
+  fixups: Array<{ readonly action: 'squash' | 'fixup'; readonly oid: ObjectId }>;
+  /** The oids folded so far (base + members), for `rewritten-pending`. */
+  pending: ObjectId[];
+  /** The latest squash member's explicit combined message, if any. */
+  inline: string | undefined;
+}
 
 const conflictResult = (
   source: ObjectId,
@@ -904,8 +931,49 @@ interface ReplaySeed {
   readonly rewritten: ReadonlyArray<readonly [ObjectId, ObjectId]>;
 }
 
+/** Meld a squash/fixup member into the group commit at HEAD: recommit HEAD's
+ *  parent with HEAD's tree + the member's changes, under the running (or, at the
+ *  group end, the cleaned) combined message. Returns the new group commit. */
+const meldGroupMember = async (
+  ctx: Context,
+  inst: PlannedInstruction,
+  cData: CommitData,
+  head: ObjectId,
+  group: MeldGroup,
+  isLast: boolean,
+): Promise<
+  | { readonly kind: 'conflict'; readonly conflicts: ReadonlyArray<MergeConflict> }
+  | {
+      readonly kind: 'committed';
+      readonly created: ObjectId;
+      readonly message: string;
+    }
+> => {
+  const headData = await readCommitData(ctx, head);
+  const outcome = await applyOnto(ctx, cData, head);
+  if (outcome.kind === 'conflict') return { kind: 'conflict', conflicts: outcome.conflicts };
+  group.members.push({ message: cData.message, skip: inst.action === 'fixup' });
+  group.fixups.push({ action: inst.action as 'squash' | 'fixup', oid: inst.oid });
+  group.pending.push(inst.oid);
+  if (inst.action === 'squash' && inst.message !== undefined) group.inline = inst.message;
+  const template = buildCombinedMessage([{ message: group.baseMessage }, ...group.members]);
+  const message = isLast
+    ? sanitizeMessage(group.inline ?? stripComments(template), { allowEmpty: false })
+    : template;
+  const created = await commitAndAdvance(ctx, {
+    tree: outcome.mergedTree,
+    parent: headData.parents[0] as ObjectId,
+    expected: head,
+    author: headData.author,
+    message,
+    reflog: `rebase (${inst.action}): ${subjectOf(message)}`,
+  });
+  return { kind: 'committed', created, message };
+};
+
 /** Replay `ic.todo` from `startHead`. Stops on the first conflict or `edit`;
- *  otherwise finishes (updates the branch + reattaches HEAD). */
+ *  otherwise finishes (updates the branch + reattaches HEAD). A run of
+ *  squash/fixup melds into the preceding commit, threading `group`. */
 const replayInteractive = async (
   ctx: Context,
   ic: InteractiveContext,
@@ -915,12 +983,47 @@ const replayInteractive = async (
   let head = startHead;
   const applied: RebasedCommit[] = [...seed.applied];
   const rewritten: Array<readonly [ObjectId, ObjectId]> = [...seed.rewritten];
+  const group: MeldGroup = {
+    baseMessage: (await readCommitData(ctx, startHead)).message,
+    members: [],
+    fixups: [],
+    pending: [startHead],
+    inline: undefined,
+  };
   for (let i = 0; i < ic.todo.length; i += 1) {
     const inst = ic.todo[i]!;
     if (inst.action === 'drop') continue;
     const cData = await readCommitData(ctx, inst.oid);
-    const step = await stepInstruction(ctx, inst, cData, head);
     const patch = await renderCommitPatch(ctx, cData);
+    if (inst.action === 'squash' || inst.action === 'fixup') {
+      const meld = await meldGroupMember(ctx, inst, cData, head, group, !meldContinues(ic.todo, i));
+      if (meld.kind === 'conflict') {
+        const template = buildCombinedMessage([
+          { message: group.baseMessage },
+          ...group.members,
+          { message: cData.message, skip: inst.action === 'fixup' },
+        ]);
+        await persistInteractiveStop(ctx, ic, i, {
+          stoppedSha: inst.oid,
+          author: cData.author,
+          message: conflictMergeMsg(
+            template,
+            meld.conflicts.map((c) => c.path),
+          ),
+          patch,
+          rewritten,
+          currentFixups: [...group.fixups, { action: inst.action, oid: inst.oid }],
+          rewrittenPending: [...group.pending],
+          messageSquash: template,
+        });
+        return conflictResult(inst.oid, meld.conflicts, ic.todo.length - (i + 1));
+      }
+      applied.push({ source: inst.oid, created: meld.created });
+      rewritten.push([inst.oid, meld.created]);
+      head = meld.created;
+      continue;
+    }
+    const step = await stepInstruction(ctx, inst, cData, head);
     if (step.kind === 'conflict') {
       await persistInteractiveStop(ctx, ic, i, {
         stoppedSha: inst.oid,
@@ -948,6 +1051,11 @@ const replayInteractive = async (
     applied.push({ source: inst.oid, created: step.created });
     rewritten.push([inst.oid, step.created]);
     head = step.created;
+    group.baseMessage = (await readCommitData(ctx, step.created)).message;
+    group.members = [];
+    group.fixups = [];
+    group.pending = [step.created];
+    group.inline = undefined;
   }
   await finishRebase(ctx, ic.branch, ic.origHead, head, ic.onto);
   await clearRebaseState(ctx);
@@ -1004,8 +1112,23 @@ const rebaseContinueInteractive = async (
   rejectUnmergedIndex(index.entries);
   const tree = await synthesizeTreeFromIndex(ctx, index.entries);
   const currentHead = await resolveRef(ctx, HEAD);
+  const stoppedOid = state.done[state.done.length - 1]!.oid;
   let resumeHead: ObjectId;
-  if (state.amend !== undefined) {
+  if (state.currentFixups !== undefined) {
+    // A squash/fixup meld conflicted: commit the resolution as the group commit
+    // (replacing the base — its parent), with the cleaned combined message.
+    const baseData = await readCommitData(ctx, currentHead);
+    const message = sanitizeMessage(stripComments(state.message), { allowEmpty: false });
+    resumeHead = await commitAndAdvance(ctx, {
+      tree,
+      parent: baseData.parents[0] as ObjectId,
+      expected: currentHead,
+      author: baseData.author,
+      message,
+      reflog: `rebase (continue): ${subjectOf(message)}`,
+    });
+    rewritten.push([stoppedOid, resumeHead]);
+  } else if (state.amend !== undefined) {
     const amendCommit = await readCommitData(ctx, state.amend);
     if (tree === amendCommit.tree) {
       resumeHead = currentHead; // edit left the tree unchanged — keep the commit
@@ -1018,7 +1141,7 @@ const rebaseContinueInteractive = async (
         message: amendCommit.message,
         reflog: `rebase (continue): ${subjectOf(amendCommit.message)}`,
       });
-      rewritten.push([state.done[state.done.length - 1]!.oid, resumeHead]);
+      rewritten.push([stoppedOid, resumeHead]);
     }
   } else {
     const message = sanitizeMessage(stripComments(state.message), { allowEmpty: false });
@@ -1030,7 +1153,7 @@ const rebaseContinueInteractive = async (
       message,
       reflog: `rebase (continue): ${subjectOf(message)}`,
     });
-    rewritten.push([state.done[state.done.length - 1]!.oid, resumeHead]);
+    rewritten.push([stoppedOid, resumeHead]);
   }
   return replayInteractive(ctx, ic, resumeHead, { applied: [], rewritten });
 };

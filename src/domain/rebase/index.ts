@@ -3,7 +3,7 @@ export {
   parseAuthorScript,
   serializeAuthorScript,
 } from './author-script.js';
-export { buildCombinedMessage } from './squash-message.js';
+export { buildCombinedMessage, type CombinedMessageEntry } from './squash-message.js';
 export {
   parseRebaseTodo,
   type RebaseTodoAction,
