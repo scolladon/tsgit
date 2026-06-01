@@ -37,6 +37,7 @@ import { resolveRef } from '../primitives/resolve-ref.js';
 import { synthesizeTreeFromIndex } from '../primitives/synthesize-tree-from-index.js';
 import { updateRef } from '../primitives/update-ref.js';
 import { walkCommits } from '../primitives/walk-commits.js';
+import { abortSequencerReset } from './internal/abort-sequencer-reset.js';
 import {
   clearCherryPickHead,
   conflictMergeMsg,
@@ -624,10 +625,6 @@ export const cherryPickAbort = async (ctx: Context): Promise<CherryPickAbortResu
   }
   const branch = await requireSymbolicHead(ctx, 'cherry-pick --abort');
   const target = seqHead ?? (await resolveRef(ctx, branch));
-  await hardResetWorktreeToCommit(ctx, target);
-  await updateRef(ctx, branch, target, { reflogMessage: `reset: moving to ${target}` });
-  await clearCherryPickHead(ctx);
-  await clearMergeMsg(ctx);
-  await clearSequencer(ctx);
+  await abortSequencerReset(ctx, { branch, target, clearHead: clearCherryPickHead });
   return { head: target, branch };
 };
