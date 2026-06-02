@@ -1,5 +1,57 @@
 # Changelog
 
+## [2.0.0](https://github.com/scolladon/tsgit/compare/v1.3.0...v2.0.0) (2026-06-02)
+
+
+### ⚠ BREAKING CHANGES
+
+* **runbook:** v2.0.0 ships the merged-but-unreleased API breaks from v1.3.0..HEAD — mergeBase(commits, opts) is array-only (was bidirectional); the CRUD porcelain (remote/branch/tag/sparseCheckout) is namespace-only (the callable discriminator form is removed).
+
+### Features
+
+* cherry-pick (single + range) ([#99](https://github.com/scolladon/tsgit/issues/99)) ([2e01738](https://github.com/scolladon/tsgit/commit/2e01738c21549294138a015c6571412a54cccd8b))
+* config porcelain on repo.* (nested namespace, all four scopes, quote-on-write) ([#87](https://github.com/scolladon/tsgit/issues/87)) ([c232f23](https://github.com/scolladon/tsgit/commit/c232f238a1b7b45c9513b09b4c11c78aa6da430b))
+* CRUD-family porcelain ([#89](https://github.com/scolladon/tsgit/issues/89)) ([9a90ab4](https://github.com/scolladon/tsgit/commit/9a90ab4cb721b838a890f5a77e7c3479246c6296))
+* diff patch-text output (`diff({ format: 'patch' })`) ([#84](https://github.com/scolladon/tsgit/issues/84)) ([f667840](https://github.com/scolladon/tsgit/commit/f6678401f5a103a69747c81239b1d8e42a0d1fff))
+* faithful commit-message stripspace normalization ([#93](https://github.com/scolladon/tsgit/issues/93)) ([0361668](https://github.com/scolladon/tsgit/commit/03616689bbf3be151314a6e06c6bab85248aa8d0))
+* git-faithfulness interop harness for write porcelain (mv/add/rm/reset) ([#95](https://github.com/scolladon/tsgit/issues/95)) ([7fb8264](https://github.com/scolladon/tsgit/commit/7fb82649a6fb68d81b8cceca4c5bc7f14dd59120))
+* merge state machine — abortMerge / continueMerge ([#85](https://github.com/scolladon/tsgit/issues/85)) ([d4131f5](https://github.com/scolladon/tsgit/commit/d4131f54a374ee39ca2bf8e6f44683cb82187567))
+* multi-base mergeBase (`--all`, `--octopus`) ([#88](https://github.com/scolladon/tsgit/issues/88)) ([2a54c19](https://github.com/scolladon/tsgit/commit/2a54c194d20e487299ae6cb39f4dd9d427927f3b))
+* mv — atomic rename in index + working tree ([#92](https://github.com/scolladon/tsgit/issues/92)) ([17d0a0a](https://github.com/scolladon/tsgit/commit/17d0a0a2d47a63b71911f67321ff03b99d311720))
+* pull — fetch + merge porcelain on repo.* ([#91](https://github.com/scolladon/tsgit/issues/91)) ([1332bd8](https://github.com/scolladon/tsgit/commit/1332bd85efd7c4fa871887b296b911cf8119ca3f))
+* rebase --interactive (pick/reword/edit/squash/fixup/drop) ([#109](https://github.com/scolladon/tsgit/issues/109)) ([4f01b60](https://github.com/scolladon/tsgit/commit/4f01b60c3839129c8379754d6a5641763f00dc98))
+* rebase (non-interactive) ([#108](https://github.com/scolladon/tsgit/issues/108)) ([2e17819](https://github.com/scolladon/tsgit/commit/2e17819fa268541ed3a8df9f5f9bd9c4baffb816))
+* remote CRUD porcelain (`add`/`remove`/`rename`/`setUrl`/`show`) ([#86](https://github.com/scolladon/tsgit/issues/86)) ([ab51e0a](https://github.com/scolladon/tsgit/commit/ab51e0ae6e735a5ac71d80ffca00536344426a27))
+* revert (single + range) ([#103](https://github.com/scolladon/tsgit/issues/103)) ([457a0eb](https://github.com/scolladon/tsgit/commit/457a0eb088ade168afacbb1a9fa6bc3ef2b4e547))
+* **rm:** git-faithful safety valve + mutualized working-tree comparison ([#97](https://github.com/scolladon/tsgit/issues/97)) ([5fa805d](https://github.com/scolladon/tsgit/commit/5fa805d68a50423791ca6aca789752cf4579f84b))
+* **snapshot:** snapshot+join engine ([#81](https://github.com/scolladon/tsgit/issues/81)) ([7d04c08](https://github.com/scolladon/tsgit/commit/7d04c089682535e6e529012cf6e5f39009a922d2))
+* standalone primitives (hashBlob, isIgnored, index CRUD) ([#83](https://github.com/scolladon/tsgit/issues/83)) ([8576b94](https://github.com/scolladon/tsgit/commit/8576b942ce1a2c1419eaa911d6c563f36664b31c))
+* stash (push/pop/list/drop/apply) ([#98](https://github.com/scolladon/tsgit/issues/98)) ([b4faece](https://github.com/scolladon/tsgit/commit/b4faecebdd0a5ceaccedcf647ca9c55e0d6d07dd))
+* **tooling:** namespace-aware browser-surface audit ([#90](https://github.com/scolladon/tsgit/issues/90)) ([1dbd41e](https://github.com/scolladon/tsgit/commit/1dbd41ed8c9aa556f99cd2b0b660d4ae661dfa72))
+
+
+### Bug Fixes
+
+* **cherry-pick:** git-faithful abort reflog + close merge-no-mainline mutation gap ([#105](https://github.com/scolladon/tsgit/issues/105)) ([ff55741](https://github.com/scolladon/tsgit/commit/ff5574175ef542904173706bd492bb4482e1b1a5))
+* **ref:** skip the no-op abort reflog, document git-faithfulness directive ([#106](https://github.com/scolladon/tsgit/issues/106)) ([16e4542](https://github.com/scolladon/tsgit/commit/16e4542a7c4131e36c3960345165dec12a1c9a8d))
+
+
+### Documentation
+
+* **backlog:** track cherry-pick abort-reflog + mutation follow-ups as 22.2a ([#104](https://github.com/scolladon/tsgit/issues/104)) ([d04c767](https://github.com/scolladon/tsgit/commit/d04c7677f5c0a4be43e11671ca833788e7fd341d))
+* **backlog:** track custom merge drivers as 24.8 ([#101](https://github.com/scolladon/tsgit/issues/101)) ([9eadfb3](https://github.com/scolladon/tsgit/commit/9eadfb331c0b95e5205d5ff7c46419d8ff27a5b3))
+* **backlog:** track magic-literal sweep as 26.5 ([#102](https://github.com/scolladon/tsgit/issues/102)) ([9719e58](https://github.com/scolladon/tsgit/commit/9719e58a3aaa8425a42945b3325a330f66675270))
+* keep walkTree/walkWorkingTree public; snapshot surface is additive ([#113](https://github.com/scolladon/tsgit/issues/113)) ([2abcc10](https://github.com/scolladon/tsgit/commit/2abcc108939363f942cbd9157c2b4f14bcf23fcd))
+* **runbook:** document release-cut footer handling ([0e6af67](https://github.com/scolladon/tsgit/commit/0e6af67f0162b97589deb496c8aa13272e318d88))
+* use TypeScript LSP tool instead of Serena in workflow ([a7e54c4](https://github.com/scolladon/tsgit/commit/a7e54c4e9dc61e5be73417ad7dda10e62a1fbe82))
+* **workflow:** architecture-refactor phase + --delete-branch merge ([#100](https://github.com/scolladon/tsgit/issues/100)) ([c7880df](https://github.com/scolladon/tsgit/commit/c7880dfbd2fffc6b4f982f62348ad48f3732a8b8))
+
+
+### Refactor
+
+* **commit-message:** unify the first-line projection into subjectLine ([#111](https://github.com/scolladon/tsgit/issues/111)) ([436d434](https://github.com/scolladon/tsgit/commit/436d43468976f34cd680fd293ddefc98dedc590c))
+* **history-rewrite:** centralise commit-read + symbolic-HEAD helpers ([#110](https://github.com/scolladon/tsgit/issues/110)) ([2b42211](https://github.com/scolladon/tsgit/commit/2b42211a469aeec8802622eb8987f825e6687327))
+
 ## [1.3.0](https://github.com/scolladon/tsgit/compare/v1.2.0...v1.3.0) (2026-05-25)
 
 
