@@ -25,7 +25,6 @@ import {
 } from '../../domain/show/index.js';
 import type { Context } from '../../ports/context.js';
 import { diffTrees } from '../primitives/diff-trees.js';
-import { flattenTree } from '../primitives/flatten-tree.js';
 import { materialisePatchFiles } from '../primitives/materialise-patch-files.js';
 import { readObject } from '../primitives/read-object.js';
 import type { PatchResult } from './diff.js';
@@ -159,31 +158,22 @@ async function commitPatch(
   commit: CommitData,
   opts: ShowOptions,
 ): Promise<PatchResult> {
+  // `git show` diffs recursively against the first parent (root commits against
+  // the empty tree) with rename detection on by default. The recursive
+  // `diffTrees` flattens both sides so sub-directories surface as per-file
+  // changes.
   const parent = commit.parents[0];
-  // `git show` diffs recursively; the single-level `diffTrees` would surface a
-  // sub-directory as one tree-add. Flatten both trees to full-path blob entries
-  // first so the patch is per-file (the synthetic trees carry slash-bearing
-  // names that are never serialised).
-  const oldTree =
-    parent !== undefined ? await flattenedTree(ctx, await treeOf(ctx, parent)) : undefined;
-  const newTree = await flattenedTree(ctx, commit.tree);
-  const diff: TreeDiff = await diffTrees(ctx, oldTree, newTree, { detectRenames: true });
+  const oldTree = parent !== undefined ? await treeOf(ctx, parent) : undefined;
+  const diff: TreeDiff = await diffTrees(ctx, oldTree, commit.tree, {
+    recursive: true,
+    detectRenames: true,
+  });
   const files = await materialisePatchFiles(ctx, diff.changes);
   const text = renderPatch(
     files,
     opts.contextLines !== undefined ? { contextLines: opts.contextLines } : {},
   );
   return { format: 'patch', text, diff };
-}
-
-async function flattenedTree(ctx: Context, treeId: ObjectId): Promise<Tree> {
-  const flat = await flattenTree(ctx, treeId);
-  const entries = Array.from(flat.entries, ([name, entry]) => ({
-    name,
-    mode: entry.mode,
-    id: entry.id,
-  }));
-  return { type: 'tree', id: treeId, entries };
 }
 
 function toStreamNode(result: ShowResult): ShowStreamNode {
