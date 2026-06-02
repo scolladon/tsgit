@@ -89,4 +89,37 @@ describe('renderCommitBlock', () => {
       expect(sut.includes('Merge:')).toBe(false);
     });
   });
+
+  describe('Given noPatch on a non-merge commit, When renderCommitBlock runs', () => {
+    it('Then the block ends after the message with no diff tail', () => {
+      // Arrange + Act — a patchText is supplied but noPatch must win.
+      const sut = renderCommitBlock({
+        id: ID,
+        commit: commit(),
+        patchText: 'diff --git a/a b/a\n',
+        noPatch: true,
+      });
+
+      // Assert
+      expect(sut).toBe(
+        `commit ${ID}\nAuthor: A U Thor <author@example.com>\nDate:   Tue Nov 14 22:13:20 2023 +0000\n\n    modify a.txt\n`,
+      );
+    });
+  });
+
+  describe('Given noPatch on a merge commit, When renderCommitBlock runs', () => {
+    it('Then the trailing-blank terminator is also suppressed', () => {
+      // Arrange + Act
+      const sut = renderCommitBlock({
+        id: ID,
+        commit: commit({ parents: [PARENT_A, PARENT_B], message: 'merge feature' }),
+        noPatch: true,
+      });
+
+      // Assert — `git show -s <merge>` ends after the message, no trailing blank.
+      expect(sut).toBe(
+        `commit ${ID}\nMerge: 80d1ead 5164635\nAuthor: A U Thor <author@example.com>\nDate:   Tue Nov 14 22:13:20 2023 +0000\n\n    merge feature\n`,
+      );
+    });
+  });
 });

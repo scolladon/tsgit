@@ -30,13 +30,36 @@ import { readObject } from '../primitives/read-object.js';
 import type { PatchResult } from './diff.js';
 import { treeOf } from './internal/history-rewrite.js';
 import { assertRepository } from './internal/repo-state.js';
+import { parseShowOptions, type ResolvedShowPlan } from './internal/show-options.js';
 import { revParse } from './rev-parse.js';
 
 export type ShowInput = string | ReadonlyArray<string>;
 
+/** How a merge commit's diff is rendered. Default `dense` (git's `show`). */
+export type MergeDiffMode = 'none' | 'separate' | 'combined' | 'dense';
+
+/** `--stat[=<width>,<name-width>,<count>]` overrides. */
+export interface ShowStatOptions {
+  readonly width?: number;
+  readonly nameWidth?: number;
+  readonly count?: number;
+}
+
 export interface ShowOptions {
   /** Context lines bracketing each hunk in commit patches. Default 3. */
   readonly contextLines?: number;
+  /** `-s` / `--no-patch`: suppress all diff output (patch / stat / combined). */
+  readonly noPatch?: boolean;
+  /** `--pretty` / `--format`: named format or `format:`/`tformat:`. Default `medium`. */
+  readonly format?: string;
+  /** `--date=<mode>`. Default `default`. */
+  readonly date?: string;
+  /** `--stat`: `true` for default width, or width overrides. */
+  readonly stat?: boolean | ShowStatOptions;
+  /** `--numstat`. */
+  readonly numstat?: boolean;
+  /** `-m` / `-c` / `--cc`. Default `dense` (git's merge default). */
+  readonly mergeDiff?: MergeDiffMode;
 }
 
 export interface ShowTreeEntry {
@@ -91,11 +114,12 @@ export async function show(
   opts: ShowOptions = {},
 ): Promise<ShowOutput> {
   await assertRepository(ctx);
+  const plan = parseShowOptions(opts);
   const revs = typeof input === 'string' ? [input] : input;
   const objects: ShowResult[] = [];
   for (const rev of revs) {
     const id = await revParse(ctx, rev);
-    objects.push(await buildResult(ctx, rev, await readObject(ctx, id), opts));
+    objects.push(await buildResult(ctx, rev, await readObject(ctx, id), plan));
   }
   return { objects, bytes: renderShowStream(objects.map(toStreamNode)) };
 }
@@ -104,7 +128,7 @@ async function buildResult(
   ctx: Context,
   rev: string,
   obj: GitObject,
-  opts: ShowOptions,
+  plan: ResolvedShowPlan,
 ): Promise<ShowResult> {
   switch (obj.type) {
     case 'blob':
@@ -112,9 +136,9 @@ async function buildResult(
     case 'tree':
       return buildTree(rev, obj);
     case 'commit':
-      return buildCommit(ctx, obj, opts);
+      return buildCommit(ctx, obj, plan);
     case 'tag':
-      return buildTag(ctx, rev, obj, opts);
+      return buildTag(ctx, rev, obj, plan);
   }
 }
 
@@ -126,12 +150,18 @@ function buildTree(rev: string, obj: Tree): ShowTreeResult {
 async function buildCommit(
   ctx: Context,
   obj: Commit,
-  opts: ShowOptions,
+  plan: ResolvedShowPlan,
 ): Promise<ShowCommitResult> {
-  const patch = obj.data.parents.length < 2 ? await commitPatch(ctx, obj.data, opts) : undefined;
+  // `-s` suppresses every diff surface and the merge trailing-blank terminator,
+  // leaving the header + message block alone.
+  const patch =
+    plan.noPatch || obj.data.parents.length >= 2
+      ? undefined
+      : await commitPatch(ctx, obj.data, plan);
   const text = renderCommitBlock({
     id: obj.id,
     commit: obj.data,
+    noPatch: plan.noPatch,
     ...(patch !== undefined ? { patchText: patch.text } : {}),
   });
   return {
@@ -147,16 +177,16 @@ async function buildTag(
   ctx: Context,
   rev: string,
   obj: Tag,
-  opts: ShowOptions,
+  plan: ResolvedShowPlan,
 ): Promise<ShowTagResult> {
-  const target = await buildResult(ctx, rev, await readObject(ctx, obj.data.object), opts);
+  const target = await buildResult(ctx, rev, await readObject(ctx, obj.data.object), plan);
   return { kind: 'tag', id: obj.id, tag: obj.data, target, text: renderTagBlock(obj.data) };
 }
 
 async function commitPatch(
   ctx: Context,
   commit: CommitData,
-  opts: ShowOptions,
+  plan: ResolvedShowPlan,
 ): Promise<PatchResult> {
   // `git show` diffs recursively against the first parent (root commits against
   // the empty tree) with rename detection on by default. The recursive
@@ -171,7 +201,7 @@ async function commitPatch(
   const files = await materialisePatchFiles(ctx, diff.changes);
   const text = renderPatch(
     files,
-    opts.contextLines !== undefined ? { contextLines: opts.contextLines } : {},
+    plan.contextLines !== undefined ? { contextLines: plan.contextLines } : {},
   );
   return { format: 'patch', text, diff };
 }

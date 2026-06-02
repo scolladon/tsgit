@@ -16,9 +16,11 @@ export interface CommitBlockParts {
   readonly id: ObjectId;
   readonly commit: CommitData;
   readonly patchText?: string;
+  /** `-s` / `--no-patch`: emit the header + message only, no diff tail. */
+  readonly noPatch?: boolean;
 }
 
-export function renderCommitBlock({ id, commit, patchText }: CommitBlockParts): string {
+export function renderCommitBlock({ id, commit, patchText, noPatch }: CommitBlockParts): string {
   const isMerge = commit.parents.length >= 2;
   const lines = [`commit ${id}`];
   if (isMerge) {
@@ -26,6 +28,8 @@ export function renderCommitBlock({ id, commit, patchText }: CommitBlockParts): 
   }
   lines.push(...renderIdentityHeader('Author', commit.author));
   const block = `${lines.join('\n')}\n\n${indentMessage(commit.message)}\n`;
+  // `-s` drops every diff surface and the merge terminator alike.
+  if (noPatch) return block;
   if (patchText) return `${block}\n${patchText}`;
   // A merge shows no patch but git terminates it with a trailing blank line
   // (the empty-diff-merges terminator); a non-merge no-diff commit does not.

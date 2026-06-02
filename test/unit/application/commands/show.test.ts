@@ -105,6 +105,26 @@ describe('show', () => {
     });
   });
 
+  describe('Given noPatch, When show() runs on a commit', () => {
+    it('Then the patch is omitted and the text ends after the message', async () => {
+      // Arrange
+      const ctx = await seedTwoCommits();
+      const head = await revParse(ctx, 'HEAD');
+
+      // Act
+      const sut = await show(ctx, 'HEAD', { noPatch: true });
+
+      // Assert
+      const result = sut.objects[0]!;
+      if (result.kind !== 'commit') throw new Error('expected commit');
+      expect(result.patch).toBeUndefined();
+      expect(result.text).toBe(
+        `commit ${head}\nAuthor: A U Thor <author@example.com>\nDate:   Tue Nov 14 22:13:20 2023 +0000\n\n    second\n`,
+      );
+      expect(decode(sut.bytes)).toBe(result.text);
+    });
+  });
+
   describe('Given a tree-ish rev, When show() runs', () => {
     it('Then it lists the tree with the input echoed in the header', async () => {
       // Arrange

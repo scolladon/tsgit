@@ -17,7 +17,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
-import { show } from '../../src/application/commands/show.js';
+import { type ShowOptions, show } from '../../src/application/commands/show.js';
 import type { Context } from '../../src/ports/context.js';
 import { GIT_AVAILABLE, git, runGit, runGitEnv } from './interop-helpers.js';
 
@@ -112,6 +112,16 @@ describe.skipIf(!GIT_AVAILABLE)('show interop', () => {
     expect(decode(result.bytes)).toBe(expected);
   };
 
+  const expectMatchFlags = async (
+    gitFlags: ReadonlyArray<string>,
+    rev: string,
+    opts: ShowOptions,
+  ): Promise<void> => {
+    const expected = git(dir, 'show', '--no-color', ...gitFlags, rev);
+    const result = await show(built.ctx, rev, opts);
+    expect(decode(result.bytes)).toBe(expected);
+  };
+
   describe('Given a single revision', () => {
     it('Then a root commit matches git show', async () => {
       await expectMatch(built.root);
@@ -165,6 +175,15 @@ describe.skipIf(!GIT_AVAILABLE)('show interop', () => {
 
       // Assert
       expect(decode(result.bytes)).toBe(expected);
+    });
+  });
+
+  describe('Given -s / --no-patch', () => {
+    it('Then a non-merge commit shows the header + message only', async () => {
+      await expectMatchFlags(['-s'], built.modify, { noPatch: true });
+    });
+    it('Then a merge commit drops the trailing-blank terminator too', async () => {
+      await expectMatchFlags(['-s'], built.merge, { noPatch: true });
     });
   });
 });
