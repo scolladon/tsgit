@@ -17,6 +17,8 @@ import type {
   Tree,
 } from '../../domain/objects/index.js';
 import {
+  type DateFormatter,
+  formatDate,
   renderCommitBlock,
   renderShowStream,
   renderTagBlock,
@@ -115,11 +117,16 @@ export async function show(
 ): Promise<ShowOutput> {
   await assertRepository(ctx);
   const plan = parseShowOptions(opts);
+  // `now` is read once so a `--date=relative`/`human` rendering is consistent
+  // across every object in the stream (mirrors revParse's single clock read).
+  const now = Math.floor(Date.now() / 1000);
+  const formatDateFor: DateFormatter = (identity) =>
+    formatDate(plan.dateMode, identity.timestamp, identity.timezoneOffset, now);
   const revs = typeof input === 'string' ? [input] : input;
   const objects: ShowResult[] = [];
   for (const rev of revs) {
     const id = await revParse(ctx, rev);
-    objects.push(await buildResult(ctx, rev, await readObject(ctx, id), plan));
+    objects.push(await buildResult(ctx, rev, await readObject(ctx, id), plan, formatDateFor));
   }
   return { objects, bytes: renderShowStream(objects.map(toStreamNode)) };
 }
@@ -129,6 +136,7 @@ async function buildResult(
   rev: string,
   obj: GitObject,
   plan: ResolvedShowPlan,
+  formatDateFor: DateFormatter,
 ): Promise<ShowResult> {
   switch (obj.type) {
     case 'blob':
@@ -136,9 +144,9 @@ async function buildResult(
     case 'tree':
       return buildTree(rev, obj);
     case 'commit':
-      return buildCommit(ctx, obj, plan);
+      return buildCommit(ctx, obj, plan, formatDateFor);
     case 'tag':
-      return buildTag(ctx, rev, obj, plan);
+      return buildTag(ctx, rev, obj, plan, formatDateFor);
   }
 }
 
@@ -151,6 +159,7 @@ async function buildCommit(
   ctx: Context,
   obj: Commit,
   plan: ResolvedShowPlan,
+  formatDateFor: DateFormatter,
 ): Promise<ShowCommitResult> {
   // `-s` suppresses every diff surface and the merge trailing-blank terminator,
   // leaving the header + message block alone.
@@ -162,6 +171,7 @@ async function buildCommit(
     id: obj.id,
     commit: obj.data,
     noPatch: plan.noPatch,
+    formatDate: formatDateFor,
     ...(patch !== undefined ? { patchText: patch.text } : {}),
   });
   return {
@@ -178,9 +188,22 @@ async function buildTag(
   rev: string,
   obj: Tag,
   plan: ResolvedShowPlan,
+  formatDateFor: DateFormatter,
 ): Promise<ShowTagResult> {
-  const target = await buildResult(ctx, rev, await readObject(ctx, obj.data.object), plan);
-  return { kind: 'tag', id: obj.id, tag: obj.data, target, text: renderTagBlock(obj.data) };
+  const target = await buildResult(
+    ctx,
+    rev,
+    await readObject(ctx, obj.data.object),
+    plan,
+    formatDateFor,
+  );
+  return {
+    kind: 'tag',
+    id: obj.id,
+    tag: obj.data,
+    target,
+    text: renderTagBlock(obj.data, formatDateFor),
+  };
 }
 
 async function commitPatch(

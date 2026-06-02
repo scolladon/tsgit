@@ -1,5 +1,8 @@
+export type { DateMode } from './date-mode.js';
+export { formatDate, formatRfc2822, parseDateMode } from './date-mode.js';
 export { formatGitDate } from './git-date.js';
-export { renderIdentityHeader } from './identity-header.js';
+export type { DateFormatter } from './identity-header.js';
+export { defaultDateFormatter, renderIdentityHeader } from './identity-header.js';
 export { indentMessage } from './message-indent.js';
 export type { CommitBlockParts } from './render-commit.js';
 export { renderCommitBlock } from './render-commit.js';

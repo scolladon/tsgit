@@ -5,12 +5,12 @@
  * separately (the `shown_one` separator joins them).
  */
 import type { TagData } from '../objects/index.js';
-import { renderIdentityHeader } from './identity-header.js';
+import { type DateFormatter, renderIdentityHeader } from './identity-header.js';
 
-export function renderTagBlock(tag: TagData): string {
+export function renderTagBlock(tag: TagData, formatDate?: DateFormatter): string {
   const header = [`tag ${tag.tagName}`];
   if (tag.tagger !== undefined) {
-    header.push(...renderIdentityHeader('Tagger', tag.tagger));
+    header.push(...renderIdentityHeader('Tagger', tag.tagger, formatDate));
   }
   return `${header.join('\n')}\n\n${tag.message}`;
 }

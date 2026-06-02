@@ -7,6 +7,7 @@
  * shape.
  */
 import { invalidOption } from '../../../domain/commands/error.js';
+import { type DateMode, parseDateMode } from '../../../domain/show/index.js';
 import type { MergeDiffMode, ShowOptions } from '../show.js';
 
 export interface ResolvedStat {
@@ -19,8 +20,8 @@ export interface ResolvedShowPlan {
   readonly noPatch: boolean;
   /** Normalised pretty-format name or `format:`/`tformat:` spec. */
   readonly format: string;
-  /** Normalised `--date=` mode name or `format:` spec. */
-  readonly date: string;
+  /** Resolved `--date=` mode. */
+  readonly dateMode: DateMode;
   readonly numstat: boolean;
   readonly stat?: ResolvedStat;
   readonly mergeDiff: MergeDiffMode;
@@ -28,7 +29,6 @@ export interface ResolvedShowPlan {
 }
 
 const SUPPORTED_FORMATS = new Set(['medium']);
-const SUPPORTED_DATES = new Set(['default', 'normal']);
 
 const resolveFormat = (format: string | undefined): string => {
   if (format === undefined) return 'medium';
@@ -38,12 +38,10 @@ const resolveFormat = (format: string | undefined): string => {
   return format;
 };
 
-const resolveDate = (date: string | undefined): string => {
-  if (date === undefined) return 'default';
-  if (!SUPPORTED_DATES.has(date)) {
-    throw invalidOption('date', `unsupported date mode: ${date}`);
-  }
-  return date === 'normal' ? 'default' : date;
+const resolveDateMode = (date: string | undefined): DateMode => {
+  const mode = parseDateMode(date ?? 'default');
+  if (mode === undefined) throw invalidOption('date', `unsupported date mode: ${date}`);
+  return mode;
 };
 
 export const parseShowOptions = (opts: ShowOptions): ResolvedShowPlan => {
@@ -53,7 +51,7 @@ export const parseShowOptions = (opts: ShowOptions): ResolvedShowPlan => {
   return {
     noPatch: opts.noPatch === true,
     format: resolveFormat(opts.format),
-    date: resolveDate(opts.date),
+    dateMode: resolveDateMode(opts.date),
     numstat: false,
     mergeDiff: 'dense',
     ...(opts.contextLines !== undefined ? { contextLines: opts.contextLines } : {}),

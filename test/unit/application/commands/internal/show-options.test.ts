@@ -22,7 +22,7 @@ describe('Given show option resolution', () => {
       expect(sut).toEqual({
         noPatch: false,
         format: 'medium',
-        date: 'default',
+        dateMode: { kind: 'default' },
         numstat: false,
         mergeDiff: 'dense',
       });
@@ -72,12 +72,22 @@ describe('Given show option resolution', () => {
   });
 
   describe('When the alias date mode "normal" is given', () => {
-    it('Then it normalises to default', () => {
+    it('Then it normalises to the default mode', () => {
       // Arrange / Act
       const sut = parseShowOptions({ date: 'normal' });
 
       // Assert
-      expect(sut.date).toBe('default');
+      expect(sut.dateMode).toEqual({ kind: 'default' });
+    });
+  });
+
+  describe('When a known date mode is given', () => {
+    it('Then it resolves the mode', () => {
+      // Arrange / Act
+      const sut = parseShowOptions({ date: 'iso-strict' });
+
+      // Assert
+      expect(sut.dateMode).toEqual({ kind: 'iso-strict' });
     });
   });
 
