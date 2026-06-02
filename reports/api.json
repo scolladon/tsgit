@@ -19443,14 +19443,14 @@
 					]
 				},
 				{
-					"id": 1395,
+					"id": 1390,
 					"name": "ShowBlobResult",
 					"variant": "declaration",
 					"kind": 256,
 					"flags": {},
 					"children": [
 						{
-							"id": 1398,
+							"id": 1393,
 							"name": "content",
 							"variant": "declaration",
 							"kind": 1024,
@@ -19469,7 +19469,7 @@
 							}
 						},
 						{
-							"id": 1397,
+							"id": 1392,
 							"name": "id",
 							"variant": "declaration",
 							"kind": 1024,
@@ -19484,7 +19484,7 @@
 							}
 						},
 						{
-							"id": 1396,
+							"id": 1391,
 							"name": "kind",
 							"variant": "declaration",
 							"kind": 1024,
@@ -19501,22 +19501,22 @@
 						{
 							"title": "Properties",
 							"children": [
-								1398,
-								1397,
-								1396
+								1393,
+								1392,
+								1391
 							]
 						}
 					]
 				},
 				{
-					"id": 1399,
+					"id": 1394,
 					"name": "ShowCommitResult",
 					"variant": "declaration",
 					"kind": 256,
 					"flags": {},
 					"children": [
 						{
-							"id": 1402,
+							"id": 1397,
 							"name": "commit",
 							"variant": "declaration",
 							"kind": 1024,
@@ -19531,7 +19531,7 @@
 							}
 						},
 						{
-							"id": 1401,
+							"id": 1396,
 							"name": "id",
 							"variant": "declaration",
 							"kind": 1024,
@@ -19546,7 +19546,7 @@
 							}
 						},
 						{
-							"id": 1400,
+							"id": 1395,
 							"name": "kind",
 							"variant": "declaration",
 							"kind": 1024,
@@ -19559,7 +19559,7 @@
 							}
 						},
 						{
-							"id": 1403,
+							"id": 1398,
 							"name": "patch",
 							"variant": "declaration",
 							"kind": 1024,
@@ -19575,7 +19575,7 @@
 							}
 						},
 						{
-							"id": 1404,
+							"id": 1399,
 							"name": "text",
 							"variant": "declaration",
 							"kind": 1024,
@@ -19592,24 +19592,24 @@
 						{
 							"title": "Properties",
 							"children": [
-								1402,
-								1401,
-								1400,
-								1403,
-								1404
+								1397,
+								1396,
+								1395,
+								1398,
+								1399
 							]
 						}
 					]
 				},
 				{
-					"id": 1406,
+					"id": 1401,
 					"name": "ShowOptions",
 					"variant": "declaration",
 					"kind": 256,
 					"flags": {},
 					"children": [
 						{
-							"id": 1407,
+							"id": 1402,
 							"name": "contextLines",
 							"variant": "declaration",
 							"kind": 1024,
@@ -19635,20 +19635,20 @@
 						{
 							"title": "Properties",
 							"children": [
-								1407
+								1402
 							]
 						}
 					]
 				},
 				{
-					"id": 1408,
+					"id": 1403,
 					"name": "ShowOutput",
 					"variant": "declaration",
 					"kind": 256,
 					"flags": {},
 					"children": [
 						{
-							"id": 1410,
+							"id": 1405,
 							"name": "bytes",
 							"variant": "declaration",
 							"kind": 1024,
@@ -19683,7 +19683,7 @@
 							}
 						},
 						{
-							"id": 1409,
+							"id": 1404,
 							"name": "objects",
 							"variant": "declaration",
 							"kind": 1024,
@@ -19705,7 +19705,7 @@
 									"type": "array",
 									"elementType": {
 										"type": "reference",
-										"target": 1411,
+										"target": 1406,
 										"name": "ShowResult",
 										"package": "@scolladon/tsgit"
 									}
@@ -19717,21 +19717,21 @@
 						{
 							"title": "Properties",
 							"children": [
-								1410,
-								1409
+								1405,
+								1404
 							]
 						}
 					]
 				},
 				{
-					"id": 1412,
+					"id": 1407,
 					"name": "ShowTagResult",
 					"variant": "declaration",
 					"kind": 256,
 					"flags": {},
 					"children": [
 						{
-							"id": 1414,
+							"id": 1409,
 							"name": "id",
 							"variant": "declaration",
 							"kind": 1024,
@@ -19746,7 +19746,7 @@
 							}
 						},
 						{
-							"id": 1413,
+							"id": 1408,
 							"name": "kind",
 							"variant": "declaration",
 							"kind": 1024,
@@ -19759,7 +19759,7 @@
 							}
 						},
 						{
-							"id": 1415,
+							"id": 1410,
 							"name": "tag",
 							"variant": "declaration",
 							"kind": 1024,
@@ -19774,7 +19774,7 @@
 							}
 						},
 						{
-							"id": 1416,
+							"id": 1411,
 							"name": "target",
 							"variant": "declaration",
 							"kind": 1024,
@@ -19783,13 +19783,13 @@
 							},
 							"type": {
 								"type": "reference",
-								"target": 1411,
+								"target": 1406,
 								"name": "ShowResult",
 								"package": "@scolladon/tsgit"
 							}
 						},
 						{
-							"id": 1417,
+							"id": 1412,
 							"name": "text",
 							"variant": "declaration",
 							"kind": 1024,
@@ -19806,24 +19806,24 @@
 						{
 							"title": "Properties",
 							"children": [
-								1414,
-								1413,
-								1415,
-								1416,
-								1417
+								1409,
+								1408,
+								1410,
+								1411,
+								1412
 							]
 						}
 					]
 				},
 				{
-					"id": 1418,
+					"id": 1413,
 					"name": "ShowTreeEntry",
 					"variant": "declaration",
 					"kind": 256,
 					"flags": {},
 					"children": [
 						{
-							"id": 1421,
+							"id": 1416,
 							"name": "id",
 							"variant": "declaration",
 							"kind": 1024,
@@ -19838,7 +19838,7 @@
 							}
 						},
 						{
-							"id": 1420,
+							"id": 1415,
 							"name": "mode",
 							"variant": "declaration",
 							"kind": 1024,
@@ -19853,7 +19853,7 @@
 							}
 						},
 						{
-							"id": 1419,
+							"id": 1414,
 							"name": "name",
 							"variant": "declaration",
 							"kind": 1024,
@@ -19870,22 +19870,22 @@
 						{
 							"title": "Properties",
 							"children": [
-								1421,
-								1420,
-								1419
+								1416,
+								1415,
+								1414
 							]
 						}
 					]
 				},
 				{
-					"id": 1422,
+					"id": 1417,
 					"name": "ShowTreeResult",
 					"variant": "declaration",
 					"kind": 256,
 					"flags": {},
 					"children": [
 						{
-							"id": 1425,
+							"id": 1420,
 							"name": "entries",
 							"variant": "declaration",
 							"kind": 1024,
@@ -19899,7 +19899,7 @@
 									"type": "array",
 									"elementType": {
 										"type": "reference",
-										"target": 1418,
+										"target": 1413,
 										"name": "ShowTreeEntry",
 										"package": "@scolladon/tsgit"
 									}
@@ -19907,7 +19907,7 @@
 							}
 						},
 						{
-							"id": 1424,
+							"id": 1419,
 							"name": "id",
 							"variant": "declaration",
 							"kind": 1024,
@@ -19922,7 +19922,7 @@
 							}
 						},
 						{
-							"id": 1423,
+							"id": 1418,
 							"name": "kind",
 							"variant": "declaration",
 							"kind": 1024,
@@ -19935,7 +19935,7 @@
 							}
 						},
 						{
-							"id": 1426,
+							"id": 1421,
 							"name": "text",
 							"variant": "declaration",
 							"kind": 1024,
@@ -19952,10 +19952,10 @@
 						{
 							"title": "Properties",
 							"children": [
-								1425,
-								1424,
-								1423,
-								1426
+								1420,
+								1419,
+								1418,
+								1421
 							]
 						}
 					]
@@ -24013,7 +24013,7 @@
 					}
 				},
 				{
-					"id": 1405,
+					"id": 1400,
 					"name": "ShowInput",
 					"variant": "declaration",
 					"kind": 2097152,
@@ -24045,7 +24045,7 @@
 					}
 				},
 				{
-					"id": 1411,
+					"id": 1406,
 					"name": "ShowResult",
 					"variant": "declaration",
 					"kind": 2097152,
@@ -24055,25 +24055,25 @@
 						"types": [
 							{
 								"type": "reference",
-								"target": 1399,
+								"target": 1394,
 								"name": "ShowCommitResult",
 								"package": "@scolladon/tsgit"
 							},
 							{
 								"type": "reference",
-								"target": 1412,
+								"target": 1407,
 								"name": "ShowTagResult",
 								"package": "@scolladon/tsgit"
 							},
 							{
 								"type": "reference",
-								"target": 1422,
+								"target": 1417,
 								"name": "ShowTreeResult",
 								"package": "@scolladon/tsgit"
 							},
 							{
 								"type": "reference",
-								"target": 1395,
+								"target": 1390,
 								"name": "ShowBlobResult",
 								"package": "@scolladon/tsgit"
 							}
@@ -29449,21 +29449,21 @@
 					]
 				},
 				{
-					"id": 1390,
+					"id": 1422,
 					"name": "show",
 					"variant": "declaration",
 					"kind": 64,
 					"flags": {},
 					"signatures": [
 						{
-							"id": 1391,
+							"id": 1423,
 							"name": "show",
 							"variant": "signature",
 							"kind": 4096,
 							"flags": {},
 							"parameters": [
 								{
-									"id": 1392,
+									"id": 1424,
 									"name": "ctx",
 									"variant": "param",
 									"kind": 32768,
@@ -29476,28 +29476,28 @@
 									}
 								},
 								{
-									"id": 1393,
+									"id": 1425,
 									"name": "input",
 									"variant": "param",
 									"kind": 32768,
 									"flags": {},
 									"type": {
 										"type": "reference",
-										"target": 1405,
+										"target": 1400,
 										"name": "ShowInput",
 										"package": "@scolladon/tsgit"
 									},
 									"defaultValue": "DEFAULT_REV"
 								},
 								{
-									"id": 1394,
+									"id": 1426,
 									"name": "opts",
 									"variant": "param",
 									"kind": 32768,
 									"flags": {},
 									"type": {
 										"type": "reference",
-										"target": 1406,
+										"target": 1401,
 										"name": "ShowOptions",
 										"package": "@scolladon/tsgit"
 									},
@@ -29514,7 +29514,7 @@
 								"typeArguments": [
 									{
 										"type": "reference",
-										"target": 1408,
+										"target": 1403,
 										"name": "ShowOutput",
 										"package": "@scolladon/tsgit"
 									}
@@ -30615,13 +30615,13 @@
 						1363,
 						1379,
 						1383,
-						1395,
-						1399,
-						1406,
-						1408,
-						1412,
-						1418,
-						1422,
+						1390,
+						1394,
+						1401,
+						1403,
+						1407,
+						1413,
+						1417,
 						1427,
 						1430,
 						1435,
@@ -30665,8 +30665,8 @@
 						1229,
 						1322,
 						1347,
-						1405,
-						1411,
+						1400,
+						1406,
 						1468,
 						1483,
 						1486,
@@ -30739,7 +30739,7 @@
 						1376,
 						1334,
 						1385,
-						1390,
+						1422,
 						1446,
 						1450,
 						1454,
@@ -89116,7 +89116,7 @@
 																"isOptional": false,
 																"element": {
 																	"type": "reference",
-																	"target": 1405,
+																	"target": 1400,
 																	"name": "ShowInput",
 																	"package": "@scolladon/tsgit"
 																}
@@ -89127,7 +89127,7 @@
 																"isOptional": false,
 																"element": {
 																	"type": "reference",
-																	"target": 1406,
+																	"target": 1401,
 																	"name": "ShowOptions",
 																	"package": "@scolladon/tsgit"
 																}
@@ -90926,7 +90926,7 @@
 		},
 		{
 			"kind": "text",
-			"text": "\n- 30 Tier-1 commands · 20+ AsyncIterable primitives · operator toolkit ("
+			"text": "\n- 31 Tier-1 commands · 20+ AsyncIterable primitives · operator toolkit ("
 		},
 		{
 			"kind": "code",
@@ -97957,187 +97957,187 @@
 		"1390": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/application/commands/show.ts",
-			"qualifiedName": "show"
+			"qualifiedName": "ShowBlobResult"
 		},
 		"1391": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/application/commands/show.ts",
-			"qualifiedName": "show"
+			"qualifiedName": "ShowBlobResult.kind"
 		},
 		"1392": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/application/commands/show.ts",
-			"qualifiedName": "ctx"
+			"qualifiedName": "ShowBlobResult.id"
 		},
 		"1393": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/application/commands/show.ts",
-			"qualifiedName": "input"
+			"qualifiedName": "ShowBlobResult.content"
 		},
 		"1394": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/application/commands/show.ts",
-			"qualifiedName": "opts"
+			"qualifiedName": "ShowCommitResult"
 		},
 		"1395": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/application/commands/show.ts",
-			"qualifiedName": "ShowBlobResult"
+			"qualifiedName": "ShowCommitResult.kind"
 		},
 		"1396": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/application/commands/show.ts",
-			"qualifiedName": "ShowBlobResult.kind"
+			"qualifiedName": "ShowCommitResult.id"
 		},
 		"1397": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/application/commands/show.ts",
-			"qualifiedName": "ShowBlobResult.id"
+			"qualifiedName": "ShowCommitResult.commit"
 		},
 		"1398": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/application/commands/show.ts",
-			"qualifiedName": "ShowBlobResult.content"
+			"qualifiedName": "ShowCommitResult.patch"
 		},
 		"1399": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/application/commands/show.ts",
-			"qualifiedName": "ShowCommitResult"
+			"qualifiedName": "ShowCommitResult.text"
 		},
 		"1400": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/application/commands/show.ts",
-			"qualifiedName": "ShowCommitResult.kind"
+			"qualifiedName": "ShowInput"
 		},
 		"1401": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/application/commands/show.ts",
-			"qualifiedName": "ShowCommitResult.id"
+			"qualifiedName": "ShowOptions"
 		},
 		"1402": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/application/commands/show.ts",
-			"qualifiedName": "ShowCommitResult.commit"
+			"qualifiedName": "ShowOptions.contextLines"
 		},
 		"1403": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/application/commands/show.ts",
-			"qualifiedName": "ShowCommitResult.patch"
+			"qualifiedName": "ShowOutput"
 		},
 		"1404": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/application/commands/show.ts",
-			"qualifiedName": "ShowCommitResult.text"
+			"qualifiedName": "ShowOutput.objects"
 		},
 		"1405": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/application/commands/show.ts",
-			"qualifiedName": "ShowInput"
+			"qualifiedName": "ShowOutput.bytes"
 		},
 		"1406": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/application/commands/show.ts",
-			"qualifiedName": "ShowOptions"
+			"qualifiedName": "ShowResult"
 		},
 		"1407": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/application/commands/show.ts",
-			"qualifiedName": "ShowOptions.contextLines"
+			"qualifiedName": "ShowTagResult"
 		},
 		"1408": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/application/commands/show.ts",
-			"qualifiedName": "ShowOutput"
+			"qualifiedName": "ShowTagResult.kind"
 		},
 		"1409": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/application/commands/show.ts",
-			"qualifiedName": "ShowOutput.objects"
+			"qualifiedName": "ShowTagResult.id"
 		},
 		"1410": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/application/commands/show.ts",
-			"qualifiedName": "ShowOutput.bytes"
+			"qualifiedName": "ShowTagResult.tag"
 		},
 		"1411": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/application/commands/show.ts",
-			"qualifiedName": "ShowResult"
+			"qualifiedName": "ShowTagResult.target"
 		},
 		"1412": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/application/commands/show.ts",
-			"qualifiedName": "ShowTagResult"
+			"qualifiedName": "ShowTagResult.text"
 		},
 		"1413": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/application/commands/show.ts",
-			"qualifiedName": "ShowTagResult.kind"
+			"qualifiedName": "ShowTreeEntry"
 		},
 		"1414": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/application/commands/show.ts",
-			"qualifiedName": "ShowTagResult.id"
+			"qualifiedName": "ShowTreeEntry.name"
 		},
 		"1415": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/application/commands/show.ts",
-			"qualifiedName": "ShowTagResult.tag"
+			"qualifiedName": "ShowTreeEntry.mode"
 		},
 		"1416": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/application/commands/show.ts",
-			"qualifiedName": "ShowTagResult.target"
+			"qualifiedName": "ShowTreeEntry.id"
 		},
 		"1417": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/application/commands/show.ts",
-			"qualifiedName": "ShowTagResult.text"
+			"qualifiedName": "ShowTreeResult"
 		},
 		"1418": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/application/commands/show.ts",
-			"qualifiedName": "ShowTreeEntry"
+			"qualifiedName": "ShowTreeResult.kind"
 		},
 		"1419": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/application/commands/show.ts",
-			"qualifiedName": "ShowTreeEntry.name"
+			"qualifiedName": "ShowTreeResult.id"
 		},
 		"1420": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/application/commands/show.ts",
-			"qualifiedName": "ShowTreeEntry.mode"
+			"qualifiedName": "ShowTreeResult.entries"
 		},
 		"1421": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/application/commands/show.ts",
-			"qualifiedName": "ShowTreeEntry.id"
+			"qualifiedName": "ShowTreeResult.text"
 		},
 		"1422": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/application/commands/show.ts",
-			"qualifiedName": "ShowTreeResult"
+			"qualifiedName": "show"
 		},
 		"1423": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/application/commands/show.ts",
-			"qualifiedName": "ShowTreeResult.kind"
+			"qualifiedName": "show"
 		},
 		"1424": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/application/commands/show.ts",
-			"qualifiedName": "ShowTreeResult.id"
+			"qualifiedName": "ctx"
 		},
 		"1425": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/application/commands/show.ts",
-			"qualifiedName": "ShowTreeResult.entries"
+			"qualifiedName": "input"
 		},
 		"1426": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/application/commands/show.ts",
-			"qualifiedName": "ShowTreeResult.text"
+			"qualifiedName": "opts"
 		},
 		"1427": {
 			"packageName": "@scolladon/tsgit",
