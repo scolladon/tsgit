@@ -87,14 +87,19 @@ fine, they never reach it). Centralising it here removes `show`'s private copy.
   `diffTrees(ctx, parent?, commit.tree, { recursive: true, detectRenames: true })`.
   Byte-identical output — `show-interop` is the regression guard.
 
-### 3.3 `diff`'s `tree` format stays single-level
+### 3.3 `diff` exposes a public `recursive` flag (ADR-243)
 
 `diff({ format: 'tree' })` is tsgit's analogue of `git diff-tree` (raw), which is
-**non-recursive by default** (`-r` opts in). It keeps surfacing a sub-directory as
-a single tree-entry change. Only the patch path — the analogue of `git diff`
-porcelain, always recursive — recurses. No public `recursive` flag is added to
-`DiffOptions` (see ADR-243 / §6). The `recursive` knob lives only on the internal
-`DiffTreesOptions` primitive used to compose the patch path.
+**non-recursive by default** with `-r` opting in. A public `recursive?: boolean`
+is added to `DiffOptions` (default `false`) to reproduce that opt-in:
+
+- `format: 'patch'` **always recurses** (git porcelain has no non-recursive
+  patch); `recursive` is inert for patch, documented on the option.
+- `format: 'tree'` recurses **only** when `recursive: true` — `git diff-tree -r`;
+  default `false` preserves the existing single-level structured contract.
+
+One composition threads it to the primitive:
+`const recursive = opts.format === 'patch' || opts.recursive === true;`
 
 ## 4. Layering
 
@@ -120,8 +125,11 @@ from single-level to full-path-blob trees.
   default (`recursive` absent / `false`) path is unchanged (sub-dir → single
   tree-entry change). Isolated guard tests per branch (mutation-resistant).
 - **Unit — `diff.test.ts`**: `format: 'patch'` over a nested directory no longer
-  throws and renders per-file hunks; `format: 'tree'` over the same trees still
-  yields a single tree-entry change (non-recursive contract pinned).
+  throws and renders per-file hunks; `format: 'patch', recursive: false` is still
+  recursive (flag inert for patch); `format: 'tree'` (default) over the same trees
+  still yields a single tree-entry change (non-recursive contract pinned);
+  `format: 'tree', recursive: true` surfaces the nested change as per-file
+  `DiffChange`s (`git diff-tree -r`).
 - **Unit — `patch-id.test.ts`**: a commit changing a nested file yields a stable,
   computable patch-id (previously threw); two commits introducing the same nested
   change on different bases collide (equivalence preserved through recursion).
@@ -147,11 +155,11 @@ domain's. A property test here would mostly exercise flattening (covered by
 ## 6. Decisions (ADR-243)
 
 One user-judgment decision: **does the structured `tree` format recurse, and is
-`recursive` a public `DiffOptions` flag?** Recommended **A — patch recurses
-unconditionally, `tree` stays single-level, no new public flag** (faithful to
-`git diff` vs `git diff-tree -r`; smallest surface). Alternatives: **B** expose a
-public `recursive` flag for the raw format; **C** recurse both formats. See
-ADR-243.
+`recursive` a public `DiffOptions` flag?** Decided **B — patch recurses
+unconditionally; a public `recursive?: boolean` (default `false`) opts the `tree`
+format into recursion, mirroring `git diff-tree -r`**. The default-`false`
+preserves the single-level structured contract; the patch path ignores the flag
+(always recursive). See ADR-243.
 
 ## 7. Out of scope / follow-ups
 
