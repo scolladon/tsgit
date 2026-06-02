@@ -328,6 +328,7 @@ Runs against a stable surface; instruments every command on medium + large fixtu
 - [ ] **26.3** Regression gate in CI — `bench:summary` diff must not exceed ±N% per scenario.
 - [ ] **26.4** Memory-pressure scenarios (large packs, deep delta chains) added to bench suite.
 - [ ] **26.5** Magic-literal sweep — centralize the magic strings/numbers scattered across commands (operation labels like `'revert'` / `'revert --continue'`, reflog prefixes `revert:` / `commit:` / `reset: moving to`, marker filenames, conflict-marker tokens, walk caps) into named constants / shared enums. Behavior-preserving; reduces primitive-obsession smell flagged during the Phase 22 history-rewrite work.
+- [ ] **26.7** Bundle-size optimization — the v2.0.0 compressed tarball grew to ~625 KiB (from ~220 KiB at v1.0) as the v2 feature set landed, so the `verify:tarball` cap was relaxed 10× (to ~7.5 MiB) as a generous temporary ceiling. Drive it back down toward the floor: verify minify + tree-shaking are effective across both ESM/CJS outputs, audit the npm `files` set for redundant artefacts (source maps, duplicate format/type emission), measure per-module contribution, then re-tighten the `tooling/verify-tarball.sh` cap once optimized. Honours the "dist must be the smallest possible" principle. (26.6 is reserved for the competitor-benchmark comparison referenced in 18.2.)
 
 ---
 
