@@ -259,9 +259,10 @@ describe.skipIf(!GIT_AVAILABLE)('show interop', () => {
   });
 
   describe('Given an absolute --date= mode', () => {
-    // `local` matches because git inherits the runner's TZ and tsgit reads the
-    // same process zone; the rest use the identity's stored offset.
-    const modes = ['iso', 'iso-strict', 'rfc', 'short', 'raw', 'unix', 'default', 'local'] as const;
+    // These use the identity's stored offset, so they are host-independent.
+    // `local` is host-TZ-dependent (git vs Node can disagree across runners), so
+    // it is pinned structurally in date-mode.test.ts rather than here (ADR-247).
+    const modes = ['iso', 'iso-strict', 'rfc', 'short', 'raw', 'unix', 'default'] as const;
     for (const mode of modes) {
       it(`Then --date=${mode} matches git show`, async () => {
         await expectMatchFlags([`--date=${mode}`], built.modify, { date: mode });
