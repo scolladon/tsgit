@@ -320,6 +320,8 @@ function extractDetail(data: TsgitErrorData): string {
       return `revision expression "${data.expression}" is ambiguous (${data.candidates.length} candidates)`;
     case 'REVPARSE_UNRESOLVED':
       return `cannot resolve revision: ${data.expression}`;
+    case 'PATH_NOT_IN_TREE':
+      return `path '${data.path}' does not exist in '${data.rev}'`;
     case 'EMPTY_PATHSPEC':
       return 'pathspec is empty (use "." to mean "all paths")';
     case 'OPERATION_IN_PROGRESS':

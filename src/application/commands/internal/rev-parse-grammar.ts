@@ -5,9 +5,11 @@ import { revparseUnresolved } from '../../../domain/commands/error.js';
  * a structured `RevExpression`; evaluation (lookup against the repository) is a
  * separate concern handled by tier-1 commands.
  *
- * Grammar (subset accepted in v1):
+ * Grammar (subset accepted):
  *   - empty                       throws REVPARSE_UNRESOLVED
  *   - `:<stage>:<path>`           IndexStage (stage in 0..3, path non-empty)
+ *   - `<tree-ish>:<path>`         TreePath — a `:` outside any `@{…}` splits the
+ *                                 tree-ish from the path (path may be empty)
  *   - `<base>` `<op>*`            RefOrHex with chained operations
  *
  * Operations:
@@ -48,6 +50,11 @@ export type RevExpression =
       readonly kind: 'index-stage';
       readonly stage: 0 | 1 | 2 | 3;
       readonly path: string;
+    }
+  | {
+      readonly kind: 'tree-path';
+      readonly rev: string;
+      readonly path: string;
     };
 
 const VALID_PEEL_TARGETS = new Set<string>(['commit', 'tree', 'blob', 'tag']);
@@ -65,8 +72,31 @@ export const parseExpression = (raw: string): RevExpression => {
   // Stryker disable next-line ConditionalExpression: equivalent — when this guard is removed, '' still fails identically: parseRefOrHex's `base === ''` guard throws revparseUnresolved('') for the same input.
   if (raw === '') fail(raw);
   if (raw.startsWith(':')) return parseIndexStage(raw);
+  // A colon outside any `@{…}` selector splits `<tree-ish>:<path>` — git resolves
+  // this everywhere, not just in `show`. Colons inside `@{…}` (ISO dates carry
+  // them) are part of the reflog selector, so the scan tracks `@{…}` depth.
+  const colon = findTreePathColon(raw);
+  if (colon !== -1) {
+    return { kind: 'tree-path', rev: raw.slice(0, colon), path: raw.slice(colon + 1) };
+  }
   if (raw.includes('@{')) return parseReflog(raw);
   return parseRefOrHex(raw);
+};
+
+/** Index of the first `:` outside any `@{…}` region, or -1. */
+const findTreePathColon = (raw: string): number => {
+  let inSelector = false;
+  for (let i = 0; i < raw.length; i += 1) {
+    if (!inSelector && raw[i] === '@' && raw[i + 1] === '{') {
+      inSelector = true;
+      i += 1;
+    } else if (inSelector && raw[i] === '}') {
+      inSelector = false;
+    } else if (!inSelector && raw[i] === ':') {
+      return i;
+    }
+  }
+  return -1;
 };
 
 const parseIndexStage = (raw: string): RevExpression => {

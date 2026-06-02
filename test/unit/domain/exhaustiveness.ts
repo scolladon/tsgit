@@ -99,6 +99,7 @@ export function assertExhaustiveSwitch(data: TsgitErrorData): void {
     case 'CHECKOUT_OVERWRITE_DIRTY':
     case 'REVPARSE_AMBIGUOUS':
     case 'REVPARSE_UNRESOLVED':
+    case 'PATH_NOT_IN_TREE':
     case 'EMPTY_PATHSPEC':
     case 'OPERATION_IN_PROGRESS':
     case 'NO_OPERATION_IN_PROGRESS':

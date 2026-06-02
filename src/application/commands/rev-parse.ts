@@ -1,4 +1,4 @@
-import { revparseUnresolved } from '../../domain/commands/error.js';
+import { pathNotInTree, revparseUnresolved } from '../../domain/commands/error.js';
 import { objectNotFound } from '../../domain/objects/error.js';
 import {
   type ObjectId,
@@ -33,6 +33,9 @@ export const revParse = async (ctx: Context, expression: string): Promise<Object
 const evaluate = async (ctx: Context, expr: RevExpression, raw: string): Promise<ObjectId> => {
   if (expr.kind === 'index-stage') {
     return resolveIndexStage(ctx, expr);
+  }
+  if (expr.kind === 'tree-path') {
+    return resolveTreePath(ctx, expr.rev, expr.path);
   }
   // `now` is read once per call so the reflog `@{date}` resolution is
   // deterministic within an evaluation; the grammar parser stays clock-free.
@@ -210,4 +213,36 @@ const resolveIndexStage = async (
     if (entry.path === expr.path && entry.flags.stage === expr.stage) return entry.id;
   }
   throw objectNotFound(`${expr.stage}:${expr.path}` as ObjectId);
+};
+
+/**
+ * `<tree-ish>:<path>` — resolve the left side to a tree, then descend `path`'s
+ * `/`-separated components to the addressed blob/tree. An empty path returns the
+ * tree itself (`HEAD:` ⇒ the root tree).
+ */
+const resolveTreePath = async (ctx: Context, rev: string, path: string): Promise<ObjectId> => {
+  const baseId = await evaluate(ctx, parseExpression(rev), rev);
+  const treeId = await peel(ctx, baseId, 'tree');
+  if (path === '') return treeId;
+  const segments = path.split('/');
+  const lastIndex = segments.length - 1;
+  let currentTree = treeId;
+  for (let i = 0; i < lastIndex; i += 1) {
+    currentTree = (await lookupTreeEntry(ctx, currentTree, segments[i] as string, rev, path)).id;
+  }
+  return (await lookupTreeEntry(ctx, currentTree, segments[lastIndex] as string, rev, path)).id;
+};
+
+const lookupTreeEntry = async (
+  ctx: Context,
+  treeId: ObjectId,
+  name: string,
+  rev: string,
+  path: string,
+): Promise<{ readonly id: ObjectId }> => {
+  const obj = await readObject(ctx, treeId);
+  if (obj.type !== 'tree') throw pathNotInTree(rev, path);
+  const entry = obj.entries.find((e) => e.name === name);
+  if (entry === undefined) throw pathNotInTree(rev, path);
+  return entry;
 };

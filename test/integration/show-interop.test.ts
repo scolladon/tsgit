@@ -186,4 +186,19 @@ describe.skipIf(!GIT_AVAILABLE)('show interop', () => {
       await expectMatchFlags(['-s'], built.merge, { noPatch: true });
     });
   });
+
+  describe('Given a <rev>:<path> tree lookup', () => {
+    it('Then a blob path dumps the raw blob, matching git show', async () => {
+      await expectMatch(`${built.modify}:a.txt`);
+    });
+    it('Then a nested blob path resolves through sub-trees', async () => {
+      await expectMatch(`${built.modify}:sub/b.txt`);
+    });
+    it('Then an empty path lists the root tree, echoing the input', async () => {
+      await expectMatch(`${built.modify}:`);
+    });
+    it('Then a sub-directory path lists that tree, echoing the input', async () => {
+      await expectMatch(`${built.modify}:sub`);
+    });
+  });
 });
