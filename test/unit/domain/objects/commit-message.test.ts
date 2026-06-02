@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { stripspace } from '../../../../src/domain/objects/commit-message.js';
+import { stripspace, subjectLine } from '../../../../src/domain/objects/commit-message.js';
 
 describe('stripspace', () => {
   describe('Given a message with no trailing newline, When stripspace runs', () => {
@@ -208,6 +208,86 @@ describe('stripspace', () => {
 
       // Assert
       expect(sut).toBe('\u00A0\n');
+    });
+  });
+});
+
+describe('subjectLine', () => {
+  describe('Given a multi-line message, When subjectLine runs', () => {
+    it('Then it returns the first line only', () => {
+      // Arrange
+      const message = 'subject\n\nbody paragraph\nmore';
+
+      // Act
+      const sut = subjectLine(message);
+
+      // Assert
+      expect(sut).toBe('subject');
+    });
+  });
+
+  describe('Given a single-line message with no newline, When subjectLine runs', () => {
+    it('Then it returns the message unchanged', () => {
+      // Arrange
+      const message = 'solo subject';
+
+      // Act
+      const sut = subjectLine(message);
+
+      // Assert
+      expect(sut).toBe('solo subject');
+    });
+  });
+
+  describe('Given an empty message, When subjectLine runs', () => {
+    it('Then it returns the empty string', () => {
+      // Arrange
+      const message = '';
+
+      // Act
+      const sut = subjectLine(message);
+
+      // Assert
+      expect(sut).toBe('');
+    });
+  });
+
+  describe('Given a message starting with a newline, When subjectLine runs', () => {
+    it('Then it returns the empty string (the first line is blank)', () => {
+      // Arrange
+      const message = '\nbody after a blank subject';
+
+      // Act
+      const sut = subjectLine(message);
+
+      // Assert
+      expect(sut).toBe('');
+    });
+  });
+
+  describe('Given a message with CRLF line endings, When subjectLine runs', () => {
+    it('Then the carriage return is retained (git splits on LF only)', () => {
+      // Arrange
+      const message = 'a\r\nb';
+
+      // Act
+      const sut = subjectLine(message);
+
+      // Assert
+      expect(sut).toBe('a\r');
+    });
+  });
+
+  describe('Given a message with a single trailing newline, When subjectLine runs', () => {
+    it('Then it returns the line without the trailing newline', () => {
+      // Arrange
+      const message = 'a\n';
+
+      // Act
+      const sut = subjectLine(message);
+
+      // Assert
+      expect(sut).toBe('a');
     });
   });
 });

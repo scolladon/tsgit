@@ -1,7 +1,7 @@
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 
-import { stripspace } from '../../../../src/domain/objects/commit-message.js';
+import { stripspace, subjectLine } from '../../../../src/domain/objects/commit-message.js';
 import { arbCommitMessage } from './arbitraries.js';
 
 const TRAILING_ASCII_WHITESPACE = /[ \t\v\f\r]$/;
@@ -52,6 +52,45 @@ describe('stripspace properties', () => {
           expect(() => stripspace(message)).not.toThrow();
         }),
         { numRuns: 100 },
+      );
+    });
+  });
+});
+
+describe('subjectLine properties', () => {
+  describe('Given an arbitrary commit message, When subjectLine runs twice', () => {
+    it('Then the second pass is a no-op (idempotent)', () => {
+      // Arrange + Act + Assert
+      fc.assert(
+        fc.property(arbCommitMessage(), (message) => {
+          const once = subjectLine(message);
+          expect(subjectLine(once)).toBe(once);
+        }),
+        { numRuns: 200 },
+      );
+    });
+  });
+
+  describe('Given an arbitrary commit message, When subjectLine runs', () => {
+    it('Then the result never contains a newline', () => {
+      // Arrange + Act + Assert
+      fc.assert(
+        fc.property(arbCommitMessage(), (message) => {
+          expect(subjectLine(message).includes('\n')).toBe(false);
+        }),
+        { numRuns: 200 },
+      );
+    });
+  });
+
+  describe('Given an arbitrary commit message, When subjectLine runs', () => {
+    it('Then the result is a prefix of the message', () => {
+      // Arrange + Act + Assert
+      fc.assert(
+        fc.property(arbCommitMessage(), (message) => {
+          expect(message.startsWith(subjectLine(message))).toBe(true);
+        }),
+        { numRuns: 200 },
       );
     });
   });
