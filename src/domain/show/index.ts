@@ -2,6 +2,8 @@ export type { DateMode } from './date-mode.js';
 export { formatDate, formatRfc2822, parseDateMode } from './date-mode.js';
 export type { DecorationInput, DecorationRef, RefKind } from './decoration.js';
 export { decorationBare, decorationLabels, decorationParen } from './decoration.js';
+export type { StatEntry } from './diff-stat.js';
+export { buildStatEntries, renderDiffStat, renderNumstat } from './diff-stat.js';
 export { formatGitDate } from './git-date.js';
 export type { DateFormatter } from './identity-header.js';
 export { defaultDateFormatter, renderIdentityHeader } from './identity-header.js';

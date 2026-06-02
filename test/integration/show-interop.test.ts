@@ -271,4 +271,25 @@ describe.skipIf(!GIT_AVAILABLE)('show interop', () => {
       });
     });
   });
+
+  describe('Given --stat / --numstat', () => {
+    it('Then --stat on a single-file change matches git', async () => {
+      await expectMatchFlags(['--stat'], built.modify, { stat: true });
+    });
+    it('Then --numstat on a single-file change matches git', async () => {
+      await expectMatchFlags(['--numstat'], built.modify, { numstat: true });
+    });
+    it('Then --stat on the initial (add) commit matches git', async () => {
+      await expectMatchFlags(['--stat'], built.root, { stat: true });
+    });
+    it('Then --numstat on the initial (add) commit matches git', async () => {
+      await expectMatchFlags(['--numstat'], built.root, { numstat: true });
+    });
+    it('Then --stat on a rename commit shows old => new with zero changes', async () => {
+      await expectMatchFlags(['--stat'], built.rename, { stat: true });
+    });
+    it('Then --numstat on a rename commit matches git', async () => {
+      await expectMatchFlags(['--numstat'], built.rename, { numstat: true });
+    });
+  });
 });

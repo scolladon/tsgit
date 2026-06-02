@@ -13,7 +13,9 @@ import {
   parseDateMode,
   parsePretty,
 } from '../../../domain/show/index.js';
-import type { MergeDiffMode, ShowOptions } from '../show.js';
+import type { MergeDiffMode, ShowOptions, ShowStatOptions } from '../show.js';
+
+const DEFAULT_STAT_WIDTH = 80;
 
 export interface ResolvedStat {
   readonly width: number;
@@ -45,16 +47,26 @@ const resolveDateMode = (date: string | undefined): DateMode => {
   return mode;
 };
 
+const resolveStat = (stat: boolean | ShowStatOptions | undefined): ResolvedStat | undefined => {
+  if (stat === undefined || stat === false) return undefined;
+  if (stat === true) return { width: DEFAULT_STAT_WIDTH };
+  return {
+    width: stat.width ?? DEFAULT_STAT_WIDTH,
+    ...(stat.nameWidth !== undefined ? { nameWidth: stat.nameWidth } : {}),
+    ...(stat.count !== undefined ? { count: stat.count } : {}),
+  };
+};
+
 export const parseShowOptions = (opts: ShowOptions): ResolvedShowPlan => {
-  if (opts.numstat === true) throw invalidOption('numstat', 'unsupported');
-  if (opts.stat !== undefined) throw invalidOption('stat', 'unsupported');
   if (opts.mergeDiff !== undefined) throw invalidOption('mergeDiff', 'unsupported');
+  const stat = resolveStat(opts.stat);
   return {
     noPatch: opts.noPatch === true,
     format: resolveFormat(opts.format),
     dateMode: resolveDateMode(opts.date),
-    numstat: false,
+    numstat: opts.numstat === true,
     mergeDiff: 'dense',
+    ...(stat !== undefined ? { stat } : {}),
     ...(opts.contextLines !== undefined ? { contextLines: opts.contextLines } : {}),
   };
 };

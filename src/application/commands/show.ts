@@ -17,15 +17,19 @@ import type {
   Tree,
 } from '../../domain/objects/index.js';
 import {
+  buildStatEntries,
   type DateFormatter,
   formatDate,
   type PrettyCommitContext,
   renderCommitBlock,
+  renderDiffStat,
+  renderNumstat,
   renderPrettyCommit,
   renderShowStream,
   renderTagBlock,
   renderTreeListing,
   type ShowStreamNode,
+  type StatEntry,
 } from '../../domain/show/index.js';
 import type { Context } from '../../ports/context.js';
 import { diffTrees } from '../primitives/diff-trees.js';
@@ -86,6 +90,8 @@ export interface ShowCommitResult {
   readonly id: ObjectId;
   readonly commit: CommitData;
   readonly patch?: PatchResult;
+  /** Per-file diffstat entries, present when `--stat` or `--numstat` is set. */
+  readonly stat?: ReadonlyArray<StatEntry>;
   readonly text: string;
 }
 
@@ -180,8 +186,9 @@ async function buildCommit(ctx: Context, obj: Commit, env: RenderEnv): Promise<S
     });
     return { kind: 'commit', id: obj.id, commit: obj.data, text };
   }
-  // `-s` suppresses the diff; otherwise compute the patch and frame it per format.
-  const patch = env.plan.noPatch ? undefined : await commitPatch(ctx, obj.data, env.plan);
+  // `-s` suppresses every diff surface; otherwise build the patch / stat / numstat
+  // section and frame it per format.
+  const section = env.plan.noPatch ? undefined : await commitDiffSection(ctx, obj.data, env.plan);
   const decoration = env.decorations?.get(obj.id);
   const prettyCtx: PrettyCommitContext = {
     id: obj.id,
@@ -195,13 +202,14 @@ async function buildCommit(ctx: Context, obj: Commit, env: RenderEnv): Promise<S
   };
   const text = renderPrettyCommit(env.plan.format, prettyCtx, {
     noPatch: env.plan.noPatch,
-    ...(patch !== undefined ? { patchText: patch.text } : {}),
+    ...(section !== undefined ? { patchText: section.text } : {}),
   });
   return {
     kind: 'commit',
     id: obj.id,
     commit: obj.data,
-    ...(patch !== undefined ? { patch } : {}),
+    ...(section?.patch !== undefined ? { patch: section.patch } : {}),
+    ...(section?.stat !== undefined ? { stat: section.stat } : {}),
     text,
   };
 }
@@ -222,15 +230,21 @@ async function buildTag(
   };
 }
 
-async function commitPatch(
+interface DiffSection {
+  readonly text: string;
+  readonly patch?: PatchResult;
+  readonly stat?: ReadonlyArray<StatEntry>;
+}
+
+async function commitDiffSection(
   ctx: Context,
   commit: CommitData,
   plan: ResolvedShowPlan,
-): Promise<PatchResult> {
+): Promise<DiffSection> {
   // `git show` diffs recursively against the first parent (root commits against
   // the empty tree) with rename detection on by default. The recursive
   // `diffTrees` flattens both sides so sub-directories surface as per-file
-  // changes.
+  // changes. `--stat`/`--numstat` replace the unified patch with a summary.
   const parent = commit.parents[0];
   const oldTree = parent !== undefined ? await treeOf(ctx, parent) : undefined;
   const diff: TreeDiff = await diffTrees(ctx, oldTree, commit.tree, {
@@ -238,11 +252,19 @@ async function commitPatch(
     detectRenames: true,
   });
   const files = await materialisePatchFiles(ctx, diff.changes);
+  if (plan.numstat) {
+    const stat = buildStatEntries(files);
+    return { text: renderNumstat(stat), stat };
+  }
+  if (plan.stat !== undefined) {
+    const stat = buildStatEntries(files);
+    return { text: renderDiffStat(stat, plan.stat.width), stat };
+  }
   const text = renderPatch(
     files,
     plan.contextLines !== undefined ? { contextLines: plan.contextLines } : {},
   );
-  return { format: 'patch', text, diff };
+  return { text, patch: { format: 'patch', text, diff } };
 }
 
 function toStreamNode(result: ShowResult): ShowStreamNode {

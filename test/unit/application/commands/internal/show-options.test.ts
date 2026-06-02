@@ -91,25 +91,33 @@ describe('Given show option resolution', () => {
     });
   });
 
-  describe('When numstat is requested before it lands', () => {
-    it('Then it throws INVALID_OPTION for numstat', () => {
+  describe('When numstat is requested', () => {
+    it('Then the plan enables numstat', () => {
       // Arrange / Act
-      const data = codeOf(() => parseShowOptions({ numstat: true }));
+      const sut = parseShowOptions({ numstat: true });
 
       // Assert
-      expect(data.code).toBe('INVALID_OPTION');
-      expect(data).toMatchObject({ option: 'numstat' });
+      expect(sut.numstat).toBe(true);
     });
   });
 
-  describe('When stat is requested before it lands', () => {
-    it('Then it throws INVALID_OPTION for stat', () => {
+  describe('When stat is requested as a boolean', () => {
+    it('Then it resolves to the default width', () => {
       // Arrange / Act
-      const data = codeOf(() => parseShowOptions({ stat: true }));
+      const sut = parseShowOptions({ stat: true });
 
       // Assert
-      expect(data.code).toBe('INVALID_OPTION');
-      expect(data).toMatchObject({ option: 'stat' });
+      expect(sut.stat).toEqual({ width: 80 });
+    });
+  });
+
+  describe('When stat is requested with width overrides', () => {
+    it('Then the overrides flow into the plan', () => {
+      // Arrange / Act
+      const sut = parseShowOptions({ stat: { width: 120, nameWidth: 30, count: 5 } });
+
+      // Assert
+      expect(sut.stat).toEqual({ width: 120, nameWidth: 30, count: 5 });
     });
   });
 
