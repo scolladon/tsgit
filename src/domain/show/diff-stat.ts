@@ -7,6 +7,7 @@
  */
 import type { DiffChange } from '../diff/index.js';
 import { diffLines, isBinary, type PatchFile } from '../diff/index.js';
+import { assertSafePath } from './safe-path.js';
 
 export interface StatEntry {
   /** Display path (`old => new` for renames). */
@@ -67,7 +68,10 @@ export const buildStatEntries = (files: ReadonlyArray<PatchFile>): ReadonlyArray
 
 export const renderNumstat = (entries: ReadonlyArray<StatEntry>): string =>
   entries
-    .map((e) => (e.binary ? `-\t-\t${e.path}\n` : `${e.added}\t${e.deleted}\t${e.path}\n`))
+    .map((e) => {
+      assertSafePath(e.path);
+      return e.binary ? `-\t-\t${e.path}\n` : `${e.added}\t${e.deleted}\t${e.path}\n`;
+    })
     .join('');
 
 const scaleLinear = (it: number, width: number, max: number): number =>
@@ -100,6 +104,7 @@ export const renderDiffStat = (
   const graphWidth = width - maxName - numberWidth - LAYOUT_OVERHEAD;
   const scaling = maxChange > graphWidth;
   const lines = entries.map((e) => {
+    assertSafePath(e.path);
     const nameCol = ` ${e.path.padEnd(maxName)} | `;
     if (e.binary) return `${nameCol}Bin ${e.oldSize} -> ${e.newSize} bytes`;
     const count = String(e.added + e.deleted).padStart(numberWidth);

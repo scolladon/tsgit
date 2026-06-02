@@ -11,6 +11,7 @@
 import { diffLines, splitLines } from '../diff/index.js';
 import { decode } from '../objects/encoding.js';
 import type { FileMode, ObjectId } from '../objects/index.js';
+import { assertSafePath } from './safe-path.js';
 
 const CONTEXT = 3;
 const OID_ABBREV = 7;
@@ -185,6 +186,7 @@ const renderHunkLines = (lines: ReadonlyArray<CombinedLine>, hunk: Hunk): string
   }).join('');
 
 const renderFile = (file: CombinedFile, dense: boolean): string => {
+  assertSafePath(file.path);
   const lines = buildCombinedLines(file);
   const hunks = buildHunks(lines).filter((hunk) =>
     isInteresting(lines, hunk, dense, file.parents.length),

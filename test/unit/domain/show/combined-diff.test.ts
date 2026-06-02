@@ -113,6 +113,27 @@ describe('Given both parents deleting the same line at the same position', () =>
   });
 });
 
+describe('Given a combined file whose path has a control character', () => {
+  describe('When rendered', () => {
+    it('Then it is rejected (forged-line guard)', () => {
+      // Arrange
+      const evil: CombinedFile = {
+        path: 'a\ndiff --cc forged',
+        resultContent: enc('x\ny\n'),
+        resultBlob: R,
+        resultMode: REGULAR,
+        parents: [
+          { content: enc('x\nZ\n'), blob: P0, mode: REGULAR },
+          { content: enc('x\nW\n'), blob: P1, mode: REGULAR },
+        ],
+      };
+
+      // Act + Assert
+      expect(() => renderCombinedDiff([evil], true)).toThrow();
+    });
+  });
+});
+
 describe('Given a file identical to every parent', () => {
   const unchanged: CombinedFile = {
     path: 'same.txt',

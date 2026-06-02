@@ -125,6 +125,19 @@ describe('Given renderDiffStat', () => {
   });
 });
 
+describe('Given a path with a control character', () => {
+  describe('When stat or numstat renders it', () => {
+    it('Then both reject it (forged-line guard)', () => {
+      // Arrange
+      const evil = [entry({ path: 'a\ndiff --git forged', added: 1, deleted: 0 })];
+
+      // Act + Assert
+      expect(() => renderDiffStat(evil)).toThrow();
+      expect(() => renderNumstat(evil)).toThrow();
+    });
+  });
+});
+
 describe('Given buildStatEntries', () => {
   describe('When a file is modified, added, renamed, or binary', () => {
     it('Then counts, paths, and binary flags resolve from the content', () => {
