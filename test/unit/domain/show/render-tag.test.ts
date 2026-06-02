@@ -21,7 +21,7 @@ const baseTag = (overrides: Partial<TagData> = {}): TagData => ({
   ...overrides,
 });
 
-const taggerlessTag = (): TagData => ({
+const tagWithoutTagger = (): TagData => ({
   object: OID,
   objectType: 'commit',
   tagName: 'v1.0',
@@ -48,7 +48,7 @@ describe('renderTagBlock', () => {
   describe('Given a tag without a tagger, When renderTagBlock runs', () => {
     it('Then the Tagger and Date lines are omitted', () => {
       // Arrange
-      const tag = taggerlessTag();
+      const tag = tagWithoutTagger();
 
       // Act
       const sut = renderTagBlock(tag);
