@@ -53,7 +53,9 @@ export const computePatchId = async (ctx: Context, commitId: ObjectId): Promise<
   const parentId = cData.parents[0];
   const parentTree =
     parentId !== undefined ? (await readCommitData(ctx, parentId)).tree : undefined;
-  const diff = await diffTrees(ctx, parentTree, cData.tree);
+  // git's patch-id is a recursive diff: a commit touching a nested file must
+  // surface per-file hunks, not a tree-oid change that patch hydration rejects.
+  const diff = await diffTrees(ctx, parentTree, cData.tree, { recursive: true });
   const files = await materialisePatchFiles(ctx, diff.changes);
   const text = renderPatch(files, { contextLines: 3, pathPrefix: { old: 'a/', new: 'b/' } });
   const binaryKey = files
