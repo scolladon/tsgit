@@ -732,7 +732,7 @@
     "@arethetypeswrong/cli": "0.18.3",
     "@biomejs/biome": "2.4.16",
     "@cloudflare/vitest-pool-workers": "0.16.11",
-    "@cloudflare/workers-types": "4.20260601.1",
+    "@cloudflare/workers-types": "4.20260602.1",
     "@commitlint/cli": "21.0.2",
     "@commitlint/config-conventional": "21.0.2",
     "@ls-lint/ls-lint": "2.3.1",
