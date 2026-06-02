@@ -14,6 +14,9 @@ interface DiffOptions {
   readonly to?: string;            // ref / oid; default empty tree
   readonly detectRenames?: boolean;
   readonly format?: DiffFormat;    // default 'tree'
+  readonly recursive?: boolean;    // recurse into sub-trees (`git diff-tree -r`);
+                                   // default false. Inert for `format: 'patch'`,
+                                   // which always recurses.
   readonly contextLines?: number;  // patch only; default 3 (matches `git diff -U3`)
   readonly pathPrefix?: { readonly old: string; readonly new: string };
                                    // patch only; default { old: 'a/', new: 'b/' }
@@ -65,7 +68,21 @@ const compact = await repo.diff({
   contextLines: 0,
   pathPrefix: { old: '', new: '' },
 });
+
+// Structured diff that recurses into sub-directories (`git diff-tree -r`):
+// a change under `src/` shows as per-file `DiffChange`s, not one `src` entry.
+const perFile = await repo.diff({ from: 'HEAD~1', recursive: true });
 ```
+
+## Recursion
+
+- `format: 'patch'` **always recurses** (like `git diff`): a change inside a
+  sub-directory renders as per-file hunks keyed by the full path
+  (`diff --git a/src/foo.ts …`). `recursive` is ignored for patch.
+- `format: 'tree'` (the structured default) is **non-recursive** like
+  `git diff-tree`: a changed sub-directory surfaces as a single tree-entry
+  change. Pass `recursive: true` to expand it into per-file `DiffChange`s
+  (`git diff-tree -r`).
 
 ## Patch output guarantees
 

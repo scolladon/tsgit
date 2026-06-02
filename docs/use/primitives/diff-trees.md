@@ -1,6 +1,6 @@
 # `diffTrees`
 
-Compare two tree-ids; return a structured `TreeDiff`. Optional rename detection (off by default — quadratic cost).
+Compare two tree-ids; return a structured `TreeDiff`. Optional rename detection (off by default — quadratic cost) and optional recursion into sub-trees (off by default — single-level, like `git diff-tree`).
 
 ## Signature
 
@@ -8,7 +8,7 @@ Compare two tree-ids; return a structured `TreeDiff`. Optional rename detection 
 repo.primitives.diffTrees(
   a: ObjectId,
   b: ObjectId | undefined,
-  options?: { detectRenames?: boolean },
+  options?: { detectRenames?: boolean; recursive?: boolean },
 ): Promise<TreeDiff>;
 
 interface TreeDiff {
@@ -20,6 +20,8 @@ interface TreeDiff {
 ```
 
 `b` may be `undefined`, interpreted as the empty tree (every entry under `a` shows as added).
+
+With `recursive: true`, both trees are flattened to full-path blob entries before classification, so a changed sub-directory surfaces as per-file changes (`src/foo.ts`) rather than a single `src` tree-entry change. This is the mode the Tier-1 patch path (`diff({ format: 'patch' })`, `show`) builds on.
 
 ## Example
 
