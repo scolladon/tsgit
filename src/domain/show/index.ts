@@ -1,3 +1,5 @@
+export type { CombinedFile } from './combined-diff.js';
+export { renderCombinedDiff } from './combined-diff.js';
 export type { DateMode } from './date-mode.js';
 export { formatDate, formatRfc2822, parseDateMode } from './date-mode.js';
 export type { DecorationInput, DecorationRef, RefKind } from './decoration.js';

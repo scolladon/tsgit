@@ -48,6 +48,10 @@ interface Built {
   readonly rename: string;
   readonly tree: string;
   readonly blob: string;
+  /** A merge that combines changes to different lines from both sides. */
+  readonly combinedMerge: string;
+  /** A three-parent octopus merge. */
+  readonly octopus: string;
 }
 
 const buildRepo = async (dir: string): Promise<Built> => {
@@ -85,9 +89,61 @@ const buildRepo = async (dir: string): Promise<Built> => {
   dated(1_700_000_400, 'commit', '-q', '-m', 'rename a.txt');
   const rename = git(dir, 'rev-parse', 'HEAD').trim();
 
+  // A non-trivial merge: each side edits a different line of m.txt, so the
+  // combined diff differs from both parents (exercises -c/--cc and the default).
+  await writeRepoFile(dir, 'm.txt', 'l1\nl2\nl3\nl4\nl5\n');
+  git(dir, 'add', '-A');
+  dated(1_700_000_500, 'commit', '-q', '-m', 'add m.txt');
+  const mbase = git(dir, 'rev-parse', 'HEAD').trim();
+  git(dir, 'checkout', '-q', '-b', 'side', mbase);
+  await writeRepoFile(dir, 'm.txt', 'l1\nSIDE2\nl3\nl4\nl5\n');
+  git(dir, 'add', '-A');
+  dated(1_700_000_600, 'commit', '-q', '-m', 'side change l2');
+  git(dir, 'checkout', '-q', 'main');
+  await writeRepoFile(dir, 'm.txt', 'l1\nl2\nl3\nMAIN4\nl5\n');
+  git(dir, 'add', '-A');
+  dated(1_700_000_700, 'commit', '-q', '-m', 'main change l4');
+  dated(1_700_000_800, 'merge', '--no-ff', 'side', '-m', 'combined merge');
+  const combinedMerge = git(dir, 'rev-parse', 'HEAD').trim();
+
+  // A three-parent octopus merge: each branch edits a distinct file (the octopus
+  // strategy refuses overlapping edits to one file). Each file then differs from
+  // two of the three parents, so the dense combined diff omits them all.
+  await writeRepoFile(dir, 'o.txt', 'l1\nl2\n');
+  await writeRepoFile(dir, 'p.txt', 'l1\nl2\n');
+  await writeRepoFile(dir, 'q.txt', 'l1\nl2\n');
+  git(dir, 'add', '-A');
+  dated(1_700_000_900, 'commit', '-q', '-m', 'add octopus files');
+  const obase = git(dir, 'rev-parse', 'HEAD').trim();
+  git(dir, 'checkout', '-q', '-b', 'octoA', obase);
+  await writeRepoFile(dir, 'o.txt', 'l1\nAAA\n');
+  git(dir, 'add', '-A');
+  dated(1_700_001_000, 'commit', '-q', '-m', 'octoA change o.txt');
+  git(dir, 'checkout', '-q', '-b', 'octoB', obase);
+  await writeRepoFile(dir, 'p.txt', 'l1\nBBB\n');
+  git(dir, 'add', '-A');
+  dated(1_700_001_100, 'commit', '-q', '-m', 'octoB change p.txt');
+  git(dir, 'checkout', '-q', 'main');
+  await writeRepoFile(dir, 'q.txt', 'l1\nCCC\n');
+  git(dir, 'add', '-A');
+  dated(1_700_001_200, 'commit', '-q', '-m', 'main change q.txt');
+  dated(1_700_001_300, 'merge', '--no-ff', 'octoA', 'octoB', '-m', 'octopus merge');
+  const octopus = git(dir, 'rev-parse', 'HEAD').trim();
+
   const tree = git(dir, 'rev-parse', `${modify}^{tree}`).trim();
   const blob = git(dir, 'rev-parse', `${modify}:a.txt`).trim();
-  return { dir, ctx: createNodeContext({ workDir: dir }), root, modify, merge, rename, tree, blob };
+  return {
+    dir,
+    ctx: createNodeContext({ workDir: dir }),
+    root,
+    modify,
+    merge,
+    rename,
+    tree,
+    blob,
+    combinedMerge,
+    octopus,
+  };
 };
 
 describe.skipIf(!GIT_AVAILABLE)('show interop', () => {
@@ -275,6 +331,24 @@ describe.skipIf(!GIT_AVAILABLE)('show interop', () => {
   describe('Given -m on a merge commit', () => {
     it('Then it shows one (from <parent>) block per parent, matching git show -m', async () => {
       await expectMatchFlags(['-m'], built.merge, { mergeDiff: 'separate' });
+    });
+  });
+
+  describe('Given a combined merge diff', () => {
+    it('Then the default merge render matches git (dense --cc)', async () => {
+      await expectMatch(built.combinedMerge);
+    });
+    it('Then --cc matches git show --cc', async () => {
+      await expectMatchFlags(['--cc'], built.combinedMerge, { mergeDiff: 'dense' });
+    });
+    it('Then -c matches git show -c', async () => {
+      await expectMatchFlags(['-c'], built.combinedMerge, { mergeDiff: 'combined' });
+    });
+    it('Then a trivial merge still renders no patch (empty combined diff)', async () => {
+      await expectMatch(built.merge);
+    });
+    it('Then an octopus (three-parent) merge matches git --cc', async () => {
+      await expectMatch(built.octopus);
     });
   });
 

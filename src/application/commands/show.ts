@@ -21,6 +21,7 @@ import {
   type DateFormatter,
   formatDate,
   type PrettyCommitContext,
+  renderCombinedDiff,
   renderCommitBlock,
   renderDiffStat,
   renderNumstat,
@@ -38,6 +39,7 @@ import { readObject } from '../primitives/read-object.js';
 import type { PatchResult } from './diff.js';
 import { treeOf } from './internal/history-rewrite.js';
 import { assertRepository } from './internal/repo-state.js';
+import { buildCombinedFiles } from './internal/show-combined.js';
 import { buildDecorationMap, type CommitDecoration } from './internal/show-decoration.js';
 import { parseShowOptions, type ResolvedShowPlan } from './internal/show-options.js';
 import { revParse } from './rev-parse.js';
@@ -235,11 +237,18 @@ async function buildMergeCommit(
     }
     return { kind: 'commit', id: obj.id, commit: obj.data, perParent, text: blocks.join('\n') };
   }
+  // `-c`/`--cc` (and the default `dense`) render a combined diff; an empty result
+  // (the merge took a parent verbatim) falls back to the trailing-blank block.
+  const combined =
+    !env.plan.noPatch && (env.plan.mergeDiff === 'combined' || env.plan.mergeDiff === 'dense')
+      ? renderCombinedDiff(await buildCombinedFiles(ctx, obj.data), env.plan.mergeDiff === 'dense')
+      : '';
   const text = renderCommitBlock({
     id: obj.id,
     commit: obj.data,
     noPatch: env.plan.noPatch,
     formatDate: env.formatDate,
+    ...(combined !== '' ? { patchText: combined } : {}),
   });
   return { kind: 'commit', id: obj.id, commit: obj.data, text };
 }
