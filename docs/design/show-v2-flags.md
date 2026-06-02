@@ -28,7 +28,7 @@ existing trivial-merge interop case keeps passing.
 | merge-diff | `-m` / `-c` / `--cc` | per-parent / combined / dense-combined merge diffs; **dense is the merge default** |
 | date | `--date=<mode>` | alternate date rendering for `Date:` + `%ad`/`%cd` |
 
-ADR-decided breadth (ADRs 244–249): full combined diff incl. octopus,
+ADR-decided breadth (ADRs 244–248): full combined diff incl. octopus,
 `relative`/`human` dates (now-dependent — structural tests only), and the
 `email`/`mboxrd` formats plus `%d`/`%D` decoration.
 
@@ -163,7 +163,7 @@ Additive: these expressions previously failed `revParse`
 resolves them everywhere). New error `PATH_NOT_IN_TREE` when a component is
 absent.
 
-## 6. Pretty formats (§ADR-246, §ADR-248)
+## 6. Pretty formats (§ADR-246)
 
 `parsePretty(spec)` → a named format or a custom template. Patch (when shown)
 **follows the header**, framed per §7.
@@ -272,7 +272,7 @@ Stat/numstat replace the patch (`-p` not implied); they occupy the patch's slot
 with the same framing (§7). Both reuse the `-m`/combined change set for merges
 (git stats the first parent by default unless combined).
 
-## 10. Merge diffs (§ADR-249)
+## 10. Merge diffs (§ADR-248)
 
 `mergeDiff` resolves to: `none` (`-s`), `separate` (`-m`), `combined` (`-c`),
 `dense` (`--cc`, **default**). Non-merge commits ignore the mode (single
