@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.0.1](https://github.com/scolladon/tsgit/compare/v2.0.0...v2.0.1) (2026-06-02)
+
+
+### Documentation
+
+* **backlog:** define 26.6 competitor benchmark comparison ([#116](https://github.com/scolladon/tsgit/issues/116)) ([706a7ea](https://github.com/scolladon/tsgit/commit/706a7eab136cfead5893a66f9b38592be4a3fd71))
+
 ## [2.0.0](https://github.com/scolladon/tsgit/compare/v1.3.0...v2.0.0) (2026-06-02)
 
 
