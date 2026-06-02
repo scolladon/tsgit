@@ -49,6 +49,10 @@ type RebaseResult =
   reflog, no state change); when `mergeBase === HEAD` it **fast-forwards** to
   `onto` (the rebase reflog dance, zero picks); otherwise it replays
   `mergeBase..HEAD` oldest-first.
+- **Unrelated histories.** When `upstream` and `HEAD` share no common ancestor,
+  `mergeBase` is empty and the **whole** `HEAD` history replays onto `onto` — the
+  root commit against the empty-tree base (an add-add 3-way merge), faithful to
+  `git rebase <unrelated>`.
 - **`--onto`.** `run({ upstream: 'main', onto: 'newbase' })` replays
   `merge-base(main, HEAD)..HEAD` onto `newbase`.
 - **Cherry-pick-equivalent drop.** A commit whose change is already upstream
@@ -111,8 +115,9 @@ await repo.rebase.run({
 - **squash/fixup chains.** Reproduced faithfully — each member commits with the
   running combination template, cleaned only at the group's end (ADR-237).
 - **Refusals.** An `oid` outside the replayed range, a leading `squash`/`fixup`
-  (nothing to meld into), an empty/all-`drop` list, or a `reword` without a
-  `message` all throw `INVALID_OPTION`.
+  (nothing to meld into), an empty/all-`drop` list, a `reword` without a
+  `message`, or a `reword`/`squash` whose `message` cleans to empty all throw
+  `INVALID_OPTION` — **before any state change** (HEAD never moves).
 - **Cross-stop messages (limitation).** Inline `reword`/`squash` messages are
   consumed during the single `run()` pass and are **not** carried across a stop.
   A `reword`/`squash` scheduled *after* a conflict or `edit` stop replays with
@@ -126,12 +131,11 @@ await repo.rebase.run({
 - `NO_INITIAL_COMMIT` — `run` on an unborn branch.
 - `BARE_REPOSITORY` — `run`/`continue`/`skip`/`abort` in a bare repository.
 - `NO_OPERATION_IN_PROGRESS` — `continue`/`skip`/`abort` with no rebase in progress.
-- `UNSUPPORTED_OPERATION` — no common ancestor between HEAD and upstream
-  (`--root` is not supported in v1).
 - `MERGE_HAS_CONFLICTS` — `continue` while the index still has unmerged entries.
 - `AMBIGUOUS_OID_PREFIX` — an abbreviated `upstream`/`onto` matched more than one object.
 - `INVALID_OPTION` — an interactive todo with an out-of-range `oid`, a leading
-  `squash`/`fixup`, an empty/all-`drop` list, or a `reword` without a `message`.
+  `squash`/`fixup`, an empty/all-`drop` list, a `reword` without a `message`, or a
+  `reword`/`squash` whose `message` cleans to empty.
 
 See [`../errors.md`](../errors.md) for the canonical `TsgitError.data.code` list.
 

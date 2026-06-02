@@ -12,10 +12,15 @@ import {
   rebaseRun,
   rebaseSkip,
 } from '../../../../src/application/commands/rebase.js';
+import { createCommit } from '../../../../src/application/primitives/create-commit.js';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
 import { readReflog } from '../../../../src/application/primitives/reflog-store.js';
 import { resolveRef } from '../../../../src/application/primitives/resolve-ref.js';
+import { updateRef } from '../../../../src/application/primitives/update-ref.js';
+import { writeObject } from '../../../../src/application/primitives/write-object.js';
+import { writeTree } from '../../../../src/application/primitives/write-tree.js';
 import type { TsgitError } from '../../../../src/domain/error.js';
+import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
 import type {
   AuthorIdentity,
   CommitData,
@@ -462,6 +467,71 @@ describe('rebaseRun', () => {
         // Assert
         expect(data.code).toBe('BARE_REPOSITORY');
         expect(data.operation).toBe(operation);
+      });
+    });
+  });
+});
+
+/** main: base, m1 (HEAD on main); an ORPHAN feature: f0 root (built via the
+ *  primitives, no parent), f1 on top — sharing no history with main. HEAD on feature. */
+const seedUnrelated = async (): Promise<{ ctx: Context; mainTip: ObjectId }> => {
+  const ctx = createMemoryContext();
+  await init(ctx);
+  await setUser(ctx);
+  await writeAddCommit(ctx, 'base.txt', 'base\n', 'base');
+  const mainTip = await writeAddCommit(ctx, 'm1.txt', 'm1\n', 'm1');
+  const blobId = await writeObject(ctx, {
+    type: 'blob',
+    content: new TextEncoder().encode('f0\n'),
+    id: '' as ObjectId,
+  });
+  const treeId = await writeTree(ctx, [
+    { name: 'f0.txt' as never, id: blobId, mode: FILE_MODE.REGULAR },
+  ]);
+  const featureRoot = await createCommit(ctx, {
+    tree: treeId,
+    parents: [],
+    author: FEAT_AUTHOR,
+    committer: FEAT_AUTHOR,
+    message: 'feature root\n',
+    extraHeaders: [],
+  });
+  await updateRef(ctx, 'refs/heads/feature' as RefName, featureRoot, {
+    reflogMessage: 'branch: Created from seed',
+  });
+  await checkout(ctx, { target: 'feature' });
+  await writeAddCommit(ctx, 'f1.txt', 'f1\n', 'feature one');
+  return { ctx, mainTip };
+};
+
+describe('rebaseRun — unrelated histories', () => {
+  describe('Given a feature branch with no common ancestor', () => {
+    describe('When rebased onto the unrelated upstream', () => {
+      it('Then it replays the whole branch onto upstream, the root gaining a parent', async () => {
+        // Arrange
+        const { ctx, mainTip } = await seedUnrelated();
+
+        // Act
+        const sut = await rebaseRun(ctx, { upstream: 'main' });
+
+        // Assert
+        expect(sut.kind).toBe('rebased');
+        const tip = await readCommit(ctx, await resolveRef(ctx, 'refs/heads/feature' as RefName));
+        expect(tip.message).toBe('feature one\n');
+        const replayedRoot = await readCommit(ctx, tip.parents[0] as ObjectId);
+        expect(replayedRoot.message).toBe('feature root\n');
+        // The empty-base replay reparents the orphan root onto the upstream tip.
+        expect(replayedRoot.parents).toEqual([mainTip]);
+        // The whole branch replayed: the tip tree carries files from both histories.
+        expect(await ctx.fs.exists(work(ctx, 'base.txt'))).toBe(true);
+        expect(await ctx.fs.exists(work(ctx, 'm1.txt'))).toBe(true);
+        expect(await ctx.fs.exists(work(ctx, 'f0.txt'))).toBe(true);
+        expect(await ctx.fs.exists(work(ctx, 'f1.txt'))).toBe(true);
+        const head = await reflogMessages(ctx, 'HEAD');
+        expect(head[0]).toBe('rebase (finish): returning to refs/heads/feature');
+        expect(head[1]).toBe('rebase (pick): feature one');
+        expect(head[2]).toBe('rebase (pick): feature root');
+        expect(head[3]).toBe('rebase (start): checkout main');
       });
     });
   });
@@ -1066,6 +1136,84 @@ describe('rebaseRun (interactive reword)', () => {
         expect(sut.code).toBe('INVALID_OPTION');
         expect(sut.option).toBe('interactive');
         expect(sut.reason).toContain('reword requires a message');
+      });
+    });
+  });
+});
+
+describe('rebaseRun (interactive) — empty reword/squash message', () => {
+  describe('Given a reword whose message cleans to empty', () => {
+    describe('When run', () => {
+      it('Then it refuses with INVALID_OPTION before any state change', async () => {
+        // Arrange
+        const { ctx, base, c1 } = await seedLinear();
+        const before = await mainTipOid(ctx);
+
+        // Act
+        const sut = await dataReason(() =>
+          rebaseRun(ctx, {
+            upstream: base,
+            interactive: [{ action: 'reword', oid: c1, message: '   \n  \n' }],
+          }),
+        );
+
+        // Assert
+        expect(sut.code).toBe('INVALID_OPTION');
+        expect(sut.option).toBe('interactive');
+        expect(sut.reason).toContain('reword message must not be empty');
+        expect(await mainTipOid(ctx)).toBe(before); // HEAD never moved
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/rebase-merge`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a squash whose inline message cleans to empty', () => {
+    describe('When run after a leading pick', () => {
+      it('Then it refuses with INVALID_OPTION before any state change', async () => {
+        // Arrange
+        const { ctx, base, c1, c2 } = await seedLinear();
+        const before = await mainTipOid(ctx);
+
+        // Act
+        const sut = await dataReason(() =>
+          rebaseRun(ctx, {
+            upstream: base,
+            interactive: [
+              { action: 'pick', oid: c1 },
+              { action: 'squash', oid: c2, message: '\n\n' },
+            ],
+          }),
+        );
+
+        // Assert
+        expect(sut.code).toBe('INVALID_OPTION');
+        expect(sut.option).toBe('interactive');
+        expect(sut.reason).toContain('squash message must not be empty');
+        expect(await mainTipOid(ctx)).toBe(before);
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/rebase-merge`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a fixup carrying an empty message', () => {
+    describe('When run after a leading pick', () => {
+      it('Then the empty message is ignored (fixup discards it) and the rebase succeeds', async () => {
+        // Arrange
+        const { ctx, base, c1, c2 } = await seedLinear();
+
+        // Act — fixup never consumes its message, so an empty one is not a refusal
+        const sut = await rebaseRun(ctx, {
+          upstream: base,
+          interactive: [
+            { action: 'pick', oid: c1 },
+            { action: 'fixup', oid: c2, message: '\n\n' },
+          ],
+        });
+
+        // Assert — c2 folds into c1, keeping c1's message; no INVALID_OPTION
+        expect(sut.kind).toBe('rebased');
+        const tip = await readCommit(ctx, await mainTipOid(ctx));
+        expect(tip.message).toBe('c1 subject\n');
       });
     });
   });

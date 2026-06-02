@@ -16,7 +16,6 @@ import {
 import { renderPatch } from '../../domain/diff/index.js';
 import { TsgitError } from '../../domain/error.js';
 import type { IndexEntry } from '../../domain/git-index/index.js';
-import { unsupportedOperation } from '../../domain/index.js';
 import type { ConflictType, MergeConflict } from '../../domain/merge/index.js';
 import type { CommitData } from '../../domain/objects/commit.js';
 import { subjectLine } from '../../domain/objects/commit-message.js';
@@ -147,11 +146,15 @@ const resolveHeadCommit = async (ctx: Context, branch: RefName): Promise<ObjectI
  *  cannot leak in. */
 const commitsToReplay = async (
   ctx: Context,
-  base: ObjectId,
+  base: ObjectId | undefined,
   head: ObjectId,
 ): Promise<ReadonlyArray<ObjectId>> => {
   const excluded = new Set<ObjectId>();
-  for await (const c of walkCommits(ctx, { from: [base] })) excluded.add(c.id);
+  // An undefined base means unrelated histories: nothing is shared, so the whole
+  // `head` history is the replay set (`∅..head`).
+  if (base !== undefined) {
+    for await (const c of walkCommits(ctx, { from: [base] })) excluded.add(c.id);
+  }
   const ids: ObjectId[] = [];
   // equivalent-mutant (`until: []`): dropping the exclusion makes this walk yield
   // `base` + its ancestors too, but `dropCherryEquivalents` feeds the SAME
@@ -170,7 +173,7 @@ const commitsToReplay = async (
 const dropCherryEquivalents = async (
   ctx: Context,
   toReplay: ReadonlyArray<ObjectId>,
-  base: ObjectId,
+  base: ObjectId | undefined,
   upstream: ObjectId,
 ): Promise<ReadonlyArray<ObjectId>> => {
   const upstreamCommits = await commitsToReplay(ctx, base, upstream);
@@ -411,10 +414,10 @@ export const rebaseRun = async (ctx: Context, input: RebaseRunInput): Promise<Re
   const onto = input.onto !== undefined ? await resolveCommitIsh(ctx, input.onto) : upstream;
   const ontoName = input.onto ?? input.upstream;
   await assertCleanWorkTree(ctx, await treeOf(ctx, headCommit));
+  // No common ancestor (unrelated histories) → `base` is undefined and the whole
+  // branch replays onto `onto`, the root commit against the empty-tree base —
+  // faithful to `git rebase <unrelated>`.
   const [base] = await mergeBase(ctx, [upstream, headCommit]);
-  if (base === undefined) {
-    throw unsupportedOperation('rebase', 'no common ancestor between HEAD and upstream');
-  }
   if (input.interactive !== undefined) {
     return rebaseRunInteractive(ctx, {
       instructions: input.interactive,
@@ -589,7 +592,7 @@ interface InteractivePlan {
   readonly upstream: ObjectId;
   readonly onto: ObjectId;
   readonly ontoName: string;
-  readonly base: ObjectId;
+  readonly base: ObjectId | undefined;
 }
 
 /**
@@ -601,7 +604,7 @@ interface InteractivePlan {
 const planInteractive = async (
   ctx: Context,
   instructions: ReadonlyArray<RebaseInstruction>,
-  base: ObjectId,
+  base: ObjectId | undefined,
   head: ObjectId,
 ): Promise<ReadonlyArray<PlannedInstruction>> => {
   if (instructions.every((i) => i.action === 'drop')) {
@@ -616,6 +619,13 @@ const planInteractive = async (
   for (const inst of instructions) {
     if (inst.action === 'reword' && inst.message === undefined) {
       throw invalidOption('interactive', 'reword requires a message (no editor in a library)');
+    }
+    if (
+      (inst.action === 'reword' || inst.action === 'squash') &&
+      inst.message !== undefined &&
+      sanitizeMessage(inst.message, { allowEmpty: true }) === ''
+    ) {
+      throw invalidOption('interactive', `${inst.action} message must not be empty`);
     }
     const oid = await resolveCommitIsh(ctx, inst.oid);
     if (!candidates.has(oid)) {
@@ -791,6 +801,10 @@ const stepReword = async (
   cData: CommitData,
   head: ObjectId,
 ): Promise<Step> => {
+  // equivalent-mutant (`allowEmpty: false` → `true`): `planInteractive` rejects an
+  // empty reword message upfront, and a reword reached on a resume carries no
+  // message (not persisted across a stop), falling back to the commit's own
+  // non-empty message — so the cleaned message is never empty here.
   const message = sanitizeMessage(inst.message ?? cData.message, { allowEmpty: false });
   const produced = await produceOnto(
     ctx,
@@ -949,6 +963,9 @@ const meldGroupMember = async (
   // killed by the fixup-carrying-an-inline-message test.)
   if (inst.action === 'squash' && inst.message !== undefined) group.inline = inst.message;
   const template = buildCombinedMessage([{ message: group.baseMessage }, ...group.members]);
+  // equivalent-mutant (`allowEmpty: false` → `true`): an empty squash inline
+  // message is rejected upfront by `planInteractive`; otherwise the template
+  // fallback retains the base commit's non-empty message — never empty here.
   const message = isLast
     ? sanitizeMessage(group.inline ?? stripComments(template), { allowEmpty: false })
     : template;

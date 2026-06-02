@@ -187,6 +187,27 @@ describe.skipIf(!GIT_AVAILABLE)('rebase interop', () => {
       expect(writeTreeOf(pair.ours)).toBe(writeTreeOf(pair.peer));
     });
   });
+
+  describe('Given two unrelated histories (no common ancestor)', () => {
+    it('Then tsgit matches git: same resulting tree, commit count, single-parent tip', async () => {
+      // Arrange — identical orphan-branch history in both repos
+      buildUnrelated(pair.peer);
+      buildUnrelated(pair.ours);
+      git(pair.peer, 'rebase', 'main');
+      const repo = await openRepository({ cwd: pair.ours });
+
+      // Act
+      const result = await repo.rebase.run({ upstream: 'main' });
+      await repo.dispose();
+
+      // Assert — the whole feature branch replays onto main, identically to git
+      expect(result.kind).toBe('rebased');
+      expect(writeTreeOf(pair.ours)).toBe(writeTreeOf(pair.peer));
+      expect(commitCount(pair.ours)).toBe(commitCount(pair.peer));
+      expect(headParents(pair.ours)).toBe(1);
+      expect(headParents(pair.peer)).toBe(1);
+    });
+  });
 });
 
 // ── git-CLI scenario builders ───────────────────────────────────────────────
@@ -255,6 +276,26 @@ function buildCherryEquivalent(dir: string): void {
   git(dir, 'add', 'f.txt');
   gitCommit(dir, 'm2 diverge');
   git(dir, 'checkout', '-q', 'topic');
+}
+
+/** main: base, m1; an ORPHAN feature: f0, f1 — no merge-base with main. HEAD on feature. */
+function buildUnrelated(dir: string): void {
+  runGit(['init', '-q', '-b', 'main', dir]);
+  configGit(dir);
+  writeWork(dir, 'base.txt', 'base\n');
+  git(dir, 'add', 'base.txt');
+  gitCommit(dir, 'base');
+  writeWork(dir, 'm1.txt', 'm1\n');
+  git(dir, 'add', 'm1.txt');
+  gitCommit(dir, 'm1');
+  git(dir, 'checkout', '-q', '--orphan', 'feature');
+  git(dir, 'rm', '-rf', '.');
+  writeWork(dir, 'f0.txt', 'f0\n');
+  git(dir, 'add', 'f0.txt');
+  gitCommit(dir, 'feature root');
+  writeWork(dir, 'f1.txt', 'f1\n');
+  git(dir, 'add', 'f1.txt');
+  gitCommit(dir, 'feature one');
 }
 
 // ── interactive (`rebase -i`) ───────────────────────────────────────────────
