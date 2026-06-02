@@ -19,7 +19,6 @@ import type { IndexEntry } from '../../domain/git-index/index.js';
 import { unsupportedOperation } from '../../domain/index.js';
 import type { ConflictType, MergeConflict } from '../../domain/merge/index.js';
 import type { CommitData } from '../../domain/objects/commit.js';
-import { unexpectedObjectType } from '../../domain/objects/error.js';
 import type { FilePath, ObjectId, RefName } from '../../domain/objects/index.js';
 import {
   buildCombinedMessage,
@@ -41,7 +40,6 @@ import { materialisePatchFiles } from '../primitives/materialise-patch-files.js'
 import { mergeBase } from '../primitives/merge-base.js';
 import { computePatchId } from '../primitives/patch-id.js';
 import { readIndex } from '../primitives/read-index.js';
-import { readObject } from '../primitives/read-object.js';
 import { recordRefUpdate } from '../primitives/record-ref-update.js';
 import { getRefStore } from '../primitives/ref-store.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
@@ -54,6 +52,7 @@ import { assertCleanWorkTree } from './internal/clean-work-tree.js';
 import { resolveCommitIsh } from './internal/commit-ish.js';
 import { sanitizeMessage, stripComments } from './internal/commit-message.js';
 import { resolveCurrentIdentity } from './internal/current-identity.js';
+import { readCommitData, subjectOf, treeOf } from './internal/history-rewrite.js';
 import { acquireIndexLock } from './internal/index-update.js';
 import { writeOrigHead } from './internal/merge-state.js';
 import {
@@ -130,16 +129,6 @@ interface PlannedPick {
   readonly subject: string;
 }
 
-const readCommitData = async (ctx: Context, id: ObjectId): Promise<CommitData> => {
-  const obj = await readObject(ctx, id);
-  if (obj.type !== 'commit') throw unexpectedObjectType('commit', obj.type, id);
-  return obj.data;
-};
-
-const treeOf = async (ctx: Context, commitId: ObjectId): Promise<ObjectId> =>
-  (await readCommitData(ctx, commitId)).tree;
-
-const subjectOf = (message: string): string => message.split('\n')[0] as string;
 const shortOid = (oid: ObjectId): string => oid.slice(0, 7);
 
 /** Resolve the (symbolic) HEAD branch to its commit, or refuse on an unborn branch. */
