@@ -1194,6 +1194,29 @@ describe('rebaseRun (interactive) — empty reword/squash message', () => {
       });
     });
   });
+
+  describe('Given a fixup carrying an empty message', () => {
+    describe('When run after a leading pick', () => {
+      it('Then the empty message is ignored (fixup discards it) and the rebase succeeds', async () => {
+        // Arrange
+        const { ctx, base, c1, c2 } = await seedLinear();
+
+        // Act — fixup never consumes its message, so an empty one is not a refusal
+        const sut = await rebaseRun(ctx, {
+          upstream: base,
+          interactive: [
+            { action: 'pick', oid: c1 },
+            { action: 'fixup', oid: c2, message: '\n\n' },
+          ],
+        });
+
+        // Assert — c2 folds into c1, keeping c1's message; no INVALID_OPTION
+        expect(sut.kind).toBe('rebased');
+        const tip = await readCommit(ctx, await mainTipOid(ctx));
+        expect(tip.message).toBe('c1 subject\n');
+      });
+    });
+  });
 });
 
 /** topic off base: t1 (a.txt clean), t2 (f.txt=TOPIC), t3 (c.txt clean); main
