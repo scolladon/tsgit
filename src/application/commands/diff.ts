@@ -18,6 +18,14 @@ export interface DiffOptions {
   readonly detectRenames?: boolean;
   /** Output format. Default `'tree'` for backward compatibility. */
   readonly format?: DiffFormat;
+  /**
+   * Recurse into sub-directories (`git diff-tree -r`), surfacing nested blobs as
+   * full-path changes instead of one change per top-level sub-tree. Applies to
+   * the structured `'tree'` format; default `false`. **Inert for `format:
+   * 'patch'`**, which always recurses (git's porcelain patch has no
+   * non-recursive mode).
+   */
+  readonly recursive?: boolean;
   /** Lines of equal context bracketing each hunk. Default `3`. Patch-only. */
   readonly contextLines?: number;
   /** Path prefixes on `diff --git`, `--- a/`, `+++ b/` lines. Default `{ old: 'a/', new: 'b/' }`. */
@@ -43,12 +51,12 @@ export async function diff(ctx: Context, opts: DiffOptions = {}): Promise<DiffRe
   await assertRepository(ctx);
   const from = await resolveTreeId(ctx, opts.from ?? 'HEAD');
   const to = opts.to !== undefined ? await resolveTreeId(ctx, opts.to) : undefined;
-  const tree = await diffTrees(
-    ctx,
-    from,
-    to,
-    opts.detectRenames === true ? { detectRenames: true } : {},
-  );
+  // Patch is always recursive (git porcelain); the `tree` format opts in.
+  const recursive = opts.format === 'patch' || opts.recursive === true;
+  const tree = await diffTrees(ctx, from, to, {
+    ...(opts.detectRenames === true ? { detectRenames: true } : {}),
+    ...(recursive ? { recursive: true } : {}),
+  });
   if (opts.format !== 'patch') return tree;
   const files = await materialisePatchFiles(ctx, tree.changes);
   const text = renderPatch(files, buildPatchOptions(opts));
