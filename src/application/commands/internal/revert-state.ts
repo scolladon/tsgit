@@ -6,7 +6,9 @@
  * clears it on success. The conflict `MERGE_MSG` block is shared with cherry-pick
  * (`conflictMergeMsg`); the revert message draft is built here.
  */
+
 import type { CommitData } from '../../../domain/objects/commit.js';
+import { subjectLine } from '../../../domain/objects/commit-message.js';
 import type { ObjectId } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
 import { readOptionalOidFile } from './oid-file.js';
@@ -46,6 +48,6 @@ export const quoteSubject = (subject: string): string => `"${subject.replace(/([
  * reverted commit only) then `This reverts commit <oid>.` — byte-faithful to git.
  */
 export const revertMessage = (cData: CommitData, reverted: ObjectId): string => {
-  const subject = cData.message.split('\n')[0] as string;
+  const subject = subjectLine(cData.message);
   return `Revert ${quoteSubject(subject)}\n\nThis reverts commit ${reverted}.\n`;
 };

@@ -3,7 +3,6 @@ import {
   indexMessage,
   onMessage,
   stashBranchLabel,
-  subjectOf,
   untrackedMessage,
   wipMessage,
 } from '../../../../../src/application/commands/internal/stash-message.js';
@@ -85,42 +84,6 @@ describe('stash-message builders', () => {
 
         // Assert
         expect(sut).toBe('(no branch)');
-      });
-    });
-  });
-
-  describe('Given a multi-line commit message', () => {
-    describe('When the subject is extracted', () => {
-      it('Then only the first line is returned', () => {
-        // Arrange + Act
-        const sut = subjectOf('first line\n\nbody paragraph\nmore body');
-
-        // Assert
-        expect(sut).toBe('first line');
-      });
-    });
-  });
-
-  describe('Given a single-line commit message', () => {
-    describe('When the subject is extracted', () => {
-      it('Then the whole message is returned verbatim', () => {
-        // Arrange + Act
-        const sut = subjectOf('just one line');
-
-        // Assert
-        expect(sut).toBe('just one line');
-      });
-    });
-  });
-
-  describe('Given an empty commit message', () => {
-    describe('When the subject is extracted', () => {
-      it('Then the empty string is returned', () => {
-        // Arrange + Act
-        const sut = subjectOf('');
-
-        // Assert
-        expect(sut).toBe('');
       });
     });
   });

@@ -94,4 +94,19 @@ describe('subjectLine properties', () => {
       );
     });
   });
+
+  describe('Given an arbitrary newline-free message, When subjectLine runs', () => {
+    it('Then the message is returned verbatim', () => {
+      // Arrange + Act + Assert
+      fc.assert(
+        fc.property(
+          fc.string().filter((s) => !s.includes('\n')),
+          (message) => {
+            expect(subjectLine(message)).toBe(message);
+          },
+        ),
+        { numRuns: 200 },
+      );
+    });
+  });
 });
