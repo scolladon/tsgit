@@ -2,7 +2,14 @@
 
 ## Status
 
-Accepted (at `1c35bc3`)
+Superseded by [ADR-239](239-keep-walkers-public-snapshot-additive.md)
+
+Originally Accepted (at `1c35bc3`). The "ship as 2.0.0" half stands. The
+deprecation-cycle half (deprecate the walkers, remove in 3.0.0) is dropped by
+ADR-239: investigation showed the snapshot does **not** subsume the walkers
+(no subtree enumeration; reduced working-tree stat), so they are kept public
+as first-class primitives — neither deprecated nor removed. The snapshot is
+an additive higher-level layer built on them.
 
 ## Context
 
