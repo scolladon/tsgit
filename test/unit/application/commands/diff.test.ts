@@ -466,4 +466,105 @@ describe('diff', () => {
       });
     });
   });
+
+  describe('Given format=patch and a file changed inside a sub-directory', () => {
+    describe('When diff', () => {
+      it('Then it recurses, rendering per-file hunks (no UNEXPECTED_OBJECT_TYPE)', async () => {
+        // Arrange — the regression: a nested-dir change once threw because the
+        // single-level diff surfaced `sub` as a tree-oid change.
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/sub/b.txt`, 'b1\n');
+        await add(ctx, ['sub/b.txt']);
+        const c1 = await commit(ctx, { message: 'first', author });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/sub/b.txt`, 'b2\n');
+        await add(ctx, ['sub/b.txt']);
+        const c2 = await commit(ctx, { message: 'second', author });
+
+        // Act
+        const sut = await diff(ctx, { from: c1.id, to: c2.id, format: 'patch' });
+
+        // Assert — per-file patch on the full path.
+        expect(sut.text).toContain('diff --git a/sub/b.txt b/sub/b.txt');
+        expect(sut.text).toContain('-b1');
+        expect(sut.text).toContain('+b2');
+        expect(sut.diff.changes).toEqual([
+          expect.objectContaining({ type: 'modify', path: 'sub/b.txt' }),
+        ]);
+      });
+    });
+  });
+
+  describe('Given format=patch and recursive=false on a nested change', () => {
+    describe('When diff', () => {
+      it('Then the patch is still recursive (the flag is inert for patch)', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/sub/b.txt`, 'b1\n');
+        await add(ctx, ['sub/b.txt']);
+        const c1 = await commit(ctx, { message: 'first', author });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/sub/b.txt`, 'b2\n');
+        await add(ctx, ['sub/b.txt']);
+        const c2 = await commit(ctx, { message: 'second', author });
+
+        // Act — recursive:false must NOT make patch single-level (git has no
+        // non-recursive porcelain patch).
+        const sut = await diff(ctx, { from: c1.id, to: c2.id, format: 'patch', recursive: false });
+
+        // Assert
+        expect(sut.text).toContain('diff --git a/sub/b.txt b/sub/b.txt');
+        expect(sut.diff.changes).toEqual([
+          expect.objectContaining({ type: 'modify', path: 'sub/b.txt' }),
+        ]);
+      });
+    });
+  });
+
+  describe('Given format=tree (default) and a file changed inside a sub-directory', () => {
+    describe('When diff', () => {
+      it('Then the sub-directory surfaces as a single tree-entry change (non-recursive)', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/sub/b.txt`, 'b1\n');
+        await add(ctx, ['sub/b.txt']);
+        const c1 = await commit(ctx, { message: 'first', author });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/sub/b.txt`, 'b2\n');
+        await add(ctx, ['sub/b.txt']);
+        const c2 = await commit(ctx, { message: 'second', author });
+
+        // Act — default tree format mirrors `git diff-tree` (non-recursive).
+        const sut = await diff(ctx, { from: c1.id, to: c2.id });
+
+        // Assert — one change, on `sub` (not `sub/b.txt`).
+        expect(sut.changes).toHaveLength(1);
+        expect(sut.changes[0]).toEqual(expect.objectContaining({ type: 'modify', path: 'sub' }));
+      });
+    });
+  });
+
+  describe('Given format=tree and recursive=true on a nested change', () => {
+    describe('When diff', () => {
+      it('Then the structured diff recurses into per-file changes (`git diff-tree -r`)', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/sub/b.txt`, 'b1\n');
+        await add(ctx, ['sub/b.txt']);
+        const c1 = await commit(ctx, { message: 'first', author });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/sub/b.txt`, 'b2\n');
+        await add(ctx, ['sub/b.txt']);
+        const c2 = await commit(ctx, { message: 'second', author });
+
+        // Act
+        const sut = await diff(ctx, { from: c1.id, to: c2.id, recursive: true });
+
+        // Assert — full-path change, not a tree-entry change.
+        expect(sut.changes).toEqual([
+          expect.objectContaining({ type: 'modify', path: 'sub/b.txt' }),
+        ]);
+      });
+    });
+  });
 });

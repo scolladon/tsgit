@@ -1,0 +1,28 @@
+diff --git a/add/new.txt b/add/new.txt
+new file mode 100644
+index 0000000..3e75765
+--- /dev/null
++++ b/add/new.txt
+@@ -0,0 +1 @@
++new
+diff --git a/deep/a/b/c.txt b/deep/a/b/c.txt
+new file mode 100644
+index 0000000..4cdb226
+--- /dev/null
++++ b/deep/a/b/c.txt
+@@ -0,0 +1 @@
++deep
+diff --git a/del/y.txt b/del/y.txt
+deleted file mode 100644
+index 975fbec..0000000
+--- a/del/y.txt
++++ /dev/null
+@@ -1 +0,0 @@
+-y
+diff --git a/mod/m.txt b/mod/m.txt
+index 63a911f..08bb233 100644
+--- a/mod/m.txt
++++ b/mod/m.txt
+@@ -1 +1 @@
+-m1
++m2

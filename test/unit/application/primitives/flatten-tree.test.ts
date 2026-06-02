@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { flattenTree } from '../../../../src/application/primitives/flatten-tree.js';
+import { readObject } from '../../../../src/application/primitives/read-object.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { writeTree } from '../../../../src/application/primitives/write-tree.js';
 import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
-import type { FilePath, ObjectId } from '../../../../src/domain/objects/index.js';
+import type { FilePath, ObjectId, Tree } from '../../../../src/domain/objects/index.js';
 import { buildSeededContext } from './fixtures.js';
 
 const writeBlob = async (
@@ -132,6 +133,34 @@ describe('flattenTree', () => {
         // Assert — only one leaf, with the full 2-level path.
         expect(result.entries.size).toBe(1);
         expect(result.entries.get('dir/sub/leaf.txt' as FilePath)?.id).toBe(blobId);
+      });
+    });
+  });
+
+  describe('Given a resolved Tree object instead of an oid', () => {
+    describe('When flattenTree runs on the object and on its oid', () => {
+      it('Then both results are identical', async () => {
+        // Arrange — a nested tree, then read it back as a Tree object.
+        const ctx = await buildSeededContext();
+        const idA = await writeBlob(ctx, 'A');
+        const idB = await writeBlob(ctx, 'B');
+        const subId = await writeTree(ctx, [
+          { name: 'inner.txt' as FilePath, id: idB, mode: FILE_MODE.REGULAR },
+        ]);
+        const rootId = await writeTree(ctx, [
+          { name: 'a.txt' as FilePath, id: idA, mode: FILE_MODE.REGULAR },
+          { name: 'sub' as FilePath, id: subId, mode: FILE_MODE.DIRECTORY },
+        ]);
+        const rootObject = (await readObject(ctx, rootId)) as Tree;
+        const sut = flattenTree;
+
+        // Act
+        const fromObject = await sut(ctx, rootObject);
+        const fromOid = await sut(ctx, rootId);
+
+        // Assert — same leaves, same keys, no redundant root read needed.
+        expect([...fromObject.entries]).toEqual([...fromOid.entries]);
+        expect(fromObject.entries.get('sub/inner.txt' as FilePath)?.id).toBe(idB);
       });
     });
   });
