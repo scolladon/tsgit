@@ -7,7 +7,12 @@
  * shape.
  */
 import { invalidOption } from '../../../domain/commands/error.js';
-import { type DateMode, parseDateMode } from '../../../domain/show/index.js';
+import {
+  type DateMode,
+  type PrettyFormat,
+  parseDateMode,
+  parsePretty,
+} from '../../../domain/show/index.js';
 import type { MergeDiffMode, ShowOptions } from '../show.js';
 
 export interface ResolvedStat {
@@ -18,8 +23,8 @@ export interface ResolvedStat {
 
 export interface ResolvedShowPlan {
   readonly noPatch: boolean;
-  /** Normalised pretty-format name or `format:`/`tformat:` spec. */
-  readonly format: string;
+  /** Resolved pretty-format (built-in or `format:`/`tformat:`). */
+  readonly format: PrettyFormat;
   /** Resolved `--date=` mode. */
   readonly dateMode: DateMode;
   readonly numstat: boolean;
@@ -28,14 +33,10 @@ export interface ResolvedShowPlan {
   readonly contextLines?: number;
 }
 
-const SUPPORTED_FORMATS = new Set(['medium']);
-
-const resolveFormat = (format: string | undefined): string => {
-  if (format === undefined) return 'medium';
-  if (!SUPPORTED_FORMATS.has(format)) {
-    throw invalidOption('format', `unsupported format: ${format}`);
-  }
-  return format;
+const resolveFormat = (format: string | undefined): PrettyFormat => {
+  const parsed = parsePretty(format ?? 'medium');
+  if (parsed === undefined) throw invalidOption('format', `unsupported format: ${format}`);
+  return parsed;
 };
 
 const resolveDateMode = (date: string | undefined): DateMode => {

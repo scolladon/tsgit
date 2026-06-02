@@ -212,4 +212,63 @@ describe.skipIf(!GIT_AVAILABLE)('show interop', () => {
       });
     }
   });
+
+  describe('Given a built-in pretty format', () => {
+    const formats = [
+      'oneline',
+      'short',
+      'full',
+      'fuller',
+      'raw',
+      'reference',
+      'email',
+      'mboxrd',
+    ] as const;
+    for (const format of formats) {
+      it(`Then --format=${format} matches git show on a body commit`, async () => {
+        // `root` carries a subject + body, exercising %b / email body.
+        await expectMatchFlags([`--format=${format}`], built.root, { format });
+      });
+      it(`Then --format=${format} matches git show on a no-body commit`, async () => {
+        await expectMatchFlags([`--format=${format}`], built.modify, { format });
+      });
+    }
+  });
+
+  describe('Given a custom format: / tformat: template', () => {
+    it('Then a hash/ident/message template matches git show', async () => {
+      await expectMatchFlags(['--format=format:%H|%h|%an <%ae>|%s|%cn|%P|%p|%t|%T'], built.modify, {
+        format: 'format:%H|%h|%an <%ae>|%s|%cn|%P|%p|%t|%T',
+      });
+    });
+    it('Then a tformat: template (with body and literals) matches git show', async () => {
+      // `%xXX` is byte-faithful for ASCII only (the string pipeline UTF-8-encodes
+      // high bytes); `%x41` is the letter `A`.
+      const tpl = 'tformat:%h %s%n[%b]%n%ai|%aI|%at|%aD|%as%x41%%';
+      await expectMatchFlags([`--format=${tpl}`], built.root, { format: tpl });
+    });
+    it('Then an unknown placeholder is passed through verbatim', async () => {
+      await expectMatchFlags(['--format=format:[%z]%H'], built.modify, {
+        format: 'format:[%z]%H',
+      });
+    });
+  });
+
+  describe('Given decoration placeholders', () => {
+    it('Then %D on a tagged commit matches git show', async () => {
+      await expectMatchFlags(['--format=format:%D'], built.modify, { format: 'format:%D' });
+    });
+    it('Then %d on the HEAD branch tip matches git show', async () => {
+      await expectMatchFlags(['--format=format:%d'], built.rename, { format: 'format:%d' });
+    });
+  });
+
+  describe('Given --format with --date interplay', () => {
+    it('Then %ad honours --date=iso while %aD stays rfc', async () => {
+      await expectMatchFlags(['--date=iso', '--format=format:%ad|%aD'], built.modify, {
+        date: 'iso',
+        format: 'format:%ad|%aD',
+      });
+    });
+  });
 });

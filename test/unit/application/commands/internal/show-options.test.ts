@@ -21,7 +21,7 @@ describe('Given show option resolution', () => {
       // Assert
       expect(sut).toEqual({
         noPatch: false,
-        format: 'medium',
+        format: { kind: 'builtin', name: 'medium' },
         dateMode: { kind: 'default' },
         numstat: false,
         mergeDiff: 'dense',
