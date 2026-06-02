@@ -13,6 +13,7 @@ import { noInitialCommit, stashApplyWouldOverwrite } from '../../domain/commands
 import { TsgitError } from '../../domain/error.js';
 import type { GitIndex, IndexEntry } from '../../domain/git-index/index.js';
 import type { ConflictType } from '../../domain/merge/index.js';
+import { subjectLine } from '../../domain/objects/commit-message.js';
 import { invalidCommit, unexpectedObjectType } from '../../domain/objects/error.js';
 import { deriveWorkingMode, type FilePath, type ObjectId } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
@@ -58,7 +59,6 @@ import {
   indexMessage,
   onMessage,
   stashBranchLabel,
-  subjectOf,
   untrackedMessage,
   wipMessage,
 } from './internal/stash-message.js';
@@ -108,7 +108,7 @@ const resolveBase = async (ctx: Context, head: HeadState): Promise<BaseState> =>
     b,
     bTree: obj.data.tree,
     branchRef: head.kind === 'symbolic' ? head.target : undefined,
-    subject: subjectOf(obj.data.message),
+    subject: subjectLine(obj.data.message),
   };
 };
 

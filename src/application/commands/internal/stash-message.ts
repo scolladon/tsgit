@@ -24,12 +24,6 @@ export const stashBranchLabel = (branchRef: string | undefined): string =>
     ? branchRef.slice(HEADS_PREFIX.length)
     : NO_BRANCH;
 
-/** HEAD's subject line: the first line of its commit message. */
-export const subjectOf = (message: string): string => {
-  const newline = message.indexOf('\n');
-  return newline === -1 ? message : message.slice(0, newline);
-};
-
 export const wipMessage = (branch: string, abbrev: string, subject: string): string =>
   `WIP on ${branch}: ${abbrev} ${subject}`;
 

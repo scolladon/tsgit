@@ -2,6 +2,7 @@ import { mergeHasConflicts } from '../../domain/commands/error.js';
 import type { IndexEntry } from '../../domain/git-index/index.js';
 import { nothingToCommit } from '../../domain/index.js';
 import type { CommitData } from '../../domain/objects/commit.js';
+import { subjectLine } from '../../domain/objects/commit-message.js';
 import type { AuthorIdentity, FilePath, ObjectId, TreeEntry } from '../../domain/objects/index.js';
 import { ZERO_OID } from '../../domain/objects/index.js';
 import type { RefName } from '../../domain/objects/object-id.js';
@@ -198,8 +199,7 @@ const commitReflogMessage = (
   mergeHead: ObjectId | undefined,
   cherryPickHead: ObjectId | undefined,
 ): string => {
-  // `split` always yields at least one element, so `[0]` is a string.
-  const subject = message.split('\n')[0] as string;
+  const subject = subjectLine(message);
   if (parentId === undefined) return `commit (initial): ${subject}`;
   if (mergeHead !== undefined) return `commit (merge): ${subject}`;
   if (cherryPickHead !== undefined) return `commit (cherry-pick): ${subject}`;

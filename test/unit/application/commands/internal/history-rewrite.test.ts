@@ -6,7 +6,6 @@ import { init } from '../../../../../src/application/commands/init.js';
 import {
   readCommitData,
   requireSymbolicHead,
-  subjectOf,
   treeOf,
 } from '../../../../../src/application/commands/internal/history-rewrite.js';
 import { readObject } from '../../../../../src/application/primitives/read-object.js';
@@ -95,53 +94,6 @@ describe('history-rewrite helpers', () => {
           expect(sut).toBe(expectedTree);
           const tree = await readObject(ctx, sut);
           expect(tree.type).toBe('tree');
-        });
-      });
-    });
-  });
-
-  describe('subjectOf', () => {
-    describe('Given a multi-line message', () => {
-      describe('When the subject is taken', () => {
-        it('Then returns the first line only', () => {
-          // Arrange
-          const message = 'subject line\n\nbody paragraph\nmore body';
-
-          // Act
-          const sut = subjectOf(message);
-
-          // Assert
-          expect(sut).toBe('subject line');
-        });
-      });
-    });
-
-    describe('Given a single-line message', () => {
-      describe('When the subject is taken', () => {
-        it('Then returns it unchanged', () => {
-          // Arrange
-          const message = 'solo subject';
-
-          // Act
-          const sut = subjectOf(message);
-
-          // Assert
-          expect(sut).toBe('solo subject');
-        });
-      });
-    });
-
-    describe('Given an empty message', () => {
-      describe('When the subject is taken', () => {
-        it('Then returns the empty string', () => {
-          // Arrange
-          const message = '';
-
-          // Act
-          const sut = subjectOf(message);
-
-          // Assert
-          expect(sut).toBe('');
         });
       });
     });

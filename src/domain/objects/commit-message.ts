@@ -16,6 +16,16 @@
 // / carriage-return can appear trailing — the last covers CRLF endings.
 const TRAILING_ASCII_WHITESPACE = /[ \t\v\f\r]+$/;
 
+/**
+ * A commit's subject: the first line of its message — everything before the
+ * first `\n`, or the whole string when single-line. An empty message yields the
+ * empty string. git splits on `\n` only, so a trailing CR (CRLF endings) is kept.
+ */
+export const subjectLine = (message: string): string => {
+  const newline = message.indexOf('\n');
+  return newline === -1 ? message : message.slice(0, newline);
+};
+
 export const stripspace = (message: string): string => {
   const lines: string[] = [];
   for (const raw of message.split('\n')) {

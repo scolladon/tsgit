@@ -19,6 +19,7 @@ import type { IndexEntry } from '../../domain/git-index/index.js';
 import { unsupportedOperation } from '../../domain/index.js';
 import type { ConflictType, MergeConflict } from '../../domain/merge/index.js';
 import type { CommitData } from '../../domain/objects/commit.js';
+import { subjectLine } from '../../domain/objects/commit-message.js';
 import type { FilePath, ObjectId, RefName } from '../../domain/objects/index.js';
 import type { TodoEntry } from '../../domain/sequencer/index.js';
 import type { Context } from '../../ports/context.js';
@@ -46,12 +47,7 @@ import { assertCleanWorkTree } from './internal/clean-work-tree.js';
 import { resolveCommitIsh } from './internal/commit-ish.js';
 import { sanitizeMessage, stripComments } from './internal/commit-message.js';
 import { resolveCurrentIdentity } from './internal/current-identity.js';
-import {
-  readCommitData,
-  requireSymbolicHead,
-  subjectOf,
-  treeOf,
-} from './internal/history-rewrite.js';
+import { readCommitData, requireSymbolicHead, treeOf } from './internal/history-rewrite.js';
 import { acquireIndexLock } from './internal/index-update.js';
 import { clearMergeMsg, readMergeMsg, writeMergeMsg } from './internal/merge-state.js';
 import { hardResetWorktreeToCommit } from './internal/reset-worktree.js';
@@ -179,7 +175,7 @@ const buildTodoEntries = async (
   const entries: TodoEntry[] = [];
   for (const oid of oids) {
     const cData = await readCommitData(ctx, oid);
-    entries.push({ command: 'pick', oid, subject: subjectOf(cData.message) });
+    entries.push({ command: 'pick', oid, subject: subjectLine(cData.message) });
   }
   return entries;
 };
@@ -336,7 +332,7 @@ const applyOnePick = async (
     const id = await createPickCommit(ctx, source, cData, ourId, res.mergedTree, opts);
     await updateRef(ctx, branch, id, {
       expected: ourId,
-      reflogMessage: `cherry-pick: ${subjectOf(cData.message)}`,
+      reflogMessage: `cherry-pick: ${subjectLine(cData.message)}`,
     });
     return { kind: 'committed', id };
   } finally {
@@ -473,7 +469,7 @@ const commitResolvedPick = async (
   });
   await updateRef(ctx, branch, id, {
     expected: ourId,
-    reflogMessage: `commit (cherry-pick): ${subjectOf(message)}`,
+    reflogMessage: `commit (cherry-pick): ${subjectLine(message)}`,
   });
   return id;
 };
