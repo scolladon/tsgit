@@ -1071,6 +1071,61 @@ describe('rebaseRun (interactive reword)', () => {
   });
 });
 
+describe('rebaseRun (interactive) — empty reword/squash message', () => {
+  describe('Given a reword whose message cleans to empty', () => {
+    describe('When run', () => {
+      it('Then it refuses with INVALID_OPTION before any state change', async () => {
+        // Arrange
+        const { ctx, base, c1 } = await seedLinear();
+        const before = await mainTipOid(ctx);
+
+        // Act
+        const sut = await dataReason(() =>
+          rebaseRun(ctx, {
+            upstream: base,
+            interactive: [{ action: 'reword', oid: c1, message: '   \n  \n' }],
+          }),
+        );
+
+        // Assert
+        expect(sut.code).toBe('INVALID_OPTION');
+        expect(sut.option).toBe('interactive');
+        expect(sut.reason).toContain('reword message must not be empty');
+        expect(await mainTipOid(ctx)).toBe(before); // HEAD never moved
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/rebase-merge`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a squash whose inline message cleans to empty', () => {
+    describe('When run after a leading pick', () => {
+      it('Then it refuses with INVALID_OPTION before any state change', async () => {
+        // Arrange
+        const { ctx, base, c1, c2 } = await seedLinear();
+        const before = await mainTipOid(ctx);
+
+        // Act
+        const sut = await dataReason(() =>
+          rebaseRun(ctx, {
+            upstream: base,
+            interactive: [
+              { action: 'pick', oid: c1 },
+              { action: 'squash', oid: c2, message: '\n\n' },
+            ],
+          }),
+        );
+
+        // Assert
+        expect(sut.code).toBe('INVALID_OPTION');
+        expect(sut.option).toBe('interactive');
+        expect(sut.reason).toContain('squash message must not be empty');
+        expect(await mainTipOid(ctx)).toBe(before);
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/rebase-merge`)).toBe(false);
+      });
+    });
+  });
+});
+
 /** topic off base: t1 (a.txt clean), t2 (f.txt=TOPIC), t3 (c.txt clean); main
  *  advances with m1 (f.txt=MAIN) — replaying t2 onto main conflicts. */
 const seedTopicConflict = async (): Promise<{

@@ -617,6 +617,13 @@ const planInteractive = async (
     if (inst.action === 'reword' && inst.message === undefined) {
       throw invalidOption('interactive', 'reword requires a message (no editor in a library)');
     }
+    if (
+      (inst.action === 'reword' || inst.action === 'squash') &&
+      inst.message !== undefined &&
+      sanitizeMessage(inst.message, { allowEmpty: true }) === ''
+    ) {
+      throw invalidOption('interactive', `${inst.action} message must not be empty`);
+    }
     const oid = await resolveCommitIsh(ctx, inst.oid);
     if (!candidates.has(oid)) {
       throw invalidOption(
@@ -791,6 +798,10 @@ const stepReword = async (
   cData: CommitData,
   head: ObjectId,
 ): Promise<Step> => {
+  // equivalent-mutant (`allowEmpty: false` → `true`): `planInteractive` rejects an
+  // empty reword message upfront, and a reword reached on a resume carries no
+  // message (not persisted across a stop), falling back to the commit's own
+  // non-empty message — so the cleaned message is never empty here.
   const message = sanitizeMessage(inst.message ?? cData.message, { allowEmpty: false });
   const produced = await produceOnto(
     ctx,
@@ -949,6 +960,9 @@ const meldGroupMember = async (
   // killed by the fixup-carrying-an-inline-message test.)
   if (inst.action === 'squash' && inst.message !== undefined) group.inline = inst.message;
   const template = buildCombinedMessage([{ message: group.baseMessage }, ...group.members]);
+  // equivalent-mutant (`allowEmpty: false` → `true`): an empty squash inline
+  // message is rejected upfront by `planInteractive`; otherwise the template
+  // fallback retains the base commit's non-empty message — never empty here.
   const message = isLast
     ? sanitizeMessage(group.inline ?? stripComments(template), { allowEmpty: false })
     : template;
