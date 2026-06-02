@@ -19,7 +19,6 @@ import type { IndexEntry } from '../../domain/git-index/index.js';
 import { unsupportedOperation } from '../../domain/index.js';
 import type { ConflictType, MergeConflict } from '../../domain/merge/index.js';
 import type { CommitData } from '../../domain/objects/commit.js';
-import { unexpectedObjectType } from '../../domain/objects/error.js';
 import type { FilePath, ObjectId, RefName } from '../../domain/objects/index.js';
 import type { TodoEntry } from '../../domain/sequencer/index.js';
 import type { Context } from '../../ports/context.js';
@@ -32,7 +31,6 @@ import {
   readHeadRaw,
 } from '../primitives/internal/repo-state.js';
 import { readIndex } from '../primitives/read-index.js';
-import { readObject } from '../primitives/read-object.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
 import { synthesizeTreeFromIndex } from '../primitives/synthesize-tree-from-index.js';
 import { updateRef } from '../primitives/update-ref.js';
@@ -48,6 +46,12 @@ import { assertCleanWorkTree } from './internal/clean-work-tree.js';
 import { resolveCommitIsh } from './internal/commit-ish.js';
 import { sanitizeMessage, stripComments } from './internal/commit-message.js';
 import { resolveCurrentIdentity } from './internal/current-identity.js';
+import {
+  readCommitData,
+  requireSymbolicHead,
+  subjectOf,
+  treeOf,
+} from './internal/history-rewrite.js';
 import { acquireIndexLock } from './internal/index-update.js';
 import { clearMergeMsg, readMergeMsg, writeMergeMsg } from './internal/merge-state.js';
 import { hardResetWorktreeToCommit } from './internal/reset-worktree.js';
@@ -106,17 +110,6 @@ type PickOutcome =
   | { readonly kind: 'committed'; readonly id: ObjectId }
   | { readonly kind: 'conflict'; readonly conflicts: ReadonlyArray<MergeConflict> }
   | { readonly kind: 'empty' };
-
-const readCommitData = async (ctx: Context, id: ObjectId): Promise<CommitData> => {
-  const obj = await readObject(ctx, id);
-  if (obj.type !== 'commit') throw unexpectedObjectType('commit', obj.type, id);
-  return obj.data;
-};
-
-const treeOf = async (ctx: Context, commitId: ObjectId): Promise<ObjectId> =>
-  (await readCommitData(ctx, commitId)).tree;
-
-const subjectOf = (message: string): string => message.split('\n')[0] as string;
 
 /** A merge commit (≥2 parents) cannot be picked without a chosen mainline (`-m`). */
 const isMergeCommit = (cData: CommitData): boolean => cData.parents.length >= 2;
@@ -567,15 +560,6 @@ export interface CherryPickAbortResult {
   readonly head: ObjectId;
   readonly branch: RefName;
 }
-
-/** Read the symbolic HEAD branch, refusing a detached HEAD for `verb`. */
-const requireSymbolicHead = async (ctx: Context, verb: string): Promise<RefName> => {
-  const head = await readHeadRaw(ctx);
-  if (head.kind !== 'symbolic') {
-    throw unsupportedOperation(verb, 'cannot run with detached HEAD');
-  }
-  return head.target;
-};
 
 /**
  * Drop the in-progress pick: hard-reset to HEAD (discarding its half-applied
