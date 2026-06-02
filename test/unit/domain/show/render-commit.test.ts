@@ -66,16 +66,16 @@ describe('renderCommitBlock', () => {
   });
 
   describe('Given a merge commit, When renderCommitBlock runs', () => {
-    it('Then a Merge line with 7-char abbreviated parents follows the commit line', () => {
+    it('Then a Merge line precedes the author and a trailing blank terminates the block', () => {
       // Arrange + Act
       const sut = renderCommitBlock({
         id: ID,
         commit: commit({ parents: [PARENT_A, PARENT_B], message: 'merge feature' }),
       });
 
-      // Assert
+      // Assert — git terminates a no-patch merge with a trailing blank line.
       expect(sut).toBe(
-        `commit ${ID}\nMerge: 80d1ead 5164635\nAuthor: A U Thor <author@example.com>\nDate:   Tue Nov 14 22:13:20 2023 +0000\n\n    merge feature\n`,
+        `commit ${ID}\nMerge: 80d1ead 5164635\nAuthor: A U Thor <author@example.com>\nDate:   Tue Nov 14 22:13:20 2023 +0000\n\n    merge feature\n\n`,
       );
     });
   });

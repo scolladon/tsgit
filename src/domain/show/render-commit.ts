@@ -19,11 +19,15 @@ export interface CommitBlockParts {
 }
 
 export function renderCommitBlock({ id, commit, patchText }: CommitBlockParts): string {
+  const isMerge = commit.parents.length >= 2;
   const lines = [`commit ${id}`];
-  if (commit.parents.length >= 2) {
+  if (isMerge) {
     lines.push(`Merge: ${commit.parents.map((p) => p.slice(0, ABBREV_LENGTH)).join(' ')}`);
   }
   lines.push(...renderIdentityHeader('Author', commit.author));
   const block = `${lines.join('\n')}\n\n${indentMessage(commit.message)}\n`;
-  return patchText ? `${block}\n${patchText}` : block;
+  if (patchText) return `${block}\n${patchText}`;
+  // A merge shows no patch but git terminates it with a trailing blank line
+  // (the empty-diff-merges terminator); a non-merge no-diff commit does not.
+  return isMerge ? `${block}\n` : block;
 }
