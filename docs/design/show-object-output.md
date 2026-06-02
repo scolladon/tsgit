@@ -66,9 +66,13 @@ Date:   <gitDate(author)>\n
 - The header uses the **resolved oid** (not the input rev string).
 - `Merge:` lists every parent's abbreviated oid (7 chars, matching the patch
   serializer's `OID_ABBREV_LENGTH`), space-separated.
-- **Merge commits show no patch** (git's default). Non-merge commits show the
-  patch against `parents[0]`'s tree; root commits (no parents) against the
-  empty tree.
+- **Merge commits show no patch** (git's default) and the block is terminated
+  with a **trailing blank line** (git's empty-diff-merges terminator); a
+  non-merge no-diff commit (e.g. an empty commit) is **not**. Non-merge commits
+  show the patch against `parents[0]`'s tree; root commits (no parents) against
+  the empty tree. The patch is computed **recursively** — both trees are
+  flattened to full-path blob entries first, so sub-directories surface as
+  per-file changes (`diff --git a/sub/b.txt …`) rather than a single tree-add.
 - **Indented message** — each message line is prefixed with four spaces;
   leading and trailing blank lines (whitespace-only, git's `is_blank_line`)
   are stripped; interior blank lines are kept and become `····` (four spaces).
