@@ -416,7 +416,7 @@ export const rebaseRun = async (ctx: Context, input: RebaseRunInput): Promise<Re
   await assertCleanWorkTree(ctx, await treeOf(ctx, headCommit));
   // No common ancestor (unrelated histories) → `base` is undefined and the whole
   // branch replays onto `onto`, the root commit against the empty-tree base —
-  // faithful to `git rebase <unrelated>` (ADR-238).
+  // faithful to `git rebase <unrelated>`.
   const [base] = await mergeBase(ctx, [upstream, headCommit]);
   if (input.interactive !== undefined) {
     return rebaseRunInteractive(ctx, {
