@@ -304,6 +304,39 @@ describe('rebaseRun', () => {
     });
   });
 
+  describe('Given a conflicting pick whose commit also touches a sub-directory', () => {
+    describe('When rebased', () => {
+      it('Then the rebase-merge/patch file recurses into the sub-directory', async () => {
+        // Arrange — base has `f.txt`; topic's only commit edits `f.txt`
+        // (conflicting with main) AND adds `sub/g.txt`. Rendering the failed
+        // pick's patch must recurse, not throw on the nested add.
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await setUser(ctx);
+        await writeAddCommit(ctx, 'f.txt', 'l1\nBASE\n', 'base');
+        await branchCreate(ctx, { name: 'topic' });
+        await checkout(ctx, { target: 'topic' });
+        await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'l1\nTOPIC\n');
+        await ctx.fs.writeUtf8(work(ctx, 'sub/g.txt'), 'nested\n');
+        await add(ctx, ['f.txt', 'sub/g.txt']);
+        await commit(ctx, { message: 't1', author: FEAT_AUTHOR });
+        await checkout(ctx, { target: 'main' });
+        await writeAddCommit(ctx, 'f.txt', 'l1\nMAIN\n', 'm1');
+        await checkout(ctx, { target: 'topic' });
+
+        // Act
+        const sut = await rebaseRun(ctx, { upstream: 'main' });
+
+        // Assert — stops on the f.txt conflict; the patch file carries the
+        // nested add as a per-file hunk (full path).
+        expect(sut.kind).toBe('conflict');
+        const patch = await readMerge(ctx, 'patch');
+        expect(patch).toContain('diff --git a/sub/g.txt b/sub/g.txt');
+        expect(patch).toContain('+nested');
+      });
+    });
+  });
+
   describe('Given a detached HEAD', () => {
     describe('When rebased onto main cleanly', () => {
       it('Then it replays onto main and leaves HEAD detached at the new tip (no finish reflog)', async () => {

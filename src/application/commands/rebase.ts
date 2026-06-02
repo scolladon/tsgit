@@ -287,7 +287,9 @@ const replayOne = async (
 const renderCommitPatch = async (ctx: Context, cData: CommitData): Promise<string> => {
   const parentId = cData.parents[0];
   const parentTree = parentId !== undefined ? await treeOf(ctx, parentId) : undefined;
-  const diff = await diffTrees(ctx, parentTree, cData.tree);
+  // Recurse like git: the patch file must render nested changes per-file, not
+  // choke on a sub-tree the patch hydration would read as a blob.
+  const diff = await diffTrees(ctx, parentTree, cData.tree, { recursive: true });
   const files = await materialisePatchFiles(ctx, diff.changes);
   // equivalent-mutant (`{}`): `renderPatch`'s defaults are exactly `contextLines:
   // 3` + `{ old: 'a/', new: 'b/' }`, so passing `{}` produces byte-identical output.
