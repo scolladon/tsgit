@@ -10,12 +10,12 @@ const isBlank = (line: string): boolean => /^\s*$/.test(line);
 
 export function indentMessage(message: string): string {
   const lines = message.split('\n');
-  let start = 0;
-  while (start < lines.length && isBlank(lines[start]!)) start += 1;
-  let end = lines.length;
-  while (end > start && isBlank(lines[end - 1]!)) end -= 1;
+  const first = lines.findIndex((line) => !isBlank(line));
+  if (first === -1) return '';
+  // Index of the last non-blank line, found from the end (no manual bounds loop).
+  const lastFromEnd = [...lines].reverse().findIndex((line) => !isBlank(line));
   return lines
-    .slice(start, end)
+    .slice(first, lines.length - lastFromEnd)
     .map((line) => `${INDENT}${line}`)
     .join('\n');
 }

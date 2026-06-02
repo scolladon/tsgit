@@ -122,6 +122,22 @@ describe('show', () => {
     });
   });
 
+  describe('Given the same tree listed twice, When show() runs', () => {
+    it('Then it is rendered twice (trees are not de-duplicated like commits)', async () => {
+      // Arrange
+      const ctx = await seedTwoCommits();
+      const tree = await revParse(ctx, 'HEAD^{tree}');
+
+      // Act
+      const sut = await show(ctx, [tree, tree]);
+
+      // Assert — a commit would de-dup; a tree must appear in `bytes` twice.
+      expect(sut.objects).toHaveLength(2);
+      const occurrences = decode(sut.bytes).split(`tree ${tree}`).length - 1;
+      expect(occurrences).toBe(2);
+    });
+  });
+
   describe('Given a blob rev, When show() runs', () => {
     it('Then the raw blob content is returned', async () => {
       // Arrange
