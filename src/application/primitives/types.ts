@@ -162,6 +162,12 @@ export type DiffTreesInput = Tree | ObjectId | undefined;
 export interface DiffTreesOptions {
   readonly detectRenames?: boolean;
   readonly renameOptions?: RenameDetectOptions;
+  /**
+   * Recurse into sub-directories, surfacing nested blobs as full-path changes
+   * (git's recursive diff) instead of one change per top-level sub-tree. Both
+   * sides are flattened to full-path blob entries before classification.
+   */
+  readonly recursive?: boolean;
 }
 
 /**

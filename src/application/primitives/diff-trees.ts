@@ -5,6 +5,7 @@ import {
 } from '../../domain/diff/index.js';
 import type { Tree } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
+import { flattenTree } from './flatten-tree.js';
 import { readTree } from './read-tree.js';
 import type { DiffTreesInput, DiffTreesOptions } from './types.js';
 
@@ -15,7 +16,10 @@ export async function diffTrees(
   options?: DiffTreesOptions,
 ): Promise<TreeDiff> {
   const [treeA, treeB] = await Promise.all([resolveInput(ctx, a), resolveInput(ctx, b)]);
-  const raw = domainDiffTrees(treeA, treeB);
+  const raw =
+    options?.recursive === true
+      ? domainDiffTrees(...(await projectBoth(ctx, treeA, treeB)))
+      : domainDiffTrees(treeA, treeB);
   if (options?.detectRenames === true) {
     return detectRenames(raw, options.renameOptions);
   }
@@ -29,4 +33,31 @@ async function resolveInput(ctx: Context, input: DiffTreesInput): Promise<Tree |
     return readTree(ctx, input);
   }
   return input;
+}
+
+function projectBoth(
+  ctx: Context,
+  a: Tree | undefined,
+  b: Tree | undefined,
+): Promise<[Tree | undefined, Tree | undefined]> {
+  return Promise.all([blobProjection(ctx, a), blobProjection(ctx, b)]);
+}
+
+/**
+ * Flatten a tree to a full-path blob *projection* — a `Tree` whose entries carry
+ * full slash-separated names and the leaf blob mode. Classifying these
+ * reproduces git's recursive diff order: a directory sorts as if it had a
+ * trailing `/`, so a raw full-path byte sort matches the recursive walk. The
+ * projection is diff-only and is never serialised — its slash-bearing names
+ * would be rejected by the tree serializer, which it never reaches.
+ */
+async function blobProjection(ctx: Context, tree: Tree | undefined): Promise<Tree | undefined> {
+  if (tree === undefined) return undefined;
+  const flat = await flattenTree(ctx, tree);
+  const entries = Array.from(flat.entries, ([name, entry]) => ({
+    name,
+    mode: entry.mode,
+    id: entry.id,
+  }));
+  return { type: 'tree', id: tree.id, entries };
 }
