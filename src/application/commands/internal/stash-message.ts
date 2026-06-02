@@ -20,9 +20,7 @@ const NO_BRANCH = '(no branch)';
  * or `undefined` when HEAD is detached.
  */
 export const stashBranchLabel = (branchRef: string | undefined): string =>
-  branchRef !== undefined && branchRef.startsWith(HEADS_PREFIX)
-    ? branchRef.slice(HEADS_PREFIX.length)
-    : NO_BRANCH;
+  branchRef?.startsWith(HEADS_PREFIX) ? branchRef.slice(HEADS_PREFIX.length) : NO_BRANCH;
 
 export const wipMessage = (branch: string, abbrev: string, subject: string): string =>
   `WIP on ${branch}: ${abbrev} ${subject}`;
