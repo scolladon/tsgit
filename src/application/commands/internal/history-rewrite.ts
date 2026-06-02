@@ -1,8 +1,8 @@
 /**
  * Helpers shared by the history-rewriting porcelain (`cherry-pick`, `revert`,
- * `rebase`): read a commit's data, project its tree, take a message subject, and
- * guard a symbolic HEAD. Each replay command consumes the same building blocks,
- * so they live here rather than being copied per command.
+ * `rebase`): read a commit's data, project its tree, and guard a symbolic HEAD.
+ * Each replay command consumes the same building blocks, so they live here
+ * rather than being copied per command.
  */
 import { unsupportedOperation } from '../../../domain/index.js';
 import type { CommitData } from '../../../domain/objects/commit.js';
@@ -20,8 +20,6 @@ export const readCommitData = async (ctx: Context, id: ObjectId): Promise<Commit
 
 export const treeOf = async (ctx: Context, commitId: ObjectId): Promise<ObjectId> =>
   (await readCommitData(ctx, commitId)).tree;
-
-export const subjectOf = (message: string): string => message.split('\n')[0] as string;
 
 /** Read the symbolic HEAD branch, refusing a detached HEAD for `verb`. */
 export const requireSymbolicHead = async (ctx: Context, verb: string): Promise<RefName> => {

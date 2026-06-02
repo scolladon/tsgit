@@ -19,6 +19,7 @@ import type { IndexEntry } from '../../domain/git-index/index.js';
 import { unsupportedOperation } from '../../domain/index.js';
 import type { ConflictType, MergeConflict } from '../../domain/merge/index.js';
 import type { CommitData } from '../../domain/objects/commit.js';
+import { subjectLine } from '../../domain/objects/commit-message.js';
 import type { FilePath, ObjectId, RefName } from '../../domain/objects/index.js';
 import {
   buildCombinedMessage,
@@ -52,7 +53,7 @@ import { assertCleanWorkTree } from './internal/clean-work-tree.js';
 import { resolveCommitIsh } from './internal/commit-ish.js';
 import { sanitizeMessage, stripComments } from './internal/commit-message.js';
 import { resolveCurrentIdentity } from './internal/current-identity.js';
-import { readCommitData, subjectOf, treeOf } from './internal/history-rewrite.js';
+import { readCommitData, treeOf } from './internal/history-rewrite.js';
 import { acquireIndexLock } from './internal/index-update.js';
 import { writeOrigHead } from './internal/merge-state.js';
 import {
@@ -191,7 +192,7 @@ const buildTodoEntries = async (
     entries.push({
       action: 'pick',
       oid,
-      subject: subjectOf((await readCommitData(ctx, oid)).message),
+      subject: subjectLine((await readCommitData(ctx, oid)).message),
     });
   }
   return entries;
@@ -274,7 +275,7 @@ const replayOne = async (
   });
   await updateRef(ctx, HEAD, id, {
     expected: ourId,
-    reflogMessage: `rebase (pick): ${subjectOf(cData.message)}`,
+    reflogMessage: `rebase (pick): ${subjectLine(cData.message)}`,
   });
   return { kind: 'committed', id };
 };
@@ -494,7 +495,7 @@ export const rebaseContinue = async (ctx: Context): Promise<RebaseResult> => {
   });
   await updateRef(ctx, HEAD, resolutionId, {
     expected: currentHead,
-    reflogMessage: `rebase (continue): ${subjectOf(message)}`,
+    reflogMessage: `rebase (continue): ${subjectLine(message)}`,
   });
   const rewritten = [...(await readRewrittenList(ctx)), [stopped.oid, resolutionId] as const];
   const rc: ReplayContext = {
@@ -623,7 +624,7 @@ const planInteractive = async (
         `commit ${oid} is not in the list of commits to be rebased`,
       );
     }
-    const subject = subjectOf((await readCommitData(ctx, oid)).message);
+    const subject = subjectLine((await readCommitData(ctx, oid)).message);
     planned.push({
       action: inst.action,
       oid,
@@ -753,7 +754,7 @@ const stepPick = async (
     inst,
     cData,
     head,
-    `rebase (pick): ${subjectOf(cData.message)}`,
+    `rebase (pick): ${subjectLine(cData.message)}`,
   );
   if (produced.kind === 'conflict') return { kind: 'conflict', conflicts: produced.conflicts };
   return { kind: 'advanced', created: produced.created };
@@ -771,7 +772,7 @@ const stepEdit = async (
     inst,
     cData,
     head,
-    `rebase (edit): ${subjectOf(cData.message)}`,
+    `rebase (edit): ${subjectLine(cData.message)}`,
   );
   if (produced.kind === 'conflict') return { kind: 'conflict', conflicts: produced.conflicts };
   return { kind: 'edit-stop', created: produced.created };
@@ -796,7 +797,7 @@ const stepReword = async (
     inst,
     cData,
     head,
-    `rebase (reword): ${subjectOf(cData.message)}`,
+    `rebase (reword): ${subjectLine(cData.message)}`,
   );
   if (produced.kind === 'conflict') return { kind: 'conflict', conflicts: produced.conflicts };
   const producedData = await readCommitData(ctx, produced.created);
@@ -806,7 +807,7 @@ const stepReword = async (
     expected: produced.created,
     author: producedData.author,
     message,
-    reflog: `rebase (reword): ${subjectOf(message)}`,
+    reflog: `rebase (reword): ${subjectLine(message)}`,
   });
   return { kind: 'advanced', created };
 };
@@ -957,7 +958,7 @@ const meldGroupMember = async (
     expected: head,
     author: headData.author,
     message,
-    reflog: `rebase (${inst.action}): ${subjectOf(message)}`,
+    reflog: `rebase (${inst.action}): ${subjectLine(message)}`,
   });
   return { kind: 'committed', created, message };
 };
@@ -1120,7 +1121,7 @@ const rebaseContinueInteractive = async (
       expected: currentHead,
       author: baseData.author,
       message,
-      reflog: `rebase (continue): ${subjectOf(message)}`,
+      reflog: `rebase (continue): ${subjectLine(message)}`,
     });
     rewritten.push([stoppedOid, resumeHead]);
   } else if (state.amend !== undefined) {
@@ -1134,7 +1135,7 @@ const rebaseContinueInteractive = async (
         expected: currentHead,
         author: state.author,
         message: amendCommit.message,
-        reflog: `rebase (continue): ${subjectOf(amendCommit.message)}`,
+        reflog: `rebase (continue): ${subjectLine(amendCommit.message)}`,
       });
       rewritten.push([stoppedOid, resumeHead]);
     }
@@ -1149,7 +1150,7 @@ const rebaseContinueInteractive = async (
       expected: currentHead,
       author: state.author,
       message,
-      reflog: `rebase (continue): ${subjectOf(message)}`,
+      reflog: `rebase (continue): ${subjectLine(message)}`,
     });
     rewritten.push([stoppedOid, resumeHead]);
   }
