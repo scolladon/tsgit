@@ -279,6 +279,7 @@ v2.0 is complete (22.4 landed; 20.1's snapshot surface shipped in #81 and is rec
 ## Phase 23 — Inspection (v3)
 
 - [ ] **23.1** `show` — formatted object output (commit/tag/tree/blob).
+- [ ] **23.1a** `diff` patch path should recurse into sub-trees (surfaced by 23.1). `repo.diff({ format: 'patch' })` throws `UNEXPECTED_OBJECT_TYPE` on any tree containing a sub-directory — the single-level `diffTrees` surfaces a sub-dir as one tree-add and `materialisePatchFiles` then `readBlob`s a tree. `show` works around this locally by flattening both trees to full-path blob entries before diffing; promote that into a shared recursive tree-diff and adopt it in `diff`. Out of 23.1's behavior-preserving refactor scope because it changes `diff`'s structured `TreeDiff`; pin with a nested-directory diff interop.
 - [ ] **23.2** `describe` — nearest tag distance.
 - [ ] **23.3** `blame` — line-by-line authorship via reverse-diff history walk.
 - [ ] **23.4** `shortlog` — author summary.
