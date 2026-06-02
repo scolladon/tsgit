@@ -335,8 +335,9 @@ slice — falls back to a structural test if Node's runtime `TZ` is not honoured
 ## 11. Error handling
 
 - `assertRepository(ctx)` first.
-- Unknown `format` named value → `INVALID_OPTION` (`{ code, option: 'format', value }`).
-- Unknown `--date` mode → `INVALID_OPTION` (`option: 'date'`).
+- Unknown `format` named value → `invalidOption('format', …)` (existing
+  `INVALID_OPTION` factory: `{ code, option, reason }`).
+- Unknown `--date` mode → `invalidOption('date', …)`.
 - `<rev>:<path>` component absent → `PATH_NOT_IN_TREE` (`{ code, rev, path }`).
 - A non-tree-ish left of `:` → propagates `revParse`'s typed error.
 - No new error code where an existing one fits (rev resolution reuses the
