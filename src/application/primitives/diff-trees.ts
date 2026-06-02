@@ -18,7 +18,7 @@ export async function diffTrees(
   const [treeA, treeB] = await Promise.all([resolveInput(ctx, a), resolveInput(ctx, b)]);
   const raw =
     options?.recursive === true
-      ? domainDiffTrees(...(await projectBoth(ctx, treeA, treeB)))
+      ? await diffRecursive(ctx, treeA, treeB)
       : domainDiffTrees(treeA, treeB);
   if (options?.detectRenames === true) {
     return detectRenames(raw, options.renameOptions);
@@ -35,12 +35,13 @@ async function resolveInput(ctx: Context, input: DiffTreesInput): Promise<Tree |
   return input;
 }
 
-function projectBoth(
+async function diffRecursive(
   ctx: Context,
   a: Tree | undefined,
   b: Tree | undefined,
-): Promise<[Tree | undefined, Tree | undefined]> {
-  return Promise.all([blobProjection(ctx, a), blobProjection(ctx, b)]);
+): Promise<TreeDiff> {
+  const [oldTree, newTree] = await Promise.all([blobProjection(ctx, a), blobProjection(ctx, b)]);
+  return domainDiffTrees(oldTree, newTree);
 }
 
 /**
