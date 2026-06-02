@@ -30,6 +30,7 @@ Every method bound on a `Repository` handle. 29 entries, alphabetical.
 | [`revParse`](rev-parse.md) | Resolve revision expressions to `ObjectId`. |
 | [`revert`](revert.md) | Record new commits that undo earlier commits (inverse of cherry-pick). |
 | [`rm`](rm.md) | Remove files from the index (and optionally the working tree). |
+| [`show`](show.md) | Formatted output for commit / tag / tree / blob objects. |
 | [`sparseCheckout`](sparse-checkout.md) | Materialise a subset of the tree (cone / non-cone). |
 | [`stash`](stash.md) | Save working-tree + index changes on a stack and restore them later. |
 | [`status`](status.md) | Compare working tree, index, and HEAD. |

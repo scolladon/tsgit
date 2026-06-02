@@ -173,6 +173,18 @@ export {
 } from './revert.js';
 export { type RmOptions, type RmResult, rm } from './rm.js';
 export {
+  type ShowBlobResult,
+  type ShowCommitResult,
+  type ShowInput,
+  type ShowOptions,
+  type ShowOutput,
+  type ShowResult,
+  type ShowTagResult,
+  type ShowTreeEntry,
+  type ShowTreeResult,
+  show,
+} from './show.js';
+export {
   type SparseCheckoutAddInput,
   type SparseCheckoutAppliedResult,
   type SparseCheckoutDisableInput,

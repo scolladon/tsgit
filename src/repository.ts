@@ -183,6 +183,7 @@ export interface Repository {
   readonly revert: commands.RevertNamespace;
   readonly revParse: BindCtx<typeof commands.revParse>;
   readonly rm: BindCtx<typeof commands.rm>;
+  readonly show: BindCtx<typeof commands.show>;
   /** Nested `repo.sparseCheckout.{list,set,add,reapply,disable}` namespace. */
   readonly sparseCheckout: commands.SparseCheckoutNamespace;
   /** Nested `repo.stash.{push,list,apply,pop,drop}` namespace. */
@@ -469,6 +470,10 @@ export const openRepository = async (
       guard();
       return commands.rm(ctx, paths, rmOpts);
     }) as Repository['rm'],
+    show: ((input, showOpts) => {
+      guard();
+      return commands.show(ctx, input, showOpts);
+    }) as Repository['show'],
     sparseCheckout: commands.bindSparseCheckoutNamespace(ctx, guard),
     stash: commands.bindStashNamespace(ctx, guard),
     status: (() => {
