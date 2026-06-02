@@ -160,6 +160,7 @@ describe('openRepository — Repository binding integrity', () => {
             'revParse',
             'revert',
             'rm',
+            'show',
             'snapshot',
             'sparseCheckout',
             'stash',
@@ -445,6 +446,24 @@ describe('openRepository — dispose state machine', () => {
         let caught: unknown;
         try {
           await sut.continueMerge();
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data.code).toBe('REPOSITORY_DISPOSED');
+      });
+    });
+    describe('When show is invoked', () => {
+      it('Then throws REPOSITORY_DISPOSED', async () => {
+        // Arrange
+        const sut = await open();
+        await sut.dispose();
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut.show();
         } catch (err) {
           caught = err;
         }
