@@ -8,7 +8,7 @@ Accepted (at `f9a13020`)
 
 `repo.diff({ format: 'patch' })` throws `UNEXPECTED_OBJECT_TYPE` on any tree
 containing a sub-directory: the single-level tree-diff classifies a sub-tree as a
-plain change carrying a *tree* oid, and the patch materialiser then `readBlob`s
+plain change carrying a *tree* oid, and the patch materialisation then `readBlob`s
 that tree. The fix is a shared recursive tree-diff (flatten both trees to
 full-path blobs, then classify) adopted by the patch path.
 

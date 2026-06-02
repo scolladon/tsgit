@@ -68,7 +68,8 @@ export async function diffTrees(ctx, a, b, options?): Promise<TreeDiff> {
 `flattenTree`s the tree and rebuilds a `Tree` whose entries carry **full-path
 names** and the leaf blob mode. This projection is a *diff-only*, never-serialised
 view (its slash-bearing names would be rejected by the tree serializer — that is
-fine, they never reach it). Centralising it here removes `show`'s private copy.
+fine, they never reach it). Keeping this projection here removes `show`'s private
+copy.
 
 `flattenTree` is generalised from `ObjectId` to `ObjectId | Tree` (the underlying
 `walkTree` already accepts both), so the primitive flattens the **already-resolved**
