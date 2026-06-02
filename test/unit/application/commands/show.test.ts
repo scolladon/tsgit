@@ -84,6 +84,27 @@ describe('show', () => {
     });
   });
 
+  describe('Given a commit touching a nested directory, When show() runs', () => {
+    it('Then the patch recurses to the per-file change', async () => {
+      // Arrange — a commit whose tree has a sub-directory; the single-level
+      // tree diff would surface `sub` as a tree-add, so this pins the flatten.
+      const ctx = createMemoryContext();
+      await init(ctx);
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/sub/b.txt`, 'nested\n');
+      await add(ctx, ['sub/b.txt']);
+      await commit(ctx, { message: 'add nested', author });
+
+      // Act
+      const sut = await show(ctx);
+
+      // Assert
+      const result = sut.objects[0]!;
+      if (result.kind !== 'commit') throw new Error('expected commit');
+      expect(result.patch?.text).toContain('diff --git a/sub/b.txt b/sub/b.txt');
+      expect(result.patch?.text).toContain('+nested');
+    });
+  });
+
   describe('Given a tree-ish rev, When show() runs', () => {
     it('Then it lists the tree with the input echoed in the header', async () => {
       // Arrange
