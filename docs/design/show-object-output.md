@@ -38,11 +38,11 @@ All formats below were observed against canonical `git show` with scrubbed
 ### 2.1 Date format (default `medium` / `DATE_NORMAL`)
 
 ```
-<Wday> <Mon> <D> <HH>:<MM>:<SS> <YYYY> <±ZZZZ>
+<WeekDay> <Mon> <D> <HH>:<MM>:<SS> <YYYY> <±ZZZZ>
 e.g.  Wed Nov 15 00:13:20 2023 +0200
 ```
 
-- `Wday` / `Mon`: English three-letter abbreviations.
+- `WeekDay` / `Mon`: English three-letter abbreviations.
 - `D`: day-of-month, **unpadded** (`2`, not `02` or ` 2`).
 - `HH:MM:SS`: zero-padded to two digits.
 - `YYYY`: full year.
@@ -295,7 +295,7 @@ pre-epoch timestamps are handled natively by `Date`.
 
 - `git-date.properties.test.ts` — the formatter is a **total function over a
   grammar** (lens 3) and a **round-trip-ish projection**: property — for any
-  safe `(timestamp, ±HHMM)`, output matches `^<Wday> <Mon> \d{1,2} \d2:\d2:\d2 \d{4} ±HHMM$`
+  safe `(timestamp, ±HHMM)`, output matches `^<WeekDay> <Mon> \d{1,2} \d2:\d2:\d2 \d{4} ±HHMM$`
   and re-parses to the same wall-clock components. Example tests pin the
   literal `Wed Nov 15 00:13:20 2023 +0200` corners (single-digit day, negative
   tz, pre-epoch).

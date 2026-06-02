@@ -21,10 +21,10 @@ References: `docs/design/show-object-output.md`, ADR-240/241/242.
   and the trailing tz equals the input verbatim. `numRuns` 200 (cheap).
 
 **Green.** Pure: parse `±HHMM` → offset seconds; `local = (timestamp+offset)*1000`;
-`WDAYS[getUTCDay]`, `MONTHS[getUTCMonth]`, unpadded `getUTCDate`, zero-padded
+`WEEKDAYS[getUTCDay]`, `MONTHS[getUTCMonth]`, unpadded `getUTCDate`, zero-padded
 H/M/S, full year, ` ${tz}`.
 
-**Refactor.** `WDAYS` / `MONTHS` as module `const` arrays.
+**Refactor.** `WEEKDAYS` / `MONTHS` as module `const` arrays.
 
 ---
 
