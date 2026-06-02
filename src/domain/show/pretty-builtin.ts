@@ -10,7 +10,7 @@
  *   - reference `<abbrev> (<subject>, <short-date>)`
  *   - email/mboxrd  mbox envelope + `Subject: [PATCH] …` + body
  */
-import { subjectLine } from '../objects/commit-message.js';
+import { commitBody, subjectLine } from '../objects/commit-message.js';
 import type { AuthorIdentity, CommitData, ObjectId } from '../objects/index.js';
 import { formatDate } from './date-mode.js';
 import { type DateFormatter, defaultDateFormatter } from './identity-header.js';
@@ -110,11 +110,6 @@ const renderReference = (parts: BuiltinParts): string => {
   return `${abbrev(parts.id)} (${subjectLine(parts.commit.message)}, ${shortDate})`;
 };
 
-const bodyOf = (message: string): string => {
-  const blank = message.indexOf('\n\n');
-  return blank === -1 ? '' : message.slice(blank + 2);
-};
-
 const mboxrdQuote = (body: string): string =>
   body
     .split('\n')
@@ -129,7 +124,7 @@ const renderEmail = (parts: BuiltinParts, quote: boolean): string => {
     parts.now,
   );
   const subject = subjectLine(parts.commit.message);
-  const rawBody = bodyOf(parts.commit.message);
+  const rawBody = commitBody(parts.commit.message);
   const body = quote ? mboxrdQuote(rawBody) : rawBody;
   const head = `From ${parts.id} ${MBOX_MAGIC}\nFrom: ${identityText(parts.commit.author)}\nDate: ${date}\nSubject: [PATCH] ${subject}`;
   // The blank line + body (which carries its own trailing newline, or is empty)

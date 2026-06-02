@@ -5,7 +5,7 @@
  * one-letter codes, `%xXX` hex bytes, `%n`, `%%`). An unknown `%?` is left
  * verbatim — git's behaviour.
  */
-import { subjectLine } from '../objects/commit-message.js';
+import { commitBody, subjectLine } from '../objects/commit-message.js';
 import type { AuthorIdentity, CommitData, ObjectId } from '../objects/index.js';
 import { type DateMode, formatDate } from './date-mode.js';
 import {
@@ -25,11 +25,6 @@ const sanitizeSubject = (subject: string): string =>
     .replace(/[^A-Za-z0-9]+/g, '-')
     .replace(/^-+/, '')
     .replace(/-+$/, '');
-
-const bodyOf = (message: string): string => {
-  const blank = message.indexOf('\n\n');
-  return blank === -1 ? '' : message.slice(blank + 2);
-};
 
 const encodingOf = (commit: CommitData): string =>
   commit.extraHeaders.find((h) => h.key === 'encoding')?.value ?? '';
@@ -83,7 +78,7 @@ export const buildCommitFields = (ctx: FieldContext): Readonly<Record<string, st
     p: commit.parents.map((parent) => parent.slice(0, ABBREV)).join(' '),
     s: subject,
     f: sanitizeSubject(subject),
-    b: bodyOf(commit.message),
+    b: commitBody(commit.message),
     B: commit.message,
     e: encodingOf(commit),
     d: decorationParen(labels),
