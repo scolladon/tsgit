@@ -170,6 +170,24 @@ macOS + Windows runs nightly via the `mutation-os.yml` workflow (ADR-055).
 5. The GitHub Release event triggers `npm-service.yml`, which runs
    `npm publish --provenance --access public` over OIDC
 
+**Forcing a version (`Release-As`) — mind the squash.** To override the
+computed bump (e.g. cut a major for breaking changes that merged earlier as
+plain `feat:`), a commit on `main` must carry a `Release-As: <version>` footer
+(plus a `BREAKING CHANGE:` footer for a major). GitHub's squash merge keeps
+only the PR **title** — it discards the PR description and the pre-squash
+commit bodies — so footers placed there are silently lost. Pass them
+explicitly on the merge instead:
+
+```bash
+gh pr merge <pr> --squash --admin --delete-branch \
+  --subject "docs: <subject>" \
+  --body $'Release-As: 2.0.0\n\nBREAKING CHANGE: <summary>'
+```
+
+Then verify they actually landed before trusting release-please:
+`git log -1 --format='%B' origin/main`. The footers are parsed regardless of
+the commit type, so an honest `docs:` / `chore:` subject works.
+
 Authentication to npm uses **trusted publisher** (OIDC), not a long-lived
 `NPM_TOKEN`. The workflow's `id-token: write` permission lets GitHub mint a
 short-lived OIDC token that npm exchanges for publish rights, gated on the
