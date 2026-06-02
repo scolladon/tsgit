@@ -57,15 +57,23 @@ const resolveStat = (stat: boolean | ShowStatOptions | undefined): ResolvedStat 
   };
 };
 
+const MERGE_DIFF_MODES = new Set<MergeDiffMode>(['none', 'separate', 'combined', 'dense']);
+
+const resolveMergeDiff = (mode: MergeDiffMode | undefined): MergeDiffMode => {
+  if (mode === undefined) return 'dense';
+  if (!MERGE_DIFF_MODES.has(mode))
+    throw invalidOption('mergeDiff', `unsupported merge diff: ${mode}`);
+  return mode;
+};
+
 export const parseShowOptions = (opts: ShowOptions): ResolvedShowPlan => {
-  if (opts.mergeDiff !== undefined) throw invalidOption('mergeDiff', 'unsupported');
   const stat = resolveStat(opts.stat);
   return {
     noPatch: opts.noPatch === true,
     format: resolveFormat(opts.format),
     dateMode: resolveDateMode(opts.date),
     numstat: opts.numstat === true,
-    mergeDiff: 'dense',
+    mergeDiff: resolveMergeDiff(opts.mergeDiff),
     ...(stat !== undefined ? { stat } : {}),
     ...(opts.contextLines !== undefined ? { contextLines: opts.contextLines } : {}),
   };

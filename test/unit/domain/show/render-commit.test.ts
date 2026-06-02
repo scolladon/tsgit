@@ -107,6 +107,23 @@ describe('renderCommitBlock', () => {
     });
   });
 
+  describe('Given a fromParent on a merge commit, When renderCommitBlock runs', () => {
+    it('Then the header carries the (from <parent>) suffix', () => {
+      // Arrange + Act
+      const sut = renderCommitBlock({
+        id: ID,
+        commit: commit({ parents: [PARENT_A, PARENT_B], message: 'merge feature' }),
+        fromParent: PARENT_A,
+        patchText: 'diff --git a/a b/a\n',
+      });
+
+      // Assert
+      expect(sut.startsWith(`commit ${ID} (from ${PARENT_A})\nMerge: 80d1ead 5164635\n`)).toBe(
+        true,
+      );
+    });
+  });
+
   describe('Given noPatch on a merge commit, When renderCommitBlock runs', () => {
     it('Then the trailing-blank terminator is also suppressed', () => {
       // Arrange + Act

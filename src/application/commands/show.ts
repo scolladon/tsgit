@@ -92,6 +92,8 @@ export interface ShowCommitResult {
   readonly patch?: PatchResult;
   /** Per-file diffstat entries, present when `--stat` or `--numstat` is set. */
   readonly stat?: ReadonlyArray<StatEntry>;
+  /** One patch per parent, present for a merge under `-m` (`mergeDiff: 'separate'`). */
+  readonly perParent?: ReadonlyArray<PatchResult>;
   readonly text: string;
 }
 
@@ -176,15 +178,8 @@ function buildTree(rev: string, obj: Tree): ShowTreeResult {
 }
 
 async function buildCommit(ctx: Context, obj: Commit, env: RenderEnv): Promise<ShowCommitResult> {
-  // Merge commits keep the medium path here; their combined diff wires in later.
   if (obj.data.parents.length >= 2) {
-    const text = renderCommitBlock({
-      id: obj.id,
-      commit: obj.data,
-      noPatch: env.plan.noPatch,
-      formatDate: env.formatDate,
-    });
-    return { kind: 'commit', id: obj.id, commit: obj.data, text };
+    return buildMergeCommit(ctx, obj, env);
   }
   // `-s` suppresses every diff surface; otherwise build the patch / stat / numstat
   // section and frame it per format.
@@ -212,6 +207,60 @@ async function buildCommit(ctx: Context, obj: Commit, env: RenderEnv): Promise<S
     ...(section?.stat !== undefined ? { stat: section.stat } : {}),
     text,
   };
+}
+
+async function buildMergeCommit(
+  ctx: Context,
+  obj: Commit,
+  env: RenderEnv,
+): Promise<ShowCommitResult> {
+  // `-m`: one full block per parent, headed `commit <oid> (from <parent>)`, each
+  // carrying a pairwise diff against that parent. Other modes keep the medium
+  // block (the combined diff wires in later).
+  if (env.plan.mergeDiff === 'separate' && !env.plan.noPatch) {
+    const perParent: PatchResult[] = [];
+    const blocks: string[] = [];
+    for (const parent of obj.data.parents) {
+      const patch = await pairwisePatch(ctx, parent, obj.data.tree, env.plan);
+      perParent.push(patch);
+      blocks.push(
+        renderCommitBlock({
+          id: obj.id,
+          commit: obj.data,
+          fromParent: parent,
+          formatDate: env.formatDate,
+          patchText: patch.text,
+        }),
+      );
+    }
+    return { kind: 'commit', id: obj.id, commit: obj.data, perParent, text: blocks.join('\n') };
+  }
+  const text = renderCommitBlock({
+    id: obj.id,
+    commit: obj.data,
+    noPatch: env.plan.noPatch,
+    formatDate: env.formatDate,
+  });
+  return { kind: 'commit', id: obj.id, commit: obj.data, text };
+}
+
+async function pairwisePatch(
+  ctx: Context,
+  parent: ObjectId,
+  resultTree: ObjectId,
+  plan: ResolvedShowPlan,
+): Promise<PatchResult> {
+  const parentTree = await treeOf(ctx, parent);
+  const diff: TreeDiff = await diffTrees(ctx, parentTree, resultTree, {
+    recursive: true,
+    detectRenames: true,
+  });
+  const files = await materialisePatchFiles(ctx, diff.changes);
+  const text = renderPatch(
+    files,
+    plan.contextLines !== undefined ? { contextLines: plan.contextLines } : {},
+  );
+  return { format: 'patch', text, diff };
 }
 
 async function buildTag(

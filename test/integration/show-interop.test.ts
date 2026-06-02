@@ -272,6 +272,12 @@ describe.skipIf(!GIT_AVAILABLE)('show interop', () => {
     });
   });
 
+  describe('Given -m on a merge commit', () => {
+    it('Then it shows one (from <parent>) block per parent, matching git show -m', async () => {
+      await expectMatchFlags(['-m'], built.merge, { mergeDiff: 'separate' });
+    });
+  });
+
   describe('Given --stat / --numstat', () => {
     it('Then --stat on a single-file change matches git', async () => {
       await expectMatchFlags(['--stat'], built.modify, { stat: true });

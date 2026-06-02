@@ -20,6 +20,8 @@ export interface CommitBlockParts {
   readonly noPatch?: boolean;
   /** Date formatter for the `Date:` line (`--date=<mode>`). Defaults to medium. */
   readonly formatDate?: DateFormatter;
+  /** `-m`: the parent this per-parent block diffs against (`commit <oid> (from <p>)`). */
+  readonly fromParent?: ObjectId;
 }
 
 export function renderCommitBlock({
@@ -28,9 +30,11 @@ export function renderCommitBlock({
   patchText,
   noPatch,
   formatDate,
+  fromParent,
 }: CommitBlockParts): string {
   const isMerge = commit.parents.length >= 2;
-  const lines = [`commit ${id}`];
+  const header = fromParent !== undefined ? `commit ${id} (from ${fromParent})` : `commit ${id}`;
+  const lines = [header];
   if (isMerge) {
     lines.push(`Merge: ${commit.parents.map((p) => p.slice(0, ABBREV_LENGTH)).join(' ')}`);
   }

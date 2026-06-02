@@ -121,10 +121,20 @@ describe('Given show option resolution', () => {
     });
   });
 
-  describe('When a merge-diff mode is requested before it lands', () => {
+  describe('When a known merge-diff mode is requested', () => {
+    it('Then the plan carries the mode', () => {
+      // Arrange / Act
+      const sut = parseShowOptions({ mergeDiff: 'separate' });
+
+      // Assert
+      expect(sut.mergeDiff).toBe('separate');
+    });
+  });
+
+  describe('When an unknown merge-diff mode is requested', () => {
     it('Then it throws INVALID_OPTION for mergeDiff', () => {
       // Arrange / Act
-      const data = codeOf(() => parseShowOptions({ mergeDiff: 'separate' }));
+      const data = codeOf(() => parseShowOptions({ mergeDiff: 'bogus' as never }));
 
       // Assert
       expect(data.code).toBe('INVALID_OPTION');
