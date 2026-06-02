@@ -4,6 +4,12 @@ Derived from `design/phase-20-1-snapshot-and-join.md` and ADRs 148–161.
 Steps are ordered for atomic commits — each commit is independently
 reviewable and (where possible) independently runnable.
 
+> **Update — Waves 2–8 withdrawn ([ADR-239](../adr/239-keep-walkers-public-snapshot-additive.md)).**
+> Only Wave 1 (the snapshot surface) shipped. The snapshot does not subsume
+> the walkers, so they are kept public as first-class primitives (additive
+> snapshot, no consumer migration, no deprecation/removal). The consumer
+> migration + walker-deprecation waves below are historical only.
+
 Wave numbering mirrors the design doc:
 - Wave 0: harness extension (1 commit).
 - Wave 1: snapshot+join primitive introduction (17 commits).

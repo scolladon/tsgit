@@ -25,6 +25,14 @@ module.exports = {
       to: { path: '^src/application/commands/' },
     },
     {
+      name: 'primitives-cannot-import-adapters',
+      comment:
+        'Primitives are low-level building blocks: they depend on ports + domain + same-tier primitives, never on concrete adapters. A primitive reaching into the adapter / snapshot-factory layer is an upward, anti-hexagonal edge — the composition root (repository.ts) wires adapters. Keeps the walker (primitive) below the snapshot (higher-level construct built on it), never the reverse.',
+      severity: 'error',
+      from: { path: '^src/application/primitives/' },
+      to: { path: '^src/adapters/' },
+    },
+    {
       name: 'ports-cannot-import-adapters',
       comment: 'Ports define interfaces — they must not depend on implementations',
       severity: 'error',

@@ -12,6 +12,15 @@ The rationale, alternatives, and trade-offs live in the spike at
 the engineering contract — every signature, every module, every export, every
 test gate. We code from this.
 
+> **Update — superseded walker disposition ([ADR-239](../adr/239-keep-walkers-public-snapshot-additive.md)).**
+> The walker disposition below (§1 goal 5 "deprecation cycle", §2 "public
+> removal … 3.0.0", §17 Wave 8) did **not** ship. Investigation showed the
+> snapshot does not subsume the walkers (no subtree enumeration; reduced
+> working-tree stat), so `walkTree` / `walkWorkingTree` are **kept public** as
+> first-class primitives — neither deprecated nor removed — and the snapshot is
+> **additive**. No consumer was migrated. Wave 1 (the surface) is the whole of
+> 20.1; Waves 2–8 are withdrawn.
+
 ## 1. Goal
 
 Ship a snapshot-and-join primitive that:

@@ -13,8 +13,8 @@ Details live in git history, ADRs (`docs/adr/`), and design docs (`docs/design/`
 | **v1.0** — foundation through launch | 0–11 | shipped (`@scolladon/tsgit@1.0.0`) |
 | **v1.x** — semantic completion | 12–17 | shipped |
 | **v1.x** — housekeeping & doc restructure | 18 | shipped (18.3 doc-maintenance harness) |
-| **v2.0** — test base + porcelain completeness + history rewriting | 19–22 | in progress (19.1–19.8 shipped; wave 0 complete) |
-| **v3.0** — inspection + maintenance & exotic | 23–24 | queued |
+| **v2.0** — test base + porcelain completeness + history rewriting | 19–22 | complete; **2.0.0 release PR open via release-please** |
+| **v3.0** — inspection + topology + utilities + extension | 23–24 | queued |
 | **v4.0** — transport + signing + perf | 25–26 | queued |
 
 Wave 0 of every major (test base, then docs, then features) is non-negotiable. Performance pass closes each major.
@@ -236,7 +236,7 @@ ADR required for: pyramid ratios, mutation budgets per domain, interop-test scop
 
 High-reuse building blocks. Unlocks Phase 21–22.
 
-- [~] **20.1** Snapshot+join surface (`repo.snapshot.head/index/workdir/…` + `join`/`innerJoin` + operators). Wave 1 lands the engine (resolvers, bus + view, snapshot impls, factory, join, operators, deprecation helper, public exports); Waves 2–8 migrate consumers (`status`, `diff`, `add`, `checkout`, `merge`, …) and deprecate the legacy walkers.
+- [x] **20.1** Snapshot+join surface (`repo.snapshot.head/index/workdir/…` + `join`/`innerJoin` + operators). The engine shipped in Wave 1 (#81): resolvers, bus + view, snapshot impls, factory, join, operators, public exports. **The surface is additive** — investigation showed it does NOT subsume `walkTree`/`walkWorkingTree` (no subtree enumeration; reduced working-tree stat), so the walkers are kept public as first-class primitives, the snapshot is the recommended high-level read path, and no consumer was migrated (ADR-239 supersedes ADR-152's deprecation cycle; design/plan Waves 2–8 withdrawn). The walker-below-snapshot one-way layering is lint-enforced (`primitives-cannot-import-adapters`). · ADR-239
 - [x] **20.2** Standalone primitives — `hashBlob`, `isIgnored`, plus granular index CRUD (`stageEntry`, `unstageEntry`, `setEntryFlags`) · ADRs 162–165 · `design/phase-20-2-standalone-primitives.md`
 - [x] **20.3** Diff patch-text output (`diff({ format: 'patch' })`); unified-diff serializer in domain. Reuses Myers (`diffLines`) for hunk grouping; canonical headers for add/delete/modify/rename/type-change/binary; OID abbrev=7, default context=3. Byte-parity with `git diff` double-pinned (live + frozen golden). · ADRs 166–169 · `design/phase-20-3-diff-patch-format.md`
 - [x] **20.4** Merge state machine — `abortMerge`, `continueMerge` on `repo.*`. `abortMerge` hard-resets HEAD/index/working-tree to `ORIG_HEAD` and clears `MERGE_HEAD` + `MERGE_MSG` (preserves `ORIG_HEAD` as cross-operation recovery aid); `continueMerge` thin-wraps `commit` with a precondition that `MERGE_HEAD` exists. New `NO_OPERATION_IN_PROGRESS` error code mirrors the existing `OPERATION_IN_PROGRESS`. Pre-shapes Phase 22's cherry-pick / rebase abort+continue. · ADRs 170–174 · `design/phase-20-4-merge-state-machine.md`
@@ -272,7 +272,7 @@ Dependent chain: 22.1 → 22.2 → 22.3 → 22.4. Each item ships its own confli
 - [x] **22.3b** Unify the "first line of a commit message" projection (surfaced by 22.3a's architecture pass). A completeness sweep found **four** copies, not two: the `subjectOf` helpers in `internal/history-rewrite.ts` (`split('\n')[0]`) and `internal/stash-message.ts` (`indexOf`/`slice`), plus inline copies in `internal/revert-state.ts` (`revertMessage`) and `commit.ts` (reflog subject). Extracted one pure `subjectLine(message)` into `domain/objects/commit-message.ts` (the `indexOf`/`slice` form — no `as string` cast); all six consumers (cherry-pick / revert / rebase / stash / revert-state / commit) import it directly. Kept **internal** (not added to the `domain/objects/index.ts` barrel) so it stays out of `api.json` — net public-API change zero. Byte-faithful (empty → `''`, CRLF retains CR). 100% coverage + property tests (idempotence / no-newline / prefix / newline-free→verbatim), 0 surviving mutants. · `design/commit-subject-line.md`
 - [x] **22.4a** Interactive-rebase faithfulness + robustness follow-ups (surfaced by 22.4's mutation grind). (1) **Unrelated-history rebase divergence** — `rebaseRun` refused a no-common-ancestor rebase with `UNSUPPORTED_OPERATION`, but canonical `git rebase <unrelated>` *succeeds* (empty merge-base → replays the whole branch onto the upstream, the root commit against the empty-tree base, like `merge`'s `EMPTY_TREE_OID` add-add path). Resolved in favour of **faithfulness** (ADR-238): the refusal is deleted and `base: ObjectId | undefined` is threaded through `commitsToReplay` (no exclusion walk when `base` is undefined → the whole `head` history is the replay set), `dropCherryEquivalents`, and `planInteractive`; the root replay reuses the already-shared empty-base branch of `mergeUnderLock` (`applyMergeToWorktree`), so no new domain code. Pinned by a unit test (root reparented onto upstream, both histories' files in the tip) + cross-tool interop (tree + commit-count + single-parent parity vs `git rebase <orphan>`). (2) **Empty reword/squash message rejected mid-replay** — an inline `reword`/`squash` message that cleaned to empty threw `EMPTY_COMMIT_MESSAGE` from `stepReword`/`meldGroupMember` *after* HEAD had detached, leaving a partial, un-abortable rebase. Fixed by rejecting empty messages **upfront** in `planInteractive` (`INVALID_OPTION`, mirroring the existing reword-without-message guard), before any state change — the two replay `allowEmpty: false` guards are now provably equivalent (annotated inline, the `BooleanLiteral` survivors retired). · ADR 238 · `design/rebase-interactive-followups.md`
 
-v2.0 is complete (22.4 landed). Perf pass for v2 covered in **26**.
+v2.0 is complete (22.4 landed; 20.1's snapshot surface shipped in #81 and is recognised as additive per ADR-239). 2.0.0 is cut by the already-merged-but-unreleased breaking changes (array-only `mergeBase`, namespace-only CRUD porcelain) via release-please. Perf pass for v2 covered in **26**.
 
 ---
 
@@ -285,18 +285,29 @@ v2.0 is complete (22.4 landed). Perf pass for v2 covered in **26**.
 - [ ] **23.5** `range-diff` — compare two commit ranges.
 - [ ] **23.6** `whatchanged` — log with raw diffs.
 
-## Phase 24 — Maintenance & exotic (v3)
+## Phase 24 — Maintenance, topology & extension (v3)
 
-- [ ] **24.1** `gc` / `repack` / `prune` — pack consolidation.
-- [ ] **24.2** `fsck` — repository integrity check.
-- [ ] **24.3** `archive` — tar/zip export of a tree.
-- [ ] **24.4** `bundle` — create / verify / list-heads.
-- [ ] **24.5** `bisect` — binary search.
-- [ ] **24.6** `worktree` — add / list / move / remove (distinct working trees over one gitdir).
+Three waves, ordered by cohesion + structural risk: repo topology first (structurally invasive — multi-gitdir / nested-repo assumptions), leaf utilities second, extension points last.
+
+### Wave A — Repo topology (submodule & worktree)
+
+- [ ] **24.1** Submodule write side — `add`/`init`/`update`/`sync`/`deinit`. Completes the submodule story (read side shipped in 17.5). _(was 25.4)_
+- [ ] **24.2** `worktree` — add / list / move / remove (distinct working trees over one gitdir).
+
+### Wave B — Utilities (leaf, low-coupling)
+
+- [ ] **24.3** `fsck` — repository integrity check.
+- [ ] **24.4** `archive` — tar/zip export of a tree.
+- [ ] **24.5** `bundle` — create / verify / list-heads.
+- [ ] **24.6** `bisect` — binary search.
 - [ ] **24.7** `notes` — add / read / list / remove on `refs/notes/*`.
-- [ ] **24.8** Custom merge drivers — `.gitattributes` `merge=<driver>` resolution + configurable `[merge "<driver>"]` driver invocation, layered over the built-in 3-way content merge (`domain/merge/`) reused by `merge`/`stash`/`cherry-pick`/`revert`.
 
-v3.0 ships when 24.8 lands. Perf pass covered in **26**.
+### Wave C — Extension points (hooks & merge drivers)
+
+- [ ] **24.8** Hook coverage parity — `post-commit`, `post-merge`, `post-checkout`, `prepare-commit-msg`, `pre-rebase`, `post-rewrite`, server-side hooks. Layers over the 17.2 hook runner. _(was 25.5)_
+- [ ] **24.9** Custom merge drivers — `.gitattributes` `merge=<driver>` resolution + configurable `[merge "<driver>"]` driver invocation, layered over the built-in 3-way content merge (`domain/merge/`) reused by `merge`/`stash`/`cherry-pick`/`revert`. Sub-dependency: `.gitattributes` parsing is net-new (only `.gitignore` exists today, 14.3).
+
+v3.0 ships when 24.9 lands. Perf pass covered in **26**.
 
 ---
 
@@ -305,8 +316,8 @@ v3.0 ships when 24.8 lands. Perf pass covered in **26**.
 - [ ] **25.1** SSH transport — new port; key resolution delegated, browser stays inert.
 - [ ] **25.2** GPG signing — new port; signed commits (`-S`), signed tags, signed pushes.
 - [ ] **25.3** Smart-HTTP v2. Must deliver **incremental fetch negotiation**: tsgit's v1 upload-pack client strips `multi_ack_detailed` and runs a single round, so it cannot fetch new objects when the client holds a base (`want C1 / have C0 / done` returns no pack — `clone` and no-op fetch work, "remote advanced → fetch new" does not). v2's `fetch` command (`ack`/`ready`/`done`) subsumes this; alternatively a focused v1 `multi_ack_detailed` round can be hoisted earlier if real incremental `fetch`/`pull` is needed before v2. Surfaced by 21.1 — `pull`'s over-the-wire fast-forward/merge composes for free once this lands (no `pull` change); FF/merge/conflict are unit-proven against a local graph until then.
-- [ ] **25.4** Submodule write side — `add`/`init`/`update`/`sync`/`deinit`.
-- [ ] **25.5** Hook coverage parity — `post-commit`, `post-merge`, `post-checkout`, `prepare-commit-msg`, `pre-rebase`, `post-rewrite`, server-side hooks.
+
+Submodule write side and hook coverage parity moved to **24.1** / **24.8** — neither is transport/signing.
 
 ## Phase 26 — Performance pass (closes v4)
 
@@ -317,6 +328,14 @@ Runs against a stable surface; instruments every command on medium + large fixtu
 - [ ] **26.3** Regression gate in CI — `bench:summary` diff must not exceed ±N% per scenario.
 - [ ] **26.4** Memory-pressure scenarios (large packs, deep delta chains) added to bench suite.
 - [ ] **26.5** Magic-literal sweep — centralize the magic strings/numbers scattered across commands (operation labels like `'revert'` / `'revert --continue'`, reflog prefixes `revert:` / `commit:` / `reset: moving to`, marker filenames, conflict-marker tokens, walk caps) into named constants / shared enums. Behavior-preserving; reduces primitive-obsession smell flagged during the Phase 22 history-rewrite work.
+
+---
+
+## Parking lot (revisit on demand / community traction)
+
+Not abandoned — deferred indefinitely. Pull back into a phase if profiling or community demand justifies the lift.
+
+- **gc / repack / prune** — pack consolidation. Large lift, largely redundant for a library embedded next to canonical git (the host's `git gc` already maintains the object store). Revisit if profiling shows loose-object explosion hurting the browser/memory adapters, or on community demand. _(was 24.1)_
 
 ---
 
