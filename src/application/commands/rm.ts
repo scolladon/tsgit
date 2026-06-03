@@ -21,15 +21,12 @@ import type { FlatTreeEntry } from '../../domain/diff/flat-tree.js';
 import { TsgitError } from '../../domain/error.js';
 import type { IndexEntry } from '../../domain/git-index/index.js';
 import { emptyPathspec } from '../../domain/index.js';
-import { unexpectedObjectType } from '../../domain/objects/error.js';
 import type { FilePath } from '../../domain/objects/object-id.js';
 import { matchesPathspec } from '../../domain/pathspec/index.js';
 import type { Context } from '../../ports/context.js';
 import { compareWorkingTreeEntry } from '../primitives/compare-working-tree-entry.js';
-import { flattenTree } from '../primitives/flatten-tree.js';
+import { readHeadTree } from '../primitives/read-head-tree.js';
 import { readIndex } from '../primitives/read-index.js';
-import { readObject } from '../primitives/read-object.js';
-import { resolveRef } from '../primitives/resolve-ref.js';
 import { acquireIndexLock } from './internal/index-update.js';
 import {
   assertNoPendingOperation,
@@ -151,16 +148,6 @@ const isStaged = (head: ReadonlyMap<FilePath, FlatTreeEntry>, entry: IndexEntry)
   return headEntry === undefined || headEntry.id !== entry.id || headEntry.mode !== entry.mode;
 };
 
-const headTreeEntries = async (ctx: Context): Promise<ReadonlyMap<FilePath, FlatTreeEntry>> => {
-  const commitId = await resolveRef(ctx, 'HEAD').catch((err: unknown) => {
-    // An unborn HEAD (no commits yet) has no tree — every entry is then staged.
-    if (err instanceof TsgitError && err.data.code === 'REF_NOT_FOUND') return undefined;
-    throw err;
-  });
-  if (commitId === undefined) return new Map();
-  const commit = await readObject(ctx, commitId);
-  if (commit.type !== 'commit') {
-    throw unexpectedObjectType('commit', commit.type, commitId);
-  }
-  return (await flattenTree(ctx, commit.data.tree)).entries;
-};
+// An unborn HEAD (no commits yet) has no tree — every entry is then staged.
+const headTreeEntries = async (ctx: Context): Promise<ReadonlyMap<FilePath, FlatTreeEntry>> =>
+  (await readHeadTree(ctx))?.entries ?? new Map();

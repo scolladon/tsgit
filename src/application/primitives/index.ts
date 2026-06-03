@@ -38,6 +38,7 @@ export { materializeTree } from './materialize-tree.js';
 export { mergeBase } from './merge-base.js';
 export { getRepoRoot, sparseCheckoutPath } from './path-layout.js';
 export { readBlob } from './read-blob.js';
+export { readHeadTree } from './read-head-tree.js';
 export { readIndex } from './read-index.js';
 export { readObject } from './read-object.js';
 export {

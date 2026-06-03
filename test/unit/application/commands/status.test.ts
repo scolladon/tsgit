@@ -3,6 +3,7 @@ import { createMemoryContext } from '../../../../src/adapters/memory/memory-adap
 import { add } from '../../../../src/application/commands/add.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
+import { rm } from '../../../../src/application/commands/rm.js';
 import { status } from '../../../../src/application/commands/status.js';
 import type { AuthorIdentity } from '../../../../src/domain/objects/index.js';
 
@@ -238,6 +239,197 @@ describe('status', () => {
         // (which would drop a.txt from the changes entirely).
         expect(sut.workingTreeChanges).toContainEqual({ kind: 'modified', path: 'a.txt' });
         expect(sut.clean).toBe(false);
+      });
+    });
+  });
+});
+
+describe('status — staged column (index-vs-HEAD)', () => {
+  describe('Given a file added to the index but not committed', () => {
+    describe('When status', () => {
+      it('Then indexChanges has an added entry and the working tree is clean', async () => {
+        // Arrange — HEAD has a.txt; stage a new b.txt without committing.
+        const ctx = await seedClean();
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.txt`, 'b');
+        await add(ctx, ['b.txt']);
+
+        // Act
+        const sut = await status(ctx);
+
+        // Assert — staged add only; b.txt matches the index so no worktree change.
+        expect(sut.indexChanges).toEqual([{ kind: 'added', path: 'b.txt' }]);
+        expect(sut.workingTreeChanges).toEqual([]);
+        expect(sut.clean).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a committed file restaged with new content', () => {
+    describe('When status', () => {
+      it('Then indexChanges has a modified entry and the working tree is clean', async () => {
+        // Arrange — a.txt committed, then changed and staged; worktree == index.
+        const ctx = await seedClean();
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'changed');
+        await add(ctx, ['a.txt']);
+
+        // Act
+        const sut = await status(ctx);
+
+        // Assert — `M ` shape: staged modify, no working-tree column.
+        expect(sut.indexChanges).toEqual([{ kind: 'modified', path: 'a.txt' }]);
+        expect(sut.workingTreeChanges).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a committed file removed from the index and disk', () => {
+    describe('When status', () => {
+      it('Then indexChanges has a deleted entry and nothing is untracked', async () => {
+        // Arrange — `rm` stages the deletion and removes the working file.
+        const ctx = await seedClean();
+        await rm(ctx, ['a.txt']);
+
+        // Act
+        const sut = await status(ctx);
+
+        // Assert — `D ` shape.
+        expect(sut.indexChanges).toEqual([{ kind: 'deleted', path: 'a.txt' }]);
+        expect(sut.workingTreeChanges).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a committed file removed from the index but kept on disk', () => {
+    describe('When status', () => {
+      it('Then it is staged-deleted AND untracked (git D + ??)', async () => {
+        // Arrange — `rm --cached` drops it from the index, leaving the file on disk.
+        const ctx = await seedClean();
+        await rm(ctx, ['a.txt'], { cached: true });
+
+        // Act
+        const sut = await status(ctx);
+
+        // Assert — same path in both columns: staged delete + untracked.
+        expect(sut.indexChanges).toEqual([{ kind: 'deleted', path: 'a.txt' }]);
+        expect(sut.workingTreeChanges).toContainEqual({ kind: 'untracked', path: 'a.txt' });
+      });
+    });
+  });
+
+  describe('Given a file modified in the index and then again in the working tree', () => {
+    describe('When status', () => {
+      it('Then both columns carry the path (git MM)', async () => {
+        // Arrange — stage one change, then edit on disk again so worktree != index.
+        const ctx = await seedClean();
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'staged');
+        await add(ctx, ['a.txt']);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'worktree');
+
+        // Act
+        const sut = await status(ctx);
+
+        // Assert
+        expect(sut.indexChanges).toEqual([{ kind: 'modified', path: 'a.txt' }]);
+        expect(sut.workingTreeChanges).toContainEqual({ kind: 'modified', path: 'a.txt' });
+      });
+    });
+  });
+
+  describe('Given a staged type change (regular file becomes a symlink)', () => {
+    describe('When status', () => {
+      it('Then the staged column reports it as modified (T folds into modified)', async () => {
+        // Arrange — commit a regular a.txt, then replace it with a symlink and stage.
+        const ctx = await seedClean();
+        await ctx.fs.rm(`${ctx.layout.workDir}/a.txt`);
+        await ctx.fs.symlink('elsewhere', `${ctx.layout.workDir}/a.txt`);
+        await add(ctx, ['a.txt']);
+
+        // Act
+        const sut = await status(ctx);
+
+        // Assert — a type change is collapsed to `modified` (ADR-254 projection).
+        expect(sut.indexChanges).toEqual([{ kind: 'modified', path: 'a.txt' }]);
+      });
+    });
+  });
+
+  describe('Given an unborn HEAD with staged files', () => {
+    describe('When status', () => {
+      it('Then every staged entry is reported as added', async () => {
+        // Arrange — init, stage two files, never commit (HEAD unborn → empty tree).
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.txt`, 'b');
+        await add(ctx, ['a.txt', 'b.txt']);
+
+        // Act
+        const sut = await status(ctx);
+
+        // Assert — both `added` against the empty HEAD tree.
+        expect(sut.indexChanges).toEqual([
+          { kind: 'added', path: 'a.txt' },
+          { kind: 'added', path: 'b.txt' },
+        ]);
+      });
+    });
+  });
+
+  describe('Given a clean repo', () => {
+    describe('When status', () => {
+      it('Then indexChanges is empty and clean is true', async () => {
+        // Arrange
+        const ctx = await seedClean();
+
+        // Act
+        const sut = await status(ctx);
+
+        // Assert — no staged column either.
+        expect(sut.indexChanges).toEqual([]);
+        expect(sut.clean).toBe(true);
+      });
+    });
+  });
+
+  describe('Given staged changes whose union order is not byte-sorted', () => {
+    describe('When status', () => {
+      it('Then indexChanges is sorted ascending by path', async () => {
+        // Arrange — HEAD {a.txt}; remove a.txt (index-empty), then stage z.txt. The
+        // index-vs-tree union visits the index-only path (z) before the tree-only
+        // path (a), so a dropped sort would yield [z, a] not [a, z].
+        const ctx = await seedClean();
+        await rm(ctx, ['a.txt']);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/z.txt`, 'z');
+        await add(ctx, ['z.txt']);
+
+        // Act
+        const sut = await status(ctx);
+
+        // Assert — byte order: a.txt (deleted) before z.txt (added).
+        expect(sut.indexChanges).toEqual([
+          { kind: 'deleted', path: 'a.txt' },
+          { kind: 'added', path: 'z.txt' },
+        ]);
+      });
+    });
+  });
+
+  describe('Given a corrupt index', () => {
+    describe('When status', () => {
+      it('Then it propagates the index error instead of fabricating deletions', async () => {
+        // Arrange — overwrite the index with bytes too short to be valid. A
+        // swallowed error would fabricate an empty index and report every committed
+        // path as a spurious staged deletion; status must surface the error.
+        const ctx = await seedClean();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/index`, 'corrupt');
+
+        // Act / Assert
+        try {
+          await status(ctx);
+          expect.unreachable('status should reject a corrupt index');
+        } catch (err) {
+          expect((err as { data: { code: string } }).data.code).toBe('INVALID_INDEX_HEADER');
+        }
       });
     });
   });

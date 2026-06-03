@@ -32,7 +32,7 @@ interface DescribeResult {
   readonly distance: number;         // commits between ref and target (0 = exact)
   readonly oid: ObjectId;            // full 40-hex oid of the described commit
   readonly exact: boolean;           // distance === 0 && tag !== undefined
-  readonly dirty: boolean;           // HEAD's working tree had tracked changes
+  readonly dirty: boolean;           // HEAD had staged or unstaged tracked changes
 }
 ```
 
@@ -48,11 +48,10 @@ interface DescribeResult {
   tagger date (git's `replace_name`).
 - **`exactMatch`:** only a tag on the target itself counts; otherwise refuses
   (`NO_EXACT_MATCH`) unless `always` is set.
-- **`dirty` / `broken`:** describe HEAD and report whether the working tree has
-  **unstaged tracked** changes (untracked files don't count); incompatible with an
-  explicit commit-ish (`INVALID_OPTION`). Staged-only changes are not yet detected
-  (a limitation inherited from `status`, whose staged column is still approximate;
-  tracked as backlog 23.2b).
+- **`dirty` / `broken`:** describe HEAD and report whether it has **tracked**
+  changes — staged (index-vs-HEAD) **or** unstaged (`git diff-index HEAD` over both
+  `status` columns); untracked files don't count. Incompatible with an explicit
+  commit-ish (`INVALID_OPTION`).
 - **Refusals:** `NO_NAMES` (no tags at all), `NO_ANNOTATED_NAMES` (only lightweight
   tags in default mode), `NO_REACHABLE_NAMES` (tags exist but none reach the
   target), `NO_EXACT_MATCH`. `always: true` returns the oid fallback instead.

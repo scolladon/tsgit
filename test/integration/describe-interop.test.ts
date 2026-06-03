@@ -243,4 +243,30 @@ describe.skipIf(!GIT_AVAILABLE)('describe interop', () => {
       expect(render(sut)).toBe(gitDescribe(dir, '--dirty'));
     });
   });
+
+  describe('Given a tagged HEAD with a staged-only change and --dirty', () => {
+    let dir = '';
+    let ctx: Context;
+
+    beforeAll(async () => {
+      dir = await makeRepo('staged-dirty');
+      ctx = createNodeContext({ workDir: dir });
+      await commitFile(dir, 'c1');
+      annotate(dir, 'v1.0', clock + 30);
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => {
+      await rm(dir, { recursive: true, force: true });
+    });
+
+    it('Then a staged change reconstructs git describe --dirty', async () => {
+      // Stage (not just touch) the change — the working tree matches the index, so
+      // only the staged column is dirty. git's `--dirty` (diff-index HEAD) agrees.
+      await writeFile(path.join(dir, 'c1.txt'), 'changed\n');
+      git(dir, 'add', 'c1.txt');
+      const sut = await describeCmd(ctx, undefined, { dirty: true });
+      expect(sut.dirty).toBe(true);
+      expect(render(sut)).toBe(gitDescribe(dir, '--dirty'));
+    });
+  });
 });
