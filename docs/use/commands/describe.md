@@ -49,8 +49,9 @@ interface DescribeResult {
 - **`exactMatch`:** only a tag on the target itself counts; otherwise refuses
   (`NO_EXACT_MATCH`) unless `always` is set.
 - **`dirty` / `broken`:** describe HEAD and report whether it has **tracked**
-  changes — staged (index-vs-HEAD) **or** unstaged (`git diff-index HEAD` over both
-  `status` columns); untracked files don't count. Incompatible with an explicit
+  changes — staged (index-vs-HEAD), unstaged, **or unmerged** (a mid-merge index
+  with conflicted paths is dirty; `git diff-index HEAD` over every `status`
+  column); untracked files don't count. Incompatible with an explicit
   commit-ish (`INVALID_OPTION`).
 - **Refusals:** `NO_NAMES` (no tags at all), `NO_ANNOTATED_NAMES` (only lightweight
   tags in default mode), `NO_REACHABLE_NAMES` (tags exist but none reach the
