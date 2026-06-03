@@ -32251,7 +32251,7 @@
 								"summary": [
 									{
 										"kind": "text",
-										"text": "Summarize the state of the working tree against both git columns: the\n**staged** column (HEAD-tree vs index — git's \"Changes to be committed\",\n"
+										"text": "Summarize the state of the working tree against git's columns: the **staged**\ncolumn (HEAD-tree vs index — git's \"Changes to be committed\",\n"
 									},
 									{
 										"kind": "code",
@@ -32259,7 +32259,15 @@
 									},
 									{
 										"kind": "text",
-										"text": ") and the **working-tree** column (index vs working\ntree), plus untracked files. The two columns are independent passes; a path\nmay appear in both (e.g. removed from the index but still on disk → staged\ndelete + untracked). "
+										"text": "), the **working-tree** column (index vs working\ntree), untracked files, and the **unmerged** column (conflicted paths with\nstage 1/2/3 entries — git's \"Unmerged paths\"). The staged and working-tree\npasses are independent; a path may appear in both (e.g. removed from the index\nbut still on disk → staged delete + untracked). A conflicted path is reported\nonly under "
+									},
+									{
+										"kind": "code",
+										"text": "`unmerged`"
+									},
+									{
+										"kind": "text",
+										"text": ", never in the other columns. "
 									},
 									{
 										"kind": "code",
@@ -32267,7 +32275,7 @@
 									},
 									{
 										"kind": "text",
-										"text": " is true only when every column is empty.\n\nProgress reporting: emits "
+										"text": " is true only when\nevery column and the unmerged set are empty.\n\nProgress reporting: emits "
 									},
 									{
 										"kind": "code",
