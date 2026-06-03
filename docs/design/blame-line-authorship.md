@@ -315,6 +315,13 @@ date-ordered walk; normalized structured result.
   `git blame -- f.txt`, on a dirty tree it diverges. **ADR (faithful divergence).**
   Follow-up: working-tree pseudo-commit.
 - **`-M` / `-C`** line move/copy detection (opt-in) — backlog follow-up.
+- **Rename-with-edit in one commit** — v1 rename following reuses the shared
+  `detectRenames`, which pairs only **exact-content** renames (`oldId === newId`).
+  A pure `git mv` is followed (the common case, interop-pinned); a rename that
+  also edits content in the same commit is treated as a fresh introduction (the
+  file's pre-rename history is not followed). A documented v1 boundary,
+  consistent with `diff`/`show`'s exact-only rename detection; similarity-based
+  following is a follow-up alongside `-M`/`-C`.
 - **`--reverse`**, `-w`/whitespace modes, `--ignore-rev` /
   `.git-blame-ignore-revs`, `-S`/incremental — backlog follow-ups.
 
