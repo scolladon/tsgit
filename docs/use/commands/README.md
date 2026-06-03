@@ -14,6 +14,7 @@ Every method bound on a `Repository` handle. 29 entries, alphabetical.
 | [`commit`](commit.md) | Create a commit from the current index. |
 | [`config`](config.md) | Read and write git config across all four scopes (`system`/`global`/`local`/`worktree`). Nested-namespace surface (`repo.config.get/set/...`). |
 | [`continueMerge`](continue-merge.md) | Finalise an in-progress merge as a two-parent commit (delegates to `commit`). |
+| [`describe`](describe.md) | Name a commit by its nearest reachable tag; returns structured data (no rendered line). |
 | [`diff`](diff.md) | Compare two tree-like targets; returns a `TreeDiff` object. |
 | [`fetch`](fetch.md) | Fetch refs and objects from a remote. |
 | [`fetchMissing`](fetch-missing.md) | Prefetch promisor-remote objects in batch (partial clone). |
