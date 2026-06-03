@@ -42,7 +42,9 @@ filename f.txt
 
 The format is exactly a **commit table** (metadata emitted once, on a commit's
 first occurrence) plus a **flat per-line list** keyed `<sha> <orig> <final>
-<count>`. This is the structured shape the library returns directly.
+<count>`. The library returns the *denormalized* projection of this (ADR-257) —
+each line carries its commit's metadata inline; the renderer re-derives
+porcelain's once-per-commit dedup from the per-line fields.
 
 Per-commit fields: `author`/`committer` identity, `summary` (the commit subject
 — first message line), `boundary` (commit is at the walk's edge), `previous`
@@ -135,27 +137,23 @@ export interface BlameOptions {
   readonly range?: { readonly start: number; readonly end: number };
 }
 
-export interface BlameCommit {
-  readonly id: ObjectId;
-  readonly author: AuthorIdentity;
-  readonly committer: AuthorIdentity;
-  /** Commit subject (first message line) — porcelain `summary`. */
-  readonly summary: string;
-  /** Commit is at the walk's edge (a root: no parents) — porcelain `boundary`. */
-  readonly boundary: boolean;
-  /** Parent the file content came from (porcelain `previous`); absent on a root. */
-  readonly previous?: { readonly commit: ObjectId; readonly path: FilePath };
-}
-
 export interface BlameLine {
   /** 1-based line number in the queried file. */
   readonly finalLine: number;
   /** 1-based line number in the blamed commit's version of the file. */
   readonly sourceLine: number;
-  /** Commit this line is blamed to (key into `commits`). */
+  /** Commit this line is blamed to. */
   readonly commit: ObjectId;
+  readonly author: AuthorIdentity;
+  readonly committer: AuthorIdentity;
+  /** Commit subject (first message line) — porcelain `summary`. */
+  readonly summary: string;
+  /** Blamed commit is at the walk's edge (a root: no parents) — porcelain `boundary`. */
+  readonly boundary: boolean;
   /** Path the file had in the blamed commit — rename-aware (porcelain `filename`). */
   readonly sourcePath: FilePath;
+  /** Parent the file content came from (porcelain `previous`); absent on a root. */
+  readonly previous?: { readonly commit: ObjectId; readonly path: FilePath };
   /** The line's bytes (newline-terminated except a final line without a trailing LF). */
   readonly content: Uint8Array;
 }
@@ -163,8 +161,6 @@ export interface BlameLine {
 export interface BlameResult {
   /** The queried path (final name). */
   readonly path: FilePath;
-  /** Blamed commits, deduped — metadata emitted once per commit (porcelain headers). */
-  readonly commits: ReadonlyMap<ObjectId, BlameCommit>;
   /** Every reported line, in final-file order. */
   readonly lines: ReadonlyArray<BlameLine>;
 }
@@ -175,16 +171,19 @@ export const blame = (ctx: Context, path: string, opts?: BlameOptions) => Promis
 `repo.blame(path, opts?)` binds it on the facade (flat method, like `log` /
 `describe`).
 
-### 3.1 Result shape rationale (normalized)
+### 3.1 Result shape rationale (denormalized per-line) — ADR-257
 
-The result is **normalized**: a `commits` map (metadata once) + a flat `lines`
-array referencing commit oids. This is the most faithful structured projection
-of porcelain (which *is* normalized), it is DRY (no N-fold duplication of
-author/summary across a long run of same-commit lines), and it lets a caller
-render either porcelain (group consecutive same-commit lines) or per-line
-(`--line-porcelain`) without re-reading objects. Considered + rejected:
-denormalized per-line metadata (duplicative; un-DRY) and porcelain-style nested
-groups (bakes one rendering's grouping into the data, less flexible). **ADR.**
+The result is **denormalized**: a single flat `lines` array, each `BlameLine`
+carrying the blamed commit's `author` / `committer` / `summary` / `boundary` /
+`previous` inline (commit identities are shared references, not deep copies).
+A consumer maps a line straight to a rendered row or a UI gutter annotation with
+authorship in hand — no oid→metadata lookup, and `-L` filtering is a plain
+`Array.filter` with no companion map to keep consistent. Reconstructing
+porcelain's deduped commit headers (emit a commit's metadata once, on its first
+occurrence) is the renderer's job, derived from the per-line fields. Considered +
+rejected (ADR-257): a normalized `commits` map + oid-referencing lines (DRY but a
+lookup per line on consumption) and porcelain-style nested groups (bakes one
+rendering's grouping into the data).
 
 ## 4. Algorithm — the blame scoreboard
 
@@ -216,10 +215,11 @@ Resolve `rev` → commit (via `resolveCommitIsh`); validate `path` to `FilePath`
 resolve it in the start commit's tree → blob (refuse with a typed error like git
 when the path is absent or names a tree). Split into `N` lines. Seed one entry
 `{ finalStart: 0, count: N, sourceStart: 0 }` on origin `(startCommit, path)`.
-Empty file → empty `lines`, empty `commits`.
+Empty file → empty `lines`.
 
-The `commits` map is assembled from the **reported** `lines` only — so a `-L`
-range (§4.6) never leaks a commit that blames no in-range line.
+The blamed commit's metadata (author/committer/summary/boundary/previous) is
+denormalized onto each finalized `BlameLine` (ADR-257) — there is no separate
+commit table.
 
 ### 4.3 Pass blame to parents (per popped origin)
 
@@ -274,17 +274,17 @@ rewritten, so no special-casing is needed.
 ### 4.6 `-L` range and `previous` stability
 
 `range` filters the finalized `lines` to the 1-based inclusive `[start, end]`
-window over `finalLine`, then `commits` is rebuilt from the survivors (§4.2).
-Inverted (`start > end`) or out-of-range bounds refuse with a typed error,
-mirroring git's `-L` validation. Because each line's blame is computed
-independently, the filtered output is identical to what git reports for the same
-`-L` — only the (here unbounded) history walk differs, which is invisible in the
-data.
+window over `finalLine`. Inverted (`start > end`) or out-of-range bounds refuse
+with a typed error, mirroring git's `-L` validation. Because each line's blame is
+computed independently, the filtered output is identical to what git reports for
+the same `-L` — only the (here unbounded) history walk differs, which is
+invisible in the data. With denormalized lines (ADR-257) the filter is a plain
+`Array.filter`; no companion commit table needs reconciling.
 
-`previous` is recorded per origin and stored on the deduped `BlameCommit`. For a
+`previous` is recorded per origin and denormalized onto each `BlameLine`. For a
 single-file blame without line-level copy detection, a commit blames exactly one
-path, so its `previous` is stable; a commit owning two source paths (only
-reachable via deferred `-C`) is out of v1 scope.
+path, so its `previous` is stable across that commit's lines; a commit owning two
+source paths (only reachable via deferred `-C`) is out of v1 scope.
 
 ## 5. Layering (hexagonal)
 
@@ -296,7 +296,7 @@ domain/blame/                 # pure, zero I/O
 application/commands/blame.ts # Tier-1 orchestration: resolve, drive walk, build result
 ```
 
-Public types (`BlameOptions`/`BlameResult`/`BlameLine`/`BlameCommit`) live with
+Public types (`BlameOptions`/`BlameResult`/`BlameLine`) live with
 the command (mirroring `describe.ts` / `show.ts`) and re-export through
 `commands/index.ts`. `repository.ts` binds `repo.blame`. No new port — blame
 reads only objects/trees through existing primitives.
@@ -342,11 +342,14 @@ date-ordered walk; normalized structured result.
   rename, `-L` range. Faithfulness is pinned on the **data**; the library emits
   no line.
 
-## 8. Open decisions (→ ADR conversation)
+## 8. Decisions (settled — ADRs 257–258)
 
-1. **Result shape** — normalized `commits` map + flat `lines` (recommended) vs
-   denormalized per-line vs porcelain-style groups (§3.1).
-2. **Working-tree blame** — defer (blame committed `rev`, recommended) vs include
-   the not-committed-yet pseudo-commit now (§6). Faithful-divergence decision.
-3. **`-L` range surface** — include in v1 as a faithful output selector
-   (recommended) vs defer to keep v1 minimal (§3, §6).
+1. **Result shape** → **denormalized per-line** (ADR-257): each `BlameLine`
+   carries its blamed commit's metadata inline; no `commits` table (§3, §3.1).
+2. **Working-tree blame** → **defer** (ADR-258): v1 blames the committed `rev`
+   (default HEAD); the not-committed-yet pseudo-commit is a follow-up (§6).
+3. **`-L` range** → **include** in v1 as a faithful output selector (§3, §4.6).
+4. **Rename following** → whole-file renames followed by default (faithful, the
+   prime directive — no ADR); `-M`/`-C` line move/copy deferred (§1.4, §6).
+5. **Merge handling** → all-parents attribution (faithful, mandated by §1.3 —
+   no ADR).
