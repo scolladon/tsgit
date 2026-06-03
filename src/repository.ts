@@ -14,7 +14,7 @@ import {
 } from './application/primitives/snapshot/snapshot-factory.js';
 import { disposeAdapters } from './dispose-adapters.js';
 import { repositoryDisposed } from './domain/commands/error.js';
-import type { TreeDiff } from './domain/diff/index.js';
+import type { StatTreeDiff, TreeDiff } from './domain/diff/index.js';
 import type { Compressor } from './ports/compressor.js';
 import type { Context, RepositoryConfig } from './ports/context.js';
 import type { FileSystem } from './ports/file-system.js';
@@ -159,12 +159,12 @@ export interface Repository {
   readonly config: commands.ConfigNamespace;
   readonly continueMerge: BindCtx<typeof commands.continueMerge>;
   readonly describe: BindCtx<typeof commands.describe>;
-  // `diff` is overloaded on `format`; `BindCtx` only captures the last overload
+  // `diff` is overloaded on `withStat`; `BindCtx` only captures the last overload
   // (a TypeScript limitation), so the binding is written by hand to preserve
   // both narrowing paths.
   readonly diff: {
-    (opts?: commands.DiffOptions & { format?: 'tree' }): Promise<TreeDiff>;
-    (opts: commands.DiffOptions & { format: 'patch' }): Promise<commands.PatchResult>;
+    (opts: commands.DiffOptions & { withStat: true }): Promise<StatTreeDiff>;
+    (opts?: commands.DiffOptions): Promise<TreeDiff>;
   };
   readonly fetch: BindCtx<typeof commands.fetch>;
   readonly fetchMissing: BindCtx<typeof commands.fetchMissing>;

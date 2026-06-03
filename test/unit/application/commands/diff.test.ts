@@ -97,6 +97,50 @@ describe('diff', () => {
     });
   });
 
+  describe('Given withStat=true and a modified file', () => {
+    describe('When diff', () => {
+      it('Then each change carries its line counts', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a1\n');
+        await add(ctx, ['a.txt']);
+        const c1 = await commit(ctx, { message: 'first', author });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a2\n');
+        await add(ctx, ['a.txt']);
+        const c2 = await commit(ctx, { message: 'second', author });
+
+        // Act
+        const sut = await diff(ctx, { from: c1.id, to: c2.id, withStat: true });
+
+        // Assert — single-line replacement: one added, one deleted.
+        expect(sut.changes[0]).toMatchObject({ added: 1, deleted: 1, binary: false });
+      });
+    });
+  });
+
+  describe('Given withStat omitted and a modified file', () => {
+    describe('When diff', () => {
+      it('Then changes carry no count fields (tree-level only)', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a1\n');
+        await add(ctx, ['a.txt']);
+        const c1 = await commit(ctx, { message: 'first', author });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a2\n');
+        await add(ctx, ['a.txt']);
+        const c2 = await commit(ctx, { message: 'second', author });
+
+        // Act
+        const sut = await diff(ctx, { from: c1.id, to: c2.id });
+
+        // Assert
+        expect(sut.changes[0]).not.toHaveProperty('added');
+      });
+    });
+  });
+
   describe('Given a rename and detectRenames=true', () => {
     describe('When diff', () => {
       it('Then collapses delete+add into a single rename change', async () => {
@@ -335,193 +379,7 @@ describe('diff', () => {
     });
   });
 
-  describe('Given format=patch and a modified file', () => {
-    describe('When diff', () => {
-      it('Then returns PatchResult with canonical text and the structured diff', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await init(ctx);
-        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a1\n');
-        await add(ctx, ['a.txt']);
-        const c1 = await commit(ctx, { message: 'first', author });
-        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a2\n');
-        await add(ctx, ['a.txt']);
-        const c2 = await commit(ctx, { message: 'second', author });
-
-        // Act
-        const sut = await diff(ctx, { from: c1.id, to: c2.id, format: 'patch' });
-
-        // Assert
-        expect(sut.format).toBe('patch');
-        expect(sut.diff.changes).toHaveLength(1);
-        expect(sut.text).toContain('diff --git a/a.txt b/a.txt');
-        expect(sut.text).toContain('--- a/a.txt');
-        expect(sut.text).toContain('+++ b/a.txt');
-        expect(sut.text).toContain('-a1');
-        expect(sut.text).toContain('+a2');
-      });
-    });
-  });
-
-  describe('Given format=patch and an added file', () => {
-    describe('When diff', () => {
-      it('Then text contains the new file mode block', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await init(ctx);
-        const c0 = await commit(ctx, { message: 'empty', author, allowEmpty: true });
-        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/fresh.txt`, 'hello\n');
-        await add(ctx, ['fresh.txt']);
-        const c1 = await commit(ctx, { message: 'add fresh', author });
-
-        // Act
-        const sut = await diff(ctx, { from: c0.id, to: c1.id, format: 'patch' });
-
-        // Assert
-        expect(sut.text).toContain('new file mode 100644');
-        expect(sut.text).toContain('--- /dev/null');
-        expect(sut.text).toContain('+++ b/fresh.txt');
-        expect(sut.text).toContain('+hello');
-      });
-    });
-  });
-
-  describe('Given format=patch and pathPrefix omitting prefixes', () => {
-    describe('When diff', () => {
-      it('Then headers use bare paths', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await init(ctx);
-        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a1\n');
-        await add(ctx, ['a.txt']);
-        const c1 = await commit(ctx, { message: 'first', author });
-        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a2\n');
-        await add(ctx, ['a.txt']);
-        const c2 = await commit(ctx, { message: 'second', author });
-
-        // Act
-        const sut = await diff(ctx, {
-          from: c1.id,
-          to: c2.id,
-          format: 'patch',
-          pathPrefix: { old: '', new: '' },
-        });
-
-        // Assert
-        expect(sut.text).toContain('diff --git a.txt a.txt');
-        expect(sut.text).toContain('--- a.txt');
-        expect(sut.text).toContain('+++ a.txt');
-      });
-    });
-  });
-
-  describe('Given format=patch and contextLines=0', () => {
-    describe('When diff with a multi-line modify', () => {
-      it('Then hunk has no equal context lines', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await init(ctx);
-        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/x.txt`, '1\n2\n3\n4\n5\n');
-        await add(ctx, ['x.txt']);
-        const c1 = await commit(ctx, { message: 'first', author });
-        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/x.txt`, '1\n2\nTHREE\n4\n5\n');
-        await add(ctx, ['x.txt']);
-        const c2 = await commit(ctx, { message: 'second', author });
-
-        // Act
-        const sut = await diff(ctx, {
-          from: c1.id,
-          to: c2.id,
-          format: 'patch',
-          contextLines: 0,
-        });
-
-        // Assert
-        expect(sut.text).toContain('@@ -3 +3 @@');
-        expect(sut.text).not.toContain(' 2');
-        expect(sut.text).not.toContain(' 4');
-      });
-    });
-  });
-
-  describe('Given format=patch and a deleted file', () => {
-    describe('When diff', () => {
-      it('Then text contains the deleted file mode block', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await init(ctx);
-        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/gone.txt`, 'bye\n');
-        await add(ctx, ['gone.txt']);
-        const c1 = await commit(ctx, { message: 'add', author });
-        await rm(ctx, ['gone.txt']);
-        const c2 = await commit(ctx, { message: 'remove', author });
-
-        // Act
-        const sut = await diff(ctx, { from: c1.id, to: c2.id, format: 'patch' });
-
-        // Assert
-        expect(sut.text).toContain('deleted file mode 100644');
-        expect(sut.text).toContain('+++ /dev/null');
-        expect(sut.text).toContain('-bye');
-      });
-    });
-  });
-
-  describe('Given format=patch and a file changed inside a sub-directory', () => {
-    describe('When diff', () => {
-      it('Then it recurses, rendering per-file hunks (no UNEXPECTED_OBJECT_TYPE)', async () => {
-        // Arrange — the regression: a nested-dir change once threw because the
-        // single-level diff surfaced `sub` as a tree-oid change.
-        const ctx = createMemoryContext();
-        await init(ctx);
-        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/sub/b.txt`, 'b1\n');
-        await add(ctx, ['sub/b.txt']);
-        const c1 = await commit(ctx, { message: 'first', author });
-        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/sub/b.txt`, 'b2\n');
-        await add(ctx, ['sub/b.txt']);
-        const c2 = await commit(ctx, { message: 'second', author });
-
-        // Act
-        const sut = await diff(ctx, { from: c1.id, to: c2.id, format: 'patch' });
-
-        // Assert — per-file patch on the full path.
-        expect(sut.text).toContain('diff --git a/sub/b.txt b/sub/b.txt');
-        expect(sut.text).toContain('-b1');
-        expect(sut.text).toContain('+b2');
-        expect(sut.diff.changes).toEqual([
-          expect.objectContaining({ type: 'modify', path: 'sub/b.txt' }),
-        ]);
-      });
-    });
-  });
-
-  describe('Given format=patch and recursive=false on a nested change', () => {
-    describe('When diff', () => {
-      it('Then the patch is still recursive (the flag is inert for patch)', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await init(ctx);
-        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/sub/b.txt`, 'b1\n');
-        await add(ctx, ['sub/b.txt']);
-        const c1 = await commit(ctx, { message: 'first', author });
-        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/sub/b.txt`, 'b2\n');
-        await add(ctx, ['sub/b.txt']);
-        const c2 = await commit(ctx, { message: 'second', author });
-
-        // Act — recursive:false must NOT make patch single-level (git has no
-        // non-recursive porcelain patch).
-        const sut = await diff(ctx, { from: c1.id, to: c2.id, format: 'patch', recursive: false });
-
-        // Assert
-        expect(sut.text).toContain('diff --git a/sub/b.txt b/sub/b.txt');
-        expect(sut.diff.changes).toEqual([
-          expect.objectContaining({ type: 'modify', path: 'sub/b.txt' }),
-        ]);
-      });
-    });
-  });
-
-  describe('Given format=tree (default) and a file changed inside a sub-directory', () => {
+  describe('Given a file changed inside a sub-directory (default)', () => {
     describe('When diff', () => {
       it('Then the sub-directory surfaces as a single tree-entry change (non-recursive)', async () => {
         // Arrange
@@ -534,7 +392,7 @@ describe('diff', () => {
         await add(ctx, ['sub/b.txt']);
         const c2 = await commit(ctx, { message: 'second', author });
 
-        // Act — default tree format mirrors `git diff-tree` (non-recursive).
+        // Act — the default mirrors `git diff-tree` (non-recursive).
         const sut = await diff(ctx, { from: c1.id, to: c2.id });
 
         // Assert — one change, on `sub` (not `sub/b.txt`).
@@ -544,7 +402,7 @@ describe('diff', () => {
     });
   });
 
-  describe('Given format=tree and recursive=true on a nested change', () => {
+  describe('Given recursive=true on a nested change', () => {
     describe('When diff', () => {
       it('Then the structured diff recurses into per-file changes (`git diff-tree -r`)', async () => {
         // Arrange

@@ -2,9 +2,10 @@
  * Integration test — byte-parity between tsgit's recursive patch text and
  * `git diff` for histories that change files **inside sub-directories**.
  *
- * `repo.diff({ format: 'patch' })` recurses (git porcelain), so a nested change
- * renders as per-file hunks keyed by the full path. Double-pinned: tsgit's bytes
- * must equal both live `git diff` and a frozen golden under
+ * `repo.diff({ recursive: true })` flattens sub-trees, so a nested change
+ * reconstructs (via the `renderPatch` domain serializer) as per-file hunks keyed
+ * by the full path. Double-pinned: tsgit's bytes must equal both live `git diff`
+ * and a frozen golden under
  * `fixtures/diff-patch/`, so a future git output change shows up as a golden
  * drift even when tsgit and the new git move together.
  *
@@ -26,6 +27,7 @@ import { diff } from '../../src/application/commands/diff.js';
 import { init } from '../../src/application/commands/init.js';
 import { rm } from '../../src/application/commands/rm.js';
 import type { AuthorIdentity } from '../../src/domain/objects/index.js';
+import { reconstructPatch } from './diff-reconstruct.js';
 import { GIT_AVAILABLE, git, makePeerPair, runGit, runGitEnv } from './interop-helpers.js';
 
 const fixturesDir = path.join(
@@ -94,11 +96,12 @@ describe.skipIf(!GIT_AVAILABLE)('integration — recursive (sub-directory) diff 
       const c2 = await commit(ctx, { message: 'second', author });
 
       // Act
-      const sut = await diff(ctx, { from: c1.id, to: c2.id, format: 'patch' });
+      const treeDiff = await diff(ctx, { from: c1.id, to: c2.id, recursive: true });
+      const sut = await reconstructPatch(ctx, treeDiff);
 
       // Assert — double pin.
-      expect(sut.text).toBe(live);
-      expect(sut.text).toBe(golden);
+      expect(sut).toBe(live);
+      expect(sut).toBe(golden);
     } finally {
       await pair.dispose();
     }
@@ -138,11 +141,12 @@ describe.skipIf(!GIT_AVAILABLE)('integration — recursive (sub-directory) diff 
       const c2 = await commit(ctx, { message: 'second', author });
 
       // Act
-      const sut = await diff(ctx, { from: c1.id, to: c2.id, format: 'patch' });
+      const treeDiff = await diff(ctx, { from: c1.id, to: c2.id, recursive: true });
+      const sut = await reconstructPatch(ctx, treeDiff);
 
       // Assert — double pin.
-      expect(sut.text).toBe(live);
-      expect(sut.text).toBe(golden);
+      expect(sut).toBe(live);
+      expect(sut).toBe(golden);
     } finally {
       await pair.dispose();
     }

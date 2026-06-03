@@ -71,13 +71,7 @@ export {
   continueMerge,
 } from './continue-merge.js';
 export { type DescribeOptions, type DescribeResult, describe } from './describe.js';
-export {
-  type DiffFormat,
-  type DiffOptions,
-  type DiffResult,
-  diff,
-  type PatchResult,
-} from './diff.js';
+export { type DiffOptions, diff, type PatchResult } from './diff.js';
 export { type FetchOptions, type FetchResult, fetch } from './fetch.js';
 export {
   createPromisorRemote,

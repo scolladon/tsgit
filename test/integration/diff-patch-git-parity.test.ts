@@ -2,12 +2,13 @@
  * Integration test — byte-parity between tsgit's patch text and `git diff`.
  *
  * Spawns a real `git` to capture the canonical patch for a handful of
- * representative file-class scenarios, then asserts byte-equality with
- * `repo.diff({ format: 'patch' })`'s output. **Double-pinned:** the
- * test also asserts equality against a frozen golden fixture committed
- * under `fixtures/diff-patch/`, so a future git upgrade that changes
- * its default output produces a visible diff against the fixture even
- * when tsgit and the new git drift together.
+ * representative file-class scenarios, then asserts byte-equality with the
+ * patch reconstructed from `repo.diff`'s structured `TreeDiff` (via the
+ * `renderPatch` domain serializer — `diff` no longer returns rendered text,
+ * ADR-251). **Double-pinned:** the test also asserts equality against a frozen
+ * golden fixture committed under `fixtures/diff-patch/`, so a future git
+ * upgrade that changes its default output produces a visible diff against the
+ * fixture even when tsgit and the new git drift together.
  *
  * Skips silently when `git` is not on PATH (CI always has git; local devs may not).
  *
@@ -27,6 +28,7 @@ import { diff } from '../../src/application/commands/diff.js';
 import { init } from '../../src/application/commands/init.js';
 import { rm } from '../../src/application/commands/rm.js';
 import type { AuthorIdentity } from '../../src/domain/objects/index.js';
+import { reconstructPatch } from './diff-reconstruct.js';
 import { GIT_AVAILABLE, git, makePeerPair, runGit, runGitEnv } from './interop-helpers.js';
 
 const fixturesDir = path.join(
@@ -83,12 +85,13 @@ describe.skipIf(!GIT_AVAILABLE)('integration — diff patch git parity', () => {
       const c2 = await commit(ctx, { message: 'second', author });
 
       // Act
-      const sut = await diff(ctx, { from: c1.id, to: c2.id, format: 'patch' });
+      const treeDiff = await diff(ctx, { from: c1.id, to: c2.id, recursive: true });
+      const sut = await reconstructPatch(ctx, treeDiff);
 
       // Assert — double pin: actual matches live git AND matches the frozen
       // golden. If live drifts (new git version) the golden still catches it.
-      expect(sut.text).toBe(live);
-      expect(sut.text).toBe(golden);
+      expect(sut).toBe(live);
+      expect(sut).toBe(golden);
     } finally {
       await pair.dispose();
     }
@@ -126,11 +129,12 @@ describe.skipIf(!GIT_AVAILABLE)('integration — diff patch git parity', () => {
       const c3 = await commit(ctx, { message: 'third', author });
 
       // Act
-      const sut = await diff(ctx, { from: c1.id, to: c3.id, format: 'patch' });
+      const treeDiff = await diff(ctx, { from: c1.id, to: c3.id, recursive: true });
+      const sut = await reconstructPatch(ctx, treeDiff);
 
       // Assert — double pin against live git + frozen golden.
-      expect(sut.text).toBe(live);
-      expect(sut.text).toBe(golden);
+      expect(sut).toBe(live);
+      expect(sut).toBe(golden);
     } finally {
       await pair.dispose();
     }
