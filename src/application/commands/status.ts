@@ -68,12 +68,15 @@ const STATUS_SCAN_OP = 'status:scan';
 const STATUS_SCAN_GRANULARITY = 100;
 
 /**
- * Summarize the state of the working tree against both git columns: the
- * **staged** column (HEAD-tree vs index — git's "Changes to be committed",
- * `diff-index --cached HEAD`) and the **working-tree** column (index vs working
- * tree), plus untracked files. The two columns are independent passes; a path
- * may appear in both (e.g. removed from the index but still on disk → staged
- * delete + untracked). `clean` is true only when every column is empty.
+ * Summarize the state of the working tree against git's columns: the **staged**
+ * column (HEAD-tree vs index — git's "Changes to be committed",
+ * `diff-index --cached HEAD`), the **working-tree** column (index vs working
+ * tree), untracked files, and the **unmerged** column (conflicted paths with
+ * stage 1/2/3 entries — git's "Unmerged paths"). The staged and working-tree
+ * passes are independent; a path may appear in both (e.g. removed from the index
+ * but still on disk → staged delete + untracked). A conflicted path is reported
+ * only under `unmerged`, never in the other columns. `clean` is true only when
+ * every column and the unmerged set are empty.
  *
  * Progress reporting: emits `status:scan` start before the
  * fan-out, updates at every 100 lstat completions, and end in a finally
@@ -194,7 +197,8 @@ const toUnmergedEntries = (groups: ReadonlyMap<FilePath, UnmergedEntryGroup>): U
 const classifyEntry = async (ctx: Context, entry: IndexEntry): Promise<ChangeEntry | undefined> => {
   // A skip-worktree entry is intentionally absent from the working tree;
   // reporting its absence as `deleted` would make a sparse repo permanently
-  // dirty. It stays in `indexByPath` so pass 2 still treats the path as tracked.
+  // dirty. Its stage-0 path is still in `trackedPaths`, so pass 2 treats it as
+  // tracked (never untracked).
   if (entry.flags.skipWorktree) return undefined;
   const comparison = await compareWorkingTreeEntry(ctx, entry);
   if (comparison === 'absent') return { kind: 'deleted', path: entry.path };
