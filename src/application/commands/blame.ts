@@ -14,7 +14,7 @@
 import { enqueue, type QueueEntry } from '../../domain/blame/priority-queue.js';
 import { splitAgainstParent } from '../../domain/blame/split-blame.js';
 import type { BlameEntry } from '../../domain/blame/types.js';
-import { pathNotInTree } from '../../domain/commands/error.js';
+import { invalidOption, pathNotInTree } from '../../domain/commands/error.js';
 import { diffLines, splitLines } from '../../domain/diff/line-diff.js';
 import type { CommitData } from '../../domain/objects/commit.js';
 import { subjectLine } from '../../domain/objects/commit-message.js';
@@ -31,6 +31,12 @@ import { assertRepository } from './internal/repo-state.js';
 export interface BlameOptions {
   /** Commit-ish to blame as-of (default: HEAD). */
   readonly rev?: string;
+  /**
+   * Restrict the reported lines to a 1-based inclusive `[start, end]` window over
+   * the final file (git's `-L`). `end` past the last line is clamped; a start
+   * below 1, a start past the last line, or an inverted/non-integer range refuse.
+   */
+  readonly range?: { readonly start: number; readonly end: number };
 }
 
 export interface BlameLine {
@@ -89,7 +95,24 @@ export const blame = async (
   await seed(sut, startCommit, filePath, rev);
   await walk(sut);
   const lines = [...sut.finalized].sort((a, b) => a.finalLine - b.finalLine);
-  return { path: filePath, lines };
+  return { path: filePath, lines: applyRange(lines, opts.range) };
+};
+
+/** Filter to a 1-based inclusive line window, clamping `end` and refusing bad bounds. */
+const applyRange = (
+  lines: ReadonlyArray<BlameLine>,
+  range: BlameOptions['range'],
+): ReadonlyArray<BlameLine> => {
+  if (range === undefined) return lines;
+  const { start, end } = range;
+  if (!Number.isInteger(start) || !Number.isInteger(end)) {
+    throw invalidOption('-L', 'line numbers must be integers');
+  }
+  if (start < 1) throw invalidOption('-L', `invalid line number: ${start}`);
+  if (start > lines.length) throw invalidOption('-L', `file has only ${lines.length} lines`);
+  if (end < start) throw invalidOption('-L', `range end ${end} precedes start ${start}`);
+  const last = Math.min(end, lines.length);
+  return lines.filter((line) => line.finalLine >= start && line.finalLine <= last);
 };
 
 const seed = async (

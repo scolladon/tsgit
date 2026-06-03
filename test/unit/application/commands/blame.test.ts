@@ -261,3 +261,95 @@ describe('Given a commit that rewrites every line of the file', () => {
     });
   });
 });
+
+describe('Given a multi-commit file and a line range', () => {
+  const buildThreeLineFile = async (): Promise<{
+    ctx: Context;
+    c1: ObjectId;
+    c2: ObjectId;
+  }> => {
+    const ctx = await seed();
+    const c1 = await commitFile(ctx, 'c1', 'f.txt', 'a\nb\nc\n');
+    const c2 = await commitFile(ctx, 'c2', 'f.txt', 'a\nb-mod\nc\n');
+    return { ctx, c1, c2 };
+  };
+
+  describe('When blaming within the range', () => {
+    it('Then only in-range lines are reported with authorship preserved', async () => {
+      // Arrange
+      const { ctx, c2 } = await buildThreeLineFile();
+
+      // Act
+      const sut = await blame(ctx, 'f.txt', { range: { start: 2, end: 2 } });
+
+      // Assert
+      expect(sut.lines.map((l) => l.finalLine)).toEqual([2]);
+      expect(sut.lines[0]!.commit).toBe(c2);
+    });
+
+    it('Then a multi-line range keeps each line on its own commit', async () => {
+      // Arrange
+      const { ctx, c1, c2 } = await buildThreeLineFile();
+
+      // Act
+      const sut = await blame(ctx, 'f.txt', { range: { start: 1, end: 2 } });
+
+      // Assert
+      expect(sut.lines.map((l) => l.finalLine)).toEqual([1, 2]);
+      expect(sut.lines.map((l) => l.commit)).toEqual([c1, c2]);
+    });
+
+    it('Then an end past the last line is clamped to the file length', async () => {
+      // Arrange
+      const { ctx } = await buildThreeLineFile();
+
+      // Act
+      const sut = await blame(ctx, 'f.txt', { range: { start: 2, end: 100 } });
+
+      // Assert
+      expect(sut.lines.map((l) => l.finalLine)).toEqual([2, 3]);
+    });
+  });
+
+  describe('When the range is invalid', () => {
+    it('Then an inverted range refuses with INVALID_OPTION', async () => {
+      // Arrange
+      const { ctx } = await buildThreeLineFile();
+
+      // Act + Assert
+      await expect(blame(ctx, 'f.txt', { range: { start: 3, end: 1 } })).rejects.toMatchObject({
+        data: { code: 'INVALID_OPTION', option: '-L' },
+      });
+    });
+
+    it('Then a start below 1 refuses with INVALID_OPTION', async () => {
+      // Arrange
+      const { ctx } = await buildThreeLineFile();
+
+      // Act + Assert
+      await expect(blame(ctx, 'f.txt', { range: { start: 0, end: 2 } })).rejects.toMatchObject({
+        data: { code: 'INVALID_OPTION', option: '-L' },
+      });
+    });
+
+    it('Then a start past the last line refuses with INVALID_OPTION', async () => {
+      // Arrange
+      const { ctx } = await buildThreeLineFile();
+
+      // Act + Assert
+      await expect(blame(ctx, 'f.txt', { range: { start: 10, end: 12 } })).rejects.toMatchObject({
+        data: { code: 'INVALID_OPTION', option: '-L' },
+      });
+    });
+
+    it('Then a non-integer bound refuses with INVALID_OPTION', async () => {
+      // Arrange
+      const { ctx } = await buildThreeLineFile();
+
+      // Act + Assert
+      await expect(blame(ctx, 'f.txt', { range: { start: 1.5, end: 2 } })).rejects.toMatchObject({
+        data: { code: 'INVALID_OPTION', option: '-L' },
+      });
+    });
+  });
+});
