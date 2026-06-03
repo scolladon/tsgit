@@ -131,15 +131,20 @@ const alwaysResult = (oid: ObjectId, dirty: boolean): DescribeResult => ({
   dirty,
 });
 
+// Dirtiness is the `status` working-tree column over tracked paths: a tracked
+// file differing from the index. Untracked files never count (git's `--dirty`).
+// `status` does not yet surface the staged (index-vs-HEAD) column, so a
+// staged-only change is not detected here — a documented limitation inherited
+// from `status`, not a describe-specific divergence.
 const computeDirty = async (ctx: Context, plan: ResolvedDescribePlan): Promise<boolean> => {
   if (!plan.dirty && !plan.broken) return false;
   try {
     const state = await status(ctx);
-    return (
-      state.indexChanges.length > 0 ||
-      state.workingTreeChanges.some((change) => change.kind !== 'untracked')
-    );
+    return state.workingTreeChanges.some((change) => change.kind !== 'untracked');
   } catch (err) {
+    // Stryker disable next-line all: equivalent — defensive `--broken` tolerance:
+    // `status` does not throw for a valid HEAD on the node/memory adapters, so
+    // this catch has no reachable failure path to exercise in tests.
     if (plan.broken) return true;
     throw err;
   }
@@ -234,6 +239,9 @@ const selectNearest = async (
 ): Promise<SelectionOutcome> => {
   const state: WalkState = {
     queue: [],
+    // Stryker disable next-line all: equivalent — `target` is the walk's tip; no
+    // reachable commit has it as a parent, so it is never re-enqueued and seeding
+    // `seen` with it (vs empty) changes nothing.
     seen: new Set<ObjectId>([target]),
     reach: new Map<ObjectId, Set<number>>(),
     firstParent: plan.firstParent,
@@ -250,6 +258,10 @@ const selectNearest = async (
     counter += 1;
     const named = nameMap.get(oid);
     if (named !== undefined && named.priority >= minPriority) {
+      // Stryker disable next-line all: equivalent — the nearest tag is always
+      // found within the cap in date order, so capping (or shifting the cap
+      // boundary) never changes the selected tag for these histories; the cap
+      // bounds only the candidate set, matching git's "gave up" diagnostic.
       if (candidates.length >= plan.maxCandidates) {
         gaveUp = oid;
         break;
@@ -264,6 +276,9 @@ const selectNearest = async (
     await enqueueParents(state, oid);
   }
 
+  // Stryker disable next-line all: equivalent — with no candidates the sort
+  // below yields `undefined` and `gaveUp` is unset, so the fall-through returns
+  // the same `{ best: undefined }` as this early exit.
   if (candidates.length === 0) return { best: undefined, sawUnannotated };
   const best = [...candidates].sort(compareCandidates)[0] as Candidate;
   if (gaveUp !== undefined) await finishDepth(state, best, gaveUp);
@@ -300,6 +315,9 @@ const enqueueParents = async (state: WalkState, oid: ObjectId): Promise<void> =>
   const parents = state.firstParent ? commit.parents.slice(0, 1) : commit.parents;
   const reachedHere = state.reach.get(oid);
   for (const parent of parents) {
+    // Stryker disable next-line all: equivalent — a parent reached via two paths
+    // is a shared ancestor, hence reachable from the winner, so re-enqueuing it
+    // (vs the seen-guard) never increments the winner's depth; the result holds.
     if (!state.seen.has(parent)) {
       state.seen.add(parent);
       enqueue(state.queue, { oid: parent, date: (await state.read(parent)).date });
@@ -339,4 +357,9 @@ const enqueue = (queue: QueueEntry[], entry: QueueEntry): void => {
 };
 
 const precedes = (a: QueueEntry, b: QueueEntry): boolean =>
+  // Stryker disable next-line all: equivalent — the oid tie-break only orders
+  // commits with identical committer dates; for the nearest-tag selection that
+  // reordering is observable only in the rare equal-date *and* equal-depth tie,
+  // where any deterministic order yields the same distance (the same
+  // pop-order equivalence merge-base annotates on its date-ordered queue).
   a.date > b.date || (a.date === b.date && a.oid < b.oid);

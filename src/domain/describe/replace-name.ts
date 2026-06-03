@@ -10,7 +10,10 @@ const ANNOTATED: DescribeName['priority'] = 2;
 
 export const shouldReplaceName = (existing: DescribeName, incoming: DescribeName): boolean => {
   if (incoming.priority > existing.priority) return true;
-  if (incoming.priority < existing.priority) return false;
+  // A lower-priority incoming has priority below 2, so it is never annotated and
+  // falls through to the final `false` — no explicit lower-priority guard is
+  // needed. The tagger-date tie-break decides only between two annotated tags
+  // (equal priority 2); reaching this branch means `existing` is annotated too.
   if (incoming.priority === ANNOTATED) return incoming.taggerDate > existing.taggerDate;
   return false;
 };

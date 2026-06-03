@@ -191,9 +191,13 @@ caller appends whatever marker it likes once it sees `dirty: true` — so the v1
 option is a plain boolean and the result exposes only `dirty: boolean`.
 
 Dirtiness is derived from the existing `status` command (the `pull → fetch/merge`
-command-composes-command precedent): dirty iff `indexChanges` is non-empty **or**
-any `workingTreeChanges` entry has a kind other than `untracked`. This is the
-`git diff-index --quiet HEAD` predicate over tracked paths.
+command-composes-command precedent): dirty iff any `workingTreeChanges` entry has
+a kind other than `untracked`. This approximates `git diff-index --quiet HEAD`
+over tracked paths. **Limitation:** `status` does not yet populate the staged
+(index-vs-HEAD) column, so a *staged-only* change is not detected — `describe`
+inherits that gap rather than re-deriving the staged diff itself. The common case
+(unstaged edits) is faithful; staged-only detection lands when `status`'s staged
+column does.
 
 `broken: true` tolerates a working tree whose state cannot be computed (a corrupt
 tree): the `status` call is wrapped, and on failure `dirty` is reported `true`
