@@ -122,7 +122,7 @@ export const status = async (ctx: Context): Promise<StatusResult> => {
     for await (const { path } of walkWorkingTree(ctx, { ignore })) {
       if (!trackedPaths.has(path)) untracked.push({ kind: 'untracked', path });
     }
-    untracked.sort(byPathAscending);
+    untracked.sort((a, b) => comparePaths(a.path, b.path));
     const workingTreeChanges = [...indexChecks, ...untracked];
     // Staged column: HEAD-tree vs index (git's "Changes to be committed"). A
     // conflicted path (stage 1/2/3, no stage-0) is in HEAD's tree but absent from
@@ -148,14 +148,6 @@ export const status = async (ctx: Context): Promise<StatusResult> => {
     ctx.progress.end(STATUS_SCAN_OP);
   }
 };
-
-/**
- * Ascending byte-order comparator for untracked entries. A filesystem walk
- * yields each path exactly once, so `a.path === b.path` is unreachable here —
- * the comparator is intentionally two-way (no equal-path branch).
- */
-// Stryker disable next-line EqualityOperator: equivalent — `untracked` is built solely from `walkWorkingTree`, which yields each filesystem path exactly once, so `a.path` and `b.path` are never equal during this sort. For two distinct paths `a.path < b.path` and `a.path <= b.path` always agree, so the mutated comparator produces an identical ordering.
-const byPathAscending = (a: ChangeEntry, b: ChangeEntry): number => (a.path < b.path ? -1 : 1);
 
 /**
  * Project an index-vs-HEAD `DiffChange` onto the `ChangeKind` used by both status
