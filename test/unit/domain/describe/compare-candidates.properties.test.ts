@@ -3,8 +3,6 @@ import { describe, expect, it } from 'vitest';
 import { compareCandidates } from '../../../../src/domain/describe/compare-candidates.js';
 import { arbCandidate } from './arbitraries.js';
 
-const sign = (n: number): number => Math.sign(n);
-
 describe('compareCandidates properties', () => {
   describe('Given an arbitrary candidate compared with itself', () => {
     describe('When compareCandidates is called', () => {
@@ -26,7 +24,16 @@ describe('compareCandidates properties', () => {
         // Arrange + Act + Assert
         fc.assert(
           fc.property(arbCandidate(), arbCandidate(), (a, b) => {
-            expect(sign(compareCandidates(a, b))).toBe(-sign(compareCandidates(b, a)));
+            const ab = compareCandidates(a, b);
+            const ba = compareCandidates(b, a);
+            // Guard the equal-candidate case (both comparisons are 0) so the
+            // assertion never pits +0 against -0: negating `Math.sign(0)` yields
+            // -0, which `toBe`'s Object.is treats as distinct from +0.
+            if (ab === 0) {
+              expect(ba).toBe(0);
+            } else {
+              expect(Math.sign(ab)).toBe(-Math.sign(ba));
+            }
           }),
           { numRuns: 100 },
         );
