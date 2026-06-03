@@ -396,6 +396,129 @@ describe('revParse', () => {
     });
   });
 
+  describe('Given a tree-ish with a path (<rev>:<path>)', () => {
+    const seedTree = async (
+      ctx: Context,
+    ): Promise<{ blobA: ObjectId; blobB: ObjectId; sub: ObjectId; root: ObjectId }> => {
+      const blobA = await writeBlob(ctx, 'hello\n');
+      const blobB = await writeBlob(ctx, 'nested\n');
+      const sub = await writeObject(ctx, {
+        type: 'tree',
+        id: '' as ObjectId,
+        entries: [{ name: 'b.txt', id: blobB, mode: FILE_MODE.REGULAR }],
+      });
+      const root = await writeObject(ctx, {
+        type: 'tree',
+        id: '' as ObjectId,
+        entries: [
+          { name: 'a.txt', id: blobA, mode: FILE_MODE.REGULAR },
+          { name: 'sub', id: sub, mode: FILE_MODE.DIRECTORY },
+        ],
+      });
+      const commit = await writeCommit(ctx, root, []);
+      await seedRepo(ctx, { refs: { 'refs/heads/main': commit } });
+      return { blobA, blobB, sub, root };
+    };
+
+    describe('When revParse(main:a.txt)', () => {
+      it('Then returns the blob at that path', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const { blobA } = await seedTree(ctx);
+
+        // Act
+        const sut = await revParse(ctx, 'main:a.txt');
+
+        // Assert
+        expect(sut).toBe(blobA);
+      });
+    });
+
+    describe('When revParse(main:sub/b.txt)', () => {
+      it('Then descends sub-trees to the nested blob', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const { blobB } = await seedTree(ctx);
+
+        // Act
+        const sut = await revParse(ctx, 'main:sub/b.txt');
+
+        // Assert
+        expect(sut).toBe(blobB);
+      });
+    });
+
+    describe('When revParse(main:) with an empty path', () => {
+      it('Then returns the commit tree itself', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const { root } = await seedTree(ctx);
+
+        // Act
+        const sut = await revParse(ctx, 'main:');
+
+        // Assert
+        expect(sut).toBe(root);
+      });
+    });
+
+    describe('When revParse(main:sub) names a sub-tree', () => {
+      it('Then returns the sub-tree id', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const { sub } = await seedTree(ctx);
+
+        // Act
+        const sut = await revParse(ctx, 'main:sub');
+
+        // Assert
+        expect(sut).toBe(sub);
+      });
+    });
+
+    describe('When the path component is absent', () => {
+      it('Then throws PATH_NOT_IN_TREE carrying rev and path', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedTree(ctx);
+        let caught: unknown;
+
+        // Act
+        try {
+          await revParse(ctx, 'main:nope');
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        const data = (caught as TsgitError).data as { code: string; rev: string; path: string };
+        expect(data.code).toBe('PATH_NOT_IN_TREE');
+        expect(data.rev).toBe('main');
+        expect(data.path).toBe('nope');
+      });
+    });
+
+    describe('When a component descends into a blob', () => {
+      it('Then throws PATH_NOT_IN_TREE on the non-tree component', async () => {
+        // Arrange — `a.txt` is a blob, so descending into `a.txt/x` cannot resolve.
+        const ctx = createMemoryContext();
+        await seedTree(ctx);
+        let caught: unknown;
+
+        // Act
+        try {
+          await revParse(ctx, 'main:a.txt/x');
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        const data = (caught as TsgitError).data as { code: string };
+        expect(data.code).toBe('PATH_NOT_IN_TREE');
+      });
+    });
+  });
+
   describe('Given a non-commit object', () => {
     describe('When revParse(<blob>^)', () => {
       it('Then throws OBJECT_NOT_FOUND on the blob id', async () => {

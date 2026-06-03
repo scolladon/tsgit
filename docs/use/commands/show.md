@@ -14,8 +14,22 @@ multi-object join).
 ```ts
 type ShowInput = string | ReadonlyArray<string>; // default 'HEAD'
 
+type MergeDiffMode = 'none' | 'separate' | 'combined' | 'dense'; // -s / -m / -c / --cc
+
+interface ShowStatOptions {
+  readonly width?: number;     // diffstat width; default 80
+  readonly nameWidth?: number;
+  readonly count?: number;
+}
+
 interface ShowOptions {
-  readonly contextLines?: number; // commit-patch hunk context; default 3
+  readonly contextLines?: number;             // commit-patch hunk context; default 3
+  readonly noPatch?: boolean;                 // -s / --no-patch
+  readonly format?: string;                   // --pretty / --format (named or format:/tformat:)
+  readonly date?: string;                     // --date=<mode>
+  readonly stat?: boolean | ShowStatOptions;  // --stat
+  readonly numstat?: boolean;                 // --numstat
+  readonly mergeDiff?: MergeDiffMode;         // -m / -c / --cc; default 'dense'
 }
 
 interface ShowTreeEntry {
@@ -26,7 +40,10 @@ interface ShowTreeEntry {
 
 type ShowResult =
   | { readonly kind: 'commit'; readonly id: ObjectId; readonly commit: CommitData;
-      readonly patch?: PatchResult; readonly text: string }     // patch omitted for merges
+      readonly patch?: PatchResult;               // single-parent / -m first patch
+      readonly stat?: ReadonlyArray<StatEntry>;   // --stat / --numstat
+      readonly perParent?: ReadonlyArray<PatchResult>; // -m, one per parent
+      readonly text: string }
   | { readonly kind: 'tag'; readonly id: ObjectId; readonly tag: TagData;
       readonly target: ShowResult; readonly text: string }      // text = tag block only
   | { readonly kind: 'tree'; readonly id: ObjectId;
@@ -63,6 +80,26 @@ const many = await repo.show(['v1.0', 'HEAD', 'HEAD~2']);
 
 // Widen the commit patch context.
 const wide = await repo.show('HEAD', { contextLines: 5 });
+
+// -s: header + message only, no diff.
+const summary = await repo.show('HEAD', { noPatch: true });
+
+// Alternate pretty formats and a custom placeholder template.
+const oneline = await repo.show('HEAD', { format: 'oneline' });
+const custom = await repo.show('HEAD', { format: 'format:%h %an: %s%n%b' });
+
+// Diffstat / numeric stat in place of the patch.
+const stat = await repo.show('HEAD', { stat: true });
+const numstat = await repo.show('HEAD', { numstat: true });
+
+// Read a blob (or sub-tree) by path inside a tree-ish.
+const file = await repo.show('HEAD:src/index.ts');
+
+// Alternate date rendering (iso/iso-strict/rfc/short/raw/unix/relative/human/format:).
+const iso = await repo.show('HEAD', { date: 'iso' });
+
+// Merge diffs: per-parent (-m), combined (-c), or dense combined (--cc, default).
+const perParent = await repo.show(mergeOid, { mergeDiff: 'separate' });
 ```
 
 ## Output guarantees
@@ -75,22 +112,40 @@ const wide = await repo.show('HEAD', { contextLines: 5 });
   (`Wed Nov 15 00:13:20 2023 +0200`), rendered in the identity's own timezone.
 - Commit patches detect renames by default (matching git's `diff.renames`),
   unlike [`diff`](diff.md), which is opt-in.
-- **Merge commits** emit a `Merge:` line and **no patch** (git's default);
-  **root commits** diff against the empty tree.
+- **Merge commits** emit a `Merge:` line and, by default, a **dense combined
+  diff** (`--cc`) — the same default as `git show`. A merge that took one side
+  verbatim (an empty combined diff) shows the header + a trailing blank, no
+  patch. `mergeDiff` selects `separate` (`-m`, per-parent), `combined` (`-c`),
+  or `none`. **Root commits** diff against the empty tree.
 - A revision repeated across the arg list de-duplicates if it resolves to a
   commit (git's revision-walker semantics); blobs, trees, and tags do not.
 - Annotated tags are **not** auto-peeled: `show('v1.0')` renders the tag
   object (and recurses into its target), never just the target.
 
-## Deferred (not v1)
+## v2 flags
 
-`-s` / `--no-patch`, `--format` / `--pretty`, `--stat`, `<rev>:<path>` blob
-lookup, combined merge diffs (`-c` / `-m` / `--cc`), and alternate `--date=`
-modes. Each is an additive option on the same return shape.
+All shipped as additive options (no breaking change):
+
+- **`-s`/`--no-patch`** (`noPatch`) — header + message only.
+- **`--pretty`/`--format`** (`format`) — `oneline`, `short`, `medium`, `full`,
+  `fuller`, `raw`, `reference`, `email`, `mboxrd`, or a `format:`/`tformat:`
+  placeholder template (`%H %h %an %ad %s %b %d`…; unknown `%?` pass through).
+- **`--stat`/`--numstat`** (`stat`/`numstat`) — the diffstat (faithful graph
+  scaling, `Bin … bytes` for binaries) or numeric `<add>\t<del>\t<path>`.
+- **`<rev>:<path>`** — read a blob/tree by path inside any tree-ish.
+- **`-m`/`-c`/`--cc`** (`mergeDiff`) — per-parent or combined merge diffs;
+  dense (`--cc`) is the default for merges.
+- **`--date=<mode>`** (`date`) — `iso`, `iso-strict`, `rfc`, `short`, `raw`,
+  `unix`, `local`, `relative`, `human`, or `format:<strftime>`.
+
+Limitations: `%xXX` is byte-faithful for ASCII bytes only; `relative`/`human`/
+`local` are not interop-pinned (now-/host-dependent); dynamic oid abbreviation
+is fixed at 7; combined diffs of files deleted by the merge are out of scope.
 
 ## See also
 
 - Related commands: [`log`](log.md), [`diff`](diff.md), [`cat-file`](cat-file.md)
-- Design: `docs/design/show-object-output.md`
-- ADRs: 240 (structured union + faithful bytes) · 241 (multi-rev `shown_one` +
-  commit dedup) · 242 (patch rename detection on by default)
+- Design: `docs/design/show-object-output.md` · `docs/design/show-v2-flags.md`
+- ADRs: 240–242 (v1 structured union, multi-rev, rename detection) · 244 (option
+  model + abbrev) · 245 (`<rev>:<path>`) · 246 (pretty breadth) · 247 (date
+  modes) · 248 (combined merge diff)

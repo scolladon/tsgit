@@ -17,11 +17,20 @@ import type {
   Tree,
 } from '../../domain/objects/index.js';
 import {
+  buildStatEntries,
+  type DateFormatter,
+  formatDate,
+  type PrettyCommitContext,
+  renderCombinedDiff,
   renderCommitBlock,
+  renderDiffStat,
+  renderNumstat,
+  renderPrettyCommit,
   renderShowStream,
   renderTagBlock,
   renderTreeListing,
   type ShowStreamNode,
+  type StatEntry,
 } from '../../domain/show/index.js';
 import type { Context } from '../../ports/context.js';
 import { diffTrees } from '../primitives/diff-trees.js';
@@ -30,13 +39,46 @@ import { readObject } from '../primitives/read-object.js';
 import type { PatchResult } from './diff.js';
 import { treeOf } from './internal/history-rewrite.js';
 import { assertRepository } from './internal/repo-state.js';
+import { buildCombinedFiles } from './internal/show-combined.js';
+import { buildDecorationMap, type CommitDecoration } from './internal/show-decoration.js';
+import { parseShowOptions, type ResolvedShowPlan } from './internal/show-options.js';
 import { revParse } from './rev-parse.js';
 
+/** Per-call rendering environment threaded to the object builders. */
+interface RenderEnv {
+  readonly plan: ResolvedShowPlan;
+  readonly formatDate: DateFormatter;
+  readonly now: number;
+  readonly decorations: ReadonlyMap<ObjectId, CommitDecoration> | undefined;
+}
+
 export type ShowInput = string | ReadonlyArray<string>;
+
+/** How a merge commit's diff is rendered. Default `dense` (git's `show`). */
+export type MergeDiffMode = 'none' | 'separate' | 'combined' | 'dense';
+
+/** `--stat[=<width>,<name-width>,<count>]` overrides. */
+export interface ShowStatOptions {
+  readonly width?: number;
+  readonly nameWidth?: number;
+  readonly count?: number;
+}
 
 export interface ShowOptions {
   /** Context lines bracketing each hunk in commit patches. Default 3. */
   readonly contextLines?: number;
+  /** `-s` / `--no-patch`: suppress all diff output (patch / stat / combined). */
+  readonly noPatch?: boolean;
+  /** `--pretty` / `--format`: named format or `format:`/`tformat:`. Default `medium`. */
+  readonly format?: string;
+  /** `--date=<mode>`. Default `default`. */
+  readonly date?: string;
+  /** `--stat`: `true` for default width, or width overrides. */
+  readonly stat?: boolean | ShowStatOptions;
+  /** `--numstat`. */
+  readonly numstat?: boolean;
+  /** `-m` / `-c` / `--cc`. Default `dense` (git's merge default). */
+  readonly mergeDiff?: MergeDiffMode;
 }
 
 export interface ShowTreeEntry {
@@ -50,6 +92,10 @@ export interface ShowCommitResult {
   readonly id: ObjectId;
   readonly commit: CommitData;
   readonly patch?: PatchResult;
+  /** Per-file diffstat entries, present when `--stat` or `--numstat` is set. */
+  readonly stat?: ReadonlyArray<StatEntry>;
+  /** One patch per parent, present for a merge under `-m` (`mergeDiff: 'separate'`). */
+  readonly perParent?: ReadonlyArray<PatchResult>;
   readonly text: string;
 }
 
@@ -91,11 +137,21 @@ export async function show(
   opts: ShowOptions = {},
 ): Promise<ShowOutput> {
   await assertRepository(ctx);
+  const plan = parseShowOptions(opts);
+  // `now` is read once so a `--date=relative`/`human` rendering is consistent
+  // across every object in the stream (mirrors revParse's single clock read).
+  const now = Math.floor(Date.now() / 1000);
+  const formatDateFor: DateFormatter = (identity) =>
+    formatDate(plan.dateMode, identity.timestamp, identity.timezoneOffset, now);
+  // Decoration is only observable through the custom `%d`/`%D` placeholders, so
+  // the ref scan is skipped for the built-in formats.
+  const decorations = plan.format.kind === 'custom' ? await buildDecorationMap(ctx) : undefined;
+  const env: RenderEnv = { plan, formatDate: formatDateFor, now, decorations };
   const revs = typeof input === 'string' ? [input] : input;
   const objects: ShowResult[] = [];
   for (const rev of revs) {
     const id = await revParse(ctx, rev);
-    objects.push(await buildResult(ctx, rev, await readObject(ctx, id), opts));
+    objects.push(await buildResult(ctx, rev, await readObject(ctx, id), env));
   }
   return { objects, bytes: renderShowStream(objects.map(toStreamNode)) };
 }
@@ -104,7 +160,7 @@ async function buildResult(
   ctx: Context,
   rev: string,
   obj: GitObject,
-  opts: ShowOptions,
+  env: RenderEnv,
 ): Promise<ShowResult> {
   switch (obj.type) {
     case 'blob':
@@ -112,9 +168,9 @@ async function buildResult(
     case 'tree':
       return buildTree(rev, obj);
     case 'commit':
-      return buildCommit(ctx, obj, opts);
+      return buildCommit(ctx, obj, env);
     case 'tag':
-      return buildTag(ctx, rev, obj, opts);
+      return buildTag(ctx, rev, obj, env);
   }
 }
 
@@ -123,45 +179,130 @@ function buildTree(rev: string, obj: Tree): ShowTreeResult {
   return { kind: 'tree', id: obj.id, entries, text: renderTreeListing(rev, entries) };
 }
 
-async function buildCommit(
-  ctx: Context,
-  obj: Commit,
-  opts: ShowOptions,
-): Promise<ShowCommitResult> {
-  const patch = obj.data.parents.length < 2 ? await commitPatch(ctx, obj.data, opts) : undefined;
-  const text = renderCommitBlock({
+async function buildCommit(ctx: Context, obj: Commit, env: RenderEnv): Promise<ShowCommitResult> {
+  if (obj.data.parents.length >= 2) {
+    return buildMergeCommit(ctx, obj, env);
+  }
+  // `-s` suppresses every diff surface; otherwise build the patch / stat / numstat
+  // section and frame it per format.
+  const section = env.plan.noPatch ? undefined : await commitDiffSection(ctx, obj.data, env.plan);
+  const decoration = env.decorations?.get(obj.id);
+  const prettyCtx: PrettyCommitContext = {
     id: obj.id,
     commit: obj.data,
-    ...(patch !== undefined ? { patchText: patch.text } : {}),
+    formatDate: env.formatDate,
+    dateMode: env.plan.dateMode,
+    now: env.now,
+    refs: decoration?.refs ?? [],
+    ...(decoration?.headBranch !== undefined ? { headBranch: decoration.headBranch } : {}),
+    ...(decoration?.detachedHead === true ? { detachedHead: true } : {}),
+  };
+  const text = renderPrettyCommit(env.plan.format, prettyCtx, {
+    noPatch: env.plan.noPatch,
+    ...(section !== undefined ? { patchText: section.text } : {}),
   });
   return {
     kind: 'commit',
     id: obj.id,
     commit: obj.data,
-    ...(patch !== undefined ? { patch } : {}),
+    ...(section?.patch !== undefined ? { patch: section.patch } : {}),
+    ...(section?.stat !== undefined ? { stat: section.stat } : {}),
     text,
   };
+}
+
+async function buildMergeCommit(
+  ctx: Context,
+  obj: Commit,
+  env: RenderEnv,
+): Promise<ShowCommitResult> {
+  // `-m`: one full block per parent, headed `commit <oid> (from <parent>)`, each
+  // carrying a pairwise diff against that parent. Other modes keep the medium
+  // block (the combined diff wires in later).
+  if (env.plan.mergeDiff === 'separate' && !env.plan.noPatch) {
+    const perParent: PatchResult[] = [];
+    const blocks: string[] = [];
+    for (const parent of obj.data.parents) {
+      const patch = await pairwisePatch(ctx, parent, obj.data.tree, env.plan);
+      perParent.push(patch);
+      blocks.push(
+        renderCommitBlock({
+          id: obj.id,
+          commit: obj.data,
+          fromParent: parent,
+          formatDate: env.formatDate,
+          patchText: patch.text,
+        }),
+      );
+    }
+    return { kind: 'commit', id: obj.id, commit: obj.data, perParent, text: blocks.join('\n') };
+  }
+  // `-c`/`--cc` (and the default `dense`) render a combined diff; an empty result
+  // (the merge took a parent verbatim) falls back to the trailing-blank block.
+  const combined =
+    !env.plan.noPatch && (env.plan.mergeDiff === 'combined' || env.plan.mergeDiff === 'dense')
+      ? renderCombinedDiff(await buildCombinedFiles(ctx, obj.data), env.plan.mergeDiff === 'dense')
+      : '';
+  const text = renderCommitBlock({
+    id: obj.id,
+    commit: obj.data,
+    noPatch: env.plan.noPatch,
+    formatDate: env.formatDate,
+    ...(combined !== '' ? { patchText: combined } : {}),
+  });
+  return { kind: 'commit', id: obj.id, commit: obj.data, text };
+}
+
+async function pairwisePatch(
+  ctx: Context,
+  parent: ObjectId,
+  resultTree: ObjectId,
+  plan: ResolvedShowPlan,
+): Promise<PatchResult> {
+  const parentTree = await treeOf(ctx, parent);
+  const diff: TreeDiff = await diffTrees(ctx, parentTree, resultTree, {
+    recursive: true,
+    detectRenames: true,
+  });
+  const files = await materialisePatchFiles(ctx, diff.changes);
+  const text = renderPatch(
+    files,
+    plan.contextLines !== undefined ? { contextLines: plan.contextLines } : {},
+  );
+  return { format: 'patch', text, diff };
 }
 
 async function buildTag(
   ctx: Context,
   rev: string,
   obj: Tag,
-  opts: ShowOptions,
+  env: RenderEnv,
 ): Promise<ShowTagResult> {
-  const target = await buildResult(ctx, rev, await readObject(ctx, obj.data.object), opts);
-  return { kind: 'tag', id: obj.id, tag: obj.data, target, text: renderTagBlock(obj.data) };
+  const target = await buildResult(ctx, rev, await readObject(ctx, obj.data.object), env);
+  return {
+    kind: 'tag',
+    id: obj.id,
+    tag: obj.data,
+    target,
+    text: renderTagBlock(obj.data, env.formatDate),
+  };
 }
 
-async function commitPatch(
+interface DiffSection {
+  readonly text: string;
+  readonly patch?: PatchResult;
+  readonly stat?: ReadonlyArray<StatEntry>;
+}
+
+async function commitDiffSection(
   ctx: Context,
   commit: CommitData,
-  opts: ShowOptions,
-): Promise<PatchResult> {
+  plan: ResolvedShowPlan,
+): Promise<DiffSection> {
   // `git show` diffs recursively against the first parent (root commits against
   // the empty tree) with rename detection on by default. The recursive
   // `diffTrees` flattens both sides so sub-directories surface as per-file
-  // changes.
+  // changes. `--stat`/`--numstat` replace the unified patch with a summary.
   const parent = commit.parents[0];
   const oldTree = parent !== undefined ? await treeOf(ctx, parent) : undefined;
   const diff: TreeDiff = await diffTrees(ctx, oldTree, commit.tree, {
@@ -169,11 +310,19 @@ async function commitPatch(
     detectRenames: true,
   });
   const files = await materialisePatchFiles(ctx, diff.changes);
+  if (plan.numstat) {
+    const stat = buildStatEntries(files);
+    return { text: renderNumstat(stat), stat };
+  }
+  if (plan.stat !== undefined) {
+    const stat = buildStatEntries(files);
+    return { text: renderDiffStat(stat, plan.stat.width), stat };
+  }
   const text = renderPatch(
     files,
-    opts.contextLines !== undefined ? { contextLines: opts.contextLines } : {},
+    plan.contextLines !== undefined ? { contextLines: plan.contextLines } : {},
   );
-  return { format: 'patch', text, diff };
+  return { text, patch: { format: 'patch', text, diff } };
 }
 
 function toStreamNode(result: ShowResult): ShowStreamNode {

@@ -48,6 +48,7 @@ export type CommandError =
       readonly candidates: ReadonlyArray<ObjectId>;
     }
   | { readonly code: 'REVPARSE_UNRESOLVED'; readonly expression: string }
+  | { readonly code: 'PATH_NOT_IN_TREE'; readonly rev: string; readonly path: string }
   | { readonly code: 'EMPTY_PATHSPEC' }
   | {
       readonly code: 'OPERATION_IN_PROGRESS';
@@ -282,6 +283,13 @@ export const revparseAmbiguous = (
 
 export const revparseUnresolved = (expression: string): TsgitError =>
   new TsgitError({ code: 'REVPARSE_UNRESOLVED', expression });
+
+export const pathNotInTree = (rev: string, path: string): TsgitError =>
+  new TsgitError({
+    code: 'PATH_NOT_IN_TREE',
+    rev: sanitizeForDisplay(rev),
+    path: sanitizeForDisplay(path),
+  });
 
 export const emptyPathspec = (): TsgitError => new TsgitError({ code: 'EMPTY_PATHSPEC' });
 

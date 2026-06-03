@@ -26,6 +26,16 @@ export const subjectLine = (message: string): string => {
   return newline === -1 ? message : message.slice(0, newline);
 };
 
+/**
+ * A commit's body: everything after the blank line separating the subject from
+ * the rest of the message (git's `%b`). The empty string when there is no blank
+ * line; any trailing newline is kept verbatim.
+ */
+export const commitBody = (message: string): string => {
+  const blank = message.indexOf('\n\n');
+  return blank === -1 ? '' : message.slice(blank + 2);
+};
+
 export const stripspace = (message: string): string => {
   const lines: string[] = [];
   for (const raw of message.split('\n')) {

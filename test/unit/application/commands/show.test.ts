@@ -2,8 +2,11 @@ import { describe, expect, it } from 'vitest';
 
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { add } from '../../../../src/application/commands/add.js';
+import { branchCreate } from '../../../../src/application/commands/branch.js';
+import { checkout } from '../../../../src/application/commands/checkout.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
+import { merge } from '../../../../src/application/commands/merge.js';
 import { revParse } from '../../../../src/application/commands/rev-parse.js';
 import { show } from '../../../../src/application/commands/show.js';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
@@ -102,6 +105,26 @@ describe('show', () => {
       if (result.kind !== 'commit') throw new Error('expected commit');
       expect(result.patch?.text).toContain('diff --git a/sub/b.txt b/sub/b.txt');
       expect(result.patch?.text).toContain('+nested');
+    });
+  });
+
+  describe('Given noPatch, When show() runs on a commit', () => {
+    it('Then the patch is omitted and the text ends after the message', async () => {
+      // Arrange
+      const ctx = await seedTwoCommits();
+      const head = await revParse(ctx, 'HEAD');
+
+      // Act
+      const sut = await show(ctx, 'HEAD', { noPatch: true });
+
+      // Assert
+      const result = sut.objects[0]!;
+      if (result.kind !== 'commit') throw new Error('expected commit');
+      expect(result.patch).toBeUndefined();
+      expect(result.text).toBe(
+        `commit ${head}\nAuthor: A U Thor <author@example.com>\nDate:   Tue Nov 14 22:13:20 2023 +0000\n\n    second\n`,
+      );
+      expect(decode(sut.bytes)).toBe(result.text);
     });
   });
 
@@ -282,6 +305,40 @@ describe('show', () => {
       // Assert
       expect(caught).toBeInstanceOf(Error);
       expect((caught as { data?: { code?: string } }).data?.code).toBe('OBJECT_NOT_FOUND');
+    });
+  });
+
+  describe('Given a non-trivial merge, When show() runs with the default (dense) merge diff', () => {
+    it('Then it renders a combined diff against both parents', async () => {
+      // Arrange — each side edits a different line, so the result differs from both.
+      const ctx = createMemoryContext();
+      await init(ctx);
+      const write = (text: string): Promise<void> =>
+        ctx.fs.writeUtf8(`${ctx.layout.workDir}/m.txt`, text);
+      await write('l1\nl2\nl3\nl4\nl5\n');
+      await add(ctx, ['m.txt']);
+      await commit(ctx, { message: 'base', author });
+      await branchCreate(ctx, { name: 'side' });
+      await checkout(ctx, { target: 'side' });
+      await write('l1\nSIDE\nl3\nl4\nl5\n');
+      await add(ctx, ['m.txt']);
+      await commit(ctx, { message: 'side', author });
+      await checkout(ctx, { target: 'main' });
+      await write('l1\nl2\nl3\nMAIN\nl5\n');
+      await add(ctx, ['m.txt']);
+      await commit(ctx, { message: 'main', author });
+      await merge(ctx, { target: 'side', author });
+
+      // Act
+      const sut = await show(ctx);
+
+      // Assert
+      const result = sut.objects[0]!;
+      if (result.kind !== 'commit') throw new Error('expected commit');
+      expect(result.text).toContain('diff --cc m.txt\n');
+      expect(result.text).toContain('@@@ -1,5 -1,5 +1,5 @@@\n');
+      expect(result.text).toContain('SIDE');
+      expect(result.text).toContain('MAIN');
     });
   });
 });

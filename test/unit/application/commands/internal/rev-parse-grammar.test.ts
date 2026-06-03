@@ -650,13 +650,13 @@ describe('internal/rev-parse-grammar', () => {
       });
     });
 
-    describe("Given 'HEAD~:' (a ':' (0x3A) right after '~')", () => {
+    describe("Given 'HEAD~' (a '~' with no digit)", () => {
       describe('When parseExpression', () => {
         it('Then throws REVPARSE_UNRESOLVED', () => {
           // Arrange / Act / Assert
-          // ':' has char code 0x3A, just past the digit range — it must not count
-          // as a digit, leaving `~` with no number and triggering the failure.
-          expectError(() => parseExpression('HEAD~:'), 'REVPARSE_UNRESOLVED');
+          // `~` must be followed by a digit; with none, the digit loop never
+          // advances (`j === i + 1`) and parseTilde fails.
+          expectError(() => parseExpression('HEAD~'), 'REVPARSE_UNRESOLVED');
         });
       });
     });
@@ -741,6 +741,84 @@ describe('internal/rev-parse-grammar', () => {
           // on '/' so the else branch fails. A mutant dropping `code >= 0x30`
           // would accept '/' as a digit and the parse would succeed.
           expectError(() => parseExpression('HEAD^2/'), 'REVPARSE_UNRESOLVED');
+        });
+      });
+    });
+
+    describe("Given '<rev>:<path>' with a non-leading colon", () => {
+      describe('When parseExpression', () => {
+        it('Then it splits into a tree-path at the first colon', () => {
+          // Arrange / Act
+          const sut: RevExpression = parseExpression('HEAD:a.txt');
+
+          // Assert
+          expect(sut).toEqual({ kind: 'tree-path', rev: 'HEAD', path: 'a.txt' });
+        });
+
+        it('Then an empty path (trailing colon) yields the tree itself', () => {
+          // Arrange / Act
+          const sut: RevExpression = parseExpression('HEAD:');
+
+          // Assert
+          expect(sut).toEqual({ kind: 'tree-path', rev: 'HEAD', path: '' });
+        });
+
+        it('Then a path containing slashes is kept verbatim after the first colon', () => {
+          // Arrange / Act
+          const sut: RevExpression = parseExpression('HEAD~1:sub/b.txt');
+
+          // Assert
+          expect(sut).toEqual({ kind: 'tree-path', rev: 'HEAD~1', path: 'sub/b.txt' });
+        });
+
+        it('Then a path containing further colons keeps them in the path', () => {
+          // Arrange / Act — only the FIRST colon splits.
+          const sut: RevExpression = parseExpression('HEAD:a:b');
+
+          // Assert
+          expect(sut).toEqual({ kind: 'tree-path', rev: 'HEAD', path: 'a:b' });
+        });
+
+        it('Then a colon right after an operator char still splits the tree-path', () => {
+          // Arrange / Act — the colon wins over the (incomplete) `~` op; the rev
+          // half is resolved later, so the grammar simply splits here.
+          const sut: RevExpression = parseExpression('HEAD~:');
+
+          // Assert
+          expect(sut).toEqual({ kind: 'tree-path', rev: 'HEAD~', path: '' });
+        });
+
+        it('Then a colon inside an @{…} selector does not split', () => {
+          // Arrange / Act — ISO timestamps carry colons; the selector owns them.
+          const sut: RevExpression = parseExpression('HEAD@{2020-01-01 12:30:00}');
+
+          // Assert — falls through to the reflog branch, not a tree-path.
+          expect(sut).toEqual({
+            kind: 'ref-or-hex',
+            base: 'HEAD',
+            reflog: { kind: 'date', raw: '2020-01-01 12:30:00' },
+            operations: [],
+          });
+        });
+
+        it('Then a colon after an @{…} selector splits the tree-path', () => {
+          // Arrange / Act
+          const sut: RevExpression = parseExpression('HEAD@{0}:a.txt');
+
+          // Assert
+          expect(sut).toEqual({ kind: 'tree-path', rev: 'HEAD@{0}', path: 'a.txt' });
+        });
+      });
+    });
+
+    describe("Given a leading-colon ':<stage>:<path>'", () => {
+      describe('When parseExpression', () => {
+        it('Then it stays an index-stage, not a tree-path', () => {
+          // Arrange / Act
+          const sut: RevExpression = parseExpression(':0:a.txt');
+
+          // Assert
+          expect(sut).toEqual({ kind: 'index-stage', stage: 0, path: 'a.txt' });
         });
       });
     });
