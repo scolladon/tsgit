@@ -1,11 +1,12 @@
 # Commands — Tier-1 reference
 
-Every method bound on a `Repository` handle. 29 entries, alphabetical.
+Every method bound on a `Repository` handle. 30 entries, alphabetical.
 
 | Command | Summary |
 |---|---|
 | [`abortMerge`](abort-merge.md) | End an in-progress merge by hard-resetting HEAD/index/workdir to `ORIG_HEAD` and clearing merge state. |
 | [`add`](add.md) | Stage paths into `.git/index`. Literal paths or `all: true` bulk mode. |
+| [`blame`](blame.md) | Line-by-line authorship for a file at a revision; returns structured per-line data (no rendered line). |
 | [`branch`](branch.md) | List, create, or delete branches. |
 | [`catFile`](cat-file.md) | Batch read of git objects in strict input order. |
 | [`checkout`](checkout.md) | Switch branches or restore working-tree files. |
