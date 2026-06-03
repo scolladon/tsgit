@@ -66,12 +66,15 @@ Retained (data / behavior):
   de-duplication** (ADR-241's de-dup + separators are a stream-rendering artifact).
 
 Faithfulness is re-pinned where the prime directive actually binds the bytes — **in
-the interop test**. A test-side reconstruction module (the relocated `domain/show/*`)
-rebuilds the `git show` stream from a structured `ShowResult` — medium format,
-default date, tag/tree/blob rendering, merge combined-diff, multi-rev de-dup +
-separators — and compares it byte-for-byte to real `git show`. Every format / date
-mode / decoration / stat case the v2 flags exercised survives **as a reconstruction
-case in the test**, not as a library option.
+the interop test**. A test-side reconstruction module (the relocated *default*
+renderers — `render-commit` / `render-tag` / `render-tree` / `identity-header` /
+`git-date` / `message-indent` / `show-stream`) rebuilds git's **default** `git show`
+stream from a structured `ShowResult` and compares it byte-for-byte to real `git
+show`; merges are pinned against `git show -m` (one block per parent), which mirrors
+the `perParent` structure. The removed features (`--pretty` / `--date` / `--stat` /
+`-c` / `--cc` / decoration) leave **no** library bytes to pin, so their rendering
+code *and* their tests are **deleted**, not relocated — reconstructing them in the
+test would only exercise the test's own oracle, never the library.
 
 ## Consequences
 

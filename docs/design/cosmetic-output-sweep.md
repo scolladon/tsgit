@@ -155,15 +155,17 @@ library surface. So:
   still in `src`), then compare to live `git diff` + the frozen golden. The
   assertion moves from `sut.text` to `renderPatch(materialise(sut.changes))`.
 - **`show` parity** (`show-interop`): a new test-side reconstruction module
-  (relocated `domain/show/*`) rebuilds the `git show` stream from the structured
-  `ShowResult` (medium format, default date, tag/tree/blob rendering, combined-diff
-  for merges, multi-rev de-dup + separators), then compares to live `git show`.
-  Coverage of every format / date mode / decoration / stat that the v2 `show`
-  flags exercised is preserved **as reconstruction cases in the test**, not as
-  library options.
+  (the relocated *default* renderers — `render-commit` / `render-tag` /
+  `render-tree` / `identity-header` / `git-date` / `message-indent` /
+  `show-stream`) rebuilds git's **default** `git show` stream from the structured
+  `ShowResult`, then compares to live `git show`; merges are pinned against `git
+  show -m` (one block per parent), mirroring `perParent`. The removed features
+  (`--pretty` / `--date` / `--stat` / `-c`/`--cc` / decoration) leave no library
+  bytes to pin, so their rendering code **and** tests are deleted, not relocated —
+  reconstructing them would only test the reconstruction's own oracle.
 
-No production byte output is lost — it relocates to where the prime directive is
-actually pinned.
+The default `git show` output is reproducible from the structured fields, which is
+the completeness proof; nothing the library still emits loses its byte-pin.
 
 ## Consumer / barrel impact
 

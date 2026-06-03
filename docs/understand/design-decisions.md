@@ -192,6 +192,15 @@ ADRs are ordered chronologically in the `adr/` folder. This page groups them by 
   could pass cross-adapter parity yet differ from real git. The harness caught a
   shipped `repo.mv` directory-rename `EISDIR` bug on the Node adapter.
 
+## Structured output, not cosmetics (inspection commands)
+
+- [ADR-249 — `describe` returns structured data only](../adr/249-describe-structured-data-only.md) — establishes the library-wide rule: ship the data, let the caller render
+- [ADR-250 — Cosmetic-output sweep: `show` becomes structured-only](../adr/250-cosmetic-output-sweep.md) — drops `bytes`/`text` + the `--pretty`/`--date`/`--stat`/`-c`/`--cc` surface; rendering reconstructed in the interop test
+- [ADR-251 — `diff` returns `TreeDiff` only](../adr/251-diff-tree-diff-only.md) — no patch text on the surface; `renderPatch` stays internal for rebase/patch-id
+- [ADR-252 — `withStat` opt-in line counts on each `DiffChange`](../adr/252-withstat-counts-on-diffchange.md) — the `--numstat` data, symmetric across `diff`/`show`, blob-free by default
+- [ADR-253 — `show` on a merge carries `perParent` diffs](../adr/253-show-merge-perparent.md) — one `TreeDiff` per parent; combined diff is test-only reconstruction
+- Design: [`docs/design/cosmetic-output-sweep.md`](../design/cosmetic-output-sweep.md)
+
 ## Reading order tips
 
 - **Onboarding to the codebase?** Read ADR-001, ADR-004, ADR-091 in order. They set the architectural ground rules.
