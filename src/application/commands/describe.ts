@@ -25,6 +25,7 @@ import type { Context } from '../../ports/context.js';
 import { enumerateRefs } from '../primitives/enumerate-refs.js';
 import { readObject } from '../primitives/read-object.js';
 import { getRefStore } from '../primitives/ref-store.js';
+import { exceedsMaxPeelDepth } from '../primitives/validators.js';
 import { resolveCommitIsh } from './internal/commit-ish.js';
 import { parseDescribeOptions, type ResolvedDescribePlan } from './internal/describe-options.js';
 import { assertRepository } from './internal/repo-state.js';
@@ -69,7 +70,6 @@ export interface DescribeResult {
 }
 
 const DEFAULT_REV = 'HEAD';
-const MAX_TAG_PEEL = 10;
 const TAGS_PREFIX = 'refs/tags/';
 
 export const describe = async (
@@ -190,7 +190,7 @@ const peelToCommit = async (ctx: Context, oid: ObjectId): Promise<PeeledCommit |
   let viaTag = false;
   let taggerDate = 0;
   for (let depth = 0; current.type === 'tag'; depth += 1) {
-    if (depth >= MAX_TAG_PEEL) return undefined;
+    if (exceedsMaxPeelDepth(depth)) return undefined;
     if (!viaTag) taggerDate = current.data.tagger?.timestamp ?? 0;
     viaTag = true;
     current = await readObject(ctx, current.data.object);
