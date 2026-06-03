@@ -1,3 +1,4 @@
+import { blameScenario } from './blame.scenario.ts';
 import { branchLifecycleScenario } from './branch-lifecycle.scenario.ts';
 import { cherryPickScenario } from './cherry-pick.scenario.ts';
 import { configScenario } from './config.scenario.ts';
@@ -45,4 +46,5 @@ export const SCENARIOS: ReadonlyArray<Scenario<unknown>> = [
   rebaseScenario,
   showScenario,
   describeScenario,
+  blameScenario,
 ];

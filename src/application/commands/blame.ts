@@ -1,0 +1,260 @@
+/**
+ * Tier-1 `blame` command — line-by-line authorship for a file at a committed
+ * revision, faithful to `git blame`. Walks history backwards: for each suspect
+ * commit it diffs the file against every parent, passing lines unchanged from a
+ * parent down to that parent and keeping lines that differ from all parents at
+ * the suspect. Lines surviving to a parentless (root) commit, or differing from
+ * every parent, are blamed there.
+ *
+ * Returns structured data only (denormalized per line): the blamed commit, that
+ * line's position in the queried file and in the commit's version, the path the
+ * file had there (rename-aware), and the line content. Assembling `git blame`'s
+ * `^abc1234 (Author …)` or `--porcelain` text is the caller's concern.
+ */
+import { enqueue, type QueueEntry } from '../../domain/blame/priority-queue.js';
+import { splitAgainstParent } from '../../domain/blame/split-blame.js';
+import type { BlameEntry } from '../../domain/blame/types.js';
+import { invalidOption, pathNotInTree } from '../../domain/commands/error.js';
+import { diffLines, splitLines } from '../../domain/diff/line-diff.js';
+import type { CommitData } from '../../domain/objects/commit.js';
+import { subjectLine } from '../../domain/objects/commit-message.js';
+import type { AuthorIdentity, FilePath, ObjectId } from '../../domain/objects/index.js';
+import { FilePath as FilePathFactory } from '../../domain/objects/object-id.js';
+import type { Context } from '../../ports/context.js';
+import { diffTrees } from '../primitives/diff-trees.js';
+import { flattenTree } from '../primitives/flatten-tree.js';
+import { readBlob } from '../primitives/read-blob.js';
+import { resolveCommitIsh } from './internal/commit-ish.js';
+import { readCommitData } from './internal/history-rewrite.js';
+import { assertRepository } from './internal/repo-state.js';
+
+export interface BlameOptions {
+  /** Commit-ish to blame as-of (default: HEAD). */
+  readonly rev?: string;
+  /**
+   * Restrict the reported lines to a 1-based inclusive `[start, end]` window over
+   * the final file (git's `-L`). `end` past the last line is clamped; a start
+   * below 1, a start past the last line, or an inverted/non-integer range refuse.
+   */
+  readonly range?: { readonly start: number; readonly end: number };
+}
+
+export interface BlameLine {
+  /** 1-based line number in the queried file. */
+  readonly finalLine: number;
+  /** 1-based line number in the blamed commit's version of the file. */
+  readonly sourceLine: number;
+  /** Commit this line is blamed to. */
+  readonly commit: ObjectId;
+  readonly author: AuthorIdentity;
+  readonly committer: AuthorIdentity;
+  /** Commit subject (first message line). */
+  readonly summary: string;
+  /** Blamed commit is a root (no parents). */
+  readonly boundary: boolean;
+  /** Path the file had in the blamed commit — rename-aware. */
+  readonly sourcePath: FilePath;
+  /** Parent the file content came from; absent on a root. */
+  readonly previous?: { readonly commit: ObjectId; readonly path: FilePath };
+  /** The line's bytes (newline-terminated except a final line without a trailing LF). */
+  readonly content: Uint8Array;
+}
+
+export interface BlameResult {
+  /** The queried path (final name). */
+  readonly path: FilePath;
+  readonly lines: ReadonlyArray<BlameLine>;
+}
+
+/** A suspect (commit, path) with its blob and the lines still blamed on it. */
+interface Suspect {
+  readonly commit: ObjectId;
+  readonly path: FilePath;
+  readonly blob: Uint8Array;
+  readonly entries: ReadonlyArray<BlameEntry>;
+}
+
+interface Scoreboard {
+  readonly ctx: Context;
+  readonly queue: QueueEntry<Suspect>[];
+  readonly finalized: BlameLine[];
+}
+
+const DEFAULT_REV = 'HEAD';
+
+export const blame = async (
+  ctx: Context,
+  path: string,
+  opts: BlameOptions = {},
+): Promise<BlameResult> => {
+  await assertRepository(ctx);
+  const filePath = FilePathFactory.from(path);
+  const rev = opts.rev ?? DEFAULT_REV;
+  const startCommit = await resolveCommitIsh(ctx, rev);
+  const board: Scoreboard = { ctx, queue: [], finalized: [] };
+  await seed(board, startCommit, filePath, rev);
+  await walk(board);
+  const lines = [...board.finalized].sort((a, b) => a.finalLine - b.finalLine);
+  return { path: filePath, lines: applyRange(lines, opts.range) };
+};
+
+/** Filter to a 1-based inclusive line window, clamping `end` and refusing bad bounds. */
+const applyRange = (
+  lines: ReadonlyArray<BlameLine>,
+  range: BlameOptions['range'],
+): ReadonlyArray<BlameLine> => {
+  if (range === undefined) return lines;
+  const { start, end } = range;
+  if (!Number.isInteger(start) || !Number.isInteger(end)) {
+    throw invalidOption('-L', 'line numbers must be integers');
+  }
+  if (start < 1) throw invalidOption('-L', `invalid line number: ${start}`);
+  if (start > lines.length) throw invalidOption('-L', `file has only ${lines.length} lines`);
+  if (end < start) throw invalidOption('-L', `range end ${end} precedes start ${start}`);
+  const last = Math.min(end, lines.length);
+  return lines.filter((line) => line.finalLine >= start && line.finalLine <= last);
+};
+
+const seed = async (
+  sb: Scoreboard,
+  commit: ObjectId,
+  path: FilePath,
+  rev: string,
+): Promise<void> => {
+  const data = await readCommitData(sb.ctx, commit);
+  const blob = await blobAtPath(sb.ctx, data.tree, path);
+  if (blob === undefined) throw pathNotInTree(rev, path);
+  const count = splitLines(blob).length;
+  // equivalent-mutant: count===0 only for an empty blob (no lines to blame); without
+  // the guard a zero-count entry is scheduled and finalizes nothing — same empty result.
+  if (count === 0) return;
+  schedule(sb, commit, path, data.committer.timestamp, blob, [
+    { finalStart: 0, count, sourceStart: 0 },
+  ]);
+};
+
+const walk = async (sb: Scoreboard): Promise<void> => {
+  while (sb.queue.length > 0) {
+    const { value } = sb.queue.shift() as QueueEntry<Suspect>;
+    await processSuspect(sb, value);
+  }
+};
+
+const processSuspect = async (sb: Scoreboard, suspect: Suspect): Promise<void> => {
+  const data = await readCommitData(sb.ctx, suspect.commit);
+  const childLines = splitLines(suspect.blob);
+  let remaining = suspect.entries;
+  let previous: BlameLine['previous'];
+  for (const parent of data.parents) {
+    const resolved = await resolveInParent(sb.ctx, parent, data.tree, suspect.path);
+    if (resolved === undefined) continue;
+    previous ??= { commit: parent, path: resolved.sourcePath };
+    const { passed, kept } = splitAgainstParent(remaining, diffLines(resolved.blob, suspect.blob));
+    schedule(sb, parent, resolved.sourcePath, resolved.date, resolved.blob, passed);
+    remaining = kept;
+  }
+  finalize(sb, suspect, data, childLines, remaining, previous);
+};
+
+const finalize = (
+  sb: Scoreboard,
+  suspect: Suspect,
+  data: CommitData,
+  childLines: ReadonlyArray<Uint8Array>,
+  entries: ReadonlyArray<BlameEntry>,
+  previous: BlameLine['previous'],
+): void => {
+  const boundary = data.parents.length === 0;
+  const summary = subjectLine(data.message);
+  for (const entry of entries) {
+    for (const offset of offsets(entry.count)) {
+      sb.finalized.push({
+        finalLine: entry.finalStart + offset + 1,
+        sourceLine: entry.sourceStart + offset + 1,
+        commit: suspect.commit,
+        author: data.author,
+        committer: data.committer,
+        summary,
+        boundary,
+        sourcePath: suspect.path,
+        ...(previous !== undefined ? { previous } : {}),
+        content: childLines[entry.sourceStart + offset] as Uint8Array,
+      });
+    }
+  }
+};
+
+/** `[0, 1, …, count-1]` — a range with no mutable index to invert into a hang. */
+const offsets = (count: number): ReadonlyArray<number> =>
+  Array.from({ length: count }, (_, index) => index);
+
+interface ResolvedParent {
+  readonly blob: Uint8Array;
+  readonly sourcePath: FilePath;
+  readonly date: number;
+}
+
+const resolveInParent = async (
+  ctx: Context,
+  parent: ObjectId,
+  childTree: ObjectId,
+  path: FilePath,
+): Promise<ResolvedParent | undefined> => {
+  const data = await readCommitData(ctx, parent);
+  const date = data.committer.timestamp;
+  const direct = await blobAtPath(ctx, data.tree, path);
+  if (direct !== undefined) return { blob: direct, sourcePath: path, date };
+  const renamed = await renamedSource(ctx, data.tree, childTree, path);
+  if (renamed === undefined) return undefined;
+  const blob = (await readBlob(ctx, renamed.blobId)).content;
+  return { blob, sourcePath: renamed.sourcePath, date };
+};
+
+/**
+ * When `path` is absent from the parent, locate the file it was renamed from.
+ * Reuses the shared exact-content rename detector — a pure `git mv` is followed,
+ * a rename-with-edit in the same commit is not (treated as a fresh introduction).
+ */
+const renamedSource = async (
+  ctx: Context,
+  parentTree: ObjectId,
+  childTree: ObjectId,
+  path: FilePath,
+): Promise<{ readonly sourcePath: FilePath; readonly blobId: ObjectId } | undefined> => {
+  const diff = await diffTrees(ctx, parentTree, childTree, {
+    recursive: true,
+    detectRenames: true,
+  });
+  for (const change of diff.changes) {
+    if (change.type === 'rename' && change.newPath === path) {
+      return { sourcePath: change.oldPath, blobId: change.id };
+    }
+  }
+  return undefined;
+};
+
+/** Queue a suspect for the lines now blamed on it (newest commit date pops first). */
+const schedule = (
+  sb: Scoreboard,
+  commit: ObjectId,
+  path: FilePath,
+  date: number,
+  blob: Uint8Array,
+  entries: ReadonlyArray<BlameEntry>,
+): void => {
+  // equivalent-mutant: an empty entry list would enqueue a suspect that finalizes
+  // nothing; the guard only avoids needlessly walking ancestors, so output is identical.
+  if (entries.length === 0) return;
+  enqueue(sb.queue, { oid: commit, date, value: { commit, path, blob, entries } });
+};
+
+const blobAtPath = async (
+  ctx: Context,
+  tree: ObjectId,
+  path: FilePath,
+): Promise<Uint8Array | undefined> => {
+  const flat = await flattenTree(ctx, tree);
+  const entry = flat.entries.get(path);
+  if (entry === undefined) return undefined;
+  return (await readBlob(ctx, entry.id)).content;
+};

@@ -144,9 +144,10 @@ export interface RuntimeFallback {
  * users never see Context except through `repo.ctx`.
  */
 export interface Repository {
-  // Tier-1 commands (18) — bound to ctx.
+  // Tier-1 commands (19) — bound to ctx.
   readonly abortMerge: BindCtx<typeof commands.abortMerge>;
   readonly add: BindCtx<typeof commands.add>;
+  readonly blame: BindCtx<typeof commands.blame>;
   /** Nested `repo.branch.{list,create,delete,rename}` namespace. */
   readonly branch: commands.BranchNamespace;
   readonly catFile: BindCtx<typeof commands.catFile>;
@@ -403,6 +404,10 @@ export const openRepository = async (
       guard();
       return commands.add(ctx, paths, addOpts);
     }) as Repository['add'],
+    blame: ((blamePath, blameOpts) => {
+      guard();
+      return commands.blame(ctx, blamePath, blameOpts);
+    }) as Repository['blame'],
     branch: commands.bindBranchNamespace(ctx, guard),
     checkout: ((checkoutOpts) => {
       guard();

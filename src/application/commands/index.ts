@@ -13,6 +13,7 @@ export type {
 } from '../../domain/diff/index.js';
 export { type AbortMergeResult, abortMerge } from './abort-merge.js';
 export { type AddOptions, type AddResult, add } from './add.js';
+export { type BlameLine, type BlameOptions, type BlameResult, blame } from './blame.js';
 export {
   type BranchCreateInput,
   type BranchCreateResult,

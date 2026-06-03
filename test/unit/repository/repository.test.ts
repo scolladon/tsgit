@@ -61,6 +61,15 @@ describe('openRepository — construction', () => {
         expect(Object.isFrozen(sut.ctx)).toBe(true);
       });
     });
+    describe('When inspecting the blame binding', () => {
+      it('Then repo.blame is a bound function', async () => {
+        // Arrange
+        const sut = await open();
+
+        // Assert
+        expect(typeof sut.blame).toBe('function');
+      });
+    });
   });
 });
 
@@ -133,6 +142,7 @@ describe('openRepository — Repository binding integrity', () => {
           [
             'abortMerge',
             'add',
+            'blame',
             'branch',
             'catFile',
             'checkout',

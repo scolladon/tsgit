@@ -1,0 +1,439 @@
+import { describe, expect, it } from 'vitest';
+import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
+import { add } from '../../../../src/application/commands/add.js';
+import { blame } from '../../../../src/application/commands/blame.js';
+import { branchCreate } from '../../../../src/application/commands/branch.js';
+import { checkout } from '../../../../src/application/commands/checkout.js';
+import { commit } from '../../../../src/application/commands/commit.js';
+import { init } from '../../../../src/application/commands/init.js';
+import { merge } from '../../../../src/application/commands/merge.js';
+import { mv } from '../../../../src/application/commands/mv.js';
+import { TsgitError } from '../../../../src/domain/error.js';
+import type { AuthorIdentity, ObjectId } from '../../../../src/domain/objects/index.js';
+import type { Context } from '../../../../src/ports/context.js';
+
+const ident = (name: string, timestamp: number): AuthorIdentity => ({
+  name,
+  email: `${name}@example.com`,
+  timestamp,
+  timezoneOffset: '+0000',
+});
+
+const text = (bytes: Uint8Array): string => new TextDecoder().decode(bytes);
+
+let clock = 1_700_000_000;
+
+const commitFile = async (
+  ctx: Context,
+  name: string,
+  path: string,
+  content: string,
+): Promise<ObjectId> => {
+  clock += 60;
+  await ctx.fs.writeUtf8(`${ctx.layout.workDir}/${path}`, content);
+  await add(ctx, [path]);
+  const result = await commit(ctx, {
+    message: `${name} subject\n\nbody`,
+    author: ident(name, clock),
+    committer: ident(name, clock),
+  });
+  return result.id;
+};
+
+const seed = async (): Promise<Context> => {
+  const ctx = createMemoryContext();
+  await init(ctx);
+  return ctx;
+};
+
+describe('Given a linear history that modifies one line and appends another', () => {
+  describe('When blaming the file', () => {
+    it('Then each line is attributed to the commit that last touched it', async () => {
+      // Arrange
+      const ctx = await seed();
+      const c1 = await commitFile(ctx, 'c1', 'f.txt', 'line1\nline2\nline3\n');
+      const c2 = await commitFile(ctx, 'c2', 'f.txt', 'line1\nline2-mod\nline3\nline4\n');
+
+      // Act
+      const sut = await blame(ctx, 'f.txt');
+
+      // Assert
+      expect(sut.lines.map((l) => l.commit)).toEqual([c1, c2, c1, c2]);
+      expect(sut.lines.map((l) => l.finalLine)).toEqual([1, 2, 3, 4]);
+      expect(sut.lines.map((l) => text(l.content))).toEqual([
+        'line1\n',
+        'line2-mod\n',
+        'line3\n',
+        'line4\n',
+      ]);
+    });
+
+    it('Then root-commit lines are boundaries and later-commit lines carry previous', async () => {
+      // Arrange
+      const ctx = await seed();
+      const c1 = await commitFile(ctx, 'c1', 'f.txt', 'line1\nline2\nline3\n');
+      await commitFile(ctx, 'c2', 'f.txt', 'line1\nline2-mod\nline3\nline4\n');
+
+      // Act
+      const sut = await blame(ctx, 'f.txt');
+
+      // Assert
+      expect(sut.lines[0]!.boundary).toBe(true);
+      expect(sut.lines[0]!.previous).toBeUndefined();
+      expect(sut.lines[1]!.boundary).toBe(false);
+      expect(sut.lines[1]!.previous).toEqual({ commit: c1, path: 'f.txt' });
+    });
+  });
+});
+
+describe('Given a commit that prepends lines above existing content', () => {
+  describe('When blaming the file', () => {
+    it('Then surviving lines keep their source line but gain a new final line', async () => {
+      // Arrange
+      const ctx = await seed();
+      const c1 = await commitFile(ctx, 'c1', 'f.txt', 'orig1\norig2\n');
+      const c2 = await commitFile(ctx, 'c2', 'f.txt', 'new1\nnew2\norig1\norig2\n');
+
+      // Act
+      const sut = await blame(ctx, 'f.txt');
+
+      // Assert
+      expect(sut.lines.map((l) => l.commit)).toEqual([c2, c2, c1, c1]);
+      expect(sut.lines.map((l) => l.finalLine)).toEqual([1, 2, 3, 4]);
+      expect(sut.lines.map((l) => l.sourceLine)).toEqual([1, 2, 1, 2]);
+    });
+  });
+});
+
+describe('Given a single root commit', () => {
+  describe('When blaming the file', () => {
+    it('Then the line is a boundary carrying the commit subject', async () => {
+      // Arrange
+      const ctx = await seed();
+      const c1 = await commitFile(ctx, 'c1', 'f.txt', 'only\n');
+
+      // Act
+      const sut = await blame(ctx, 'f.txt');
+
+      // Assert
+      expect(sut.lines).toHaveLength(1);
+      expect(sut.lines[0]!.commit).toBe(c1);
+      expect(sut.lines[0]!.boundary).toBe(true);
+      expect(sut.lines[0]!.summary).toBe('c1 subject');
+      expect(sut.lines[0]!.sourcePath).toBe('f.txt');
+    });
+  });
+});
+
+describe('Given an empty file', () => {
+  describe('When blaming it', () => {
+    it('Then no lines are reported', async () => {
+      // Arrange
+      const ctx = await seed();
+      await commitFile(ctx, 'c1', 'empty.txt', '');
+
+      // Act
+      const sut = await blame(ctx, 'empty.txt');
+
+      // Assert
+      expect(sut.lines).toEqual([]);
+      expect(sut.path).toBe('empty.txt');
+    });
+  });
+});
+
+describe('Given a path absent from the revision', () => {
+  describe('When blaming it', () => {
+    it('Then it refuses with PATH_NOT_IN_TREE', async () => {
+      // Arrange
+      const ctx = await seed();
+      await commitFile(ctx, 'c1', 'f.txt', 'a\n');
+
+      // Act + Assert
+      try {
+        await blame(ctx, 'missing.txt');
+        expect.unreachable('blame should refuse an absent path');
+      } catch (error) {
+        expect(error).toBeInstanceOf(TsgitError);
+        expect((error as TsgitError).data).toMatchObject({
+          code: 'PATH_NOT_IN_TREE',
+          path: 'missing.txt',
+        });
+      }
+    });
+  });
+});
+
+describe('Given an explicit older revision', () => {
+  describe('When blaming the file as of that revision', () => {
+    it('Then only that revision content is blamed', async () => {
+      // Arrange
+      const ctx = await seed();
+      const c1 = await commitFile(ctx, 'c1', 'f.txt', 'line1\nline2\n');
+      await commitFile(ctx, 'c2', 'f.txt', 'line1\nline2-mod\n');
+
+      // Act
+      const sut = await blame(ctx, 'f.txt', { rev: c1 });
+
+      // Assert
+      expect(sut.lines.map((l) => l.commit)).toEqual([c1, c1]);
+      expect(sut.lines.map((l) => text(l.content))).toEqual(['line1\n', 'line2\n']);
+    });
+  });
+});
+
+describe('Given a clean merge of two branches that changed different lines', () => {
+  describe('When blaming the merge tip', () => {
+    it('Then each line is blamed to the branch that changed it, never the merge', async () => {
+      // Arrange — side changes line 1, main changes line 3, line 2 untouched
+      const ctx = await seed();
+      const c1 = await commitFile(ctx, 'c1', 'f.txt', 'a\nb\nc\n');
+      await branchCreate(ctx, { name: 'side' });
+      await checkout(ctx, { target: 'side' });
+      const side = await commitFile(ctx, 'side', 'f.txt', 'a-side\nb\nc\n');
+      await checkout(ctx, { target: 'main' });
+      const main = await commitFile(ctx, 'main', 'f.txt', 'a\nb\nc-main\n');
+      clock += 60;
+      const merged = await merge(ctx, {
+        target: 'side',
+        author: ident('merger', clock),
+        committer: ident('merger', clock),
+      });
+
+      // Act
+      const sut = await blame(ctx, 'f.txt');
+
+      // Assert
+      expect(merged.kind).toBe('merge');
+      expect(sut.lines.map((l) => l.commit)).toEqual([side, c1, main]);
+      expect(sut.lines.map((l) => text(l.content))).toEqual(['a-side\n', 'b\n', 'c-main\n']);
+      expect(sut.lines[1]!.boundary).toBe(true);
+      const mergeId = merged.kind === 'merge' ? merged.id : undefined;
+      expect(sut.lines.some((l) => l.commit === mergeId)).toBe(false);
+    });
+  });
+});
+
+describe('Given a file first added by a non-root commit', () => {
+  describe('When blaming it', () => {
+    it('Then its lines blame the adding commit, with no boundary and no previous', async () => {
+      // Arrange — c1 touches another file; c2 introduces f.txt fresh (no rename)
+      const ctx = await seed();
+      await commitFile(ctx, 'c1', 'other.txt', 'unrelated\n');
+      const c2 = await commitFile(ctx, 'c2', 'f.txt', 'fresh1\nfresh2\n');
+
+      // Act
+      const sut = await blame(ctx, 'f.txt');
+
+      // Assert
+      expect(sut.lines.map((l) => l.commit)).toEqual([c2, c2]);
+      expect(sut.lines.every((l) => l.boundary)).toBe(false);
+      expect(sut.lines.every((l) => l.previous === undefined)).toBe(true);
+    });
+  });
+});
+
+describe('Given a file renamed wholesale by a later commit', () => {
+  describe('When blaming the file under its new name', () => {
+    it('Then lines are followed across the rename to their originating commits', async () => {
+      // Arrange
+      const ctx = await seed();
+      const c1 = await commitFile(ctx, 'c1', 'f.txt', 'line1\nline2\n');
+      const c2 = await commitFile(ctx, 'c2', 'f.txt', 'line1\nline2-mod\n');
+      await mv(ctx, ['f.txt'], 'renamed.txt');
+      clock += 60;
+      const c3 = (
+        await commit(ctx, {
+          message: 'c3 rename',
+          author: ident('c3', clock),
+          committer: ident('c3', clock),
+        })
+      ).id;
+
+      // Act
+      const sut = await blame(ctx, 'renamed.txt');
+
+      // Assert
+      expect(sut.lines.map((l) => l.commit)).toEqual([c1, c2]);
+      expect(sut.lines.map((l) => l.sourcePath)).toEqual(['f.txt', 'f.txt']);
+      expect(sut.lines.map((l) => l.finalLine)).toEqual([1, 2]);
+      expect(sut.lines.some((l) => l.commit === c3)).toBe(false);
+      expect(sut.lines[1]!.previous).toEqual({ commit: c1, path: 'f.txt' });
+    });
+  });
+});
+
+describe('Given a commit that rewrites every line of the file', () => {
+  describe('When blaming the file', () => {
+    it('Then all lines are blamed to the rewrite, none to the original', async () => {
+      // Arrange
+      const ctx = await seed();
+      const c1 = await commitFile(ctx, 'c1', 'f.txt', 'a\nb\n');
+      const c2 = await commitFile(ctx, 'c2', 'f.txt', 'x\ny\n');
+
+      // Act
+      const sut = await blame(ctx, 'f.txt');
+
+      // Assert
+      expect(sut.lines.map((l) => l.commit)).toEqual([c2, c2]);
+      expect(sut.lines.some((l) => l.commit === c1)).toBe(false);
+    });
+  });
+});
+
+describe('Given a rename of a file inside a subdirectory', () => {
+  describe('When blaming it under the new nested name', () => {
+    it('Then the rename is followed across the subtree to the originating commit', async () => {
+      // Arrange
+      const ctx = await seed();
+      const c1 = await commitFile(ctx, 'c1', 'dir/a.txt', 'deep1\ndeep2\n');
+      await mv(ctx, ['dir/a.txt'], 'dir/b.txt');
+      clock += 60;
+      const c2 = (
+        await commit(ctx, {
+          message: 'c2 nested rename',
+          author: ident('c2', clock),
+          committer: ident('c2', clock),
+        })
+      ).id;
+
+      // Act
+      const sut = await blame(ctx, 'dir/b.txt');
+
+      // Assert
+      expect(sut.lines.map((l) => l.commit)).toEqual([c1, c1]);
+      expect(sut.lines.map((l) => l.sourcePath)).toEqual(['dir/a.txt', 'dir/a.txt']);
+      expect(sut.lines.some((l) => l.commit === c2)).toBe(false);
+    });
+  });
+});
+
+describe('Given a commit that renames two files at once', () => {
+  describe('When blaming each renamed file', () => {
+    it('Then each follows to its own source, not the other rename', async () => {
+      // Arrange
+      const ctx = await seed();
+      clock += 60;
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'aa\n');
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.txt`, 'bb\n');
+      await add(ctx, ['a.txt', 'b.txt']);
+      const c1 = (
+        await commit(ctx, {
+          message: 'c1 two files',
+          author: ident('c1', clock),
+          committer: ident('c1', clock),
+        })
+      ).id;
+      await mv(ctx, ['a.txt'], 'x.txt');
+      await mv(ctx, ['b.txt'], 'y.txt');
+      clock += 60;
+      await commit(ctx, {
+        message: 'c2 two renames',
+        author: ident('c2', clock),
+        committer: ident('c2', clock),
+      });
+
+      // Act
+      const blameX = await blame(ctx, 'x.txt');
+      const blameY = await blame(ctx, 'y.txt');
+
+      // Assert
+      expect(blameX.lines.map((l) => l.commit)).toEqual([c1]);
+      expect(blameX.lines[0]!.sourcePath).toBe('a.txt');
+      expect(blameY.lines.map((l) => l.commit)).toEqual([c1]);
+      expect(blameY.lines[0]!.sourcePath).toBe('b.txt');
+    });
+  });
+});
+
+describe('Given a multi-commit file and a line range', () => {
+  const buildThreeLineFile = async (): Promise<{
+    ctx: Context;
+    c1: ObjectId;
+    c2: ObjectId;
+  }> => {
+    const ctx = await seed();
+    const c1 = await commitFile(ctx, 'c1', 'f.txt', 'a\nb\nc\n');
+    const c2 = await commitFile(ctx, 'c2', 'f.txt', 'a\nb-mod\nc\n');
+    return { ctx, c1, c2 };
+  };
+
+  describe('When blaming within the range', () => {
+    it('Then only in-range lines are reported with authorship preserved', async () => {
+      // Arrange
+      const { ctx, c2 } = await buildThreeLineFile();
+
+      // Act
+      const sut = await blame(ctx, 'f.txt', { range: { start: 2, end: 2 } });
+
+      // Assert
+      expect(sut.lines.map((l) => l.finalLine)).toEqual([2]);
+      expect(sut.lines[0]!.commit).toBe(c2);
+    });
+
+    it('Then a multi-line range keeps each line on its own commit', async () => {
+      // Arrange
+      const { ctx, c1, c2 } = await buildThreeLineFile();
+
+      // Act
+      const sut = await blame(ctx, 'f.txt', { range: { start: 1, end: 2 } });
+
+      // Assert
+      expect(sut.lines.map((l) => l.finalLine)).toEqual([1, 2]);
+      expect(sut.lines.map((l) => l.commit)).toEqual([c1, c2]);
+    });
+
+    it('Then an end past the last line is clamped to the file length', async () => {
+      // Arrange
+      const { ctx } = await buildThreeLineFile();
+
+      // Act
+      const sut = await blame(ctx, 'f.txt', { range: { start: 2, end: 100 } });
+
+      // Assert
+      expect(sut.lines.map((l) => l.finalLine)).toEqual([2, 3]);
+    });
+  });
+
+  describe('When the range is invalid', () => {
+    it('Then an inverted range refuses with INVALID_OPTION', async () => {
+      // Arrange
+      const { ctx } = await buildThreeLineFile();
+
+      // Act + Assert
+      await expect(blame(ctx, 'f.txt', { range: { start: 3, end: 1 } })).rejects.toMatchObject({
+        data: { code: 'INVALID_OPTION', option: '-L', reason: 'range end 1 precedes start 3' },
+      });
+    });
+
+    it('Then a start below 1 refuses with INVALID_OPTION', async () => {
+      // Arrange
+      const { ctx } = await buildThreeLineFile();
+
+      // Act + Assert
+      await expect(blame(ctx, 'f.txt', { range: { start: 0, end: 2 } })).rejects.toMatchObject({
+        data: { code: 'INVALID_OPTION', option: '-L', reason: 'invalid line number: 0' },
+      });
+    });
+
+    it('Then a start past the last line refuses with INVALID_OPTION', async () => {
+      // Arrange
+      const { ctx } = await buildThreeLineFile();
+
+      // Act + Assert
+      await expect(blame(ctx, 'f.txt', { range: { start: 10, end: 12 } })).rejects.toMatchObject({
+        data: { code: 'INVALID_OPTION', option: '-L', reason: 'file has only 3 lines' },
+      });
+    });
+
+    it('Then a non-integer bound refuses with INVALID_OPTION', async () => {
+      // Arrange
+      const { ctx } = await buildThreeLineFile();
+
+      // Act + Assert
+      await expect(blame(ctx, 'f.txt', { range: { start: 1.5, end: 2 } })).rejects.toMatchObject({
+        data: { code: 'INVALID_OPTION', option: '-L', reason: 'line numbers must be integers' },
+      });
+    });
+  });
+});
