@@ -46,6 +46,26 @@ npm run test:mutation # Stryker mutation testing
 npm run build         # Compile to dist/
 ```
 
+## Code Navigation (LSP)
+
+Use the **LSP tool** as the default for navigating and understanding source —
+`goToDefinition`, `findReferences`, `goToImplementation`, `documentSymbol`,
+`workspaceSymbol`, `hover`, and the call-hierarchy ops. Reach for `Read`/`Grep`
+only for non-code files (markdown, JSON, generated artefacts) or a quick literal
+scan. Apply edits with `Edit`/`Write`.
+
+**Always pass absolute paths rooted at the active worktree** (e.g.
+`/abs/path/tsgit-<slug>/src/...`). The workflow runs in a sibling git worktree,
+but the harness resolves **relative** LSP paths against the *main* repo root —
+loading the wrong `tsconfig`/`node_modules`, surfacing spurious
+`Cannot find module` diagnostics, and showing stale content that misses your
+worktree edits. Absolute worktree paths pin the language server to the worktree's
+own project so references/hover/edits all reflect reality.
+
+LSP diagnostics are advisory only; the ground-truth gate is always
+`npm run validate` (and `npm run check:types`). Ignore lagging cross-root
+diagnostics when the type-check is green.
+
 ## Test Conventions
 
 - **Titles:** Split across the describe/it tree — `describe('Given <context>')` > `describe('When <action>')` > `it('Then <expected>')`. Outer non-GWT describes (e.g. module names) are allowed as transparent wrappers. The 2-level shortcut `describe('Given <context>, When <action>')` > `it('Then <expected>')` is allowed when only one expectation lives under the When.
