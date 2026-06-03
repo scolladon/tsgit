@@ -1,3 +1,16 @@
+export type {
+  AddChange,
+  DeleteChange,
+  DiffChange,
+  DiffChangeType,
+  ModifyChange,
+  RenameChange,
+  StatDiffChange,
+  StatFields,
+  StatTreeDiff,
+  TreeDiff,
+  TypeChangeChange,
+} from '../../domain/diff/index.js';
 export { type AbortMergeResult, abortMerge } from './abort-merge.js';
 export { type AddOptions, type AddResult, add } from './add.js';
 export {
@@ -71,13 +84,7 @@ export {
   continueMerge,
 } from './continue-merge.js';
 export { type DescribeOptions, type DescribeResult, describe } from './describe.js';
-export {
-  type DiffFormat,
-  type DiffOptions,
-  type DiffResult,
-  diff,
-  type PatchResult,
-} from './diff.js';
+export { type DiffOptions, diff } from './diff.js';
 export { type FetchOptions, type FetchResult, fetch } from './fetch.js';
 export {
   createPromisorRemote,
@@ -178,7 +185,6 @@ export {
   type ShowCommitResult,
   type ShowInput,
   type ShowOptions,
-  type ShowOutput,
   type ShowResult,
   type ShowTagResult,
   type ShowTreeEntry,

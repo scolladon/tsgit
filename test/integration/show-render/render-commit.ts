@@ -6,7 +6,7 @@
  * patch computation are the caller's concern; this renderer appends `patchText`
  * iff a non-empty one is given.
  */
-import type { CommitData, ObjectId } from '../objects/index.js';
+import type { CommitData, ObjectId } from '../../../src/domain/objects/index.js';
 import { type DateFormatter, renderIdentityHeader } from './identity-header.js';
 import { indentMessage } from './message-indent.js';
 

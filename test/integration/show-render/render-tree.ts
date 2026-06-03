@@ -4,7 +4,7 @@
  * immediate entry names in stored order — names only, a trailing `/` for
  * sub-trees.
  */
-import { type FileMode, isDirectory } from '../objects/index.js';
+import { type FileMode, isDirectory } from '../../../src/domain/objects/index.js';
 
 export interface TreeListingEntry {
   readonly name: string;

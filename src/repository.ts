@@ -14,7 +14,7 @@ import {
 } from './application/primitives/snapshot/snapshot-factory.js';
 import { disposeAdapters } from './dispose-adapters.js';
 import { repositoryDisposed } from './domain/commands/error.js';
-import type { TreeDiff } from './domain/diff/index.js';
+import type { StatTreeDiff, TreeDiff } from './domain/diff/index.js';
 import type { Compressor } from './ports/compressor.js';
 import type { Context, RepositoryConfig } from './ports/context.js';
 import type { FileSystem } from './ports/file-system.js';
@@ -159,12 +159,12 @@ export interface Repository {
   readonly config: commands.ConfigNamespace;
   readonly continueMerge: BindCtx<typeof commands.continueMerge>;
   readonly describe: BindCtx<typeof commands.describe>;
-  // `diff` is overloaded on `format`; `BindCtx` only captures the last overload
+  // `diff` is overloaded on `withStat`; `BindCtx` only captures the last overload
   // (a TypeScript limitation), so the binding is written by hand to preserve
   // both narrowing paths.
   readonly diff: {
-    (opts?: commands.DiffOptions & { format?: 'tree' }): Promise<TreeDiff>;
-    (opts: commands.DiffOptions & { format: 'patch' }): Promise<commands.PatchResult>;
+    (opts: commands.DiffOptions & { withStat: true }): Promise<StatTreeDiff>;
+    (opts?: commands.DiffOptions): Promise<TreeDiff>;
   };
   readonly fetch: BindCtx<typeof commands.fetch>;
   readonly fetchMissing: BindCtx<typeof commands.fetchMissing>;
@@ -184,7 +184,23 @@ export interface Repository {
   readonly revert: commands.RevertNamespace;
   readonly revParse: BindCtx<typeof commands.revParse>;
   readonly rm: BindCtx<typeof commands.rm>;
-  readonly show: BindCtx<typeof commands.show>;
+  // `show` is overloaded on input arity and `withStat`; `BindCtx` only captures
+  // the last overload, so the binding is hand-written to preserve all paths.
+  readonly show: {
+    (
+      input: ReadonlyArray<string>,
+      opts: commands.ShowOptions & { withStat: true },
+    ): Promise<ReadonlyArray<commands.ShowResult<StatTreeDiff>>>;
+    (
+      input: string | undefined,
+      opts: commands.ShowOptions & { withStat: true },
+    ): Promise<commands.ShowResult<StatTreeDiff>>;
+    (
+      input: ReadonlyArray<string>,
+      opts?: commands.ShowOptions,
+    ): Promise<ReadonlyArray<commands.ShowResult>>;
+    (input?: string, opts?: commands.ShowOptions): Promise<commands.ShowResult>;
+  };
   /** Nested `repo.sparseCheckout.{list,set,add,reapply,disable}` namespace. */
   readonly sparseCheckout: commands.SparseCheckoutNamespace;
   /** Nested `repo.stash.{push,list,apply,pop,drop}` namespace. */
@@ -477,7 +493,13 @@ export const openRepository = async (
     }) as Repository['rm'],
     show: ((input, showOpts) => {
       guard();
-      return commands.show(ctx, input, showOpts);
+      return (
+        commands.show as (
+          c: Context,
+          i?: commands.ShowInput,
+          o?: commands.ShowOptions,
+        ) => Promise<unknown>
+      )(ctx, input, showOpts);
     }) as Repository['show'],
     sparseCheckout: commands.bindSparseCheckoutNamespace(ctx, guard),
     stash: commands.bindStashNamespace(ctx, guard),

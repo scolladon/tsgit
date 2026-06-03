@@ -1,30 +1,73 @@
 import {
+  computeStatFields,
+  type DiffChange,
   detectRenames,
   diffTrees as domainDiffTrees,
+  type StatDiffChange,
+  type StatTreeDiff,
   type TreeDiff,
 } from '../../domain/diff/index.js';
 import type { Tree } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
 import { flattenTree } from './flatten-tree.js';
+import { materialisePatchFiles } from './materialise-patch-files.js';
 import { readTree } from './read-tree.js';
 import type { DiffTreesInput, DiffTreesOptions } from './types.js';
 
+const EMPTY = new Uint8Array(0);
+
+export function diffTrees(
+  ctx: Context,
+  a: DiffTreesInput,
+  b: DiffTreesInput,
+  options: DiffTreesOptions & { withStat: true },
+): Promise<StatTreeDiff>;
+export function diffTrees(
+  ctx: Context,
+  a: DiffTreesInput,
+  b: DiffTreesInput,
+  options?: DiffTreesOptions,
+): Promise<TreeDiff>;
 export async function diffTrees(
   ctx: Context,
   a: DiffTreesInput,
   b: DiffTreesInput,
   options?: DiffTreesOptions,
-): Promise<TreeDiff> {
+): Promise<TreeDiff | StatTreeDiff> {
   const [treeA, treeB] = await Promise.all([resolveInput(ctx, a), resolveInput(ctx, b)]);
-  const raw =
+  const rawDiff =
     options?.recursive === true
       ? await diffRecursive(ctx, treeA, treeB)
       : domainDiffTrees(treeA, treeB);
-  if (options?.detectRenames === true) {
-    return detectRenames(raw, options.renameOptions);
+  const diff =
+    options?.detectRenames === true ? detectRenames(rawDiff, options.renameOptions) : rawDiff;
+  if (options?.withStat === true) {
+    return attachStats(ctx, diff);
   }
-  return raw;
+  return diff;
 }
+
+/**
+ * Hydrate each change with its line counts. Reads blob contents (via
+ * `materialisePatchFiles`) and runs the line diff per file — the line-level cost
+ * the tree-level path avoids.
+ */
+async function attachStats(ctx: Context, diff: TreeDiff): Promise<StatTreeDiff> {
+  const files = await materialisePatchFiles(ctx, diff.changes);
+  const changes = files.map(
+    (file): StatDiffChange => withStatFields(file.change, file.oldContent, file.newContent),
+  );
+  return { changes };
+}
+
+const withStatFields = (
+  change: DiffChange,
+  oldContent: Uint8Array | undefined,
+  newContent: Uint8Array | undefined,
+): StatDiffChange => ({
+  ...change,
+  ...computeStatFields(oldContent ?? EMPTY, newContent ?? EMPTY),
+});
 
 async function resolveInput(ctx: Context, input: DiffTreesInput): Promise<Tree | undefined> {
   // Stryker disable next-line ConditionalExpression: equivalent — when input is undefined, skipping this guard falls through to `return input`, which is also undefined

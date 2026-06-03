@@ -6,8 +6,8 @@
  * separator; the tag → target blank line is the same separator (the target
  * inherits the flag). Commits de-duplicate by oid across the whole walk.
  */
-import { encode } from '../objects/encoding.js';
-import type { ObjectId } from '../objects/index.js';
+import { encode } from '../../../src/domain/objects/encoding.js';
+import type { ObjectId } from '../../../src/domain/objects/index.js';
 
 export type ShowStreamNode =
   | { readonly kind: 'commit'; readonly id: ObjectId; readonly text: string }

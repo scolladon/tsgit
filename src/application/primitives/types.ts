@@ -168,6 +168,13 @@ export interface DiffTreesOptions {
    * sides are flattened to full-path blob entries before classification.
    */
   readonly recursive?: boolean;
+  /**
+   * Attach per-file line counts (`added` / `deleted` / `binary`) to every change
+   * — the data half of git's `--numstat`. Off by default: the tree-level diff
+   * reads no blob contents; `withStat` opts into the line-level pass (blob loads +
+   * line diff), so the result is a `StatTreeDiff`.
+   */
+  readonly withStat?: boolean;
 }
 
 /**
