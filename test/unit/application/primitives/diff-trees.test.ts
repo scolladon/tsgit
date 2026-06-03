@@ -369,4 +369,97 @@ describe('diffTrees', () => {
       });
     });
   });
+
+  describe('Given withStat=true and a one-line blob added', () => {
+    describe('When diffTrees is called', () => {
+      it('Then the change carries its line counts', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const blobId = await blob(ctx, 'only line\n');
+        const empty = await writeTree(ctx, []);
+        const withEntry = await writeTree(ctx, [
+          { name: 'a.txt', mode: FILE_MODE.REGULAR, id: blobId },
+        ]);
+
+        // Act
+        const sut = await diffTrees(ctx, empty, withEntry, { withStat: true });
+
+        // Assert
+        expect(sut.changes[0]).toMatchObject({ type: 'add', added: 1, deleted: 0, binary: false });
+      });
+    });
+  });
+
+  describe('Given withStat=true and a one-line blob modified', () => {
+    describe('When diffTrees is called', () => {
+      it('Then the change carries one added and one deleted line', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const before = await writeTree(ctx, [
+          { name: 'a.txt', mode: FILE_MODE.REGULAR, id: await blob(ctx, 'a\n') },
+        ]);
+        const after = await writeTree(ctx, [
+          { name: 'a.txt', mode: FILE_MODE.REGULAR, id: await blob(ctx, 'b\n') },
+        ]);
+
+        // Act
+        const sut = await diffTrees(ctx, before, after, { withStat: true });
+
+        // Assert
+        expect(sut.changes[0]).toMatchObject({
+          type: 'modify',
+          added: 1,
+          deleted: 1,
+          binary: false,
+        });
+      });
+    });
+  });
+
+  describe('Given withStat=true and a one-line blob deleted', () => {
+    describe('When diffTrees is called', () => {
+      it('Then the change carries one deleted line', async () => {
+        // Arrange — exercises the new-content-absent branch of stat hydration.
+        const ctx = await buildSeededContext();
+        const blobId = await blob(ctx, 'gone\n');
+        const withEntry = await writeTree(ctx, [
+          { name: 'a.txt', mode: FILE_MODE.REGULAR, id: blobId },
+        ]);
+        const empty = await writeTree(ctx, []);
+
+        // Act
+        const sut = await diffTrees(ctx, withEntry, empty, { withStat: true });
+
+        // Assert
+        expect(sut.changes[0]).toMatchObject({
+          type: 'delete',
+          added: 0,
+          deleted: 1,
+          binary: false,
+        });
+      });
+    });
+  });
+
+  describe('Given withStat is omitted and a one-line blob added', () => {
+    describe('When diffTrees is called', () => {
+      it('Then the change carries no count fields (tree-level only)', async () => {
+        // Arrange — kills the BooleanLiteral mutant on the withStat guard: the
+        // default path must NOT compute counts.
+        const ctx = await buildSeededContext();
+        const blobId = await blob(ctx, 'only line\n');
+        const empty = await writeTree(ctx, []);
+        const withEntry = await writeTree(ctx, [
+          { name: 'a.txt', mode: FILE_MODE.REGULAR, id: blobId },
+        ]);
+
+        // Act
+        const sut = await diffTrees(ctx, empty, withEntry);
+
+        // Assert
+        expect(sut.changes[0]).not.toHaveProperty('added');
+        expect(sut.changes[0]).not.toHaveProperty('binary');
+      });
+    });
+  });
 });

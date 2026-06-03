@@ -52,5 +52,9 @@ export { comparePaths, sortByPath } from './path-compare.js';
 export type { RenameDetectOptions } from './rename-detect.js';
 export { detectRenames } from './rename-detect.js';
 
+// Per-file stat counts (withStat)
+export type { StatDiffChange, StatFields, StatTreeDiff } from './stat-fields.js';
+export { computeStatFields } from './stat-fields.js';
+
 // Tree diff
 export { diffTrees } from './tree-diff.js';

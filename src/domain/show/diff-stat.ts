@@ -6,7 +6,7 @@
  * graph width (default terminal width 80).
  */
 import type { DiffChange } from '../diff/index.js';
-import { diffLines, isBinary, type PatchFile } from '../diff/index.js';
+import { computeStatFields, type PatchFile } from '../diff/index.js';
 import { assertSafePath } from './safe-path.js';
 
 export interface StatEntry {
@@ -36,34 +36,16 @@ const displayPath = (change: DiffChange): string => {
   }
 };
 
-const countLines = (old: Uint8Array, next: Uint8Array): { added: number; deleted: number } => {
-  const diff = diffLines(old, next);
-  let added = 0;
-  let deleted = 0;
-  for (const hunk of diff.hunks) {
-    if (hunk.kind === 'theirs-only') added += hunk.theirsEnd - hunk.theirsStart;
-    else if (hunk.kind === 'ours-only') deleted += hunk.oursEnd - hunk.oursStart;
-  }
-  return { added, deleted };
-};
-
 export const buildStatEntries = (files: ReadonlyArray<PatchFile>): ReadonlyArray<StatEntry> =>
   files.map((file) => {
     const old = file.oldContent ?? EMPTY;
     const next = file.newContent ?? EMPTY;
-    const path = displayPath(file.change);
-    if (isBinary(old) || isBinary(next)) {
-      return {
-        path,
-        added: 0,
-        deleted: 0,
-        binary: true,
-        oldSize: old.length,
-        newSize: next.length,
-      };
-    }
-    const { added, deleted } = countLines(old, next);
-    return { path, added, deleted, binary: false, oldSize: old.length, newSize: next.length };
+    return {
+      path: displayPath(file.change),
+      ...computeStatFields(old, next),
+      oldSize: old.length,
+      newSize: next.length,
+    };
   });
 
 export const renderNumstat = (entries: ReadonlyArray<StatEntry>): string =>
