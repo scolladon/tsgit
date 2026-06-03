@@ -125,6 +125,8 @@ const seed = async (
   const blob = await blobAtPath(sb.ctx, data.tree, path);
   if (blob === undefined) throw pathNotInTree(rev, path);
   const count = splitLines(blob).length;
+  // equivalent-mutant: count===0 only for an empty blob (no lines to blame); without
+  // the guard a zero-count entry is scheduled and finalizes nothing — same empty result.
   if (count === 0) return;
   schedule(sb, commit, path, data.committer.timestamp, blob, [
     { finalStart: 0, count, sourceStart: 0 },
@@ -150,6 +152,8 @@ const processSuspect = async (sb: Scoreboard, suspect: Suspect): Promise<void> =
     const { passed, kept } = splitAgainstParent(remaining, diffLines(resolved.blob, suspect.blob));
     schedule(sb, parent, resolved.sourcePath, resolved.date, resolved.blob, passed);
     remaining = kept;
+    // equivalent-mutant: once nothing remains, later parents only split an empty set
+    // (a no-op) and `previous` is already set — dropping the break changes no output.
     if (remaining.length === 0) break;
   }
   finalize(sb, suspect, data, childLines, remaining, previous);
@@ -237,6 +241,8 @@ const schedule = (
   blob: Uint8Array,
   entries: ReadonlyArray<BlameEntry>,
 ): void => {
+  // equivalent-mutant: an empty entry list would enqueue a suspect that finalizes
+  // nothing; the guard only avoids needlessly walking ancestors, so output is identical.
   if (entries.length === 0) return;
   enqueue(sb.queue, { oid: commit, date, value: { commit, path, blob, entries } });
 };

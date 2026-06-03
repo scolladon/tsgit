@@ -281,6 +281,71 @@ describe('Given a commit that rewrites every line of the file', () => {
   });
 });
 
+describe('Given a rename of a file inside a subdirectory', () => {
+  describe('When blaming it under the new nested name', () => {
+    it('Then the rename is followed across the subtree to the originating commit', async () => {
+      // Arrange
+      const ctx = await seed();
+      const c1 = await commitFile(ctx, 'c1', 'dir/a.txt', 'deep1\ndeep2\n');
+      await mv(ctx, ['dir/a.txt'], 'dir/b.txt');
+      clock += 60;
+      const c2 = (
+        await commit(ctx, {
+          message: 'c2 nested rename',
+          author: ident('c2', clock),
+          committer: ident('c2', clock),
+        })
+      ).id;
+
+      // Act
+      const sut = await blame(ctx, 'dir/b.txt');
+
+      // Assert
+      expect(sut.lines.map((l) => l.commit)).toEqual([c1, c1]);
+      expect(sut.lines.map((l) => l.sourcePath)).toEqual(['dir/a.txt', 'dir/a.txt']);
+      expect(sut.lines.some((l) => l.commit === c2)).toBe(false);
+    });
+  });
+});
+
+describe('Given a commit that renames two files at once', () => {
+  describe('When blaming each renamed file', () => {
+    it('Then each follows to its own source, not the other rename', async () => {
+      // Arrange
+      const ctx = await seed();
+      clock += 60;
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'aa\n');
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.txt`, 'bb\n');
+      await add(ctx, ['a.txt', 'b.txt']);
+      const c1 = (
+        await commit(ctx, {
+          message: 'c1 two files',
+          author: ident('c1', clock),
+          committer: ident('c1', clock),
+        })
+      ).id;
+      await mv(ctx, ['a.txt'], 'x.txt');
+      await mv(ctx, ['b.txt'], 'y.txt');
+      clock += 60;
+      await commit(ctx, {
+        message: 'c2 two renames',
+        author: ident('c2', clock),
+        committer: ident('c2', clock),
+      });
+
+      // Act
+      const blameX = await blame(ctx, 'x.txt');
+      const blameY = await blame(ctx, 'y.txt');
+
+      // Assert
+      expect(blameX.lines.map((l) => l.commit)).toEqual([c1]);
+      expect(blameX.lines[0]!.sourcePath).toBe('a.txt');
+      expect(blameY.lines.map((l) => l.commit)).toEqual([c1]);
+      expect(blameY.lines[0]!.sourcePath).toBe('b.txt');
+    });
+  });
+});
+
 describe('Given a multi-commit file and a line range', () => {
   const buildThreeLineFile = async (): Promise<{
     ctx: Context;

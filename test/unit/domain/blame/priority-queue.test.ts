@@ -20,6 +20,9 @@ describe('Given two entries with different commit dates, When ordering them', ()
     // Act + Assert
     expect(sut({ date: 30, oid: oid('a') }, { date: 10, oid: oid('a') })).toBe(true);
     expect(sut({ date: 10, oid: oid('a') }, { date: 30, oid: oid('a') })).toBe(false);
+    // Older entry with the smaller oid must still not precede the newer: the date
+    // comparison dominates the oid tie-break (the tie-break only applies on equal dates).
+    expect(sut({ date: 10, oid: oid('a') }, { date: 30, oid: oid('b') })).toBe(false);
   });
 });
 
