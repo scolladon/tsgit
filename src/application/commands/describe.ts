@@ -131,16 +131,17 @@ const alwaysResult = (oid: ObjectId, dirty: boolean): DescribeResult => ({
   dirty,
 });
 
-// Dirtiness is `git diff-index HEAD` over both `status` columns: a staged
-// (index-vs-HEAD) change or a tracked working-tree change. Untracked files never
-// count (git's `--dirty`).
+// Dirtiness is `git diff-index HEAD` over every `status` column: a staged
+// (index-vs-HEAD) change, a tracked working-tree change, or an unmerged path (a
+// mid-merge index is dirty). Untracked files never count (git's `--dirty`).
 const computeDirty = async (ctx: Context, plan: ResolvedDescribePlan): Promise<boolean> => {
   if (!plan.dirty && !plan.broken) return false;
   try {
     const state = await status(ctx);
     return (
       state.indexChanges.length > 0 ||
-      state.workingTreeChanges.some((change) => change.kind !== 'untracked')
+      state.workingTreeChanges.some((change) => change.kind !== 'untracked') ||
+      state.unmerged.length > 0
     );
   } catch (err) {
     // Stryker disable next-line all: equivalent — defensive `--broken` tolerance:
