@@ -8,6 +8,7 @@ import { tagCreate } from '../../../../src/application/commands/tag.js';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
 import { getRefStore } from '../../../../src/application/primitives/ref-store.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
+import { writeSymbolicRef } from '../../../../src/application/primitives/write-symbolic-ref.js';
 import { TsgitError } from '../../../../src/domain/error.js';
 import type {
   AuthorIdentity,
@@ -499,6 +500,79 @@ describe('describe', () => {
 
         // Assert
         expect(sut.data).toMatchObject({ code: 'INVALID_OPTION', option: 'candidates' });
+      });
+    });
+  });
+
+  describe('Given a tag that peels to a tree, not a commit', () => {
+    describe('When describe runs', () => {
+      it('Then the tree tag is skipped and the commit tag is used', async () => {
+        // Arrange
+        const ctx = await seed();
+        const c1 = await commitFile(ctx, 'c1');
+        await annotatedTag(ctx, 'v1.0', c1, clock);
+        const tree = await treeOf(ctx, c1);
+        const treeTag: TagData = {
+          object: tree,
+          objectType: 'tree',
+          tagName: 'tree-tag',
+          tagger: ident(clock),
+          message: 'tree\n',
+          extraHeaders: [],
+        };
+        const treeTagOid = await writeObject(ctx, {
+          type: 'tag',
+          id: '' as ObjectId,
+          data: treeTag,
+        });
+        await tagCreate(ctx, { name: 'tree-tag', target: treeTagOid });
+        await commitFile(ctx, 'c2');
+
+        // Act
+        const sut = await describeCmd(ctx);
+
+        // Assert — the tree tag peels to a tree and is dropped, leaving v1.0.
+        expect(sut.name).toBe('v1.0');
+      });
+    });
+  });
+
+  describe('Given a symbolic ref among the refs under all', () => {
+    describe('When describe runs with all: true', () => {
+      it('Then the symbolic ref is skipped', async () => {
+        // Arrange
+        const ctx = await seed();
+        const c1 = await commitFile(ctx, 'c1');
+        await writeSymbolicRef(
+          ctx,
+          RefName.from('refs/remotes/origin/HEAD'),
+          RefName.from('refs/heads/main'),
+        );
+
+        // Act
+        const sut = await describeCmd(ctx, c1, { all: true });
+
+        // Assert — the symbolic origin/HEAD is skipped; heads/main resolves directly.
+        expect(sut.name).toBe('heads/main');
+        expect(sut.exact).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a tree object as the target', () => {
+    describe('When describe runs', () => {
+      it('Then it refuses (a tree reaches no tagged commit)', async () => {
+        // Arrange
+        const ctx = await seed();
+        const c1 = await commitFile(ctx, 'c1');
+        await annotatedTag(ctx, 'v1.0', c1, clock);
+        const tree = await treeOf(ctx, c1);
+
+        // Act
+        const sut = await catchError(() => describeCmd(ctx, tree));
+
+        // Assert
+        expect(sut.data).toMatchObject({ code: 'NO_REACHABLE_NAMES' });
       });
     });
   });
