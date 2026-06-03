@@ -491,6 +491,47 @@ describe('describe', () => {
     });
   });
 
+  describe('Given a staged-only tracked change and dirty: true', () => {
+    describe('When describe runs', () => {
+      it('Then the result is marked dirty (the staged column counts)', async () => {
+        // Arrange — change c1.txt and stage it, so the working tree matches the
+        // index but the index differs from HEAD (git's `D `/`M ` staged column).
+        const ctx = await seed();
+        const head = await commitFile(ctx, 'c1');
+        await annotatedTag(ctx, 'v1.0', head, clock);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/c1.txt`, 'changed\n');
+        await add(ctx, ['c1.txt']);
+
+        // Act
+        const sut = await describeCmd(ctx, undefined, { dirty: true });
+
+        // Assert
+        expect(sut.dirty).toBe(true);
+        expect(sut.name).toBe('v1.0');
+      });
+    });
+  });
+
+  describe('Given a staged-only tracked change and broken: true', () => {
+    describe('When describe runs', () => {
+      it('Then the staged change is still detected as dirty', async () => {
+        // Arrange — broken also routes through the dirtiness check; a staged-only
+        // change must register there too.
+        const ctx = await seed();
+        const head = await commitFile(ctx, 'c1');
+        await annotatedTag(ctx, 'v1.0', head, clock);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/c1.txt`, 'changed\n');
+        await add(ctx, ['c1.txt']);
+
+        // Act
+        const sut = await describeCmd(ctx, undefined, { broken: true });
+
+        // Assert
+        expect(sut.dirty).toBe(true);
+      });
+    });
+  });
+
   describe('Given dirty: true together with an explicit commit-ish', () => {
     describe('When describe runs', () => {
       it('Then it refuses with INVALID_OPTION', async () => {
