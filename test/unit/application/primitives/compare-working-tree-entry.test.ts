@@ -2,7 +2,11 @@ import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { add } from '../../../../src/application/commands/add.js';
 import { init } from '../../../../src/application/commands/init.js';
-import { compareWorkingTreeEntry } from '../../../../src/application/primitives/compare-working-tree-entry.js';
+import {
+  compareWorkingTreeEntry,
+  isWorkingTreeModified,
+  type WorkingTreeComparison,
+} from '../../../../src/application/primitives/compare-working-tree-entry.js';
 import { readIndex } from '../../../../src/application/primitives/read-index.js';
 import type { IndexEntry } from '../../../../src/domain/git-index/index-entry.js';
 import type { Context } from '../../../../src/ports/context.js';
@@ -85,10 +89,11 @@ describe('compareWorkingTreeEntry', () => {
     });
   });
 
-  describe('Given a staged file whose mode differs from the working file', () => {
-    describe('When comparing an executable-mode entry to a regular working file', () => {
-      it("Then returns 'modified' on the mode mismatch alone (content identical)", async () => {
-        // Arrange
+  describe('Given an executable-mode entry whose working file is a same-content regular file', () => {
+    describe('When comparing the entry to the working tree', () => {
+      it("Then returns 'mode-changed' (same blob, exec bit differs)", async () => {
+        // Arrange — index says 100755, working file is the seeded regular file
+        // with identical content.
         const { ctx, entry } = await seedFile('a.txt', 'hello\n');
         const executableEntry: IndexEntry = { ...entry, mode: '100755' };
 
@@ -96,7 +101,79 @@ describe('compareWorkingTreeEntry', () => {
         const sut = await compareWorkingTreeEntry(ctx, executableEntry);
 
         // Assert
+        expect(sut).toBe('mode-changed');
+      });
+    });
+  });
+
+  describe('Given an executable-mode entry whose working file changed content too', () => {
+    describe('When comparing the entry to the working tree', () => {
+      it("Then returns 'modified' (content change dominates the mode change)", async () => {
+        // Arrange — both the blob and the mode differ; git renders M (content),
+        // not a mode-only change.
+        const { ctx, entry } = await seedFile('a.txt', 'hello\n');
+        await ctx.fs.writeUtf8(work(ctx, 'a.txt'), 'changed\n');
+        const executableEntry: IndexEntry = { ...entry, mode: '100755' };
+
+        // Act
+        const sut = await compareWorkingTreeEntry(ctx, executableEntry);
+
+        // Assert
         expect(sut).toBe('modified');
+      });
+    });
+  });
+
+  describe('Given an entry whose working file is a different kind (regular vs symlink)', () => {
+    describe('When the index says symlink but the working file is a regular file', () => {
+      it("Then returns 'type-changed'", async () => {
+        // Arrange — regular working file, entry mode forced to symlink kind.
+        const { ctx, entry } = await seedFile('a.txt', 'hello\n');
+        const symlinkEntry: IndexEntry = { ...entry, mode: '120000' };
+
+        // Act
+        const sut = await compareWorkingTreeEntry(ctx, symlinkEntry);
+
+        // Assert
+        expect(sut).toBe('type-changed');
+      });
+    });
+
+    describe('When the index says regular file but the working file is a symlink', () => {
+      it("Then returns 'type-changed'", async () => {
+        // Arrange — symlink working file, entry mode forced to regular-file kind.
+        const { ctx, entry } = await seedSymlink('link', 'target-a');
+        const regularEntry: IndexEntry = { ...entry, mode: '100644' };
+
+        // Act
+        const sut = await compareWorkingTreeEntry(ctx, regularEntry);
+
+        // Assert
+        expect(sut).toBe('type-changed');
+      });
+    });
+  });
+
+  describe('isWorkingTreeModified', () => {
+    describe('Given each working-tree comparison value', () => {
+      describe('When asking whether it is a modified variant', () => {
+        it("Then 'modified', 'type-changed', and 'mode-changed' are modified; 'unchanged' and 'absent' are not", () => {
+          // Arrange
+          const modifiedVariants: ReadonlyArray<WorkingTreeComparison> = [
+            'modified',
+            'type-changed',
+            'mode-changed',
+          ];
+          const cleanVariants: ReadonlyArray<WorkingTreeComparison> = ['unchanged', 'absent'];
+
+          // Act / Assert
+          for (const variant of modifiedVariants) {
+            expect(isWorkingTreeModified(variant)).toBe(true);
+          }
+          for (const variant of cleanVariants) {
+            expect(isWorkingTreeModified(variant)).toBe(false);
+          }
+        });
       });
     });
   });

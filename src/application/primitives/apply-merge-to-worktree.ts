@@ -30,7 +30,7 @@ import {
 } from '../../domain/merge/index.js';
 import type { FileMode, FilePath, ObjectId } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
-import { compareWorkingTreeEntry } from './compare-working-tree-entry.js';
+import { compareWorkingTreeEntry, isWorkingTreeModified } from './compare-working-tree-entry.js';
 import { flattenTree } from './flatten-tree.js';
 import { stage0Entry, zeroStat } from './internal/synthetic-index-entry.js';
 import { removeWorkingTreeFile, writeWorkingTreeFile } from './internal/write-working-tree-file.js';
@@ -139,7 +139,7 @@ const findWouldOverwrite = async (
       if (exists) dirty.push(path);
       continue;
     }
-    if ((await compareWorkingTreeEntry(ctx, entry)) === 'modified') dirty.push(path);
+    if (isWorkingTreeModified(await compareWorkingTreeEntry(ctx, entry))) dirty.push(path);
   }
   return dirty;
 };

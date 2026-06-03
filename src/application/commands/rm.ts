@@ -24,7 +24,10 @@ import { emptyPathspec } from '../../domain/index.js';
 import type { FilePath } from '../../domain/objects/object-id.js';
 import { matchesPathspec } from '../../domain/pathspec/index.js';
 import type { Context } from '../../ports/context.js';
-import { compareWorkingTreeEntry } from '../primitives/compare-working-tree-entry.js';
+import {
+  compareWorkingTreeEntry,
+  isWorkingTreeModified,
+} from '../primitives/compare-working-tree-entry.js';
 import { readHeadTree } from '../primitives/read-head-tree.js';
 import { readIndex } from '../primitives/read-index.js';
 import { acquireIndexLock } from './internal/index-update.js';
@@ -129,7 +132,7 @@ const enforceSafetyValve = async (
   for (const entry of entries) {
     const worktree = await compareWorkingTreeEntry(ctx, entry);
     if (worktree === 'absent') continue;
-    const local = worktree === 'modified';
+    const local = isWorkingTreeModified(worktree);
     const staged = isStaged(head, entry);
     if (staged && local) both.push(entry.path);
     else if (staged && !cached) stagedOnly.push(entry.path);

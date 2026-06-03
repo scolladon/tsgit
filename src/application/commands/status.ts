@@ -12,7 +12,13 @@ import { buildRepoIgnorePredicate } from './internal/build-ignore-evaluator.js';
 import { createGranularityTracker } from './internal/progress-tracker.js';
 import { assertRepository, readHeadRaw } from './internal/repo-state.js';
 
-export type ChangeKind = 'modified' | 'added' | 'deleted' | 'untracked';
+export type ChangeKind =
+  | 'modified'
+  | 'added'
+  | 'deleted'
+  | 'untracked'
+  | 'type-changed'
+  | 'mode-changed';
 
 export interface ChangeEntry {
   readonly kind: ChangeKind;
@@ -123,6 +129,8 @@ const classifyEntry = async (ctx: Context, entry: IndexEntry): Promise<ChangeEnt
   if (entry.flags.skipWorktree) return undefined;
   const comparison = await compareWorkingTreeEntry(ctx, entry);
   if (comparison === 'absent') return { kind: 'deleted', path: entry.path };
+  if (comparison === 'type-changed') return { kind: 'type-changed', path: entry.path };
+  if (comparison === 'mode-changed') return { kind: 'mode-changed', path: entry.path };
   if (comparison === 'modified') return { kind: 'modified', path: entry.path };
   return undefined;
 };

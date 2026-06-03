@@ -723,9 +723,9 @@ describe('status — progress reporting', () => {
 
   describe('Given a tracked symlink replaced by a regular file with identical bytes', () => {
     describe('When status', () => {
-      it('Then it reports the path modified on the mode change (content identical)', async () => {
+      it('Then it reports the path type-changed (symlink → file is git T, even with identical bytes)', async () => {
         // Arrange — the symlink blob is its target string; a regular file holding
-        // those same bytes hashes identically, so only a mode-aware check differs.
+        // those same bytes hashes identically, so only the file kind differs.
         const ctx = createMemoryContext();
         await init(ctx);
         await ctx.fs.symlink('target-content', `${ctx.layout.workDir}/link`);
@@ -737,7 +737,7 @@ describe('status — progress reporting', () => {
         const sut = await status(ctx);
 
         // Assert
-        expect(sut.workingTreeChanges).toContainEqual({ kind: 'modified', path: 'link' });
+        expect(sut.workingTreeChanges).toContainEqual({ kind: 'type-changed', path: 'link' });
       });
     });
   });

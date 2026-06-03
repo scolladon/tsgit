@@ -84,7 +84,7 @@ Two judgment calls:
 
   The `kind` is the semantic conflict state (porcelain v1 XY is a trivial caller
   mapping); the per-stage blobs make the field **lossless** — porcelain v2 `u`
-  lines are reconstructable without a later widening. A pure domain classifier
+  lines can be reconstructed without a later widening. A pure domain classifier
   `classifyUnmerged(group): ConflictKind` maps the stage-presence triple to one of
   the seven states as a fall-through decision tree whose final arm is the
   single-stage-3 case — total over a non-empty group (every `groupUnmergedEntries`
