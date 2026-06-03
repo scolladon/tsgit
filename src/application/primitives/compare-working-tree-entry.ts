@@ -3,9 +3,10 @@
  *
  * Compares the working file at `entry.path` against the entry's `(id, mode)`:
  * `absent` when no working file exists, `type-changed` when the file kind differs
- * (file↔symlink↔gitlink, git's `T`), `modified` when the content hash differs,
- * `mode-changed` when only the mode (exec bit) differs with identical content,
- * else `unchanged`. Content is hashed via the
+ * (file↔symlink, git's `T`; gitlink/submodule entries are excluded — git reports
+ * them as `M`), `modified` when the content hash differs, `mode-changed` when only
+ * the mode (exec bit) differs with identical content, else `unchanged`. Content is
+ * hashed via the
  * uncapped `serializeAndHash` core (never the size-capped `hashBlob` write path),
  * so a read-only comparison never throws on a large working file. Symlink
  * content is its target (`readlink`), not the followed file.
@@ -14,7 +15,7 @@
  */
 import { isSameKind } from '../../domain/diff/mode-kind.js';
 import type { IndexEntry } from '../../domain/git-index/index-entry.js';
-import { deriveWorkingMode } from '../../domain/objects/file-mode.js';
+import { deriveWorkingMode, FILE_MODE } from '../../domain/objects/file-mode.js';
 import type { ObjectId } from '../../domain/objects/object-id.js';
 import type { Context } from '../../ports/context.js';
 import { serializeAndHash } from './internal/serialize-and-hash.js';
@@ -45,9 +46,15 @@ export const compareWorkingTreeEntry = async (
   const stat = await ctx.fs.lstat(absPath).catch(() => undefined);
   if (stat === undefined) return 'absent';
   const workingMode = deriveWorkingMode(stat);
-  // A kind change (file↔symlink↔gitlink) is git's `T`, decided on mode alone —
-  // no hash needed and the content is meaningless across kinds.
-  if (!isSameKind(workingMode, entry.mode)) return 'type-changed';
+  // A file↔symlink kind change is git's `T`, decided on mode alone — no hash
+  // needed and the content is meaningless across kinds. A gitlink (submodule)
+  // entry is excluded: `deriveWorkingMode` cannot derive a gitlink, so the
+  // comparison would always spuriously read `T`; git reports a submodule as `M`,
+  // so the gitlink entry falls through to the content path (an unreadable
+  // submodule directory degrades to `modified`).
+  if (entry.mode !== FILE_MODE.GITLINK && !isSameKind(workingMode, entry.mode)) {
+    return 'type-changed';
+  }
   try {
     const content = stat.isSymbolicLink
       ? LINK_ENCODER.encode(await ctx.fs.readlink(absPath))

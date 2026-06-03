@@ -235,4 +235,27 @@ describe('compareWorkingTreeEntry', () => {
       });
     });
   });
+
+  describe('Given a gitlink (submodule) entry over a working directory', () => {
+    describe('When comparing the entry to the working tree', () => {
+      it("Then returns 'modified', not 'type-changed' (git reports a submodule as M)", async () => {
+        // Arrange — a 160000 entry whose working path is a directory. The kind
+        // derived from the directory is a file kind, but a gitlink must NOT read
+        // as a type change; the unreadable directory degrades to `modified`.
+        const { ctx, entry } = await seedFile('a.txt', 'hello\n');
+        await ctx.fs.mkdir(work(ctx, 'sub'));
+        const gitlinkEntry: IndexEntry = {
+          ...entry,
+          path: 'sub' as typeof entry.path,
+          mode: '160000',
+        };
+
+        // Act
+        const sut = await compareWorkingTreeEntry(ctx, gitlinkEntry);
+
+        // Assert
+        expect(sut).toBe('modified');
+      });
+    });
+  });
 });
