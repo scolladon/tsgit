@@ -63,15 +63,25 @@ lightweight tag still populates the map and still contributes to the
 - `prio = 1` — **lightweight** tag (the ref points straight at a commit).
 - A tag peeling to a **non-commit** (tree/blob) is dropped (cannot describe).
 
-When two tags name the **same commit**, git's `replace_name` keeps one:
+With **`--all`**, every ref is a name, not just tags. A non-tag ref
+(`refs/heads/*`, `refs/remotes/*`, …) enters the map at `prio = 0`; its short
+name strips only `refs/` (`refs/heads/main` → `heads/main`,
+`refs/remotes/origin/x` → `remotes/origin/x`, `refs/tags/v1.0` → `tags/v1.0`).
+Without `--all` only `refs/tags/*` is enumerated and the name strips the full
+`refs/tags/` (`v1.0`). `HEAD` is never a name. Selection is by **depth then
+found-order** regardless of prio — a depth-0 branch beats a depth-1 annotated tag
+(verified: `describe --all` of a branch tip yields `heads/<branch>`); prio only
+governs the per-commit dedup below and the tag-source qualification in §2.3.
+
+When two refs name the **same commit**, git's `replace_name` keeps one:
 
 - higher `prio` wins;
 - two annotated (`prio == 2`) → the **newer tagger date** wins; equal dates keep
   the first encountered;
-- two lightweight (`prio == 1`) → keep the first encountered.
+- equal lower prio (`1` or `0`) → keep the first encountered.
 
 "First encountered" is **refname-sorted** order, so the map is built by iterating
-tags sorted by name (matching `tagList`'s existing sort and git's sorted
+refs sorted by name (matching `tagList`'s existing sort and git's sorted
 `for_each_rawref`).
 
 `--match <glob>` / `--exclude <glob>` filter on the **short tag name** before
@@ -159,6 +169,27 @@ If no candidate was found, the refusal mirrors git's three distinct conditions
 `maxCandidates` defaults to `10`; `--candidates=<n>` overrides; `--exact-match`
 sets it to `0` (handled by §2.2).
 
+### 2.5 `--dirty` / `--broken` (working-tree mark)
+
+`--dirty[=<mark>]` describes **HEAD** and appends `<mark>` (default `-dirty`) when
+the working tree has **tracked** changes; untracked files do not count (verified).
+It is **incompatible with an explicit commit-ish** — git refuses `describe --dirty
+HEAD` with *option '--dirty' and commit-ishes cannot be used together*, so the API
+raises `INVALID_OPTION` when `input` is supplied alongside `dirty`/`broken`.
+
+Dirtiness is derived from the existing `status` command (the `pull → fetch/merge`
+command-composes-command precedent): dirty iff `indexChanges` is non-empty **or**
+any `workingTreeChanges` entry has a kind other than `untracked`. This is the
+`git diff-index --quiet HEAD` predicate over tracked paths.
+
+`--broken[=<mark>]` (default `-broken`) covers the case where dirtiness cannot be
+computed (a corrupt working tree): the `status` call is wrapped, and on failure
+the broken mark is appended instead of propagating the error. When the check
+succeeds, `--broken` behaves like `--dirty`.
+
+The mark is appended to `text`/`bytes` after the tag/abbrev rendering
+(`v2.0-1-g0f3a9c1-dirty`); the structured result carries `dirty: boolean`.
+
 ## 3. Output formatting (pure)
 
 `formatDescribe({ tag, depth, oid, long, abbrev })`:
@@ -182,6 +213,7 @@ abbreviation is out of scope here, consistent with the rest of the codebase.
 ```ts
 export interface DescribeOptions {
   readonly tags?: boolean;            // include lightweight tags (prio ≥ 1)
+  readonly all?: boolean;             // include every ref (branches/remotes; prio 0)
   readonly long?: boolean;            // always emit -<depth>-g<hash>
   readonly abbrev?: number;           // hash length; 0 suppresses the suffix. Default 7
   readonly exactMatch?: boolean;      // ≡ candidates: 0
@@ -190,14 +222,17 @@ export interface DescribeOptions {
   readonly firstParent?: boolean;     // follow only first parents
   readonly match?: string | ReadonlyArray<string>;    // short-name globs to include
   readonly exclude?: string | ReadonlyArray<string>;  // short-name globs to drop
+  readonly dirty?: boolean | string;  // mark HEAD's tree dirty; string = custom mark
+  readonly broken?: boolean | string; // mark on a corrupt tree; string = custom mark
 }
 
 export interface DescribeResult {
-  readonly tag: RefName | undefined;  // chosen tag refname; undefined on --always fallback
-  readonly name: string;              // chosen tag short-name or '' on --always fallback
-  readonly distance: number;          // commits between tag and target (0 = exact)
+  readonly tag: RefName | undefined;  // chosen ref (a tag, or any ref under --all); undefined on --always
+  readonly name: string;              // chosen short-name or '' on --always fallback
+  readonly distance: number;          // commits between ref and target (0 = exact)
   readonly abbreviated: string;       // abbreviated target oid (no 'g' prefix)
   readonly exact: boolean;            // distance === 0 && tag !== undefined
+  readonly dirty: boolean;            // a --dirty/--broken mark was appended
   readonly text: string;              // rendered line, no trailing newline
   readonly bytes: Uint8Array;         // text + '\n' — byte-faithful `git describe` stdout
 }
@@ -215,11 +250,9 @@ Bound on the facade as `repo.describe` (single Tier-1 method, like `show` /
 
 ### Deferred (follow-up `23.2a`)
 
-`--all` (branch/remote ref names + their `heads/…` / `remotes/…` formatting),
-`--dirty` / `--broken` (working-tree state, only meaningful for HEAD),
-`--contains` (a forward `name-rev` walk — a different algorithm, candidate for its
-own backlog item), and multi-commit-ish argument lists (git's `describe A B C`).
-Each is additive and lands without breaking the v1 surface.
+`--contains` (a forward `name-rev` walk — a different algorithm, a candidate for
+its own backlog item) and multi-commit-ish argument lists (git's `describe A B
+C`). Both are additive and land without breaking the v1 surface.
 
 ## 5. Module layout (hexagonal)
 
@@ -232,14 +265,18 @@ domain/describe/                 # pure — no I/O
   format.ts           formatDescribe(input) → string
   index.ts            barrel (internal — NOT added to objects barrel / api.json)
 application/commands/
-  describe.ts         Tier-1: peel, enumerate tags, build map, walk, format
+  describe.ts         Tier-1: peel, enumerate refs, build map, walk, format
   internal/
     describe-options.ts  parse/validate DescribeOptions → ResolvedDescribePlan
 ```
 
-The date-ordered priority queue is written locally in `describe.ts`. `merge-base`
-has the only other copy; two consumers is below rule-of-three, so extraction is
-deferred (revisited in the Step 7 architecture pass).
+Ref enumeration reuses the `enumerateRefs` primitive (HEAD + loose + packed),
+dropping `HEAD` and — unless `--all` — keeping only `refs/tags/*`. Each ref is
+resolved + peeled via the ref-store / `readObject`; unresolvable refs are skipped.
+The `--dirty` predicate reuses the `status` command. The date-ordered priority
+queue is written locally in `describe.ts`. `merge-base` has the only other copy;
+two consumers is below rule-of-three, so extraction is deferred (revisited in the
+Step 7 architecture pass).
 
 ## 6. Errors (structured, co-refusal-pinned)
 
@@ -252,9 +289,11 @@ New `CommandError` variants (factories in `domain/commands/error.ts`, messages i
 - `NO_EXACT_MATCH` `{ oid }` — `--exact-match` and the commit is not tagged.
 
 `abbrev` / `candidates` validation reuses `INVALID_OPTION` (negative abbrev,
-negative candidates). As a library tsgit raises typed errors rather than git's
-stderr strings; the interop test asserts **co-refusal** (git and tsgit both fail
-on the same inputs), the established pattern for `rm` / `mv` / rev-parse.
+negative candidates), as does the `--dirty`/`--broken`-with-commit-ish refusal
+(git: *option '--dirty' and commit-ishes cannot be used together*). As a library
+tsgit raises typed errors rather than git's stderr strings; the interop test
+asserts **co-refusal** (git and tsgit both fail on the same inputs), the
+established pattern for `rm` / `mv` / rev-parse.
 
 ## 7. Test plan
 
@@ -270,9 +309,12 @@ on the same inputs), the established pattern for `rm` / `mv` / rev-parse.
 - `match.ts` — include-only, exclude-only, both, no patterns (identity), `*`
   not crossing `/`.
 - `describe.ts` — peel input, exact short-circuit, nearest over farther,
-  `--tags` vs default, `--first-parent` across a merge, `--always` fallback,
+  `--tags` vs default, `--all` (branch name + `heads/…` formatting, depth beats
+  prio), `--first-parent` across a merge, `--always` fallback, `--dirty` mark
+  (clean vs tracked-dirty vs untracked-only) + custom mark + commit-ish refusal,
   cap/gaveUp depth-finalisation, and each refusal (`NO_NAMES`,
-  `NO_ANNOTATED_NAMES`, `NO_EXACT_MATCH`) via try/catch + `.data` assertions.
+  `NO_ANNOTATED_NAMES`, `NO_REACHABLE_NAMES`, `NO_EXACT_MATCH`) via try/catch +
+  `.data` assertions.
 
 ### Property (`*.properties.test.ts`)
 
@@ -289,9 +331,11 @@ on the same inputs), the established pattern for `rm` / `mv` / rev-parse.
 Build a repo with canonical git (pinned dates, signing off) and assert
 `decode(describe(ctx, rev, opts).bytes) === git('describe', …)` for: nearest
 annotated, `--long`, `--abbrev=0`/`=12`, exact-tagged commit, `--tags` with
-lightweight, merge default vs `--first-parent`, `--match`/`--exclude`,
-same-commit newer-tagger-date win, `--always` fallback, and **co-refusal** on
-`--exact-match` of an untagged commit and a no-tags repo.
+lightweight, `--all` (branch/remote names), merge default vs `--first-parent`,
+`--match`/`--exclude`, same-commit newer-tagger-date win, `--always` fallback,
+`--dirty` (clean → no mark; tracked change → `-dirty`; custom mark), and
+**co-refusal** on `--exact-match` of an untagged commit, a no-tags repo, and
+`--dirty` with a commit-ish.
 
 ## 8. Faithfulness invariants (prime directive)
 
