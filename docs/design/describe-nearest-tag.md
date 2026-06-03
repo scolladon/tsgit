@@ -264,11 +264,17 @@ Bound on the facade as `repo.describe` (single Tier-1 method, like `show` /
 `status`). Input is a single commit-ish resolved through the existing
 `resolveCommitIsh` ladder (40-hex → ref-DWIM with tag peeling → abbreviated oid).
 
-### Deferred (follow-up `23.2a`)
+### Deferred + non-goals
 
-`--contains` (a forward `name-rev` walk — a different algorithm, a candidate for
-its own backlog item) and multi-commit-ish argument lists (git's `describe A B
-C`). Both are additive and land without breaking the v1 surface.
+- **`--contains`** — the inverse direction (the nearest tag/ref that *contains* a
+  commit, with git's `~`/`^` path notation) is a `name-rev` reverse-reachability
+  walk, a different algorithm from this date-ordered BFS. Tracked as its own
+  command in backlog **23.7**, not as describe scope.
+- **Multi-commit-ish args** (`describe A B C`) — a **non-goal**. git's CLI batches
+  to amortise process startup; a library caller just loops
+  (`Promise.all(ids.map((id) => repo.describe(id)))`), and batching is the
+  caller's concern, consistent with the structured-output rule. The single-input
+  API stays.
 
 ## 5. Module layout (hexagonal)
 

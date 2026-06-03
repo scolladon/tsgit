@@ -288,6 +288,7 @@ v2.0 is complete (22.4 landed; 20.1's snapshot surface shipped in #81 and is rec
 - [ ] **23.4** `shortlog` — author summary.
 - [ ] **23.5** `range-diff` — compare two commit ranges.
 - [ ] **23.6** `whatchanged` — log with raw diffs.
+- [ ] **23.7** `name-rev` + `describe --contains` — name a commit by the nearest tag/ref that **contains** it (the inverse of 23.2's nearest-ancestor tag), with git's `~`/`^` path notation (`v2.0~3^2~1`). A reverse-reachability walk from refs down to the commit (git's `name-rev`), a different algorithm from describe's date-ordered BFS — `describe --contains` (+ `--all`/`--tags`) delegates to it. Answers "which release first contains this commit?". Surfaced by 23.2's deferral.
 
 ## Phase 24 — Maintenance, topology & extension (v3)
 
