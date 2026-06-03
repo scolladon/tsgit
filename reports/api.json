@@ -14837,14 +14837,14 @@
 					]
 				},
 				{
-					"id": 806,
+					"id": 781,
 					"name": "DescribeOptions",
 					"variant": "declaration",
 					"kind": 256,
 					"flags": {},
 					"children": [
 						{
-							"id": 808,
+							"id": 783,
 							"name": "all",
 							"variant": "declaration",
 							"kind": 1024,
@@ -14866,7 +14866,7 @@
 							}
 						},
 						{
-							"id": 809,
+							"id": 784,
 							"name": "always",
 							"variant": "declaration",
 							"kind": 1024,
@@ -14888,7 +14888,7 @@
 							}
 						},
 						{
-							"id": 816,
+							"id": 791,
 							"name": "broken",
 							"variant": "declaration",
 							"kind": 1024,
@@ -14910,7 +14910,7 @@
 							}
 						},
 						{
-							"id": 811,
+							"id": 786,
 							"name": "candidates",
 							"variant": "declaration",
 							"kind": 1024,
@@ -14932,7 +14932,7 @@
 							}
 						},
 						{
-							"id": 815,
+							"id": 790,
 							"name": "dirty",
 							"variant": "declaration",
 							"kind": 1024,
@@ -14954,7 +14954,7 @@
 							}
 						},
 						{
-							"id": 810,
+							"id": 785,
 							"name": "exactMatch",
 							"variant": "declaration",
 							"kind": 1024,
@@ -14984,7 +14984,7 @@
 							}
 						},
 						{
-							"id": 814,
+							"id": 789,
 							"name": "exclude",
 							"variant": "declaration",
 							"kind": 1024,
@@ -15022,7 +15022,7 @@
 							}
 						},
 						{
-							"id": 812,
+							"id": 787,
 							"name": "firstParent",
 							"variant": "declaration",
 							"kind": 1024,
@@ -15044,7 +15044,7 @@
 							}
 						},
 						{
-							"id": 813,
+							"id": 788,
 							"name": "match",
 							"variant": "declaration",
 							"kind": 1024,
@@ -15082,7 +15082,7 @@
 							}
 						},
 						{
-							"id": 807,
+							"id": 782,
 							"name": "tags",
 							"variant": "declaration",
 							"kind": 1024,
@@ -15108,29 +15108,29 @@
 						{
 							"title": "Properties",
 							"children": [
-								808,
-								809,
-								816,
-								811,
-								815,
-								810,
-								814,
-								812,
-								813,
-								807
+								783,
+								784,
+								791,
+								786,
+								790,
+								785,
+								789,
+								787,
+								788,
+								782
 							]
 						}
 					]
 				},
 				{
-					"id": 817,
+					"id": 792,
 					"name": "DescribeResult",
 					"variant": "declaration",
 					"kind": 256,
 					"flags": {},
 					"children": [
 						{
-							"id": 823,
+							"id": 798,
 							"name": "dirty",
 							"variant": "declaration",
 							"kind": 1024,
@@ -15171,7 +15171,7 @@
 							}
 						},
 						{
-							"id": 820,
+							"id": 795,
 							"name": "distance",
 							"variant": "declaration",
 							"kind": 1024,
@@ -15200,7 +15200,7 @@
 							}
 						},
 						{
-							"id": 822,
+							"id": 797,
 							"name": "exact",
 							"variant": "declaration",
 							"kind": 1024,
@@ -15225,7 +15225,7 @@
 							}
 						},
 						{
-							"id": 819,
+							"id": 794,
 							"name": "name",
 							"variant": "declaration",
 							"kind": 1024,
@@ -15278,7 +15278,7 @@
 							}
 						},
 						{
-							"id": 821,
+							"id": 796,
 							"name": "oid",
 							"variant": "declaration",
 							"kind": 1024,
@@ -15301,7 +15301,7 @@
 							}
 						},
 						{
-							"id": 818,
+							"id": 793,
 							"name": "tag",
 							"variant": "declaration",
 							"kind": 1024,
@@ -15361,25 +15361,25 @@
 						{
 							"title": "Properties",
 							"children": [
-								823,
-								820,
-								822,
-								819,
-								821,
-								818
+								798,
+								795,
+								797,
+								794,
+								796,
+								793
 							]
 						}
 					]
 				},
 				{
-					"id": 782,
+					"id": 805,
 					"name": "DiffOptions",
 					"variant": "declaration",
 					"kind": 256,
 					"flags": {},
 					"children": [
 						{
-							"id": 788,
+							"id": 811,
 							"name": "contextLines",
 							"variant": "declaration",
 							"kind": 1024,
@@ -15409,7 +15409,7 @@
 							}
 						},
 						{
-							"id": 785,
+							"id": 808,
 							"name": "detectRenames",
 							"variant": "declaration",
 							"kind": 1024,
@@ -15423,7 +15423,7 @@
 							}
 						},
 						{
-							"id": 786,
+							"id": 809,
 							"name": "format",
 							"variant": "declaration",
 							"kind": 1024,
@@ -15449,13 +15449,13 @@
 							},
 							"type": {
 								"type": "reference",
-								"target": 781,
+								"target": 804,
 								"name": "DiffFormat",
 								"package": "@scolladon/tsgit"
 							}
 						},
 						{
-							"id": 783,
+							"id": 806,
 							"name": "from",
 							"variant": "declaration",
 							"kind": 1024,
@@ -15477,7 +15477,7 @@
 							}
 						},
 						{
-							"id": 789,
+							"id": 812,
 							"name": "pathPrefix",
 							"variant": "declaration",
 							"kind": 1024,
@@ -15533,7 +15533,7 @@
 							}
 						},
 						{
-							"id": 787,
+							"id": 810,
 							"name": "recursive",
 							"variant": "declaration",
 							"kind": 1024,
@@ -15587,7 +15587,7 @@
 							}
 						},
 						{
-							"id": 784,
+							"id": 807,
 							"name": "to",
 							"variant": "declaration",
 							"kind": 1024,
@@ -15605,13 +15605,13 @@
 						{
 							"title": "Properties",
 							"children": [
-								788,
-								785,
-								786,
-								783,
-								789,
-								787,
-								784
+								811,
+								808,
+								809,
+								806,
+								812,
+								810,
+								807
 							]
 						}
 					]
@@ -16785,14 +16785,14 @@
 					]
 				},
 				{
-					"id": 802,
+					"id": 825,
 					"name": "PatchResult",
 					"variant": "declaration",
 					"kind": 256,
 					"flags": {},
 					"children": [
 						{
-							"id": 805,
+							"id": 828,
 							"name": "diff",
 							"variant": "declaration",
 							"kind": 1024,
@@ -16807,7 +16807,7 @@
 							}
 						},
 						{
-							"id": 803,
+							"id": 826,
 							"name": "format",
 							"variant": "declaration",
 							"kind": 1024,
@@ -16820,7 +16820,7 @@
 							}
 						},
 						{
-							"id": 804,
+							"id": 827,
 							"name": "text",
 							"variant": "declaration",
 							"kind": 1024,
@@ -16837,9 +16837,9 @@
 						{
 							"title": "Properties",
 							"children": [
-								805,
-								803,
-								804
+								828,
+								826,
+								827
 							]
 						}
 					]
@@ -20159,7 +20159,7 @@
 							},
 							"type": {
 								"type": "reference",
-								"target": 802,
+								"target": 825,
 								"name": "PatchResult",
 								"package": "@scolladon/tsgit"
 							}
@@ -20204,7 +20204,7 @@
 									"type": "array",
 									"elementType": {
 										"type": "reference",
-										"target": 802,
+										"target": 825,
 										"name": "PatchResult",
 										"package": "@scolladon/tsgit"
 									}
@@ -23434,7 +23434,7 @@
 					}
 				},
 				{
-					"id": 781,
+					"id": 804,
 					"name": "DiffFormat",
 					"variant": "declaration",
 					"kind": 2097152,
@@ -23454,7 +23454,7 @@
 					}
 				},
 				{
-					"id": 790,
+					"id": 813,
 					"name": "DiffResult",
 					"variant": "declaration",
 					"kind": 2097152,
@@ -23470,7 +23470,7 @@
 							},
 							{
 								"type": "reference",
-								"target": 802,
+								"target": 825,
 								"name": "PatchResult",
 								"package": "@scolladon/tsgit"
 							}
@@ -28214,21 +28214,21 @@
 					]
 				},
 				{
-					"id": 824,
+					"id": 799,
 					"name": "describe",
 					"variant": "declaration",
 					"kind": 64,
 					"flags": {},
 					"signatures": [
 						{
-							"id": 825,
+							"id": 800,
 							"name": "describe",
 							"variant": "signature",
 							"kind": 4096,
 							"flags": {},
 							"parameters": [
 								{
-									"id": 826,
+									"id": 801,
 									"name": "ctx",
 									"variant": "param",
 									"kind": 32768,
@@ -28241,7 +28241,7 @@
 									}
 								},
 								{
-									"id": 827,
+									"id": 802,
 									"name": "input",
 									"variant": "param",
 									"kind": 32768,
@@ -28254,14 +28254,14 @@
 									}
 								},
 								{
-									"id": 828,
+									"id": 803,
 									"name": "opts",
 									"variant": "param",
 									"kind": 32768,
 									"flags": {},
 									"type": {
 										"type": "reference",
-										"target": 806,
+										"target": 781,
 										"name": "DescribeOptions",
 										"package": "@scolladon/tsgit"
 									},
@@ -28278,7 +28278,7 @@
 								"typeArguments": [
 									{
 										"type": "reference",
-										"target": 817,
+										"target": 792,
 										"name": "DescribeResult",
 										"package": "@scolladon/tsgit"
 									}
@@ -28290,14 +28290,14 @@
 					]
 				},
 				{
-					"id": 791,
+					"id": 814,
 					"name": "diff",
 					"variant": "declaration",
 					"kind": 64,
 					"flags": {},
 					"signatures": [
 						{
-							"id": 792,
+							"id": 815,
 							"name": "diff",
 							"variant": "signature",
 							"kind": 4096,
@@ -28328,7 +28328,7 @@
 							},
 							"parameters": [
 								{
-									"id": 793,
+									"id": 816,
 									"name": "ctx",
 									"variant": "param",
 									"kind": 32768,
@@ -28341,7 +28341,7 @@
 									}
 								},
 								{
-									"id": 794,
+									"id": 817,
 									"name": "opts",
 									"variant": "param",
 									"kind": 32768,
@@ -28353,21 +28353,21 @@
 										"types": [
 											{
 												"type": "reference",
-												"target": 782,
+												"target": 805,
 												"name": "DiffOptions",
 												"package": "@scolladon/tsgit"
 											},
 											{
 												"type": "reflection",
 												"declaration": {
-													"id": 795,
+													"id": 818,
 													"name": "__type",
 													"variant": "declaration",
 													"kind": 65536,
 													"flags": {},
 													"children": [
 														{
-															"id": 796,
+															"id": 819,
 															"name": "format",
 															"variant": "declaration",
 															"kind": 1024,
@@ -28384,7 +28384,7 @@
 														{
 															"title": "Properties",
 															"children": [
-																796
+																819
 															]
 														}
 													]
@@ -28414,7 +28414,7 @@
 							}
 						},
 						{
-							"id": 797,
+							"id": 820,
 							"name": "diff",
 							"variant": "signature",
 							"kind": 4096,
@@ -28445,7 +28445,7 @@
 							},
 							"parameters": [
 								{
-									"id": 798,
+									"id": 821,
 									"name": "ctx",
 									"variant": "param",
 									"kind": 32768,
@@ -28458,7 +28458,7 @@
 									}
 								},
 								{
-									"id": 799,
+									"id": 822,
 									"name": "opts",
 									"variant": "param",
 									"kind": 32768,
@@ -28468,21 +28468,21 @@
 										"types": [
 											{
 												"type": "reference",
-												"target": 782,
+												"target": 805,
 												"name": "DiffOptions",
 												"package": "@scolladon/tsgit"
 											},
 											{
 												"type": "reflection",
 												"declaration": {
-													"id": 800,
+													"id": 823,
 													"name": "__type",
 													"variant": "declaration",
 													"kind": 65536,
 													"flags": {},
 													"children": [
 														{
-															"id": 801,
+															"id": 824,
 															"name": "format",
 															"variant": "declaration",
 															"kind": 1024,
@@ -28497,7 +28497,7 @@
 														{
 															"title": "Properties",
 															"children": [
-																801
+																824
 															]
 														}
 													]
@@ -28517,7 +28517,7 @@
 								"typeArguments": [
 									{
 										"type": "reference",
-										"target": 802,
+										"target": 825,
 										"name": "PatchResult",
 										"package": "@scolladon/tsgit"
 									}
@@ -31595,9 +31595,9 @@
 						718,
 						722,
 						771,
-						806,
-						817,
-						782,
+						781,
+						792,
+						805,
 						848,
 						850,
 						829,
@@ -31611,7 +31611,7 @@
 						1145,
 						1150,
 						1153,
-						802,
+						825,
 						1163,
 						1173,
 						1180,
@@ -31686,8 +31686,8 @@
 						681,
 						725,
 						776,
-						781,
-						790,
+						804,
+						813,
 						1120,
 						1156,
 						1207,
@@ -31743,8 +31743,8 @@
 						767,
 						777,
 						845,
-						824,
-						791,
+						799,
+						814,
 						841,
 						854,
 						865,
@@ -87271,7 +87271,7 @@
 																"isOptional": false,
 																"element": {
 																	"type": "reference",
-																	"target": 806,
+																	"target": 781,
 																	"name": "DescribeOptions",
 																	"package": "@scolladon/tsgit"
 																}
@@ -87332,7 +87332,7 @@
 														"types": [
 															{
 																"type": "reference",
-																"target": 782,
+																"target": 805,
 																"name": "DiffOptions",
 																"package": "@scolladon/tsgit"
 															},
@@ -87410,7 +87410,7 @@
 														"types": [
 															{
 																"type": "reference",
-																"target": 782,
+																"target": 805,
 																"name": "DiffOptions",
 																"package": "@scolladon/tsgit"
 															},
@@ -87459,7 +87459,7 @@
 												"typeArguments": [
 													{
 														"type": "reference",
-														"target": 802,
+														"target": 825,
 														"name": "PatchResult",
 														"package": "@scolladon/tsgit"
 													}
@@ -92324,7 +92324,7 @@
 		},
 		{
 			"kind": "text",
-			"text": "\n- 31 Tier-1 commands · 20+ AsyncIterable primitives · operator toolkit ("
+			"text": "\n- 32 Tier-1 commands · 20+ AsyncIterable primitives · operator toolkit ("
 		},
 		{
 			"kind": "code",
@@ -96309,243 +96309,243 @@
 		},
 		"781": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/commands/diff.ts",
-			"qualifiedName": "DiffFormat"
-		},
-		"782": {
-			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/commands/diff.ts",
-			"qualifiedName": "DiffOptions"
-		},
-		"783": {
-			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/commands/diff.ts",
-			"qualifiedName": "DiffOptions.from"
-		},
-		"784": {
-			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/commands/diff.ts",
-			"qualifiedName": "DiffOptions.to"
-		},
-		"785": {
-			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/commands/diff.ts",
-			"qualifiedName": "DiffOptions.detectRenames"
-		},
-		"786": {
-			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/commands/diff.ts",
-			"qualifiedName": "DiffOptions.format"
-		},
-		"787": {
-			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/commands/diff.ts",
-			"qualifiedName": "DiffOptions.recursive"
-		},
-		"788": {
-			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/commands/diff.ts",
-			"qualifiedName": "DiffOptions.contextLines"
-		},
-		"789": {
-			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/commands/diff.ts",
-			"qualifiedName": "DiffOptions.pathPrefix"
-		},
-		"790": {
-			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/commands/diff.ts",
-			"qualifiedName": "DiffResult"
-		},
-		"791": {
-			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/commands/diff.ts",
-			"qualifiedName": "diff"
-		},
-		"792": {
-			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/commands/diff.ts",
-			"qualifiedName": "diff"
-		},
-		"793": {
-			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/commands/diff.ts",
-			"qualifiedName": "ctx"
-		},
-		"794": {
-			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/commands/diff.ts",
-			"qualifiedName": "opts"
-		},
-		"795": {
-			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/commands/diff.ts",
-			"qualifiedName": "__type"
-		},
-		"796": {
-			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/commands/diff.ts",
-			"qualifiedName": "__type.format"
-		},
-		"797": {
-			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/commands/diff.ts",
-			"qualifiedName": "diff"
-		},
-		"798": {
-			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/commands/diff.ts",
-			"qualifiedName": "ctx"
-		},
-		"799": {
-			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/commands/diff.ts",
-			"qualifiedName": "opts"
-		},
-		"800": {
-			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/commands/diff.ts",
-			"qualifiedName": "__type"
-		},
-		"801": {
-			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/commands/diff.ts",
-			"qualifiedName": "__type.format"
-		},
-		"802": {
-			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/commands/diff.ts",
-			"qualifiedName": "PatchResult"
-		},
-		"803": {
-			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/commands/diff.ts",
-			"qualifiedName": "PatchResult.format"
-		},
-		"804": {
-			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/commands/diff.ts",
-			"qualifiedName": "PatchResult.text"
-		},
-		"805": {
-			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/commands/diff.ts",
-			"qualifiedName": "PatchResult.diff"
-		},
-		"806": {
-			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/application/commands/describe.ts",
 			"qualifiedName": "DescribeOptions"
 		},
-		"807": {
+		"782": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/application/commands/describe.ts",
 			"qualifiedName": "DescribeOptions.tags"
 		},
-		"808": {
+		"783": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/application/commands/describe.ts",
 			"qualifiedName": "DescribeOptions.all"
 		},
-		"809": {
+		"784": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/application/commands/describe.ts",
 			"qualifiedName": "DescribeOptions.always"
 		},
-		"810": {
+		"785": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/application/commands/describe.ts",
 			"qualifiedName": "DescribeOptions.exactMatch"
 		},
-		"811": {
+		"786": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/application/commands/describe.ts",
 			"qualifiedName": "DescribeOptions.candidates"
 		},
-		"812": {
+		"787": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/application/commands/describe.ts",
 			"qualifiedName": "DescribeOptions.firstParent"
 		},
-		"813": {
+		"788": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/application/commands/describe.ts",
 			"qualifiedName": "DescribeOptions.match"
 		},
-		"814": {
+		"789": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/application/commands/describe.ts",
 			"qualifiedName": "DescribeOptions.exclude"
 		},
-		"815": {
+		"790": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/application/commands/describe.ts",
 			"qualifiedName": "DescribeOptions.dirty"
 		},
-		"816": {
+		"791": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/application/commands/describe.ts",
 			"qualifiedName": "DescribeOptions.broken"
 		},
-		"817": {
+		"792": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/application/commands/describe.ts",
 			"qualifiedName": "DescribeResult"
 		},
-		"818": {
+		"793": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/application/commands/describe.ts",
 			"qualifiedName": "DescribeResult.tag"
 		},
-		"819": {
+		"794": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/application/commands/describe.ts",
 			"qualifiedName": "DescribeResult.name"
 		},
-		"820": {
+		"795": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/application/commands/describe.ts",
 			"qualifiedName": "DescribeResult.distance"
 		},
-		"821": {
+		"796": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/application/commands/describe.ts",
 			"qualifiedName": "DescribeResult.oid"
 		},
-		"822": {
+		"797": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/application/commands/describe.ts",
 			"qualifiedName": "DescribeResult.exact"
 		},
-		"823": {
+		"798": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/application/commands/describe.ts",
 			"qualifiedName": "DescribeResult.dirty"
 		},
-		"824": {
+		"799": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/application/commands/describe.ts",
 			"qualifiedName": "describe"
 		},
-		"825": {
+		"800": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/application/commands/describe.ts",
 			"qualifiedName": "describe"
 		},
-		"826": {
+		"801": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/application/commands/describe.ts",
 			"qualifiedName": "ctx"
 		},
-		"827": {
+		"802": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/application/commands/describe.ts",
 			"qualifiedName": "input"
 		},
-		"828": {
+		"803": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/application/commands/describe.ts",
 			"qualifiedName": "opts"
+		},
+		"804": {
+			"packageName": "@scolladon/tsgit",
+			"packagePath": "src/application/commands/diff.ts",
+			"qualifiedName": "DiffFormat"
+		},
+		"805": {
+			"packageName": "@scolladon/tsgit",
+			"packagePath": "src/application/commands/diff.ts",
+			"qualifiedName": "DiffOptions"
+		},
+		"806": {
+			"packageName": "@scolladon/tsgit",
+			"packagePath": "src/application/commands/diff.ts",
+			"qualifiedName": "DiffOptions.from"
+		},
+		"807": {
+			"packageName": "@scolladon/tsgit",
+			"packagePath": "src/application/commands/diff.ts",
+			"qualifiedName": "DiffOptions.to"
+		},
+		"808": {
+			"packageName": "@scolladon/tsgit",
+			"packagePath": "src/application/commands/diff.ts",
+			"qualifiedName": "DiffOptions.detectRenames"
+		},
+		"809": {
+			"packageName": "@scolladon/tsgit",
+			"packagePath": "src/application/commands/diff.ts",
+			"qualifiedName": "DiffOptions.format"
+		},
+		"810": {
+			"packageName": "@scolladon/tsgit",
+			"packagePath": "src/application/commands/diff.ts",
+			"qualifiedName": "DiffOptions.recursive"
+		},
+		"811": {
+			"packageName": "@scolladon/tsgit",
+			"packagePath": "src/application/commands/diff.ts",
+			"qualifiedName": "DiffOptions.contextLines"
+		},
+		"812": {
+			"packageName": "@scolladon/tsgit",
+			"packagePath": "src/application/commands/diff.ts",
+			"qualifiedName": "DiffOptions.pathPrefix"
+		},
+		"813": {
+			"packageName": "@scolladon/tsgit",
+			"packagePath": "src/application/commands/diff.ts",
+			"qualifiedName": "DiffResult"
+		},
+		"814": {
+			"packageName": "@scolladon/tsgit",
+			"packagePath": "src/application/commands/diff.ts",
+			"qualifiedName": "diff"
+		},
+		"815": {
+			"packageName": "@scolladon/tsgit",
+			"packagePath": "src/application/commands/diff.ts",
+			"qualifiedName": "diff"
+		},
+		"816": {
+			"packageName": "@scolladon/tsgit",
+			"packagePath": "src/application/commands/diff.ts",
+			"qualifiedName": "ctx"
+		},
+		"817": {
+			"packageName": "@scolladon/tsgit",
+			"packagePath": "src/application/commands/diff.ts",
+			"qualifiedName": "opts"
+		},
+		"818": {
+			"packageName": "@scolladon/tsgit",
+			"packagePath": "src/application/commands/diff.ts",
+			"qualifiedName": "__type"
+		},
+		"819": {
+			"packageName": "@scolladon/tsgit",
+			"packagePath": "src/application/commands/diff.ts",
+			"qualifiedName": "__type.format"
+		},
+		"820": {
+			"packageName": "@scolladon/tsgit",
+			"packagePath": "src/application/commands/diff.ts",
+			"qualifiedName": "diff"
+		},
+		"821": {
+			"packageName": "@scolladon/tsgit",
+			"packagePath": "src/application/commands/diff.ts",
+			"qualifiedName": "ctx"
+		},
+		"822": {
+			"packageName": "@scolladon/tsgit",
+			"packagePath": "src/application/commands/diff.ts",
+			"qualifiedName": "opts"
+		},
+		"823": {
+			"packageName": "@scolladon/tsgit",
+			"packagePath": "src/application/commands/diff.ts",
+			"qualifiedName": "__type"
+		},
+		"824": {
+			"packageName": "@scolladon/tsgit",
+			"packagePath": "src/application/commands/diff.ts",
+			"qualifiedName": "__type.format"
+		},
+		"825": {
+			"packageName": "@scolladon/tsgit",
+			"packagePath": "src/application/commands/diff.ts",
+			"qualifiedName": "PatchResult"
+		},
+		"826": {
+			"packageName": "@scolladon/tsgit",
+			"packagePath": "src/application/commands/diff.ts",
+			"qualifiedName": "PatchResult.format"
+		},
+		"827": {
+			"packageName": "@scolladon/tsgit",
+			"packagePath": "src/application/commands/diff.ts",
+			"qualifiedName": "PatchResult.text"
+		},
+		"828": {
+			"packageName": "@scolladon/tsgit",
+			"packagePath": "src/application/commands/diff.ts",
+			"qualifiedName": "PatchResult.diff"
 		},
 		"829": {
 			"packageName": "@scolladon/tsgit",
