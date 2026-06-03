@@ -12,7 +12,7 @@ Replicate canonical git's **observable behaviour byte-for-byte** — object SHAs
 
 The library returns **data in a structured shape**; representing it — date formats, number formatting, output layout, hash abbreviation, suffixes/markers — is the **caller's** responsibility. A command surface must not carry options whose only job is to steer rendered text (`--long`, `--abbrev=<n>`, `--pretty`/`--format`, `--date=<mode>`, `--stat` widths, dirty `=<mark>`, …), nor return a pre-rendered line/`bytes`. Ship the underlying fields (oids, counts, timestamps, enums, booleans) and let the consumer format them.
 
-This **refines** the prime directive: byte-for-byte faithfulness binds the **data and on-disk state** (SHAs, refs, reflogs, state files, refusal conditions), not the **human-readable stdout** git prints. Pin faithfulness by reconstructing git's display *in the interop test* from the structured fields and comparing to real `git` — the library itself emits no display string. New commands follow this from day one; existing rendering-bearing commands (`show`, `log`, …) are swept by backlog **26.8**. See [ADR-249](docs/adr/249-describe-structured-data-only.md).
+This **refines** the prime directive: byte-for-byte faithfulness binds the **data and on-disk state** (SHAs, refs, reflogs, state files, refusal conditions), not the **human-readable stdout** git prints. Pin faithfulness by reconstructing git's display *in the interop test* from the structured fields and comparing to real `git` — the library itself emits no display string. New commands follow this from day one; existing rendering-bearing commands (`show`, `log`, …) are swept by backlog **23.2a**. See [ADR-249](docs/adr/249-describe-structured-data-only.md).
 
 ## Architecture
 

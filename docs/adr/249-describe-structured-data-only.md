@@ -59,7 +59,7 @@ suffix against `dirty: true`.
 
 This intentionally diverges from ADR-240 (`show`'s `bytes`). ADR-240 is **not**
 superseded here — reconciling `show` and the other rendering-bearing commands with
-the structured-output rule is the dedicated backlog sweep, not this PR.
+the structured-output rule is the dedicated backlog sweep (**23.2a**), not this PR.
 
 ## Consequences
 
