@@ -152,9 +152,6 @@ const processSuspect = async (sb: Scoreboard, suspect: Suspect): Promise<void> =
     const { passed, kept } = splitAgainstParent(remaining, diffLines(resolved.blob, suspect.blob));
     schedule(sb, parent, resolved.sourcePath, resolved.date, resolved.blob, passed);
     remaining = kept;
-    // equivalent-mutant: once nothing remains, later parents only split an empty set
-    // (a no-op) and `previous` is already set — dropping the break changes no output.
-    if (remaining.length === 0) break;
   }
   finalize(sb, suspect, data, childLines, remaining, previous);
 };
@@ -170,10 +167,10 @@ const finalize = (
   const boundary = data.parents.length === 0;
   const summary = subjectLine(data.message);
   for (const entry of entries) {
-    for (let i = 0; i < entry.count; i += 1) {
+    for (const offset of offsets(entry.count)) {
       sb.finalized.push({
-        finalLine: entry.finalStart + i + 1,
-        sourceLine: entry.sourceStart + i + 1,
+        finalLine: entry.finalStart + offset + 1,
+        sourceLine: entry.sourceStart + offset + 1,
         commit: suspect.commit,
         author: data.author,
         committer: data.committer,
@@ -181,11 +178,15 @@ const finalize = (
         boundary,
         sourcePath: suspect.path,
         ...(previous !== undefined ? { previous } : {}),
-        content: childLines[entry.sourceStart + i] as Uint8Array,
+        content: childLines[entry.sourceStart + offset] as Uint8Array,
       });
     }
   }
 };
+
+/** `[0, 1, …, count-1]` — a range with no mutable index to invert into a hang. */
+const offsets = (count: number): ReadonlyArray<number> =>
+  Array.from({ length: count }, (_, index) => index);
 
 interface ResolvedParent {
   readonly blob: Uint8Array;
