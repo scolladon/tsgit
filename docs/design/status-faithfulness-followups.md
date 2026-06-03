@@ -84,9 +84,9 @@ export type ChangeKind =
 ```
 
 `type-changed` reconstructs git's `T`; `mode-changed` reconstructs `M` (same as
-`modified`) but preserves the blob-unchanged/mode-changed fact. This **revisits
-ADR-254**, which deliberately deferred exactly this enrichment "across both
-columns together"; the new ADR supersedes it.
+`modified`) but preserves the blob-unchanged/mode-changed fact. ADR-255 records
+this and supersedes ADR-254, which deliberately deferred exactly this enrichment
+"across both columns together".
 
 **Staged projection** (`toStagedChange`, pure mapping over `DiffChange`):
 
@@ -158,9 +158,17 @@ export type ConflictKind =
   | 'added-by-us' | 'added-by-them'
   | 'deleted-by-us' | 'deleted-by-them';
 
+export interface ConflictStage {
+  readonly id: ObjectId;
+  readonly mode: FileMode;
+}
+
 export interface UnmergedEntry {
   readonly kind: ConflictKind;
   readonly path: FilePath;
+  readonly base?: ConflictStage;   // stage 1
+  readonly ours?: ConflictStage;   // stage 2
+  readonly theirs?: ConflictStage; // stage 3
 }
 
 export interface StatusResult {
@@ -178,10 +186,12 @@ next to `groupUnmergedEntries` (`domain/diff/`), enabling reuse by any future
 conflict-aware command.
 
 `status` maps `grouped.unmerged` entries → `UnmergedEntry[]`, sorted by path
-(git order). `unmerged` carries the semantic state only, **not** the per-stage
-blobs: that reconstructs porcelain v1 (the project's faithfulness bar) fully;
-per-stage `{id, mode}` (needed only for porcelain **v2** `u` lines) is YAGNI
-until a consumer needs it — logged, not built (§7).
+(git order). Each entry carries the semantic `kind` **and** the per-stage
+`{ id, mode }` projected from the group's `stage1`/`stage2`/`stage3` index
+entries (`undefined` where a stage is absent) — **lossless** against both
+porcelain v1 (`kind` → XY) and porcelain v2 (`u`-line modes + oids). The blobs
+are already in hand from `groupUnmergedEntries`, so surfacing them is nearly free
+and avoids a future breaking widening of `UnmergedEntry` (ADR-256, shape B).
 
 ### 3.4 `clean`
 
@@ -264,8 +274,8 @@ Candidates, executed in-PR unless feature-sized:
 
 ## 7. Follow-ups (logged only if feature-sized)
 
-- Per-stage `{id, mode}` on `UnmergedEntry` for porcelain **v2** `u`-line
-  reconstruction — additive, deferred until a consumer needs v2.
+None. The per-stage `{id, mode}` that an earlier draft deferred for porcelain v2
+is built in now (ADR-256, shape B). No feature-sized residual.
 
 ## 8. Non-goals
 
