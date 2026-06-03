@@ -269,4 +269,39 @@ describe.skipIf(!GIT_AVAILABLE)('describe interop', () => {
       expect(render(sut)).toBe(gitDescribe(dir, '--dirty'));
     });
   });
+
+  describe('Given a conflicted index (mid-merge) with --dirty', () => {
+    let dir = '';
+    let ctx: Context;
+
+    beforeAll(async () => {
+      dir = await makeRepo('conflict-dirty');
+      ctx = createNodeContext({ workDir: dir });
+      await writeFile(path.join(dir, 'f.txt'), 'shared\n');
+      git(dir, 'add', '-A');
+      runGit(['-C', dir, 'commit', '-q', '-m', 'base'], { env: datedEnv(clock) });
+      annotate(dir, 'v1.0', clock + 30);
+      git(dir, 'checkout', '-q', '-b', 'feature');
+      await writeFile(path.join(dir, 'f.txt'), 'theirs\n');
+      git(dir, 'add', '-A');
+      runGit(['-C', dir, 'commit', '-q', '-m', 'feature'], { env: datedEnv(clock + 60) });
+      git(dir, 'checkout', '-q', 'main');
+      await writeFile(path.join(dir, 'f.txt'), 'ours\n');
+      git(dir, 'add', '-A');
+      runGit(['-C', dir, 'commit', '-q', '-m', 'on-main'], { env: datedEnv(clock + 120) });
+      tryRunGit(['-C', dir, 'merge', 'feature'], { env: datedEnv(clock + 180) });
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => {
+      await rm(dir, { recursive: true, force: true });
+    });
+
+    it('Then the conflicted index reconstructs git describe --dirty', async () => {
+      // A mid-merge index (stage 1/2/3 entries) is dirty per git's diff-index HEAD,
+      // even though no path appears in the staged or working-tree columns.
+      const sut = await describeCmd(ctx, undefined, { dirty: true });
+      expect(sut.dirty).toBe(true);
+      expect(render(sut)).toBe(gitDescribe(dir, '--dirty'));
+    });
+  });
 });

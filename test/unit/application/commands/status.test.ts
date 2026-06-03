@@ -1,11 +1,24 @@
 import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { add } from '../../../../src/application/commands/add.js';
+import { branchCreate } from '../../../../src/application/commands/branch.js';
+import { checkout } from '../../../../src/application/commands/checkout.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
+import { merge } from '../../../../src/application/commands/merge.js';
 import { rm } from '../../../../src/application/commands/rm.js';
-import { status } from '../../../../src/application/commands/status.js';
-import type { AuthorIdentity } from '../../../../src/domain/objects/index.js';
+import {
+  status,
+  toStagedChange,
+  toWorkingTreeChange,
+} from '../../../../src/application/commands/status.js';
+import type { DiffChange } from '../../../../src/domain/diff/index.js';
+import type {
+  AuthorIdentity,
+  FileMode,
+  FilePath,
+  ObjectId,
+} from '../../../../src/domain/objects/index.js';
 
 const author: AuthorIdentity = {
   name: 'Ada',
@@ -337,7 +350,7 @@ describe('status — staged column (index-vs-HEAD)', () => {
 
   describe('Given a staged type change (regular file becomes a symlink)', () => {
     describe('When status', () => {
-      it('Then the staged column reports it as modified (T folds into modified)', async () => {
+      it('Then the staged column reports it as type-changed (git T)', async () => {
         // Arrange — commit a regular a.txt, then replace it with a symlink and stage.
         const ctx = await seedClean();
         await ctx.fs.rm(`${ctx.layout.workDir}/a.txt`);
@@ -347,8 +360,8 @@ describe('status — staged column (index-vs-HEAD)', () => {
         // Act
         const sut = await status(ctx);
 
-        // Assert — a type change is collapsed to `modified` (ADR-254 projection).
-        expect(sut.indexChanges).toEqual([{ kind: 'modified', path: 'a.txt' }]);
+        // Assert — a kind change is git's `T`.
+        expect(sut.indexChanges).toEqual([{ kind: 'type-changed', path: 'a.txt' }]);
       });
     });
   });
@@ -723,9 +736,9 @@ describe('status — progress reporting', () => {
 
   describe('Given a tracked symlink replaced by a regular file with identical bytes', () => {
     describe('When status', () => {
-      it('Then it reports the path modified on the mode change (content identical)', async () => {
+      it('Then it reports the path type-changed (symlink → file is git T, even with identical bytes)', async () => {
         // Arrange — the symlink blob is its target string; a regular file holding
-        // those same bytes hashes identically, so only a mode-aware check differs.
+        // those same bytes hashes identically, so only the file kind differs.
         const ctx = createMemoryContext();
         await init(ctx);
         await ctx.fs.symlink('target-content', `${ctx.layout.workDir}/link`);
@@ -737,7 +750,317 @@ describe('status — progress reporting', () => {
         const sut = await status(ctx);
 
         // Assert
-        expect(sut.workingTreeChanges).toContainEqual({ kind: 'modified', path: 'link' });
+        expect(sut.workingTreeChanges).toContainEqual({ kind: 'type-changed', path: 'link' });
+      });
+    });
+  });
+});
+
+describe('toStagedChange', () => {
+  const oid = (s: string): ObjectId => s as ObjectId;
+  const path = (s: string): FilePath => s as FilePath;
+  const REGULAR = '100644' as FileMode;
+  const EXEC = '100755' as FileMode;
+  const SYMLINK = '120000' as FileMode;
+
+  describe('Given an add change', () => {
+    describe('When projected to a staged change', () => {
+      it("Then it is 'added' on the new path", () => {
+        // Arrange
+        const change: DiffChange = {
+          type: 'add',
+          newPath: path('a.txt'),
+          newId: oid('aaa'),
+          newMode: REGULAR,
+        };
+
+        // Act
+        const sut = toStagedChange(change);
+
+        // Assert
+        expect(sut).toEqual({ kind: 'added', path: 'a.txt' });
+      });
+    });
+  });
+
+  describe('Given a delete change', () => {
+    describe('When projected to a staged change', () => {
+      it("Then it is 'deleted' on the old path", () => {
+        // Arrange
+        const change: DiffChange = {
+          type: 'delete',
+          oldPath: path('a.txt'),
+          oldId: oid('aaa'),
+          oldMode: REGULAR,
+        };
+
+        // Act
+        const sut = toStagedChange(change);
+
+        // Assert
+        expect(sut).toEqual({ kind: 'deleted', path: 'a.txt' });
+      });
+    });
+  });
+
+  describe('Given a type-change', () => {
+    describe('When projected to a staged change', () => {
+      it("Then it is 'type-changed' (git T)", () => {
+        // Arrange — regular file became a symlink in the index.
+        const change: DiffChange = {
+          type: 'type-change',
+          path: path('a.txt'),
+          oldId: oid('aaa'),
+          newId: oid('bbb'),
+          oldMode: REGULAR,
+          newMode: SYMLINK,
+        };
+
+        // Act
+        const sut = toStagedChange(change);
+
+        // Assert
+        expect(sut).toEqual({ kind: 'type-changed', path: 'a.txt' });
+      });
+    });
+  });
+
+  describe('Given a modify change whose blob id is unchanged', () => {
+    describe('When projected to a staged change', () => {
+      it("Then it is 'mode-changed' (same blob, exec bit flipped)", () => {
+        // Arrange — identical oid, mode promoted to executable.
+        const change: DiffChange = {
+          type: 'modify',
+          path: path('a.txt'),
+          oldId: oid('aaa'),
+          newId: oid('aaa'),
+          oldMode: REGULAR,
+          newMode: EXEC,
+        };
+
+        // Act
+        const sut = toStagedChange(change);
+
+        // Assert
+        expect(sut).toEqual({ kind: 'mode-changed', path: 'a.txt' });
+      });
+    });
+  });
+
+  describe('Given a modify change whose blob id differs', () => {
+    describe('When projected to a staged change', () => {
+      it("Then it is 'modified' (content change)", () => {
+        // Arrange — different oid (content edit).
+        const change: DiffChange = {
+          type: 'modify',
+          path: path('a.txt'),
+          oldId: oid('aaa'),
+          newId: oid('bbb'),
+          oldMode: REGULAR,
+          newMode: REGULAR,
+        };
+
+        // Act
+        const sut = toStagedChange(change);
+
+        // Assert
+        expect(sut).toEqual({ kind: 'modified', path: 'a.txt' });
+      });
+    });
+  });
+});
+
+// Mirror merge.test.ts's content/content conflict to leave stages 1/2/3 in the
+// index for `file.txt` (git porcelain `UU`).
+const seedConflict = async () => {
+  const ctx = createMemoryContext();
+  await init(ctx);
+  await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'shared\n');
+  await add(ctx, ['file.txt']);
+  await commit(ctx, { message: 'base', author });
+  await branchCreate(ctx, { name: 'feature' });
+  await checkout(ctx, { target: 'feature' });
+  await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'FEATURE-CHANGE\n');
+  await add(ctx, ['file.txt']);
+  await commit(ctx, { message: 'on-feature', author });
+  await checkout(ctx, { target: 'main' });
+  await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'MAIN-CHANGE\n');
+  await add(ctx, ['file.txt']);
+  await commit(ctx, { message: 'on-main', author });
+  await merge(ctx, { target: 'feature', author });
+  return ctx;
+};
+
+describe('status — unmerged column', () => {
+  describe('Given a conflicted index (both sides modified the same file)', () => {
+    describe('When status', () => {
+      it('Then the path is reported as both-modified with all three stage blobs', async () => {
+        // Arrange
+        const ctx = await seedConflict();
+
+        // Act
+        const sut = await status(ctx);
+
+        // Assert — one unmerged entry carrying base/ours/theirs blobs.
+        expect(sut.unmerged).toHaveLength(1);
+        const entry = sut.unmerged[0];
+        expect(entry?.kind).toBe('both-modified');
+        expect(entry?.path).toBe('file.txt');
+        expect(entry?.base?.mode).toBe('100644');
+        expect(entry?.ours?.mode).toBe('100644');
+        expect(entry?.theirs?.mode).toBe('100644');
+        // ours and theirs are the divergent blobs (distinct from each other and base).
+        expect(entry?.ours?.id).not.toBe(entry?.theirs?.id);
+        expect(entry?.base?.id).not.toBe(entry?.ours?.id);
+      });
+
+      it('Then the conflicted path is absent from the other columns and untracked set', async () => {
+        // Arrange
+        const ctx = await seedConflict();
+
+        // Act
+        const sut = await status(ctx);
+
+        // Assert — git lists an unmerged path only under "Unmerged paths".
+        expect(sut.indexChanges.map((c) => c.path)).not.toContain('file.txt');
+        expect(sut.workingTreeChanges.map((c) => c.path)).not.toContain('file.txt');
+      });
+
+      it('Then the repo is not clean', async () => {
+        // Arrange
+        const ctx = await seedConflict();
+
+        // Act
+        const sut = await status(ctx);
+
+        // Assert
+        expect(sut.clean).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a modify/delete conflict (one side modifies, the other deletes)', () => {
+    describe('When status', () => {
+      it('Then it is deleted-by-them with the base and ours stages but no theirs', async () => {
+        // Arrange — main modifies file.txt, feature deletes it → stages 1 (base)
+        // and 2 (ours) only, no stage 3 (theirs); git porcelain `UD`.
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'shared\n');
+        await add(ctx, ['file.txt']);
+        await commit(ctx, { message: 'base', author });
+        await branchCreate(ctx, { name: 'feature' });
+        await checkout(ctx, { target: 'feature' });
+        await rm(ctx, ['file.txt']);
+        await commit(ctx, { message: 'delete', author });
+        await checkout(ctx, { target: 'main' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'MAIN\n');
+        await add(ctx, ['file.txt']);
+        await commit(ctx, { message: 'modify', author });
+        await merge(ctx, { target: 'feature', author });
+
+        // Act
+        const sut = await status(ctx);
+
+        // Assert — UD: base + ours present, theirs omitted.
+        expect(sut.unmerged).toHaveLength(1);
+        const entry = sut.unmerged[0];
+        expect(entry?.kind).toBe('deleted-by-them');
+        expect(entry?.path).toBe('file.txt');
+        expect(entry?.base).toBeDefined();
+        expect(entry?.ours).toBeDefined();
+        expect(entry?.theirs).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given two conflicting files merged out of insertion order', () => {
+    describe('When status', () => {
+      it('Then the unmerged entries are byte-ordered by path', async () => {
+        // Arrange — conflict on z.txt and a.txt; assert byte order (a before z),
+        // guarding the order inherited from the byte-sorted index.
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/z.txt`, 'shared\n');
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'shared\n');
+        await add(ctx, ['z.txt', 'a.txt']);
+        await commit(ctx, { message: 'base', author });
+        await branchCreate(ctx, { name: 'feature' });
+        await checkout(ctx, { target: 'feature' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/z.txt`, 'FEATURE\n');
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'FEATURE\n');
+        await add(ctx, ['z.txt', 'a.txt']);
+        await commit(ctx, { message: 'on-feature', author });
+        await checkout(ctx, { target: 'main' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/z.txt`, 'MAIN\n');
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'MAIN\n');
+        await add(ctx, ['z.txt', 'a.txt']);
+        await commit(ctx, { message: 'on-main', author });
+        await merge(ctx, { target: 'feature', author });
+
+        // Act
+        const sut = await status(ctx);
+
+        // Assert
+        expect(sut.unmerged.map((u) => u.path)).toEqual(['a.txt', 'z.txt']);
+      });
+    });
+  });
+
+  describe('Given a clean repo', () => {
+    describe('When status', () => {
+      it('Then the unmerged column is empty', async () => {
+        // Arrange
+        const ctx = await seedClean();
+
+        // Act
+        const sut = await status(ctx);
+
+        // Assert
+        expect(sut.unmerged).toEqual([]);
+      });
+    });
+  });
+});
+
+describe('toWorkingTreeChange', () => {
+  const p = 'a.txt' as FilePath;
+
+  describe('Given each working-tree comparison', () => {
+    describe('When projected to a working-tree change', () => {
+      it("Then 'absent' is deleted", () => {
+        // Arrange / Act
+        const sut = toWorkingTreeChange('absent', p);
+        // Assert
+        expect(sut).toEqual({ kind: 'deleted', path: 'a.txt' });
+      });
+
+      it("Then 'type-changed' is type-changed", () => {
+        // Arrange / Act
+        const sut = toWorkingTreeChange('type-changed', p);
+        // Assert
+        expect(sut).toEqual({ kind: 'type-changed', path: 'a.txt' });
+      });
+
+      it("Then 'mode-changed' is mode-changed", () => {
+        // Arrange / Act
+        const sut = toWorkingTreeChange('mode-changed', p);
+        // Assert
+        expect(sut).toEqual({ kind: 'mode-changed', path: 'a.txt' });
+      });
+
+      it("Then 'modified' is modified", () => {
+        // Arrange / Act
+        const sut = toWorkingTreeChange('modified', p);
+        // Assert
+        expect(sut).toEqual({ kind: 'modified', path: 'a.txt' });
+      });
+
+      it("Then 'unchanged' yields no entry", () => {
+        // Arrange / Act
+        const sut = toWorkingTreeChange('unchanged', p);
+        // Assert
+        expect(sut).toBeUndefined();
       });
     });
   });

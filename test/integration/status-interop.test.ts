@@ -17,18 +17,19 @@
  *   unique:         tsgit's status columns reconstruct canonical `git status --porcelain`
  *   interopSurface: status
  */
-import { mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
 import {
   type ChangeKind,
+  type ConflictKind,
   type StatusResult,
   status as statusCmd,
 } from '../../src/application/commands/status.js';
 import type { Context } from '../../src/ports/context.js';
-import { GIT_AVAILABLE, git, runGit, runGitEnv } from './interop-helpers.js';
+import { GIT_AVAILABLE, git, runGit, runGitEnv, tryRunGit } from './interop-helpers.js';
 
 const SETUP_TIMEOUT = 60_000;
 let clock = 1_700_000_000;
@@ -69,17 +70,77 @@ const initOnly = async (slug: string): Promise<{ dir: string; ctx: Context }> =>
   return { dir, ctx: createNodeContext({ workDir: dir }) };
 };
 
-const code = (kind: ChangeKind): string =>
-  kind === 'added' ? 'A' : kind === 'deleted' ? 'D' : kind === 'modified' ? 'M' : '?';
+/**
+ * A repo mid-merge with four unmerged states: `both-mod.txt` (UU), `both-add.txt`
+ * (AA), `them-del.txt` (we modify, they delete → UD), `us-del.txt` (we delete,
+ * they modify → DU). git writes the conflicted index; tsgit reads it.
+ */
+const conflictRepo = async (slug: string): Promise<{ dir: string; ctx: Context }> => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), `tsgit-status-${slug}-`));
+  createdDirs.push(dir);
+  git(dir, 'init', '-q', '-b', 'main');
+  git(dir, 'config', 'user.name', 'A U Thor');
+  git(dir, 'config', 'user.email', 'author@example.com');
+  git(dir, 'config', 'commit.gpgsign', 'false');
+  await writeFile(path.join(dir, 'both-mod.txt'), 'base\n');
+  await writeFile(path.join(dir, 'them-del.txt'), 'base\n');
+  await writeFile(path.join(dir, 'us-del.txt'), 'base\n');
+  git(dir, 'add', '-A');
+  runGit(['-C', dir, 'commit', '-q', '-m', 'base'], { env: datedEnv() });
 
-/** Reconstruct `git status --porcelain` from tsgit's two columns. */
+  git(dir, 'checkout', '-q', '-b', 'feature');
+  await writeFile(path.join(dir, 'both-mod.txt'), 'theirs\n');
+  await rm(path.join(dir, 'them-del.txt'));
+  await writeFile(path.join(dir, 'us-del.txt'), 'theirs\n');
+  await writeFile(path.join(dir, 'both-add.txt'), 'theirs\n');
+  git(dir, 'add', '-A');
+  runGit(['-C', dir, 'commit', '-q', '-m', 'feature'], { env: datedEnv() });
+
+  git(dir, 'checkout', '-q', 'main');
+  await writeFile(path.join(dir, 'both-mod.txt'), 'ours\n');
+  await writeFile(path.join(dir, 'them-del.txt'), 'ours\n');
+  await rm(path.join(dir, 'us-del.txt'));
+  await writeFile(path.join(dir, 'both-add.txt'), 'ours\n');
+  git(dir, 'add', '-A');
+  runGit(['-C', dir, 'commit', '-q', '-m', 'main'], { env: datedEnv() });
+
+  tryRunGit(['-C', dir, 'merge', 'feature'], { env: datedEnv() });
+  return { dir, ctx: createNodeContext({ workDir: dir }) };
+};
+
+const code = (kind: ChangeKind): string => {
+  if (kind === 'added') return 'A';
+  if (kind === 'deleted') return 'D';
+  if (kind === 'type-changed') return 'T';
+  if (kind === 'modified' || kind === 'mode-changed') return 'M';
+  return '?';
+};
+
+// git's unmerged `XY` is a function of which stages are present (the same mapping
+// `classifyUnmerged` encodes); reconstruct it from the structured conflict state.
+const CONFLICT_XY: Record<ConflictKind, string> = {
+  'both-modified': 'UU',
+  'both-added': 'AA',
+  'both-deleted': 'DD',
+  'added-by-us': 'AU',
+  'added-by-them': 'UA',
+  'deleted-by-us': 'DU',
+  'deleted-by-them': 'UD',
+};
+
+/** Reconstruct `git status --porcelain` from tsgit's structured columns. */
 const reconstruct = (s: StatusResult): string => {
   const staged = new Map(s.indexChanges.map((c) => [c.path, c.kind]));
   const worktree = new Map(
     s.workingTreeChanges.filter((c) => c.kind !== 'untracked').map((c) => [c.path, c.kind]),
   );
-  const trackedPaths = [...new Set([...staged.keys(), ...worktree.keys()])].sort();
+  const unmerged = new Map(s.unmerged.map((u) => [u.path, u.kind]));
+  const trackedPaths = [
+    ...new Set([...staged.keys(), ...worktree.keys(), ...unmerged.keys()]),
+  ].sort();
   const trackedLines = trackedPaths.map((p) => {
+    const conflict = unmerged.get(p);
+    if (conflict !== undefined) return `${CONFLICT_XY[conflict]} ${p}`;
     const sk = staged.get(p);
     const wk = worktree.get(p);
     return `${sk === undefined ? ' ' : code(sk)}${wk === undefined ? ' ' : code(wk)} ${p}`;
@@ -199,23 +260,50 @@ describe.skipIf(!GIT_AVAILABLE)('status interop — staged column', () => {
   );
 
   it(
-    'Then a staged type change reconstructs git (file becomes a symlink)',
+    'Then a staged type change reconstructs git status --porcelain (T)',
     async () => {
-      // Arrange — replace a regular file with a symlink and stage it. git reports
-      // `T` in porcelain; tsgit collapses it to `modified` (M), so this is asserted
-      // structurally, not by byte-equal porcelain.
+      // Arrange — replace a regular file with a symlink and stage it; worktree
+      // then matches the index, so git reports `T ` (staged only).
       const { dir, ctx } = await baseRepo('typechange');
       await rm(path.join(dir, 'a.txt'));
       await symlink('elsewhere', path.join(dir, 'a.txt'));
       git(dir, 'add', 'a.txt');
 
+      // Act / Assert — byte-equal, no longer a structural-only carve-out.
+      expect(reconstruct(await statusCmd(ctx))).toBe(gitPorcelain(dir));
+    },
+    SETUP_TIMEOUT,
+  );
+
+  it(
+    'Then a staged mode change reconstructs git status --porcelain (M)',
+    async () => {
+      // Arrange — flip the exec bit and stage it (same blob). With core.fileMode
+      // on, git reports `M ` (staged only); tsgit's staged column is `mode-changed`.
+      const { dir, ctx } = await baseRepo('mode-change');
+      git(dir, 'config', 'core.fileMode', 'true');
+      await chmod(path.join(dir, 'a.txt'), 0o755);
+      git(dir, 'add', 'a.txt');
+
+      // Act / Assert
+      expect(reconstruct(await statusCmd(ctx))).toBe(gitPorcelain(dir));
+    },
+    SETUP_TIMEOUT,
+  );
+
+  it(
+    'Then a conflicted merge reconstructs git status --porcelain (UU/AA/UD/DU)',
+    async () => {
+      // Arrange — a real git merge conflict exercising four unmerged states. git
+      // writes stages 1/2/3; tsgit reads that index and reconstructs the U-codes.
+      const { dir, ctx } = await conflictRepo('unmerged');
+
       // Act
       const sut = await statusCmd(ctx);
 
-      // Assert — staged column carries a.txt as modified; git agrees a change is
-      // staged (its porcelain X is `T`, our coarse projection is `M`).
-      expect(sut.indexChanges).toEqual([{ kind: 'modified', path: 'a.txt' }]);
-      expect(git(dir, 'status', '--porcelain', '--no-renames')).toMatch(/^T. a\.txt$/m);
+      // Assert — byte-equal unmerged reporting, and the repo is not clean.
+      expect(reconstruct(sut)).toBe(gitPorcelain(dir));
+      expect(sut.clean).toBe(false);
     },
     SETUP_TIMEOUT,
   );

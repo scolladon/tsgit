@@ -1,9 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { add } from '../../../../src/application/commands/add.js';
+import { branchCreate } from '../../../../src/application/commands/branch.js';
+import { checkout } from '../../../../src/application/commands/checkout.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { describe as describeCmd } from '../../../../src/application/commands/describe.js';
 import { init } from '../../../../src/application/commands/init.js';
+import { merge } from '../../../../src/application/commands/merge.js';
 import { tagCreate } from '../../../../src/application/commands/tag.js';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
 import { getRefStore } from '../../../../src/application/primitives/ref-store.js';
@@ -528,6 +531,38 @@ describe('describe', () => {
 
         // Assert
         expect(sut.dirty).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a conflicted index (mid-merge) and dirty: true', () => {
+    describe('When describe runs', () => {
+      it('Then the unmerged paths count as dirty', async () => {
+        // Arrange — a content/content merge conflict leaves stages 1/2/3 in the
+        // index; git's `diff-index HEAD` reports a mid-merge index as dirty even
+        // though no path appears in the staged or working-tree columns.
+        const ctx = await seed();
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'shared\n');
+        await add(ctx, ['file.txt']);
+        const base = await commit(ctx, { message: 'base', author: ident(clock) });
+        await annotatedTag(ctx, 'v1.0', base.id, clock);
+        await branchCreate(ctx, { name: 'feature' });
+        await checkout(ctx, { target: 'feature' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'FEATURE\n');
+        await add(ctx, ['file.txt']);
+        await commit(ctx, { message: 'on-feature', author: ident(clock) });
+        await checkout(ctx, { target: 'main' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'MAIN\n');
+        await add(ctx, ['file.txt']);
+        await commit(ctx, { message: 'on-main', author: ident(clock) });
+        await merge(ctx, { target: 'feature', author: ident(clock) });
+
+        // Act
+        const sut = await describeCmd(ctx, undefined, { dirty: true });
+
+        // Assert
+        expect(sut.dirty).toBe(true);
+        expect(sut.name).toBe('v1.0');
       });
     });
   });
