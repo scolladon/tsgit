@@ -70,6 +70,7 @@ export {
   type ContinueMergeResult,
   continueMerge,
 } from './continue-merge.js';
+export { type DescribeOptions, type DescribeResult, describe } from './describe.js';
 export {
   type DiffFormat,
   type DiffOptions,

@@ -151,6 +151,10 @@ export function assertExhaustiveSwitch(data: TsgitErrorData): void {
     case 'INVALID_SEQUENCER_TODO':
     case 'CHERRY_PICK_MERGE_NO_MAINLINE':
     case 'REVERT_MERGE_NO_MAINLINE':
+    case 'NO_NAMES':
+    case 'NO_ANNOTATED_NAMES':
+    case 'NO_REACHABLE_NAMES':
+    case 'NO_EXACT_MATCH':
       return;
     default: {
       const _exhaustive: never = data;

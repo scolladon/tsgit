@@ -142,6 +142,7 @@ describe('openRepository — Repository binding integrity', () => {
             'config',
             'continueMerge',
             'ctx',
+            'describe',
             'diff',
             'dispose',
             'fetch',

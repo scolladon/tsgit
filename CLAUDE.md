@@ -8,6 +8,12 @@ A pure TypeScript git library. Lightning-fast, portable (Node.js + browser), zer
 
 Replicate canonical git's **observable behaviour byte-for-byte** — object SHAs, ref & reflog contents, on-disk state files (`sequencer/`, `MERGE_HEAD`, `CHERRY_PICK_HEAD`, …), refusal conditions, and message formats — **unless an ADR explicitly diverges and says why**. This is a project-wide invariant, not scoped to any workflow: it binds every change. Verify against real `git` (scrubbed `GIT_*`, signing off) rather than guessing; pin the result with a cross-tool interop test. Enforced by the interop harness + parity goldens + write-surface audit. See [ADR-226](docs/adr/226-git-faithfulness-prime-directive.md).
 
+## Structured output, not cosmetics
+
+The library returns **data in a structured shape**; representing it — date formats, number formatting, output layout, hash abbreviation, suffixes/markers — is the **caller's** responsibility. A command surface must not carry options whose only job is to steer rendered text (`--long`, `--abbrev=<n>`, `--pretty`/`--format`, `--date=<mode>`, `--stat` widths, dirty `=<mark>`, …), nor return a pre-rendered line/`bytes`. Ship the underlying fields (oids, counts, timestamps, enums, booleans) and let the consumer format them.
+
+This **refines** the prime directive: byte-for-byte faithfulness binds the **data and on-disk state** (SHAs, refs, reflogs, state files, refusal conditions), not the **human-readable stdout** git prints. Pin faithfulness by reconstructing git's display *in the interop test* from the structured fields and comparing to real `git` — the library itself emits no display string. New commands follow this from day one; existing rendering-bearing commands (`show`, `log`, …) are swept by backlog **23.2a**. See [ADR-249](docs/adr/249-describe-structured-data-only.md).
+
 ## Architecture
 
 Hexagonal architecture with tiered application layer:

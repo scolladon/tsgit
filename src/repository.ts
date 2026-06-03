@@ -158,6 +158,7 @@ export interface Repository {
   /** Nested `repo.config.{get,set,unset,unsetAll,getAll,getRegexp,list,renameSection,removeSection}` (ADR-181). */
   readonly config: commands.ConfigNamespace;
   readonly continueMerge: BindCtx<typeof commands.continueMerge>;
+  readonly describe: BindCtx<typeof commands.describe>;
   // `diff` is overloaded on `format`; `BindCtx` only captures the last overload
   // (a TypeScript limitation), so the binding is written by hand to preserve
   // both narrowing paths.
@@ -409,6 +410,10 @@ export const openRepository = async (
       guard();
       return commands.continueMerge(ctx, opts);
     }) as Repository['continueMerge'],
+    describe: ((input, describeOpts) => {
+      guard();
+      return commands.describe(ctx, input, describeOpts);
+    }) as Repository['describe'],
     // Overload-preserving binding. The inner cast to `commands.DiffOptions`
     // forwards to the implementation signature; the outer cast restores the
     // public overloads so callers narrow on `format`.
