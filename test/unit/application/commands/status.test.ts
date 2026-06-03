@@ -7,7 +7,11 @@ import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
 import { merge } from '../../../../src/application/commands/merge.js';
 import { rm } from '../../../../src/application/commands/rm.js';
-import { status, toStagedChange } from '../../../../src/application/commands/status.js';
+import {
+  status,
+  toStagedChange,
+  toWorkingTreeChange,
+} from '../../../../src/application/commands/status.js';
 import type { DiffChange } from '../../../../src/domain/diff/index.js';
 import type {
   AuthorIdentity,
@@ -970,6 +974,39 @@ describe('status — unmerged column', () => {
     });
   });
 
+  describe('Given two conflicting files merged out of insertion order', () => {
+    describe('When status', () => {
+      it('Then the unmerged entries are byte-ordered by path', async () => {
+        // Arrange — conflict on z.txt and a.txt; assert byte order (a before z),
+        // guarding the order inherited from the byte-sorted index.
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/z.txt`, 'shared\n');
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'shared\n');
+        await add(ctx, ['z.txt', 'a.txt']);
+        await commit(ctx, { message: 'base', author });
+        await branchCreate(ctx, { name: 'feature' });
+        await checkout(ctx, { target: 'feature' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/z.txt`, 'FEATURE\n');
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'FEATURE\n');
+        await add(ctx, ['z.txt', 'a.txt']);
+        await commit(ctx, { message: 'on-feature', author });
+        await checkout(ctx, { target: 'main' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/z.txt`, 'MAIN\n');
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'MAIN\n');
+        await add(ctx, ['z.txt', 'a.txt']);
+        await commit(ctx, { message: 'on-main', author });
+        await merge(ctx, { target: 'feature', author });
+
+        // Act
+        const sut = await status(ctx);
+
+        // Assert
+        expect(sut.unmerged.map((u) => u.path)).toEqual(['a.txt', 'z.txt']);
+      });
+    });
+  });
+
   describe('Given a clean repo', () => {
     describe('When status', () => {
       it('Then the unmerged column is empty', async () => {
@@ -981,6 +1018,49 @@ describe('status — unmerged column', () => {
 
         // Assert
         expect(sut.unmerged).toEqual([]);
+      });
+    });
+  });
+});
+
+describe('toWorkingTreeChange', () => {
+  const p = 'a.txt' as FilePath;
+
+  describe('Given each working-tree comparison', () => {
+    describe('When projected to a working-tree change', () => {
+      it("Then 'absent' is deleted", () => {
+        // Arrange / Act
+        const sut = toWorkingTreeChange('absent', p);
+        // Assert
+        expect(sut).toEqual({ kind: 'deleted', path: 'a.txt' });
+      });
+
+      it("Then 'type-changed' is type-changed", () => {
+        // Arrange / Act
+        const sut = toWorkingTreeChange('type-changed', p);
+        // Assert
+        expect(sut).toEqual({ kind: 'type-changed', path: 'a.txt' });
+      });
+
+      it("Then 'mode-changed' is mode-changed", () => {
+        // Arrange / Act
+        const sut = toWorkingTreeChange('mode-changed', p);
+        // Assert
+        expect(sut).toEqual({ kind: 'mode-changed', path: 'a.txt' });
+      });
+
+      it("Then 'modified' is modified", () => {
+        // Arrange / Act
+        const sut = toWorkingTreeChange('modified', p);
+        // Assert
+        expect(sut).toEqual({ kind: 'modified', path: 'a.txt' });
+      });
+
+      it("Then 'unchanged' yields no entry", () => {
+        // Arrange / Act
+        const sut = toWorkingTreeChange('unchanged', p);
+        // Assert
+        expect(sut).toBeUndefined();
       });
     });
   });

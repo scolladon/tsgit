@@ -12,7 +12,10 @@ import type { IndexEntry } from '../../domain/git-index/index.js';
 import type { FileMode, RefName } from '../../domain/objects/index.js';
 import type { FilePath, ObjectId } from '../../domain/objects/object-id.js';
 import type { Context } from '../../ports/context.js';
-import { compareWorkingTreeEntry } from '../primitives/compare-working-tree-entry.js';
+import {
+  compareWorkingTreeEntry,
+  type WorkingTreeComparison,
+} from '../primitives/compare-working-tree-entry.js';
 import { readHeadTree } from '../primitives/read-head-tree.js';
 import { readIndex } from '../primitives/read-index.js';
 import { walkWorkingTree } from '../primitives/walk-working-tree.js';
@@ -170,7 +173,9 @@ const conflictStage = (entry: IndexEntry): ConflictStage => ({ id: entry.id, mod
 
 /**
  * Project the grouped unmerged entries into `UnmergedEntry[]`, carrying the
- * conflict state and the present per-stage blobs, sorted by path (git order).
+ * conflict state and the present per-stage blobs. The result is byte-ordered by
+ * path without an explicit sort: `groupUnmergedEntries` preserves the order of
+ * the index, whose entries are required to be byte-sorted (a git index invariant).
  */
 const toUnmergedEntries = (groups: ReadonlyMap<FilePath, UnmergedEntryGroup>): UnmergedEntry[] => {
   const entries: UnmergedEntry[] = [];
@@ -183,7 +188,23 @@ const toUnmergedEntries = (groups: ReadonlyMap<FilePath, UnmergedEntryGroup>): U
       ...(group.stage3 && { theirs: conflictStage(group.stage3) }),
     });
   }
-  return entries.sort((a, b) => comparePaths(a.path, b.path));
+  return entries;
+};
+
+/**
+ * Project a working-tree comparison onto the working-tree `ChangeKind`: `absent`
+ * is git's ` D`, the type/mode/content variants map 1:1, and `unchanged` drops
+ * out (no entry).
+ */
+export const toWorkingTreeChange = (
+  comparison: WorkingTreeComparison,
+  path: FilePath,
+): ChangeEntry | undefined => {
+  if (comparison === 'absent') return { kind: 'deleted', path };
+  if (comparison === 'type-changed') return { kind: 'type-changed', path };
+  if (comparison === 'mode-changed') return { kind: 'mode-changed', path };
+  if (comparison === 'modified') return { kind: 'modified', path };
+  return undefined;
 };
 
 const classifyEntry = async (ctx: Context, entry: IndexEntry): Promise<ChangeEntry | undefined> => {
@@ -192,10 +213,5 @@ const classifyEntry = async (ctx: Context, entry: IndexEntry): Promise<ChangeEnt
   // dirty. Its stage-0 path is still in `trackedPaths`, so pass 2 treats it as
   // tracked (never untracked).
   if (entry.flags.skipWorktree) return undefined;
-  const comparison = await compareWorkingTreeEntry(ctx, entry);
-  if (comparison === 'absent') return { kind: 'deleted', path: entry.path };
-  if (comparison === 'type-changed') return { kind: 'type-changed', path: entry.path };
-  if (comparison === 'mode-changed') return { kind: 'mode-changed', path: entry.path };
-  if (comparison === 'modified') return { kind: 'modified', path: entry.path };
-  return undefined;
+  return toWorkingTreeChange(await compareWorkingTreeEntry(ctx, entry), entry.path);
 };
