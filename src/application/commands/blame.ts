@@ -91,10 +91,10 @@ export const blame = async (
   const filePath = FilePathFactory.from(path);
   const rev = opts.rev ?? DEFAULT_REV;
   const startCommit = await resolveCommitIsh(ctx, rev);
-  const sut: Scoreboard = { ctx, queue: [], finalized: [] };
-  await seed(sut, startCommit, filePath, rev);
-  await walk(sut);
-  const lines = [...sut.finalized].sort((a, b) => a.finalLine - b.finalLine);
+  const board: Scoreboard = { ctx, queue: [], finalized: [] };
+  await seed(board, startCommit, filePath, rev);
+  await walk(board);
+  const lines = [...board.finalized].sort((a, b) => a.finalLine - b.finalLine);
   return { path: filePath, lines: applyRange(lines, opts.range) };
 };
 
