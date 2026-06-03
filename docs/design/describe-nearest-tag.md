@@ -237,7 +237,7 @@ export interface DescribeOptions {
   readonly match?: string | ReadonlyArray<string>;    // short-name globs to include
   readonly exclude?: string | ReadonlyArray<string>;  // short-name globs to drop
   readonly dirty?: boolean;           // compute HEAD's tracked-dirtiness (HEAD only)
-  readonly broken?: boolean;          // tolerate an uncomputable tree (report dirty)
+  readonly broken?: boolean;          // tolerate a tree whose state can't be read (report dirty)
 }
 
 export interface DescribeResult {

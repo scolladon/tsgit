@@ -29,7 +29,7 @@ Red → Green per file; all pure, no I/O.
 4. `compare-candidates.ts` — `compareCandidates(a: Candidate, b: Candidate): number`
    - `a.depth - b.depth`, else `a.foundOrder - b.foundOrder`.
    - Tests: depth dominates; foundOrder tie-break; identical → 0.
-   - `compare-candidates.properties.test.ts` (case 2): sign-antisymmetry, depth
+   - `compare-candidates.properties.test.ts` (case 2): antisymmetric signs, depth
      dominates foundOrder, reflexive 0. `numRuns` 100.
 5. `match.ts` — `tagNameMatches(name: string, include: readonly string[], exclude: readonly string[]): boolean`
    - empty `include` ⇒ included; else included iff some include glob matches.
