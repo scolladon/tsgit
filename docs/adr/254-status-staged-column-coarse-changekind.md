@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted (at `240cc89e`)
+Accepted (at `240cc89e`) — superseded by [ADR-255](255-status-first-class-type-and-mode-change.md)
 
 ## Context
 
