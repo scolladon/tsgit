@@ -33,7 +33,7 @@ cd ../tsgit-<slug>
 npm install
 ```
 
-The TypeScript LSP tool is available for code navigation — no activation step needed; the LSP server starts on first use. Use it as the default for navigating source (`goToDefinition`, `findReferences`, `goToImplementation`, `documentSymbol`, `workspaceSymbol`, `hover`, call-hierarchy ops). Apply edits with `Edit` / `Write`; use `Read` / `Grep` for non-code files (markdown, JSON, generated artefacts).
+**Activate Serena on the fresh worktree immediately** — `mcp__serena__activate_project` with the absolute worktree path (`/abs/path/tsgit-<slug>`). Serena's activated-project LSP is rooted at the worktree, so cross-file navigation/rename reflect the worktree's own edits; the harness LSP tool is single-rooted at the *main* repo and only sees declarations for worktree files. Use Serena symbol/LSP tools (`find_symbol`, `find_referencing_symbols`, `rename_symbol`, `get_symbols_overview`, …) as the default for navigating and editing source; fall back to the harness LSP tool or `Edit` / `Write` only when Serena can't do it; use `Read` / `Grep` for non-code files (markdown, JSON, generated artefacts).
 
 If the branch already exists or the worktree path collides, STOP and ask the user.
 
@@ -93,10 +93,10 @@ Discovery is **seeded by the feature's diff** and radiates only as far as the fe
 
 **Contract:**
 
+- **Integrate, don't defer:** the discovered refactor is executed **in this PR**, not logged for later. The default is to do the work now while the feature diff makes the blast radius obvious. Only spin out a `docs/BACKLOG.md` follow-up when the refactor is genuinely *feature-sized* — large enough to need its own complex ADR and its own workflow run. Small and medium structural gains are landed here, every time.
 - **Behavior-preserving:** tests change only mechanically (moved/renamed). `npm run validate` stays green throughout. No public-API behavior change.
-- **Bounded blast radius:** every change traces back to the feature's concerns. A cross-cutting opportunity unrelated to the feature is *not* done here — log it as a `docs/BACKLOG.md` follow-up entry.
+- **Bounded blast radius:** every change traces back to the feature's concerns. A cross-cutting opportunity *unrelated* to the feature is still out of scope — but an in-scope opportunity is done now, not deferred.
 - **May be a no-op:** if the code is already in good shape, the step still emits a 1–3 line written justification of what was considered and why nothing changed. A silent skip is not allowed.
-- **May defer:** follow-ups recorded explicitly (backlog), left for a dedicated step; this pass never balloons the PR.
 - **Atomic commits:** each refactor lands as its own `refactor(<scope>): <what>` commit, separate from the feature commits.
 
 Then **re-review**, scoped to *only* the refactor diff (`git diff` of the `refactor(...)` commits), through the same three lenses (typescript / security / tests), fix-all-until-converged (≤3 cycles), re-validate. Findings that imply *further* refactoring become follow-ups, not another refactor loop.
@@ -126,6 +126,8 @@ gh pr merge <#> --squash --delete-branch --admin
 ```bash
 git checkout main && git sync
 ```
+
+After `git sync` removes the worktree, **clean up Serena's project entry** for it: prune the stale `~/.serena` project record for `tsgit-<slug>` so a later `activate_project` doesn't trip over a deleted path. The Serena activation (Step 1) and this cleanup are a matched pair — every worktree that gets activated gets pruned here.
 
 ## Hard rules
 
