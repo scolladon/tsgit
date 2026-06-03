@@ -2,11 +2,8 @@ import { describe, expect, it } from 'vitest';
 
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { add } from '../../../../src/application/commands/add.js';
-import { branchCreate } from '../../../../src/application/commands/branch.js';
-import { checkout } from '../../../../src/application/commands/checkout.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
-import { merge } from '../../../../src/application/commands/merge.js';
 import { revParse } from '../../../../src/application/commands/rev-parse.js';
 import { show } from '../../../../src/application/commands/show.js';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
@@ -49,7 +46,7 @@ const writeAnnotatedTag = (ctx: Context, target: ObjectId): Promise<ObjectId> =>
 
 describe('show', () => {
   describe('Given a repository at HEAD, When show() runs with no rev', () => {
-    it('Then it renders the HEAD commit with its patch', async () => {
+    it('Then it returns the HEAD commit with its structured patch', async () => {
       // Arrange
       const ctx = await seedTwoCommits();
       const head = await revParse(ctx, 'HEAD');
@@ -58,20 +55,18 @@ describe('show', () => {
       const sut = await show(ctx);
 
       // Assert
-      expect(sut.objects).toHaveLength(1);
-      const result = sut.objects[0]!;
-      expect(result.kind).toBe('commit');
-      if (result.kind !== 'commit') throw new Error('expected commit');
-      expect(result.id).toBe(head);
-      expect(result.commit.message).toBe('second\n');
-      expect(result.patch?.text).toContain('diff --git a/a.txt b/a.txt');
-      expect(result.text.startsWith(`commit ${head}\n`)).toBe(true);
-      expect(decode(sut.bytes)).toBe(result.text);
+      expect(sut.kind).toBe('commit');
+      if (sut.kind !== 'commit') throw new Error('expected commit');
+      expect(sut.id).toBe(head);
+      expect(sut.commit.message).toBe('second\n');
+      expect(sut.patch?.changes).toEqual([
+        expect.objectContaining({ type: 'modify', path: 'a.txt' }),
+      ]);
     });
   });
 
   describe('Given a root commit, When show() runs on it', () => {
-    it('Then the patch is computed against the empty tree', async () => {
+    it('Then the patch is computed against the empty tree (an add)', async () => {
       // Arrange
       const ctx = await seedTwoCommits();
       const root = await revParse(ctx, 'HEAD~1');
@@ -80,10 +75,10 @@ describe('show', () => {
       const sut = await show(ctx, root);
 
       // Assert
-      const result = sut.objects[0]!;
-      if (result.kind !== 'commit') throw new Error('expected commit');
-      expect(result.patch?.text).toContain('new file mode 100644');
-      expect(result.patch?.text).toContain('--- /dev/null');
+      if (sut.kind !== 'commit') throw new Error('expected commit');
+      expect(sut.patch?.changes).toEqual([
+        expect.objectContaining({ type: 'add', newPath: 'a.txt' }),
+      ]);
     });
   });
 
@@ -101,35 +96,47 @@ describe('show', () => {
       const sut = await show(ctx);
 
       // Assert
-      const result = sut.objects[0]!;
-      if (result.kind !== 'commit') throw new Error('expected commit');
-      expect(result.patch?.text).toContain('diff --git a/sub/b.txt b/sub/b.txt');
-      expect(result.patch?.text).toContain('+nested');
+      if (sut.kind !== 'commit') throw new Error('expected commit');
+      expect(sut.patch?.changes).toEqual([
+        expect.objectContaining({ type: 'add', newPath: 'sub/b.txt' }),
+      ]);
     });
   });
 
-  describe('Given noPatch, When show() runs on a commit', () => {
-    it('Then the patch is omitted and the text ends after the message', async () => {
+  describe('Given withStat, When show() runs on a commit', () => {
+    it('Then the patch changes carry per-file line counts', async () => {
       // Arrange
       const ctx = await seedTwoCommits();
-      const head = await revParse(ctx, 'HEAD');
 
-      // Act
-      const sut = await show(ctx, 'HEAD', { noPatch: true });
+      // Act — line 3 changed in a 5-line file: one added, one deleted.
+      const sut = await show(ctx, 'HEAD', { withStat: true });
 
       // Assert
-      const result = sut.objects[0]!;
-      if (result.kind !== 'commit') throw new Error('expected commit');
-      expect(result.patch).toBeUndefined();
-      expect(result.text).toBe(
-        `commit ${head}\nAuthor: A U Thor <author@example.com>\nDate:   Tue Nov 14 22:13:20 2023 +0000\n\n    second\n`,
-      );
-      expect(decode(sut.bytes)).toBe(result.text);
+      if (sut.kind !== 'commit' || sut.patch === undefined) {
+        throw new Error('expected a commit with a patch');
+      }
+      expect(sut.patch.changes[0]).toMatchObject({ added: 1, deleted: 1, binary: false });
+    });
+  });
+
+  describe('Given withStat omitted, When show() runs on a commit', () => {
+    it('Then the patch changes carry no count fields', async () => {
+      // Arrange
+      const ctx = await seedTwoCommits();
+
+      // Act
+      const sut = await show(ctx, 'HEAD');
+
+      // Assert
+      if (sut.kind !== 'commit' || sut.patch === undefined) {
+        throw new Error('expected a commit with a patch');
+      }
+      expect(sut.patch.changes[0]).not.toHaveProperty('added');
     });
   });
 
   describe('Given a tree-ish rev, When show() runs', () => {
-    it('Then it lists the tree with the input echoed in the header', async () => {
+    it('Then it returns the tree entries', async () => {
       // Arrange
       const ctx = await seedTwoCommits();
 
@@ -137,16 +144,14 @@ describe('show', () => {
       const sut = await show(ctx, 'HEAD^{tree}');
 
       // Assert
-      const result = sut.objects[0]!;
-      expect(result.kind).toBe('tree');
-      if (result.kind !== 'tree') throw new Error('expected tree');
-      expect(result.text.startsWith('tree HEAD^{tree}\n\n')).toBe(true);
-      expect(result.entries.map((e) => e.name)).toContain('a.txt');
+      expect(sut.kind).toBe('tree');
+      if (sut.kind !== 'tree') throw new Error('expected tree');
+      expect(sut.entries.map((e) => e.name)).toContain('a.txt');
     });
   });
 
   describe('Given the same tree listed twice, When show() runs', () => {
-    it('Then it is rendered twice (trees are not de-duplicated like commits)', async () => {
+    it('Then both results are returned (no commit-style de-duplication)', async () => {
       // Arrange
       const ctx = await seedTwoCommits();
       const tree = await revParse(ctx, 'HEAD^{tree}');
@@ -154,10 +159,9 @@ describe('show', () => {
       // Act
       const sut = await show(ctx, [tree, tree]);
 
-      // Assert — a commit would de-dup; a tree must appear in `bytes` twice.
-      expect(sut.objects).toHaveLength(2);
-      const occurrences = decode(sut.bytes).split(`tree ${tree}`).length - 1;
-      expect(occurrences).toBe(2);
+      // Assert — structured output returns one result per input rev, in order.
+      expect(sut).toHaveLength(2);
+      expect(sut.every((r) => r.kind === 'tree')).toBe(true);
     });
   });
 
@@ -167,22 +171,21 @@ describe('show', () => {
       const ctx = await seedTwoCommits();
       const tree = await readObject(ctx, await revParse(ctx, 'HEAD^{tree}'));
       if (tree.type !== 'tree') throw new Error('expected tree');
-      const blobId = tree.entries.find((e) => e.name === 'a.txt')!.id;
+      const blobId = tree.entries.find((e) => e.name === 'a.txt')?.id;
+      if (blobId === undefined) throw new Error('a.txt missing');
 
       // Act
       const sut = await show(ctx, blobId);
 
       // Assert
-      const result = sut.objects[0]!;
-      expect(result.kind).toBe('blob');
-      if (result.kind !== 'blob') throw new Error('expected blob');
-      expect(decode(result.content)).toBe('l1\nl2\nL3\nl4\nl5\n');
-      expect(sut.bytes).toEqual(result.content);
+      expect(sut.kind).toBe('blob');
+      if (sut.kind !== 'blob') throw new Error('expected blob');
+      expect(decode(sut.content)).toBe('l1\nl2\nL3\nl4\nl5\n');
     });
   });
 
   describe('Given an annotated tag, When show() runs', () => {
-    it('Then the tag block plus the recursed target commit are emitted', async () => {
+    it('Then the tag data plus the recursed target commit are returned', async () => {
       // Arrange
       const ctx = await seedTwoCommits();
       const head = await revParse(ctx, 'HEAD');
@@ -193,22 +196,17 @@ describe('show', () => {
       const sut = await show(ctx, 'v1.0');
 
       // Assert
-      const result = sut.objects[0]!;
-      expect(result.kind).toBe('tag');
-      if (result.kind !== 'tag') throw new Error('expected tag');
-      expect(result.id).toBe(tagId);
-      expect(result.tag.tagName).toBe('v1.0');
-      expect(result.target.kind).toBe('commit');
-      expect(result.text).toBe(
-        'tag v1.0\nTagger: A U Thor <author@example.com>\nDate:   Tue Nov 14 22:13:20 2023 +0000\n\nrelease one\n',
-      );
-      expect(decode(sut.bytes).startsWith('tag v1.0\n')).toBe(true);
-      expect(decode(sut.bytes)).toContain(`\n\ncommit ${head}\n`);
+      expect(sut.kind).toBe('tag');
+      if (sut.kind !== 'tag') throw new Error('expected tag');
+      expect(sut.id).toBe(tagId);
+      expect(sut.tag.tagName).toBe('v1.0');
+      expect(sut.target.kind).toBe('commit');
+      expect(sut.target.id).toBe(head);
     });
   });
 
   describe('Given a merge commit, When show() runs', () => {
-    it('Then a Merge line is emitted and no patch is computed', async () => {
+    it('Then one diff per parent is returned and no single patch', async () => {
       // Arrange
       const ctx = await seedTwoCommits();
       const head = await revParse(ctx, 'HEAD');
@@ -232,16 +230,19 @@ describe('show', () => {
       const sut = await show(ctx, mergeId);
 
       // Assert
-      const result = sut.objects[0]!;
-      if (result.kind !== 'commit') throw new Error('expected commit');
-      expect(result.patch).toBeUndefined();
-      expect(result.text).toContain(`Merge: ${head.slice(0, 7)} ${root.slice(0, 7)}`);
-      expect(result.text).not.toContain('diff --git');
+      if (sut.kind !== 'commit') throw new Error('expected commit');
+      expect(sut.patch).toBeUndefined();
+      expect(sut.perParent).toHaveLength(2);
+      // Merge tree == head's tree: diff vs head is empty; diff vs root carries the change.
+      expect(sut.perParent?.[0]?.changes).toEqual([]);
+      expect(sut.perParent?.[1]?.changes).toEqual([
+        expect.objectContaining({ type: 'modify', path: 'a.txt' }),
+      ]);
     });
   });
 
   describe('Given multiple revs, When show() runs', () => {
-    it('Then one result per rev is returned and bytes are concatenated', async () => {
+    it('Then one result per rev is returned in order', async () => {
       // Arrange
       const ctx = await seedTwoCommits();
       const head = await revParse(ctx, 'HEAD');
@@ -251,32 +252,14 @@ describe('show', () => {
       const sut = await show(ctx, [head, root]);
 
       // Assert
-      expect(sut.objects).toHaveLength(2);
-      const [first, second] = sut.objects;
-      if (first?.kind !== 'commit' || second?.kind !== 'commit') {
-        throw new Error('expected commits');
-      }
-      expect(decode(sut.bytes)).toBe(`${first.text}\n${second.text}`);
-    });
-  });
-
-  describe('Given contextLines is set, When show() runs on a commit', () => {
-    it('Then the patch hunk uses that many context lines', async () => {
-      // Arrange
-      const ctx = await seedTwoCommits();
-
-      // Act
-      const sut = await show(ctx, 'HEAD', { contextLines: 1 });
-
-      // Assert — line 3 changed in a 5-line file; one context line each side ⇒ -2,3 +2,3.
-      const result = sut.objects[0]!;
-      if (result.kind !== 'commit') throw new Error('expected commit');
-      expect(result.patch?.text).toContain('@@ -2,3 +2,3 @@');
+      expect(sut).toHaveLength(2);
+      expect(sut[0]?.id).toBe(head);
+      expect(sut[1]?.id).toBe(root);
     });
   });
 
   describe('Given an empty rev list, When show() runs', () => {
-    it('Then no objects and empty bytes are returned', async () => {
+    it('Then an empty array is returned', async () => {
       // Arrange
       const ctx = await seedTwoCommits();
 
@@ -284,8 +267,7 @@ describe('show', () => {
       const sut = await show(ctx, []);
 
       // Assert
-      expect(sut.objects).toHaveLength(0);
-      expect(sut.bytes).toEqual(new Uint8Array(0));
+      expect(sut).toEqual([]);
     });
   });
 
@@ -305,40 +287,6 @@ describe('show', () => {
       // Assert
       expect(caught).toBeInstanceOf(Error);
       expect((caught as { data?: { code?: string } }).data?.code).toBe('OBJECT_NOT_FOUND');
-    });
-  });
-
-  describe('Given a non-trivial merge, When show() runs with the default (dense) merge diff', () => {
-    it('Then it renders a combined diff against both parents', async () => {
-      // Arrange — each side edits a different line, so the result differs from both.
-      const ctx = createMemoryContext();
-      await init(ctx);
-      const write = (text: string): Promise<void> =>
-        ctx.fs.writeUtf8(`${ctx.layout.workDir}/m.txt`, text);
-      await write('l1\nl2\nl3\nl4\nl5\n');
-      await add(ctx, ['m.txt']);
-      await commit(ctx, { message: 'base', author });
-      await branchCreate(ctx, { name: 'side' });
-      await checkout(ctx, { target: 'side' });
-      await write('l1\nSIDE\nl3\nl4\nl5\n');
-      await add(ctx, ['m.txt']);
-      await commit(ctx, { message: 'side', author });
-      await checkout(ctx, { target: 'main' });
-      await write('l1\nl2\nl3\nMAIN\nl5\n');
-      await add(ctx, ['m.txt']);
-      await commit(ctx, { message: 'main', author });
-      await merge(ctx, { target: 'side', author });
-
-      // Act
-      const sut = await show(ctx);
-
-      // Assert
-      const result = sut.objects[0]!;
-      if (result.kind !== 'commit') throw new Error('expected commit');
-      expect(result.text).toContain('diff --cc m.txt\n');
-      expect(result.text).toContain('@@@ -1,5 -1,5 +1,5 @@@\n');
-      expect(result.text).toContain('SIDE');
-      expect(result.text).toContain('MAIN');
     });
   });
 });

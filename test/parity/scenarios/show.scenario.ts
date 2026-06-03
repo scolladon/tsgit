@@ -1,7 +1,7 @@
 /**
  * Show scenario — seeds a single root commit then exercises `repo.show()` on
- * HEAD. Asserts the rendered head line (resolved oid) and that the faithful
- * `bytes` stream begins with it, identically on Node and in the browser.
+ * HEAD. Asserts the structured result kind and the resolved commit oid,
+ * identically on Node and in the browser.
  *
  * Surfaces closed:
  *   commands: show
@@ -11,8 +11,7 @@ import type { Scenario } from './types.ts';
 
 interface ShowScenarioResult {
   readonly kind: string;
-  readonly headLine: string;
-  readonly bytesStartsWithHead: boolean;
+  readonly id: string;
 }
 
 export const showScenario: Scenario<ShowScenarioResult> = {
@@ -20,8 +19,7 @@ export const showScenario: Scenario<ShowScenarioResult> = {
   inputs: { files: [FILES.helloA], author: AUTHOR, message: MESSAGES.seed },
   expected: {
     kind: 'commit',
-    headLine: 'commit fa8b886eee0d470d870e786878657cac05d686e6',
-    bytesStartsWithHead: true,
+    id: 'fa8b886eee0d470d870e786878657cac05d686e6',
   },
   run: async (repo, inputs) => {
     await repo.init();
@@ -29,9 +27,6 @@ export const showScenario: Scenario<ShowScenarioResult> = {
     await repo.commit({ message: inputs.message, author: inputs.author });
 
     const result = await repo.show();
-    const head = result.objects[0];
-    const headLine = head?.kind === 'commit' ? (head.text.split('\n')[0] ?? '') : '';
-    const bytesStartsWithHead = new TextDecoder().decode(result.bytes).startsWith(headLine);
-    return { kind: head?.kind ?? 'none', headLine, bytesStartsWithHead };
+    return { kind: result.kind, id: result.kind === 'commit' ? result.id : '' };
   },
 };

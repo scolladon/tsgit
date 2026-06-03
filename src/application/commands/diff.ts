@@ -26,19 +26,6 @@ export interface DiffOptions {
 }
 
 /**
- * Structured patch view: the unified-diff text bundled with the `TreeDiff`.
- *
- * Internal only — no command returns it. `show` surfaces the structured diff
- * (`TreeDiff`); the unified-diff *text* is reconstructed by callers / interop
- * tests via the `renderPatch` domain serializer.
- */
-export interface PatchResult {
-  readonly format: 'patch';
-  readonly text: string;
-  readonly diff: TreeDiff;
-}
-
-/**
  * Diff two tree-like targets, returning the structured `TreeDiff`. Pass
  * `withStat: true` to attach per-file line counts (a `StatTreeDiff`). Rendering
  * the diff as a unified patch is the caller's concern.

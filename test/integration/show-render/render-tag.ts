@@ -4,7 +4,7 @@
  * line, then the verbatim tag message. The tagged object is rendered
  * separately (the `shown_one` separator joins them).
  */
-import type { TagData } from '../objects/index.js';
+import type { TagData } from '../../../src/domain/objects/index.js';
 import { type DateFormatter, renderIdentityHeader } from './identity-header.js';
 
 export function renderTagBlock(tag: TagData, formatDate?: DateFormatter): string {

@@ -1,15 +1,18 @@
 /**
  * Cross-tool interop — `show`. Builds a repository with canonical git
- * (deterministic author/committer dates, signing off), then asserts that
- * `decode(show(ctx, rev).bytes)` is byte-identical to `git show <rev>` across
- * every object kind: root / modify / merge / rename commits, annotated and
- * lightweight tags, trees (by peel and by raw oid), a blob, a multi-rev
- * stream, and a custom `contextLines` patch.
+ * (deterministic author/committer dates, signing off), then asserts that the
+ * `git show` stream **reconstructed** from `show`'s structured `ShowResult`
+ * (via the relocated default renderers + the `renderPatch` serializer) is
+ * byte-identical to real `git show` across every object kind: root / modify /
+ * rename commits, annotated and lightweight tags, trees (by peel and by raw
+ * oid), a blob, a multi-rev stream, and `<rev>:<path>` lookups. Merges are
+ * pinned against `git show -m` (the `perParent` structure; git's textual
+ * combined diff is not a library surface).
  *
  * @proves
  *   surface:        show
  *   bucket:         cross-tool-interop
- *   unique:         `show` rendered bytes match canonical `git show`
+ *   unique:         `show`'s structured data reconstructs canonical `git show` byte-for-byte
  *   interopSurface: show
  */
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
@@ -17,9 +20,10 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
-import { type ShowOptions, show } from '../../src/application/commands/show.js';
+import { show } from '../../src/application/commands/show.js';
 import type { Context } from '../../src/ports/context.js';
 import { GIT_AVAILABLE, git, runGit, runGitEnv } from './interop-helpers.js';
+import { reconstructShow } from './show-render/reconstruct.js';
 
 const decode = (bytes: Uint8Array): string => new TextDecoder().decode(bytes);
 
@@ -89,8 +93,8 @@ const buildRepo = async (dir: string): Promise<Built> => {
   dated(1_700_000_400, 'commit', '-q', '-m', 'rename a.txt');
   const rename = git(dir, 'rev-parse', 'HEAD').trim();
 
-  // A non-trivial merge: each side edits a different line of m.txt, so the
-  // combined diff differs from both parents (exercises -c/--cc and the default).
+  // A non-trivial merge: each side edits a different line of m.txt, so each
+  // parent's diff is distinct (exercises per-parent reconstruction).
   await writeRepoFile(dir, 'm.txt', 'l1\nl2\nl3\nl4\nl5\n');
   git(dir, 'add', '-A');
   dated(1_700_000_500, 'commit', '-q', '-m', 'add m.txt');
@@ -106,9 +110,7 @@ const buildRepo = async (dir: string): Promise<Built> => {
   dated(1_700_000_800, 'merge', '--no-ff', 'side', '-m', 'combined merge');
   const combinedMerge = git(dir, 'rev-parse', 'HEAD').trim();
 
-  // A three-parent octopus merge: each branch edits a distinct file (the octopus
-  // strategy refuses overlapping edits to one file). Each file then differs from
-  // two of the three parents, so the dense combined diff omits them all.
+  // A three-parent octopus merge: each branch edits a distinct file.
   await writeRepoFile(dir, 'o.txt', 'l1\nl2\n');
   await writeRepoFile(dir, 'p.txt', 'l1\nl2\n');
   await writeRepoFile(dir, 'q.txt', 'l1\nl2\n');
@@ -151,8 +153,8 @@ describe.skipIf(!GIT_AVAILABLE)('show interop', () => {
   let built: Built;
 
   // `show` is read-only, so the fixture repo is built once and shared. The
-  // generous timeout absorbs the ~dozen synchronous `git` spawns (incl. a
-  // merge) under parallel integration load, where a per-test build times out.
+  // generous timeout absorbs the ~dozen synchronous `git` spawns (incl. merges)
+  // under parallel integration load, where a per-test build times out.
   beforeAll(async () => {
     dir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-interop-show-'));
     built = await buildRepo(dir);
@@ -162,89 +164,81 @@ describe.skipIf(!GIT_AVAILABLE)('show interop', () => {
     await rm(dir, { recursive: true, force: true });
   });
 
+  // Reconstruct git's default `git show <rev>` from the structured result.
   const expectMatch = async (rev: string): Promise<void> => {
     const expected = git(dir, 'show', '--no-color', rev);
     const result = await show(built.ctx, rev);
-    expect(decode(result.bytes)).toBe(expected);
+    const bytes = await reconstructShow(built.ctx, [{ result, rev }]);
+    expect(decode(bytes)).toBe(expected);
   };
 
-  const expectMatchFlags = async (
-    gitFlags: ReadonlyArray<string>,
-    rev: string,
-    opts: ShowOptions,
-  ): Promise<void> => {
-    const expected = git(dir, 'show', '--no-color', ...gitFlags, rev);
-    const result = await show(built.ctx, rev, opts);
-    expect(decode(result.bytes)).toBe(expected);
+  // Merges are pinned against `git show -m` (one diff per parent), mirroring
+  // the `perParent` structure.
+  const expectMatchMerge = async (rev: string): Promise<void> => {
+    const expected = git(dir, 'show', '--no-color', '-m', rev);
+    const result = await show(built.ctx, rev);
+    const bytes = await reconstructShow(built.ctx, [{ result, rev }]);
+    expect(decode(bytes)).toBe(expected);
   };
 
   describe('Given a single revision', () => {
-    it('Then a root commit matches git show', async () => {
+    it('Then a root commit reconstructs git show', async () => {
       await expectMatch(built.root);
     });
-    it('Then a non-root commit matches git show', async () => {
+    it('Then a non-root commit reconstructs git show', async () => {
       await expectMatch(built.modify);
     });
-    it('Then a merge commit (Merge line, no patch) matches git show', async () => {
-      await expectMatch(built.merge);
-    });
-    it('Then a rename commit matches git show', async () => {
+    it('Then a rename commit reconstructs git show', async () => {
       await expectMatch(built.rename);
     });
-    it('Then an annotated tag matches git show', async () => {
+    it('Then an annotated tag reconstructs git show', async () => {
       await expectMatch('v1.0');
     });
-    it('Then a lightweight tag renders as its commit, matching git show', async () => {
+    it('Then a lightweight tag reconstructs as its commit', async () => {
       await expectMatch('light');
     });
-    it('Then a tree by peel echoes the input and matches git show', async () => {
+    it('Then a tree by peel echoes the input and reconstructs git show', async () => {
       await expectMatch(`${built.modify}^{tree}`);
     });
-    it('Then a tree by raw oid matches git show', async () => {
+    it('Then a tree by raw oid reconstructs git show', async () => {
       await expectMatch(built.tree);
     });
-    it('Then a blob matches git show', async () => {
+    it('Then a blob reconstructs git show', async () => {
       await expectMatch(built.blob);
     });
   });
 
+  describe('Given a merge commit', () => {
+    it('Then a feature merge reconstructs git show -m', async () => {
+      await expectMatchMerge(built.merge);
+    });
+    it('Then a combined (both-sides-edit) merge reconstructs git show -m', async () => {
+      await expectMatchMerge(built.combinedMerge);
+    });
+    it('Then a three-parent octopus merge reconstructs git show -m', async () => {
+      await expectMatchMerge(built.octopus);
+    });
+  });
+
   describe('Given multiple revisions', () => {
-    it('Then the concatenated stream matches git show A B', async () => {
+    it('Then the concatenated stream reconstructs git show A B', async () => {
       // Arrange
       const expected = git(dir, 'show', '--no-color', built.modify, built.root);
 
       // Act
-      const result = await show(built.ctx, [built.modify, built.root]);
+      const results = await show(built.ctx, [built.modify, built.root]);
+      const bytes = await reconstructShow(built.ctx, [
+        { result: results[0] as (typeof results)[number], rev: built.modify },
+        { result: results[1] as (typeof results)[number], rev: built.root },
+      ]);
 
       // Assert
-      expect(decode(result.bytes)).toBe(expected);
-    });
-  });
-
-  describe('Given a custom context-line count', () => {
-    it('Then the commit patch matches git show -U1', async () => {
-      // Arrange
-      const expected = git(dir, 'show', '--no-color', '-U1', built.modify);
-
-      // Act
-      const result = await show(built.ctx, built.modify, { contextLines: 1 });
-
-      // Assert
-      expect(decode(result.bytes)).toBe(expected);
-    });
-  });
-
-  describe('Given -s / --no-patch', () => {
-    it('Then a non-merge commit shows the header + message only', async () => {
-      await expectMatchFlags(['-s'], built.modify, { noPatch: true });
-    });
-    it('Then a merge commit drops the trailing-blank terminator too', async () => {
-      await expectMatchFlags(['-s'], built.merge, { noPatch: true });
+      expect(decode(bytes)).toBe(expected);
     });
   });
 
   describe('Given a <rev>:<path> tree lookup', () => {
-    it('Then a blob path dumps the raw blob, matching git show', async () => {
+    it('Then a blob path reconstructs the raw blob', async () => {
       await expectMatch(`${built.modify}:a.txt`);
     });
     it('Then a nested blob path resolves through sub-trees', async () => {
@@ -258,119 +252,16 @@ describe.skipIf(!GIT_AVAILABLE)('show interop', () => {
     });
   });
 
-  describe('Given an absolute --date= mode', () => {
-    // These use the identity's stored offset, so they are host-independent.
-    // `local` is host-TZ-dependent (git vs Node can disagree across runners), so
-    // it is pinned structurally in date-mode.test.ts rather than here (ADR-247).
-    const modes = ['iso', 'iso-strict', 'rfc', 'short', 'raw', 'unix', 'default'] as const;
-    for (const mode of modes) {
-      it(`Then --date=${mode} matches git show`, async () => {
-        await expectMatchFlags([`--date=${mode}`], built.modify, { date: mode });
-      });
-    }
-  });
+  describe('Given withStat', () => {
+    it('Then a single-file change carries the per-file counts', async () => {
+      // Arrange / Act
+      const result = await show(built.ctx, built.modify, { withStat: true });
 
-  describe('Given a built-in pretty format', () => {
-    const formats = [
-      'oneline',
-      'short',
-      'full',
-      'fuller',
-      'raw',
-      'reference',
-      'email',
-      'mboxrd',
-    ] as const;
-    for (const format of formats) {
-      it(`Then --format=${format} matches git show on a body commit`, async () => {
-        // `root` carries a subject + body, exercising %b / email body.
-        await expectMatchFlags([`--format=${format}`], built.root, { format });
-      });
-      it(`Then --format=${format} matches git show on a no-body commit`, async () => {
-        await expectMatchFlags([`--format=${format}`], built.modify, { format });
-      });
-    }
-  });
-
-  describe('Given a custom format: / tformat: template', () => {
-    it('Then a hash/ident/message template matches git show', async () => {
-      await expectMatchFlags(['--format=format:%H|%h|%an <%ae>|%s|%cn|%P|%p|%t|%T'], built.modify, {
-        format: 'format:%H|%h|%an <%ae>|%s|%cn|%P|%p|%t|%T',
-      });
-    });
-    it('Then a tformat: template (with body and literals) matches git show', async () => {
-      // `%xXX` is byte-faithful for ASCII only (the string pipeline UTF-8-encodes
-      // high bytes); `%x41` is the letter `A`.
-      const tpl = 'tformat:%h %s%n[%b]%n%ai|%aI|%at|%aD|%as%x41%%';
-      await expectMatchFlags([`--format=${tpl}`], built.root, { format: tpl });
-    });
-    it('Then an unknown placeholder is passed through verbatim', async () => {
-      await expectMatchFlags(['--format=format:[%z]%H'], built.modify, {
-        format: 'format:[%z]%H',
-      });
-    });
-  });
-
-  describe('Given decoration placeholders', () => {
-    it('Then %D on a tagged commit matches git show', async () => {
-      await expectMatchFlags(['--format=format:%D'], built.modify, { format: 'format:%D' });
-    });
-    it('Then %d on the HEAD branch tip matches git show', async () => {
-      await expectMatchFlags(['--format=format:%d'], built.rename, { format: 'format:%d' });
-    });
-  });
-
-  describe('Given --format with --date interplay', () => {
-    it('Then %ad honours --date=iso while %aD stays rfc', async () => {
-      await expectMatchFlags(['--date=iso', '--format=format:%ad|%aD'], built.modify, {
-        date: 'iso',
-        format: 'format:%ad|%aD',
-      });
-    });
-  });
-
-  describe('Given -m on a merge commit', () => {
-    it('Then it shows one (from <parent>) block per parent, matching git show -m', async () => {
-      await expectMatchFlags(['-m'], built.merge, { mergeDiff: 'separate' });
-    });
-  });
-
-  describe('Given a combined merge diff', () => {
-    it('Then the default merge render matches git (dense --cc)', async () => {
-      await expectMatch(built.combinedMerge);
-    });
-    it('Then --cc matches git show --cc', async () => {
-      await expectMatchFlags(['--cc'], built.combinedMerge, { mergeDiff: 'dense' });
-    });
-    it('Then -c matches git show -c', async () => {
-      await expectMatchFlags(['-c'], built.combinedMerge, { mergeDiff: 'combined' });
-    });
-    it('Then a trivial merge still renders no patch (empty combined diff)', async () => {
-      await expectMatch(built.merge);
-    });
-    it('Then an octopus (three-parent) merge matches git --cc', async () => {
-      await expectMatch(built.octopus);
-    });
-  });
-
-  describe('Given --stat / --numstat', () => {
-    it('Then --stat on a single-file change matches git', async () => {
-      await expectMatchFlags(['--stat'], built.modify, { stat: true });
-    });
-    it('Then --numstat on a single-file change matches git', async () => {
-      await expectMatchFlags(['--numstat'], built.modify, { numstat: true });
-    });
-    it('Then --stat on the initial (add) commit matches git', async () => {
-      await expectMatchFlags(['--stat'], built.root, { stat: true });
-    });
-    it('Then --numstat on the initial (add) commit matches git', async () => {
-      await expectMatchFlags(['--numstat'], built.root, { numstat: true });
-    });
-    it('Then --stat on a rename commit shows old => new with zero changes', async () => {
-      await expectMatchFlags(['--stat'], built.rename, { stat: true });
-    });
-    it('Then --numstat on a rename commit matches git', async () => {
-      await expectMatchFlags(['--numstat'], built.rename, { numstat: true });
+      // Assert — `modify` edits a.txt: structured counts present on the change.
+      if (result.kind !== 'commit' || result.patch === undefined) {
+        throw new Error('expected a commit with a patch');
+      }
+      expect(result.patch.changes[0]).toMatchObject({ added: 2, deleted: 1, binary: false });
     });
   });
 });
