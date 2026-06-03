@@ -73,4 +73,28 @@ describe('tagNameMatches', () => {
       });
     });
   });
+
+  describe('Given an anchored pattern and a name with a leading segment', () => {
+    describe('When matching', () => {
+      it('Then the match is anchored at the start (no unanchored suffix match)', () => {
+        // Arrange + Act — an unanchored matcher would accept the `sub/` prefix.
+        const sut = tagNameMatches('sub/v1.0', ['v1.0'], []);
+
+        // Assert
+        expect(sut).toBe(false);
+      });
+    });
+  });
+
+  describe('Given several include patterns of which only one matches', () => {
+    describe('When matching', () => {
+      it('Then any single match includes the name (some, not every)', () => {
+        // Arrange + Act
+        const sut = tagNameMatches('v1.0', ['v*', 'x*'], []);
+
+        // Assert
+        expect(sut).toBe(true);
+      });
+    });
+  });
 });

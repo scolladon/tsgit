@@ -108,4 +108,36 @@ describe('shouldReplaceName', () => {
       });
     });
   });
+
+  describe('Given two lightweight tags whose dates differ', () => {
+    describe('When deciding replacement', () => {
+      it('Then the tagger date does not decide for non-annotated tags', () => {
+        // Arrange — date is meaningful only for annotated tags.
+        const existing = name(1, 100);
+        const incoming = name(1, 999);
+
+        // Act
+        const sut = shouldReplaceName(existing, incoming);
+
+        // Assert
+        expect(sut).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a lower-priority incoming with a newer date than an annotated existing', () => {
+    describe('When deciding replacement', () => {
+      it('Then a newer date never lets a lower priority replace', () => {
+        // Arrange
+        const existing = name(2, 100);
+        const incoming = name(1, 999);
+
+        // Act
+        const sut = shouldReplaceName(existing, incoming);
+
+        // Assert
+        expect(sut).toBe(false);
+      });
+    });
+  });
 });

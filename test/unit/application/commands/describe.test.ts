@@ -64,6 +64,26 @@ const annotatedTag = async (
   await tagCreate(ctx, { name, target: tagOid });
 };
 
+const tagObjectRef = async (
+  ctx: Context,
+  name: string,
+  object: ObjectId,
+  objectType: TagData['objectType'],
+  taggerTime: number,
+): Promise<ObjectId> => {
+  const data: TagData = {
+    object,
+    objectType,
+    tagName: name,
+    tagger: ident(taggerTime),
+    message: `${name}\n`,
+    extraHeaders: [],
+  };
+  const oid = await writeObject(ctx, { type: 'tag', id: '' as ObjectId, data });
+  await tagCreate(ctx, { name, target: oid });
+  return oid;
+};
+
 const treeOf = async (ctx: Context, commitOid: ObjectId): Promise<ObjectId> => {
   const object = await readObject(ctx, commitOid);
   if (object.type !== 'commit') throw new Error('expected a commit');
@@ -483,7 +503,11 @@ describe('describe', () => {
         const sut = await catchError(() => describeCmd(ctx, head, { dirty: true }));
 
         // Assert
-        expect(sut.data).toMatchObject({ code: 'INVALID_OPTION', option: 'dirty' });
+        expect(sut.data).toMatchObject({
+          code: 'INVALID_OPTION',
+          option: 'dirty',
+          reason: 'option dirty and commit-ishes cannot be used together',
+        });
       });
     });
   });
@@ -499,7 +523,11 @@ describe('describe', () => {
         const sut = await catchError(() => describeCmd(ctx, undefined, { candidates: -1 }));
 
         // Assert
-        expect(sut.data).toMatchObject({ code: 'INVALID_OPTION', option: 'candidates' });
+        expect(sut.data).toMatchObject({
+          code: 'INVALID_OPTION',
+          option: 'candidates',
+          reason: 'expected a non-negative integer, got -1',
+        });
       });
     });
   });
@@ -533,6 +561,10 @@ describe('describe', () => {
 
         // Assert — the tree tag peels to a tree and is dropped, leaving v1.0.
         expect(sut.name).toBe('v1.0');
+        // And describing the tree oid itself refuses — the dropped tree tag must
+        // not be mapped onto the tree (which would let it exact-match).
+        const onTree = await catchError(() => describeCmd(ctx, tree));
+        expect(onTree.data).toMatchObject({ code: 'NO_REACHABLE_NAMES' });
       });
     });
   });
@@ -573,6 +605,197 @@ describe('describe', () => {
 
         // Assert
         expect(sut.data).toMatchObject({ code: 'NO_REACHABLE_NAMES' });
+      });
+    });
+  });
+
+  describe('Given candidates: 0 on an exactly-tagged HEAD', () => {
+    describe('When describe runs', () => {
+      it('Then 0 is a valid count and the exact tag is returned', async () => {
+        // Arrange
+        const ctx = await seed();
+        const head = await commitFile(ctx, 'c1');
+        await annotatedTag(ctx, 'v1.0', head, clock);
+
+        // Act
+        const sut = await describeCmd(ctx, undefined, { candidates: 0 });
+
+        // Assert
+        expect(sut).toMatchObject({ name: 'v1.0', distance: 0, exact: true });
+      });
+    });
+  });
+
+  describe('Given exactMatch on an exactly-tagged commit', () => {
+    describe('When describe runs', () => {
+      it('Then it returns that tag at distance 0', async () => {
+        // Arrange
+        const ctx = await seed();
+        const head = await commitFile(ctx, 'c1');
+        await annotatedTag(ctx, 'v1.0', head, clock);
+
+        // Act
+        const sut = await describeCmd(ctx, undefined, { exactMatch: true });
+
+        // Assert
+        expect(sut).toMatchObject({ name: 'v1.0', distance: 0, exact: true });
+      });
+    });
+  });
+
+  describe('Given a lightweight tag on HEAD itself in default mode', () => {
+    describe('When describe runs', () => {
+      it('Then the lightweight tag does not satisfy the exact short-circuit', async () => {
+        // Arrange
+        const ctx = await seed();
+        const head = await commitFile(ctx, 'c1');
+        await tagCreate(ctx, { name: 'light', target: head });
+
+        // Act
+        const sut = await catchError(() => describeCmd(ctx));
+
+        // Assert — a priority-1 tag must not exact-match in annotated-only mode.
+        expect(sut.data).toEqual({ code: 'NO_ANNOTATED_NAMES', oid: head });
+      });
+    });
+  });
+
+  describe('Given broken: true with an explicit commit-ish', () => {
+    describe('When describe runs', () => {
+      it('Then it refuses with INVALID_OPTION', async () => {
+        // Arrange
+        const ctx = await seed();
+        const head = await commitFile(ctx, 'c1');
+        await annotatedTag(ctx, 'v1.0', head, clock);
+
+        // Act
+        const sut = await catchError(() => describeCmd(ctx, head, { broken: true }));
+
+        // Assert
+        expect(sut.data).toMatchObject({ code: 'INVALID_OPTION', option: 'dirty' });
+      });
+    });
+  });
+
+  describe('Given broken: true with a tracked change', () => {
+    describe('When describe runs', () => {
+      it('Then it reports dirty', async () => {
+        // Arrange
+        const ctx = await seed();
+        const head = await commitFile(ctx, 'c1');
+        await annotatedTag(ctx, 'v1.0', head, clock);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/c1.txt`, 'changed\n');
+
+        // Act
+        const sut = await describeCmd(ctx, undefined, { broken: true });
+
+        // Assert
+        expect(sut.dirty).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a tracked change but neither dirty nor broken', () => {
+    describe('When describe runs', () => {
+      it('Then the result is not marked dirty (the check is gated)', async () => {
+        // Arrange
+        const ctx = await seed();
+        const head = await commitFile(ctx, 'c1');
+        await annotatedTag(ctx, 'v1.0', head, clock);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/c1.txt`, 'changed\n');
+
+        // Act
+        const sut = await describeCmd(ctx);
+
+        // Assert
+        expect(sut.dirty).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a capped search over a merge with a tagged sibling branch', () => {
+    describe('When describe runs with candidates: 1', () => {
+      it('Then the winner depth is finalised past the cap (counts the sibling)', async () => {
+        // Arrange — M = merge(a1, b1), each tagged. b1 is newer so its tag is
+        // found first (and capped as the winner); a1 is the gave-up commit whose
+        // branch the finish phase must still count into the winner's depth.
+        const ctx = await seed();
+        const base = await commitFile(ctx, 'base');
+        const tree = await treeOf(ctx, base);
+        const a1 = await writeCommit(ctx, tree, [base], 'a1');
+        await annotatedTag(ctx, 'tag-a', a1, clock);
+        const b1 = await writeCommit(ctx, tree, [base], 'b1');
+        await annotatedTag(ctx, 'tag-b', b1, clock);
+        const merge = await writeCommit(ctx, tree, [a1, b1], 'merge');
+
+        // Act
+        const sut = await describeCmd(ctx, merge, { candidates: 1 });
+
+        // Assert — |tag-b..merge| = { merge, a1 } = 2.
+        expect(sut.name).toBe('tag-b');
+        expect(sut.distance).toBe(2);
+      });
+    });
+  });
+
+  describe('Given a detached HEAD and all: true', () => {
+    describe('When describe runs', () => {
+      it('Then HEAD is excluded as a name (only real refs count)', async () => {
+        // Arrange — detach HEAD onto c1; `refs/heads/main` still names c1.
+        const ctx = await seed();
+        const c1 = await commitFile(ctx, 'c1');
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, `${c1}\n`);
+
+        // Act
+        const sut = await describeCmd(ctx, c1, { all: true });
+
+        // Assert — git never names a commit `HEAD`; only `heads/main` qualifies.
+        expect(sut.name).toBe('heads/main');
+      });
+    });
+  });
+
+  describe('Given a tag chain deeper than the peel bound', () => {
+    describe('When describe runs', () => {
+      it('Then the over-deep tag is dropped at the peel bound', async () => {
+        // Arrange — seven nested annotated tags on c1 with increasing dates. The
+        // outermost (t7) exceeds the peel depth and must be dropped, so the
+        // newest still-peelable tag (t6) wins rather than t7.
+        const ctx = await seed();
+        const c1 = await commitFile(ctx, 'c1');
+        let prev = c1;
+        let prevType: TagData['objectType'] = 'commit';
+        for (let i = 1; i <= 7; i += 1) {
+          prev = await tagObjectRef(ctx, `t${i}`, prev, prevType, 1_000 + i);
+          prevType = 'tag';
+        }
+
+        // Act
+        const sut = await describeCmd(ctx);
+
+        // Assert
+        expect(sut.name).toBe('t6');
+      });
+    });
+  });
+
+  describe('Given a nested annotated tag and a sibling tag on one commit', () => {
+    describe('When describe runs', () => {
+      it('Then the outermost tagger date drives the dedup', async () => {
+        // Arrange — c1 carries `outer` (a tag of a tag, outermost date 3000),
+        // `inner` (its inner tag, date 1000), and `sibling` (date 2000). The
+        // newest outermost date (outer, 3000) must win.
+        const ctx = await seed();
+        const c1 = await commitFile(ctx, 'c1');
+        const innerOid = await tagObjectRef(ctx, 'inner', c1, 'commit', 1_000);
+        await tagObjectRef(ctx, 'sibling', c1, 'commit', 2_000);
+        await tagObjectRef(ctx, 'outer', innerOid, 'tag', 3_000);
+
+        // Act
+        const sut = await describeCmd(ctx);
+
+        // Assert
+        expect(sut.name).toBe('outer');
       });
     });
   });
