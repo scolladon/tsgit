@@ -413,6 +413,26 @@ describe('status — staged column (index-vs-HEAD)', () => {
       });
     });
   });
+
+  describe('Given a corrupt index', () => {
+    describe('When status', () => {
+      it('Then it propagates the index error instead of fabricating deletions', async () => {
+        // Arrange — overwrite the index with bytes too short to be valid. A
+        // swallowed error would fabricate an empty index and report every committed
+        // path as a spurious staged deletion; status must surface the error.
+        const ctx = await seedClean();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/index`, 'corrupt');
+
+        // Act / Assert
+        try {
+          await status(ctx);
+          expect.unreachable('status should reject a corrupt index');
+        } catch (err) {
+          expect((err as { data: { code: string } }).data.code).toBe('INVALID_INDEX_HEADER');
+        }
+      });
+    });
+  });
 });
 
 // Progress reporting. Mutation-resistant: every assertion uses

@@ -1,6 +1,6 @@
 import { primaryPath } from '../../domain/diff/change-path.js';
 import { type DiffChange, diffIndexAgainstTree } from '../../domain/diff/index.js';
-import type { GitIndex, IndexEntry } from '../../domain/git-index/index.js';
+import type { IndexEntry } from '../../domain/git-index/index.js';
 import type { RefName } from '../../domain/objects/index.js';
 import type { FilePath } from '../../domain/objects/object-id.js';
 import type { Context } from '../../ports/context.js';
@@ -49,9 +49,11 @@ export const status = async (ctx: Context): Promise<StatusResult> => {
   const head = await readHeadRaw(ctx);
   const branch = head.kind === 'symbolic' ? head.target : undefined;
   const detached = head.kind === 'direct';
-  const index = await readIndex(ctx).catch(
-    (): GitIndex => ({ version: 2, entries: [], extensions: [], trailerSha: new Uint8Array(0) }),
-  );
+  // `readIndex` returns an empty index when the file is absent (fresh/unborn
+  // repo); a thrown error means a corrupt index, which we let propagate rather
+  // than fabricate an empty one — fabricating it would report every HEAD path as
+  // a spurious staged deletion (git errors on a corrupt index too).
+  const index = await readIndex(ctx);
   const indexByPath = new Map<FilePath, IndexEntry>();
   for (const entry of index.entries) indexByPath.set(entry.path, entry);
   ctx.progress.start(STATUS_SCAN_OP);
