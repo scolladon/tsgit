@@ -111,14 +111,19 @@ export const status = async (ctx: Context): Promise<StatusResult> => {
 const byPathAscending = (a: ChangeEntry, b: ChangeEntry): number => (a.path < b.path ? -1 : 1);
 
 /**
- * Project an index-vs-HEAD `DiffChange` onto the coarse `ChangeKind` used by both
- * status columns. A type change folds into `modified`, mirroring the working-tree
- * column's projection. `diffIndexAgainstTree` never emits renames, so the residual
- * arm only ever sees `modify` / `type-change`.
+ * Project an index-vs-HEAD `DiffChange` onto the `ChangeKind` used by both status
+ * columns. A kind change is `type-changed` (git `T`); a same-blob mode difference
+ * is `mode-changed`; a content change is `modified`. `diffIndexAgainstTree` never
+ * emits renames, so the residual `modified` arm is only reached by a
+ * content-bearing `modify`.
  */
-const toStagedChange = (change: DiffChange): ChangeEntry => {
+export const toStagedChange = (change: DiffChange): ChangeEntry => {
   if (change.type === 'add') return { kind: 'added', path: change.newPath };
   if (change.type === 'delete') return { kind: 'deleted', path: change.oldPath };
+  if (change.type === 'type-change') return { kind: 'type-changed', path: change.path };
+  if (change.type === 'modify' && change.oldId === change.newId) {
+    return { kind: 'mode-changed', path: change.path };
+  }
   return { kind: 'modified', path: primaryPath(change) };
 };
 

@@ -202,8 +202,8 @@ describe.skipIf(!GIT_AVAILABLE)('status interop — staged column', () => {
     'Then a staged type change reconstructs git (file becomes a symlink)',
     async () => {
       // Arrange — replace a regular file with a symlink and stage it. git reports
-      // `T` in porcelain; tsgit collapses it to `modified` (M), so this is asserted
-      // structurally, not by byte-equal porcelain.
+      // `T` in porcelain; tsgit's staged column carries `type-changed`, which
+      // reconstructs to `T`.
       const { dir, ctx } = await baseRepo('typechange');
       await rm(path.join(dir, 'a.txt'));
       await symlink('elsewhere', path.join(dir, 'a.txt'));
@@ -212,9 +212,8 @@ describe.skipIf(!GIT_AVAILABLE)('status interop — staged column', () => {
       // Act
       const sut = await statusCmd(ctx);
 
-      // Assert — staged column carries a.txt as modified; git agrees a change is
-      // staged (its porcelain X is `T`, our coarse projection is `M`).
-      expect(sut.indexChanges).toEqual([{ kind: 'modified', path: 'a.txt' }]);
+      // Assert — staged column carries a.txt as a type change (git porcelain X is `T`).
+      expect(sut.indexChanges).toEqual([{ kind: 'type-changed', path: 'a.txt' }]);
       expect(git(dir, 'status', '--porcelain', '--no-renames')).toMatch(/^T. a\.txt$/m);
     },
     SETUP_TIMEOUT,

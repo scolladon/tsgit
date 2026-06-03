@@ -4,8 +4,14 @@ import { add } from '../../../../src/application/commands/add.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
 import { rm } from '../../../../src/application/commands/rm.js';
-import { status } from '../../../../src/application/commands/status.js';
-import type { AuthorIdentity } from '../../../../src/domain/objects/index.js';
+import { status, toStagedChange } from '../../../../src/application/commands/status.js';
+import type { DiffChange } from '../../../../src/domain/diff/index.js';
+import type {
+  AuthorIdentity,
+  FileMode,
+  FilePath,
+  ObjectId,
+} from '../../../../src/domain/objects/index.js';
 
 const author: AuthorIdentity = {
   name: 'Ada',
@@ -337,7 +343,7 @@ describe('status — staged column (index-vs-HEAD)', () => {
 
   describe('Given a staged type change (regular file becomes a symlink)', () => {
     describe('When status', () => {
-      it('Then the staged column reports it as modified (T folds into modified)', async () => {
+      it('Then the staged column reports it as type-changed (git T)', async () => {
         // Arrange — commit a regular a.txt, then replace it with a symlink and stage.
         const ctx = await seedClean();
         await ctx.fs.rm(`${ctx.layout.workDir}/a.txt`);
@@ -347,8 +353,8 @@ describe('status — staged column (index-vs-HEAD)', () => {
         // Act
         const sut = await status(ctx);
 
-        // Assert — a type change is collapsed to `modified` (ADR-254 projection).
-        expect(sut.indexChanges).toEqual([{ kind: 'modified', path: 'a.txt' }]);
+        // Assert — a kind change is git's `T`.
+        expect(sut.indexChanges).toEqual([{ kind: 'type-changed', path: 'a.txt' }]);
       });
     });
   });
@@ -738,6 +744,120 @@ describe('status — progress reporting', () => {
 
         // Assert
         expect(sut.workingTreeChanges).toContainEqual({ kind: 'type-changed', path: 'link' });
+      });
+    });
+  });
+});
+
+describe('toStagedChange', () => {
+  const oid = (s: string): ObjectId => s as ObjectId;
+  const path = (s: string): FilePath => s as FilePath;
+  const REGULAR = '100644' as FileMode;
+  const EXEC = '100755' as FileMode;
+  const SYMLINK = '120000' as FileMode;
+
+  describe('Given an add change', () => {
+    describe('When projected to a staged change', () => {
+      it("Then it is 'added' on the new path", () => {
+        // Arrange
+        const change: DiffChange = {
+          type: 'add',
+          newPath: path('a.txt'),
+          newId: oid('aaa'),
+          newMode: REGULAR,
+        };
+
+        // Act
+        const sut = toStagedChange(change);
+
+        // Assert
+        expect(sut).toEqual({ kind: 'added', path: 'a.txt' });
+      });
+    });
+  });
+
+  describe('Given a delete change', () => {
+    describe('When projected to a staged change', () => {
+      it("Then it is 'deleted' on the old path", () => {
+        // Arrange
+        const change: DiffChange = {
+          type: 'delete',
+          oldPath: path('a.txt'),
+          oldId: oid('aaa'),
+          oldMode: REGULAR,
+        };
+
+        // Act
+        const sut = toStagedChange(change);
+
+        // Assert
+        expect(sut).toEqual({ kind: 'deleted', path: 'a.txt' });
+      });
+    });
+  });
+
+  describe('Given a type-change', () => {
+    describe('When projected to a staged change', () => {
+      it("Then it is 'type-changed' (git T)", () => {
+        // Arrange — regular file became a symlink in the index.
+        const change: DiffChange = {
+          type: 'type-change',
+          path: path('a.txt'),
+          oldId: oid('aaa'),
+          newId: oid('bbb'),
+          oldMode: REGULAR,
+          newMode: SYMLINK,
+        };
+
+        // Act
+        const sut = toStagedChange(change);
+
+        // Assert
+        expect(sut).toEqual({ kind: 'type-changed', path: 'a.txt' });
+      });
+    });
+  });
+
+  describe('Given a modify change whose blob id is unchanged', () => {
+    describe('When projected to a staged change', () => {
+      it("Then it is 'mode-changed' (same blob, exec bit flipped)", () => {
+        // Arrange — identical oid, mode promoted to executable.
+        const change: DiffChange = {
+          type: 'modify',
+          path: path('a.txt'),
+          oldId: oid('aaa'),
+          newId: oid('aaa'),
+          oldMode: REGULAR,
+          newMode: EXEC,
+        };
+
+        // Act
+        const sut = toStagedChange(change);
+
+        // Assert
+        expect(sut).toEqual({ kind: 'mode-changed', path: 'a.txt' });
+      });
+    });
+  });
+
+  describe('Given a modify change whose blob id differs', () => {
+    describe('When projected to a staged change', () => {
+      it("Then it is 'modified' (content change)", () => {
+        // Arrange — different oid (content edit).
+        const change: DiffChange = {
+          type: 'modify',
+          path: path('a.txt'),
+          oldId: oid('aaa'),
+          newId: oid('bbb'),
+          oldMode: REGULAR,
+          newMode: REGULAR,
+        };
+
+        // Act
+        const sut = toStagedChange(change);
+
+        // Assert
+        expect(sut).toEqual({ kind: 'modified', path: 'a.txt' });
       });
     });
   });
