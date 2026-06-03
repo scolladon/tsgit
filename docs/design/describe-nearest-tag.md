@@ -1,9 +1,13 @@
 # Design — `describe` (nearest tag distance)
 
 > Tier-1 `repo.describe(input?, opts?)` — name a commit by its nearest reachable
-> tag, faithful to `git describe`. Returns a structured `DescribeResult` carrying
-> the chosen tag, the commit distance, the abbreviated object id, and `bytes` —
-> the byte-faithful `git describe` stdout line.
+> tag, faithful to `git describe`. Returns a **structured** `DescribeResult`
+> (chosen ref, short name, commit distance, target oid, exact/dirty flags). The
+> library renders **no** output line and exposes **no** cosmetic-formatting
+> options — assembling `<name>-<distance>-g<abbrev>` is the caller's job. Data
+> faithfulness (selected tag, exact distance, refusal conditions) is pinned by the
+> interop test, which reconstructs git's line from the fields and compares it to
+> real `git describe`.
 
 ## 1. What `git describe` computes
 
@@ -34,6 +38,10 @@ Grounded against real `git` (probed, signing off, pinned dates):
 | same commit, two annotated tags | the one with the **newer tagger date** wins |
 | `--match 'v*'` / `--exclude 'rc*'` | filter candidate tags by short-name glob |
 | merge: `describe` vs `--first-parent` | second-parent tag vs first-parent tag |
+
+This table documents git's **rendered** output for reference. tsgit returns the
+underlying data (`name`, `distance`, `oid`, `exact`); the `--long` / `--abbrev*`
+rows are git rendering choices the library does not own (§3).
 
 Two distinct refusals were observed:
 
@@ -95,9 +103,9 @@ codebase-wide limitation); `*` / `?` / `**` cover the common `v*` / `release/*` 
 ### 2.2 Exact-commit short-circuit
 
 Peel `input` to the target commit `T`. If `nameMap` has an entry for `T.oid` that
-qualifies under the current tag-source mode, return it immediately at depth 0
-(this is the `<tag>` / `--long` `<tag>-0-g<hash>` output). `--exact-match` /
-`--candidates=0` stop here: no exact entry → `NO_EXACT_MATCH` refusal.
+qualifies under the current tag-source mode, return it immediately at `distance 0`
+(`exact: true`). `--exact-match` / `--candidates=0` stop here: no exact entry →
+`NO_EXACT_MATCH` refusal.
 
 ### 2.3 The walk
 
@@ -169,72 +177,76 @@ If no candidate was found, the refusal mirrors git's three distinct conditions
 `maxCandidates` defaults to `10`; `--candidates=<n>` overrides; `--exact-match`
 sets it to `0` (handled by §2.2).
 
-### 2.5 `--dirty` / `--broken` (working-tree mark)
+### 2.5 `dirty` / `broken` (working-tree state)
 
-`--dirty[=<mark>]` describes **HEAD** and appends `<mark>` (default `-dirty`) when
-the working tree has **tracked** changes; untracked files do not count (verified).
-It is **incompatible with an explicit commit-ish** — git refuses `describe --dirty
-HEAD` with *option '--dirty' and commit-ishes cannot be used together*, so the API
+`dirty: true` describes **HEAD** and sets `dirty: true` in the result when the
+working tree has **tracked** changes; untracked files do not count (verified). It
+is **incompatible with an explicit commit-ish** — git refuses `describe --dirty
+HEAD` (*option '--dirty' and commit-ishes cannot be used together*), so the API
 raises `INVALID_OPTION` when `input` is supplied alongside `dirty`/`broken`.
+
+The git option carries an optional `=<mark>` suffix (the string appended to the
+output line, default `-dirty`). That mark is **pure output cosmetics** — the
+caller appends whatever marker it likes once it sees `dirty: true` — so the v1
+option is a plain boolean and the result exposes only `dirty: boolean`.
 
 Dirtiness is derived from the existing `status` command (the `pull → fetch/merge`
 command-composes-command precedent): dirty iff `indexChanges` is non-empty **or**
 any `workingTreeChanges` entry has a kind other than `untracked`. This is the
 `git diff-index --quiet HEAD` predicate over tracked paths.
 
-`--broken[=<mark>]` (default `-broken`) covers the case where dirtiness cannot be
-computed (a corrupt working tree): the `status` call is wrapped, and on failure
-the broken mark is appended instead of propagating the error. When the check
-succeeds, `--broken` behaves like `--dirty`.
+`broken: true` tolerates a working tree whose state cannot be computed (a corrupt
+tree): the `status` call is wrapped, and on failure `dirty` is reported `true`
+rather than propagating the error (git would append its `-broken` mark there).
 
-The mark is appended to `text`/`bytes` after the tag/abbrev rendering
-(`v2.0-1-g0f3a9c1-dirty`); the structured result carries `dirty: boolean`.
+## 3. No output rendering (data only)
 
-## 3. Output formatting (pure)
+The library renders **no** describe line and ships **no** cosmetic-formatting
+option. The structured result carries everything a caller needs — `name`,
+`distance`, the full target `oid`, and the `exact` / `dirty` flags — and the
+caller assembles whatever string it wants:
 
-`formatDescribe({ tag, depth, oid, long, abbrev })`:
+```ts
+// caller-side, not in the library:
+const line = r.tag === undefined
+  ? r.oid.slice(0, 7)                                    // --always fallback
+  : r.exact
+    ? r.name                                             // exact tag
+    : `${r.name}-${r.distance}-g${r.oid.slice(0, 7)}`;   // <name>-<depth>-g<hash>
+```
 
-- `abbrev === 0` → `tag` (no suffix; `--long` is ignored, as in git).
-- `long || depth > 0` → `${tag}-${depth}-g${oid.slice(0, abbrev)}`.
-- otherwise (`depth === 0`, not long) → `tag`.
-
-The `--always` fallback (no tag) renders `oid.slice(0, abbrev)` alone.
-
-**Abbreviation length.** git uses `find_unique_abbrev` (shortest unambiguous
-prefix, floor `DEFAULT_ABBREV = 7`). tsgit's existing `show` / pretty / combined-
-diff renderers already abbreviate with a **fixed 7-char slice**, which is
-byte-identical to git in every repository where 7 hex is already unique (all
-interop fixtures). `describe` follows that established precedent: default abbrev
-`7`, `--abbrev=<n>` slices to `n` (and `0` suppresses the suffix). Unique-prefix
-abbreviation is out of scope here, consistent with the rest of the codebase.
+Consequently the git flags that only steer rendering are **dropped**, not
+implemented: `--long` (force the suffix at depth 0 — derivable from `exact`),
+`--abbrev=<n>` (hash display length — the caller slices the full `oid`), and the
+`--dirty`/`--broken` `=<mark>` strings (§2.5). `--abbrev=0`'s *semantic* effect
+(suppress the suffix, print only the tag) is likewise a caller rendering choice.
+The library therefore never abbreviates — it returns the full 40-hex `oid` and the
+selection data; representation is entirely the caller's.
 
 ## 4. Public API
 
 ```ts
+// Every field is a DATA / behavior selector — none steer output cosmetics.
 export interface DescribeOptions {
   readonly tags?: boolean;            // include lightweight tags (prio ≥ 1)
   readonly all?: boolean;             // include every ref (branches/remotes; prio 0)
-  readonly long?: boolean;            // always emit -<depth>-g<hash>
-  readonly abbrev?: number;           // hash length; 0 suppresses the suffix. Default 7
   readonly exactMatch?: boolean;      // ≡ candidates: 0
   readonly candidates?: number;       // max tags considered. Default 10
-  readonly always?: boolean;          // fall back to the abbreviated oid
+  readonly always?: boolean;          // return the oid fallback instead of refusing
   readonly firstParent?: boolean;     // follow only first parents
   readonly match?: string | ReadonlyArray<string>;    // short-name globs to include
   readonly exclude?: string | ReadonlyArray<string>;  // short-name globs to drop
-  readonly dirty?: boolean | string;  // mark HEAD's tree dirty; string = custom mark
-  readonly broken?: boolean | string; // mark on a corrupt tree; string = custom mark
+  readonly dirty?: boolean;           // compute HEAD's tracked-dirtiness (HEAD only)
+  readonly broken?: boolean;          // tolerate an uncomputable tree (report dirty)
 }
 
 export interface DescribeResult {
   readonly tag: RefName | undefined;  // chosen ref (a tag, or any ref under --all); undefined on --always
-  readonly name: string;              // chosen short-name or '' on --always fallback
+  readonly name: string;              // describe short-name ('v2.0' / 'heads/main'); '' on fallback
   readonly distance: number;          // commits between ref and target (0 = exact)
-  readonly abbreviated: string;       // abbreviated target oid (no 'g' prefix)
+  readonly oid: ObjectId;             // full 40-hex oid of the described commit (caller abbreviates)
   readonly exact: boolean;            // distance === 0 && tag !== undefined
-  readonly dirty: boolean;            // a --dirty/--broken mark was appended
-  readonly text: string;              // rendered line, no trailing newline
-  readonly bytes: Uint8Array;         // text + '\n' — byte-faithful `git describe` stdout
+  readonly dirty: boolean;            // HEAD's working tree had tracked changes
 }
 
 export async function describe(
@@ -257,18 +269,20 @@ C`). Both are additive and land without breaking the v1 surface.
 ## 5. Module layout (hexagonal)
 
 ```
-domain/describe/                 # pure — no I/O
-  types.ts            DescribeName, Candidate, DescribeRenderInput
+domain/describe/                 # pure — no I/O, no rendering
+  types.ts            DescribeName, Candidate
   replace-name.ts     shouldReplaceName(existing, incoming) — prio + tagger date
   compare-candidates.ts compareCandidates(a, b) — depth then foundOrder
   match.ts            tagNameMatches(name, include[], exclude[]) via compileGlob
-  format.ts           formatDescribe(input) → string
+  ref-name.ts         describeName(refName, all) — strip refs/tags/ or refs/
   index.ts            barrel (internal — NOT added to objects barrel / api.json)
 application/commands/
-  describe.ts         Tier-1: peel, enumerate refs, build map, walk, format
+  describe.ts         Tier-1: peel, enumerate refs, build map, walk, select
   internal/
     describe-options.ts  parse/validate DescribeOptions → ResolvedDescribePlan
 ```
+
+There is deliberately **no** `format.ts` — the library does not render a line.
 
 Ref enumeration reuses the `enumerateRefs` primitive (HEAD + loose + packed),
 dropping `HEAD` and — unless `--all` — keeping only `refs/tags/*`. Each ref is
@@ -288,61 +302,68 @@ New `CommandError` variants (factories in `domain/commands/error.ts`, messages i
 - `NO_REACHABLE_NAMES` `{ oid }` — tags exist but none qualify/reach the target.
 - `NO_EXACT_MATCH` `{ oid }` — `--exact-match` and the commit is not tagged.
 
-`abbrev` / `candidates` validation reuses `INVALID_OPTION` (negative abbrev,
-negative candidates), as does the `--dirty`/`--broken`-with-commit-ish refusal
-(git: *option '--dirty' and commit-ishes cannot be used together*). As a library
-tsgit raises typed errors rather than git's stderr strings; the interop test
-asserts **co-refusal** (git and tsgit both fail on the same inputs), the
-established pattern for `rm` / `mv` / rev-parse.
+`candidates` validation reuses `INVALID_OPTION` (negative count), as does the
+`dirty`/`broken`-with-commit-ish refusal (git: *option '--dirty' and commit-ishes
+cannot be used together*). As a library tsgit raises typed errors rather than
+git's stderr strings; the interop test asserts **co-refusal** (git and tsgit both
+fail on the same inputs), the established pattern for `rm` / `mv` / rev-parse.
 
 ## 7. Test plan
 
 ### Unit (example, GWT/AAA, `sut`, 100 % coverage, 0 surviving mutants)
 
-- `format.ts` — every branch: exact (`tag`), `--long` at depth 0
-  (`tag-0-ghash`), depth > 0 (`tag-N-ghash`), `--abbrev=0` (`tag`), custom abbrev
-  width, `--always` fallback (`hash`).
+- `ref-name.ts` — `refs/tags/v1` → `v1`; under `--all` `refs/heads/main` →
+  `heads/main`, `refs/remotes/origin/x` → `remotes/origin/x`, `refs/tags/v1` →
+  `tags/v1`.
 - `replace-name.ts` — higher prio replaces; annotated newer-date replaces;
-  annotated equal/older keeps; lightweight keeps first. Each guard isolated
+  annotated equal/older keeps; lower-prio keeps first. Each guard isolated
   (separate tests trigger each condition alone, per the mutation-resistant rules).
 - `compare-candidates.ts` — depth ordering; foundOrder tie-break; equal returns 0.
 - `match.ts` — include-only, exclude-only, both, no patterns (identity), `*`
   not crossing `/`.
 - `describe.ts` — peel input, exact short-circuit, nearest over farther,
-  `--tags` vs default, `--all` (branch name + `heads/…` formatting, depth beats
-  prio), `--first-parent` across a merge, `--always` fallback, `--dirty` mark
-  (clean vs tracked-dirty vs untracked-only) + custom mark + commit-ish refusal,
-  cap/gaveUp depth-finalisation, and each refusal (`NO_NAMES`,
-  `NO_ANNOTATED_NAMES`, `NO_REACHABLE_NAMES`, `NO_EXACT_MATCH`) via try/catch +
-  `.data` assertions.
+  `tags` vs default, `all` (branch name + `heads/…` projection, depth beats
+  prio), `firstParent` across a merge, `always` fallback (`tag: undefined`),
+  `dirty` (clean → false, tracked-dirty → true, untracked-only → false) +
+  commit-ish refusal, cap/gaveUp depth-finalisation, and each refusal
+  (`NO_NAMES`, `NO_ANNOTATED_NAMES`, `NO_REACHABLE_NAMES`, `NO_EXACT_MATCH`)
+  via try/catch + `.data` assertions.
 
 ### Property (`*.properties.test.ts`)
 
 - `compareCandidates` — total order invariants (reflexive 0, antisymmetric sign,
   depth dominates foundOrder). *(case 2: compositional comparator.)*
-- `formatDescribe` — round-trip shape: for any `depth ≥ 0`, abbrev `n ∈ 1..40`,
-  the rendered suffix re-parses to the same `(tag, depth, hash[0..n])`.
-  *(case 4: counting/parse invariant.)*
 - `tagNameMatches` — empty include ⇒ identity (everything passes); adding an
   exclude that matches flips to false. *(case 2.)*
 
+(No `formatDescribe` property — the library renders nothing. The interop test is
+the single place that assembles git's line, from the structured fields.)
+
 ### Interop (`describe-interop.test.ts`, cross-tool parity vs real `git`)
 
-Build a repo with canonical git (pinned dates, signing off) and assert
-`decode(describe(ctx, rev, opts).bytes) === git('describe', …)` for: nearest
-annotated, `--long`, `--abbrev=0`/`=12`, exact-tagged commit, `--tags` with
-lightweight, `--all` (branch/remote names), merge default vs `--first-parent`,
-`--match`/`--exclude`, same-commit newer-tagger-date win, `--always` fallback,
-`--dirty` (clean → no mark; tracked change → `-dirty`; custom mark), and
-**co-refusal** on `--exact-match` of an untagged commit, a no-tags repo, and
-`--dirty` with a commit-ish.
+Build a repo with canonical git (pinned dates, signing off). A small test-only
+`render(r)` helper assembles git's line from the structured fields
+(`tag === undefined ? oid.slice(0,7) : exact ? name : \`${name}-${distance}-g${oid.slice(0,7)}\``).
+Assert `render(describe(ctx, rev, opts)) === git('describe', …)` for: nearest
+annotated, exact-tagged commit (`exact`), `--tags` with lightweight, `--all`
+(branch/remote names), merge default vs `firstParent`, `match`/`exclude`,
+same-commit newer-tagger-date win, `always` fallback (`tag: undefined`), and
+`dirty` (clean → `dirty:false`; tracked change → `dirty:true`, compared to git's
+`-dirty` suffix). Assert **co-refusal** on `exactMatch` of an untagged commit, a
+no-tags repo, and `dirty` with a commit-ish. The `--long` / `--abbrev` git
+renderings are covered by feeding the SAME structured fields through the matching
+caller-side render variant — proving the data is sufficient to reproduce them
+without the library owning the option.
 
 ## 8. Faithfulness invariants (prime directive)
 
 - Depth equals `git rev-list --count <tag>..<target>` for the chosen tag.
-- Tag selection (nearest, then earliest in date-BFS, then newer tagger date for
-  a shared commit) matches `git describe` byte-for-byte on the chosen line.
+- Tag **selection** (nearest, then earliest in date-BFS, then newer tagger date
+  for a shared commit) matches `git describe` — pinned by reconstructing git's
+  line from the structured fields and comparing to real `git describe`.
 - Refusal conditions match git's (co-refusal interop), even though the thrown
   message is tsgit's structured error, not git's stderr string.
-- Abbreviation is a fixed 7-char (or `--abbrev=n`) slice — the existing codebase
-  precedent, byte-identical to git wherever 7 hex is unique.
+- The library renders no line and never abbreviates: faithfulness is a property of
+  the **data** (`name`, `distance`, `oid`, `exact`, `dirty`), not of any string
+  the library emits. Cosmetics (suffix, abbreviation length, dirty mark) are the
+  caller's, per the structured-output rule (ADR below).
