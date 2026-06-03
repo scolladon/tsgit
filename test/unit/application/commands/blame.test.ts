@@ -2,8 +2,11 @@ import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { add } from '../../../../src/application/commands/add.js';
 import { blame } from '../../../../src/application/commands/blame.js';
+import { branchCreate } from '../../../../src/application/commands/branch.js';
+import { checkout } from '../../../../src/application/commands/checkout.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
+import { merge } from '../../../../src/application/commands/merge.js';
 import { TsgitError } from '../../../../src/domain/error.js';
 import type { AuthorIdentity, ObjectId } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
@@ -174,6 +177,56 @@ describe('Given an explicit older revision', () => {
       // Assert
       expect(sut.lines.map((l) => l.commit)).toEqual([c1, c1]);
       expect(sut.lines.map((l) => text(l.content))).toEqual(['line1\n', 'line2\n']);
+    });
+  });
+});
+
+describe('Given a clean merge of two branches that changed different lines', () => {
+  describe('When blaming the merge tip', () => {
+    it('Then each line is blamed to the branch that changed it, never the merge', async () => {
+      // Arrange — side changes line 1, main changes line 3, line 2 untouched
+      const ctx = await seed();
+      const c1 = await commitFile(ctx, 'c1', 'f.txt', 'a\nb\nc\n');
+      await branchCreate(ctx, { name: 'side' });
+      await checkout(ctx, { target: 'side' });
+      const side = await commitFile(ctx, 'side', 'f.txt', 'a-side\nb\nc\n');
+      await checkout(ctx, { target: 'main' });
+      const main = await commitFile(ctx, 'main', 'f.txt', 'a\nb\nc-main\n');
+      clock += 60;
+      const merged = await merge(ctx, {
+        target: 'side',
+        author: ident('merger', clock),
+        committer: ident('merger', clock),
+      });
+
+      // Act
+      const sut = await blame(ctx, 'f.txt');
+
+      // Assert
+      expect(merged.kind).toBe('merge');
+      expect(sut.lines.map((l) => l.commit)).toEqual([side, c1, main]);
+      expect(sut.lines.map((l) => text(l.content))).toEqual(['a-side\n', 'b\n', 'c-main\n']);
+      expect(sut.lines[1]!.boundary).toBe(true);
+      const mergeId = merged.kind === 'merge' ? merged.id : undefined;
+      expect(sut.lines.some((l) => l.commit === mergeId)).toBe(false);
+    });
+  });
+});
+
+describe('Given a commit that rewrites every line of the file', () => {
+  describe('When blaming the file', () => {
+    it('Then all lines are blamed to the rewrite, none to the original', async () => {
+      // Arrange
+      const ctx = await seed();
+      const c1 = await commitFile(ctx, 'c1', 'f.txt', 'a\nb\n');
+      const c2 = await commitFile(ctx, 'c2', 'f.txt', 'x\ny\n');
+
+      // Act
+      const sut = await blame(ctx, 'f.txt');
+
+      // Assert
+      expect(sut.lines.map((l) => l.commit)).toEqual([c2, c2]);
+      expect(sut.lines.some((l) => l.commit === c1)).toBe(false);
     });
   });
 });

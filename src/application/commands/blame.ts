@@ -59,19 +59,17 @@ export interface BlameResult {
   readonly lines: ReadonlyArray<BlameLine>;
 }
 
-interface Origin {
+/** A suspect (commit, path) with its blob and the lines still blamed on it. */
+interface Suspect {
   readonly commit: ObjectId;
   readonly path: FilePath;
-  readonly date: number;
   readonly blob: Uint8Array;
-  entries: BlameEntry[];
-  inQueue: boolean;
+  readonly entries: ReadonlyArray<BlameEntry>;
 }
 
 interface Scoreboard {
   readonly ctx: Context;
-  readonly pending: Map<string, Origin>;
-  readonly queue: QueueEntry<string>[];
+  readonly queue: QueueEntry<Suspect>[];
   readonly finalized: BlameLine[];
 }
 
@@ -86,7 +84,7 @@ export const blame = async (
   const filePath = FilePathFactory.from(path);
   const rev = opts.rev ?? DEFAULT_REV;
   const startCommit = await resolveCommitIsh(ctx, rev);
-  const sut: Scoreboard = { ctx, pending: new Map(), queue: [], finalized: [] };
+  const sut: Scoreboard = { ctx, queue: [], finalized: [] };
   await seed(sut, startCommit, filePath, rev);
   await walk(sut);
   const lines = [...sut.finalized].sort((a, b) => a.finalLine - b.finalLine);
@@ -104,46 +102,38 @@ const seed = async (
   if (blob === undefined) throw pathNotInTree(rev, path);
   const count = splitLines(blob).length;
   if (count === 0) return;
-  addEntries(sb, commit, path, data.committer.timestamp, blob, [
+  schedule(sb, commit, path, data.committer.timestamp, blob, [
     { finalStart: 0, count, sourceStart: 0 },
   ]);
 };
 
 const walk = async (sb: Scoreboard): Promise<void> => {
   while (sb.queue.length > 0) {
-    const { value: key } = sb.queue.shift() as QueueEntry<string>;
-    const origin = sb.pending.get(key) as Origin;
-    origin.inQueue = false;
-    const entries = origin.entries;
-    origin.entries = [];
-    await processOrigin(sb, origin, entries);
+    const { value } = sb.queue.shift() as QueueEntry<Suspect>;
+    await processSuspect(sb, value);
   }
 };
 
-const processOrigin = async (
-  sb: Scoreboard,
-  origin: Origin,
-  entries: ReadonlyArray<BlameEntry>,
-): Promise<void> => {
-  const data = await readCommitData(sb.ctx, origin.commit);
-  const childLines = splitLines(origin.blob);
-  let remaining = entries;
+const processSuspect = async (sb: Scoreboard, suspect: Suspect): Promise<void> => {
+  const data = await readCommitData(sb.ctx, suspect.commit);
+  const childLines = splitLines(suspect.blob);
+  let remaining = suspect.entries;
   let previous: BlameLine['previous'];
   for (const parent of data.parents) {
-    const resolved = await resolveInParent(sb.ctx, parent, origin.path);
+    const resolved = await resolveInParent(sb.ctx, parent, suspect.path);
     if (resolved === undefined) continue;
     previous ??= { commit: parent, path: resolved.sourcePath };
-    const { passed, kept } = splitAgainstParent(remaining, diffLines(resolved.blob, origin.blob));
-    addEntries(sb, parent, resolved.sourcePath, resolved.date, resolved.blob, passed);
+    const { passed, kept } = splitAgainstParent(remaining, diffLines(resolved.blob, suspect.blob));
+    schedule(sb, parent, resolved.sourcePath, resolved.date, resolved.blob, passed);
     remaining = kept;
     if (remaining.length === 0) break;
   }
-  finalize(sb, origin, data, childLines, remaining, previous);
+  finalize(sb, suspect, data, childLines, remaining, previous);
 };
 
 const finalize = (
   sb: Scoreboard,
-  origin: Origin,
+  suspect: Suspect,
   data: CommitData,
   childLines: ReadonlyArray<Uint8Array>,
   entries: ReadonlyArray<BlameEntry>,
@@ -156,12 +146,12 @@ const finalize = (
       sb.finalized.push({
         finalLine: entry.finalStart + i + 1,
         sourceLine: entry.sourceStart + i + 1,
-        commit: origin.commit,
+        commit: suspect.commit,
         author: data.author,
         committer: data.committer,
         summary,
         boundary,
-        sourcePath: origin.path,
+        sourcePath: suspect.path,
         ...(previous !== undefined ? { previous } : {}),
         content: childLines[entry.sourceStart + i] as Uint8Array,
       });
@@ -186,7 +176,8 @@ const resolveInParent = async (
   return { blob, sourcePath: path, date: data.committer.timestamp };
 };
 
-const addEntries = (
+/** Queue a suspect for the lines now blamed on it (newest commit date pops first). */
+const schedule = (
   sb: Scoreboard,
   commit: ObjectId,
   path: FilePath,
@@ -195,26 +186,7 @@ const addEntries = (
   entries: ReadonlyArray<BlameEntry>,
 ): void => {
   if (entries.length === 0) return;
-  const key = `${commit}:${path}`;
-  const origin = sb.pending.get(key) ?? createOrigin(sb, key, commit, path, date, blob);
-  origin.entries.push(...entries);
-  if (!origin.inQueue) {
-    origin.inQueue = true;
-    enqueue(sb.queue, { oid: commit, date, value: key });
-  }
-};
-
-const createOrigin = (
-  sb: Scoreboard,
-  key: string,
-  commit: ObjectId,
-  path: FilePath,
-  date: number,
-  blob: Uint8Array,
-): Origin => {
-  const origin: Origin = { commit, path, date, blob, entries: [], inQueue: false };
-  sb.pending.set(key, origin);
-  return origin;
+  enqueue(sb.queue, { oid: commit, date, value: { commit, path, blob, entries } });
 };
 
 const blobAtPath = async (
