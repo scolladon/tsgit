@@ -423,6 +423,14 @@ function extractDetail(data: TsgitErrorData): string {
     case 'CHERRY_PICK_MERGE_NO_MAINLINE':
     case 'REVERT_MERGE_NO_MAINLINE':
       return `commit ${data.commit} is a merge but no -m option was given`;
+    case 'NO_NAMES':
+      return `no names found, cannot describe ${data.oid}`;
+    case 'NO_ANNOTATED_NAMES':
+      return `no annotated tags can describe ${data.oid}; try tags: true`;
+    case 'NO_REACHABLE_NAMES':
+      return `no tags can describe ${data.oid}`;
+    case 'NO_EXACT_MATCH':
+      return `no tag exactly matches ${data.oid}`;
     default: {
       const _exhaustive: never = data;
       return String(_exhaustive);

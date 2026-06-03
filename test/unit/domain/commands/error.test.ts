@@ -25,9 +25,13 @@ import {
   MAX_HOOK_STDERR_IN_ERROR,
   maxRefspecsExceeded,
   mergeHasConflicts,
+  noAnnotatedNames,
+  noExactMatch,
   noInitialCommit,
+  noNames,
   nonFastForward,
   noOperationInProgress,
+  noReachableNames,
   nothingToCommit,
   noUpstreamConfigured,
   operationInProgress,
@@ -150,6 +154,60 @@ describe('domain commands error — factory data', () => {
         expect(sut.message).toBe(
           `REVERT_MERGE_NO_MAINLINE: commit ${OID1} is a merge but no -m option was given`,
         );
+      });
+    });
+  });
+
+  describe('Given the noNames error helper', () => {
+    describe('When called with the target oid', () => {
+      it('Then data and message carry the code and oid', () => {
+        // Arrange + Act
+        const sut = noNames(OID1);
+
+        // Assert
+        expect(sut.data).toEqual({ code: 'NO_NAMES', oid: OID1 });
+        expect(sut.message).toBe(`NO_NAMES: no names found, cannot describe ${OID1}`);
+      });
+    });
+  });
+
+  describe('Given the noAnnotatedNames error helper', () => {
+    describe('When called with the target oid', () => {
+      it('Then data and message carry the code and oid', () => {
+        // Arrange + Act
+        const sut = noAnnotatedNames(OID1);
+
+        // Assert
+        expect(sut.data).toEqual({ code: 'NO_ANNOTATED_NAMES', oid: OID1 });
+        expect(sut.message).toBe(
+          `NO_ANNOTATED_NAMES: no annotated tags can describe ${OID1}; try tags: true`,
+        );
+      });
+    });
+  });
+
+  describe('Given the noReachableNames error helper', () => {
+    describe('When called with the target oid', () => {
+      it('Then data and message carry the code and oid', () => {
+        // Arrange + Act
+        const sut = noReachableNames(OID1);
+
+        // Assert
+        expect(sut.data).toEqual({ code: 'NO_REACHABLE_NAMES', oid: OID1 });
+        expect(sut.message).toBe(`NO_REACHABLE_NAMES: no tags can describe ${OID1}`);
+      });
+    });
+  });
+
+  describe('Given the noExactMatch error helper', () => {
+    describe('When called with the target oid', () => {
+      it('Then data and message carry the code and oid', () => {
+        // Arrange + Act
+        const sut = noExactMatch(OID1);
+
+        // Assert
+        expect(sut.data).toEqual({ code: 'NO_EXACT_MATCH', oid: OID1 });
+        expect(sut.message).toBe(`NO_EXACT_MATCH: no tag exactly matches ${OID1}`);
       });
     });
   });

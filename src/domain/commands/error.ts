@@ -169,7 +169,11 @@ export type CommandError =
     }
   | { readonly code: 'INVALID_SEQUENCER_TODO'; readonly reason: string }
   | { readonly code: 'CHERRY_PICK_MERGE_NO_MAINLINE'; readonly commit: ObjectId }
-  | { readonly code: 'REVERT_MERGE_NO_MAINLINE'; readonly commit: ObjectId };
+  | { readonly code: 'REVERT_MERGE_NO_MAINLINE'; readonly commit: ObjectId }
+  | { readonly code: 'NO_NAMES'; readonly oid: ObjectId }
+  | { readonly code: 'NO_ANNOTATED_NAMES'; readonly oid: ObjectId }
+  | { readonly code: 'NO_REACHABLE_NAMES'; readonly oid: ObjectId }
+  | { readonly code: 'NO_EXACT_MATCH'; readonly oid: ObjectId };
 
 const sanitizeForDisplay = (s: string): string => {
   let out = '';
@@ -487,3 +491,20 @@ export const cherryPickMergeNoMainline = (commit: ObjectId): TsgitError =>
 // validated 40-hex oid, embedded verbatim.
 export const revertMergeNoMainline = (commit: ObjectId): TsgitError =>
   new TsgitError({ code: 'REVERT_MERGE_NO_MAINLINE', commit });
+
+// `describe` refusals, mirroring git's three "cannot describe" conditions plus
+// the exact-match miss. `oid` is the validated 40-hex target, embedded verbatim.
+// `NO_NAMES`: no tags/refs exist (or all filtered out). `NO_ANNOTATED_NAMES`:
+// only lightweight tags exist in the default annotated-only mode.
+// `NO_REACHABLE_NAMES`: tags exist but none qualify/reach the target.
+// `NO_EXACT_MATCH`: `exactMatch` and the commit carries no tag.
+export const noNames = (oid: ObjectId): TsgitError => new TsgitError({ code: 'NO_NAMES', oid });
+
+export const noAnnotatedNames = (oid: ObjectId): TsgitError =>
+  new TsgitError({ code: 'NO_ANNOTATED_NAMES', oid });
+
+export const noReachableNames = (oid: ObjectId): TsgitError =>
+  new TsgitError({ code: 'NO_REACHABLE_NAMES', oid });
+
+export const noExactMatch = (oid: ObjectId): TsgitError =>
+  new TsgitError({ code: 'NO_EXACT_MATCH', oid });
