@@ -17,7 +17,7 @@ tsgit's `blame` must pick what v1's `repo.blame(path, opts?)` targets. Forces:
 - The prime directive favours replicating the bare command exactly, including the
   not-committed-yet pseudo-commit.
 - But the pseudo-commit requires reading the **working tree** (a filesystem read,
-  hashing the worktree blob, synthesising a fake commit/identity) — machinery the
+  hashing the worktree blob, constructing a fake commit/identity) — machinery the
   pure history walk does not otherwise need. tsgit runs on memory and browser
   adapters that frequently have **no working tree at all**; a worktree-only
   default is a poor fit for the library's primary surface.
