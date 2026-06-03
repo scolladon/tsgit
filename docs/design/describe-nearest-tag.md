@@ -367,3 +367,21 @@ without the library owning the option.
   the **data** (`name`, `distance`, `oid`, `exact`, `dirty`), not of any string
   the library emits. Cosmetics (suffix, abbreviation length, dirty mark) are the
   caller's, per the structured-output rule (ADR below).
+
+## 9. Architecture pass (post-implementation)
+
+Two centralisation candidates surfaced by the feature diff were considered and
+**deferred** (behaviour-preserving no-op), bounded by the rule-of-three / YAGNI:
+
+- **Date-ordered commit priority queue** — `describe`'s `enqueue` / `precedes`
+  (committer-date desc, oid asc) duplicate `merge-base`'s. Two consumers is below
+  the rule-of-three; extracting now is speculative. Revisit when a third
+  date-ordered walk appears.
+- **Ref-enumeration → commit map** — `describe.buildNameMap` and
+  `show`'s `buildDecorationMap` both iterate `enumerateRefs` and peel each ref to a
+  commit. But `describe` needs the tag priority + outermost tagger date for its
+  per-commit dedup, which `resolveRef({ peel: true })` (decoration's path) discards
+  — so a shared helper would have one real consumer plus speculation. Deferred.
+
+The peel-depth bound was aligned to the codebase-wide `exceedsMaxPeelDepth`
+(removing an ad-hoc magic constant) during the review pass.
