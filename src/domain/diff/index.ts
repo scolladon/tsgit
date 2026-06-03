@@ -1,3 +1,7 @@
+// Conflict classification
+export type { ConflictKind } from './classify-unmerged.js';
+export { classifyUnmerged } from './classify-unmerged.js';
+
 // Types
 export type {
   AddChange,
