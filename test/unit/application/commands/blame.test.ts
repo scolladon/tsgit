@@ -7,6 +7,7 @@ import { checkout } from '../../../../src/application/commands/checkout.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
 import { merge } from '../../../../src/application/commands/merge.js';
+import { mv } from '../../../../src/application/commands/mv.js';
 import { TsgitError } from '../../../../src/domain/error.js';
 import type { AuthorIdentity, ObjectId } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
@@ -209,6 +210,36 @@ describe('Given a clean merge of two branches that changed different lines', () 
       expect(sut.lines[1]!.boundary).toBe(true);
       const mergeId = merged.kind === 'merge' ? merged.id : undefined;
       expect(sut.lines.some((l) => l.commit === mergeId)).toBe(false);
+    });
+  });
+});
+
+describe('Given a file renamed wholesale by a later commit', () => {
+  describe('When blaming the file under its new name', () => {
+    it('Then lines are followed across the rename to their originating commits', async () => {
+      // Arrange
+      const ctx = await seed();
+      const c1 = await commitFile(ctx, 'c1', 'f.txt', 'line1\nline2\n');
+      const c2 = await commitFile(ctx, 'c2', 'f.txt', 'line1\nline2-mod\n');
+      await mv(ctx, ['f.txt'], 'renamed.txt');
+      clock += 60;
+      const c3 = (
+        await commit(ctx, {
+          message: 'c3 rename',
+          author: ident('c3', clock),
+          committer: ident('c3', clock),
+        })
+      ).id;
+
+      // Act
+      const sut = await blame(ctx, 'renamed.txt');
+
+      // Assert
+      expect(sut.lines.map((l) => l.commit)).toEqual([c1, c2]);
+      expect(sut.lines.map((l) => l.sourcePath)).toEqual(['f.txt', 'f.txt']);
+      expect(sut.lines.map((l) => l.finalLine)).toEqual([1, 2]);
+      expect(sut.lines.some((l) => l.commit === c3)).toBe(false);
+      expect(sut.lines[1]!.previous).toEqual({ commit: c1, path: 'f.txt' });
     });
   });
 });

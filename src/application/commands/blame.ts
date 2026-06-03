@@ -21,6 +21,7 @@ import { subjectLine } from '../../domain/objects/commit-message.js';
 import type { AuthorIdentity, FilePath, ObjectId } from '../../domain/objects/index.js';
 import { FilePath as FilePathFactory } from '../../domain/objects/object-id.js';
 import type { Context } from '../../ports/context.js';
+import { diffTrees } from '../primitives/diff-trees.js';
 import { flattenTree } from '../primitives/flatten-tree.js';
 import { readBlob } from '../primitives/read-blob.js';
 import { resolveCommitIsh } from './internal/commit-ish.js';
@@ -120,7 +121,7 @@ const processSuspect = async (sb: Scoreboard, suspect: Suspect): Promise<void> =
   let remaining = suspect.entries;
   let previous: BlameLine['previous'];
   for (const parent of data.parents) {
-    const resolved = await resolveInParent(sb.ctx, parent, suspect.path);
+    const resolved = await resolveInParent(sb.ctx, parent, data.tree, suspect.path);
     if (resolved === undefined) continue;
     previous ??= { commit: parent, path: resolved.sourcePath };
     const { passed, kept } = splitAgainstParent(remaining, diffLines(resolved.blob, suspect.blob));
@@ -168,12 +169,40 @@ interface ResolvedParent {
 const resolveInParent = async (
   ctx: Context,
   parent: ObjectId,
+  childTree: ObjectId,
   path: FilePath,
 ): Promise<ResolvedParent | undefined> => {
   const data = await readCommitData(ctx, parent);
-  const blob = await blobAtPath(ctx, data.tree, path);
-  if (blob === undefined) return undefined;
-  return { blob, sourcePath: path, date: data.committer.timestamp };
+  const date = data.committer.timestamp;
+  const direct = await blobAtPath(ctx, data.tree, path);
+  if (direct !== undefined) return { blob: direct, sourcePath: path, date };
+  const renamed = await renamedSource(ctx, data.tree, childTree, path);
+  if (renamed === undefined) return undefined;
+  const blob = (await readBlob(ctx, renamed.blobId)).content;
+  return { blob, sourcePath: renamed.sourcePath, date };
+};
+
+/**
+ * When `path` is absent from the parent, locate the file it was renamed from.
+ * Reuses the shared exact-content rename detector — a pure `git mv` is followed,
+ * a rename-with-edit in the same commit is not (treated as a fresh introduction).
+ */
+const renamedSource = async (
+  ctx: Context,
+  parentTree: ObjectId,
+  childTree: ObjectId,
+  path: FilePath,
+): Promise<{ readonly sourcePath: FilePath; readonly blobId: ObjectId } | undefined> => {
+  const diff = await diffTrees(ctx, parentTree, childTree, {
+    recursive: true,
+    detectRenames: true,
+  });
+  for (const change of diff.changes) {
+    if (change.type === 'rename' && change.newPath === path) {
+      return { sourcePath: change.oldPath, blobId: change.id };
+    }
+  }
+  return undefined;
 };
 
 /** Queue a suspect for the lines now blamed on it (newest commit date pops first). */
