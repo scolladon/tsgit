@@ -197,7 +197,7 @@ over tracked paths. **Limitation:** `status` does not yet populate the staged
 (index-vs-HEAD) column, so a *staged-only* change is not detected — `describe`
 inherits that gap rather than re-deriving the staged diff itself. The common case
 (unstaged edits) is faithful; staged-only detection lands when `status`'s staged
-column does.
+column does (tracked as backlog 23.2b).
 
 `broken: true` tolerates a working tree whose state cannot be computed (a corrupt
 tree): the `status` call is wrapped, and on failure `dirty` is reported `true`

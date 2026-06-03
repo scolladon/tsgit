@@ -51,7 +51,8 @@ interface DescribeResult {
 - **`dirty` / `broken`:** describe HEAD and report whether the working tree has
   **unstaged tracked** changes (untracked files don't count); incompatible with an
   explicit commit-ish (`INVALID_OPTION`). Staged-only changes are not yet detected
-  (a limitation inherited from `status`, whose staged column is still approximate).
+  (a limitation inherited from `status`, whose staged column is still approximate;
+  tracked as backlog 23.2b).
 - **Refusals:** `NO_NAMES` (no tags at all), `NO_ANNOTATED_NAMES` (only lightweight
   tags in default mode), `NO_REACHABLE_NAMES` (tags exist but none reach the
   target), `NO_EXACT_MATCH`. `always: true` returns the oid fallback instead.
