@@ -214,6 +214,25 @@ describe('Given a clean merge of two branches that changed different lines', () 
   });
 });
 
+describe('Given a file first added by a non-root commit', () => {
+  describe('When blaming it', () => {
+    it('Then its lines blame the adding commit, with no boundary and no previous', async () => {
+      // Arrange — c1 touches another file; c2 introduces f.txt fresh (no rename)
+      const ctx = await seed();
+      await commitFile(ctx, 'c1', 'other.txt', 'unrelated\n');
+      const c2 = await commitFile(ctx, 'c2', 'f.txt', 'fresh1\nfresh2\n');
+
+      // Act
+      const sut = await blame(ctx, 'f.txt');
+
+      // Assert
+      expect(sut.lines.map((l) => l.commit)).toEqual([c2, c2]);
+      expect(sut.lines.every((l) => l.boundary)).toBe(false);
+      expect(sut.lines.every((l) => l.previous === undefined)).toBe(true);
+    });
+  });
+});
+
 describe('Given a file renamed wholesale by a later commit', () => {
   describe('When blaming the file under its new name', () => {
     it('Then lines are followed across the rename to their originating commits', async () => {
@@ -318,7 +337,7 @@ describe('Given a multi-commit file and a line range', () => {
 
       // Act + Assert
       await expect(blame(ctx, 'f.txt', { range: { start: 3, end: 1 } })).rejects.toMatchObject({
-        data: { code: 'INVALID_OPTION', option: '-L' },
+        data: { code: 'INVALID_OPTION', option: '-L', reason: 'range end 1 precedes start 3' },
       });
     });
 
@@ -328,7 +347,7 @@ describe('Given a multi-commit file and a line range', () => {
 
       // Act + Assert
       await expect(blame(ctx, 'f.txt', { range: { start: 0, end: 2 } })).rejects.toMatchObject({
-        data: { code: 'INVALID_OPTION', option: '-L' },
+        data: { code: 'INVALID_OPTION', option: '-L', reason: 'invalid line number: 0' },
       });
     });
 
@@ -338,7 +357,7 @@ describe('Given a multi-commit file and a line range', () => {
 
       // Act + Assert
       await expect(blame(ctx, 'f.txt', { range: { start: 10, end: 12 } })).rejects.toMatchObject({
-        data: { code: 'INVALID_OPTION', option: '-L' },
+        data: { code: 'INVALID_OPTION', option: '-L', reason: 'file has only 3 lines' },
       });
     });
 
@@ -348,7 +367,7 @@ describe('Given a multi-commit file and a line range', () => {
 
       // Act + Assert
       await expect(blame(ctx, 'f.txt', { range: { start: 1.5, end: 2 } })).rejects.toMatchObject({
-        data: { code: 'INVALID_OPTION', option: '-L' },
+        data: { code: 'INVALID_OPTION', option: '-L', reason: 'line numbers must be integers' },
       });
     });
   });
