@@ -935,6 +935,41 @@ describe('status — unmerged column', () => {
     });
   });
 
+  describe('Given a modify/delete conflict (one side modifies, the other deletes)', () => {
+    describe('When status', () => {
+      it('Then it is deleted-by-them with the base and ours stages but no theirs', async () => {
+        // Arrange — main modifies file.txt, feature deletes it → stages 1 (base)
+        // and 2 (ours) only, no stage 3 (theirs); git porcelain `UD`.
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'shared\n');
+        await add(ctx, ['file.txt']);
+        await commit(ctx, { message: 'base', author });
+        await branchCreate(ctx, { name: 'feature' });
+        await checkout(ctx, { target: 'feature' });
+        await rm(ctx, ['file.txt']);
+        await commit(ctx, { message: 'delete', author });
+        await checkout(ctx, { target: 'main' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'MAIN\n');
+        await add(ctx, ['file.txt']);
+        await commit(ctx, { message: 'modify', author });
+        await merge(ctx, { target: 'feature', author });
+
+        // Act
+        const sut = await status(ctx);
+
+        // Assert — UD: base + ours present, theirs omitted.
+        expect(sut.unmerged).toHaveLength(1);
+        const entry = sut.unmerged[0];
+        expect(entry?.kind).toBe('deleted-by-them');
+        expect(entry?.path).toBe('file.txt');
+        expect(entry?.base).toBeDefined();
+        expect(entry?.ours).toBeDefined();
+        expect(entry?.theirs).toBeUndefined();
+      });
+    });
+  });
+
   describe('Given a clean repo', () => {
     describe('When status', () => {
       it('Then the unmerged column is empty', async () => {
