@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { add } from '../../../../src/application/commands/add.js';
+import { branchCreate } from '../../../../src/application/commands/branch.js';
+import { checkout } from '../../../../src/application/commands/checkout.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
+import { merge } from '../../../../src/application/commands/merge.js';
 import { rm } from '../../../../src/application/commands/rm.js';
 import { status, toStagedChange } from '../../../../src/application/commands/status.js';
 import type { DiffChange } from '../../../../src/domain/diff/index.js';
@@ -858,6 +861,91 @@ describe('toStagedChange', () => {
 
         // Assert
         expect(sut).toEqual({ kind: 'modified', path: 'a.txt' });
+      });
+    });
+  });
+});
+
+// Mirror merge.test.ts's content/content conflict to leave stages 1/2/3 in the
+// index for `file.txt` (git porcelain `UU`).
+const seedConflict = async () => {
+  const ctx = createMemoryContext();
+  await init(ctx);
+  await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'shared\n');
+  await add(ctx, ['file.txt']);
+  await commit(ctx, { message: 'base', author });
+  await branchCreate(ctx, { name: 'feature' });
+  await checkout(ctx, { target: 'feature' });
+  await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'FEATURE-CHANGE\n');
+  await add(ctx, ['file.txt']);
+  await commit(ctx, { message: 'on-feature', author });
+  await checkout(ctx, { target: 'main' });
+  await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'MAIN-CHANGE\n');
+  await add(ctx, ['file.txt']);
+  await commit(ctx, { message: 'on-main', author });
+  await merge(ctx, { target: 'feature', author });
+  return ctx;
+};
+
+describe('status — unmerged column', () => {
+  describe('Given a conflicted index (both sides modified the same file)', () => {
+    describe('When status', () => {
+      it('Then the path is reported as both-modified with all three stage blobs', async () => {
+        // Arrange
+        const ctx = await seedConflict();
+
+        // Act
+        const sut = await status(ctx);
+
+        // Assert — one unmerged entry carrying base/ours/theirs blobs.
+        expect(sut.unmerged).toHaveLength(1);
+        const entry = sut.unmerged[0];
+        expect(entry?.kind).toBe('both-modified');
+        expect(entry?.path).toBe('file.txt');
+        expect(entry?.base?.mode).toBe('100644');
+        expect(entry?.ours?.mode).toBe('100644');
+        expect(entry?.theirs?.mode).toBe('100644');
+        // ours and theirs are the divergent blobs (distinct from each other and base).
+        expect(entry?.ours?.id).not.toBe(entry?.theirs?.id);
+        expect(entry?.base?.id).not.toBe(entry?.ours?.id);
+      });
+
+      it('Then the conflicted path is absent from the other columns and untracked set', async () => {
+        // Arrange
+        const ctx = await seedConflict();
+
+        // Act
+        const sut = await status(ctx);
+
+        // Assert — git lists an unmerged path only under "Unmerged paths".
+        expect(sut.indexChanges.map((c) => c.path)).not.toContain('file.txt');
+        expect(sut.workingTreeChanges.map((c) => c.path)).not.toContain('file.txt');
+      });
+
+      it('Then the repo is not clean', async () => {
+        // Arrange
+        const ctx = await seedConflict();
+
+        // Act
+        const sut = await status(ctx);
+
+        // Assert
+        expect(sut.clean).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a clean repo', () => {
+    describe('When status', () => {
+      it('Then the unmerged column is empty', async () => {
+        // Arrange
+        const ctx = await seedClean();
+
+        // Act
+        const sut = await status(ctx);
+
+        // Assert
+        expect(sut.unmerged).toEqual([]);
       });
     });
   });

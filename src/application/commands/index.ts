@@ -221,7 +221,15 @@ export {
   stashPop,
   stashPush,
 } from './stash.js';
-export { type ChangeEntry, type ChangeKind, type StatusResult, status } from './status.js';
+export {
+  type ChangeEntry,
+  type ChangeKind,
+  type ConflictKind,
+  type ConflictStage,
+  type StatusResult,
+  status,
+  type UnmergedEntry,
+} from './status.js';
 export {
   type SubmoduleEntry,
   type SubmodulesAction,
