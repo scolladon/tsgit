@@ -107,6 +107,24 @@ export interface WalkCommitsOptions {
   readonly shallow?: ReadonlySet<ObjectId>;
 }
 
+/**
+ * Options for `walkCommitsByDate` — the all-parents, commit-date-ordered history
+ * walk (newest committer-date first, oid-ascending tie-break). Mirrors the
+ * boundary/missing/hash knobs of {@link WalkCommitsOptions} but carries no
+ * `order`: the date order is the primitive's identity.
+ */
+export interface WalkCommitsByDateOptions {
+  readonly from: ReadonlyArray<ObjectId>;
+  readonly until?: ReadonlyArray<ObjectId>;
+  /**
+   * Commits whose parents must NOT be walked (shallow boundary). The commit
+   * itself is still yielded — only its parents are skipped.
+   */
+  readonly shallow?: ReadonlySet<ObjectId>;
+  readonly ignoreMissing?: boolean;
+  readonly verifyHash?: boolean;
+}
+
 /** Maximum `have` lines a single-round fetch will send. */
 export const MAX_HAVES = 256;
 

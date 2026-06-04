@@ -233,6 +233,7 @@ export interface Repository {
     readonly unstageEntry: BindCtx<typeof primitives.unstageEntry>;
     readonly updateRef: BindCtx<typeof primitives.updateRef>;
     readonly walkCommits: BindCtx<typeof primitives.walkCommits>;
+    readonly walkCommitsByDate: BindCtx<typeof primitives.walkCommitsByDate>;
     readonly walkSubmodules: BindCtx<typeof primitives.walkSubmodules>;
     readonly walkTree: BindCtx<typeof primitives.walkTree>;
     readonly walkWorkingTree: BindCtx<typeof primitives.walkWorkingTree>;
@@ -594,6 +595,10 @@ export const openRepository = async (
         guard();
         return primitives.walkCommits(ctx, options);
       }) as Repository['primitives']['walkCommits'],
+      walkCommitsByDate: ((options) => {
+        guard();
+        return primitives.walkCommitsByDate(ctx, options);
+      }) as Repository['primitives']['walkCommitsByDate'],
       walkSubmodules: ((options) => {
         guard();
         return primitives.walkSubmodules(ctx, options);
