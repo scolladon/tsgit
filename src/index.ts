@@ -4,10 +4,6 @@ export * from './application/commands/index.js';
 export { warnDeprecated } from './application/primitives/deprecation.js';
 export type { IndexEntry } from './application/primitives/snapshot/index-entry.js';
 export {
-  createIndexSnapshot,
-  type IndexSnapshotDeps,
-} from './application/primitives/snapshot/index-snapshot.js';
-export {
   innerJoin,
   type JoinOptions,
   join,
@@ -21,26 +17,11 @@ export type {
   TreeSnapshot,
   WorkdirSnapshot,
 } from './application/primitives/snapshot/snapshot.js';
-export {
-  createSnapshotFactory,
-  type SnapshotFactory,
-  type SnapshotFactoryDeps,
-} from './application/primitives/snapshot/snapshot-factory.js';
-export {
-  createStashSnapshot,
-  type StashSnapshot,
-} from './application/primitives/snapshot/stash-snapshot.js';
+export type { SnapshotFactory } from './application/primitives/snapshot/snapshot-factory.js';
+export type { StashSnapshot } from './application/primitives/snapshot/stash-snapshot.js';
 export type { TreeEntry } from './application/primitives/snapshot/tree-entry.js';
-export {
-  createTreeSnapshot,
-  type TreeSnapshotDeps,
-} from './application/primitives/snapshot/tree-snapshot.js';
 export type { WorkdirEntry } from './application/primitives/snapshot/workdir-entry.js';
-export {
-  createWorkdirSnapshot,
-  type WorkdirSnapshotDeps,
-  type WorkdirSnapshotOptions,
-} from './application/primitives/snapshot/workdir-snapshot.js';
+export type { WorkdirSnapshotOptions } from './application/primitives/snapshot/workdir-snapshot.js';
 export * from './application/primitives/snapshot-operators/index.js';
 export * from './ports/index.js';
 export { consoleProgress, noopProgress, type ProgressReporter } from './progress.js';
