@@ -127,6 +127,7 @@ export {
 } from './mv.js';
 export { type PullOptions, type PullResult, pull } from './pull.js';
 export { type PushOptions, type PushResult, push } from './push.js';
+export { type ReadFileAtResult, readFileAt } from './read-file-at.js';
 export {
   type RebaseAbortResult,
   type RebaseConflict,
