@@ -44612,7 +44612,15 @@
 									},
 									{
 										"kind": "text",
-										"text": " thread into the\nshared commit reader; an aborted signal throws at the next loop head."
+										"text": " thread into the\nshared commit reader; an aborted signal throws at the next loop head.\n\nThe walk is lazy (parents discovered on pop), so it matches\n"
+									},
+									{
+										"kind": "code",
+										"text": "`git rev-list --date-order`"
+									},
+									{
+										"kind": "text",
+										"text": " for histories whose committer dates are monotonic\nalong parent edges — every history built by normal git operations. It does not\nenforce git's strict all-children-before-parent rule for forged reverse-causal\ndates, trading that edge case for streaming composition."
 									}
 								]
 							},
