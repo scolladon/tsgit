@@ -26,6 +26,24 @@ export const subjectLine = (message: string): string => {
   return newline === -1 ? message : message.slice(0, newline);
 };
 
+/**
+ * A commit's folded subject — git's `%s` (`format_subject`): the leading
+ * paragraph collapsed to a single line, joining consecutive non-blank lines with
+ * one space. Each line's trailing ASCII whitespace is stripped (git's
+ * `is_blank_line`), the first blank line ends the subject so the body never
+ * appears, and leading whitespace on a continuation line is preserved. Unlike
+ * `subjectLine`, a trailing CR (CRLF endings) is trimmed rather than kept.
+ */
+export const foldSubject = (message: string): string => {
+  const lines: string[] = [];
+  for (const raw of message.split('\n')) {
+    const line = raw.replace(TRAILING_ASCII_WHITESPACE, '');
+    if (line === '') break;
+    lines.push(line);
+  }
+  return lines.join(' ');
+};
+
 export const stripspace = (message: string): string => {
   const lines: string[] = [];
   for (const raw of message.split('\n')) {
