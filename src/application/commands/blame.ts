@@ -11,10 +11,10 @@
  * file had there (rename-aware), and the line content. Assembling `git blame`'s
  * `^abc1234 (Author …)` or `--porcelain` text is the caller's concern.
  */
-import { enqueue, type QueueEntry } from '../../domain/blame/priority-queue.js';
 import { splitAgainstParent } from '../../domain/blame/split-blame.js';
 import type { BlameEntry } from '../../domain/blame/types.js';
 import { invalidOption, pathNotInTree } from '../../domain/commands/error.js';
+import { enqueue, type QueueEntry } from '../../domain/commit/priority-queue.js';
 import { diffLines, splitLines } from '../../domain/diff/line-diff.js';
 import type { CommitData } from '../../domain/objects/commit.js';
 import { subjectLine } from '../../domain/objects/commit-message.js';
