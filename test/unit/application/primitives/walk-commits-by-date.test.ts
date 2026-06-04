@@ -463,12 +463,25 @@ describe('walkCommitsByDate', () => {
     });
   });
 
-  describe('Given a signal aborted between two yields', () => {
-    describe('When walkCommitsByDate continues', () => {
-      it('Then throws OPERATION_ABORTED at the next loop head', async () => {
-        // Arrange — kills the loop-head `ctx.signal?.aborted` guard set to false.
+  describe('Given a signal aborted after yielding a parentless seed with another seed queued', () => {
+    describe('When walkCommitsByDate reaches the next loop head', () => {
+      it('Then throws OPERATION_ABORTED without reading further', async () => {
+        // Arrange — two parentless roots, so the next loop head is reached with NO
+        // intervening read. This isolates the loop-head `ctx.signal?.aborted`
+        // guard: during parent expansion readObject's own abort check would mask
+        // it, but a parentless commit triggers no read before the guard fires.
         const ctx = await buildSeededContext();
-        const ids = await linearChain(ctx, 3);
+        const treeId = await emptyTree(ctx);
+        const mkRoot = (ts: number, message: string): Promise<ObjectId> =>
+          createCommit(ctx, {
+            tree: treeId,
+            parents: [],
+            author: { ...AUTHOR, timestamp: ts },
+            committer: { ...AUTHOR, timestamp: ts },
+            message,
+          });
+        const newer = await mkRoot(1700000200, 'newer root');
+        const older = await mkRoot(1700000100, 'older root');
         const controller = new AbortController();
         const aborted = { ...ctx, signal: controller.signal };
 
@@ -476,7 +489,7 @@ describe('walkCommitsByDate', () => {
         const yielded: ObjectId[] = [];
         let caught: unknown;
         try {
-          for await (const c of walkCommitsByDate(aborted, { from: [ids.at(-1)!] })) {
+          for await (const c of walkCommitsByDate(aborted, { from: [newer, older] })) {
             yielded.push(c.id);
             controller.abort();
           }
@@ -484,7 +497,7 @@ describe('walkCommitsByDate', () => {
         } catch (error) {
           caught = error;
         }
-        expect(yielded).toEqual([ids.at(-1)]);
+        expect(yielded).toEqual([newer]);
         expect((caught as TsgitError).data.code).toBe('OPERATION_ABORTED');
       });
     });
