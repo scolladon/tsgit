@@ -93,65 +93,94 @@ These are **not** interchangeable: `subjectLine('a\nb')` is `'a'`;
 `foldSubject('a\nb')` is `'a b'`. The reflog path deliberately keeps
 `subjectLine` (git's reflog subject is the first line, not the folded `%s`).
 
-### `walkCommits` — new `order: 'date'`
+### `walkCommitsByDate` — dedicated primitive (ADR-261)
 
 ```ts
-// src/application/primitives/types.ts
-readonly order?: 'topo' | 'first-parent' | 'date';
+// src/application/primitives/walk-commits-by-date.ts
+export interface WalkCommitsByDateOptions {
+  readonly from: ReadonlyArray<ObjectId>;
+  readonly until?: ReadonlyArray<ObjectId>;
+  readonly shallow?: ReadonlySet<ObjectId>;
+  readonly ignoreMissing?: boolean;
+  readonly verifyHash?: boolean;
+}
+export async function* walkCommitsByDate(
+  ctx: Context,
+  options: WalkCommitsByDateOptions,
+): AsyncIterable<Commit> { /* … */ }
 ```
 
-`date` walks **all parents** of every reachable commit, yielding them in
-commit-date priority order (newest first, oid-asc tie-break). It honours the
-same `from` / `until` / `shallow` / `ignoreMissing` / `verifyHash` / abort
-semantics as the existing orders. The primitive is already bound at
-`repo.primitives.walkCommits`, so the new order is reachable without any new
-binding or export — only the `WalkCommitsOptions.order` union widens (additive).
+It walks **all parents** of every reachable commit, yielding them in commit-date
+priority order (newest first, oid-asc tie-break), honouring the same `from` /
+`until` / `shallow` / `ignoreMissing` / `verifyHash` / abort semantics as
+`walkCommits` but with **no `order`** field — the order is the primitive's
+identity. New binding `repo.primitives.walkCommitsByDate` + a primitives-barrel
+re-export; `reports/api.json` regenerates to include both.
 
-`topo` (all-parents FIFO) and `first-parent` (FIFO) are **untouched** — their
-lazy "read-on-pop" discipline and the queue-overflow DoS guard that depends on
-it stay exactly as today.
+`walkCommits` (`topo` all-parents FIFO, `first-parent` FIFO) is left
+behaviourally **untouched** — its lazy "read-on-pop" discipline and the
+queue-overflow DoS guard that depends on it stay exactly as today; only its
+private commit reader is relocated to the shared helper the two walkers co-own.
 
-## Decision — date-order walk lives on `walkCommits` (`order: 'date'`)
+## Decision — dedicated `walkCommitsByDate` primitive (ADR-261)
 
-`walkCommits` already declares a three-state intent: `pickNext(queue, _order)`
-carries the comment *"Order arg retained for future heap-based scheduler."* The
-date order **is** that scheduler. Adding it as a third `order` keeps one
-read-model entry point for "walk commits," reuses `validateOptions`,
-`fetchCommit`, the abort check, and the `until`/`shallow`/`missing` handling,
-and surfaces automatically through the existing `repo.primitives.walkCommits`
-binding.
+Per ADR-261, the date-ordered history walk ships as a **sibling primitive**, not
+a third `order` on `walkCommits`. The two are structurally different traversals
+that cannot share a queue — the FIFO walker enqueues bare **oids** and reads
+**lazily on pop**; the date walker must read **eagerly at enqueue** to know each
+commit's timestamp. Cramming both into one function leaves a hard internal seam
+where the overflow guard applies to one branch but not the other, and a dead
+`order`-skip branch in the pop loop. A dedicated primitive keeps each walker
+small, single-purpose, and independently testable — a divergent algorithm
+isolated behind its own tests gives a tighter mutation surface (no FIFO/date
+seam for mutants to hide in), leaves perf headroom to profile the eager-read
+walk on its own, and keeps a later fusion open as a deliberate, test-backed move
+rather than a risky retro-split (ADR-261's three drivers). The (now-vestigial)
+`pickNext(_order)` "future heap-based scheduler" breadcrumb is logged for the
+architecture pass, not removed in the feature commits.
 
-The alternative — a separate `walkCommitsByDate` primitive — buys cleaner
-separation of the eager (date) from the lazy (FIFO) disciplines but at the cost
-of a second primitive, a new binding/export, and duplicated `until`/`shallow`/
-abort plumbing. Rejected as surface bloat against the breadcrumb's intent. (ADR
-below.)
-
-### Why date order must read eagerly (and why FIFO must not)
+### Why the date walk reads eagerly (and why FIFO must not)
 
 The two disciplines are genuinely different and **cannot share one queue**:
 
-- **FIFO (`topo`/`first-parent`)** enqueues bare parent **oids** and reads each
-  commit lazily *on pop*. This is what makes the queue-overflow guard
-  meaningful: an octopus commit with thousands of *fake* parents floods the
-  queue cheaply (no reads), and `MAX_WALK_QUEUE_SIZE` is the backstop. A unit
-  test exploits exactly this cheap-flood vector.
-- **`date`** must know a commit's timestamp to place it in the priority queue,
-  so it reads each commit *at enqueue time* and carries the loaded `Commit`
-  through the queue (yielded on pop, never re-read). A fake parent **cannot**
-  enter the date frontier — it fails to read first — so the cheap-flood vector
-  the FIFO guard defends against does not exist here.
+- **`walkCommits` (FIFO)** enqueues bare parent **oids** and reads each commit
+  lazily *on pop*. This is what makes the queue-overflow guard meaningful: an
+  octopus commit with thousands of *fake* parents floods the queue cheaply (no
+  reads), and `MAX_WALK_QUEUE_SIZE` is the backstop. A unit test exploits
+  exactly this cheap-flood vector.
+- **`walkCommitsByDate`** must know a commit's timestamp to place it in the
+  priority queue, so it reads each commit *at enqueue time* and carries the
+  loaded `Commit` through the queue (yielded on pop, never re-read). A fake
+  parent **cannot** enter the date frontier — it fails to read first — so the
+  cheap-flood vector the FIFO guard defends against does not exist here.
 
-Consequently the date path is **not** given the numeric `MAX_WALK_QUEUE_SIZE`
-guard. Its frontier is bounded another way: a `seen` set guards enqueue (each
-reachable commit is read and enqueued **at most once**, mirroring `describe`'s
-walk), so peak queue size ≤ the reachable-commit count — the same memory ceiling
-any reachability walk inherently holds (and the same `visited`-bounded ceiling
-the FIFO path reaches once its cheap-flood guard is satisfied). Forcing FIFO to
-also read-on-enqueue (to unify the two) is rejected: it would move the overflow
-detection *after* the first parent read, changing the guard's observable error
-from `INVALID_WALK_INPUT` to `OBJECT_NOT_FOUND` and breaking the documented DoS
-contract.
+Consequently `walkCommitsByDate` is **not** given the numeric
+`MAX_WALK_QUEUE_SIZE` guard (a cap line would be untestable without a
+reachable-commit count in the tens of thousands). Its frontier is bounded
+another way: a `seen` set guards enqueue (each reachable commit is read and
+enqueued **at most once**, mirroring `describe`'s walk), so peak queue size ≤ the
+reachable-commit count — the same memory ceiling any reachability walk inherently
+holds. Forcing FIFO to also read-on-enqueue (to unify the two) is rejected: it
+would move the overflow detection *after* the first parent read, changing the
+guard's observable error from `INVALID_WALK_INPUT` to `OBJECT_NOT_FOUND` and
+breaking the documented DoS contract.
+
+### Shared between the two walkers
+
+Only what is genuinely common is factored — over-factoring two oid-lazy /
+commit-eager queues would re-introduce the seam ADR-261 avoids:
+
+- **Seed validators** — `isEmptyFrom` / `exceedsMaxWalkSeeds` and their
+  `INVALID_WALK_INPUT` reasons already live in `validators.ts`; both walkers
+  call them.
+- **Commit reader** — `walkCommits`'s private `fetchCommit`/`isObjectNotFound`
+  (read object → skip non-commit → `ignoreMissing`/`missing` handling) is
+  extracted to a shared internal helper imported by both. Behaviour-preserving
+  for `walkCommits`; lands as its own `refactor(primitives)` commit before the
+  feature.
+- **Priority queue** — `domain/commit/priority-queue.ts` (`enqueue` /
+  `QueueEntry<Commit>` / `precedes`), making `walkCommitsByDate` the
+  payload-carrying consumer ADR-259 anticipated.
 
 ### Reuse — third consumer of the shared priority queue
 
@@ -179,9 +208,13 @@ while queue not empty:
     enqueueIfCommit(parent)
 
 enqueueIfCommit(oid):
-  commit ← fetchCommit(oid)              // shared with FIFO: verifyHash / ignoreMissing / missing
+  commit ← readCommit(oid)              // shared helper: verifyHash / ignoreMissing / non-commit-skip
   if commit: enqueue {oid, date: commit.committer.timestamp, value: commit}
 ```
+
+(`commit.committer.timestamp` / `commit.parents` / `commit.id` are shorthand for
+the real `commit.data.committer.timestamp` / `commit.data.parents` /
+`commit.id`.)
 
 The `until` gate moves to **before** the eager read (both at seeding and at
 parent expansion) so the queue only ever holds commits that *will* be yielded —
@@ -197,8 +230,9 @@ eagerly would diverge (throw `OBJECT_NOT_FOUND` where FIFO stays silent).
 - **shallow**: a shallow-boundary commit is yielded but its parents are not
   walked (matches FIFO + canonical git on a `.git/shallow` repo).
 - **abort**: checked at every loop head, identical to FIFO.
-- **ignoreMissing / verifyHash**: threaded straight into the shared
-  `fetchCommit`; a missing parent under `ignoreMissing` is recorded and skipped.
+- **ignoreMissing / verifyHash**: threaded straight into the shared `readCommit`
+  helper; a missing parent under `ignoreMissing` is skipped (the `seen` gate,
+  not a `missing` set, prevents any retry).
 
 ## Tests
 
@@ -232,24 +266,32 @@ fits lens 4 (idempotence) + invariants:
   — the subject ignores everything past the first blank line — `numRuns: 100`;
 - **never throws** — `numRuns: 100`.
 
-### `walkCommits` `order: 'date'` — example (`walk-commits.test.ts`)
+### `walkCommitsByDate` — example (`walk-commits-by-date.test.ts`)
 
-Extends the existing suite (same `linearChain` / `buildDiamond` fixtures):
+A new sibling suite (its own `linearChain` / `buildDiamond` fixtures, mirroring
+`walk-commits.test.ts`):
 
-- linear 5-chain, `order:'date'` → newest-first sequence, all five present;
+- empty `from` → `INVALID_WALK_INPUT` (empty); over-cap `from` → `INVALID_WALK_INPUT`
+  (too many) — both validators wired;
+- linear 5-chain → newest-first sequence, all five present;
 - diamond `A→B,C→D` with strictly-increasing dates `a<b<c<d` → exact order
   `[d, c, b, a]` (pins the all-parents reach **and** the newest-first
-  comparator: a topo-FIFO mutant would yield `[d,b,c,a]`);
+  comparator: a FIFO/topo mutant would yield `[d,b,c,a]`);
 - **tie-break**: two commits with **equal** committer dates pop in oid-ascending
   order (pins `precedes`'s tie-break; kills the `a.oid < b.oid` mutant);
 - diamond shared base `a` appears exactly once (dedup `seen` guard);
-- `until=[base]` excludes the base (and is not yielded);
+- `until=[base]` excludes the base (and is not yielded); a `until` seed is never
+  read (kills the "read-then-skip" divergence);
 - `shallow={tip}` yields only the tip (parents not expanded);
 - `ignoreMissing` + a missing parent → child yielded, no throw;
 - missing parent without `ignoreMissing` → `OBJECT_NOT_FOUND`;
-- an already-aborted signal → zero yields, `OPERATION_ABORTED`;
-- **regression**: `topo` and `first-parent` outputs are unchanged (existing
-  cases stay green).
+- non-commit seed (a tree oid) is skipped (shared reader's type check);
+- an already-aborted signal → zero yields, `OPERATION_ABORTED`; an abort between
+  two yields → `OPERATION_ABORTED` at the next loop head.
+
+The extracted shared reader keeps `walk-commits.test.ts` green unchanged
+(behaviour-preserving relocation), proving the refactor is invisible to the FIFO
+walker.
 
 ### Interop — faithfulness goldens
 
@@ -257,7 +299,7 @@ A new `history-interop.test.ts` (cross-tool, `skipIf(!GIT_AVAILABLE)`) builds a
 small DAG with **strictly-decreasing** commit dates via canonical `git`
 (scrubbed `GIT_*`, signing off), then asserts:
 
-- the `order:'date'` oid sequence equals `git rev-list --date-order <tip>`;
+- the `walkCommitsByDate` oid sequence equals `git rev-list --date-order <tip>`;
 - for every commit, `foldSubject(message)` equals `git log -1 --format=%s <oid>`
   — including a deliberately multi-line subject and a trailing-whitespace
   subject, the two shapes that separate `%s` from a naive first-line split.
@@ -287,7 +329,7 @@ with `// equivalent-mutant: <why>` only.
   preempting it here would risk a surface 23.4j wants to own.
 - Publicly exporting `foldSubject` — separable; recorded as a possibility, not
   done (YAGNI).
-- Unifying `describe`'s bespoke date walk onto the new `order:'date'` — its
+- Unifying `describe`'s bespoke date walk onto `walkCommitsByDate` — its
   candidate-reachability bookkeeping is entangled; rule-of-three is not yet met
-  (date-walk is the second general consumer). Re-evaluated in the architecture
-  pass; logged as a follow-up if it stays divergent.
+  (`walkCommitsByDate` is the second general consumer). Re-evaluated in the
+  architecture pass; logged as a follow-up if it stays divergent.
