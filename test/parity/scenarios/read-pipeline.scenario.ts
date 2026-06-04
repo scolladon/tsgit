@@ -7,7 +7,7 @@
  * deliberately omitted).
  *
  * Surfaces closed (per 19.5a):
- *   commands:   catFile
+ *   commands:   catFile, readFileAt
  *   primitives: readObject, readTree, readIndex, getRepoRoot, walkCommits,
  *               walkCommitsByDate, walkTree, walkWorkingTree, catFileBatch
  */
@@ -26,6 +26,8 @@ interface ReadPipelineResult {
   readonly walkWorkingTreeCount: number;
   readonly catFileEntryKind: string;
   readonly catFileBatchType: string;
+  readonly readFileAtContent: string;
+  readonly readFileAtMode: string;
 }
 
 export const readPipelineScenario: Scenario<ReadPipelineResult> = {
@@ -43,6 +45,8 @@ export const readPipelineScenario: Scenario<ReadPipelineResult> = {
     walkWorkingTreeCount: 1,
     catFileEntryKind: 'batch',
     catFileBatchType: 'commit',
+    readFileAtContent: 'hello a\n',
+    readFileAtMode: '100644',
   },
   run: async (repo, inputs) => {
     await repo.init();
@@ -67,6 +71,8 @@ export const readPipelineScenario: Scenario<ReadPipelineResult> = {
 
     const catFile = await repo.catFile({ ids: [commit.id] });
 
+    const fileAt = await repo.readFileAt(commit.id, 'a.txt');
+
     let catFileBatchType = '';
     for await (const entry of repo.primitives.catFileBatch([commit.id])) {
       if (entry.ok) catFileBatchType = entry.type;
@@ -85,6 +91,8 @@ export const readPipelineScenario: Scenario<ReadPipelineResult> = {
       walkWorkingTreeCount,
       catFileEntryKind: catFile.kind,
       catFileBatchType,
+      readFileAtContent: new TextDecoder().decode(fileAt.content),
+      readFileAtMode: fileAt.mode,
     };
   },
 };
