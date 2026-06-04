@@ -33,6 +33,12 @@ interface DateWalk {
  * excludes commits before they are read; `shallow` boundaries are yielded but
  * their parents are not walked; `ignoreMissing` / `verifyHash` thread into the
  * shared commit reader; an aborted signal throws at the next loop head.
+ *
+ * The walk is lazy (parents discovered on pop), so it matches
+ * `git rev-list --date-order` for histories whose committer dates are monotonic
+ * along parent edges — every history built by normal git operations. It does not
+ * enforce git's strict all-children-before-parent rule for forged reverse-causal
+ * dates, trading that edge case for streaming composition.
  */
 export async function* walkCommitsByDate(
   ctx: Context,

@@ -33,6 +33,16 @@ interface WalkCommitsByDateOptions {
 - Throws `INVALID_WALK_INPUT` on an empty or over-cap `from`, and aborts at the
   next loop head when `ctx.signal` is aborted.
 
+## Ordering scope
+
+A **lazy** date-priority walk: parents are discovered on pop, so the order equals
+`git rev-list --date-order` for any history whose committer dates are monotonic
+along parent edges — i.e. every history built by normal git operations (a parent
+object predates the child that references it). It does **not** enforce git's
+strict all-children-before-parent rule for *forged* reverse-causal committer
+dates (a parent dated newer than a child); that edge case is traded for
+streaming composition. See ADR-261.
+
 ## Example
 
 ```ts

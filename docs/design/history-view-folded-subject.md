@@ -62,8 +62,19 @@ library must pick its own total order. We reuse the repo's existing
 oid-asc tie-break), already the date-order primitive for `describe`, `blame`,
 and `merge-base` (ADR-259). The faithfulness golden (below) therefore uses
 **strictly-decreasing** commit dates so the ordering is unambiguous and matches
-`git rev-list --date-order` exactly; the deterministic tie-break is pinned by a
+`git rev-list --date-order`; the deterministic tie-break is pinned by a
 unit test, not by git parity.
+
+**Lazy scope (ADR-261).** The walk is **lazy** — it discovers a commit's parents
+only on pop, so a parent enters the frontier only after a child, preserving
+child-before-parent along every discovered path. This equals `--date-order` for
+any history whose committer dates are **monotonic along parent edges** — i.e.
+every history built by normal git operations, since a parent object predates the
+child that references it. It does **not** enforce git's strict
+all-children-before-parent rule for the adversarial *forged reverse-causal* case
+(a parent dated newer than a child), trading that edge case for streaming
+composition (efficient `take(N)`). Strict `--date-order` is deferred to **23.4j**.
+See ADR-261 §"Date-order scope".
 
 ## Surface
 
@@ -329,6 +340,11 @@ with `// equivalent-mutant: <why>` only.
   preempting it here would risk a surface 23.4j wants to own.
 - Publicly exporting `foldSubject` — separable; recorded as a possibility, not
   done (YAGNI).
+- A **strict `git rev-list --date-order` mode** (the two-pass in-degree sort that
+  enforces all-children-before-parent under forged reverse-causal committer
+  dates) — deferred to the log-convergence capstone **23.4j**, built only if a
+  converged porcelain needs it; the lazy walk is faithful for every causally-dated
+  history (ADR-261 §"Date-order scope").
 - Unifying `describe`'s bespoke date walk onto `walkCommitsByDate` — its
   candidate-reachability bookkeeping is entangled; rule-of-three is not yet met
   (`walkCommitsByDate` is the second general consumer). Re-evaluated in the

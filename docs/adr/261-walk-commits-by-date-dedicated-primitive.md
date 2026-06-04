@@ -82,6 +82,33 @@ is relocated to the shared helper it now co-owns. The now-vestigial
 `pickNext(_order)` breadcrumb (the "future heap-based scheduler" landed in a
 sibling, not in-place) is logged for the architecture pass, not removed here.
 
+### Date-order scope — lazy, not strict `--date-order`
+
+`walkCommitsByDate` is a **lazy** date-priority walk: it discovers a commit's
+parents only when that commit is popped, then yields the newest-committer-date
+commit currently on the frontier. This preserves child-before-parent **along
+every discovered path** and equals `git rev-list --date-order` for any history
+whose committer dates are **monotonic along parent edges** — which is **every
+history produced by normal git operations** (rebase / amend / cherry-pick /
+filter included), because a parent object necessarily predates the child that
+references it.
+
+It does **not** implement git's strict all-children-before-parent constraint for
+the adversarial case of **forged, reverse-causal committer dates** (a parent
+dated *newer* than one of its children, only reachable by deliberately setting
+`GIT_COMMITTER_DATE` out of causal order). There it may emit a shared parent
+before a lower-dated child — e.g. `[M, C1, P, C2, R]` where strict `--date-order`
+gives `[M, C1, C2, P, R]`.
+
+This is a **deliberate, ADR-sanctioned scope** (per the git-faithfulness prime
+directive, ADR-226): laziness buys streaming composition — an efficient
+`take(N)` over the operator toolkit, the read-model's intended use — which strict
+`--date-order` precludes, since the strict in-degree sort must read the **entire**
+reachable set before the first yield. The faithfulness goldens therefore use
+strictly-distinct, causally-ordered dates (where lazy ≡ strict). A strict
+`--date-order` mode is **deferred to the log-convergence capstone (23.4j)** as a
+follow-up, to be built only if a converged porcelain demonstrably needs it.
+
 ## Consequences
 
 ### Positive

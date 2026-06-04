@@ -5,14 +5,16 @@
  *
  *   1. `walkCommitsByDate` yields the same oid sequence as
  *      `git rev-list --date-order <merge>` — the all-parents, newest-date-first
- *      order, byte-for-byte;
+ *      order;
  *   2. `foldSubject(message)` equals `git log -1 --format=%s <oid>` for every
  *      reachable commit, including a multi-line subject (the shape that
  *      separates `%s` from a naive first-line split).
  *
  * A merge is required so the order assertion distinguishes the all-parents reach
- * from a first-parent walk. Distinct dates keep the order independent of git's
- * unspecified equal-date heap order.
+ * from a first-parent walk. The dates are strictly distinct and causally ordered
+ * (parent older than child) — the regime where the lazy walk is byte-for-byte
+ * `--date-order` (ADR-261); the deterministic equal-date tie-break is a unit-test
+ * concern, and strict ordering under forged reverse-causal dates is out of scope.
  *
  * @proves
  *   surface:        walkCommitsByDate, foldSubject
