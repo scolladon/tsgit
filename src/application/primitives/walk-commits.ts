@@ -1,7 +1,7 @@
-import { invalidWalkInput, operationAborted, TsgitError } from '../../domain/error.js';
+import { invalidWalkInput, operationAborted } from '../../domain/error.js';
 import type { Commit, ObjectId } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
-import { readObject } from './read-object.js';
+import { readCommit } from './internal/read-commit.js';
 import { MAX_WALK_QUEUE_SIZE, type WalkCommitsOptions } from './types.js';
 import {
   exceedsMaxWalkSeeds,
@@ -43,7 +43,7 @@ export async function* walkCommits(
     const id = pickNext(state.queue, order);
     if (state.visited.has(id) || state.until.has(id)) continue;
 
-    const commit = await fetchCommit(ctx, id, verifyHash, ignoreMissing, state.missing);
+    const commit = await readCommit(ctx, id, { verifyHash, ignoreMissing, missing: state.missing });
     if (commit === undefined) continue;
     state.visited.add(id);
     yield commit;
@@ -57,26 +57,6 @@ function validateOptions(options: WalkCommitsOptions): void {
   }
   if (exceedsMaxWalkSeeds(options.from)) {
     throw invalidWalkInput(REASON_WALK_TOO_MANY_SEEDS);
-  }
-}
-
-async function fetchCommit(
-  ctx: Context,
-  id: ObjectId,
-  verifyHash: boolean,
-  ignoreMissing: boolean,
-  missing: Set<string>,
-): Promise<Commit | undefined> {
-  try {
-    const object = await readObject(ctx, id, { verifyHash });
-    if (object.type !== 'commit') return undefined;
-    return object;
-  } catch (error) {
-    if (ignoreMissing && isObjectNotFound(error)) {
-      missing.add(id);
-      return undefined;
-    }
-    throw error;
   }
 }
 
@@ -101,8 +81,4 @@ function pickNext(queue: ObjectId[], _order: 'topo' | 'first-parent'): ObjectId 
   // Caller guards `queue.length > 0`, so shift is guaranteed to return a value.
   // Order arg retained for future heap-based scheduler.
   return queue.shift() as ObjectId;
-}
-
-function isObjectNotFound(error: unknown): boolean {
-  return error instanceof TsgitError && error.data.code === 'OBJECT_NOT_FOUND';
 }
