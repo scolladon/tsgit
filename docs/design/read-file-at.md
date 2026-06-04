@@ -55,13 +55,13 @@ file addressed by `<path>` in the tree of `<rev>`:
 Pinned byte-for-byte by a `read-file-at-interop` cross-tool suite reconstructing
 `git cat-file blob <rev>:<path>` (and its refusals) against real `git`.
 
-## Open decisions (ADR conversation)
+## Decisions (ADR-262)
 
-Two load-bearing choices are **not** pre-decided by an existing ADR. The design
-below is written against the **recommended** option; if the user picks otherwise
-the doc is revised before the plan.
+Two load-bearing choices, settled in **ADR-262**: a **Tier-1 command over the
+full `revParse` grammar** (D1), returning **`{ id, mode, content }`** (D2). The
+rest of the design is written against those.
 
-### D1 — Tier & accepted `rev` grammar *(recommend: Tier-1 command, full grammar)*
+### D1 — Tier & accepted `rev` grammar *(decided: Tier-1 command, full grammar)*
 
 The backlog frames this as *"golden-path **convenience** for the #1 viewer job"*.
 Convenience hinges on which `rev` forms resolve:
@@ -97,7 +97,7 @@ The two are not mutually exclusive forever — (A) can later delegate to a (B)
 primitive in the 23.4j convergence — but shipping **one** now per YAGNI, (A) is
 the better single bet for a helper whose entire reason to exist is convenience.
 
-### D2 — Return shape *(recommend: `{ id, mode, content }`)*
+### D2 — Return shape *(decided: `{ id, mode, content }`)*
 
 - **(A) `{ id, mode, content }`.** *Recommended.* The blob oid, its tree-entry
   mode, and the raw bytes. `mode` is **free** (already read during descent) and
@@ -111,7 +111,7 @@ Returning `content` directly (not the whole `Blob` wrapper) keeps the result a
 flat, purpose-built record; `type` is always `'blob'` by construction so it
 carries no information.
 
-## Surface (recommended options A/A)
+## Surface (ADR-262)
 
 ```ts
 // src/application/commands/read-file-at.ts
