@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { enqueue, precedes, type QueueEntry } from '../../../../src/domain/blame/priority-queue.js';
+import {
+  enqueue,
+  precedes,
+  type QueueEntry,
+} from '../../../../src/domain/commit/priority-queue.js';
 import type { ObjectId } from '../../../../src/domain/objects/index.js';
 
 const oid = (char: string): ObjectId => char.repeat(40) as ObjectId;

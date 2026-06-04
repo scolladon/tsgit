@@ -11,6 +11,7 @@ import {
   noNames,
   noReachableNames,
 } from '../../domain/commands/error.js';
+import { enqueue, type QueueEntry } from '../../domain/commit/priority-queue.js';
 import {
   buildNameFilter,
   type Candidate,
@@ -212,14 +213,9 @@ interface WalkCommit {
   readonly parents: ReadonlyArray<ObjectId>;
 }
 
-interface QueueEntry {
-  readonly oid: ObjectId;
-  readonly date: number;
-}
-
 /** Mutable state threaded through the date-ordered walk. */
 interface WalkState {
-  readonly queue: QueueEntry[];
+  readonly queue: QueueEntry<undefined>[];
   readonly seen: Set<ObjectId>;
   readonly reach: Map<ObjectId, Set<number>>;
   readonly firstParent: boolean;
@@ -253,10 +249,10 @@ const selectNearest = async (
   let counter = 0;
   let sawUnannotated = false;
   let gaveUp: ObjectId | undefined;
-  enqueue(state.queue, { oid: target, date: (await state.read(target)).date });
+  enqueue(state.queue, { oid: target, date: (await state.read(target)).date, value: undefined });
 
   while (state.queue.length > 0) {
-    const { oid } = state.queue.shift() as QueueEntry;
+    const { oid } = state.queue.shift() as QueueEntry<undefined>;
     counter += 1;
     const named = nameMap.get(oid);
     if (named !== undefined && named.priority >= minPriority) {
@@ -322,7 +318,11 @@ const enqueueParents = async (state: WalkState, oid: ObjectId): Promise<void> =>
     // (vs the seen-guard) never increments the winner's depth; the result holds.
     if (!state.seen.has(parent)) {
       state.seen.add(parent);
-      enqueue(state.queue, { oid: parent, date: (await state.read(parent)).date });
+      enqueue(state.queue, {
+        oid: parent,
+        date: (await state.read(parent)).date,
+        value: undefined,
+      });
     }
     if (reachedHere !== undefined) {
       const parentReach = reachSet(state.reach, parent);
@@ -333,9 +333,9 @@ const enqueueParents = async (state: WalkState, oid: ObjectId): Promise<void> =>
 
 /** Continue the walk past the candidate cap to finalise the winner's depth. */
 const finishDepth = async (state: WalkState, best: Candidate, gaveUp: ObjectId): Promise<void> => {
-  enqueue(state.queue, { oid: gaveUp, date: (await state.read(gaveUp)).date });
+  enqueue(state.queue, { oid: gaveUp, date: (await state.read(gaveUp)).date, value: undefined });
   while (state.queue.length > 0) {
-    const { oid } = state.queue.shift() as QueueEntry;
+    const { oid } = state.queue.shift() as QueueEntry<undefined>;
     const reached = state.reach.get(oid);
     if (reached === undefined || !reached.has(best.foundOrder)) best.depth += 1;
     await enqueueParents(state, oid);
@@ -350,18 +350,3 @@ const reachSet = (reach: Map<ObjectId, Set<number>>, oid: ObjectId): Set<number>
   }
   return set;
 };
-
-/** Insert keeping the queue newest-date-first, oid-ascending on ties. */
-const enqueue = (queue: QueueEntry[], entry: QueueEntry): void => {
-  let i = 0;
-  while (i < queue.length && !precedes(entry, queue[i] as QueueEntry)) i += 1;
-  queue.splice(i, 0, entry);
-};
-
-const precedes = (a: QueueEntry, b: QueueEntry): boolean =>
-  // Stryker disable next-line all: equivalent — the oid tie-break only orders
-  // commits with identical committer dates; for the nearest-tag selection that
-  // reordering is observable only in the rare equal-date *and* equal-depth tie,
-  // where any deterministic order yields the same distance (the same
-  // pop-order equivalence merge-base annotates on its date-ordered queue).
-  a.date > b.date || (a.date === b.date && a.oid < b.oid);

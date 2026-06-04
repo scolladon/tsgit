@@ -1,3 +1,4 @@
+import { enqueue, type QueueEntry } from '../../domain/commit/priority-queue.js';
 import { invalidWalkInput } from '../../domain/error.js';
 import type { Commit } from '../../domain/objects/index.js';
 import type { ObjectId } from '../../domain/objects/object-id.js';
@@ -16,10 +17,6 @@ export interface MergeBaseOptions {
 }
 
 type ReadCommit = (id: ObjectId) => Promise<Commit | undefined>;
-interface QueueEntry {
-  readonly id: ObjectId;
-  readonly date: number;
-}
 
 const makeReadCommit = (ctx: Context): ReadCommit => {
   const cache = new Map<ObjectId, Commit | undefined>();
@@ -38,28 +35,14 @@ const makeReadCommit = (ctx: Context): ReadCommit => {
 
 const dateOf = (commit: Commit | undefined): number => commit?.data.committer.timestamp ?? 0;
 
-// Priority queue as an insertion-sorted array: front = newest date, oid asc on ties.
-const precedes = (a: QueueEntry, b: QueueEntry): boolean => {
-  // Stryker disable next-line all: equivalent — this comparator only fixes the
-  // queue's pop order; the merge-base result set is order-independent (proven by
-  // the date-order-invariance property), so any reordering yields the same bases.
-  return a.date > b.date || (a.date === b.date && a.id < b.id);
-};
-
-const enqueue = (queue: QueueEntry[], entry: QueueEntry): void => {
-  let i = 0;
-  // Stryker disable next-line all: equivalent — the scan only picks the insertion
-  // slot (pop order); results are order-independent, so a different slot or step
-  // changes nothing observable. `splice` below still inserts the entry.
-  while (i < queue.length && !precedes(entry, queue[i]!)) i += 1;
-  queue.splice(i, 0, entry);
-};
-
-const hasNonStale = (queue: readonly QueueEntry[], flags: ReadonlyMap<ObjectId, number>): boolean =>
+const hasNonStale = (
+  queue: readonly QueueEntry<undefined>[],
+  flags: ReadonlyMap<ObjectId, number>,
+): boolean =>
   // Stryker disable next-line all: equivalent — forcing this true only drains the
   // whole queue instead of stopping early; the extra stale pops re-mark nothing
   // (parents already carry their flags), so RESULT bits and the output are identical.
-  queue.some((entry) => ((flags.get(entry.id) ?? 0) & STALE) === 0);
+  queue.some((entry) => ((flags.get(entry.oid) ?? 0) & STALE) === 0);
 
 /**
  * Paint commits down to their common ancestors (Git's `paint_down_to_common`).
@@ -73,15 +56,15 @@ const paint = async (
   twos: readonly ObjectId[],
 ): Promise<Map<ObjectId, number>> => {
   const flags = new Map<ObjectId, number>();
-  const queue: QueueEntry[] = [];
+  const queue: QueueEntry<undefined>[] = [];
   const mark = async (id: ObjectId, bits: number): Promise<void> => {
     flags.set(id, (flags.get(id) ?? 0) | bits);
-    enqueue(queue, { id, date: dateOf(await read(id)) });
+    enqueue(queue, { oid: id, date: dateOf(await read(id)), value: undefined });
   };
   await mark(one, PARENT1);
   for (const two of twos) await mark(two, PARENT2);
   while (hasNonStale(queue, flags)) {
-    const { id } = queue.shift()!;
+    const { oid: id } = queue.shift()!;
     let f = (flags.get(id) ?? 0) & (BOTH | STALE);
     if (f === BOTH) {
       flags.set(id, (flags.get(id) ?? 0) | RESULT);
