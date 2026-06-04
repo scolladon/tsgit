@@ -21,7 +21,7 @@ import {
   assertRepository,
   readHeadRaw,
 } from './internal/repo-state.js';
-import { type MergeResult, merge } from './merge.js';
+import { type MergeInternalOptions, type MergeResult, merge } from './merge.js';
 
 const HEADS_PREFIX = 'refs/heads/';
 
@@ -106,17 +106,22 @@ export const pull = async (ctx: Context, opts: PullOptions = {}): Promise<PullRe
 
   const tip = await resolveRef(ctx, `refs/remotes/${remote}/${branch}` as RefName);
 
-  const mergeResult = await merge(ctx, {
-    target: tip,
-    message: opts.message ?? `Merge branch '${branch}' of ${fetchResult.url}`,
-    reflogLabel: 'pull',
-    // Stryker disable next-line ConditionalExpression: equivalent — the always-true mutant forwards `{ fastForward: undefined }`, which `merge` reads as `!== 'never'` (so a fast-forward proceeds) and `=== 'only'` (false) — identical to omitting it. The drop direction + the `!==` flip are killed by the fastForward-forwarding tests.
-    ...(opts.fastForward !== undefined ? { fastForward: opts.fastForward } : {}),
-    // Stryker disable next-line ConditionalExpression: equivalent — the always-true mutant forwards `{ author: undefined }`, which `merge` resolves as `opts.author ?? config` — identical to omitting it. The drop direction + the `!==` flip are killed by the author-bearing merge tests.
-    ...(opts.author !== undefined ? { author: opts.author } : {}),
-    // Stryker disable next-line ConditionalExpression: equivalent — the always-true mutant forwards `{ committer: undefined }`, which `merge` resolves as `opts.committer ?? author` — identical to omitting it. The drop direction + the `!==` flip are killed by the committer-forwarding test.
-    ...(opts.committer !== undefined ? { committer: opts.committer } : {}),
-  });
+  // git sets GIT_REFLOG_ACTION=pull for the integrate step; this is its analogue.
+  const mergeInternal: MergeInternalOptions = { reflogAction: 'pull' };
+  const mergeResult = await merge(
+    ctx,
+    {
+      target: tip,
+      message: opts.message ?? `Merge branch '${branch}' of ${fetchResult.url}`,
+      // Stryker disable next-line ConditionalExpression: equivalent — the always-true mutant forwards `{ fastForward: undefined }`, which `merge` reads as `!== 'never'` (so a fast-forward proceeds) and `=== 'only'` (false) — identical to omitting it. The drop direction + the `!==` flip are killed by the fastForward-forwarding tests.
+      ...(opts.fastForward !== undefined ? { fastForward: opts.fastForward } : {}),
+      // Stryker disable next-line ConditionalExpression: equivalent — the always-true mutant forwards `{ author: undefined }`, which `merge` resolves as `opts.author ?? config` — identical to omitting it. The drop direction + the `!==` flip are killed by the author-bearing merge tests.
+      ...(opts.author !== undefined ? { author: opts.author } : {}),
+      // Stryker disable next-line ConditionalExpression: equivalent — the always-true mutant forwards `{ committer: undefined }`, which `merge` resolves as `opts.committer ?? author` — identical to omitting it. The drop direction + the `!==` flip are killed by the committer-forwarding test.
+      ...(opts.committer !== undefined ? { committer: opts.committer } : {}),
+    },
+    mergeInternal,
+  );
 
   return { fetch: fetchResult, merge: mergeResult };
 };

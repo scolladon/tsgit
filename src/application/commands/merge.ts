@@ -64,12 +64,20 @@ export interface MergeOptions {
   readonly fastForward?: 'only' | 'never' | 'allow';
   readonly author?: AuthorIdentity;
   readonly committer?: AuthorIdentity;
+}
+
+/**
+ * Internal-only knobs for `merge`, set by composing porcelain (e.g. `pull`),
+ * never by end users. Deliberately **not** re-exported from the commands barrel,
+ * so it stays off the public API surface.
+ */
+export interface MergeInternalOptions {
   /**
    * Reflog action prefix, mirroring git's GIT_REFLOG_ACTION. Replaces the
    * default `merge <target>` prefix in the fast-forward and merge-commit reflog
    * messages (e.g. `pull` → `pull: Fast-forward`). Defaults to `merge <target>`.
    */
-  readonly reflogLabel?: string;
+  readonly reflogAction?: string;
 }
 
 export interface MergeConflictDescriptor {
@@ -106,7 +114,11 @@ export type MergeResult =
  *  Resolution path: edit the marker files, `repo.add(paths)`,
  *  `repo.commit({ message })` — the resulting commit has two parents.
  */
-export const merge = async (ctx: Context, opts: MergeOptions): Promise<MergeResult> => {
+export const merge = async (
+  ctx: Context,
+  opts: MergeOptions,
+  internal: MergeInternalOptions = {},
+): Promise<MergeResult> => {
   await assertRepository(ctx);
   await assertNotBare(ctx, 'merge');
   await assertNoPendingOperation(ctx);
@@ -124,7 +136,7 @@ export const merge = async (ctx: Context, opts: MergeOptions): Promise<MergeResu
     if (opts.fastForward !== 'never') {
       await updateRef(ctx, head.target, theirId, {
         expected: ourId,
-        reflogMessage: `${opts.reflogLabel ?? `merge ${opts.target}`}: Fast-forward`,
+        reflogMessage: `${internal.reflogAction ?? `merge ${opts.target}`}: Fast-forward`,
       });
       return { kind: 'fast-forward', id: theirId, branch: head.target };
     }
@@ -132,7 +144,7 @@ export const merge = async (ctx: Context, opts: MergeOptions): Promise<MergeResu
   if (opts.fastForward === 'only') {
     throw nonFastForward(head.target, ourId, theirId);
   }
-  return mergeCommit(ctx, opts, head.target, ourId, theirId, base);
+  return mergeCommit(ctx, opts, internal, head.target, ourId, theirId, base);
 };
 
 const MERGE_WRITE_FILES_OP = 'merge:write-files';
@@ -145,6 +157,7 @@ export const UNSUPPORTED_CONFLICT_TYPES: ReadonlySet<ConflictType> = new Set([
 const mergeCommit = async (
   ctx: Context,
   opts: MergeOptions,
+  internal: MergeInternalOptions,
   branchName: RefName,
   ourId: ObjectId,
   theirId: ObjectId,
@@ -156,7 +169,7 @@ const mergeCommit = async (
     if (treeResult.kind === 'conflict') {
       return persistConflictState(ctx, opts, treeResult, ourId, theirId);
     }
-    return commitCleanMerge(ctx, opts, branchName, ourId, theirId, treeResult.tree);
+    return commitCleanMerge(ctx, opts, internal, branchName, ourId, theirId, treeResult.tree);
   } finally {
     ctx.progress.end(MERGE_WRITE_FILES_OP);
   }
@@ -165,6 +178,7 @@ const mergeCommit = async (
 const commitCleanMerge = async (
   ctx: Context,
   opts: MergeOptions,
+  internal: MergeInternalOptions,
   branchName: RefName,
   ourId: ObjectId,
   theirId: ObjectId,
@@ -184,7 +198,7 @@ const commitCleanMerge = async (
   const id = await createCommit(ctx, commitData);
   await updateRef(ctx, branchName, id, {
     expected: ourId,
-    reflogMessage: `${opts.reflogLabel ?? `merge ${opts.target}`}: Merge made by the 'tsgit' strategy.`,
+    reflogMessage: `${internal.reflogAction ?? `merge ${opts.target}`}: Merge made by the 'tsgit' strategy.`,
   });
   return { kind: 'merge', id, branch: branchName, parents: [ourId, theirId] };
 };

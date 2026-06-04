@@ -1416,7 +1416,7 @@ describe('merge — updateRef CAS guard', () => {
   });
 });
 
-describe('merge — reflogLabel', () => {
+describe('merge — internal reflog action', () => {
   const seedFastForward = async () => {
     const ctx = createMemoryContext();
     await init(ctx);
@@ -1432,7 +1432,7 @@ describe('merge — reflogLabel', () => {
     return ctx;
   };
 
-  describe('Given no reflogLabel and a fast-forward', () => {
+  describe('Given no reflog action override and a fast-forward', () => {
     describe('When merge', () => {
       it('Then the branch reflog records the default "merge <target>" prefix', async () => {
         // Arrange
@@ -1450,14 +1450,32 @@ describe('merge — reflogLabel', () => {
     });
   });
 
-  describe('Given reflogLabel "pull" and a fast-forward', () => {
+  describe('Given no reflog action override and a forced merge commit', () => {
+    describe('When merge', () => {
+      it('Then the branch reflog records the default "merge <target>" merge-commit prefix', async () => {
+        // Arrange
+        const ctx = await seedFastForward();
+
+        // Act
+        await merge(ctx, { target: 'feature', fastForward: 'never', message: 'merge', author });
+
+        // Assert
+        const messages = (await readReflog(ctx, 'refs/heads/main' as RefName)).map(
+          (e) => e.message,
+        );
+        expect(messages).toContain("merge feature: Merge made by the 'tsgit' strategy.");
+      });
+    });
+  });
+
+  describe('Given an internal reflogAction "pull" and a fast-forward', () => {
     describe('When merge', () => {
       it('Then the branch reflog records "pull: Fast-forward"', async () => {
         // Arrange
         const ctx = await seedFastForward();
 
         // Act
-        await merge(ctx, { target: 'feature', reflogLabel: 'pull' });
+        await merge(ctx, { target: 'feature' }, { reflogAction: 'pull' });
 
         // Assert
         const messages = (await readReflog(ctx, 'refs/heads/main' as RefName)).map(
@@ -1468,20 +1486,18 @@ describe('merge — reflogLabel', () => {
     });
   });
 
-  describe('Given reflogLabel "pull" and a forced merge commit', () => {
+  describe('Given an internal reflogAction "pull" and a forced merge commit', () => {
     describe('When merge', () => {
       it('Then the branch reflog records "pull: Merge made by the \'tsgit\' strategy."', async () => {
         // Arrange
         const ctx = await seedFastForward();
 
         // Act
-        await merge(ctx, {
-          target: 'feature',
-          fastForward: 'never',
-          message: 'merge',
-          author,
-          reflogLabel: 'pull',
-        });
+        await merge(
+          ctx,
+          { target: 'feature', fastForward: 'never', message: 'merge', author },
+          { reflogAction: 'pull' },
+        );
 
         // Assert
         const messages = (await readReflog(ctx, 'refs/heads/main' as RefName)).map(
