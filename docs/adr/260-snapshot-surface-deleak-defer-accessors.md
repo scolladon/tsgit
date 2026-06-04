@@ -36,7 +36,7 @@ Two frictions surfaced while weighing the accessors:
 - **`repo.tree(rev)` is not an alias.** `repo.snapshot.tree(oid)` takes a
   resolved tree `ObjectId`; `repo.tree(rev)` would take a revision string and
   must rev-parse + peel-to-tree — the heart of 23.4c (`readFileAt(rev, path)`)
-  and 23.4e (the `rev` vocabulary). Building it here pre-empts two
+  and 23.4e (the `rev` vocabulary). Building it here preempts two
   not-yet-designed items.
 
 ## Decision
@@ -64,7 +64,7 @@ reflog, on-disk state, refusal, or output change — and does not touch
 
 Do **not** add `repo.tree(rev)` / `repo.index` / `repo.workdir` / `repo.stash`
 in this slice. Reasons: the `repo.stash` collision; `repo.tree(rev)`
-pre-empting 23.4c/e; and `repo.index`/`repo.workdir` being thin getters whose
+preempting 23.4c/e; and `repo.index`/`repo.workdir` being thin getters whose
 final shape belongs to the read-model convergence capstone (23.4j), which is
 explicitly gated on the over-design caution. Bare-property getters would also be
 *less capable* than the methods they shadow (they cannot carry
@@ -85,7 +85,7 @@ has proven the read model out.
   `reports/api.json` unchanged.
 - The accessor shape stays open for 23.4j to decide holistically, avoiding a
   premature, asymmetric `repo.index`/`repo.workdir` duplication and a
-  `repo.tree(rev)` that would pre-empt 23.4c/e.
+  `repo.tree(rev)` that would preempt 23.4c/e.
 
 ### Negative
 

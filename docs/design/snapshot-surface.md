@@ -154,7 +154,7 @@ Three concrete frictions argue against forcing the abstraction in this slice:
    `repo.tree(rev)` would take a **revision string** and must rev-parse +
    peel-to-tree first. That rev→tree resolution is the heart of **23.4c**
    (`readFileAt(rev, path)`) and the `rev` vocabulary of **23.4e** — building it
-   here pre-empts two not-yet-designed items and risks a shape they will want to
+   here preempts two not-yet-designed items and risks a shape they will want to
    own.
 3. **`repo.index` / `repo.workdir` would be thin getters** delegating to
    `repo.snapshot.index()` / `repo.snapshot.workdir()` — pure surface
@@ -164,7 +164,7 @@ Three concrete frictions argue against forcing the abstraction in this slice:
 **Recommendation: defer all four accessors** — ship deliverable 1 (the mandatory
 encapsulation) alone, and record the accessors as an explicit backlog follow-up
 so the decision is *deferred, not dropped*. This honours the literal closing
-clause, sidesteps the `repo.stash` collision, and avoids pre-empting 23.4c/e/j.
+clause, sidesteps the `repo.stash` collision, and avoids preempting 23.4c/e/j.
 The disposition is a user-judgment call → captured as an ADR.
 
 ## Test strategy
@@ -199,5 +199,5 @@ naming, 100% coverage, 0 surviving mutants on any touched file.
   `repo.stash`) — deferred per the ADR; a backlog follow-up records the weigh.
 - `readFileAt(rev, path)` (23.4c), `rev` vocabulary (23.4e), read-model
   convergence (23.4j) — adjacent items that the accessor decision must not
-  pre-empt.
+  preempt.
 ```
