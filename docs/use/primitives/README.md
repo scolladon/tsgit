@@ -25,6 +25,7 @@ The composable building blocks every Tier-1 command is built from. Same `Context
 | [`unstageEntry`](unstage-entry.md) | Drop a single tracked entry (no working-tree side-effect). |
 | [`updateRef`](update-ref.md) | Convenience wrapper around `recordRefUpdate`. |
 | [`walkCommits`](walk-commits.md) | `AsyncIterable<Commit>` walker (any parent ordering). |
+| [`walkCommitsByDate`](walk-commits-by-date.md) | `AsyncIterable<Commit>` walker, all parents, newest committer-date first. |
 | [`walkSubmodules`](walk-submodules.md) | `AsyncIterable<SubmoduleEntry>` walker. |
 | [`walkTree`](walk-tree.md) | `AsyncIterable<TreeEntry>` walker. |
 | [`walkWorkingTree`](walk-working-tree.md) | `AsyncIterable<WalkWorkingTreeEntry>` walker (DFS, ignore-aware). |

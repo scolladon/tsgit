@@ -46,3 +46,15 @@ function arbRawLine(): fc.Arbitrary<string> {
 export function arbCommitMessage(): fc.Arbitrary<string> {
   return fc.array(arbRawLine(), { maxLength: 10 }).map((lines) => lines.join('\n'));
 }
+
+// A single `\n`-free line guaranteed to carry at least one non-whitespace ASCII
+// char (the anchor), so it survives `foldSubject`'s trailing-trim as a non-empty
+// subject. Surrounding fill chars may include spaces; the anchor keeps the line
+// from folding to the empty string.
+export function arbNonBlankLine(): fc.Arbitrary<string> {
+  const bodyChars = fc.constantFrom('a', 'b', 'c', '#', 'x', '.', ' ');
+  const fill = fc.array(bodyChars, { maxLength: 4 }).map((chars) => chars.join(''));
+  return fc
+    .tuple(fill, fc.constantFrom('a', 'b', 'x', '.', '#'), fill)
+    .map(([pre, anchor, post]) => pre + anchor + post);
+}

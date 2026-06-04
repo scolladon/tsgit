@@ -83,6 +83,7 @@ export {
 } from './update-config.js';
 export { updateRef } from './update-ref.js';
 export { walkCommits } from './walk-commits.js';
+export { walkCommitsByDate } from './walk-commits-by-date.js';
 export { walkSubmodules } from './walk-submodules.js';
 export { walkTree } from './walk-tree.js';
 export { walkWorkingTree } from './walk-working-tree.js';

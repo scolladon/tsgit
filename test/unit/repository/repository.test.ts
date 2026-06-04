@@ -209,6 +209,7 @@ describe('openRepository — Repository binding integrity', () => {
             'unstageEntry',
             'updateRef',
             'walkCommits',
+            'walkCommitsByDate',
             'walkSubmodules',
             'walkTree',
             'walkWorkingTree',

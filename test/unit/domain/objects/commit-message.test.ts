@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
-import { stripspace, subjectLine } from '../../../../src/domain/objects/commit-message.js';
+import {
+  foldSubject,
+  stripspace,
+  subjectLine,
+} from '../../../../src/domain/objects/commit-message.js';
 
 describe('stripspace', () => {
   describe('Given a message with no trailing newline, When stripspace runs', () => {
@@ -288,6 +292,164 @@ describe('subjectLine', () => {
 
       // Assert
       expect(sut).toBe('a');
+    });
+  });
+});
+
+describe('foldSubject', () => {
+  describe('Given a two-line subject, When foldSubject runs', () => {
+    it('Then the lines are folded with a single space', () => {
+      // Arrange
+      const message = 'Fix the bug\nin the parser';
+
+      // Act
+      const result = foldSubject(message);
+
+      // Assert
+      expect(result).toBe('Fix the bug in the parser');
+    });
+  });
+
+  describe('Given a subject followed by a body after a blank line, When foldSubject runs', () => {
+    it('Then only the subject is returned (the body is dropped)', () => {
+      // Arrange
+      const message = 'subject\n\nbody paragraph\nmore';
+
+      // Act
+      const result = foldSubject(message);
+
+      // Assert
+      expect(result).toBe('subject');
+    });
+  });
+
+  describe('Given a folded line with trailing spaces, When foldSubject runs', () => {
+    it('Then the trailing spaces are stripped before joining', () => {
+      // Arrange
+      const message = 'a  \nb';
+
+      // Act
+      const result = foldSubject(message);
+
+      // Assert
+      expect(result).toBe('a b');
+    });
+  });
+
+  describe('Given a continuation line with leading whitespace, When foldSubject runs', () => {
+    it('Then the leading whitespace is preserved', () => {
+      // Arrange
+      const message = 'a\n  b';
+
+      // Act
+      const result = foldSubject(message);
+
+      // Assert
+      expect(result).toBe('a   b');
+    });
+  });
+
+  describe('Given a message starting with a blank line, When foldSubject runs', () => {
+    it('Then the empty string is returned', () => {
+      // Arrange
+      const message = '\nbody after a blank subject';
+
+      // Act
+      const result = foldSubject(message);
+
+      // Assert
+      expect(result).toBe('');
+    });
+  });
+
+  describe('Given a single line ending in a tab, When foldSubject runs', () => {
+    it('Then the trailing tab is stripped', () => {
+      // Arrange
+      const message = 'a\t';
+
+      // Act
+      const result = foldSubject(message);
+
+      // Assert
+      expect(result).toBe('a');
+    });
+  });
+
+  describe('Given a single line ending in a vertical tab, When foldSubject runs', () => {
+    it('Then the trailing vertical tab is stripped', () => {
+      // Arrange
+      const message = 'a\v';
+
+      // Act
+      const result = foldSubject(message);
+
+      // Assert
+      expect(result).toBe('a');
+    });
+  });
+
+  describe('Given a single line ending in a form feed, When foldSubject runs', () => {
+    it('Then the trailing form feed is stripped', () => {
+      // Arrange
+      const message = 'a\f';
+
+      // Act
+      const result = foldSubject(message);
+
+      // Assert
+      expect(result).toBe('a');
+    });
+  });
+
+  describe('Given a two-line subject with CRLF endings, When foldSubject runs', () => {
+    it('Then the carriage returns are stripped and the lines fold with a space', () => {
+      // Arrange — unlike subjectLine, %s trims the trailing CR per line
+      const message = 'a\r\nb\r\n';
+
+      // Act
+      const result = foldSubject(message);
+
+      // Assert
+      expect(result).toBe('a b');
+    });
+  });
+
+  describe('Given a single-line message, When foldSubject runs', () => {
+    it('Then the line is returned unchanged', () => {
+      // Arrange
+      const message = 'solo subject';
+
+      // Act
+      const result = foldSubject(message);
+
+      // Assert
+      expect(result).toBe('solo subject');
+    });
+  });
+
+  describe('Given an empty message, When foldSubject runs', () => {
+    it('Then the empty string is returned', () => {
+      // Arrange
+      const message = '';
+
+      // Act
+      const result = foldSubject(message);
+
+      // Assert
+      expect(result).toBe('');
+    });
+  });
+
+  describe('Given a line of only a non-breaking space (non-ASCII), When foldSubject runs', () => {
+    it('Then the non-breaking space is kept as content', () => {
+      // Arrange — U+00A0 is whitespace to JS trim() but not to git's ASCII isspace
+      const message = ' ';
+
+      // Act
+      const result = foldSubject(message);
+
+      // Assert
+      expect(result).toBe(' ');
     });
   });
 });

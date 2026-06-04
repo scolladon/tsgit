@@ -9,7 +9,7 @@
  * Surfaces closed (per 19.5a):
  *   commands:   catFile
  *   primitives: readObject, readTree, readIndex, getRepoRoot, walkCommits,
- *               walkTree, walkWorkingTree, catFileBatch
+ *               walkCommitsByDate, walkTree, walkWorkingTree, catFileBatch
  */
 import { AUTHOR, FILES, MESSAGES } from '../fixtures.ts';
 import type { Scenario } from './types.ts';
@@ -21,6 +21,7 @@ interface ReadPipelineResult {
   readonly readIndexEntryCount: number;
   readonly repoRootResolved: boolean;
   readonly walkCommitsCount: number;
+  readonly walkCommitsByDateCount: number;
   readonly walkTreeCount: number;
   readonly walkWorkingTreeCount: number;
   readonly catFileEntryKind: string;
@@ -37,6 +38,7 @@ export const readPipelineScenario: Scenario<ReadPipelineResult> = {
     readIndexEntryCount: 1,
     repoRootResolved: true,
     walkCommitsCount: 1,
+    walkCommitsByDateCount: 1,
     walkTreeCount: 1,
     walkWorkingTreeCount: 1,
     catFileEntryKind: 'batch',
@@ -54,6 +56,9 @@ export const readPipelineScenario: Scenario<ReadPipelineResult> = {
 
     let walkCommitsCount = 0;
     for await (const _ of repo.primitives.walkCommits({ from: [commit.id] })) walkCommitsCount += 1;
+    let walkCommitsByDateCount = 0;
+    for await (const _ of repo.primitives.walkCommitsByDate({ from: [commit.id] }))
+      walkCommitsByDateCount += 1;
     let walkTreeCount = 0;
     for await (const _ of repo.primitives.walkTree(tree.id, { recursive: true }))
       walkTreeCount += 1;
@@ -75,6 +80,7 @@ export const readPipelineScenario: Scenario<ReadPipelineResult> = {
       readIndexEntryCount: index.entries.length,
       repoRootResolved: typeof repoRoot === 'string' && repoRoot.length > 0,
       walkCommitsCount,
+      walkCommitsByDateCount,
       walkTreeCount,
       walkWorkingTreeCount,
       catFileEntryKind: catFile.kind,

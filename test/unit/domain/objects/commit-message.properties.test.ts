@@ -1,8 +1,12 @@
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 
-import { stripspace, subjectLine } from '../../../../src/domain/objects/commit-message.js';
-import { arbCommitMessage } from './arbitraries.js';
+import {
+  foldSubject,
+  stripspace,
+  subjectLine,
+} from '../../../../src/domain/objects/commit-message.js';
+import { arbCommitMessage, arbNonBlankLine } from './arbitraries.js';
 
 const TRAILING_ASCII_WHITESPACE = /[ \t\v\f\r]$/;
 
@@ -106,6 +110,57 @@ describe('subjectLine properties', () => {
           },
         ),
         { numRuns: 200 },
+      );
+    });
+  });
+});
+
+describe('foldSubject properties', () => {
+  describe('Given an arbitrary commit message, When foldSubject runs twice', () => {
+    it('Then the second pass is a no-op (idempotent)', () => {
+      // Arrange + Act + Assert
+      fc.assert(
+        fc.property(arbCommitMessage(), (message) => {
+          const once = foldSubject(message);
+          expect(foldSubject(once)).toBe(once);
+        }),
+        { numRuns: 200 },
+      );
+    });
+  });
+
+  describe('Given an arbitrary commit message, When foldSubject runs', () => {
+    it('Then the result never contains a newline', () => {
+      // Arrange + Act + Assert
+      fc.assert(
+        fc.property(arbCommitMessage(), (message) => {
+          expect(foldSubject(message).includes('\n')).toBe(false);
+        }),
+        { numRuns: 200 },
+      );
+    });
+  });
+
+  describe('Given a non-blank subject and an arbitrary body, When foldSubject runs', () => {
+    it('Then everything past the first blank line is ignored', () => {
+      // Arrange + Act + Assert
+      fc.assert(
+        fc.property(arbNonBlankLine(), arbCommitMessage(), (subject, body) => {
+          expect(foldSubject(`${subject}\n\n${body}`)).toBe(foldSubject(subject));
+        }),
+        { numRuns: 100 },
+      );
+    });
+  });
+
+  describe('Given an arbitrary commit message, When foldSubject runs', () => {
+    it('Then it never throws', () => {
+      // Arrange + Act + Assert
+      fc.assert(
+        fc.property(arbCommitMessage(), (message) => {
+          expect(() => foldSubject(message)).not.toThrow();
+        }),
+        { numRuns: 100 },
       );
     });
   });
