@@ -3,7 +3,7 @@
 Integrate a remote branch into the current branch: `fetch` the remote, then
 `merge` the fetched tip into `HEAD`. Returns the underlying `fetch` and `merge`
 results — **conflicts do not throw**; `pull` inherits `merge`'s state machine, so
-`abortMerge` / `continueMerge` resolve a pull-initiated conflict unchanged.
+`merge.abort` / `merge.continue` resolve a pull-initiated conflict unchanged.
 
 Integration is merge-only; the `rebase` mode is added when `rebase` lands.
 
@@ -15,8 +15,7 @@ repo.pull(opts?: PullOptions): Promise<PullResult>;
 interface PullOptions {
   readonly remote?: string;        // default: branch.<current>.remote ?? 'origin'
   readonly branch?: string;        // default: short form of branch.<current>.merge
-  readonly fastForwardOnly?: boolean;
-  readonly noFastForward?: boolean;
+  readonly fastForward?: 'only' | 'never' | 'allow'; // default 'allow'; forwarded to merge
   readonly prune?: boolean;        // forwarded to fetch
   readonly depth?: number;         // forwarded to fetch
   readonly message?: string;       // override the merge-commit message / MERGE_MSG
@@ -52,7 +51,8 @@ upstream needs an explicit `repo.pull({ branch })`.
 | Diverged, clean | `merge` | Two-parent commit `Merge branch '<branch>' of <url>`; reflog `pull: Merge made by the 'tsgit' strategy.`. |
 | Diverged, clashing | `conflict` | `MERGE_HEAD`/`MERGE_MSG`/`ORIG_HEAD` + conflicted index written. |
 
-The reflog action is `pull` (git-faithful), achieved via `merge`'s `reflogLabel`.
+The reflog action is `pull` (git-faithful), achieved via `merge`'s internal
+reflog-action channel (the `GIT_REFLOG_ACTION` analogue), not a public option.
 
 `pull` does **not** materialise the working tree on the fast-forward / clean
 paths — it delegates integration to `merge`, inheriting its contract exactly.
@@ -65,9 +65,9 @@ const result = await repo.pull();
 if (result.merge.kind === 'conflict') {
   // resolve the working-tree files, then:
   await repo.add(result.merge.conflicts.map((c) => c.path));
-  await repo.continueMerge({ message: 'resolve pull' });
+  await repo.merge.continue({ message: 'resolve pull' });
   // …or give up:
-  // await repo.abortMerge();
+  // await repo.merge.abort();
 }
 
 // Pull a specific branch from a specific remote.
@@ -81,10 +81,10 @@ await repo.pull({ remote: 'upstream', branch: 'main' });
 - `REMOTE_NOT_CONFIGURED` — the resolved remote has no configured URL.
 - `REF_NOT_FOUND` — the remote does not advertise the requested branch.
 - `BARE_REPOSITORY` / `OPERATION_IN_PROGRESS` — refused before the fetch.
-- `NON_FAST_FORWARD` — `fastForwardOnly: true` and a true merge is required.
+- `NON_FAST_FORWARD` — `fastForward: 'only'` and a true merge is required.
 
 ## See also
 
 - Composed from: [`fetch`](fetch.md) + [`merge`](merge.md).
-- Conflict resolution: [`abortMerge`](abort-merge.md), [`continueMerge`](continue-merge.md).
+- Conflict resolution: [`merge.continue` / `merge.abort`](merge.md#state-machine--mergecontinue-and-mergeabort).
 - ADRs: [196](../../adr/196-pull-strict-upstream-clone-writes-tracking.md), [197](../../adr/197-pull-oid-passthrough-merge-reflog-label.md), [198](../../adr/198-pull-omit-rebase-until-22-3.md), [199](../../adr/199-merge-resolve-target-gitrevisions-dwim.md)

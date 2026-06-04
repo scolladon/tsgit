@@ -1,10 +1,9 @@
 # Commands — Tier-1 reference
 
-Every method bound on a `Repository` handle. 30 entries, alphabetical.
+Every method bound on a `Repository` handle. 33 entries, alphabetical.
 
 | Command | Summary |
 |---|---|
-| [`abortMerge`](abort-merge.md) | End an in-progress merge by hard-resetting HEAD/index/workdir to `ORIG_HEAD` and clearing merge state. |
 | [`add`](add.md) | Stage paths into `.git/index`. Literal paths or `all: true` bulk mode. |
 | [`blame`](blame.md) | Line-by-line authorship for a file at a revision; returns structured per-line data (no rendered line). |
 | [`branch`](branch.md) | List, create, or delete branches. |
@@ -14,14 +13,13 @@ Every method bound on a `Repository` handle. 30 entries, alphabetical.
 | [`clone`](clone.md) | Clone a remote repository over smart-HTTP (full / shallow / partial). |
 | [`commit`](commit.md) | Create a commit from the current index. |
 | [`config`](config.md) | Read and write git config across all four scopes (`system`/`global`/`local`/`worktree`). Nested-namespace surface (`repo.config.get/set/...`). |
-| [`continueMerge`](continue-merge.md) | Finalise an in-progress merge as a two-parent commit (delegates to `commit`). |
 | [`describe`](describe.md) | Name a commit by its nearest reachable tag; returns structured data (no rendered line). |
 | [`diff`](diff.md) | Compare two tree-like targets; returns a `TreeDiff` object. |
 | [`fetch`](fetch.md) | Fetch refs and objects from a remote. |
 | [`fetchMissing`](fetch-missing.md) | Prefetch promisor-remote objects in batch (partial clone). |
 | [`init`](init.md) | Initialize a fresh repository. |
 | [`log`](log.md) | Walk first-parent commit history. |
-| [`merge`](merge.md) | Three-way merge with conflict materialisation. |
+| [`merge`](merge.md) | Three-way merge with conflict materialisation. Nested-namespace surface (`repo.merge.run/continue/abort`). |
 | [`mv`](mv.md) | Rename/move tracked paths in the index and working tree. |
 | [`pull`](pull.md) | Fetch a remote branch and merge it into the current branch. |
 | [`push`](push.md) | Push refs and objects to a remote. |
