@@ -13,7 +13,7 @@ export interface WorkdirSnapshotOptions extends SnapshotOptions {
   readonly consistency?: 'eager' | 'verified';
 }
 
-export interface WorkdirSnapshotDeps {
+interface WorkdirSnapshotDeps {
   readonly ctx: Context;
   readonly enumerator: WorkdirEnumerator;
 }

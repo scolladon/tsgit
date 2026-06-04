@@ -8,7 +8,7 @@ import type { IndexResolver } from '../../../ports/snapshot-resolvers.js';
 import { createIndexEntry, type IndexEntry } from './index-entry.js';
 import type { Snapshot, SnapshotOptions } from './snapshot.js';
 
-export interface IndexSnapshotDeps {
+interface IndexSnapshotDeps {
   readonly ctx: Context;
   readonly indexResolver: IndexResolver;
 }

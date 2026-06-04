@@ -17,7 +17,7 @@ const kindFromMode = (mode: FileMode): TreeEntryRow['kind'] => {
 const toEntry = (ctx: Context, path: FilePath, oid: ObjectId, mode: FileMode): TreeEntry =>
   createTreeEntry(ctx, { source: 'tree', path, oid, mode, kind: kindFromMode(mode) });
 
-export interface TreeSnapshotDeps {
+interface TreeSnapshotDeps {
   readonly ctx: Context;
   readonly treeResolver: TreeResolver;
 }

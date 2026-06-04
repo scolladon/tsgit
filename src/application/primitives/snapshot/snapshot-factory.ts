@@ -16,7 +16,7 @@ import { createStashSnapshot, type StashSnapshot } from './stash-snapshot.js';
 import { createTreeSnapshot } from './tree-snapshot.js';
 import { createWorkdirSnapshot, type WorkdirSnapshotOptions } from './workdir-snapshot.js';
 
-export interface SnapshotFactoryDeps {
+interface SnapshotFactoryDeps {
   readonly ctx: Context;
   readonly indexResolver: IndexResolver;
   readonly treeResolver: TreeResolver;
