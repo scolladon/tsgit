@@ -55,8 +55,13 @@ import {
 export interface MergeOptions {
   readonly target: string;
   readonly message?: string;
-  readonly fastForwardOnly?: boolean;
-  readonly noFastForward?: boolean;
+  /**
+   * Fast-forward policy (git `--ff` / `--ff-only` / `--no-ff`):
+   * - `'allow'` (default) — fast-forward when possible, else a true merge.
+   * - `'only'` — refuse with `NON_FAST_FORWARD` when a true merge is required.
+   * - `'never'` — always create a merge commit, even when a fast-forward is possible.
+   */
+  readonly fastForward?: 'only' | 'never' | 'allow';
   readonly author?: AuthorIdentity;
   readonly committer?: AuthorIdentity;
   /**
@@ -116,7 +121,7 @@ export const merge = async (ctx: Context, opts: MergeOptions): Promise<MergeResu
   const [base] = await mergeBase(ctx, [ourId, theirId]);
   if (base === theirId) return { kind: 'up-to-date', id: ourId };
   if (base === ourId) {
-    if (opts.noFastForward !== true) {
+    if (opts.fastForward !== 'never') {
       await updateRef(ctx, head.target, theirId, {
         expected: ourId,
         reflogMessage: `${opts.reflogLabel ?? `merge ${opts.target}`}: Fast-forward`,
@@ -124,7 +129,7 @@ export const merge = async (ctx: Context, opts: MergeOptions): Promise<MergeResu
       return { kind: 'fast-forward', id: theirId, branch: head.target };
     }
   }
-  if (opts.fastForwardOnly === true) {
+  if (opts.fastForward === 'only') {
     throw nonFastForward(head.target, ourId, theirId);
   }
   return mergeCommit(ctx, opts, head.target, ourId, theirId, base);

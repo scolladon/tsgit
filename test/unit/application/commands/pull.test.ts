@@ -457,7 +457,7 @@ describe('pull', () => {
     });
   });
 
-  describe('Given diverged histories and fastForwardOnly', () => {
+  describe("Given diverged histories and fastForward='only'", () => {
     describe('When pull', () => {
       it('Then propagates NON_FAST_FORWARD from merge', async () => {
         // Arrange — divergence forces a true merge, which ff-only rejects.
@@ -478,7 +478,7 @@ describe('pull', () => {
         // Act
         let caught: unknown;
         try {
-          await pull(withTransport(ctx, transport), { fastForwardOnly: true, author });
+          await pull(withTransport(ctx, transport), { fastForward: 'only', author });
         } catch (err) {
           caught = err;
         }
@@ -572,9 +572,9 @@ describe('pull', () => {
     });
   });
 
-  describe('Given noFastForward over a history that would fast-forward', () => {
+  describe("Given fastForward='never' over a history that would fast-forward", () => {
     describe('When pull', () => {
-      it('Then forwards noFastForward to merge (forces a merge commit)', async () => {
+      it('Then forwards fastForward to merge (forces a merge commit)', async () => {
         // Arrange — main at A, B is A's child; remote main → B would fast-forward.
         const ctx = createMemoryContext();
         await init(ctx);
@@ -590,7 +590,7 @@ describe('pull', () => {
         );
 
         // Act
-        const sut = await pull(withTransport(ctx, transport), { noFastForward: true, author });
+        const sut = await pull(withTransport(ctx, transport), { fastForward: 'never', author });
 
         // Assert — a true merge commit, not a fast-forward.
         expect(sut.merge.kind).toBe('merge');

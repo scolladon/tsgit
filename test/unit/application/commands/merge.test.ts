@@ -87,7 +87,7 @@ describe('merge', () => {
     });
   });
 
-  describe('Given an ancestor target + noFastForward=true', () => {
+  describe("Given an ancestor target + fastForward='never'", () => {
     describe('When merge', () => {
       it('Then a real merge commit is produced', async () => {
         // Arrange
@@ -106,7 +106,7 @@ describe('merge', () => {
         // Act
         const sut = await merge(ctx, {
           target: 'feature',
-          noFastForward: true,
+          fastForward: 'never',
           message: 'merge',
           author,
         });
@@ -115,6 +115,90 @@ describe('merge', () => {
         expect(sut.kind).toBe('merge');
         if (sut.kind === 'merge') {
           expect(sut.parents).toHaveLength(2);
+        }
+      });
+    });
+  });
+
+  describe("Given an ancestor target + fastForward='allow'", () => {
+    describe('When merge', () => {
+      it('Then it fast-forwards (no merge commit)', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
+        await add(ctx, ['a.txt']);
+        await commit(ctx, { message: 'first', author });
+        await branchCreate(ctx, { name: 'feature' });
+        await checkout(ctx, { target: 'feature' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.txt`, 'b');
+        await add(ctx, ['b.txt']);
+        const second = await commit(ctx, { message: 'second', author });
+        await checkout(ctx, { target: 'main' });
+
+        // Act
+        const sut = await merge(ctx, { target: 'feature', fastForward: 'allow' });
+
+        // Assert
+        expect(sut.kind).toBe('fast-forward');
+        if (sut.kind === 'fast-forward') {
+          expect(sut.id).toBe(second.id);
+        }
+      });
+    });
+  });
+
+  describe('Given an ancestor target + fastForward omitted', () => {
+    describe('When merge', () => {
+      it('Then it fast-forwards by default', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
+        await add(ctx, ['a.txt']);
+        await commit(ctx, { message: 'first', author });
+        await branchCreate(ctx, { name: 'feature' });
+        await checkout(ctx, { target: 'feature' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.txt`, 'b');
+        await add(ctx, ['b.txt']);
+        const second = await commit(ctx, { message: 'second', author });
+        await checkout(ctx, { target: 'main' });
+
+        // Act
+        const sut = await merge(ctx, { target: 'feature' });
+
+        // Assert
+        expect(sut.kind).toBe('fast-forward');
+        if (sut.kind === 'fast-forward') {
+          expect(sut.id).toBe(second.id);
+        }
+      });
+    });
+  });
+
+  describe("Given a fast-forwardable target + fastForward='only'", () => {
+    describe('When merge', () => {
+      it('Then it fast-forwards (does not over-refuse)', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
+        await add(ctx, ['a.txt']);
+        await commit(ctx, { message: 'first', author });
+        await branchCreate(ctx, { name: 'feature' });
+        await checkout(ctx, { target: 'feature' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.txt`, 'b');
+        await add(ctx, ['b.txt']);
+        const second = await commit(ctx, { message: 'second', author });
+        await checkout(ctx, { target: 'main' });
+
+        // Act
+        const sut = await merge(ctx, { target: 'feature', fastForward: 'only' });
+
+        // Assert
+        expect(sut.kind).toBe('fast-forward');
+        if (sut.kind === 'fast-forward') {
+          expect(sut.id).toBe(second.id);
         }
       });
     });
@@ -386,9 +470,9 @@ describe('merge', () => {
     });
   });
 
-  describe('Given diverged histories + fastForwardOnly=true', () => {
+  describe("Given diverged histories + fastForward='only'", () => {
     describe('When merge', () => {
-      it('Then throws NON_FAST_FORWARD', async () => {
+      it('Then throws NON_FAST_FORWARD carrying the ref + both tips', async () => {
         // Arrange — diverge: both branches advance from a common base.
         const ctx = createMemoryContext();
         await init(ctx);
@@ -399,22 +483,28 @@ describe('merge', () => {
         await checkout(ctx, { target: 'feature' });
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.txt`, 'b');
         await add(ctx, ['b.txt']);
-        await commit(ctx, { message: 'on-feature', author });
+        const featureTip = await commit(ctx, { message: 'on-feature', author });
         await checkout(ctx, { target: 'main' });
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/c.txt`, 'c');
         await add(ctx, ['c.txt']);
-        await commit(ctx, { message: 'on-main', author });
+        const mainTip = await commit(ctx, { message: 'on-main', author });
 
         // Act
         let caught: unknown;
         try {
-          await merge(ctx, { target: 'feature', fastForwardOnly: true });
+          await merge(ctx, { target: 'feature', fastForward: 'only' });
         } catch (err) {
           caught = err;
         }
 
         // Assert
-        expect((caught as { data?: { code?: string } })?.data?.code).toBe('NON_FAST_FORWARD');
+        const data = (
+          caught as { data?: { code?: string; ref?: string; local?: string; remote?: string } }
+        )?.data;
+        expect(data?.code).toBe('NON_FAST_FORWARD');
+        expect(data?.ref).toBe('refs/heads/main');
+        expect(data?.local).toBe(mainTip.id);
+        expect(data?.remote).toBe(featureTip.id);
       });
     });
   });
@@ -1387,7 +1477,7 @@ describe('merge — reflogLabel', () => {
         // Act
         await merge(ctx, {
           target: 'feature',
-          noFastForward: true,
+          fastForward: 'never',
           message: 'merge',
           author,
           reflogLabel: 'pull',

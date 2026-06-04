@@ -33,10 +33,14 @@ export interface PullOptions {
    * When neither is resolvable, pull throws `NO_UPSTREAM_CONFIGURED`.
    */
   readonly branch?: string;
-  /** Reject the pull when a true merge would be required. */
-  readonly fastForwardOnly?: boolean;
-  /** Always create a merge commit, even when a fast-forward is possible. */
-  readonly noFastForward?: boolean;
+  /**
+   * Fast-forward policy for the integrate step, forwarded to `merge` (git
+   * `--ff` / `--ff-only` / `--no-ff`):
+   * - `'allow'` (default) — fast-forward when possible, else a true merge.
+   * - `'only'` — reject when a true merge would be required.
+   * - `'never'` — always create a merge commit, even when a fast-forward is possible.
+   */
+  readonly fastForward?: 'only' | 'never' | 'allow';
   /** Prune deleted remote-tracking refs during the fetch step. */
   readonly prune?: boolean;
   /** Shallow fetch depth, forwarded to fetch. */
@@ -106,10 +110,8 @@ export const pull = async (ctx: Context, opts: PullOptions = {}): Promise<PullRe
     target: tip,
     message: opts.message ?? `Merge branch '${branch}' of ${fetchResult.url}`,
     reflogLabel: 'pull',
-    // Stryker disable next-line ConditionalExpression: equivalent — the always-true mutant forwards `{ fastForwardOnly: undefined }`, which `merge` reads as `=== true` (false) — identical to omitting it. The drop direction + the `!==` flip are killed by the fastForwardOnly test.
-    ...(opts.fastForwardOnly !== undefined ? { fastForwardOnly: opts.fastForwardOnly } : {}),
-    // Stryker disable next-line ConditionalExpression: equivalent — the always-true mutant forwards `{ noFastForward: undefined }`, which `merge` reads as `!== true` (so a fast-forward proceeds) — identical to omitting it. The drop direction + the `!==` flip are killed by the noFastForward test.
-    ...(opts.noFastForward !== undefined ? { noFastForward: opts.noFastForward } : {}),
+    // Stryker disable next-line ConditionalExpression: equivalent — the always-true mutant forwards `{ fastForward: undefined }`, which `merge` reads as `!== 'never'` (so a fast-forward proceeds) and `=== 'only'` (false) — identical to omitting it. The drop direction + the `!==` flip are killed by the fastForward-forwarding tests.
+    ...(opts.fastForward !== undefined ? { fastForward: opts.fastForward } : {}),
     // Stryker disable next-line ConditionalExpression: equivalent — the always-true mutant forwards `{ author: undefined }`, which `merge` resolves as `opts.author ?? config` — identical to omitting it. The drop direction + the `!==` flip are killed by the author-bearing merge tests.
     ...(opts.author !== undefined ? { author: opts.author } : {}),
     // Stryker disable next-line ConditionalExpression: equivalent — the always-true mutant forwards `{ committer: undefined }`, which `merge` resolves as `opts.committer ?? author` — identical to omitting it. The drop direction + the `!==` flip are killed by the committer-forwarding test.
