@@ -1,4 +1,4 @@
-import { pathNotInTree, revparseUnresolved } from '../../domain/commands/error.js';
+import { revparseUnresolved } from '../../domain/commands/error.js';
 import { objectNotFound } from '../../domain/objects/error.js';
 import {
   type ObjectId,
@@ -10,8 +10,10 @@ import { reflogEntryOutOfRange } from '../../domain/reflog/error.js';
 import type { ReflogEntry } from '../../domain/reflog/reflog-entry.js';
 import { refCandidates, validateRefName } from '../../domain/refs/index.js';
 import type { Context } from '../../ports/context.js';
+import { descendTreePath } from '../primitives/internal/resolve-tree-path.js';
 import { readIndex } from '../primitives/read-index.js';
 import { readObject } from '../primitives/read-object.js';
+import { readTree } from '../primitives/read-tree.js';
 import { getRefStore } from '../primitives/ref-store.js';
 import { readReflog, reflogExists } from '../primitives/reflog-store.js';
 import { resolveOidPrefix } from '../primitives/resolve-oid-prefix.js';
@@ -224,25 +226,8 @@ const resolveTreePath = async (ctx: Context, rev: string, path: string): Promise
   const baseId = await evaluate(ctx, parseExpression(rev), rev);
   const treeId = await peel(ctx, baseId, 'tree');
   if (path === '') return treeId;
-  const segments = path.split('/');
-  const lastIndex = segments.length - 1;
-  let currentTree = treeId;
-  for (let i = 0; i < lastIndex; i += 1) {
-    currentTree = (await lookupTreeEntry(ctx, currentTree, segments[i] as string, rev, path)).id;
-  }
-  return (await lookupTreeEntry(ctx, currentTree, segments[lastIndex] as string, rev, path)).id;
-};
-
-const lookupTreeEntry = async (
-  ctx: Context,
-  treeId: ObjectId,
-  name: string,
-  rev: string,
-  path: string,
-): Promise<{ readonly id: ObjectId }> => {
-  const obj = await readObject(ctx, treeId);
-  if (obj.type !== 'tree') throw pathNotInTree(rev, path);
-  const entry = obj.entries.find((e) => e.name === name);
-  if (entry === undefined) throw pathNotInTree(rev, path);
-  return entry;
+  // `treeId` is already a tree (peeled above), so `readTree` loads it without a
+  // further peel; the shared descent then walks the `/`-separated components.
+  const rootTree = await readTree(ctx, treeId);
+  return (await descendTreePath(ctx, rootTree, path, rev)).id;
 };
