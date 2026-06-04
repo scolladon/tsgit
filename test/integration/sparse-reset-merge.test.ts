@@ -21,7 +21,7 @@ import { branchCreate } from '../../src/application/commands/branch.js';
 import { checkout } from '../../src/application/commands/checkout.js';
 import { commit } from '../../src/application/commands/commit.js';
 import { init } from '../../src/application/commands/init.js';
-import { merge } from '../../src/application/commands/merge.js';
+import { mergeRun } from '../../src/application/commands/merge.js';
 import { reset } from '../../src/application/commands/reset.js';
 import { sparseCheckoutSet } from '../../src/application/commands/sparse-checkout.js';
 import { status } from '../../src/application/commands/status.js';
@@ -113,7 +113,7 @@ describe('integration — sparse reset/merge (memory adapter)', () => {
     expect(await ctx.fs.exists(`${ctx.layout.workDir}/docs/guide.md`)).toBe(false);
 
     // Act
-    const sut = await merge(ctx, { target: 'feature', author });
+    const sut = await mergeRun(ctx, { target: 'feature', author });
 
     // Assert — the conflict is materialised, the excluded clean file is not.
     expect(sut.kind).toBe('conflict');

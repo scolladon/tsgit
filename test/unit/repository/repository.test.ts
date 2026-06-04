@@ -140,7 +140,6 @@ describe('openRepository — Repository binding integrity', () => {
         // Assert
         expect(Object.keys(sut).sort()).toEqual(
           [
-            'abortMerge',
             'add',
             'blame',
             'branch',
@@ -150,7 +149,6 @@ describe('openRepository — Repository binding integrity', () => {
             'clone',
             'commit',
             'config',
-            'continueMerge',
             'ctx',
             'describe',
             'diff',
@@ -236,6 +234,7 @@ describe('openRepository — Repository binding integrity', () => {
           'cherryPick',
           'revert',
           'rebase',
+          'merge',
         ]);
         const nonFunctionKeys = new Set(['ctx', 'primitives', 'snapshot', ...namespaceKeys]);
 
@@ -410,28 +409,21 @@ describe('openRepository — dispose state machine', () => {
   });
 
   describe('Given a Repository handle', () => {
-    describe('When abortMerge is accessed', () => {
-      it('Then it is a function bound to ctx', async () => {
+    describe('When the merge namespace is accessed', () => {
+      it('Then run / continue / abort are all functions', async () => {
         // Arrange
         const sut = await open();
 
         // Assert
-        expect(typeof sut.abortMerge).toBe('function');
-      });
-    });
-    describe('When continueMerge is accessed', () => {
-      it('Then it is a function bound to ctx', async () => {
-        // Arrange
-        const sut = await open();
-
-        // Assert
-        expect(typeof sut.continueMerge).toBe('function');
+        expect(typeof sut.merge.run).toBe('function');
+        expect(typeof sut.merge.continue).toBe('function');
+        expect(typeof sut.merge.abort).toBe('function');
       });
     });
   });
 
   describe('Given a disposed Repository', () => {
-    describe('When abortMerge is invoked', () => {
+    describe('When merge.abort is invoked', () => {
       it('Then throws REPOSITORY_DISPOSED', async () => {
         // Arrange
         const sut = await open();
@@ -440,7 +432,7 @@ describe('openRepository — dispose state machine', () => {
         // Act
         let caught: unknown;
         try {
-          await sut.abortMerge();
+          await sut.merge.abort();
         } catch (err) {
           caught = err;
         }
@@ -449,7 +441,7 @@ describe('openRepository — dispose state machine', () => {
         expect((caught as TsgitError).data.code).toBe('REPOSITORY_DISPOSED');
       });
     });
-    describe('When continueMerge is invoked', () => {
+    describe('When merge.continue is invoked', () => {
       it('Then throws REPOSITORY_DISPOSED', async () => {
         // Arrange
         const sut = await open();
@@ -458,7 +450,25 @@ describe('openRepository — dispose state machine', () => {
         // Act
         let caught: unknown;
         try {
-          await sut.continueMerge();
+          await sut.merge.continue();
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data.code).toBe('REPOSITORY_DISPOSED');
+      });
+    });
+    describe('When merge.run is invoked', () => {
+      it('Then throws REPOSITORY_DISPOSED', async () => {
+        // Arrange
+        const sut = await open();
+        await sut.dispose();
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut.merge.run({ target: 'feature' });
         } catch (err) {
           caught = err;
         }

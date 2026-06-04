@@ -4,9 +4,9 @@ import { add } from '../../../../src/application/commands/add.js';
 import { branchCreate } from '../../../../src/application/commands/branch.js';
 import { checkout } from '../../../../src/application/commands/checkout.js';
 import { commit } from '../../../../src/application/commands/commit.js';
-import { continueMerge } from '../../../../src/application/commands/continue-merge.js';
+import { mergeContinue } from '../../../../src/application/commands/continue-merge.js';
 import { init } from '../../../../src/application/commands/init.js';
-import { merge } from '../../../../src/application/commands/merge.js';
+import { mergeRun } from '../../../../src/application/commands/merge.js';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
 import type { AuthorIdentity, ObjectId } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
@@ -51,9 +51,9 @@ const resolveAndStage = async (
   await add(ctx, ['file.txt']);
 };
 
-describe('continueMerge', () => {
+describe('mergeContinue', () => {
   describe('Given a non-repo (no HEAD)', () => {
-    describe('When continueMerge runs', () => {
+    describe('When mergeContinue runs', () => {
       it('Then throws NOT_A_REPOSITORY', async () => {
         // Arrange
         const ctx = createMemoryContext();
@@ -61,7 +61,7 @@ describe('continueMerge', () => {
         // Act
         let caught: unknown;
         try {
-          await continueMerge(ctx);
+          await mergeContinue(ctx);
         } catch (err) {
           caught = err;
         }
@@ -73,7 +73,7 @@ describe('continueMerge', () => {
   });
 
   describe('Given a bare repo', () => {
-    describe('When continueMerge runs', () => {
+    describe('When mergeContinue runs', () => {
       it('Then throws BARE_REPOSITORY with operation=merge --continue', async () => {
         // Arrange
         const ctx = createMemoryContext();
@@ -82,7 +82,7 @@ describe('continueMerge', () => {
         // Act
         let caught: unknown;
         try {
-          await continueMerge(ctx);
+          await mergeContinue(ctx);
         } catch (err) {
           caught = err;
         }
@@ -96,7 +96,7 @@ describe('continueMerge', () => {
   });
 
   describe('Given a repo with no MERGE_HEAD', () => {
-    describe('When continueMerge runs', () => {
+    describe('When mergeContinue runs', () => {
       it('Then throws NO_OPERATION_IN_PROGRESS(merge)', async () => {
         // Arrange
         const ctx = createMemoryContext();
@@ -108,7 +108,7 @@ describe('continueMerge', () => {
         // Act
         let caught: unknown;
         try {
-          await continueMerge(ctx);
+          await mergeContinue(ctx);
         } catch (err) {
           caught = err;
         }
@@ -122,19 +122,19 @@ describe('continueMerge', () => {
   });
 
   describe('Given MERGE_HEAD and unresolved index entries', () => {
-    describe('When continueMerge runs', () => {
+    describe('When mergeContinue runs', () => {
       it('Then throws MERGE_HAS_CONFLICTS (delegated to commit)', async () => {
         // Arrange
         const ctx = createMemoryContext();
         await setupConflictingMerge(ctx);
-        await merge(ctx, { target: 'feature', author });
+        await mergeRun(ctx, { target: 'feature', author });
 
         // Act — explicit author/committer so the call reaches the
         // unmerged-index check (rejectUnmergedIndex) before
         // AUTHOR_UNCONFIGURED can fire.
         let caught: unknown;
         try {
-          await continueMerge(ctx, { message: 'resolved', author, committer: author });
+          await mergeContinue(ctx, { message: 'resolved', author, committer: author });
         } catch (err) {
           caught = err;
         }
@@ -146,16 +146,16 @@ describe('continueMerge', () => {
   });
 
   describe('Given a resolved merge with no message override', () => {
-    describe('When continueMerge runs', () => {
+    describe('When mergeContinue runs', () => {
       it('Then the resulting commit reuses the MERGE_MSG draft', async () => {
         // Arrange
         const ctx = createMemoryContext();
         await setupConflictingMerge(ctx);
-        await merge(ctx, { target: 'feature', author, message: 'Merge feature into main' });
+        await mergeRun(ctx, { target: 'feature', author, message: 'Merge feature into main' });
         await resolveAndStage(ctx);
 
         // Act
-        const sut = await continueMerge(ctx, { author, committer: author });
+        const sut = await mergeContinue(ctx, { author, committer: author });
 
         // Assert
         const obj = await readObject(ctx, sut.id);
@@ -168,16 +168,16 @@ describe('continueMerge', () => {
   });
 
   describe('Given a resolved merge with an explicit message', () => {
-    describe('When continueMerge runs', () => {
+    describe('When mergeContinue runs', () => {
       it('Then the resulting commit carries the explicit message', async () => {
         // Arrange
         const ctx = createMemoryContext();
         await setupConflictingMerge(ctx);
-        await merge(ctx, { target: 'feature', author });
+        await mergeRun(ctx, { target: 'feature', author });
         await resolveAndStage(ctx);
 
         // Act
-        const sut = await continueMerge(ctx, {
+        const sut = await mergeContinue(ctx, {
           message: 'resolved by user',
           author,
           committer: author,
@@ -195,16 +195,16 @@ describe('continueMerge', () => {
   });
 
   describe('Given a resolved merge', () => {
-    describe('When continueMerge runs', () => {
+    describe('When mergeContinue runs', () => {
       it('Then the resulting commit has parents=[origHead, mergeHead]', async () => {
         // Arrange
         const ctx = createMemoryContext();
         const { preMergeMain, featureTip } = await setupConflictingMerge(ctx);
-        await merge(ctx, { target: 'feature', author });
+        await mergeRun(ctx, { target: 'feature', author });
         await resolveAndStage(ctx);
 
         // Act
-        const sut = await continueMerge(ctx, { message: 'resolved', author, committer: author });
+        const sut = await mergeContinue(ctx, { message: 'resolved', author, committer: author });
 
         // Assert
         expect(sut.parents).toEqual([preMergeMain, featureTip]);
@@ -214,11 +214,11 @@ describe('continueMerge', () => {
         // Arrange
         const ctx = createMemoryContext();
         await setupConflictingMerge(ctx);
-        await merge(ctx, { target: 'feature', author });
+        await mergeRun(ctx, { target: 'feature', author });
         await resolveAndStage(ctx);
 
         // Act
-        await continueMerge(ctx, { message: 'resolved', author, committer: author });
+        await mergeContinue(ctx, { message: 'resolved', author, committer: author });
 
         // Assert — ORIG_HEAD survives (recovery aid), MERGE_HEAD/MERGE_MSG don't.
         expect(await ctx.fs.exists(`${ctx.layout.gitDir}/MERGE_HEAD`)).toBe(false);
@@ -229,7 +229,7 @@ describe('continueMerge', () => {
   });
 
   describe('Given a resolved merge with explicit author and committer', () => {
-    describe('When continueMerge runs', () => {
+    describe('When mergeContinue runs', () => {
       it('Then the commit object carries the distinct author and committer identities', async () => {
         // Arrange — distinct author and committer so dropping the committer
         // forward would let `commit` derive committer-from-author and the
@@ -238,7 +238,7 @@ describe('continueMerge', () => {
         // author fallback.
         const ctx = createMemoryContext();
         await setupConflictingMerge(ctx);
-        await merge(ctx, { target: 'feature', author });
+        await mergeRun(ctx, { target: 'feature', author });
         await resolveAndStage(ctx);
         const explicitAuthor: AuthorIdentity = {
           name: 'Bob',
@@ -254,7 +254,7 @@ describe('continueMerge', () => {
         };
 
         // Act
-        const sut = await continueMerge(ctx, {
+        const sut = await mergeContinue(ctx, {
           message: 'resolved',
           author: explicitAuthor,
           committer: explicitCommitter,
@@ -272,10 +272,10 @@ describe('continueMerge', () => {
   });
 
   describe('Given a resolved merge with failing hooks but noVerify true', () => {
-    describe('When continueMerge runs', () => {
+    describe('When mergeContinue runs', () => {
       it('Then the commit succeeds with hooks skipped', async () => {
         // Arrange — pre-commit returns exit=1 ONLY when MERGE_HEAD is present
-        // (so the fixture-setup commits succeed, but a non-noVerify continueMerge
+        // (so the fixture-setup commits succeed, but a non-noVerify mergeContinue
         // would surface HOOK_FAILED). With noVerify, the commit lands normally.
         let ctx!: Context;
         const runner: HookRunner = {
@@ -289,11 +289,11 @@ describe('continueMerge', () => {
         };
         ctx = createMemoryContext({ hooks: runner });
         await setupConflictingMerge(ctx);
-        await merge(ctx, { target: 'feature', author });
+        await mergeRun(ctx, { target: 'feature', author });
         await resolveAndStage(ctx);
 
         // Act
-        const sut = await continueMerge(ctx, {
+        const sut = await mergeContinue(ctx, {
           message: 'resolved',
           author,
           committer: author,

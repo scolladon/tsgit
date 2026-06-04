@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
-import { abortMerge } from '../../../../src/application/commands/abort-merge.js';
+import { mergeAbort } from '../../../../src/application/commands/abort-merge.js';
 import { add } from '../../../../src/application/commands/add.js';
 import { branchCreate } from '../../../../src/application/commands/branch.js';
 import { checkout } from '../../../../src/application/commands/checkout.js';
 import { commit } from '../../../../src/application/commands/commit.js';
-import { continueMerge } from '../../../../src/application/commands/continue-merge.js';
+import { mergeContinue } from '../../../../src/application/commands/continue-merge.js';
 import { init } from '../../../../src/application/commands/init.js';
 import { pull } from '../../../../src/application/commands/pull.js';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
@@ -201,7 +201,7 @@ describe('pull', () => {
 
   describe('Given diverged histories editing the same file', () => {
     describe('When pull', () => {
-      it('Then leaves conflict state that abortMerge can recover', async () => {
+      it('Then leaves conflict state that mergeAbort can recover', async () => {
         // Arrange — both sides edit a.txt; remote main → B.
         const ctx = createMemoryContext();
         await init(ctx);
@@ -220,10 +220,10 @@ describe('pull', () => {
         // Act
         const sut = await pull(withTransport(ctx, transport), { author });
 
-        // Assert — conflict state persisted, then abortMerge restores ORIG_HEAD.
+        // Assert — conflict state persisted, then mergeAbort restores ORIG_HEAD.
         expect(sut.merge.kind).toBe('conflict');
         expect(await ctx.fs.exists(`${ctx.layout.gitDir}/MERGE_HEAD`)).toBe(true);
-        await abortMerge(ctx);
+        await mergeAbort(ctx);
         expect(await ctx.fs.exists(`${ctx.layout.gitDir}/MERGE_HEAD`)).toBe(false);
         expect(await resolveRef(ctx, 'refs/heads/main' as RefName)).toBe(x);
       });
@@ -231,7 +231,7 @@ describe('pull', () => {
   });
 
   describe('Given a pull conflict resolved by the caller', () => {
-    describe('When continueMerge finalises it', () => {
+    describe('When mergeContinue finalises it', () => {
       it('Then a two-parent merge commit is produced (20.4 state machine composes)', async () => {
         // Arrange — diverged same-path edits → pull conflict.
         const ctx = createMemoryContext();
@@ -253,7 +253,7 @@ describe('pull', () => {
         // Act — resolve the file, stage it, and continue.
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'resolved\n');
         await add(ctx, ['a.txt']);
-        const result = await continueMerge(ctx, { message: 'resolve pull', author });
+        const result = await mergeContinue(ctx, { message: 'resolve pull', author });
 
         // Assert — the merge commit has both ours (X) and theirs (B) as parents.
         const obj = await readObject(ctx, result.id);

@@ -6,7 +6,7 @@ import { checkout } from '../../../../src/application/commands/checkout.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { describe as describeCmd } from '../../../../src/application/commands/describe.js';
 import { init } from '../../../../src/application/commands/init.js';
-import { merge } from '../../../../src/application/commands/merge.js';
+import { mergeRun } from '../../../../src/application/commands/merge.js';
 import { tagCreate } from '../../../../src/application/commands/tag.js';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
 import { getRefStore } from '../../../../src/application/primitives/ref-store.js';
@@ -555,7 +555,7 @@ describe('describe', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'MAIN\n');
         await add(ctx, ['file.txt']);
         await commit(ctx, { message: 'on-main', author: ident(clock) });
-        await merge(ctx, { target: 'feature', author: ident(clock) });
+        await mergeRun(ctx, { target: 'feature', author: ident(clock) });
 
         // Act
         const sut = await describeCmd(ctx, undefined, { dirty: true });
@@ -792,7 +792,7 @@ describe('describe', () => {
   describe('Given a capped search over a merge with a tagged sibling branch', () => {
     describe('When describe runs with candidates: 1', () => {
       it('Then the winner depth is finalised past the cap (counts the sibling)', async () => {
-        // Arrange — M = merge(a1, b1), each tagged. b1 is newer so its tag is
+        // Arrange — M = mergeRun(a1, b1), each tagged. b1 is newer so its tag is
         // found first (and capped as the winner); a1 is the gave-up commit whose
         // branch the finish phase must still count into the winner's depth.
         const ctx = await seed();

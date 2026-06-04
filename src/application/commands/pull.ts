@@ -6,8 +6,8 @@
  * the `rebase` mode is added when rebase (Phase 22.3) lands.
  *
  * A pull that conflicts leaves the exact MERGE_HEAD / MERGE_MSG / ORIG_HEAD +
- * conflicted-index state a direct `merge` leaves, so `abortMerge` /
- * `continueMerge` resolve a pull-initiated conflict with no pull-specific code.
+ * conflicted-index state a direct `merge` leaves, so `merge.abort` /
+ * `merge.continue` resolve a pull-initiated conflict with no pull-specific code.
  */
 import { noUpstreamConfigured } from '../../domain/commands/error.js';
 import { type AuthorIdentity, RefName } from '../../domain/objects/index.js';
@@ -21,7 +21,7 @@ import {
   assertRepository,
   readHeadRaw,
 } from './internal/repo-state.js';
-import { type MergeInternalOptions, type MergeResult, merge } from './merge.js';
+import { type MergeInternalOptions, type MergeResult, mergeRun } from './merge.js';
 
 const HEADS_PREFIX = 'refs/heads/';
 
@@ -108,7 +108,7 @@ export const pull = async (ctx: Context, opts: PullOptions = {}): Promise<PullRe
 
   // git sets GIT_REFLOG_ACTION=pull for the integrate step; this is its analogue.
   const mergeInternal: MergeInternalOptions = { reflogAction: 'pull' };
-  const mergeResult = await merge(
+  const mergeResult = await mergeRun(
     ctx,
     {
       target: tip,

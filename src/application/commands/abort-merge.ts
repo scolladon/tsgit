@@ -7,7 +7,7 @@ import { clearMergeState, readMergeHead, readOrigHead } from './internal/merge-s
 import { assertNotBare, assertRepository, readHeadRaw } from './internal/repo-state.js';
 import { hardResetWorktreeToCommit } from './internal/reset-worktree.js';
 
-export interface AbortMergeResult {
+export interface MergeAbortResult {
   /** The commit `ORIG_HEAD` recorded; HEAD now points at this id. */
   readonly origHead: ObjectId;
   /** The branch HEAD is on (always defined — detached merges are rejected upstream). */
@@ -26,14 +26,14 @@ export interface AbortMergeResult {
  * the call can bypass `assertNoPendingOperation` (which would itself
  * fire on the very `MERGE_HEAD` we're about to clear). See ADR-170.
  */
-export const abortMerge = async (ctx: Context): Promise<AbortMergeResult> => {
+export const mergeAbort = async (ctx: Context): Promise<MergeAbortResult> => {
   await assertRepository(ctx);
   await assertNotBare(ctx, 'merge --abort');
   const mergeHead = await readMergeHead(ctx);
   // Load-bearing under the ADR-027 write order: `merge`'s conflict path
   // writes `ORIG_HEAD` *before* `MERGE_HEAD`. A crash between the two leaves
   // `ORIG_HEAD` on disk with `MERGE_HEAD` absent — without this guard,
-  // `abortMerge` would silently hard-reset to `ORIG_HEAD` instead of
+  // `mergeAbort` would silently hard-reset to `ORIG_HEAD` instead of
   // surfacing the inconsistent state to the caller.
   if (mergeHead === undefined) throw noOperationInProgress('merge');
   const origHead = await readOrigHead(ctx);

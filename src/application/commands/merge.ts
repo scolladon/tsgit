@@ -52,7 +52,7 @@ import {
   readHeadRaw,
 } from './internal/repo-state.js';
 
-export interface MergeOptions {
+export interface MergeRunInput {
   readonly target: string;
   readonly message?: string;
   /**
@@ -114,9 +114,9 @@ export type MergeResult =
  *  Resolution path: edit the marker files, `repo.add(paths)`,
  *  `repo.commit({ message })` — the resulting commit has two parents.
  */
-export const merge = async (
+export const mergeRun = async (
   ctx: Context,
-  opts: MergeOptions,
+  opts: MergeRunInput,
   internal: MergeInternalOptions = {},
 ): Promise<MergeResult> => {
   await assertRepository(ctx);
@@ -156,7 +156,7 @@ export const UNSUPPORTED_CONFLICT_TYPES: ReadonlySet<ConflictType> = new Set([
 
 const mergeCommit = async (
   ctx: Context,
-  opts: MergeOptions,
+  opts: MergeRunInput,
   internal: MergeInternalOptions,
   branchName: RefName,
   ourId: ObjectId,
@@ -177,7 +177,7 @@ const mergeCommit = async (
 
 const commitCleanMerge = async (
   ctx: Context,
-  opts: MergeOptions,
+  opts: MergeRunInput,
   internal: MergeInternalOptions,
   branchName: RefName,
   ourId: ObjectId,
@@ -380,7 +380,7 @@ export const writeNestedTree = async (
  */
 const persistConflictState = async (
   ctx: Context,
-  opts: MergeOptions,
+  opts: MergeRunInput,
   result: Extract<MergeTreeResult, { readonly kind: 'conflict' }>,
   ourId: ObjectId,
   theirId: ObjectId,
@@ -675,7 +675,7 @@ export const buildConflictIndexEntries = (
 /** Resolve the merge-commit author. Exported for direct unit testing. */
 export const resolveMergeAuthor = async (
   ctx: Context,
-  opts: MergeOptions,
+  opts: MergeRunInput,
 ): Promise<AuthorIdentity> => {
   const config = await readConfig(ctx);
   const cfgUser = config.user
@@ -694,7 +694,7 @@ export const resolveMergeAuthor = async (
 
 /** Resolve the merge-commit committer. Exported for direct unit testing. */
 export const resolveMergeCommitter = (
-  opts: MergeOptions,
+  opts: MergeRunInput,
   author: AuthorIdentity,
 ): AuthorIdentity => {
   const committerInput: {

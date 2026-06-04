@@ -1,12 +1,12 @@
 /**
- * Integration — merge state machine end-to-end. Drives `repo.merge` →
- * conflict → `repo.abortMerge` / `repo.continueMerge` through the real
+ * Integration — merge state machine end-to-end. Drives `repo.merge.run` →
+ * conflict → `repo.merge.abort` / `repo.merge.continue` through the real
  * `openRepository` facade (against the Node fs adapter, a real tmpdir).
  *
  * @proves
- *   surface: repo.abortMerge
+ *   surface: repo.merge.abort
  *   bucket:  coverage-gap
- *   unique:  abortMerge + continueMerge wired through the Tier-1 facade on a real fs
+ *   unique:  merge.abort + merge.continue wired through the Tier-1 facade on a real fs
  */
 import { mkdtemp, realpath, rm } from 'node:fs/promises';
 import * as os from 'node:os';
@@ -58,18 +58,18 @@ afterEach(async () => {
 });
 
 describe('integration — merge state machine via openRepository', () => {
-  describe('Given a conflicting merge, When repo.abortMerge runs', () => {
+  describe('Given a conflicting merge, When repo.merge.abort runs', () => {
     it('Then HEAD is restored and a re-merge produces the same conflict', async () => {
       // Arrange
       const workDir = await realpath(tmpdir);
       const repo = await openRepository({ cwd: workDir });
       try {
         await setupConflictingMerge(repo, workDir);
-        const firstMerge = await repo.merge({ target: 'feature', author });
+        const firstMerge = await repo.merge.run({ target: 'feature', author });
         if (firstMerge.kind !== 'conflict') throw new Error('expected conflict');
 
         // Act
-        const aborted = await repo.abortMerge();
+        const aborted = await repo.merge.abort();
 
         // Assert — pointer restored, no merge state left behind.
         expect(aborted.branch).toBe('refs/heads/main');
@@ -77,7 +77,7 @@ describe('integration — merge state machine via openRepository', () => {
         expect(status.branch).toBe('refs/heads/main');
 
         // Re-running the same merge produces the same conflict shape.
-        const secondMerge = await repo.merge({ target: 'feature', author });
+        const secondMerge = await repo.merge.run({ target: 'feature', author });
         expect(secondMerge.kind).toBe('conflict');
         if (secondMerge.kind === 'conflict' && firstMerge.kind === 'conflict') {
           expect(secondMerge.mergeHead).toBe(firstMerge.mergeHead);
@@ -89,20 +89,20 @@ describe('integration — merge state machine via openRepository', () => {
     });
   });
 
-  describe('Given a resolved conflict, When repo.continueMerge runs', () => {
+  describe('Given a resolved conflict, When repo.merge.continue runs', () => {
     it('Then HEAD becomes a two-parent merge commit', async () => {
       // Arrange
       const workDir = await realpath(tmpdir);
       const repo = await openRepository({ cwd: workDir });
       try {
         await setupConflictingMerge(repo, workDir);
-        const conflict = await repo.merge({ target: 'feature', author });
+        const conflict = await repo.merge.run({ target: 'feature', author });
         if (conflict.kind !== 'conflict') throw new Error('expected conflict');
         await writeFileAt(workDir, 'file.txt', 'RESOLVED\n');
         await repo.add(['file.txt']);
 
         // Act
-        const result = await repo.continueMerge({
+        const result = await repo.merge.continue({
           message: 'resolved',
           author,
           committer: author,
@@ -124,7 +124,7 @@ describe('integration — merge state machine via openRepository', () => {
     });
   });
 
-  describe('Given no merge in progress, When repo.abortMerge runs', () => {
+  describe('Given no merge in progress, When repo.merge.abort runs', () => {
     it('Then it throws NO_OPERATION_IN_PROGRESS(merge)', async () => {
       // Arrange
       const workDir = await realpath(tmpdir);
@@ -138,7 +138,7 @@ describe('integration — merge state machine via openRepository', () => {
         // Act
         let caught: unknown;
         try {
-          await repo.abortMerge();
+          await repo.merge.abort();
         } catch (err) {
           caught = err;
         }

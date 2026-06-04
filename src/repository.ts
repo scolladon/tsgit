@@ -144,8 +144,7 @@ export interface RuntimeFallback {
  * users never see Context except through `repo.ctx`.
  */
 export interface Repository {
-  // Tier-1 commands (19) — bound to ctx.
-  readonly abortMerge: BindCtx<typeof commands.abortMerge>;
+  // Tier-1 commands — bound to ctx.
   readonly add: BindCtx<typeof commands.add>;
   readonly blame: BindCtx<typeof commands.blame>;
   /** Nested `repo.branch.{list,create,delete,rename}` namespace. */
@@ -158,7 +157,6 @@ export interface Repository {
   readonly commit: BindCtx<typeof commands.commit>;
   /** Nested `repo.config.{get,set,unset,unsetAll,getAll,getRegexp,list,renameSection,removeSection}` (ADR-181). */
   readonly config: commands.ConfigNamespace;
-  readonly continueMerge: BindCtx<typeof commands.continueMerge>;
   readonly describe: BindCtx<typeof commands.describe>;
   // `diff` is overloaded on `withStat`; `BindCtx` only captures the last overload
   // (a TypeScript limitation), so the binding is written by hand to preserve
@@ -171,7 +169,8 @@ export interface Repository {
   readonly fetchMissing: BindCtx<typeof commands.fetchMissing>;
   readonly init: BindCtx<typeof commands.init>;
   readonly log: BindCtx<typeof commands.log>;
-  readonly merge: BindCtx<typeof commands.merge>;
+  /** Nested `repo.merge.{run,continue,abort}` namespace. */
+  readonly merge: commands.MergeNamespace;
   readonly mv: BindCtx<typeof commands.mv>;
   readonly pull: BindCtx<typeof commands.pull>;
   readonly push: BindCtx<typeof commands.push>;
@@ -398,10 +397,6 @@ export const openRepository = async (
 
   const repo: Repository = Object.freeze({
     snapshot,
-    abortMerge: (() => {
-      guard();
-      return commands.abortMerge(ctx);
-    }) as Repository['abortMerge'],
     add: ((paths, addOpts) => {
       guard();
       return commands.add(ctx, paths, addOpts);
@@ -429,10 +424,6 @@ export const openRepository = async (
       return commands.commit(ctx, commitOpts);
     }) as Repository['commit'],
     config: commands.bindConfigNamespace(ctx, guard),
-    continueMerge: ((opts) => {
-      guard();
-      return commands.continueMerge(ctx, opts);
-    }) as Repository['continueMerge'],
     describe: ((input, describeOpts) => {
       guard();
       return commands.describe(ctx, input, describeOpts);
@@ -463,10 +454,7 @@ export const openRepository = async (
       guard();
       return commands.log(ctx, logOpts);
     }) as Repository['log'],
-    merge: ((mergeOpts) => {
-      guard();
-      return commands.merge(ctx, mergeOpts);
-    }) as Repository['merge'],
+    merge: commands.bindMergeNamespace(ctx, guard),
     mv: ((sources, destination, mvOpts) => {
       guard();
       return commands.mv(ctx, sources, destination, mvOpts);

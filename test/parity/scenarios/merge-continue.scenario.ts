@@ -1,10 +1,10 @@
 /**
  * Merge state-machine continue scenario — drives a conflict, then a
  * deterministic resolution (overwrite the file with a fixed payload and
- * stage), then `continueMerge` to produce the two-parent merge commit.
+ * stage), then `merge.continue` to produce the two-parent merge commit.
  *
  * Surfaces closed (per 19.5a):
- *   commands: continueMerge
+ *   commands: merge
  */
 import type { AuthorIdentity } from '../../../src/domain/objects/author-identity.ts';
 import { AUTHOR } from '../fixtures.ts';
@@ -56,7 +56,7 @@ export const mergeContinueScenario: Scenario<MergeContinueResult> = {
     await repo.add(['a.txt']);
     const mainTip = await repo.commit({ message: 'on-main', author: inputs.author });
 
-    const mergeResult = await repo.merge({
+    const mergeResult = await repo.merge.run({
       target: 'feature',
       author: inputs.author,
       message: 'Merge feature into main',
@@ -69,7 +69,7 @@ export const mergeContinueScenario: Scenario<MergeContinueResult> = {
     await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'RESOLVED\n');
     await repo.add(['a.txt']);
 
-    const resolved = await repo.continueMerge({
+    const resolved = await repo.merge.continue({
       message: 'resolved',
       author: inputs.author,
       committer: inputs.author,

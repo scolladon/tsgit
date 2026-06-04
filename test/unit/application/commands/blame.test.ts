@@ -6,7 +6,7 @@ import { branchCreate } from '../../../../src/application/commands/branch.js';
 import { checkout } from '../../../../src/application/commands/checkout.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
-import { merge } from '../../../../src/application/commands/merge.js';
+import { mergeRun } from '../../../../src/application/commands/merge.js';
 import { mv } from '../../../../src/application/commands/mv.js';
 import { TsgitError } from '../../../../src/domain/error.js';
 import type { AuthorIdentity, ObjectId } from '../../../../src/domain/objects/index.js';
@@ -194,7 +194,7 @@ describe('Given a clean merge of two branches that changed different lines', () 
       await checkout(ctx, { target: 'main' });
       const main = await commitFile(ctx, 'main', 'f.txt', 'a\nb\nc-main\n');
       clock += 60;
-      const merged = await merge(ctx, {
+      const merged = await mergeRun(ctx, {
         target: 'side',
         author: ident('merger', clock),
         committer: ident('merger', clock),

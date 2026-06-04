@@ -246,7 +246,7 @@ describe('merge-state', () => {
     describe('Given a malformed (non-hex) ORIG_HEAD', () => {
       describe('When readOrigHead is called', () => {
         it('Then throws INVALID_OBJECT_ID with the offending value', async () => {
-          // Arrange — a corrupt ORIG_HEAD must NOT silently route abortMerge
+          // Arrange — a corrupt ORIG_HEAD must NOT silently route mergeAbort
           // to an invalid commit. The factory rejection guards downstream
           // consumers that resolve to a tree.
           const ctx = createMemoryContext();

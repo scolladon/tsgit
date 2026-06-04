@@ -5,7 +5,7 @@ import { branchCreate } from '../../../../src/application/commands/branch.js';
 import { checkout } from '../../../../src/application/commands/checkout.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
-import { merge } from '../../../../src/application/commands/merge.js';
+import { mergeRun } from '../../../../src/application/commands/merge.js';
 import { rm } from '../../../../src/application/commands/rm.js';
 import {
   status,
@@ -887,7 +887,7 @@ const seedConflict = async () => {
   await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'MAIN-CHANGE\n');
   await add(ctx, ['file.txt']);
   await commit(ctx, { message: 'on-main', author });
-  await merge(ctx, { target: 'feature', author });
+  await mergeRun(ctx, { target: 'feature', author });
   return ctx;
 };
 
@@ -957,7 +957,7 @@ describe('status — unmerged column', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'MAIN\n');
         await add(ctx, ['file.txt']);
         await commit(ctx, { message: 'modify', author });
-        await merge(ctx, { target: 'feature', author });
+        await mergeRun(ctx, { target: 'feature', author });
 
         // Act
         const sut = await status(ctx);
@@ -996,7 +996,7 @@ describe('status — unmerged column', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'MAIN\n');
         await add(ctx, ['z.txt', 'a.txt']);
         await commit(ctx, { message: 'on-main', author });
-        await merge(ctx, { target: 'feature', author });
+        await mergeRun(ctx, { target: 'feature', author });
 
         // Act
         const sut = await status(ctx);

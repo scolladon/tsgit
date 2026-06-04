@@ -1,11 +1,11 @@
 /**
  * Merge state-machine abort scenario — drives a conflict and then
- * `abortMerge` to restore the pre-merge branch state. The conflicting
+ * `merge.abort` to restore the pre-merge branch state. The conflicting
  * merge is built on top of the FF fixture (two diverging commits on
  * `feature` vs `main` touching the same file).
  *
  * Surfaces closed (per 19.5a):
- *   commands: abortMerge
+ *   commands: merge
  */
 import type { AuthorIdentity } from '../../../src/domain/objects/author-identity.ts';
 import { AUTHOR } from '../fixtures.ts';
@@ -59,12 +59,12 @@ export const mergeAbortScenario: Scenario<MergeAbortResult> = {
     await repo.add(['a.txt']);
     const mainTip = await repo.commit({ message: 'on-main', author: inputs.author });
 
-    const mergeResult = await repo.merge({ target: 'feature', author: inputs.author });
+    const mergeResult = await repo.merge.run({ target: 'feature', author: inputs.author });
     if (mergeResult.kind !== 'conflict') {
       throw new Error(`merge-abort expected kind='conflict' but got kind='${mergeResult.kind}'`);
     }
 
-    const aborted = await repo.abortMerge();
+    const aborted = await repo.merge.abort();
 
     return {
       seedCommitId: seed.id,

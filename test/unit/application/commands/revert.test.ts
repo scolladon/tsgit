@@ -6,7 +6,7 @@ import { checkout } from '../../../../src/application/commands/checkout.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
 import { bindRevertNamespace } from '../../../../src/application/commands/internal/revert-namespace.js';
-import { merge } from '../../../../src/application/commands/merge.js';
+import { mergeRun } from '../../../../src/application/commands/merge.js';
 import {
   revertAbort,
   revertContinue,
@@ -254,7 +254,7 @@ describe('revert run', () => {
         await add(ctx, ['side.txt']);
         await commit(ctx, { message: 'side commit', author: MAIN_AUTHOR });
         await checkout(ctx, { target: 'feature' });
-        const m = await merge(ctx, { target: 'side' });
+        const m = await mergeRun(ctx, { target: 'side' });
         if (m.kind !== 'merge') throw new Error('seed: expected a merge commit');
         await checkout(ctx, { target: 'main' });
 
@@ -449,7 +449,7 @@ describe('revert range and sequencer', () => {
   describe('Given a range containing a merge commit', () => {
     describe('When reverting it', () => {
       it('Then reverts the newer commits, stops at the merge with sequencer state', async () => {
-        // Arrange — main: c1 → merge(side) → top. Revert c1..HEAD reverts top,
+        // Arrange — main: c1 → mergeRun(side) → top. Revert c1..HEAD reverts top,
         // then stops at the merge.
         const ctx = createMemoryContext();
         await init(ctx);
@@ -466,7 +466,7 @@ describe('revert range and sequencer', () => {
         await ctx.fs.writeUtf8(work(ctx, 'main.txt'), 'm\n');
         await add(ctx, ['main.txt']);
         await commit(ctx, { message: 'main commit', author: MAIN_AUTHOR });
-        const m = await merge(ctx, { target: 'side' });
+        const m = await mergeRun(ctx, { target: 'side' });
         if (m.kind !== 'merge') throw new Error('seed: expected a merge commit');
         await ctx.fs.writeUtf8(work(ctx, 'top.txt'), 't\n');
         await add(ctx, ['top.txt']);
@@ -800,7 +800,7 @@ describe('revert abort', () => {
   describe('Given a sequence that committed earlier reverts before stopping', () => {
     describe('When abort runs', () => {
       it('Then resets to the pre-sequence HEAD, undoing the committed reverts', async () => {
-        // Arrange — main: c1 → merge(side) → top. `revert c1..HEAD` reverts top
+        // Arrange — main: c1 → mergeRun(side) → top. `revert c1..HEAD` reverts top
         // then stops at the merge; abort must rewind past the top revert.
         const ctx = createMemoryContext();
         await init(ctx);
@@ -817,7 +817,7 @@ describe('revert abort', () => {
         await ctx.fs.writeUtf8(work(ctx, 'main.txt'), 'm\n');
         await add(ctx, ['main.txt']);
         await commit(ctx, { message: 'main commit', author: MAIN_AUTHOR });
-        await merge(ctx, { target: 'side' });
+        await mergeRun(ctx, { target: 'side' });
         await ctx.fs.writeUtf8(work(ctx, 'top.txt'), 't\n');
         await add(ctx, ['top.txt']);
         const top = (await commit(ctx, { message: 'top commit', author: MAIN_AUTHOR })).id;
@@ -963,7 +963,7 @@ describe('revert no-commit (-n)', () => {
         await add(ctx, ['side.txt']);
         await commit(ctx, { message: 'side commit', author: MAIN_AUTHOR });
         await checkout(ctx, { target: 'feature' });
-        const m = await merge(ctx, { target: 'side' });
+        const m = await mergeRun(ctx, { target: 'side' });
         if (m.kind !== 'merge') throw new Error('seed: expected a merge commit');
         await checkout(ctx, { target: 'main' });
 
@@ -1437,7 +1437,7 @@ describe('revert mutation-hardening surfaces', () => {
         await add(ctx, ['side.txt']);
         await commit(ctx, { message: 'side commit', author: MAIN_AUTHOR });
         await checkout(ctx, { target: 'feature' });
-        const m = await merge(ctx, { target: 'side' });
+        const m = await mergeRun(ctx, { target: 'side' });
         if (m.kind !== 'merge') throw new Error('seed: expected a merge commit');
         await checkout(ctx, { target: 'main' });
         await ctx.fs.writeUtf8(work(ctx, 'main.txt'), 'm\n');
