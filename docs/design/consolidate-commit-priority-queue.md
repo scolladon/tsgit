@@ -150,6 +150,18 @@ name-rev), with the existing test relocated alongside.
   consumers' *other* logic are untouched; the two on the deleted inline queues
   disappear with the code.
 
+## Architecture pass (post-implementation)
+
+A no-op, justified. The feature's concern is the date-ordered commit priority-queue;
+it had exactly three consumers, now all on `domain/commit/priority-queue.ts`. The
+only other commit queue, `primitives/walk-commits.ts`, is a plain topo/first-parent
+FIFO (`push`/`shift`, no date ordering) — a different scheduling concern, correctly
+left untouched. The adjacent memoizing commit-readers (`describe`'s
+`makeCommitReader`, `merge-base`'s `makeReadCommit`) are two *divergent* copies
+(different cached projections: `{date, parents}` vs `Commit | undefined`) — below
+rule-of-three and not reached by the priority-queue concern; unifying them would be
+speculative (YAGNI), so they stay. Nothing to refactor; no scoped re-review needed.
+
 ## Non-goals
 
 - No first-class collection / class wrapper around the queue (`shift`/`length`
