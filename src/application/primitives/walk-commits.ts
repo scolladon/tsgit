@@ -40,7 +40,8 @@ export async function* walkCommits(
 
   while (state.queue.length > 0) {
     if (ctx.signal?.aborted) throw operationAborted();
-    const id = pickNext(state.queue, order);
+    // Caller guards `queue.length > 0`, so shift is guaranteed to return a value.
+    const id = state.queue.shift() as ObjectId;
     if (state.visited.has(id) || state.until.has(id)) continue;
 
     const commit = await readCommit(ctx, id, { verifyHash, ignoreMissing, missing: state.missing });
@@ -75,10 +76,4 @@ function enqueueParents(state: WalkState, commit: Commit, order: 'topo' | 'first
     }
     state.queue.push(parent);
   }
-}
-
-function pickNext(queue: ObjectId[], _order: 'topo' | 'first-parent'): ObjectId {
-  // Caller guards `queue.length > 0`, so shift is guaranteed to return a value.
-  // Order arg retained for future heap-based scheduler.
-  return queue.shift() as ObjectId;
 }
