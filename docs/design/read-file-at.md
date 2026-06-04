@@ -151,8 +151,8 @@ type re-exported from the commands barrel; `reports/api.json` regenerates.
 
 ```
 readFileAt(ctx, rev, path, options):
-  commitish ← revParse(ctx, rev)              // full grammar → commit-ish oid (D1-A)
-  rootTree  ← readTree(ctx, commitish)        // peel commit/tag → root Tree
+  revOid   ← revParse(ctx, rev)               // full grammar → commit-ish oid (D1-A)
+  rootTree ← readTree(ctx, revOid)            // peel commit/tag → root Tree
   entry     ← descendTreePath(ctx, rootTree, path, rev)   // shared descent → { id, mode }
   blob      ← readBlob(ctx, entry.id, options)            // blob-guard + maxBytes/verifyHash
   return { id: entry.id, mode: entry.mode, content: blob.content }

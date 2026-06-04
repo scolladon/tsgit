@@ -119,8 +119,8 @@ export const readFileAt = async (
   options?: ReadObjectOptions,
 ): Promise<ReadFileAtResult> => {
   await assertRepository(ctx);
-  const commitish = await revParse(ctx, rev);
-  const rootTree = await readTree(ctx, commitish);
+  const revOid = await revParse(ctx, rev);
+  const rootTree = await readTree(ctx, revOid);
   const entry = await descendTreePath(ctx, rootTree, path, rev);
   const blob = await readBlob(ctx, entry.id, options);
   return { id: entry.id, mode: entry.mode, content: blob.content };
