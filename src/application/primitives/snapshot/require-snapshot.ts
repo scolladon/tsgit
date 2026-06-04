@@ -4,7 +4,7 @@ import { snapshotRequired } from '../../../domain/error.js';
  * Unwrap a `Promise<T | null>` from a compound-state snapshot factory
  * (`mergeHead`, `cherryPickHead`, `revertHead`, `fetchHead`, `stashEntry`).
  *
- * Calls that require the state to exist (e.g. `abortMerge` when no merge
+ * Calls that require the state to exist (e.g. `mergeAbort` when no merge
  * is in progress) use this helper to fail loudly with a `SNAPSHOT_REQUIRED`
  * code carrying the caller's reason. Calls that tolerate absence keep the
  * null-check in their own flow.

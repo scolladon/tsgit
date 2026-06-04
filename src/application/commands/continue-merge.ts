@@ -5,7 +5,7 @@ import { type CommitOptions, type CommitResult, commit } from './commit.js';
 import { readMergeHead } from './internal/merge-state.js';
 import { assertNotBare, assertRepository } from './internal/repo-state.js';
 
-export interface ContinueMergeOptions {
+export interface MergeContinueInput {
   /** Override `MERGE_MSG`. Empty/undefined falls back to the draft. */
   readonly message?: string;
   /** Forwarded to commit. */
@@ -15,7 +15,7 @@ export interface ContinueMergeOptions {
   readonly noVerify?: boolean;
 }
 
-export type ContinueMergeResult = CommitResult;
+export type MergeContinueResult = CommitResult;
 
 /**
  * Finalise a conflicting merge as a merge commit. Asserts a merge is in
@@ -27,10 +27,10 @@ export type ContinueMergeResult = CommitResult;
  * Refuses when no merge is in progress (`MERGE_HEAD` absent). Refuses
  * (via `commit`) when the index still has stage-1/2/3 entries.
  */
-export const continueMerge = async (
+export const mergeContinue = async (
   ctx: Context,
-  opts: ContinueMergeOptions = {},
-): Promise<ContinueMergeResult> => {
+  opts: MergeContinueInput = {},
+): Promise<MergeContinueResult> => {
   await assertRepository(ctx);
   await assertNotBare(ctx, 'merge --continue');
   const mergeHead = await readMergeHead(ctx);
@@ -38,7 +38,7 @@ export const continueMerge = async (
   return commit(ctx, buildCommitOptions(opts));
 };
 
-const buildCommitOptions = (opts: ContinueMergeOptions): CommitOptions => ({
+const buildCommitOptions = (opts: MergeContinueInput): CommitOptions => ({
   message: opts.message ?? '',
   ...(opts.author !== undefined && { author: opts.author }),
   ...(opts.committer !== undefined && { committer: opts.committer }),

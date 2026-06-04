@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
-import { abortMerge } from '../../../../src/application/commands/abort-merge.js';
+import { mergeAbort } from '../../../../src/application/commands/abort-merge.js';
 import { add } from '../../../../src/application/commands/add.js';
 import { branchCreate } from '../../../../src/application/commands/branch.js';
 import { checkout } from '../../../../src/application/commands/checkout.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
-import { merge } from '../../../../src/application/commands/merge.js';
+import { mergeRun } from '../../../../src/application/commands/merge.js';
 import { readIndex } from '../../../../src/application/primitives/read-index.js';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
 import { readReflog } from '../../../../src/application/primitives/reflog-store.js';
@@ -49,9 +49,9 @@ const setupConflictingMerge = async (
   return { preMergeMain: mainTip.id, featureTip: featureTip.id, baseTreeFile: 'MAIN\n' };
 };
 
-describe('abortMerge', () => {
+describe('mergeAbort', () => {
   describe('Given a non-repo (no HEAD)', () => {
-    describe('When abortMerge runs', () => {
+    describe('When mergeAbort runs', () => {
       it('Then throws NOT_A_REPOSITORY', async () => {
         // Arrange
         const ctx = createMemoryContext();
@@ -59,7 +59,7 @@ describe('abortMerge', () => {
         // Act
         let caught: unknown;
         try {
-          await abortMerge(ctx);
+          await mergeAbort(ctx);
         } catch (err) {
           caught = err;
         }
@@ -71,7 +71,7 @@ describe('abortMerge', () => {
   });
 
   describe('Given a bare repo', () => {
-    describe('When abortMerge runs', () => {
+    describe('When mergeAbort runs', () => {
       it('Then throws BARE_REPOSITORY with operation=merge --abort', async () => {
         // Arrange
         const ctx = createMemoryContext();
@@ -80,7 +80,7 @@ describe('abortMerge', () => {
         // Act
         let caught: unknown;
         try {
-          await abortMerge(ctx);
+          await mergeAbort(ctx);
         } catch (err) {
           caught = err;
         }
@@ -94,7 +94,7 @@ describe('abortMerge', () => {
   });
 
   describe('Given a repo with no MERGE_HEAD', () => {
-    describe('When abortMerge runs', () => {
+    describe('When mergeAbort runs', () => {
       it('Then throws NO_OPERATION_IN_PROGRESS(merge)', async () => {
         // Arrange
         const ctx = createMemoryContext();
@@ -106,7 +106,7 @@ describe('abortMerge', () => {
         // Act
         let caught: unknown;
         try {
-          await abortMerge(ctx);
+          await mergeAbort(ctx);
         } catch (err) {
           caught = err;
         }
@@ -120,12 +120,12 @@ describe('abortMerge', () => {
   });
 
   describe('Given ORIG_HEAD exists but MERGE_HEAD is absent (ADR-027 crash window)', () => {
-    describe('When abortMerge runs', () => {
+    describe('When mergeAbort runs', () => {
       it('Then throws NO_OPERATION_IN_PROGRESS(merge) without resetting HEAD', async () => {
         // Arrange — simulate the partial state from a crash between
         // `merge`'s ORIG_HEAD write and its MERGE_HEAD write (write order
         // is ORIG_HEAD → MERGE_HEAD per ADR-027). Without the explicit
-        // MERGE_HEAD guard, abortMerge would silently hard-reset to a stale
+        // MERGE_HEAD guard, mergeAbort would silently hard-reset to a stale
         // ORIG_HEAD instead of surfacing the inconsistent state.
         const ctx = createMemoryContext();
         await init(ctx);
@@ -138,7 +138,7 @@ describe('abortMerge', () => {
         // Act
         let caught: unknown;
         try {
-          await abortMerge(ctx);
+          await mergeAbort(ctx);
         } catch (err) {
           caught = err;
         }
@@ -154,18 +154,18 @@ describe('abortMerge', () => {
   });
 
   describe('Given MERGE_HEAD exists but ORIG_HEAD is absent', () => {
-    describe('When abortMerge runs', () => {
+    describe('When mergeAbort runs', () => {
       it('Then throws NO_OPERATION_IN_PROGRESS(merge)', async () => {
         // Arrange — synthesize a half-state: MERGE_HEAD on disk, ORIG_HEAD removed.
         const ctx = createMemoryContext();
         await setupConflictingMerge(ctx);
-        await merge(ctx, { target: 'feature', author });
+        await mergeRun(ctx, { target: 'feature', author });
         await ctx.fs.rm(`${ctx.layout.gitDir}/ORIG_HEAD`);
 
         // Act
         let caught: unknown;
         try {
-          await abortMerge(ctx);
+          await mergeAbort(ctx);
         } catch (err) {
           caught = err;
         }
@@ -179,7 +179,7 @@ describe('abortMerge', () => {
   });
 
   describe('Given a synthetic ORIG_HEAD pointing at a blob (not a commit)', () => {
-    describe('When abortMerge runs', () => {
+    describe('When mergeAbort runs', () => {
       it('Then throws UNEXPECTED_OBJECT_TYPE with expected=commit', async () => {
         // Arrange — produce a real merge state, then overwrite ORIG_HEAD with
         // a blob's OID. This exercises the `commit.type !== 'commit'` guard
@@ -187,7 +187,7 @@ describe('abortMerge', () => {
         // a less specific error.
         const ctx = createMemoryContext();
         await setupConflictingMerge(ctx);
-        await merge(ctx, { target: 'feature', author });
+        await mergeRun(ctx, { target: 'feature', author });
         const blobId = await writeObject(ctx, {
           type: 'blob',
           content: new TextEncoder().encode('not a commit'),
@@ -198,7 +198,7 @@ describe('abortMerge', () => {
         // Act
         let caught: unknown;
         try {
-          await abortMerge(ctx);
+          await mergeAbort(ctx);
         } catch (err) {
           caught = err;
         }
@@ -212,19 +212,19 @@ describe('abortMerge', () => {
   });
 
   describe('Given a synthetic detached HEAD with MERGE_HEAD on disk', () => {
-    describe('When abortMerge runs', () => {
+    describe('When mergeAbort runs', () => {
       it('Then throws UNSUPPORTED_OPERATION with operation=merge --abort and a detached-HEAD reason', async () => {
         // Arrange — produce a real conflict to write MERGE_HEAD + ORIG_HEAD,
-        // then detach HEAD so the symbolic-HEAD guard inside abortMerge fires.
+        // then detach HEAD so the symbolic-HEAD guard inside mergeAbort fires.
         const ctx = createMemoryContext();
         const { preMergeMain } = await setupConflictingMerge(ctx);
-        await merge(ctx, { target: 'feature', author });
+        await mergeRun(ctx, { target: 'feature', author });
         await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, `${preMergeMain}\n`);
 
         // Act
         let caught: unknown;
         try {
-          await abortMerge(ctx);
+          await mergeAbort(ctx);
         } catch (err) {
           caught = err;
         }
@@ -240,15 +240,15 @@ describe('abortMerge', () => {
   });
 
   describe('Given a conflicting merge', () => {
-    describe('When abortMerge runs', () => {
+    describe('When mergeAbort runs', () => {
       it('Then the working-tree file is restored to the pre-merge content', async () => {
         // Arrange — pre-merge HEAD has file.txt=MAIN; merge wrote conflict markers.
         const ctx = createMemoryContext();
         const fixture = await setupConflictingMerge(ctx);
-        await merge(ctx, { target: 'feature', author });
+        await mergeRun(ctx, { target: 'feature', author });
 
         // Act
-        await abortMerge(ctx);
+        await mergeAbort(ctx);
 
         // Assert
         const sut = await ctx.fs.readUtf8(`${ctx.layout.workDir}/file.txt`);
@@ -259,10 +259,10 @@ describe('abortMerge', () => {
         // Arrange
         const ctx = createMemoryContext();
         await setupConflictingMerge(ctx);
-        await merge(ctx, { target: 'feature', author });
+        await mergeRun(ctx, { target: 'feature', author });
 
         // Act
-        await abortMerge(ctx);
+        await mergeAbort(ctx);
 
         // Assert
         const sut = await readIndex(ctx);
@@ -274,10 +274,10 @@ describe('abortMerge', () => {
         // Arrange
         const ctx = createMemoryContext();
         const { preMergeMain } = await setupConflictingMerge(ctx);
-        await merge(ctx, { target: 'feature', author });
+        await mergeRun(ctx, { target: 'feature', author });
 
         // Act
-        await abortMerge(ctx);
+        await mergeAbort(ctx);
 
         // Assert
         const sut = await resolveRef(ctx, MAIN);
@@ -288,10 +288,10 @@ describe('abortMerge', () => {
         // Arrange
         const ctx = createMemoryContext();
         await setupConflictingMerge(ctx);
-        await merge(ctx, { target: 'feature', author });
+        await mergeRun(ctx, { target: 'feature', author });
 
         // Act
-        await abortMerge(ctx);
+        await mergeAbort(ctx);
 
         // Assert
         const sut = await ctx.fs.exists(`${ctx.layout.gitDir}/MERGE_HEAD`);
@@ -302,10 +302,10 @@ describe('abortMerge', () => {
         // Arrange
         const ctx = createMemoryContext();
         await setupConflictingMerge(ctx);
-        await merge(ctx, { target: 'feature', author });
+        await mergeRun(ctx, { target: 'feature', author });
 
         // Act
-        await abortMerge(ctx);
+        await mergeAbort(ctx);
 
         // Assert
         const sut = await ctx.fs.exists(`${ctx.layout.gitDir}/MERGE_MSG`);
@@ -316,10 +316,10 @@ describe('abortMerge', () => {
         // Arrange
         const ctx = createMemoryContext();
         const { preMergeMain } = await setupConflictingMerge(ctx);
-        await merge(ctx, { target: 'feature', author });
+        await mergeRun(ctx, { target: 'feature', author });
 
         // Act
-        await abortMerge(ctx);
+        await mergeAbort(ctx);
 
         // Assert — the file persists with the same id; `reset --hard ORIG_HEAD`
         // remains a meaningful recovery move after abort.
@@ -333,11 +333,11 @@ describe('abortMerge', () => {
         // with the faithful `reset: moving to HEAD` message git's reset writes.
         const ctx = createMemoryContext();
         await setupConflictingMerge(ctx);
-        await merge(ctx, { target: 'feature', author });
+        await mergeRun(ctx, { target: 'feature', author });
         const branchBefore = (await readReflog(ctx, MAIN)).at(-1)?.message;
 
         // Act
-        await abortMerge(ctx);
+        await mergeAbort(ctx);
 
         // Assert
         const sut = await readReflog(ctx, HEAD);
@@ -351,10 +351,10 @@ describe('abortMerge', () => {
         // Arrange
         const ctx = createMemoryContext();
         const { preMergeMain } = await setupConflictingMerge(ctx);
-        await merge(ctx, { target: 'feature', author });
+        await mergeRun(ctx, { target: 'feature', author });
 
         // Act
-        const sut = await abortMerge(ctx);
+        const sut = await mergeAbort(ctx);
 
         // Assert
         expect(sut.origHead).toBe(preMergeMain);
@@ -364,10 +364,10 @@ describe('abortMerge', () => {
         // Arrange
         const ctx = createMemoryContext();
         await setupConflictingMerge(ctx);
-        await merge(ctx, { target: 'feature', author });
+        await mergeRun(ctx, { target: 'feature', author });
 
         // Act
-        const sut = await abortMerge(ctx);
+        const sut = await mergeAbort(ctx);
 
         // Assert
         expect(sut.branch).toBe(MAIN);
@@ -393,13 +393,13 @@ describe('abortMerge', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/conflict.txt`, 'MAIN\n');
         await add(ctx, ['conflict.txt']);
         await commit(ctx, { message: 'on-main', author });
-        await merge(ctx, { target: 'feature', author });
+        await mergeRun(ctx, { target: 'feature', author });
         // Dirty the non-conflicting path's working-tree bytes. Its index
         // entry remains stage-0 matching the pre-merge tree's blob.
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/clean.txt`, 'DIRTY\n');
 
         // Act
-        await abortMerge(ctx);
+        await mergeAbort(ctx);
 
         // Assert — clean.txt restored from ORIG_HEAD's tree.
         const sut = await ctx.fs.readUtf8(`${ctx.layout.workDir}/clean.txt`);
@@ -412,10 +412,10 @@ describe('abortMerge', () => {
         // file and the follow-up add would surface RESOURCE_LOCKED.
         const ctx = createMemoryContext();
         await setupConflictingMerge(ctx);
-        await merge(ctx, { target: 'feature', author });
+        await mergeRun(ctx, { target: 'feature', author });
 
         // Act
-        await abortMerge(ctx);
+        await mergeAbort(ctx);
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/follow-up.txt`, 'x\n');
 
         // Assert — the follow-up add succeeds; lock was released.
@@ -430,7 +430,7 @@ describe('abortMerge', () => {
         // on disk and surface RESOURCE_LOCKED on the next mutation.
         const ctx = createMemoryContext();
         await setupConflictingMerge(ctx);
-        await merge(ctx, { target: 'feature', author });
+        await mergeRun(ctx, { target: 'feature', author });
         const originalWrite = ctx.fs.write.bind(ctx.fs);
         let failOnce = true;
         (ctx.fs as { write: typeof originalWrite }).write = async (p, data) => {
@@ -444,7 +444,7 @@ describe('abortMerge', () => {
         // Act — abort throws because materializeTree's working-tree write fails.
         let caught: unknown;
         try {
-          await abortMerge(ctx);
+          await mergeAbort(ctx);
         } catch (err) {
           caught = err;
         }
@@ -458,10 +458,10 @@ describe('abortMerge', () => {
         // Arrange
         const ctx = createMemoryContext();
         const { preMergeMain } = await setupConflictingMerge(ctx);
-        await merge(ctx, { target: 'feature', author });
+        await mergeRun(ctx, { target: 'feature', author });
 
         // Act
-        await abortMerge(ctx);
+        await mergeAbort(ctx);
 
         // Assert — read the pre-merge HEAD commit's tree, compare with the
         // freshly-rebuilt index's tree contents (same blobs in same paths).

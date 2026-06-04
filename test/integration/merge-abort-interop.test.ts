@@ -4,10 +4,10 @@
  * branch reflog entry (needs-commit no-move skip) and logs `reset: moving to HEAD`
  * on the coupled `HEAD` symref — the literal `HEAD`, not the oid, because
  * `merge --abort` delegates to a `reset` whose rev argument is `HEAD`. This pins
- * `repo.abortMerge` to that exact message + branch-skip against real `git`.
+ * `repo.merge.abort` to that exact message + branch-skip against real `git`.
  *
  * @proves
- *   surface:        repo.abortMerge
+ *   surface:        repo.merge.abort
  *   bucket:         cross-tool-interop
  *   unique:         merge --abort HEAD reflog message matches canonical git
  *   interopSurface: merge --abort
@@ -91,12 +91,12 @@ describe.skipIf(!GIT_AVAILABLE)('merge --abort reflog interop', () => {
       const peerMerge = tryRunGit(['-C', pair.peer, 'merge', 'feature']);
       expect(peerMerge.ok).toBe(false);
       const repo = await openRepository({ cwd: pair.ours });
-      const oursMerge = await repo.merge({ target: 'feature', author: AUTHOR });
+      const oursMerge = await repo.merge.run({ target: 'feature', author: AUTHOR });
       expect(oursMerge.kind).toBe('conflict');
 
       // Act — abort on both tools.
       runGit(['-C', pair.peer, 'merge', '--abort']);
-      await repo.abortMerge();
+      await repo.merge.abort();
       await repo.dispose();
 
       // Assert — identical faithful HEAD message, branch reflog left untouched.

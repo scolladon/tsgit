@@ -9,7 +9,7 @@ import {
   buildConflictIndexEntries,
   MAX_MERGE_TREE_DEPTH,
   materialiseConflictBytes,
-  merge,
+  mergeRun,
   parentDir,
   removeWorkingTreeFile,
   resolveMergeAuthor,
@@ -51,7 +51,7 @@ describe('merge', () => {
         const c = await commit(ctx, { message: 'first', author });
 
         // Act
-        const sut = await merge(ctx, { target: c.id });
+        const sut = await mergeRun(ctx, { target: c.id });
 
         // Assert
         expect(sut.kind).toBe('up-to-date');
@@ -76,7 +76,7 @@ describe('merge', () => {
         await checkout(ctx, { target: 'main' });
 
         // Act
-        const sut = await merge(ctx, { target: 'feature' });
+        const sut = await mergeRun(ctx, { target: 'feature' });
 
         // Assert
         expect(sut.kind).toBe('fast-forward');
@@ -87,7 +87,7 @@ describe('merge', () => {
     });
   });
 
-  describe('Given an ancestor target + noFastForward=true', () => {
+  describe("Given an ancestor target + fastForward='never'", () => {
     describe('When merge', () => {
       it('Then a real merge commit is produced', async () => {
         // Arrange
@@ -104,9 +104,9 @@ describe('merge', () => {
         await checkout(ctx, { target: 'main' });
 
         // Act
-        const sut = await merge(ctx, {
+        const sut = await mergeRun(ctx, {
           target: 'feature',
-          noFastForward: true,
+          fastForward: 'never',
           message: 'merge',
           author,
         });
@@ -115,6 +115,90 @@ describe('merge', () => {
         expect(sut.kind).toBe('merge');
         if (sut.kind === 'merge') {
           expect(sut.parents).toHaveLength(2);
+        }
+      });
+    });
+  });
+
+  describe("Given an ancestor target + fastForward='allow'", () => {
+    describe('When merge', () => {
+      it('Then it fast-forwards (no merge commit)', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
+        await add(ctx, ['a.txt']);
+        await commit(ctx, { message: 'first', author });
+        await branchCreate(ctx, { name: 'feature' });
+        await checkout(ctx, { target: 'feature' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.txt`, 'b');
+        await add(ctx, ['b.txt']);
+        const second = await commit(ctx, { message: 'second', author });
+        await checkout(ctx, { target: 'main' });
+
+        // Act
+        const sut = await mergeRun(ctx, { target: 'feature', fastForward: 'allow' });
+
+        // Assert
+        expect(sut.kind).toBe('fast-forward');
+        if (sut.kind === 'fast-forward') {
+          expect(sut.id).toBe(second.id);
+        }
+      });
+    });
+  });
+
+  describe('Given an ancestor target + fastForward omitted', () => {
+    describe('When merge', () => {
+      it('Then it fast-forwards by default', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
+        await add(ctx, ['a.txt']);
+        await commit(ctx, { message: 'first', author });
+        await branchCreate(ctx, { name: 'feature' });
+        await checkout(ctx, { target: 'feature' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.txt`, 'b');
+        await add(ctx, ['b.txt']);
+        const second = await commit(ctx, { message: 'second', author });
+        await checkout(ctx, { target: 'main' });
+
+        // Act
+        const sut = await mergeRun(ctx, { target: 'feature' });
+
+        // Assert
+        expect(sut.kind).toBe('fast-forward');
+        if (sut.kind === 'fast-forward') {
+          expect(sut.id).toBe(second.id);
+        }
+      });
+    });
+  });
+
+  describe("Given a fast-forwardable target + fastForward='only'", () => {
+    describe('When merge', () => {
+      it('Then it fast-forwards (does not over-refuse)', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
+        await add(ctx, ['a.txt']);
+        await commit(ctx, { message: 'first', author });
+        await branchCreate(ctx, { name: 'feature' });
+        await checkout(ctx, { target: 'feature' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.txt`, 'b');
+        await add(ctx, ['b.txt']);
+        const second = await commit(ctx, { message: 'second', author });
+        await checkout(ctx, { target: 'main' });
+
+        // Act
+        const sut = await mergeRun(ctx, { target: 'feature', fastForward: 'only' });
+
+        // Assert
+        expect(sut.kind).toBe('fast-forward');
+        if (sut.kind === 'fast-forward') {
+          expect(sut.id).toBe(second.id);
         }
       });
     });
@@ -144,7 +228,7 @@ describe('merge', () => {
         await commit(ctx, { message: 'on-main', author });
 
         // Act
-        const sut = await merge(ctx, { target: 'feature', author });
+        const sut = await mergeRun(ctx, { target: 'feature', author });
 
         // Assert — the merge commit's tree contains a.txt + b.txt + c.txt.
         expect(sut.kind).toBe('merge');
@@ -179,7 +263,7 @@ describe('merge', () => {
         await commit(ctx, { message: 'on-main', author });
 
         // Act
-        const sut = await merge(ctx, { target: 'feature', author });
+        const sut = await mergeRun(ctx, { target: 'feature', author });
 
         // Assert — merged content combines both line edits.
         expect(sut.kind).toBe('merge');
@@ -216,7 +300,7 @@ describe('merge', () => {
         const mainTip = await commit(ctx, { message: 'on-main', author });
 
         // Act
-        const sut = await merge(ctx, { target: 'feature', author });
+        const sut = await mergeRun(ctx, { target: 'feature', author });
 
         // Assert — kind='conflict' with path + type + heads.
         expect(sut.kind).toBe('conflict');
@@ -262,7 +346,7 @@ describe('merge', () => {
         await commit(ctx, { message: 'on-main', author });
 
         // Act
-        const sut = await merge(ctx, { target: 'feature', author });
+        const sut = await mergeRun(ctx, { target: 'feature', author });
 
         // Assert — merged tree has b.txt (unchanged) + c.txt (added on main),
         // but a.txt is GONE (resolved-deleted on feature's side).
@@ -303,7 +387,7 @@ describe('merge', () => {
         await commit(ctx, { message: 'on-main', author });
 
         // Act
-        const sut = await merge(ctx, { target: 'feature', author });
+        const sut = await mergeRun(ctx, { target: 'feature', author });
 
         // Assert — merged root has THREE top-level subdirs: src, lib, pkg.
         expect(sut.kind).toBe('merge');
@@ -374,7 +458,7 @@ describe('merge', () => {
         });
 
         // Act
-        const sut = await merge(ctx, { target: 'unrelated', author });
+        const sut = await mergeRun(ctx, { target: 'unrelated', author });
 
         // Assert — kind='conflict' with add-add for shared.txt.
         expect(sut.kind).toBe('conflict');
@@ -386,9 +470,9 @@ describe('merge', () => {
     });
   });
 
-  describe('Given diverged histories + fastForwardOnly=true', () => {
+  describe("Given diverged histories + fastForward='only'", () => {
     describe('When merge', () => {
-      it('Then throws NON_FAST_FORWARD', async () => {
+      it('Then throws NON_FAST_FORWARD carrying the ref + both tips', async () => {
         // Arrange — diverge: both branches advance from a common base.
         const ctx = createMemoryContext();
         await init(ctx);
@@ -399,22 +483,28 @@ describe('merge', () => {
         await checkout(ctx, { target: 'feature' });
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.txt`, 'b');
         await add(ctx, ['b.txt']);
-        await commit(ctx, { message: 'on-feature', author });
+        const featureTip = await commit(ctx, { message: 'on-feature', author });
         await checkout(ctx, { target: 'main' });
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/c.txt`, 'c');
         await add(ctx, ['c.txt']);
-        await commit(ctx, { message: 'on-main', author });
+        const mainTip = await commit(ctx, { message: 'on-main', author });
 
         // Act
         let caught: unknown;
         try {
-          await merge(ctx, { target: 'feature', fastForwardOnly: true });
+          await mergeRun(ctx, { target: 'feature', fastForward: 'only' });
         } catch (err) {
           caught = err;
         }
 
         // Assert
-        expect((caught as { data?: { code?: string } })?.data?.code).toBe('NON_FAST_FORWARD');
+        const data = (
+          caught as { data?: { code?: string; ref?: string; local?: string; remote?: string } }
+        )?.data;
+        expect(data?.code).toBe('NON_FAST_FORWARD');
+        expect(data?.ref).toBe('refs/heads/main');
+        expect(data?.local).toBe(mainTip.id);
+        expect(data?.remote).toBe(featureTip.id);
       });
     });
   });
@@ -448,7 +538,7 @@ describe('merge.4b conflict persistence', () => {
         await setupConflictingMerge(ctx);
 
         // Act
-        await merge(ctx, { target: 'feature', author });
+        await mergeRun(ctx, { target: 'feature', author });
 
         // Assert
         const sut = await ctx.fs.readUtf8(`${ctx.layout.workDir}/file.txt`);
@@ -464,7 +554,7 @@ describe('merge.4b conflict persistence', () => {
         const { featureTip } = await setupConflictingMerge(ctx);
 
         // Act
-        await merge(ctx, { target: 'feature', author });
+        await mergeRun(ctx, { target: 'feature', author });
 
         // Assert — exact content (id + LF), kills mutants that drop LF or
         // record the wrong id.
@@ -477,7 +567,7 @@ describe('merge.4b conflict persistence', () => {
         const { preMergeMain } = await setupConflictingMerge(ctx);
 
         // Act
-        await merge(ctx, { target: 'feature', author });
+        await mergeRun(ctx, { target: 'feature', author });
 
         // Assert
         const sut = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/ORIG_HEAD`);
@@ -489,7 +579,7 @@ describe('merge.4b conflict persistence', () => {
         await setupConflictingMerge(ctx);
 
         // Act
-        await merge(ctx, { target: 'feature', author });
+        await mergeRun(ctx, { target: 'feature', author });
 
         // Assert
         const { readIndex } = await import('../../../../src/application/primitives/read-index.js');
@@ -506,7 +596,7 @@ describe('merge.4b conflict persistence', () => {
         await setupConflictingMerge(ctx);
 
         // Act
-        await merge(ctx, { target: 'feature', author, message: 'Merge feature into main' });
+        await mergeRun(ctx, { target: 'feature', author, message: 'Merge feature into main' });
 
         // Assert
         const sut = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/MERGE_MSG`);
@@ -523,7 +613,7 @@ describe('merge.4b conflict persistence', () => {
         // parents=[preMergeMain, featureTip].
         const ctx = createMemoryContext();
         const { preMergeMain, featureTip } = await setupConflictingMerge(ctx);
-        await merge(ctx, { target: 'feature', author });
+        await mergeRun(ctx, { target: 'feature', author });
 
         // Act — manual resolution.
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'RESOLVED\n');
@@ -548,12 +638,12 @@ describe('merge.4b conflict persistence', () => {
         // Arrange
         const ctx = createMemoryContext();
         await setupConflictingMerge(ctx);
-        await merge(ctx, { target: 'feature', author });
+        await mergeRun(ctx, { target: 'feature', author });
 
         // Act / Assert
         let caught: unknown;
         try {
-          await merge(ctx, { target: 'feature', author });
+          await mergeRun(ctx, { target: 'feature', author });
         } catch (err) {
           caught = err;
         }
@@ -571,7 +661,7 @@ describe('merge.4b conflict persistence', () => {
         // Arrange
         const ctx = createMemoryContext();
         await setupConflictingMerge(ctx);
-        await merge(ctx, { target: 'feature', author });
+        await mergeRun(ctx, { target: 'feature', author });
 
         // Act / Assert — user tries to commit BEFORE running `add` on the
         // resolved file; the unmerged stage-1/2/3 entries remain.
@@ -783,7 +873,7 @@ describe('merge.4b conflict persistence', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file-b.txt`, 'MAIN-B\n');
         await add(ctx, ['file-a.txt', 'file-b.txt']);
         await commit(ctx, { message: 'on-main', author });
-        await merge(ctx, { target: 'feature', author });
+        await mergeRun(ctx, { target: 'feature', author });
 
         // Resolve only file-a (move stage-1/2/3 to stage-0); leave file-b
         // unmerged.
@@ -816,7 +906,7 @@ describe('merge.4b conflict persistence', () => {
         // (empty user message + no MERGE_MSG → sanitizeMessage rejects).
         const ctx = createMemoryContext();
         await setupConflictingMerge(ctx);
-        await merge(ctx, { target: 'feature', author });
+        await mergeRun(ctx, { target: 'feature', author });
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'RESOLVED\n');
         await add(ctx, ['file.txt']);
         await ctx.fs.rm(`${ctx.layout.gitDir}/MERGE_MSG`);
@@ -840,7 +930,7 @@ describe('merge.4b conflict persistence', () => {
         // Arrange
         const ctx = createMemoryContext();
         await setupConflictingMerge(ctx);
-        await merge(ctx, { target: 'feature', author, message: 'Merge feature' });
+        await mergeRun(ctx, { target: 'feature', author, message: 'Merge feature' });
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'RESOLVED\n');
         await add(ctx, ['file.txt']);
 
@@ -946,7 +1036,7 @@ describe('merge — bounded blob reads', () => {
         // Act — conflicting merge invokes contentMerger which reads the
         // three blobs via Promise.all. Throws MERGE_HAS_CONFLICTS after.
         try {
-          await merge(ctx, { target: 'feature', author });
+          await mergeRun(ctx, { target: 'feature', author });
         } catch {
           // expected MERGE_HAS_CONFLICTS — irrelevant to the assertion.
         }
@@ -972,7 +1062,7 @@ describe('merge — progress reporting', () => {
         await commit(ctx, { message: 'm', author });
         const { reporter, events } = recordingProgress();
 
-        await merge(withProgress(ctx, reporter), { target: 'main' });
+        await mergeRun(withProgress(ctx, reporter), { target: 'main' });
 
         // Assert
         expect(events).toEqual([]);
@@ -1002,7 +1092,7 @@ describe('merge — progress reporting', () => {
         const { reporter, events } = recordingProgress();
 
         // Act
-        await merge(withProgress(ctx, reporter), { target: 'feature', author });
+        await mergeRun(withProgress(ctx, reporter), { target: 'feature', author });
 
         // Assert — both a start and the finally-block end fired for the op.
         expect(events).toContainEqual({ kind: 'start', op: 'merge:write-files' });
@@ -1024,7 +1114,7 @@ describe('merge — guard rails', () => {
         // Act
         let caught: unknown;
         try {
-          await merge(ctx, { target: 'feature' });
+          await mergeRun(ctx, { target: 'feature' });
         } catch (err) {
           caught = err;
         }
@@ -1051,7 +1141,7 @@ describe('merge — guard rails', () => {
         // Act
         let caught: unknown;
         try {
-          await merge(ctx, { target: 'feature' });
+          await mergeRun(ctx, { target: 'feature' });
         } catch (err) {
           caught = err;
         }
@@ -1083,7 +1173,7 @@ describe('merge — guard rails', () => {
         const second = await commit(ctx, { message: 'second', author });
 
         // Act
-        const sut = await merge(ctx, { target: 'old', author });
+        const sut = await mergeRun(ctx, { target: 'old', author });
 
         // Assert — up-to-date, NOT a fresh merge commit.
         expect(sut.kind).toBe('up-to-date');
@@ -1115,7 +1205,7 @@ describe('merge — guard rails', () => {
         // Act
         let caught: unknown;
         try {
-          await merge(ctx, { target: 'feature', author, message: '' });
+          await mergeRun(ctx, { target: 'feature', author, message: '' });
         } catch (err) {
           caught = err;
         }
@@ -1148,7 +1238,7 @@ describe('merge — guard rails', () => {
         // Act
         let caught: unknown;
         try {
-          await merge(ctx, { target: 'feature', author, message: '' });
+          await mergeRun(ctx, { target: 'feature', author, message: '' });
         } catch (err) {
           caught = err;
         }
@@ -1181,7 +1271,7 @@ describe('merge — guard rails', () => {
         const mainTip = await commit(ctx, { message: 'on-main', author });
 
         // Act
-        const sut = await merge(ctx, { target: 'feature', author });
+        const sut = await mergeRun(ctx, { target: 'feature', author });
 
         // Assert — exactly [ourId, theirId]; not an empty parents array.
         expect(sut.kind).toBe('merge');
@@ -1232,7 +1322,7 @@ describe('merge — updateRef CAS guard', () => {
         // Act
         let caught: unknown;
         try {
-          await merge(ctx, { target: 'feature' });
+          await mergeRun(ctx, { target: 'feature' });
         } catch (err) {
           caught = err;
         }
@@ -1266,7 +1356,7 @@ describe('merge — updateRef CAS guard', () => {
         // Act
         let caught: unknown;
         try {
-          await merge(ctx, { target: 'feature', author });
+          await mergeRun(ctx, { target: 'feature', author });
         } catch (err) {
           caught = err;
         }
@@ -1313,7 +1403,7 @@ describe('merge — updateRef CAS guard', () => {
         // Act — first merge fails mid-persist; lock must be released by finally.
         let firstError: unknown;
         try {
-          await merge(ctx, { target: 'feature', author });
+          await mergeRun(ctx, { target: 'feature', author });
         } catch (err) {
           firstError = err;
         }
@@ -1326,7 +1416,7 @@ describe('merge — updateRef CAS guard', () => {
   });
 });
 
-describe('merge — reflogLabel', () => {
+describe('merge — internal reflog action', () => {
   const seedFastForward = async () => {
     const ctx = createMemoryContext();
     await init(ctx);
@@ -1342,14 +1432,14 @@ describe('merge — reflogLabel', () => {
     return ctx;
   };
 
-  describe('Given no reflogLabel and a fast-forward', () => {
+  describe('Given no reflog action override and a fast-forward', () => {
     describe('When merge', () => {
       it('Then the branch reflog records the default "merge <target>" prefix', async () => {
         // Arrange
         const ctx = await seedFastForward();
 
         // Act
-        await merge(ctx, { target: 'feature' });
+        await mergeRun(ctx, { target: 'feature' });
 
         // Assert
         const messages = (await readReflog(ctx, 'refs/heads/main' as RefName)).map(
@@ -1360,14 +1450,32 @@ describe('merge — reflogLabel', () => {
     });
   });
 
-  describe('Given reflogLabel "pull" and a fast-forward', () => {
+  describe('Given no reflog action override and a forced merge commit', () => {
+    describe('When merge', () => {
+      it('Then the branch reflog records the default "merge <target>" merge-commit prefix', async () => {
+        // Arrange
+        const ctx = await seedFastForward();
+
+        // Act
+        await mergeRun(ctx, { target: 'feature', fastForward: 'never', message: 'merge', author });
+
+        // Assert
+        const messages = (await readReflog(ctx, 'refs/heads/main' as RefName)).map(
+          (e) => e.message,
+        );
+        expect(messages).toContain("merge feature: Merge made by the 'tsgit' strategy.");
+      });
+    });
+  });
+
+  describe('Given an internal reflogAction "pull" and a fast-forward', () => {
     describe('When merge', () => {
       it('Then the branch reflog records "pull: Fast-forward"', async () => {
         // Arrange
         const ctx = await seedFastForward();
 
         // Act
-        await merge(ctx, { target: 'feature', reflogLabel: 'pull' });
+        await mergeRun(ctx, { target: 'feature' }, { reflogAction: 'pull' });
 
         // Assert
         const messages = (await readReflog(ctx, 'refs/heads/main' as RefName)).map(
@@ -1378,20 +1486,18 @@ describe('merge — reflogLabel', () => {
     });
   });
 
-  describe('Given reflogLabel "pull" and a forced merge commit', () => {
+  describe('Given an internal reflogAction "pull" and a forced merge commit', () => {
     describe('When merge', () => {
       it('Then the branch reflog records "pull: Merge made by the \'tsgit\' strategy."', async () => {
         // Arrange
         const ctx = await seedFastForward();
 
         // Act
-        await merge(ctx, {
-          target: 'feature',
-          noFastForward: true,
-          message: 'merge',
-          author,
-          reflogLabel: 'pull',
-        });
+        await mergeRun(
+          ctx,
+          { target: 'feature', fastForward: 'never', message: 'merge', author },
+          { reflogAction: 'pull' },
+        );
 
         // Assert
         const messages = (await readReflog(ctx, 'refs/heads/main' as RefName)).map(
@@ -2299,7 +2405,7 @@ describe('merge — sparse checkout', () => {
         await ctx.fs.rm(`${ctx.layout.workDir}/docs/b.txt`);
 
         // Act
-        const sut = await merge(ctx, { target: 'feature', author });
+        const sut = await mergeRun(ctx, { target: 'feature', author });
 
         // Assert — the in-pattern conflict file is materialised with markers; the
         // excluded clean file stays absent (not re-materialised) and is recorded

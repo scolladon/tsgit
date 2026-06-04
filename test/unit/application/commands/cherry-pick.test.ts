@@ -13,7 +13,7 @@ import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
 import { bindCherryPickNamespace } from '../../../../src/application/commands/internal/cherry-pick-namespace.js';
 import { writeMergeHead } from '../../../../src/application/commands/internal/merge-state.js';
-import { merge } from '../../../../src/application/commands/merge.js';
+import { mergeRun } from '../../../../src/application/commands/merge.js';
 import { createCommit } from '../../../../src/application/primitives/create-commit.js';
 import { readIndex } from '../../../../src/application/primitives/read-index.js';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
@@ -162,7 +162,7 @@ const seedMerge = async (): Promise<{
   await add(ctx, ['s1.txt']);
   await commit(ctx, { message: 's1', author: FEAT_AUTHOR });
   await checkout(ctx, { target: 'feature' });
-  const m = await merge(ctx, { target: 'side' });
+  const m = await mergeRun(ctx, { target: 'side' });
   if (m.kind !== 'merge') throw new Error('seed: expected a merge commit');
   await ctx.fs.writeUtf8(work(ctx, 'f2.txt'), 'f2\n');
   await add(ctx, ['f2.txt']);

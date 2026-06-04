@@ -20,7 +20,7 @@ import { branchCreate, branchDelete, branchRename } from '../../src/application/
 import { checkout } from '../../src/application/commands/checkout.js';
 import { commit } from '../../src/application/commands/commit.js';
 import { init } from '../../src/application/commands/init.js';
-import { merge } from '../../src/application/commands/merge.js';
+import { mergeRun } from '../../src/application/commands/merge.js';
 import { reset } from '../../src/application/commands/reset.js';
 import { tagCreate } from '../../src/application/commands/tag.js';
 import { __resetConfigCacheForTests } from '../../src/application/primitives/config-read.js';
@@ -192,7 +192,7 @@ describe('integration — reflog writers', () => {
     await checkout(ctx, { target: 'main' });
 
     // Act
-    await merge(ctx, { target: 'feature', author });
+    await mergeRun(ctx, { target: 'feature', author });
 
     // Assert
     const branchLog = await readReflog(ctx, MAIN);
@@ -212,7 +212,7 @@ describe('integration — reflog writers', () => {
     await commit(ctx, { message: 'on main', author });
 
     // Act
-    await merge(ctx, { target: 'feature', author });
+    await mergeRun(ctx, { target: 'feature', author });
 
     // Assert
     const branchLog = await readReflog(ctx, MAIN);

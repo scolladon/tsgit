@@ -11,7 +11,7 @@ export type {
   TreeDiff,
   TypeChangeChange,
 } from '../../domain/diff/index.js';
-export { type AbortMergeResult, abortMerge } from './abort-merge.js';
+export { type MergeAbortResult, mergeAbort } from './abort-merge.js';
 export { type AddOptions, type AddResult, add } from './add.js';
 export { type BlameLine, type BlameOptions, type BlameResult, blame } from './blame.js';
 export {
@@ -80,9 +80,9 @@ export {
   configUnsetAll,
 } from './config.js';
 export {
-  type ContinueMergeOptions,
-  type ContinueMergeResult,
-  continueMerge,
+  type MergeContinueInput,
+  type MergeContinueResult,
+  mergeContinue,
 } from './continue-merge.js';
 export { type DescribeOptions, type DescribeResult, describe } from './describe.js';
 export { type DiffOptions, diff } from './diff.js';
@@ -100,6 +100,7 @@ export {
   type CherryPickNamespace,
 } from './internal/cherry-pick-namespace.js';
 export { bindConfigNamespace, type ConfigNamespace } from './internal/config-namespace.js';
+export { bindMergeNamespace, type MergeNamespace } from './internal/merge-namespace.js';
 export {
   bindRebaseNamespace,
   type RebaseNamespace,
@@ -116,7 +117,7 @@ export {
 export { bindStashNamespace, type StashNamespace } from './internal/stash-namespace.js';
 export { bindTagNamespace, type TagNamespace } from './internal/tag-namespace.js';
 export { type LogEntry, type LogOptions, log } from './log.js';
-export { type MergeOptions, type MergeResult, merge } from './merge.js';
+export { type MergeResult, type MergeRunInput, mergeRun } from './merge.js';
 export {
   type MvMove,
   type MvOptions,

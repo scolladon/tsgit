@@ -218,7 +218,7 @@ await repo.fetch({ remote: 'origin', refspecs: ['refs/heads/main:refs/remotes/or
 await repo.fetch({ remote: 'origin', depth: 1, prune: true });
 ```
 
-### `git.merge` → `repo.merge`
+### `git.merge` → `repo.merge.run`
 
 ```ts
 // isomorphic-git
@@ -227,8 +227,8 @@ await git.merge({
   author: { name: 'A', email: 'a@b' },
 });
 
-// tsgit
-const result = await repo.merge({
+// tsgit — merge is a namespace: run / continue / abort
+const result = await repo.merge.run({
   target: 'feature',
   author: { name: 'A', email: 'a@b', timestamp: 0, timezoneOffset: '+0000' },
 });
@@ -240,10 +240,12 @@ switch (result.kind) {
   case 'conflict':            // working tree has markers; index has stage 1/2/3
     // resolve, then:
     await repo.add(result.conflicts.map(c => c.path));
-    await repo.commit({ message: 'resolve' });
+    await repo.merge.continue({ message: 'resolve' });
     break;
 }
 ```
+
+Fast-forward policy is the `fastForward: 'only' | 'never' | 'allow'` field (git `--ff-only` / `--no-ff` / `--ff`), replacing the older `fastForwardOnly` / `noFastForward` boolean pair.
 
 Conflicting merges **return** a discriminated `'conflict'` result rather than throwing. Callers that handled the `MERGE_HAS_CONFLICTS` error code in pre-1.x builds should switch to the result discriminator. `commit` honours `.git/MERGE_HEAD` automatically.
 
@@ -262,7 +264,7 @@ const { fetch, merge } = await repo.pull({
 await repo.pull({ remote: 'origin', branch: 'main' });
 ```
 
-`pull` is `fetch` + `merge`; it returns both results (`{ fetch, merge }`) and, like `merge`, surfaces conflicts via `merge.kind === 'conflict'` rather than throwing — resolve and `continueMerge`, or `abortMerge`. `rebase` mode arrives with `rebase` itself.
+`pull` is `fetch` + `merge`; it returns both results (`{ fetch, merge }`) and, like `merge`, surfaces conflicts via `merge.kind === 'conflict'` rather than throwing — resolve and `repo.merge.continue`, or `repo.merge.abort`. `rebase` mode arrives with `rebase` itself.
 
 ### `git.readBlob` → `repo.primitives.readBlob`
 

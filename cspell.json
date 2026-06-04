@@ -22,6 +22,8 @@
     "precomputes",
     "Mitter",
     "fuller",
+    "forwardable",
+    "unrepresentable",
     "unioned",
     "mbase",
     "obase",
