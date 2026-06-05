@@ -120,22 +120,22 @@ describe('log', () => {
     });
   });
 
-  describe("Given from='main' (ref name, not HEAD)", () => {
+  describe("Given rev='main' (ref name, not HEAD)", () => {
     describe('When log', () => {
       it('Then resolves the named branch', async () => {
         // Arrange
         const ctx = await seedThree();
 
         // Act
-        const sut = await log(ctx, { from: 'main' });
+        const sut = await log(ctx, { rev: 'main' });
 
-        // Assert — same shape as default HEAD-driven log; kills `from === 'HEAD'` mutants.
+        // Assert — same shape as default HEAD-driven log; kills `rev === 'HEAD'` mutants.
         expect(sut.length).toBeGreaterThanOrEqual(3);
       });
     });
   });
 
-  describe('Given from is a 40-hex oid', () => {
+  describe('Given rev is a 40-hex oid', () => {
     describe('When log', () => {
       it('Then walks from that oid directly (no ref lookup)', async () => {
         // Arrange
@@ -144,7 +144,7 @@ describe('log', () => {
         const oldest = all[all.length - 1] as { readonly id: string };
 
         // Act — walk from the oldest commit; should yield only itself.
-        const sut = await log(ctx, { from: oldest.id });
+        const sut = await log(ctx, { rev: oldest.id });
 
         // Assert
         expect(sut).toHaveLength(1);
@@ -239,7 +239,7 @@ describe('log', () => {
     });
   });
 
-  describe('Given from is a branch name whose 40-hex suffix is hex', () => {
+  describe('Given rev is a branch name whose 40-hex suffix is hex', () => {
     describe('When log', () => {
       it('Then it resolves as a ref not an oid', async () => {
         // Arrange — branch name = 'r' + <40-hex>; the `^` anchor keeps this off the
@@ -254,7 +254,7 @@ describe('log', () => {
         });
 
         // Act
-        const sut = await log(ctx, { from: branchName });
+        const sut = await log(ctx, { rev: branchName });
 
         // Assert — resolved via the branch ref; mutant would throw on a 41-char oid.
         expect(sut.map((e) => e.message)).toEqual(['target']);
@@ -262,7 +262,7 @@ describe('log', () => {
     });
   });
 
-  describe('Given from is a branch name whose 40-hex prefix is hex', () => {
+  describe('Given rev is a branch name whose 40-hex prefix is hex', () => {
     describe('When log', () => {
       it('Then it resolves as a ref not an oid', async () => {
         // Arrange — branch name = <40-hex> + 'r'; the `$` anchor keeps this off the
@@ -277,7 +277,7 @@ describe('log', () => {
         });
 
         // Act
-        const sut = await log(ctx, { from: branchName });
+        const sut = await log(ctx, { rev: branchName });
 
         // Assert — resolved via the branch ref; mutant would throw on a 41-char oid.
         expect(sut.map((e) => e.message)).toEqual(['target']);
@@ -285,7 +285,7 @@ describe('log', () => {
     });
   });
 
-  describe('Given from is a tag short name', () => {
+  describe('Given rev is a tag short name', () => {
     describe('When log', () => {
       it('Then it resolves via refs/tags/<name>', async () => {
         // Arrange — only `refs/tags/v1` carries the commit; neither the literal
@@ -297,9 +297,9 @@ describe('log', () => {
         });
 
         // Act
-        const sut = await log(ctx, { from: 'v1' });
+        const sut = await log(ctx, { rev: 'v1' });
 
-        // Assert — kills the `refs/tags/${from}` → `` StringLiteral mutant, which
+        // Assert — kills the `refs/tags/${rev}` → `` StringLiteral mutant, which
         // would drop the only resolvable candidate and throw.
         expect(sut.map((e) => e.message)).toEqual(['tagged']);
       });

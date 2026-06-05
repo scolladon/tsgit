@@ -6,7 +6,7 @@ import { walkCommits } from '../primitives/walk-commits.js';
 import { assertRepository } from './internal/repo-state.js';
 
 export interface LogOptions {
-  readonly from?: string;
+  readonly rev?: string;
   readonly limit?: number;
   readonly excluding?: ReadonlyArray<string>;
   readonly before?: Date;
@@ -22,7 +22,7 @@ export interface LogEntry {
 }
 
 /**
- * Walk first-parent commits starting from `from` (default: HEAD), yielding
+ * Walk first-parent commits starting from `rev` (default: HEAD), yielding
  * ordered `LogEntry` records. Honors `limit`, `excluding` (oid stops), and
  * `before` (only commits with `committer.timestamp < before`).
  */
@@ -31,7 +31,7 @@ export const log = async (
   opts: LogOptions = {},
 ): Promise<ReadonlyArray<LogEntry>> => {
   await assertRepository(ctx);
-  const startId = await resolveStart(ctx, opts.from ?? 'HEAD');
+  const startId = await resolveStart(ctx, opts.rev ?? 'HEAD');
   // Stryker disable next-line ArrayDeclaration: equivalent — any unresolvable seed (e.g. "Stryker was here") is caught and skipped by resolveExcluding, yielding the same empty exclusion list as [].
   const exclude = await resolveExcluding(ctx, opts.excluding ?? []);
   const before = opts.before;
@@ -59,11 +59,11 @@ export const log = async (
   return out;
 };
 
-const resolveStart = async (ctx: Context, from: string): Promise<ObjectId> => {
-  if (/^[0-9a-f]{40}$/.test(from)) return from as ObjectId;
+const resolveStart = async (ctx: Context, rev: string): Promise<ObjectId> => {
+  if (/^[0-9a-f]{40}$/.test(rev)) return rev as ObjectId;
   // Try the literal name first (already-prefixed full ref or `HEAD`), then
   // refs/heads/<name>, then refs/tags/<name>.
-  const candidates = [from, `refs/heads/${from}`, `refs/tags/${from}`];
+  const candidates = [rev, `refs/heads/${rev}`, `refs/tags/${rev}`];
   for (const candidate of candidates) {
     try {
       return await resolveRef(ctx, validateRefName(candidate));
@@ -71,7 +71,7 @@ const resolveStart = async (ctx: Context, from: string): Promise<ObjectId> => {
       // continue
     }
   }
-  return resolveRef(ctx, validateRefName(from));
+  return resolveRef(ctx, validateRefName(rev));
 };
 
 const resolveExcluding = async (
