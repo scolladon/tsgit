@@ -27,7 +27,7 @@ first run, and caches it in `~/.cache/deno/` for subsequent runs.
 const repo = await openRepository({ cwd: Deno.cwd() });
 const commits = await repo.log({ limit: 10 });
 const status = await repo.status();
-console.log(`on ${status.branch}, ${status.workingTreeChanges.length} unstaged`);
+console.log(`on ${status.branch}, ${status.changes.length} changed, ${status.untracked.length} untracked`);
 await repo.dispose();
 ```
 

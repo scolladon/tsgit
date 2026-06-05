@@ -129,7 +129,7 @@ describe('integration — sparse checkout (memory adapter)', () => {
     // Assert — `status` reports clean: no phantom `deleted` for excluded files.
     const sparseStatus = await status(sut);
     expect(sparseStatus.clean).toBe(true);
-    expect(sparseStatus.workingTreeChanges).toEqual([]);
+    expect(sparseStatus.changes).toEqual([]);
 
     // Act — edit an in-cone file and commit.
     await sut.fs.writeUtf8(`${sut.layout.workDir}/src/app/main.ts`, 'export const main = 99;\n');

@@ -17,8 +17,8 @@ interface BrowserRepo {
     clean: boolean;
     branch?: string;
     detached: boolean;
-    indexChanges: ReadonlyArray<unknown>;
-    workingTreeChanges: ReadonlyArray<unknown>;
+    changes: ReadonlyArray<unknown>;
+    untracked: ReadonlyArray<unknown>;
   }>;
   dispose: () => Promise<void>;
 }
@@ -76,8 +76,8 @@ test.describe('OPFS round-trip', () => {
       expect(result.status.clean).toBe(true);
       expect(result.status.branch).toBe('refs/heads/main');
       expect(result.status.detached).toBe(false);
-      expect(result.status.indexChanges).toEqual([]);
-      expect(result.status.workingTreeChanges).toEqual([]);
+      expect(result.status.changes).toEqual([]);
+      expect(result.status.untracked).toEqual([]);
     });
   });
 });

@@ -125,7 +125,7 @@ describe('integration — sparse reset/merge (memory adapter)', () => {
     // skip-worktree bit keeps the absent `docs/guide.md` out of the change set.
     const st = await status(ctx);
     expect(st.clean).toBe(false);
-    const changedPaths = [...st.indexChanges, ...st.workingTreeChanges].map((c) => c.path);
+    const changedPaths = [...st.changes.map((c) => c.path), ...st.untracked];
     expect(changedPaths).not.toContain('docs/guide.md');
   });
 });

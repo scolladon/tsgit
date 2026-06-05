@@ -75,7 +75,8 @@ describe('integration — gitignore end-to-end', () => {
     // Commit + clean status: only the.gitignore files + content above are tracked.
     await commit(ctx, { message: 'initial', author });
     const cleanStatus = await status(ctx);
-    expect(cleanStatus.workingTreeChanges).toEqual([]);
+    expect(cleanStatus.changes).toEqual([]);
+    expect(cleanStatus.untracked).toEqual([]);
     expect(cleanStatus.clean).toBe(true);
 
     // The on-disk index never contains ignored paths.
@@ -98,17 +99,13 @@ describe('integration — gitignore end-to-end', () => {
     await ctx.fs.writeUtf8(`${ctx.layout.workDir}/TODO.md`, 'todo');
     const dirtyStatus = await status(ctx);
     expect(dirtyStatus.clean).toBe(false);
-    expect(dirtyStatus.workingTreeChanges).toContainEqual({
-      kind: 'untracked',
-      path: 'TODO.md',
-    });
+    expect(dirtyStatus.untracked).toContain('TODO.md');
     // Note: src/keep.log gets staged earlier (it was negated), so a
     // SECOND `add --all` after re-modifying it would surface as 'modified'.
     await ctx.fs.writeUtf8(`${ctx.layout.workDir}/src/keep.log`, 'changed');
     const modifiedStatus = await status(ctx);
-    expect(modifiedStatus.workingTreeChanges).toContainEqual({
-      kind: 'modified',
-      path: 'src/keep.log',
-    });
+    expect(modifiedStatus.changes).toContainEqual(
+      expect.objectContaining({ path: 'src/keep.log', unstaged: 'modified' }),
+    );
   });
 });

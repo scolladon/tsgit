@@ -107,10 +107,10 @@ const matrix = await git.statusMatrix({ fs, dir: '.' });
 
 // tsgit
 const result = await repo.status();
-// { clean, branch, detached, indexChanges, workingTreeChanges }
+// { clean, branch, detached, changes, untracked, unmerged }
 ```
 
-The shape changes: tsgit returns structured `ChangeEntry[]` arrays instead of a 4-tuple matrix. Filter caller-side.
+The shape changes: tsgit returns one correlated `ChangedPath` per path (its `staged`/`unstaged` kinds plus the `head`/`index`/`worktree` blob endpoints — the structured form of `git status --porcelain=v2`), with `untracked` and `unmerged` as separate fields, instead of a 4-tuple matrix. Filter caller-side.
 
 ### `git.log` → `repo.log`
 

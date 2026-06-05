@@ -225,13 +225,14 @@ export {
   stashPush,
 } from './stash.js';
 export {
-  type ChangeEntry,
+  type BlobSide,
+  type ChangedPath,
   type ChangeKind,
   type ConflictKind,
-  type ConflictStage,
   type StatusResult,
   status,
   type UnmergedEntry,
+  type WorktreeSide,
 } from './status.js';
 export {
   type SubmoduleEntry,

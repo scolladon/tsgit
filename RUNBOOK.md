@@ -513,7 +513,7 @@ new `walkWorkingTree` primitive. Operator-visible behaviours:
   supported in v1.
 - **`status`** does NOT take a `paths` filter — see
   `docs/adr/039-defer-status-pathspec.md`. Filter the returned
-  `ChangeEntry[]` client-side if needed.
+  `changes` / `untracked` arrays client-side if needed.
 - **Atomicity** — the `.git/index.lock` is acquired before the walk,
   released after either a successful single-shot commit OR a thrown
   error. Concurrent processes hitting the index see either the old

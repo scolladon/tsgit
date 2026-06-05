@@ -8,9 +8,11 @@ import { init } from '../../../../src/application/commands/init.js';
 import { mergeRun } from '../../../../src/application/commands/merge.js';
 import { rm } from '../../../../src/application/commands/rm.js';
 import {
+  type ChangedPath,
+  type StatusResult,
   status,
-  toStagedChange,
-  toWorkingTreeChange,
+  toStagedKind,
+  toUnstagedKind,
 } from '../../../../src/application/commands/status.js';
 import type { DiffChange } from '../../../../src/domain/diff/index.js';
 import type {
@@ -36,10 +38,14 @@ const seedClean = async () => {
   return ctx;
 };
 
+/** The single `changes` record for a path, or undefined if the path is clean. */
+const changeFor = (sut: StatusResult, path: string): ChangedPath | undefined =>
+  sut.changes.find((c) => c.path === path);
+
 describe('status', () => {
   describe('Given a clean repo', () => {
     describe('When status', () => {
-      it('Then clean=true and no working-tree changes', async () => {
+      it('Then clean=true and no changes/untracked', async () => {
         // Arrange
         const ctx = await seedClean();
 
@@ -48,7 +54,8 @@ describe('status', () => {
 
         // Assert
         expect(sut.clean).toBe(true);
-        expect(sut.workingTreeChanges).toEqual([]);
+        expect(sut.changes).toEqual([]);
+        expect(sut.untracked).toEqual([]);
         expect(sut.branch).toBe('refs/heads/main');
       });
     });
@@ -56,24 +63,29 @@ describe('status', () => {
 
   describe('Given a modified working file', () => {
     describe('When status', () => {
-      it('Then workingTreeChanges contains a modified entry', async () => {
-        // Arrange
+      it('Then changes carries an unstaged-modified record with head==index endpoints', async () => {
+        // Arrange — a.txt committed, then edited on disk (index still matches HEAD).
         const ctx = await seedClean();
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'modified');
 
         // Act
         const sut = await status(ctx);
 
-        // Assert
+        // Assert — `.M` shape: unstaged modify, staged unchanged → head equals index.
         expect(sut.clean).toBe(false);
-        expect(sut.workingTreeChanges).toContainEqual({ kind: 'modified', path: 'a.txt' });
+        const c = changeFor(sut, 'a.txt');
+        expect(c?.unstaged).toBe('modified');
+        expect(c?.staged).toBeUndefined();
+        expect(c?.head?.id).toBe(c?.index?.id);
+        expect(c?.index?.mode).toBe('100644');
+        expect(c?.worktree?.mode).toBe('100644');
       });
     });
   });
 
   describe('Given a deleted working file', () => {
     describe('When status', () => {
-      it('Then workingTreeChanges contains a deleted entry', async () => {
+      it('Then changes carries an unstaged-deleted record with no worktree side', async () => {
         // Arrange
         const ctx = await seedClean();
         await ctx.fs.rm(`${ctx.layout.workDir}/a.txt`);
@@ -81,8 +93,11 @@ describe('status', () => {
         // Act
         const sut = await status(ctx);
 
-        // Assert
-        expect(sut.workingTreeChanges).toContainEqual({ kind: 'deleted', path: 'a.txt' });
+        // Assert — ` D` shape: the working file is gone, so no `worktree`.
+        const c = changeFor(sut, 'a.txt');
+        expect(c?.unstaged).toBe('deleted');
+        expect(c?.index?.mode).toBe('100644');
+        expect(c?.worktree).toBeUndefined();
       });
     });
   });
@@ -96,8 +111,7 @@ describe('status', () => {
         // Act
         const sut = await status(ctx);
 
-        // Assert — kills L46 `head.kind === 'direct'` -> `false` (would force
-        // detached=false anyway, but `=== ` -> `!== ` would flip this to true).
+        // Assert — kills the `head.kind === 'direct'` EqualityOperator flip.
         expect(sut.detached).toBe(false);
         expect(sut.branch).toBe('refs/heads/main');
       });
@@ -117,8 +131,7 @@ describe('status', () => {
         // Act
         const sut = await status(ctx);
 
-        // Assert — kills L46 EqualityOperator `=== ` -> `!== ` (would make this
-        // false) and ConditionalExpression `-> false` (would make this false).
+        // Assert
         expect(sut.detached).toBe(true);
         expect(sut.branch).toBeUndefined();
       });
@@ -127,11 +140,10 @@ describe('status', () => {
 
   describe('Given three untracked files added out of order', () => {
     describe('When status', () => {
-      it('Then they are sorted ascending by path', async () => {
+      it('Then untracked is sorted ascending by path', async () => {
         // Arrange — write in a deliberately non-sorted, non-reversed order so a
-        // dropped `.sort()` (MethodExpression mutant) yields the insertion order
-        // `['u3','u1','u2']`, which differs from both ascending and descending.
-        // u*.txt names avoid colliding with the tracked `a.txt` from seedClean.
+        // dropped `.sort()` yields the insertion order `['u3','u1','u2']`, which
+        // differs from both ascending and descending.
         const ctx = await seedClean();
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/u3.txt`, '3');
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/u1.txt`, '1');
@@ -140,23 +152,17 @@ describe('status', () => {
         // Act
         const sut = await status(ctx);
 
-        // Assert — kills L72 `untracked.sort(...)` -> `untracked` (no sort) and
-        // ConditionalExpression `-> true`/`-> false` + UnaryOperator `-1` -> `+1`
-        // on the comparator, all of which break this exact ascending order.
-        const untrackedPaths = sut.workingTreeChanges
-          .filter((c) => c.kind === 'untracked')
-          .map((c) => c.path);
-        expect(untrackedPaths).toEqual(['u1.txt', 'u2.txt', 'u3.txt']);
+        // Assert — kills the dropped-sort and comparator-flip mutants.
+        expect(sut.untracked).toEqual(['u1.txt', 'u2.txt', 'u3.txt']);
       });
     });
   });
 
   describe('Given untracked files added in descending order', () => {
     describe('When status', () => {
-      it('Then they are sorted ascending', async () => {
-        // Arrange — pure descending insertion: a dropped sort or a `false`/`-1->+1`
-        // comparator mutant would leave `['u3','u2','u1']`; a `>=` comparator
-        // mutant would also leave `['u3','u2','u1']`.
+      it('Then untracked is sorted ascending', async () => {
+        // Arrange — pure descending insertion: a dropped sort or a flipped
+        // comparator would leave `['u3','u2','u1']`.
         const ctx = await seedClean();
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/u3.txt`, '3');
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/u2.txt`, '2');
@@ -165,11 +171,8 @@ describe('status', () => {
         // Act
         const sut = await status(ctx);
 
-        // Assert — kills the comparator's EqualityOperator `< ` -> `>= ` mutant.
-        const untrackedPaths = sut.workingTreeChanges
-          .filter((c) => c.kind === 'untracked')
-          .map((c) => c.path);
-        expect(untrackedPaths).toEqual(['u1.txt', 'u2.txt', 'u3.txt']);
+        // Assert — kills the comparator's `< ` -> `>= ` mutant.
+        expect(sut.untracked).toEqual(['u1.txt', 'u2.txt', 'u3.txt']);
       });
     });
   });
@@ -195,7 +198,7 @@ describe('status', () => {
     describe('When status', () => {
       it('Then it is NOT reported as deleted and the repo is clean', async () => {
         // Arrange — `docs/b.txt` is skip-worktree (sparse-excluded); its absence is
-        // expected, so `classifyEntry` must early-return undefined for it.
+        // expected, so the working pass must skip it.
         const ctx = await seedSparseRepo();
 
         // Act
@@ -203,7 +206,7 @@ describe('status', () => {
 
         // Assert
         expect(sut.clean).toBe(true);
-        expect(sut.workingTreeChanges).toEqual([]);
+        expect(sut.changes).toEqual([]);
       });
     });
   });
@@ -211,8 +214,8 @@ describe('status', () => {
   describe('Given a skip-worktree path manually re-created on disk', () => {
     describe('When status', () => {
       it('Then it is NOT reported as untracked (still treated as tracked)', async () => {
-        // Arrange — re-create the excluded file. It must stay in `indexByPath` so
-        // pass 2 does not emit a spurious `untracked` for a tracked path.
+        // Arrange — re-create the excluded file. It must stay tracked so the
+        // untracked pass does not emit a spurious entry for it.
         const ctx = await seedSparseRepo();
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/docs/b.txt`, 'b');
 
@@ -220,18 +223,17 @@ describe('status', () => {
         const sut = await status(ctx);
 
         // Assert — no `untracked` entry for the still-tracked path.
-        const kinds = sut.workingTreeChanges.map((c) => `${c.kind}:${c.path}`);
-        expect(kinds).not.toContain('untracked:docs/b.txt');
+        expect(sut.untracked).not.toContain('docs/b.txt');
       });
     });
   });
 
   describe('Given a tracked file whose read throws during scan', () => {
     describe('When status', () => {
-      it('Then it is reported as modified', async () => {
+      it('Then it is reported as unstaged-modified', async () => {
         // Arrange — a.txt is staged/committed clean. Wrap ctx.fs.read so reading
-        // a.txt throws: lstat still succeeds, so classifyEntry reaches isModified,
-        // whose catch must report the file as modified.
+        // a.txt throws: lstat still succeeds, so the comparison reaches the hash
+        // step, whose catch must report the file as modified.
         const ctx = await seedClean();
         const workFile = `${ctx.layout.workDir}/a.txt`;
         const failingReadCtx = {
@@ -248,9 +250,8 @@ describe('status', () => {
         // Act
         const sut = await status(failingReadCtx);
 
-        // Assert — kills L111 BooleanLiteral `return true` -> `return false`
-        // (which would drop a.txt from the changes entirely).
-        expect(sut.workingTreeChanges).toContainEqual({ kind: 'modified', path: 'a.txt' });
+        // Assert — kills the catch's BooleanLiteral mutant (would drop a.txt).
+        expect(changeFor(sut, 'a.txt')?.unstaged).toBe('modified');
         expect(sut.clean).toBe(false);
       });
     });
@@ -260,7 +261,7 @@ describe('status', () => {
 describe('status — staged column (index-vs-HEAD)', () => {
   describe('Given a file added to the index but not committed', () => {
     describe('When status', () => {
-      it('Then indexChanges has an added entry and the working tree is clean', async () => {
+      it('Then the record is staged-added with an index side and no head', async () => {
         // Arrange — HEAD has a.txt; stage a new b.txt without committing.
         const ctx = await seedClean();
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.txt`, 'b');
@@ -269,9 +270,13 @@ describe('status — staged column (index-vs-HEAD)', () => {
         // Act
         const sut = await status(ctx);
 
-        // Assert — staged add only; b.txt matches the index so no worktree change.
-        expect(sut.indexChanges).toEqual([{ kind: 'added', path: 'b.txt' }]);
-        expect(sut.workingTreeChanges).toEqual([]);
+        // Assert — `A ` shape: staged add only; b.txt matches the index on disk.
+        const c = changeFor(sut, 'b.txt');
+        expect(c?.staged).toBe('added');
+        expect(c?.unstaged).toBeUndefined();
+        expect(c?.head).toBeUndefined();
+        expect(c?.index?.mode).toBe('100644');
+        expect(c?.worktree?.mode).toBe('100644');
         expect(sut.clean).toBe(false);
       });
     });
@@ -279,7 +284,7 @@ describe('status — staged column (index-vs-HEAD)', () => {
 
   describe('Given a committed file restaged with new content', () => {
     describe('When status', () => {
-      it('Then indexChanges has a modified entry and the working tree is clean', async () => {
+      it('Then the record is staged-modified with divergent head/index blobs', async () => {
         // Arrange — a.txt committed, then changed and staged; worktree == index.
         const ctx = await seedClean();
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'changed');
@@ -288,16 +293,18 @@ describe('status — staged column (index-vs-HEAD)', () => {
         // Act
         const sut = await status(ctx);
 
-        // Assert — `M ` shape: staged modify, no working-tree column.
-        expect(sut.indexChanges).toEqual([{ kind: 'modified', path: 'a.txt' }]);
-        expect(sut.workingTreeChanges).toEqual([]);
+        // Assert — `M ` shape: staged modify, no working-tree column; head≠index.
+        const c = changeFor(sut, 'a.txt');
+        expect(c?.staged).toBe('modified');
+        expect(c?.unstaged).toBeUndefined();
+        expect(c?.head?.id).not.toBe(c?.index?.id);
       });
     });
   });
 
   describe('Given a committed file removed from the index and disk', () => {
     describe('When status', () => {
-      it('Then indexChanges has a deleted entry and nothing is untracked', async () => {
+      it('Then the record is staged-deleted with a head side and nothing untracked', async () => {
         // Arrange — `rm` stages the deletion and removes the working file.
         const ctx = await seedClean();
         await rm(ctx, ['a.txt']);
@@ -305,16 +312,20 @@ describe('status — staged column (index-vs-HEAD)', () => {
         // Act
         const sut = await status(ctx);
 
-        // Assert — `D ` shape.
-        expect(sut.indexChanges).toEqual([{ kind: 'deleted', path: 'a.txt' }]);
-        expect(sut.workingTreeChanges).toEqual([]);
+        // Assert — `D ` shape: head present, index/worktree absent.
+        const c = changeFor(sut, 'a.txt');
+        expect(c?.staged).toBe('deleted');
+        expect(c?.head?.mode).toBe('100644');
+        expect(c?.index).toBeUndefined();
+        expect(c?.worktree).toBeUndefined();
+        expect(sut.untracked).toEqual([]);
       });
     });
   });
 
   describe('Given a committed file removed from the index but kept on disk', () => {
     describe('When status', () => {
-      it('Then it is staged-deleted AND untracked (git D + ??)', async () => {
+      it('Then it is staged-deleted in changes AND listed as untracked (git D + ??)', async () => {
         // Arrange — `rm --cached` drops it from the index, leaving the file on disk.
         const ctx = await seedClean();
         await rm(ctx, ['a.txt'], { cached: true });
@@ -322,16 +333,19 @@ describe('status — staged column (index-vs-HEAD)', () => {
         // Act
         const sut = await status(ctx);
 
-        // Assert — same path in both columns: staged delete + untracked.
-        expect(sut.indexChanges).toEqual([{ kind: 'deleted', path: 'a.txt' }]);
-        expect(sut.workingTreeChanges).toContainEqual({ kind: 'untracked', path: 'a.txt' });
+        // Assert — two clean sources: a staged delete and the untracked on-disk file.
+        const c = changeFor(sut, 'a.txt');
+        expect(c?.staged).toBe('deleted');
+        expect(c?.head?.mode).toBe('100644');
+        expect(c?.index).toBeUndefined();
+        expect(sut.untracked).toContain('a.txt');
       });
     });
   });
 
   describe('Given a file modified in the index and then again in the working tree', () => {
     describe('When status', () => {
-      it('Then both columns carry the path (git MM)', async () => {
+      it('Then one record carries both columns with all three sides (git MM)', async () => {
         // Arrange — stage one change, then edit on disk again so worktree != index.
         const ctx = await seedClean();
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'staged');
@@ -341,16 +355,19 @@ describe('status — staged column (index-vs-HEAD)', () => {
         // Act
         const sut = await status(ctx);
 
-        // Assert
-        expect(sut.indexChanges).toEqual([{ kind: 'modified', path: 'a.txt' }]);
-        expect(sut.workingTreeChanges).toContainEqual({ kind: 'modified', path: 'a.txt' });
+        // Assert — `MM`: staged and unstaged on one record, head/index/worktree all set.
+        const c = changeFor(sut, 'a.txt');
+        expect(c?.staged).toBe('modified');
+        expect(c?.unstaged).toBe('modified');
+        expect(c?.head?.id).not.toBe(c?.index?.id);
+        expect(c?.worktree?.mode).toBe('100644');
       });
     });
   });
 
   describe('Given a staged type change (regular file becomes a symlink)', () => {
     describe('When status', () => {
-      it('Then the staged column reports it as type-changed (git T)', async () => {
+      it('Then the staged column reports type-changed with mode 100644→120000 (git T)', async () => {
         // Arrange — commit a regular a.txt, then replace it with a symlink and stage.
         const ctx = await seedClean();
         await ctx.fs.rm(`${ctx.layout.workDir}/a.txt`);
@@ -360,15 +377,19 @@ describe('status — staged column (index-vs-HEAD)', () => {
         // Act
         const sut = await status(ctx);
 
-        // Assert — a kind change is git's `T`.
-        expect(sut.indexChanges).toEqual([{ kind: 'type-changed', path: 'a.txt' }]);
+        // Assert — a kind change is git's `T`; the side modes capture it.
+        const c = changeFor(sut, 'a.txt');
+        expect(c?.staged).toBe('type-changed');
+        expect(c?.head?.mode).toBe('100644');
+        expect(c?.index?.mode).toBe('120000');
+        expect(c?.worktree?.mode).toBe('120000');
       });
     });
   });
 
   describe('Given an unborn HEAD with staged files', () => {
     describe('When status', () => {
-      it('Then every staged entry is reported as added', async () => {
+      it('Then every staged entry is added with no head side', async () => {
         // Arrange — init, stage two files, never commit (HEAD unborn → empty tree).
         const ctx = createMemoryContext();
         await init(ctx);
@@ -379,26 +400,28 @@ describe('status — staged column (index-vs-HEAD)', () => {
         // Act
         const sut = await status(ctx);
 
-        // Assert — both `added` against the empty HEAD tree.
-        expect(sut.indexChanges).toEqual([
-          { kind: 'added', path: 'a.txt' },
-          { kind: 'added', path: 'b.txt' },
-        ]);
+        // Assert — both `added` against the empty HEAD tree, no head blobs.
+        expect(sut.changes.map((c) => c.path)).toEqual(['a.txt', 'b.txt']);
+        for (const c of sut.changes) {
+          expect(c.staged).toBe('added');
+          expect(c.head).toBeUndefined();
+          expect(c.index?.mode).toBe('100644');
+        }
       });
     });
   });
 
   describe('Given a clean repo', () => {
     describe('When status', () => {
-      it('Then indexChanges is empty and clean is true', async () => {
+      it('Then changes is empty and clean is true', async () => {
         // Arrange
         const ctx = await seedClean();
 
         // Act
         const sut = await status(ctx);
 
-        // Assert — no staged column either.
-        expect(sut.indexChanges).toEqual([]);
+        // Assert
+        expect(sut.changes).toEqual([]);
         expect(sut.clean).toBe(true);
       });
     });
@@ -406,10 +429,9 @@ describe('status — staged column (index-vs-HEAD)', () => {
 
   describe('Given staged changes whose union order is not byte-sorted', () => {
     describe('When status', () => {
-      it('Then indexChanges is sorted ascending by path', async () => {
+      it('Then changes is sorted ascending by path', async () => {
         // Arrange — HEAD {a.txt}; remove a.txt (index-empty), then stage z.txt. The
-        // index-vs-tree union visits the index-only path (z) before the tree-only
-        // path (a), so a dropped sort would yield [z, a] not [a, z].
+        // index-vs-tree union visits z before a, so a dropped sort would yield [z, a].
         const ctx = await seedClean();
         await rm(ctx, ['a.txt']);
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/z.txt`, 'z');
@@ -419,9 +441,9 @@ describe('status — staged column (index-vs-HEAD)', () => {
         const sut = await status(ctx);
 
         // Assert — byte order: a.txt (deleted) before z.txt (added).
-        expect(sut.indexChanges).toEqual([
-          { kind: 'deleted', path: 'a.txt' },
-          { kind: 'added', path: 'z.txt' },
+        expect(sut.changes.map((c) => `${c.path}:${c.staged}`)).toEqual([
+          'a.txt:deleted',
+          'z.txt:added',
         ]);
       });
     });
@@ -599,8 +621,8 @@ describe('status — progress reporting', () => {
         // Act
         await status(replaceProgress(ctx, reporter));
 
-        // Assert — bucket crossing at 100 (Math.floor(100/100)=1>0). Last 1 entry doesn't cross
-        // a new bucket; total is undefined so no final-flush rule applies.
+        // Assert — bucket crossing at 100 (Math.floor(100/100)=1>0). Last 1 entry
+        // doesn't cross a new bucket; total is undefined so no final-flush rule applies.
         const updates = events
           .filter((e): e is Extract<Event, { kind: 'update' }> => e.kind === 'update')
           .map((e) => e.current);
@@ -648,7 +670,7 @@ describe('status — progress reporting', () => {
 
   describe('Given an untracked working-tree file', () => {
     describe('When status', () => {
-      it('Then workingTreeChanges contains a `untracked` ChangeEntry and clean=false', async () => {
+      it('Then untracked contains the path and clean=false', async () => {
         // Arrange — committed a.txt; add an untracked b.txt.
         const ctx = await seedClean();
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.txt`, 'new');
@@ -658,20 +680,19 @@ describe('status — progress reporting', () => {
 
         // Assert
         expect(sut.clean).toBe(false);
-        expect(sut.workingTreeChanges).toContainEqual({ kind: 'untracked', path: 'b.txt' });
+        expect(sut.untracked).toContain('b.txt');
       });
     });
   });
 
-  describe('Given an untracked file matched by.gitignore', () => {
+  describe('Given an untracked file matched by .gitignore', () => {
     describe('When status', () => {
-      it('Then it is NOT in workingTreeChanges and clean=true (only-ignored-untracked)', async () => {
+      it('Then it is NOT untracked and clean=true (only-ignored-untracked)', async () => {
         // Arrange
         const ctx = await seedClean();
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitignore`, 'build.log\n');
-        // The.gitignore itself is untracked — also matches no rule, so it WOULD
-        // appear. Add a rule that also ignores.gitignore so we test the
-        // "only ignored untracked files" path cleanly.
+        // The .gitignore itself is untracked — add a rule ignoring it too so we test
+        // the "only ignored untracked files" path cleanly.
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitignore`, 'build.log\n.gitignore\n');
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/build.log`, 'log');
 
@@ -679,7 +700,8 @@ describe('status — progress reporting', () => {
         const sut = await status(ctx);
 
         // Assert
-        expect(sut.workingTreeChanges).toEqual([]);
+        expect(sut.untracked).toEqual([]);
+        expect(sut.changes).toEqual([]);
         expect(sut.clean).toBe(true);
       });
     });
@@ -687,7 +709,7 @@ describe('status — progress reporting', () => {
 
   describe('Given a tracked-but-ignored file', () => {
     describe('When status', () => {
-      it('Then it appears as modified/clean (NOT untracked) — tracked beats ignored', async () => {
+      it('Then it appears as unstaged-modified (NOT untracked) — tracked beats ignored', async () => {
         // Arrange — stage `secret.bin`, then add a rule that would ignore it,
         // then modify it.
         const ctx = await seedClean();
@@ -700,11 +722,9 @@ describe('status — progress reporting', () => {
         // Act
         const sut = await status(ctx);
 
-        // Assert — secret.bin is detected as modified (Pass 1 covers tracked
-        // entries regardless of ignore status). NOT emitted as 'untracked'.
-        const kinds = sut.workingTreeChanges.map((c) => `${c.kind}:${c.path}`);
-        expect(kinds).toContain('modified:secret.bin');
-        expect(kinds).not.toContain('untracked:secret.bin');
+        // Assert — the working pass covers tracked entries regardless of ignore status.
+        expect(changeFor(sut, 'secret.bin')?.unstaged).toBe('modified');
+        expect(sut.untracked).not.toContain('secret.bin');
       });
     });
   });
@@ -736,7 +756,7 @@ describe('status — progress reporting', () => {
 
   describe('Given a tracked symlink replaced by a regular file with identical bytes', () => {
     describe('When status', () => {
-      it('Then it reports the path type-changed (symlink → file is git T, even with identical bytes)', async () => {
+      it('Then it reports the path unstaged type-changed (symlink → file is git T)', async () => {
         // Arrange — the symlink blob is its target string; a regular file holding
         // those same bytes hashes identically, so only the file kind differs.
         const ctx = createMemoryContext();
@@ -750,13 +770,15 @@ describe('status — progress reporting', () => {
         const sut = await status(ctx);
 
         // Assert
-        expect(sut.workingTreeChanges).toContainEqual({ kind: 'type-changed', path: 'link' });
+        const c = changeFor(sut, 'link');
+        expect(c?.unstaged).toBe('type-changed');
+        expect(c?.worktree?.mode).toBe('100644');
       });
     });
   });
 });
 
-describe('toStagedChange', () => {
+describe('toStagedKind', () => {
   const oid = (s: string): ObjectId => s as ObjectId;
   const path = (s: string): FilePath => s as FilePath;
   const REGULAR = '100644' as FileMode;
@@ -764,8 +786,8 @@ describe('toStagedChange', () => {
   const SYMLINK = '120000' as FileMode;
 
   describe('Given an add change', () => {
-    describe('When projected to a staged change', () => {
-      it("Then it is 'added' on the new path", () => {
+    describe('When projected to a staged kind', () => {
+      it("Then it is 'added'", () => {
         // Arrange
         const change: DiffChange = {
           type: 'add',
@@ -774,18 +796,15 @@ describe('toStagedChange', () => {
           newMode: REGULAR,
         };
 
-        // Act
-        const sut = toStagedChange(change);
-
-        // Assert
-        expect(sut).toEqual({ kind: 'added', path: 'a.txt' });
+        // Act / Assert
+        expect(toStagedKind(change)).toBe('added');
       });
     });
   });
 
   describe('Given a delete change', () => {
-    describe('When projected to a staged change', () => {
-      it("Then it is 'deleted' on the old path", () => {
+    describe('When projected to a staged kind', () => {
+      it("Then it is 'deleted'", () => {
         // Arrange
         const change: DiffChange = {
           type: 'delete',
@@ -794,17 +813,14 @@ describe('toStagedChange', () => {
           oldMode: REGULAR,
         };
 
-        // Act
-        const sut = toStagedChange(change);
-
-        // Assert
-        expect(sut).toEqual({ kind: 'deleted', path: 'a.txt' });
+        // Act / Assert
+        expect(toStagedKind(change)).toBe('deleted');
       });
     });
   });
 
   describe('Given a type-change', () => {
-    describe('When projected to a staged change', () => {
+    describe('When projected to a staged kind', () => {
       it("Then it is 'type-changed' (git T)", () => {
         // Arrange — regular file became a symlink in the index.
         const change: DiffChange = {
@@ -816,17 +832,14 @@ describe('toStagedChange', () => {
           newMode: SYMLINK,
         };
 
-        // Act
-        const sut = toStagedChange(change);
-
-        // Assert
-        expect(sut).toEqual({ kind: 'type-changed', path: 'a.txt' });
+        // Act / Assert
+        expect(toStagedKind(change)).toBe('type-changed');
       });
     });
   });
 
   describe('Given a modify change whose blob id is unchanged', () => {
-    describe('When projected to a staged change', () => {
+    describe('When projected to a staged kind', () => {
       it("Then it is 'mode-changed' (same blob, exec bit flipped)", () => {
         // Arrange — identical oid, mode promoted to executable.
         const change: DiffChange = {
@@ -838,17 +851,14 @@ describe('toStagedChange', () => {
           newMode: EXEC,
         };
 
-        // Act
-        const sut = toStagedChange(change);
-
-        // Assert
-        expect(sut).toEqual({ kind: 'mode-changed', path: 'a.txt' });
+        // Act / Assert
+        expect(toStagedKind(change)).toBe('mode-changed');
       });
     });
   });
 
   describe('Given a modify change whose blob id differs', () => {
-    describe('When projected to a staged change', () => {
+    describe('When projected to a staged kind', () => {
       it("Then it is 'modified' (content change)", () => {
         // Arrange — different oid (content edit).
         const change: DiffChange = {
@@ -860,11 +870,49 @@ describe('toStagedChange', () => {
           newMode: REGULAR,
         };
 
-        // Act
-        const sut = toStagedChange(change);
+        // Act / Assert
+        expect(toStagedKind(change)).toBe('modified');
+      });
+    });
+  });
+});
 
+describe('toUnstagedKind', () => {
+  describe('Given each working-tree comparison', () => {
+    describe('When projected to an unstaged kind', () => {
+      it("Then 'absent' is deleted", () => {
+        // Arrange / Act
+        const sut = toUnstagedKind('absent');
         // Assert
-        expect(sut).toEqual({ kind: 'modified', path: 'a.txt' });
+        expect(sut).toBe('deleted');
+      });
+
+      it("Then 'type-changed' is type-changed", () => {
+        // Arrange / Act
+        const sut = toUnstagedKind('type-changed');
+        // Assert
+        expect(sut).toBe('type-changed');
+      });
+
+      it("Then 'mode-changed' is mode-changed", () => {
+        // Arrange / Act
+        const sut = toUnstagedKind('mode-changed');
+        // Assert
+        expect(sut).toBe('mode-changed');
+      });
+
+      it("Then 'modified' is modified", () => {
+        // Arrange / Act
+        const sut = toUnstagedKind('modified');
+        // Assert
+        expect(sut).toBe('modified');
+      });
+
+      it("Then 'unchanged' yields no kind", () => {
+        // Arrange / Act
+        const sut = toUnstagedKind('unchanged');
+        // Assert
+        expect(sut).toBeUndefined();
       });
     });
   });
@@ -914,7 +962,7 @@ describe('status — unmerged column', () => {
         expect(entry?.base?.id).not.toBe(entry?.ours?.id);
       });
 
-      it('Then the conflicted path is absent from the other columns and untracked set', async () => {
+      it('Then the conflicted path is absent from changes and untracked', async () => {
         // Arrange
         const ctx = await seedConflict();
 
@@ -922,8 +970,8 @@ describe('status — unmerged column', () => {
         const sut = await status(ctx);
 
         // Assert — git lists an unmerged path only under "Unmerged paths".
-        expect(sut.indexChanges.map((c) => c.path)).not.toContain('file.txt');
-        expect(sut.workingTreeChanges.map((c) => c.path)).not.toContain('file.txt');
+        expect(sut.changes.map((c) => c.path)).not.toContain('file.txt');
+        expect(sut.untracked).not.toContain('file.txt');
       });
 
       it('Then the repo is not clean', async () => {
@@ -977,8 +1025,7 @@ describe('status — unmerged column', () => {
   describe('Given two conflicting files merged out of insertion order', () => {
     describe('When status', () => {
       it('Then the unmerged entries are byte-ordered by path', async () => {
-        // Arrange — conflict on z.txt and a.txt; assert byte order (a before z),
-        // guarding the order inherited from the byte-sorted index.
+        // Arrange — conflict on z.txt and a.txt; assert byte order (a before z).
         const ctx = createMemoryContext();
         await init(ctx);
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/z.txt`, 'shared\n');
@@ -1018,49 +1065,6 @@ describe('status — unmerged column', () => {
 
         // Assert
         expect(sut.unmerged).toEqual([]);
-      });
-    });
-  });
-});
-
-describe('toWorkingTreeChange', () => {
-  const p = 'a.txt' as FilePath;
-
-  describe('Given each working-tree comparison', () => {
-    describe('When projected to a working-tree change', () => {
-      it("Then 'absent' is deleted", () => {
-        // Arrange / Act
-        const sut = toWorkingTreeChange('absent', p);
-        // Assert
-        expect(sut).toEqual({ kind: 'deleted', path: 'a.txt' });
-      });
-
-      it("Then 'type-changed' is type-changed", () => {
-        // Arrange / Act
-        const sut = toWorkingTreeChange('type-changed', p);
-        // Assert
-        expect(sut).toEqual({ kind: 'type-changed', path: 'a.txt' });
-      });
-
-      it("Then 'mode-changed' is mode-changed", () => {
-        // Arrange / Act
-        const sut = toWorkingTreeChange('mode-changed', p);
-        // Assert
-        expect(sut).toEqual({ kind: 'mode-changed', path: 'a.txt' });
-      });
-
-      it("Then 'modified' is modified", () => {
-        // Arrange / Act
-        const sut = toWorkingTreeChange('modified', p);
-        // Assert
-        expect(sut).toEqual({ kind: 'modified', path: 'a.txt' });
-      });
-
-      it("Then 'unchanged' yields no entry", () => {
-        // Arrange / Act
-        const sut = toWorkingTreeChange('unchanged', p);
-        // Assert
-        expect(sut).toBeUndefined();
       });
     });
   });
