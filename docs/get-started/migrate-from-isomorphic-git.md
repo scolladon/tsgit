@@ -260,8 +260,8 @@ const { fetch, merge } = await repo.pull({
   author: { name: 'A', email: 'a@b', timestamp: 0, timezoneOffset: '+0000' },
 });
 
-// Explicit remote + branch (no upstream configured)
-await repo.pull({ remote: 'origin', branch: 'main' });
+// Explicit remote + ref (no upstream configured)
+await repo.pull({ remote: 'origin', ref: 'main' });
 ```
 
 `pull` is `fetch` + `merge`; it returns both results (`{ fetch, merge }`) and, like `merge`, surfaces conflicts via `merge.kind === 'conflict'` rather than throwing — resolve and `repo.merge.continue`, or `repo.merge.abort`. `rebase` mode arrives with `rebase` itself.

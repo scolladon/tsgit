@@ -29,10 +29,12 @@ export interface PullOptions {
   /** Remote to pull from. Default: `branch.<current>.remote` ?? `'origin'`. */
   readonly remote?: string;
   /**
-   * Short branch name to merge. Default: short form of `branch.<current>.merge`.
-   * When neither is resolvable, pull throws `NO_UPSTREAM_CONFIGURED`.
+   * Remote ref to merge — a short branch name resolved as
+   * `refs/remotes/<remote>/<ref>`. Default: short form of
+   * `branch.<current>.merge`. When neither is resolvable, pull throws
+   * `NO_UPSTREAM_CONFIGURED`.
    */
-  readonly branch?: string;
+  readonly ref?: string;
   /**
    * Fast-forward policy for the integrate step, forwarded to `merge` (git
    * `--ff` / `--ff-only` / `--no-ff`):
@@ -79,7 +81,7 @@ const resolveUpstream = async (
   const config = await readConfig(ctx);
   const tracking = currentBranch !== undefined ? config.branch?.get(currentBranch) : undefined;
   const remote = opts.remote ?? tracking?.remote ?? 'origin';
-  const branch = opts.branch ?? shortMergeRef(tracking?.merge);
+  const branch = opts.ref ?? shortMergeRef(tracking?.merge);
   if (branch === undefined) {
     throw noUpstreamConfigured(fallbackRef);
   }

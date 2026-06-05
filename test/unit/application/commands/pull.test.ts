@@ -285,7 +285,7 @@ describe('pull', () => {
         // Act
         const sut = await pull(withTransport(ctx, transport), {
           remote: 'upstream',
-          branch: 'main',
+          ref: 'main',
         });
 
         // Assert
@@ -391,7 +391,7 @@ describe('pull', () => {
         // Act
         let caught: unknown;
         try {
-          await pull(withTransport(ctx, transport), { branch: 'main' });
+          await pull(withTransport(ctx, transport), { ref: 'main' });
         } catch (err) {
           caught = err;
         }
@@ -446,7 +446,7 @@ describe('pull', () => {
         // Act
         let caught: unknown;
         try {
-          await pull(withTransport(ctx, transport), { branch: 'nope' });
+          await pull(withTransport(ctx, transport), { ref: 'nope' });
         } catch (err) {
           caught = err;
         }
