@@ -16678,20 +16678,6 @@
 							}
 						},
 						{
-							"id": 1201,
-							"name": "from",
-							"variant": "declaration",
-							"kind": 1024,
-							"flags": {
-								"isOptional": true,
-								"isReadonly": true
-							},
-							"type": {
-								"type": "intrinsic",
-								"name": "string"
-							}
-						},
-						{
 							"id": 1202,
 							"name": "limit",
 							"variant": "declaration",
@@ -16704,6 +16690,20 @@
 								"type": "intrinsic",
 								"name": "number"
 							}
+						},
+						{
+							"id": 1201,
+							"name": "rev",
+							"variant": "declaration",
+							"kind": 1024,
+							"flags": {
+								"isOptional": true,
+								"isReadonly": true
+							},
+							"type": {
+								"type": "intrinsic",
+								"name": "string"
+							}
 						}
 					],
 					"groups": [
@@ -16712,8 +16712,8 @@
 							"children": [
 								1204,
 								1203,
-								1201,
-								1202
+								1202,
+								1201
 							]
 						}
 					]
@@ -17357,7 +17357,7 @@
 						},
 						{
 							"id": 1228,
-							"name": "target",
+							"name": "rev",
 							"variant": "declaration",
 							"kind": 1024,
 							"flags": {
@@ -17822,44 +17822,6 @@
 							}
 						},
 						{
-							"id": 1261,
-							"name": "branch",
-							"variant": "declaration",
-							"kind": 1024,
-							"flags": {
-								"isOptional": true,
-								"isReadonly": true
-							},
-							"comment": {
-								"summary": [
-									{
-										"kind": "text",
-										"text": "Short branch name to merge. Default: short form of "
-									},
-									{
-										"kind": "code",
-										"text": "`branch.<current>.merge`"
-									},
-									{
-										"kind": "text",
-										"text": ".\nWhen neither is resolvable, pull throws "
-									},
-									{
-										"kind": "code",
-										"text": "`NO_UPSTREAM_CONFIGURED`"
-									},
-									{
-										"kind": "text",
-										"text": "."
-									}
-								]
-							},
-							"type": {
-								"type": "intrinsic",
-								"name": "string"
-							}
-						},
-						{
 							"id": 1267,
 							"name": "committer",
 							"variant": "declaration",
@@ -18033,6 +17995,52 @@
 							}
 						},
 						{
+							"id": 1261,
+							"name": "ref",
+							"variant": "declaration",
+							"kind": 1024,
+							"flags": {
+								"isOptional": true,
+								"isReadonly": true
+							},
+							"comment": {
+								"summary": [
+									{
+										"kind": "text",
+										"text": "Remote ref to merge — a short branch name resolved as\n"
+									},
+									{
+										"kind": "code",
+										"text": "`refs/remotes/<remote>/<ref>`"
+									},
+									{
+										"kind": "text",
+										"text": ". Default: short form of\n"
+									},
+									{
+										"kind": "code",
+										"text": "`branch.<current>.merge`"
+									},
+									{
+										"kind": "text",
+										"text": ". When neither is resolvable, pull throws\n"
+									},
+									{
+										"kind": "code",
+										"text": "`NO_UPSTREAM_CONFIGURED`"
+									},
+									{
+										"kind": "text",
+										"text": "."
+									}
+								]
+							},
+							"type": {
+								"type": "intrinsic",
+								"name": "string"
+							}
+						},
+						{
 							"id": 1260,
 							"name": "remote",
 							"variant": "declaration",
@@ -18076,12 +18084,12 @@
 							"title": "Properties",
 							"children": [
 								1266,
-								1261,
 								1267,
 								1264,
 								1262,
 								1265,
 								1263,
+								1261,
 								1260
 							]
 						}
@@ -20560,7 +20568,7 @@
 						},
 						{
 							"id": 1459,
-							"name": "target",
+							"name": "rev",
 							"variant": "declaration",
 							"kind": 1024,
 							"flags": {
@@ -29780,7 +29788,7 @@
 								},
 								{
 									"id": 891,
-									"name": "input",
+									"name": "rev",
 									"variant": "param",
 									"kind": 32768,
 									"flags": {
@@ -30317,7 +30325,7 @@
 									},
 									{
 										"kind": "code",
-										"text": "`from`"
+										"text": "`rev`"
 									},
 									{
 										"kind": "text",
@@ -30683,11 +30691,11 @@
 									},
 									{
 										"kind": "code",
-										"text": "`target`"
+										"text": "`rev`"
 									},
 									{
 										"kind": "text",
-										"text": " into the current HEAD branch.\n\n- Up-to-date: target is ancestor of HEAD → no-op.\n- Fast-forward: HEAD is ancestor of target → branch advances.\n- True merge for diverged histories:.4a wired the three-way\n tree merge ("
+										"text": " into the current HEAD branch.\n\n- Up-to-date: rev is ancestor of HEAD → no-op.\n- Fast-forward: HEAD is ancestor of rev → branch advances.\n- True merge for diverged histories:.4a wired the three-way\n tree merge ("
 									},
 									{
 										"kind": "code",
@@ -31946,7 +31954,7 @@
 									},
 									{
 										"kind": "code",
-										"text": "`target`"
+										"text": "`rev`"
 									},
 									{
 										"kind": "text",
@@ -32478,7 +32486,7 @@
 								},
 								{
 									"id": 1557,
-									"name": "input",
+									"name": "rev",
 									"variant": "param",
 									"kind": 32768,
 									"flags": {},
@@ -32600,7 +32608,7 @@
 								},
 								{
 									"id": 1563,
-									"name": "input",
+									"name": "rev",
 									"variant": "param",
 									"kind": 32768,
 									"flags": {},
@@ -32717,7 +32725,7 @@
 								},
 								{
 									"id": 1569,
-									"name": "input",
+									"name": "rev",
 									"variant": "param",
 									"kind": 32768,
 									"flags": {},
@@ -32805,7 +32813,7 @@
 								},
 								{
 									"id": 1573,
-									"name": "input",
+									"name": "rev",
 									"variant": "param",
 									"kind": 32768,
 									"flags": {
@@ -89810,7 +89818,7 @@
 														"elements": [
 															{
 																"type": "namedTupleMember",
-																"name": "input",
+																"name": "rev",
 																"isOptional": true,
 																"element": {
 																	"type": "intrinsic",
@@ -93127,7 +93135,7 @@
 											"parameters": [
 												{
 													"id": 182,
-													"name": "input",
+													"name": "rev",
 													"variant": "param",
 													"kind": 32768,
 													"flags": {},
@@ -93236,7 +93244,7 @@
 											"parameters": [
 												{
 													"id": 187,
-													"name": "input",
+													"name": "rev",
 													"variant": "param",
 													"kind": 32768,
 													"flags": {},
@@ -93340,7 +93348,7 @@
 											"parameters": [
 												{
 													"id": 192,
-													"name": "input",
+													"name": "rev",
 													"variant": "param",
 													"kind": 32768,
 													"flags": {},
@@ -93407,7 +93415,7 @@
 											"parameters": [
 												{
 													"id": 195,
-													"name": "input",
+													"name": "rev",
 													"variant": "param",
 													"kind": 32768,
 													"flags": {
@@ -96224,7 +96232,7 @@
 		"182": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/repository.ts",
-			"qualifiedName": "input"
+			"qualifiedName": "rev"
 		},
 		"183": {
 			"packageName": "@scolladon/tsgit",
@@ -96249,7 +96257,7 @@
 		"187": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/repository.ts",
-			"qualifiedName": "input"
+			"qualifiedName": "rev"
 		},
 		"188": {
 			"packageName": "@scolladon/tsgit",
@@ -96274,7 +96282,7 @@
 		"192": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/repository.ts",
-			"qualifiedName": "input"
+			"qualifiedName": "rev"
 		},
 		"193": {
 			"packageName": "@scolladon/tsgit",
@@ -96289,7 +96297,7 @@
 		"195": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/repository.ts",
-			"qualifiedName": "input"
+			"qualifiedName": "rev"
 		},
 		"196": {
 			"packageName": "@scolladon/tsgit",
@@ -99769,7 +99777,7 @@
 		"891": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/application/commands/describe.ts",
-			"qualifiedName": "input"
+			"qualifiedName": "rev"
 		},
 		"892": {
 			"packageName": "@scolladon/tsgit",
@@ -101319,7 +101327,7 @@
 		"1201": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/application/commands/log.ts",
-			"qualifiedName": "LogOptions.from"
+			"qualifiedName": "LogOptions.rev"
 		},
 		"1202": {
 			"packageName": "@scolladon/tsgit",
@@ -101454,7 +101462,7 @@
 		"1228": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/application/commands/merge.ts",
-			"qualifiedName": "MergeRunInput.target"
+			"qualifiedName": "MergeRunInput.rev"
 		},
 		"1229": {
 			"packageName": "@scolladon/tsgit",
@@ -101619,7 +101627,7 @@
 		"1261": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/application/commands/pull.ts",
-			"qualifiedName": "PullOptions.branch"
+			"qualifiedName": "PullOptions.ref"
 		},
 		"1262": {
 			"packageName": "@scolladon/tsgit",
@@ -102609,7 +102617,7 @@
 		"1459": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/application/commands/reset.ts",
-			"qualifiedName": "ResetOptions.target"
+			"qualifiedName": "ResetOptions.rev"
 		},
 		"1460": {
 			"packageName": "@scolladon/tsgit",
@@ -103099,7 +103107,7 @@
 		"1557": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/application/commands/show.ts",
-			"qualifiedName": "input"
+			"qualifiedName": "rev"
 		},
 		"1558": {
 			"packageName": "@scolladon/tsgit",
@@ -103129,7 +103137,7 @@
 		"1563": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/application/commands/show.ts",
-			"qualifiedName": "input"
+			"qualifiedName": "rev"
 		},
 		"1564": {
 			"packageName": "@scolladon/tsgit",
@@ -103159,7 +103167,7 @@
 		"1569": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/application/commands/show.ts",
-			"qualifiedName": "input"
+			"qualifiedName": "rev"
 		},
 		"1570": {
 			"packageName": "@scolladon/tsgit",
@@ -103179,7 +103187,7 @@
 		"1573": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/application/commands/show.ts",
-			"qualifiedName": "input"
+			"qualifiedName": "rev"
 		},
 		"1574": {
 			"packageName": "@scolladon/tsgit",
