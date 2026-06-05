@@ -3,6 +3,7 @@ import { createMemoryContext } from '../../../../src/adapters/memory/memory-adap
 import { add } from '../../../../src/application/commands/add.js';
 import { init } from '../../../../src/application/commands/init.js';
 import {
+  compareWorkingTreeDelta,
   compareWorkingTreeEntry,
   isWorkingTreeModified,
   type WorkingTreeComparison,
@@ -252,6 +253,136 @@ describe('compareWorkingTreeEntry', () => {
 
         // Act
         const sut = await compareWorkingTreeEntry(ctx, gitlinkEntry);
+
+        // Assert
+        expect(sut).toBe('modified');
+      });
+    });
+  });
+});
+
+describe('compareWorkingTreeDelta', () => {
+  describe('Given a staged file whose working copy was deleted', () => {
+    describe('When comparing the entry to the working tree', () => {
+      it("Then the status is 'absent' and the worktree mode is omitted", async () => {
+        // Arrange
+        const { ctx, entry } = await seedFile('a.txt', 'hello\n');
+        await ctx.fs.rm(work(ctx, 'a.txt'));
+
+        // Act
+        const sut = await compareWorkingTreeDelta(ctx, entry);
+
+        // Assert — no working file exists, so there is no mode to report.
+        expect(sut).toEqual({ status: 'absent' });
+        expect(sut.worktreeMode).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a staged file whose working copy is untouched', () => {
+    describe('When comparing the entry to the working tree', () => {
+      it("Then the status is 'unchanged' and the worktree mode is the regular blob mode", async () => {
+        // Arrange
+        const { ctx, entry } = await seedFile('a.txt', 'hello\n');
+
+        // Act
+        const sut = await compareWorkingTreeDelta(ctx, entry);
+
+        // Assert
+        expect(sut).toEqual({ status: 'unchanged', worktreeMode: '100644' });
+      });
+    });
+  });
+
+  describe('Given a staged file whose working content changed', () => {
+    describe('When comparing the entry to the working tree', () => {
+      it("Then the status is 'modified' and the worktree mode is the regular blob mode", async () => {
+        // Arrange
+        const { ctx, entry } = await seedFile('a.txt', 'hello\n');
+        await ctx.fs.writeUtf8(work(ctx, 'a.txt'), 'changed\n');
+
+        // Act
+        const sut = await compareWorkingTreeDelta(ctx, entry);
+
+        // Assert
+        expect(sut).toEqual({ status: 'modified', worktreeMode: '100644' });
+      });
+    });
+  });
+
+  describe('Given an executable-mode entry whose working file is a same-content regular file', () => {
+    describe('When comparing the entry to the working tree', () => {
+      it("Then the status is 'mode-changed' and the worktree mode is the regular blob mode", async () => {
+        // Arrange — index says 100755, working file is the seeded regular file.
+        const { ctx, entry } = await seedFile('a.txt', 'hello\n');
+        const executableEntry: IndexEntry = { ...entry, mode: '100755' };
+
+        // Act
+        const sut = await compareWorkingTreeDelta(ctx, executableEntry);
+
+        // Assert
+        expect(sut).toEqual({ status: 'mode-changed', worktreeMode: '100644' });
+      });
+    });
+  });
+
+  describe('Given a symlink entry whose working file is a regular file', () => {
+    describe('When comparing the entry to the working tree', () => {
+      it("Then the status is 'type-changed' and the worktree mode is the regular blob mode", async () => {
+        // Arrange — regular working file, entry mode forced to symlink kind.
+        const { ctx, entry } = await seedFile('a.txt', 'hello\n');
+        const symlinkEntry: IndexEntry = { ...entry, mode: '120000' };
+
+        // Act
+        const sut = await compareWorkingTreeDelta(ctx, symlinkEntry);
+
+        // Assert
+        expect(sut).toEqual({ status: 'type-changed', worktreeMode: '100644' });
+      });
+    });
+  });
+
+  describe('Given a staged symlink whose target is untouched', () => {
+    describe('When comparing the entry to the working tree', () => {
+      it("Then the status is 'unchanged' and the worktree mode is the symlink mode", async () => {
+        // Arrange
+        const { ctx, entry } = await seedSymlink('link', 'target-a');
+
+        // Act
+        const sut = await compareWorkingTreeDelta(ctx, entry);
+
+        // Assert
+        expect(sut).toEqual({ status: 'unchanged', worktreeMode: '120000' });
+      });
+    });
+  });
+
+  describe('Given a staged symlink whose target changed', () => {
+    describe('When comparing the entry to the working tree', () => {
+      it("Then the status is 'modified' and the worktree mode is the symlink mode", async () => {
+        // Arrange
+        const { ctx, entry } = await seedSymlink('link', 'target-a');
+        await ctx.fs.rm(work(ctx, 'link'));
+        await ctx.fs.symlink('target-b', work(ctx, 'link'));
+
+        // Act
+        const sut = await compareWorkingTreeDelta(ctx, entry);
+
+        // Assert
+        expect(sut).toEqual({ status: 'modified', worktreeMode: '120000' });
+      });
+    });
+  });
+
+  describe('Given the enum projection over the delta', () => {
+    describe('When comparing a modified entry through compareWorkingTreeEntry', () => {
+      it('Then it returns the delta status verbatim', async () => {
+        // Arrange
+        const { ctx, entry } = await seedFile('a.txt', 'hello\n');
+        await ctx.fs.writeUtf8(work(ctx, 'a.txt'), 'changed\n');
+
+        // Act
+        const sut = await compareWorkingTreeEntry(ctx, entry);
 
         // Assert
         expect(sut).toBe('modified');
