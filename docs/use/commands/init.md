@@ -41,5 +41,5 @@ await repo.init({ bare: true });
 
 ## See also
 
-- Primitives: [`writeSymbolicRef`](../primitives/write-symbolic-ref.md)
+- Primitives: [`writeSymbolicRef`](../primitives/internals.md#writesymbolicref)
 - Related commands: [`clone`](clone.md) (init + remote bootstrap)

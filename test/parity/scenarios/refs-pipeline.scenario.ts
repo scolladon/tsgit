@@ -1,12 +1,11 @@
 /**
  * Refs primitive scenario — exercises low-level ref CRUD primitives plus
  * `revParse`. Drives a chained dance: resolveRef(HEAD) → updateRef
- * (creates a new ref and its reflog) → resolveRef(new ref) → writeSymbolicRef
- * (points a second symbolic ref at the new one) → revParse(short SHA).
+ * (creates a new ref and its reflog) → resolveRef(new ref) → revParse(HEAD).
  *
  * Surfaces closed (per 19.5a):
  *   commands:   revParse
- *   primitives: resolveRef, updateRef, writeSymbolicRef
+ *   primitives: resolveRef, updateRef
  */
 import type { RefName } from '../../../src/domain/objects/index.ts';
 import { AUTHOR, FILES, MESSAGES } from '../fixtures.ts';
@@ -16,13 +15,11 @@ interface RefsPipelineResult {
   readonly seedCommitId: string;
   readonly headResolvesToSeed: boolean;
   readonly newRefResolvesToSeed: boolean;
-  readonly symbolicResolvesToSeed: boolean;
   readonly updateRefCreatedReflog: boolean;
   readonly revParseHeadResolvesToSeed: boolean;
 }
 
 const NEW_BRANCH = 'refs/heads/refs-pipeline' as RefName;
-const SYMBOLIC_NAME = 'refs/heads/refs-pipeline-alias' as RefName;
 const NEW_BRANCH_FOR_REFLOG = 'refs/heads/refs-pipeline-reflog' as RefName;
 
 export const refsPipelineScenario: Scenario<RefsPipelineResult> = {
@@ -32,7 +29,6 @@ export const refsPipelineScenario: Scenario<RefsPipelineResult> = {
     seedCommitId: 'fa8b886eee0d470d870e786878657cac05d686e6',
     headResolvesToSeed: true,
     newRefResolvesToSeed: true,
-    symbolicResolvesToSeed: true,
     updateRefCreatedReflog: true,
     revParseHeadResolvesToSeed: true,
   },
@@ -48,9 +44,6 @@ export const refsPipelineScenario: Scenario<RefsPipelineResult> = {
       reflogMessage: 'refs-pipeline: create branch',
     });
     const newRefTarget = await repo.primitives.resolveRef(NEW_BRANCH);
-
-    await repo.primitives.writeSymbolicRef(SYMBOLIC_NAME, NEW_BRANCH);
-    const symbolicTarget = await repo.primitives.resolveRef(SYMBOLIC_NAME);
 
     // updateRef writes the ref and records its reflog atomically — the
     // coherent public ref-write surface (a decoupled reflog write is not
@@ -77,7 +70,6 @@ export const refsPipelineScenario: Scenario<RefsPipelineResult> = {
       seedCommitId: seed.id,
       headResolvesToSeed: head === seed.id,
       newRefResolvesToSeed: newRefTarget === seed.id,
-      symbolicResolvesToSeed: symbolicTarget === seed.id,
       updateRefCreatedReflog,
       revParseHeadResolvesToSeed: fromHead === seed.id,
     };

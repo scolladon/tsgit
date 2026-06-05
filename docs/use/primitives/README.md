@@ -26,7 +26,6 @@ The composable building blocks every Tier-1 command is built from. Same `Context
 | [`walkTree`](walk-tree.md) | `AsyncIterable<TreeEntry>` walker. |
 | [`walkWorkingTree`](walk-working-tree.md) | `AsyncIterable<WalkWorkingTreeEntry>` walker (DFS, ignore-aware). |
 | [`writeObject`](write-object.md) | Write any git object; returns the resulting id. |
-| [`writeSymbolicRef`](write-symbolic-ref.md) | Write a symbolic ref (e.g. `HEAD → refs/heads/main`). |
 | [`writeTree`](write-tree.md) | Write a tree object from entries; returns the id. |
 
 For internal building blocks referenced from command pages (`materializeTree`, `fetchPack`, `buildPack`, etc.) see [`internals.md`](internals.md).

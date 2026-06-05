@@ -211,7 +211,7 @@ export interface Repository {
   /** Nested `repo.tag.{list,create,delete}` namespace. */
   readonly tag: commands.TagNamespace;
 
-  // Tier-2 primitives (16) — bound under.primitives.* to keep the top-level
+  // Tier-2 primitives (21) — bound under .primitives.* to keep the top-level
   // surface focused on user-facing commands.
   readonly primitives: {
     readonly catFileBatch: BindCtx<typeof primitives.catFileBatch>;
@@ -234,7 +234,6 @@ export interface Repository {
     readonly walkTree: BindCtx<typeof primitives.walkTree>;
     readonly walkWorkingTree: BindCtx<typeof primitives.walkWorkingTree>;
     readonly writeObject: BindCtx<typeof primitives.writeObject>;
-    readonly writeSymbolicRef: BindCtx<typeof primitives.writeSymbolicRef>;
     readonly writeTree: BindCtx<typeof primitives.writeTree>;
   };
 
@@ -588,10 +587,6 @@ export const openRepository = async (
         guard();
         return primitives.writeObject(ctx, object);
       }) as Repository['primitives']['writeObject'],
-      writeSymbolicRef: ((name, target) => {
-        guard();
-        return primitives.writeSymbolicRef(ctx, name, target);
-      }) as Repository['primitives']['writeSymbolicRef'],
       writeTree: ((entries) => {
         guard();
         return primitives.writeTree(ctx, entries);

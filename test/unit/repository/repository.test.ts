@@ -209,7 +209,6 @@ describe('openRepository — Repository binding integrity', () => {
             'walkTree',
             'walkWorkingTree',
             'writeObject',
-            'writeSymbolicRef',
             'writeTree',
           ].sort(),
         );

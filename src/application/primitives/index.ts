@@ -82,5 +82,4 @@ export { walkTree } from './walk-tree.js';
 export { walkWorkingTree } from './walk-working-tree.js';
 export { writeObject } from './write-object.js';
 export { writeSparsePatternText } from './write-sparse-checkout.js';
-export { writeSymbolicRef } from './write-symbolic-ref.js';
 export { writeTree } from './write-tree.js';

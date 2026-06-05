@@ -70,7 +70,6 @@ describe('primitives barrel', () => {
           'writeObject',
           'writeReflog',
           'writeSparsePatternText',
-          'writeSymbolicRef',
           'writeTree',
         ];
         for (const name of names) {
@@ -147,7 +146,6 @@ describe('primitives barrel', () => {
           'writeObject',
           'writeReflog',
           'writeSparsePatternText',
-          'writeSymbolicRef',
           'writeTree',
         ]);
         const actual = new Set(Object.keys(primitives));
