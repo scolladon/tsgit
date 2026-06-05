@@ -65,7 +65,7 @@ describe('integration — merge state machine via openRepository', () => {
       const repo = await openRepository({ cwd: workDir });
       try {
         await setupConflictingMerge(repo, workDir);
-        const firstMerge = await repo.merge.run({ target: 'feature', author });
+        const firstMerge = await repo.merge.run({ rev: 'feature', author });
         if (firstMerge.kind !== 'conflict') throw new Error('expected conflict');
 
         // Act
@@ -77,7 +77,7 @@ describe('integration — merge state machine via openRepository', () => {
         expect(status.branch).toBe('refs/heads/main');
 
         // Re-running the same merge produces the same conflict shape.
-        const secondMerge = await repo.merge.run({ target: 'feature', author });
+        const secondMerge = await repo.merge.run({ rev: 'feature', author });
         expect(secondMerge.kind).toBe('conflict');
         if (secondMerge.kind === 'conflict' && firstMerge.kind === 'conflict') {
           expect(secondMerge.mergeHead).toBe(firstMerge.mergeHead);
@@ -96,7 +96,7 @@ describe('integration — merge state machine via openRepository', () => {
       const repo = await openRepository({ cwd: workDir });
       try {
         await setupConflictingMerge(repo, workDir);
-        const conflict = await repo.merge.run({ target: 'feature', author });
+        const conflict = await repo.merge.run({ rev: 'feature', author });
         if (conflict.kind !== 'conflict') throw new Error('expected conflict');
         await writeFileAt(workDir, 'file.txt', 'RESOLVED\n');
         await repo.add(['file.txt']);

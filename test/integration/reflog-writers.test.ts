@@ -192,7 +192,7 @@ describe('integration — reflog writers', () => {
     await checkout(ctx, { target: 'main' });
 
     // Act
-    await mergeRun(ctx, { target: 'feature', author });
+    await mergeRun(ctx, { rev: 'feature', author });
 
     // Assert
     const branchLog = await readReflog(ctx, MAIN);
@@ -212,7 +212,7 @@ describe('integration — reflog writers', () => {
     await commit(ctx, { message: 'on main', author });
 
     // Act
-    await mergeRun(ctx, { target: 'feature', author });
+    await mergeRun(ctx, { rev: 'feature', author });
 
     // Assert
     const branchLog = await readReflog(ctx, MAIN);

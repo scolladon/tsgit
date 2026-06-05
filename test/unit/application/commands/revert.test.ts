@@ -254,7 +254,7 @@ describe('revert run', () => {
         await add(ctx, ['side.txt']);
         await commit(ctx, { message: 'side commit', author: MAIN_AUTHOR });
         await checkout(ctx, { target: 'feature' });
-        const m = await mergeRun(ctx, { target: 'side' });
+        const m = await mergeRun(ctx, { rev: 'side' });
         if (m.kind !== 'merge') throw new Error('seed: expected a merge commit');
         await checkout(ctx, { target: 'main' });
 
@@ -466,7 +466,7 @@ describe('revert range and sequencer', () => {
         await ctx.fs.writeUtf8(work(ctx, 'main.txt'), 'm\n');
         await add(ctx, ['main.txt']);
         await commit(ctx, { message: 'main commit', author: MAIN_AUTHOR });
-        const m = await mergeRun(ctx, { target: 'side' });
+        const m = await mergeRun(ctx, { rev: 'side' });
         if (m.kind !== 'merge') throw new Error('seed: expected a merge commit');
         await ctx.fs.writeUtf8(work(ctx, 'top.txt'), 't\n');
         await add(ctx, ['top.txt']);
@@ -817,7 +817,7 @@ describe('revert abort', () => {
         await ctx.fs.writeUtf8(work(ctx, 'main.txt'), 'm\n');
         await add(ctx, ['main.txt']);
         await commit(ctx, { message: 'main commit', author: MAIN_AUTHOR });
-        await mergeRun(ctx, { target: 'side' });
+        await mergeRun(ctx, { rev: 'side' });
         await ctx.fs.writeUtf8(work(ctx, 'top.txt'), 't\n');
         await add(ctx, ['top.txt']);
         const top = (await commit(ctx, { message: 'top commit', author: MAIN_AUTHOR })).id;
@@ -963,7 +963,7 @@ describe('revert no-commit (-n)', () => {
         await add(ctx, ['side.txt']);
         await commit(ctx, { message: 'side commit', author: MAIN_AUTHOR });
         await checkout(ctx, { target: 'feature' });
-        const m = await mergeRun(ctx, { target: 'side' });
+        const m = await mergeRun(ctx, { rev: 'side' });
         if (m.kind !== 'merge') throw new Error('seed: expected a merge commit');
         await checkout(ctx, { target: 'main' });
 
@@ -1437,7 +1437,7 @@ describe('revert mutation-hardening surfaces', () => {
         await add(ctx, ['side.txt']);
         await commit(ctx, { message: 'side commit', author: MAIN_AUTHOR });
         await checkout(ctx, { target: 'feature' });
-        const m = await mergeRun(ctx, { target: 'side' });
+        const m = await mergeRun(ctx, { rev: 'side' });
         if (m.kind !== 'merge') throw new Error('seed: expected a merge commit');
         await checkout(ctx, { target: 'main' });
         await ctx.fs.writeUtf8(work(ctx, 'main.txt'), 'm\n');

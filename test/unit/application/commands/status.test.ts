@@ -887,7 +887,7 @@ const seedConflict = async () => {
   await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'MAIN-CHANGE\n');
   await add(ctx, ['file.txt']);
   await commit(ctx, { message: 'on-main', author });
-  await mergeRun(ctx, { target: 'feature', author });
+  await mergeRun(ctx, { rev: 'feature', author });
   return ctx;
 };
 
@@ -957,7 +957,7 @@ describe('status — unmerged column', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'MAIN\n');
         await add(ctx, ['file.txt']);
         await commit(ctx, { message: 'modify', author });
-        await mergeRun(ctx, { target: 'feature', author });
+        await mergeRun(ctx, { rev: 'feature', author });
 
         // Act
         const sut = await status(ctx);
@@ -996,7 +996,7 @@ describe('status — unmerged column', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'MAIN\n');
         await add(ctx, ['z.txt', 'a.txt']);
         await commit(ctx, { message: 'on-main', author });
-        await mergeRun(ctx, { target: 'feature', author });
+        await mergeRun(ctx, { rev: 'feature', author });
 
         // Act
         const sut = await status(ctx);

@@ -113,7 +113,7 @@ describe('integration — sparse reset/merge (memory adapter)', () => {
     expect(await ctx.fs.exists(`${ctx.layout.workDir}/docs/guide.md`)).toBe(false);
 
     // Act
-    const sut = await mergeRun(ctx, { target: 'feature', author });
+    const sut = await mergeRun(ctx, { rev: 'feature', author });
 
     // Assert — the conflict is materialised, the excluded clean file is not.
     expect(sut.kind).toBe('conflict');

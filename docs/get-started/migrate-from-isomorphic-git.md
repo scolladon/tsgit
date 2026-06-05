@@ -229,7 +229,7 @@ await git.merge({
 
 // tsgit — merge is a namespace: run / continue / abort
 const result = await repo.merge.run({
-  target: 'feature',
+  rev: 'feature',
   author: { name: 'A', email: 'a@b', timestamp: 0, timezoneOffset: '+0000' },
 });
 

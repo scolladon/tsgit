@@ -91,7 +91,7 @@ describe.skipIf(!GIT_AVAILABLE)('merge --abort reflog interop', () => {
       const peerMerge = tryRunGit(['-C', pair.peer, 'merge', 'feature']);
       expect(peerMerge.ok).toBe(false);
       const repo = await openRepository({ cwd: pair.ours });
-      const oursMerge = await repo.merge.run({ target: 'feature', author: AUTHOR });
+      const oursMerge = await repo.merge.run({ rev: 'feature', author: AUTHOR });
       expect(oursMerge.kind).toBe('conflict');
 
       // Act — abort on both tools.

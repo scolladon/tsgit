@@ -162,7 +162,7 @@ const seedMerge = async (): Promise<{
   await add(ctx, ['s1.txt']);
   await commit(ctx, { message: 's1', author: FEAT_AUTHOR });
   await checkout(ctx, { target: 'feature' });
-  const m = await mergeRun(ctx, { target: 'side' });
+  const m = await mergeRun(ctx, { rev: 'side' });
   if (m.kind !== 'merge') throw new Error('seed: expected a merge commit');
   await ctx.fs.writeUtf8(work(ctx, 'f2.txt'), 'f2\n');
   await add(ctx, ['f2.txt']);

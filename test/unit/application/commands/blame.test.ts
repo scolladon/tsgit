@@ -195,7 +195,7 @@ describe('Given a clean merge of two branches that changed different lines', () 
       const main = await commitFile(ctx, 'main', 'f.txt', 'a\nb\nc-main\n');
       clock += 60;
       const merged = await mergeRun(ctx, {
-        target: 'side',
+        rev: 'side',
         author: ident('merger', clock),
         committer: ident('merger', clock),
       });

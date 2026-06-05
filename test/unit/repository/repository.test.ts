@@ -468,7 +468,7 @@ describe('openRepository — dispose state machine', () => {
         // Act
         let caught: unknown;
         try {
-          await sut.merge.run({ target: 'feature' });
+          await sut.merge.run({ rev: 'feature' });
         } catch (err) {
           caught = err;
         }

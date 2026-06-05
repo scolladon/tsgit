@@ -555,7 +555,7 @@ describe('describe', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'MAIN\n');
         await add(ctx, ['file.txt']);
         await commit(ctx, { message: 'on-main', author: ident(clock) });
-        await mergeRun(ctx, { target: 'feature', author: ident(clock) });
+        await mergeRun(ctx, { rev: 'feature', author: ident(clock) });
 
         // Act
         const sut = await describeCmd(ctx, undefined, { dirty: true });

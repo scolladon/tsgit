@@ -39,7 +39,7 @@ export const mergeFfScenario: Scenario<MergeFfResult> = {
     const feature = await repo.commit({ message: MESSAGES.second, author: inputs.author });
 
     await repo.checkout({ target: 'main' });
-    const result = await repo.merge.run({ target: 'feature' });
+    const result = await repo.merge.run({ rev: 'feature' });
 
     if (result.kind !== 'fast-forward') {
       throw new Error(`merge-ff expected kind='fast-forward' but got kind='${result.kind}'`);

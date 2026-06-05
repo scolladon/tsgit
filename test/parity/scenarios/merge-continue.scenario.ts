@@ -57,7 +57,7 @@ export const mergeContinueScenario: Scenario<MergeContinueResult> = {
     const mainTip = await repo.commit({ message: 'on-main', author: inputs.author });
 
     const mergeResult = await repo.merge.run({
-      target: 'feature',
+      rev: 'feature',
       author: inputs.author,
       message: 'Merge feature into main',
     });

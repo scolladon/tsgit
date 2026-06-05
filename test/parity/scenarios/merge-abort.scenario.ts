@@ -59,7 +59,7 @@ export const mergeAbortScenario: Scenario<MergeAbortResult> = {
     await repo.add(['a.txt']);
     const mainTip = await repo.commit({ message: 'on-main', author: inputs.author });
 
-    const mergeResult = await repo.merge.run({ target: 'feature', author: inputs.author });
+    const mergeResult = await repo.merge.run({ rev: 'feature', author: inputs.author });
     if (mergeResult.kind !== 'conflict') {
       throw new Error(`merge-abort expected kind='conflict' but got kind='${mergeResult.kind}'`);
     }
