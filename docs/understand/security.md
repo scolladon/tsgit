@@ -41,14 +41,14 @@ The Memory adapter's symlink follower caps at 40 hops (POSIX `SYMLOOP_MAX`).
 - Ref CRUD (`recordRefUpdate`) — under `.git/refs/<name>.lock`
 - Index updates (`commit`, `add`, `reset --mixed`, `checkout`, `merge`) — under `.git/index.lock`
 
-A `RESOURCE_LOCKED` error fires when another writer holds the lock; callers can opt into stale-lock breaking via `breakStaleLockMs`.
+A `RESOURCE_LOCKED` error fires when another writer holds the lock. Stale-lock breaking is repository-environment policy: set `breakStaleLockMs` once on `openRepository({ config })` and every index acquisition honours it. Left unset (the default), tsgit never auto-breaks a lock — faithful to git.
 
 ## TLS & SSRF guards (Node HTTP)
 
 - `http://` URLs are **rejected by default**. Opt in via `OpenNodeRepositoryOptions.allowInsecureHttp` — disabling this is a per-call choice, never inherited from environment.
 - Certificate validation is **never disabled** by the library. If you need to test against a self-signed server, configure trust at the Node level (`NODE_EXTRA_CA_CERTS`).
-- **DNS resolver is caller-injected.** `clone`, `fetch`, and `push` require a `resolver` to enforce SSRF — without it, you can only hit hosts the underlying OS resolver returns, which is appropriate for trusted contexts.
-- **Private networks are rejected by default.** RFC1918 / loopback / link-local destinations require `allowPrivateNetworks: true`. Off by default.
+- **DNS resolver is configured on the context, not per call.** Set `config.dnsResolver` on `openRepository`; the transport wrapper (`wrapTransportValidator`) validates every request URL — `clone`/`fetch`/`push` carry no SSRF options of their own. The default resolver is **fail-closed** (rejects every host as `BLOCKED_HOST`) until you supply one. A hand-built `Context` that skips the wrapper (or `unsafeRawAdapters: true`) opts out of the guard.
+- **Private networks are rejected by default.** RFC1918 / loopback / link-local destinations require `config.allowPrivateNetworks: true`. Off by default. `http://` likewise requires `config.allowInsecure: true`.
 - **Redirect cap.** Maximum redirect chain length enforced; `TOO_MANY_REDIRECTS` fires beyond the cap.
 
 ## Error sanitisation
