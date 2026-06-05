@@ -97,10 +97,10 @@ Plumbing leak. Fails criteria **1, 3, 4**.
 > already over-served; and shipping a non-faithful entry writer is worse than
 > shipping none.
 
-### `recordRefUpdate` — **demote to internal**
+### `recordRefUpdate` — **demote to internal (strip from both public surfaces)**
 
 Plumbing leak on the **coherence/safety** axis (crit. 2, 4), but it *is*
-composed-from (crit. 1) so it stays as a module.
+composed-from (crit. 1) so the module stays.
 
 - **Footgun (crit. 2).** `recordRefUpdate` appends a reflog entry **without
   moving the ref**. A caller can write `.git/logs/refs/heads/main` recording a
@@ -113,22 +113,32 @@ composed-from (crit. 1) so it stays as a module.
   the unsafe half.
 - **Composed-from (crit. 1), so keep the module.** `clone`, `checkout`,
   `commit`, `rebase`, and `update-ref` import it **directly** from
-  `./record-ref-update.js` (never via the barrel). Demotion removes it from the
-  curated namespace + docs only; the module stays, internal consumers compile
-  unchanged.
+  `./record-ref-update.js` (never via the barrel), so demotion is invisible to
+  them. The footgun is removed from **both** public surfaces — the
+  `repo.primitives.*` namespace **and** the `@scolladon/tsgit/primitives` barrel
+  (and the blessed docs). Maximum subtraction: a known footgun left on the
+  everything-barrel is still advertised; making it fully private is cleaner than
+  relying on the barrel as a catch-all.
 
-### `writeSymbolicRef` — **keep**
+### `writeSymbolicRef` — **demote to internal (strip from both public surfaces)**
 
-Real extension surface. Passes all four.
+A symref-backend mechanism, not a blessed building block.
 
-- **Composed-from (crit. 1):** `checkout`, `branch`, `rebase`.
-- **Capability (crit. 4):** the only door to setting HEAD (or any symref)
-  *symbolically* — `git symbolic-ref HEAD refs/heads/<b>`, the canonical way to
-  set a bare repo's default branch with no working tree to check out. No
-  porcelain reaches it without a checkout.
-- **Coherent + faithful (crit. 2, 3):** writes a well-formed `ref: <target>\n`
-  via `validateRefName`; pointing at an unborn branch is exactly git's allowed
-  behaviour. Pairs with `updateRef` as the `{direct, symbolic}` ref-write surface.
+- **Composed-from (crit. 1):** `checkout`, `branch`, `rebase` — all import it
+  **directly** from `./write-symbolic-ref.js`, so the module stays and demotion
+  is invisible to them.
+- **Capability largely porcelain-reachable (crit. 4).** Its one distinctive use
+  — setting HEAD symbolically without a checkout (`git symbolic-ref HEAD
+  refs/heads/<b>`, e.g. a bare repo's default branch) — is niche; `checkout` and
+  `branch` already move HEAD through porcelain. On balance it reads as the ref
+  backend's symbolic-write half, the symref counterpart to `recordRefUpdate`'s
+  reflog-write half, rather than a building block users reach for.
+- **Coherent + faithful (crit. 2, 3):** it *is* safe and byte-faithful — this is
+  not a footgun demotion but a **coherence** one: grouping the two ref-backend
+  writers as internal, leaving `updateRef` as the single blessed ref-write
+  surface. Removed from the namespace **and** the barrel **and** the blessed
+  docs; the module stays. If a bare-repo default-branch need is shown it returns
+  additively.
 
 ### `runHook` — **keep**
 
@@ -155,7 +165,9 @@ primitives — every one is composed-from by a command and passes the framework:
 - **Write (object/ref):** `createCommit`, `writeObject`, `writeTree`,
   `updateRef` (4) — object construction + the coherent ref-write surface.
 
-Net namespace: **26 → 22** (delete 3, demote 1).
+Together with the kept `runHook`, the surviving blessed namespace is **21**.
+
+Net namespace: **26 → 21** (delete 3, demote 2).
 
 ## Consequence — `AcquireOptions.breakStaleLockMs` collapses
 
@@ -174,8 +186,9 @@ folded into the architecture pass (Step 7) — it traces directly to the deletio
 Pure **surface** change. No SHA, ref, reflog, on-disk state, refusal, or output
 changes — every behaviour is removed (the three deleted verbs had no command
 path) or relocated to an internal-only call site (`recordRefUpdate` keeps firing
-verbatim from `updateRef`/commands). No new interop golden is required; there is
-no new observable behaviour to pin. Verified by:
+verbatim from `updateRef`/commands; `writeSymbolicRef` from
+`checkout`/`branch`/`rebase`). No new interop golden is required; there is no new
+observable behaviour to pin. Verified by:
 
 - the **type-checker** (`check:types`) as the completeness oracle — every
   internal consumer must compile against the smaller surface;
@@ -188,24 +201,27 @@ no new observable behaviour to pin. Verified by:
 A namespace member touches a fixed set of gates (per the "adding a Tier-1
 command" surface map, applied subtractively):
 
-- **`src/repository.ts`** — drop 4 entries from the `Repository['primitives']`
-  type block and 4 from the `Object.freeze({…})` binding; fix the stale
-  `Tier-2 primitives (16)` comment to the real count (**22**).
+- **`src/repository.ts`** — drop **5** entries from the
+  `Repository['primitives']` type block and 5 from the `Object.freeze({…})`
+  binding (`stageEntry`, `unstageEntry`, `setEntryFlags`, `recordRefUpdate`,
+  `writeSymbolicRef`); fix the stale `Tier-2 primitives (16)` comment to the real
+  count (**21**).
 - **`src/application/primitives/index.ts`** (barrel) — drop the three **deleted**
   functions' exports + their type exports (`StageEntrySource`,
-  `StageEntryOptions`, `UnstageEntryOptions`, `SetEntryFlagsOptions`).
-  `recordRefUpdate` **stays** in the barrel (the "everything" escape hatch; it
-  is still a live module) — it leaves only the curated namespace.
+  `StageEntryOptions`, `UnstageEntryOptions`, `SetEntryFlagsOptions`), **and** the
+  two **demoted** writers' exports (`recordRefUpdate`, `writeSymbolicRef`). Both
+  demoted modules remain on disk (live, internally consumed by direct import);
+  only their barrel advertisement goes.
 - **Deleted modules + tests** — `src/application/primitives/{stage-entry,
   unstage-entry,set-entry-flags}.ts` and their mirrored unit tests under
   `test/unit/application/primitives/` (no co-located property siblings exist).
-- **`test/unit/repository/repository.test.ts`** — drop the four keys from the
+- **`test/unit/repository/repository.test.ts`** — drop the **five** keys from the
   documented-surface key list; drop the bound-`recordRefUpdate` behaviour test
   (the capability is still covered by `record-ref-update.test.ts` at the module
   level, and end-to-end by the command suites).
-- **`test/unit/application/primitives/index.test.ts`** (barrel test) — drop the
-  three deleted verbs from its two export-name lists; `recordRefUpdate` stays
-  (still a barrel export).
+- **`test/unit/application/primitives/index.test.ts`** (barrel test) — drop all
+  five names (`stageEntry`, `unstageEntry`, `setEntryFlags`, `recordRefUpdate`,
+  `writeSymbolicRef`) from its two export-name lists.
 - **`test/parity/scenarios/phase-20-2-primitives.scenario.ts`** — the bundled
   parity scenario covers `hashBlob`, `isIgnored`, `stageEntry`, `unstageEntry`,
   `setEntryFlags`. Trim it to the two survivors (`hashBlob`/`isIgnored`):
@@ -219,11 +235,12 @@ command" surface map, applied subtractively):
   with the flag set directly (the file already uses `writeFramedIndex` + a local
   entry builder for its stage-1 case) — behaviour under test unchanged.
 - **Docs** — delete `docs/use/primitives/{stage-entry,unstage-entry,
-  set-entry-flags}.md`; move `record-ref-update.md` out of the blessed set
-  (its mechanism is documented in `internals.md`, where the reflog-store layer
-  already lives); drop all four rows from `docs/use/primitives/README.md`; sweep
-  cross-references (`create-commit.md`, `update-ref.md`, `internals.md`,
-  `errors.md`). Update the README headline count if it names a primitive total.
+  set-entry-flags}.md`; move `record-ref-update.md` **and** `write-symbolic-ref.md`
+  out of the blessed set (their mechanisms are documented in `internals.md`,
+  where the reflog-store layer already lives); drop all **five** rows from
+  `docs/use/primitives/README.md`; sweep cross-references (`create-commit.md`,
+  `update-ref.md`, `internals.md`, `errors.md`, and any command page linking the
+  two writers). Update the README headline count if it names a primitive total.
 - **`reports/api.json`** — regenerates (committed in-PR, `check:doc-typedoc`
   prepush gate; a large typedoc-id reshuffle is expected and normal).
 
@@ -237,14 +254,15 @@ byte-identical":
    their test files; `check:types` is the oracle that nothing referenced them.
    The doc-coverage check (parses the `Repository` interface → asserts a doc
    page per namespace key) becomes the gate that the docs moved in lockstep.
-2. **`recordRefUpdate` demotion** — the reflog-writing behaviour is unchanged
-   and stays pinned by `record-ref-update.test.ts` (module-level) + every
-   command interop/parity suite that asserts reflog contents (`commit`,
-   `checkout`, `clone`, `rebase`). The Red/Green is the namespace key list test:
-   update it to **not** include `recordRefUpdate`, watch it fail against the
-   still-bound facade (Red), drop the binding (Green).
-3. **`writeSymbolicRef` / `runHook`** — unchanged; their existing module +
-   command tests stay green.
+2. **`recordRefUpdate` / `writeSymbolicRef` demotion** — both writers' behaviour
+   is unchanged and stays pinned at the module level (`record-ref-update.test.ts`,
+   `write-symbolic-ref.test.ts`) + every command interop/parity suite that
+   asserts reflog/ref/HEAD contents (`commit`, `checkout`, `clone`, `branch`,
+   `rebase`). The Red/Green is the namespace key-list + barrel-export tests:
+   update them to exclude both names, watch them fail against the still-bound
+   facade / still-exporting barrel (Red), drop the bindings + barrel exports
+   (Green).
+3. **`runHook`** — unchanged; its existing module + command tests stay green.
 4. **`AcquireOptions.breakStaleLockMs` collapse** (Step 7) — `index-lock.test.ts`
    keeps the `config`-driven stale-break cases; the per-call-override case (only
    reachable through the deleted primitives) is removed with the field. The
@@ -256,15 +274,21 @@ byte-identical":
 Mutation (Step 8) re-runs against the smaller shape. Deleting the three modules
 **reduces** the mutated surface; no new suppressions are introduced.
 
-## Decision summary (for the ADR conversation)
+## Decision summary (ratified — ADR-268)
 
 Three load-bearing judgments, resolved toward "**blessed = composed-from, safe,
-faithful; everything else is barrel-only or gone**":
+faithful; everything else is gone from every public surface**":
 
 1. **`stageEntry` / `unstageEntry` / `setEntryFlags` → delete** (orphaned,
    non-faithful, pure plumbing; re-add additively if a real consumer appears).
-2. **`recordRefUpdate` → demote to internal** (`updateRef` is the coherent
+2. **`recordRefUpdate` → demote to internal, stripped from both the namespace and
+   the `@scolladon/tsgit/primitives` barrel** (`updateRef` is the coherent
    ref-write surface; the decoupled reflog write is a footgun; module kept for
    its 5 internal consumers).
-3. **`writeSymbolicRef` / `runHook` → keep** (genuine capabilities, no porcelain
-   alternative, safe + faithful, composed-from).
+3. **`writeSymbolicRef` → demote to internal, stripped from both surfaces**
+   (a symref-backend mechanism, largely porcelain-reachable; module kept for
+   `checkout`/`branch`/`rebase`). **`runHook` → keep** (genuine extension, maps to
+   `git hook run`, safe + faithful, composed-from).
+
+Net: `repo.primitives.*` **26 → 21**; the `/primitives` barrel loses 5 exports
+(3 deleted + 2 demoted).
