@@ -60,12 +60,22 @@ parameter names.
 | `reset`    | `ResetOptions.target`                  | `rev`          | option     |
 | `describe` | positional `input?: string`            | `rev?`         | positional |
 | `show`     | positional `input?: ShowInput`         | `rev?`         | positional |
+| `checkout` | `CheckoutSwitchOptions.target`         | `rev`          | option     |
 | `pull`     | `PullOptions.branch`                   | `ref` (ADR-266)| option     |
 
 `blame` is already canonical (it defines the target word) — listed for
 completeness, no change. The `MergeRunInput` / `ResetOptions` *type names* are
 **unchanged**; only their `target` field is renamed (the `*RunInput` naming
 convention for namespace input bags stays intact).
+
+`checkout` was **folded in during implementation** (a user directive: handle the
+remaining commit-ish params here rather than spinning a follow-up). Its
+**switch** option (`CheckoutSwitchOptions.target` → `rev`) is a clean commit-ish
+— the destination to switch HEAD to; the **path-restore** variant
+(`CheckoutPathsOptions.paths`) is a separate, untouched option shape. The
+`isSwitch` discriminator (`'rev' in opts`) and the
+`invalidOption('rev', 'either rev or paths must be provided')` refusal move with
+it. `tag` is deliberately **left** as `target` (see scope boundaries).
 
 ### `log`: a single start, not a range
 
@@ -98,13 +108,16 @@ set) is updated to `rev` to match.
 
 ## Scope boundaries (deliberately out)
 
-The bounded blast radius stops at the eight commands S3 enumerates. The
+The blast radius covers the eight commands S3 enumerates **plus `checkout`**
+(folded in by user directive — its switch `target` is a clean commit-ish). The
 following are **left untouched on purpose**:
 
-- **`checkout`'s `target`** — *not* in S3's list. `checkout`'s argument is
-  dual-role (a branch/commit to switch to **or** a pathspec to restore), a
-  distinct concept from a pure read commit-ish; folding it in is a separate
-  judgment. Logged as a follow-up consideration, **not** done here.
+- **`tag`'s `target`** — the **object the tag points at** (git's `<object>`,
+  default HEAD), which may be a tree or blob, *not only* a commit-ish. `rev`
+  would narrow its meaning incorrectly, so `target` stays — it is correct as-is,
+  **not** a deferred follow-up.
+- **`diff`'s `from`/`to`** — the two endpoints of a genuine range; this is the
+  vocabulary the pass *reserves*, so it is the intended end state, not a deferral.
 - **`branch.rename`'s `from`/`to`** — a *rename pair* (old name → new name), not
   a commit-ish and not a commit range; the `from`/`to` reservation is about
   commit ranges, and `branch.rename`'s pair reads naturally. Untouched.

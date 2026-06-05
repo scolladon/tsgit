@@ -48,11 +48,22 @@ outcome option 2 warned against, and `branch` (option 1) leaves the surface
 inconsistent. `ref` is the smallest honest vocabulary that still removes the
 five-name sprawl.
 
+`checkout` is **folded into the same pass** (a user directive during
+implementation: handle the remaining commit-ish params here rather than spinning
+a follow-up item). Its **switch** option `CheckoutSwitchOptions.target` → `rev`
+(a clean commit-ish — the destination HEAD switches to); the path-restore
+variant's `paths` is untouched. The validation refusal becomes
+`invalidOption('rev', 'either rev or paths must be provided')`. `tag`'s `target`
+is **kept** — it names the *object the tag points at* (git's `<object>`, possibly
+a tree/blob), broader than a commit-ish, so `rev` would mislead; it is correct
+as-is, not a deferred item.
+
 All renames are **breaking** (renamed fields/positional params), which the 23.4
 window permits with no release-bundling and **no compat aliases**, matching the
 clean breaks 23.4a and 23.4d already took. The change is otherwise
 **behaviour-preserving**: no SHA, ref, reflog, on-disk state, refusal, or result
-shape moves.
+shape moves (the renamed `invalidOption` reason is a structured-error string, not
+a git-observable refusal).
 
 ## Consequences
 
@@ -70,13 +81,16 @@ shape moves.
 - Two vocabulary words instead of one — a caller must learn that `pull` is `ref`,
   not `rev`. Mitigated: `pull` is the *only* `ref` consumer, and its parameter
   genuinely differs in kind.
-- Breaking for every caller of `log`/`merge`/`reset`/`pull` option fields and the
-  `describe`/`show` signatures. Acceptable inside the 23.4 breaking window.
+- Breaking for every caller of `log`/`merge`/`reset`/`checkout`/`pull` option
+  fields and the `describe`/`show` signatures. Acceptable inside the 23.4
+  breaking window.
 
 ### Neutral
 
 - `diff` is named in S3 but does not rename — it is the canonical owner of the
   reserved `from`/`to` range words.
-- `checkout`'s `target`, `branch.rename`'s `from`/`to`, and the
-  `revert`/`cherryPick`/`rebase` `revisions` arrays are out of scope (distinct
-  concepts; see the design doc's scope boundaries).
+- `tag`'s `target` (an object reference, broader than a commit-ish),
+  `branch.rename`'s `from`/`to` (a name pair), and the
+  `revert`/`cherryPick`/`rebase` `revisions` arrays (plural ranges) stay as-is —
+  distinct concepts, correct under this vocabulary, **not** deferred follow-ups
+  (see the design doc's scope boundaries).

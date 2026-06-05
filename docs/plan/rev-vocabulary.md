@@ -122,10 +122,29 @@ are name-agnostic in TS), so `refactor(x):` without `!`.
 
 ---
 
+## Slice 8 — `checkout`: `CheckoutSwitchOptions.target` → `rev` (folded in)
+
+Added by user directive (handle the remaining commit-ish param here, not as a
+follow-up). The **switch** option only; the path-restore variant is untouched.
+
+- **Edit** `src/application/commands/checkout.ts`: `target` → `rev` in
+  `CheckoutSwitchOptions`; the `isSwitch` discriminator (`'rev' in opts &&
+  opts.rev !== undefined`); the `opts.rev` accesses; the `resolveSwitchOid` param;
+  the validation refusals (`invalidOption('rev', 'either rev or paths must be
+  provided')` + `'cannot be combined with rev'`). `head.target` and the local
+  `target` tree var stay (different concepts).
+- **Tests**: `checkout.test.ts` (call sites + error-assertion strings + comments),
+  `surface-parity.spec.ts` (decl + calls), and the `checkout({ target })` call
+  sites in the ~20 command/integration/scenario tests that set up fixtures
+  (`tag`'s `target:` preserved).
+- **Docs**: `checkout.md`, `recipes.md`, `clone.md`, `browser.md`, migrate guide.
+- **Commit**: `refactor(checkout)!: rev replaces target switch option`
+
 ## Out of scope (do **not** touch)
 
-- `checkout`'s `target`, `branch.rename`'s `from`/`to`, `diff`'s `from`/`to`
-  (genuine range — keep), `revert`/`cherryPick`/`rebase` `revisions` arrays and
+- `tag`'s `target` (object reference — broader than a commit-ish), `diff`'s
+  `from`/`to` (genuine range — the reserved vocabulary), `branch.rename`'s
+  `from`/`to` (a name pair), `revert`/`cherryPick`/`rebase` `revisions` arrays and
   their `*RunInput` bag naming. (See design § scope boundaries.)
 
 ## Review / refactor / mutation (Steps 6–8)
