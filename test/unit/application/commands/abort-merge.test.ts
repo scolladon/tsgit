@@ -38,11 +38,11 @@ const setupConflictingMerge = async (
   await add(ctx, ['file.txt']);
   await commit(ctx, { message: 'base', author });
   await branchCreate(ctx, { name: 'feature' });
-  await checkout(ctx, { target: 'feature' });
+  await checkout(ctx, { rev: 'feature' });
   await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'FEATURE\n');
   await add(ctx, ['file.txt']);
   const featureTip = await commit(ctx, { message: 'on-feature', author });
-  await checkout(ctx, { target: 'main' });
+  await checkout(ctx, { rev: 'main' });
   await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'MAIN\n');
   await add(ctx, ['file.txt']);
   const mainTip = await commit(ctx, { message: 'on-main', author });
@@ -385,11 +385,11 @@ describe('mergeAbort', () => {
         await add(ctx, ['conflict.txt', 'clean.txt']);
         await commit(ctx, { message: 'base', author });
         await branchCreate(ctx, { name: 'feature' });
-        await checkout(ctx, { target: 'feature' });
+        await checkout(ctx, { rev: 'feature' });
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/conflict.txt`, 'FEATURE\n');
         await add(ctx, ['conflict.txt']);
         await commit(ctx, { message: 'on-feature', author });
-        await checkout(ctx, { target: 'main' });
+        await checkout(ctx, { rev: 'main' });
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/conflict.txt`, 'MAIN\n');
         await add(ctx, ['conflict.txt']);
         await commit(ctx, { message: 'on-main', author });

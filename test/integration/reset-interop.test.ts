@@ -192,7 +192,7 @@ describe.skipIf(!GIT_AVAILABLE)('reset porcelain interop', () => {
   describe('Given a detached HEAD at the tip', () => {
     const detachBoth = async (tip: string): Promise<void> => {
       runGit(['-C', pair.peer, 'checkout', '--detach', tip]);
-      await repo.checkout({ target: tip, detach: true });
+      await repo.checkout({ rev: tip, detach: true });
     };
 
     describe('When reset --hard HEAD is a no-move on both tools', () => {

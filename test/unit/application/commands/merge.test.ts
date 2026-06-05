@@ -69,11 +69,11 @@ describe('merge', () => {
         await add(ctx, ['a.txt']);
         await commit(ctx, { message: 'first', author });
         await branchCreate(ctx, { name: 'feature' });
-        await checkout(ctx, { target: 'feature' });
+        await checkout(ctx, { rev: 'feature' });
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.txt`, 'b');
         await add(ctx, ['b.txt']);
         const c2 = await commit(ctx, { message: 'second', author });
-        await checkout(ctx, { target: 'main' });
+        await checkout(ctx, { rev: 'main' });
 
         // Act
         const sut = await mergeRun(ctx, { rev: 'feature' });
@@ -97,11 +97,11 @@ describe('merge', () => {
         await add(ctx, ['a.txt']);
         await commit(ctx, { message: 'first', author });
         await branchCreate(ctx, { name: 'feature' });
-        await checkout(ctx, { target: 'feature' });
+        await checkout(ctx, { rev: 'feature' });
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.txt`, 'b');
         await add(ctx, ['b.txt']);
         await commit(ctx, { message: 'second', author });
-        await checkout(ctx, { target: 'main' });
+        await checkout(ctx, { rev: 'main' });
 
         // Act
         const sut = await mergeRun(ctx, {
@@ -130,11 +130,11 @@ describe('merge', () => {
         await add(ctx, ['a.txt']);
         await commit(ctx, { message: 'first', author });
         await branchCreate(ctx, { name: 'feature' });
-        await checkout(ctx, { target: 'feature' });
+        await checkout(ctx, { rev: 'feature' });
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.txt`, 'b');
         await add(ctx, ['b.txt']);
         const second = await commit(ctx, { message: 'second', author });
-        await checkout(ctx, { target: 'main' });
+        await checkout(ctx, { rev: 'main' });
 
         // Act
         const sut = await mergeRun(ctx, { rev: 'feature', fastForward: 'allow' });
@@ -158,11 +158,11 @@ describe('merge', () => {
         await add(ctx, ['a.txt']);
         await commit(ctx, { message: 'first', author });
         await branchCreate(ctx, { name: 'feature' });
-        await checkout(ctx, { target: 'feature' });
+        await checkout(ctx, { rev: 'feature' });
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.txt`, 'b');
         await add(ctx, ['b.txt']);
         const second = await commit(ctx, { message: 'second', author });
-        await checkout(ctx, { target: 'main' });
+        await checkout(ctx, { rev: 'main' });
 
         // Act
         const sut = await mergeRun(ctx, { rev: 'feature' });
@@ -186,11 +186,11 @@ describe('merge', () => {
         await add(ctx, ['a.txt']);
         await commit(ctx, { message: 'first', author });
         await branchCreate(ctx, { name: 'feature' });
-        await checkout(ctx, { target: 'feature' });
+        await checkout(ctx, { rev: 'feature' });
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.txt`, 'b');
         await add(ctx, ['b.txt']);
         const second = await commit(ctx, { message: 'second', author });
-        await checkout(ctx, { target: 'main' });
+        await checkout(ctx, { rev: 'main' });
 
         // Act
         const sut = await mergeRun(ctx, { rev: 'feature', fastForward: 'only' });
@@ -217,11 +217,11 @@ describe('merge', () => {
         await add(ctx, ['a.txt']);
         await commit(ctx, { message: 'base', author });
         await branchCreate(ctx, { name: 'feature' });
-        await checkout(ctx, { target: 'feature' });
+        await checkout(ctx, { rev: 'feature' });
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.txt`, 'b');
         await add(ctx, ['b.txt']);
         await commit(ctx, { message: 'on-feature', author });
-        await checkout(ctx, { target: 'main' });
+        await checkout(ctx, { rev: 'main' });
         // Note: checkout to main reverts the working tree, so b.txt is gone here.
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/c.txt`, 'c');
         await add(ctx, ['c.txt']);
@@ -253,11 +253,11 @@ describe('merge', () => {
         await add(ctx, ['file.txt']);
         await commit(ctx, { message: 'base', author });
         await branchCreate(ctx, { name: 'feature' });
-        await checkout(ctx, { target: 'feature' });
+        await checkout(ctx, { rev: 'feature' });
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'line1\nline2\nFEATURE\n');
         await add(ctx, ['file.txt']);
         await commit(ctx, { message: 'on-feature', author });
-        await checkout(ctx, { target: 'main' });
+        await checkout(ctx, { rev: 'main' });
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'MAIN\nline2\nline3\n');
         await add(ctx, ['file.txt']);
         await commit(ctx, { message: 'on-main', author });
@@ -290,11 +290,11 @@ describe('merge', () => {
         await add(ctx, ['file.txt']);
         const baseCommit = await commit(ctx, { message: 'base', author });
         await branchCreate(ctx, { name: 'feature' });
-        await checkout(ctx, { target: 'feature' });
+        await checkout(ctx, { rev: 'feature' });
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'FEATURE-CHANGE\n');
         await add(ctx, ['file.txt']);
         await commit(ctx, { message: 'on-feature', author });
-        await checkout(ctx, { target: 'main' });
+        await checkout(ctx, { rev: 'main' });
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'MAIN-CHANGE\n');
         await add(ctx, ['file.txt']);
         const mainTip = await commit(ctx, { message: 'on-main', author });
@@ -334,12 +334,12 @@ describe('merge', () => {
         await add(ctx, ['a.txt', 'b.txt']);
         await commit(ctx, { message: 'base', author });
         await branchCreate(ctx, { name: 'feature' });
-        await checkout(ctx, { target: 'feature' });
+        await checkout(ctx, { rev: 'feature' });
         // Remove a.txt by re-staging an empty list — use rm command surface.
         const { rm } = await import('../../../../src/application/commands/rm.js');
         await rm(ctx, ['a.txt']);
         await commit(ctx, { message: 'feature-delete', author });
-        await checkout(ctx, { target: 'main' });
+        await checkout(ctx, { rev: 'main' });
         // Advance main without touching a.txt or b.txt so they're force-unchanged.
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/c.txt`, 'c');
         await add(ctx, ['c.txt']);
@@ -375,12 +375,12 @@ describe('merge', () => {
         await add(ctx, ['src/base.ts']);
         await commit(ctx, { message: 'base', author });
         await branchCreate(ctx, { name: 'feature' });
-        await checkout(ctx, { target: 'feature' });
+        await checkout(ctx, { rev: 'feature' });
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/src/feature/a.ts`, 'a');
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/lib/x.ts`, 'x');
         await add(ctx, ['src/feature/a.ts', 'lib/x.ts']);
         await commit(ctx, { message: 'on-feature', author });
-        await checkout(ctx, { target: 'main' });
+        await checkout(ctx, { rev: 'main' });
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/src/main/b.ts`, 'b');
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/pkg/y.ts`, 'y');
         await add(ctx, ['src/main/b.ts', 'pkg/y.ts']);
@@ -480,11 +480,11 @@ describe('merge', () => {
         await add(ctx, ['a.txt']);
         await commit(ctx, { message: 'base', author });
         await branchCreate(ctx, { name: 'feature' });
-        await checkout(ctx, { target: 'feature' });
+        await checkout(ctx, { rev: 'feature' });
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.txt`, 'b');
         await add(ctx, ['b.txt']);
         const featureTip = await commit(ctx, { message: 'on-feature', author });
-        await checkout(ctx, { target: 'main' });
+        await checkout(ctx, { rev: 'main' });
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/c.txt`, 'c');
         await add(ctx, ['c.txt']);
         const mainTip = await commit(ctx, { message: 'on-main', author });
@@ -519,11 +519,11 @@ describe('merge.4b conflict persistence', () => {
     await add(ctx, ['file.txt']);
     await commit(ctx, { message: 'base', author });
     await branchCreate(ctx, { name: 'feature' });
-    await checkout(ctx, { target: 'feature' });
+    await checkout(ctx, { rev: 'feature' });
     await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'FEATURE\n');
     await add(ctx, ['file.txt']);
     const featureTip = await commit(ctx, { message: 'on-feature', author });
-    await checkout(ctx, { target: 'main' });
+    await checkout(ctx, { rev: 'main' });
     await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'MAIN\n');
     await add(ctx, ['file.txt']);
     const mainTip = await commit(ctx, { message: 'on-main', author });
@@ -863,12 +863,12 @@ describe('merge.4b conflict persistence', () => {
         await add(ctx, ['file-a.txt', 'file-b.txt']);
         await commit(ctx, { message: 'base', author });
         await branchCreate(ctx, { name: 'feature' });
-        await checkout(ctx, { target: 'feature' });
+        await checkout(ctx, { rev: 'feature' });
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file-a.txt`, 'FEAT-A\n');
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file-b.txt`, 'FEAT-B\n');
         await add(ctx, ['file-a.txt', 'file-b.txt']);
         await commit(ctx, { message: 'on-feature', author });
-        await checkout(ctx, { target: 'main' });
+        await checkout(ctx, { rev: 'main' });
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file-a.txt`, 'MAIN-A\n');
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file-b.txt`, 'MAIN-B\n');
         await add(ctx, ['file-a.txt', 'file-b.txt']);
@@ -969,11 +969,11 @@ describe('merge — bounded blob reads', () => {
         await add(ctx, ['file.txt']);
         await commit(ctx, { message: 'base', author });
         await branchCreate(ctx, { name: 'feature' });
-        await checkout(ctx, { target: 'feature' });
+        await checkout(ctx, { rev: 'feature' });
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'FEATURE\n');
         await add(ctx, ['file.txt']);
         await commit(ctx, { message: 'on-feature', author });
-        await checkout(ctx, { target: 'main' });
+        await checkout(ctx, { rev: 'main' });
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'MAIN\n');
         await add(ctx, ['file.txt']);
         await commit(ctx, { message: 'on-main', author });
@@ -1081,11 +1081,11 @@ describe('merge — progress reporting', () => {
         await add(ctx, ['a.txt']);
         await commit(ctx, { message: 'base', author });
         await branchCreate(ctx, { name: 'feature' });
-        await checkout(ctx, { target: 'feature' });
+        await checkout(ctx, { rev: 'feature' });
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.txt`, 'b');
         await add(ctx, ['b.txt']);
         await commit(ctx, { message: 'on-feature', author });
-        await checkout(ctx, { target: 'main' });
+        await checkout(ctx, { rev: 'main' });
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/c.txt`, 'c');
         await add(ctx, ['c.txt']);
         await commit(ctx, { message: 'on-main', author });
@@ -1193,11 +1193,11 @@ describe('merge — guard rails', () => {
         await add(ctx, ['a.txt']);
         await commit(ctx, { message: 'base', author });
         await branchCreate(ctx, { name: 'feature' });
-        await checkout(ctx, { target: 'feature' });
+        await checkout(ctx, { rev: 'feature' });
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.txt`, 'b');
         await add(ctx, ['b.txt']);
         await commit(ctx, { message: 'on-feature', author });
-        await checkout(ctx, { target: 'main' });
+        await checkout(ctx, { rev: 'main' });
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/c.txt`, 'c');
         await add(ctx, ['c.txt']);
         await commit(ctx, { message: 'on-main', author });
@@ -1226,11 +1226,11 @@ describe('merge — guard rails', () => {
         await add(ctx, ['file.txt']);
         await commit(ctx, { message: 'base', author });
         await branchCreate(ctx, { name: 'feature' });
-        await checkout(ctx, { target: 'feature' });
+        await checkout(ctx, { rev: 'feature' });
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'FEATURE\n');
         await add(ctx, ['file.txt']);
         await commit(ctx, { message: 'on-feature', author });
-        await checkout(ctx, { target: 'main' });
+        await checkout(ctx, { rev: 'main' });
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'MAIN\n');
         await add(ctx, ['file.txt']);
         await commit(ctx, { message: 'on-main', author });
@@ -1261,11 +1261,11 @@ describe('merge — guard rails', () => {
         await commit(ctx, { message: 'base', author });
         const preMain = await resolveRef(ctx, 'refs/heads/main' as RefName);
         await branchCreate(ctx, { name: 'feature' });
-        await checkout(ctx, { target: 'feature' });
+        await checkout(ctx, { rev: 'feature' });
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.txt`, 'b');
         await add(ctx, ['b.txt']);
         const featureTip = await commit(ctx, { message: 'on-feature', author });
-        await checkout(ctx, { target: 'main' });
+        await checkout(ctx, { rev: 'main' });
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/c.txt`, 'c');
         await add(ctx, ['c.txt']);
         const mainTip = await commit(ctx, { message: 'on-main', author });
@@ -1312,11 +1312,11 @@ describe('merge — updateRef CAS guard', () => {
         await add(ctx, ['a.txt']);
         await commit(ctx, { message: 'first', author });
         await branchCreate(ctx, { name: 'feature' });
-        await checkout(ctx, { target: 'feature' });
+        await checkout(ctx, { rev: 'feature' });
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.txt`, 'b');
         await add(ctx, ['b.txt']);
         await commit(ctx, { message: 'second', author });
-        await checkout(ctx, { target: 'main' });
+        await checkout(ctx, { rev: 'main' });
         patchStaleMainRef(ctx);
 
         // Act
@@ -1343,11 +1343,11 @@ describe('merge — updateRef CAS guard', () => {
         await add(ctx, ['a.txt']);
         await commit(ctx, { message: 'base', author });
         await branchCreate(ctx, { name: 'feature' });
-        await checkout(ctx, { target: 'feature' });
+        await checkout(ctx, { rev: 'feature' });
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.txt`, 'b');
         await add(ctx, ['b.txt']);
         await commit(ctx, { message: 'on-feature', author });
-        await checkout(ctx, { target: 'main' });
+        await checkout(ctx, { rev: 'main' });
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/c.txt`, 'c');
         await add(ctx, ['c.txt']);
         await commit(ctx, { message: 'on-main', author });
@@ -1380,11 +1380,11 @@ describe('merge — updateRef CAS guard', () => {
         await add(ctx, ['file.txt']);
         await commit(ctx, { message: 'base', author });
         await branchCreate(ctx, { name: 'feature' });
-        await checkout(ctx, { target: 'feature' });
+        await checkout(ctx, { rev: 'feature' });
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'FEATURE\n');
         await add(ctx, ['file.txt']);
         await commit(ctx, { message: 'on-feature', author });
-        await checkout(ctx, { target: 'main' });
+        await checkout(ctx, { rev: 'main' });
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'MAIN\n');
         await add(ctx, ['file.txt']);
         await commit(ctx, { message: 'on-main', author });
@@ -1424,17 +1424,17 @@ describe('merge — internal reflog action', () => {
     await add(ctx, ['a.txt']);
     await commit(ctx, { message: 'first', author });
     await branchCreate(ctx, { name: 'feature' });
-    await checkout(ctx, { target: 'feature' });
+    await checkout(ctx, { rev: 'feature' });
     await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.txt`, 'b');
     await add(ctx, ['b.txt']);
     await commit(ctx, { message: 'second', author });
-    await checkout(ctx, { target: 'main' });
+    await checkout(ctx, { rev: 'main' });
     return ctx;
   };
 
   describe('Given no reflog action override and a fast-forward', () => {
     describe('When merge', () => {
-      it('Then the branch reflog records the default "merge <target>" prefix', async () => {
+      it('Then the branch reflog records the default "merge <rev>" prefix', async () => {
         // Arrange
         const ctx = await seedFastForward();
 
@@ -1452,7 +1452,7 @@ describe('merge — internal reflog action', () => {
 
   describe('Given no reflog action override and a forced merge commit', () => {
     describe('When merge', () => {
-      it('Then the branch reflog records the default "merge <target>" merge-commit prefix', async () => {
+      it('Then the branch reflog records the default "merge <rev>" merge-commit prefix', async () => {
         // Arrange
         const ctx = await seedFastForward();
 
@@ -2393,11 +2393,11 @@ describe('merge — sparse checkout', () => {
         await add(ctx, ['src/a.txt', 'docs/b.txt']);
         await commit(ctx, { message: 'base', author });
         await branchCreate(ctx, { name: 'feature' });
-        await checkout(ctx, { target: 'feature' });
+        await checkout(ctx, { rev: 'feature' });
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/src/a.txt`, 'FEATURE-a\n');
         await add(ctx, ['src/a.txt']);
         await commit(ctx, { message: 'on-feature', author });
-        await checkout(ctx, { target: 'main' });
+        await checkout(ctx, { rev: 'main' });
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/src/a.txt`, 'MAIN-a\n');
         await add(ctx, ['src/a.txt']);
         await commit(ctx, { message: 'on-main', author });

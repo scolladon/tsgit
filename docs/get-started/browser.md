@@ -36,7 +36,7 @@ const result = await repo.clone({
   url: 'https://github.com/owner/repo.git',
   filter: 'blob:none',   // partial clone — recommended in the browser to bound storage
 });
-await repo.checkout({ target: result.head });
+await repo.checkout({ rev: result.head });
 ```
 
 Smart-HTTP runs over `fetch`. The same SSRF / TLS guards as Node apply; the OPFS sandbox limits writes to the origin's private filesystem.

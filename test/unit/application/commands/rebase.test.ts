@@ -101,12 +101,12 @@ const seedDivergent = async (): Promise<{
   await setUser(ctx);
   await writeAddCommit(ctx, 'base.txt', 'base\n', 'base');
   await branchCreate(ctx, { name: 'topic' });
-  await checkout(ctx, { target: 'topic' });
+  await checkout(ctx, { rev: 'topic' });
   await writeAddCommit(ctx, 't1.txt', 't1\n', 't1');
   await writeAddCommit(ctx, 't2.txt', 't2\n', 't2');
-  await checkout(ctx, { target: 'main' });
+  await checkout(ctx, { rev: 'main' });
   const mainTip = await writeAddCommit(ctx, 'm1.txt', 'm1\n', 'm1');
-  await checkout(ctx, { target: 'topic' });
+  await checkout(ctx, { rev: 'topic' });
   return { ctx, mainTip, t1Author: FEAT_AUTHOR };
 };
 
@@ -171,7 +171,7 @@ describe('rebaseRun', () => {
         await setUser(ctx);
         await writeAddCommit(ctx, 'base.txt', 'base\n', 'base');
         await branchCreate(ctx, { name: 'topic' });
-        await checkout(ctx, { target: 'topic' });
+        await checkout(ctx, { rev: 'topic' });
         const before = await writeAddCommit(ctx, 't1.txt', 't1\n', 't1');
 
         // Act
@@ -197,7 +197,7 @@ describe('rebaseRun', () => {
         await branchCreate(ctx, { name: 'topic' });
         await writeAddCommit(ctx, 'm1.txt', 'm1\n', 'm1');
         const mainTip = await writeAddCommit(ctx, 'm2.txt', 'm2\n', 'm2');
-        await checkout(ctx, { target: 'topic' });
+        await checkout(ctx, { rev: 'topic' });
 
         // Act
         const sut = await rebaseRun(ctx, { upstream: 'main' });
@@ -221,13 +221,13 @@ describe('rebaseRun', () => {
         await setUser(ctx);
         await writeAddCommit(ctx, 'base.txt', 'base\n', 'base');
         await branchCreate(ctx, { name: 'topic' });
-        await checkout(ctx, { target: 'topic' });
+        await checkout(ctx, { rev: 'topic' });
         await writeAddCommit(ctx, 't1.txt', 't1\n', 't1');
-        await checkout(ctx, { target: 'main' });
+        await checkout(ctx, { rev: 'main' });
         await branchCreate(ctx, { name: 'newbase' });
-        await checkout(ctx, { target: 'newbase' });
+        await checkout(ctx, { rev: 'newbase' });
         const newbaseTip = await writeAddCommit(ctx, 'n1.txt', 'n1\n', 'n1');
-        await checkout(ctx, { target: 'topic' });
+        await checkout(ctx, { rev: 'topic' });
 
         // Act
         const sut = await rebaseRun(ctx, { upstream: 'main', onto: 'newbase' });
@@ -253,13 +253,13 @@ describe('rebaseRun', () => {
         await setUser(ctx);
         await writeAddCommit(ctx, 'f.txt', 'l1\nl2\n', 'base');
         await branchCreate(ctx, { name: 'topic' });
-        await checkout(ctx, { target: 'topic' });
+        await checkout(ctx, { rev: 'topic' });
         const t1 = await writeAddCommit(ctx, 'a.txt', 'a\n', 't1');
         const t2 = await writeAddCommit(ctx, 'f.txt', 'l1\nTOPIC\n', 't2');
         const t3 = await writeAddCommit(ctx, 'c.txt', 'c\n', 't3');
-        await checkout(ctx, { target: 'main' });
+        await checkout(ctx, { rev: 'main' });
         const mainTip = await writeAddCommit(ctx, 'f.txt', 'l1\nMAIN\n', 'm1');
-        await checkout(ctx, { target: 'topic' });
+        await checkout(ctx, { rev: 'topic' });
         const short = (oid: ObjectId): string => oid.slice(0, 7);
 
         // Act
@@ -315,14 +315,14 @@ describe('rebaseRun', () => {
         await setUser(ctx);
         await writeAddCommit(ctx, 'f.txt', 'l1\nBASE\n', 'base');
         await branchCreate(ctx, { name: 'topic' });
-        await checkout(ctx, { target: 'topic' });
+        await checkout(ctx, { rev: 'topic' });
         await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'l1\nTOPIC\n');
         await ctx.fs.writeUtf8(work(ctx, 'sub/g.txt'), 'nested\n');
         await add(ctx, ['f.txt', 'sub/g.txt']);
         await commit(ctx, { message: 't1', author: FEAT_AUTHOR });
-        await checkout(ctx, { target: 'main' });
+        await checkout(ctx, { rev: 'main' });
         await writeAddCommit(ctx, 'f.txt', 'l1\nMAIN\n', 'm1');
-        await checkout(ctx, { target: 'topic' });
+        await checkout(ctx, { rev: 'topic' });
 
         // Act
         const sut = await rebaseRun(ctx, { upstream: 'main' });
@@ -343,7 +343,7 @@ describe('rebaseRun', () => {
         // Arrange — detach at topic's tip, then rebase onto the advanced main.
         const { ctx, mainTip } = await seedDivergent();
         const topicTip = await resolveRef(ctx, 'refs/heads/topic' as RefName);
-        await checkout(ctx, { target: topicTip, detach: true });
+        await checkout(ctx, { rev: topicTip, detach: true });
 
         // Act
         const sut = await rebaseRun(ctx, { upstream: 'main' });
@@ -370,13 +370,13 @@ describe('rebaseRun', () => {
         await setUser(ctx);
         await writeAddCommit(ctx, 'f.txt', 'l1\nl2\n', 'base');
         await branchCreate(ctx, { name: 'topic' });
-        await checkout(ctx, { target: 'topic' });
+        await checkout(ctx, { rev: 'topic' });
         await writeAddCommit(ctx, 'a.txt', 'a\n', 't1');
         await writeAddCommit(ctx, 'f.txt', 'l1\nTOPIC\n', 't2');
-        await checkout(ctx, { target: 'main' });
+        await checkout(ctx, { rev: 'main' });
         await writeAddCommit(ctx, 'f.txt', 'l1\nMAIN\n', 'm1');
         const topicTip = await resolveRef(ctx, 'refs/heads/topic' as RefName);
-        await checkout(ctx, { target: topicTip, detach: true });
+        await checkout(ctx, { rev: topicTip, detach: true });
         const origDetached = await resolveRef(ctx, 'HEAD' as RefName);
         await rebaseRun(ctx, { upstream: 'main' });
 
@@ -405,13 +405,13 @@ describe('rebaseRun', () => {
         await setUser(ctx);
         await writeAddCommit(ctx, 'f.txt', 'a\n', 'base');
         await branchCreate(ctx, { name: 'topic' });
-        await checkout(ctx, { target: 'topic' });
+        await checkout(ctx, { rev: 'topic' });
         await writeAddCommit(ctx, 'f.txt', 'b\n', 'dup');
         const t2 = await writeAddCommit(ctx, 't2.txt', 't2\n', 't2');
-        await checkout(ctx, { target: 'main' });
+        await checkout(ctx, { rev: 'main' });
         await writeAddCommit(ctx, 'f.txt', 'b\n', 'dup on main');
         await writeAddCommit(ctx, 'f.txt', 'c\n', 'm2 diverges');
-        await checkout(ctx, { target: 'topic' });
+        await checkout(ctx, { rev: 'topic' });
 
         // Act
         const sut = await rebaseRun(ctx, { upstream: 'main' });
@@ -532,7 +532,7 @@ const seedUnrelated = async (): Promise<{ ctx: Context; mainTip: ObjectId }> => 
   await updateRef(ctx, 'refs/heads/feature' as RefName, featureRoot, {
     reflogMessage: 'branch: Created from seed',
   });
-  await checkout(ctx, { target: 'feature' });
+  await checkout(ctx, { rev: 'feature' });
   await writeAddCommit(ctx, 'f1.txt', 'f1\n', 'feature one');
   return { ctx, mainTip };
 };
@@ -577,12 +577,12 @@ const seedConflict = async (): Promise<Context> => {
   await setUser(ctx);
   await writeAddCommit(ctx, 'f.txt', 'l1\nl2\n', 'base');
   await branchCreate(ctx, { name: 'topic' });
-  await checkout(ctx, { target: 'topic' });
+  await checkout(ctx, { rev: 'topic' });
   await writeAddCommit(ctx, 'a.txt', 'a\n', 't1');
   await writeAddCommit(ctx, 'f.txt', 'l1\nTOPIC\n', 't2');
-  await checkout(ctx, { target: 'main' });
+  await checkout(ctx, { rev: 'main' });
   await writeAddCommit(ctx, 'f.txt', 'l1\nMAIN\n', 'm1');
-  await checkout(ctx, { target: 'topic' });
+  await checkout(ctx, { rev: 'topic' });
   await rebaseRun(ctx, { upstream: 'main' });
   return ctx;
 };
@@ -735,17 +735,17 @@ describe('rebase edge cases', () => {
         await setUser(ctx);
         await writeAddCommit(ctx, 'base.txt', 'base\n', 'base');
         await branchCreate(ctx, { name: 'topic' });
-        await checkout(ctx, { target: 'topic' });
+        await checkout(ctx, { rev: 'topic' });
         await writeAddCommit(ctx, 'x.txt', 'v\n', 'add x');
         // A real follow-up commit: the empty `add x` must release its index lock
         // before this one acquires it, else the replay deadlocks.
         await writeAddCommit(ctx, 'z.txt', 'z\n', 'add z');
-        await checkout(ctx, { target: 'main' });
+        await checkout(ctx, { rev: 'main' });
         await ctx.fs.writeUtf8(work(ctx, 'x.txt'), 'v\n');
         await ctx.fs.writeUtf8(work(ctx, 'y.txt'), 'w\n');
         await add(ctx, ['x.txt', 'y.txt']);
         await commit(ctx, { message: 'add x and y', author: FEAT_AUTHOR });
-        await checkout(ctx, { target: 'topic' });
+        await checkout(ctx, { rev: 'topic' });
 
         // Act
         const sut = await rebaseRun(ctx, { upstream: 'main' });
@@ -773,14 +773,14 @@ describe('rebase edge cases', () => {
         const root = await writeAddCommit(ctx, 'base.txt', 'base\n', 'R');
         await writeAddCommit(ctx, 'a.txt', 'a\n', 'A');
         await branchCreate(ctx, { name: 'topic' });
-        await checkout(ctx, { target: 'topic' });
+        await checkout(ctx, { rev: 'topic' });
         await writeAddCommit(ctx, 't1.txt', 't1\n', 't1');
-        await checkout(ctx, { target: 'main' });
+        await checkout(ctx, { rev: 'main' });
         await writeAddCommit(ctx, 'b.txt', 'b\n', 'B');
         await branchCreate(ctx, { name: 'newbase', startPoint: root });
-        await checkout(ctx, { target: 'newbase' });
+        await checkout(ctx, { rev: 'newbase' });
         await writeAddCommit(ctx, 'n1.txt', 'n1\n', 'n1');
-        await checkout(ctx, { target: 'topic' });
+        await checkout(ctx, { rev: 'topic' });
 
         // Act
         const sut = await rebaseRun(ctx, { upstream: 'main', onto: 'newbase' });
@@ -806,14 +806,14 @@ describe('rebase edge cases', () => {
         const t1 = await (async () => {
           await writeAddCommit(ctx, 'f.txt', 'l1\nl2\nl3\n', 'base');
           await branchCreate(ctx, { name: 'topic' });
-          await checkout(ctx, { target: 'topic' });
+          await checkout(ctx, { rev: 'topic' });
           return writeAddCommit(ctx, 'a.txt', 'a\n', 't1');
         })();
         await writeAddCommit(ctx, 'f.txt', 'l1\nT2\nl3\n', 't2');
         await writeAddCommit(ctx, 'f.txt', 'l1\nT2\nT3\n', 't3');
-        await checkout(ctx, { target: 'main' });
+        await checkout(ctx, { rev: 'main' });
         await writeAddCommit(ctx, 'f.txt', 'l1\nM2\nM3\n', 'm1');
-        await checkout(ctx, { target: 'topic' });
+        await checkout(ctx, { rev: 'topic' });
         const firstStop = await rebaseRun(ctx, { upstream: 'main' });
         expect(firstStop.kind).toBe('conflict'); // t2 conflicts on line 2
         await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'l1\nR2\nM3\n');
@@ -1265,13 +1265,13 @@ const seedTopicConflict = async (): Promise<{
   await setUser(ctx);
   await writeAddCommit(ctx, 'f.txt', 'L\n', 'base');
   await branchCreate(ctx, { name: 'topic' });
-  await checkout(ctx, { target: 'topic' });
+  await checkout(ctx, { rev: 'topic' });
   const t1 = await writeAddCommit(ctx, 'a.txt', 'a\n', 't1 subject');
   const t2 = await writeAddCommit(ctx, 'f.txt', 'TOPIC\n', 't2 subject');
   const t3 = await writeAddCommit(ctx, 'c.txt', 'c\n', 't3 subject');
-  await checkout(ctx, { target: 'main' });
+  await checkout(ctx, { rev: 'main' });
   await writeAddCommit(ctx, 'f.txt', 'MAIN\n', 'm1');
-  await checkout(ctx, { target: 'topic' });
+  await checkout(ctx, { rev: 'topic' });
   return { ctx, t1, t2, t3 };
 };
 
@@ -1789,7 +1789,7 @@ describe('rebaseRun (interactive squash / fixup)', () => {
         await writeAddCommit(ctx, 'g.txt', '0\n', 'g0');
         await writeAddCommit(ctx, 'g.txt', 'O\n', 'gO');
         await branchCreate(ctx, { name: 'topic' });
-        await checkout(ctx, { target: 'topic' });
+        await checkout(ctx, { rev: 'topic' });
         const a = await writeAddCommit(ctx, 'f.txt', 'A\n', 'A subject');
         const m = await writeAddCommit(ctx, 'f.txt', 'M\n', 'M subject');
         const z = await writeAddCommit(ctx, 'f.txt', 'Z\n', 'Z subject');
@@ -1869,7 +1869,7 @@ describe('rebaseRun (interactive, detached HEAD)', () => {
       it('Then head-name records "detached HEAD"', async () => {
         // Arrange — detach at the topic tip, then replay its commits onto main
         const { ctx, t1, t2 } = await seedTopicConflict();
-        await checkout(ctx, { target: t2 });
+        await checkout(ctx, { rev: t2 });
 
         // Act — t2 conflicts with main's f.txt
         const sut = await rebaseRun(ctx, {

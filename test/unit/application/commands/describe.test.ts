@@ -547,11 +547,11 @@ describe('describe', () => {
         const base = await commit(ctx, { message: 'base', author: ident(clock) });
         await annotatedTag(ctx, 'v1.0', base.id, clock);
         await branchCreate(ctx, { name: 'feature' });
-        await checkout(ctx, { target: 'feature' });
+        await checkout(ctx, { rev: 'feature' });
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'FEATURE\n');
         await add(ctx, ['file.txt']);
         await commit(ctx, { message: 'on-feature', author: ident(clock) });
-        await checkout(ctx, { target: 'main' });
+        await checkout(ctx, { rev: 'main' });
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'MAIN\n');
         await add(ctx, ['file.txt']);
         await commit(ctx, { message: 'on-main', author: ident(clock) });

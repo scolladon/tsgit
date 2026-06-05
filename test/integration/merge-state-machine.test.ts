@@ -39,11 +39,11 @@ const setupConflictingMerge = async (repo: Repository, workDir: string): Promise
   await repo.add(['file.txt']);
   await repo.commit({ message: 'base', author });
   await repo.branch.create({ name: 'feature' });
-  await repo.checkout({ target: 'feature' });
+  await repo.checkout({ rev: 'feature' });
   await writeFileAt(workDir, 'file.txt', 'FEATURE\n');
   await repo.add(['file.txt']);
   await repo.commit({ message: 'on-feature', author });
-  await repo.checkout({ target: 'main' });
+  await repo.checkout({ rev: 'main' });
   await writeFileAt(workDir, 'file.txt', 'MAIN\n');
   await repo.add(['file.txt']);
   await repo.commit({ message: 'on-main', author });

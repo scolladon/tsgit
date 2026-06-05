@@ -196,16 +196,16 @@ describe('integration — sparse checkout (memory adapter)', () => {
       'src/lib/core.ts': 'export const core = 1;\n',
     });
     await branchCreate(sut, { name: 'feature', startPoint: 'main' });
-    await checkout(sut, { target: 'feature' });
+    await checkout(sut, { rev: 'feature' });
     await sut.fs.writeUtf8(`${sut.layout.workDir}/src/app/extra.ts`, 'export const extra = 2;\n');
     await sut.fs.writeUtf8(`${sut.layout.workDir}/src/lib/helper.ts`, 'export const helper = 2;\n');
     await add(sut, ['src/app/extra.ts', 'src/lib/helper.ts']);
     await commit(sut, { message: 'feature work', author });
-    await checkout(sut, { target: 'main' });
+    await checkout(sut, { rev: 'main' });
 
     // Act — narrow to `src/app`, then switch to the feature branch.
     await sparseCheckoutSet(sut, { patterns: ['src/app'], cone: true });
-    await checkout(sut, { target: 'feature' });
+    await checkout(sut, { rev: 'feature' });
 
     // Assert — only in-cone files of the feature tree are on disk.
     const featurePaths = [

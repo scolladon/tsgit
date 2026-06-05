@@ -101,11 +101,11 @@ describe('integration — sparse reset/merge (memory adapter)', () => {
     await add(ctx, ['src/app/main.ts', 'docs/guide.md']);
     await commit(ctx, { message: 'seed', author });
     await branchCreate(ctx, { name: 'feature' });
-    await checkout(ctx, { target: 'feature' });
+    await checkout(ctx, { rev: 'feature' });
     await ctx.fs.writeUtf8(`${ctx.layout.workDir}/src/app/main.ts`, 'FEATURE\n');
     await add(ctx, ['src/app/main.ts']);
     await commit(ctx, { message: 'on-feature', author });
-    await checkout(ctx, { target: 'main' });
+    await checkout(ctx, { rev: 'main' });
     await ctx.fs.writeUtf8(`${ctx.layout.workDir}/src/app/main.ts`, 'MAIN\n');
     await add(ctx, ['src/app/main.ts']);
     await commit(ctx, { message: 'on-main', author });

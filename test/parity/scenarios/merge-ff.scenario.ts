@@ -34,11 +34,11 @@ export const mergeFfScenario: Scenario<MergeFfResult> = {
     const seed = await repo.commit({ message: inputs.message, author: inputs.author });
 
     await repo.branch.create({ name: 'feature' });
-    await repo.checkout({ target: 'feature' });
+    await repo.checkout({ rev: 'feature' });
     await repo.add(['b.txt']);
     const feature = await repo.commit({ message: MESSAGES.second, author: inputs.author });
 
-    await repo.checkout({ target: 'main' });
+    await repo.checkout({ rev: 'main' });
     const result = await repo.merge.run({ rev: 'feature' });
 
     if (result.kind !== 'fast-forward') {

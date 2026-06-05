@@ -32,11 +32,11 @@ export const cherryPickScenario: Scenario<CherryPickResult> = {
     await repo.commit({ message: inputs.message, author: inputs.author });
 
     await repo.branch.create({ name: 'feature' });
-    await repo.checkout({ target: 'feature' });
+    await repo.checkout({ rev: 'feature' });
     await ctx.fs.writeUtf8(`${ctx.layout.workDir}/feat.txt`, 'feat\n');
     await repo.add(['feat.txt']);
     await repo.commit({ message: 'add feat', author: inputs.author });
-    await repo.checkout({ target: 'main' });
+    await repo.checkout({ rev: 'main' });
 
     const result = await repo.cherryPick.run({ commits: ['feature'] });
     const featContent = await ctx.fs.readUtf8(`${ctx.layout.workDir}/feat.txt`);

@@ -27,7 +27,7 @@ import {
 import { enforceLiteralMustMatch, resolvePathspec } from './internal/resolve-pathspec.js';
 
 export interface CheckoutSwitchOptions {
-  readonly target: string;
+  readonly rev: string;
   readonly detach?: boolean;
   readonly force?: boolean;
 }
@@ -50,13 +50,13 @@ const HEADS_PREFIX = 'refs/heads/';
 const CHECKOUT_MATERIALIZE_OP = 'checkout:materialize';
 
 const isSwitch = (opts: CheckoutOptions): opts is CheckoutSwitchOptions =>
-  'target' in opts && opts.target !== undefined;
+  'rev' in opts && opts.rev !== undefined;
 const isPaths = (opts: CheckoutOptions): opts is CheckoutPathsOptions =>
   'paths' in opts && opts.paths !== undefined;
 
-const resolveSwitchOid = async (ctx: Context, target: string): Promise<ObjectId> => {
-  if (/^[0-9a-f]{40}$/.test(target)) return target as ObjectId;
-  return resolveRef(ctx, target as RefName);
+const resolveSwitchOid = async (ctx: Context, rev: string): Promise<ObjectId> => {
+  if (/^[0-9a-f]{40}$/.test(rev)) return rev as ObjectId;
+  return resolveRef(ctx, rev as RefName);
 };
 
 /** git's checkout reflog label: the branch short-name on a branch, the
@@ -75,15 +75,15 @@ const headCheckoutLabel = (
 };
 
 const switchBranch = async (ctx: Context, opts: CheckoutSwitchOptions): Promise<CheckoutResult> => {
-  const detached = opts.detach === true || /^[0-9a-f]{40}$/.test(opts.target);
+  const detached = opts.detach === true || /^[0-9a-f]{40}$/.test(opts.rev);
   const priorHead = await readHeadRaw(ctx);
   const oldOid = await resolveRef(ctx, 'HEAD' as RefName);
   let branchRef: RefName | undefined;
   let oid: ObjectId;
   if (detached) {
-    oid = await resolveSwitchOid(ctx, opts.target);
+    oid = await resolveSwitchOid(ctx, opts.rev);
   } else {
-    branchRef = validateRefName(`${HEADS_PREFIX}${opts.target}`);
+    branchRef = validateRefName(`${HEADS_PREFIX}${opts.rev}`);
     if (!(await ctx.fs.exists(`${ctx.layout.gitDir}/${branchRef}`))) {
       throw branchNotFound(branchRef);
     }
@@ -148,7 +148,7 @@ const switchBranch = async (ctx: Context, opts: CheckoutSwitchOptions): Promise<
     'HEAD' as RefName,
     oldOid,
     oid,
-    `checkout: moving from ${fromLabel} to ${opts.target}`,
+    `checkout: moving from ${fromLabel} to ${opts.rev}`,
   );
   return {
     branch: branchRef,
@@ -307,10 +307,10 @@ export const checkout = async (ctx: Context, opts: CheckoutOptions): Promise<Che
   const switchMode = isSwitch(opts);
   const pathsMode = isPaths(opts);
   if (switchMode && pathsMode) {
-    throw invalidOption('paths', 'cannot be combined with target');
+    throw invalidOption('paths', 'cannot be combined with rev');
   }
   if (!switchMode && !pathsMode) {
-    throw invalidOption('target', 'either target or paths must be provided');
+    throw invalidOption('rev', 'either rev or paths must be provided');
   }
 
   ctx.progress.start(CHECKOUT_MATERIALIZE_OP);

@@ -33,7 +33,7 @@ describe('checkout', () => {
         const { ctx, commitId } = await seedWithBranches();
 
         // Act
-        const sut = await checkout(ctx, { target: 'feature' });
+        const sut = await checkout(ctx, { rev: 'feature' });
 
         // Assert
         expect(sut.branch).toBe('refs/heads/feature');
@@ -52,7 +52,7 @@ describe('checkout', () => {
         const { ctx, commitId } = await seedWithBranches();
 
         // Act
-        const sut = await checkout(ctx, { target: commitId });
+        const sut = await checkout(ctx, { rev: commitId });
 
         // Assert
         expect(sut.detached).toBe(true);
@@ -65,7 +65,7 @@ describe('checkout', () => {
 
   describe('Given a symbolic HEAD pointing outside refs/heads/', () => {
     describe('When checkout', () => {
-      it('Then the reflog label is the target basename (not a mangled prefix-strip)', async () => {
+      it('Then the reflog label is the rev basename (not a mangled prefix-strip)', async () => {
         // Arrange — point HEAD at refs/remotes/origin/main. A naive
         // slice(HEADS_PREFIX.length) would yield `gin/main`; the label must be the
         // last path segment, `main`.
@@ -77,7 +77,7 @@ describe('checkout', () => {
         );
 
         // Act
-        await checkout(ctx, { target: 'feature' });
+        await checkout(ctx, { rev: 'feature' });
 
         // Assert — the newest HEAD reflog entry records the move from `main`.
         const headLog = await readReflog(ctx, 'HEAD' as RefName);
@@ -99,7 +99,7 @@ describe('checkout', () => {
         );
 
         // Act
-        await checkout(ctx, { target: 'feature' });
+        await checkout(ctx, { rev: 'feature' });
 
         // Assert
         const headLog = await readReflog(ctx, 'HEAD' as RefName);
@@ -123,7 +123,7 @@ describe('checkout', () => {
         );
 
         // Act
-        await checkout(ctx, { target: 'feature' });
+        await checkout(ctx, { rev: 'feature' });
 
         // Assert
         const headLog = await readReflog(ctx, 'HEAD' as RefName);
@@ -148,7 +148,7 @@ describe('checkout', () => {
         );
 
         // Act
-        await checkout(ctx, { target: 'feature' });
+        await checkout(ctx, { rev: 'feature' });
 
         // Assert
         const headLog = await readReflog(ctx, 'HEAD' as RefName);
@@ -169,7 +169,7 @@ describe('checkout', () => {
         );
 
         // Act
-        await checkout(ctx, { target: 'feature' });
+        await checkout(ctx, { rev: 'feature' });
 
         // Assert — the label is exactly the first 7 hex chars of the detached oid.
         const headLog = await readReflog(ctx, 'HEAD' as RefName);
@@ -189,7 +189,7 @@ describe('checkout', () => {
         // Act
         let caught: unknown;
         try {
-          await checkout(ctx, { target: 'ghost' });
+          await checkout(ctx, { rev: 'ghost' });
         } catch (err) {
           caught = err;
         }
@@ -208,7 +208,7 @@ describe('checkout', () => {
         const { ctx } = await seedWithBranches();
 
         // Act
-        const sut = await checkout(ctx, { target: 'main' });
+        const sut = await checkout(ctx, { rev: 'main' });
 
         // Assert
         expect(sut.branch).toBe('refs/heads/main');
@@ -224,7 +224,7 @@ describe('checkout', () => {
         const { ctx, commitId } = await seedWithBranches();
 
         // Act — branch name + detach should resolve to the oid AND detach.
-        const sut = await checkout(ctx, { target: commitId, detach: true });
+        const sut = await checkout(ctx, { rev: commitId, detach: true });
 
         // Assert
         expect(sut.detached).toBe(true);
@@ -247,7 +247,7 @@ describe('checkout', () => {
         await commit(ctx, { message: 'v2', author });
 
         // Act — checkout the first commit
-        const sut = await checkout(ctx, { target: c1.id, force: true });
+        const sut = await checkout(ctx, { rev: c1.id, force: true });
 
         // Assert — working tree now matches v1, and changedPaths reflects the update
         expect(sut.detached).toBe(true);
@@ -258,7 +258,7 @@ describe('checkout', () => {
     });
   });
 
-  describe('Given both target and paths are provided', () => {
+  describe('Given both rev and paths are provided', () => {
     describe('When checkout', () => {
       it('Then throws INVALID_OPTION', async () => {
         // Arrange
@@ -267,7 +267,7 @@ describe('checkout', () => {
         // Act + Assert
         try {
           await checkout(ctx, {
-            target: 'main',
+            rev: 'main',
             paths: ['a.txt'],
           } as unknown as Parameters<typeof checkout>[1]);
           throw new Error('expected throw');
@@ -280,7 +280,7 @@ describe('checkout', () => {
     });
   });
 
-  describe('Given neither target nor paths', () => {
+  describe('Given neither rev nor paths', () => {
     describe('When checkout', () => {
       it('Then throws INVALID_OPTION', async () => {
         // Arrange
@@ -332,7 +332,7 @@ describe('checkout', () => {
         // Act
         let caught: unknown;
         try {
-          await checkout(ctx, { target: 'feature' });
+          await checkout(ctx, { rev: 'feature' });
         } catch (err) {
           caught = err;
         }
@@ -361,17 +361,17 @@ describe('checkout', () => {
         await add(ctx, ['base.txt']);
         await commit(ctx, { message: 'base', author });
         await branchCreate(ctx, { name: 'feature' });
-        await checkout(ctx, { target: 'feature' });
+        await checkout(ctx, { rev: 'feature' });
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/collide.txt`, 'from-feature');
         await add(ctx, ['collide.txt']);
         await commit(ctx, { message: 'feature file', author });
-        await checkout(ctx, { target: 'main' });
+        await checkout(ctx, { rev: 'main' });
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/collide.txt`, 'untracked');
 
         // Act — the switch throws CHECKOUT_OVERWRITE_DIRTY from inside the lock.
         let caught: unknown;
         try {
-          await checkout(ctx, { target: 'feature' });
+          await checkout(ctx, { rev: 'feature' });
         } catch (err) {
           caught = err;
         }
@@ -516,10 +516,10 @@ describe('checkout', () => {
 });
 
 describe('checkout — mutation hardening', () => {
-  describe('Given opts with target key set to undefined', () => {
+  describe('Given opts with rev key set to undefined', () => {
     describe('When checkout', () => {
-      it('Then throws INVALID_OPTION (target is not switch mode)', async () => {
-        // Arrange — `'target' in opts` is true but `opts.target === undefined`.
+      it('Then throws INVALID_OPTION (rev is not switch mode)', async () => {
+        // Arrange — `'rev' in opts` is true but `opts.rev === undefined`.
         // isSwitch must be false; with the `!== undefined` guard mutated away,
         // switchMode would be true and route into switchBranch instead of throwing.
         const { ctx } = await seedWithBranches();
@@ -527,19 +527,19 @@ describe('checkout — mutation hardening', () => {
         // Act
         let caught: unknown;
         try {
-          await checkout(ctx, { target: undefined } as unknown as Parameters<typeof checkout>[1]);
+          await checkout(ctx, { rev: undefined } as unknown as Parameters<typeof checkout>[1]);
         } catch (err) {
           caught = err;
         }
 
-        // Assert — neither switch nor paths mode → "either target or paths" branch.
+        // Assert — neither switch nor paths mode → "either rev or paths" branch.
         expect(caught).toBeInstanceOf(TsgitError);
         const data = (caught as TsgitError).data;
         expect(data.code).toBe('INVALID_OPTION');
         if (data.code === 'INVALID_OPTION') {
-          expect(data.option).toBe('target');
+          expect(data.option).toBe('rev');
           expect((caught as TsgitError).message).toBe(
-            'INVALID_OPTION: invalid option: target — either target or paths must be provided',
+            'INVALID_OPTION: invalid option: rev — either rev or paths must be provided',
           );
         }
       });
@@ -567,7 +567,7 @@ describe('checkout — mutation hardening', () => {
         const data = (caught as TsgitError).data;
         expect(data.code).toBe('INVALID_OPTION');
         if (data.code === 'INVALID_OPTION') {
-          expect(data.option).toBe('target');
+          expect(data.option).toBe('rev');
         }
       });
     });
@@ -578,12 +578,12 @@ describe('checkout — mutation hardening', () => {
       it('Then it is resolved as a ref not as a raw oid', async () => {
         // Arrange — `feature` is not 40-hex; the L55 regex / L60 detach detector
         // must NOT classify it as a detached oid. A regex anchor mutation or a
-        // ConditionalExpression→true would treat every target as a raw oid and
+        // ConditionalExpression→true would treat every rev as a raw oid and
         // produce a detached HEAD instead of a symref.
         const { ctx } = await seedWithBranches();
 
         // Act
-        const sut = await checkout(ctx, { target: 'feature' });
+        const sut = await checkout(ctx, { rev: 'feature' });
 
         // Assert — symref, not detached.
         expect(sut.detached).toBe(false);
@@ -592,7 +592,7 @@ describe('checkout — mutation hardening', () => {
     });
   });
 
-  describe('Given a 39-hex target (one short)', () => {
+  describe('Given a 39-hex rev (one short)', () => {
     describe('When checkout', () => {
       it('Then it is treated as a ref name not a raw oid', async () => {
         // Arrange — 39 hex chars must NOT match `/^[0-9a-f]{40}$/`. If the
@@ -605,7 +605,7 @@ describe('checkout — mutation hardening', () => {
         // Act
         let caught: unknown;
         try {
-          await checkout(ctx, { target: thirtyNineHex });
+          await checkout(ctx, { rev: thirtyNineHex });
         } catch (err) {
           caught = err;
         }
@@ -617,7 +617,7 @@ describe('checkout — mutation hardening', () => {
     });
   });
 
-  describe('Given a target with a trailing non-hex char after 40 hex', () => {
+  describe('Given a rev with a trailing non-hex char after 40 hex', () => {
     describe('When checkout', () => {
       it('Then it is treated as a branch ref not a detached oid', async () => {
         // Arrange — `<40 hex>z` (41 chars) must NOT match `/^[0-9a-f]{40}$/`.
@@ -631,7 +631,7 @@ describe('checkout — mutation hardening', () => {
         // Act
         let caught: unknown;
         try {
-          await checkout(ctx, { target: fortyHexPlus });
+          await checkout(ctx, { rev: fortyHexPlus });
         } catch (err) {
           caught = err;
         }
@@ -643,7 +643,7 @@ describe('checkout — mutation hardening', () => {
     });
   });
 
-  describe('Given a target with a non-hex char before 40 hex', () => {
+  describe('Given a rev with a non-hex char before 40 hex', () => {
     describe('When checkout', () => {
       it('Then it is treated as a branch ref not a detached oid', async () => {
         // Arrange — `z<40 hex>` (41 chars) must NOT match. Without the `^` anchor
@@ -655,7 +655,7 @@ describe('checkout — mutation hardening', () => {
         // Act
         let caught: unknown;
         try {
-          await checkout(ctx, { target: prefixedHex });
+          await checkout(ctx, { rev: prefixedHex });
         } catch (err) {
           caught = err;
         }
@@ -667,10 +667,10 @@ describe('checkout — mutation hardening', () => {
     });
   });
 
-  describe('Given detach=true with a full ref-path target', () => {
+  describe('Given detach=true with a full ref-path rev', () => {
     describe('When checkout', () => {
       it('Then the ref is resolved to its commit oid (L55 ref resolution path)', async () => {
-        // Arrange — detach:true forces the detached branch (L63), and the target
+        // Arrange — detach:true forces the detached branch (L63), and the rev
         // is a ref path, not a 40-hex oid. resolveSwitchOid must take the
         // L55-false path and resolveRef the ref into the commit oid. A
         // ConditionalExpression→true at L55 would skip resolveRef and return the
@@ -680,7 +680,7 @@ describe('checkout — mutation hardening', () => {
         const refPath = 'refs/heads/feature';
 
         // Act
-        const sut = await checkout(ctx, { target: refPath, detach: true });
+        const sut = await checkout(ctx, { rev: refPath, detach: true });
 
         // Assert — HEAD detached at the RESOLVED commit oid, not the raw ref text.
         expect(sut.detached).toBe(true);
@@ -702,7 +702,7 @@ describe('checkout — mutation hardening', () => {
         const { ctx } = await seedWithBranches();
 
         // Act
-        const sut = await checkout(ctx, { target: 'feature', detach: false });
+        const sut = await checkout(ctx, { rev: 'feature', detach: false });
 
         // Assert
         expect(sut.detached).toBe(false);
@@ -727,14 +727,14 @@ describe('checkout — mutation hardening', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/foo.txt`, 'v2');
         await add(ctx, ['foo.txt']);
         const c2 = await commit(ctx, { message: 'v2', author });
-        await checkout(ctx, { target: c1.id, force: true });
+        await checkout(ctx, { rev: c1.id, force: true });
         // Dirty the working tree without staging — the guard must catch this.
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/foo.txt`, 'locally-edited');
 
         // Act
         let caught: unknown;
         try {
-          await checkout(ctx, { target: c2.id });
+          await checkout(ctx, { rev: c2.id });
         } catch (err) {
           caught = err;
         }
@@ -771,8 +771,8 @@ describe('checkout — mutation hardening', () => {
 
         // Re-stage both then check out the older 'both' commit, then check out
         // 'fewer' to force a deletion-only transition.
-        await checkout(ctx, { target: both.id, force: true });
-        const sut = await checkout(ctx, { target: fewer.id, force: true });
+        await checkout(ctx, { rev: both.id, force: true });
+        const sut = await checkout(ctx, { rev: fewer.id, force: true });
 
         // Assert — exactly one path changed (the deletion) and it was committed.
         expect(sut.changedPaths).toBe(1);
@@ -802,8 +802,8 @@ describe('checkout — mutation hardening', () => {
 
         // Detach onto origin-pt removing extra.txt, then check out withExtra by
         // oid (detached) so the result goes through the L98 detached branch.
-        await checkout(ctx, { target: 'origin-pt', force: true });
-        const sut = await checkout(ctx, { target: withExtra.id, force: true });
+        await checkout(ctx, { rev: 'origin-pt', force: true });
+        const sut = await checkout(ctx, { rev: withExtra.id, force: true });
 
         // Assert — exactly one write, sum is exactly 1 (not -1 or other), and the
         // index commit ran (the L90 guard fired on the written>0 operand; a
@@ -821,7 +821,7 @@ describe('checkout — mutation hardening', () => {
 
   describe('Given detach:true onto a ref name with a 40-hex PREFIX', () => {
     describe('When checkout', () => {
-      it('Then resolveSwitchOid resolves it via resolveRef (L55 `^...{40}$` rejects the 41-char target — kills the `$`-anchor drop)', async () => {
+      it('Then resolveSwitchOid resolves it via resolveRef (L55 `^...{40}$` rejects the 41-char rev — kills the `$`-anchor drop)', async () => {
         // Arrange — a loose ref whose NAME is `<40 hex>z` (41 chars). The L55
         // regex `/^[0-9a-f]{40}$/` must NOT match (length 41 + trailing `z`), so
         // resolveSwitchOid resolves it via resolveRef into the real commit oid.
@@ -837,8 +837,8 @@ describe('checkout — mutation hardening', () => {
         // Write the loose ref directly (resolveRef joins the name onto gitDir).
         await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/${hexPrefixRef}`, `${c.id}\n`);
 
-        // Act — detach:true forces the detached branch; target is the hex-prefix ref.
-        const sut = await checkout(ctx, { target: hexPrefixRef, detach: true });
+        // Act — detach:true forces the detached branch; rev is the hex-prefix ref.
+        const sut = await checkout(ctx, { rev: hexPrefixRef, detach: true });
 
         // Assert — id is the RESOLVED commit oid, never the raw ref text.
         expect(sut.detached).toBe(true);
@@ -852,7 +852,7 @@ describe('checkout — mutation hardening', () => {
 
   describe('Given detach:true onto a ref name with a 40-hex SUFFIX', () => {
     describe('When checkout', () => {
-      it('Then resolveSwitchOid resolves it via resolveRef (L55 `^...{40}$` rejects the slashed target — kills the `^`-anchor drop)', async () => {
+      it('Then resolveSwitchOid resolves it via resolveRef (L55 `^...{40}$` rejects the slashed rev — kills the `^`-anchor drop)', async () => {
         // Arrange — a branch literally named with 40 hex characters, so its full
         // ref path `refs/heads/<40 hex>` ENDS with a 40-hex run. The L55 regex
         // `/^[0-9a-f]{40}$/` must NOT match (the `refs/heads/` prefix breaks the
@@ -868,8 +868,8 @@ describe('checkout — mutation hardening', () => {
         await branchCreate(ctx, { name: hexBranch });
         const fullRefPath = `refs/heads/${hexBranch}`;
 
-        // Act — target is the full ref path ending in a 40-hex run.
-        const sut = await checkout(ctx, { target: fullRefPath, detach: true });
+        // Act — rev is the full ref path ending in a 40-hex run.
+        const sut = await checkout(ctx, { rev: fullRefPath, detach: true });
 
         // Assert — id is the RESOLVED commit oid, never the raw ref path text.
         expect(sut.detached).toBe(true);
@@ -902,7 +902,7 @@ describe('checkout — mutation hardening', () => {
         await commit(ctx, { message: 'b-only', author });
 
         // Act — non-detached switch back to feature (writes a.txt, deletes b.txt).
-        const sut = await checkout(ctx, { target: 'feature', force: true });
+        const sut = await checkout(ctx, { rev: 'feature', force: true });
 
         // Assert — symref branch (non-detached) and the exact sum 1 + 1 = 2.
         expect(sut.detached).toBe(false);
@@ -1116,18 +1116,18 @@ describe('checkout — mutation hardening', () => {
     });
   });
 
-  describe('Given both target and paths', () => {
+  describe('Given both rev and paths', () => {
     describe('When checkout', () => {
       it('Then the error names the paths option and the combine reason (L259 literals)', async () => {
         // Arrange — pins the L259 string literals 'paths' and
-        // 'cannot be combined with target'.
+        // 'cannot be combined with rev'.
         const { ctx } = await seedWithBranches();
 
         // Act
         let caught: unknown;
         try {
           await checkout(ctx, {
-            target: 'main',
+            rev: 'main',
             paths: ['a.txt'],
           } as unknown as Parameters<typeof checkout>[1]);
         } catch (err) {
@@ -1140,20 +1140,20 @@ describe('checkout — mutation hardening', () => {
         expect(data.code).toBe('INVALID_OPTION');
         if (data.code === 'INVALID_OPTION') {
           expect(data.option).toBe('paths');
-          expect(data.reason).toBe('cannot be combined with target');
+          expect(data.reason).toBe('cannot be combined with rev');
         }
         expect((caught as TsgitError).message).toBe(
-          'INVALID_OPTION: invalid option: paths — cannot be combined with target',
+          'INVALID_OPTION: invalid option: paths — cannot be combined with rev',
         );
       });
     });
   });
 
-  describe('Given neither target nor paths', () => {
+  describe('Given neither rev nor paths', () => {
     describe('When checkout', () => {
-      it('Then the error names the target option and the requirement reason (L262 literals)', async () => {
-        // Arrange — pins the L262 string literals 'target' and
-        // 'either target or paths must be provided'.
+      it('Then the error names the rev option and the requirement reason (L262 literals)', async () => {
+        // Arrange — pins the L262 string literals 'rev' and
+        // 'either rev or paths must be provided'.
         const { ctx } = await seedWithBranches();
 
         // Act
@@ -1169,11 +1169,11 @@ describe('checkout — mutation hardening', () => {
         const data = (caught as TsgitError).data;
         expect(data.code).toBe('INVALID_OPTION');
         if (data.code === 'INVALID_OPTION') {
-          expect(data.option).toBe('target');
-          expect(data.reason).toBe('either target or paths must be provided');
+          expect(data.option).toBe('rev');
+          expect(data.reason).toBe('either rev or paths must be provided');
         }
         expect((caught as TsgitError).message).toBe(
-          'INVALID_OPTION: invalid option: target — either target or paths must be provided',
+          'INVALID_OPTION: invalid option: rev — either rev or paths must be provided',
         );
       });
     });
@@ -1194,7 +1194,7 @@ describe('checkout — mutation hardening', () => {
         // Act
         let caught: unknown;
         try {
-          await checkout(ctx, { target: 'main' });
+          await checkout(ctx, { rev: 'main' });
         } catch (err) {
           caught = err;
         }
@@ -1250,7 +1250,7 @@ describe('checkout — sparse checkout', () => {
         await enableSparseSrcOnly(ctx);
 
         // Act
-        const sut = await checkout(ctx, { target: 'feature' });
+        const sut = await checkout(ctx, { rev: 'feature' });
 
         // Assert — in-pattern file present, excluded file removed from disk.
         expect(sut.branch).toBe('refs/heads/feature');
@@ -1279,7 +1279,7 @@ describe('checkout — sparse checkout', () => {
         await branchCreate(ctx, { name: 'feature' });
 
         // Act
-        const sut = await checkout(ctx, { target: 'feature' });
+        const sut = await checkout(ctx, { rev: 'feature' });
 
         // Assert — both files on disk, no skip-worktree entry.
         expect(sut.branch).toBe('refs/heads/feature');
@@ -1307,7 +1307,7 @@ describe('checkout — sparse checkout', () => {
         await add(ctx, ['src/a.txt', 'docs/b.txt']);
         await commit(ctx, { message: 'first', author });
         await branchCreate(ctx, { name: 'feature' });
-        await checkout(ctx, { target: 'feature' });
+        await checkout(ctx, { rev: 'feature' });
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/docs/b.txt`, 'b-on-feature');
         await add(ctx, ['docs/b.txt']);
         await commit(ctx, { message: 'feature edit', author });
@@ -1315,7 +1315,7 @@ describe('checkout — sparse checkout', () => {
         const featureDocsId = (await readIndex(ctx)).entries.find(
           (e) => e.path === 'docs/b.txt',
         )?.id;
-        await checkout(ctx, { target: 'main' });
+        await checkout(ctx, { rev: 'main' });
         const { sparseCheckoutSet } = await import(
           '../../../../src/application/commands/sparse-checkout.js'
         );
@@ -1324,7 +1324,7 @@ describe('checkout — sparse checkout', () => {
 
         // Act — switch to feature: in-pattern `src/a.txt` is byte-identical, so
         // written=0; `docs/b.txt` is excluded and already absent, so deleted=0.
-        await checkout(ctx, { target: 'feature' });
+        await checkout(ctx, { rev: 'feature' });
 
         // Assert — the excluded entry now carries feature's id, not main's stale one.
         const docsEntry = (await readIndex(ctx)).entries.find((e) => e.path === 'docs/b.txt');
@@ -1356,7 +1356,7 @@ describe('checkout — progress reporting', () => {
         const ctx = await seedWithBranch();
         const { reporter, events } = recordingProgress();
 
-        await checkout(withProgress(ctx, reporter), { target: 'feature' });
+        await checkout(withProgress(ctx, reporter), { rev: 'feature' });
 
         // Assert
         expect(events[0]).toEqual({ kind: 'start', op: 'checkout:materialize' });
@@ -1469,7 +1469,7 @@ describe('checkout — progress reporting', () => {
         const { reporter, events } = recordingProgress();
 
         try {
-          await checkout(withProgress(ctx, reporter), { target: 'does-not-exist' });
+          await checkout(withProgress(ctx, reporter), { rev: 'does-not-exist' });
         } catch {
           // expected
         }

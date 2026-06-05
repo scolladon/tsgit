@@ -344,7 +344,7 @@ describe('reset', () => {
   describe('Given a mixed reset target that resolves to a non-commit object', () => {
     describe('When reset', () => {
       it('Then throws UNEXPECTED_OBJECT_TYPE expected=commit', async () => {
-        // Arrange — write a standalone blob and pass its oid as `target`. The mixed
+        // Arrange — write a standalone blob and pass its oid as `rev`. The mixed
         // path will resolve it to a non-commit object and must reject.
         const { ctx } = await seedTwoCommits();
         const { writeObject } = await import(
@@ -521,7 +521,7 @@ describe('reset', () => {
         expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/HEAD`)).toBe(`${c1}\n`);
       });
 
-      it('Then HEAD records exactly one `reset: moving to <target>` entry', async () => {
+      it('Then HEAD records exactly one `reset: moving to <rev>` entry', async () => {
         // Arrange — detached at c2, resetting to c1 is a real move.
         const { ctx, c1, c2 } = await seedTwoCommits();
         await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, `${c2}\n`);

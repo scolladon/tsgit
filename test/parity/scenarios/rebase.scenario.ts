@@ -32,16 +32,16 @@ export const rebaseScenario: Scenario<RebaseScenarioResult> = {
     await repo.commit({ message: inputs.message, author: inputs.author });
 
     await repo.branch.create({ name: 'topic' });
-    await repo.checkout({ target: 'topic' });
+    await repo.checkout({ rev: 'topic' });
     await ctx.fs.writeUtf8(`${ctx.layout.workDir}/t.txt`, 'topic\n');
     await repo.add(['t.txt']);
     await repo.commit({ message: 't1', author: inputs.author });
 
-    await repo.checkout({ target: 'main' });
+    await repo.checkout({ rev: 'main' });
     await ctx.fs.writeUtf8(`${ctx.layout.workDir}/m.txt`, 'main\n');
     await repo.add(['m.txt']);
     await repo.commit({ message: 'm1', author: inputs.author });
-    await repo.checkout({ target: 'topic' });
+    await repo.checkout({ rev: 'topic' });
 
     const result = await repo.rebase.run({ upstream: 'main' });
     const fileContent = await ctx.fs.readUtf8(`${ctx.layout.workDir}/m.txt`);

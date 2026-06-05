@@ -143,7 +143,7 @@ await repo.branch.delete({ name: 'feature' });
 await git.checkout({ fs, dir: '.', ref: 'main' });
 
 // tsgit — branch switch
-await repo.checkout({ target: 'main' });
+await repo.checkout({ rev: 'main' });
 
 // tsgit — path restore
 await repo.checkout({ paths: ['src/foo.ts'] });                  // from index
@@ -159,7 +159,7 @@ Without `force: true`, the checkout refuses to overwrite a dirty working-tree fi
 await git.resetIndex({ fs, dir: '.', filepath: 'src/foo.ts' });
 
 // tsgit
-await repo.reset({ mode: 'mixed', target: 'HEAD~1' });
+await repo.reset({ mode: 'mixed', rev: 'HEAD~1' });
 ```
 
 Working tree is untouched; index rebuilt from the target commit's tree under the same lock that commits it. Pathspec scoping (`reset --mixed -- <pathspec>`) is roadmap (Phase 22).
@@ -171,7 +171,7 @@ Working tree is untouched; index rebuilt from the target commit's tree under the
 await git.checkout({ fs, dir: '.', ref: 'HEAD', force: true });
 
 // tsgit
-await repo.reset({ mode: 'hard', target: 'HEAD' });
+await repo.reset({ mode: 'hard', rev: 'HEAD' });
 ```
 
 Atomic; rewrites both the working tree and `.git/index` to match the target commit's tree.
