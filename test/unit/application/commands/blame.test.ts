@@ -536,6 +536,32 @@ describe('Given a new file staged but never committed', () => {
   });
 });
 
+describe('Given a committed symlink whose target changed in the worktree', () => {
+  describe('When blaming the worktree', () => {
+    it('Then the link blames the pseudo-commit with its new target as content', async () => {
+      // Arrange — commit a symlink, then repoint it in the worktree
+      const ctx = await seed();
+      await ctx.fs.symlink('old/target', `${ctx.layout.workDir}/link`);
+      await add(ctx, ['link']);
+      clock += 60;
+      await commit(ctx, {
+        message: 'c1 subject\n\nbody',
+        author: ident('c1', clock),
+        committer: ident('c1', clock),
+      });
+      await ctx.fs.rm(`${ctx.layout.workDir}/link`);
+      await ctx.fs.symlink('new/target', `${ctx.layout.workDir}/link`);
+
+      // Act
+      const sut = await blame(ctx, 'link', { worktree: true });
+
+      // Assert — a symlink's content is its target string (no trailing newline)
+      expect(sut.lines.map((l) => l.committed)).toEqual([false]);
+      expect(text(sut.lines[0]!.content)).toBe('new/target');
+    });
+  });
+});
+
 describe('Given a worktree blame and a line range', () => {
   describe('When the range spans a committed and an uncommitted line', () => {
     it('Then both are reported with their respective attribution', async () => {
@@ -656,7 +682,11 @@ describe('Given the worktree option combined with an explicit revision', () => {
 
       // Act + Assert
       await expect(blame(ctx, 'f.txt', { worktree: true, rev: 'HEAD' })).rejects.toMatchObject({
-        data: { code: 'INVALID_OPTION', option: 'worktree' },
+        data: {
+          code: 'INVALID_OPTION',
+          option: 'worktree',
+          reason: 'cannot combine with a revision',
+        },
       });
     });
   });
