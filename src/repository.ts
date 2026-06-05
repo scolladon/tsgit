@@ -228,9 +228,6 @@ export interface Repository {
     readonly recordRefUpdate: BindCtx<typeof primitives.recordRefUpdate>;
     readonly resolveRef: BindCtx<typeof primitives.resolveRef>;
     readonly runHook: BindCtx<typeof primitives.runHook>;
-    readonly setEntryFlags: BindCtx<typeof primitives.setEntryFlags>;
-    readonly stageEntry: BindCtx<typeof primitives.stageEntry>;
-    readonly unstageEntry: BindCtx<typeof primitives.unstageEntry>;
     readonly updateRef: BindCtx<typeof primitives.updateRef>;
     readonly walkCommits: BindCtx<typeof primitives.walkCommits>;
     readonly walkCommitsByDate: BindCtx<typeof primitives.walkCommitsByDate>;
@@ -568,18 +565,6 @@ export const openRepository = async (
         guard();
         return primitives.runHook(ctx, name, input);
       }) as Repository['primitives']['runHook'],
-      setEntryFlags: ((p, f, options) => {
-        guard();
-        return primitives.setEntryFlags(ctx, p, f, options);
-      }) as Repository['primitives']['setEntryFlags'],
-      stageEntry: ((p, source, options) => {
-        guard();
-        return primitives.stageEntry(ctx, p, source, options);
-      }) as Repository['primitives']['stageEntry'],
-      unstageEntry: ((p, options) => {
-        guard();
-        return primitives.unstageEntry(ctx, p, options);
-      }) as Repository['primitives']['unstageEntry'],
       updateRef: ((name, newId, options) => {
         guard();
         return primitives.updateRef(ctx, name, newId, options);

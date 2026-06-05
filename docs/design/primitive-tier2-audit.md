@@ -199,7 +199,7 @@ observable behaviour to pin. Verified by:
 ## Surface-gate impact
 
 A namespace member touches a fixed set of gates (per the "adding a Tier-1
-command" surface map, applied subtractively):
+command" surface map, applied as removals):
 
 - **`src/repository.ts`** — drop **5** entries from the
   `Repository['primitives']` type block and 5 from the `Object.freeze({…})`

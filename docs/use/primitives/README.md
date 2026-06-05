@@ -20,9 +20,6 @@ The composable building blocks every Tier-1 command is built from. Same `Context
 | [`recordRefUpdate`](record-ref-update.md) | Atomic ref CRUD + reflog write. |
 | [`resolveRef`](resolve-ref.md) | Resolve a ref name to an `ObjectId`. |
 | [`runHook`](run-hook.md) | Execute a `.git/hooks/<name>` script (Node only). |
-| [`setEntryFlags`](set-entry-flags.md) | Flip `assumeValid` / `skipWorktree` / `intentToAdd` on a tracked path. |
-| [`stageEntry`](stage-entry.md) | Stage one entry from bytes or a known OID; atomic under the index lock. |
-| [`unstageEntry`](unstage-entry.md) | Drop a single tracked entry (no working-tree side-effect). |
 | [`updateRef`](update-ref.md) | Convenience wrapper around `recordRefUpdate`. |
 | [`walkCommits`](walk-commits.md) | `AsyncIterable<Commit>` walker (any parent ordering). |
 | [`walkCommitsByDate`](walk-commits-by-date.md) | `AsyncIterable<Commit>` walker, all parents, newest committer-date first. |

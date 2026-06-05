@@ -102,7 +102,7 @@ test-seam is retained).
 
 - The blessed namespace is exactly the building blocks commands are *actually*
   built from — the project invariant, enforced rather than aspirational.
-- Two footguns (decoupled reflog write; non-faithful index entry) leave the
+- Two footgun operations (decoupled reflog write; non-faithful index entry) leave the
   public surface entirely; the inconsistent-state door is closed.
 - Net subtractive: −3 modules, −5 namespace keys, smaller `reports/api.json`,
   smaller mutated surface, one dead lock-option field removed.

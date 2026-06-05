@@ -1,10 +1,10 @@
 /**
  * Phase 20.2 standalone primitives — single bundled parity scenario that
- * exercises every new primitive in one flow so Node + Memory + Browser
+ * exercises the read/compute primitives in one flow so Node + Memory + Browser
  * drivers all close the surface gaps in one go.
  *
  * Surfaces closed (per 19.5a):
- *   primitives: hashBlob, isIgnored, stageEntry, unstageEntry, setEntryFlags
+ *   primitives: hashBlob, isIgnored
  */
 import type { FilePath } from '../../../src/domain/objects/object-id.ts';
 import { AUTHOR } from '../fixtures.ts';
@@ -16,10 +16,6 @@ interface Phase202Result {
   readonly ignoredCount: number;
   readonly ignoredSourceKind: string;
   readonly notIgnoredCount: number;
-  readonly stagedPathPresentInIndex: boolean;
-  readonly stagedEntryStage: number;
-  readonly afterUnstageEntryCount: number;
-  readonly skipWorktreeAfterFlagFlip: boolean;
 }
 
 const sampleContent = new Uint8Array([0x68, 0x69]); // 'hi'
@@ -44,10 +40,6 @@ export const phase202PrimitivesScenario: Scenario<Phase202Result> = {
     ignoredCount: 1,
     ignoredSourceKind: 'gitignore',
     notIgnoredCount: 1,
-    stagedPathPresentInIndex: true,
-    stagedEntryStage: 0,
-    afterUnstageEntryCount: 0,
-    skipWorktreeAfterFlagFlip: true,
   },
   run: async (repo, _inputs) => {
     await repo.init();
@@ -67,31 +59,12 @@ export const phase202PrimitivesScenario: Scenario<Phase202Result> = {
     const ignoredSourceKind = ignoreResults.find((r) => r.ignored)?.source?.kind ?? '';
     const notIgnoredCount = ignoreResults.filter((r) => !r.ignored).length;
 
-    // Stage a fresh entry, flip a flag, unstage.
-    const staged = await repo.primitives.stageEntry('staged.txt' as FilePath, {
-      content: new Uint8Array([1, 2, 3]),
-    });
-    let index = await repo.primitives.readIndex();
-    const stagedPathPresentInIndex = index.entries.some((e) => e.path === 'staged.txt');
-
-    const flagged = await repo.primitives.setEntryFlags('staged.txt' as FilePath, {
-      skipWorktree: true,
-    });
-
-    await repo.primitives.unstageEntry('staged.txt' as FilePath);
-    index = await repo.primitives.readIndex();
-    const afterUnstageEntryCount = index.entries.filter((e) => e.path === 'staged.txt').length;
-
     return {
       hashedOid,
       writtenOidMatchesHashed: hashedOid === writtenOid,
       ignoredCount,
       ignoredSourceKind,
       notIgnoredCount,
-      stagedPathPresentInIndex,
-      stagedEntryStage: staged.flags.stage,
-      afterUnstageEntryCount,
-      skipWorktreeAfterFlagFlip: flagged.flags.skipWorktree,
     };
   },
 };
