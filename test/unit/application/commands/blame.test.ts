@@ -619,6 +619,34 @@ describe('Given a worktree blame on an unborn HEAD', () => {
   });
 });
 
+describe('Given a worktree blame on a path that escapes the repository', () => {
+  describe('When the path traverses upward', () => {
+    it('Then it refuses with PATHSPEC_OUTSIDE_REPO before reading the filesystem', async () => {
+      // Arrange
+      const ctx = await seed();
+      await commitFile(ctx, 'c1', 'f.txt', 'a\n');
+
+      // Act + Assert
+      await expect(blame(ctx, '../escape.txt', { worktree: true })).rejects.toMatchObject({
+        data: { code: 'PATHSPEC_OUTSIDE_REPO' },
+      });
+    });
+  });
+
+  describe('When the path targets the .git directory', () => {
+    it('Then it refuses with PATHSPEC_OUTSIDE_REPO', async () => {
+      // Arrange
+      const ctx = await seed();
+      await commitFile(ctx, 'c1', 'f.txt', 'a\n');
+
+      // Act + Assert
+      await expect(blame(ctx, '.git/config', { worktree: true })).rejects.toMatchObject({
+        data: { code: 'PATHSPEC_OUTSIDE_REPO' },
+      });
+    });
+  });
+});
+
 describe('Given the worktree option combined with an explicit revision', () => {
   describe('When blaming', () => {
     it('Then it refuses the contradictory combination with INVALID_OPTION', async () => {

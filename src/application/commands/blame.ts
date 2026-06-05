@@ -20,6 +20,7 @@ import type { CommitData } from '../../domain/objects/commit.js';
 import { subjectLine } from '../../domain/objects/commit-message.js';
 import type { AuthorIdentity, FilePath, ObjectId } from '../../domain/objects/index.js';
 import { FilePath as FilePathFactory } from '../../domain/objects/object-id.js';
+import { validateWorkingTreePath } from '../../domain/working-tree-path.js';
 import type { Context } from '../../ports/context.js';
 import { diffTrees } from '../primitives/diff-trees.js';
 import { flattenTree } from '../primitives/flatten-tree.js';
@@ -139,6 +140,10 @@ export const blame = async (
  * as uncommitted. A path absent from both HEAD and the index is untracked → refuse.
  */
 const seedWorkingTree = async (sb: Scoreboard, path: FilePath): Promise<void> => {
+  // Worktree mode reads the file from disk, so the path is constrained to the
+  // repository (rejects `..`, absolute paths, and `.git`) before any FS access —
+  // committed-rev mode is unaffected (it resolves paths through the object tree).
+  validateWorkingTreePath(path);
   const head = await resolveCommitIsh(sb.ctx, DEFAULT_REV);
   const data = await readCommitData(sb.ctx, head);
   const workingBlob = await readWorkingFile(sb.ctx, path);
