@@ -148,6 +148,9 @@ const seedWorkingTree = async (sb: Scoreboard, path: FilePath): Promise<void> =>
   const data = await readCommitData(sb.ctx, head);
   const workingBlob = await readWorkingFile(sb.ctx, path);
   const count = splitLines(workingBlob).length;
+  // equivalent-mutant: count===0 only for an empty working file; without the guard a
+  // zero-count entry flows through splitAgainstParent/finalize and yields no lines — the
+  // same empty result (mirrors the committed-rev seed guard below).
   if (count === 0) return;
   const whole: ReadonlyArray<BlameEntry> = [{ finalStart: 0, count, sourceStart: 0 }];
   const headBlob = await blobAtPath(sb.ctx, data.tree, path);
