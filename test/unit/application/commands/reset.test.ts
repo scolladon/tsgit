@@ -38,7 +38,7 @@ describe('reset', () => {
         const { ctx, c1, c2 } = await seedTwoCommits();
 
         // Act
-        const sut = await reset(ctx, { mode: 'soft', target: c1 });
+        const sut = await reset(ctx, { mode: 'soft', rev: c1 });
 
         // Assert
         expect(sut.id).toBe(c1);
@@ -55,7 +55,7 @@ describe('reset', () => {
       it('Then HEAD branch updated', async () => {
         // Arrange
         const { ctx, c1 } = await seedTwoCommits();
-        const sut = await reset(ctx, { mode: 'mixed', target: c1 });
+        const sut = await reset(ctx, { mode: 'mixed', rev: c1 });
         // Assert
         expect(sut.mode).toBe('mixed');
         expect(sut.id).toBe(c1);
@@ -68,7 +68,7 @@ describe('reset', () => {
       it('Then result.mode=hard and HEAD branch updated', async () => {
         // Arrange
         const { ctx, c1 } = await seedTwoCommits();
-        const sut = await reset(ctx, { mode: 'hard', target: c1 });
+        const sut = await reset(ctx, { mode: 'hard', rev: c1 });
         // Assert
         expect(sut.mode).toBe('hard');
         expect(sut.id).toBe(c1);
@@ -84,7 +84,7 @@ describe('reset', () => {
         const { ctx, c1 } = await seedTwoCommits();
 
         // Act
-        const sut = await reset(ctx, { mode: 'hard', target: c1 });
+        const sut = await reset(ctx, { mode: 'hard', rev: c1 });
 
         // Assert — index
         expect(sut.mode).toBe('hard');
@@ -110,7 +110,7 @@ describe('reset', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'LOCALLY MODIFIED');
 
         // Act
-        await reset(ctx, { mode: 'hard', target: c2 });
+        await reset(ctx, { mode: 'hard', rev: c2 });
 
         // Assert — the file content reverts to the committed version.
         expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/a.txt`)).toBe('a');
@@ -125,7 +125,7 @@ describe('reset', () => {
         const { ctx, c2 } = await seedTwoCommits();
 
         // Act
-        await reset(ctx, { mode: 'hard', target: c2 });
+        await reset(ctx, { mode: 'hard', rev: c2 });
 
         // Assert — both files still on disk with their committed content; index
         // still has both entries.
@@ -150,7 +150,7 @@ describe('reset', () => {
         // Act — first reset must fail.
         let firstError: unknown;
         try {
-          await reset(ctx, { mode: 'hard', target: c1 });
+          await reset(ctx, { mode: 'hard', rev: c1 });
         } catch (err) {
           firstError = err;
         }
@@ -159,7 +159,7 @@ describe('reset', () => {
         // Repair the index so the follow-up read succeeds; the second reset must
         // NOT throw RESOURCE_LOCKED, proving the first attempt's lock was released.
         await ctx.fs.rm(indexPath);
-        await reset(ctx, { mode: 'hard', target: c1 });
+        await reset(ctx, { mode: 'hard', rev: c1 });
 
         // Assert
         const stillLocked = await ctx.fs.exists(`${indexPath}.lock`);
@@ -182,7 +182,7 @@ describe('reset', () => {
         // Act
         let caught: unknown;
         try {
-          await reset(ctx, { mode: 'hard', target: c1 });
+          await reset(ctx, { mode: 'hard', rev: c1 });
         } catch (err) {
           caught = err;
         }
@@ -212,7 +212,7 @@ describe('reset', () => {
         // Act
         let caught: unknown;
         try {
-          await reset(ctx, { mode: 'hard', target: blobId });
+          await reset(ctx, { mode: 'hard', rev: blobId });
         } catch (err) {
           caught = err;
         }
@@ -232,7 +232,7 @@ describe('reset', () => {
         const { ctx } = await seedTwoCommits();
         let caught: unknown;
         try {
-          await reset(ctx, { mode: 'soft', target: 'no-such-ref' });
+          await reset(ctx, { mode: 'soft', rev: 'no-such-ref' });
         } catch (err) {
           caught = err;
         }
@@ -247,7 +247,7 @@ describe('reset', () => {
       it('Then resolves via refs/heads/<name>', async () => {
         // Arrange
         const { ctx, c2 } = await seedTwoCommits();
-        const sut = await reset(ctx, { mode: 'soft', target: 'main' });
+        const sut = await reset(ctx, { mode: 'soft', rev: 'main' });
         // Pin to the exact resolved oid so a mutation to the candidate list (e.g.
         // dropping the `refs/heads/${target}` prefix) is caught.
         // Assert
@@ -261,7 +261,7 @@ describe('reset', () => {
       it('Then no-op (HEAD already points there)', async () => {
         // Arrange
         const { ctx, c2 } = await seedTwoCommits();
-        const sut = await reset(ctx, { mode: 'soft', target: 'HEAD' });
+        const sut = await reset(ctx, { mode: 'soft', rev: 'HEAD' });
         // Assert
         expect(sut.id).toBe(c2);
       });
@@ -276,7 +276,7 @@ describe('reset', () => {
         const { ctx, c1 } = await seedTwoCommits();
 
         // Act
-        await reset(ctx, { mode: 'soft', target: c1 });
+        await reset(ctx, { mode: 'soft', rev: c1 });
 
         // Assert
         const index = await readIndex(ctx);
@@ -297,7 +297,7 @@ describe('reset', () => {
         // Act
         let caught: unknown;
         try {
-          await reset(ctx, { mode: 'soft', target: 'a'.repeat(41) });
+          await reset(ctx, { mode: 'soft', rev: 'a'.repeat(41) });
         } catch (err) {
           caught = err;
         }
@@ -322,7 +322,7 @@ describe('reset', () => {
         // Act — first reset must fail.
         let firstError: unknown;
         try {
-          await reset(ctx, { mode: 'mixed', target: c1 });
+          await reset(ctx, { mode: 'mixed', rev: c1 });
         } catch (err) {
           firstError = err;
         }
@@ -332,7 +332,7 @@ describe('reset', () => {
         // follow-up reset must NOT throw RESOURCE_LOCKED — meaning the lock from
         // the first attempt was correctly released in the `finally`.
         await ctx.fs.rm(indexPath);
-        await reset(ctx, { mode: 'mixed', target: c1 });
+        await reset(ctx, { mode: 'mixed', rev: c1 });
 
         // Assert — if we got here, the second reset succeeded; no stale lock.
         const stillLocked = await ctx.fs.exists(`${indexPath}.lock`);
@@ -359,7 +359,7 @@ describe('reset', () => {
         // Act
         let caught: unknown;
         try {
-          await reset(ctx, { mode: 'mixed', target: blobId });
+          await reset(ctx, { mode: 'mixed', rev: blobId });
         } catch (err) {
           caught = err;
         }
@@ -379,7 +379,7 @@ describe('reset', () => {
         const { ctx, c1 } = await seedTwoCommits();
 
         // Act
-        const sut = await reset(ctx, { mode: 'mixed', target: c1 });
+        const sut = await reset(ctx, { mode: 'mixed', rev: c1 });
 
         // Assert
         expect(sut.id).toBe(c1);
@@ -392,7 +392,7 @@ describe('reset', () => {
         const { ctx, c1 } = await seedTwoCommits();
 
         // Act
-        await reset(ctx, { mode: 'mixed', target: c1 });
+        await reset(ctx, { mode: 'mixed', rev: c1 });
 
         // Assert — both files still present on disk; only the index changed.
         expect(await ctx.fs.exists(`${ctx.layout.workDir}/a.txt`)).toBe(true);
@@ -411,7 +411,7 @@ describe('reset', () => {
         expect(beforeA?.mtimeSeconds).toBeGreaterThan(0); // sanity: add() recorded an mtime
 
         // Act
-        await reset(ctx, { mode: 'mixed', target: c2 });
+        await reset(ctx, { mode: 'mixed', rev: c2 });
 
         // Assert — after reset to the same HEAD, donor entry's stat fields survive.
         const after = await readIndex(ctx);
@@ -440,7 +440,7 @@ describe('reset', () => {
         // Act — reset --mixed back to v1's commit; a.txt's blob id should revert,
         // and because the donor's id (v2) no longer matches the target tree's id (v1),
         // the donor is rejected and stat fields are zeroed.
-        await reset(ctx, { mode: 'mixed', target: c1.id });
+        await reset(ctx, { mode: 'mixed', rev: c1.id });
 
         // Assert
         const index = await readIndex(ctx);
@@ -467,7 +467,7 @@ describe('reset', () => {
         // BARE_REPOSITORY — that would prove the bare guard fired for mixed.
         let caught: unknown;
         try {
-          await reset(ctx, { mode: 'mixed', target: 'HEAD' });
+          await reset(ctx, { mode: 'mixed', rev: 'HEAD' });
         } catch (err) {
           caught = err;
         }
@@ -489,7 +489,7 @@ describe('reset', () => {
         // Act
         let caught: unknown;
         try {
-          await reset(ctx, { mode: 'hard', target: 'HEAD' });
+          await reset(ctx, { mode: 'hard', rev: 'HEAD' });
         } catch (err) {
           caught = err;
         }
@@ -511,7 +511,7 @@ describe('reset', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, `${c2}\n`);
 
         // Act
-        const sut = await reset(ctx, { mode: 'soft', target: c1 });
+        const sut = await reset(ctx, { mode: 'soft', rev: c1 });
 
         // Assert — the detached path routes through `updateRef('HEAD', …)`, which
         // writes `${gitDir}/HEAD` with `${id}\n`. An emptied `'HEAD'` ref-name or a
@@ -528,7 +528,7 @@ describe('reset', () => {
         const before = await readReflog(ctx, HEAD);
 
         // Act
-        await reset(ctx, { mode: 'soft', target: c1 });
+        await reset(ctx, { mode: 'soft', rev: c1 });
 
         // Assert — the move records the faithful message, once (no coupled-HEAD
         // double-log on the direct detached write).
@@ -546,7 +546,7 @@ describe('reset', () => {
         const before = await readReflog(ctx, HEAD);
 
         // Act — reset to the same oid: git's needs-commit semantics write nothing.
-        await reset(ctx, { mode: 'soft', target: c2 });
+        await reset(ctx, { mode: 'soft', rev: c2 });
 
         // Assert — neither length nor tip changed; no spurious `reset: moving to`.
         const sut = await readReflog(ctx, HEAD);
@@ -566,14 +566,14 @@ describe('reset', () => {
         // the index. Kills the `result.written <= 0` mutant: that mutant turns the
         // guard into `false || false` → skip → index would stay ['a.txt'].
         const { ctx, c1, c2 } = await seedTwoCommits();
-        await reset(ctx, { mode: 'hard', target: c1 });
+        await reset(ctx, { mode: 'hard', rev: c1 });
         const mid = await readIndex(ctx);
         expect(mid.entries.filter((e) => e.flags.stage === 0).map((e) => e.path)).toEqual([
           'a.txt',
         ]);
 
         // Act
-        await reset(ctx, { mode: 'hard', target: c2 });
+        await reset(ctx, { mode: 'hard', rev: c2 });
 
         // Assert
         const index = await readIndex(ctx);
@@ -600,14 +600,14 @@ describe('reset', () => {
         const c1 = await commit(ctx, { message: 'c1', author });
         await rm(ctx, ['a.txt'], {});
         const cEmpty = await commit(ctx, { message: 'empty', author });
-        await reset(ctx, { mode: 'hard', target: c1.id });
+        await reset(ctx, { mode: 'hard', rev: c1.id });
         const mid = await readIndex(ctx);
         expect(mid.entries.filter((e) => e.flags.stage === 0).map((e) => e.path)).toEqual([
           'a.txt',
         ]);
 
         // Act
-        await reset(ctx, { mode: 'hard', target: cEmpty.id });
+        await reset(ctx, { mode: 'hard', rev: cEmpty.id });
 
         // Assert
         const index = await readIndex(ctx);
@@ -630,7 +630,7 @@ describe('reset', () => {
         const empty = await commit(ctx, { message: 'empty', author });
 
         // Act
-        await reset(ctx, { mode: 'hard', target: empty.id });
+        await reset(ctx, { mode: 'hard', rev: empty.id });
 
         // Assert
         expect(await ctx.fs.exists(`${ctx.layout.gitDir}/index`)).toBe(false);
@@ -670,7 +670,7 @@ describe('reset — sparse checkout', () => {
         await enableSparseSrcOnly(ctx);
 
         // Act
-        const sut = await reset(ctx, { mode: 'mixed', target: c1 });
+        const sut = await reset(ctx, { mode: 'mixed', rev: c1 });
 
         // Assert — `docs/b.txt` is excluded, `src/a.txt` stays in-pattern.
         expect(sut.mode).toBe('mixed');
@@ -688,7 +688,7 @@ describe('reset — sparse checkout', () => {
         const { ctx, c1 } = await seedSrcAndDocs();
 
         // Act
-        await reset(ctx, { mode: 'mixed', target: c1 });
+        await reset(ctx, { mode: 'mixed', rev: c1 });
 
         // Assert
         const index = await readIndex(ctx);
@@ -707,7 +707,7 @@ describe('reset — sparse checkout', () => {
         await enableSparseSrcOnly(ctx);
 
         // Act
-        const sut = await reset(ctx, { mode: 'hard', target: c1 });
+        const sut = await reset(ctx, { mode: 'hard', rev: c1 });
 
         // Assert
         expect(sut.mode).toBe('hard');
@@ -727,7 +727,7 @@ describe('reset — sparse checkout', () => {
         const { ctx, c1 } = await seedSrcAndDocs();
 
         // Act
-        await reset(ctx, { mode: 'hard', target: c1 });
+        await reset(ctx, { mode: 'hard', rev: c1 });
 
         // Assert
         expect(await ctx.fs.exists(`${ctx.layout.workDir}/src/a.txt`)).toBe(true);
@@ -756,11 +756,11 @@ describe('reset — sparse checkout', () => {
         await add(ctx, ['docs/x.txt']);
         const c2 = await commit(ctx, { message: 'v2', author });
         await enableSparseSrcOnly(ctx);
-        await reset(ctx, { mode: 'hard', target: c1.id });
+        await reset(ctx, { mode: 'hard', rev: c1.id });
         const idBefore = (await readIndex(ctx)).entries.find((e) => e.path === 'docs/x.txt')?.id;
 
         // Act — c2's tree is entirely out-of-pattern; nothing is written or deleted.
-        await reset(ctx, { mode: 'hard', target: c2.id });
+        await reset(ctx, { mode: 'hard', rev: c2.id });
 
         // Assert — the index advanced to c2's blob id for the excluded path.
         const entry = (await readIndex(ctx)).entries.find((e) => e.path === 'docs/x.txt');

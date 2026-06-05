@@ -173,7 +173,7 @@ describe('integration — reflog writers', () => {
     await commit(ctx, { message: 'second', author });
 
     // Act
-    await reset(ctx, { mode: 'soft', target: first.id });
+    await reset(ctx, { mode: 'soft', rev: first.id });
 
     // Assert
     const headLog = await readReflog(ctx, HEAD);

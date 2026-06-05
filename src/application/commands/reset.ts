@@ -33,7 +33,7 @@ export type ResetMode = 'soft' | 'mixed' | 'hard';
 
 export interface ResetOptions {
   readonly mode: ResetMode;
-  readonly target: string;
+  readonly rev: string;
 }
 
 export interface ResetResult {
@@ -43,7 +43,7 @@ export interface ResetResult {
 }
 
 /**
- * Reset HEAD (and optionally index/working tree) to `target`.
+ * Reset HEAD (and optionally index/working tree) to `rev`.
  *
  * - `soft`: HEAD only.
  * - `mixed`: HEAD + rebuild the index from the target commit's tree
@@ -62,7 +62,7 @@ export const reset = async (ctx: Context, opts: ResetOptions): Promise<ResetResu
   await assertRepository(ctx);
   if (opts.mode === 'hard') await assertNotBare(ctx, 'reset --hard');
   await assertNoPendingOperation(ctx);
-  const id = await resolveTarget(ctx, opts.target);
+  const id = await resolveTarget(ctx, opts.rev);
 
   if (opts.mode === 'mixed') {
     await rebuildIndexFromCommit(ctx, id);
@@ -77,7 +77,7 @@ export const reset = async (ctx: Context, opts: ResetOptions): Promise<ResetResu
   // so `reset --hard HEAD` records no entry while a real move records the message.
   const branch = head.kind === 'symbolic' ? head.target : undefined;
   await updateRef(ctx, branch ?? ('HEAD' as RefName), id, {
-    reflogMessage: `reset: moving to ${opts.target}`,
+    reflogMessage: `reset: moving to ${opts.rev}`,
   });
   return { mode: opts.mode, id, branch };
 };

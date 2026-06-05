@@ -47,7 +47,7 @@ export const resetRmReflogScenario: Scenario<ResetRmReflogResult> = {
       author: inputs.author,
     });
 
-    const resetResult = await repo.reset({ mode: 'mixed', target: seed.id });
+    const resetResult = await repo.reset({ mode: 'mixed', rev: seed.id });
 
     const reflog = await repo.reflog({ action: 'show', ref: 'HEAD' });
 

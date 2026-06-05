@@ -58,7 +58,7 @@ describe('integration — sparse reset/merge (memory adapter)', () => {
     expect(await ctx.fs.exists(`${ctx.layout.workDir}/docs/guide.md`)).toBe(false);
 
     // Act
-    await reset(ctx, { mode: 'mixed', target: seed.id });
+    await reset(ctx, { mode: 'mixed', rev: seed.id });
 
     // Assert
     const index = await readIndex(ctx);
@@ -78,7 +78,7 @@ describe('integration — sparse reset/merge (memory adapter)', () => {
     await ctx.fs.writeUtf8(`${ctx.layout.workDir}/src/app/main.ts`, 'LOCAL EDIT\n');
 
     // Act
-    await reset(ctx, { mode: 'hard', target: seed.id });
+    await reset(ctx, { mode: 'hard', rev: seed.id });
 
     // Assert — the in-cone file reverts, the excluded file is not re-created.
     expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/src/app/main.ts`)).toBe(
@@ -167,7 +167,7 @@ describe.skipIf(GIT === undefined)('integration — sparse reset interop with ca
       await repo.sparseCheckout.set({ patterns: ['kept.ts'], cone: true });
 
       // Act — tsgit rebuilds the index from the same commit.
-      await repo.reset({ mode: 'mixed', target: seed.id });
+      await repo.reset({ mode: 'mixed', rev: seed.id });
 
       // Assert — canonical git still sees the skip-worktree (`S`) bit and
       // reports a clean tree (no phantom deletion of `out/gone.ts`).
