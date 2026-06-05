@@ -17,10 +17,9 @@ The composable building blocks every Tier-1 command is built from. Same `Context
 | [`readIndex`](read-index.md) | Read `.git/index` (v2 or v3). |
 | [`readObject`](read-object.md) | Read any git object by id; transparent partial-clone lazy-fetch. |
 | [`readTree`](read-tree.md) | Read a tree object by ref or id (peeled). |
-| [`recordRefUpdate`](record-ref-update.md) | Atomic ref CRUD + reflog write. |
 | [`resolveRef`](resolve-ref.md) | Resolve a ref name to an `ObjectId`. |
 | [`runHook`](run-hook.md) | Execute a `.git/hooks/<name>` script (Node only). |
-| [`updateRef`](update-ref.md) | Convenience wrapper around `recordRefUpdate`. |
+| [`updateRef`](update-ref.md) | Atomically write a ref, record its reflog, and log coupled HEAD. |
 | [`walkCommits`](walk-commits.md) | `AsyncIterable<Commit>` walker (any parent ordering). |
 | [`walkCommitsByDate`](walk-commits-by-date.md) | `AsyncIterable<Commit>` walker, all parents, newest committer-date first. |
 | [`walkSubmodules`](walk-submodules.md) | `AsyncIterable<SubmoduleEntry>` walker. |

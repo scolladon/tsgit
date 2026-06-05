@@ -68,6 +68,6 @@ await repo.commit({ message: 'resolve conflict' });
 
 ## See also
 
-- Primitives: [`createCommit`](../primitives/create-commit.md), [`writeTree`](../primitives/write-tree.md), [`recordRefUpdate`](../primitives/record-ref-update.md), [`runHook`](../primitives/run-hook.md)
+- Primitives: [`createCommit`](../primitives/create-commit.md), [`writeTree`](../primitives/write-tree.md), [`recordRefUpdate`](../primitives/internals.md#recordrefupdate), [`runHook`](../primitives/run-hook.md)
 - Related commands: [`add`](add.md), [`merge`](merge.md), [`reset`](reset.md)
 - ADRs: [065](../../adr/065-hook-runner-port.md), [066](../../adr/066-hooks-default-on.md), [067](../../adr/067-commit-msg-editmsg-roundtrip.md), [068](../../adr/068-windows-hook-execution.md)

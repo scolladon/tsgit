@@ -47,7 +47,6 @@ export {
   readSparsePatternText,
 } from './read-sparse-checkout.js';
 export { readTree } from './read-tree.js';
-export { recordRefUpdate } from './record-ref-update.js';
 export { resolveReflogIdentity } from './reflog-identity.js';
 export {
   appendReflog,

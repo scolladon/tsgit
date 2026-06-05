@@ -84,7 +84,7 @@ Codes are grouped by domain. Within each group, alphabetical.
 | `REF_CYCLE_DETECTED` | `name` | Symbolic ref pointed at itself directly or indirectly. |
 | `REF_LOCKED` | `name` | Another writer holds the ref lock. |
 | `REF_NOT_FOUND` | `name` | Resolution against a missing name. |
-| `REF_UPDATE_CONFLICT` | `name, expected, actual` | CAS check failed in `recordRefUpdate`. |
+| `REF_UPDATE_CONFLICT` | `name, expected, actual` | CAS check failed in `updateRef`. |
 | `REFLOG_ENTRY_OUT_OF_RANGE` | `index, length` | `@{N}` (or explicit delete by index) beyond reflog length. |
 | `REFLOG_NOT_FOUND` | `ref` | Ref has no reflog. |
 | `REVPARSE_AMBIGUOUS` | `expression, candidates` | Short oid matched multiple objects. |

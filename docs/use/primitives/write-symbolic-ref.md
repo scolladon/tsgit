@@ -21,4 +21,5 @@ Byte-identical with `git symbolic-ref` output: produces `ref: <target>\n` exactl
 ## See also
 
 - Tier-1: [`init`](../commands/init.md), [`checkout`](../commands/checkout.md)
-- Related primitives: [`recordRefUpdate`](record-ref-update.md), [`resolveRef`](resolve-ref.md)
+- Related primitives: [`resolveRef`](resolve-ref.md)
+- Internal mechanisms: [`recordRefUpdate`](internals.md#recordrefupdate)

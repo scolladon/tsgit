@@ -225,7 +225,6 @@ export interface Repository {
     readonly readIndex: BindCtx<typeof primitives.readIndex>;
     readonly readObject: BindCtx<typeof primitives.readObject>;
     readonly readTree: BindCtx<typeof primitives.readTree>;
-    readonly recordRefUpdate: BindCtx<typeof primitives.recordRefUpdate>;
     readonly resolveRef: BindCtx<typeof primitives.resolveRef>;
     readonly runHook: BindCtx<typeof primitives.runHook>;
     readonly updateRef: BindCtx<typeof primitives.updateRef>;
@@ -553,10 +552,6 @@ export const openRepository = async (
         guard();
         return primitives.readTree(ctx, ref);
       }) as Repository['primitives']['readTree'],
-      recordRefUpdate: ((name, oldId, newId, message) => {
-        guard();
-        return primitives.recordRefUpdate(ctx, name, oldId, newId, message);
-      }) as Repository['primitives']['recordRefUpdate'],
       resolveRef: ((name, options) => {
         guard();
         return primitives.resolveRef(ctx, name, options);

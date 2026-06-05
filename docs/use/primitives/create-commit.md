@@ -1,6 +1,6 @@
 # `createCommit`
 
-Build a commit object from tree id + parents + author/committer + message, write it, return its `ObjectId`. Does **not** update any ref — pair with [`updateRef`](update-ref.md) or [`recordRefUpdate`](record-ref-update.md) for the ref move.
+Build a commit object from tree id + parents + author/committer + message, write it, return its `ObjectId`. Does **not** update any ref — pair with [`updateRef`](update-ref.md) for the ref move.
 
 ## Signature
 

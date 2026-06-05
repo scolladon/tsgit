@@ -1,13 +1,12 @@
 /**
  * Refs primitive scenario — exercises low-level ref CRUD primitives plus
  * `revParse`. Drives a chained dance: resolveRef(HEAD) → updateRef
- * (creates a new ref) → resolveRef(new ref) → writeSymbolicRef (points a
- * second symbolic ref at the new one) → recordRefUpdate (writes a reflog
- * entry alongside an update) → revParse(short SHA).
+ * (creates a new ref and its reflog) → resolveRef(new ref) → writeSymbolicRef
+ * (points a second symbolic ref at the new one) → revParse(short SHA).
  *
  * Surfaces closed (per 19.5a):
  *   commands:   revParse
- *   primitives: resolveRef, updateRef, writeSymbolicRef, recordRefUpdate
+ *   primitives: resolveRef, updateRef, writeSymbolicRef
  */
 import type { RefName } from '../../../src/domain/objects/index.ts';
 import { AUTHOR, FILES, MESSAGES } from '../fixtures.ts';
@@ -18,7 +17,7 @@ interface RefsPipelineResult {
   readonly headResolvesToSeed: boolean;
   readonly newRefResolvesToSeed: boolean;
   readonly symbolicResolvesToSeed: boolean;
-  readonly recordRefUpdateCreatedReflog: boolean;
+  readonly updateRefCreatedReflog: boolean;
   readonly revParseHeadResolvesToSeed: boolean;
 }
 
@@ -34,7 +33,7 @@ export const refsPipelineScenario: Scenario<RefsPipelineResult> = {
     headResolvesToSeed: true,
     newRefResolvesToSeed: true,
     symbolicResolvesToSeed: true,
-    recordRefUpdateCreatedReflog: true,
+    updateRefCreatedReflog: true,
     revParseHeadResolvesToSeed: true,
   },
   run: async (repo, inputs) => {
@@ -53,28 +52,22 @@ export const refsPipelineScenario: Scenario<RefsPipelineResult> = {
     await repo.primitives.writeSymbolicRef(SYMBOLIC_NAME, NEW_BRANCH);
     const symbolicTarget = await repo.primitives.resolveRef(SYMBOLIC_NAME);
 
-    // recordRefUpdate writes a reflog entry alongside a manual ref update.
-    // We call updateRef first to actually move the ref, then recordRefUpdate
-    // to attach the reflog row — mirroring how commit/merge compose them.
+    // updateRef writes the ref and records its reflog atomically — the
+    // coherent public ref-write surface (a decoupled reflog write is not
+    // exposed). Creating a fresh branch here must file its reflog.
     await repo.primitives.updateRef(NEW_BRANCH_FOR_REFLOG, seed.id, {
       expected: 'absent',
       reflogMessage: 'refs-pipeline: create',
     });
-    await repo.primitives.recordRefUpdate(
-      NEW_BRANCH_FOR_REFLOG,
-      seed.id,
-      seed.id,
-      'refs-pipeline: synthetic no-op for reflog',
-    );
-    // Read the reflog back so the assertion proves recordRefUpdate actually
+    // Read the reflog back so the assertion proves updateRef actually
     // created a `.git/logs/refs/heads/refs-pipeline-reflog` file with at
     // least one entry — a hardcoded `true` would let a stubbed-out
-    // recordRefUpdate slip through.
+    // reflog writer slip through.
     const reflogProof = await repo.reflog({
       action: 'exists',
       ref: NEW_BRANCH_FOR_REFLOG,
     });
-    const recordRefUpdateCreatedReflog = reflogProof.kind === 'exists' && reflogProof.exists;
+    const updateRefCreatedReflog = reflogProof.kind === 'exists' && reflogProof.exists;
 
     // rev-parse only accepts full 40-hex or ref names — short SHA prefix
     // lookup is not implemented; HEAD goes through the ref-resolution path.
@@ -85,7 +78,7 @@ export const refsPipelineScenario: Scenario<RefsPipelineResult> = {
       headResolvesToSeed: head === seed.id,
       newRefResolvesToSeed: newRefTarget === seed.id,
       symbolicResolvesToSeed: symbolicTarget === seed.id,
-      recordRefUpdateCreatedReflog,
+      updateRefCreatedReflog,
       revParseHeadResolvesToSeed: fromHead === seed.id,
     };
   },
