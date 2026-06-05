@@ -169,7 +169,7 @@ Tier-2 primitives use, and the `now` clock is the test seam. Only the
   mutation surface a real extension point or git plumbing showing through?).
   These keep their explicit option here; they transparently gain the
   config-fallback via `acquireIndexLock`'s new `?? ctx.config?.…`. Folding them
-  in would pre-empt 23.4g.
+  in would preempt 23.4g.
 - **Other index-lock callers** (checkout/merge/rebase/reset/stash/cherry-pick/
   revert) — they call `acquireIndexLock(ctx)` and now transparently honour
   `config.breakStaleLockMs`. No signature change; behaviour-preserving under the
