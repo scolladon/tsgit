@@ -40,7 +40,7 @@ interface CloneResult {
 
 ## Behaviour
 
-`clone` creates the `.git` skeleton, performs smart-HTTP v1 discovery, fetches the pack, and propagates remote refs (`refs/remotes/origin/*` + tracked branch + tags). It does **not** materialise the working tree — follow up with `repo.checkout({ target: result.head })`.
+`clone` creates the `.git` skeleton, performs smart-HTTP v1 discovery, fetches the pack, and propagates remote refs (`refs/remotes/origin/*` + tracked branch + tags). It does **not** materialise the working tree — follow up with `repo.checkout({ rev: result.head })`.
 
 A `filter` records `origin` as a *promisor remote* in `.git/config`. Objects omitted by the filter are fetched transparently on the first read — every command built on `readObject` works unchanged on a partial clone.
 
@@ -56,7 +56,7 @@ const repo = await openRepository({
 });
 
 const result = await repo.clone({ url: 'https://github.com/owner/repo.git' });
-await repo.checkout({ target: result.head });
+await repo.checkout({ rev: result.head });
 
 // Partial clone — blobs lazy-fetched on read
 await repo.clone({ url: 'https://github.com/owner/repo.git', filter: 'blob:none' });

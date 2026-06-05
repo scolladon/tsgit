@@ -143,7 +143,7 @@ describe.skipIf(!GIT_AVAILABLE)('reset porcelain interop', () => {
         const { c0 } = await seedTwoCommits();
 
         // Act
-        await repo.reset({ mode: 'soft', target: c0 });
+        await repo.reset({ mode: 'soft', rev: c0 });
         runGit(['-C', pair.peer, 'reset', '--soft', c0]);
         const sut = await snapshot(pair.ours);
 
@@ -159,7 +159,7 @@ describe.skipIf(!GIT_AVAILABLE)('reset porcelain interop', () => {
         const { c0 } = await seedTwoCommits();
 
         // Act
-        await repo.reset({ mode: 'mixed', target: c0 });
+        await repo.reset({ mode: 'mixed', rev: c0 });
         runGit(['-C', pair.peer, 'reset', '--mixed', c0]);
         const sut = await snapshot(pair.ours);
 
@@ -176,7 +176,7 @@ describe.skipIf(!GIT_AVAILABLE)('reset porcelain interop', () => {
         const { c0 } = await seedTwoCommits();
 
         // Act
-        await repo.reset({ mode: 'hard', target: c0 });
+        await repo.reset({ mode: 'hard', rev: c0 });
         runGit(['-C', pair.peer, 'reset', '--hard', c0]);
         const sut = await snapshot(pair.ours);
 
@@ -192,7 +192,7 @@ describe.skipIf(!GIT_AVAILABLE)('reset porcelain interop', () => {
   describe('Given a detached HEAD at the tip', () => {
     const detachBoth = async (tip: string): Promise<void> => {
       runGit(['-C', pair.peer, 'checkout', '--detach', tip]);
-      await repo.checkout({ target: tip, detach: true });
+      await repo.checkout({ rev: tip, detach: true });
     };
 
     describe('When reset --hard HEAD is a no-move on both tools', () => {
@@ -206,7 +206,7 @@ describe.skipIf(!GIT_AVAILABLE)('reset porcelain interop', () => {
 
         // Act — reset to the same oid: a detached direct-ref no-move writes nothing.
         runGit(['-C', pair.peer, 'reset', '--hard', 'HEAD']);
-        await repo.reset({ mode: 'hard', target: 'HEAD' });
+        await repo.reset({ mode: 'hard', rev: 'HEAD' });
 
         // Assert — each tool's HEAD reflog top is unchanged by the reset. The
         // before/after-per-tool form isolates the gate from any checkout-message
@@ -225,7 +225,7 @@ describe.skipIf(!GIT_AVAILABLE)('reset porcelain interop', () => {
 
         // Act — a real move records the faithful message on both tools.
         runGit(['-C', pair.peer, 'reset', '--hard', c0]);
-        await repo.reset({ mode: 'hard', target: c0 });
+        await repo.reset({ mode: 'hard', rev: c0 });
 
         // Assert — guards the routing from over-skipping a real move.
         const sut = topReflogSubject(pair.ours, 'HEAD');

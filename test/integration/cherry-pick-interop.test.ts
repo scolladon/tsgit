@@ -114,11 +114,11 @@ describe.skipIf(!GIT_AVAILABLE)('cherry-pick interop', () => {
       await repo.add(['base.txt']);
       await repo.commit({ message: 'base', author: AUTHOR });
       await repo.branch.create({ name: 'feature' });
-      await repo.checkout({ target: 'feature' });
+      await repo.checkout({ rev: 'feature' });
       await writeFile(path.join(pair.ours, 'feat.txt'), 'feat\n');
       await repo.add(['feat.txt']);
       await repo.commit({ message: 'feat subject\n\nbody', author: AUTHOR });
-      await repo.checkout({ target: 'main' });
+      await repo.checkout({ rev: 'main' });
 
       // Act
       const result = await repo.cherryPick.run({ commits: ['feature'] });

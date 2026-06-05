@@ -189,13 +189,13 @@ describe('Given a clean merge of two branches that changed different lines', () 
       const ctx = await seed();
       const c1 = await commitFile(ctx, 'c1', 'f.txt', 'a\nb\nc\n');
       await branchCreate(ctx, { name: 'side' });
-      await checkout(ctx, { target: 'side' });
+      await checkout(ctx, { rev: 'side' });
       const side = await commitFile(ctx, 'side', 'f.txt', 'a-side\nb\nc\n');
-      await checkout(ctx, { target: 'main' });
+      await checkout(ctx, { rev: 'main' });
       const main = await commitFile(ctx, 'main', 'f.txt', 'a\nb\nc-main\n');
       clock += 60;
       const merged = await mergeRun(ctx, {
-        target: 'side',
+        rev: 'side',
         author: ident('merger', clock),
         committer: ident('merger', clock),
       });

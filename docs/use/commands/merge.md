@@ -10,7 +10,7 @@ repo.merge.continue(input?: MergeContinueInput): Promise<MergeContinueResult>;
 repo.merge.abort(): Promise<MergeAbortResult>;
 
 interface MergeRunInput {
-  readonly target: string;
+  readonly rev: string;
   readonly message?: string;
   readonly fastForward?: 'only' | 'never' | 'allow'; // default 'allow'
   readonly author?: AuthorIdentity;
@@ -80,7 +80,7 @@ Both refuse with `NO_OPERATION_IN_PROGRESS` (`operation: 'merge'`) when `MERGE_H
 `merge.abort` uses simple hard-reset semantics — any pre-merge uncommitted local changes are lost. (ADR-170 — canonical git's `--merge` variant that preserves them is out of scope for v1.)
 
 ```ts
-const m = await repo.merge.run({ target: 'feature/x' });
+const m = await repo.merge.run({ rev: 'feature/x' });
 if (m.kind === 'conflict') {
   // Option A — give up on the merge.
   await repo.merge.abort();
@@ -95,7 +95,7 @@ if (m.kind === 'conflict') {
 
 ```ts
 const result = await repo.merge.run({
-  target: 'feature/x',
+  rev: 'feature/x',
   author: { name: 'A', email: 'a@b', timestamp: 0, timezoneOffset: '+0000' },
 });
 

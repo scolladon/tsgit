@@ -879,15 +879,15 @@ const seedConflict = async () => {
   await add(ctx, ['file.txt']);
   await commit(ctx, { message: 'base', author });
   await branchCreate(ctx, { name: 'feature' });
-  await checkout(ctx, { target: 'feature' });
+  await checkout(ctx, { rev: 'feature' });
   await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'FEATURE-CHANGE\n');
   await add(ctx, ['file.txt']);
   await commit(ctx, { message: 'on-feature', author });
-  await checkout(ctx, { target: 'main' });
+  await checkout(ctx, { rev: 'main' });
   await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'MAIN-CHANGE\n');
   await add(ctx, ['file.txt']);
   await commit(ctx, { message: 'on-main', author });
-  await mergeRun(ctx, { target: 'feature', author });
+  await mergeRun(ctx, { rev: 'feature', author });
   return ctx;
 };
 
@@ -950,14 +950,14 @@ describe('status — unmerged column', () => {
         await add(ctx, ['file.txt']);
         await commit(ctx, { message: 'base', author });
         await branchCreate(ctx, { name: 'feature' });
-        await checkout(ctx, { target: 'feature' });
+        await checkout(ctx, { rev: 'feature' });
         await rm(ctx, ['file.txt']);
         await commit(ctx, { message: 'delete', author });
-        await checkout(ctx, { target: 'main' });
+        await checkout(ctx, { rev: 'main' });
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'MAIN\n');
         await add(ctx, ['file.txt']);
         await commit(ctx, { message: 'modify', author });
-        await mergeRun(ctx, { target: 'feature', author });
+        await mergeRun(ctx, { rev: 'feature', author });
 
         // Act
         const sut = await status(ctx);
@@ -986,17 +986,17 @@ describe('status — unmerged column', () => {
         await add(ctx, ['z.txt', 'a.txt']);
         await commit(ctx, { message: 'base', author });
         await branchCreate(ctx, { name: 'feature' });
-        await checkout(ctx, { target: 'feature' });
+        await checkout(ctx, { rev: 'feature' });
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/z.txt`, 'FEATURE\n');
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'FEATURE\n');
         await add(ctx, ['z.txt', 'a.txt']);
         await commit(ctx, { message: 'on-feature', author });
-        await checkout(ctx, { target: 'main' });
+        await checkout(ctx, { rev: 'main' });
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/z.txt`, 'MAIN\n');
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'MAIN\n');
         await add(ctx, ['z.txt', 'a.txt']);
         await commit(ctx, { message: 'on-main', author });
-        await mergeRun(ctx, { target: 'feature', author });
+        await mergeRun(ctx, { rev: 'feature', author });
 
         // Act
         const sut = await status(ctx);

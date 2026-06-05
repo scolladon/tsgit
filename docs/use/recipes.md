@@ -19,7 +19,7 @@ const repo = await openRepository({
 });
 
 const result = await repo.clone({ url: 'https://github.com/owner/repo.git' });
-await repo.checkout({ target: result.head });
+await repo.checkout({ rev: result.head });
 ```
 
 The split is deliberate: callers who want a bare clone (`{ bare: true }`) or who want to inspect refs before materialisation never pay for the working-tree write.

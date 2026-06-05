@@ -53,7 +53,7 @@ import {
 } from './internal/repo-state.js';
 
 export interface MergeRunInput {
-  readonly target: string;
+  readonly rev: string;
   readonly message?: string;
   /**
    * Fast-forward policy (git `--ff` / `--ff-only` / `--no-ff`):
@@ -74,8 +74,8 @@ export interface MergeRunInput {
 export interface MergeInternalOptions {
   /**
    * Reflog action prefix, mirroring git's GIT_REFLOG_ACTION. Replaces the
-   * default `merge <target>` prefix in the fast-forward and merge-commit reflog
-   * messages (e.g. `pull` → `pull: Fast-forward`). Defaults to `merge <target>`.
+   * default `merge <rev>` prefix in the fast-forward and merge-commit reflog
+   * messages (e.g. `pull` → `pull: Fast-forward`). Defaults to `merge <rev>`.
    */
   readonly reflogAction?: string;
 }
@@ -102,10 +102,10 @@ export type MergeResult =
     };
 
 /**
- * Merge `target` into the current HEAD branch.
+ * Merge `rev` into the current HEAD branch.
  *
- * - Up-to-date: target is ancestor of HEAD → no-op.
- * - Fast-forward: HEAD is ancestor of target → branch advances.
+ * - Up-to-date: rev is ancestor of HEAD → no-op.
+ * - Fast-forward: HEAD is ancestor of rev → branch advances.
  * - True merge for diverged histories:.4a wired the three-way
  *  tree merge (`mergeTrees` + `mergeContent`) so a CLEAN merge commits
  *  the merged tree directly.4b persists conflict state on
@@ -127,7 +127,7 @@ export const mergeRun = async (
     throw unsupportedOperation('merge', 'cannot merge with detached HEAD');
   }
   const ourId = await resolveRef(ctx, head.target);
-  const theirId = await resolveCommitIsh(ctx, opts.target);
+  const theirId = await resolveCommitIsh(ctx, opts.rev);
   // Stryker disable next-line ConditionalExpression: equivalent — when ourId===theirId, mergeBase returns that same commit, so the `base === theirId` check below yields the identical up-to-date result.
   if (ourId === theirId) return { kind: 'up-to-date', id: ourId };
   const [base] = await mergeBase(ctx, [ourId, theirId]);
@@ -136,7 +136,7 @@ export const mergeRun = async (
     if (opts.fastForward !== 'never') {
       await updateRef(ctx, head.target, theirId, {
         expected: ourId,
-        reflogMessage: `${internal.reflogAction ?? `merge ${opts.target}`}: Fast-forward`,
+        reflogMessage: `${internal.reflogAction ?? `merge ${opts.rev}`}: Fast-forward`,
       });
       return { kind: 'fast-forward', id: theirId, branch: head.target };
     }
@@ -186,7 +186,7 @@ const commitCleanMerge = async (
 ): Promise<MergeResult> => {
   const author = await resolveMergeAuthor(ctx, opts);
   const committer = resolveMergeCommitter(opts, author);
-  const message = sanitizeMessage(opts.message ?? `Merge ${opts.target}`, { allowEmpty: false });
+  const message = sanitizeMessage(opts.message ?? `Merge ${opts.rev}`, { allowEmpty: false });
   const commitData: CommitData = {
     tree: mergedTree,
     parents: [ourId, theirId],
@@ -198,7 +198,7 @@ const commitCleanMerge = async (
   const id = await createCommit(ctx, commitData);
   await updateRef(ctx, branchName, id, {
     expected: ourId,
-    reflogMessage: `${internal.reflogAction ?? `merge ${opts.target}`}: Merge made by the 'tsgit' strategy.`,
+    reflogMessage: `${internal.reflogAction ?? `merge ${opts.rev}`}: Merge made by the 'tsgit' strategy.`,
   });
   return { kind: 'merge', id, branch: branchName, parents: [ourId, theirId] };
 };
@@ -396,7 +396,7 @@ const persistConflictState = async (
     await writeConflictingWorkingTree(ctx, result.outcomes, result.conflicts, matcher);
     await writeOrigHead(ctx, ourId);
     await writeMergeHead(ctx, theirId);
-    const message = sanitizeMessage(opts.message ?? `Merge ${opts.target}`, { allowEmpty: false });
+    const message = sanitizeMessage(opts.message ?? `Merge ${opts.rev}`, { allowEmpty: false });
     await writeMergeMsg(ctx, message);
     const indexEntries = buildConflictIndexEntries(result.outcomes, result.conflicts, matcher);
     await lock.commit(indexEntries);

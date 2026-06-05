@@ -40,7 +40,7 @@ interface BrowserRepo {
     list: () => Promise<{ branches: ReadonlyArray<BranchInfo> }>;
     delete: (input: { name: string }) => Promise<{ name: string }>;
   };
-  checkout: (opts: { target: string }) => Promise<unknown>;
+  checkout: (opts: { rev: string }) => Promise<unknown>;
   tag: {
     create: (input: { name: string }) => Promise<{ name: string; id: string }>;
     list: () => Promise<{ tags: ReadonlyArray<TagInfo> }>;
@@ -185,13 +185,13 @@ test.describe('surface parity', () => {
           await repo.add(['a.txt']);
           await repo.commit({ message: 'v1 on main', author });
           await repo.branch.create({ name: 'feature' });
-          await repo.checkout({ target: 'feature' });
+          await repo.checkout({ rev: 'feature' });
           await writeA('v2\n');
           await repo.add(['a.txt']);
           await repo.commit({ message: 'v2 on feature', author });
-          await repo.checkout({ target: 'main' });
+          await repo.checkout({ rev: 'main' });
           const onMain = await readA();
-          await repo.checkout({ target: 'feature' });
+          await repo.checkout({ rev: 'feature' });
           const onFeature = await readA();
           return { onMain, onFeature };
         } finally {

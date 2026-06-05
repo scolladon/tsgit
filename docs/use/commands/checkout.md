@@ -10,7 +10,7 @@ repo.checkout(opts: CheckoutOptions): Promise<CheckoutResult>;
 type CheckoutOptions = CheckoutSwitchOptions | CheckoutPathsOptions;
 
 interface CheckoutSwitchOptions {
-  readonly target: string;
+  readonly rev: string;
   readonly force?: boolean;
 }
 
@@ -24,7 +24,7 @@ interface CheckoutPathsOptions {
 
 | Mode | Triggered by | Effect |
 |---|---|---|
-| **Switch** | `{ target }` | Materialise `target`'s tree onto the working tree, commit a new index, move HEAD. Atomic per-file. |
+| **Switch** | `{ rev }` | Materialise `rev`'s tree onto the working tree, commit a new index, move HEAD. Atomic per-file. |
 | **Restore from index** (default) | `{ paths }` (no `source` or `source: 'index'`) | Restore staged content into the working tree. Index untouched. |
 | **Restore from HEAD or tree** | `{ paths, source: 'HEAD' \| <ObjectId> }` | Restore content from HEAD's tree (or an arbitrary tree). Index entries for the listed paths are also rewritten. |
 
@@ -39,8 +39,8 @@ interface CheckoutPathsOptions {
 
 ```ts
 // Switch branches (or to any commit)
-await repo.checkout({ target: 'main' });
-await repo.checkout({ target: '<oid>' });
+await repo.checkout({ rev: 'main' });
+await repo.checkout({ rev: '<oid>' });
 
 // Restore a file from the index
 await repo.checkout({ paths: ['src/foo.ts'] });
@@ -49,13 +49,13 @@ await repo.checkout({ paths: ['src/foo.ts'] });
 await repo.checkout({ paths: ['src/foo.ts'], source: 'HEAD' });
 
 // Force-switch through a dirty tree
-await repo.checkout({ target: 'main', force: true });
+await repo.checkout({ rev: 'main', force: true });
 ```
 
 ## Throws
 
 - `CHECKOUT_OVERWRITE_DIRTY` — switch without `force` against a dirty working tree.
-- `REF_NOT_FOUND` / `INVALID_REF` — `target` does not resolve.
+- `REF_NOT_FOUND` / `INVALID_REF` — `rev` does not resolve.
 - `PATHSPEC_NO_MATCH` — a literal path pattern matched nothing.
 - `BARE_REPOSITORY` — checkout is not valid in a bare repository.
 

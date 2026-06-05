@@ -82,11 +82,11 @@ const seedFeature = async (
   await add(ctx, ['base.txt']);
   const base = await commit(ctx, { message: 'base', author: MAIN_AUTHOR });
   await branchCreate(ctx, { name: 'feature' });
-  await checkout(ctx, { target: 'feature' });
+  await checkout(ctx, { rev: 'feature' });
   await ctx.fs.writeUtf8(work(ctx, 'feat.txt'), featBody);
   await add(ctx, ['feat.txt']);
   const feature = await commit(ctx, { message: 'add feat\n\nbody line', author: FEAT_AUTHOR });
-  await checkout(ctx, { target: 'main' });
+  await checkout(ctx, { rev: 'main' });
   return { ctx, feature: feature.id, base: base.id };
 };
 
@@ -99,11 +99,11 @@ const seedConflictPick = async (): Promise<{ ctx: Context; feature: ObjectId }> 
   await add(ctx, ['f.txt']);
   await commit(ctx, { message: 'base', author: MAIN_AUTHOR });
   await branchCreate(ctx, { name: 'feature' });
-  await checkout(ctx, { target: 'feature' });
+  await checkout(ctx, { rev: 'feature' });
   await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'l1\nFEAT\n');
   await add(ctx, ['f.txt']);
   const feature = await commit(ctx, { message: 'feat change', author: FEAT_AUTHOR });
-  await checkout(ctx, { target: 'main' });
+  await checkout(ctx, { rev: 'main' });
   await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'l1\nMAIN\n');
   await add(ctx, ['f.txt']);
   await commit(ctx, { message: 'main change', author: MAIN_AUTHOR });
@@ -125,14 +125,14 @@ const seedRange = async (): Promise<{
   await add(ctx, ['f.txt']);
   const base = await commit(ctx, { message: 'base', author: MAIN_AUTHOR });
   await branchCreate(ctx, { name: 'feature' });
-  await checkout(ctx, { target: 'feature' });
+  await checkout(ctx, { rev: 'feature' });
   await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'l1\nFEAT\n');
   await add(ctx, ['f.txt']);
   const c1 = await commit(ctx, { message: 'c1 change', author: FEAT_AUTHOR });
   await ctx.fs.writeUtf8(work(ctx, 'g.txt'), 'g\n');
   await add(ctx, ['g.txt']);
   const feature = await commit(ctx, { message: 'c2 add g', author: FEAT_AUTHOR });
-  await checkout(ctx, { target: 'main' });
+  await checkout(ctx, { rev: 'main' });
   await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'l1\nMAIN\n');
   await add(ctx, ['f.txt']);
   await commit(ctx, { message: 'main change', author: MAIN_AUTHOR });
@@ -152,22 +152,22 @@ const seedMerge = async (): Promise<{
   await add(ctx, ['base.txt']);
   const base = await commit(ctx, { message: 'base', author: MAIN_AUTHOR });
   await branchCreate(ctx, { name: 'feature' });
-  await checkout(ctx, { target: 'feature' });
+  await checkout(ctx, { rev: 'feature' });
   await ctx.fs.writeUtf8(work(ctx, 'f1.txt'), 'f1\n');
   await add(ctx, ['f1.txt']);
   await commit(ctx, { message: 'c1', author: FEAT_AUTHOR });
   await branchCreate(ctx, { name: 'side', startPoint: base.id });
-  await checkout(ctx, { target: 'side' });
+  await checkout(ctx, { rev: 'side' });
   await ctx.fs.writeUtf8(work(ctx, 's1.txt'), 's1\n');
   await add(ctx, ['s1.txt']);
   await commit(ctx, { message: 's1', author: FEAT_AUTHOR });
-  await checkout(ctx, { target: 'feature' });
-  const m = await mergeRun(ctx, { target: 'side' });
+  await checkout(ctx, { rev: 'feature' });
+  const m = await mergeRun(ctx, { rev: 'side' });
   if (m.kind !== 'merge') throw new Error('seed: expected a merge commit');
   await ctx.fs.writeUtf8(work(ctx, 'f2.txt'), 'f2\n');
   await add(ctx, ['f2.txt']);
   await commit(ctx, { message: 'c2 post-merge', author: FEAT_AUTHOR });
-  await checkout(ctx, { target: 'main' });
+  await checkout(ctx, { rev: 'main' });
   return { ctx, mergeId: m.id, base: base.id };
 };
 
@@ -274,13 +274,13 @@ describe('cherryPickRun — ranges and the sequencer', () => {
         await add(ctx, ['base.txt']);
         const base = await commit(ctx, { message: 'base', author: MAIN_AUTHOR });
         await branchCreate(ctx, { name: 'feature' });
-        await checkout(ctx, { target: 'feature' });
+        await checkout(ctx, { rev: 'feature' });
         for (const name of ['f1', 'f2', 'f3']) {
           await ctx.fs.writeUtf8(work(ctx, `${name}.txt`), `${name}\n`);
           await add(ctx, [`${name}.txt`]);
           await commit(ctx, { message: `add ${name}`, author: FEAT_AUTHOR });
         }
-        await checkout(ctx, { target: 'main' });
+        await checkout(ctx, { rev: 'main' });
 
         // Act
         const sut = await cherryPickRun(ctx, { commits: [`${base.id}..feature`] });
@@ -721,11 +721,11 @@ describe('cherryPickRun', () => {
       it('Then both are applied in order onto HEAD', async () => {
         // Arrange — feature has feat.txt; add a second feature commit
         const { ctx, feature } = await seedFeature();
-        await checkout(ctx, { target: 'feature' });
+        await checkout(ctx, { rev: 'feature' });
         await ctx.fs.writeUtf8(work(ctx, 'feat2.txt'), 'feat2\n');
         await add(ctx, ['feat2.txt']);
         const second = await commit(ctx, { message: 'add feat2', author: FEAT_AUTHOR });
-        await checkout(ctx, { target: 'main' });
+        await checkout(ctx, { rev: 'main' });
 
         // Act
         const sut = await cherryPickRun(ctx, { commits: [feature, second.id] });
@@ -781,11 +781,11 @@ describe('cherryPickRun', () => {
         await add(ctx, ['f.txt']);
         await commit(ctx, { message: 'base', author: MAIN_AUTHOR });
         await branchCreate(ctx, { name: 'feature' });
-        await checkout(ctx, { target: 'feature' });
+        await checkout(ctx, { rev: 'feature' });
         await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'l1\nFEAT\n');
         await add(ctx, ['f.txt']);
         const feature = await commit(ctx, { message: 'feat change', author: FEAT_AUTHOR });
-        await checkout(ctx, { target: 'main' });
+        await checkout(ctx, { rev: 'main' });
         await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'l1\nMAIN\n');
         await add(ctx, ['f.txt']);
         await commit(ctx, { message: 'main change', author: MAIN_AUTHOR });
@@ -855,11 +855,11 @@ describe('cherryPickRun', () => {
       it('Then accumulates both changes in the index without committing', async () => {
         // Arrange
         const { ctx, feature, base } = await seedFeature();
-        await checkout(ctx, { target: 'feature' });
+        await checkout(ctx, { rev: 'feature' });
         await ctx.fs.writeUtf8(work(ctx, 'feat2.txt'), 'feat2\n');
         await add(ctx, ['feat2.txt']);
         const second = await commit(ctx, { message: 'add feat2', author: FEAT_AUTHOR });
-        await checkout(ctx, { target: 'main' });
+        await checkout(ctx, { rev: 'main' });
 
         // Act
         const sut = await cherryPickRun(ctx, { commits: [feature, second.id], noCommit: true });
@@ -885,11 +885,11 @@ describe('cherryPickRun', () => {
         await add(ctx, ['f.txt']);
         await commit(ctx, { message: 'base', author: MAIN_AUTHOR });
         await branchCreate(ctx, { name: 'feature' });
-        await checkout(ctx, { target: 'feature' });
+        await checkout(ctx, { rev: 'feature' });
         await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'l1\nFEAT\n');
         await add(ctx, ['f.txt']);
         const feature = await commit(ctx, { message: 'feat change', author: FEAT_AUTHOR });
-        await checkout(ctx, { target: 'main' });
+        await checkout(ctx, { rev: 'main' });
         await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'l1\nMAIN\n');
         await add(ctx, ['f.txt']);
         await commit(ctx, { message: 'main change', author: MAIN_AUTHOR });
@@ -953,11 +953,11 @@ describe('cherryPickRun', () => {
         await add(ctx, ['base.txt']);
         await commit(ctx, { message: 'base', author: MAIN_AUTHOR });
         await branchCreate(ctx, { name: 'feature' });
-        await checkout(ctx, { target: 'feature' });
+        await checkout(ctx, { rev: 'feature' });
         await ctx.fs.writeUtf8(work(ctx, 'feat.txt'), 'feat\n');
         await add(ctx, ['feat.txt']);
         const feature = await commit(ctx, { message: 'add feat', author: FEAT_AUTHOR });
-        await checkout(ctx, { target: 'main' });
+        await checkout(ctx, { rev: 'main' });
 
         // Act
         const code = await codeOf(() => cherryPickRun(ctx, { commits: [feature.id] }));

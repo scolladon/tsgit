@@ -36,16 +36,16 @@ interface ResetResult {
 
 ```ts
 // Undo the last commit; keep changes staged
-await repo.reset({ mode: 'soft', target: 'HEAD~1' });
+await repo.reset({ mode: 'soft', rev: 'HEAD~1' });
 
 // Unstage everything; working tree intact
-await repo.reset({ mode: 'mixed', target: 'HEAD' });
+await repo.reset({ mode: 'mixed', rev: 'HEAD' });
 
 // Wipe local mods; restore to a known good commit
-await repo.reset({ mode: 'hard', target: 'origin/main' });
+await repo.reset({ mode: 'hard', rev: 'origin/main' });
 
 // Abort a merge by going back to ORIG_HEAD
-await repo.reset({ mode: 'hard', target: 'ORIG_HEAD' });
+await repo.reset({ mode: 'hard', rev: 'ORIG_HEAD' });
 ```
 
 ## Throws

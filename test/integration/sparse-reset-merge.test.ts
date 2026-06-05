@@ -58,7 +58,7 @@ describe('integration — sparse reset/merge (memory adapter)', () => {
     expect(await ctx.fs.exists(`${ctx.layout.workDir}/docs/guide.md`)).toBe(false);
 
     // Act
-    await reset(ctx, { mode: 'mixed', target: seed.id });
+    await reset(ctx, { mode: 'mixed', rev: seed.id });
 
     // Assert
     const index = await readIndex(ctx);
@@ -78,7 +78,7 @@ describe('integration — sparse reset/merge (memory adapter)', () => {
     await ctx.fs.writeUtf8(`${ctx.layout.workDir}/src/app/main.ts`, 'LOCAL EDIT\n');
 
     // Act
-    await reset(ctx, { mode: 'hard', target: seed.id });
+    await reset(ctx, { mode: 'hard', rev: seed.id });
 
     // Assert — the in-cone file reverts, the excluded file is not re-created.
     expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/src/app/main.ts`)).toBe(
@@ -101,11 +101,11 @@ describe('integration — sparse reset/merge (memory adapter)', () => {
     await add(ctx, ['src/app/main.ts', 'docs/guide.md']);
     await commit(ctx, { message: 'seed', author });
     await branchCreate(ctx, { name: 'feature' });
-    await checkout(ctx, { target: 'feature' });
+    await checkout(ctx, { rev: 'feature' });
     await ctx.fs.writeUtf8(`${ctx.layout.workDir}/src/app/main.ts`, 'FEATURE\n');
     await add(ctx, ['src/app/main.ts']);
     await commit(ctx, { message: 'on-feature', author });
-    await checkout(ctx, { target: 'main' });
+    await checkout(ctx, { rev: 'main' });
     await ctx.fs.writeUtf8(`${ctx.layout.workDir}/src/app/main.ts`, 'MAIN\n');
     await add(ctx, ['src/app/main.ts']);
     await commit(ctx, { message: 'on-main', author });
@@ -113,7 +113,7 @@ describe('integration — sparse reset/merge (memory adapter)', () => {
     expect(await ctx.fs.exists(`${ctx.layout.workDir}/docs/guide.md`)).toBe(false);
 
     // Act
-    const sut = await mergeRun(ctx, { target: 'feature', author });
+    const sut = await mergeRun(ctx, { rev: 'feature', author });
 
     // Assert — the conflict is materialised, the excluded clean file is not.
     expect(sut.kind).toBe('conflict');
@@ -167,7 +167,7 @@ describe.skipIf(GIT === undefined)('integration — sparse reset interop with ca
       await repo.sparseCheckout.set({ patterns: ['kept.ts'], cone: true });
 
       // Act — tsgit rebuilds the index from the same commit.
-      await repo.reset({ mode: 'mixed', target: seed.id });
+      await repo.reset({ mode: 'mixed', rev: seed.id });
 
       // Assert — canonical git still sees the skip-worktree (`S`) bit and
       // reports a clean tree (no phantom deletion of `out/gone.ts`).

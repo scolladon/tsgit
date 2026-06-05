@@ -38,11 +38,11 @@ const setupConflictingMerge = async (
   await add(ctx, ['file.txt']);
   await commit(ctx, { message: 'base', author });
   await branchCreate(ctx, { name: 'feature' });
-  await checkout(ctx, { target: 'feature' });
+  await checkout(ctx, { rev: 'feature' });
   await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'FEATURE\n');
   await add(ctx, ['file.txt']);
   const featureTip = await commit(ctx, { message: 'on-feature', author });
-  await checkout(ctx, { target: 'main' });
+  await checkout(ctx, { rev: 'main' });
   await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'MAIN\n');
   await add(ctx, ['file.txt']);
   const mainTip = await commit(ctx, { message: 'on-main', author });
@@ -159,7 +159,7 @@ describe('mergeAbort', () => {
         // Arrange — synthesize a half-state: MERGE_HEAD on disk, ORIG_HEAD removed.
         const ctx = createMemoryContext();
         await setupConflictingMerge(ctx);
-        await mergeRun(ctx, { target: 'feature', author });
+        await mergeRun(ctx, { rev: 'feature', author });
         await ctx.fs.rm(`${ctx.layout.gitDir}/ORIG_HEAD`);
 
         // Act
@@ -187,7 +187,7 @@ describe('mergeAbort', () => {
         // a less specific error.
         const ctx = createMemoryContext();
         await setupConflictingMerge(ctx);
-        await mergeRun(ctx, { target: 'feature', author });
+        await mergeRun(ctx, { rev: 'feature', author });
         const blobId = await writeObject(ctx, {
           type: 'blob',
           content: new TextEncoder().encode('not a commit'),
@@ -218,7 +218,7 @@ describe('mergeAbort', () => {
         // then detach HEAD so the symbolic-HEAD guard inside mergeAbort fires.
         const ctx = createMemoryContext();
         const { preMergeMain } = await setupConflictingMerge(ctx);
-        await mergeRun(ctx, { target: 'feature', author });
+        await mergeRun(ctx, { rev: 'feature', author });
         await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, `${preMergeMain}\n`);
 
         // Act
@@ -245,7 +245,7 @@ describe('mergeAbort', () => {
         // Arrange — pre-merge HEAD has file.txt=MAIN; merge wrote conflict markers.
         const ctx = createMemoryContext();
         const fixture = await setupConflictingMerge(ctx);
-        await mergeRun(ctx, { target: 'feature', author });
+        await mergeRun(ctx, { rev: 'feature', author });
 
         // Act
         await mergeAbort(ctx);
@@ -259,7 +259,7 @@ describe('mergeAbort', () => {
         // Arrange
         const ctx = createMemoryContext();
         await setupConflictingMerge(ctx);
-        await mergeRun(ctx, { target: 'feature', author });
+        await mergeRun(ctx, { rev: 'feature', author });
 
         // Act
         await mergeAbort(ctx);
@@ -274,7 +274,7 @@ describe('mergeAbort', () => {
         // Arrange
         const ctx = createMemoryContext();
         const { preMergeMain } = await setupConflictingMerge(ctx);
-        await mergeRun(ctx, { target: 'feature', author });
+        await mergeRun(ctx, { rev: 'feature', author });
 
         // Act
         await mergeAbort(ctx);
@@ -288,7 +288,7 @@ describe('mergeAbort', () => {
         // Arrange
         const ctx = createMemoryContext();
         await setupConflictingMerge(ctx);
-        await mergeRun(ctx, { target: 'feature', author });
+        await mergeRun(ctx, { rev: 'feature', author });
 
         // Act
         await mergeAbort(ctx);
@@ -302,7 +302,7 @@ describe('mergeAbort', () => {
         // Arrange
         const ctx = createMemoryContext();
         await setupConflictingMerge(ctx);
-        await mergeRun(ctx, { target: 'feature', author });
+        await mergeRun(ctx, { rev: 'feature', author });
 
         // Act
         await mergeAbort(ctx);
@@ -316,7 +316,7 @@ describe('mergeAbort', () => {
         // Arrange
         const ctx = createMemoryContext();
         const { preMergeMain } = await setupConflictingMerge(ctx);
-        await mergeRun(ctx, { target: 'feature', author });
+        await mergeRun(ctx, { rev: 'feature', author });
 
         // Act
         await mergeAbort(ctx);
@@ -333,7 +333,7 @@ describe('mergeAbort', () => {
         // with the faithful `reset: moving to HEAD` message git's reset writes.
         const ctx = createMemoryContext();
         await setupConflictingMerge(ctx);
-        await mergeRun(ctx, { target: 'feature', author });
+        await mergeRun(ctx, { rev: 'feature', author });
         const branchBefore = (await readReflog(ctx, MAIN)).at(-1)?.message;
 
         // Act
@@ -351,7 +351,7 @@ describe('mergeAbort', () => {
         // Arrange
         const ctx = createMemoryContext();
         const { preMergeMain } = await setupConflictingMerge(ctx);
-        await mergeRun(ctx, { target: 'feature', author });
+        await mergeRun(ctx, { rev: 'feature', author });
 
         // Act
         const sut = await mergeAbort(ctx);
@@ -364,7 +364,7 @@ describe('mergeAbort', () => {
         // Arrange
         const ctx = createMemoryContext();
         await setupConflictingMerge(ctx);
-        await mergeRun(ctx, { target: 'feature', author });
+        await mergeRun(ctx, { rev: 'feature', author });
 
         // Act
         const sut = await mergeAbort(ctx);
@@ -385,15 +385,15 @@ describe('mergeAbort', () => {
         await add(ctx, ['conflict.txt', 'clean.txt']);
         await commit(ctx, { message: 'base', author });
         await branchCreate(ctx, { name: 'feature' });
-        await checkout(ctx, { target: 'feature' });
+        await checkout(ctx, { rev: 'feature' });
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/conflict.txt`, 'FEATURE\n');
         await add(ctx, ['conflict.txt']);
         await commit(ctx, { message: 'on-feature', author });
-        await checkout(ctx, { target: 'main' });
+        await checkout(ctx, { rev: 'main' });
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/conflict.txt`, 'MAIN\n');
         await add(ctx, ['conflict.txt']);
         await commit(ctx, { message: 'on-main', author });
-        await mergeRun(ctx, { target: 'feature', author });
+        await mergeRun(ctx, { rev: 'feature', author });
         // Dirty the non-conflicting path's working-tree bytes. Its index
         // entry remains stage-0 matching the pre-merge tree's blob.
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/clean.txt`, 'DIRTY\n');
@@ -412,7 +412,7 @@ describe('mergeAbort', () => {
         // file and the follow-up add would surface RESOURCE_LOCKED.
         const ctx = createMemoryContext();
         await setupConflictingMerge(ctx);
-        await mergeRun(ctx, { target: 'feature', author });
+        await mergeRun(ctx, { rev: 'feature', author });
 
         // Act
         await mergeAbort(ctx);
@@ -430,7 +430,7 @@ describe('mergeAbort', () => {
         // on disk and surface RESOURCE_LOCKED on the next mutation.
         const ctx = createMemoryContext();
         await setupConflictingMerge(ctx);
-        await mergeRun(ctx, { target: 'feature', author });
+        await mergeRun(ctx, { rev: 'feature', author });
         const originalWrite = ctx.fs.write.bind(ctx.fs);
         let failOnce = true;
         (ctx.fs as { write: typeof originalWrite }).write = async (p, data) => {
@@ -458,7 +458,7 @@ describe('mergeAbort', () => {
         // Arrange
         const ctx = createMemoryContext();
         const { preMergeMain } = await setupConflictingMerge(ctx);
-        await mergeRun(ctx, { target: 'feature', author });
+        await mergeRun(ctx, { rev: 'feature', author });
 
         // Act
         await mergeAbort(ctx);

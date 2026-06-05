@@ -116,9 +116,9 @@ describe('pull', () => {
         await init(ctx);
         await commitFile(ctx, 'a.txt', 'a', 'A');
         await branchCreate(ctx, { name: 'feature' });
-        await checkout(ctx, { target: 'feature' });
+        await checkout(ctx, { rev: 'feature' });
         const b = await commitFile(ctx, 'b.txt', 'b', 'B');
-        await checkout(ctx, { target: 'main' });
+        await checkout(ctx, { rev: 'main' });
         await seedConfig(ctx, { url: REMOTE_URL, upstream: true });
         const { transport } = buildPullRemote(
           [{ name: 'refs/heads/main', id: b }],
@@ -169,9 +169,9 @@ describe('pull', () => {
         await init(ctx);
         await commitFile(ctx, 'a.txt', 'a', 'A');
         await branchCreate(ctx, { name: 'feature' });
-        await checkout(ctx, { target: 'feature' });
+        await checkout(ctx, { rev: 'feature' });
         const b = await commitFile(ctx, 'b.txt', 'b', 'B');
-        await checkout(ctx, { target: 'main' });
+        await checkout(ctx, { rev: 'main' });
         await commitFile(ctx, 'c.txt', 'c', 'X');
         await seedConfig(ctx, { url: REMOTE_URL, upstream: true });
         const { transport } = buildPullRemote(
@@ -207,9 +207,9 @@ describe('pull', () => {
         await init(ctx);
         await commitFile(ctx, 'a.txt', 'base\n', 'A');
         await branchCreate(ctx, { name: 'feature' });
-        await checkout(ctx, { target: 'feature' });
+        await checkout(ctx, { rev: 'feature' });
         const b = await commitFile(ctx, 'a.txt', 'theirs\n', 'B');
-        await checkout(ctx, { target: 'main' });
+        await checkout(ctx, { rev: 'main' });
         const x = await commitFile(ctx, 'a.txt', 'ours\n', 'X');
         await seedConfig(ctx, { url: REMOTE_URL, upstream: true });
         const { transport } = buildPullRemote(
@@ -238,9 +238,9 @@ describe('pull', () => {
         await init(ctx);
         await commitFile(ctx, 'a.txt', 'base\n', 'A');
         await branchCreate(ctx, { name: 'feature' });
-        await checkout(ctx, { target: 'feature' });
+        await checkout(ctx, { rev: 'feature' });
         const b = await commitFile(ctx, 'a.txt', 'theirs\n', 'B');
-        await checkout(ctx, { target: 'main' });
+        await checkout(ctx, { rev: 'main' });
         const x = await commitFile(ctx, 'a.txt', 'ours\n', 'X');
         await seedConfig(ctx, { url: REMOTE_URL, upstream: true });
         const { transport } = buildPullRemote(
@@ -273,9 +273,9 @@ describe('pull', () => {
         await init(ctx);
         await commitFile(ctx, 'a.txt', 'a', 'A');
         await branchCreate(ctx, { name: 'feature' });
-        await checkout(ctx, { target: 'feature' });
+        await checkout(ctx, { rev: 'feature' });
         const b = await commitFile(ctx, 'b.txt', 'b', 'B');
-        await checkout(ctx, { target: 'main' });
+        await checkout(ctx, { rev: 'main' });
         await seedConfig(ctx, { remote: 'upstream', url: REMOTE_URL });
         const { transport } = buildPullRemote(
           [{ name: 'refs/heads/main', id: b }],
@@ -285,7 +285,7 @@ describe('pull', () => {
         // Act
         const sut = await pull(withTransport(ctx, transport), {
           remote: 'upstream',
-          branch: 'main',
+          ref: 'main',
         });
 
         // Assert
@@ -391,7 +391,7 @@ describe('pull', () => {
         // Act
         let caught: unknown;
         try {
-          await pull(withTransport(ctx, transport), { branch: 'main' });
+          await pull(withTransport(ctx, transport), { ref: 'main' });
         } catch (err) {
           caught = err;
         }
@@ -446,7 +446,7 @@ describe('pull', () => {
         // Act
         let caught: unknown;
         try {
-          await pull(withTransport(ctx, transport), { branch: 'nope' });
+          await pull(withTransport(ctx, transport), { ref: 'nope' });
         } catch (err) {
           caught = err;
         }
@@ -465,9 +465,9 @@ describe('pull', () => {
         await init(ctx);
         await commitFile(ctx, 'a.txt', 'a', 'A');
         await branchCreate(ctx, { name: 'feature' });
-        await checkout(ctx, { target: 'feature' });
+        await checkout(ctx, { rev: 'feature' });
         const b = await commitFile(ctx, 'b.txt', 'b', 'B');
-        await checkout(ctx, { target: 'main' });
+        await checkout(ctx, { rev: 'main' });
         await commitFile(ctx, 'c.txt', 'c', 'X');
         await seedConfig(ctx, { url: REMOTE_URL, upstream: true });
         const { transport } = buildPullRemote(
@@ -497,9 +497,9 @@ describe('pull', () => {
         await init(ctx);
         await commitFile(ctx, 'a.txt', 'a', 'A');
         await branchCreate(ctx, { name: 'feature' });
-        await checkout(ctx, { target: 'feature' });
+        await checkout(ctx, { rev: 'feature' });
         const b = await commitFile(ctx, 'b.txt', 'b', 'B');
-        await checkout(ctx, { target: 'main' });
+        await checkout(ctx, { rev: 'main' });
         await commitFile(ctx, 'c.txt', 'c', 'X');
         await seedConfig(ctx, { url: REMOTE_URL, upstream: true });
         const { transport } = buildPullRemote(
@@ -580,9 +580,9 @@ describe('pull', () => {
         await init(ctx);
         await commitFile(ctx, 'a.txt', 'a', 'A');
         await branchCreate(ctx, { name: 'feature' });
-        await checkout(ctx, { target: 'feature' });
+        await checkout(ctx, { rev: 'feature' });
         const b = await commitFile(ctx, 'b.txt', 'b', 'B');
-        await checkout(ctx, { target: 'main' });
+        await checkout(ctx, { rev: 'main' });
         await seedConfig(ctx, { url: REMOTE_URL, upstream: true });
         const { transport } = buildPullRemote(
           [{ name: 'refs/heads/main', id: b }],
@@ -612,9 +612,9 @@ describe('pull', () => {
         await init(ctx);
         await commitFile(ctx, 'a.txt', 'a', 'A');
         await branchCreate(ctx, { name: 'feature' });
-        await checkout(ctx, { target: 'feature' });
+        await checkout(ctx, { rev: 'feature' });
         const b = await commitFile(ctx, 'b.txt', 'b', 'B');
-        await checkout(ctx, { target: 'main' });
+        await checkout(ctx, { rev: 'main' });
         await commitFile(ctx, 'c.txt', 'c', 'X');
         await seedConfig(ctx, { url: REMOTE_URL, upstream: true });
         const { transport } = buildPullRemote(

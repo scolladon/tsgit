@@ -14,7 +14,7 @@ repo.pull(opts?: PullOptions): Promise<PullResult>;
 
 interface PullOptions {
   readonly remote?: string;        // default: branch.<current>.remote ?? 'origin'
-  readonly branch?: string;        // default: short form of branch.<current>.merge
+  readonly ref?: string;           // remote ref to merge; default: short form of branch.<current>.merge
   readonly fastForward?: 'only' | 'never' | 'allow'; // default 'allow'; forwarded to merge
   readonly prune?: boolean;        // forwarded to fetch
   readonly depth?: number;         // forwarded to fetch
@@ -34,13 +34,13 @@ interface PullResult {
 `pull` reads the same tracking config `clone` writes:
 
 - **remote** — `opts.remote` ?? `branch.<current>.remote` ?? `'origin'`.
-- **branch** — `opts.branch` ?? short form of `branch.<current>.merge`. When
-  neither resolves (no upstream and no explicit branch, or a detached HEAD),
+- **ref** — `opts.ref` ?? short form of `branch.<current>.merge`. When
+  neither resolves (no upstream and no explicit ref, or a detached HEAD),
   pull throws `NO_UPSTREAM_CONFIGURED`.
 
 After a normal `clone`, `branch.<default>.remote/merge` are set, so a no-argument
 `repo.pull()` works on the cloned branch. A locally-created branch with no
-upstream needs an explicit `repo.pull({ branch })`.
+upstream needs an explicit `repo.pull({ ref })`.
 
 ## Behaviour
 
@@ -70,8 +70,8 @@ if (result.merge.kind === 'conflict') {
   // await repo.merge.abort();
 }
 
-// Pull a specific branch from a specific remote.
-await repo.pull({ remote: 'upstream', branch: 'main' });
+// Pull a specific remote ref from a specific remote.
+await repo.pull({ remote: 'upstream', ref: 'main' });
 ```
 
 ## Throws

@@ -144,7 +144,7 @@ describe('integration — reflog writers', () => {
     await branchCreate(ctx, { name: 'feature', startPoint: 'main' });
 
     // Act
-    await checkout(ctx, { target: 'feature' });
+    await checkout(ctx, { rev: 'feature' });
 
     // Assert
     const headLog = await readReflog(ctx, HEAD);
@@ -157,7 +157,7 @@ describe('integration — reflog writers', () => {
     const first = await commit(ctx, { message: 'first', author });
 
     // Act
-    await checkout(ctx, { target: first.id, detach: true });
+    await checkout(ctx, { rev: first.id, detach: true });
 
     // Assert
     const headLog = await readReflog(ctx, HEAD);
@@ -173,7 +173,7 @@ describe('integration — reflog writers', () => {
     await commit(ctx, { message: 'second', author });
 
     // Act
-    await reset(ctx, { mode: 'soft', target: first.id });
+    await reset(ctx, { mode: 'soft', rev: first.id });
 
     // Assert
     const headLog = await readReflog(ctx, HEAD);
@@ -186,13 +186,13 @@ describe('integration — reflog writers', () => {
     const ctx = await seed();
     await commit(ctx, { message: 'first', author });
     await branchCreate(ctx, { name: 'feature', startPoint: 'main' });
-    await checkout(ctx, { target: 'feature' });
+    await checkout(ctx, { rev: 'feature' });
     await stageFile(ctx, 'b.txt', 'b');
     await commit(ctx, { message: 'on feature', author });
-    await checkout(ctx, { target: 'main' });
+    await checkout(ctx, { rev: 'main' });
 
     // Act
-    await mergeRun(ctx, { target: 'feature', author });
+    await mergeRun(ctx, { rev: 'feature', author });
 
     // Assert
     const branchLog = await readReflog(ctx, MAIN);
@@ -204,15 +204,15 @@ describe('integration — reflog writers', () => {
     const ctx = await seed({ 'a.txt': 'a' });
     await commit(ctx, { message: 'first', author });
     await branchCreate(ctx, { name: 'feature', startPoint: 'main' });
-    await checkout(ctx, { target: 'feature' });
+    await checkout(ctx, { rev: 'feature' });
     await stageFile(ctx, 'feature.txt', 'f');
     await commit(ctx, { message: 'on feature', author });
-    await checkout(ctx, { target: 'main' });
+    await checkout(ctx, { rev: 'main' });
     await stageFile(ctx, 'mainline.txt', 'm');
     await commit(ctx, { message: 'on main', author });
 
     // Act
-    await mergeRun(ctx, { target: 'feature', author });
+    await mergeRun(ctx, { rev: 'feature', author });
 
     // Assert
     const branchLog = await readReflog(ctx, MAIN);

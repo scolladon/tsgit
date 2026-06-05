@@ -83,30 +83,30 @@ const DEFAULT_REV = 'HEAD';
 
 export function show(
   ctx: Context,
-  input: ReadonlyArray<string>,
+  rev: ReadonlyArray<string>,
   opts: ShowOptions & { withStat: true },
 ): Promise<ReadonlyArray<ShowResult<StatTreeDiff>>>;
 export function show(
   ctx: Context,
-  input: string | undefined,
+  rev: string | undefined,
   opts: ShowOptions & { withStat: true },
 ): Promise<ShowResult<StatTreeDiff>>;
 export function show(
   ctx: Context,
-  input: ReadonlyArray<string>,
+  rev: ReadonlyArray<string>,
   opts?: ShowOptions,
 ): Promise<ReadonlyArray<ShowResult>>;
-export function show(ctx: Context, input?: string, opts?: ShowOptions): Promise<ShowResult>;
+export function show(ctx: Context, rev?: string, opts?: ShowOptions): Promise<ShowResult>;
 export async function show(
   ctx: Context,
-  input: ShowInput = DEFAULT_REV,
+  rev: ShowInput = DEFAULT_REV,
   opts: ShowOptions = {},
 ): Promise<ShowResult | ReadonlyArray<ShowResult>> {
   await assertRepository(ctx);
   const withStat = opts.withStat === true;
-  if (typeof input === 'string') return buildForRev(ctx, input, withStat);
+  if (typeof rev === 'string') return buildForRev(ctx, rev, withStat);
   const results: ShowResult[] = [];
-  for (const rev of input) results.push(await buildForRev(ctx, rev, withStat));
+  for (const r of rev) results.push(await buildForRev(ctx, r, withStat));
   return results;
 }
 
