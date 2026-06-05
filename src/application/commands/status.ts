@@ -5,16 +5,18 @@ import {
   comparePaths,
   type DiffChange,
   diffIndexAgainstTree,
+  type FlatTree,
   groupUnmergedEntries,
   type UnmergedEntryGroup,
 } from '../../domain/diff/index.js';
-import type { IndexEntry } from '../../domain/git-index/index.js';
+import type { GitIndex, IndexEntry } from '../../domain/git-index/index.js';
 import type { FileMode, RefName } from '../../domain/objects/index.js';
 import type { FilePath, ObjectId } from '../../domain/objects/object-id.js';
 import type { Context } from '../../ports/context.js';
 import {
-  compareWorkingTreeEntry,
+  compareWorkingTreeDelta,
   type WorkingTreeComparison,
+  type WorkingTreeDelta,
 } from '../primitives/compare-working-tree-entry.js';
 import { readHeadTree } from '../primitives/read-head-tree.js';
 import { readIndex } from '../primitives/read-index.js';
@@ -23,46 +25,62 @@ import { buildRepoIgnorePredicate } from './internal/build-ignore-evaluator.js';
 import { createGranularityTracker } from './internal/progress-tracker.js';
 import { assertRepository, readHeadRaw } from './internal/repo-state.js';
 
-export type ChangeKind =
-  | 'modified'
-  | 'added'
-  | 'deleted'
-  | 'untracked'
-  | 'type-changed'
-  | 'mode-changed';
-
-export interface ChangeEntry {
-  readonly kind: ChangeKind;
-  readonly path: FilePath;
-}
+export type ChangeKind = 'modified' | 'added' | 'deleted' | 'type-changed' | 'mode-changed';
 
 export type { ConflictKind } from '../../domain/diff/index.js';
 
-/** A single merge stage's blob: its object id and file mode. */
-export interface ConflictStage {
+/** A blob reference on one side of a comparison: its object id and file mode. */
+export interface BlobSide {
   readonly id: ObjectId;
   readonly mode: FileMode;
 }
 
 /**
+ * The working-tree side of a change: mode only. The working file need not be in
+ * the object store, so git reports its mode (`mW`) but no working blob oid.
+ */
+export interface WorktreeSide {
+  readonly mode: FileMode;
+}
+
+/**
+ * One tracked path with a staged and/or unstaged change — the structured form of
+ * `git status --porcelain=v2`'s ordinary changed-entry line. At least one of
+ * `staged` (index vs HEAD, git's X) and `unstaged` (worktree vs index, git's Y) is
+ * present. The `head` / `index` / `worktree` sides carry the blobs that form the
+ * change's diffs; a side is omitted when the path does not exist there (staged add
+ * → no `head`; staged delete → no `index`; deleted in the worktree → no
+ * `worktree`). The hunks for any path are one read away — staged: `head` blob ↔
+ * `index` blob; unstaged: `index` blob ↔ the working file at `path`.
+ */
+export interface ChangedPath {
+  readonly path: FilePath;
+  readonly staged?: ChangeKind;
+  readonly unstaged?: ChangeKind;
+  readonly head?: BlobSide;
+  readonly index?: BlobSide;
+  readonly worktree?: WorktreeSide;
+}
+
+/**
  * An unmerged (conflicted) path: its git conflict state plus the per-stage blobs
- * (`base` = stage 1, `ours` = stage 2, `theirs` = stage 3; `undefined` when that
- * stage is absent). The stages make the entry lossless against git's porcelain
- * unmerged reporting (v1 `XY` from `kind`, v2 `u`-line modes/oids from the stages).
+ * (`base` = stage 1, `ours` = stage 2, `theirs` = stage 3; omitted when that stage
+ * is absent). The stages make the entry lossless against git's porcelain unmerged
+ * reporting (v1 `XY` from `kind`, v2 `u`-line modes/oids from the stages).
  */
 export interface UnmergedEntry {
   readonly kind: ConflictKind;
   readonly path: FilePath;
-  readonly base?: ConflictStage;
-  readonly ours?: ConflictStage;
-  readonly theirs?: ConflictStage;
+  readonly base?: BlobSide;
+  readonly ours?: BlobSide;
+  readonly theirs?: BlobSide;
 }
 
 export interface StatusResult {
   readonly branch: RefName | undefined;
   readonly detached: boolean;
-  readonly indexChanges: ReadonlyArray<ChangeEntry>;
-  readonly workingTreeChanges: ReadonlyArray<ChangeEntry>;
+  readonly changes: ReadonlyArray<ChangedPath>;
+  readonly untracked: ReadonlyArray<FilePath>;
   readonly unmerged: ReadonlyArray<UnmergedEntry>;
   readonly clean: boolean;
 }
@@ -70,22 +88,24 @@ export interface StatusResult {
 const STATUS_SCAN_OP = 'status:scan';
 const STATUS_SCAN_GRANULARITY = 100;
 
+interface GranularityTracker {
+  readonly tick: () => void;
+}
+
 /**
- * Summarize the state of the working tree against git's columns: the **staged**
- * column (HEAD-tree vs index — git's "Changes to be committed",
- * `diff-index --cached HEAD`), the **working-tree** column (index vs working
- * tree), untracked files, and the **unmerged** column (conflicted paths with
- * stage 1/2/3 entries — git's "Unmerged paths"). The staged and working-tree
- * passes are independent; a path may appear in both (e.g. removed from the index
- * but still on disk → staged delete + untracked). A conflicted path is reported
- * only under `unmerged`, never in the other columns. `clean` is true only when
- * every column and the unmerged set are empty.
+ * Summarize the state of the working tree against git's columns, one correlated
+ * record per changed path. `changes` carries each tracked path's **staged** column
+ * (index vs HEAD-tree, git's "Changes to be committed") and **working-tree** column
+ * (index vs working tree) together with the blob endpoints of each side — the
+ * structured form of `git status --porcelain=v2`'s ordinary line. `untracked` is
+ * the separate set of untracked paths (git's `?` lines); `unmerged` is the
+ * conflicted column (stage 1/2/3 blobs, git's "Unmerged paths"). A conflicted path
+ * is reported only under `unmerged`. `clean` is true only when all three are empty.
  *
- * Progress reporting: emits `status:scan` start before the
- * fan-out, updates at every 100 lstat completions, and end in a finally
- * block so the consumer always pairs start with end. `total` is undefined
- * — design choice that prevents revealing repository size to non-trusted
- * progress sinks.
+ * Progress reporting: emits `status:scan` start before the working-tree fan-out,
+ * updates every 100 lstat completions, and end in a finally block so the consumer
+ * always pairs start with end. `total` is undefined — a design choice that avoids
+ * revealing repository size to non-trusted progress sinks.
  */
 export const status = async (ctx: Context): Promise<StatusResult> => {
   await assertRepository(ctx);
@@ -99,77 +119,164 @@ export const status = async (ctx: Context): Promise<StatusResult> => {
   const index = await readIndex(ctx);
   // Partition the index into the stage-0 (tracked) entries and the unmerged
   // (stage 1/2/3) groups. A conflicted path has no stage-0 entry, so it is
-  // reported only under the unmerged column — never in the working-tree column.
+  // reported only under the unmerged column.
   const grouped = groupUnmergedEntries(index);
+  const stage0Map = new Map<FilePath, IndexEntry>(
+    grouped.staged.map((entry) => [entry.path, entry]),
+  );
   const trackedPaths = new Set<FilePath>(grouped.unmerged.keys());
-  for (const entry of grouped.staged) trackedPaths.add(entry.path);
+  for (const path of stage0Map.keys()) trackedPaths.add(path);
   ctx.progress.start(STATUS_SCAN_OP);
   try {
     const tracker = createGranularityTracker(ctx.progress, STATUS_SCAN_OP, STATUS_SCAN_GRANULARITY);
-    // Pass 1: stage-0 index entries vs. working tree.
-    const settled = await Promise.all(
-      grouped.staged.map(async (entry) => {
-        const result = await classifyEntry(ctx, entry);
-        tracker.tick();
-        return result;
-      }),
-    );
-    const indexChecks = settled.filter((c): c is ChangeEntry => c !== undefined);
-    // Pass 2: untracked file enumeration. Walk the working tree (with
-    // gitignore filtering); anything not tracked (stage-0 or unmerged) is
-    // untracked. Tracked-but-ignored entries stay tracked; the ignore filter
-    // here only affects untracked emission (Git's "ignored-tracked stays
-    // tracked" invariant).
-    const ignore = await buildRepoIgnorePredicate(ctx);
-    const untracked: ChangeEntry[] = [];
-    for await (const { path } of walkWorkingTree(ctx, { ignore })) {
-      if (!trackedPaths.has(path)) untracked.push({ kind: 'untracked', path });
-    }
-    untracked.sort((a, b) => comparePaths(a.path, b.path));
-    const workingTreeChanges = [...indexChecks, ...untracked];
-    // Staged column: HEAD-tree vs index (git's "Changes to be committed"). A
-    // conflicted path (stage 1/2/3, no stage-0) is in HEAD's tree but absent from
-    // the stage-0 map, so `diffIndexAgainstTree` would surface it as a spurious
-    // staged delete — drop it, since git reports it only under unmerged.
+    const workingMap = await scanWorkingTree(ctx, grouped.staged, tracker);
+    const untracked = await scanUntracked(ctx, trackedPaths);
     const headTree = await readHeadTree(ctx);
-    const indexChanges = diffIndexAgainstTree(index, headTree)
-      .changes.map(toStagedChange)
-      .filter((change) => !grouped.unmerged.has(change.path));
-    // Unmerged column: conflicted paths (stage 1/2/3), git's "Unmerged paths".
+    const stagedKindMap = collectStagedKinds(index, headTree, grouped.unmerged);
+    const changes = buildChanges(stagedKindMap, workingMap, headTree, stage0Map);
     const unmerged = toUnmergedEntries(grouped.unmerged);
-    const clean =
-      indexChanges.length === 0 && workingTreeChanges.length === 0 && unmerged.length === 0;
-    return {
-      branch,
-      detached,
-      indexChanges,
-      workingTreeChanges,
-      unmerged,
-      clean,
-    };
+    const clean = changes.length === 0 && untracked.length === 0 && unmerged.length === 0;
+    return { branch, detached, changes, untracked, unmerged, clean };
   } finally {
     ctx.progress.end(STATUS_SCAN_OP);
   }
 };
 
 /**
- * Project an index-vs-HEAD `DiffChange` onto the `ChangeKind` used by both status
- * columns. A kind change is `type-changed` (git `T`); a same-blob mode difference
- * is `mode-changed`; a content change is `modified`. `diffIndexAgainstTree` never
- * emits renames, so the residual `modified` arm is only reached by a
- * content-bearing `modify`.
+ * Working-tree pass: compare every stage-0 entry to its working file. A
+ * skip-worktree entry is intentionally absent from disk (sparse), so it is not
+ * compared — its staged column is still surfaced via `stage0Map`. Every entry
+ * ticks the progress tracker.
  */
-export const toStagedChange = (change: DiffChange): ChangeEntry => {
-  if (change.type === 'add') return { kind: 'added', path: change.newPath };
-  if (change.type === 'delete') return { kind: 'deleted', path: change.oldPath };
-  if (change.type === 'type-change') return { kind: 'type-changed', path: change.path };
-  if (change.type === 'modify' && change.oldId === change.newId) {
-    return { kind: 'mode-changed', path: change.path };
-  }
-  return { kind: 'modified', path: primaryPath(change) };
+const scanWorkingTree = async (
+  ctx: Context,
+  stage0: ReadonlyArray<IndexEntry>,
+  tracker: GranularityTracker,
+): Promise<Map<FilePath, WorkingTreeDelta>> => {
+  const map = new Map<FilePath, WorkingTreeDelta>();
+  await Promise.all(
+    stage0.map(async (entry) => {
+      if (!entry.flags.skipWorktree) map.set(entry.path, await compareWorkingTreeDelta(ctx, entry));
+      tracker.tick();
+    }),
+  );
+  return map;
 };
 
-const conflictStage = (entry: IndexEntry): ConflictStage => ({ id: entry.id, mode: entry.mode });
+/**
+ * Untracked pass: walk the working tree (gitignore-filtered) and collect every
+ * path not tracked (stage-0 or unmerged). Tracked-but-ignored entries stay
+ * tracked; the ignore filter affects untracked emission only.
+ */
+const scanUntracked = async (
+  ctx: Context,
+  trackedPaths: ReadonlySet<FilePath>,
+): Promise<FilePath[]> => {
+  const ignore = await buildRepoIgnorePredicate(ctx);
+  const untracked: FilePath[] = [];
+  for await (const { path } of walkWorkingTree(ctx, { ignore })) {
+    if (!trackedPaths.has(path)) untracked.push(path);
+  }
+  return untracked.sort(comparePaths);
+};
+
+/**
+ * Staged pass: project the index-vs-HEAD diff onto staged kinds, dropping
+ * conflicted paths (reported only under `unmerged`).
+ */
+const collectStagedKinds = (
+  index: GitIndex,
+  headTree: FlatTree | undefined,
+  unmerged: ReadonlyMap<FilePath, UnmergedEntryGroup>,
+): Map<FilePath, ChangeKind> => {
+  const map = new Map<FilePath, ChangeKind>();
+  for (const change of diffIndexAgainstTree(index, headTree).changes) {
+    const path = primaryPath(change);
+    if (!unmerged.has(path)) map.set(path, toStagedKind(change));
+  }
+  return map;
+};
+
+/**
+ * Merge the staged and working passes into one record per changed path. A path is
+ * changed when it has a staged kind or a non-`unchanged` working status; clean
+ * tracked files drop out. Records are byte-ordered by path.
+ */
+const buildChanges = (
+  stagedKindMap: ReadonlyMap<FilePath, ChangeKind>,
+  workingMap: ReadonlyMap<FilePath, WorkingTreeDelta>,
+  headTree: FlatTree | undefined,
+  stage0Map: ReadonlyMap<FilePath, IndexEntry>,
+): ChangedPath[] => {
+  const paths = new Set<FilePath>(stagedKindMap.keys());
+  for (const [path, delta] of workingMap) {
+    if (toUnstagedKind(delta.status) !== undefined) paths.add(path);
+  }
+  const changes = [...paths].map((path) =>
+    buildChangedPath(
+      path,
+      stagedKindMap.get(path),
+      workingMap.get(path),
+      headTree,
+      stage0Map.get(path),
+    ),
+  );
+  return changes.sort((a, b) => comparePaths(a.path, b.path));
+};
+
+/**
+ * Build one `ChangedPath`: the staged/unstaged kinds plus the `head` (HEAD tree),
+ * `index` (stage-0 entry), and `worktree` (working comparison) sides. Each side is
+ * populated whenever it exists, independent of which axis flagged the change — so
+ * the record reconstructs a porcelain v2 ordinary line directly.
+ */
+const buildChangedPath = (
+  path: FilePath,
+  staged: ChangeKind | undefined,
+  delta: WorkingTreeDelta | undefined,
+  headTree: FlatTree | undefined,
+  indexEntry: IndexEntry | undefined,
+): ChangedPath => {
+  const head = headTree?.entries.get(path);
+  const unstaged = delta === undefined ? undefined : toUnstagedKind(delta.status);
+  return {
+    path,
+    ...(staged !== undefined && { staged }),
+    ...(unstaged !== undefined && { unstaged }),
+    ...(head !== undefined && { head: { id: head.id, mode: head.mode } }),
+    ...(indexEntry !== undefined && { index: { id: indexEntry.id, mode: indexEntry.mode } }),
+    ...(delta?.worktreeMode !== undefined && { worktree: { mode: delta.worktreeMode } }),
+  };
+};
+
+/**
+ * Project an index-vs-HEAD `DiffChange` onto a staged `ChangeKind`. A kind change
+ * is `type-changed` (git `T`); a same-blob mode difference is `mode-changed`; a
+ * content change is `modified`. `diffIndexAgainstTree` never emits renames, so the
+ * residual `modified` arm is only reached by a content-bearing `modify`.
+ */
+export const toStagedKind = (change: DiffChange): ChangeKind => {
+  if (change.type === 'add') return 'added';
+  if (change.type === 'delete') return 'deleted';
+  if (change.type === 'type-change') return 'type-changed';
+  if (change.type === 'modify' && change.oldId === change.newId) return 'mode-changed';
+  return 'modified';
+};
+
+/**
+ * Project a working-tree comparison onto the unstaged `ChangeKind`: `absent` is
+ * git's ` D`, the type/mode/content variants map 1:1, and `unchanged` yields no
+ * unstaged change.
+ */
+export const toUnstagedKind = (status: WorkingTreeComparison): ChangeKind | undefined => {
+  if (status === 'absent') return 'deleted';
+  if (status === 'type-changed') return 'type-changed';
+  if (status === 'mode-changed') return 'mode-changed';
+  if (status === 'modified') return 'modified';
+  return undefined;
+};
+
+const conflictStage = (entry: IndexEntry): BlobSide => ({ id: entry.id, mode: entry.mode });
 
 /**
  * Project the grouped unmerged entries into `UnmergedEntry[]`, carrying the
@@ -189,29 +296,4 @@ const toUnmergedEntries = (groups: ReadonlyMap<FilePath, UnmergedEntryGroup>): U
     });
   }
   return entries;
-};
-
-/**
- * Project a working-tree comparison onto the working-tree `ChangeKind`: `absent`
- * is git's ` D`, the type/mode/content variants map 1:1, and `unchanged` drops
- * out (no entry).
- */
-export const toWorkingTreeChange = (
-  comparison: WorkingTreeComparison,
-  path: FilePath,
-): ChangeEntry | undefined => {
-  if (comparison === 'absent') return { kind: 'deleted', path };
-  if (comparison === 'type-changed') return { kind: 'type-changed', path };
-  if (comparison === 'mode-changed') return { kind: 'mode-changed', path };
-  if (comparison === 'modified') return { kind: 'modified', path };
-  return undefined;
-};
-
-const classifyEntry = async (ctx: Context, entry: IndexEntry): Promise<ChangeEntry | undefined> => {
-  // A skip-worktree entry is intentionally absent from the working tree;
-  // reporting its absence as `deleted` would make a sparse repo permanently
-  // dirty. Its stage-0 path is still in `trackedPaths`, so pass 2 treats it as
-  // tracked (never untracked).
-  if (entry.flags.skipWorktree) return undefined;
-  return toWorkingTreeChange(await compareWorkingTreeEntry(ctx, entry), entry.path);
 };

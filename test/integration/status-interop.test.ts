@@ -28,6 +28,7 @@ import {
   type StatusResult,
   status as statusCmd,
 } from '../../src/application/commands/status.js';
+import type { FilePath } from '../../src/domain/objects/index.js';
 import type { Context } from '../../src/ports/context.js';
 import { GIT_AVAILABLE, git, runGit, runGitEnv, tryRunGit } from './interop-helpers.js';
 
@@ -112,8 +113,7 @@ const code = (kind: ChangeKind): string => {
   if (kind === 'added') return 'A';
   if (kind === 'deleted') return 'D';
   if (kind === 'type-changed') return 'T';
-  if (kind === 'modified' || kind === 'mode-changed') return 'M';
-  return '?';
+  return 'M'; // 'modified' | 'mode-changed'
 };
 
 // git's unmerged `XY` is a function of which stages are present (the same mapping
@@ -128,12 +128,14 @@ const CONFLICT_XY: Record<ConflictKind, string> = {
   'deleted-by-them': 'UD',
 };
 
-/** Reconstruct `git status --porcelain` from tsgit's structured columns. */
+/** Reconstruct `git status --porcelain` (v1) from tsgit's structured columns. */
 const reconstruct = (s: StatusResult): string => {
-  const staged = new Map(s.indexChanges.map((c) => [c.path, c.kind]));
-  const worktree = new Map(
-    s.workingTreeChanges.filter((c) => c.kind !== 'untracked').map((c) => [c.path, c.kind]),
-  );
+  const staged = new Map<FilePath, ChangeKind>();
+  const worktree = new Map<FilePath, ChangeKind>();
+  for (const c of s.changes) {
+    if (c.staged !== undefined) staged.set(c.path, c.staged);
+    if (c.unstaged !== undefined) worktree.set(c.path, c.unstaged);
+  }
   const unmerged = new Map(s.unmerged.map((u) => [u.path, u.kind]));
   const trackedPaths = [
     ...new Set([...staged.keys(), ...worktree.keys(), ...unmerged.keys()]),
@@ -145,11 +147,7 @@ const reconstruct = (s: StatusResult): string => {
     const wk = worktree.get(p);
     return `${sk === undefined ? ' ' : code(sk)}${wk === undefined ? ' ' : code(wk)} ${p}`;
   });
-  const untrackedLines = s.workingTreeChanges
-    .filter((c) => c.kind === 'untracked')
-    .map((c) => c.path)
-    .sort()
-    .map((p) => `?? ${p}`);
+  const untrackedLines = [...s.untracked].sort().map((p) => `?? ${p}`);
   const lines = [...trackedLines, ...untrackedLines];
   return lines.length === 0 ? '' : `${lines.join('\n')}\n`;
 };

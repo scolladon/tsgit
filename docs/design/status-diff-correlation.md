@@ -186,7 +186,7 @@ compute and **merge** the staged and working passes into per-path records.
 7. `clean` = `changes`, `untracked`, **and** `unmerged` all empty.
 
 Every side reflects existence, independent of which axis flagged the change — so a
-record is fully reconstructable into a porcelain v2 ordinary line. When `staged`
+record reconstructs a porcelain v2 ordinary line directly. When `staged`
 is `undefined` the `head` side equals the `index` side (git prints `hH == hI`);
 populating `head` from `headTree` regardless keeps the record direct rather than
 forcing the consumer to infer equality.
@@ -269,8 +269,8 @@ the public primitive barrel.
 - **No submodule state** in records — the `sub` field of git's `1`/`2` lines is
   always `N...` for the non-submodule paths tsgit's status models; not surfaced.
 - **`unmerged` unchanged** — already self-describing (ADR-256). Adding the
-  conflict-path **worktree mode** (`mW` of the `u` line) to make `UnmergedEntry`
-  fully v2-`u`-line-reconstructable is a logged follow-up (**23.4m**), not this PR.
+  conflict-path **worktree mode** (`mW` of the `u` line) so `UnmergedEntry` can
+  reconstruct the full v2 `u` line is a logged follow-up (**23.4m**), not this PR.
 - **Read-model convergence** (commands as projections over a unified read model)
   remains the 23.4j capstone; this pass defines the v2-faithful `StatusResult`
   shape that capstone will converge on, without forcing the abstraction early.
