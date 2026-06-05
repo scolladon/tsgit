@@ -8,6 +8,16 @@ import type { FileStat } from '../../../../../src/ports/file-system.js';
 const indexPath = (ctx: Context): string => `${ctx.layout.gitDir}/index`;
 const lockPath = (ctx: Context): string => `${indexPath(ctx)}.lock`;
 
+/**
+ * Set the repo-wide stale-lock break window (environment policy on `ctx.config`,
+ * the only place `acquireIndexLock` reads it from). Shares the original `fs` and
+ * `layout`, so assertions on the source `ctx` observe the same lock file.
+ */
+const withWindow = (ctx: Context, breakStaleLockMs: number): Context => ({
+  ...ctx,
+  config: { ...ctx.config, breakStaleLockMs },
+});
+
 /** A FileStat with an arbitrary mtime — used to simulate a stale lock for break tests. */
 const statWithMtime = (mtimeMs: number): FileStat => ({
   ctimeMs: mtimeMs,
@@ -90,7 +100,7 @@ describe('internal/index-update', () => {
         const now = () => Date.now() + 60_000;
 
         // Act
-        const sut = await acquireIndexLock(ctx, { breakStaleLockMs: 1000, now });
+        const sut = await acquireIndexLock(withWindow(ctx, 1000), { now });
 
         // Assert
         expect(await ctx.fs.exists(lockPath(ctx))).toBe(true);
@@ -110,7 +120,7 @@ describe('internal/index-update', () => {
 
         // Act + Assert
         await expectError(
-          () => acquireIndexLock(ctx, { breakStaleLockMs: 1000, now }),
+          () => acquireIndexLock(withWindow(ctx, 1000), { now }),
           'RESOURCE_LOCKED',
         );
       });
@@ -181,7 +191,7 @@ describe('internal/index-update', () => {
         const now = () => mtime + 1000;
 
         // Act
-        const sut = await acquireIndexLock(ctx, { breakStaleLockMs: 1000, now });
+        const sut = await acquireIndexLock(withWindow(ctx, 1000), { now });
 
         // Assert — the lock was broken and re-acquired.
         expect(await ctx.fs.exists(lockPath(ctx))).toBe(true);
@@ -201,7 +211,7 @@ describe('internal/index-update', () => {
 
         // Act + Assert
         await expectError(
-          () => acquireIndexLock(ctx, { breakStaleLockMs: 1000, now }),
+          () => acquireIndexLock(withWindow(ctx, 1000), { now }),
           'RESOURCE_LOCKED',
         );
       });
@@ -224,26 +234,6 @@ describe('internal/index-update', () => {
         // Assert — broken + re-acquired, not RESOURCE_LOCKED.
         expect(await ctx.fs.exists(lockPath(ctx))).toBe(true);
         await sut.release();
-      });
-    });
-  });
-
-  describe('Given both an explicit opts.breakStaleLockMs and ctx.config.breakStaleLockMs', () => {
-    describe('When acquireIndexLock', () => {
-      it('Then the explicit opts value takes precedence over config', async () => {
-        // Arrange — config (1 ms) would treat the lock as stale and break it; the
-        // explicit opts window (100_000 ms) does NOT. RESOURCE_LOCKED proves opts won.
-        const base = createMemoryContext();
-        const ctx: Context = { ...base, config: { breakStaleLockMs: 1 } };
-        await ctx.fs.write(lockPath(ctx), new Uint8Array([1]));
-        const mtime = (await ctx.fs.lstat(lockPath(ctx))).mtimeMs;
-        const now = (): number => mtime + 1000; // age 1000: stale under config(1), fresh under opts(100_000)
-
-        // Act + Assert
-        await expectError(
-          () => acquireIndexLock(ctx, { breakStaleLockMs: 100_000, now }),
-          'RESOURCE_LOCKED',
-        );
       });
     });
   });
@@ -351,7 +341,7 @@ describe('internal/index-update', () => {
 
         // Act + Assert — clock-skew guard fires before the threshold comparison.
         const caught = await expectError(
-          () => acquireIndexLock(ctx, { breakStaleLockMs: -100, now }),
+          () => acquireIndexLock(withWindow(ctx, -100), { now }),
           'RESOURCE_LOCKED',
         );
         expect(caught.data).toMatchObject({ resource: 'index', mtimeMs: mtime });
@@ -370,7 +360,7 @@ describe('internal/index-update', () => {
         const now = (): number => mtime; // age = 0 exactly
 
         // Act
-        const sut = await acquireIndexLock(ctx, { breakStaleLockMs: 0, now });
+        const sut = await acquireIndexLock(withWindow(ctx, 0), { now });
 
         // Assert — succeeded (broken), not rejected as clock skew.
         expect(await ctx.fs.exists(lockPath(ctx))).toBe(true);
@@ -537,7 +527,7 @@ describe('internal/index-update', () => {
 
         // Act + Assert
         const caught = await expectError(
-          () => acquireIndexLock(ctxStale, { breakStaleLockMs: 1000, now }),
+          () => acquireIndexLock(withWindow(ctxStale, 1000), { now }),
           'RESOURCE_LOCKED',
         );
         expect(writeCalls).toBe(2);
@@ -573,7 +563,7 @@ describe('internal/index-update', () => {
 
         // Act + Assert
         const caught = await expectError(
-          () => acquireIndexLock(ctx, { breakStaleLockMs: 1000, now }),
+          () => acquireIndexLock(withWindow(ctx, 1000), { now }),
           'PERMISSION_DENIED',
         );
         expect(caught).toBe(denied);
