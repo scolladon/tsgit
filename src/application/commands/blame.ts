@@ -13,7 +13,7 @@
  */
 import { splitAgainstParent } from '../../domain/blame/split-blame.js';
 import type { BlameEntry } from '../../domain/blame/types.js';
-import { invalidOption, pathNotInTree } from '../../domain/commands/error.js';
+import { invalidOption, pathNotInTree, worktreeFileAbsent } from '../../domain/commands/error.js';
 import { enqueue, type QueueEntry } from '../../domain/commit/priority-queue.js';
 import { diffLines, splitLines } from '../../domain/diff/line-diff.js';
 import type { CommitData } from '../../domain/objects/commit.js';
@@ -24,13 +24,23 @@ import type { Context } from '../../ports/context.js';
 import { diffTrees } from '../primitives/diff-trees.js';
 import { flattenTree } from '../primitives/flatten-tree.js';
 import { readBlob } from '../primitives/read-blob.js';
+import { readIndex } from '../primitives/read-index.js';
 import { resolveCommitIsh } from './internal/commit-ish.js';
 import { readCommitData } from './internal/history-rewrite.js';
 import { assertRepository } from './internal/repo-state.js';
 
+const LINK_ENCODER = new TextEncoder();
+
 export interface BlameOptions {
-  /** Commit-ish to blame as-of (default: HEAD). */
+  /** Commit-ish to blame as-of (default: HEAD). Mutually exclusive with `worktree`. */
   readonly rev?: string;
+  /**
+   * Blame the working-tree content instead of a committed revision (git's bare
+   * `git blame <file>`): lines matching the committed history blame to their real
+   * commits, uncommitted lines to the "Not Committed Yet" pseudo-commit
+   * (`committed: false`). Mutually exclusive with `rev`; requires a working tree.
+   */
+  readonly worktree?: boolean;
   /**
    * Restrict the reported lines to a 1-based inclusive `[start, end]` window over
    * the final file (git's `-L`). `end` past the last line is clamped; a start
@@ -106,13 +116,81 @@ export const blame = async (
 ): Promise<BlameResult> => {
   await assertRepository(ctx);
   const filePath = FilePathFactory.from(path);
-  const rev = opts.rev ?? DEFAULT_REV;
-  const startCommit = await resolveCommitIsh(ctx, rev);
   const board: Scoreboard = { ctx, queue: [], finalized: [] };
-  await seed(board, startCommit, filePath, rev);
+  if (opts.worktree === true) {
+    if (opts.rev !== undefined) {
+      throw invalidOption('worktree', 'cannot combine with a revision');
+    }
+    await seedWorkingTree(board, filePath);
+  } else {
+    const rev = opts.rev ?? DEFAULT_REV;
+    await seed(board, await resolveCommitIsh(ctx, rev), filePath, rev);
+  }
   await walk(board);
   const lines = [...board.finalized].sort((a, b) => a.finalLine - b.finalLine);
   return { path: filePath, lines: applyRange(lines, opts.range) };
+};
+
+/**
+ * Seed the working-tree pseudo-commit (git's bare `git blame <file>`). Resolves
+ * HEAD first (an unborn HEAD refuses here, as git does), reads the working file,
+ * then diffs it against HEAD's blob: lines common with HEAD enter the committed
+ * walk; lines that differ (or the whole file when the path is staged-new) finalize
+ * as uncommitted. A path absent from both HEAD and the index is untracked → refuse.
+ */
+const seedWorkingTree = async (sb: Scoreboard, path: FilePath): Promise<void> => {
+  const head = await resolveCommitIsh(sb.ctx, DEFAULT_REV);
+  const data = await readCommitData(sb.ctx, head);
+  const workingBlob = await readWorkingFile(sb.ctx, path);
+  const count = splitLines(workingBlob).length;
+  if (count === 0) return;
+  const whole: ReadonlyArray<BlameEntry> = [{ finalStart: 0, count, sourceStart: 0 }];
+  const headBlob = await blobAtPath(sb.ctx, data.tree, path);
+  if (headBlob !== undefined) {
+    const { passed, kept } = splitAgainstParent(whole, diffLines(headBlob, workingBlob));
+    schedule(sb, head, path, data.committer.timestamp, headBlob, passed);
+    finalizeUncommitted(sb, path, workingBlob, kept, { commit: head, path });
+    return;
+  }
+  const index = await readIndex(sb.ctx);
+  if (index.entries.some((entry) => entry.path === path)) {
+    finalizeUncommitted(sb, path, workingBlob, whole, undefined);
+    return;
+  }
+  throw pathNotInTree(DEFAULT_REV, path);
+};
+
+/** Read the working-tree file's bytes (symlink → its target); absent → refuse like git's `Cannot lstat`. */
+const readWorkingFile = async (ctx: Context, path: FilePath): Promise<Uint8Array> => {
+  const absPath = `${ctx.layout.workDir}/${path}`;
+  const stat = await ctx.fs.lstat(absPath).catch(() => undefined);
+  if (stat === undefined) throw worktreeFileAbsent(path);
+  return stat.isSymbolicLink
+    ? LINK_ENCODER.encode(await ctx.fs.readlink(absPath))
+    : ctx.fs.read(absPath);
+};
+
+/** Finalize lines to the zero-oid "Not Committed Yet" pseudo-commit (`committed: false`). */
+const finalizeUncommitted = (
+  sb: Scoreboard,
+  path: FilePath,
+  blob: Uint8Array,
+  entries: ReadonlyArray<BlameEntry>,
+  previous: BlameLine['previous'],
+): void => {
+  const lines = splitLines(blob);
+  for (const entry of entries) {
+    for (const offset of offsets(entry.count)) {
+      sb.finalized.push({
+        committed: false,
+        finalLine: entry.finalStart + offset + 1,
+        sourceLine: entry.sourceStart + offset + 1,
+        sourcePath: path,
+        ...(previous !== undefined ? { previous } : {}),
+        content: lines[entry.sourceStart + offset] as Uint8Array,
+      });
+    }
+  }
 };
 
 /** Filter to a 1-based inclusive line window, clamping `end` and refusing bad bounds. */

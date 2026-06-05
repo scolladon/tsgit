@@ -448,3 +448,188 @@ describe('Given a multi-commit file and a line range', () => {
     });
   });
 });
+
+const write = (ctx: Context, path: string, content: string): Promise<void> =>
+  ctx.fs.writeUtf8(`${ctx.layout.workDir}/${path}`, content);
+
+describe('Given a worktree blame on a clean tree', () => {
+  describe('When blaming with the worktree option', () => {
+    it('Then the result is identical to blaming HEAD', async () => {
+      // Arrange
+      const ctx = await seed();
+      await commitFile(ctx, 'c1', 'f.txt', 'a\nb\n');
+
+      // Act
+      const sut = await blame(ctx, 'f.txt', { worktree: true });
+
+      // Assert
+      expect(sut).toEqual(await blame(ctx, 'f.txt'));
+      expect(sut.lines.every((l) => l.committed)).toBe(true);
+    });
+  });
+});
+
+describe('Given a tracked file modified in the worktree but not committed', () => {
+  describe('When blaming the worktree', () => {
+    it('Then the changed line blames the pseudo-commit and the rest their commits', async () => {
+      // Arrange
+      const ctx = await seed();
+      const c1 = await commitFile(ctx, 'c1', 'f.txt', 'a\nb\nc\n');
+      await write(ctx, 'f.txt', 'a\nB\nc\n');
+
+      // Act
+      const sut = await blame(ctx, 'f.txt', { worktree: true });
+
+      // Assert
+      expect(sut.lines.map((l) => l.committed)).toEqual([true, false, true]);
+      expect(sut.lines.map((l) => l.finalLine)).toEqual([1, 2, 3]);
+      expect(sut.lines[0]).toMatchObject({ committed: true, commit: c1 });
+      expect(sut.lines[2]).toMatchObject({ committed: true, commit: c1 });
+      const changed = sut.lines[1]!;
+      expect(changed.committed).toBe(false);
+      expect(changed.sourceLine).toBe(2);
+      expect(text(changed.content)).toBe('B\n');
+      expect(changed.previous).toEqual({ commit: c1, path: 'f.txt' });
+    });
+  });
+
+  describe('When a new line is appended in the worktree', () => {
+    it('Then the appended line blames the pseudo-commit with HEAD as previous', async () => {
+      // Arrange
+      const ctx = await seed();
+      const c1 = await commitFile(ctx, 'c1', 'f.txt', 'a\nb\n');
+      await write(ctx, 'f.txt', 'a\nb\nc\n');
+
+      // Act
+      const sut = await blame(ctx, 'f.txt', { worktree: true });
+
+      // Assert
+      expect(sut.lines.map((l) => l.committed)).toEqual([true, true, false]);
+      const appended = sut.lines[2]!;
+      expect(appended.finalLine).toBe(3);
+      expect(appended.sourceLine).toBe(3);
+      expect(text(appended.content)).toBe('c\n');
+      expect(appended.previous).toEqual({ commit: c1, path: 'f.txt' });
+    });
+  });
+});
+
+describe('Given a new file staged but never committed', () => {
+  describe('When blaming the worktree', () => {
+    it('Then every line blames the pseudo-commit with no previous', async () => {
+      // Arrange
+      const ctx = await seed();
+      await commitFile(ctx, 'c1', 'other.txt', 'x\n');
+      await write(ctx, 'new.txt', 'p\nq\n');
+      await add(ctx, ['new.txt']);
+
+      // Act
+      const sut = await blame(ctx, 'new.txt', { worktree: true });
+
+      // Assert
+      expect(sut.lines.map((l) => l.committed)).toEqual([false, false]);
+      expect(sut.lines.map((l) => l.finalLine)).toEqual([1, 2]);
+      expect(sut.lines.map((l) => l.sourceLine)).toEqual([1, 2]);
+      expect(sut.lines.every((l) => l.previous === undefined)).toBe(true);
+      expect(sut.lines.map((l) => text(l.content))).toEqual(['p\n', 'q\n']);
+    });
+  });
+});
+
+describe('Given a worktree blame and a line range', () => {
+  describe('When the range spans a committed and an uncommitted line', () => {
+    it('Then both are reported with their respective attribution', async () => {
+      // Arrange
+      const ctx = await seed();
+      const c1 = await commitFile(ctx, 'c1', 'f.txt', 'a\nb\nc\nd\n');
+      await write(ctx, 'f.txt', 'a\nB\nc\nD\n');
+
+      // Act
+      const sut = await blame(ctx, 'f.txt', { worktree: true, range: { start: 2, end: 3 } });
+
+      // Assert
+      expect(sut.lines.map((l) => l.finalLine)).toEqual([2, 3]);
+      expect(sut.lines[0]).toMatchObject({ committed: false });
+      expect(sut.lines[1]).toMatchObject({ committed: true, commit: c1 });
+    });
+  });
+});
+
+describe('Given a worktree blame with an empty working file', () => {
+  describe('When blaming it', () => {
+    it('Then no lines are reported', async () => {
+      // Arrange
+      const ctx = await seed();
+      await commitFile(ctx, 'c1', 'f.txt', 'a\nb\n');
+      await write(ctx, 'f.txt', '');
+
+      // Act
+      const sut = await blame(ctx, 'f.txt', { worktree: true });
+
+      // Assert
+      expect(sut.lines).toEqual([]);
+    });
+  });
+});
+
+describe('Given a worktree blame on an untracked file', () => {
+  describe('When blaming it', () => {
+    it('Then it refuses with PATH_NOT_IN_TREE', async () => {
+      // Arrange
+      const ctx = await seed();
+      await commitFile(ctx, 'c1', 'other.txt', 'x\n');
+      await write(ctx, 'untracked.txt', 'a\n');
+
+      // Act + Assert
+      await expect(blame(ctx, 'untracked.txt', { worktree: true })).rejects.toMatchObject({
+        data: { code: 'PATH_NOT_IN_TREE', rev: 'HEAD', path: 'untracked.txt' },
+      });
+    });
+  });
+});
+
+describe('Given a worktree blame on a tracked file deleted from disk', () => {
+  describe('When blaming it', () => {
+    it('Then it refuses with WORKTREE_FILE_ABSENT', async () => {
+      // Arrange
+      const ctx = await seed();
+      await commitFile(ctx, 'c1', 'f.txt', 'a\n');
+      await ctx.fs.rm(`${ctx.layout.workDir}/f.txt`);
+
+      // Act + Assert
+      await expect(blame(ctx, 'f.txt', { worktree: true })).rejects.toMatchObject({
+        data: { code: 'WORKTREE_FILE_ABSENT', path: 'f.txt' },
+      });
+    });
+  });
+});
+
+describe('Given a worktree blame on an unborn HEAD', () => {
+  describe('When blaming it', () => {
+    it('Then it refuses with REF_NOT_FOUND before reading the working file', async () => {
+      // Arrange — init only, no commit; a working file present must not mask the refusal
+      const ctx = await seed();
+      await write(ctx, 'f.txt', 'a\n');
+
+      // Act + Assert
+      await expect(blame(ctx, 'f.txt', { worktree: true })).rejects.toMatchObject({
+        data: { code: 'REF_NOT_FOUND' },
+      });
+    });
+  });
+});
+
+describe('Given the worktree option combined with an explicit revision', () => {
+  describe('When blaming', () => {
+    it('Then it refuses the contradictory combination with INVALID_OPTION', async () => {
+      // Arrange
+      const ctx = await seed();
+      await commitFile(ctx, 'c1', 'f.txt', 'a\n');
+
+      // Act + Assert
+      await expect(blame(ctx, 'f.txt', { worktree: true, rev: 'HEAD' })).rejects.toMatchObject({
+        data: { code: 'INVALID_OPTION', option: 'worktree' },
+      });
+    });
+  });
+});

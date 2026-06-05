@@ -100,6 +100,7 @@ export function assertExhaustiveSwitch(data: TsgitErrorData): void {
     case 'REVPARSE_AMBIGUOUS':
     case 'REVPARSE_UNRESOLVED':
     case 'PATH_NOT_IN_TREE':
+    case 'WORKTREE_FILE_ABSENT':
     case 'EMPTY_PATHSPEC':
     case 'OPERATION_IN_PROGRESS':
     case 'NO_OPERATION_IN_PROGRESS':
