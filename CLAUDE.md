@@ -46,23 +46,26 @@ npm run test:mutation # Stryker mutation testing
 npm run build         # Compile to dist/
 ```
 
-## Code Navigation (LSP)
+## Code Navigation (Serena)
 
-Use the **LSP tool** as the default for navigating and understanding source —
-`goToDefinition`, `findReferences`, `goToImplementation`, `documentSymbol`,
-`workspaceSymbol`, `hover`, and the call-hierarchy ops. Reach for `Read`/`Grep`
-only for non-code files (markdown, JSON, generated artefacts) or a quick literal
-scan. Apply edits with `Edit`/`Write`.
+**Activate Serena on the active worktree first** (`mcp__serena__activate_project`
+with the absolute worktree path, e.g. `/abs/path/tsgit-<slug>`), then use its
+symbol/LSP tools (`find_symbol`, `find_referencing_symbols`, `rename_symbol`,
+`get_symbols_overview`, `insert_after_symbol`, …) as the **default** for
+navigating, understanding, and editing source. Fall back to the harness LSP tool
+or `Edit`/`Write` only when Serena can't do it; reach for `Read`/`Grep` only for
+non-code files (markdown, JSON, generated artefacts) or a quick literal scan.
 
-**Always pass absolute paths rooted at the active worktree** (e.g.
-`/abs/path/tsgit-<slug>/src/...`). The workflow runs in a sibling git worktree,
-but the harness resolves **relative** LSP paths against the *main* repo root —
-loading the wrong `tsconfig`/`node_modules`, surfacing spurious
-`Cannot find module` diagnostics, and showing stale content that misses your
-worktree edits. Absolute worktree paths pin the language server to the worktree's
-own project so references/hover/edits all reflect reality.
+**Why Serena, not the harness LSP, in worktrees:** Serena's activated-project LSP
+is rooted at the **worktree**, so references/hover/rename reflect the worktree's
+own edits and project (`tsconfig`/`node_modules`). The harness LSP tool is
+single-rooted at the **main** repo — for a sibling worktree's files it sees only
+the declaration, surfaces spurious `Cannot find module` cross-root diagnostics,
+and shows stale content that misses your worktree edits. Activation and the
+end-of-workflow `~/.serena` prune are a matched pair: every worktree that gets
+activated gets pruned when it's removed.
 
-LSP diagnostics are advisory only; the ground-truth gate is always
+LSP/Serena diagnostics are advisory only; the ground-truth gate is always
 `npm run validate` (and `npm run check:types`). Ignore lagging cross-root
 diagnostics when the type-check is green.
 
