@@ -75,12 +75,12 @@ const TAGS_PREFIX = 'refs/tags/';
 
 export const describe = async (
   ctx: Context,
-  input?: string,
+  rev?: string,
   opts: DescribeOptions = {},
 ): Promise<DescribeResult> => {
   await assertRepository(ctx);
-  const plan = parseDescribeOptions(opts, input !== undefined);
-  const target = await resolveCommitIsh(ctx, input ?? DEFAULT_REV);
+  const plan = parseDescribeOptions(opts, rev !== undefined);
+  const target = await resolveCommitIsh(ctx, rev ?? DEFAULT_REV);
   const dirty = await computeDirty(ctx, plan);
   const nameMap = await buildNameMap(ctx, plan);
   const minPriority = minQualifyingPriority(plan);

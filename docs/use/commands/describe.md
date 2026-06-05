@@ -10,8 +10,8 @@ line and abbreviates no oid. Assembling `<name>-<distance>-g<abbrev>` (or applyi
 ## Signature
 
 ```ts
-repo.describe(input?: string, opts?: DescribeOptions): Promise<DescribeResult>;
-// input defaults to 'HEAD'
+repo.describe(rev?: string, opts?: DescribeOptions): Promise<DescribeResult>;
+// rev defaults to 'HEAD'
 
 interface DescribeOptions {
   readonly tags?: boolean;        // include lightweight tags (priority ≥ 1)

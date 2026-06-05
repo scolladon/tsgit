@@ -189,18 +189,18 @@ export interface Repository {
   // the last overload, so the binding is hand-written to preserve all paths.
   readonly show: {
     (
-      input: ReadonlyArray<string>,
+      rev: ReadonlyArray<string>,
       opts: commands.ShowOptions & { withStat: true },
     ): Promise<ReadonlyArray<commands.ShowResult<StatTreeDiff>>>;
     (
-      input: string | undefined,
+      rev: string | undefined,
       opts: commands.ShowOptions & { withStat: true },
     ): Promise<commands.ShowResult<StatTreeDiff>>;
     (
-      input: ReadonlyArray<string>,
+      rev: ReadonlyArray<string>,
       opts?: commands.ShowOptions,
     ): Promise<ReadonlyArray<commands.ShowResult>>;
-    (input?: string, opts?: commands.ShowOptions): Promise<commands.ShowResult>;
+    (rev?: string, opts?: commands.ShowOptions): Promise<commands.ShowResult>;
   };
   /** Nested `repo.sparseCheckout.{list,set,add,reapply,disable}` namespace. */
   readonly sparseCheckout: commands.SparseCheckoutNamespace;
@@ -424,9 +424,9 @@ export const openRepository = async (
       return commands.commit(ctx, commitOpts);
     }) as Repository['commit'],
     config: commands.bindConfigNamespace(ctx, guard),
-    describe: ((input, describeOpts) => {
+    describe: ((rev, describeOpts) => {
       guard();
-      return commands.describe(ctx, input, describeOpts);
+      return commands.describe(ctx, rev, describeOpts);
     }) as Repository['describe'],
     // Overload-preserving binding. The inner cast to `commands.DiffOptions`
     // forwards to the implementation signature; the outer cast restores the
@@ -490,15 +490,15 @@ export const openRepository = async (
       guard();
       return commands.rm(ctx, paths, rmOpts);
     }) as Repository['rm'],
-    show: ((input, showOpts) => {
+    show: ((rev, showOpts) => {
       guard();
       return (
         commands.show as (
           c: Context,
-          i?: commands.ShowInput,
+          r?: commands.ShowInput,
           o?: commands.ShowOptions,
         ) => Promise<unknown>
-      )(ctx, input, showOpts);
+      )(ctx, rev, showOpts);
     }) as Repository['show'],
     sparseCheckout: commands.bindSparseCheckoutNamespace(ctx, guard),
     stash: commands.bindStashNamespace(ctx, guard),
