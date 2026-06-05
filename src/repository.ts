@@ -211,7 +211,7 @@ export interface Repository {
   /** Nested `repo.tag.{list,create,delete}` namespace. */
   readonly tag: commands.TagNamespace;
 
-  // Tier-2 primitives (16) — bound under.primitives.* to keep the top-level
+  // Tier-2 primitives (21) — bound under .primitives.* to keep the top-level
   // surface focused on user-facing commands.
   readonly primitives: {
     readonly catFileBatch: BindCtx<typeof primitives.catFileBatch>;
@@ -225,12 +225,8 @@ export interface Repository {
     readonly readIndex: BindCtx<typeof primitives.readIndex>;
     readonly readObject: BindCtx<typeof primitives.readObject>;
     readonly readTree: BindCtx<typeof primitives.readTree>;
-    readonly recordRefUpdate: BindCtx<typeof primitives.recordRefUpdate>;
     readonly resolveRef: BindCtx<typeof primitives.resolveRef>;
     readonly runHook: BindCtx<typeof primitives.runHook>;
-    readonly setEntryFlags: BindCtx<typeof primitives.setEntryFlags>;
-    readonly stageEntry: BindCtx<typeof primitives.stageEntry>;
-    readonly unstageEntry: BindCtx<typeof primitives.unstageEntry>;
     readonly updateRef: BindCtx<typeof primitives.updateRef>;
     readonly walkCommits: BindCtx<typeof primitives.walkCommits>;
     readonly walkCommitsByDate: BindCtx<typeof primitives.walkCommitsByDate>;
@@ -238,7 +234,6 @@ export interface Repository {
     readonly walkTree: BindCtx<typeof primitives.walkTree>;
     readonly walkWorkingTree: BindCtx<typeof primitives.walkWorkingTree>;
     readonly writeObject: BindCtx<typeof primitives.writeObject>;
-    readonly writeSymbolicRef: BindCtx<typeof primitives.writeSymbolicRef>;
     readonly writeTree: BindCtx<typeof primitives.writeTree>;
   };
 
@@ -556,10 +551,6 @@ export const openRepository = async (
         guard();
         return primitives.readTree(ctx, ref);
       }) as Repository['primitives']['readTree'],
-      recordRefUpdate: ((name, oldId, newId, message) => {
-        guard();
-        return primitives.recordRefUpdate(ctx, name, oldId, newId, message);
-      }) as Repository['primitives']['recordRefUpdate'],
       resolveRef: ((name, options) => {
         guard();
         return primitives.resolveRef(ctx, name, options);
@@ -568,18 +559,6 @@ export const openRepository = async (
         guard();
         return primitives.runHook(ctx, name, input);
       }) as Repository['primitives']['runHook'],
-      setEntryFlags: ((p, f, options) => {
-        guard();
-        return primitives.setEntryFlags(ctx, p, f, options);
-      }) as Repository['primitives']['setEntryFlags'],
-      stageEntry: ((p, source, options) => {
-        guard();
-        return primitives.stageEntry(ctx, p, source, options);
-      }) as Repository['primitives']['stageEntry'],
-      unstageEntry: ((p, options) => {
-        guard();
-        return primitives.unstageEntry(ctx, p, options);
-      }) as Repository['primitives']['unstageEntry'],
       updateRef: ((name, newId, options) => {
         guard();
         return primitives.updateRef(ctx, name, newId, options);
@@ -608,10 +587,6 @@ export const openRepository = async (
         guard();
         return primitives.writeObject(ctx, object);
       }) as Repository['primitives']['writeObject'],
-      writeSymbolicRef: ((name, target) => {
-        guard();
-        return primitives.writeSymbolicRef(ctx, name, target);
-      }) as Repository['primitives']['writeSymbolicRef'],
       writeTree: ((entries) => {
         guard();
         return primitives.writeTree(ctx, entries);

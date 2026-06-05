@@ -1,6 +1,6 @@
 # `updateRef`
 
-Convenience wrapper around [`recordRefUpdate`](record-ref-update.md). Same atomicity guarantees; gives you a positional `newId` for the common case.
+The coherent ref-write surface: atomically writes the ref, records the matching reflog (via the internal [`recordRefUpdate`](internals.md#recordrefupdate)), and logs coupled HEAD. A positional `newId` keeps the common case ergonomic.
 
 ## Signature
 
@@ -23,4 +23,5 @@ await repo.primitives.updateRef('refs/heads/main', newCommitId, {
 
 ## See also
 
-- Related primitives: [`recordRefUpdate`](record-ref-update.md), [`writeSymbolicRef`](write-symbolic-ref.md), [`resolveRef`](resolve-ref.md)
+- Related primitives: [`resolveRef`](resolve-ref.md)
+- Internal mechanisms: [`recordRefUpdate`](internals.md#recordrefupdate), [`writeSymbolicRef`](internals.md#writesymbolicref)

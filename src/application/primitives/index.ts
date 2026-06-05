@@ -47,7 +47,6 @@ export {
   readSparsePatternText,
 } from './read-sparse-checkout.js';
 export { readTree } from './read-tree.js';
-export { recordRefUpdate } from './record-ref-update.js';
 export { resolveReflogIdentity } from './reflog-identity.js';
 export {
   appendReflog,
@@ -59,15 +58,9 @@ export {
 } from './reflog-store.js';
 export { resolveRef } from './resolve-ref.js';
 export { type HookInput, runHook } from './run-hook.js';
-export type { SetEntryFlagsOptions } from './set-entry-flags.js';
-export { setEntryFlags } from './set-entry-flags.js';
 export { readShallow, updateShallow } from './shallow-file.js';
-export type { StageEntryOptions, StageEntrySource } from './stage-entry.js';
-export { stageEntry } from './stage-entry.js';
 export { synthesizeTreeFromIndex } from './synthesize-tree-from-index.js';
 export type * from './types.js';
-export type { UnstageEntryOptions } from './unstage-entry.js';
-export { unstageEntry } from './unstage-entry.js';
 export type { ConfigEntry } from './update-config.js';
 export {
   applyConfigOpInText,
@@ -89,5 +82,4 @@ export { walkTree } from './walk-tree.js';
 export { walkWorkingTree } from './walk-working-tree.js';
 export { writeObject } from './write-object.js';
 export { writeSparsePatternText } from './write-sparse-checkout.js';
-export { writeSymbolicRef } from './write-symbolic-ref.js';
 export { writeTree } from './write-tree.js';

@@ -5,7 +5,6 @@ import { commit } from '../../../../../src/application/commands/commit.js';
 import { init } from '../../../../../src/application/commands/init.js';
 import { assertCleanWorkTree } from '../../../../../src/application/commands/internal/clean-work-tree.js';
 import { readIndex } from '../../../../../src/application/primitives/read-index.js';
-import { setEntryFlags } from '../../../../../src/application/primitives/set-entry-flags.js';
 import { writeTree } from '../../../../../src/application/primitives/write-tree.js';
 import type { TsgitError } from '../../../../../src/domain/error.js';
 import type { GitIndex, IndexEntry } from '../../../../../src/domain/git-index/index.js';
@@ -208,7 +207,15 @@ describe('assertCleanWorkTree', () => {
       it('Then it passes (the sparse-excluded path is not compared on disk)', async () => {
         // Arrange — commit a file, mark its entry skip-worktree, remove the file
         const { ctx, headTree } = await seedClean('a.txt', 'hello\n');
-        await setEntryFlags(ctx, 'a.txt' as FilePath, { skipWorktree: true });
+        const { entries } = await readIndex(ctx);
+        await writeFramedIndex(
+          ctx,
+          entries.map((entry) =>
+            entry.path === ('a.txt' as FilePath)
+              ? { ...entry, flags: { ...entry.flags, skipWorktree: true } }
+              : entry,
+          ),
+        );
         await ctx.fs.rm(work(ctx, 'a.txt'));
 
         // Act + Assert (does not throw — id still matches HEAD, disk skipped)

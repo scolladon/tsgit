@@ -1,6 +1,6 @@
 # Internal building blocks
 
-Primitives exported from `@scolladon/tsgit/primitives` for advanced composition but **not** bound on `repo.primitives.*`. They power the Tier-1 commands. Each entry names the source file under `src/application/primitives/`; that file is the canonical reference for the signature.
+Internal building blocks that power the Tier-1 commands. Most are exported from `@scolladon/tsgit/primitives` for advanced composition (but **not** bound on `repo.primitives.*`); a few are **fully internal** — reachable only by the commands themselves — and are listed here to document how the porcelain works, not as a public surface. Each entry names the source file under `src/application/primitives/`; that file is the canonical reference for the signature.
 
 Alphabetical.
 
@@ -40,8 +40,14 @@ Alphabetical.
 ### `readConfig`
 `config-read.ts`. Read `.git/config` (INI tokenizer; reused by `.gitmodules` parsing in submodules).
 
+### `recordRefUpdate`
+`record-ref-update.ts`. **Fully internal.** The single reflog *writer*: reads config, applies the autocreate gate, resolves identity, sanitises the message, appends one entry. It moves no ref — [`updateRef`](update-ref.md) is the coherent public surface that writes the ref *and* records the matching reflog atomically. Used internally by [`clone`](../commands/clone.md), [`checkout`](../commands/checkout.md), [`commit`](../commands/commit.md), [`rebase`](../commands/rebase.md), and `updateRef`.
+
+### `writeSymbolicRef`
+`write-symbolic-ref.ts`. **Fully internal.** Write a `ref: <target>` symbolic ref (HEAD and friends) atomically, validating both names. Used internally by [`init`](../commands/init.md), [`checkout`](../commands/checkout.md), [`branch`](../commands/branch.md), [`rebase`](../commands/rebase.md) to set or move HEAD's symbolic pointer.
+
 ### `appendReflog`
-`reflog-store.ts`. Append one entry to `.git/logs/<ref>`. Called via [`recordRefUpdate`](record-ref-update.md).
+`reflog-store.ts`. Append one entry to `.git/logs/<ref>`. Called via `recordRefUpdate`.
 
 ### `deleteReflog`
 `reflog-store.ts`. Drop one entry by index, optionally rewriting subsequent entries.

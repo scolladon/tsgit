@@ -4,7 +4,6 @@ import type { Context } from '../../../ports/context.js';
 import { indexPath, lockSuffix } from '../path-layout.js';
 
 interface AcquireOptions {
-  readonly breakStaleLockMs?: number;
   /** Injectable clock — defaults to `Date.now`. Tests override to simulate stale/skewed locks. */
   readonly now?: () => number;
 }
@@ -30,11 +29,11 @@ const resourceLocked = (path: string, mtimeMs: number | undefined): TsgitError =
 /**
  * Acquire `${gitDir}/index.lock` for the read-modify-write cycle.
  *
- * The break window is the per-call `opts.breakStaleLockMs` when given, else the
- * repo-wide `ctx.config?.breakStaleLockMs` — stale-lock breaking is environment
- * policy fixed at `openRepository`, so every index acquisition honours it.
+ * The break window is the repo-wide `ctx.config?.breakStaleLockMs` — stale-lock
+ * breaking is environment policy fixed at `openRepository`, so every index
+ * acquisition honours it.
  *
- * Without a window (neither set): lock contention surfaces as `RESOURCE_LOCKED`
+ * Without a window (unset): lock contention surfaces as `RESOURCE_LOCKED`
  * (callers must handle).
  *
  * With a window `N`: when the existing lock's age `(now - mtime)` is in the
@@ -49,7 +48,7 @@ export const acquireIndexLock = async (
   const lockPath = `${indexPath(ctx.layout.gitDir)}${lockSuffix}`;
   const indexFile = indexPath(ctx.layout.gitDir);
   const now = opts.now ?? (() => Date.now());
-  const breakStaleLockMs = opts.breakStaleLockMs ?? ctx.config?.breakStaleLockMs;
+  const breakStaleLockMs = ctx.config?.breakStaleLockMs;
 
   try {
     await ctx.fs.writeExclusive(lockPath, new Uint8Array());

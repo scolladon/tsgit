@@ -27,4 +27,4 @@ const tagCommit = await repo.primitives.resolveRef('refs/tags/v1.0.0', { peel: t
 ## See also
 
 - Tier-1: [`revParse`](../commands/rev-parse.md), [`branch`](../commands/branch.md)
-- Related primitives: [`updateRef`](update-ref.md), [`recordRefUpdate`](record-ref-update.md)
+- Related primitives: [`updateRef`](update-ref.md)

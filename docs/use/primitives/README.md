@@ -17,20 +17,15 @@ The composable building blocks every Tier-1 command is built from. Same `Context
 | [`readIndex`](read-index.md) | Read `.git/index` (v2 or v3). |
 | [`readObject`](read-object.md) | Read any git object by id; transparent partial-clone lazy-fetch. |
 | [`readTree`](read-tree.md) | Read a tree object by ref or id (peeled). |
-| [`recordRefUpdate`](record-ref-update.md) | Atomic ref CRUD + reflog write. |
 | [`resolveRef`](resolve-ref.md) | Resolve a ref name to an `ObjectId`. |
 | [`runHook`](run-hook.md) | Execute a `.git/hooks/<name>` script (Node only). |
-| [`setEntryFlags`](set-entry-flags.md) | Flip `assumeValid` / `skipWorktree` / `intentToAdd` on a tracked path. |
-| [`stageEntry`](stage-entry.md) | Stage one entry from bytes or a known OID; atomic under the index lock. |
-| [`unstageEntry`](unstage-entry.md) | Drop a single tracked entry (no working-tree side-effect). |
-| [`updateRef`](update-ref.md) | Convenience wrapper around `recordRefUpdate`. |
+| [`updateRef`](update-ref.md) | Atomically write a ref, record its reflog, and log coupled HEAD. |
 | [`walkCommits`](walk-commits.md) | `AsyncIterable<Commit>` walker (any parent ordering). |
 | [`walkCommitsByDate`](walk-commits-by-date.md) | `AsyncIterable<Commit>` walker, all parents, newest committer-date first. |
 | [`walkSubmodules`](walk-submodules.md) | `AsyncIterable<SubmoduleEntry>` walker. |
 | [`walkTree`](walk-tree.md) | `AsyncIterable<TreeEntry>` walker. |
 | [`walkWorkingTree`](walk-working-tree.md) | `AsyncIterable<WalkWorkingTreeEntry>` walker (DFS, ignore-aware). |
 | [`writeObject`](write-object.md) | Write any git object; returns the resulting id. |
-| [`writeSymbolicRef`](write-symbolic-ref.md) | Write a symbolic ref (e.g. `HEAD → refs/heads/main`). |
 | [`writeTree`](write-tree.md) | Write a tree object from entries; returns the id. |
 
 For internal building blocks referenced from command pages (`materializeTree`, `fetchPack`, `buildPack`, etc.) see [`internals.md`](internals.md).

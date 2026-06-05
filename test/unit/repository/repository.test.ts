@@ -200,12 +200,8 @@ describe('openRepository — Repository binding integrity', () => {
             'readIndex',
             'readObject',
             'readTree',
-            'recordRefUpdate',
             'resolveRef',
             'runHook',
-            'setEntryFlags',
-            'stageEntry',
-            'unstageEntry',
             'updateRef',
             'walkCommits',
             'walkCommitsByDate',
@@ -213,7 +209,6 @@ describe('openRepository — Repository binding integrity', () => {
             'walkTree',
             'walkWorkingTree',
             'writeObject',
-            'writeSymbolicRef',
             'writeTree',
           ].sort(),
         );
@@ -609,24 +604,6 @@ describe('openRepository — round-trip via memory adapter', () => {
 
         // Assert
         expect(result).toEqual({ kind: 'show', ref: 'HEAD', entries: [] });
-      });
-    });
-    describe('When the bound recordRefUpdate primitive is called', () => {
-      it('Then it appends a reflog entry', async () => {
-        // Arrange — the bound primitive strips `ctx`; a default-loggable branch ref
-        // is logged.
-        const fallback = makeFallback();
-        const sut = await openRepository({ cwd: '/repo' }, fallback);
-        await sut.init();
-        const zero = '0'.repeat(40) as never;
-        const newId = 'a'.repeat(40) as never;
-
-        // Act
-        await sut.primitives.recordRefUpdate('refs/heads/main' as never, zero, newId, 'commit: x');
-
-        // Assert
-        const result = await sut.reflog({ action: 'show', ref: 'refs/heads/main' });
-        expect(result.kind === 'show' && result.entries).toHaveLength(1);
       });
     });
     describe('When the bound sparseCheckout command is called', () => {
