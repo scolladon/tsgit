@@ -21,7 +21,7 @@ import { openRepository } from '@scolladon/tsgit';
 
 const repo = await openRepository({ cwd: process.cwd() });
 const commits = await repo.log({ limit: 10 });
-const { clean, branch, indexChanges, workingTreeChanges } = await repo.status();
+const { clean, branch, changes, untracked } = await repo.status();
 await repo.dispose();
 ```
 

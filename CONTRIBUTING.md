@@ -104,8 +104,8 @@ When a new `Repository` flow needs the Node × Memory × Browser parity
 guarantee, add a single file under `test/parity/scenarios/<name>.scenario.ts`:
 
 1. Declare a `<Name>Result` interface — only fields exact-equality-safe
-   across all three adapters (use the existing `ChangeEntry` shape for
-   `status.*Changes`).
+   across all three adapters (use the existing `ChangedPath` shape for
+   `status.changes`).
 2. Export `scenario: Scenario<<Name>Result>` with `name`, `inputs` (drawn
    from `test/parity/fixtures.ts` constants — no inline literals; the
    `check:parity-fixtures` audit gates determinism), `expected` (with
