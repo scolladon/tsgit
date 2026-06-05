@@ -400,61 +400,6 @@ describe('clone', () => {
     });
   });
 
-  describe('Given a resolver that resolves to a blocked address', () => {
-    describe('When clone', () => {
-      it('Then validateUrl runs and throws BLOCKED_HOST', async () => {
-        // Arrange — a resolver pointing the URL host at a loopback address. The
-        // in-clone validateUrl path only runs when `opts.resolver` is supplied.
-        const ctx = createMemoryContext();
-        const { packBytes, blobId } = await buildPackFromSingleBlob(ctx, 'ssrf\n');
-        const transport = buildCloneRemote({
-          capabilities: ['side-band-64k', 'symref=HEAD:refs/heads/main'],
-          refs: [{ name: 'refs/heads/main', id: blobId }],
-          head: 'refs/heads/main',
-          packBytes,
-        });
-        const networkCtx = withTransport(ctx, transport);
-        const resolver = async (): Promise<ReadonlyArray<string>> => ['127.0.0.1'];
-
-        // Act
-        let caught: unknown;
-        try {
-          await clone(networkCtx, { url: REMOTE_URL, resolver });
-        } catch (err) {
-          caught = err;
-        }
-
-        // Assert — if the resolver branch body were skipped, clone would succeed.
-        expect(caught).toBeInstanceOf(TsgitError);
-        expect((caught as TsgitError).data.code).toBe('BLOCKED_HOST');
-      });
-    });
-  });
-
-  describe('Given a resolver and a public address', () => {
-    describe('When clone', () => {
-      it('Then validateUrl passes and the clone completes', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        const { packBytes, blobId } = await buildPackFromSingleBlob(ctx, 'resolver ok\n');
-        const transport = buildCloneRemote({
-          capabilities: ['side-band-64k', 'symref=HEAD:refs/heads/main'],
-          refs: [{ name: 'refs/heads/main', id: blobId }],
-          head: 'refs/heads/main',
-          packBytes,
-        });
-        const networkCtx = withTransport(ctx, transport);
-        const resolver = async (): Promise<ReadonlyArray<string>> => ['93.184.216.34'];
-
-        // Act
-        const sut = await clone(networkCtx, { url: REMOTE_URL, resolver });
-
-        // Assert
-        expect(sut.head).toBe('refs/heads/main');
-      });
-    });
-  });
-
   describe('Given no bare option', () => {
     describe('When clone', () => {
       it('Then the written config records bare = false', async () => {

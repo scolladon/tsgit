@@ -194,12 +194,7 @@ describe.skipIf(SKIP_REASON !== false)('pull — end-to-end against git-http-bac
         dnsResolver: async () => ['127.0.0.1'],
       },
     });
-    await repo.clone({
-      url,
-      allowInsecure: true,
-      allowPrivateNetworks: true,
-      resolver: async () => ['127.0.0.1'],
-    });
+    await repo.clone({ url });
 
     // Act
     const sut = await repo.pull();

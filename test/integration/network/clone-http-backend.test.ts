@@ -92,13 +92,9 @@ describe.skipIf(SKIP_REASON !== false)('clone — end-to-end against git-http-ba
       },
     });
 
-    // Act
-    const result = await repo.clone({
-      url,
-      allowInsecure: true,
-      allowPrivateNetworks: true,
-      resolver: async () => ['127.0.0.1'],
-    });
+    // Act — the SSRF policy (allowInsecure / allowPrivateNetworks / dnsResolver)
+    // is configured on openRepository above; clone needs only the url.
+    const result = await repo.clone({ url });
 
     // Assert — clone result
     expect(result.head).toBe('refs/heads/main');

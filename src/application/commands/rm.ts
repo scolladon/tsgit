@@ -49,7 +49,6 @@ export interface RmOptions {
   readonly cached?: boolean;
   /** Override the safety valve (`-f`) — remove even staged / locally-modified paths. */
   readonly force?: boolean;
-  readonly breakStaleLockMs?: number;
 }
 
 export interface RmResult {
@@ -70,10 +69,7 @@ export const rm = async (
   await assertNoPendingOperation(ctx);
   if (paths.length === 0) throw emptyPathspec();
   const { matcher, literalMustMatch } = resolvePathspec(paths);
-  const lock = await acquireIndexLock(
-    ctx,
-    opts.breakStaleLockMs !== undefined ? { breakStaleLockMs: opts.breakStaleLockMs } : {},
-  );
+  const lock = await acquireIndexLock(ctx);
   try {
     const index = await readIndex(ctx).catch((err: unknown) => {
       if (err instanceof TsgitError && isIndexMissingCode(err.data.code)) {

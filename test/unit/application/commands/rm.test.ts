@@ -347,17 +347,18 @@ describe('rm', () => {
     });
   });
 
-  describe('Given breakStaleLockMs and a stale lock', () => {
+  describe('Given config.breakStaleLockMs and a stale lock', () => {
     describe('When rm', () => {
       it('Then the stale lock is broken and rm succeeds', async () => {
         // Arrange — pre-create index.lock and report an ancient mtime for it, so
-        // its age exceeds breakStaleLockMs. With the option threaded through,
-        // acquireIndexLock breaks the stale lock and rm proceeds.
+        // its age exceeds the repo-wide config.breakStaleLockMs. With the policy
+        // sourced from config, acquireIndexLock breaks the stale lock and rm proceeds.
         const ctx = await seedAndStage({ 'a.txt': 'a' });
         const lockPath = `${ctx.layout.gitDir}/index.lock`;
         await ctx.fs.writeExclusive(lockPath, new Uint8Array());
         const staleCtx = {
           ...ctx,
+          config: { ...ctx.config, breakStaleLockMs: 1 },
           fs: {
             ...ctx.fs,
             lstat: async (path: string) => {
@@ -368,17 +369,17 @@ describe('rm', () => {
           },
         };
 
-        // Act — kills L48 ObjectLiteral `-> {}`: with `{}` breakStaleLockMs is
-        // dropped, the lock is never broken, and rm throws RESOURCE_LOCKED instead.
-        const sut = await rm(staleCtx, ['a.txt'], { breakStaleLockMs: 1 });
+        // Act — if rm stopped sourcing the window from config the lock would not
+        // break and RESOURCE_LOCKED would surface instead.
+        const sut = await rm(staleCtx, ['a.txt']);
 
-        // Assert — the option was threaded through; the stale lock was broken.
+        // Assert — the policy reached acquireIndexLock; the stale lock was broken.
         expect(sut.removed).toEqual(['a.txt']);
       });
     });
   });
 
-  describe('Given no breakStaleLockMs and a held lock', () => {
+  describe('Given no config.breakStaleLockMs and a held lock', () => {
     describe('When rm', () => {
       it('Then it surfaces RESOURCE_LOCKED', async () => {
         // Arrange — pre-create index.lock with no breakStaleLockMs option.

@@ -7,7 +7,7 @@ Stage paths into `.git/index`. Two modes: literal paths (each validated and stag
 ```ts
 repo.add(
   paths: ReadonlyArray<string>,
-  opts?: { force?: boolean; all?: boolean; breakStaleLockMs?: number },
+  opts?: { force?: boolean; all?: boolean },
 ): Promise<AddResult>;
 
 interface AddResult {
@@ -24,7 +24,8 @@ interface AddResult {
 | `paths` | `ReadonlyArray<string>` | (required) | Literal paths or pathspec globs. **MUST be empty when `all: true`.** |
 | `opts.all` | `boolean` | `false` | Bulk mode — walk the working tree and stage every change. |
 | `opts.force` | `boolean` | `false` | Stage ignored paths anyway. |
-| `opts.breakStaleLockMs` | `number` | (none) | Break a stale `.git/index.lock` older than this many ms. |
+
+> Breaking a stale `.git/index.lock` is repository-environment policy, set once on `openRepository({ config: { breakStaleLockMs } })` — not a per-call option. It applies to every index-mutating command.
 
 ## Pathspec syntax
 

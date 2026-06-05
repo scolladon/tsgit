@@ -220,12 +220,7 @@ describe.skipIf(SKIP_REASON !== false)('push — end-to-end against git-http-bac
       },
     });
 
-    await repo.clone({
-      url,
-      allowInsecure: true,
-      allowPrivateNetworks: true,
-      resolver: async () => ['127.0.0.1'],
-    });
+    await repo.clone({ url });
 
     // Wire a remote so push can resolve "origin".
     const configPath = path.join(repo.ctx.layout.gitDir, 'config');
@@ -321,12 +316,7 @@ describe.skipIf(SKIP_REASON !== false)('push — end-to-end against git-http-bac
         dnsResolver: async () => ['127.0.0.1'],
       },
     });
-    await repo.clone({
-      url,
-      allowInsecure: true,
-      allowPrivateNetworks: true,
-      resolver: async () => ['127.0.0.1'],
-    });
+    await repo.clone({ url });
     const configPath = path.join(repo.ctx.layout.gitDir, 'config');
     const existingConfig = await readFile(configPath, 'utf8').catch(() => '');
     if (!existingConfig.includes('[remote "origin"]')) {

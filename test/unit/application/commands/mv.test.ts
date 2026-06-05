@@ -3,7 +3,7 @@ import { createMemoryContext } from '../../../../src/adapters/memory/memory-adap
 import { add } from '../../../../src/application/commands/add.js';
 import { mv } from '../../../../src/application/commands/mv.js';
 import { readIndex } from '../../../../src/application/primitives/read-index.js';
-import { TsgitError } from '../../../../src/domain/index.js';
+import { fileNotFound, TsgitError } from '../../../../src/domain/index.js';
 import type { Context } from '../../../../src/ports/context.js';
 import { seedRepo } from './fixtures.js';
 
@@ -513,15 +513,17 @@ describe('mv', () => {
     });
   });
 
-  describe('Given breakStaleLockMs and a stale lock', () => {
+  describe('Given config.breakStaleLockMs and a stale lock', () => {
     describe('When mv', () => {
       it('Then the stale lock is broken and mv succeeds', async () => {
-        // Arrange
+        // Arrange — the break window lives on config (set once at open), not on
+        // a per-call mv option; the stale lock reports a far-past mtime.
         const ctx = await seedAndStage({ 'a.txt': 'a' });
         const lockPath = `${ctx.layout.gitDir}/index.lock`;
         await ctx.fs.writeExclusive(lockPath, new Uint8Array());
         const staleCtx: Context = {
           ...ctx,
+          config: { ...ctx.config, breakStaleLockMs: 1 },
           fs: {
             ...ctx.fs,
             lstat: async (path: string) => {
@@ -532,7 +534,7 @@ describe('mv', () => {
         };
 
         // Act
-        const sut = await mv(staleCtx, ['a.txt'], 'b.txt', { breakStaleLockMs: 1 });
+        const sut = await mv(staleCtx, ['a.txt'], 'b.txt');
 
         // Assert
         expect(sut.moved).toEqual([{ from: 'a.txt', to: 'b.txt' }]);
@@ -540,7 +542,7 @@ describe('mv', () => {
     });
   });
 
-  describe('Given a held lock without breakStaleLockMs', () => {
+  describe('Given a held lock without config.breakStaleLockMs', () => {
     describe('When mv', () => {
       it('Then it surfaces RESOURCE_LOCKED', async () => {
         // Arrange
@@ -583,6 +585,171 @@ describe('mv', () => {
         expect(await ctx.fs.exists(`${ctx.layout.gitDir}/index.lock`)).toBe(false);
         const sut = await mv(ctx, ['b.txt'], 'c.txt');
         expect(sut.moved).toEqual([{ from: 'b.txt', to: 'c.txt' }]);
+      });
+    });
+  });
+
+  describe('Given a corrupt index (INVALID_INDEX_HEADER)', () => {
+    describe('When mv', () => {
+      it('Then the parse error is tolerated and the source reads as untracked', async () => {
+        // Arrange — an index shorter than the hash trailer makes readIndex throw
+        // INVALID_INDEX_HEADER; readIndexMap tolerates it as an empty index.
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, {});
+        await ctx.fs.write(`${ctx.layout.gitDir}/index`, new Uint8Array([1, 2, 3]));
+
+        // Act / Assert — empty index ⇒ 'a.txt' untracked ⇒ MV_SOURCE_NOT_TRACKED
+        // (re-throwing the parse error would surface INVALID_INDEX_HEADER instead).
+        await expectError(() => mv(ctx, ['a.txt'], 'b.txt'), 'MV_SOURCE_NOT_TRACKED');
+      });
+    });
+  });
+
+  describe('Given a corrupt index (INVALID_INDEX_ENTRY)', () => {
+    describe('When mv', () => {
+      it('Then the parse error is tolerated and the source reads as untracked', async () => {
+        // Arrange — checksum-valid index whose single entry has no NUL terminator,
+        // so parseIndex throws INVALID_INDEX_ENTRY (reached past the checksum).
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, {});
+        const payload = new Uint8Array(12 + 62 + 100);
+        const view = new DataView(payload.buffer);
+        view.setUint32(0, 0x44495243); // 'DIRC'
+        view.setUint32(4, 2); // version 2
+        view.setUint32(8, 1); // 1 entry
+        view.setUint32(12 + 24, 0o100644); // entry mode
+        view.setUint16(12 + 60, 5); // declared path length
+        payload.fill(0x78, 12 + 62); // garbage path bytes, no NUL terminator
+        const checksum = await ctx.hash.hash(payload);
+        const indexBytes = new Uint8Array(payload.length + checksum.length);
+        indexBytes.set(payload, 0);
+        indexBytes.set(checksum, payload.length);
+        await ctx.fs.write(`${ctx.layout.gitDir}/index`, indexBytes);
+
+        // Act / Assert
+        await expectError(() => mv(ctx, ['a.txt'], 'b.txt'), 'MV_SOURCE_NOT_TRACKED');
+      });
+    });
+  });
+
+  describe('Given readIndex racing to FILE_NOT_FOUND', () => {
+    describe('When mv', () => {
+      it('Then the error is tolerated and the source reads as untracked', async () => {
+        // Arrange — index exists (passes readIndex's exists() guard) but stat throws
+        // FILE_NOT_FOUND, simulating the file vanishing; readIndex propagates it and
+        // readIndexMap tolerates it as an empty index.
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, {});
+        const indexFile = `${ctx.layout.gitDir}/index`;
+        await ctx.fs.write(indexFile, new Uint8Array(32));
+        const racingCtx: Context = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            stat: async (path: string) => {
+              if (path === indexFile) throw fileNotFound(indexFile);
+              return ctx.fs.stat(path);
+            },
+          },
+        };
+
+        // Act / Assert
+        await expectError(() => mv(racingCtx, ['a.txt'], 'b.txt'), 'MV_SOURCE_NOT_TRACKED');
+      });
+    });
+  });
+
+  describe('Given a non-index-missing readIndex error', () => {
+    describe('When mv', () => {
+      it('Then the error propagates (not silently tolerated)', async () => {
+        // Arrange — make readIndex throw a code that is NOT index-missing; readIndexMap
+        // must re-throw it rather than swallow it into an empty index.
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, {});
+        const indexFile = `${ctx.layout.gitDir}/index`;
+        await ctx.fs.write(indexFile, new Uint8Array(32));
+        const failingCtx: Context = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            stat: async (path: string) => {
+              if (path === indexFile) {
+                throw new TsgitError({ code: 'PERMISSION_DENIED', path: indexFile });
+              }
+              return ctx.fs.stat(path);
+            },
+          },
+        };
+
+        // Act / Assert
+        await expectError(() => mv(failingCtx, ['a.txt'], 'b.txt'), 'PERMISSION_DENIED');
+      });
+    });
+  });
+
+  describe('Given a tracked directory source that is a plain file on disk', () => {
+    describe('When mv', () => {
+      it('Then MV_BAD_SOURCE (a directory source must be a real directory on disk)', async () => {
+        // Arrange — 'd/f.txt' is tracked, so 'd' classifies as a directory source;
+        // replace the working subtree with a regular file named 'd'.
+        const ctx = await seedAndStage({ 'd/f.txt': '1' });
+        await ctx.fs.rmRecursive(work(ctx, 'd'));
+        await ctx.fs.writeUtf8(work(ctx, 'd'), 'now-a-file');
+
+        // Act / Assert — sourceExistsOnDisk('d','directory') is false because the
+        // on-disk entry is a file, not a directory.
+        await expectError(() => mv(ctx, ['d'], 'dest'), 'MV_BAD_SOURCE');
+      });
+    });
+  });
+
+  describe('Given a tracked file source that is a directory on disk', () => {
+    describe('When mv', () => {
+      it('Then MV_BAD_SOURCE (a file source must be a file or symlink on disk)', async () => {
+        // Arrange — 'a.txt' is tracked as a file; replace it on disk with a directory.
+        const ctx = await seedAndStage({ 'a.txt': 'a' });
+        await ctx.fs.rm(work(ctx, 'a.txt'));
+        await ctx.fs.mkdir(work(ctx, 'a.txt'));
+
+        // Act / Assert — sourceExistsOnDisk('a.txt','file') is false (neither file
+        // nor symlink), so the move is refused as a bad source.
+        await expectError(() => mv(ctx, ['a.txt'], 'b.txt'), 'MV_BAD_SOURCE');
+      });
+    });
+  });
+
+  describe('Given a trailing-slash destination naming an existing directory', () => {
+    describe('When mv', () => {
+      it('Then the trailing slash is stripped and the file moves into the directory', async () => {
+        // Arrange — destination 'dir/' must resolve to the existing 'dir' (the slash
+        // stripped before the directory probe), moving 'a.txt' to 'dir/a.txt'.
+        const ctx = await seedAndStage({ 'a.txt': 'a', 'dir/keep.txt': 'k' });
+
+        // Act
+        const sut = await mv(ctx, ['a.txt'], 'dir/');
+
+        // Assert
+        expect(sut.moved).toEqual([{ from: 'a.txt', to: 'dir/a.txt' }]);
+        expect(await readWork(ctx, 'dir/a.txt')).toBe('a');
+      });
+    });
+  });
+
+  describe('Given reverse-ordered sources moved into a directory', () => {
+    describe('When mv', () => {
+      it('Then moved is sorted ascending by from, regardless of argument order', async () => {
+        // Arrange — sources listed z-before-a; the result must be a-before-z.
+        const ctx = await seedAndStage({ 'a.txt': 'a', 'z.txt': 'z', 'dir/keep.txt': 'k' });
+
+        // Act
+        const sut = await mv(ctx, ['z.txt', 'a.txt'], 'dir');
+
+        // Assert — pins the ascending sort (a mutant that keeps argument order would
+        // yield z before a).
+        expect(sut.moved).toEqual([
+          { from: 'a.txt', to: 'dir/a.txt' },
+          { from: 'z.txt', to: 'dir/z.txt' },
+        ]);
       });
     });
   });

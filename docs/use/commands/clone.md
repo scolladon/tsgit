@@ -1,6 +1,6 @@
 # `clone`
 
-Clone a remote repository over smart-HTTP. Supports shallow clone (`depth`), partial clone (`filter`), bare clones, and a caller-supplied DNS resolver for SSRF guards.
+Clone a remote repository over smart-HTTP. Supports shallow clone (`depth`), partial clone (`filter`), and bare clones. The SSRF guard (DNS resolver, `http://` and private-network policy) is configured once on `openRepository`, not per call — see [security](../../understand/security.md).
 
 ## Signature
 
@@ -12,9 +12,6 @@ interface CloneOptions {
   readonly bare?: boolean;
   readonly initialBranch?: string;
   readonly depth?: number;
-  readonly resolver?: DnsResolver;
-  readonly allowInsecure?: boolean;
-  readonly allowPrivateNetworks?: boolean;
   readonly filter?: string;
 }
 
@@ -34,9 +31,8 @@ interface CloneResult {
 | `initialBranch` | `string` | (server `HEAD`) | Override the branch `HEAD` points at after clone. |
 | `depth` | `number` | (full clone) | Shallow clone depth. Persists boundaries to `.git/shallow`. |
 | `filter` | `string` | (full clone) | Partial-clone filter: `'blob:none'`, `'blob:limit=<size>'`, or `'tree:<depth>'`. |
-| `resolver` | `DnsResolver` | (none) | DNS resolver injected to enforce SSRF guards. |
-| `allowInsecure` | `boolean` | `false` | Permit `http://` URLs. Off by default. |
-| `allowPrivateNetworks` | `boolean` | `false` | Permit URLs whose DNS resolution lands on RFC1918 / loopback / link-local. |
+
+> SSRF policy is **not** a clone option. Configure it once on `openRepository({ config: { dnsResolver, allowInsecure, allowPrivateNetworks } })`; the transport wrapper enforces it on every request (see [security](../../understand/security.md)). The default fail-closed resolver rejects every host until `dnsResolver` is supplied.
 
 ## Behaviour
 

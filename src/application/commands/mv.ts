@@ -47,8 +47,6 @@ export interface MvOptions {
   readonly dryRun?: boolean;
   /** Skip refused (source → target) pairs instead of aborting the whole call. `-k`. */
   readonly skipErrors?: boolean;
-  /** Break a stale `index.lock` older than N ms (same contract as rm/add). */
-  readonly breakStaleLockMs?: number;
 }
 
 export interface MvMove {
@@ -104,10 +102,7 @@ export const mv = async (
   assertNoOverlappingSources(validatedSources);
   const destNoSlash = validatePath(stripTrailingSlash(destination));
 
-  const lock = await acquireIndexLock(
-    ctx,
-    opts.breakStaleLockMs !== undefined ? { breakStaleLockMs: opts.breakStaleLockMs } : {},
-  );
+  const lock = await acquireIndexLock(ctx);
   try {
     const byPath = await readIndexMap(ctx);
     const mode = await resolveDestinationMode(ctx, firstSource, destination, destNoSlash);
@@ -148,6 +143,10 @@ const resolveDestinationMode = async (
   destNoSlash: FilePath,
 ): Promise<DestinationMode> => {
   const stat = await lstatOrUndefined(ctx, destNoSlash);
+  // equivalent-mutant: lstat never reports a path as both a directory and a symlink
+  // (it does not follow the final component), so when `isDirectory === true` the
+  // `isSymbolicLink !== true` operand is always true — the guard stays defensive for
+  // adapters that might diverge from that contract.
   if (stat?.isDirectory === true && stat.isSymbolicLink !== true) {
     return { kind: 'into-dir', destDir: destNoSlash };
   }
@@ -201,6 +200,10 @@ const validateMove = async (
   if (target === source || target.startsWith(`${source}/`)) return { skip: 'into-self' };
   // `dirname` of a validated path is a prefix of it — still a valid repo path.
   const parent = dirname(target) as FilePath;
+  // equivalent-mutant: an empty parent is the work-tree root, which
+  // `isDirectoryOnDisk('')` always reports as a directory, so the `parent !== ''`
+  // short-circuit only spares a redundant lstat — mutating the operand (or the `''`
+  // literal) yields the same no-throw result.
   if (parent !== '' && !(await isDirectoryOnDisk(ctx, parent))) {
     throw mvDestinationDirectoryMissing(source, target);
   }
@@ -258,6 +261,9 @@ const destinationFree = async (
 const assertNoOverlappingSources = (sources: ReadonlyArray<FilePath>): void => {
   for (const parent of sources) {
     for (const child of sources) {
+      // equivalent-mutant: a path never startsWith(itself + '/'), so the self-pair is
+      // already excluded by the startsWith check; the `child !== parent` operand is
+      // redundant and forcing it true cannot change the outcome.
       if (child !== parent && child.startsWith(`${parent}/`)) {
         throw mvOverlappingSources(child, parent);
       }
@@ -280,6 +286,10 @@ const plannedMoves = (planned: ReadonlyArray<PlanItem>): ReadonlyArray<MvMove> =
       moves.push({ from: entry.path, to: repath(entry, item.source, item.target) });
     }
   }
+  // equivalent-mutant: a move set has unique `from` paths, so `a.from === b.from` is
+  // unreachable; the tie-branch (0), the `<`/`>` boundary variants, and the second
+  // ternary's value are all indistinguishable for an insertion sort over distinct keys
+  // (it only ever moves an element on the strictly-less `-1` result).
   return moves.sort((a, b) => (a.from < b.from ? -1 : a.from > b.from ? 1 : 0));
 };
 
@@ -329,5 +339,7 @@ const lstatOrUndefined = async (
 
 const isDirectoryOnDisk = async (ctx: Context, path: FilePath): Promise<boolean> => {
   const stat = await lstatOrUndefined(ctx, path);
+  // equivalent-mutant: lstat never reports a path as both a directory and a symlink, so
+  // when `isDirectory === true` the `isSymbolicLink !== true` operand is always true.
   return stat?.isDirectory === true && stat.isSymbolicLink !== true;
 };

@@ -7,7 +7,7 @@ Remove files from the index, and by default from the working tree. Accepts the s
 ```ts
 repo.rm(
   paths: ReadonlyArray<string>,
-  opts?: { cached?: boolean; force?: boolean; breakStaleLockMs?: number },
+  opts?: { cached?: boolean; force?: boolean },
 ): Promise<RmResult>;
 
 interface RmResult {
@@ -21,7 +21,8 @@ interface RmResult {
 |---|---|---|---|
 | `cached` | `boolean` | `false` | Index only — leave the working-tree file in place. |
 | `force` | `boolean` | `false` | Override the safety valve (`-f`) — remove even staged or locally-modified paths. |
-| `breakStaleLockMs` | `number` | (none) | Break a stale `.git/index.lock` older than this many ms. |
+
+> Breaking a stale `.git/index.lock` is repository-environment policy, set once on `openRepository({ config: { breakStaleLockMs } })` — not a per-call option. It applies to every index-mutating command.
 
 ## Safety valve
 

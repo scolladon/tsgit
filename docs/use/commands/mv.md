@@ -18,7 +18,6 @@ repo.mv(
     force?: boolean;
     dryRun?: boolean;
     skipErrors?: boolean;
-    breakStaleLockMs?: number;
   },
 ): Promise<MvResult>;
 
@@ -46,7 +45,8 @@ keeping its basename. Otherwise it is a single rename.
 | `force` | `boolean` | `false` | Overwrite an existing destination (a file source only). |
 | `dryRun` | `boolean` | `false` | Validate and report the plan without touching index or working tree. |
 | `skipErrors` | `boolean` | `false` | Skip refused source pairs (collected in `skipped`) instead of aborting. |
-| `breakStaleLockMs` | `number` | (none) | Break a stale `.git/index.lock` older than this many ms. |
+
+> Breaking a stale `.git/index.lock` is repository-environment policy, set once on `openRepository({ config: { breakStaleLockMs } })` — not a per-call option. It applies to every index-mutating command.
 
 ## Examples
 

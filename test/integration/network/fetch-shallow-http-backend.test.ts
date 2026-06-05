@@ -199,13 +199,7 @@ describe.skipIf(SKIP_REASON !== false)(
       });
 
       // Act
-      const result = await repo.clone({
-        url,
-        depth: 1,
-        allowInsecure: true,
-        allowPrivateNetworks: true,
-        resolver: async () => ['127.0.0.1'],
-      });
+      const result = await repo.clone({ url, depth: 1 });
 
       // Assert — clone result
       expect(result.head).toBe('refs/heads/main');

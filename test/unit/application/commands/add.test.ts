@@ -14,9 +14,10 @@ const seedFreshRepo = async (workingTree: Readonly<Record<string, string>> = {})
 };
 
 // Seed a repo with a pre-existing `index.lock` whose mtime is reported far
-// in the past, so any `breakStaleLockMs` value larger than 0 treats it as
+// in the past, so the repo-wide `config.breakStaleLockMs` (> 0) treats it as
 // stale and breaks it. The lstat override only rewrites the lock's mtime;
-// every other path keeps its real stat.
+// every other path keeps its real stat. The stale-lock break policy lives on
+// `config`, set once at open — not on the per-call add option.
 const staleLockCtx = async (workingTree: Readonly<Record<string, string>>) => {
   const ctx = await seedFreshRepo(workingTree);
   const lockPath = `${ctx.layout.gitDir}/index.lock`;
@@ -34,7 +35,7 @@ const staleLockCtx = async (workingTree: Readonly<Record<string, string>>) => {
       return Reflect.get(target, prop, receiver);
     },
   });
-  return { ...ctx, fs };
+  return { ...ctx, fs, config: { ...ctx.config, breakStaleLockMs: 1 } };
 };
 
 const expectError = async (fn: () => Promise<unknown>, code: string): Promise<TsgitError> => {
@@ -909,7 +910,7 @@ describe('add', () => {
         const ignore = (path: string) => path.startsWith('node_modules/');
 
         // Act
-        const sut = await addAllInternal(ctx, {}, ignore);
+        const sut = await addAllInternal(ctx, ignore);
 
         // Assert
         expect(sut.added).toEqual(['a.txt']);
@@ -1440,7 +1441,7 @@ describe('add', () => {
           isDirectory && path === 'vendor';
 
         // Act
-        const sut = await addAllInternal(ctx, {}, ancestorIgnore);
+        const sut = await addAllInternal(ctx, ancestorIgnore);
 
         // Assert — the leaf is filtered from the walk but its ancestor is
         // ignored, so the tracked entry is preserved, NOT removed.
@@ -1465,7 +1466,7 @@ describe('add', () => {
           !isDirectory && path === 'keep.bin';
 
         // Act
-        const sut = await addAllInternal(ctx, {}, leafFileIgnore);
+        const sut = await addAllInternal(ctx, leafFileIgnore);
 
         // Assert
         expect(sut.removed).toEqual([]);
@@ -1490,7 +1491,7 @@ describe('add', () => {
           isDirectory && path === 'a/b';
 
         // Act
-        const sut = await addAllInternal(ctx, {}, deepIgnore);
+        const sut = await addAllInternal(ctx, deepIgnore);
 
         // Assert
         expect(sut.removed).toEqual([]);
@@ -1517,7 +1518,7 @@ describe('add', () => {
           isDirectory && path === 'gone.txt';
 
         // Act
-        const sut = await addAllInternal(ctx, {}, leafAsDirIgnore);
+        const sut = await addAllInternal(ctx, leafAsDirIgnore);
 
         // Assert — the leaf is NOT consulted as a directory, so it is removed.
         expect(sut.removed).toEqual(['gone.txt']);
@@ -1545,7 +1546,7 @@ describe('add', () => {
         const neverIgnore = async () => false;
 
         // Act
-        const sut = await addAllInternal(ctx, {}, neverIgnore);
+        const sut = await addAllInternal(ctx, neverIgnore);
 
         // Assert — no ancestor is ignored, so the deleted file is removed.
         expect(sut.removed).toEqual(['dir/gone.txt']);
@@ -1635,13 +1636,13 @@ describe('add', () => {
     describe('When add', () => {
       it('Then the stale lock is broken and the file is staged', async () => {
         // Arrange — pre-create index.lock and report a far-past mtime so the
-        // lock is stale. The `{ breakStaleLockMs }` option object on L99 must
-        // reach acquireIndexLock; a `{}` mutant would drop it and throw
-        // RESOURCE_LOCKED.
+        // lock is stale. `config.breakStaleLockMs` (baked into staleLockCtx) must
+        // reach acquireIndexLock; if the command stopped sourcing it from config
+        // the lock would not break and RESOURCE_LOCKED would surface.
         const ctx = await staleLockCtx({ 'a.txt': 'a' });
 
         // Act
-        const sut = await add(ctx, ['a.txt'], { breakStaleLockMs: 1 });
+        const sut = await add(ctx, ['a.txt']);
 
         // Assert
         expect(sut.added).toEqual(['a.txt']);
@@ -1652,12 +1653,12 @@ describe('add', () => {
   describe('Given a stale index.lock and breakStaleLockMs in glob (pathspec) mode', () => {
     describe('When add', () => {
       it('Then the stale lock is broken and matches are staged', async () => {
-        // Arrange — glob routes through addByPathspec; the `{ breakStaleLockMs }`
-        // object on L153 must reach acquireIndexLock.
+        // Arrange — glob routes through addByPathspec; config.breakStaleLockMs
+        // must reach acquireIndexLock there too.
         const ctx = await staleLockCtx({ 'a.ts': 'a' });
 
         // Act
-        const sut = await add(ctx, ['*.ts'], { breakStaleLockMs: 1 });
+        const sut = await add(ctx, ['*.ts']);
 
         // Assert
         expect(sut.added).toEqual(['a.ts']);
@@ -1668,12 +1669,12 @@ describe('add', () => {
   describe('Given a stale index.lock and breakStaleLockMs in bulk mode', () => {
     describe('When add({ all: true })', () => {
       it('Then the stale lock is broken and files are staged', async () => {
-        // Arrange — bulk mode routes through addAll; the `{ breakStaleLockMs }`
-        // object on L192 must reach acquireIndexLock.
+        // Arrange — bulk mode routes through addAll; config.breakStaleLockMs
+        // must reach acquireIndexLock there too.
         const ctx = await staleLockCtx({ 'a.txt': 'a' });
 
         // Act
-        const sut = await add(ctx, [], { all: true, breakStaleLockMs: 1 });
+        const sut = await add(ctx, [], { all: true });
 
         // Assert
         expect(sut.added).toEqual(['a.txt']);

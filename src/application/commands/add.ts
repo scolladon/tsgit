@@ -41,7 +41,6 @@ const INDEX_MISSING_CODES = new Set([
 export interface AddOptions {
   readonly force?: boolean;
   readonly all?: boolean;
-  readonly breakStaleLockMs?: number;
 }
 
 export interface AddResult {
@@ -77,37 +76,29 @@ export const add = async (
     if (paths.length !== 0) {
       throw invalidOption('all', 'pathspec must be empty when all=true');
     }
-    return addAll(ctx, opts);
+    return addAll(ctx);
   }
   if (paths.length === 0) throw emptyPathspec();
-  return dispatchPathspec(ctx, paths, opts);
+  return dispatchPathspec(ctx, paths);
 };
 
 // Branch on the resolved pathspec: pure literals that each name an
 // existing file route through the byte-identical per-path stage flow
 // from; anything else (globs, literal directories, negations)
 // walks the working tree and filters with the matcher.
-const dispatchPathspec = async (
-  ctx: Context,
-  paths: ReadonlyArray<string>,
-  opts: AddOptions,
-): Promise<AddResult> => {
+const dispatchPathspec = async (ctx: Context, paths: ReadonlyArray<string>): Promise<AddResult> => {
   const { matcher, literalMustMatch, hasGlob } = resolvePathspec(paths);
   if (!hasGlob && (await allLiteralsAreFiles(ctx, literalMustMatch))) {
-    return addLiteralOnly(ctx, literalMustMatch, opts);
+    return addLiteralOnly(ctx, literalMustMatch);
   }
-  return addByPathspec(ctx, matcher, literalMustMatch, opts);
+  return addByPathspec(ctx, matcher, literalMustMatch);
 };
 
 const addLiteralOnly = async (
   ctx: Context,
   validated: ReadonlyArray<FilePath>,
-  opts: AddOptions,
 ): Promise<AddResult> => {
-  const lock = await acquireIndexLock(
-    ctx,
-    opts.breakStaleLockMs !== undefined ? { breakStaleLockMs: opts.breakStaleLockMs } : {},
-  );
+  const lock = await acquireIndexLock(ctx);
   try {
     const existing = await readExistingEntries(ctx);
     const newEntries = new Map<FilePath, IndexEntry>(existing);
@@ -150,7 +141,6 @@ const addByPathspec = async (
   ctx: Context,
   matcher: Pathspec,
   literalMustMatch: ReadonlyArray<FilePath>,
-  opts: AddOptions,
 ): Promise<AddResult> => {
   const ignore = await buildRepoIgnorePredicate(ctx);
   const combinedIgnore: IgnorePredicate = async (path, isDirectory) => {
@@ -158,10 +148,7 @@ const addByPathspec = async (
     if (isDirectory) return false;
     return !matchesPathspec(matcher, path);
   };
-  const lock = await acquireIndexLock(
-    ctx,
-    opts.breakStaleLockMs !== undefined ? { breakStaleLockMs: opts.breakStaleLockMs } : {},
-  );
+  const lock = await acquireIndexLock(ctx);
   try {
     const existing = await readExistingEntries(ctx);
     const newEntries = new Map<FilePath, IndexEntry>(existing);
@@ -193,14 +180,10 @@ const addByPathspec = async (
  */
 export const addAll = async (
   ctx: Context,
-  opts: AddOptions,
   ignoreOverride?: IgnorePredicate,
 ): Promise<AddResult> => {
   const ignore = ignoreOverride ?? (await buildRepoIgnorePredicate(ctx));
-  const lock = await acquireIndexLock(
-    ctx,
-    opts.breakStaleLockMs !== undefined ? { breakStaleLockMs: opts.breakStaleLockMs } : {},
-  );
+  const lock = await acquireIndexLock(ctx);
   try {
     const existing = await readExistingEntries(ctx);
     const newEntries = new Map<FilePath, IndexEntry>(existing);
