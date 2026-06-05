@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { add } from '../../../../src/application/commands/add.js';
-import { blame } from '../../../../src/application/commands/blame.js';
+import {
+  type BlameResult,
+  blame,
+  type CommittedBlameLine,
+} from '../../../../src/application/commands/blame.js';
 import { branchCreate } from '../../../../src/application/commands/branch.js';
 import { checkout } from '../../../../src/application/commands/checkout.js';
 import { commit } from '../../../../src/application/commands/commit.js';
@@ -20,6 +24,13 @@ const ident = (name: string, timestamp: number): AuthorIdentity => ({
 });
 
 const text = (bytes: Uint8Array): string => new TextDecoder().decode(bytes);
+
+/** Narrow a committed-rev result to its committed lines, asserting none is uncommitted. */
+const committedLines = (result: BlameResult): readonly CommittedBlameLine[] =>
+  result.lines.map((line) => {
+    if (!line.committed) throw new Error('expected a committed line');
+    return line;
+  });
 
 let clock = 1_700_000_000;
 
@@ -58,7 +69,7 @@ describe('Given a linear history that modifies one line and appends another', ()
       const sut = await blame(ctx, 'f.txt');
 
       // Assert
-      expect(sut.lines.map((l) => l.commit)).toEqual([c1, c2, c1, c2]);
+      expect(committedLines(sut).map((l) => l.commit)).toEqual([c1, c2, c1, c2]);
       expect(sut.lines.map((l) => l.finalLine)).toEqual([1, 2, 3, 4]);
       expect(sut.lines.map((l) => text(l.content))).toEqual([
         'line1\n',
@@ -78,9 +89,9 @@ describe('Given a linear history that modifies one line and appends another', ()
       const sut = await blame(ctx, 'f.txt');
 
       // Assert
-      expect(sut.lines[0]!.boundary).toBe(true);
+      expect(committedLines(sut)[0]!.boundary).toBe(true);
       expect(sut.lines[0]!.previous).toBeUndefined();
-      expect(sut.lines[1]!.boundary).toBe(false);
+      expect(committedLines(sut)[1]!.boundary).toBe(false);
       expect(sut.lines[1]!.previous).toEqual({ commit: c1, path: 'f.txt' });
     });
   });
@@ -98,7 +109,7 @@ describe('Given a commit that prepends lines above existing content', () => {
       const sut = await blame(ctx, 'f.txt');
 
       // Assert
-      expect(sut.lines.map((l) => l.commit)).toEqual([c2, c2, c1, c1]);
+      expect(committedLines(sut).map((l) => l.commit)).toEqual([c2, c2, c1, c1]);
       expect(sut.lines.map((l) => l.finalLine)).toEqual([1, 2, 3, 4]);
       expect(sut.lines.map((l) => l.sourceLine)).toEqual([1, 2, 1, 2]);
     });
@@ -117,9 +128,9 @@ describe('Given a single root commit', () => {
 
       // Assert
       expect(sut.lines).toHaveLength(1);
-      expect(sut.lines[0]!.commit).toBe(c1);
-      expect(sut.lines[0]!.boundary).toBe(true);
-      expect(sut.lines[0]!.summary).toBe('c1 subject');
+      expect(committedLines(sut)[0]!.commit).toBe(c1);
+      expect(committedLines(sut)[0]!.boundary).toBe(true);
+      expect(committedLines(sut)[0]!.summary).toBe('c1 subject');
       expect(sut.lines[0]!.sourcePath).toBe('f.txt');
     });
   });
@@ -176,7 +187,7 @@ describe('Given an explicit older revision', () => {
       const sut = await blame(ctx, 'f.txt', { rev: c1 });
 
       // Assert
-      expect(sut.lines.map((l) => l.commit)).toEqual([c1, c1]);
+      expect(committedLines(sut).map((l) => l.commit)).toEqual([c1, c1]);
       expect(sut.lines.map((l) => text(l.content))).toEqual(['line1\n', 'line2\n']);
     });
   });
@@ -205,11 +216,11 @@ describe('Given a clean merge of two branches that changed different lines', () 
 
       // Assert
       expect(merged.kind).toBe('merge');
-      expect(sut.lines.map((l) => l.commit)).toEqual([side, c1, main]);
+      expect(committedLines(sut).map((l) => l.commit)).toEqual([side, c1, main]);
       expect(sut.lines.map((l) => text(l.content))).toEqual(['a-side\n', 'b\n', 'c-main\n']);
-      expect(sut.lines[1]!.boundary).toBe(true);
+      expect(committedLines(sut)[1]!.boundary).toBe(true);
       const mergeId = merged.kind === 'merge' ? merged.id : undefined;
-      expect(sut.lines.some((l) => l.commit === mergeId)).toBe(false);
+      expect(committedLines(sut).some((l) => l.commit === mergeId)).toBe(false);
     });
   });
 });
@@ -226,8 +237,8 @@ describe('Given a file first added by a non-root commit', () => {
       const sut = await blame(ctx, 'f.txt');
 
       // Assert
-      expect(sut.lines.map((l) => l.commit)).toEqual([c2, c2]);
-      expect(sut.lines.every((l) => l.boundary)).toBe(false);
+      expect(committedLines(sut).map((l) => l.commit)).toEqual([c2, c2]);
+      expect(committedLines(sut).every((l) => l.boundary)).toBe(false);
       expect(sut.lines.every((l) => l.previous === undefined)).toBe(true);
     });
   });
@@ -254,10 +265,10 @@ describe('Given a file renamed wholesale by a later commit', () => {
       const sut = await blame(ctx, 'renamed.txt');
 
       // Assert
-      expect(sut.lines.map((l) => l.commit)).toEqual([c1, c2]);
+      expect(committedLines(sut).map((l) => l.commit)).toEqual([c1, c2]);
       expect(sut.lines.map((l) => l.sourcePath)).toEqual(['f.txt', 'f.txt']);
       expect(sut.lines.map((l) => l.finalLine)).toEqual([1, 2]);
-      expect(sut.lines.some((l) => l.commit === c3)).toBe(false);
+      expect(committedLines(sut).some((l) => l.commit === c3)).toBe(false);
       expect(sut.lines[1]!.previous).toEqual({ commit: c1, path: 'f.txt' });
     });
   });
@@ -275,8 +286,8 @@ describe('Given a commit that rewrites every line of the file', () => {
       const sut = await blame(ctx, 'f.txt');
 
       // Assert
-      expect(sut.lines.map((l) => l.commit)).toEqual([c2, c2]);
-      expect(sut.lines.some((l) => l.commit === c1)).toBe(false);
+      expect(committedLines(sut).map((l) => l.commit)).toEqual([c2, c2]);
+      expect(committedLines(sut).some((l) => l.commit === c1)).toBe(false);
     });
   });
 });
@@ -301,9 +312,9 @@ describe('Given a rename of a file inside a subdirectory', () => {
       const sut = await blame(ctx, 'dir/b.txt');
 
       // Assert
-      expect(sut.lines.map((l) => l.commit)).toEqual([c1, c1]);
+      expect(committedLines(sut).map((l) => l.commit)).toEqual([c1, c1]);
       expect(sut.lines.map((l) => l.sourcePath)).toEqual(['dir/a.txt', 'dir/a.txt']);
-      expect(sut.lines.some((l) => l.commit === c2)).toBe(false);
+      expect(committedLines(sut).some((l) => l.commit === c2)).toBe(false);
     });
   });
 });
@@ -338,9 +349,9 @@ describe('Given a commit that renames two files at once', () => {
       const blameY = await blame(ctx, 'y.txt');
 
       // Assert
-      expect(blameX.lines.map((l) => l.commit)).toEqual([c1]);
+      expect(committedLines(blameX).map((l) => l.commit)).toEqual([c1]);
       expect(blameX.lines[0]!.sourcePath).toBe('a.txt');
-      expect(blameY.lines.map((l) => l.commit)).toEqual([c1]);
+      expect(committedLines(blameY).map((l) => l.commit)).toEqual([c1]);
       expect(blameY.lines[0]!.sourcePath).toBe('b.txt');
     });
   });
@@ -368,7 +379,7 @@ describe('Given a multi-commit file and a line range', () => {
 
       // Assert
       expect(sut.lines.map((l) => l.finalLine)).toEqual([2]);
-      expect(sut.lines[0]!.commit).toBe(c2);
+      expect(committedLines(sut)[0]!.commit).toBe(c2);
     });
 
     it('Then a multi-line range keeps each line on its own commit', async () => {
@@ -380,7 +391,7 @@ describe('Given a multi-commit file and a line range', () => {
 
       // Assert
       expect(sut.lines.map((l) => l.finalLine)).toEqual([1, 2]);
-      expect(sut.lines.map((l) => l.commit)).toEqual([c1, c2]);
+      expect(committedLines(sut).map((l) => l.commit)).toEqual([c1, c2]);
     });
 
     it('Then an end past the last line is clamped to the file length', async () => {

@@ -21,8 +21,12 @@ import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
 import { type BlameLine, type BlameResult, blame } from '../../src/application/commands/blame.js';
+import { ZERO_OID } from '../../src/domain/objects/object-id.js';
 import type { Context } from '../../src/ports/context.js';
 import { GIT_AVAILABLE, git, runGit, runGitEnv } from './interop-helpers.js';
+
+/** Porcelain renders the zero oid for the "Not Committed Yet" pseudo-commit. */
+const oidOf = (line: BlameLine): string => (line.committed ? line.commit : ZERO_OID);
 
 const SETUP_TIMEOUT = 60_000;
 const decoder = new TextDecoder();
@@ -55,7 +59,33 @@ const commitContent = async (dir: string, file: string, content: string): Promis
   runGit(['-C', dir, 'commit', '-q', '-m', `edit ${file}`], { env: datedEnv(clock) });
 };
 
+/**
+ * git's "Not Committed Yet" identity is fabricated at the current wall-clock time;
+ * the library emits none of it, so the renderer supplies it. `author-time`/`-tz`
+ * carry placeholders that `scrubNow` (below) normalises on both sides — every other
+ * byte (oid, identity, summary, previous) stays pinned.
+ */
+const uncommittedBlock = (line: BlameLine): string => {
+  const lines = [
+    'author Not Committed Yet',
+    'author-mail <not.committed.yet>',
+    'author-time 0',
+    'author-tz +0000',
+    'committer Not Committed Yet',
+    'committer-mail <not.committed.yet>',
+    'committer-time 0',
+    'committer-tz +0000',
+    `summary Version of ${line.sourcePath} from ${line.sourcePath}`,
+    ...(line.previous !== undefined
+      ? [`previous ${line.previous.commit} ${line.previous.path}`]
+      : []),
+    `filename ${line.sourcePath}`,
+  ];
+  return `${lines.join('\n')}\n`;
+};
+
 const metadataBlock = (line: BlameLine): string => {
+  if (!line.committed) return uncommittedBlock(line);
   const lines = [
     `author ${line.author.name}`,
     `author-mail <${line.author.email}>`,
@@ -76,7 +106,7 @@ const metadataBlock = (line: BlameLine): string => {
 };
 
 const isContiguous = (a: BlameLine, b: BlameLine): boolean =>
-  b.commit === a.commit && b.finalLine === a.finalLine + 1 && b.sourceLine === a.sourceLine + 1;
+  oidOf(b) === oidOf(a) && b.finalLine === a.finalLine + 1 && b.sourceLine === a.sourceLine + 1;
 
 /** Reconstruct `git blame --porcelain` output from tsgit's structured result. */
 const renderPorcelain = (result: BlameResult): string => {
@@ -89,10 +119,11 @@ const renderPorcelain = (result: BlameResult): string => {
     const count = i - start + 1;
     for (let k = start; k <= i; k++) {
       const line = result.lines[k]!;
-      const header = `${line.commit} ${line.sourceLine} ${line.finalLine}`;
+      const oid = oidOf(line);
+      const header = `${oid} ${line.sourceLine} ${line.finalLine}`;
       out.push(k === start ? `${header} ${count}\n` : `${header}\n`);
-      if (!seen.has(line.commit)) {
-        seen.add(line.commit);
+      if (!seen.has(oid)) {
+        seen.add(oid);
         out.push(metadataBlock(line));
       }
       out.push(`\t${decoder.decode(line.content)}`);

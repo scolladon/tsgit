@@ -33,11 +33,12 @@ export const blameScenario: Scenario<BlameScenarioResult> = {
 
     const result = await repo.blame(FILES.helloA.path);
     const line = result.lines[0];
+    const committed = line?.committed === true ? line : undefined;
     return {
       lineCount: result.lines.length,
       content: line === undefined ? '' : new TextDecoder().decode(line.content),
-      boundary: line?.boundary ?? false,
-      blamesSeed: line?.commit === seed.id,
+      boundary: committed?.boundary ?? false,
+      blamesSeed: committed?.commit === seed.id,
     };
   },
 };

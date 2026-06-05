@@ -39,11 +39,23 @@ export interface BlameOptions {
   readonly range?: { readonly start: number; readonly end: number };
 }
 
-export interface BlameLine {
+/** Fields shared by every blamed line, committed or not. */
+export interface BlameLineBase {
   /** 1-based line number in the queried file. */
   readonly finalLine: number;
-  /** 1-based line number in the blamed commit's version of the file. */
+  /** 1-based line number in the originating blob (the queried-file position for an uncommitted line). */
   readonly sourceLine: number;
+  /** Path the file had in the originating version — rename-aware. */
+  readonly sourcePath: FilePath;
+  /** Where the committed base lives; absent for a staged-new file (not in HEAD). */
+  readonly previous?: { readonly commit: ObjectId; readonly path: FilePath };
+  /** The line's bytes (newline-terminated except a final line without a trailing LF). */
+  readonly content: Uint8Array;
+}
+
+/** A line blamed to a real commit. */
+export interface CommittedBlameLine extends BlameLineBase {
+  readonly committed: true;
   /** Commit this line is blamed to. */
   readonly commit: ObjectId;
   readonly author: AuthorIdentity;
@@ -52,13 +64,18 @@ export interface BlameLine {
   readonly summary: string;
   /** Blamed commit is a root (no parents). */
   readonly boundary: boolean;
-  /** Path the file had in the blamed commit — rename-aware. */
-  readonly sourcePath: FilePath;
-  /** Parent the file content came from; absent on a root. */
-  readonly previous?: { readonly commit: ObjectId; readonly path: FilePath };
-  /** The line's bytes (newline-terminated except a final line without a trailing LF). */
-  readonly content: Uint8Array;
 }
+
+/**
+ * A line not yet committed — git's zero-oid "Not Committed Yet" pseudo-commit.
+ * The library emits none of git's fabricated oid / identity / timestamp / summary
+ * (those are the caller's to render); `committed: false` losslessly signals it.
+ */
+export interface UncommittedBlameLine extends BlameLineBase {
+  readonly committed: false;
+}
+
+export type BlameLine = CommittedBlameLine | UncommittedBlameLine;
 
 export interface BlameResult {
   /** The queried path (final name). */
@@ -169,6 +186,7 @@ const finalize = (
   for (const entry of entries) {
     for (const offset of offsets(entry.count)) {
       sb.finalized.push({
+        committed: true,
         finalLine: entry.finalStart + offset + 1,
         sourceLine: entry.sourceStart + offset + 1,
         commit: suspect.commit,
