@@ -109,6 +109,7 @@ Codes are grouped by domain. Within each group, alphabetical.
 | `TREE_ENTRY_LIMIT_EXCEEDED` | `path, limit` | Tree had more than the configured entry cap. |
 | `WORKING_TREE_DIRTY` | `paths` | Operation requires a clean working tree (and no `force`). |
 | `WORKING_TREE_FILE_TOO_LARGE` | `path, bytes, limit` | File exceeds `MAX_WORKING_TREE_BLOB_BYTES` (256 MiB). |
+| `WORKTREE_FILE_ABSENT` | `path` | Working-tree blame (`worktree: true`) of a tracked path whose file is missing from disk. |
 
 ### Diff & merge
 
