@@ -513,15 +513,17 @@ describe('mv', () => {
     });
   });
 
-  describe('Given breakStaleLockMs and a stale lock', () => {
+  describe('Given config.breakStaleLockMs and a stale lock', () => {
     describe('When mv', () => {
       it('Then the stale lock is broken and mv succeeds', async () => {
-        // Arrange
+        // Arrange — the break window lives on config (set once at open), not on
+        // a per-call mv option; the stale lock reports a far-past mtime.
         const ctx = await seedAndStage({ 'a.txt': 'a' });
         const lockPath = `${ctx.layout.gitDir}/index.lock`;
         await ctx.fs.writeExclusive(lockPath, new Uint8Array());
         const staleCtx: Context = {
           ...ctx,
+          config: { ...ctx.config, breakStaleLockMs: 1 },
           fs: {
             ...ctx.fs,
             lstat: async (path: string) => {
@@ -532,7 +534,7 @@ describe('mv', () => {
         };
 
         // Act
-        const sut = await mv(staleCtx, ['a.txt'], 'b.txt', { breakStaleLockMs: 1 });
+        const sut = await mv(staleCtx, ['a.txt'], 'b.txt');
 
         // Assert
         expect(sut.moved).toEqual([{ from: 'a.txt', to: 'b.txt' }]);
@@ -540,7 +542,7 @@ describe('mv', () => {
     });
   });
 
-  describe('Given a held lock without breakStaleLockMs', () => {
+  describe('Given a held lock without config.breakStaleLockMs', () => {
     describe('When mv', () => {
       it('Then it surfaces RESOURCE_LOCKED', async () => {
         // Arrange

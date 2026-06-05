@@ -208,6 +208,46 @@ describe('internal/index-update', () => {
     });
   });
 
+  describe('Given a stale lock and ctx.config.breakStaleLockMs with no per-call option', () => {
+    describe('When acquireIndexLock', () => {
+      it('Then the config window drives the break', async () => {
+        // Arrange — the policy lives on ctx.config; opts carries only the clock.
+        // A far-future now() makes the lock stale under the config window.
+        const base = createMemoryContext();
+        const ctx: Context = { ...base, config: { breakStaleLockMs: 1000 } };
+        await ctx.fs.write(lockPath(ctx), new Uint8Array([1]));
+        const now = (): number => Date.now() + 60_000;
+
+        // Act
+        const sut = await acquireIndexLock(ctx, { now });
+
+        // Assert — broken + re-acquired, not RESOURCE_LOCKED.
+        expect(await ctx.fs.exists(lockPath(ctx))).toBe(true);
+        await sut.release();
+      });
+    });
+  });
+
+  describe('Given both an explicit opts.breakStaleLockMs and ctx.config.breakStaleLockMs', () => {
+    describe('When acquireIndexLock', () => {
+      it('Then the explicit opts value takes precedence over config', async () => {
+        // Arrange — config (1 ms) would treat the lock as stale and break it; the
+        // explicit opts window (100_000 ms) does NOT. RESOURCE_LOCKED proves opts won.
+        const base = createMemoryContext();
+        const ctx: Context = { ...base, config: { breakStaleLockMs: 1 } };
+        await ctx.fs.write(lockPath(ctx), new Uint8Array([1]));
+        const mtime = (await ctx.fs.lstat(lockPath(ctx))).mtimeMs;
+        const now = (): number => mtime + 1000; // age 1000: stale under config(1), fresh under opts(100_000)
+
+        // Act + Assert
+        await expectError(
+          () => acquireIndexLock(ctx, { breakStaleLockMs: 100_000, now }),
+          'RESOURCE_LOCKED',
+        );
+      });
+    });
+  });
+
   describe('Given commit then a second commit on the same lock object', () => {
     describe('When commit is called twice', () => {
       it('Then the second is a no-op (post-commit guard)', async () => {

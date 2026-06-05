@@ -30,13 +30,17 @@ const resourceLocked = (path: string, mtimeMs: number | undefined): TsgitError =
 /**
  * Acquire `${gitDir}/index.lock` for the read-modify-write cycle.
  *
- * Without `breakStaleLockMs`: lock contention surfaces as `RESOURCE_LOCKED`
+ * The break window is the per-call `opts.breakStaleLockMs` when given, else the
+ * repo-wide `ctx.config?.breakStaleLockMs` — stale-lock breaking is environment
+ * policy fixed at `openRepository`, so every index acquisition honours it.
+ *
+ * Without a window (neither set): lock contention surfaces as `RESOURCE_LOCKED`
  * (callers must handle).
  *
- * With `breakStaleLockMs`: when the existing lock's age `(now - mtime)` is in
- * the half-open range `[N, ∞)`, the lock is removed once and acquisition is
- * retried. A second contention surfaces as `RESOURCE_LOCKED`. When the lock's
- * mtime appears to be in the future (clock-skew guard), the lock is NOT broken.
+ * With a window `N`: when the existing lock's age `(now - mtime)` is in the
+ * half-open range `[N, ∞)`, the lock is removed once and acquisition is retried.
+ * A second contention surfaces as `RESOURCE_LOCKED`. When the lock's mtime
+ * appears to be in the future (clock-skew guard), the lock is NOT broken.
  */
 export const acquireIndexLock = async (
   ctx: Context,
@@ -45,7 +49,7 @@ export const acquireIndexLock = async (
   const lockPath = `${indexPath(ctx.layout.gitDir)}${lockSuffix}`;
   const indexFile = indexPath(ctx.layout.gitDir);
   const now = opts.now ?? (() => Date.now());
-  const breakStaleLockMs = opts.breakStaleLockMs;
+  const breakStaleLockMs = opts.breakStaleLockMs ?? ctx.config?.breakStaleLockMs;
 
   try {
     await ctx.fs.writeExclusive(lockPath, new Uint8Array());

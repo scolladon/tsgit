@@ -47,8 +47,6 @@ export interface MvOptions {
   readonly dryRun?: boolean;
   /** Skip refused (source → target) pairs instead of aborting the whole call. `-k`. */
   readonly skipErrors?: boolean;
-  /** Break a stale `index.lock` older than N ms (same contract as rm/add). */
-  readonly breakStaleLockMs?: number;
 }
 
 export interface MvMove {
@@ -104,10 +102,7 @@ export const mv = async (
   assertNoOverlappingSources(validatedSources);
   const destNoSlash = validatePath(stripTrailingSlash(destination));
 
-  const lock = await acquireIndexLock(
-    ctx,
-    opts.breakStaleLockMs !== undefined ? { breakStaleLockMs: opts.breakStaleLockMs } : {},
-  );
+  const lock = await acquireIndexLock(ctx);
   try {
     const byPath = await readIndexMap(ctx);
     const mode = await resolveDestinationMode(ctx, firstSource, destination, destNoSlash);
