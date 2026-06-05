@@ -186,14 +186,7 @@ const finalizeUncommitted = (
   const lines = splitLines(blob);
   for (const entry of entries) {
     for (const offset of offsets(entry.count)) {
-      sb.finalized.push({
-        committed: false,
-        finalLine: entry.finalStart + offset + 1,
-        sourceLine: entry.sourceStart + offset + 1,
-        sourcePath: path,
-        ...(previous !== undefined ? { previous } : {}),
-        content: lines[entry.sourceStart + offset] as Uint8Array,
-      });
+      sb.finalized.push({ committed: false, ...baseLine(entry, offset, lines, path, previous) });
     }
   }
 };
@@ -270,20 +263,31 @@ const finalize = (
     for (const offset of offsets(entry.count)) {
       sb.finalized.push({
         committed: true,
-        finalLine: entry.finalStart + offset + 1,
-        sourceLine: entry.sourceStart + offset + 1,
         commit: suspect.commit,
         author: data.author,
         committer: data.committer,
         summary,
         boundary,
-        sourcePath: suspect.path,
-        ...(previous !== undefined ? { previous } : {}),
-        content: childLines[entry.sourceStart + offset] as Uint8Array,
+        ...baseLine(entry, offset, childLines, suspect.path, previous),
       });
     }
   }
 };
+
+/** The fields every blamed line shares, for one entry's offset (committed or not). */
+const baseLine = (
+  entry: BlameEntry,
+  offset: number,
+  lines: ReadonlyArray<Uint8Array>,
+  sourcePath: FilePath,
+  previous: BlameLine['previous'],
+): BlameLineBase => ({
+  finalLine: entry.finalStart + offset + 1,
+  sourceLine: entry.sourceStart + offset + 1,
+  sourcePath,
+  ...(previous !== undefined ? { previous } : {}),
+  content: lines[entry.sourceStart + offset] as Uint8Array,
+});
 
 /** `[0, 1, …, count-1]` — a range with no mutable index to invert into a hang. */
 const offsets = (count: number): ReadonlyArray<number> =>
