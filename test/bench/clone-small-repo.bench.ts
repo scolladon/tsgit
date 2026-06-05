@@ -73,12 +73,7 @@ benchScenario(
         },
       });
       try {
-        await repo.clone({
-          url,
-          allowInsecure: true,
-          allowPrivateNetworks: true,
-          resolver: async () => ['127.0.0.1'],
-        });
+        await repo.clone({ url });
       } finally {
         await repo.dispose();
       }

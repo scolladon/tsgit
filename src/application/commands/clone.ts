@@ -21,7 +21,6 @@ import {
   selectFetchCapabilities,
   uniqueRefOids,
 } from './internal/upload-pack-client.js';
-import { type DnsResolver, validateUrl } from './internal/url-validate.js';
 
 export interface CloneOptions {
   readonly url: string;
@@ -32,10 +31,6 @@ export interface CloneOptions {
    * resulting shallow boundaries to `.git/shallow`.
    */
   readonly depth?: number;
-  /** DNS resolver injected by the caller; required to enforce SSRF guards. */
-  readonly resolver?: DnsResolver;
-  readonly allowInsecure?: boolean;
-  readonly allowPrivateNetworks?: boolean;
   /**
    * Partial-clone object filter (`blob:none`, `blob:limit=<n>`, `tree:<n>`).
    * When set, the server omits the filtered objects, a promisor remote is
@@ -53,7 +48,10 @@ export interface CloneResult {
 /**
  * Clone a remote repository into `ctx.layout.workDir`.
  *
- * Performs URL validation (SSRF guards), bootstraps a `.git` skeleton,
+ * The SSRF URL guard is applied by the transport wrapper `openRepository`
+ * installs (`wrapTransportValidator`, from `config.dnsResolver` /
+ * `allowInsecure` / `allowPrivateNetworks`), not by `clone` itself — a blocked
+ * URL is refused on the first transport request. Bootstraps a `.git` skeleton,
  * discovers refs via smart-HTTP v1, fetches the pack, writes it under
  * `.git/objects/pack/`, propagates remote refs into the local layout
  * (HEAD-tracked branch under `refs/heads/<branch>`, all branches under
@@ -80,23 +78,6 @@ export const clone = async (ctx: Context, opts: CloneOptions): Promise<CloneResu
     opts.filter !== undefined ? formatObjectFilter(parseObjectFilter(opts.filter)) : undefined;
   ctx.progress.start(CLONE_DISCOVER_OP);
   try {
-    // Defense-in-depth URL validation. Production callers go through
-    // `openRepository`, which wraps `ctx.transport` with `wrapTransportValidator`
-    // — every transport.request() then runs `validateUrl` using
-    // `config.dnsResolver` from the facade. This in-clone path only fires when
-    // a caller manually constructs a Context and passes `opts.resolver`; both
-    // layers run when both are configured, which is harmless.
-    if (opts.resolver !== undefined) {
-      await validateUrl(opts.url, {
-        resolver: opts.resolver,
-        // Stryker disable next-line ConditionalExpression: equivalent — always-true ternary spreads `{ allowInsecure: opts.allowInsecure }`; validateUrl reads `opts.allowInsecure ?? false`, so `undefined`/`false` both yield the same `false` as the empty spread.
-        ...(opts.allowInsecure !== undefined ? { allowInsecure: opts.allowInsecure } : {}),
-        // Stryker disable next-line ConditionalExpression: equivalent — always-true ternary spreads `{ allowPrivateNetworks: opts.allowPrivateNetworks }`; validateUrl reads `opts.allowPrivateNetworks ?? false`, so `undefined`/`false` both yield the same `false` as the empty spread.
-        ...(opts.allowPrivateNetworks !== undefined
-          ? { allowPrivateNetworks: opts.allowPrivateNetworks }
-          : {}),
-      });
-    }
     const bootstrap = await bootstrapRepository(ctx, {
       initialBranch: opts.initialBranch ?? 'main',
       bare: opts.bare ?? false,

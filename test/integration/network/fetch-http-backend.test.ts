@@ -190,12 +190,7 @@ describe.skipIf(SKIP_REASON !== false)('fetch — end-to-end against git-http-ba
       },
     });
 
-    await repo.clone({
-      url,
-      allowInsecure: true,
-      allowPrivateNetworks: true,
-      resolver: async () => ['127.0.0.1'],
-    });
+    await repo.clone({ url });
 
     // Write a config block so fetch can find the remote.
     const configPath = path.join(repo.ctx.layout.gitDir, 'config');
