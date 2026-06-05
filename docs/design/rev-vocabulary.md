@@ -21,6 +21,11 @@ A consumer learning the surface must memorise five spellings for one idea. After
 this pass there is **one** spelling for a single commit-ish (`rev`) and **one**
 spelling for a range (`from`/`to`).
 
+After ADR-266 the vocabulary is **two precise words**, not one: **`rev`** for a
+**commit-ish** (resolves to a commit — oid, `HEAD`, `~`/`^`, tag, branch, reflog
+selector), **`from`/`to`** for a **range**, and **`ref`** for a **literal ref
+name** (`pull`, whose input is a remote branch short-name, *not* a commit-ish).
+
 This is a **pure parameter rename** — **behaviour-preserving**. No object SHA,
 ref, reflog, on-disk state file, refusal condition, or structured result shape
 changes. Only the *spelling of an input field / positional parameter* on the
@@ -55,7 +60,7 @@ parameter names.
 | `reset`    | `ResetOptions.target`                  | `rev`          | option     |
 | `describe` | positional `input?: string`            | `rev?`         | positional |
 | `show`     | positional `input?: ShowInput`         | `rev?`         | positional |
-| `pull`     | `PullOptions.branch`                   | **see ADR**    | option     |
+| `pull`     | `PullOptions.branch`                   | `ref` (ADR-266)| option     |
 
 `blame` is already canonical (it defines the target word) — listed for
 completeness, no change. The `MergeRunInput` / `ResetOptions` *type names* are
@@ -141,11 +146,14 @@ Mutation testing re-runs against the renamed shape (Step 8); since logic is
 untouched, scores must hold — any new survivor signals a mechanical edit slip,
 not a real gap.
 
-## Open decision (→ ADR)
+## `pull`: a `ref`, not a `rev` (ADR-266)
 
-**`pull`'s `branch`** is the one genuine judgment call (see ADR). Unlike the
-other seven, `pull`'s parameter is a **remote branch short-name** resolved as
+**`pull`'s `branch`** was the one genuine judgment call. Unlike the other seven,
+`pull`'s parameter is a **remote branch short-name** resolved as
 `refs/remotes/<remote>/<branch>` — it is *not* a general commit-ish (no oid, no
-`HEAD~3`, no arbitrary rev). Whether "standardise on `rev`" should fold it in
-(uniformity) or leave it as `branch` (semantic honesty) is settled with the user
-before implementation. The recommendation and alternatives are in the ADR.
+`HEAD~3`, no arbitrary rev). ADR-266 settles it: rename to **`ref`**, a
+deliberate second vocabulary word whose contract is "a literal ref name, looked
+up — not commit-ish resolution". `pull` is the only `ref` consumer. Internally,
+the resolved `Upstream.branch` field and the `noUpstreamConfigured(branch)` error
+keep their `branch` spelling (they hold a genuine branch name, off the public
+options surface) — only `PullOptions.branch` → `PullOptions.ref` moves.
