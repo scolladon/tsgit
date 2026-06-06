@@ -45588,15 +45588,45 @@
 									},
 									{
 										"kind": "text",
-										"text": " across **all** parents, yielding them\nin commit-date priority order — newest committer date first, oid-ascending on\nties (the shared "
+										"text": " across **all** parents, yielding them\nin commit-date priority order — newest committer date first, oid-ascending on\nties. A thin wrapper over the shared "
 									},
 									{
-										"kind": "code",
-										"text": "`domain/commit`"
+										"kind": "inline-tag",
+										"tag": "@link",
+										"text": "commitDateWalk",
+										"target": {
+											"packageName": "@scolladon/tsgit",
+											"packagePath": "src/application/primitives/internal/commit-date-walk.ts",
+											"qualifiedName": "commitDateWalk"
+										}
 									},
 									{
 										"kind": "text",
-										"text": " comparator). Unlike "
+										"text": " core: it owns the\npublic "
+									},
+									{
+										"kind": "code",
+										"text": "`INVALID_WALK_INPUT`"
+									},
+									{
+										"kind": "text",
+										"text": " seed contract (empty / too-many seeds) and\ndelegates the all-parents traversal. The core's first-parent variant is\ninternal — no public consumer needs date + first-parent yet ("
+									},
+									{
+										"kind": "code",
+										"text": "`log`"
+									},
+									{
+										"kind": "text",
+										"text": " routes\n"
+									},
+									{
+										"kind": "code",
+										"text": "`--first-parent`"
+									},
+									{
+										"kind": "text",
+										"text": " through "
 									},
 									{
 										"kind": "code",
@@ -45604,63 +45634,7 @@
 									},
 									{
 										"kind": "text",
-										"text": "'s lazy FIFO\norders, this reads each commit eagerly to order the frontier, carrying the\nloaded "
-									},
-									{
-										"kind": "code",
-										"text": "`Commit`"
-									},
-									{
-										"kind": "text",
-										"text": " through the priority queue.\n\nA "
-									},
-									{
-										"kind": "code",
-										"text": "`seen`"
-									},
-									{
-										"kind": "text",
-										"text": " set guards enqueue, so each reachable commit is read and yielded at\nmost once and the frontier is bounded by the reachable-commit count. "
-									},
-									{
-										"kind": "code",
-										"text": "`until`"
-									},
-									{
-										"kind": "text",
-										"text": "\nexcludes commits before they are read; "
-									},
-									{
-										"kind": "code",
-										"text": "`shallow`"
-									},
-									{
-										"kind": "text",
-										"text": " boundaries are yielded but\ntheir parents are not walked; "
-									},
-									{
-										"kind": "code",
-										"text": "`ignoreMissing`"
-									},
-									{
-										"kind": "text",
-										"text": " / "
-									},
-									{
-										"kind": "code",
-										"text": "`verifyHash`"
-									},
-									{
-										"kind": "text",
-										"text": " thread into the\nshared commit reader; an aborted signal throws at the next loop head.\n\nThe walk is lazy (parents discovered on pop), so it matches\n"
-									},
-									{
-										"kind": "code",
-										"text": "`git rev-list --date-order`"
-									},
-									{
-										"kind": "text",
-										"text": " for histories whose committer dates are monotonic\nalong parent edges — every history built by normal git operations. It does not\nenforce git's strict all-children-before-parent rule for forged reverse-causal\ndates, trading that edge case for streaming composition."
+										"text": "'s lazy FIFO)."
 									}
 								]
 							},

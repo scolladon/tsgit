@@ -182,6 +182,46 @@ describe.skipIf(!GIT_AVAILABLE)('describe interop', () => {
     });
   });
 
+  // The candidate cap changes which tag is reported: `side` sits on a newer-dated
+  // commit (so the date-ordered walk meets it first) but is structurally farther
+  // from HEAD, while `near` is older-dated yet nearer. With one candidate slot the
+  // walk spends it on `side` and gives up before reaching `near` — git does the
+  // same, so `--candidates=1` reconstructs `git describe --candidates=1` exactly.
+  // (git's default keeps that first-found `side` too via its early-termination
+  // heuristic; tsgit's default instead returns the exhaustively-nearest `near` —
+  // a pre-existing selection divergence tracked separately, not exercised here.)
+  describe('Given a newer-dated tag farther than an older nearer tag', () => {
+    let dir = '';
+    let ctx: Context;
+
+    beforeAll(async () => {
+      dir = await makeRepo('candidate-cap');
+      ctx = createNodeContext({ workDir: dir });
+      const base = await commitFile(dir, 'base');
+      await commitFile(dir, 'n1');
+      await commitFile(dir, 'n2');
+      annotate(dir, 'near', clock + 30);
+      git(dir, 'checkout', '-q', '-b', 'side', base);
+      await commitFile(dir, 's1');
+      annotate(dir, 'side', clock + 30);
+      git(dir, 'checkout', '-q', 'main');
+      clock += 60;
+      runGit(['-C', dir, 'merge', '-q', '--no-ff', 'side', '-m', 'merge side'], {
+        env: datedEnv(clock),
+      });
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => {
+      await rm(dir, { recursive: true, force: true });
+    });
+
+    it('Then --candidates=1 spends its slot on the farther (newer-found) tag, matching git', async () => {
+      expect(render(await describeCmd(ctx, undefined, { candidates: 1 }))).toBe(
+        gitDescribe(dir, '--candidates=1'),
+      );
+    });
+  });
+
   describe('Given a repository with no tags', () => {
     let dir = '';
     let ctx: Context;
