@@ -36,8 +36,8 @@ weigh outcome (declined; cohesion + altitude + reversibility; ADR-274).
 `npm run validate` (lint/format/types/full test suite + cspell). Expectations:
 
 - The existing facade-surface test stays green (surface unchanged).
-- cspell: watch the known British `-ising/-ised` gap — full validate catches what
-  the commit hook may miss.
+- cspell: watch the known British-spelling gap — full validate catches what the
+  commit hook may miss.
 
 ## Review / refactor / mutation phases
 

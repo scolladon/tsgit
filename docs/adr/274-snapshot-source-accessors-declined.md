@@ -35,8 +35,8 @@ the project's KISS/YAGNI posture and the altitude boundary between the porcelain
 `repo.*` surface and the `repo.snapshot.*` power-tool namespace.
 
 A second force is **reversibility asymmetry**. Inside the 23.4 breaking window
-(open until the end of Phase 28) any shape is reshapeable; at window close it
-freezes. *Not* adding an accessor is fully reversible — a method can be added
+(open until the end of Phase 28) any shape can still be reshaped; at window close
+it freezes. *Not* adding an accessor is fully reversible — a method can be added
 later, additively (non-breaking), even after the window. *Adding* one commits a
 name and an altitude decision that is breaking to undo post-window.
 

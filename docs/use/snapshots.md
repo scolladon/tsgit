@@ -48,6 +48,24 @@ The compound-state factories return `Promise` because they have to check
 whether the underlying ref file exists. They still don't parse the tree
 until iterated.
 
+### Why sources live on the factory, not `repo.*`
+
+Every source is reached through `repo.snapshot.*`, never as a top-level
+`repo.index` / `repo.workdir` / `repo.tree(rev)` accessor. This is deliberate:
+snapshots are a **power-tool** (lazy handles with isolation semantics), kept off
+the everyday porcelain surface that returns plain structured data. Folding them
+onto `repo.*` would either duplicate the factory (`repo.index()` ≡
+`repo.snapshot.index()`), drop capability (a bare `repo.index` getter cannot
+carry the options bag the method takes), or collide with a command namespace
+(`repo.stash` is the stash *command*). The factory keeps the surface cohesive —
+one place for all four sources.
+
+To snapshot a tree at an arbitrary revision, resolve it first:
+
+```ts
+const tree = repo.snapshot.commit(await repo.revParse('v1.0'));
+```
+
 ## Worked example — `status`
 
 Compare head, index, and workdir in a single pass:
