@@ -210,11 +210,15 @@ interface SelectionOutcome {
 }
 
 /**
- * Date-ordered walk collecting candidate tags and their exact distances. Drives
- * the shared `commitDateWalk` core (first-parent honoured) and layers describe's
- * policy on top: every popped commit advances the depth of each candidate it
- * does not reach; the candidate cap bounds how many tags are collected; the
- * nearest survivor (git's `compare_pt`) is chosen once the walk drains.
+ * Date-ordered walk reproducing git's nearest-tag search. Drives the shared
+ * `commitDateWalk` core (first-parent honoured) and layers describe's policy:
+ * every popped commit advances the depth of each candidate it does not reach,
+ * until the candidate set is frozen the moment every slot — or every name — is
+ * taken (git's `gave_up_on`). The frozen set is sorted on its partial depths
+ * (git's `compare_pt`) to pick the winner, whose depth is then finalised by
+ * walking the remainder advancing the winner alone (git's
+ * `finish_depth_computation`). git's secondary "covered path" break is omitted:
+ * it cannot change the winner or its finalised depth, only the commits traversed.
  */
 const selectNearest = async (
   ctx: Context,
@@ -223,29 +227,39 @@ const selectNearest = async (
   plan: ResolvedDescribePlan,
   minPriority: number,
 ): Promise<SelectionOutcome> => {
+  const totalNames = nameMap.size;
   const reach = new Map<ObjectId, Set<number>>();
   const candidates: Candidate[] = [];
   let counter = 0;
   let sawUnannotated = false;
+  let winner: Candidate | undefined;
 
   for await (const commit of commitDateWalk(ctx, {
     from: [target],
     firstParent: plan.firstParent,
   })) {
+    if (winner !== undefined) {
+      finishWinner(reach, commit, winner, plan.firstParent);
+      continue;
+    }
+    if (candidates.length === plan.maxCandidates || candidates.length === totalNames) {
+      winner = pickNearest(candidates);
+      if (winner === undefined) break;
+      finishWinner(reach, commit, winner, plan.firstParent);
+      continue;
+    }
     const oid = commit.id;
     counter += 1;
     const named = nameMap.get(oid);
     if (named !== undefined && named.priority >= minPriority) {
-      if (candidates.length < plan.maxCandidates) {
-        const index = candidates.length;
-        candidates.push({
-          name: named.name,
-          commitOid: oid,
-          depth: counter - 1,
-          foundOrder: index,
-        });
-        reachSet(reach, oid).add(index);
-      }
+      const index = candidates.length;
+      candidates.push({
+        name: named.name,
+        commitOid: oid,
+        depth: counter - 1,
+        foundOrder: index,
+      });
+      reachSet(reach, oid).add(index);
     } else if (named !== undefined) {
       sawUnannotated = true;
     }
@@ -253,7 +267,22 @@ const selectNearest = async (
     propagateReach(reach, commit, plan.firstParent);
   }
 
-  return { best: [...candidates].sort(compareCandidates)[0], sawUnannotated };
+  return { best: winner ?? pickNearest(candidates), sawUnannotated };
+};
+
+/** git's `compare_pt`: nearest (smallest depth) first, ties broken by found order. */
+const pickNearest = (candidates: ReadonlyArray<Candidate>): Candidate | undefined =>
+  [...candidates].sort(compareCandidates)[0];
+
+/** Advance only the winner's depth (git's `finish_depth_computation`), still spreading reach. */
+const finishWinner = (
+  reach: Map<ObjectId, Set<number>>,
+  commit: Commit,
+  winner: Candidate,
+  firstParent: boolean,
+): void => {
+  incrementUnreached([winner], reach.get(commit.id));
+  propagateReach(reach, commit, firstParent);
 };
 
 const incrementUnreached = (

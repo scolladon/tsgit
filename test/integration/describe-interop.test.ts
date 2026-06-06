@@ -184,12 +184,11 @@ describe.skipIf(!GIT_AVAILABLE)('describe interop', () => {
 
   // The candidate cap changes which tag is reported: `side` sits on a newer-dated
   // commit (so the date-ordered walk meets it first) but is structurally farther
-  // from HEAD, while `near` is older-dated yet nearer. With one candidate slot the
-  // walk spends it on `side` and gives up before reaching `near` — git does the
-  // same, so `--candidates=1` reconstructs `git describe --candidates=1` exactly.
-  // (git's default keeps that first-found `side` too via its early-termination
-  // heuristic; tsgit's default instead returns the exhaustively-nearest `near` —
-  // a pre-existing selection divergence tracked separately, not exercised here.)
+  // from HEAD, while `near` is older-dated yet nearer. git freezes the candidate
+  // set the moment every name is collected, sorts on the frozen partial depths (a
+  // `side`/`near` tie), breaks the tie on found order (`side` first), then
+  // finalises the winner's depth — so BOTH the default and `--candidates=1`
+  // reconstruct `git describe` exactly, keeping the farther, first-met `side`.
   describe('Given a newer-dated tag farther than an older nearer tag', () => {
     let dir = '';
     let ctx: Context;
@@ -215,7 +214,95 @@ describe.skipIf(!GIT_AVAILABLE)('describe interop', () => {
       await rm(dir, { recursive: true, force: true });
     });
 
+    it('Then default describe keeps the farther, first-met tag, matching git', async () => {
+      expect(render(await describeCmd(ctx))).toBe(gitDescribe(dir));
+    });
+
     it('Then --candidates=1 spends its slot on the farther (newer-found) tag, matching git', async () => {
+      expect(render(await describeCmd(ctx, undefined, { candidates: 1 }))).toBe(
+        gitDescribe(dir, '--candidates=1'),
+      );
+    });
+  });
+
+  // A tag behind a convergence: `ay` (newer) and `bee` (older) are equidistant
+  // children of `p`; `old` sits two commits further back. git fires its
+  // "covered path" early break at `p` and reports the first-met `ay` without ever
+  // reaching `old`. tsgit omits that break (it cannot change the result), walking
+  // the full set and even collecting `old` — yet still reports `ay` because `old`
+  // is farther and never wins. This pins that omission against regression.
+  describe('Given an annotated tag behind a merge convergence', () => {
+    let dir = '';
+    let ctx: Context;
+
+    beforeAll(async () => {
+      dir = await makeRepo('convergence');
+      ctx = createNodeContext({ workDir: dir });
+      await commitFile(dir, 'base');
+      await commitFile(dir, 'cold');
+      annotate(dir, 'old', clock + 30);
+      const p = await commitFile(dir, 'cp');
+      await commitFile(dir, 'bee');
+      annotate(dir, 'bee', clock + 30);
+      git(dir, 'checkout', '-q', '-b', 'topic', p);
+      await commitFile(dir, 'cay');
+      annotate(dir, 'ay', clock + 30);
+      git(dir, 'checkout', '-q', 'main');
+      clock += 60;
+      runGit(['-C', dir, 'merge', '-q', '--no-ff', 'topic', '-m', 'merge topic'], {
+        env: datedEnv(clock),
+      });
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => {
+      await rm(dir, { recursive: true, force: true });
+    });
+
+    it('Then default describe reports the nearest first-met tag, matching git', async () => {
+      expect(render(await describeCmd(ctx))).toBe(gitDescribe(dir));
+    });
+  });
+
+  // Three tags where the candidate budget changes the answer: `t2` is met first
+  // (newest) but `t1` is structurally nearer. With the full budget every name is
+  // collected and the frozen sort picks the nearer `t1`; with one slot the walk
+  // keeps the first-met `t2`. Both reconstruct real git exactly — pinning that the
+  // budget, not only the total-name count, is faithfully load-bearing.
+  describe('Given three tags where the candidate budget changes the result', () => {
+    let dir = '';
+    let ctx: Context;
+
+    beforeAll(async () => {
+      dir = await makeRepo('budget');
+      ctx = createNodeContext({ workDir: dir });
+      const base = await commitFile(dir, 'base');
+      git(dir, 'checkout', '-q', '-b', 'br0', base);
+      const b0 = await commitFile(dir, 'b0');
+      annotate(dir, 't0', clock + 5);
+      git(dir, 'checkout', '-q', '-b', 'br1', b0);
+      await commitFile(dir, 'b1a');
+      await commitFile(dir, 'b1b');
+      annotate(dir, 't1', clock + 5);
+      git(dir, 'checkout', '-q', '-b', 'br2', base);
+      await commitFile(dir, 'b2a');
+      await commitFile(dir, 'b2b');
+      annotate(dir, 't2', clock + 5);
+      git(dir, 'checkout', '-q', 'main');
+      clock += 60;
+      runGit(['-C', dir, 'merge', '-q', '--no-ff', 'br2', 'br1', '-m', 'merge'], {
+        env: datedEnv(clock),
+      });
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => {
+      await rm(dir, { recursive: true, force: true });
+    });
+
+    it('Then the full budget keeps the nearer later-met tag, matching git', async () => {
+      expect(render(await describeCmd(ctx))).toBe(gitDescribe(dir));
+    });
+
+    it('Then a single slot keeps the first-met tag instead, matching git', async () => {
       expect(render(await describeCmd(ctx, undefined, { candidates: 1 }))).toBe(
         gitDescribe(dir, '--candidates=1'),
       );
