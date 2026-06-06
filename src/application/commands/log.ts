@@ -3,10 +3,19 @@ import { validateRefName } from '../../domain/refs/index.js';
 import type { Context } from '../../ports/context.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
 import { walkCommits } from '../primitives/walk-commits.js';
+import { walkCommitsByDate } from '../primitives/walk-commits-by-date.js';
 import { assertRepository } from './internal/repo-state.js';
+
+/**
+ * Walk order. `'date'` (default) yields every reachable commit across all
+ * parents, newest committer-date first (git's default `git log` order);
+ * `'first-parent'` follows only the first parent (`git log --first-parent`).
+ */
+export type LogOrder = 'date' | 'first-parent';
 
 export interface LogOptions {
   readonly rev?: string;
+  readonly order?: LogOrder;
   readonly limit?: number;
   readonly excluding?: ReadonlyArray<string>;
   readonly before?: Date;
@@ -22,9 +31,11 @@ export interface LogEntry {
 }
 
 /**
- * Walk first-parent commits starting from `rev` (default: HEAD), yielding
- * ordered `LogEntry` records. Honors `limit`, `excluding` (oid stops), and
- * `before` (only commits with `committer.timestamp < before`).
+ * Walk commits starting from `rev` (default: HEAD), yielding ordered `LogEntry`
+ * records. By default walks every reachable commit across all parents in
+ * committer-date order; `order: 'first-parent'` follows only the first parent.
+ * Honors `limit`, `excluding` (oid stops), and `before` (only commits with
+ * `committer.timestamp < before`).
  */
 export const log = async (
   ctx: Context,
@@ -35,13 +46,13 @@ export const log = async (
   // Stryker disable next-line ArrayDeclaration: equivalent — any unresolvable seed (e.g. "Stryker was here") is caught and skipped by resolveExcluding, yielding the same empty exclusion list as [].
   const exclude = await resolveExcluding(ctx, opts.excluding ?? []);
   const before = opts.before;
+  const walk =
+    opts.order === 'first-parent'
+      ? walkCommits(ctx, { from: [startId], until: exclude, order: 'first-parent' })
+      : walkCommitsByDate(ctx, { from: [startId], until: exclude });
   const out: LogEntry[] = [];
   let yielded = 0;
-  for await (const value of walkCommits(ctx, {
-    from: [startId],
-    until: exclude,
-    order: 'first-parent',
-  })) {
+  for await (const value of walk) {
     if (before !== undefined && value.data.committer.timestamp >= before.getTime() / 1000) {
       continue;
     }

@@ -71,6 +71,21 @@ const seedTimestampChain = async () => {
   return { ctx, c1, c2, c3 };
 };
 
+/**
+ * Seed a diamond: base `A`, two branches `B`/`C` off `A`, merge `D` with parents
+ * `[B, C]`. Strictly-increasing committer dates `a<b<c<d` make the date order
+ * unambiguous and distinct from the first-parent spine (`D → B → A`).
+ */
+const seedDiamond = async () => {
+  const ctx = createMemoryContext();
+  const a = await writeCommitAt(ctx, [], 1000, 'A');
+  const b = await writeCommitAt(ctx, [a], 2000, 'B');
+  const c = await writeCommitAt(ctx, [a], 3000, 'C');
+  const d = await writeCommitAt(ctx, [b, c], 4000, 'D');
+  await seedRepo(ctx, { refs: { 'refs/heads/main': d } });
+  return { ctx, a, b, c, d };
+};
+
 describe('log', () => {
   describe('Given three commits', () => {
     describe('When log', () => {
@@ -83,6 +98,36 @@ describe('log', () => {
 
         // Assert
         expect(sut.map((e) => e.message)).toEqual(['third\n', 'second\n', 'first\n']);
+      });
+    });
+  });
+
+  describe('Given a diamond history (merge of two branches)', () => {
+    describe('When log runs with the default order', () => {
+      it('Then yields every parent newest-committer-date first', async () => {
+        // Arrange
+        const ctx = (await seedDiamond()).ctx;
+
+        // Act
+        const sut = await log(ctx);
+
+        // Assert — all four commits, committer-date desc; a first-parent default
+        // walk would drop `C` (it is off the first-parent spine).
+        expect(sut.map((e) => e.message)).toEqual(['D', 'C', 'B', 'A']);
+      });
+    });
+
+    describe("When log runs with order 'first-parent'", () => {
+      it('Then follows only the first parent of the merge', async () => {
+        // Arrange
+        const ctx = (await seedDiamond()).ctx;
+
+        // Act
+        const sut = await log(ctx, { order: 'first-parent' });
+
+        // Assert — `D → B` (parents[0]) → `A`; `C` is off the spine. The default
+        // (date) walk would re-add `C`.
+        expect(sut.map((e) => e.message)).toEqual(['D', 'B', 'A']);
       });
     });
   });
