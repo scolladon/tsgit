@@ -37,6 +37,28 @@ describe('diff', () => {
     });
   });
 
+  describe("Given `from` is a grammar selector 'HEAD^'", () => {
+    describe('When diff', () => {
+      it("Then resolves the parent commit's tree (the bespoke resolver had no `^`)", async () => {
+        // Arrange — c1(a1) ← c2(a2); HEAD→c2, so HEAD^ is c1.
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a1');
+        await add(ctx, ['a.txt']);
+        await commit(ctx, { message: 'first', author });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a2');
+        await add(ctx, ['a.txt']);
+        await commit(ctx, { message: 'second', author });
+
+        // Act — diff HEAD^ (c1's tree) against HEAD (c2's tree).
+        const sut = await diff(ctx, { from: 'HEAD^', to: 'HEAD' });
+
+        // Assert — `a.txt` changed between the two trees.
+        expect(sut.changes.length).toBeGreaterThanOrEqual(1);
+      });
+    });
+  });
+
   describe('Given a non-repo ctx', () => {
     describe('When diff', () => {
       it('Then throws NOT_A_REPOSITORY', async () => {
@@ -258,7 +280,7 @@ describe('diff', () => {
 
   describe('Given a 41-hex-character `from`', () => {
     describe('When diff', () => {
-      it('Then it is treated as a ref name — proving both regex anchors', async () => {
+      it('Then the grammar refuses it (not silently sliced to a 40-hex oid)', async () => {
         // Arrange
         const ctx = createMemoryContext();
         await init(ctx);
@@ -267,8 +289,9 @@ describe('diff', () => {
         await commit(ctx, { message: 'first', author });
         const tooLong = 'a'.repeat(41);
 
-        // Act — 41 hex chars: `/^[0-9a-f]{40}$/` rejects (length mismatch), so it is
-        // routed through validateRefName → resolveRef → REF_NOT_FOUND.
+        // Act — 41 chars is neither a valid ref nor a 4–40 oid prefix, so the
+        // grammar exhausts both ladders and refuses (it does not slice the first
+        // 40 chars into an oid).
         let caught: unknown;
         try {
           await diff(ctx, { from: tooLong });
@@ -276,18 +299,16 @@ describe('diff', () => {
           caught = err;
         }
 
-        // Assert — must be a REF lookup failure, NOT an object lookup. Dropping the
-        // `^` anchor (`/[0-9a-f]{40}$/`) would match the last 40 chars; dropping the
-        // `$` anchor (`/^[0-9a-f]{40}/`) would match the first 40 — either mutation
-        // mis-treats the string as an oid → OBJECT_NOT_FOUND, failing this assert.
-        expect((caught as { data?: { code?: string } })?.data?.code).toBe('REF_NOT_FOUND');
+        // Assert — OBJECT_NOT_FOUND from the grammar's exhausted resolution
+        // (consistent with log / show / readFileAt).
+        expect((caught as { data?: { code?: string } })?.data?.code).toBe('OBJECT_NOT_FOUND');
       });
     });
   });
 
   describe('Given a `from` with a 39-hex prefix and a non-hex suffix', () => {
     describe('When diff', () => {
-      it('Then it is treated as a ref name', async () => {
+      it('Then the grammar refuses it (a non-hex char rules out the oid path)', async () => {
         // Arrange
         const ctx = createMemoryContext();
         await init(ctx);
@@ -297,8 +318,7 @@ describe('diff', () => {
         // 40 chars total: 39 hex + a trailing non-hex char → not an oid.
         const notAnOid = `${'a'.repeat(39)}z`;
 
-        // Act — `[0-9a-f]{40}` cannot match 40 chars containing a non-hex `z`, so
-        // the value is a ref name and resolution fails.
+        // Act — the trailing `z` keeps it off the oid path; no ref matches either.
         let caught: unknown;
         try {
           await diff(ctx, { from: notAnOid, to: c1.id });
@@ -307,7 +327,7 @@ describe('diff', () => {
         }
 
         // Assert
-        expect((caught as { data?: { code?: string } })?.data?.code).toBe('REF_NOT_FOUND');
+        expect((caught as { data?: { code?: string } })?.data?.code).toBe('OBJECT_NOT_FOUND');
       });
     });
   });
@@ -354,7 +374,7 @@ describe('diff', () => {
 
   describe('Given a non-existent ref name as target', () => {
     describe('When diff', () => {
-      it('Then fails ref resolution (proving the non-HEAD branch is taken)', async () => {
+      it('Then fails resolution (the grammar exhausts ref then oid lookup)', async () => {
         // Arrange
         const ctx = createMemoryContext();
         await init(ctx);
@@ -362,10 +382,8 @@ describe('diff', () => {
         await add(ctx, ['a.txt']);
         await commit(ctx, { message: 'first', author });
 
-        // Act — 'refs/heads/missing' !== 'HEAD'. The non-HEAD branch validates and
-        // resolves it; resolution fails. If `target==='HEAD'` were forced true (or
-        // the conditional replaced with `true`), it would resolve HEAD and the diff
-        // would succeed with an empty result — so this pins the equality operator.
+        // Act — no `refs/heads/missing` exists and it is not an oid, so the grammar
+        // refuses; a successful empty diff here would mean it wrongly resolved HEAD.
         let caught: unknown;
         try {
           await diff(ctx, { from: 'refs/heads/missing' });
@@ -374,7 +392,7 @@ describe('diff', () => {
         }
 
         // Assert
-        expect((caught as { data?: { code?: string } })?.data?.code).toBe('REF_NOT_FOUND');
+        expect((caught as { data?: { code?: string } })?.data?.code).toBe('OBJECT_NOT_FOUND');
       });
     });
   });

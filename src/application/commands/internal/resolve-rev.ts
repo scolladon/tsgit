@@ -13,3 +13,7 @@ import { peel, revParse } from '../rev-parse.js';
 /** Resolve `rev` and peel to its commit (annotated tags followed). */
 export const resolveCommit = async (ctx: Context, rev: string): Promise<ObjectId> =>
   peel(ctx, await revParse(ctx, rev), 'commit');
+
+/** Resolve `rev` and peel to its tree (commit → its tree, tags followed). */
+export const resolveTreeish = async (ctx: Context, rev: string): Promise<ObjectId> =>
+  peel(ctx, await revParse(ctx, rev), 'tree');
