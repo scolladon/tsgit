@@ -403,12 +403,12 @@ describe('describe', () => {
 
   describe('Given a newer-dated tag farther than an older nearer tag across a merge', () => {
     // `side` sits on a newer commit (met first in date order) but is
-    // structurally farther; `near` is older yet nearer. The default search
-    // returns the exhaustively-nearest `near`; capping to one candidate spends
-    // the slot on the first-met `side` and reports it instead — so the cap and
-    // the nearest-first sort each change the answer here. (Real git keeps the
-    // first-met `side` even by default via its early-termination heuristic; that
-    // selection divergence is asserted faithfully only for `--candidates=1`.)
+    // structurally farther; `near` is older yet nearer. git's early-termination
+    // freezes the candidate set once every name is collected, sorts on the
+    // FROZEN partial depths (a `side`/`near` tie at depth 2), breaks the tie on
+    // found order (`side` met first), then finalises only the winner's depth
+    // (`side` 2 → its exact 3). So default describe keeps the farther, first-met
+    // `side` — matching git — and `--candidates=1` does the same with one slot.
     const buildSplit = async (ctx: Context): Promise<ObjectId> => {
       const base = await commitFile(ctx, 'base');
       const tree = await treeOf(ctx, base);
@@ -421,7 +421,7 @@ describe('describe', () => {
     };
 
     describe('When describe runs with the default candidate budget', () => {
-      it('Then the nearer (older, later-met) tag wins at its exact distance', async () => {
+      it('Then the farther, first-met tag wins at its finalised distance', async () => {
         // Arrange
         const ctx = await seed();
         const merge = await buildSplit(ctx);
@@ -429,9 +429,10 @@ describe('describe', () => {
         // Act
         const sut = await describeCmd(ctx, merge);
 
-        // Assert
-        expect(sut.name).toBe('near');
-        expect(sut.distance).toBe(2);
+        // Assert — frozen-depth tie broken by found order (side), then the
+        // winner's depth is finalised from 2 to its exact 3.
+        expect(sut.name).toBe('side');
+        expect(sut.distance).toBe(3);
       });
     });
 
@@ -447,6 +448,41 @@ describe('describe', () => {
         // Assert
         expect(sut.name).toBe('side');
         expect(sut.distance).toBe(3);
+      });
+    });
+  });
+
+  describe('Given a lightweight tag keeps the name count above the qualifying set', () => {
+    // Same inversion topology as above, but a lightweight tag on `n1` lifts the
+    // total name count to 3 while only two annotated tags qualify. The collected
+    // count can never reach the total, so the gave-up freeze never fires; the
+    // walk runs to its natural end on full depths and the exhaustively-nearest
+    // `near` wins — exactly as git does (it counts lightweight tags in its name
+    // total too, so its gave-up break is likewise never reached).
+    const buildSplitWithLightweight = async (ctx: Context): Promise<ObjectId> => {
+      const base = await commitFile(ctx, 'base');
+      const tree = await treeOf(ctx, base);
+      const n1 = await writeCommit(ctx, tree, [base], 'n1');
+      await tagCreate(ctx, { name: 'light', target: n1 });
+      const n2 = await writeCommit(ctx, tree, [n1], 'n2');
+      await annotatedTag(ctx, 'near', n2, clock);
+      const s1 = await writeCommit(ctx, tree, [base], 's1');
+      await annotatedTag(ctx, 'side', s1, clock);
+      return writeCommit(ctx, tree, [n2, s1], 'merge');
+    };
+
+    describe('When describe runs with the default candidate budget', () => {
+      it('Then the walk runs to the end and the nearest annotated tag wins', async () => {
+        // Arrange
+        const ctx = await seed();
+        const merge = await buildSplitWithLightweight(ctx);
+
+        // Act
+        const sut = await describeCmd(ctx, merge);
+
+        // Assert
+        expect(sut.name).toBe('near');
+        expect(sut.distance).toBe(2);
       });
     });
   });

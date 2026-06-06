@@ -56,8 +56,8 @@ explains it. The date-ordered scoreboard walk, per popped commit `c`:
 3. A second early break (`annotated_cnt && queue_empty && c covered by every
    minimum-depth candidate`) stops once the frontier collapses to a single path
    already covered by the nearest candidate(s).
-4. After the loop: `QSORT(all_matches, compare_pt)` — order by **depth asc, then
-   found_order asc** — picks `all_matches[0]`. Then
+4. After the loop: sort `all_matches` by `compare_pt` — **depth asc, then
+   found_order asc** — and pick `all_matches[0]`. Then
    `finish_depth_computation(&queue, &all_matches[0])` walks the rest, advancing
    **only the winner's** depth, to make the winner's distance exact.
 
