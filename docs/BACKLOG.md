@@ -308,14 +308,19 @@ v2.0 is complete (22.4 landed; 20.1's snapshot surface shipped in #81 and is rec
 
 ## Phase 24 — Maintenance, topology & extension (v3)
 
-Three waves, ordered by cohesion + structural risk: repo topology first (structurally invasive — multi-gitdir / nested-repo assumptions), leaf utilities second, extension points last.
+Three waves, ordered by cohesion + structural risk: repo topology first (structurally invasive — multi-gitdir / nested-repo assumptions), extension points second, leaf utilities last. (Item numbers are stable IDs, so they read non-monotonically across the reordered waves.)
 
 ### Wave A — Repo topology (submodule & worktree)
 
 - [ ] **24.1** Submodule write side — `add`/`init`/`update`/`sync`/`deinit`. Completes the submodule story (read side shipped in 17.5). _(was 25.4)_
 - [ ] **24.2** `worktree` — add / list / move / remove (distinct working trees over one gitdir).
 
-### Wave B — Utilities (leaf, low-coupling)
+### Wave B — Extension points (hooks & merge drivers)
+
+- [ ] **24.8** Hook coverage parity — `post-commit`, `post-merge`, `post-checkout`, `prepare-commit-msg`, `pre-rebase`, `post-rewrite`, server-side hooks. Layers over the 17.2 hook runner. _(was 25.5)_
+- [ ] **24.9** Custom merge drivers — `.gitattributes` `merge=<driver>` resolution + configurable `[merge "<driver>"]` driver invocation, layered over the built-in 3-way content merge (`domain/merge/`) reused by `merge`/`stash`/`cherry-pick`/`revert`. Sub-dependency: `.gitattributes` parsing is net-new (only `.gitignore` exists today, 14.3).
+
+### Wave C — Utilities (leaf, low-coupling)
 
 - [ ] **24.3** `fsck` — repository integrity check.
 - [ ] **24.4** `archive` — tar/zip export of a tree.
@@ -323,12 +328,7 @@ Three waves, ordered by cohesion + structural risk: repo topology first (structu
 - [ ] **24.6** `bisect` — binary search.
 - [ ] **24.7** `notes` — add / read / list / remove on `refs/notes/*`.
 
-### Wave C — Extension points (hooks & merge drivers)
-
-- [ ] **24.8** Hook coverage parity — `post-commit`, `post-merge`, `post-checkout`, `prepare-commit-msg`, `pre-rebase`, `post-rewrite`, server-side hooks. Layers over the 17.2 hook runner. _(was 25.5)_
-- [ ] **24.9** Custom merge drivers — `.gitattributes` `merge=<driver>` resolution + configurable `[merge "<driver>"]` driver invocation, layered over the built-in 3-way content merge (`domain/merge/`) reused by `merge`/`stash`/`cherry-pick`/`revert`. Sub-dependency: `.gitattributes` parsing is net-new (only `.gitignore` exists today, 14.3).
-
-v3.0 ships when 24.9 lands. Perf pass covered in **26**.
+v3.0 ships when Phase 24 completes. Perf pass covered in **26**.
 
 ---
 
