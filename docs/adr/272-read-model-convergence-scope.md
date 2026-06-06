@@ -58,7 +58,7 @@ Concretely, 23.4j:
 - Honours the over-design caution: the capstone adds zero speculative surface; it
   *removes* duplication.
 - Keeps 23.4k's accessor decision clean and deferred — 23.4j gives it the
-  proof-out it was waiting for instead of pre-empting it.
+  proof-out it was waiting for instead of deciding it early.
 - Every change traces to a concrete faithfulness gap or a real duplication, not to
   an architectural aspiration.
 
