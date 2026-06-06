@@ -27,6 +27,7 @@ import {
   type ConflictKind,
   type StatusResult,
   status as statusCmd,
+  type UnmergedEntry,
 } from '../../src/application/commands/status.js';
 import type { FilePath } from '../../src/domain/objects/index.js';
 import type { Context } from '../../src/ports/context.js';
@@ -156,14 +157,40 @@ const gitPorcelain = (dir: string): string => git(dir, 'status', '--porcelain', 
 
 const ZERO_OID = '0'.repeat(40);
 
+/** Byte-order comparator for the tracked section (git sorts `1`/`u` lines together). */
+const byPath = (a: { path: string }, b: { path: string }): number => {
+  if (a.path < b.path) return -1;
+  if (a.path > b.path) return 1;
+  return 0;
+};
+
 /**
- * Reconstruct `git status --porcelain=v2`'s ordinary (`1`) + untracked (`?`) lines
- * from the change endpoints — `1 <XY> N... <mH> <mI> <mW> <hH> <hI> <path>`. An
- * unchanged side is `.`; an absent side is `000000` / 40 zeros. Pins the new
- * blob-side modes and oids byte-for-byte. Conflicted (`u`) lines are out of scope.
+ * Reconstruct an unmerged `u` line — `u <XY> N... <m1> <m2> <m3> <mW> <h1> <h2>
+ * <h3> <path>`. The stage modes/oids come from `base`/`ours`/`theirs`; `mW` from
+ * the worktree side (`000000` when the conflicted file is absent on disk).
+ */
+const unmergedV2Line = (u: UnmergedEntry): string => {
+  const m1 = u.base?.mode ?? '000000';
+  const m2 = u.ours?.mode ?? '000000';
+  const m3 = u.theirs?.mode ?? '000000';
+  const mW = u.worktree?.mode ?? '000000';
+  const h1 = u.base?.id ?? ZERO_OID;
+  const h2 = u.ours?.id ?? ZERO_OID;
+  const h3 = u.theirs?.id ?? ZERO_OID;
+  return `u ${CONFLICT_XY[u.kind]} N... ${m1} ${m2} ${m3} ${mW} ${h1} ${h2} ${h3} ${u.path}`;
+};
+
+/**
+ * Reconstruct `git status --porcelain=v2`'s ordinary (`1`), unmerged (`u`), and
+ * untracked (`?`) lines from the structured fields. Ordinary line:
+ * `1 <XY> N... <mH> <mI> <mW> <hH> <hI> <path>` (unchanged side `.`; absent side
+ * `000000` / 40 zeros). Ordinary and unmerged lines are interleaved in byte-path
+ * order (git emits the tracked section sorted together); untracked `?` lines
+ * follow. Pins every changed-entry mode/oid — including the conflicted `mW` — byte
+ * for byte.
  */
 const reconstructV2 = (s: StatusResult): string => {
-  const changedLines = s.changes.map((c) => {
+  const ordinary = s.changes.map((c) => {
     const x = c.staged === undefined ? '.' : code(c.staged);
     const y = c.unstaged === undefined ? '.' : code(c.unstaged);
     const mH = c.head?.mode ?? '000000';
@@ -171,10 +198,12 @@ const reconstructV2 = (s: StatusResult): string => {
     const mW = c.worktree?.mode ?? '000000';
     const hH = c.head?.id ?? ZERO_OID;
     const hI = c.index?.id ?? ZERO_OID;
-    return `1 ${x}${y} N... ${mH} ${mI} ${mW} ${hH} ${hI} ${c.path}`;
+    return { path: c.path, line: `1 ${x}${y} N... ${mH} ${mI} ${mW} ${hH} ${hI} ${c.path}` };
   });
+  const unmerged = s.unmerged.map((u) => ({ path: u.path, line: unmergedV2Line(u) }));
+  const trackedLines = [...ordinary, ...unmerged].sort(byPath).map((t) => t.line);
   const untrackedLines = [...s.untracked].sort().map((p) => `? ${p}`);
-  const lines = [...changedLines, ...untrackedLines];
+  const lines = [...trackedLines, ...untrackedLines];
   return lines.length === 0 ? '' : `${lines.join('\n')}\n`;
 };
 
@@ -406,6 +435,34 @@ describe.skipIf(!GIT_AVAILABLE)('status interop — porcelain v2 endpoints', () 
       const { dir, ctx } = await baseRepo('v2-clean');
 
       // Act / Assert
+      expect(reconstructV2(await statusCmd(ctx))).toBe(gitPorcelainV2(dir));
+    },
+    SETUP_TIMEOUT,
+  );
+});
+
+describe.skipIf(!GIT_AVAILABLE)('status interop — porcelain v2 unmerged', () => {
+  it(
+    'Then a conflicted merge reconstructs git status --porcelain=v2 (u-lines, mW present)',
+    async () => {
+      // Arrange — UU/AA/UD/DU, each conflicted file left on disk → mW = 100644.
+      const { dir, ctx } = await conflictRepo('v2-unmerged');
+
+      // Act / Assert — byte-equal u-lines (m1 m2 m3 mW h1 h2 h3) vs real git.
+      expect(reconstructV2(await statusCmd(ctx))).toBe(gitPorcelainV2(dir));
+    },
+    SETUP_TIMEOUT,
+  );
+
+  it(
+    'Then a conflicted file removed from disk reconstructs git v2 (mW=000000)',
+    async () => {
+      // Arrange — drop one conflicted file from the working tree so its mW flips
+      // to 000000 while its stage blobs (m1/m2/m3, h1/h2/h3) stay put.
+      const { dir, ctx } = await conflictRepo('v2-unmerged-absent');
+      await rm(path.join(dir, 'both-mod.txt'));
+
+      // Act / Assert — mixed present/absent mW, byte-equal vs real git.
       expect(reconstructV2(await statusCmd(ctx))).toBe(gitPorcelainV2(dir));
     },
     SETUP_TIMEOUT,
