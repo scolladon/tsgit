@@ -18,6 +18,13 @@ Small and additive: no breaking change (a new optional field), no SHA / ref /
 reflog / on-disk state / refusal change. Pure ergonomics — surface data git
 already computes and `status` currently never reads for conflicted paths.
 
+**Decision record:** no new ADR. Every choice here is governed by **ADR-269**
+(worktree mode = `lstat`-derived `mode`, no `hW`, omitted when absent) extended
+symmetrically from `ChangedPath` to `UnmergedEntry`, plus **ADR-256**
+(`UnmergedEntry` stage shape) and the git-faithfulness prime directive (`mW` is
+the on-disk mode, no content hash). This pass is an additive completion of
+ADR-269; ADR-269 is the governing decision of record.
+
 ## Faithfulness anchor (git)
 
 `git status --porcelain=v2 --no-renames` emits, per **unmerged** path:
