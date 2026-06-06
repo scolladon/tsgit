@@ -16307,7 +16307,31 @@
 								"summary": [
 									{
 										"kind": "text",
-										"text": "Resolve to a tree. Accepts ref name, oid, or 'HEAD'."
+										"text": "Resolve to a tree. Accepts any revision (ref, oid, "
+									},
+									{
+										"kind": "code",
+										"text": "`HEAD`"
+									},
+									{
+										"kind": "text",
+										"text": ", "
+									},
+									{
+										"kind": "code",
+										"text": "`~`"
+									},
+									{
+										"kind": "text",
+										"text": "/"
+									},
+									{
+										"kind": "code",
+										"text": "`^`"
+									},
+									{
+										"kind": "text",
+										"text": " grammar)."
 									}
 								]
 							},
@@ -31070,7 +31094,7 @@
 									},
 									{
 										"kind": "text",
-										"text": " (oid stops), and "
+										"text": " (commit-ish stops), and "
 									},
 									{
 										"kind": "code",
