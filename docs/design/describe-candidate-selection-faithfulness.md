@@ -271,3 +271,23 @@ suppression.
 - The debug `traversed` / `gave up search` counters — git stderr diagnostics with
   no structured-data analogue (ADR-249).
 - 23.4m (`UnmergedEntry` worktree mode) — unrelated deferred item.
+
+## Implementation outcome
+
+- **The candidate budget is genuinely load-bearing.** Mutation surfaced that the
+  `candidates.length === plan.maxCandidates` arm of the freeze condition needs a
+  three-tag merge to discriminate: a random search against real `git`
+  produced a topology where a *later-met* tag is the frozen-nearest, so `git
+  describe` (full budget) keeps it while `--candidates=1` keeps the first-met tag.
+  tsgit reproduces both byte-for-byte (verified against real git; pinned in unit +
+  interop). With two tags the first-met always has the minimum frozen depth, so
+  the budget never changes the pick there — which is why the original
+  candidate-cap scenario could not kill that arm.
+- **Architecture pass: no-op.** Considered merging the finishing + freeze branches
+  to dedup the `finishWinner(...); continue;` tail, but the merged form needs a
+  `winner === undefined` guard that is an equivalent mutant (re-sorting the frozen
+  set is idempotent), worsening the mutation surface for a one-line saving. Kept
+  the two explicit branches. No cross-module duplication: the reach/depth
+  scoreboard is wholly describe-specific; the shared traversal substrate is
+  already extracted (ADRs 259/261/275).
+- 100% mutation on `describe.ts` (0 survivors); `npm run validate` green.

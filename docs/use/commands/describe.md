@@ -41,8 +41,14 @@ interface DescribeResult {
 - **Annotated by default:** only annotated tags are considered; `tags: true` adds
   lightweight tags, `all: true` adds every ref (branch/remote names projected as
   `heads/…` / `remotes/…`).
-- **Nearest wins:** selection is by commit distance, then by discovery order in a
-  committer-date-ordered walk; depth beats priority (a depth-0 branch beats a
+- **Selection (git's early-termination):** the committer-date-ordered walk
+  collects candidate tags until the `candidates` budget — or every reachable name
+  — is taken, then picks the smallest distance **at that freeze point** (ties
+  broken by discovery order, newest-dated first) and finalises only the winner's
+  exact distance. This is byte-faithful to `git describe`: on a merge where a
+  newer-dated tag is structurally **farther** than an older, nearer one, the
+  farther first-met tag is kept, and a smaller `candidates` budget can change
+  which tag is reported. Depth still beats priority (a depth-0 branch beats a
   deeper annotated tag under `all`).
 - **Same-commit ties:** two annotated tags on one commit resolve to the newer
   tagger date (git's `replace_name`).
@@ -77,5 +83,5 @@ const { dirty } = await repo.describe(undefined, { dirty: true });
 
 - Primitives: [`readObject`](../primitives/read-object.md), [`resolveRef`](../primitives/resolve-ref.md), [`walkCommits`](../primitives/walk-commits.md)
 - Related commands: [`tag`](tag.md), [`show`](show.md), [`log`](log.md)
-- ADRs: [249](../../adr/249-describe-structured-data-only.md)
+- ADRs: [249](../../adr/249-describe-structured-data-only.md), [276](../../adr/276-describe-early-termination-output-only.md)
 - Roadmap: Phase 23 — Inspection (v3)
