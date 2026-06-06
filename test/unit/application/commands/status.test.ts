@@ -449,6 +449,34 @@ describe('status — staged column (index-vs-HEAD)', () => {
     });
   });
 
+  describe('Given a staged change on a late path and a working-only change on an early path', () => {
+    describe('When status', () => {
+      it('Then changes is byte-sorted even though the union starts staged-first', async () => {
+        // Arrange — HEAD {a.txt, z.txt}. Stage a modify to z.txt (staged column)
+        // and modify a.txt on disk only (working column). The change set is built
+        // from the staged keys first, so the pre-sort union is [z.txt, a.txt]; a
+        // dropped sort would surface that order.
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/z.txt`, 'z');
+        await add(ctx, ['a.txt', 'z.txt']);
+        await commit(ctx, { message: 'base', author });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/z.txt`, 'z2');
+        await add(ctx, ['z.txt']);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a2');
+
+        // Act
+        const sut = await status(ctx);
+
+        // Assert — byte order a.txt (unstaged) before z.txt (staged).
+        expect(sut.changes.map((c) => `${c.path}:${c.staged ?? '-'}:${c.unstaged ?? '-'}`)).toEqual(
+          ['a.txt:-:modified', 'z.txt:modified:-'],
+        );
+      });
+    });
+  });
+
   describe('Given a corrupt index', () => {
     describe('When status', () => {
       it('Then it propagates the index error instead of fabricating deletions', async () => {
@@ -983,6 +1011,47 @@ describe('status — unmerged column', () => {
 
         // Assert
         expect(sut.clean).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a conflicted file present on disk', () => {
+    describe('When status', () => {
+      it('Then the entry carries a worktree side with the on-disk mode (mW)', async () => {
+        // Arrange — the merge leaves file.txt (with conflict markers) on disk.
+        const ctx = await seedConflict();
+
+        // Act
+        const sut = await status(ctx);
+
+        // Assert — mW is the on-disk regular-file mode; stages stay intact.
+        const entry = sut.unmerged[0];
+        expect(entry?.path).toBe('file.txt');
+        expect(entry?.worktree?.mode).toBe('100644');
+        expect(entry?.base).toBeDefined();
+        expect(entry?.ours).toBeDefined();
+        expect(entry?.theirs).toBeDefined();
+      });
+    });
+  });
+
+  describe('Given a conflicted file removed from disk', () => {
+    describe('When status', () => {
+      it('Then the worktree side is omitted while the stage blobs remain', async () => {
+        // Arrange — remove the conflicted file from the working tree (git's mW=000000).
+        const ctx = await seedConflict();
+        await ctx.fs.rm(`${ctx.layout.workDir}/file.txt`);
+
+        // Act
+        const sut = await status(ctx);
+
+        // Assert — no worktree side, but the index stages are still reported.
+        const entry = sut.unmerged[0];
+        expect(entry?.path).toBe('file.txt');
+        expect(entry?.worktree).toBeUndefined();
+        expect(entry?.base).toBeDefined();
+        expect(entry?.ours).toBeDefined();
+        expect(entry?.theirs).toBeDefined();
       });
     });
   });

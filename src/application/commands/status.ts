@@ -10,7 +10,7 @@ import {
   type UnmergedEntryGroup,
 } from '../../domain/diff/index.js';
 import type { GitIndex, IndexEntry } from '../../domain/git-index/index.js';
-import type { FileMode, RefName } from '../../domain/objects/index.js';
+import { deriveWorkingMode, type FileMode, type RefName } from '../../domain/objects/index.js';
 import type { FilePath, ObjectId } from '../../domain/objects/object-id.js';
 import type { Context } from '../../ports/context.js';
 import {
@@ -65,8 +65,10 @@ export interface ChangedPath {
 /**
  * An unmerged (conflicted) path: its git conflict state plus the per-stage blobs
  * (`base` = stage 1, `ours` = stage 2, `theirs` = stage 3; omitted when that stage
- * is absent). The stages make the entry lossless against git's porcelain unmerged
- * reporting (v1 `XY` from `kind`, v2 `u`-line modes/oids from the stages).
+ * is absent) and the conflicted file's on-disk mode (`worktree`, git's `mW`;
+ * omitted when the file is absent on disk). The stages plus `worktree` make the
+ * entry lossless against git's porcelain unmerged reporting (v1 `XY` from `kind`,
+ * the full v2 `u`-line modes/oids from the stages and `worktree`).
  */
 export interface UnmergedEntry {
   readonly kind: ConflictKind;
@@ -74,6 +76,7 @@ export interface UnmergedEntry {
   readonly base?: BlobSide;
   readonly ours?: BlobSide;
   readonly theirs?: BlobSide;
+  readonly worktree?: WorktreeSide;
 }
 
 export interface StatusResult {
@@ -134,7 +137,7 @@ export const status = async (ctx: Context): Promise<StatusResult> => {
     const headTree = await readHeadTree(ctx);
     const stagedKindMap = collectStagedKinds(index, headTree, grouped.unmerged);
     const changes = buildChanges(stagedKindMap, workingMap, headTree, stage0Map);
-    const unmerged = toUnmergedEntries(grouped.unmerged);
+    const unmerged = await buildUnmergedEntries(ctx, grouped.unmerged);
     const clean = changes.length === 0 && untracked.length === 0 && unmerged.length === 0;
     return { branch, detached, changes, untracked, unmerged, clean };
   } finally {
@@ -279,21 +282,35 @@ export const toUnstagedKind = (status: WorkingTreeComparison): ChangeKind | unde
 const conflictStage = (entry: IndexEntry): BlobSide => ({ id: entry.id, mode: entry.mode });
 
 /**
- * Project the grouped unmerged entries into `UnmergedEntry[]`, carrying the
- * conflict state and the present per-stage blobs. The result is byte-ordered by
- * path without an explicit sort: `groupUnmergedEntries` preserves the order of
- * the index, whose entries are required to be byte-sorted (a git index invariant).
+ * Build the unmerged entries, carrying the conflict state, the present per-stage
+ * blobs, and the conflicted file's on-disk mode (`worktree`, git's `mW`; omitted
+ * when the file is absent). A conflicted path has no stage-0 entry, so it is
+ * absent from the working-tree pass and its mode is read here — `lstat`-derived
+ * only, since git does no content hash for `mW`. The result is byte-ordered by
+ * path: `groupUnmergedEntries` preserves the order of the index (whose entries
+ * are required to be byte-sorted, a git index invariant) and `Promise.all`
+ * preserves that array order.
  */
-const toUnmergedEntries = (groups: ReadonlyMap<FilePath, UnmergedEntryGroup>): UnmergedEntry[] => {
-  const entries: UnmergedEntry[] = [];
-  for (const [path, group] of groups) {
-    entries.push({
-      kind: classifyUnmerged(group),
-      path,
-      ...(group.stage1 && { base: conflictStage(group.stage1) }),
-      ...(group.stage2 && { ours: conflictStage(group.stage2) }),
-      ...(group.stage3 && { theirs: conflictStage(group.stage3) }),
-    });
-  }
-  return entries;
+const buildUnmergedEntries = (
+  ctx: Context,
+  groups: ReadonlyMap<FilePath, UnmergedEntryGroup>,
+): Promise<UnmergedEntry[]> =>
+  Promise.all(
+    [...groups].map(async ([path, group]) => {
+      const worktreeMode = await readWorktreeMode(ctx, path);
+      return {
+        kind: classifyUnmerged(group),
+        path,
+        ...(group.stage1 && { base: conflictStage(group.stage1) }),
+        ...(group.stage2 && { ours: conflictStage(group.stage2) }),
+        ...(group.stage3 && { theirs: conflictStage(group.stage3) }),
+        ...(worktreeMode !== undefined && { worktree: { mode: worktreeMode } }),
+      };
+    }),
+  );
+
+/** The conflicted file's on-disk git mode, or `undefined` when it is absent. */
+const readWorktreeMode = async (ctx: Context, path: FilePath): Promise<FileMode | undefined> => {
+  const stat = await ctx.fs.lstat(`${ctx.layout.workDir}/${path}`).catch(() => undefined);
+  return stat === undefined ? undefined : deriveWorkingMode(stat);
 };
