@@ -21,8 +21,12 @@ import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
 import { type BlameLine, type BlameResult, blame } from '../../src/application/commands/blame.js';
+import { ZERO_OID } from '../../src/domain/objects/object-id.js';
 import type { Context } from '../../src/ports/context.js';
 import { GIT_AVAILABLE, git, runGit, runGitEnv } from './interop-helpers.js';
+
+/** Porcelain renders the zero oid for the "Not Committed Yet" pseudo-commit. */
+const oidOf = (line: BlameLine): string => (line.committed ? line.commit : ZERO_OID);
 
 const SETUP_TIMEOUT = 60_000;
 const decoder = new TextDecoder();
@@ -55,7 +59,33 @@ const commitContent = async (dir: string, file: string, content: string): Promis
   runGit(['-C', dir, 'commit', '-q', '-m', `edit ${file}`], { env: datedEnv(clock) });
 };
 
+/**
+ * git's "Not Committed Yet" identity is fabricated at the current wall-clock time;
+ * the library emits none of it, so the renderer supplies it. `author-time`/`-tz`
+ * carry placeholders that `scrubNow` (below) normalises on both sides — every other
+ * byte (oid, identity, summary, previous) stays pinned.
+ */
+const uncommittedBlock = (line: BlameLine): string => {
+  const lines = [
+    'author Not Committed Yet',
+    'author-mail <not.committed.yet>',
+    'author-time 0',
+    'author-tz +0000',
+    'committer Not Committed Yet',
+    'committer-mail <not.committed.yet>',
+    'committer-time 0',
+    'committer-tz +0000',
+    `summary Version of ${line.sourcePath} from ${line.sourcePath}`,
+    ...(line.previous !== undefined
+      ? [`previous ${line.previous.commit} ${line.previous.path}`]
+      : []),
+    `filename ${line.sourcePath}`,
+  ];
+  return `${lines.join('\n')}\n`;
+};
+
 const metadataBlock = (line: BlameLine): string => {
+  if (!line.committed) return uncommittedBlock(line);
   const lines = [
     `author ${line.author.name}`,
     `author-mail <${line.author.email}>`,
@@ -76,7 +106,7 @@ const metadataBlock = (line: BlameLine): string => {
 };
 
 const isContiguous = (a: BlameLine, b: BlameLine): boolean =>
-  b.commit === a.commit && b.finalLine === a.finalLine + 1 && b.sourceLine === a.sourceLine + 1;
+  oidOf(b) === oidOf(a) && b.finalLine === a.finalLine + 1 && b.sourceLine === a.sourceLine + 1;
 
 /** Reconstruct `git blame --porcelain` output from tsgit's structured result. */
 const renderPorcelain = (result: BlameResult): string => {
@@ -89,10 +119,11 @@ const renderPorcelain = (result: BlameResult): string => {
     const count = i - start + 1;
     for (let k = start; k <= i; k++) {
       const line = result.lines[k]!;
-      const header = `${line.commit} ${line.sourceLine} ${line.finalLine}`;
+      const oid = oidOf(line);
+      const header = `${oid} ${line.sourceLine} ${line.finalLine}`;
       out.push(k === start ? `${header} ${count}\n` : `${header}\n`);
-      if (!seen.has(line.commit)) {
-        seen.add(line.commit);
+      if (!seen.has(oid)) {
+        seen.add(oid);
         out.push(metadataBlock(line));
       }
       out.push(`\t${decoder.decode(line.content)}`);
@@ -105,11 +136,28 @@ const renderPorcelain = (result: BlameResult): string => {
 const gitPorcelain = (dir: string, file: string, ...flags: string[]): string =>
   git(dir, 'blame', '--porcelain', ...flags, 'HEAD', '--', file);
 
+/** Bare `git blame --porcelain <file>` — the working-tree pseudo-commit form (no rev). */
+const gitPorcelainWorktree = (dir: string, file: string, ...flags: string[]): string =>
+  git(dir, 'blame', '--porcelain', ...flags, file);
+
+/**
+ * git fabricates the pseudo-commit's author/committer time and tz at the current
+ * wall-clock instant (the one byte sequence it cannot reproduce). Normalise both
+ * sides' "Not Committed Yet" time/tz so every other byte stays pinned. Anchored on
+ * `committer Not Committed Yet`, so committed lines' real times are untouched.
+ */
+const scrubNow = (porcelain: string): string =>
+  porcelain.replace(
+    /author-time \d+\nauthor-tz [+-]\d{4}\ncommitter Not Committed Yet\ncommitter-mail <not\.committed\.yet>\ncommitter-time \d+\ncommitter-tz [+-]\d{4}/g,
+    'author-time 0\nauthor-tz +0000\ncommitter Not Committed Yet\ncommitter-mail <not.committed.yet>\ncommitter-time 0\ncommitter-tz +0000',
+  );
+
 describe.skipIf(!GIT_AVAILABLE)('blame interop', () => {
   let linear: { dir: string; ctx: Context };
   let prepend: { dir: string; ctx: Context };
   let merged: { dir: string; ctx: Context };
   let renamed: { dir: string; ctx: Context };
+  let worktree: { dir: string; ctx: Context };
 
   beforeAll(async () => {
     const linearDir = await makeRepo('linear');
@@ -139,11 +187,23 @@ describe.skipIf(!GIT_AVAILABLE)('blame interop', () => {
     clock += 60;
     runGit(['-C', renameDir, 'commit', '-q', '-m', 'rename'], { env: datedEnv(clock) });
     renamed = { dir: renameDir, ctx: createNodeContext({ workDir: renameDir }) };
+
+    // Worktree: commit a/b/c, then dirty line 2 + append a line (uncommitted), and
+    // stage a never-committed new file — covers the modified, appended, and
+    // staged-new pseudo-commit cases.
+    const worktreeDir = await makeRepo('worktree');
+    await commitContent(worktreeDir, 'f.txt', 'a\nb\nc\n');
+    await writeFile(path.join(worktreeDir, 'f.txt'), 'a\nB\nc\nNEW\n');
+    await writeFile(path.join(worktreeDir, 'staged.txt'), 'p\nq\n');
+    git(worktreeDir, 'add', 'staged.txt');
+    worktree = { dir: worktreeDir, ctx: createNodeContext({ workDir: worktreeDir }) };
   }, SETUP_TIMEOUT);
 
   afterAll(async () => {
     await Promise.all(
-      [linear, prepend, merged, renamed].map((r) => rm(r.dir, { recursive: true, force: true })),
+      [linear, prepend, merged, renamed, worktree].map((r) =>
+        rm(r.dir, { recursive: true, force: true }),
+      ),
     );
   });
 
@@ -174,5 +234,22 @@ describe.skipIf(!GIT_AVAILABLE)('blame interop', () => {
   it('Then an -L range reconstructs git blame --porcelain -L', async () => {
     const ours = renderPorcelain(await blame(linear.ctx, 'f.txt', { range: { start: 2, end: 3 } }));
     expect(ours).toBe(gitPorcelain(linear.dir, 'f.txt', '-L', '2,3'));
+  });
+
+  it('Then a dirty working tree reconstructs bare git blame --porcelain', async () => {
+    const ours = renderPorcelain(await blame(worktree.ctx, 'f.txt', { worktree: true }));
+    expect(scrubNow(ours)).toBe(scrubNow(gitPorcelainWorktree(worktree.dir, 'f.txt')));
+  });
+
+  it('Then a staged-new file reconstructs bare git blame --porcelain', async () => {
+    const ours = renderPorcelain(await blame(worktree.ctx, 'staged.txt', { worktree: true }));
+    expect(scrubNow(ours)).toBe(scrubNow(gitPorcelainWorktree(worktree.dir, 'staged.txt')));
+  });
+
+  it('Then a worktree -L range spanning committed and uncommitted lines reconstructs git blame', async () => {
+    const ours = renderPorcelain(
+      await blame(worktree.ctx, 'f.txt', { worktree: true, range: { start: 1, end: 2 } }),
+    );
+    expect(scrubNow(ours)).toBe(scrubNow(gitPorcelainWorktree(worktree.dir, 'f.txt', '-L', '1,2')));
   });
 });

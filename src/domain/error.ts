@@ -322,6 +322,8 @@ function extractDetail(data: TsgitErrorData): string {
       return `cannot resolve revision: ${data.expression}`;
     case 'PATH_NOT_IN_TREE':
       return `path '${data.path}' does not exist in '${data.rev}'`;
+    case 'WORKTREE_FILE_ABSENT':
+      return `cannot read working-tree file '${data.path}'`;
     case 'EMPTY_PATHSPEC':
       return 'pathspec is empty (use "." to mean "all paths")';
     case 'OPERATION_IN_PROGRESS':

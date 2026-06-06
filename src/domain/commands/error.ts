@@ -49,6 +49,7 @@ export type CommandError =
     }
   | { readonly code: 'REVPARSE_UNRESOLVED'; readonly expression: string }
   | { readonly code: 'PATH_NOT_IN_TREE'; readonly rev: string; readonly path: string }
+  | { readonly code: 'WORKTREE_FILE_ABSENT'; readonly path: string }
   | { readonly code: 'EMPTY_PATHSPEC' }
   | {
       readonly code: 'OPERATION_IN_PROGRESS';
@@ -294,6 +295,9 @@ export const pathNotInTree = (rev: string, path: string): TsgitError =>
     rev: sanitizeForDisplay(rev),
     path: sanitizeForDisplay(path),
   });
+
+export const worktreeFileAbsent = (path: string): TsgitError =>
+  new TsgitError({ code: 'WORKTREE_FILE_ABSENT', path: sanitizeForDisplay(path) });
 
 export const emptyPathspec = (): TsgitError => new TsgitError({ code: 'EMPTY_PATHSPEC' });
 

@@ -16,6 +16,7 @@ repo.blame(path: string, opts?: BlameOptions): Promise<BlameResult>;
 
 interface BlameOptions {
   readonly rev?: string;                                  // commit-ish to blame as-of; default 'HEAD'
+  readonly worktree?: boolean;                            // blame the working tree (git's bare `git blame`); mutually exclusive with rev
   readonly range?: { readonly start: number; readonly end: number }; // 1-based inclusive line window (git -L)
 }
 
@@ -24,26 +25,49 @@ interface BlameResult {
   readonly lines: ReadonlyArray<BlameLine>; // every reported line, in final-file order
 }
 
-interface BlameLine {
+// Fields shared by every line, committed or not.
+interface BlameLineBase {
   readonly finalLine: number;               // 1-based line number in the queried file
-  readonly sourceLine: number;              // 1-based line number in the blamed commit's version
+  readonly sourceLine: number;              // 1-based line number in the originating blob
+  readonly sourcePath: FilePath;            // path the file had in the originating version (rename-aware)
+  readonly previous?: { readonly commit: ObjectId; readonly path: FilePath }; // where the committed base lives
+  readonly content: Uint8Array;             // the line's bytes (newline-terminated except a final no-LF line)
+}
+
+interface CommittedBlameLine extends BlameLineBase {
+  readonly committed: true;
   readonly commit: ObjectId;                // commit this line is blamed to
   readonly author: AuthorIdentity;
   readonly committer: AuthorIdentity;
   readonly summary: string;                 // commit subject (first message line)
   readonly boundary: boolean;               // blamed commit is a root (no parents)
-  readonly sourcePath: FilePath;            // path the file had in the blamed commit (rename-aware)
-  readonly previous?: { readonly commit: ObjectId; readonly path: FilePath }; // parent the content came from
-  readonly content: Uint8Array;             // the line's bytes (newline-terminated except a final no-LF line)
 }
+
+// git's zero-oid "Not Committed Yet" pseudo-commit. The library emits none of
+// git's fabricated oid / identity / timestamp / summary — `committed: false`
+// signals it; the caller reconstructs the display (see below).
+interface UncommittedBlameLine extends BlameLineBase {
+  readonly committed: false;
+}
+
+type BlameLine = CommittedBlameLine | UncommittedBlameLine;
 ```
 
 ## Behaviour
 
-- **Committed content:** blames `rev` (default `HEAD`); on a clean tree this
-  equals `git blame -- <path>`. The working-tree "Not Committed Yet"
-  pseudo-commit is **not** synthesised (a deliberate divergence,
-  [ADR-258](../../adr/258-blame-targets-committed-rev.md)).
+- **Committed content (default):** blames `rev` (default `HEAD`); on a clean tree
+  this equals `git blame -- <path>`. Omitting `rev` keeps the committed-rev
+  semantics ([ADR-258](../../adr/258-blame-targets-committed-rev.md)) — it does
+  **not** silently switch to the worktree.
+- **Working tree (`worktree: true`):** git's bare `git blame <path>`
+  ([ADR-270](../../adr/270-blame-worktree-explicit-opt-in.md)). Lines matching the
+  committed history blame to their real commits; **uncommitted** lines (modified,
+  or in a staged-but-never-committed file) blame to git's zero-oid "Not Committed
+  Yet" pseudo-commit, reported as `committed: false`
+  ([ADR-271](../../adr/271-blame-uncommitted-line-discriminated-union.md)). The
+  library emits none of git's fabricated `00000000` / `Not Committed Yet` /
+  current-time / `Version of <p> from <p>` — reconstruct them from `committed:
+  false` (see the example). Mutually exclusive with `rev` (`INVALID_OPTION`).
 - **Denormalized per line:** each `BlameLine` carries its blamed commit's
   author / committer / summary / boundary / previous inline; the renderer dedups
   per-commit headers (`--porcelain`) from the per-line fields
@@ -58,21 +82,29 @@ interface BlameLine {
 - **`range` (`-L`):** restricts the reported lines to a 1-based inclusive window;
   `end` past the last line is clamped. A start below 1, a start past the last
   line, an inverted range, or a non-integer bound refuses (`INVALID_OPTION`).
-- **Refusals:** a path absent from `rev` refuses (`PATH_NOT_IN_TREE`).
+- **Refusals:** a path absent from `rev` refuses (`PATH_NOT_IN_TREE`). In
+  `worktree` mode, an untracked path (in neither HEAD nor the index) refuses
+  `PATH_NOT_IN_TREE`, a tracked path missing from disk refuses
+  `WORKTREE_FILE_ABSENT`, an unborn HEAD refuses `REF_NOT_FOUND`, and a path
+  escaping the repository (`..`, absolute, `.git`) refuses `PATHSPEC_OUTSIDE_REPO`.
 
 ## Examples
 
 ```ts
 const { lines } = await repo.blame('src/index.ts');
-// caller renders git's default line from the data:
+// caller renders git's default line from the data, narrowing on `committed`:
 for (const line of lines) {
-  const sha = (line.boundary ? '^' : '') + line.commit.slice(0, 7);
   const text = new TextDecoder().decode(line.content).replace(/\n$/, '');
-  console.log(`${sha} (${line.author.name} ${line.finalLine}) ${text}`);
+  const sha = line.committed
+    ? (line.boundary ? '^' : '') + line.commit.slice(0, 7)
+    : '00000000'; // the "Not Committed Yet" pseudo-commit
+  const who = line.committed ? line.author.name : 'Not Committed Yet';
+  console.log(`${sha} (${who} ${line.finalLine}) ${text}`);
 }
 
-await repo.blame('src/index.ts', { rev: 'v2.0' });               // as of a tag
+await repo.blame('src/index.ts', { rev: 'v2.0' });                   // as of a tag
 await repo.blame('src/index.ts', { range: { start: 10, end: 20 } }); // -L 10,20
+await repo.blame('src/index.ts', { worktree: true });                // bare `git blame` (uncommitted lines → committed: false)
 ```
 
 ## See also

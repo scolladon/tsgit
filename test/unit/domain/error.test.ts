@@ -1,11 +1,21 @@
 import { describe, expect, it } from 'vitest';
 import {
+  ambiguousOidPrefix,
+  invalidSequencerTodo,
+  noPromisorRemote,
+  pathNotInTree,
+  worktreeFileAbsent,
+} from '../../../src/domain/commands/error.js';
+import {
   basename,
   dirname,
   invalidWalkInput,
   operationAborted,
+  orderInvariantViolation,
+  snapshotRequired,
   TsgitError as TsgitErrorClass,
   type TsgitErrorData,
+  workdirRace,
 } from '../../../src/domain/error.js';
 import {
   compressFailed,
@@ -30,7 +40,9 @@ import {
   type TsgitError,
   unsupportedOperation,
 } from '../../../src/domain/index.js';
-import type { FilePath, RefName } from '../../../src/domain/objects/index.js';
+import type { FilePath, ObjectId, RefName } from '../../../src/domain/objects/index.js';
+import { invalidFilterSpec, remoteFilterUnsupported } from '../../../src/domain/protocol/error.js';
+import type { WorkdirStat } from '../../../src/domain/snapshot/index.js';
 
 describe('domain error — AdapterError', () => {
   describe('factory functions', () => {
@@ -990,6 +1002,99 @@ describe('domain error — AdapterError', () => {
           expect(sut.message).toContain('[object Object]');
         });
       });
+    });
+  });
+
+  describe('Given central-switch error codes, When reading their message', () => {
+    it('Then PATH_NOT_IN_TREE names the path and the rev', () => {
+      // Arrange & Act
+      const sut = pathNotInTree('HEAD', 'missing.txt');
+
+      // Assert
+      expect(sut.message).toContain("path 'missing.txt' does not exist in 'HEAD'");
+    });
+
+    it('Then WORKTREE_FILE_ABSENT names the unreadable working-tree file', () => {
+      // Arrange & Act
+      const sut = worktreeFileAbsent('f.txt');
+
+      // Assert
+      expect(sut.message).toContain("cannot read working-tree file 'f.txt'");
+    });
+
+    it('Then NO_PROMISOR_REMOTE explains the missing promisor remote', () => {
+      // Arrange & Act
+      const sut = noPromisorRemote();
+
+      // Assert
+      expect(sut.message).toContain(
+        'no promisor remote configured; this repository is not a partial clone',
+      );
+    });
+
+    it('Then INVALID_FILTER_SPEC quotes the spec and reason', () => {
+      // Arrange & Act
+      const sut = invalidFilterSpec('blob:none', 'unsupported');
+
+      // Assert
+      expect(sut.message).toContain('invalid object filter "blob:none": unsupported');
+    });
+
+    it('Then REMOTE_FILTER_UNSUPPORTED states the remote lacks filtering', () => {
+      // Arrange & Act
+      const sut = remoteFilterUnsupported();
+
+      // Assert
+      expect(sut.message).toContain('remote does not support partial-clone object filtering');
+    });
+
+    it('Then SNAPSHOT_REQUIRED includes the reason', () => {
+      // Arrange & Act
+      const sut = snapshotRequired('index changed');
+
+      // Assert
+      expect(sut.message).toContain('snapshot required: index changed');
+    });
+
+    it('Then WORKDIR_RACE reports both observed and current stats', () => {
+      // Arrange
+      const observed = { mode: 0o100644, size: 2, mtimeMs: 1 } as unknown as WorkdirStat;
+      const current = { mode: 0o100644, size: 4, mtimeMs: 3 } as unknown as WorkdirStat;
+
+      // Act
+      const sut = workdirRace('a.txt', observed, current);
+
+      // Assert
+      expect(sut.message).toContain(
+        'working-tree changed under us at a.txt (observed mtime=1 size=2, current mtime=3 size=4)',
+      );
+    });
+
+    it('Then ORDER_INVARIANT_VIOLATION names both rows in order', () => {
+      // Arrange & Act
+      const sut = orderInvariantViolation('row-a', 'row-b');
+
+      // Assert
+      expect(sut.message).toContain('row order broken: row-a followed by row-b');
+    });
+
+    it('Then AMBIGUOUS_OID_PREFIX reports the prefix and candidate count', () => {
+      // Arrange
+      const candidates = ['1', '2'] as unknown as ReadonlyArray<ObjectId>;
+
+      // Act
+      const sut = ambiguousOidPrefix('abc', candidates);
+
+      // Assert
+      expect(sut.message).toContain('short object id abc is ambiguous (2 candidates)');
+    });
+
+    it('Then INVALID_SEQUENCER_TODO includes the reason', () => {
+      // Arrange & Act
+      const sut = invalidSequencerTodo('bad line');
+
+      // Assert
+      expect(sut.message).toContain('invalid sequencer todo: bad line');
     });
   });
 });

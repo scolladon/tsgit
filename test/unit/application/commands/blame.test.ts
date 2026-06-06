@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { add } from '../../../../src/application/commands/add.js';
-import { blame } from '../../../../src/application/commands/blame.js';
+import {
+  type BlameResult,
+  blame,
+  type CommittedBlameLine,
+} from '../../../../src/application/commands/blame.js';
 import { branchCreate } from '../../../../src/application/commands/branch.js';
 import { checkout } from '../../../../src/application/commands/checkout.js';
 import { commit } from '../../../../src/application/commands/commit.js';
@@ -20,6 +24,13 @@ const ident = (name: string, timestamp: number): AuthorIdentity => ({
 });
 
 const text = (bytes: Uint8Array): string => new TextDecoder().decode(bytes);
+
+/** Narrow a committed-rev result to its committed lines, asserting none is uncommitted. */
+const committedLines = (result: BlameResult): readonly CommittedBlameLine[] =>
+  result.lines.map((line) => {
+    if (!line.committed) throw new Error('expected a committed line');
+    return line;
+  });
 
 let clock = 1_700_000_000;
 
@@ -58,7 +69,7 @@ describe('Given a linear history that modifies one line and appends another', ()
       const sut = await blame(ctx, 'f.txt');
 
       // Assert
-      expect(sut.lines.map((l) => l.commit)).toEqual([c1, c2, c1, c2]);
+      expect(committedLines(sut).map((l) => l.commit)).toEqual([c1, c2, c1, c2]);
       expect(sut.lines.map((l) => l.finalLine)).toEqual([1, 2, 3, 4]);
       expect(sut.lines.map((l) => text(l.content))).toEqual([
         'line1\n',
@@ -78,9 +89,9 @@ describe('Given a linear history that modifies one line and appends another', ()
       const sut = await blame(ctx, 'f.txt');
 
       // Assert
-      expect(sut.lines[0]!.boundary).toBe(true);
+      expect(committedLines(sut)[0]!.boundary).toBe(true);
       expect(sut.lines[0]!.previous).toBeUndefined();
-      expect(sut.lines[1]!.boundary).toBe(false);
+      expect(committedLines(sut)[1]!.boundary).toBe(false);
       expect(sut.lines[1]!.previous).toEqual({ commit: c1, path: 'f.txt' });
     });
   });
@@ -98,7 +109,7 @@ describe('Given a commit that prepends lines above existing content', () => {
       const sut = await blame(ctx, 'f.txt');
 
       // Assert
-      expect(sut.lines.map((l) => l.commit)).toEqual([c2, c2, c1, c1]);
+      expect(committedLines(sut).map((l) => l.commit)).toEqual([c2, c2, c1, c1]);
       expect(sut.lines.map((l) => l.finalLine)).toEqual([1, 2, 3, 4]);
       expect(sut.lines.map((l) => l.sourceLine)).toEqual([1, 2, 1, 2]);
     });
@@ -117,9 +128,9 @@ describe('Given a single root commit', () => {
 
       // Assert
       expect(sut.lines).toHaveLength(1);
-      expect(sut.lines[0]!.commit).toBe(c1);
-      expect(sut.lines[0]!.boundary).toBe(true);
-      expect(sut.lines[0]!.summary).toBe('c1 subject');
+      expect(committedLines(sut)[0]!.commit).toBe(c1);
+      expect(committedLines(sut)[0]!.boundary).toBe(true);
+      expect(committedLines(sut)[0]!.summary).toBe('c1 subject');
       expect(sut.lines[0]!.sourcePath).toBe('f.txt');
     });
   });
@@ -176,7 +187,7 @@ describe('Given an explicit older revision', () => {
       const sut = await blame(ctx, 'f.txt', { rev: c1 });
 
       // Assert
-      expect(sut.lines.map((l) => l.commit)).toEqual([c1, c1]);
+      expect(committedLines(sut).map((l) => l.commit)).toEqual([c1, c1]);
       expect(sut.lines.map((l) => text(l.content))).toEqual(['line1\n', 'line2\n']);
     });
   });
@@ -205,11 +216,11 @@ describe('Given a clean merge of two branches that changed different lines', () 
 
       // Assert
       expect(merged.kind).toBe('merge');
-      expect(sut.lines.map((l) => l.commit)).toEqual([side, c1, main]);
+      expect(committedLines(sut).map((l) => l.commit)).toEqual([side, c1, main]);
       expect(sut.lines.map((l) => text(l.content))).toEqual(['a-side\n', 'b\n', 'c-main\n']);
-      expect(sut.lines[1]!.boundary).toBe(true);
+      expect(committedLines(sut)[1]!.boundary).toBe(true);
       const mergeId = merged.kind === 'merge' ? merged.id : undefined;
-      expect(sut.lines.some((l) => l.commit === mergeId)).toBe(false);
+      expect(committedLines(sut).some((l) => l.commit === mergeId)).toBe(false);
     });
   });
 });
@@ -226,8 +237,8 @@ describe('Given a file first added by a non-root commit', () => {
       const sut = await blame(ctx, 'f.txt');
 
       // Assert
-      expect(sut.lines.map((l) => l.commit)).toEqual([c2, c2]);
-      expect(sut.lines.every((l) => l.boundary)).toBe(false);
+      expect(committedLines(sut).map((l) => l.commit)).toEqual([c2, c2]);
+      expect(committedLines(sut).every((l) => l.boundary)).toBe(false);
       expect(sut.lines.every((l) => l.previous === undefined)).toBe(true);
     });
   });
@@ -254,10 +265,10 @@ describe('Given a file renamed wholesale by a later commit', () => {
       const sut = await blame(ctx, 'renamed.txt');
 
       // Assert
-      expect(sut.lines.map((l) => l.commit)).toEqual([c1, c2]);
+      expect(committedLines(sut).map((l) => l.commit)).toEqual([c1, c2]);
       expect(sut.lines.map((l) => l.sourcePath)).toEqual(['f.txt', 'f.txt']);
       expect(sut.lines.map((l) => l.finalLine)).toEqual([1, 2]);
-      expect(sut.lines.some((l) => l.commit === c3)).toBe(false);
+      expect(committedLines(sut).some((l) => l.commit === c3)).toBe(false);
       expect(sut.lines[1]!.previous).toEqual({ commit: c1, path: 'f.txt' });
     });
   });
@@ -275,8 +286,8 @@ describe('Given a commit that rewrites every line of the file', () => {
       const sut = await blame(ctx, 'f.txt');
 
       // Assert
-      expect(sut.lines.map((l) => l.commit)).toEqual([c2, c2]);
-      expect(sut.lines.some((l) => l.commit === c1)).toBe(false);
+      expect(committedLines(sut).map((l) => l.commit)).toEqual([c2, c2]);
+      expect(committedLines(sut).some((l) => l.commit === c1)).toBe(false);
     });
   });
 });
@@ -301,9 +312,9 @@ describe('Given a rename of a file inside a subdirectory', () => {
       const sut = await blame(ctx, 'dir/b.txt');
 
       // Assert
-      expect(sut.lines.map((l) => l.commit)).toEqual([c1, c1]);
+      expect(committedLines(sut).map((l) => l.commit)).toEqual([c1, c1]);
       expect(sut.lines.map((l) => l.sourcePath)).toEqual(['dir/a.txt', 'dir/a.txt']);
-      expect(sut.lines.some((l) => l.commit === c2)).toBe(false);
+      expect(committedLines(sut).some((l) => l.commit === c2)).toBe(false);
     });
   });
 });
@@ -338,9 +349,9 @@ describe('Given a commit that renames two files at once', () => {
       const blameY = await blame(ctx, 'y.txt');
 
       // Assert
-      expect(blameX.lines.map((l) => l.commit)).toEqual([c1]);
+      expect(committedLines(blameX).map((l) => l.commit)).toEqual([c1]);
       expect(blameX.lines[0]!.sourcePath).toBe('a.txt');
-      expect(blameY.lines.map((l) => l.commit)).toEqual([c1]);
+      expect(committedLines(blameY).map((l) => l.commit)).toEqual([c1]);
       expect(blameY.lines[0]!.sourcePath).toBe('b.txt');
     });
   });
@@ -368,7 +379,7 @@ describe('Given a multi-commit file and a line range', () => {
 
       // Assert
       expect(sut.lines.map((l) => l.finalLine)).toEqual([2]);
-      expect(sut.lines[0]!.commit).toBe(c2);
+      expect(committedLines(sut)[0]!.commit).toBe(c2);
     });
 
     it('Then a multi-line range keeps each line on its own commit', async () => {
@@ -380,7 +391,7 @@ describe('Given a multi-commit file and a line range', () => {
 
       // Assert
       expect(sut.lines.map((l) => l.finalLine)).toEqual([1, 2]);
-      expect(sut.lines.map((l) => l.commit)).toEqual([c1, c2]);
+      expect(committedLines(sut).map((l) => l.commit)).toEqual([c1, c2]);
     });
 
     it('Then an end past the last line is clamped to the file length', async () => {
@@ -433,6 +444,249 @@ describe('Given a multi-commit file and a line range', () => {
       // Act + Assert
       await expect(blame(ctx, 'f.txt', { range: { start: 1.5, end: 2 } })).rejects.toMatchObject({
         data: { code: 'INVALID_OPTION', option: '-L', reason: 'line numbers must be integers' },
+      });
+    });
+  });
+});
+
+const write = (ctx: Context, path: string, content: string): Promise<void> =>
+  ctx.fs.writeUtf8(`${ctx.layout.workDir}/${path}`, content);
+
+describe('Given a worktree blame on a clean tree', () => {
+  describe('When blaming with the worktree option', () => {
+    it('Then the result is identical to blaming HEAD', async () => {
+      // Arrange
+      const ctx = await seed();
+      await commitFile(ctx, 'c1', 'f.txt', 'a\nb\n');
+
+      // Act
+      const sut = await blame(ctx, 'f.txt', { worktree: true });
+
+      // Assert
+      expect(sut).toEqual(await blame(ctx, 'f.txt'));
+      expect(sut.lines.every((l) => l.committed)).toBe(true);
+    });
+  });
+});
+
+describe('Given a tracked file modified in the worktree but not committed', () => {
+  describe('When blaming the worktree', () => {
+    it('Then the changed line blames the pseudo-commit and the rest their commits', async () => {
+      // Arrange
+      const ctx = await seed();
+      const c1 = await commitFile(ctx, 'c1', 'f.txt', 'a\nb\nc\n');
+      await write(ctx, 'f.txt', 'a\nB\nc\n');
+
+      // Act
+      const sut = await blame(ctx, 'f.txt', { worktree: true });
+
+      // Assert
+      expect(sut.lines.map((l) => l.committed)).toEqual([true, false, true]);
+      expect(sut.lines.map((l) => l.finalLine)).toEqual([1, 2, 3]);
+      expect(sut.lines[0]).toMatchObject({ committed: true, commit: c1 });
+      expect(sut.lines[2]).toMatchObject({ committed: true, commit: c1 });
+      const changed = sut.lines[1]!;
+      expect(changed.committed).toBe(false);
+      expect(changed.sourceLine).toBe(2);
+      expect(text(changed.content)).toBe('B\n');
+      expect(changed.previous).toEqual({ commit: c1, path: 'f.txt' });
+    });
+  });
+
+  describe('When a new line is appended in the worktree', () => {
+    it('Then the appended line blames the pseudo-commit with HEAD as previous', async () => {
+      // Arrange
+      const ctx = await seed();
+      const c1 = await commitFile(ctx, 'c1', 'f.txt', 'a\nb\n');
+      await write(ctx, 'f.txt', 'a\nb\nc\n');
+
+      // Act
+      const sut = await blame(ctx, 'f.txt', { worktree: true });
+
+      // Assert
+      expect(sut.lines.map((l) => l.committed)).toEqual([true, true, false]);
+      const appended = sut.lines[2]!;
+      expect(appended.finalLine).toBe(3);
+      expect(appended.sourceLine).toBe(3);
+      expect(text(appended.content)).toBe('c\n');
+      expect(appended.previous).toEqual({ commit: c1, path: 'f.txt' });
+    });
+  });
+});
+
+describe('Given a new file staged but never committed', () => {
+  describe('When blaming the worktree', () => {
+    it('Then every line blames the pseudo-commit with no previous', async () => {
+      // Arrange
+      const ctx = await seed();
+      await commitFile(ctx, 'c1', 'other.txt', 'x\n');
+      await write(ctx, 'new.txt', 'p\nq\n');
+      await add(ctx, ['new.txt']);
+
+      // Act
+      const sut = await blame(ctx, 'new.txt', { worktree: true });
+
+      // Assert
+      expect(sut.lines.map((l) => l.committed)).toEqual([false, false]);
+      expect(sut.lines.map((l) => l.finalLine)).toEqual([1, 2]);
+      expect(sut.lines.map((l) => l.sourceLine)).toEqual([1, 2]);
+      expect(sut.lines.every((l) => l.previous === undefined)).toBe(true);
+      expect(sut.lines.map((l) => text(l.content))).toEqual(['p\n', 'q\n']);
+    });
+  });
+});
+
+describe('Given a committed symlink whose target changed in the worktree', () => {
+  describe('When blaming the worktree', () => {
+    it('Then the link blames the pseudo-commit with its new target as content', async () => {
+      // Arrange — commit a symlink, then repoint it in the worktree
+      const ctx = await seed();
+      await ctx.fs.symlink('old/target', `${ctx.layout.workDir}/link`);
+      await add(ctx, ['link']);
+      clock += 60;
+      await commit(ctx, {
+        message: 'c1 subject\n\nbody',
+        author: ident('c1', clock),
+        committer: ident('c1', clock),
+      });
+      await ctx.fs.rm(`${ctx.layout.workDir}/link`);
+      await ctx.fs.symlink('new/target', `${ctx.layout.workDir}/link`);
+
+      // Act
+      const sut = await blame(ctx, 'link', { worktree: true });
+
+      // Assert — a symlink's content is its target string (no trailing newline)
+      expect(sut.lines.map((l) => l.committed)).toEqual([false]);
+      expect(text(sut.lines[0]!.content)).toBe('new/target');
+    });
+  });
+});
+
+describe('Given a worktree blame and a line range', () => {
+  describe('When the range spans a committed and an uncommitted line', () => {
+    it('Then both are reported with their respective attribution', async () => {
+      // Arrange
+      const ctx = await seed();
+      const c1 = await commitFile(ctx, 'c1', 'f.txt', 'a\nb\nc\nd\n');
+      await write(ctx, 'f.txt', 'a\nB\nc\nD\n');
+
+      // Act
+      const sut = await blame(ctx, 'f.txt', { worktree: true, range: { start: 2, end: 3 } });
+
+      // Assert
+      expect(sut.lines.map((l) => l.finalLine)).toEqual([2, 3]);
+      expect(sut.lines[0]).toMatchObject({ committed: false });
+      expect(sut.lines[1]).toMatchObject({ committed: true, commit: c1 });
+    });
+  });
+});
+
+describe('Given a worktree blame with an empty working file', () => {
+  describe('When blaming it', () => {
+    it('Then no lines are reported', async () => {
+      // Arrange
+      const ctx = await seed();
+      await commitFile(ctx, 'c1', 'f.txt', 'a\nb\n');
+      await write(ctx, 'f.txt', '');
+
+      // Act
+      const sut = await blame(ctx, 'f.txt', { worktree: true });
+
+      // Assert
+      expect(sut.lines).toEqual([]);
+    });
+  });
+});
+
+describe('Given a worktree blame on an untracked file', () => {
+  describe('When blaming it', () => {
+    it('Then it refuses with PATH_NOT_IN_TREE', async () => {
+      // Arrange
+      const ctx = await seed();
+      await commitFile(ctx, 'c1', 'other.txt', 'x\n');
+      await write(ctx, 'untracked.txt', 'a\n');
+
+      // Act + Assert
+      await expect(blame(ctx, 'untracked.txt', { worktree: true })).rejects.toMatchObject({
+        data: { code: 'PATH_NOT_IN_TREE', rev: 'HEAD', path: 'untracked.txt' },
+      });
+    });
+  });
+});
+
+describe('Given a worktree blame on a tracked file deleted from disk', () => {
+  describe('When blaming it', () => {
+    it('Then it refuses with WORKTREE_FILE_ABSENT', async () => {
+      // Arrange
+      const ctx = await seed();
+      await commitFile(ctx, 'c1', 'f.txt', 'a\n');
+      await ctx.fs.rm(`${ctx.layout.workDir}/f.txt`);
+
+      // Act + Assert
+      await expect(blame(ctx, 'f.txt', { worktree: true })).rejects.toMatchObject({
+        data: { code: 'WORKTREE_FILE_ABSENT', path: 'f.txt' },
+      });
+    });
+  });
+});
+
+describe('Given a worktree blame on an unborn HEAD', () => {
+  describe('When blaming it', () => {
+    it('Then it refuses with REF_NOT_FOUND before reading the working file', async () => {
+      // Arrange — init only, no commit; a working file present must not mask the refusal
+      const ctx = await seed();
+      await write(ctx, 'f.txt', 'a\n');
+
+      // Act + Assert
+      await expect(blame(ctx, 'f.txt', { worktree: true })).rejects.toMatchObject({
+        data: { code: 'REF_NOT_FOUND' },
+      });
+    });
+  });
+});
+
+describe('Given a worktree blame on a path that escapes the repository', () => {
+  describe('When the path traverses upward', () => {
+    it('Then it refuses with PATHSPEC_OUTSIDE_REPO before reading the filesystem', async () => {
+      // Arrange
+      const ctx = await seed();
+      await commitFile(ctx, 'c1', 'f.txt', 'a\n');
+
+      // Act + Assert
+      await expect(blame(ctx, '../escape.txt', { worktree: true })).rejects.toMatchObject({
+        data: { code: 'PATHSPEC_OUTSIDE_REPO' },
+      });
+    });
+  });
+
+  describe('When the path targets the .git directory', () => {
+    it('Then it refuses with PATHSPEC_OUTSIDE_REPO', async () => {
+      // Arrange
+      const ctx = await seed();
+      await commitFile(ctx, 'c1', 'f.txt', 'a\n');
+
+      // Act + Assert
+      await expect(blame(ctx, '.git/config', { worktree: true })).rejects.toMatchObject({
+        data: { code: 'PATHSPEC_OUTSIDE_REPO' },
+      });
+    });
+  });
+});
+
+describe('Given the worktree option combined with an explicit revision', () => {
+  describe('When blaming', () => {
+    it('Then it refuses the contradictory combination with INVALID_OPTION', async () => {
+      // Arrange
+      const ctx = await seed();
+      await commitFile(ctx, 'c1', 'f.txt', 'a\n');
+
+      // Act + Assert
+      await expect(blame(ctx, 'f.txt', { worktree: true, rev: 'HEAD' })).rejects.toMatchObject({
+        data: {
+          code: 'INVALID_OPTION',
+          option: 'worktree',
+          reason: 'cannot combine with a revision',
+        },
       });
     });
   });

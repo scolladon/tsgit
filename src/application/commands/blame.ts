@@ -13,24 +13,35 @@
  */
 import { splitAgainstParent } from '../../domain/blame/split-blame.js';
 import type { BlameEntry } from '../../domain/blame/types.js';
-import { invalidOption, pathNotInTree } from '../../domain/commands/error.js';
+import { invalidOption, pathNotInTree, worktreeFileAbsent } from '../../domain/commands/error.js';
 import { enqueue, type QueueEntry } from '../../domain/commit/priority-queue.js';
 import { diffLines, splitLines } from '../../domain/diff/line-diff.js';
 import type { CommitData } from '../../domain/objects/commit.js';
 import { subjectLine } from '../../domain/objects/commit-message.js';
 import type { AuthorIdentity, FilePath, ObjectId } from '../../domain/objects/index.js';
 import { FilePath as FilePathFactory } from '../../domain/objects/object-id.js';
+import { validateWorkingTreePath } from '../../domain/working-tree-path.js';
 import type { Context } from '../../ports/context.js';
 import { diffTrees } from '../primitives/diff-trees.js';
 import { flattenTree } from '../primitives/flatten-tree.js';
 import { readBlob } from '../primitives/read-blob.js';
+import { readIndex } from '../primitives/read-index.js';
 import { resolveCommitIsh } from './internal/commit-ish.js';
 import { readCommitData } from './internal/history-rewrite.js';
 import { assertRepository } from './internal/repo-state.js';
 
+const LINK_ENCODER = new TextEncoder();
+
 export interface BlameOptions {
-  /** Commit-ish to blame as-of (default: HEAD). */
+  /** Commit-ish to blame as-of (default: HEAD). Mutually exclusive with `worktree`. */
   readonly rev?: string;
+  /**
+   * Blame the working-tree content instead of a committed revision (git's bare
+   * `git blame <file>`): lines matching the committed history blame to their real
+   * commits, uncommitted lines to the "Not Committed Yet" pseudo-commit
+   * (`committed: false`). Mutually exclusive with `rev`; requires a working tree.
+   */
+  readonly worktree?: boolean;
   /**
    * Restrict the reported lines to a 1-based inclusive `[start, end]` window over
    * the final file (git's `-L`). `end` past the last line is clamped; a start
@@ -39,11 +50,23 @@ export interface BlameOptions {
   readonly range?: { readonly start: number; readonly end: number };
 }
 
-export interface BlameLine {
+/** Fields shared by every blamed line, committed or not. */
+export interface BlameLineBase {
   /** 1-based line number in the queried file. */
   readonly finalLine: number;
-  /** 1-based line number in the blamed commit's version of the file. */
+  /** 1-based line number in the originating blob (the queried-file position for an uncommitted line). */
   readonly sourceLine: number;
+  /** Path the file had in the originating version — rename-aware. */
+  readonly sourcePath: FilePath;
+  /** Where the committed base lives; absent for a staged-new file (not in HEAD). */
+  readonly previous?: { readonly commit: ObjectId; readonly path: FilePath };
+  /** The line's bytes (newline-terminated except a final line without a trailing LF). */
+  readonly content: Uint8Array;
+}
+
+/** A line blamed to a real commit. */
+export interface CommittedBlameLine extends BlameLineBase {
+  readonly committed: true;
   /** Commit this line is blamed to. */
   readonly commit: ObjectId;
   readonly author: AuthorIdentity;
@@ -52,13 +75,18 @@ export interface BlameLine {
   readonly summary: string;
   /** Blamed commit is a root (no parents). */
   readonly boundary: boolean;
-  /** Path the file had in the blamed commit — rename-aware. */
-  readonly sourcePath: FilePath;
-  /** Parent the file content came from; absent on a root. */
-  readonly previous?: { readonly commit: ObjectId; readonly path: FilePath };
-  /** The line's bytes (newline-terminated except a final line without a trailing LF). */
-  readonly content: Uint8Array;
 }
+
+/**
+ * A line not yet committed — git's zero-oid "Not Committed Yet" pseudo-commit.
+ * The library emits none of git's fabricated oid / identity / timestamp / summary
+ * (those are the caller's to render); `committed: false` losslessly signals it.
+ */
+export interface UncommittedBlameLine extends BlameLineBase {
+  readonly committed: false;
+}
+
+export type BlameLine = CommittedBlameLine | UncommittedBlameLine;
 
 export interface BlameResult {
   /** The queried path (final name). */
@@ -89,13 +117,81 @@ export const blame = async (
 ): Promise<BlameResult> => {
   await assertRepository(ctx);
   const filePath = FilePathFactory.from(path);
-  const rev = opts.rev ?? DEFAULT_REV;
-  const startCommit = await resolveCommitIsh(ctx, rev);
   const board: Scoreboard = { ctx, queue: [], finalized: [] };
-  await seed(board, startCommit, filePath, rev);
+  if (opts.worktree === true) {
+    if (opts.rev !== undefined) {
+      throw invalidOption('worktree', 'cannot combine with a revision');
+    }
+    await seedWorkingTree(board, filePath);
+  } else {
+    const rev = opts.rev ?? DEFAULT_REV;
+    await seed(board, await resolveCommitIsh(ctx, rev), filePath, rev);
+  }
   await walk(board);
   const lines = [...board.finalized].sort((a, b) => a.finalLine - b.finalLine);
   return { path: filePath, lines: applyRange(lines, opts.range) };
+};
+
+/**
+ * Seed the working-tree pseudo-commit (git's bare `git blame <file>`). Resolves
+ * HEAD first (an unborn HEAD refuses here, as git does), reads the working file,
+ * then diffs it against HEAD's blob: lines common with HEAD enter the committed
+ * walk; lines that differ (or the whole file when the path is staged-new) finalize
+ * as uncommitted. A path absent from both HEAD and the index is untracked → refuse.
+ */
+const seedWorkingTree = async (sb: Scoreboard, path: FilePath): Promise<void> => {
+  // Worktree mode reads the file from disk, so the path is constrained to the
+  // repository (rejects `..`, absolute paths, and `.git`) before any FS access —
+  // committed-rev mode is unaffected (it resolves paths through the object tree).
+  validateWorkingTreePath(path);
+  const head = await resolveCommitIsh(sb.ctx, DEFAULT_REV);
+  const data = await readCommitData(sb.ctx, head);
+  const workingBlob = await readWorkingFile(sb.ctx, path);
+  const count = splitLines(workingBlob).length;
+  // equivalent-mutant: count===0 only for an empty working file; without the guard a
+  // zero-count entry flows through splitAgainstParent/finalize and yields no lines — the
+  // same empty result (mirrors the committed-rev seed guard below).
+  if (count === 0) return;
+  const whole: ReadonlyArray<BlameEntry> = [{ finalStart: 0, count, sourceStart: 0 }];
+  const headBlob = await blobAtPath(sb.ctx, data.tree, path);
+  if (headBlob !== undefined) {
+    const { passed, kept } = splitAgainstParent(whole, diffLines(headBlob, workingBlob));
+    schedule(sb, head, path, data.committer.timestamp, headBlob, passed);
+    finalizeUncommitted(sb, path, workingBlob, kept, { commit: head, path });
+    return;
+  }
+  const index = await readIndex(sb.ctx);
+  if (index.entries.some((entry) => entry.path === path)) {
+    finalizeUncommitted(sb, path, workingBlob, whole, undefined);
+    return;
+  }
+  throw pathNotInTree(DEFAULT_REV, path);
+};
+
+/** Read the working-tree file's bytes (symlink → its target); absent → refuse like git's `Cannot lstat`. */
+const readWorkingFile = async (ctx: Context, path: FilePath): Promise<Uint8Array> => {
+  const absPath = `${ctx.layout.workDir}/${path}`;
+  const stat = await ctx.fs.lstat(absPath).catch(() => undefined);
+  if (stat === undefined) throw worktreeFileAbsent(path);
+  return stat.isSymbolicLink
+    ? LINK_ENCODER.encode(await ctx.fs.readlink(absPath))
+    : ctx.fs.read(absPath);
+};
+
+/** Finalize lines to the zero-oid "Not Committed Yet" pseudo-commit (`committed: false`). */
+const finalizeUncommitted = (
+  sb: Scoreboard,
+  path: FilePath,
+  blob: Uint8Array,
+  entries: ReadonlyArray<BlameEntry>,
+  previous: BlameLine['previous'],
+): void => {
+  const lines = splitLines(blob);
+  for (const entry of entries) {
+    for (const offset of offsets(entry.count)) {
+      sb.finalized.push({ committed: false, ...baseLine(entry, offset, lines, path, previous) });
+    }
+  }
 };
 
 /** Filter to a 1-based inclusive line window, clamping `end` and refusing bad bounds. */
@@ -169,20 +265,32 @@ const finalize = (
   for (const entry of entries) {
     for (const offset of offsets(entry.count)) {
       sb.finalized.push({
-        finalLine: entry.finalStart + offset + 1,
-        sourceLine: entry.sourceStart + offset + 1,
+        committed: true,
         commit: suspect.commit,
         author: data.author,
         committer: data.committer,
         summary,
         boundary,
-        sourcePath: suspect.path,
-        ...(previous !== undefined ? { previous } : {}),
-        content: childLines[entry.sourceStart + offset] as Uint8Array,
+        ...baseLine(entry, offset, childLines, suspect.path, previous),
       });
     }
   }
 };
+
+/** The fields every blamed line shares, for one entry's offset (committed or not). */
+const baseLine = (
+  entry: BlameEntry,
+  offset: number,
+  lines: ReadonlyArray<Uint8Array>,
+  sourcePath: FilePath,
+  previous: BlameLine['previous'],
+): BlameLineBase => ({
+  finalLine: entry.finalStart + offset + 1,
+  sourceLine: entry.sourceStart + offset + 1,
+  sourcePath,
+  ...(previous !== undefined ? { previous } : {}),
+  content: lines[entry.sourceStart + offset] as Uint8Array,
+});
 
 /** `[0, 1, …, count-1]` — a range with no mutable index to invert into a hang. */
 const offsets = (count: number): ReadonlyArray<number> =>
