@@ -987,6 +987,47 @@ describe('status — unmerged column', () => {
     });
   });
 
+  describe('Given a conflicted file present on disk', () => {
+    describe('When status', () => {
+      it('Then the entry carries a worktree side with the on-disk mode (mW)', async () => {
+        // Arrange — the merge leaves file.txt (with conflict markers) on disk.
+        const ctx = await seedConflict();
+
+        // Act
+        const sut = await status(ctx);
+
+        // Assert — mW is the on-disk regular-file mode; stages stay intact.
+        const entry = sut.unmerged[0];
+        expect(entry?.path).toBe('file.txt');
+        expect(entry?.worktree?.mode).toBe('100644');
+        expect(entry?.base).toBeDefined();
+        expect(entry?.ours).toBeDefined();
+        expect(entry?.theirs).toBeDefined();
+      });
+    });
+  });
+
+  describe('Given a conflicted file removed from disk', () => {
+    describe('When status', () => {
+      it('Then the worktree side is omitted while the stage blobs remain', async () => {
+        // Arrange — remove the conflicted file from the working tree (git's mW=000000).
+        const ctx = await seedConflict();
+        await ctx.fs.rm(`${ctx.layout.workDir}/file.txt`);
+
+        // Act
+        const sut = await status(ctx);
+
+        // Assert — no worktree side, but the index stages are still reported.
+        const entry = sut.unmerged[0];
+        expect(entry?.path).toBe('file.txt');
+        expect(entry?.worktree).toBeUndefined();
+        expect(entry?.base).toBeDefined();
+        expect(entry?.ours).toBeDefined();
+        expect(entry?.theirs).toBeDefined();
+      });
+    });
+  });
+
   describe('Given a modify/delete conflict (one side modifies, the other deletes)', () => {
     describe('When status', () => {
       it('Then it is deleted-by-them with the base and ours stages but no theirs', async () => {
