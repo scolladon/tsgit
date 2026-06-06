@@ -44,9 +44,10 @@ type ConflictKind =
 interface UnmergedEntry {
   readonly kind: ConflictKind;
   readonly path: FilePath;
-  readonly base?: BlobSide;   // stage 1 (merge base)
-  readonly ours?: BlobSide;   // stage 2 (our side)
-  readonly theirs?: BlobSide; // stage 3 (their side)
+  readonly base?: BlobSide;       // stage 1 (merge base) — m1 / h1
+  readonly ours?: BlobSide;       // stage 2 (our side)   — m2 / h2
+  readonly theirs?: BlobSide;     // stage 3 (their side) — m3 / h3
+  readonly worktree?: WorktreeSide; // mW — on-disk mode (no oid), omitted when absent
 }
 ```
 
@@ -56,7 +57,7 @@ interface UnmergedEntry {
 - **Self-describing endpoints → hunks.** Each record carries the blobs that form its diffs: `head`/`index` (`{ id, mode }`) and `worktree` (`{ mode }` only — git prints `mW` but no working oid). The hunks for any path are one read away — staged: `readBlob(head)` vs `readBlob(index)`; unstaged: `readBlob(index)` vs the working file at `path`. A side is omitted when the path does not exist there (staged add → no `head`; staged delete → no `index`; deleted in the worktree → no `worktree`).
 - **Untracked.** `untracked` is the separate set of untracked paths (git's `?` lines). A path removed from the index but kept on disk (`git rm --cached`) appears as a staged `deleted` record in `changes` **and** in `untracked` — git's `D ` + `??`.
 - **First-class `type-changed` / `mode-changed`.** Both columns distinguish a kind change (file↔symlink, git porcelain `T`) as `type-changed` and a same-blob mode-only change (exec bit, git `M`) as `mode-changed`, alongside content `modified` (ADR-255). A gitlink/submodule entry stays `modified` (git reports a submodule as `M`, not `T`). To reconstruct git's porcelain `XY`, map `type-changed → T` and `mode-changed → M`.
-- **Unmerged paths.** `unmerged` reports conflicted paths (index stages 1/2/3 — git's "Unmerged paths"), each with a `kind` (the seven git conflict states, reconstructing the `UU`/`AA`/`DD`/`AU`/`UA`/`DU`/`UD` codes) and the present per-stage blobs (`base`/`ours`/`theirs`). A conflicted path is reported **only** here, never in `changes`/`untracked` (ADR-256).
+- **Unmerged paths.** `unmerged` reports conflicted paths (index stages 1/2/3 — git's "Unmerged paths"), each with a `kind` (the seven git conflict states, reconstructing the `UU`/`AA`/`DD`/`AU`/`UA`/`DU`/`UD` codes), the present per-stage blobs (`base`/`ours`/`theirs`), and the conflicted file's on-disk mode (`worktree`, git's `mW`; omitted when the file is absent on disk — `git status --porcelain=v2` then prints `000000`). With the stages plus `worktree`, the full v2 `u` line (`u <XY> N... <m1> <m2> <m3> <mW> <h1> <h2> <h3> <path>`) reconstructs byte-for-byte. A conflicted path is reported **only** here, never in `changes`/`untracked` (ADR-256).
 - **Unborn HEAD.** With no commit yet, the HEAD tree is empty, so every staged entry is `added` (no `head` side).
 - **Stat-cache fast path:** entries whose `mtime/ctime/size/ino` match the index's recorded stat fields are not re-hashed. This is the hot path that `add`/`commit`/`reset --mixed` populate.
 - **Sparse-aware:** out-of-cone paths marked `skip-worktree` are not reported as deletions.
