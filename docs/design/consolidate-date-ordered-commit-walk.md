@@ -275,3 +275,26 @@ parity scenario — none change. `walkCommitsByDate`'s own unit + `history-inter
   until demanded (YAGNI).
 - A strict `--date-order` mode (forged reverse-causal dates) remains deferred per
   ADR-261; this consolidation does not touch the lazy-vs-strict scope.
+
+## Implementation outcome
+
+Two refinements landed past this design during review and mutation:
+
+1. **The cap's two-phase walk collapsed to a single sweep.** The mutation pass
+   showed the post-cap "finish only the winner's depth" fast-path was redundant —
+   phase-1's `incrementUnreached(candidates, …)` already finishes the winner's
+   depth (the winner is a candidate), so the early-exit branch only bred
+   equivalent mutants and forced an `as Candidate` cast. The shipped
+   `selectNearest` instead caps the *push* (collect ≤ `maxCandidates` tags),
+   advances every candidate's depth on every popped commit, and sorts once at the
+   end. Simpler, cast-free, byte-identical output — and it retired the original
+   cap/sort `// Stryker disable` annotations (net suppression reduction; 100%
+   mutation on `describe.ts`).
+2. **A pre-existing `describe` selection divergence surfaced and was logged
+   (23.4n), not fixed.** Pinning the candidate cap faithfully revealed that on a
+   merge where a newer-dated tag is structurally farther than an older nearer
+   tag, `git describe` (default) keeps the first-met farther tag via its
+   early-termination heuristic, while tsgit returns the exhaustively-nearest tag.
+   `--candidates=1` already matches git (interop-pinned); only the default pick
+   diverges. This is independent of the consolidation (the pre-fold code diverged
+   identically) and out of scope for a behaviour-preserving change.
