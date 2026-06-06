@@ -212,9 +212,9 @@ interface SelectionOutcome {
 /**
  * Date-ordered walk collecting candidate tags and their exact distances. Drives
  * the shared `commitDateWalk` core (first-parent honoured) and layers describe's
- * candidate / reachability / depth policy on top. Once the candidate cap is hit
- * the winner is settled, so the remaining commits stream straight into finishing
- * its depth.
+ * policy on top: every popped commit advances the depth of each candidate it
+ * does not reach; the candidate cap bounds how many tags are collected; the
+ * nearest survivor (git's `compare_pt`) is chosen once the walk drains.
  */
 const selectNearest = async (
   ctx: Context,
@@ -227,30 +227,25 @@ const selectNearest = async (
   const candidates: Candidate[] = [];
   let counter = 0;
   let sawUnannotated = false;
-  let best: Candidate | undefined;
 
   for await (const commit of commitDateWalk(ctx, {
     from: [target],
     firstParent: plan.firstParent,
   })) {
     const oid = commit.id;
-    if (best !== undefined) {
-      incrementUnreached([best], reach.get(oid));
-      propagateReach(reach, commit, plan.firstParent);
-      continue;
-    }
     counter += 1;
     const named = nameMap.get(oid);
     if (named !== undefined && named.priority >= minPriority) {
-      if (candidates.length >= plan.maxCandidates) {
-        best = [...candidates].sort(compareCandidates)[0] as Candidate;
-        incrementUnreached([best], reach.get(oid));
-        propagateReach(reach, commit, plan.firstParent);
-        continue;
+      if (candidates.length < plan.maxCandidates) {
+        const index = candidates.length;
+        candidates.push({
+          name: named.name,
+          commitOid: oid,
+          depth: counter - 1,
+          foundOrder: index,
+        });
+        reachSet(reach, oid).add(index);
       }
-      const index = candidates.length;
-      candidates.push({ name: named.name, commitOid: oid, depth: counter - 1, foundOrder: index });
-      reachSet(reach, oid).add(index);
     } else if (named !== undefined) {
       sawUnannotated = true;
     }
@@ -258,7 +253,7 @@ const selectNearest = async (
     propagateReach(reach, commit, plan.firstParent);
   }
 
-  return { best: best ?? [...candidates].sort(compareCandidates)[0], sawUnannotated };
+  return { best: [...candidates].sort(compareCandidates)[0], sawUnannotated };
 };
 
 const incrementUnreached = (
