@@ -109,14 +109,15 @@ const readWorktreeMode = async (ctx, path): Promise<FileMode | undefined> => {
 working comparator already share (symlink → `120000`, exec bit → `100755`, else
 `100644`), so the unmerged `mW` agrees byte-for-byte with the ordinary-line `mW`.
 
-Wiring (mirrors the existing `workingMap` pass):
-
-1. **Unmerged worktree pass**: `scanUnmergedWorktree(ctx, grouped.unmerged)` →
-   `Map<FilePath, FileMode>`, one `readWorktreeMode` per conflicted path,
-   recording only present files (`Promise.all` fan-out, like `scanWorkingTree`).
-2. **Projection**: `toUnmergedEntries(grouped.unmerged, worktreeModes)` adds
-   `...(mode !== undefined && { worktree: { mode } })` to each entry, keeping the
-   existing byte-ordered, present-stage-only projection otherwise.
+Wiring — `buildUnmergedEntries(ctx, grouped.unmerged)` fuses the worktree read
+into the projection: a `Promise.all` over the byte-sorted groups, each callback
+reading `readWorktreeMode(ctx, path)` and spreading
+`...(worktreeMode !== undefined && { worktree: { mode: worktreeMode } })` onto the
+entry (alongside the existing present-stage-only `base`/`ours`/`theirs` spreads).
+A single guard decides presence — no intermediate `Map` and no second guard to
+go stale (a pre-scan-then-project split leaves a redundant guard that mutation
+testing flags as equivalent). `Promise.all` preserves the groups' array order, so
+the result stays byte-ordered without an explicit sort.
 
 `clean` / `describe --dirty/--broken` are **unaffected** — they already count
 `unmerged.length`; the new field carries no dirtiness signal of its own.
@@ -158,8 +159,8 @@ No `describe.ts` change (its dirty check reads `changes`/`unmerged` lengths only
     not just defined — StringLiteral/mutation resistance).
   - conflicted file **absent** on disk (removed after merge) → `worktree`
     undefined, other stages intact.
-  These two cover every new branch (`readWorktreeMode`'s present/absent ternary,
-  `scanUnmergedWorktree`'s set-guard, `toUnmergedEntries`'s spread).
+  These two cover every new branch (`readWorktreeMode`'s present/absent ternary
+  and `buildUnmergedEntries`'s `worktree` spread guard).
 - **Interop** (`status-interop.test.ts`) — extend the v2 reconstruction to emit
   `u` lines (`u XY N... m1 m2 m3 mW h1 h2 h3 path`), interleaved with ordinary
   lines in byte-path order (git sorts the tracked section together), and add:
