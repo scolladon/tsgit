@@ -4,6 +4,11 @@
 
 Accepted (at `dd50478e`)
 
+Deliverable 1 (de-leak the wiring) stands. Deliverable 2 (defer the source
+accessors) is superseded by
+[ADR-274](274-snapshot-source-accessors-declined.md), which settles the deferred
+weigh as **declined**.
+
 ## Context
 
 The 23.4 API review (finding S7) flagged the lazy-snapshot read surface
