@@ -86,6 +86,20 @@ const seedDiamond = async () => {
   return { ctx, a, b, c, d };
 };
 
+/** Write an annotated tag object pointing at a commit `target`. */
+const writeAnnotatedTag = (ctx: Context, target: ObjectId, name: string): Promise<ObjectId> =>
+  writeObject(ctx, {
+    type: 'tag',
+    id: '' as ObjectId,
+    data: {
+      object: target,
+      objectType: 'commit',
+      tagName: name,
+      message: 'tag',
+      extraHeaders: [],
+    },
+  });
+
 describe('log', () => {
   describe('Given three commits', () => {
     describe('When log', () => {
@@ -214,10 +228,11 @@ describe('log', () => {
           caught = err;
         }
 
-        // Assert — error must name the missing HEAD ref, not just be defined.
+        // Assert — unborn HEAD still refuses; the grammar resolver reports
+        // OBJECT_NOT_FOUND (consistent with show/readFileAt), not REF_NOT_FOUND.
         expect(caught).toBeInstanceOf(Error);
         const data = (caught as { data?: { code?: string } }).data;
-        expect(data?.code).toBe('REF_NOT_FOUND');
+        expect(data?.code).toBe('OBJECT_NOT_FOUND');
       });
     });
   });
@@ -347,6 +362,99 @@ describe('log', () => {
         // Assert — kills the `refs/tags/${rev}` → `` StringLiteral mutant, which
         // would drop the only resolvable candidate and throw.
         expect(sut.map((e) => e.message)).toEqual(['tagged']);
+      });
+    });
+  });
+
+  describe("Given rev is a grammar selector 'HEAD~2'", () => {
+    describe('When log', () => {
+      it('Then resolves the ancestor and walks from there', async () => {
+        // Arrange — chain oldest(c1)←middle(c2)←newest(c3); HEAD→c3, so HEAD~2 is c1.
+        const { ctx } = await seedTimestampChain();
+
+        // Act
+        const sut = await log(ctx, { rev: 'HEAD~2' });
+
+        // Assert — walks from the oldest only (the bespoke resolver had no `~` grammar).
+        expect(sut.map((e) => e.message)).toEqual(['oldest']);
+      });
+    });
+  });
+
+  describe('Given rev is an annotated tag', () => {
+    describe('When log', () => {
+      it('Then peels the tag to its commit before walking', async () => {
+        // Arrange — annotated tag `v9` over the oldest commit.
+        const ctx = createMemoryContext();
+        const c1 = await writeCommitAt(ctx, [], 1000, 'oldest');
+        const c2 = await writeCommitAt(ctx, [c1], 2000, 'newest');
+        const tagId = await writeAnnotatedTag(ctx, c1, 'v9');
+        await seedRepo(ctx, {
+          refs: { 'refs/heads/main': c2, 'refs/tags/v9': tagId },
+        });
+
+        // Act
+        const sut = await log(ctx, { rev: 'v9' });
+
+        // Assert — peeled to c1; without the peel the walk reads the tag object,
+        // skips it as a non-commit, and yields nothing.
+        expect(sut.map((e) => e.message)).toEqual(['oldest']);
+      });
+    });
+  });
+
+  describe('Given excluding uses a grammar selector', () => {
+    describe('When log', () => {
+      it('Then resolves it and stops at that commit', async () => {
+        // Arrange — HEAD→c3; HEAD~1 is the middle commit.
+        const { ctx } = await seedTimestampChain();
+
+        // Act
+        const sut = await log(ctx, { excluding: ['HEAD~1'] });
+
+        // Assert — only the newest remains (middle + its ancestor are excluded).
+        expect(sut.map((e) => e.message)).toEqual(['newest']);
+      });
+    });
+  });
+
+  describe('Given rev is unresolvable', () => {
+    describe('When log', () => {
+      it('Then throws OBJECT_NOT_FOUND', async () => {
+        // Arrange
+        const { ctx } = await seedTimestampChain();
+
+        // Act
+        let caught: unknown;
+        try {
+          await log(ctx, { rev: 'no-such-rev' });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert — the grammar resolver refuses an unknown rev (was REF_NOT_FOUND
+        // via the bespoke resolver; now OBJECT_NOT_FOUND, matching show/readFileAt).
+        expect((caught as { data?: { code?: string } }).data?.code).toBe('OBJECT_NOT_FOUND');
+      });
+    });
+  });
+
+  describe('Given an excluding entry is unresolvable', () => {
+    describe('When log', () => {
+      it('Then throws OBJECT_NOT_FOUND (no longer silently skipped)', async () => {
+        // Arrange
+        const { ctx } = await seedTimestampChain();
+
+        // Act
+        let caught: unknown;
+        try {
+          await log(ctx, { excluding: ['no-such-rev'] });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert — faithful: a bad exclusion refuses rather than being dropped.
+        expect((caught as { data?: { code?: string } }).data?.code).toBe('OBJECT_NOT_FOUND');
       });
     });
   });

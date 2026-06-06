@@ -1,10 +1,9 @@
 import type { AuthorIdentity, ObjectId } from '../../domain/objects/index.js';
-import { validateRefName } from '../../domain/refs/index.js';
 import type { Context } from '../../ports/context.js';
-import { resolveRef } from '../primitives/resolve-ref.js';
 import { walkCommits } from '../primitives/walk-commits.js';
 import { walkCommitsByDate } from '../primitives/walk-commits-by-date.js';
 import { assertRepository } from './internal/repo-state.js';
+import { resolveCommit } from './internal/resolve-rev.js';
 
 /**
  * Walk order. `'date'` (default) yields every reachable commit across all
@@ -42,9 +41,8 @@ export const log = async (
   opts: LogOptions = {},
 ): Promise<ReadonlyArray<LogEntry>> => {
   await assertRepository(ctx);
-  const startId = await resolveStart(ctx, opts.rev ?? 'HEAD');
-  // Stryker disable next-line ArrayDeclaration: equivalent — any unresolvable seed (e.g. "Stryker was here") is caught and skipped by resolveExcluding, yielding the same empty exclusion list as [].
-  const exclude = await resolveExcluding(ctx, opts.excluding ?? []);
+  const startId = await resolveCommit(ctx, opts.rev ?? 'HEAD');
+  const exclude = await Promise.all((opts.excluding ?? []).map((r) => resolveCommit(ctx, r)));
   const before = opts.before;
   const walk =
     opts.order === 'first-parent'
@@ -66,41 +64,6 @@ export const log = async (
     });
     yielded += 1;
     if (opts.limit !== undefined && yielded >= opts.limit) break;
-  }
-  return out;
-};
-
-const resolveStart = async (ctx: Context, rev: string): Promise<ObjectId> => {
-  if (/^[0-9a-f]{40}$/.test(rev)) return rev as ObjectId;
-  // Try the literal name first (already-prefixed full ref or `HEAD`), then
-  // refs/heads/<name>, then refs/tags/<name>.
-  const candidates = [rev, `refs/heads/${rev}`, `refs/tags/${rev}`];
-  for (const candidate of candidates) {
-    try {
-      return await resolveRef(ctx, validateRefName(candidate));
-    } catch {
-      // continue
-    }
-  }
-  return resolveRef(ctx, validateRefName(rev));
-};
-
-const resolveExcluding = async (
-  ctx: Context,
-  refs: ReadonlyArray<string>,
-): Promise<ReadonlyArray<ObjectId>> => {
-  const out: ObjectId[] = [];
-  for (const r of refs) {
-    // Stryker disable next-line Regex: equivalent — dropping either anchor only lets a non-40-char string match, but the whole string `r` is then pushed verbatim into the `until` set; `walkCommits` only does `until.has(id)` against real 40-char oids, so a malformed-length entry can never collide. The `resolveRef` fallback merely throws-and-skips the same string, leaving `out` identical either way.
-    if (/^[0-9a-f]{40}$/.test(r)) {
-      out.push(r as ObjectId);
-      continue;
-    }
-    try {
-      out.push(await resolveRef(ctx, validateRefName(r)));
-    } catch {
-      // skip unresolved exclusions
-    }
   }
   return out;
 };

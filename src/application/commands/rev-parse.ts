@@ -187,7 +187,7 @@ const getNthParent = async (ctx: Context, id: ObjectId, n: number): Promise<Obje
   return parent;
 };
 
-const peel = async (
+export const peel = async (
   ctx: Context,
   id: ObjectId,
   target: 'commit' | 'tree' | 'blob' | 'tag',
