@@ -222,7 +222,7 @@ The result is robust to the one place the two schemes *do* differ — old
 `finishDepth` re-enqueues `gaveUp` to compete by date, the single pass processes
 it immediately. `describe`'s output is an **order-independent aggregate**:
 `best.depth` is a *sum* over the phase-2 commits that cannot reach the winner
-(re-ordering the summands cannot change the total), and `reach` sets are
+(re-ordering the terms cannot change the total), and `reach` sets are
 monotonic and complete for any commit before it is popped (in a causal
 date-order walk every child precedes its parent). `describe` never exposes a
 commit *stream*, so the literal pop order — including any equal-date tie — is
