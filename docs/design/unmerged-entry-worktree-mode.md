@@ -186,6 +186,22 @@ No `describe.ts` change (its dirty check reads `changes`/`unmerged` lengths only
 - **No rename detection**, **no submodule `sub` state** — same scope boundary as
   ADR-269.
 
+## Architecture pass
+
+No-op, two candidates considered and declined:
+
+- **Share `readWorktreeMode`** (lstat → mode, undefined if absent) with the other
+  `deriveWorkingMode` sites — declined: `compareWorkingTreeDelta`, `stash`, and
+  `add` all need the **raw `stat`** afterward (symlink branch, size cap, content
+  read), not just the derived mode, so a mode-only helper has exactly one
+  consumer. Not rule-of-three.
+- **Extract a `worktreeSide(mode)` builder** for the two `{ worktree: { mode } }`
+  spreads (`buildChangedPath` + `buildUnmergedEntries`, same file) — declined at
+  rule-of-two (KISS; the project defers such extraction below rule-of-three).
+
+The local structural gain (fusing the worktree read into the projection to drop a
+redundant guard) landed during review as a `refactor(status)` commit.
+
 ## Closes
 
 - **23.4m** — the last v2 `u`-line field, completing porcelain-v2 reconstruction
