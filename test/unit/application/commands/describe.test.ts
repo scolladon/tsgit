@@ -401,6 +401,56 @@ describe('describe', () => {
     });
   });
 
+  describe('Given a newer-dated tag farther than an older nearer tag across a merge', () => {
+    // `side` sits on a newer commit (met first in date order) but is
+    // structurally farther; `near` is older yet nearer. The default search
+    // returns the exhaustively-nearest `near`; capping to one candidate spends
+    // the slot on the first-met `side` and reports it instead — so the cap and
+    // the nearest-first sort each change the answer here. (Real git keeps the
+    // first-met `side` even by default via its early-termination heuristic; that
+    // selection divergence is asserted faithfully only for `--candidates=1`.)
+    const buildSplit = async (ctx: Context): Promise<ObjectId> => {
+      const base = await commitFile(ctx, 'base');
+      const tree = await treeOf(ctx, base);
+      const n1 = await writeCommit(ctx, tree, [base], 'n1');
+      const n2 = await writeCommit(ctx, tree, [n1], 'n2');
+      await annotatedTag(ctx, 'near', n2, clock);
+      const s1 = await writeCommit(ctx, tree, [base], 's1');
+      await annotatedTag(ctx, 'side', s1, clock);
+      return writeCommit(ctx, tree, [n2, s1], 'merge');
+    };
+
+    describe('When describe runs with the default candidate budget', () => {
+      it('Then the nearer (older, later-met) tag wins at its exact distance', async () => {
+        // Arrange
+        const ctx = await seed();
+        const merge = await buildSplit(ctx);
+
+        // Act
+        const sut = await describeCmd(ctx, merge);
+
+        // Assert
+        expect(sut.name).toBe('near');
+        expect(sut.distance).toBe(2);
+      });
+    });
+
+    describe('When describe runs with candidates: 1', () => {
+      it('Then the cap spends its slot on the farther, first-met tag', async () => {
+        // Arrange
+        const ctx = await seed();
+        const merge = await buildSplit(ctx);
+
+        // Act
+        const sut = await describeCmd(ctx, merge, { candidates: 1 });
+
+        // Assert
+        expect(sut.name).toBe('side');
+        expect(sut.distance).toBe(3);
+      });
+    });
+  });
+
   describe('Given two annotated tags on one commit with different tagger dates', () => {
     describe('When describe runs', () => {
       it('Then the newer tagger date wins even when its name sorts later', async () => {
