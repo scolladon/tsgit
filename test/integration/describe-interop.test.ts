@@ -263,6 +263,52 @@ describe.skipIf(!GIT_AVAILABLE)('describe interop', () => {
     });
   });
 
+  // Three tags where the candidate budget changes the answer: `t2` is met first
+  // (newest) but `t1` is structurally nearer. With the full budget every name is
+  // collected and the frozen sort picks the nearer `t1`; with one slot the walk
+  // keeps the first-met `t2`. Both reconstruct real git exactly — pinning that the
+  // budget, not only the total-name count, is faithfully load-bearing.
+  describe('Given three tags where the candidate budget changes the result', () => {
+    let dir = '';
+    let ctx: Context;
+
+    beforeAll(async () => {
+      dir = await makeRepo('budget');
+      ctx = createNodeContext({ workDir: dir });
+      const base = await commitFile(dir, 'base');
+      git(dir, 'checkout', '-q', '-b', 'br0', base);
+      const b0 = await commitFile(dir, 'b0');
+      annotate(dir, 't0', clock + 5);
+      git(dir, 'checkout', '-q', '-b', 'br1', b0);
+      await commitFile(dir, 'b1a');
+      await commitFile(dir, 'b1b');
+      annotate(dir, 't1', clock + 5);
+      git(dir, 'checkout', '-q', '-b', 'br2', base);
+      await commitFile(dir, 'b2a');
+      await commitFile(dir, 'b2b');
+      annotate(dir, 't2', clock + 5);
+      git(dir, 'checkout', '-q', 'main');
+      clock += 60;
+      runGit(['-C', dir, 'merge', '-q', '--no-ff', 'br2', 'br1', '-m', 'merge'], {
+        env: datedEnv(clock),
+      });
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => {
+      await rm(dir, { recursive: true, force: true });
+    });
+
+    it('Then the full budget keeps the nearer later-met tag, matching git', async () => {
+      expect(render(await describeCmd(ctx))).toBe(gitDescribe(dir));
+    });
+
+    it('Then a single slot keeps the first-met tag instead, matching git', async () => {
+      expect(render(await describeCmd(ctx, undefined, { candidates: 1 }))).toBe(
+        gitDescribe(dir, '--candidates=1'),
+      );
+    });
+  });
+
   describe('Given a repository with no tags', () => {
     let dir = '';
     let ctx: Context;

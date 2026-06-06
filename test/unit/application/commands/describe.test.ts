@@ -487,6 +487,57 @@ describe('describe', () => {
     });
   });
 
+  describe('Given three tags where a later-met tag is nearer than the first-met one', () => {
+    // `t2` is met first (newest) but `t1` is structurally nearer. With the full
+    // budget every name is collected before the freeze, and the frozen sort makes
+    // the nearer `t1` win; with a single slot the walk spends it on the first-met
+    // `t2` and finalises that. So the candidate budget changes the answer — the
+    // cap is load-bearing, not just the total-name count.
+    const buildThreeTagSplit = async (ctx: Context): Promise<ObjectId> => {
+      const base = await commitFile(ctx, 'base');
+      const tree = await treeOf(ctx, base);
+      const b0 = await writeCommit(ctx, tree, [base], 'b0');
+      await annotatedTag(ctx, 't0', b0, clock);
+      const b1a = await writeCommit(ctx, tree, [b0], 'b1a');
+      const b1b = await writeCommit(ctx, tree, [b1a], 'b1b');
+      await annotatedTag(ctx, 't1', b1b, clock);
+      const b2a = await writeCommit(ctx, tree, [base], 'b2a');
+      const b2b = await writeCommit(ctx, tree, [b2a], 'b2b');
+      await annotatedTag(ctx, 't2', b2b, clock);
+      return writeCommit(ctx, tree, [base, b2b, b1b], 'merge');
+    };
+
+    describe('When describe runs with the default candidate budget', () => {
+      it('Then the frozen sort picks the nearer, later-met tag', async () => {
+        // Arrange
+        const ctx = await seed();
+        const merge = await buildThreeTagSplit(ctx);
+
+        // Act
+        const sut = await describeCmd(ctx, merge);
+
+        // Assert
+        expect(sut.name).toBe('t1');
+        expect(sut.distance).toBe(3);
+      });
+    });
+
+    describe('When describe runs with candidates: 1', () => {
+      it('Then the single slot is spent on the first-met tag instead', async () => {
+        // Arrange
+        const ctx = await seed();
+        const merge = await buildThreeTagSplit(ctx);
+
+        // Act
+        const sut = await describeCmd(ctx, merge, { candidates: 1 });
+
+        // Assert
+        expect(sut.name).toBe('t2');
+        expect(sut.distance).toBe(4);
+      });
+    });
+  });
+
   describe('Given two annotated tags on one commit with different tagger dates', () => {
     describe('When describe runs', () => {
       it('Then the newer tagger date wins even when its name sorts later', async () => {
