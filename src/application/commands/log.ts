@@ -33,7 +33,7 @@ export interface LogEntry {
  * Walk commits starting from `rev` (default: HEAD), yielding ordered `LogEntry`
  * records. By default walks every reachable commit across all parents in
  * committer-date order; `order: 'first-parent'` follows only the first parent.
- * Honors `limit`, `excluding` (oid stops), and `before` (only commits with
+ * Honors `limit`, `excluding` (commit-ish stops), and `before` (only commits with
  * `committer.timestamp < before`).
  */
 export const log = async (
