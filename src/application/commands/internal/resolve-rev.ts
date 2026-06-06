@@ -8,7 +8,8 @@
  */
 import type { ObjectId } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
-import { peel, revParse } from '../rev-parse.js';
+import { peel } from '../../primitives/internal/peel.js';
+import { revParse } from '../rev-parse.js';
 
 /** Resolve `rev` and peel to its commit (annotated tags followed). */
 export const resolveCommit = async (ctx: Context, rev: string): Promise<ObjectId> =>

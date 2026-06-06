@@ -10,6 +10,7 @@ import { reflogEntryOutOfRange } from '../../domain/reflog/error.js';
 import type { ReflogEntry } from '../../domain/reflog/reflog-entry.js';
 import { refCandidates, validateRefName } from '../../domain/refs/index.js';
 import type { Context } from '../../ports/context.js';
+import { peel } from '../primitives/internal/peel.js';
 import { descendTreePath } from '../primitives/internal/resolve-tree-path.js';
 import { readIndex } from '../primitives/read-index.js';
 import { readObject } from '../primitives/read-object.js';
@@ -185,25 +186,6 @@ const getNthParent = async (ctx: Context, id: ObjectId, n: number): Promise<Obje
   const parent = parents[n - 1];
   if (parent === undefined) throw objectNotFound(id);
   return parent;
-};
-
-export const peel = async (
-  ctx: Context,
-  id: ObjectId,
-  target: 'commit' | 'tree' | 'blob' | 'tag',
-): Promise<ObjectId> => {
-  let current: ObjectId = id;
-  for (let i = 0; i < 5; i += 1) {
-    const obj = await readObject(ctx, current);
-    if (obj.type === target) return current;
-    if (obj.type === 'tag') {
-      current = obj.data.object;
-      continue;
-    }
-    if (target === 'tree' && obj.type === 'commit') return obj.data.tree;
-    throw objectNotFound(current);
-  }
-  throw objectNotFound(current);
 };
 
 const resolveIndexStage = async (
