@@ -8,8 +8,8 @@ caller's responsibility (see [ADR-251](../../adr/251-diff-tree-diff-only.md)).
 
 ```ts
 interface DiffOptions {
-  readonly from?: string;          // ref / oid / 'HEAD'; default 'HEAD'
-  readonly to?: string;            // ref / oid; default empty tree
+  readonly from?: string;          // tree-ish, full rev grammar; default 'HEAD'
+  readonly to?: string;            // tree-ish, full rev grammar; default empty tree
   readonly detectRenames?: boolean;
   readonly recursive?: boolean;    // recurse into sub-trees (`git diff-tree -r`); default false
   readonly withStat?: boolean;     // attach per-file { added, deleted, binary } counts
@@ -34,7 +34,8 @@ const everything = await repo.diff();
 // Diff two refs.
 const incoming = await repo.diff({ from: 'main', to: 'feature/x' });
 
-// Detect renames (off by default).
+// Detect renames (off by default). `from`/`to` accept the full rev grammar,
+// so `HEAD~1` / `HEAD^` / annotated tags resolve to their tree.
 const withRenames = await repo.diff({ from: 'HEAD~1', detectRenames: true });
 
 // Recurse into sub-directories (`git diff-tree -r`): a change under `src/`
