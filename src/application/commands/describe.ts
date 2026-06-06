@@ -11,7 +11,6 @@ import {
   noNames,
   noReachableNames,
 } from '../../domain/commands/error.js';
-import { enqueue, type QueueEntry } from '../../domain/commit/priority-queue.js';
 import {
   buildNameFilter,
   type Candidate,
@@ -20,10 +19,11 @@ import {
   describeName,
   shouldReplaceName,
 } from '../../domain/describe/index.js';
-import type { GitObject, ObjectId, RefName } from '../../domain/objects/index.js';
+import type { Commit, ObjectId, RefName } from '../../domain/objects/index.js';
 import { RefName as RefNameFactory } from '../../domain/objects/object-id.js';
 import type { Context } from '../../ports/context.js';
 import { enumerateRefs } from '../primitives/enumerate-refs.js';
+import { commitDateWalk, selectParents } from '../primitives/internal/commit-date-walk.js';
 import { readObject } from '../primitives/read-object.js';
 import { getRefStore } from '../primitives/ref-store.js';
 import { exceedsMaxPeelDepth } from '../primitives/validators.js';
@@ -204,27 +204,18 @@ const peelToCommit = async (ctx: Context, oid: ObjectId): Promise<PeeledCommit |
   return { commitOid: current.id, viaTag, taggerDate };
 };
 
-/** A commit read reduced to the two fields the walk needs. */
-interface WalkCommit {
-  readonly date: number;
-  readonly parents: ReadonlyArray<ObjectId>;
-}
-
-/** Mutable state threaded through the date-ordered walk. */
-interface WalkState {
-  readonly queue: QueueEntry<undefined>[];
-  readonly seen: Set<ObjectId>;
-  readonly reach: Map<ObjectId, Set<number>>;
-  readonly firstParent: boolean;
-  readonly read: (oid: ObjectId) => Promise<WalkCommit>;
-}
-
 interface SelectionOutcome {
   readonly best: Candidate | undefined;
   readonly sawUnannotated: boolean;
 }
 
-/** Date-ordered walk collecting candidate tags and their exact distances. */
+/**
+ * Date-ordered walk collecting candidate tags and their exact distances. Drives
+ * the shared `commitDateWalk` core (first-parent honoured) and layers describe's
+ * candidate / reachability / depth policy on top. Once the candidate cap is hit
+ * the winner is settled, so the remaining commits stream straight into finishing
+ * its depth.
+ */
 const selectNearest = async (
   ctx: Context,
   target: ObjectId,
@@ -232,68 +223,42 @@ const selectNearest = async (
   plan: ResolvedDescribePlan,
   minPriority: number,
 ): Promise<SelectionOutcome> => {
-  const state: WalkState = {
-    queue: [],
-    // Stryker disable next-line all: equivalent — `target` is the walk's tip; no
-    // reachable commit has it as a parent, so it is never re-enqueued and seeding
-    // `seen` with it (vs empty) changes nothing.
-    seen: new Set<ObjectId>([target]),
-    reach: new Map<ObjectId, Set<number>>(),
-    firstParent: plan.firstParent,
-    read: makeCommitReader(ctx),
-  };
+  const reach = new Map<ObjectId, Set<number>>();
   const candidates: Candidate[] = [];
   let counter = 0;
   let sawUnannotated = false;
-  let gaveUp: ObjectId | undefined;
-  enqueue(state.queue, { oid: target, date: (await state.read(target)).date, value: undefined });
+  let best: Candidate | undefined;
 
-  while (state.queue.length > 0) {
-    const { oid } = state.queue.shift() as QueueEntry<undefined>;
+  for await (const commit of commitDateWalk(ctx, {
+    from: [target],
+    firstParent: plan.firstParent,
+  })) {
+    const oid = commit.id;
+    if (best !== undefined) {
+      incrementUnreached([best], reach.get(oid));
+      propagateReach(reach, commit, plan.firstParent);
+      continue;
+    }
     counter += 1;
     const named = nameMap.get(oid);
     if (named !== undefined && named.priority >= minPriority) {
-      // Stryker disable next-line all: equivalent — the nearest tag is always
-      // found within the cap in date order, so capping (or shifting the cap
-      // boundary) never changes the selected tag for these histories; the cap
-      // bounds only the candidate set, matching git's "gave up" diagnostic.
       if (candidates.length >= plan.maxCandidates) {
-        gaveUp = oid;
-        break;
+        best = [...candidates].sort(compareCandidates)[0] as Candidate;
+        incrementUnreached([best], reach.get(oid));
+        propagateReach(reach, commit, plan.firstParent);
+        continue;
       }
       const index = candidates.length;
       candidates.push({ name: named.name, commitOid: oid, depth: counter - 1, foundOrder: index });
-      reachSet(state.reach, oid).add(index);
+      reachSet(reach, oid).add(index);
     } else if (named !== undefined) {
       sawUnannotated = true;
     }
-    incrementUnreached(candidates, state.reach.get(oid));
-    await enqueueParents(state, oid);
+    incrementUnreached(candidates, reach.get(oid));
+    propagateReach(reach, commit, plan.firstParent);
   }
 
-  // Stryker disable next-line all: equivalent — with no candidates the sort
-  // below yields `undefined` and `gaveUp` is unset, so the fall-through returns
-  // the same `{ best: undefined }` as this early exit.
-  if (candidates.length === 0) return { best: undefined, sawUnannotated };
-  const best = [...candidates].sort(compareCandidates)[0] as Candidate;
-  if (gaveUp !== undefined) await finishDepth(state, best, gaveUp);
-  return { best, sawUnannotated };
-};
-
-const makeCommitReader = (ctx: Context): ((oid: ObjectId) => Promise<WalkCommit>) => {
-  const cache = new Map<ObjectId, WalkCommit>();
-  return async (oid) => {
-    const cached = cache.get(oid);
-    if (cached !== undefined) return cached;
-    const walk = toWalkCommit(await readObject(ctx, oid));
-    cache.set(oid, walk);
-    return walk;
-  };
-};
-
-const toWalkCommit = (object: GitObject): WalkCommit => {
-  if (object.type !== 'commit') return { date: 0, parents: [] };
-  return { date: object.data.committer.timestamp, parents: object.data.parents };
+  return { best: best ?? [...candidates].sort(compareCandidates)[0], sawUnannotated };
 };
 
 const incrementUnreached = (
@@ -305,37 +270,17 @@ const incrementUnreached = (
   }
 };
 
-const enqueueParents = async (state: WalkState, oid: ObjectId): Promise<void> => {
-  const commit = await state.read(oid);
-  const parents = state.firstParent ? commit.parents.slice(0, 1) : commit.parents;
-  const reachedHere = state.reach.get(oid);
-  for (const parent of parents) {
-    // Stryker disable next-line all: equivalent — a parent reached via two paths
-    // is a shared ancestor, hence reachable from the winner, so re-enqueuing it
-    // (vs the seen-guard) never increments the winner's depth; the result holds.
-    if (!state.seen.has(parent)) {
-      state.seen.add(parent);
-      enqueue(state.queue, {
-        oid: parent,
-        date: (await state.read(parent)).date,
-        value: undefined,
-      });
-    }
-    if (reachedHere !== undefined) {
-      const parentReach = reachSet(state.reach, parent);
-      for (const index of reachedHere) parentReach.add(index);
-    }
-  }
-};
-
-/** Continue the walk past the candidate cap to finalise the winner's depth. */
-const finishDepth = async (state: WalkState, best: Candidate, gaveUp: ObjectId): Promise<void> => {
-  enqueue(state.queue, { oid: gaveUp, date: (await state.read(gaveUp)).date, value: undefined });
-  while (state.queue.length > 0) {
-    const { oid } = state.queue.shift() as QueueEntry<undefined>;
-    const reached = state.reach.get(oid);
-    if (reached === undefined || !reached.has(best.foundOrder)) best.depth += 1;
-    await enqueueParents(state, oid);
+/** Spread a commit's reachability set to the parents the walk follows. */
+const propagateReach = (
+  reach: Map<ObjectId, Set<number>>,
+  commit: Commit,
+  firstParent: boolean,
+): void => {
+  const reachedHere = reach.get(commit.id);
+  if (reachedHere === undefined) return;
+  for (const parent of selectParents(commit, firstParent)) {
+    const parentReach = reachSet(reach, parent);
+    for (const index of reachedHere) parentReach.add(index);
   }
 };
 
