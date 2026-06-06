@@ -209,7 +209,13 @@ Existing linear-chain cases stay green (date ≡ first-parent on a chain). New:
 - **`excluding` grammar:** `excluding: ['HEAD~1']` (a real range) stops correctly.
 - **bad `excluding` throws** `REF_NOT_FOUND` with `.data` asserted (was silently
   skipped) — isolated from the bad-`rev` case (guard-isolation).
-- **`limit` / `before` / unborn-HEAD** cases retained, re-pointed at the new walk.
+- **`limit` / `before`** cases retained, re-pointed at the new walk.
+- **unborn HEAD** still refuses, but the code changes `REF_NOT_FOUND` →
+  `OBJECT_NOT_FOUND`: routing the start through `revParse` (whose `resolveBase`
+  swallows the ref miss and falls through to `objectNotFound`) makes `log`
+  **consistent** with `show`/`readFileAt`, which already resolve via the grammar.
+  The refusal *condition* (unborn HEAD → throw) is preserved; only the structured
+  code aligns. Documented in the PR.
 
 Guard-isolation: the `order` branch gets independent date- and first-parent cases;
 the two resolver throw-paths (`rev` vs each `excluding`) get independent cases.
