@@ -43,7 +43,7 @@ await repo.dispose();
 - Cross-runtime — Node 22+ · Deno · Bun · Cloudflare Workers · Browser (OPFS) · in-memory
 - Tree-shakeable — `sideEffects: false`; each primitive is an independent entry
 - CJS + ESM dual-publish, verified by `arethetypeswrong`
-- 34 Tier-1 commands · 20+ AsyncIterable primitives · operator toolkit (`pipe`, `filter`, `map`, …)
+- 35 Tier-1 commands · 20+ AsyncIterable primitives · operator toolkit (`pipe`, `filter`, `map`, …)
 - Snapshot+join surface — query tree / index / workdir / stash through one lazy, atomic-iteration pipeline ([primer](docs/use/snapshots.md))
 - Type-safe — branded `ObjectId`/`RefName`/`FilePath`, discriminated-union errors, no `any`
 - AbortSignal lifetime — `repo.dispose()` cancels in-flight work
