@@ -3,6 +3,14 @@
  * shortest-augmenting-path linear assignment solver (Jonker & Volgenant, 1987)
  * that `range-diff` uses to pair the patches of two ranges at minimum total cost.
  *
+ * Contract note: this is a faithful transcription of git's solver, not a general
+ * LAP — git's own `BUG("negative j")` guard shows it only promises a complete
+ * matching on the structured cost matrices range-diff builds (where every commit
+ * has a finite creation/deletion escape, so a cheap perfect matching exists). On
+ * an unstructured matrix it may leave columns `-1`, exactly as git does;
+ * `correspond` treats any such `-1` as "unmatched" (a deletion), so the
+ * downstream behaviour degrades gracefully.
+ *
  * Faithfulness note: git's dual variables and reduced costs are 32-bit `int`s
  * that may overflow when subtracting a negative dual from a `COST_MAX` cell. The
  * resulting wraparound is part of git's observable tie-breaking, so every value
