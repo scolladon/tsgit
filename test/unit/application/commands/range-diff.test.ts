@@ -7,8 +7,10 @@ import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
 import { mergeRun } from '../../../../src/application/commands/merge.js';
 import { rangeDiff } from '../../../../src/application/commands/range-diff.js';
+import { createCommit } from '../../../../src/application/primitives/create-commit.js';
+import { readObject } from '../../../../src/application/primitives/read-object.js';
 import { TsgitError } from '../../../../src/domain/error.js';
-import type { AuthorIdentity } from '../../../../src/domain/objects/index.js';
+import type { AuthorIdentity, ObjectId } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
 
 const makeClock = () => {
@@ -187,6 +189,39 @@ describe('rangeDiff', () => {
       // Assert
       expect(matched.map((e) => e.status)).toEqual(['changed']);
       expect(split.map((e) => e.status)).toEqual(['only-old', 'only-new']);
+    });
+  });
+
+  describe('Given a range whose series begins at a root commit, When rangeDiff runs', () => {
+    it('Then the root commit is hydrated against the empty tree (no first parent)', async () => {
+      // Arrange — an unrelated orphan base forces the walk to include main's root
+      // commit, which has no first parent and must be diffed against the empty tree.
+      const ctx = createMemoryContext();
+      await init(ctx);
+      const clock = makeClock();
+      const root = await commitFile(ctx, clock, 'seed', 'seed\n', 'seed');
+      await commitFile(ctx, clock, 'a', 'a\n', 'add a');
+      const rootObject = await readObject(ctx, root as ObjectId);
+      if (rootObject.type !== 'commit') throw new Error('expected a commit');
+      const orphan = await createCommit(ctx, {
+        tree: rootObject.data.tree,
+        parents: [],
+        author: clock(),
+        committer: clock(),
+        message: 'orphan',
+      });
+      const sut = rangeDiff;
+
+      // Act — the same range on both sides; the series spans [seed (root), add a]
+      const result = await sut(ctx, {
+        old: { base: orphan, tip: 'main' },
+        new: { base: orphan, tip: 'main' },
+      });
+
+      // Assert — both commits pair as unchanged; the root resolved with no parent
+      expect(result.map((e) => e.status)).toEqual(['unchanged', 'unchanged']);
+      expect(result[0]?.old?.position).toBe(1);
+      expect(result[1]?.new?.position).toBe(2);
     });
   });
 });
