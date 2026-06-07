@@ -85,13 +85,9 @@ const CASES: ReadonlyArray<CorrCase> = [
 ];
 
 describe('correspond characterization', () => {
-  describe.each(CASES.map((c, index) => ({ ...c, index })))('Given series case #$index (cf=$cf)', ({
-    o,
-    n,
-    cf,
-    oldM,
-    newM,
-  }) => {
+  describe.each(
+    CASES.map((c, index) => ({ ...c, index })),
+  )('Given series case #$index (cf=$cf), When corresponded', ({ o, n, cf, oldM, newM }) => {
     it('Then the matching equals the pinned engine output', () => {
       // Arrange
       const oldPatches = o.map((p, i) => patch(p, i));

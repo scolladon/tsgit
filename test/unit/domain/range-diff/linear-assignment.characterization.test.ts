@@ -1196,7 +1196,12 @@ const CASES: ReadonlyArray<LapCase> = [
 describe('computeAssignment characterization', () => {
   describe.each(
     CASES.map((c, index) => ({ ...c, index })),
-  )('Given cost matrix case #$index (n=$n)', ({ n, cost, columnToRow, rowToColumn }) => {
+  )('Given cost matrix case #$index (n=$n), When computeAssignment runs', ({
+    n,
+    cost,
+    columnToRow,
+    rowToColumn,
+  }) => {
     it('Then the assignment matches the pinned solver output', () => {
       // Arrange
       const sut = computeAssignment;
