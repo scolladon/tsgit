@@ -18,9 +18,9 @@ import {
 import type { Commit, ObjectId, RefName } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
 import { enumerateRefs } from '../primitives/enumerate-refs.js';
+import { peelRefToCommit } from '../primitives/internal/peel-ref-to-commit.js';
 import { readObject } from '../primitives/read-object.js';
 import { getRefStore } from '../primitives/ref-store.js';
-import { exceedsMaxPeelDepth } from '../primitives/validators.js';
 import { parseNameRevOptions } from './internal/name-rev-options.js';
 import { assertRepository } from './internal/repo-state.js';
 import { resolveCommit } from './internal/resolve-rev.js';
@@ -67,31 +67,6 @@ export const nameRev = async (
   return { oid: target, ref: name.ref, tagDeref: name.tagDeref, steps: foldSteps(name) };
 };
 
-interface PeeledTip {
-  readonly commit: Commit;
-  readonly tagDeref: boolean;
-  readonly taggerDate: number;
-}
-
-/** Peel a ref target to its commit, capturing the outermost annotated tagger date. */
-const peelToCommit = async (ctx: Context, oid: ObjectId): Promise<PeeledTip | undefined> => {
-  let current = await readObject(ctx, oid);
-  let tagDeref = false;
-  let taggerDate = 0;
-  for (let depth = 0; current.type === 'tag'; depth += 1) {
-    if (exceedsMaxPeelDepth(depth)) return undefined;
-    if (!tagDeref) taggerDate = current.data.tagger?.timestamp ?? 0;
-    tagDeref = true;
-    current = await readObject(ctx, current.data.object);
-  }
-  if (current.type !== 'commit') return undefined;
-  return {
-    commit: current,
-    tagDeref,
-    taggerDate: tagDeref ? taggerDate : current.data.committer.timestamp,
-  };
-};
-
 /** Flood down from a single ref, recording the best name for each commit reached. */
 const walkRef = async (
   ctx: Context,
@@ -118,13 +93,13 @@ const seedRef = async (
 ): Promise<Commit | undefined> => {
   const resolved = await getRefStore(ctx).resolveDirect(ref);
   if (resolved.kind !== 'direct') return undefined;
-  const tip = await peelToCommit(ctx, resolved.id);
+  const tip = await peelRefToCommit(ctx, resolved.id);
   if (tip === undefined) return undefined;
   const seed: RevName = {
     ref,
-    tagDeref: tip.tagDeref,
+    tagDeref: tip.viaTag,
     fromTag: ref.startsWith(TAGS_PREFIX),
-    taggerDate: tip.taggerDate,
+    taggerDate: tip.viaTag ? tip.taggerDate : tip.commit.data.committer.timestamp,
     generation: 0,
     distance: 0,
     steps: [],

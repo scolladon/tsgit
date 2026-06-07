@@ -25,9 +25,8 @@ import { RefName as RefNameFactory } from '../../domain/objects/object-id.js';
 import type { Context } from '../../ports/context.js';
 import { enumerateRefs } from '../primitives/enumerate-refs.js';
 import { commitDateWalk, selectParents } from '../primitives/internal/commit-date-walk.js';
-import { readObject } from '../primitives/read-object.js';
+import { type PeeledRef, peelRefToCommit } from '../primitives/internal/peel-ref-to-commit.js';
 import { getRefStore } from '../primitives/ref-store.js';
-import { exceedsMaxPeelDepth } from '../primitives/validators.js';
 import { resolveCommitIsh } from './internal/commit-ish.js';
 import { parseDescribeOptions, type ResolvedDescribePlan } from './internal/describe-options.js';
 import { assertRepository } from './internal/repo-state.js';
@@ -198,44 +197,23 @@ const buildNameMap = async (
   for (const ref of refs) {
     const resolved = await store.resolveDirect(ref);
     if (resolved.kind !== 'direct') continue;
-    const peeled = await peelToCommit(ctx, resolved.id);
+    const peeled = await peelRefToCommit(ctx, resolved.id);
     if (peeled === undefined) continue;
     const shortName = describeName(ref, plan.all);
     if (!filter.matches(shortName)) continue;
     const incoming = nameOf(ref, shortName, peeled);
-    const existing = map.get(peeled.commitOid);
+    const existing = map.get(peeled.commit.id);
     if (existing === undefined || shouldReplaceName(existing, incoming)) {
-      map.set(peeled.commitOid, incoming);
+      map.set(peeled.commit.id, incoming);
     }
   }
   return map;
 };
 
-interface PeeledCommit {
-  readonly commitOid: ObjectId;
-  readonly viaTag: boolean;
-  readonly taggerDate: number;
-}
-
-const nameOf = (ref: RefName, shortName: string, peeled: PeeledCommit): DescribeName => {
+const nameOf = (ref: RefName, shortName: string, peeled: PeeledRef): DescribeName => {
   const underTags = ref.startsWith(TAGS_PREFIX);
   const priority = underTags ? (peeled.viaTag ? 2 : 1) : 0;
   return { name: shortName, priority, taggerDate: peeled.taggerDate };
-};
-
-/** Peel a ref target to its commit, capturing the outermost tagger date. */
-const peelToCommit = async (ctx: Context, oid: ObjectId): Promise<PeeledCommit | undefined> => {
-  let current = await readObject(ctx, oid);
-  let viaTag = false;
-  let taggerDate = 0;
-  for (let depth = 0; current.type === 'tag'; depth += 1) {
-    if (exceedsMaxPeelDepth(depth)) return undefined;
-    if (!viaTag) taggerDate = current.data.tagger?.timestamp ?? 0;
-    viaTag = true;
-    current = await readObject(ctx, current.data.object);
-  }
-  if (current.type !== 'commit') return undefined;
-  return { commitOid: current.id, viaTag, taggerDate };
 };
 
 interface SelectionOutcome {
