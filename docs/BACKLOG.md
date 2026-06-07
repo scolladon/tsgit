@@ -413,6 +413,27 @@ needs to define hot paths.
   hottest operations). Once that list lands as an ADR, hot paths get
   small / medium / large fixtures; non-hot paths keep medium only.
   Bench gating only on hot paths.
+- [ ] **27.5 Mutation runner — Stryker × vitest-4 test/mutant mis-pairing.**
+  Stryker 9.6.1's vitest-runner with vitest 4.1.8 (both latest) under-reports
+  killed mutants: for some source files it runs a *subset* of the covering
+  tests (false survivors) and for others finds *no* related tests at all
+  (false `NoCoverage`). Surfaced during 23.6's mutation grind — e.g.
+  `correspond.test.ts`'s pure-deletion test demonstrably kills the
+  `if (j >= 0 && j < m)` → `true` mutant (proven by activating it via
+  `__STRYKER_ACTIVE_MUTANT__` in the sandbox: baseline passes, mutant active
+  fails), yet Stryker reports it surviving under **every** config permutation
+  tried (`coverageAnalysis` perTest/all/off, `vitest.related` on/off, the
+  `projects` config vs a dedicated flat config, `ignoreStatic` on/off,
+  `mutantActivation` runtime/static, with/without `dir`, caches cleared) —
+  *including* `off` mode, which is supposed to run all tests per mutant.
+  `patch-text.test.ts` and the `range-diff` command test show the same as
+  all-`NoCoverage`. Not config-fixable and no newer versions exist. Options to
+  investigate: pin the Stryker vitest config to `pool: 'threads'`/`'vmThreads'`
+  (vitest 4 defaults to `forks`, whose process isolation may starve Stryker's
+  coverage/activation hooks), evaluate a vitest-3 line for the mutation job
+  only, or report upstream. Until fixed, the mutation gate under-counts kills,
+  so per-file scores must be read with the known false survivors/NoCoverage in
+  mind.
 
 ADRs required before kick-off:
 - ADR-N: Phase 27 rework rationale + sequencing after Phase 26.
