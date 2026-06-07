@@ -6,15 +6,34 @@ Tier-1 `repo.rangeDiff(opts)` — git's `git range-diff`: compare two versions o
 patch series (two commit ranges) and report, commit-by-commit, which patches were
 **added**, **removed**, left **unchanged**, or **changed** between the old and the
 new range. **Structured data only** (ADR-249): the command returns the ordered
-**correspondence list** — exactly the data behind `git range-diff --no-patch`
-(`-s`) — not the rendered "diff of diffs" body. Each entry carries the matched
-old/new commit (position + oid), a status enum (`= ! < >`), and the shown subject.
-The byte-faithful `-s` line, the abbreviation length, the number padding, and the
-diff-of-diffs body are all caller projections.
+**correspondence list** plus, for each **changed** pair, the structured
+**diff-of-diffs** — a `LineDiff` over the two commits' `## ` patch texts. Each
+entry carries the matched old/new commit (position + oid), a status enum
+(`= ! < >`), the shown subject, and (changed pairs only) `diffOfDiffs`. The
+byte-faithful `-s` line, the abbreviation length, the number padding, and the
+2-level-prefixed render of the diff-of-diffs are all caller projections.
 
 This is the first command whose **core datum is an assignment** (a min-cost
 bipartite matching), not a walk or a projection. The matching is the novel,
-faithful algorithm; the diff-of-diffs body git prints by default is rendering.
+faithful algorithm; the diff-of-diffs is a structured `LineDiff` (the caller
+applies the outer `+`/`-`/` ` prefix + indent to render git's body).
+
+## Decisions (resolved with the user — ADRs 279–281)
+
+- **ADR-279 — output shape:** correspondence list **plus** a structured
+  diff-of-diffs (`LineDiff`) on each `changed` entry. The `LineDiff` is over the
+  full `## ` patch texts (`diffLines(old.patch, new.patch)`); the caller renders
+  the 2-level-prefix body. Creations/deletions/unchanged carry no `diffOfDiffs`
+  (git emits no body for them — verified).
+- **ADR-280 — vocabulary:** `old` / `new` for the two ranges and the two entry
+  sides; status `only-old` / `only-new`. Faithful to git's "old vs new version of
+  a series" model.
+- **ADR-281 — assignment + funcname fidelity:** port git's exact engine
+  (`compute_assignment`, the cost matrix, the `## ` patch text) **and** the
+  default funcname hunk-section heading (`def_ff`), so the matching, the `=`/`!`
+  status, and the diff-of-diffs are byte-faithful for the default git config.
+  Userdiff-driver funcname patterns (`.gitattributes diff=<lang>`) are deferred
+  (no `.gitattributes` support exists anywhere yet — backlog 24.9 territory).
 
 ## Faithfulness research (verified against real `git` 2.54.0)
 
@@ -74,8 +93,16 @@ Author: <name> <email>
   `diff --git`, `index <a>..<b>`, `--- `, `+++ `, `new/deleted file mode` lines
   are **stripped** (no blob oids, no mode lines, no `±` path headers).
 - Hunk headers drop the `-a,b +c,d` line numbers: `@@ -a,b +c,d @@ <section>` →
-  `@@`, plus ` <path>:` and the `<section>` heading **only when a section
-  heading is present**. Content lines carry `+`/`-`/` ` (space) prefixes.
+  `@@`, plus ` <path>:` and the `<section>` heading **only when a funcname
+  section heading is present**. Content lines carry `+`/`-`/` ` (space) prefixes.
+- **Funcname section heading** (git's `XDL_EMIT_FUNCNAMES`, default `def_ff`):
+  for each hunk, scan the **old** file backward from `firstOldLine - 1` (bounded
+  below by the previous hunk's scan start) for the nearest line whose first byte
+  is `isalpha | '_' | '$'` (`def_ff`); its content trailing-ws-stripped, capped at
+  80 bytes, is the heading. When a hunk's scan finds none, git **retains the prior
+  hunk's** heading (the `func_line` buffer persists). `<path>` is the new name
+  (old name for deletions). Only the **default** heuristic is ported — per-language
+  userdiff funcname regexes need `.gitattributes` (deferred).
 - `util->diffsize` counts **only the diff-slice lines** (file headers, `@@`
   headers, content) — *not* the metadata/message (those `continue` past the
   counter).
@@ -145,24 +172,21 @@ Author: <name> <email>
 
 ### Documented faithful divergences
 
-- **Hunk section headings** (funcname context after `@@`): our diff machinery
-  (`patch-serializer`/`line-diff`) does **not** detect userdiff funcname context,
-  so our `## ` `@@` lines omit the ` <path>: <section>` suffix git adds for
-  source files. This feeds `diffsize` (the cost) and the `=`/`!` strcmp. In
-  practice it is **cost-neutral**: the `@@` line is one line either way, and the
-  section heading is identical across the two versions of a patch (so it stays a
-  single common context line), changing `diffsize` only on the rare hunk whose
-  funcname *itself* changed. The correspondence is therefore byte-faithful for
-  content without funcname-detectable context (prose, data, sequences — all
-  interop fixtures); funcname-bearing source hunks are a deferred divergence
-  (backlog **23.6a**, shared with a future `--function-context`).
+- **Userdiff-driver funcname patterns**: only the **default** `def_ff` heuristic
+  is ported. A repo that configures `.gitattributes diff=<lang>` would get a
+  language-specific funcname regex — unsupported here (no `.gitattributes` support
+  exists; backlog 24.9). For the default config (no driver) the headings are
+  byte-faithful. Affects only the `@@`-heading bytes inside `diff`/`patch`.
+- **Rename-with-edit**: `diffTrees`' rename detection is exact-content only, so a
+  renamed-and-edited file shows as delete+add (existing diff-machinery divergence)
+  rather than git's `<old> => <new>` rename + partial diff.
 - **Non-linear range order**: like `log`/`shortlog`, `walkCommitsByDate` equals
   `git log --date-order` for every causally-dated history (all real series).
   Strictly-forged reverse-causal committer dates are out of scope.
-- **The diff-of-diffs body** is not emitted (it is rendering). Reconstructed only
-  in interop via `-s`; the default `git range-diff` body is a caller projection
-  (deferred render-side, shared with the 23.2a-style "caller renders patches"
-  stance). The `--creation-factor` knob is in scope (it changes the *matching*).
+- **The rendered diff-of-diffs body string** is the caller's job: the library
+  ships the structured `LineDiff` (`diffOfDiffs`); the 2-level `+`/`-`/` ` prefix,
+  4-space indent, and dual-color are applied by the consumer (ADR-249). The
+  `--creation-factor` knob is in scope (it changes the *matching*).
 
 ## Architecture
 
@@ -172,11 +196,12 @@ Hexagonal, mirroring `blame`/`describe` but with a richer pure core:
 src/
 ├── domain/
 │   └── range-diff/                       # NEW pure subsystem
-│       ├── patch-text.ts                 # render the `## ` full+diff text & diffsize from a pure commit-patch input
+│       ├── funcname.ts                   # def_ff + backward old-file scan → hunk section heading
+│       ├── patch-text.ts                 # render the `## ` full+diff text & diffsize (uses funcname)
 │       ├── diff-size.ts                  # diffsize(a, b): ctxlen-3 emitted-line count between two texts
 │       ├── linear-assignment.ts          # compute_assignment port (verbatim JV-LAP)
 │       ├── correspond.ts                 # exact-match + cost matrix + assignment → matching arrays
-│       ├── interleave.ts                 # output ordering → ordered RangeDiffEntry[]
+│       ├── interleave.ts                 # output ordering → ordered entries (+ diffOfDiffs on changed)
 │       ├── range-diff.ts                 # pure orchestrator over two RangePatch series
 │       └── index.ts                      # internal barrel
 └── application/commands/
@@ -236,7 +261,10 @@ correspondences(old: RenderedPatch[], new: RenderedPatch[], creationFactor):
 ```
 
 `status` is `=` iff `old.patch === new.patch`. `subject` is taken from the
-**old** entry's precomputed `subject` when present, else the new's.
+**old** entry's precomputed `subject` when present, else the new's. For a
+`changed` (`!`) pair, `diffOfDiffs = diffLines(encode(old.patch),
+encode(new.patch))` (a render-free structured line diff over the two `## ` texts;
+the `RenderedPatch.patch` strings are already in hand from the render step).
 
 ### Application — `rangeDiff(ctx, opts)`
 
@@ -283,31 +311,21 @@ interface RangeDiffEntry {
   readonly old?: RangeDiffCommit;      // absent iff status === 'only-new'
   readonly new?: RangeDiffCommit;      // absent iff status === 'only-old'
   readonly subject: string;            // folded subject of (old ?? new)
+  readonly diffOfDiffs?: LineDiff;     // present iff status === 'changed'; diffLines(old.patch, new.patch)
 }
 ```
+
+`LineDiff` is the existing diff-domain structured line diff (`hunks` of
+`common`/`ours-only`/`theirs-only` ranges + `oursLines`/`theirsLines` byte
+arrays). Here `ours` = the old commit's full `## ` patch text, `theirs` = the
+new's. The caller renders git's body by walking the hunks and prefixing each line
+with the outer `+`/`-`/` ` (and a 4-space indent). It is attached **only** to
+`changed` entries — git emits no body for `=`/`<`/`>` (verified).
 
 **Caller projections** (not library concerns, ADR-249):
 - the `-s` line: `printf("%*d:  %s %c %*d:  %s %s", w, position, abbrev(id), marker, …)`.
 - `--left-only` / `--right-only`: `entries.filter(e => e.old)` / `e.new`.
 - the diff-of-diffs body: re-render each pair's two `## ` patch texts and diff them.
-
-### Open decisions (→ ADR conversation)
-
-- **D1 — output shape.** Correspondence list only (= `git range-diff -s`, the
-  assignment), vs. additionally exposing the **structured diff-of-diffs** per
-  `changed` pair. *Recommend:* correspondence-only — the assignment is the novel
-  faithful datum; the diff-of-diffs is a render over the `## ` text (cosmetics in
-  data), and ADR-249/23.2a put patch rendering on the caller. The engine renders
-  the `## ` text internally (for hashing + cost) but does not expose it.
-- **D2 — range / side vocabulary.** `old`/`new` (faithful to git's mental model;
-  `new` is a legal-but-awkward object key), vs. `before`/`after`, vs.
-  `left`/`right` (the output columns). *Recommend:* `old`/`new` for fidelity, or
-  `before`/`after` if the reserved word is undesirable.
-- **D3 — assignment fidelity.** Port git's exact `compute_assignment` +
-  cost/`## `-text engine for a byte-faithful matching (`-s` reconstructed), vs. a
-  simpler heuristic matcher. *Recommend:* port verbatim — the assignment is
-  observable, so the prime directive binds it. Funcname section headings are the
-  one deferred divergence (23.6a).
 
 ## Surface gates (per the Tier-1 checklist)
 
@@ -322,7 +340,7 @@ interface RangeDiffEntry {
   (node/memory/browser) parity.
 - Docs: `docs/use/commands/range-diff.md`, index `README.md` (34 → 35), root
   `README.md` Tier-1 count (34 → 35), `reports/api.json` regen.
-- `docs/BACKLOG.md`: flip `23.6` `[ ]` → `[x]`; add `23.6a` (funcname sections).
+- `docs/BACKLOG.md`: flip `23.6` `[ ]` → `[x]`.
 
 ## Testing strategy
 
@@ -332,11 +350,15 @@ interface RangeDiffEntry {
   (lens 3 — total function over a non-negative integer cost matrix: returns a
   permutation; cost ≤ identity; `column2row`/`row2column` are mutual inverses on
   assigned indices). Small-`n` (`< 2`) early-return guarded in isolation.
+- **`funcname`** — example tests (`def_ff` first-char alpha/`_`/`$`; trailing-ws
+  strip; 80-byte cap; backward old-file scan; nearest-match; none-found retains
+  prior heading; `<path>:` prefix); property (lens 3 — total function over byte
+  lines: returns a heading or none, never throws).
 - **`patch-text`** — example tests for each `read_patches` rule (metadata, 4-space
-  message, `(new)`/`(deleted)`/rename/mode-change headers, `@@` line-number strip,
-  `+`/`-`/` ` body, binary line, `diff_offset` split, `diffsize` count); property
-  (lens 1 — `diff` is a suffix of `patch`; `diffsize === diff.split('\n')` count
-  minus the trailing empty).
+  message, `(new)`/`(deleted)`/rename/mode-change headers, `@@` line-number strip
+  + funcname heading, `+`/`-`/` ` body, binary line, `diff_offset` split,
+  `diffsize` count); property (lens 1 — `diff` is a suffix of `patch`;
+  `diffsize === diff.split('\n')` count minus the trailing empty).
 - **`diff-size`** — example tests (identical → 0; disjoint → sum; ctxlen-3
   context counted); property (symmetric, `diffsize(x,x) === 0`).
 - **`correspond` / `interleave`** — example tests reproducing every researched
@@ -344,10 +366,13 @@ interface RangeDiffEntry {
   add/drop, empty range); property (lens 2 — every old/new commit appears exactly
   once across the entries; ordering is new-range-monotone on the present side).
 - **Interop** — `range-diff-interop.test.ts` builds repos with real git
-  (deterministic dates, signing off) and reconstructs `git range-diff -s` /
-  `--creation-factor=N` / `--left-only` / `--right-only` byte-for-byte from the
-  entries. Scenarios: linear reword (`!`), exact cherry (`=`), small-patch split
-  (`< >`), reorder, add+drop, one-empty-range, multi-file, rename, deletion.
+  (deterministic dates, signing off) and reconstructs **both** `git range-diff -s`
+  (the `-s` lines, from positions/oids/status/subject) **and** the default
+  `git range-diff` body (the 2-level-prefixed diff-of-diffs, from `diffOfDiffs`)
+  byte-for-byte. Also `--creation-factor=N` / `--left-only` / `--right-only`.
+  Scenarios: linear reword (`!`), exact cherry (`=`), small-patch split (`< >`),
+  reorder, add+drop, one-empty-range, multi-file, rename, deletion, and a
+  funcname-bearing source file (`@@ path: func` heading).
 - **Mutation-resistant**: specific error assertions (`creationFactor` validation,
   cost-matrix guard); isolated guard tests for each status branch (`< > = !`) and
   each interleave branch (deletion / creation / pair / skip-shown); the
@@ -357,11 +382,13 @@ interface RangeDiffEntry {
 
 ## Non-goals (deferred, divergences noted)
 
-- **Funcname hunk-section headings** (23.6a) — needs userdiff funcname detection.
-- **The diff-of-diffs body** — caller projection (render the two `## ` texts).
+- **Userdiff-driver funcname patterns** — needs `.gitattributes` (24.9). The
+  default `def_ff` heuristic IS implemented.
+- **The rendered diff-of-diffs body string** — the structured `LineDiff` IS
+  returned; the byte string (prefixes + indent + dual-color) is a caller render.
 - **Symmetric `A...B` convenience** — caller computes `merge-base` (we have it);
   YAGNI for v1, additive later.
-- **`--notes` / `--diff-merges` / dual-color / `--no-patch` is the default here**
-  — rendering/notes flags, out of scope.
+- **`--notes` / `--diff-merges` / dual-color** — rendering/notes flags, out of
+  scope.
 - **`.mailmap`** — no mailmap support anywhere yet (cross-cutting).
 ```
