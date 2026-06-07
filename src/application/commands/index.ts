@@ -274,3 +274,8 @@ export {
   tagDelete,
   tagList,
 } from './tag.js';
+export {
+  type WhatchangedEntry,
+  type WhatchangedOptions,
+  whatchanged,
+} from './whatchanged.js';

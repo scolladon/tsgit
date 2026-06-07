@@ -1,6 +1,6 @@
 # Commands — Tier-1 reference
 
-Every method bound on a `Repository` handle. 35 entries, alphabetical.
+Every method bound on a `Repository` handle. 36 entries, alphabetical.
 
 | Command | Summary |
 |---|---|
@@ -39,6 +39,7 @@ Every method bound on a `Repository` handle. 35 entries, alphabetical.
 | [`status`](status.md) | Compare working tree, index, and HEAD. |
 | [`submodules`](submodules.md) | Walk submodules pinned at a tree-ish. |
 | [`tag`](tag.md) | List, create, or delete tags. |
+| [`whatchanged`](whatchanged.md) | Walk reachable commits (merges excluded) pairing each with its raw structured changes; returns structured data (no rendered line). |
 
 ## Page shape
 
