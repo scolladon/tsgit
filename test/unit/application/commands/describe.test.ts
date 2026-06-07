@@ -1123,7 +1123,11 @@ describe('describe --contains', () => {
           );
 
           // Assert
-          expect(sut.data).toMatchObject({ code: 'INVALID_OPTION', option });
+          expect(sut.data).toMatchObject({
+            code: 'INVALID_OPTION',
+            option,
+            reason: `option ${option} cannot be combined with contains`,
+          });
         });
       });
     }

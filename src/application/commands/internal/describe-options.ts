@@ -19,8 +19,14 @@ export interface ResolvedDescribePlan {
   readonly exclude: ReadonlyArray<string>;
   readonly dirty: boolean;
   readonly broken: boolean;
-  /** Delegate to `name-rev` (the nearest *containing* ref) instead of the ancestor walk. */
-  readonly contains: boolean;
+}
+
+/** The only selectors `--contains` (a `name-rev` delegation) reads — no ancestor-walk fields. */
+export interface ContainsPlan {
+  readonly all: boolean;
+  readonly include: ReadonlyArray<string>;
+  readonly exclude: ReadonlyArray<string>;
+  readonly always: boolean;
 }
 
 // In `contains` mode `describe` is `name-rev`; the ancestor-walk selectors have
@@ -50,23 +56,17 @@ const resolveMaxCandidates = (opts: DescribeOptions): number => {
   return opts.candidates ?? DEFAULT_CANDIDATES;
 };
 
-const parseContainsPlan = (opts: DescribeOptions): ResolvedDescribePlan => {
+export const parseContainsOptions = (opts: DescribeOptions): ContainsPlan => {
   for (const key of CONTAINS_INCOMPATIBLE) {
     if (opts[key] !== undefined) {
       throw invalidOption(key, `option ${key} cannot be combined with contains`);
     }
   }
   return {
-    tags: opts.tags === true,
     all: opts.all === true,
-    maxCandidates: DEFAULT_CANDIDATES,
-    always: opts.always === true,
-    firstParent: false,
     include: toPatterns(opts.match),
     exclude: toPatterns(opts.exclude),
-    dirty: false,
-    broken: false,
-    contains: true,
+    always: opts.always === true,
   };
 };
 
@@ -74,7 +74,6 @@ export const parseDescribeOptions = (
   opts: DescribeOptions,
   hasExplicitInput: boolean,
 ): ResolvedDescribePlan => {
-  if (opts.contains === true) return parseContainsPlan(opts);
   const dirty = opts.dirty === true;
   const broken = opts.broken === true;
   if ((dirty || broken) && hasExplicitInput) {
@@ -90,6 +89,5 @@ export const parseDescribeOptions = (
     exclude: toPatterns(opts.exclude),
     dirty,
     broken,
-    contains: false,
   };
 };

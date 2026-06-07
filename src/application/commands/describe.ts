@@ -28,7 +28,12 @@ import { commitDateWalk, selectParents } from '../primitives/internal/commit-dat
 import { type PeeledRef, peelRefToCommit } from '../primitives/internal/peel-ref-to-commit.js';
 import { getRefStore } from '../primitives/ref-store.js';
 import { resolveCommitIsh } from './internal/commit-ish.js';
-import { parseDescribeOptions, type ResolvedDescribePlan } from './internal/describe-options.js';
+import {
+  type ContainsPlan,
+  parseContainsOptions,
+  parseDescribeOptions,
+  type ResolvedDescribePlan,
+} from './internal/describe-options.js';
 import { assertRepository } from './internal/repo-state.js';
 import { type NameRevResult, nameRev } from './name-rev.js';
 import { status } from './status.js';
@@ -92,8 +97,8 @@ export async function describe(
   opts: DescribeOptions = {},
 ): Promise<DescribeResult | NameRevResult> {
   await assertRepository(ctx);
+  if (opts.contains === true) return describeContains(ctx, rev, parseContainsOptions(opts));
   const plan = parseDescribeOptions(opts, rev !== undefined);
-  if (plan.contains) return describeContains(ctx, rev, plan);
   const target = await resolveCommitIsh(ctx, rev ?? DEFAULT_REV);
   const dirty = await computeDirty(ctx, plan);
   const nameMap = await buildNameMap(ctx, plan);
@@ -123,7 +128,7 @@ export async function describe(
 const describeContains = async (
   ctx: Context,
   rev: string | undefined,
-  plan: ResolvedDescribePlan,
+  plan: ContainsPlan,
 ): Promise<NameRevResult> => {
   const useTags = !plan.all;
   const qualify = (pattern: string): string => `${TAGS_PREFIX}${pattern}`;
