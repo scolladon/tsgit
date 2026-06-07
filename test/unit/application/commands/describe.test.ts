@@ -4,7 +4,10 @@ import { add } from '../../../../src/application/commands/add.js';
 import { branchCreate } from '../../../../src/application/commands/branch.js';
 import { checkout } from '../../../../src/application/commands/checkout.js';
 import { commit } from '../../../../src/application/commands/commit.js';
-import { describe as describeCmd } from '../../../../src/application/commands/describe.js';
+import {
+  type DescribeOptions,
+  describe as describeCmd,
+} from '../../../../src/application/commands/describe.js';
 import { init } from '../../../../src/application/commands/init.js';
 import { mergeRun } from '../../../../src/application/commands/merge.js';
 import { tagCreate } from '../../../../src/application/commands/tag.js';
@@ -1011,5 +1014,122 @@ describe('describe', () => {
         expect(sut.name).toBe('outer');
       });
     });
+  });
+});
+
+describe('describe --contains', () => {
+  describe('Given an annotated tag a commit ahead of the target', () => {
+    describe('When describe runs with contains', () => {
+      it('Then it delegates to name-rev and names the containing tag', async () => {
+        // Arrange
+        const ctx = await seed();
+        const c0 = await commitFile(ctx, 'c0');
+        const c1 = await commitFile(ctx, 'c1');
+        await annotatedTag(ctx, 'v1.0', c1, clock);
+
+        // Act
+        const sut = await describeCmd(ctx, c0, { contains: true });
+
+        // Assert
+        expect(sut).toEqual({
+          oid: c0,
+          ref: RefName.from('refs/tags/v1.0'),
+          tagDeref: true,
+          steps: [{ kind: 'ancestor', count: 1 }],
+        });
+      });
+    });
+  });
+
+  describe('Given a commit reachable only from a branch', () => {
+    describe('When describe runs with contains and all', () => {
+      it('Then it considers every ref and names the branch', async () => {
+        // Arrange
+        const ctx = await seed();
+        const head = await commitFile(ctx, 'c1');
+
+        // Act
+        const sut = await describeCmd(ctx, head, { contains: true, all: true });
+
+        // Assert
+        expect(sut.ref).toBe(RefName.from('refs/heads/main'));
+      });
+    });
+
+    describe('When describe runs with contains in the default tags mode', () => {
+      it('Then it refuses (no tag contains the commit)', async () => {
+        // Arrange
+        const ctx = await seed();
+        const head = await commitFile(ctx, 'c1');
+
+        // Act
+        const sut = await catchError(() => describeCmd(ctx, head, { contains: true }));
+
+        // Assert
+        expect(sut.data).toMatchObject({ code: 'CANNOT_DESCRIBE', oid: head });
+      });
+
+      it('Then with always it returns an undefined-ref result instead', async () => {
+        // Arrange
+        const ctx = await seed();
+        const head = await commitFile(ctx, 'c1');
+
+        // Act
+        const sut = await describeCmd(ctx, head, { contains: true, always: true });
+
+        // Assert
+        expect(sut).toEqual({ oid: head, ref: undefined, tagDeref: false, steps: [] });
+      });
+    });
+  });
+
+  describe('Given two tags and a contains match pattern', () => {
+    describe('When describe runs with contains and match', () => {
+      it('Then the match is scoped to refs/tags and filters the names', async () => {
+        // Arrange
+        const ctx = await seed();
+        const c0 = await commitFile(ctx, 'c0');
+        const c1 = await commitFile(ctx, 'c1');
+        await annotatedTag(ctx, 'release-1', c1, clock);
+        await annotatedTag(ctx, 'beta-1', c1, clock);
+
+        // Act
+        const sut = await describeCmd(ctx, c0, { contains: true, match: 'release-*' });
+
+        // Assert
+        expect(sut.ref).toBe(RefName.from('refs/tags/release-1'));
+      });
+    });
+  });
+
+  describe('Given contains combined with an ancestor-walk option', () => {
+    const cases: ReadonlyArray<[string, DescribeOptions]> = [
+      ['candidates', { candidates: 1 }],
+      ['exactMatch', { exactMatch: true }],
+      ['firstParent', { firstParent: true }],
+      ['dirty', { dirty: true }],
+      ['broken', { broken: true }],
+    ];
+    for (const [option, extra] of cases) {
+      describe(`When describe runs with contains and ${option}`, () => {
+        it('Then it refuses with INVALID_OPTION', async () => {
+          // Arrange
+          const ctx = await seed();
+          await commitFile(ctx, 'c1');
+
+          // Act
+          const sut = await catchError(() =>
+            describeCmd(ctx, undefined, { contains: true, ...extra }),
+          );
+
+          // Assert
+          expect(sut.data).toMatchObject({
+            code: 'INVALID_OPTION',
+            option,
+            reason: `option ${option} cannot be combined with contains`,
+          });
+        });
+      });
+    }
   });
 });

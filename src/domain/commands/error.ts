@@ -174,7 +174,8 @@ export type CommandError =
   | { readonly code: 'NO_NAMES'; readonly oid: ObjectId }
   | { readonly code: 'NO_ANNOTATED_NAMES'; readonly oid: ObjectId }
   | { readonly code: 'NO_REACHABLE_NAMES'; readonly oid: ObjectId }
-  | { readonly code: 'NO_EXACT_MATCH'; readonly oid: ObjectId };
+  | { readonly code: 'NO_EXACT_MATCH'; readonly oid: ObjectId }
+  | { readonly code: 'CANNOT_DESCRIBE'; readonly oid: ObjectId };
 
 const sanitizeForDisplay = (s: string): string => {
   let out = '';
@@ -512,3 +513,8 @@ export const noReachableNames = (oid: ObjectId): TsgitError =>
 
 export const noExactMatch = (oid: ObjectId): TsgitError =>
   new TsgitError({ code: 'NO_EXACT_MATCH', oid });
+
+// `describe --contains` with `--no-undefined`: the target is reachable from no
+// qualifying ref and `always` was not set (git: `cannot describe '<oid>'`).
+export const cannotDescribe = (oid: ObjectId): TsgitError =>
+  new TsgitError({ code: 'CANNOT_DESCRIBE', oid });

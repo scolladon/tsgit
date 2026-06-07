@@ -8,6 +8,7 @@ import {
   branchNotFound,
   type CommandError,
   cannotDeleteCheckedOutBranch,
+  cannotDescribe,
   checkoutOverwriteDirty,
   cherryPickMergeNoMainline,
   configKeyInvalid,
@@ -208,6 +209,19 @@ describe('domain commands error — factory data', () => {
         // Assert
         expect(sut.data).toEqual({ code: 'NO_EXACT_MATCH', oid: OID1 });
         expect(sut.message).toBe(`NO_EXACT_MATCH: no tag exactly matches ${OID1}`);
+      });
+    });
+  });
+
+  describe('Given the cannotDescribe error helper', () => {
+    describe('When called with the target oid', () => {
+      it('Then data and message carry the code and oid', () => {
+        // Arrange + Act
+        const sut = cannotDescribe(OID1);
+
+        // Assert
+        expect(sut.data).toEqual({ code: 'CANNOT_DESCRIBE', oid: OID1 });
+        expect(sut.message).toBe(`CANNOT_DESCRIBE: cannot describe ${OID1}`);
       });
     });
   });

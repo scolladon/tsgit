@@ -157,7 +157,15 @@ export interface Repository {
   readonly commit: BindCtx<typeof commands.commit>;
   /** Nested `repo.config.{get,set,unset,unsetAll,getAll,getRegexp,list,renameSection,removeSection}` (ADR-181). */
   readonly config: commands.ConfigNamespace;
-  readonly describe: BindCtx<typeof commands.describe>;
+  // `describe` is overloaded on `contains` (which returns a `NameRevResult`);
+  // `BindCtx` only captures the last overload, so the binding is hand-written.
+  readonly describe: {
+    (
+      rev: string | undefined,
+      opts: commands.DescribeOptions & { contains: true },
+    ): Promise<commands.NameRevResult>;
+    (rev?: string, opts?: commands.DescribeOptions): Promise<commands.DescribeResult>;
+  };
   // `diff` is overloaded on `withStat`; `BindCtx` only captures the last overload
   // (a TypeScript limitation), so the binding is written by hand to preserve
   // both narrowing paths.
@@ -172,6 +180,7 @@ export interface Repository {
   /** Nested `repo.merge.{run,continue,abort}` namespace. */
   readonly merge: commands.MergeNamespace;
   readonly mv: BindCtx<typeof commands.mv>;
+  readonly nameRev: BindCtx<typeof commands.nameRev>;
   readonly pull: BindCtx<typeof commands.pull>;
   readonly push: BindCtx<typeof commands.push>;
   readonly readFileAt: BindCtx<typeof commands.readFileAt>;
@@ -457,6 +466,10 @@ export const openRepository = async (
       guard();
       return commands.mv(ctx, sources, destination, mvOpts);
     }) as Repository['mv'],
+    nameRev: ((rev, nameRevOpts) => {
+      guard();
+      return commands.nameRev(ctx, rev, nameRevOpts);
+    }) as Repository['nameRev'],
     pull: ((pullOpts) => {
       guard();
       return commands.pull(ctx, pullOpts);

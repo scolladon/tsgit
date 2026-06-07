@@ -6,6 +6,7 @@
  * assembling `<name>-<distance>-g<abbrev>` is the caller's responsibility.
  */
 import {
+  cannotDescribe,
   noAnnotatedNames,
   noExactMatch,
   noNames,
@@ -24,12 +25,17 @@ import { RefName as RefNameFactory } from '../../domain/objects/object-id.js';
 import type { Context } from '../../ports/context.js';
 import { enumerateRefs } from '../primitives/enumerate-refs.js';
 import { commitDateWalk, selectParents } from '../primitives/internal/commit-date-walk.js';
-import { readObject } from '../primitives/read-object.js';
+import { type PeeledRef, peelRefToCommit } from '../primitives/internal/peel-ref-to-commit.js';
 import { getRefStore } from '../primitives/ref-store.js';
-import { exceedsMaxPeelDepth } from '../primitives/validators.js';
 import { resolveCommitIsh } from './internal/commit-ish.js';
-import { parseDescribeOptions, type ResolvedDescribePlan } from './internal/describe-options.js';
+import {
+  type ContainsPlan,
+  parseContainsOptions,
+  parseDescribeOptions,
+  type ResolvedDescribePlan,
+} from './internal/describe-options.js';
 import { assertRepository } from './internal/repo-state.js';
+import { type NameRevResult, nameRev } from './name-rev.js';
 import { status } from './status.js';
 
 export interface DescribeOptions {
@@ -53,6 +59,8 @@ export interface DescribeOptions {
   readonly dirty?: boolean;
   /** Tolerate a working tree whose state can't be read, reporting it dirty. */
   readonly broken?: boolean;
+  /** Name the nearest ref that *contains* the commit (delegates to `name-rev`). */
+  readonly contains?: boolean;
 }
 
 export interface DescribeResult {
@@ -73,12 +81,23 @@ export interface DescribeResult {
 const DEFAULT_REV = 'HEAD';
 const TAGS_PREFIX = 'refs/tags/';
 
-export const describe = async (
+export function describe(
+  ctx: Context,
+  rev: string | undefined,
+  opts: DescribeOptions & { contains: true },
+): Promise<NameRevResult>;
+export function describe(
+  ctx: Context,
+  rev?: string,
+  opts?: DescribeOptions,
+): Promise<DescribeResult>;
+export async function describe(
   ctx: Context,
   rev?: string,
   opts: DescribeOptions = {},
-): Promise<DescribeResult> => {
+): Promise<DescribeResult | NameRevResult> {
   await assertRepository(ctx);
+  if (opts.contains === true) return describeContains(ctx, rev, parseContainsOptions(opts));
   const plan = parseDescribeOptions(opts, rev !== undefined);
   const target = await resolveCommitIsh(ctx, rev ?? DEFAULT_REV);
   const dirty = await computeDirty(ctx, plan);
@@ -101,6 +120,28 @@ export const describe = async (
   if (plan.always) return alwaysResult(target, dirty);
   if (nameMap.size === 0) throw noNames(target);
   throw sawUnannotated ? noAnnotatedNames(target) : noReachableNames(target);
+}
+
+// `--contains`: git runs `name-rev --tags --no-undefined` (all refs under `all`,
+// `match`/`exclude` mapped to `refs/tags/<pat>`); `always` turns the refusal back
+// into an `undefined`-ref result (the caller renders the oid).
+const describeContains = async (
+  ctx: Context,
+  rev: string | undefined,
+  plan: ContainsPlan,
+): Promise<NameRevResult> => {
+  const useTags = !plan.all;
+  // Under `all`, git passes no `--refs`/`--exclude` (every ref is a source); under
+  // default mode each pattern is scoped to `refs/tags/`.
+  const scope = (patterns: ReadonlyArray<string>): ReadonlyArray<string> =>
+    useTags ? patterns.map((pattern) => `${TAGS_PREFIX}${pattern}`) : [];
+  const result = await nameRev(ctx, rev, {
+    tags: useTags,
+    refs: scope(plan.include),
+    exclude: scope(plan.exclude),
+  });
+  if (result.ref === undefined && !plan.always) throw cannotDescribe(result.oid);
+  return result;
 };
 
 const minQualifyingPriority = (plan: ResolvedDescribePlan): number => {
@@ -164,44 +205,23 @@ const buildNameMap = async (
   for (const ref of refs) {
     const resolved = await store.resolveDirect(ref);
     if (resolved.kind !== 'direct') continue;
-    const peeled = await peelToCommit(ctx, resolved.id);
+    const peeled = await peelRefToCommit(ctx, resolved.id);
     if (peeled === undefined) continue;
     const shortName = describeName(ref, plan.all);
     if (!filter.matches(shortName)) continue;
     const incoming = nameOf(ref, shortName, peeled);
-    const existing = map.get(peeled.commitOid);
+    const existing = map.get(peeled.commit.id);
     if (existing === undefined || shouldReplaceName(existing, incoming)) {
-      map.set(peeled.commitOid, incoming);
+      map.set(peeled.commit.id, incoming);
     }
   }
   return map;
 };
 
-interface PeeledCommit {
-  readonly commitOid: ObjectId;
-  readonly viaTag: boolean;
-  readonly taggerDate: number;
-}
-
-const nameOf = (ref: RefName, shortName: string, peeled: PeeledCommit): DescribeName => {
+const nameOf = (ref: RefName, shortName: string, peeled: PeeledRef): DescribeName => {
   const underTags = ref.startsWith(TAGS_PREFIX);
   const priority = underTags ? (peeled.viaTag ? 2 : 1) : 0;
   return { name: shortName, priority, taggerDate: peeled.taggerDate };
-};
-
-/** Peel a ref target to its commit, capturing the outermost tagger date. */
-const peelToCommit = async (ctx: Context, oid: ObjectId): Promise<PeeledCommit | undefined> => {
-  let current = await readObject(ctx, oid);
-  let viaTag = false;
-  let taggerDate = 0;
-  for (let depth = 0; current.type === 'tag'; depth += 1) {
-    if (exceedsMaxPeelDepth(depth)) return undefined;
-    if (!viaTag) taggerDate = current.data.tagger?.timestamp ?? 0;
-    viaTag = true;
-    current = await readObject(ctx, current.data.object);
-  }
-  if (current.type !== 'commit') return undefined;
-  return { commitOid: current.id, viaTag, taggerDate };
 };
 
 interface SelectionOutcome {

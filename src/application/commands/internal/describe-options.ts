@@ -21,6 +21,25 @@ export interface ResolvedDescribePlan {
   readonly broken: boolean;
 }
 
+/** The only selectors `--contains` (a `name-rev` delegation) reads — no ancestor-walk fields. */
+export interface ContainsPlan {
+  readonly all: boolean;
+  readonly include: ReadonlyArray<string>;
+  readonly exclude: ReadonlyArray<string>;
+  readonly always: boolean;
+}
+
+// In `contains` mode `describe` is `name-rev`; the ancestor-walk selectors have
+// no meaning there, so supplying one is refused (an illegal combination at the
+// library boundary — a deliberate divergence from git's silent ignore).
+const CONTAINS_INCOMPATIBLE = [
+  'candidates',
+  'exactMatch',
+  'firstParent',
+  'dirty',
+  'broken',
+] as const satisfies ReadonlyArray<keyof DescribeOptions>;
+
 const toPatterns = (value: string | ReadonlyArray<string> | undefined): ReadonlyArray<string> => {
   if (value === undefined) return [];
   return typeof value === 'string' ? [value] : value;
@@ -35,6 +54,20 @@ const resolveMaxCandidates = (opts: DescribeOptions): number => {
   }
   if (opts.exactMatch === true) return 0;
   return opts.candidates ?? DEFAULT_CANDIDATES;
+};
+
+export const parseContainsOptions = (opts: DescribeOptions): ContainsPlan => {
+  for (const key of CONTAINS_INCOMPATIBLE) {
+    if (opts[key] !== undefined) {
+      throw invalidOption(key, `option ${key} cannot be combined with contains`);
+    }
+  }
+  return {
+    all: opts.all === true,
+    include: toPatterns(opts.match),
+    exclude: toPatterns(opts.exclude),
+    always: opts.always === true,
+  };
 };
 
 export const parseDescribeOptions = (

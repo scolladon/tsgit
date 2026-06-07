@@ -134,6 +134,12 @@ export {
   type MvSkipReason,
   mv,
 } from './mv.js';
+export {
+  type NameRevOptions,
+  type NameRevResult,
+  type NameRevStep,
+  nameRev,
+} from './name-rev.js';
 export { type PullOptions, type PullResult, pull } from './pull.js';
 export { type PushOptions, type PushResult, push } from './push.js';
 export {
