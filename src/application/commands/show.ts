@@ -22,9 +22,8 @@ import type {
   Tree,
 } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
-import { diffTrees } from '../primitives/diff-trees.js';
 import { readObject } from '../primitives/read-object.js';
-import { treeOf } from './internal/history-rewrite.js';
+import { diffCommitAgainstParent } from './internal/commit-diff.js';
 import { assertRepository } from './internal/repo-state.js';
 import { revParse } from './rev-parse.js';
 
@@ -140,27 +139,12 @@ async function buildCommit(
   if (parents.length >= 2) {
     const perParent: TreeDiff[] = [];
     for (const parent of parents)
-      perParent.push(await diffParentToTree(ctx, parent, tree, withStat));
+      perParent.push(await diffCommitAgainstParent(ctx, parent, tree, withStat));
     return { kind: 'commit', id: obj.id, commit: obj.data, perParent };
   }
-  const patch = await diffParentToTree(ctx, parents[0], tree, withStat);
+  const patch = await diffCommitAgainstParent(ctx, parents[0], tree, withStat);
   return { kind: 'commit', id: obj.id, commit: obj.data, patch };
 }
-
-/** Diff a commit's tree against a parent's tree (root: against the empty tree). */
-const diffParentToTree = async (
-  ctx: Context,
-  parent: ObjectId | undefined,
-  tree: ObjectId,
-  withStat: boolean,
-): Promise<TreeDiff> => {
-  const oldTree = parent !== undefined ? await treeOf(ctx, parent) : undefined;
-  return diffTrees(ctx, oldTree, tree, {
-    recursive: true,
-    detectRenames: true,
-    ...(withStat ? { withStat: true } : {}),
-  });
-};
 
 async function buildTag(ctx: Context, obj: Tag, withStat: boolean): Promise<ShowTagResult> {
   const target = await buildResult(ctx, await readObject(ctx, obj.data.object), withStat);

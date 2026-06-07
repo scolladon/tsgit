@@ -11,10 +11,9 @@
  */
 import type { TreeDiff } from '../../domain/diff/index.js';
 import type { Context } from '../../ports/context.js';
-import { diffTrees } from '../primitives/diff-trees.js';
 import { walkCommits } from '../primitives/walk-commits.js';
 import { walkCommitsByDate } from '../primitives/walk-commits-by-date.js';
-import { treeOf } from './internal/history-rewrite.js';
+import { diffCommitAgainstParent } from './internal/commit-diff.js';
 import { assertRepository } from './internal/repo-state.js';
 import { resolveCommit } from './internal/resolve-rev.js';
 import type { LogEntry, LogOrder } from './log.js';
@@ -57,12 +56,7 @@ export const whatchanged = async (
     if (before !== undefined && value.data.committer.timestamp >= before.getTime() / 1000) {
       continue;
     }
-    const parent = value.data.parents[0];
-    const oldTree = parent !== undefined ? await treeOf(ctx, parent) : undefined;
-    const changes = await diffTrees(ctx, oldTree, value.data.tree, {
-      recursive: true,
-      detectRenames: true,
-    });
+    const changes = await diffCommitAgainstParent(ctx, value.data.parents[0], value.data.tree);
     out.push({
       id: value.id,
       tree: value.data.tree,
