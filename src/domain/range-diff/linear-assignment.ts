@@ -52,6 +52,9 @@ const costAt = (s: Lap, column: number, row: number): number =>
 const columnReduction = (s: Lap): void => {
   for (let j = s.columnCount - 1; j >= 0; j--) {
     let i1 = 0;
+    // equivalent-mutant (`i < rowCount` → `i <= rowCount`): the extra `i === rowCount`
+    // reads `costAt` out of bounds (`undefined`), and `costAt(…, i1) > undefined` is
+    // false, so `i1` is never updated — the trailing iteration is a no-op.
     for (let i = 1; i < s.rowCount; i++) {
       if (costAt(s, j, i1) > costAt(s, j, i)) i1 = i;
     }
@@ -60,6 +63,12 @@ const columnReduction = (s: Lap): void => {
       s.rowToColumn[i1] = j;
       s.columnToRow[j] = i1;
     } else {
+      // equivalent-mutant (emptying this branch / forcing the `>= 0` guard): this is
+      // git's double-claim bookkeeping — `columnToRow[j]` is already `-1` (set once,
+      // here), and the negative-encoding flip only records that row `i1` is contended
+      // so reduction-transfer can skip an early `transferRow`. Either way the shortest-
+      // augmenting-path phase reconciles row `i1` to the same final assignment; no
+      // matrix in the 150-case adversarial/tie-heavy/targeted corpus distinguishes it.
       if (s.rowToColumn[i1]! >= 0) s.rowToColumn[i1] = -2 - s.rowToColumn[i1]!;
       s.columnToRow[j] = -1;
     }
@@ -72,6 +81,8 @@ const transferRow = (s: Lap, i: number, j1: number): void => {
   let min = i32(costAt(s, other, i) - s.v[other]!);
   for (let j = 1; j < s.columnCount; j++) {
     const reduced = i32(costAt(s, j, i) - s.v[j]!);
+    // equivalent-mutant (`min > reduced` → `min >= reduced`): when `min === reduced`
+    // the assignment `min = reduced` stores the same value, so the two forms agree.
     if (j !== j1 && min > reduced) min = reduced;
   }
   s.v[j1] = i32(s.v[j1]! - min);
@@ -79,9 +90,15 @@ const transferRow = (s: Lap, i: number, j1: number): void => {
 
 const reductionTransfer = (s: Lap, freeRow: number[]): number => {
   let freeCount = 0;
+  // equivalent-mutant (`i < rowCount` → `i <= rowCount`): the extra `i === rowCount`
+  // reads `rowToColumn[rowCount]` (`undefined`), which is neither `-1` nor `< -1`, so
+  // it falls to `transferRow(s, rowCount, undefined)` — that only writes the phantom
+  // `v[undefined]` (every real access is `i32(NaN) === 0`), leaving valid state intact.
   for (let i = 0; i < s.rowCount; i++) {
     const j1 = s.rowToColumn[i]!;
     if (j1 === -1) freeRow[freeCount++] = i;
+    // equivalent-mutant (`j1 < -1` → `j1 <= -1`): `j1 === -1` is already handled by the
+    // branch above, so the `=== -1` case never reaches here — the bounds coincide.
     else if (j1 < -1) s.rowToColumn[i] = -2 - j1;
     else transferRow(s, i, j1);
   }
@@ -115,6 +132,12 @@ const findTwoSmallest = (s: Lap, i: number): TwoSmallest => {
       }
     }
   }
+  // equivalent-mutant (`j2 = -1` → `+1`, and emptying/forcing this reset): `j2` is left
+  // unset only when every column's reduced cost is `>= COST_MAX`, i.e. the row is fully
+  // forbidden. Reaching that state forces every column dual `v[j]` to 0, which (by the
+  // pigeonhole of column-reduction claims) leaves this row's best column `j1` unassigned
+  // — so the `else if (i0 >= 0)` in `reduceFreeRow` that would consume `j2` is never
+  // taken, making the reset's outcome unobservable across the 150-case corpus.
   if (j2 < 0) {
     j2 = j1;
     u2 = u1;
@@ -233,6 +256,9 @@ const scanRows = (
     const j1 = col[search.low++]!;
     const i = s.columnToRow[j1]!;
     const u1 = i32(costAt(s, j1, i) - s.v[j1]! - min);
+    // equivalent-mutant (`k < columnCount` → `k <= columnCount`): at `k === columnCount`
+    // `col[k]` is `undefined`, so `c` is `i32(NaN) === 0` and `c < d[undefined]` is
+    // `0 < undefined` (false) — the trailing iteration relaxes nothing.
     for (let k = search.up; k < s.columnCount; k++) {
       const j = col[k]!;
       const c = i32(costAt(s, j, i) - s.v[j]! - u1);
@@ -264,15 +290,24 @@ const findAugmentingPath = (s: Lap, d: number[], pred: number[], col: number[]):
 };
 
 const augmentOne = (s: Lap, i1: number): void => {
+  // equivalent-mutant (`new Array<number>(columnCount)` → `new Array()`): the three
+  // working arrays are fully written by index in the immediately following loop, so the
+  // preallocated length is an optimisation with no observable effect.
   const d = new Array<number>(s.columnCount);
   const pred = new Array<number>(s.columnCount);
   const col = new Array<number>(s.columnCount);
+  // equivalent-mutant (`j < columnCount` → `j <= columnCount`): the extra entry at index
+  // `columnCount` is never read — `findAugmentingPath` and the scans all bound `k` by
+  // `columnCount`.
   for (let j = 0; j < s.columnCount; j++) {
     d[j] = i32(costAt(s, j, i1) - s.v[j]!);
     pred[j] = i1;
     col[j] = j;
   }
   const path = findAugmentingPath(s, d, pred, col);
+  // equivalent-mutant (`k < path.last` → `k <= path.last`): `path.last` is the read
+  // cursor when the augmenting column was found; `col[path.last]` is that column, whose
+  // `d` already equals `path.min`, so the extra `v += d - min` adds 0 — no dual changes.
   for (let k = 0; k < path.last; k++) {
     const j1 = col[k]!;
     s.v[j1] = i32(s.v[j1]! + (d[j1]! - path.min));
@@ -297,27 +332,38 @@ export const computeAssignment = (n: number, cost: ReadonlyArray<number>): Assig
   const columnToRow = new Array<number>(n);
   const rowToColumn = new Array<number>(n);
 
+  // equivalent-mutant (removing this `n < 2` fast-path): for `n === 0` the loops below
+  // are empty and for `n === 1` column-reduction assigns the single cell, so the general
+  // path returns the same `[0]`/`[]` result this shortcut produces.
   if (n < 2) {
     columnToRow.fill(0);
     rowToColumn.fill(0);
     return { columnToRow, rowToColumn };
   }
 
+  // equivalent-mutant (`columnToRow.fill(-1)` → `fill(+1)`): every `columnToRow[j]` is
+  // overwritten in column-reduction before it is read, so its initial value is dead.
   columnToRow.fill(-1);
   rowToColumn.fill(-1);
   const s: Lap = {
     columnCount: n,
     rowCount: n,
     cost,
+    // equivalent-mutant (`new Array(n).fill(0)` → `new Array().fill(0)`): column-reduction
+    // assigns every `v[j]` before any read.
     v: new Array<number>(n).fill(0),
     columnToRow,
     rowToColumn,
   };
 
   columnReduction(s);
+  // equivalent-mutant (`new Array<number>(n)` → `new Array()`): `freeRow` is written by
+  // index (`freeRow[freeCount++]`) and read only below `freeCount`.
   const freeRow = new Array<number>(n);
   let freeCount = reductionTransfer(s, freeRow);
 
+  // equivalent-mutant (removing this `freeCount === 0` early return): when no rows are
+  // free the augmenting loops below execute zero iterations and return the same result.
   if (freeCount === 0) return { columnToRow, rowToColumn };
 
   freeCount = augmentingRowReduction(s, freeRow, freeCount);

@@ -60,6 +60,11 @@ const cellCost = (
   j: number,
 ): number => {
   if (exactOldI === j) return 0;
+  // equivalent-mutant: loosening this guard (`< 0` → `<= 0`, or forcing it true)
+  // only ever turns a forbidden COST_MAX cell into a finite cost for a row/column
+  // that is already exact-matched elsewhere at cost 0. The cost-0 exact pair
+  // dominates the assignment, so the forbidden cell's value cannot change the
+  // chosen matching.
   if (exactOldI < 0 && exactNewJ < 0) return diffSize(oldPatch.diff, newPatch.diff);
   return COST_MAX;
 };
@@ -76,10 +81,14 @@ const buildCostMatrix = (
   const total = n + m;
   const cost = new Array<number>(total * total).fill(0); // dummy×dummy stays 0
   for (let i = 0; i < n; i++) {
+    // equivalent-mutant (`j < m` → `j <= m`): the extra `j === m` cell is the first
+    // dummy column, overwritten immediately by the deletion loop below.
     for (let j = 0; j < m; j++) {
       cost[i + total * j] = cellCost(oldPatches[i]!, newPatches[j]!, exactOld[i]!, exactNew[j]!, j);
     }
     const del = dummyCost(exactOld[i]!, oldPatches[i]!.diffsize, creationFactor);
+    // equivalent-mutant (`j < total` → `j <= total`): the extra `j === total` write
+    // lands at flat index `i + total*total`, past the matrix; the solver never reads it.
     for (let j = m; j < total; j++) cost[i + total * j] = del;
   }
   for (let j = 0; j < m; j++) {

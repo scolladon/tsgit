@@ -120,4 +120,38 @@ describe('correspond', () => {
       expect(result.new[0]?.matching).toBe(-1);
     });
   });
+
+  describe('Given an old patch but no new patches, When corresponded', () => {
+    it('Then the old patch is a deletion assigned a dummy column, so it stays unmatched', () => {
+      // Arrange — with no new side the lone old commit is assigned dummy column 0
+      // (index >= newCount of 0); the in-range filter must reject it rather than
+      // record column 0 as a partner.
+      const sut = correspond;
+      const old = [patch('a', ' ## f ##\n@@\n+x\n', 1)];
+
+      // Act
+      const result = sut(old, [], 60);
+
+      // Assert
+      expect(result.old).toHaveLength(1);
+      expect(result.old[0]?.matching).toBe(-1);
+      expect(result.new).toHaveLength(0);
+    });
+  });
+
+  describe('Given a new patch but no old patches, When corresponded', () => {
+    it('Then the new patch is a creation and stays unmatched', () => {
+      // Arrange
+      const sut = correspond;
+      const next = [patch('b', ' ## f ##\n@@\n+y\n', 1)];
+
+      // Act
+      const result = sut([], next, 60);
+
+      // Assert
+      expect(result.new).toHaveLength(1);
+      expect(result.new[0]?.matching).toBe(-1);
+      expect(result.old).toHaveLength(0);
+    });
+  });
 });

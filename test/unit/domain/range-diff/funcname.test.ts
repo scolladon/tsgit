@@ -149,4 +149,60 @@ describe('findFuncLine', () => {
       expect(result).toBeUndefined();
     });
   });
+
+  describe('Given a forward scan (start below limit), When searched', () => {
+    it('Then it steps upward and returns the first function line ahead', () => {
+      // Arrange
+      const sut = findFuncLine;
+      const lines = ['{', '\tbody', 'int g(void)', '\tmore'].map(line);
+
+      // Act — scan from index 0 up toward limit 4
+      const result = sut(lines, 0, 4);
+
+      // Assert
+      expect(result).toEqual({ index: 2, heading: 'int g(void)' });
+    });
+  });
+
+  describe('Given a forward scan whose only function line sits at or past the limit, When searched', () => {
+    it('Then the limit boundary stops the scan before reaching it', () => {
+      // Arrange — function line at index 3, limit 3 excludes it
+      const sut = findFuncLine;
+      const lines = ['{', '\tbody', '\tmore', 'fn z()'].map(line);
+
+      // Act
+      const result = sut(lines, 0, 3);
+
+      // Assert
+      expect(result).toBeUndefined();
+    });
+  });
+
+  describe('Given a forward limit past the end of the file, When searched', () => {
+    it('Then the upper bound stops the scan at the last line', () => {
+      // Arrange — no function line; limit exceeds the array length
+      const sut = findFuncLine;
+      const lines = ['{', '\tbody', '\tmore'].map(line);
+
+      // Act
+      const result = sut(lines, 0, 99);
+
+      // Assert
+      expect(result).toBeUndefined();
+    });
+  });
+
+  describe('Given a backward limit below the start of the file, When searched', () => {
+    it('Then the lower bound stops the scan at the first line', () => {
+      // Arrange — no function line; limit is below -1
+      const sut = findFuncLine;
+      const lines = ['\tbody', '\tmore'].map(line);
+
+      // Act
+      const result = sut(lines, 1, -5);
+
+      // Assert
+      expect(result).toBeUndefined();
+    });
+  });
 });

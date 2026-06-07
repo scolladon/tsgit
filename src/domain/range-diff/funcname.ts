@@ -27,8 +27,14 @@ const isSpace = (byte: number): boolean => byte === 0x20 || (byte >= 0x09 && byt
  * the first ≤80 bytes, trailing whitespace stripped — else `undefined`.
  */
 export const matchFuncRec = (line: Uint8Array): string | undefined => {
+  // equivalent-mutant (`line.length === 0` → false): on an empty line `line[0]` is
+  // `undefined`, and `isIdentifierStart(undefined)` is already false, so the second
+  // clause returns `undefined` on its own — the length check is a fast-path.
   if (line.length === 0 || !isIdentifierStart(line[0]!)) return undefined;
   let len = Math.min(line.length, FUNCNAME_MAX_BYTES);
+  // equivalent-mutant (`len > 0` → `len >= 0`/true): `line[0]` is an identifier byte
+  // (non-space), so the scan always stops on it at `len === 1`; the `len > 0` bound is
+  // never the exit condition.
   while (len > 0 && isSpace(line[len - 1]!)) len--;
   return decoder.decode(line.subarray(0, len));
 };
