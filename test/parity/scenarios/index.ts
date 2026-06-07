@@ -16,6 +16,7 @@ import { refsPipelineScenario } from './refs-pipeline.scenario.ts';
 import { remoteCrudScenario } from './remote-crud.scenario.ts';
 import { resetRmReflogScenario } from './reset-rm-reflog.scenario.ts';
 import { revertScenario } from './revert.scenario.ts';
+import { shortlogScenario } from './shortlog.scenario.ts';
 import { showScenario } from './show.scenario.ts';
 import { sparseCheckoutScenario } from './sparse-checkout.scenario.ts';
 import { stashScenario } from './stash.scenario.ts';
@@ -47,4 +48,5 @@ export const SCENARIOS: ReadonlyArray<Scenario<unknown>> = [
   showScenario,
   describeScenario,
   blameScenario,
+  shortlogScenario,
 ];
