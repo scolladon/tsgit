@@ -190,4 +190,98 @@ describe('renderRangePatch', () => {
       expect(result.diffsize).toBe(0);
     });
   });
+
+  describe('Given a file whose new content lacks a trailing newline, When rendered', () => {
+    it('Then the no-newline marker follows the changed line', () => {
+      // Arrange
+      const sut = renderRangePatch;
+      const input = baseInput({ files: [modify('f.txt', 'one\ntwo\n', 'one\nTWO')] });
+
+      // Act
+      const result = sut(input);
+
+      // Assert
+      expect(result.diff).toContain('+TWO\n \\ No newline at end of file\n');
+    });
+  });
+
+  describe('Given a new binary file, When rendered', () => {
+    it('Then a Binary files line is emitted against /dev/null', () => {
+      // Arrange
+      const sut = renderRangePatch;
+      const add: PatchFile = {
+        change: {
+          type: 'add',
+          newPath: path('blob.bin'),
+          newId: oid('c'),
+          newMode: FILE_MODE.REGULAR,
+        },
+        newContent: new Uint8Array([0x01, 0x00, 0x02]),
+      };
+      const input = baseInput({ files: [add] });
+
+      // Act
+      const result = sut(input);
+
+      // Assert
+      expect(result.diff).toBe(
+        ' ## blob.bin (new) ##\n Binary files /dev/null and blob.bin differ\n',
+      );
+    });
+  });
+
+  describe('Given a deleted binary file, When rendered', () => {
+    it('Then a Binary files line is emitted against /dev/null', () => {
+      // Arrange
+      const sut = renderRangePatch;
+      const del: PatchFile = {
+        change: {
+          type: 'delete',
+          oldPath: path('blob.bin'),
+          oldId: oid('d'),
+          oldMode: FILE_MODE.REGULAR,
+        },
+        oldContent: new Uint8Array([0x00, 0x01]),
+      };
+      const input = baseInput({ files: [del] });
+
+      // Act
+      const result = sut(input);
+
+      // Assert
+      expect(result.diff).toBe(
+        ' ## blob.bin (deleted) ##\n Binary files blob.bin and /dev/null differ\n',
+      );
+    });
+  });
+
+  describe('Given a modified binary file, When rendered', () => {
+    it('Then a Binary files line names both sides', () => {
+      // Arrange
+      const sut = renderRangePatch;
+      const change: DiffChange = {
+        type: 'modify',
+        path: path('blob.bin'),
+        oldId: oid('a'),
+        newId: oid('b'),
+        oldMode: FILE_MODE.REGULAR,
+        newMode: FILE_MODE.REGULAR,
+      };
+      const input = baseInput({
+        files: [
+          {
+            change,
+            oldContent: new Uint8Array([0x00, 0x01]),
+            newContent: new Uint8Array([0x00, 0x02]),
+          },
+        ],
+      });
+
+      // Act
+      const result = sut(input);
+
+      // Assert
+      expect(result.diff).toBe(' ## blob.bin ##\n Binary files blob.bin and blob.bin differ\n');
+    });
+  });
 });

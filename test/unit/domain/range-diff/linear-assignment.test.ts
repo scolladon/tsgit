@@ -15,7 +15,7 @@ describe('computeAssignment', () => {
       const cost = [0, 9, 9, 0]; // C(0,0)=0 C(1,0)=9 C(0,1)=9 C(1,1)=0
 
       // Act
-      const result = sut(2, 2, cost);
+      const result = sut(2, cost);
 
       // Assert
       expect(result.columnToRow).toEqual([0, 1]);
@@ -30,7 +30,7 @@ describe('computeAssignment', () => {
       const cost = [9, 0, 0, 9]; // C(0,0)=9 C(1,0)=0 C(0,1)=0 C(1,1)=9
 
       // Act
-      const result = sut(2, 2, cost);
+      const result = sut(2, cost);
 
       // Assert
       expect(result.columnToRow).toEqual([1, 0]);
@@ -44,7 +44,7 @@ describe('computeAssignment', () => {
       const sut = computeAssignment;
 
       // Act
-      const result = sut(1, 1, [7]);
+      const result = sut(1, [7]);
 
       // Assert
       expect(result.columnToRow).toEqual([0]);
@@ -58,7 +58,7 @@ describe('computeAssignment', () => {
       const sut = computeAssignment;
 
       // Act
-      const result = sut(0, 0, []);
+      const result = sut(0, []);
 
       // Assert
       expect(result.columnToRow).toEqual([]);
@@ -86,7 +86,7 @@ describe('computeAssignment', () => {
       ];
 
       // Act
-      const result = sut(3, 3, cost);
+      const result = sut(3, cost);
 
       // Assert: column0->row1, column1->row2, column2->row0
       expect(result.columnToRow).toEqual([1, 2, 0]);
@@ -105,9 +105,30 @@ describe('computeAssignment', () => {
       ];
 
       // Act
-      const result = sut(2, 2, cost);
+      const result = sut(2, cost);
 
       // Assert
+      expect(result.columnToRow).toEqual([0, 1]);
+    });
+  });
+
+  describe('Given a free row whose only finite column is column 0, When assigned', () => {
+    it('Then the single-candidate path (no second-smallest) still assigns it', () => {
+      // Arrange — column reduction leaves row 0 free; in the augmenting-row
+      // reduction its only non-COST_MAX column is column 0, so no second-smallest
+      // candidate exists (git's `j2 < 0` branch).
+      const sut = computeAssignment;
+      const cost = [
+        5,
+        COST_MAX, // row 0: C(0,0)=5    C(1,0)=MAX
+        3,
+        0, // row 1: C(0,1)=3    C(1,1)=0
+      ];
+
+      // Act
+      const result = sut(2, cost);
+
+      // Assert — col0 takes row0, col1 takes its only cheap row1
       expect(result.columnToRow).toEqual([0, 1]);
     });
   });
@@ -130,7 +151,7 @@ describe('computeAssignment', () => {
       for (let j = 0; j < 3; j++) for (let i = 3; i < 6; i++) at(i, j, COST_MAX);
 
       // Act
-      const result = sut(total, total, cost);
+      const result = sut(total, cost);
 
       // Assert — old columns map to their exact rows; dummies absorb the rest
       expect(result.columnToRow.slice(0, 3)).toEqual([0, 2, 1]);

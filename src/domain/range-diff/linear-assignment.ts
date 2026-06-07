@@ -288,15 +288,16 @@ const augmentOne = (s: Lap, i1: number): void => {
   } while (i1 !== i);
 };
 
-export const computeAssignment = (
-  columnCount: number,
-  rowCount: number,
-  cost: ReadonlyArray<number>,
-): Assignment => {
-  const columnToRow = new Array<number>(columnCount);
-  const rowToColumn = new Array<number>(rowCount);
+/**
+ * Solve a square `n×n` assignment. range-diff (like git) only ever solves square
+ * matrices, so a single `n` replaces git's `column_count`/`row_count` pair; the
+ * non-square `-1`-padding path git documents is unused here.
+ */
+export const computeAssignment = (n: number, cost: ReadonlyArray<number>): Assignment => {
+  const columnToRow = new Array<number>(n);
+  const rowToColumn = new Array<number>(n);
 
-  if (columnCount < 2) {
+  if (n < 2) {
     columnToRow.fill(0);
     rowToColumn.fill(0);
     return { columnToRow, rowToColumn };
@@ -305,21 +306,19 @@ export const computeAssignment = (
   columnToRow.fill(-1);
   rowToColumn.fill(-1);
   const s: Lap = {
-    columnCount,
-    rowCount,
+    columnCount: n,
+    rowCount: n,
     cost,
-    v: new Array<number>(columnCount).fill(0),
+    v: new Array<number>(n).fill(0),
     columnToRow,
     rowToColumn,
   };
 
   columnReduction(s);
-  const freeRow = new Array<number>(rowCount);
+  const freeRow = new Array<number>(n);
   let freeCount = reductionTransfer(s, freeRow);
 
-  if (freeCount === (columnCount < rowCount ? rowCount - columnCount : 0)) {
-    return { columnToRow, rowToColumn };
-  }
+  if (freeCount === 0) return { columnToRow, rowToColumn };
 
   freeCount = augmentingRowReduction(s, freeRow, freeCount);
   for (let f = 0; f < freeCount; f++) augmentOne(s, freeRow[f]!);
