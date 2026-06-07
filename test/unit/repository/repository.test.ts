@@ -179,6 +179,7 @@ describe('openRepository — Repository binding integrity', () => {
             'status',
             'submodules',
             'tag',
+            'whatchanged',
           ].sort(),
         );
       });

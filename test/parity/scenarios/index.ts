@@ -23,6 +23,7 @@ import { sparseCheckoutScenario } from './sparse-checkout.scenario.ts';
 import { stashScenario } from './stash.scenario.ts';
 import { submodulesEmptyScenario } from './submodules-empty.scenario.ts';
 import type { Scenario } from './types.ts';
+import { whatchangedScenario } from './whatchanged.scenario.ts';
 import { writePipelineScenario } from './write-pipeline.scenario.ts';
 
 export const SCENARIOS: ReadonlyArray<Scenario<unknown>> = [
@@ -51,4 +52,5 @@ export const SCENARIOS: ReadonlyArray<Scenario<unknown>> = [
   blameScenario,
   shortlogScenario,
   rangeDiffScenario,
+  whatchangedScenario,
 ];

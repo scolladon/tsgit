@@ -212,6 +212,7 @@ export interface Repository {
   readonly submodules: BindCtx<typeof commands.submodules>;
   /** Nested `repo.tag.{list,create,delete}` namespace. */
   readonly tag: commands.TagNamespace;
+  readonly whatchanged: BindCtx<typeof commands.whatchanged>;
 
   // Tier-2 primitives (21) — bound under .primitives.* to keep the top-level
   // surface focused on user-facing commands.
@@ -516,6 +517,10 @@ export const openRepository = async (
       return commands.submodules(ctx, opts);
     }) as Repository['submodules'],
     tag: commands.bindTagNamespace(ctx, guard),
+    whatchanged: ((opts) => {
+      guard();
+      return commands.whatchanged(ctx, opts);
+    }) as Repository['whatchanged'],
     primitives: Object.freeze({
       catFileBatch: ((ids, options) => {
         guard();
