@@ -18786,14 +18786,14 @@
 					]
 				},
 				{
-					"id": 1305,
+					"id": 1295,
 					"name": "RangeDiffCommit",
 					"variant": "declaration",
 					"kind": 256,
 					"flags": {},
 					"children": [
 						{
-							"id": 1307,
+							"id": 1297,
 							"name": "id",
 							"variant": "declaration",
 							"kind": 1024,
@@ -18808,7 +18808,7 @@
 							}
 						},
 						{
-							"id": 1306,
+							"id": 1296,
 							"name": "position",
 							"variant": "declaration",
 							"kind": 1024,
@@ -18833,21 +18833,21 @@
 						{
 							"title": "Properties",
 							"children": [
-								1307,
-								1306
+								1297,
+								1296
 							]
 						}
 					]
 				},
 				{
-					"id": 1308,
+					"id": 1298,
 					"name": "RangeDiffEntry",
 					"variant": "declaration",
 					"kind": 256,
 					"flags": {},
 					"children": [
 						{
-							"id": 1313,
+							"id": 1303,
 							"name": "diffOfDiffs",
 							"variant": "declaration",
 							"kind": 1024,
@@ -18887,7 +18887,7 @@
 							}
 						},
 						{
-							"id": 1311,
+							"id": 1301,
 							"name": "new",
 							"variant": "declaration",
 							"kind": 1024,
@@ -18897,13 +18897,13 @@
 							},
 							"type": {
 								"type": "reference",
-								"target": 1305,
+								"target": 1295,
 								"name": "RangeDiffCommit",
 								"package": "@scolladon/tsgit"
 							}
 						},
 						{
-							"id": 1310,
+							"id": 1300,
 							"name": "old",
 							"variant": "declaration",
 							"kind": 1024,
@@ -18913,13 +18913,13 @@
 							},
 							"type": {
 								"type": "reference",
-								"target": 1305,
+								"target": 1295,
 								"name": "RangeDiffCommit",
 								"package": "@scolladon/tsgit"
 							}
 						},
 						{
-							"id": 1309,
+							"id": 1299,
 							"name": "status",
 							"variant": "declaration",
 							"kind": 1024,
@@ -18928,13 +18928,13 @@
 							},
 							"type": {
 								"type": "reference",
-								"target": 1321,
+								"target": 1311,
 								"name": "RangeDiffStatus",
 								"package": "@scolladon/tsgit"
 							}
 						},
 						{
-							"id": 1312,
+							"id": 1302,
 							"name": "subject",
 							"variant": "declaration",
 							"kind": 1024,
@@ -18951,24 +18951,24 @@
 						{
 							"title": "Properties",
 							"children": [
-								1313,
-								1311,
-								1310,
-								1309,
-								1312
+								1303,
+								1301,
+								1300,
+								1299,
+								1302
 							]
 						}
 					]
 				},
 				{
-					"id": 1314,
+					"id": 1304,
 					"name": "RangeDiffOptions",
 					"variant": "declaration",
 					"kind": 256,
 					"flags": {},
 					"children": [
 						{
-							"id": 1317,
+							"id": 1307,
 							"name": "creationFactor",
 							"variant": "declaration",
 							"kind": 1024,
@@ -19006,7 +19006,7 @@
 							}
 						},
 						{
-							"id": 1316,
+							"id": 1306,
 							"name": "new",
 							"variant": "declaration",
 							"kind": 1024,
@@ -19023,13 +19023,13 @@
 							},
 							"type": {
 								"type": "reference",
-								"target": 1318,
+								"target": 1308,
 								"name": "RangeDiffRange",
 								"package": "@scolladon/tsgit"
 							}
 						},
 						{
-							"id": 1315,
+							"id": 1305,
 							"name": "old",
 							"variant": "declaration",
 							"kind": 1024,
@@ -19046,7 +19046,7 @@
 							},
 							"type": {
 								"type": "reference",
-								"target": 1318,
+								"target": 1308,
 								"name": "RangeDiffRange",
 								"package": "@scolladon/tsgit"
 							}
@@ -19056,15 +19056,15 @@
 						{
 							"title": "Properties",
 							"children": [
-								1317,
-								1316,
-								1315
+								1307,
+								1306,
+								1305
 							]
 						}
 					]
 				},
 				{
-					"id": 1318,
+					"id": 1308,
 					"name": "RangeDiffRange",
 					"variant": "declaration",
 					"kind": 256,
@@ -19087,7 +19087,7 @@
 					},
 					"children": [
 						{
-							"id": 1319,
+							"id": 1309,
 							"name": "base",
 							"variant": "declaration",
 							"kind": 1024,
@@ -19100,7 +19100,7 @@
 							}
 						},
 						{
-							"id": 1320,
+							"id": 1310,
 							"name": "tip",
 							"variant": "declaration",
 							"kind": 1024,
@@ -19117,14 +19117,14 @@
 						{
 							"title": "Properties",
 							"children": [
-								1319,
-								1320
+								1309,
+								1310
 							]
 						}
 					]
 				},
 				{
-					"id": 1295,
+					"id": 1316,
 					"name": "ReadFileAtResult",
 					"variant": "declaration",
 					"kind": 256,
@@ -19139,7 +19139,7 @@
 					},
 					"children": [
 						{
-							"id": 1298,
+							"id": 1319,
 							"name": "content",
 							"variant": "declaration",
 							"kind": 1024,
@@ -19166,7 +19166,7 @@
 							}
 						},
 						{
-							"id": 1296,
+							"id": 1317,
 							"name": "id",
 							"variant": "declaration",
 							"kind": 1024,
@@ -19189,7 +19189,7 @@
 							}
 						},
 						{
-							"id": 1297,
+							"id": 1318,
 							"name": "mode",
 							"variant": "declaration",
 							"kind": 1024,
@@ -19240,9 +19240,9 @@
 						{
 							"title": "Properties",
 							"children": [
-								1298,
-								1296,
-								1297
+								1319,
+								1317,
+								1318
 							]
 						}
 					]
@@ -26785,7 +26785,7 @@
 					}
 				},
 				{
-					"id": 1321,
+					"id": 1311,
 					"name": "RangeDiffStatus",
 					"variant": "declaration",
 					"kind": 2097152,
@@ -32496,21 +32496,21 @@
 					]
 				},
 				{
-					"id": 1322,
+					"id": 1312,
 					"name": "rangeDiff",
 					"variant": "declaration",
 					"kind": 64,
 					"flags": {},
 					"signatures": [
 						{
-							"id": 1323,
+							"id": 1313,
 							"name": "rangeDiff",
 							"variant": "signature",
 							"kind": 4096,
 							"flags": {},
 							"parameters": [
 								{
-									"id": 1324,
+									"id": 1314,
 									"name": "ctx",
 									"variant": "param",
 									"kind": 32768,
@@ -32523,14 +32523,14 @@
 									}
 								},
 								{
-									"id": 1325,
+									"id": 1315,
 									"name": "opts",
 									"variant": "param",
 									"kind": 32768,
 									"flags": {},
 									"type": {
 										"type": "reference",
-										"target": 1314,
+										"target": 1304,
 										"name": "RangeDiffOptions",
 										"package": "@scolladon/tsgit"
 									}
@@ -32551,7 +32551,7 @@
 											"type": "array",
 											"elementType": {
 												"type": "reference",
-												"target": 1308,
+												"target": 1298,
 												"name": "RangeDiffEntry",
 												"package": "@scolladon/tsgit"
 											}
@@ -32565,14 +32565,14 @@
 					]
 				},
 				{
-					"id": 1299,
+					"id": 1320,
 					"name": "readFileAt",
 					"variant": "declaration",
 					"kind": 64,
 					"flags": {},
 					"signatures": [
 						{
-							"id": 1300,
+							"id": 1321,
 							"name": "readFileAt",
 							"variant": "signature",
 							"kind": 4096,
@@ -32603,7 +32603,7 @@
 							},
 							"parameters": [
 								{
-									"id": 1301,
+									"id": 1322,
 									"name": "ctx",
 									"variant": "param",
 									"kind": 32768,
@@ -32616,7 +32616,7 @@
 									}
 								},
 								{
-									"id": 1302,
+									"id": 1323,
 									"name": "rev",
 									"variant": "param",
 									"kind": 32768,
@@ -32667,7 +32667,7 @@
 									}
 								},
 								{
-									"id": 1303,
+									"id": 1324,
 									"name": "path",
 									"variant": "param",
 									"kind": 32768,
@@ -32694,7 +32694,7 @@
 									}
 								},
 								{
-									"id": 1304,
+									"id": 1325,
 									"name": "options",
 									"variant": "param",
 									"kind": 32768,
@@ -32751,7 +32751,7 @@
 								"typeArguments": [
 									{
 										"type": "reference",
-										"target": 1295,
+										"target": 1316,
 										"name": "ReadFileAtResult",
 										"package": "@scolladon/tsgit"
 									}
@@ -35581,11 +35581,11 @@
 						1274,
 						1281,
 						1287,
-						1305,
-						1308,
-						1314,
-						1318,
 						1295,
+						1298,
+						1304,
+						1308,
+						1316,
 						1326,
 						1329,
 						1332,
@@ -35672,7 +35672,7 @@
 						871,
 						1216,
 						1258,
-						1321,
+						1311,
 						1339,
 						1340,
 						1372,
@@ -35740,8 +35740,8 @@
 						1259,
 						1277,
 						1291,
-						1322,
-						1299,
+						1312,
+						1320,
 						1359,
 						1362,
 						1365,
@@ -93579,7 +93579,7 @@
 																"isOptional": false,
 																"element": {
 																	"type": "reference",
-																	"target": 1314,
+																	"target": 1304,
 																	"name": "RangeDiffOptions",
 																	"package": "@scolladon/tsgit"
 																}
@@ -96252,7 +96252,7 @@
 		},
 		{
 			"kind": "text",
-			"text": "\n- 34 Tier-1 commands · 20+ AsyncIterable primitives · operator toolkit ("
+			"text": "\n- 35 Tier-1 commands · 20+ AsyncIterable primitives · operator toolkit ("
 		},
 		{
 			"kind": "code",
@@ -102807,158 +102807,158 @@
 		},
 		"1295": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/commands/read-file-at.ts",
-			"qualifiedName": "ReadFileAtResult"
-		},
-		"1296": {
-			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/commands/read-file-at.ts",
-			"qualifiedName": "ReadFileAtResult.id"
-		},
-		"1297": {
-			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/commands/read-file-at.ts",
-			"qualifiedName": "ReadFileAtResult.mode"
-		},
-		"1298": {
-			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/commands/read-file-at.ts",
-			"qualifiedName": "ReadFileAtResult.content"
-		},
-		"1299": {
-			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/commands/read-file-at.ts",
-			"qualifiedName": "readFileAt"
-		},
-		"1300": {
-			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/commands/read-file-at.ts",
-			"qualifiedName": "readFileAt"
-		},
-		"1301": {
-			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/commands/read-file-at.ts",
-			"qualifiedName": "ctx"
-		},
-		"1302": {
-			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/commands/read-file-at.ts",
-			"qualifiedName": "rev"
-		},
-		"1303": {
-			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/commands/read-file-at.ts",
-			"qualifiedName": "path"
-		},
-		"1304": {
-			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/commands/read-file-at.ts",
-			"qualifiedName": "options"
-		},
-		"1305": {
-			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/range-diff/interleave.ts",
 			"qualifiedName": "RangeDiffCommit"
 		},
-		"1306": {
+		"1296": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/range-diff/interleave.ts",
 			"qualifiedName": "RangeDiffCommit.position"
 		},
-		"1307": {
+		"1297": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/range-diff/interleave.ts",
 			"qualifiedName": "RangeDiffCommit.id"
 		},
-		"1308": {
+		"1298": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/range-diff/interleave.ts",
 			"qualifiedName": "RangeDiffEntry"
 		},
-		"1309": {
+		"1299": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/range-diff/interleave.ts",
 			"qualifiedName": "RangeDiffEntry.status"
 		},
-		"1310": {
+		"1300": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/range-diff/interleave.ts",
 			"qualifiedName": "RangeDiffEntry.old"
 		},
-		"1311": {
+		"1301": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/range-diff/interleave.ts",
 			"qualifiedName": "RangeDiffEntry.new"
 		},
-		"1312": {
+		"1302": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/range-diff/interleave.ts",
 			"qualifiedName": "RangeDiffEntry.subject"
 		},
-		"1313": {
+		"1303": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/range-diff/interleave.ts",
 			"qualifiedName": "RangeDiffEntry.diffOfDiffs"
 		},
-		"1314": {
+		"1304": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/application/commands/range-diff.ts",
 			"qualifiedName": "RangeDiffOptions"
 		},
-		"1315": {
+		"1305": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/application/commands/range-diff.ts",
 			"qualifiedName": "RangeDiffOptions.old"
 		},
-		"1316": {
+		"1306": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/application/commands/range-diff.ts",
 			"qualifiedName": "RangeDiffOptions.new"
 		},
-		"1317": {
+		"1307": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/application/commands/range-diff.ts",
 			"qualifiedName": "RangeDiffOptions.creationFactor"
 		},
-		"1318": {
+		"1308": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/application/commands/range-diff.ts",
 			"qualifiedName": "RangeDiffRange"
 		},
-		"1319": {
+		"1309": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/application/commands/range-diff.ts",
 			"qualifiedName": "RangeDiffRange.base"
 		},
-		"1320": {
+		"1310": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/application/commands/range-diff.ts",
 			"qualifiedName": "RangeDiffRange.tip"
 		},
-		"1321": {
+		"1311": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/range-diff/interleave.ts",
 			"qualifiedName": "RangeDiffStatus"
 		},
-		"1322": {
+		"1312": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/application/commands/range-diff.ts",
 			"qualifiedName": "rangeDiff"
 		},
-		"1323": {
+		"1313": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/application/commands/range-diff.ts",
 			"qualifiedName": "rangeDiff"
 		},
-		"1324": {
+		"1314": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/application/commands/range-diff.ts",
 			"qualifiedName": "ctx"
 		},
-		"1325": {
+		"1315": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/application/commands/range-diff.ts",
 			"qualifiedName": "opts"
+		},
+		"1316": {
+			"packageName": "@scolladon/tsgit",
+			"packagePath": "src/application/commands/read-file-at.ts",
+			"qualifiedName": "ReadFileAtResult"
+		},
+		"1317": {
+			"packageName": "@scolladon/tsgit",
+			"packagePath": "src/application/commands/read-file-at.ts",
+			"qualifiedName": "ReadFileAtResult.id"
+		},
+		"1318": {
+			"packageName": "@scolladon/tsgit",
+			"packagePath": "src/application/commands/read-file-at.ts",
+			"qualifiedName": "ReadFileAtResult.mode"
+		},
+		"1319": {
+			"packageName": "@scolladon/tsgit",
+			"packagePath": "src/application/commands/read-file-at.ts",
+			"qualifiedName": "ReadFileAtResult.content"
+		},
+		"1320": {
+			"packageName": "@scolladon/tsgit",
+			"packagePath": "src/application/commands/read-file-at.ts",
+			"qualifiedName": "readFileAt"
+		},
+		"1321": {
+			"packageName": "@scolladon/tsgit",
+			"packagePath": "src/application/commands/read-file-at.ts",
+			"qualifiedName": "readFileAt"
+		},
+		"1322": {
+			"packageName": "@scolladon/tsgit",
+			"packagePath": "src/application/commands/read-file-at.ts",
+			"qualifiedName": "ctx"
+		},
+		"1323": {
+			"packageName": "@scolladon/tsgit",
+			"packagePath": "src/application/commands/read-file-at.ts",
+			"qualifiedName": "rev"
+		},
+		"1324": {
+			"packageName": "@scolladon/tsgit",
+			"packagePath": "src/application/commands/read-file-at.ts",
+			"qualifiedName": "path"
+		},
+		"1325": {
+			"packageName": "@scolladon/tsgit",
+			"packagePath": "src/application/commands/read-file-at.ts",
+			"qualifiedName": "options"
 		},
 		"1326": {
 			"packageName": "@scolladon/tsgit",
