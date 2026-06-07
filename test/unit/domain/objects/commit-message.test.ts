@@ -350,7 +350,7 @@ describe('foldSubject', () => {
   });
 
   describe('Given a message starting with a blank line, When foldSubject runs', () => {
-    it('Then the empty string is returned', () => {
+    it('Then the leading blank is skipped and the following line is the subject', () => {
       // Arrange
       const message = '\nbody after a blank subject';
 
@@ -358,7 +358,46 @@ describe('foldSubject', () => {
       const result = foldSubject(message);
 
       // Assert
-      expect(result).toBe('');
+      expect(result).toBe('body after a blank subject');
+    });
+  });
+
+  describe('Given a message starting with two blank lines, When foldSubject runs', () => {
+    it('Then both leading blanks are skipped', () => {
+      // Arrange
+      const message = '\n\ndouble leading blank';
+
+      // Act
+      const result = foldSubject(message);
+
+      // Assert
+      expect(result).toBe('double leading blank');
+    });
+  });
+
+  describe('Given a whitespace-only first line, When foldSubject runs', () => {
+    it('Then it is treated as a leading blank and skipped', () => {
+      // Arrange
+      const message = '   \nwhitespace-only first line';
+
+      // Act
+      const result = foldSubject(message);
+
+      // Assert
+      expect(result).toBe('whitespace-only first line');
+    });
+  });
+
+  describe('Given a first content line with leading whitespace, When foldSubject runs', () => {
+    it('Then the content line keeps its leading whitespace', () => {
+      // Arrange
+      const message = '  hello\nworld';
+
+      // Act
+      const result = foldSubject(message);
+
+      // Assert
+      expect(result).toBe('  hello world');
     });
   });
 

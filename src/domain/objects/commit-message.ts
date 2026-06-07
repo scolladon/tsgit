@@ -30,15 +30,19 @@ export const subjectLine = (message: string): string => {
  * A commit's folded subject — git's `%s` (`format_subject`): the leading
  * paragraph collapsed to a single line, joining consecutive non-blank lines with
  * one space. Each line's trailing ASCII whitespace is stripped (git's
- * `is_blank_line`), the first blank line ends the subject so the body never
- * appears, and leading whitespace on a continuation line is preserved. Unlike
- * `subjectLine`, a trailing CR (CRLF endings) is trimmed rather than kept.
+ * `is_blank_line`); leading blank lines are skipped, then the first blank line
+ * after content ends the subject so the body never appears; leading whitespace on
+ * a content line is preserved. Unlike `subjectLine`, a trailing CR (CRLF endings)
+ * is trimmed rather than kept.
  */
 export const foldSubject = (message: string): string => {
   const lines: string[] = [];
   for (const raw of message.split('\n')) {
     const line = raw.replace(TRAILING_ASCII_WHITESPACE, '');
-    if (line === '') break;
+    if (line === '') {
+      if (lines.length > 0) break;
+      continue;
+    }
     lines.push(line);
   }
   return lines.join(' ');
