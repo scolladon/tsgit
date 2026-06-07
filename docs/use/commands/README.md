@@ -1,6 +1,6 @@
 # Commands — Tier-1 reference
 
-Every method bound on a `Repository` handle. 34 entries, alphabetical.
+Every method bound on a `Repository` handle. 35 entries, alphabetical.
 
 | Command | Summary |
 |---|---|
@@ -23,6 +23,7 @@ Every method bound on a `Repository` handle. 34 entries, alphabetical.
 | [`mv`](mv.md) | Rename/move tracked paths in the index and working tree. |
 | [`pull`](pull.md) | Fetch a remote branch and merge it into the current branch. |
 | [`push`](push.md) | Push refs and objects to a remote. |
+| [`rangeDiff`](range-diff.md) | Compare two commit ranges (two versions of a patch series); returns the structured correspondence list (`= ! < >`) with a per-changed-pair diff-of-diffs (no rendered line). |
 | [`readFileAt`](read-file-at.md) | Read a file's bytes as of a revision (`git show <rev>:<path>`); returns structured `{ id, mode, content }` (no rendered output). |
 | [`rebase`](rebase.md) | Replay the current branch's commits onto another base (non-interactive), preserving authors, dropping cherry-pick equivalents, with a git-faithful resumable `.git/rebase-merge/` state. Nested-namespace surface (`repo.rebase.run/continue/skip/abort`). |
 | [`reflog`](reflog.md) | Show, query, delete, or expire reflog entries. |

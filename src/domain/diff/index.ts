@@ -48,8 +48,14 @@ export {
 export type { ModeKind } from './mode-kind.js';
 export { isSameKind, kindOf } from './mode-kind.js';
 // Patch serializer
-export type { PatchFile, PatchOptions, PatchPathPrefix } from './patch-serializer.js';
-export { renderPatch } from './patch-serializer.js';
+export type {
+  BodyLine,
+  OutputHunk,
+  PatchFile,
+  PatchOptions,
+  PatchPathPrefix,
+} from './patch-serializer.js';
+export { computeHunks, renderPatch } from './patch-serializer.js';
 // Path comparison
 export { comparePaths, sortByPath } from './path-compare.js';
 // Rename detection

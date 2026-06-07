@@ -136,6 +136,14 @@ export {
 } from './mv.js';
 export { type PullOptions, type PullResult, pull } from './pull.js';
 export { type PushOptions, type PushResult, push } from './push.js';
+export {
+  type RangeDiffCommit,
+  type RangeDiffEntry,
+  type RangeDiffOptions,
+  type RangeDiffRange,
+  type RangeDiffStatus,
+  rangeDiff,
+} from './range-diff.js';
 export { type ReadFileAtResult, readFileAt } from './read-file-at.js';
 export {
   type RebaseAbortResult,

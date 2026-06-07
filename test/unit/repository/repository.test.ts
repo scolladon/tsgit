@@ -163,6 +163,7 @@ describe('openRepository — Repository binding integrity', () => {
             'pull',
             'push',
             'readFileAt',
+            'rangeDiff',
             'rebase',
             'reflog',
             'remote',

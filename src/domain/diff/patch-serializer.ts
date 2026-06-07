@@ -118,13 +118,13 @@ interface Edit {
   readonly text: string;
 }
 
-interface BodyLine {
+export interface BodyLine {
   readonly kind: EditKind;
   readonly text: string;
   readonly trailingNoNewline: boolean;
 }
 
-interface OutputHunk {
+export interface OutputHunk {
   readonly oldStart: number;
   readonly oldLen: number;
   readonly newStart: number;
@@ -424,6 +424,29 @@ function renderBinaryBody(
   return [`Binary files ${oldLabel} and ${newLabel} differ`];
 }
 
+/**
+ * Group the line-level diff of two blobs into unified-diff hunks (the shared
+ * core behind both the unified-diff serializer and range-diff's `## ` text). Each
+ * hunk carries its old/new line spans and a typed body (`context`/`delete`/
+ * `insert`). The `@@ -a,b +c,d @@` line numbers and the body prefixes are the
+ * caller's to render.
+ */
+export function computeHunks(
+  oldBytes: Uint8Array,
+  newBytes: Uint8Array,
+  contextLines: number,
+): ReadonlyArray<OutputHunk> {
+  const oldSplit = splitContentLines(oldBytes);
+  const newSplit = splitContentLines(newBytes);
+  const edits = buildEdits(oldSplit.lines, newSplit.lines, oldBytes, newBytes);
+  return groupHunks(edits, contextLines, {
+    oldTotal: oldSplit.lines.length,
+    newTotal: newSplit.lines.length,
+    oldHasTrailingNewline: oldSplit.hasTrailingNewline,
+    newHasTrailingNewline: newSplit.hasTrailingNewline,
+  });
+}
+
 function renderTextBody(
   common: SameKindChange,
   prefix: PatchPathPrefix,
@@ -431,15 +454,7 @@ function renderTextBody(
   newBytes: Uint8Array,
   contextLines: number,
 ): string[] {
-  const oldSplit = splitContentLines(oldBytes);
-  const newSplit = splitContentLines(newBytes);
-  const edits = buildEdits(oldSplit.lines, newSplit.lines, oldBytes, newBytes);
-  const hunks = groupHunks(edits, contextLines, {
-    oldTotal: oldSplit.lines.length,
-    newTotal: newSplit.lines.length,
-    oldHasTrailingNewline: oldSplit.hasTrailingNewline,
-    newHasTrailingNewline: newSplit.hasTrailingNewline,
-  });
+  const hunks = computeHunks(oldBytes, newBytes, contextLines);
   const out: string[] = [];
   out.push(`--- ${prefix.old}${common.path}`);
   out.push(`+++ ${prefix.new}${common.path}`);

@@ -175,6 +175,7 @@ export interface Repository {
   readonly pull: BindCtx<typeof commands.pull>;
   readonly push: BindCtx<typeof commands.push>;
   readonly readFileAt: BindCtx<typeof commands.readFileAt>;
+  readonly rangeDiff: BindCtx<typeof commands.rangeDiff>;
   /** Nested `repo.rebase.{run,continue,skip,abort}` namespace. */
   readonly rebase: commands.RebaseNamespace;
   readonly reflog: BindCtx<typeof commands.reflog>;
@@ -467,6 +468,10 @@ export const openRepository = async (
       guard();
       return commands.readFileAt(ctx, rev, path, opts);
     }) as Repository['readFileAt'],
+    rangeDiff: ((rangeDiffOpts) => {
+      guard();
+      return commands.rangeDiff(ctx, rangeDiffOpts);
+    }) as Repository['rangeDiff'],
     rebase: commands.bindRebaseNamespace(ctx, guard),
     reflog: ((reflogOpts) => {
       guard();
