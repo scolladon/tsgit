@@ -1,6 +1,6 @@
 # Commands — Tier-1 reference
 
-Every method bound on a `Repository` handle. 33 entries, alphabetical.
+Every method bound on a `Repository` handle. 34 entries, alphabetical.
 
 | Command | Summary |
 |---|---|
@@ -31,6 +31,7 @@ Every method bound on a `Repository` handle. 33 entries, alphabetical.
 | [`revParse`](rev-parse.md) | Resolve revision expressions to `ObjectId`. |
 | [`revert`](revert.md) | Record new commits that undo earlier commits (inverse of cherry-pick). |
 | [`rm`](rm.md) | Remove files from the index (and optionally the working tree). |
+| [`shortlog`](shortlog.md) | Summarise reachable commits grouped by author/committer identity; returns structured per-author groups (no rendered line). |
 | [`show`](show.md) | Formatted output for commit / tag / tree / blob objects. |
 | [`sparseCheckout`](sparse-checkout.md) | Materialise a subset of the tree (cone / non-cone). |
 | [`stash`](stash.md) | Save working-tree + index changes on a stack and restore them later. |

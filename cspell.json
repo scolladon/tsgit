@@ -705,7 +705,10 @@
     "noff",
     "mutualize",
     "mutualized",
-    "mutualization"
+    "mutualization",
+    "strcmp",
+    "reconstructable",
+    "summarise"
   ],
   "ignorePaths": [
     "node_modules",

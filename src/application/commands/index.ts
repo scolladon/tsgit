@@ -192,6 +192,13 @@ export {
 } from './revert.js';
 export { type RmOptions, type RmResult, rm } from './rm.js';
 export {
+  type ShortlogBy,
+  type ShortlogCommit,
+  type ShortlogGroup,
+  type ShortlogOptions,
+  shortlog,
+} from './shortlog.js';
+export {
   type ShowBlobResult,
   type ShowCommitResult,
   type ShowInput,

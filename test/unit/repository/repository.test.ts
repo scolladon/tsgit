@@ -170,6 +170,7 @@ describe('openRepository — Repository binding integrity', () => {
             'revParse',
             'revert',
             'rm',
+            'shortlog',
             'show',
             'snapshot',
             'sparseCheckout',
