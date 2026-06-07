@@ -5,8 +5,8 @@
  * `RangeDiffEntry[]` (positions, oids, status marker, subject). The assignment —
  * exact + min-cost matching, the integer-division creation threshold, and the
  * interleaved output order — is what is pinned; the library emits no line. The
- * default-`-p` diff-of-diffs body is additionally reconstructed for a changed
- * pair from the structured `diffOfDiffs`.
+ * structured `diffOfDiffs` is additionally checked present + non-trivial for a
+ * changed pair (its rendered body is a caller projection, per ADR-279).
  *
  * @proves
  *   surface:        rangeDiff
@@ -76,6 +76,7 @@ const reconstructS = (entries: ReadonlyArray<RangeDiffEntry>): string => {
 
 let root: string;
 let ctx: Context;
+let baseRev: string;
 
 const range = (base: string, tip: string) => ({ base, tip });
 
@@ -115,23 +116,21 @@ runs('range-diff interop', () => {
     await writeAndCommit(root, 'e.txt', 'just e\n', 'feat E'); // new → '>'
     await writeAndCommit(root, 'src.c', src('return total + 1;'), 'feat S'); // funcname-bearing change
 
-    (globalThis as { __base?: string }).__base = base;
+    baseRev = base;
   }, SETUP_TIMEOUT);
 
   afterAll(async () => {
     if (root) await rm(root, { recursive: true, force: true });
   });
 
-  const base = (): string => (globalThis as { __base?: string }).__base!;
-
   it('Then range-diff -s reconstructs byte-for-byte', async () => {
     // Arrange
-    const expected = git(root, 'range-diff', '-s', `${base()}..v1`, `${base()}..v2`);
+    const expected = git(root, 'range-diff', '-s', `${baseRev}..v1`, `${baseRev}..v2`);
 
     // Act
     const entries = await rangeDiffCmd(ctx, {
-      old: range(base(), 'v1'),
-      new: range(base(), 'v2'),
+      old: range(baseRev, 'v1'),
+      new: range(baseRev, 'v2'),
     });
 
     // Assert
@@ -145,14 +144,14 @@ runs('range-diff interop', () => {
       'range-diff',
       '-s',
       '--creation-factor=1',
-      `${base()}..v1`,
-      `${base()}..v2`,
+      `${baseRev}..v1`,
+      `${baseRev}..v2`,
     );
 
     // Act
     const entries = await rangeDiffCmd(ctx, {
-      old: range(base(), 'v1'),
-      new: range(base(), 'v2'),
+      old: range(baseRev, 'v1'),
+      new: range(baseRev, 'v2'),
       creationFactor: 1,
     });
 
@@ -162,10 +161,20 @@ runs('range-diff interop', () => {
 
   it('Then --left-only is the entries that touch the old range', async () => {
     // Arrange
-    const expected = git(root, 'range-diff', '-s', '--left-only', `${base()}..v1`, `${base()}..v2`);
+    const expected = git(
+      root,
+      'range-diff',
+      '-s',
+      '--left-only',
+      `${baseRev}..v1`,
+      `${baseRev}..v2`,
+    );
 
     // Act
-    const entries = await rangeDiffCmd(ctx, { old: range(base(), 'v1'), new: range(base(), 'v2') });
+    const entries = await rangeDiffCmd(ctx, {
+      old: range(baseRev, 'v1'),
+      new: range(baseRev, 'v2'),
+    });
     const leftOnly = entries.filter((e) => e.old);
 
     // Assert
@@ -174,7 +183,10 @@ runs('range-diff interop', () => {
 
   it('Then a changed pair carries a diff-of-diffs over the ## patch texts', async () => {
     // Act
-    const entries = await rangeDiffCmd(ctx, { old: range(base(), 'v1'), new: range(base(), 'v2') });
+    const entries = await rangeDiffCmd(ctx, {
+      old: range(baseRev, 'v1'),
+      new: range(baseRev, 'v2'),
+    });
     const changed = entries.find((e) => e.status === 'changed');
 
     // Assert — the structured diff-of-diffs is present and non-trivial
