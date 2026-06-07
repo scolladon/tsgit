@@ -76,10 +76,15 @@ export const interleave = (
   next: ReadonlyArray<MatchedPatch>,
 ): ReadonlyArray<RangeDiffEntry> => {
   const entries: RangeDiffEntry[] = [];
+  // equivalent-mutant: `.fill(false)` vs an empty array — an unset `shown[i]`
+  // reads as `undefined` (falsy ≡ false), and only indices < old.length are ever
+  // assigned, so the two initialisations are observationally identical.
   const shown = new Array<boolean>(old.length).fill(false);
   let i = 0;
   let j = 0;
   while (i < old.length || j < next.length) {
+    // equivalent-mutant: the `i < old.length` bound here is redundant — `shown[i]`
+    // is never truthy at or past old.length, so `<`/`<=`/`true` all stop together.
     while (i < old.length && shown[i]) i++;
     if (i < old.length && old[i]!.matching < 0) {
       entries.push(deletion(old[i]!, i));
