@@ -8,13 +8,18 @@
  */
 
 import { cleanShortlogSubject } from '../../domain/shortlog/clean-subject.js';
-import { groupShortlog, type ShortlogEntry } from '../../domain/shortlog/group.js';
+import {
+  groupShortlog,
+  type ShortlogCommit,
+  type ShortlogEntry,
+  type ShortlogGroup,
+} from '../../domain/shortlog/group.js';
 import type { Context } from '../../ports/context.js';
 import { walkCommitsByDate } from '../primitives/walk-commits-by-date.js';
 import { assertRepository } from './internal/repo-state.js';
 import { resolveCommit } from './internal/resolve-rev.js';
 
-export type { ShortlogCommit, ShortlogGroup } from '../../domain/shortlog/index.js';
+export type { ShortlogCommit, ShortlogGroup };
 
 /** Which identity keys the grouping. */
 export type ShortlogBy = 'author' | 'committer';
@@ -28,7 +33,10 @@ export interface ShortlogOptions {
   readonly by?: ShortlogBy;
 }
 
-export const shortlog = async (ctx: Context, opts: ShortlogOptions = {}) => {
+export const shortlog = async (
+  ctx: Context,
+  opts: ShortlogOptions = {},
+): Promise<ReadonlyArray<ShortlogGroup>> => {
   await assertRepository(ctx);
   const startId = await resolveCommit(ctx, opts.rev ?? 'HEAD');
   const exclude = await Promise.all((opts.excluding ?? []).map((r) => resolveCommit(ctx, r)));
