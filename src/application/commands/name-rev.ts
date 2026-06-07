@@ -18,7 +18,6 @@ import {
 import type { Commit, ObjectId, RefName } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
 import { enumerateRefs } from '../primitives/enumerate-refs.js';
-import { readCommit } from '../primitives/internal/read-commit.js';
 import { readObject } from '../primitives/read-object.js';
 import { getRefStore } from '../primitives/ref-store.js';
 import { exceedsMaxPeelDepth } from '../primitives/validators.js';
@@ -50,7 +49,6 @@ export interface NameRevResult {
 
 const DEFAULT_REV = 'HEAD';
 const TAGS_PREFIX = 'refs/tags/';
-const READ_PARENT = { verifyHash: false, ignoreMissing: false, missing: new Set<string>() };
 
 export const nameRev = async (
   ctx: Context,
@@ -147,8 +145,8 @@ const expandParents = async (
     const parentOid = parents[index] as ObjectId;
     const candidate = index === 0 ? firstParentName(name) : mergeParentName(name, index + 1);
     if (!accept(revNames, parentOid, candidate)) continue;
-    const parentCommit = await readCommit(ctx, parentOid, READ_PARENT);
-    if (parentCommit !== undefined) queued.push(parentCommit);
+    const parent = await readObject(ctx, parentOid);
+    if (parent.type === 'commit') queued.push(parent);
   }
   return queued;
 };
