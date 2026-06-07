@@ -19,7 +19,20 @@ export interface ResolvedDescribePlan {
   readonly exclude: ReadonlyArray<string>;
   readonly dirty: boolean;
   readonly broken: boolean;
+  /** Delegate to `name-rev` (the nearest *containing* ref) instead of the ancestor walk. */
+  readonly contains: boolean;
 }
+
+// In `contains` mode `describe` is `name-rev`; the ancestor-walk selectors have
+// no meaning there, so supplying one is refused (an illegal combination at the
+// library boundary — a deliberate divergence from git's silent ignore).
+const CONTAINS_INCOMPATIBLE = [
+  'candidates',
+  'exactMatch',
+  'firstParent',
+  'dirty',
+  'broken',
+] as const satisfies ReadonlyArray<keyof DescribeOptions>;
 
 const toPatterns = (value: string | ReadonlyArray<string> | undefined): ReadonlyArray<string> => {
   if (value === undefined) return [];
@@ -37,10 +50,31 @@ const resolveMaxCandidates = (opts: DescribeOptions): number => {
   return opts.candidates ?? DEFAULT_CANDIDATES;
 };
 
+const parseContainsPlan = (opts: DescribeOptions): ResolvedDescribePlan => {
+  for (const key of CONTAINS_INCOMPATIBLE) {
+    if (opts[key] !== undefined) {
+      throw invalidOption(key, `option ${key} cannot be combined with contains`);
+    }
+  }
+  return {
+    tags: opts.tags === true,
+    all: opts.all === true,
+    maxCandidates: DEFAULT_CANDIDATES,
+    always: opts.always === true,
+    firstParent: false,
+    include: toPatterns(opts.match),
+    exclude: toPatterns(opts.exclude),
+    dirty: false,
+    broken: false,
+    contains: true,
+  };
+};
+
 export const parseDescribeOptions = (
   opts: DescribeOptions,
   hasExplicitInput: boolean,
 ): ResolvedDescribePlan => {
+  if (opts.contains === true) return parseContainsPlan(opts);
   const dirty = opts.dirty === true;
   const broken = opts.broken === true;
   if ((dirty || broken) && hasExplicitInput) {
@@ -56,5 +90,6 @@ export const parseDescribeOptions = (
     exclude: toPatterns(opts.exclude),
     dirty,
     broken,
+    contains: false,
   };
 };

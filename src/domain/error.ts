@@ -433,6 +433,8 @@ function extractDetail(data: TsgitErrorData): string {
       return `no tags can describe ${data.oid}`;
     case 'NO_EXACT_MATCH':
       return `no tag exactly matches ${data.oid}`;
+    case 'CANNOT_DESCRIBE':
+      return `cannot describe ${data.oid}`;
     default: {
       const _exhaustive: never = data;
       return String(_exhaustive);
