@@ -54,6 +54,19 @@ describe('cleanShortlogSubject', () => {
     });
   });
 
+  describe('Given leading whitespace before a "[PATCH]" prefix, When cleaned', () => {
+    it('Then the whitespace is trimmed first so the prefix is still stripped', () => {
+      // Arrange
+      const sut = cleanShortlogSubject;
+
+      // Act
+      const result = sut('  [PATCH] x');
+
+      // Assert
+      expect(result).toBe('x');
+    });
+  });
+
   describe('Given a "[PATCH v2]" prefix, When cleaned', () => {
     it('Then the whole bracket is stripped', () => {
       // Arrange
