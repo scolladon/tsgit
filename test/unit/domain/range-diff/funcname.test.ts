@@ -20,6 +20,10 @@ describe('matchFuncRec', () => {
   describe.each([
     ['underscore', '_private(void)'],
     ['dollar', '$vms_routine'],
+    ['uppercase A boundary', 'Apply()'],
+    ['uppercase Z boundary', 'Zero()'],
+    ['lowercase a boundary', 'apply()'],
+    ['lowercase z boundary', 'zip()'],
   ])('Given a line beginning with an %s identifier byte, When matched', (_label, text) => {
     it('Then it returns the line as the heading', () => {
       // Arrange
@@ -39,6 +43,9 @@ describe('matchFuncRec', () => {
     ['a space indent', '  spaced'],
     ['an empty line', ''],
     ['a digit', '0xdead'],
+    ['an at-sign (just below A)', '@home'],
+    ['a bracket (just above Z)', '[index]'],
+    ['a backtick (just below a)', '`tick'],
   ])('Given a line beginning with %s, When matched', (_label, text) => {
     it('Then it is not a function line', () => {
       // Arrange
@@ -52,16 +59,36 @@ describe('matchFuncRec', () => {
     });
   });
 
-  describe('Given a function line with trailing whitespace and a newline, When matched', () => {
-    it('Then trailing whitespace is stripped', () => {
+  describe.each([
+    ['a space', 'void f() '],
+    ['a tab', 'void f()\t'],
+    ['a newline', 'void f()\n'],
+    ['a carriage return', 'void f()\r'],
+    ['a vertical tab', 'void f()\v'],
+    ['a form feed', 'void f()\f'],
+  ])('Given a function line ending with %s, When matched', (_label, text) => {
+    it('Then the trailing whitespace byte is stripped', () => {
       // Arrange
       const sut = matchFuncRec;
 
       // Act
-      const result = sut(line('void f()  \t\n'));
+      const result = sut(line(text));
 
       // Assert
       expect(result).toBe('void f()');
+    });
+  });
+
+  describe('Given a function line ending with a non-whitespace control byte, When matched', () => {
+    it('Then it is kept (0x08 is below the isspace range)', () => {
+      // Arrange
+      const sut = matchFuncRec;
+
+      // Act
+      const result = sut(line('void f()\b'));
+
+      // Assert
+      expect(result).toBe('void f()\b');
     });
   });
 
