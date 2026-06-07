@@ -1,6 +1,6 @@
 # Commands — Tier-1 reference
 
-Every method bound on a `Repository` handle. 36 entries, alphabetical.
+Every method bound on a `Repository` handle. 37 entries, alphabetical.
 
 | Command | Summary |
 |---|---|
@@ -21,6 +21,7 @@ Every method bound on a `Repository` handle. 36 entries, alphabetical.
 | [`log`](log.md) | Walk first-parent commit history. |
 | [`merge`](merge.md) | Three-way merge with conflict materialisation. Nested-namespace surface (`repo.merge.run/continue/abort`). |
 | [`mv`](mv.md) | Rename/move tracked paths in the index and working tree. |
+| [`nameRev`](name-rev.md) | Name a commit by the nearest ref that contains it (`~`/`^` path); `describe --contains` delegates here. Structured data (no rendered line). |
 | [`pull`](pull.md) | Fetch a remote branch and merge it into the current branch. |
 | [`push`](push.md) | Push refs and objects to a remote. |
 | [`rangeDiff`](range-diff.md) | Compare two commit ranges (two versions of a patch series); returns the structured correspondence list (`= ! < >`) with a per-changed-pair diff-of-diffs (no rendered line). |
