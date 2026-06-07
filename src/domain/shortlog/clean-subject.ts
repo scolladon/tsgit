@@ -19,7 +19,7 @@ export const cleanShortlogSubject = (message: string): string => {
   return body.replace(LEADING_ASCII_WHITESPACE, '');
 };
 
-const dropToFirstBracket = (subject: string): string => {
-  const close = subject.indexOf(']');
-  return close === -1 ? subject : subject.slice(close + 1);
-};
+// Drop the leading `[PATCH…]` prefix through its first `]`. With no `]`,
+// `indexOf` is -1 so `slice(0)` returns the subject unchanged — git keeps a
+// `[PATCH`-prefix that never closes on its first line.
+const dropToFirstBracket = (subject: string): string => subject.slice(subject.indexOf(']') + 1);
