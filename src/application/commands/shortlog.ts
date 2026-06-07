@@ -7,13 +7,13 @@
  * caller projections.
  */
 
-import { cleanShortlogSubject } from '../../domain/shortlog/clean-subject.js';
 import {
+  cleanShortlogSubject,
   groupShortlog,
   type ShortlogCommit,
   type ShortlogEntry,
   type ShortlogGroup,
-} from '../../domain/shortlog/group.js';
+} from '../../domain/shortlog/index.js';
 import type { Context } from '../../ports/context.js';
 import { walkCommitsByDate } from '../primitives/walk-commits-by-date.js';
 import { assertRepository } from './internal/repo-state.js';
