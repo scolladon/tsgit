@@ -273,6 +273,27 @@ describe('nameRev', () => {
     });
   });
 
+  describe('Given two fully-tied tags created in reverse-alphabetical order', () => {
+    describe('When name-rev runs', () => {
+      it('Then the byte-first ref name wins the tie', async () => {
+        // Arrange — two lightweight tags on one commit tie on every key, so the
+        // ref-name sort (not enumeration order) and the reject-worse gate decide.
+        const ctx = await seed();
+        const c0 = await commitFile(ctx, 'c0');
+        const c1 = await commitFile(ctx, 'c1');
+        await lightweightTag(ctx, 'zzz', c1);
+        await lightweightTag(ctx, 'aaa', c1);
+
+        // Act
+        const sut = await nameRev(ctx, c0);
+
+        // Assert
+        expect(sut.ref).toBe(RefName.from('refs/tags/aaa'));
+        expect(sut.steps).toEqual([{ kind: 'ancestor', count: 1 }]);
+      });
+    });
+  });
+
   describe('Given two equal-distance tags with different tagger dates', () => {
     describe('When name-rev runs', () => {
       it('Then the older-tagged name wins', async () => {

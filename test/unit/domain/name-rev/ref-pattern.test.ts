@@ -108,6 +108,22 @@ describe('buildRefFilter', () => {
     });
   });
 
+  describe('Given multiple include patterns', () => {
+    describe('When a ref matches one but not all of them', () => {
+      it('Then matching any single include qualifies it', () => {
+        // Arrange
+        const sut = buildRefFilter({
+          tags: false,
+          refs: ['refs/tags/a*', 'refs/tags/z*'],
+          exclude: [],
+        });
+
+        // Act + Assert — `refs/tags/apple` matches `a*` only (`some`, not `every`).
+        expect(sut.qualifies('refs/tags/apple')).toBe(true);
+      });
+    });
+  });
+
   describe('Given an exclude pattern matching an otherwise-included ref', () => {
     describe('When qualifying', () => {
       it('Then the exclude drops it', () => {
