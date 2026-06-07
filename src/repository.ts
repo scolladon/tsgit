@@ -185,6 +185,7 @@ export interface Repository {
   readonly revert: commands.RevertNamespace;
   readonly revParse: BindCtx<typeof commands.revParse>;
   readonly rm: BindCtx<typeof commands.rm>;
+  readonly shortlog: BindCtx<typeof commands.shortlog>;
   // `show` is overloaded on input arity and `withStat`; `BindCtx` only captures
   // the last overload, so the binding is hand-written to preserve all paths.
   readonly show: {
@@ -485,6 +486,10 @@ export const openRepository = async (
       guard();
       return commands.rm(ctx, paths, rmOpts);
     }) as Repository['rm'],
+    shortlog: ((shortlogOpts) => {
+      guard();
+      return commands.shortlog(ctx, shortlogOpts);
+    }) as Repository['shortlog'],
     show: ((rev, showOpts) => {
       guard();
       return (
