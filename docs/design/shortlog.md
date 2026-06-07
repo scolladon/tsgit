@@ -49,7 +49,7 @@ binding contract; the design merely records them.
    leading paragraph to one space-joined line (per-line trailing ws stripped,
    continuation-line leading ws preserved, stop at the first blank line after
    content). Verified: `\nx` → `x`, `\n\ny` → `y`, `   \nz` → `z`.
-8. **Unborn HEAD refuses** — `git shortlog HEAD` fatals on an unborn branch; the
+8. **Unborn HEAD refuses** — `git shortlog HEAD` errors on an unborn branch; the
    library inherits this via `resolveCommit('HEAD')` (same as `log`).
 
 ## Surfacing latent bug: `foldSubject`
