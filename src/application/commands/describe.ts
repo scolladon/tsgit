@@ -131,11 +131,14 @@ const describeContains = async (
   plan: ContainsPlan,
 ): Promise<NameRevResult> => {
   const useTags = !plan.all;
-  const qualify = (pattern: string): string => `${TAGS_PREFIX}${pattern}`;
+  // Under `all`, git passes no `--refs`/`--exclude` (every ref is a source); under
+  // default mode each pattern is scoped to `refs/tags/`.
+  const scope = (patterns: ReadonlyArray<string>): ReadonlyArray<string> =>
+    useTags ? patterns.map((pattern) => `${TAGS_PREFIX}${pattern}`) : [];
   const result = await nameRev(ctx, rev, {
     tags: useTags,
-    refs: useTags ? plan.include.map(qualify) : [],
-    exclude: useTags ? plan.exclude.map(qualify) : [],
+    refs: scope(plan.include),
+    exclude: scope(plan.exclude),
   });
   if (result.ref === undefined && !plan.always) throw cannotDescribe(result.oid);
   return result;
