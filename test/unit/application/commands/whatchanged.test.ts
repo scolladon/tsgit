@@ -114,6 +114,8 @@ describe('whatchanged', () => {
       expect(messages(result)).toEqual(['empty', 'rename b to c', 'mod a add b', 'root']);
       expect(result[2]?.changes.changes.map((c) => c.type).sort()).toEqual(['add', 'modify']);
       expect(result[2]?.author.name).toBe('Ada');
+      // changes are raw / blob-free — no per-file stat counts (withStat off)
+      expect(result[2]?.changes.changes[0]).not.toHaveProperty('added');
     });
   });
 
