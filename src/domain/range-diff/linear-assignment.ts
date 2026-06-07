@@ -12,8 +12,11 @@
  * augmentation) and every index dance are kept identical to the C source.
  */
 
-/** git's `COST_MAX` — `INT_MAX`; marks a forbidden assignment cell. */
-export const COST_MAX = 0x7fffffff;
+/** git's `COST_MAX` (`linear-assignment.h`): `1 << 16`, deliberately small to
+ *  prevent integer overflow in the dual-variable arithmetic. Marks a forbidden
+ *  assignment cell — large enough to dominate any real cost, small enough that
+ *  `COST_MAX - v` never overflows a 32-bit int. */
+export const COST_MAX = 1 << 16;
 
 export interface Assignment {
   /** `columnToRow[c]` = the row assigned to column `c`. */

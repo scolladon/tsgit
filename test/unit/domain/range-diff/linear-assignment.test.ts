@@ -111,4 +111,29 @@ describe('computeAssignment', () => {
       expect(result.columnToRow).toEqual([0, 1]);
     });
   });
+
+  describe('Given a forbidden-cell-heavy 6x6 (range-diff reorder shape), When assigned', () => {
+    it('Then the forced permutation is found without overflow corruption', () => {
+      // Arrange — three exact pairs (col i -> row [0,2,1][i]) at cost 0, every
+      // other real/dummy cell forbidden, dummy×dummy free. A COST_MAX of INT_MAX
+      // would overflow the dual arithmetic and loop forever; 1<<16 does not.
+      const sut = computeAssignment;
+      const total = 6;
+      const cost = new Array<number>(total * total).fill(0);
+      const at = (column: number, row: number, value: number): void => {
+        cost[column + total * row] = value;
+      };
+      const exact = [0, 2, 1];
+      for (let i = 0; i < 3; i++)
+        for (let j = 0; j < 3; j++) at(i, j, exact[i] === j ? 0 : COST_MAX);
+      for (let i = 0; i < 3; i++) for (let j = 3; j < 6; j++) at(i, j, COST_MAX);
+      for (let j = 0; j < 3; j++) for (let i = 3; i < 6; i++) at(i, j, COST_MAX);
+
+      // Act
+      const result = sut(total, total, cost);
+
+      // Assert — old columns map to their exact rows; dummies absorb the rest
+      expect(result.columnToRow.slice(0, 3)).toEqual([0, 2, 1]);
+    });
+  });
 });
