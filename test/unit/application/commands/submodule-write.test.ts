@@ -573,7 +573,7 @@ describe('commands/submodule — deinit', () => {
     });
   });
 
-  describe('Given an empty worktree directory', () => {
+  describe('Given a missing worktree directory', () => {
     describe('When deinit runs', () => {
       it('Then cleared is false', async () => {
         // Arrange
@@ -584,6 +584,23 @@ describe('commands/submodule — deinit', () => {
 
         // Assert
         expect(sut.entries[0]?.cleared).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a present but empty worktree directory', () => {
+    describe('When deinit runs', () => {
+      it('Then cleared is false', async () => {
+        // Arrange
+        const ctx = await seed({ gitmodules: GITMODULES_ONE, config: REGISTERED_ONE });
+        await ctx.fs.mkdir(`${ctx.layout.workDir}/libs/a`);
+
+        // Act
+        const sut = await submoduleDeinit(ctx, { paths: ['libs/a'] });
+
+        // Assert
+        expect(sut.entries[0]?.cleared).toBe(false);
+        expect(await readConfigText(ctx)).not.toContain('[submodule "libs/a"]');
       });
     });
   });
