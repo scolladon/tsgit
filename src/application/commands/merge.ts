@@ -137,18 +137,13 @@ export const mergeRun = async (
   if (base === theirId) return { kind: 'up-to-date', id: ourId };
   if (base === ourId) {
     if (opts.fastForward !== 'never') {
-      const lock = await acquireIndexLock(ctx);
-      try {
-        const entries = await materialiseNonConflictTree(ctx, await getTree(ctx, theirId));
-        await lock.commit(entries);
+      return materialiseAndApply(ctx, await getTree(ctx, theirId), async () => {
         await updateRef(ctx, head.target, theirId, {
           expected: ourId,
           reflogMessage: `${internal.reflogAction ?? `merge ${opts.rev}`}: Fast-forward`,
         });
-      } finally {
-        await lock.release();
-      }
-      return { kind: 'fast-forward', id: theirId, branch: head.target };
+        return { kind: 'fast-forward', id: theirId, branch: head.target };
+      });
     }
   }
   if (opts.fastForward === 'only') {
@@ -216,6 +211,27 @@ const materialiseNonConflictTree = async (
   }
 };
 
+/**
+ * Materialise a non-conflict merge result (`targetTree`) to the working tree +
+ * index under the index lock, then run `apply` (the ref/commit step) and return
+ * its result — releasing the lock either way. Shared by the clean true-merge and
+ * fast-forward branches so the lock ceremony lives in one place.
+ */
+const materialiseAndApply = async (
+  ctx: Context,
+  targetTree: ObjectId,
+  apply: () => Promise<MergeResult>,
+): Promise<MergeResult> => {
+  const lock = await acquireIndexLock(ctx);
+  try {
+    const entries = await materialiseNonConflictTree(ctx, targetTree);
+    await lock.commit(entries);
+    return await apply();
+  } finally {
+    await lock.release();
+  }
+};
+
 const commitCleanMerge = async (
   ctx: Context,
   opts: MergeRunInput,
@@ -236,19 +252,14 @@ const commitCleanMerge = async (
     message,
     extraHeaders: [],
   };
-  const lock = await acquireIndexLock(ctx);
-  try {
-    const entries = await materialiseNonConflictTree(ctx, mergedTree);
-    await lock.commit(entries);
+  return materialiseAndApply(ctx, mergedTree, async () => {
     const id = await createCommit(ctx, commitData);
     await updateRef(ctx, branchName, id, {
       expected: ourId,
       reflogMessage: `${internal.reflogAction ?? `merge ${opts.rev}`}: Merge made by the 'tsgit' strategy.`,
     });
     return { kind: 'merge', id, branch: branchName, parents: [ourId, theirId] };
-  } finally {
-    await lock.release();
-  }
+  });
 };
 
 type MergeTreeResult =
