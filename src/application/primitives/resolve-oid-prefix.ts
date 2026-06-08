@@ -10,7 +10,7 @@ import { ambiguousOidPrefix } from '../../domain/commands/error.js';
 import type { ObjectId } from '../../domain/objects/index.js';
 import { findByPrefix } from '../../domain/storage/index.js';
 import type { Context } from '../../ports/context.js';
-import { objectsDir } from './path-layout.js';
+import { commonGitDir, objectsDir } from './path-layout.js';
 import { getPackRegistry } from './read-object.js';
 
 const FULL_OID = /^[0-9a-f]{40}$/;
@@ -22,7 +22,7 @@ export const MAX_OID_PREFIX_CANDIDATES = 16;
 
 /** Loose objects whose `<dir><name>` starts with `prefix` (name-based scan). */
 const scanLoose = async (ctx: Context, prefix: string): Promise<ReadonlyArray<ObjectId>> => {
-  const dir = objectsDir(ctx.layout.gitDir, prefix.slice(0, 2));
+  const dir = objectsDir(commonGitDir(ctx), prefix.slice(0, 2));
   if (!(await ctx.fs.exists(dir))) return [];
   const rest = prefix.slice(2);
   const found: ObjectId[] = [];

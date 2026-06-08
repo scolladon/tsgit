@@ -23,7 +23,7 @@ import {
 } from '../../domain/storage/index.js';
 import type { Context } from '../../ports/context.js';
 import type { PackLookupHit, PackRegistry } from './pack-registry.js';
-import { looseObjectPath } from './path-layout.js';
+import { commonGitDir, looseObjectPath } from './path-layout.js';
 
 const PACK_SLICE_HINT = 1 << 16;
 
@@ -148,7 +148,7 @@ function checkAborted(ctx: Context): void {
 }
 
 async function tryLoose(ctx: Context, id: ObjectId): Promise<Uint8Array | undefined> {
-  const path = looseObjectPath(ctx.layout.gitDir, id);
+  const path = looseObjectPath(commonGitDir(ctx), id);
   if (!(await ctx.fs.exists(path))) return undefined;
   const compressed = await ctx.fs.read(path);
   return ctx.compressor.inflate(compressed);
