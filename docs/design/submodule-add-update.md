@@ -94,9 +94,9 @@ All facts below are pinned from real `git submodule add`/`update --init` runs
    `refs/remotes/origin/*`, `[remote "origin"] url+fetch`, `[branch "<head>"]
    remote/merge`, one `clone: from <url>` reflog line. The module stays **on the
    branch** (not detached).
-2. **`core.worktree`** in the module config: `(../ × (2 + nameSegs)) + <path>`
+2. **`core.worktree`** in the module config: `(../ × (2 + name-segments)) + <path>`
    (e.g. name `libs/sub`, path `libs/sub` → `../../../../libs/sub`).
-3. **`.git` gitfile** at `<path>/.git`: `gitdir: (../ × pathSegs).git/modules/<name>`
+3. **`.git` gitfile** at `<path>/.git`: `gitdir: (../ × path-segments).git/modules/<name>`
    (e.g. path `libs/sub` → `gitdir: ../../.git/modules/libs/sub`).
 4. **Materialise the worktree** at the remote-HEAD branch's tree (git's clone
    checkout — only the `clone: from` reflog entry, **no** separate `checkout`
@@ -167,11 +167,11 @@ gets no `branch` key (the branch lives only in `.gitmodules`).
 `.gitmodules`. `recursive` additionally derives each **checked-out** submodule's
 child Context (`deriveSubmoduleContext`) and runs `sync({recursive:true})` there,
 bounded by `MAX_SUBMODULE_DEPTH` (the read-walk cap) and the `visited` cycle
-guard. An uninitialised/uncheckout submodule is silently skipped (no child HEAD).
+guard. An uninitialised / un-cloned submodule is silently skipped (no child HEAD).
 
 ## Substrate — clone into a nested gitdir + materialise a worktree
 
-The one new capability. Decomposed to **maximise reuse** and keep the existing
+The one new capability. Decomposed to **reuse as much as possible** and keep the existing
 top-level `clone` untouched (its faithfulness goldens stay green):
 
 ```
@@ -213,7 +213,7 @@ already-safe (`isUnsafeSubmoduleName`-passed) `name`/`path`:
 export const submoduleGitfile = (name: string, path: string): string =>
   `gitdir: ${'../'.repeat(segmentCount(path))}.git/modules/${name}`;
 
-// core.worktree in the module config (.git/modules/<name> is 2 + nameSegs deep)
+// core.worktree in the module config (.git/modules/<name> is 2 + name-segments deep)
 export const submoduleCoreWorktree = (name: string, path: string): string =>
   `${'../'.repeat(2 + segmentCount(name))}${path}`;
 ```

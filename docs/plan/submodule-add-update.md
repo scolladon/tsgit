@@ -5,8 +5,8 @@ commit, one atomic conventional-commit per slice. Mutation kills come from **uni
 tests (interop is skipped under Stryker); interop proves real-git byte-parity.
 
 Faithfulness anchors (all verified against git 2.54 in design/ADRs):
-- gitfile `<path>/.git` = `gitdir: ` + (`../`×pathSegs) + `.git/modules/<name>`
-- core.worktree = (`../`×(2+nameSegs)) + `<path>`
+- gitfile `<path>/.git` = `gitdir: ` + (`../`×path-segments) + `.git/modules/<name>`
+- core.worktree = (`../`×(2+name-segments)) + `<path>`
 - `.gitmodules` keys: `path`, `url`(raw), `branch?` — tab-indented
 - super `.git/config` `add` order: `url`(resolved), `active` (no `update`)
 - module reflog: `clone: from <url>`; `checkout: moving from <x> to <y>`;
