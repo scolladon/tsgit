@@ -1,7 +1,10 @@
 import type { Context } from '../../../ports/context.js';
 import {
+  type SubmoduleInitOptions,
+  type SubmoduleInitResult,
   type SubmoduleListOptions,
   type SubmoduleListResult,
+  submoduleInit,
   submoduleList,
 } from '../submodule.js';
 
@@ -13,6 +16,7 @@ import {
  */
 export interface SubmoduleNamespace {
   readonly list: (opts?: SubmoduleListOptions) => Promise<SubmoduleListResult>;
+  readonly init: (opts?: SubmoduleInitOptions) => Promise<SubmoduleInitResult>;
 }
 
 /**
@@ -26,6 +30,10 @@ export const bindSubmoduleNamespace = (ctx: Context, guard: () => void): Submodu
     list: (opts) => {
       guard();
       return submoduleList(ctx, opts);
+    },
+    init: (opts) => {
+      guard();
+      return submoduleInit(ctx, opts);
     },
   };
   return Object.freeze(ns);

@@ -269,8 +269,12 @@ export {
 } from './status.js';
 export {
   type SubmoduleEntry,
+  type SubmoduleInitEntry,
+  type SubmoduleInitOptions,
+  type SubmoduleInitResult,
   type SubmoduleListOptions,
   type SubmoduleListResult,
+  submoduleInit,
   submoduleList,
 } from './submodule.js';
 export {

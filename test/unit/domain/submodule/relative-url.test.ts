@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { TsgitError } from '../../../../src/domain/error.js';
-import { relativeUrl } from '../../../../src/domain/submodule/relative-url.js';
+import { relativeUrl, resolveSubmoduleUrl } from '../../../../src/domain/submodule/relative-url.js';
 
 describe('Given a relative submodule URL and a base remote URL', () => {
   describe('When resolving an https base', () => {
@@ -90,6 +90,11 @@ describe('Given a relative submodule URL and a base remote URL', () => {
       expect(relativeUrl('./a/b/super', '../sub')).toBe('a/b/sub');
     });
 
+    it('Then a base already prefixed with `./` resolves a `./` url', () => {
+      // Arrange + Act + Assert
+      expect(relativeUrl('./a/b/super', './sub')).toBe('a/b/super/sub');
+    });
+
     it('Then over-popping a relative base past its root refuses', () => {
       // Arrange
       const sut = relativeUrl;
@@ -103,6 +108,38 @@ describe('Given a relative submodule URL and a base remote URL', () => {
       // Assert
       expect(thrown).toBeInstanceOf(TsgitError);
       expect((thrown as TsgitError).data).toMatchObject({ code: 'RELATIVE_URL_UNRESOLVABLE' });
+    });
+  });
+});
+
+describe('Given a .gitmodules submodule url and a base', () => {
+  describe('When the url is dot-relative', () => {
+    it('Then a `../` url resolves against the base', () => {
+      // Arrange + Act + Assert
+      expect(resolveSubmoduleUrl('https://h.x/a/b/super.git', '../sub')).toBe(
+        'https://h.x/a/b/sub',
+      );
+    });
+
+    it('Then a `./` url resolves against the base', () => {
+      // Arrange + Act + Assert
+      expect(resolveSubmoduleUrl('https://h.x/a/super.git', './sub')).toBe(
+        'https://h.x/a/super.git/sub',
+      );
+    });
+  });
+
+  describe('When the url is not dot-relative', () => {
+    it('Then a bare relative url is used verbatim', () => {
+      // Arrange + Act + Assert
+      expect(resolveSubmoduleUrl('https://h.x/a/b/super.git', 'sub')).toBe('sub');
+    });
+
+    it('Then an absolute https url is used verbatim', () => {
+      // Arrange + Act + Assert
+      expect(resolveSubmoduleUrl('https://h.x/super', 'https://other/x.git')).toBe(
+        'https://other/x.git',
+      );
     });
   });
 });

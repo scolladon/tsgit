@@ -65,3 +65,13 @@ export const relativeUrl = (remoteUrl: string, url: string): string => {
   const trimmed = rest.endsWith('/') ? joined.slice(0, -1) : joined;
   return trimmed.startsWith(DOT_SLASH) ? trimmed.slice(DOT_SLASH.length) : trimmed;
 };
+
+/**
+ * Resolve a `.gitmodules` submodule URL against the superproject's base URL.
+ * git only treats a URL as relative when it starts with `./` or `../` (the
+ * `starts_with_dot_slash` / `starts_with_dot_dot_slash` gate around
+ * `relative_url`); every other form — bare `sub`, `https://…`, `git@h:…`,
+ * `/abs` — is used verbatim.
+ */
+export const resolveSubmoduleUrl = (base: string, url: string): string =>
+  url.startsWith(DOT_SLASH) || url.startsWith(DOT_DOT_SLASH) ? relativeUrl(base, url) : url;
