@@ -13,6 +13,13 @@ const arbSegment = (): fc.Arbitrary<string> =>
 const arbSegments = (max: number): fc.Arbitrary<string> =>
   fc.array(arbSegment(), { minLength: 1, maxLength: max }).map((parts) => parts.join('/'));
 
+/**
+ * A `/`-joined submodule name or path that passes `isUnsafeSubmoduleName`: 1–4
+ * non-empty, non-`.`/`..` segments with no leading/trailing slash. Drives the
+ * gitlink-path algebra over its declared safe subset.
+ */
+export const arbSafeSubmoduleName = (max = 4): fc.Arbitrary<string> => arbSegments(max);
+
 /** A non-relative base: absolute path, https URL, or scp-style URL. */
 export const arbNonRelativeBase = (): fc.Arbitrary<string> =>
   fc.oneof(
