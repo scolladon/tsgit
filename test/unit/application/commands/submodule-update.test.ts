@@ -1,18 +1,23 @@
 import { describe, expect, it } from 'vitest';
+import { clone } from '../../../../src/application/commands/clone.js';
 import { submoduleUpdate } from '../../../../src/application/commands/submodule.js';
 import { readConfig } from '../../../../src/application/primitives/config-read.js';
 import { acquireIndexLock } from '../../../../src/application/primitives/internal/index-lock.js';
+import { deriveSubmoduleCloneContext } from '../../../../src/application/primitives/internal/submodule-context.js';
+import { materializeWorktreeFromHead } from '../../../../src/application/primitives/materialize-worktree-from-head.js';
+import { readObject } from '../../../../src/application/primitives/read-object.js';
+import { resolveRef } from '../../../../src/application/primitives/resolve-ref.js';
 import { updateConfigOperations } from '../../../../src/application/primitives/update-config.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { writeTree } from '../../../../src/application/primitives/write-tree.js';
 import { TsgitError } from '../../../../src/domain/error.js';
 import { type IndexEntry, STAGE0_FLAGS } from '../../../../src/domain/git-index/index.js';
 import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
-import type { FilePath, ObjectId } from '../../../../src/domain/objects/index.js';
+import type { FilePath, ObjectId, RefName } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
 import type { HttpTransport } from '../../../../src/ports/http-transport.js';
 import { buildSeededContext } from '../primitives/fixtures.js';
-import { buildSubmoduleRemote } from './submodule-network-fixture.js';
+import { buildDivergentRemote, buildSubmoduleRemote } from './submodule-network-fixture.js';
 
 const ENCODER = new TextEncoder();
 const SUB_URL = 'https://remote.example/sub.git';
@@ -202,6 +207,108 @@ describe('Given a superproject pinning a registered submodule', () => {
       expect(caught).toBeInstanceOf(TsgitError);
       expect((caught as TsgitError).data.code).toBe('OBJECT_NOT_FOUND');
       expect((caught as TsgitError).data).toMatchObject({ id: BOGUS_OID });
+    });
+  });
+});
+
+/**
+ * Seed a superproject whose submodule `lib` pins the divergent `m2`, while the
+ * module clones onto `main` (m1) — so a rebase/merge reconciliation is real.
+ */
+const seedDivergent = async (update: string): Promise<{ ctx: Context; m2: ObjectId }> => {
+  const base = await buildSeededContext();
+  const remote = await buildDivergentRemote(base);
+  const blob = (await writeObject(base, {
+    type: 'blob',
+    id: '' as ObjectId,
+    content: ENCODER.encode('root\n'),
+  })) as ObjectId;
+  const tree = await writeTree(base, [
+    { name: 'README' as FilePath, id: blob, mode: FILE_MODE.REGULAR },
+  ]);
+  const commit = (await writeObject(base, {
+    type: 'commit',
+    id: '' as ObjectId,
+    data: {
+      tree,
+      parents: [],
+      author: IDENTITY,
+      committer: IDENTITY,
+      message: 'init',
+      extraHeaders: [],
+    },
+  })) as ObjectId;
+  await base.fs.writeUtf8(`${base.layout.gitDir}/refs/heads/main`, `${commit}\n`);
+  await base.fs.writeUtf8(`${base.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
+  await base.fs.writeUtf8(
+    `${base.layout.workDir}/.gitmodules`,
+    `[submodule "lib"]\n\tpath = lib\n\turl = ${SUB_URL}\n\tupdate = ${update}\n`,
+  );
+  const lock = await acquireIndexLock(base);
+  await lock.commit([
+    entry('README', blob, FILE_MODE.REGULAR),
+    entry('lib', remote.m2, FILE_MODE.GITLINK),
+  ]);
+  await updateConfigOperations(base, [
+    { kind: 'set', section: 'submodule', subsection: 'lib', key: 'url', value: SUB_URL },
+  ]);
+  const ctx = withTransport(base, remote.transport);
+  // Pre-clone the module on branch `main` and give it a local `[user]` (a real
+  // user has a global identity; tsgit's readConfig is local-only). The reconcile
+  // update then sees the module already cloned and rebases/merges onto the pin.
+  const child = deriveSubmoduleCloneContext(ctx, 'lib', 'lib' as FilePath);
+  await clone(child, { url: SUB_URL });
+  await child.fs.appendUtf8(
+    `${child.layout.gitDir}/config`,
+    `[user]\n\tname = ${IDENTITY.name}\n\temail = ${IDENTITY.email}\n`,
+  );
+  await materializeWorktreeFromHead(child);
+  return { ctx, m2: remote.m2 };
+};
+
+describe('Given a submodule whose branch diverges from the pinned commit', () => {
+  describe('When update --rebase reconciles it', () => {
+    it('Then it replays the branch onto the pin (linear), keeping both sides', async () => {
+      // Arrange
+      const { ctx } = await seedDivergent('rebase');
+      // Act
+      const result = await submoduleUpdate(ctx, { paths: ['lib'] });
+      // Assert
+      expect(result.entries[0]).toMatchObject({ mode: 'rebase', changed: true });
+      const reflog = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/modules/lib/logs/HEAD`);
+      expect(reflog).toContain('rebase');
+      expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/lib/a.txt`)).toBe('a only\n');
+      expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/lib/m.txt`)).toBe('m only\n');
+    });
+  });
+
+  describe('When update --merge reconciles it', () => {
+    it('Then it creates a merge commit (two parents) on the branch', async () => {
+      // Arrange
+      const { ctx, m2 } = await seedDivergent('merge');
+      // Act
+      const result = await submoduleUpdate(ctx, { paths: ['lib'] });
+      // Assert
+      expect(result.entries[0]).toMatchObject({ mode: 'merge', changed: true });
+      const reflog = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/modules/lib/logs/HEAD`);
+      expect(reflog).toContain('merge');
+      const child = deriveSubmoduleCloneContext(ctx, 'lib', 'lib' as FilePath);
+      const head = await readObject(child, await resolveRef(child, 'HEAD' as RefName));
+      if (head.type !== 'commit') throw new Error('expected a commit at HEAD');
+      expect(head.data.parents).toHaveLength(2);
+      expect(head.data.parents).toContain(m2);
+    });
+  });
+
+  describe('When opts.mode overrides a configured update mode', () => {
+    it('Then --checkout overrides update=none and detaches at the pin', async () => {
+      // Arrange
+      const { ctx, m2 } = await seedDivergent('none');
+      // Act
+      const result = await submoduleUpdate(ctx, { paths: ['lib'], mode: 'checkout' });
+      // Assert
+      expect(result.entries[0]).toMatchObject({ mode: 'checkout', changed: true });
+      expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/modules/lib/HEAD`)).toBe(`${m2}\n`);
     });
   });
 });

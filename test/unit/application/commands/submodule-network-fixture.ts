@@ -124,3 +124,99 @@ export const buildSubmoduleRemote = async (
   const capabilities = ['side-band-64k', 'ofs-delta', `symref=HEAD:refs/heads/${opts.head}`];
   return { transport: makeTransport(refs, capabilities, packBytes), commits };
 };
+
+interface TreeEntrySpec {
+  readonly mode: typeof FILE_MODE.REGULAR;
+  readonly name: string;
+  readonly id: ObjectId;
+}
+
+/** Accumulate unique objects (deduped by id) for a multi-commit pack. */
+const createPackBuilder = (ctx: Context) => {
+  const byId = new Map<string, EntrySpec>();
+  const add = async (object: Parameters<typeof serializeObject>[0]): Promise<ObjectId> => {
+    const bytes = serializeObject(object, ctx.hashConfig);
+    const id = (await ctx.hash.hashHex(bytes)) as ObjectId;
+    if (!byId.has(id))
+      byId.set(id, { kind: 'base', type: object.type, content: stripHeader(bytes) });
+    return id;
+  };
+  return {
+    blob: (content: string): Promise<ObjectId> =>
+      add({ type: 'blob', id: '' as ObjectId, content: ENCODER.encode(content) }),
+    tree: (entries: ReadonlyArray<TreeEntrySpec>): Promise<ObjectId> =>
+      add({ type: 'tree', id: '' as ObjectId, entries: [...entries] }),
+    commit: (
+      tree: ObjectId,
+      parents: ReadonlyArray<ObjectId>,
+      message: string,
+    ): Promise<ObjectId> =>
+      add({
+        type: 'commit',
+        id: '' as ObjectId,
+        data: {
+          tree,
+          parents: [...parents],
+          author: REMOTE_IDENTITY,
+          committer: REMOTE_IDENTITY,
+          message,
+          extraHeaders: [],
+        },
+      }),
+    pack: async (): Promise<Uint8Array> =>
+      (await buildSyntheticPack(ctx, [...byId.values()])).packBytes,
+  };
+};
+
+export interface DivergentRemote {
+  readonly transport: HttpTransport;
+  /** Shared base commit. */
+  readonly base: ObjectId;
+  /** `main` tip — base + a change to `f.txt` and a new `a.txt`. */
+  readonly m1: ObjectId;
+  /** `other` tip — base + a new `m.txt` (touches different paths than m1). */
+  readonly m2: ObjectId;
+}
+
+/**
+ * A remote whose `main` (→ m1) and `other` (→ m2) branches diverge from a shared
+ * base, touching disjoint paths so a rebase/merge of one onto the other never
+ * conflicts. `head` is `main`. Drives the `update --rebase`/`--merge` tests:
+ * the module clones onto `main` (m1), and reconciling to a pin of `m2` exercises
+ * a real (linear vs merge-commit) reconciliation.
+ */
+export const buildDivergentRemote = async (ctx: Context): Promise<DivergentRemote> => {
+  const b = createPackBuilder(ctx);
+  const REGULAR = FILE_MODE.REGULAR;
+  const baseF = await b.blob('base\n');
+  const base = await b.commit(
+    await b.tree([{ mode: REGULAR, name: 'f.txt', id: baseF }]),
+    [],
+    'base',
+  );
+  const mainF = await b.blob('main change\n');
+  const aBlob = await b.blob('a only\n');
+  const m1 = await b.commit(
+    await b.tree([
+      { mode: REGULAR, name: 'a.txt', id: aBlob },
+      { mode: REGULAR, name: 'f.txt', id: mainF },
+    ]),
+    [base],
+    'm1',
+  );
+  const mBlob = await b.blob('m only\n');
+  const m2 = await b.commit(
+    await b.tree([
+      { mode: REGULAR, name: 'f.txt', id: baseF },
+      { mode: REGULAR, name: 'm.txt', id: mBlob },
+    ]),
+    [base],
+    'm2',
+  );
+  const refs = [
+    { name: 'refs/heads/main', id: m1 },
+    { name: 'refs/heads/other', id: m2 },
+  ];
+  const capabilities = ['side-band-64k', 'ofs-delta', 'symref=HEAD:refs/heads/main'];
+  return { transport: makeTransport(refs, capabilities, await b.pack()), base, m1, m2 };
+};

@@ -718,7 +718,13 @@ export const submoduleUpdate = async (
     const url = config.submodule?.get(row.name)?.url ?? row.url ?? '';
     const child = deriveSubmoduleCloneContext(ctx, row.name, row.path as FilePath);
     const cloned = !(await ctx.fs.exists(`${child.layout.gitDir}/HEAD`));
-    if (cloned) await cloneSubmoduleInto(ctx, child, url, row.name, row.path);
+    if (cloned) {
+      await cloneSubmoduleInto(ctx, child, url, row.name, row.path);
+      // Materialise the clone's checked-out branch so a rebase/merge reconcile
+      // sees a clean working tree (clone fetches objects only) — git's clone
+      // checkout. `checkout` mode re-materialises at the pin below.
+      await materializeWorktreeFromHead(child);
+    }
     await readObject(child, pinned);
     const changed = await reconcileSubmodule(child, pinned, mode);
     entries.push({ name: row.name, path: row.path as FilePath, id: pinned, mode, cloned, changed });
