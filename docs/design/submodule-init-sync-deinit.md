@@ -400,9 +400,9 @@ killable mutants. Property tests for the two parser/grammar modules.
 
 | # | Decision |
 |---|----------|
-| (this) | Scope 24.1a = `init`/`sync`/`deinit` (local); `add`/`update` (network) → 24.1b |
-| NNN | Surface: unified `repo.submodule` namespace; remove `repo.submodules` (breaking) |
-| NNN+1 | `relativeUrl` is a verbatim port of git's `relative_url`; lives in `domain/submodule/` |
+| [286](../adr/286-submodule-write-side-local-scope.md) | Scope 24.1a = `init`/`sync`/`deinit` (local); `add`/`update` (network) → 24.1b |
+| [287](../adr/287-unified-submodule-namespace.md) | Surface: unified `repo.submodule` namespace; remove `repo.submodules` (breaking) |
+| [288](../adr/288-relative-url-verbatim-port.md) | `relativeUrl` is a verbatim port of git's `relative_url`; lives in `domain/submodule/` |
 
 Decisions pre-settled by existing ADRs: per-verb concrete results, no
 discriminator (ADR-192); namespace binder in `internal/` (ADR-181); `.gitmodules`
