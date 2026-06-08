@@ -6,6 +6,7 @@ import { checkout } from '../../../../src/application/commands/checkout.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
 import {
+  asMergeDirtyError,
   buildConflictIndexEntries,
   MAX_MERGE_TREE_DEPTH,
   materialiseConflictBytes,
@@ -18,10 +19,13 @@ import {
   writeOutcomeToTree,
 } from '../../../../src/application/commands/merge.js';
 import { readBlob } from '../../../../src/application/primitives/read-blob.js';
+import { readIndex } from '../../../../src/application/primitives/read-index.js';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
 import { readReflog } from '../../../../src/application/primitives/reflog-store.js';
 import { resolveRef } from '../../../../src/application/primitives/resolve-ref.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
+import { checkoutOverwriteDirty } from '../../../../src/domain/commands/error.js';
+import { TsgitError } from '../../../../src/domain/error.js';
 import type { MergeConflict, MergeOutcome } from '../../../../src/domain/merge/index.js';
 import type {
   AuthorIdentity,
@@ -83,6 +87,35 @@ describe('merge', () => {
         if (sut.kind === 'fast-forward') {
           expect(sut.id).toBe(c2.id);
         }
+      });
+    });
+  });
+
+  describe('Given an ancestor target that adds a file', () => {
+    describe('When merge fast-forwards', () => {
+      it('Then the working tree and index gain the added file', async () => {
+        // Arrange — base f.txt; feature +m.txt; main stays at base → fast-forward.
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/f.txt`, 'base\n');
+        await add(ctx, ['f.txt']);
+        await commit(ctx, { message: 'base', author });
+        await branchCreate(ctx, { name: 'feature' });
+        await checkout(ctx, { rev: 'feature' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/m.txt`, 'm\n');
+        await add(ctx, ['m.txt']);
+        await commit(ctx, { message: 'feature-add', author });
+        await checkout(ctx, { rev: 'main' });
+
+        // Act
+        const sut = await mergeRun(ctx, { rev: 'feature', author });
+
+        // Assert — fast-forward materialises m.txt to working tree + index.
+        expect(sut.kind).toBe('fast-forward');
+        const onDisk = await ctx.fs.exists(`${ctx.layout.workDir}/m.txt`);
+        const indexPaths = (await readIndex(ctx)).entries.map((e) => e.path).sort();
+        expect(onDisk).toBe(true);
+        expect(indexPaths).toEqual(['f.txt', 'm.txt']);
       });
     });
   });
@@ -238,6 +271,226 @@ describe('merge', () => {
         const mergedTree = (await readObject(ctx, mergeCommit.data.tree)) as Tree;
         const names = mergedTree.entries.map((e) => e.name).sort();
         expect(names).toEqual(['a.txt', 'b.txt', 'c.txt']);
+      });
+    });
+  });
+
+  describe('Given a clean true-merge with a theirs-only add', () => {
+    describe('When merge', () => {
+      it('Then the working tree and index gain the added file', async () => {
+        // Arrange — base f.txt; ours +a.txt; theirs +m.txt (disjoint → clean).
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/f.txt`, 'base\n');
+        await add(ctx, ['f.txt']);
+        await commit(ctx, { message: 'base', author });
+        await branchCreate(ctx, { name: 'theirs' });
+        await checkout(ctx, { rev: 'theirs' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/m.txt`, 'm\n');
+        await add(ctx, ['m.txt']);
+        await commit(ctx, { message: 'theirs-add', author });
+        await checkout(ctx, { rev: 'main' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a\n');
+        await add(ctx, ['a.txt']);
+        await commit(ctx, { message: 'ours-add', author });
+
+        // Act
+        const sut = await mergeRun(ctx, { rev: 'theirs', author });
+
+        // Assert — m.txt reaches both the working tree and the index.
+        expect(sut.kind).toBe('merge');
+        const onDisk = await ctx.fs.exists(`${ctx.layout.workDir}/m.txt`);
+        const indexPaths = (await readIndex(ctx)).entries.map((e) => e.path).sort();
+        expect(onDisk).toBe(true);
+        expect(indexPaths).toEqual(['a.txt', 'f.txt', 'm.txt']);
+      });
+    });
+  });
+
+  describe('Given a clean true-merge with a theirs-side edit', () => {
+    describe('When merge', () => {
+      it('Then the working file holds the merged bytes', async () => {
+        // Arrange — base 3-line file; ours edits line1; theirs edits line3.
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'line1\nline2\nline3\n');
+        await add(ctx, ['file.txt']);
+        await commit(ctx, { message: 'base', author });
+        await branchCreate(ctx, { name: 'theirs' });
+        await checkout(ctx, { rev: 'theirs' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'line1\nline2\nTHEIRS\n');
+        await add(ctx, ['file.txt']);
+        await commit(ctx, { message: 'theirs-edit', author });
+        await checkout(ctx, { rev: 'main' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'OURS\nline2\nline3\n');
+        await add(ctx, ['file.txt']);
+        await commit(ctx, { message: 'ours-edit', author });
+
+        // Act
+        const sut = await mergeRun(ctx, { rev: 'theirs', author });
+
+        // Assert — the working file carries both edits.
+        expect(sut.kind).toBe('merge');
+        const onDisk = await ctx.fs.readUtf8(`${ctx.layout.workDir}/file.txt`);
+        expect(onDisk).toBe('OURS\nline2\nTHEIRS\n');
+      });
+    });
+  });
+
+  describe('Given a clean true-merge where theirs deletes a file', () => {
+    describe('When merge', () => {
+      it('Then the working file is removed and the index drops it', async () => {
+        // Arrange — base a.txt + b.txt; theirs deletes a.txt; ours touches c.txt.
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a\n');
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.txt`, 'b\n');
+        await add(ctx, ['a.txt', 'b.txt']);
+        await commit(ctx, { message: 'base', author });
+        await branchCreate(ctx, { name: 'theirs' });
+        await checkout(ctx, { rev: 'theirs' });
+        const { rm } = await import('../../../../src/application/commands/rm.js');
+        await rm(ctx, ['a.txt']);
+        await commit(ctx, { message: 'theirs-delete', author });
+        await checkout(ctx, { rev: 'main' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/c.txt`, 'c\n');
+        await add(ctx, ['c.txt']);
+        await commit(ctx, { message: 'ours-add', author });
+
+        // Act
+        const sut = await mergeRun(ctx, { rev: 'theirs', author });
+
+        // Assert — a.txt is gone from disk and the index.
+        expect(sut.kind).toBe('merge');
+        const onDisk = await ctx.fs.exists(`${ctx.layout.workDir}/a.txt`);
+        const indexPaths = (await readIndex(ctx)).entries.map((e) => e.path).sort();
+        expect(onDisk).toBe(false);
+        expect(indexPaths).toEqual(['b.txt', 'c.txt']);
+      });
+    });
+  });
+
+  describe('Given a tracked file the merge would overwrite is locally modified', () => {
+    describe('When merge', () => {
+      it('Then it refuses with WORKING_TREE_DIRTY, leaving HEAD and the dirty file intact', async () => {
+        // Arrange — base f.txt; ours +o.txt; theirs edits f.txt → clean true-merge
+        // that would overwrite f.txt. Drift the working f.txt before merging.
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/f.txt`, 'base\n');
+        await add(ctx, ['f.txt']);
+        await commit(ctx, { message: 'base', author });
+        await branchCreate(ctx, { name: 'theirs' });
+        await checkout(ctx, { rev: 'theirs' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/f.txt`, 'theirs\n');
+        await add(ctx, ['f.txt']);
+        await commit(ctx, { message: 'theirs-edit', author });
+        await checkout(ctx, { rev: 'main' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/o.txt`, 'o\n');
+        await add(ctx, ['o.txt']);
+        const oursTip = await commit(ctx, { message: 'ours-add', author });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/f.txt`, 'DIRTY\n');
+
+        // Act
+        let error: unknown;
+        try {
+          await mergeRun(ctx, { rev: 'theirs', author });
+        } catch (caught) {
+          error = caught;
+        }
+
+        // Assert — WORKING_TREE_DIRTY on f.txt; HEAD and the dirty bytes untouched.
+        expect(error).toBeInstanceOf(TsgitError);
+        const data = (error as TsgitError).data;
+        expect(data.code).toBe('WORKING_TREE_DIRTY');
+        if (data.code === 'WORKING_TREE_DIRTY') {
+          expect(data.paths).toContain('f.txt');
+        }
+        expect(await resolveRef(ctx, 'refs/heads/main' as RefName)).toBe(oursTip.id);
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/f.txt`)).toBe('DIRTY\n');
+      });
+    });
+  });
+
+  describe('Given an untracked file clashes with a theirs-only add', () => {
+    describe('When merge', () => {
+      it('Then it refuses with WORKING_TREE_DIRTY, leaving HEAD and the untracked file intact', async () => {
+        // Arrange — base f.txt; ours +o.txt; theirs +m.txt. Pre-write an untracked
+        // m.txt the theirs-only add would clobber.
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/f.txt`, 'base\n');
+        await add(ctx, ['f.txt']);
+        await commit(ctx, { message: 'base', author });
+        await branchCreate(ctx, { name: 'theirs' });
+        await checkout(ctx, { rev: 'theirs' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/m.txt`, 'theirs-m\n');
+        await add(ctx, ['m.txt']);
+        await commit(ctx, { message: 'theirs-add', author });
+        await checkout(ctx, { rev: 'main' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/o.txt`, 'o\n');
+        await add(ctx, ['o.txt']);
+        const oursTip = await commit(ctx, { message: 'ours-add', author });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/m.txt`, 'untracked\n');
+
+        // Act
+        let error: unknown;
+        try {
+          await mergeRun(ctx, { rev: 'theirs', author });
+        } catch (caught) {
+          error = caught;
+        }
+
+        // Assert — WORKING_TREE_DIRTY on m.txt; HEAD and the untracked bytes untouched.
+        expect(error).toBeInstanceOf(TsgitError);
+        const data = (error as TsgitError).data;
+        expect(data.code).toBe('WORKING_TREE_DIRTY');
+        if (data.code === 'WORKING_TREE_DIRTY') {
+          expect(data.paths).toContain('m.txt');
+        }
+        expect(await resolveRef(ctx, 'refs/heads/main' as RefName)).toBe(oursTip.id);
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/m.txt`)).toBe('untracked\n');
+      });
+    });
+  });
+
+  describe('Given a dirty-worktree merge refusal acquired the index lock', () => {
+    describe('When a later index operation runs', () => {
+      it('Then the lock was released so the operation is not blocked', async () => {
+        // Arrange — a clean true-merge that would overwrite f.txt, drifted so it refuses.
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/f.txt`, 'base\n');
+        await add(ctx, ['f.txt']);
+        await commit(ctx, { message: 'base', author });
+        await branchCreate(ctx, { name: 'theirs' });
+        await checkout(ctx, { rev: 'theirs' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/f.txt`, 'theirs\n');
+        await add(ctx, ['f.txt']);
+        await commit(ctx, { message: 'theirs-edit', author });
+        await checkout(ctx, { rev: 'main' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/o.txt`, 'o\n');
+        await add(ctx, ['o.txt']);
+        await commit(ctx, { message: 'ours-add', author });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/f.txt`, 'DIRTY\n');
+        let refused = false;
+        try {
+          await mergeRun(ctx, { rev: 'theirs', author });
+        } catch (caught) {
+          refused =
+            (caught as { readonly data?: { readonly code?: string } }).data?.code ===
+            'WORKING_TREE_DIRTY';
+        }
+        expect(refused).toBe(true);
+
+        // Act — a follow-up op that re-acquires the index lock; a leaked lock
+        // would surface as RESOURCE_LOCKED here.
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/q.txt`, 'q\n');
+        await add(ctx, ['q.txt']);
+
+        // Assert — the add succeeded, so the refused merge released the lock.
+        const indexPaths = (await readIndex(ctx)).entries.map((e) => e.path).sort();
+        expect(indexPaths).toContain('q.txt');
       });
     });
   });
@@ -2421,6 +2674,55 @@ describe('merge — sparse checkout', () => {
           .map((e) => e.flags.stage)
           .sort((a, b) => a - b);
         expect(srcStages).toEqual([1, 2, 3]);
+      });
+    });
+  });
+});
+
+describe('asMergeDirtyError (direct)', () => {
+  describe('Given a CHECKOUT_OVERWRITE_DIRTY error', () => {
+    describe('When asMergeDirtyError maps it', () => {
+      it('Then returns WORKING_TREE_DIRTY carrying the same paths', () => {
+        // Arrange
+        const sut = asMergeDirtyError(checkoutOverwriteDirty(['x.txt' as FilePath]));
+
+        // Assert
+        expect(sut).toBeInstanceOf(TsgitError);
+        const data = (sut as TsgitError).data;
+        expect(data.code).toBe('WORKING_TREE_DIRTY');
+        if (data.code === 'WORKING_TREE_DIRTY') {
+          expect(data.paths).toEqual(['x.txt']);
+        }
+      });
+    });
+  });
+
+  describe('Given a TsgitError with a different code', () => {
+    describe('When asMergeDirtyError maps it', () => {
+      it('Then returns the original error unchanged', () => {
+        // Arrange
+        const original = new TsgitError({ code: 'NOTHING_TO_COMMIT' });
+
+        // Act
+        const sut = asMergeDirtyError(original);
+
+        // Assert
+        expect(sut).toBe(original);
+      });
+    });
+  });
+
+  describe('Given a non-TsgitError value', () => {
+    describe('When asMergeDirtyError maps it', () => {
+      it('Then returns it unchanged', () => {
+        // Arrange
+        const original = new Error('boom');
+
+        // Act
+        const sut = asMergeDirtyError(original);
+
+        // Assert
+        expect(sut).toBe(original);
       });
     });
   });

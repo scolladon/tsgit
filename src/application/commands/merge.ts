@@ -1,5 +1,6 @@
-import { nonFastForward } from '../../domain/commands/error.js';
+import { nonFastForward, workingTreeDirty } from '../../domain/commands/error.js';
 import { conflictsToIndexEntries } from '../../domain/diff/index.js';
+import { TsgitError } from '../../domain/error.js';
 import {
   type IndexEntry,
   STAGE0_FLAGS,
@@ -33,8 +34,10 @@ import type { Context } from '../../ports/context.js';
 import { readConfig } from '../primitives/config-read.js';
 import { createCommit } from '../primitives/create-commit.js';
 import { flattenTree } from '../primitives/flatten-tree.js';
+import { materializeTree } from '../primitives/materialize-tree.js';
 import { mergeBase } from '../primitives/merge-base.js';
 import { readBlob } from '../primitives/read-blob.js';
+import { readIndex } from '../primitives/read-index.js';
 import { readObject } from '../primitives/read-object.js';
 import { loadSparseMatcher } from '../primitives/read-sparse-checkout.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
@@ -134,11 +137,13 @@ export const mergeRun = async (
   if (base === theirId) return { kind: 'up-to-date', id: ourId };
   if (base === ourId) {
     if (opts.fastForward !== 'never') {
-      await updateRef(ctx, head.target, theirId, {
-        expected: ourId,
-        reflogMessage: `${internal.reflogAction ?? `merge ${opts.rev}`}: Fast-forward`,
+      return materialiseAndApply(ctx, await getTree(ctx, theirId), async () => {
+        await updateRef(ctx, head.target, theirId, {
+          expected: ourId,
+          reflogMessage: `${internal.reflogAction ?? `merge ${opts.rev}`}: Fast-forward`,
+        });
+        return { kind: 'fast-forward', id: theirId, branch: head.target };
       });
-      return { kind: 'fast-forward', id: theirId, branch: head.target };
     }
   }
   if (opts.fastForward === 'only') {
@@ -175,6 +180,58 @@ const mergeCommit = async (
   }
 };
 
+/**
+ * Map `materializeTree`'s checkout-flavoured dirty refusal to the merge-family
+ * `WORKING_TREE_DIRTY` code, so the whole 3-way merge family speaks one
+ * would-overwrite error; any other error passes through untouched. Exported for
+ * direct unit testing.
+ */
+export const asMergeDirtyError = (err: unknown): unknown =>
+  err instanceof TsgitError && err.data.code === 'CHECKOUT_OVERWRITE_DIRTY'
+    ? workingTreeDirty(err.data.paths)
+    : err;
+
+/**
+ * Materialise a non-conflict merge result (clean true-merge or fast-forward) to
+ * the working tree + index: write the target tree's delta against the current
+ * index and return the post-write stage-0 entries for the caller to commit under
+ * its index lock. Mirrors the clean branch of `applyMergeToWorktree`; the
+ * conflict path keeps its own sparse-aware writers.
+ */
+const materialiseNonConflictTree = async (
+  ctx: Context,
+  targetTree: ObjectId,
+): Promise<ReadonlyArray<IndexEntry>> => {
+  const currentIndex = await readIndex(ctx);
+  try {
+    const result = await materializeTree(ctx, { targetTree, currentIndex, force: false });
+    return result.newIndexEntries;
+  } catch (err) {
+    throw asMergeDirtyError(err);
+  }
+};
+
+/**
+ * Materialise a non-conflict merge result (`targetTree`) to the working tree +
+ * index under the index lock, then run `apply` (the ref/commit step) and return
+ * its result — releasing the lock either way. Shared by the clean true-merge and
+ * fast-forward branches so the lock ceremony lives in one place.
+ */
+const materialiseAndApply = async (
+  ctx: Context,
+  targetTree: ObjectId,
+  apply: () => Promise<MergeResult>,
+): Promise<MergeResult> => {
+  const lock = await acquireIndexLock(ctx);
+  try {
+    const entries = await materialiseNonConflictTree(ctx, targetTree);
+    await lock.commit(entries);
+    return await apply();
+  } finally {
+    await lock.release();
+  }
+};
+
 const commitCleanMerge = async (
   ctx: Context,
   opts: MergeRunInput,
@@ -195,12 +252,14 @@ const commitCleanMerge = async (
     message,
     extraHeaders: [],
   };
-  const id = await createCommit(ctx, commitData);
-  await updateRef(ctx, branchName, id, {
-    expected: ourId,
-    reflogMessage: `${internal.reflogAction ?? `merge ${opts.rev}`}: Merge made by the 'tsgit' strategy.`,
+  return materialiseAndApply(ctx, mergedTree, async () => {
+    const id = await createCommit(ctx, commitData);
+    await updateRef(ctx, branchName, id, {
+      expected: ourId,
+      reflogMessage: `${internal.reflogAction ?? `merge ${opts.rev}`}: Merge made by the 'tsgit' strategy.`,
+    });
+    return { kind: 'merge', id, branch: branchName, parents: [ourId, theirId] };
   });
-  return { kind: 'merge', id, branch: branchName, parents: [ourId, theirId] };
 };
 
 type MergeTreeResult =
