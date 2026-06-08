@@ -1,5 +1,7 @@
 import type { Context } from '../../../ports/context.js';
 import {
+  type SubmoduleAddOptions,
+  type SubmoduleAddResult,
   type SubmoduleDeinitOptions,
   type SubmoduleDeinitResult,
   type SubmoduleInitOptions,
@@ -8,10 +10,14 @@ import {
   type SubmoduleListResult,
   type SubmoduleSyncOptions,
   type SubmoduleSyncResult,
+  type SubmoduleUpdateOptions,
+  type SubmoduleUpdateResult,
+  submoduleAdd,
   submoduleDeinit,
   submoduleInit,
   submoduleList,
   submoduleSync,
+  submoduleUpdate,
 } from '../submodule.js';
 
 /**
@@ -22,7 +28,9 @@ import {
  */
 export interface SubmoduleNamespace {
   readonly list: (opts?: SubmoduleListOptions) => Promise<SubmoduleListResult>;
+  readonly add: (opts: SubmoduleAddOptions) => Promise<SubmoduleAddResult>;
   readonly init: (opts?: SubmoduleInitOptions) => Promise<SubmoduleInitResult>;
+  readonly update: (opts?: SubmoduleUpdateOptions) => Promise<SubmoduleUpdateResult>;
   readonly sync: (opts?: SubmoduleSyncOptions) => Promise<SubmoduleSyncResult>;
   readonly deinit: (opts?: SubmoduleDeinitOptions) => Promise<SubmoduleDeinitResult>;
 }
@@ -39,9 +47,17 @@ export const bindSubmoduleNamespace = (ctx: Context, guard: () => void): Submodu
       guard();
       return submoduleList(ctx, opts);
     },
+    add: (opts) => {
+      guard();
+      return submoduleAdd(ctx, opts);
+    },
     init: (opts) => {
       guard();
       return submoduleInit(ctx, opts);
+    },
+    update: (opts) => {
+      guard();
+      return submoduleUpdate(ctx, opts);
     },
     sync: (opts) => {
       guard();
