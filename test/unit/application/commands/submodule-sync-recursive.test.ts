@@ -55,31 +55,31 @@ describe('Given a two-level submodule tree', () => {
   describe('When sync runs without recursion', () => {
     it('Then it re-points the top level only, leaving the nested submodule untouched', async () => {
       // Arrange
-      const sut = await seedNested();
+      const ctx = await seedNested();
       // Act
-      await submoduleSync(sut);
+      await submoduleSync(ctx);
       // Assert
-      const config = await readConfig(sut);
+      const config = await readConfig(ctx);
       expect(config.submodule?.get('lib')?.url).toBe(SUPER_NEW);
-      expect(await innerUrlOf(sut)).toBe(INNER_OLD);
+      expect(await innerUrlOf(ctx)).toBe(INNER_OLD);
     });
   });
 
   describe('When sync runs with recursion', () => {
     it('Then it descends and re-points the nested submodule too', async () => {
       // Arrange
-      const sut = await seedNested();
+      const ctx = await seedNested();
       // Act
-      await submoduleSync(sut, { recursive: true });
+      await submoduleSync(ctx, { recursive: true });
       // Assert — top level re-pointed
-      const config = await readConfig(sut);
+      const config = await readConfig(ctx);
       expect(config.submodule?.get('lib')?.url).toBe(SUPER_NEW);
       // lib's own remote.origin.url re-pointed
-      const libConfig = await ctx_text(sut, 'modules/lib/config');
+      const libConfig = await ctx_text(ctx, 'modules/lib/config');
       expect(libConfig).toContain(`url = ${SUPER_NEW}`);
       // nested inner re-pointed in lib's config + inner's own remote
-      expect(await innerUrlOf(sut)).toBe(INNER_NEW);
-      const innerConfig = await ctx_text(sut, 'modules/lib/modules/inner/config');
+      expect(await innerUrlOf(ctx)).toBe(INNER_NEW);
+      const innerConfig = await ctx_text(ctx, 'modules/lib/modules/inner/config');
       expect(innerConfig).toContain(`url = ${INNER_NEW}`);
     });
   });

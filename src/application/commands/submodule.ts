@@ -626,6 +626,10 @@ export const submoduleAdd = async (
   await assertNotBare(ctx, 'submodule add');
   const name = opts.name ?? opts.path;
   assertAddInputs(name, opts.path, opts.url);
+  // Validate `branch` as a ref component — it is joined into `refs/heads/<branch>`
+  // and written as a file, so an unchecked `../`-laden value could traverse out
+  // of the module gitdir.
+  if (opts.branch !== undefined) validateRefName(`${HEADS_PREFIX}${opts.branch}`);
   await assertPathFree(ctx, opts.path);
   const config = await readConfig(ctx);
   const base = await resolveBaseUrl(ctx, config);

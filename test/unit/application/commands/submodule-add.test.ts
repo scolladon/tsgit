@@ -207,6 +207,18 @@ describe('Given a superproject and a submodule remote', () => {
     });
   });
 
+  describe('When add is given an unsafe branch name', () => {
+    it('Then it refuses before cloning (no ref-path traversal)', async () => {
+      // Arrange
+      const { ctx } = await seedSuper();
+      // Act + Assert
+      await expect(
+        submoduleAdd(ctx, { url: SUB_URL, path: 'libs/sub', branch: '../../evil' }),
+      ).rejects.toThrow(TsgitError);
+      expect(await ctx.fs.exists(`${ctx.layout.gitDir}/modules`)).toBe(false);
+    });
+  });
+
   describe('When add tracks a named branch (-b)', () => {
     it('Then .gitmodules records branch after path and url', async () => {
       // Arrange
