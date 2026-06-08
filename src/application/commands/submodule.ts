@@ -9,10 +9,15 @@
  * result (no discriminator); the namespace binder lives in
  * `internal/submodule-namespace.ts`.
  */
-import { invalidOption, pathspecNoMatch } from '../../domain/commands/error.js';
+import {
+  invalidOption,
+  pathspecNoMatch,
+  workingTreeFileTooLarge,
+} from '../../domain/commands/error.js';
 import { type FilePath, ObjectId, type RefName } from '../../domain/objects/index.js';
 import { validateRefName } from '../../domain/refs/index.js';
 import { submoduleHasModifications } from '../../domain/submodule/error.js';
+import { isUnsafeSubmoduleName } from '../../domain/submodule/name.js';
 import { resolveSubmoduleUrl } from '../../domain/submodule/relative-url.js';
 import { parseUpdateMode, type SubmoduleUpdateMode } from '../../domain/submodule/update-mode.js';
 import type { Context } from '../../ports/context.js';
@@ -20,7 +25,7 @@ import { type ParsedConfig, readConfig } from '../primitives/config-read.js';
 import { deriveSubmoduleContext } from '../primitives/internal/submodule-context.js';
 import { type GitmodulesRow, parseGitmodules } from '../primitives/parse-gitmodules.js';
 import { getRefStore } from '../primitives/ref-store.js';
-import type { SubmoduleEntry } from '../primitives/types.js';
+import { MAX_GITMODULES_BYTES, type SubmoduleEntry } from '../primitives/types.js';
 import { type ConfigOperation, updateConfigOperations } from '../primitives/update-config.js';
 import { looksLikeObjectId } from '../primitives/validators.js';
 import { walkSubmodules } from '../primitives/walk-submodules.js';
@@ -33,17 +38,29 @@ const GITMODULES_FILE = '.gitmodules';
 const HEADS_PREFIX = 'refs/heads/';
 const HEAD_REF = 'HEAD' as RefName;
 
-/** A `.gitmodules` row that is actionable by the write verbs (has a path). */
+/** A `.gitmodules` row that is actionable by the write verbs (has a safe path). */
 interface PathedRow extends GitmodulesRow {
   readonly path: string;
 }
 
-const hasPath = (row: GitmodulesRow): row is PathedRow => row.path !== undefined;
+/**
+ * A row the write verbs may act on: it has a `path` that is safe to join onto
+ * the worktree root. The `path` is rejected by the same containment rules as
+ * the subsection name (no `..`/empty segment, absolute, drive-prefixed,
+ * backslash, control chars), so `deinit`'s working-tree removal and the status
+ * child Context can never escape the superproject — git's path hardening.
+ */
+const isActionableRow = (row: GitmodulesRow): row is PathedRow =>
+  row.path !== undefined && !isUnsafeSubmoduleName(row.path);
 
 /** Parse the working-tree `.gitmodules`; absent file ⇒ no submodules. */
 const readWorktreeGitmodules = async (ctx: Context): Promise<ReadonlyArray<GitmodulesRow>> => {
   const path = `${ctx.layout.workDir}/${GITMODULES_FILE}`;
   if (!(await ctx.fs.exists(path))) return [];
+  const stat = await ctx.fs.stat(path);
+  if (stat.size > MAX_GITMODULES_BYTES) {
+    throw workingTreeFileTooLarge(path as FilePath, stat.size, MAX_GITMODULES_BYTES);
+  }
   return parseGitmodules(await ctx.fs.readUtf8(path));
 };
 
@@ -73,7 +90,7 @@ const selectRows = (
   rows: ReadonlyArray<GitmodulesRow>,
   paths: ReadonlyArray<string> | undefined,
 ): ReadonlyArray<PathedRow> => {
-  const pathed = rows.filter(hasPath);
+  const pathed = rows.filter(isActionableRow);
   if (paths === undefined) return pathed;
   const matched = pathed.filter((row) => paths.includes(row.path));
   const matchedPaths = new Set(matched.map((row) => row.path));
@@ -310,20 +327,23 @@ export const submoduleDeinit = async (
     throw invalidOption('submodule.deinit', "use 'all: true' to deinitialise every submodule");
   }
   const rows = await readWorktreeGitmodules(ctx);
-  const selected = opts.all === true ? rows.filter(hasPath) : selectRows(rows, opts.paths);
+  const selected = opts.all === true ? rows.filter(isActionableRow) : selectRows(rows, opts.paths);
   const config = await readConfig(ctx);
   const entries: SubmoduleDeinitEntry[] = [];
-  const ops: ConfigOperation[] = [];
+  // Each submodule is fully deinit'd (worktree cleared + config section removed)
+  // before the next — git's incremental behaviour, so a later dirty submodule
+  // leaves earlier ones completely deinit'd rather than half-done.
   for (const row of selected) {
     const path = row.path as FilePath;
     if (opts.force !== true) await assertSubmoduleClean(ctx, row.name, path);
     const cleared = await clearWorktree(ctx, path);
     if (config.submodule?.has(row.name) === true) {
-      ops.push({ kind: 'removeSection', section: 'submodule', subsection: row.name });
+      await updateConfigOperations(ctx, [
+        { kind: 'removeSection', section: 'submodule', subsection: row.name },
+      ]);
     }
     entries.push({ name: row.name, path, url: row.url ?? '', cleared });
   }
-  if (ops.length > 0) await updateConfigOperations(ctx, ops);
   return { entries };
 };
 

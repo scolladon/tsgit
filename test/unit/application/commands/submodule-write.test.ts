@@ -6,6 +6,7 @@ import {
   submoduleSync,
 } from '../../../../src/application/commands/submodule.js';
 import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
+import { MAX_GITMODULES_BYTES } from '../../../../src/application/primitives/types.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { writeTree } from '../../../../src/application/primitives/write-tree.js';
 import { TsgitError } from '../../../../src/domain/error.js';
@@ -191,6 +192,45 @@ describe('commands/submodule — init', () => {
 
         // Assert
         expect(sut.entries.map((e) => e.name)).toEqual(['libs/a']);
+      });
+    });
+  });
+
+  describe('Given a submodule whose path escapes the worktree', () => {
+    describe('When init runs', () => {
+      it('Then the unsafe-path row is dropped', async () => {
+        // Arrange
+        const ctx = await seed({
+          gitmodules: `[submodule "evil"]\n\tpath = ../escape\n\turl = ../x\n${GITMODULES_ONE}`,
+          config: ORIGIN,
+        });
+
+        // Act
+        const sut = await submoduleInit(ctx);
+
+        // Assert
+        expect(sut.entries.map((e) => e.name)).toEqual(['libs/a']);
+      });
+    });
+  });
+
+  describe('Given a .gitmodules larger than the byte cap', () => {
+    describe('When init runs', () => {
+      it('Then it refuses with WORKING_TREE_FILE_TOO_LARGE', async () => {
+        // Arrange
+        const ctx = await seed({
+          gitmodules: 'x'.repeat(MAX_GITMODULES_BYTES + 1),
+          config: ORIGIN,
+        });
+
+        // Act & Assert
+        try {
+          await submoduleInit(ctx);
+          expect.fail('init did not reject an oversized .gitmodules');
+        } catch (err) {
+          expect(err).toBeInstanceOf(TsgitError);
+          expect((err as TsgitError).data.code).toBe('WORKING_TREE_FILE_TOO_LARGE');
+        }
       });
     });
   });
@@ -562,6 +602,33 @@ describe('commands/submodule — deinit', () => {
           expect(err).toBeInstanceOf(TsgitError);
           expect((err as TsgitError).data.code).toBe('PATHSPEC_NO_MATCH');
         }
+      });
+    });
+  });
+
+  describe('Given two submodules where the second is dirty', () => {
+    describe('When deinit all runs without force', () => {
+      it('Then the first is fully deinit-ed before the second refuses', async () => {
+        // Arrange — libs/a un-checked-out (clears cleanly), libs/b checked out + dirty
+        const ctx = await seed({
+          gitmodules: `${GITMODULES_ONE}[submodule "libs/b"]\n\tpath = libs/b\n\turl = ../b\n`,
+          config: `${REGISTERED_ONE}[submodule "libs/b"]\n\turl = https://h.x/g/b\n`,
+        });
+        await writeWorktreeFile(ctx, 'libs/a', 'file.txt');
+        await seedCheckedOut(ctx, 'libs/b');
+        await writeWorktreeFile(ctx, 'libs/b', 'dirty.txt');
+
+        // Act & Assert
+        try {
+          await submoduleDeinit(ctx, { all: true });
+          expect.fail('deinit did not refuse the dirty second submodule');
+        } catch (err) {
+          expect((err as TsgitError).data.code).toBe('SUBMODULE_HAS_MODIFICATIONS');
+        }
+        // libs/a was fully deinit-ed (config removed) before libs/b aborted
+        const text = await readConfigText(ctx);
+        expect(text).not.toContain('[submodule "libs/a"]');
+        expect(text).toContain('[submodule "libs/b"]');
       });
     });
   });
