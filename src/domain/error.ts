@@ -441,6 +441,8 @@ function extractDetail(data: TsgitErrorData): string {
       return `cannot strip one component off url '${data.url}'`;
     case 'SUBMODULE_HAS_MODIFICATIONS':
       return `submodule work tree '${data.path}' contains local modifications`;
+    case 'SUBMODULE_PATH_EXISTS':
+      return `'${data.path}' already exists in the index`;
     default: {
       const _exhaustive: never = data;
       return String(_exhaustive);

@@ -14,22 +14,37 @@ import {
   pathspecNoMatch,
   workingTreeFileTooLarge,
 } from '../../domain/commands/error.js';
-import { type FilePath, ObjectId, type RefName } from '../../domain/objects/index.js';
+import { type IndexEntry, STAGE0_FLAGS } from '../../domain/git-index/index.js';
+import { FILE_MODE, type FilePath, ObjectId, type RefName } from '../../domain/objects/index.js';
 import { validateRefName } from '../../domain/refs/index.js';
-import { submoduleHasModifications } from '../../domain/submodule/error.js';
+import { submoduleHasModifications, submodulePathExists } from '../../domain/submodule/error.js';
+import { submoduleCoreWorktree, submoduleGitfile } from '../../domain/submodule/gitlink-path.js';
 import { isUnsafeSubmoduleName } from '../../domain/submodule/name.js';
 import { resolveSubmoduleUrl } from '../../domain/submodule/relative-url.js';
 import { parseUpdateMode, type SubmoduleUpdateMode } from '../../domain/submodule/update-mode.js';
 import type { Context } from '../../ports/context.js';
 import { type ParsedConfig, readConfig } from '../primitives/config-read.js';
-import { deriveSubmoduleContext } from '../primitives/internal/submodule-context.js';
+import { acquireIndexLock } from '../primitives/internal/index-lock.js';
+import {
+  deriveSubmoduleCloneContext,
+  deriveSubmoduleContext,
+} from '../primitives/internal/submodule-context.js';
+import { materializeWorktreeFromHead } from '../primitives/materialize-worktree-from-head.js';
 import { type GitmodulesRow, parseGitmodules } from '../primitives/parse-gitmodules.js';
+import { readIndex } from '../primitives/read-index.js';
 import { getRefStore } from '../primitives/ref-store.js';
+import { resolveRef } from '../primitives/resolve-ref.js';
 import { MAX_GITMODULES_BYTES, type SubmoduleEntry } from '../primitives/types.js';
-import { type ConfigOperation, updateConfigOperations } from '../primitives/update-config.js';
+import {
+  applyConfigOpInText,
+  type ConfigOperation,
+  updateConfigOperations,
+} from '../primitives/update-config.js';
 import { looksLikeObjectId } from '../primitives/validators.js';
 import { walkSubmodules } from '../primitives/walk-submodules.js';
-import { assertRepository } from './internal/repo-state.js';
+import { writeObject } from '../primitives/write-object.js';
+import { clone } from './clone.js';
+import { assertNotBare, assertRepository } from './internal/repo-state.js';
 import { status } from './status.js';
 
 export type { SubmoduleEntry };
@@ -383,4 +398,184 @@ export const submoduleList = async (
     entries.push(entry);
   }
   return { entries };
+};
+
+const SUBMODULE_SECTION = 'submodule';
+
+export interface SubmoduleAddOptions {
+  /** Submodule URL — stored verbatim in `.gitmodules`, resolved for `.git/config`. */
+  readonly url: string;
+  /** Worktree-relative checkout path. */
+  readonly path: string;
+  /** `.gitmodules` subsection name. Default: `path` (git's `--name` default). */
+  readonly name?: string;
+  /** `-b`: track this branch instead of the remote default HEAD. */
+  readonly branch?: string;
+}
+
+export interface SubmoduleAddEntry {
+  readonly name: string;
+  readonly path: FilePath;
+  /** Resolved URL written to `.git/config` + the module's `remote.origin.url`. */
+  readonly url: string;
+  /** Submodule HEAD oid staged as the gitlink. */
+  readonly id: ObjectId;
+  /** Checked-out branch (remote default HEAD branch, or `branch`). */
+  readonly branch: string;
+}
+
+export type SubmoduleAddResult = SubmoduleAddEntry;
+
+/** Reject empty/unsafe `name`/`path`/`url` before any filesystem mutation. */
+const assertAddInputs = (name: string, path: string, url: string): void => {
+  if (url === '') throw invalidOption('submodule.add', 'url must not be empty');
+  if (path === '') throw invalidOption('submodule.add', 'path must not be empty');
+  if (isUnsafeSubmoduleName(name))
+    throw invalidOption('submodule.add.name', `unsafe name '${name}'`);
+  if (isUnsafeSubmoduleName(path))
+    throw invalidOption('submodule.add.path', `unsafe path '${path}'`);
+};
+
+/** Refuse when the target path is already tracked in the superproject index. */
+const assertPathFree = async (ctx: Context, path: string): Promise<void> => {
+  const index = await readIndex(ctx);
+  if (index.entries.some((entry) => entry.path === path)) throw submodulePathExists(path);
+};
+
+/** A `set` op on the submodule subsection of `.gitmodules` / `.git/config`. */
+const setSubmoduleOp = (subsection: string, key: string, value: string): ConfigOperation => ({
+  kind: 'set',
+  section: SUBMODULE_SECTION,
+  subsection,
+  key,
+  value,
+});
+
+/**
+ * Write the `.gitmodules` `[submodule "<name>"]` block (`path`, `url`, optional
+ * `branch`). `setConfigEntryInText` inserts a fresh key right after the header,
+ * so the ops are folded in reverse to land in git's `path`→`url`→`branch` order.
+ */
+const writeGitmodulesEntry = async (
+  ctx: Context,
+  name: string,
+  path: string,
+  rawUrl: string,
+  branch: string | undefined,
+): Promise<Uint8Array> => {
+  const file = `${ctx.layout.workDir}/${GITMODULES_FILE}`;
+  const existing = (await ctx.fs.exists(file)) ? await ctx.fs.readUtf8(file) : '';
+  const ordered = [setSubmoduleOp(name, 'path', path), setSubmoduleOp(name, 'url', rawUrl)];
+  if (branch !== undefined) ordered.push(setSubmoduleOp(name, 'branch', branch));
+  let text = existing;
+  for (const op of [...ordered].reverse()) text = applyConfigOpInText(text, op);
+  await ctx.fs.writeUtf8(file, text);
+  return new TextEncoder().encode(text);
+};
+
+/** Build a stage-0 index entry from a path's `lstat` + an object id and mode. */
+const buildEntry = (
+  stat: Awaited<ReturnType<Context['fs']['lstat']>>,
+  mode: typeof FILE_MODE.GITLINK | typeof FILE_MODE.REGULAR,
+  id: ObjectId,
+  path: FilePath,
+): IndexEntry => ({
+  ctimeSeconds: Math.floor(stat.ctimeMs / 1000),
+  ctimeNanoseconds: 0,
+  mtimeSeconds: Math.floor(stat.mtimeMs / 1000),
+  mtimeNanoseconds: 0,
+  dev: stat.dev,
+  ino: stat.ino,
+  mode,
+  uid: stat.uid,
+  gid: stat.gid,
+  fileSize: stat.size,
+  id,
+  flags: STAGE0_FLAGS,
+  path,
+});
+
+/**
+ * Stage the gitlink (`160000 <subHead> <path>`) and the `.gitmodules` blob into
+ * the superproject index under a single lock — git stages both on `add`.
+ */
+const stageSubmodule = async (
+  ctx: Context,
+  path: string,
+  subHead: ObjectId,
+  gitmodulesBytes: Uint8Array,
+): Promise<void> => {
+  const gitmodulesBlob = (await writeObject(ctx, {
+    type: 'blob',
+    id: '' as ObjectId,
+    content: gitmodulesBytes,
+  })) as ObjectId;
+  const lock = await acquireIndexLock(ctx);
+  try {
+    const index = await readIndex(ctx);
+    const entries = new Map<string, IndexEntry>(index.entries.map((e) => [e.path, e]));
+    const gitlinkStat = await ctx.fs.lstat(`${ctx.layout.workDir}/${path}`);
+    entries.set(path, buildEntry(gitlinkStat, FILE_MODE.GITLINK, subHead, path as FilePath));
+    const gitmodulesStat = await ctx.fs.lstat(`${ctx.layout.workDir}/${GITMODULES_FILE}`);
+    entries.set(
+      GITMODULES_FILE,
+      buildEntry(gitmodulesStat, FILE_MODE.REGULAR, gitmodulesBlob, GITMODULES_FILE as FilePath),
+    );
+    await lock.commit([...entries.values()]);
+  } finally {
+    await lock.release();
+  }
+};
+
+/** The short branch name HEAD points at, or `''` when detached. */
+const headBranchName = (head: { kind: string; target?: string }): string =>
+  head.kind === 'symbolic' && head.target?.startsWith(HEADS_PREFIX) === true
+    ? head.target.slice(HEADS_PREFIX.length)
+    : '';
+
+/**
+ * Clone a new submodule into the worktree + `.git/modules/<name>` and register
+ * it (`git submodule add`). Clones the remote into the absorbed gitdir, writes
+ * `core.worktree` + the `.git` gitfile, materialises the working tree on the
+ * remote default branch, writes `.gitmodules`, stages the gitlink +
+ * `.gitmodules` blob, and records `submodule.<name>.{url,active}` in
+ * `.git/config`. Refuses an unsafe/empty name/path/url or an already-tracked path.
+ */
+export const submoduleAdd = async (
+  ctx: Context,
+  opts: SubmoduleAddOptions,
+): Promise<SubmoduleAddResult> => {
+  await assertRepository(ctx);
+  await assertNotBare(ctx, 'submodule add');
+  const name = opts.name ?? opts.path;
+  assertAddInputs(name, opts.path, opts.url);
+  await assertPathFree(ctx, opts.path);
+  const config = await readConfig(ctx);
+  const base = await resolveBaseUrl(ctx, config);
+  const resolved = resolveSubmoduleUrl(base, opts.url);
+  const child = deriveSubmoduleCloneContext(ctx, name, opts.path as FilePath);
+  await clone(child, { url: resolved });
+  await updateConfigOperations(child, [
+    {
+      kind: 'set',
+      section: 'core',
+      key: 'worktree',
+      value: submoduleCoreWorktree(name, opts.path),
+    },
+  ]);
+  await ctx.fs.writeUtf8(
+    `${ctx.layout.workDir}/${opts.path}/.git`,
+    `${submoduleGitfile(name, opts.path)}\n`,
+  );
+  await materializeWorktreeFromHead(child);
+  const head = await getRefStore(child).resolveDirect(HEAD_REF);
+  const branch = headBranchName(head);
+  const subHead = await resolveRef(child, HEAD_REF);
+  const gitmodulesBytes = await writeGitmodulesEntry(ctx, name, opts.path, opts.url, undefined);
+  await stageSubmodule(ctx, opts.path, subHead, gitmodulesBytes);
+  await updateConfigOperations(ctx, [
+    setSubmoduleOp(name, 'active', 'true'),
+    setSubmoduleOp(name, 'url', resolved),
+  ]);
+  return { name, path: opts.path as FilePath, url: resolved, id: subHead, branch };
 };
