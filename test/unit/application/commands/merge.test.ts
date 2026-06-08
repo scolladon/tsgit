@@ -6,6 +6,7 @@ import { checkout } from '../../../../src/application/commands/checkout.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
 import {
+  asMergeDirtyError,
   buildConflictIndexEntries,
   MAX_MERGE_TREE_DEPTH,
   materialiseConflictBytes,
@@ -23,6 +24,7 @@ import { readObject } from '../../../../src/application/primitives/read-object.j
 import { readReflog } from '../../../../src/application/primitives/reflog-store.js';
 import { resolveRef } from '../../../../src/application/primitives/resolve-ref.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
+import { checkoutOverwriteDirty } from '../../../../src/domain/commands/error.js';
 import { TsgitError } from '../../../../src/domain/error.js';
 import type { MergeConflict, MergeOutcome } from '../../../../src/domain/merge/index.js';
 import type {
@@ -2631,6 +2633,55 @@ describe('merge — sparse checkout', () => {
           .map((e) => e.flags.stage)
           .sort((a, b) => a - b);
         expect(srcStages).toEqual([1, 2, 3]);
+      });
+    });
+  });
+});
+
+describe('asMergeDirtyError (direct)', () => {
+  describe('Given a CHECKOUT_OVERWRITE_DIRTY error', () => {
+    describe('When asMergeDirtyError maps it', () => {
+      it('Then returns WORKING_TREE_DIRTY carrying the same paths', () => {
+        // Arrange
+        const sut = asMergeDirtyError(checkoutOverwriteDirty(['x.txt' as FilePath]));
+
+        // Assert
+        expect(sut).toBeInstanceOf(TsgitError);
+        const data = (sut as TsgitError).data;
+        expect(data.code).toBe('WORKING_TREE_DIRTY');
+        if (data.code === 'WORKING_TREE_DIRTY') {
+          expect(data.paths).toEqual(['x.txt']);
+        }
+      });
+    });
+  });
+
+  describe('Given a TsgitError with a different code', () => {
+    describe('When asMergeDirtyError maps it', () => {
+      it('Then returns the original error unchanged', () => {
+        // Arrange
+        const original = new TsgitError({ code: 'NOTHING_TO_COMMIT' });
+
+        // Act
+        const sut = asMergeDirtyError(original);
+
+        // Assert
+        expect(sut).toBe(original);
+      });
+    });
+  });
+
+  describe('Given a non-TsgitError value', () => {
+    describe('When asMergeDirtyError maps it', () => {
+      it('Then returns it unchanged', () => {
+        // Arrange
+        const original = new Error('boom');
+
+        // Act
+        const sut = asMergeDirtyError(original);
+
+        // Assert
+        expect(sut).toBe(original);
       });
     });
   });

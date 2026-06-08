@@ -186,6 +186,17 @@ const mergeCommit = async (
 };
 
 /**
+ * Map `materializeTree`'s checkout-flavoured dirty refusal to the merge-family
+ * `WORKING_TREE_DIRTY` code, so the whole 3-way merge family speaks one
+ * would-overwrite error; any other error passes through untouched. Exported for
+ * direct unit testing.
+ */
+export const asMergeDirtyError = (err: unknown): unknown =>
+  err instanceof TsgitError && err.data.code === 'CHECKOUT_OVERWRITE_DIRTY'
+    ? workingTreeDirty(err.data.paths)
+    : err;
+
+/**
  * Materialise a non-conflict merge result (clean true-merge or fast-forward) to
  * the working tree + index: write the target tree's delta against the current
  * index and return the post-write stage-0 entries for the caller to commit under
@@ -201,12 +212,7 @@ const materialiseNonConflictTree = async (
     const result = await materializeTree(ctx, { targetTree, currentIndex, force: false });
     return result.newIndexEntries;
   } catch (err) {
-    // Surface the merge-family would-overwrite code, not the checkout-flavoured
-    // one `materializeTree` raises, so the 3-way merge family speaks one error.
-    if (err instanceof TsgitError && err.data.code === 'CHECKOUT_OVERWRITE_DIRTY') {
-      throw workingTreeDirty(err.data.paths);
-    }
-    throw err;
+    throw asMergeDirtyError(err);
   }
 };
 
