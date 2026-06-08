@@ -290,10 +290,10 @@ Commit: `test(name-rev): cross-adapter parity scenario`
 ## Slice 9 — backlog
 
 **Files:** `docs/BACKLOG.md` — flip `23.8` `[ ] → [x]` with the shipped summary;
-add `26.2b` (name-rev date-cutoff perf follow-up) in dependency order under
+add `26.4b` (name-rev date-cutoff perf follow-up) in dependency order under
 Phase 26.
 
-Commit: `docs(backlog): mark 23.8 done, log 26.2b cutoff follow-up`
+Commit: `docs(backlog): mark 23.8 done, log 26.4b cutoff follow-up`
 
 ---
 

@@ -79,7 +79,7 @@ Adopt **Option A**. `describe` reproduces git's early-termination for its
 
 The **performance** half of cond 2 (Option B — early-termination so `describe`
 stops after `O(distance)` rather than walking all reachable history) is deferred
-to the Phase 26 performance pass as **26.2a**, scoped to the `describe` command.
+to the Phase 26 performance pass as **26.4a**, scoped to the `describe` command.
 It is a measured optimisation that belongs with the profiling-driven hot-path
 work, not bundled into a correctness fix.
 
@@ -98,12 +98,12 @@ work, not bundled into a correctness fix.
 ### Negative
 
 - `describe` keeps today's traversal cost (the full reachable set) — no
-  regression, but the perf gap vs git's early termination remains until 26.2a.
+  regression, but the perf gap vs git's early termination remains until 26.4a.
 
 ### Neutral
 
 - cond 2's omission is invisible to consumers (output identical; no debug stream).
-  The deferred perf work is recorded as 26.2a (Option B), with this ADR as its
+  The deferred perf work is recorded as 26.4a (Option B), with this ADR as its
   design reference.
 - The winner's reported distance can exceed its frozen depth (the
   `finish_depth_computation` lift) and can exceed a non-winner candidate's frozen

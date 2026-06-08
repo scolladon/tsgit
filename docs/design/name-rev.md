@@ -187,8 +187,8 @@ a commit older than every target can never *be* a target, so naming it is wasted
 Omitting it yields **identical** output for the named commit (those commits are
 never the target and never improve the target's name) — it only changes how much
 history is walked. v1 ships the correct full flood; the cutoff is a perf
-follow-up (backlog **26.2b**, mirroring `describe`'s early-termination deferral
-to 26.2a). Including it now would add a guard mutation testing flags as an
+follow-up (backlog **26.4b**, mirroring `describe`'s early-termination deferral
+to 26.4a). Including it now would add a guard mutation testing flags as an
 equivalent mutant; deferring keeps the surface mutation-clean.
 
 ## 3. No output rendering (data only)
@@ -383,7 +383,7 @@ A small linear+merge history asserting the same `NameRevResult` on node / memory
   (doc-coverage gate); bump "36 entries" → "37" there and in `README.md`.
 - `test/integration/name-rev-interop.test.ts` + `describe-interop` contains cases.
 - `test/parity/scenarios/name-rev.scenario.ts` (+ index registration).
-- `docs/BACKLOG.md`: flip `23.8` to `[x]`; add the `26.2b` cutoff perf follow-up.
+- `docs/BACKLOG.md`: flip `23.8` to `[x]`; add the `26.4b` cutoff perf follow-up.
 
 ## 10. Open decisions (→ ADR conversation)
 

@@ -11,8 +11,8 @@ A newcomer **grasps tsgit and runs a working snippet in under a minute**. Mainta
 Non-goals (this phase):
 
 - New code, new commands, or new primitives.
-- Bundle-size measurement scripts (deferred to **26.5**).
-- Competitor benchmark numbers in README (deferred to **26.6**).
+- Bundle-size measurement scripts (deferred to **26.8**).
+- Competitor benchmark numbers in README (deferred to **26.7**).
 - Deno / Bun / Workers test matrix (deferred to **19.8**).
 - Doc-drift detection in CI (deferred to **18.3**, follow-up PR).
 
@@ -140,8 +140,8 @@ The new README is **≤ 90 lines** and contains nine sections, in order:
 Honesty boundaries enforced in 18.2:
 
 - **Runtime claims** — README states only Node + Browser + in-memory (tested today). Deno + Bun + Cloudflare Workers are deferred until **19.8** lands a green parity matrix.
-- **Bundle size** — README cites the size-limit-enforced bound (Node entry < 60 KB gz). No tree-shaken number until **26.5** ships measurement scripts.
-- **Performance** — README quotes 6 medians from `reports/benchmarks/summary.md` as-measured. No competitor row. No "X× faster" headline. Honest about where tsgit is slower today (`log:walk`, `readBlob:cold-cache`). Deeper comparison deferred to `docs/understand/performance.md` and **26.6**.
+- **Bundle size** — README cites the size-limit-enforced bound (Node entry < 60 KB gz). No tree-shaken number until **26.8** ships measurement scripts.
+- **Performance** — README quotes 6 medians from `reports/benchmarks/summary.md` as-measured. No competitor row. No "X× faster" headline. Honest about where tsgit is slower today (`log:walk`, `readBlob:cold-cache`). Deeper comparison deferred to `docs/understand/performance.md` and **26.7**.
 - **Quality claims** — only assertions whose proof lives in CI today (100% coverage, mutation tested, cross-platform CI).
 
 ## 6. Voice & structure conventions for the new folders

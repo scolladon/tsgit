@@ -266,7 +266,7 @@ suppression.
 - The `annotated_cnt && queue_empty` early break (cond 2) — omitted as
   observationally inert (above); pinned by the convergence interop scenario. Its
   **performance** half (git's early-termination, so a shallow tag in a deep
-  history doesn't walk all of history) is deferred to **26.2a** (Option B) per the
+  history doesn't walk all of history) is deferred to **26.4a** (Option B) per the
   ADR — pure perf, output already identical.
 - The debug `traversed` / `gave up search` counters — git stderr diagnostics with
   no structured-data analogue (ADR-249).
