@@ -28,9 +28,9 @@ Concretely:
 | Claim type | README treatment | Where the deeper claim lives |
 |---|---|---|
 | Runtime support | "Node + Browser (OPFS) + in-memory" only | Deno + Bun + Workers restored after **19.8** parity matrix is green |
-| Bundle size | "Node entry under 60 KB gz (size-limit-enforced)" — cites the enforced ceiling | Real measured bytes + tree-shaken sizes deferred to **26.5** |
+| Bundle size | "Node entry under 60 KB gz (size-limit-enforced)" — cites the enforced ceiling | Real measured bytes + tree-shaken sizes deferred to **26.8** |
 | Performance | 6 medians from `reports/benchmarks/summary.md`, as-measured, on a single platform stated explicitly | Methodology, targets, regression history → `docs/understand/performance.md` |
-| Competitor comparison | Absent | Side-by-side numbers → `docs/understand/performance.md` after **26.6** |
+| Competitor comparison | Absent | Side-by-side numbers → `docs/understand/performance.md` after **26.7** |
 | Quality | 100% line/branch/function/statement coverage, mutation-tested every PR, cross-platform CI matrix | Same — all assertions are CI-enforced today |
 
 The README's "Why tsgit" section is restructured around **design goals** (qualitative, audience-facing) plus **current measured performance** (quantitative, single platform). There is no "X× faster" headline. There is no honesty asymmetry between sections: wins, parity, and current losses all appear in the deeper `performance.md`, but the README chooses brevity over completeness and points at the deeper page for the full picture.
@@ -41,13 +41,13 @@ The README's "Why tsgit" section is restructured around **design goals** (qualit
 
 - Every README number is regenerable from a committed artifact. A reviewer can run `cat reports/benchmarks/summary.md` and reproduce the table.
 - A user who benchmarks tsgit themselves discovers the same numbers the README quotes — no surprise. Trust compounds.
-- The honesty boundary creates back-pressure on the perf roadmap: claims tighten only after **26.5** (bundle measurement scripts) and **26.6** (competitor benchmark suite) make them defensible.
+- The honesty boundary creates back-pressure on the perf roadmap: claims tighten only after **26.8** (bundle measurement scripts) and **26.7** (competitor benchmark suite) make them defensible.
 - Restoring the Deno + Bun + Workers runtime claim becomes a CI-gated event (19.8 must be green), not a copywriting choice.
 
 ### Negative
 
 - The README reads "smaller" than the pre-restructure version. Pure marketing impact: a reader skimming the README sees fewer "wins". Mitigation: the page that holds the deeper comparison (`docs/understand/performance.md`) is linked from the README at the natural point.
-- Restoring removed claims requires a follow-up PR (gated on **19.8** / **26.5** / **26.6** landing). Each gate is an explicit checkpoint, not a copywriting decision.
+- Restoring removed claims requires a follow-up PR (gated on **19.8** / **26.8** / **26.7** landing). Each gate is an explicit checkpoint, not a copywriting decision.
 - A claim already true today (e.g. "tsgit handles `status:dirty` ~2× faster than iso-git on our hardware") is absent from the README in the name of "no competitor mentions". Some accuracy is sacrificed to discipline. The full picture is one click away.
 
 ### Neutral

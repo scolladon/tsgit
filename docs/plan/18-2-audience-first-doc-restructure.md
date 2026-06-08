@@ -69,7 +69,7 @@ Convergence cap: this is a documentation move, not a code change. Self-review ×
 
 - `docs/understand/architecture.md` (absorbs `DESIGN.md` §Architecture + §Subsystems)
 - `docs/understand/design-decisions.md` (curated ADR index — not a reverse chronological dump; grouped by subsystem)
-- `docs/understand/performance.md` (absorbs `DESIGN.md` §Performance Strategy; carries `reports/benchmarks/summary.md` table inline; methodology section; deferred competitor comparison placeholder for **26.6**)
+- `docs/understand/performance.md` (absorbs `DESIGN.md` §Performance Strategy; carries `reports/benchmarks/summary.md` table inline; methodology section; deferred competitor comparison placeholder for **26.7**)
 - `docs/understand/security.md` (absorbs `DESIGN.md` §Security Properties)
 
 **Method:**

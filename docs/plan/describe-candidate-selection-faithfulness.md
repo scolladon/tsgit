@@ -195,4 +195,4 @@ catch is untouched (out of scope).
 - `describe` default pick byte-faithful to `git describe` (23.4n);
   `--candidates=1` / `--first-parent` / filters / refusals unchanged.
 - `npm run validate` green; 0 killable mutants on `describe.ts`.
-- BACKLOG 23.4n flipped `[x]`; 26.2a present; docs refreshed.
+- BACKLOG 23.4n flipped `[x]`; 26.4a present; docs refreshed.
