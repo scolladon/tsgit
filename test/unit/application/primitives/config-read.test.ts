@@ -339,6 +339,43 @@ describe('primitives/config-read', () => {
     });
   });
 
+  describe('Given a [submodule "libs/a"] section with url, active and update', () => {
+    describe('When readConfig', () => {
+      it('Then parsed.submodule.get("libs/a") is populated', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(
+          ctx,
+          '[submodule "libs/a"]\n  active = true\n  url = ../a\n  update = rebase\n  ignore = dirty\n',
+        );
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert
+        expect(sut.submodule?.get('libs/a')?.url).toBe('../a');
+        expect(sut.submodule?.get('libs/a')?.active).toBe(true);
+        expect(sut.submodule?.get('libs/a')?.update).toBe('rebase');
+      });
+    });
+  });
+
+  describe('Given a config with no submodule section', () => {
+    describe('When readConfig', () => {
+      it('Then parsed.submodule is undefined', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[core]\n  bare = false\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert
+        expect(sut.submodule).toBeUndefined();
+      });
+    });
+  });
+
   describe('Given a config with # comments and ; comments', () => {
     describe('When readConfig', () => {
       it('Then comments are skipped', async () => {
