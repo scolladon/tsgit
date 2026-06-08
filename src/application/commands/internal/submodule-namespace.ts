@@ -1,11 +1,14 @@
 import type { Context } from '../../../ports/context.js';
 import {
+  type SubmoduleDeinitOptions,
+  type SubmoduleDeinitResult,
   type SubmoduleInitOptions,
   type SubmoduleInitResult,
   type SubmoduleListOptions,
   type SubmoduleListResult,
   type SubmoduleSyncOptions,
   type SubmoduleSyncResult,
+  submoduleDeinit,
   submoduleInit,
   submoduleList,
   submoduleSync,
@@ -21,6 +24,7 @@ export interface SubmoduleNamespace {
   readonly list: (opts?: SubmoduleListOptions) => Promise<SubmoduleListResult>;
   readonly init: (opts?: SubmoduleInitOptions) => Promise<SubmoduleInitResult>;
   readonly sync: (opts?: SubmoduleSyncOptions) => Promise<SubmoduleSyncResult>;
+  readonly deinit: (opts?: SubmoduleDeinitOptions) => Promise<SubmoduleDeinitResult>;
 }
 
 /**
@@ -42,6 +46,10 @@ export const bindSubmoduleNamespace = (ctx: Context, guard: () => void): Submodu
     sync: (opts) => {
       guard();
       return submoduleSync(ctx, opts);
+    },
+    deinit: (opts) => {
+      guard();
+      return submoduleDeinit(ctx, opts);
     },
   };
   return Object.freeze(ns);

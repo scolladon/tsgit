@@ -268,6 +268,9 @@ export {
   type WorktreeSide,
 } from './status.js';
 export {
+  type SubmoduleDeinitEntry,
+  type SubmoduleDeinitOptions,
+  type SubmoduleDeinitResult,
   type SubmoduleEntry,
   type SubmoduleInitEntry,
   type SubmoduleInitOptions,
@@ -277,6 +280,7 @@ export {
   type SubmoduleSyncEntry,
   type SubmoduleSyncOptions,
   type SubmoduleSyncResult,
+  submoduleDeinit,
   submoduleInit,
   submoduleList,
   submoduleSync,

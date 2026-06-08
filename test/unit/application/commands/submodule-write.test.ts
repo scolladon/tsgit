@@ -1,8 +1,16 @@
 import { describe, expect, it } from 'vitest';
 
-import { submoduleInit, submoduleSync } from '../../../../src/application/commands/submodule.js';
+import {
+  submoduleDeinit,
+  submoduleInit,
+  submoduleSync,
+} from '../../../../src/application/commands/submodule.js';
 import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
+import { writeObject } from '../../../../src/application/primitives/write-object.js';
+import { writeTree } from '../../../../src/application/primitives/write-tree.js';
 import { TsgitError } from '../../../../src/domain/error.js';
+import type { ObjectId } from '../../../../src/domain/objects/index.js';
+import type { Context } from '../../../../src/ports/context.js';
 import { buildSeededContext } from '../primitives/fixtures.js';
 
 interface SeedParts {
@@ -379,6 +387,181 @@ describe('commands/submodule — sync', () => {
 
         // Assert
         expect(sut.entries.map((e) => e.path)).toEqual(['libs/a']);
+      });
+    });
+  });
+});
+
+const writeWorktreeFile = async (
+  ctx: Awaited<ReturnType<typeof seed>>,
+  path: string,
+  name: string,
+): Promise<void> => {
+  await ctx.fs.writeUtf8(`${ctx.layout.workDir}/${path}/${name}`, 'content\n');
+};
+
+/** Seed a checked-out submodule gitdir (empty-tree HEAD) so its status can run. */
+const seedCheckedOut = async (
+  ctx: Awaited<ReturnType<typeof seed>>,
+  name: string,
+): Promise<void> => {
+  const childGitDir = `${ctx.layout.gitDir}/modules/${name}`;
+  const childCtx: Context = Object.freeze({
+    ...ctx,
+    layout: Object.freeze({ ...ctx.layout, gitDir: childGitDir }),
+  });
+  const emptyTree = await writeTree(childCtx, []);
+  const commitId = await writeObject(childCtx, {
+    type: 'commit',
+    id: '' as ObjectId,
+    data: {
+      tree: emptyTree,
+      parents: [],
+      author: { name: 'A', email: 'a@x', timestamp: 1, timezoneOffset: '+0000' },
+      committer: { name: 'A', email: 'a@x', timestamp: 1, timezoneOffset: '+0000' },
+      message: 's',
+      extraHeaders: [],
+    },
+  });
+  await ctx.fs.writeUtf8(`${childGitDir}/HEAD`, `${commitId}\n`);
+};
+
+const REGISTERED_ONE = `${ORIGIN}[submodule "libs/a"]\n\tactive = true\n\turl = https://h.x/g/a\n`;
+
+describe('commands/submodule — deinit', () => {
+  describe('Given neither paths nor all', () => {
+    describe('When deinit runs', () => {
+      it('Then it refuses', async () => {
+        // Arrange
+        const ctx = await seed({ gitmodules: GITMODULES_ONE, config: REGISTERED_ONE });
+
+        // Act & Assert
+        try {
+          await submoduleDeinit(ctx);
+          expect.fail('deinit did not refuse a bare call');
+        } catch (err) {
+          expect(err).toBeInstanceOf(TsgitError);
+          expect((err as TsgitError).data).toMatchObject({
+            code: 'INVALID_OPTION',
+            option: 'submodule.deinit',
+          });
+        }
+      });
+    });
+  });
+
+  describe('Given an un-checked-out submodule with a populated worktree', () => {
+    describe('When deinit runs without force', () => {
+      it('Then it clears the worktree and removes the config section', async () => {
+        // Arrange
+        const ctx = await seed({ gitmodules: GITMODULES_ONE, config: REGISTERED_ONE });
+        await writeWorktreeFile(ctx, 'libs/a', 'file.txt');
+
+        // Act
+        const sut = await submoduleDeinit(ctx, { paths: ['libs/a'] });
+
+        // Assert
+        expect(sut.entries).toEqual([
+          { name: 'libs/a', path: 'libs/a', url: '../a', cleared: true },
+        ]);
+        expect(await readConfigText(ctx)).not.toContain('[submodule "libs/a"]');
+        expect(await ctx.fs.exists(`${ctx.layout.workDir}/libs/a`)).toBe(true);
+        expect(await ctx.fs.exists(`${ctx.layout.workDir}/libs/a/file.txt`)).toBe(false);
+        expect(await ctx.fs.exists(`${ctx.layout.workDir}/.gitmodules`)).toBe(true);
+      });
+    });
+  });
+
+  describe('Given all=true with two registered submodules', () => {
+    describe('When deinit runs', () => {
+      it('Then every submodule is cleared and unregistered', async () => {
+        // Arrange
+        const ctx = await seed({
+          gitmodules: `${GITMODULES_ONE}[submodule "libs/b"]\n\tpath = libs/b\n\turl = ../b\n`,
+          config: `${REGISTERED_ONE}[submodule "libs/b"]\n\turl = https://h.x/g/b\n`,
+        });
+
+        // Act
+        const sut = await submoduleDeinit(ctx, { all: true });
+
+        // Assert
+        expect(sut.entries.map((e) => e.path)).toEqual(['libs/a', 'libs/b']);
+        const text = await readConfigText(ctx);
+        expect(text).not.toContain('[submodule "libs/a"]');
+        expect(text).not.toContain('[submodule "libs/b"]');
+      });
+    });
+  });
+
+  describe('Given a checked-out submodule with an untracked file', () => {
+    describe('When deinit runs without force', () => {
+      it('Then it refuses with SUBMODULE_HAS_MODIFICATIONS', async () => {
+        // Arrange
+        const ctx = await seed({ gitmodules: GITMODULES_ONE, config: REGISTERED_ONE });
+        await seedCheckedOut(ctx, 'libs/a');
+        await writeWorktreeFile(ctx, 'libs/a', 'dirty.txt');
+
+        // Act & Assert
+        try {
+          await submoduleDeinit(ctx, { paths: ['libs/a'] });
+          expect.fail('deinit did not refuse a dirty submodule');
+        } catch (err) {
+          expect(err).toBeInstanceOf(TsgitError);
+          expect((err as TsgitError).data).toMatchObject({
+            code: 'SUBMODULE_HAS_MODIFICATIONS',
+            path: 'libs/a',
+          });
+        }
+        expect(await readConfigText(ctx)).toContain('[submodule "libs/a"]');
+      });
+    });
+
+    describe('When deinit runs with force', () => {
+      it('Then the dirty worktree is discarded', async () => {
+        // Arrange
+        const ctx = await seed({ gitmodules: GITMODULES_ONE, config: REGISTERED_ONE });
+        await seedCheckedOut(ctx, 'libs/a');
+        await writeWorktreeFile(ctx, 'libs/a', 'dirty.txt');
+
+        // Act
+        const sut = await submoduleDeinit(ctx, { paths: ['libs/a'], force: true });
+
+        // Assert
+        expect(sut.entries[0]?.cleared).toBe(true);
+        expect(await ctx.fs.exists(`${ctx.layout.workDir}/libs/a/dirty.txt`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given an empty worktree directory', () => {
+    describe('When deinit runs', () => {
+      it('Then cleared is false', async () => {
+        // Arrange
+        const ctx = await seed({ gitmodules: GITMODULES_ONE, config: REGISTERED_ONE });
+
+        // Act
+        const sut = await submoduleDeinit(ctx, { paths: ['libs/a'] });
+
+        // Assert
+        expect(sut.entries[0]?.cleared).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a paths filter with an unmatched path', () => {
+    describe('When deinit runs', () => {
+      it('Then it refuses with PATHSPEC_NO_MATCH', async () => {
+        // Arrange
+        const ctx = await seed({ gitmodules: GITMODULES_ONE, config: REGISTERED_ONE });
+
+        // Act & Assert
+        try {
+          await submoduleDeinit(ctx, { paths: ['nope'] });
+          expect.fail('deinit did not reject the unmatched path');
+        } catch (err) {
+          expect(err).toBeInstanceOf(TsgitError);
+          expect((err as TsgitError).data.code).toBe('PATHSPEC_NO_MATCH');
+        }
       });
     });
   });

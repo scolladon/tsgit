@@ -439,6 +439,8 @@ function extractDetail(data: TsgitErrorData): string {
       return `cannot describe ${data.oid}`;
     case 'RELATIVE_URL_UNRESOLVABLE':
       return `cannot strip one component off url '${data.url}'`;
+    case 'SUBMODULE_HAS_MODIFICATIONS':
+      return `submodule work tree '${data.path}' contains local modifications`;
     default: {
       const _exhaustive: never = data;
       return String(_exhaustive);

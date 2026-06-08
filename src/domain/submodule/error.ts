@@ -1,10 +1,9 @@
 import { TsgitError } from '../error.js';
 
 /** Submodule-tier error codes. */
-export type SubmoduleError = {
-  readonly code: 'RELATIVE_URL_UNRESOLVABLE';
-  readonly url: string;
-};
+export type SubmoduleError =
+  | { readonly code: 'RELATIVE_URL_UNRESOLVABLE'; readonly url: string }
+  | { readonly code: 'SUBMODULE_HAS_MODIFICATIONS'; readonly path: string };
 
 /**
  * A relative submodule URL cannot be resolved because the base URL has no more
@@ -15,3 +14,12 @@ export type SubmoduleError = {
  */
 export const relativeUrlUnresolvable = (url: string): TsgitError =>
   new TsgitError({ code: 'RELATIVE_URL_UNRESOLVABLE', url });
+
+/**
+ * `deinit` refuses to discard a submodule working tree that has local
+ * modifications (modified tracked content or untracked files) without `force` —
+ * git's "Submodule work tree '<path>' contains local modifications; use '-f' to
+ * discard them".
+ */
+export const submoduleHasModifications = (path: string): TsgitError =>
+  new TsgitError({ code: 'SUBMODULE_HAS_MODIFICATIONS', path });

@@ -12,6 +12,7 @@
 import { invalidOption, pathspecNoMatch } from '../../domain/commands/error.js';
 import { type FilePath, ObjectId, type RefName } from '../../domain/objects/index.js';
 import { validateRefName } from '../../domain/refs/index.js';
+import { submoduleHasModifications } from '../../domain/submodule/error.js';
 import { resolveSubmoduleUrl } from '../../domain/submodule/relative-url.js';
 import { parseUpdateMode, type SubmoduleUpdateMode } from '../../domain/submodule/update-mode.js';
 import type { Context } from '../../ports/context.js';
@@ -24,6 +25,7 @@ import { type ConfigOperation, updateConfigOperations } from '../primitives/upda
 import { looksLikeObjectId } from '../primitives/validators.js';
 import { walkSubmodules } from '../primitives/walk-submodules.js';
 import { assertRepository } from './internal/repo-state.js';
+import { status } from './status.js';
 
 export type { SubmoduleEntry };
 
@@ -247,6 +249,79 @@ export const submoduleSync = async (
     ops.push({ kind: 'set', section: 'submodule', subsection: row.name, key: 'url', value: url });
     const syncedRemote = await syncSubmoduleRemote(ctx, row.name, path, url);
     entries.push({ name: row.name, path, url, syncedRemote });
+  }
+  if (ops.length > 0) await updateConfigOperations(ctx, ops);
+  return { entries };
+};
+
+export interface SubmoduleDeinitOptions {
+  /** Submodule paths to deinitialise. Required unless `all` is set. */
+  readonly paths?: ReadonlyArray<string>;
+  /** Deinitialise every submodule. Required when `paths` is empty/omitted. */
+  readonly all?: boolean;
+  /** Discard a submodule working tree that has local modifications. */
+  readonly force?: boolean;
+}
+
+export interface SubmoduleDeinitEntry {
+  readonly name: string;
+  readonly path: FilePath;
+  /** The raw `.gitmodules` URL (git's unregister message reports this form). */
+  readonly url: string;
+  /** True when a populated working tree was cleared. */
+  readonly cleared: boolean;
+}
+
+export interface SubmoduleDeinitResult {
+  readonly entries: ReadonlyArray<SubmoduleDeinitEntry>;
+}
+
+/** Refuse when a checked-out submodule has local modifications (unless forced). */
+const assertSubmoduleClean = async (ctx: Context, name: string, path: FilePath): Promise<void> => {
+  const child = await deriveSubmoduleContext(ctx, name, path);
+  if (child === undefined) return;
+  const result = await status(child);
+  if (!result.clean) throw submoduleHasModifications(path);
+};
+
+/** Clear a submodule working-tree directory's contents, keeping the empty dir. */
+const clearWorktree = async (ctx: Context, path: FilePath): Promise<boolean> => {
+  const dir = `${ctx.layout.workDir}/${path}`;
+  if (!(await ctx.fs.exists(dir))) return false;
+  if ((await ctx.fs.readdir(dir)).length === 0) return false;
+  await ctx.fs.rmRecursive(dir);
+  await ctx.fs.mkdir(dir);
+  return true;
+};
+
+/**
+ * Unregister submodules and clear their working trees (`git submodule deinit`).
+ * Requires `paths` or `all`. Removes each submodule's `.git/config` section and
+ * clears its working-tree contents (the empty directory, `.gitmodules`, the
+ * index gitlink, and `.git/modules/<name>` are all left intact). Refuses a
+ * submodule with local modifications unless `force`.
+ */
+export const submoduleDeinit = async (
+  ctx: Context,
+  opts: SubmoduleDeinitOptions = {},
+): Promise<SubmoduleDeinitResult> => {
+  await assertRepository(ctx);
+  if ((opts.paths === undefined || opts.paths.length === 0) && opts.all !== true) {
+    throw invalidOption('submodule.deinit', "use 'all: true' to deinitialise every submodule");
+  }
+  const rows = await readWorktreeGitmodules(ctx);
+  const selected = opts.all === true ? rows.filter(hasPath) : selectRows(rows, opts.paths);
+  const config = await readConfig(ctx);
+  const entries: SubmoduleDeinitEntry[] = [];
+  const ops: ConfigOperation[] = [];
+  for (const row of selected) {
+    const path = row.path as FilePath;
+    if (opts.force !== true) await assertSubmoduleClean(ctx, row.name, path);
+    const cleared = await clearWorktree(ctx, path);
+    if (config.submodule?.has(row.name) === true) {
+      ops.push({ kind: 'removeSection', section: 'submodule', subsection: row.name });
+    }
+    entries.push({ name: row.name, path, url: row.url ?? '', cleared });
   }
   if (ops.length > 0) await updateConfigOperations(ctx, ops);
   return { entries };
