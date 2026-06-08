@@ -178,7 +178,7 @@ describe('openRepository — Repository binding integrity', () => {
             'sparseCheckout',
             'stash',
             'status',
-            'submodules',
+            'submodule',
             'tag',
             'whatchanged',
           ].sort(),
@@ -234,6 +234,7 @@ describe('openRepository — Repository binding integrity', () => {
           'revert',
           'rebase',
           'merge',
+          'submodule',
         ]);
         const nonFunctionKeys = new Set(['ctx', 'primitives', 'snapshot', ...namespaceKeys]);
 
@@ -628,20 +629,20 @@ describe('openRepository — round-trip via memory adapter', () => {
   });
 
   describe('Given a fresh repo with an empty tree', () => {
-    describe('When the bound submodules command is called', () => {
+    describe('When the bound submodule.list command is called', () => {
       it('Then it delegates and returns an empty list', async () => {
         // Arrange — write an empty tree and target it explicitly so the call does
-        // not depend on an unborn HEAD; exercises the `submodules` binding.
+        // not depend on an unborn HEAD; exercises the `submodule` namespace binding.
         const fallback = makeFallback();
         const sut = await openRepository({ cwd: '/repo' }, fallback);
         await sut.init();
         const treeId = await sut.primitives.writeTree([]);
 
         // Act
-        const result = await sut.submodules({ ref: treeId });
+        const result = await sut.submodule.list({ ref: treeId });
 
         // Assert
-        expect(result).toEqual({ kind: 'list', entries: [] });
+        expect(result).toEqual({ entries: [] });
       });
     });
   });

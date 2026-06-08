@@ -123,6 +123,10 @@ export {
   type SparseCheckoutNamespace,
 } from './internal/sparse-checkout-namespace.js';
 export { bindStashNamespace, type StashNamespace } from './internal/stash-namespace.js';
+export {
+  bindSubmoduleNamespace,
+  type SubmoduleNamespace,
+} from './internal/submodule-namespace.js';
 export { bindTagNamespace, type TagNamespace } from './internal/tag-namespace.js';
 export { type LogEntry, type LogOptions, log } from './log.js';
 export { type MergeResult, type MergeRunInput, mergeRun } from './merge.js';
@@ -265,10 +269,10 @@ export {
 } from './status.js';
 export {
   type SubmoduleEntry,
-  type SubmodulesAction,
-  type SubmodulesResult,
-  submodules,
-} from './submodules.js';
+  type SubmoduleListOptions,
+  type SubmoduleListResult,
+  submoduleList,
+} from './submodule.js';
 export {
   type TagCreateInput,
   type TagCreateResult,

@@ -218,7 +218,8 @@ export interface Repository {
   /** Nested `repo.stash.{push,list,apply,pop,drop}` namespace. */
   readonly stash: commands.StashNamespace;
   readonly status: BindCtx<typeof commands.status>;
-  readonly submodules: BindCtx<typeof commands.submodules>;
+  /** Nested `repo.submodule.{list,init,sync,deinit}` namespace. */
+  readonly submodule: commands.SubmoduleNamespace;
   /** Nested `repo.tag.{list,create,delete}` namespace. */
   readonly tag: commands.TagNamespace;
   readonly whatchanged: BindCtx<typeof commands.whatchanged>;
@@ -525,10 +526,7 @@ export const openRepository = async (
       guard();
       return commands.status(ctx);
     }) as Repository['status'],
-    submodules: ((opts) => {
-      guard();
-      return commands.submodules(ctx, opts);
-    }) as Repository['submodules'],
+    submodule: commands.bindSubmoduleNamespace(ctx, guard),
     tag: commands.bindTagNamespace(ctx, guard),
     whatchanged: ((opts) => {
       guard();
