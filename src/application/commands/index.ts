@@ -274,8 +274,12 @@ export {
   type SubmoduleInitResult,
   type SubmoduleListOptions,
   type SubmoduleListResult,
+  type SubmoduleSyncEntry,
+  type SubmoduleSyncOptions,
+  type SubmoduleSyncResult,
   submoduleInit,
   submoduleList,
+  submoduleSync,
 } from './submodule.js';
 export {
   type TagCreateInput,

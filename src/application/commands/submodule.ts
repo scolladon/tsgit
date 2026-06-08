@@ -16,6 +16,7 @@ import { resolveSubmoduleUrl } from '../../domain/submodule/relative-url.js';
 import { parseUpdateMode, type SubmoduleUpdateMode } from '../../domain/submodule/update-mode.js';
 import type { Context } from '../../ports/context.js';
 import { type ParsedConfig, readConfig } from '../primitives/config-read.js';
+import { deriveSubmoduleContext } from '../primitives/internal/submodule-context.js';
 import { type GitmodulesRow, parseGitmodules } from '../primitives/parse-gitmodules.js';
 import { getRefStore } from '../primitives/ref-store.js';
 import type { SubmoduleEntry } from '../primitives/types.js';
@@ -183,6 +184,69 @@ export const submoduleInit = async (
       registered: true,
       ...(update !== undefined ? { update } : {}),
     });
+  }
+  if (ops.length > 0) await updateConfigOperations(ctx, ops);
+  return { entries };
+};
+
+export interface SubmoduleSyncOptions {
+  /** Submodule paths to sync. Default: every initialised submodule. */
+  readonly paths?: ReadonlyArray<string>;
+}
+
+export interface SubmoduleSyncEntry {
+  readonly name: string;
+  readonly path: FilePath;
+  /** Resolved URL written to `submodule.<name>.url`. */
+  readonly url: string;
+  /** True when the checked-out submodule's own `remote.origin.url` was updated too. */
+  readonly syncedRemote: boolean;
+}
+
+export interface SubmoduleSyncResult {
+  readonly entries: ReadonlyArray<SubmoduleSyncEntry>;
+}
+
+/** Update a checked-out submodule's own `remote.origin.url`; false when absent. */
+const syncSubmoduleRemote = async (
+  ctx: Context,
+  name: string,
+  path: FilePath,
+  url: string,
+): Promise<boolean> => {
+  const child = await deriveSubmoduleContext(ctx, name, path);
+  if (child === undefined) return false;
+  await updateConfigOperations(child, [
+    { kind: 'set', section: 'remote', subsection: 'origin', key: 'url', value: url },
+  ]);
+  return true;
+};
+
+/**
+ * Re-point configured submodule URLs from `.gitmodules` (`git submodule sync`).
+ * Operates only on **initialised** submodules (those already carrying
+ * `submodule.<name>.url` in config); a fresh clone with nothing initialised is a
+ * no-op. Overwrites `submodule.<name>.url` with the freshly resolved URL and,
+ * when the submodule is checked out, its own `remote.origin.url`.
+ */
+export const submoduleSync = async (
+  ctx: Context,
+  opts: SubmoduleSyncOptions = {},
+): Promise<SubmoduleSyncResult> => {
+  await assertRepository(ctx);
+  const selected = selectRows(await readWorktreeGitmodules(ctx), opts.paths);
+  const config = await readConfig(ctx);
+  const base = await resolveBaseUrl(ctx, config);
+  const entries: SubmoduleSyncEntry[] = [];
+  const ops: ConfigOperation[] = [];
+  for (const row of selected) {
+    if (row.url === undefined) continue;
+    if (config.submodule?.get(row.name)?.url === undefined) continue;
+    const path = row.path as FilePath;
+    const url = resolveSubmoduleUrl(base, row.url);
+    ops.push({ kind: 'set', section: 'submodule', subsection: row.name, key: 'url', value: url });
+    const syncedRemote = await syncSubmoduleRemote(ctx, row.name, path, url);
+    entries.push({ name: row.name, path, url, syncedRemote });
   }
   if (ops.length > 0) await updateConfigOperations(ctx, ops);
   return { entries };

@@ -4,8 +4,11 @@ import {
   type SubmoduleInitResult,
   type SubmoduleListOptions,
   type SubmoduleListResult,
+  type SubmoduleSyncOptions,
+  type SubmoduleSyncResult,
   submoduleInit,
   submoduleList,
+  submoduleSync,
 } from '../submodule.js';
 
 /**
@@ -17,6 +20,7 @@ import {
 export interface SubmoduleNamespace {
   readonly list: (opts?: SubmoduleListOptions) => Promise<SubmoduleListResult>;
   readonly init: (opts?: SubmoduleInitOptions) => Promise<SubmoduleInitResult>;
+  readonly sync: (opts?: SubmoduleSyncOptions) => Promise<SubmoduleSyncResult>;
 }
 
 /**
@@ -34,6 +38,10 @@ export const bindSubmoduleNamespace = (ctx: Context, guard: () => void): Submodu
     init: (opts) => {
       guard();
       return submoduleInit(ctx, opts);
+    },
+    sync: (opts) => {
+      guard();
+      return submoduleSync(ctx, opts);
     },
   };
   return Object.freeze(ns);

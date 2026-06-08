@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { submoduleInit } from '../../../../src/application/commands/submodule.js';
+import { submoduleInit, submoduleSync } from '../../../../src/application/commands/submodule.js';
 import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
 import { TsgitError } from '../../../../src/domain/error.js';
 import { buildSeededContext } from '../primitives/fixtures.js';
@@ -291,6 +291,94 @@ describe('commands/submodule — init', () => {
           expect(err).toBeInstanceOf(TsgitError);
           expect((err as TsgitError).data.code).toBe('NOT_A_REPOSITORY');
         }
+      });
+    });
+  });
+});
+
+const seedModuleConfig = async (
+  ctx: Awaited<ReturnType<typeof seed>>,
+  name: string,
+  remoteUrl: string,
+): Promise<void> => {
+  const dir = `${ctx.layout.gitDir}/modules/${name}`;
+  await ctx.fs.writeUtf8(`${dir}/HEAD`, 'ref: refs/heads/main\n');
+  await ctx.fs.writeUtf8(`${dir}/config`, `[remote "origin"]\n\turl = ${remoteUrl}\n`);
+};
+
+describe('commands/submodule — sync', () => {
+  describe('Given a fresh clone with nothing initialised', () => {
+    describe('When sync runs', () => {
+      it('Then it is a no-op (no config writes)', async () => {
+        // Arrange
+        const ctx = await seed({ gitmodules: GITMODULES_ONE, config: ORIGIN });
+
+        // Act
+        const sut = await submoduleSync(ctx);
+
+        // Assert
+        expect(sut.entries).toEqual([]);
+        expect(await readConfigText(ctx)).not.toContain('[submodule "libs/a"]');
+      });
+    });
+  });
+
+  describe('Given an initialised submodule whose .gitmodules url changed', () => {
+    describe('When sync runs', () => {
+      it('Then the superproject url is overwritten with the resolved url', async () => {
+        // Arrange — registered with a stale url; .gitmodules now points at ../moved
+        const ctx = await seed({
+          gitmodules: '[submodule "libs/a"]\n\tpath = libs/a\n\turl = ../moved\n',
+          config: `${ORIGIN}[submodule "libs/a"]\n\tactive = true\n\turl = https://h.x/g/stale\n`,
+        });
+
+        // Act
+        const sut = await submoduleSync(ctx);
+
+        // Assert
+        expect(sut.entries).toEqual([
+          { name: 'libs/a', path: 'libs/a', url: 'https://h.x/g/moved', syncedRemote: false },
+        ]);
+        expect(await readConfigText(ctx)).toContain('\turl = https://h.x/g/moved\n');
+      });
+    });
+  });
+
+  describe('Given an initialised, checked-out submodule', () => {
+    describe('When sync runs', () => {
+      it("Then the submodule's own remote.origin.url is updated too", async () => {
+        // Arrange
+        const ctx = await seed({
+          gitmodules: GITMODULES_ONE,
+          config: `${ORIGIN}[submodule "libs/a"]\n\tactive = true\n\turl = https://h.x/g/stale\n`,
+        });
+        await seedModuleConfig(ctx, 'libs/a', 'https://h.x/g/stale');
+
+        // Act
+        const sut = await submoduleSync(ctx);
+
+        // Assert
+        expect(sut.entries[0]?.syncedRemote).toBe(true);
+        const moduleConfig = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/modules/libs/a/config`);
+        expect(moduleConfig).toContain('\turl = https://h.x/g/a\n');
+      });
+    });
+  });
+
+  describe('Given a paths filter that excludes an initialised submodule', () => {
+    describe('When sync runs', () => {
+      it('Then only the matched submodule is synced', async () => {
+        // Arrange
+        const ctx = await seed({
+          gitmodules: `${GITMODULES_ONE}[submodule "libs/b"]\n\tpath = libs/b\n\turl = ../b\n`,
+          config: `${ORIGIN}[submodule "libs/a"]\n\turl = https://h.x/g/stale\n[submodule "libs/b"]\n\turl = https://h.x/g/stale-b\n`,
+        });
+
+        // Act
+        const sut = await submoduleSync(ctx, { paths: ['libs/a'] });
+
+        // Assert
+        expect(sut.entries.map((e) => e.path)).toEqual(['libs/a']);
       });
     });
   });
