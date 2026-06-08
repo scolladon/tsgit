@@ -169,11 +169,11 @@ Excluded files stay in the index (marked `skip-worktree`) — `commit` still rec
 
 ```ts
 // List submodules pinned at HEAD
-const { entries } = await repo.submodules();
+const { entries } = await repo.submodule.list();
 for (const e of entries) console.log(e.path, e.commit, e.url ?? '(no .gitmodules row)');
 
 // Recurse into nested submodules whose absorbed gitdir is locally available
-const nested = await repo.submodules({ ref: 'main', recursive: true });
+const nested = await repo.submodule.list({ ref: 'main', recursive: true });
 
 // Stream form — bounded memory; iterate and stop when you want
 for await (const e of repo.primitives.walkSubmodules({ recursive: true })) {
