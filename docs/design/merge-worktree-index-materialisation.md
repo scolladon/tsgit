@@ -166,8 +166,8 @@ Unit (`merge.test.ts`, GWT/AAA, `sut`, 100% coverage + 0 killable mutants):
   `ADR-076`); tracked separately if ever desired.
 - Reproducing git's human-readable "would be overwritten by merge" prose — the
   library emits structured codes, not rendered stdout (`ADR-249`).
-- The pre-merge **index-vs-HEAD** cleanliness guard (git's "Entry not uptodate.
-  Cannot merge." / staged-changes refusal) — a separate, pre-existing gap that
-  `merge` already lacks; the `force: false` guard here checks working-tree drift
-  against the index, not index drift against HEAD. Not a regression; tracked
+- The pre-merge **index-vs-HEAD** cleanliness guard (git refuses a merge when the
+  index carries staged changes on an affected path) — a separate, pre-existing gap
+  that `merge` already lacks; the `force: false` guard here checks working-tree
+  drift against the index, not index drift against HEAD. Not a regression; tracked
   separately if desired.

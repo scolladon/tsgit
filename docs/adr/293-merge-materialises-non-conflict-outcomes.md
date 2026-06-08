@@ -88,9 +88,9 @@ unfaithful).
 
 ### Neutral
 
-- The pre-merge **index-vs-HEAD** cleanliness guard (git's "Entry not uptodate.
-  Cannot merge.") is a separate, pre-existing gap `merge` already lacks; the
-  `force: false` guard checks working-tree drift against the index, not index
-  drift against HEAD. Not addressed here.
+- The pre-merge **index-vs-HEAD** cleanliness guard (git refuses a merge when the
+  index carries staged changes on an affected path) is a separate, pre-existing
+  gap `merge` already lacks; the `force: false` guard checks working-tree drift
+  against the index, not index drift against HEAD. Not addressed here.
 - Existing clean-merge unit tests assert only the merge-commit tree on a clean
   working tree, so they stay green and gain incidental worktree/index coverage.
