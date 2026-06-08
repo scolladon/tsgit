@@ -29,12 +29,12 @@ clone-with-worktree stays the 24.x gap). So the interop twins build the
 superproject's *starting state* with **real git** (a tsgit-cloned super has no
 worktree/index yet); the tool under test then runs only the submodule verb.
 
-**Out of scope (documented non-goals):** `update`'s `rebase`/`merge` modes
-(refused `INVALID_OPTION` — they need rebase/merge-against-submodule machinery);
-incremental fetch when the pinned commit is absent after the initial clone (tsgit
-is smart-HTTP-v1, no `multi_ack` — gated on 25.3); `add --branch`/`--reference`
-/`--depth` shallow submodules; `.mailmap`; superproject auto-commit (git doesn't
-auto-commit either — both verbs leave the index staged for the caller to commit).
+All four `update` modes are implemented faithfully (ADR-290) and `add --branch`
+(ADR-292). **Out of scope (documented non-goals):** incremental fetch when the
+pinned commit is absent after the initial clone (tsgit is smart-HTTP-v1, no
+`multi_ack` — gated on 25.3, refused per ADR-291); `add --reference`/`--depth`
+shallow submodules; `.mailmap`; superproject auto-commit (git doesn't auto-commit
+either — both verbs leave the index staged for the caller to commit).
 
 ## Surface — two new verbs, one extended flag
 
@@ -44,26 +44,29 @@ export interface SubmoduleAddOptions {
   readonly url: string;            // raw url, stored verbatim in .gitmodules
   readonly path: string;           // worktree-relative checkout path
   readonly name?: string;          // default: path (git's --name default)
+  readonly branch?: string;        // -b: track this branch (else remote HEAD); ADR-292
 }
 export interface SubmoduleAddResult {
   readonly name: string;
   readonly path: FilePath;
   readonly url: string;            // RESOLVED url written to .git/config + module remote.origin
   readonly id: ObjectId;           // submodule HEAD oid staged as the gitlink
-  readonly branch: string;         // checked-out branch (remote HEAD branch)
+  readonly branch: string;         // checked-out branch (remote HEAD branch, or `branch` opt)
 }
 
 // repo.submodule.update(opts)
 export interface SubmoduleUpdateOptions {
   readonly paths?: ReadonlyArray<string>;   // default: every registered submodule
   readonly init?: boolean;                  // --init: register before updating
+  readonly mode?: SubmoduleUpdateMode;      // --checkout/--rebase/--merge override of configured mode
 }
 export interface SubmoduleUpdateEntry {
   readonly name: string;
   readonly path: FilePath;
-  readonly id: ObjectId;           // pinned gitlink oid now checked out (detached)
+  readonly id: ObjectId;           // pinned gitlink oid the submodule was reconciled to
+  readonly mode: SubmoduleUpdateMode;  // mode actually applied
   readonly cloned: boolean;        // true ⇒ this call cloned the module gitdir
-  readonly checkedOut: boolean;    // true ⇒ HEAD moved (false ⇒ already at pinned)
+  readonly changed: boolean;       // true ⇒ submodule HEAD/branch moved (false ⇒ already in sync / none)
 }
 export interface SubmoduleUpdateResult { readonly entries: ReadonlyArray<SubmoduleUpdateEntry>; }
 
@@ -107,6 +110,15 @@ All facts below are pinned from real `git submodule add`/`update --init` runs
    then `active = true` (order **url, active** — `add`'s order, distinct from
    `init`'s active,url; no `update` key).
 
+**`add --branch <b>` (ADR-292):** after the clone (HEAD on remote-default `main`),
+create the local tracking branch `refs/heads/<b>` at `origin/<b>` with
+`branch.<b>.{remote,merge}`, `checkout(child, { rev: <b> })` (reflog
+`checkout: moving from main to <b>`, materialise `<b>`'s tree), append
+`branch = <b>` to `.gitmodules` (after `path`, `url`), and stage `<b>`'s commit as
+the gitlink. The module gitdir keeps **both** local branches (`main` from the
+clone, `<b>` from the checkout) — git-faithful. The superproject `.git/config`
+gets no `branch` key (the branch lives only in `.gitmodules`).
+
 ### `add` refusals
 
 - `path` already in the index (tracked file **or** existing submodule) →
@@ -126,10 +138,15 @@ All facts below are pinned from real `git submodule add`/`update --init` runs
 3. **Clone if missing**: if `.git/modules/<name>/HEAD` is absent, clone the module
    gitdir (as in `add` steps 1–4 — gitfile + core.worktree + worktree
    materialise). `cloned: true`.
-4. **Detached checkout** of the pinned oid: HEAD becomes the raw oid, worktree
-   materialises that commit, reflog gains `checkout: moving from <from> to <oid>`.
-   Skipped (`checkedOut: false`) when the module HEAD already equals the pinned
-   oid (git's idempotent no-op).
+4. **Reconcile to the pinned oid by mode** (ADR-290) — `mode` = `opts.mode` (the
+   `--checkout/--rebase/--merge` override) ?? `submodule.<name>.update` ?? `checkout`:
+   - `checkout` → `checkout(child, { rev: pinned, detach: true })`; **detached**
+     HEAD, reflog `checkout: moving from <from> to <oid>`. Skipped (`changed:false`)
+     when module HEAD already equals pinned (git's idempotent no-op).
+   - `rebase` → `rebaseRun(child, { upstream: pinned })`; stays on the branch,
+     reflog `rebase (start)/(finish)`.
+   - `merge` → `mergeRun(child, { rev: pinned })`; merges into the current branch.
+   - `none` → skip (`changed:false`).
 
 ### `update` refusals
 
@@ -138,10 +155,11 @@ All facts below are pinned from real `git submodule add`/`update --init` runs
 - a selected submodule **not registered** and `init !== true` → skipped with a
   refusal mirroring git's "not initialized" (the caller must pass `init`).
 - the pinned oid **absent** from the freshly-cloned module objects (remote
-  advanced past the initial clone) → `OBJECT_NOT_FOUND`, documented as the
-  incremental-fetch gap (25.3); the interop fixtures pin a commit always present.
-- `submodule.<name>.update ∈ {rebase, merge}` → `INVALID_OPTION` (non-goal);
-  `none` → the submodule is skipped (faithful).
+  advanced past the initial clone) → `OBJECT_NOT_FOUND` (ADR-291, the 25.3
+  incremental-fetch gap); the interop fixtures pin a commit always present.
+- `rebase`/`merge` propagate the underlying `rebaseRun`/`mergeRun` refusals +
+  conflict states (`rebase-merge/`, `MERGE_HEAD`) unchanged — the submodule is left
+  mid-operation, resolved through its own `repo.rebase`/`repo.merge` (ADR-290).
 
 ### `sync --recursive`
 
@@ -236,15 +254,21 @@ reject INDEX-ALREADY if index has any entry at `path` (or under it / gitlink)   
 config := readConfig(ctx); base := resolveBaseUrl(ctx, config)                  // 24.1a helper
 resolved := resolveSubmoduleUrl(base, url)
 child := deriveSubmoduleCloneContext(ctx, name, path)
-clone(child, { url: resolved })                                                 // module gitdir, on branch
+mkdir -p ${workDir}/${path}
+clone(child, { url: resolved })                                                 // module gitdir, on remote-HEAD branch
 writeConfig(child, core.worktree = submoduleCoreWorktree(name, path))
 write `${workDir}/${path}/.git` = submoduleGitfile(name, path)
-materializeWorktreeFromHead(child)                                              // worktree + module index
+if opts.branch:                                                                 // ADR-292
+   createTrackingBranch(child, opts.branch)                                     // refs/heads/<b>@origin/<b> + branch.<b>.{remote,merge}
+   checkout(child, { rev: opts.branch })                                        // HEAD→<b>, materialise
+   branch := opts.branch
+else:
+   materializeWorktreeFromHead(child); branch := remoteHeadBranch              // stay on remote HEAD branch
 subHead := resolveRef(child, 'HEAD')
-writeGitmodules(ctx, name, path, rawUrl=url)                                    // [submodule name] path,url(raw)
+writeGitmodules(ctx, name, path, rawUrl=url, branch?)                           // [submodule name] path,url(raw),branch?
 stage(ctx index): gitlink 160000 subHead @path  +  .gitmodules blob 100644      // single index lock
 updateConfig(ctx): submodule.<name>.url=resolved, then active=true              // order url,active
-return { name, path, url: resolved, id: subHead, branch: remoteHeadBranch }
+return { name, path, url: resolved, id: subHead, branch }
 ```
 
 ### `submoduleUpdate(ctx, opts)`
@@ -261,17 +285,14 @@ for row in selected (incremental, git order):
   if !registered:
      if opts.init: submoduleInit(ctx, { paths:[row.path] }); refresh config
      else: skip (not initialised)
-  mode := updateModes.get(row.name) ?? 'checkout'
-  if mode==='none': continue
-  if mode∈{rebase,merge}: throw INVALID_OPTION
+  mode := opts.mode ?? updateModes.get(row.name) ?? 'checkout'
+  if mode==='none': push {…, mode, changed:false}; continue
   child := deriveSubmoduleCloneContext(ctx, row.name, row.path)
   cloned := !exists(child gitDir/HEAD)
-  if cloned: clone(child, { url: config.submodule.<name>.url }); gitfile+core.worktree
-  if resolveRef(child,'HEAD') !== pinned:
-     reject if !objectExists(child, pinned)                                     // remote-advanced gap (25.3)
-     checkout(child, { rev: pinned, detach: true }); checkedOut := true
-  else checkedOut := false
-  push { name, path, id: pinned, cloned, checkedOut }
+  if cloned: clone(child, { url: config.submodule.<name>.url }); gitfile+core.worktree+materialize
+  reject OBJECT_NOT_FOUND if !objectExists(child, pinned)                       // remote-advanced gap (ADR-291)
+  changed := reconcile(child, pinned, mode)                                     // checkout-detach | rebaseRun | mergeRun
+  push { name, path, id: pinned, mode, cloned, changed }
 ```
 
 ### `submoduleSync(ctx, { recursive })` — extend 24.1a
@@ -335,15 +356,14 @@ regeneration (the prepush `check:doc-typedoc` gate).
   network verbs are node-interop-only, like `clone`).
 - A nested-submodule fixture drives `sync --recursive` parity.
 
-## Open decisions (→ ADRs, Step 3)
+## Decisions (resolved — ADRs 289–292)
 
 1. **Substrate shape** — reuse `clone` + new `materializeWorktreeFromHead`
-   primitive (recommended, KISS, leaves top-level `clone` untouched) vs a unified
-   new clone-with-worktree primitive vs giving top-level `clone` a worktree now.
-2. **`update` non-checkout modes** — `rebase`/`merge` refused `INVALID_OPTION`
-   (recommended) vs silently treated as `checkout`. `none` always skips.
-3. **Remote-advanced pinned oid** — refuse `OBJECT_NOT_FOUND` (recommended, honest
-   about the 25.3 incremental-fetch gap) vs attempt a (currently no-op) fetch.
-4. **`add` branch option** — omit `--branch`/`-b` (recommended non-goal; default
-   to remote HEAD branch) vs implement `submodule.<name>.branch`.
+   primitive; top-level `clone` untouched. **ADR-289.**
+2. **`update` modes** — implement all four faithfully; `rebase`/`merge` delegate to
+   `rebaseRun`/`mergeRun` on the child; `none` skips. **ADR-290.**
+3. **Remote-advanced pinned oid** — refuse `OBJECT_NOT_FOUND` (honest about the
+   25.3 incremental-fetch gap). **ADR-291.**
+4. **`add --branch`** — implemented: track a named branch (`.gitmodules branch=`,
+   dual-branch module config, branch-only-in-`.gitmodules`). **ADR-292.**
 ```
