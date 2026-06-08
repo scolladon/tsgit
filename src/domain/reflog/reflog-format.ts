@@ -25,17 +25,18 @@ export function serializeReflogLine(entry: ReflogEntry): string {
     throw invalidReflogEntry('message contains a line break');
   }
   const identity = serializeIdentity(entry.identity);
-  return `${entry.oldId} ${entry.newId} ${identity}\t${entry.message}\n`;
+  const meta = `${entry.oldId} ${entry.newId} ${identity}`;
+  // git appends the TAB + message only when the message is non-empty
+  // (`if (msg && *msg)`); an empty message ends the line at the timezone.
+  return entry.message === '' ? `${meta}\n` : `${meta}\t${entry.message}\n`;
 }
 
 /** Parse one reflog line (LF already stripped). Throws INVALID_REFLOG_ENTRY. */
 export function parseReflogLine(line: string): ReflogEntry {
   const tab = line.indexOf('\t');
-  if (tab === -1) {
-    throw invalidReflogEntry('missing tab separator');
-  }
-  const meta = line.slice(0, tab);
-  const message = line.slice(tab + 1);
+  // A tab-less line is git's empty-message form: the committer runs to the end.
+  const meta = tab === -1 ? line : line.slice(0, tab);
+  const message = tab === -1 ? '' : line.slice(tab + 1);
   if (meta[OID_LENGTH] !== FIELD_SEPARATOR || meta[NEW_ID_END] !== FIELD_SEPARATOR) {
     throw invalidReflogEntry('misplaced field separator');
   }

@@ -80,15 +80,17 @@ describe('serializeReflogLine', () => {
 
   describe('Given an empty message', () => {
     describe('When serializing', () => {
-      it('Then the TAB is still present before an empty message', () => {
-        // Arrange
+      it('Then no TAB is written before the line feed', () => {
+        // Arrange — git appends the TAB + message only when the message is
+        // non-empty (`if (msg && *msg)`); an empty message ends at the timezone.
         const sut: ReflogEntry = { ...ENTRY, message: '' };
 
         // Act
         const line = serializeReflogLine(sut);
 
         // Assert
-        expect(line.endsWith('+0000\t\n')).toBe(true);
+        expect(line.endsWith('+0000\n')).toBe(true);
+        expect(line.includes('\t')).toBe(false);
       });
     });
   });
@@ -179,14 +181,19 @@ describe('parseReflogLine', () => {
     });
   });
 
-  describe('Given a line with no TAB', () => {
+  describe('Given a tab-less line with a valid committer', () => {
     describe('When parsing', () => {
-      it('Then throws INVALID_REFLOG_ENTRY', () => {
-        // Arrange
-        const sut = `${OID_A} ${OID_B} Ada <ada@example.com> 1716240000 +0000 commit: second`;
+      it('Then the message is empty', () => {
+        // Arrange — git writes an empty-message reflog entry with no TAB; the
+        // committer runs to the end of the line.
+        const sut = `${OID_A} ${OID_B} Ada <ada@example.com> 1716240000 +0000`;
 
-        // Act & Assert
-        expectInvalidReflogEntry(() => parseReflogLine(sut), 'missing tab separator');
+        // Act
+        const entry = parseReflogLine(sut);
+
+        // Assert
+        expect(entry.message).toBe('');
+        expect(entry.identity.name).toBe('Ada');
       });
     });
   });
@@ -304,11 +311,13 @@ describe('parseReflog', () => {
   describe('Given a reflog file with a malformed line', () => {
     describe('When parsing', () => {
       it('Then throws INVALID_REFLOG_ENTRY', () => {
-        // Arrange
+        // Arrange — a tab-less garbage line is now read as an empty-message
+        // entry, so it fails on the misplaced field separator (too short for
+        // the index-40 space) rather than a missing tab.
         const sut = `${serializeReflogLine(ENTRY)}garbage line\n`;
 
         // Act & Assert
-        expectInvalidReflogEntry(() => parseReflog(sut), 'missing tab separator');
+        expectInvalidReflogEntry(() => parseReflog(sut), 'misplaced field separator');
       });
     });
   });
