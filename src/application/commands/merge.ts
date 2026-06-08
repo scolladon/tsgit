@@ -136,10 +136,17 @@ export const mergeRun = async (
   if (base === theirId) return { kind: 'up-to-date', id: ourId };
   if (base === ourId) {
     if (opts.fastForward !== 'never') {
-      await updateRef(ctx, head.target, theirId, {
-        expected: ourId,
-        reflogMessage: `${internal.reflogAction ?? `merge ${opts.rev}`}: Fast-forward`,
-      });
+      const lock = await acquireIndexLock(ctx);
+      try {
+        const entries = await materialiseNonConflictTree(ctx, await getTree(ctx, theirId));
+        await lock.commit(entries);
+        await updateRef(ctx, head.target, theirId, {
+          expected: ourId,
+          reflogMessage: `${internal.reflogAction ?? `merge ${opts.rev}`}: Fast-forward`,
+        });
+      } finally {
+        await lock.release();
+      }
       return { kind: 'fast-forward', id: theirId, branch: head.target };
     }
   }

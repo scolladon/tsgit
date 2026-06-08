@@ -88,6 +88,35 @@ describe('merge', () => {
     });
   });
 
+  describe('Given an ancestor target that adds a file', () => {
+    describe('When merge fast-forwards', () => {
+      it('Then the working tree and index gain the added file', async () => {
+        // Arrange — base f.txt; feature +m.txt; main stays at base → fast-forward.
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/f.txt`, 'base\n');
+        await add(ctx, ['f.txt']);
+        await commit(ctx, { message: 'base', author });
+        await branchCreate(ctx, { name: 'feature' });
+        await checkout(ctx, { rev: 'feature' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/m.txt`, 'm\n');
+        await add(ctx, ['m.txt']);
+        await commit(ctx, { message: 'feature-add', author });
+        await checkout(ctx, { rev: 'main' });
+
+        // Act
+        const sut = await mergeRun(ctx, { rev: 'feature', author });
+
+        // Assert — fast-forward materialises m.txt to working tree + index.
+        expect(sut.kind).toBe('fast-forward');
+        const onDisk = await ctx.fs.exists(`${ctx.layout.workDir}/m.txt`);
+        const indexPaths = (await readIndex(ctx)).entries.map((e) => e.path).sort();
+        expect(onDisk).toBe(true);
+        expect(indexPaths).toEqual(['f.txt', 'm.txt']);
+      });
+    });
+  });
+
   describe("Given an ancestor target + fastForward='never'", () => {
     describe('When merge', () => {
       it('Then a real merge commit is produced', async () => {
