@@ -454,6 +454,47 @@ describe('merge', () => {
     });
   });
 
+  describe('Given a dirty-worktree merge refusal acquired the index lock', () => {
+    describe('When a later index operation runs', () => {
+      it('Then the lock was released so the operation is not blocked', async () => {
+        // Arrange — a clean true-merge that would overwrite f.txt, drifted so it refuses.
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/f.txt`, 'base\n');
+        await add(ctx, ['f.txt']);
+        await commit(ctx, { message: 'base', author });
+        await branchCreate(ctx, { name: 'theirs' });
+        await checkout(ctx, { rev: 'theirs' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/f.txt`, 'theirs\n');
+        await add(ctx, ['f.txt']);
+        await commit(ctx, { message: 'theirs-edit', author });
+        await checkout(ctx, { rev: 'main' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/o.txt`, 'o\n');
+        await add(ctx, ['o.txt']);
+        await commit(ctx, { message: 'ours-add', author });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/f.txt`, 'DIRTY\n');
+        let refused = false;
+        try {
+          await mergeRun(ctx, { rev: 'theirs', author });
+        } catch (caught) {
+          refused =
+            (caught as { readonly data?: { readonly code?: string } }).data?.code ===
+            'WORKING_TREE_DIRTY';
+        }
+        expect(refused).toBe(true);
+
+        // Act — a follow-up op that re-acquires the index lock; a leaked lock
+        // would surface as RESOURCE_LOCKED here.
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/q.txt`, 'q\n');
+        await add(ctx, ['q.txt']);
+
+        // Assert — the add succeeded, so the refused merge released the lock.
+        const indexPaths = (await readIndex(ctx)).entries.map((e) => e.path).sort();
+        expect(indexPaths).toContain('q.txt');
+      });
+    });
+  });
+
   describe('Given a non-overlapping content change to the same file on each side', () => {
     describe('When merge', () => {
       it('Then merged content combines both edits', async () => {
