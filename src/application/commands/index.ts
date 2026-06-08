@@ -268,6 +268,9 @@ export {
   type WorktreeSide,
 } from './status.js';
 export {
+  type SubmoduleAddEntry,
+  type SubmoduleAddOptions,
+  type SubmoduleAddResult,
   type SubmoduleDeinitEntry,
   type SubmoduleDeinitOptions,
   type SubmoduleDeinitResult,
@@ -280,10 +283,15 @@ export {
   type SubmoduleSyncEntry,
   type SubmoduleSyncOptions,
   type SubmoduleSyncResult,
+  type SubmoduleUpdateEntry,
+  type SubmoduleUpdateOptions,
+  type SubmoduleUpdateResult,
+  submoduleAdd,
   submoduleDeinit,
   submoduleInit,
   submoduleList,
   submoduleSync,
+  submoduleUpdate,
 } from './submodule.js';
 export {
   type TagCreateInput,

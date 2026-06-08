@@ -3,7 +3,8 @@ import { TsgitError } from '../error.js';
 /** Submodule-tier error codes. */
 export type SubmoduleError =
   | { readonly code: 'RELATIVE_URL_UNRESOLVABLE'; readonly url: string }
-  | { readonly code: 'SUBMODULE_HAS_MODIFICATIONS'; readonly path: string };
+  | { readonly code: 'SUBMODULE_HAS_MODIFICATIONS'; readonly path: string }
+  | { readonly code: 'SUBMODULE_PATH_EXISTS'; readonly path: string };
 
 /**
  * A relative submodule URL cannot be resolved because the base URL has no more
@@ -23,3 +24,11 @@ export const relativeUrlUnresolvable = (url: string): TsgitError =>
  */
 export const submoduleHasModifications = (path: string): TsgitError =>
   new TsgitError({ code: 'SUBMODULE_HAS_MODIFICATIONS', path });
+
+/**
+ * `add` refuses when the target path is already tracked in the superproject
+ * index (a committed file or an existing submodule) — git's
+ * `fatal: '<path>' already exists in the index`. Checked before any clone.
+ */
+export const submodulePathExists = (path: string): TsgitError =>
+  new TsgitError({ code: 'SUBMODULE_PATH_EXISTS', path });

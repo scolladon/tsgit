@@ -14,22 +14,53 @@ import {
   pathspecNoMatch,
   workingTreeFileTooLarge,
 } from '../../domain/commands/error.js';
-import { type FilePath, ObjectId, type RefName } from '../../domain/objects/index.js';
+import type { IndexEntry } from '../../domain/git-index/index.js';
+import {
+  FILE_MODE,
+  type FilePath,
+  ObjectId,
+  type RefName,
+  ZERO_OID,
+} from '../../domain/objects/index.js';
 import { validateRefName } from '../../domain/refs/index.js';
-import { submoduleHasModifications } from '../../domain/submodule/error.js';
+import { submoduleHasModifications, submodulePathExists } from '../../domain/submodule/error.js';
+import { submoduleCoreWorktree, submoduleGitfile } from '../../domain/submodule/gitlink-path.js';
 import { isUnsafeSubmoduleName } from '../../domain/submodule/name.js';
 import { resolveSubmoduleUrl } from '../../domain/submodule/relative-url.js';
 import { parseUpdateMode, type SubmoduleUpdateMode } from '../../domain/submodule/update-mode.js';
 import type { Context } from '../../ports/context.js';
 import { type ParsedConfig, readConfig } from '../primitives/config-read.js';
-import { deriveSubmoduleContext } from '../primitives/internal/submodule-context.js';
+import { indexEntryFromStat } from '../primitives/internal/index-entry-from-stat.js';
+import { acquireIndexLock } from '../primitives/internal/index-lock.js';
+import {
+  deriveSubmoduleCloneContext,
+  deriveSubmoduleContext,
+} from '../primitives/internal/submodule-context.js';
+import { materializeWorktreeFromHead } from '../primitives/materialize-worktree-from-head.js';
 import { type GitmodulesRow, parseGitmodules } from '../primitives/parse-gitmodules.js';
+import { readIndex } from '../primitives/read-index.js';
+import { readObject } from '../primitives/read-object.js';
+import { recordRefUpdate } from '../primitives/record-ref-update.js';
 import { getRefStore } from '../primitives/ref-store.js';
-import { MAX_GITMODULES_BYTES, type SubmoduleEntry } from '../primitives/types.js';
-import { type ConfigOperation, updateConfigOperations } from '../primitives/update-config.js';
+import { resolveRef } from '../primitives/resolve-ref.js';
+import {
+  MAX_GITMODULES_BYTES,
+  MAX_SUBMODULE_DEPTH,
+  type SubmoduleEntry,
+} from '../primitives/types.js';
+import {
+  applyConfigOpInText,
+  type ConfigOperation,
+  updateConfigOperations,
+} from '../primitives/update-config.js';
 import { looksLikeObjectId } from '../primitives/validators.js';
 import { walkSubmodules } from '../primitives/walk-submodules.js';
-import { assertRepository } from './internal/repo-state.js';
+import { writeObject } from '../primitives/write-object.js';
+import { checkout } from './checkout.js';
+import { clone } from './clone.js';
+import { assertNotBare, assertRepository } from './internal/repo-state.js';
+import { mergeRun } from './merge.js';
+import { rebaseRun } from './rebase.js';
 import { status } from './status.js';
 
 export type { SubmoduleEntry };
@@ -211,6 +242,8 @@ export const submoduleInit = async (
 export interface SubmoduleSyncOptions {
   /** Submodule paths to sync. Default: every initialised submodule. */
   readonly paths?: ReadonlyArray<string>;
+  /** `--recursive`: descend into checked-out submodules and sync their nested ones. */
+  readonly recursive?: boolean;
 }
 
 export interface SubmoduleSyncEntry {
@@ -242,15 +275,16 @@ const syncSubmoduleRemote = async (
 };
 
 /**
- * Re-point configured submodule URLs from `.gitmodules` (`git submodule sync`).
- * Operates only on **initialised** submodules (those already carrying
- * `submodule.<name>.url` in config); a fresh clone with nothing initialised is a
- * no-op. Overwrites `submodule.<name>.url` with the freshly resolved URL and,
- * when the submodule is checked out, its own `remote.origin.url`.
+ * Re-point this level's submodule URLs from `.gitmodules` and, when `recursive`,
+ * descend into each checked-out submodule. `depth`/`visited` bound the descent
+ * (`MAX_SUBMODULE_DEPTH` + the absorbed-gitdir cycle guard). Returns this level's
+ * entries; nested syncs are on-disk side effects.
  */
-export const submoduleSync = async (
+const syncLevel = async (
   ctx: Context,
-  opts: SubmoduleSyncOptions = {},
+  opts: SubmoduleSyncOptions,
+  depth: number,
+  visited: ReadonlySet<string>,
 ): Promise<SubmoduleSyncResult> => {
   await assertRepository(ctx);
   const selected = selectRows(await readWorktreeGitmodules(ctx), opts.paths);
@@ -268,8 +302,29 @@ export const submoduleSync = async (
     entries.push({ name: row.name, path, url, syncedRemote });
   }
   if (ops.length > 0) await updateConfigOperations(ctx, ops);
+  if (opts.recursive === true && depth < MAX_SUBMODULE_DEPTH) {
+    for (const row of selected) {
+      const childGitDir = `${ctx.layout.gitDir}/modules/${row.name}`;
+      const child = await deriveSubmoduleContext(ctx, row.name, row.path as FilePath, visited);
+      if (child === undefined) continue;
+      await syncLevel(child, opts, depth + 1, new Set([...visited, childGitDir]));
+    }
+  }
   return { entries };
 };
+
+/**
+ * Re-point configured submodule URLs from `.gitmodules` (`git submodule sync`).
+ * Operates only on **initialised** submodules (those already carrying
+ * `submodule.<name>.url` in config); a fresh clone with nothing initialised is a
+ * no-op. Overwrites `submodule.<name>.url` with the freshly resolved URL and,
+ * when the submodule is checked out, its own `remote.origin.url`. With
+ * `recursive`, descends into each checked-out submodule and syncs its nested ones.
+ */
+export const submoduleSync = (
+  ctx: Context,
+  opts: SubmoduleSyncOptions = {},
+): Promise<SubmoduleSyncResult> => syncLevel(ctx, opts, 0, new Set());
 
 export interface SubmoduleDeinitOptions {
   /** Submodule paths to deinitialise. Required unless `all` is set. */
@@ -381,6 +436,317 @@ export const submoduleList = async (
     ...(opts.maxDepth !== undefined ? { maxDepth: opts.maxDepth } : {}),
   })) {
     entries.push(entry);
+  }
+  return { entries };
+};
+
+const SUBMODULE_SECTION = 'submodule';
+
+export interface SubmoduleAddOptions {
+  /** Submodule URL — stored verbatim in `.gitmodules`, resolved for `.git/config`. */
+  readonly url: string;
+  /** Worktree-relative checkout path. */
+  readonly path: string;
+  /** `.gitmodules` subsection name. Default: `path` (git's `--name` default). */
+  readonly name?: string;
+  /** `-b`: track this branch instead of the remote default HEAD. */
+  readonly branch?: string;
+}
+
+export interface SubmoduleAddEntry {
+  readonly name: string;
+  readonly path: FilePath;
+  /** Resolved URL written to `.git/config` + the module's `remote.origin.url`. */
+  readonly url: string;
+  /** Submodule HEAD oid staged as the gitlink. */
+  readonly id: ObjectId;
+  /** Checked-out branch (remote default HEAD branch, or `branch`). */
+  readonly branch: string;
+}
+
+export type SubmoduleAddResult = SubmoduleAddEntry;
+
+/** Reject empty/unsafe `name`/`path`/`url` before any filesystem mutation. */
+const assertAddInputs = (name: string, path: string, url: string): void => {
+  if (url === '') throw invalidOption('submodule.add', 'url must not be empty');
+  if (path === '') throw invalidOption('submodule.add', 'path must not be empty');
+  if (isUnsafeSubmoduleName(name))
+    throw invalidOption('submodule.add.name', `unsafe name '${name}'`);
+  if (isUnsafeSubmoduleName(path))
+    throw invalidOption('submodule.add.path', `unsafe path '${path}'`);
+};
+
+/** Refuse when the target path is already tracked in the superproject index. */
+const assertPathFree = async (ctx: Context, path: string): Promise<void> => {
+  const index = await readIndex(ctx);
+  if (index.entries.some((entry) => entry.path === path)) throw submodulePathExists(path);
+};
+
+/** A `set` op on the submodule subsection of `.gitmodules` / `.git/config`. */
+const setSubmoduleOp = (subsection: string, key: string, value: string): ConfigOperation => ({
+  kind: 'set',
+  section: SUBMODULE_SECTION,
+  subsection,
+  key,
+  value,
+});
+
+/**
+ * Write the `.gitmodules` `[submodule "<name>"]` block (`path`, `url`, optional
+ * `branch`). `setConfigEntryInText` inserts a fresh key right after the header,
+ * so the ops are folded in reverse to land in git's `path`→`url`→`branch` order.
+ */
+const writeGitmodulesEntry = async (
+  ctx: Context,
+  name: string,
+  path: string,
+  rawUrl: string,
+  branch: string | undefined,
+): Promise<Uint8Array> => {
+  const file = `${ctx.layout.workDir}/${GITMODULES_FILE}`;
+  const existing = (await ctx.fs.exists(file)) ? await ctx.fs.readUtf8(file) : '';
+  const ordered = [setSubmoduleOp(name, 'path', path), setSubmoduleOp(name, 'url', rawUrl)];
+  if (branch !== undefined) ordered.push(setSubmoduleOp(name, 'branch', branch));
+  let text = existing;
+  for (const op of [...ordered].reverse()) text = applyConfigOpInText(text, op);
+  await ctx.fs.writeUtf8(file, text);
+  return new TextEncoder().encode(text);
+};
+
+/**
+ * Stage the gitlink (`160000 <subHead> <path>`) and the `.gitmodules` blob into
+ * the superproject index under a single lock — git stages both on `add`.
+ */
+const stageSubmodule = async (
+  ctx: Context,
+  path: string,
+  subHead: ObjectId,
+  gitmodulesBytes: Uint8Array,
+): Promise<void> => {
+  const gitmodulesBlob = (await writeObject(ctx, {
+    type: 'blob',
+    id: '' as ObjectId,
+    content: gitmodulesBytes,
+  })) as ObjectId;
+  const lock = await acquireIndexLock(ctx);
+  try {
+    const index = await readIndex(ctx);
+    const entries = new Map<string, IndexEntry>(index.entries.map((e) => [e.path, e]));
+    const gitlinkStat = await ctx.fs.lstat(`${ctx.layout.workDir}/${path}`);
+    entries.set(
+      path,
+      indexEntryFromStat(gitlinkStat, FILE_MODE.GITLINK, subHead, path as FilePath),
+    );
+    const gitmodulesStat = await ctx.fs.lstat(`${ctx.layout.workDir}/${GITMODULES_FILE}`);
+    entries.set(
+      GITMODULES_FILE,
+      indexEntryFromStat(
+        gitmodulesStat,
+        FILE_MODE.REGULAR,
+        gitmodulesBlob,
+        GITMODULES_FILE as FilePath,
+      ),
+    );
+    await lock.commit([...entries.values()]);
+  } finally {
+    await lock.release();
+  }
+};
+
+/**
+ * Clone a submodule into its absorbed gitdir (`child`) and lay down the absorbed
+ * layout: the module's `core.worktree`, then the `.git` gitfile in the worktree.
+ * Shared by `add` and `update`'s clone-if-missing step; the caller then
+ * materialises / checks out the worktree.
+ */
+const cloneSubmoduleInto = async (
+  ctx: Context,
+  child: Context,
+  resolvedUrl: string,
+  name: string,
+  path: string,
+): Promise<void> => {
+  await clone(child, { url: resolvedUrl });
+  await updateConfigOperations(child, [
+    { kind: 'set', section: 'core', key: 'worktree', value: submoduleCoreWorktree(name, path) },
+  ]);
+  await ctx.fs.writeUtf8(`${ctx.layout.workDir}/${path}/.git`, `${submoduleGitfile(name, path)}\n`);
+};
+
+/** The short branch name HEAD points at, or `''` when detached. */
+const headBranchName = (head: { kind: string; target?: string }): string =>
+  head.kind === 'symbolic' && head.target?.startsWith(HEADS_PREFIX) === true
+    ? head.target.slice(HEADS_PREFIX.length)
+    : '';
+
+/**
+ * Create the local tracking branch `refs/heads/<branch>` at `origin/<branch>`
+ * with `branch.<branch>.{remote,merge}`, mirroring git's `checkout -b <branch>
+ * origin/<branch>` (reflog `branch: Created from origin/<branch>`). Then switch
+ * the submodule onto it — `add -b`'s post-clone step.
+ */
+const checkoutTrackingBranch = async (child: Context, branch: string): Promise<void> => {
+  const oid = await resolveRef(child, `refs/remotes/origin/${branch}` as RefName);
+  const ref = `${HEADS_PREFIX}${branch}` as RefName;
+  await child.fs.writeUtf8(`${child.layout.gitDir}/${ref}`, `${oid}\n`);
+  await recordRefUpdate(child, ref, ZERO_OID, oid, `branch: Created from origin/${branch}`);
+  await updateConfigOperations(child, [
+    { kind: 'set', section: 'branch', subsection: branch, key: 'remote', value: 'origin' },
+    { kind: 'set', section: 'branch', subsection: branch, key: 'merge', value: ref },
+  ]);
+  await checkout(child, { rev: branch });
+};
+
+/**
+ * Clone a new submodule into the worktree + `.git/modules/<name>` and register
+ * it (`git submodule add`). Clones the remote into the absorbed gitdir, writes
+ * `core.worktree` + the `.git` gitfile, materialises the working tree on the
+ * remote default branch, writes `.gitmodules`, stages the gitlink +
+ * `.gitmodules` blob, and records `submodule.<name>.{url,active}` in
+ * `.git/config`. Refuses an unsafe/empty name/path/url or an already-tracked path.
+ */
+export const submoduleAdd = async (
+  ctx: Context,
+  opts: SubmoduleAddOptions,
+): Promise<SubmoduleAddResult> => {
+  await assertRepository(ctx);
+  await assertNotBare(ctx, 'submodule add');
+  const name = opts.name ?? opts.path;
+  assertAddInputs(name, opts.path, opts.url);
+  // Validate `branch` as a ref component — it is joined into `refs/heads/<branch>`
+  // and written as a file, so an unchecked `../`-laden value could traverse out
+  // of the module gitdir.
+  if (opts.branch !== undefined) validateRefName(`${HEADS_PREFIX}${opts.branch}`);
+  await assertPathFree(ctx, opts.path);
+  const config = await readConfig(ctx);
+  const base = await resolveBaseUrl(ctx, config);
+  const resolved = resolveSubmoduleUrl(base, opts.url);
+  const child = deriveSubmoduleCloneContext(ctx, name, opts.path as FilePath);
+  await cloneSubmoduleInto(ctx, child, resolved, name, opts.path);
+  if (opts.branch !== undefined) await checkoutTrackingBranch(child, opts.branch);
+  else await materializeWorktreeFromHead(child);
+  const head = await getRefStore(child).resolveDirect(HEAD_REF);
+  const branch = headBranchName(head);
+  const subHead = await resolveRef(child, HEAD_REF);
+  const gitmodulesBytes = await writeGitmodulesEntry(ctx, name, opts.path, opts.url, opts.branch);
+  await stageSubmodule(ctx, opts.path, subHead, gitmodulesBytes);
+  await updateConfigOperations(ctx, [
+    setSubmoduleOp(name, 'active', 'true'),
+    setSubmoduleOp(name, 'url', resolved),
+  ]);
+  return { name, path: opts.path as FilePath, url: resolved, id: subHead, branch };
+};
+
+export interface SubmoduleUpdateOptions {
+  /** Submodule paths to update. Default: every registered submodule. */
+  readonly paths?: ReadonlyArray<string>;
+  /** `--init`: register an unregistered submodule before updating it. */
+  readonly init?: boolean;
+  /** `--checkout`/`--rebase`/`--merge`: override the configured update mode. */
+  readonly mode?: SubmoduleUpdateMode;
+}
+
+export interface SubmoduleUpdateEntry {
+  readonly name: string;
+  readonly path: FilePath;
+  /** Pinned gitlink oid the submodule was reconciled to. */
+  readonly id: ObjectId;
+  /** Mode actually applied. */
+  readonly mode: SubmoduleUpdateMode;
+  /** True when this call cloned the module gitdir. */
+  readonly cloned: boolean;
+  /** True when the submodule HEAD/branch moved (false ⇒ already in sync / none). */
+  readonly changed: boolean;
+}
+
+export interface SubmoduleUpdateResult {
+  readonly entries: ReadonlyArray<SubmoduleUpdateEntry>;
+}
+
+/** The pinned gitlink oid recorded in the superproject index for `path`. */
+const gitlinkFromIndex = (
+  index: Awaited<ReturnType<typeof readIndex>>,
+  path: string,
+): ObjectId | undefined =>
+  index.entries.find((e) => e.path === path && e.mode === FILE_MODE.GITLINK)?.id;
+
+/**
+ * Reconcile a submodule to the pinned oid per `mode`. `checkout` detaches HEAD at
+ * the pin (skipped when already detached there); `rebase`/`merge` delegate to the
+ * faithful `rebaseRun`/`mergeRun` on the submodule's current branch. Returns
+ * whether the submodule HEAD moved.
+ */
+const reconcileSubmodule = async (
+  child: Context,
+  pinned: ObjectId,
+  mode: SubmoduleUpdateMode,
+): Promise<boolean> => {
+  if (mode === 'checkout') {
+    const head = await getRefStore(child).resolveDirect(HEAD_REF);
+    if (head.kind === 'direct' && head.id === pinned) return false;
+    await checkout(child, { rev: pinned, detach: true });
+    return true;
+  }
+  const before = await resolveRef(child, HEAD_REF);
+  if (mode === 'rebase') await rebaseRun(child, { upstream: pinned });
+  else await mergeRun(child, { rev: pinned });
+  return (await resolveRef(child, HEAD_REF)) !== before;
+};
+
+/**
+ * Clone-if-missing + reconcile each registered, selected submodule to its pinned
+ * commit (`git submodule update`). The pinned oid is read from the superproject
+ * index gitlink; the module is cloned into `.git/modules/<name>` when absent,
+ * then brought to the pin per its `update` mode (`checkout`/`rebase`/`merge`/
+ * `none`; `opts.mode` overrides). An unregistered submodule is skipped unless
+ * `init`. Refuses `OBJECT_NOT_FOUND` when the pin is absent after cloning (the
+ * remote-advanced case — tsgit has no incremental fetch).
+ */
+export const submoduleUpdate = async (
+  ctx: Context,
+  opts: SubmoduleUpdateOptions = {},
+): Promise<SubmoduleUpdateResult> => {
+  await assertRepository(ctx);
+  await assertNotBare(ctx, 'submodule update');
+  const rows = await readWorktreeGitmodules(ctx);
+  const selected = selectRows(rows, opts.paths);
+  const updateModes = validateUpdateModes(rows);
+  const index = await readIndex(ctx);
+  let config = await readConfig(ctx);
+  const entries: SubmoduleUpdateEntry[] = [];
+  for (const row of selected) {
+    const pinned = gitlinkFromIndex(index, row.path);
+    if (pinned === undefined) continue;
+    if (config.submodule?.get(row.name)?.url === undefined) {
+      if (opts.init !== true) continue;
+      await submoduleInit(ctx, { paths: [row.path] });
+      config = await readConfig(ctx);
+    }
+    const mode = opts.mode ?? updateModes.get(row.name) ?? 'checkout';
+    if (mode === 'none') {
+      entries.push({
+        name: row.name,
+        path: row.path as FilePath,
+        id: pinned,
+        mode,
+        cloned: false,
+        changed: false,
+      });
+      continue;
+    }
+    const url = config.submodule?.get(row.name)?.url ?? row.url ?? '';
+    const child = deriveSubmoduleCloneContext(ctx, row.name, row.path as FilePath);
+    const cloned = !(await ctx.fs.exists(`${child.layout.gitDir}/HEAD`));
+    if (cloned) {
+      await cloneSubmoduleInto(ctx, child, url, row.name, row.path);
+      // Materialise the clone's checked-out branch so a rebase/merge reconcile
+      // sees a clean working tree (clone fetches objects only) — git's clone
+      // checkout. `checkout` mode re-materialises at the pin below.
+      await materializeWorktreeFromHead(child);
+    }
+    await readObject(child, pinned);
+    const changed = await reconcileSubmodule(child, pinned, mode);
+    entries.push({ name: row.name, path: row.path as FilePath, id: pinned, mode, cloned, changed });
   }
   return { entries };
 };

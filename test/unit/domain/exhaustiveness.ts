@@ -159,6 +159,7 @@ export function assertExhaustiveSwitch(data: TsgitErrorData): void {
     case 'CANNOT_DESCRIBE':
     case 'RELATIVE_URL_UNRESOLVABLE':
     case 'SUBMODULE_HAS_MODIFICATIONS':
+    case 'SUBMODULE_PATH_EXISTS':
       return;
     default: {
       const _exhaustive: never = data;

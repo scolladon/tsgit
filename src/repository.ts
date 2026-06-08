@@ -218,7 +218,7 @@ export interface Repository {
   /** Nested `repo.stash.{push,list,apply,pop,drop}` namespace. */
   readonly stash: commands.StashNamespace;
   readonly status: BindCtx<typeof commands.status>;
-  /** Nested `repo.submodule.{list,init,sync,deinit}` namespace. */
+  /** Nested `repo.submodule.{list,add,init,update,sync,deinit}` namespace. */
   readonly submodule: commands.SubmoduleNamespace;
   /** Nested `repo.tag.{list,create,delete}` namespace. */
   readonly tag: commands.TagNamespace;
