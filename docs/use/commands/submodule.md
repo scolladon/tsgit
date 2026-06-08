@@ -1,10 +1,12 @@
 # `submodule`
 
-The `repo.submodule.*` namespace: inspect (`list`) and register/sync/unregister
-submodules in local state. `list` reads a tree-ish (so it works in bare repos and
-is deterministic for a ref); the write verbs (`init` / `sync` / `deinit`) read the
-working-tree `.gitmodules` and mutate `.git/config` (and, for `deinit`, the
-submodule working tree). The network half (`add` / `update`) is roadmap 24.1b.
+The `repo.submodule.*` namespace: inspect (`list`), clone/checkout (`add` /
+`update`), and register/sync/unregister submodules. `list` reads a tree-ish (so it
+works in bare repos and is deterministic for a ref); the local write verbs
+(`init` / `sync` / `deinit`) read the working-tree `.gitmodules` and mutate
+`.git/config` (and, for `deinit`, the submodule working tree); the network verbs
+(`add` / `update`) clone a submodule into `.git/modules/<name>` and materialise
+its working tree over smart-HTTP.
 
 ## `list`
 
@@ -49,7 +51,86 @@ for (const e of entries) console.log(e.path, e.commit, e.url ?? '(no .gitmodules
 await repo.submodule.list({ ref: 'main', recursive: true, maxDepth: 2 });
 ```
 
-## Write verbs
+## Network verbs (`add` / `update`)
+
+`add` and `update` clone a submodule over smart-HTTP into the absorbed gitdir
+`.git/modules/<name>`, write the `.git` gitfile + `core.worktree`, and materialise
+its working tree. **Structured data only** — git's stdout (`Cloning into …`,
+`Submodule path '<p>': checked out '<oid>'`) is the caller's to render. tsgit's
+clone is smart-HTTP-only, so the submodule url must be an HTTP(S) endpoint.
+
+### `add`
+
+```ts
+repo.submodule.add(opts: SubmoduleAddOptions): Promise<SubmoduleAddResult>;
+
+interface SubmoduleAddOptions {
+  readonly url: string;      // stored raw in .gitmodules; resolved for .git/config
+  readonly path: string;     // worktree-relative checkout path
+  readonly name?: string;    // .gitmodules subsection name; default = path
+  readonly branch?: string;  // -b: track this branch instead of remote HEAD
+}
+
+interface SubmoduleAddResult {
+  readonly name: string;
+  readonly path: FilePath;
+  readonly url: string;      // resolved url written to config + module remote.origin
+  readonly id: ObjectId;     // submodule HEAD oid staged as the gitlink
+  readonly branch: string;   // checked-out branch
+}
+```
+
+Clones the remote into `.git/modules/<name>`, writes `.gitmodules`
+(`path`, raw `url`, optional `branch`), stages the gitlink (`160000`) **and** the
+`.gitmodules` blob into the superproject index, and records
+`submodule.<name>.{url,active}` in `.git/config`. With `branch`, creates a local
+tracking branch at `origin/<branch>` and checks it out (git's `add -b`). Refuses
+an unsafe/empty `name`/`path`/`url` (CVE-2018-17456 lineage) or an already-tracked
+path (`SUBMODULE_PATH_EXISTS`). Neither the index nor `.gitmodules` is committed —
+that is left to the caller, exactly as git.
+
+```ts
+await repo.submodule.add({ url: 'https://host/lib.git', path: 'libs/lib' });
+await repo.submodule.add({ url: 'https://host/lib.git', path: 'libs/lib', branch: 'dev' });
+```
+
+### `update`
+
+```ts
+repo.submodule.update(opts?: SubmoduleUpdateOptions): Promise<SubmoduleUpdateResult>;
+
+interface SubmoduleUpdateOptions {
+  readonly paths?: ReadonlyArray<string>;          // default: every registered submodule
+  readonly init?: boolean;                         // --init: register before updating
+  readonly mode?: 'checkout' | 'rebase' | 'merge' | 'none'; // override the configured mode
+}
+
+interface SubmoduleUpdateEntry {
+  readonly name: string;
+  readonly path: FilePath;
+  readonly id: ObjectId;     // pinned gitlink oid reconciled to
+  readonly mode: 'checkout' | 'rebase' | 'merge' | 'none';
+  readonly cloned: boolean;  // true ⇒ this call cloned the module gitdir
+  readonly changed: boolean; // true ⇒ submodule HEAD/branch moved
+}
+```
+
+Reads the pinned commit from the superproject index gitlink, clones the module
+gitdir **if missing**, then reconciles to the pin per
+`submodule.<name>.update` (or `mode`): `checkout` (default) detaches at the pin;
+`rebase`/`merge` reconcile the submodule's current branch (delegating to
+`repo.rebase`/`repo.merge`); `none` skips. An unregistered submodule is skipped
+unless `init`. When the pinned commit is absent after cloning (the remote advanced
+past the initial clone), `update` refuses `OBJECT_NOT_FOUND` — tsgit's smart-HTTP
+v1 has no incremental fetch (roadmap 25.3). `rebase`/`merge` need a `[user]`
+identity in the module config (tsgit reads local config only).
+
+```ts
+await repo.submodule.update({ init: true });              // clone + checkout every pin
+await repo.submodule.update({ paths: ['libs/lib'], mode: 'rebase' });
+```
+
+## Local write verbs
 
 `init` / `sync` / `deinit` read the **working-tree** `.gitmodules` (not a tree-ish)
 and mutate **local state only** — `.git/config`, an already-checked-out
@@ -92,7 +173,10 @@ await repo.submodule.init({ paths: ['libs/a'] });
 ### `sync`
 
 ```ts
-repo.submodule.sync(opts?: { paths?: ReadonlyArray<string> }): Promise<SubmoduleSyncResult>;
+repo.submodule.sync(opts?: {
+  paths?: ReadonlyArray<string>;
+  recursive?: boolean;
+}): Promise<SubmoduleSyncResult>;
 
 interface SubmoduleSyncEntry {
   readonly name: string;
@@ -105,7 +189,10 @@ interface SubmoduleSyncEntry {
 Re-points `submodule.<name>.url` from the current `.gitmodules` — overwriting the
 existing value (unlike `init`). Operates only on **initialised** submodules (a
 fresh clone with nothing initialised is a no-op). When the submodule is checked
-out, its own `remote.origin.url` is updated to the same resolved url.
+out, its own `remote.origin.url` is updated to the same resolved url. With
+`recursive`, descends into each checked-out submodule and syncs its nested ones
+(depth-capped + cycle-guarded). The result lists the top level; nested syncs are
+on-disk side effects.
 
 ### `deinit`
 
@@ -142,5 +229,4 @@ await repo.submodule.deinit({ all: true, force: true });
 
 - Primitives: [`walkSubmodules`](../primitives/walk-submodules.md), [`readObject`](../primitives/read-object.md), [`readConfig`](../primitives/internals.md#readconfig) (INI tokenizer reuse)
 - Related commands: [`log`](log.md), [`status`](status.md), [`remote`](remote.md)
-- ADRs: [083](../../adr/083-submodule-api-surface.md), [084](../../adr/084-submodule-data-source.md), [085](../../adr/085-nested-submodule-recursion.md), [086](../../adr/086-gitmodules-ini-reuse.md), [286](../../adr/286-submodule-write-side-local-scope.md), [287](../../adr/287-unified-submodule-namespace.md), [288](../../adr/288-relative-url-verbatim-port.md)
-- Roadmap: 24.1b — submodule network write side (`add` / `update`)
+- ADRs: [083](../../adr/083-submodule-api-surface.md), [084](../../adr/084-submodule-data-source.md), [085](../../adr/085-nested-submodule-recursion.md), [086](../../adr/086-gitmodules-ini-reuse.md), [286](../../adr/286-submodule-write-side-local-scope.md), [287](../../adr/287-unified-submodule-namespace.md), [288](../../adr/288-relative-url-verbatim-port.md), [289](../../adr/289-submodule-clone-worktree-substrate.md), [290](../../adr/290-submodule-update-all-four-modes.md), [291](../../adr/291-submodule-update-pinned-oid-absent-refuses.md), [292](../../adr/292-submodule-add-branch-option.md)
