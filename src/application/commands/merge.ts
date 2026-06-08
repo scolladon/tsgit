@@ -1,5 +1,6 @@
-import { nonFastForward } from '../../domain/commands/error.js';
+import { nonFastForward, workingTreeDirty } from '../../domain/commands/error.js';
 import { conflictsToIndexEntries } from '../../domain/diff/index.js';
+import { TsgitError } from '../../domain/error.js';
 import {
   type IndexEntry,
   STAGE0_FLAGS,
@@ -196,8 +197,17 @@ const materialiseNonConflictTree = async (
   targetTree: ObjectId,
 ): Promise<ReadonlyArray<IndexEntry>> => {
   const currentIndex = await readIndex(ctx);
-  const result = await materializeTree(ctx, { targetTree, currentIndex, force: false });
-  return result.newIndexEntries;
+  try {
+    const result = await materializeTree(ctx, { targetTree, currentIndex, force: false });
+    return result.newIndexEntries;
+  } catch (err) {
+    // Surface the merge-family would-overwrite code, not the checkout-flavoured
+    // one `materializeTree` raises, so the 3-way merge family speaks one error.
+    if (err instanceof TsgitError && err.data.code === 'CHECKOUT_OVERWRITE_DIRTY') {
+      throw workingTreeDirty(err.data.paths);
+    }
+    throw err;
+  }
 };
 
 const commitCleanMerge = async (

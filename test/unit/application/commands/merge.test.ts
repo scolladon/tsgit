@@ -23,6 +23,7 @@ import { readObject } from '../../../../src/application/primitives/read-object.j
 import { readReflog } from '../../../../src/application/primitives/reflog-store.js';
 import { resolveRef } from '../../../../src/application/primitives/resolve-ref.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
+import { TsgitError } from '../../../../src/domain/error.js';
 import type { MergeConflict, MergeOutcome } from '../../../../src/domain/merge/index.js';
 import type {
   AuthorIdentity,
@@ -363,6 +364,90 @@ describe('merge', () => {
         const indexPaths = (await readIndex(ctx)).entries.map((e) => e.path).sort();
         expect(onDisk).toBe(false);
         expect(indexPaths).toEqual(['b.txt', 'c.txt']);
+      });
+    });
+  });
+
+  describe('Given a tracked file the merge would overwrite is locally modified', () => {
+    describe('When merge', () => {
+      it('Then it refuses with WORKING_TREE_DIRTY, leaving HEAD and the dirty file intact', async () => {
+        // Arrange — base f.txt; ours +o.txt; theirs edits f.txt → clean true-merge
+        // that would overwrite f.txt. Drift the working f.txt before merging.
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/f.txt`, 'base\n');
+        await add(ctx, ['f.txt']);
+        await commit(ctx, { message: 'base', author });
+        await branchCreate(ctx, { name: 'theirs' });
+        await checkout(ctx, { rev: 'theirs' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/f.txt`, 'theirs\n');
+        await add(ctx, ['f.txt']);
+        await commit(ctx, { message: 'theirs-edit', author });
+        await checkout(ctx, { rev: 'main' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/o.txt`, 'o\n');
+        await add(ctx, ['o.txt']);
+        const oursTip = await commit(ctx, { message: 'ours-add', author });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/f.txt`, 'DIRTY\n');
+
+        // Act
+        let error: unknown;
+        try {
+          await mergeRun(ctx, { rev: 'theirs', author });
+        } catch (caught) {
+          error = caught;
+        }
+
+        // Assert — WORKING_TREE_DIRTY on f.txt; HEAD and the dirty bytes untouched.
+        expect(error).toBeInstanceOf(TsgitError);
+        const data = (error as TsgitError).data;
+        expect(data.code).toBe('WORKING_TREE_DIRTY');
+        if (data.code === 'WORKING_TREE_DIRTY') {
+          expect(data.paths).toContain('f.txt');
+        }
+        expect(await resolveRef(ctx, 'refs/heads/main' as RefName)).toBe(oursTip.id);
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/f.txt`)).toBe('DIRTY\n');
+      });
+    });
+  });
+
+  describe('Given an untracked file clashes with a theirs-only add', () => {
+    describe('When merge', () => {
+      it('Then it refuses with WORKING_TREE_DIRTY, leaving HEAD and the untracked file intact', async () => {
+        // Arrange — base f.txt; ours +o.txt; theirs +m.txt. Pre-write an untracked
+        // m.txt the theirs-only add would clobber.
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/f.txt`, 'base\n');
+        await add(ctx, ['f.txt']);
+        await commit(ctx, { message: 'base', author });
+        await branchCreate(ctx, { name: 'theirs' });
+        await checkout(ctx, { rev: 'theirs' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/m.txt`, 'theirs-m\n');
+        await add(ctx, ['m.txt']);
+        await commit(ctx, { message: 'theirs-add', author });
+        await checkout(ctx, { rev: 'main' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/o.txt`, 'o\n');
+        await add(ctx, ['o.txt']);
+        const oursTip = await commit(ctx, { message: 'ours-add', author });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/m.txt`, 'untracked\n');
+
+        // Act
+        let error: unknown;
+        try {
+          await mergeRun(ctx, { rev: 'theirs', author });
+        } catch (caught) {
+          error = caught;
+        }
+
+        // Assert — WORKING_TREE_DIRTY on m.txt; HEAD and the untracked bytes untouched.
+        expect(error).toBeInstanceOf(TsgitError);
+        const data = (error as TsgitError).data;
+        expect(data.code).toBe('WORKING_TREE_DIRTY');
+        if (data.code === 'WORKING_TREE_DIRTY') {
+          expect(data.paths).toContain('m.txt');
+        }
+        expect(await resolveRef(ctx, 'refs/heads/main' as RefName)).toBe(oursTip.id);
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/m.txt`)).toBe('untracked\n');
       });
     });
   });
