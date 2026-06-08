@@ -35,6 +35,7 @@ export type {
 export { isIgnored } from './is-ignored.js';
 export type { MaterializeTreeOpts, MaterializeTreeResult } from './materialize-tree.js';
 export { materializeTree } from './materialize-tree.js';
+export { materializeWorktreeFromHead } from './materialize-worktree-from-head.js';
 export { mergeBase } from './merge-base.js';
 export { getRepoRoot, sparseCheckoutPath } from './path-layout.js';
 export { readBlob } from './read-blob.js';
