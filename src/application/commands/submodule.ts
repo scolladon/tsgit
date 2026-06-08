@@ -15,7 +15,13 @@ import {
   workingTreeFileTooLarge,
 } from '../../domain/commands/error.js';
 import { type IndexEntry, STAGE0_FLAGS } from '../../domain/git-index/index.js';
-import { FILE_MODE, type FilePath, ObjectId, type RefName } from '../../domain/objects/index.js';
+import {
+  FILE_MODE,
+  type FilePath,
+  ObjectId,
+  type RefName,
+  ZERO_OID,
+} from '../../domain/objects/index.js';
 import { validateRefName } from '../../domain/refs/index.js';
 import { submoduleHasModifications, submodulePathExists } from '../../domain/submodule/error.js';
 import { submoduleCoreWorktree, submoduleGitfile } from '../../domain/submodule/gitlink-path.js';
@@ -32,6 +38,7 @@ import {
 import { materializeWorktreeFromHead } from '../primitives/materialize-worktree-from-head.js';
 import { type GitmodulesRow, parseGitmodules } from '../primitives/parse-gitmodules.js';
 import { readIndex } from '../primitives/read-index.js';
+import { recordRefUpdate } from '../primitives/record-ref-update.js';
 import { getRefStore } from '../primitives/ref-store.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
 import { MAX_GITMODULES_BYTES, type SubmoduleEntry } from '../primitives/types.js';
@@ -43,6 +50,7 @@ import {
 import { looksLikeObjectId } from '../primitives/validators.js';
 import { walkSubmodules } from '../primitives/walk-submodules.js';
 import { writeObject } from '../primitives/write-object.js';
+import { checkout } from './checkout.js';
 import { clone } from './clone.js';
 import { assertNotBare, assertRepository } from './internal/repo-state.js';
 import { status } from './status.js';
@@ -534,6 +542,24 @@ const headBranchName = (head: { kind: string; target?: string }): string =>
     : '';
 
 /**
+ * Create the local tracking branch `refs/heads/<branch>` at `origin/<branch>`
+ * with `branch.<branch>.{remote,merge}`, mirroring git's `checkout -b <branch>
+ * origin/<branch>` (reflog `branch: Created from origin/<branch>`). Then switch
+ * the submodule onto it — `add -b`'s post-clone step.
+ */
+const checkoutTrackingBranch = async (child: Context, branch: string): Promise<void> => {
+  const oid = await resolveRef(child, `refs/remotes/origin/${branch}` as RefName);
+  const ref = `${HEADS_PREFIX}${branch}` as RefName;
+  await child.fs.writeUtf8(`${child.layout.gitDir}/${ref}`, `${oid}\n`);
+  await recordRefUpdate(child, ref, ZERO_OID, oid, `branch: Created from origin/${branch}`);
+  await updateConfigOperations(child, [
+    { kind: 'set', section: 'branch', subsection: branch, key: 'remote', value: 'origin' },
+    { kind: 'set', section: 'branch', subsection: branch, key: 'merge', value: ref },
+  ]);
+  await checkout(child, { rev: branch });
+};
+
+/**
  * Clone a new submodule into the worktree + `.git/modules/<name>` and register
  * it (`git submodule add`). Clones the remote into the absorbed gitdir, writes
  * `core.worktree` + the `.git` gitfile, materialises the working tree on the
@@ -567,11 +593,12 @@ export const submoduleAdd = async (
     `${ctx.layout.workDir}/${opts.path}/.git`,
     `${submoduleGitfile(name, opts.path)}\n`,
   );
-  await materializeWorktreeFromHead(child);
+  if (opts.branch !== undefined) await checkoutTrackingBranch(child, opts.branch);
+  else await materializeWorktreeFromHead(child);
   const head = await getRefStore(child).resolveDirect(HEAD_REF);
   const branch = headBranchName(head);
   const subHead = await resolveRef(child, HEAD_REF);
-  const gitmodulesBytes = await writeGitmodulesEntry(ctx, name, opts.path, opts.url, undefined);
+  const gitmodulesBytes = await writeGitmodulesEntry(ctx, name, opts.path, opts.url, opts.branch);
   await stageSubmodule(ctx, opts.path, subHead, gitmodulesBytes);
   await updateConfigOperations(ctx, [
     setSubmoduleOp(name, 'active', 'true'),

@@ -206,4 +206,46 @@ describe('Given a superproject and a submodule remote', () => {
       expect(await ctx.fs.exists(`${ctx.layout.gitDir}/modules`)).toBe(false);
     });
   });
+
+  describe('When add tracks a named branch (-b)', () => {
+    it('Then .gitmodules records branch after path and url', async () => {
+      // Arrange
+      const { ctx } = await seedSuper();
+      // Act
+      await submoduleAdd(ctx, { url: SUB_URL, path: 'libs/sub', branch: 'dev' });
+      // Assert
+      const gitmodules = await ctx.fs.readUtf8(`${ctx.layout.workDir}/.gitmodules`);
+      expect(gitmodules).toBe(
+        `[submodule "libs/sub"]\n\tpath = libs/sub\n\turl = ${SUB_URL}\n\tbranch = dev\n`,
+      );
+    });
+
+    it('Then the submodule is checked out on the named branch at its commit', async () => {
+      // Arrange
+      const { ctx, remote } = await seedSuper();
+      // Act
+      const result = await submoduleAdd(ctx, { url: SUB_URL, path: 'libs/sub', branch: 'dev' });
+      // Assert
+      const head = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/modules/libs/sub/HEAD`);
+      expect(head).toBe('ref: refs/heads/dev\n');
+      expect(result.branch).toBe('dev');
+      expect(result.id).toBe(remote.commits.get('dev'));
+      expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/libs/sub/lib.txt`)).toBe('lib dev\n');
+    });
+
+    it('Then the module keeps both local branches with the tracking-branch reflog', async () => {
+      // Arrange
+      const { ctx } = await seedSuper();
+      const moduleDir = `${ctx.layout.gitDir}/modules/libs/sub`;
+      // Act
+      await submoduleAdd(ctx, { url: SUB_URL, path: 'libs/sub', branch: 'dev' });
+      // Assert
+      expect(await ctx.fs.exists(`${moduleDir}/refs/heads/main`)).toBe(true);
+      expect(await ctx.fs.exists(`${moduleDir}/refs/heads/dev`)).toBe(true);
+      const devReflog = await ctx.fs.readUtf8(`${moduleDir}/logs/refs/heads/dev`);
+      expect(devReflog).toContain('branch: Created from origin/dev');
+      const headReflog = await ctx.fs.readUtf8(`${moduleDir}/logs/HEAD`);
+      expect(headReflog).toContain('checkout: moving from main to dev');
+    });
+  });
 });
