@@ -10,6 +10,7 @@ import type { RepositoryError } from './repository/error.js';
 import type { WorkdirStat } from './snapshot/workdir-entry-row.js';
 import type { StorageError } from './storage/error.js';
 import type { SubmoduleError } from './submodule/error.js';
+import type { WorktreeError } from './worktree/error.js';
 
 export type AdapterError =
   | { readonly code: 'FILE_NOT_FOUND'; readonly path: string }
@@ -69,7 +70,8 @@ export type TsgitErrorData =
   | ProtocolError
   | RepositoryError
   | CommandError
-  | SubmoduleError;
+  | SubmoduleError
+  | WorktreeError;
 
 export class TsgitError extends Error {
   override readonly name = 'TsgitError';
@@ -443,6 +445,16 @@ function extractDetail(data: TsgitErrorData): string {
       return `submodule work tree '${data.path}' contains local modifications`;
     case 'SUBMODULE_PATH_EXISTS':
       return `'${data.path}' already exists in the index`;
+    case 'WORKTREE_PATH_EXISTS':
+      return `'${data.path}' already exists`;
+    case 'BRANCH_CHECKED_OUT':
+      return `'${data.branch}' is already used by worktree at '${data.path}'`;
+    case 'WORKTREE_LOCKED':
+      return `working tree '${data.path}' is locked`;
+    case 'WORKTREE_DIRTY':
+      return `'${data.path}' contains modified or untracked files, use --force to delete it`;
+    case 'NOT_A_WORKTREE':
+      return `'${data.path}' is not a working tree`;
     default: {
       const _exhaustive: never = data;
       return String(_exhaustive);

@@ -160,6 +160,11 @@ export function assertExhaustiveSwitch(data: TsgitErrorData): void {
     case 'RELATIVE_URL_UNRESOLVABLE':
     case 'SUBMODULE_HAS_MODIFICATIONS':
     case 'SUBMODULE_PATH_EXISTS':
+    case 'WORKTREE_PATH_EXISTS':
+    case 'BRANCH_CHECKED_OUT':
+    case 'WORKTREE_LOCKED':
+    case 'WORKTREE_DIRTY':
+    case 'NOT_A_WORKTREE':
       return;
     default: {
       const _exhaustive: never = data;
