@@ -9,6 +9,7 @@ import type { RefsError } from './refs/error.js';
 import type { RepositoryError } from './repository/error.js';
 import type { WorkdirStat } from './snapshot/workdir-entry-row.js';
 import type { StorageError } from './storage/error.js';
+import type { SubmoduleError } from './submodule/error.js';
 
 export type AdapterError =
   | { readonly code: 'FILE_NOT_FOUND'; readonly path: string }
@@ -67,7 +68,8 @@ export type TsgitErrorData =
   | ApplicationError
   | ProtocolError
   | RepositoryError
-  | CommandError;
+  | CommandError
+  | SubmoduleError;
 
 export class TsgitError extends Error {
   override readonly name = 'TsgitError';
@@ -435,6 +437,8 @@ function extractDetail(data: TsgitErrorData): string {
       return `no tag exactly matches ${data.oid}`;
     case 'CANNOT_DESCRIBE':
       return `cannot describe ${data.oid}`;
+    case 'RELATIVE_URL_UNRESOLVABLE':
+      return `cannot strip one component off url '${data.url}'`;
     default: {
       const _exhaustive: never = data;
       return String(_exhaustive);
