@@ -147,44 +147,62 @@ describe('Given a superproject and a submodule remote', () => {
     });
   });
 
+  const expectRefusal = async (promise: Promise<unknown>, code: string): Promise<TsgitError> => {
+    let caught: unknown;
+    try {
+      await promise;
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(TsgitError);
+    expect((caught as TsgitError).data.code).toBe(code);
+    return caught as TsgitError;
+  };
+
   describe('When add is given an unsafe name', () => {
-    it('Then it refuses without cloning', async () => {
+    it('Then it refuses with INVALID_OPTION without cloning', async () => {
       // Arrange
       const { ctx } = await seedSuper();
-      // Act + Assert
-      await expect(
+      // Act
+      const error = await expectRefusal(
         submoduleAdd(ctx, { url: SUB_URL, path: 'libs/sub', name: '../escape' }),
-      ).rejects.toThrow(TsgitError);
+        'INVALID_OPTION',
+      );
+      // Assert
+      expect(error.data).toMatchObject({ option: 'submodule.add.name' });
       expect(await ctx.fs.exists(`${ctx.layout.gitDir}/modules`)).toBe(false);
     });
   });
 
-  describe('When add is given an unsafe path', () => {
-    it('Then it refuses', async () => {
-      // Arrange
+  describe('When add is given an unsafe path (with a safe name)', () => {
+    it('Then it refuses with INVALID_OPTION on the path guard', async () => {
+      // Arrange — a safe name isolates the path guard from the name guard
       const { ctx } = await seedSuper();
-      // Act + Assert
-      await expect(submoduleAdd(ctx, { url: SUB_URL, path: '../escape' })).rejects.toThrow(
-        TsgitError,
+      // Act
+      const error = await expectRefusal(
+        submoduleAdd(ctx, { url: SUB_URL, path: '../escape', name: 'safe' }),
+        'INVALID_OPTION',
       );
+      // Assert
+      expect(error.data).toMatchObject({ option: 'submodule.add.path' });
     });
   });
 
   describe('When add is given an empty url', () => {
-    it('Then it refuses', async () => {
+    it('Then it refuses with INVALID_OPTION', async () => {
       // Arrange
       const { ctx } = await seedSuper();
       // Act + Assert
-      await expect(submoduleAdd(ctx, { url: '', path: 'libs/sub' })).rejects.toThrow(TsgitError);
+      await expectRefusal(submoduleAdd(ctx, { url: '', path: 'libs/sub' }), 'INVALID_OPTION');
     });
   });
 
   describe('When add is given an empty path', () => {
-    it('Then it refuses', async () => {
+    it('Then it refuses with INVALID_OPTION', async () => {
       // Arrange
       const { ctx } = await seedSuper();
       // Act + Assert
-      await expect(submoduleAdd(ctx, { url: SUB_URL, path: '' })).rejects.toThrow(TsgitError);
+      await expectRefusal(submoduleAdd(ctx, { url: SUB_URL, path: '' }), 'INVALID_OPTION');
     });
   });
 
@@ -208,13 +226,15 @@ describe('Given a superproject and a submodule remote', () => {
   });
 
   describe('When add is given an unsafe branch name', () => {
-    it('Then it refuses before cloning (no ref-path traversal)', async () => {
+    it('Then it refuses with INVALID_REF before cloning (no ref-path traversal)', async () => {
       // Arrange
       const { ctx } = await seedSuper();
-      // Act + Assert
-      await expect(
+      // Act
+      await expectRefusal(
         submoduleAdd(ctx, { url: SUB_URL, path: 'libs/sub', branch: '../../evil' }),
-      ).rejects.toThrow(TsgitError);
+        'INVALID_REF',
+      );
+      // Assert
       expect(await ctx.fs.exists(`${ctx.layout.gitDir}/modules`)).toBe(false);
     });
   });
