@@ -745,7 +745,10 @@
     "deinitialised",
     "unregister",
     "unregistered",
-    "unregistering"
+    "unregistering",
+    "pathed",
+    "nopath",
+    "nourl"
   ],
   "ignorePaths": [
     "node_modules",

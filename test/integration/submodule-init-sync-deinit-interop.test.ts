@@ -13,8 +13,9 @@
  *   interopSurface: submodule
  */
 import { execFileSync } from 'node:child_process';
-import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
@@ -67,7 +68,7 @@ const freshClone = (): string => {
 
 beforeAll(() => {
   if (!GIT_AVAILABLE) return;
-  base = execFileSync('mktemp', ['-d']).toString().trim();
+  base = mkdtempSync(path.join(os.tmpdir(), 'tsgit-submodule-interop-'));
   // A submodule source repo.
   const subDir = path.join(base, 'sub');
   git(base, 'init', '-q', '-b', 'main', subDir);
