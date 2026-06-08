@@ -14,7 +14,7 @@ import {
   pathspecNoMatch,
   workingTreeFileTooLarge,
 } from '../../domain/commands/error.js';
-import { type IndexEntry, STAGE0_FLAGS } from '../../domain/git-index/index.js';
+import type { IndexEntry } from '../../domain/git-index/index.js';
 import {
   FILE_MODE,
   type FilePath,
@@ -30,6 +30,7 @@ import { resolveSubmoduleUrl } from '../../domain/submodule/relative-url.js';
 import { parseUpdateMode, type SubmoduleUpdateMode } from '../../domain/submodule/update-mode.js';
 import type { Context } from '../../ports/context.js';
 import { type ParsedConfig, readConfig } from '../primitives/config-read.js';
+import { indexEntryFromStat } from '../primitives/internal/index-entry-from-stat.js';
 import { acquireIndexLock } from '../primitives/internal/index-lock.js';
 import {
   deriveSubmoduleCloneContext,
@@ -512,28 +513,6 @@ const writeGitmodulesEntry = async (
   return new TextEncoder().encode(text);
 };
 
-/** Build a stage-0 index entry from a path's `lstat` + an object id and mode. */
-const buildEntry = (
-  stat: Awaited<ReturnType<Context['fs']['lstat']>>,
-  mode: typeof FILE_MODE.GITLINK | typeof FILE_MODE.REGULAR,
-  id: ObjectId,
-  path: FilePath,
-): IndexEntry => ({
-  ctimeSeconds: Math.floor(stat.ctimeMs / 1000),
-  ctimeNanoseconds: 0,
-  mtimeSeconds: Math.floor(stat.mtimeMs / 1000),
-  mtimeNanoseconds: 0,
-  dev: stat.dev,
-  ino: stat.ino,
-  mode,
-  uid: stat.uid,
-  gid: stat.gid,
-  fileSize: stat.size,
-  id,
-  flags: STAGE0_FLAGS,
-  path,
-});
-
 /**
  * Stage the gitlink (`160000 <subHead> <path>`) and the `.gitmodules` blob into
  * the superproject index under a single lock — git stages both on `add`.
@@ -554,11 +533,19 @@ const stageSubmodule = async (
     const index = await readIndex(ctx);
     const entries = new Map<string, IndexEntry>(index.entries.map((e) => [e.path, e]));
     const gitlinkStat = await ctx.fs.lstat(`${ctx.layout.workDir}/${path}`);
-    entries.set(path, buildEntry(gitlinkStat, FILE_MODE.GITLINK, subHead, path as FilePath));
+    entries.set(
+      path,
+      indexEntryFromStat(gitlinkStat, FILE_MODE.GITLINK, subHead, path as FilePath),
+    );
     const gitmodulesStat = await ctx.fs.lstat(`${ctx.layout.workDir}/${GITMODULES_FILE}`);
     entries.set(
       GITMODULES_FILE,
-      buildEntry(gitmodulesStat, FILE_MODE.REGULAR, gitmodulesBlob, GITMODULES_FILE as FilePath),
+      indexEntryFromStat(
+        gitmodulesStat,
+        FILE_MODE.REGULAR,
+        gitmodulesBlob,
+        GITMODULES_FILE as FilePath,
+      ),
     );
     await lock.commit([...entries.values()]);
   } finally {

@@ -11,12 +11,13 @@
  */
 import { invalidOption, workingTreeFileTooLarge } from '../../domain/commands/error.js';
 import { operationAborted, TsgitError } from '../../domain/error.js';
-import { type IndexEntry, STAGE0_FLAGS } from '../../domain/git-index/index.js';
+import type { IndexEntry } from '../../domain/git-index/index.js';
 import { emptyPathspec, pathspecNoMatch } from '../../domain/index.js';
 import { deriveWorkingMode, type FileMode, type ObjectId } from '../../domain/objects/index.js';
 import type { FilePath } from '../../domain/objects/object-id.js';
 import { matchesPathspec, type Pathspec } from '../../domain/pathspec/index.js';
 import type { Context } from '../../ports/context.js';
+import { indexEntryFromStat } from '../primitives/internal/index-entry-from-stat.js';
 import { readIndex } from '../primitives/read-index.js';
 import { MAX_WORKING_TREE_BLOB_BYTES, type WalkWorkingTreeEntry } from '../primitives/types.js';
 import { walkWorkingTree } from '../primitives/walk-working-tree.js';
@@ -344,7 +345,7 @@ const stageFromStat = async (
     id: '' as ObjectId,
     content: bytes,
   })) as ObjectId;
-  return makeEntry(fresh, mode, id, path);
+  return indexEntryFromStat(fresh, mode, id, path);
 };
 
 const readContent = async (
@@ -364,24 +365,3 @@ const readContent = async (
   }
   return readFile(ctx, path);
 };
-
-const makeEntry = (
-  stat: Awaited<ReturnType<Context['fs']['lstat']>>,
-  mode: FileMode,
-  id: ObjectId,
-  path: FilePath,
-): IndexEntry => ({
-  ctimeSeconds: Math.floor(stat.ctimeMs / 1000),
-  ctimeNanoseconds: 0,
-  mtimeSeconds: Math.floor(stat.mtimeMs / 1000),
-  mtimeNanoseconds: 0,
-  dev: stat.dev,
-  ino: stat.ino,
-  mode,
-  uid: stat.uid,
-  gid: stat.gid,
-  fileSize: stat.size,
-  id,
-  flags: STAGE0_FLAGS,
-  path,
-});
