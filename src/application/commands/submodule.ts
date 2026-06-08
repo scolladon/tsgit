@@ -38,6 +38,7 @@ import {
 import { materializeWorktreeFromHead } from '../primitives/materialize-worktree-from-head.js';
 import { type GitmodulesRow, parseGitmodules } from '../primitives/parse-gitmodules.js';
 import { readIndex } from '../primitives/read-index.js';
+import { readObject } from '../primitives/read-object.js';
 import { recordRefUpdate } from '../primitives/record-ref-update.js';
 import { getRefStore } from '../primitives/ref-store.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
@@ -53,6 +54,8 @@ import { writeObject } from '../primitives/write-object.js';
 import { checkout } from './checkout.js';
 import { clone } from './clone.js';
 import { assertNotBare, assertRepository } from './internal/repo-state.js';
+import { mergeRun } from './merge.js';
+import { rebaseRun } from './rebase.js';
 import { status } from './status.js';
 
 export type { SubmoduleEntry };
@@ -535,6 +538,26 @@ const stageSubmodule = async (
   }
 };
 
+/**
+ * Clone a submodule into its absorbed gitdir (`child`) and lay down the absorbed
+ * layout: the module's `core.worktree`, then the `.git` gitfile in the worktree.
+ * Shared by `add` and `update`'s clone-if-missing step; the caller then
+ * materialises / checks out the worktree.
+ */
+const cloneSubmoduleInto = async (
+  ctx: Context,
+  child: Context,
+  resolvedUrl: string,
+  name: string,
+  path: string,
+): Promise<void> => {
+  await clone(child, { url: resolvedUrl });
+  await updateConfigOperations(child, [
+    { kind: 'set', section: 'core', key: 'worktree', value: submoduleCoreWorktree(name, path) },
+  ]);
+  await ctx.fs.writeUtf8(`${ctx.layout.workDir}/${path}/.git`, `${submoduleGitfile(name, path)}\n`);
+};
+
 /** The short branch name HEAD points at, or `''` when detached. */
 const headBranchName = (head: { kind: string; target?: string }): string =>
   head.kind === 'symbolic' && head.target?.startsWith(HEADS_PREFIX) === true
@@ -580,19 +603,7 @@ export const submoduleAdd = async (
   const base = await resolveBaseUrl(ctx, config);
   const resolved = resolveSubmoduleUrl(base, opts.url);
   const child = deriveSubmoduleCloneContext(ctx, name, opts.path as FilePath);
-  await clone(child, { url: resolved });
-  await updateConfigOperations(child, [
-    {
-      kind: 'set',
-      section: 'core',
-      key: 'worktree',
-      value: submoduleCoreWorktree(name, opts.path),
-    },
-  ]);
-  await ctx.fs.writeUtf8(
-    `${ctx.layout.workDir}/${opts.path}/.git`,
-    `${submoduleGitfile(name, opts.path)}\n`,
-  );
+  await cloneSubmoduleInto(ctx, child, resolved, name, opts.path);
   if (opts.branch !== undefined) await checkoutTrackingBranch(child, opts.branch);
   else await materializeWorktreeFromHead(child);
   const head = await getRefStore(child).resolveDirect(HEAD_REF);
@@ -605,4 +616,112 @@ export const submoduleAdd = async (
     setSubmoduleOp(name, 'url', resolved),
   ]);
   return { name, path: opts.path as FilePath, url: resolved, id: subHead, branch };
+};
+
+export interface SubmoduleUpdateOptions {
+  /** Submodule paths to update. Default: every registered submodule. */
+  readonly paths?: ReadonlyArray<string>;
+  /** `--init`: register an unregistered submodule before updating it. */
+  readonly init?: boolean;
+  /** `--checkout`/`--rebase`/`--merge`: override the configured update mode. */
+  readonly mode?: SubmoduleUpdateMode;
+}
+
+export interface SubmoduleUpdateEntry {
+  readonly name: string;
+  readonly path: FilePath;
+  /** Pinned gitlink oid the submodule was reconciled to. */
+  readonly id: ObjectId;
+  /** Mode actually applied. */
+  readonly mode: SubmoduleUpdateMode;
+  /** True when this call cloned the module gitdir. */
+  readonly cloned: boolean;
+  /** True when the submodule HEAD/branch moved (false ⇒ already in sync / none). */
+  readonly changed: boolean;
+}
+
+export interface SubmoduleUpdateResult {
+  readonly entries: ReadonlyArray<SubmoduleUpdateEntry>;
+}
+
+/** The pinned gitlink oid recorded in the superproject index for `path`. */
+const gitlinkFromIndex = (
+  index: Awaited<ReturnType<typeof readIndex>>,
+  path: string,
+): ObjectId | undefined =>
+  index.entries.find((e) => e.path === path && e.mode === FILE_MODE.GITLINK)?.id;
+
+/**
+ * Reconcile a submodule to the pinned oid per `mode`. `checkout` detaches HEAD at
+ * the pin (skipped when already detached there); `rebase`/`merge` delegate to the
+ * faithful `rebaseRun`/`mergeRun` on the submodule's current branch. Returns
+ * whether the submodule HEAD moved.
+ */
+const reconcileSubmodule = async (
+  child: Context,
+  pinned: ObjectId,
+  mode: SubmoduleUpdateMode,
+): Promise<boolean> => {
+  if (mode === 'checkout') {
+    const head = await getRefStore(child).resolveDirect(HEAD_REF);
+    if (head.kind === 'direct' && head.id === pinned) return false;
+    await checkout(child, { rev: pinned, detach: true });
+    return true;
+  }
+  const before = await resolveRef(child, HEAD_REF);
+  if (mode === 'rebase') await rebaseRun(child, { upstream: pinned });
+  else await mergeRun(child, { rev: pinned });
+  return (await resolveRef(child, HEAD_REF)) !== before;
+};
+
+/**
+ * Clone-if-missing + reconcile each registered, selected submodule to its pinned
+ * commit (`git submodule update`). The pinned oid is read from the superproject
+ * index gitlink; the module is cloned into `.git/modules/<name>` when absent,
+ * then brought to the pin per its `update` mode (`checkout`/`rebase`/`merge`/
+ * `none`; `opts.mode` overrides). An unregistered submodule is skipped unless
+ * `init`. Refuses `OBJECT_NOT_FOUND` when the pin is absent after cloning (the
+ * remote-advanced case — tsgit has no incremental fetch).
+ */
+export const submoduleUpdate = async (
+  ctx: Context,
+  opts: SubmoduleUpdateOptions = {},
+): Promise<SubmoduleUpdateResult> => {
+  await assertRepository(ctx);
+  await assertNotBare(ctx, 'submodule update');
+  const rows = await readWorktreeGitmodules(ctx);
+  const selected = selectRows(rows, opts.paths);
+  const updateModes = validateUpdateModes(rows);
+  const index = await readIndex(ctx);
+  let config = await readConfig(ctx);
+  const entries: SubmoduleUpdateEntry[] = [];
+  for (const row of selected) {
+    const pinned = gitlinkFromIndex(index, row.path);
+    if (pinned === undefined) continue;
+    if (config.submodule?.get(row.name)?.url === undefined) {
+      if (opts.init !== true) continue;
+      await submoduleInit(ctx, { paths: [row.path] });
+      config = await readConfig(ctx);
+    }
+    const mode = opts.mode ?? updateModes.get(row.name) ?? 'checkout';
+    if (mode === 'none') {
+      entries.push({
+        name: row.name,
+        path: row.path as FilePath,
+        id: pinned,
+        mode,
+        cloned: false,
+        changed: false,
+      });
+      continue;
+    }
+    const url = config.submodule?.get(row.name)?.url ?? row.url ?? '';
+    const child = deriveSubmoduleCloneContext(ctx, row.name, row.path as FilePath);
+    const cloned = !(await ctx.fs.exists(`${child.layout.gitDir}/HEAD`));
+    if (cloned) await cloneSubmoduleInto(ctx, child, url, row.name, row.path);
+    await readObject(child, pinned);
+    const changed = await reconcileSubmodule(child, pinned, mode);
+    entries.push({ name: row.name, path: row.path as FilePath, id: pinned, mode, cloned, changed });
+  }
+  return { entries };
 };
