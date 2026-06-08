@@ -1,5 +1,6 @@
 import { TsgitError } from '../../domain/error.js';
 import type { Context } from '../../ports/context.js';
+import { commonGitDir } from './path-layout.js';
 
 /**
  * Subset of `.git/config` that v1 commands consume. Only fields actually used by
@@ -81,7 +82,7 @@ const loadConfig = async (ctx: Context): Promise<ParsedConfig> => {
 
 const readRawConfig = async (ctx: Context): Promise<string | undefined> => {
   try {
-    return await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
+    return await ctx.fs.readUtf8(`${commonGitDir(ctx)}/config`);
   } catch (err) {
     if (err instanceof TsgitError && err.data.code === 'FILE_NOT_FOUND') return undefined;
     throw err;
