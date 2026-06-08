@@ -18,6 +18,7 @@ import {
   writeOutcomeToTree,
 } from '../../../../src/application/commands/merge.js';
 import { readBlob } from '../../../../src/application/primitives/read-blob.js';
+import { readIndex } from '../../../../src/application/primitives/read-index.js';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
 import { readReflog } from '../../../../src/application/primitives/reflog-store.js';
 import { resolveRef } from '../../../../src/application/primitives/resolve-ref.js';
@@ -238,6 +239,101 @@ describe('merge', () => {
         const mergedTree = (await readObject(ctx, mergeCommit.data.tree)) as Tree;
         const names = mergedTree.entries.map((e) => e.name).sort();
         expect(names).toEqual(['a.txt', 'b.txt', 'c.txt']);
+      });
+    });
+  });
+
+  describe('Given a clean true-merge with a theirs-only add', () => {
+    describe('When merge', () => {
+      it('Then the working tree and index gain the added file', async () => {
+        // Arrange — base f.txt; ours +a.txt; theirs +m.txt (disjoint → clean).
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/f.txt`, 'base\n');
+        await add(ctx, ['f.txt']);
+        await commit(ctx, { message: 'base', author });
+        await branchCreate(ctx, { name: 'theirs' });
+        await checkout(ctx, { rev: 'theirs' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/m.txt`, 'm\n');
+        await add(ctx, ['m.txt']);
+        await commit(ctx, { message: 'theirs-add', author });
+        await checkout(ctx, { rev: 'main' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a\n');
+        await add(ctx, ['a.txt']);
+        await commit(ctx, { message: 'ours-add', author });
+
+        // Act
+        const sut = await mergeRun(ctx, { rev: 'theirs', author });
+
+        // Assert — m.txt reaches both the working tree and the index.
+        expect(sut.kind).toBe('merge');
+        const onDisk = await ctx.fs.exists(`${ctx.layout.workDir}/m.txt`);
+        const indexPaths = (await readIndex(ctx)).entries.map((e) => e.path).sort();
+        expect(onDisk).toBe(true);
+        expect(indexPaths).toEqual(['a.txt', 'f.txt', 'm.txt']);
+      });
+    });
+  });
+
+  describe('Given a clean true-merge with a theirs-side edit', () => {
+    describe('When merge', () => {
+      it('Then the working file holds the merged bytes', async () => {
+        // Arrange — base 3-line file; ours edits line1; theirs edits line3.
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'line1\nline2\nline3\n');
+        await add(ctx, ['file.txt']);
+        await commit(ctx, { message: 'base', author });
+        await branchCreate(ctx, { name: 'theirs' });
+        await checkout(ctx, { rev: 'theirs' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'line1\nline2\nTHEIRS\n');
+        await add(ctx, ['file.txt']);
+        await commit(ctx, { message: 'theirs-edit', author });
+        await checkout(ctx, { rev: 'main' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'OURS\nline2\nline3\n');
+        await add(ctx, ['file.txt']);
+        await commit(ctx, { message: 'ours-edit', author });
+
+        // Act
+        const sut = await mergeRun(ctx, { rev: 'theirs', author });
+
+        // Assert — the working file carries both edits.
+        expect(sut.kind).toBe('merge');
+        const onDisk = await ctx.fs.readUtf8(`${ctx.layout.workDir}/file.txt`);
+        expect(onDisk).toBe('OURS\nline2\nTHEIRS\n');
+      });
+    });
+  });
+
+  describe('Given a clean true-merge where theirs deletes a file', () => {
+    describe('When merge', () => {
+      it('Then the working file is removed and the index drops it', async () => {
+        // Arrange — base a.txt + b.txt; theirs deletes a.txt; ours touches c.txt.
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a\n');
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.txt`, 'b\n');
+        await add(ctx, ['a.txt', 'b.txt']);
+        await commit(ctx, { message: 'base', author });
+        await branchCreate(ctx, { name: 'theirs' });
+        await checkout(ctx, { rev: 'theirs' });
+        const { rm } = await import('../../../../src/application/commands/rm.js');
+        await rm(ctx, ['a.txt']);
+        await commit(ctx, { message: 'theirs-delete', author });
+        await checkout(ctx, { rev: 'main' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/c.txt`, 'c\n');
+        await add(ctx, ['c.txt']);
+        await commit(ctx, { message: 'ours-add', author });
+
+        // Act
+        const sut = await mergeRun(ctx, { rev: 'theirs', author });
+
+        // Assert — a.txt is gone from disk and the index.
+        expect(sut.kind).toBe('merge');
+        const onDisk = await ctx.fs.exists(`${ctx.layout.workDir}/a.txt`);
+        const indexPaths = (await readIndex(ctx)).entries.map((e) => e.path).sort();
+        expect(onDisk).toBe(false);
+        expect(indexPaths).toEqual(['b.txt', 'c.txt']);
       });
     });
   });

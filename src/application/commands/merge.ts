@@ -33,8 +33,10 @@ import type { Context } from '../../ports/context.js';
 import { readConfig } from '../primitives/config-read.js';
 import { createCommit } from '../primitives/create-commit.js';
 import { flattenTree } from '../primitives/flatten-tree.js';
+import { materializeTree } from '../primitives/materialize-tree.js';
 import { mergeBase } from '../primitives/merge-base.js';
 import { readBlob } from '../primitives/read-blob.js';
+import { readIndex } from '../primitives/read-index.js';
 import { readObject } from '../primitives/read-object.js';
 import { loadSparseMatcher } from '../primitives/read-sparse-checkout.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
@@ -175,6 +177,22 @@ const mergeCommit = async (
   }
 };
 
+/**
+ * Materialise a non-conflict merge result (clean true-merge or fast-forward) to
+ * the working tree + index: write the target tree's delta against the current
+ * index and return the post-write stage-0 entries for the caller to commit under
+ * its index lock. Mirrors the clean branch of `applyMergeToWorktree`; the
+ * conflict path keeps its own sparse-aware writers.
+ */
+const materialiseNonConflictTree = async (
+  ctx: Context,
+  targetTree: ObjectId,
+): Promise<ReadonlyArray<IndexEntry>> => {
+  const currentIndex = await readIndex(ctx);
+  const result = await materializeTree(ctx, { targetTree, currentIndex, force: false });
+  return result.newIndexEntries;
+};
+
 const commitCleanMerge = async (
   ctx: Context,
   opts: MergeRunInput,
@@ -195,12 +213,19 @@ const commitCleanMerge = async (
     message,
     extraHeaders: [],
   };
-  const id = await createCommit(ctx, commitData);
-  await updateRef(ctx, branchName, id, {
-    expected: ourId,
-    reflogMessage: `${internal.reflogAction ?? `merge ${opts.rev}`}: Merge made by the 'tsgit' strategy.`,
-  });
-  return { kind: 'merge', id, branch: branchName, parents: [ourId, theirId] };
+  const lock = await acquireIndexLock(ctx);
+  try {
+    const entries = await materialiseNonConflictTree(ctx, mergedTree);
+    await lock.commit(entries);
+    const id = await createCommit(ctx, commitData);
+    await updateRef(ctx, branchName, id, {
+      expected: ourId,
+      reflogMessage: `${internal.reflogAction ?? `merge ${opts.rev}`}: Merge made by the 'tsgit' strategy.`,
+    });
+    return { kind: 'merge', id, branch: branchName, parents: [ourId, theirId] };
+  } finally {
+    await lock.release();
+  }
 };
 
 type MergeTreeResult =
