@@ -29,6 +29,11 @@ export interface ParsedConfig {
     }
   >;
   readonly branch?: ReadonlyMap<string, { readonly remote?: string; readonly merge?: string }>;
+  /** `[submodule "<name>"]` — the registered (initialised) submodules. */
+  readonly submodule?: ReadonlyMap<
+    string,
+    { readonly url?: string; readonly active?: boolean; readonly update?: string }
+  >;
   /** `[extensions]` — `partialClone` names the promisor remote of a partial clone. */
   readonly extensions?: { readonly partialClone?: string };
 }
@@ -238,6 +243,7 @@ interface MutableParsedConfig {
     }
   >;
   branch?: Map<string, { remote?: string; merge?: string }>;
+  submodule?: Map<string, { url?: string; active?: boolean; update?: string }>;
   extensions?: { partialClone?: string };
 }
 
@@ -250,6 +256,8 @@ const dispatchSection = (acc: MutableParsedConfig, sec: IniSection): void => {
     mergeRemote(acc, sec.subsection, sec);
   } else if (sec.section === 'branch' && sec.subsection !== undefined) {
     mergeBranch(acc, sec.subsection, sec);
+  } else if (sec.section === 'submodule' && sec.subsection !== undefined) {
+    mergeSubmodule(acc, sec.subsection, sec);
   } else if (sec.section === 'extensions' && sec.subsection === undefined) {
     mergeExtensions(acc, sec);
   }
@@ -372,6 +380,24 @@ const mergeBranch = (
   acc.branch.set(name, next);
 };
 
+const mergeSubmodule = (
+  acc: { submodule?: Map<string, { url?: string; active?: boolean; update?: string }> },
+  name: string,
+  sec: IniSection,
+): void => {
+  acc.submodule ??= new Map();
+  const next: { url?: string; active?: boolean; update?: string } = {
+    ...(acc.submodule.get(name) ?? {}),
+  };
+  for (const { key, value } of sec.entries) {
+    const lowered = key.toLowerCase();
+    if (lowered === 'url') next.url = value;
+    else if (lowered === 'active') next.active = parseGitBoolean(value);
+    else if (lowered === 'update') next.update = value;
+  }
+  acc.submodule.set(name, next);
+};
+
 const mergeExtensions = (
   acc: { extensions?: { partialClone?: string } },
   sec: IniSection,
@@ -437,6 +463,7 @@ const finalize = (acc: MutableParsedConfig): ParsedConfig => {
       }
     >;
     branch?: ReadonlyMap<string, { remote?: string; merge?: string }>;
+    submodule?: ReadonlyMap<string, { url?: string; active?: boolean; update?: string }>;
     extensions?: { partialClone?: string };
   } = {};
   const core = finalizeCore(acc.core);
@@ -452,6 +479,8 @@ const finalize = (acc: MutableParsedConfig): ParsedConfig => {
   if (acc.extensions !== undefined) out.extensions = acc.extensions;
   // Stryker disable next-line EqualityOperator,ConditionalExpression: equivalent — `acc.branch` is only ever assigned after a `Map.set`, so when defined its size is always >= 1; `> 0`, `>= 0` and a constant `true` never differ.
   if (acc.branch !== undefined && acc.branch.size > 0) out.branch = acc.branch;
+  // Stryker disable next-line EqualityOperator,ConditionalExpression: equivalent — `acc.submodule` is only ever assigned after a `Map.set`, so when defined its size is always >= 1; `> 0`, `>= 0` and a constant `true` never differ.
+  if (acc.submodule !== undefined && acc.submodule.size > 0) out.submodule = acc.submodule;
   return out;
 };
 

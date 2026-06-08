@@ -16,7 +16,7 @@ interface WalkSubmodulesOptions {
 
 ## Behaviour
 
-Same as the [`submodules`](../commands/submodules.md) command — same name validation, same CVE hardening, same join with `.gitmodules` — but yields one entry at a time so the consumer can stop early.
+Same as the [`submodule.list`](../commands/submodule.md) command — same name validation, same CVE hardening, same join with `.gitmodules` — but yields one entry at a time so the consumer can stop early.
 
 ## Example
 
@@ -32,6 +32,6 @@ for await (const entry of repo.primitives.walkSubmodules({ recursive: true })) {
 
 ## See also
 
-- Tier-1: [`submodules`](../commands/submodules.md)
+- Tier-1: [`submodule.list`](../commands/submodule.md)
 - Related primitives: [`readObject`](read-object.md), [`walkTree`](walk-tree.md)
 - ADRs: [083](../../adr/083-submodule-api-surface.md), [085](../../adr/085-nested-submodule-recursion.md)

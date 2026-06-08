@@ -38,7 +38,7 @@ Every method bound on a `Repository` handle. 37 entries, alphabetical.
 | [`sparseCheckout`](sparse-checkout.md) | Materialise a subset of the tree (cone / non-cone). |
 | [`stash`](stash.md) | Save working-tree + index changes on a stack and restore them later. |
 | [`status`](status.md) | Compare working tree, index, and HEAD. |
-| [`submodules`](submodules.md) | Walk submodules pinned at a tree-ish. |
+| [`submodule`](submodule.md) | Inspect, register, sync and unregister submodules. |
 | [`tag`](tag.md) | List, create, or delete tags. |
 | [`whatchanged`](whatchanged.md) | Walk reachable commits (merges excluded) pairing each with its raw structured changes; returns structured data (no rendered line). |
 

@@ -157,6 +157,8 @@ export function assertExhaustiveSwitch(data: TsgitErrorData): void {
     case 'NO_REACHABLE_NAMES':
     case 'NO_EXACT_MATCH':
     case 'CANNOT_DESCRIBE':
+    case 'RELATIVE_URL_UNRESOLVABLE':
+    case 'SUBMODULE_HAS_MODIFICATIONS':
       return;
     default: {
       const _exhaustive: never = data;

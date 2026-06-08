@@ -4,10 +4,7 @@ import {
   MAX_GITMODULES_BYTES,
   type SubmoduleEntry,
 } from '../../../../src/application/primitives/types.js';
-import {
-  __isUnsafeSubmoduleNameForTests as isUnsafeSubmoduleName,
-  walkSubmodules,
-} from '../../../../src/application/primitives/walk-submodules.js';
+import { walkSubmodules } from '../../../../src/application/primitives/walk-submodules.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { writeTree } from '../../../../src/application/primitives/write-tree.js';
 import { TsgitError } from '../../../../src/domain/error.js';
@@ -125,60 +122,6 @@ const seedSubmoduleStore = async (
 describe('primitives/walk-submodules', () => {
   beforeEach(() => {
     __resetConfigCacheForTests();
-  });
-
-  describe('isUnsafeSubmoduleName', () => {
-    describe('Given an unsafe name (%s)', () => {
-      describe('When isUnsafeSubmoduleName', () => {
-        it.each([
-          ['empty', ''],
-          ['dot segment', '.'],
-          ['double-dot segment', '..'],
-          ['nested double-dot', 'a/../b'],
-          ['nested dot', 'a/./b'],
-          ['empty segment (trailing slash)', 'foo/'],
-          ['empty segment (double slash)', 'foo//bar'],
-          ['backslash', 'a\\b'],
-          ['leading slash (POSIX absolute)', '/foo'],
-          ['drive-letter prefix', 'C:/foo'],
-          ['leading dash (option-like)', '-flag'],
-          ['NUL byte', `a${String.fromCharCode(0)}b`],
-          ['tab control char', 'a\tb'],
-          [
-            'unit-separator (0x1f) — boundary of the control-char range',
-            `a${String.fromCharCode(0x1f)}b`,
-          ],
-          ['DEL control char', `a${String.fromCharCode(127)}b`],
-        ])('Then returns true', (_label, name) => {
-          // Arrange
-          const sut = isUnsafeSubmoduleName(name);
-          // Assert
-          expect(sut).toBe(true);
-        });
-      });
-    });
-
-    describe('Given a plain name', () => {
-      describe('When isUnsafeSubmoduleName', () => {
-        it('Then returns false', () => {
-          // Arrange
-          const sut = isUnsafeSubmoduleName('libfoo');
-          // Assert
-          expect(sut).toBe(false);
-        });
-      });
-    });
-
-    describe('Given a slash-containing name (legitimate for nested module dirs)', () => {
-      describe('When isUnsafeSubmoduleName', () => {
-        it('Then returns false', () => {
-          // Arrange
-          const sut = isUnsafeSubmoduleName('libs/foo');
-          // Assert
-          expect(sut).toBe(false);
-        });
-      });
-    });
   });
 
   describe('walkSubmodules — non-recursive', () => {

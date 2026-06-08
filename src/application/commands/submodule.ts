@@ -1,0 +1,386 @@
+/**
+ * `submodule` porcelain — the `repo.submodule.*` nested namespace.
+ *
+ * `list` materialises the streaming `walkSubmodules` primitive over a tree-ish
+ * (mirrors `log` / `walkCommits`). The write verbs (`init` / `sync` / `deinit`)
+ * operate on local state — the working-tree `.gitmodules`, `.git/config`
+ * `[submodule "<name>"]` sections, and (for `deinit`) the submodule working
+ * tree. Each verb is a Context-aware function returning a per-verb concrete
+ * result (no discriminator); the namespace binder lives in
+ * `internal/submodule-namespace.ts`.
+ */
+import {
+  invalidOption,
+  pathspecNoMatch,
+  workingTreeFileTooLarge,
+} from '../../domain/commands/error.js';
+import { type FilePath, ObjectId, type RefName } from '../../domain/objects/index.js';
+import { validateRefName } from '../../domain/refs/index.js';
+import { submoduleHasModifications } from '../../domain/submodule/error.js';
+import { isUnsafeSubmoduleName } from '../../domain/submodule/name.js';
+import { resolveSubmoduleUrl } from '../../domain/submodule/relative-url.js';
+import { parseUpdateMode, type SubmoduleUpdateMode } from '../../domain/submodule/update-mode.js';
+import type { Context } from '../../ports/context.js';
+import { type ParsedConfig, readConfig } from '../primitives/config-read.js';
+import { deriveSubmoduleContext } from '../primitives/internal/submodule-context.js';
+import { type GitmodulesRow, parseGitmodules } from '../primitives/parse-gitmodules.js';
+import { getRefStore } from '../primitives/ref-store.js';
+import { MAX_GITMODULES_BYTES, type SubmoduleEntry } from '../primitives/types.js';
+import { type ConfigOperation, updateConfigOperations } from '../primitives/update-config.js';
+import { looksLikeObjectId } from '../primitives/validators.js';
+import { walkSubmodules } from '../primitives/walk-submodules.js';
+import { assertRepository } from './internal/repo-state.js';
+import { status } from './status.js';
+
+export type { SubmoduleEntry };
+
+const GITMODULES_FILE = '.gitmodules';
+const HEADS_PREFIX = 'refs/heads/';
+const HEAD_REF = 'HEAD' as RefName;
+
+/** A `.gitmodules` row that is actionable by the write verbs (has a safe path). */
+interface PathedRow extends GitmodulesRow {
+  readonly path: string;
+}
+
+/**
+ * A row the write verbs may act on: it has a `path` that is safe to join onto
+ * the worktree root. The `path` is rejected by the same containment rules as
+ * the subsection name (no `..`/empty segment, absolute, drive-prefixed,
+ * backslash, control chars), so `deinit`'s working-tree removal and the status
+ * child Context can never escape the superproject — git's path hardening.
+ */
+const isActionableRow = (row: GitmodulesRow): row is PathedRow =>
+  row.path !== undefined && !isUnsafeSubmoduleName(row.path);
+
+/** Parse the working-tree `.gitmodules`; absent file ⇒ no submodules. */
+const readWorktreeGitmodules = async (ctx: Context): Promise<ReadonlyArray<GitmodulesRow>> => {
+  const path = `${ctx.layout.workDir}/${GITMODULES_FILE}`;
+  if (!(await ctx.fs.exists(path))) return [];
+  const stat = await ctx.fs.stat(path);
+  if (stat.size > MAX_GITMODULES_BYTES) {
+    throw workingTreeFileTooLarge(path as FilePath, stat.size, MAX_GITMODULES_BYTES);
+  }
+  return parseGitmodules(await ctx.fs.readUtf8(path));
+};
+
+/**
+ * Validate every declared `submodule.<name>.update` up front — git parses the
+ * whole `.gitmodules` before acting, so a single invalid (`!command` / unknown)
+ * value refuses the command before any write. Returns the validated mode per
+ * row name.
+ */
+const validateUpdateModes = (
+  rows: ReadonlyArray<GitmodulesRow>,
+): ReadonlyMap<string, SubmoduleUpdateMode> => {
+  const modes = new Map<string, SubmoduleUpdateMode>();
+  for (const row of rows) {
+    if (row.update === undefined) continue;
+    const mode = parseUpdateMode(row.update);
+    if (mode === undefined) {
+      throw invalidOption(`submodule.${row.name}.update`, `invalid value '${row.update}'`);
+    }
+    modes.set(row.name, mode);
+  }
+  return modes;
+};
+
+/** Select the actionable rows; with `paths`, every entry must match a submodule. */
+const selectRows = (
+  rows: ReadonlyArray<GitmodulesRow>,
+  paths: ReadonlyArray<string> | undefined,
+): ReadonlyArray<PathedRow> => {
+  const pathed = rows.filter(isActionableRow);
+  if (paths === undefined) return pathed;
+  const matched = pathed.filter((row) => paths.includes(row.path));
+  const matchedPaths = new Set(matched.map((row) => row.path));
+  for (const path of paths) {
+    if (!matchedPaths.has(path)) throw pathspecNoMatch(path);
+  }
+  return matched;
+};
+
+/**
+ * The base URL relative `.gitmodules` URLs resolve against: the current
+ * branch's upstream remote (`branch.<HEAD>.remote`, default `origin`) URL,
+ * falling back to the superproject's worktree path when no remote URL is set
+ * (git's "own authoritative upstream").
+ */
+const resolveBaseUrl = async (ctx: Context, config: ParsedConfig): Promise<string> => {
+  const head = await getRefStore(ctx).resolveDirect(HEAD_REF);
+  const branch =
+    head.kind === 'symbolic' && head.target.startsWith(HEADS_PREFIX)
+      ? head.target.slice(HEADS_PREFIX.length)
+      : undefined;
+  const remoteName =
+    (branch !== undefined ? config.branch?.get(branch)?.remote : undefined) ?? 'origin';
+  return config.remote?.get(remoteName)?.url ?? ctx.layout.workDir;
+};
+
+/**
+ * `set`/`appendEntry` insert a fresh key right after the section header, so a
+ * forward sequence of ops on a new section reverses the key order. Emit them
+ * in reverse (`update`, `url`, `active`) so the file ends up in git's order:
+ * `active`, `url`, `update`.
+ */
+const registerOps = (
+  name: string,
+  url: string,
+  update: SubmoduleUpdateMode | undefined,
+): ReadonlyArray<ConfigOperation> => {
+  const set = (key: string, value: string): ConfigOperation => ({
+    kind: 'set',
+    section: 'submodule',
+    subsection: name,
+    key,
+    value,
+  });
+  const ordered: ConfigOperation[] = [set('active', 'true'), set('url', url)];
+  if (update !== undefined) ordered.push(set('update', update));
+  return [...ordered].reverse();
+};
+
+export interface SubmoduleInitOptions {
+  /** Submodule paths to register. Default: every submodule in `.gitmodules`. */
+  readonly paths?: ReadonlyArray<string>;
+}
+
+export interface SubmoduleInitEntry {
+  readonly name: string;
+  readonly path: FilePath;
+  /** Resolved URL now in `.git/config` (newly written, or the preserved existing value). */
+  readonly url: string;
+  /** True when this call wrote the registration; false when it was already registered. */
+  readonly registered: boolean;
+  readonly update?: SubmoduleUpdateMode;
+}
+
+export interface SubmoduleInitResult {
+  readonly entries: ReadonlyArray<SubmoduleInitEntry>;
+}
+
+/**
+ * Register submodules into `.git/config` (`git submodule init`). For each
+ * un-registered submodule (no `submodule.<name>.url` in config) writes
+ * `active = true`, the resolved `url`, and (when declared) a validated
+ * `update` mode, in git's key order. An already-registered submodule keeps its
+ * url untouched (`registered: false`). Relative `.gitmodules` URLs resolve
+ * against the superproject's default-remote URL.
+ */
+export const submoduleInit = async (
+  ctx: Context,
+  opts: SubmoduleInitOptions = {},
+): Promise<SubmoduleInitResult> => {
+  await assertRepository(ctx);
+  const rows = await readWorktreeGitmodules(ctx);
+  const updateModes = validateUpdateModes(rows);
+  const selected = selectRows(rows, opts.paths);
+  const config = await readConfig(ctx);
+  const base = await resolveBaseUrl(ctx, config);
+  const entries: SubmoduleInitEntry[] = [];
+  const ops: ConfigOperation[] = [];
+  for (const row of selected) {
+    if (row.url === undefined) continue;
+    const path = row.path as FilePath;
+    const update = updateModes.get(row.name);
+    const existing = config.submodule?.get(row.name)?.url;
+    if (existing !== undefined) {
+      entries.push({
+        name: row.name,
+        path,
+        url: existing,
+        registered: false,
+        ...(update !== undefined ? { update } : {}),
+      });
+      continue;
+    }
+    const url = resolveSubmoduleUrl(base, row.url);
+    ops.push(...registerOps(row.name, url, update));
+    entries.push({
+      name: row.name,
+      path,
+      url,
+      registered: true,
+      ...(update !== undefined ? { update } : {}),
+    });
+  }
+  if (ops.length > 0) await updateConfigOperations(ctx, ops);
+  return { entries };
+};
+
+export interface SubmoduleSyncOptions {
+  /** Submodule paths to sync. Default: every initialised submodule. */
+  readonly paths?: ReadonlyArray<string>;
+}
+
+export interface SubmoduleSyncEntry {
+  readonly name: string;
+  readonly path: FilePath;
+  /** Resolved URL written to `submodule.<name>.url`. */
+  readonly url: string;
+  /** True when the checked-out submodule's own `remote.origin.url` was updated too. */
+  readonly syncedRemote: boolean;
+}
+
+export interface SubmoduleSyncResult {
+  readonly entries: ReadonlyArray<SubmoduleSyncEntry>;
+}
+
+/** Update a checked-out submodule's own `remote.origin.url`; false when absent. */
+const syncSubmoduleRemote = async (
+  ctx: Context,
+  name: string,
+  path: FilePath,
+  url: string,
+): Promise<boolean> => {
+  const child = await deriveSubmoduleContext(ctx, name, path);
+  if (child === undefined) return false;
+  await updateConfigOperations(child, [
+    { kind: 'set', section: 'remote', subsection: 'origin', key: 'url', value: url },
+  ]);
+  return true;
+};
+
+/**
+ * Re-point configured submodule URLs from `.gitmodules` (`git submodule sync`).
+ * Operates only on **initialised** submodules (those already carrying
+ * `submodule.<name>.url` in config); a fresh clone with nothing initialised is a
+ * no-op. Overwrites `submodule.<name>.url` with the freshly resolved URL and,
+ * when the submodule is checked out, its own `remote.origin.url`.
+ */
+export const submoduleSync = async (
+  ctx: Context,
+  opts: SubmoduleSyncOptions = {},
+): Promise<SubmoduleSyncResult> => {
+  await assertRepository(ctx);
+  const selected = selectRows(await readWorktreeGitmodules(ctx), opts.paths);
+  const config = await readConfig(ctx);
+  const base = await resolveBaseUrl(ctx, config);
+  const entries: SubmoduleSyncEntry[] = [];
+  const ops: ConfigOperation[] = [];
+  for (const row of selected) {
+    if (row.url === undefined) continue;
+    if (config.submodule?.get(row.name)?.url === undefined) continue;
+    const path = row.path as FilePath;
+    const url = resolveSubmoduleUrl(base, row.url);
+    ops.push({ kind: 'set', section: 'submodule', subsection: row.name, key: 'url', value: url });
+    const syncedRemote = await syncSubmoduleRemote(ctx, row.name, path, url);
+    entries.push({ name: row.name, path, url, syncedRemote });
+  }
+  if (ops.length > 0) await updateConfigOperations(ctx, ops);
+  return { entries };
+};
+
+export interface SubmoduleDeinitOptions {
+  /** Submodule paths to deinitialise. Required unless `all` is set. */
+  readonly paths?: ReadonlyArray<string>;
+  /** Deinitialise every submodule. Required when `paths` is empty/omitted. */
+  readonly all?: boolean;
+  /** Discard a submodule working tree that has local modifications. */
+  readonly force?: boolean;
+}
+
+export interface SubmoduleDeinitEntry {
+  readonly name: string;
+  readonly path: FilePath;
+  /** The raw `.gitmodules` URL (git's unregister message reports this form). */
+  readonly url: string;
+  /** True when a populated working tree was cleared. */
+  readonly cleared: boolean;
+}
+
+export interface SubmoduleDeinitResult {
+  readonly entries: ReadonlyArray<SubmoduleDeinitEntry>;
+}
+
+/** Refuse when a checked-out submodule has local modifications (unless forced). */
+const assertSubmoduleClean = async (ctx: Context, name: string, path: FilePath): Promise<void> => {
+  const child = await deriveSubmoduleContext(ctx, name, path);
+  if (child === undefined) return;
+  const result = await status(child);
+  if (!result.clean) throw submoduleHasModifications(path);
+};
+
+/** Clear a submodule working-tree directory's contents, keeping the empty dir. */
+const clearWorktree = async (ctx: Context, path: FilePath): Promise<boolean> => {
+  const dir = `${ctx.layout.workDir}/${path}`;
+  if (!(await ctx.fs.exists(dir))) return false;
+  if ((await ctx.fs.readdir(dir)).length === 0) return false;
+  await ctx.fs.rmRecursive(dir);
+  await ctx.fs.mkdir(dir);
+  return true;
+};
+
+/**
+ * Unregister submodules and clear their working trees (`git submodule deinit`).
+ * Requires `paths` or `all`. Removes each submodule's `.git/config` section and
+ * clears its working-tree contents (the empty directory, `.gitmodules`, the
+ * index gitlink, and `.git/modules/<name>` are all left intact). Refuses a
+ * submodule with local modifications unless `force`.
+ */
+export const submoduleDeinit = async (
+  ctx: Context,
+  opts: SubmoduleDeinitOptions = {},
+): Promise<SubmoduleDeinitResult> => {
+  await assertRepository(ctx);
+  if ((opts.paths === undefined || opts.paths.length === 0) && opts.all !== true) {
+    throw invalidOption('submodule.deinit', "use 'all: true' to deinitialise every submodule");
+  }
+  const rows = await readWorktreeGitmodules(ctx);
+  const selected = opts.all === true ? rows.filter(isActionableRow) : selectRows(rows, opts.paths);
+  const config = await readConfig(ctx);
+  const entries: SubmoduleDeinitEntry[] = [];
+  // Each submodule is fully deinit'd (worktree cleared + config section removed)
+  // before the next — git's incremental behaviour, so a later dirty submodule
+  // leaves earlier ones completely deinit'd rather than half-done.
+  for (const row of selected) {
+    const path = row.path as FilePath;
+    if (opts.force !== true) await assertSubmoduleClean(ctx, row.name, path);
+    const cleared = await clearWorktree(ctx, path);
+    if (config.submodule?.has(row.name) === true) {
+      await updateConfigOperations(ctx, [
+        { kind: 'removeSection', section: 'submodule', subsection: row.name },
+      ]);
+    }
+    entries.push({ name: row.name, path, url: row.url ?? '', cleared });
+  }
+  return { entries };
+};
+
+export interface SubmoduleListOptions {
+  /** Tree-ish to walk. Default: `'HEAD'`. */
+  readonly ref?: string;
+  /** Descend into nested submodules' own `.gitmodules`. Default: `false`. */
+  readonly recursive?: boolean;
+  /**
+   * Cap on recursion depth. Default: `MAX_SUBMODULE_DEPTH`. Entries at exactly
+   * this depth are yielded but not recursed into.
+   */
+  readonly maxDepth?: number;
+}
+
+export interface SubmoduleListResult {
+  readonly entries: ReadonlyArray<SubmoduleEntry>;
+}
+
+const coerceRef = (ref: string): RefName | ObjectId =>
+  looksLikeObjectId(ref) ? ObjectId.from(ref) : validateRefName(ref);
+
+export const submoduleList = async (
+  ctx: Context,
+  opts: SubmoduleListOptions = {},
+): Promise<SubmoduleListResult> => {
+  await assertRepository(ctx);
+  const ref = coerceRef(opts.ref ?? 'HEAD');
+  const recursive = opts.recursive === true;
+  const entries: SubmoduleEntry[] = [];
+  for await (const entry of walkSubmodules(ctx, {
+    ref,
+    recursive,
+    // Stryker disable next-line ConditionalExpression,ObjectLiteral: equivalent — `walkSubmodules` reads `options?.maxDepth ?? MAX_SUBMODULE_DEPTH`, so spreading `{ maxDepth: undefined }` is identical to spreading `{}`; the conditional only exists to keep the spread well-typed under `exactOptionalPropertyTypes`.
+    ...(opts.maxDepth !== undefined ? { maxDepth: opts.maxDepth } : {}),
+  })) {
+    entries.push(entry);
+  }
+  return { entries };
+};

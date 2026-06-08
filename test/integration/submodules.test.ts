@@ -82,7 +82,7 @@ const writeCommit = async (repo: Repository, treeId: ObjectId): Promise<ObjectId
   });
 
 describe('integration/submodules', () => {
-  it('Given a real repo with one gitlink + .gitmodules, When repo.submodules(), Then surfaces the entry', async () => {
+  it('Given a real repo with one gitlink + .gitmodules, When repo.submodule.list(), Then surfaces the entry', async () => {
     // Arrange
     const repo = await openRepository({ cwd: tmpDir });
     try {
@@ -93,10 +93,9 @@ describe('integration/submodules', () => {
       await repo.ctx.fs.writeUtf8(`${repo.ctx.layout.gitDir}/HEAD`, `${commit}\n`);
 
       // Act
-      const sut = await repo.submodules();
+      const sut = await repo.submodule.list();
 
       // Assert
-      expect(sut.kind).toBe('list');
       expect(sut.entries).toEqual([
         {
           name: 'vendorfoo',
@@ -111,7 +110,7 @@ describe('integration/submodules', () => {
     }
   });
 
-  it('Given a real repo with an absorbed nested submodule, When repo.submodules({ recursive: true }), Then descends into the nested store', async () => {
+  it('Given a real repo with an absorbed nested submodule, When repo.submodule.list({ recursive: true }), Then descends into the nested store', async () => {
     // Arrange
     const repo = await openRepository({ cwd: tmpDir });
     try {
@@ -170,7 +169,7 @@ describe('integration/submodules', () => {
       await repo.ctx.fs.writeUtf8(`${repo.ctx.layout.gitDir}/HEAD`, `${parentCommit}\n`);
 
       // Act
-      const sut = await repo.submodules({ recursive: true });
+      const sut = await repo.submodule.list({ recursive: true });
       await childRepo.dispose();
 
       // Assert

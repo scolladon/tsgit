@@ -736,7 +736,19 @@
     "mutualization",
     "strcmp",
     "reconstructable",
-    "summarise"
+    "summarise",
+    "colonsep",
+    "customised",
+    "inited",
+    "deinitialize",
+    "deinitialise",
+    "deinitialised",
+    "unregister",
+    "unregistered",
+    "unregistering",
+    "pathed",
+    "nopath",
+    "nourl"
   ],
   "ignorePaths": [
     "node_modules",
