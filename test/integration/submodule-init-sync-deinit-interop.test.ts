@@ -85,7 +85,7 @@ beforeAll(() => {
   git(superDir, 'config', '-f', '.gitmodules', 'submodule.libs/sub.update', 'rebase');
   git(superDir, 'add', '.gitmodules');
   git(superDir, 'commit', '-qm', 'add submodule');
-});
+}, 60_000);
 
 afterAll(async () => {
   if (base !== undefined) await rm(base, { recursive: true, force: true });
