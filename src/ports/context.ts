@@ -20,6 +20,14 @@ export interface RepositoryLayout {
   readonly workDir: string;
   /** Absolute path to the.git directory (usually `${workDir}/.git`, but may differ for bare repos or worktrees). */
   readonly gitDir: string;
+  /**
+   * Absolute path to the shared **common** git dir — objects, `packed-refs`,
+   * `config`, and shared refs/reflogs. Absent for a normal repo or the main
+   * worktree (it equals `gitDir`); set only for a linked worktree, whose
+   * `gitDir` is its own admin dir while shared state lives here. Resolve via
+   * `commonGitDir(ctx)` rather than reading this field directly.
+   */
+  readonly commonDir?: string;
   /** Whether this is a bare repository. */
   readonly bare: boolean;
   /**

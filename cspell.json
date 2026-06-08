@@ -635,6 +635,7 @@
     "commitish",
     "commondir",
     "pseudoref",
+    "pseudorefs",
     "promisor",
     "promisors",
     "reserialise",

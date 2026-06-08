@@ -14,6 +14,14 @@ import type { Context } from '../../ports/context.js';
  */
 export const getRepoRoot = (ctx: Context): FilePath => ctx.layout.workDir as FilePath;
 
+/**
+ * The shared (common) git dir: objects, `packed-refs`, `config`, shared refs and
+ * their reflogs live here. For a normal repo or the main worktree this is the
+ * `gitDir`; for a linked worktree it is the repository's common dir, while
+ * per-worktree state (HEAD/index/…) stays under `gitDir`.
+ */
+export const commonGitDir = (ctx: Context): string => ctx.layout.commonDir ?? ctx.layout.gitDir;
+
 export const looseObjectPath = (gitDir: string, id: ObjectId): string =>
   `${gitDir}/objects/${computeLooseObjectPath(id)}`;
 
