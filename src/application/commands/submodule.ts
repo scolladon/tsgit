@@ -42,7 +42,11 @@ import { readObject } from '../primitives/read-object.js';
 import { recordRefUpdate } from '../primitives/record-ref-update.js';
 import { getRefStore } from '../primitives/ref-store.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
-import { MAX_GITMODULES_BYTES, type SubmoduleEntry } from '../primitives/types.js';
+import {
+  MAX_GITMODULES_BYTES,
+  MAX_SUBMODULE_DEPTH,
+  type SubmoduleEntry,
+} from '../primitives/types.js';
 import {
   applyConfigOpInText,
   type ConfigOperation,
@@ -237,6 +241,8 @@ export const submoduleInit = async (
 export interface SubmoduleSyncOptions {
   /** Submodule paths to sync. Default: every initialised submodule. */
   readonly paths?: ReadonlyArray<string>;
+  /** `--recursive`: descend into checked-out submodules and sync their nested ones. */
+  readonly recursive?: boolean;
 }
 
 export interface SubmoduleSyncEntry {
@@ -268,15 +274,16 @@ const syncSubmoduleRemote = async (
 };
 
 /**
- * Re-point configured submodule URLs from `.gitmodules` (`git submodule sync`).
- * Operates only on **initialised** submodules (those already carrying
- * `submodule.<name>.url` in config); a fresh clone with nothing initialised is a
- * no-op. Overwrites `submodule.<name>.url` with the freshly resolved URL and,
- * when the submodule is checked out, its own `remote.origin.url`.
+ * Re-point this level's submodule URLs from `.gitmodules` and, when `recursive`,
+ * descend into each checked-out submodule. `depth`/`visited` bound the descent
+ * (`MAX_SUBMODULE_DEPTH` + the absorbed-gitdir cycle guard). Returns this level's
+ * entries; nested syncs are on-disk side effects.
  */
-export const submoduleSync = async (
+const syncLevel = async (
   ctx: Context,
-  opts: SubmoduleSyncOptions = {},
+  opts: SubmoduleSyncOptions,
+  depth: number,
+  visited: ReadonlySet<string>,
 ): Promise<SubmoduleSyncResult> => {
   await assertRepository(ctx);
   const selected = selectRows(await readWorktreeGitmodules(ctx), opts.paths);
@@ -294,8 +301,29 @@ export const submoduleSync = async (
     entries.push({ name: row.name, path, url, syncedRemote });
   }
   if (ops.length > 0) await updateConfigOperations(ctx, ops);
+  if (opts.recursive === true && depth < MAX_SUBMODULE_DEPTH) {
+    for (const row of selected) {
+      const childGitDir = `${ctx.layout.gitDir}/modules/${row.name}`;
+      const child = await deriveSubmoduleContext(ctx, row.name, row.path as FilePath, visited);
+      if (child === undefined) continue;
+      await syncLevel(child, opts, depth + 1, new Set([...visited, childGitDir]));
+    }
+  }
   return { entries };
 };
+
+/**
+ * Re-point configured submodule URLs from `.gitmodules` (`git submodule sync`).
+ * Operates only on **initialised** submodules (those already carrying
+ * `submodule.<name>.url` in config); a fresh clone with nothing initialised is a
+ * no-op. Overwrites `submodule.<name>.url` with the freshly resolved URL and,
+ * when the submodule is checked out, its own `remote.origin.url`. With
+ * `recursive`, descends into each checked-out submodule and syncs its nested ones.
+ */
+export const submoduleSync = (
+  ctx: Context,
+  opts: SubmoduleSyncOptions = {},
+): Promise<SubmoduleSyncResult> => syncLevel(ctx, opts, 0, new Set());
 
 export interface SubmoduleDeinitOptions {
   /** Submodule paths to deinitialise. Required unless `all` is set. */
