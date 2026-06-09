@@ -49,6 +49,13 @@ export const MAX_WORKING_TREE_BLOB_BYTES = 256 * 1024 * 1024;
 export const MAX_GITIGNORE_BYTES = 1 * 1024 * 1024;
 
 /**
+ * Per-file cap on `.gitattributes`, `.git/info/attributes`, and the global
+ * attributesFile. 1 MiB matches the `.gitignore` cap — both are small text
+ * files in practice; the guard only stops a pathological input.
+ */
+export const MAX_GITATTRIBUTES_BYTES = 1 * 1024 * 1024;
+
+/**
  * Per-file cap on a single `.git/logs/<ref>` reflog file. 16 MiB is generous
  * — `reflog expire` is the size-management story; this guard only stops an
  * adversarial or corrupt log from being buffered unbounded into memory.

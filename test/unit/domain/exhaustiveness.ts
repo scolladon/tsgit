@@ -118,6 +118,7 @@ export function assertExhaustiveSwitch(data: TsgitErrorData): void {
     case 'OBJECT_TOO_LARGE':
     case 'WORKING_TREE_FILE_TOO_LARGE':
     case 'GITIGNORE_FILE_TOO_LARGE':
+    case 'GITATTRIBUTES_FILE_TOO_LARGE':
     case 'SPARSE_PATTERN_FILE_TOO_LARGE':
     case 'INVALID_REFLOG_ENTRY':
     case 'REFLOG_NOT_FOUND':

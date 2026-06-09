@@ -10,6 +10,7 @@ export interface ParsedConfig {
   readonly core?: {
     readonly bare?: boolean;
     readonly excludesFile?: string;
+    readonly attributesFile?: string;
     readonly logAllRefUpdates?: boolean | 'always';
     readonly hooksPath?: string;
     readonly sparseCheckout?: boolean;
@@ -232,6 +233,7 @@ interface MutableParsedConfig {
   core?: {
     bare?: boolean;
     excludesFile?: string;
+    attributesFile?: string;
     logAllRefUpdates?: boolean | 'always';
     hooksPath?: string;
     sparseCheckout?: boolean;
@@ -285,6 +287,7 @@ const mergeCore = (
     core?: {
       bare?: boolean;
       excludesFile?: string;
+      attributesFile?: string;
       logAllRefUpdates?: boolean | 'always';
       hooksPath?: string;
       sparseCheckout?: boolean;
@@ -302,6 +305,8 @@ const mergeCore = (
       acc.core = { ...acc.core, bare: parseGitBoolean(value) };
     } else if (lowered === 'excludesfile') {
       acc.core = { ...acc.core, excludesFile: value };
+    } else if (lowered === 'attributesfile') {
+      acc.core = { ...acc.core, attributesFile: value };
     } else if (lowered === 'logallrefupdates') {
       acc.core = { ...acc.core, logAllRefUpdates: parseLogAllRefUpdates(value) };
     } else if (lowered === 'hookspath') {
@@ -448,6 +453,7 @@ const finalizeCore = (
     | {
         bare?: boolean;
         excludesFile?: string;
+        attributesFile?: string;
         logAllRefUpdates?: boolean | 'always';
         hooksPath?: string;
         sparseCheckout?: boolean;
@@ -459,6 +465,7 @@ const finalizeCore = (
   return {
     ...(core.bare !== undefined ? { bare: core.bare } : {}),
     ...(core.excludesFile !== undefined ? { excludesFile: core.excludesFile } : {}),
+    ...(core.attributesFile !== undefined ? { attributesFile: core.attributesFile } : {}),
     ...(core.logAllRefUpdates !== undefined ? { logAllRefUpdates: core.logAllRefUpdates } : {}),
     ...(core.hooksPath !== undefined ? { hooksPath: core.hooksPath } : {}),
     ...(core.sparseCheckout !== undefined ? { sparseCheckout: core.sparseCheckout } : {}),
@@ -473,6 +480,7 @@ const finalize = (acc: MutableParsedConfig): ParsedConfig => {
     core?: {
       bare?: boolean;
       excludesFile?: string;
+      attributesFile?: string;
       logAllRefUpdates?: boolean | 'always';
       hooksPath?: string;
       sparseCheckout?: boolean;

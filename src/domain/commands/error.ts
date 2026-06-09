@@ -84,6 +84,12 @@ export type CommandError =
       readonly limit: number;
     }
   | {
+      readonly code: 'GITATTRIBUTES_FILE_TOO_LARGE';
+      readonly path: FilePath;
+      readonly size: number;
+      readonly limit: number;
+    }
+  | {
       readonly code: 'SPARSE_PATTERN_FILE_TOO_LARGE';
       readonly path: FilePath;
       readonly size: number;
@@ -349,6 +355,12 @@ export const workingTreeFileTooLarge = (path: FilePath, size: number, limit: num
 
 export const gitignoreFileTooLarge = (path: FilePath, size: number, limit: number): TsgitError =>
   new TsgitError({ code: 'GITIGNORE_FILE_TOO_LARGE', path, size, limit });
+
+export const gitattributesFileTooLarge = (
+  path: FilePath,
+  size: number,
+  limit: number,
+): TsgitError => new TsgitError({ code: 'GITATTRIBUTES_FILE_TOO_LARGE', path, size, limit });
 
 export const sparsePatternFileTooLarge = (
   path: FilePath,
