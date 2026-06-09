@@ -10,12 +10,9 @@ import {
 import { unsupportedOperation } from '../../domain/index.js';
 import {
   type ConflictType,
-  type ContentMergeResult,
-  type ContentMerger,
   MAX_CONFLICT_OUTPUT_BYTES,
   type MergeConflict,
   type MergeOutcome,
-  mergeContent,
   mergeTrees,
   writeConflictMarkers,
 } from '../../domain/merge/index.js';
@@ -31,6 +28,7 @@ import {
 } from '../../domain/objects/index.js';
 import type { SparseMatcher } from '../../domain/sparse/index.js';
 import type { Context } from '../../ports/context.js';
+import { buildContentMerger } from '../primitives/build-content-merger.js';
 import { readConfig } from '../primitives/config-read.js';
 import { createCommit } from '../primitives/create-commit.js';
 import { flattenTree } from '../primitives/flatten-tree.js';
@@ -314,42 +312,6 @@ const computeMergeTreeResult = async (
   }
   return { kind: 'conflict', outcomes: result.outcomes, conflicts: result.conflicts };
 };
-
-const buildContentMerger =
-  (ctx: Context): ContentMerger =>
-  async (mergeCtx, _baseStub, _oursStub, _theirsStub): Promise<ContentMergeResult> => {
-    // Parallel-capped fetch. Each blob is bounded by
-    // MAX_CONFLICT_OUTPUT_BYTES; a hostile adversarial input
-    // is rejected upfront via OBJECT_TOO_LARGE without ever reaching
-    // `mergeContent`'s line-diff path. The Promise.all parallelism is
-    // exercised by the "issue concurrently" test in merge.test.ts —
-    // mutating it to a serial loop would drop maxInFlight to 1 and the
-    // test would fail.
-    //
-    // equivalent-mutant: Stryker mutates `{ maxBytes: MAX_CONFLICT_OUTPUT_BYTES }`
-    // to `{}` at the three call sites below — observationally equivalent
-    // in the test suite because no fixture allocates a real
-    // MAX_CONFLICT_OUTPUT_BYTES (256 MiB) blob to trigger the cap at this
-    // integration boundary. The cap mechanics themselves are fully
-    // covered by direct unit tests on readObject / readBlob
-    // (test/unit/application/primitives/read-object.test.ts and
-    // read-blob.test.ts) at every cap site (loose, pack-base,
-    // pre-apply-delta, cached). The integration line is mechanical
-    // wiring; allocating a 256 MiB fixture to kill these three mutants
-    // would cost ~1 GiB peak RSS per CI run for ~zero additional
-    // assurance.
-    const [ours, theirs, base] = await Promise.all([
-      // Stryker disable next-line ObjectLiteral: equivalent — the 256 MiB cap is unobservable without a 256 MiB fixture; cap mechanics covered by read-blob.test.ts.
-      readBlob(ctx, mergeCtx.ourId, { maxBytes: MAX_CONFLICT_OUTPUT_BYTES }),
-      // Stryker disable next-line ObjectLiteral: equivalent — the 256 MiB cap is unobservable without a 256 MiB fixture; cap mechanics covered by read-blob.test.ts.
-      readBlob(ctx, mergeCtx.theirId, { maxBytes: MAX_CONFLICT_OUTPUT_BYTES }),
-      mergeCtx.baseId !== undefined
-        ? // Stryker disable next-line ObjectLiteral: equivalent — the 256 MiB cap is unobservable without a 256 MiB fixture; cap mechanics covered by read-blob.test.ts.
-          readBlob(ctx, mergeCtx.baseId, { maxBytes: MAX_CONFLICT_OUTPUT_BYTES })
-        : Promise.resolve(undefined),
-    ]);
-    return mergeContent(base?.content, ours.content, theirs.content);
-  };
 
 interface LeafRecord {
   readonly path: FilePath;
