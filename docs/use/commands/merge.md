@@ -61,6 +61,23 @@ Resolve the working-tree files, `repo.add` the resolved paths, then `repo.merge.
 
 Unsupported conflict types (`rename-rename`, `gitlink`) reject upfront with `UNSUPPORTED_OPERATION` before any disk write.
 
+## Custom merge drivers
+
+The per-path content merge honours `.gitattributes` `merge=<driver>` selection,
+shared with `stash apply` / `cherry-pick` / `revert` / `rebase`:
+
+- `merge` / `merge=text` (or unspecified) → the built-in 3-way line merge.
+- `-merge` / `merge=binary` (incl. via the `binary` macro) → take *ours* and
+  declare a conflict.
+- `merge=<name>` with `[merge "<name>"] driver = <cmd>` in the config → run the
+  command (`%O %A %B %L %P` substituted; exit 0 ⇒ clean, non-zero ⇒ conflict).
+
+In Node the driver runs by default; pass `openRepository({ command: false })` to
+disable external drivers (they fall back to the built-in merge). The browser /
+memory adapters have no command runner, so external drivers always fall back
+there. `merge=union` is not yet implemented and falls back to the text merge.
+See the [RUNBOOK](../../../RUNBOOK.md) "Operating custom merge drivers" section.
+
 ## State machine — `merge.continue` and `merge.abort`
 
 A conflicting merge leaves the repository in an "in-progress" state recorded by `.git/MERGE_HEAD`, `.git/MERGE_MSG`, and `.git/ORIG_HEAD`. Two verbs end that state:

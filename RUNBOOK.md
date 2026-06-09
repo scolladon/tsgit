@@ -567,6 +567,35 @@ site (tsgit is a client; no `receive-pack` server). Operator-visible behaviour:
 - **Output bounds.** Captured hook stdout/stderr is capped at 1 MiB per stream;
   a hung hook is killed when `ctx.signal` aborts.
 
+## Operating custom merge drivers
+
+Every three-way content merge (`merge`, `stash apply`, `cherry-pick`, `revert`,
+`rebase`) honours a per-path **merge driver** selected by the `merge` attribute
+in `.gitattributes`, exactly as canonical git does. Operator-visible behaviour:
+
+- **Selection.** `.gitattributes` `path merge=<driver>` chooses the driver;
+  precedence is `$GIT_DIR/info/attributes` → the path's directory `.gitattributes`
+  up to the worktree root → global `core.attributesFile`, last-match-wins within a
+  file. The built-in `binary` macro (and user `[attr]` macros) are honoured.
+- **Built-ins.** `merge` / `merge=text` / unspecified → the built-in 3-way line
+  merge. `-merge` / `merge=binary` → take *ours* and mark the path conflicted
+  (stage 1/2/3). `merge=union` is **not yet implemented** and falls back to the
+  text merge.
+- **External drivers.** `merge=<name>` with `[merge "<name>"] driver = <command>`
+  in the config runs that command via the shell, with `%O`/`%A`/`%B` (ancestor /
+  ours / theirs temp files), `%L` (marker size, fixed at 7) and `%P` (pathname)
+  substituted. The driver overwrites `%A`; exit 0 ⇒ clean, non-zero ⇒ conflict.
+- **Default-on (Node).** `openRepository` / `createNodeContext` wire the command
+  runner by default. The browser / memory adapters have none, so a configured
+  external driver falls back to the built-in merge there.
+- **Disabling.** `openRepository({ command: false })` or
+  `createNodeContext({ command: false })` detaches the runner — a configured
+  driver then falls back to the built-in merge. Use it on a repository whose
+  config you do not trust: the driver is an arbitrary shell command that inherits
+  the process environment (`process.env`, including any secrets).
+- **`recursive`** (`[merge "<d>"] recursive = …`) is parsed but inert — tsgit
+  merges against a single base, so there is no recursive inner merge to redirect.
+
 ## Operating sparse checkout (Phase 17.3)
 
 `repo.sparseCheckout` materialises only a subset of tracked files into the
