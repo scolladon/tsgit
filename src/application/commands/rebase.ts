@@ -43,6 +43,7 @@ import { readIndex } from '../primitives/read-index.js';
 import { recordRefUpdate } from '../primitives/record-ref-update.js';
 import { getRefStore } from '../primitives/ref-store.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
+import { runHook, runInformationalHook } from '../primitives/run-hook.js';
 import { synthesizeTreeFromIndex } from '../primitives/synthesize-tree-from-index.js';
 import { updateRef } from '../primitives/update-ref.js';
 import { walkCommits } from '../primitives/walk-commits.js';
@@ -61,11 +62,14 @@ import {
   type RebaseStop,
   readRebaseState,
   readRewrittenList,
+  serializeRewritten,
   writeRebaseStop,
 } from './internal/rebase-state.js';
 import { hardResetWorktreeToCommit } from './internal/reset-worktree.js';
 
 const HEAD = 'HEAD' as RefName;
+/** `post-rewrite`'s command-name argument when fired from a rebase. */
+const REBASE_REWRITE_LABEL = 'rebase';
 
 /** The interactive instruction verbs (`git rebase -i`). */
 export type RebaseInteractiveAction = RebaseTodoAction;
@@ -371,6 +375,23 @@ const finishRebase = async (
   await recordRefUpdate(ctx, HEAD, newTip, newTip, `rebase (finish): returning to ${branch}`);
 };
 
+/**
+ * Fire the informational `post-rewrite` hook once a rebase finishes, feeding it
+ * git's `<old> SP <new> LF` lines on stdin — the same bytes as the
+ * `rewritten-list` state file. A no-op when nothing was rewritten (git fires it
+ * only on a non-empty rewrite set).
+ */
+const firePostRewrite = async (
+  ctx: Context,
+  rewritten: ReadonlyArray<readonly [ObjectId, ObjectId]>,
+): Promise<void> => {
+  if (rewritten.length === 0) return;
+  await runInformationalHook(ctx, 'post-rewrite', {
+    args: [REBASE_REWRITE_LABEL],
+    stdin: serializeRewritten(rewritten),
+  });
+};
+
 /** Replay `rc.todo` from the detached HEAD `ourId`; stop on conflict, else finish. */
 const replayFrom = async (
   ctx: Context,
@@ -401,6 +422,7 @@ const replayFrom = async (
     };
   }
   await finishRebase(ctx, rc.branch, rc.origHead, cur, rc.onto);
+  await firePostRewrite(ctx, rewritten);
   await clearRebaseState(ctx);
   return { kind: 'rebased', commits: applied };
 };
@@ -416,6 +438,9 @@ export const rebaseRun = async (ctx: Context, input: RebaseRunInput): Promise<Re
   const onto = input.onto !== undefined ? await resolveCommitIsh(ctx, input.onto) : upstream;
   const ontoName = input.onto ?? input.upstream;
   await assertCleanWorkTree(ctx, await treeOf(ctx, headCommit));
+  // pre-rebase can veto the rebase (a non-zero exit throws HOOK_FAILED) before
+  // any ref moves; fired here so it guards both the plain and interactive paths.
+  await runHook(ctx, 'pre-rebase', { args: [input.upstream] });
   // No common ancestor (unrelated histories) → `base` is undefined and the whole
   // branch replays onto `onto`, the root commit against the empty-tree base —
   // faithful to `git rebase <unrelated>`.
@@ -1069,6 +1094,7 @@ const replayInteractive = async (
     group.inline = undefined;
   }
   await finishRebase(ctx, ic.branch, ic.origHead, head, ic.onto);
+  await firePostRewrite(ctx, rewritten);
   await clearRebaseState(ctx);
   return { kind: 'rebased', commits: applied };
 };

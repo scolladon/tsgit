@@ -97,7 +97,12 @@ const dir = (ctx: Context): string => `${ctx.layout.gitDir}/rebase-merge`;
 const file = (ctx: Context, name: string): string => `${dir(ctx)}/${name}`;
 const rebaseHeadPath = (ctx: Context): string => `${ctx.layout.gitDir}/REBASE_HEAD`;
 
-const serializeRewritten = (pairs: ReadonlyArray<readonly [ObjectId, ObjectId]>): string =>
+/**
+ * Serialise rewritten `[old, new]` pairs to git's `<old> SP <new> LF` lines —
+ * the exact byte format of both the `.git/rebase-merge/rewritten-list` file and
+ * the stdin canonical git feeds the `post-rewrite` hook.
+ */
+export const serializeRewritten = (pairs: ReadonlyArray<readonly [ObjectId, ObjectId]>): string =>
   pairs.map(([oldId, newId]) => `${oldId} ${newId}\n`).join('');
 
 export const writeRebaseStop = async (ctx: Context, stop: RebaseStop): Promise<void> => {
