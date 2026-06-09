@@ -578,9 +578,9 @@ in `.gitattributes`, exactly as canonical git does. Operator-visible behaviour:
   up to the worktree root → global `core.attributesFile`, last-match-wins within a
   file. The built-in `binary` macro (and user `[attr]` macros) are honoured.
 - **Built-ins.** `merge` / `merge=text` / unspecified → the built-in 3-way line
-  merge. `-merge` / `merge=binary` → take *ours* and mark the path conflicted
-  (stage 1/2/3). `merge=union` is **not yet implemented** and falls back to the
-  text merge.
+  merge. `merge=union` → the built-in merge resolving each overlapping region by
+  concatenating *both* sides with no markers (git's union favor). `-merge` /
+  `merge=binary` → take *ours* and mark the path conflicted (stage 1/2/3).
 - **External drivers.** `merge=<name>` with `[merge "<name>"] driver = <command>`
   in the config runs that command via the shell, with `%O`/`%A`/`%B` (ancestor /
   ours / theirs temp files), `%L` (marker size, fixed at 7) and `%P` (pathname)
