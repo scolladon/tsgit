@@ -207,6 +207,11 @@ function classify(group: RawGroup): Classification {
   if (!hasTheirs) return 'clean-ours';
   const [oc] = group.ours;
   const [tc] = group.theirs;
+  // equivalent-mutant: the two `length === 1` guards are defensive but provably
+  // redundant — a group whose first ours/theirs changes share an exact range
+  // (baseStart+baseEnd) is necessarily 1-ours-1-theirs, since the change that
+  // would link a second change into the group must extend past that shared end.
+  // So weakening them never changes the verdict; they stay as a readability guard.
   const isTwin =
     group.ours.length === 1 &&
     group.theirs.length === 1 &&
