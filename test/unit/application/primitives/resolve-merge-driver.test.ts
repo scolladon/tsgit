@@ -2,22 +2,16 @@ import { describe, expect, it } from 'vitest';
 
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { buildAttributeProvider } from '../../../../src/application/primitives/internal/read-gitattributes.js';
-import {
-  resolveMergeDriver,
-  resolvePathMergeSpec,
-} from '../../../../src/application/primitives/resolve-merge-driver.js';
+import { resolvePathMergeSpec } from '../../../../src/application/primitives/resolve-merge-driver.js';
 import type { FilePath } from '../../../../src/domain/objects/object-id.js';
 import type { Context } from '../../../../src/ports/context.js';
-
-const choose = async (ctx: Context, path: string) => {
-  const provider = await buildAttributeProvider(ctx);
-  return resolveMergeDriver(ctx, provider, path as FilePath);
-};
 
 const spec = async (ctx: Context, path: string) => {
   const provider = await buildAttributeProvider(ctx);
   return resolvePathMergeSpec(ctx, provider, path as FilePath);
 };
+
+const choose = async (ctx: Context, path: string) => (await spec(ctx, path)).driver;
 
 const seed = (ctx: Context, attrs?: string, config?: string): Promise<void[]> =>
   Promise.all([
@@ -29,7 +23,7 @@ const seed = (ctx: Context, attrs?: string, config?: string): Promise<void[]> =>
       : ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, config),
   ]);
 
-describe('resolveMergeDriver', () => {
+describe('resolvePathMergeSpec — driver resolution', () => {
   describe('Given no merge attribute', () => {
     describe('When resolving', () => {
       it('Then the built-in text driver is chosen', async () => {

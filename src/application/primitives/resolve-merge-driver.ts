@@ -44,20 +44,6 @@ const driverFromMergeValue = (ctx: Context, value: AttributeValue): Promise<Merg
   return namedChoice(ctx, value.set);
 };
 
-/**
- * Resolve the merge driver for `path`: read its `merge` attribute via `provider`,
- * then map it to a built-in or external choice. The caller builds `provider`
- * once per merge so the `.gitattributes` sources are parsed once.
- */
-export const resolveMergeDriver = async (
-  ctx: Context,
-  provider: AttributeProvider,
-  path: FilePath,
-): Promise<MergeDriverChoice> => {
-  const { sources, macros } = await provider.sourcesForPath(path);
-  return driverFromMergeValue(ctx, resolveAttribute(sources, path, 'merge', macros));
-};
-
 /** A path's merge driver choice paired with its conflict-marker length. */
 export interface PathMergeSpec {
   readonly driver: MergeDriverChoice;
