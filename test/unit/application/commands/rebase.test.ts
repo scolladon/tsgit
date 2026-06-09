@@ -2039,4 +2039,30 @@ describe('rebase — hooks', () => {
       });
     });
   });
+
+  describe('Given a fast-forward rebase (topic is an ancestor of upstream)', () => {
+    describe('When rebaseRun fast-forwards with nothing to replay', () => {
+      it('Then pre-rebase fires but post-rewrite does not (no rewrites)', async () => {
+        // Arrange — topic = base; main = base + m1 + m2.
+        const runner = new MemoryHookRunner();
+        const ctx = createMemoryContext({ hooks: runner });
+        await init(ctx);
+        await setUser(ctx);
+        await writeAddCommit(ctx, 'base.txt', 'base\n', 'base');
+        await branchCreate(ctx, { name: 'topic' });
+        await writeAddCommit(ctx, 'm1.txt', 'm1\n', 'm1');
+        await writeAddCommit(ctx, 'm2.txt', 'm2\n', 'm2');
+        await checkout(ctx, { rev: 'topic' });
+
+        // Act
+        const sut = await rebaseRun(ctx, { upstream: 'main' });
+
+        // Assert — work happened (the branch moved) so pre-rebase fires, but no
+        // commit was rewritten so post-rewrite stays silent.
+        expect(sut.kind).toBe('rebased');
+        expect(runner.calls.some((call) => call.name === 'pre-rebase')).toBe(true);
+        expect(runner.calls.some((call) => call.name === 'post-rewrite')).toBe(false);
+      });
+    });
+  });
 });
