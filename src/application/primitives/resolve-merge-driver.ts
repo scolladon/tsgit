@@ -32,8 +32,8 @@ const namedChoice = async (ctx: Context, name: string): Promise<MergeDriverChoic
 
 /**
  * Resolve the merge driver for `path`: read its `merge` attribute via `provider`,
- * then map it (ADR-303). The caller builds `provider` once per merge so the
- * `.gitattributes` sources are parsed once.
+ * then map it to a built-in or external choice. The caller builds `provider`
+ * once per merge so the `.gitattributes` sources are parsed once.
  */
 export const resolveMergeDriver = async (
   ctx: Context,

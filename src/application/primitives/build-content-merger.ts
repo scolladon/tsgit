@@ -20,7 +20,7 @@ import { runMergeDriver } from './run-merge-driver.js';
  * - `text`     → the built-in line merge (`mergeContent`) — the default.
  * - `binary`   → take `ours` and declare a conflict (git's `-merge`).
  * - `external` → run the configured command (when a `CommandRunner` is wired);
- *                otherwise fall back to the built-in line merge (ADR-304).
+ *                otherwise fall back to the built-in line merge.
  *
  * The attribute provider is built once, lazily, on the first content merge, so
  * a merge with no content-level conflicts reads no `.gitattributes`.
