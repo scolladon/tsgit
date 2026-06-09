@@ -221,6 +221,43 @@ describe('applyMergeToWorktree', () => {
     });
   });
 
+  describe('Given supplied labels and a content conflict', () => {
+    describe('When the merge is applied', () => {
+      it('Then the working-tree markers carry the ours / theirs labels', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const b = await writeBlob(ctx, 'base\n');
+        const o = await writeBlob(ctx, 'ours\n');
+        const t = await writeBlob(ctx, 'theirs\n');
+        const base = await treeWith(ctx, [
+          { name: 'a' as FilePath, id: b, mode: FILE_MODE.REGULAR },
+        ]);
+        const ours = await treeWith(ctx, [
+          { name: 'a' as FilePath, id: o, mode: FILE_MODE.REGULAR },
+        ]);
+        const theirs = await treeWith(ctx, [
+          { name: 'a' as FilePath, id: t, mode: FILE_MODE.REGULAR },
+        ]);
+        await ctx.fs.write(`${ctx.layout.workDir}/a`, new TextEncoder().encode('ours\n'));
+
+        // Act
+        const sut = await applyMergeToWorktree(ctx, {
+          baseTree: base,
+          oursTree: ours,
+          theirsTree: theirs,
+          currentIndex: index([indexEntry('a', o)]),
+          labels: { ours: 'HEAD', theirs: 'topic', base: 'main' },
+        });
+
+        // Assert
+        expect(sut.kind).toBe('conflict');
+        const onDisk = await readWork(ctx, 'a');
+        expect(onDisk).toContain('<<<<<<< HEAD\n');
+        expect(onDisk).toContain('>>>>>>> topic\n');
+      });
+    });
+  });
+
   describe('Given a changed path that is dirty in the working tree', () => {
     describe('When the merge is applied', () => {
       it('Then it refuses with would-overwrite and writes nothing', async () => {
