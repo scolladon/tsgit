@@ -1,174 +1,113 @@
-import type { LineHunk } from '../diff/line-diff.js';
 import { diffLines, isBinary, splitLines } from '../diff/line-diff.js';
+import { bytesEqual } from '../objects/encoding.js';
 import { writeConflictMarkers } from './conflict-markers.js';
-import type { ConflictMarkerOptions, ContentMergeResult } from './merge-types.js';
+import type { ConflictMarkerOptions, ContentMergeResult, MergeFavor } from './merge-types.js';
+import { buildMergeSegments, changesFromHunks, type MergeSegment } from './region-merge.js';
 
-interface ChangeRange {
-  readonly baseStart: number;
-  readonly baseEnd: number;
-  readonly replacement: ReadonlyArray<Uint8Array>;
-}
+const LF = 0x0a;
 
-function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
-  if (a.length !== b.length) return false;
-  // Stryker disable next-line EqualityOperator: equivalent — lengths are equal here, so at i===a.length both a[i] and b[i] are undefined and undefined !== undefined is false
-  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
-  return true;
-}
+export type MergeContentOptions = ConflictMarkerOptions & { readonly favor?: MergeFavor };
 
-function lineArraysEqual(a: ReadonlyArray<Uint8Array>, b: ReadonlyArray<Uint8Array>): boolean {
-  if (a.length !== b.length) return false;
-  for (let i = 0; i < a.length; i++) {
-    if (!bytesEqual(a[i]!, b[i]!)) return false;
-  }
-  return true;
-}
-
-function concatLines(lines: ReadonlyArray<Uint8Array>): Uint8Array {
+function concatBytes(parts: ReadonlyArray<Uint8Array>): Uint8Array {
   let total = 0;
-  for (const l of lines) total += l.length;
+  for (const p of parts) total += p.length;
   const out = new Uint8Array(total);
   let offset = 0;
-  for (const l of lines) {
-    out.set(l, offset);
-    offset += l.length;
+  for (const p of parts) {
+    out.set(p, offset);
+    offset += p.length;
   }
   return out;
 }
 
-function changesFromHunks(
-  hunks: ReadonlyArray<LineHunk>,
-  sideLines: ReadonlyArray<Uint8Array>,
-): ChangeRange[] {
-  const changes: ChangeRange[] = [];
-  let pending: { baseStart: number; baseEnd: number; replacement: Uint8Array[] } | undefined;
+function endsWithLf(line: Uint8Array): boolean {
+  return line.length > 0 && line[line.length - 1] === LF;
+}
 
-  const flush = () => {
-    if (pending !== undefined) {
-      changes.push({
-        baseStart: pending.baseStart,
-        baseEnd: pending.baseEnd,
-        replacement: pending.replacement,
-      });
-      pending = undefined;
+/** Concatenate lines, ensuring every line but the last ends in `\n` (interior newline safety). */
+function joinLinesEnsuringInteriorLf(lines: ReadonlyArray<Uint8Array>): Uint8Array {
+  let total = 0;
+  for (let i = 0; i < lines.length; i++) {
+    total += lines[i]!.length;
+    if (i < lines.length - 1 && !endsWithLf(lines[i]!)) total += 1;
+  }
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!;
+    out.set(line, offset);
+    offset += line.length;
+    if (i < lines.length - 1 && !endsWithLf(line)) {
+      out[offset] = LF;
+      offset += 1;
     }
-  };
+  }
+  return out;
+}
 
-  for (const hunk of hunks) {
-    if (hunk.kind === 'common') {
-      flush();
-      continue;
-    }
-    if (pending === undefined) {
-      pending = { baseStart: hunk.oursStart, baseEnd: hunk.oursStart, replacement: [] };
-    }
-    if (hunk.kind === 'ours-only') {
-      pending.baseEnd = Math.max(pending.baseEnd, hunk.oursEnd);
+function renderUnion(segments: ReadonlyArray<MergeSegment>): ContentMergeResult {
+  const lines: Uint8Array[] = [];
+  for (const segment of segments) {
+    if (segment.kind === 'clean') {
+      lines.push(...segment.lines);
     } else {
-      for (let j = hunk.theirsStart; j < hunk.theirsEnd; j++) {
-        pending.replacement.push(sideLines[j]!);
-      }
+      lines.push(...segment.ours, ...segment.theirs);
     }
   }
-  flush();
-  return changes;
+  return { status: 'clean', bytes: joinLinesEnsuringInteriorLf(lines) };
 }
 
-function rangesOverlap(a: ChangeRange, b: ChangeRange): boolean {
-  // Zero-length insertion inside or at the boundary of another range overlaps.
-  if (a.baseStart === a.baseEnd) {
-    return b.baseStart === b.baseEnd
-      ? a.baseStart === b.baseStart
-      : a.baseStart >= b.baseStart && a.baseStart < b.baseEnd;
-  }
-  if (b.baseStart === b.baseEnd) {
-    return b.baseStart >= a.baseStart && b.baseStart < a.baseEnd;
-  }
-  return a.baseStart < b.baseEnd && b.baseStart < a.baseEnd;
-}
-
-interface MergedPlan {
-  readonly changes: ReadonlyArray<ChangeRange>;
-}
-
-// Changes on a single side come from runs separated by common hunks, so they
-// have strictly ordered, non-overlapping (and distinct) [baseStart, baseEnd)
-// ranges. A twin therefore shares its exact range with exactly one opposite-side
-// change, which means an already-consumed candidate can neither twin nor overlap
-// any other target — no consumed-set filtering is needed here.
-function findIdenticalTwin(
-  target: ChangeRange,
-  candidates: ReadonlyArray<ChangeRange>,
-): ChangeRange | undefined {
-  for (const candidate of candidates) {
-    if (
-      candidate.baseStart === target.baseStart &&
-      candidate.baseEnd === target.baseEnd &&
-      lineArraysEqual(candidate.replacement, target.replacement)
-    ) {
-      return candidate;
-    }
-  }
-  return undefined;
-}
-
-function collidesWithAny(target: ChangeRange, candidates: ReadonlyArray<ChangeRange>): boolean {
-  for (const candidate of candidates) {
-    if (rangesOverlap(target, candidate)) return true;
-  }
-  return false;
-}
-
-function mergePlans(
-  oursChanges: ReadonlyArray<ChangeRange>,
-  theirsChanges: ReadonlyArray<ChangeRange>,
-): MergedPlan | undefined {
-  const out: ChangeRange[] = [];
-  const consumedTheirs = new Set<ChangeRange>();
-
-  for (const oc of oursChanges) {
-    const twin = findIdenticalTwin(oc, theirsChanges);
-    if (twin !== undefined) {
-      consumedTheirs.add(twin);
-      out.push(oc);
-      continue;
-    }
-    if (collidesWithAny(oc, theirsChanges)) return undefined;
-    out.push(oc);
-  }
-  for (const tc of theirsChanges) {
-    if (!consumedTheirs.has(tc)) out.push(tc);
-  }
-  out.sort((a, b) => a.baseStart - b.baseStart);
-  return { changes: out };
-}
-
-function applyPlan(baseLines: ReadonlyArray<Uint8Array>, plan: MergedPlan): Uint8Array[] {
-  const result: Uint8Array[] = [];
-  let cursor = 0;
-  for (const change of plan.changes) {
-    for (let i = cursor; i < change.baseStart; i++) result.push(baseLines[i]!);
-    for (const line of change.replacement) result.push(line);
-    cursor = change.baseEnd;
-  }
-  for (let i = cursor; i < baseLines.length; i++) result.push(baseLines[i]!);
-  return result;
-}
-
-function wholeFileConflict(
-  oursLines: ReadonlyArray<Uint8Array>,
-  theirsLines: ReadonlyArray<Uint8Array>,
+function renderWithMarkers(
+  segments: ReadonlyArray<MergeSegment>,
   options: ConflictMarkerOptions,
 ): ContentMergeResult {
-  const markedBytes = writeConflictMarkers(oursLines, theirsLines, options);
-  return { status: 'conflict', conflictType: 'content', markedBytes };
+  const parts: Uint8Array[] = [];
+  let conflicted = false;
+  for (const segment of segments) {
+    if (segment.kind === 'clean') {
+      parts.push(...segment.lines);
+    } else {
+      conflicted = true;
+      parts.push(writeConflictMarkers(segment.ours, segment.theirs, options));
+    }
+  }
+  const bytes = concatBytes(parts);
+  return conflicted
+    ? { status: 'conflict', conflictType: 'content', markedBytes: bytes }
+    : { status: 'clean', bytes };
 }
 
+function mergeFromDiffs(
+  base: Uint8Array,
+  ours: Uint8Array,
+  theirs: Uint8Array,
+  options: MergeContentOptions,
+): ContentMergeResult {
+  const oursDiff = diffLines(base, ours);
+  const theirsDiff = diffLines(base, theirs);
+  const segments: ReadonlyArray<MergeSegment> =
+    oursDiff.degraded || theirsDiff.degraded
+      ? [{ kind: 'conflict', ours: splitLines(ours), theirs: splitLines(theirs) }]
+      : buildMergeSegments(
+          oursDiff.oursLines,
+          changesFromHunks(oursDiff.hunks, oursDiff.theirsLines),
+          changesFromHunks(theirsDiff.hunks, theirsDiff.theirsLines),
+        );
+  return options.favor === 'union' ? renderUnion(segments) : renderWithMarkers(segments, options);
+}
+
+/**
+ * Three-way line merge. Produces git-faithful per-region output: clean runs are
+ * applied directly, and each overlapping region is rendered by `favor` —
+ * `none` (default) wraps it in conflict markers, `union` concatenates both
+ * sides with no markers (always clean). Binary content and a degraded diff fall
+ * back to a single whole-file region.
+ */
 export function mergeContent(
   base: Uint8Array | undefined,
   ours: Uint8Array,
   theirs: Uint8Array,
-  options: ConflictMarkerOptions = {},
+  options: MergeContentOptions = {},
 ): ContentMergeResult {
   if (isBinary(ours) || isBinary(theirs) || (base !== undefined && isBinary(base))) {
     return { status: 'conflict', conflictType: 'binary', markedBytes: ours };
@@ -176,32 +115,12 @@ export function mergeContent(
 
   if (base === undefined) {
     if (bytesEqual(ours, theirs)) return { status: 'clean', bytes: ours };
-    return wholeFileConflict(splitLines(ours), splitLines(theirs), options);
+    return mergeFromDiffs(new Uint8Array(0), ours, theirs, options);
   }
 
   if (bytesEqual(ours, base)) return { status: 'clean', bytes: theirs };
   if (bytesEqual(theirs, base)) return { status: 'clean', bytes: ours };
   if (bytesEqual(ours, theirs)) return { status: 'clean', bytes: ours };
 
-  const oursDiff = diffLines(base, ours);
-  const theirsDiff = diffLines(base, theirs);
-  if (oursDiff.degraded || theirsDiff.degraded) {
-    return wholeFileConflict(splitLines(ours), splitLines(theirs), options);
-  }
-
-  const oursChanges = changesFromHunks(oursDiff.hunks, oursDiff.theirsLines);
-  const theirsChanges = changesFromHunks(theirsDiff.hunks, theirsDiff.theirsLines);
-  const plan = mergePlans(oursChanges, theirsChanges);
-  if (plan === undefined) {
-    // Conservative whole-file fallback: per-region conflict markers require a lockstep walk
-    // over two independent edit scripts against the same base, correlating overlapping regions
-    // while faithfully emitting clean segments from the correct side. Implementing this safely
-    // needs extensive property tests and interop validation against C git. The whole-file
-    // fallback is correct (never silently drops data) and matches git's behavior for complex
-    // overlapping edits. Per-region output is deferred to a future iteration.
-    return wholeFileConflict(splitLines(ours), splitLines(theirs), options);
-  }
-
-  const mergedLines = applyPlan(oursDiff.oursLines, plan);
-  return { status: 'clean', bytes: concatLines(mergedLines) };
+  return mergeFromDiffs(base, ours, theirs, options);
 }

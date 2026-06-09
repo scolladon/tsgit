@@ -2,6 +2,7 @@ import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 
 import {
+  bytesEqual,
   bytesToHex,
   compareBytes,
   decode,
@@ -226,6 +227,56 @@ describe('encoding', () => {
 
           // Assert
           expect(sut).toBeGreaterThan(0);
+        });
+      });
+    });
+  });
+
+  describe('bytesEqual', () => {
+    describe('Given two byte arrays with identical content', () => {
+      describe('When comparing for equality', () => {
+        it('Then returns true', () => {
+          // Arrange
+          const a = new Uint8Array([0x01, 0x02, 0x03]);
+          const b = new Uint8Array([0x01, 0x02, 0x03]);
+
+          // Act
+          const sut = bytesEqual(a, b);
+
+          // Assert
+          expect(sut).toBe(true);
+        });
+      });
+    });
+
+    describe('Given two byte arrays of different length', () => {
+      describe('When comparing for equality', () => {
+        it('Then returns false without comparing content', () => {
+          // Arrange — b is a strict prefix of a, so the per-byte loop alone would not catch it.
+          const a = new Uint8Array([0x01, 0x02]);
+          const b = new Uint8Array([0x01]);
+
+          // Act
+          const sut = bytesEqual(a, b);
+
+          // Assert
+          expect(sut).toBe(false);
+        });
+      });
+    });
+
+    describe('Given two equal-length arrays differing in one byte', () => {
+      describe('When comparing for equality', () => {
+        it('Then returns false', () => {
+          // Arrange
+          const a = new Uint8Array([0x01, 0x02, 0x03]);
+          const b = new Uint8Array([0x01, 0x09, 0x03]);
+
+          // Act
+          const sut = bytesEqual(a, b);
+
+          // Assert
+          expect(sut).toBe(false);
         });
       });
     });

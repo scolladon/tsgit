@@ -117,9 +117,9 @@ describe('resolveMergeDriver', () => {
     });
   });
 
-  describe('Given merge=union (deferred built-in)', () => {
+  describe('Given merge=union', () => {
     describe('When resolving', () => {
-      it('Then it falls back to the text driver', async () => {
+      it('Then the built-in union driver is chosen', async () => {
         // Arrange
         const ctx = createMemoryContext();
         await seed(ctx, '* merge=union\n');
@@ -128,7 +128,7 @@ describe('resolveMergeDriver', () => {
         const sut = await choose(ctx, 'a.txt');
 
         // Assert
-        expect(sut).toEqual({ kind: 'text' });
+        expect(sut).toEqual({ kind: 'union' });
       });
     });
   });

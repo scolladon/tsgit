@@ -67,6 +67,9 @@ The per-path content merge honours `.gitattributes` `merge=<driver>` selection,
 shared with `stash apply` / `cherry-pick` / `revert` / `rebase`:
 
 - `merge` / `merge=text` (or unspecified) → the built-in 3-way line merge.
+- `merge=union` → the built-in line merge, resolving each overlapping region by
+  keeping **both** sides concatenated (no conflict markers) — git's
+  `XDL_MERGE_FAVOR_UNION`.
 - `-merge` / `merge=binary` (incl. via the `binary` macro) → take *ours* and
   declare a conflict.
 - `merge=<name>` with `[merge "<name>"] driver = <cmd>` in the config → run the
@@ -75,8 +78,7 @@ shared with `stash apply` / `cherry-pick` / `revert` / `rebase`:
 In Node the driver runs by default; pass `openRepository({ command: false })` to
 disable external drivers (they fall back to the built-in merge). The browser /
 memory adapters have no command runner, so external drivers always fall back
-there. `merge=union` is not yet implemented and falls back to the text merge.
-See the [RUNBOOK](../../../RUNBOOK.md) "Operating custom merge drivers" section.
+there. See the [RUNBOOK](../../../RUNBOOK.md) "Operating custom merge drivers" section.
 
 ## State machine — `merge.continue` and `merge.abort`
 

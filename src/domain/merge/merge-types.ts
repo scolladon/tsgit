@@ -67,6 +67,9 @@ export interface ContentMergeContext {
   readonly theirMode: FileMode;
 }
 
+/** How an overlapping region is resolved: `none` → conflict markers, `union` → both sides concatenated. */
+export type MergeFavor = 'none' | 'union';
+
 export interface ConflictMarkerOptions {
   readonly labels?: {
     readonly ours?: string;

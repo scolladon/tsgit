@@ -42,6 +42,13 @@ export function compareBytes(a: Uint8Array, b: Uint8Array): number {
   return a.length - b.length;
 }
 
+export function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.length !== b.length) return false;
+  // Stryker disable next-line EqualityOperator: equivalent — lengths are equal here, so at i===a.length both a[i] and b[i] are undefined and undefined !== undefined is false
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+
 export function indexOf(bytes: Uint8Array, target: number, fromIndex: number): number {
   // Stryker disable next-line EqualityOperator: equivalent — at i=bytes.length, bytes[i] is undefined; `undefined === target` is always false for a numeric target, so the extra iteration changes nothing.
   for (let i = fromIndex; i < bytes.length; i++) {

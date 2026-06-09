@@ -1,3 +1,5 @@
+import { bytesEqual } from '../objects/encoding.js';
+
 export interface LineHunk {
   readonly kind: 'common' | 'ours-only' | 'theirs-only';
   readonly oursStart: number;
@@ -70,15 +72,6 @@ export function isBinary(bytes: Uint8Array): boolean {
   return hasNulInWindow(bytes) || exceedsLineCaps(bytes);
 }
 
-function linesEqual(a: Uint8Array, b: Uint8Array): boolean {
-  if (a.length !== b.length) return false;
-  // Stryker disable next-line EqualityOperator: equivalent — lengths are equal here, so at i===a.length both a[i] and b[i] are undefined and undefined !== undefined is false
-  for (let i = 0; i < a.length; i++) {
-    if (a[i] !== b[i]) return false;
-  }
-  return true;
-}
-
 type Edit = 'equal' | 'delete' | 'insert';
 
 interface MyersResult {
@@ -109,7 +102,7 @@ function advanceSnake(
   while (
     x < oursLines.length &&
     y < theirsLines.length &&
-    linesEqual(oursLines[x]!, theirsLines[y]!)
+    bytesEqual(oursLines[x]!, theirsLines[y]!)
   ) {
     x++;
     y++;
