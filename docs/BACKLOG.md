@@ -325,9 +325,9 @@ Three waves, ordered by cohesion + structural risk: repo topology first (structu
 ### Wave C — Utilities (leaf, low-coupling)
 
 - [ ] **24.3** `fsck` — repository integrity check.
-- [ ] **24.4** `archive` — tar/zip export of a tree.
+- [ ] **24.4** `archive` — export a tree. **Library surface is the structured tree→entry stream** (per entry: path, mode, oid, blob bytes); the tar/zip byte **framing is a thin, separable serializer** (a data-interchange format, not human display per ADR-249), kept isolated so a consumer can swap in its own container. Don't bake rendering concerns (prefix, compression level, mtime) into the data surface.
 - [ ] **24.5** `bundle` — create / verify / list-heads.
-- [ ] **24.6** `bisect` — binary search.
+- [ ] **24.6** `bisect` — **expose only the pure midpoint primitive**: given the good/bad reachable-commit sets, return the next commit to test + the remaining steps (git's bisection halving over the reachable set). The good/bad **verdict** and the stateful session porcelain (`start`/`good`/`bad`/`skip`/`reset`/`run`, the `BISECT_*` + `refs/bisect/*` state files) stay the **consumer's** — driving the bisect loop is orchestration, not a data-library surface.
 - [ ] **24.7** `notes` — add / read / list / remove on `refs/notes/*`.
 
 Deferred from **24.9** (custom merge drivers), in dependency order:
