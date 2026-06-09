@@ -115,13 +115,14 @@ export interface Context {
    */
   readonly promisor?: PromisorRemote;
   /**
-   * Optional facade capability returning a `FileSystem` confined to a linked
-   * worktree path AND the common dir (ADR-298). The worktree commands route
-   * worktree-directory I/O through it so worktrees outside `workDir` stay
-   * faithful without dropping containment. Absent on sandboxed adapters
-   * (memory/browser), where worktrees are confined under the adapter root.
+   * Optional facade capability returning a `FileSystem` confined to one or more
+   * linked worktree paths AND the common dir (ADR-298). The worktree commands
+   * route worktree-directory I/O through it so worktrees outside `workDir` stay
+   * faithful without dropping containment (`move` passes both endpoints). Absent
+   * on sandboxed adapters (memory/browser), where worktrees are confined under
+   * the adapter root.
    */
-  readonly worktreeFs?: (worktreePath: string) => FileSystem;
+  readonly worktreeFs?: (worktreePath: string | ReadonlyArray<string>) => FileSystem;
 }
 
 export interface CreateContextParts {

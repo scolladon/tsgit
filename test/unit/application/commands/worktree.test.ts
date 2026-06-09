@@ -4,7 +4,13 @@ import { add } from '../../../../src/application/commands/add.js';
 import { branchCreate } from '../../../../src/application/commands/branch.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
-import { worktreeAdd, worktreeList } from '../../../../src/application/commands/worktree.js';
+import {
+  worktreeAdd,
+  worktreeList,
+  worktreeMove,
+  worktreeRemove,
+} from '../../../../src/application/commands/worktree.js';
+import { resolveRef } from '../../../../src/application/primitives/resolve-ref.js';
 import { TsgitError } from '../../../../src/domain/error.js';
 import type { AuthorIdentity, ObjectId, RefName } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
@@ -199,6 +205,143 @@ describe('worktreeAdd', () => {
           () => worktreeAdd(ctx, { path: 'wt7', commitish: 'main' }),
           'BRANCH_CHECKED_OUT',
         );
+      });
+    });
+  });
+});
+
+describe('worktreeMove', () => {
+  describe('Given a linked worktree', () => {
+    describe('When worktreeMove runs', () => {
+      it('Then it relocates the dir and re-points the admin gitdir', async () => {
+        // Arrange
+        const { ctx } = await seedWithCommit();
+        const added = await worktreeAdd(ctx, { path: 'wm' });
+
+        // Act
+        const result = await worktreeMove(ctx, 'wm', 'wm-moved');
+
+        // Assert
+        expect(result).toEqual({ from: '/repo/wm', to: '/repo/wm-moved', id: added.id });
+        expect(await ctx.fs.readUtf8(adminFile(ctx, added.id, 'gitdir'))).toBe(
+          '/repo/wm-moved/.git\n',
+        );
+        expect(await ctx.fs.exists('/repo/wm-moved/a.txt')).toBe(true);
+        expect(await ctx.fs.exists('/repo/wm/.git')).toBe(false);
+      });
+    });
+  });
+
+  describe('Given the main worktree', () => {
+    describe('When worktreeMove runs', () => {
+      it('Then it refuses with INVALID_OPTION', async () => {
+        // Arrange
+        const { ctx } = await seedWithCommit();
+
+        // Act & Assert
+        await expectError(() => worktreeMove(ctx, ctx.layout.workDir, 'x'), 'INVALID_OPTION');
+      });
+    });
+  });
+
+  describe('Given a path that is not a worktree', () => {
+    describe('When worktreeMove runs', () => {
+      it('Then it refuses with NOT_A_WORKTREE', async () => {
+        // Arrange
+        const { ctx } = await seedWithCommit();
+
+        // Act & Assert
+        await expectError(() => worktreeMove(ctx, 'nope', 'x'), 'NOT_A_WORKTREE');
+      });
+    });
+  });
+
+  describe('Given a locked worktree', () => {
+    describe('When worktreeMove runs without force', () => {
+      it('Then it refuses with WORKTREE_LOCKED', async () => {
+        // Arrange
+        const { ctx } = await seedWithCommit();
+        const added = await worktreeAdd(ctx, { path: 'wm2' });
+        await ctx.fs.writeUtf8(adminFile(ctx, added.id, 'locked'), '');
+
+        // Act & Assert
+        await expectError(() => worktreeMove(ctx, 'wm2', 'wm2-moved'), 'WORKTREE_LOCKED');
+      });
+    });
+  });
+
+  describe('Given a non-empty destination', () => {
+    describe('When worktreeMove runs', () => {
+      it('Then it refuses with WORKTREE_PATH_EXISTS', async () => {
+        // Arrange
+        const { ctx } = await seedWithCommit();
+        await worktreeAdd(ctx, { path: 'wm3' });
+        await ctx.fs.writeUtf8('/repo/dest/keep.txt', 'x');
+
+        // Act & Assert
+        await expectError(() => worktreeMove(ctx, 'wm3', 'dest'), 'WORKTREE_PATH_EXISTS');
+      });
+    });
+  });
+});
+
+describe('worktreeRemove', () => {
+  describe('Given a clean linked worktree', () => {
+    describe('When worktreeRemove runs', () => {
+      it('Then it deletes the dir + admin dir and leaves the branch', async () => {
+        // Arrange
+        const { ctx } = await seedWithCommit();
+        const added = await worktreeAdd(ctx, { path: 'wr' });
+
+        // Act
+        const result = await worktreeRemove(ctx, 'wr');
+
+        // Assert
+        expect(result.id).toBe(added.id);
+        expect(await ctx.fs.exists('/repo/wr')).toBe(false);
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/worktrees/${added.id}`)).toBe(false);
+        await expect(resolveRef(ctx, 'refs/heads/wr' as RefName)).resolves.toBeDefined();
+      });
+    });
+  });
+
+  describe('Given a worktree with an untracked file', () => {
+    describe('When worktreeRemove runs without force', () => {
+      it('Then it refuses with WORKTREE_DIRTY', async () => {
+        // Arrange
+        const { ctx } = await seedWithCommit();
+        await worktreeAdd(ctx, { path: 'wr2' });
+        await ctx.fs.writeUtf8('/repo/wr2/extra.txt', 'untracked');
+
+        // Act & Assert
+        await expectError(() => worktreeRemove(ctx, 'wr2'), 'WORKTREE_DIRTY');
+      });
+    });
+
+    describe('When worktreeRemove runs with force', () => {
+      it('Then it removes the worktree anyway', async () => {
+        // Arrange
+        const { ctx } = await seedWithCommit();
+        await worktreeAdd(ctx, { path: 'wr3' });
+        await ctx.fs.writeUtf8('/repo/wr3/extra.txt', 'untracked');
+
+        // Act
+        await worktreeRemove(ctx, 'wr3', { force: true });
+
+        // Assert
+        expect(await ctx.fs.exists('/repo/wr3')).toBe(false);
+      });
+    });
+  });
+
+  describe('Given the main worktree', () => {
+    describe('When worktreeRemove runs', () => {
+      it('Then it refuses with INVALID_OPTION', async () => {
+        // Arrange
+        const { ctx } = await seedWithCommit();
+
+        // Act & Assert
+        await expectError(() => worktreeRemove(ctx, ctx.layout.workDir), 'INVALID_OPTION');
       });
     });
   });

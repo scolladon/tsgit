@@ -333,14 +333,15 @@ export const openRepository = async (
   // The facade opens a main/normal repo (linked-worktree discovery is deferred,
   // ADR-296), so its common dir is the gitDir.
   const commonDir = fallback.layout.gitDir;
-  const worktreeFs = (worktreePath: string): FileSystem =>
-    opts.unsafeRawAdapters === true
-      ? detected.fs
-      : wrapFsValidator(
-          detected.fs,
-          [worktreePath, commonDir],
-          computeConfigScopePaths(detected.fs),
-        );
+  const worktreeFs = (worktreePath: string | ReadonlyArray<string>): FileSystem => {
+    if (opts.unsafeRawAdapters === true) return detected.fs;
+    const paths = typeof worktreePath === 'string' ? [worktreePath] : worktreePath;
+    return wrapFsValidator(
+      detected.fs,
+      [...paths, commonDir],
+      computeConfigScopePaths(detected.fs),
+    );
+  };
   const config = opts.config !== undefined ? deepFreeze({ ...opts.config }) : undefined;
   const controller = new AbortController();
   const signal =

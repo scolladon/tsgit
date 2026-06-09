@@ -74,6 +74,7 @@ describe('listWorktrees', () => {
 
         // Assert
         expect(result[1]).toEqual({
+          id: 'wt',
           path: '/repo/wts/wt',
           head: OID_WT,
           branch: 'refs/heads/wt',
@@ -100,6 +101,7 @@ describe('listWorktrees', () => {
 
         // Assert
         expect(result[1]).toEqual({
+          id: 'det',
           path: '/repo/wts/det',
           head: OID_WT,
           detached: true,

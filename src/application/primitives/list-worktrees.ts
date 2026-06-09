@@ -15,6 +15,8 @@ const GIT_SUFFIX = '/.git';
 const PRUNABLE_REASON = 'gitdir file points to non-existent location';
 
 export interface WorktreeEntry {
+  /** Admin-directory id (`<commonDir>/worktrees/<id>`); absent for the main worktree. */
+  readonly id?: string;
   /** Absolute worktree path. */
   readonly path: FilePath;
   /** HEAD commit oid; absent for an unborn branch or a bare main worktree. */
@@ -72,7 +74,7 @@ const readLocked = async (
 };
 
 /** Build the entry for one linked worktree from its admin dir. */
-const linkedEntry = async (ctx: Context, adminDir: string): Promise<WorktreeEntry> => {
+const linkedEntry = async (ctx: Context, id: string, adminDir: string): Promise<WorktreeEntry> => {
   const gitdirPointer = (await ctx.fs.readUtf8(`${adminDir}/gitdir`)).trim();
   const path = (
     gitdirPointer.endsWith(GIT_SUFFIX) ? gitdirPointer.slice(0, -GIT_SUFFIX.length) : gitdirPointer
@@ -86,6 +88,7 @@ const linkedEntry = async (ctx: Context, adminDir: string): Promise<WorktreeEntr
     ? undefined
     : { reason: PRUNABLE_REASON };
   return {
+    id,
     path,
     bare: false,
     main: false,
@@ -105,7 +108,7 @@ export const listWorktrees = async (ctx: Context): Promise<ReadonlyArray<Worktre
   const linked: WorktreeEntry[] = [];
   for (const dir of await ctx.fs.readdir(root)) {
     if (!dir.isDirectory) continue;
-    linked.push(await linkedEntry(ctx, `${root}/${dir.name}`));
+    linked.push(await linkedEntry(ctx, dir.name, `${root}/${dir.name}`));
   }
   linked.sort(byPath);
   return [main, ...linked];

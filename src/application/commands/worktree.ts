@@ -7,6 +7,8 @@
  * rendered table. The namespace binder lives in
  * `internal/worktree-namespace.ts`.
  */
+
+import { invalidOption } from '../../domain/commands/error.js';
 import {
   type FilePath,
   type ObjectId,
@@ -21,7 +23,13 @@ import {
   worktreeHeadContent,
 } from '../../domain/worktree/admin-files.js';
 import { worktreeAdminId } from '../../domain/worktree/admin-id.js';
-import { branchCheckedOut, worktreePathExists } from '../../domain/worktree/error.js';
+import {
+  branchCheckedOut,
+  notAWorktree,
+  worktreeDirty,
+  worktreeLocked,
+  worktreePathExists,
+} from '../../domain/worktree/error.js';
 import { resolveWorktreePath, worktreePathBasename } from '../../domain/worktree/resolve-path.js';
 import type { Context } from '../../ports/context.js';
 import type { FileSystem } from '../../ports/file-system.js';
@@ -37,6 +45,7 @@ import { getRefStore } from '../primitives/ref-store.js';
 import { branchCreate } from './branch.js';
 import { assertRepository } from './internal/repo-state.js';
 import { resolveCommit } from './internal/resolve-rev.js';
+import { status } from './status.js';
 
 export type { WorktreeEntry };
 
@@ -86,8 +95,8 @@ type CheckoutMode = { readonly kind: 'checkout'; readonly branchRef: RefName };
 type DetachedMode = { readonly kind: 'detached' };
 type AddMode = CreateMode | CheckoutMode | DetachedMode;
 
-/** The fs confined to a worktree path + the common dir (ADR-298). */
-const worktreeFsFor = (ctx: Context, worktreePath: string): FileSystem =>
+/** The fs confined to one or more worktree paths + the common dir (ADR-298). */
+const worktreeFsFor = (ctx: Context, worktreePath: string | ReadonlyArray<string>): FileSystem =>
   ctx.worktreeFs?.(worktreePath) ?? ctx.fs;
 
 /** Refuse when the target directory already exists and is not empty. */
@@ -227,4 +236,101 @@ export const worktreeAdd = async (
     detached: mode.kind === 'detached',
     ...(mode.kind !== 'detached' ? { branch: mode.branchRef } : {}),
   };
+};
+
+/** A linked worktree entry resolved by path (carries its admin id). */
+interface LinkedWorktree extends WorktreeEntry {
+  readonly id: string;
+}
+
+/**
+ * Resolve the linked worktree at `worktreePath`. Refuses the main worktree
+ * (`INVALID_OPTION`) and an unknown path (`NOT_A_WORKTREE`).
+ */
+const resolveLinked = async (
+  ctx: Context,
+  worktreePath: string,
+  verb: string,
+): Promise<LinkedWorktree> => {
+  const entry = (await listWorktrees(ctx)).find((candidate) => candidate.path === worktreePath);
+  if (entry === undefined) throw notAWorktree(worktreePath);
+  if (entry.main || entry.id === undefined) {
+    throw invalidOption(`worktree ${verb}`, 'cannot operate on the main working tree');
+  }
+  return entry as LinkedWorktree;
+};
+
+/** Refuse a locked worktree unless forced. */
+const assertUnlocked = (entry: WorktreeEntry, force: boolean): void => {
+  if (entry.locked !== undefined && !force) throw worktreeLocked(entry.path, entry.locked.reason);
+};
+
+export interface WorktreeMoveOptions {
+  /** Move even when the worktree is locked. */
+  readonly force?: boolean;
+}
+
+export interface WorktreeMoveResult {
+  readonly from: FilePath;
+  readonly to: FilePath;
+  readonly id: string;
+}
+
+/**
+ * Relocate a linked worktree (`git worktree move`). Renames the worktree
+ * directory and re-points the admin `gitdir` file at the new `.git` location;
+ * the `.git` gitfile itself moves with the directory and still points at the
+ * (unchanged) admin dir. Refuses a locked worktree (without force), a non-empty
+ * destination, the main worktree, or a non-worktree source.
+ */
+export const worktreeMove = async (
+  ctx: Context,
+  from: string,
+  to: string,
+  opts: WorktreeMoveOptions = {},
+): Promise<WorktreeMoveResult> => {
+  await assertRepository(ctx);
+  const fromPath = resolveWorktreePath(ctx.cwd, from) as FilePath;
+  const toPath = resolveWorktreePath(ctx.cwd, to) as FilePath;
+  const entry = await resolveLinked(ctx, fromPath, 'move');
+  assertUnlocked(entry, opts.force === true);
+  await assertTargetFree(ctx, toPath);
+  await worktreeFsFor(ctx, [fromPath, toPath]).rename(fromPath, toPath);
+  const admin = `${commonGitDir(ctx)}/worktrees/${entry.id}`;
+  await ctx.fs.writeUtf8(`${admin}/gitdir`, `${worktreeGitdirPointer(toPath)}\n`);
+  return { from: fromPath, to: toPath, id: entry.id };
+};
+
+export interface WorktreeRemoveOptions {
+  /** Remove even when the worktree is dirty or locked. */
+  readonly force?: boolean;
+}
+
+export interface WorktreeRemoveResult {
+  readonly path: FilePath;
+  readonly id: string;
+}
+
+/**
+ * Remove a linked worktree (`git worktree remove`). Refuses a locked worktree or
+ * one with modified/untracked files (without force), then deletes the worktree
+ * directory and its admin dir. The branch is left intact. Refuses the main
+ * worktree or a non-worktree path.
+ */
+export const worktreeRemove = async (
+  ctx: Context,
+  path: string,
+  opts: WorktreeRemoveOptions = {},
+): Promise<WorktreeRemoveResult> => {
+  await assertRepository(ctx);
+  const worktreePath = resolveWorktreePath(ctx.cwd, path) as FilePath;
+  const entry = await resolveLinked(ctx, worktreePath, 'remove');
+  assertUnlocked(entry, opts.force === true);
+  if (opts.force !== true) {
+    const child = deriveWorktreeContext(ctx, entry.id, worktreePath);
+    if (!(await status(child)).clean) throw worktreeDirty(worktreePath);
+  }
+  await worktreeFsFor(ctx, worktreePath).rmRecursive(worktreePath);
+  await ctx.fs.rmRecursive(`${commonGitDir(ctx)}/worktrees/${entry.id}`);
+  return { path: worktreePath, id: entry.id };
 };

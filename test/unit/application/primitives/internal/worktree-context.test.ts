@@ -28,10 +28,10 @@ describe('deriveWorktreeContext', () => {
         // Arrange
         const base = createMemoryContext();
         const marker = { marker: true } as never;
-        const calls: string[] = [];
+        const calls: Array<string | ReadonlyArray<string>> = [];
         const parent = {
           ...base,
-          worktreeFs: (p: string) => {
+          worktreeFs: (p: string | ReadonlyArray<string>) => {
             calls.push(p);
             return marker;
           },
