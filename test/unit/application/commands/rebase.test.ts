@@ -2004,6 +2004,8 @@ describe('rebase — hooks', () => {
 
         // Assert
         expect(sut.kind).toBe('rebased');
+        // An interactive rebase always does work, so pre-rebase fires too.
+        expect(runner.calls.some((call) => call.name === 'pre-rebase')).toBe(true);
         const postRewrite = runner.calls.filter((call) => call.name === 'post-rewrite');
         expect(postRewrite).toHaveLength(1);
         expect(postRewrite[0]?.args).toEqual(['rebase']);
@@ -2030,9 +2032,10 @@ describe('rebase — hooks', () => {
         // Act
         const sut = await rebaseRun(ctx, { upstream: 'main' });
 
-        // Assert
+        // Assert — git fires neither pre-rebase nor post-rewrite on a no-op rebase.
         expect(sut.kind).toBe('up-to-date');
         expect(runner.calls.some((call) => call.name === 'post-rewrite')).toBe(false);
+        expect(runner.calls.some((call) => call.name === 'pre-rebase')).toBe(false);
       });
     });
   });

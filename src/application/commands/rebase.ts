@@ -376,6 +376,14 @@ const finishRebase = async (
 };
 
 /**
+ * Fire the blocking `pre-rebase` hook (a non-zero exit throws `HOOK_FAILED`,
+ * vetoing the rebase before any ref moves). git passes `<upstream> [<branch>]`;
+ * tsgit always rebases the current HEAD, so only the upstream operand is sent.
+ */
+const firePreRebase = (ctx: Context, upstream: string): Promise<void> =>
+  runHook(ctx, 'pre-rebase', { args: [upstream] });
+
+/**
  * Fire the informational `post-rewrite` hook once a rebase finishes, feeding it
  * git's `<old> SP <new> LF` lines on stdin — the same bytes as the
  * `rewritten-list` state file. A no-op when nothing was rewritten (git fires it
@@ -438,14 +446,14 @@ export const rebaseRun = async (ctx: Context, input: RebaseRunInput): Promise<Re
   const onto = input.onto !== undefined ? await resolveCommitIsh(ctx, input.onto) : upstream;
   const ontoName = input.onto ?? input.upstream;
   await assertCleanWorkTree(ctx, await treeOf(ctx, headCommit));
-  // pre-rebase can veto the rebase (a non-zero exit throws HOOK_FAILED) before
-  // any ref moves; fired here so it guards both the plain and interactive paths.
-  await runHook(ctx, 'pre-rebase', { args: [input.upstream] });
   // No common ancestor (unrelated histories) → `base` is undefined and the whole
   // branch replays onto `onto`, the root commit against the empty-tree base —
   // faithful to `git rebase <unrelated>`.
   const [base] = await mergeBase(ctx, [upstream, headCommit]);
   if (input.interactive !== undefined) {
+    // An interactive rebase always has todo work (the caller supplies it), so it
+    // is never the no-op "up to date" case — pre-rebase fires.
+    await firePreRebase(ctx, input.upstream);
     return rebaseRunInteractive(ctx, {
       instructions: input.interactive,
       branch,
@@ -456,7 +464,10 @@ export const rebaseRun = async (ctx: Context, input: RebaseRunInput): Promise<Re
       base,
     });
   }
+  // git fires pre-rebase only when the rebase will do work; an up-to-date rebase
+  // (nothing to replay or fast-forward) returns before the hook, matching git.
   if (onto === base) return { kind: 'up-to-date' };
+  await firePreRebase(ctx, input.upstream);
   const toReplay = await commitsToReplay(ctx, base, headCommit);
   const kept = await dropCherryEquivalents(ctx, toReplay, base, upstream);
   const todo = await buildTodoEntries(ctx, kept);
