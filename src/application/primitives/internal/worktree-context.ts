@@ -1,5 +1,17 @@
 import type { Context } from '../../../ports/context.js';
+import type { FileSystem } from '../../../ports/file-system.js';
 import { commonGitDir } from '../path-layout.js';
+
+/**
+ * The filesystem to use for worktree-directory I/O: the facade's worktree-fs
+ * capability confined to `worktreePath` + the common dir (ADR-298), falling back
+ * to the parent fs on sandboxed adapters (memory/browser) that confine worktrees
+ * under their root. The single source for routing out-of-workDir worktree I/O.
+ */
+export const worktreeScopedFs = (
+  ctx: Context,
+  worktreePath: string | ReadonlyArray<string>,
+): FileSystem => ctx.worktreeFs?.(worktreePath) ?? ctx.fs;
 
 /**
  * Build a child `Context` for the linked worktree whose admin dir is
@@ -25,7 +37,7 @@ export const deriveWorktreeContext = (
     // The child reaches both the worktree path (working-tree files) and the
     // common dir (objects/admin); `worktreeFs` confines it to exactly those
     // (ADR-298). Falls back to the parent fs on sandboxed adapters.
-    fs: ctx.worktreeFs?.(absWorktreePath) ?? ctx.fs,
+    fs: worktreeScopedFs(ctx, absWorktreePath),
     layout: Object.freeze({
       workDir: absWorktreePath,
       gitDir,

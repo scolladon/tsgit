@@ -32,9 +32,11 @@ import {
 } from '../../domain/worktree/error.js';
 import { resolveWorktreePath, worktreePathBasename } from '../../domain/worktree/resolve-path.js';
 import type { Context } from '../../ports/context.js';
-import type { FileSystem } from '../../ports/file-system.js';
 import { acquireIndexLock } from '../primitives/internal/index-lock.js';
-import { deriveWorktreeContext } from '../primitives/internal/worktree-context.js';
+import {
+  deriveWorktreeContext,
+  worktreeScopedFs,
+} from '../primitives/internal/worktree-context.js';
 import { listWorktrees, type WorktreeEntry } from '../primitives/list-worktrees.js';
 import { materializeTree } from '../primitives/materialize-tree.js';
 import { commonGitDir } from '../primitives/path-layout.js';
@@ -95,13 +97,9 @@ type CheckoutMode = { readonly kind: 'checkout'; readonly branchRef: RefName };
 type DetachedMode = { readonly kind: 'detached' };
 type AddMode = CreateMode | CheckoutMode | DetachedMode;
 
-/** The fs confined to one or more worktree paths + the common dir (ADR-298). */
-const worktreeFsFor = (ctx: Context, worktreePath: string | ReadonlyArray<string>): FileSystem =>
-  ctx.worktreeFs?.(worktreePath) ?? ctx.fs;
-
 /** Refuse when the target directory already exists and is not empty. */
 const assertTargetFree = async (ctx: Context, worktreePath: string): Promise<void> => {
-  const wfs = worktreeFsFor(ctx, worktreePath);
+  const wfs = worktreeScopedFs(ctx, worktreePath);
   if (!(await wfs.exists(worktreePath))) return;
   if ((await wfs.readdir(worktreePath)).length > 0) throw worktreePathExists(worktreePath);
 };
@@ -164,7 +162,7 @@ const writeAdmin = async (
   await ctx.fs.writeUtf8(`${admin}/gitdir`, `${worktreeGitdirPointer(worktreePath)}\n`);
   await ctx.fs.writeUtf8(`${admin}/HEAD`, `${worktreeHeadContent(head)}\n`);
   await ctx.fs.writeUtf8(`${admin}/ORIG_HEAD`, `${oid}\n`);
-  await worktreeFsFor(ctx, worktreePath).writeUtf8(
+  await worktreeScopedFs(ctx, worktreePath).writeUtf8(
     `${worktreePath}/.git`,
     `${worktreeGitfile(admin)}\n`,
   );
@@ -302,7 +300,7 @@ export const worktreeMove = async (
   const entry = await resolveLinked(ctx, fromPath, 'move');
   assertUnlocked(entry, opts.force === true);
   await assertTargetFree(ctx, toPath);
-  await worktreeFsFor(ctx, [fromPath, toPath]).rename(fromPath, toPath);
+  await worktreeScopedFs(ctx, [fromPath, toPath]).rename(fromPath, toPath);
   const admin = `${commonGitDir(ctx)}/worktrees/${entry.id}`;
   await ctx.fs.writeUtf8(`${admin}/gitdir`, `${worktreeGitdirPointer(toPath)}\n`);
   return { from: fromPath, to: toPath, id: entry.id };
@@ -337,7 +335,7 @@ export const worktreeRemove = async (
     const child = deriveWorktreeContext(ctx, entry.id, worktreePath);
     if (!(await status(child)).clean) throw worktreeDirty(worktreePath);
   }
-  await worktreeFsFor(ctx, worktreePath).rmRecursive(worktreePath);
+  await worktreeScopedFs(ctx, worktreePath).rmRecursive(worktreePath);
   await ctx.fs.rmRecursive(`${commonGitDir(ctx)}/worktrees/${entry.id}`);
   return { path: worktreePath, id: entry.id };
 };

@@ -8,6 +8,7 @@ import type { ObjectId, RefName } from '../../domain/objects/index.js';
 import type { FilePath } from '../../domain/objects/object-id.js';
 import { parseLooseRef } from '../../domain/refs/index.js';
 import type { Context } from '../../ports/context.js';
+import { worktreeScopedFs } from './internal/worktree-context.js';
 import { commonGitDir } from './path-layout.js';
 import { getRefStore } from './ref-store.js';
 
@@ -83,7 +84,7 @@ const linkedEntry = async (ctx: Context, id: string, adminDir: string): Promise<
   const locked = await readLocked(ctx, adminDir);
   // The worktree dir lives outside workDir, so probe it through the worktree fs
   // (confined to the worktree path + common dir; ADR-298).
-  const worktreeFs = ctx.worktreeFs?.(path) ?? ctx.fs;
+  const worktreeFs = worktreeScopedFs(ctx, path);
   const prunable = (await worktreeFs.exists(gitdirPointer))
     ? undefined
     : { reason: PRUNABLE_REASON };
