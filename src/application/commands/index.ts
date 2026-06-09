@@ -128,6 +128,10 @@ export {
   type SubmoduleNamespace,
 } from './internal/submodule-namespace.js';
 export { bindTagNamespace, type TagNamespace } from './internal/tag-namespace.js';
+export {
+  bindWorktreeNamespace,
+  type WorktreeNamespace,
+} from './internal/worktree-namespace.js';
 export { type LogEntry, type LogOptions, log } from './log.js';
 export { type MergeResult, type MergeRunInput, mergeRun } from './merge.js';
 export {
@@ -309,3 +313,17 @@ export {
   type WhatchangedOptions,
   whatchanged,
 } from './whatchanged.js';
+export {
+  type WorktreeAddOptions,
+  type WorktreeAddResult,
+  type WorktreeEntry,
+  type WorktreeListResult,
+  type WorktreeMoveOptions,
+  type WorktreeMoveResult,
+  type WorktreeRemoveOptions,
+  type WorktreeRemoveResult,
+  worktreeAdd,
+  worktreeList,
+  worktreeMove,
+  worktreeRemove,
+} from './worktree.js';

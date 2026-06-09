@@ -20,6 +20,14 @@ export interface RepositoryLayout {
   readonly workDir: string;
   /** Absolute path to the.git directory (usually `${workDir}/.git`, but may differ for bare repos or worktrees). */
   readonly gitDir: string;
+  /**
+   * Absolute path to the shared **common** git dir — objects, `packed-refs`,
+   * `config`, and shared refs/reflogs. Absent for a normal repo or the main
+   * worktree (it equals `gitDir`); set only for a linked worktree, whose
+   * `gitDir` is its own admin dir while shared state lives here. Resolve via
+   * `commonGitDir(ctx)` rather than reading this field directly.
+   */
+  readonly commonDir?: string;
   /** Whether this is a bare repository. */
   readonly bare: boolean;
   /**
@@ -106,6 +114,15 @@ export interface Context {
    * `readObject` consults it to lazy-fetch an object a partial clone omitted.
    */
   readonly promisor?: PromisorRemote;
+  /**
+   * Optional facade capability returning a `FileSystem` confined to one or more
+   * linked worktree paths AND the common dir (ADR-298). The worktree commands
+   * route worktree-directory I/O through it so worktrees outside `workDir` stay
+   * faithful without dropping containment (`move` passes both endpoints). Absent
+   * on sandboxed adapters (memory/browser), where worktrees are confined under
+   * the adapter root.
+   */
+  readonly worktreeFs?: (worktreePath: string | ReadonlyArray<string>) => FileSystem;
 }
 
 export interface CreateContextParts {

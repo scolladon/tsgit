@@ -136,6 +136,14 @@ export interface RuntimeFallback {
   readonly layout: RepositoryLayoutInput;
   readonly hashConfig: Context['hashConfig'];
   readonly deltaCache: Context['deltaCache'];
+  /**
+   * Build a raw (adapter-level) `FileSystem` able to reach `worktreePaths`
+   * (which may lie outside `workDir`) as well as the repository itself — for the
+   * worktree containment escape (ADR-298). The node shim roots a fresh adapter
+   * at the common ancestor of the workDir and the worktree paths; sandboxed
+   * runtimes (memory/browser) omit it and fall back to the repo-rooted fs.
+   */
+  readonly makeWorktreeFs?: (worktreePaths: ReadonlyArray<string>) => FileSystem;
 }
 
 /**
@@ -223,6 +231,8 @@ export interface Repository {
   /** Nested `repo.tag.{list,create,delete}` namespace. */
   readonly tag: commands.TagNamespace;
   readonly whatchanged: BindCtx<typeof commands.whatchanged>;
+  /** Nested `repo.worktree.{list,add,move,remove}` namespace. */
+  readonly worktree: commands.WorktreeNamespace;
 
   // Tier-2 primitives (21) — bound under .primitives.* to keep the top-level
   // surface focused on user-facing commands.
@@ -326,6 +336,22 @@ export const openRepository = async (
           ),
           transport: wrapTransportValidator(detected.transport, opts.config),
         };
+  // ADR-298: a linked worktree lives outside workDir and a worktree Context must
+  // reach BOTH the worktree path and the common dir. `worktreeFs` asks the
+  // runtime for a raw fs wide enough to reach the worktree paths (the node shim
+  // roots a fresh adapter at the common ancestor), then confines it with a
+  // multi-root validator to exactly those subtrees (or returns the raw fs when
+  // containment is opted out). The facade opens a main/normal repo
+  // (linked-worktree discovery is deferred, ADR-296), so its common dir is the
+  // gitDir.
+  const commonDir = fallback.layout.gitDir;
+  const worktreeFs = (worktreePath: string | ReadonlyArray<string>): FileSystem => {
+    const paths = typeof worktreePath === 'string' ? [worktreePath] : worktreePath;
+    const roots = [...paths, commonDir];
+    const raw = fallback.makeWorktreeFs?.(roots) ?? detected.fs;
+    if (opts.unsafeRawAdapters === true) return raw;
+    return wrapFsValidator(raw, roots, computeConfigScopePaths(raw));
+  };
   const config = opts.config !== undefined ? deepFreeze({ ...opts.config }) : undefined;
   const controller = new AbortController();
   const signal =
@@ -345,6 +371,7 @@ export const openRepository = async (
     hashConfig: fallback.hashConfig,
     deltaCache: fallback.deltaCache,
     signal,
+    worktreeFs,
   };
   const sanitizedLogger = opts.logger !== undefined ? wrapLoggerSanitizer(opts.logger) : undefined;
   // `false` fully disables hooks; otherwise an explicit runner overrides the
@@ -532,6 +559,7 @@ export const openRepository = async (
       guard();
       return commands.whatchanged(ctx, opts);
     }) as Repository['whatchanged'],
+    worktree: commands.bindWorktreeNamespace(ctx, guard),
     primitives: Object.freeze({
       catFileBatch: ((ids, options) => {
         guard();

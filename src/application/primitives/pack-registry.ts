@@ -6,7 +6,7 @@ import type { ObjectId } from '../../domain/objects/index.js';
 import { invalidPackIndex } from '../../domain/storage/error.js';
 import { lookupPackIndex, type PackIndex, parsePackIndex } from '../../domain/storage/index.js';
 import type { Context } from '../../ports/context.js';
-import { packsDir } from './path-layout.js';
+import { commonGitDir, packsDir } from './path-layout.js';
 import { exceedsMaxPackIdxBytes, REASON_PACK_IDX_EXCEEDS_MAX } from './validators.js';
 
 export interface RegisteredPack {
@@ -65,7 +65,7 @@ export function createPackRegistry(ctx: Context): PackRegistry {
 
   async function loadAll(): Promise<ReadonlyArray<RegisteredPack>> {
     if (cache !== undefined) return cache;
-    const dir = packsDir(ctx.layout.gitDir);
+    const dir = packsDir(commonGitDir(ctx));
     if (!(await ctx.fs.exists(dir))) {
       cache = [];
       return cache;

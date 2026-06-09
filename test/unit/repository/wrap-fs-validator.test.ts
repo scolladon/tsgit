@@ -37,6 +37,33 @@ const expectOutside = async (fn: () => Promise<unknown>): Promise<void> => {
   }
 };
 
+describe('wrapFsValidator — multiple roots', () => {
+  describe('Given two containment roots', () => {
+    describe('When a path under the second root is read', () => {
+      it('Then it delegates without throwing', async () => {
+        // Arrange
+        const fs = stubFs();
+        const sut = wrapFsValidator(fs, ['/repo/.git', '/elsewhere/wt']);
+
+        // Act + Assert
+        await expect(sut.read('/elsewhere/wt/file')).resolves.toBeInstanceOf(Uint8Array);
+        await expect(sut.read('/repo/.git/objects/x')).resolves.toBeInstanceOf(Uint8Array);
+      });
+    });
+
+    describe('When a path under neither root is read', () => {
+      it('Then it throws PATHSPEC_OUTSIDE_REPO', async () => {
+        // Arrange
+        const fs = stubFs();
+        const sut = wrapFsValidator(fs, ['/repo/.git', '/elsewhere/wt']);
+
+        // Act + Assert
+        await expectOutside(() => sut.read('/etc/passwd'));
+      });
+    });
+  });
+});
+
 describe('wrapFsValidator — happy path', () => {
   describe('Given a path equal to cwd', () => {
     describe('When read runs', () => {

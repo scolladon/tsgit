@@ -7,6 +7,7 @@ import { TsgitError } from '../../../domain/error.js';
 import type { Context } from '../../../ports/context.js';
 import type { IniSection } from '../config-read.js';
 import { parseIniSections } from '../config-read.js';
+import { commonGitDir } from '../path-layout.js';
 
 /**
  * Canonical read precedence: later scopes override earlier ones for a given
@@ -47,7 +48,7 @@ const callAdapterPath = (scope: ConfigScope, fn: () => string): string => {
  * for the per-worktree config file at `${gitDir}/config.worktree`.
  */
 export const isWorktreeScopeActive = async (ctx: Context): Promise<boolean> => {
-  const text = await safeReadUtf8(ctx, `${ctx.layout.gitDir}/config`);
+  const text = await safeReadUtf8(ctx, `${commonGitDir(ctx)}/config`);
   if (text === undefined) return false;
   const sections = parseIniSections(text);
   for (const section of sections) {
@@ -67,7 +68,7 @@ export const isWorktreeScopeActive = async (ctx: Context): Promise<boolean> => {
  * unavailable on this adapter or platform.
  */
 export const resolveScopePath = async (ctx: Context, scope: ConfigScope): Promise<string> => {
-  if (scope === 'local') return `${ctx.layout.gitDir}/config`;
+  if (scope === 'local') return `${commonGitDir(ctx)}/config`;
   if (scope === 'worktree') {
     if (!(await isWorktreeScopeActive(ctx))) {
       throw configScopeNotAvailable('worktree', 'worktree-extension-unset');

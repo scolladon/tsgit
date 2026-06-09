@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  commonGitDir,
   indexPath,
   lockSuffix,
   logsDir,
@@ -12,6 +13,10 @@ import {
   sparseCheckoutPath,
 } from '../../../../src/application/primitives/path-layout.js';
 import type { ObjectId, RefName } from '../../../../src/domain/objects/index.js';
+import type { Context } from '../../../../src/ports/context.js';
+
+const ctxWithLayout = (gitDir: string, commonDir?: string): Context =>
+  ({ layout: { gitDir, ...(commonDir !== undefined ? { commonDir } : {}) } }) as Context;
 
 describe('path-layout', () => {
   describe('Given gitDir and an ObjectId', () => {
@@ -133,6 +138,36 @@ describe('path-layout', () => {
 
         // Assert
         expect(sut).toBe('/g/info/sparse-checkout');
+      });
+    });
+  });
+
+  describe('Given a layout with no commonDir', () => {
+    describe('When commonGitDir', () => {
+      it('Then falls back to gitDir', () => {
+        // Arrange
+        const sut = ctxWithLayout('/g');
+
+        // Act
+        const result = commonGitDir(sut);
+
+        // Assert
+        expect(result).toBe('/g');
+      });
+    });
+  });
+
+  describe('Given a layout whose commonDir differs from gitDir', () => {
+    describe('When commonGitDir', () => {
+      it('Then returns the commonDir', () => {
+        // Arrange
+        const sut = ctxWithLayout('/g/worktrees/wt', '/g');
+
+        // Act
+        const result = commonGitDir(sut);
+
+        // Assert
+        expect(result).toBe('/g');
       });
     });
   });

@@ -9,7 +9,7 @@ import {
   serializeDirectRef,
 } from '../../domain/refs/index.js';
 import type { Context } from '../../ports/context.js';
-import { looseRefPath, packedRefsPath } from './path-layout.js';
+import { commonGitDir, looseRefPath, packedRefsPath, perWorktreeRefDir } from './path-layout.js';
 
 export interface RefStore {
   /**
@@ -49,8 +49,10 @@ export function getRefStore(ctx: Context): RefStore {
 export function createRefStore(ctx: Context): RefStore {
   let packedCache: { readonly parsed: PackedRefs; readonly mtimeKey: string } | undefined;
 
+  const refDir = (name: RefName): string => perWorktreeRefDir(ctx, name);
+
   async function loadPackedRefs(): Promise<PackedRefs> {
-    const path = packedRefsPath(ctx.layout.gitDir);
+    const path = packedRefsPath(commonGitDir(ctx));
     if (!(await ctx.fs.exists(path))) {
       return { entries: [], peeling: 'none', sorted: false };
     }
@@ -66,7 +68,7 @@ export function createRefStore(ctx: Context): RefStore {
   }
 
   async function readLooseContent(name: RefName): Promise<string | undefined> {
-    const path = looseRefPath(ctx.layout.gitDir, name);
+    const path = looseRefPath(refDir(name), name);
     if (!(await ctx.fs.exists(path))) return undefined;
     return ctx.fs.readUtf8(path);
   }
@@ -91,19 +93,19 @@ export function createRefStore(ctx: Context): RefStore {
     },
 
     async writeLoose(name: RefName, id: ObjectId): Promise<void> {
-      const path = looseRefPath(ctx.layout.gitDir, name);
+      const path = looseRefPath(refDir(name), name);
       await ctx.fs.writeUtf8(path, serializeDirectRef(id));
     },
 
     async removeLoose(name: RefName): Promise<void> {
-      const path = looseRefPath(ctx.layout.gitDir, name);
+      const path = looseRefPath(refDir(name), name);
       if (await ctx.fs.exists(path)) {
         await ctx.fs.rm(path);
       }
     },
 
     async isLoose(name: RefName): Promise<boolean> {
-      return ctx.fs.exists(looseRefPath(ctx.layout.gitDir, name));
+      return ctx.fs.exists(looseRefPath(refDir(name), name));
     },
 
     async readLooseRaw(name: RefName): Promise<string | undefined> {

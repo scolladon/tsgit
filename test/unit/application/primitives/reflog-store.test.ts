@@ -37,10 +37,12 @@ const entry = (overrides: Partial<ReflogEntry> = {}): ReflogEntry => ({
 
 // Build one syntactically valid reflog line whose serialized length is
 // exactly `bytes`, by padding the message. ASCII-only, so byte length equals
-// string length.
+// string length. A non-empty line frames the message with `<meta>\t…\n`, so the
+// fixed framing is the empty-message length (`<meta>\n`) plus the one TAB a
+// non-empty message adds.
 const lineOfSize = (bytes: number): string => {
-  const prefix = serializeReflogLine(entry({ message: '' }));
-  return serializeReflogLine(entry({ message: 'x'.repeat(bytes - prefix.length) }));
+  const framing = serializeReflogLine(entry({ message: '' })).length + 1;
+  return serializeReflogLine(entry({ message: 'x'.repeat(bytes - framing) }));
 };
 
 describe('reflog-store', () => {

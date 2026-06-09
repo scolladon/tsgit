@@ -4,6 +4,7 @@ import { type IgnoreRuleset, parseGitignore } from '../../../domain/ignore/index
 import type { FilePath } from '../../../domain/objects/object-id.js';
 import type { Context } from '../../../ports/context.js';
 import { readConfig } from '../config-read.js';
+import { commonGitDir } from '../path-layout.js';
 import { MAX_GITIGNORE_BYTES } from '../types.js';
 
 /**
@@ -23,7 +24,7 @@ export const readGitignore = async (
 
 /** Load `.git/info/exclude` (per-clone excludes that don't ship with the repo). */
 export const readInfoExclude = async (ctx: Context): Promise<IgnoreRuleset | undefined> =>
-  loadAndParse(ctx, `${ctx.layout.gitDir}/info/exclude`);
+  loadAndParse(ctx, `${commonGitDir(ctx)}/info/exclude`);
 
 /**
  * Load the global excludes file pointed at by `core.excludesFile` in
