@@ -181,6 +181,7 @@ describe('openRepository — Repository binding integrity', () => {
             'submodule',
             'tag',
             'whatchanged',
+            'worktree',
           ].sort(),
         );
       });
@@ -235,6 +236,7 @@ describe('openRepository — Repository binding integrity', () => {
           'rebase',
           'merge',
           'submodule',
+          'worktree',
         ]);
         const nonFunctionKeys = new Set(['ctx', 'primitives', 'snapshot', ...namespaceKeys]);
 

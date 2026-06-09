@@ -41,6 +41,7 @@ Every method bound on a `Repository` handle. 37 entries, alphabetical.
 | [`submodule`](submodule.md) | Inspect, register, sync and unregister submodules. |
 | [`tag`](tag.md) | List, create, or delete tags. |
 | [`whatchanged`](whatchanged.md) | Walk reachable commits (merges excluded) pairing each with its raw structured changes; returns structured data (no rendered line). |
+| [`worktree`](worktree.md) | Manage linked working trees over one object store (`list`/`add`/`move`/`remove`); returns structured per-worktree data. Nested-namespace surface (`repo.worktree.*`). |
 
 ## Page shape
 

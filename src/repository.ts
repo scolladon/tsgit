@@ -223,6 +223,8 @@ export interface Repository {
   /** Nested `repo.tag.{list,create,delete}` namespace. */
   readonly tag: commands.TagNamespace;
   readonly whatchanged: BindCtx<typeof commands.whatchanged>;
+  /** Nested `repo.worktree.{list,add,move,remove}` namespace. */
+  readonly worktree: commands.WorktreeNamespace;
 
   // Tier-2 primitives (21) — bound under .primitives.* to keep the top-level
   // surface focused on user-facing commands.
@@ -549,6 +551,7 @@ export const openRepository = async (
       guard();
       return commands.whatchanged(ctx, opts);
     }) as Repository['whatchanged'],
+    worktree: commands.bindWorktreeNamespace(ctx, guard),
     primitives: Object.freeze({
       catFileBatch: ((ids, options) => {
         guard();
