@@ -14,14 +14,10 @@ const segmentsOf = (absolutePath: string): ReadonlyArray<string> =>
  * Returns `/` when the paths share no prefix or when `paths` is empty.
  */
 export const commonAncestor = (paths: ReadonlyArray<string>): string => {
-  if (paths.length === 0) return '/';
-  const segmentLists = paths.map(segmentsOf);
-  const shortest = Math.min(...segmentLists.map((list) => list.length));
+  const [first = [], ...rest] = paths.map(segmentsOf);
   const shared: string[] = [];
-  for (let i = 0; i < shortest; i += 1) {
-    const segment = segmentLists[0]?.[i];
-    if (segment === undefined) break;
-    if (!segmentLists.every((list) => list[i] === segment)) break;
+  for (const segment of first) {
+    if (!rest.every((list) => list[shared.length] === segment)) break;
     shared.push(segment);
   }
   return `/${shared.join('/')}`;

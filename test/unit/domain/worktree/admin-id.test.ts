@@ -85,7 +85,18 @@ describe('worktreeAdminId', () => {
 describe('isUnsafeWorktreeId', () => {
   describe('Given an unsafe id component', () => {
     describe('When isUnsafeWorktreeId runs', () => {
-      it.each(['', '.', '..', 'a/b', 'a\\b', 'a\tb', 'a\nb'])('Then %j is unsafe', (name) => {
+      // `` (0x1f) is the highest control character — the inclusive
+      // boundary of the `<= CONTROL_CHAR_MAX` guard.
+      it.each([
+        '',
+        '.',
+        '..',
+        'a/b',
+        'a\\b',
+        'a\tb',
+        'a\nb',
+        `a${String.fromCharCode(0x1f)}b`,
+      ])('Then %j is unsafe', (name) => {
         // Arrange + Act
         const result = isUnsafeWorktreeId(name);
 
