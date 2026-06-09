@@ -1,7 +1,32 @@
 import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
+import { MemoryCommandRunner } from '../../../../src/adapters/memory/memory-command-runner.js';
 
 describe('createMemoryContext', () => {
+  describe('Given a command runner option', () => {
+    describe('When reading ctx.command', () => {
+      it('Then it equals the supplied runner', () => {
+        // Arrange
+        const command = new MemoryCommandRunner();
+
+        // Act
+        const sut = createMemoryContext({ command });
+
+        // Assert
+        expect(sut.command).toBe(command);
+      });
+    });
+    describe('When no command runner is supplied', () => {
+      it('Then ctx.command is undefined', () => {
+        // Arrange / Act
+        const sut = createMemoryContext();
+
+        // Assert
+        expect(sut.command).toBeUndefined();
+      });
+    });
+  });
+
   describe('Given default options', () => {
     describe('When reading config', () => {
       it('Then workDir is /repo and gitDir is /repo/.git', () => {

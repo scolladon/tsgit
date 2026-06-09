@@ -1,6 +1,7 @@
 import type { HashConfig } from '../domain/objects/hash-config.js';
 import type { RefName } from '../domain/objects/object-id.js';
 import type { LruCache } from '../domain/storage/lru-cache.js';
+import type { CommandRunner } from './command-runner.js';
 import type { Compressor } from './compressor.js';
 import type { FileSystem } from './file-system.js';
 import type { HashService } from './hash-service.js';
@@ -110,6 +111,12 @@ export interface Context {
   /** Optional hook runner. Absent ⇒ hooks are inert (browser, or opted out). */
   readonly hooks?: HookRunner;
   /**
+   * Optional shell-command runner. Absent ⇒ a configured external merge driver
+   * falls back to the built-in merge (browser / memory adapters cannot spawn a
+   * process).
+   */
+  readonly command?: CommandRunner;
+  /**
    * Optional promisor-remote capability. Populated by `openRepository`;
    * `readObject` consults it to lazy-fetch an object a partial clone omitted.
    */
@@ -139,6 +146,7 @@ export interface CreateContextParts {
   readonly logger?: Logger;
   readonly signal?: AbortSignal;
   readonly hooks?: HookRunner;
+  readonly command?: CommandRunner;
 }
 
 /** Assemble a frozen Context from its constituent ports + layout. */
