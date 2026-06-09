@@ -14,6 +14,7 @@ import { loadSparseMatcher } from '../primitives/read-sparse-checkout.js';
 import { readTree } from '../primitives/read-tree.js';
 import { recordRefUpdate } from '../primitives/record-ref-update.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
+import { runInformationalHook } from '../primitives/run-hook.js';
 import { synthesizeTreeFromIndex } from '../primitives/synthesize-tree-from-index.js';
 import { walkTree } from '../primitives/walk-tree.js';
 import { writeSymbolicRef } from '../primitives/write-symbolic-ref.js';
@@ -48,6 +49,9 @@ export interface CheckoutResult {
 
 const HEADS_PREFIX = 'refs/heads/';
 const CHECKOUT_MATERIALIZE_OP = 'checkout:materialize';
+/** post-checkout's 3rd argument: `1` for a branch checkout, `0` for a file checkout. */
+const BRANCH_FLAG = '1';
+const FILE_FLAG = '0';
 
 const isSwitch = (opts: CheckoutOptions): opts is CheckoutSwitchOptions =>
   'rev' in opts && opts.rev !== undefined;
@@ -135,25 +139,23 @@ const switchBranch = async (ctx: Context, opts: CheckoutSwitchOptions): Promise<
       oid,
       `checkout: moving from ${fromLabel} to ${oid.slice(0, 7)}`,
     );
-    return {
-      branch: undefined,
-      id: oid,
-      detached: true,
-      changedPaths: materializeResult.written + materializeResult.deleted,
-    };
+  } else {
+    await writeSymbolicRef(ctx, 'HEAD' as RefName, branchRef as RefName);
+    await recordRefUpdate(
+      ctx,
+      'HEAD' as RefName,
+      oldOid,
+      oid,
+      `checkout: moving from ${fromLabel} to ${opts.rev}`,
+    );
   }
-  await writeSymbolicRef(ctx, 'HEAD' as RefName, branchRef as RefName);
-  await recordRefUpdate(
-    ctx,
-    'HEAD' as RefName,
-    oldOid,
-    oid,
-    `checkout: moving from ${fromLabel} to ${opts.rev}`,
-  );
+  // post-checkout (informational) fires after the worktree + HEAD are updated;
+  // a branch checkout (changing branches / detaching) flags `1`.
+  await runInformationalHook(ctx, 'post-checkout', { args: [oldOid, oid, BRANCH_FLAG] });
   return {
-    branch: branchRef,
+    branch: detached ? undefined : branchRef,
     id: oid,
-    detached: false,
+    detached,
     changedPaths: materializeResult.written + materializeResult.deleted,
   };
 };
@@ -207,6 +209,9 @@ const pathRestore = async (ctx: Context, opts: CheckoutPathsOptions): Promise<Ch
 
   // HEAD unchanged. Resolve current HEAD for the result.
   const head = await resolveRef(ctx, 'HEAD' as RefName);
+  // post-checkout (informational) fires after a file checkout with prev == new
+  // HEAD (the restore does not move HEAD) and the file flag.
+  await runInformationalHook(ctx, 'post-checkout', { args: [head, head, FILE_FLAG] });
   return {
     branch: undefined,
     id: head,
