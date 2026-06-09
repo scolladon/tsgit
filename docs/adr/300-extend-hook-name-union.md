@@ -46,8 +46,8 @@ hold.
 ### Negative
 
 - The firing sites are distributed across the command modules rather than
-  centralised. This is the correct locus: a hook fires *as part of* its
-  command's lifecycle, with command-local arguments; centralising the call
+  centralized. This is the correct locus: a hook fires *as part of* its
+  command's lifecycle, with command-local arguments; centralizing the call
   would force command state outward for no gain.
 
 ### Neutral

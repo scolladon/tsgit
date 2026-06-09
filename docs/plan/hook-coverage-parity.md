@@ -88,7 +88,7 @@ source or test code. Run a single test file with
    - Replace `applyCommitMsgHook` with `applyCommitMessageHooks(ctx, message,
      { noVerify, allowEmptyMessage, source })`: when `ctx.hooks === undefined`
      return `message`; else write `COMMIT_EDITMSG`, `runHook('prepare-commit-msg',
-     { args: [editMsgPath, source] })` (ungated), then if `!noVerify`
+     { args: [editMsgPath, source] })` (always, not gated by noVerify), then if `!noVerify`
      `runHook('commit-msg', { args: [editMsgPath] })`, re-read + `sanitizeMessage`.
 4. `src/application/commands/commit.ts`:
    - Compute `source: PrepareCommitMsgSource` = `'merge'` when
