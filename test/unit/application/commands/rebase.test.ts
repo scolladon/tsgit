@@ -305,6 +305,32 @@ describe('rebaseRun', () => {
     });
   });
 
+  describe('Given a replay conflict', () => {
+    describe('When the rebase stops', () => {
+      it('Then the working-tree markers are labelled HEAD and the replayed commit', async () => {
+        // Arrange — topic's t2 edits f.txt conflictingly with main.
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await setUser(ctx);
+        await writeAddCommit(ctx, 'f.txt', 'l1\nl2\n', 'base');
+        await branchCreate(ctx, { name: 'topic' });
+        await checkout(ctx, { rev: 'topic' });
+        const t2 = await writeAddCommit(ctx, 'f.txt', 'l1\nTOPIC\n', 't2');
+        await checkout(ctx, { rev: 'main' });
+        await writeAddCommit(ctx, 'f.txt', 'l1\nMAIN\n', 'm1');
+        await checkout(ctx, { rev: 'topic' });
+
+        // Act
+        await rebaseRun(ctx, { upstream: 'main' });
+
+        // Assert
+        const file = await ctx.fs.readUtf8(work(ctx, 'f.txt'));
+        expect(file).toContain('<<<<<<< HEAD\n');
+        expect(file).toContain(`>>>>>>> ${t2.slice(0, 7)} (t2)\n`);
+      });
+    });
+  });
+
   describe('Given a conflicting pick whose commit also touches a sub-directory', () => {
     describe('When rebased', () => {
       it('Then the rebase-merge/patch file recurses into the sub-directory', async () => {
