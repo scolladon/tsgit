@@ -1,5 +1,9 @@
 export type { AttributeValue } from './attribute-value.js';
 export {
+  type DriverPlaceholders,
+  substituteDriverPlaceholders,
+} from './driver-command.js';
+export {
   BUILTIN_MACROS,
   buildMacroRegistry,
   expandAttributes,
