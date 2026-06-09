@@ -1,7 +1,7 @@
 import { hookFailed } from '../../domain/commands/error.js';
 import type { HookName } from '../../domain/hooks/index.js';
 import type { Context, RepositoryLayout } from '../../ports/context.js';
-import type { HookRequest } from '../../ports/hook-runner.js';
+import type { HookRequest, HookResult } from '../../ports/hook-runner.js';
 import { readConfig } from './config-read.js';
 
 const HOOKS_SUBDIR = 'hooks';
@@ -36,18 +36,19 @@ export interface HookInput {
 }
 
 /**
- * Run a named git hook through `ctx.hooks`. A no-op when no `HookRunner` is
- * wired (browser, or opted out), when the hook file is absent / not executable
- * (`skipped`), or when the hook exits 0. Throws `HOOK_FAILED` on a non-zero
- * exit.
+ * Resolve `ctx.hooks`, fill the `HookRequest` from `ctx.layout` + config, and
+ * invoke the runner. Returns `undefined` when no runner is wired (browser, or
+ * opted out); otherwise the raw `HookResult`. The shared chokepoint both the
+ * blocking (`runHook`) and informational (`runInformationalHook`) entry points
+ * layer exit-code policy on top of.
  */
-export const runHook = async (
+const invokeHook = async (
   ctx: Context,
   name: HookName,
-  input: HookInput = {},
-): Promise<void> => {
+  input: HookInput,
+): Promise<HookResult | undefined> => {
   const runner = ctx.hooks;
-  if (runner === undefined) return;
+  if (runner === undefined) return undefined;
   const config = await readConfig(ctx);
   const request: HookRequest = {
     name,
@@ -58,9 +59,37 @@ export const runHook = async (
     stdin: input.stdin ?? '',
     ...(ctx.signal !== undefined ? { signal: ctx.signal } : {}),
   };
-  const result = await runner.run(request);
-  if (result.kind === 'skipped') return;
+  return runner.run(request);
+};
+
+/**
+ * Run a blocking git hook through `ctx.hooks`. A no-op when no `HookRunner` is
+ * wired (browser, or opted out), when the hook file is absent / not executable
+ * (`skipped`), or when the hook exits 0. Throws `HOOK_FAILED` on a non-zero
+ * exit — the caller's signal to abort the operation.
+ */
+export const runHook = async (
+  ctx: Context,
+  name: HookName,
+  input: HookInput = {},
+): Promise<void> => {
+  const result = await invokeHook(ctx, name, input);
+  if (result === undefined || result.kind === 'skipped') return;
   if (result.exitCode !== 0) {
     throw hookFailed(name, result.exitCode, result.stderr);
   }
+};
+
+/**
+ * Run an informational (`post-*`) git hook — fire-and-forget. The operation has
+ * already completed, so git ignores a post-hook's exit code (it cannot abort);
+ * tsgit does the same: absent runner, `skipped`, or any exit code → no throw,
+ * no return value. The runner never rejects, so this only ever resolves.
+ */
+export const runInformationalHook = async (
+  ctx: Context,
+  name: HookName,
+  input: HookInput = {},
+): Promise<void> => {
+  await invokeHook(ctx, name, input);
 };

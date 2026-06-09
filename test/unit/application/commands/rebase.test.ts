@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
+import { MemoryHookRunner } from '../../../../src/adapters/memory/memory-hook-runner.js';
 import { add } from '../../../../src/application/commands/add.js';
 import { branchCreate } from '../../../../src/application/commands/branch.js';
 import { checkout } from '../../../../src/application/commands/checkout.js';
@@ -1883,6 +1884,184 @@ describe('rebaseRun (interactive, detached HEAD)', () => {
         // Assert
         expect(sut.kind).toBe('conflict');
         expect((await readMerge(ctx, 'head-name')).trimEnd()).toBe('detached HEAD');
+      });
+    });
+  });
+});
+
+describe('rebase — hooks', () => {
+  /** seedDivergent, but on a hook-wired Context. */
+  const seedDivergentHooked = async (runner: MemoryHookRunner): Promise<Context> => {
+    const ctx = createMemoryContext({ hooks: runner });
+    await init(ctx);
+    await setUser(ctx);
+    await writeAddCommit(ctx, 'base.txt', 'base\n', 'base');
+    await branchCreate(ctx, { name: 'topic' });
+    await checkout(ctx, { rev: 'topic' });
+    await writeAddCommit(ctx, 't1.txt', 't1\n', 't1');
+    await writeAddCommit(ctx, 't2.txt', 't2\n', 't2');
+    await checkout(ctx, { rev: 'main' });
+    await writeAddCommit(ctx, 'm1.txt', 'm1\n', 'm1');
+    await checkout(ctx, { rev: 'topic' });
+    return ctx;
+  };
+
+  /** The post-rewrite stdin tsgit must send: one `<source> <created>` line per replayed commit. */
+  const expectedRewriteStdin = (sut: Awaited<ReturnType<typeof rebaseRun>>): string => {
+    if (sut.kind !== 'rebased') throw new Error('expected rebased');
+    return sut.commits.map((c) => `${c.source} ${c.created}\n`).join('');
+  };
+
+  describe('Given a pre-rebase hook that exits non-zero', () => {
+    describe('When rebaseRun', () => {
+      it('Then it throws HOOK_FAILED and no ref moved', async () => {
+        // Arrange
+        const runner = new MemoryHookRunner({
+          'pre-rebase': { kind: 'ran', exitCode: 1, stdout: '', stderr: 'blocked' },
+        });
+        const ctx = await seedDivergentHooked(runner);
+        const topicBefore = await resolveRef(ctx, 'refs/heads/topic' as RefName);
+
+        // Act
+        let caught: unknown;
+        try {
+          await rebaseRun(ctx, { upstream: 'main' });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({
+          code: 'HOOK_FAILED',
+          hook: 'pre-rebase',
+          exitCode: 1,
+          stderr: 'blocked',
+        });
+        expect(await resolveRef(ctx, 'refs/heads/topic' as RefName)).toBe(topicBefore);
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/ORIG_HEAD`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a pre-rebase hook that passes', () => {
+    describe('When rebaseRun', () => {
+      it('Then the rebase proceeds and pre-rebase fired with the upstream argument', async () => {
+        // Arrange
+        const runner = new MemoryHookRunner();
+        const ctx = await seedDivergentHooked(runner);
+
+        // Act
+        const sut = await rebaseRun(ctx, { upstream: 'main' });
+
+        // Assert
+        expect(sut.kind).toBe('rebased');
+        const preRebase = runner.calls.filter((c) => c.name === 'pre-rebase');
+        expect(preRebase).toHaveLength(1);
+        expect(preRebase[0]?.args).toEqual(['main']);
+      });
+    });
+  });
+
+  describe('Given a finished plain rebase', () => {
+    describe('When rebaseRun completes', () => {
+      it('Then post-rewrite fires with the rebase label and the rewritten-pair stdin', async () => {
+        // Arrange
+        const runner = new MemoryHookRunner();
+        const ctx = await seedDivergentHooked(runner);
+
+        // Act
+        const sut = await rebaseRun(ctx, { upstream: 'main' });
+
+        // Assert
+        const postRewrite = runner.calls.filter((c) => c.name === 'post-rewrite');
+        expect(postRewrite).toHaveLength(1);
+        expect(postRewrite[0]?.args).toEqual(['rebase']);
+        expect(postRewrite[0]?.stdin).toBe(expectedRewriteStdin(sut));
+      });
+    });
+  });
+
+  describe('Given a finished interactive rebase that rewrites a commit', () => {
+    describe('When rebaseRun completes interactively', () => {
+      it('Then post-rewrite fires with the rebase label and the rewritten-pair stdin', async () => {
+        // Arrange
+        const runner = new MemoryHookRunner();
+        const ctx = createMemoryContext({ hooks: runner });
+        await init(ctx);
+        await setUser(ctx);
+        const base = await writeAddCommit(ctx, 'f.txt', 'L\n', 'base');
+        const c1 = await writeAddCommit(ctx, 'f.txt', 'A\n', 'c1 subject');
+        const c2 = await writeAddCommit(ctx, 'f.txt', 'B\n', 'c2 subject');
+
+        // Act — reword c1 (genuine rewrite), pick c2 atop it.
+        const sut = await rebaseRun(ctx, {
+          upstream: base,
+          interactive: [
+            { action: 'reword', oid: c1, message: 'reworded c1' },
+            { action: 'pick', oid: c2 },
+          ],
+        });
+
+        // Assert
+        expect(sut.kind).toBe('rebased');
+        // An interactive rebase always does work, so pre-rebase fires too.
+        expect(runner.calls.some((call) => call.name === 'pre-rebase')).toBe(true);
+        const postRewrite = runner.calls.filter((call) => call.name === 'post-rewrite');
+        expect(postRewrite).toHaveLength(1);
+        expect(postRewrite[0]?.args).toEqual(['rebase']);
+        expect(postRewrite[0]?.stdin).toBe(expectedRewriteStdin(sut));
+        // The first rewritten pair maps the reworded source to a new oid.
+        expect(postRewrite[0]?.stdin.startsWith(`${c1} `)).toBe(true);
+      });
+    });
+  });
+
+  describe('Given an up-to-date rebase (no rewrites)', () => {
+    describe('When rebaseRun', () => {
+      it('Then post-rewrite does not fire', async () => {
+        // Arrange — main = base; topic = base + t1, so onto === merge-base.
+        const runner = new MemoryHookRunner();
+        const ctx = createMemoryContext({ hooks: runner });
+        await init(ctx);
+        await setUser(ctx);
+        await writeAddCommit(ctx, 'base.txt', 'base\n', 'base');
+        await branchCreate(ctx, { name: 'topic' });
+        await checkout(ctx, { rev: 'topic' });
+        await writeAddCommit(ctx, 't1.txt', 't1\n', 't1');
+
+        // Act
+        const sut = await rebaseRun(ctx, { upstream: 'main' });
+
+        // Assert — git fires neither pre-rebase nor post-rewrite on a no-op rebase.
+        expect(sut.kind).toBe('up-to-date');
+        expect(runner.calls.some((call) => call.name === 'post-rewrite')).toBe(false);
+        expect(runner.calls.some((call) => call.name === 'pre-rebase')).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a fast-forward rebase (topic is an ancestor of upstream)', () => {
+    describe('When rebaseRun fast-forwards with nothing to replay', () => {
+      it('Then pre-rebase fires but post-rewrite does not (no rewrites)', async () => {
+        // Arrange — topic = base; main = base + m1 + m2.
+        const runner = new MemoryHookRunner();
+        const ctx = createMemoryContext({ hooks: runner });
+        await init(ctx);
+        await setUser(ctx);
+        await writeAddCommit(ctx, 'base.txt', 'base\n', 'base');
+        await branchCreate(ctx, { name: 'topic' });
+        await writeAddCommit(ctx, 'm1.txt', 'm1\n', 'm1');
+        await writeAddCommit(ctx, 'm2.txt', 'm2\n', 'm2');
+        await checkout(ctx, { rev: 'topic' });
+
+        // Act
+        const sut = await rebaseRun(ctx, { upstream: 'main' });
+
+        // Assert — work happened (the branch moved) so pre-rebase fires, but no
+        // commit was rewritten so post-rewrite stays silent.
+        expect(sut.kind).toBe('rebased');
+        expect(runner.calls.some((call) => call.name === 'pre-rebase')).toBe(true);
+        expect(runner.calls.some((call) => call.name === 'post-rewrite')).toBe(false);
       });
     });
   });

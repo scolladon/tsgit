@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
+import { MemoryHookRunner } from '../../../../src/adapters/memory/memory-hook-runner.js';
 import { add } from '../../../../src/application/commands/add.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
@@ -619,6 +620,48 @@ describe('commit — hooks', () => {
           () => commit(ctx, { message: 'original', author }),
           'EMPTY_COMMIT_MESSAGE',
         );
+      });
+    });
+  });
+
+  describe('Given a normal commit', () => {
+    describe('When commit fires prepare-commit-msg', () => {
+      it('Then the message source argument is "message"', async () => {
+        // Arrange
+        const runner = new MemoryHookRunner();
+        const ctx = createMemoryContext({ hooks: runner });
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
+        await add(ctx, ['a.txt']);
+
+        // Act
+        await commit(ctx, { message: 'first', author });
+
+        // Assert
+        const prepare = runner.calls.find((c) => c.name === 'prepare-commit-msg');
+        expect(prepare?.args[1]).toBe('message');
+      });
+    });
+  });
+
+  describe('Given a merge resolution commit', () => {
+    describe('When commit fires prepare-commit-msg', () => {
+      it('Then the message source argument is "merge"', async () => {
+        // Arrange — a populated MERGE_HEAD makes this a merge resolution.
+        const runner = new MemoryHookRunner();
+        const ctx = createMemoryContext({ hooks: runner });
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
+        await add(ctx, ['a.txt']);
+        await commit(ctx, { message: 'first', author });
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/MERGE_HEAD`, `${'1'.repeat(40)}\n`);
+
+        // Act
+        await commit(ctx, { message: 'resolve', author });
+
+        // Assert
+        const prepares = runner.calls.filter((c) => c.name === 'prepare-commit-msg');
+        expect(prepares[prepares.length - 1]?.args[1]).toBe('merge');
       });
     });
   });

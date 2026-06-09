@@ -519,10 +519,24 @@ new `walkWorkingTree` primitive. Operator-visible behaviours:
   error. Concurrent processes hitting the index see either the old
   or new state, never a partial blend.
 
-## Operating git hooks (Phase 17.2)
+## Operating git hooks
 
-tsgit runs `.git/hooks/` scripts — `pre-commit` and `commit-msg` during
-`commit`, `pre-push` during `push`. Operator-visible behaviour:
+tsgit runs `.git/hooks/` scripts at the matching lifecycle points:
+
+- **`commit`** — `pre-commit`, `prepare-commit-msg`, `commit-msg` (blocking),
+  then `post-commit` (informational).
+- **`merge` / `pull`** — `post-merge` (informational) after a fast-forward or
+  clean true-merge.
+- **`checkout`** — `post-checkout` (informational) after a branch switch
+  (flag `1`) or a path restore (flag `0`).
+- **`push`** — `pre-push` (blocking).
+- **`rebase`** — `pre-rebase` (blocking) before work starts; `post-rewrite`
+  (informational) on completion, fed the rewritten `<old> <new>` pairs on stdin.
+
+**Blocking** hooks abort their command on a non-zero exit (`HOOK_FAILED`);
+**informational** (`post-*`) hooks run after the operation has completed and
+their exit code is ignored — git's own policy. Server-side hooks have no firing
+site (tsgit is a client; no `receive-pack` server). Operator-visible behaviour:
 
 - **Default-on (Node).** `openRepository` / `createNodeContext` wire a hook
   runner by default; hooks run as under canonical git. The browser adapter has
@@ -533,17 +547,20 @@ tsgit runs `.git/hooks/` scripts — `pre-commit` and `commit-msg` during
   arbitrary scripts that inherit the process environment (`process.env`,
   including any secrets).
 - **Per-call skip.** `commit({ noVerify: true })` and `push({ noVerify: true })`
-  skip verification for that one call — git's `--no-verify`.
+  skip verification for that one call — git's `--no-verify`. As in git, this
+  bypasses only `pre-commit` and `commit-msg`; `prepare-commit-msg` still runs.
 - **Failure.** A non-zero hook exit throws `HOOK_FAILED { hook, exitCode,
   stderr }`; `stderr` is sanitised and capped at 4 KiB. `commit` aborts before
   the ref moves; `push` aborts before any upload.
 - **`core.hooksPath`.** Honoured — an absolute path is used as-is, `~/…`
   expands against the home directory, a relative path resolves against the
   working tree. Absent → `${gitDir}/hooks`.
-- **`commit-msg`.** The message is round-tripped through `.git/COMMIT_EDITMSG`
-  (written, hook run with that path as `argv[1]`, re-read) — a hook may rewrite
-  it. `pre-commit` runs before the index is read, so a re-staging hook is
-  honoured.
+- **Message hooks.** The message is round-tripped through `.git/COMMIT_EDITMSG`
+  (written, `prepare-commit-msg` then `commit-msg` run with that path as
+  `argv[1]`, re-read) — either hook may rewrite it. `prepare-commit-msg` also
+  receives the source (`message`, or `merge` when resolving a merge /
+  cherry-pick / revert). `pre-commit` runs before the index is read, so a
+  re-staging hook is honoured. `post-commit` runs after the commit lands.
 - **Windows.** Hooks are spawned directly — native executables and `.bat` /
   `.cmd` run; extensionless `#!/bin/sh` scripts need a shell on `PATH` (the
   same constraint git-for-Windows carries). See ADR-068.

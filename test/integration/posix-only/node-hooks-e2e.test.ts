@@ -108,4 +108,70 @@ describe('Node openRepository — git hooks end to end', () => {
       await repo.dispose();
     }
   });
+
+  it('Given a prepare-commit-msg hook that rewrites the message, When commit, Then the commit uses the rewritten message', async () => {
+    // Arrange
+    const repo = await openRepository({ cwd: root });
+    try {
+      await repo.init();
+      await writeHook(
+        repo.ctx.layout.gitDir,
+        'prepare-commit-msg',
+        '#!/bin/sh\necho "from prepare" > "$1"\n',
+      );
+      await fsPromises.writeFile(nodePath.join(root, 'a.txt'), 'a');
+      await repo.add(['a.txt']);
+
+      // Act
+      const result = await repo.commit({ message: 'original', author });
+
+      // Assert
+      const obj = await repo.primitives.readObject(result.id);
+      expect(obj.type).toBe('commit');
+      if (obj.type === 'commit') {
+        expect(obj.data.message).toBe('from prepare\n');
+      }
+    } finally {
+      await repo.dispose();
+    }
+  });
+
+  it('Given a post-commit hook, When commit succeeds, Then the hook runs', async () => {
+    // Arrange
+    const repo = await openRepository({ cwd: root });
+    const sentinel = nodePath.join(root, 'post-commit-ran');
+    try {
+      await repo.init();
+      await writeHook(repo.ctx.layout.gitDir, 'post-commit', `#!/bin/sh\ntouch "${sentinel}"\n`);
+      await fsPromises.writeFile(nodePath.join(root, 'a.txt'), 'a');
+      await repo.add(['a.txt']);
+
+      // Act
+      await repo.commit({ message: 'first', author });
+
+      // Assert
+      await expect(fsPromises.stat(sentinel)).resolves.toBeDefined();
+    } finally {
+      await repo.dispose();
+    }
+  });
+
+  it('Given a failing post-commit hook, When commit, Then the commit still succeeds (informational)', async () => {
+    // Arrange
+    const repo = await openRepository({ cwd: root });
+    try {
+      await repo.init();
+      await writeHook(repo.ctx.layout.gitDir, 'post-commit', '#!/bin/sh\nexit 1\n');
+      await fsPromises.writeFile(nodePath.join(root, 'a.txt'), 'a');
+      await repo.add(['a.txt']);
+
+      // Act
+      const result = await repo.commit({ message: 'first', author });
+
+      // Assert — a post-* hook's non-zero exit does not abort the operation.
+      expect(result.id).toMatch(/^[0-9a-f]{40}$/);
+    } finally {
+      await repo.dispose();
+    }
+  });
 });

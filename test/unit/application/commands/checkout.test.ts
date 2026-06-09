@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
+import { MemoryHookRunner } from '../../../../src/adapters/memory/memory-hook-runner.js';
 import { add } from '../../../../src/application/commands/add.js';
 import { branchCreate } from '../../../../src/application/commands/branch.js';
 import { checkout } from '../../../../src/application/commands/checkout.js';
@@ -1478,6 +1479,128 @@ describe('checkout — progress reporting', () => {
         const endCount = events.filter((e) => e.kind === 'end').length;
         // Assert
         expect(endCount).toBe(startCount);
+      });
+    });
+  });
+});
+
+describe('checkout — post-checkout hook', () => {
+  /** Seed two branches whose tips differ: main at A, feature at B (A's child). */
+  const seedTwoTips = async (runner: MemoryHookRunner) => {
+    const ctx = createMemoryContext({ hooks: runner });
+    await init(ctx);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
+    await add(ctx, ['a.txt']);
+    const a = await commit(ctx, { message: 'first', author });
+    await branchCreate(ctx, { name: 'feature' });
+    await checkout(ctx, { rev: 'feature' });
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.txt`, 'b');
+    await add(ctx, ['b.txt']);
+    const b = await commit(ctx, { message: 'second', author });
+    await checkout(ctx, { rev: 'main' });
+    return { ctx, a: a.id, b: b.id };
+  };
+
+  /** post-checkout invocations recorded after the given call-log index. */
+  const postCheckoutSince = (runner: MemoryHookRunner, since: number) =>
+    runner.calls.slice(since).filter((call) => call.name === 'post-checkout');
+
+  describe('Given a branch switch', () => {
+    describe('When checkout switches branches', () => {
+      it('Then post-checkout fires with prev/new HEAD and the branch flag', async () => {
+        // Arrange
+        const runner = new MemoryHookRunner();
+        const { ctx, a, b } = await seedTwoTips(runner);
+        const before = runner.calls.length;
+
+        // Act
+        await checkout(ctx, { rev: 'feature' });
+
+        // Assert
+        const post = postCheckoutSince(runner, before);
+        expect(post).toHaveLength(1);
+        expect(post[0]?.args).toEqual([a, b, '1']);
+      });
+    });
+  });
+
+  describe('Given a detached checkout', () => {
+    describe('When checkout detaches at an oid', () => {
+      it('Then post-checkout fires with the branch flag', async () => {
+        // Arrange
+        const runner = new MemoryHookRunner();
+        const { ctx, a, b } = await seedTwoTips(runner);
+        const before = runner.calls.length;
+
+        // Act
+        await checkout(ctx, { rev: b, detach: true });
+
+        // Assert
+        const post = postCheckoutSince(runner, before);
+        expect(post).toHaveLength(1);
+        expect(post[0]?.args).toEqual([a, b, '1']);
+      });
+    });
+  });
+
+  describe('Given a path restore', () => {
+    describe('When checkout restores a path', () => {
+      it('Then post-checkout fires with equal prev/new HEAD and the file flag', async () => {
+        // Arrange
+        const runner = new MemoryHookRunner();
+        const ctx = createMemoryContext({ hooks: runner });
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
+        await add(ctx, ['a.txt']);
+        const c = await commit(ctx, { message: 'first', author });
+        const before = runner.calls.length;
+
+        // Act
+        await checkout(ctx, { paths: ['a.txt'] });
+
+        // Assert — HEAD does not move, so prev == new; flag is the file flag.
+        const post = postCheckoutSince(runner, before);
+        expect(post).toHaveLength(1);
+        expect(post[0]?.args).toEqual([c.id, c.id, '0']);
+      });
+    });
+  });
+
+  describe('Given a path restore whose glob matches nothing', () => {
+    describe('When checkout is a no-op', () => {
+      it('Then post-checkout does not fire', async () => {
+        // Arrange
+        const runner = new MemoryHookRunner();
+        const ctx = createMemoryContext({ hooks: runner });
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
+        await add(ctx, ['a.txt']);
+        await commit(ctx, { message: 'first', author });
+        const before = runner.calls.length;
+
+        // Act
+        await checkout(ctx, { paths: ['*.nomatch'] });
+
+        // Assert
+        expect(postCheckoutSince(runner, before)).toHaveLength(0);
+      });
+    });
+  });
+
+  describe('Given a post-checkout hook that exits non-zero', () => {
+    describe('When checkout switches branches', () => {
+      it('Then the checkout result still returns (informational hook)', async () => {
+        // Arrange
+        const runner = new MemoryHookRunner({
+          'post-checkout': { kind: 'ran', exitCode: 1, stdout: '', stderr: 'noisy' },
+        });
+        const { ctx } = await seedTwoTips(runner);
+
+        // Act
+        const sut = await checkout(ctx, { rev: 'feature' });
+
+        // Assert
+        expect(sut.branch).toBe('refs/heads/feature');
       });
     });
   });

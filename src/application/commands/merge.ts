@@ -41,6 +41,7 @@ import { readIndex } from '../primitives/read-index.js';
 import { readObject } from '../primitives/read-object.js';
 import { loadSparseMatcher } from '../primitives/read-sparse-checkout.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
+import { runInformationalHook } from '../primitives/run-hook.js';
 import { updateRef } from '../primitives/update-ref.js';
 import { writeObject } from '../primitives/write-object.js';
 import { writeTree } from '../primitives/write-tree.js';
@@ -117,10 +118,28 @@ export type MergeResult =
  *  Resolution path: edit the marker files, `repo.add(paths)`,
  *  `repo.commit({ message })` — the resulting commit has two parents.
  */
+/** `post-merge`'s squash-flag argument. tsgit has no `--squash`, so always off. */
+const SQUASH_FLAG_OFF = '0';
+
 export const mergeRun = async (
   ctx: Context,
   opts: MergeRunInput,
   internal: MergeInternalOptions = {},
+): Promise<MergeResult> => {
+  const result = await computeMerge(ctx, opts, internal);
+  // post-merge is informational — git fires it after a merge that updates the
+  // working tree (fast-forward or clean true-merge), never on up-to-date or a
+  // conflict. It cannot abort the completed merge (its exit code is ignored).
+  if (result.kind === 'fast-forward' || result.kind === 'merge') {
+    await runInformationalHook(ctx, 'post-merge', { args: [SQUASH_FLAG_OFF] });
+  }
+  return result;
+};
+
+const computeMerge = async (
+  ctx: Context,
+  opts: MergeRunInput,
+  internal: MergeInternalOptions,
 ): Promise<MergeResult> => {
   await assertRepository(ctx);
   await assertNotBare(ctx, 'merge');

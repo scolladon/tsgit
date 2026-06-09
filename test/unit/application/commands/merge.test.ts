@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
+import { MemoryHookRunner } from '../../../../src/adapters/memory/memory-hook-runner.js';
 import { add } from '../../../../src/application/commands/add.js';
 import { branchCreate } from '../../../../src/application/commands/branch.js';
 import { checkout } from '../../../../src/application/commands/checkout.js';
@@ -2723,6 +2724,151 @@ describe('asMergeDirtyError (direct)', () => {
 
         // Assert
         expect(sut).toBe(original);
+      });
+    });
+  });
+});
+
+describe('merge — post-merge hook', () => {
+  const hookedCtx = (runner: MemoryHookRunner): ReturnType<typeof createMemoryContext> =>
+    createMemoryContext({ hooks: runner });
+
+  describe('Given a fast-forwardable target', () => {
+    describe('When merge fast-forwards', () => {
+      it('Then post-merge fires once with the squash flag off', async () => {
+        // Arrange
+        const runner = new MemoryHookRunner();
+        const ctx = hookedCtx(runner);
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
+        await add(ctx, ['a.txt']);
+        await commit(ctx, { message: 'first', author });
+        await branchCreate(ctx, { name: 'feature' });
+        await checkout(ctx, { rev: 'feature' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.txt`, 'b');
+        await add(ctx, ['b.txt']);
+        await commit(ctx, { message: 'second', author });
+        await checkout(ctx, { rev: 'main' });
+
+        // Act
+        const sut = await mergeRun(ctx, { rev: 'feature' });
+
+        // Assert
+        expect(sut.kind).toBe('fast-forward');
+        const postMerge = runner.calls.filter((c) => c.name === 'post-merge');
+        expect(postMerge).toHaveLength(1);
+        expect(postMerge[0]?.args).toEqual(['0']);
+      });
+    });
+  });
+
+  describe('Given diverged histories with non-conflicting paths', () => {
+    describe('When merge makes a clean true-merge', () => {
+      it('Then post-merge fires once with the squash flag off', async () => {
+        // Arrange
+        const runner = new MemoryHookRunner();
+        const ctx = hookedCtx(runner);
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/f.txt`, 'base\n');
+        await add(ctx, ['f.txt']);
+        await commit(ctx, { message: 'base', author });
+        await branchCreate(ctx, { name: 'theirs' });
+        await checkout(ctx, { rev: 'theirs' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/m.txt`, 'm\n');
+        await add(ctx, ['m.txt']);
+        await commit(ctx, { message: 'theirs-add', author });
+        await checkout(ctx, { rev: 'main' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a\n');
+        await add(ctx, ['a.txt']);
+        await commit(ctx, { message: 'ours-add', author });
+
+        // Act
+        const sut = await mergeRun(ctx, { rev: 'theirs', author });
+
+        // Assert
+        expect(sut.kind).toBe('merge');
+        const postMerge = runner.calls.filter((c) => c.name === 'post-merge');
+        expect(postMerge).toHaveLength(1);
+        expect(postMerge[0]?.args).toEqual(['0']);
+      });
+    });
+  });
+
+  describe('Given a target equal to HEAD', () => {
+    describe('When merge is up-to-date', () => {
+      it('Then post-merge does not fire', async () => {
+        // Arrange
+        const runner = new MemoryHookRunner();
+        const ctx = hookedCtx(runner);
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
+        await add(ctx, ['a.txt']);
+        const c = await commit(ctx, { message: 'first', author });
+
+        // Act
+        const sut = await mergeRun(ctx, { rev: c.id });
+
+        // Assert
+        expect(sut.kind).toBe('up-to-date');
+        expect(runner.calls.some((call) => call.name === 'post-merge')).toBe(false);
+      });
+    });
+  });
+
+  describe('Given conflicting modifications to the same file', () => {
+    describe('When merge conflicts', () => {
+      it('Then post-merge does not fire', async () => {
+        // Arrange
+        const runner = new MemoryHookRunner();
+        const ctx = hookedCtx(runner);
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'shared\n');
+        await add(ctx, ['file.txt']);
+        await commit(ctx, { message: 'base', author });
+        await branchCreate(ctx, { name: 'feature' });
+        await checkout(ctx, { rev: 'feature' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'FEATURE-CHANGE\n');
+        await add(ctx, ['file.txt']);
+        await commit(ctx, { message: 'on-feature', author });
+        await checkout(ctx, { rev: 'main' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'MAIN-CHANGE\n');
+        await add(ctx, ['file.txt']);
+        await commit(ctx, { message: 'on-main', author });
+
+        // Act
+        const sut = await mergeRun(ctx, { rev: 'feature', author });
+
+        // Assert
+        expect(sut.kind).toBe('conflict');
+        expect(runner.calls.some((call) => call.name === 'post-merge')).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a post-merge hook that exits non-zero on a clean merge', () => {
+    describe('When merge runs', () => {
+      it('Then the merge result still returns (informational hook)', async () => {
+        // Arrange
+        const runner = new MemoryHookRunner({
+          'post-merge': { kind: 'ran', exitCode: 1, stdout: '', stderr: 'noisy' },
+        });
+        const ctx = hookedCtx(runner);
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
+        await add(ctx, ['a.txt']);
+        await commit(ctx, { message: 'first', author });
+        await branchCreate(ctx, { name: 'feature' });
+        await checkout(ctx, { rev: 'feature' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.txt`, 'b');
+        await add(ctx, ['b.txt']);
+        await commit(ctx, { message: 'second', author });
+        await checkout(ctx, { rev: 'main' });
+
+        // Act
+        const sut = await mergeRun(ctx, { rev: 'feature' });
+
+        // Assert
+        expect(sut.kind).toBe('fast-forward');
       });
     });
   });

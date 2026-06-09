@@ -2,7 +2,11 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { MemoryHookRunner } from '../../../../src/adapters/memory/memory-hook-runner.js';
 import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
-import { resolveHooksDir, runHook } from '../../../../src/application/primitives/run-hook.js';
+import {
+  resolveHooksDir,
+  runHook,
+  runInformationalHook,
+} from '../../../../src/application/primitives/run-hook.js';
 import { TsgitError } from '../../../../src/domain/error.js';
 import type { RepositoryLayout } from '../../../../src/ports/context.js';
 
@@ -277,6 +281,159 @@ describe('primitives/run-hook runHook', () => {
 
         // Act
         await runHook(ctx, 'pre-commit');
+
+        // Assert
+        expect('signal' in (runner.calls[0] ?? {})).toBe(false);
+      });
+    });
+  });
+});
+
+describe('primitives/run-hook runInformationalHook', () => {
+  beforeEach(() => {
+    __resetConfigCacheForTests();
+  });
+
+  describe('Given a Context with no HookRunner', () => {
+    describe('When runInformationalHook', () => {
+      it('Then it resolves without error', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+
+        // Act & Assert
+        await expect(runInformationalHook(ctx, 'post-commit')).resolves.toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a runner that skips the hook', () => {
+    describe('When runInformationalHook', () => {
+      it('Then it resolves and records the invocation', async () => {
+        // Arrange
+        const runner = new MemoryHookRunner();
+        const ctx = createMemoryContext({ hooks: runner });
+
+        // Act
+        await runInformationalHook(ctx, 'post-commit');
+
+        // Assert
+        expect(runner.calls[0]?.name).toBe('post-commit');
+      });
+    });
+  });
+
+  describe('Given a hook that exits 0', () => {
+    describe('When runInformationalHook', () => {
+      it('Then it resolves without throwing', async () => {
+        // Arrange
+        const runner = new MemoryHookRunner({
+          'post-merge': { kind: 'ran', exitCode: 0, stdout: '', stderr: '' },
+        });
+        const ctx = createMemoryContext({ hooks: runner });
+
+        // Act & Assert
+        await expect(runInformationalHook(ctx, 'post-merge')).resolves.toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a hook that exits non-zero', () => {
+    describe('When runInformationalHook', () => {
+      it('Then it still resolves without throwing and records the fire', async () => {
+        // Arrange — the defining contrast with runHook: an informational hook's
+        // non-zero exit is ignored (git-faithful), never surfaced as HOOK_FAILED.
+        const runner = new MemoryHookRunner({
+          'post-checkout': { kind: 'ran', exitCode: 1, stdout: '', stderr: 'noisy' },
+        });
+        const ctx = createMemoryContext({ hooks: runner });
+
+        // Act & Assert
+        await expect(runInformationalHook(ctx, 'post-checkout')).resolves.toBeUndefined();
+        expect(runner.calls[0]?.name).toBe('post-checkout');
+      });
+    });
+  });
+
+  describe('Given args and stdin', () => {
+    describe('When runInformationalHook', () => {
+      it('Then the runner receives them verbatim', async () => {
+        // Arrange
+        const runner = new MemoryHookRunner();
+        const ctx = createMemoryContext({ hooks: runner });
+
+        // Act
+        await runInformationalHook(ctx, 'post-rewrite', {
+          args: ['rebase'],
+          stdin: 'old new\n',
+        });
+
+        // Assert
+        expect(runner.calls[0]?.args).toEqual(['rebase']);
+        expect(runner.calls[0]?.stdin).toBe('old new\n');
+      });
+    });
+  });
+
+  describe('Given no input', () => {
+    describe('When runInformationalHook', () => {
+      it('Then the runner receives empty args and stdin', async () => {
+        // Arrange
+        const runner = new MemoryHookRunner();
+        const ctx = createMemoryContext({ hooks: runner });
+
+        // Act
+        await runInformationalHook(ctx, 'post-commit');
+
+        // Assert
+        expect(runner.calls[0]?.args).toEqual([]);
+        expect(runner.calls[0]?.stdin).toBe('');
+      });
+    });
+  });
+
+  describe('Given core.hooksPath is configured', () => {
+    describe('When runInformationalHook', () => {
+      it('Then the request hooksDir reflects it', async () => {
+        // Arrange
+        const runner = new MemoryHookRunner();
+        const ctx = createMemoryContext({ hooks: runner });
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n  hooksPath = /opt/gh\n');
+
+        // Act
+        await runInformationalHook(ctx, 'post-commit');
+
+        // Assert
+        expect(runner.calls[0]?.hooksDir).toBe('/opt/gh');
+      });
+    });
+  });
+
+  describe('Given a Context with an abort signal', () => {
+    describe('When runInformationalHook', () => {
+      it('Then the request carries that signal', async () => {
+        // Arrange
+        const runner = new MemoryHookRunner();
+        const controller = new AbortController();
+        const ctx = createMemoryContext({ hooks: runner, signal: controller.signal });
+
+        // Act
+        await runInformationalHook(ctx, 'post-commit');
+
+        // Assert
+        expect(runner.calls[0]?.signal).toBe(controller.signal);
+      });
+    });
+  });
+
+  describe('Given a Context with no abort signal', () => {
+    describe('When runInformationalHook', () => {
+      it('Then the request has no signal key', async () => {
+        // Arrange
+        const runner = new MemoryHookRunner();
+        const ctx = createMemoryContext({ hooks: runner });
+
+        // Act
+        await runInformationalHook(ctx, 'post-commit');
 
         // Assert
         expect('signal' in (runner.calls[0] ?? {})).toBe(false);
