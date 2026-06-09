@@ -146,6 +146,35 @@ describe('resolveAttribute', () => {
         expect(sut).toBe('unspecified');
       });
     });
+
+    describe('When an anchored pattern only matches the basedir-relative path', () => {
+      it('Then the match is against the stripped path, not the full path', () => {
+        // Arrange — `x/c.txt` is anchored (interior slash); it must be matched
+        // against `x/c.txt` (relative to `a/b`), never `a/b/x/c.txt`.
+        const sources = [sourceAt('a/b', 'x/c.txt merge=anchored')];
+
+        // Act
+        const sut = resolveAttribute(sources, 'a/b/x/c.txt', 'merge', BUILTIN_MACROS);
+
+        // Assert
+        expect(sut).toEqual({ set: 'anchored' });
+      });
+    });
+  });
+
+  describe('Given a later matching rule that does not assign the attribute', () => {
+    describe('When resolving', () => {
+      it('Then the earlier assignment is retained (the non-assigning match is ignored)', () => {
+        // Arrange — rule 1 sets merge; rule 2 also matches but only sets `text`.
+        const sources = [sourceAt('', '* merge=keep\n* text')];
+
+        // Act
+        const sut = resolveAttribute(sources, 'a.txt', 'merge', BUILTIN_MACROS);
+
+        // Assert
+        expect(sut).toEqual({ set: 'keep' });
+      });
+    });
   });
 
   describe('Given the built-in `binary` macro applied to a path', () => {
@@ -224,6 +253,22 @@ describe('expandAttributes', () => {
 
         // Assert
         expect([...sut]).toEqual([['merge', { set: 'custom' }]]);
+      });
+    });
+  });
+
+  describe('Given a rule that unsets a macro name (`-binary`)', () => {
+    describe('When expanded', () => {
+      it('Then the macro is NOT expanded (only set names expand)', () => {
+        // Arrange
+        const { rules } = parseGitattributes('*.x -binary');
+
+        // Act
+        const sut = expandAttributes(rules[0]!.attributes, BUILTIN_MACROS);
+
+        // Assert — `-binary` unsets the macro attribute without expanding it.
+        expect(sut.get('binary')).toBe(false);
+        expect(sut.get('merge')).toBeUndefined();
       });
     });
   });

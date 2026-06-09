@@ -72,6 +72,7 @@ const readPattern = (line: string): { readonly pattern: string; readonly rest: s
 };
 
 const splitWhitespace = (s: string): ReadonlyArray<string> =>
+  // Stryker disable next-line Regex: equivalent — `/\s/` instead of `/\s+/` only injects empty strings between consecutive whitespace chars, which the `!== ''` filter removes, so the token list is identical.
   s.split(/\s+/).filter((t) => t !== '');
 
 const parseAttributeToken = (

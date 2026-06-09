@@ -270,6 +270,10 @@ describe('parseGitattributes', () => {
 
         // Assert
         expect(sut.rules[0]!.directoryOnly).toBe(true);
+        // The trailing `/` is stripped before deriving anchor + compiled body:
+        // `build` has no interior slash, so it is unanchored and matches `build`.
+        expect(sut.rules[0]!.anchored).toBe(false);
+        expect(sut.rules[0]!.compiled.test('build')).toBe(true);
         expect(attrs(sut.rules[0]!.attributes)).toEqual({ merge: false });
       });
     });
@@ -324,6 +328,19 @@ describe('parseGitattributes', () => {
 
         // Assert
         expect(sut.rules[0]!.pattern).toBe('ab');
+      });
+    });
+
+    describe('When the quote is never closed', () => {
+      it('Then the pattern is read up to end of line', () => {
+        // Arrange — no closing quote; the scanner consumes to the line end.
+        const input = '"unterminated text';
+
+        // Act
+        const sut = parseGitattributes(input);
+
+        // Assert
+        expect(sut.rules[0]!.pattern).toBe('unterminated text');
       });
     });
   });
