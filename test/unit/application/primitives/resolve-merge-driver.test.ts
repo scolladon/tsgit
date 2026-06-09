@@ -2,13 +2,21 @@ import { describe, expect, it } from 'vitest';
 
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { buildAttributeProvider } from '../../../../src/application/primitives/internal/read-gitattributes.js';
-import { resolveMergeDriver } from '../../../../src/application/primitives/resolve-merge-driver.js';
+import {
+  resolveMergeDriver,
+  resolvePathMergeSpec,
+} from '../../../../src/application/primitives/resolve-merge-driver.js';
 import type { FilePath } from '../../../../src/domain/objects/object-id.js';
 import type { Context } from '../../../../src/ports/context.js';
 
 const choose = async (ctx: Context, path: string) => {
   const provider = await buildAttributeProvider(ctx);
   return resolveMergeDriver(ctx, provider, path as FilePath);
+};
+
+const spec = async (ctx: Context, path: string) => {
+  const provider = await buildAttributeProvider(ctx);
+  return resolvePathMergeSpec(ctx, provider, path as FilePath);
 };
 
 const seed = (ctx: Context, attrs?: string, config?: string): Promise<void[]> =>
@@ -197,6 +205,85 @@ describe('resolveMergeDriver', () => {
 
         // Assert
         expect(sut).toEqual({ kind: 'text' });
+      });
+    });
+  });
+});
+
+describe('resolvePathMergeSpec', () => {
+  describe('Given no attributes', () => {
+    describe('When resolving the spec', () => {
+      it('Then the driver is text and the marker size defaults to 7', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+
+        // Act
+        const sut = await spec(ctx, 'a.txt');
+
+        // Assert
+        expect(sut).toEqual({ driver: { kind: 'text' }, markerSize: 7 });
+      });
+    });
+  });
+
+  describe('Given conflict-marker-size=15', () => {
+    describe('When resolving the spec', () => {
+      it('Then the marker size is 15', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '* conflict-marker-size=15\n');
+
+        // Act
+        const sut = await spec(ctx, 'a.txt');
+
+        // Assert
+        expect(sut.markerSize).toBe(15);
+      });
+    });
+  });
+
+  describe('Given merge=custom and conflict-marker-size=12 together', () => {
+    describe('When resolving the spec', () => {
+      it('Then both the external driver and the marker size are resolved in one pass', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(
+          ctx,
+          '* merge=custom conflict-marker-size=12\n',
+          '[merge "custom"]\n  driver = run %A\n',
+        );
+
+        // Act
+        const sut = await spec(ctx, 'a.txt');
+
+        // Assert
+        expect(sut).toEqual({
+          driver: { kind: 'external', command: 'run %A' },
+          markerSize: 12,
+        });
+      });
+    });
+  });
+
+  describe('Given a deeper .gitattributes overriding conflict-marker-size', () => {
+    describe('When resolving the spec for a nested path', () => {
+      it('Then the nearest directory rule wins', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.workDir}/.gitattributes`,
+          '* conflict-marker-size=7\n',
+        );
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.workDir}/sub/.gitattributes`,
+          '* conflict-marker-size=9\n',
+        );
+
+        // Act
+        const sut = await spec(ctx, 'sub/a.txt');
+
+        // Assert
+        expect(sut.markerSize).toBe(9);
       });
     });
   });
