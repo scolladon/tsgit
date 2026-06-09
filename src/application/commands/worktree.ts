@@ -22,7 +22,7 @@ import {
   worktreeGitfile,
   worktreeHeadContent,
 } from '../../domain/worktree/admin-files.js';
-import { worktreeAdminId } from '../../domain/worktree/admin-id.js';
+import { isUnsafeWorktreeId, worktreeAdminId } from '../../domain/worktree/admin-id.js';
 import {
   branchCheckedOut,
   notAWorktree,
@@ -210,6 +210,13 @@ export const worktreeAdd = async (
   await assertRepository(ctx);
   if (opts.path === '') throw worktreePathExists('');
   const worktreePath = resolveWorktreePath(ctx.cwd, opts.path) as FilePath;
+  // Defence in depth: the admin id is the path basename, joined onto
+  // `worktrees/<id>`. A normalised path basename can never contain `/` or `..`,
+  // but an empty basename (a path resolving to the filesystem root) would yield
+  // an unusable id — reject it up front.
+  if (isUnsafeWorktreeId(worktreePathBasename(worktreePath))) {
+    throw invalidOption('worktree add', `invalid worktree path '${opts.path}'`);
+  }
   await assertTargetFree(ctx, worktreePath);
   const oid = await resolveCommit(ctx, opts.commitish ?? 'HEAD');
   const tree = await readTree(ctx, oid);

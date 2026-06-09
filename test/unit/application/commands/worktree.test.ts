@@ -181,6 +181,18 @@ describe('worktreeAdd', () => {
     });
   });
 
+  describe('Given a path that resolves to the filesystem root', () => {
+    describe('When worktreeAdd runs', () => {
+      it('Then it refuses with INVALID_OPTION', async () => {
+        // Arrange
+        const { ctx } = await seedWithCommit();
+
+        // Act & Assert
+        await expectError(() => worktreeAdd(ctx, { path: '/' }), 'INVALID_OPTION');
+      });
+    });
+  });
+
   describe('Given a -b branch that already exists', () => {
     describe('When worktreeAdd runs', () => {
       it('Then it refuses with BRANCH_EXISTS', async () => {
@@ -190,6 +202,20 @@ describe('worktreeAdd', () => {
 
         // Act & Assert
         await expectError(() => worktreeAdd(ctx, { path: 'wt6', branch: 'dup' }), 'BRANCH_EXISTS');
+      });
+    });
+
+    describe('When worktreeAdd runs with force', () => {
+      it('Then it resets the branch and creates the worktree', async () => {
+        // Arrange
+        const { ctx } = await seedWithCommit();
+        await branchCreate(ctx, { name: 'dup' });
+
+        // Act
+        const result = await worktreeAdd(ctx, { path: 'wt6b', branch: 'dup', force: true });
+
+        // Assert
+        expect(result.branch).toBe('refs/heads/dup');
       });
     });
   });
@@ -280,6 +306,24 @@ describe('worktreeMove', () => {
 
         // Act & Assert
         await expectError(() => worktreeMove(ctx, 'wm3', 'dest'), 'WORKTREE_PATH_EXISTS');
+      });
+    });
+  });
+
+  describe('Given a locked worktree', () => {
+    describe('When worktreeMove runs with force', () => {
+      it('Then it relocates the worktree anyway', async () => {
+        // Arrange
+        const { ctx } = await seedWithCommit();
+        const added = await worktreeAdd(ctx, { path: 'wm4' });
+        await ctx.fs.writeUtf8(adminFile(ctx, added.id, 'locked'), '');
+
+        // Act
+        const result = await worktreeMove(ctx, 'wm4', 'wm4-moved', { force: true });
+
+        // Assert
+        expect(result.to).toBe('/repo/wm4-moved');
+        expect(await ctx.fs.exists('/repo/wm4-moved/a.txt')).toBe(true);
       });
     });
   });
