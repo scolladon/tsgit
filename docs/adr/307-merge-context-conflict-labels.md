@@ -29,7 +29,7 @@ The label strings (verified against git 2.54.0):
 | stash        | `Stash base`                  | `Updated upstream` | `Stashed changes`             |
 
 `<subj>` is git's `find_commit_subject` (first body line, verbatim);
-`<rev-as-typed>` is the merge argument unnormalised; the base label feeds the
+`<rev-as-typed>` is the merge argument exactly as typed; the base label feeds the
 driver `%S` only (tsgit writes no diff3 base marker in v1).
 
 ## Decision

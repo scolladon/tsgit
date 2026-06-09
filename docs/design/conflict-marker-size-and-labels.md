@@ -5,7 +5,7 @@
 Two coupled faithfulness gaps in the three-way content merge that underlies
 `merge` / `cherry-pick` / `revert` / `rebase` / `stash`:
 
-1. **Conflict-marker size** — git's `conflict-marker-size` gitattribute sets the
+1. **Conflict-marker size** — git's `conflict-marker-size` gitattributes attribute sets the
    length of the `<<<<<<<` / `=======` / `>>>>>>>` markers (default 7) and the
    external merge-driver `%L` placeholder. tsgit hardcodes 7 in both
    `writeConflictMarkers` and `runMergeDriver`.
