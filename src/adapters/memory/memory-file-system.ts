@@ -231,6 +231,10 @@ export class MemoryFileSystem implements FileSystem {
     const fileBytes = this.files.get(normalizedSrc);
     const linkTarget = this.symlinks.get(normalizedSrc);
     if (fileBytes === undefined && linkTarget === undefined) {
+      if (this.directories.has(normalizedSrc)) {
+        this.renameDirectory(normalizedSrc, normalizedDst);
+        return;
+      }
       throw fileNotFound(src);
     }
     // Invariant: files.set / symlinks.set always touch(); rm always deletes the timestamp.
@@ -251,6 +255,33 @@ export class MemoryFileSystem implements FileSystem {
     this.times.delete(normalizedSrc);
     this.times.set(normalizedDst, timestamp);
   };
+
+  /**
+   * Move a directory subtree by re-keying every files/symlinks/times/directories
+   * entry at `src` or under `src/` to the corresponding `dst` path. Mirrors a
+   * POSIX directory rename (what the node adapter does natively).
+   */
+  private renameDirectory(src: string, dst: string): void {
+    this.ensureParentDirs(dst);
+    const remap = (key: string): string => (key === src ? dst : `${dst}${key.slice(src.length)}`);
+    const moves = <V>(map: Map<string, V>): void => {
+      for (const [key, value] of [...map]) {
+        if (key === src || key.startsWith(`${src}/`)) {
+          map.delete(key);
+          map.set(remap(key), value);
+        }
+      }
+    };
+    for (const dir of [...this.directories]) {
+      if (dir === src || dir.startsWith(`${src}/`)) {
+        this.directories.delete(dir);
+        this.directories.add(remap(dir));
+      }
+    }
+    moves(this.files);
+    moves(this.symlinks);
+    moves(this.times);
+  }
 
   readlink = async (path: string): Promise<string> => {
     const normalized = this.resolve(path);

@@ -239,6 +239,30 @@ describe('MemoryFileSystem', () => {
       });
     });
 
+    describe('Given rename of a directory subtree', () => {
+      describe('When renaming', () => {
+        it('Then nested files, symlinks and dirs move and the source is gone', async () => {
+          // Arrange
+          const sut = new MemoryFileSystem({ rootDir: '/repo' });
+          await sut.write('/repo/wt/a.txt', new Uint8Array([1]));
+          await sut.write('/repo/wt/sub/b.txt', new Uint8Array([2]));
+          await sut.symlink('/repo/wt/a.txt', '/repo/wt/link');
+          await sut.mkdir('/repo/wt/empty');
+
+          // Act
+          await sut.rename('/repo/wt', '/repo/moved');
+
+          // Assert
+          expect(await sut.read('/repo/moved/a.txt')).toEqual(new Uint8Array([1]));
+          expect(await sut.read('/repo/moved/sub/b.txt')).toEqual(new Uint8Array([2]));
+          expect(await sut.readlink('/repo/moved/link')).toBe('/repo/wt/a.txt');
+          expect(await sut.exists('/repo/moved/empty')).toBe(true);
+          expect(await sut.exists('/repo/wt')).toBe(false);
+          expect(await sut.exists('/repo/wt/a.txt')).toBe(false);
+        });
+      });
+    });
+
     describe('Given regular file', () => {
       describe('When lstat', () => {
         it('Then returns isFile stat (non-symlink branch)', async () => {
