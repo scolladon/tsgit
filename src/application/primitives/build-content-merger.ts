@@ -18,6 +18,7 @@ import { runMergeDriver } from './run-merge-driver.js';
  * `[merge "<driver>"]`), and dispatches:
  *
  * - `text`     → the built-in line merge (`mergeContent`) — the default.
+ * - `union`    → the built-in line merge with overlaps concatenated, no markers.
  * - `binary`   → take `ours` and declare a conflict (git's `-merge`).
  * - `external` → run the configured command (when a `CommandRunner` is wired);
  *                otherwise fall back to the built-in line merge.
@@ -57,6 +58,8 @@ export const buildContentMerger = (ctx: Context): ContentMerger => {
         path: mergeCtx.path,
       });
     }
-    return mergeContent(base?.content, ours.content, theirs.content);
+    return mergeContent(base?.content, ours.content, theirs.content, {
+      favor: choice.kind === 'union' ? 'union' : 'none',
+    });
   };
 };

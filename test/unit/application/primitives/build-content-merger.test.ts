@@ -76,6 +76,29 @@ describe('buildContentMerger', () => {
     });
   });
 
+  describe('Given merge=union on an overlapping change', () => {
+    describe('When merging', () => {
+      it('Then it resolves cleanly by concatenating both sides', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, '* merge=union\n');
+        const sut = buildContentMerger(ctx);
+        const mergeCtx = await mergeCtxFor(ctx, {
+          base: 'a\nb\nc\n',
+          ours: 'a\nX\nc\n',
+          theirs: 'a\nY\nc\n',
+        });
+
+        // Act
+        const result = await sut(mergeCtx, undefined, new Uint8Array(0), new Uint8Array(0));
+
+        // Assert
+        expect(result.status).toBe('clean');
+        expect(result.status === 'clean' && dec(result.bytes)).toBe('a\nX\nY\nc\n');
+      });
+    });
+  });
+
   describe('Given a configured external driver and a wired CommandRunner', () => {
     describe('When merging', () => {
       it('Then the driver output becomes the merge result', async () => {
