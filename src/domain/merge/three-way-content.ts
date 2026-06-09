@@ -1,4 +1,5 @@
 import { diffLines, isBinary, splitLines } from '../diff/line-diff.js';
+import { bytesEqual } from '../objects/index.js';
 import { writeConflictMarkers } from './conflict-markers.js';
 import type { ConflictMarkerOptions, ContentMergeResult, MergeFavor } from './merge-types.js';
 import { buildMergeSegments, changesFromHunks, type MergeSegment } from './region-merge.js';
@@ -6,13 +7,6 @@ import { buildMergeSegments, changesFromHunks, type MergeSegment } from './regio
 const LF = 0x0a;
 
 export type MergeContentOptions = ConflictMarkerOptions & { readonly favor?: MergeFavor };
-
-function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
-  if (a.length !== b.length) return false;
-  // Stryker disable next-line EqualityOperator: equivalent — lengths are equal here, so at i===a.length both a[i] and b[i] are undefined and undefined !== undefined is false
-  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
-  return true;
-}
 
 function concatBytes(parts: ReadonlyArray<Uint8Array>): Uint8Array {
   let total = 0;

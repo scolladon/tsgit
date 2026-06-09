@@ -1,4 +1,5 @@
 import type { LineHunk } from '../diff/line-diff.js';
+import { bytesEqual } from '../objects/index.js';
 
 /** A contiguous edit one side made against the base: replace `[baseStart, baseEnd)` with `replacement`. */
 export interface ChangeRange {
@@ -22,13 +23,6 @@ export type MergeSegment =
 
 /** git coalesces two conflict regions separated by at most this many base lines. */
 export const MAX_CONFLICT_COALESCE_GAP = 3;
-
-function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
-  if (a.length !== b.length) return false;
-  // Stryker disable next-line EqualityOperator: equivalent — lengths are equal here, so at i===a.length both a[i] and b[i] are undefined and undefined !== undefined is false
-  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
-  return true;
-}
 
 function lineArraysEqual(a: ReadonlyArray<Uint8Array>, b: ReadonlyArray<Uint8Array>): boolean {
   if (a.length !== b.length) return false;
