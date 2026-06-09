@@ -35,6 +35,11 @@ export interface ParsedConfig {
     string,
     { readonly url?: string; readonly active?: boolean; readonly update?: string }
   >;
+  /** `[merge "<driver>"]` — configured custom merge drivers. */
+  readonly merge?: ReadonlyMap<
+    string,
+    { readonly name?: string; readonly driver?: string; readonly recursive?: string }
+  >;
   /** `[extensions]` — `partialClone` names the promisor remote of a partial clone. */
   readonly extensions?: { readonly partialClone?: string };
 }
@@ -245,6 +250,7 @@ interface MutableParsedConfig {
   >;
   branch?: Map<string, { remote?: string; merge?: string }>;
   submodule?: Map<string, { url?: string; active?: boolean; update?: string }>;
+  merge?: Map<string, { name?: string; driver?: string; recursive?: string }>;
   extensions?: { partialClone?: string };
 }
 
@@ -259,6 +265,8 @@ const dispatchSection = (acc: MutableParsedConfig, sec: IniSection): void => {
     mergeBranch(acc, sec.subsection, sec);
   } else if (sec.section === 'submodule' && sec.subsection !== undefined) {
     mergeSubmodule(acc, sec.subsection, sec);
+  } else if (sec.section === 'merge' && sec.subsection !== undefined) {
+    mergeMergeDriver(acc, sec.subsection, sec);
   } else if (sec.section === 'extensions' && sec.subsection === undefined) {
     mergeExtensions(acc, sec);
   }
@@ -399,6 +407,24 @@ const mergeSubmodule = (
   acc.submodule.set(name, next);
 };
 
+const mergeMergeDriver = (
+  acc: { merge?: Map<string, { name?: string; driver?: string; recursive?: string }> },
+  name: string,
+  sec: IniSection,
+): void => {
+  acc.merge ??= new Map();
+  const next: { name?: string; driver?: string; recursive?: string } = {
+    ...(acc.merge.get(name) ?? {}),
+  };
+  for (const { key, value } of sec.entries) {
+    const lowered = key.toLowerCase();
+    if (lowered === 'name') next.name = value;
+    else if (lowered === 'driver') next.driver = value;
+    else if (lowered === 'recursive') next.recursive = value;
+  }
+  acc.merge.set(name, next);
+};
+
 const mergeExtensions = (
   acc: { extensions?: { partialClone?: string } },
   sec: IniSection,
@@ -465,6 +491,7 @@ const finalize = (acc: MutableParsedConfig): ParsedConfig => {
     >;
     branch?: ReadonlyMap<string, { remote?: string; merge?: string }>;
     submodule?: ReadonlyMap<string, { url?: string; active?: boolean; update?: string }>;
+    merge?: ReadonlyMap<string, { name?: string; driver?: string; recursive?: string }>;
     extensions?: { partialClone?: string };
   } = {};
   const core = finalizeCore(acc.core);
@@ -482,6 +509,8 @@ const finalize = (acc: MutableParsedConfig): ParsedConfig => {
   if (acc.branch !== undefined && acc.branch.size > 0) out.branch = acc.branch;
   // Stryker disable next-line EqualityOperator,ConditionalExpression: equivalent — `acc.submodule` is only ever assigned after a `Map.set`, so when defined its size is always >= 1; `> 0`, `>= 0` and a constant `true` never differ.
   if (acc.submodule !== undefined && acc.submodule.size > 0) out.submodule = acc.submodule;
+  // Stryker disable next-line EqualityOperator,ConditionalExpression: equivalent — `acc.merge` is only ever assigned after a `Map.set`, so when defined its size is always >= 1; `> 0`, `>= 0` and a constant `true` never differ.
+  if (acc.merge !== undefined && acc.merge.size > 0) out.merge = acc.merge;
   return out;
 };
 

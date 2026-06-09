@@ -376,6 +376,94 @@ describe('primitives/config-read', () => {
     });
   });
 
+  describe('Given a [merge "custom"] section with name, driver and recursive', () => {
+    describe('When readConfig', () => {
+      it('Then parsed.merge.get("custom") is populated', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(
+          ctx,
+          '[merge "custom"]\n  name = my driver\n  driver = run %O %A %B\n  recursive = binary\n',
+        );
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert
+        expect(sut.merge?.get('custom')?.name).toBe('my driver');
+        expect(sut.merge?.get('custom')?.driver).toBe('run %O %A %B');
+        expect(sut.merge?.get('custom')?.recursive).toBe('binary');
+      });
+    });
+  });
+
+  describe('Given two [merge "<name>"] sections', () => {
+    describe('When readConfig', () => {
+      it('Then each driver is parsed independently', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[merge "a"]\n  driver = tool-a\n[merge "b"]\n  driver = tool-b\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert
+        expect(sut.merge?.get('a')?.driver).toBe('tool-a');
+        expect(sut.merge?.get('b')?.driver).toBe('tool-b');
+      });
+    });
+  });
+
+  describe('Given a [merge "custom"] section with only a driver', () => {
+    describe('When readConfig', () => {
+      it('Then name and recursive are undefined', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[merge "custom"]\n  driver = tool\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert
+        expect(sut.merge?.get('custom')?.driver).toBe('tool');
+        expect(sut.merge?.get('custom')?.name).toBeUndefined();
+        expect(sut.merge?.get('custom')?.recursive).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a subsectionless [merge] section', () => {
+    describe('When readConfig', () => {
+      it('Then it is ignored', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[merge]\n  driver = tool\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert
+        expect(sut.merge).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a config with no merge section', () => {
+    describe('When readConfig', () => {
+      it('Then parsed.merge is undefined', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[core]\n  bare = false\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert
+        expect(sut.merge).toBeUndefined();
+      });
+    });
+  });
+
   describe('Given a config with # comments and ; comments', () => {
     describe('When readConfig', () => {
       it('Then comments are skipped', async () => {
