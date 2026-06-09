@@ -428,6 +428,23 @@ assertions.
 | [300](../adr/300-extend-hook-name-union.md) | The six new hooks ship by **extending the `HookName` union + inserting calls**, exactly as 17.2's port was designed for — no new port, Context field, or adapter change. |
 | [301](../adr/301-informational-hook-semantics.md) | **Informational (`post-*`) hooks ignore their exit code** (non-throwing `runInformationalHook`), git-faithful; `prepare-commit-msg` runs even under `--no-verify`; `clone`'s `post-checkout` is omitted as observationally inert. |
 
+## 10a. Architecture pass
+
+Behaviour-preserving structural review of what the feature diff reaches — a
+**no-op**. The six new firings each sit at their command's lifecycle point with
+command-local arguments (`merge` result kind, checkout old/new oids, the rebase
+rewritten-pair list), exactly as the pre-existing `pre-commit` / `commit-msg` /
+`pre-push` sites do — the extension path 17.2 was built for (ADR-300). A shared
+hook registry was already weighed and rejected there (the args are command-local
+state no table could hold); the per-command flag/label constants are distinct
+command semantics, not shared literals (cross-command literal consolidation is
+26.1's remit, and these are not shared). Hexagonal layering is intact: domain
+`HookName` → primitive `runHook`/`runInformationalHook` → command call sites →
+adapter spawn. The two `post-checkout` sites in `checkout` were considered for a
+3-arg passthrough helper and left inline (trivial bodies; KISS over a cosmetic
+wrapper, unlike `rebase`'s `firePreRebase`/`firePostRewrite`, which carry real
+logic — the guard and the rewritten-list serialisation).
+
 ## 11. Risks & mitigations
 
 - **Arbitrary script execution / `core.hooksPath` traversal / env inheritance.**
