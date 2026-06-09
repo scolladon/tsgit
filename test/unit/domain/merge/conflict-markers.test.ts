@@ -168,6 +168,57 @@ describe('writeConflictMarkers — positive', () => {
   });
 });
 
+describe('writeConflictMarkers — marker size', () => {
+  describe('Given markerSize 1', () => {
+    describe('When writeConflictMarkers called', () => {
+      it('Then all three markers are a single character', () => {
+        // Arrange + Act
+        const sut = writeConflictMarkers([enc('a\n')], [enc('b\n')], {
+          labels: { ours: 'HEAD', theirs: 'feature' },
+          markerSize: 1,
+        });
+
+        // Assert
+        const text = new TextDecoder().decode(sut);
+        expect(text).toBe('< HEAD\na\n=\nb\n> feature\n');
+      });
+    });
+  });
+
+  describe('Given markerSize 15', () => {
+    describe('When writeConflictMarkers called', () => {
+      it('Then every marker run is 15 characters long', () => {
+        // Arrange + Act
+        const sut = writeConflictMarkers([enc('a\n')], [enc('b\n')], {
+          labels: { ours: 'HEAD', theirs: 'feature' },
+          markerSize: 15,
+        });
+
+        // Assert
+        const text = new TextDecoder().decode(sut);
+        expect(text).toContain(`${'<'.repeat(15)} HEAD\n`);
+        expect(text).toContain(`${'='.repeat(15)}\n`);
+        expect(text).toContain(`${'>'.repeat(15)} feature\n`);
+      });
+    });
+  });
+
+  describe('Given markerSize omitted', () => {
+    describe('When writeConflictMarkers called', () => {
+      it('Then it defaults to git`s 7-character markers', () => {
+        // Arrange + Act
+        const sut = writeConflictMarkers([enc('a\n')], [enc('b\n')], {
+          labels: { ours: 'HEAD', theirs: 'feature' },
+        });
+
+        // Assert
+        const text = new TextDecoder().decode(sut);
+        expect(text).toBe('<<<<<<< HEAD\na\n=======\nb\n>>>>>>> feature\n');
+      });
+    });
+  });
+});
+
 describe('writeConflictMarkers — label validation (negative)', () => {
   describe('Given label with \\\\n', () => {
     describe('When writeConflictMarkers called', () => {

@@ -8,6 +8,8 @@ const SEPARATOR_MARKER = '=======';
 const THEIRS_MARKER = '>>>>>>>';
 const FORBIDDEN_SUBSTRINGS = [OURS_MARKER, SEPARATOR_MARKER, THEIRS_MARKER, BASE_MARKER];
 const MAX_LABEL_LENGTH = 255;
+/** git's `DEFAULT_CONFLICT_MARKER_SIZE` — the marker run length when none is given. */
+const DEFAULT_MARKER_SIZE = 7;
 
 const encoder = new TextEncoder();
 const LF = 0x0a;
@@ -111,9 +113,10 @@ export function writeConflictMarkers(
     throw invalidMergeInput('conflict output exceeds MAX_CONFLICT_OUTPUT_BYTES');
   }
 
-  const openMarker = encoder.encode(`<<<<<<< ${oursLabel}\n`);
-  const separator = encoder.encode('=======\n');
-  const closeMarker = encoder.encode(`>>>>>>> ${theirsLabel}\n`);
+  const size = options.markerSize ?? DEFAULT_MARKER_SIZE;
+  const openMarker = encoder.encode(`${'<'.repeat(size)} ${oursLabel}\n`);
+  const separator = encoder.encode(`${'='.repeat(size)}\n`);
+  const closeMarker = encoder.encode(`${'>'.repeat(size)} ${theirsLabel}\n`);
   const oursBlock = concatEnsuringTrailingLf(oursLines);
   const theirsBlock = concatEnsuringTrailingLf(theirsLines);
 

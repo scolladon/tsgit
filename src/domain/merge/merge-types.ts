@@ -77,6 +77,8 @@ export interface ConflictMarkerOptions {
     readonly theirs?: string;
   };
   readonly conflictStyle?: 'merge' | 'diff3';
+  /** Marker run length (git's `conflict-marker-size`); defaults to 7 when omitted. */
+  readonly markerSize?: number;
 }
 
 export const MAX_CONFLICT_OUTPUT_BYTES = 256 * 1024 * 1024;
