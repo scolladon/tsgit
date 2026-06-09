@@ -7,24 +7,18 @@ import type { RefName } from '../../domain/objects/object-id.js';
 import { invalidReflogEntry } from '../../domain/reflog/error.js';
 import type { ReflogEntry } from '../../domain/reflog/reflog-entry.js';
 import { parseReflog, serializeReflogLine } from '../../domain/reflog/reflog-format.js';
-import { isPerWorktreeRef } from '../../domain/refs/index.js';
 import type { Context } from '../../ports/context.js';
-import { commonGitDir, logsDir, reflogPath } from './path-layout.js';
+import { logsDir, perWorktreeRefDir, reflogPath } from './path-layout.js';
 import { MAX_REFLOG_BYTES } from './types.js';
-
-// A per-worktree ref's reflog (logs/HEAD, …) lives in the worktree's own gitdir;
-// every shared ref logs under the common dir.
-const reflogDir = (ctx: Context, ref: RefName): string =>
-  isPerWorktreeRef(ref) ? ctx.layout.gitDir : commonGitDir(ctx);
 
 /** Append one entry to `ref`'s reflog, creating the file and parents as needed. */
 export async function appendReflog(ctx: Context, ref: RefName, entry: ReflogEntry): Promise<void> {
-  await ctx.fs.appendUtf8(reflogPath(reflogDir(ctx, ref), ref), serializeReflogLine(entry));
+  await ctx.fs.appendUtf8(reflogPath(perWorktreeRefDir(ctx, ref), ref), serializeReflogLine(entry));
 }
 
 /** Read `ref`'s reflog, oldest-first. Returns `[]` when the file is absent. */
 export async function readReflog(ctx: Context, ref: RefName): Promise<ReadonlyArray<ReflogEntry>> {
-  const path = reflogPath(reflogDir(ctx, ref), ref);
+  const path = reflogPath(perWorktreeRefDir(ctx, ref), ref);
   if (!(await ctx.fs.exists(path))) return [];
   const stat = await ctx.fs.stat(path);
   if (stat.size > MAX_REFLOG_BYTES) {
@@ -35,7 +29,7 @@ export async function readReflog(ctx: Context, ref: RefName): Promise<ReadonlyAr
 
 /** Whether `ref` has a reflog file at all. */
 export async function reflogExists(ctx: Context, ref: RefName): Promise<boolean> {
-  return ctx.fs.exists(reflogPath(reflogDir(ctx, ref), ref));
+  return ctx.fs.exists(reflogPath(perWorktreeRefDir(ctx, ref), ref));
 }
 
 /** Replace `ref`'s reflog with exactly `entries`. Used by expire / delete. */
@@ -45,12 +39,12 @@ export async function writeReflog(
   entries: ReadonlyArray<ReflogEntry>,
 ): Promise<void> {
   const text = entries.map(serializeReflogLine).join('');
-  await ctx.fs.writeUtf8(reflogPath(reflogDir(ctx, ref), ref), text);
+  await ctx.fs.writeUtf8(reflogPath(perWorktreeRefDir(ctx, ref), ref), text);
 }
 
 /** Remove `ref`'s reflog file. A no-op when the file is already absent. */
 export async function deleteReflog(ctx: Context, ref: RefName): Promise<void> {
-  const path = reflogPath(reflogDir(ctx, ref), ref);
+  const path = reflogPath(perWorktreeRefDir(ctx, ref), ref);
   if (await ctx.fs.exists(path)) {
     await ctx.fs.rm(path);
   }

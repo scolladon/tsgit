@@ -3,14 +3,13 @@
  */
 import type { ObjectId, RefName } from '../../domain/objects/index.js';
 import {
-  isPerWorktreeRef,
   type PackedRefs,
   parseLooseRef,
   parsePackedRefs,
   serializeDirectRef,
 } from '../../domain/refs/index.js';
 import type { Context } from '../../ports/context.js';
-import { commonGitDir, looseRefPath, packedRefsPath } from './path-layout.js';
+import { commonGitDir, looseRefPath, packedRefsPath, perWorktreeRefDir } from './path-layout.js';
 
 export interface RefStore {
   /**
@@ -50,11 +49,7 @@ export function getRefStore(ctx: Context): RefStore {
 export function createRefStore(ctx: Context): RefStore {
   let packedCache: { readonly parsed: PackedRefs; readonly mtimeKey: string } | undefined;
 
-  // Per-worktree refs (HEAD, ORIG_HEAD, refs/bisect/…) live in the worktree's
-  // own gitdir; every shared ref (refs/heads, refs/tags, …) lives in the common
-  // dir, alongside packed-refs.
-  const refDir = (name: RefName): string =>
-    isPerWorktreeRef(name) ? ctx.layout.gitDir : commonGitDir(ctx);
+  const refDir = (name: RefName): string => perWorktreeRefDir(ctx, name);
 
   async function loadPackedRefs(): Promise<PackedRefs> {
     const path = packedRefsPath(commonGitDir(ctx));
