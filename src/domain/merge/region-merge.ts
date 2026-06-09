@@ -1,5 +1,5 @@
 import type { LineHunk } from '../diff/line-diff.js';
-import { bytesEqual } from '../objects/index.js';
+import { bytesEqual } from '../objects/encoding.js';
 
 /** A contiguous edit one side made against the base: replace `[baseStart, baseEnd)` with `replacement`. */
 export interface ChangeRange {

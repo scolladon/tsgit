@@ -11,7 +11,7 @@ export { parseCommitContent, serializeCommitContent } from './commit.js';
 // Commit message
 export { stripspace } from './commit-message.js';
 // Encoding (public subset)
-export { bytesEqual, bytesToHex, compareBytes, hexToBytes } from './encoding.js';
+export { bytesToHex, compareBytes, hexToBytes } from './encoding.js';
 // Errors
 export type { DomainObjectError } from './error.js';
 export {

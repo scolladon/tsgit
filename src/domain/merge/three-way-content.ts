@@ -1,5 +1,5 @@
 import { diffLines, isBinary, splitLines } from '../diff/line-diff.js';
-import { bytesEqual } from '../objects/index.js';
+import { bytesEqual } from '../objects/encoding.js';
 import { writeConflictMarkers } from './conflict-markers.js';
 import type { ConflictMarkerOptions, ContentMergeResult, MergeFavor } from './merge-types.js';
 import { buildMergeSegments, changesFromHunks, type MergeSegment } from './region-merge.js';

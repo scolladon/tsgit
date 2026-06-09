@@ -1,4 +1,4 @@
-import { bytesEqual } from '../objects/index.js';
+import { bytesEqual } from '../objects/encoding.js';
 
 export interface LineHunk {
   readonly kind: 'common' | 'ours-only' | 'theirs-only';
