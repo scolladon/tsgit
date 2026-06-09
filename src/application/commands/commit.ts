@@ -13,10 +13,15 @@ import { readIndex } from '../primitives/read-index.js';
 import { readObject } from '../primitives/read-object.js';
 import { recordRefUpdate } from '../primitives/record-ref-update.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
+import { runInformationalHook } from '../primitives/run-hook.js';
 import { updateRef } from '../primitives/update-ref.js';
 import { writeTree } from '../primitives/write-tree.js';
 import { clearCherryPickHead, readCherryPickHead } from './internal/cherry-pick-state.js';
-import { applyCommitMsgHook, runPreCommitHook } from './internal/commit-hooks.js';
+import {
+  applyCommitMessageHooks,
+  type PrepareCommitMsgSource,
+  runPreCommitHook,
+} from './internal/commit-hooks.js';
 import {
   resolveAuthor,
   resolveCommitter,
@@ -78,11 +83,12 @@ export const commit = async (ctx: Context, opts: CommitOptions): Promise<CommitR
   // pre-commit runs before the index is read, so a hook that re-stages files
   // (e.g. a formatter) is reflected in the committed tree.
   await runPreCommitHook(ctx, noVerify);
-  const resolved = await resolveCommitMessage(
-    ctx,
-    opts,
-    mergeHead !== undefined || cherryPickHead !== undefined || revertHead !== undefined,
-  );
+  // A resolution commit for a pending merge / cherry-pick / revert reuses
+  // MERGE_MSG as its draft — git's `merge` message source for prepare-commit-msg.
+  const resolvingPending =
+    mergeHead !== undefined || cherryPickHead !== undefined || revertHead !== undefined;
+  const messageSource: PrepareCommitMsgSource = resolvingPending ? 'merge' : 'message';
+  const resolved = await resolveCommitMessage(ctx, opts, resolvingPending);
   const config = await readConfig(ctx);
   const configUser = toAuthor(config.user);
   const author = resolveAuthor(buildResolverInput(opts.author, configUser));
@@ -102,11 +108,12 @@ export const commit = async (ctx: Context, opts: CommitOptions): Promise<CommitR
     const parentTree = await getParentTree(ctx, parentId);
     if (parentTree === treeId) throw nothingToCommit();
   }
-  // commit-msg runs once the commit is certain to happen; it may rewrite the
-  // message, so its result feeds both the commit object and the reflog.
-  const message = await applyCommitMsgHook(ctx, resolved, {
+  // The message hooks run once the commit is certain to happen; they may
+  // rewrite the message, so the result feeds both the commit object and the reflog.
+  const message = await applyCommitMessageHooks(ctx, resolved, {
     noVerify,
     allowEmptyMessage: opts.allowEmptyMessage ?? false,
+    source: messageSource,
   });
   const commitData: CommitData = {
     tree: treeId,
@@ -119,6 +126,27 @@ export const commit = async (ctx: Context, opts: CommitOptions): Promise<CommitR
   const id = await createCommit(ctx, commitData);
   const branch = head.kind === 'symbolic' ? head.target : undefined;
   const reflogMessage = commitReflogMessage(message, parentId, mergeHead, cherryPickHead);
+  await writeCommitRef(ctx, { branch, id, parentId, reflogMessage });
+  await clearResolvedState(ctx, markers);
+  // post-commit is informational — it runs after the commit lands and cannot
+  // abort it (git ignores its exit code).
+  await runInformationalHook(ctx, 'post-commit');
+  return { id, tree: treeId, branch, parents };
+};
+
+interface CommitRefUpdate {
+  readonly branch: RefName | undefined;
+  readonly id: ObjectId;
+  readonly parentId: ObjectId | undefined;
+  readonly reflogMessage: string;
+}
+
+/**
+ * Point the commit's target at the new commit: a branch ref via `updateRef`
+ * (CAS on its prior tip), or detached HEAD via a raw write + reflog record.
+ */
+const writeCommitRef = async (ctx: Context, update: CommitRefUpdate): Promise<void> => {
+  const { branch, id, parentId, reflogMessage } = update;
   if (branch !== undefined) {
     // Stryker disable next-line ObjectLiteral: equivalent — parentId is read from `branch` itself and the library is single-threaded, so the CAS `expected` always equals the ref's current value; dropping it cannot change the outcome.
     await updateRef(
@@ -127,12 +155,10 @@ export const commit = async (ctx: Context, opts: CommitOptions): Promise<CommitR
       id,
       parentId !== undefined ? { expected: parentId, reflogMessage } : { reflogMessage },
     );
-  } else {
-    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, `${id}\n`);
-    await recordRefUpdate(ctx, 'HEAD' as RefName, parentId ?? ZERO_OID, id, reflogMessage);
+    return;
   }
-  await clearResolvedState(ctx, markers);
-  return { id, tree: treeId, branch, parents };
+  await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, `${id}\n`);
+  await recordRefUpdate(ctx, 'HEAD' as RefName, parentId ?? ZERO_OID, id, reflogMessage);
 };
 
 interface PendingMarkers {

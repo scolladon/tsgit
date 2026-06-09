@@ -2,24 +2,28 @@ import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../../src/adapters/memory/memory-adapter.js';
 import { MemoryHookRunner } from '../../../../../src/adapters/memory/memory-hook-runner.js';
 import {
-  applyCommitMsgHook,
+  applyCommitMessageHooks,
   runPreCommitHook,
 } from '../../../../../src/application/commands/internal/commit-hooks.js';
 import type { TsgitError } from '../../../../../src/domain/error.js';
+import type { HookName } from '../../../../../src/domain/hooks/index.js';
 import type { Context } from '../../../../../src/ports/context.js';
 import type { HookRunner } from '../../../../../src/ports/hook-runner.js';
 
 /**
- * Build a memory Context whose `commit-msg` hook optionally overwrites
- * `.git/COMMIT_EDITMSG` with `commitMsgRewrite` — the only way to simulate a
- * message-rewriting hook, since a hook signals a rewrite via the file.
+ * Build a memory Context whose message hooks optionally overwrite
+ * `.git/COMMIT_EDITMSG` with the given replacement — the only way to simulate a
+ * message-rewriting hook, since a hook signals a rewrite via the file. A
+ * rewrite map keyed by hook name lets a test compose prepare-commit-msg and
+ * commit-msg edits in order.
  */
-const hookedContext = (commitMsgRewrite?: string): Context => {
+const hookedContext = (rewrites: Partial<Record<HookName, string>> = {}): Context => {
   let ctx!: Context;
   const runner: HookRunner = {
     run: async (request) => {
-      if (request.name === 'commit-msg' && commitMsgRewrite !== undefined) {
-        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/COMMIT_EDITMSG`, commitMsgRewrite);
+      const replacement = rewrites[request.name];
+      if (replacement !== undefined) {
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/COMMIT_EDITMSG`, replacement);
       }
       return { kind: 'ran', exitCode: 0, stdout: '', stderr: '' };
     },
@@ -28,7 +32,7 @@ const hookedContext = (commitMsgRewrite?: string): Context => {
   return ctx;
 };
 
-const opts = { noVerify: false, allowEmptyMessage: false };
+const opts = { noVerify: false, allowEmptyMessage: false, source: 'message' as const };
 
 describe('commands/internal commit-hooks runPreCommitHook', () => {
   describe('Given noVerify true', () => {
@@ -89,31 +93,68 @@ describe('commands/internal commit-hooks runPreCommitHook', () => {
   });
 });
 
-describe('commands/internal commit-hooks applyCommitMsgHook', () => {
-  describe('Given noVerify true', () => {
-    describe('When applyCommitMsgHook', () => {
-      it('Then it returns the message unchanged and writes no editmsg file', async () => {
+describe('commands/internal commit-hooks applyCommitMessageHooks', () => {
+  describe('Given a runner and source message', () => {
+    describe('When applyCommitMessageHooks', () => {
+      it('Then prepare-commit-msg fires before commit-msg with the editmsg path and source', async () => {
         // Arrange
-        const ctx = createMemoryContext({ hooks: new MemoryHookRunner() });
+        const runner = new MemoryHookRunner();
+        const ctx = createMemoryContext({ hooks: runner });
+        const editMsg = `${ctx.layout.gitDir}/COMMIT_EDITMSG`;
 
         // Act
-        const result = await applyCommitMsgHook(ctx, 'original', { ...opts, noVerify: true });
+        await applyCommitMessageHooks(ctx, 'msg', opts);
 
         // Assert
-        expect(result).toBe('original');
-        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/COMMIT_EDITMSG`)).toBe(false);
+        expect(runner.calls.map((c) => c.name)).toEqual(['prepare-commit-msg', 'commit-msg']);
+        expect(runner.calls[0]?.args).toEqual([editMsg, 'message']);
+        expect(runner.calls[1]?.args).toEqual([editMsg]);
+      });
+    });
+  });
+
+  describe('Given source merge', () => {
+    describe('When applyCommitMessageHooks', () => {
+      it('Then prepare-commit-msg receives the merge source', async () => {
+        // Arrange
+        const runner = new MemoryHookRunner();
+        const ctx = createMemoryContext({ hooks: runner });
+
+        // Act
+        await applyCommitMessageHooks(ctx, 'msg', { ...opts, source: 'merge' });
+
+        // Assert
+        expect(runner.calls[0]?.args).toEqual([`${ctx.layout.gitDir}/COMMIT_EDITMSG`, 'merge']);
+      });
+    });
+  });
+
+  describe('Given noVerify true and a runner', () => {
+    describe('When applyCommitMessageHooks', () => {
+      it('Then prepare-commit-msg still fires, commit-msg does not, and COMMIT_EDITMSG is written', async () => {
+        // Arrange — git's --no-verify bypasses only pre-commit + commit-msg;
+        // prepare-commit-msg runs regardless.
+        const runner = new MemoryHookRunner();
+        const ctx = createMemoryContext({ hooks: runner });
+
+        // Act
+        await applyCommitMessageHooks(ctx, 'msg', { ...opts, noVerify: true });
+
+        // Assert
+        expect(runner.calls.map((c) => c.name)).toEqual(['prepare-commit-msg']);
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/COMMIT_EDITMSG`)).toBe(true);
       });
     });
   });
 
   describe('Given no hook runner', () => {
-    describe('When applyCommitMsgHook', () => {
+    describe('When applyCommitMessageHooks', () => {
       it('Then it returns the message unchanged without writing the editmsg file', async () => {
         // Arrange
         const ctx = createMemoryContext();
 
         // Act
-        const result = await applyCommitMsgHook(ctx, 'original', opts);
+        const result = await applyCommitMessageHooks(ctx, 'original', opts);
 
         // Assert — no runner ⇒ the round-trip is skipped entirely.
         expect(result).toBe('original');
@@ -123,13 +164,13 @@ describe('commands/internal commit-hooks applyCommitMsgHook', () => {
   });
 
   describe('Given a hook that does not touch the file', () => {
-    describe('When applyCommitMsgHook', () => {
+    describe('When applyCommitMessageHooks', () => {
       it('Then it returns the sanitised message', async () => {
         // Arrange
         const ctx = hookedContext();
 
         // Act
-        const result = await applyCommitMsgHook(ctx, '  spaced  ', opts);
+        const result = await applyCommitMessageHooks(ctx, '  spaced  ', opts);
 
         // Assert — the round-trip re-sanitises (stripspace) the message: trailing
         // whitespace + blank lines go, leading whitespace and a single newline stay.
@@ -139,13 +180,13 @@ describe('commands/internal commit-hooks applyCommitMsgHook', () => {
   });
 
   describe('Given a commit-msg hook that rewrites COMMIT_EDITMSG', () => {
-    describe('When applyCommitMsgHook', () => {
+    describe('When applyCommitMessageHooks', () => {
       it('Then it returns the rewritten message', async () => {
         // Arrange
-        const ctx = hookedContext('rewritten by hook');
+        const ctx = hookedContext({ 'commit-msg': 'rewritten by hook' });
 
         // Act
-        const result = await applyCommitMsgHook(ctx, 'original', opts);
+        const result = await applyCommitMessageHooks(ctx, 'original', opts);
 
         // Assert
         expect(result).toBe('rewritten by hook\n');
@@ -153,16 +194,49 @@ describe('commands/internal commit-hooks applyCommitMsgHook', () => {
     });
   });
 
+  describe('Given a prepare-commit-msg and a commit-msg hook that both rewrite', () => {
+    describe('When applyCommitMessageHooks', () => {
+      it('Then the commit-msg rewrite (last) wins, proving order', async () => {
+        // Arrange
+        const ctx = hookedContext({
+          'prepare-commit-msg': 'from prepare',
+          'commit-msg': 'from commit-msg',
+        });
+
+        // Act
+        const result = await applyCommitMessageHooks(ctx, 'original', opts);
+
+        // Assert — commit-msg runs after prepare-commit-msg, so its edit is final.
+        expect(result).toBe('from commit-msg\n');
+      });
+    });
+  });
+
+  describe('Given only a prepare-commit-msg hook that rewrites', () => {
+    describe('When applyCommitMessageHooks', () => {
+      it('Then the prepare-commit-msg rewrite is picked up', async () => {
+        // Arrange
+        const ctx = hookedContext({ 'prepare-commit-msg': 'from prepare' });
+
+        // Act
+        const result = await applyCommitMessageHooks(ctx, 'original', opts);
+
+        // Assert
+        expect(result).toBe('from prepare\n');
+      });
+    });
+  });
+
   describe('Given a commit-msg hook that empties the message and allowEmptyMessage false', () => {
-    describe('When applyCommitMsgHook', () => {
+    describe('When applyCommitMessageHooks', () => {
       it('Then it throws EMPTY_COMMIT_MESSAGE', async () => {
         // Arrange
-        const ctx = hookedContext('   ');
+        const ctx = hookedContext({ 'commit-msg': '   ' });
 
         // Act
         let caught: unknown;
         try {
-          await applyCommitMsgHook(ctx, 'original', opts);
+          await applyCommitMessageHooks(ctx, 'original', opts);
         } catch (err) {
           caught = err;
         }
@@ -174,13 +248,13 @@ describe('commands/internal commit-hooks applyCommitMsgHook', () => {
   });
 
   describe('Given a commit-msg hook that empties the message and allowEmptyMessage true', () => {
-    describe('When applyCommitMsgHook', () => {
+    describe('When applyCommitMessageHooks', () => {
       it('Then it returns an empty string', async () => {
         // Arrange
-        const ctx = hookedContext('   ');
+        const ctx = hookedContext({ 'commit-msg': '   ' });
 
         // Act
-        const result = await applyCommitMsgHook(ctx, 'original', {
+        const result = await applyCommitMessageHooks(ctx, 'original', {
           ...opts,
           allowEmptyMessage: true,
         });
@@ -191,8 +265,37 @@ describe('commands/internal commit-hooks applyCommitMsgHook', () => {
     });
   });
 
+  describe('Given a prepare-commit-msg hook that exits non-zero', () => {
+    describe('When applyCommitMessageHooks', () => {
+      it('Then it throws HOOK_FAILED and commit-msg never runs', async () => {
+        // Arrange
+        const runner = new MemoryHookRunner({
+          'prepare-commit-msg': { kind: 'ran', exitCode: 1, stdout: '', stderr: 'prep bad' },
+        });
+        const ctx = createMemoryContext({ hooks: runner });
+
+        // Act
+        let caught: unknown;
+        try {
+          await applyCommitMessageHooks(ctx, 'original', opts);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({
+          code: 'HOOK_FAILED',
+          hook: 'prepare-commit-msg',
+          exitCode: 1,
+          stderr: 'prep bad',
+        });
+        expect(runner.calls.map((c) => c.name)).toEqual(['prepare-commit-msg']);
+      });
+    });
+  });
+
   describe('Given a commit-msg hook that exits non-zero', () => {
-    describe('When applyCommitMsgHook', () => {
+    describe('When applyCommitMessageHooks', () => {
       it('Then it throws HOOK_FAILED', async () => {
         // Arrange
         const ctx = createMemoryContext({
@@ -204,7 +307,7 @@ describe('commands/internal commit-hooks applyCommitMsgHook', () => {
         // Act
         let caught: unknown;
         try {
-          await applyCommitMsgHook(ctx, 'original', opts);
+          await applyCommitMessageHooks(ctx, 'original', opts);
         } catch (err) {
           caught = err;
         }
@@ -216,24 +319,6 @@ describe('commands/internal commit-hooks applyCommitMsgHook', () => {
           exitCode: 1,
           stderr: 'bad',
         });
-      });
-    });
-  });
-
-  describe('Given a hook runner', () => {
-    describe('When applyCommitMsgHook', () => {
-      it('Then the commit-msg hook receives the COMMIT_EDITMSG path as its only argument', async () => {
-        // Arrange
-        const runner = new MemoryHookRunner();
-        const ctx = createMemoryContext({ hooks: runner });
-
-        // Act
-        await applyCommitMsgHook(ctx, 'msg', opts);
-
-        // Assert
-        expect(runner.calls).toHaveLength(1);
-        expect(runner.calls[0]?.name).toBe('commit-msg');
-        expect(runner.calls[0]?.args).toEqual([`${ctx.layout.gitDir}/COMMIT_EDITMSG`]);
       });
     });
   });
