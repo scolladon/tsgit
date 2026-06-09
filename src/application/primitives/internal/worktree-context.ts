@@ -22,6 +22,10 @@ export const deriveWorktreeContext = (
   const { promisor: _promisor, hooks: _hooks, ...rest } = ctx;
   return Object.freeze({
     ...rest,
+    // The child reaches both the worktree path (working-tree files) and the
+    // common dir (objects/admin); `worktreeFs` confines it to exactly those
+    // (ADR-298). Falls back to the parent fs on sandboxed adapters.
+    fs: ctx.worktreeFs?.(absWorktreePath) ?? ctx.fs,
     layout: Object.freeze({
       workDir: absWorktreePath,
       gitDir,

@@ -79,7 +79,12 @@ const linkedEntry = async (ctx: Context, adminDir: string): Promise<WorktreeEntr
   ) as FilePath;
   const resolved = await resolveHead(ctx, await ctx.fs.readUtf8(`${adminDir}/HEAD`));
   const locked = await readLocked(ctx, adminDir);
-  const prunable = (await ctx.fs.exists(gitdirPointer)) ? undefined : { reason: PRUNABLE_REASON };
+  // The worktree dir lives outside workDir, so probe it through the worktree fs
+  // (confined to the worktree path + common dir; ADR-298).
+  const worktreeFs = ctx.worktreeFs?.(path) ?? ctx.fs;
+  const prunable = (await worktreeFs.exists(gitdirPointer))
+    ? undefined
+    : { reason: PRUNABLE_REASON };
   return {
     path,
     bare: false,

@@ -326,6 +326,21 @@ export const openRepository = async (
           ),
           transport: wrapTransportValidator(detected.transport, opts.config),
         };
+  // ADR-298: a linked worktree lives outside workDir and a worktree Context must
+  // reach BOTH the worktree path and the common dir. `worktreeFs` re-wraps the
+  // raw adapter fs with a multi-root validator confined to exactly those two
+  // subtrees (or returns the raw fs when containment is opted out).
+  // The facade opens a main/normal repo (linked-worktree discovery is deferred,
+  // ADR-296), so its common dir is the gitDir.
+  const commonDir = fallback.layout.gitDir;
+  const worktreeFs = (worktreePath: string): FileSystem =>
+    opts.unsafeRawAdapters === true
+      ? detected.fs
+      : wrapFsValidator(
+          detected.fs,
+          [worktreePath, commonDir],
+          computeConfigScopePaths(detected.fs),
+        );
   const config = opts.config !== undefined ? deepFreeze({ ...opts.config }) : undefined;
   const controller = new AbortController();
   const signal =
@@ -345,6 +360,7 @@ export const openRepository = async (
     hashConfig: fallback.hashConfig,
     deltaCache: fallback.deltaCache,
     signal,
+    worktreeFs,
   };
   const sanitizedLogger = opts.logger !== undefined ? wrapLoggerSanitizer(opts.logger) : undefined;
   // `false` fully disables hooks; otherwise an explicit runner overrides the

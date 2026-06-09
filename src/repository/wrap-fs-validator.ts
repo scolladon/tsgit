@@ -30,12 +30,16 @@ const sanitizeAllowlist = (paths: ReadonlyArray<string>): ReadonlyArray<string> 
 
 export const wrapFsValidator = (
   fs: FileSystem,
-  cwd: string,
+  roots: string | ReadonlyArray<string>,
   allowExternalPaths: ReadonlyArray<string> = [],
 ): FileSystem => {
+  // A path is permitted when it is contained in ANY root (a worktree Context is
+  // confined to its worktree path PLUS the common dir — ADR-298). A single
+  // string is the one-root case.
+  const rootList = typeof roots === 'string' ? [roots] : roots;
   const allowSet = new Set(sanitizeAllowlist(allowExternalPaths));
   const guard = (path: string): void => {
-    if (isContainedIn(path, cwd)) return;
+    if (rootList.some((root) => isContainedIn(path, root))) return;
     if (allowSet.has(path)) return;
     throw pathspecOutsideRepo(path as FilePath);
   };

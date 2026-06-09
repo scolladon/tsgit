@@ -22,6 +22,46 @@ describe('deriveWorktreeContext', () => {
     });
   });
 
+  describe('Given a parent Context exposing a worktreeFs capability', () => {
+    describe('When deriveWorktreeContext runs', () => {
+      it('Then the child fs is the worktree-confined fs for that path', () => {
+        // Arrange
+        const base = createMemoryContext();
+        const marker = { marker: true } as never;
+        const calls: string[] = [];
+        const parent = {
+          ...base,
+          worktreeFs: (p: string) => {
+            calls.push(p);
+            return marker;
+          },
+        };
+
+        // Act
+        const sut = deriveWorktreeContext(parent, 'wt', '/abs/wt');
+
+        // Assert
+        expect(sut.fs).toBe(marker);
+        expect(calls).toEqual(['/abs/wt']);
+      });
+    });
+  });
+
+  describe('Given a parent Context with no worktreeFs capability', () => {
+    describe('When deriveWorktreeContext runs', () => {
+      it('Then the child fs falls back to the parent fs', () => {
+        // Arrange
+        const parent = createMemoryContext();
+
+        // Act
+        const sut = deriveWorktreeContext(parent, 'wt', '/abs/wt');
+
+        // Assert
+        expect(sut.fs).toBe(parent.fs);
+      });
+    });
+  });
+
   describe('Given a parent Context carrying promisor and hooks', () => {
     describe('When deriveWorktreeContext runs', () => {
       it('Then the child drops promisor and hooks', () => {
