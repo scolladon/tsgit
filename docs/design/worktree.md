@@ -159,6 +159,22 @@ Context needs to behave like a real linked worktree.
 - `add`'s materialise (objects ← commonDir, index → admin, files → worktree),
 - `remove`'s dirty-check (`status(child)`).
 
+### FS containment escape (ADR-298)
+
+A linked worktree lives **outside** `workDir`, but tsgit confines all I/O to
+`workDir` (`wrapFsValidator` / memory root). Worktree paths are dynamic, and a
+worktree child Context must reach two disjoint subtrees (the worktree path + the
+common dir). So `Context` gains a facade-provided capability
+`worktreeFs?: (worktreePath) => FileSystem` that re-wraps the **raw** adapter fs
+with a **multi-root** validator confined to exactly `[worktreePath, commonDir]`
+(`wrapFsValidator` is generalised to accept several roots). Worktree commands
+validate each path (absolute, normalised, no `..`) and route worktree-directory
+I/O — materialise, the `.git` gitfile, `move`/`remove`, `list`'s prunable probe —
+through `ctx.worktreeFs?.(path) ?? ctx.fs`; admin/ref/object I/O stays on
+`ctx.fs`. `deriveWorktreeContext`'s child fs is `ctx.worktreeFs?.(path) ?? ctx.fs`.
+When unset (memory/browser sandboxes) worktrees are confined under the adapter
+root. See ADR-298.
+
 ## Faithful on-disk behaviour (verified against git 2.54.0)
 
 ### Admin layout, per linked worktree
