@@ -6,33 +6,17 @@ import {
   parseGitattributes,
 } from '../../../domain/attributes/index.js';
 import { gitattributesFileTooLarge } from '../../../domain/commands/error.js';
-import { TsgitError } from '../../../domain/error.js';
 import type { FilePath } from '../../../domain/objects/object-id.js';
 import type { Context } from '../../../ports/context.js';
 import { readConfig } from '../config-read.js';
 import { commonGitDir } from '../path-layout.js';
 import { MAX_GITATTRIBUTES_BYTES } from '../types.js';
-
-/** Strip the directory prefix from a path before embedding it in an error payload. */
-const sanitizedErrorPath = (path: string): FilePath => {
-  const slash = path.lastIndexOf('/');
-  return (slash === -1 ? path : path.slice(slash + 1)) as FilePath;
-};
+import { expandUserPath, loadCappedUtf8 } from './read-capped-file.js';
 
 /** Load + parse one attributes file; `undefined` when absent, symlink, or a directory. */
 const loadAndParse = async (ctx: Context, path: string): Promise<ParsedAttributes | undefined> => {
-  let stat: Awaited<ReturnType<Context['fs']['lstat']>>;
-  try {
-    stat = await ctx.fs.lstat(path);
-  } catch (err) {
-    if (err instanceof TsgitError && err.data.code === 'FILE_NOT_FOUND') return undefined;
-    throw err;
-  }
-  if (!stat.isFile || stat.isSymbolicLink) return undefined;
-  if (stat.size > MAX_GITATTRIBUTES_BYTES) {
-    throw gitattributesFileTooLarge(sanitizedErrorPath(path), stat.size, MAX_GITATTRIBUTES_BYTES);
-  }
-  return parseGitattributes(await ctx.fs.readUtf8(path));
+  const text = await loadCappedUtf8(ctx, path, MAX_GITATTRIBUTES_BYTES, gitattributesFileTooLarge);
+  return text === undefined ? undefined : parseGitattributes(text);
 };
 
 const readDir = (ctx: Context, dir: FilePath | ''): Promise<ParsedAttributes | undefined> =>
@@ -45,15 +29,6 @@ const readDir = (ctx: Context, dir: FilePath | ''): Promise<ParsedAttributes | u
 
 const readInfo = (ctx: Context): Promise<ParsedAttributes | undefined> =>
   loadAndParse(ctx, `${commonGitDir(ctx)}/info/attributes`);
-
-const expandUserPath = (ctx: Context, raw: string): string | undefined => {
-  if (raw === '~') return ctx.layout.homeDir;
-  if (raw.startsWith('~/')) {
-    if (ctx.layout.homeDir === undefined) return undefined;
-    return `${ctx.layout.homeDir}/${raw.slice(2)}`;
-  }
-  return raw;
-};
 
 const readGlobal = async (ctx: Context): Promise<ParsedAttributes | undefined> => {
   const raw = (await readConfig(ctx)).core?.attributesFile;
