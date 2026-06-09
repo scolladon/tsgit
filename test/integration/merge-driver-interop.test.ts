@@ -187,6 +187,45 @@ describe.skipIf(!GIT_AVAILABLE)('merge interop — custom merge drivers', () => 
     });
   });
 
+  describe('Given a `merge=union` attribute on an overlapping change', () => {
+    describe('When both sides change the same line', () => {
+      it('Then both concatenate the two sides with no markers, matching git', async () => {
+        // Arrange — ours and theirs overlap on the middle line (built-in would conflict);
+        // union resolves cleanly by keeping both sides between the shared edges.
+        await writeBoth('.gitattributes', 'file.txt merge=union\n');
+        await writeBoth('file.txt', 'a\nb\nc\n');
+        await commitBoth('base', ['.gitattributes', 'file.txt']);
+        await branchBoth('theirs');
+        await writeBoth('file.txt', 'a\nY\nc\n');
+        await commitBoth('theirs', ['file.txt']);
+        await checkoutBoth('main');
+        await writeBoth('file.txt', 'a\nX\nc\n');
+        await commitBoth('ours', ['file.txt']);
+
+        // Act
+        runGit(
+          ['-C', pair.peer, '-c', 'commit.gpgsign=false', 'merge', '--no-ff', '-m', 'm', 'theirs'],
+          {
+            env: COMMIT_ENV,
+          },
+        );
+        const result = await repo.merge.run({
+          rev: 'theirs',
+          message: 'm',
+          author: AUTHOR,
+          committer: AUTHOR,
+        });
+
+        // Assert
+        expect(result.kind).toBe('merge');
+        expect(headOf(pair.ours)).toBe(headOf(pair.peer));
+        expect(stageOf(pair.ours)).toBe(stageOf(pair.peer));
+        expect(await read(pair.ours, 'file.txt')).toBe(await read(pair.peer, 'file.txt'));
+        expect(await read(pair.ours, 'file.txt')).toBe('a\nX\nY\nc\n');
+      });
+    });
+  });
+
   describe('Given a `merge=text` attribute on non-overlapping edits', () => {
     describe('When the clean built-in merge runs on both tools', () => {
       it('Then it merges like a plain text merge and matches git', async () => {
