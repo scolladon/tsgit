@@ -21,15 +21,14 @@ import { unsupportedOperation } from '../../domain/error.js';
 import type { GitIndex, IndexEntry } from '../../domain/git-index/index.js';
 import {
   type ConflictType,
-  type ContentMerger,
   MAX_CONFLICT_OUTPUT_BYTES,
   type MergeConflict,
   type MergeOutcome,
-  mergeContent,
   mergeTrees,
 } from '../../domain/merge/index.js';
 import type { FileMode, FilePath, ObjectId } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
+import { buildContentMerger } from './build-content-merger.js';
 import { compareWorkingTreeEntry, isWorkingTreeModified } from './compare-working-tree-entry.js';
 import { flattenTree } from './flatten-tree.js';
 import { stage0Entry, zeroStat } from './internal/synthetic-index-entry.js';
@@ -60,22 +59,6 @@ export type ApplyMergeResult =
       readonly indexEntries: ReadonlyArray<IndexEntry>;
     }
   | { readonly kind: 'would-overwrite'; readonly paths: ReadonlyArray<FilePath> };
-
-const buildContentMerger =
-  (ctx: Context): ContentMerger =>
-  async (mergeCtx) => {
-    const [ours, theirs, base] = await Promise.all([
-      // Stryker disable next-line ObjectLiteral: equivalent — the 256 MiB cap is unobservable without a 256 MiB fixture; cap mechanics covered by read-blob.test.ts.
-      readBlob(ctx, mergeCtx.ourId, { maxBytes: MAX_CONFLICT_OUTPUT_BYTES }),
-      // Stryker disable next-line ObjectLiteral: equivalent — the 256 MiB cap is unobservable without a 256 MiB fixture; cap mechanics covered by read-blob.test.ts.
-      readBlob(ctx, mergeCtx.theirId, { maxBytes: MAX_CONFLICT_OUTPUT_BYTES }),
-      mergeCtx.baseId !== undefined
-        ? // Stryker disable next-line ObjectLiteral: equivalent — the 256 MiB cap is unobservable without a 256 MiB fixture; cap mechanics covered by read-blob.test.ts.
-          readBlob(ctx, mergeCtx.baseId, { maxBytes: MAX_CONFLICT_OUTPUT_BYTES })
-        : Promise.resolve(undefined),
-    ]);
-    return mergeContent(base?.content, ours.content, theirs.content);
-  };
 
 /** Whether a clean outcome changes the path relative to `ours`. */
 const outcomeChangesOurs = (

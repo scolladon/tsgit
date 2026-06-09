@@ -62,12 +62,17 @@ describe('deriveWorktreeContext', () => {
     });
   });
 
-  describe('Given a parent Context carrying promisor and hooks', () => {
+  describe('Given a parent Context carrying promisor, hooks and command', () => {
     describe('When deriveWorktreeContext runs', () => {
-      it('Then the child drops promisor and hooks', () => {
+      it('Then the child drops promisor, hooks and command', () => {
         // Arrange
         const base = createMemoryContext();
-        const parent = { ...base, promisor: { fetch: async () => undefined }, hooks: {} } as never;
+        const parent = {
+          ...base,
+          promisor: { fetch: async () => undefined },
+          hooks: {},
+          command: { run: async () => ({ exitCode: 0 }) },
+        } as never;
 
         // Act
         const sut = deriveWorktreeContext(parent, 'wt', '/abs/wt');
@@ -75,6 +80,7 @@ describe('deriveWorktreeContext', () => {
         // Assert
         expect(sut.promisor).toBeUndefined();
         expect(sut.hooks).toBeUndefined();
+        expect(sut.command).toBeUndefined();
       });
     });
   });
