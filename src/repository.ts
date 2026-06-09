@@ -136,6 +136,14 @@ export interface RuntimeFallback {
   readonly layout: RepositoryLayoutInput;
   readonly hashConfig: Context['hashConfig'];
   readonly deltaCache: Context['deltaCache'];
+  /**
+   * Build a raw (adapter-level) `FileSystem` able to reach `worktreePaths`
+   * (which may lie outside `workDir`) as well as the repository itself — for the
+   * worktree containment escape (ADR-298). The node shim roots a fresh adapter
+   * at the common ancestor of the workDir and the worktree paths; sandboxed
+   * runtimes (memory/browser) omit it and fall back to the repo-rooted fs.
+   */
+  readonly makeWorktreeFs?: (worktreePaths: ReadonlyArray<string>) => FileSystem;
 }
 
 /**
@@ -329,20 +337,20 @@ export const openRepository = async (
           transport: wrapTransportValidator(detected.transport, opts.config),
         };
   // ADR-298: a linked worktree lives outside workDir and a worktree Context must
-  // reach BOTH the worktree path and the common dir. `worktreeFs` re-wraps the
-  // raw adapter fs with a multi-root validator confined to exactly those two
-  // subtrees (or returns the raw fs when containment is opted out).
-  // The facade opens a main/normal repo (linked-worktree discovery is deferred,
-  // ADR-296), so its common dir is the gitDir.
+  // reach BOTH the worktree path and the common dir. `worktreeFs` asks the
+  // runtime for a raw fs wide enough to reach the worktree paths (the node shim
+  // roots a fresh adapter at the common ancestor), then confines it with a
+  // multi-root validator to exactly those subtrees (or returns the raw fs when
+  // containment is opted out). The facade opens a main/normal repo
+  // (linked-worktree discovery is deferred, ADR-296), so its common dir is the
+  // gitDir.
   const commonDir = fallback.layout.gitDir;
   const worktreeFs = (worktreePath: string | ReadonlyArray<string>): FileSystem => {
-    if (opts.unsafeRawAdapters === true) return detected.fs;
     const paths = typeof worktreePath === 'string' ? [worktreePath] : worktreePath;
-    return wrapFsValidator(
-      detected.fs,
-      [...paths, commonDir],
-      computeConfigScopePaths(detected.fs),
-    );
+    const roots = [...paths, commonDir];
+    const raw = fallback.makeWorktreeFs?.(roots) ?? detected.fs;
+    if (opts.unsafeRawAdapters === true) return raw;
+    return wrapFsValidator(raw, roots, computeConfigScopePaths(raw));
   };
   const config = opts.config !== undefined ? deepFreeze({ ...opts.config }) : undefined;
   const controller = new AbortController();

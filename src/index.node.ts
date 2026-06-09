@@ -14,6 +14,7 @@ import { NodeHookRunner } from './adapters/node/node-hook-runner.js';
 import { NodeHttpTransport } from './adapters/node/node-http-transport.js';
 import { SHA1_CONFIG } from './domain/objects/hash-config.js';
 import { createLruCache } from './domain/storage/lru-cache.js';
+import { commonAncestor } from './repository/common-ancestor.js';
 import {
   type OpenRepositoryOptions,
   openRepository as openRepositoryCore,
@@ -73,6 +74,11 @@ export const openRepository = async (opts: OpenNodeRepositoryOptions = {}): Prom
       opts.deltaCacheMaxBytes ?? DEFAULT_DELTA_CACHE_BYTES,
       opts.deltaCacheMaxEntries ?? DEFAULT_DELTA_CACHE_ENTRIES,
     ),
+    // A linked worktree lives outside `workDir`; root a fresh adapter at the
+    // common ancestor of the repo and the worktree paths so it can reach both
+    // (the facade's multi-root validator then narrows access; ADR-298).
+    makeWorktreeFs: (worktreePaths: ReadonlyArray<string>): NodeFileSystem =>
+      new NodeFileSystem(commonAncestor([layout.workDir, ...worktreePaths])),
   };
   // Strip the node-only opts AND `cwd` (we override with the realpath-resolved
   // form) before forwarding so the core sees only its own option surface.

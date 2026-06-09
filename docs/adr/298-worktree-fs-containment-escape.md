@@ -33,13 +33,20 @@ Add a facade-provided capability to `Context`:
 readonly worktreeFs?: (worktreePath: string) => FileSystem;
 ```
 
-The facade implements it by re-wrapping the **raw** adapter fs with a
-**multi-root** validator confined to exactly `[worktreePath, commonDir]` (plus
-the existing config-scope escapes). `wrapFsValidator` is generalised to accept an
-array of containment roots; a path is allowed iff it is contained in **any** root
-(prefix check), so the worktree subtree and the shared object/admin subtree are
-both reachable while everything else stays blocked. Under `unsafeRawAdapters` the
-capability returns the raw fs (no validator), matching the existing opt-out.
+The facade implements it in two steps. The node adapter is itself hard-rooted at
+`workDir` (a realpath containment **below** the validator), so re-wrapping the
+repo-rooted fs cannot reach a sibling. Instead the **runtime** supplies
+`RuntimeFallback.makeWorktreeFs(paths)` — a raw adapter-level fs wide enough to
+reach the worktree paths (the node shim roots a fresh `NodeFileSystem` at the
+`commonAncestor` of the workDir and the worktree paths); sandboxed runtimes
+(memory/browser) omit it and the repo-rooted fs is used (confining worktrees
+under their root). The facade then wraps that raw fs with a **multi-root**
+validator confined to exactly `[…worktreePaths, commonDir]` (plus the existing
+config-scope escapes). `wrapFsValidator` is generalised to accept an array of
+containment roots; a path is allowed iff it is contained in **any** root (prefix
+check), so the worktree subtree and the shared object/admin subtree are both
+reachable while everything else stays blocked. Under `unsafeRawAdapters` the
+capability returns the wide raw fs (no validator), matching the existing opt-out.
 
 Worktree commands:
 
