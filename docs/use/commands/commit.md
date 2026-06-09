@@ -35,7 +35,7 @@ interface AuthorIdentity {
 
 ## Behaviour
 
-- **Hooks (Node only):** `pre-commit` runs before the index is read (so a re-staging hook is honoured); `commit-msg` runs after `pre-commit` with the message round-tripped through `.git/COMMIT_EDITMSG`. A non-zero exit throws `HOOK_FAILED`.
+- **Hooks (Node only):** in git's order — `pre-commit` runs before the index is read (so a re-staging hook is honoured); then the message round-trips through `.git/COMMIT_EDITMSG` via `prepare-commit-msg` (args `<editmsg-path> <source>`, where `source` is `message` or `merge`) and `commit-msg`; either may rewrite it. `post-commit` runs after the commit lands (informational — its exit code is ignored). A non-zero exit from a blocking hook throws `HOOK_FAILED`. `noVerify` skips `pre-commit` + `commit-msg` only — `prepare-commit-msg` still runs, as in git.
 - **Merge follow-up:** if `.git/MERGE_HEAD` exists, the commit has two parents and the merge-state files (`MERGE_HEAD`, `MERGE_MSG`, `ORIG_HEAD`) are cleared atomically.
 - **Message normalization:** the message is run through git's `stripspace` (the `whitespace` cleanup mode `git commit -m` uses) — per-line trailing whitespace is stripped, runs of blank lines collapse to one, leading/trailing blank lines are dropped, and a single trailing newline is guaranteed. This makes commit-object SHAs byte-identical to canonical git. Leading whitespace on a content line is preserved (git keeps it), and only ASCII whitespace is treated as blank. The low-level `repo.primitives.createCommit` is the verbatim escape hatch — it does **not** normalize.
 - **Reproducible hashes:** because `timestamp` is caller-provided, repeated calls with identical inputs produce identical commit oids.
