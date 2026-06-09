@@ -809,6 +809,33 @@ describe('cherryPickRun', () => {
         expect(index.entries.some((e) => e.path === 'f.txt' && e.flags.stage !== 0)).toBe(true);
         expect(await ctx.fs.readUtf8(work(ctx, 'f.txt'))).toContain('<<<<<<<');
       });
+
+      it('Then the markers are labelled HEAD and the picked commit', async () => {
+        // Arrange — feature and main change the same line differently
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await setUser(ctx);
+        await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'l1\nl2\n');
+        await add(ctx, ['f.txt']);
+        await commit(ctx, { message: 'base', author: MAIN_AUTHOR });
+        await branchCreate(ctx, { name: 'feature' });
+        await checkout(ctx, { rev: 'feature' });
+        await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'l1\nFEAT\n');
+        await add(ctx, ['f.txt']);
+        const feature = await commit(ctx, { message: 'feat change', author: FEAT_AUTHOR });
+        await checkout(ctx, { rev: 'main' });
+        await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'l1\nMAIN\n');
+        await add(ctx, ['f.txt']);
+        await commit(ctx, { message: 'main change', author: MAIN_AUTHOR });
+
+        // Act
+        await cherryPickRun(ctx, { commits: [feature.id] });
+
+        // Assert
+        const file = await ctx.fs.readUtf8(work(ctx, 'f.txt'));
+        expect(file).toContain('<<<<<<< HEAD\n');
+        expect(file).toContain(`>>>>>>> ${feature.id.slice(0, 7)} (feat change)\n`);
+      });
     });
   });
 
