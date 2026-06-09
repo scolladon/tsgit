@@ -200,7 +200,8 @@ alongside this work (docs-only, no code):
 
 ## Non-goals (unchanged deferrals)
 
-`-Xours`/`-Xtheirs` favors (merge-strategy options, not driver attributes),
+the `ours`/`theirs` strategy favors (git's `-X` merge-strategy option, not
+driver attributes),
 diff3 conflict style, `conflict-marker-size`/labels (24.9b), and `recursive`
 driver selection (24.9d). Binary content under `union` stays a take-ours
 conflict (line union is undefined for binary).

@@ -79,7 +79,8 @@ consumer (merge / cherry-pick / revert / rebase / stash) inherits union via
 
 ### Neutral
 
-- Favor stays minimal: `none` and `union` only. `-Xours`/`-Xtheirs`, diff3,
+- Favor stays minimal: `none` and `union` only. The `ours`/`theirs` strategy
+  favors (git's `-X` option), diff3,
   `conflict-marker-size`/labels (24.9b), and recursive driver selection remain
   out of scope.
 - The nested case of a one-sided change falling inside a coalescing gap is

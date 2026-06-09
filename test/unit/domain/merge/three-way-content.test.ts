@@ -839,4 +839,131 @@ describe('mergeContent', () => {
       });
     });
   });
+
+  describe('Given an overlap and favor union', () => {
+    describe('When mergeContent called', () => {
+      it('Then clean with both sides concatenated, no markers', () => {
+        // Arrange
+        const base = enc('a\nb\nc\n');
+        const ours = enc('a\nX\nc\n');
+        const theirs = enc('a\nY\nc\n');
+
+        // Act
+        const sut = mergeContent(base, ours, theirs, { favor: 'union' });
+
+        // Assert
+        assertClean(sut, 'a\nX\nY\nc\n');
+      });
+    });
+  });
+
+  describe('Given conflict sides sharing a trailing line and favor union', () => {
+    describe('When mergeContent called', () => {
+      it('Then the shared line appears once after both middles', () => {
+        // Arrange
+        const base = enc('p\nq\nr\ns\nt\n');
+        const ours = enc('p\nX\nY\nZ\nt\n');
+        const theirs = enc('p\nM\nN\nZ\nt\n');
+
+        // Act
+        const sut = mergeContent(base, ours, theirs, { favor: 'union' });
+
+        // Assert
+        assertClean(sut, 'p\nX\nY\nM\nN\nZ\nt\n');
+      });
+    });
+  });
+
+  describe('Given two conflicts coalesced by a 3-line gap and favor union', () => {
+    describe('When mergeContent called', () => {
+      it('Then the gap lines appear on both sides', () => {
+        // Arrange
+        const base = enc('H\nX\nm1\nm2\nm3\nY\nT\n');
+        const ours = enc('H\nXo\nm1\nm2\nm3\nYo\nT\n');
+        const theirs = enc('H\nXt\nm1\nm2\nm3\nYt\nT\n');
+
+        // Act
+        const sut = mergeContent(base, ours, theirs, { favor: 'union' });
+
+        // Assert
+        assertClean(sut, 'H\nXo\nm1\nm2\nm3\nYo\nXt\nm1\nm2\nm3\nYt\nT\n');
+      });
+    });
+  });
+
+  describe('Given a no-trailing-newline EOF conflict and favor union', () => {
+    describe('When mergeContent called', () => {
+      it('Then an interior newline is added but the final line keeps none', () => {
+        // Arrange — base/ours/theirs all end without a trailing newline.
+        const base = enc('a\nb\nc');
+        const ours = enc('a\nXX');
+        const theirs = enc('a\nYY');
+
+        // Act
+        const sut = mergeContent(base, ours, theirs, { favor: 'union' });
+
+        // Assert
+        assertClean(sut, 'a\nXX\nYY');
+      });
+    });
+  });
+
+  describe('Given an add/add (undefined base) overlap and favor union', () => {
+    describe('When mergeContent called', () => {
+      it('Then the differing middle is unioned and shared edges kept once', () => {
+        // Arrange
+        const ours = enc('hello\nx\n');
+        const theirs = enc('world\nx\n');
+
+        // Act
+        const sut = mergeContent(undefined, ours, theirs, { favor: 'union' });
+
+        // Assert
+        assertClean(sut, 'hello\nworld\nx\n');
+      });
+    });
+  });
+
+  describe('Given non-overlapping edits on each side of one overlap (default favor)', () => {
+    describe('When mergeContent called', () => {
+      it('Then only the overlap is marked, the outer edits apply cleanly', () => {
+        // Arrange — ours changes line 0 + line 3; theirs changes line 3 + line 6. Only line 3 overlaps.
+        const base = enc('a\nb\nc\nd\ne\nf\ng\n');
+        const ours = enc('A\nb\nc\nD\ne\nf\ng\n');
+        const theirs = enc('a\nb\nc\nD2\ne\nf\nG\n');
+
+        // Act
+        const sut = mergeContent(base, ours, theirs);
+
+        // Assert — per-region: A and G apply, only line 3 conflicts
+        expect(sut.status).toBe('conflict');
+        if (sut.status === 'conflict') {
+          expect(decoder.decode(sut.markedBytes)).toBe(
+            'A\nb\nc\n<<<<<<< ours\nD\n=======\nD2\n>>>>>>> theirs\ne\nf\nG\n',
+          );
+        }
+      });
+    });
+  });
+
+  describe('Given an add/add (undefined base) overlap with shared edges (default favor)', () => {
+    describe('When mergeContent called', () => {
+      it('Then the conflict is trimmed to the differing middle', () => {
+        // Arrange
+        const ours = enc('a\nb\nc\n');
+        const theirs = enc('a\nX\nc\n');
+
+        // Act
+        const sut = mergeContent(undefined, ours, theirs);
+
+        // Assert
+        expect(sut.status).toBe('conflict');
+        if (sut.status === 'conflict') {
+          expect(decoder.decode(sut.markedBytes)).toBe(
+            'a\n<<<<<<< ours\nb\n=======\nX\n>>>>>>> theirs\nc\n',
+          );
+        }
+      });
+    });
+  });
 });
