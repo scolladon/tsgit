@@ -15,6 +15,7 @@ import {
 import { disposeAdapters } from './dispose-adapters.js';
 import { repositoryDisposed } from './domain/commands/error.js';
 import type { StatTreeDiff, TreeDiff } from './domain/diff/index.js';
+import type { CommandRunner } from './ports/command-runner.js';
 import type { Compressor } from './ports/compressor.js';
 import type { Context, RepositoryConfig } from './ports/context.js';
 import type { FileSystem } from './ports/file-system.js';
@@ -94,6 +95,17 @@ export interface OpenRepositoryOptions {
    */
   readonly hooks?: HookRunner | false;
   /**
+   * Custom merge-driver command runner. Omit to inherit the runtime default
+   * (Node wires one; the browser does not). Pass `false` to disable external
+   * merge drivers — a configured `[merge "<driver>"].driver` then falls back to
+   * the built-in merge.
+   *
+   * WARNING: a wired runner executes the `driver` shell command from
+   * `.git/config`, inheriting the calling process's environment. Pass `false`
+   * when operating on a repository whose config you do not trust.
+   */
+  readonly command?: CommandRunner | false;
+  /**
    * Opt OUT of adapter validator wrapping for `fs` and `transport`. NEVER set
    * with adapters whose code you do not control; a raw transport receives
    * `config.auth` credentials with no SSRF guard.
@@ -132,6 +144,8 @@ export interface RuntimeFallback {
   readonly transport: HttpTransport;
   /** Optional runtime-default hook runner (Node supplies one; others omit it). */
   readonly hooks?: HookRunner;
+  /** Optional runtime-default command runner (Node supplies one; others omit it). */
+  readonly command?: CommandRunner;
   readonly runtime: 'node' | 'browser' | 'memory';
   readonly layout: RepositoryLayoutInput;
   readonly hashConfig: Context['hashConfig'];
@@ -377,6 +391,9 @@ export const openRepository = async (
   // `false` fully disables hooks; otherwise an explicit runner overrides the
   // runtime default (Node supplies one, browser/memory do not).
   const hooks = opts.hooks === false ? undefined : (opts.hooks ?? fallback.hooks);
+  // `false` disables external merge drivers; otherwise an explicit runner
+  // overrides the runtime default (Node supplies one, browser/memory do not).
+  const command = opts.command === false ? undefined : (opts.command ?? fallback.command);
   // The promisor port closes over the very `Context` that carries it. `ctx` is
   // frozen, so the closure captures it through a late-assigned binding —
   // sound because `promisor.fetch` is only ever invoked after this function
@@ -390,6 +407,7 @@ export const openRepository = async (
     ...(config !== undefined ? { config } : {}),
     ...(sanitizedLogger !== undefined ? { logger: sanitizedLogger } : {}),
     ...(hooks !== undefined ? { hooks } : {}),
+    ...(command !== undefined ? { command } : {}),
     promisor,
   });
   promisorCtx = ctx;

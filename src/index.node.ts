@@ -7,6 +7,7 @@
 import { realpath, stat } from 'node:fs/promises';
 import * as nodePath from 'node:path';
 
+import { NodeCommandRunner } from './adapters/node/node-command-runner.js';
 import { NodeCompressor } from './adapters/node/node-compressor.js';
 import { NodeFileSystem } from './adapters/node/node-file-system.js';
 import { NodeHashService } from './adapters/node/node-hash-service.js';
@@ -67,6 +68,7 @@ export const openRepository = async (opts: OpenNodeRepositoryOptions = {}): Prom
     compressor,
     transport,
     hooks: new NodeHookRunner(),
+    command: new NodeCommandRunner(),
     runtime: 'node' as const,
     layout,
     hashConfig: SHA1_CONFIG,

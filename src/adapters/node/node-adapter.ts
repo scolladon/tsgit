@@ -4,6 +4,7 @@ import { SHA1_CONFIG } from '../../domain/objects/hash-config.js';
 import { createLruCache } from '../../domain/storage/lru-cache.js';
 import { type Context, createContext, type RepositoryLayout } from '../../ports/context.js';
 import { noopProgress } from '../../progress.js';
+import { NodeCommandRunner } from './node-command-runner.js';
 import { NodeCompressor } from './node-compressor.js';
 import { NodeFileSystem } from './node-file-system.js';
 import { NodeHashService } from './node-hash-service.js';
@@ -27,6 +28,12 @@ export interface NodeAdapterOptions {
    * `process.env` — disable it for repositories you do not trust.
    */
   readonly hooks?: boolean;
+  /**
+   * Wire the merge-driver command runner (default true). Pass `false` to
+   * disable external merge drivers. A wired runner executes the configured
+   * `[merge "<driver>"].driver` shell command with the full `process.env`.
+   */
+  readonly command?: boolean;
 }
 
 export function createNodeContext(options: NodeAdapterOptions): Context {
@@ -57,6 +64,7 @@ export function createNodeContext(options: NodeAdapterOptions): Context {
     deltaCache,
     ...(options.signal !== undefined ? { signal: options.signal } : {}),
     ...(options.hooks === false ? {} : { hooks: new NodeHookRunner() }),
+    ...(options.command === false ? {} : { command: new NodeCommandRunner() }),
   };
   return createContext(parts);
 }

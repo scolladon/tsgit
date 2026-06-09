@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import {
+  MemoryCommandRunner,
   MemoryCompressor,
   MemoryFileSystem,
   MemoryHashService,
@@ -125,6 +126,63 @@ describe('openRepository — hooks', () => {
 
         // Assert
         expect(sut.ctx.hooks).toBe(runner);
+      });
+    });
+  });
+});
+
+describe('openRepository — command', () => {
+  describe('Given no command option and a fallback without one', () => {
+    describe('When openRepository runs', () => {
+      it('Then ctx.command is undefined', async () => {
+        // Arrange / Act
+        const sut = await open();
+
+        // Assert
+        expect(sut.ctx.command).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given an explicit command runner', () => {
+    describe('When openRepository runs', () => {
+      it('Then ctx.command is that runner', async () => {
+        // Arrange
+        const runner = new MemoryCommandRunner();
+
+        const sut = await open({ command: runner });
+
+        // Assert
+        expect(sut.ctx.command).toBe(runner);
+      });
+    });
+  });
+
+  describe('Given command: false and a fallback that supplies a runner', () => {
+    describe('When openRepository runs', () => {
+      it('Then ctx.command is undefined', async () => {
+        // Arrange
+        const sut = await openRepository(
+          { cwd: '/repo', command: false },
+          { ...makeFallback(), command: new MemoryCommandRunner() },
+        );
+
+        // Assert
+        expect(sut.ctx.command).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given no command option but a fallback that supplies a runner', () => {
+    describe('When openRepository runs', () => {
+      it('Then ctx.command is the fallback runner', async () => {
+        // Arrange
+        const runner = new MemoryCommandRunner();
+
+        const sut = await openRepository({ cwd: '/repo' }, { ...makeFallback(), command: runner });
+
+        // Assert
+        expect(sut.ctx.command).toBe(runner);
       });
     });
   });

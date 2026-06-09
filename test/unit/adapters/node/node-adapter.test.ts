@@ -6,6 +6,7 @@ import {
   createNodeContext,
   resolveHomeDir,
 } from '../../../../src/adapters/node/node-adapter.js';
+import { NodeCommandRunner } from '../../../../src/adapters/node/node-command-runner.js';
 import { NodeCompressor } from '../../../../src/adapters/node/node-compressor.js';
 import { NodeFileSystem } from '../../../../src/adapters/node/node-file-system.js';
 import { NodeHashService } from '../../../../src/adapters/node/node-hash-service.js';
@@ -126,6 +127,30 @@ describe('createNodeContext', () => {
 
         // Assert — the explicit opt-out detaches the runner.
         expect(sut.hooks).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given default options', () => {
+    describe('When creating context', () => {
+      it('Then ctx.command is wired (a NodeCommandRunner)', () => {
+        // Arrange / Act
+        const sut = createNodeContext({ workDir: '/tmp/tsgit-command-on' });
+
+        // Assert — external merge drivers run by default, like git.
+        expect(sut.command).toBeInstanceOf(NodeCommandRunner);
+      });
+    });
+  });
+
+  describe('Given command: false', () => {
+    describe('When creating context', () => {
+      it('Then ctx.command is undefined', () => {
+        // Arrange / Act
+        const sut = createNodeContext({ workDir: '/tmp/tsgit-command-off', command: false });
+
+        // Assert — the explicit opt-out detaches the runner.
+        expect(sut.command).toBeUndefined();
       });
     });
   });

@@ -31,7 +31,7 @@ export const deriveWorktreeContext = (
 ): Context => {
   const common = commonGitDir(ctx);
   const gitDir = `${common}/worktrees/${id}`;
-  const { promisor: _promisor, hooks: _hooks, ...rest } = ctx;
+  const { promisor: _promisor, hooks: _hooks, command: _command, ...rest } = ctx;
   return Object.freeze({
     ...rest,
     // The child reaches both the worktree path (working-tree files) and the
