@@ -144,9 +144,15 @@ Given the resolved `merge` attribute value for a path:
 | `false` (or via `binary` macro) | **binary** → take `ours`, declare conflict (git's `-merge`) |
 | `{ set: 'text' }`        | built-in text                                                   |
 | `{ set: 'binary' }`      | binary (take ours, conflict)                                    |
-| `{ set: 'union' }`       | **built-in union** *(scope decision — see ADRs)*                |
+| `{ set: 'union' }`       | **deferred** (ADR-303) → falls back to built-in text for now    |
 | `{ set: 'name' }` with `[merge "name"].driver` | **external command**                      |
 | `{ set: 'name' }` no `driver` configured | fall back to built-in text (git's behaviour)    |
+
+Per ADR-303, this feature ships `text` + `binary` + external `driver=<command>`. `union` is
+deferred to a backlog follow-up tied to the per-region merge rework (tsgit's content merge
+can only produce whole-file conflict granularity today, so a byte-exact `union` for
+overlapping regions needs that rework first). Sources, precedence and macros follow ADR-302;
+the `CommandRunner` port + temp-file orchestration follow ADR-304.
 
 The `binary` outcome maps onto the existing `{status:'conflict', conflictType:'binary',
 markedBytes: ours}` that `mergeContent` already emits for binary content — so the
@@ -228,13 +234,16 @@ cached per `Context` (like `readConfig`) so a multi-file merge parses `.gitattri
 
 GWT/AAA, `sut`, 100% coverage, 0 killable mutants. Error assertions specific (code + data).
 
-## Out of scope (documented non-goals)
+## Out of scope (documented non-goals / follow-ups)
 
+- **`union` built-in driver** — deferred (ADR-303); backlog follow-up tied to the per-region
+  merge rework so it lands byte-exact. Falls back to text until then.
 - `conflict-marker-size` attribute / `merge.conflictMarkerSize` config (`%L` fixed at 7).
 - Label placeholders `%S %X %Y`.
 - `recursive` driver selection (tsgit merges against a single base; parsed but inert —
   documented).
 - Diff drivers, filters (`clean`/`smudge`), `text`/`eol`/`working-tree-encoding`
   attributes — the parser stores them generically but no consumer reads them yet.
-- System-wide `/etc/gitattributes`.
+- **System-wide `/etc/gitattributes`** — parked (ADR-302); tsgit has no system-config layer
+  anywhere. A backlog parking-lot item, revisited only on community traction.
 - Server-side / browser driver execution (no `CommandRunner` ⇒ built-in fallback).
