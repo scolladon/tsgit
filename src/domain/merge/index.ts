@@ -8,6 +8,7 @@ export { invalidMergeInput, invalidMergeTree } from './error.js';
 // Conflict labels
 export {
   abbreviateOid,
+  DEFAULT_MERGE_LABELS,
   type MergeLabels,
   mergeLabels,
   replayLabels,

@@ -1,6 +1,8 @@
+import { DEFAULT_CONFLICT_MARKER_SIZE } from '../../domain/attributes/index.js';
 import {
   type ContentMergeResult,
   type ContentMerger,
+  DEFAULT_MERGE_LABELS,
   MAX_CONFLICT_OUTPUT_BYTES,
   mergeContent,
 } from '../../domain/merge/index.js';
@@ -56,6 +58,8 @@ export const buildContentMerger = (ctx: Context): ContentMerger => {
         ours: ours.content,
         theirs: theirs.content,
         path: mergeCtx.path,
+        markerSize: DEFAULT_CONFLICT_MARKER_SIZE,
+        labels: DEFAULT_MERGE_LABELS,
       });
     }
     return mergeContent(base?.content, ours.content, theirs.content, {

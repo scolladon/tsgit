@@ -1,16 +1,13 @@
 import { substituteDriverPlaceholders } from '../../domain/attributes/index.js';
-import type { ContentMergeResult } from '../../domain/merge/index.js';
+import type { ContentMergeResult, MergeLabels } from '../../domain/merge/index.js';
 import type { FilePath } from '../../domain/objects/object-id.js';
 import type { CommandRunner } from '../../ports/command-runner.js';
 import type { Context } from '../../ports/context.js';
 
-/** git's default conflict-marker length (`%L`). The per-file override is a follow-up. */
-const DEFAULT_MARKER_SIZE = 7;
-
 const EMPTY = new Uint8Array(0);
 
 export interface MergeDriverInput {
-  /** The configured driver command line, with `%O %A %B %L %P` placeholders. */
+  /** The configured driver command line, with `%O %A %B %L %P %S %X %Y` placeholders. */
   readonly command: string;
   /** Ancestor (`%O`) content; `undefined` for an add/add merge — written as an empty file. */
   readonly base: Uint8Array | undefined;
@@ -20,6 +17,10 @@ export interface MergeDriverInput {
   readonly theirs: Uint8Array;
   /** The repo-relative pathname (`%P`). */
   readonly path: FilePath;
+  /** The conflict-marker length (`%L`). */
+  readonly markerSize: number;
+  /** The base / ours / theirs conflict labels (`%S` / `%X` / `%Y`). */
+  readonly labels: MergeLabels;
 }
 
 /**
@@ -52,8 +53,11 @@ export const runMergeDriver = async (
       O: oPath,
       A: aPath,
       B: bPath,
-      L: String(DEFAULT_MARKER_SIZE),
+      L: String(input.markerSize),
       P: input.path,
+      S: input.labels.base,
+      X: input.labels.ours,
+      Y: input.labels.theirs,
     });
     const { exitCode } = await runner.run({
       command,

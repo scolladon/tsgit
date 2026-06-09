@@ -8,6 +8,9 @@ const values = {
   B: '/tmp/theirs',
   L: '7',
   P: 'src/a.txt',
+  S: 'parent of 2c77705 (subject)',
+  X: 'HEAD',
+  Y: '2c77705 (subject)',
 };
 
 describe('substituteDriverPlaceholders', () => {
@@ -22,6 +25,21 @@ describe('substituteDriverPlaceholders', () => {
 
         // Assert
         expect(sut).toBe('merge /tmp/base /tmp/ours /tmp/theirs 7 src/a.txt');
+      });
+    });
+  });
+
+  describe('Given a template using the label placeholders', () => {
+    describe('When substituted', () => {
+      it('Then `%S` `%X` `%Y` are replaced by the base / ours / theirs labels', () => {
+        // Arrange
+        const template = 'drv %L %S %X %Y';
+
+        // Act
+        const sut = substituteDriverPlaceholders(template, values);
+
+        // Assert
+        expect(sut).toBe('drv 7 parent of 2c77705 (subject) HEAD 2c77705 (subject)');
       });
     });
   });

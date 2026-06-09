@@ -58,3 +58,10 @@ export const STASH_LABELS: MergeLabels = {
   theirs: 'Stashed changes',
   base: 'Stash base',
 };
+
+/**
+ * Fallback labels for a content merge whose caller supplies none — the same
+ * `ours`/`theirs` defaults `writeConflictMarkers` already uses. Every live
+ * operation passes real labels; this only covers direct primitive callers.
+ */
+export const DEFAULT_MERGE_LABELS: MergeLabels = { ours: 'ours', theirs: 'theirs', base: '' };
