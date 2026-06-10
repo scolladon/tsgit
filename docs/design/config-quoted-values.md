@@ -76,7 +76,7 @@ Restructure `parseIniSections` to iterate **physical lines by index** (no more g
    - `\` → look at next char: end-of-line → continuation (advance to next physical line — works inside quote spans too; on the *last* line the value simply ends, git fakes an EOL at EOF); `n` → LF; `t` → TAB; `b` → BS; `\` and `"` → themselves; anything else → **parse error**. An escape append resets `trimLen` even when the decoded char is whitespace (`a \t` → `a <TAB>`, pinned).
    - `"` → toggle `inQuotes` **and reset `trimLen`** (`a ""` → `a `, pinned).
    - any other literal char appended resets `trimLen`.
-6. Parse error → throw `CONFIG_PARSE_ERROR` (structured: `{ code, line }`, 1-based physical line of the failure; an optional `source` label parameter on `parseIniSections` lets callers attach the file path). git's refusal (`fatal: bad config line N in file F`) is reconstructed by the consumer per ADR-249. *(Pending ADR — see open decisions.)*
+6. Parse error → throw `CONFIG_PARSE_ERROR` (structured: `{ code, line }`, 1-based physical line of the failure; an optional `source` label parameter on `parseIniSections` lets callers attach the file path). git's refusal (`fatal: bad config line N in file F`) is reconstructed by the consumer per ADR-249 (ADR-308).
 
 `stripInlineComment`/`indexOfUnquoted` remain for header lines and pre-`=` comment detection. Non-value malformations (orphan keys, malformed headers, valueless keys) keep today's lenient skip — widening refusal parity to the whole grammar is a separate follow-up.
 
@@ -118,7 +118,7 @@ For every NUL-free string `v`: `parseConfigValue(renderValue(v)) ≡ v`, and the
 - **Whole-grammar refusal parity** — git also dies on malformed headers/keys; tsgit stays lenient there.
 - **`include` / `includeIf`** — no include machinery exists in tsgit; unchanged.
 
-## Open decisions (ADR conversation)
+## Decisions (resolved)
 
-1. **Malformed value: throw vs lenient skip.** git refuses to run *any* command on `bad config line N`. Recommended: faithful — throw structured `CONFIG_PARSE_ERROR { line, source? }` from the shared parser (refusal conditions bind under ADR-226). Alternative: keep tsgit's lenient skip-the-line (diverges; would need its own ADR).
-2. **Amending ADR-186.** The writer grammar above contradicts accepted ADR-186 (quote-set and escape-set). Mandated by the prime directive, but recorded as a superseding ADR.
+1. **Malformed value → throw, git-faithful** ([ADR-308](../adr/308-config-parse-error-refusal.md)): the shared parser throws structured `CONFIG_PARSE_ERROR { line, source? }` on unknown escapes and unclosed quotes; every reader surface inherits the refusal. Non-value malformations stay lenient.
+2. **Writer adopts `write_pair` byte-for-byte** ([ADR-309](../adr/309-config-value-write-grammar-parity.md), supersedes ADR-186's rules): quote predicate `;`/`#`/CR/leading/trailing space; unconditional escapes; value rejections relaxed to NUL-only.
