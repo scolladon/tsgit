@@ -117,6 +117,7 @@ export type CommandError =
       readonly code: 'CONFIG_PARSE_ERROR';
       readonly line: number;
       readonly source?: string;
+      readonly partialSectionName?: string;
     }
   | {
       readonly code: 'CONFIG_MULTIPLE_VALUES';
@@ -409,16 +410,22 @@ export const configValueInvalid = (key: string, position: number): TsgitError =>
   });
 
 /**
- * Malformed config value (unknown escape, unclosed quote) at the 1-based
- * physical `line`. `source` labels the file when the caller knows it — the
- * data behind git's `fatal: bad config line N in file F`.
+ * Malformed config value or header at the 1-based physical `line`. `source`
+ * labels the file when the caller knows it. `partialSectionName` carries the
+ * partially-accumulated section.subsection name at the failure point — present
+ * only for malformed quoted-subsection headers (git's `invalid section name`).
  */
-export const configParseError = (line: number, source?: string): TsgitError =>
-  new TsgitError(
-    source === undefined
-      ? { code: 'CONFIG_PARSE_ERROR', line }
-      : { code: 'CONFIG_PARSE_ERROR', line, source },
-  );
+export const configParseError = (
+  line: number,
+  source?: string,
+  partialSectionName?: string,
+): TsgitError =>
+  new TsgitError({
+    code: 'CONFIG_PARSE_ERROR',
+    line,
+    ...(source !== undefined ? { source } : {}),
+    ...(partialSectionName !== undefined ? { partialSectionName } : {}),
+  });
 
 export const configMultipleValues = (
   key: string,

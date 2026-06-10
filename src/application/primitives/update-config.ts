@@ -28,11 +28,12 @@ import { resolveScopePath } from './internal/config-scope.js';
  * True when `line` is the header for `[section]` / `[section "subsection"]`.
  * Section names are matched case-insensitively (git semantics); subsection
  * names case-sensitively. A `subsection` of `undefined` matches a header with
- * no subsection or an explicitly empty one (`[section ""]`).
+ * no subsection or an explicitly empty one (`[section ""]`). Malformed headers
+ * never match — only `kind: 'header'` results are considered.
  */
 const matchesSection = (line: string, section: string, subsection: string | undefined): boolean => {
   const header = parseSectionHeader(line.trim());
-  if (header === undefined) return false;
+  if (header.kind !== 'header') return false;
   if (header.section.toLowerCase() !== section.toLowerCase()) return false;
   if (subsection === undefined) {
     return header.subsection === undefined || header.subsection === '';
