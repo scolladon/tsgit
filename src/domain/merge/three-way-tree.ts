@@ -1,10 +1,11 @@
 import type { FlatTree, FlatTreeEntry } from '../diff/flat-tree.js';
 import { MAX_FLAT_TREE_ENTRIES } from '../diff/flat-tree.js';
-import { isSameKind } from '../diff/mode-kind.js';
+import { isSameKind, kindOf } from '../diff/mode-kind.js';
 import { sortByPath } from '../diff/path-compare.js';
 import type { FileMode, FilePath } from '../objects/index.js';
 import { FILE_MODE } from '../objects/index.js';
 import { invalidMergeInput, invalidMergeTree } from './error.js';
+import { DEFAULT_MERGE_LABELS, type MergeLabels } from './merge-labels.js';
 import type {
   ContentMergeContext,
   ContentMergeResult,
@@ -227,11 +228,119 @@ async function resolveBothPresent(
   return resolveContentMerge(path, base, our, their, mode, contentMerger);
 }
 
-function resolveAddAdd(path: FilePath, our: FlatTreeEntry, their: FlatTreeEntry): MergeOutcome {
+function isRegularKind(mode: FileMode): boolean {
+  return kindOf(mode) === 'file';
+}
+
+function isSymlinkKind(mode: FileMode): boolean {
+  return mode === FILE_MODE.SYMLINK;
+}
+
+function flattenLabel(label: string): string {
+  return label.replace(/\//g, '_');
+}
+
+function uniquePath(reserved: Set<FilePath>, base: FilePath, label: string): FilePath {
+  const suffix = flattenLabel(label);
+  let candidate = `${base}~${suffix}` as FilePath;
+  let n = 0;
+  while (reserved.has(candidate)) {
+    candidate = `${candidate}_${n}` as FilePath;
+    n += 1;
+  }
+  reserved.add(candidate);
+  return candidate;
+}
+
+function distinctTypesConflict(
+  path: FilePath,
+  our: FlatTreeEntry,
+  their: FlatTreeEntry,
+  labels: MergeLabels,
+  reserved: Set<FilePath>,
+): MergeOutcome {
+  const ourIsRegular = isRegularKind(our.mode);
+  const regularLabel = ourIsRegular ? labels.ours : labels.theirs;
+  const renamedPath = uniquePath(reserved, path, regularLabel);
+  const ourPath = ourIsRegular ? renamedPath : path;
+  const theirPath = ourIsRegular ? path : renamedPath;
+  return conflictOutcome({
+    type: 'distinct-types',
+    path,
+    ourId: our.id,
+    ourMode: our.mode,
+    theirId: their.id,
+    theirMode: their.mode,
+    ourPath,
+    theirPath,
+  });
+}
+
+function enforceOutputCap(bytes: Uint8Array, label: string): void {
+  if (bytes.length > MAX_CONFLICT_OUTPUT_BYTES) {
+    throw invalidMergeInput(`contentMerger returned oversize ${label}`);
+  }
+}
+
+async function resolveAddAdd(
+  path: FilePath,
+  our: FlatTreeEntry,
+  their: FlatTreeEntry,
+  contentMerger: ContentMerger,
+  labels: MergeLabels,
+  reserved: Set<FilePath>,
+): Promise<MergeOutcome> {
   if (entriesEqual(our, their)) {
     return { status: 'resolved-known', path, id: our.id, mode: our.mode };
   }
-  return addAddConflict(path, our, their);
+  const ourRegular = isRegularKind(our.mode);
+  const theirRegular = isRegularKind(their.mode);
+  const ourSymlink = isSymlinkKind(our.mode);
+  const theirSymlink = isSymlinkKind(their.mode);
+  if ((ourRegular && theirSymlink) || (ourSymlink && theirRegular)) {
+    return distinctTypesConflict(path, our, their, labels, reserved);
+  }
+  if (!ourRegular || !theirRegular) {
+    return addAddConflict(path, our, their);
+  }
+  const ctx: ContentMergeContext = {
+    path,
+    ourId: our.id,
+    theirId: their.id,
+    ourMode: our.mode,
+    theirMode: their.mode,
+  };
+  const result = await contentMerger(ctx, undefined, new Uint8Array(0), new Uint8Array(0));
+  if (result.status === 'clean') {
+    enforceOutputCap(result.bytes, 'clean bytes');
+    if (our.mode === their.mode) {
+      if (result.id !== undefined) {
+        return { status: 'resolved-known', path, id: result.id, mode: our.mode };
+      }
+      return { status: 'resolved-merged', path, bytes: result.bytes, mode: our.mode };
+    }
+    return conflictOutcome({
+      type: 'add-add',
+      path,
+      ourId: our.id,
+      theirId: their.id,
+      ourMode: our.mode,
+      theirMode: their.mode,
+      conflictContent: result.bytes,
+      contentVerdict: 'clean',
+    });
+  }
+  enforceOutputCap(result.markedBytes, 'marked bytes');
+  return conflictOutcome({
+    type: 'add-add',
+    path,
+    ourId: our.id,
+    theirId: their.id,
+    ourMode: our.mode,
+    theirMode: their.mode,
+    conflictContent: result.markedBytes,
+    contentVerdict: result.conflictType,
+  });
 }
 
 function resolvePath(
@@ -240,6 +349,8 @@ function resolvePath(
   our: FlatTreeEntry | undefined,
   their: FlatTreeEntry | undefined,
   contentMerger: ContentMerger,
+  labels: MergeLabels,
+  reserved: Set<FilePath>,
 ): MergeOutcome | Promise<MergeOutcome> {
   if (our === undefined && their === undefined) {
     return { status: 'resolved-deleted', path };
@@ -251,7 +362,7 @@ function resolvePath(
     return resolveOneSideAbsent(path, base, our, 'our');
   }
   if (base === undefined) {
-    return resolveAddAdd(path, our, their);
+    return resolveAddAdd(path, our, their, contentMerger, labels, reserved);
   }
   return resolveBothPresent(path, base, our, their, contentMerger);
 }
@@ -269,6 +380,7 @@ export async function mergeTrees(
   ours: FlatTree | undefined,
   theirs: FlatTree | undefined,
   contentMerger: ContentMerger,
+  labels: MergeLabels = DEFAULT_MERGE_LABELS,
 ): Promise<TreeMergeResult> {
   enforcePerInputCap(base, 'base');
   enforcePerInputCap(ours, 'ours');
@@ -276,6 +388,7 @@ export async function mergeTrees(
 
   const paths = buildUnionPaths(base, ours, theirs);
   const sortedPaths = sortByPath([...paths], (p) => p);
+  const reserved = new Set<FilePath>(paths);
 
   const outcomes: MergeOutcome[] = [];
   for (const path of sortedPaths) {
@@ -285,6 +398,8 @@ export async function mergeTrees(
       ours?.entries.get(path),
       theirs?.entries.get(path),
       contentMerger,
+      labels,
+      reserved,
     );
     const outcome = result instanceof Promise ? await result : result;
     outcomes.push(outcome);

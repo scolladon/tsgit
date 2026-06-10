@@ -426,6 +426,311 @@ describe('applyMergeToWorktree', () => {
     });
   });
 
+  describe('Given both sides add the same regular-file path (no base entry) with diverging content', () => {
+    describe('When the merge is applied', () => {
+      it('Then the worktree file contains per-region conflict markers (not ours bytes) and the index has stages 2/3 only', async () => {
+        // Arrange — no base tree; ours adds `f` with "shared\nours\n", theirs adds `f` with "shared\ntheirs\n"
+        const ctx = await buildSeededContext();
+        const oursId = await writeBlob(ctx, 'shared\nours\n');
+        const theirsId = await writeBlob(ctx, 'shared\ntheirs\n');
+        const emptyBase = await treeWith(ctx, []);
+        const oursTree = await treeWith(ctx, [
+          { name: 'f' as FilePath, id: oursId, mode: FILE_MODE.REGULAR },
+        ]);
+        const theirsTree = await treeWith(ctx, [
+          { name: 'f' as FilePath, id: theirsId, mode: FILE_MODE.REGULAR },
+        ]);
+        await ctx.fs.write(`${ctx.layout.workDir}/f`, new TextEncoder().encode('shared\nours\n'));
+
+        // Act
+        const sut = await applyMergeToWorktree(ctx, {
+          baseTree: emptyBase,
+          oursTree,
+          theirsTree,
+          currentIndex: index([indexEntry('f', oursId)]),
+          labels: { ours: 'HEAD', theirs: 'side', base: 'base' },
+        });
+
+        // Assert
+        expect(sut.kind).toBe('conflict');
+        if (sut.kind !== 'conflict') return;
+        expect(sut.conflicts[0]?.type).toBe('add-add');
+        const onDisk = await readWork(ctx, 'f');
+        // Must contain conflict markers — not just ours bytes
+        expect(onDisk).toContain('<<<<<<<');
+        expect(onDisk).toContain('shared');
+        expect(onDisk).toContain('ours');
+        expect(onDisk).toContain('theirs');
+        // The marker bytes must differ from ours' raw content
+        expect(onDisk).not.toBe('shared\nours\n');
+        const stages = sut.indexEntries.filter((e) => e.path === 'f').map((e) => e.flags.stage);
+        // Only stages 2/3 (no base → no stage 1)
+        expect(stages).toEqual([2, 3]);
+      });
+    });
+  });
+
+  describe('Given both sides add the same symlink path (no base entry) with different targets', () => {
+    describe('When the merge is applied', () => {
+      it('Then the worktree keeps ours as a symlink (not a regular file) and the index has stages 2/3', async () => {
+        // Arrange — no base tree; both sides add `f` as a symlink with different targets
+        const ctx = await buildSeededContext();
+        const oursId = await writeBlob(ctx, 'target-ours');
+        const theirsId = await writeBlob(ctx, 'target-theirs');
+        const emptyBase = await treeWith(ctx, []);
+        const oursTree = await treeWith(ctx, [
+          { name: 'f' as FilePath, id: oursId, mode: FILE_MODE.SYMLINK },
+        ]);
+        const theirsTree = await treeWith(ctx, [
+          { name: 'f' as FilePath, id: theirsId, mode: FILE_MODE.SYMLINK },
+        ]);
+        await ctx.fs.symlink('target-ours', `${ctx.layout.workDir}/f`);
+
+        // Act
+        const sut = await applyMergeToWorktree(ctx, {
+          baseTree: emptyBase,
+          oursTree,
+          theirsTree,
+          currentIndex: index([indexEntry('f', oursId, FILE_MODE.SYMLINK)]),
+          labels: { ours: 'HEAD', theirs: 'side', base: 'base' },
+        });
+
+        // Assert
+        expect(sut.kind).toBe('conflict');
+        if (sut.kind !== 'conflict') return;
+        expect(sut.conflicts[0]?.type).toBe('add-add');
+        expect(sut.conflicts[0]?.contentVerdict).toBeUndefined();
+        const linkTarget = await ctx.fs.readlink(`${ctx.layout.workDir}/f`);
+        expect(linkTarget).toBe('target-ours');
+        const stages = sut.indexEntries.filter((e) => e.path === 'f').map((e) => e.flags.stage);
+        expect(stages).toEqual([2, 3]);
+      });
+    });
+  });
+
+  describe('Given both sides add the same path as distinct types (regular ours, symlink theirs)', () => {
+    describe('When the merge is applied', () => {
+      it('Then both recorded paths are written: regular file at ourPath and symlink at theirPath, index has stage 2/3 at recorded paths', async () => {
+        // Arrange — ours adds `f` as regular file; theirs adds `f` as symlink
+        const ctx = await buildSeededContext();
+        const fileContent = new TextEncoder().encode('file content\n');
+        const linkTarget = new TextEncoder().encode('/etc/target');
+        const oursId = await writeObject(ctx, {
+          type: 'blob',
+          content: fileContent,
+          id: '' as ObjectId,
+        });
+        const theirsId = await writeObject(ctx, {
+          type: 'blob',
+          content: linkTarget,
+          id: '' as ObjectId,
+        });
+        const emptyBase = await treeWith(ctx, []);
+        const oursTree = await treeWith(ctx, [
+          { name: 'f' as FilePath, id: oursId, mode: FILE_MODE.REGULAR },
+        ]);
+        const theirsTree = await treeWith(ctx, [
+          { name: 'f' as FilePath, id: theirsId, mode: FILE_MODE.SYMLINK },
+        ]);
+        await ctx.fs.write(`${ctx.layout.workDir}/f`, fileContent);
+
+        // Act
+        const sut = await applyMergeToWorktree(ctx, {
+          baseTree: emptyBase,
+          oursTree,
+          theirsTree,
+          currentIndex: index([indexEntry('f', oursId)]),
+          labels: { ours: 'HEAD', theirs: 'side', base: 'base' },
+        });
+
+        // Assert
+        expect(sut.kind).toBe('conflict');
+        if (sut.kind !== 'conflict') return;
+        expect(sut.conflicts[0]?.type).toBe('distinct-types');
+        const conflict = sut.conflicts[0];
+        if (conflict?.type !== 'distinct-types') return;
+        // Regular file written at ourPath (~HEAD); symlink written at theirPath (f keeps symlink)
+        const ourPath = conflict.ourPath;
+        const theirPath = conflict.theirPath;
+        expect(ourPath).toBeDefined();
+        expect(theirPath).toBeDefined();
+        // The regular-file side gets renamed to f~HEAD
+        const ourContent = new TextDecoder().decode(
+          await ctx.fs.read(`${ctx.layout.workDir}/${ourPath}`),
+        );
+        expect(ourContent).toBe('file content\n');
+        // The symlink side keeps f (theirPath = f)
+        const linkActualTarget = await ctx.fs.readlink(`${ctx.layout.workDir}/${theirPath}`);
+        expect(linkActualTarget).toBe('/etc/target');
+        // Index: stage 2 at ourPath, stage 3 at theirPath
+        const stage2 = sut.indexEntries.find((e) => e.path === ourPath && e.flags.stage === 2);
+        const stage3 = sut.indexEntries.find((e) => e.path === theirPath && e.flags.stage === 3);
+        expect(stage2).toBeDefined();
+        expect(stage3).toBeDefined();
+      });
+    });
+  });
+
+  describe('Given both sides add the same path as distinct types (symlink ours, regular theirs)', () => {
+    describe('When the merge is applied', () => {
+      it('Then both recorded paths are written: symlink at ourPath (f) and regular file at theirPath (f~side)', async () => {
+        // Arrange — ours adds `f` as symlink; theirs adds `f` as regular file
+        const ctx = await buildSeededContext();
+        const linkTarget = new TextEncoder().encode('/etc/ours-target');
+        const fileContent = new TextEncoder().encode('theirs file\n');
+        const oursId = await writeObject(ctx, {
+          type: 'blob',
+          content: linkTarget,
+          id: '' as ObjectId,
+        });
+        const theirsId = await writeObject(ctx, {
+          type: 'blob',
+          content: fileContent,
+          id: '' as ObjectId,
+        });
+        const emptyBase = await treeWith(ctx, []);
+        const oursTree = await treeWith(ctx, [
+          { name: 'f' as FilePath, id: oursId, mode: FILE_MODE.SYMLINK },
+        ]);
+        const theirsTree = await treeWith(ctx, [
+          { name: 'f' as FilePath, id: theirsId, mode: FILE_MODE.REGULAR },
+        ]);
+        // ours is a symlink; working tree has no regular file at 'f'
+
+        // Act
+        const sut = await applyMergeToWorktree(ctx, {
+          baseTree: emptyBase,
+          oursTree,
+          theirsTree,
+          currentIndex: index([]),
+          labels: { ours: 'HEAD', theirs: 'side', base: 'base' },
+        });
+
+        // Assert
+        expect(sut.kind).toBe('conflict');
+        if (sut.kind !== 'conflict') return;
+        expect(sut.conflicts[0]?.type).toBe('distinct-types');
+        const conflict = sut.conflicts[0];
+        if (conflict?.type !== 'distinct-types') return;
+        // The symlink keeps `f` (ourPath=f); the regular file is renamed (theirPath=f~side)
+        const ourPath = conflict.ourPath;
+        const theirPath = conflict.theirPath;
+        expect(ourPath).toBe('f');
+        expect(theirPath).toBe('f~side');
+        // Symlink written at f
+        const linkActualTarget = await ctx.fs.readlink(`${ctx.layout.workDir}/${ourPath}`);
+        expect(linkActualTarget).toBe('/etc/ours-target');
+        // Regular file written at f~side
+        const theirContent = new TextDecoder().decode(
+          await ctx.fs.read(`${ctx.layout.workDir}/${theirPath}`),
+        );
+        expect(theirContent).toBe('theirs file\n');
+      });
+    });
+  });
+
+  describe('Given an untracked file sits at the distinct-types rename target', () => {
+    describe('When the merge is applied', () => {
+      it('Then it refuses with would-overwrite naming the rename target path, nothing is written', async () => {
+        // Arrange — ours adds `f` as regular, theirs as symlink → ourPath becomes f~HEAD
+        // An untracked `f~HEAD` already exists on disk
+        const ctx = await buildSeededContext();
+        const fileContent = new TextEncoder().encode('file content\n');
+        const linkTarget = new TextEncoder().encode('/etc/target');
+        const oursId = await writeObject(ctx, {
+          type: 'blob',
+          content: fileContent,
+          id: '' as ObjectId,
+        });
+        const theirsId = await writeObject(ctx, {
+          type: 'blob',
+          content: linkTarget,
+          id: '' as ObjectId,
+        });
+        const emptyBase = await treeWith(ctx, []);
+        const oursTree = await treeWith(ctx, [
+          { name: 'f' as FilePath, id: oursId, mode: FILE_MODE.REGULAR },
+        ]);
+        const theirsTree = await treeWith(ctx, [
+          { name: 'f' as FilePath, id: theirsId, mode: FILE_MODE.SYMLINK },
+        ]);
+        // The rename target f~HEAD is already occupied by an untracked file
+        await ctx.fs.write(
+          `${ctx.layout.workDir}/f~HEAD`,
+          new TextEncoder().encode('in the way\n'),
+        );
+        await ctx.fs.write(`${ctx.layout.workDir}/f`, fileContent);
+
+        // Act
+        const sut = await applyMergeToWorktree(ctx, {
+          baseTree: emptyBase,
+          oursTree,
+          theirsTree,
+          currentIndex: index([indexEntry('f', oursId)]),
+          labels: { ours: 'HEAD', theirs: 'side', base: 'base' },
+        });
+
+        // Assert
+        expect(sut.kind).toBe('would-overwrite');
+        if (sut.kind !== 'would-overwrite') return;
+        expect(sut.paths).toContain('f~HEAD');
+        // The obstructing file is untouched
+        const onDisk = new TextDecoder().decode(await ctx.fs.read(`${ctx.layout.workDir}/f~HEAD`));
+        expect(onDisk).toBe('in the way\n');
+      });
+    });
+  });
+
+  describe('Given a dirty tracked file sits at the distinct-types rename target', () => {
+    describe('When the merge is applied', () => {
+      it('Then it refuses with would-overwrite naming the rename target path', async () => {
+        // Arrange — ours adds `f` as regular, theirs as symlink → ourPath becomes f~HEAD
+        // `f~HEAD` is tracked (in currentIndex) but dirty (working file differs from index)
+        const ctx = await buildSeededContext();
+        const fileContent = new TextEncoder().encode('file content\n');
+        const linkTarget = new TextEncoder().encode('/etc/target');
+        const trackedId = await writeBlob(ctx, 'tracked content\n');
+        const oursId = await writeObject(ctx, {
+          type: 'blob',
+          content: fileContent,
+          id: '' as ObjectId,
+        });
+        const theirsId = await writeObject(ctx, {
+          type: 'blob',
+          content: linkTarget,
+          id: '' as ObjectId,
+        });
+        const emptyBase = await treeWith(ctx, []);
+        const oursTree = await treeWith(ctx, [
+          { name: 'f' as FilePath, id: oursId, mode: FILE_MODE.REGULAR },
+        ]);
+        const theirsTree = await treeWith(ctx, [
+          { name: 'f' as FilePath, id: theirsId, mode: FILE_MODE.SYMLINK },
+        ]);
+        // f~HEAD is tracked but the working file is dirty
+        await ctx.fs.write(
+          `${ctx.layout.workDir}/f~HEAD`,
+          new TextEncoder().encode('dirty local\n'),
+        );
+        await ctx.fs.write(`${ctx.layout.workDir}/f`, fileContent);
+
+        // Act
+        const sut = await applyMergeToWorktree(ctx, {
+          baseTree: emptyBase,
+          oursTree,
+          theirsTree,
+          currentIndex: index([indexEntry('f', oursId), indexEntry('f~HEAD', trackedId)]),
+          labels: { ours: 'HEAD', theirs: 'side', base: 'base' },
+        });
+
+        // Assert
+        expect(sut.kind).toBe('would-overwrite');
+        if (sut.kind !== 'would-overwrite') return;
+        expect(sut.paths).toContain('f~HEAD');
+      });
+    });
+  });
+
   describe('Given a gitlink that diverges on both sides', () => {
     describe('When the merge is applied', () => {
       it('Then it rejects with UNSUPPORTED_OPERATION naming the gitlink type', async () => {

@@ -25,6 +25,7 @@ import {
 import type { Context } from '../../ports/context.js';
 import type { Changeset, ChangesetEntry } from './compute-changeset.js';
 import { serializeAndHash } from './internal/serialize-and-hash.js';
+import { rmIfExists } from './internal/write-working-tree-file.js';
 import { readBlob } from './read-blob.js';
 
 export interface ApplyChangesetOpts {
@@ -123,9 +124,9 @@ const writeFileEntry = async (
 ): Promise<void> => {
   if (mode === FILE_MODE.SYMLINK) {
     const target = decoder.decode(content);
-    // Symlinks are written atomically by the platform; if a previous file
-    // exists at the path, rm first.
-    if (await ctx.fs.exists(absPath)) await ctx.fs.rm(absPath);
+    // Symlinks are written atomically by the platform; rm any previous entry
+    // at the path first (lstat-probing, so dangling symlinks are removed too).
+    await rmIfExists(ctx, absPath);
     await ctx.fs.symlink(target, absPath);
     return;
   }
@@ -170,7 +171,7 @@ const applyEntry = async (
   const absPath = joinPath(workdir, entry.path);
   if (entry.kind === 'noop') return undefined;
   if (entry.kind === 'delete') {
-    if (await ctx.fs.exists(absPath)) await ctx.fs.rm(absPath);
+    await rmIfExists(ctx, absPath);
     return undefined;
   }
   if (entry.id === undefined) return undefined;

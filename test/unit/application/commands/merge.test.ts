@@ -1084,6 +1084,7 @@ describe('merge.4b conflict persistence', () => {
         it.each([
           'content',
           'add-add',
+          'distinct-types',
           'modify-delete',
           'type-change',
           'binary',
@@ -2882,6 +2883,388 @@ describe('merge — post-merge hook', () => {
 
         // Assert
         expect(sut.kind).toBe('fast-forward');
+      });
+    });
+  });
+});
+
+// ── Slice 4 tests ──────────────────────────────────────────────────────────────
+
+describe('materialiseConflictBytes — add-add with conflictContent (slice 4)', () => {
+  const seedBlob = async (
+    ctx: ReturnType<typeof createMemoryContext>,
+    text: string,
+  ): Promise<ObjectId> =>
+    writeObject(ctx, {
+      type: 'blob',
+      content: new TextEncoder().encode(text),
+      id: '' as ObjectId,
+    });
+  const decode = (b: Uint8Array | undefined): string =>
+    b === undefined ? '<undefined>' : new TextDecoder().decode(b);
+
+  describe('Given an add-add conflict WITH conflictContent', () => {
+    describe('When materialiseConflictBytes runs', () => {
+      it('Then it returns conflictContent (not ours blob)', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const oursId = await seedBlob(ctx, 'OURS-BYTES');
+        const markerBytes = new TextEncoder().encode(
+          '<<<<<<< HEAD\nOURS\n=======\nTHEIRS\n>>>>>>> feature\n',
+        );
+        const conflict: MergeConflict = {
+          type: 'add-add',
+          path: 'f.txt' as FilePath,
+          ourId: oursId,
+          ourMode: FILE_MODE.REGULAR,
+          theirMode: FILE_MODE.REGULAR,
+          conflictContent: markerBytes,
+          contentVerdict: 'content',
+        };
+
+        // Act
+        const result = await materialiseConflictBytes(ctx, conflict);
+
+        // Assert — conflictContent is preferred over ours blob
+        expect(decode(result)).toBe('<<<<<<< HEAD\nOURS\n=======\nTHEIRS\n>>>>>>> feature\n');
+      });
+    });
+  });
+
+  describe('Given a bare add-add conflict (no conflictContent)', () => {
+    describe('When materialiseConflictBytes runs', () => {
+      it('Then it returns the ours blob (existing behaviour)', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const oursId = await seedBlob(ctx, 'OURS-SYMLINK-TARGET');
+        const conflict: MergeConflict = {
+          type: 'add-add',
+          path: 'link' as FilePath,
+          ourId: oursId,
+          ourMode: FILE_MODE.SYMLINK,
+          theirMode: FILE_MODE.SYMLINK,
+        };
+
+        // Act
+        const result = await materialiseConflictBytes(ctx, conflict);
+
+        // Assert — ours blob fallback
+        expect(decode(result)).toBe('OURS-SYMLINK-TARGET');
+      });
+    });
+  });
+});
+
+describe('merge — add-add content merge (slice 4, end-to-end)', () => {
+  describe('Given two branches adding the same path with overlapping text', () => {
+    describe('When merge runs', () => {
+      it('Then the worktree file contains the content-merged marker bytes (not ours blob)', async () => {
+        // Arrange — both branches add f.txt (unrelated histories: no common base),
+        // with overlapping text that will conflict.
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/f.txt`, 'OURS-VERSION\n');
+        await add(ctx, ['f.txt']);
+        await commit(ctx, { message: 'ours-root', author });
+
+        const theirsBlobId = await writeObject(ctx, {
+          type: 'blob',
+          content: new TextEncoder().encode('THEIRS-VERSION\n'),
+          id: '' as ObjectId,
+        });
+        const { writeTree } = await import('../../../../src/application/primitives/write-tree.js');
+        const { createCommit: createCommitPrim } = await import(
+          '../../../../src/application/primitives/create-commit.js'
+        );
+        const { updateRef } = await import('../../../../src/application/primitives/update-ref.js');
+        const theirsTreeId = await writeTree(ctx, [
+          { name: 'f.txt' as FilePath, id: theirsBlobId, mode: FILE_MODE.REGULAR },
+        ]);
+        const theirsCommitId = await createCommitPrim(ctx, {
+          tree: theirsTreeId,
+          parents: [],
+          author,
+          committer: author,
+          message: 'theirs-root',
+          extraHeaders: [],
+        });
+        await updateRef(ctx, 'refs/heads/theirs' as RefName, theirsCommitId, {
+          reflogMessage: 'branch: Created from seed',
+        });
+
+        // Act
+        const sut = await mergeRun(ctx, { rev: 'theirs', author });
+
+        // Assert — conflict kind and worktree carries marker bytes
+        expect(sut.kind).toBe('conflict');
+        const onDisk = await ctx.fs.readUtf8(`${ctx.layout.workDir}/f.txt`);
+        expect(onDisk).toContain('<<<<<<<');
+        expect(onDisk).toContain('=======');
+        expect(onDisk).toContain('>>>>>>>');
+        expect(onDisk).toContain('OURS-VERSION');
+        expect(onDisk).toContain('THEIRS-VERSION');
+      });
+    });
+  });
+
+  describe('Given two branches adding the same path as symlinks with different targets', () => {
+    describe('When merge runs', () => {
+      it('Then the worktree keeps ours symlink (bare add-add fallback)', async () => {
+        // Arrange — both sides add a symlink at the same path (no common base)
+        const ctx = createMemoryContext();
+        await init(ctx);
+
+        // Build ours commit: symlink 'link' → 'target-ours'
+        const oursBlobId = await writeObject(ctx, {
+          type: 'blob',
+          content: new TextEncoder().encode('target-ours'),
+          id: '' as ObjectId,
+        });
+        const { writeTree } = await import('../../../../src/application/primitives/write-tree.js');
+        const { createCommit: createCommitPrim } = await import(
+          '../../../../src/application/primitives/create-commit.js'
+        );
+        const { updateRef } = await import('../../../../src/application/primitives/update-ref.js');
+        const oursTreeId = await writeTree(ctx, [
+          { name: 'link' as FilePath, id: oursBlobId, mode: FILE_MODE.SYMLINK },
+        ]);
+        const oursCommitId = await createCommitPrim(ctx, {
+          tree: oursTreeId,
+          parents: [],
+          author,
+          committer: author,
+          message: 'ours-root',
+          extraHeaders: [],
+        });
+        await updateRef(ctx, 'refs/heads/main' as RefName, oursCommitId, {
+          reflogMessage: 'branch: Created',
+        });
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
+        // Place the ours symlink on disk
+        await ctx.fs.symlink('target-ours', `${ctx.layout.workDir}/link`);
+
+        // Build theirs commit: symlink 'link' → 'target-theirs'
+        const theirsBlobId = await writeObject(ctx, {
+          type: 'blob',
+          content: new TextEncoder().encode('target-theirs'),
+          id: '' as ObjectId,
+        });
+        const theirsTreeId = await writeTree(ctx, [
+          { name: 'link' as FilePath, id: theirsBlobId, mode: FILE_MODE.SYMLINK },
+        ]);
+        const theirsCommitId = await createCommitPrim(ctx, {
+          tree: theirsTreeId,
+          parents: [],
+          author,
+          committer: author,
+          message: 'theirs-root',
+          extraHeaders: [],
+        });
+        await updateRef(ctx, 'refs/heads/theirs' as RefName, theirsCommitId, {
+          reflogMessage: 'branch: Created from seed',
+        });
+
+        // Act
+        const sut = await mergeRun(ctx, { rev: 'theirs', author });
+
+        // Assert — bare add-add: ours symlink remains
+        expect(sut.kind).toBe('conflict');
+        if (sut.kind !== 'conflict') throw new Error('expected conflict');
+        expect(sut.conflicts[0]?.type).toBe('add-add');
+        const target = await ctx.fs.readlink(`${ctx.layout.workDir}/link`);
+        expect(target).toBe('target-ours');
+      });
+    });
+  });
+});
+
+describe('merge — distinct-types conflict (slice 4, end-to-end)', () => {
+  const buildUnrelatedCommit = async (
+    ctx: ReturnType<typeof createMemoryContext>,
+    branchName: string,
+    entries: Array<{ name: string; content: string; mode: string }>,
+  ): Promise<void> => {
+    const { writeTree } = await import('../../../../src/application/primitives/write-tree.js');
+    const { createCommit: createCommitPrim } = await import(
+      '../../../../src/application/primitives/create-commit.js'
+    );
+    const { updateRef } = await import('../../../../src/application/primitives/update-ref.js');
+    const treeEntries = await Promise.all(
+      entries.map(async ({ name, content, mode }) => {
+        const id = await writeObject(ctx, {
+          type: 'blob',
+          content: new TextEncoder().encode(content),
+          id: '' as ObjectId,
+        });
+        return { name: name as FilePath, id, mode: mode as never };
+      }),
+    );
+    const treeId = await writeTree(ctx, treeEntries);
+    const commitId = await createCommitPrim(ctx, {
+      tree: treeId,
+      parents: [],
+      author,
+      committer: author,
+      message: `${branchName}-root`,
+      extraHeaders: [],
+    });
+    await updateRef(ctx, `refs/heads/${branchName}` as RefName, commitId, {
+      reflogMessage: 'branch: Created from seed',
+    });
+  };
+
+  describe('Given ours adds a regular file and theirs adds a symlink at the same path', () => {
+    describe('When merge runs', () => {
+      it('Then ours regular bytes are at f.txt~HEAD, theirs symlink is at f.txt, index has stage 2 at f.txt~HEAD and stage 3 at f.txt', async () => {
+        // Arrange — ours adds regular file f.txt, theirs adds symlink f.txt → some-target
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/f.txt`, 'ours-regular-content\n');
+        await add(ctx, ['f.txt']);
+        await commit(ctx, { message: 'ours-root', author });
+
+        await buildUnrelatedCommit(ctx, 'theirs', [
+          { name: 'f.txt', content: 'some-target', mode: FILE_MODE.SYMLINK },
+        ]);
+
+        // Act
+        const sut = await mergeRun(ctx, { rev: 'theirs', author });
+
+        // Assert — conflict reported
+        expect(sut.kind).toBe('conflict');
+        if (sut.kind !== 'conflict') throw new Error('expected conflict');
+        expect(sut.conflicts[0]?.type).toBe('distinct-types');
+
+        // Regular file at f.txt~HEAD (ours regular side renamed)
+        const oursContent = await ctx.fs.readUtf8(`${ctx.layout.workDir}/f.txt~HEAD`);
+        expect(oursContent).toBe('ours-regular-content\n');
+
+        // Symlink at original path f.txt pointing to 'some-target'
+        const linkTarget = await ctx.fs.readlink(`${ctx.layout.workDir}/f.txt`);
+        expect(linkTarget).toBe('some-target');
+
+        // Index: stage 2 at f.txt~HEAD (ours), stage 3 at f.txt (theirs)
+        const index = await readIndex(ctx);
+        const oursEntry = index.entries.find((e) => e.path === ('f.txt~HEAD' as FilePath));
+        const theirsEntry = index.entries.find((e) => e.path === 'f.txt');
+        expect(oursEntry?.flags.stage).toBe(2);
+        expect(theirsEntry?.flags.stage).toBe(3);
+      });
+    });
+  });
+
+  describe('Given ours adds a symlink and theirs adds a regular file at the same path', () => {
+    describe('When merge runs', () => {
+      it('Then theirs regular bytes are at f.txt~theirs, ours symlink is at f.txt, index has stage 2 at f.txt and stage 3 at f.txt~theirs', async () => {
+        // Arrange — ours adds symlink f.txt → some-target, theirs adds regular file f.txt
+        const ctx = createMemoryContext();
+        await init(ctx);
+
+        // Set up ours root commit with a symlink
+        const { writeTree } = await import('../../../../src/application/primitives/write-tree.js');
+        const { createCommit: createCommitPrim } = await import(
+          '../../../../src/application/primitives/create-commit.js'
+        );
+        const { updateRef } = await import('../../../../src/application/primitives/update-ref.js');
+        const oursBlobId = await writeObject(ctx, {
+          type: 'blob',
+          content: new TextEncoder().encode('some-target'),
+          id: '' as ObjectId,
+        });
+        const oursTreeId = await writeTree(ctx, [
+          { name: 'f.txt' as FilePath, id: oursBlobId, mode: FILE_MODE.SYMLINK },
+        ]);
+        const oursCommitId = await createCommitPrim(ctx, {
+          tree: oursTreeId,
+          parents: [],
+          author,
+          committer: author,
+          message: 'ours-root',
+          extraHeaders: [],
+        });
+        await updateRef(ctx, 'refs/heads/main' as RefName, oursCommitId, {
+          reflogMessage: 'branch: Created',
+        });
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
+        // Place ours symlink on disk
+        await ctx.fs.symlink('some-target', `${ctx.layout.workDir}/f.txt`);
+
+        await buildUnrelatedCommit(ctx, 'theirs', [
+          { name: 'f.txt', content: 'theirs-regular-content\n', mode: FILE_MODE.REGULAR },
+        ]);
+
+        // Act
+        const sut = await mergeRun(ctx, { rev: 'theirs', author });
+
+        // Assert — conflict reported
+        expect(sut.kind).toBe('conflict');
+        if (sut.kind !== 'conflict') throw new Error('expected conflict');
+        expect(sut.conflicts[0]?.type).toBe('distinct-types');
+
+        // Regular file at f.txt~theirs (theirs' regular side renamed)
+        const theirsContent = await ctx.fs.readUtf8(`${ctx.layout.workDir}/f.txt~theirs`);
+        expect(theirsContent).toBe('theirs-regular-content\n');
+
+        // Symlink at original path f.txt pointing to 'some-target' (ours)
+        const linkTarget = await ctx.fs.readlink(`${ctx.layout.workDir}/f.txt`);
+        expect(linkTarget).toBe('some-target');
+
+        // Index: stage 2 at f.txt (ours), stage 3 at f.txt~theirs (theirs)
+        const index = await readIndex(ctx);
+        const oursEntry = index.entries.find((e) => e.path === 'f.txt');
+        const theirsEntry = index.entries.find((e) => e.path === ('f.txt~theirs' as FilePath));
+        expect(oursEntry?.flags.stage).toBe(2);
+        expect(theirsEntry?.flags.stage).toBe(3);
+      });
+    });
+  });
+});
+
+describe('merge — labels threading (slice 4)', () => {
+  describe('Given ours and theirs add the same path (unrelated histories)', () => {
+    describe('When merge runs with rev=feature', () => {
+      it('Then conflict markers carry HEAD and feature labels', async () => {
+        // Arrange — two unrelated commits adding the same file with different content
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/f.txt`, 'OURS-CONTENT\n');
+        await add(ctx, ['f.txt']);
+        await commit(ctx, { message: 'ours-root', author });
+
+        const theirsBlobId = await writeObject(ctx, {
+          type: 'blob',
+          content: new TextEncoder().encode('THEIRS-CONTENT\n'),
+          id: '' as ObjectId,
+        });
+        const { writeTree } = await import('../../../../src/application/primitives/write-tree.js');
+        const { createCommit: createCommitPrim } = await import(
+          '../../../../src/application/primitives/create-commit.js'
+        );
+        const { updateRef } = await import('../../../../src/application/primitives/update-ref.js');
+        const theirsTreeId = await writeTree(ctx, [
+          { name: 'f.txt' as FilePath, id: theirsBlobId, mode: FILE_MODE.REGULAR },
+        ]);
+        const theirsCommitId = await createCommitPrim(ctx, {
+          tree: theirsTreeId,
+          parents: [],
+          author,
+          committer: author,
+          message: 'theirs-root',
+          extraHeaders: [],
+        });
+        await updateRef(ctx, 'refs/heads/feature' as RefName, theirsCommitId, {
+          reflogMessage: 'branch: Created from seed',
+        });
+
+        // Act
+        await mergeRun(ctx, { rev: 'feature', author });
+
+        // Assert — conflict markers use HEAD and feature labels
+        const onDisk = await ctx.fs.readUtf8(`${ctx.layout.workDir}/f.txt`);
+        expect(onDisk).toContain('<<<<<<< HEAD\n');
+        expect(onDisk).toContain('>>>>>>> feature\n');
       });
     });
   });

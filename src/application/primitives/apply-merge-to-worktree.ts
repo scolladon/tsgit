@@ -33,7 +33,12 @@ import { buildContentMerger } from './build-content-merger.js';
 import { compareWorkingTreeEntry, isWorkingTreeModified } from './compare-working-tree-entry.js';
 import { flattenTree } from './flatten-tree.js';
 import { stage0Entry, zeroStat } from './internal/synthetic-index-entry.js';
-import { removeWorkingTreeFile, writeWorkingTreeFile } from './internal/write-working-tree-file.js';
+import { writeDistinctTypesSides } from './internal/write-distinct-types-sides.js';
+import {
+  removeWorkingTreeFile,
+  writeWorkingTreeEntry,
+  writeWorkingTreeFile,
+} from './internal/write-working-tree-file.js';
 import { type MaterializeTreeResult, materializeTree } from './materialize-tree.js';
 import { readBlob } from './read-blob.js';
 import { synthesizeTreeFromIndex } from './synthesize-tree-from-index.js';
@@ -101,7 +106,14 @@ const changedPaths = (
   for (const outcome of outcomes) {
     if (outcome.status !== 'conflict' && outcomeChangesOurs(outcome, ours)) paths.add(outcome.path);
   }
-  for (const conflict of conflicts) paths.add(conflict.path);
+  for (const conflict of conflicts) {
+    if (conflict.type === 'distinct-types') {
+      if (conflict.ourPath !== undefined) paths.add(conflict.ourPath);
+      if (conflict.theirPath !== undefined) paths.add(conflict.theirPath);
+    } else {
+      paths.add(conflict.path);
+    }
+  }
   return paths;
 };
 
@@ -155,20 +167,18 @@ const synthesiseMergedTree = async (
 /**
  * Working-tree bytes for a conflicted path. Mirrors `merge`'s materialisation.
  *
- * `mergeContent` always populates `conflictContent` for a content conflict, so
- * the content case is handled by the first branch. The add-add / binary /
- * type-change fallback writes the `ours` side, which the working tree already
- * holds (those conflicts arise from a path `ours` also has), so that write is a
- * no-op observationally — hence its branch-selection mutants are equivalent.
+ * When `conflictContent` is present (content conflicts and content-merged add-add),
+ * return those bytes — they carry marker text that is observably different from
+ * ours. For bare add-add (binary/symlink-symlink) and type-change, fall back to
+ * ours; distinct-types conflicts are routed to `writeDistinctTypesSides` before
+ * this function is reached.
  */
 const conflictBytes = async (
   ctx: Context,
   conflict: MergeConflict,
 ): Promise<Uint8Array | undefined> => {
-  // Stryker disable next-line ConditionalExpression,EqualityOperator,BlockStatement,LogicalOperator: equivalent — `conflictContent` is populated iff the conflict is `content`, so the two operands are correlated and `&&` vs `||` selects the same conflicts; the add-add/binary fallback writes `ours`, which the working tree already holds (see function header).
-  if (conflict.type === 'content' && conflict.conflictContent !== undefined) {
-    return conflict.conflictContent;
-  }
+  // Covers `content` conflicts and content-merged `add-add` (both carry `conflictContent`).
+  if (conflict.conflictContent !== undefined) return conflict.conflictContent;
   if (conflict.type === 'modify-delete') {
     const survivorId = conflict.ourId ?? conflict.theirId;
     if (survivorId !== undefined) {
@@ -177,13 +187,35 @@ const conflictBytes = async (
     }
     return undefined;
   }
-  // add-add / binary / type-change: keep ours when present.
-  // Stryker disable next-line ConditionalExpression,BlockStatement: equivalent — the `ours` bytes equal what the working tree already holds for these conflict types, so the write (or its absence) is observationally identical; see function header.
+  // Bare add-add (binary/symlink-symlink/type-change): keep ours when present.
+  // Stryker disable next-line ConditionalExpression,BlockStatement: equivalent — for bare add-add/binary/type-change the `ourId` is always defined (ours has a side), and the write reproduces bytes the working tree already holds (ours was checked out), so skipping it is observationally identical.
   if (conflict.ourId !== undefined) {
     // Stryker disable next-line ObjectLiteral: equivalent — the 256 MiB cap is unobservable without a 256 MiB fixture; cap mechanics covered by read-blob.test.ts.
     return (await readBlob(ctx, conflict.ourId, { maxBytes: MAX_CONFLICT_OUTPUT_BYTES })).content;
   }
   return undefined;
+};
+
+/**
+ * Write one non-distinct-types conflict's bytes. A bare add-add writes the
+ * ours side verbatim; when ours is a symlink the entry must be re-created as
+ * a symlink (a plain write over a symlink-occupied path refuses on the node
+ * adapter).
+ */
+const writeMarkedConflict = async (ctx: Context, conflict: MergeConflict): Promise<void> => {
+  const bytes = await conflictBytes(ctx, conflict);
+  if (bytes === undefined) return;
+  const useMode =
+    conflict.type === 'add-add' &&
+    conflict.conflictContent === undefined &&
+    conflict.ourMode !== undefined
+      ? conflict.ourMode
+      : undefined;
+  if (useMode !== undefined) {
+    await writeWorkingTreeEntry(ctx, conflict.path, bytes, useMode);
+    return;
+  }
+  await writeWorkingTreeFile(ctx, conflict.path, bytes);
 };
 
 /** Write the changed clean outcomes + conflict markers to the working tree. */
@@ -212,8 +244,11 @@ const writeConflictWorktree = async (
     }
   }
   for (const conflict of conflicts) {
-    const bytes = await conflictBytes(ctx, conflict);
-    if (bytes !== undefined) await writeWorkingTreeFile(ctx, conflict.path, bytes);
+    if (conflict.type === 'distinct-types') {
+      await writeDistinctTypesSides(ctx, conflict);
+      continue;
+    }
+    await writeMarkedConflict(ctx, conflict);
   }
 };
 
@@ -260,7 +295,13 @@ export const applyMergeToWorktree = async (
     flattenTree(ctx, input.oursTree),
     flattenTree(ctx, input.theirsTree),
   ]);
-  const merged = await mergeTrees(base, ours, theirs, buildContentMerger(ctx, input.labels));
+  const merged = await mergeTrees(
+    base,
+    ours,
+    theirs,
+    buildContentMerger(ctx, input.labels),
+    input.labels,
+  );
   // Stryker disable next-line ConditionalExpression: equivalent — `rejectUnsupported` over an empty conflict list is a no-op, so the `if(true)` variant behaves identically on a clean merge; `if(false)` is killed by the gitlink-rejection test.
   if (!merged.cleanMerge) rejectUnsupported(merged.conflicts);
 
@@ -310,7 +351,13 @@ export const mergeTreesToTree = async (
     flattenTree(ctx, input.oursTree),
     flattenTree(ctx, input.theirsTree),
   ]);
-  const merged = await mergeTrees(base, ours, theirs, buildContentMerger(ctx, input.labels));
+  const merged = await mergeTrees(
+    base,
+    ours,
+    theirs,
+    buildContentMerger(ctx, input.labels),
+    input.labels,
+  );
   // Stryker disable next-line ConditionalExpression: equivalent — `if(true)` (always-conflict) is killed by the clean `--index` reinstatement test; `if(false)` only mishandles a *conflicting* index-side `--index` merge, which v1 intentionally leaves un-reinstated ("Index was not unstashed", ADR-211), so the caller's behaviour is unchanged.
   if (!merged.cleanMerge) return { kind: 'conflict', conflicts: merged.conflicts };
   return { kind: 'clean', mergedTree: await synthesiseMergedTree(ctx, merged.outcomes) };

@@ -12,6 +12,7 @@ import {
   type ConflictType,
   MAX_CONFLICT_OUTPUT_BYTES,
   type MergeConflict,
+  type MergeLabels,
   type MergeOutcome,
   mergeLabels,
   mergeTrees,
@@ -33,6 +34,11 @@ import { buildContentMerger } from '../primitives/build-content-merger.js';
 import { readConfig } from '../primitives/config-read.js';
 import { createCommit } from '../primitives/create-commit.js';
 import { flattenTree } from '../primitives/flatten-tree.js';
+import { writeDistinctTypesSides } from '../primitives/internal/write-distinct-types-sides.js';
+import {
+  rmIfExists,
+  writeWorkingTreeEntry,
+} from '../primitives/internal/write-working-tree-file.js';
 import { materializeTree } from '../primitives/materialize-tree.js';
 import { mergeBase } from '../primitives/merge-base.js';
 import { readBlob } from '../primitives/read-blob.js';
@@ -305,8 +311,9 @@ const computeMergeTreeResult = async (
     baseTreeId !== undefined ? flattenTree(ctx, baseTreeId) : Promise.resolve(undefined),
   ]);
 
-  const contentMerger = buildContentMerger(ctx, mergeLabels(revName, baseId));
-  const result = await mergeTrees(baseFlat, ourFlat, theirFlat, contentMerger);
+  const labels: MergeLabels = mergeLabels(revName, baseId);
+  const contentMerger = buildContentMerger(ctx, labels);
+  const result = await mergeTrees(baseFlat, ourFlat, theirFlat, contentMerger, labels);
 
   if (result.cleanMerge) {
     const tree = await synthesiseMergedTree(ctx, result.outcomes);
@@ -484,12 +491,52 @@ const MAX_CONCURRENT_PATH_WRITES = 32;
 const isExcluded = (matcher: SparseMatcher | undefined, path: FilePath): boolean =>
   matcher !== undefined && !matcher(path);
 
+/** Whether a distinct-types rename target already exists on disk (lstat — no follow). */
+const isUntrackedBlocker = async (ctx: Context, renamedPath: FilePath): Promise<boolean> => {
+  const abs = `${ctx.layout.workDir}/${renamedPath}`;
+  try {
+    await ctx.fs.lstat(abs);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * Collect the distinct-types rename targets that exist on disk. Only the side
+ * whose recorded path differs from the original (`conflict.path`) was renamed;
+ * its target is probed unique against every tracked path of the three input
+ * trees, so anything found there is necessarily untracked. The non-renamed
+ * side's path legitimately exists on disk (ours is checked out) and is skipped.
+ * Mirrors git's "untracked working tree file would be overwritten by merge" refusal.
+ */
+const collectUntrackedRenameBlockers = async (
+  ctx: Context,
+  conflicts: ReadonlyArray<MergeConflict>,
+): Promise<ReadonlyArray<FilePath>> => {
+  const blockers: FilePath[] = [];
+  for (const conflict of conflicts) {
+    if (conflict.type !== 'distinct-types') continue;
+    for (const recordedPath of [conflict.ourPath, conflict.theirPath]) {
+      if (recordedPath === undefined || recordedPath === conflict.path) continue;
+      if (await isUntrackedBlocker(ctx, recordedPath)) blockers.push(recordedPath);
+    }
+  }
+  return blockers;
+};
+
 const writeConflictingWorkingTree = async (
   ctx: Context,
   outcomes: ReadonlyArray<MergeOutcome>,
   conflicts: ReadonlyArray<MergeConflict>,
   matcher: SparseMatcher | undefined,
 ): Promise<void> => {
+  // Pre-flight: refuse when an untracked file would be overwritten by a
+  // distinct-types rename. Mirrors git's "untracked working tree file would
+  // be overwritten by merge" refusal (checked before any working-tree write).
+  const blockers = await collectUntrackedRenameBlockers(ctx, conflicts);
+  if (blockers.length > 0) throw workingTreeDirty(blockers);
+
   // Bounded parallelism — independent path writes overlap, but the pool
   // caps in-flight at MAX_CONCURRENT_PATH_WRITES so a 10k-path merge
   // doesn't exhaust file descriptors.
@@ -568,10 +615,56 @@ export const writeOutcomeToTree = async (
 };
 
 const writeConflictToTree = async (ctx: Context, conflict: MergeConflict): Promise<void> => {
-  const bytes = await materialiseConflictBytes(ctx, conflict);
-  if (bytes !== undefined) {
-    await writeWorkingTreeFile(ctx, conflict.path, bytes);
+  if (conflict.type === 'distinct-types') {
+    await writeDistinctTypesSides(ctx, conflict);
+    return;
   }
+  const bytes = await materialiseConflictBytes(ctx, conflict);
+  if (bytes === undefined) return;
+  // When the materialised bytes come from the ours blob verbatim (no conflict
+  // markers were injected), the file must be written with the original mode.
+  // Symlink/symlink add-add conflicts fall here: the bytes are the ours
+  // symlink target, and we must re-create a symlink, not a regular file.
+  const useMode =
+    conflict.type === 'add-add' &&
+    conflict.conflictContent === undefined &&
+    conflict.ourMode !== undefined
+      ? conflict.ourMode
+      : undefined;
+  if (useMode !== undefined) {
+    await writeWorkingTreeEntry(ctx, conflict.path, bytes, useMode);
+    return;
+  }
+  await writeWorkingTreeFile(ctx, conflict.path, bytes);
+};
+
+// Stryker disable next-line ObjectLiteral: equivalent — the 256 MiB cap is unobservable without a 256 MiB fixture; cap mechanics covered by read-blob.test.ts.
+const READ_BLOB_OPTS = { maxBytes: MAX_CONFLICT_OUTPUT_BYTES } as const;
+
+const readOursBlob = (ctx: Context, conflict: MergeConflict): Promise<Uint8Array> | undefined => {
+  if (conflict.ourId === undefined) return undefined;
+  return readBlob(ctx, conflict.ourId, READ_BLOB_OPTS).then((b) => b.content);
+};
+
+const materialiseAddAdd = async (
+  ctx: Context,
+  conflict: MergeConflict,
+): Promise<Uint8Array | undefined> => {
+  if (conflict.conflictContent !== undefined) return conflict.conflictContent;
+  return readOursBlob(ctx, conflict);
+};
+
+const materialiseContent = async (
+  ctx: Context,
+  conflict: MergeConflict,
+): Promise<Uint8Array | undefined> => {
+  if (conflict.conflictContent !== undefined) return conflict.conflictContent;
+  if (conflict.ourId === undefined || conflict.theirId === undefined) return undefined;
+  const [ours, theirs] = await Promise.all([
+    readBlob(ctx, conflict.ourId, READ_BLOB_OPTS),
+    readBlob(ctx, conflict.theirId, READ_BLOB_OPTS),
+  ]);
+  return writeConflictMarkers([ours.content], [theirs.content]);
 };
 
 /** Derive the working-tree bytes for a conflicting path. Exported for direct unit testing. */
@@ -579,45 +672,15 @@ export const materialiseConflictBytes = async (
   ctx: Context,
   conflict: MergeConflict,
 ): Promise<Uint8Array | undefined> => {
-  if (conflict.type === 'content' && conflict.conflictContent !== undefined) {
-    return conflict.conflictContent;
-  }
-  if (conflict.type === 'binary') {
-    // Binary conflicts: write ours bytes verbatim (matches mergeContent's
-    // existing fallback shape). User must manually choose a side.
-    if (conflict.ourId !== undefined) {
-      // Stryker disable next-line ObjectLiteral: equivalent — the 256 MiB cap is unobservable without a 256 MiB fixture; cap mechanics covered by read-blob.test.ts.
-      return (await readBlob(ctx, conflict.ourId, { maxBytes: MAX_CONFLICT_OUTPUT_BYTES })).content;
-    }
-  }
-  if (conflict.type === 'add-add' || conflict.type === 'type-change') {
-    if (conflict.ourId !== undefined) {
-      // Stryker disable next-line ObjectLiteral: equivalent — the 256 MiB cap is unobservable without a 256 MiB fixture; cap mechanics covered by read-blob.test.ts.
-      return (await readBlob(ctx, conflict.ourId, { maxBytes: MAX_CONFLICT_OUTPUT_BYTES })).content;
-    }
-  }
+  if (conflict.type === 'content') return materialiseContent(ctx, conflict);
+  if (conflict.type === 'add-add') return materialiseAddAdd(ctx, conflict);
+  if (conflict.type === 'binary') return readOursBlob(ctx, conflict);
+  if (conflict.type === 'type-change') return readOursBlob(ctx, conflict);
   if (conflict.type === 'modify-delete') {
     // Preserve the surviving side's bytes (whichever has an id).
     const survivorId = conflict.ourId ?? conflict.theirId;
-    if (survivorId !== undefined) {
-      // Stryker disable next-line ObjectLiteral: equivalent — the 256 MiB cap is unobservable without a 256 MiB fixture; cap mechanics covered by read-blob.test.ts.
-      return (await readBlob(ctx, survivorId, { maxBytes: MAX_CONFLICT_OUTPUT_BYTES })).content;
-    }
-  }
-  // Content conflict whose mergeContent didn't produce conflictContent —
-  // build the markers from ours/theirs blobs directly.
-  if (
-    conflict.type === 'content' &&
-    conflict.ourId !== undefined &&
-    conflict.theirId !== undefined
-  ) {
-    const [ours, theirs] = await Promise.all([
-      // Stryker disable next-line ObjectLiteral: equivalent — the 256 MiB cap is unobservable without a 256 MiB fixture; cap mechanics covered by read-blob.test.ts.
-      readBlob(ctx, conflict.ourId, { maxBytes: MAX_CONFLICT_OUTPUT_BYTES }),
-      // Stryker disable next-line ObjectLiteral: equivalent — the 256 MiB cap is unobservable without a 256 MiB fixture; cap mechanics covered by read-blob.test.ts.
-      readBlob(ctx, conflict.theirId, { maxBytes: MAX_CONFLICT_OUTPUT_BYTES }),
-    ]);
-    return writeConflictMarkers([ours.content], [theirs.content]);
+    if (survivorId === undefined) return undefined;
+    return (await readBlob(ctx, survivorId, READ_BLOB_OPTS)).content;
   }
   return undefined;
 };
@@ -633,15 +696,17 @@ const writeWorkingTreeFile = async (
   if (parent !== undefined) {
     await ctx.fs.mkdir(parent);
   }
+  // Remove any existing symlink (including dangling) before writing a regular
+  // file — NodeFileSystem.write uses 'creation' mode and would throw
+  // PERMISSION_DENIED if a symlink already occupies the path.
+  await rmIfExists(ctx, fullPath);
   await ctx.fs.write(fullPath, content);
 };
 
 /** Remove a working-tree file if it exists. Exported for direct unit testing. */
 export const removeWorkingTreeFile = async (ctx: Context, path: FilePath): Promise<void> => {
   const fullPath = `${ctx.layout.workDir}/${path}`;
-  if (await ctx.fs.exists(fullPath)) {
-    await ctx.fs.rm(fullPath);
-  }
+  await rmIfExists(ctx, fullPath);
 };
 
 /** Compute the parent directory of a path. Exported for direct unit testing. */
