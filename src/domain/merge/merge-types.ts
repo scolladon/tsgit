@@ -3,6 +3,7 @@ import type { FileMode, FilePath, ObjectId } from '../objects/index.js';
 export type ConflictType =
   | 'content'
   | 'add-add'
+  | 'distinct-types'
   | 'modify-delete'
   | 'type-change'
   | 'rename-rename'
@@ -20,6 +21,10 @@ export interface MergeConflict {
   readonly theirMode?: FileMode;
   readonly conflictContent?: Uint8Array;
   readonly contentVerdict?: 'clean' | 'content' | 'binary';
+  /** Recorded path for our side; populated only on `distinct-types` conflicts. */
+  readonly ourPath?: FilePath;
+  /** Recorded path for their side; populated only on `distinct-types` conflicts. */
+  readonly theirPath?: FilePath;
 }
 
 export type MergeOutcome =
