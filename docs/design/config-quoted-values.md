@@ -38,6 +38,7 @@ All pinned empirically via `git config --file` with a scrubbed environment (`env
 | `"ab<CR>"` | `ab<CR>` | quoted CR preserved |
 | `ab<CR>c` | `ab<CR>c` | interior CR preserved |
 | `a<0x01>b`, `a<DEL>b` | verbatim | raw control bytes pass through |
+| `a<VT>` / `<VT>a` / `a<FF>` | verbatim | VT/FF are NOT whitespace (git sane-ctype `GIT_SPACE` = space/TAB/LF/CR) — never skipped or trimmed |
 | `a\x` | **fatal: bad config line N in file F** | unknown escape |
 | `"a` (unclosed) | **fatal: bad config line N in file F** | quote span cannot cross a raw LF |
 | (empty) / `""` | `` (empty string) | |
@@ -71,7 +72,7 @@ Restructure `parseIniSections` to iterate **physical lines by index** (no more g
    - flags: `inQuotes`, `inComment`; accumulator `out`; `trimLen` (length of `out` before the current trailing unquoted-whitespace run, git's trailing-trim mechanism).
    - end of physical line: `inQuotes` → **parse error**; otherwise truncate `out` to `trimLen` when a trailing run is open, and finish.
    - `inComment` → skip char.
-   - whitespace (` `, TAB, CR, VT, FF — C `isspace` minus LF) outside quotes: skipped while `out` is empty, otherwise appended with `trimLen` latched at the run start.
+   - whitespace (` `, TAB, CR — git's sane-ctype `GIT_SPACE` minus LF; VT/FF are *not* whitespace to git, pinned) outside quotes: skipped while `out` is empty, otherwise appended with `trimLen` latched at the run start.
    - `;`/`#` outside quotes → `inComment = true`.
    - `\` → look at next char: end-of-line → continuation (advance to next physical line — works inside quote spans too; on the *last* line the value simply ends, git fakes an EOL at EOF); `n` → LF; `t` → TAB; `b` → BS; `\` and `"` → themselves; anything else → **parse error**. An escape append resets `trimLen` even when the decoded char is whitespace (`a \t` → `a <TAB>`, pinned).
    - `"` → toggle `inQuotes` **and reset `trimLen`** (`a ""` → `a `, pinned).
