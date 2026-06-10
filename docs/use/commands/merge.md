@@ -64,6 +64,29 @@ Resolve the working-tree files, `repo.add` the resolved paths, then `repo.merge.
 
 Unsupported conflict types (`rename-rename`, `gitlink`) reject upfront with `UNSUPPORTED_OPERATION` before any disk write.
 
+### Both-added paths
+
+When both sides **add** the same path (no merge-base entry):
+
+- **Regular-file pairs** content-merge against an empty base — markers wrap only
+  the truly conflicting regions, and a `merge=union` (or clean external) driver
+  resolves the path cleanly. The conflict keeps `type: 'add-add'` and carries
+  `contentVerdict` (`'content'`, `'binary'`, or `'clean'` when the bytes merged
+  but the file modes disagree) alongside the materialised `conflictContent`.
+  The index gains stage-2/3 entries only (no base → no stage 1).
+- **A regular file vs a symlink** is a `distinct-types` conflict: the regular
+  side is renamed to `<path>~<label>` (that side's conflict label with `/`
+  flattened to `_`, made unique with `_0`, `_1`, … against tracked paths) while
+  the symlink keeps the original path — each side lands as a single-stage entry
+  at its recorded path (`ourPath` / `theirPath`), matching git's
+  `CONFLICT (distinct types)`. An untracked working file at the rename target
+  refuses with `WORKING_TREE_DIRTY` before anything is written.
+- **Symlink vs symlink** (and any pair involving a gitlink) keeps ours in the
+  working tree with plain stage-2/3 entries.
+
+The same behaviour applies wherever the shared 3-way merge runs: `stash apply`,
+`cherry-pick`, `revert`, and `rebase`.
+
 ## Custom merge drivers
 
 The per-path content merge honours `.gitattributes` `merge=<driver>` selection,
