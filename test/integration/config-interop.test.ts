@@ -262,22 +262,16 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
     });
   });
 
-  // Subsections used in the write-parity matrix. CR is handled with
-  // git config --file (not --local) because git strips CR bytes when
-  // parsing dotted keys from argv, but preserves them in --file mode.
   const SUBSECTION_WRITE_MATRIX: ReadonlyArray<{
     label: string;
     subsection: string;
-    // When true, the git peer write uses --file instead of --local because
-    // git strips control chars (CR) from argv key parsing.
-    useFile?: boolean;
   }> = [
     { label: 'double-quote', subsection: 'a"b' },
     { label: 'backslash', subsection: 'a\\b' },
     { label: 'bracket', subsection: 'a]b' },
     { label: 'hash', subsection: 'a#b' },
     { label: 'space', subsection: 'a b' },
-    { label: 'CR', subsection: 'a\rb', useFile: true },
+    { label: 'CR', subsection: 'a\rb' },
     { label: 'combo (quote, backslash, bracket)', subsection: 'a"b\\c]d' },
   ];
 
@@ -287,7 +281,6 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
         SUBSECTION_WRITE_MATRIX,
       )('Then the [test "..."] section bytes are identical for subsection "$label"', async ({
         subsection,
-        useFile,
       }) => {
         // Arrange
         const ctx = createNodeContext({ workDir: pair.ours });
@@ -299,12 +292,7 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
         await updateConfigEntries(ctx, [{ section: 'test', subsection, key: 'v', value: 'v' }]);
 
         // Act — canonical git writes to its own repo
-        if (useFile === true) {
-          // git strips CR from argv key parsing; use --file mode to preserve it
-          runGit(['config', '--file', peerConfigPath, `test.${subsection}.v`, 'v']);
-        } else {
-          runGit(['-C', pair.peer, 'config', '--local', `test.${subsection}.v`, 'v']);
-        }
+        runGit(['-C', pair.peer, 'config', '--local', `test.${subsection}.v`, 'v']);
 
         // Assert — byte-identical [test "..."] section in both repos
         const oursConfig = await readFile(oursConfigPath, 'utf8');
