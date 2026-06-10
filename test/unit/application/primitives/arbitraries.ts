@@ -13,6 +13,51 @@ import type { Context } from '../../../../src/ports/context.js';
  * indices, so every generated graph is acyclic by construction.
  */
 
+/**
+ * Characters that exercise every grammar branch of the subsection writer/reader:
+ * mandatory escape targets (`\`, `"`), raw-emitted but structurally sensitive
+ * chars (`]`, CR), and comment triggers (`#`, `;`).
+ */
+const SUBSECTION_SPECIAL_CHARS = [
+  '"', // must be escaped to `\"`
+  '\\', // must be escaped to `\\` (first)
+  ']', // written raw inside quotes — would break an unquoted header
+  '\r', // CR — written raw inside quotes, round-trips
+  '#', // comment trigger — written raw inside quotes
+  ';', // comment trigger — written raw inside quotes
+  ' ', // space — ordinary inside a quoted subsection
+  '\t', // TAB — ordinary content inside a quoted subsection
+  '\x01', // C0 control — passed through raw
+  '\x7f', // DEL — passed through raw
+];
+
+/**
+ * Single character arbitrary biased toward subsection-grammar-exercising
+ * special chars plus ordinary printable ASCII.
+ * Excludes LF (`\n`) and NUL (`\0`) — the two chars git rejects.
+ */
+const arbSubsectionUnit = (): fc.Arbitrary<string> =>
+  fc.oneof(
+    fc.constantFrom(...SUBSECTION_SPECIAL_CHARS),
+    fc.integer({ min: 0x20, max: 0x7e }).map((cp) => String.fromCodePoint(cp)),
+  );
+
+/**
+ * Generator over the full LF/NUL-free subsection-name domain (up to 1024 chars).
+ * Includes the empty string. Combines a wide full-unicode generator (with LF and
+ * NUL stripped) and a specials-biased generator so shrunk counterexamples stay
+ * readable and grammar branch coverage is high.
+ */
+export const subsectionName = (): fc.Arbitrary<string> => {
+  // Wide: full unicode with LF and NUL stripped.
+  const wide = fc.string({ unit: 'binary', maxLength: 1024 }).map((s) => s.replace(/[\n\0]/g, ''));
+
+  // Biased: strings built from grammar-exercising specials + printable ASCII.
+  const biased = fc.string({ unit: arbSubsectionUnit(), maxLength: 1024 });
+
+  return fc.oneof(wide, biased);
+};
+
 export interface DagNodeSpec {
   readonly parents: readonly number[];
   readonly ts: number;

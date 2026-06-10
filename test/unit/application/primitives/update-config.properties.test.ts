@@ -5,6 +5,7 @@ import {
   parseIniSections,
 } from '../../../../src/application/primitives/config-read.js';
 import { setConfigEntryInText } from '../../../../src/application/primitives/update-config.js';
+import { subsectionName } from './arbitraries.js';
 
 const findValue = (
   sections: ReadonlyArray<IniSection>,
@@ -94,6 +95,46 @@ describe('update-config writer properties', () => {
             expect(sections).toHaveLength(1);
             const entries = sections[0]?.entries;
             expect(entries).toHaveLength(1);
+          }),
+          { numRuns: 200 },
+        );
+      });
+    });
+  });
+
+  describe('Given an arbitrary subsection name', () => {
+    describe('When the subsection is rendered into config text and re-parsed via parseIniSections', () => {
+      it('Then the parsed subsection equals the original input', () => {
+        // Arrange + Act + Assert — render-then-parse round-trip: `setConfigEntryInText`
+        // is the writer (sut), `parseIniSections` is the reader; the round-trip must
+        // recover exactly the original subsection string for every LF/NUL-free input.
+        const sut = setConfigEntryInText;
+        fc.assert(
+          fc.property(subsectionName(), (s) => {
+            const text = sut('', 'test', s, 'k', 'v');
+            const sections = parseIniSections(text);
+            expect(sections).toHaveLength(1);
+            const parsed = sections[0];
+            expect(parsed?.section).toBe('test');
+            expect(parsed?.subsection).toBe(s);
+          }),
+          { numRuns: 200 },
+        );
+      });
+    });
+
+    describe('When the subsection is rendered into config text', () => {
+      it('Then parseIniSections does not throw and returns an array', () => {
+        // Arrange + Act + Assert — totality property: the strict quoted-grammar
+        // must never reject the writer's output over the full LF/NUL-free domain;
+        // a thrown CONFIG_PARSE_ERROR is shrunk and reported independently from
+        // the equality failure in the round-trip property above.
+        const sut = setConfigEntryInText;
+        fc.assert(
+          fc.property(subsectionName(), (s) => {
+            const text = sut('', 'test', s, 'k', 'v');
+            const result = parseIniSections(text);
+            expect(Array.isArray(result)).toBe(true);
           }),
           { numRuns: 200 },
         );
