@@ -153,6 +153,90 @@ describe('buildContentMerger', () => {
     });
   });
 
+  describe('Given supplied labels and an overlapping change', () => {
+    describe('When the built-in merge conflicts', () => {
+      it('Then the markers carry the ours / theirs labels', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const sut = buildContentMerger(ctx, { ours: 'HEAD', theirs: 'feature', base: 'main' });
+        const mergeCtx = await mergeCtxFor(ctx, {
+          base: 'a\nb\nc\n',
+          ours: 'a\nX\nc\n',
+          theirs: 'a\nY\nc\n',
+        });
+
+        // Act
+        const result = await sut(mergeCtx, undefined, new Uint8Array(0), new Uint8Array(0));
+
+        // Assert
+        expect(result.status).toBe('conflict');
+        const text = result.status === 'conflict' ? dec(result.markedBytes) : '';
+        expect(text).toContain('<<<<<<< HEAD\n');
+        expect(text).toContain('>>>>>>> feature\n');
+      });
+    });
+  });
+
+  describe('Given conflict-marker-size=2 and an overlapping change', () => {
+    describe('When the built-in merge conflicts', () => {
+      it('Then the markers are two characters long', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.workDir}/.gitattributes`,
+          '* conflict-marker-size=2\n',
+        );
+        const sut = buildContentMerger(ctx, { ours: 'HEAD', theirs: 'feature', base: 'main' });
+        const mergeCtx = await mergeCtxFor(ctx, {
+          base: 'a\nb\nc\n',
+          ours: 'a\nX\nc\n',
+          theirs: 'a\nY\nc\n',
+        });
+
+        // Act
+        const result = await sut(mergeCtx, undefined, new Uint8Array(0), new Uint8Array(0));
+
+        // Assert
+        const text = result.status === 'conflict' ? dec(result.markedBytes) : '';
+        expect(text).toContain('<< HEAD\n');
+        expect(text).toContain('>> feature\n');
+      });
+    });
+  });
+
+  describe('Given an external driver with conflict-marker-size=9 and supplied labels', () => {
+    describe('When merging', () => {
+      it('Then the driver receives the resolved %L and %X %Y labels', async () => {
+        // Arrange
+        let captured = '';
+        const ctx = createMemoryContext({
+          command: new MemoryCommandRunner(async (req) => {
+            captured = req.command;
+            const a = req.command.split(' ')[0] as string;
+            await ctx.fs.write(a, enc('done'));
+            return 0;
+          }),
+        });
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.workDir}/.gitattributes`,
+          '* merge=custom conflict-marker-size=9\n',
+        );
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          '[merge "custom"]\n  driver = %A | %L | %X | %Y\n',
+        );
+        const sut = buildContentMerger(ctx, { ours: 'HEAD', theirs: 'feat', base: 'main' });
+        const mergeCtx = await mergeCtxFor(ctx, { base: 'B', ours: 'O', theirs: 'T' });
+
+        // Act
+        await sut(mergeCtx, undefined, new Uint8Array(0), new Uint8Array(0));
+
+        // Assert
+        expect(captured.endsWith(' | 9 | HEAD | feat')).toBe(true);
+      });
+    });
+  });
+
   describe('Given the merger is invoked for two paths', () => {
     describe('When merging twice', () => {
       it('Then the attribute provider is reused (both lookups resolve)', async () => {

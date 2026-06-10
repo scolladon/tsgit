@@ -12,7 +12,7 @@
 import { noInitialCommit, stashApplyWouldOverwrite } from '../../domain/commands/error.js';
 import { TsgitError } from '../../domain/error.js';
 import type { GitIndex, IndexEntry } from '../../domain/git-index/index.js';
-import type { ConflictType } from '../../domain/merge/index.js';
+import { abbreviateOid, type ConflictType, STASH_LABELS } from '../../domain/merge/index.js';
 import { subjectLine } from '../../domain/objects/commit-message.js';
 import { invalidCommit, unexpectedObjectType } from '../../domain/objects/error.js';
 import { deriveWorkingMode, type FilePath, type ObjectId } from '../../domain/objects/index.js';
@@ -232,7 +232,7 @@ const createStashCommits = async (
   const { base, iTree, working, untracked, opts } = inputs;
   const identity = await resolveReflogIdentity(ctx);
   const branch = stashBranchLabel(base.branchRef);
-  const abbrev = base.b.slice(0, 7);
+  const abbrev = abbreviateOid(base.b);
   const subject = base.subject;
   const wipMsg =
     opts.message !== undefined
@@ -397,6 +397,7 @@ const reinstateIndex = async (
     baseTree: args.bTree,
     oursTree: args.cTree,
     theirsTree: iTree,
+    labels: STASH_LABELS,
   });
   if (merged.kind !== 'clean') return;
   const entries = await buildIndexFromTree(ctx, {
@@ -435,6 +436,7 @@ export const stashApply = async (
       oursTree: cTree,
       theirsTree: parsed.wTree,
       currentIndex,
+      labels: STASH_LABELS,
     });
     if (result.kind === 'would-overwrite') throw stashApplyWouldOverwrite(result.paths);
     if (result.kind === 'conflict') {

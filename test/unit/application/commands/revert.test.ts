@@ -156,6 +156,22 @@ describe('revert run', () => {
         expect(index.entries.some((e) => e.flags.stage !== 0)).toBe(true);
         expect(await ctx.fs.readUtf8(work(ctx, 'f.txt'))).toContain('<<<<<<<');
       });
+
+      it('Then the markers are labelled HEAD and the parent of the reverted commit', async () => {
+        // Arrange — c3 changes the same line c2 did, so reverting c2 conflicts.
+        const { ctx, c2 } = await seedLinear();
+        await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'a\nB3\nc\n');
+        await add(ctx, ['f.txt']);
+        await commit(ctx, { message: 'c3 top', author: MAIN_AUTHOR });
+
+        // Act
+        await revertRun(ctx, { commits: [c2] });
+
+        // Assert
+        const file = await ctx.fs.readUtf8(work(ctx, 'f.txt'));
+        expect(file).toContain('<<<<<<< HEAD\n');
+        expect(file).toContain(`>>>>>>> parent of ${c2.slice(0, 7)} (c2 mid)\n`);
+      });
     });
   });
 

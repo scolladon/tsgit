@@ -1,4 +1,4 @@
-/** The five placeholder values git substitutes into a merge-driver command. */
+/** The placeholder values git substitutes into a merge-driver command. */
 export interface DriverPlaceholders {
   /** `%O` — the ancestor (base) version's temp path. */
   readonly O: string;
@@ -10,6 +10,12 @@ export interface DriverPlaceholders {
   readonly L: string;
   /** `%P` — the pathname the merged result is stored at. */
   readonly P: string;
+  /** `%S` — the ancestor (base) version's conflict label. */
+  readonly S: string;
+  /** `%X` — the current (ours) version's conflict label. */
+  readonly X: string;
+  /** `%Y` — the other (theirs) version's conflict label. */
+  readonly Y: string;
 }
 
 const substituteOne = (code: string, values: DriverPlaceholders): string => {
@@ -24,6 +30,12 @@ const substituteOne = (code: string, values: DriverPlaceholders): string => {
       return values.L;
     case 'P':
       return values.P;
+    case 'S':
+      return values.S;
+    case 'X':
+      return values.X;
+    case 'Y':
+      return values.Y;
     case '%':
       return '%';
     default:
@@ -32,9 +44,9 @@ const substituteOne = (code: string, values: DriverPlaceholders): string => {
 };
 
 /**
- * Substitute `%O %A %B %L %P` and `%%` in a merge-driver command template.
- * Substitution is raw (no shell quoting — faithful to git); an unknown `%x`
- * and a dangling trailing `%` are emitted literally.
+ * Substitute `%O %A %B %L %P %S %X %Y` and `%%` in a merge-driver command
+ * template. Substitution is raw (no shell quoting — faithful to git); an unknown
+ * `%x` and a dangling trailing `%` are emitted literally.
  */
 export const substituteDriverPlaceholders = (
   template: string,

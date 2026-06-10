@@ -802,6 +802,19 @@ describe('merge.4b conflict persistence', () => {
         expect(sut).toContain('MAIN');
         expect(sut).toContain('FEATURE');
       });
+      it('Then the open marker is labelled HEAD and the close marker the merged rev', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await setupConflictingMerge(ctx);
+
+        // Act
+        await mergeRun(ctx, { rev: 'feature', author });
+
+        // Assert
+        const sut = await ctx.fs.readUtf8(`${ctx.layout.workDir}/file.txt`);
+        expect(sut).toContain('<<<<<<< HEAD\n');
+        expect(sut).toContain('>>>>>>> feature\n');
+      });
       it('Then .git/MERGE_HEAD records the target tip id', async () => {
         // Arrange
         const ctx = createMemoryContext();

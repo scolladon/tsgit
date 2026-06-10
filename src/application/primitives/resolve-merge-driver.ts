@@ -1,4 +1,8 @@
-import { resolveAttribute } from '../../domain/attributes/index.js';
+import {
+  type AttributeValue,
+  resolveAttribute,
+  resolveMarkerSize,
+} from '../../domain/attributes/index.js';
 import type { FilePath } from '../../domain/objects/object-id.js';
 import type { Context } from '../../ports/context.js';
 import { readConfig } from './config-read.js';
@@ -33,19 +37,33 @@ const namedChoice = async (ctx: Context, name: string): Promise<MergeDriverChoic
     : { kind: 'external', command: driver.driver, name: driver.name };
 };
 
+/** Map a resolved `merge` attribute value to a driver choice. */
+const driverFromMergeValue = (ctx: Context, value: AttributeValue): Promise<MergeDriverChoice> => {
+  if (value === false) return Promise.resolve(BINARY);
+  if (value === true || value === 'unspecified') return Promise.resolve(TEXT);
+  return namedChoice(ctx, value.set);
+};
+
+/** A path's merge driver choice paired with its conflict-marker length. */
+export interface PathMergeSpec {
+  readonly driver: MergeDriverChoice;
+  readonly markerSize: number;
+}
+
 /**
- * Resolve the merge driver for `path`: read its `merge` attribute via `provider`,
- * then map it to a built-in or external choice. The caller builds `provider`
- * once per merge so the `.gitattributes` sources are parsed once.
+ * Resolve both the merge driver and the conflict-marker size for `path` from a
+ * single `sourcesForPath` lookup — the `merge` and `conflict-marker-size`
+ * attributes are read off the same precedence-ordered sources.
  */
-export const resolveMergeDriver = async (
+export const resolvePathMergeSpec = async (
   ctx: Context,
   provider: AttributeProvider,
   path: FilePath,
-): Promise<MergeDriverChoice> => {
+): Promise<PathMergeSpec> => {
   const { sources, macros } = await provider.sourcesForPath(path);
-  const value = resolveAttribute(sources, path, 'merge', macros);
-  if (value === false) return BINARY;
-  if (value === true || value === 'unspecified') return TEXT;
-  return namedChoice(ctx, value.set);
+  const driver = await driverFromMergeValue(ctx, resolveAttribute(sources, path, 'merge', macros));
+  const markerSize = resolveMarkerSize(
+    resolveAttribute(sources, path, 'conflict-marker-size', macros),
+  );
+  return { driver, markerSize };
 };

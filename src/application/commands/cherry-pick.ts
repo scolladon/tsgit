@@ -17,7 +17,7 @@ import {
 import { TsgitError } from '../../domain/error.js';
 import type { IndexEntry } from '../../domain/git-index/index.js';
 import { unsupportedOperation } from '../../domain/index.js';
-import type { ConflictType, MergeConflict } from '../../domain/merge/index.js';
+import { type ConflictType, type MergeConflict, replayLabels } from '../../domain/merge/index.js';
 import type { CommitData } from '../../domain/objects/commit.js';
 import { subjectLine } from '../../domain/objects/commit-message.js';
 import type { FilePath, ObjectId, RefName } from '../../domain/objects/index.js';
@@ -321,6 +321,7 @@ const applyOnePick = async (
       oursTree,
       theirsTree: cData.tree,
       currentIndex,
+      labels: replayLabels(source, subjectLine(cData.message)),
     });
     if (res.kind === 'would-overwrite') throw workingTreeDirty(res.paths);
     if (res.kind === 'conflict') {
@@ -390,6 +391,7 @@ const runNoCommit = async (
         oursTree,
         theirsTree: cData.tree,
         currentIndex,
+        labels: replayLabels(source, subjectLine(cData.message)),
       });
       if (res.kind === 'would-overwrite') throw workingTreeDirty(res.paths);
       if (res.kind === 'conflict') {

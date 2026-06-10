@@ -16,6 +16,8 @@ const baseInput = {
   ours: enc('OURS'),
   theirs: enc('THEIRS'),
   path: 'f.txt' as FilePath,
+  markerSize: 7,
+  labels: { ours: 'HEAD', theirs: 'feature', base: 'main' },
 };
 
 /** Driver that copies the `%O` file onto the `%A` output and exits 0. */
@@ -41,6 +43,33 @@ describe('runMergeDriver', () => {
         // Assert
         expect(sut.status).toBe('clean');
         expect(sut.status === 'clean' && dec(sut.bytes)).toBe('BASE');
+      });
+    });
+  });
+
+  describe('Given a command using the marker-size and label placeholders', () => {
+    describe('When run', () => {
+      it('Then %L %S %X %Y are substituted from markerSize and labels', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        let captured = '';
+        const runner = new MemoryCommandRunner(async (req) => {
+          captured = req.command;
+          const a = req.command.split(' ')[0] as string;
+          await ctx.fs.write(a, enc('x'));
+          return 0;
+        });
+
+        // Act
+        await runMergeDriver(ctx, runner, {
+          ...baseInput,
+          command: '%A | %L | %S | %X | %Y',
+          markerSize: 15,
+          labels: { ours: 'HEAD', theirs: '2c77705 (s)', base: 'parent of 2c77705 (s)' },
+        });
+
+        // Assert
+        expect(captured.endsWith(' | 15 | parent of 2c77705 (s) | HEAD | 2c77705 (s)')).toBe(true);
       });
     });
   });

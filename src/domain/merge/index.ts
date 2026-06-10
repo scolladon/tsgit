@@ -5,6 +5,16 @@ export { writeConflictMarkers } from './conflict-markers.js';
 // Errors
 export type { MergeError } from './error.js';
 export { invalidMergeInput, invalidMergeTree } from './error.js';
+// Conflict labels
+export {
+  abbreviateOid,
+  DEFAULT_MERGE_LABELS,
+  type MergeLabels,
+  mergeLabels,
+  replayLabels,
+  revertLabels,
+  STASH_LABELS,
+} from './merge-labels.js';
 export type {
   ConflictMarkerOptions,
   ConflictType,

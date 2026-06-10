@@ -53,7 +53,10 @@ A **fast-forward** and a **clean true-merge** both check the result out: the wor
 
 When the merge cannot resolve cleanly, `run` returns `{ kind: 'conflict', conflicts, mergeHead, origHead }`:
 
-- Per-path conflict markers (`<<<<<<<` / `=======` / `>>>>>>>`) are written to the working tree.
+- Per-path conflict markers (`<<<<<<<` / `=======` / `>>>>>>>`) are written to the
+  working tree. The open marker is labelled `HEAD` and the close marker the merged
+  rev (`>>>>>>> <rev>`), exactly as git labels them. A path's
+  `conflict-marker-size` gitattributes value sets the marker run length (default 7).
 - The index gains stage-1/2/3 entries for each conflict.
 - `.git/MERGE_HEAD`, `.git/MERGE_MSG`, `.git/ORIG_HEAD` persist the merge state.
 
@@ -73,7 +76,9 @@ shared with `stash apply` / `cherry-pick` / `revert` / `rebase`:
 - `-merge` / `merge=binary` (incl. via the `binary` macro) → take *ours* and
   declare a conflict.
 - `merge=<name>` with `[merge "<name>"] driver = <cmd>` in the config → run the
-  command (`%O %A %B %L %P` substituted; exit 0 ⇒ clean, non-zero ⇒ conflict).
+  command (`%O %A %B %L %P %S %X %Y` substituted; exit 0 ⇒ clean, non-zero ⇒
+  conflict). `%L` is the resolved `conflict-marker-size` (default 7); `%S` / `%X`
+  / `%Y` are the base / ours / theirs conflict labels.
 
 In Node the driver runs by default; pass `openRepository({ command: false })` to
 disable external drivers (they fall back to the built-in merge). The browser /

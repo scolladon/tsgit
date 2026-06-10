@@ -1,5 +1,9 @@
 export type { AttributeValue } from './attribute-value.js';
 export {
+  DEFAULT_CONFLICT_MARKER_SIZE,
+  resolveMarkerSize,
+} from './conflict-marker-size.js';
+export {
   type DriverPlaceholders,
   substituteDriverPlaceholders,
 } from './driver-command.js';

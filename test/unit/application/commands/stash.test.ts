@@ -506,6 +506,22 @@ describe('stash apply', () => {
         ]);
         expect((await stashList(ctx)).entries).toHaveLength(1);
       });
+
+      it('Then the markers are labelled Updated upstream / Stashed changes', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await write(ctx, 'a.txt', 'stashed\n');
+        await stashPush(ctx, {});
+        await commit2(ctx, 'current\n', 'diverge');
+
+        // Act
+        await stashApply(ctx, {});
+
+        // Assert
+        const file = await read(ctx, 'a.txt');
+        expect(file).toContain('<<<<<<< Updated upstream\n');
+        expect(file).toContain('>>>>>>> Stashed changes\n');
+      });
     });
   });
 

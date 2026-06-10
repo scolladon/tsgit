@@ -13,6 +13,7 @@ import {
   MAX_CONFLICT_OUTPUT_BYTES,
   type MergeConflict,
   type MergeOutcome,
+  mergeLabels,
   mergeTrees,
   writeConflictMarkers,
 } from '../../domain/merge/index.js';
@@ -187,7 +188,7 @@ const mergeCommit = async (
 ): Promise<MergeResult> => {
   ctx.progress.start(MERGE_WRITE_FILES_OP);
   try {
-    const treeResult = await computeMergeTreeResult(ctx, ourId, theirId, baseId);
+    const treeResult = await computeMergeTreeResult(ctx, ourId, theirId, baseId, opts.rev);
     if (treeResult.kind === 'conflict') {
       return persistConflictState(ctx, opts, treeResult, ourId, theirId);
     }
@@ -292,6 +293,7 @@ const computeMergeTreeResult = async (
   ourId: ObjectId,
   theirId: ObjectId,
   baseId: ObjectId | undefined,
+  revName: string,
 ): Promise<MergeTreeResult> => {
   const ourTreeId = await getTree(ctx, ourId);
   const theirTreeId = await getTree(ctx, theirId);
@@ -303,7 +305,7 @@ const computeMergeTreeResult = async (
     baseTreeId !== undefined ? flattenTree(ctx, baseTreeId) : Promise.resolve(undefined),
   ]);
 
-  const contentMerger = buildContentMerger(ctx);
+  const contentMerger = buildContentMerger(ctx, mergeLabels(revName, baseId));
   const result = await mergeTrees(baseFlat, ourFlat, theirFlat, contentMerger);
 
   if (result.cleanMerge) {

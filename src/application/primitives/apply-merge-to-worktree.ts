@@ -23,6 +23,7 @@ import {
   type ConflictType,
   MAX_CONFLICT_OUTPUT_BYTES,
   type MergeConflict,
+  type MergeLabels,
   type MergeOutcome,
   mergeTrees,
 } from '../../domain/merge/index.js';
@@ -45,6 +46,8 @@ export interface ApplyMergeInput {
   readonly oursTree: ObjectId;
   readonly theirsTree: ObjectId;
   readonly currentIndex: GitIndex;
+  /** Per-operation conflict labels for any content markers written. */
+  readonly labels?: MergeLabels;
 }
 
 export type ApplyMergeResult =
@@ -257,7 +260,7 @@ export const applyMergeToWorktree = async (
     flattenTree(ctx, input.oursTree),
     flattenTree(ctx, input.theirsTree),
   ]);
-  const merged = await mergeTrees(base, ours, theirs, buildContentMerger(ctx));
+  const merged = await mergeTrees(base, ours, theirs, buildContentMerger(ctx, input.labels));
   // Stryker disable next-line ConditionalExpression: equivalent — `rejectUnsupported` over an empty conflict list is a no-op, so the `if(true)` variant behaves identically on a clean merge; `if(false)` is killed by the gitlink-rejection test.
   if (!merged.cleanMerge) rejectUnsupported(merged.conflicts);
 
@@ -299,6 +302,7 @@ export const mergeTreesToTree = async (
     readonly baseTree: ObjectId | undefined;
     readonly oursTree: ObjectId;
     readonly theirsTree: ObjectId;
+    readonly labels?: MergeLabels;
   },
 ): Promise<MergeTreesResult> => {
   const [base, ours, theirs] = await Promise.all([
@@ -306,7 +310,7 @@ export const mergeTreesToTree = async (
     flattenTree(ctx, input.oursTree),
     flattenTree(ctx, input.theirsTree),
   ]);
-  const merged = await mergeTrees(base, ours, theirs, buildContentMerger(ctx));
+  const merged = await mergeTrees(base, ours, theirs, buildContentMerger(ctx, input.labels));
   // Stryker disable next-line ConditionalExpression: equivalent — `if(true)` (always-conflict) is killed by the clean `--index` reinstatement test; `if(false)` only mishandles a *conflicting* index-side `--index` merge, which v1 intentionally leaves un-reinstated ("Index was not unstashed", ADR-211), so the caller's behaviour is unchanged.
   if (!merged.cleanMerge) return { kind: 'conflict', conflicts: merged.conflicts };
   return { kind: 'clean', mergedTree: await synthesiseMergedTree(ctx, merged.outcomes) };

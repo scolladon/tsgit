@@ -16,7 +16,7 @@ import {
 import { renderPatch } from '../../domain/diff/index.js';
 import { TsgitError } from '../../domain/error.js';
 import type { IndexEntry } from '../../domain/git-index/index.js';
-import type { ConflictType, MergeConflict } from '../../domain/merge/index.js';
+import { type ConflictType, type MergeConflict, replayLabels } from '../../domain/merge/index.js';
 import type { CommitData } from '../../domain/objects/commit.js';
 import { subjectLine } from '../../domain/objects/commit-message.js';
 import type { FilePath, ObjectId, RefName } from '../../domain/objects/index.js';
@@ -231,6 +231,7 @@ const detachHead = async (
  */
 const mergeUnderLock = async (
   ctx: Context,
+  source: ObjectId,
   cData: CommitData,
   ourId: ObjectId,
 ): Promise<
@@ -248,6 +249,7 @@ const mergeUnderLock = async (
       oursTree,
       theirsTree: cData.tree,
       currentIndex,
+      labels: replayLabels(source, subjectLine(cData.message)),
     });
     if (res.kind === 'would-overwrite') throw workingTreeDirty(res.paths);
     if (res.kind === 'conflict') {
@@ -265,10 +267,11 @@ const mergeUnderLock = async (
  *  `rebase (pick)`) when the clean merge changed the tree, else report `empty`. */
 const replayOne = async (
   ctx: Context,
+  source: ObjectId,
   cData: CommitData,
   ourId: ObjectId,
 ): Promise<ReplayOutcome> => {
-  const outcome = await mergeUnderLock(ctx, cData, ourId);
+  const outcome = await mergeUnderLock(ctx, source, cData, ourId);
   if (outcome.kind === 'conflict') return { kind: 'conflict', conflicts: outcome.conflicts };
   if (outcome.mergedTree === outcome.oursTree) return { kind: 'empty' };
   const committer = await resolveCurrentIdentity(ctx);
@@ -413,7 +416,7 @@ const replayFrom = async (
   for (let i = 0; i < rc.todo.length; i += 1) {
     const source = rc.todo[i]!.oid;
     const cData = await readCommitData(ctx, source);
-    const outcome = await replayOne(ctx, cData, cur);
+    const outcome = await replayOne(ctx, source, cData, cur);
     if (outcome.kind === 'committed') {
       applied.push({ source, created: outcome.id });
       rewritten.push([source, outcome.id]);
@@ -777,7 +780,7 @@ const produceOnto = async (
     await fastForwardOnto(ctx, inst.oid);
     return { kind: 'committed', created: inst.oid };
   }
-  const outcome = await mergeUnderLock(ctx, cData, head);
+  const outcome = await mergeUnderLock(ctx, inst.oid, cData, head);
   if (outcome.kind === 'conflict') return { kind: 'conflict', conflicts: outcome.conflicts };
   const created = await commitAndAdvance(ctx, {
     tree: outcome.mergedTree,
@@ -990,7 +993,7 @@ const meldGroupMember = async (
     }
 > => {
   const headData = await readCommitData(ctx, head);
-  const outcome = await mergeUnderLock(ctx, cData, head);
+  const outcome = await mergeUnderLock(ctx, inst.oid, cData, head);
   if (outcome.kind === 'conflict') return { kind: 'conflict', conflicts: outcome.conflicts };
   group.members.push({ message: cData.message, skip: inst.action === 'fixup' });
   group.fixups.push({ action: inst.action as 'squash' | 'fixup', oid: inst.oid });

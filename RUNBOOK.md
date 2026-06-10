@@ -583,8 +583,15 @@ in `.gitattributes`, exactly as canonical git does. Operator-visible behaviour:
   `merge=binary` → take *ours* and mark the path conflicted (stage 1/2/3).
 - **External drivers.** `merge=<name>` with `[merge "<name>"] driver = <command>`
   in the config runs that command via the shell, with `%O`/`%A`/`%B` (ancestor /
-  ours / theirs temp files), `%L` (marker size, fixed at 7) and `%P` (pathname)
-  substituted. The driver overwrites `%A`; exit 0 ⇒ clean, non-zero ⇒ conflict.
+  ours / theirs temp files), `%P` (pathname), `%L` (the resolved
+  `conflict-marker-size`, default 7), and `%S`/`%X`/`%Y` (the base / ours / theirs
+  conflict labels) substituted. The driver overwrites `%A`; exit 0 ⇒ clean,
+  non-zero ⇒ conflict.
+- **Marker size & labels.** A path's `conflict-marker-size` gitattributes value sets the
+  built-in marker run length (and `%L`); the `<<<<<<<` / `>>>>>>>` labels are git's
+  per-operation strings (`HEAD` / the merged rev for `merge`, `<abbrev> (<subject>)`
+  / `parent of …` for `cherry-pick` / `revert` / `rebase`, `Updated upstream` /
+  `Stashed changes` for `stash`). Labels are written verbatim — sanitise on display.
 - **Default-on (Node).** `openRepository` / `createNodeContext` wire the command
   runner by default. The browser / memory adapters have none, so a configured
   external driver falls back to the built-in merge there.
