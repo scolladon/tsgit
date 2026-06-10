@@ -496,6 +496,9 @@ const readConfigText = async (ctx: Context, path: string): Promise<string> => {
  * raw; C0/DEL are written verbatim (git accepts any byte except NUL).
  */
 const assertValueSafe = (key: string, value: string): void => {
+  // equivalent-mutant: `i <= value.length` is observably equivalent — at
+  // `i === value.length` `charCodeAt` returns NaN, which is never 0, so the
+  // extra iteration cannot throw.
   for (let i = 0; i < value.length; i += 1) {
     if (value.charCodeAt(i) === 0) {
       throw configValueInvalid(key, i);

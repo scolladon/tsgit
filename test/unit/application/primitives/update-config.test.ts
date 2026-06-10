@@ -398,7 +398,11 @@ describe('primitives/update-config', () => {
 
           // Assert
           expect(caught).toBeInstanceOf(TsgitError);
-          expect((caught as TsgitError).data.code).toBe('INVALID_OPTION');
+          expect((caught as TsgitError).data).toMatchObject({
+            code: 'INVALID_OPTION',
+            option: 'config',
+            reason: 'value must not contain a NUL byte',
+          });
         });
       });
     });
