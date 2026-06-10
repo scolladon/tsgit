@@ -129,7 +129,7 @@ const parseConfigText = (text: string, source: string): ParsedConfig => {
  * `#`/`;` starting comments — and a malformed value (unknown escape, unclosed
  * quote) throws `CONFIG_PARSE_ERROR` with its 1-based physical line and the
  * optional `source` label, mirroring git's `bad config line N in file F`
- * refusal (ADR-308).
+ * refusal.
  */
 export const parseIniSections = (text: string, source?: string): ReadonlyArray<IniSection> => {
   const sections: SectionBuilder[] = [];
@@ -208,6 +208,12 @@ interface ValueCursor {
   col: number;
 }
 
+/** One parsed value plus the index of the first physical line after it. */
+interface ParsedValue {
+  readonly value: string;
+  readonly nextLineIdx: number;
+}
+
 /**
  * Parse one value starting at `lines[startLine][startCol]` (just past the `=`),
  * mirroring git's `parse_value`: GIT_SPACE handling with trailing trim, quote
@@ -222,7 +228,7 @@ const parseConfigValue = (
   startLine: number,
   startCol: number,
   source: string | undefined,
-): { readonly value: string; readonly nextLineIdx: number } => {
+): ParsedValue => {
   const cursor: ValueCursor = { lineIdx: startLine, col: startCol };
   const state: ValueState = { out: '', trimLen: -1, inQuotes: false, inComment: false };
   while (cursor.lineIdx < lines.length) {
@@ -303,10 +309,7 @@ const appendValueSpace = (state: ValueState, c: string): void => {
 };
 
 /** Apply the trailing-whitespace trim and package the parse result. */
-const finishValue = (
-  state: ValueState,
-  nextLineIdx: number,
-): { readonly value: string; readonly nextLineIdx: number } => ({
+const finishValue = (state: ValueState, nextLineIdx: number): ParsedValue => ({
   value: state.trimLen === -1 ? state.out : state.out.slice(0, state.trimLen),
   nextLineIdx,
 });
