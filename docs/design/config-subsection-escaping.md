@@ -42,7 +42,10 @@ The grammar after `[section`: one-or-more GIT_SPACE chars, then `"`, then chars 
 
 ### Write-path refusal on malformed files (pinned)
 
-`git config --file <bad> x.y z` **refuses to write** when the existing file is malformed: a bad value line dies `fatal: bad config line N in file F` (exit 128); a bad header dies `error: invalid section name '…'` + `error: invalid config file F` (exit 3). The refusal *condition* is shared (no write ever lands on a malformed file); the error *shape* differs between git's read and write paths.
+git's write machinery splits in two:
+
+- **`set` / `unset`** parse the file first. A malformed *header* refuses with `error: invalid section name '<partial>'` + `error: invalid config file <path>` (exit 3) — `<partial>` is the partially-accumulated name at the failure point: section lowercased, subsection escapes decoded, accumulated until the grammar broke (`[s "a]` → `s.a]`, `[s "a\"b]` → `s.a"b]`, `[s "a" x]` / `[s "a" ]` → `s.a`, `[s"a"]` → `s`, `[s "ab\` at EOL → `s.ab`, `[S "a" x]` → `s.a`). A malformed *value* dies with the **read-path** shape `fatal: bad config line N in file F` (exit 128).
+- **`rename-section` / `remove-section`** are line-based and lenient: both succeed on files with malformed headers *and* malformed values; a malformed header never matches a rename/remove source (`fatal: no such section`, exit 128).
 
 ## Current state
 
@@ -60,7 +63,9 @@ The grammar after `[section`: one-or-more GIT_SPACE chars, then `"`, then chars 
 ```ts
 type SectionHeaderParse =
   | { readonly kind: 'header'; readonly section: string; readonly subsection: string | undefined }
-  | { readonly kind: 'malformed' } // quoted-subsection grammar violated — git refuses the file
+  // quoted-subsection grammar violated — git refuses the file; partialName is the
+  // pinned write-path `<partial>` (section lowercased + decoded subsection so far)
+  | { readonly kind: 'malformed'; readonly partialName: string }
   | { readonly kind: 'not-header' };
 ```
 
@@ -92,11 +97,12 @@ In `domain/commands/config-key.ts`:
 
 - `SUBSECTION_FORBIDDEN` → `/[\n\0]/`. Dotted keys like `remote.a"b.url`, `merge.a\b.driver` now parse; position data in `CONFIG_KEY_INVALID` is unchanged for the still-rejected chars.
 
-### Write-path refusal — parse before surgery
+### Write-path refusal — mirror git's per-operation map (ADR-313)
 
-`setConfigEntry` (and the batch writers `updateConfigEntries` / `updateConfigOperations`) currently line-splice without parsing, so they can "succeed" on a file git refuses to touch. Each read-modify-write path now calls `parseIniSections(text, path)` on the original text before applying the transform — a malformed file (bad value *or* bad quoted-subsection header) throws `CONFIG_PARSE_ERROR` and the file is never written, matching git's refusal *condition*. We diverge deliberately on the error *shape* for writes (git's write path emits `invalid section name` / exit 3; tsgit reuses the one structured `CONFIG_PARSE_ERROR`) — one refusal shape for one grammar, per the ADR.
+`parseSectionHeader`'s `malformed` result carries the **partially-accumulated section name** (section lowercased, subsection escapes decoded, accumulated until the failure — the pinned `<partial>` rule), and `parseIniSections` attaches it to the thrown error's data (`header: { partialName }` alongside `line`/`source`).
 
-The unset/rename/remove-section paths already parse first and inherit the new header refusals for free.
+- **`setConfigEntry` / `unsetConfigEntry` / `unsetAllConfigEntries`** (and the internal batch writers `updateConfigEntries` / `updateConfigOperations`) parse the original text before any surgery. A header-malformation error is translated to the new structured **`CONFIG_INVALID_FILE { sectionName, source }`** (consumers reconstruct git's two `error:` lines + exit 3 per ADR-249); a value malformation propagates as `CONFIG_PARSE_ERROR` untouched (git dies with the read shape there, pinned). No byte is ever written to a malformed file.
+- **`renameConfigSection` / `removeConfigSection`** stop full-parsing: the source-existence check (`sectionExists` over `parseIniSections`) is replaced by a line-based scan using `matchesSection`, so both operations are lenient on malformed files exactly like git's line-based `copy_or_rename` machinery — and a malformed header never matches a source (`CONFIG_SECTION_NOT_FOUND`, mirroring git's `no such section`). This also repairs the ADR-308-era divergence where tsgit's rename/remove threw on bad *values* git happily ignores.
 
 ### Round-trip invariant
 
@@ -109,7 +115,7 @@ For every LF/NUL-free subsection `s`: `parseSectionHeader(renderSectionHeader(se
 - **Interop** (`test/integration/config-interop.test.ts`, extended):
   - *Write parity*: for a subsection matrix (`"`, `\`, `]`, CR, `#`, space, combo), tsgit `setConfigEntry` and `git config` produce **byte-identical** files, and `git config --get` reads tsgit's file back.
   - *Read parity*: hand-written exotic headers (`\t` decode, `]` literal, escaped quote) → tsgit equals `git config --list`.
-  - *Refusal parity*: each fatal form (`[s "a" x]`, `[s "a" ]`, `[s"a"]`, unclosed, `\`-at-EOL) → git exits non-zero with `bad config line N`; tsgit throws `CONFIG_PARSE_ERROR` with the same `N`. Write-path: both tools refuse to set a key into a malformed file.
+  - *Refusal parity*: each fatal form (`[s "a" x]`, `[s "a" ]`, `[s"a"]`, unclosed, `\`-at-EOL) → git exits non-zero with `bad config line N`; tsgit throws `CONFIG_PARSE_ERROR` with the same `N`. Write-path: `set`/`unset` on a bad-header file → git's `invalid section name '<partial>'` (exit 3) and tsgit's `CONFIG_INVALID_FILE` carry the same `<partial>`; on a bad-value file both report the read shape. Rename/remove-section on malformed files succeed in both tools (leniency parity), and a malformed header as rename source is `no such section` / `CONFIG_SECTION_NOT_FOUND` in both.
   - *Rename parity*: rename to a subsection containing `"`/`\` → byte-identical headers.
   - *Match parity*: setting a second key under an existing escaped header lands in that section (no duplicate header), matching git (pinned).
 
@@ -122,4 +128,5 @@ For every LF/NUL-free subsection `s`: `parseSectionHeader(renderSectionHeader(se
 
 ## Decisions (resolved)
 
-1. **Malformed quoted-subsection header → throw, git-faithful** ([ADR-312](../adr/312-config-subsection-header-grammar-parity.md)): the strict grammar refuses with structured `CONFIG_PARSE_ERROR { line, source }` exactly where git's reader dies, scoped to headers that contain a `"`; unquoted-header malformations keep the lenient skip (follow-up). Write paths parse before surgery so the refusal condition matches git's; the write-path error *shape* deliberately reuses `CONFIG_PARSE_ERROR` instead of mirroring git's distinct `invalid section name` wording.
+1. **Malformed quoted-subsection header → throw, git-faithful** ([ADR-312](../adr/312-config-subsection-header-grammar-parity.md)): the strict grammar refuses with structured `CONFIG_PARSE_ERROR { line, source }` exactly where git's reader dies, scoped to headers that contain a `"`; unquoted-header malformations keep the lenient skip (follow-up).
+2. **Write paths mirror git's per-operation refusal map** ([ADR-313](../adr/313-config-write-path-refusal-shapes.md)): set/unset parse first and translate header malformations to `CONFIG_INVALID_FILE { sectionName, source }` (git's `invalid section name` + `invalid config file`, exit 3) while value malformations keep the read shape; rename/remove-section drop the full parse and stay line-surgically lenient like git, repairing the ADR-308-era bad-value divergence there.
