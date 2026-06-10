@@ -1843,6 +1843,7 @@ describe('primitives/config-read value grammar', () => {
       ['a   b', 'a   b'],
       ['a\tb', 'a\tb'],
       ['a\r', 'a'],
+      ['\ra', 'a'],
       ['a\rb', 'a\rb'],
       ['"a\r"', 'a\r'],
       ['\x0ba', '\x0ba'],
@@ -1966,10 +1967,12 @@ describe('primitives/config-read value grammar', () => {
       expect(firstValue(result)).toBe('a');
     });
 
-    it('Then a comment before the equals sign swallows the whole line', () => {
+    it.each([
+      ['hash', '[test]\n\tab#cd = x\n\tv = ok\n'],
+      ['semicolon', '[test]\n\tab;cd = x\n\tv = ok\n'],
+    ])('Then a %s comment before the equals sign swallows the whole line', (_label, text) => {
       // Arrange
       const sut = parseIniSections;
-      const text = '[test]\n\tab#cd = x\n\tv = ok\n';
 
       // Act
       const result = sut(text);
