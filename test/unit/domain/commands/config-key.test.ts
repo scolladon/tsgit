@@ -289,11 +289,67 @@ describe('parseConfigKey', () => {
     });
   });
 
-  describe('Given a subsection containing a quote', () => {
+  describe('Given a subsection containing a quote remote.a"b.url', () => {
     describe('When parsed', () => {
-      it('Then throws CONFIG_KEY_INVALID with reason "bad-character"', () => {
+      it('Then subsection is "a\\"b" (quote accepted by git)', () => {
+        // Arrange + Act
+        const sut = parseConfigKey('remote.a"b.url');
+
+        // Assert — quote is now accepted in subsection names
+        expect(sut.section).toBe('remote');
+        expect(sut.subsection).toBe('a"b');
+        expect(sut.name).toBe('url');
+      });
+    });
+  });
+
+  describe('Given a subsection containing a backslash remote.a\\b.url', () => {
+    describe('When parsed', () => {
+      it('Then subsection is "a\\b" (backslash accepted by git)', () => {
+        // Arrange + Act
+        const sut = parseConfigKey('remote.a\\b.url');
+
+        // Assert — backslash is now accepted in subsection names
+        expect(sut.section).toBe('remote');
+        expect(sut.subsection).toBe('a\\b');
+        expect(sut.name).toBe('url');
+      });
+    });
+  });
+
+  describe('Given a subsection containing a closing bracket remote.a]b.url', () => {
+    describe('When parsed', () => {
+      it('Then subsection is "a]b" (bracket accepted by git)', () => {
+        // Arrange + Act
+        const sut = parseConfigKey('remote.a]b.url');
+
+        // Assert — ] is now accepted in subsection names
+        expect(sut.section).toBe('remote');
+        expect(sut.subsection).toBe('a]b');
+        expect(sut.name).toBe('url');
+      });
+    });
+  });
+
+  describe('Given a subsection containing a CR remote.a\\rb.url', () => {
+    describe('When parsed', () => {
+      it('Then subsection is "a\\rb" (CR accepted by git)', () => {
+        // Arrange + Act
+        const sut = parseConfigKey('remote.a\rb.url');
+
+        // Assert — CR is now accepted in subsection names
+        expect(sut.section).toBe('remote');
+        expect(sut.subsection).toBe('a\rb');
+        expect(sut.name).toBe('url');
+      });
+    });
+  });
+
+  describe('Given a subsection containing a LF', () => {
+    describe('When parsed', () => {
+      it('Then throws CONFIG_KEY_INVALID with reason "bad-character" at the LF position', () => {
         // Arrange
-        const key = 'remote.foo"bar.url';
+        const key = 'remote.a\nb.url';
         let caught: TsgitError | undefined;
 
         // Act
@@ -303,10 +359,38 @@ describe('parseConfigKey', () => {
           caught = err as TsgitError;
         }
 
-        // Assert — '"' is at index 10 in 'remote.foo"bar.url'
-        expect(caught?.data.code).toBe('CONFIG_KEY_INVALID');
-        expect((caught?.data as { reason: string; position: number }).reason).toBe('bad-character');
-        expect((caught?.data as { reason: string; position: number }).position).toBe(10);
+        // Assert — LF is at index 8 in 'remote.a\nb.url'
+        expect(caught?.data).toEqual({
+          code: 'CONFIG_KEY_INVALID',
+          key,
+          reason: 'bad-character',
+          position: 8,
+        });
+      });
+    });
+  });
+
+  describe('Given a subsection containing a NUL', () => {
+    describe('When parsed', () => {
+      it('Then throws CONFIG_KEY_INVALID with reason "bad-character" at the NUL position', () => {
+        // Arrange
+        const key = 'remote.a\0b.url';
+        let caught: TsgitError | undefined;
+
+        // Act
+        try {
+          parseConfigKey(key);
+        } catch (err) {
+          caught = err as TsgitError;
+        }
+
+        // Assert — NUL is at index 8; sanitizeForDisplay renders NUL as \\x00
+        expect(caught?.data).toEqual({
+          code: 'CONFIG_KEY_INVALID',
+          key: 'remote.a\\x00b.url',
+          reason: 'bad-character',
+          position: 8,
+        });
       });
     });
   });

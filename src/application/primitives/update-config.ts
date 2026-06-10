@@ -90,9 +90,17 @@ const renderValue = (value: string): string => {
 /** Render `key = value` indented with a tab — git's own section-body style. */
 const renderEntry = (key: string, value: string): string => `\t${key} = ${renderValue(value)}`;
 
+/**
+ * Escape a subsection name for embedding inside `[section "…"]`. git's
+ * `write_section` escapes `\` → `\\` first (order matters), then `"` → `\"`.
+ * Every other byte — `]`, CR, `#`, `;`, spaces — is written raw.
+ */
+const escapeSubsection = (subsection: string): string =>
+  subsection.replaceAll('\\', '\\\\').replaceAll('"', '\\"');
+
 /** Render a `[section]` / `[section "subsection"]` header line. */
 const renderSectionHeader = (section: string, subsection: string | undefined): string =>
-  subsection === undefined ? `[${section}]` : `[${section} "${subsection}"]`;
+  subsection === undefined ? `[${section}]` : `[${section} "${escapeSubsection(subsection)}"]`;
 
 /** Index of the matching section header line, or `-1` when absent. */
 const findSectionHeader = (
@@ -162,13 +170,13 @@ const rejectValueControlChars = (value: string): void => {
 };
 
 /**
- * Reject a subsection name that would break the `[section "subsection"]`
- * quoting: a control char (above) plus `"`, `\`, or `]`.
+ * Reject a subsection name that cannot survive a config write. git rejects
+ * LF ("invalid key (newline)"); NUL is argv-impossible. CR, `"`, `\`, and `]`
+ * are accepted — the writer escapes `"` and `\`, and writes `]`/CR raw.
  */
 const rejectSubsection = (subsection: string): void => {
-  rejectControlChars('subsection', subsection);
-  if (/["\\\]]/.test(subsection)) {
-    throw invalidOption('config', 'subsection must not contain a quote, backslash, or bracket');
+  if (/[\n\0]/.test(subsection)) {
+    throw invalidOption('config', 'subsection must not contain a newline or NUL');
   }
 };
 

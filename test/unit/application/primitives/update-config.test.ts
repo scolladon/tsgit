@@ -651,13 +651,76 @@ describe('primitives/update-config', () => {
       });
     });
 
-    describe('Given a subsection containing a quote', () => {
+    describe('Given a subsection containing a quote (a"b)', () => {
       describe('When setConfigEntryInText', () => {
-        it('Then it throws INVALID_OPTION', () => {
+        it('Then the quote is escaped and the header is rendered as [s "a\\"b"]', () => {
+          // Arrange & Act
+          const sut = setConfigEntryInText('', 's', 'a"b', 'k', 'v');
+
+          // Assert — git escapes " → \" inside the subsection quotes
+          expect(sut).toBe('[s "a\\"b"]\n\tk = v\n');
+        });
+      });
+    });
+
+    describe('Given a subsection containing a backslash (a\\b)', () => {
+      describe('When setConfigEntryInText', () => {
+        it('Then the backslash is escaped and the header is rendered as [s "a\\\\b"]', () => {
+          // Arrange & Act
+          const sut = setConfigEntryInText('', 's', 'a\\b', 'k', 'v');
+
+          // Assert — git escapes \ → \\ inside the subsection quotes
+          expect(sut).toBe('[s "a\\\\b"]\n\tk = v\n');
+        });
+      });
+    });
+
+    describe('Given a subsection containing a backslash followed by a quote (a\\"b)', () => {
+      describe('When setConfigEntryInText', () => {
+        it('Then backslash is escaped first, then quote: header is [s "a\\\\\\"b"]', () => {
+          // Arrange & Act — escape order: \ → \\ first, then " → \"
+          const sut = setConfigEntryInText('', 's', 'a\\"b', 'k', 'v');
+
+          // Assert — a\"b (a + \ + " + b) → a\\\"b (a + \\ + \" + b) inside the header quotes
+          // Three backslashes in the output: two for escaped-\, one before the escaped-"
+          expect(sut).toBe('[s "a\\\\\\"b"]\n\tk = v\n');
+        });
+      });
+    });
+
+    describe('Given a subsection containing a bracket (a]b)', () => {
+      describe('When setConfigEntryInText', () => {
+        it('Then the bracket is written raw inside the quotes', () => {
+          // Arrange & Act — ] is not escaped by git inside subsection quotes
+          const sut = setConfigEntryInText('', 's', 'a]b', 'k', 'v');
+
+          // Assert — raw ] inside quotes
+          expect(sut).toBe('[s "a]b"]\n\tk = v\n');
+        });
+      });
+    });
+
+    describe('Given a subsection containing a CR (a\\rb)', () => {
+      describe('When setConfigEntryInText', () => {
+        it('Then the CR is written raw inside the quotes (accepted by git)', () => {
+          // Arrange & Act — CR is accepted and written verbatim
+          const sut = setConfigEntryInText('', 's', 'a\rb', 'k', 'v');
+
+          // Assert — raw CR inside subsection quotes
+          expect(sut).toBe('[s "a\rb"]\n\tk = v\n');
+        });
+      });
+    });
+
+    describe('Given a subsection containing a LF', () => {
+      describe('When setConfigEntryInText', () => {
+        it('Then it throws INVALID_OPTION (LF is forbidden by git)', () => {
           // Arrange
           let caught: unknown;
+
+          // Act
           try {
-            setConfigEntryInText('', 'remote', 'ori"gin', 'url', 'u');
+            setConfigEntryInText('', 's', 'a\nb', 'k', 'v');
           } catch (err) {
             caught = err;
           }
@@ -668,7 +731,63 @@ describe('primitives/update-config', () => {
           expect(data.code).toBe('INVALID_OPTION');
           if (data.code !== 'INVALID_OPTION') throw new Error('unreachable');
           expect(data.option).toBe('config');
-          expect(data.reason).toContain('quote');
+          expect(data.reason).toContain('newline');
+        });
+      });
+    });
+
+    describe('Given a subsection containing a NUL', () => {
+      describe('When setConfigEntryInText', () => {
+        it('Then it throws INVALID_OPTION (NUL is forbidden)', () => {
+          // Arrange
+          let caught: unknown;
+
+          // Act
+          try {
+            setConfigEntryInText('', 's', 'a\0b', 'k', 'v');
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data;
+          expect(data.code).toBe('INVALID_OPTION');
+          if (data.code !== 'INVALID_OPTION') throw new Error('unreachable');
+          expect(data.option).toBe('config');
+          expect(data.reason).toContain('newline');
+        });
+      });
+    });
+
+    describe('Given text already holding [s "a\\"b"] with k = v, When setConfigEntryInText adds k2 under subsection a"b', () => {
+      describe('When setConfigEntryInText', () => {
+        it('Then k2 lands inside the existing section without duplicating the header', () => {
+          // Arrange — pre-existing escaped header (as the writer would produce)
+          const text = '[s "a\\"b"]\n\tk = v\n';
+
+          // Act
+          const sut = setConfigEntryInText(text, 's', 'a"b', 'k2', 'w');
+
+          // Assert — k2 inserted after header; header NOT duplicated
+          expect(sut).toBe('[s "a\\"b"]\n\tk2 = w\n\tk = v\n');
+        });
+      });
+    });
+
+    describe('Given a rendered subsection, When the output is re-parsed via parseIniSections', () => {
+      describe('When round-tripping subsection a"b through render then parse', () => {
+        it('Then the parsed subsection equals the original', () => {
+          // Arrange
+          const subsection = 'a"b';
+
+          // Act
+          const text = setConfigEntryInText('', 's', subsection, 'k', 'v');
+          const sections = parseIniSections(text);
+
+          // Assert — round-trip: render → parse returns same subsection
+          expect(sections).toHaveLength(1);
+          expect(sections[0]?.subsection).toBe(subsection);
         });
       });
     });
@@ -1277,19 +1396,17 @@ describe('primitives/update-config', () => {
       });
     });
 
-    describe('Given a subsection containing a quote', () => {
+    describe('Given a subsection containing a quote (a"b)', () => {
       describe('When removeConfigSectionInText', () => {
-        it('Then it throws INVALID_OPTION', () => {
-          // Arrange
-          let caught: unknown;
-          try {
-            removeConfigSectionInText('', 'remote', 'a"b');
-          } catch (err) {
-            caught = err;
-          }
+        it('Then the subsection is accepted and the matching section is removed', () => {
+          // Arrange — subsection with a quote is now accepted and escaped on render
+          const text = '[remote "a\\"b"]\n\turl = u\n';
 
-          // Assert
-          expect((caught as TsgitError).data.code).toBe('INVALID_OPTION');
+          // Act
+          const sut = removeConfigSectionInText(text, 'remote', 'a"b');
+
+          // Assert — the section is removed (no-op on empty text is fine; here we verify it works)
+          expect(sut).toBe('');
         });
       });
     });
@@ -1424,6 +1541,36 @@ describe('primitives/update-config', () => {
           // Assert
           expect(caught).toBeInstanceOf(TsgitError);
           expect((caught as TsgitError).data.code).toBe('INVALID_OPTION');
+        });
+      });
+    });
+
+    describe('Given a target subsection containing a quote (a"b)', () => {
+      describe('When renameConfigSectionInText', () => {
+        it('Then the quote is escaped and the new header is rendered as [remote "a\\"b"]', () => {
+          // Arrange
+          const text = '[remote "old"]\n\turl = u\n';
+
+          // Act
+          const sut = renameConfigSectionInText(text, 'remote', 'old', 'a"b');
+
+          // Assert — git escapes " → \" in the target subsection
+          expect(sut).toBe('[remote "a\\"b"]\n\turl = u\n');
+        });
+      });
+    });
+
+    describe('Given a target subsection containing a backslash (a\\b)', () => {
+      describe('When renameConfigSectionInText', () => {
+        it('Then the backslash is escaped and the new header is rendered as [remote "a\\\\b"]', () => {
+          // Arrange
+          const text = '[remote "old"]\n\turl = u\n';
+
+          // Act
+          const sut = renameConfigSectionInText(text, 'remote', 'old', 'a\\b');
+
+          // Assert — git escapes \ → \\ in the target subsection
+          expect(sut).toBe('[remote "a\\\\b"]\n\turl = u\n');
         });
       });
     });
