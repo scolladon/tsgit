@@ -386,6 +386,10 @@ function extractDetail(data: TsgitErrorData): string {
         : `invalid config key "${data.key}": ${data.reason} at position ${data.position}`;
     case 'CONFIG_VALUE_INVALID':
       return `invalid config value for "${data.key}": ${data.reason} at position ${data.position}`;
+    case 'CONFIG_PARSE_ERROR':
+      return data.source === undefined
+        ? `bad config line ${data.line}`
+        : `bad config line ${data.line} in file ${data.source}`;
     case 'CONFIG_MULTIPLE_VALUES':
       return data.scope === undefined
         ? `config key "${data.key}" has ${data.count} values (${data.requested} requires single)`

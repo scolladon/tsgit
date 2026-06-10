@@ -574,7 +574,7 @@ export const unsetConfigEntry = async ({
   const targetScope: ConfigScope = scope ?? 'local';
   const path = await resolveScopePath(ctx, targetScope);
   const text = await readConfigText(ctx, path);
-  const sections = parseIniSections(text);
+  const sections = parseIniSections(text, path);
   const matches = collectValues(sections, parsed);
   if (matches.length === 0) return;
   if (matches.length > 1) {
@@ -605,7 +605,7 @@ export const unsetAllConfigEntries = async ({
   const targetScope: ConfigScope = scope ?? 'local';
   const path = await resolveScopePath(ctx, targetScope);
   const text = await readConfigText(ctx, path);
-  const sections = parseIniSections(text);
+  const sections = parseIniSections(text, path);
   const matches = collectValues(sections, parsed);
   if (matches.length === 0) return;
   const after = removeConfigEntry(text, parsed.section, parsed.subsection, parsed.name);
@@ -685,7 +685,7 @@ export const renameConfigSection = async ({
   const targetScope: ConfigScope = scope ?? 'local';
   const path = await resolveScopePath(ctx, targetScope);
   const text = await readConfigText(ctx, path);
-  const sections = parseIniSections(text);
+  const sections = parseIniSections(text, path);
   if (!sectionExists(sections, oldParts.section, oldParts.subsection)) {
     throw configSectionNotFound(oldName, targetScope);
   }
@@ -718,7 +718,7 @@ export const removeConfigSection = async ({
   const targetScope: ConfigScope = scope ?? 'local';
   const path = await resolveScopePath(ctx, targetScope);
   const text = await readConfigText(ctx, path);
-  const sections = parseIniSections(text);
+  const sections = parseIniSections(text, path);
   if (!sectionExists(sections, parts.section, parts.subsection)) {
     throw configSectionNotFound(sectionName, targetScope);
   }

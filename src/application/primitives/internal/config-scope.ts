@@ -48,9 +48,10 @@ const callAdapterPath = (scope: ConfigScope, fn: () => string): string => {
  * for the per-worktree config file at `${gitDir}/config.worktree`.
  */
 export const isWorktreeScopeActive = async (ctx: Context): Promise<boolean> => {
-  const text = await safeReadUtf8(ctx, `${commonGitDir(ctx)}/config`);
+  const path = `${commonGitDir(ctx)}/config`;
+  const text = await safeReadUtf8(ctx, path);
   if (text === undefined) return false;
-  const sections = parseIniSections(text);
+  const sections = parseIniSections(text, path);
   for (const section of sections) {
     if (section.section.toLowerCase() !== 'extensions') continue;
     if (section.subsection !== undefined) continue;

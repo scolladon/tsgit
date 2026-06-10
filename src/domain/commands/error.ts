@@ -114,6 +114,11 @@ export type CommandError =
       readonly position: number;
     }
   | {
+      readonly code: 'CONFIG_PARSE_ERROR';
+      readonly line: number;
+      readonly source?: string;
+    }
+  | {
       readonly code: 'CONFIG_MULTIPLE_VALUES';
       readonly key: string;
       readonly count: number;
@@ -402,6 +407,18 @@ export const configValueInvalid = (key: string, position: number): TsgitError =>
     reason: 'control-character',
     position,
   });
+
+/**
+ * Malformed config value (unknown escape, unclosed quote) at the 1-based
+ * physical `line`. `source` labels the file when the caller knows it — the
+ * data behind git's `fatal: bad config line N in file F`.
+ */
+export const configParseError = (line: number, source?: string): TsgitError =>
+  new TsgitError(
+    source === undefined
+      ? { code: 'CONFIG_PARSE_ERROR', line }
+      : { code: 'CONFIG_PARSE_ERROR', line, source },
+  );
 
 export const configMultipleValues = (
   key: string,

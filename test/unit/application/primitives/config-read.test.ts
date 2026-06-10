@@ -501,8 +501,9 @@ describe('primitives/config-read', () => {
 
   describe('Given a config with continuation (line ending in backslash)', () => {
     describe('When readConfig', () => {
-      it('Then the next line is concatenated', async () => {
-        // Arrange — Git supports backslash line continuation.
+      it('Then the next line is concatenated with its leading whitespace preserved', async () => {
+        // Arrange — Git supports backslash line continuation; the continuation
+        // line's leading whitespace is interior to the value and survives.
         const ctx = createMemoryContext();
         await seed(ctx, '[remote "origin"]\n  url = https://example.com/\\\n    really-long.git\n');
 
@@ -510,7 +511,7 @@ describe('primitives/config-read', () => {
         const sut = await readConfig(ctx);
 
         // Assert
-        expect(sut.remote?.get('origin')?.url).toBe('https://example.com/really-long.git');
+        expect(sut.remote?.get('origin')?.url).toBe('https://example.com/    really-long.git');
       });
     });
   });
@@ -1781,6 +1782,345 @@ describe('primitives/config-read parseIniSections', () => {
         // Assert
         expect(sut).toEqual([]);
       });
+    });
+  });
+});
+
+describe('primitives/config-read value grammar', () => {
+  const configTextFor = (raw: string): string => `[test]\n\tv = ${raw}\n`;
+
+  const firstValue = (sections: ReadonlyArray<IniSection>): string | undefined =>
+    sections[0]?.entries[0]?.value;
+
+  describe('Given a quoted or quote-toggled value, When parseIniSections', () => {
+    it.each([
+      ['"a b"', 'a b'],
+      ['a" b "c', 'a b c'],
+      ['""', ''],
+      ['"a "', 'a '],
+      ['"a # c"', 'a # c'],
+      ['"a ; c"', 'a ; c'],
+    ])('Then %j parses to %j (quotes stripped, spans concatenated)', (raw, expected) => {
+      // Arrange
+      const sut = parseIniSections;
+      const text = configTextFor(raw);
+
+      // Act
+      const result = sut(text);
+
+      // Assert
+      expect(firstValue(result)).toBe(expected);
+    });
+  });
+
+  describe('Given escape sequences inside and outside quotes, When parseIniSections', () => {
+    it.each([
+      ['a\\nb', 'a\nb'],
+      ['a\\tb', 'a\tb'],
+      ['a\\bb', 'a\bb'],
+      ['a\\"b', 'a"b'],
+      ['a\\\\b', 'a\\b'],
+      ['"a\\nb"', 'a\nb'],
+      ['"a\\tb"', 'a\tb'],
+      ['"a\\\\b"', 'a\\b'],
+    ])('Then %j decodes to %j', (raw, expected) => {
+      // Arrange
+      const sut = parseIniSections;
+      const text = configTextFor(raw);
+
+      // Act
+      const result = sut(text);
+
+      // Assert
+      expect(firstValue(result)).toBe(expected);
+    });
+  });
+
+  describe('Given whitespace around and inside the value, When parseIniSections', () => {
+    it.each([
+      ['   a', 'a'],
+      ['a   ', 'a'],
+      ['a   b', 'a   b'],
+      ['a\tb', 'a\tb'],
+      ['a\r', 'a'],
+      ['a\rb', 'a\rb'],
+      ['"a\r"', 'a\r'],
+      ['\x0ba', '\x0ba'],
+      ['a\x0b', 'a\x0b'],
+      ['a\x0c', 'a\x0c'],
+    ])('Then %j parses to %j (GIT_SPACE trim: space/tab/CR only)', (raw, expected) => {
+      // Arrange
+      const sut = parseIniSections;
+      const text = configTextFor(raw);
+
+      // Act
+      const result = sut(text);
+
+      // Assert
+      expect(firstValue(result)).toBe(expected);
+    });
+
+    it('Then a quote toggle resets the trailing-whitespace trim', () => {
+      // Arrange
+      const sut = parseIniSections;
+      const text = configTextFor('a ""');
+
+      // Act
+      const result = sut(text);
+
+      // Assert
+      expect(firstValue(result)).toBe('a ');
+    });
+
+    it('Then an escape append resets the trailing-whitespace trim', () => {
+      // Arrange
+      const sut = parseIniSections;
+      const text = configTextFor('a \\t');
+
+      // Act
+      const result = sut(text);
+
+      // Assert
+      expect(firstValue(result)).toBe('a \t');
+    });
+  });
+
+  describe('Given backslash continuations, When parseIniSections', () => {
+    it('Then the continuation line leading whitespace is preserved as interior', () => {
+      // Arrange
+      const sut = parseIniSections;
+      const text = '[test]\n\tv = a\\\n   b\n';
+
+      // Act
+      const result = sut(text);
+
+      // Assert
+      expect(result[0]?.entries).toEqual([{ key: 'v', value: 'a   b' }]);
+    });
+
+    it('Then an escaped backslash at end of line is not a continuation', () => {
+      // Arrange
+      const sut = parseIniSections;
+      const text = '[test]\n\tv = a\\\\\n\tw = c\n';
+
+      // Act
+      const result = sut(text);
+
+      // Assert
+      expect(result[0]?.entries).toEqual([
+        { key: 'v', value: 'a\\' },
+        { key: 'w', value: 'c' },
+      ]);
+    });
+
+    it('Then a continuation inside a quote span carries the quote state across lines', () => {
+      // Arrange
+      const sut = parseIniSections;
+      const text = '[test]\n\tv = "a\\\nb"\n';
+
+      // Act
+      const result = sut(text);
+
+      // Assert
+      expect(result[0]?.entries).toEqual([{ key: 'v', value: 'ab' }]);
+    });
+
+    it('Then a continuation on the final line ends the value without error', () => {
+      // Arrange — git fakes an end-of-line at EOF.
+      const sut = parseIniSections;
+      const text = '[test]\n\tv = a\\';
+
+      // Act
+      const result = sut(text);
+
+      // Assert
+      expect(result[0]?.entries).toEqual([{ key: 'v', value: 'a' }]);
+    });
+
+    it('Then a section header after a continued value is still recognized', () => {
+      // Arrange
+      const sut = parseIniSections;
+      const text = '[test]\n\tv = a\\\nb\n[next]\n\tw = c\n';
+
+      // Act
+      const result = sut(text);
+
+      // Assert
+      expect(result).toEqual([
+        { section: 'test', subsection: undefined, entries: [{ key: 'v', value: 'ab' }] },
+        { section: 'next', subsection: undefined, entries: [{ key: 'w', value: 'c' }] },
+      ]);
+    });
+  });
+
+  describe('Given comment characters, When parseIniSections', () => {
+    it('Then an unquoted hash starts a comment and trailing whitespace is trimmed', () => {
+      // Arrange
+      const sut = parseIniSections;
+      const text = configTextFor('a # c');
+
+      // Act
+      const result = sut(text);
+
+      // Assert
+      expect(firstValue(result)).toBe('a');
+    });
+
+    it('Then a comment before the equals sign swallows the whole line', () => {
+      // Arrange
+      const sut = parseIniSections;
+      const text = '[test]\n\tab#cd = x\n\tv = ok\n';
+
+      // Act
+      const result = sut(text);
+
+      // Assert
+      expect(result[0]?.entries).toEqual([{ key: 'v', value: 'ok' }]);
+    });
+  });
+
+  describe('Given a malformed value, When parseIniSections', () => {
+    it('Then an unknown escape throws CONFIG_PARSE_ERROR with the physical line', () => {
+      // Arrange
+      const sut = parseIniSections;
+      const text = '[test]\n\tv = a\\xb\n';
+
+      // Act + Assert
+      try {
+        sut(text);
+        expect.unreachable('parseIniSections must throw on an unknown escape');
+      } catch (err) {
+        if (!(err instanceof TsgitError)) throw err;
+        expect(err.data.code).toBe('CONFIG_PARSE_ERROR');
+        expect(err.data).toMatchObject({ line: 2 });
+      }
+    });
+
+    it('Then an unclosed quote throws CONFIG_PARSE_ERROR with the physical line', () => {
+      // Arrange
+      const sut = parseIniSections;
+      const text = '[a]\nk = ok\n[test]\nv = "good"\nw = "bad\n';
+
+      // Act + Assert
+      try {
+        sut(text);
+        expect.unreachable('parseIniSections must throw on an unclosed quote');
+      } catch (err) {
+        if (!(err instanceof TsgitError)) throw err;
+        expect(err.data.code).toBe('CONFIG_PARSE_ERROR');
+        expect(err.data).toMatchObject({ line: 5 });
+      }
+    });
+
+    it('Then a failure on a continuation line reports the continuation physical line', () => {
+      // Arrange — value starts on line 2; the bad escape sits on line 3.
+      const sut = parseIniSections;
+      const text = '[test]\n\tv = a\\\nb\\q\n';
+
+      // Act + Assert
+      try {
+        sut(text);
+        expect.unreachable('parseIniSections must throw on an unknown escape');
+      } catch (err) {
+        if (!(err instanceof TsgitError)) throw err;
+        expect(err.data.code).toBe('CONFIG_PARSE_ERROR');
+        expect(err.data).toMatchObject({ line: 3 });
+      }
+    });
+
+    it('Then the source label is carried when provided', () => {
+      // Arrange
+      const sut = parseIniSections;
+      const text = '[test]\n\tv = "bad\n';
+
+      // Act + Assert
+      try {
+        sut(text, 'some/config');
+        expect.unreachable('parseIniSections must throw on an unclosed quote');
+      } catch (err) {
+        if (!(err instanceof TsgitError)) throw err;
+        expect(err.data).toMatchObject({ code: 'CONFIG_PARSE_ERROR', source: 'some/config' });
+      }
+    });
+
+    it('Then the source label is absent when not provided', () => {
+      // Arrange
+      const sut = parseIniSections;
+      const text = '[test]\n\tv = "bad\n';
+
+      // Act + Assert
+      try {
+        sut(text);
+        expect.unreachable('parseIniSections must throw on an unclosed quote');
+      } catch (err) {
+        if (!(err instanceof TsgitError)) throw err;
+        expect(err.data.code).toBe('CONFIG_PARSE_ERROR');
+        expect(Object.hasOwn(err.data, 'source')).toBe(false);
+      }
+    });
+  });
+
+  describe('Given a malformed .git/config, When readConfig', () => {
+    beforeEach(() => {
+      __resetConfigCacheForTests();
+    });
+
+    it('Then it rejects with CONFIG_PARSE_ERROR carrying the config path as source', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await seed(ctx, '[core]\n\tbare = a\\x\n');
+
+      // Act + Assert
+      try {
+        await readConfig(ctx);
+        expect.unreachable('readConfig must reject on a malformed config');
+      } catch (err) {
+        if (!(err instanceof TsgitError)) throw err;
+        expect(err.data).toMatchObject({
+          code: 'CONFIG_PARSE_ERROR',
+          line: 2,
+          source: `${ctx.layout.gitDir}/config`,
+        });
+      }
+    });
+
+    it('Then the rejection is cached (single underlying read)', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await seed(ctx, '[core]\n\tbare = "open\n');
+      const spy = vi.spyOn(ctx.fs, 'readUtf8');
+
+      // Act
+      const first = readConfig(ctx).catch((err: unknown) => err);
+      const second = readConfig(ctx).catch((err: unknown) => err);
+      const [a, b] = await Promise.all([first, second]);
+
+      // Assert — both rejections come from one read.
+      expect((a as TsgitError).data.code).toBe('CONFIG_PARSE_ERROR');
+      expect((b as TsgitError).data.code).toBe('CONFIG_PARSE_ERROR');
+      expect(spy).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('Given a malformed local config, When getConfigValue reads scoped sections', () => {
+    beforeEach(() => {
+      __resetConfigCacheForTests();
+      __resetSectionsCacheForTests();
+    });
+
+    it('Then the CONFIG_PARSE_ERROR propagates (not swallowed as a missing scope)', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await seed(ctx, '[user]\n\tname = "open\n');
+
+      // Act + Assert
+      try {
+        await getConfigValue({ ctx, key: 'user.name' });
+        expect.unreachable('getConfigValue must reject on a malformed config');
+      } catch (err) {
+        if (!(err instanceof TsgitError)) throw err;
+        expect(err.data.code).toBe('CONFIG_PARSE_ERROR');
+      }
     });
   });
 });
