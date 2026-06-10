@@ -11,11 +11,7 @@ function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
   return true;
 }
 
-function expectMergeError(
-  fn: () => unknown,
-  reasonSubstr?: string,
-  assertReason?: (reason: string) => void,
-): void {
+function expectMergeError(fn: () => unknown, reasonSubstr: string): void {
   let thrown: unknown;
   try {
     fn();
@@ -25,8 +21,7 @@ function expectMergeError(
   expect(thrown).toBeDefined();
   const data = (thrown as { data: { code: string; reason: string } }).data;
   expect(data.code).toBe('INVALID_MERGE_INPUT');
-  if (reasonSubstr !== undefined) expect(data.reason).toContain(reasonSubstr);
-  if (assertReason !== undefined) assertReason(data.reason);
+  expect(data.reason).toContain(reasonSubstr);
 }
 
 describe('writeConflictMarkers — positive', () => {
@@ -62,9 +57,9 @@ describe('writeConflictMarkers — positive', () => {
     });
   });
 
-  describe('Given label with surrounding spaces but non-empty after trim', () => {
+  describe('Given label with surrounding spaces', () => {
     describe('When writeConflictMarkers called', () => {
-      it('Then accepted verbatim', () => {
+      it('Then it is written verbatim', () => {
         // Arrange — leading/trailing spaces preserved verbatim in output
         const sut = writeConflictMarkers([enc('a\n')], [enc('b\n')], {
           labels: { ours: ' HEAD ', theirs: ' HEAD ' },
@@ -139,15 +134,15 @@ describe('writeConflictMarkers — positive', () => {
     });
   });
 
-  describe('Given valid base label present in options', () => {
+  describe('Given a base label in options', () => {
     describe('When writeConflictMarkers called', () => {
-      it('Then accepted', () => {
-        // Arrange & Act — base label validated but not emitted (v1 two-way markers)
+      it('Then it is not emitted (v1 two-way markers)', () => {
+        // Arrange & Act
         const sut = writeConflictMarkers([enc('a\n')], [enc('b\n')], {
           labels: { ours: 'HEAD', theirs: 'feature', base: 'main' },
         });
 
-        // Assert — call succeeds, no base marker in v1 output
+        // Assert — no base marker in v1 output
         const text = new TextDecoder().decode(sut);
         expect(text).not.toContain('|||||||');
       });
@@ -219,384 +214,31 @@ describe('writeConflictMarkers — marker size', () => {
   });
 });
 
-describe('writeConflictMarkers — label validation (negative)', () => {
-  describe('Given label with \\\\n', () => {
+describe('writeConflictMarkers — verbatim labels', () => {
+  describe('Given a long label carrying a marker substring and a control character', () => {
     describe('When writeConflictMarkers called', () => {
-      it('Then throws INVALID_MERGE_INPUT', () => {
-        // Arrange + Assert
-        expectMergeError(() =>
-          writeConflictMarkers([], [], { labels: { ours: 'a\nb', theirs: 'HEAD' } }),
-        );
-      });
-    });
-  });
-
-  describe('Given label with \\\\r', () => {
-    describe('When writeConflictMarkers called', () => {
-      it('Then throws INVALID_MERGE_INPUT', () => {
-        // Arrange + Assert
-        expectMergeError(() =>
-          writeConflictMarkers([], [], { labels: { ours: 'a\rb', theirs: 'HEAD' } }),
-        );
-      });
-    });
-  });
-
-  describe('Given label with \\\\x1b (C0 ANSI escape)', () => {
-    describe('When writeConflictMarkers called', () => {
-      it('Then throws INVALID_MERGE_INPUT', () => {
-        // Arrange + Assert
-        expectMergeError(() =>
-          writeConflictMarkers([], [], {
-            labels: { ours: 'HEAD\x1b[31mred', theirs: 'HEAD' },
-          }),
-        );
-      });
-    });
-  });
-
-  describe('Given label with \\\\x7f (DEL)', () => {
-    describe('When writeConflictMarkers called', () => {
-      it('Then throws INVALID_MERGE_INPUT', () => {
-        // Arrange + Assert
-        expectMergeError(() =>
-          writeConflictMarkers([], [], {
-            labels: { ours: 'HEAD\x7fX', theirs: 'HEAD' },
-          }),
-        );
-      });
-    });
-  });
-
-  describe('Given label with \\\\x9b (C1 control)', () => {
-    describe('When writeConflictMarkers called', () => {
-      it('Then throws INVALID_MERGE_INPUT', () => {
-        // Arrange + Assert
-        expectMergeError(() =>
-          writeConflictMarkers([], [], {
-            labels: { ours: 'HEAD\u009b', theirs: 'HEAD' },
-          }),
-        );
-      });
-    });
-  });
-
-  describe('Given label containing <<<<<<<', () => {
-    describe('When writeConflictMarkers called', () => {
-      it('Then throws INVALID_MERGE_INPUT', () => {
-        // Arrange + Assert
-        expectMergeError(() =>
-          writeConflictMarkers([], [], { labels: { ours: '<<<<<<<', theirs: 'HEAD' } }),
-        );
-      });
-    });
-  });
-
-  describe('Given label containing =======', () => {
-    describe('When writeConflictMarkers called', () => {
-      it('Then throws INVALID_MERGE_INPUT', () => {
-        // Arrange + Assert
-        expectMergeError(() =>
-          writeConflictMarkers([], [], { labels: { ours: '=======', theirs: 'HEAD' } }),
-        );
-      });
-    });
-  });
-
-  describe('Given label containing >>>>>>>', () => {
-    describe('When writeConflictMarkers called', () => {
-      it('Then throws INVALID_MERGE_INPUT', () => {
-        // Arrange + Assert
-        expectMergeError(() =>
-          writeConflictMarkers([], [], { labels: { ours: '>>>>>>>', theirs: 'HEAD' } }),
-        );
-      });
-    });
-  });
-
-  describe('Given label containing |||||||', () => {
-    describe('When writeConflictMarkers called', () => {
-      it('Then throws INVALID_MERGE_INPUT', () => {
-        // Arrange + Assert
-        expectMergeError(() =>
-          writeConflictMarkers([], [], { labels: { ours: '|||||||', theirs: 'HEAD' } }),
-        );
-      });
-    });
-  });
-
-  describe('Given label of all printable ASCII (U+0020\\u2013U+007E)', () => {
-    describe('When writeConflictMarkers called', () => {
-      it('Then accepted (no char treated as control)', () => {
-        // Arrange \u2014 every printable code point; none is a control or bidi/invisible char
-        let printable = '';
-        for (let code = 0x20; code <= 0x7e; code++) {
-          const ch = String.fromCharCode(code);
-          // skip marker-substring-forming chars handled by a separate guard
-          if (ch === '<' || ch === '=' || ch === '>' || ch === '|') continue;
-          printable += ch;
-        }
+      it('Then the label bytes are written verbatim (git-faithful, no validation)', () => {
+        // Arrange — git writes any label bytes into the marker, including long
+        // subjects and control / marker characters; the library is faithful and
+        // leaves display-time sanitisation to the consumer.
+        const long = 'x'.repeat(300);
+        const noisy = 'has ======= and \x1b[31m';
 
         // Act
         const sut = writeConflictMarkers([enc('a\n')], [enc('b\n')], {
-          labels: { ours: printable, theirs: 'HEAD' },
+          labels: { ours: long, theirs: noisy },
         });
 
-        // Assert \u2014 label round-trips verbatim; isControlCode returned false for every char
+        // Assert
         const text = new TextDecoder().decode(sut);
-        expect(text).toContain(`<<<<<<< ${printable}\n`);
+        expect(text).toContain(`<<<<<<< ${long}\n`);
+        expect(text).toContain(`>>>>>>> ${noisy}\n`);
       });
     });
   });
+});
 
-  describe('Given label with U+001F (C0 control upper boundary)', () => {
-    describe('When writeConflictMarkers called', () => {
-      it('Then throws INVALID_MERGE_INPUT', () => {
-        // Arrange + Assert
-        expectMergeError(
-          () => writeConflictMarkers([], [], { labels: { ours: 'HEAD\u001F', theirs: 'HEAD' } }),
-          'forbidden control character',
-        );
-      });
-    });
-  });
-
-  describe('Given label with U+009F (C1 control upper boundary)', () => {
-    describe('When writeConflictMarkers called', () => {
-      it('Then throws INVALID_MERGE_INPUT', () => {
-        // Arrange + Assert
-        expectMergeError(
-          () => writeConflictMarkers([], [], { labels: { ours: 'HEAD\u009F', theirs: 'HEAD' } }),
-          'forbidden control character',
-        );
-      });
-    });
-  });
-
-  describe('Given label with U+202A (bidi LRE, lower boundary of override range)', () => {
-    describe('When writeConflictMarkers called', () => {
-      it('Then throws INVALID_MERGE_INPUT', () => {
-        // Arrange + Assert
-        expectMergeError(
-          () => writeConflictMarkers([], [], { labels: { ours: 'HEAD\u202A', theirs: 'HEAD' } }),
-          'forbidden control character',
-        );
-      });
-    });
-  });
-
-  describe('Given label with U+2066 (bidi isolate LRI, lower boundary)', () => {
-    describe('When writeConflictMarkers called', () => {
-      it('Then throws INVALID_MERGE_INPUT', () => {
-        // Arrange + Assert
-        expectMergeError(
-          () => writeConflictMarkers([], [], { labels: { ours: 'HEAD\u2066', theirs: 'HEAD' } }),
-          'forbidden control character',
-        );
-      });
-    });
-  });
-
-  describe('Given label with U+2069 (bidi isolate PDI, upper boundary)', () => {
-    describe('When writeConflictMarkers called', () => {
-      it('Then throws INVALID_MERGE_INPUT', () => {
-        // Arrange + Assert
-        expectMergeError(
-          () => writeConflictMarkers([], [], { labels: { ours: 'HEAD\u2069', theirs: 'HEAD' } }),
-          'forbidden control character',
-        );
-      });
-    });
-  });
-
-  describe('Given label with U+200C (ZWNJ invisible)', () => {
-    describe('When writeConflictMarkers called', () => {
-      it('Then throws INVALID_MERGE_INPUT', () => {
-        // Arrange + Assert
-        expectMergeError(
-          () => writeConflictMarkers([], [], { labels: { ours: 'HEAD\u200C', theirs: 'HEAD' } }),
-          'forbidden control character',
-        );
-      });
-    });
-  });
-
-  describe('Given label with U+2060 (WORD JOINER invisible)', () => {
-    describe('When writeConflictMarkers called', () => {
-      it('Then throws INVALID_MERGE_INPUT', () => {
-        // Arrange + Assert
-        expectMergeError(
-          () => writeConflictMarkers([], [], { labels: { ours: 'HEAD\u2060', theirs: 'HEAD' } }),
-          'forbidden control character',
-        );
-      });
-    });
-  });
-
-  describe('Given label with U+202E (bidi RLO override)', () => {
-    describe('When writeConflictMarkers called', () => {
-      it('Then throws INVALID_MERGE_INPUT', () => {
-        // Arrange + Assert
-        expectMergeError(() =>
-          writeConflictMarkers([], [], { labels: { ours: 'HEAD\u202E<<<', theirs: 'HEAD' } }),
-        );
-      });
-    });
-  });
-
-  describe('Given label with U+200D (ZWJ invisible)', () => {
-    describe('When writeConflictMarkers called', () => {
-      it('Then throws INVALID_MERGE_INPUT', () => {
-        // Arrange + Assert
-        expectMergeError(() =>
-          writeConflictMarkers([], [], { labels: { ours: 'HEAD\u200D', theirs: 'HEAD' } }),
-        );
-      });
-    });
-  });
-
-  describe('Given label with U+200B (ZERO WIDTH SPACE)', () => {
-    describe('When writeConflictMarkers called', () => {
-      it('Then throws INVALID_MERGE_INPUT', () => {
-        // Arrange + Assert
-        expectMergeError(() =>
-          writeConflictMarkers([], [], { labels: { ours: 'HEAD\u200B', theirs: 'HEAD' } }),
-        );
-      });
-    });
-  });
-
-  describe('Given label with U+FEFF (BOM)', () => {
-    describe('When writeConflictMarkers called', () => {
-      it('Then throws INVALID_MERGE_INPUT', () => {
-        // Arrange + Assert
-        expectMergeError(() =>
-          writeConflictMarkers([], [], { labels: { ours: 'HEAD\uFEFF', theirs: 'HEAD' } }),
-        );
-      });
-    });
-  });
-
-  describe("Given empty label ''", () => {
-    describe('When writeConflictMarkers called', () => {
-      it('Then throws INVALID_MERGE_INPUT', () => {
-        // Arrange + Assert
-        expectMergeError(
-          () => writeConflictMarkers([], [], { labels: { ours: '', theirs: 'HEAD' } }),
-          'empty or whitespace-only',
-        );
-      });
-    });
-  });
-
-  describe("Given whitespace-only label ' \\\\t\\\\v\\\\f '", () => {
-    describe('When writeConflictMarkers called', () => {
-      it('Then throws INVALID_MERGE_INPUT', () => {
-        // Arrange + Assert
-        expectMergeError(
-          () => writeConflictMarkers([], [], { labels: { ours: ' \t\v\f ', theirs: 'HEAD' } }),
-          'empty or whitespace-only',
-        );
-      });
-    });
-  });
-
-  describe('Given invalid base label', () => {
-    describe('When writeConflictMarkers called', () => {
-      it('Then throws INVALID_MERGE_INPUT', () => {
-        // Arrange + Assert
-        expectMergeError(
-          () =>
-            writeConflictMarkers([], [], {
-              labels: { ours: 'HEAD', theirs: 'HEAD', base: '<<<<<<<' },
-            }),
-          'base label contains forbidden marker substring',
-        );
-      });
-    });
-  });
-
-  describe('Given label of exactly 255 chars', () => {
-    describe('When writeConflictMarkers called', () => {
-      it('Then succeeds (at-boundary)', () => {
-        // Arrange
-        const label = 'a'.repeat(255);
-
-        // Act & Assert
-        expect(() =>
-          writeConflictMarkers([], [], { labels: { ours: label, theirs: 'HEAD' } }),
-        ).not.toThrow();
-      });
-    });
-  });
-
-  describe('Given label of 256 chars', () => {
-    describe('When writeConflictMarkers called', () => {
-      it('Then throws INVALID_MERGE_INPUT', () => {
-        // Arrange
-        const label = 'a'.repeat(256);
-
-        // Act & Assert
-        expectMergeError(
-          () => writeConflictMarkers([], [], { labels: { ours: label, theirs: 'HEAD' } }),
-          'exceeds maximum length',
-        );
-      });
-    });
-  });
-
-  describe('Given invalid theirs label', () => {
-    describe('When writeConflictMarkers called', () => {
-      it('Then throws INVALID_MERGE_INPUT with theirs in reason', () => {
-        // Arrange + Assert
-        expectMergeError(
-          () =>
-            writeConflictMarkers([], [], {
-              labels: { ours: 'HEAD', theirs: 'a\nb' },
-            }),
-          'theirs',
-        );
-      });
-    });
-  });
-
-  describe('Given label with forbidden char at last position', () => {
-    describe('When writeConflictMarkers called', () => {
-      it('Then throws INVALID_MERGE_INPUT (loop reaches final index)', () => {
-        // Arrange + Assert — NUL at the very last character position; ensures the loop bound reaches the last index
-        expectMergeError(
-          () =>
-            writeConflictMarkers([], [], {
-              labels: { ours: 'abc\x00', theirs: 'HEAD' },
-            }),
-          'forbidden control character',
-        );
-      });
-    });
-  });
-
-  describe('Given any invalid label', () => {
-    describe('When writeConflictMarkers called', () => {
-      it('Then error reason does NOT contain the label value (branch-name privacy)', () => {
-        // Arrange — secret branch name that must not leak into diagnostics
-        const secret = 'secret-branch-name';
-        const hostile = `${secret}\n`;
-
-        // Act & Assert
-        expectMergeError(
-          () =>
-            writeConflictMarkers([], [], {
-              labels: { ours: hostile, theirs: 'HEAD' },
-            }),
-          undefined,
-          (reason) => {
-            expect(reason).not.toContain(secret);
-          },
-        );
-      });
-    });
-  });
-
+describe('writeConflictMarkers — unsupported diff3', () => {
   describe("Given conflictStyle 'diff3' option", () => {
     describe('When writeConflictMarkers called', () => {
       it("Then throws INVALID_MERGE_INPUT containing 'diff3'", () => {

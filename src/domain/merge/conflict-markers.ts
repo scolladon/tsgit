@@ -2,71 +2,11 @@ import { invalidMergeInput } from './error.js';
 import type { ConflictMarkerOptions } from './merge-types.js';
 import { MAX_CONFLICT_OUTPUT_BYTES } from './merge-types.js';
 
-const OURS_MARKER = '<<<<<<<';
-const BASE_MARKER = '|||||||';
-const SEPARATOR_MARKER = '=======';
-const THEIRS_MARKER = '>>>>>>>';
-const FORBIDDEN_SUBSTRINGS = [OURS_MARKER, SEPARATOR_MARKER, THEIRS_MARKER, BASE_MARKER];
-const MAX_LABEL_LENGTH = 255;
 /** git's `DEFAULT_CONFLICT_MARKER_SIZE` — the marker run length when none is given. */
 const DEFAULT_MARKER_SIZE = 7;
 
 const encoder = new TextEncoder();
 const LF = 0x0a;
-
-type LabelSide = 'ours' | 'base' | 'theirs';
-
-function isControlCode(code: number): boolean {
-  // C0 controls U+0000–U+001F, plus DEL and C1 controls U+007F–U+009F.
-  // `code` comes from charCodeAt so it is always >= 0 (or NaN, for which every
-  // comparison is false) — the lower `>= 0x00` bound is redundant and omitted.
-  return code <= 0x1f || (code >= 0x7f && code <= 0x9f);
-}
-
-function isBidiOrInvisible(code: number): boolean {
-  // Unicode bidi overrides U+202A–U+202E, bidi isolates U+2066–U+2069,
-  // and invisible formatting: ZWNJ U+200C, ZWJ U+200D, WORD JOINER U+2060.
-  return (
-    (code >= 0x202a && code <= 0x202e) ||
-    (code >= 0x2066 && code <= 0x2069) ||
-    code === 0x200b ||
-    code === 0x200c ||
-    code === 0x200d ||
-    code === 0x2060 ||
-    code === 0xfeff
-  );
-}
-
-function hasForbiddenChar(label: string): boolean {
-  // Stryker disable next-line EqualityOperator: equivalent — at i === label.length, charCodeAt returns NaN; isControlCode/isBidiOrInvisible(NaN) are both false, so the extra iteration changes nothing
-  for (let i = 0; i < label.length; i++) {
-    const code = label.charCodeAt(i);
-    if (isControlCode(code) || isBidiOrInvisible(code)) return true;
-  }
-  return false;
-}
-
-function hasMarkerSubstring(label: string): boolean {
-  for (const marker of FORBIDDEN_SUBSTRINGS) {
-    if (label.includes(marker)) return true;
-  }
-  return false;
-}
-
-function validateLabel(label: string, which: LabelSide): void {
-  if (label.length > MAX_LABEL_LENGTH) {
-    throw invalidMergeInput(`conflict marker ${which} label exceeds maximum length`);
-  }
-  if (label.trim() === '') {
-    throw invalidMergeInput(`conflict marker ${which} label is empty or whitespace-only`);
-  }
-  if (hasForbiddenChar(label)) {
-    throw invalidMergeInput(`conflict marker ${which} label contains forbidden control character`);
-  }
-  if (hasMarkerSubstring(label)) {
-    throw invalidMergeInput(`conflict marker ${which} label contains forbidden marker substring`);
-  }
-}
 
 function sumBytes(lines: ReadonlyArray<Uint8Array>): number {
   let total = 0;
@@ -91,6 +31,13 @@ function concatEnsuringTrailingLf(lines: ReadonlyArray<Uint8Array>): Uint8Array 
   return block;
 }
 
+/**
+ * Serialise a two-way conflict region. Labels are written **verbatim**, exactly
+ * as git does — the library emits the bytes git would and leaves any display-time
+ * sanitisation to the consumer (ADR-249). Only the content-size cap and the
+ * unsupported `diff3` style are refused; the markers scale to `options.markerSize`
+ * (git's `conflict-marker-size`, default 7).
+ */
 export function writeConflictMarkers(
   oursLines: ReadonlyArray<Uint8Array>,
   theirsLines: ReadonlyArray<Uint8Array>,
@@ -102,11 +49,6 @@ export function writeConflictMarkers(
 
   const oursLabel = options.labels?.ours ?? 'ours';
   const theirsLabel = options.labels?.theirs ?? 'theirs';
-  validateLabel(oursLabel, 'ours');
-  validateLabel(theirsLabel, 'theirs');
-  if (options.labels?.base !== undefined) {
-    validateLabel(options.labels.base, 'base');
-  }
 
   const contentSize = sumBytes(oursLines) + sumBytes(theirsLines);
   if (contentSize > MAX_CONFLICT_OUTPUT_BYTES) {
