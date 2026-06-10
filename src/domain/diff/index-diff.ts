@@ -131,24 +131,65 @@ interface StageEmission {
   readonly id: ObjectId;
   readonly mode: FileMode;
   readonly stage: 1 | 2 | 3;
+  readonly path: FilePath;
 }
 
 function conflictStageEmissions(conflict: MergeConflict): ReadonlyArray<StageEmission> {
+  if (conflict.type === 'distinct-types') {
+    return distinctTypesEmissions(conflict);
+  }
+  return regularEmissions(conflict);
+}
+
+function distinctTypesEmissions(conflict: MergeConflict): ReadonlyArray<StageEmission> {
   const out: StageEmission[] = [];
-  if (conflict.baseId !== undefined && conflict.baseMode !== undefined) {
-    out.push({ id: conflict.baseId, mode: conflict.baseMode, stage: 1 });
+  if (
+    conflict.ourId !== undefined &&
+    conflict.ourMode !== undefined &&
+    conflict.ourPath !== undefined
+  ) {
+    out.push({ id: conflict.ourId, mode: conflict.ourMode, stage: 2, path: conflict.ourPath });
   }
-  if (conflict.ourId !== undefined && conflict.ourMode !== undefined) {
-    out.push({ id: conflict.ourId, mode: conflict.ourMode, stage: 2 });
-  }
-  if (conflict.theirId !== undefined && conflict.theirMode !== undefined) {
-    out.push({ id: conflict.theirId, mode: conflict.theirMode, stage: 3 });
+  if (
+    conflict.theirId !== undefined &&
+    conflict.theirMode !== undefined &&
+    conflict.theirPath !== undefined
+  ) {
+    out.push({
+      id: conflict.theirId,
+      mode: conflict.theirMode,
+      stage: 3,
+      path: conflict.theirPath,
+    });
   }
   return out;
 }
 
+function regularEmissions(conflict: MergeConflict): ReadonlyArray<StageEmission> {
+  const out: StageEmission[] = [];
+  if (conflict.baseId !== undefined && conflict.baseMode !== undefined) {
+    out.push({ id: conflict.baseId, mode: conflict.baseMode, stage: 1, path: conflict.path });
+  }
+  if (conflict.ourId !== undefined && conflict.ourMode !== undefined) {
+    out.push({ id: conflict.ourId, mode: conflict.ourMode, stage: 2, path: conflict.path });
+  }
+  if (conflict.theirId !== undefined && conflict.theirMode !== undefined) {
+    out.push({ id: conflict.theirId, mode: conflict.theirMode, stage: 3, path: conflict.path });
+  }
+  return out;
+}
+
+function recordedPaths(conflict: MergeConflict): ReadonlyArray<FilePath> {
+  if (conflict.type === 'distinct-types') {
+    const paths: FilePath[] = [];
+    if (conflict.ourPath !== undefined) paths.push(conflict.ourPath);
+    if (conflict.theirPath !== undefined) paths.push(conflict.theirPath);
+    return paths;
+  }
+  return [conflict.path];
+}
+
 function toIndexEntry(
-  path: FilePath,
   emission: StageEmission,
   statFactory: (mode: FileMode) => StatData,
 ): IndexEntry {
@@ -166,7 +207,7 @@ function toIndexEntry(
     fileSize: stat.fileSize,
     id: emission.id,
     flags: { ...STAGE0_FLAGS, stage: emission.stage },
-    path,
+    path: emission.path,
   };
 }
 
@@ -176,23 +217,23 @@ export function conflictsToIndexEntries(
 ): ReadonlyArray<IndexEntry> {
   const seenPaths = new Set<FilePath>();
   for (const conflict of conflicts) {
-    if (seenPaths.has(conflict.path)) {
-      throw invalidDiffInput('duplicate conflict path');
+    for (const path of recordedPaths(conflict)) {
+      if (seenPaths.has(path)) {
+        throw invalidDiffInput('duplicate conflict path');
+      }
+      seenPaths.add(path);
     }
-    seenPaths.add(conflict.path);
   }
 
   const entries: IndexEntry[] = [];
   for (const conflict of conflicts) {
     for (const emission of conflictStageEmissions(conflict)) {
-      entries.push(toIndexEntry(conflict.path, emission, statFactory));
+      entries.push(toIndexEntry(emission, statFactory));
     }
   }
   entries.sort((a, b) => {
     const pathCmp = comparePaths(a.path, b.path);
-    // Stryker disable next-line ConditionalExpression: equivalent — same-path entries only ever come from one conflict (duplicate paths are rejected above) and are pushed in ascending stage order 1→2→3; with `true` the comparator returns 0 for them and V8's spec-stable sort preserves that already-ascending insertion order, yielding identical output.
     if (pathCmp !== 0) return pathCmp;
-    // Stryker disable next-line ArithmeticOperator: equivalent — same-path runs are always pushed pre-sorted ascending by stage (conflictStageEmissions emits 1→2→3, duplicate paths rejected above), so the comparator never has to reorder them; `+` and `-` both leave the already-ascending run in place.
     return a.flags.stage - b.flags.stage;
   });
   return entries;

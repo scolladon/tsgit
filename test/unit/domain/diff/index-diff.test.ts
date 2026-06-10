@@ -582,4 +582,232 @@ describe('conflictsToIndexEntries', () => {
       });
     });
   });
+
+  describe('Given a distinct-types conflict (path f, ourPath f~HEAD, theirPath f)', () => {
+    describe('When conflictsToIndexEntries called', () => {
+      it('Then emits stage 2 at ourPath and stage 3 at theirPath, no stage 1, path-sorted', () => {
+        // Arrange
+        const sut = conflictsToIndexEntries(
+          [
+            conflict({
+              type: 'distinct-types',
+              path: 'f' as FilePath,
+              ourPath: 'f~HEAD' as FilePath,
+              theirPath: 'f' as FilePath,
+              ourId: ID_B,
+              ourMode: FILE_MODE.EXECUTABLE,
+              theirId: ID_C,
+              theirMode: FILE_MODE.SYMLINK,
+            }),
+          ],
+          zeroStat,
+        );
+
+        // Assert — exactly two entries; f (stage 3) sorts before f~HEAD (stage 2)
+        expect(sut).toHaveLength(2);
+        expect(sut[0]?.path).toBe('f');
+        expect(sut[0]?.flags.stage).toBe(3);
+        expect(sut[0]?.id).toBe(ID_C);
+        expect(sut[0]?.mode).toBe(FILE_MODE.SYMLINK);
+        expect(sut[1]?.path).toBe('f~HEAD');
+        expect(sut[1]?.flags.stage).toBe(2);
+        expect(sut[1]?.id).toBe(ID_B);
+        expect(sut[1]?.mode).toBe(FILE_MODE.EXECUTABLE);
+      });
+    });
+  });
+
+  describe('Given two conflicts whose recorded paths collide (distinct-types ourPath matches another conflict path)', () => {
+    describe('When conflictsToIndexEntries called', () => {
+      it('Then throws INVALID_DIFF_INPUT on recorded-path collision', () => {
+        // Arrange — distinct-types conflict with ourPath 'g~HEAD'; a regular
+        // conflict at 'g~HEAD' collides on the recorded path
+        const conflicts: ReadonlyArray<MergeConflict> = [
+          conflict({
+            type: 'distinct-types',
+            path: 'g' as FilePath,
+            ourPath: 'g~HEAD' as FilePath,
+            theirPath: 'g' as FilePath,
+            ourId: ID_A,
+            ourMode: FILE_MODE.REGULAR,
+            theirId: ID_B,
+            theirMode: FILE_MODE.SYMLINK,
+          }),
+          conflict({
+            path: 'g~HEAD' as FilePath,
+            ourId: ID_C,
+            ourMode: FILE_MODE.REGULAR,
+          }),
+        ];
+
+        // Act
+        let thrown: unknown;
+        try {
+          conflictsToIndexEntries(conflicts, zeroStat);
+        } catch (e) {
+          thrown = e;
+        }
+
+        // Assert
+        expect((thrown as { data: { code: string; reason: string } }).data.code).toBe(
+          'INVALID_DIFF_INPUT',
+        );
+        expect((thrown as { data: { reason: string } }).data.reason).toContain('duplicate');
+      });
+    });
+  });
+
+  describe('Given a distinct-types conflict alongside an unrelated conflict at a different path', () => {
+    describe('When conflictsToIndexEntries called', () => {
+      it('Then does not throw and emits all entries', () => {
+        // Arrange — distinct-types at 'h' (ourPath h~HEAD, theirPath h) plus a
+        // regular conflict at 'z'; no recorded-path overlap
+        const sut = conflictsToIndexEntries(
+          [
+            conflict({
+              type: 'distinct-types',
+              path: 'h' as FilePath,
+              ourPath: 'h~HEAD' as FilePath,
+              theirPath: 'h' as FilePath,
+              ourId: ID_A,
+              ourMode: FILE_MODE.REGULAR,
+              theirId: ID_B,
+              theirMode: FILE_MODE.SYMLINK,
+            }),
+            conflict({
+              path: 'z' as FilePath,
+              ourId: ID_C,
+              ourMode: FILE_MODE.REGULAR,
+            }),
+          ],
+          zeroStat,
+        );
+
+        // Assert — 3 entries total (2 for distinct-types + 1 for regular), no throw
+        expect(sut).toHaveLength(3);
+        const keys = sut.map((e) => `${e.path}:${e.flags.stage}`);
+        expect(keys).toEqual(['h:3', 'h~HEAD:2', 'z:2']);
+      });
+    });
+  });
+
+  describe('Given a distinct-types conflict with no ourId set', () => {
+    describe('When conflictsToIndexEntries called', () => {
+      it('Then emits only stage 3 entry at theirPath', () => {
+        // Arrange — partial distinct-types: ourId absent, only theirs present
+        const sut = conflictsToIndexEntries(
+          [
+            conflict({
+              type: 'distinct-types',
+              path: 'k' as FilePath,
+              ourPath: 'k~HEAD' as FilePath,
+              theirPath: 'k' as FilePath,
+              theirId: ID_C,
+              theirMode: FILE_MODE.SYMLINK,
+            }),
+          ],
+          zeroStat,
+        );
+
+        // Assert — only theirs entry emitted
+        expect(sut).toHaveLength(1);
+        expect(sut[0]?.path).toBe('k');
+        expect(sut[0]?.flags.stage).toBe(3);
+      });
+    });
+  });
+
+  describe('Given a distinct-types conflict with no theirId set', () => {
+    describe('When conflictsToIndexEntries called', () => {
+      it('Then emits only stage 2 entry at ourPath', () => {
+        // Arrange — partial distinct-types: theirId absent, only ours present
+        const sut = conflictsToIndexEntries(
+          [
+            conflict({
+              type: 'distinct-types',
+              path: 'm' as FilePath,
+              ourPath: 'm~HEAD' as FilePath,
+              theirPath: 'm' as FilePath,
+              ourId: ID_A,
+              ourMode: FILE_MODE.REGULAR,
+            }),
+          ],
+          zeroStat,
+        );
+
+        // Assert — only ours entry emitted
+        expect(sut).toHaveLength(1);
+        expect(sut[0]?.path).toBe('m~HEAD');
+        expect(sut[0]?.flags.stage).toBe(2);
+      });
+    });
+  });
+
+  describe('Given a distinct-types conflict with only theirPath set (ourPath absent)', () => {
+    describe('When conflictsToIndexEntries called', () => {
+      it('Then recordedPaths uses only theirPath for dedup', () => {
+        // Arrange — ourPath absent, so only theirPath is the recorded path;
+        // a second conflict at that same path must still refuse
+        const conflicts: ReadonlyArray<MergeConflict> = [
+          conflict({
+            type: 'distinct-types',
+            path: 'n' as FilePath,
+            theirPath: 'n' as FilePath,
+            theirId: ID_C,
+            theirMode: FILE_MODE.SYMLINK,
+          }),
+          conflict({
+            path: 'n' as FilePath,
+            ourId: ID_A,
+            ourMode: FILE_MODE.REGULAR,
+          }),
+        ];
+
+        // Act
+        let thrown: unknown;
+        try {
+          conflictsToIndexEntries(conflicts, zeroStat);
+        } catch (e) {
+          thrown = e;
+        }
+
+        // Assert
+        expect((thrown as { data: { code: string } }).data.code).toBe('INVALID_DIFF_INPUT');
+      });
+    });
+  });
+
+  describe('Given a distinct-types conflict with only ourPath set (theirPath absent)', () => {
+    describe('When conflictsToIndexEntries called', () => {
+      it('Then recordedPaths uses only ourPath for dedup', () => {
+        // Arrange — theirPath absent, so only ourPath is the recorded path;
+        // a second conflict at that path must refuse
+        const conflicts: ReadonlyArray<MergeConflict> = [
+          conflict({
+            type: 'distinct-types',
+            path: 'p' as FilePath,
+            ourPath: 'p~HEAD' as FilePath,
+            ourId: ID_A,
+            ourMode: FILE_MODE.REGULAR,
+          }),
+          conflict({
+            path: 'p~HEAD' as FilePath,
+            ourId: ID_C,
+            ourMode: FILE_MODE.REGULAR,
+          }),
+        ];
+
+        // Act
+        let thrown: unknown;
+        try {
+          conflictsToIndexEntries(conflicts, zeroStat);
+        } catch (e) {
+          thrown = e;
+        }
+
+        // Assert
+        expect((thrown as { data: { code: string } }).data.code).toBe('INVALID_DIFF_INPUT');
+      });
+    });
+  });
 });
