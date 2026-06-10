@@ -470,6 +470,44 @@ describe('applyMergeToWorktree', () => {
     });
   });
 
+  describe('Given both sides add the same symlink path (no base entry) with different targets', () => {
+    describe('When the merge is applied', () => {
+      it('Then the worktree keeps ours as a symlink (not a regular file) and the index has stages 2/3', async () => {
+        // Arrange — no base tree; both sides add `f` as a symlink with different targets
+        const ctx = await buildSeededContext();
+        const oursId = await writeBlob(ctx, 'target-ours');
+        const theirsId = await writeBlob(ctx, 'target-theirs');
+        const emptyBase = await treeWith(ctx, []);
+        const oursTree = await treeWith(ctx, [
+          { name: 'f' as FilePath, id: oursId, mode: FILE_MODE.SYMLINK },
+        ]);
+        const theirsTree = await treeWith(ctx, [
+          { name: 'f' as FilePath, id: theirsId, mode: FILE_MODE.SYMLINK },
+        ]);
+        await ctx.fs.symlink('target-ours', `${ctx.layout.workDir}/f`);
+
+        // Act
+        const sut = await applyMergeToWorktree(ctx, {
+          baseTree: emptyBase,
+          oursTree,
+          theirsTree,
+          currentIndex: index([indexEntry('f', oursId, FILE_MODE.SYMLINK)]),
+          labels: { ours: 'HEAD', theirs: 'side', base: 'base' },
+        });
+
+        // Assert
+        expect(sut.kind).toBe('conflict');
+        if (sut.kind !== 'conflict') return;
+        expect(sut.conflicts[0]?.type).toBe('add-add');
+        expect(sut.conflicts[0]?.contentVerdict).toBeUndefined();
+        const linkTarget = await ctx.fs.readlink(`${ctx.layout.workDir}/f`);
+        expect(linkTarget).toBe('target-ours');
+        const stages = sut.indexEntries.filter((e) => e.path === 'f').map((e) => e.flags.stage);
+        expect(stages).toEqual([2, 3]);
+      });
+    });
+  });
+
   describe('Given both sides add the same path as distinct types (regular ours, symlink theirs)', () => {
     describe('When the merge is applied', () => {
       it('Then both recorded paths are written: regular file at ourPath and symlink at theirPath, index has stage 2/3 at recorded paths', async () => {

@@ -210,6 +210,28 @@ const writeDistinctTypesSides = async (ctx: Context, conflict: MergeConflict): P
   }
 };
 
+/**
+ * Write one non-distinct-types conflict's bytes. A bare add-add writes the
+ * ours side verbatim; when ours is a symlink the entry must be re-created as
+ * a symlink (a plain write over a symlink-occupied path refuses on the node
+ * adapter).
+ */
+const writeMarkedConflict = async (ctx: Context, conflict: MergeConflict): Promise<void> => {
+  const bytes = await conflictBytes(ctx, conflict);
+  if (bytes === undefined) return;
+  const useMode =
+    conflict.type === 'add-add' &&
+    conflict.conflictContent === undefined &&
+    conflict.ourMode !== undefined
+      ? conflict.ourMode
+      : undefined;
+  if (useMode !== undefined) {
+    await writeWorkingTreeEntry(ctx, conflict.path, bytes, useMode);
+    return;
+  }
+  await writeWorkingTreeFile(ctx, conflict.path, bytes);
+};
+
 /** Write the changed clean outcomes + conflict markers to the working tree. */
 const writeConflictWorktree = async (
   ctx: Context,
@@ -240,8 +262,7 @@ const writeConflictWorktree = async (
       await writeDistinctTypesSides(ctx, conflict);
       continue;
     }
-    const bytes = await conflictBytes(ctx, conflict);
-    if (bytes !== undefined) await writeWorkingTreeFile(ctx, conflict.path, bytes);
+    await writeMarkedConflict(ctx, conflict);
   }
 };
 
