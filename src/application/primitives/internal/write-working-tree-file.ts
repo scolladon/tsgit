@@ -3,8 +3,10 @@
  * directories; removing is a no-op when the file is already absent. Used by the
  * three-way merge → working-tree application (`apply-merge-to-worktree`).
  */
-import type { FilePath } from '../../../domain/objects/object-id.js';
+import { FILE_MODE, type FileMode, type FilePath } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
+
+const decoder = new TextDecoder();
 
 /**
  * The parent directory of an absolute path, or `undefined` when there is none
@@ -25,6 +27,30 @@ export const writeWorkingTreeFile = async (
   const fullPath = `${ctx.layout.workDir}/${path}`;
   const parent = parentDir(fullPath);
   if (parent !== undefined) await ctx.fs.mkdir(parent);
+  await ctx.fs.write(fullPath, content);
+};
+
+/**
+ * Mode-aware working-tree write: symlink mode (120000) → create a symlink whose
+ * target is the blob content decoded as UTF-8 (rm-if-exists first, mirroring
+ * `apply-changeset`'s `writeFileEntry`); regular modes → plain file write.
+ * Exported for use by the merge conflict materialisation step.
+ */
+export const writeWorkingTreeEntry = async (
+  ctx: Context,
+  path: FilePath,
+  content: Uint8Array,
+  mode: FileMode,
+): Promise<void> => {
+  const fullPath = `${ctx.layout.workDir}/${path}`;
+  const parent = parentDir(fullPath);
+  if (parent !== undefined) await ctx.fs.mkdir(parent);
+  if (mode === FILE_MODE.SYMLINK) {
+    const target = decoder.decode(content);
+    if (await ctx.fs.exists(fullPath)) await ctx.fs.rm(fullPath);
+    await ctx.fs.symlink(target, fullPath);
+    return;
+  }
   await ctx.fs.write(fullPath, content);
 };
 

@@ -12,6 +12,7 @@ import {
   type ConflictType,
   MAX_CONFLICT_OUTPUT_BYTES,
   type MergeConflict,
+  type MergeLabels,
   type MergeOutcome,
   mergeLabels,
   mergeTrees,
@@ -33,6 +34,7 @@ import { buildContentMerger } from '../primitives/build-content-merger.js';
 import { readConfig } from '../primitives/config-read.js';
 import { createCommit } from '../primitives/create-commit.js';
 import { flattenTree } from '../primitives/flatten-tree.js';
+import { writeWorkingTreeEntry } from '../primitives/internal/write-working-tree-file.js';
 import { materializeTree } from '../primitives/materialize-tree.js';
 import { mergeBase } from '../primitives/merge-base.js';
 import { readBlob } from '../primitives/read-blob.js';
@@ -305,8 +307,9 @@ const computeMergeTreeResult = async (
     baseTreeId !== undefined ? flattenTree(ctx, baseTreeId) : Promise.resolve(undefined),
   ]);
 
-  const contentMerger = buildContentMerger(ctx, mergeLabels(revName, baseId));
-  const result = await mergeTrees(baseFlat, ourFlat, theirFlat, contentMerger);
+  const labels: MergeLabels = mergeLabels(revName, baseId);
+  const contentMerger = buildContentMerger(ctx, labels);
+  const result = await mergeTrees(baseFlat, ourFlat, theirFlat, contentMerger, labels);
 
   if (result.cleanMerge) {
     const tree = await synthesiseMergedTree(ctx, result.outcomes);
@@ -568,10 +571,57 @@ export const writeOutcomeToTree = async (
 };
 
 const writeConflictToTree = async (ctx: Context, conflict: MergeConflict): Promise<void> => {
+  if (conflict.type === 'distinct-types') {
+    await writeDistinctTypesSides(ctx, conflict);
+    return;
+  }
   const bytes = await materialiseConflictBytes(ctx, conflict);
   if (bytes !== undefined) {
     await writeWorkingTreeFile(ctx, conflict.path, bytes);
   }
+};
+
+const writeDistinctTypesSides = async (ctx: Context, conflict: MergeConflict): Promise<void> => {
+  const { ourPath, theirPath, ourId, ourMode, theirId, theirMode } = conflict;
+  if (ourPath !== undefined && ourId !== undefined && ourMode !== undefined) {
+    // Stryker disable next-line ObjectLiteral: equivalent — the 256 MiB cap is unobservable without a 256 MiB fixture; cap mechanics covered by read-blob.test.ts.
+    const ourBlob = await readBlob(ctx, ourId, { maxBytes: MAX_CONFLICT_OUTPUT_BYTES });
+    await writeWorkingTreeEntry(ctx, ourPath, ourBlob.content, ourMode);
+  }
+  if (theirPath !== undefined && theirId !== undefined && theirMode !== undefined) {
+    // Stryker disable next-line ObjectLiteral: equivalent — the 256 MiB cap is unobservable without a 256 MiB fixture; cap mechanics covered by read-blob.test.ts.
+    const theirBlob = await readBlob(ctx, theirId, { maxBytes: MAX_CONFLICT_OUTPUT_BYTES });
+    await writeWorkingTreeEntry(ctx, theirPath, theirBlob.content, theirMode);
+  }
+};
+
+// Stryker disable next-line ObjectLiteral: equivalent — the 256 MiB cap is unobservable without a 256 MiB fixture; cap mechanics covered by read-blob.test.ts.
+const READ_BLOB_OPTS = { maxBytes: MAX_CONFLICT_OUTPUT_BYTES } as const;
+
+const readOursBlob = (ctx: Context, conflict: MergeConflict): Promise<Uint8Array> | undefined => {
+  if (conflict.ourId === undefined) return undefined;
+  return readBlob(ctx, conflict.ourId, READ_BLOB_OPTS).then((b) => b.content);
+};
+
+const materialiseAddAdd = async (
+  ctx: Context,
+  conflict: MergeConflict,
+): Promise<Uint8Array | undefined> => {
+  if (conflict.conflictContent !== undefined) return conflict.conflictContent;
+  return readOursBlob(ctx, conflict);
+};
+
+const materialiseContent = async (
+  ctx: Context,
+  conflict: MergeConflict,
+): Promise<Uint8Array | undefined> => {
+  if (conflict.conflictContent !== undefined) return conflict.conflictContent;
+  if (conflict.ourId === undefined || conflict.theirId === undefined) return undefined;
+  const [ours, theirs] = await Promise.all([
+    readBlob(ctx, conflict.ourId, READ_BLOB_OPTS),
+    readBlob(ctx, conflict.theirId, READ_BLOB_OPTS),
+  ]);
+  return writeConflictMarkers([ours.content], [theirs.content]);
 };
 
 /** Derive the working-tree bytes for a conflicting path. Exported for direct unit testing. */
@@ -579,45 +629,15 @@ export const materialiseConflictBytes = async (
   ctx: Context,
   conflict: MergeConflict,
 ): Promise<Uint8Array | undefined> => {
-  if (conflict.type === 'content' && conflict.conflictContent !== undefined) {
-    return conflict.conflictContent;
-  }
-  if (conflict.type === 'binary') {
-    // Binary conflicts: write ours bytes verbatim (matches mergeContent's
-    // existing fallback shape). User must manually choose a side.
-    if (conflict.ourId !== undefined) {
-      // Stryker disable next-line ObjectLiteral: equivalent — the 256 MiB cap is unobservable without a 256 MiB fixture; cap mechanics covered by read-blob.test.ts.
-      return (await readBlob(ctx, conflict.ourId, { maxBytes: MAX_CONFLICT_OUTPUT_BYTES })).content;
-    }
-  }
-  if (conflict.type === 'add-add' || conflict.type === 'type-change') {
-    if (conflict.ourId !== undefined) {
-      // Stryker disable next-line ObjectLiteral: equivalent — the 256 MiB cap is unobservable without a 256 MiB fixture; cap mechanics covered by read-blob.test.ts.
-      return (await readBlob(ctx, conflict.ourId, { maxBytes: MAX_CONFLICT_OUTPUT_BYTES })).content;
-    }
-  }
+  if (conflict.type === 'content') return materialiseContent(ctx, conflict);
+  if (conflict.type === 'add-add') return materialiseAddAdd(ctx, conflict);
+  if (conflict.type === 'binary') return readOursBlob(ctx, conflict);
+  if (conflict.type === 'type-change') return readOursBlob(ctx, conflict);
   if (conflict.type === 'modify-delete') {
     // Preserve the surviving side's bytes (whichever has an id).
     const survivorId = conflict.ourId ?? conflict.theirId;
-    if (survivorId !== undefined) {
-      // Stryker disable next-line ObjectLiteral: equivalent — the 256 MiB cap is unobservable without a 256 MiB fixture; cap mechanics covered by read-blob.test.ts.
-      return (await readBlob(ctx, survivorId, { maxBytes: MAX_CONFLICT_OUTPUT_BYTES })).content;
-    }
-  }
-  // Content conflict whose mergeContent didn't produce conflictContent —
-  // build the markers from ours/theirs blobs directly.
-  if (
-    conflict.type === 'content' &&
-    conflict.ourId !== undefined &&
-    conflict.theirId !== undefined
-  ) {
-    const [ours, theirs] = await Promise.all([
-      // Stryker disable next-line ObjectLiteral: equivalent — the 256 MiB cap is unobservable without a 256 MiB fixture; cap mechanics covered by read-blob.test.ts.
-      readBlob(ctx, conflict.ourId, { maxBytes: MAX_CONFLICT_OUTPUT_BYTES }),
-      // Stryker disable next-line ObjectLiteral: equivalent — the 256 MiB cap is unobservable without a 256 MiB fixture; cap mechanics covered by read-blob.test.ts.
-      readBlob(ctx, conflict.theirId, { maxBytes: MAX_CONFLICT_OUTPUT_BYTES }),
-    ]);
-    return writeConflictMarkers([ours.content], [theirs.content]);
+    if (survivorId === undefined) return undefined;
+    return (await readBlob(ctx, survivorId, READ_BLOB_OPTS)).content;
   }
   return undefined;
 };
