@@ -1993,6 +1993,21 @@ describe('primitives/config-read value grammar', () => {
       // Assert
       expect(result[0]?.entries).toEqual([{ key: 'v', value: 'ok' }]);
     });
+
+    it('Then an unindented comment-swallowed line yields no entry at all', () => {
+      // Arrange — with no indentation a bogus equals-index would slice a
+      // non-empty key from column 0; the line must still be swallowed whole.
+      const sut = parseIniSections;
+      const text = '[test]\na;b = x # y\nv = ok\n';
+
+      // Act
+      const result = sut(text);
+
+      // Assert
+      expect(result).toEqual([
+        { section: 'test', subsection: undefined, entries: [{ key: 'v', value: 'ok' }] },
+      ]);
+    });
   });
 
   describe('Given section headers carrying comments and quoted names, When parseIniSections', () => {
@@ -2009,6 +2024,21 @@ describe('primitives/config-read value grammar', () => {
       // Assert
       expect(result).toEqual([
         { section: 'test', subsection: undefined, entries: [{ key: 'v', value: 'ok' }] },
+      ]);
+    });
+
+    it('Then a comment after a closed quoted subsection is still cut', () => {
+      // Arrange — the quote span must CLOSE at its second `"` so the later
+      // `#` is unquoted again and the trailing comment is stripped.
+      const sut = parseIniSections;
+      const text = '[branch "a"] # c\n\tv = ok\n';
+
+      // Act
+      const result = sut(text);
+
+      // Assert
+      expect(result).toEqual([
+        { section: 'branch', subsection: 'a', entries: [{ key: 'v', value: 'ok' }] },
       ]);
     });
 
