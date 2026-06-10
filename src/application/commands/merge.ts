@@ -34,6 +34,7 @@ import { buildContentMerger } from '../primitives/build-content-merger.js';
 import { readConfig } from '../primitives/config-read.js';
 import { createCommit } from '../primitives/create-commit.js';
 import { flattenTree } from '../primitives/flatten-tree.js';
+import { writeDistinctTypesSides } from '../primitives/internal/write-distinct-types-sides.js';
 import {
   rmIfExists,
   writeWorkingTreeEntry,
@@ -635,20 +636,6 @@ const writeConflictToTree = async (ctx: Context, conflict: MergeConflict): Promi
     return;
   }
   await writeWorkingTreeFile(ctx, conflict.path, bytes);
-};
-
-const writeDistinctTypesSides = async (ctx: Context, conflict: MergeConflict): Promise<void> => {
-  const { ourPath, theirPath, ourId, ourMode, theirId, theirMode } = conflict;
-  if (ourPath !== undefined && ourId !== undefined && ourMode !== undefined) {
-    // Stryker disable next-line ObjectLiteral: equivalent — the 256 MiB cap is unobservable without a 256 MiB fixture; cap mechanics covered by read-blob.test.ts.
-    const ourBlob = await readBlob(ctx, ourId, { maxBytes: MAX_CONFLICT_OUTPUT_BYTES });
-    await writeWorkingTreeEntry(ctx, ourPath, ourBlob.content, ourMode);
-  }
-  if (theirPath !== undefined && theirId !== undefined && theirMode !== undefined) {
-    // Stryker disable next-line ObjectLiteral: equivalent — the 256 MiB cap is unobservable without a 256 MiB fixture; cap mechanics covered by read-blob.test.ts.
-    const theirBlob = await readBlob(ctx, theirId, { maxBytes: MAX_CONFLICT_OUTPUT_BYTES });
-    await writeWorkingTreeEntry(ctx, theirPath, theirBlob.content, theirMode);
-  }
 };
 
 // Stryker disable next-line ObjectLiteral: equivalent — the 256 MiB cap is unobservable without a 256 MiB fixture; cap mechanics covered by read-blob.test.ts.
