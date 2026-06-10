@@ -1,3 +1,4 @@
+import { configParseError } from '../../domain/commands/error.js';
 import { TsgitError } from '../../domain/error.js';
 import type { Context } from '../../ports/context.js';
 import { commonGitDir } from './path-layout.js';
@@ -81,14 +82,15 @@ export const invalidateConfigCache = (ctx: Context): void => {
 };
 
 const loadConfig = async (ctx: Context): Promise<ParsedConfig> => {
-  const raw = await readRawConfig(ctx);
+  const path = `${commonGitDir(ctx)}/config`;
+  const raw = await readRawConfig(ctx, path);
   if (raw === undefined) return {};
-  return parseConfigText(raw);
+  return parseConfigText(raw, path);
 };
 
-const readRawConfig = async (ctx: Context): Promise<string | undefined> => {
+const readRawConfig = async (ctx: Context, path: string): Promise<string | undefined> => {
   try {
-    return await ctx.fs.readUtf8(`${commonGitDir(ctx)}/config`);
+    return await ctx.fs.readUtf8(path);
   } catch (err) {
     if (err instanceof TsgitError && err.data.code === 'FILE_NOT_FOUND') return undefined;
     throw err;
@@ -114,59 +116,205 @@ interface SectionBuilder {
   readonly entries: Array<{ readonly key: string; readonly value: string }>;
 }
 
-const parseConfigText = (text: string): ParsedConfig => {
-  const sections = parseIniSections(text);
+const parseConfigText = (text: string, source: string): ParsedConfig => {
+  const sections = parseIniSections(text, source);
   return assembleParsed(sections);
 };
 
 /**
- * Tokenize git-config-format INI text into its sections. Lenient, like git:
- * orphan and malformed lines are skipped; comments and backslash
- * continuations are honored.
+ * Tokenize git-config-format INI text into its sections. Lenient on structure,
+ * like git is with unknown keys: orphan key/values and malformed headers are
+ * skipped. Values follow git's full quoted-value grammar — quotes stripped,
+ * `\n`/`\t`/`\b`/`\"`/`\\` decoded, backslash-newline continuations, unquoted
+ * `#`/`;` starting comments — and a malformed value (unknown escape, unclosed
+ * quote) throws `CONFIG_PARSE_ERROR` with its 1-based physical line and the
+ * optional `source` label, mirroring git's `bad config line N in file F`
+ * refusal.
  */
-export const parseIniSections = (text: string): ReadonlyArray<IniSection> => {
+export const parseIniSections = (text: string, source?: string): ReadonlyArray<IniSection> => {
   const sections: SectionBuilder[] = [];
+  const lines = text.split('\n');
   let current: SectionBuilder | undefined;
-  for (const line of joinContinuations(text.split('\n'))) {
+  let lineIdx = 0;
+  while (lineIdx < lines.length) {
+    const line = lines[lineIdx] as string;
     const trimmed = stripInlineComment(line).trim();
-    // Stryker disable next-line ConditionalExpression,StringLiteral: equivalent — an empty `trimmed` matches neither a section header nor a key/value, so skipping it explicitly or falling through both `continue` produces the same sections.
-    if (trimmed === '') continue;
+    // Stryker disable next-line ConditionalExpression,StringLiteral: equivalent — an empty `trimmed` matches neither a section header nor a key/value (no `=`), so skipping it explicitly or falling through produces the same sections.
+    if (trimmed === '') {
+      lineIdx += 1;
+      continue;
+    }
     const header = parseSectionHeader(trimmed);
     if (header !== undefined) {
       current = { section: header.section, subsection: header.subsection, entries: [] };
       sections.push(current);
+      lineIdx += 1;
       continue;
     }
-    if (current === undefined) continue; // orphan key/value before any section.
-    const kv = parseKeyValue(trimmed);
-    if (kv === undefined) continue;
-    current.entries.push(kv);
+    const eqAt = effectiveEqualsIndex(line);
+    if (eqAt === -1) {
+      lineIdx += 1;
+      continue;
+    }
+    const key = line.slice(0, eqAt).trim();
+    const parsed = parseConfigValue(lines, lineIdx, eqAt + 1, source);
+    if (current !== undefined && key !== '') {
+      current.entries.push({ key, value: parsed.value });
+    }
+    lineIdx = parsed.nextLineIdx;
   }
   return sections;
 };
 
-const joinContinuations = (lines: ReadonlyArray<string>): ReadonlyArray<string> => {
-  // Stryker disable next-line ArrayDeclaration: equivalent — a non-empty seed prepends one extra logical line; as it precedes every section header it is an orphan that collectSections discards, leaving the parsed config unchanged.
-  const out: string[] = [];
-  let pending = '';
-  for (const line of lines) {
-    // Continuation: leading whitespace on the continuation line is dropped,
-    // matching git's behavior when joining multi-line values.
-    // Stryker disable next-line ConditionalExpression,StringLiteral: equivalent — leading whitespace of the first physical line of a logical line is always at the start of the joined value, so collectSections' trim() removes it regardless of which ternary branch runs.
-    const piece = pending === '' ? line : line.replace(/^\s+/, '');
-    if (line.endsWith('\\')) {
-      // `line` is already known to end with `\\` (the enclosing `if`), so the
-      // backslash is dropped unconditionally.
-      pending += piece.slice(0, piece.length - 1);
-      continue;
-    }
-    out.push(`${pending}${piece}`);
-    pending = '';
-  }
-  // Stryker disable next-line ConditionalExpression,StringLiteral: equivalent — pushing an empty `pending` only appends a blank line, which collectSections skips; observable output is identical.
-  if (pending !== '') out.push(pending);
-  return out;
+/**
+ * Index of the `=` that introduces a value, or `-1` when the line carries no
+ * key/value: no `=` at all, or an unquoted comment starts before the `=`
+ * (the comment swallows it, e.g. `ab#cd = x`).
+ */
+const effectiveEqualsIndex = (line: string): number => {
+  const eqAt = line.indexOf('=');
+  if (eqAt === -1) return -1;
+  const hashAt = indexOfUnquoted(line, '#');
+  const semiAt = indexOfUnquoted(line, ';');
+  const cuts = [hashAt, semiAt].filter((n) => n >= 0);
+  // equivalent-mutant: `<=` is observably equivalent — a cut index holds `#`
+  // or `;` while `eqAt` holds `=`, so the two indices can never be equal.
+  if (cuts.length > 0 && Math.min(...cuts) < eqAt) return -1;
+  return eqAt;
 };
+
+/** Escape sequences git's value grammar accepts; anything else is a parse error. */
+const VALUE_ESCAPES: ReadonlyMap<string, string> = new Map([
+  ['n', '\n'],
+  ['t', '\t'],
+  ['b', '\b'],
+  ['\\', '\\'],
+  ['"', '"'],
+]);
+
+/** git sane-ctype `GIT_SPACE` minus LF (the line terminator): VT/FF are NOT whitespace. */
+const VALUE_SPACE: ReadonlySet<string> = new Set([' ', '\t', '\r']);
+
+/** Mutable accumulator for one value parse; local to `parseConfigValue`. */
+interface ValueState {
+  out: string;
+  /** Length of `out` before the open trailing-whitespace run, or -1 when none. */
+  trimLen: number;
+  inQuotes: boolean;
+  inComment: boolean;
+}
+
+/** Mutable read position; `lineIdx` advances on backslash-newline continuations. */
+interface ValueCursor {
+  lineIdx: number;
+  col: number;
+}
+
+/** One parsed value plus the index of the first physical line after it. */
+interface ParsedValue {
+  readonly value: string;
+  readonly nextLineIdx: number;
+}
+
+/**
+ * Parse one value starting at `lines[startLine][startCol]` (just past the `=`),
+ * mirroring git's `parse_value`: GIT_SPACE handling with trailing trim, quote
+ * spans, escape decoding, unquoted `#`/`;` comments, and backslash-newline
+ * continuations (which may consume following physical lines). Throws
+ * `CONFIG_PARSE_ERROR` on an unknown escape or a quote span left open at end
+ * of line; a continuation on the final line ends the value (git fakes an EOL
+ * at EOF).
+ */
+const parseConfigValue = (
+  lines: ReadonlyArray<string>,
+  startLine: number,
+  startCol: number,
+  source: string | undefined,
+): ParsedValue => {
+  const cursor: ValueCursor = { lineIdx: startLine, col: startCol };
+  const state: ValueState = { out: '', trimLen: -1, inQuotes: false, inComment: false };
+  while (cursor.lineIdx < lines.length) {
+    const line = lines[cursor.lineIdx] as string;
+    if (cursor.col >= line.length) {
+      if (state.inQuotes) throw configParseError(cursor.lineIdx + 1, source);
+      return finishValue(state, cursor.lineIdx + 1);
+    }
+    stepValueChar(lines, cursor, state, source);
+  }
+  return finishValue(state, cursor.lineIdx);
+};
+
+/** Consume one char (or escape pair) at the cursor, updating state in place. */
+const stepValueChar = (
+  lines: ReadonlyArray<string>,
+  cursor: ValueCursor,
+  state: ValueState,
+  source: string | undefined,
+): void => {
+  const line = lines[cursor.lineIdx] as string;
+  const c = line[cursor.col] as string;
+  cursor.col += 1;
+  if (state.inComment) return;
+  if (!state.inQuotes && VALUE_SPACE.has(c)) {
+    appendValueSpace(state, c);
+    return;
+  }
+  if (!state.inQuotes && (c === '#' || c === ';')) {
+    state.inComment = true;
+    return;
+  }
+  if (c === '\\') {
+    consumeEscape(lines, cursor, state, source);
+    return;
+  }
+  if (c === '"') {
+    state.inQuotes = !state.inQuotes;
+    state.trimLen = -1;
+    return;
+  }
+  state.out += c;
+  state.trimLen = -1;
+};
+
+/**
+ * Decode the char after a backslash. A backslash at end of line is a
+ * continuation: the line break is consumed and parsing resumes at column 0 of
+ * the next physical line (its leading whitespace is interior to the value).
+ */
+const consumeEscape = (
+  lines: ReadonlyArray<string>,
+  cursor: ValueCursor,
+  state: ValueState,
+  source: string | undefined,
+): void => {
+  const line = lines[cursor.lineIdx] as string;
+  if (cursor.col >= line.length) {
+    cursor.lineIdx += 1;
+    cursor.col = 0;
+    return;
+  }
+  const decoded = VALUE_ESCAPES.get(line[cursor.col] as string);
+  if (decoded === undefined) throw configParseError(cursor.lineIdx + 1, source);
+  cursor.col += 1;
+  state.out += decoded;
+  state.trimLen = -1;
+};
+
+/**
+ * Unquoted whitespace is skipped while the value is still empty (leading),
+ * otherwise appended with the start of the run latched for the trailing trim.
+ */
+const appendValueSpace = (state: ValueState, c: string): void => {
+  if (state.out === '') return;
+  if (state.trimLen === -1) state.trimLen = state.out.length;
+  state.out += c;
+};
+
+/** Apply the trailing-whitespace trim and package the parse result. */
+const finishValue = (state: ValueState, nextLineIdx: number): ParsedValue => ({
+  value: state.trimLen === -1 ? state.out : state.out.slice(0, state.trimLen),
+  nextLineIdx,
+});
 
 const stripInlineComment = (line: string): string => {
   const hashAt = indexOfUnquoted(line, '#');
@@ -215,18 +363,6 @@ export const parseSectionHeader = (
   if (lastQuote <= quoteAt) return undefined;
   const subsection = inner.slice(quoteAt + 1, lastQuote);
   return { section: sectionPart, subsection };
-};
-
-const parseKeyValue = (
-  line: string,
-): { readonly key: string; readonly value: string } | undefined => {
-  const eqAt = line.indexOf('=');
-  if (eqAt === -1) return undefined;
-  const key = line.slice(0, eqAt).trim();
-  // Stryker disable next-line ConditionalExpression,StringLiteral: equivalent — an empty key produces an entry whose key matches none of the consumed keys (bare/excludesfile/name/email/url/fetch/remote/merge), so rejecting it or emitting it leaves the parsed config unchanged.
-  if (key === '') return undefined;
-  const value = line.slice(eqAt + 1).trim();
-  return { key, value };
 };
 
 interface MutableParsedConfig {

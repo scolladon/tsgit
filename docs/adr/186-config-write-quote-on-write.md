@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted (at `ab51e0a`)
+Accepted (at `ab51e0a`) — quoting/escaping/rejection rules superseded by [ADR-309](309-config-value-write-grammar-parity.md); the accept-and-quote direction stands
 
 ## Context
 

@@ -48,7 +48,7 @@ const readSingleScopeUncached = async (
   const path = await resolveScopePath(ctx, scope);
   try {
     const text = await ctx.fs.readUtf8(path);
-    return parseIniSections(text);
+    return parseIniSections(text, path);
   } catch (err) {
     if (err instanceof TsgitError) {
       const code = err.data.code;

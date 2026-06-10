@@ -6,31 +6,6 @@ import {
 } from '../../../../src/application/primitives/config-read.js';
 import { setConfigEntryInText } from '../../../../src/application/primitives/update-config.js';
 
-// Inline value unquoter for property round-trips. The production unquoter lives
-// at the porcelain reader layer (slice 7 — `getConfigValue`); this test helper
-// stays scoped to the property file to avoid leaking a half-public surface.
-// Mirrors canonical-git's quoted-value semantics for the writer's grammar.
-const unquoteValue = (raw: string): string => {
-  if (raw.length < 2 || !raw.startsWith('"') || !raw.endsWith('"')) return raw;
-  const body = raw.slice(1, -1);
-  const out: string[] = [];
-  for (let i = 0; i < body.length; i += 1) {
-    const ch = body[i];
-    if (ch !== '\\') {
-      out.push(ch as string);
-      continue;
-    }
-    const next = body[i + 1];
-    if (next === 'n') out.push('\n');
-    else if (next === 't') out.push('\t');
-    else if (next === '"') out.push('"');
-    else if (next === '\\') out.push('\\');
-    else out.push(next as string);
-    i += 1;
-  }
-  return out.join('');
-};
-
 const findValue = (
   sections: ReadonlyArray<IniSection>,
   section: string,
@@ -45,24 +20,80 @@ const findValue = (
   return undefined;
 };
 
-// Values inside the `assertValueSafe`-survivable subset (CLAUDE.md): ASCII
-// printable + `\t` + `\n`, excluding NUL/CR and other control chars. Length
-// is capped at 1024 to keep numRuns budget honest.
-const arbSafeValue = (): fc.Arbitrary<string> =>
-  fc.string({ maxLength: 1024 }).map((s) => s.replace(/[^\x20-\x7e\t\n]/g, ''));
+/**
+ * Characters that exercise every grammar branch of the writer and reader:
+ * quote triggers (CR, leading/trailing space, `;`, `#`), unconditional escape
+ * targets (`\`, `"`, LF, TAB), and raw control bytes (C0, DEL).
+ */
+const SPECIAL_CHARS = [
+  '\r', // CR — quote trigger, written raw inside quotes
+  '\t', // TAB — always escaped to `\t`
+  '\n', // LF — always escaped to `\n`
+  '"', // double-quote — always escaped to `\"`
+  '\\', // backslash — always escaped to `\\` (first)
+  ';', // comment trigger — quote trigger
+  '#', // comment trigger — quote trigger
+  ' ', // space — quote trigger at leading/trailing edges
+  '\x01', // C0 control — passed through raw
+  '\x7f', // DEL — passed through raw
+];
+
+/**
+ * Single-character arbitrary biased toward grammar-exercising special chars
+ * plus ordinary printable ASCII so shrunk counterexamples stay readable.
+ */
+const arbNulFreeUnit = (): fc.Arbitrary<string> =>
+  fc.oneof(
+    fc.constantFrom(...SPECIAL_CHARS),
+    fc.integer({ min: 0x20, max: 0x7e }).map((cp) => String.fromCodePoint(cp)),
+  );
+
+/**
+ * Generator over the full NUL-free string domain (up to 1024 chars).
+ * Combines a full-unicode binary-unit generator (NUL stripped) with a
+ * specials-biased generator so shrunk counterexamples stay readable and
+ * grammar branch coverage is high.
+ */
+const arbNulFreeValue = (): fc.Arbitrary<string> => {
+  // Wide: full unicode with NUL stripped.
+  const wide = fc.string({ unit: 'binary', maxLength: 1024 }).map((s) => s.replace(/\0/g, ''));
+
+  // Biased: strings built from grammar-exercising specials + printable ASCII.
+  const biased = fc.string({ unit: arbNulFreeUnit(), maxLength: 1024 });
+
+  return fc.oneof(wide, biased);
+};
 
 describe('update-config writer properties', () => {
-  describe('Given an arbitrary value in the assertValueSafe-survivable subset', () => {
+  describe('Given an arbitrary NUL-free value', () => {
     describe('When the value is rendered into config text and re-parsed via parseIniSections', () => {
-      it('Then the unquoted parsed value equals the original input', () => {
-        // Arrange + Act + Assert — round-trip is `write → parse → unquote`.
+      it('Then the parsed value equals the original input', () => {
+        // Arrange + Act + Assert — round-trip is `write → parse`; the parser
+        // decodes git's quoted-value grammar itself.
         fc.assert(
-          fc.property(arbSafeValue(), (value) => {
+          fc.property(arbNulFreeValue(), (value) => {
             const text = setConfigEntryInText('', 'user', undefined, 'name', value);
             const parsed = parseIniSections(text);
-            const rawValue = findValue(parsed, 'user', 'name');
-            expect(rawValue).toBeDefined();
-            expect(unquoteValue(rawValue as string)).toBe(value);
+            const result = findValue(parsed, 'user', 'name');
+            expect(result).toBe(value);
+          }),
+          { numRuns: 200 },
+        );
+      });
+    });
+
+    describe('When the value is rendered into config text', () => {
+      it('Then parseIniSections does not throw and returns exactly one entry', () => {
+        // Arrange + Act + Assert — totality property: a thrown CONFIG_PARSE_ERROR
+        // is distinguishable from a value mismatch (separate property so
+        // fast-check shrinks the throw path independently from the equality path).
+        fc.assert(
+          fc.property(arbNulFreeValue(), (value) => {
+            const text = setConfigEntryInText('', 'user', undefined, 'name', value);
+            const sections = parseIniSections(text);
+            expect(sections).toHaveLength(1);
+            const entries = sections[0]?.entries;
+            expect(entries).toHaveLength(1);
           }),
           { numRuns: 200 },
         );

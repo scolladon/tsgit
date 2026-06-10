@@ -56,7 +56,7 @@ const reduceSection = (section: IniSection): GitmodulesRow | undefined => {
 
 export const parseGitmodules = (text: string): ReadonlyArray<GitmodulesRow> => {
   const rows: GitmodulesRow[] = [];
-  for (const section of parseIniSections(text)) {
+  for (const section of parseIniSections(text, '.gitmodules')) {
     const row = reduceSection(section);
     if (row === undefined) continue;
     rows.push(row);

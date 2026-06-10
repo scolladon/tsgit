@@ -185,5 +185,6 @@ Codes are grouped by domain. Within each group, alphabetical.
 |---|---|---|
 | `ALREADY_INITIALIZED` | `path` | `init` against a directory that already has `.git/HEAD`. |
 | `BARE_REPOSITORY` | `operation` | Command not valid in a bare repository (`add`, `checkout`, `commit`, `rm`, …). |
+| `CONFIG_PARSE_ERROR` | `line, source?` | A config file value is malformed (unknown escape, unclosed quote) — git's `bad config line N in file F`; refuses any command that reads the file. |
 | `INVALID_WALK_INPUT` | `reason` | Walker arguments invalid. |
 | `TARGET_DIRECTORY_NOT_EMPTY` | `path` | `clone` into a directory that already has `.git/HEAD`. |

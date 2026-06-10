@@ -108,7 +108,7 @@ export const readSequencerOpts = async (ctx: Context): Promise<SequencerOpts> =>
   if (!(await ctx.fs.exists(path))) {
     return { recordOrigin: false, allowEmpty: false, noCommit: false };
   }
-  const sections = parseIniSections(await ctx.fs.readUtf8(path));
+  const sections = parseIniSections(await ctx.fs.readUtf8(path), path);
   return {
     noCommit: hasTrueKey(sections, 'no-commit'),
     recordOrigin: hasTrueKey(sections, 'record-origin'),

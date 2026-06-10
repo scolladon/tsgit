@@ -1,6 +1,6 @@
 # `config`
 
-Nested-namespace porcelain for reading and writing git config across all four canonical scopes: `system`, `global`, `local`, `worktree`. Mirrors `git config` semantics; values are quoted on write so `#`, `;`, embedded `"`, leading/trailing whitespace, and `\n` survive a round-trip.
+Nested-namespace porcelain for reading and writing git config across all four canonical scopes: `system`, `global`, `local`, `worktree`. Mirrors `git config` semantics byte-for-byte: values are written with git's own `write_pair` quoting/escaping grammar and read with git's full quoted-value grammar (quotes stripped, escapes decoded, continuations honoured), so any NUL-free value survives a round-trip and the on-disk bytes match what canonical git would write.
 
 ## Signature
 
@@ -65,12 +65,14 @@ const everything = await repo.config.list();
 - **Regex flavour:** `getRegexp` uses native JavaScript `RegExp`; not POSIX-ERE (ADR-185).
 - **Worktree scope:** gated on `[extensions] worktreeConfig = true` in `local`; otherwise throws `CONFIG_SCOPE_NOT_AVAILABLE`.
 - **Browser adapter:** `global` and `system` scopes throw `CONFIG_SCOPE_NOT_AVAILABLE` with `reason: 'browser-adapter'`.
-- **Quote-on-write:** values containing `#`, `;`, leading/trailing whitespace, embedded `"`, `\`, or `\n` are wrapped in `"…"` with `\\` / `\"` / `\\n` escapes (ADR-186). NUL and CR are rejected with `CONFIG_VALUE_INVALID`.
+- **Quote-on-write (git `write_pair` parity):** a value is wrapped in `"…"` iff it starts or ends with a space or contains `;`, `#`, or CR; `\` / `"` / LF / TAB are always escaped (`\\`, `\"`, `\n`, `\t`), quoted or not; CR and other control bytes are written raw (ADR-309, supersedes ADR-186's rules). Only NUL is rejected, with `CONFIG_VALUE_INVALID`.
+- **Quoted-value read:** the reader decodes git's full value grammar — surrounding quotes stripped, quote spans concatenated, `\n`/`\t`/`\b`/`\"`/`\\` decoded, unquoted `#`/`;` starting comments, backslash-newline continuations. A malformed value (unknown escape, unclosed quote) throws `CONFIG_PARSE_ERROR` with the 1-based line and file, mirroring git's `fatal: bad config line N in file F` (ADR-308).
 
 ## Errors
 
 - `CONFIG_KEY_INVALID` — `key` failed `parseConfigKey` validation.
-- `CONFIG_VALUE_INVALID` — `value` contains a banned control character (NUL or CR).
+- `CONFIG_VALUE_INVALID` — `value` contains NUL (the only byte git's grammar cannot represent).
+- `CONFIG_PARSE_ERROR` — a config file contains a malformed value (unknown escape, unclosed quote); carries the 1-based `line` and the file as `source`.
 - `CONFIG_MULTIPLE_VALUES` — single-value operation (`get` / `set` / `unset`) on a multi-valued key.
 - `CONFIG_SECTION_NOT_FOUND` — `renameSection` / `removeSection` target missing.
 - `CONFIG_SCOPE_NOT_AVAILABLE` — `worktree` scope without the extension, or `global`/`system` on the browser adapter.
@@ -88,3 +90,5 @@ const everything = await repo.config.list();
 - `docs/adr/186-config-write-quote-on-write.md`
 - `docs/adr/187-config-primitives-keep-writers-add-readers.md`
 - `docs/adr/188-config-text-helper-rename.md`
+- `docs/adr/308-config-parse-error-refusal.md` (malformed values refuse like git)
+- `docs/adr/309-config-value-write-grammar-parity.md` (byte-exact `write_pair` grammar)
