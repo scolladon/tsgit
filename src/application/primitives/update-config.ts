@@ -57,30 +57,33 @@ const isKeyLine = (line: string, key: string): boolean => {
 };
 
 /**
- * True when `value` needs to be wrapped in double quotes to survive a parser
- * round-trip: `#`/`;` would start inline comments, leading/trailing whitespace
- * would be trimmed, embedded `"`/`\`/`\n` would either break the quoting
- * grammar (`"`/`\`) or splice a forged line (`\n`).
+ * True when `value` must be wrapped in double quotes: the value starts with a
+ * space, ends with a space, or contains `;`, `#`, or CR. These characters
+ * would be misread by the parser without quotes (comment characters, trimmed
+ * whitespace, CRLF line-ending). TAB, `"`, `\`, and LF do NOT trigger quoting
+ * — they are always escaped instead (git's `write_pair` grammar).
  */
 const needsQuote = (value: string): boolean =>
-  value.includes('#') ||
+  value.startsWith(' ') ||
+  value.endsWith(' ') ||
   value.includes(';') ||
-  /^[ \t]/.test(value) ||
-  /[ \t]$/.test(value) ||
-  value.includes('"') ||
-  value.includes('\\') ||
-  value.includes('\n');
+  value.includes('#') ||
+  value.includes('\r');
 
 /**
- * Render a value for emission inside a `key = value` line. Plain values pass
- * through verbatim; values needing quoting are wrapped in `"..."` with `\\`,
- * `"`, and `\n` escaped. The escape order matters — backslashes MUST be
- * escaped first so a later replace does not double-escape them.
+ * Render a value for emission inside a `key = value` line. Escaping is
+ * unconditional (quoted or not): `\` → `\\` first, then `"` → `\"`,
+ * LF → `\n`, TAB → `\t`. CR and all other control bytes pass through raw.
+ * The value is then wrapped in `"…"` iff `needsQuote` is true.
+ * Escape order matters — backslashes MUST be escaped first.
  */
 const renderValue = (value: string): string => {
-  if (!needsQuote(value)) return value;
-  const escaped = value.replaceAll('\\', '\\\\').replaceAll('"', '\\"').replaceAll('\n', '\\n');
-  return `"${escaped}"`;
+  const escaped = value
+    .replaceAll('\\', '\\\\')
+    .replaceAll('"', '\\"')
+    .replaceAll('\n', '\\n')
+    .replaceAll('\t', '\\t');
+  return needsQuote(value) ? `"${escaped}"` : escaped;
 };
 
 /** Render `key = value` indented with a tab — git's own section-body style. */
@@ -147,14 +150,13 @@ const rejectControlChars = (field: 'key' | 'subsection', text: string): void => 
 };
 
 /**
- * Reject value-side control chars that the writer cannot escape: NUL (no
- * canonical-git escape) and `\r` (rejected to match `git_config_set_multivar_in_file`
- * which similarly bans CR). `\n` and `\t` are ACCEPTED — the quoting writer
- * escapes them to `\\n`/`\\t` so a round-trip through the parser is safe.
+ * Reject NUL (`\0`) in a value. NUL has no canonical-git escape and cannot
+ * survive a config write. CR and other control bytes are accepted — CR triggers
+ * quoting and passes through raw; C0/DEL are written verbatim (git accepts them).
  */
 const rejectValueControlChars = (value: string): void => {
-  if (/[\r\0]/.test(value)) {
-    throw invalidOption('config', 'value must not contain a carriage return or NUL');
+  if (value.includes('\0')) {
+    throw invalidOption('config', 'value must not contain a NUL byte');
   }
 };
 
@@ -488,16 +490,14 @@ const readConfigText = async (ctx: Context, path: string): Promise<string> => {
 };
 
 /**
- * Validate a value-side string before writing. Rejects control characters
- * the writer's quoting grammar cannot represent: NUL, CR, and the other
- * non-newline / non-tab C0/C1 controls. `\n` and `\t` are accepted because
- * `renderValue` escapes them to `\\n` / `\\t` on write.
+ * Validate a value-side string before writing. Rejects only NUL (`\0`) — it
+ * has no canonical-git escape and cannot be represented in a config value.
+ * CR, C0 controls, and DEL are accepted: CR triggers quoting and passes through
+ * raw; C0/DEL are written verbatim (git accepts any byte except NUL).
  */
 const assertValueSafe = (key: string, value: string): void => {
   for (let i = 0; i < value.length; i += 1) {
-    const code = value.charCodeAt(i);
-    if (code === 0x09 || code === 0x0a) continue;
-    if (code < 0x20 || code === 0x7f) {
+    if (value.charCodeAt(i) === 0) {
       throw configValueInvalid(key, i);
     }
   }

@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import {
   __resetConfigCacheForTests,
+  parseIniSections,
   readConfig,
 } from '../../../../src/application/primitives/config-read.js';
 import {
@@ -355,37 +356,29 @@ describe('primitives/update-config', () => {
 
     describe('Given a value containing a newline', () => {
       describe('When setCoreConfigEntryInText', () => {
-        it('Then the line is double-quoted with the newline escaped (no fake section injected)', () => {
-          // Arrange & Act — `\n` is escaped to literal `\n` inside the quoted value;
-          // no raw newline reaches disk, so the on-disk text cannot host an injected section.
+        it('Then the newline is escaped as \\n and " is escaped as \\", value unquoted', () => {
+          // Arrange & Act — LF is escaped to `\n`; `"` is escaped to `\"`; neither triggers
+          // quoting, so the value is emitted unquoted.
           const sut = setCoreConfigEntryInText(
             '[core]\n',
             'sparseCheckout',
             'true\n[remote "evil"]',
           );
 
-          // Assert — exactly one logical line, and the `[remote "evil"]` token is inside the quoted value.
-          expect(sut).toBe('[core]\n\tsparseCheckout = "true\\n[remote \\"evil\\"]"\n');
+          // Assert — unquoted, LF → \n, " → \".
+          expect(sut).toBe('[core]\n\tsparseCheckout = true\\n[remote \\"evil\\"]\n');
         });
       });
     });
 
     describe('Given a value containing a carriage return', () => {
       describe('When setCoreConfigEntryInText', () => {
-        it('Then it throws INVALID_OPTION', () => {
-          // Arrange — `\r` is rejected alongside `\n` so a CRLF-style splice fails too.
-          let caught: unknown;
+        it('Then the value is double-quoted with the raw CR inside (CR is accepted)', () => {
+          // Arrange & Act — CR triggers quoting and passes through raw; it is no longer rejected.
+          const sut = setCoreConfigEntryInText('[core]\n', 'sparseCheckout', 'true\r[harmless]');
 
-          // Act
-          try {
-            setCoreConfigEntryInText('[core]\n', 'sparseCheckout', 'true\r[evil]');
-          } catch (err) {
-            caught = err;
-          }
-
-          // Assert
-          expect(caught).toBeInstanceOf(TsgitError);
-          expect((caught as TsgitError).data.code).toBe('INVALID_OPTION');
+          // Assert — quoted because CR triggers quoting; CR byte is raw inside quotes.
+          expect(sut).toBe('[core]\n\tsparseCheckout = "true\r[harmless]"\n');
         });
       });
     });
@@ -736,12 +729,12 @@ describe('primitives/update-config', () => {
 
     describe('Given a value with a leading tab', () => {
       describe('When setConfigEntryInText', () => {
-        it('Then the rendered line is double-quoted', () => {
-          // Arrange & Act
+        it('Then the TAB is escaped to \\t and the value is NOT quoted (tab is not a quote trigger)', () => {
+          // Arrange & Act — leading TAB is escaped unconditionally; it does not trigger quoting.
           const sut = setConfigEntryInText('', 'user', undefined, 'name', '\tAda');
 
-          // Assert
-          expect(sut).toBe('[user]\n\tname = "\tAda"\n');
+          // Assert — unquoted; leading TAB escaped to \t so no trimming risk.
+          expect(sut).toBe('[user]\n\tname = \\tAda\n');
         });
       });
     });
@@ -760,48 +753,48 @@ describe('primitives/update-config', () => {
 
     describe('Given a value with a trailing tab', () => {
       describe('When setConfigEntryInText', () => {
-        it('Then the rendered line is double-quoted', () => {
-          // Arrange & Act
+        it('Then the TAB is escaped to \\t and the value is NOT quoted (tab is not a quote trigger)', () => {
+          // Arrange & Act — trailing TAB is escaped unconditionally; it does not trigger quoting.
           const sut = setConfigEntryInText('', 'user', undefined, 'name', 'Ada\t');
 
-          // Assert
-          expect(sut).toBe('[user]\n\tname = "Ada\t"\n');
+          // Assert — unquoted; trailing TAB escaped to \t.
+          expect(sut).toBe('[user]\n\tname = Ada\\t\n');
         });
       });
     });
 
     describe('Given a value containing an embedded "', () => {
       describe('When setConfigEntryInText', () => {
-        it('Then the quote is escaped inside a double-quoted line', () => {
-          // Arrange & Act
+        it('Then the quote is escaped unconditionally but the value is NOT wrapped in quotes', () => {
+          // Arrange & Act — embedded " does not trigger quoting; it is always escaped.
           const sut = setConfigEntryInText('', 'user', undefined, 'name', 'Ada "Lovelace"');
 
-          // Assert
-          expect(sut).toBe('[user]\n\tname = "Ada \\"Lovelace\\""\n');
+          // Assert — unquoted; each " → \".
+          expect(sut).toBe('[user]\n\tname = Ada \\"Lovelace\\"\n');
         });
       });
     });
 
     describe('Given a value containing an embedded \\', () => {
       describe('When setConfigEntryInText', () => {
-        it('Then the backslash is escaped inside a double-quoted line', () => {
-          // Arrange & Act
+        it('Then the backslash is escaped unconditionally but the value is NOT wrapped in quotes', () => {
+          // Arrange & Act — embedded \ does not trigger quoting; it is always escaped.
           const sut = setConfigEntryInText('', 'core', undefined, 'editor', 'C:\\bin\\vim');
 
-          // Assert
-          expect(sut).toBe('[core]\n\teditor = "C:\\\\bin\\\\vim"\n');
+          // Assert — unquoted; each \ → \\.
+          expect(sut).toBe('[core]\n\teditor = C:\\\\bin\\\\vim\n');
         });
       });
     });
 
     describe('Given a value containing an embedded newline', () => {
       describe('When setConfigEntryInText', () => {
-        it('Then the newline is escaped as a literal \\n inside a double-quoted line', () => {
-          // Arrange & Act — the writer never emits a raw `\n` inside a value (would forge a config line).
+        it('Then the newline is escaped as \\n and the value is NOT wrapped in quotes', () => {
+          // Arrange & Act — LF does not trigger quoting; it is escaped unconditionally to \n.
           const sut = setConfigEntryInText('', 'alias', undefined, 'lg', 'log\nshort');
 
-          // Assert
-          expect(sut).toBe('[alias]\n\tlg = "log\\nshort"\n');
+          // Assert — unquoted; LF → \n.
+          expect(sut).toBe('[alias]\n\tlg = log\\nshort\n');
         });
       });
     });
@@ -820,24 +813,183 @@ describe('primitives/update-config', () => {
 
     describe('Given a value containing only an embedded tab (no other trigger)', () => {
       describe('When setConfigEntryInText', () => {
-        it('Then the value is emitted verbatim (no quotes)', () => {
-          // Arrange & Act — embedded tabs (not leading/trailing) survive a round-trip without quoting.
+        it('Then the TAB is escaped to \\t and the value is NOT quoted', () => {
+          // Arrange & Act — embedded TAB is escaped unconditionally to \t; no quoting trigger.
           const sut = setConfigEntryInText('', 'user', undefined, 'name', 'A\tB');
 
-          // Assert
-          expect(sut).toBe('[user]\n\tname = A\tB\n');
+          // Assert — unquoted; TAB → \t.
+          expect(sut).toBe('[user]\n\tname = A\\tB\n');
         });
       });
     });
 
     describe('Given a value with both embedded \\n and embedded \\', () => {
       describe('When setConfigEntryInText', () => {
-        it('Then both are escaped (backslashes first, then newlines)', () => {
-          // Arrange & Act — escape order matters: replacing `\n` before `\\` would double-escape backslashes.
+        it('Then both are escaped (backslashes first, then newlines), unquoted', () => {
+          // Arrange & Act — escape order matters: backslashes escaped first, then LF;
+          // neither triggers quoting, so the result is unquoted.
           const sut = setConfigEntryInText('', 'alias', undefined, 'lg', 'a\\b\nc');
 
           // Assert
-          expect(sut).toBe('[alias]\n\tlg = "a\\\\b\\nc"\n');
+          expect(sut).toBe('[alias]\n\tlg = a\\\\b\\nc\n');
+        });
+      });
+    });
+
+    describe('Given a value containing a semicolon (a;b)', () => {
+      describe('When setConfigEntryInText', () => {
+        it('Then the rendered line is double-quoted (semicolon triggers quoting)', () => {
+          // Arrange & Act
+          const sut = setConfigEntryInText('', 'test', undefined, 'k', 'a;b');
+
+          // Assert
+          expect(sut).toBe('[test]\n\tk = "a;b"\n');
+        });
+      });
+    });
+
+    describe('Given a value containing a hash (a#b)', () => {
+      describe('When setConfigEntryInText', () => {
+        it('Then the rendered line is double-quoted (hash triggers quoting)', () => {
+          // Arrange & Act
+          const sut = setConfigEntryInText('', 'test', undefined, 'k', 'a#b');
+
+          // Assert
+          expect(sut).toBe('[test]\n\tk = "a#b"\n');
+        });
+      });
+    });
+
+    describe('Given a value with a leading space ( a)', () => {
+      describe('When setConfigEntryInText', () => {
+        it('Then the rendered line is double-quoted (leading space triggers quoting)', () => {
+          // Arrange & Act
+          const sut = setConfigEntryInText('', 'test', undefined, 'k', ' a');
+
+          // Assert
+          expect(sut).toBe('[test]\n\tk = " a"\n');
+        });
+      });
+    });
+
+    describe('Given a value with a trailing space (a )', () => {
+      describe('When setConfigEntryInText', () => {
+        it('Then the rendered line is double-quoted (trailing space triggers quoting)', () => {
+          // Arrange & Act
+          const sut = setConfigEntryInText('', 'test', undefined, 'k', 'a ');
+
+          // Assert
+          expect(sut).toBe('[test]\n\tk = "a "\n');
+        });
+      });
+    });
+
+    describe('Given a value containing a CR (a\\rb)', () => {
+      describe('When setConfigEntryInText', () => {
+        it('Then the rendered line is double-quoted with raw CR inside the quotes', () => {
+          // Arrange & Act — CR triggers quoting; CR itself passes through raw (not escaped).
+          const sut = setConfigEntryInText('', 'test', undefined, 'k', 'a\rb');
+
+          // Assert — the actual CR byte is inside the quotes, verbatim.
+          expect(sut).toBe('[test]\n\tk = "a\rb"\n');
+        });
+      });
+    });
+
+    describe('Given a value containing an embedded " (a"b)', () => {
+      describe('When setConfigEntryInText', () => {
+        it('Then the quote is escaped but the value is NOT quoted (new grammar)', () => {
+          // Arrange & Act — quote does not trigger quoting; it is escaped unconditionally.
+          const sut = setConfigEntryInText('', 'test', undefined, 'k', 'a"b');
+
+          // Assert — unquoted, with \" escape.
+          expect(sut).toBe('[test]\n\tk = a\\"b\n');
+        });
+      });
+    });
+
+    describe('Given a value containing a single backslash (a\\b)', () => {
+      describe('When setConfigEntryInText', () => {
+        it('Then the backslash is escaped to \\\\ but the value is NOT quoted (new grammar)', () => {
+          // Arrange & Act — backslash does not trigger quoting; escaped unconditionally.
+          const sut = setConfigEntryInText('', 'test', undefined, 'k', 'a\\b');
+
+          // Assert — unquoted, with \\ escape.
+          expect(sut).toBe('[test]\n\tk = a\\\\b\n');
+        });
+      });
+    });
+
+    describe('Given a value containing a LF (a\\nb)', () => {
+      describe('When setConfigEntryInText', () => {
+        it('Then LF is escaped to \\n and the value is NOT quoted (new grammar)', () => {
+          // Arrange & Act — LF does not trigger quoting; escaped unconditionally.
+          const sut = setConfigEntryInText('', 'test', undefined, 'k', 'a\nb');
+
+          // Assert — unquoted, with \n escape.
+          expect(sut).toBe('[test]\n\tk = a\\nb\n');
+        });
+      });
+    });
+
+    describe('Given a value containing a TAB (a\\tb)', () => {
+      describe('When setConfigEntryInText', () => {
+        it('Then TAB is escaped to \\t and the value is NOT quoted (new grammar)', () => {
+          // Arrange & Act — TAB does not trigger quoting; escaped unconditionally.
+          const sut = setConfigEntryInText('', 'test', undefined, 'k', 'a\tb');
+
+          // Assert — unquoted, with \t escape.
+          expect(sut).toBe('[test]\n\tk = a\\tb\n');
+        });
+      });
+    });
+
+    describe('Given a value with a leading TAB (\\ta)', () => {
+      describe('When setConfigEntryInText', () => {
+        it('Then the TAB is escaped to \\t and the value is NOT quoted (new grammar)', () => {
+          // Arrange & Act — leading TAB is escaped (not raw), so no trimming risk;
+          // escape does not trigger quoting.
+          const sut = setConfigEntryInText('', 'test', undefined, 'k', '\ta');
+
+          // Assert — unquoted, TAB escaped.
+          expect(sut).toBe('[test]\n\tk = \\ta\n');
+        });
+      });
+    });
+
+    describe('Given a combo value (a; b"c\\d ) with trailing space', () => {
+      describe('When setConfigEntryInText', () => {
+        it('Then it is quoted (trailing space) with both " and \\ escaped inside', () => {
+          // Arrange & Act — trailing space triggers quoting; " and \ are escaped inside.
+          const sut = setConfigEntryInText('', 'test', undefined, 'k', 'a; b"c\\d ');
+
+          // Assert — quoted because of trailing space; semicolon is safe inside quotes;
+          // " → \", \ → \\ applied unconditionally before wrapping.
+          expect(sut).toBe('[test]\n\tk = "a; b\\"c\\\\d "\n');
+        });
+      });
+    });
+
+    describe('Given a value containing a C0 control byte (\\x01)', () => {
+      describe('When setConfigEntryInText', () => {
+        it('Then the byte passes through verbatim and the value is NOT quoted', () => {
+          // Arrange & Act — C0 controls (except NUL) are accepted and written raw.
+          const sut = setConfigEntryInText('', 'test', undefined, 'k', 'a\x01b');
+
+          // Assert — verbatim, unquoted.
+          expect(sut).toBe('[test]\n\tk = a\x01b\n');
+        });
+      });
+    });
+
+    describe('Given a value containing a DEL byte (\\x7f)', () => {
+      describe('When setConfigEntryInText', () => {
+        it('Then the byte passes through verbatim and the value is NOT quoted', () => {
+          // Arrange & Act — DEL is accepted and written raw.
+          const sut = setConfigEntryInText('', 'test', undefined, 'k', 'a\x7fb');
+
+          // Assert — verbatim, unquoted.
+          expect(sut).toBe('[test]\n\tk = a\x7fb\n');
         });
       });
     });
@@ -1590,23 +1742,14 @@ describe('setConfigEntry (I/O)', () => {
   });
 
   describe('Given a value containing a CR byte, When setConfigEntry runs', () => {
-    it('Then it throws CONFIG_VALUE_INVALID at the CR position', async () => {
+    it('Then the call succeeds (CR is accepted and written quoted with raw CR)', async () => {
       // Arrange
       const ctx = createMemoryContext();
-      let caught: TsgitError | undefined;
 
-      // Act
-      try {
-        await setConfigEntry({ ctx, key: 'user.name', value: 'x\ry' });
-      } catch (err) {
-        caught = err as TsgitError;
-      }
-
-      // Assert
-      expect((caught?.data as { reason: string; position: number }).reason).toBe(
-        'control-character',
-      );
-      expect((caught?.data as { reason: string; position: number }).position).toBe(1);
+      // Act + Assert (no throw)
+      await expect(
+        setConfigEntry({ ctx, key: 'user.name', value: 'x\ry' }),
+      ).resolves.toBeUndefined();
     });
   });
 
@@ -1655,6 +1798,215 @@ describe('setConfigEntry (I/O)', () => {
         reason: 'worktree-extension-unset',
       });
       expect(writeSpy).toHaveBeenCalledTimes(0);
+    });
+  });
+
+  describe('Given a value containing a C0 control byte (\\x01), When setConfigEntry runs', () => {
+    it('Then the call succeeds (C0 controls are accepted and written verbatim)', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+
+      // Act + Assert (no throw)
+      await expect(
+        setConfigEntry({ ctx, key: 'user.name', value: 'a\x01b' }),
+      ).resolves.toBeUndefined();
+    });
+  });
+});
+
+describe('setConfigEntry round-trip', () => {
+  describe('Given a value containing ;, When written and re-parsed via parseIniSections', () => {
+    it('Then the parsed value equals the original', () => {
+      // Arrange
+      const value = 'a;b';
+
+      // Act
+      const text = setConfigEntryInText('', 'test', undefined, 'v', value);
+      const sections = parseIniSections(text);
+      const result = sections[0]?.entries[0]?.value;
+
+      // Assert
+      expect(result).toBe(value);
+    });
+  });
+
+  describe('Given a value containing #, When written and re-parsed via parseIniSections', () => {
+    it('Then the parsed value equals the original', () => {
+      // Arrange
+      const value = 'a#b';
+
+      // Act
+      const text = setConfigEntryInText('', 'test', undefined, 'v', value);
+      const sections = parseIniSections(text);
+      const result = sections[0]?.entries[0]?.value;
+
+      // Assert
+      expect(result).toBe(value);
+    });
+  });
+
+  describe('Given a value with a leading space, When written and re-parsed via parseIniSections', () => {
+    it('Then the parsed value equals the original', () => {
+      // Arrange
+      const value = ' a';
+
+      // Act
+      const text = setConfigEntryInText('', 'test', undefined, 'v', value);
+      const sections = parseIniSections(text);
+      const result = sections[0]?.entries[0]?.value;
+
+      // Assert
+      expect(result).toBe(value);
+    });
+  });
+
+  describe('Given a value with a trailing space, When written and re-parsed via parseIniSections', () => {
+    it('Then the parsed value equals the original', () => {
+      // Arrange
+      const value = 'a ';
+
+      // Act
+      const text = setConfigEntryInText('', 'test', undefined, 'v', value);
+      const sections = parseIniSections(text);
+      const result = sections[0]?.entries[0]?.value;
+
+      // Assert
+      expect(result).toBe(value);
+    });
+  });
+
+  describe('Given a value containing CR (a\\rb), When written and re-parsed via parseIniSections', () => {
+    it('Then the parsed value equals the original', () => {
+      // Arrange
+      const value = 'a\rb';
+
+      // Act
+      const text = setConfigEntryInText('', 'test', undefined, 'v', value);
+      const sections = parseIniSections(text);
+      const result = sections[0]?.entries[0]?.value;
+
+      // Assert
+      expect(result).toBe(value);
+    });
+  });
+
+  describe('Given a value containing " (a"b), When written and re-parsed via parseIniSections', () => {
+    it('Then the parsed value equals the original', () => {
+      // Arrange
+      const value = 'a"b';
+
+      // Act
+      const text = setConfigEntryInText('', 'test', undefined, 'v', value);
+      const sections = parseIniSections(text);
+      const result = sections[0]?.entries[0]?.value;
+
+      // Assert
+      expect(result).toBe(value);
+    });
+  });
+
+  describe('Given a value containing \\ (a\\b), When written and re-parsed via parseIniSections', () => {
+    it('Then the parsed value equals the original', () => {
+      // Arrange
+      const value = 'a\\b';
+
+      // Act
+      const text = setConfigEntryInText('', 'test', undefined, 'v', value);
+      const sections = parseIniSections(text);
+      const result = sections[0]?.entries[0]?.value;
+
+      // Assert
+      expect(result).toBe(value);
+    });
+  });
+
+  describe('Given a value containing LF (a\\nb), When written and re-parsed via parseIniSections', () => {
+    it('Then the parsed value equals the original', () => {
+      // Arrange
+      const value = 'a\nb';
+
+      // Act
+      const text = setConfigEntryInText('', 'test', undefined, 'v', value);
+      const sections = parseIniSections(text);
+      const result = sections[0]?.entries[0]?.value;
+
+      // Assert
+      expect(result).toBe(value);
+    });
+  });
+
+  describe('Given a value containing TAB (a\\tb), When written and re-parsed via parseIniSections', () => {
+    it('Then the parsed value equals the original', () => {
+      // Arrange
+      const value = 'a\tb';
+
+      // Act
+      const text = setConfigEntryInText('', 'test', undefined, 'v', value);
+      const sections = parseIniSections(text);
+      const result = sections[0]?.entries[0]?.value;
+
+      // Assert
+      expect(result).toBe(value);
+    });
+  });
+
+  describe('Given a value with a leading TAB (\\ta), When written and re-parsed via parseIniSections', () => {
+    it('Then the parsed value equals the original', () => {
+      // Arrange
+      const value = '\ta';
+
+      // Act
+      const text = setConfigEntryInText('', 'test', undefined, 'v', value);
+      const sections = parseIniSections(text);
+      const result = sections[0]?.entries[0]?.value;
+
+      // Assert
+      expect(result).toBe(value);
+    });
+  });
+
+  describe('Given a combo value (a; b"c\\d ), When written and re-parsed via parseIniSections', () => {
+    it('Then the parsed value equals the original', () => {
+      // Arrange
+      const value = 'a; b"c\\d ';
+
+      // Act
+      const text = setConfigEntryInText('', 'test', undefined, 'v', value);
+      const sections = parseIniSections(text);
+      const result = sections[0]?.entries[0]?.value;
+
+      // Assert
+      expect(result).toBe(value);
+    });
+  });
+
+  describe('Given a value containing \\x01 (C0 control), When written and re-parsed via parseIniSections', () => {
+    it('Then the parsed value equals the original', () => {
+      // Arrange
+      const value = 'a\x01b';
+
+      // Act
+      const text = setConfigEntryInText('', 'test', undefined, 'v', value);
+      const sections = parseIniSections(text);
+      const result = sections[0]?.entries[0]?.value;
+
+      // Assert
+      expect(result).toBe(value);
+    });
+  });
+
+  describe('Given a value containing \\x7f (DEL), When written and re-parsed via parseIniSections', () => {
+    it('Then the parsed value equals the original', () => {
+      // Arrange
+      const value = 'a\x7fb';
+
+      // Act
+      const text = setConfigEntryInText('', 'test', undefined, 'v', value);
+      const sections = parseIniSections(text);
+      const result = sections[0]?.entries[0]?.value;
+
+      // Assert
+      expect(result).toBe(value);
     });
   });
 });
