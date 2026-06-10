@@ -512,7 +512,11 @@ export class NodeFileSystem implements FileSystem {
   };
 
   rm = async (path: string): Promise<void> => {
-    const real = await this.checkContainment(path, 'read');
+    // Use 'lstat' mode (resolves parent via realpath, joins basename without
+    // following the leaf) so dangling symlinks — whose realpath would fail —
+    // can be removed. A regular file's containment is still verified via its
+    // parent directory, which is the same security guarantee.
+    const real = await this.checkContainment(path, 'lstat');
     await runFs(() => this.fsOps.rm(real), path);
     // Node's `fs.rm` without `recursive` only removes leaves — a regular
     // file or symlink. The parent directory and its realpath are

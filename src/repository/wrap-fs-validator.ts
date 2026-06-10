@@ -106,14 +106,12 @@ export const wrapFsValidator = (
       return fs.readlink(p);
     },
     symlink: (target, linkPath) => {
-      // Both arguments are path-confined: the link itself MUST live under cwd
-      // (linkPath), and its target MUST also resolve under cwd so we can't
-      // create a link inside the repo that points at /etc/passwd. `target` is
-      // checked via the same predicate; relative targets that don't start
-      // with '/' would be evaluated relative to the link's directory at
-      // resolve time — for now we only accept absolute targets that match
-      // the cwd-confinement rule.
-      guard(target);
+      // Only the link's location (linkPath) is path-confined: it MUST live
+      // under cwd. The symlink target is opaque content (the blob bytes) —
+      // git stores and writes arbitrary targets, including relative ones like
+      // `../lib` or absolute system paths. Guarding `target` would break all
+      // relative-target symlinks (the common case in repos) and is not the
+      // right security boundary. The OS enforces access at dereference time.
       guard(linkPath);
       return fs.symlink(target, linkPath);
     },

@@ -9,6 +9,20 @@ import type { Context } from '../../../ports/context.js';
 const decoder = new TextDecoder();
 
 /**
+ * Remove a working-tree path if it exists, using `lstat` (no symlink follow)
+ * so dangling symlinks are detected and removed. A missing path is silently
+ * ignored.
+ */
+const rmIfExists = async (ctx: Context, fullPath: string): Promise<void> => {
+  try {
+    await ctx.fs.lstat(fullPath);
+    await ctx.fs.rm(fullPath);
+  } catch {
+    // File does not exist — nothing to remove
+  }
+};
+
+/**
  * The parent directory of an absolute path, or `undefined` when there is none
  * to create (no slash, or a root-level path like `/foo`). Exported for direct
  * unit testing of the boundary.
@@ -47,7 +61,7 @@ export const writeWorkingTreeEntry = async (
   if (parent !== undefined) await ctx.fs.mkdir(parent);
   if (mode === FILE_MODE.SYMLINK) {
     const target = decoder.decode(content);
-    if (await ctx.fs.exists(fullPath)) await ctx.fs.rm(fullPath);
+    await rmIfExists(ctx, fullPath);
     await ctx.fs.symlink(target, fullPath);
     return;
   }
@@ -56,5 +70,5 @@ export const writeWorkingTreeEntry = async (
 
 export const removeWorkingTreeFile = async (ctx: Context, path: FilePath): Promise<void> => {
   const fullPath = `${ctx.layout.workDir}/${path}`;
-  if (await ctx.fs.exists(fullPath)) await ctx.fs.rm(fullPath);
+  await rmIfExists(ctx, fullPath);
 };

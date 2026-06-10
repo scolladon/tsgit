@@ -123,9 +123,16 @@ const writeFileEntry = async (
 ): Promise<void> => {
   if (mode === FILE_MODE.SYMLINK) {
     const target = decoder.decode(content);
-    // Symlinks are written atomically by the platform; if a previous file
-    // exists at the path, rm first.
-    if (await ctx.fs.exists(absPath)) await ctx.fs.rm(absPath);
+    // Symlinks are written atomically by the platform; rm any previous entry
+    // at the path first. Use lstat (no follow) so dangling symlinks are also
+    // detected and removed; ctx.fs.exists follows symlinks and returns false
+    // for dangling targets.
+    try {
+      await ctx.fs.lstat(absPath);
+      await ctx.fs.rm(absPath);
+    } catch {
+      // File does not exist — nothing to remove
+    }
     await ctx.fs.symlink(target, absPath);
     return;
   }
@@ -170,7 +177,13 @@ const applyEntry = async (
   const absPath = joinPath(workdir, entry.path);
   if (entry.kind === 'noop') return undefined;
   if (entry.kind === 'delete') {
-    if (await ctx.fs.exists(absPath)) await ctx.fs.rm(absPath);
+    // Use lstat (no symlink follow) so dangling symlinks are also removed.
+    try {
+      await ctx.fs.lstat(absPath);
+      await ctx.fs.rm(absPath);
+    } catch {
+      // File does not exist — nothing to remove
+    }
     return undefined;
   }
   if (entry.id === undefined) return undefined;

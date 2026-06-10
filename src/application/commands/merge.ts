@@ -487,12 +487,70 @@ const MAX_CONCURRENT_PATH_WRITES = 32;
 const isExcluded = (matcher: SparseMatcher | undefined, path: FilePath): boolean =>
   matcher !== undefined && !matcher(path);
 
+const outcomePath = (o: MergeOutcome): FilePath =>
+  o.status === 'conflict' ? o.conflict.path : o.path;
+
+/**
+ * A rename target is an untracked blocker when it exists on disk and is NOT
+ * already accounted for by any merge outcome or original conflict path.
+ */
+const isUntrackedBlocker = async (
+  ctx: Context,
+  knownPaths: ReadonlySet<string>,
+  renamedPath: FilePath,
+): Promise<boolean> => {
+  if (knownPaths.has(renamedPath)) return false;
+  const abs = `${ctx.layout.workDir}/${renamedPath}`;
+  try {
+    await ctx.fs.lstat(abs);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * Collect all distinct-types rename targets (`ourPath`/`theirPath`) that exist
+ * on disk AND are not already accounted for by the merge outcomes (i.e., are
+ * untracked). A rename target that overlaps a resolved outcome path is expected
+ * on disk (it was tracked before the merge); only truly untracked files block.
+ * Mirrors git's "untracked working tree file would be overwritten by merge" refusal.
+ */
+const collectUntrackedRenameBlockers = async (
+  ctx: Context,
+  outcomes: ReadonlyArray<MergeOutcome>,
+  conflicts: ReadonlyArray<MergeConflict>,
+): Promise<ReadonlyArray<FilePath>> => {
+  // Build the set of all paths the merge tree resolver already knows about.
+  // Only the probe-generated side-car rename paths (ourPath/theirPath) are NEW;
+  // those must not silently overwrite untracked working-tree files.
+  const knownPaths = new Set<string>([
+    ...outcomes.map(outcomePath),
+    ...conflicts.map((c) => c.path),
+  ]);
+  const blockers: FilePath[] = [];
+  for (const conflict of conflicts) {
+    if (conflict.type !== 'distinct-types') continue;
+    for (const renamedPath of [conflict.ourPath, conflict.theirPath]) {
+      if (renamedPath === undefined) continue;
+      if (await isUntrackedBlocker(ctx, knownPaths, renamedPath)) blockers.push(renamedPath);
+    }
+  }
+  return blockers;
+};
+
 const writeConflictingWorkingTree = async (
   ctx: Context,
   outcomes: ReadonlyArray<MergeOutcome>,
   conflicts: ReadonlyArray<MergeConflict>,
   matcher: SparseMatcher | undefined,
 ): Promise<void> => {
+  // Pre-flight: refuse when an untracked file would be overwritten by a
+  // distinct-types rename. Mirrors git's "untracked working tree file would
+  // be overwritten by merge" refusal (checked before any working-tree write).
+  const blockers = await collectUntrackedRenameBlockers(ctx, outcomes, conflicts);
+  if (blockers.length > 0) throw workingTreeDirty(blockers);
+
   // Bounded parallelism — independent path writes overlap, but the pool
   // caps in-flight at MAX_CONCURRENT_PATH_WRITES so a 10k-path merge
   // doesn't exhaust file descriptors.
@@ -576,9 +634,22 @@ const writeConflictToTree = async (ctx: Context, conflict: MergeConflict): Promi
     return;
   }
   const bytes = await materialiseConflictBytes(ctx, conflict);
-  if (bytes !== undefined) {
-    await writeWorkingTreeFile(ctx, conflict.path, bytes);
+  if (bytes === undefined) return;
+  // When the materialised bytes come from the ours blob verbatim (no conflict
+  // markers were injected), the file must be written with the original mode.
+  // Symlink/symlink add-add conflicts fall here: the bytes are the ours
+  // symlink target, and we must re-create a symlink, not a regular file.
+  const useMode =
+    conflict.type === 'add-add' &&
+    conflict.conflictContent === undefined &&
+    conflict.ourMode !== undefined
+      ? conflict.ourMode
+      : undefined;
+  if (useMode !== undefined) {
+    await writeWorkingTreeEntry(ctx, conflict.path, bytes, useMode);
+    return;
   }
+  await writeWorkingTreeFile(ctx, conflict.path, bytes);
 };
 
 const writeDistinctTypesSides = async (ctx: Context, conflict: MergeConflict): Promise<void> => {
@@ -642,6 +713,17 @@ export const materialiseConflictBytes = async (
   return undefined;
 };
 
+const rmIfExists = async (ctx: Context, fullPath: string): Promise<void> => {
+  // Use lstat (no symlink follow) so dangling symlinks are detected and removed.
+  // ctx.fs.exists follows symlinks and returns false for dangling targets.
+  try {
+    await ctx.fs.lstat(fullPath);
+    await ctx.fs.rm(fullPath);
+  } catch {
+    // Nothing to remove
+  }
+};
+
 const writeWorkingTreeFile = async (
   ctx: Context,
   path: FilePath,
@@ -653,15 +735,17 @@ const writeWorkingTreeFile = async (
   if (parent !== undefined) {
     await ctx.fs.mkdir(parent);
   }
+  // Remove any existing symlink (including dangling) before writing a regular
+  // file — NodeFileSystem.write uses 'creation' mode and would throw
+  // PERMISSION_DENIED if a symlink already occupies the path.
+  await rmIfExists(ctx, fullPath);
   await ctx.fs.write(fullPath, content);
 };
 
 /** Remove a working-tree file if it exists. Exported for direct unit testing. */
 export const removeWorkingTreeFile = async (ctx: Context, path: FilePath): Promise<void> => {
   const fullPath = `${ctx.layout.workDir}/${path}`;
-  if (await ctx.fs.exists(fullPath)) {
-    await ctx.fs.rm(fullPath);
-  }
+  await rmIfExists(ctx, fullPath);
 };
 
 /** Compute the parent directory of a path. Exported for direct unit testing. */
