@@ -1,9 +1,9 @@
 ---
-description: Run the in-session tsgit workflow on a backlog item, PRD file, or free-text feature description. Every phase runs in this session — no subagents.
+description: Run the tsgit workflow on a backlog item, PRD file, or free-text feature description. All phases run in this session except implementation slices, which are delegated one-per-slice to sonnet subagents.
 argument-hint: <backlog-id | docs/prd/file.md | "feature description">
 ---
 
-You are running tsgit's in-session development workflow (see `CLAUDE.md` §"Development Workflow"). Run the workflow on the input below **in this session, in-thread**. Do NOT spawn subagents (no `Agent` tool calls). Every phase — design, ADR, plan, implementation, review, mutation, docs, PR — happens here. The user sees every action as it happens.
+You are running tsgit's development workflow (see `CLAUDE.md` §"Development Workflow"). Run the workflow on the input below **in this session, in-thread** — with ONE exception: each implementation slice (Step 5) is executed by a dedicated subagent on the `sonnet` model, orchestrated and verified from this session. Every other phase — design, ADR, plan, review, mutation, docs, PR — happens here, in-thread. The user sees every action as it happens.
 
 ## Input
 
@@ -57,19 +57,23 @@ If the design has no user-judgment decisions, skip to Step 4 without inventing q
 
 Write `docs/plan/<slug>.md` directly. The plan is the implementation script — per-slice TDD steps the next phase reads top-to-bottom. Self-review until convergence (max 3 passes). Commit: `docs(plan): <slug>`.
 
-## Step 5 — Implementation
+## Step 5 — Implementation (one sonnet subagent per slice)
 
-Execute every slice from the plan top-to-bottom:
+Execute the plan's slices top-to-bottom, **delegating each slice to its own subagent** (`Agent` tool, `model: "sonnet"`, general-purpose type). Slices share one worktree and build on each other, so run them **sequentially** — never two agents writing the same worktree concurrently. The session stays the orchestrator: it launches, verifies, and gates every slice.
 
-- **Red**: write the test first; run it with `npx vitest run <file>`; it must fail for the stated reason.
-- **Green**: write minimal code to pass; re-run the test file.
-- **Refactor**: clean up while keeping tests green.
-- Run `npm run validate` before each commit. NEVER commit on a red validate.
-- One slice = one atomic conventional-commit.
+**Per-slice agent prompt must carry** (the agent starts with zero context):
 
-Use the TypeScript LSP tool (`goToDefinition`, `findReferences`, `documentSymbol`, …) to navigate before editing; apply edits with `Edit` / `Write`. Never `--no-verify` the hook. Never insert `// @ts-ignore`, `// eslint-disable`, `// v8 ignore`, `// stryker-disable`, or `// biome-ignore`.
+- The absolute worktree path and an instruction to work ONLY there.
+- The plan file path + the exact slice to execute (quote the slice text verbatim if short).
+- The design doc path for grammar/behaviour reference.
+- The TDD contract: **Red** (write the test first, run `npx vitest run <file>`, it must fail for the stated reason) → **Green** (minimal code, re-run) → **Refactor** (keep green).
+- The gate: run `npm run validate`; NEVER commit on red; commit exactly one atomic conventional-commit with the message the plan names; never `--no-verify`.
+- The conventions: GWT describe/it split, AAA sections with real statements, `sut` = the unit under test (result goes in `result`), no `@ts-ignore` / `eslint-disable` / `v8 ignore` / `stryker-disable` / `biome-ignore`, no phase/ADR/backlog refs in source or tests, git-faithful behaviour.
+- The blocker protocol: on any wall (ambiguous spec, ADR-level decision, failing gate it cannot honestly fix) the agent must NOT commit — it reports `{ slice, reason, ≤3 candidate options }` back as its final message.
 
-If blocked (design hits a wall, ADR-level decision needed, ambiguous spec): surface to the user with `{ slice, reason, ≤3 candidate options }`. Never spin, never silently abandon.
+**After each agent returns, verify in-session before launching the next slice**: the commit exists and contains what the slice promised (`git log`/`git show --stat`), `npm run validate` is green, and the diff honours the conventions (spot-check; deep review still happens in Step 6). A failed or blocked slice is handled in-session: fix it directly or surface to the user with the agent's options — never relaunch blindly.
+
+If blocked at orchestration level (design hits a wall, ADR-level decision needed): surface to the user with `{ slice, reason, ≤3 candidate options }`. Never spin, never silently abandon.
 
 ## Step 6 — Review × 3 (sequential, in-thread)
 
@@ -131,7 +135,7 @@ After `git sync` removes the worktree, **clean up Serena's project entry** for i
 
 ## Hard rules
 
-- **NEVER spawn subagents.** The whole workflow runs in this session. The user sees every action, can interrupt at any point, can steer mid-flight.
+- **Subagents ONLY for Step 5 implementation slices, always on `sonnet`, one per slice, sequential.** Every other phase — design, ADR, plan, reviews, refactor, mutation, docs, PR — runs in this session, in-thread. The session orchestrates and verifies each slice; the user can interrupt at any point, can steer mid-flight.
 - **Never skip the ADR step** when user-judgment was required to disambiguate the design.
 - **Never skip the three review passes** before pushing.
 - **Never skip the architecture refactor pass** (Step 7). It may be a no-op, but a no-op must carry a written justification — never a silent skip. Refactor commits are atomic and behavior-preserving, and are re-reviewed before mutation.

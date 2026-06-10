@@ -142,9 +142,9 @@ If the work touches a parser/decoder/matcher and the diff lands without a `*.pro
 
 ## Development Workflow (MANDATORY)
 
-The operational workflow lives in **`.claude/commands/apply-workflow.md`** (run via `/apply-workflow <backlog-id | file | description>`). It runs every phase **in the current session, in-thread** — no subagents — so every action is visible and steerable.
+The operational workflow lives in **`.claude/commands/apply-workflow.md`** (run via `/apply-workflow <backlog-id | file | description>`). It runs every phase **in the current session, in-thread** — except implementation slices, which are each delegated to a dedicated **sonnet subagent** (one per slice, sequential, orchestrated and verified from the session) — so every action stays visible and steerable.
 
-Phase sequence: **branch → design (self-review ≤×3) → ADR (with user) → plan (self-review ≤×3) → implement (TDD per slice, atomic commits) → review ×3 (typescript / security / tests, fix-all-until-converged) → architecture refactor + scoped re-review (behavior-preserving, may no-op with justification) → mutation (0 killable) → docs + PR**.
+Phase sequence: **branch → design (self-review ≤×3) → ADR (with user) → plan (self-review ≤×3) → implement (TDD per slice via sonnet subagents, atomic commits) → review ×3 (typescript / security / tests, fix-all-until-converged) → architecture refactor + scoped re-review (behavior-preserving, may no-op with justification) → mutation (0 killable) → docs + PR**.
 
 **Precedence:** this in-repo workflow supersedes the user-global "Default feature workflow" when working inside this repository. The project triggers (`"apply the workflow"`, `/apply-workflow`, "the usual flow") drive it; the user-global workflow fires only on its own trigger (`"use my default workflow"`).
 
