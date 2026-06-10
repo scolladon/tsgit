@@ -345,7 +345,7 @@ export const updateConfigEntries = async (
 ): Promise<void> => {
   const path = `${ctx.layout.gitDir}/config`;
   const original = await readConfigText(ctx, path);
-  assertWritableConfigText(original, path);
+  parseIniSectionsForWrite(original, path);
   const updated = entries.reduce(
     (text, entry) =>
       setConfigEntryInText(text, entry.section, entry.subsection, entry.key, entry.value),
@@ -481,7 +481,7 @@ export const updateConfigOperations = async (
 ): Promise<void> => {
   const path = `${ctx.layout.gitDir}/config`;
   const original = await readConfigText(ctx, path);
-  assertWritableConfigText(original, path);
+  parseIniSectionsForWrite(original, path);
   const updated = ops.reduce(applyConfigOpInText, original);
   await ctx.fs.writeUtf8(path, updated);
   invalidateConfigCache(ctx);
@@ -519,33 +519,13 @@ const assertValueSafe = (key: string, value: string): void => {
 };
 
 /**
- * Validate that `text` is safe to modify via line surgery. Parses with
- * `parseIniSections`; when a `CONFIG_PARSE_ERROR` carrying `partialSectionName`
- * is caught, it means the file has a malformed quoted-subsection header — git
- * refuses the write with `invalid section name`. That case is translated to
- * `CONFIG_INVALID_FILE { sectionName, source }`. Value-malformation errors
- * (`CONFIG_PARSE_ERROR` without `partialSectionName`) propagate unchanged so
- * callers see git's read-shape error. All other exceptions propagate as-is.
- */
-const assertWritableConfigText = (text: string, path: string): void => {
-  try {
-    parseIniSections(text, path);
-  } catch (err) {
-    if (
-      err instanceof TsgitError &&
-      err.data.code === 'CONFIG_PARSE_ERROR' &&
-      err.data.partialSectionName !== undefined
-    ) {
-      throw configInvalidFile(err.data.partialSectionName, path);
-    }
-    throw err;
-  }
-};
-
-/**
- * `parseIniSections` with the same header-malformation translation as
- * `assertWritableConfigText`. Used where the sections result is also needed
- * (unset paths), so we parse once rather than parsing twice.
+ * `parseIniSections` for write paths: a `CONFIG_PARSE_ERROR` carrying
+ * `partialSectionName` means the file has a malformed quoted-subsection
+ * header — git refuses the write with `invalid section name`, so it is
+ * translated to `CONFIG_INVALID_FILE { sectionName, source }`. Value
+ * malformations (no `partialSectionName`) propagate unchanged so callers
+ * see git's read-shape error; all other exceptions propagate as-is.
+ * Callers that only need the validation discard the result.
  */
 const parseIniSectionsForWrite = (
   text: string,
@@ -578,7 +558,7 @@ const readModifyWriteScopedConfig = async (
 ): Promise<void> => {
   const path = await resolveScopePath(ctx, scope);
   const before = await readConfigText(ctx, path);
-  assertWritableConfigText(before, path);
+  parseIniSectionsForWrite(before, path);
   const after = transform(before);
   await ctx.fs.writeUtf8(path, after);
   invalidateConfigCache(ctx);

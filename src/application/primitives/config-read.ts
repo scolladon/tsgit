@@ -196,8 +196,12 @@ const VALUE_ESCAPES: ReadonlyMap<string, string> = new Map([
   ['"', '"'],
 ]);
 
-/** git sane-ctype `GIT_SPACE` minus LF (the line terminator): VT/FF are NOT whitespace. */
-const VALUE_SPACE: ReadonlySet<string> = new Set([' ', '\t', '\r']);
+/**
+ * git sane-ctype `GIT_SPACE` minus LF (the line terminator): VT/FF are NOT
+ * whitespace. Shared by the value parser and the quoted-subsection grammar
+ * (the whitespace required before an opening subsection quote).
+ */
+const GIT_SPACE: ReadonlySet<string> = new Set([' ', '\t', '\r']);
 
 /** Mutable accumulator for one value parse; local to `parseConfigValue`. */
 interface ValueState {
@@ -259,7 +263,7 @@ const stepValueChar = (
   const c = line[cursor.col] as string;
   cursor.col += 1;
   if (state.inComment) return;
-  if (!state.inQuotes && VALUE_SPACE.has(c)) {
+  if (!state.inQuotes && GIT_SPACE.has(c)) {
     appendValueSpace(state, c);
     return;
   }
@@ -357,9 +361,6 @@ export type SectionHeaderParse =
   | { readonly kind: 'malformed'; readonly partialName: string }
   | { readonly kind: 'not-header' };
 
-/** GIT_SPACE chars that may precede an opening subsection quote. */
-const GIT_SPACE: ReadonlySet<string> = new Set([' ', '\t', '\r']);
-
 /**
  * Parse a trimmed `[section]` / `[section "subsection"]` header line.
  * Returns a three-state discriminated union: `header` on success, `malformed`
@@ -388,12 +389,12 @@ export const parseSectionHeader = (line: string): SectionHeaderParse => {
 
 /** Handle the quoted-subsection branch of `parseSectionHeader`. */
 const parseQuotedSubsectionHeader = (afterOpen: string, quoteAt: number): SectionHeaderParse => {
-  const sectionPart = afterOpen.slice(0, quoteAt).trim().toLowerCase();
+  const section = afterOpen.slice(0, quoteAt).trim();
+  const sectionPart = section.toLowerCase();
   const charBeforeQuote = quoteAt > 0 ? afterOpen[quoteAt - 1] : undefined;
   if (charBeforeQuote === undefined || !GIT_SPACE.has(charBeforeQuote)) {
     return { kind: 'malformed', partialName: sectionPart };
   }
-  const section = afterOpen.slice(0, quoteAt).trim();
   return scanQuotedSpan(afterOpen, quoteAt, section, sectionPart);
 };
 
