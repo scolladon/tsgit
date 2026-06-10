@@ -1980,6 +1980,66 @@ describe('primitives/config-read value grammar', () => {
       // Assert
       expect(result[0]?.entries).toEqual([{ key: 'v', value: 'ok' }]);
     });
+
+    it('Then a line with a semicolon before = and a hash after = is still swallowed', () => {
+      // Arrange — the EARLIEST unquoted comment char decides the cut, so the
+      // `;` at index 1 swallows the `=` even though the `#` sits after it.
+      const sut = parseIniSections;
+      const text = '[test]\n\ta;b = x # y\n\tv = ok\n';
+
+      // Act
+      const result = sut(text);
+
+      // Assert
+      expect(result[0]?.entries).toEqual([{ key: 'v', value: 'ok' }]);
+    });
+  });
+
+  describe('Given section headers carrying comments and quoted names, When parseIniSections', () => {
+    it.each([
+      ['hash-then-semicolon', '[test] # c ; d\n\tv = ok\n'],
+      ['semicolon-then-hash', '[test] ; c # d\n\tv = ok\n'],
+    ])('Then a %s trailing comment is cut at the earliest marker', (_label, text) => {
+      // Arrange
+      const sut = parseIniSections;
+
+      // Act
+      const result = sut(text);
+
+      // Assert
+      expect(result).toEqual([
+        { section: 'test', subsection: undefined, entries: [{ key: 'v', value: 'ok' }] },
+      ]);
+    });
+
+    it('Then a hash inside a quoted subsection is not a comment', () => {
+      // Arrange
+      const sut = parseIniSections;
+      const text = '[branch "a#b"]\n\tv = ok\n';
+
+      // Act
+      const result = sut(text);
+
+      // Assert
+      expect(result).toEqual([
+        { section: 'branch', subsection: 'a#b', entries: [{ key: 'v', value: 'ok' }] },
+      ]);
+    });
+
+    it('Then a backslash-escaped quote inside a quoted subsection does not close the span', () => {
+      // Arrange — the subsection text is kept verbatim (no unescaping yet);
+      // the `\"` must not end the quoted span, so the `#` stays quoted.
+      const sut = parseIniSections;
+      const text = '[branch "a\\"#b"]\n\tv = ok\n';
+
+      // Act
+      const result = sut(text);
+
+      // Assert
+      expect(result).toEqual([
+        { section: 'branch', subsection: 'a\\"#b', entries: [{ key: 'v', value: 'ok' }] },
+      ]);
+    });
   });
 
   describe('Given a malformed value, When parseIniSections', () => {

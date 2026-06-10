@@ -177,6 +177,8 @@ const effectiveEqualsIndex = (line: string): number => {
   const hashAt = indexOfUnquoted(line, '#');
   const semiAt = indexOfUnquoted(line, ';');
   const cuts = [hashAt, semiAt].filter((n) => n >= 0);
+  // equivalent-mutant: `<=` is observably equivalent — a cut index holds `#`
+  // or `;` while `eqAt` holds `=`, so the two indices can never be equal.
   if (cuts.length > 0 && Math.min(...cuts) < eqAt) return -1;
   return eqAt;
 };
