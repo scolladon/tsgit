@@ -1,6 +1,6 @@
 import type { FlatTree, FlatTreeEntry } from '../diff/flat-tree.js';
 import { MAX_FLAT_TREE_ENTRIES } from '../diff/flat-tree.js';
-import { isSameKind } from '../diff/mode-kind.js';
+import { isSameKind, kindOf } from '../diff/mode-kind.js';
 import { sortByPath } from '../diff/path-compare.js';
 import type { FileMode, FilePath } from '../objects/index.js';
 import { FILE_MODE } from '../objects/index.js';
@@ -227,11 +227,66 @@ async function resolveBothPresent(
   return resolveContentMerge(path, base, our, their, mode, contentMerger);
 }
 
-function resolveAddAdd(path: FilePath, our: FlatTreeEntry, their: FlatTreeEntry): MergeOutcome {
+function isRegularKind(mode: FileMode): boolean {
+  return kindOf(mode) === 'file';
+}
+
+function enforceOutputCap(bytes: Uint8Array, label: string): void {
+  if (bytes.length > MAX_CONFLICT_OUTPUT_BYTES) {
+    throw invalidMergeInput(`contentMerger returned oversize ${label}`);
+  }
+}
+
+async function resolveAddAdd(
+  path: FilePath,
+  our: FlatTreeEntry,
+  their: FlatTreeEntry,
+  contentMerger: ContentMerger,
+): Promise<MergeOutcome> {
   if (entriesEqual(our, their)) {
     return { status: 'resolved-known', path, id: our.id, mode: our.mode };
   }
-  return addAddConflict(path, our, their);
+  if (!isRegularKind(our.mode) || !isRegularKind(their.mode)) {
+    return addAddConflict(path, our, their);
+  }
+  const ctx: ContentMergeContext = {
+    path,
+    ourId: our.id,
+    theirId: their.id,
+    ourMode: our.mode,
+    theirMode: their.mode,
+  };
+  const result = await contentMerger(ctx, undefined, new Uint8Array(0), new Uint8Array(0));
+  if (result.status === 'clean') {
+    enforceOutputCap(result.bytes, 'clean bytes');
+    if (our.mode === their.mode) {
+      if (result.id !== undefined) {
+        return { status: 'resolved-known', path, id: result.id, mode: our.mode };
+      }
+      return { status: 'resolved-merged', path, bytes: result.bytes, mode: our.mode };
+    }
+    return conflictOutcome({
+      type: 'add-add',
+      path,
+      ourId: our.id,
+      theirId: their.id,
+      ourMode: our.mode,
+      theirMode: their.mode,
+      conflictContent: result.bytes,
+      contentVerdict: 'clean',
+    });
+  }
+  enforceOutputCap(result.markedBytes, 'marked bytes');
+  return conflictOutcome({
+    type: 'add-add',
+    path,
+    ourId: our.id,
+    theirId: their.id,
+    ourMode: our.mode,
+    theirMode: their.mode,
+    conflictContent: result.markedBytes,
+    contentVerdict: result.conflictType,
+  });
 }
 
 function resolvePath(
@@ -251,7 +306,7 @@ function resolvePath(
     return resolveOneSideAbsent(path, base, our, 'our');
   }
   if (base === undefined) {
-    return resolveAddAdd(path, our, their);
+    return resolveAddAdd(path, our, their, contentMerger);
   }
   return resolveBothPresent(path, base, our, their, contentMerger);
 }

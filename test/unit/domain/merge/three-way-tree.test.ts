@@ -191,15 +191,21 @@ describe('mergeTrees — decision table rows', () => {
     });
   });
 
-  describe('Given add-add with different content (—|X|Y)', () => {
+  describe('Given add-add with different content (—|X|Y) and merger returns content conflict', () => {
     describe('When mergeTrees called', () => {
       it('Then conflict with type add-add', async () => {
         // Arrange
         const ours = tree([['p', entry(ID_A)]]);
         const theirs = tree([['p', entry(ID_B)]]);
+        const markedBytes = new Uint8Array([0xab]);
+        const conflictMerger = spyMerger({
+          status: 'conflict',
+          conflictType: 'content',
+          markedBytes,
+        });
 
         // Act
-        const result = await mergeTrees(undefined, ours, theirs, noopMerger);
+        const result = await mergeTrees(undefined, ours, theirs, conflictMerger.fn);
 
         // Assert
         expect(result.conflicts).toHaveLength(1);
@@ -953,15 +959,20 @@ describe('mergeTrees — property laws', () => {
     });
   });
 
-  describe('Given add-add conflict scenario', () => {
+  describe('Given add-add conflict scenario with content-conflicting merger', () => {
     describe('When mergeTrees called', () => {
       it('Then cleanMerge is false', async () => {
-        // Arrange — add-add conflict
+        // Arrange — add-add with merger that returns content conflict
         const ours = tree([['p', entry(ID_A)]]);
         const theirs = tree([['p', entry(ID_B)]]);
+        const conflictMerger = spyMerger({
+          status: 'conflict',
+          conflictType: 'content',
+          markedBytes: new Uint8Array([0xab]),
+        });
 
         // Act
-        const result = await mergeTrees(undefined, ours, theirs, noopMerger);
+        const result = await mergeTrees(undefined, ours, theirs, conflictMerger.fn);
 
         // Assert
         expect(result.conflicts.length).toBeGreaterThan(0);
@@ -1028,6 +1039,267 @@ describe('mergeTrees — property laws', () => {
           o.status === 'conflict' ? [o.conflict] : [],
         );
         expect(result.conflicts).toEqual(derived);
+      });
+    });
+  });
+});
+
+describe('mergeTrees — add/add regular-file content merge', () => {
+  describe('Given a both-added path with differing regular-file entries', () => {
+    describe('When identical entries are added by both sides', () => {
+      it('Then outcome is resolved-known without invoking the merger', async () => {
+        // Arrange
+        const same = tree([['f', entry(ID_A, FILE_MODE.REGULAR)]]);
+        const spy = vi.fn(noopMerger);
+
+        // Act
+        const result = await mergeTrees(undefined, same, same, spy);
+
+        // Assert
+        expect(spy).not.toHaveBeenCalled();
+        expect(result.outcomes).toEqual([
+          { status: 'resolved-known', path: 'f', id: ID_A, mode: FILE_MODE.REGULAR },
+        ]);
+      });
+    });
+
+    describe('When the content merger resolves clean and modes are equal', () => {
+      it('Then outcome is resolved-merged with merger bytes and shared mode', async () => {
+        // Arrange
+        const ours = tree([['f', entry(ID_A, FILE_MODE.REGULAR)]]);
+        const theirs = tree([['f', entry(ID_B, FILE_MODE.REGULAR)]]);
+        const bytes = new Uint8Array([1, 2, 3]);
+        const spy = spyMerger({ status: 'clean', bytes });
+
+        // Act
+        const result = await mergeTrees(undefined, ours, theirs, spy.fn);
+
+        // Assert
+        expect(result.outcomes).toEqual([
+          { status: 'resolved-merged', path: 'f', bytes, mode: FILE_MODE.REGULAR },
+        ]);
+        expect(result.cleanMerge).toBe(true);
+      });
+
+      it('Then outcome is resolved-known when the merger returns an id', async () => {
+        // Arrange
+        const ours = tree([['f', entry(ID_A, FILE_MODE.REGULAR)]]);
+        const theirs = tree([['f', entry(ID_B, FILE_MODE.REGULAR)]]);
+        const bytes = new Uint8Array([1]);
+        const spy = spyMerger({ status: 'clean', bytes, id: ID_C });
+
+        // Act
+        const result = await mergeTrees(undefined, ours, theirs, spy.fn);
+
+        // Assert
+        expect(result.outcomes).toEqual([
+          { status: 'resolved-known', path: 'f', id: ID_C, mode: FILE_MODE.REGULAR },
+        ]);
+      });
+    });
+
+    describe('When the content merger resolves clean but modes differ (100644 vs 100755)', () => {
+      it('Then outcome is an add-add conflict with contentVerdict clean and no baseId/baseMode', async () => {
+        // Arrange
+        const ours = tree([['f', entry(ID_A, FILE_MODE.REGULAR)]]);
+        const theirs = tree([['f', entry(ID_B, FILE_MODE.EXECUTABLE)]]);
+        const bytes = new Uint8Array([4, 5, 6]);
+        const spy = spyMerger({ status: 'clean', bytes });
+
+        // Act
+        const result = await mergeTrees(undefined, ours, theirs, spy.fn);
+
+        // Assert
+        expect(result.conflicts).toHaveLength(1);
+        const conflict = result.conflicts[0];
+        expect(conflict?.type).toBe('add-add');
+        expect(conflict?.contentVerdict).toBe('clean');
+        expect(conflict?.conflictContent).toBe(bytes);
+        expect(conflict?.baseId).toBeUndefined();
+        expect(conflict?.baseMode).toBeUndefined();
+        expect(conflict?.ourId).toBe(ID_A);
+        expect(conflict?.theirId).toBe(ID_B);
+      });
+    });
+
+    describe('When the content merger returns a content conflict', () => {
+      it('Then outcome is add-add conflict with contentVerdict content and conflictContent', async () => {
+        // Arrange
+        const ours = tree([['f', entry(ID_A, FILE_MODE.REGULAR)]]);
+        const theirs = tree([['f', entry(ID_B, FILE_MODE.REGULAR)]]);
+        const markedBytes = new Uint8Array([0xff, 0xfe]);
+        const spy = spyMerger({ status: 'conflict', conflictType: 'content', markedBytes });
+
+        // Act
+        const result = await mergeTrees(undefined, ours, theirs, spy.fn);
+
+        // Assert
+        expect(result.conflicts).toHaveLength(1);
+        const conflict = result.conflicts[0];
+        expect(conflict?.type).toBe('add-add');
+        expect(conflict?.contentVerdict).toBe('content');
+        expect(conflict?.conflictContent).toBe(markedBytes);
+        expect(conflict?.baseId).toBeUndefined();
+        expect(conflict?.baseMode).toBeUndefined();
+      });
+    });
+
+    describe('When the content merger reports a binary conflict', () => {
+      it('Then outcome is add-add conflict with contentVerdict binary and conflictContent', async () => {
+        // Arrange
+        const ours = tree([['f', entry(ID_A, FILE_MODE.REGULAR)]]);
+        const theirs = tree([['f', entry(ID_B, FILE_MODE.REGULAR)]]);
+        const markedBytes = new Uint8Array([0x00, 0x01, 0x02]);
+        const spy = spyMerger({ status: 'conflict', conflictType: 'binary', markedBytes });
+
+        // Act
+        const result = await mergeTrees(undefined, ours, theirs, spy.fn);
+
+        // Assert
+        expect(result.conflicts).toHaveLength(1);
+        const conflict = result.conflicts[0];
+        expect(conflict?.type).toBe('add-add');
+        expect(conflict?.contentVerdict).toBe('binary');
+        expect(conflict?.conflictContent).toBe(markedBytes);
+      });
+    });
+
+    describe('When the merger is invoked for a both-added regular pair', () => {
+      it('Then ContentMergeContext has no baseId and no baseMode', async () => {
+        // Arrange
+        const ours = tree([['f', entry(ID_A, FILE_MODE.REGULAR)]]);
+        const theirs = tree([['f', entry(ID_B, FILE_MODE.REGULAR)]]);
+        const spy = spyMerger({ status: 'clean', bytes: new Uint8Array(0) });
+
+        // Act
+        await mergeTrees(undefined, ours, theirs, spy.fn);
+
+        // Assert
+        expect(spy.ctxs).toHaveLength(1);
+        expect(spy.ctxs[0]?.baseId).toBeUndefined();
+        expect(spy.ctxs[0]?.baseMode).toBeUndefined();
+        expect(spy.ctxs[0]?.ourId).toBe(ID_A);
+        expect(spy.ctxs[0]?.theirId).toBe(ID_B);
+        expect(spy.ctxs[0]?.ourMode).toBe(FILE_MODE.REGULAR);
+        expect(spy.ctxs[0]?.theirMode).toBe(FILE_MODE.REGULAR);
+        expect(spy.ctxs[0]?.path).toBe('f');
+      });
+    });
+
+    describe('When both sides add a symlink/symlink pair with differing entries', () => {
+      it('Then merger is never invoked and bare add-add conflict is returned without contentVerdict', async () => {
+        // Arrange
+        const ours = tree([['f', entry(ID_A, FILE_MODE.SYMLINK)]]);
+        const theirs = tree([['f', entry(ID_B, FILE_MODE.SYMLINK)]]);
+        const spy = vi.fn(noopMerger);
+
+        // Act
+        const result = await mergeTrees(undefined, ours, theirs, spy);
+
+        // Assert
+        expect(spy).not.toHaveBeenCalled();
+        expect(result.conflicts).toHaveLength(1);
+        const conflict = result.conflicts[0];
+        expect(conflict?.type).toBe('add-add');
+        expect(conflict?.contentVerdict).toBeUndefined();
+        expect(conflict?.ourId).toBe(ID_A);
+        expect(conflict?.theirId).toBe(ID_B);
+      });
+    });
+
+    describe('When ours adds a gitlink and theirs adds a regular file', () => {
+      it('Then merger is never invoked and bare add-add conflict is returned without contentVerdict', async () => {
+        // Arrange
+        const ours = tree([['f', entry(ID_A, FILE_MODE.GITLINK)]]);
+        const theirs = tree([['f', entry(ID_B, FILE_MODE.REGULAR)]]);
+        const spy = vi.fn(noopMerger);
+
+        // Act
+        const result = await mergeTrees(undefined, ours, theirs, spy);
+
+        // Assert
+        expect(spy).not.toHaveBeenCalled();
+        expect(result.conflicts).toHaveLength(1);
+        const conflict = result.conflicts[0];
+        expect(conflict?.type).toBe('add-add');
+        expect(conflict?.contentVerdict).toBeUndefined();
+      });
+    });
+
+    describe('When ours adds a regular file and theirs adds a gitlink', () => {
+      it('Then merger is never invoked and bare add-add conflict is returned without contentVerdict', async () => {
+        // Arrange
+        const ours = tree([['f', entry(ID_A, FILE_MODE.REGULAR)]]);
+        const theirs = tree([['f', entry(ID_B, FILE_MODE.GITLINK)]]);
+        const spy = vi.fn(noopMerger);
+
+        // Act
+        const result = await mergeTrees(undefined, ours, theirs, spy);
+
+        // Assert
+        expect(spy).not.toHaveBeenCalled();
+        expect(result.conflicts).toHaveLength(1);
+        const conflict = result.conflicts[0];
+        expect(conflict?.type).toBe('add-add');
+        expect(conflict?.contentVerdict).toBeUndefined();
+      });
+    });
+
+    describe('When the content merger returns oversize clean bytes', () => {
+      it('Then throws INVALID_MERGE_INPUT', async () => {
+        // Arrange
+        const ours = tree([['f', entry(ID_A, FILE_MODE.REGULAR)]]);
+        const theirs = tree([['f', entry(ID_B, FILE_MODE.REGULAR)]]);
+        const fakeBytes = new Proxy(new Uint8Array(1), {
+          get(target, prop) {
+            if (prop === 'length') return MAX_CONFLICT_OUTPUT_BYTES + 1;
+            return (target as unknown as Record<string | symbol, unknown>)[prop as string];
+          },
+        }) as unknown as Uint8Array;
+        const spy = spyMerger({ status: 'clean', bytes: fakeBytes });
+
+        // Act
+        let thrown: unknown;
+        try {
+          await mergeTrees(undefined, ours, theirs, spy.fn);
+        } catch (e) {
+          thrown = e;
+        }
+
+        // Assert
+        expect((thrown as { data: { code: string } }).data.code).toBe('INVALID_MERGE_INPUT');
+        expect((thrown as { data: { reason: string } }).data.reason).toContain('oversize');
+      });
+    });
+
+    describe('When the content merger returns oversize marked bytes', () => {
+      it('Then throws INVALID_MERGE_INPUT', async () => {
+        // Arrange
+        const ours = tree([['f', entry(ID_A, FILE_MODE.REGULAR)]]);
+        const theirs = tree([['f', entry(ID_B, FILE_MODE.REGULAR)]]);
+        const fakeBytes = new Proxy(new Uint8Array(1), {
+          get(target, prop) {
+            if (prop === 'length') return MAX_CONFLICT_OUTPUT_BYTES + 1;
+            return (target as unknown as Record<string | symbol, unknown>)[prop as string];
+          },
+        }) as unknown as Uint8Array;
+        const spy = spyMerger({
+          status: 'conflict',
+          conflictType: 'content',
+          markedBytes: fakeBytes,
+        });
+
+        // Act
+        let thrown: unknown;
+        try {
+          await mergeTrees(undefined, ours, theirs, spy.fn);
+        } catch (e) {
+          thrown = e;
+        }
+
+        // Assert
+        expect((thrown as { data: { code: string } }).data.code).toBe('INVALID_MERGE_INPUT');
+        expect((thrown as { data: { reason: string } }).data.reason).toContain('oversize');
       });
     });
   });

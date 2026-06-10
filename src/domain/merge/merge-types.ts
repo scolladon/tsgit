@@ -19,6 +19,7 @@ export interface MergeConflict {
   readonly ourMode?: FileMode;
   readonly theirMode?: FileMode;
   readonly conflictContent?: Uint8Array;
+  readonly contentVerdict?: 'clean' | 'content' | 'binary';
 }
 
 export type MergeOutcome =
