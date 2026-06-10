@@ -7,9 +7,6 @@
  *   - the index stages via `lsStage`,
  *   - clean vs conflict verdicts.
  *
- * Each scenario corresponds to one row in the faithfulness evidence table of
- * docs/design/add-add-content-merge.md.
- *
  * @proves
  *   surface:        repo.merge.run
  *   bucket:         cross-tool-interop

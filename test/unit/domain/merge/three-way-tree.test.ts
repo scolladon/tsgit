@@ -498,7 +498,9 @@ describe('mergeTrees — contentMerger contract', () => {
         expect((thrown as { data: { code: string; reason: string } }).data.code).toBe(
           'INVALID_MERGE_INPUT',
         );
-        expect((thrown as { data: { reason: string } }).data.reason).toContain('oversize');
+        expect((thrown as { data: { reason: string } }).data.reason).toBe(
+          'contentMerger returned oversize clean bytes',
+        );
       });
     });
   });
@@ -534,7 +536,9 @@ describe('mergeTrees — contentMerger contract', () => {
         expect((thrown as { data: { code: string; reason: string } }).data.code).toBe(
           'INVALID_MERGE_INPUT',
         );
-        expect((thrown as { data: { reason: string } }).data.reason).toContain('oversize');
+        expect((thrown as { data: { reason: string } }).data.reason).toBe(
+          'contentMerger returned oversize marked bytes',
+        );
       });
     });
   });
@@ -1269,7 +1273,9 @@ describe('mergeTrees — add/add regular-file content merge', () => {
 
         // Assert
         expect((thrown as { data: { code: string } }).data.code).toBe('INVALID_MERGE_INPUT');
-        expect((thrown as { data: { reason: string } }).data.reason).toContain('oversize');
+        expect((thrown as { data: { reason: string } }).data.reason).toBe(
+          'contentMerger returned oversize clean bytes',
+        );
       });
     });
 
@@ -1300,7 +1306,9 @@ describe('mergeTrees — add/add regular-file content merge', () => {
 
         // Assert
         expect((thrown as { data: { code: string } }).data.code).toBe('INVALID_MERGE_INPUT');
-        expect((thrown as { data: { reason: string } }).data.reason).toContain('oversize');
+        expect((thrown as { data: { reason: string } }).data.reason).toBe(
+          'contentMerger returned oversize marked bytes',
+        );
       });
     });
   });
