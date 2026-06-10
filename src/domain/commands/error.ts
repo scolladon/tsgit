@@ -126,6 +126,7 @@ export type CommandError =
       readonly requested: 'read' | 'overwrite' | 'remove';
       readonly scope?: ConfigScope;
     }
+  | { readonly code: 'CONFIG_INVALID_FILE'; readonly sectionName: string; readonly source: string }
   | {
       readonly code: 'CONFIG_SECTION_NOT_FOUND';
       readonly name: string;
@@ -426,6 +427,15 @@ export const configParseError = (
     ...(source !== undefined ? { source } : {}),
     ...(partialSectionName !== undefined ? { partialSectionName } : {}),
   });
+
+/**
+ * A write operation was refused because the config file contains a malformed
+ * quoted-subsection header. `sectionName` is the partially-accumulated
+ * `section.subsection` name at the failure point (git's `invalid section name`
+ * text); `source` is the file path.
+ */
+export const configInvalidFile = (sectionName: string, source: string): TsgitError =>
+  new TsgitError({ code: 'CONFIG_INVALID_FILE', sectionName, source });
 
 export const configMultipleValues = (
   key: string,

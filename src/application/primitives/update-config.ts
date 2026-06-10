@@ -12,6 +12,7 @@
 import type { ConfigScope } from '../../domain/commands/config-key.js';
 import { parseConfigKey } from '../../domain/commands/config-key.js';
 import {
+  configInvalidFile,
   configMultipleValues,
   configSectionNotFound,
   configValueInvalid,
@@ -344,6 +345,7 @@ export const updateConfigEntries = async (
 ): Promise<void> => {
   const path = `${ctx.layout.gitDir}/config`;
   const original = await readConfigText(ctx, path);
+  assertWritableConfigText(original, path);
   const updated = entries.reduce(
     (text, entry) =>
       setConfigEntryInText(text, entry.section, entry.subsection, entry.key, entry.value),
@@ -479,6 +481,7 @@ export const updateConfigOperations = async (
 ): Promise<void> => {
   const path = `${ctx.layout.gitDir}/config`;
   const original = await readConfigText(ctx, path);
+  assertWritableConfigText(original, path);
   const updated = ops.reduce(applyConfigOpInText, original);
   await ctx.fs.writeUtf8(path, updated);
   invalidateConfigCache(ctx);
@@ -516,6 +519,53 @@ const assertValueSafe = (key: string, value: string): void => {
 };
 
 /**
+ * Validate that `text` is safe to modify via line surgery. Parses with
+ * `parseIniSections`; when a `CONFIG_PARSE_ERROR` carrying `partialSectionName`
+ * is caught, it means the file has a malformed quoted-subsection header — git
+ * refuses the write with `invalid section name`. That case is translated to
+ * `CONFIG_INVALID_FILE { sectionName, source }`. Value-malformation errors
+ * (`CONFIG_PARSE_ERROR` without `partialSectionName`) propagate unchanged so
+ * callers see git's read-shape error. All other exceptions propagate as-is.
+ */
+const assertWritableConfigText = (text: string, path: string): void => {
+  try {
+    parseIniSections(text, path);
+  } catch (err) {
+    if (
+      err instanceof TsgitError &&
+      err.data.code === 'CONFIG_PARSE_ERROR' &&
+      err.data.partialSectionName !== undefined
+    ) {
+      throw configInvalidFile(err.data.partialSectionName, path);
+    }
+    throw err;
+  }
+};
+
+/**
+ * `parseIniSections` with the same header-malformation translation as
+ * `assertWritableConfigText`. Used where the sections result is also needed
+ * (unset paths), so we parse once rather than parsing twice.
+ */
+const parseIniSectionsForWrite = (
+  text: string,
+  path: string,
+): ReturnType<typeof parseIniSections> => {
+  try {
+    return parseIniSections(text, path);
+  } catch (err) {
+    if (
+      err instanceof TsgitError &&
+      err.data.code === 'CONFIG_PARSE_ERROR' &&
+      err.data.partialSectionName !== undefined
+    ) {
+      throw configInvalidFile(err.data.partialSectionName, path);
+    }
+    throw err;
+  }
+};
+
+/**
  * Read-modify-write the config file for a given scope. The `transform` is a
  * pure text function (e.g. `setConfigEntryInText`) — this helper handles the
  * I/O, the missing-file → `''` fallback, the post-write cache invalidation,
@@ -528,6 +578,7 @@ const readModifyWriteScopedConfig = async (
 ): Promise<void> => {
   const path = await resolveScopePath(ctx, scope);
   const before = await readConfigText(ctx, path);
+  assertWritableConfigText(before, path);
   const after = transform(before);
   await ctx.fs.writeUtf8(path, after);
   invalidateConfigCache(ctx);
@@ -586,7 +637,9 @@ export const unsetConfigEntry = async ({
   const targetScope: ConfigScope = scope ?? 'local';
   const path = await resolveScopePath(ctx, targetScope);
   const text = await readConfigText(ctx, path);
-  const sections = parseIniSections(text, path);
+  // parseIniSections throws on malformed headers/values; translate header
+  // errors to CONFIG_INVALID_FILE so the shape matches git's write refusal.
+  const sections = parseIniSectionsForWrite(text, path);
   const matches = collectValues(sections, parsed);
   if (matches.length === 0) return;
   if (matches.length > 1) {
@@ -617,7 +670,8 @@ export const unsetAllConfigEntries = async ({
   const targetScope: ConfigScope = scope ?? 'local';
   const path = await resolveScopePath(ctx, targetScope);
   const text = await readConfigText(ctx, path);
-  const sections = parseIniSections(text, path);
+  // Translate header malformation to CONFIG_INVALID_FILE (same as unsetConfigEntry).
+  const sections = parseIniSectionsForWrite(text, path);
   const matches = collectValues(sections, parsed);
   if (matches.length === 0) return;
   const after = removeConfigEntry(text, parsed.section, parsed.subsection, parsed.name);
@@ -652,22 +706,6 @@ const parseSectionName = (
   return { section, subsection };
 };
 
-const sectionExists = (
-  sections: ReadonlyArray<{
-    readonly section: string;
-    readonly subsection: string | undefined;
-  }>,
-  section: string,
-  subsection: string,
-): boolean => {
-  const lowerSection = section.toLowerCase();
-  for (const s of sections) {
-    if (s.section.toLowerCase() !== lowerSection) continue;
-    if (s.subsection === subsection) return true;
-  }
-  return false;
-};
-
 /**
  * Rename `[<section> "<oldSubsection>"]` to `[<section> "<newSubsection>"]`.
  * Both inputs are dotted (`'remote.origin'`). The two section families MUST
@@ -697,8 +735,10 @@ export const renameConfigSection = async ({
   const targetScope: ConfigScope = scope ?? 'local';
   const path = await resolveScopePath(ctx, targetScope);
   const text = await readConfigText(ctx, path);
-  const sections = parseIniSections(text, path);
-  if (!sectionExists(sections, oldParts.section, oldParts.subsection)) {
+  // Line-based existence check — lenient on malformed headers/values, exactly
+  // like git's copy_or_rename machinery. A malformed header never matches
+  // matchesSection (kind !== 'header'), so it is never the rename source.
+  if (findSectionHeader(text.split('\n'), oldParts.section, oldParts.subsection) === -1) {
     throw configSectionNotFound(oldName, targetScope);
   }
   const after = renameConfigSectionInText(
@@ -730,8 +770,9 @@ export const removeConfigSection = async ({
   const targetScope: ConfigScope = scope ?? 'local';
   const path = await resolveScopePath(ctx, targetScope);
   const text = await readConfigText(ctx, path);
-  const sections = parseIniSections(text, path);
-  if (!sectionExists(sections, parts.section, parts.subsection)) {
+  // Line-based existence check — lenient on malformed headers/values, exactly
+  // like git's remove-section machinery.
+  if (findSectionHeader(text.split('\n'), parts.section, parts.subsection) === -1) {
     throw configSectionNotFound(sectionName, targetScope);
   }
   const after = removeConfigSectionInText(text, parts.section, parts.subsection);
