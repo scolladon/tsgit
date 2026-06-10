@@ -228,6 +228,22 @@ describe('wrapFsValidator — outside cwd rejected', () => {
       });
     });
   });
+
+  describe('Given symlink whose target escapes cwd but whose linkPath is inside', () => {
+    describe('When called', () => {
+      it('Then delegates with the target untouched', async () => {
+        // Arrange
+        const fs = stubFs();
+        const sut = wrapFsValidator(fs, '/repo');
+
+        // Act
+        await sut.symlink('../outside/lib', '/repo/link');
+
+        // Assert
+        expect(fs.symlink).toHaveBeenCalledWith('../outside/lib', '/repo/link');
+      });
+    });
+  });
 });
 
 describe('wrapFsValidator — coverage of every wrapped method', () => {
