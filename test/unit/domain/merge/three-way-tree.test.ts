@@ -1279,6 +1279,28 @@ describe('mergeTrees — add/add regular-file content merge', () => {
       });
     });
 
+    describe('When the content merger returns clean bytes of exactly the cap size', () => {
+      it('Then the merge accepts them (the cap is exclusive)', async () => {
+        // Arrange
+        const ours = tree([['f', entry(ID_A, FILE_MODE.REGULAR)]]);
+        const theirs = tree([['f', entry(ID_B, FILE_MODE.REGULAR)]]);
+        const fakeBytes = new Proxy(new Uint8Array(1), {
+          get(target, prop) {
+            if (prop === 'length') return MAX_CONFLICT_OUTPUT_BYTES;
+            return (target as unknown as Record<string | symbol, unknown>)[prop as string];
+          },
+        }) as unknown as Uint8Array;
+        const spy = spyMerger({ status: 'clean', bytes: fakeBytes });
+
+        // Act
+        const result = await mergeTrees(undefined, ours, theirs, spy.fn);
+
+        // Assert
+        expect(result.cleanMerge).toBe(true);
+        expect(result.outcomes[0]?.status).toBe('resolved-merged');
+      });
+    });
+
     describe('When the content merger returns oversize marked bytes', () => {
       it('Then throws INVALID_MERGE_INPUT', async () => {
         // Arrange
