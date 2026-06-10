@@ -34,7 +34,10 @@ import { buildContentMerger } from '../primitives/build-content-merger.js';
 import { readConfig } from '../primitives/config-read.js';
 import { createCommit } from '../primitives/create-commit.js';
 import { flattenTree } from '../primitives/flatten-tree.js';
-import { writeWorkingTreeEntry } from '../primitives/internal/write-working-tree-file.js';
+import {
+  rmIfExists,
+  writeWorkingTreeEntry,
+} from '../primitives/internal/write-working-tree-file.js';
 import { materializeTree } from '../primitives/materialize-tree.js';
 import { mergeBase } from '../primitives/merge-base.js';
 import { readBlob } from '../primitives/read-blob.js';
@@ -487,19 +490,8 @@ const MAX_CONCURRENT_PATH_WRITES = 32;
 const isExcluded = (matcher: SparseMatcher | undefined, path: FilePath): boolean =>
   matcher !== undefined && !matcher(path);
 
-const outcomePath = (o: MergeOutcome): FilePath =>
-  o.status === 'conflict' ? o.conflict.path : o.path;
-
-/**
- * A rename target is an untracked blocker when it exists on disk and is NOT
- * already accounted for by any merge outcome or original conflict path.
- */
-const isUntrackedBlocker = async (
-  ctx: Context,
-  knownPaths: ReadonlySet<string>,
-  renamedPath: FilePath,
-): Promise<boolean> => {
-  if (knownPaths.has(renamedPath)) return false;
+/** Whether a distinct-types rename target already exists on disk (lstat — no follow). */
+const isUntrackedBlocker = async (ctx: Context, renamedPath: FilePath): Promise<boolean> => {
   const abs = `${ctx.layout.workDir}/${renamedPath}`;
   try {
     await ctx.fs.lstat(abs);
@@ -510,30 +502,23 @@ const isUntrackedBlocker = async (
 };
 
 /**
- * Collect all distinct-types rename targets (`ourPath`/`theirPath`) that exist
- * on disk AND are not already accounted for by the merge outcomes (i.e., are
- * untracked). A rename target that overlaps a resolved outcome path is expected
- * on disk (it was tracked before the merge); only truly untracked files block.
+ * Collect the distinct-types rename targets that exist on disk. Only the side
+ * whose recorded path differs from the original (`conflict.path`) was renamed;
+ * its target is probed unique against every tracked path of the three input
+ * trees, so anything found there is necessarily untracked. The non-renamed
+ * side's path legitimately exists on disk (ours is checked out) and is skipped.
  * Mirrors git's "untracked working tree file would be overwritten by merge" refusal.
  */
 const collectUntrackedRenameBlockers = async (
   ctx: Context,
-  outcomes: ReadonlyArray<MergeOutcome>,
   conflicts: ReadonlyArray<MergeConflict>,
 ): Promise<ReadonlyArray<FilePath>> => {
-  // Build the set of all paths the merge tree resolver already knows about.
-  // Only the probe-generated side-car rename paths (ourPath/theirPath) are NEW;
-  // those must not silently overwrite untracked working-tree files.
-  const knownPaths = new Set<string>([
-    ...outcomes.map(outcomePath),
-    ...conflicts.map((c) => c.path),
-  ]);
   const blockers: FilePath[] = [];
   for (const conflict of conflicts) {
     if (conflict.type !== 'distinct-types') continue;
-    for (const renamedPath of [conflict.ourPath, conflict.theirPath]) {
-      if (renamedPath === undefined) continue;
-      if (await isUntrackedBlocker(ctx, knownPaths, renamedPath)) blockers.push(renamedPath);
+    for (const recordedPath of [conflict.ourPath, conflict.theirPath]) {
+      if (recordedPath === undefined || recordedPath === conflict.path) continue;
+      if (await isUntrackedBlocker(ctx, recordedPath)) blockers.push(recordedPath);
     }
   }
   return blockers;
@@ -548,7 +533,7 @@ const writeConflictingWorkingTree = async (
   // Pre-flight: refuse when an untracked file would be overwritten by a
   // distinct-types rename. Mirrors git's "untracked working tree file would
   // be overwritten by merge" refusal (checked before any working-tree write).
-  const blockers = await collectUntrackedRenameBlockers(ctx, outcomes, conflicts);
+  const blockers = await collectUntrackedRenameBlockers(ctx, conflicts);
   if (blockers.length > 0) throw workingTreeDirty(blockers);
 
   // Bounded parallelism — independent path writes overlap, but the pool
@@ -711,17 +696,6 @@ export const materialiseConflictBytes = async (
     return (await readBlob(ctx, survivorId, READ_BLOB_OPTS)).content;
   }
   return undefined;
-};
-
-const rmIfExists = async (ctx: Context, fullPath: string): Promise<void> => {
-  // Use lstat (no symlink follow) so dangling symlinks are detected and removed.
-  // ctx.fs.exists follows symlinks and returns false for dangling targets.
-  try {
-    await ctx.fs.lstat(fullPath);
-    await ctx.fs.rm(fullPath);
-  } catch {
-    // Nothing to remove
-  }
 };
 
 const writeWorkingTreeFile = async (

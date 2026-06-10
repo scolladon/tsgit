@@ -9,17 +9,16 @@ import type { Context } from '../../../ports/context.js';
 const decoder = new TextDecoder();
 
 /**
- * Remove a working-tree path if it exists, using `lstat` (no symlink follow)
- * so dangling symlinks are detected and removed. A missing path is silently
- * ignored.
+ * Remove a working-tree path if it exists, probing with `lstat` (no symlink
+ * follow) so dangling symlinks are detected and removed. Only the existence
+ * probe may swallow an error (missing path); a failing `rm` propagates.
  */
-const rmIfExists = async (ctx: Context, fullPath: string): Promise<void> => {
-  try {
-    await ctx.fs.lstat(fullPath);
-    await ctx.fs.rm(fullPath);
-  } catch {
-    // File does not exist — nothing to remove
-  }
+export const rmIfExists = async (ctx: Context, fullPath: string): Promise<void> => {
+  const exists = await ctx.fs
+    .lstat(fullPath)
+    .then(() => true)
+    .catch(() => false);
+  if (exists) await ctx.fs.rm(fullPath);
 };
 
 /**
