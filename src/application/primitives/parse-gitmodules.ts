@@ -26,8 +26,10 @@ interface SubmoduleKeys {
 
 const mergeKey = (
   acc: SubmoduleKeys,
-  kv: { readonly key: string; readonly value: string },
+  kv: { readonly key: string; readonly value: string | null },
 ): SubmoduleKeys => {
+  // String-typed fields skip null (valueless key treated as absent).
+  if (kv.value === null) return acc;
   const k = kv.key.toLowerCase();
   if (k === 'path') return { ...acc, path: kv.value };
   if (k === 'url') return { ...acc, url: kv.value };

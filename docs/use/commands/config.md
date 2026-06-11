@@ -7,18 +7,18 @@ Nested-namespace porcelain for reading and writing git config across all four ca
 ```ts
 repo.config: {
   readonly get: (input: { key: string; scope?: ConfigScope }) =>
-    Promise<{ key: ConfigKey; value: string; scope: ConfigScope } |
+    Promise<{ key: ConfigKey; value: string | null; scope: ConfigScope } |
             { key: ConfigKey; value: undefined }>;
   readonly getAll: (input: { key: string; scope?: ConfigScope }) =>
-    Promise<{ key: ConfigKey; values: ReadonlyArray<{ value: string; scope: ConfigScope }> }>;
+    Promise<{ key: ConfigKey; values: ReadonlyArray<{ value: string | null; scope: ConfigScope }> }>;
   readonly getRegexp: (input: { keyPattern: RegExp; valuePattern?: RegExp; scope?: ConfigScope }) =>
-    Promise<{ entries: ReadonlyArray<{ key: ConfigKey; value: string; scope: ConfigScope }> }>;
+    Promise<{ entries: ReadonlyArray<{ key: ConfigKey; value: string | null; scope: ConfigScope }> }>;
   readonly list: (input?: { scope?: ConfigScope }) =>
-    Promise<{ entries: ReadonlyArray<{ key: ConfigKey; value: string; scope: ConfigScope }> }>;
+    Promise<{ entries: ReadonlyArray<{ key: ConfigKey; value: string | null; scope: ConfigScope }> }>;
   readonly set: (input: { key: string; value: string; scope?: ConfigScope }) =>
     Promise<{ key: ConfigKey; value: string; scope: ConfigScope }>;
   readonly unset: (input: { key: string; scope?: ConfigScope }) =>
-    Promise<{ key: ConfigKey; scope: ConfigScope; removed: true; previousValue: string } |
+    Promise<{ key: ConfigKey; scope: ConfigScope; removed: true; previousValue: string | null } |
             { key: ConfigKey; scope: ConfigScope; removed: false }>;
   readonly unsetAll: (input: { key: string; scope?: ConfigScope }) =>
     Promise<{ key: ConfigKey; scope: ConfigScope; removed: number }>;
@@ -63,6 +63,7 @@ const everything = await repo.config.list();
 - **Multi-valued keys:** `get` and `set` throw `CONFIG_MULTIPLE_VALUES` when the key has more than one entry in the active scope set. Use `getAll` / `unsetAll` for multi-valued keys.
 - **Idempotent `unset`:** a missing key produces `{ removed: false }`, not an error (diverges from `git config --unset` exit-5).
 - **Regex flavour:** `getRegexp` uses native JavaScript `RegExp`; not POSIX-ERE (ADR-185).
+- **Valueless keys (git NULL parity):** a `key` line with no `=` is a present-but-valueless entry — surfaced as `value: null`, distinct from `value: undefined` (key absent) and `''` (empty value after `key =`). Boolean interpretation maps `null` to `true` (`[core]` + `bare` ⇒ bare repository), and `getRegexp`'s `valuePattern` matches a `null` value as the empty string — both exactly like git (ADR-314). A malformed no-`=` line (`key ; c`, `bad!key`, `9key`) throws `CONFIG_PARSE_ERROR` where git dies `bad config line N`. Writes never emit valueless entries (git's CLI cannot either); `set` on a valueless entry replaces the line with canonical `key = value`, `unset` removes it (`previousValue: null`).
 - **Worktree scope:** gated on `[extensions] worktreeConfig = true` in `local`; otherwise throws `CONFIG_SCOPE_NOT_AVAILABLE`.
 - **Browser adapter:** `global` and `system` scopes throw `CONFIG_SCOPE_NOT_AVAILABLE` with `reason: 'browser-adapter'`.
 - **Quote-on-write (git `write_pair` parity):** a value is wrapped in `"…"` iff it starts or ends with a space or contains `;`, `#`, or CR; `\` / `"` / LF / TAB are always escaped (`\\`, `\"`, `\n`, `\t`), quoted or not; CR and other control bytes are written raw (ADR-309, supersedes ADR-186's rules). Only NUL is rejected, with `CONFIG_VALUE_INVALID`.
@@ -94,7 +95,10 @@ const everything = await repo.config.list();
 - `docs/adr/309-config-value-write-grammar-parity.md` (value write grammar)
 - `docs/adr/312-config-subsection-header-grammar-parity.md` (subsection grammar)
 - `docs/adr/313-config-write-path-refusal-shapes.md` (write-path refusals)
+- `docs/adr/314-valueless-config-key-null-representation.md` (valueless keys are `value: null`)
+- `docs/adr/315-valueless-string-config-fields-absent.md` (valueless string-typed internals)
 - `docs/design/config-subsection-escaping.md`
+- `docs/design/config-valueless-keys.md`
 - `docs/adr/186-config-write-quote-on-write.md`
 - `docs/adr/187-config-primitives-keep-writers-add-readers.md`
 - `docs/adr/188-config-text-helper-rename.md`

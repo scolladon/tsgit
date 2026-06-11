@@ -110,6 +110,101 @@ describe('configList', () => {
       ]);
     });
   });
+
+  describe('Given a valueless entry in local, When configList runs', () => {
+    it('Then the entry is returned with value: null', async () => {
+      // Arrange
+      const ctx = repoCtx();
+      await ctx.fs.writeUtf8(
+        `${ctx.layout.gitDir}/config`,
+        '[core]\n\tbare\n\trepositoryformatversion = 0\n',
+      );
+
+      // Act
+      const result = await configList(ctx);
+
+      // Assert
+      expect(result.entries).toEqual([
+        { key: 'core.bare', value: null, scope: 'local' },
+        { key: 'core.repositoryformatversion', value: '0', scope: 'local' },
+      ]);
+    });
+  });
+});
+
+describe('configGetRegexp — valueless key behaviour', () => {
+  describe('Given a valueless entry matching the key pattern, When configGetRegexp runs', () => {
+    it('Then the entry is returned with value: null', async () => {
+      // Arrange
+      const ctx = repoCtx();
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tbare\n');
+
+      // Act
+      const result = await configGetRegexp(ctx, { keyPattern: /^core\.bare$/ });
+
+      // Assert
+      expect(result.entries).toEqual([{ key: 'core.bare', value: null, scope: 'local' }]);
+    });
+  });
+
+  describe('Given a valueless entry and valuePattern /^$/, When configGetRegexp runs', () => {
+    it('Then the entry matches (NULL matches as the empty string)', async () => {
+      // Arrange
+      const ctx = repoCtx();
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tbare\n');
+
+      // Act
+      const result = await configGetRegexp(ctx, { keyPattern: /^core\.bare$/, valuePattern: /^$/ });
+
+      // Assert
+      expect(result.entries).toHaveLength(1);
+      expect(result.entries[0]).toEqual({ key: 'core.bare', value: null, scope: 'local' });
+    });
+  });
+
+  describe('Given a valueless entry and valuePattern /val/, When configGetRegexp runs', () => {
+    it('Then no entries are returned (NULL does not match a non-empty pattern)', async () => {
+      // Arrange
+      const ctx = repoCtx();
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tbare\n');
+
+      // Act
+      const result = await configGetRegexp(ctx, {
+        keyPattern: /^core\.bare$/,
+        valuePattern: /val/,
+      });
+
+      // Assert
+      expect(result.entries).toHaveLength(0);
+    });
+  });
+});
+
+describe('configGet — valueless key multiplicity', () => {
+  describe('Given one valued and one valueless occurrence of the same key, When configGet runs', () => {
+    it('Then throws CONFIG_MULTIPLE_VALUES with count 2 (valueless counts)', async () => {
+      // Arrange
+      const ctx = repoCtx();
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tbare = false\n\tbare\n');
+      let caught: TsgitError | undefined;
+
+      // Act
+      try {
+        await configGet(ctx, { key: 'core.bare' });
+      } catch (err) {
+        caught = err as TsgitError;
+      }
+
+      // Assert
+      expect(caught?.data).toEqual({
+        code: 'CONFIG_MULTIPLE_VALUES',
+        key: 'core.bare',
+        count: 2,
+        requested: 'read',
+        scope: undefined,
+      });
+    });
+  });
 });
 
 describe('configSet', () => {
@@ -136,6 +231,31 @@ describe('configSet', () => {
       // Act
       try {
         await configSet(ctx, { key: 'user.name', value: 'Cara' });
+      } catch (err) {
+        caught = err as TsgitError;
+      }
+
+      // Assert
+      expect(caught?.data).toEqual({
+        code: 'CONFIG_MULTIPLE_VALUES',
+        key: 'user.name',
+        count: 2,
+        requested: 'overwrite',
+        scope: 'local',
+      });
+    });
+  });
+
+  describe('Given a valueless occurrence mixed with a valued occurrence, When configSet runs', () => {
+    it('Then it throws CONFIG_MULTIPLE_VALUES (valueless occurrences are counted)', async () => {
+      // Arrange — one valueless + one valued = count 2; multiplicity guard must fire.
+      const ctx = repoCtx();
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[user]\n\tname\n\tname = Ada\n');
+      let caught: TsgitError | undefined;
+
+      // Act
+      try {
+        await configSet(ctx, { key: 'user.name', value: 'Bob' });
       } catch (err) {
         caught = err as TsgitError;
       }
@@ -183,6 +303,25 @@ describe('configUnset', () => {
       // Assert
       expect(sut).toEqual({ key: 'user.name', scope: 'local', removed: false });
       expect(sut).not.toHaveProperty('previousValue');
+    });
+  });
+
+  describe('Given a valueless entry, When configUnset runs', () => {
+    it('Then it returns removed=true with previousValue null', async () => {
+      // Arrange
+      const ctx = repoCtx();
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[user]\n\tname\n');
+
+      // Act
+      const result = await configUnset(ctx, { key: 'user.name' });
+
+      // Assert
+      expect(result).toEqual({
+        key: 'user.name',
+        scope: 'local',
+        removed: true,
+        previousValue: null,
+      });
     });
   });
 });

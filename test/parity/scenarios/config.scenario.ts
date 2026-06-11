@@ -12,9 +12,9 @@ import type { Scenario } from './types.ts';
 
 interface ConfigResult {
   readonly setScope: string;
-  readonly nameAfterSet: string | undefined;
-  readonly emailAfterSet: string | undefined;
-  readonly emailAfterUnset: string | undefined;
+  readonly nameAfterSet: string | null | undefined;
+  readonly emailAfterSet: string | null | undefined;
+  readonly emailAfterUnset: string | null | undefined;
   readonly emailRemoved: boolean;
 }
 

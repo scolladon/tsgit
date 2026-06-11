@@ -14964,9 +14964,38 @@
 							"flags": {
 								"isReadonly": true
 							},
+							"comment": {
+								"summary": [
+									{
+										"kind": "code",
+										"text": "`null`"
+									},
+									{
+										"kind": "text",
+										"text": " means the entry is present with no "
+									},
+									{
+										"kind": "code",
+										"text": "`=`"
+									},
+									{
+										"kind": "text",
+										"text": " (git's internal NULL)."
+									}
+								]
+							},
 							"type": {
-								"type": "intrinsic",
-								"name": "string"
+								"type": "union",
+								"types": [
+									{
+										"type": "intrinsic",
+										"name": "string"
+									},
+									{
+										"type": "literal",
+										"value": null
+									}
+								]
 							}
 						}
 					],
@@ -15096,8 +15125,17 @@
 														"isReadonly": true
 													},
 													"type": {
-														"type": "intrinsic",
-														"name": "string"
+														"type": "union",
+														"types": [
+															{
+																"type": "intrinsic",
+																"name": "string"
+															},
+															{
+																"type": "literal",
+																"value": null
+															}
+														]
 													}
 												}
 											],
@@ -30332,8 +30370,17 @@
 												"isReadonly": true
 											},
 											"type": {
-												"type": "intrinsic",
-												"name": "string"
+												"type": "union",
+												"types": [
+													{
+														"type": "intrinsic",
+														"name": "string"
+													},
+													{
+														"type": "literal",
+														"value": null
+													}
+												]
 											}
 										}
 									],
@@ -30442,9 +30489,42 @@
 											"flags": {
 												"isReadonly": true
 											},
+											"comment": {
+												"summary": [
+													{
+														"kind": "text",
+														"text": "The value that was removed. "
+													},
+													{
+														"kind": "code",
+														"text": "`null`"
+													},
+													{
+														"kind": "text",
+														"text": " when the entry had no "
+													},
+													{
+														"kind": "code",
+														"text": "`=`"
+													},
+													{
+														"kind": "text",
+														"text": "."
+													}
+												]
+											},
 											"type": {
-												"type": "intrinsic",
-												"name": "string"
+												"type": "union",
+												"types": [
+													{
+														"type": "intrinsic",
+														"name": "string"
+													},
+													{
+														"type": "literal",
+														"value": null
+													}
+												]
 											}
 										},
 										{
@@ -43416,7 +43496,71 @@
 							},
 							{
 								"kind": "text",
-								"text": " parsing — byte-identical grammar — reuses one\ntokenizer (ADR-086)."
+								"text": " parsing — byte-identical grammar — reuses one\ntokenizer (ADR-086).\n\nEntry "
+							},
+							{
+								"kind": "code",
+								"text": "`value`"
+							},
+							{
+								"kind": "text",
+								"text": ":\n  - "
+							},
+							{
+								"kind": "code",
+								"text": "`string`"
+							},
+							{
+								"kind": "text",
+								"text": " — key present with "
+							},
+							{
+								"kind": "code",
+								"text": "`=`"
+							},
+							{
+								"kind": "text",
+								"text": " (possibly "
+							},
+							{
+								"kind": "code",
+								"text": "`''`"
+							},
+							{
+								"kind": "text",
+								"text": " for "
+							},
+							{
+								"kind": "code",
+								"text": "`key =`"
+							},
+							{
+								"kind": "text",
+								"text": ")\n  - "
+							},
+							{
+								"kind": "code",
+								"text": "`null`"
+							},
+							{
+								"kind": "text",
+								"text": "   — key present with no "
+							},
+							{
+								"kind": "code",
+								"text": "`=`"
+							},
+							{
+								"kind": "text",
+								"text": " (git's internal NULL; boolean-true)\n  - "
+							},
+							{
+								"kind": "code",
+								"text": "`undefined`"
+							},
+							{
+								"kind": "text",
+								"text": " is never used here; the absent-key state lives one layer up"
 							}
 						]
 					},
@@ -43465,8 +43609,17 @@
 														"isReadonly": true
 													},
 													"type": {
-														"type": "intrinsic",
-														"name": "string"
+														"type": "union",
+														"types": [
+															{
+																"type": "intrinsic",
+																"name": "string"
+															},
+															{
+																"type": "literal",
+																"value": null
+															}
+														]
 													}
 												}
 											],
@@ -48358,7 +48511,47 @@
 								"summary": [
 									{
 										"kind": "text",
-										"text": "Look up every value for a key. Returns matches in scope-precedence order\n(and physical-file order within each scope). Empty array when the key is\nabsent. Never throws on multi-value."
+										"text": "Look up every value for a key. Returns matches in scope-precedence order\n(and physical-file order within each scope). Empty array when the key is\nabsent. Never throws on multi-value.\n\nEach "
+									},
+									{
+										"kind": "code",
+										"text": "`value`"
+									},
+									{
+										"kind": "text",
+										"text": " carries "
+									},
+									{
+										"kind": "code",
+										"text": "`string | null`"
+									},
+									{
+										"kind": "text",
+										"text": ": "
+									},
+									{
+										"kind": "code",
+										"text": "`null`"
+									},
+									{
+										"kind": "text",
+										"text": " means the entry was present\nwith no "
+									},
+									{
+										"kind": "code",
+										"text": "`=`"
+									},
+									{
+										"kind": "text",
+										"text": " (git's internal NULL); "
+									},
+									{
+										"kind": "code",
+										"text": "`undefined`"
+									},
+									{
+										"kind": "text",
+										"text": " is never in the array."
 									}
 								]
 							},
@@ -48515,8 +48708,17 @@
 																				"isReadonly": true
 																			},
 																			"type": {
-																				"type": "intrinsic",
-																				"name": "string"
+																				"type": "union",
+																				"types": [
+																					{
+																						"type": "intrinsic",
+																						"name": "string"
+																					},
+																					{
+																						"type": "literal",
+																						"value": null
+																					}
+																				]
 																			}
 																		}
 																	],
@@ -48634,7 +48836,63 @@
 									},
 									{
 										"kind": "text",
-										"text": "; never throws.\n\nBranding: the returned "
+										"text": "; never throws.\n- Valueless key (no "
+									},
+									{
+										"kind": "code",
+										"text": "`=`"
+									},
+									{
+										"kind": "text",
+										"text": " in the file): returns "
+									},
+									{
+										"kind": "code",
+										"text": "`{ key, value: null, scope }`"
+									},
+									{
+										"kind": "text",
+										"text": ".\n  "
+									},
+									{
+										"kind": "code",
+										"text": "`null`"
+									},
+									{
+										"kind": "text",
+										"text": " (present, no "
+									},
+									{
+										"kind": "code",
+										"text": "`=`"
+									},
+									{
+										"kind": "text",
+										"text": ") is distinct from "
+									},
+									{
+										"kind": "code",
+										"text": "`undefined`"
+									},
+									{
+										"kind": "text",
+										"text": " (absent) and from\n  "
+									},
+									{
+										"kind": "code",
+										"text": "`''`"
+									},
+									{
+										"kind": "text",
+										"text": " (empty string after "
+									},
+									{
+										"kind": "code",
+										"text": "`key =`"
+									},
+									{
+										"kind": "text",
+										"text": ").\n\nBranding: the returned "
 									},
 									{
 										"kind": "code",
@@ -48796,8 +49054,17 @@
 																"isReadonly": true
 															},
 															"type": {
-																"type": "intrinsic",
-																"name": "string"
+																"type": "union",
+																"types": [
+																	{
+																		"type": "intrinsic",
+																		"name": "string"
+																	},
+																	{
+																		"type": "literal",
+																		"value": null
+																	}
+																]
 															}
 														}
 													],
@@ -49872,7 +50139,103 @@
 									},
 									{
 										"kind": "text",
-										"text": "."
+										"text": ".\n\nLines with no effective "
+									},
+									{
+										"kind": "code",
+										"text": "`=`"
+									},
+									{
+										"kind": "text",
+										"text": " are treated as valueless keys: "
+									},
+									{
+										"kind": "code",
+										"text": "`key`"
+									},
+									{
+										"kind": "text",
+										"text": " (no "
+									},
+									{
+										"kind": "code",
+										"text": "`=`"
+									},
+									{
+										"kind": "text",
+										"text": ")\npushes "
+									},
+									{
+										"kind": "code",
+										"text": "`{ key, value: null }`"
+									},
+									{
+										"kind": "text",
+										"text": " into the current section. The valueless grammar\nis "
+									},
+									{
+										"kind": "code",
+										"text": "`^[ \\t\\r]*([a-zA-Z][a-zA-Z0-9-]*)[ \\t]*\\r?$`"
+									},
+									{
+										"kind": "text",
+										"text": "; anything that fails it\n(e.g. "
+									},
+									{
+										"kind": "code",
+										"text": "`key ; c`"
+									},
+									{
+										"kind": "text",
+										"text": ", "
+									},
+									{
+										"kind": "code",
+										"text": "`bad!key`"
+									},
+									{
+										"kind": "text",
+										"text": ", "
+									},
+									{
+										"kind": "code",
+										"text": "`9key`"
+									},
+									{
+										"kind": "text",
+										"text": ") throws "
+									},
+									{
+										"kind": "code",
+										"text": "`CONFIG_PARSE_ERROR`"
+									},
+									{
+										"kind": "text",
+										"text": ". Lines whose\nfirst non-space character is "
+									},
+									{
+										"kind": "code",
+										"text": "`[`"
+									},
+									{
+										"kind": "text",
+										"text": " (a "
+									},
+									{
+										"kind": "code",
+										"text": "`not-header`"
+									},
+									{
+										"kind": "text",
+										"text": " result from\n"
+									},
+									{
+										"kind": "code",
+										"text": "`parseSectionHeader`"
+									},
+									{
+										"kind": "text",
+										"text": ") keep the existing lenient skip."
 									}
 								]
 							},

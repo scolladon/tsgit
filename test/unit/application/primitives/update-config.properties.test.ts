@@ -11,7 +11,7 @@ const findValue = (
   sections: ReadonlyArray<IniSection>,
   section: string,
   key: string,
-): string | undefined => {
+): string | null | undefined => {
   for (const sec of sections) {
     if (sec.section.toLowerCase() !== section) continue;
     for (const entry of sec.entries) {
@@ -64,6 +64,30 @@ const arbNulFreeValue = (): fc.Arbitrary<string> => {
 
   return fc.oneof(wide, biased);
 };
+
+/**
+ * Arbitrary for a valid config key: first char alpha, rest alnum or dash,
+ * total length 1–16.  Kept local here since this file doesn't share generators
+ * with config-read.properties.test.ts (different lens).
+ */
+const arbConfigKey = (): fc.Arbitrary<string> =>
+  fc
+    .tuple(
+      fc.oneof(
+        fc.integer({ min: 0x41, max: 0x5a }).map((cp) => String.fromCodePoint(cp)), // A–Z
+        fc.integer({ min: 0x61, max: 0x7a }).map((cp) => String.fromCodePoint(cp)), // a–z
+      ),
+      fc.array(
+        fc.oneof(
+          fc.integer({ min: 0x41, max: 0x5a }).map((cp) => String.fromCodePoint(cp)),
+          fc.integer({ min: 0x61, max: 0x7a }).map((cp) => String.fromCodePoint(cp)),
+          fc.integer({ min: 0x30, max: 0x39 }).map((cp) => String.fromCodePoint(cp)),
+          fc.constant('-'),
+        ),
+        { minLength: 0, maxLength: 15 },
+      ),
+    )
+    .map(([first, rest]) => first + rest.join(''));
 
 describe('update-config writer properties', () => {
   describe('Given an arbitrary NUL-free value', () => {
@@ -137,6 +161,29 @@ describe('update-config writer properties', () => {
             expect(Array.isArray(result)).toBe(true);
           }),
           { numRuns: 200 },
+        );
+      });
+    });
+  });
+
+  describe('Given a config text with a valueless entry and an unrelated key', () => {
+    describe('When setConfigEntryInText sets the unrelated key', () => {
+      it('Then the valueless physical line survives byte-for-byte in the output', () => {
+        // Arrange
+        const sut = setConfigEntryInText;
+
+        // Act + Assert — fast-check invokes the predicate per sample; each call
+        // sets an unrelated key and checks the valueless line is left verbatim.
+        fc.assert(
+          fc.property(arbConfigKey(), arbConfigKey(), (valuelessKey, otherKey) => {
+            fc.pre(valuelessKey.toLowerCase() !== otherKey.toLowerCase());
+            const valuelessLine = `\t${valuelessKey}`;
+            const inputText = `[a]\n${valuelessLine}\n\texisting = old\n`;
+            const result = sut(inputText, 'a', undefined, otherKey, 'new');
+            const lines = result.split('\n');
+            expect(lines).toContain(valuelessLine);
+          }),
+          { numRuns: 100 },
         );
       });
     });

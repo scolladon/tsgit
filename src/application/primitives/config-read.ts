@@ -102,23 +102,55 @@ const readRawConfig = async (ctx: Context, path: string): Promise<string | undef
  * section name, an optional quoted subsection, and its key/value entries.
  * Exported so `.gitmodules` parsing — byte-identical grammar — reuses one
  * tokenizer (ADR-086).
+ *
+ * Entry `value`:
+ *   - `string` — key present with `=` (possibly `''` for `key =`)
+ *   - `null`   — key present with no `=` (git's internal NULL; boolean-true)
+ *   - `undefined` is never used here; the absent-key state lives one layer up
  */
 export interface IniSection {
   readonly section: string;
   readonly subsection: string | undefined;
-  readonly entries: ReadonlyArray<{ readonly key: string; readonly value: string }>;
+  readonly entries: ReadonlyArray<{ readonly key: string; readonly value: string | null }>;
 }
 
 /** Internal builder shape — `entries` stays mutable while a section is collected. */
 interface SectionBuilder {
   readonly section: string;
   readonly subsection: string | undefined;
-  readonly entries: Array<{ readonly key: string; readonly value: string }>;
+  readonly entries: Array<{ readonly key: string; readonly value: string | null }>;
 }
 
 const parseConfigText = (text: string, source: string): ParsedConfig => {
   const sections = parseIniSections(text, source);
   return assembleParsed(sections);
+};
+
+/**
+ * Key grammar for a valueless (no `=`) body line, anchored to the full raw line.
+ * Accepts optional leading whitespace, an alpha-first alnum+dash key, optional
+ * trailing space/TAB, and an optional CR (CRLF files). Anything else is refused
+ * with `CONFIG_PARSE_ERROR`, mirroring git's `bad config line N in file F`.
+ */
+const VALUELESS_KEY_RE = /^[ \t\r]*([a-zA-Z][a-zA-Z0-9-]*)[ \t]*\r?$/;
+
+/**
+ * Process a body line with no effective `=`. Lines whose stripped form starts
+ * with `[` are `not-header` results (e.g. `[a] key`) and get the lenient skip.
+ * Otherwise the valueless-key grammar is checked: match → push `{ key, null }`
+ * into `current`; no match → throw `CONFIG_PARSE_ERROR`.
+ */
+const processValuelessLine = (
+  line: string,
+  trimmed: string,
+  lineIdx: number,
+  current: SectionBuilder | undefined,
+  source: string | undefined,
+): void => {
+  if (trimmed.startsWith('[')) return;
+  const match = VALUELESS_KEY_RE.exec(line);
+  if (match === null) throw configParseError(lineIdx + 1, source);
+  if (current !== undefined) current.entries.push({ key: match[1] as string, value: null });
 };
 
 /**
@@ -131,6 +163,13 @@ const parseConfigText = (text: string, source: string): ParsedConfig => {
  * optional `source` label, mirroring git's `bad config line N in file F`
  * refusal. A malformed quoted-subsection header (e.g. `[s"a"]`, `[s "a" x]`,
  * unclosed quote) also throws `CONFIG_PARSE_ERROR` with `partialSectionName`.
+ *
+ * Lines with no effective `=` are treated as valueless keys: `key` (no `=`)
+ * pushes `{ key, value: null }` into the current section. The valueless grammar
+ * is `^[ \t\r]*([a-zA-Z][a-zA-Z0-9-]*)[ \t]*\r?$`; anything that fails it
+ * (e.g. `key ; c`, `bad!key`, `9key`) throws `CONFIG_PARSE_ERROR`. Lines whose
+ * first non-space character is `[` (a `not-header` result from
+ * `parseSectionHeader`) keep the existing lenient skip.
  */
 export const parseIniSections = (text: string, source?: string): ReadonlyArray<IniSection> => {
   const sections: SectionBuilder[] = [];
@@ -157,6 +196,7 @@ export const parseIniSections = (text: string, source?: string): ReadonlyArray<I
     }
     const eqAt = effectiveEqualsIndex(line);
     if (eqAt === -1) {
+      processValuelessLine(line, trimmed, lineIdx, current, source);
       lineIdx += 1;
       continue;
     }
@@ -487,50 +527,60 @@ const assembleParsed = (sections: ReadonlyArray<IniSection>): ParsedConfig => {
   return finalize(acc);
 };
 
-const mergeCore = (
-  acc: {
-    core?: {
-      bare?: boolean;
-      excludesFile?: string;
-      attributesFile?: string;
-      logAllRefUpdates?: boolean | 'always';
-      hooksPath?: string;
-      sparseCheckout?: boolean;
-      sparseCheckoutCone?: boolean;
-    };
-  },
-  sec: IniSection,
-): void => {
+type MutableCore = {
+  bare?: boolean;
+  excludesFile?: string;
+  attributesFile?: string;
+  logAllRefUpdates?: boolean | 'always';
+  hooksPath?: string;
+  sparseCheckout?: boolean;
+  sparseCheckoutCone?: boolean;
+};
+
+/**
+ * Apply one [core] entry to a mutable core accumulator. Returns the updated
+ * accumulator, or `undefined` when the key is not recognised (so the caller
+ * can avoid promoting `acc.core` from `undefined` to `{}` on irrelevant keys).
+ */
+const applyCoreEntry = (
+  core: MutableCore,
+  lowered: string,
+  value: string | null,
+): MutableCore | undefined => {
+  if (lowered === 'bare') return { ...core, bare: parseGitBoolean(value) };
+  if (lowered === 'logallrefupdates')
+    return { ...core, logAllRefUpdates: parseLogAllRefUpdates(value) };
+  if (lowered === 'sparsecheckout') return { ...core, sparseCheckout: parseGitBoolean(value) };
+  if (lowered === 'sparsecheckoutcone')
+    return { ...core, sparseCheckoutCone: parseGitBoolean(value) };
+  // String-typed fields skip null (valueless key treated as absent).
+  if (value === null) return undefined;
+  if (lowered === 'excludesfile') return { ...core, excludesFile: value };
+  if (lowered === 'attributesfile') return { ...core, attributesFile: value };
+  if (lowered === 'hookspath') return { ...core, hooksPath: value };
+  return undefined;
+};
+
+const mergeCore = (acc: { core?: MutableCore }, sec: IniSection): void => {
   for (const { key, value } of sec.entries) {
     // Git config keys are case-insensitive; the parser preserves casing,
     // so we lowercase here for comparison.
-    const lowered = key.toLowerCase();
-    if (lowered === 'bare') {
-      // `{ ...undefined }` is `{}`, so the spread alone handles the first write.
-      acc.core = { ...acc.core, bare: parseGitBoolean(value) };
-    } else if (lowered === 'excludesfile') {
-      acc.core = { ...acc.core, excludesFile: value };
-    } else if (lowered === 'attributesfile') {
-      acc.core = { ...acc.core, attributesFile: value };
-    } else if (lowered === 'logallrefupdates') {
-      acc.core = { ...acc.core, logAllRefUpdates: parseLogAllRefUpdates(value) };
-    } else if (lowered === 'hookspath') {
-      acc.core = { ...acc.core, hooksPath: value };
-    } else if (lowered === 'sparsecheckout') {
-      acc.core = { ...acc.core, sparseCheckout: parseGitBoolean(value) };
-    } else if (lowered === 'sparsecheckoutcone') {
-      acc.core = { ...acc.core, sparseCheckoutCone: parseGitBoolean(value) };
-    }
+    // `{ ...undefined }` is `{}`, so the spread alone handles the first write.
+    const updated = applyCoreEntry(acc.core ?? {}, key.toLowerCase(), value);
+    if (updated !== undefined) acc.core = updated;
   }
 };
 
-// The literal `always` is a third state beyond git's boolean values; anything
-// else falls through to the standard boolean parse.
-const parseLogAllRefUpdates = (value: string): boolean | 'always' =>
-  value.toLowerCase() === 'always' ? 'always' : parseGitBoolean(value);
+// The literal `always` is a third state beyond git's boolean values; a null
+// value (valueless key) is boolean-true. Anything else falls through to the
+// standard boolean parse.
+const parseLogAllRefUpdates = (value: string | null): boolean | 'always' =>
+  value !== null && value.toLowerCase() === 'always' ? 'always' : parseGitBoolean(value);
 
 const mergeUser = (acc: { user?: { name?: string; email?: string } }, sec: IniSection): void => {
   for (const { key, value } of sec.entries) {
+    // String-typed fields skip null (valueless key treated as absent).
+    if (value === null) continue;
     if (key === 'name') {
       // `{ ...undefined }` is `{}`, so the spread alone handles the first write.
       acc.user = { ...acc.user, name: value };
@@ -548,16 +598,24 @@ interface MutableRemote {
   partialCloneFilter?: string;
 }
 
-const applyRemoteEntry = (acc: MutableRemote, key: string, value: string): void => {
+const applyRemoteEntry = (acc: MutableRemote, key: string, value: string | null): void => {
   // Git config keys are case-insensitive — compare on the lower-cased key.
   const lowered = key.toLowerCase();
-  if (lowered === 'url') acc.url = value;
-  else if (lowered === 'pushurl') acc.pushUrl = value;
-  else if (lowered === 'fetch') {
-    acc.fetch ??= [];
-    acc.fetch.push(value);
-  } else if (lowered === 'promisor') acc.promisor = parseGitBoolean(value);
-  else if (lowered === 'partialclonefilter') acc.partialCloneFilter = value;
+  if (lowered === 'url') {
+    // String-typed fields skip null (valueless key treated as absent).
+    if (value !== null) acc.url = value;
+  } else if (lowered === 'pushurl') {
+    if (value !== null) acc.pushUrl = value;
+  } else if (lowered === 'fetch') {
+    if (value !== null) {
+      acc.fetch ??= [];
+      acc.fetch.push(value);
+    }
+  } else if (lowered === 'promisor') {
+    acc.promisor = parseGitBoolean(value);
+  } else if (lowered === 'partialclonefilter') {
+    if (value !== null) acc.partialCloneFilter = value;
+  }
 };
 
 const compactRemote = (mutable: MutableRemote): MutableRemote => {
@@ -593,6 +651,8 @@ const mergeBranch = (
   const current = acc.branch.get(name) ?? {};
   const next: { remote?: string; merge?: string } = { ...current };
   for (const { key, value } of sec.entries) {
+    // String-typed fields skip null (valueless key treated as absent).
+    if (value === null) continue;
     if (key === 'remote') next.remote = value;
     else if (key === 'merge') next.merge = value;
   }
@@ -610,9 +670,14 @@ const mergeSubmodule = (
   };
   for (const { key, value } of sec.entries) {
     const lowered = key.toLowerCase();
-    if (lowered === 'url') next.url = value;
-    else if (lowered === 'active') next.active = parseGitBoolean(value);
-    else if (lowered === 'update') next.update = value;
+    if (lowered === 'url') {
+      // String-typed fields skip null (valueless key treated as absent).
+      if (value !== null) next.url = value;
+    } else if (lowered === 'active') {
+      next.active = parseGitBoolean(value);
+    } else if (lowered === 'update') {
+      if (value !== null) next.update = value;
+    }
   }
   acc.submodule.set(name, next);
 };
@@ -627,6 +692,8 @@ const mergeMergeDriver = (
     ...(acc.merge.get(name) ?? {}),
   };
   for (const { key, value } of sec.entries) {
+    // String-typed fields skip null (valueless key treated as absent).
+    if (value === null) continue;
     const lowered = key.toLowerCase();
     if (lowered === 'name') next.name = value;
     else if (lowered === 'driver') next.driver = value;
@@ -641,7 +708,8 @@ const mergeExtensions = (
 ): void => {
   for (const { key, value } of sec.entries) {
     // `partialClone` names the promisor remote of a partial clone.
-    if (key.toLowerCase() === 'partialclone') {
+    // String-typed field: skip null (valueless key treated as absent).
+    if (key.toLowerCase() === 'partialclone' && value !== null) {
       acc.extensions = { ...acc.extensions, partialClone: value };
     }
   }
@@ -731,5 +799,7 @@ const TRUE_VALUES = new Set(['true', 'yes', 'on', '1']);
 
 // Anything not a recognized truthy value is false: explicit false aliases
 // (false/no/off/0/'') and unparseable values both fall through to `false`
-// (lenient, like git itself).
-const parseGitBoolean = (value: string): boolean => TRUE_VALUES.has(value.toLowerCase());
+// (lenient, like git itself). A `null` value (valueless key, git's internal
+// NULL) maps to `true` — `git_config_bool(NULL) == 1`.
+const parseGitBoolean = (value: string | null): boolean =>
+  value === null || TRUE_VALUES.has(value.toLowerCase());

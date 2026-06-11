@@ -22,12 +22,15 @@ const matchesSectionHeader = (section: IniSection, parsed: ParsedConfigKey): boo
 /**
  * Walk a flat sections array and collect the values whose qualified key matches
  * `parsed`. Entries are returned in physical (file) order.
+ *
+ * The `value` field carries `string | null`: `null` means the key was present
+ * with no `=` (git's internal NULL); `undefined` is never used here.
  */
 export const collectValues = (
   sections: ReadonlyArray<IniSection>,
   parsed: ParsedConfigKey,
-): ReadonlyArray<{ readonly value: string }> => {
-  const matches: Array<{ value: string }> = [];
+): ReadonlyArray<{ readonly value: string | null }> => {
+  const matches: Array<{ value: string | null }> = [];
   for (const section of sections) {
     if (!matchesSectionHeader(section, parsed)) continue;
     for (const entry of section.entries) {
@@ -41,12 +44,15 @@ export const collectValues = (
  * Walk a scope-tagged sections array and collect matches tagged with the scope
  * they came from. Caller order is preserved, so wrapping with
  * `mergeConfigsByScope` yields scope-precedence order.
+ *
+ * The `value` field carries `string | null`: `null` means the key was present
+ * with no `=` (git's internal NULL); `undefined` is never used here.
  */
 export const collectScopedValues = (
   scopedSections: ReadonlyArray<{ readonly scope: ConfigScope; readonly section: IniSection }>,
   parsed: ParsedConfigKey,
-): ReadonlyArray<{ readonly value: string; readonly scope: ConfigScope }> => {
-  const matches: Array<{ value: string; scope: ConfigScope }> = [];
+): ReadonlyArray<{ readonly value: string | null; readonly scope: ConfigScope }> => {
+  const matches: Array<{ value: string | null; scope: ConfigScope }> = [];
   for (const { scope, section } of scopedSections) {
     if (!matchesSectionHeader(section, parsed)) continue;
     for (const entry of section.entries) {

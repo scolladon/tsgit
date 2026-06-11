@@ -894,16 +894,21 @@ describe('primitives/config-read', () => {
 
   describe('Given a header missing `[` but ending with `]`', () => {
     describe('When readConfig', () => {
-      it('Then it is rejected', async () => {
-        // Arrange — `.core]` ends with `]`; only the missing `[` should reject it.
+      it('Then it throws CONFIG_PARSE_ERROR (junk no-`=` line refused)', async () => {
+        // Arrange — `.core]` starts with `.` so the valueless-key grammar refuses
+        // it; git emits `bad config line 1 in file F` for the same input.
         const ctx = createMemoryContext();
         await seed(ctx, '.core]\n  bare = true\n');
 
-        // Act
-        const sut = await readConfig(ctx);
-
-        // Assert
-        expect(sut.core).toBeUndefined();
+        // Act + Assert
+        try {
+          await readConfig(ctx);
+          expect.unreachable('readConfig must throw on a junk no-`=` line');
+        } catch (err) {
+          if (!(err instanceof TsgitError)) throw err;
+          expect(err.data.code).toBe('CONFIG_PARSE_ERROR');
+          expect(err.data).toMatchObject({ line: 1 });
+        }
       });
     });
   });
@@ -960,17 +965,35 @@ describe('primitives/config-read', () => {
     });
   });
 
-  describe('Given a `[core]` body line that contains no `=`', () => {
+  describe('Given a `[core]` body line holding an unrecognized valueless key', () => {
     describe('When readConfig', () => {
-      it('Then the line is ignored entirely', async () => {
-        // Arrange — `bareX` has no `=`; parseKeyValue must reject it outright.
+      it('Then core stays undefined', async () => {
+        // Arrange — `bareX` is a valid valueless key (boolean-true in git) but
+        // not a key the [core] merge consumes; it must not synthesize `bare`.
         const ctx = createMemoryContext();
         await seed(ctx, '[core]\n  bareX\n');
 
         // Act
         const sut = await readConfig(ctx);
 
-        // Assert — accepting it would synthesize a `bare` key and define `core`.
+        // Assert — an unrecognized key never promotes `core` into existence.
+        expect(sut.core).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a `[core]` string-typed key as a valueless entry', () => {
+    describe('When readConfig', () => {
+      it('Then the field is skipped and core stays undefined', async () => {
+        // Arrange — `excludesfile` is string-typed; a valueless occurrence is
+        // treated as absent and must not promote `core` into existence.
+        const ctx = createMemoryContext();
+        await seed(ctx, '[core]\n  excludesfile\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert
         expect(sut.core).toBeUndefined();
       });
     });
@@ -1793,7 +1816,7 @@ describe('primitives/config-read parseIniSections', () => {
 describe('primitives/config-read value grammar', () => {
   const configTextFor = (raw: string): string => `[test]\n\tv = ${raw}\n`;
 
-  const firstValue = (sections: ReadonlyArray<IniSection>): string | undefined =>
+  const firstValue = (sections: ReadonlyArray<IniSection>): string | null | undefined =>
     sections[0]?.entries[0]?.value;
 
   describe('Given a quoted or quote-toggled value, When parseIniSections', () => {
@@ -1974,43 +1997,54 @@ describe('primitives/config-read value grammar', () => {
     it.each([
       ['hash', '[test]\n\tab#cd = x\n\tv = ok\n'],
       ['semicolon', '[test]\n\tab;cd = x\n\tv = ok\n'],
-    ])('Then a %s comment before the equals sign swallows the whole line', (_label, text) => {
-      // Arrange
+    ])('Then a %s comment before the equals sign causes CONFIG_PARSE_ERROR', (_label, text) => {
+      // Arrange — the comment swallows the `=`, landing the line on the
+      // valueless-key path; `ab#cd` / `ab;cd` fail the key grammar → git refuses.
       const sut = parseIniSections;
 
-      // Act
-      const result = sut(text);
-
-      // Assert
-      expect(result[0]?.entries).toEqual([{ key: 'v', value: 'ok' }]);
+      // Act + Assert
+      try {
+        sut(text, 'test.cfg');
+        expect.unreachable('parseIniSections must throw when comment swallows =');
+      } catch (err) {
+        if (!(err instanceof TsgitError)) throw err;
+        expect(err.data.code).toBe('CONFIG_PARSE_ERROR');
+        expect(err.data).toMatchObject({ line: 2, source: 'test.cfg' });
+      }
     });
 
-    it('Then a line with a semicolon before = and a hash after = is still swallowed', () => {
-      // Arrange — the EARLIEST unquoted comment char decides the cut, so the
-      // `;` at index 1 swallows the `=` even though the `#` sits after it.
+    it('Then a line with a semicolon before = and a hash after = causes CONFIG_PARSE_ERROR', () => {
+      // Arrange — the `;` before `=` swallows the `=`; `a;b` fails the key
+      // grammar (semicolon is not alnum/dash) → git refuses the file.
       const sut = parseIniSections;
       const text = '[test]\n\ta;b = x # y\n\tv = ok\n';
 
-      // Act
-      const result = sut(text);
-
-      // Assert
-      expect(result[0]?.entries).toEqual([{ key: 'v', value: 'ok' }]);
+      // Act + Assert
+      try {
+        sut(text, 'test.cfg');
+        expect.unreachable('parseIniSections must throw on comment-swallowed = line');
+      } catch (err) {
+        if (!(err instanceof TsgitError)) throw err;
+        expect(err.data.code).toBe('CONFIG_PARSE_ERROR');
+        expect(err.data).toMatchObject({ line: 2, source: 'test.cfg' });
+      }
     });
 
-    it('Then an unindented comment-swallowed line yields no entry at all', () => {
-      // Arrange — with no indentation a bogus equals-index would slice a
-      // non-empty key from column 0; the line must still be swallowed whole.
+    it('Then an unindented comment-swallowed line causes CONFIG_PARSE_ERROR', () => {
+      // Arrange — without indentation the key starts at column 0; the `;` still
+      // fails the grammar and git refuses the file with `bad config line N`.
       const sut = parseIniSections;
       const text = '[test]\na;b = x # y\nv = ok\n';
 
-      // Act
-      const result = sut(text);
-
-      // Assert
-      expect(result).toEqual([
-        { section: 'test', subsection: undefined, entries: [{ key: 'v', value: 'ok' }] },
-      ]);
+      // Act + Assert
+      try {
+        sut(text, 'test.cfg');
+        expect.unreachable('parseIniSections must throw on unindented comment-swallowed line');
+      } catch (err) {
+        if (!(err instanceof TsgitError)) throw err;
+        expect(err.data.code).toBe('CONFIG_PARSE_ERROR');
+        expect(err.data).toMatchObject({ line: 2, source: 'test.cfg' });
+      }
     });
   });
 
@@ -2680,6 +2714,512 @@ describe('readConfigSections / getConfigValue / getAllConfigValues', () => {
 
       // Assert
       expect(sut).toEqual({ key: 'user.email', values: [] });
+    });
+  });
+
+  describe('Given a valueless key, When getConfigValue', () => {
+    it('Then returns { key, value: null, scope } (distinct from absent → value: undefined)', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await seed(ctx, '[core]\nbare\n');
+
+      // Act
+      const result = await getConfigValue({ ctx, key: 'core.bare', scope: 'local' });
+
+      // Assert
+      expect(result).toEqual({ key: 'core.bare', value: null, scope: 'local' });
+    });
+  });
+
+  describe('Given an absent key, When getConfigValue', () => {
+    it('Then returns { key, value: undefined } (distinct from valueless → value: null)', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await seed(ctx, '[core]\n');
+
+      // Act
+      const result = await getConfigValue({ ctx, key: 'core.bare', scope: 'local' });
+
+      // Assert
+      expect(result).toEqual({ key: 'core.bare', value: undefined });
+    });
+  });
+
+  describe('Given a key with one valued and one valueless occurrence, When getAllConfigValues', () => {
+    it('Then values array carries null in physical file order', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await seed(
+        ctx,
+        '[remote "origin"]\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n\tfetch\n',
+      );
+
+      // Act
+      const result = await getAllConfigValues({
+        ctx,
+        key: 'remote.origin.fetch',
+        scope: 'local',
+      });
+
+      // Assert
+      expect(result.values).toEqual([
+        { value: '+refs/heads/*:refs/remotes/origin/*', scope: 'local' },
+        { value: null, scope: 'local' },
+      ]);
+    });
+  });
+});
+
+describe('primitives/config-read valueless keys', () => {
+  describe('parseIniSections — valueless entry tokenisation', () => {
+    describe('Given [a]\\n\\tkey\\n, When parseIniSections', () => {
+      it('Then one entry with key and value null', () => {
+        // Arrange
+        const sut = parseIniSections;
+
+        // Act
+        const result = sut('[a]\n\tkey\n');
+
+        // Assert
+        expect(result).toEqual([
+          { section: 'a', subsection: undefined, entries: [{ key: 'key', value: null }] },
+        ]);
+      });
+    });
+
+    describe('Given valueless key with trailing spaces, When parseIniSections', () => {
+      it('Then value is null (trailing spaces accepted)', () => {
+        // Arrange
+        const sut = parseIniSections;
+
+        // Act
+        const result = sut('[a]\n\tkey   \n');
+
+        // Assert
+        expect(result[0]?.entries).toEqual([{ key: 'key', value: null }]);
+      });
+    });
+
+    describe('Given valueless key with trailing tab, When parseIniSections', () => {
+      it('Then value is null (trailing tab accepted)', () => {
+        // Arrange
+        const sut = parseIniSections;
+
+        // Act
+        const result = sut('[a]\n\tkey\t\n');
+
+        // Assert
+        expect(result[0]?.entries).toEqual([{ key: 'key', value: null }]);
+      });
+    });
+
+    describe('Given valueless key with trailing CR (CRLF line), When parseIniSections', () => {
+      it('Then value is null (CR at EOL accepted)', () => {
+        // Arrange
+        const sut = parseIniSections;
+
+        // Act
+        const result = sut('[a]\n\tkey\r\n');
+
+        // Assert
+        expect(result[0]?.entries).toEqual([{ key: 'key', value: null }]);
+      });
+    });
+
+    describe('Given valueless key with leading whitespace, When parseIniSections', () => {
+      it('Then value is null (leading whitespace accepted)', () => {
+        // Arrange
+        const sut = parseIniSections;
+
+        // Act
+        const result = sut('[a]\n   key\n');
+
+        // Assert
+        expect(result[0]?.entries).toEqual([{ key: 'key', value: null }]);
+      });
+    });
+
+    describe('Given valueless key With-CAPS, When parseIniSections', () => {
+      it('Then key case is preserved and value is null', () => {
+        // Arrange
+        const sut = parseIniSections;
+
+        // Act
+        const result = sut('[a]\n\tWith-CAPS\n');
+
+        // Assert
+        expect(result[0]?.entries).toEqual([{ key: 'With-CAPS', value: null }]);
+      });
+    });
+
+    describe('Given valueless key at EOF with no trailing newline, When parseIniSections', () => {
+      it('Then value is null (no trailing newline accepted)', () => {
+        // Arrange
+        const sut = parseIniSections;
+
+        // Act
+        const result = sut('[a]\nkey');
+
+        // Assert
+        expect(result[0]?.entries).toEqual([{ key: 'key', value: null }]);
+      });
+    });
+  });
+
+  describe('parseIniSections — refusal matrix', () => {
+    describe('Given key with inline semicolon comment (key ; c), When parseIniSections', () => {
+      it('Then throws CONFIG_PARSE_ERROR with line 2 and the source', () => {
+        // Arrange
+        const sut = parseIniSections;
+
+        // Act + Assert
+        try {
+          sut('[a]\nkey ; c\n', 'test.cfg');
+          expect.unreachable('must throw on key with inline comment');
+        } catch (err) {
+          if (!(err instanceof TsgitError)) throw err;
+          expect(err.data.code).toBe('CONFIG_PARSE_ERROR');
+          expect(err.data).toMatchObject({ line: 2, source: 'test.cfg' });
+        }
+      });
+    });
+
+    describe('Given key with inline hash comment (key # c), When parseIniSections', () => {
+      it('Then throws CONFIG_PARSE_ERROR with line 2 and the source', () => {
+        // Arrange
+        const sut = parseIniSections;
+
+        // Act + Assert
+        try {
+          sut('[a]\nkey # c\n', 'test.cfg');
+          expect.unreachable('must throw on key with inline hash comment');
+        } catch (err) {
+          if (!(err instanceof TsgitError)) throw err;
+          expect(err.data.code).toBe('CONFIG_PARSE_ERROR');
+          expect(err.data).toMatchObject({ line: 2, source: 'test.cfg' });
+        }
+      });
+    });
+
+    describe('Given key with exclamation (bad!key), When parseIniSections', () => {
+      it('Then throws CONFIG_PARSE_ERROR with line 2', () => {
+        // Arrange
+        const sut = parseIniSections;
+
+        // Act + Assert
+        try {
+          sut('[a]\nbad!key\n', 'test.cfg');
+          expect.unreachable('must throw on bad!key');
+        } catch (err) {
+          if (!(err instanceof TsgitError)) throw err;
+          expect(err.data.code).toBe('CONFIG_PARSE_ERROR');
+          expect(err.data).toMatchObject({ line: 2, source: 'test.cfg' });
+        }
+      });
+    });
+
+    describe('Given key starting with digit (9key), When parseIniSections', () => {
+      it('Then throws CONFIG_PARSE_ERROR with line 2', () => {
+        // Arrange
+        const sut = parseIniSections;
+
+        // Act + Assert
+        try {
+          sut('[a]\n9key\n', 'test.cfg');
+          expect.unreachable('must throw on 9key');
+        } catch (err) {
+          if (!(err instanceof TsgitError)) throw err;
+          expect(err.data.code).toBe('CONFIG_PARSE_ERROR');
+          expect(err.data).toMatchObject({ line: 2, source: 'test.cfg' });
+        }
+      });
+    });
+
+    describe('Given key starting with dash (-key), When parseIniSections', () => {
+      it('Then throws CONFIG_PARSE_ERROR with line 2', () => {
+        // Arrange
+        const sut = parseIniSections;
+
+        // Act + Assert
+        try {
+          sut('[a]\n-key\n', 'test.cfg');
+          expect.unreachable('must throw on -key');
+        } catch (err) {
+          if (!(err instanceof TsgitError)) throw err;
+          expect(err.data.code).toBe('CONFIG_PARSE_ERROR');
+          expect(err.data).toMatchObject({ line: 2, source: 'test.cfg' });
+        }
+      });
+    });
+
+    describe('Given key with underscore (under_score), When parseIniSections', () => {
+      it('Then throws CONFIG_PARSE_ERROR with line 2', () => {
+        // Arrange
+        const sut = parseIniSections;
+
+        // Act + Assert
+        try {
+          sut('[a]\nunder_score\n', 'test.cfg');
+          expect.unreachable('must throw on under_score');
+        } catch (err) {
+          if (!(err instanceof TsgitError)) throw err;
+          expect(err.data.code).toBe('CONFIG_PARSE_ERROR');
+          expect(err.data).toMatchObject({ line: 2, source: 'test.cfg' });
+        }
+      });
+    });
+
+    describe('Given key with lone CR before trailing space (key\\r ), When parseIniSections', () => {
+      it('Then throws CONFIG_PARSE_ERROR with line 2', () => {
+        // Arrange
+        const sut = parseIniSections;
+
+        // Act + Assert
+        try {
+          sut('[a]\nkey\r \n', 'test.cfg');
+          expect.unreachable('must throw on key with CR not at EOL');
+        } catch (err) {
+          if (!(err instanceof TsgitError)) throw err;
+          expect(err.data.code).toBe('CONFIG_PARSE_ERROR');
+          expect(err.data).toMatchObject({ line: 2, source: 'test.cfg' });
+        }
+      });
+    });
+
+    describe('Given ab#cd = x where comment swallows the =, When parseIniSections', () => {
+      it('Then throws CONFIG_PARSE_ERROR (refused like git)', () => {
+        // Arrange
+        const sut = parseIniSections;
+
+        // Act + Assert
+        try {
+          sut('[a]\n\tab#cd = x\n', 'test.cfg');
+          expect.unreachable('must throw when comment swallows =');
+        } catch (err) {
+          if (!(err instanceof TsgitError)) throw err;
+          expect(err.data.code).toBe('CONFIG_PARSE_ERROR');
+          expect(err.data).toMatchObject({ line: 2, source: 'test.cfg' });
+        }
+      });
+    });
+  });
+
+  describe('parseIniSections — leniency preserved', () => {
+    describe('Given a valid valueless key before any section (orphan), When parseIniSections', () => {
+      it('Then no entry produced and no throw (orphan key has no section and is dropped)', () => {
+        // Arrange
+        const sut = parseIniSections;
+
+        // Act
+        const result = sut('key\n[a]\n\tv = ok\n');
+
+        // Assert
+        expect(result).toEqual([
+          { section: 'a', subsection: undefined, entries: [{ key: 'v', value: 'ok' }] },
+        ]);
+      });
+    });
+
+    describe('Given [a] key on the header line (line-wise unparseable), When parseIniSections', () => {
+      it('Then skipped and no throw (line-wise vs char-wise known divergence)', () => {
+        // Arrange — `[a] key` is not-header; it starts with `[` so it gets the
+        // lenient skip. A proper `[a]` header precedes it so we can verify that a
+        // following valued entry still lands correctly.
+        const sut = parseIniSections;
+
+        // Act
+        const result = sut('[a]\n[a] key\n\tv = ok\n');
+
+        // Assert — `[a] key` is dropped but the section stays open; `v` is recorded.
+        expect(result).toEqual([
+          { section: 'a', subsection: undefined, entries: [{ key: 'v', value: 'ok' }] },
+        ]);
+      });
+    });
+
+    describe('Given a full-line comment, When parseIniSections', () => {
+      it('Then skipped and no throw', () => {
+        // Arrange
+        const sut = parseIniSections;
+
+        // Act
+        const result = sut('[a]\n# comment\n\tv = ok\n');
+
+        // Assert
+        expect(result).toEqual([
+          { section: 'a', subsection: undefined, entries: [{ key: 'v', value: 'ok' }] },
+        ]);
+      });
+    });
+
+    describe('Given a blank line, When parseIniSections', () => {
+      it('Then skipped and no throw', () => {
+        // Arrange
+        const sut = parseIniSections;
+
+        // Act
+        const result = sut('[a]\n\n\tv = ok\n');
+
+        // Assert
+        expect(result).toEqual([
+          { section: 'a', subsection: undefined, entries: [{ key: 'v', value: 'ok' }] },
+        ]);
+      });
+    });
+  });
+
+  describe('readConfig — bool semantics via valueless keys', () => {
+    beforeEach(() => {
+      __resetConfigCacheForTests();
+    });
+
+    describe('Given [core]\\nbare (valueless), When readConfig', () => {
+      it('Then core.bare is true', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[core]\nbare\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.core?.bare).toBe(true);
+      });
+    });
+
+    describe('Given [core]\\nsparsecheckout (valueless), When readConfig', () => {
+      it('Then core.sparseCheckout is true', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[core]\nsparsecheckout\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.core?.sparseCheckout).toBe(true);
+      });
+    });
+
+    describe('Given [core]\\nlogallrefupdates (valueless), When readConfig', () => {
+      it('Then core.logAllRefUpdates is true', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[core]\nlogallrefupdates\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.core?.logAllRefUpdates).toBe(true);
+      });
+    });
+
+    describe('Given [core]\\nbare = (empty value), When readConfig', () => {
+      it('Then core.bare is false (empty string is falsy)', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[core]\nbare =\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.core?.bare).toBe(false);
+      });
+    });
+  });
+
+  describe('readConfig — string-typed fields skip valueless entries', () => {
+    beforeEach(() => {
+      __resetConfigCacheForTests();
+    });
+
+    describe('Given [user]\\nname\\nemail = e, When readConfig', () => {
+      it('Then user is undefined (valueless name skipped, pair incomplete)', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[user]\nname\nemail = e\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.user).toBeUndefined();
+      });
+    });
+
+    describe('Given [remote "o"]\\nurl\\nfetch (both valueless), When readConfig', () => {
+      it('Then remote o has no url and no fetch entries', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[remote "o"]\nurl\nfetch\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        const remote = result.remote?.get('o');
+        expect(remote?.url).toBeUndefined();
+        expect(remote?.fetch).toBeUndefined();
+      });
+    });
+
+    describe('Given [merge "d"]\\ndriver (valueless), When readConfig', () => {
+      it('Then merge driver d has no driver field (valueless string skipped)', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[merge "d"]\ndriver\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert — the section is present but driver (string field) skips null
+        expect(result.merge?.get('d')?.driver).toBeUndefined();
+      });
+    });
+
+    describe('Given [submodule "s"]\\nactive (valueless bool), When readConfig', () => {
+      it('Then submodule s has active true', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[submodule "s"]\nactive\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.submodule?.get('s')?.active).toBe(true);
+      });
+    });
+
+    describe('Given [remote "o"]\\npromisor (valueless bool), When readConfig', () => {
+      it('Then remote o has promisor true', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[remote "o"]\nurl = u\npromisor\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.remote?.get('o')?.promisor).toBe(true);
+      });
+    });
+
+    describe('Given [branch "b"]\\nremote\\nmerge (both valueless), When readConfig', () => {
+      it('Then branch b has neither remote nor merge (valueless strings skipped)', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[branch "b"]\nremote\nmerge\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert — the section is present but both string fields skip null
+        expect(result.branch?.get('b')?.remote).toBeUndefined();
+        expect(result.branch?.get('b')?.merge).toBeUndefined();
+      });
     });
   });
 });
