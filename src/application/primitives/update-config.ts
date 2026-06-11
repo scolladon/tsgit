@@ -52,11 +52,24 @@ const isSectionHeader = (line: string): boolean => {
  * `key = value` line whose key (case-insensitively) equals `key`. The key is
  * the text before the first `=`, trimmed.
  */
-const isKeyLine = (line: string, key: string): boolean => {
-  const eqAt = line.indexOf('=');
-  if (eqAt === -1) return false;
-  return line.slice(0, eqAt).trim().toLowerCase() === key.toLowerCase();
-};
+const /**
+   * Returns true when `line` is a config entry line for `key` (case-insensitive).
+   *
+   * Matches both forms:
+   *   - Valued:    `\t<key> = <value>` (any leading/trailing whitespace around the key)
+   *   - Valueless: `\t<key>` (no `=` on the line — git's NULL-value boolean-true form)
+   *
+   * Only call this inside a matched section body; section headers and blank/comment
+   * lines are handled by the caller before this function is reached.
+   */
+  isKeyLine = (line: string, key: string): boolean => {
+    const eqAt = line.indexOf('=');
+    if (eqAt !== -1) {
+      return line.slice(0, eqAt).trim().toLowerCase() === key.toLowerCase();
+    }
+    // Valueless form: the entire (trimmed) line must be the key name.
+    return line.trim().toLowerCase() === key.toLowerCase();
+  };
 
 /**
  * True when `value` must be wrapped in double quotes: the value starts with a

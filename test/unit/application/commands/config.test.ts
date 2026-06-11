@@ -242,6 +242,31 @@ describe('configSet', () => {
       });
     });
   });
+
+  describe('Given a valueless occurrence mixed with a valued occurrence, When configSet runs', () => {
+    it('Then it throws CONFIG_MULTIPLE_VALUES (valueless occurrences are counted)', async () => {
+      // Arrange — one valueless + one valued = count 2; multiplicity guard must fire.
+      const ctx = repoCtx();
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[user]\n\tname\n\tname = Ada\n');
+      let caught: TsgitError | undefined;
+
+      // Act
+      try {
+        await configSet(ctx, { key: 'user.name', value: 'Bob' });
+      } catch (err) {
+        caught = err as TsgitError;
+      }
+
+      // Assert
+      expect(caught?.data).toEqual({
+        code: 'CONFIG_MULTIPLE_VALUES',
+        key: 'user.name',
+        count: 2,
+        requested: 'overwrite',
+        scope: 'local',
+      });
+    });
+  });
 });
 
 describe('configUnset', () => {
@@ -275,6 +300,25 @@ describe('configUnset', () => {
       // Assert
       expect(sut).toEqual({ key: 'user.name', scope: 'local', removed: false });
       expect(sut).not.toHaveProperty('previousValue');
+    });
+  });
+
+  describe('Given a valueless entry, When configUnset runs', () => {
+    it('Then it returns removed=true with previousValue null', async () => {
+      // Arrange
+      const ctx = repoCtx();
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[user]\n\tname\n');
+
+      // Act
+      const sut = await configUnset(ctx, { key: 'user.name' });
+
+      // Assert
+      expect(sut).toEqual({
+        key: 'user.name',
+        scope: 'local',
+        removed: true,
+        previousValue: null,
+      });
     });
   });
 });

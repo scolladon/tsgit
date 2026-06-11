@@ -1116,6 +1116,66 @@ describe('primitives/update-config', () => {
         });
       });
     });
+
+    describe('Given a valueless entry for the key', () => {
+      describe('When setConfigEntryInText replaces it', () => {
+        it('Then the valueless line is replaced with the canonical key = value form', () => {
+          // Arrange
+          const text = '[a]\n\tkey\n';
+
+          // Act
+          const sut = setConfigEntryInText(text, 'a', undefined, 'key', 'replaced');
+
+          // Assert — byte-exact: tab indent, space around =, trailing newline preserved.
+          expect(sut).toBe('[a]\n\tkey = replaced\n');
+        });
+      });
+    });
+
+    describe('Given a valueless entry whose name is a different case from the set key', () => {
+      describe('When setConfigEntryInText matches case-insensitively', () => {
+        it('Then the valueless line is replaced (case-insensitive key match)', () => {
+          // Arrange
+          const text = '[a]\n\tkey\n';
+
+          // Act
+          const sut = setConfigEntryInText(text, 'a', undefined, 'KEY', 'replaced');
+
+          // Assert — valueless `key` line matched via case-insensitive comparison.
+          expect(sut).toBe('[a]\n\tKEY = replaced\n');
+        });
+      });
+    });
+
+    describe('Given a valueless line for a DIFFERENT key in the same section', () => {
+      describe('When setConfigEntryInText targets another key', () => {
+        it('Then the valueless line for the other key is not matched', () => {
+          // Arrange — `other` is valueless; we set `key`, which is absent.
+          const text = '[a]\n\tother\n';
+
+          // Act
+          const sut = setConfigEntryInText(text, 'a', undefined, 'key', 'v');
+
+          // Assert — `other` line untouched; `key` inserted after header.
+          expect(sut).toBe('[a]\n\tkey = v\n\tother\n');
+        });
+      });
+    });
+
+    describe('Given a valueless line for the key in a LATER section', () => {
+      describe('When setConfigEntryInText targets the first section', () => {
+        it('Then the later section valueless line is not matched (section-stop)', () => {
+          // Arrange — `key` is valueless in `[b]`, absent in `[a]`.
+          const text = '[a]\n\tother = v\n[b]\n\tkey\n';
+
+          // Act
+          const sut = setConfigEntryInText(text, 'a', undefined, 'key', 'w');
+
+          // Assert — new entry inserted under [a]; [b] section untouched.
+          expect(sut).toBe('[a]\n\tkey = w\n\tother = v\n[b]\n\tkey\n');
+        });
+      });
+    });
   });
 
   describe('updateConfigEntries', () => {
@@ -1267,6 +1327,21 @@ describe('primitives/update-config', () => {
 
           // Assert — the unrelated section is preserved verbatim.
           expect(sut).toBe(text);
+        });
+      });
+    });
+
+    describe('Given a valueless entry for the key', () => {
+      describe('When removeConfigEntry removes it', () => {
+        it('Then the valueless line is removed and neighbours are preserved byte-for-byte', () => {
+          // Arrange
+          const text = '[a]\n\tbefore = x\n\tkey\n\tafter = y\n';
+
+          // Act
+          const sut = removeConfigEntry(text, 'a', undefined, 'key');
+
+          // Assert — `key` line gone; surrounding lines untouched.
+          expect(sut).toBe('[a]\n\tbefore = x\n\tafter = y\n');
         });
       });
     });
@@ -1652,6 +1727,21 @@ describe('primitives/update-config', () => {
 
           // Assert
           expect((caught as TsgitError).data.code).toBe('INVALID_OPTION');
+        });
+      });
+    });
+
+    describe('Given a valueless entry as the only prior occurrence of the key', () => {
+      describe('When appendConfigEntry inserts after it', () => {
+        it('Then the new entry is inserted AFTER the valueless line', () => {
+          // Arrange — `key` appears valueless; appending should land after it.
+          const text = '[remote "r"]\n\tkey\n';
+
+          // Act
+          const sut = appendConfigEntry(text, 'remote', 'r', 'key', 'B');
+
+          // Assert — new entry after the valueless line.
+          expect(sut).toBe('[remote "r"]\n\tkey\n\tkey = B\n');
         });
       });
     });
