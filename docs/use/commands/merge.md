@@ -64,6 +64,15 @@ Resolve the working-tree files, `repo.add` the resolved paths, then `repo.merge.
 
 Unsupported conflict types (`rename-rename`, `gitlink`) reject upfront with `UNSUPPORTED_OPERATION` before any disk write.
 
+### Distinct types (file vs symlink)
+
+When both sides **change** to different kinds — one a regular file and one a symlink — the conflict is `distinct-types`. The regular side is renamed to `<path>~<label>` (that side's conflict label with `/` flattened to `_`, made unique with `_0`, `_1`, … against tracked paths) while the symlink keeps the original path. Each side lands at its recorded path — no content merge, and the behaviour is identical whether or not a merge base exists:
+
+- **No base (add/add).** Both sides add; each lands as a single-stage entry at its recorded path (`ourPath` / `theirPath`), with stages 2/3 only.
+- **With base (both sides changed).** The base's stage-1 entry travels with the side whose kind matches the base: base file ⇒ stage 1 at the renamed regular side's path (so that path has stages 1+2); base symlink ⇒ stage 1 at the original path with stages 1+3. The conflict carries `basePath` recording where stage 1 was emitted.
+
+An untracked working file at the rename target refuses with `WORKING_TREE_DIRTY` before anything is written.
+
 ### Both-added paths
 
 When both sides **add** the same path (no merge-base entry):
@@ -74,15 +83,32 @@ When both sides **add** the same path (no merge-base entry):
   `contentVerdict` (`'content'`, `'binary'`, or `'clean'` when the bytes merged
   but the file modes disagree) alongside the materialised `conflictContent`.
   The index gains stage-2/3 entries only (no base → no stage 1).
-- **A regular file vs a symlink** is a `distinct-types` conflict: the regular
-  side is renamed to `<path>~<label>` (that side's conflict label with `/`
-  flattened to `_`, made unique with `_0`, `_1`, … against tracked paths) while
-  the symlink keeps the original path — each side lands as a single-stage entry
-  at its recorded path (`ourPath` / `theirPath`), matching git's
-  `CONFLICT (distinct types)`. An untracked working file at the rename target
-  refuses with `WORKING_TREE_DIRTY` before anything is written.
 - **Symlink vs symlink** (and any pair involving a gitlink) keeps ours in the
   working tree with plain stage-2/3 entries.
+
+### Same-kind files with kind-changed base
+
+When both sides are regular files but the merge base is a different kind (symlink or other):
+
+- The content merge runs with the base treated as **absent for content** (two-way merge; `union` resolves cleanly), yet the base's stage-1 entry is recorded per the standard merge rules.
+- The conflict type is `'content'` with the merged bytes in `conflictContent`.
+- Clean content + equal modes → resolved (no conflict).
+- Clean content + differing modes → conflict, `contentVerdict: 'clean'`, worktree carries ours' mode (executable bit preserved).
+
+### Symlink vs symlink (both changed)
+
+When both sides are symlinks, the conflict is a bare `'content'` conflict (no markers, no `conflictContent`):
+
+- All three stages (base, ours, theirs) are recorded at the path.
+- The working tree keeps **ours' symlink** as-is — link targets are never merged.
+- This applies whether or not the base is a symlink.
+
+### Conflict writes (worktree mode preservation)
+
+All conflict materialisation is mode-aware. Conflicted paths appear in the working tree with their merged/surviving side's mode:
+
+- Marker-file conflicts (`conflictContent`) carry ours' or the resolved mode, preserving the executable bit.
+- Bare take-ours conflicts (symlink pairs, distinct-types outcomes) re-create the kind correctly — symlinks as symlinks (mode 120000), not as regular files.
 
 The same behaviour applies wherever the shared 3-way merge runs: `stash apply`,
 `cherry-pick`, `revert`, and `rebase`.
@@ -179,5 +205,5 @@ switch (result.kind) {
 
 - Primitives: [`mergeBase`](../primitives/merge-base.md), [`diffTrees`](../primitives/diff-trees.md)
 - Related commands: [`commit`](commit.md) (clears merge state), [`reset`](reset.md) (`mode: 'hard'` to `ORIG_HEAD` is the manual equivalent of `merge.abort`)
-- ADRs: [025](../../adr/025-merge-parallel-blob-reads.md), [026](../../adr/026-merge-conflict-returns-not-throws.md), [027](../../adr/027-merge-conflict-write-order.md), [028](../../adr/028-merge-msg-content.md), [076](../../adr/076-merge-conflict-materialization.md), [170](../../adr/170-abort-merge-hard-reset-semantics.md), [171](../../adr/171-no-operation-in-progress-error.md), [172](../../adr/172-flat-abort-continue-surface.md), [173](../../adr/173-abort-merge-preserves-orig-head.md), [174](../../adr/174-continue-merge-delegates-to-commit.md), [263](../../adr/263-merge-namespace-reshape.md), [264](../../adr/264-fast-forward-tristate.md), [265](../../adr/265-merge-internal-reflog-channel.md), [293](../../adr/293-merge-materialises-non-conflict-outcomes.md)
+- ADRs: [025](../../adr/025-merge-parallel-blob-reads.md), [026](../../adr/026-merge-conflict-returns-not-throws.md), [027](../../adr/027-merge-conflict-write-order.md), [028](../../adr/028-merge-msg-content.md), [076](../../adr/076-merge-conflict-materialization.md), [170](../../adr/170-abort-merge-hard-reset-semantics.md), [171](../../adr/171-no-operation-in-progress-error.md), [172](../../adr/172-flat-abort-continue-surface.md), [173](../../adr/173-abort-merge-preserves-orig-head.md), [174](../../adr/174-continue-merge-delegates-to-commit.md), [263](../../adr/263-merge-namespace-reshape.md), [264](../../adr/264-fast-forward-tristate.md), [265](../../adr/265-merge-internal-reflog-channel.md), [293](../../adr/293-merge-materialises-non-conflict-outcomes.md), [318](../../adr/318-distinct-types-with-base-conflict-type.md), [319](../../adr/319-symlink-content-conflict.md), [320](../../adr/320-content-verdict-scope.md), [321](../../adr/321-mode-aware-conflict-writes.md)
 ```
