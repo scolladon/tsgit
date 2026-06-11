@@ -20,6 +20,7 @@ import { FILE_MODE } from '../../../../src/domain/objects/index.js';
 const ID_A = 'a'.repeat(40) as ObjectId;
 const ID_B = 'b'.repeat(40) as ObjectId;
 const ID_C = 'c'.repeat(40) as ObjectId;
+const ID_D = 'd'.repeat(40) as ObjectId;
 
 function zeroStat(mode: FileMode): StatData {
   return {
@@ -773,6 +774,176 @@ describe('conflictsToIndexEntries', () => {
 
         // Assert
         expect((thrown as { data: { code: string } }).data.code).toBe('INVALID_DIFF_INPUT');
+      });
+    });
+  });
+
+  describe('Given a with-base distinct-types conflict whose base is a regular file (S1 shape)', () => {
+    describe('When conflictsToIndexEntries called', () => {
+      it('Then the base entry is emitted at stage 1 at basePath alongside stage 2', () => {
+        // Arrange — S1: base=file, ours=file (renamed to f~HEAD), theirs=symlink (stays at f)
+        const sut = conflictsToIndexEntries(
+          [
+            conflict({
+              type: 'distinct-types',
+              path: 'f' as FilePath,
+              ourPath: 'f~HEAD' as FilePath,
+              theirPath: 'f' as FilePath,
+              basePath: 'f~HEAD' as FilePath,
+              baseId: ID_A,
+              baseMode: FILE_MODE.REGULAR,
+              ourId: ID_B,
+              ourMode: FILE_MODE.REGULAR,
+              theirId: ID_C,
+              theirMode: FILE_MODE.SYMLINK,
+            }),
+          ],
+          zeroStat,
+        );
+
+        // Assert — exactly three entries in path-then-stage order
+        expect(sut).toHaveLength(3);
+        expect(sut[0]?.path).toBe('f');
+        expect(sut[0]?.flags.stage).toBe(3);
+        expect(sut[0]?.id).toBe(ID_C);
+        expect(sut[0]?.mode).toBe(FILE_MODE.SYMLINK);
+        expect(sut[1]?.path).toBe('f~HEAD');
+        expect(sut[1]?.flags.stage).toBe(1);
+        expect(sut[1]?.id).toBe(ID_A);
+        expect(sut[1]?.mode).toBe(FILE_MODE.REGULAR);
+        expect(sut[2]?.path).toBe('f~HEAD');
+        expect(sut[2]?.flags.stage).toBe(2);
+        expect(sut[2]?.id).toBe(ID_B);
+        expect(sut[2]?.mode).toBe(FILE_MODE.REGULAR);
+      });
+
+      it('Then the two-stage run at f~HEAD lists stage 1 before stage 2', () => {
+        // Arrange — same S1 conflict; focus on stage order within f~HEAD
+        const sut = conflictsToIndexEntries(
+          [
+            conflict({
+              type: 'distinct-types',
+              path: 'f' as FilePath,
+              ourPath: 'f~HEAD' as FilePath,
+              theirPath: 'f' as FilePath,
+              basePath: 'f~HEAD' as FilePath,
+              baseId: ID_A,
+              baseMode: FILE_MODE.REGULAR,
+              ourId: ID_B,
+              ourMode: FILE_MODE.REGULAR,
+              theirId: ID_C,
+              theirMode: FILE_MODE.SYMLINK,
+            }),
+          ],
+          zeroStat,
+        );
+
+        // Assert — stage 1 precedes stage 2 at the same path
+        const fHead = sut.filter((e) => e.path === ('f~HEAD' as FilePath));
+        expect(fHead).toHaveLength(2);
+        expect(fHead[0]?.flags.stage).toBe(1);
+        expect(fHead[1]?.flags.stage).toBe(2);
+      });
+    });
+  });
+
+  describe('Given a with-base distinct-types conflict whose base is a symlink (S3 shape)', () => {
+    describe('When conflictsToIndexEntries called', () => {
+      it('Then the base stage-1 is at the symlink path alongside stage 2, regular side at f~B', () => {
+        // Arrange — S3: base=symlink, ours=symlink (stays at f), theirs=file (renamed to f~B)
+        const sut = conflictsToIndexEntries(
+          [
+            conflict({
+              type: 'distinct-types',
+              path: 'f' as FilePath,
+              ourPath: 'f' as FilePath,
+              theirPath: 'f~B' as FilePath,
+              basePath: 'f' as FilePath,
+              baseId: ID_A,
+              baseMode: FILE_MODE.SYMLINK,
+              ourId: ID_B,
+              ourMode: FILE_MODE.SYMLINK,
+              theirId: ID_C,
+              theirMode: FILE_MODE.REGULAR,
+            }),
+          ],
+          zeroStat,
+        );
+
+        // Assert — exactly three entries: f:1, f:2, f~B:3
+        expect(sut).toHaveLength(3);
+        expect(sut[0]?.path).toBe('f');
+        expect(sut[0]?.flags.stage).toBe(1);
+        expect(sut[0]?.id).toBe(ID_A);
+        expect(sut[0]?.mode).toBe(FILE_MODE.SYMLINK);
+        expect(sut[1]?.path).toBe('f');
+        expect(sut[1]?.flags.stage).toBe(2);
+        expect(sut[1]?.id).toBe(ID_B);
+        expect(sut[1]?.mode).toBe(FILE_MODE.SYMLINK);
+        expect(sut[2]?.path).toBe('f~B');
+        expect(sut[2]?.flags.stage).toBe(3);
+        expect(sut[2]?.id).toBe(ID_C);
+        expect(sut[2]?.mode).toBe(FILE_MODE.REGULAR);
+      });
+    });
+  });
+
+  describe('Given a with-base distinct-types conflict with basePath set but baseId absent', () => {
+    describe('When conflictsToIndexEntries called', () => {
+      it('Then no stage-1 entry is emitted', () => {
+        // Arrange — basePath present but baseId missing → guard prevents emission
+        const sut = conflictsToIndexEntries(
+          [
+            conflict({
+              type: 'distinct-types',
+              path: 'f' as FilePath,
+              ourPath: 'f~HEAD' as FilePath,
+              theirPath: 'f' as FilePath,
+              basePath: 'f~HEAD' as FilePath,
+              // baseId intentionally absent
+              baseMode: FILE_MODE.REGULAR,
+              ourId: ID_B,
+              ourMode: FILE_MODE.REGULAR,
+              theirId: ID_C,
+              theirMode: FILE_MODE.SYMLINK,
+            }),
+          ],
+          zeroStat,
+        );
+
+        // Assert — two entries only (stages 2 and 3), no stage 1
+        expect(sut).toHaveLength(2);
+        expect(sut.every((e) => e.flags.stage !== 1)).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a with-base distinct-types conflict with baseId set but basePath absent', () => {
+    describe('When conflictsToIndexEntries called', () => {
+      it('Then no stage-1 entry is emitted', () => {
+        // Arrange — baseId/baseMode present but basePath missing → guard prevents emission
+        const sut = conflictsToIndexEntries(
+          [
+            conflict({
+              type: 'distinct-types',
+              path: 'f' as FilePath,
+              ourPath: 'f~HEAD' as FilePath,
+              theirPath: 'f' as FilePath,
+              // basePath intentionally absent
+              baseId: ID_D,
+              baseMode: FILE_MODE.REGULAR,
+              ourId: ID_B,
+              ourMode: FILE_MODE.REGULAR,
+              theirId: ID_C,
+              theirMode: FILE_MODE.SYMLINK,
+            }),
+          ],
+          zeroStat,
+        );
+
+        // Assert — two entries only (stages 2 and 3), no stage 1
+        expect(sut).toHaveLength(2);
+        expect(sut.every((e) => e.flags.stage !== 1)).toBe(true);
       });
     });
   });

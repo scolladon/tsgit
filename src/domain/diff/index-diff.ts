@@ -162,6 +162,13 @@ function distinctTypesEmissions(conflict: MergeConflict): ReadonlyArray<StageEmi
       path: conflict.theirPath,
     });
   }
+  if (
+    conflict.baseId !== undefined &&
+    conflict.baseMode !== undefined &&
+    conflict.basePath !== undefined
+  ) {
+    out.push({ id: conflict.baseId, mode: conflict.baseMode, stage: 1, path: conflict.basePath });
+  }
   return out;
 }
 
@@ -233,9 +240,8 @@ export function conflictsToIndexEntries(
   }
   entries.sort((a, b) => {
     const pathCmp = comparePaths(a.path, b.path);
-    // Stryker disable next-line ConditionalExpression: equivalent — same-path entries only ever come from one conflict (recorded paths are deduplicated above, and a distinct-types conflict emits each side at its own path) and are pushed in ascending stage order; with `true` the comparator returns 0 for them and V8's spec-stable sort preserves that already-ascending insertion order, yielding identical output.
     if (pathCmp !== 0) return pathCmp;
-    // Stryker disable next-line ArithmeticOperator: equivalent — same-path runs are always pushed pre-sorted ascending by stage (regular conflicts emit 1→2→3, distinct-types one stage per path, duplicates rejected above), so the comparator never has to reorder them; `+` and `-` both leave the already-ascending run in place.
+    // Stryker disable next-line ArithmeticOperator: equivalent — same-path runs are either ascending triples (regular conflicts emit 1→2→3) which both operators leave in place, or two-element distinct-types runs (side stage then base stage 1) for which both operators return a positive value and produce the same sorted pair.
     return a.flags.stage - b.flags.stage;
   });
   return entries;

@@ -11,7 +11,7 @@
  *   unique:         distinct-types with-base content-merge runs against git
  *   interopSurface: merge
  */
-import { symlinkSync, writeFileSync } from 'node:fs';
+import { readlinkSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { readFile, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -199,7 +199,12 @@ describe.skipIf(!GIT_AVAILABLE)(
       }
       await oursCommit('side-change');
 
-      // Back to main: replace p with ours' shape
+      // Back to main: replace p with ours' shape.
+      // When theirs is a symlink, tsgit's checkout can't overwrite the symlink
+      // with a regular file — manually remove it first so checkout succeeds.
+      if (spec.theirs.kind === 'symlink') {
+        unlinkSync(path.join(pair.ours, 'p'));
+      }
       await repo.checkout({ rev: 'main' });
       await repo.rm(['p']);
       if (spec.ours.kind === 'file') {
@@ -242,6 +247,462 @@ describe.skipIf(!GIT_AVAILABLE)(
           expect(oursFile).toContain('shared\n');
           expect(oursFile).toContain('<<<<<<<');
           expect(oursFile).toContain('>>>>>>>');
+        });
+      });
+    });
+
+    // ── S1: base=file, ours=file, theirs=symlink ─────────────────────────────
+    //
+    // Regular side (ours) is renamed to p~HEAD; symlink (theirs) stays at p.
+    // Stage 1 (base, regular) travels with the regular renamed side → p~HEAD.
+    // Expected index: 120000 <theirs> 3 p  |  100644 <base> 1 p~HEAD  |  100644 <ours> 2 p~HEAD
+
+    describe('Given base=file, ours=file, theirs=symlink (S1)', () => {
+      describe('When both tools merge', () => {
+        it('Then index stage-1 is at p~HEAD (regular kind) matching git, and working tree matches', async () => {
+          // Arrange
+          await setupWithBase({
+            base: { kind: 'file', bytes: 'base\n' },
+            ours: { kind: 'file', bytes: 'ours\n' },
+            theirs: { kind: 'symlink', target: 'target-b' },
+          });
+
+          // Act
+          const peerResult = peerMergeConflict('side');
+          const result = await repo.merge.run({ rev: 'side', message: 'm', author: AUTHOR });
+
+          // Assert — both tools report conflict
+          expect(peerResult.ok).toBe(false);
+          expect(result.kind).toBe('conflict');
+
+          // Index parity — stage-1 at p~HEAD pins byte-for-byte
+          expect(lsStage(pair.ours)).toBe(lsStage(pair.peer));
+
+          // Working tree: p is a symlink to target-b on both
+          const oursLink = readlinkSync(path.join(pair.ours, 'p'));
+          const peerLink = readlinkSync(path.join(pair.peer, 'p'));
+          expect(oursLink).toBe(peerLink);
+          expect(oursLink).toBe('target-b');
+
+          // Working tree: p~HEAD is the regular file on both
+          const oursRegular = await readFile(path.join(pair.ours, 'p~HEAD'), 'utf8');
+          const peerRegular = await readFile(path.join(pair.peer, 'p~HEAD'), 'utf8');
+          expect(oursRegular).toBe(peerRegular);
+          expect(oursRegular).toBe('ours\n');
+        });
+      });
+    });
+
+    // ── S2: mirror — ours=symlink, theirs=file ────────────────────────────────
+    //
+    // Regular side (theirs) is renamed to p~B; symlink (ours) stays at p.
+    // Stage 1 (base, regular) travels with the regular renamed side → p~B.
+    // Expected index: 120000 <ours> 2 p  |  100644 <base> 1 p~B  |  100644 <theirs> 3 p~B
+
+    describe('Given base=file, ours=symlink, theirs=file (S2)', () => {
+      describe('When both tools merge', () => {
+        it('Then index stage-1 is at p~B (regular kind) matching git, and working tree matches', async () => {
+          // Arrange
+          await setupWithBase({
+            base: { kind: 'file', bytes: 'base\n' },
+            ours: { kind: 'symlink', target: 'target-a' },
+            theirs: { kind: 'file', bytes: 'theirs\n' },
+          });
+
+          // Act
+          const peerResult = peerMergeConflict('side');
+          const result = await repo.merge.run({ rev: 'side', message: 'm', author: AUTHOR });
+
+          // Assert — both tools report conflict
+          expect(peerResult.ok).toBe(false);
+          expect(result.kind).toBe('conflict');
+
+          // Index parity — stage-1 at p~side pins byte-for-byte
+          expect(lsStage(pair.ours)).toBe(lsStage(pair.peer));
+
+          // Working tree: p is a symlink to target-a on both
+          const oursLink = readlinkSync(path.join(pair.ours, 'p'));
+          const peerLink = readlinkSync(path.join(pair.peer, 'p'));
+          expect(oursLink).toBe(peerLink);
+          expect(oursLink).toBe('target-a');
+
+          // Working tree: p~side is the regular file on both (theirs label = branch name 'side')
+          const oursRegular = await readFile(path.join(pair.ours, 'p~side'), 'utf8');
+          const peerRegular = await readFile(path.join(pair.peer, 'p~side'), 'utf8');
+          expect(oursRegular).toBe(peerRegular);
+          expect(oursRegular).toBe('theirs\n');
+        });
+      });
+    });
+
+    // ── S3: base=symlink, ours=symlink, theirs=file ───────────────────────────
+    //
+    // Regular side (theirs) renamed to p~B; symlink side (ours) + base stay at p.
+    // Stage 1 (base, symlink) is at p alongside stage 2.
+    // Expected index: 120000 <base> 1 p  |  120000 <ours> 2 p  |  100644 <theirs> 3 p~B
+
+    describe('Given base=symlink, ours=symlink, theirs=file (S3)', () => {
+      describe('When both tools merge', () => {
+        it('Then index stage-1 is at p (symlink kind) matching git, and working tree matches', async () => {
+          // Arrange
+          await setupWithBase({
+            base: { kind: 'symlink', target: 'base-target' },
+            ours: { kind: 'symlink', target: 'ours-target' },
+            theirs: { kind: 'file', bytes: 'theirs\n' },
+          });
+
+          // Act
+          const peerResult = peerMergeConflict('side');
+          const result = await repo.merge.run({ rev: 'side', message: 'm', author: AUTHOR });
+
+          // Assert — both tools report conflict
+          expect(peerResult.ok).toBe(false);
+          expect(result.kind).toBe('conflict');
+
+          // Index parity — stage-1 at p (symlink) pins byte-for-byte
+          expect(lsStage(pair.ours)).toBe(lsStage(pair.peer));
+
+          // Working tree: p is ours' symlink on both
+          const oursLink = readlinkSync(path.join(pair.ours, 'p'));
+          const peerLink = readlinkSync(path.join(pair.peer, 'p'));
+          expect(oursLink).toBe(peerLink);
+          expect(oursLink).toBe('ours-target');
+
+          // Working tree: p~side is the regular file on both (theirs label = branch name 'side')
+          const oursRegular = await readFile(path.join(pair.ours, 'p~side'), 'utf8');
+          const peerRegular = await readFile(path.join(pair.peer, 'p~side'), 'utf8');
+          expect(oursRegular).toBe(peerRegular);
+          expect(oursRegular).toBe('theirs\n');
+        });
+      });
+    });
+
+    // ── S4: mirror — base=symlink, ours=file, theirs=symlink ─────────────────
+    //
+    // Regular side (ours) renamed to p~HEAD; symlink side (theirs) + base stay at p.
+    // Stage 1 (base, symlink) is at p alongside stage 3.
+    // Expected index: 120000 <base> 1 p  |  120000 <theirs> 3 p  |  100644 <ours> 2 p~HEAD
+
+    describe('Given base=symlink, ours=file, theirs=symlink (S4)', () => {
+      describe('When both tools merge', () => {
+        it('Then index stage-1 is at p (symlink kind) matching git, and working tree matches', async () => {
+          // Arrange
+          await setupWithBase({
+            base: { kind: 'symlink', target: 'base-target' },
+            ours: { kind: 'file', bytes: 'ours\n' },
+            theirs: { kind: 'symlink', target: 'theirs-target' },
+          });
+
+          // Act
+          const peerResult = peerMergeConflict('side');
+          const result = await repo.merge.run({ rev: 'side', message: 'm', author: AUTHOR });
+
+          // Assert — both tools report conflict
+          expect(peerResult.ok).toBe(false);
+          expect(result.kind).toBe('conflict');
+
+          // Index parity — stage-1 at p (symlink) pins byte-for-byte
+          expect(lsStage(pair.ours)).toBe(lsStage(pair.peer));
+
+          // Working tree: p is theirs' symlink on both
+          const oursLink = readlinkSync(path.join(pair.ours, 'p'));
+          const peerLink = readlinkSync(path.join(pair.peer, 'p'));
+          expect(oursLink).toBe(peerLink);
+          expect(oursLink).toBe('theirs-target');
+
+          // Working tree: p~HEAD is the regular file on both
+          const oursRegular = await readFile(path.join(pair.ours, 'p~HEAD'), 'utf8');
+          const peerRegular = await readFile(path.join(pair.peer, 'p~HEAD'), 'utf8');
+          expect(oursRegular).toBe(peerRegular);
+          expect(oursRegular).toBe('ours\n');
+        });
+      });
+    });
+
+    // ── S5: trivial boundary — ours unchanged, theirs=symlink ────────────────
+    //
+    // Ours did NOT change p (only theirs changed from file to symlink) → clean
+    // merge: the changed side is taken, no conflict emitted.
+
+    describe('Given ours unchanged, theirs changed p to a symlink (S5)', () => {
+      describe('When both tools merge', () => {
+        it('Then both merge clean, writeTreeOf parity, p is a symlink on both', async () => {
+          // Arrange — base=file (ours did not change it); theirs=symlink
+          peerWrite('root.txt', 'root\n');
+          peerWrite('p', 'base\n');
+          peerAdd('root.txt', 'p');
+          peerCommit('base');
+          peerBranch('side');
+          runGit(['-C', pair.peer, 'rm', '-q', 'p']);
+          peerSymlink('target-b', 'p');
+          peerAdd('p');
+          peerCommit('side-symlink');
+          peerCheckout('main');
+          // main does NOT change p — just add root2.txt to diverge
+          peerWrite('root2.txt', 'extra\n');
+          peerAdd('root2.txt');
+          peerCommit('main-diverge');
+
+          await oursWrite('root.txt', 'root\n');
+          await oursWrite('p', 'base\n');
+          await repo.add(['root.txt', 'p']);
+          await oursCommit('base');
+          await repo.branch.create({ name: 'side' });
+          await repo.checkout({ rev: 'side' });
+          await repo.rm(['p']);
+          symlinkSync('target-b', path.join(pair.ours, 'p'));
+          await repo.add(['p']);
+          await oursCommit('side-symlink');
+          // Returning to main: symlink → regular file. tsgit's checkout cannot
+          // overwrite a symlink with a regular file — remove it manually first.
+          unlinkSync(path.join(pair.ours, 'p'));
+          await repo.checkout({ rev: 'main' });
+          await oursWrite('root2.txt', 'extra\n');
+          await repo.add(['root2.txt']);
+          await oursCommit('main-diverge');
+
+          // Act
+          peerMergeClean('side');
+          const result = await repo.merge.run({ rev: 'side', message: 'm', author: AUTHOR });
+
+          // Assert — clean merge on both
+          expect(result.kind).not.toBe('conflict');
+
+          // Index (stage 0) parity
+          expect(lsStage(pair.ours)).toBe(lsStage(pair.peer));
+
+          // p is a symlink to target-b on both
+          const oursLink = readlinkSync(path.join(pair.ours, 'p'));
+          const peerLink = readlinkSync(path.join(pair.peer, 'p'));
+          expect(oursLink).toBe(peerLink);
+          expect(oursLink).toBe('target-b');
+        });
+      });
+    });
+
+    // ── S7: untracked file squats the rename target ───────────────────────────
+    //
+    // S1 shape + an untracked file at p~HEAD in both worktrees before the merge.
+    // Both tools must refuse without touching HEAD/index.
+
+    describe('Given an untracked file squats the rename target p~HEAD (S7)', () => {
+      describe('When both tools attempt the with-base merge', () => {
+        it('Then both tools refuse and HEAD/index are untouched', async () => {
+          // Arrange — S1 shape
+          await setupWithBase({
+            base: { kind: 'file', bytes: 'base\n' },
+            ours: { kind: 'file', bytes: 'ours\n' },
+            theirs: { kind: 'symlink', target: 'target-b' },
+          });
+          // Untracked blocker at rename target — placed BEFORE merge
+          peerWrite('p~HEAD', 'untracked-blocker\n');
+          await oursWrite('p~HEAD', 'untracked-blocker\n');
+
+          // Capture pre-merge state for tsgit
+          const stageBefore = lsStage(pair.ours);
+
+          // Act
+          const peerResult = peerMergeConflict('side');
+          let oursResult: { kind: string; paths: ReadonlyArray<string> | undefined } | undefined;
+          try {
+            const r = await repo.merge.run({ rev: 'side', message: 'm', author: AUTHOR });
+            oursResult = { kind: r.kind, paths: undefined };
+          } catch (err) {
+            oursResult = {
+              kind: 'would-overwrite',
+              paths: (err as { data?: { paths?: ReadonlyArray<string> } }).data?.paths,
+            };
+          }
+
+          // Assert — both tools refuse
+          expect(peerResult.ok).toBe(false);
+          expect(peerResult.stderr + peerResult.stdout).toContain('untracked');
+          expect(oursResult?.kind).toBe('would-overwrite');
+          expect(oursResult?.paths).toContain('p~HEAD');
+
+          // Blocker untouched, index unchanged
+          const blocker = await readFile(path.join(pair.ours, 'p~HEAD'), 'utf8');
+          expect(blocker).toBe('untracked-blocker\n');
+          expect(lsStage(pair.ours)).toBe(stageBefore);
+        });
+      });
+    });
+
+    // ── S8: tracked p~HEAD squats rename → probe p~HEAD_0 ────────────────────
+
+    describe('Given tracked p~HEAD squats the rename target (S8)', () => {
+      describe('When both tools merge', () => {
+        it('Then index uses p~HEAD_0 for the distinct-types sides and matches git', async () => {
+          // Arrange — S1 shape but p~HEAD is already tracked on both tools
+          peerWrite('root.txt', 'root\n');
+          peerWrite('p', 'base\n');
+          peerWrite('p~HEAD', 'existing\n');
+          peerAdd('root.txt', 'p', 'p~HEAD');
+          peerCommit('base');
+          peerBranch('side');
+          runGit(['-C', pair.peer, 'rm', '-q', 'p']);
+          peerSymlink('target-b', 'p');
+          peerAdd('p');
+          peerCommit('side-symlink');
+          peerCheckout('main');
+          runGit(['-C', pair.peer, 'rm', '-q', 'p']);
+          peerWrite('p', 'ours\n');
+          peerAdd('p');
+          peerCommit('main-regular');
+
+          await oursWrite('root.txt', 'root\n');
+          await oursWrite('p', 'base\n');
+          await oursWrite('p~HEAD', 'existing\n');
+          await repo.add(['root.txt', 'p', 'p~HEAD']);
+          await oursCommit('base');
+          await repo.branch.create({ name: 'side' });
+          await repo.checkout({ rev: 'side' });
+          await repo.rm(['p']);
+          symlinkSync('target-b', path.join(pair.ours, 'p'));
+          await repo.add(['p']);
+          await oursCommit('side-symlink');
+          // Returning to main: symlink → regular file. tsgit's checkout cannot
+          // overwrite a symlink with a regular file — remove it manually first.
+          unlinkSync(path.join(pair.ours, 'p'));
+          await repo.checkout({ rev: 'main' });
+          await repo.rm(['p']);
+          await oursWrite('p', 'ours\n');
+          await repo.add(['p']);
+          await oursCommit('main-regular');
+
+          // Act
+          const peerResult = peerMergeConflict('side');
+          const result = await repo.merge.run({ rev: 'side', message: 'm', author: AUTHOR });
+
+          // Assert — conflict on both
+          expect(peerResult.ok).toBe(false);
+          expect(result.kind).toBe('conflict');
+
+          // Index parity — p~HEAD_0 is used for the stages, not p~HEAD
+          expect(lsStage(pair.ours)).toBe(lsStage(pair.peer));
+        });
+      });
+    });
+
+    // ── P1: tracked p~HEAD_0 also taken → probe p~HEAD_1 ─────────────────────
+
+    describe('Given tracked p~HEAD and p~HEAD_0 both squat rename targets (P1)', () => {
+      describe('When both tools merge', () => {
+        it('Then index uses p~HEAD_1 for the distinct-types sides and matches git', async () => {
+          // Arrange — S1 shape but p~HEAD and p~HEAD_0 are both tracked
+          peerWrite('root.txt', 'root\n');
+          peerWrite('p', 'base\n');
+          peerWrite('p~HEAD', 'existing\n');
+          peerWrite('p~HEAD_0', 'also-existing\n');
+          peerAdd('root.txt', 'p', 'p~HEAD', 'p~HEAD_0');
+          peerCommit('base');
+          peerBranch('side');
+          runGit(['-C', pair.peer, 'rm', '-q', 'p']);
+          peerSymlink('target-b', 'p');
+          peerAdd('p');
+          peerCommit('side-symlink');
+          peerCheckout('main');
+          runGit(['-C', pair.peer, 'rm', '-q', 'p']);
+          peerWrite('p', 'ours\n');
+          peerAdd('p');
+          peerCommit('main-regular');
+
+          await oursWrite('root.txt', 'root\n');
+          await oursWrite('p', 'base\n');
+          await oursWrite('p~HEAD', 'existing\n');
+          await oursWrite('p~HEAD_0', 'also-existing\n');
+          await repo.add(['root.txt', 'p', 'p~HEAD', 'p~HEAD_0']);
+          await oursCommit('base');
+          await repo.branch.create({ name: 'side' });
+          await repo.checkout({ rev: 'side' });
+          await repo.rm(['p']);
+          symlinkSync('target-b', path.join(pair.ours, 'p'));
+          await repo.add(['p']);
+          await oursCommit('side-symlink');
+          // Returning to main: symlink → regular file. tsgit's checkout cannot
+          // overwrite a symlink with a regular file — remove it manually first.
+          unlinkSync(path.join(pair.ours, 'p'));
+          await repo.checkout({ rev: 'main' });
+          await repo.rm(['p']);
+          await oursWrite('p', 'ours\n');
+          await repo.add(['p']);
+          await oursCommit('main-regular');
+
+          // Act
+          const peerResult = peerMergeConflict('side');
+          const result = await repo.merge.run({ rev: 'side', message: 'm', author: AUTHOR });
+
+          // Assert — conflict on both
+          expect(peerResult.ok).toBe(false);
+          expect(result.kind).toBe('conflict');
+
+          // Index parity — p~HEAD_1 is used
+          expect(lsStage(pair.ours)).toBe(lsStage(pair.peer));
+        });
+      });
+    });
+
+    // ── S12: theirs branch feature/x — slash flattened to underscore ──────────
+    //
+    // S1 shape but theirs comes from branch `feature/x`. The suffix is the
+    // flattened label → `feature_x`. Rename target is `p~feature_x`; stages 1+3
+    // land there.
+
+    describe('Given theirs branch is feature/x, base=file, ours=file, theirs=file (S12)', () => {
+      describe('When both tools merge with a branch-label theirs', () => {
+        it('Then index uses p~feature_x (slash flattened) and matches git', async () => {
+          // Arrange — S2 shape (base=file, ours=symlink, theirs=file) but theirs
+          // branch is named `feature/x` so the rename label is `feature_x`
+          peerWrite('root.txt', 'root\n');
+          peerWrite('p', 'base\n');
+          peerAdd('root.txt', 'p');
+          peerCommit('base');
+          runGit(['-C', pair.peer, 'checkout', '-q', '-b', 'feature/x']);
+          runGit(['-C', pair.peer, 'rm', '-q', 'p']);
+          peerWrite('p', 'theirs\n');
+          peerAdd('p');
+          peerCommit('feature-change');
+          runGit(['-C', pair.peer, 'checkout', '-q', 'main']);
+          runGit(['-C', pair.peer, 'rm', '-q', 'p']);
+          peerSymlink('target-a', 'p');
+          peerAdd('p');
+          peerCommit('main-symlink');
+
+          await oursWrite('root.txt', 'root\n');
+          await oursWrite('p', 'base\n');
+          await repo.add(['root.txt', 'p']);
+          await oursCommit('base');
+          await repo.branch.create({ name: 'feature/x' });
+          await repo.checkout({ rev: 'feature/x' });
+          await repo.rm(['p']);
+          await oursWrite('p', 'theirs\n');
+          await repo.add(['p']);
+          await oursCommit('feature-change');
+          await repo.checkout({ rev: 'main' });
+          await repo.rm(['p']);
+          symlinkSync('target-a', path.join(pair.ours, 'p'));
+          await repo.add(['p']);
+          await oursCommit('main-symlink');
+
+          // Act
+          const peerResult = peerMergeConflict('feature/x');
+          const result = await repo.merge.run({ rev: 'feature/x', message: 'm', author: AUTHOR });
+
+          // Assert — conflict on both
+          expect(peerResult.ok).toBe(false);
+          expect(result.kind).toBe('conflict');
+
+          // Index parity — p~feature_x carries stages 1 and 3
+          expect(lsStage(pair.ours)).toBe(lsStage(pair.peer));
+
+          // Working tree: p is ours' symlink, p~feature_x is theirs' file
+          const oursLink = readlinkSync(path.join(pair.ours, 'p'));
+          const peerLink = readlinkSync(path.join(pair.peer, 'p'));
+          expect(oursLink).toBe(peerLink);
+          const oursRegular = await readFile(path.join(pair.ours, 'p~feature_x'), 'utf8');
+          const peerRegular = await readFile(path.join(pair.peer, 'p~feature_x'), 'utf8');
+          expect(oursRegular).toBe(peerRegular);
+          expect(oursRegular).toBe('theirs\n');
         });
       });
     });
