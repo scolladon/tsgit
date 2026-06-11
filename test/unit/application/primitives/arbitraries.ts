@@ -1,5 +1,6 @@
 import fc from 'fast-check';
 
+import { tokenizeConfig } from '../../../../src/application/primitives/config-read.js';
 import { createCommit } from '../../../../src/application/primitives/create-commit.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import type { AuthorIdentity, ObjectId, Tree } from '../../../../src/domain/objects/index.js';
@@ -196,6 +197,38 @@ export const configEntryBlock = (): fc.Arbitrary<string> =>
  */
 export const configFile = (): fc.Arbitrary<string> =>
   fc.array(configEntryBlock(), { minLength: 1, maxLength: 4 }).map((blocks) => blocks.join(''));
+
+/**
+ * A config file plus an operation target whose section comes from the same
+ * pool the blocks draw from and whose key is biased (3:1) toward keys already
+ * present in the file, so surgery properties exercise the existing-entry
+ * paths (multi-line replace/remove, orphan-tail detection) on most runs
+ * instead of degenerating to insert-new/no-op.
+ */
+export const configFileWithTarget = (): fc.Arbitrary<{
+  readonly file: string;
+  readonly section: string;
+  readonly key: string;
+}> =>
+  configFile().chain((file) => {
+    const presentKeys = [
+      ...new Set(
+        tokenizeConfig(file).flatMap((t) => (t.kind === 'entry' && t.key !== '' ? [t.key] : [])),
+      ),
+    ];
+    const key =
+      presentKeys.length === 0
+        ? arbConfigKey()
+        : fc.oneof(
+            { weight: 3, arbitrary: fc.constantFrom(...presentKeys) },
+            { weight: 1, arbitrary: arbConfigKey() },
+          );
+    return fc.record({
+      file: fc.constant(file),
+      section: fc.constantFrom(...ARB_SECTIONS),
+      key,
+    });
+  });
 
 export interface DagNodeSpec {
   readonly parents: readonly number[];

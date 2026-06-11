@@ -296,8 +296,6 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
       }) => {
         // Arrange
         const ctx = createNodeContext({ workDir: pair.ours });
-        const oursConfigPath = path.join(pair.ours, '.git', 'config');
-        const peerConfigPath = path.join(pair.peer, '.git', 'config');
 
         // Act — tsgit writes via updateConfigEntries (section/subsection split
         // avoids parseConfigKey rejection of dots/special chars in the key string)
@@ -307,8 +305,7 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
         runGit(['-C', pair.peer, 'config', '--local', `test.${subsection}.v`, 'v']);
 
         // Assert — byte-identical [test "..."] section in both repos
-        const oursConfig = await readFile(oursConfigPath, 'utf8');
-        const peerConfig = await readFile(peerConfigPath, 'utf8');
+        const { oursConfig, peerConfig } = await readTwinConfigs(pair);
         expect(extractSubsectionedTestSection(oursConfig)).toBe(
           extractSubsectionedTestSection(peerConfig),
         );
@@ -560,10 +557,7 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
     describe('When git config --file and tsgit renameConfigSection rename t.x to t.y', () => {
       it('Then both succeed and produce byte-identical configs', async () => {
         // Arrange — write the same starting bytes into both repos
-        const oursConfigPath = path.join(pair.ours, '.git', 'config');
-        const peerConfigPath = path.join(pair.peer, '.git', 'config');
-        await writeFile(oursConfigPath, startingConfigBytes, 'utf8');
-        await writeFile(peerConfigPath, startingConfigBytes, 'utf8');
+        const { peerConfigPath } = await seedTwinConfigs(pair, startingConfigBytes);
 
         // Act — canonical git (--file is lenient on malformed headers; --local is not)
         const gitResult = tryRunGit([
@@ -581,17 +575,13 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
         await renameConfigSection({ ctx, oldName: 't.x', newName: 't.y' });
 
         // Assert — byte-identical resulting configs
-        const oursConfig = await readFile(oursConfigPath, 'utf8');
-        const peerConfig = await readFile(peerConfigPath, 'utf8');
+        const { oursConfig, peerConfig } = await readTwinConfigs(pair);
         expect(oursConfig).toBe(peerConfig);
       });
 
       it('Then both refuse when the rename source is the malformed section', async () => {
         // Arrange — write starting bytes (malformed [s "a" x] is the rename source)
-        const oursConfigPath = path.join(pair.ours, '.git', 'config');
-        const peerConfigPath = path.join(pair.peer, '.git', 'config');
-        await writeFile(oursConfigPath, startingConfigBytes, 'utf8');
-        await writeFile(peerConfigPath, startingConfigBytes, 'utf8');
+        const { peerConfigPath } = await seedTwinConfigs(pair, startingConfigBytes);
 
         // Act — canonical git: s.a is a malformed section → no such section
         const gitResult = tryRunGit([
@@ -629,10 +619,7 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
         // Arrange — hand-write the same starting bytes into both repos
         // The subsection `a"b` is stored as `[test "a\"b"]` on disk.
         const startingBytes = '[core]\n\trepositoryformatversion = 0\n[test "a\\"b"]\n\tk = v\n';
-        const oursConfigPath = path.join(pair.ours, '.git', 'config');
-        const peerConfigPath = path.join(pair.peer, '.git', 'config');
-        await writeFile(oursConfigPath, startingBytes, 'utf8');
-        await writeFile(peerConfigPath, startingBytes, 'utf8');
+        await seedTwinConfigs(pair, startingBytes);
 
         // Act — tsgit sets k2 = v2 under subsection a"b (explicit split to avoid
         // parseConfigKey handling of " in the key string)
@@ -644,13 +631,10 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
         // Act — canonical git sets the same key in peer
         runGit(['-C', pair.peer, 'config', '--local', 'test.a"b.k2', 'v2']);
 
-        // Assert — single [test "a\"b"] header in ours (no duplicate introduced)
-        const oursConfig = await readFile(oursConfigPath, 'utf8');
+        // Assert — single [test "a\"b"] header in each repo (no duplicate introduced)
+        const { oursConfig, peerConfig } = await readTwinConfigs(pair);
         const oursHeaders = oursConfig.match(/\[test "a\\"b"\]/g) ?? [];
         expect(oursHeaders).toHaveLength(1);
-
-        // Assert — single [test "a\"b"] header in peer (no duplicate introduced)
-        const peerConfig = await readFile(peerConfigPath, 'utf8');
         const peerHeaders = peerConfig.match(/\[test "a\\"b"\]/g) ?? [];
         expect(peerHeaders).toHaveLength(1);
 
@@ -800,10 +784,7 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
       it('Then the resulting [a] section bytes are identical', async () => {
         // Arrange — same starting bytes in both repos
         const startingBytes = '[core]\n\trepositoryformatversion = 0\n[a]\n\tkey\n';
-        const oursConfigPath = path.join(pair.ours, '.git', 'config');
-        const peerConfigPath = path.join(pair.peer, '.git', 'config');
-        await writeFile(oursConfigPath, startingBytes, 'utf8');
-        await writeFile(peerConfigPath, startingBytes, 'utf8');
+        const { peerConfigPath } = await seedTwinConfigs(pair, startingBytes);
 
         // Act — canonical git sets a.key via --file
         const gitResult = tryRunGit(['config', '--file', peerConfigPath, 'a.key', 'replaced']);
@@ -814,8 +795,7 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
         await configSet(ctx, { key: 'a.key', value: 'replaced', scope: 'local' });
 
         // Assert — byte-identical [a] section
-        const oursConfig = await readFile(oursConfigPath, 'utf8');
-        const peerConfig = await readFile(peerConfigPath, 'utf8');
+        const { oursConfig, peerConfig } = await readTwinConfigs(pair);
         expect(extractASection(oursConfig)).toBe(extractASection(peerConfig));
       }, 60_000);
     });
@@ -824,10 +804,7 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
       it('Then the resulting [a] section bytes are identical', async () => {
         // Arrange — same starting bytes in both repos (key + adjacent entry)
         const startingBytes = '[core]\n\trepositoryformatversion = 0\n[a]\n\tkey\n\tother = v\n';
-        const oursConfigPath = path.join(pair.ours, '.git', 'config');
-        const peerConfigPath = path.join(pair.peer, '.git', 'config');
-        await writeFile(oursConfigPath, startingBytes, 'utf8');
-        await writeFile(peerConfigPath, startingBytes, 'utf8');
+        const { peerConfigPath } = await seedTwinConfigs(pair, startingBytes);
 
         // Act — canonical git unsets a.key via --file
         const gitResult = tryRunGit(['config', '--file', peerConfigPath, '--unset', 'a.key']);
@@ -844,8 +821,7 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
         }
 
         // Assert — byte-identical [a] section
-        const oursConfig = await readFile(oursConfigPath, 'utf8');
-        const peerConfig = await readFile(peerConfigPath, 'utf8');
+        const { oursConfig, peerConfig } = await readTwinConfigs(pair);
         expect(extractASection(oursConfig)).toBe(extractASection(peerConfig));
       }, 60_000);
     });
@@ -856,10 +832,7 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
         // a valueless key; renaming to [a "y"] must preserve the body verbatim)
         const startingBytes =
           '[core]\n\trepositoryformatversion = 0\n[a "x"]\n\tkey\n\tother = v\n';
-        const oursConfigPath = path.join(pair.ours, '.git', 'config');
-        const peerConfigPath = path.join(pair.peer, '.git', 'config');
-        await writeFile(oursConfigPath, startingBytes, 'utf8');
-        await writeFile(peerConfigPath, startingBytes, 'utf8');
+        const { peerConfigPath } = await seedTwinConfigs(pair, startingBytes);
 
         // Act — canonical git --rename-section a.x → a.y via --file
         const gitResult = tryRunGit([
@@ -877,8 +850,7 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
         await configRenameSectionCmd(ctx, { oldName: 'a.x', newName: 'a.y', scope: 'local' });
 
         // Assert — byte-identical content from the renamed [a "y"] section onward
-        const oursConfig = await readFile(oursConfigPath, 'utf8');
-        const peerConfig = await readFile(peerConfigPath, 'utf8');
+        const { oursConfig, peerConfig } = await readTwinConfigs(pair);
         const extractAYSection = (c: string): string => {
           const idx = c.indexOf('[a "y"]');
           return idx === -1 ? '' : c.slice(idx);
@@ -968,7 +940,8 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
    */
   const extractFromA = (content: string): string => {
     const idx = content.indexOf('[a]');
-    return idx === -1 ? '' : content.slice(idx);
+    if (idx === -1) throw new Error('marker [a] not found in config content');
+    return content.slice(idx);
   };
 
   /**
@@ -976,7 +949,36 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
    */
   const extractRemoteO = (content: string): string => {
     const idx = content.indexOf('[remote "o"]');
-    return idx === -1 ? '' : content.slice(idx);
+    if (idx === -1) throw new Error('marker [remote "o"] not found in config content');
+    return content.slice(idx);
+  };
+
+  /** Twin `.git/config` paths for a peer pair. */
+  const twinConfigPaths = (p: PeerPair): { oursConfigPath: string; peerConfigPath: string } => ({
+    oursConfigPath: path.join(p.ours, '.git', 'config'),
+    peerConfigPath: path.join(p.peer, '.git', 'config'),
+  });
+
+  /** Seed both twin configs with the same starting bytes; returns the paths. */
+  const seedTwinConfigs = async (
+    p: PeerPair,
+    bytes: string,
+  ): Promise<{ oursConfigPath: string; peerConfigPath: string }> => {
+    const paths = twinConfigPaths(p);
+    await writeFile(paths.oursConfigPath, bytes, 'utf8');
+    await writeFile(paths.peerConfigPath, bytes, 'utf8');
+    return paths;
+  };
+
+  /** Read back both twin configs for byte comparison. */
+  const readTwinConfigs = async (
+    p: PeerPair,
+  ): Promise<{ oursConfig: string; peerConfig: string }> => {
+    const { oursConfigPath, peerConfigPath } = twinConfigPaths(p);
+    return {
+      oursConfig: await readFile(oursConfigPath, 'utf8'),
+      peerConfig: await readFile(peerConfigPath, 'utf8'),
+    };
   };
 
   describe('Given twin repos with a multi-line entry `[a]\\n\\tkey = one\\\\\\n   two\\n\\tother = x\\n`', () => {
@@ -985,10 +987,7 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
         // Arrange — row A: set replaces all physical lines of the spanned entry
         const startingBytes =
           '[core]\n\trepositoryformatversion = 0\n[a]\n\tkey = one\\\n   two\n\tother = x\n';
-        const oursConfigPath = path.join(pair.ours, '.git', 'config');
-        const peerConfigPath = path.join(pair.peer, '.git', 'config');
-        await writeFile(oursConfigPath, startingBytes, 'utf8');
-        await writeFile(peerConfigPath, startingBytes, 'utf8');
+        const { peerConfigPath } = await seedTwinConfigs(pair, startingBytes);
 
         // Act — canonical git
         const gitResult = tryRunGit(['config', '--file', peerConfigPath, 'a.key', 'newval']);
@@ -999,8 +998,7 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
         await configSet(ctx, { key: 'a.key', value: 'newval', scope: 'local' });
 
         // Assert — byte-identical [a]-onward content
-        const oursConfig = await readFile(oursConfigPath, 'utf8');
-        const peerConfig = await readFile(peerConfigPath, 'utf8');
+        const { oursConfig, peerConfig } = await readTwinConfigs(pair);
         expect(extractFromA(oursConfig)).toBe(extractFromA(peerConfig));
       }, 60_000);
     });
@@ -1012,10 +1010,7 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
         // Arrange — row B: unset removes all physical lines of the continuation span
         const startingBytes =
           '[core]\n\trepositoryformatversion = 0\n[a]\n\tkey = one\\\n   two\n\tother = x\n';
-        const oursConfigPath = path.join(pair.ours, '.git', 'config');
-        const peerConfigPath = path.join(pair.peer, '.git', 'config');
-        await writeFile(oursConfigPath, startingBytes, 'utf8');
-        await writeFile(peerConfigPath, startingBytes, 'utf8');
+        const { peerConfigPath } = await seedTwinConfigs(pair, startingBytes);
 
         // Act — canonical git
         const gitResult = tryRunGit(['config', '--file', peerConfigPath, '--unset', 'a.key']);
@@ -1026,8 +1021,7 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
         await configUnset(ctx, { key: 'a.key', scope: 'local' });
 
         // Assert
-        const oursConfig = await readFile(oursConfigPath, 'utf8');
-        const peerConfig = await readFile(peerConfigPath, 'utf8');
+        const { oursConfig, peerConfig } = await readTwinConfigs(pair);
         expect(extractFromA(oursConfig)).toBe(extractFromA(peerConfig));
       }, 60_000);
     });
@@ -1040,10 +1034,7 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
         const startingBytes =
           '[core]\n\trepositoryformatversion = 0\n' +
           '[a]\n\tkey = one\\\n   two\n\tmid = m\n\tkey = three\n\tkey = four\\\n   five\n';
-        const oursConfigPath = path.join(pair.ours, '.git', 'config');
-        const peerConfigPath = path.join(pair.peer, '.git', 'config');
-        await writeFile(oursConfigPath, startingBytes, 'utf8');
-        await writeFile(peerConfigPath, startingBytes, 'utf8');
+        const { peerConfigPath } = await seedTwinConfigs(pair, startingBytes);
 
         // Act — canonical git
         const gitResult = tryRunGit(['config', '--file', peerConfigPath, '--unset-all', 'a.key']);
@@ -1054,8 +1045,7 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
         await configUnsetAll(ctx, { key: 'a.key', scope: 'local' });
 
         // Assert
-        const oursConfig = await readFile(oursConfigPath, 'utf8');
-        const peerConfig = await readFile(peerConfigPath, 'utf8');
+        const { oursConfig, peerConfig } = await readTwinConfigs(pair);
         expect(extractFromA(oursConfig)).toBe(extractFromA(peerConfig));
       }, 60_000);
     });
@@ -1067,10 +1057,7 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
         // Arrange — row J: --add places the new entry at the end of the section
         const startingBytes =
           '[core]\n\trepositoryformatversion = 0\n[remote "o"]\n\turl = u\n\tfetch = A\n\tpush = p\n';
-        const oursConfigPath = path.join(pair.ours, '.git', 'config');
-        const peerConfigPath = path.join(pair.peer, '.git', 'config');
-        await writeFile(oursConfigPath, startingBytes, 'utf8');
-        await writeFile(peerConfigPath, startingBytes, 'utf8');
+        const { peerConfigPath } = await seedTwinConfigs(pair, startingBytes);
 
         // Act — canonical git
         const gitResult = tryRunGit([
@@ -1091,8 +1078,7 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
         await updateConfigOperations(ctx, ops);
 
         // Assert
-        const oursConfig = await readFile(oursConfigPath, 'utf8');
-        const peerConfig = await readFile(peerConfigPath, 'utf8');
+        const { oursConfig, peerConfig } = await readTwinConfigs(pair);
         expect(extractRemoteO(oursConfig)).toBe(extractRemoteO(peerConfig));
       }, 60_000);
     });
@@ -1104,10 +1090,7 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
         // Arrange — row J2: append after a multi-line entry
         const startingBytes =
           '[core]\n\trepositoryformatversion = 0\n[remote "o"]\n\tfetch = A\\\n   tail\n';
-        const oursConfigPath = path.join(pair.ours, '.git', 'config');
-        const peerConfigPath = path.join(pair.peer, '.git', 'config');
-        await writeFile(oursConfigPath, startingBytes, 'utf8');
-        await writeFile(peerConfigPath, startingBytes, 'utf8');
+        const { peerConfigPath } = await seedTwinConfigs(pair, startingBytes);
 
         // Act — canonical git
         const gitResult = tryRunGit([
@@ -1128,8 +1111,7 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
         await updateConfigOperations(ctx, ops);
 
         // Assert
-        const oursConfig = await readFile(oursConfigPath, 'utf8');
-        const peerConfig = await readFile(peerConfigPath, 'utf8');
+        const { oursConfig, peerConfig } = await readTwinConfigs(pair);
         expect(extractRemoteO(oursConfig)).toBe(extractRemoteO(peerConfig));
       }, 60_000);
     });
@@ -1141,10 +1123,7 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
         // Arrange — row I1: new key lands after the last entry, not right after the header
         const startingBytes =
           '[core]\n\trepositoryformatversion = 0\n[a]\n\tkey = one\n[b]\n\tk = v\n';
-        const oursConfigPath = path.join(pair.ours, '.git', 'config');
-        const peerConfigPath = path.join(pair.peer, '.git', 'config');
-        await writeFile(oursConfigPath, startingBytes, 'utf8');
-        await writeFile(peerConfigPath, startingBytes, 'utf8');
+        const { peerConfigPath } = await seedTwinConfigs(pair, startingBytes);
 
         // Act — canonical git
         const gitResult = tryRunGit(['config', '--file', peerConfigPath, 'a.other', 'val']);
@@ -1155,8 +1134,7 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
         await configSet(ctx, { key: 'a.other', value: 'val', scope: 'local' });
 
         // Assert
-        const oursConfig = await readFile(oursConfigPath, 'utf8');
-        const peerConfig = await readFile(peerConfigPath, 'utf8');
+        const { oursConfig, peerConfig } = await readTwinConfigs(pair);
         expect(extractFromA(oursConfig)).toBe(extractFromA(peerConfig));
       }, 60_000);
     });
@@ -1168,10 +1146,7 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
         // Arrange — row I2: insertion after the last entry token, before trailing blank+comment
         const startingBytes =
           '[core]\n\trepositoryformatversion = 0\n[a]\n\tkey = one\n\n# trailing comment\n[b]\n\tk = v\n';
-        const oursConfigPath = path.join(pair.ours, '.git', 'config');
-        const peerConfigPath = path.join(pair.peer, '.git', 'config');
-        await writeFile(oursConfigPath, startingBytes, 'utf8');
-        await writeFile(peerConfigPath, startingBytes, 'utf8');
+        const { peerConfigPath } = await seedTwinConfigs(pair, startingBytes);
 
         // Act — canonical git
         const gitResult = tryRunGit(['config', '--file', peerConfigPath, 'a.other', 'val']);
@@ -1182,8 +1157,7 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
         await configSet(ctx, { key: 'a.other', value: 'val', scope: 'local' });
 
         // Assert
-        const oursConfig = await readFile(oursConfigPath, 'utf8');
-        const peerConfig = await readFile(peerConfigPath, 'utf8');
+        const { oursConfig, peerConfig } = await readTwinConfigs(pair);
         expect(extractFromA(oursConfig)).toBe(extractFromA(peerConfig));
       }, 60_000);
     });
@@ -1196,10 +1170,7 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
         // also pins the composed corner: last block empty while an earlier one has entries.
         const startingBytes =
           '[core]\n\trepositoryformatversion = 0\n[a]\n\tk1 = x\n[b]\n\tk = v\n[a]\n';
-        const oursConfigPath = path.join(pair.ours, '.git', 'config');
-        const peerConfigPath = path.join(pair.peer, '.git', 'config');
-        await writeFile(oursConfigPath, startingBytes, 'utf8');
-        await writeFile(peerConfigPath, startingBytes, 'utf8');
+        const { peerConfigPath } = await seedTwinConfigs(pair, startingBytes);
 
         // Act — canonical git
         const gitResult = tryRunGit(['config', '--file', peerConfigPath, 'a.new', 'val']);
@@ -1210,8 +1181,7 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
         await configSet(ctx, { key: 'a.new', value: 'val', scope: 'local' });
 
         // Assert
-        const oursConfig = await readFile(oursConfigPath, 'utf8');
-        const peerConfig = await readFile(peerConfigPath, 'utf8');
+        const { oursConfig, peerConfig } = await readTwinConfigs(pair);
         expect(extractFromA(oursConfig)).toBe(extractFromA(peerConfig));
       }, 60_000);
     });
@@ -1223,10 +1193,7 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
         // Arrange — row D: removing the only entry prunes the section header too
         const startingBytes =
           '[core]\n\trepositoryformatversion = 0\n[a]\n\tkey = one\\\n   two\n[b]\n\tk = v\n';
-        const oursConfigPath = path.join(pair.ours, '.git', 'config');
-        const peerConfigPath = path.join(pair.peer, '.git', 'config');
-        await writeFile(oursConfigPath, startingBytes, 'utf8');
-        await writeFile(peerConfigPath, startingBytes, 'utf8');
+        const { peerConfigPath } = await seedTwinConfigs(pair, startingBytes);
 
         // Act — canonical git
         const gitResult = tryRunGit(['config', '--file', peerConfigPath, '--unset', 'a.key']);
@@ -1237,8 +1204,7 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
         await configUnset(ctx, { key: 'a.key', scope: 'local' });
 
         // Assert — full file byte compare (preamble is identical, [a] block gone)
-        const oursConfig = await readFile(oursConfigPath, 'utf8');
-        const peerConfig = await readFile(peerConfigPath, 'utf8');
+        const { oursConfig, peerConfig } = await readTwinConfigs(pair);
         expect(oursConfig).toBe(peerConfig);
       }, 60_000);
     });
@@ -1250,10 +1216,7 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
         // Arrange — row D4: a comment in the block keeps the header (and the comment)
         const startingBytes =
           '[core]\n\trepositoryformatversion = 0\n[a]\n\t# keep me\n\tkey = one\\\n   two\n[b]\n\tk = v\n';
-        const oursConfigPath = path.join(pair.ours, '.git', 'config');
-        const peerConfigPath = path.join(pair.peer, '.git', 'config');
-        await writeFile(oursConfigPath, startingBytes, 'utf8');
-        await writeFile(peerConfigPath, startingBytes, 'utf8');
+        const { peerConfigPath } = await seedTwinConfigs(pair, startingBytes);
 
         // Act — canonical git
         const gitResult = tryRunGit(['config', '--file', peerConfigPath, '--unset', 'a.key']);
@@ -1264,8 +1227,7 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
         await configUnset(ctx, { key: 'a.key', scope: 'local' });
 
         // Assert
-        const oursConfig = await readFile(oursConfigPath, 'utf8');
-        const peerConfig = await readFile(peerConfigPath, 'utf8');
+        const { oursConfig, peerConfig } = await readTwinConfigs(pair);
         expect(oursConfig).toBe(peerConfig);
       }, 60_000);
     });
@@ -1277,10 +1239,7 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
         // Arrange — row D8: comment present → header, blank, and comment all kept
         const startingBytes =
           '[core]\n\trepositoryformatversion = 0\n[a]\n\tkey = one\n\n# c\n[b]\n\tk = v\n';
-        const oursConfigPath = path.join(pair.ours, '.git', 'config');
-        const peerConfigPath = path.join(pair.peer, '.git', 'config');
-        await writeFile(oursConfigPath, startingBytes, 'utf8');
-        await writeFile(peerConfigPath, startingBytes, 'utf8');
+        const { peerConfigPath } = await seedTwinConfigs(pair, startingBytes);
 
         // Act — canonical git
         const gitResult = tryRunGit(['config', '--file', peerConfigPath, '--unset', 'a.key']);
@@ -1291,8 +1250,7 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
         await configUnset(ctx, { key: 'a.key', scope: 'local' });
 
         // Assert
-        const oursConfig = await readFile(oursConfigPath, 'utf8');
-        const peerConfig = await readFile(peerConfigPath, 'utf8');
+        const { oursConfig, peerConfig } = await readTwinConfigs(pair);
         expect(oursConfig).toBe(peerConfig);
       }, 60_000);
     });
@@ -1305,10 +1263,7 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
         // line; the real `url = real` entry follows. Set must target the real entry.
         const startingBytes =
           '[core]\n\trepositoryformatversion = 0\n[a]\n\tnote = first\\\n\turl = fake\n\turl = real\n';
-        const oursConfigPath = path.join(pair.ours, '.git', 'config');
-        const peerConfigPath = path.join(pair.peer, '.git', 'config');
-        await writeFile(oursConfigPath, startingBytes, 'utf8');
-        await writeFile(peerConfigPath, startingBytes, 'utf8');
+        const { peerConfigPath } = await seedTwinConfigs(pair, startingBytes);
 
         // Act — canonical git
         const gitResult = tryRunGit(['config', '--file', peerConfigPath, 'a.url', 'NEW']);
@@ -1319,8 +1274,7 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
         await configSet(ctx, { key: 'a.url', value: 'NEW', scope: 'local' });
 
         // Assert
-        const oursConfig = await readFile(oursConfigPath, 'utf8');
-        const peerConfig = await readFile(peerConfigPath, 'utf8');
+        const { oursConfig, peerConfig } = await readTwinConfigs(pair);
         expect(extractFromA(oursConfig)).toBe(extractFromA(peerConfig));
       }, 60_000);
     });
@@ -1333,10 +1287,7 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
         // section continues past it and `key = old` is the real entry.
         const startingBytes =
           '[core]\n\trepositoryformatversion = 0\n[a]\n\tnote = v\\\n[x]\n\tkey = old\n';
-        const oursConfigPath = path.join(pair.ours, '.git', 'config');
-        const peerConfigPath = path.join(pair.peer, '.git', 'config');
-        await writeFile(oursConfigPath, startingBytes, 'utf8');
-        await writeFile(peerConfigPath, startingBytes, 'utf8');
+        const { peerConfigPath } = await seedTwinConfigs(pair, startingBytes);
 
         // Act — canonical git
         const gitResult = tryRunGit(['config', '--file', peerConfigPath, 'a.key', 'NEW']);
@@ -1347,8 +1298,7 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
         await configSet(ctx, { key: 'a.key', value: 'NEW', scope: 'local' });
 
         // Assert
-        const oursConfig = await readFile(oursConfigPath, 'utf8');
-        const peerConfig = await readFile(peerConfigPath, 'utf8');
+        const { oursConfig, peerConfig } = await readTwinConfigs(pair);
         expect(extractFromA(oursConfig)).toBe(extractFromA(peerConfig));
       }, 60_000);
     });
@@ -1360,10 +1310,7 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
         // Arrange — S2 corner: the file has no trailing LF; git repairs it when
         // inserting a new entry. tsgit's `idx === lines.length` branch does the same.
         const startingBytes = '[core]\n\trepositoryformatversion = 0\n[a]\n\tk = v';
-        const oursConfigPath = path.join(pair.ours, '.git', 'config');
-        const peerConfigPath = path.join(pair.peer, '.git', 'config');
-        await writeFile(oursConfigPath, startingBytes, 'utf8');
-        await writeFile(peerConfigPath, startingBytes, 'utf8');
+        const { peerConfigPath } = await seedTwinConfigs(pair, startingBytes);
 
         // Act — canonical git
         const gitResult = tryRunGit(['config', '--file', peerConfigPath, 'a.other', 'val']);
@@ -1374,8 +1321,7 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
         await configSet(ctx, { key: 'a.other', value: 'val', scope: 'local' });
 
         // Assert — full file byte compare
-        const oursConfig = await readFile(oursConfigPath, 'utf8');
-        const peerConfig = await readFile(peerConfigPath, 'utf8');
+        const { oursConfig, peerConfig } = await readTwinConfigs(pair);
         expect(oursConfig).toBe(peerConfig);
       }, 60_000);
     });
@@ -1386,10 +1332,7 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
       it('Then the resulting bytes are identical — the rewritten entry is newline-terminated', async () => {
         // Arrange — the replaced span reaches EOF of a no-final-LF file
         const startingBytes = '[core]\n\trepositoryformatversion = 0\n[a]\n\tk = old';
-        const oursConfigPath = path.join(pair.ours, '.git', 'config');
-        const peerConfigPath = path.join(pair.peer, '.git', 'config');
-        await writeFile(oursConfigPath, startingBytes, 'utf8');
-        await writeFile(peerConfigPath, startingBytes, 'utf8');
+        const { peerConfigPath } = await seedTwinConfigs(pair, startingBytes);
 
         // Act — canonical git
         const gitResult = tryRunGit(['config', '--file', peerConfigPath, 'a.k', 'new']);
@@ -1400,8 +1343,7 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
         await configSet(ctx, { key: 'a.k', value: 'new', scope: 'local' });
 
         // Assert — full file byte compare
-        const oursConfig = await readFile(oursConfigPath, 'utf8');
-        const peerConfig = await readFile(peerConfigPath, 'utf8');
+        const { oursConfig, peerConfig } = await readTwinConfigs(pair);
         expect(oursConfig).toBe(peerConfig);
       }, 60_000);
     });
@@ -1413,10 +1355,7 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
         // Arrange — pruning the trailing block must keep the newline that
         // followed the last kept line
         const startingBytes = '[core]\n\trepositoryformatversion = 0\n[a]\n\tkey = one';
-        const oursConfigPath = path.join(pair.ours, '.git', 'config');
-        const peerConfigPath = path.join(pair.peer, '.git', 'config');
-        await writeFile(oursConfigPath, startingBytes, 'utf8');
-        await writeFile(peerConfigPath, startingBytes, 'utf8');
+        const { peerConfigPath } = await seedTwinConfigs(pair, startingBytes);
 
         // Act — canonical git
         const gitResult = tryRunGit(['config', '--file', peerConfigPath, '--unset', 'a.key']);
@@ -1427,8 +1366,7 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
         await configUnset(ctx, { key: 'a.key', scope: 'local' });
 
         // Assert — full file byte compare
-        const oursConfig = await readFile(oursConfigPath, 'utf8');
-        const peerConfig = await readFile(peerConfigPath, 'utf8');
+        const { oursConfig, peerConfig } = await readTwinConfigs(pair);
         expect(oursConfig).toBe(peerConfig);
       }, 60_000);
     });
@@ -1440,10 +1378,7 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
         // Arrange — sole-section variant: starting bytes include [core] preamble
         // plus [a] with one entry. Unsetting a.key must leave an empty file for [a].
         const startingBytes = '[core]\n\trepositoryformatversion = 0\n[a]\n\tkey = v\n';
-        const oursConfigPath = path.join(pair.ours, '.git', 'config');
-        const peerConfigPath = path.join(pair.peer, '.git', 'config');
-        await writeFile(oursConfigPath, startingBytes, 'utf8');
-        await writeFile(peerConfigPath, startingBytes, 'utf8');
+        const { peerConfigPath } = await seedTwinConfigs(pair, startingBytes);
 
         // Act — canonical git
         const gitResult = tryRunGit(['config', '--file', peerConfigPath, '--unset', 'a.key']);
@@ -1454,8 +1389,7 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
         await configUnset(ctx, { key: 'a.key', scope: 'local' });
 
         // Assert — [a] block is gone in both
-        const oursConfig = await readFile(oursConfigPath, 'utf8');
-        const peerConfig = await readFile(peerConfigPath, 'utf8');
+        const { oursConfig, peerConfig } = await readTwinConfigs(pair);
         expect(oursConfig).toBe(peerConfig);
         expect(oursConfig).not.toContain('[a]');
       }, 60_000);
@@ -1496,10 +1430,7 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
         // Both git and tsgit rename the lookalike tail alongside the real header.
         const startingBytes =
           '[core]\n\trepositoryformatversion = 0\n[a]\n\tkey = one\\\n[b "s"]\n[b "s"]\n\tk = v\n';
-        const oursConfigPath = path.join(pair.ours, '.git', 'config');
-        const peerConfigPath = path.join(pair.peer, '.git', 'config');
-        await writeFile(oursConfigPath, startingBytes, 'utf8');
-        await writeFile(peerConfigPath, startingBytes, 'utf8');
+        const { peerConfigPath } = await seedTwinConfigs(pair, startingBytes);
 
         // Act — canonical git
         const gitResult = tryRunGit([
@@ -1517,13 +1448,8 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
         await configRenameSectionCmd(ctx, { oldName: 'b.s', newName: 'b.t', scope: 'local' });
 
         // Assert — byte-identical content from first [a] header onward
-        const oursConfig = await readFile(oursConfigPath, 'utf8');
-        const peerConfig = await readFile(peerConfigPath, 'utf8');
-        const extractFromFirstA = (c: string): string => {
-          const idx = c.indexOf('[a]');
-          return idx === -1 ? '' : c.slice(idx);
-        };
-        expect(extractFromFirstA(oursConfig)).toBe(extractFromFirstA(peerConfig));
+        const { oursConfig, peerConfig } = await readTwinConfigs(pair);
+        expect(extractFromA(oursConfig)).toBe(extractFromA(peerConfig));
       }, 60_000);
     });
   });
@@ -1535,10 +1461,7 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
         // section header so it passes through rename unchanged (span-unaware, faithful).
         const startingBytes =
           '[core]\n\trepositoryformatversion = 0\n[a "s"]\n\tkey = one\\\n   two\n[b]\n\tk = v\n';
-        const oursConfigPath = path.join(pair.ours, '.git', 'config');
-        const peerConfigPath = path.join(pair.peer, '.git', 'config');
-        await writeFile(oursConfigPath, startingBytes, 'utf8');
-        await writeFile(peerConfigPath, startingBytes, 'utf8');
+        const { peerConfigPath } = await seedTwinConfigs(pair, startingBytes);
 
         // Act — canonical git
         const gitResult = tryRunGit([
@@ -1556,8 +1479,7 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
         await configRenameSectionCmd(ctx, { oldName: 'a.s', newName: 'a.t', scope: 'local' });
 
         // Assert — full file compare (preamble identical, only the header changes)
-        const oursConfig = await readFile(oursConfigPath, 'utf8');
-        const peerConfig = await readFile(peerConfigPath, 'utf8');
+        const { oursConfig, peerConfig } = await readTwinConfigs(pair);
         expect(oursConfig).toBe(peerConfig);
       }, 60_000);
     });
@@ -1570,10 +1492,7 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
         // corrupting a.key's value. Replicating this byte-for-byte is intended.
         const startingBytes =
           '[core]\n\trepositoryformatversion = 0\n[a]\n\tkey = one\\\n[b "s"]\n\tinside = t\n[b "s"]\n\tk = v\n[d]\n\te = f\n';
-        const oursConfigPath = path.join(pair.ours, '.git', 'config');
-        const peerConfigPath = path.join(pair.peer, '.git', 'config');
-        await writeFile(oursConfigPath, startingBytes, 'utf8');
-        await writeFile(peerConfigPath, startingBytes, 'utf8');
+        const { peerConfigPath } = await seedTwinConfigs(pair, startingBytes);
 
         // Act — canonical git
         const gitResult = tryRunGit([
@@ -1590,8 +1509,7 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
         await configRemoveSection(ctx, { name: 'b.s', scope: 'local' });
 
         // Assert
-        const oursConfig = await readFile(oursConfigPath, 'utf8');
-        const peerConfig = await readFile(peerConfigPath, 'utf8');
+        const { oursConfig, peerConfig } = await readTwinConfigs(pair);
         expect(oursConfig).toBe(peerConfig);
       }, 60_000);
     });

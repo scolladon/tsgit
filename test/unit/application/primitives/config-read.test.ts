@@ -3494,89 +3494,103 @@ describe('primitives/config-read tokenizeConfig', () => {
     });
   });
 
-  describe('Given a malformed section header, When tokenizeConfig', () => {
-    it('Then CONFIG_PARSE_ERROR carries line 1 and the partial section name', () => {
-      // Arrange
-      const sut = tokenizeConfig;
+  describe('Given a malformed section header', () => {
+    describe('When tokenizeConfig parses it', () => {
+      it('Then CONFIG_PARSE_ERROR carries line 1 and the partial section name', () => {
+        // Arrange
+        const sut = tokenizeConfig;
 
-      // Act
-      let error: unknown;
-      try {
-        sut('[s "a" x]\n\tk = v\n');
-      } catch (e) {
-        error = e;
-      }
+        // Act
+        let error: unknown;
+        try {
+          sut('[s "a" x]\n\tk = v\n');
+        } catch (e) {
+          error = e;
+        }
 
-      // Assert
-      expect(error).toBeInstanceOf(Error);
-      expect(
-        (error as { data?: { code?: string; line?: number; partialSectionName?: string } }).data
-          ?.code,
-      ).toBe('CONFIG_PARSE_ERROR');
-      expect((error as { data?: { line?: number } }).data?.line).toBe(1);
-      expect((error as { data?: { partialSectionName?: string } }).data?.partialSectionName).toBe(
-        's.a',
-      );
+        // Assert
+        expect(error).toBeInstanceOf(Error);
+        expect(
+          (error as { data?: { code?: string; line?: number; partialSectionName?: string } }).data
+            ?.code,
+        ).toBe('CONFIG_PARSE_ERROR');
+        expect((error as { data?: { line?: number } }).data?.line).toBe(1);
+        expect((error as { data?: { partialSectionName?: string } }).data?.partialSectionName).toBe(
+          's.a',
+        );
+      });
     });
+  });
 
-    it('Then CONFIG_PARSE_ERROR carries line 2 for a bad key', () => {
-      // Arrange
-      const sut = tokenizeConfig;
+  describe('Given a bad key line under a valid header', () => {
+    describe('When tokenizeConfig parses it', () => {
+      it('Then CONFIG_PARSE_ERROR carries line 2', () => {
+        // Arrange
+        const sut = tokenizeConfig;
 
-      // Act
-      let error: unknown;
-      try {
-        sut('[a]\nbad!key\n');
-      } catch (e) {
-        error = e;
-      }
+        // Act
+        let error: unknown;
+        try {
+          sut('[a]\nbad!key\n');
+        } catch (e) {
+          error = e;
+        }
 
-      // Assert
-      expect(error).toBeInstanceOf(Error);
-      expect((error as { data?: { code?: string } }).data?.code).toBe('CONFIG_PARSE_ERROR');
-      expect((error as { data?: { line?: number } }).data?.line).toBe(2);
+        // Assert
+        expect(error).toBeInstanceOf(Error);
+        expect((error as { data?: { code?: string } }).data?.code).toBe('CONFIG_PARSE_ERROR');
+        expect((error as { data?: { line?: number } }).data?.line).toBe(2);
+      });
     });
+  });
 
-    it('Then CONFIG_PARSE_ERROR carries line 2 for an unclosed quote', () => {
-      // Arrange
-      const sut = tokenizeConfig;
+  describe('Given an entry value with an unclosed quote', () => {
+    describe('When tokenizeConfig parses it', () => {
+      it('Then CONFIG_PARSE_ERROR carries line 2', () => {
+        // Arrange
+        const sut = tokenizeConfig;
 
-      // Act
-      let error: unknown;
-      try {
-        sut('[a]\nk = "unclosed\n');
-      } catch (e) {
-        error = e;
-      }
+        // Act
+        let error: unknown;
+        try {
+          sut('[a]\nk = "unclosed\n');
+        } catch (e) {
+          error = e;
+        }
 
-      // Assert
-      expect(error).toBeInstanceOf(Error);
-      expect((error as { data?: { code?: string } }).data?.code).toBe('CONFIG_PARSE_ERROR');
-      expect((error as { data?: { line?: number } }).data?.line).toBe(2);
+        // Assert
+        expect(error).toBeInstanceOf(Error);
+        expect((error as { data?: { code?: string } }).data?.code).toBe('CONFIG_PARSE_ERROR');
+        expect((error as { data?: { line?: number } }).data?.line).toBe(2);
+      });
     });
+  });
 
-    it('Then the source label is carried when provided', () => {
-      // Arrange
-      const sut = tokenizeConfig;
-      const source = 'my-config';
+  describe('Given a malformed header and a source label', () => {
+    describe('When tokenizeConfig and parseIniSections parse it', () => {
+      it('Then both errors carry the source label', () => {
+        // Arrange
+        const sut = tokenizeConfig;
+        const source = 'my-config';
 
-      // Act — also verify parseIniSections carries source for same input
-      let tokenizeError: unknown;
-      let parseError: unknown;
-      try {
-        sut('[s "a" x]\n\tk = v\n', source);
-      } catch (e) {
-        tokenizeError = e;
-      }
-      try {
-        parseIniSections('[s "a" x]\n\tk = v\n', source);
-      } catch (e) {
-        parseError = e;
-      }
+        // Act — also verify parseIniSections carries source for same input
+        let tokenizeError: unknown;
+        let parseError: unknown;
+        try {
+          sut('[s "a" x]\n\tk = v\n', source);
+        } catch (e) {
+          tokenizeError = e;
+        }
+        try {
+          parseIniSections('[s "a" x]\n\tk = v\n', source);
+        } catch (e) {
+          parseError = e;
+        }
 
-      // Assert
-      expect((tokenizeError as { data?: { source?: string } }).data?.source).toBe(source);
-      expect((parseError as { data?: { source?: string } }).data?.source).toBe(source);
+        // Assert
+        expect((tokenizeError as { data?: { source?: string } }).data?.source).toBe(source);
+        expect((parseError as { data?: { source?: string } }).data?.source).toBe(source);
+      });
     });
   });
 });
