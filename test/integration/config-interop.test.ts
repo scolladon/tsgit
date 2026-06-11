@@ -15,6 +15,13 @@ import { readFile, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
+import {
+  configGetRegexp,
+  configList,
+  configRenameSection as configRenameSectionCmd,
+  configSet,
+  configUnset,
+} from '../../src/application/commands/config.js';
 import { readConfig } from '../../src/application/primitives/config-read.js';
 import { getConfigValue } from '../../src/application/primitives/config-scoped-read.js';
 import {
@@ -648,6 +655,301 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
         expect(k1Readback).toBe('v\n');
         expect(k2Readback).toBe('v2\n');
       });
+    });
+  });
+
+  /**
+   * Extract the text that starts at the first `[a]` section header.
+   * Used by valueless write-parity tests to ignore differing preambles
+   * while still comparing section bytes exactly.
+   */
+  const extractASection = (content: string): string => {
+    const idx = content.indexOf('[a]');
+    if (idx === -1) return '';
+    return content.slice(idx);
+  };
+
+  // Refusal parity matrix: each bad line placed at physical line 2 inside [a].
+  // git exits 128 with "bad config line 2 in file ..."; tsgit throws CONFIG_PARSE_ERROR
+  // with data.line === 2.
+  const VALUELESS_REFUSAL_MATRIX: ReadonlyArray<{ label: string; badLine: string }> = [
+    { label: 'key ; c — inline comment after valueless key', badLine: 'key ; c' },
+    { label: 'key # c — hash comment after valueless key', badLine: 'key # c' },
+    { label: 'bad!key — exclamation in key name', badLine: 'bad!key' },
+    { label: '9key — key starting with digit', badLine: '9key' },
+    { label: 'under_score — underscore in key name', badLine: 'under_score' },
+  ];
+
+  describe('Given a config file with a valueless key (no `=` line)', () => {
+    describe('When tsgit and git read --list', () => {
+      it('Then the reconstructed --list stdout matches git byte-for-byte', async () => {
+        // Arrange — write the fixture into ours .git/config
+        // Line 1: [a], line 2: \tkey, line 3: \tempty =, line 4: \tother = v
+        const configContent = '[a]\n\tkey\n\tempty =\n\tother = v\n';
+        const oursConfigPath = path.join(pair.ours, '.git', 'config');
+        await writeFile(oursConfigPath, configContent, 'utf8');
+
+        // Act — canonical git --list (scoped to file, not --local, because the
+        // preamble written by initBothRepos is not in our fixture)
+        const gitResult = tryRunGit(['config', '--file', oursConfigPath, '--list']);
+        expect(gitResult.ok, `git --list failed: ${gitResult.stderr}`).toBe(true);
+        const gitStdout = gitResult.stdout;
+
+        // Act — tsgit configList (local scope, fresh context)
+        const ctx = createNodeContext({ workDir: pair.ours });
+        const sut = await configList(ctx, { scope: 'local' });
+
+        // Reconstruct git's --list stdout from structured entries:
+        //   value === null  → bare key line ("a.key\n")
+        //   value === ''    → "a.key=\n"
+        //   value           → "a.key=value\n"
+        const reconstructed = sut.entries
+          .map((e) => (e.value === null ? `${e.key}\n` : `${e.key}=${e.value}\n`))
+          .join('');
+
+        // Assert — byte-identical reconstruction
+        expect(reconstructed).toBe(gitStdout);
+      }, 60_000);
+    });
+  });
+
+  describe('Given a repo with `bare` as a valueless entry appended to [core]', () => {
+    describe('When git and tsgit both evaluate core.bare', () => {
+      it('Then git reports bare=true and tsgit returns value: null (null → true)', async () => {
+        // Arrange — append a bare valueless line to ours [core] section
+        // initBothRepos already wrote [core] with bare = false; we replace
+        // the whole config with a minimal one that has bare as valueless.
+        const oursConfigPath = path.join(pair.ours, '.git', 'config');
+        const configContent =
+          '[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tlogallrefupdates = true\n\tbare\n';
+        await writeFile(oursConfigPath, configContent, 'utf8');
+
+        // Act — canonical git: rev-parse --is-bare-repository
+        const gitResult = tryRunGit(['-C', pair.ours, 'rev-parse', '--is-bare-repository']);
+        expect(gitResult.ok, `git rev-parse failed: ${gitResult.stderr}`).toBe(true);
+        const gitBare = gitResult.stdout.trim();
+
+        // Act — tsgit getConfigValue for core.bare
+        const ctx = createNodeContext({ workDir: pair.ours });
+        const sut = await getConfigValue({ ctx, key: 'core.bare', scope: 'local' });
+
+        // Assert — git sees bare=true
+        expect(gitBare).toBe('true');
+
+        // Assert — tsgit surfaces value: null (git's internal NULL); narrow the
+        // discriminated union before accessing .value to satisfy the type checker
+        expect(sut.value, 'core.bare should be found').not.toBeUndefined();
+        const found = sut as { value: string | null };
+        expect(found.value).toBeNull();
+
+        // Assert — boolean reconstruction: null → true (agrees with git)
+        const boolReconstruction = found.value === null || found.value.toLowerCase() === 'true';
+        expect(boolReconstruction).toBe(true);
+      }, 60_000);
+    });
+  });
+
+  describe('Given a config file with a bad no-`=` line from the refusal matrix', () => {
+    describe('When git and tsgit parse the file', () => {
+      it.each(
+        VALUELESS_REFUSAL_MATRIX,
+      )('Then both refuse with data.line === 2 for "$label"', async ({ badLine }) => {
+        // Arrange — [a] on line 1, bad line on line 2
+        const configContent = `[a]\n\t${badLine}\n`;
+        const oursConfigPath = path.join(pair.ours, '.git', 'config');
+        await writeFile(oursConfigPath, configContent, 'utf8');
+
+        // Act — canonical git
+        const gitResult = tryRunGit(['config', '--file', oursConfigPath, '--list']);
+
+        // Assert — git exits non-zero with bad config line 2
+        expect(gitResult.ok).toBe(false);
+        const lineMatch = /bad config line (\d+)/i.exec(gitResult.stderr);
+        expect(lineMatch, `expected 'bad config line N' in: ${gitResult.stderr}`).not.toBeNull();
+        const gitLine = Number((lineMatch as RegExpExecArray)[1]);
+        expect(gitLine).toBe(2);
+
+        // Act — tsgit (fresh context to bypass cache)
+        const ctx = createNodeContext({ workDir: pair.ours });
+        let tsgitError: TsgitError | undefined;
+        try {
+          await readConfig(ctx);
+        } catch (err) {
+          if (err instanceof TsgitError) tsgitError = err;
+          else throw err;
+        }
+
+        // Assert — tsgit throws CONFIG_PARSE_ERROR with matching line number
+        expect(tsgitError, 'expected tsgit to throw TsgitError').not.toBeUndefined();
+        const data = (tsgitError as TsgitError).data;
+        expect(data.code).toBe('CONFIG_PARSE_ERROR');
+        if (data.code === 'CONFIG_PARSE_ERROR') {
+          expect(data.line).toBe(gitLine);
+        }
+      }, 60_000);
+    });
+  });
+
+  describe('Given twin repos with a valueless entry `[a]\\n\\tkey\\n`', () => {
+    describe('When git and tsgit each set a.key to "replaced"', () => {
+      it('Then the resulting [a] section bytes are identical', async () => {
+        // Arrange — same starting bytes in both repos
+        const startingBytes = '[core]\n\trepositoryformatversion = 0\n[a]\n\tkey\n';
+        const oursConfigPath = path.join(pair.ours, '.git', 'config');
+        const peerConfigPath = path.join(pair.peer, '.git', 'config');
+        await writeFile(oursConfigPath, startingBytes, 'utf8');
+        await writeFile(peerConfigPath, startingBytes, 'utf8');
+
+        // Act — canonical git sets a.key via --file
+        const gitResult = tryRunGit(['config', '--file', peerConfigPath, 'a.key', 'replaced']);
+        expect(gitResult.ok, `git config set failed: ${gitResult.stderr}`).toBe(true);
+
+        // Act — tsgit configSet on ours
+        const ctx = createNodeContext({ workDir: pair.ours });
+        await configSet(ctx, { key: 'a.key', value: 'replaced', scope: 'local' });
+
+        // Assert — byte-identical [a] section
+        const oursConfig = await readFile(oursConfigPath, 'utf8');
+        const peerConfig = await readFile(peerConfigPath, 'utf8');
+        expect(extractASection(oursConfig)).toBe(extractASection(peerConfig));
+      }, 60_000);
+    });
+
+    describe('When git and tsgit each unset a.key', () => {
+      it('Then the resulting [a] section bytes are identical', async () => {
+        // Arrange — same starting bytes in both repos (key + adjacent entry)
+        const startingBytes = '[core]\n\trepositoryformatversion = 0\n[a]\n\tkey\n\tother = v\n';
+        const oursConfigPath = path.join(pair.ours, '.git', 'config');
+        const peerConfigPath = path.join(pair.peer, '.git', 'config');
+        await writeFile(oursConfigPath, startingBytes, 'utf8');
+        await writeFile(peerConfigPath, startingBytes, 'utf8');
+
+        // Act — canonical git unsets a.key via --file
+        const gitResult = tryRunGit(['config', '--file', peerConfigPath, '--unset', 'a.key']);
+        expect(gitResult.ok, `git config --unset failed: ${gitResult.stderr}`).toBe(true);
+
+        // Act — tsgit configUnset on ours
+        const ctx = createNodeContext({ workDir: pair.ours });
+        const sut = await configUnset(ctx, { key: 'a.key', scope: 'local' });
+
+        // Assert — unset reports the valueless entry as removed with null previousValue
+        expect(sut.removed).toBe(true);
+        if (sut.removed) {
+          expect(sut.previousValue).toBeNull();
+        }
+
+        // Assert — byte-identical [a] section
+        const oursConfig = await readFile(oursConfigPath, 'utf8');
+        const peerConfig = await readFile(peerConfigPath, 'utf8');
+        expect(extractASection(oursConfig)).toBe(extractASection(peerConfig));
+      }, 60_000);
+    });
+
+    describe('When git and tsgit each rename subsection a.x to a.y', () => {
+      it('Then the valueless body lines are preserved byte-for-byte in the renamed section', async () => {
+        // Arrange — same starting bytes in both repos (subsectioned [a "x"] with
+        // a valueless key; renaming to [a "y"] must preserve the body verbatim)
+        const startingBytes =
+          '[core]\n\trepositoryformatversion = 0\n[a "x"]\n\tkey\n\tother = v\n';
+        const oursConfigPath = path.join(pair.ours, '.git', 'config');
+        const peerConfigPath = path.join(pair.peer, '.git', 'config');
+        await writeFile(oursConfigPath, startingBytes, 'utf8');
+        await writeFile(peerConfigPath, startingBytes, 'utf8');
+
+        // Act — canonical git --rename-section a.x → a.y via --file
+        const gitResult = tryRunGit([
+          'config',
+          '--file',
+          peerConfigPath,
+          '--rename-section',
+          'a.x',
+          'a.y',
+        ]);
+        expect(gitResult.ok, `git rename-section failed: ${gitResult.stderr}`).toBe(true);
+
+        // Act — tsgit configRenameSection (section.subsection format) on ours
+        const ctx = createNodeContext({ workDir: pair.ours });
+        await configRenameSectionCmd(ctx, { oldName: 'a.x', newName: 'a.y', scope: 'local' });
+
+        // Assert — byte-identical content from the renamed [a "y"] section onward
+        const oursConfig = await readFile(oursConfigPath, 'utf8');
+        const peerConfig = await readFile(peerConfigPath, 'utf8');
+        const extractAYSection = (c: string): string => {
+          const idx = c.indexOf('[a "y"]');
+          return idx === -1 ? '' : c.slice(idx);
+        };
+        expect(extractAYSection(oursConfig)).toBe(extractAYSection(peerConfig));
+      }, 60_000);
+    });
+  });
+
+  describe('Given a config file with valueless and valued entries under [a]', () => {
+    describe('When tsgit and git both run get-regexp against all keys', () => {
+      it('Then the reconstructed --get-regexp stdout matches git byte-for-byte', async () => {
+        // Arrange — write the fixture into ours .git/config
+        const configContent = '[a]\n\tkey\n\tempty =\n\tother = v\n';
+        const oursConfigPath = path.join(pair.ours, '.git', 'config');
+        await writeFile(oursConfigPath, configContent, 'utf8');
+
+        // Act — canonical git --get-regexp '.*' (scoped to file)
+        const gitResult = tryRunGit(['config', '--file', oursConfigPath, '--get-regexp', '.*']);
+        expect(gitResult.ok, `git --get-regexp failed: ${gitResult.stderr}`).toBe(true);
+        const gitStdout = gitResult.stdout;
+
+        // Act — tsgit configGetRegexp (local scope, key-pattern matches all)
+        const ctx = createNodeContext({ workDir: pair.ours });
+        const sut = await configGetRegexp(ctx, {
+          keyPattern: /.*/,
+          scope: 'local',
+        });
+
+        // Reconstruct git's --get-regexp stdout:
+        //   value === null  → "key\n"         (bare, no space)
+        //   value === ''    → "key \n"         (key + space + empty)
+        //   value           → "key value\n"
+        const reconstructed = sut.entries
+          .map((e) => (e.value === null ? `${e.key}\n` : `${e.key} ${e.value}\n`))
+          .join('');
+
+        // Assert — byte-identical reconstruction
+        expect(reconstructed).toBe(gitStdout);
+      }, 60_000);
+
+      it('Then value-pattern ^$ matches both the valueless entry and the empty-string entry', async () => {
+        // Arrange — write the fixture
+        const configContent = '[a]\n\tkey\n\tempty =\n\tother = v\n';
+        const oursConfigPath = path.join(pair.ours, '.git', 'config');
+        await writeFile(oursConfigPath, configContent, 'utf8');
+
+        // Act — canonical git --get-regexp '.*' '^$' (value-pattern)
+        const gitResult = tryRunGit([
+          'config',
+          '--file',
+          oursConfigPath,
+          '--get-regexp',
+          '.*',
+          '^$',
+        ]);
+        expect(gitResult.ok, `git --get-regexp value-pattern failed: ${gitResult.stderr}`).toBe(
+          true,
+        );
+        const gitMatched = gitResult.stdout
+          .split('\n')
+          .filter((l) => l.length > 0)
+          .map((l) => l.split(' ')[0]);
+
+        // Act — tsgit configGetRegexp with valuePattern /^$/
+        const ctx = createNodeContext({ workDir: pair.ours });
+        const sut = await configGetRegexp(ctx, {
+          keyPattern: /.*/,
+          valuePattern: /^$/,
+          scope: 'local',
+        });
+        const tsgitMatched = sut.entries.map((e) => e.key);
+
+        // Assert — same matched key set (order and count)
+        expect(tsgitMatched).toEqual(gitMatched);
+      }, 60_000);
     });
   });
 });
