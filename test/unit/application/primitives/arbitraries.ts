@@ -1,5 +1,6 @@
 import fc from 'fast-check';
 
+import { tokenizeConfig } from '../../../../src/application/primitives/config-read.js';
 import { createCommit } from '../../../../src/application/primitives/create-commit.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import type { AuthorIdentity, ObjectId, Tree } from '../../../../src/domain/objects/index.js';
@@ -57,6 +58,174 @@ export const subsectionName = (): fc.Arbitrary<string> => {
 
   return fc.oneof(wide, biased);
 };
+
+// ---------------------------------------------------------------------------
+// Config-file generators for surgery-preservation property tests
+// ---------------------------------------------------------------------------
+
+/**
+ * Characters valid inside a config value that the tokenizer handles as
+ * plain content — excludes `\`, `"`, `#`, `;` (comment triggers), and
+ * leading/trailing space (so generated values never need quoting and are
+ * always tokenized as single-line entries).
+ */
+const CONFIG_VALUE_CHARS = fc.integer({ min: 0x21, max: 0x7e }).map((cp) => {
+  const ch = String.fromCodePoint(cp);
+  if (ch === '\\' || ch === '"' || ch === '#' || ch === ';') return 'x';
+  return ch;
+});
+
+/**
+ * A grammar-safe config value: 1–12 printable ASCII chars with no special
+ * characters that would trigger quoting or comment parsing.
+ */
+const arbSafeValue = (): fc.Arbitrary<string> =>
+  fc.string({ unit: CONFIG_VALUE_CHARS, minLength: 1, maxLength: 12 });
+
+/**
+ * A valid config key: first char alpha, rest alnum or dash, length 1–8.
+ * Kept short so collision probability between generated blocks is meaningful.
+ */
+export const arbConfigKey = (): fc.Arbitrary<string> =>
+  fc
+    .tuple(
+      fc.integer({ min: 0x61, max: 0x7a }).map((cp) => String.fromCodePoint(cp)), // a–z
+      fc.array(
+        fc.oneof(
+          fc.integer({ min: 0x61, max: 0x7a }).map((cp) => String.fromCodePoint(cp)),
+          fc.integer({ min: 0x30, max: 0x39 }).map((cp) => String.fromCodePoint(cp)),
+          fc.constant('-'),
+        ),
+        { minLength: 0, maxLength: 7 },
+      ),
+    )
+    .map(([first, rest]) => first + rest.join(''));
+
+/** Section names drawn from a small pool so duplicate-block cases occur. */
+const ARB_SECTIONS = ['a', 'b', 'zed'] as const;
+
+/** Subsections: empty string (no subsection) or a short alnum string. */
+const arbSubsectionOrNone = (): fc.Arbitrary<string | undefined> =>
+  fc.oneof(
+    fc.constant(undefined),
+    fc
+      .string({
+        unit: fc.integer({ min: 0x61, max: 0x7a }).map((cp) => String.fromCodePoint(cp)),
+        minLength: 1,
+        maxLength: 4,
+      })
+      .map((s) => s),
+  );
+
+/**
+ * A single body item: one of —
+ *  - single-line valued entry
+ *  - valueless entry
+ *  - multi-line entry (head + 1–2 continuation tails, including key-lookalike
+ *    and header-lookalike tails, to exercise K/L-style misclassification guards)
+ *  - comment line
+ *  - blank line
+ *
+ * Values use `arbSafeValue` so `tokenizeConfig` is total over the generated text.
+ */
+const arbBodyItem = (): fc.Arbitrary<string> =>
+  fc.oneof(
+    // single-line valued entry
+    fc.tuple(arbConfigKey(), arbSafeValue()).map(([k, v]) => `\t${k} = ${v}\n`),
+    // valueless entry
+    arbConfigKey().map((k) => `\t${k}\n`),
+    // multi-line entry: head line + 1 or 2 tail lines
+    fc
+      .tuple(
+        arbConfigKey(),
+        arbSafeValue(),
+        fc.oneof(
+          // plain continuation tail
+          arbSafeValue().map((v) => `   ${v}\n`),
+          // key-lookalike tail (exercises K-case: looks like `url = fake`)
+          fc.tuple(arbConfigKey(), arbSafeValue()).map(([k, v]) => `\t${k} = ${v}\n`),
+          // header-lookalike tail (exercises L-case: looks like `[section]`)
+          fc.constantFrom('[lookalike]', '[b]', '[zed "x"]').map((h) => `${h}\n`),
+        ),
+        // optional bare mid value — when present the entry chains two tails
+        fc.option(arbSafeValue(), { nil: undefined }),
+      )
+      .map(([k, v, finalTail, midValue]) => {
+        const head = `\t${k} = ${v}`;
+        if (midValue !== undefined) {
+          // two tails: head\<LF>   mid\<LF>finalTail<LF>
+          return `${head}\\\n   ${midValue}\\\n${finalTail}`;
+        }
+        // one tail: head\<LF>finalTail<LF>
+        return `${head}\\\n${finalTail}`;
+      }),
+    // comment line
+    fc.constantFrom('# a comment\n', '; another comment\n'),
+    // blank line
+    fc.constant('\n'),
+  );
+
+/** A complete `[section]` or `[section "sub"]` header line. */
+const arbHeader = (): fc.Arbitrary<{
+  readonly text: string;
+  readonly section: string;
+  readonly subsection: string | undefined;
+}> =>
+  fc
+    .tuple(fc.constantFrom(...ARB_SECTIONS), arbSubsectionOrNone())
+    .map(([section, subsection]) => ({
+      text: subsection !== undefined ? `[${section} "${subsection}"]\n` : `[${section}]\n`,
+      section,
+      subsection,
+    }));
+
+/**
+ * Arbitrary of one config block: a header followed by 0–4 body items.
+ * Section names from `ARB_SECTIONS` so collisions (duplicate blocks) occur.
+ */
+export const configEntryBlock = (): fc.Arbitrary<string> =>
+  fc
+    .tuple(arbHeader(), fc.array(arbBodyItem(), { minLength: 0, maxLength: 4 }))
+    .map(([header, items]) => header.text + items.join(''));
+
+/**
+ * Arbitrary of a complete LF-terminated config file: 1–4 blocks concatenated.
+ * Always ends with `\n` (the last block item always terminates with LF).
+ */
+export const configFile = (): fc.Arbitrary<string> =>
+  fc.array(configEntryBlock(), { minLength: 1, maxLength: 4 }).map((blocks) => blocks.join(''));
+
+/**
+ * A config file plus an operation target whose section comes from the same
+ * pool the blocks draw from and whose key is biased (3:1) toward keys already
+ * present in the file, so surgery properties exercise the existing-entry
+ * paths (multi-line replace/remove, orphan-tail detection) on most runs
+ * instead of degenerating to insert-new/no-op.
+ */
+export const configFileWithTarget = (): fc.Arbitrary<{
+  readonly file: string;
+  readonly section: string;
+  readonly key: string;
+}> =>
+  configFile().chain((file) => {
+    const presentKeys = [
+      ...new Set(
+        tokenizeConfig(file).flatMap((t) => (t.kind === 'entry' && t.key !== '' ? [t.key] : [])),
+      ),
+    ];
+    const key =
+      presentKeys.length === 0
+        ? arbConfigKey()
+        : fc.oneof(
+            { weight: 3, arbitrary: fc.constantFrom(...presentKeys) },
+            { weight: 1, arbitrary: arbConfigKey() },
+          );
+    return fc.record({
+      file: fc.constant(file),
+      section: fc.constantFrom(...ARB_SECTIONS),
+      key,
+    });
+  });
 
 export interface DagNodeSpec {
   readonly parents: readonly number[];

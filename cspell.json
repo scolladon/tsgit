@@ -73,6 +73,8 @@
     "autostash",
     "msgnum",
     "newbase",
+    "newval",
+    "nomatch",
     "markerless",
     "stringly",
     "unstashed",

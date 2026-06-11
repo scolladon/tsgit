@@ -121,6 +121,27 @@ interface SectionBuilder {
   readonly entries: Array<{ readonly key: string; readonly value: string | null }>;
 }
 
+/** Physical-line classification of git-config text; the writer's surgery unit. */
+export type ConfigToken =
+  | {
+      readonly kind: 'header';
+      readonly section: string;
+      readonly subsection: string | undefined;
+      readonly line: number;
+      /** Header line carries an unquoted inline `#`/`;` comment (blocks empty-section pruning). */
+      readonly hasComment: boolean;
+    }
+  | {
+      readonly kind: 'entry';
+      readonly key: string;
+      readonly value: string | null;
+      readonly startLine: number;
+      /** Exclusive — `parseConfigValue`'s `nextLineIdx`; `startLine + 1` for single-line entries. */
+      readonly endLine: number;
+    }
+  | { readonly kind: 'comment'; readonly line: number }
+  | { readonly kind: 'blank'; readonly line: number };
+
 const parseConfigText = (text: string, source: string): ParsedConfig => {
   const sections = parseIniSections(text, source);
   return assembleParsed(sections);
@@ -135,22 +156,103 @@ const parseConfigText = (text: string, source: string): ParsedConfig => {
 const VALUELESS_KEY_RE = /^[ \t\r]*([a-zA-Z][a-zA-Z0-9-]*)[ \t]*\r?$/;
 
 /**
- * Process a body line with no effective `=`. Lines whose stripped form starts
- * with `[` are `not-header` results (e.g. `[a] key`) and get the lenient skip.
- * Otherwise the valueless-key grammar is checked: match → push `{ key, null }`
- * into `current`; no match → throw `CONFIG_PARSE_ERROR`.
+ * Classify a single physical line that has no effective `=` into a `ConfigToken`.
+ * Lines whose stripped form starts with `[` get the lenient comment classification.
+ * Otherwise the valueless-key grammar is checked: match → entry token with null value;
+ * no match → throw `CONFIG_PARSE_ERROR`.
  */
-const processValuelessLine = (
+const classifyValuelessLine = (
   line: string,
   trimmed: string,
   lineIdx: number,
-  current: SectionBuilder | undefined,
   source: string | undefined,
-): void => {
-  if (trimmed.startsWith('[')) return;
+): ConfigToken => {
+  if (trimmed.startsWith('[')) return { kind: 'comment', line: lineIdx };
   const match = VALUELESS_KEY_RE.exec(line);
   if (match === null) throw configParseError(lineIdx + 1, source);
-  if (current !== undefined) current.entries.push({ key: match[1] as string, value: null });
+  return {
+    kind: 'entry',
+    key: match[1] as string,
+    value: null,
+    startLine: lineIdx,
+    endLine: lineIdx + 1,
+  };
+};
+
+/**
+ * Produce a flat token stream of physical-line classifications for git-config text.
+ * Each `ConfigToken` carries the physical line index (0-based) or span it occupies.
+ * The stream is the writer's surgery unit — every physical line maps to exactly one token.
+ * Degenerate case: empty text (`''`) yields one `blank` token at line 0, because
+ * `''.split('\n')` produces a single empty line; consumers that skip blanks see `[]`.
+ *
+ * Terminator handling: when `text` ends with `\n`, the final empty element from
+ * `split('\n')` is the file terminator and emits no token. Continuation values may
+ * still consume it (their `endLine` may equal `lines.length`).
+ *
+ * Throws `CONFIG_PARSE_ERROR` for malformed headers, unknown value escapes, unclosed
+ * quotes, and invalid key grammar — mirroring `parseIniSections` exactly.
+ */
+export const tokenizeConfig = (text: string, source?: string): ReadonlyArray<ConfigToken> =>
+  tokenizeConfigLines(text.split('\n'), text.endsWith('\n'), source);
+
+/**
+ * Same as `tokenizeConfig` over pre-split lines, so writers that already hold
+ * the line array do not split the text twice. `endsWithNewline` tells whether
+ * the final array element is the file terminator rather than a content line.
+ */
+export const tokenizeConfigLines = (
+  lines: ReadonlyArray<string>,
+  endsWithNewline: boolean,
+  source?: string,
+): ReadonlyArray<ConfigToken> => {
+  const tokens: ConfigToken[] = [];
+  const limit = endsWithNewline ? lines.length - 1 : lines.length;
+  let lineIdx = 0;
+  while (lineIdx < limit) {
+    const line = lines[lineIdx] as string;
+    const stripped = stripInlineComment(line);
+    const trimmed = stripped.trim();
+    if (trimmed === '') {
+      tokens.push(
+        line.trim() === '' ? { kind: 'blank', line: lineIdx } : { kind: 'comment', line: lineIdx },
+      );
+      lineIdx += 1;
+      continue;
+    }
+    const header = parseSectionHeader(trimmed);
+    if (header.kind === 'header') {
+      tokens.push({
+        kind: 'header',
+        section: header.section,
+        subsection: header.subsection,
+        line: lineIdx,
+        hasComment: stripped !== line,
+      });
+      lineIdx += 1;
+      continue;
+    }
+    if (header.kind === 'malformed') {
+      throw configParseError(lineIdx + 1, source, header.partialName);
+    }
+    const eqAt = effectiveEqualsIndex(line);
+    if (eqAt === -1) {
+      tokens.push(classifyValuelessLine(line, trimmed, lineIdx, source));
+      lineIdx += 1;
+      continue;
+    }
+    const key = line.slice(0, eqAt).trim();
+    const parsed = parseConfigValue(lines, lineIdx, eqAt + 1, source);
+    tokens.push({
+      kind: 'entry',
+      key,
+      value: parsed.value,
+      startLine: lineIdx,
+      endLine: parsed.nextLineIdx,
+    });
+    lineIdx = parsed.nextLineIdx;
+  }
+  return tokens;
 };
 
 /**
@@ -173,39 +275,14 @@ const processValuelessLine = (
  */
 export const parseIniSections = (text: string, source?: string): ReadonlyArray<IniSection> => {
   const sections: SectionBuilder[] = [];
-  const lines = text.split('\n');
   let current: SectionBuilder | undefined;
-  let lineIdx = 0;
-  while (lineIdx < lines.length) {
-    const line = lines[lineIdx] as string;
-    const trimmed = stripInlineComment(line).trim();
-    // Stryker disable next-line ConditionalExpression,StringLiteral: equivalent — an empty `trimmed` matches neither a section header nor a key/value (no `=`), so skipping it explicitly or falling through produces the same sections.
-    if (trimmed === '') {
-      lineIdx += 1;
-      continue;
-    }
-    const header = parseSectionHeader(trimmed);
-    if (header.kind === 'header') {
-      current = { section: header.section, subsection: header.subsection, entries: [] };
+  for (const token of tokenizeConfig(text, source)) {
+    if (token.kind === 'header') {
+      current = { section: token.section, subsection: token.subsection, entries: [] };
       sections.push(current);
-      lineIdx += 1;
-      continue;
+    } else if (token.kind === 'entry' && current !== undefined && token.key !== '') {
+      current.entries.push({ key: token.key, value: token.value });
     }
-    if (header.kind === 'malformed') {
-      throw configParseError(lineIdx + 1, source, header.partialName);
-    }
-    const eqAt = effectiveEqualsIndex(line);
-    if (eqAt === -1) {
-      processValuelessLine(line, trimmed, lineIdx, current, source);
-      lineIdx += 1;
-      continue;
-    }
-    const key = line.slice(0, eqAt).trim();
-    const parsed = parseConfigValue(lines, lineIdx, eqAt + 1, source);
-    if (current !== undefined && key !== '') {
-      current.entries.push({ key, value: parsed.value });
-    }
-    lineIdx = parsed.nextLineIdx;
   }
   return sections;
 };

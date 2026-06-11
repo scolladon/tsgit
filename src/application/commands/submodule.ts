@@ -149,10 +149,8 @@ const resolveBaseUrl = async (ctx: Context, config: ParsedConfig): Promise<strin
 };
 
 /**
- * `set`/`appendEntry` insert a fresh key right after the section header, so a
- * forward sequence of ops on a new section reverses the key order. Emit them
- * in reverse (`update`, `url`, `active`) so the file ends up in git's order:
- * `active`, `url`, `update`.
+ * Build the `set` ops for registering a submodule in git's order: `active`,
+ * `url`, `update`. End-of-section insertion preserves this forward order.
  */
 const registerOps = (
   name: string,
@@ -168,7 +166,7 @@ const registerOps = (
   });
   const ordered: ConfigOperation[] = [set('active', 'true'), set('url', url)];
   if (update !== undefined) ordered.push(set('update', update));
-  return [...ordered].reverse();
+  return ordered;
 };
 
 export interface SubmoduleInitOptions {
@@ -493,8 +491,7 @@ const setSubmoduleOp = (subsection: string, key: string, value: string): ConfigO
 
 /**
  * Write the `.gitmodules` `[submodule "<name>"]` block (`path`, `url`, optional
- * `branch`). `setConfigEntryInText` inserts a fresh key right after the header,
- * so the ops are folded in reverse to land in git's `path`→`url`→`branch` order.
+ * `branch`). End-of-section insertion preserves forward order: `path`→`url`→`branch`.
  */
 const writeGitmodulesEntry = async (
   ctx: Context,
@@ -508,7 +505,7 @@ const writeGitmodulesEntry = async (
   const ordered = [setSubmoduleOp(name, 'path', path), setSubmoduleOp(name, 'url', rawUrl)];
   if (branch !== undefined) ordered.push(setSubmoduleOp(name, 'branch', branch));
   let text = existing;
-  for (const op of [...ordered].reverse()) text = applyConfigOpInText(text, op);
+  for (const op of ordered) text = applyConfigOpInText(text, op);
   await ctx.fs.writeUtf8(file, text);
   return new TextEncoder().encode(text);
 };
@@ -631,8 +628,8 @@ export const submoduleAdd = async (
   const gitmodulesBytes = await writeGitmodulesEntry(ctx, name, opts.path, opts.url, opts.branch);
   await stageSubmodule(ctx, opts.path, subHead, gitmodulesBytes);
   await updateConfigOperations(ctx, [
-    setSubmoduleOp(name, 'active', 'true'),
     setSubmoduleOp(name, 'url', resolved),
+    setSubmoduleOp(name, 'active', 'true'),
   ]);
   return { name, path: opts.path as FilePath, url: resolved, id: subHead, branch };
 };

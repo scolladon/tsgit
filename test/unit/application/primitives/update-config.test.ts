@@ -39,25 +39,27 @@ describe('primitives/update-config', () => {
           const text = '[core]\n\tsparseCheckout = false\n';
 
           // Act
-          const sut = setCoreConfigEntryInText(text, 'sparseCheckout', 'true');
+          const sut = setCoreConfigEntryInText;
+          const result = sut(text, 'sparseCheckout', 'true');
 
           // Assert — the value flips; the line is rewritten with a tab indent.
-          expect(sut).toBe('[core]\n\tsparseCheckout = true\n');
+          expect(result).toBe('[core]\n\tsparseCheckout = true\n');
         });
       });
     });
 
     describe('Given a [core] section without the key', () => {
       describe('When setCoreConfigEntryInText', () => {
-        it('Then the key is inserted right after the header', () => {
+        it('Then the key is inserted at the end of the section', () => {
           // Arrange
           const text = '[core]\n\tbare = false\n';
 
           // Act
-          const sut = setCoreConfigEntryInText(text, 'sparseCheckout', 'true');
+          const sut = setCoreConfigEntryInText;
+          const result = sut(text, 'sparseCheckout', 'true');
 
-          // Assert — inserted immediately after `[core]`, before the existing key.
-          expect(sut).toBe('[core]\n\tsparseCheckout = true\n\tbare = false\n');
+          // Assert — inserted at the end of [core], after existing key.
+          expect(result).toBe('[core]\n\tbare = false\n\tsparseCheckout = true\n');
         });
       });
     });
@@ -69,10 +71,11 @@ describe('primitives/update-config', () => {
           const text = '[user]\n\tname = Ada\n';
 
           // Act
-          const sut = setCoreConfigEntryInText(text, 'sparseCheckout', 'true');
+          const sut = setCoreConfigEntryInText;
+          const result = sut(text, 'sparseCheckout', 'true');
 
           // Assert — the new section is appended at the end of the file.
-          expect(sut).toBe('[user]\n\tname = Ada\n[core]\n\tsparseCheckout = true\n');
+          expect(result).toBe('[user]\n\tname = Ada\n[core]\n\tsparseCheckout = true\n');
         });
       });
     });
@@ -84,10 +87,11 @@ describe('primitives/update-config', () => {
           const text = '';
 
           // Act
-          const sut = setCoreConfigEntryInText(text, 'sparseCheckout', 'true');
+          const sut = setCoreConfigEntryInText;
+          const result = sut(text, 'sparseCheckout', 'true');
 
           // Assert
-          expect(sut).toBe('[core]\n\tsparseCheckout = true\n');
+          expect(result).toBe('[core]\n\tsparseCheckout = true\n');
         });
       });
     });
@@ -99,10 +103,11 @@ describe('primitives/update-config', () => {
           const text = '[user]\n\tname = Ada';
 
           // Act
-          const sut = setCoreConfigEntryInText(text, 'sparseCheckout', 'true');
+          const sut = setCoreConfigEntryInText;
+          const result = sut(text, 'sparseCheckout', 'true');
 
           // Assert
-          expect(sut).toBe('[user]\n\tname = Ada\n[core]\n\tsparseCheckout = true\n');
+          expect(result).toBe('[user]\n\tname = Ada\n[core]\n\tsparseCheckout = true\n');
         });
       });
     });
@@ -115,10 +120,11 @@ describe('primitives/update-config', () => {
           const text = '[core]\n\tSPARSECHECKOUT = false\n';
 
           // Act
-          const sut = setCoreConfigEntryInText(text, 'sparseCheckout', 'true');
+          const sut = setCoreConfigEntryInText;
+          const result = sut(text, 'sparseCheckout', 'true');
 
           // Assert — the line is replaced (re-rendered with the passed-in casing).
-          expect(sut).toBe('[core]\n\tsparseCheckout = true\n');
+          expect(result).toBe('[core]\n\tsparseCheckout = true\n');
         });
       });
     });
@@ -132,10 +138,11 @@ describe('primitives/update-config', () => {
             '# top comment\n[user]\n\tname = Ada\n\n[core]\n\t; core comment\n\tBARE = false\n\tsparseCheckout = false\n[remote "origin"]\n\turl = u\n';
 
           // Act
-          const sut = setCoreConfigEntryInText(text, 'sparseCheckout', 'true');
+          const sut = setCoreConfigEntryInText;
+          const result = sut(text, 'sparseCheckout', 'true');
 
           // Assert — only the sparseCheckout value changed.
-          expect(sut).toBe(
+          expect(result).toBe(
             '# top comment\n[user]\n\tname = Ada\n\n[core]\n\t; core comment\n\tBARE = false\n\tsparseCheckout = true\n[remote "origin"]\n\turl = u\n',
           );
         });
@@ -150,11 +157,12 @@ describe('primitives/update-config', () => {
           const text = '[core]\n\tbare = false\n[other]\n\tsparseCheckout = false\n';
 
           // Act
-          const sut = setCoreConfigEntryInText(text, 'sparseCheckout', 'true');
+          const sut = setCoreConfigEntryInText;
+          const result = sut(text, 'sparseCheckout', 'true');
 
-          // Assert — inserted under [core]; the [other] line is untouched.
-          expect(sut).toBe(
-            '[core]\n\tsparseCheckout = true\n\tbare = false\n[other]\n\tsparseCheckout = false\n',
+          // Assert — inserted at end of [core] (after existing key); the [other] line is untouched.
+          expect(result).toBe(
+            '[core]\n\tbare = false\n\tsparseCheckout = true\n[other]\n\tsparseCheckout = false\n',
           );
         });
       });
@@ -168,10 +176,11 @@ describe('primitives/update-config', () => {
           const text = '[core "sub"]\n\tsparseCheckout = false\n';
 
           // Act
-          const sut = setCoreConfigEntryInText(text, 'sparseCheckout', 'true');
+          const sut = setCoreConfigEntryInText;
+          const result = sut(text, 'sparseCheckout', 'true');
 
           // Assert — the subsection survives; a real [core] is appended.
-          expect(sut).toBe(
+          expect(result).toBe(
             '[core "sub"]\n\tsparseCheckout = false\n[core]\n\tsparseCheckout = true\n',
           );
         });
@@ -186,10 +195,11 @@ describe('primitives/update-config', () => {
           const text = '[core ""]\n\tbare = false\n';
 
           // Act
-          const sut = setCoreConfigEntryInText(text, 'sparseCheckout', 'true');
+          const sut = setCoreConfigEntryInText;
+          const result = sut(text, 'sparseCheckout', 'true');
 
-          // Assert — the key is inserted under the `[core ""]` header.
-          expect(sut).toBe('[core ""]\n\tsparseCheckout = true\n\tbare = false\n');
+          // Assert — the key is inserted at the end of the `[core ""]` section.
+          expect(result).toBe('[core ""]\n\tbare = false\n\tsparseCheckout = true\n');
         });
       });
     });
@@ -197,16 +207,17 @@ describe('primitives/update-config', () => {
     describe('Given a [core] body line lacking `=` whose text would key-match after dropping its last char', () => {
       describe('When setCoreConfigEntryInText', () => {
         it('Then the `=`-less line is not mistaken for the key', () => {
-          // Arrange — `sparseCheckoutX` has no `=`. Without the `indexOf('=') === -1`
-          // guard, `slice(0, -1)` would yield `sparseCheckout` and falsely match the
-          // key, replacing this malformed line instead of inserting a fresh entry.
+          // Arrange — `sparseCheckoutX` has no `=`. Without the valueless-key guard,
+          // the line would be mistaken for a key match. The key must be inserted at the
+          // end of the section (after the valueless line).
           const text = '[core]\n\tsparseCheckoutX\n';
 
           // Act
-          const sut = setCoreConfigEntryInText(text, 'sparseCheckout', 'true');
+          const sut = setCoreConfigEntryInText;
+          const result = sut(text, 'sparseCheckout', 'true');
 
-          // Assert — the key is inserted after the header; the `=`-less line survives.
-          expect(sut).toBe('[core]\n\tsparseCheckout = true\n\tsparseCheckoutX\n');
+          // Assert — the key is inserted at the end of the section; the `=`-less line survives.
+          expect(result).toBe('[core]\n\tsparseCheckoutX\n\tsparseCheckout = true\n');
         });
       });
     });
@@ -218,10 +229,11 @@ describe('primitives/update-config', () => {
           const text = '  [core]  \n\tbare = false\n';
 
           // Act
-          const sut = setCoreConfigEntryInText(text, 'sparseCheckout', 'true');
+          const sut = setCoreConfigEntryInText;
+          const result = sut(text, 'sparseCheckout', 'true');
 
-          // Assert — the original header line is preserved verbatim.
-          expect(sut).toBe('  [core]  \n\tsparseCheckout = true\n\tbare = false\n');
+          // Assert — the original header line is preserved verbatim; key inserted at end.
+          expect(result).toBe('  [core]  \n\tbare = false\n\tsparseCheckout = true\n');
         });
       });
     });
@@ -235,11 +247,12 @@ describe('primitives/update-config', () => {
           const text = '[core]\n\tbare = false\n  [other]  \n\tsparseCheckout = false\n';
 
           // Act
-          const sut = setCoreConfigEntryInText(text, 'sparseCheckout', 'true');
+          const sut = setCoreConfigEntryInText;
+          const result = sut(text, 'sparseCheckout', 'true');
 
-          // Assert — inserted under [core]; the `[other]` line is byte-preserved.
-          expect(sut).toBe(
-            '[core]\n\tsparseCheckout = true\n\tbare = false\n  [other]  \n\tsparseCheckout = false\n',
+          // Assert — inserted at end of [core] (after bare); the `[other]` line is byte-preserved.
+          expect(result).toBe(
+            '[core]\n\tbare = false\n\tsparseCheckout = true\n  [other]  \n\tsparseCheckout = false\n',
           );
         });
       });
@@ -254,27 +267,37 @@ describe('primitives/update-config', () => {
           const text = '[core]\n\t[not-a-header\n\tsparseCheckout = false\n';
 
           // Act
-          const sut = setCoreConfigEntryInText(text, 'sparseCheckout', 'true');
+          const sut = setCoreConfigEntryInText;
+          const result = sut(text, 'sparseCheckout', 'true');
 
           // Assert — the existing `sparseCheckout` line is replaced in place.
-          expect(sut).toBe('[core]\n\t[not-a-header\n\tsparseCheckout = true\n');
+          expect(result).toBe('[core]\n\t[not-a-header\n\tsparseCheckout = true\n');
         });
       });
     });
 
     describe('Given a [core] body line that ends with `]` but does not start with `[`', () => {
-      describe('When setCoreConfigEntryInText replaces a later key', () => {
-        it('Then that line is not treated as a section boundary', () => {
-          // Arrange — `not-a-header]` ends with `]` yet is not a real header (no `[`).
-          // The scan must require BOTH brackets, else it stops here and inserts a
-          // duplicate instead of replacing the real `sparseCheckout` line below it.
+      describe('When setCoreConfigEntryInText runs on this malformed content', () => {
+        it('Then CONFIG_PARSE_ERROR is thrown (malformed key grammar)', () => {
+          // Arrange — `not-a-header]` fails the valueless-key grammar (contains `]`).
+          // The tokenizer refuses this malformed content, matching git's own write refusal.
           const text = '[core]\n\tnot-a-header]\n\tsparseCheckout = false\n';
+          let caught: unknown;
 
           // Act
-          const sut = setCoreConfigEntryInText(text, 'sparseCheckout', 'true');
+          try {
+            setCoreConfigEntryInText(text, 'sparseCheckout', 'true');
+          } catch (err) {
+            caught = err;
+          }
 
-          // Assert — the existing `sparseCheckout` line is replaced in place.
-          expect(sut).toBe('[core]\n\tnot-a-header]\n\tsparseCheckout = true\n');
+          // Assert — refusal on malformed body line
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data;
+          expect(data.code).toBe('CONFIG_PARSE_ERROR');
+          if (data.code === 'CONFIG_PARSE_ERROR') {
+            expect(data.line).toBe(2);
+          }
         });
       });
     });
@@ -287,10 +310,11 @@ describe('primitives/update-config', () => {
           const text = '[Core]\n\tsparseCheckout = false\n';
 
           // Act
-          const sut = setCoreConfigEntryInText(text, 'sparseCheckout', 'true');
+          const sut = setCoreConfigEntryInText;
+          const result = sut(text, 'sparseCheckout', 'true');
 
           // Assert — the existing line is replaced; no second `[core]` appears.
-          expect(sut).toBe('[Core]\n\tsparseCheckout = true\n');
+          expect(result).toBe('[Core]\n\tsparseCheckout = true\n');
         });
       });
     });
@@ -302,10 +326,11 @@ describe('primitives/update-config', () => {
           const text = '[CORE]\n\tbare = false\n';
 
           // Act
-          const sut = setCoreConfigEntryInText(text, 'sparseCheckout', 'true');
+          const sut = setCoreConfigEntryInText;
+          const result = sut(text, 'sparseCheckout', 'true');
 
-          // Assert — the key is inserted under `[CORE]`; no appended `[core]`.
-          expect(sut).toBe('[CORE]\n\tsparseCheckout = true\n\tbare = false\n');
+          // Assert — the key is inserted at end of `[CORE]`; no appended `[core]`.
+          expect(result).toBe('[CORE]\n\tbare = false\n\tsparseCheckout = true\n');
         });
       });
     });
@@ -318,10 +343,11 @@ describe('primitives/update-config', () => {
           const text = '[Core "sub"]\n\tsparseCheckout = false\n';
 
           // Act
-          const sut = setCoreConfigEntryInText(text, 'sparseCheckout', 'true');
+          const sut = setCoreConfigEntryInText;
+          const result = sut(text, 'sparseCheckout', 'true');
 
           // Assert — the subsection survives; a real [core] is appended.
-          expect(sut).toBe(
+          expect(result).toBe(
             '[Core "sub"]\n\tsparseCheckout = false\n[core]\n\tsparseCheckout = true\n',
           );
         });
@@ -359,14 +385,11 @@ describe('primitives/update-config', () => {
         it('Then the newline is escaped as \\n and " is escaped as \\", value unquoted', () => {
           // Arrange & Act — LF is escaped to `\n`; `"` is escaped to `\"`; neither triggers
           // quoting, so the value is emitted unquoted.
-          const sut = setCoreConfigEntryInText(
-            '[core]\n',
-            'sparseCheckout',
-            'true\n[remote "evil"]',
-          );
+          const sut = setCoreConfigEntryInText;
+          const result = sut('[core]\n', 'sparseCheckout', 'true\n[remote "evil"]');
 
           // Assert — unquoted, LF → \n, " → \".
-          expect(sut).toBe('[core]\n\tsparseCheckout = true\\n[remote \\"evil\\"]\n');
+          expect(result).toBe('[core]\n\tsparseCheckout = true\\n[remote \\"evil\\"]\n');
         });
       });
     });
@@ -375,10 +398,11 @@ describe('primitives/update-config', () => {
       describe('When setCoreConfigEntryInText', () => {
         it('Then the value is double-quoted with the raw CR inside (CR is accepted)', () => {
           // Arrange & Act — CR triggers quoting and passes through raw; it is no longer rejected.
-          const sut = setCoreConfigEntryInText('[core]\n', 'sparseCheckout', 'true\r[harmless]');
+          const sut = setCoreConfigEntryInText;
+          const result = sut('[core]\n', 'sparseCheckout', 'true\r[harmless]');
 
           // Assert — quoted because CR triggers quoting; CR byte is raw inside quotes.
-          expect(sut).toBe('[core]\n\tsparseCheckout = "true\r[harmless]"\n');
+          expect(result).toBe('[core]\n\tsparseCheckout = "true\r[harmless]"\n');
         });
       });
     });
@@ -435,9 +459,9 @@ describe('primitives/update-config', () => {
           // Act
           await updateCoreConfig(ctx, { sparseCheckout: 'true' });
 
-          // Assert
+          // Assert — end-of-section insertion: sparseCheckout lands after bare
           const written = await ctx.fs.readUtf8(configPath(ctx));
-          expect(written).toBe('[core]\n\tsparseCheckout = true\n\tbare = false\n');
+          expect(written).toBe('[core]\n\tbare = false\n\tsparseCheckout = true\n');
         });
       });
     });
@@ -452,10 +476,10 @@ describe('primitives/update-config', () => {
           // Act
           await updateCoreConfig(ctx, { sparseCheckout: 'true', sparseCheckoutCone: 'false' });
 
-          // Assert — both keys land under [core]; later-folded key is inserted first.
+          // Assert — both keys land under [core]; each key appended at end of section in fold order.
           const written = await ctx.fs.readUtf8(configPath(ctx));
           expect(written).toBe(
-            '[core]\n\tsparseCheckoutCone = false\n\tsparseCheckout = true\n\tbare = false\n',
+            '[core]\n\tbare = false\n\tsparseCheckout = true\n\tsparseCheckoutCone = false\n',
           );
         });
       });
@@ -551,10 +575,11 @@ describe('primitives/update-config', () => {
       describe('When setConfigEntryInText', () => {
         it('Then the section is appended', () => {
           // Arrange & Act
-          const sut = setConfigEntryInText('', 'extensions', undefined, 'partialClone', 'origin');
+          const sut = setConfigEntryInText;
+          const result = sut('', 'extensions', undefined, 'partialClone', 'origin');
 
           // Assert
-          expect(sut).toBe('[extensions]\n\tpartialClone = origin\n');
+          expect(result).toBe('[extensions]\n\tpartialClone = origin\n');
         });
       });
     });
@@ -563,25 +588,27 @@ describe('primitives/update-config', () => {
       describe('When setConfigEntryInText', () => {
         it('Then the subsectioned header is rendered', () => {
           // Arrange & Act
-          const sut = setConfigEntryInText('', 'remote', 'origin', 'url', 'https://e/r.git');
+          const sut = setConfigEntryInText;
+          const result = sut('', 'remote', 'origin', 'url', 'https://e/r.git');
 
           // Assert
-          expect(sut).toBe('[remote "origin"]\n\turl = https://e/r.git\n');
+          expect(result).toBe('[remote "origin"]\n\turl = https://e/r.git\n');
         });
       });
     });
 
     describe('Given an existing section without the key', () => {
       describe('When setConfigEntryInText', () => {
-        it('Then the key is inserted after the header', () => {
+        it('Then the key is inserted at the end of the section', () => {
           // Arrange
           const text = '[remote "origin"]\n\turl = https://e/r.git\n';
 
           // Act
-          const sut = setConfigEntryInText(text, 'remote', 'origin', 'promisor', 'true');
+          const sut = setConfigEntryInText;
+          const result = sut(text, 'remote', 'origin', 'promisor', 'true');
 
-          // Assert
-          expect(sut).toBe('[remote "origin"]\n\tpromisor = true\n\turl = https://e/r.git\n');
+          // Assert — inserted at the end of the section, after existing key
+          expect(result).toBe('[remote "origin"]\n\turl = https://e/r.git\n\tpromisor = true\n');
         });
       });
     });
@@ -593,10 +620,11 @@ describe('primitives/update-config', () => {
           const text = '[remote "origin"]\n\tpromisor = false\n';
 
           // Act
-          const sut = setConfigEntryInText(text, 'remote', 'origin', 'promisor', 'true');
+          const sut = setConfigEntryInText;
+          const result = sut(text, 'remote', 'origin', 'promisor', 'true');
 
           // Assert
-          expect(sut).toBe('[remote "origin"]\n\tpromisor = true\n');
+          expect(result).toBe('[remote "origin"]\n\tpromisor = true\n');
         });
       });
     });
@@ -608,10 +636,11 @@ describe('primitives/update-config', () => {
           const text = '[remote "Origin"]\n\turl = old\n';
 
           // Act
-          const sut = setConfigEntryInText(text, 'remote', 'origin', 'promisor', 'true');
+          const sut = setConfigEntryInText;
+          const result = sut(text, 'remote', 'origin', 'promisor', 'true');
 
           // Assert
-          expect(sut).toBe(
+          expect(result).toBe(
             '[remote "Origin"]\n\turl = old\n[remote "origin"]\n\tpromisor = true\n',
           );
         });
@@ -625,10 +654,11 @@ describe('primitives/update-config', () => {
           const text = '[EXTENSIONS]\n\tpartialClone = a\n';
 
           // Act
-          const sut = setConfigEntryInText(text, 'extensions', undefined, 'partialClone', 'b');
+          const sut = setConfigEntryInText;
+          const result = sut(text, 'extensions', undefined, 'partialClone', 'b');
 
           // Assert
-          expect(sut).toBe('[EXTENSIONS]\n\tpartialClone = b\n');
+          expect(result).toBe('[EXTENSIONS]\n\tpartialClone = b\n');
         });
       });
     });
@@ -655,10 +685,11 @@ describe('primitives/update-config', () => {
       describe('When setConfigEntryInText', () => {
         it('Then the quote is escaped and the header is rendered as [s "a\\"b"]', () => {
           // Arrange & Act
-          const sut = setConfigEntryInText('', 's', 'a"b', 'k', 'v');
+          const sut = setConfigEntryInText;
+          const result = sut('', 's', 'a"b', 'k', 'v');
 
           // Assert — git escapes " → \" inside the subsection quotes
-          expect(sut).toBe('[s "a\\"b"]\n\tk = v\n');
+          expect(result).toBe('[s "a\\"b"]\n\tk = v\n');
         });
       });
     });
@@ -667,10 +698,11 @@ describe('primitives/update-config', () => {
       describe('When setConfigEntryInText', () => {
         it('Then the backslash is escaped and the header is rendered as [s "a\\\\b"]', () => {
           // Arrange & Act
-          const sut = setConfigEntryInText('', 's', 'a\\b', 'k', 'v');
+          const sut = setConfigEntryInText;
+          const result = sut('', 's', 'a\\b', 'k', 'v');
 
           // Assert — git escapes \ → \\ inside the subsection quotes
-          expect(sut).toBe('[s "a\\\\b"]\n\tk = v\n');
+          expect(result).toBe('[s "a\\\\b"]\n\tk = v\n');
         });
       });
     });
@@ -679,11 +711,12 @@ describe('primitives/update-config', () => {
       describe('When setConfigEntryInText', () => {
         it('Then backslash is escaped first, then quote: header is [s "a\\\\\\"b"]', () => {
           // Arrange & Act — escape order: \ → \\ first, then " → \"
-          const sut = setConfigEntryInText('', 's', 'a\\"b', 'k', 'v');
+          const sut = setConfigEntryInText;
+          const result = sut('', 's', 'a\\"b', 'k', 'v');
 
           // Assert — a\"b (a + \ + " + b) → a\\\"b (a + \\ + \" + b) inside the header quotes
           // Three backslashes in the output: two for escaped-\, one before the escaped-"
-          expect(sut).toBe('[s "a\\\\\\"b"]\n\tk = v\n');
+          expect(result).toBe('[s "a\\\\\\"b"]\n\tk = v\n');
         });
       });
     });
@@ -692,10 +725,11 @@ describe('primitives/update-config', () => {
       describe('When setConfigEntryInText', () => {
         it('Then the bracket is written raw inside the quotes', () => {
           // Arrange & Act — ] is not escaped by git inside subsection quotes
-          const sut = setConfigEntryInText('', 's', 'a]b', 'k', 'v');
+          const sut = setConfigEntryInText;
+          const result = sut('', 's', 'a]b', 'k', 'v');
 
           // Assert — raw ] inside quotes
-          expect(sut).toBe('[s "a]b"]\n\tk = v\n');
+          expect(result).toBe('[s "a]b"]\n\tk = v\n');
         });
       });
     });
@@ -704,10 +738,11 @@ describe('primitives/update-config', () => {
       describe('When setConfigEntryInText', () => {
         it('Then the CR is written raw inside the quotes (accepted by git)', () => {
           // Arrange & Act — CR is accepted and written verbatim
-          const sut = setConfigEntryInText('', 's', 'a\rb', 'k', 'v');
+          const sut = setConfigEntryInText;
+          const result = sut('', 's', 'a\rb', 'k', 'v');
 
           // Assert — raw CR inside subsection quotes
-          expect(sut).toBe('[s "a\rb"]\n\tk = v\n');
+          expect(result).toBe('[s "a\rb"]\n\tk = v\n');
         });
       });
     });
@@ -767,10 +802,11 @@ describe('primitives/update-config', () => {
           const text = '[s "a\\"b"]\n\tk = v\n';
 
           // Act
-          const sut = setConfigEntryInText(text, 's', 'a"b', 'k2', 'w');
+          const sut = setConfigEntryInText;
+          const result = sut(text, 's', 'a"b', 'k2', 'w');
 
-          // Assert — k2 inserted after header; header NOT duplicated
-          expect(sut).toBe('[s "a\\"b"]\n\tk2 = w\n\tk = v\n');
+          // Assert — k2 inserted at end of section (after k); header NOT duplicated
+          expect(result).toBe('[s "a\\"b"]\n\tk = v\n\tk2 = w\n');
         });
       });
     });
@@ -818,10 +854,11 @@ describe('primitives/update-config', () => {
       describe('When setConfigEntryInText', () => {
         it('Then the rendered line is double-quoted', () => {
           // Arrange & Act — `#` would start an inline comment unquoted, so the writer must quote.
-          const sut = setConfigEntryInText('', 'pager', undefined, 'log', 'less # paginate');
+          const sut = setConfigEntryInText;
+          const result = sut('', 'pager', undefined, 'log', 'less # paginate');
 
           // Assert
-          expect(sut).toBe('[pager]\n\tlog = "less # paginate"\n');
+          expect(result).toBe('[pager]\n\tlog = "less # paginate"\n');
         });
       });
     });
@@ -830,10 +867,11 @@ describe('primitives/update-config', () => {
       describe('When setConfigEntryInText', () => {
         it('Then the rendered line is double-quoted', () => {
           // Arrange & Act — `;` is the second comment delimiter.
-          const sut = setConfigEntryInText('', 'pager', undefined, 'log', 'less ; paginate');
+          const sut = setConfigEntryInText;
+          const result = sut('', 'pager', undefined, 'log', 'less ; paginate');
 
           // Assert
-          expect(sut).toBe('[pager]\n\tlog = "less ; paginate"\n');
+          expect(result).toBe('[pager]\n\tlog = "less ; paginate"\n');
         });
       });
     });
@@ -842,10 +880,11 @@ describe('primitives/update-config', () => {
       describe('When setConfigEntryInText', () => {
         it('Then the rendered line is double-quoted', () => {
           // Arrange & Act — leading whitespace would be trimmed by the parser without quotes.
-          const sut = setConfigEntryInText('', 'user', undefined, 'name', ' Ada');
+          const sut = setConfigEntryInText;
+          const result = sut('', 'user', undefined, 'name', ' Ada');
 
           // Assert
-          expect(sut).toBe('[user]\n\tname = " Ada"\n');
+          expect(result).toBe('[user]\n\tname = " Ada"\n');
         });
       });
     });
@@ -854,10 +893,11 @@ describe('primitives/update-config', () => {
       describe('When setConfigEntryInText', () => {
         it('Then the TAB is escaped to \\t and the value is NOT quoted (tab is not a quote trigger)', () => {
           // Arrange & Act — leading TAB is escaped unconditionally; it does not trigger quoting.
-          const sut = setConfigEntryInText('', 'user', undefined, 'name', '\tAda');
+          const sut = setConfigEntryInText;
+          const result = sut('', 'user', undefined, 'name', '\tAda');
 
           // Assert — unquoted; leading TAB escaped to \t so no trimming risk.
-          expect(sut).toBe('[user]\n\tname = \\tAda\n');
+          expect(result).toBe('[user]\n\tname = \\tAda\n');
         });
       });
     });
@@ -866,10 +906,11 @@ describe('primitives/update-config', () => {
       describe('When setConfigEntryInText', () => {
         it('Then the rendered line is double-quoted', () => {
           // Arrange & Act
-          const sut = setConfigEntryInText('', 'user', undefined, 'name', 'Ada ');
+          const sut = setConfigEntryInText;
+          const result = sut('', 'user', undefined, 'name', 'Ada ');
 
           // Assert
-          expect(sut).toBe('[user]\n\tname = "Ada "\n');
+          expect(result).toBe('[user]\n\tname = "Ada "\n');
         });
       });
     });
@@ -878,10 +919,11 @@ describe('primitives/update-config', () => {
       describe('When setConfigEntryInText', () => {
         it('Then the TAB is escaped to \\t and the value is NOT quoted (tab is not a quote trigger)', () => {
           // Arrange & Act — trailing TAB is escaped unconditionally; it does not trigger quoting.
-          const sut = setConfigEntryInText('', 'user', undefined, 'name', 'Ada\t');
+          const sut = setConfigEntryInText;
+          const result = sut('', 'user', undefined, 'name', 'Ada\t');
 
           // Assert — unquoted; trailing TAB escaped to \t.
-          expect(sut).toBe('[user]\n\tname = Ada\\t\n');
+          expect(result).toBe('[user]\n\tname = Ada\\t\n');
         });
       });
     });
@@ -890,10 +932,11 @@ describe('primitives/update-config', () => {
       describe('When setConfigEntryInText', () => {
         it('Then the quote is escaped unconditionally but the value is NOT wrapped in quotes', () => {
           // Arrange & Act — embedded " does not trigger quoting; it is always escaped.
-          const sut = setConfigEntryInText('', 'user', undefined, 'name', 'Ada "Lovelace"');
+          const sut = setConfigEntryInText;
+          const result = sut('', 'user', undefined, 'name', 'Ada "Lovelace"');
 
           // Assert — unquoted; each " → \".
-          expect(sut).toBe('[user]\n\tname = Ada \\"Lovelace\\"\n');
+          expect(result).toBe('[user]\n\tname = Ada \\"Lovelace\\"\n');
         });
       });
     });
@@ -902,10 +945,11 @@ describe('primitives/update-config', () => {
       describe('When setConfigEntryInText', () => {
         it('Then the backslash is escaped unconditionally but the value is NOT wrapped in quotes', () => {
           // Arrange & Act — embedded \ does not trigger quoting; it is always escaped.
-          const sut = setConfigEntryInText('', 'core', undefined, 'editor', 'C:\\bin\\vim');
+          const sut = setConfigEntryInText;
+          const result = sut('', 'core', undefined, 'editor', 'C:\\bin\\vim');
 
           // Assert — unquoted; each \ → \\.
-          expect(sut).toBe('[core]\n\teditor = C:\\\\bin\\\\vim\n');
+          expect(result).toBe('[core]\n\teditor = C:\\\\bin\\\\vim\n');
         });
       });
     });
@@ -914,10 +958,11 @@ describe('primitives/update-config', () => {
       describe('When setConfigEntryInText', () => {
         it('Then the newline is escaped as \\n and the value is NOT wrapped in quotes', () => {
           // Arrange & Act — LF does not trigger quoting; it is escaped unconditionally to \n.
-          const sut = setConfigEntryInText('', 'alias', undefined, 'lg', 'log\nshort');
+          const sut = setConfigEntryInText;
+          const result = sut('', 'alias', undefined, 'lg', 'log\nshort');
 
           // Assert — unquoted; LF → \n.
-          expect(sut).toBe('[alias]\n\tlg = log\\nshort\n');
+          expect(result).toBe('[alias]\n\tlg = log\\nshort\n');
         });
       });
     });
@@ -926,10 +971,11 @@ describe('primitives/update-config', () => {
       describe('When setConfigEntryInText', () => {
         it('Then no quotes are added (backward-compatible)', () => {
           // Arrange & Act — values that do not trigger any quoting rule must render verbatim.
-          const sut = setConfigEntryInText('', 'user', undefined, 'name', 'Ada');
+          const sut = setConfigEntryInText;
+          const result = sut('', 'user', undefined, 'name', 'Ada');
 
           // Assert
-          expect(sut).toBe('[user]\n\tname = Ada\n');
+          expect(result).toBe('[user]\n\tname = Ada\n');
         });
       });
     });
@@ -938,10 +984,11 @@ describe('primitives/update-config', () => {
       describe('When setConfigEntryInText', () => {
         it('Then the TAB is escaped to \\t and the value is NOT quoted', () => {
           // Arrange & Act — embedded TAB is escaped unconditionally to \t; no quoting trigger.
-          const sut = setConfigEntryInText('', 'user', undefined, 'name', 'A\tB');
+          const sut = setConfigEntryInText;
+          const result = sut('', 'user', undefined, 'name', 'A\tB');
 
           // Assert — unquoted; TAB → \t.
-          expect(sut).toBe('[user]\n\tname = A\\tB\n');
+          expect(result).toBe('[user]\n\tname = A\\tB\n');
         });
       });
     });
@@ -951,10 +998,11 @@ describe('primitives/update-config', () => {
         it('Then both are escaped (backslashes first, then newlines), unquoted', () => {
           // Arrange & Act — escape order matters: backslashes escaped first, then LF;
           // neither triggers quoting, so the result is unquoted.
-          const sut = setConfigEntryInText('', 'alias', undefined, 'lg', 'a\\b\nc');
+          const sut = setConfigEntryInText;
+          const result = sut('', 'alias', undefined, 'lg', 'a\\b\nc');
 
           // Assert
-          expect(sut).toBe('[alias]\n\tlg = a\\\\b\\nc\n');
+          expect(result).toBe('[alias]\n\tlg = a\\\\b\\nc\n');
         });
       });
     });
@@ -963,10 +1011,11 @@ describe('primitives/update-config', () => {
       describe('When setConfigEntryInText', () => {
         it('Then the rendered line is double-quoted (semicolon triggers quoting)', () => {
           // Arrange & Act
-          const sut = setConfigEntryInText('', 'test', undefined, 'k', 'a;b');
+          const sut = setConfigEntryInText;
+          const result = sut('', 'test', undefined, 'k', 'a;b');
 
           // Assert
-          expect(sut).toBe('[test]\n\tk = "a;b"\n');
+          expect(result).toBe('[test]\n\tk = "a;b"\n');
         });
       });
     });
@@ -975,10 +1024,11 @@ describe('primitives/update-config', () => {
       describe('When setConfigEntryInText', () => {
         it('Then the rendered line is double-quoted (hash triggers quoting)', () => {
           // Arrange & Act
-          const sut = setConfigEntryInText('', 'test', undefined, 'k', 'a#b');
+          const sut = setConfigEntryInText;
+          const result = sut('', 'test', undefined, 'k', 'a#b');
 
           // Assert
-          expect(sut).toBe('[test]\n\tk = "a#b"\n');
+          expect(result).toBe('[test]\n\tk = "a#b"\n');
         });
       });
     });
@@ -987,10 +1037,11 @@ describe('primitives/update-config', () => {
       describe('When setConfigEntryInText', () => {
         it('Then the rendered line is double-quoted (leading space triggers quoting)', () => {
           // Arrange & Act
-          const sut = setConfigEntryInText('', 'test', undefined, 'k', ' a');
+          const sut = setConfigEntryInText;
+          const result = sut('', 'test', undefined, 'k', ' a');
 
           // Assert
-          expect(sut).toBe('[test]\n\tk = " a"\n');
+          expect(result).toBe('[test]\n\tk = " a"\n');
         });
       });
     });
@@ -999,10 +1050,11 @@ describe('primitives/update-config', () => {
       describe('When setConfigEntryInText', () => {
         it('Then the rendered line is double-quoted (trailing space triggers quoting)', () => {
           // Arrange & Act
-          const sut = setConfigEntryInText('', 'test', undefined, 'k', 'a ');
+          const sut = setConfigEntryInText;
+          const result = sut('', 'test', undefined, 'k', 'a ');
 
           // Assert
-          expect(sut).toBe('[test]\n\tk = "a "\n');
+          expect(result).toBe('[test]\n\tk = "a "\n');
         });
       });
     });
@@ -1011,10 +1063,11 @@ describe('primitives/update-config', () => {
       describe('When setConfigEntryInText', () => {
         it('Then the rendered line is double-quoted with raw CR inside the quotes', () => {
           // Arrange & Act — CR triggers quoting; CR itself passes through raw (not escaped).
-          const sut = setConfigEntryInText('', 'test', undefined, 'k', 'a\rb');
+          const sut = setConfigEntryInText;
+          const result = sut('', 'test', undefined, 'k', 'a\rb');
 
           // Assert — the actual CR byte is inside the quotes, verbatim.
-          expect(sut).toBe('[test]\n\tk = "a\rb"\n');
+          expect(result).toBe('[test]\n\tk = "a\rb"\n');
         });
       });
     });
@@ -1023,10 +1076,11 @@ describe('primitives/update-config', () => {
       describe('When setConfigEntryInText', () => {
         it('Then the quote is escaped but the value is NOT quoted (new grammar)', () => {
           // Arrange & Act — quote does not trigger quoting; it is escaped unconditionally.
-          const sut = setConfigEntryInText('', 'test', undefined, 'k', 'a"b');
+          const sut = setConfigEntryInText;
+          const result = sut('', 'test', undefined, 'k', 'a"b');
 
           // Assert — unquoted, with \" escape.
-          expect(sut).toBe('[test]\n\tk = a\\"b\n');
+          expect(result).toBe('[test]\n\tk = a\\"b\n');
         });
       });
     });
@@ -1035,10 +1089,11 @@ describe('primitives/update-config', () => {
       describe('When setConfigEntryInText', () => {
         it('Then the backslash is escaped to \\\\ but the value is NOT quoted (new grammar)', () => {
           // Arrange & Act — backslash does not trigger quoting; escaped unconditionally.
-          const sut = setConfigEntryInText('', 'test', undefined, 'k', 'a\\b');
+          const sut = setConfigEntryInText;
+          const result = sut('', 'test', undefined, 'k', 'a\\b');
 
           // Assert — unquoted, with \\ escape.
-          expect(sut).toBe('[test]\n\tk = a\\\\b\n');
+          expect(result).toBe('[test]\n\tk = a\\\\b\n');
         });
       });
     });
@@ -1047,10 +1102,11 @@ describe('primitives/update-config', () => {
       describe('When setConfigEntryInText', () => {
         it('Then LF is escaped to \\n and the value is NOT quoted (new grammar)', () => {
           // Arrange & Act — LF does not trigger quoting; escaped unconditionally.
-          const sut = setConfigEntryInText('', 'test', undefined, 'k', 'a\nb');
+          const sut = setConfigEntryInText;
+          const result = sut('', 'test', undefined, 'k', 'a\nb');
 
           // Assert — unquoted, with \n escape.
-          expect(sut).toBe('[test]\n\tk = a\\nb\n');
+          expect(result).toBe('[test]\n\tk = a\\nb\n');
         });
       });
     });
@@ -1059,10 +1115,11 @@ describe('primitives/update-config', () => {
       describe('When setConfigEntryInText', () => {
         it('Then TAB is escaped to \\t and the value is NOT quoted (new grammar)', () => {
           // Arrange & Act — TAB does not trigger quoting; escaped unconditionally.
-          const sut = setConfigEntryInText('', 'test', undefined, 'k', 'a\tb');
+          const sut = setConfigEntryInText;
+          const result = sut('', 'test', undefined, 'k', 'a\tb');
 
           // Assert — unquoted, with \t escape.
-          expect(sut).toBe('[test]\n\tk = a\\tb\n');
+          expect(result).toBe('[test]\n\tk = a\\tb\n');
         });
       });
     });
@@ -1072,10 +1129,11 @@ describe('primitives/update-config', () => {
         it('Then the TAB is escaped to \\t and the value is NOT quoted (new grammar)', () => {
           // Arrange & Act — leading TAB is escaped (not raw), so no trimming risk;
           // escape does not trigger quoting.
-          const sut = setConfigEntryInText('', 'test', undefined, 'k', '\ta');
+          const sut = setConfigEntryInText;
+          const result = sut('', 'test', undefined, 'k', '\ta');
 
           // Assert — unquoted, TAB escaped.
-          expect(sut).toBe('[test]\n\tk = \\ta\n');
+          expect(result).toBe('[test]\n\tk = \\ta\n');
         });
       });
     });
@@ -1084,11 +1142,12 @@ describe('primitives/update-config', () => {
       describe('When setConfigEntryInText', () => {
         it('Then it is quoted (trailing space) with both " and \\ escaped inside', () => {
           // Arrange & Act — trailing space triggers quoting; " and \ are escaped inside.
-          const sut = setConfigEntryInText('', 'test', undefined, 'k', 'a; b"c\\d ');
+          const sut = setConfigEntryInText;
+          const result = sut('', 'test', undefined, 'k', 'a; b"c\\d ');
 
           // Assert — quoted because of trailing space; semicolon is safe inside quotes;
           // " → \", \ → \\ applied unconditionally before wrapping.
-          expect(sut).toBe('[test]\n\tk = "a; b\\"c\\\\d "\n');
+          expect(result).toBe('[test]\n\tk = "a; b\\"c\\\\d "\n');
         });
       });
     });
@@ -1097,10 +1156,11 @@ describe('primitives/update-config', () => {
       describe('When setConfigEntryInText', () => {
         it('Then the byte passes through verbatim and the value is NOT quoted', () => {
           // Arrange & Act — C0 controls (except NUL) are accepted and written raw.
-          const sut = setConfigEntryInText('', 'test', undefined, 'k', 'a\x01b');
+          const sut = setConfigEntryInText;
+          const result = sut('', 'test', undefined, 'k', 'a\x01b');
 
           // Assert — verbatim, unquoted.
-          expect(sut).toBe('[test]\n\tk = a\x01b\n');
+          expect(result).toBe('[test]\n\tk = a\x01b\n');
         });
       });
     });
@@ -1109,10 +1169,11 @@ describe('primitives/update-config', () => {
       describe('When setConfigEntryInText', () => {
         it('Then the byte passes through verbatim and the value is NOT quoted', () => {
           // Arrange & Act — DEL is accepted and written raw.
-          const sut = setConfigEntryInText('', 'test', undefined, 'k', 'a\x7fb');
+          const sut = setConfigEntryInText;
+          const result = sut('', 'test', undefined, 'k', 'a\x7fb');
 
           // Assert — verbatim, unquoted.
-          expect(sut).toBe('[test]\n\tk = a\x7fb\n');
+          expect(result).toBe('[test]\n\tk = a\x7fb\n');
         });
       });
     });
@@ -1124,10 +1185,11 @@ describe('primitives/update-config', () => {
           const text = '[a]\n\tkey\n';
 
           // Act
-          const sut = setConfigEntryInText(text, 'a', undefined, 'key', 'replaced');
+          const sut = setConfigEntryInText;
+          const result = sut(text, 'a', undefined, 'key', 'replaced');
 
           // Assert — byte-exact: tab indent, space around =, trailing newline preserved.
-          expect(sut).toBe('[a]\n\tkey = replaced\n');
+          expect(result).toBe('[a]\n\tkey = replaced\n');
         });
       });
     });
@@ -1139,10 +1201,11 @@ describe('primitives/update-config', () => {
           const text = '[a]\n\tkey\n';
 
           // Act
-          const sut = setConfigEntryInText(text, 'a', undefined, 'KEY', 'replaced');
+          const sut = setConfigEntryInText;
+          const result = sut(text, 'a', undefined, 'KEY', 'replaced');
 
           // Assert — valueless `key` line matched via case-insensitive comparison.
-          expect(sut).toBe('[a]\n\tKEY = replaced\n');
+          expect(result).toBe('[a]\n\tKEY = replaced\n');
         });
       });
     });
@@ -1154,10 +1217,11 @@ describe('primitives/update-config', () => {
           const text = '[a]\n\tother\n';
 
           // Act
-          const sut = setConfigEntryInText(text, 'a', undefined, 'key', 'v');
+          const sut = setConfigEntryInText;
+          const result = sut(text, 'a', undefined, 'key', 'v');
 
-          // Assert — `other` line untouched; `key` inserted after header.
-          expect(sut).toBe('[a]\n\tkey = v\n\tother\n');
+          // Assert — `other` line untouched; `key` inserted at end of section.
+          expect(result).toBe('[a]\n\tother\n\tkey = v\n');
         });
       });
     });
@@ -1169,10 +1233,280 @@ describe('primitives/update-config', () => {
           const text = '[a]\n\tother = v\n[b]\n\tkey\n';
 
           // Act
-          const sut = setConfigEntryInText(text, 'a', undefined, 'key', 'w');
+          const sut = setConfigEntryInText;
+          const result = sut(text, 'a', undefined, 'key', 'w');
 
-          // Assert — new entry inserted under [a]; [b] section untouched.
-          expect(sut).toBe('[a]\n\tkey = w\n\tother = v\n[b]\n\tkey\n');
+          // Assert — new entry inserted at end of [a]; [b] section untouched.
+          expect(result).toBe('[a]\n\tother = v\n\tkey = w\n[b]\n\tkey\n');
+        });
+      });
+    });
+
+    describe('Given a multi-line entry (backslash continuation)', () => {
+      describe('When setConfigEntryInText replaces the key', () => {
+        it('Then every physical line of the spanned entry is replaced by one canonical line', () => {
+          // Arrange — row A: two-line continuation entry
+          const text = '[a]\n\tkey = one\\\n   two\n\tother = x\n';
+
+          // Act
+          const sut = setConfigEntryInText;
+          const result = sut(text, 'a', undefined, 'key', 'newval');
+
+          // Assert — all span lines replaced by a single canonical line
+          expect(result).toBe('[a]\n\tkey = newval\n\tother = x\n');
+        });
+      });
+    });
+
+    describe('Given a chained continuation entry', () => {
+      describe('When setConfigEntryInText replaces the key', () => {
+        it('Then chained continuation lines are all replaced', () => {
+          // Arrange — row A2: three-line continuation entry
+          const text = '[a]\n\tkey = one\\\n   two\\\n   three\n\tother = x\n';
+
+          // Act
+          const sut = setConfigEntryInText;
+          const result = sut(text, 'a', undefined, 'key', 'newval');
+
+          // Assert — all three span lines replaced by one canonical line
+          expect(result).toBe('[a]\n\tkey = newval\n\tother = x\n');
+        });
+      });
+    });
+
+    describe('Given a quoted continuation entry', () => {
+      describe('When setConfigEntryInText replaces the key', () => {
+        it('Then a quoted continuation span is replaced whole', () => {
+          // Arrange — row E1: continuation inside a quote
+          const text = '[a]\n\tkey = "one\\\n   two"\n\tother = x\n';
+
+          // Act
+          const sut = setConfigEntryInText;
+          const result = sut(text, 'a', undefined, 'key', 'newval');
+
+          // Assert — the quoted continuation span removed entirely
+          expect(result).toBe('[a]\n\tkey = newval\n\tother = x\n');
+        });
+      });
+    });
+
+    describe('Given a backslash inside a trailing comment', () => {
+      describe('When setConfigEntryInText replaces the key', () => {
+        it('Then a backslash inside a trailing comment does not extend the replaced span', () => {
+          // Arrange — row E2: \\ in a comment is NOT a continuation
+          const text = '[a]\n\tkey = one # c\\\n\tnext = x\n';
+
+          // Act
+          const sut = setConfigEntryInText;
+          const result = sut(text, 'a', undefined, 'key', 'newval');
+
+          // Assert — only the first line replaced; next = x line preserved
+          expect(result).toBe('[a]\n\tkey = newval\n\tnext = x\n');
+        });
+      });
+    });
+
+    describe('Given a continuation tail that looks like a key line', () => {
+      describe('When setConfigEntryInText targets url', () => {
+        it('Then a continuation tail that looks like a key line is never matched', () => {
+          // Arrange — row K: url = fake is inside the continuation of note
+          const text = '[a]\n\tnote = first\\\n\turl = fake\n\turl = real\n';
+
+          // Act
+          const sut = setConfigEntryInText;
+          const result = sut(text, 'a', undefined, 'url', 'NEW');
+
+          // Assert — only the actual url entry is replaced, not the continuation tail
+          expect(result).toBe('[a]\n\tnote = first\\\n\turl = fake\n\turl = NEW\n');
+        });
+      });
+    });
+
+    describe('Given a continuation tail that looks like a section header', () => {
+      describe('When setConfigEntryInText targets key in [a]', () => {
+        it('Then a continuation tail that looks like a section header does not end the section', () => {
+          // Arrange — row L: [x] is inside the continuation of note (a value tail),
+          // not a real header; key = old lives in section [a], not a separate [x] section
+          const text = '[a]\n\tnote = v\\\n[x]\n\tkey = old\n';
+
+          // Act — the reader sees key as being in [a]; we replace a.key
+          const sut = setConfigEntryInText;
+          const result = sut(text, 'a', undefined, 'key', 'NEW');
+
+          // Assert — key replaced in place; note's continuation is preserved
+          expect(result).toBe('[a]\n\tnote = v\\\n[x]\n\tkey = NEW\n');
+        });
+      });
+    });
+
+    describe('Given a section whose last entry has a multi-line tail, and a new key', () => {
+      describe('When setConfigEntryInText inserts a new key', () => {
+        it('Then a new key is inserted after the multi-line tail of the last entry', () => {
+          // Arrange — row C: other is new, must land after the two-line span
+          const text = '[a]\n\tkey = one\\\n   two\n';
+
+          // Act
+          const sut = setConfigEntryInText;
+          const result = sut(text, 'a', undefined, 'other', 'val');
+
+          // Assert — other lands after the full span of key
+          expect(result).toBe('[a]\n\tkey = one\\\n   two\n\tother = val\n');
+        });
+      });
+    });
+
+    describe('Given a section followed by another section', () => {
+      describe('When setConfigEntryInText inserts a new key into the first section', () => {
+        it('Then a new key is inserted at the end of the section, not after the header', () => {
+          // Arrange — row I1: new key goes after last entry of [a], before [b]
+          const text = '[a]\n\tkey = one\n[b]\n\tk = v\n';
+
+          // Act
+          const sut = setConfigEntryInText;
+          const result = sut(text, 'a', undefined, 'other', 'val');
+
+          // Assert — inserted at end of [a] block, before [b]
+          expect(result).toBe('[a]\n\tkey = one\n\tother = val\n[b]\n\tk = v\n');
+        });
+      });
+    });
+
+    describe('Given a section with trailing blank and comment lines before the next section', () => {
+      describe('When setConfigEntryInText inserts a new key', () => {
+        it('Then a new key is inserted after the last entry, before trailing blank and comment lines', () => {
+          // Arrange — row I2: blank and comment after last entry, before [b]
+          const text = '[a]\n\tkey = one\n\n# trailing comment\n[b]\n\tk = v\n';
+
+          // Act
+          const sut = setConfigEntryInText;
+          const result = sut(text, 'a', undefined, 'other', 'val');
+
+          // Assert — inserted after last entry, blank and comment preserved after
+          expect(result).toBe(
+            '[a]\n\tkey = one\n\tother = val\n\n# trailing comment\n[b]\n\tk = v\n',
+          );
+        });
+      });
+    });
+
+    describe('Given an empty section', () => {
+      describe('When setConfigEntryInText inserts a new key', () => {
+        it('Then a new key in an empty section is inserted right after the header', () => {
+          // Arrange — row I3: [a] is empty (no entries), [b] follows
+          const text = '[a]\n[b]\n\tk = v\n';
+
+          // Act
+          const sut = setConfigEntryInText;
+          const result = sut(text, 'a', undefined, 'other', 'val');
+
+          // Assert — inserted right after the [a] header
+          expect(result).toBe('[a]\n\tother = val\n[b]\n\tk = v\n');
+        });
+      });
+    });
+
+    describe('Given duplicate section blocks', () => {
+      describe('When setConfigEntryInText inserts a new key', () => {
+        it('Then the last duplicate section block receives the new key', () => {
+          // Arrange — row I4: two [a] blocks, new key goes to the last one
+          const text = '[a]\n\tk1 = x\n[b]\n\tk = v\n[a]\n\tk2 = y\n';
+
+          // Act
+          const sut = setConfigEntryInText;
+          const result = sut(text, 'a', undefined, 'new', 'val');
+
+          // Assert — new key added at end of last [a] block
+          expect(result).toBe('[a]\n\tk1 = x\n[b]\n\tk = v\n[a]\n\tk2 = y\n\tnew = val\n');
+        });
+      });
+    });
+
+    describe('Given duplicate section blocks where first block has the key', () => {
+      describe('When setConfigEntryInText replaces the key', () => {
+        it('Then an existing key is replaced in the first block where it lives', () => {
+          // Arrange — row M: key exists in first [a] block, should be replaced there
+          const text = '[a]\n\tkey = x\n[b]\n\tk = v\n[a]\n\tother = y\n';
+
+          // Act
+          const sut = setConfigEntryInText;
+          const result = sut(text, 'a', undefined, 'key', 'NEW');
+
+          // Assert — replaced in the first [a] block
+          expect(result).toBe('[a]\n\tkey = NEW\n[b]\n\tk = v\n[a]\n\tother = y\n');
+        });
+      });
+    });
+
+    describe('Given one block holding the same key twice', () => {
+      describe('When setConfigEntryInText replaces the key', () => {
+        it('Then only the first occurrence is rewritten and the second survives', () => {
+          // Arrange — git itself refuses a bare set on a multi-valued key
+          // (the configSet porcelain mirrors that refusal); the primitive's
+          // contract is first-match-only, never replace-all
+          const sut = setConfigEntryInText;
+          const text = '[a]\n\tkey = x\n\tkey = y\n';
+
+          // Act
+          const result = sut(text, 'a', undefined, 'key', 'NEW');
+
+          // Assert — first occurrence replaced, second untouched
+          expect(result).toBe('[a]\n\tkey = NEW\n\tkey = y\n');
+        });
+      });
+    });
+
+    describe('Given text with an unclosed value quote', () => {
+      describe('When setConfigEntryInText runs standalone', () => {
+        it('Then CONFIG_PARSE_ERROR carries the 1-based line', () => {
+          // Arrange
+          let caught: unknown;
+
+          // Act
+          try {
+            setConfigEntryInText('[a]\n\tk = "unclosed\n', 'a', undefined, 'k', 'v');
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert — try/catch + direct .data assertions
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data;
+          expect(data.code).toBe('CONFIG_PARSE_ERROR');
+          if (data.code === 'CONFIG_PARSE_ERROR') {
+            expect(data.line).toBe(2);
+          }
+        });
+      });
+    });
+
+    describe('Given a section at EOF without a trailing newline', () => {
+      describe('When a new key is inserted', () => {
+        it('Then the file gains a single trailing newline', () => {
+          // Arrange — file ends with k = v with no trailing LF
+          const text = '[a]\n\tk = v';
+
+          // Act
+          const sut = setConfigEntryInText;
+          const result = sut(text, 'a', undefined, 'new', 'x');
+
+          // Assert — new entry added, trailing newline added
+          expect(result).toBe('[a]\n\tk = v\n\tnew = x\n');
+        });
+      });
+    });
+
+    describe('Given an existing entry at EOF without a trailing newline', () => {
+      describe('When the entry is replaced', () => {
+        it('Then the rewritten entry is terminated with a newline', () => {
+          // Arrange — file ends with the replaced entry, no trailing LF
+          const sut = setConfigEntryInText;
+          const text = '[a]\n\tk = old';
+
+          // Act
+          const result = sut(text, 'a', undefined, 'k', 'new');
+
+          // Assert — git's writer always terminates the rewritten pair
+          expect(result).toBe('[a]\n\tk = new\n');
         });
       });
     });
@@ -1233,10 +1567,11 @@ describe('primitives/update-config', () => {
           const text = '[remote "origin"]\n\turl = https://e.com/r\n\tfetch = +A:B\n';
 
           // Act
-          const sut = removeConfigEntry(text, 'remote', 'origin', 'url');
+          const sut = removeConfigEntry;
+          const result = sut(text, 'remote', 'origin', 'url');
 
           // Assert — header + fetch line preserved.
-          expect(sut).toBe('[remote "origin"]\n\tfetch = +A:B\n');
+          expect(result).toBe('[remote "origin"]\n\tfetch = +A:B\n');
         });
       });
     });
@@ -1248,10 +1583,11 @@ describe('primitives/update-config', () => {
           const text = '[remote "origin"]\n\tfetch = +A:B\n';
 
           // Act
-          const sut = removeConfigEntry(text, 'remote', 'origin', 'url');
+          const sut = removeConfigEntry;
+          const result = sut(text, 'remote', 'origin', 'url');
 
           // Assert
-          expect(sut).toBe(text);
+          expect(result).toBe(text);
         });
       });
     });
@@ -1263,10 +1599,11 @@ describe('primitives/update-config', () => {
           const text = '[core]\n\tbare = false\n';
 
           // Act
-          const sut = removeConfigEntry(text, 'remote', 'origin', 'url');
+          const sut = removeConfigEntry;
+          const result = sut(text, 'remote', 'origin', 'url');
 
           // Assert
-          expect(sut).toBe(text);
+          expect(result).toBe(text);
         });
       });
     });
@@ -1278,25 +1615,27 @@ describe('primitives/update-config', () => {
           const text = '[remote "origin"]\n\tfetch = +A:B\n\tfetch = +C:D\n\turl = u\n';
 
           // Act
-          const sut = removeConfigEntry(text, 'remote', 'origin', 'fetch');
+          const sut = removeConfigEntry;
+          const result = sut(text, 'remote', 'origin', 'fetch');
 
           // Assert
-          expect(sut).toBe('[remote "origin"]\n\turl = u\n');
+          expect(result).toBe('[remote "origin"]\n\turl = u\n');
         });
       });
     });
 
     describe('Given the same key in two different sections', () => {
       describe('When removeConfigEntry targets one section', () => {
-        it('Then the other section is preserved byte-for-byte', () => {
+        it('Then the emptied section is pruned and the other section preserved byte-for-byte', () => {
           // Arrange
           const text = '[remote "origin"]\n\turl = O\n[remote "upstream"]\n\turl = U\n';
 
           // Act
-          const sut = removeConfigEntry(text, 'remote', 'origin', 'url');
+          const sut = removeConfigEntry;
+          const result = sut(text, 'remote', 'origin', 'url');
 
-          // Assert
-          expect(sut).toBe('[remote "origin"]\n[remote "upstream"]\n\turl = U\n');
+          // Assert — the emptied origin block is pruned; upstream preserved verbatim.
+          expect(result).toBe('[remote "upstream"]\n\turl = U\n');
         });
       });
     });
@@ -1308,10 +1647,11 @@ describe('primitives/update-config', () => {
           const text = '[remote "origin"]\n\tURL = up\n';
 
           // Act
-          const sut = removeConfigEntry(text, 'remote', 'origin', 'url');
+          const sut = removeConfigEntry;
+          const result = sut(text, 'remote', 'origin', 'url');
 
-          // Assert — case-insensitive match removed the entry.
-          expect(sut).toBe('[remote "origin"]\n');
+          // Assert — sole entry removed, sole block pruned → empty file.
+          expect(result).toBe('');
         });
       });
     });
@@ -1323,25 +1663,270 @@ describe('primitives/update-config', () => {
           const text = '[remote "A"]\n\tfetch = +x:y\n[remote "B"]\n\turl = u\n';
 
           // Act
-          const sut = removeConfigEntry(text, 'remote', 'A', 'url');
+          const sut = removeConfigEntry;
+          const result = sut(text, 'remote', 'A', 'url');
 
           // Assert — the unrelated section is preserved verbatim.
-          expect(sut).toBe(text);
+          expect(result).toBe(text);
         });
       });
     });
 
     describe('Given a valueless entry for the key', () => {
       describe('When removeConfigEntry removes it', () => {
-        it('Then the valueless line is removed and neighbours are preserved byte-for-byte', () => {
+        it('Then the valueless line is removed and neighbors are preserved byte-for-byte', () => {
           // Arrange
           const text = '[a]\n\tbefore = x\n\tkey\n\tafter = y\n';
 
           // Act
-          const sut = removeConfigEntry(text, 'a', undefined, 'key');
+          const sut = removeConfigEntry;
+          const result = sut(text, 'a', undefined, 'key');
 
           // Assert — `key` line gone; surrounding lines untouched.
-          expect(sut).toBe('[a]\n\tbefore = x\n\tafter = y\n');
+          expect(result).toBe('[a]\n\tbefore = x\n\tafter = y\n');
+        });
+      });
+    });
+
+    describe('Given a multi-line entry (backslash continuation) with a neighbor key', () => {
+      describe('When removeConfigEntry targets the multi-line key', () => {
+        it('Then the whole continuation span is removed', () => {
+          // Arrange — row B: head + tail both belong to key = "one   two"
+          const text = '[a]\n\tkey = one\\\n   two\n\tother = x\n';
+
+          // Act
+          const sut = removeConfigEntry;
+          const result = sut(text, 'a', undefined, 'key');
+
+          // Assert — header + other line kept, no orphan tail
+          expect(result).toBe('[a]\n\tother = x\n');
+        });
+      });
+    });
+
+    describe('Given multiple multi-line and single-line occurrences of the same key', () => {
+      describe('When removeConfigEntry targets the key', () => {
+        it('Then every occurrence full span is removed', () => {
+          // Arrange — row F
+          const text =
+            '[a]\n\tkey = one\\\n   two\n\tmid = m\n\tkey = three\n\tkey = four\\\n   five\n';
+
+          // Act
+          const sut = removeConfigEntry;
+          const result = sut(text, 'a', undefined, 'key');
+
+          // Assert — only mid = m survives
+          expect(result).toBe('[a]\n\tmid = m\n');
+        });
+      });
+    });
+
+    describe('Given a multi-line entry whose tail looks like a section header and a following real entry', () => {
+      describe('When removeConfigEntry targets the entry that physically follows the lookalike tail', () => {
+        it('Then only the real entry line is removed, the lookalike header tail stays', () => {
+          // Arrange — row L2: [x] on the third physical line is a continuation tail of [a].note,
+          // not a real header; key = old follows and is the real entry in [a]'s token block.
+          const text = '[a]\n\tnote = v\\\n[x]\n\tkey = old\n';
+
+          // Act — targeting a.key (not x.key) because the tokenizer correctly sees [x] as a tail
+          const sut = removeConfigEntry;
+          const result = sut(text, 'a', undefined, 'key');
+
+          // Assert — key = old removed; the continuation [x] line stays as part of note's span
+          expect(result).toBe('[a]\n\tnote = v\\\n[x]\n');
+        });
+      });
+    });
+
+    describe('Given a block whose only entry is a multi-line key', () => {
+      describe('When removeConfigEntry empties it', () => {
+        it('Then a block emptied of its only entry loses its header too', () => {
+          // Arrange — row D
+          const text = '[a]\n\tkey = one\\\n   two\n[b]\n\tk = v\n';
+
+          // Act
+          const sut = removeConfigEntry;
+          const result = sut(text, 'a', undefined, 'key');
+
+          // Assert — [a] block pruned entirely
+          expect(result).toBe('[b]\n\tk = v\n');
+        });
+      });
+    });
+
+    describe('Given a block whose only entry is a single-line key', () => {
+      describe('When removeConfigEntry empties it', () => {
+        it('Then a block emptied of its single-line entry loses its header too', () => {
+          // Arrange — row D2
+          const text = '[a]\n\tkey = one\n[b]\n\tk = v\n';
+
+          // Act
+          const sut = removeConfigEntry;
+          const result = sut(text, 'a', undefined, 'key');
+
+          // Assert — [a] block pruned
+          expect(result).toBe('[b]\n\tk = v\n');
+        });
+      });
+    });
+
+    describe('Given a block that is last in the file and its only entry is removed', () => {
+      describe('When removeConfigEntry empties the last block', () => {
+        it('Then the emptied last block of the file is removed and the trailing newline preserved', () => {
+          // Arrange — row D3
+          const text = '[b]\n\tk = v\n[a]\n\tkey = one\\\n   two\n';
+
+          // Act
+          const sut = removeConfigEntry;
+          const result = sut(text, 'a', undefined, 'key');
+
+          // Assert — [a] last block pruned; [b] block and trailing newline preserved
+          expect(result).toBe('[b]\n\tk = v\n');
+        });
+      });
+    });
+
+    describe('Given a trailing section in a file without a final newline', () => {
+      describe('When its only entry is unset and the block is pruned', () => {
+        it('Then the kept prefix retains its newline terminator', () => {
+          // Arrange — [a] is the last block and the file lacks a final LF
+          const sut = removeConfigEntry;
+          const text = '[b]\n\tk = v\n[a]\n\tkey = one';
+
+          // Act
+          const result = sut(text, 'a', undefined, 'key');
+
+          // Assert — git copies the bytes before the removed region verbatim,
+          // including the newline that followed the last kept line
+          expect(result).toBe('[b]\n\tk = v\n');
+        });
+      });
+    });
+
+    describe('Given a block with a comment and a key entry', () => {
+      describe('When removeConfigEntry empties the entries', () => {
+        it('Then a comment line in the block keeps the header', () => {
+          // Arrange — row D4: comment protects the block
+          const text = '[a]\n\t# keep me\n\tkey = one\\\n   two\n[b]\n\tk = v\n';
+
+          // Act
+          const sut = removeConfigEntry;
+          const result = sut(text, 'a', undefined, 'key');
+
+          // Assert — header + comment kept; blank lines gone with the entry
+          expect(result).toBe('[a]\n\t# keep me\n[b]\n\tk = v\n');
+        });
+      });
+    });
+
+    describe('Given a block with multiple key occurrences', () => {
+      describe('When removeConfigEntry removes all occurrences', () => {
+        it('Then the emptied block is pruned', () => {
+          // Arrange — row D5
+          const text = '[a]\n\tkey = x\n\tkey = y\\\n   tail\n[b]\n\tk = v\n';
+
+          // Act
+          const sut = removeConfigEntry;
+          const result = sut(text, 'a', undefined, 'key');
+
+          // Assert — [a] block entirely pruned
+          expect(result).toBe('[b]\n\tk = v\n');
+        });
+      });
+    });
+
+    describe('Given a block with a blank line and its only entry is removed', () => {
+      describe('When removeConfigEntry empties it', () => {
+        it('Then blank lines do not protect the header and are removed with it', () => {
+          // Arrange — row D6
+          const text = '[a]\n\tkey = one\n\n[b]\n\tk = v\n';
+
+          // Act
+          const sut = removeConfigEntry;
+          const result = sut(text, 'a', undefined, 'key');
+
+          // Assert — blank does not protect; entire [a] block pruned
+          expect(result).toBe('[b]\n\tk = v\n');
+        });
+      });
+    });
+
+    describe('Given a block with a blank line followed by a comment, and entry removed', () => {
+      describe('When removeConfigEntry empties the entries', () => {
+        it('Then a comment keeps the header and its blank lines', () => {
+          // Arrange — row D8: comment after blank → block kept (blank + comment both survive)
+          const text = '[a]\n\tkey = one\n\n# c\n[b]\n\tk = v\n';
+
+          // Act
+          const sut = removeConfigEntry;
+          const result = sut(text, 'a', undefined, 'key');
+
+          // Assert — [a] header + blank + comment all kept
+          expect(result).toBe('[a]\n\n# c\n[b]\n\tk = v\n');
+        });
+      });
+    });
+
+    describe('Given two same-name blocks where only the first has the target key', () => {
+      describe('When removeConfigEntry removes it', () => {
+        it('Then only the emptied block is pruned, a later same-name block survives', () => {
+          // Arrange — row D9: per-block rule
+          const text = '[a]\n\tkey = x\n[b]\n\tk = v\n[a]\n\tother = y\n';
+
+          // Act
+          const sut = removeConfigEntry;
+          const result = sut(text, 'a', undefined, 'key');
+
+          // Assert — first [a] block pruned; [b] and second [a] untouched
+          expect(result).toBe('[b]\n\tk = v\n[a]\n\tother = y\n');
+        });
+      });
+    });
+
+    describe('Given a block with an inline comment on its header line', () => {
+      describe('When removeConfigEntry empties the entries', () => {
+        it('Then an inline comment on the header line keeps the header', () => {
+          // Arrange — row D10: hasComment=true on header
+          const text = '[a] # note\n\tkey = one\n[b]\n\tk = v\n';
+
+          // Act
+          const sut = removeConfigEntry;
+          const result = sut(text, 'a', undefined, 'key');
+
+          // Assert — header (with its inline comment) kept; [b] preserved
+          expect(result).toBe('[a] # note\n[b]\n\tk = v\n');
+        });
+      });
+    });
+
+    describe('Given an already-empty block before the targeted section', () => {
+      describe('When removeConfigEntry targets a key elsewhere', () => {
+        it('Then the already-empty block is preserved byte-for-byte', () => {
+          // Arrange — guard sentinel: pre-existing empty block must not be pruned
+          const text = '[empty]\n[a]\n\tkey = v\n\tother = x\n';
+
+          // Act
+          const sut = removeConfigEntry;
+          const result = sut(text, 'a', undefined, 'key');
+
+          // Assert — [empty] block untouched; [a] block keeps header + other
+          expect(result).toBe('[empty]\n[a]\n\tother = x\n');
+        });
+      });
+    });
+
+    describe('Given a block with a lenient bracket body line as the only non-entry token', () => {
+      describe('When removeConfigEntry empties the entries', () => {
+        it('Then the header is kept because opaque content protects the block', () => {
+          // Arrange — guard sentinel: lenient "[half" tokenized as comment → protects block
+          const text = '[a]\n\t[half\n\tkey = v\n';
+
+          // Act
+          const sut = removeConfigEntry;
+          const result = sut(text, 'a', undefined, 'key');
+
+          // Assert — "[half" comment-token keeps the header
+          expect(result).toBe('[a]\n\t[half\n');
         });
       });
     });
@@ -1355,10 +1940,11 @@ describe('primitives/update-config', () => {
           const text = '[remote "origin"]\n\turl = u\n\tfetch = +A:B\n';
 
           // Act
-          const sut = removeConfigSectionInText(text, 'remote', 'origin');
+          const sut = removeConfigSectionInText;
+          const result = sut(text, 'remote', 'origin');
 
           // Assert
-          expect(sut).toBe('');
+          expect(result).toBe('');
         });
       });
     });
@@ -1370,10 +1956,11 @@ describe('primitives/update-config', () => {
           const text = '[remote "origin"]\n\turl = O\n[remote "upstream"]\n\turl = U\n';
 
           // Act
-          const sut = removeConfigSectionInText(text, 'remote', 'origin');
+          const sut = removeConfigSectionInText;
+          const result = sut(text, 'remote', 'origin');
 
           // Assert
-          expect(sut).toBe('[remote "upstream"]\n\turl = U\n');
+          expect(result).toBe('[remote "upstream"]\n\turl = U\n');
         });
       });
     });
@@ -1385,10 +1972,11 @@ describe('primitives/update-config', () => {
           const text = '[core]\n\tbare = false\n[remote "origin"]\n\turl = u\n';
 
           // Act
-          const sut = removeConfigSectionInText(text, 'remote', 'origin');
+          const sut = removeConfigSectionInText;
+          const result = sut(text, 'remote', 'origin');
 
           // Assert
-          expect(sut).toBe('[core]\n\tbare = false\n');
+          expect(result).toBe('[core]\n\tbare = false\n');
         });
       });
     });
@@ -1400,10 +1988,11 @@ describe('primitives/update-config', () => {
           const text = '[core]\n\tbare = false\n';
 
           // Act
-          const sut = removeConfigSectionInText(text, 'remote', 'origin');
+          const sut = removeConfigSectionInText;
+          const result = sut(text, 'remote', 'origin');
 
           // Assert
-          expect(sut).toBe(text);
+          expect(result).toBe(text);
         });
       });
     });
@@ -1416,10 +2005,11 @@ describe('primitives/update-config', () => {
             '[remote "origin"]\n\turl = A\n[core]\n\tbare = false\n[remote "origin"]\n\turl = B\n';
 
           // Act
-          const sut = removeConfigSectionInText(text, 'remote', 'origin');
+          const sut = removeConfigSectionInText;
+          const result = sut(text, 'remote', 'origin');
 
           // Assert
-          expect(sut).toBe('[core]\n\tbare = false\n');
+          expect(result).toBe('[core]\n\tbare = false\n');
         });
       });
     });
@@ -1431,10 +2021,11 @@ describe('primitives/update-config', () => {
           const text = '[core]\n\tbare = false\n[user]\n\tname = Ada\n';
 
           // Act
-          const sut = removeConfigSectionInText(text, 'core', undefined);
+          const sut = removeConfigSectionInText;
+          const result = sut(text, 'core', undefined);
 
           // Assert
-          expect(sut).toBe('[user]\n\tname = Ada\n');
+          expect(result).toBe('[user]\n\tname = Ada\n');
         });
       });
     });
@@ -1446,10 +2037,11 @@ describe('primitives/update-config', () => {
           const text = '[remote "origin"]\n\turl = u\n[core]\n\tbare = false';
 
           // Act
-          const sut = removeConfigSectionInText(text, 'remote', 'origin');
+          const sut = removeConfigSectionInText;
+          const result = sut(text, 'remote', 'origin');
 
           // Assert
-          expect(sut).toBe('[core]\n\tbare = false');
+          expect(result).toBe('[core]\n\tbare = false');
         });
       });
     });
@@ -1478,10 +2070,71 @@ describe('primitives/update-config', () => {
           const text = '[remote "a\\"b"]\n\turl = u\n';
 
           // Act
-          const sut = removeConfigSectionInText(text, 'remote', 'a"b');
+          const sut = removeConfigSectionInText;
+          const result = sut(text, 'remote', 'a"b');
 
           // Assert — the section is removed (no-op on empty text is fine; here we verify it works)
-          expect(sut).toBe('');
+          expect(result).toBe('');
+        });
+      });
+    });
+
+    describe('Given a section whose body contains a multi-line tail with no lookalike header', () => {
+      describe('When removeConfigSectionInText removes it', () => {
+        it('Then the whole block including the tail is dropped (G2)', () => {
+          // Arrange — row G2: [a] has a two-line continuation; no header-lookalike inside.
+          // Canonical git's section machinery is line-based: body tails that do NOT
+          // parse as a section header pass through removal unchanged — the entire block
+          // (header + body lines + tails) is dropped. Replicating that byte-for-byte is
+          // intended.
+          const text = '[a]\n\tkey = one\\\n   two\n[b]\n\tk = v\n';
+
+          // Act
+          const sut = removeConfigSectionInText;
+          const result = sut(text, 'a', undefined);
+
+          // Assert
+          expect(result).toBe('[b]\n\tk = v\n');
+        });
+      });
+    });
+
+    describe('Given a section whose body has a continuation tail that parses as a header', () => {
+      describe('When removeConfigSectionInText removes the section', () => {
+        it('Then removal stops at the lookalike tail, leaving lines the reader considers part of [a] (G3)', () => {
+          // Arrange — row G3: `[a]` has `key = one\` then `[b]` on the next line.
+          // The reader parses `a.key` as `one[b]` and `a.k` as `v` (the [b] line is
+          // a continuation, not a header). But git's remove-section machinery is
+          // line-based and treats `[b]` as the start of a new section — so removal
+          // stops there, leaving `[b]\n\tk = v\n`. Replicating that byte-for-byte is
+          // intended (the reader and writer disagree, same as git).
+          const text = '[a]\n\tkey = one\\\n[b]\n\tk = v\n';
+
+          // Act
+          const sut = removeConfigSectionInText;
+          const result = sut(text, 'a', undefined);
+
+          // Assert
+          expect(result).toBe('[b]\n\tk = v\n');
+        });
+      });
+    });
+
+    describe('Given a remove-section target whose name appears in continuation tails', () => {
+      describe('When removeConfigSectionInText removes all [b] blocks', () => {
+        it('Then both real blocks and the lookalike tail are removed, corrupting the preceding value (G5)', () => {
+          // Arrange — row G5: `[a]` has `key = one\` then `[b]` (a lookalike tail);
+          // two real `[b]` blocks follow. Removing section `b` hits all three — the
+          // lookalike tail line is treated as a header and removed too, which corrupts
+          // `a.key`'s value (now `one[d]`). Replicating that byte-for-byte is intended.
+          const text = '[a]\n\tkey = one\\\n[b]\n\tinside-tail = t\n[b]\n\tk = v\n[d]\n\te = f\n';
+
+          // Act
+          const sut = removeConfigSectionInText;
+          const result = sut(text, 'b', undefined);
+
+          // Assert
+          expect(result).toBe('[a]\n\tkey = one\\\n[d]\n\te = f\n');
         });
       });
     });
@@ -1531,10 +2184,11 @@ describe('primitives/update-config', () => {
           const text = '[remote "old"]\n\turl = u\n\tfetch = +A:B\n';
 
           // Act
-          const sut = renameConfigSectionInText(text, 'remote', 'old', 'new');
+          const sut = renameConfigSectionInText;
+          const result = sut(text, 'remote', 'old', 'new');
 
           // Assert
-          expect(sut).toBe('[remote "new"]\n\turl = u\n\tfetch = +A:B\n');
+          expect(result).toBe('[remote "new"]\n\turl = u\n\tfetch = +A:B\n');
         });
       });
     });
@@ -1547,10 +2201,11 @@ describe('primitives/update-config', () => {
             '[core]\n\tbare = false\n[remote "old"]\n\turl = u\n[remote "other"]\n\turl = o\n';
 
           // Act
-          const sut = renameConfigSectionInText(text, 'remote', 'old', 'new');
+          const sut = renameConfigSectionInText;
+          const result = sut(text, 'remote', 'old', 'new');
 
           // Assert
-          expect(sut).toBe(
+          expect(result).toBe(
             '[core]\n\tbare = false\n[remote "new"]\n\turl = u\n[remote "other"]\n\turl = o\n',
           );
         });
@@ -1564,10 +2219,11 @@ describe('primitives/update-config', () => {
           const text = '[remote "other"]\n\turl = o\n';
 
           // Act
-          const sut = renameConfigSectionInText(text, 'remote', 'old', 'new');
+          const sut = renameConfigSectionInText;
+          const result = sut(text, 'remote', 'old', 'new');
 
           // Assert
-          expect(sut).toBe(text);
+          expect(result).toBe(text);
         });
       });
     });
@@ -1579,10 +2235,11 @@ describe('primitives/update-config', () => {
           const text = '[remote "old"]\n\turl = A\n[remote "old"]\n\turl = B\n';
 
           // Act
-          const sut = renameConfigSectionInText(text, 'remote', 'old', 'new');
+          const sut = renameConfigSectionInText;
+          const result = sut(text, 'remote', 'old', 'new');
 
           // Assert
-          expect(sut).toBe('[remote "new"]\n\turl = A\n[remote "new"]\n\turl = B\n');
+          expect(result).toBe('[remote "new"]\n\turl = A\n[remote "new"]\n\turl = B\n');
         });
       });
     });
@@ -1594,10 +2251,11 @@ describe('primitives/update-config', () => {
           const text = '[branch "old"]\n\tmerge = m\n[remote "old"]\n\turl = u\n';
 
           // Act
-          const sut = renameConfigSectionInText(text, 'remote', 'old', 'new');
+          const sut = renameConfigSectionInText;
+          const result = sut(text, 'remote', 'old', 'new');
 
           // Assert
-          expect(sut).toBe('[branch "old"]\n\tmerge = m\n[remote "new"]\n\turl = u\n');
+          expect(result).toBe('[branch "old"]\n\tmerge = m\n[remote "new"]\n\turl = u\n');
         });
       });
     });
@@ -1627,10 +2285,11 @@ describe('primitives/update-config', () => {
           const text = '[remote "old"]\n\turl = u\n';
 
           // Act
-          const sut = renameConfigSectionInText(text, 'remote', 'old', 'a"b');
+          const sut = renameConfigSectionInText;
+          const result = sut(text, 'remote', 'old', 'a"b');
 
           // Assert — git escapes " → \" in the target subsection
-          expect(sut).toBe('[remote "a\\"b"]\n\turl = u\n');
+          expect(result).toBe('[remote "a\\"b"]\n\turl = u\n');
         });
       });
     });
@@ -1642,10 +2301,69 @@ describe('primitives/update-config', () => {
           const text = '[remote "old"]\n\turl = u\n';
 
           // Act
-          const sut = renameConfigSectionInText(text, 'remote', 'old', 'a\\b');
+          const sut = renameConfigSectionInText;
+          const result = sut(text, 'remote', 'old', 'a\\b');
 
           // Assert — git escapes \ → \\ in the target subsection
-          expect(sut).toBe('[remote "a\\\\b"]\n\turl = u\n');
+          expect(result).toBe('[remote "a\\\\b"]\n\turl = u\n');
+        });
+      });
+    });
+
+    describe('Given a section with a continuation tail that parses as the rename target', () => {
+      describe('When renameConfigSectionInText renames b.s to b.t', () => {
+        it('Then both the real header and the lookalike tail are renamed (N1)', () => {
+          // Arrange — row N1: `[a]` has `key = one\` then `[b "s"]` (a lookalike tail);
+          // a real `[b "s"]` block follows. Canonical git's rename-section machinery is
+          // line-based: the continuation tail that parses as `[b "s"]` is also renamed
+          // to `[b "t"]`, changing `a.key`'s value from `one[b "s"]` to `one[b "t"]`.
+          // Replicating that byte-for-byte is intended.
+          const text = '[a]\n\tkey = one\\\n[b "s"]\n[b "s"]\n\tk = v\n';
+
+          // Act
+          const sut = renameConfigSectionInText;
+          const result = sut(text, 'b', 's', 't');
+
+          // Assert
+          expect(result).toBe('[a]\n\tkey = one\\\n[b "t"]\n[b "t"]\n\tk = v\n');
+        });
+      });
+    });
+
+    describe('Given a section with a continuation tail that does NOT parse as the rename target', () => {
+      describe('When renameConfigSectionInText renames a.s to a.t', () => {
+        it('Then the header is renamed and body tails pass through verbatim (N2)', () => {
+          // Arrange — row N2: `[a "s"]` has a two-line continuation body tail `   two`.
+          // That tail does not parse as any section header, so it passes through verbatim.
+          const text = '[a "s"]\n\tkey = one\\\n   two\n[b]\n\tk = v\n';
+
+          // Act
+          const sut = renameConfigSectionInText;
+          const result = sut(text, 'a', 's', 't');
+
+          // Assert
+          expect(result).toBe('[a "t"]\n\tkey = one\\\n   two\n[b]\n\tk = v\n');
+        });
+      });
+    });
+  });
+
+  describe('removeConfigSectionInText (subsectioned N3)', () => {
+    describe('Given a section with a lookalike-tail followed by two real matching blocks', () => {
+      describe('When removeConfigSectionInText removes b.s', () => {
+        it('Then both real blocks and the lookalike tail line are removed, corrupting the preceding value (N3)', () => {
+          // Arrange — row N3: `[a]` has `key = one\` then `[b "s"]` (lookalike tail);
+          // two real `[b "s"]` blocks follow. Removing `b.s` hits all three via the
+          // line-based machinery. Replicating that byte-for-byte is intended.
+          const text =
+            '[a]\n\tkey = one\\\n[b "s"]\n\tinside = t\n[b "s"]\n\tk = v\n[d]\n\te = f\n';
+
+          // Act
+          const sut = removeConfigSectionInText;
+          const result = sut(text, 'b', 's');
+
+          // Assert
+          expect(result).toBe('[a]\n\tkey = one\\\n[d]\n\te = f\n');
         });
       });
     });
@@ -1659,25 +2377,27 @@ describe('primitives/update-config', () => {
           const text = '[remote "r"]\n\tfetch = A\n';
 
           // Act
-          const sut = appendConfigEntry(text, 'remote', 'r', 'fetch', 'B');
+          const sut = appendConfigEntry;
+          const result = sut(text, 'remote', 'r', 'fetch', 'B');
 
           // Assert
-          expect(sut).toBe('[remote "r"]\n\tfetch = A\n\tfetch = B\n');
+          expect(result).toBe('[remote "r"]\n\tfetch = A\n\tfetch = B\n');
         });
       });
     });
 
     describe('Given an existing section with NO prior matching key', () => {
       describe('When appendConfigEntry', () => {
-        it('Then the entry is inserted directly after the header', () => {
+        it('Then the entry is inserted at the end of the section', () => {
           // Arrange
           const text = '[remote "r"]\n\turl = u\n';
 
           // Act
-          const sut = appendConfigEntry(text, 'remote', 'r', 'fetch', 'A');
+          const sut = appendConfigEntry;
+          const result = sut(text, 'remote', 'r', 'fetch', 'A');
 
-          // Assert
-          expect(sut).toBe('[remote "r"]\n\tfetch = A\n\turl = u\n');
+          // Assert — end-of-section insertion: fetch lands after url
+          expect(result).toBe('[remote "r"]\n\turl = u\n\tfetch = A\n');
         });
       });
     });
@@ -1686,15 +2406,17 @@ describe('primitives/update-config', () => {
       describe('When appendConfigEntry', () => {
         it('Then a matching key in the LATER section is NOT considered', () => {
           // Arrange — `fetch = X` lives in the SECOND section; appending to
-          // the first must insert under the first's header, not after the
-          // unrelated later section's entry.
+          // the first must insert at the end of the first section's block.
           const text = '[remote "r"]\n\turl = u\n[remote "other"]\n\tfetch = X\n';
 
           // Act
-          const sut = appendConfigEntry(text, 'remote', 'r', 'fetch', 'A');
+          const sut = appendConfigEntry;
+          const result = sut(text, 'remote', 'r', 'fetch', 'A');
 
-          // Assert
-          expect(sut).toBe('[remote "r"]\n\tfetch = A\n\turl = u\n[remote "other"]\n\tfetch = X\n');
+          // Assert — end-of-section insertion: fetch lands after url, before [remote "other"]
+          expect(result).toBe(
+            '[remote "r"]\n\turl = u\n\tfetch = A\n[remote "other"]\n\tfetch = X\n',
+          );
         });
       });
     });
@@ -1706,10 +2428,11 @@ describe('primitives/update-config', () => {
           const text = '[core]\n\tbare = false\n';
 
           // Act
-          const sut = appendConfigEntry(text, 'remote', 'r', 'fetch', 'A');
+          const sut = appendConfigEntry;
+          const result = sut(text, 'remote', 'r', 'fetch', 'A');
 
           // Assert
-          expect(sut).toBe('[core]\n\tbare = false\n[remote "r"]\n\tfetch = A\n');
+          expect(result).toBe('[core]\n\tbare = false\n[remote "r"]\n\tfetch = A\n');
         });
       });
     });
@@ -1738,10 +2461,43 @@ describe('primitives/update-config', () => {
           const text = '[remote "r"]\n\tkey\n';
 
           // Act
-          const sut = appendConfigEntry(text, 'remote', 'r', 'key', 'B');
+          const sut = appendConfigEntry;
+          const result = sut(text, 'remote', 'r', 'key', 'B');
 
           // Assert — new entry after the valueless line.
-          expect(sut).toBe('[remote "r"]\n\tkey\n\tkey = B\n');
+          expect(result).toBe('[remote "r"]\n\tkey\n\tkey = B\n');
+        });
+      });
+    });
+
+    describe('Given a section with multiple unrelated keys', () => {
+      describe('When appendConfigEntry adds a new fetch entry', () => {
+        it('Then the appended entry lands at the end of the section, after unrelated keys', () => {
+          // Arrange — row J: fetch = B appended to section that has url, fetch = A, push
+          const text = '[remote "o"]\n\turl = u\n\tfetch = A\n\tpush = p\n';
+
+          // Act
+          const sut = appendConfigEntry;
+          const result = sut(text, 'remote', 'o', 'fetch', 'B');
+
+          // Assert — new fetch entry appended at the end of the section
+          expect(result).toBe('[remote "o"]\n\turl = u\n\tfetch = A\n\tpush = p\n\tfetch = B\n');
+        });
+      });
+    });
+
+    describe('Given a section with a multi-line tail entry', () => {
+      describe('When appendConfigEntry adds a new entry', () => {
+        it('Then the appended entry lands after the multi-line tail', () => {
+          // Arrange — row J2: section ends with a multi-line fetch entry
+          const text = '[remote "o"]\n\tfetch = A\\\n   tail\n';
+
+          // Act
+          const sut = appendConfigEntry;
+          const result = sut(text, 'remote', 'o', 'fetch', 'B');
+
+          // Assert — new entry appended after the full span of the continuation
+          expect(result).toBe('[remote "o"]\n\tfetch = A\\\n   tail\n\tfetch = B\n');
         });
       });
     });

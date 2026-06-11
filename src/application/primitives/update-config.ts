@@ -20,7 +20,13 @@ import {
 } from '../../domain/commands/error.js';
 import { TsgitError } from '../../domain/error.js';
 import type { Context } from '../../ports/context.js';
-import { invalidateConfigCache, parseIniSections, parseSectionHeader } from './config-read.js';
+import {
+  type ConfigToken,
+  invalidateConfigCache,
+  parseIniSections,
+  parseSectionHeader,
+  tokenizeConfigLines,
+} from './config-read.js';
 import { invalidateScopedConfigCache } from './config-scoped-read.js';
 import { collectValues } from './internal/config-key.js';
 import { resolveScopePath } from './internal/config-scope.js';
@@ -46,25 +52,6 @@ const matchesSection = (line: string, section: string, subsection: string | unde
 const isSectionHeader = (line: string): boolean => {
   const trimmed = line.trim();
   return trimmed.startsWith('[') && trimmed.endsWith(']');
-};
-
-/**
- * True when `line` is a config entry line for `key` (case-insensitive).
- *
- * Matches both forms:
- *   - valued:    `\t<key> = <value>` — the key is the text before the first `=`, trimmed;
- *   - valueless: `\t<key>` — no `=` on the line (git's NULL-value boolean-true form),
- *     the entire trimmed line is the key name.
- *
- * Only called inside a matched section body; section headers and blank/comment
- * lines are handled by the callers before this function is reached.
- */
-const isKeyLine = (line: string, key: string): boolean => {
-  const eqAt = line.indexOf('=');
-  if (eqAt !== -1) {
-    return line.slice(0, eqAt).trim().toLowerCase() === key.toLowerCase();
-  }
-  return line.trim().toLowerCase() === key.toLowerCase();
 };
 
 /**
@@ -124,37 +111,126 @@ const findSectionHeader = (
   return -1;
 };
 
+/** Section/subsection identity for token-based section matching. */
+interface SectionTarget {
+  readonly sectionLc: string;
+  readonly subsection: string | undefined;
+}
+
+/** Builds a target with the section needle lowered once, not per header token. */
+const makeTarget = (section: string, subsection: string | undefined): SectionTarget => ({
+  sectionLc: section.toLowerCase(),
+  subsection,
+});
+
+type EntryToken = Extract<ConfigToken, { kind: 'entry' }>;
+type HeaderToken = Extract<ConfigToken, { kind: 'header' }>;
+
+/** Physical-line span `[startLine, endLine)` of one logical entry. */
+interface LineSpan {
+  readonly startLine: number;
+  readonly endLine: number;
+}
+
 /**
- * Within the section that starts at `headerIndex`, the index of an existing
- * `key =` line, or `-1` when absent. The scan stops at the next section
- * header so a `key` line under a *later* section is never matched.
+ * True when `header` token matches `target`: case-insensitive section,
+ * case-sensitive subsection, `undefined` matches `undefined` or `''`.
+ * Mirrors the semantics of `matchesSection`.
  */
-const findKeyInSection = (
-  lines: ReadonlyArray<string>,
-  headerIndex: number,
-  key: string,
-): number => {
-  for (let i = headerIndex + 1; i < lines.length; i += 1) {
-    const line = lines[i] as string;
-    if (isSectionHeader(line)) return -1;
-    if (isKeyLine(line, key)) return i;
+const matchesTarget = (header: HeaderToken, target: SectionTarget): boolean => {
+  if (header.section.toLowerCase() !== target.sectionLc) return false;
+  if (target.subsection === undefined) {
+    return header.subsection === undefined || header.subsection === '';
   }
-  return -1;
+  return header.subsection === target.subsection;
 };
 
-/** Replace element `at` in `lines` with `replacement`, returning a new array. */
-const replaceLine = (
-  lines: ReadonlyArray<string>,
-  at: number,
-  replacement: string,
-): ReadonlyArray<string> => [...lines.slice(0, at), replacement, ...lines.slice(at + 1)];
+/**
+ * First entry token (in line order) whose key matches `key` case-insensitively,
+ * inside any block that matches `target`. Returns `undefined` when absent.
+ */
+const findEntry = (
+  tokens: ReadonlyArray<ConfigToken>,
+  target: SectionTarget,
+  key: string,
+): EntryToken | undefined => {
+  const keyLc = key.toLowerCase();
+  let inTarget = false;
+  for (const token of tokens) {
+    if (token.kind === 'header') {
+      inTarget = matchesTarget(token, target);
+    } else if (inTarget && token.kind === 'entry' && token.key.toLowerCase() === keyLc) {
+      return token;
+    }
+  }
+  return undefined;
+};
 
-/** Insert `entry` immediately after element `at`, returning a new array. */
-const insertAfter = (
+/**
+ * Insertion line for a new key: the end of the LAST matching block — the
+ * last entry token's `endLine`, or `headerLine + 1` when that block has no
+ * entries. Returns `undefined` when no block matches `target`.
+ */
+const insertionLine = (
+  tokens: ReadonlyArray<ConfigToken>,
+  target: SectionTarget,
+): number | undefined => {
+  let result: number | undefined;
+  let inTarget = false;
+  let blockInsert: number | undefined;
+  for (const token of tokens) {
+    if (token.kind === 'header') {
+      if (inTarget) {
+        result = blockInsert;
+      }
+      inTarget = matchesTarget(token, target);
+      blockInsert = inTarget ? token.line + 1 : undefined;
+    } else if (inTarget && token.kind === 'entry') {
+      blockInsert = token.endLine;
+    }
+  }
+  if (inTarget) {
+    result = blockInsert;
+  }
+  return result;
+};
+
+/**
+ * When `originalLines` ended with `''` (trailing `\n`) and `out` does not,
+ * push `''` to restore the trailing newline. Used by remove-section.
+ */
+const withTrailingNewlineRestored = (
+  originalLines: ReadonlyArray<string>,
+  out: ReadonlyArray<string>,
+): ReadonlyArray<string> => {
+  if (
+    originalLines[originalLines.length - 1] === '' &&
+    out.length > 0 &&
+    out[out.length - 1] !== ''
+  ) {
+    return [...out, ''];
+  }
+  return out;
+};
+
+/**
+ * Insert `entry` at line index `idx` in `lines`, clamping to the file's
+ * writable boundary. When `idx === lines.length` (file has no trailing LF
+ * and insertion is at EOF), appends a trailing `''` so the written entry
+ * is LF-terminated.
+ */
+const spliceEntryAt = (
   lines: ReadonlyArray<string>,
   at: number,
   entry: string,
-): ReadonlyArray<string> => [...lines.slice(0, at + 1), entry, ...lines.slice(at + 1)];
+  originalText: string,
+): ReadonlyArray<string> => {
+  const max = originalText.endsWith('\n') ? lines.length - 1 : lines.length;
+  const idx = Math.min(at, max);
+  const out = [...lines.slice(0, idx), entry, ...lines.slice(idx)];
+  if (idx === lines.length) out.push('');
+  return out;
+};
 
 /**
  * Reject a `key`/`subsection` carrying a `\n`, `\r`, or `\0` — those would let
@@ -208,9 +284,10 @@ const rejectSection = (section: string): void => {
  * Set `key` under `[section]` / `[section "subsection"]`, preserving every
  * other byte verbatim.
  *
- * - existing section with that key ⇒ its value is replaced;
+ * - existing section with that key ⇒ full span of the first match is replaced
+ *   by a single canonical `\t<key> = <value>` line;
  * - existing section without that key ⇒ a `\t<key> = <value>` line is
- *   inserted right after the header;
+ *   inserted at the end of the last matching block;
  * - no such section ⇒ `[section]\n\t<key> = <value>\n` is appended.
  */
 export const setConfigEntryInText = (
@@ -225,28 +302,107 @@ export const setConfigEntryInText = (
   rejectValueControlChars(value);
   if (subsection !== undefined) rejectSubsection(subsection);
   const lines = text.split('\n');
-  const headerIndex = findSectionHeader(lines, section, subsection);
-  if (headerIndex === -1) {
+  const tokens = tokenizeConfigLines(lines, text.endsWith('\n'));
+  const target = makeTarget(section, subsection);
+  const existing = findEntry(tokens, target, key);
+  if (existing !== undefined) {
+    // The tokenizer's endLine never exceeds the tokenized line count.
+    const end = existing.endLine;
+    const out = [
+      ...lines.slice(0, existing.startLine),
+      renderEntry(key, value),
+      ...lines.slice(end),
+    ];
+    // git's write_pair always terminates the rewritten entry with LF, even
+    // when the replaced span reached EOF of a file lacking a final newline.
+    const terminated = end === lines.length ? [...out, ''] : out;
+    return terminated.join('\n');
+  }
+  const at = insertionLine(tokens, target);
+  if (at === undefined) {
     const prefix = text === '' ? '' : text.endsWith('\n') ? text : `${text}\n`;
     return `${prefix}${renderSectionHeader(section, subsection)}\n${renderEntry(key, value)}\n`;
   }
-  const keyIndex = findKeyInSection(lines, headerIndex, key);
-  if (keyIndex !== -1) {
-    return replaceLine(lines, keyIndex, renderEntry(key, value)).join('\n');
-  }
-  return insertAfter(lines, headerIndex, renderEntry(key, value)).join('\n');
+  return spliceEntryAt(lines, at, renderEntry(key, value), text).join('\n');
 };
 
 /** `setConfigEntryInText` bound to the `[core]` section — kept for legacy callers. */
 export const setCoreConfigEntryInText = (text: string, key: string, value: string): string =>
   setConfigEntryInText(text, 'core', undefined, key, value);
 
+type TokenBlock = {
+  readonly header: HeaderToken;
+  readonly bodyTokens: ReadonlyArray<ConfigToken>;
+};
+
+/** Group tokens into blocks: one header + every following token until the next header. */
+const buildTokenBlocks = (tokens: ReadonlyArray<ConfigToken>): ReadonlyArray<TokenBlock> => {
+  const blocks: TokenBlock[] = [];
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i] as ConfigToken;
+    if (token.kind !== 'header') continue;
+    const body: ConfigToken[] = [];
+    let j = i + 1;
+    while (j < tokens.length && (tokens[j] as ConfigToken).kind !== 'header') {
+      body.push(tokens[j] as ConfigToken);
+      j++;
+    }
+    blocks.push({ header: token, bodyTokens: body });
+    i = j - 1;
+  }
+  return blocks;
+};
+
+/** Collect the entry spans in `block` whose key matches `key` (case-insensitive). */
+const matchingEntrySpans = (block: TokenBlock, keyLc: string): ReadonlyArray<LineSpan> =>
+  block.bodyTokens.flatMap((t) =>
+    t.kind === 'entry' && t.key.toLowerCase() === keyLc
+      ? [{ startLine: t.startLine, endLine: t.endLine }]
+      : [],
+  );
+
 /**
- * Remove every `key = value` line for `key` from the section
+ * True when the block retains content that prevents empty-block pruning:
+ * a comment body token, a non-matched entry, or an inline comment on the header.
+ */
+const blockHasProtectingContent = (block: TokenBlock, keyLc: string): boolean =>
+  block.header.hasComment ||
+  block.bodyTokens.some(
+    (t) => t.kind === 'comment' || (t.kind === 'entry' && t.key.toLowerCase() !== keyLc),
+  );
+
+/**
+ * Mark every physical line of the block (header + all body) as excluded.
+ * Only called when `blockHasProtectingContent` is false, so body tokens are
+ * matched entries and blanks — comments cannot occur here.
+ */
+const blockExclusions = (block: TokenBlock): ReadonlyArray<number> => [
+  block.header.line,
+  ...block.bodyTokens.flatMap((token) =>
+    token.kind === 'entry' ? spanExclusions([token]) : [token.line],
+  ),
+];
+
+/**
+ * Mark every physical line of each span as excluded. Span bounds come from
+ * the tokenizer, whose `endLine` never exceeds the tokenized line count.
+ */
+const spanExclusions = (spans: ReadonlyArray<LineSpan>): ReadonlyArray<number> =>
+  spans.flatMap((span) =>
+    Array.from({ length: span.endLine - span.startLine }, (_, i) => span.startLine + i),
+  );
+
+/**
+ * Remove every entry span for `key` from the section
  * `[section]` / `[section "subsection"]`. No-op when the section or key
  * is absent. Mirrors `git config --unset-all`: when the key appears more
- * than once in the section (e.g. multiple `fetch =` lines), every
- * occurrence is removed.
+ * than once (e.g. multiple `fetch =` lines), every occurrence and its full
+ * backslash-continuation span is removed.
+ *
+ * Empty-block pruning: after removing the matched spans, a block whose
+ * remaining tokens contain no entries and no comments (including the header's
+ * own inline comment) is removed entirely, blank lines included. The rule is
+ * per block occurrence, not per logical section name.
  */
 export const removeConfigEntry = (
   text: string,
@@ -257,18 +413,28 @@ export const removeConfigEntry = (
   rejectSection(section);
   if (subsection !== undefined) rejectSubsection(subsection);
   rejectControlChars('key', key);
+
   const lines = text.split('\n');
-  const out: string[] = [];
-  let inTarget = false;
-  for (const line of lines) {
-    if (isSectionHeader(line)) {
-      inTarget = matchesSection(line, section, subsection);
-      out.push(line);
-      continue;
-    }
-    if (inTarget && isKeyLine(line, key)) continue;
-    out.push(line);
-  }
+  const target = makeTarget(section, subsection);
+  const blocks = buildTokenBlocks(tokenizeConfigLines(lines, text.endsWith('\n')));
+  const keyLc = key.toLowerCase();
+  const excluded = new Set(
+    blocks.flatMap((block) => {
+      if (!matchesTarget(block.header, target)) return [];
+      const spans = matchingEntrySpans(block, keyLc);
+      if (spans.length === 0) return [];
+      return blockHasProtectingContent(block, keyLc)
+        ? spanExclusions(spans)
+        : blockExclusions(block);
+    }),
+  );
+
+  if (excluded.size === 0) return text;
+  const kept = lines.filter((_, idx) => !excluded.has(idx));
+  // When the removed region reached EOF, every kept line was followed by LF
+  // in the original, so the output keeps that terminator — like git, which
+  // copies the bytes before the removed region verbatim.
+  const out = excluded.has(lines.length - 1) ? [...kept, ''] : kept;
   return out.join('\n');
 };
 
@@ -301,14 +467,7 @@ export const removeConfigSectionInText = (
     if (skipping) continue;
     out.push(line);
   }
-  // Preserve the file-level trailing newline: when the original ended in
-  // `\n` (so split yielded a trailing '') AND that '' was consumed inside
-  // a dropped section, the join loses one trailing `\n`. Restore it so a
-  // non-empty result ends with `\n` exactly when the original did.
-  const endedWithNewline = lines[lines.length - 1] === '';
-  const outEndsWithNewline = out.length > 0 && out[out.length - 1] === '';
-  if (endedWithNewline && !outEndsWithNewline && out.length > 0) out.push('');
-  return out.join('\n');
+  return withTrailingNewlineRestored(lines, out).join('\n');
 };
 
 /**
@@ -390,9 +549,10 @@ export type ConfigOperation =
     }
   | {
       /**
-       * Insert a fresh `key = value` line after the section header WITHOUT
-       * replacing any existing entry with the same key. Use for multi-value
-       * keys (`fetch`) where every call must yield an additional line.
+       * Insert a fresh `key = value` line at the end of the last matching
+       * section block WITHOUT replacing any existing entry with the same key.
+       * Use for multi-value keys (`fetch`) where every call must yield an
+       * additional line.
        */
       readonly kind: 'appendEntry';
       readonly section: string;
@@ -401,6 +561,10 @@ export type ConfigOperation =
       readonly value: string;
     }
   | {
+      /**
+       * Remove every entry span for `key` from the section, pruning the block
+       * header if no entries or comments remain. Delegates to `removeConfigEntry`.
+       */
       readonly kind: 'removeEntry';
       readonly section: string;
       readonly subsection?: string;
@@ -431,11 +595,10 @@ export const applyConfigOpInText = (text: string, op: ConfigOperation): string =
 };
 
 /**
- * Insert `\tkey = value` after the LAST existing matching key inside the
- * section (or after the section header when none exists). Preserves
- * insertion order across repeated `appendEntry` calls — `fetch = A`
- * followed by `fetch = B` produces `A` then `B`, not `B` then `A`.
- * Creates the section if absent.
+ * Insert a fresh `\tkey = value` line at the end of the LAST matching block
+ * (never replaces an existing entry). Preserves insertion order across
+ * repeated `appendEntry` calls — `fetch = A` followed by `fetch = B`
+ * produces `A` then `B`. Creates the section if absent.
  */
 export const appendConfigEntry = (
   text: string,
@@ -449,34 +612,14 @@ export const appendConfigEntry = (
   rejectValueControlChars(value);
   if (subsection !== undefined) rejectSubsection(subsection);
   const lines = text.split('\n');
-  const headerIndex = findSectionHeader(lines, section, subsection);
-  if (headerIndex === -1) {
+  const tokens = tokenizeConfigLines(lines, text.endsWith('\n'));
+  const target = makeTarget(section, subsection);
+  const at = insertionLine(tokens, target);
+  if (at === undefined) {
     const prefix = text === '' ? '' : text.endsWith('\n') ? text : `${text}\n`;
     return `${prefix}${renderSectionHeader(section, subsection)}\n${renderEntry(key, value)}\n`;
   }
-  const insertAt = findLastKeyInSection(lines, headerIndex, key);
-  return insertAfter(lines, insertAt, renderEntry(key, value)).join('\n');
-};
-
-/**
- * Within the section that starts at `headerIndex`, the index of the LAST
- * `key =` line, or `headerIndex` when no such line exists. The scan stops
- * at the next section header so a later section's `key` line is never
- * matched. `appendConfigEntry` uses this to preserve insertion order
- * across repeated appends.
- */
-const findLastKeyInSection = (
-  lines: ReadonlyArray<string>,
-  headerIndex: number,
-  key: string,
-): number => {
-  let last = headerIndex;
-  for (let i = headerIndex + 1; i < lines.length; i += 1) {
-    const line = lines[i] as string;
-    if (isSectionHeader(line)) return last;
-    if (isKeyLine(line, key)) last = i;
-  }
-  return last;
+  return spliceEntryAt(lines, at, renderEntry(key, value), text).join('\n');
 };
 
 /**
@@ -611,7 +754,8 @@ export const setConfigEntry = async ({
  * the key is absent the call is a no-op (no I/O). If the key appears more
  * than once in the targeted scope, throws `CONFIG_MULTIPLE_VALUES` with
  * `requested: 'remove'` (the caller should use `unsetAllConfigEntries` to
- * clear every occurrence).
+ * clear every occurrence). An emptied section block is pruned entirely
+ * (header + blank lines removed) unless the block contains a comment.
  */
 export const unsetConfigEntry = async ({
   ctx,
@@ -643,8 +787,9 @@ export const unsetConfigEntry = async ({
 /**
  * Remove every occurrence of `key` from the targeted scope. Idempotent — a
  * missing key produces no I/O. Unlike `unsetConfigEntry`, multi-valued keys
- * are explicitly supported: all matching lines are removed in a single
- * read-modify-write pass.
+ * are explicitly supported: all matching spans are removed in a single
+ * read-modify-write pass. An emptied section block is pruned entirely
+ * (header + blank lines removed) unless the block contains a comment.
  */
 export const unsetAllConfigEntries = async ({
   ctx,

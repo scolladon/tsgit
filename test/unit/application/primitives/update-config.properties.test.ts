@@ -3,9 +3,13 @@ import { describe, expect, it } from 'vitest';
 import {
   type IniSection,
   parseIniSections,
+  tokenizeConfig,
 } from '../../../../src/application/primitives/config-read.js';
-import { setConfigEntryInText } from '../../../../src/application/primitives/update-config.js';
-import { subsectionName } from './arbitraries.js';
+import {
+  removeConfigEntry,
+  setConfigEntryInText,
+} from '../../../../src/application/primitives/update-config.js';
+import { arbConfigKey, configFileWithTarget, subsectionName } from './arbitraries.js';
 
 const findValue = (
   sections: ReadonlyArray<IniSection>,
@@ -64,30 +68,6 @@ const arbNulFreeValue = (): fc.Arbitrary<string> => {
 
   return fc.oneof(wide, biased);
 };
-
-/**
- * Arbitrary for a valid config key: first char alpha, rest alnum or dash,
- * total length 1–16.  Kept local here since this file doesn't share generators
- * with config-read.properties.test.ts (different lens).
- */
-const arbConfigKey = (): fc.Arbitrary<string> =>
-  fc
-    .tuple(
-      fc.oneof(
-        fc.integer({ min: 0x41, max: 0x5a }).map((cp) => String.fromCodePoint(cp)), // A–Z
-        fc.integer({ min: 0x61, max: 0x7a }).map((cp) => String.fromCodePoint(cp)), // a–z
-      ),
-      fc.array(
-        fc.oneof(
-          fc.integer({ min: 0x41, max: 0x5a }).map((cp) => String.fromCodePoint(cp)),
-          fc.integer({ min: 0x61, max: 0x7a }).map((cp) => String.fromCodePoint(cp)),
-          fc.integer({ min: 0x30, max: 0x39 }).map((cp) => String.fromCodePoint(cp)),
-          fc.constant('-'),
-        ),
-        { minLength: 0, maxLength: 15 },
-      ),
-    )
-    .map(([first, rest]) => first + rest.join(''));
 
 describe('update-config writer properties', () => {
   describe('Given an arbitrary NUL-free value', () => {
@@ -182,6 +162,255 @@ describe('update-config writer properties', () => {
             const result = sut(inputText, 'a', undefined, otherKey, 'new');
             const lines = result.split('\n');
             expect(lines).toContain(valuelessLine);
+          }),
+          { numRuns: 100 },
+        );
+      });
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Surgery-preservation invariants (lens 2/4 — compositional invariants)
+// ---------------------------------------------------------------------------
+
+/**
+ * Collect all (section ci, subsection, key ci, value) tuples from parsed
+ * sections, filtering by the predicate on (section, subsection, key).
+ */
+const collectEntries = (
+  sections: ReadonlyArray<IniSection>,
+  filter: (section: string, subsection: string | undefined, key: string) => boolean,
+): ReadonlyArray<{
+  section: string;
+  subsection: string | undefined;
+  key: string;
+  value: string | null;
+}> => {
+  const out: {
+    section: string;
+    subsection: string | undefined;
+    key: string;
+    value: string | null;
+  }[] = [];
+  for (const sec of sections) {
+    for (const entry of sec.entries) {
+      if (filter(sec.section.toLowerCase(), sec.subsection, entry.key.toLowerCase())) {
+        out.push({
+          section: sec.section.toLowerCase(),
+          subsection: sec.subsection,
+          key: entry.key.toLowerCase(),
+          value: entry.value,
+        });
+      }
+    }
+  }
+  return out;
+};
+
+describe('update-config surgery-preservation invariants', () => {
+  describe('Given an arbitrary config file and a key drawn from the generator pool', () => {
+    describe('When setConfigEntryInText sets (s, sub, k) to a new value v', () => {
+      it('Then reading back the output, the first (s, sub, k) value equals v and every other entry is unchanged in order and value', () => {
+        // Arrange — `sut` is the function under test; `configFileWithTarget()`
+        // assembles 1–4 blocks from a small section pool and biases the key
+        // toward ones present in the file so existing-entry paths dominate.
+        const sut = setConfigEntryInText;
+        fc.assert(
+          fc.property(configFileWithTarget(), ({ file, section, key }) => {
+            const sub = undefined; // no subsection — keeps the invariant tight
+            const newValue = 'replaced';
+
+            // Act
+            let result: string;
+            try {
+              result = sut(file, section, sub, key, newValue);
+            } catch {
+              // Assert — refusal parity: surgery may refuse only inputs the
+              // tokenizer itself refuses, never a file the reader accepts
+              expect(() => tokenizeConfig(file)).toThrow();
+              return;
+            }
+
+            const inputSections = parseIniSections(file);
+            const outputSections = parseIniSections(result);
+
+            // Assert — first (section, key) in output equals newValue
+            const firstMatch = outputSections
+              .filter(
+                (s) => s.section.toLowerCase() === section.toLowerCase() && s.subsection === sub,
+              )
+              .flatMap((s) => s.entries)
+              .find((e) => e.key.toLowerCase() === key.toLowerCase());
+            expect(firstMatch?.value).toBe(newValue);
+
+            // Assert — every other entry is unchanged (exclude (section, key) pairs)
+            const otherInput = collectEntries(
+              inputSections,
+              (s, su, k) => !(s === section.toLowerCase() && su === sub && k === key.toLowerCase()),
+            );
+            const otherOutput = collectEntries(
+              outputSections,
+              (s, su, k) => !(s === section.toLowerCase() && su === sub && k === key.toLowerCase()),
+            );
+            expect(otherOutput).toEqual(otherInput);
+          }),
+          { numRuns: 100 },
+        );
+      });
+    });
+  });
+
+  describe('Given an arbitrary config file and a key drawn from the generator pool', () => {
+    describe('When removeConfigEntry removes (s, sub, k)', () => {
+      it('Then no (s, sub, k ci) entry remains and every other entry is unchanged in order and value', () => {
+        // Arrange
+        const sut = removeConfigEntry;
+        fc.assert(
+          fc.property(configFileWithTarget(), ({ file, section, key }) => {
+            const sub = undefined;
+
+            // Act
+            let result: string;
+            try {
+              result = sut(file, section, sub, key);
+            } catch {
+              // Assert — refusal parity: surgery may refuse only inputs the
+              // tokenizer itself refuses, never a file the reader accepts
+              expect(() => tokenizeConfig(file)).toThrow();
+              return;
+            }
+
+            const inputSections = parseIniSections(file);
+            const outputSections = parseIniSections(result);
+
+            // Assert — no (section, key) entry in output
+            const remaining = collectEntries(
+              outputSections,
+              (s, su, k) => s === section.toLowerCase() && su === sub && k === key.toLowerCase(),
+            );
+            expect(remaining).toHaveLength(0);
+
+            // Assert — every other entry is unchanged
+            const otherInput = collectEntries(
+              inputSections,
+              (s, su, k) => !(s === section.toLowerCase() && su === sub && k === key.toLowerCase()),
+            );
+            const otherOutput = collectEntries(
+              outputSections,
+              (s, su, k) => !(s === section.toLowerCase() && su === sub && k === key.toLowerCase()),
+            );
+            expect(otherOutput).toEqual(otherInput);
+          }),
+          { numRuns: 100 },
+        );
+      });
+    });
+  });
+
+  describe('Given an arbitrary config file and a key drawn from the generator pool', () => {
+    describe('When setConfigEntryInText or removeConfigEntry operates on the file', () => {
+      it('Then re-tokenizing the output yields no entry whose ci key is outside the input key set plus the operated key', () => {
+        // Arrange — catches K/L-style misclassification: a continuation tail
+        // re-parsed as a standalone entry whose key was not in the original file.
+        fc.assert(
+          fc.property(configFileWithTarget(), ({ file, section, key }) => {
+            const sub = undefined;
+            const inputKeys = new Set(
+              tokenizeConfig(file)
+                .filter((t): t is Extract<typeof t, { kind: 'entry' }> => t.kind === 'entry')
+                .map((t) => t.key.toLowerCase()),
+            );
+
+            for (const operate of [
+              (t: string) => setConfigEntryInText(t, section, sub, key, 'v'),
+              (t: string) => removeConfigEntry(t, section, sub, key),
+            ]) {
+              // Act
+              let result: string;
+              try {
+                result = operate(file);
+              } catch {
+                // Assert — refusal parity: surgery may refuse only inputs the
+                // tokenizer itself refuses, never a file the reader accepts
+                expect(() => tokenizeConfig(file)).toThrow();
+                continue;
+              }
+
+              // Assert — every output key already existed or is the operated key
+              const outputKeys = tokenizeConfig(result)
+                .filter((t): t is Extract<typeof t, { kind: 'entry' }> => t.kind === 'entry')
+                .map((t) => t.key.toLowerCase());
+
+              const allowedKeys = new Set([...inputKeys, key.toLowerCase()]);
+              for (const k of outputKeys) {
+                expect(allowedKeys.has(k), `orphan key "${k}" appeared in output`).toBe(true);
+              }
+            }
+          }),
+          { numRuns: 100 },
+        );
+      });
+    });
+  });
+
+  describe('Given an arbitrary config file where the operated key is absent', () => {
+    describe('When setConfigEntryInText or removeConfigEntry runs on a missing key', () => {
+      it('Then every existing entry retains its parsed value unchanged', () => {
+        // Arrange — absent-key stability: operating on a key that is not in the
+        // file must not alter any other parsed entry.
+        fc.assert(
+          fc.property(configFileWithTarget(), ({ file, section, key }) => {
+            const sub = undefined;
+            const inputSections = parseIniSections(file);
+
+            // Only proceed when the key is genuinely absent from the section
+            const keyPresent = inputSections
+              .filter(
+                (s) => s.section.toLowerCase() === section.toLowerCase() && s.subsection === sub,
+              )
+              .some((s) => s.entries.some((e) => e.key.toLowerCase() === key.toLowerCase()));
+            fc.pre(!keyPresent);
+
+            // Act — remove of an absent key
+            let removed: string | undefined;
+            try {
+              removed = removeConfigEntry(file, section, sub, key);
+            } catch {
+              // Assert — refusal parity: surgery may refuse only inputs the
+              // tokenizer itself refuses, never a file the reader accepts
+              expect(() => tokenizeConfig(file)).toThrow();
+            }
+
+            // Assert — removing an absent key leaves the file byte-identical
+            if (removed !== undefined) expect(removed).toBe(file);
+
+            // Act — set of an absent key
+            let added: string | undefined;
+            try {
+              added = setConfigEntryInText(file, section, sub, key, 'v');
+            } catch {
+              // Assert — refusal parity, as above
+              expect(() => tokenizeConfig(file)).toThrow();
+            }
+
+            // Assert — every entry present in the input keeps its parsed value
+            if (added !== undefined) {
+              const outputEntries = collectEntries(parseIniSections(added), () => true);
+              for (const inEntry of collectEntries(inputSections, () => true)) {
+                const found = outputEntries.find(
+                  (o) =>
+                    o.section === inEntry.section &&
+                    o.subsection === inEntry.subsection &&
+                    o.key === inEntry.key &&
+                    o.value === inEntry.value,
+                );
+                expect(
+                  found,
+                  `entry ${inEntry.section}.${inEntry.key} changed or disappeared`,
+                ).toBeDefined();
+              }
+            }
           }),
           { numRuns: 100 },
         );

@@ -2,10 +2,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import {
   __resetConfigCacheForTests,
+  type ConfigToken,
   type IniSection,
   invalidateConfigCache,
   parseIniSections,
   readConfig,
+  tokenizeConfig,
 } from '../../../../src/application/primitives/config-read.js';
 import {
   __resetSectionsCacheForTests,
@@ -3219,6 +3221,364 @@ describe('primitives/config-read valueless keys', () => {
         // Assert — the section is present but both string fields skip null
         expect(result.branch?.get('b')?.remote).toBeUndefined();
         expect(result.branch?.get('b')?.merge).toBeUndefined();
+      });
+    });
+  });
+});
+
+describe('primitives/config-read tokenizeConfig', () => {
+  describe('Given a simple section with one entry, When tokenizeConfig', () => {
+    it('Then returns a header token followed by an entry token with correct span', () => {
+      // Arrange
+      const sut = tokenizeConfig;
+
+      // Act
+      const result = sut('[a]\n\tkey = v\n');
+
+      // Assert
+      expect(result).toEqual<ReadonlyArray<ConfigToken>>([
+        { kind: 'header', section: 'a', subsection: undefined, line: 0, hasComment: false },
+        { kind: 'entry', key: 'key', value: 'v', startLine: 1, endLine: 2 },
+      ]);
+    });
+  });
+
+  describe('Given a backslash continuation, When tokenizeConfig', () => {
+    it('Then the entry spans both physical lines with the joined value', () => {
+      // Arrange
+      const sut = tokenizeConfig;
+
+      // Act
+      const result = sut('[a]\n\tkey = one\\\n   two\n');
+
+      // Assert
+      expect(result).toEqual<ReadonlyArray<ConfigToken>>([
+        { kind: 'header', section: 'a', subsection: undefined, line: 0, hasComment: false },
+        { kind: 'entry', key: 'key', value: 'one   two', startLine: 1, endLine: 3 },
+      ]);
+    });
+  });
+
+  describe('Given chained backslash continuations, When tokenizeConfig', () => {
+    it('Then the entry spans all physical lines with endLine equal to the last continuation plus one', () => {
+      // Arrange
+      const sut = tokenizeConfig;
+
+      // Act
+      const result = sut('[a]\n\tkey = one\\\n   two\\\n   three\n');
+
+      // Assert
+      expect(result).toEqual<ReadonlyArray<ConfigToken>>([
+        { kind: 'header', section: 'a', subsection: undefined, line: 0, hasComment: false },
+        { kind: 'entry', key: 'key', value: 'one   two   three', startLine: 1, endLine: 4 },
+      ]);
+    });
+  });
+
+  describe('Given a quoted continuation, When tokenizeConfig', () => {
+    it('Then the entry spans both physical lines with the concatenated quoted value', () => {
+      // Arrange
+      const sut = tokenizeConfig;
+
+      // Act
+      const result = sut('[a]\n\tkey = "one\\\n   two"\n');
+
+      // Assert
+      expect(result).toEqual<ReadonlyArray<ConfigToken>>([
+        { kind: 'header', section: 'a', subsection: undefined, line: 0, hasComment: false },
+        { kind: 'entry', key: 'key', value: 'one   two', startLine: 1, endLine: 3 },
+      ]);
+    });
+  });
+
+  describe('Given a backslash inside a trailing comment, When tokenizeConfig', () => {
+    it('Then the backslash is not a continuation and the next line is a separate entry', () => {
+      // Arrange
+      const sut = tokenizeConfig;
+
+      // Act
+      const result = sut('[a]\n\tkey = one # c\\\n\tnext = x\n');
+
+      // Assert
+      expect(result).toEqual<ReadonlyArray<ConfigToken>>([
+        { kind: 'header', section: 'a', subsection: undefined, line: 0, hasComment: false },
+        { kind: 'entry', key: 'key', value: 'one', startLine: 1, endLine: 2 },
+        { kind: 'entry', key: 'next', value: 'x', startLine: 2, endLine: 3 },
+      ]);
+    });
+  });
+
+  describe('Given a continuation tail that looks like a key line, When tokenizeConfig', () => {
+    it('Then the tail is value content and only the real url entry is emitted', () => {
+      // Arrange
+      const sut = tokenizeConfig;
+
+      // Act
+      const result = sut('[a]\n\tnote = first\\\n\turl = fake\n\turl = real\n');
+
+      // Assert
+      expect(result).toEqual<ReadonlyArray<ConfigToken>>([
+        { kind: 'header', section: 'a', subsection: undefined, line: 0, hasComment: false },
+        { kind: 'entry', key: 'note', value: 'first\turl = fake', startLine: 1, endLine: 3 },
+        { kind: 'entry', key: 'url', value: 'real', startLine: 3, endLine: 4 },
+      ]);
+    });
+  });
+
+  describe('Given a continuation tail that looks like a section header, When tokenizeConfig', () => {
+    it('Then only one header token is emitted and note spans both physical lines', () => {
+      // Arrange
+      const sut = tokenizeConfig;
+
+      // Act
+      const result = sut('[a]\n\tnote = v\\\n[x]\n\tkey = old\n');
+
+      // Assert
+      expect(result).toEqual<ReadonlyArray<ConfigToken>>([
+        { kind: 'header', section: 'a', subsection: undefined, line: 0, hasComment: false },
+        { kind: 'entry', key: 'note', value: 'v[x]', startLine: 1, endLine: 3 },
+        { kind: 'entry', key: 'key', value: 'old', startLine: 3, endLine: 4 },
+      ]);
+    });
+  });
+
+  describe('Given blank lines and comment lines, When tokenizeConfig', () => {
+    it('Then blank lines emit blank tokens and comment lines emit comment tokens', () => {
+      // Arrange
+      const sut = tokenizeConfig;
+
+      // Act
+      const result = sut('[a]\n\n# c\n   ; c\n   \n');
+
+      // Assert
+      expect(result).toEqual<ReadonlyArray<ConfigToken>>([
+        { kind: 'header', section: 'a', subsection: undefined, line: 0, hasComment: false },
+        { kind: 'blank', line: 1 },
+        { kind: 'comment', line: 2 },
+        { kind: 'comment', line: 3 },
+        { kind: 'blank', line: 4 },
+      ]);
+    });
+  });
+
+  describe('Given a header with or without an inline comment, When tokenizeConfig', () => {
+    it('Then hasComment is true when an unquoted inline comment is present and false otherwise', () => {
+      // Arrange
+      const sut = tokenizeConfig;
+
+      // Act
+      const withComment = sut('[a] # note\n');
+      const withSemicolonComment = sut('[a] ; note\n');
+      const withoutComment = sut('[a]\n');
+      const quotedHash = sut('[a "x#y"]\n');
+
+      // Assert
+      expect((withComment[0] as Extract<ConfigToken, { kind: 'header' }>).hasComment).toBe(true);
+      expect((withSemicolonComment[0] as Extract<ConfigToken, { kind: 'header' }>).hasComment).toBe(
+        true,
+      );
+      expect((withoutComment[0] as Extract<ConfigToken, { kind: 'header' }>).hasComment).toBe(
+        false,
+      );
+      expect((quotedHash[0] as Extract<ConfigToken, { kind: 'header' }>).hasComment).toBe(false);
+    });
+  });
+
+  describe('Given a lenient not-header body line starting with [, When tokenizeConfig', () => {
+    it('Then the not-header body line is classified as a comment token', () => {
+      // Arrange
+      const sut = tokenizeConfig;
+
+      // Act
+      const result = sut('[a]\n\t[half\n');
+
+      // Assert
+      expect(result).toEqual<ReadonlyArray<ConfigToken>>([
+        { kind: 'header', section: 'a', subsection: undefined, line: 0, hasComment: false },
+        { kind: 'comment', line: 1 },
+      ]);
+    });
+  });
+
+  describe('Given a valueless entry, When tokenizeConfig', () => {
+    it('Then the entry token has a null value and a single-line span', () => {
+      // Arrange
+      const sut = tokenizeConfig;
+
+      // Act
+      const result = sut('[a]\n\tkey\n');
+
+      // Assert
+      expect(result).toEqual<ReadonlyArray<ConfigToken>>([
+        { kind: 'header', section: 'a', subsection: undefined, line: 0, hasComment: false },
+        { kind: 'entry', key: 'key', value: null, startLine: 1, endLine: 2 },
+      ]);
+    });
+  });
+
+  describe('Given an empty-key entry, When tokenizeConfig', () => {
+    it('Then the entry token has an empty key and parseIniSections yields no entries for the section', () => {
+      // Arrange
+      const sut = tokenizeConfig;
+      const input = '[a]\n\t= v\n';
+
+      // Act
+      const tokens = sut(input);
+      const sections = parseIniSections(input);
+
+      // Assert — tokenizer emits the entry (every physical line classified)
+      expect(tokens).toEqual<ReadonlyArray<ConfigToken>>([
+        { kind: 'header', section: 'a', subsection: undefined, line: 0, hasComment: false },
+        { kind: 'entry', key: '', value: 'v', startLine: 1, endLine: 2 },
+      ]);
+      // fold parity: empty key is not pushed into section entries
+      expect(sections).toEqual<ReadonlyArray<IniSection>>([
+        { section: 'a', subsection: undefined, entries: [] },
+      ]);
+    });
+  });
+
+  describe('Given an orphan entry before any header, When tokenizeConfig', () => {
+    it('Then the orphan entry token precedes the header token and parseIniSections yields only the header section', () => {
+      // Arrange
+      const sut = tokenizeConfig;
+      const input = 'key = v\n[a]\n';
+
+      // Act
+      const tokens = sut(input);
+      const sections = parseIniSections(input);
+
+      // Assert
+      expect(tokens).toEqual<ReadonlyArray<ConfigToken>>([
+        { kind: 'entry', key: 'key', value: 'v', startLine: 0, endLine: 1 },
+        { kind: 'header', section: 'a', subsection: undefined, line: 1, hasComment: false },
+      ]);
+      // fold parity: orphan entry (no current section) is not included
+      expect(sections).toEqual<ReadonlyArray<IniSection>>([
+        { section: 'a', subsection: undefined, entries: [] },
+      ]);
+    });
+  });
+
+  describe('Given text with a single trailing newline versus two trailing newlines, When tokenizeConfig', () => {
+    it('Then the LF terminator emits no token but a second blank line does emit a blank token', () => {
+      // Arrange
+      const sut = tokenizeConfig;
+
+      // Act
+      const singleNewline = sut('[a]\n');
+      const doubleNewline = sut('[a]\n\n');
+
+      // Assert
+      expect(singleNewline).toEqual<ReadonlyArray<ConfigToken>>([
+        { kind: 'header', section: 'a', subsection: undefined, line: 0, hasComment: false },
+      ]);
+      expect(doubleNewline).toEqual<ReadonlyArray<ConfigToken>>([
+        { kind: 'header', section: 'a', subsection: undefined, line: 0, hasComment: false },
+        { kind: 'blank', line: 1 },
+      ]);
+    });
+  });
+
+  describe('Given a continuation that consumes the EOF terminator, When tokenizeConfig', () => {
+    it('Then the entry endLine equals the split-array length pinning the exclusive-end contract at EOF', () => {
+      // Arrange
+      const sut = tokenizeConfig;
+      const input = '[a]\n\tk = v\\\n';
+
+      // Act
+      const result = sut(input);
+
+      // Assert
+      const lines = input.split('\n');
+      expect(result).toEqual<ReadonlyArray<ConfigToken>>([
+        { kind: 'header', section: 'a', subsection: undefined, line: 0, hasComment: false },
+        { kind: 'entry', key: 'k', value: 'v', startLine: 1, endLine: lines.length },
+      ]);
+    });
+  });
+
+  describe('Given a malformed section header', () => {
+    describe('When tokenizeConfig parses it', () => {
+      it('Then CONFIG_PARSE_ERROR carries line 1 and the partial section name', () => {
+        // Arrange
+        const sut = tokenizeConfig;
+
+        // Act + Assert
+        try {
+          sut('[s "a" x]\n\tk = v\n');
+          expect.unreachable('tokenizeConfig must refuse a malformed header');
+        } catch (err) {
+          if (!(err instanceof TsgitError)) throw err;
+          expect(err.data.code).toBe('CONFIG_PARSE_ERROR');
+          expect(err.data).toMatchObject({ line: 1, partialSectionName: 's.a' });
+        }
+      });
+    });
+  });
+
+  describe('Given a bad key line under a valid header', () => {
+    describe('When tokenizeConfig parses it', () => {
+      it('Then CONFIG_PARSE_ERROR carries line 2', () => {
+        // Arrange
+        const sut = tokenizeConfig;
+
+        // Act + Assert
+        try {
+          sut('[a]\nbad!key\n');
+          expect.unreachable('tokenizeConfig must refuse a bad key line');
+        } catch (err) {
+          if (!(err instanceof TsgitError)) throw err;
+          expect(err.data.code).toBe('CONFIG_PARSE_ERROR');
+          expect(err.data).toMatchObject({ line: 2 });
+        }
+      });
+    });
+  });
+
+  describe('Given an entry value with an unclosed quote', () => {
+    describe('When tokenizeConfig parses it', () => {
+      it('Then CONFIG_PARSE_ERROR carries line 2', () => {
+        // Arrange
+        const sut = tokenizeConfig;
+
+        // Act + Assert
+        try {
+          sut('[a]\nk = "unclosed\n');
+          expect.unreachable('tokenizeConfig must refuse an unclosed quote');
+        } catch (err) {
+          if (!(err instanceof TsgitError)) throw err;
+          expect(err.data.code).toBe('CONFIG_PARSE_ERROR');
+          expect(err.data).toMatchObject({ line: 2 });
+        }
+      });
+    });
+  });
+
+  describe('Given a malformed header and a source label', () => {
+    describe('When tokenizeConfig and parseIniSections parse it', () => {
+      it('Then both errors carry the source label', () => {
+        // Arrange
+        const sut = tokenizeConfig;
+        const source = 'my-config';
+
+        // Act + Assert — tokenizeConfig carries the source label
+        try {
+          sut('[s "a" x]\n\tk = v\n', source);
+          expect.unreachable('tokenizeConfig must refuse a malformed header');
+        } catch (err) {
+          if (!(err instanceof TsgitError)) throw err;
+          expect(err.data).toMatchObject({ code: 'CONFIG_PARSE_ERROR', source });
+        }
+
+        // Act + Assert — parseIniSections carries the same source label
+        try {
+          parseIniSections('[s "a" x]\n\tk = v\n', source);
+          expect.unreachable('parseIniSections must refuse a malformed header');
+        } catch (err) {
+          if (!(err instanceof TsgitError)) throw err;
+          expect(err.data).toMatchObject({ code: 'CONFIG_PARSE_ERROR', source });
+        }
       });
     });
   });
