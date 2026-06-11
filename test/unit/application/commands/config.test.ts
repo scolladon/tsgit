@@ -121,10 +121,10 @@ describe('configList', () => {
       );
 
       // Act
-      const sut = await configList(ctx);
+      const result = await configList(ctx);
 
       // Assert
-      expect(sut.entries).toEqual([
+      expect(result.entries).toEqual([
         { key: 'core.bare', value: null, scope: 'local' },
         { key: 'core.repositoryformatversion', value: '0', scope: 'local' },
       ]);
@@ -140,10 +140,10 @@ describe('configGetRegexp — valueless key behaviour', () => {
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tbare\n');
 
       // Act
-      const sut = await configGetRegexp(ctx, { keyPattern: /^core\.bare$/ });
+      const result = await configGetRegexp(ctx, { keyPattern: /^core\.bare$/ });
 
       // Assert
-      expect(sut.entries).toEqual([{ key: 'core.bare', value: null, scope: 'local' }]);
+      expect(result.entries).toEqual([{ key: 'core.bare', value: null, scope: 'local' }]);
     });
   });
 
@@ -154,11 +154,11 @@ describe('configGetRegexp — valueless key behaviour', () => {
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tbare\n');
 
       // Act
-      const sut = await configGetRegexp(ctx, { keyPattern: /^core\.bare$/, valuePattern: /^$/ });
+      const result = await configGetRegexp(ctx, { keyPattern: /^core\.bare$/, valuePattern: /^$/ });
 
       // Assert
-      expect(sut.entries).toHaveLength(1);
-      expect(sut.entries[0]).toEqual({ key: 'core.bare', value: null, scope: 'local' });
+      expect(result.entries).toHaveLength(1);
+      expect(result.entries[0]).toEqual({ key: 'core.bare', value: null, scope: 'local' });
     });
   });
 
@@ -169,10 +169,13 @@ describe('configGetRegexp — valueless key behaviour', () => {
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tbare\n');
 
       // Act
-      const sut = await configGetRegexp(ctx, { keyPattern: /^core\.bare$/, valuePattern: /val/ });
+      const result = await configGetRegexp(ctx, {
+        keyPattern: /^core\.bare$/,
+        valuePattern: /val/,
+      });
 
       // Assert
-      expect(sut.entries).toHaveLength(0);
+      expect(result.entries).toHaveLength(0);
     });
   });
 });
@@ -310,10 +313,10 @@ describe('configUnset', () => {
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[user]\n\tname\n');
 
       // Act
-      const sut = await configUnset(ctx, { key: 'user.name' });
+      const result = await configUnset(ctx, { key: 'user.name' });
 
       // Assert
-      expect(sut).toEqual({
+      expect(result).toEqual({
         key: 'user.name',
         scope: 'local',
         removed: true,

@@ -697,13 +697,13 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
 
         // Act — tsgit configList (local scope, fresh context)
         const ctx = createNodeContext({ workDir: pair.ours });
-        const sut = await configList(ctx, { scope: 'local' });
+        const result = await configList(ctx, { scope: 'local' });
 
         // Reconstruct git's --list stdout from structured entries:
         //   value === null  → bare key line ("a.key\n")
         //   value === ''    → "a.key=\n"
         //   value           → "a.key=value\n"
-        const reconstructed = sut.entries
+        const reconstructed = result.entries
           .map((e) => (e.value === null ? `${e.key}\n` : `${e.key}=${e.value}\n`))
           .join('');
 
@@ -731,15 +731,15 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
 
         // Act — tsgit getConfigValue for core.bare
         const ctx = createNodeContext({ workDir: pair.ours });
-        const sut = await getConfigValue({ ctx, key: 'core.bare', scope: 'local' });
+        const result = await getConfigValue({ ctx, key: 'core.bare', scope: 'local' });
 
         // Assert — git sees bare=true
         expect(gitBare).toBe('true');
 
         // Assert — tsgit surfaces value: null (git's internal NULL); narrow the
         // discriminated union before accessing .value to satisfy the type checker
-        expect(sut.value, 'core.bare should be found').not.toBeUndefined();
-        const found = sut as { value: string | null };
+        expect(result.value, 'core.bare should be found').not.toBeUndefined();
+        const found = result as { value: string | null };
         expect(found.value).toBeNull();
 
         // Assert — boolean reconstruction: null → true (agrees with git)
@@ -830,12 +830,12 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
 
         // Act — tsgit configUnset on ours
         const ctx = createNodeContext({ workDir: pair.ours });
-        const sut = await configUnset(ctx, { key: 'a.key', scope: 'local' });
+        const result = await configUnset(ctx, { key: 'a.key', scope: 'local' });
 
         // Assert — unset reports the valueless entry as removed with null previousValue
-        expect(sut.removed).toBe(true);
-        if (sut.removed) {
-          expect(sut.previousValue).toBeNull();
+        expect(result.removed).toBe(true);
+        if (result.removed) {
+          expect(result.previousValue).toBeNull();
         }
 
         // Assert — byte-identical [a] section
@@ -898,7 +898,7 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
 
         // Act — tsgit configGetRegexp (local scope, key-pattern matches all)
         const ctx = createNodeContext({ workDir: pair.ours });
-        const sut = await configGetRegexp(ctx, {
+        const result = await configGetRegexp(ctx, {
           keyPattern: /.*/,
           scope: 'local',
         });
@@ -907,7 +907,7 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
         //   value === null  → "key\n"         (bare, no space)
         //   value === ''    → "key \n"         (key + space + empty)
         //   value           → "key value\n"
-        const reconstructed = sut.entries
+        const reconstructed = result.entries
           .map((e) => (e.value === null ? `${e.key}\n` : `${e.key} ${e.value}\n`))
           .join('');
 
@@ -940,12 +940,12 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
 
         // Act — tsgit configGetRegexp with valuePattern /^$/
         const ctx = createNodeContext({ workDir: pair.ours });
-        const sut = await configGetRegexp(ctx, {
+        const result = await configGetRegexp(ctx, {
           keyPattern: /.*/,
           valuePattern: /^$/,
           scope: 'local',
         });
-        const tsgitMatched = sut.entries.map((e) => e.key);
+        const tsgitMatched = result.entries.map((e) => e.key);
 
         // Assert — same matched key set (order and count)
         expect(tsgitMatched).toEqual(gitMatched);

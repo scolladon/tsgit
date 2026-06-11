@@ -2706,10 +2706,10 @@ describe('readConfigSections / getConfigValue / getAllConfigValues', () => {
       await seed(ctx, '[core]\nbare\n');
 
       // Act
-      const sut = await getConfigValue({ ctx, key: 'core.bare', scope: 'local' });
+      const result = await getConfigValue({ ctx, key: 'core.bare', scope: 'local' });
 
       // Assert
-      expect(sut).toEqual({ key: 'core.bare', value: null, scope: 'local' });
+      expect(result).toEqual({ key: 'core.bare', value: null, scope: 'local' });
     });
   });
 
@@ -2720,10 +2720,10 @@ describe('readConfigSections / getConfigValue / getAllConfigValues', () => {
       await seed(ctx, '[core]\n');
 
       // Act
-      const sut = await getConfigValue({ ctx, key: 'core.bare', scope: 'local' });
+      const result = await getConfigValue({ ctx, key: 'core.bare', scope: 'local' });
 
       // Assert
-      expect(sut).toEqual({ key: 'core.bare', value: undefined });
+      expect(result).toEqual({ key: 'core.bare', value: undefined });
     });
   });
 
@@ -2737,14 +2737,14 @@ describe('readConfigSections / getConfigValue / getAllConfigValues', () => {
       );
 
       // Act
-      const sut = await getAllConfigValues({
+      const result = await getAllConfigValues({
         ctx,
         key: 'remote.origin.fetch',
         scope: 'local',
       });
 
       // Assert
-      expect(sut.values).toEqual([
+      expect(result.values).toEqual([
         { value: '+refs/heads/*:refs/remotes/origin/*', scope: 'local' },
         { value: null, scope: 'local' },
       ]);
@@ -3062,10 +3062,10 @@ describe('primitives/config-read valueless keys', () => {
         await seed(ctx, '[core]\nbare\n');
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert
-        expect(sut.core?.bare).toBe(true);
+        expect(result.core?.bare).toBe(true);
       });
     });
 
@@ -3076,10 +3076,10 @@ describe('primitives/config-read valueless keys', () => {
         await seed(ctx, '[core]\nsparsecheckout\n');
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert
-        expect(sut.core?.sparseCheckout).toBe(true);
+        expect(result.core?.sparseCheckout).toBe(true);
       });
     });
 
@@ -3090,10 +3090,10 @@ describe('primitives/config-read valueless keys', () => {
         await seed(ctx, '[core]\nlogallrefupdates\n');
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert
-        expect(sut.core?.logAllRefUpdates).toBe(true);
+        expect(result.core?.logAllRefUpdates).toBe(true);
       });
     });
 
@@ -3104,10 +3104,10 @@ describe('primitives/config-read valueless keys', () => {
         await seed(ctx, '[core]\nbare =\n');
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert
-        expect(sut.core?.bare).toBe(false);
+        expect(result.core?.bare).toBe(false);
       });
     });
   });
@@ -3124,10 +3124,10 @@ describe('primitives/config-read valueless keys', () => {
         await seed(ctx, '[user]\nname\nemail = e\n');
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert
-        expect(sut.user).toBeUndefined();
+        expect(result.user).toBeUndefined();
       });
     });
 
@@ -3138,10 +3138,10 @@ describe('primitives/config-read valueless keys', () => {
         await seed(ctx, '[remote "o"]\nurl\nfetch\n');
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert
-        const remote = sut.remote?.get('o');
+        const remote = result.remote?.get('o');
         expect(remote?.url).toBeUndefined();
         expect(remote?.fetch).toBeUndefined();
       });
@@ -3154,10 +3154,10 @@ describe('primitives/config-read valueless keys', () => {
         await seed(ctx, '[merge "d"]\ndriver\n');
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert — the section is present but driver (string field) skips null
-        expect(sut.merge?.get('d')?.driver).toBeUndefined();
+        expect(result.merge?.get('d')?.driver).toBeUndefined();
       });
     });
 
@@ -3168,10 +3168,10 @@ describe('primitives/config-read valueless keys', () => {
         await seed(ctx, '[submodule "s"]\nactive\n');
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert
-        expect(sut.submodule?.get('s')?.active).toBe(true);
+        expect(result.submodule?.get('s')?.active).toBe(true);
       });
     });
   });
