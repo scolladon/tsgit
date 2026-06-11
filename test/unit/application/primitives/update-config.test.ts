@@ -1926,6 +1926,63 @@ describe('primitives/update-config', () => {
         });
       });
     });
+
+    describe('Given a section whose body contains a multi-line tail with no lookalike header', () => {
+      describe('When removeConfigSectionInText removes it', () => {
+        it('Then the whole block including the tail is dropped (G2)', () => {
+          // Arrange — row G2: [a] has a two-line continuation; no header-lookalike inside.
+          // Canonical git's section machinery is line-based: body tails that do NOT
+          // parse as a section header pass through removal unchanged — the entire block
+          // (header + body lines + tails) is dropped. Replicating that byte-for-byte is
+          // intended.
+          const text = '[a]\n\tkey = one\\\n   two\n[b]\n\tk = v\n';
+
+          // Act
+          const sut = removeConfigSectionInText(text, 'a', undefined);
+
+          // Assert
+          expect(sut).toBe('[b]\n\tk = v\n');
+        });
+      });
+    });
+
+    describe('Given a section whose body has a continuation tail that parses as a header', () => {
+      describe('When removeConfigSectionInText removes the section', () => {
+        it('Then removal stops at the lookalike tail, leaving lines the reader considers part of [a] (G3)', () => {
+          // Arrange — row G3: `[a]` has `key = one\` then `[b]` on the next line.
+          // The reader parses `a.key` as `one[b]` and `a.k` as `v` (the [b] line is
+          // a continuation, not a header). But git's remove-section machinery is
+          // line-based and treats `[b]` as the start of a new section — so removal
+          // stops there, leaving `[b]\n\tk = v\n`. Replicating that byte-for-byte is
+          // intended (the reader and writer disagree, same as git).
+          const text = '[a]\n\tkey = one\\\n[b]\n\tk = v\n';
+
+          // Act
+          const sut = removeConfigSectionInText(text, 'a', undefined);
+
+          // Assert
+          expect(sut).toBe('[b]\n\tk = v\n');
+        });
+      });
+    });
+
+    describe('Given a remove-section target whose name appears in continuation tails', () => {
+      describe('When removeConfigSectionInText removes all [b] blocks', () => {
+        it('Then both real blocks and the lookalike tail are removed, corrupting the preceding value (G5)', () => {
+          // Arrange — row G5: `[a]` has `key = one\` then `[b]` (a lookalike tail);
+          // two real `[b]` blocks follow. Removing section `b` hits all three — the
+          // lookalike tail line is treated as a header and removed too, which corrupts
+          // `a.key`'s value (now `one[d]`). Replicating that byte-for-byte is intended.
+          const text = '[a]\n\tkey = one\\\n[b]\n\tinside-tail = t\n[b]\n\tk = v\n[d]\n\te = f\n';
+
+          // Act
+          const sut = removeConfigSectionInText(text, 'b', undefined);
+
+          // Assert
+          expect(sut).toBe('[a]\n\tkey = one\\\n[d]\n\te = f\n');
+        });
+      });
+    });
   });
 
   describe('removeConfigEntry validation', () => {
@@ -2087,6 +2144,61 @@ describe('primitives/update-config', () => {
 
           // Assert — git escapes \ → \\ in the target subsection
           expect(sut).toBe('[remote "a\\\\b"]\n\turl = u\n');
+        });
+      });
+    });
+
+    describe('Given a section with a continuation tail that parses as the rename target', () => {
+      describe('When renameConfigSectionInText renames b.s to b.t', () => {
+        it('Then both the real header and the lookalike tail are renamed (N1)', () => {
+          // Arrange — row N1: `[a]` has `key = one\` then `[b "s"]` (a lookalike tail);
+          // a real `[b "s"]` block follows. Canonical git's rename-section machinery is
+          // line-based: the continuation tail that parses as `[b "s"]` is also renamed
+          // to `[b "t"]`, changing `a.key`'s value from `one[b "s"]` to `one[b "t"]`.
+          // Replicating that byte-for-byte is intended.
+          const text = '[a]\n\tkey = one\\\n[b "s"]\n[b "s"]\n\tk = v\n';
+
+          // Act
+          const sut = renameConfigSectionInText(text, 'b', 's', 't');
+
+          // Assert
+          expect(sut).toBe('[a]\n\tkey = one\\\n[b "t"]\n[b "t"]\n\tk = v\n');
+        });
+      });
+    });
+
+    describe('Given a section with a continuation tail that does NOT parse as the rename target', () => {
+      describe('When renameConfigSectionInText renames a.s to a.t', () => {
+        it('Then the header is renamed and body tails pass through verbatim (N2)', () => {
+          // Arrange — row N2: `[a "s"]` has a two-line continuation body tail `   two`.
+          // That tail does not parse as any section header, so it passes through verbatim.
+          const text = '[a "s"]\n\tkey = one\\\n   two\n[b]\n\tk = v\n';
+
+          // Act
+          const sut = renameConfigSectionInText(text, 'a', 's', 't');
+
+          // Assert
+          expect(sut).toBe('[a "t"]\n\tkey = one\\\n   two\n[b]\n\tk = v\n');
+        });
+      });
+    });
+  });
+
+  describe('removeConfigSectionInText (subsectioned N3)', () => {
+    describe('Given a section with a lookalike-tail followed by two real matching blocks', () => {
+      describe('When removeConfigSectionInText removes b.s', () => {
+        it('Then both real blocks and the lookalike tail line are removed, corrupting the preceding value (N3)', () => {
+          // Arrange — row N3: `[a]` has `key = one\` then `[b "s"]` (lookalike tail);
+          // two real `[b "s"]` blocks follow. Removing `b.s` hits all three via the
+          // line-based machinery. Replicating that byte-for-byte is intended.
+          const text =
+            '[a]\n\tkey = one\\\n[b "s"]\n\tinside = t\n[b "s"]\n\tk = v\n[d]\n\te = f\n';
+
+          // Act
+          const sut = removeConfigSectionInText(text, 'b', 's');
+
+          // Assert
+          expect(sut).toBe('[a]\n\tkey = one\\\n[d]\n\te = f\n');
         });
       });
     });
