@@ -2698,6 +2698,58 @@ describe('readConfigSections / getConfigValue / getAllConfigValues', () => {
       expect(sut).toEqual({ key: 'user.email', values: [] });
     });
   });
+
+  describe('Given a valueless key, When getConfigValue', () => {
+    it('Then returns { key, value: null, scope } (distinct from absent → value: undefined)', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await seed(ctx, '[core]\nbare\n');
+
+      // Act
+      const sut = await getConfigValue({ ctx, key: 'core.bare', scope: 'local' });
+
+      // Assert
+      expect(sut).toEqual({ key: 'core.bare', value: null, scope: 'local' });
+    });
+  });
+
+  describe('Given an absent key, When getConfigValue', () => {
+    it('Then returns { key, value: undefined } (distinct from valueless → value: null)', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await seed(ctx, '[core]\n');
+
+      // Act
+      const sut = await getConfigValue({ ctx, key: 'core.bare', scope: 'local' });
+
+      // Assert
+      expect(sut).toEqual({ key: 'core.bare', value: undefined });
+    });
+  });
+
+  describe('Given a key with one valued and one valueless occurrence, When getAllConfigValues', () => {
+    it('Then values array carries null in physical file order', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await seed(
+        ctx,
+        '[remote "origin"]\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n\tfetch\n',
+      );
+
+      // Act
+      const sut = await getAllConfigValues({
+        ctx,
+        key: 'remote.origin.fetch',
+        scope: 'local',
+      });
+
+      // Assert
+      expect(sut.values).toEqual([
+        { value: '+refs/heads/*:refs/remotes/origin/*', scope: 'local' },
+        { value: null, scope: 'local' },
+      ]);
+    });
+  });
 });
 
 describe('primitives/config-read valueless keys', () => {
