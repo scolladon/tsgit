@@ -11,7 +11,7 @@ const findValue = (
   sections: ReadonlyArray<IniSection>,
   section: string,
   key: string,
-): string | undefined => {
+): string | null | undefined => {
   for (const sec of sections) {
     if (sec.section.toLowerCase() !== section) continue;
     for (const entry of sec.entries) {

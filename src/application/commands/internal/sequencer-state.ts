@@ -100,7 +100,11 @@ const hasTrueKey = (sections: ReturnType<typeof parseIniSections>, key: string):
   sections.some(
     (s) =>
       s.section.toLowerCase() === 'options' &&
-      s.entries.some((e) => e.key.toLowerCase() === key && e.value.toLowerCase() === 'true'),
+      // Sequencer opts files are tsgit-written and never contain valueless
+      // entries, so null is guarded for type safety only.
+      s.entries.some(
+        (e) => e.key.toLowerCase() === key && e.value !== null && e.value.toLowerCase() === 'true',
+      ),
   );
 
 export const readSequencerOpts = async (ctx: Context): Promise<SequencerOpts> => {

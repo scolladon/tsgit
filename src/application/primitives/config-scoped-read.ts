@@ -128,7 +128,7 @@ const collectScopedMatches = async (
   ctx: Context,
   parsedKey: ReturnType<typeof parseConfigKey>,
   scope: ConfigScope | undefined,
-): Promise<ReadonlyArray<{ readonly value: string; readonly scope: ConfigScope }>> => {
+): Promise<ReadonlyArray<{ readonly value: string | null; readonly scope: ConfigScope }>> => {
   if (scope !== undefined) {
     const sections = await readSingleScope(ctx, scope);
     return collectValues(sections, parsedKey).map((m) => ({ value: m.value, scope }));
@@ -150,6 +150,9 @@ const collectScopedMatches = async (
  *   throw if more than one entry matches anywhere across the merged view
  *   (without the `scope` discriminator).
  * - Absent key: returns `{ key, value: undefined }`; never throws.
+ * - Valueless key (no `=` in the file): returns `{ key, value: null, scope }`.
+ *   `null` (present, no `=`) is distinct from `undefined` (absent) and from
+ *   `''` (empty string after `key =`).
  *
  * Branding: the returned `key` is the caller's input cast to `ConfigKey`;
  * `parseConfigKey` validates the string before this cast, so the brand is
@@ -164,7 +167,7 @@ export const getConfigValue = async ({
   readonly key: string;
   readonly scope?: ConfigScope;
 }): Promise<
-  | { readonly key: ConfigKey; readonly value: string; readonly scope: ConfigScope }
+  | { readonly key: ConfigKey; readonly value: string | null; readonly scope: ConfigScope }
   | { readonly key: ConfigKey; readonly value: undefined }
 > => {
   const parsed = parseConfigKey(key);
@@ -176,7 +179,7 @@ export const getConfigValue = async ({
   const [first] = matches;
   return {
     key: brandKey(key),
-    value: (first as { value: string }).value,
+    value: (first as { value: string | null }).value,
     scope: (first as { scope: ConfigScope }).scope,
   };
 };
@@ -185,6 +188,9 @@ export const getConfigValue = async ({
  * Look up every value for a key. Returns matches in scope-precedence order
  * (and physical-file order within each scope). Empty array when the key is
  * absent. Never throws on multi-value.
+ *
+ * Each `value` carries `string | null`: `null` means the entry was present
+ * with no `=` (git's internal NULL); `undefined` is never in the array.
  */
 export const getAllConfigValues = async ({
   ctx,
@@ -196,7 +202,7 @@ export const getAllConfigValues = async ({
   readonly scope?: ConfigScope;
 }): Promise<{
   readonly key: ConfigKey;
-  readonly values: ReadonlyArray<{ readonly value: string; readonly scope: ConfigScope }>;
+  readonly values: ReadonlyArray<{ readonly value: string | null; readonly scope: ConfigScope }>;
 }> => {
   const parsed = parseConfigKey(key);
   const values = await collectScopedMatches(ctx, parsed, scope);

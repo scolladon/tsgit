@@ -39,7 +39,7 @@ export interface ConfigGetInput {
 }
 
 export type ConfigGetResult =
-  | { readonly key: ConfigKey; readonly value: string; readonly scope: ConfigScope }
+  | { readonly key: ConfigKey; readonly value: string | null; readonly scope: ConfigScope }
   | { readonly key: ConfigKey; readonly value: undefined };
 
 export const configGet = async (ctx: Context, input: ConfigGetInput): Promise<ConfigGetResult> => {
@@ -56,7 +56,7 @@ export interface ConfigGetAllInput {
 
 export interface ConfigGetAllResult {
   readonly key: ConfigKey;
-  readonly values: ReadonlyArray<{ readonly value: string; readonly scope: ConfigScope }>;
+  readonly values: ReadonlyArray<{ readonly value: string | null; readonly scope: ConfigScope }>;
 }
 
 export const configGetAll = async (
@@ -77,7 +77,8 @@ export interface ConfigGetRegexpInput {
 
 export interface ConfigEntryView {
   readonly key: ConfigKey;
-  readonly value: string;
+  /** `null` means the entry is present with no `=` (git's internal NULL). */
+  readonly value: string | null;
   readonly scope: ConfigScope;
 }
 
@@ -99,7 +100,7 @@ export const configGetRegexp = async (
     for (const entry of section.entries) {
       const qualified = qualifyKey(section, entry.key);
       if (!input.keyPattern.test(qualified)) continue;
-      if (input.valuePattern !== undefined && !input.valuePattern.test(entry.value)) continue;
+      if (input.valuePattern !== undefined && !input.valuePattern.test(entry.value ?? '')) continue;
       entries.push({ key: brandKey(qualified), value: entry.value, scope });
     }
   }
@@ -168,7 +169,8 @@ export type ConfigUnsetResult =
       readonly key: ConfigKey;
       readonly scope: ConfigScope;
       readonly removed: true;
-      readonly previousValue: string;
+      /** The value that was removed. `null` when the entry had no `=`. */
+      readonly previousValue: string | null;
     }
   | { readonly key: ConfigKey; readonly scope: ConfigScope; readonly removed: false };
 
@@ -191,7 +193,7 @@ export const configUnset = async (
     key: brandKey(input.key),
     scope: targetScope,
     removed: true,
-    previousValue: (first as { value: string }).value,
+    previousValue: (first as { value: string | null }).value,
   };
 };
 
