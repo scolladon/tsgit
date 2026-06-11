@@ -1,6 +1,17 @@
 #!/bin/bash
-# Stop hook: final quality gate when session ends
-# Runs lint + unit tests to ensure the project is never left broken
+# Stop hook: fires EVERY TIME the main agent finishes a response turn (not at
+# session exit; subagents fire SubagentStop, which is not configured). It is a
+# per-turn quality signal, so it MUST stay cheap: scoped to what actually
+# changed — seconds, not minutes. A clean working tree exits immediately.
+#
+# - biome lint scoped to the changed .ts/.js/.json files
+# - tsc full project (type errors are cross-file; scoping is meaningless)
+# - unit tests scoped to the tests RELATED to the changed files, derived from
+#   the mirror layout: src/<path>/<name>.ts → test/unit/<path>/<name>.test.ts
+#   (+ .properties.test.ts sibling); changed test files run themselves.
+#
+# Clean working tree → exits immediately (worktree-based sessions gate their
+# own changes via slice gates + phase validates).
 
 set -euo pipefail
 
@@ -10,21 +21,54 @@ if [[ ! -f "package.json" ]]; then
   exit 0
 fi
 
-ERRORS=""
+CHANGED=$(
+  {
+    git diff --name-only HEAD 2>/dev/null
+    git ls-files --others --exclude-standard 2>/dev/null
+  } | sort -u
+)
 
-# Check for lint errors
-if ! npx biome check . 2>/dev/null; then
-  ERRORS="${ERRORS}\n- Biome lint/format errors detected"
+if [[ -z "$CHANGED" ]]; then
+  exit 0
 fi
 
-# Check for type errors
-if ! npx tsc --noEmit 2>/dev/null; then
+CHANGED_CODE=()
+RELATED_TESTS=()
+while IFS= read -r f; do
+  [[ "$f" != *.ts && "$f" != *.js && "$f" != *.json ]] && continue
+  [[ ! -f "$f" ]] && continue
+  CHANGED_CODE+=("$f")
+  if [[ "$f" == test/*.test.ts ]]; then
+    RELATED_TESTS+=("$f")
+  elif [[ "$f" == src/*.ts ]]; then
+    rel="${f#src/}"
+    base="${rel%.ts}"
+    for candidate in "test/unit/${base}.test.ts" "test/unit/${base}.properties.test.ts"; do
+      [[ -f "$candidate" ]] && RELATED_TESTS+=("$candidate")
+    done
+  fi
+done <<<"$CHANGED"
+
+ERRORS=""
+
+if ((${#CHANGED_CODE[@]} > 0)); then
+  if ! npx --no-install biome check --no-errors-on-unmatched "${CHANGED_CODE[@]}" >/dev/null 2>&1; then
+    ERRORS="${ERRORS}\n- Biome lint/format errors in changed files"
+  fi
+fi
+
+if ! npx --no-install tsc --noEmit >/dev/null 2>&1; then
   ERRORS="${ERRORS}\n- TypeScript type errors detected"
 fi
 
-# Run unit tests
-if ! npx vitest run --project unit 2>/dev/null; then
-  ERRORS="${ERRORS}\n- Unit tests failing"
+if ((${#RELATED_TESTS[@]} > 0)); then
+  UNIQUE_TESTS=()
+  while IFS= read -r t; do
+    UNIQUE_TESTS+=("$t")
+  done < <(printf '%s\n' "${RELATED_TESTS[@]}" | sort -u)
+  if ! npx --no-install vitest run "${UNIQUE_TESTS[@]}" >/dev/null 2>&1; then
+    ERRORS="${ERRORS}\n- Related unit tests failing (${#UNIQUE_TESTS[@]} file(s))"
+  fi
 fi
 
 if [[ -n "$ERRORS" ]]; then
