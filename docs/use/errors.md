@@ -185,6 +185,7 @@ Codes are grouped by domain. Within each group, alphabetical.
 |---|---|---|
 | `ALREADY_INITIALIZED` | `path` | `init` against a directory that already has `.git/HEAD`. |
 | `BARE_REPOSITORY` | `operation` | Command not valid in a bare repository (`add`, `checkout`, `commit`, `rm`, …). |
-| `CONFIG_PARSE_ERROR` | `line, source?` | A config file value is malformed (unknown escape, unclosed quote) — git's `bad config line N in file F`; refuses any command that reads the file. |
+| `CONFIG_PARSE_ERROR` | `line, source?, partialSectionName?` | A config file value (unknown escape, unclosed quote) or quoted-subsection header is malformed — git's `bad config line N in file F`; refuses any command that reads the file. |
+| `CONFIG_INVALID_FILE` | `sectionName, source` | A config `set`/`unset` refused because the file holds a malformed quoted-subsection header — git's `invalid section name '<partial>'` + `invalid config file F`. |
 | `INVALID_WALK_INPUT` | `reason` | Walker arguments invalid. |
 | `TARGET_DIRECTORY_NOT_EMPTY` | `path` | `clone` into a directory that already has `.git/HEAD`. |

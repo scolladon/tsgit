@@ -129,7 +129,8 @@ const parseConfigText = (text: string, source: string): ParsedConfig => {
  * `#`/`;` starting comments — and a malformed value (unknown escape, unclosed
  * quote) throws `CONFIG_PARSE_ERROR` with its 1-based physical line and the
  * optional `source` label, mirroring git's `bad config line N in file F`
- * refusal.
+ * refusal. A malformed quoted-subsection header (e.g. `[s"a"]`, `[s "a" x]`,
+ * unclosed quote) also throws `CONFIG_PARSE_ERROR` with `partialSectionName`.
  */
 export const parseIniSections = (text: string, source?: string): ReadonlyArray<IniSection> => {
   const sections: SectionBuilder[] = [];
@@ -145,11 +146,14 @@ export const parseIniSections = (text: string, source?: string): ReadonlyArray<I
       continue;
     }
     const header = parseSectionHeader(trimmed);
-    if (header !== undefined) {
+    if (header.kind === 'header') {
       current = { section: header.section, subsection: header.subsection, entries: [] };
       sections.push(current);
       lineIdx += 1;
       continue;
+    }
+    if (header.kind === 'malformed') {
+      throw configParseError(lineIdx + 1, source, header.partialName);
     }
     const eqAt = effectiveEqualsIndex(line);
     if (eqAt === -1) {
@@ -192,8 +196,12 @@ const VALUE_ESCAPES: ReadonlyMap<string, string> = new Map([
   ['"', '"'],
 ]);
 
-/** git sane-ctype `GIT_SPACE` minus LF (the line terminator): VT/FF are NOT whitespace. */
-const VALUE_SPACE: ReadonlySet<string> = new Set([' ', '\t', '\r']);
+/**
+ * git sane-ctype `GIT_SPACE` minus LF (the line terminator): VT/FF are NOT
+ * whitespace. Shared by the value parser and the quoted-subsection grammar
+ * (the whitespace required before an opening subsection quote).
+ */
+const GIT_SPACE: ReadonlySet<string> = new Set([' ', '\t', '\r']);
 
 /** Mutable accumulator for one value parse; local to `parseConfigValue`. */
 interface ValueState {
@@ -255,7 +263,7 @@ const stepValueChar = (
   const c = line[cursor.col] as string;
   cursor.col += 1;
   if (state.inComment) return;
-  if (!state.inQuotes && VALUE_SPACE.has(c)) {
+  if (!state.inQuotes && GIT_SPACE.has(c)) {
     appendValueSpace(state, c);
     return;
   }
@@ -345,24 +353,85 @@ const indexOfUnquoted = (line: string, ch: string): number => {
 };
 
 /**
- * Parse a trimmed `[section]` / `[section "subsection"]` header line, or
- * `undefined` when the line is not a well-formed header. Exported so the
- * sibling config *writer* (`update-config.ts`) shares one header parser.
+ * Three-state result of parsing a trimmed `[…]`-shaped header line. Exported
+ * so the sibling config writer (`update-config.ts`) shares one header parser.
  */
-export const parseSectionHeader = (
-  line: string,
-): { readonly section: string; readonly subsection: string | undefined } | undefined => {
-  if (!line.startsWith('[') || !line.endsWith(']')) return undefined;
-  const inner = line.slice(1, -1).trim();
-  // Stryker disable next-line ConditionalExpression,StringLiteral: equivalent — an empty `inner` yields a section named '' which assembleParsed never matches (it only handles core/user/remote/branch), so rejecting it or returning a '' section produces the same parsed config.
-  if (inner === '') return undefined;
-  const quoteAt = inner.indexOf('"');
-  if (quoteAt === -1) return { section: inner, subsection: undefined };
-  const sectionPart = inner.slice(0, quoteAt).trim();
-  const lastQuote = inner.lastIndexOf('"');
-  if (lastQuote <= quoteAt) return undefined;
-  const subsection = inner.slice(quoteAt + 1, lastQuote);
-  return { section: sectionPart, subsection };
+export type SectionHeaderParse =
+  | { readonly kind: 'header'; readonly section: string; readonly subsection: string | undefined }
+  | { readonly kind: 'malformed'; readonly partialName: string }
+  | { readonly kind: 'not-header' };
+
+/**
+ * Parse a trimmed `[section]` / `[section "subsection"]` header line.
+ * Returns a three-state discriminated union: `header` on success, `malformed`
+ * when the `[…]` shape is present but the quoted-subsection grammar is
+ * violated (git refuses the file), or `not-header` when the line is not
+ * `[…]`-shaped at all (lenient skip, like git for unquoted malformations).
+ *
+ * For quoted subsections the scan is performed over `line.slice(1)` (everything
+ * after the opening `[`) so that unclosed spans accumulate raw trailing chars
+ * including any `]` that would otherwise be treated as the header terminator —
+ * matching git's partial-name diagnostic.
+ */
+export const parseSectionHeader = (line: string): SectionHeaderParse => {
+  if (!line.startsWith('[')) return { kind: 'not-header' };
+  const afterOpen = line.slice(1);
+  const quoteAt = afterOpen.indexOf('"');
+  if (quoteAt === -1) {
+    if (!line.endsWith(']')) return { kind: 'not-header' };
+    const inner = afterOpen.slice(0, -1).trim();
+    // Stryker disable next-line ConditionalExpression,StringLiteral: equivalent — an empty `inner` yields a section named '' which assembleParsed never matches, so rejecting it or returning a '' section produces the same parsed config.
+    if (inner === '') return { kind: 'not-header' };
+    return { kind: 'header', section: inner, subsection: undefined };
+  }
+  return parseQuotedSubsectionHeader(afterOpen, quoteAt);
+};
+
+/** Handle the quoted-subsection branch of `parseSectionHeader`. */
+const parseQuotedSubsectionHeader = (afterOpen: string, quoteAt: number): SectionHeaderParse => {
+  const section = afterOpen.slice(0, quoteAt).trim();
+  const sectionPart = section.toLowerCase();
+  // `afterOpen[-1]` is `undefined` when the quote opens the header content,
+  // which the guard below treats as missing whitespace — exactly git's refusal.
+  const charBeforeQuote = afterOpen[quoteAt - 1];
+  if (charBeforeQuote === undefined || !GIT_SPACE.has(charBeforeQuote)) {
+    return { kind: 'malformed', partialName: sectionPart };
+  }
+  return scanQuotedSpan(afterOpen, quoteAt, section, sectionPart);
+};
+
+/**
+ * Scan the quoted subsection span starting at `openAt` (the index of `"`).
+ * On success, the closing `"` must be immediately followed by `]` (end of
+ * `afterOpen`). Otherwise produces a `malformed` result with the partial name.
+ */
+const scanQuotedSpan = (
+  afterOpen: string,
+  openAt: number,
+  section: string,
+  sectionPart: string,
+): SectionHeaderParse => {
+  let subsection = '';
+  let i = openAt + 1;
+  while (i < afterOpen.length) {
+    const c = afterOpen[i] as string;
+    if (c === '\\') {
+      if (i + 1 >= afterOpen.length) {
+        return { kind: 'malformed', partialName: `${sectionPart}.${subsection}` };
+      }
+      subsection += afterOpen[i + 1] as string;
+      i += 2;
+      continue;
+    }
+    if (c === '"') {
+      const rest = afterOpen.slice(i + 1);
+      if (rest === ']') return { kind: 'header', section, subsection };
+      return { kind: 'malformed', partialName: `${sectionPart}.${subsection}` };
+    }
+    subsection += c;
+    i += 1;
+  }
+  return { kind: 'malformed', partialName: `${sectionPart}.${subsection}` };
 };
 
 interface MutableParsedConfig {

@@ -651,13 +651,76 @@ describe('primitives/update-config', () => {
       });
     });
 
-    describe('Given a subsection containing a quote', () => {
+    describe('Given a subsection containing a quote (a"b)', () => {
       describe('When setConfigEntryInText', () => {
-        it('Then it throws INVALID_OPTION', () => {
+        it('Then the quote is escaped and the header is rendered as [s "a\\"b"]', () => {
+          // Arrange & Act
+          const sut = setConfigEntryInText('', 's', 'a"b', 'k', 'v');
+
+          // Assert — git escapes " → \" inside the subsection quotes
+          expect(sut).toBe('[s "a\\"b"]\n\tk = v\n');
+        });
+      });
+    });
+
+    describe('Given a subsection containing a backslash (a\\b)', () => {
+      describe('When setConfigEntryInText', () => {
+        it('Then the backslash is escaped and the header is rendered as [s "a\\\\b"]', () => {
+          // Arrange & Act
+          const sut = setConfigEntryInText('', 's', 'a\\b', 'k', 'v');
+
+          // Assert — git escapes \ → \\ inside the subsection quotes
+          expect(sut).toBe('[s "a\\\\b"]\n\tk = v\n');
+        });
+      });
+    });
+
+    describe('Given a subsection containing a backslash followed by a quote (a\\"b)', () => {
+      describe('When setConfigEntryInText', () => {
+        it('Then backslash is escaped first, then quote: header is [s "a\\\\\\"b"]', () => {
+          // Arrange & Act — escape order: \ → \\ first, then " → \"
+          const sut = setConfigEntryInText('', 's', 'a\\"b', 'k', 'v');
+
+          // Assert — a\"b (a + \ + " + b) → a\\\"b (a + \\ + \" + b) inside the header quotes
+          // Three backslashes in the output: two for escaped-\, one before the escaped-"
+          expect(sut).toBe('[s "a\\\\\\"b"]\n\tk = v\n');
+        });
+      });
+    });
+
+    describe('Given a subsection containing a bracket (a]b)', () => {
+      describe('When setConfigEntryInText', () => {
+        it('Then the bracket is written raw inside the quotes', () => {
+          // Arrange & Act — ] is not escaped by git inside subsection quotes
+          const sut = setConfigEntryInText('', 's', 'a]b', 'k', 'v');
+
+          // Assert — raw ] inside quotes
+          expect(sut).toBe('[s "a]b"]\n\tk = v\n');
+        });
+      });
+    });
+
+    describe('Given a subsection containing a CR (a\\rb)', () => {
+      describe('When setConfigEntryInText', () => {
+        it('Then the CR is written raw inside the quotes (accepted by git)', () => {
+          // Arrange & Act — CR is accepted and written verbatim
+          const sut = setConfigEntryInText('', 's', 'a\rb', 'k', 'v');
+
+          // Assert — raw CR inside subsection quotes
+          expect(sut).toBe('[s "a\rb"]\n\tk = v\n');
+        });
+      });
+    });
+
+    describe('Given a subsection containing a LF', () => {
+      describe('When setConfigEntryInText', () => {
+        it('Then it throws INVALID_OPTION (LF is forbidden by git)', () => {
           // Arrange
           let caught: unknown;
+
+          // Act
           try {
-            setConfigEntryInText('', 'remote', 'ori"gin', 'url', 'u');
+            setConfigEntryInText('', 's', 'a\nb', 'k', 'v');
           } catch (err) {
             caught = err;
           }
@@ -668,7 +731,63 @@ describe('primitives/update-config', () => {
           expect(data.code).toBe('INVALID_OPTION');
           if (data.code !== 'INVALID_OPTION') throw new Error('unreachable');
           expect(data.option).toBe('config');
-          expect(data.reason).toContain('quote');
+          expect(data.reason).toContain('newline');
+        });
+      });
+    });
+
+    describe('Given a subsection containing a NUL', () => {
+      describe('When setConfigEntryInText', () => {
+        it('Then it throws INVALID_OPTION (NUL is forbidden)', () => {
+          // Arrange
+          let caught: unknown;
+
+          // Act
+          try {
+            setConfigEntryInText('', 's', 'a\0b', 'k', 'v');
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data;
+          expect(data.code).toBe('INVALID_OPTION');
+          if (data.code !== 'INVALID_OPTION') throw new Error('unreachable');
+          expect(data.option).toBe('config');
+          expect(data.reason).toContain('newline');
+        });
+      });
+    });
+
+    describe('Given text already holding [s "a\\"b"] with k = v, When setConfigEntryInText adds k2 under subsection a"b', () => {
+      describe('When setConfigEntryInText', () => {
+        it('Then k2 lands inside the existing section without duplicating the header', () => {
+          // Arrange — pre-existing escaped header (as the writer would produce)
+          const text = '[s "a\\"b"]\n\tk = v\n';
+
+          // Act
+          const sut = setConfigEntryInText(text, 's', 'a"b', 'k2', 'w');
+
+          // Assert — k2 inserted after header; header NOT duplicated
+          expect(sut).toBe('[s "a\\"b"]\n\tk2 = w\n\tk = v\n');
+        });
+      });
+    });
+
+    describe('Given a rendered subsection, When the output is re-parsed via parseIniSections', () => {
+      describe('When round-tripping subsection a"b through render then parse', () => {
+        it('Then the parsed subsection equals the original', () => {
+          // Arrange
+          const subsection = 'a"b';
+
+          // Act
+          const text = setConfigEntryInText('', 's', subsection, 'k', 'v');
+          const sections = parseIniSections(text);
+
+          // Assert — round-trip: render → parse returns same subsection
+          expect(sections).toHaveLength(1);
+          expect(sections[0]?.subsection).toBe(subsection);
         });
       });
     });
@@ -1277,19 +1396,17 @@ describe('primitives/update-config', () => {
       });
     });
 
-    describe('Given a subsection containing a quote', () => {
+    describe('Given a subsection containing a quote (a"b)', () => {
       describe('When removeConfigSectionInText', () => {
-        it('Then it throws INVALID_OPTION', () => {
-          // Arrange
-          let caught: unknown;
-          try {
-            removeConfigSectionInText('', 'remote', 'a"b');
-          } catch (err) {
-            caught = err;
-          }
+        it('Then the subsection is accepted and the matching section is removed', () => {
+          // Arrange — subsection with a quote is now accepted and escaped on render
+          const text = '[remote "a\\"b"]\n\turl = u\n';
 
-          // Assert
-          expect((caught as TsgitError).data.code).toBe('INVALID_OPTION');
+          // Act
+          const sut = removeConfigSectionInText(text, 'remote', 'a"b');
+
+          // Assert — the section is removed (no-op on empty text is fine; here we verify it works)
+          expect(sut).toBe('');
         });
       });
     });
@@ -1424,6 +1541,36 @@ describe('primitives/update-config', () => {
           // Assert
           expect(caught).toBeInstanceOf(TsgitError);
           expect((caught as TsgitError).data.code).toBe('INVALID_OPTION');
+        });
+      });
+    });
+
+    describe('Given a target subsection containing a quote (a"b)', () => {
+      describe('When renameConfigSectionInText', () => {
+        it('Then the quote is escaped and the new header is rendered as [remote "a\\"b"]', () => {
+          // Arrange
+          const text = '[remote "old"]\n\turl = u\n';
+
+          // Act
+          const sut = renameConfigSectionInText(text, 'remote', 'old', 'a"b');
+
+          // Assert — git escapes " → \" in the target subsection
+          expect(sut).toBe('[remote "a\\"b"]\n\turl = u\n');
+        });
+      });
+    });
+
+    describe('Given a target subsection containing a backslash (a\\b)', () => {
+      describe('When renameConfigSectionInText', () => {
+        it('Then the backslash is escaped and the new header is rendered as [remote "a\\\\b"]', () => {
+          // Arrange
+          const text = '[remote "old"]\n\turl = u\n';
+
+          // Act
+          const sut = renameConfigSectionInText(text, 'remote', 'old', 'a\\b');
+
+          // Assert — git escapes \ → \\ in the target subsection
+          expect(sut).toBe('[remote "a\\\\b"]\n\turl = u\n');
         });
       });
     });
@@ -2273,6 +2420,302 @@ describe('removeConfigSection (I/O)', () => {
 
       // Assert
       expect(caught?.data.code).toBe('INVALID_OPTION');
+    });
+  });
+});
+
+describe('write-path refusal on malformed config files', () => {
+  const malformedHeaderText = '[s "a" x]\n\tk = v\n';
+  const malformedValueText = '[s]\n\tk = "x\n';
+
+  describe('setConfigEntry onto a file with a malformed header [s "a" x]', () => {
+    describe('Given a config file whose header is [s "a" x]', () => {
+      describe('When setConfigEntry is called', () => {
+        it('Then it throws CONFIG_INVALID_FILE with sectionName s.a and the config path', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          const path = `${ctx.layout.gitDir}/config`;
+          await ctx.fs.writeUtf8(path, malformedHeaderText);
+          let caught: TsgitError | undefined;
+
+          // Act
+          try {
+            await setConfigEntry({ ctx, key: 'core.bare', value: 'false' });
+          } catch (err) {
+            caught = err as TsgitError;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data;
+          expect(data.code).toBe('CONFIG_INVALID_FILE');
+          if (data.code !== 'CONFIG_INVALID_FILE') throw new Error('unreachable');
+          expect(data.sectionName).toBe('s.a');
+          expect(data.source).toBe(path);
+        });
+      });
+    });
+  });
+
+  describe('setConfigEntry onto a file with a malformed value (unclosed quote)', () => {
+    describe('Given a config file whose only malformation is an unclosed value quote', () => {
+      describe('When setConfigEntry is called', () => {
+        it('Then it throws CONFIG_PARSE_ERROR (not CONFIG_INVALID_FILE)', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          const path = `${ctx.layout.gitDir}/config`;
+          await ctx.fs.writeUtf8(path, malformedValueText);
+          let caught: TsgitError | undefined;
+
+          // Act
+          try {
+            await setConfigEntry({ ctx, key: 'core.bare', value: 'false' });
+          } catch (err) {
+            caught = err as TsgitError;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data;
+          expect(data.code).toBe('CONFIG_PARSE_ERROR');
+          if (data.code !== 'CONFIG_PARSE_ERROR') throw new Error('unreachable');
+          expect(data.line).toBe(2);
+        });
+      });
+    });
+  });
+
+  describe('setConfigEntry refusal happens before I/O', () => {
+    describe('Given a config file with a malformed header', () => {
+      describe('When setConfigEntry is called', () => {
+        it('Then no bytes are written to the file', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          const path = `${ctx.layout.gitDir}/config`;
+          await ctx.fs.writeUtf8(path, malformedHeaderText);
+          const writeSpy = vi.spyOn(ctx.fs, 'writeUtf8');
+          let caught: TsgitError | undefined;
+
+          // Act
+          try {
+            await setConfigEntry({ ctx, key: 'core.bare', value: 'false' });
+          } catch (err) {
+            caught = err as TsgitError;
+          }
+
+          // Assert
+          expect(caught?.data.code).toBe('CONFIG_INVALID_FILE');
+          expect(writeSpy).not.toHaveBeenCalled();
+        });
+      });
+    });
+  });
+
+  describe('unsetConfigEntry onto a file with a malformed header [s "a" x]', () => {
+    describe('Given a config file whose header is [s "a" x]', () => {
+      describe('When unsetConfigEntry is called', () => {
+        it('Then it throws CONFIG_INVALID_FILE with sectionName s.a and the config path', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          const path = `${ctx.layout.gitDir}/config`;
+          await ctx.fs.writeUtf8(path, malformedHeaderText);
+          let caught: TsgitError | undefined;
+
+          // Act
+          try {
+            await unsetConfigEntry({ ctx, key: 'core.bare' });
+          } catch (err) {
+            caught = err as TsgitError;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data;
+          expect(data.code).toBe('CONFIG_INVALID_FILE');
+          if (data.code !== 'CONFIG_INVALID_FILE') throw new Error('unreachable');
+          expect(data.sectionName).toBe('s.a');
+          expect(data.source).toBe(path);
+        });
+      });
+    });
+  });
+
+  describe('unsetAllConfigEntries onto a file with a malformed header [s "a" x]', () => {
+    describe('Given a config file whose header is [s "a" x]', () => {
+      describe('When unsetAllConfigEntries is called', () => {
+        it('Then it throws CONFIG_INVALID_FILE with sectionName s.a and the config path', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          const path = `${ctx.layout.gitDir}/config`;
+          await ctx.fs.writeUtf8(path, malformedHeaderText);
+          let caught: TsgitError | undefined;
+
+          // Act
+          try {
+            await unsetAllConfigEntries({ ctx, key: 'core.bare' });
+          } catch (err) {
+            caught = err as TsgitError;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data;
+          expect(data.code).toBe('CONFIG_INVALID_FILE');
+          if (data.code !== 'CONFIG_INVALID_FILE') throw new Error('unreachable');
+          expect(data.sectionName).toBe('s.a');
+          expect(data.source).toBe(path);
+        });
+      });
+    });
+  });
+
+  describe('updateConfigEntries onto a file with a malformed header [s "a" x]', () => {
+    describe('Given a config file whose header is [s "a" x]', () => {
+      describe('When updateConfigEntries is called', () => {
+        it('Then it throws CONFIG_INVALID_FILE with sectionName s.a and the config path', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          const path = `${ctx.layout.gitDir}/config`;
+          await ctx.fs.writeUtf8(path, malformedHeaderText);
+          let caught: TsgitError | undefined;
+
+          // Act
+          try {
+            await updateConfigEntries(ctx, [{ section: 'core', key: 'bare', value: 'false' }]);
+          } catch (err) {
+            caught = err as TsgitError;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data;
+          expect(data.code).toBe('CONFIG_INVALID_FILE');
+          if (data.code !== 'CONFIG_INVALID_FILE') throw new Error('unreachable');
+          expect(data.sectionName).toBe('s.a');
+          expect(data.source).toBe(path);
+        });
+      });
+    });
+  });
+
+  describe('updateConfigOperations onto a file with a malformed header [s "a" x]', () => {
+    describe('Given a config file whose header is [s "a" x]', () => {
+      describe('When updateConfigOperations is called', () => {
+        it('Then it throws CONFIG_INVALID_FILE with sectionName s.a and the config path', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          const path = `${ctx.layout.gitDir}/config`;
+          await ctx.fs.writeUtf8(path, malformedHeaderText);
+          let caught: TsgitError | undefined;
+
+          // Act
+          try {
+            await updateConfigOperations(ctx, [
+              { kind: 'set', section: 'core', key: 'bare', value: 'false' },
+            ]);
+          } catch (err) {
+            caught = err as TsgitError;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data;
+          expect(data.code).toBe('CONFIG_INVALID_FILE');
+          if (data.code !== 'CONFIG_INVALID_FILE') throw new Error('unreachable');
+          expect(data.sectionName).toBe('s.a');
+          expect(data.source).toBe(path);
+        });
+      });
+    });
+  });
+
+  describe('renameConfigSection with a malformed header plus a well-formed section', () => {
+    describe('Given a file with [s "a" x] malformed AND [t "x"] well-formed', () => {
+      describe('When renameConfigSection renames t.x to t.y', () => {
+        it('Then it succeeds, the malformed line is preserved byte-for-byte, and the [t] header is renamed', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          const path = `${ctx.layout.gitDir}/config`;
+          const initial = '[s "a" x]\n\tbad = v\n[t "x"]\n\tgood = w\n';
+          await ctx.fs.writeUtf8(path, initial);
+
+          // Act
+          await renameConfigSection({ ctx, oldName: 't.x', newName: 't.y' });
+
+          // Assert
+          const result = await ctx.fs.readUtf8(path);
+          expect(result).toContain('[s "a" x]');
+          expect(result).toContain('[t "y"]');
+          expect(result).not.toContain('[t "x"]');
+        });
+      });
+    });
+  });
+
+  describe('renameConfigSection whose source is the malformed header itself', () => {
+    describe('Given a file with only [s "a" x] (malformed)', () => {
+      describe('When renameConfigSection tries to rename s.a', () => {
+        it('Then it throws CONFIG_SECTION_NOT_FOUND', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          const path = `${ctx.layout.gitDir}/config`;
+          await ctx.fs.writeUtf8(path, '[s "a" x]\n\tk = v\n[s "b"]\n\tk = v\n');
+          let caught: TsgitError | undefined;
+
+          // Act
+          try {
+            await renameConfigSection({ ctx, oldName: 's.a', newName: 's.z' });
+          } catch (err) {
+            caught = err as TsgitError;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data;
+          expect(data.code).toBe('CONFIG_SECTION_NOT_FOUND');
+        });
+      });
+    });
+  });
+
+  describe('removeConfigSection on a file with a malformed header plus a well-formed section', () => {
+    describe('Given a file with [s "a" x] malformed AND [t "x"] well-formed', () => {
+      describe('When removeConfigSection removes t.x', () => {
+        it('Then it succeeds and the malformed line is preserved byte-for-byte', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          const path = `${ctx.layout.gitDir}/config`;
+          const initial = '[s "a" x]\n\tbad = v\n[t "x"]\n\tgood = w\n';
+          await ctx.fs.writeUtf8(path, initial);
+
+          // Act
+          await removeConfigSection({ ctx, sectionName: 't.x' });
+
+          // Assert
+          const result = await ctx.fs.readUtf8(path);
+          expect(result).toContain('[s "a" x]');
+          expect(result).not.toContain('[t "x"]');
+        });
+      });
+    });
+  });
+
+  describe('removeConfigSection on a file with a malformed value', () => {
+    describe('Given a file with a well-formed header [t "x"] and a malformed-value section', () => {
+      describe('When removeConfigSection removes t.x', () => {
+        it('Then it succeeds (lenient — malformed values do not block rename/remove)', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          const path = `${ctx.layout.gitDir}/config`;
+          await ctx.fs.writeUtf8(path, '[s]\n\tk = "x\n[t "x"]\n\tgood = w\n');
+
+          // Act + Assert (no throw)
+          await expect(removeConfigSection({ ctx, sectionName: 't.x' })).resolves.toBeUndefined();
+
+          const result = await ctx.fs.readUtf8(path);
+          expect(result).not.toContain('[t "x"]');
+        });
+      });
     });
   });
 });

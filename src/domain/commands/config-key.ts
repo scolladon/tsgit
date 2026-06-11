@@ -40,7 +40,9 @@ const findInvalidIdentifierIndex = (text: string): number | undefined => {
   return undefined;
 };
 
-const SUBSECTION_FORBIDDEN = /[\n\r\0"\\\]]/;
+// git accepts any subsection byte except LF ("invalid key (newline)") and NUL
+// (argv-impossible). CR, ", \, ] are written escaped or raw by the writer.
+const SUBSECTION_FORBIDDEN = /[\n\0]/;
 
 /**
  * Parse a fully-qualified config key. Two grammars accepted:

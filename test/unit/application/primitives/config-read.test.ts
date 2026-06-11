@@ -940,18 +940,22 @@ describe('primitives/config-read', () => {
     });
   });
 
-  describe('Given a `[remote "..."]` header with an unterminated subsection quote', () => {
+  describe('Given a `[remote "origin]` header with an unterminated subsection quote', () => {
     describe('When readConfig', () => {
-      it('Then the section is rejected', async () => {
-        // Arrange — only one `"`: lastQuote === quoteAt, so the header is malformed.
+      it('Then it throws CONFIG_PARSE_ERROR on the offending line', async () => {
+        // Arrange — unclosed quote: git refuses the file with "bad config line N"
         const ctx = createMemoryContext();
         await seed(ctx, '[remote "origin]\n  url = https://example.com/r.git\n');
 
-        // Act
-        const sut = await readConfig(ctx);
-
-        // Assert
-        expect(sut.remote).toBeUndefined();
+        // Act + Assert
+        try {
+          await readConfig(ctx);
+          expect.unreachable('readConfig must throw on an unclosed subsection quote');
+        } catch (err) {
+          if (!(err instanceof TsgitError)) throw err;
+          expect(err.data.code).toBe('CONFIG_PARSE_ERROR');
+          expect(err.data).toMatchObject({ line: 1 });
+        }
       });
     });
   });
@@ -2056,9 +2060,9 @@ describe('primitives/config-read value grammar', () => {
       ]);
     });
 
-    it('Then a backslash-escaped quote inside a quoted subsection does not close the span', () => {
-      // Arrange — the subsection text is kept verbatim (no unescaping yet);
-      // the `\"` must not end the quoted span, so the `#` stays quoted.
+    it('Then a backslash-escaped quote inside a quoted subsection is decoded and does not close the span', () => {
+      // Arrange — `\"` decodes to `"` (not verbatim `\"`); the `#` after it stays
+      // inside the span and becomes part of the subsection name, not a comment.
       const sut = parseIniSections;
       const text = '[branch "a\\"#b"]\n\tv = ok\n';
 
@@ -2067,8 +2071,312 @@ describe('primitives/config-read value grammar', () => {
 
       // Assert
       expect(result).toEqual([
-        { section: 'branch', subsection: 'a\\"#b', entries: [{ key: 'v', value: 'ok' }] },
+        { section: 'branch', subsection: 'a"#b', entries: [{ key: 'v', value: 'ok' }] },
       ]);
+    });
+  });
+
+  describe('Given a quoted subsection with escape sequences, When parseIniSections', () => {
+    it('Then `\\"` in the subsection is decoded to `"`', () => {
+      // Arrange
+      const sut = parseIniSections;
+      const text = '[s "a\\"b"]\n\tk = v\n';
+
+      // Act
+      const result = sut(text);
+
+      // Assert
+      expect(result).toEqual([
+        { section: 's', subsection: 'a"b', entries: [{ key: 'k', value: 'v' }] },
+      ]);
+    });
+
+    it('Then `\\\\` in the subsection is decoded to `\\`', () => {
+      // Arrange
+      const sut = parseIniSections;
+      const text = '[s "a\\\\b"]\n\tk = v\n';
+
+      // Act
+      const result = sut(text);
+
+      // Assert
+      expect(result).toEqual([
+        { section: 's', subsection: 'a\\b', entries: [{ key: 'k', value: 'v' }] },
+      ]);
+    });
+
+    it('Then `\\t` (backslash + letter t) is decoded to `t` — no named escapes', () => {
+      // Arrange — subsection grammar has NO named escapes; `\c` → `c` for any `c`
+      const sut = parseIniSections;
+      const text = '[s "a\\tb"]\n\tk = v\n';
+
+      // Act
+      const result = sut(text);
+
+      // Assert
+      expect(result).toEqual([
+        { section: 's', subsection: 'atb', entries: [{ key: 'k', value: 'v' }] },
+      ]);
+    });
+
+    it('Then a literal `]` inside the quoted subsection is content, not the header close', () => {
+      // Arrange
+      const sut = parseIniSections;
+      const text = '[s "a]b"]\n\tk = v\n';
+
+      // Act
+      const result = sut(text);
+
+      // Assert
+      expect(result).toEqual([
+        { section: 's', subsection: 'a]b', entries: [{ key: 'k', value: 'v' }] },
+      ]);
+    });
+
+    it('Then `#` inside the quoted subsection is content, not a comment', () => {
+      // Arrange
+      const sut = parseIniSections;
+      const text = '[s "a#b"]\n\tk = v\n';
+
+      // Act
+      const result = sut(text);
+
+      // Assert
+      expect(result).toEqual([
+        { section: 's', subsection: 'a#b', entries: [{ key: 'k', value: 'v' }] },
+      ]);
+    });
+
+    it('Then `;` inside the quoted subsection is content, not a comment', () => {
+      // Arrange
+      const sut = parseIniSections;
+      const text = '[s "a;b"]\n\tk = v\n';
+
+      // Act
+      const result = sut(text);
+
+      // Assert
+      expect(result).toEqual([
+        { section: 's', subsection: 'a;b', entries: [{ key: 'k', value: 'v' }] },
+      ]);
+    });
+
+    it('Then a raw CR inside the quoted subsection is content', () => {
+      // Arrange
+      const sut = parseIniSections;
+      const text = '[s "a\rb"]\n\tk = v\n';
+
+      // Act
+      const result = sut(text);
+
+      // Assert
+      expect(result).toEqual([
+        { section: 's', subsection: 'a\rb', entries: [{ key: 'k', value: 'v' }] },
+      ]);
+    });
+
+    it('Then a TAB between the section name and the opening quote is accepted (GIT_SPACE)', () => {
+      // Arrange
+      const sut = parseIniSections;
+      const text = '[s\t"a"]\n\tk = v\n';
+
+      // Act
+      const result = sut(text);
+
+      // Assert
+      expect(result).toEqual([
+        { section: 's', subsection: 'a', entries: [{ key: 'k', value: 'v' }] },
+      ]);
+    });
+
+    it('Then a trailing comment after the closing `]` is stripped', () => {
+      // Arrange
+      const sut = parseIniSections;
+      const text = '[s "a"] # trailing comment\n\tk = v\n';
+
+      // Act
+      const result = sut(text);
+
+      // Assert
+      expect(result).toEqual([
+        { section: 's', subsection: 'a', entries: [{ key: 'k', value: 'v' }] },
+      ]);
+    });
+
+    it('Then an empty quoted subsection `""` yields an empty string (not undefined)', () => {
+      // Arrange
+      const sut = parseIniSections;
+      const text = '[s ""]\n\tk = v\n';
+
+      // Act
+      const result = sut(text);
+
+      // Assert
+      expect(result).toEqual([
+        { section: 's', subsection: '', entries: [{ key: 'k', value: 'v' }] },
+      ]);
+    });
+  });
+
+  describe('Given a malformed quoted subsection header, When parseIniSections', () => {
+    it('Then `[s "a" x]` — junk after the closing quote — throws CONFIG_PARSE_ERROR with partial `s.a`', () => {
+      // Arrange
+      const sut = parseIniSections;
+
+      // Act + Assert
+      try {
+        sut('[s "a" x]\n\tk = v\n', 'test-source');
+        expect.unreachable('parseIniSections must throw on junk after closing quote');
+      } catch (err) {
+        if (!(err instanceof TsgitError)) throw err;
+        expect(err.data.code).toBe('CONFIG_PARSE_ERROR');
+        expect(err.data).toMatchObject({
+          line: 1,
+          source: 'test-source',
+          partialSectionName: 's.a',
+        });
+      }
+    });
+
+    it('Then `[s "a" ]` — space before closing `]` — throws CONFIG_PARSE_ERROR with partial `s.a`', () => {
+      // Arrange
+      const sut = parseIniSections;
+
+      // Act + Assert
+      try {
+        sut('[s "a" ]\n\tk = v\n', 'test-source');
+        expect.unreachable('parseIniSections must throw on space before closing bracket');
+      } catch (err) {
+        if (!(err instanceof TsgitError)) throw err;
+        expect(err.data.code).toBe('CONFIG_PARSE_ERROR');
+        expect(err.data).toMatchObject({
+          line: 1,
+          source: 'test-source',
+          partialSectionName: 's.a',
+        });
+      }
+    });
+
+    it('Then `[s"a"]` — no space before the quote — throws CONFIG_PARSE_ERROR with partial `s`', () => {
+      // Arrange
+      const sut = parseIniSections;
+
+      // Act + Assert
+      try {
+        sut('[s"a"]\n\tk = v\n', 'test-source');
+        expect.unreachable('parseIniSections must throw when quote is not preceded by whitespace');
+      } catch (err) {
+        if (!(err instanceof TsgitError)) throw err;
+        expect(err.data.code).toBe('CONFIG_PARSE_ERROR');
+        expect(err.data).toMatchObject({ line: 1, source: 'test-source', partialSectionName: 's' });
+      }
+    });
+
+    it('Then `["a"]` — no section, quote directly after `[` — throws CONFIG_PARSE_ERROR with partial `"` empty', () => {
+      // Arrange
+      const sut = parseIniSections;
+
+      // Act + Assert
+      try {
+        sut('["a"]\n\tk = v\n', 'test-source');
+        expect.unreachable('parseIniSections must throw when no section precedes the quote');
+      } catch (err) {
+        if (!(err instanceof TsgitError)) throw err;
+        expect(err.data.code).toBe('CONFIG_PARSE_ERROR');
+        expect(err.data).toMatchObject({ line: 1, source: 'test-source', partialSectionName: '' });
+      }
+    });
+
+    it('Then `[s "a]` — unclosed quote — throws CONFIG_PARSE_ERROR with partial `s.a]`', () => {
+      // Arrange
+      const sut = parseIniSections;
+
+      // Act + Assert
+      try {
+        sut('[s "a]\n\tk = v\n', 'test-source');
+        expect.unreachable('parseIniSections must throw on unclosed subsection quote');
+      } catch (err) {
+        if (!(err instanceof TsgitError)) throw err;
+        expect(err.data.code).toBe('CONFIG_PARSE_ERROR');
+        expect(err.data).toMatchObject({
+          line: 1,
+          source: 'test-source',
+          partialSectionName: 's.a]',
+        });
+      }
+    });
+
+    it('Then `[s "a\\"b]` — escaped quote then unclosed — throws CONFIG_PARSE_ERROR with partial `s.a"b]`', () => {
+      // Arrange — `\"` inside the span decodes to `"`, then the span is never closed
+      const sut = parseIniSections;
+
+      // Act + Assert
+      try {
+        sut('[s "a\\"b]\n\tk = v\n', 'test-source');
+        expect.unreachable('parseIniSections must throw on unclosed span after escaped quote');
+      } catch (err) {
+        if (!(err instanceof TsgitError)) throw err;
+        expect(err.data.code).toBe('CONFIG_PARSE_ERROR');
+        expect(err.data).toMatchObject({
+          line: 1,
+          source: 'test-source',
+          partialSectionName: 's.a"b]',
+        });
+      }
+    });
+
+    it('Then `[s "ab\\` — dangling backslash at end of line — throws CONFIG_PARSE_ERROR with partial `s.ab`', () => {
+      // Arrange — `\` at end of inner span (after stripping `]`) is fatal
+      const sut = parseIniSections;
+
+      // Act + Assert
+      try {
+        sut('[s "ab\\\n\tk = v\n', 'test-source');
+        expect.unreachable('parseIniSections must throw on dangling backslash in subsection');
+      } catch (err) {
+        if (!(err instanceof TsgitError)) throw err;
+        expect(err.data.code).toBe('CONFIG_PARSE_ERROR');
+        expect(err.data).toMatchObject({
+          line: 1,
+          source: 'test-source',
+          partialSectionName: 's.ab',
+        });
+      }
+    });
+
+    it('Then `[S "a" x]` — uppercase section — throws with partial `s.a` (section lowercased)', () => {
+      // Arrange
+      const sut = parseIniSections;
+
+      // Act + Assert
+      try {
+        sut('[S "a" x]\n\tk = v\n', 'test-source');
+        expect.unreachable('parseIniSections must throw on junk after closing quote');
+      } catch (err) {
+        if (!(err instanceof TsgitError)) throw err;
+        expect(err.data.code).toBe('CONFIG_PARSE_ERROR');
+        expect(err.data).toMatchObject({
+          line: 1,
+          source: 'test-source',
+          partialSectionName: 's.a',
+        });
+      }
+    });
+
+    it('Then a malformed header on line 3 of a multi-line file reports `line: 3`', () => {
+      // Arrange — two well-formed lines precede the malformed header
+      const sut = parseIniSections;
+      const text = '[a]\n\tk = v\n[s "bad" x]\n\tw = ok\n';
+
+      // Act + Assert
+      try {
+        sut(text, 'test-source');
+        expect.unreachable('parseIniSections must throw on the malformed header');
+      } catch (err) {
+        if (!(err instanceof TsgitError)) throw err;
+        expect(err.data.code).toBe('CONFIG_PARSE_ERROR');
+        expect(err.data).toMatchObject({ line: 3 });
+      }
     });
   });
 
