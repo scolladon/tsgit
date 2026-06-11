@@ -965,17 +965,35 @@ describe('primitives/config-read', () => {
     });
   });
 
-  describe('Given a `[core]` body line that contains no `=`', () => {
+  describe('Given a `[core]` body line holding an unrecognized valueless key', () => {
     describe('When readConfig', () => {
-      it('Then the line is ignored entirely', async () => {
-        // Arrange — `bareX` has no `=`; parseKeyValue must reject it outright.
+      it('Then core stays undefined', async () => {
+        // Arrange — `bareX` is a valid valueless key (boolean-true in git) but
+        // not a key the [core] merge consumes; it must not synthesize `bare`.
         const ctx = createMemoryContext();
         await seed(ctx, '[core]\n  bareX\n');
 
         // Act
         const sut = await readConfig(ctx);
 
-        // Assert — accepting it would synthesize a `bare` key and define `core`.
+        // Assert — an unrecognized key never promotes `core` into existence.
+        expect(sut.core).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a `[core]` string-typed key as a valueless entry', () => {
+    describe('When readConfig', () => {
+      it('Then the field is skipped and core stays undefined', async () => {
+        // Arrange — `excludesfile` is string-typed; a valueless occurrence is
+        // treated as absent and must not promote `core` into existence.
+        const ctx = createMemoryContext();
+        await seed(ctx, '[core]\n  excludesfile\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert
         expect(sut.core).toBeUndefined();
       });
     });
@@ -3112,7 +3130,7 @@ describe('primitives/config-read valueless keys', () => {
     });
   });
 
-  describe('readConfig — string-typed fields skip null (ADR-315 absent semantics)', () => {
+  describe('readConfig — string-typed fields skip valueless entries', () => {
     beforeEach(() => {
       __resetConfigCacheForTests();
     });
@@ -3172,6 +3190,35 @@ describe('primitives/config-read valueless keys', () => {
 
         // Assert
         expect(result.submodule?.get('s')?.active).toBe(true);
+      });
+    });
+
+    describe('Given [remote "o"]\\npromisor (valueless bool), When readConfig', () => {
+      it('Then remote o has promisor true', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[remote "o"]\nurl = u\npromisor\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.remote?.get('o')?.promisor).toBe(true);
+      });
+    });
+
+    describe('Given [branch "b"]\\nremote\\nmerge (both valueless), When readConfig', () => {
+      it('Then branch b has neither remote nor merge (valueless strings skipped)', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[branch "b"]\nremote\nmerge\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert — the section is present but both string fields skip null
+        expect(result.branch?.get('b')?.remote).toBeUndefined();
+        expect(result.branch?.get('b')?.merge).toBeUndefined();
       });
     });
   });
