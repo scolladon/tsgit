@@ -199,7 +199,7 @@ export function recordedPaths(conflict: MergeConflict): ReadonlyArray<FilePath> 
 export function sortedRecordedPaths(
   conflicts: ReadonlyArray<MergeConflict>,
 ): ReadonlyArray<FilePath> {
-  return conflicts.flatMap((conflict) => [...recordedPaths(conflict)]).sort(comparePaths);
+  return conflicts.flatMap((conflict) => recordedPaths(conflict)).sort(comparePaths);
 }
 
 function toIndexEntry(

@@ -392,6 +392,51 @@ describe('mergeTrees — contentMerger contract', () => {
     });
   });
 
+  describe('Given a content conflict where only theirs flipped the exec bit', () => {
+    describe('When mergeTrees called', () => {
+      it('Then the conflict carries mergedMode with theirs executable mode', async () => {
+        // Arrange
+        const base = tree([['p', entry(ID_A)]]);
+        const ours = tree([['p', entry(ID_B)]]);
+        const theirs = tree([['p', entry(ID_C, FILE_MODE.EXECUTABLE)]]);
+        const spy = spyMerger({
+          status: 'conflict',
+          conflictType: 'content',
+          markedBytes: new Uint8Array([0xff]),
+        });
+
+        // Act
+        const result = await mergeTrees(base, ours, theirs, spy.fn);
+
+        // Assert — three-way mode merge: ours kept the base mode, theirs wins
+        expect(result.conflicts[0]?.mergedMode).toBe(FILE_MODE.EXECUTABLE);
+        expect(result.conflicts[0]?.ourMode).toBe(FILE_MODE.REGULAR);
+      });
+    });
+  });
+
+  describe('Given a content conflict where both sides flipped the exec bit apart', () => {
+    describe('When mergeTrees called', () => {
+      it('Then the conflict carries mergedMode with ours mode', async () => {
+        // Arrange
+        const base = tree([['p', entry(ID_A, FILE_MODE.EXECUTABLE)]]);
+        const ours = tree([['p', entry(ID_B)]]);
+        const theirs = tree([['p', entry(ID_C, FILE_MODE.EXECUTABLE)]]);
+        const spy = spyMerger({
+          status: 'conflict',
+          conflictType: 'content',
+          markedBytes: new Uint8Array([0xff]),
+        });
+
+        // Act
+        const result = await mergeTrees(base, ours, theirs, spy.fn);
+
+        // Assert — ours diverged from the base mode, so ours wins
+        expect(result.conflicts[0]?.mergedMode).toBe(FILE_MODE.REGULAR);
+      });
+    });
+  });
+
   describe('Given contentMerger returning binary conflict with markedBytes', () => {
     describe('When mergeTrees called', () => {
       it('Then conflict with type binary', async () => {

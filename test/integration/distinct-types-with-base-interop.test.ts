@@ -1122,6 +1122,118 @@ describe.skipIf(!GIT_AVAILABLE)(
       });
     });
 
+    // ── Q5: content conflict where only theirs flips the exec bit ────────────
+    //
+    // Three-way mode merge: ours kept the base's 644, theirs flipped to 755 —
+    // git materialises the marker file with the merged 755, not ours' 644.
+
+    describe('Given a content conflict where only theirs flipped the exec bit (Q5)', () => {
+      describe('When both tools merge', () => {
+        it('Then both tools UU and the marker file carries the merged 755 mode', async () => {
+          // Arrange — overlapping edit; only theirs chmods to 755
+          peerWrite('root.txt', 'root\n');
+          peerWrite('p', 'line1\nline2\nline3\n');
+          peerAdd('root.txt', 'p');
+          peerCommit('base');
+          peerBranch('side');
+          peerWrite('p', 'line1\nTHEIRS\nline3\n');
+          chmodSync(path.join(pair.peer, 'p'), 0o755);
+          runGit(['-C', pair.peer, 'add', 'p']);
+          peerCommit('theirs-exec');
+          peerCheckout('main');
+          peerWrite('p', 'line1\nOURS\nline3\n');
+          peerAdd('p');
+          peerCommit('ours-edit');
+
+          await oursWrite('root.txt', 'root\n');
+          await oursWrite('p', 'line1\nline2\nline3\n');
+          await repo.add(['root.txt', 'p']);
+          await oursCommit('base');
+          await repo.branch.create({ name: 'side' });
+          await repo.checkout({ rev: 'side' });
+          await oursWrite('p', 'line1\nTHEIRS\nline3\n');
+          chmodSync(path.join(pair.ours, 'p'), 0o755);
+          await repo.add(['p']);
+          await oursCommit('theirs-exec');
+          await repo.checkout({ rev: 'main' });
+          await oursWrite('p', 'line1\nOURS\nline3\n');
+          await repo.add(['p']);
+          await oursCommit('ours-edit');
+
+          // Act
+          const peerResult = peerMergeConflict('side');
+          const result = await repo.merge.run({ rev: 'side', message: 'm', author: AUTHOR });
+
+          // Assert — both tools conflict
+          expect(peerResult.ok).toBe(false);
+          expect(result.kind).toBe('conflict');
+
+          // Stage parity (stage 2 is 644, stage 3 is 755 on both)
+          expect(lsStage(pair.ours)).toBe(lsStage(pair.peer));
+
+          // Marker file carries the merged 755 (theirs flipped, ours kept base)
+          expect(lstatSync(path.join(pair.peer, 'p')).mode & 0o777).toBe(0o755);
+          expect(lstatSync(path.join(pair.ours, 'p')).mode & 0o777).toBe(0o755);
+        });
+      });
+    });
+
+    // ── Q6: modify/delete whose surviving theirs side is a symlink ───────────
+    //
+    // Ours deletes the path, theirs retargets the symlink — git leaves theirs'
+    // symlink in the worktree (never its target bytes as a regular file).
+
+    describe('Given ours deletes a symlink that theirs retargets (Q6)', () => {
+      describe('When both tools merge', () => {
+        it('Then both tools conflict and the worktree keeps theirs symlink', async () => {
+          // Arrange
+          peerWrite('root.txt', 'root\n');
+          peerAdd('root.txt');
+          symlinkSync('old-target', path.join(pair.peer, 't'));
+          runGit(['-C', pair.peer, 'add', 't']);
+          peerCommit('base');
+          peerBranch('side');
+          unlinkSync(path.join(pair.peer, 't'));
+          symlinkSync('new-target', path.join(pair.peer, 't'));
+          runGit(['-C', pair.peer, 'add', 't']);
+          peerCommit('theirs-retarget');
+          peerCheckout('main');
+          runGit(['-C', pair.peer, 'rm', '-q', 't']);
+          peerCommit('ours-delete');
+
+          await oursWrite('root.txt', 'root\n');
+          await repo.add(['root.txt']);
+          symlinkSync('old-target', path.join(pair.ours, 't'));
+          await repo.add(['t']);
+          await oursCommit('base');
+          await repo.branch.create({ name: 'side' });
+          await repo.checkout({ rev: 'side' });
+          unlinkSync(path.join(pair.ours, 't'));
+          symlinkSync('new-target', path.join(pair.ours, 't'));
+          await repo.add(['t']);
+          await oursCommit('theirs-retarget');
+          await repo.checkout({ rev: 'main' });
+          await repo.rm(['t']);
+          await oursCommit('ours-delete');
+
+          // Act
+          const peerResult = peerMergeConflict('side');
+          const result = await repo.merge.run({ rev: 'side', message: 'm', author: AUTHOR });
+
+          // Assert — both tools conflict
+          expect(peerResult.ok).toBe(false);
+          expect(result.kind).toBe('conflict');
+
+          // Stage parity (stage 1 base symlink + stage 3 theirs symlink)
+          expect(lsStage(pair.ours)).toBe(lsStage(pair.peer));
+
+          // Worktree: t is theirs' symlink on both tools
+          expect(readlinkSync(path.join(pair.peer, 't'))).toBe('new-target');
+          expect(readlinkSync(path.join(pair.ours, 't'))).toBe('new-target');
+        });
+      });
+    });
+
     // ── P5: with-base distinct-types via revert ──────────────────────────────
     //
     // Root commit has `p` regular. Commit A "make p a symlink". Commit B changes

@@ -22,6 +22,10 @@ export type ContentMerger = (
   theirs: Uint8Array,
 ) => Promise<ContentMergeResult> | ContentMergeResult;
 
+// Placeholder handed to ContentMerger callbacks, which read real blob bytes
+// via the ids on the context; immutable because it is zero-length.
+const EMPTY_BYTES = new Uint8Array(0);
+
 function entriesEqual(a: FlatTreeEntry, b: FlatTreeEntry): boolean {
   return a.id === b.id && a.mode === b.mode;
 }
@@ -161,7 +165,7 @@ async function resolveContentMerge(
   // supplies real content via its closure, using
   // ctx.baseId/ourId/theirId to read blobs. These placeholders are never
   // used by a well-behaved callback.
-  const result = await contentMerger(ctx, undefined, new Uint8Array(0), new Uint8Array(0));
+  const result = await contentMerger(ctx, undefined, EMPTY_BYTES, EMPTY_BYTES);
   if (result.status === 'clean') {
     if (result.bytes.length > MAX_CONFLICT_OUTPUT_BYTES) {
       throw invalidMergeInput('contentMerger returned oversize clean bytes');
@@ -184,6 +188,7 @@ async function resolveContentMerge(
     ourMode: our.mode,
     theirMode: their.mode,
     conflictContent: result.markedBytes,
+    mergedMode: mode,
   });
 }
 
@@ -352,7 +357,7 @@ async function resolveKindChangedBase(
     ourMode: our.mode,
     theirMode: their.mode,
   };
-  const result = await contentMerger(ctx, undefined, new Uint8Array(0), new Uint8Array(0));
+  const result = await contentMerger(ctx, undefined, EMPTY_BYTES, EMPTY_BYTES);
   if (result.status === 'clean') {
     enforceOutputCap(result.bytes, 'clean bytes');
     if (our.mode === their.mode) {
@@ -422,7 +427,7 @@ async function resolveAddAdd(
     ourMode: our.mode,
     theirMode: their.mode,
   };
-  const result = await contentMerger(ctx, undefined, new Uint8Array(0), new Uint8Array(0));
+  const result = await contentMerger(ctx, undefined, EMPTY_BYTES, EMPTY_BYTES);
   if (result.status === 'clean') {
     enforceOutputCap(result.bytes, 'clean bytes');
     if (our.mode === their.mode) {

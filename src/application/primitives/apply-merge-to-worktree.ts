@@ -16,7 +16,7 @@
  *                tree (git's "local changes would be overwritten" guard);
  *                nothing is written.
  */
-import { conflictsToIndexEntries } from '../../domain/diff/index.js';
+import { conflictsToIndexEntries, recordedPaths } from '../../domain/diff/index.js';
 import { unsupportedOperation } from '../../domain/error.js';
 import type { GitIndex, IndexEntry } from '../../domain/git-index/index.js';
 import {
@@ -107,12 +107,7 @@ const changedPaths = (
     if (outcome.status !== 'conflict' && outcomeChangesOurs(outcome, ours)) paths.add(outcome.path);
   }
   for (const conflict of conflicts) {
-    if (conflict.type === 'distinct-types') {
-      if (conflict.ourPath !== undefined) paths.add(conflict.ourPath);
-      if (conflict.theirPath !== undefined) paths.add(conflict.theirPath);
-    } else {
-      paths.add(conflict.path);
-    }
+    for (const path of recordedPaths(conflict)) paths.add(path);
   }
   return paths;
 };
@@ -209,12 +204,12 @@ const conflictBytes = async (
 export const writeMarkedConflict = async (ctx: Context, conflict: MergeConflict): Promise<void> => {
   const bytes = await conflictBytes(ctx, conflict);
   if (bytes === undefined) return;
-  // Use ours' mode when present so the kind (symlink / exec bit) is preserved:
-  // symlink-pair content conflicts re-create ours' symlink; executable marker
-  // files carry ours' exec bit. When ourMode is absent (modify-delete with ours
-  // deleted), fall back to a plain file write.
-  if (conflict.ourMode !== undefined) {
-    await writeWorkingTreeEntry(ctx, conflict.path, bytes, conflict.ourMode);
+  // Materialise with the merged mode when the merge resolved one, else the
+  // surviving side's (ours, or theirs for modify-delete with ours deleted) so
+  // the kind (symlink / exec bit) is preserved.
+  const mode = conflict.mergedMode ?? conflict.ourMode ?? conflict.theirMode;
+  if (mode !== undefined) {
+    await writeWorkingTreeEntry(ctx, conflict.path, bytes, mode);
     return;
   }
   await writeWorkingTreeFile(ctx, conflict.path, bytes);

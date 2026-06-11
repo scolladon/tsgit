@@ -840,27 +840,54 @@ describe('writeMarkedConflict (direct)', () => {
     });
   });
 
-  // Mirror of step 5: modify-delete with ours deleted — no mode regression
-  describe('Given a modify-delete conflict with only theirId (ours deleted)', () => {
+  // Marker bytes carry the three-way-merged mode, not ours' stage mode
+  describe('Given a content conflict where mergedMode is executable but ourMode is regular', () => {
     describe('When writeMarkedConflict runs', () => {
-      it('Then the theirs survivor is written as a plain file (no mode guard regression)', async () => {
+      it('Then the marker file is written with the merged exec mode', async () => {
         // Arrange
         const ctx = await buildSeededContext();
         const chmodSpy = vi.spyOn(ctx.fs, 'chmod');
-        const theirsId = await seedBlob(ctx, 'survivor-theirs');
         const conflict = conflictOf({
-          type: 'modify-delete',
-          theirId: theirsId,
-          // ourMode is absent: ours has no side
+          type: 'content',
+          conflictContent: new TextEncoder().encode(
+            '<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> side\n',
+          ),
+          ourMode: FILE_MODE.REGULAR,
+          theirMode: FILE_MODE.EXECUTABLE,
+          mergedMode: FILE_MODE.EXECUTABLE,
         });
 
         // Act
         await writeMarkedConflict(ctx, conflict);
 
-        // Assert — bytes written without chmod
-        const bytes = await ctx.fs.read(`${ctx.layout.workDir}/p`);
-        expect(new TextDecoder().decode(bytes)).toBe('survivor-theirs');
-        expect(chmodSpy).not.toHaveBeenCalled();
+        // Assert — merged mode wins over ours' stage mode
+        expect(chmodSpy).toHaveBeenCalledWith(`${ctx.layout.workDir}/p`, 0o755);
+      });
+    });
+  });
+
+  // Modify-delete with ours deleted: the survivor keeps its kind on disk
+  describe('Given a modify-delete conflict whose surviving theirs side is a symlink', () => {
+    describe('When writeMarkedConflict runs', () => {
+      it('Then the survivor symlink is re-created at the path', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const theirsId = await seedBlob(ctx, 'survivor-target');
+        const conflict = conflictOf({
+          type: 'modify-delete',
+          theirId: theirsId,
+          theirMode: FILE_MODE.SYMLINK,
+          // ourId/ourMode are absent: ours deleted the path
+        });
+
+        // Act
+        await writeMarkedConflict(ctx, conflict);
+
+        // Assert — lstat reveals a symlink pointing at theirs' target
+        const stat = await ctx.fs.lstat(`${ctx.layout.workDir}/p`);
+        expect(stat.isSymbolicLink).toBe(true);
+        const target = await ctx.fs.readlink(`${ctx.layout.workDir}/p`);
+        expect(target).toBe('survivor-target');
       });
     });
   });

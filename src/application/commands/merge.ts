@@ -620,12 +620,12 @@ export const writeConflictToTree = async (ctx: Context, conflict: MergeConflict)
   }
   const bytes = await materialiseConflictBytes(ctx, conflict);
   if (bytes === undefined) return;
-  // Use ours' mode when present so the kind (symlink / exec bit) is preserved:
-  // symlink-pair content conflicts re-create ours' symlink; executable marker
-  // files carry ours' exec bit. When ourMode is absent (modify-delete with ours
-  // deleted), fall back to a plain file write.
-  if (conflict.ourMode !== undefined) {
-    await writeWorkingTreeEntry(ctx, conflict.path, bytes, conflict.ourMode);
+  // Materialise with the merged mode when the merge resolved one, else the
+  // surviving side's (ours, or theirs for modify-delete with ours deleted) so
+  // the kind (symlink / exec bit) is preserved.
+  const mode = conflict.mergedMode ?? conflict.ourMode ?? conflict.theirMode;
+  if (mode !== undefined) {
+    await writeWorkingTreeEntry(ctx, conflict.path, bytes, mode);
     return;
   }
   await writeWorkingTreeFile(ctx, conflict.path, bytes);
@@ -639,15 +639,7 @@ const readOursBlob = (ctx: Context, conflict: MergeConflict): Promise<Uint8Array
   return readBlob(ctx, conflict.ourId, READ_BLOB_OPTS).then((b) => b.content);
 };
 
-const materialiseAddAdd = async (
-  ctx: Context,
-  conflict: MergeConflict,
-): Promise<Uint8Array | undefined> => {
-  if (conflict.conflictContent !== undefined) return conflict.conflictContent;
-  return readOursBlob(ctx, conflict);
-};
-
-const materialiseContent = async (
+const materialiseMarkedOrOurs = async (
   ctx: Context,
   conflict: MergeConflict,
 ): Promise<Uint8Array | undefined> => {
@@ -660,8 +652,8 @@ export const materialiseConflictBytes = async (
   ctx: Context,
   conflict: MergeConflict,
 ): Promise<Uint8Array | undefined> => {
-  if (conflict.type === 'content') return materialiseContent(ctx, conflict);
-  if (conflict.type === 'add-add') return materialiseAddAdd(ctx, conflict);
+  if (conflict.type === 'content') return materialiseMarkedOrOurs(ctx, conflict);
+  if (conflict.type === 'add-add') return materialiseMarkedOrOurs(ctx, conflict);
   if (conflict.type === 'binary') return readOursBlob(ctx, conflict);
   if (conflict.type === 'type-change') return readOursBlob(ctx, conflict);
   if (conflict.type === 'modify-delete') {

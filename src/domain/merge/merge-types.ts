@@ -21,6 +21,12 @@ export interface MergeConflict {
   readonly theirMode?: FileMode;
   readonly conflictContent?: Uint8Array;
   readonly contentVerdict?: 'clean' | 'content' | 'binary';
+  /**
+   * Three-way-merged mode for `content` conflicts (theirs' mode when only
+   * theirs diverged from the base, ours' otherwise). The working tree is
+   * materialised with this mode; the per-side stage entries keep their own.
+   */
+  readonly mergedMode?: FileMode;
   /** Recorded path for our side; populated only on `distinct-types` conflicts. */
   readonly ourPath?: FilePath;
   /** Recorded path for their side; populated only on `distinct-types` conflicts. */
