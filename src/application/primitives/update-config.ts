@@ -20,7 +20,13 @@ import {
 } from '../../domain/commands/error.js';
 import { TsgitError } from '../../domain/error.js';
 import type { Context } from '../../ports/context.js';
-import { invalidateConfigCache, parseIniSections, parseSectionHeader } from './config-read.js';
+import {
+  type ConfigToken,
+  invalidateConfigCache,
+  parseIniSections,
+  parseSectionHeader,
+  tokenizeConfig,
+} from './config-read.js';
 import { invalidateScopedConfigCache } from './config-scoped-read.js';
 import { collectValues } from './internal/config-key.js';
 import { resolveScopePath } from './internal/config-scope.js';
@@ -124,37 +130,118 @@ const findSectionHeader = (
   return -1;
 };
 
+/** Section/subsection identity for token-based section matching. */
+interface SectionTarget {
+  readonly section: string;
+  readonly subsection: string | undefined;
+}
+
+type EntryToken = Extract<ConfigToken, { kind: 'entry' }>;
+type HeaderToken = Extract<ConfigToken, { kind: 'header' }>;
+
 /**
- * Within the section that starts at `headerIndex`, the index of an existing
- * `key =` line, or `-1` when absent. The scan stops at the next section
- * header so a `key` line under a *later* section is never matched.
+ * True when `header` token matches `target`: case-insensitive section,
+ * case-sensitive subsection, `undefined` matches `undefined` or `''`.
+ * Mirrors the semantics of `matchesSection`.
  */
-const findKeyInSection = (
-  lines: ReadonlyArray<string>,
-  headerIndex: number,
-  key: string,
-): number => {
-  for (let i = headerIndex + 1; i < lines.length; i += 1) {
-    const line = lines[i] as string;
-    if (isSectionHeader(line)) return -1;
-    if (isKeyLine(line, key)) return i;
+const matchesTarget = (header: HeaderToken, target: SectionTarget): boolean => {
+  if (header.section.toLowerCase() !== target.section.toLowerCase()) return false;
+  if (target.subsection === undefined) {
+    return header.subsection === undefined || header.subsection === '';
   }
-  return -1;
+  return header.subsection === target.subsection;
 };
 
-/** Replace element `at` in `lines` with `replacement`, returning a new array. */
-const replaceLine = (
-  lines: ReadonlyArray<string>,
-  at: number,
-  replacement: string,
-): ReadonlyArray<string> => [...lines.slice(0, at), replacement, ...lines.slice(at + 1)];
+/**
+ * First entry token (in line order) whose key matches `key` case-insensitively,
+ * inside any block that matches `target`. Returns `undefined` when absent.
+ */
+const findEntry = (
+  tokens: ReadonlyArray<ConfigToken>,
+  target: SectionTarget,
+  key: string,
+): EntryToken | undefined => {
+  let inTarget = false;
+  for (const token of tokens) {
+    if (token.kind === 'header') {
+      inTarget = matchesTarget(token, target);
+    } else if (
+      inTarget &&
+      token.kind === 'entry' &&
+      token.key.toLowerCase() === key.toLowerCase()
+    ) {
+      return token;
+    }
+  }
+  return undefined;
+};
 
-/** Insert `entry` immediately after element `at`, returning a new array. */
-const insertAfter = (
+/**
+ * Insertion line for a new key: the end of the LAST matching block — the
+ * last entry token's `endLine`, or `headerLine + 1` when that block has no
+ * entries. Returns `undefined` when no block matches `target`.
+ */
+const insertionLine = (
+  tokens: ReadonlyArray<ConfigToken>,
+  target: SectionTarget,
+): number | undefined => {
+  let result: number | undefined;
+  let inTarget = false;
+  let blockInsert: number | undefined;
+  for (const token of tokens) {
+    if (token.kind === 'header') {
+      if (inTarget && blockInsert !== undefined) {
+        result = blockInsert;
+      }
+      inTarget = matchesTarget(token, target);
+      blockInsert = inTarget ? token.line + 1 : undefined;
+    } else if (inTarget && token.kind === 'entry') {
+      blockInsert = token.endLine;
+    }
+  }
+  if (inTarget && blockInsert !== undefined) {
+    result = blockInsert;
+  }
+  return result;
+};
+
+/**
+ * When `originalLines` ended with `''` (trailing `\n`) and `out` does not,
+ * push `''` to restore the trailing newline. Shared by set/append and
+ * remove-section.
+ */
+const withTrailingNewlineRestored = (
+  originalLines: ReadonlyArray<string>,
+  out: ReadonlyArray<string>,
+): ReadonlyArray<string> => {
+  if (
+    originalLines[originalLines.length - 1] === '' &&
+    out.length > 0 &&
+    out[out.length - 1] !== ''
+  ) {
+    return [...out, ''];
+  }
+  return out;
+};
+
+/**
+ * Insert `entry` at line index `idx` in `lines`, clamping to the file's
+ * writable boundary. When `idx === lines.length` (file has no trailing LF
+ * and insertion is at EOF), appends a trailing `''` so the written entry
+ * is LF-terminated.
+ */
+const spliceEntryAt = (
   lines: ReadonlyArray<string>,
   at: number,
   entry: string,
-): ReadonlyArray<string> => [...lines.slice(0, at + 1), entry, ...lines.slice(at + 1)];
+  originalText: string,
+): ReadonlyArray<string> => {
+  const max = originalText.endsWith('\n') ? lines.length - 1 : lines.length;
+  const idx = Math.min(at, max);
+  const out = [...lines.slice(0, idx), entry, ...lines.slice(idx)];
+  if (idx === lines.length) out.push('');
+  return out;
+};
 
 /**
  * Reject a `key`/`subsection` carrying a `\n`, `\r`, or `\0` — those would let
@@ -208,9 +295,10 @@ const rejectSection = (section: string): void => {
  * Set `key` under `[section]` / `[section "subsection"]`, preserving every
  * other byte verbatim.
  *
- * - existing section with that key ⇒ its value is replaced;
+ * - existing section with that key ⇒ full span of the first match is replaced
+ *   by a single canonical `\t<key> = <value>` line;
  * - existing section without that key ⇒ a `\t<key> = <value>` line is
- *   inserted right after the header;
+ *   inserted at the end of the last matching block;
  * - no such section ⇒ `[section]\n\t<key> = <value>\n` is appended.
  */
 export const setConfigEntryInText = (
@@ -225,16 +313,24 @@ export const setConfigEntryInText = (
   rejectValueControlChars(value);
   if (subsection !== undefined) rejectSubsection(subsection);
   const lines = text.split('\n');
-  const headerIndex = findSectionHeader(lines, section, subsection);
-  if (headerIndex === -1) {
+  const tokens = tokenizeConfig(text);
+  const target = { section, subsection };
+  const existing = findEntry(tokens, target, key);
+  if (existing !== undefined) {
+    const end = Math.min(existing.endLine, lines.length);
+    const out = [
+      ...lines.slice(0, existing.startLine),
+      renderEntry(key, value),
+      ...lines.slice(end),
+    ];
+    return withTrailingNewlineRestored(lines, out).join('\n');
+  }
+  const at = insertionLine(tokens, target);
+  if (at === undefined) {
     const prefix = text === '' ? '' : text.endsWith('\n') ? text : `${text}\n`;
     return `${prefix}${renderSectionHeader(section, subsection)}\n${renderEntry(key, value)}\n`;
   }
-  const keyIndex = findKeyInSection(lines, headerIndex, key);
-  if (keyIndex !== -1) {
-    return replaceLine(lines, keyIndex, renderEntry(key, value)).join('\n');
-  }
-  return insertAfter(lines, headerIndex, renderEntry(key, value)).join('\n');
+  return spliceEntryAt(lines, at, renderEntry(key, value), text).join('\n');
 };
 
 /** `setConfigEntryInText` bound to the `[core]` section — kept for legacy callers. */
@@ -301,14 +397,7 @@ export const removeConfigSectionInText = (
     if (skipping) continue;
     out.push(line);
   }
-  // Preserve the file-level trailing newline: when the original ended in
-  // `\n` (so split yielded a trailing '') AND that '' was consumed inside
-  // a dropped section, the join loses one trailing `\n`. Restore it so a
-  // non-empty result ends with `\n` exactly when the original did.
-  const endedWithNewline = lines[lines.length - 1] === '';
-  const outEndsWithNewline = out.length > 0 && out[out.length - 1] === '';
-  if (endedWithNewline && !outEndsWithNewline && out.length > 0) out.push('');
-  return out.join('\n');
+  return withTrailingNewlineRestored(lines, out).join('\n');
 };
 
 /**
@@ -431,11 +520,10 @@ export const applyConfigOpInText = (text: string, op: ConfigOperation): string =
 };
 
 /**
- * Insert `\tkey = value` after the LAST existing matching key inside the
- * section (or after the section header when none exists). Preserves
- * insertion order across repeated `appendEntry` calls — `fetch = A`
- * followed by `fetch = B` produces `A` then `B`, not `B` then `A`.
- * Creates the section if absent.
+ * Insert a fresh `\tkey = value` line at the end of the LAST matching block
+ * (never replaces an existing entry). Preserves insertion order across
+ * repeated `appendEntry` calls — `fetch = A` followed by `fetch = B`
+ * produces `A` then `B`. Creates the section if absent.
  */
 export const appendConfigEntry = (
   text: string,
@@ -449,34 +537,14 @@ export const appendConfigEntry = (
   rejectValueControlChars(value);
   if (subsection !== undefined) rejectSubsection(subsection);
   const lines = text.split('\n');
-  const headerIndex = findSectionHeader(lines, section, subsection);
-  if (headerIndex === -1) {
+  const tokens = tokenizeConfig(text);
+  const target = { section, subsection };
+  const at = insertionLine(tokens, target);
+  if (at === undefined) {
     const prefix = text === '' ? '' : text.endsWith('\n') ? text : `${text}\n`;
     return `${prefix}${renderSectionHeader(section, subsection)}\n${renderEntry(key, value)}\n`;
   }
-  const insertAt = findLastKeyInSection(lines, headerIndex, key);
-  return insertAfter(lines, insertAt, renderEntry(key, value)).join('\n');
-};
-
-/**
- * Within the section that starts at `headerIndex`, the index of the LAST
- * `key =` line, or `headerIndex` when no such line exists. The scan stops
- * at the next section header so a later section's `key` line is never
- * matched. `appendConfigEntry` uses this to preserve insertion order
- * across repeated appends.
- */
-const findLastKeyInSection = (
-  lines: ReadonlyArray<string>,
-  headerIndex: number,
-  key: string,
-): number => {
-  let last = headerIndex;
-  for (let i = headerIndex + 1; i < lines.length; i += 1) {
-    const line = lines[i] as string;
-    if (isSectionHeader(line)) return last;
-    if (isKeyLine(line, key)) last = i;
-  }
-  return last;
+  return spliceEntryAt(lines, at, renderEntry(key, value), text).join('\n');
 };
 
 /**
