@@ -25,6 +25,8 @@ export interface MergeConflict {
   readonly ourPath?: FilePath;
   /** Recorded path for their side; populated only on `distinct-types` conflicts. */
   readonly theirPath?: FilePath;
+  /** Recorded path of the base's stage-1 entry; populated only on `distinct-types` conflicts that have a base. */
+  readonly basePath?: FilePath;
 }
 
 export type MergeOutcome =
