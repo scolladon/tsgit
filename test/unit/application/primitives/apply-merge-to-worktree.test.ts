@@ -890,8 +890,8 @@ describe('writeMarkedConflict (direct)', () => {
   describe('Given a bare add-add conflict with only theirId and theirMode', () => {
     describe('When writeMarkedConflict runs', () => {
       it('Then nothing is written at the path', async () => {
-        // Arrange — conflictContent absent and ourId absent, so bytes are
-        // underivable while the theirs mode is present
+        // Arrange — conflictContent absent and ourId absent, so no bytes can be derived
+        // while the theirs mode is present
         const ctx = await buildSeededContext();
         const theirsId = await seedBlob(ctx, 'theirs-only');
         const conflict = conflictOf({
