@@ -619,16 +619,12 @@ export const writeConflictToTree = async (ctx: Context, conflict: MergeConflict)
     return;
   }
   const bytes = await materialiseConflictBytes(ctx, conflict);
-  if (bytes === undefined) return;
   // Materialise with the merged mode when the merge resolved one, else the
   // surviving side's (ours, or theirs for modify-delete with ours deleted) so
   // the kind (symlink / exec bit) is preserved.
   const mode = conflict.mergedMode ?? conflict.ourMode ?? conflict.theirMode;
-  if (mode !== undefined) {
-    await writeWorkingTreeEntry(ctx, conflict.path, bytes, mode);
-    return;
-  }
-  await writeWorkingTreeFile(ctx, conflict.path, bytes);
+  if (bytes === undefined || mode === undefined) return;
+  await writeWorkingTreeEntry(ctx, conflict.path, bytes, mode);
 };
 
 // Stryker disable next-line ObjectLiteral: equivalent — the 256 MiB cap is unobservable without a 256 MiB fixture; cap mechanics covered by read-blob.test.ts.
