@@ -785,7 +785,7 @@ describe('writeMarkedConflict (direct)', () => {
   const conflictOf = (over: Partial<MergeConflict>): MergeConflict =>
     ({ path: 'p' as FilePath, ...over }) as MergeConflict;
 
-  // Mirror of step 3b: bare content symlink-pair — ours symlink re-created
+  // Bare content symlink-pair — ours symlink re-created
   describe('Given a bare content conflict with symlink modes on both sides', () => {
     describe('When writeMarkedConflict runs', () => {
       it('Then ours symlink is re-created at the path (not target bytes as a regular file)', async () => {
@@ -816,7 +816,7 @@ describe('writeMarkedConflict (direct)', () => {
     });
   });
 
-  // Mirror of step 4: conflictContent + executable ourMode — exec bit preserved
+  // conflictContent + executable ourMode — exec bit preserved
   describe('Given a content conflict with conflictContent and executable ourMode', () => {
     describe('When writeMarkedConflict runs', () => {
       it('Then the marker file is written with exec mode (chmod 0o755 called)', async () => {
@@ -892,7 +892,7 @@ describe('writeMarkedConflict (direct)', () => {
     });
   });
 
-  // Mirror of step 6: bare type-change with symlink ourMode
+  // Bare type-change with symlink ourMode
   describe('Given a bare type-change conflict with symlink ourMode', () => {
     describe('When writeMarkedConflict runs', () => {
       it('Then ours symlink is re-created at the path', async () => {

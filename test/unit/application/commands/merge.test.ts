@@ -2282,8 +2282,8 @@ describe('materialiseConflictBytes (direct)', () => {
         const ctx = createMemoryContext();
         await init(ctx);
         const oursId = await seedBlob(ctx, 'OURS-LINE');
-        await seedBlob(ctx, 'THEIRS-LINE');
-        const conflict = conflictOf({ type: 'content', ourId: oursId });
+        const theirsId = await seedBlob(ctx, 'THEIRS-LINE');
+        const conflict = conflictOf({ type: 'content', ourId: oursId, theirId: theirsId });
 
         // Act
         const sut = await materialiseConflictBytes(ctx, conflict);
@@ -3283,7 +3283,7 @@ describe('writeConflictToTree (direct)', () => {
   const conflictOf = (over: Partial<MergeConflict>): MergeConflict =>
     ({ path: 'p' as FilePath, ...over }) as MergeConflict;
 
-  // Step 3b: bare content symlink-pair — ours symlink re-created, not a regular file
+  // Bare content symlink-pair — ours symlink re-created, not a regular file
   describe('Given a bare content conflict with symlink modes on both sides', () => {
     describe('When writeConflictToTree runs', () => {
       it('Then ours symlink is re-created at the path (not target bytes as a regular file)', async () => {
@@ -3293,7 +3293,6 @@ describe('writeConflictToTree (direct)', () => {
         const oursId = await seedBlob(ctx, 'ours-target');
         const theirsId = await seedBlob(ctx, 'theirs-target');
         const baseId = await seedBlob(ctx, 'base-file-content');
-        const sut = writeConflictToTree;
         const conflict = conflictOf({
           type: 'content',
           ourId: oursId,
@@ -3305,7 +3304,7 @@ describe('writeConflictToTree (direct)', () => {
         });
 
         // Act
-        await sut(ctx, conflict);
+        await writeConflictToTree(ctx, conflict);
 
         // Assert — lstat reveals a symlink; readlink returns ours' target
         const stat = await ctx.fs.lstat(`${ctx.layout.workDir}/p`);
@@ -3316,7 +3315,7 @@ describe('writeConflictToTree (direct)', () => {
     });
   });
 
-  // Step 4: marker-bytes conflict with ourMode 100755 — exec bit preserved
+  // Marker-bytes conflict with ourMode 100755 — exec bit preserved
   describe('Given a content conflict with conflictContent and executable ourMode', () => {
     describe('When writeConflictToTree runs', () => {
       it('Then the marker file is written with exec mode (chmod 0o755 called)', async () => {
@@ -3395,7 +3394,7 @@ describe('writeConflictToTree (direct)', () => {
     });
   });
 
-  // Step 6: bare type-change with ourMode symlink — ours' symlink re-created at path
+  // Bare type-change with ourMode symlink — ours' symlink re-created at path
   describe('Given a bare type-change conflict with symlink ourMode', () => {
     describe('When writeConflictToTree runs', () => {
       it('Then ours symlink is re-created at the path (useMode generalised beyond add-add)', async () => {

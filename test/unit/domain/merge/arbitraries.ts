@@ -55,3 +55,35 @@ export const arbDisjointThreeWay = (): fc.Arbitrary<ThreeWay> =>
         theirs: applyDecisions(base, theirs, (i) => i >= mid),
       }));
   });
+
+export interface UniquePathInput {
+  readonly base: string;
+  readonly label: string;
+  readonly stem: string;
+  readonly reserved: Set<string>;
+}
+
+/**
+ * An input for the rename-target prober: a slash-free base path and label
+ * (flattenLabel is identity without slashes), and a reserved set drawn from an
+ * 11-bit mask — bit 10 occupies the stem itself, bits 0–9 occupy stem_0…stem_9.
+ * Leaving the stem free keeps the "returns the stem" branch live.
+ */
+export const arbUniquePathInput = (): fc.Arbitrary<UniquePathInput> =>
+  fc
+    .record({
+      base: fc.stringMatching(/^[a-z][a-z0-9-]{0,8}$/),
+      label: fc.stringMatching(/^[a-z][a-z0-9]{0,7}$/),
+      mask: fc.integer({ min: 0, max: 2047 }),
+    })
+    .map(({ base, label, mask }) => {
+      const stem = `${base}~${label}`;
+      const reserved = new Set<string>();
+      if (mask & 1024) reserved.add(stem);
+      for (let k = 0; k < 10; k++) {
+        if (mask & (1 << k)) {
+          reserved.add(`${stem}_${k}`);
+        }
+      }
+      return { base, label, stem, reserved };
+    });

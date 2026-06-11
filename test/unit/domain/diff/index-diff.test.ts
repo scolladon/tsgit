@@ -817,34 +817,6 @@ describe('conflictsToIndexEntries', () => {
         expect(sut[2]?.id).toBe(ID_B);
         expect(sut[2]?.mode).toBe(FILE_MODE.REGULAR);
       });
-
-      it('Then the two-stage run at f~HEAD lists stage 1 before stage 2', () => {
-        // Arrange — same S1 conflict; focus on stage order within f~HEAD
-        const sut = conflictsToIndexEntries(
-          [
-            conflict({
-              type: 'distinct-types',
-              path: 'f' as FilePath,
-              ourPath: 'f~HEAD' as FilePath,
-              theirPath: 'f' as FilePath,
-              basePath: 'f~HEAD' as FilePath,
-              baseId: ID_A,
-              baseMode: FILE_MODE.REGULAR,
-              ourId: ID_B,
-              ourMode: FILE_MODE.REGULAR,
-              theirId: ID_C,
-              theirMode: FILE_MODE.SYMLINK,
-            }),
-          ],
-          zeroStat,
-        );
-
-        // Assert — stage 1 precedes stage 2 at the same path
-        const fHead = sut.filter((e) => e.path === ('f~HEAD' as FilePath));
-        expect(fHead).toHaveLength(2);
-        expect(fHead[0]?.flags.stage).toBe(1);
-        expect(fHead[1]?.flags.stage).toBe(2);
-      });
     });
   });
 

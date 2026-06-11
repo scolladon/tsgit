@@ -135,14 +135,14 @@ describe('write-working-tree-file', () => {
         it('Then it chmods the file to 0o755', async () => {
           // Arrange
           const ctx = await buildSeededContext();
-          const sut = vi.spyOn(ctx.fs, 'chmod');
+          const chmodSpy = vi.spyOn(ctx.fs, 'chmod');
           const content = new TextEncoder().encode('exec-content');
 
           // Act
           await writeWorkingTreeEntry(ctx, 'x.sh' as FilePath, content, FILE_MODE.EXECUTABLE);
 
           // Assert
-          expect(sut).toHaveBeenCalledWith(`${ctx.layout.workDir}/x.sh`, 0o755);
+          expect(chmodSpy).toHaveBeenCalledWith(`${ctx.layout.workDir}/x.sh`, 0o755);
         });
       });
     });
@@ -152,14 +152,14 @@ describe('write-working-tree-file', () => {
         it('Then it chmods the file to 0o644', async () => {
           // Arrange
           const ctx = await buildSeededContext();
-          const sut = vi.spyOn(ctx.fs, 'chmod');
+          const chmodSpy = vi.spyOn(ctx.fs, 'chmod');
           const content = new TextEncoder().encode('regular-content');
 
           // Act
           await writeWorkingTreeEntry(ctx, 'r.txt' as FilePath, content, FILE_MODE.REGULAR);
 
           // Assert
-          expect(sut).toHaveBeenCalledWith(`${ctx.layout.workDir}/r.txt`, 0o644);
+          expect(chmodSpy).toHaveBeenCalledWith(`${ctx.layout.workDir}/r.txt`, 0o644);
         });
       });
     });
@@ -169,14 +169,14 @@ describe('write-working-tree-file', () => {
         it('Then chmod is never called', async () => {
           // Arrange
           const ctx = await buildSeededContext();
-          const sut = vi.spyOn(ctx.fs, 'chmod');
+          const chmodSpy = vi.spyOn(ctx.fs, 'chmod');
           const content = new TextEncoder().encode('target-path');
 
           // Act
           await writeWorkingTreeEntry(ctx, 'link' as FilePath, content, FILE_MODE.SYMLINK);
 
           // Assert
-          expect(sut).not.toHaveBeenCalled();
+          expect(chmodSpy).not.toHaveBeenCalled();
         });
       });
     });
