@@ -113,12 +113,24 @@ const findSectionHeader = (
 
 /** Section/subsection identity for token-based section matching. */
 interface SectionTarget {
-  readonly section: string;
+  readonly sectionLc: string;
   readonly subsection: string | undefined;
 }
 
+/** Builds a target with the section needle lowered once, not per header token. */
+const makeTarget = (section: string, subsection: string | undefined): SectionTarget => ({
+  sectionLc: section.toLowerCase(),
+  subsection,
+});
+
 type EntryToken = Extract<ConfigToken, { kind: 'entry' }>;
 type HeaderToken = Extract<ConfigToken, { kind: 'header' }>;
+
+/** Physical-line span `[startLine, endLine)` of one logical entry. */
+interface LineSpan {
+  readonly startLine: number;
+  readonly endLine: number;
+}
 
 /**
  * True when `header` token matches `target`: case-insensitive section,
@@ -126,7 +138,7 @@ type HeaderToken = Extract<ConfigToken, { kind: 'header' }>;
  * Mirrors the semantics of `matchesSection`.
  */
 const matchesTarget = (header: HeaderToken, target: SectionTarget): boolean => {
-  if (header.section.toLowerCase() !== target.section.toLowerCase()) return false;
+  if (header.section.toLowerCase() !== target.sectionLc) return false;
   if (target.subsection === undefined) {
     return header.subsection === undefined || header.subsection === '';
   }
@@ -185,8 +197,7 @@ const insertionLine = (
 
 /**
  * When `originalLines` ended with `''` (trailing `\n`) and `out` does not,
- * push `''` to restore the trailing newline. Shared by set/append and
- * remove-section.
+ * push `''` to restore the trailing newline. Used by remove-section.
  */
 const withTrailingNewlineRestored = (
   originalLines: ReadonlyArray<string>,
@@ -292,10 +303,11 @@ export const setConfigEntryInText = (
   if (subsection !== undefined) rejectSubsection(subsection);
   const lines = text.split('\n');
   const tokens = tokenizeConfigLines(lines, text.endsWith('\n'));
-  const target = { section, subsection };
+  const target = makeTarget(section, subsection);
   const existing = findEntry(tokens, target, key);
   if (existing !== undefined) {
-    const end = Math.min(existing.endLine, lines.length);
+    // The tokenizer's endLine never exceeds the tokenized line count.
+    const end = existing.endLine;
     const out = [
       ...lines.slice(0, existing.startLine),
       renderEntry(key, value),
@@ -342,10 +354,7 @@ const buildTokenBlocks = (tokens: ReadonlyArray<ConfigToken>): ReadonlyArray<Tok
 };
 
 /** Collect the entry spans in `block` whose key matches `key` (case-insensitive). */
-const matchingEntrySpans = (
-  block: TokenBlock,
-  keyLc: string,
-): ReadonlyArray<{ startLine: number; endLine: number }> =>
+const matchingEntrySpans = (block: TokenBlock, keyLc: string): ReadonlyArray<LineSpan> =>
   block.bodyTokens.flatMap((t) =>
     t.kind === 'entry' && t.key.toLowerCase() === keyLc
       ? [{ startLine: t.startLine, endLine: t.endLine }]
@@ -362,25 +371,26 @@ const blockHasProtectingContent = (block: TokenBlock, keyLc: string): boolean =>
     (t) => t.kind === 'comment' || (t.kind === 'entry' && t.key.toLowerCase() !== keyLc),
   );
 
-/** Mark every physical line of the block (header + all body) as excluded. */
-const blockExclusions = (block: TokenBlock, totalLines: number): ReadonlyArray<number> => [
+/**
+ * Mark every physical line of the block (header + all body) as excluded.
+ * Only called when `blockHasProtectingContent` is false, so body tokens are
+ * matched entries and blanks — comments cannot occur here.
+ */
+const blockExclusions = (block: TokenBlock): ReadonlyArray<number> => [
   block.header.line,
-  ...block.bodyTokens.flatMap((token) => {
-    if (token.kind === 'blank') return [token.line];
-    if (token.kind === 'entry') return spanExclusions([token], totalLines);
-    return [];
-  }),
+  ...block.bodyTokens.flatMap((token) =>
+    token.kind === 'entry' ? spanExclusions([token]) : [token.line],
+  ),
 ];
 
-/** Mark every physical line of each span as excluded. */
-const spanExclusions = (
-  spans: ReadonlyArray<{ startLine: number; endLine: number }>,
-  totalLines: number,
-): ReadonlyArray<number> =>
-  spans.flatMap((span) => {
-    const end = Math.min(span.endLine, totalLines);
-    return Array.from({ length: end - span.startLine }, (_, i) => span.startLine + i);
-  });
+/**
+ * Mark every physical line of each span as excluded. Span bounds come from
+ * the tokenizer, whose `endLine` never exceeds the tokenized line count.
+ */
+const spanExclusions = (spans: ReadonlyArray<LineSpan>): ReadonlyArray<number> =>
+  spans.flatMap((span) =>
+    Array.from({ length: span.endLine - span.startLine }, (_, i) => span.startLine + i),
+  );
 
 /**
  * Remove every entry span for `key` from the section
@@ -405,7 +415,7 @@ export const removeConfigEntry = (
   rejectControlChars('key', key);
 
   const lines = text.split('\n');
-  const target: SectionTarget = { section, subsection };
+  const target = makeTarget(section, subsection);
   const blocks = buildTokenBlocks(tokenizeConfigLines(lines, text.endsWith('\n')));
   const keyLc = key.toLowerCase();
   const excluded = new Set(
@@ -414,8 +424,8 @@ export const removeConfigEntry = (
       const spans = matchingEntrySpans(block, keyLc);
       if (spans.length === 0) return [];
       return blockHasProtectingContent(block, keyLc)
-        ? spanExclusions(spans, lines.length)
-        : blockExclusions(block, lines.length);
+        ? spanExclusions(spans)
+        : blockExclusions(block);
     }),
   );
 
@@ -603,7 +613,7 @@ export const appendConfigEntry = (
   if (subsection !== undefined) rejectSubsection(subsection);
   const lines = text.split('\n');
   const tokens = tokenizeConfigLines(lines, text.endsWith('\n'));
-  const target = { section, subsection };
+  const target = makeTarget(section, subsection);
   const at = insertionLine(tokens, target);
   if (at === undefined) {
     const prefix = text === '' ? '' : text.endsWith('\n') ? text : `${text}\n`;

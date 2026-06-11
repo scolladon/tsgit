@@ -183,6 +183,8 @@ const classifyValuelessLine = (
  * Produce a flat token stream of physical-line classifications for git-config text.
  * Each `ConfigToken` carries the physical line index (0-based) or span it occupies.
  * The stream is the writer's surgery unit — every physical line maps to exactly one token.
+ * Degenerate case: empty text (`''`) yields one `blank` token at line 0, because
+ * `''.split('\n')` produces a single empty line; consumers that skip blanks see `[]`.
  *
  * Terminator handling: when `text` ends with `\n`, the final empty element from
  * `split('\n')` is the file terminator and emits no token. Continuation values may
