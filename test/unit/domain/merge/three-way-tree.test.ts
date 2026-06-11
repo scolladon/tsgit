@@ -415,7 +415,7 @@ describe('mergeTrees — contentMerger contract', () => {
     });
   });
 
-  describe('Given a content conflict where both sides flipped the exec bit apart', () => {
+  describe('Given a content conflict where only ours flipped the exec bit', () => {
     describe('When mergeTrees called', () => {
       it('Then the conflict carries mergedMode with ours mode', async () => {
         // Arrange
