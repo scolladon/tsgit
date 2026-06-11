@@ -176,7 +176,7 @@ disjunction with:
 |---|---|---|---|
 | regular | symlink (either order) | any non-gitlink | `distinct-types` with base fields (R1+R2) |
 | differs from theirs | — | — (gitlink anywhere in the pair) | `type-change` as today (R8) |
-| symlink | symlink | any | bare take-ours conflict, no merger call (R5) |
+| symlink | symlink | any | bare take-ours `content` conflict, no merger call (R5, ADR-319) |
 | regular | regular | kind differs | `resolveContentMerge` with a **base-less context** but base-ful conflict/stage fields (R4) |
 | regular | regular | regular | existing route, untouched |
 | gitlink | gitlink | gitlink | `gitlinkConflict`, untouched |
@@ -198,17 +198,13 @@ disjunction with:
   when content is clean); differing side modes ⇒ conflict even on clean
   content, `contentVerdict: 'clean'`-style merged bytes in `conflictContent`.
 - R5 builds a bare conflict (no `conflictContent`, no `contentVerdict`) with
-  all three stage fields. Its `type` is a decision point: reuse
-  `'type-change'` (minimal; the writer fix below makes it byte-faithful) vs
-  `'content'` (matches git's display family). The design assumes
-  **`'type-change'` retained** pending the ADR.
+  all three stage fields, typed **`'content'`** (ADR-319) — matching git's
+  `CONFLICT (content)`/`UU` family. Consumers reconstructing displays must
+  handle the bare (no-`conflictContent`) `content` shape.
 
-ADR-310's "conflict types other than `add-add` never carry `contentVerdict`"
-needs a one-line amendment if R4's clean-content-mode-conflict reuses
-`contentVerdict: 'clean'` on a `'content'`-typed conflict; the alternative is
-leaving the verdict off and letting `conflictContent`-without-markers imply
-it. The design assumes **carry the verdict** (symmetry with 24.9f, cheap
-display reconstruction) pending the ADR.
+R4's clean-content/mode-conflict case carries **`contentVerdict: 'clean'`**
+on its `'content'`-typed conflict per ADR-320, which amends ADR-310's
+"add-add only" clause (symmetry with 24.9f, cheap display reconstruction).
 
 ### Stage emission (`domain/diff/index-diff.ts`)
 
@@ -227,25 +223,21 @@ duplicate-path uniqueness keys are unchanged.
 - Distinct-types conflicts (now also with-base) keep routing to
   `writeDistinctTypesSides` — dual recorded paths, symlink-aware, base never
   written. No change to the writer.
-- The take-ours fallback generalises its mode-awareness: in both
+- Conflict writes become **mode-aware repo-wide** (ADR-321): in both
   `writeConflictToTree` (merge) and `writeMarkedConflict` (apply), `useMode`
-  becomes `conflict.conflictContent === undefined && conflict.ourMode !== undefined`
-  (dropping the `type === 'add-add'` restriction) so every bare take-ours
-  conflict — R5 symlink pairs, gitlink-involved `type-change` whose ours side
-  is a symlink — re-creates ours' kind instead of dumping bytes into a
-  regular file. `modify-delete` keeps its survivor logic (it can carry a
-  theirs-only survivor; mode-aware write for it is out of scope — its ours
-  side, when present, is by definition the unchanged kind on disk).
-- **Exec-bit on conflict writes (Q1/Q2/Q4)** — git materialises every
-  conflict file with the merged/ours **mode**, exec bit included; tsgit's
-  `conflictContent` path writes through `writeWorkingTreeFile` (no mode), a
-  **pre-existing repo-wide gap** for any content conflict on an executable
-  file (Q4 control), merely re-surfaced by Q1/Q2 here. Decision point: widen
-  `useMode` further to "use `ourMode` whenever defined" for non-distinct-types
-  conflict writes (one rule, fixes the whole class) vs defer the exec-bit fix
-  to a backlog follow-up and scope Q1/Q2 interop assertions to bytes + stages
-  (stages already pin 755). The design assumes **defer** pending the ADR —
-  the fix touches every existing conflict write, beyond this item's lens.
+  becomes `conflict.ourMode !== undefined` — for every conflict type, bare or
+  `conflictContent`-bearing.
+  - Bare take-ours conflicts — R5 symlink pairs, gitlink-involved
+    `type-change` whose ours side is a symlink — re-create ours' **kind**
+    (mode 120000 ⇒ `fs.symlink`) instead of dumping bytes into a regular
+    file.
+  - Marker-bytes (`conflictContent`) writes carry the resolved/ours mode, so
+    the **exec bit** survives conflict materialisation (Q1/Q2 here, and the
+    pre-existing repo-wide Q4-control gap for any content conflict on an
+    executable file — fixed in the same rule rather than deferred).
+  - `modify-delete` keeps its survivor logic (it can carry a theirs-only
+    survivor; its present side is by definition the unchanged kind on disk).
+  - Interop assertions pin worktree **bytes, kinds, and modes** (Q1/Q2/Q4).
 - Equivalence comments tied to "take-ours always reproduces bytes already on
   disk" (`conflictBytes`, `outcomeChangesOurs`) must be re-derived: with a
   base, `path`'s content **changes side** (S1: ours' file is replaced by
@@ -296,25 +288,26 @@ no change.
 
 ## Decisions
 
-Proposed, pending ADR ratification (none is pre-decided by an existing ADR):
+Ratified:
 
 1. **Conflict type for with-base distinct types** — reuse `'distinct-types'`
-   with optional base fields (recommended; one type, `baseId` discriminates)
-   vs a new type vs extending `'type-change'` with rename fields.
-2. **`basePath` as an explicit field** (recommended; consumers and stage
-   emission read it directly) vs deriving kind-match placement inside
-   `index-diff.ts`.
-3. **R5 symlink-pair conflict type** — keep `'type-change'` (recommended;
-   minimal surface change) vs `'content'`.
-4. **R5 reach** — cover both base kinds (S9b **and** P3, recommended; one
-   guard, removes the target-content-merge divergence) vs S9b only.
+   with optional base fields; `baseId` discriminates the with-base shape
+   (ADR-318).
+2. **`basePath` as an explicit field** — classification computes the
+   kind-match placement once; stage emission and consumers read it directly
+   (ADR-318).
+3. **R5 symlink-pair conflict type** — **`'content'`**, matching git's
+   display family; `content` conflicts may now be bare (no `conflictContent`)
+   (ADR-319).
+4. **R5 reach** — **both base kinds** (S9b and P3); one guard, removes the
+   symlink-target content-merge divergence in the same change (ADR-319).
 5. **`contentVerdict` on R4's `'content'` conflicts** — carry `'clean'` for
-   the clean-content/mode-conflict case (recommended; amends ADR-310's
-   "add-add only" clause) vs leave it absent.
-6. **Exec-bit on conflict writes** (Q1/Q2/Q4) — defer the repo-wide
-   ours-mode write fix to a backlog follow-up (recommended; pre-existing
-   class, wider than this item) vs fold it into the `useMode` generalisation
-   now.
+   the clean-content/mode-conflict case; amends ADR-310's "add-add only"
+   clause (ADR-320).
+6. **Mode-aware conflict writes repo-wide** — `useMode` is "ours' mode
+   whenever defined" for every conflict write, bare or marker-bytes; fixes
+   the symlink-bytes-as-file bug **and** the pre-existing exec-bit gap in one
+   rule (ADR-321).
 
 ADR-311 (rename mechanics, labels, refusal), ADR-307 (labels), ADR-028
 (MERGE_MSG), ADR-249 (structured output) bind the rest as cited inline.
@@ -327,25 +320,27 @@ ADR-311 (rename mechanics, labels, refusal), ADR-307 (labels), ADR-028
   both side orders × both base kinds), S5 trivial boundary (clean), S6
   cherry-pick + P5 revert suffixes, S7 untracked refusal (nothing written),
   S8/P1 probing (`_0`, then `_1` on double collision), S9 base-less markers,
-  P2 union clean, Q1/Q2 mode conflicts (worktree-**mode** assertion gated on
-  decision 6; bytes + stages pinned regardless), S9b/P3 symlink pairs (ours'
-  symlink in the worktree, three stages), S12 flattening. Stage bytes
-  compared via `lsStage`; worktree via `lstat`/`readlink` + content.
+  P2 union clean, Q1/Q2 mode conflicts (worktree **bytes + modes** + stages,
+  per ADR-321) and the Q4 exec-bit control (755 marker file on a plain
+  content conflict), S9b/P3 symlink pairs (ours' symlink in the worktree,
+  three stages), S12 flattening. Stage bytes compared via `lsStage`; worktree
+  via `lstat`/`readlink` + content.
 - **Unit (`three-way-tree.test.ts`)** — routing table row by row: with-base
   file/symlink pairs build `distinct-types` with `basePath` per kind-match
   (all four side/base permutations); gitlink pairs keep `type-change`;
   symlink pairs bypass the merger (bare conflict, all stage fields); R4 calls
   the merger with `baseId === undefined` while the conflict keeps
   `baseId`/`baseMode`; clean+equal-modes resolves; clean+differing-modes
-  conflicts; `uniquePath` double-collision probes `_1` (kills the cumulative
-  variant); existing no-base cases stay green.
+  conflicts (`'content'` + `contentVerdict: 'clean'`); symlink pairs typed
+  `'content'`; `uniquePath` double-collision probes `_1` (kills the
+  cumulative variant); existing no-base cases stay green.
 - **Unit (`index-diff.test.ts`)** — stage-1 emission at `basePath`;
   two-stage runs at one recorded path sort 1-before-2; re-derived comparator
   expectations.
-- **Unit (materialisers)** — generalised `useMode`: bare `type-change` with
-  symlink ours writes a symlink (both writers); `conflictContent`-bearing
-  conflicts unaffected; `writeDistinctTypesSides` untouched (existing tests
-  stand).
+- **Unit (materialisers)** — generalised `useMode` (ADR-321): bare conflicts
+  with symlink ours write a symlink (both writers); `conflictContent`-bearing
+  conflicts write with ours'/resolved mode (exec bit preserved);
+  `writeDistinctTypesSides` untouched (existing tests stand).
 - **Unit (sequencer)** — `conflictMergeMsg` call sites receive sorted
   recorded paths (cherry-pick/revert/rebase state tests).
 - **Property lens check (per CLAUDE.md)** — the four lenses were applied:
