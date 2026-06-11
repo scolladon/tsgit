@@ -55,3 +55,4 @@ megalinter-reports/
 .env
 .env.local
 .env.*.local
+reports/stryker-incremental.json

@@ -99,7 +99,11 @@ Four review dimensions, **fanned out in parallel** (one message, four `Agent` ca
 
 Each reviewer is a **read-only fable subagent**: worktree path, design doc path, mission to read `git diff main...HEAD` plus whatever surrounding code it needs (Serena already active); no edits, no commits; returns a structured findings list `{ file:line, severity, finding, suggested fix }` (empty list valid — and a converged dimension).
 
-**Convergence loop:** collect the round's findings → the SESSION applies every fix directly (Serena), batched and committed **per dimension**, `npm run validate` after the round's batches → re-launch in parallel a **fresh** reviewer for each dimension that had findings, on the updated diff (a clean dimension stays converged and is not re-run; later rounds see the other dimensions' fixes, which is the point) → repeat until every dimension returns a clean cycle or hits 3 cycles. Fresh per-cycle contexts keep reviewers unbiased by the implementer's history and their own previous pass.
+**Convergence loop:** collect the round's findings → the SESSION applies every fix directly (Serena), batched and committed **per dimension**, `npm run validate` after the round's batches → then converge per dimension by severity:
+
+- **LOW-only dimension:** converged once the session applies its fixes — NO fresh reviewer relaunch just to confirm polish (a relaunch to rubber-stamp LOWs costs a full review pass for predictable empty lists).
+- **MEDIUM+ dimension:** re-launch a **fresh** reviewer — but scoped to the **fix delta**, not the whole branch: its prompt carries the prior round's findings list, the fix commits' diff (`git diff <pre-fix>..HEAD`), and the mission "verify each finding's resolution + review the fix diff itself"; it does NOT re-read the full `main...HEAD` diff (round 1 already deep-read every line — what needs fresh eyes is the fixes).
+- Repeat until every dimension is converged or hits 3 cycles. Round 1 is always full-diff; fresh per-cycle contexts keep reviewers unbiased by the implementer's history and their own previous pass.
 
 Commit fixes per dimension as conventional commits (e.g. `refactor(config): apply code-review fixes`, `fix(security): tighten path validator`, `perf(pack): hoist allocation out of loop`, `test(coverage): close gap surfaced by test-review`).
 
@@ -125,32 +129,43 @@ Then **re-review**, scoped to *only* the refactor diff (`git diff` of the `refac
 
 **Why here (before mutation):** mutation testing scores test strength against the *final* code shape. Refactoring after mutation would invalidate the run and force a costly redo. Refactor → re-review → green validate → then mutation.
 
-## Step 8 — Mutation testing (background; NEVER wait)
+## Step 8 — Mutation testing (scoped to the PR's touched files; PR waits for it)
 
-The moment Step 7's validate is green, start the scoped run **in the background** and IMMEDIATELY proceed to Step 9 — **no step, including PR creation and merge, ever blocks on mutation, local or CI**:
+The moment Step 7's validate is green, start the scoped run **in the background** — scoped to **exactly the code the PR touches**, never the full tree. **Line-range scoping is the default**: derive each file's contiguous changed regions from `git diff main...HEAD` and pass one `<file>:<start>-<end>` entry per region (the same file may appear several times); widen to the whole file only when the diff blankets it (most of the file changed, or the regions are so fragmented the ranges add noise — e.g. a file-wide mechanical rename):
 
 ```bash
-./node_modules/.bin/stryker run --mutate "<comma-separated changed src files>"   # run_in_background
+./node_modules/.bin/stryker run --incremental --mutate "src/a.ts:42-118,src/a.ts:300-340,src/b.ts"   # run_in_background
 ```
 
-(One `--mutate` flag with a comma list — repeated flags override each other. Line-range scoping `src/file.ts:170-345` is faster when the diff is localized.)
+(One `--mutate` flag with a comma list — repeated flags override each other.) Pre-existing-line survivors are out of scope anyway (the triage filters to the diff's lines), so mutating untouched regions of a touched file is pure wasted wall-clock on the PR's critical path — don't pay it.
 
-**When the run lands**, filter survivors/no-coverage to **the diff's lines only** (pre-existing-line survivors are out of scope) and triage with a **sonnet subagent**: kill each with a mutation-resistant test, or document inline as `// equivalent-mutant: <why>` when provably equivalent; commit kills as `test(mutation): <module>`. Known caveat: local Stryker under vitest-4 can report false survivors — verify a survivor is real before writing a test for it. If the run lands after the merge, triage in a tiny follow-up PR. If the project has no mutation config, note it and move on.
+**Incremental mode:** always pass `--incremental` — `stryker.config.json` wires `incrementalFile: reports/stryker-incremental.json` (gitignored, never committed), so the post-triage re-run only re-tests mutants affected by the new kill tests instead of the full scoped set. If results look inconsistent with the cache (stale kills, impossible survivors), rebuild it with `--force`; the vitest-4 false-survivor caveat below applies to incremental runs too.
 
-## Step 9 — Docs refresh (haiku subagent, parallel with mutation) + PR (in-session)
+While it grinds, Step 9's **docs work** may proceed in parallel — but **the PR is NOT created until this run lands and its triage is complete**. Mutation is part of the work, not a post-merge afterthought: the PR must carry the final, mutation-hardened test suite.
 
-While mutation grinds in the background, delegate the **mechanical** documentation to a **haiku subagent** (worktree path, design doc path, the list of public-surface changes, Serena-active note, targeted gates):
+**When the run lands**, filter survivors/no-coverage to **the diff's lines only** (pre-existing-line survivors are out of scope) and triage with a **sonnet subagent**: kill each with a mutation-resistant test, or document inline as `// equivalent-mutant: <why>` when provably equivalent; commit kills as `test(mutation): <module>`, then re-run `npm run validate`. Known caveat: local Stryker under vitest-4 can report false survivors — verify a survivor is real before writing a test for it. If the project has no mutation config, note it and move on.
 
-- `README.md` / `RUNBOOK.md` / `CONTRIBUTING.md` touches and the relevant `docs/get-started/` / `docs/use/` / `docs/understand/` pages — signature blocks, behaviour-note bullets, error tables, ADR/design links (content sourced from the design doc, not invented).
-- **The backlog flip, bare:** `[ ]` / `[~]` → `[x]` plus appending only `· ADRs NNN–NNN · design/<slug>.md`. **NO retrospective prose** — the squash commit and PR body are the permanent record; `git blame` on the line finds them.
-- One commit: `docs(<slug>): refresh pages + backlog flip`.
+**Never destroy the run's worktree while it executes** (no `git sync`/worktree removal until the run has landed — it crashes the run with no verdict, and the CI mutation job dies with the branch at merge, so both verdict sources are lost).
+
+## Step 9 — Docs refresh (haiku subagent, parallel with mutation) + PR (in-session, AFTER mutation triage)
+
+While mutation grinds in the background, handle the documentation. **First check whether any doc pages are actually affected** (public-surface changes, behaviour notes a page states). If none are, skip the haiku agent entirely. If pages need updating, delegate ONLY the page work to a **haiku subagent** (worktree path, design doc path, the list of public-surface changes, Serena-active note, targeted gates):
+
+- `README.md` / `RUNBOOK.md` / `CONTRIBUTING.md` touches and the relevant `docs/get-started/` / `docs/use/` / `docs/understand/` pages — signature blocks, behaviour-note bullets, error tables, ADR/design links (content sourced from the design doc, not invented). One commit: `docs(<slug>): refresh pages`.
 
 The SESSION keeps the synthesis work (these are specs and records other sessions depend on — never haiku):
 
+- **The backlog flip, bare** (session-owned — it's a one-line Edit, and a delegated agent has rewritten the entry body against instructions before): `[ ]` / `[~]` → `[x]` plus appending only `· ADRs NNN–NNN · design/<slug>.md`. **NO retrospective prose, NO rewording the entry body** — the squash commit and PR body are the permanent record; `git blame` on the line finds them. Commit: `docs(<slug>): backlog flip` (or fold into the follow-up-entries commit).
 - **New backlog follow-up entries** surfaced during the run — full context, cross-links (`surfaced by`/`same shape as`), placed in dependency order. They are what a future `/apply-workflow <id>` resolves from.
 - **The PR body** — now the single source of truth for what shipped: decisions + ADR numbers, design doc path, divergences, pinned behaviours, test plan. Write it accordingly.
 
-Then push the branch with `-u origin` and run `gh pr create` with that body. Do not wait for the mutation run to create the PR — survivor kills land as extra commits on the open PR (or a follow-up PR post-merge).
+**Pre-PR gate (all must hold before `gh pr create`):**
+
+1. Docs committed, backlog updated.
+2. Step 8's mutation run landed + survivors triaged + validate green.
+3. **Deps freshness:** `npm outdated` is clean — the CI `deps` job gates on it, so catching it here saves a full CI round. If anything is outdated, bump it in its own `chore(deps): bump <pkgs>` commit and re-validate (known publisher-bug false flags, e.g. `@ls-lint/ls-lint` same-version, are local-only and ignorable).
+
+Then push the branch with `-u origin` and run `gh pr create` with the PR body.
 
 ## Step 10 — Merge + cleanup
 
@@ -170,8 +185,8 @@ After `git sync` removes the worktree, **clean up Serena's project entry** for i
 
 ## Hard rules
 
-- **Delegation map (fixed):** design (2) + plan (4) + review dimensions (6, read-only, 4 in parallel, per-dimension convergence ≤3) → `fable`; implementation slices (5, one per slice, sequential) + scoped refactor execution (7) + mutation triage (8) → `sonnet`; mechanical docs + bare backlog flip (9) → `haiku`. Refactor *judgment* (candidate scan + scoping) stays with the session — only the scoped execution is delegated. The SESSION keeps: input resolution, branch setup, the ADR conversation, slice verification, review-fix application, all phase-boundary validates, backlog follow-up authoring, the PR body, CI monitoring, merge + cleanup. Review agents never edit; only the session edits during review. The user can interrupt at any point and steer mid-flight.
-- **Never wait on mutation testing** — local run backgrounds at Step 8 and the workflow continues through docs/PR/merge; the `mutation` CI job is non-blocking; survivors are triaged when the run lands, wherever the workflow is by then.
+- **Delegation map (fixed):** design (2) + plan (4) + review dimensions (6, read-only, 4 in parallel, per-dimension convergence ≤3) → `fable`; implementation slices (5, one per slice, sequential) + scoped refactor execution (7) + mutation triage (8) → `sonnet`; mechanical doc-page updates (9, only when pages are actually affected) → `haiku`. Refactor *judgment* (candidate scan + scoping) stays with the session — only the scoped execution is delegated. The SESSION keeps: input resolution, branch setup, the ADR conversation, slice verification, review-fix application, all phase-boundary validates, the backlog flip, backlog follow-up authoring, the PR body, CI monitoring, merge + cleanup. Review agents never edit; only the session edits during review. The user can interrupt at any point and steer mid-flight.
+- **Mutation gates the PR** — the run is scoped to exactly the src files the PR touches (never the full tree), backgrounds at Step 8 so docs can parallel it, and the PR is created only after the run lands, survivors are triaged (killed or documented equivalent), and validate is green. Never destroy the worktree while the run executes. The `mutation` CI job stays non-blocking at merge time (the local triage is the gate).
 - **Never skip the ADR step** when user-judgment was required to disambiguate the design.
 - **Never skip the four review dimensions** before pushing.
 - **Never skip the architecture refactor pass** (Step 7). It may be a no-op, but a no-op must carry a written justification — never a silent skip. Refactor commits are atomic and behavior-preserving, and are re-reviewed before mutation.
