@@ -1405,6 +1405,39 @@ describe('primitives/update-config', () => {
         });
       });
     });
+
+    describe('Given an existing entry at EOF without a trailing newline', () => {
+      describe('When the entry is replaced', () => {
+        it('Then the rewritten entry is terminated with a newline', () => {
+          // Arrange — file ends with the replaced entry, no trailing LF
+          const sut = setConfigEntryInText;
+          const text = '[a]\n\tk = old';
+
+          // Act
+          const result = sut(text, 'a', undefined, 'k', 'new');
+
+          // Assert — git's writer always terminates the rewritten pair
+          expect(result).toBe('[a]\n\tk = new\n');
+        });
+      });
+    });
+
+    describe('Given a trailing section in a file without a final newline', () => {
+      describe('When its only entry is unset and the block is pruned', () => {
+        it('Then the kept prefix retains its newline terminator', () => {
+          // Arrange — [a] is the last block and the file lacks a final LF
+          const sut = removeConfigEntry;
+          const text = '[b]\n\tk = v\n[a]\n\tkey = one';
+
+          // Act
+          const result = sut(text, 'a', undefined, 'key');
+
+          // Assert — git copies the bytes before the removed region verbatim,
+          // including the newline that followed the last kept line
+          expect(result).toBe('[b]\n\tk = v\n');
+        });
+      });
+    });
   });
 
   describe('updateConfigEntries', () => {

@@ -1381,6 +1381,59 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
     });
   });
 
+  describe('Given twin repos whose last entry sits at EOF without a trailing newline', () => {
+    describe('When git and tsgit each replace that entry', () => {
+      it('Then the resulting bytes are identical — the rewritten entry is newline-terminated', async () => {
+        // Arrange — the replaced span reaches EOF of a no-final-LF file
+        const startingBytes = '[core]\n\trepositoryformatversion = 0\n[a]\n\tk = old';
+        const oursConfigPath = path.join(pair.ours, '.git', 'config');
+        const peerConfigPath = path.join(pair.peer, '.git', 'config');
+        await writeFile(oursConfigPath, startingBytes, 'utf8');
+        await writeFile(peerConfigPath, startingBytes, 'utf8');
+
+        // Act — canonical git
+        const gitResult = tryRunGit(['config', '--file', peerConfigPath, 'a.k', 'new']);
+        expect(gitResult.ok, `git config set failed: ${gitResult.stderr}`).toBe(true);
+
+        // Act — tsgit
+        const ctx = createNodeContext({ workDir: pair.ours });
+        await configSet(ctx, { key: 'a.k', value: 'new', scope: 'local' });
+
+        // Assert — full file byte compare
+        const oursConfig = await readFile(oursConfigPath, 'utf8');
+        const peerConfig = await readFile(peerConfigPath, 'utf8');
+        expect(oursConfig).toBe(peerConfig);
+      }, 60_000);
+    });
+  });
+
+  describe('Given twin repos whose trailing [a] block ends a file without a final newline', () => {
+    describe('When git and tsgit each unset the only a.key entry', () => {
+      it('Then the resulting bytes are identical — the kept prefix stays newline-terminated', async () => {
+        // Arrange — pruning the trailing block must keep the newline that
+        // followed the last kept line
+        const startingBytes = '[core]\n\trepositoryformatversion = 0\n[a]\n\tkey = one';
+        const oursConfigPath = path.join(pair.ours, '.git', 'config');
+        const peerConfigPath = path.join(pair.peer, '.git', 'config');
+        await writeFile(oursConfigPath, startingBytes, 'utf8');
+        await writeFile(peerConfigPath, startingBytes, 'utf8');
+
+        // Act — canonical git
+        const gitResult = tryRunGit(['config', '--file', peerConfigPath, '--unset', 'a.key']);
+        expect(gitResult.ok, `git config unset failed: ${gitResult.stderr}`).toBe(true);
+
+        // Act — tsgit
+        const ctx = createNodeContext({ workDir: pair.ours });
+        await configUnset(ctx, { key: 'a.key', scope: 'local' });
+
+        // Assert — full file byte compare
+        const oursConfig = await readFile(oursConfigPath, 'utf8');
+        const peerConfig = await readFile(peerConfigPath, 'utf8');
+        expect(oursConfig).toBe(peerConfig);
+      }, 60_000);
+    });
+  });
+
   describe('Given twin repos where a sole [a] section is removed after unsetting its only key', () => {
     describe('When git and tsgit each unset a.key', () => {
       it('Then the [a] block vanishes entirely — empty-section pruning in situ', async () => {

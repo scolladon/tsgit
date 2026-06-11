@@ -191,10 +191,21 @@ const classifyValuelessLine = (
  * Throws `CONFIG_PARSE_ERROR` for malformed headers, unknown value escapes, unclosed
  * quotes, and invalid key grammar — mirroring `parseIniSections` exactly.
  */
-export const tokenizeConfig = (text: string, source?: string): ReadonlyArray<ConfigToken> => {
+export const tokenizeConfig = (text: string, source?: string): ReadonlyArray<ConfigToken> =>
+  tokenizeConfigLines(text.split('\n'), text.endsWith('\n'), source);
+
+/**
+ * Same as `tokenizeConfig` over pre-split lines, so writers that already hold
+ * the line array do not split the text twice. `endsWithNewline` tells whether
+ * the final array element is the file terminator rather than a content line.
+ */
+export const tokenizeConfigLines = (
+  lines: ReadonlyArray<string>,
+  endsWithNewline: boolean,
+  source?: string,
+): ReadonlyArray<ConfigToken> => {
   const tokens: ConfigToken[] = [];
-  const lines = text.split('\n');
-  const limit = text.endsWith('\n') ? lines.length - 1 : lines.length;
+  const limit = endsWithNewline ? lines.length - 1 : lines.length;
   let lineIdx = 0;
   while (lineIdx < limit) {
     const line = lines[lineIdx] as string;

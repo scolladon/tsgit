@@ -25,7 +25,7 @@ import {
   invalidateConfigCache,
   parseIniSections,
   parseSectionHeader,
-  tokenizeConfig,
+  tokenizeConfigLines,
 } from './config-read.js';
 import { invalidateScopedConfigCache } from './config-scoped-read.js';
 import { collectValues } from './internal/config-key.js';
@@ -142,15 +142,12 @@ const findEntry = (
   target: SectionTarget,
   key: string,
 ): EntryToken | undefined => {
+  const keyLc = key.toLowerCase();
   let inTarget = false;
   for (const token of tokens) {
     if (token.kind === 'header') {
       inTarget = matchesTarget(token, target);
-    } else if (
-      inTarget &&
-      token.kind === 'entry' &&
-      token.key.toLowerCase() === key.toLowerCase()
-    ) {
+    } else if (inTarget && token.kind === 'entry' && token.key.toLowerCase() === keyLc) {
       return token;
     }
   }
@@ -171,7 +168,7 @@ const insertionLine = (
   let blockInsert: number | undefined;
   for (const token of tokens) {
     if (token.kind === 'header') {
-      if (inTarget && blockInsert !== undefined) {
+      if (inTarget) {
         result = blockInsert;
       }
       inTarget = matchesTarget(token, target);
@@ -180,7 +177,7 @@ const insertionLine = (
       blockInsert = token.endLine;
     }
   }
-  if (inTarget && blockInsert !== undefined) {
+  if (inTarget) {
     result = blockInsert;
   }
   return result;
@@ -294,7 +291,7 @@ export const setConfigEntryInText = (
   rejectValueControlChars(value);
   if (subsection !== undefined) rejectSubsection(subsection);
   const lines = text.split('\n');
-  const tokens = tokenizeConfig(text);
+  const tokens = tokenizeConfigLines(lines, text.endsWith('\n'));
   const target = { section, subsection };
   const existing = findEntry(tokens, target, key);
   if (existing !== undefined) {
@@ -304,7 +301,10 @@ export const setConfigEntryInText = (
       renderEntry(key, value),
       ...lines.slice(end),
     ];
-    return withTrailingNewlineRestored(lines, out).join('\n');
+    // git's write_pair always terminates the rewritten entry with LF, even
+    // when the replaced span reached EOF of a file lacking a final newline.
+    const terminated = end === lines.length ? [...out, ''] : out;
+    return terminated.join('\n');
   }
   const at = insertionLine(tokens, target);
   if (at === undefined) {
@@ -344,10 +344,10 @@ const buildTokenBlocks = (tokens: ReadonlyArray<ConfigToken>): ReadonlyArray<Tok
 /** Collect the entry spans in `block` whose key matches `key` (case-insensitive). */
 const matchingEntrySpans = (
   block: TokenBlock,
-  key: string,
+  keyLc: string,
 ): ReadonlyArray<{ startLine: number; endLine: number }> =>
   block.bodyTokens.flatMap((t) =>
-    t.kind === 'entry' && t.key.toLowerCase() === key.toLowerCase()
+    t.kind === 'entry' && t.key.toLowerCase() === keyLc
       ? [{ startLine: t.startLine, endLine: t.endLine }]
       : [],
   );
@@ -356,39 +356,31 @@ const matchingEntrySpans = (
  * True when the block retains content that prevents empty-block pruning:
  * a comment body token, a non-matched entry, or an inline comment on the header.
  */
-const blockHasProtectingContent = (block: TokenBlock, key: string): boolean =>
+const blockHasProtectingContent = (block: TokenBlock, keyLc: string): boolean =>
   block.header.hasComment ||
   block.bodyTokens.some(
-    (t) =>
-      t.kind === 'comment' ||
-      (t.kind === 'entry' && t.key.toLowerCase() !== key.toLowerCase()) ||
-      (t.kind === 'entry' && t.key === ''),
+    (t) => t.kind === 'comment' || (t.kind === 'entry' && t.key.toLowerCase() !== keyLc),
   );
 
 /** Mark every physical line of the block (header + all body) as excluded. */
-const excludeBlockLines = (block: TokenBlock, totalLines: number, excluded: Set<number>): void => {
-  excluded.add(block.header.line);
-  for (const token of block.bodyTokens) {
-    if (token.kind === 'blank') {
-      excluded.add(token.line);
-    } else if (token.kind === 'entry') {
-      const end = Math.min(token.endLine, totalLines);
-      for (let l = token.startLine; l < end; l++) excluded.add(l);
-    }
-  }
-};
+const blockExclusions = (block: TokenBlock, totalLines: number): ReadonlyArray<number> => [
+  block.header.line,
+  ...block.bodyTokens.flatMap((token) => {
+    if (token.kind === 'blank') return [token.line];
+    if (token.kind === 'entry') return spanExclusions([token], totalLines);
+    return [];
+  }),
+];
 
 /** Mark every physical line of each span as excluded. */
-const excludeSpanLines = (
+const spanExclusions = (
   spans: ReadonlyArray<{ startLine: number; endLine: number }>,
   totalLines: number,
-  excluded: Set<number>,
-): void => {
-  for (const span of spans) {
+): ReadonlyArray<number> =>
+  spans.flatMap((span) => {
     const end = Math.min(span.endLine, totalLines);
-    for (let l = span.startLine; l < end; l++) excluded.add(l);
-  }
-};
+    return Array.from({ length: end - span.startLine }, (_, i) => span.startLine + i);
+  });
 
 /**
  * Remove every entry span for `key` from the section
@@ -414,23 +406,26 @@ export const removeConfigEntry = (
 
   const lines = text.split('\n');
   const target: SectionTarget = { section, subsection };
-  const blocks = buildTokenBlocks(tokenizeConfig(text));
-  const excluded = new Set<number>();
-
-  for (const block of blocks) {
-    if (!matchesTarget(block.header, target)) continue;
-    const spans = matchingEntrySpans(block, key);
-    if (spans.length === 0) continue;
-    if (blockHasProtectingContent(block, key)) {
-      excludeSpanLines(spans, lines.length, excluded);
-    } else {
-      excludeBlockLines(block, lines.length, excluded);
-    }
-  }
+  const blocks = buildTokenBlocks(tokenizeConfigLines(lines, text.endsWith('\n')));
+  const keyLc = key.toLowerCase();
+  const excluded = new Set(
+    blocks.flatMap((block) => {
+      if (!matchesTarget(block.header, target)) return [];
+      const spans = matchingEntrySpans(block, keyLc);
+      if (spans.length === 0) return [];
+      return blockHasProtectingContent(block, keyLc)
+        ? spanExclusions(spans, lines.length)
+        : blockExclusions(block, lines.length);
+    }),
+  );
 
   if (excluded.size === 0) return text;
   const kept = lines.filter((_, idx) => !excluded.has(idx));
-  return withTrailingNewlineRestored(lines, kept).join('\n');
+  // When the removed region reached EOF, every kept line was followed by LF
+  // in the original, so the output keeps that terminator — like git, which
+  // copies the bytes before the removed region verbatim.
+  const out = excluded.has(lines.length - 1) ? [...kept, ''] : kept;
+  return out.join('\n');
 };
 
 /**
@@ -544,9 +539,10 @@ export type ConfigOperation =
     }
   | {
       /**
-       * Insert a fresh `key = value` line after the section header WITHOUT
-       * replacing any existing entry with the same key. Use for multi-value
-       * keys (`fetch`) where every call must yield an additional line.
+       * Insert a fresh `key = value` line at the end of the last matching
+       * section block WITHOUT replacing any existing entry with the same key.
+       * Use for multi-value keys (`fetch`) where every call must yield an
+       * additional line.
        */
       readonly kind: 'appendEntry';
       readonly section: string;
@@ -606,7 +602,7 @@ export const appendConfigEntry = (
   rejectValueControlChars(value);
   if (subsection !== undefined) rejectSubsection(subsection);
   const lines = text.split('\n');
-  const tokens = tokenizeConfig(text);
+  const tokens = tokenizeConfigLines(lines, text.endsWith('\n'));
   const target = { section, subsection };
   const at = insertionLine(tokens, target);
   if (at === undefined) {
