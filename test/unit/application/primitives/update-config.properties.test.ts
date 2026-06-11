@@ -212,8 +212,9 @@ describe('update-config surgery-preservation invariants', () => {
   describe('Given an arbitrary config file and a key drawn from the generator pool', () => {
     describe('When setConfigEntryInText sets (s, sub, k) to a new value v', () => {
       it('Then reading back the output, the first (s, sub, k) value equals v and every other entry is unchanged in order and value', () => {
-        // Arrange — `sut` is the function under test; `configFile()` assembles
-        // 1–4 blocks from a small section pool so hits and misses both occur.
+        // Arrange — `sut` is the function under test; `configFileWithTarget()`
+        // assembles 1–4 blocks from a small section pool and biases the key
+        // toward ones present in the file so existing-entry paths dominate.
         const sut = setConfigEntryInText;
         fc.assert(
           fc.property(configFileWithTarget(), ({ file, section, key }) => {

@@ -1437,6 +1437,24 @@ describe('primitives/update-config', () => {
       });
     });
 
+    describe('Given one block holding the same key twice', () => {
+      describe('When setConfigEntryInText replaces the key', () => {
+        it('Then only the first occurrence is rewritten and the second survives', () => {
+          // Arrange — git itself refuses a bare set on a multi-valued key
+          // (the configSet porcelain mirrors that refusal); the primitive's
+          // contract is first-match-only, never replace-all
+          const sut = setConfigEntryInText;
+          const text = '[a]\n\tkey = x\n\tkey = y\n';
+
+          // Act
+          const result = sut(text, 'a', undefined, 'key', 'NEW');
+
+          // Assert — first occurrence replaced, second untouched
+          expect(result).toBe('[a]\n\tkey = NEW\n\tkey = y\n');
+        });
+      });
+    });
+
     describe('Given text with an unclosed value quote', () => {
       describe('When setConfigEntryInText runs standalone', () => {
         it('Then CONFIG_PARSE_ERROR carries the 1-based line', () => {
@@ -1489,23 +1507,6 @@ describe('primitives/update-config', () => {
 
           // Assert — git's writer always terminates the rewritten pair
           expect(result).toBe('[a]\n\tk = new\n');
-        });
-      });
-    });
-
-    describe('Given a trailing section in a file without a final newline', () => {
-      describe('When its only entry is unset and the block is pruned', () => {
-        it('Then the kept prefix retains its newline terminator', () => {
-          // Arrange — [a] is the last block and the file lacks a final LF
-          const sut = removeConfigEntry;
-          const text = '[b]\n\tk = v\n[a]\n\tkey = one';
-
-          // Act
-          const result = sut(text, 'a', undefined, 'key');
-
-          // Assert — git copies the bytes before the removed region verbatim,
-          // including the newline that followed the last kept line
-          expect(result).toBe('[b]\n\tk = v\n');
         });
       });
     });
@@ -1780,6 +1781,23 @@ describe('primitives/update-config', () => {
           const result = sut(text, 'a', undefined, 'key');
 
           // Assert — [a] last block pruned; [b] block and trailing newline preserved
+          expect(result).toBe('[b]\n\tk = v\n');
+        });
+      });
+    });
+
+    describe('Given a trailing section in a file without a final newline', () => {
+      describe('When its only entry is unset and the block is pruned', () => {
+        it('Then the kept prefix retains its newline terminator', () => {
+          // Arrange — [a] is the last block and the file lacks a final LF
+          const sut = removeConfigEntry;
+          const text = '[b]\n\tk = v\n[a]\n\tkey = one';
+
+          // Act
+          const result = sut(text, 'a', undefined, 'key');
+
+          // Assert — git copies the bytes before the removed region verbatim,
+          // including the newline that followed the last kept line
           expect(result).toBe('[b]\n\tk = v\n');
         });
       });

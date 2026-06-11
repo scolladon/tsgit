@@ -3368,11 +3368,15 @@ describe('primitives/config-read tokenizeConfig', () => {
 
       // Act
       const withComment = sut('[a] # note\n');
+      const withSemicolonComment = sut('[a] ; note\n');
       const withoutComment = sut('[a]\n');
       const quotedHash = sut('[a "x#y"]\n');
 
       // Assert
       expect((withComment[0] as Extract<ConfigToken, { kind: 'header' }>).hasComment).toBe(true);
+      expect((withSemicolonComment[0] as Extract<ConfigToken, { kind: 'header' }>).hasComment).toBe(
+        true,
+      );
       expect((withoutComment[0] as Extract<ConfigToken, { kind: 'header' }>).hasComment).toBe(
         false,
       );
@@ -3500,24 +3504,15 @@ describe('primitives/config-read tokenizeConfig', () => {
         // Arrange
         const sut = tokenizeConfig;
 
-        // Act
-        let error: unknown;
+        // Act + Assert
         try {
           sut('[s "a" x]\n\tk = v\n');
-        } catch (e) {
-          error = e;
+          expect.unreachable('tokenizeConfig must refuse a malformed header');
+        } catch (err) {
+          if (!(err instanceof TsgitError)) throw err;
+          expect(err.data.code).toBe('CONFIG_PARSE_ERROR');
+          expect(err.data).toMatchObject({ line: 1, partialSectionName: 's.a' });
         }
-
-        // Assert
-        expect(error).toBeInstanceOf(Error);
-        expect(
-          (error as { data?: { code?: string; line?: number; partialSectionName?: string } }).data
-            ?.code,
-        ).toBe('CONFIG_PARSE_ERROR');
-        expect((error as { data?: { line?: number } }).data?.line).toBe(1);
-        expect((error as { data?: { partialSectionName?: string } }).data?.partialSectionName).toBe(
-          's.a',
-        );
       });
     });
   });
@@ -3528,18 +3523,15 @@ describe('primitives/config-read tokenizeConfig', () => {
         // Arrange
         const sut = tokenizeConfig;
 
-        // Act
-        let error: unknown;
+        // Act + Assert
         try {
           sut('[a]\nbad!key\n');
-        } catch (e) {
-          error = e;
+          expect.unreachable('tokenizeConfig must refuse a bad key line');
+        } catch (err) {
+          if (!(err instanceof TsgitError)) throw err;
+          expect(err.data.code).toBe('CONFIG_PARSE_ERROR');
+          expect(err.data).toMatchObject({ line: 2 });
         }
-
-        // Assert
-        expect(error).toBeInstanceOf(Error);
-        expect((error as { data?: { code?: string } }).data?.code).toBe('CONFIG_PARSE_ERROR');
-        expect((error as { data?: { line?: number } }).data?.line).toBe(2);
       });
     });
   });
@@ -3550,18 +3542,15 @@ describe('primitives/config-read tokenizeConfig', () => {
         // Arrange
         const sut = tokenizeConfig;
 
-        // Act
-        let error: unknown;
+        // Act + Assert
         try {
           sut('[a]\nk = "unclosed\n');
-        } catch (e) {
-          error = e;
+          expect.unreachable('tokenizeConfig must refuse an unclosed quote');
+        } catch (err) {
+          if (!(err instanceof TsgitError)) throw err;
+          expect(err.data.code).toBe('CONFIG_PARSE_ERROR');
+          expect(err.data).toMatchObject({ line: 2 });
         }
-
-        // Assert
-        expect(error).toBeInstanceOf(Error);
-        expect((error as { data?: { code?: string } }).data?.code).toBe('CONFIG_PARSE_ERROR');
-        expect((error as { data?: { line?: number } }).data?.line).toBe(2);
       });
     });
   });
@@ -3573,23 +3562,23 @@ describe('primitives/config-read tokenizeConfig', () => {
         const sut = tokenizeConfig;
         const source = 'my-config';
 
-        // Act — also verify parseIniSections carries source for same input
-        let tokenizeError: unknown;
-        let parseError: unknown;
+        // Act + Assert — tokenizeConfig carries the source label
         try {
           sut('[s "a" x]\n\tk = v\n', source);
-        } catch (e) {
-          tokenizeError = e;
-        }
-        try {
-          parseIniSections('[s "a" x]\n\tk = v\n', source);
-        } catch (e) {
-          parseError = e;
+          expect.unreachable('tokenizeConfig must refuse a malformed header');
+        } catch (err) {
+          if (!(err instanceof TsgitError)) throw err;
+          expect(err.data).toMatchObject({ code: 'CONFIG_PARSE_ERROR', source });
         }
 
-        // Assert
-        expect((tokenizeError as { data?: { source?: string } }).data?.source).toBe(source);
-        expect((parseError as { data?: { source?: string } }).data?.source).toBe(source);
+        // Act + Assert — parseIniSections carries the same source label
+        try {
+          parseIniSections('[s "a" x]\n\tk = v\n', source);
+          expect.unreachable('parseIniSections must refuse a malformed header');
+        } catch (err) {
+          if (!(err instanceof TsgitError)) throw err;
+          expect(err.data).toMatchObject({ code: 'CONFIG_PARSE_ERROR', source });
+        }
       });
     });
   });

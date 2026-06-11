@@ -147,20 +147,17 @@ const arbBodyItem = (): fc.Arbitrary<string> =>
           // header-lookalike tail (exercises L-case: looks like `[section]`)
           fc.constantFrom('[lookalike]', '[b]', '[zed "x"]').map((h) => `${h}\n`),
         ),
-        // optional second tail (non-final tails may chain via `\`)
-        fc.option(
-          arbSafeValue().map((v) => `   ${v}\n`),
-          { nil: undefined },
-        ),
+        // optional bare mid value — when present the entry chains two tails
+        fc.option(arbSafeValue(), { nil: undefined }),
       )
-      .map(([k, v, tail1, tail2]) => {
+      .map(([k, v, finalTail, midValue]) => {
         const head = `\t${k} = ${v}`;
-        if (tail2 !== undefined) {
-          // two tails: head\<LF>   mid\<LF>   final<LF>
-          return `${head}\\\n   ${tail2.trim()}\\\n${tail1}`;
+        if (midValue !== undefined) {
+          // two tails: head\<LF>   mid\<LF>finalTail<LF>
+          return `${head}\\\n   ${midValue}\\\n${finalTail}`;
         }
-        // one tail: head\<LF>tail<LF>
-        return `${head}\\\n${tail1}`;
+        // one tail: head\<LF>finalTail<LF>
+        return `${head}\\\n${finalTail}`;
       }),
     // comment line
     fc.constantFrom('# a comment\n', '; another comment\n'),
