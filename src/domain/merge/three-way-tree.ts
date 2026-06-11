@@ -167,17 +167,13 @@ async function resolveContentMerge(
   // used by a well-behaved callback.
   const result = await contentMerger(ctx, undefined, EMPTY_BYTES, EMPTY_BYTES);
   if (result.status === 'clean') {
-    if (result.bytes.length > MAX_CONFLICT_OUTPUT_BYTES) {
-      throw invalidMergeInput('contentMerger returned oversize clean bytes');
-    }
+    enforceOutputCap(result.bytes, 'clean bytes');
     if (result.id !== undefined) {
       return { status: 'resolved-known', path, id: result.id, mode };
     }
     return { status: 'resolved-merged', path, bytes: result.bytes, mode };
   }
-  if (result.markedBytes.length > MAX_CONFLICT_OUTPUT_BYTES) {
-    throw invalidMergeInput('contentMerger returned oversize marked bytes');
-  }
+  enforceOutputCap(result.markedBytes, 'marked bytes');
   return conflictOutcome({
     type: result.conflictType,
     path,
