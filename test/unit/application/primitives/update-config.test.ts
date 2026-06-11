@@ -1517,15 +1517,15 @@ describe('primitives/update-config', () => {
 
     describe('Given the same key in two different sections', () => {
       describe('When removeConfigEntry targets one section', () => {
-        it('Then the other section is preserved byte-for-byte', () => {
+        it('Then the emptied section is pruned and the other section preserved byte-for-byte', () => {
           // Arrange
           const text = '[remote "origin"]\n\turl = O\n[remote "upstream"]\n\turl = U\n';
 
           // Act
           const sut = removeConfigEntry(text, 'remote', 'origin', 'url');
 
-          // Assert
-          expect(sut).toBe('[remote "origin"]\n[remote "upstream"]\n\turl = U\n');
+          // Assert — the emptied origin block is pruned; upstream preserved verbatim.
+          expect(sut).toBe('[remote "upstream"]\n\turl = U\n');
         });
       });
     });
@@ -1539,8 +1539,8 @@ describe('primitives/update-config', () => {
           // Act
           const sut = removeConfigEntry(text, 'remote', 'origin', 'url');
 
-          // Assert — case-insensitive match removed the entry.
-          expect(sut).toBe('[remote "origin"]\n');
+          // Assert — sole entry removed, sole block pruned → empty file.
+          expect(sut).toBe('');
         });
       });
     });
@@ -1571,6 +1571,218 @@ describe('primitives/update-config', () => {
 
           // Assert — `key` line gone; surrounding lines untouched.
           expect(sut).toBe('[a]\n\tbefore = x\n\tafter = y\n');
+        });
+      });
+    });
+
+    describe('Given a multi-line entry (backslash continuation) with a neighbour key', () => {
+      describe('When removeConfigEntry targets the multi-line key', () => {
+        it('Then the whole continuation span is removed', () => {
+          // Arrange — row B: head + tail both belong to key = "one   two"
+          const text = '[a]\n\tkey = one\\\n   two\n\tother = x\n';
+
+          // Act
+          const sut = removeConfigEntry(text, 'a', undefined, 'key');
+
+          // Assert — header + other line kept, no orphan tail
+          expect(sut).toBe('[a]\n\tother = x\n');
+        });
+      });
+    });
+
+    describe('Given multiple multi-line and single-line occurrences of the same key', () => {
+      describe('When removeConfigEntry targets the key', () => {
+        it('Then every occurrence full span is removed', () => {
+          // Arrange — row F
+          const text =
+            '[a]\n\tkey = one\\\n   two\n\tmid = m\n\tkey = three\n\tkey = four\\\n   five\n';
+
+          // Act
+          const sut = removeConfigEntry(text, 'a', undefined, 'key');
+
+          // Assert — only mid = m survives
+          expect(sut).toBe('[a]\n\tmid = m\n');
+        });
+      });
+    });
+
+    describe('Given a multi-line entry whose tail looks like a section header and a following real entry', () => {
+      describe('When removeConfigEntry targets the entry that physically follows the lookalike tail', () => {
+        it('Then only the real entry line is removed, the lookalike header tail stays', () => {
+          // Arrange — row L2: [x] on the third physical line is a continuation tail of [a].note,
+          // not a real header; key = old follows and is the real entry in [a]'s token block.
+          const text = '[a]\n\tnote = v\\\n[x]\n\tkey = old\n';
+
+          // Act — targeting a.key (not x.key) because the tokenizer correctly sees [x] as a tail
+          const sut = removeConfigEntry(text, 'a', undefined, 'key');
+
+          // Assert — key = old removed; the continuation [x] line stays as part of note's span
+          expect(sut).toBe('[a]\n\tnote = v\\\n[x]\n');
+        });
+      });
+    });
+
+    describe('Given a block whose only entry is a multi-line key', () => {
+      describe('When removeConfigEntry empties it', () => {
+        it('Then a block emptied of its only entry loses its header too', () => {
+          // Arrange — row D
+          const text = '[a]\n\tkey = one\\\n   two\n[b]\n\tk = v\n';
+
+          // Act
+          const sut = removeConfigEntry(text, 'a', undefined, 'key');
+
+          // Assert — [a] block pruned entirely
+          expect(sut).toBe('[b]\n\tk = v\n');
+        });
+      });
+    });
+
+    describe('Given a block whose only entry is a single-line key', () => {
+      describe('When removeConfigEntry empties it', () => {
+        it('Then a block emptied of its single-line entry loses its header too', () => {
+          // Arrange — row D2
+          const text = '[a]\n\tkey = one\n[b]\n\tk = v\n';
+
+          // Act
+          const sut = removeConfigEntry(text, 'a', undefined, 'key');
+
+          // Assert — [a] block pruned
+          expect(sut).toBe('[b]\n\tk = v\n');
+        });
+      });
+    });
+
+    describe('Given a block that is last in the file and its only entry is removed', () => {
+      describe('When removeConfigEntry empties the last block', () => {
+        it('Then the emptied last block of the file is removed and the trailing newline preserved', () => {
+          // Arrange — row D3
+          const text = '[b]\n\tk = v\n[a]\n\tkey = one\\\n   two\n';
+
+          // Act
+          const sut = removeConfigEntry(text, 'a', undefined, 'key');
+
+          // Assert — [a] last block pruned; [b] block and trailing newline preserved
+          expect(sut).toBe('[b]\n\tk = v\n');
+        });
+      });
+    });
+
+    describe('Given a block with a comment and a key entry', () => {
+      describe('When removeConfigEntry empties the entries', () => {
+        it('Then a comment line in the block keeps the header', () => {
+          // Arrange — row D4: comment protects the block
+          const text = '[a]\n\t# keep me\n\tkey = one\\\n   two\n[b]\n\tk = v\n';
+
+          // Act
+          const sut = removeConfigEntry(text, 'a', undefined, 'key');
+
+          // Assert — header + comment kept; blank lines gone with the entry
+          expect(sut).toBe('[a]\n\t# keep me\n[b]\n\tk = v\n');
+        });
+      });
+    });
+
+    describe('Given a block with multiple key occurrences and unset-all', () => {
+      describe('When removeConfigEntry removes all occurrences', () => {
+        it('Then unset-all prunes the emptied block', () => {
+          // Arrange — row D5
+          const text = '[a]\n\tkey = x\n\tkey = y\\\n   tail\n[b]\n\tk = v\n';
+
+          // Act
+          const sut = removeConfigEntry(text, 'a', undefined, 'key');
+
+          // Assert — [a] block entirely pruned
+          expect(sut).toBe('[b]\n\tk = v\n');
+        });
+      });
+    });
+
+    describe('Given a block with a blank line and its only entry is removed', () => {
+      describe('When removeConfigEntry empties it', () => {
+        it('Then blank lines do not protect the header and are removed with it', () => {
+          // Arrange — row D6
+          const text = '[a]\n\tkey = one\n\n[b]\n\tk = v\n';
+
+          // Act
+          const sut = removeConfigEntry(text, 'a', undefined, 'key');
+
+          // Assert — blank does not protect; entire [a] block pruned
+          expect(sut).toBe('[b]\n\tk = v\n');
+        });
+      });
+    });
+
+    describe('Given a block with a blank line followed by a comment, and entry removed', () => {
+      describe('When removeConfigEntry empties the entries', () => {
+        it('Then a comment keeps the header and its blank lines', () => {
+          // Arrange — row D8: comment after blank → block kept (blank + comment both survive)
+          const text = '[a]\n\tkey = one\n\n# c\n[b]\n\tk = v\n';
+
+          // Act
+          const sut = removeConfigEntry(text, 'a', undefined, 'key');
+
+          // Assert — [a] header + blank + comment all kept
+          expect(sut).toBe('[a]\n\n# c\n[b]\n\tk = v\n');
+        });
+      });
+    });
+
+    describe('Given two same-name blocks where only the first has the target key', () => {
+      describe('When removeConfigEntry removes it', () => {
+        it('Then only the emptied block is pruned, a later same-name block survives', () => {
+          // Arrange — row D9: per-block rule
+          const text = '[a]\n\tkey = x\n[b]\n\tk = v\n[a]\n\tother = y\n';
+
+          // Act
+          const sut = removeConfigEntry(text, 'a', undefined, 'key');
+
+          // Assert — first [a] block pruned; [b] and second [a] untouched
+          expect(sut).toBe('[b]\n\tk = v\n[a]\n\tother = y\n');
+        });
+      });
+    });
+
+    describe('Given a block with an inline comment on its header line', () => {
+      describe('When removeConfigEntry empties the entries', () => {
+        it('Then an inline comment on the header line keeps the header', () => {
+          // Arrange — row D10: hasComment=true on header
+          const text = '[a] # note\n\tkey = one\n[b]\n\tk = v\n';
+
+          // Act
+          const sut = removeConfigEntry(text, 'a', undefined, 'key');
+
+          // Assert — header (with its inline comment) kept; [b] preserved
+          expect(sut).toBe('[a] # note\n[b]\n\tk = v\n');
+        });
+      });
+    });
+
+    describe('Given an already-empty block before the targeted section', () => {
+      describe('When removeConfigEntry targets a key elsewhere', () => {
+        it('Then the already-empty block is preserved byte-for-byte', () => {
+          // Arrange — guard sentinel: pre-existing empty block must not be pruned
+          const text = '[empty]\n[a]\n\tkey = v\n\tother = x\n';
+
+          // Act
+          const sut = removeConfigEntry(text, 'a', undefined, 'key');
+
+          // Assert — [empty] block untouched; [a] block keeps header + other
+          expect(sut).toBe('[empty]\n[a]\n\tother = x\n');
+        });
+      });
+    });
+
+    describe('Given a block with a lenient bracket body line as the only non-entry token', () => {
+      describe('When removeConfigEntry empties the entries', () => {
+        it('Then the header is kept because opaque content protects the block', () => {
+          // Arrange — guard sentinel: lenient "[half" tokenized as comment → protects block
+          const text = '[a]\n\t[half\n\tkey = v\n';
+
+          // Act
+          const sut = removeConfigEntry(text, 'a', undefined, 'key');
+
+          // Assert — "[half" comment-token keeps the header
+          expect(sut).toBe('[a]\n\t[half\n');
         });
       });
     });

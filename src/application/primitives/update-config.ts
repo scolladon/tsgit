@@ -55,25 +55,6 @@ const isSectionHeader = (line: string): boolean => {
 };
 
 /**
- * True when `line` is a config entry line for `key` (case-insensitive).
- *
- * Matches both forms:
- *   - valued:    `\t<key> = <value>` — the key is the text before the first `=`, trimmed;
- *   - valueless: `\t<key>` — no `=` on the line (git's NULL-value boolean-true form),
- *     the entire trimmed line is the key name.
- *
- * Only called inside a matched section body; section headers and blank/comment
- * lines are handled by the callers before this function is reached.
- */
-const isKeyLine = (line: string, key: string): boolean => {
-  const eqAt = line.indexOf('=');
-  if (eqAt !== -1) {
-    return line.slice(0, eqAt).trim().toLowerCase() === key.toLowerCase();
-  }
-  return line.trim().toLowerCase() === key.toLowerCase();
-};
-
-/**
  * True when `value` must be wrapped in double quotes: the value starts with a
  * space, ends with a space, or contains `;`, `#`, or CR. These characters
  * would be misread by the parser without quotes (comment characters, trimmed
@@ -337,12 +318,89 @@ export const setConfigEntryInText = (
 export const setCoreConfigEntryInText = (text: string, key: string, value: string): string =>
   setConfigEntryInText(text, 'core', undefined, key, value);
 
+type TokenBlock = {
+  readonly header: HeaderToken;
+  readonly bodyTokens: ReadonlyArray<ConfigToken>;
+};
+
+/** Group tokens into blocks: one header + every following token until the next header. */
+const buildTokenBlocks = (tokens: ReadonlyArray<ConfigToken>): ReadonlyArray<TokenBlock> => {
+  const blocks: TokenBlock[] = [];
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i] as ConfigToken;
+    if (token.kind !== 'header') continue;
+    const body: ConfigToken[] = [];
+    let j = i + 1;
+    while (j < tokens.length && (tokens[j] as ConfigToken).kind !== 'header') {
+      body.push(tokens[j] as ConfigToken);
+      j++;
+    }
+    blocks.push({ header: token, bodyTokens: body });
+    i = j - 1;
+  }
+  return blocks;
+};
+
+/** Collect the entry spans in `block` whose key matches `key` (case-insensitive). */
+const matchingEntrySpans = (
+  block: TokenBlock,
+  key: string,
+): ReadonlyArray<{ startLine: number; endLine: number }> =>
+  block.bodyTokens.flatMap((t) =>
+    t.kind === 'entry' && t.key.toLowerCase() === key.toLowerCase()
+      ? [{ startLine: t.startLine, endLine: t.endLine }]
+      : [],
+  );
+
 /**
- * Remove every `key = value` line for `key` from the section
+ * True when the block retains content that prevents empty-block pruning:
+ * a comment body token, a non-matched entry, or an inline comment on the header.
+ */
+const blockHasProtectingContent = (block: TokenBlock, key: string): boolean =>
+  block.header.hasComment ||
+  block.bodyTokens.some(
+    (t) =>
+      t.kind === 'comment' ||
+      (t.kind === 'entry' && t.key.toLowerCase() !== key.toLowerCase()) ||
+      (t.kind === 'entry' && t.key === ''),
+  );
+
+/** Mark every physical line of the block (header + all body) as excluded. */
+const excludeBlockLines = (block: TokenBlock, totalLines: number, excluded: Set<number>): void => {
+  excluded.add(block.header.line);
+  for (const token of block.bodyTokens) {
+    if (token.kind === 'blank') {
+      excluded.add(token.line);
+    } else if (token.kind === 'entry') {
+      const end = Math.min(token.endLine, totalLines);
+      for (let l = token.startLine; l < end; l++) excluded.add(l);
+    }
+  }
+};
+
+/** Mark every physical line of each span as excluded. */
+const excludeSpanLines = (
+  spans: ReadonlyArray<{ startLine: number; endLine: number }>,
+  totalLines: number,
+  excluded: Set<number>,
+): void => {
+  for (const span of spans) {
+    const end = Math.min(span.endLine, totalLines);
+    for (let l = span.startLine; l < end; l++) excluded.add(l);
+  }
+};
+
+/**
+ * Remove every entry span for `key` from the section
  * `[section]` / `[section "subsection"]`. No-op when the section or key
  * is absent. Mirrors `git config --unset-all`: when the key appears more
- * than once in the section (e.g. multiple `fetch =` lines), every
- * occurrence is removed.
+ * than once (e.g. multiple `fetch =` lines), every occurrence and its full
+ * backslash-continuation span is removed.
+ *
+ * Empty-block pruning: after removing the matched spans, a block whose
+ * remaining tokens contain no entries and no comments (including the header's
+ * own inline comment) is removed entirely, blank lines included. The rule is
+ * per block occurrence, not per logical section name.
  */
 export const removeConfigEntry = (
   text: string,
@@ -353,19 +411,26 @@ export const removeConfigEntry = (
   rejectSection(section);
   if (subsection !== undefined) rejectSubsection(subsection);
   rejectControlChars('key', key);
+
   const lines = text.split('\n');
-  const out: string[] = [];
-  let inTarget = false;
-  for (const line of lines) {
-    if (isSectionHeader(line)) {
-      inTarget = matchesSection(line, section, subsection);
-      out.push(line);
-      continue;
+  const target: SectionTarget = { section, subsection };
+  const blocks = buildTokenBlocks(tokenizeConfig(text));
+  const excluded = new Set<number>();
+
+  for (const block of blocks) {
+    if (!matchesTarget(block.header, target)) continue;
+    const spans = matchingEntrySpans(block, key);
+    if (spans.length === 0) continue;
+    if (blockHasProtectingContent(block, key)) {
+      excludeSpanLines(spans, lines.length, excluded);
+    } else {
+      excludeBlockLines(block, lines.length, excluded);
     }
-    if (inTarget && isKeyLine(line, key)) continue;
-    out.push(line);
   }
-  return out.join('\n');
+
+  if (excluded.size === 0) return text;
+  const kept = lines.filter((_, idx) => !excluded.has(idx));
+  return withTrailingNewlineRestored(lines, kept).join('\n');
 };
 
 /**
@@ -490,6 +555,10 @@ export type ConfigOperation =
       readonly value: string;
     }
   | {
+      /**
+       * Remove every entry span for `key` from the section, pruning the block
+       * header if no entries or comments remain. Delegates to `removeConfigEntry`.
+       */
       readonly kind: 'removeEntry';
       readonly section: string;
       readonly subsection?: string;
@@ -679,7 +748,8 @@ export const setConfigEntry = async ({
  * the key is absent the call is a no-op (no I/O). If the key appears more
  * than once in the targeted scope, throws `CONFIG_MULTIPLE_VALUES` with
  * `requested: 'remove'` (the caller should use `unsetAllConfigEntries` to
- * clear every occurrence).
+ * clear every occurrence). An emptied section block is pruned entirely
+ * (header + blank lines removed) unless the block contains a comment.
  */
 export const unsetConfigEntry = async ({
   ctx,
@@ -711,8 +781,9 @@ export const unsetConfigEntry = async ({
 /**
  * Remove every occurrence of `key` from the targeted scope. Idempotent — a
  * missing key produces no I/O. Unlike `unsetConfigEntry`, multi-valued keys
- * are explicitly supported: all matching lines are removed in a single
- * read-modify-write pass.
+ * are explicitly supported: all matching spans are removed in a single
+ * read-modify-write pass. An emptied section block is pruned entirely
+ * (header + blank lines removed) unless the block contains a comment.
  */
 export const unsetAllConfigEntries = async ({
   ctx,
