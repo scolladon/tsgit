@@ -346,6 +346,56 @@ async function resolveKindChangedBase(
   their: FlatTreeEntry,
   contentMerger: ContentMerger,
 ): Promise<MergeOutcome> {
+  const r = await mergeBaseless(path, our, their, contentMerger);
+  if (r.tag === 'resolved') return r.outcome;
+  if (r.tag === 'clean-split') {
+    return conflictOutcome({
+      type: 'content',
+      path,
+      baseId: base.id,
+      baseMode: base.mode,
+      ourId: our.id,
+      ourMode: our.mode,
+      theirId: their.id,
+      theirMode: their.mode,
+      conflictContent: r.bytes,
+      contentVerdict: 'clean',
+    });
+  }
+  return conflictOutcome({
+    type: r.conflictType,
+    path,
+    baseId: base.id,
+    baseMode: base.mode,
+    ourId: our.id,
+    ourMode: our.mode,
+    theirId: their.id,
+    theirMode: their.mode,
+    conflictContent: r.bytes,
+  });
+}
+
+function enforceOutputCap(bytes: Uint8Array, label: string): void {
+  if (bytes.length > MAX_CONFLICT_OUTPUT_BYTES) {
+    throw invalidMergeInput(`contentMerger returned oversize ${label}`);
+  }
+}
+
+type BaselessContentResult =
+  | { readonly tag: 'resolved'; readonly outcome: MergeOutcome }
+  | { readonly tag: 'clean-split'; readonly bytes: Uint8Array }
+  | {
+      readonly tag: 'conflict';
+      readonly bytes: Uint8Array;
+      readonly conflictType: 'content' | 'binary';
+    };
+
+async function mergeBaseless(
+  path: FilePath,
+  our: FlatTreeEntry,
+  their: FlatTreeEntry,
+  contentMerger: ContentMerger,
+): Promise<BaselessContentResult> {
   const ctx: ContentMergeContext = {
     path,
     ourId: our.id,
@@ -358,41 +408,20 @@ async function resolveKindChangedBase(
     enforceOutputCap(result.bytes, 'clean bytes');
     if (our.mode === their.mode) {
       if (result.id !== undefined) {
-        return { status: 'resolved-known', path, id: result.id, mode: our.mode };
+        return {
+          tag: 'resolved',
+          outcome: { status: 'resolved-known', path, id: result.id, mode: our.mode },
+        };
       }
-      return { status: 'resolved-merged', path, bytes: result.bytes, mode: our.mode };
+      return {
+        tag: 'resolved',
+        outcome: { status: 'resolved-merged', path, bytes: result.bytes, mode: our.mode },
+      };
     }
-    return conflictOutcome({
-      type: 'content',
-      path,
-      baseId: base.id,
-      baseMode: base.mode,
-      ourId: our.id,
-      ourMode: our.mode,
-      theirId: their.id,
-      theirMode: their.mode,
-      conflictContent: result.bytes,
-      contentVerdict: 'clean',
-    });
+    return { tag: 'clean-split', bytes: result.bytes };
   }
   enforceOutputCap(result.markedBytes, 'marked bytes');
-  return conflictOutcome({
-    type: result.conflictType,
-    path,
-    baseId: base.id,
-    baseMode: base.mode,
-    ourId: our.id,
-    ourMode: our.mode,
-    theirId: their.id,
-    theirMode: their.mode,
-    conflictContent: result.markedBytes,
-  });
-}
-
-function enforceOutputCap(bytes: Uint8Array, label: string): void {
-  if (bytes.length > MAX_CONFLICT_OUTPUT_BYTES) {
-    throw invalidMergeInput(`contentMerger returned oversize ${label}`);
-  }
+  return { tag: 'conflict', bytes: result.markedBytes, conflictType: result.conflictType };
 }
 
 async function resolveAddAdd(
@@ -416,34 +445,8 @@ async function resolveAddAdd(
   if (!ourRegular || !theirRegular) {
     return addAddConflict(path, our, their);
   }
-  const ctx: ContentMergeContext = {
-    path,
-    ourId: our.id,
-    theirId: their.id,
-    ourMode: our.mode,
-    theirMode: their.mode,
-  };
-  const result = await contentMerger(ctx, undefined, EMPTY_BYTES, EMPTY_BYTES);
-  if (result.status === 'clean') {
-    enforceOutputCap(result.bytes, 'clean bytes');
-    if (our.mode === their.mode) {
-      if (result.id !== undefined) {
-        return { status: 'resolved-known', path, id: result.id, mode: our.mode };
-      }
-      return { status: 'resolved-merged', path, bytes: result.bytes, mode: our.mode };
-    }
-    return conflictOutcome({
-      type: 'add-add',
-      path,
-      ourId: our.id,
-      theirId: their.id,
-      ourMode: our.mode,
-      theirMode: their.mode,
-      conflictContent: result.bytes,
-      contentVerdict: 'clean',
-    });
-  }
-  enforceOutputCap(result.markedBytes, 'marked bytes');
+  const r = await mergeBaseless(path, our, their, contentMerger);
+  if (r.tag === 'resolved') return r.outcome;
   return conflictOutcome({
     type: 'add-add',
     path,
@@ -451,8 +454,8 @@ async function resolveAddAdd(
     theirId: their.id,
     ourMode: our.mode,
     theirMode: their.mode,
-    conflictContent: result.markedBytes,
-    contentVerdict: result.conflictType,
+    conflictContent: r.bytes,
+    contentVerdict: r.tag === 'clean-split' ? 'clean' : r.conflictType,
   });
 }
 
