@@ -358,9 +358,11 @@ describe('update-config surgery-preservation invariants', () => {
                 }
               },
             ]) {
+              // Act
               const result = operate(file);
               if (result === undefined) continue;
 
+              // Assert — every output key already existed or is the operated key
               const outputKeys = tokenizeConfig(result)
                 .filter((t): t is Extract<typeof t, { kind: 'entry' }> => t.kind === 'entry')
                 .map((t) => t.key.toLowerCase());
@@ -411,6 +413,7 @@ describe('update-config surgery-preservation invariants', () => {
                 }
               },
             ]) {
+              // Act
               const result = operate(file);
               if (result === undefined) continue;
 
@@ -418,7 +421,7 @@ describe('update-config surgery-preservation invariants', () => {
               const outputEntries = collectEntries(outputSections, () => true);
               const inputEntries = collectEntries(inputSections, () => true);
 
-              // For remove of an absent key the file should be byte-identical;
+              // Assert — for remove of an absent key the file should be byte-identical;
               // for set the new entry is added — compare only entries present in input.
               for (const inEntry of inputEntries) {
                 const found = outputEntries.find(

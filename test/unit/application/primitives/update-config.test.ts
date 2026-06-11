@@ -1562,7 +1562,7 @@ describe('primitives/update-config', () => {
 
     describe('Given a valueless entry for the key', () => {
       describe('When removeConfigEntry removes it', () => {
-        it('Then the valueless line is removed and neighbours are preserved byte-for-byte', () => {
+        it('Then the valueless line is removed and neighbors are preserved byte-for-byte', () => {
           // Arrange
           const text = '[a]\n\tbefore = x\n\tkey\n\tafter = y\n';
 
@@ -1575,7 +1575,7 @@ describe('primitives/update-config', () => {
       });
     });
 
-    describe('Given a multi-line entry (backslash continuation) with a neighbour key', () => {
+    describe('Given a multi-line entry (backslash continuation) with a neighbor key', () => {
       describe('When removeConfigEntry targets the multi-line key', () => {
         it('Then the whole continuation span is removed', () => {
           // Arrange — row B: head + tail both belong to key = "one   two"
