@@ -1279,6 +1279,29 @@ describe('mergeTrees — mode handling', () => {
         expect(conflict?.conflictContent).toBe(markedBytes);
       });
     });
+
+    describe('When merger returns a binary conflict', () => {
+      it('Then the conflict type is binary (merger verdict passed through)', async () => {
+        // Arrange
+        const base = tree([['p', entry(ID_A, FILE_MODE.SYMLINK)]]);
+        const ours = tree([['p', entry(ID_B, FILE_MODE.REGULAR)]]);
+        const theirs = tree([['p', entry(ID_C, FILE_MODE.REGULAR)]]);
+        const markedBytes = new Uint8Array([9, 0, 9]);
+        const spy = spyMerger({
+          status: 'conflict',
+          conflictType: 'binary',
+          markedBytes,
+        });
+
+        // Act
+        const result = await mergeTrees(base, ours, theirs, spy.fn);
+
+        // Assert — the merger's binary verdict survives the kind-changed route
+        expect(result.conflicts[0]?.type).toBe('binary');
+        expect(result.conflicts[0]?.baseId).toBe(ID_A);
+        expect(result.conflicts[0]?.conflictContent).toBe(markedBytes);
+      });
+    });
   });
 
   describe('Given base symlink and both sides regular with equal modes (R4 clean/equal)', () => {

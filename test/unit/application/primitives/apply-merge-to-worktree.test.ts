@@ -866,6 +866,49 @@ describe('writeMarkedConflict (direct)', () => {
     });
   });
 
+  // Refusal seam: no mode at all — nothing is written, no blob is read
+  describe('Given a conflict carrying conflictContent but no mode on any field', () => {
+    describe('When writeMarkedConflict runs', () => {
+      it('Then nothing is written at the path', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const conflict = conflictOf({
+          type: 'content',
+          conflictContent: new TextEncoder().encode('marker-bytes\n'),
+        });
+
+        // Act
+        await writeMarkedConflict(ctx, conflict);
+
+        // Assert — no file materialised
+        expect(await ctx.fs.exists(`${ctx.layout.workDir}/p`)).toBe(false);
+      });
+    });
+  });
+
+  // Refusal seam: mode defined but no derivable bytes — no write, no throw
+  describe('Given a bare add-add conflict with only theirId and theirMode', () => {
+    describe('When writeMarkedConflict runs', () => {
+      it('Then nothing is written at the path', async () => {
+        // Arrange — conflictContent absent and ourId absent, so bytes are
+        // underivable while the theirs mode is present
+        const ctx = await buildSeededContext();
+        const theirsId = await seedBlob(ctx, 'theirs-only');
+        const conflict = conflictOf({
+          type: 'add-add',
+          theirId: theirsId,
+          theirMode: FILE_MODE.REGULAR,
+        });
+
+        // Act
+        await writeMarkedConflict(ctx, conflict);
+
+        // Assert — no file materialised
+        expect(await ctx.fs.exists(`${ctx.layout.workDir}/p`)).toBe(false);
+      });
+    });
+  });
+
   // Modify-delete with ours deleted: the survivor keeps its kind on disk
   describe('Given a modify-delete conflict whose surviving theirs side is a symlink', () => {
     describe('When writeMarkedConflict runs', () => {
