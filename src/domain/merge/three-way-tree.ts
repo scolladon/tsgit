@@ -240,12 +240,12 @@ function flattenLabel(label: string): string {
   return label.replace(/\//g, '_');
 }
 
-function uniquePath(reserved: Set<FilePath>, base: FilePath, label: string): FilePath {
-  const suffix = flattenLabel(label);
-  let candidate = `${base}~${suffix}` as FilePath;
+export function uniquePath(reserved: Set<FilePath>, base: FilePath, label: string): FilePath {
+  const stem = `${base}~${flattenLabel(label)}`;
+  let candidate = stem as FilePath;
   let n = 0;
   while (reserved.has(candidate)) {
-    candidate = `${candidate}_${n}` as FilePath;
+    candidate = `${stem}_${n}` as FilePath;
     n += 1;
   }
   reserved.add(candidate);

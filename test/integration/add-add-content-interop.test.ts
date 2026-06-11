@@ -671,6 +671,68 @@ describe.skipIf(!GIT_AVAILABLE)(
       });
     });
 
+    // ── Scenario 10b: tracked f~HEAD and f~HEAD_0 both occupied → probe f~HEAD_1 ─
+    //
+    // The REGULAR side is ours (HEAD), so the rename label is `HEAD`.
+    // Both `f~HEAD` and `f~HEAD_0` are already tracked in the input trees,
+    // so the probe must reset to the stem each time: f~HEAD → f~HEAD_0 → f~HEAD_1.
+
+    describe('Given f~HEAD and f~HEAD_0 are both already tracked', () => {
+      describe('When a distinct-types conflict occurs on both tools', () => {
+        it('Then the rename probes to f~HEAD_1 matching git', async () => {
+          // Arrange
+          // root: tracks f~HEAD and f~HEAD_0; side branch adds symlink f;
+          // main adds regular f (ours is regular → renamed with label HEAD).
+          peerWrite('f~HEAD', 'occupied-a\n');
+          peerWrite('f~HEAD_0', 'occupied-b\n');
+          peerWrite('root.txt', 'root\n');
+          peerAdd('f~HEAD', 'f~HEAD_0', 'root.txt');
+          peerCommit('root');
+          peerBranch('side');
+          peerSymlink('sym-target', 'f');
+          peerAdd('f');
+          peerCommit('side-add-symlink');
+          peerCheckout('main');
+          peerWrite('f', 'regular-main\n');
+          peerAdd('f');
+          peerCommit('main-add-regular');
+
+          // tsgit
+          await oursWrite('f~HEAD', 'occupied-a\n');
+          await oursWrite('f~HEAD_0', 'occupied-b\n');
+          await oursWrite('root.txt', 'root\n');
+          await repo.add(['f~HEAD', 'f~HEAD_0', 'root.txt']);
+          await oursCommit('root');
+          await repo.branch.create({ name: 'side' });
+          await repo.checkout({ rev: 'side' });
+          symlinkSync('sym-target', path.join(pair.ours, 'f'));
+          await repo.add(['f']);
+          await oursCommit('side-add-symlink');
+          await repo.checkout({ rev: 'main' });
+          await oursWrite('f', 'regular-main\n');
+          await repo.add(['f']);
+          await oursCommit('main-add-regular');
+
+          // Act
+          const peerResult = peerMergeConflict('side');
+          const result = await repo.merge.run({ rev: 'side', message: 'm', author: AUTHOR });
+
+          // Assert
+          expect(peerResult.ok).toBe(false);
+          expect(result.kind).toBe('conflict');
+          expect(lsStage(pair.ours)).toBe(lsStage(pair.peer));
+          // Regular (ours) renamed to f~HEAD_1 — both f~HEAD and f~HEAD_0 were occupied
+          const oursRenamed = await readFile(path.join(pair.ours, 'f~HEAD_1'), 'utf8');
+          expect(oursRenamed).toBe('regular-main\n');
+          const peerRenamed = await readFile(path.join(pair.peer, 'f~HEAD_1'), 'utf8');
+          expect(peerRenamed).toBe('regular-main\n');
+          // Symlink at f (theirs' side)
+          const oursLink = readlinkSync(path.join(pair.ours, 'f'));
+          expect(oursLink).toBe('sym-target');
+        });
+      });
+    });
+
     // ── Scenario 11: untracked file at rename target → both tools refuse ────
     //
     // The REGULAR side is `side` (theirs) so the rename label is `side`.

@@ -1462,7 +1462,7 @@ describe('mergeTrees — distinct-types add/add rename conflict', () => {
 
   describe('Given f~HEAD and f~HEAD_0 both already present in input trees', () => {
     describe('When ours is regular and theirs is symlink', () => {
-      it('Then ourPath=f~HEAD_0_1 (probe loop appends _n to current candidate)', async () => {
+      it('Then ourPath=f~HEAD_1 (probing resets to the stem)', async () => {
         // Arrange — both f~HEAD and f~HEAD_0 are taken
         const ours = tree([
           ['f', entry(ID_A, FILE_MODE.REGULAR)],
@@ -1478,7 +1478,7 @@ describe('mergeTrees — distinct-types add/add rename conflict', () => {
 
         // Assert
         expect(result.conflicts[0]?.type).toBe('distinct-types');
-        expect(result.conflicts[0]?.ourPath).toBe('f~HEAD_0_1');
+        expect(result.conflicts[0]?.ourPath).toBe('f~HEAD_1');
         expect(result.conflicts[0]?.theirPath).toBe('f');
       });
     });
@@ -1526,7 +1526,7 @@ describe('mergeTrees — distinct-types add/add rename conflict', () => {
         // reserved-set tracking via a direct collision chain instead).
         // Use: ours has 'g' (regular) and 'g~HEAD' is occupied in ours.
         // Also ours has 'h' (regular), theirs has 'g~HEAD_0' occupied in theirs.
-        // First: g → g~HEAD taken → g~HEAD_0 taken → g~HEAD_0_1 generated and reserved.
+        // First: g → g~HEAD taken → g~HEAD_0 taken → g~HEAD_1 (probing resets to stem).
         // Then: h → h~HEAD not taken → h~HEAD generated.
         // This confirms the reserved set grows with each generated path.
         const ours = tree([
@@ -1547,7 +1547,7 @@ describe('mergeTrees — distinct-types add/add rename conflict', () => {
         expect(result.conflicts).toHaveLength(2);
         const conflictG = result.conflicts.find((c) => c.path === 'g');
         const conflictH = result.conflicts.find((c) => c.path === 'h');
-        expect(conflictG?.ourPath).toBe('g~HEAD_0_1');
+        expect(conflictG?.ourPath).toBe('g~HEAD_1');
         expect(conflictH?.ourPath).toBe('h~HEAD');
       });
     });
