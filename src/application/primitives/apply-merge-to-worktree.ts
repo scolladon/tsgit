@@ -202,12 +202,15 @@ const conflictBytes = async (
  * adapter).
  */
 export const writeMarkedConflict = async (ctx: Context, conflict: MergeConflict): Promise<void> => {
-  const bytes = await conflictBytes(ctx, conflict);
   // Materialise with the merged mode when the merge resolved one, else the
   // surviving side's (ours, or theirs for modify-delete with ours deleted) so
-  // the kind (symlink / exec bit) is preserved.
+  // the kind (symlink / exec bit) is preserved. Every conflict constructor
+  // pairs ids with modes, so bytes being derivable implies a mode exists; the
+  // guard checks anyway and skips the blob read when no mode is present.
   const mode = conflict.mergedMode ?? conflict.ourMode ?? conflict.theirMode;
-  if (bytes === undefined || mode === undefined) return;
+  if (mode === undefined) return;
+  const bytes = await conflictBytes(ctx, conflict);
+  if (bytes === undefined) return;
   await writeWorkingTreeEntry(ctx, conflict.path, bytes, mode);
 };
 

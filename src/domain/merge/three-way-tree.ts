@@ -346,9 +346,9 @@ async function resolveKindChangedBase(
   their: FlatTreeEntry,
   contentMerger: ContentMerger,
 ): Promise<MergeOutcome> {
-  const r = await mergeBaseless(path, our, their, contentMerger);
-  if (r.tag === 'resolved') return r.outcome;
-  if (r.tag === 'clean-split') {
+  const contentResult = await mergeBaseless(path, our, their, contentMerger);
+  if (contentResult.tag === 'resolved') return contentResult.outcome;
+  if (contentResult.tag === 'clean-split') {
     return conflictOutcome({
       type: 'content',
       path,
@@ -358,12 +358,12 @@ async function resolveKindChangedBase(
       ourMode: our.mode,
       theirId: their.id,
       theirMode: their.mode,
-      conflictContent: r.bytes,
+      conflictContent: contentResult.bytes,
       contentVerdict: 'clean',
     });
   }
   return conflictOutcome({
-    type: r.conflictType,
+    type: contentResult.conflictType,
     path,
     baseId: base.id,
     baseMode: base.mode,
@@ -371,7 +371,7 @@ async function resolveKindChangedBase(
     ourMode: our.mode,
     theirId: their.id,
     theirMode: their.mode,
-    conflictContent: r.bytes,
+    conflictContent: contentResult.bytes,
   });
 }
 
@@ -382,7 +382,10 @@ function enforceOutputCap(bytes: Uint8Array, label: string): void {
 }
 
 type BaselessContentResult =
-  | { readonly tag: 'resolved'; readonly outcome: MergeOutcome }
+  | {
+      readonly tag: 'resolved';
+      readonly outcome: Extract<MergeOutcome, { status: 'resolved-known' | 'resolved-merged' }>;
+    }
   | { readonly tag: 'clean-split'; readonly bytes: Uint8Array }
   | {
       readonly tag: 'conflict';
@@ -445,8 +448,8 @@ async function resolveAddAdd(
   if (!ourRegular || !theirRegular) {
     return addAddConflict(path, our, their);
   }
-  const r = await mergeBaseless(path, our, their, contentMerger);
-  if (r.tag === 'resolved') return r.outcome;
+  const contentResult = await mergeBaseless(path, our, their, contentMerger);
+  if (contentResult.tag === 'resolved') return contentResult.outcome;
   return conflictOutcome({
     type: 'add-add',
     path,
@@ -454,8 +457,8 @@ async function resolveAddAdd(
     theirId: their.id,
     ourMode: our.mode,
     theirMode: their.mode,
-    conflictContent: r.bytes,
-    contentVerdict: r.tag === 'clean-split' ? 'clean' : r.conflictType,
+    conflictContent: contentResult.bytes,
+    contentVerdict: contentResult.tag === 'clean-split' ? 'clean' : contentResult.conflictType,
   });
 }
 
