@@ -9,6 +9,8 @@
     "ctype",
     "iskeychar",
     "macroname",
+    "markered",
+    "misdescribes",
     "strtol",
     "textconv",
     "unsets",
