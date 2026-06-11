@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { MemoryHookRunner } from '../../../../src/adapters/memory/memory-hook-runner.js';
 import { add } from '../../../../src/application/commands/add.js';
@@ -16,6 +16,7 @@ import {
   removeWorkingTreeFile,
   resolveMergeAuthor,
   resolveMergeCommitter,
+  writeConflictToTree,
   writeNestedTree,
   writeOutcomeToTree,
 } from '../../../../src/application/commands/merge.js';
@@ -2273,41 +2274,40 @@ describe('materialiseConflictBytes (direct)', () => {
     });
   });
 
-  describe('Given a content conflict with no conflictContent but ours+theirs ids', () => {
+  describe('Given a bare content conflict (no conflictContent) with ours+theirs ids', () => {
     describe('When materialiseConflictBytes runs', () => {
-      it('Then it builds a marker block from both blobs', async () => {
-        // Arrange
+      it('Then it returns the ours blob bytes (R5 take-ours)', async () => {
+        // Arrange — bare content: a symlink-pair R5 conflict where the domain
+        // emits no markers; both ids present but no conflictContent.
         const ctx = createMemoryContext();
         await init(ctx);
         const oursId = await seedBlob(ctx, 'OURS-LINE');
-        const theirsId = await seedBlob(ctx, 'THEIRS-LINE');
-        const conflict = conflictOf({ type: 'content', ourId: oursId, theirId: theirsId });
+        await seedBlob(ctx, 'THEIRS-LINE');
+        const conflict = conflictOf({ type: 'content', ourId: oursId });
 
         // Act
         const sut = await materialiseConflictBytes(ctx, conflict);
 
-        // Assert — a real conflict-marker block containing BOTH sides.
-        const text = decode(sut);
-        expect(text).toContain('<<<<<<<');
-        expect(text).toContain('=======');
-        expect(text).toContain('>>>>>>>');
-        expect(text).toContain('OURS-LINE');
-        expect(text).toContain('THEIRS-LINE');
+        // Assert — ours bytes returned, no marker block.
+        expect(decode(sut)).toBe('OURS-LINE');
       });
     });
   });
 
-  describe('Given a content conflict with no conflictContent and only ourId', () => {
+  describe('Given a bare content conflict with only ourId and no conflictContent', () => {
     describe('When materialiseConflictBytes runs', () => {
-      it('Then it returns undefined (theirId operand required)', async () => {
+      it('Then it returns the ours blob bytes (take-ours for R5)', async () => {
         // Arrange
         const ctx = createMemoryContext();
         await init(ctx);
         const oursId = await seedBlob(ctx, 'OURS-ONLY');
         const conflict = conflictOf({ type: 'content', ourId: oursId });
 
-        // Act / Assert
-        expect(await materialiseConflictBytes(ctx, conflict)).toBeUndefined();
+        // Act
+        const sut = await materialiseConflictBytes(ctx, conflict);
+
+        // Assert
+        expect(decode(sut)).toBe('OURS-ONLY');
       });
     });
   });
@@ -3265,6 +3265,130 @@ describe('merge — labels threading (slice 4)', () => {
         const onDisk = await ctx.fs.readUtf8(`${ctx.layout.workDir}/f.txt`);
         expect(onDisk).toContain('<<<<<<< HEAD\n');
         expect(onDisk).toContain('>>>>>>> feature\n');
+      });
+    });
+  });
+});
+
+describe('writeConflictToTree (direct)', () => {
+  const seedBlob = async (
+    ctx: ReturnType<typeof createMemoryContext>,
+    text: string,
+  ): Promise<ObjectId> =>
+    writeObject(ctx, {
+      type: 'blob',
+      content: new TextEncoder().encode(text),
+      id: '' as ObjectId,
+    });
+  const conflictOf = (over: Partial<MergeConflict>): MergeConflict =>
+    ({ path: 'p' as FilePath, ...over }) as MergeConflict;
+
+  // Step 3b: bare content symlink-pair — ours symlink re-created, not a regular file
+  describe('Given a bare content conflict with symlink modes on both sides', () => {
+    describe('When writeConflictToTree runs', () => {
+      it('Then ours symlink is re-created at the path (not target bytes as a regular file)', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const oursId = await seedBlob(ctx, 'ours-target');
+        const theirsId = await seedBlob(ctx, 'theirs-target');
+        const baseId = await seedBlob(ctx, 'base-file-content');
+        const sut = writeConflictToTree;
+        const conflict = conflictOf({
+          type: 'content',
+          ourId: oursId,
+          theirId: theirsId,
+          baseId,
+          ourMode: FILE_MODE.SYMLINK,
+          theirMode: FILE_MODE.SYMLINK,
+          baseMode: FILE_MODE.REGULAR,
+        });
+
+        // Act
+        await sut(ctx, conflict);
+
+        // Assert — lstat reveals a symlink; readlink returns ours' target
+        const stat = await ctx.fs.lstat(`${ctx.layout.workDir}/p`);
+        expect(stat.isSymbolicLink).toBe(true);
+        const target = await ctx.fs.readlink(`${ctx.layout.workDir}/p`);
+        expect(target).toBe('ours-target');
+      });
+    });
+  });
+
+  // Step 4: marker-bytes conflict with ourMode 100755 — exec bit preserved
+  describe('Given a content conflict with conflictContent and executable ourMode', () => {
+    describe('When writeConflictToTree runs', () => {
+      it('Then the marker file is written with exec mode (chmod 0o755 called)', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const chmodSpy = vi.spyOn(ctx.fs, 'chmod');
+        const conflict = conflictOf({
+          type: 'content',
+          conflictContent: new TextEncoder().encode(
+            '<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> side\n',
+          ),
+          ourMode: FILE_MODE.EXECUTABLE,
+        });
+
+        // Act
+        await writeConflictToTree(ctx, conflict);
+
+        // Assert — chmod called with exec permission
+        expect(chmodSpy).toHaveBeenCalledWith(`${ctx.layout.workDir}/p`, 0o755);
+      });
+    });
+  });
+
+  // Step 5: modify-delete with ours deleted (only theirId) — plain survivor write, no mode regression
+  describe('Given a modify-delete conflict with only theirId (ours deleted)', () => {
+    describe('When writeConflictToTree runs', () => {
+      it('Then the theirs survivor is written as a plain file (no mode guard regression)', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const chmodSpy = vi.spyOn(ctx.fs, 'chmod');
+        const theirsId = await seedBlob(ctx, 'survivor-theirs');
+        const conflict = conflictOf({
+          type: 'modify-delete',
+          theirId: theirsId,
+          // ourMode is undefined: ours has no side
+        });
+
+        // Act
+        await writeConflictToTree(ctx, conflict);
+
+        // Assert — file written as plain regular bytes; no chmod called
+        const bytes = await ctx.fs.read(`${ctx.layout.workDir}/p`);
+        expect(new TextDecoder().decode(bytes)).toBe('survivor-theirs');
+        expect(chmodSpy).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  // Step 6: bare type-change with ourMode symlink — ours' symlink re-created at path
+  describe('Given a bare type-change conflict with symlink ourMode', () => {
+    describe('When writeConflictToTree runs', () => {
+      it('Then ours symlink is re-created at the path (useMode generalised beyond add-add)', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const oursId = await seedBlob(ctx, 'symlink-target');
+        const conflict = conflictOf({
+          type: 'type-change',
+          ourId: oursId,
+          ourMode: FILE_MODE.SYMLINK,
+        });
+
+        // Act
+        await writeConflictToTree(ctx, conflict);
+
+        // Assert — symlink re-created, not bytes written as a regular file
+        const stat = await ctx.fs.lstat(`${ctx.layout.workDir}/p`);
+        expect(stat.isSymbolicLink).toBe(true);
+        const target = await ctx.fs.readlink(`${ctx.layout.workDir}/p`);
+        expect(target).toBe('symlink-target');
       });
     });
   });

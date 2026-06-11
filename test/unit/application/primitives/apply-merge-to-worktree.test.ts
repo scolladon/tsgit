@@ -1,10 +1,14 @@
-import { describe, expect, it } from 'vitest';
-import { applyMergeToWorktree } from '../../../../src/application/primitives/apply-merge-to-worktree.js';
+import { describe, expect, it, vi } from 'vitest';
+import {
+  applyMergeToWorktree,
+  writeMarkedConflict,
+} from '../../../../src/application/primitives/apply-merge-to-worktree.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { writeTree } from '../../../../src/application/primitives/write-tree.js';
 import { TsgitError } from '../../../../src/domain/error.js';
 import type { GitIndex, IndexEntry } from '../../../../src/domain/git-index/index.js';
 import { STAGE0_FLAGS } from '../../../../src/domain/git-index/index.js';
+import type { MergeConflict } from '../../../../src/domain/merge/index.js';
 import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
 import type {
   FileMode,
@@ -419,8 +423,8 @@ describe('applyMergeToWorktree', () => {
         const aStages = sut.indexEntries.filter((e) => e.path === 'a').map((e) => e.flags.stage);
         expect(aStages).toEqual([1, 2, 3]);
         const paths = sut.indexEntries.map((e) => e.path);
-        const posA = paths.findIndex((p) => p === 'a');
-        const posB = paths.findIndex((p) => p === 'b');
+        const posA = paths.indexOf('a' as FilePath);
+        const posB = paths.indexOf('b' as FilePath);
         expect(posA).toBeLessThan(posB);
       });
     });
@@ -766,6 +770,122 @@ describe('applyMergeToWorktree', () => {
           }
         });
         await expect(act).rejects.toBeInstanceOf(TsgitError);
+      });
+    });
+  });
+});
+
+describe('writeMarkedConflict (direct)', () => {
+  const seedBlob = (ctx: Context, text: string): Promise<ObjectId> =>
+    writeObject(ctx, {
+      type: 'blob',
+      content: new TextEncoder().encode(text),
+      id: '' as ObjectId,
+    });
+  const conflictOf = (over: Partial<MergeConflict>): MergeConflict =>
+    ({ path: 'p' as FilePath, ...over }) as MergeConflict;
+
+  // Mirror of step 3b: bare content symlink-pair — ours symlink re-created
+  describe('Given a bare content conflict with symlink modes on both sides', () => {
+    describe('When writeMarkedConflict runs', () => {
+      it('Then ours symlink is re-created at the path (not target bytes as a regular file)', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const oursId = await seedBlob(ctx, 'ours-target');
+        const theirsId = await seedBlob(ctx, 'theirs-target');
+        const baseId = await seedBlob(ctx, 'base-file-content');
+        const conflict = conflictOf({
+          type: 'content',
+          ourId: oursId,
+          theirId: theirsId,
+          baseId,
+          ourMode: FILE_MODE.SYMLINK,
+          theirMode: FILE_MODE.SYMLINK,
+          baseMode: FILE_MODE.REGULAR,
+        });
+
+        // Act
+        await writeMarkedConflict(ctx, conflict);
+
+        // Assert — lstat reveals a symlink; readlink returns ours' target
+        const stat = await ctx.fs.lstat(`${ctx.layout.workDir}/p`);
+        expect(stat.isSymbolicLink).toBe(true);
+        const target = await ctx.fs.readlink(`${ctx.layout.workDir}/p`);
+        expect(target).toBe('ours-target');
+      });
+    });
+  });
+
+  // Mirror of step 4: conflictContent + executable ourMode — exec bit preserved
+  describe('Given a content conflict with conflictContent and executable ourMode', () => {
+    describe('When writeMarkedConflict runs', () => {
+      it('Then the marker file is written with exec mode (chmod 0o755 called)', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const chmodSpy = vi.spyOn(ctx.fs, 'chmod');
+        const conflict = conflictOf({
+          type: 'content',
+          conflictContent: new TextEncoder().encode(
+            '<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> side\n',
+          ),
+          ourMode: FILE_MODE.EXECUTABLE,
+        });
+
+        // Act
+        await writeMarkedConflict(ctx, conflict);
+
+        // Assert
+        expect(chmodSpy).toHaveBeenCalledWith(`${ctx.layout.workDir}/p`, 0o755);
+      });
+    });
+  });
+
+  // Mirror of step 5: modify-delete with ours deleted — no mode regression
+  describe('Given a modify-delete conflict with only theirId (ours deleted)', () => {
+    describe('When writeMarkedConflict runs', () => {
+      it('Then the theirs survivor is written as a plain file (no mode guard regression)', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const chmodSpy = vi.spyOn(ctx.fs, 'chmod');
+        const theirsId = await seedBlob(ctx, 'survivor-theirs');
+        const conflict = conflictOf({
+          type: 'modify-delete',
+          theirId: theirsId,
+          // ourMode is absent: ours has no side
+        });
+
+        // Act
+        await writeMarkedConflict(ctx, conflict);
+
+        // Assert — bytes written without chmod
+        const bytes = await ctx.fs.read(`${ctx.layout.workDir}/p`);
+        expect(new TextDecoder().decode(bytes)).toBe('survivor-theirs');
+        expect(chmodSpy).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  // Mirror of step 6: bare type-change with symlink ourMode
+  describe('Given a bare type-change conflict with symlink ourMode', () => {
+    describe('When writeMarkedConflict runs', () => {
+      it('Then ours symlink is re-created at the path', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const oursId = await seedBlob(ctx, 'symlink-target');
+        const conflict = conflictOf({
+          type: 'type-change',
+          ourId: oursId,
+          ourMode: FILE_MODE.SYMLINK,
+        });
+
+        // Act
+        await writeMarkedConflict(ctx, conflict);
+
+        // Assert
+        const stat = await ctx.fs.lstat(`${ctx.layout.workDir}/p`);
+        expect(stat.isSymbolicLink).toBe(true);
+        const target = await ctx.fs.readlink(`${ctx.layout.workDir}/p`);
+        expect(target).toBe('symlink-target');
       });
     });
   });

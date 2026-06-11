@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   parentDir,
   removeWorkingTreeFile,
@@ -124,6 +124,59 @@ describe('write-working-tree-file', () => {
           // Assert
           const bytes = await ctx.fs.read(`${ctx.layout.workDir}/sub/a.txt`);
           expect(new TextDecoder().decode(bytes)).toBe('nested');
+        });
+      });
+    });
+  });
+
+  describe('writeWorkingTreeEntry — chmod', () => {
+    describe('Given an executable mode', () => {
+      describe('When writeWorkingTreeEntry writes a regular payload', () => {
+        it('Then it chmods the file to 0o755', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const sut = vi.spyOn(ctx.fs, 'chmod');
+          const content = new TextEncoder().encode('exec-content');
+
+          // Act
+          await writeWorkingTreeEntry(ctx, 'x.sh' as FilePath, content, FILE_MODE.EXECUTABLE);
+
+          // Assert
+          expect(sut).toHaveBeenCalledWith(`${ctx.layout.workDir}/x.sh`, 0o755);
+        });
+      });
+    });
+
+    describe('Given a regular mode', () => {
+      describe('When writeWorkingTreeEntry writes a regular payload', () => {
+        it('Then it chmods the file to 0o644', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const sut = vi.spyOn(ctx.fs, 'chmod');
+          const content = new TextEncoder().encode('regular-content');
+
+          // Act
+          await writeWorkingTreeEntry(ctx, 'r.txt' as FilePath, content, FILE_MODE.REGULAR);
+
+          // Assert
+          expect(sut).toHaveBeenCalledWith(`${ctx.layout.workDir}/r.txt`, 0o644);
+        });
+      });
+    });
+
+    describe('Given a symlink mode', () => {
+      describe('When writeWorkingTreeEntry writes a symlink', () => {
+        it('Then chmod is never called', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const sut = vi.spyOn(ctx.fs, 'chmod');
+          const content = new TextEncoder().encode('target-path');
+
+          // Act
+          await writeWorkingTreeEntry(ctx, 'link' as FilePath, content, FILE_MODE.SYMLINK);
+
+          // Assert
+          expect(sut).not.toHaveBeenCalled();
         });
       });
     });

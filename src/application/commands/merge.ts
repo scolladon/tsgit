@@ -16,7 +16,6 @@ import {
   type MergeOutcome,
   mergeLabels,
   mergeTrees,
-  writeConflictMarkers,
 } from '../../domain/merge/index.js';
 import type { CommitData } from '../../domain/objects/commit.js';
 import { treeDepthExceeded, unexpectedObjectType } from '../../domain/objects/error.js';
@@ -614,25 +613,19 @@ export const writeOutcomeToTree = async (
   // 'conflict' outcomes are handled by the parallel conflicts batch.
 };
 
-const writeConflictToTree = async (ctx: Context, conflict: MergeConflict): Promise<void> => {
+export const writeConflictToTree = async (ctx: Context, conflict: MergeConflict): Promise<void> => {
   if (conflict.type === 'distinct-types') {
     await writeDistinctTypesSides(ctx, conflict);
     return;
   }
   const bytes = await materialiseConflictBytes(ctx, conflict);
   if (bytes === undefined) return;
-  // When the materialised bytes come from the ours blob verbatim (no conflict
-  // markers were injected), the file must be written with the original mode.
-  // Symlink/symlink add-add conflicts fall here: the bytes are the ours
-  // symlink target, and we must re-create a symlink, not a regular file.
-  const useMode =
-    conflict.type === 'add-add' &&
-    conflict.conflictContent === undefined &&
-    conflict.ourMode !== undefined
-      ? conflict.ourMode
-      : undefined;
-  if (useMode !== undefined) {
-    await writeWorkingTreeEntry(ctx, conflict.path, bytes, useMode);
+  // Use ours' mode when present so the kind (symlink / exec bit) is preserved:
+  // symlink-pair content conflicts re-create ours' symlink; executable marker
+  // files carry ours' exec bit. When ourMode is absent (modify-delete with ours
+  // deleted), fall back to a plain file write.
+  if (conflict.ourMode !== undefined) {
+    await writeWorkingTreeEntry(ctx, conflict.path, bytes, conflict.ourMode);
     return;
   }
   await writeWorkingTreeFile(ctx, conflict.path, bytes);
@@ -659,12 +652,7 @@ const materialiseContent = async (
   conflict: MergeConflict,
 ): Promise<Uint8Array | undefined> => {
   if (conflict.conflictContent !== undefined) return conflict.conflictContent;
-  if (conflict.ourId === undefined || conflict.theirId === undefined) return undefined;
-  const [ours, theirs] = await Promise.all([
-    readBlob(ctx, conflict.ourId, READ_BLOB_OPTS),
-    readBlob(ctx, conflict.theirId, READ_BLOB_OPTS),
-  ]);
-  return writeConflictMarkers([ours.content], [theirs.content]);
+  return readOursBlob(ctx, conflict);
 };
 
 /** Derive the working-tree bytes for a conflicting path. Exported for direct unit testing. */

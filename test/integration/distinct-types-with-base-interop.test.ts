@@ -11,7 +11,14 @@
  *   unique:         distinct-types with-base content-merge runs against git
  *   interopSurface: merge
  */
-import { readlinkSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  lstatSync,
+  readlinkSync,
+  symlinkSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { readFile, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -829,6 +836,288 @@ describe.skipIf(!GIT_AVAILABLE)(
           expect(oursMergeMsg).toContain('# Conflicts:\n');
           expect(oursMergeMsg).toContain('#\tp\n');
           expect(oursMergeMsg).toContain(`#\t${renamedPath}\n`);
+        });
+      });
+    });
+
+    // ── S9b: base=file; both sides symlinks, differing targets ───────────────
+    //
+    // Content conflict: domain emits a bare `content` conflict (R5). Both stages
+    // 2 and 3 are symlinks at `p`; stage 1 is the file. Worktree must hold ours'
+    // symlink — no marker bytes anywhere.
+
+    describe('Given base=file, both sides are symlinks with differing targets (S9b)', () => {
+      describe('When both tools merge', () => {
+        it('Then both tools UU, stages match git, and worktree p is ours symlink with no markers', async () => {
+          // Arrange
+          await setupWithBase({
+            base: { kind: 'file', bytes: 'base-content\n' },
+            ours: { kind: 'symlink', target: 'ours-target' },
+            theirs: { kind: 'symlink', target: 'theirs-target' },
+          });
+
+          // Act
+          const peerResult = peerMergeConflict('side');
+          const result = await repo.merge.run({ rev: 'side', message: 'm', author: AUTHOR });
+
+          // Assert — both tools report conflict
+          expect(peerResult.ok).toBe(false);
+          expect(result.kind).toBe('conflict');
+
+          // Stage parity — stage-1 file + stage-2/3 symlinks at p
+          expect(lsStage(pair.ours)).toBe(lsStage(pair.peer));
+
+          // Worktree: p is ours' symlink on both, no markers
+          const oursLink = readlinkSync(path.join(pair.ours, 'p'));
+          const peerLink = readlinkSync(path.join(pair.peer, 'p'));
+          expect(oursLink).toBe(peerLink);
+          expect(oursLink).toBe('ours-target');
+        });
+      });
+    });
+
+    // ── P3: base=symlink; both sides symlinks, differing targets ─────────────
+    //
+    // Same shape as S9b but base is also a symlink. Still a bare `content`
+    // conflict (R5): domain emits no markers; worktree keeps ours' symlink.
+
+    describe('Given base=symlink, both sides are symlinks with differing targets (P3)', () => {
+      describe('When both tools merge', () => {
+        it('Then both tools UU, stages match git, and worktree p is ours symlink with no markers', async () => {
+          // Arrange
+          await setupWithBase({
+            base: { kind: 'symlink', target: 'base-target' },
+            ours: { kind: 'symlink', target: 'ours-target' },
+            theirs: { kind: 'symlink', target: 'theirs-target' },
+          });
+
+          // Act
+          const peerResult = peerMergeConflict('side');
+          const result = await repo.merge.run({ rev: 'side', message: 'm', author: AUTHOR });
+
+          // Assert — both tools report conflict
+          expect(peerResult.ok).toBe(false);
+          expect(result.kind).toBe('conflict');
+
+          // Stage parity
+          expect(lsStage(pair.ours)).toBe(lsStage(pair.peer));
+
+          // Worktree: p is ours' symlink on both, no markers
+          const oursLink = readlinkSync(path.join(pair.ours, 'p'));
+          const peerLink = readlinkSync(path.join(pair.peer, 'p'));
+          expect(oursLink).toBe(peerLink);
+          expect(oursLink).toBe('ours-target');
+        });
+      });
+    });
+
+    // ── Q1: base=symlink; sides identical bytes, modes 100755 vs 100644 ───────
+    //
+    // Content conflict with a mode-only difference. Worktree file must be written
+    // with ours' mode (755).
+
+    describe('Given base=symlink, sides identical bytes but ours mode=100755 / theirs mode=100644 (Q1)', () => {
+      describe('When both tools merge', () => {
+        it('Then both tools UU, stages match, worktree bytes identical with ours mode 755, no markers', async () => {
+          // Arrange — build the graph directly (not via setupWithBase) so we can
+          // control per-commit file modes precisely.
+
+          // ── Peer ────────────────────────────────────────────────────────────
+          // Base: symlink at p
+          peerSymlink('base-target', 'p');
+          peerAdd('p');
+          peerCommit('base');
+          // side branch: p → regular file, mode 100644
+          peerBranch('side');
+          runGit(['-C', pair.peer, 'rm', '-q', 'p']);
+          peerWrite('p', 'shared-content\n');
+          peerAdd('p');
+          peerCommit('theirs-644');
+          // main: p → regular file, mode 100755
+          peerCheckout('main');
+          runGit(['-C', pair.peer, 'rm', '-q', 'p']);
+          peerWrite('p', 'shared-content\n');
+          chmodSync(path.join(pair.peer, 'p'), 0o755);
+          runGit(['-C', pair.peer, 'add', 'p']);
+          peerCommit('ours-755');
+
+          // ── tsgit ────────────────────────────────────────────────────────────
+          // Base: symlink at p
+          symlinkSync('base-target', path.join(pair.ours, 'p'));
+          await repo.add(['p']);
+          await oursCommit('base');
+          // side branch: p → regular file, mode 100644
+          await repo.branch.create({ name: 'side' });
+          await repo.checkout({ rev: 'side' });
+          await repo.rm(['p']);
+          await oursWrite('p', 'shared-content\n');
+          await repo.add(['p']);
+          await oursCommit('theirs-644');
+          // main: p → regular file, mode 100755
+          unlinkSync(path.join(pair.ours, 'p'));
+          await repo.checkout({ rev: 'main' });
+          await repo.rm(['p']);
+          await oursWrite('p', 'shared-content\n');
+          chmodSync(path.join(pair.ours, 'p'), 0o755);
+          await repo.add(['p']);
+          await oursCommit('ours-755');
+
+          // Act
+          const peerResult = peerMergeConflict('side');
+          const result = await repo.merge.run({ rev: 'side', message: 'm', author: AUTHOR });
+
+          // Assert — both tools report conflict (mode difference → UU)
+          expect(peerResult.ok).toBe(false);
+          expect(result.kind).toBe('conflict');
+
+          // Stage parity
+          expect(lsStage(pair.ours)).toBe(lsStage(pair.peer));
+
+          // Worktree bytes identical (shared content, no markers)
+          const oursFile = await readFile(path.join(pair.ours, 'p'), 'utf8');
+          const peerFile = await readFile(path.join(pair.peer, 'p'), 'utf8');
+          expect(oursFile).toBe(peerFile);
+          expect(oursFile).not.toContain('<<<<<<<');
+
+          // Worktree mode = 755 on both
+          expect(lstatSync(path.join(pair.ours, 'p')).mode & 0o777).toBe(0o755);
+          expect(lstatSync(path.join(pair.peer, 'p')).mode & 0o777).toBe(0o755);
+        });
+      });
+    });
+
+    // ── Q2: base=symlink; merge=union; ours 100755 / theirs 100644 differing text
+    //
+    // Union content merge (no conflict markers), UU due to mode conflict,
+    // worktree carries ours' mode (755) and the merged union bytes.
+
+    describe('Given base=symlink, merge=union, ours 100755/differing text vs theirs 100644 (Q2)', () => {
+      describe('When both tools merge', () => {
+        it('Then both tools UU, clean union bytes, ours mode 755, no markers', async () => {
+          // Arrange — build the graph directly
+
+          // ── Peer ────────────────────────────────────────────────────────────
+          // Base: symlink at p + .gitattributes
+          peerSymlink('base-target', 'p');
+          peerWrite('.gitattributes', 'p merge=union\n');
+          peerAdd('p', '.gitattributes');
+          peerCommit('base');
+          // side branch: p → regular file, mode 100644
+          peerBranch('side');
+          runGit(['-C', pair.peer, 'rm', '-q', 'p']);
+          peerWrite('p', 'theirs-line\n');
+          peerAdd('p');
+          peerCommit('theirs-644');
+          // main: p → regular file, mode 100755
+          peerCheckout('main');
+          runGit(['-C', pair.peer, 'rm', '-q', 'p']);
+          peerWrite('p', 'ours-line\n');
+          chmodSync(path.join(pair.peer, 'p'), 0o755);
+          runGit(['-C', pair.peer, 'add', 'p']);
+          peerCommit('ours-755');
+
+          // ── tsgit ────────────────────────────────────────────────────────────
+          symlinkSync('base-target', path.join(pair.ours, 'p'));
+          await oursWrite('.gitattributes', 'p merge=union\n');
+          await repo.add(['p', '.gitattributes']);
+          await oursCommit('base');
+          // side branch: p → regular file, mode 100644
+          await repo.branch.create({ name: 'side' });
+          await repo.checkout({ rev: 'side' });
+          await repo.rm(['p']);
+          await oursWrite('p', 'theirs-line\n');
+          await repo.add(['p']);
+          await oursCommit('theirs-644');
+          // main: p → regular file, mode 100755
+          unlinkSync(path.join(pair.ours, 'p'));
+          await repo.checkout({ rev: 'main' });
+          await repo.rm(['p']);
+          await oursWrite('p', 'ours-line\n');
+          chmodSync(path.join(pair.ours, 'p'), 0o755);
+          await repo.add(['p']);
+          await oursCommit('ours-755');
+
+          // Act
+          const peerResult = peerMergeConflict('side');
+          const result = await repo.merge.run({ rev: 'side', message: 'm', author: AUTHOR });
+
+          // Assert — both tools conflict (UU due to mode difference)
+          expect(peerResult.ok).toBe(false);
+          expect(result.kind).toBe('conflict');
+
+          // Stage parity
+          expect(lsStage(pair.ours)).toBe(lsStage(pair.peer));
+
+          // Worktree: union bytes with no markers, matches git
+          const oursFile = await readFile(path.join(pair.ours, 'p'), 'utf8');
+          const peerFile = await readFile(path.join(pair.peer, 'p'), 'utf8');
+          expect(oursFile).toBe(peerFile);
+          expect(oursFile).not.toContain('<<<<<<<');
+          expect(oursFile).toContain('ours-line\n');
+
+          // Worktree mode = 755 on both
+          expect(lstatSync(path.join(pair.ours, 'p')).mode & 0o777).toBe(0o755);
+          expect(lstatSync(path.join(pair.peer, 'p')).mode & 0o777).toBe(0o755);
+        });
+      });
+    });
+
+    // ── Q4: control — plain modify/modify content conflict, all stages 100755 ──
+    //
+    // No kind change. Both sides are executable regular files. The marker file
+    // written by tsgit must also be mode 755.
+
+    describe('Given a plain content conflict where all stages are 100755 (Q4 control)', () => {
+      describe('When both tools merge', () => {
+        it('Then both tools UU, marker file mode is 755 on both', async () => {
+          // Arrange — simple diverging edit; both ours and theirs are executable
+          peerWrite('root.txt', 'root\n');
+          peerWrite('p', 'base\n');
+          peerAdd('root.txt', 'p');
+          peerCommit('base');
+          peerBranch('side');
+          peerWrite('p', 'theirs-edit\n');
+          peerAdd('p');
+          chmodSync(path.join(pair.peer, 'p'), 0o755);
+          runGit(['-C', pair.peer, 'add', 'p']);
+          peerCommit('theirs-exec');
+          peerCheckout('main');
+          peerWrite('p', 'ours-edit\n');
+          peerAdd('p');
+          chmodSync(path.join(pair.peer, 'p'), 0o755);
+          runGit(['-C', pair.peer, 'add', 'p']);
+          peerCommit('ours-exec');
+
+          await oursWrite('root.txt', 'root\n');
+          await oursWrite('p', 'base\n');
+          await repo.add(['root.txt', 'p']);
+          await oursCommit('base');
+          await repo.branch.create({ name: 'side' });
+          await repo.checkout({ rev: 'side' });
+          await oursWrite('p', 'theirs-edit\n');
+          chmodSync(path.join(pair.ours, 'p'), 0o755);
+          await repo.add(['p']);
+          await oursCommit('theirs-exec');
+          await repo.checkout({ rev: 'main' });
+          await oursWrite('p', 'ours-edit\n');
+          chmodSync(path.join(pair.ours, 'p'), 0o755);
+          await repo.add(['p']);
+          await oursCommit('ours-exec');
+
+          // Act
+          const peerResult = peerMergeConflict('side');
+          const result = await repo.merge.run({ rev: 'side', message: 'm', author: AUTHOR });
+
+          // Assert — both tools conflict
+          expect(peerResult.ok).toBe(false);
+          expect(result.kind).toBe('conflict');
+
+          // Stage parity
+          expect(lsStage(pair.ours)).toBe(lsStage(pair.peer));
+
+          // Marker file written with mode 755 on both
+          expect(lstatSync(path.join(pair.ours, 'p')).mode & 0o777).toBe(0o755);
+          expect(lstatSync(path.join(pair.peer, 'p')).mode & 0o777).toBe(0o755);
         });
       });
     });

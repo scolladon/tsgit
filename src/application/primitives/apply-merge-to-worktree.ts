@@ -177,7 +177,7 @@ const conflictBytes = async (
   ctx: Context,
   conflict: MergeConflict,
 ): Promise<Uint8Array | undefined> => {
-  // Covers `content` conflicts and content-merged `add-add` (both carry `conflictContent`).
+  // Covers markered `content` conflicts and content-merged `add-add` (both carry `conflictContent`).
   if (conflict.conflictContent !== undefined) return conflict.conflictContent;
   if (conflict.type === 'modify-delete') {
     const survivorId = conflict.ourId ?? conflict.theirId;
@@ -187,8 +187,12 @@ const conflictBytes = async (
     }
     return undefined;
   }
-  // Bare add-add (binary/symlink-symlink/type-change): keep ours when present.
-  // Stryker disable next-line ConditionalExpression,BlockStatement: equivalent — for bare add-add/binary/type-change the `ourId` is always defined (ours has a side), and the write reproduces bytes the working tree already holds (ours was checked out), so skipping it is observationally identical.
+  // Bare add-add (binary/symlink-symlink/type-change) and bare content (R5 symlink-pair):
+  // keep ours when present.
+  // Stryker disable next-line ConditionalExpression,BlockStatement: equivalent — for bare
+  // content/add-add/binary/type-change the `ourId` is always defined (ours has a side), and the
+  // write reproduces bytes the working tree already holds (ours was checked out at `path`), so
+  // skipping it is observationally identical.
   if (conflict.ourId !== undefined) {
     // Stryker disable next-line ObjectLiteral: equivalent — the 256 MiB cap is unobservable without a 256 MiB fixture; cap mechanics covered by read-blob.test.ts.
     return (await readBlob(ctx, conflict.ourId, { maxBytes: MAX_CONFLICT_OUTPUT_BYTES })).content;
@@ -202,17 +206,15 @@ const conflictBytes = async (
  * a symlink (a plain write over a symlink-occupied path refuses on the node
  * adapter).
  */
-const writeMarkedConflict = async (ctx: Context, conflict: MergeConflict): Promise<void> => {
+export const writeMarkedConflict = async (ctx: Context, conflict: MergeConflict): Promise<void> => {
   const bytes = await conflictBytes(ctx, conflict);
   if (bytes === undefined) return;
-  const useMode =
-    conflict.type === 'add-add' &&
-    conflict.conflictContent === undefined &&
-    conflict.ourMode !== undefined
-      ? conflict.ourMode
-      : undefined;
-  if (useMode !== undefined) {
-    await writeWorkingTreeEntry(ctx, conflict.path, bytes, useMode);
+  // Use ours' mode when present so the kind (symlink / exec bit) is preserved:
+  // symlink-pair content conflicts re-create ours' symlink; executable marker
+  // files carry ours' exec bit. When ourMode is absent (modify-delete with ours
+  // deleted), fall back to a plain file write.
+  if (conflict.ourMode !== undefined) {
+    await writeWorkingTreeEntry(ctx, conflict.path, bytes, conflict.ourMode);
     return;
   }
   await writeWorkingTreeFile(ctx, conflict.path, bytes);
