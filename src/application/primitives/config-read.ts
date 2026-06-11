@@ -391,7 +391,9 @@ export const parseSectionHeader = (line: string): SectionHeaderParse => {
 const parseQuotedSubsectionHeader = (afterOpen: string, quoteAt: number): SectionHeaderParse => {
   const section = afterOpen.slice(0, quoteAt).trim();
   const sectionPart = section.toLowerCase();
-  const charBeforeQuote = quoteAt > 0 ? afterOpen[quoteAt - 1] : undefined;
+  // `afterOpen[-1]` is `undefined` when the quote opens the header content,
+  // which the guard below treats as missing whitespace — exactly git's refusal.
+  const charBeforeQuote = afterOpen[quoteAt - 1];
   if (charBeforeQuote === undefined || !GIT_SPACE.has(charBeforeQuote)) {
     return { kind: 'malformed', partialName: sectionPart };
   }
