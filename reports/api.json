@@ -52178,7 +52178,7 @@
 									},
 									{
 										"kind": "text",
-										"text": ", preserving every\nother byte verbatim.\n\n- existing section with that key ⇒ its value is replaced;\n- existing section without that key ⇒ a "
+										"text": ", preserving every\nother byte verbatim.\n\n- existing section with that key ⇒ full span of the first match is replaced\n  by a single canonical "
 									},
 									{
 										"kind": "code",
@@ -52186,7 +52186,15 @@
 									},
 									{
 										"kind": "text",
-										"text": " line is\n  inserted right after the header;\n- no such section ⇒ "
+										"text": " line;\n- existing section without that key ⇒ a "
+									},
+									{
+										"kind": "code",
+										"text": "`\\t<key> = <value>`"
+									},
+									{
+										"kind": "text",
+										"text": " line is\n  inserted at the end of the last matching block;\n- no such section ⇒ "
 									},
 									{
 										"kind": "code",
@@ -52513,7 +52521,7 @@
 									},
 									{
 										"kind": "text",
-										"text": ", multi-valued keys\nare explicitly supported: all matching lines are removed in a single\nread-modify-write pass."
+										"text": ", multi-valued keys\nare explicitly supported: all matching spans are removed in a single\nread-modify-write pass. An emptied section block is pruned entirely\n(header + blank lines removed) unless the block contains a comment."
 									}
 								]
 							},
@@ -52660,7 +52668,7 @@
 									},
 									{
 										"kind": "text",
-										"text": " to\nclear every occurrence)."
+										"text": " to\nclear every occurrence). An emptied section block is pruned entirely\n(header + blank lines removed) unless the block contains a comment."
 									}
 								]
 							},
