@@ -186,7 +186,7 @@ function regularEmissions(conflict: MergeConflict): ReadonlyArray<StageEmission>
   return out;
 }
 
-function recordedPaths(conflict: MergeConflict): ReadonlyArray<FilePath> {
+export function recordedPaths(conflict: MergeConflict): ReadonlyArray<FilePath> {
   if (conflict.type === 'distinct-types') {
     const paths: FilePath[] = [];
     if (conflict.ourPath !== undefined) paths.push(conflict.ourPath);
@@ -194,6 +194,12 @@ function recordedPaths(conflict: MergeConflict): ReadonlyArray<FilePath> {
     return paths;
   }
   return [conflict.path];
+}
+
+export function sortedRecordedPaths(
+  conflicts: ReadonlyArray<MergeConflict>,
+): ReadonlyArray<FilePath> {
+  return conflicts.flatMap((conflict) => [...recordedPaths(conflict)]).sort(comparePaths);
 }
 
 function toIndexEntry(

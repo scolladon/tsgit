@@ -5,6 +5,7 @@ import {
   conflictsToIndexEntries,
   diffIndexAgainstTree,
   groupUnmergedEntries,
+  sortedRecordedPaths,
 } from '../../../../src/domain/diff/index-diff.js';
 import type {
   GitIndex,
@@ -978,6 +979,103 @@ describe('conflictsToIndexEntries', () => {
 
         // Assert
         expect((thrown as { data: { code: string } }).data.code).toBe('INVALID_DIFF_INPUT');
+      });
+    });
+  });
+});
+
+describe('sortedRecordedPaths', () => {
+  function conflict(partial: Partial<MergeConflict> & { path: FilePath }): MergeConflict {
+    return {
+      type: 'content',
+      ...partial,
+    } as MergeConflict;
+  }
+
+  describe('Given a mix of a distinct-types conflict and a regular conflict', () => {
+    describe('When sortedRecordedPaths called', () => {
+      it('Then it lists every recorded path byte-sorted', () => {
+        // Arrange — distinct-types at `p` with ourPath `p~HEAD` + theirPath `p`;
+        // a regular conflict at `a`. flatMap order puts distinct-types first
+        // (killing the sort mutation: unsorted would yield `p`, `p~HEAD`, `a`).
+        const conflicts: ReadonlyArray<MergeConflict> = [
+          conflict({
+            type: 'distinct-types',
+            path: 'p' as FilePath,
+            ourPath: 'p~HEAD' as FilePath,
+            theirPath: 'p' as FilePath,
+          }),
+          conflict({ path: 'a' as FilePath }),
+        ];
+
+        // Act
+        const sut = sortedRecordedPaths;
+        const result = sut(conflicts);
+
+        // Assert
+        expect(result).toEqual(['a', 'p', 'p~HEAD']);
+      });
+    });
+  });
+
+  describe('Given a regular conflict', () => {
+    describe('When sortedRecordedPaths called', () => {
+      it('Then it returns the single conflict path', () => {
+        // Arrange
+        const conflicts: ReadonlyArray<MergeConflict> = [
+          conflict({ path: 'file.txt' as FilePath }),
+        ];
+
+        // Act
+        const sut = sortedRecordedPaths;
+        const result = sut(conflicts);
+
+        // Assert
+        expect(result).toEqual(['file.txt']);
+      });
+    });
+  });
+
+  describe('Given a distinct-types conflict with only ourPath set', () => {
+    describe('When sortedRecordedPaths called', () => {
+      it('Then it returns only the present recorded path', () => {
+        // Arrange
+        const conflicts: ReadonlyArray<MergeConflict> = [
+          conflict({
+            type: 'distinct-types',
+            path: 'q' as FilePath,
+            ourPath: 'q~HEAD' as FilePath,
+          }),
+        ];
+
+        // Act
+        const sut = sortedRecordedPaths;
+        const result = sut(conflicts);
+
+        // Assert
+        expect(result).toEqual(['q~HEAD']);
+      });
+    });
+  });
+
+  describe('Given a distinct-types conflict with only theirPath set', () => {
+    describe('When sortedRecordedPaths called', () => {
+      it('Then it returns only the present recorded path', () => {
+        // Arrange
+        const conflicts: ReadonlyArray<MergeConflict> = [
+          conflict({
+            type: 'distinct-types',
+            path: 'r' as FilePath,
+            theirPath: 'r' as FilePath,
+          }),
+        ];
+
+        // Act
+        const sut = sortedRecordedPaths;
+        const result = sut(conflicts);
+
+        // Assert
+        expect(result).toEqual(['r']);
       });
     });
   });

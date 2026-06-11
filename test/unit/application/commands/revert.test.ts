@@ -172,6 +172,41 @@ describe('revert run', () => {
         expect(file).toContain('<<<<<<< HEAD\n');
         expect(file).toContain(`>>>>>>> parent of ${c2.slice(0, 7)} (c2 mid)\n`);
       });
+
+      it('Then MERGE_MSG lists recorded paths when a distinct-types conflict occurs', async () => {
+        // Arrange — c0 has `p` as regular file; cA makes `p` a symlink; cB
+        // changes the symlink target. Reverting cA: base=cA's tree (symlink),
+        // ours=cB's HEAD (symlink), theirs=cA's parent=c0 (regular).
+        // → distinct-types: ours stays (symlink at p), theirs renamed p~parent…
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await setUser(ctx);
+        // c0 — regular p
+        await ctx.fs.writeUtf8(work(ctx, 'p'), 'regular-content\n');
+        await add(ctx, ['p']);
+        await commit(ctx, { message: 'c0 base', author: MAIN_AUTHOR });
+        // cA — replace p with a symlink (the commit we will revert)
+        await ctx.fs.rm(work(ctx, 'p'));
+        await ctx.fs.symlink('target-a', work(ctx, 'p'));
+        await add(ctx, ['p']);
+        const cA = await commit(ctx, { message: 'make p a symlink', author: MAIN_AUTHOR });
+        // cB — change the symlink target (HEAD at revert time)
+        await ctx.fs.rm(work(ctx, 'p'));
+        await ctx.fs.symlink('target-b', work(ctx, 'p'));
+        await add(ctx, ['p']);
+        await commit(ctx, { message: 'change symlink target', author: MAIN_AUTHOR });
+
+        // Act — revert cA
+        const result = await revertRun(ctx, { commits: [cA.id] });
+
+        // Assert — distinct-types conflict, MERGE_MSG lists both recorded paths
+        expect(result.kind).toBe('conflict');
+        const mergeMsg = await ctx.fs.readUtf8(`${gitDir(ctx)}/MERGE_MSG`);
+        const abbrev = cA.id.slice(0, 7);
+        const renamedPath = `p~parent of ${abbrev} (make p a symlink)`;
+        expect(mergeMsg).toContain('#\tp\n');
+        expect(mergeMsg).toContain(`#\t${renamedPath}\n`);
+      });
     });
   });
 

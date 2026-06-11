@@ -738,5 +738,184 @@ describe.skipIf(!GIT_AVAILABLE)(
         });
       });
     });
+
+    // ── S6: with-base distinct-types via cherry-pick ──────────────────────────
+    //
+    // Base commit has `p` as a regular file. Feature branch changes `p` regular
+    // (theirs = regular). Main changes `p` to a symlink (ours = symlink).
+    // Cherry-pick feature onto main → with-base distinct-types conflict.
+    // The regular side (theirs) gets renamed to `p~<abbrev> (<subject>)`.
+    // MERGE_MSG # Conflicts: block must list both `p` and the renamed path.
+
+    describe('Given base is a regular file, main makes p a symlink, cherry-pick of a regular change (S6)', () => {
+      describe('When cherry-pick runs on both tools', () => {
+        it('Then stages, worktree, and MERGE_MSG trailer byte-match git', async () => {
+          // Arrange — peer
+          peerWrite('root.txt', 'root\n');
+          peerWrite('p', 'base-content\n');
+          peerAdd('root.txt', 'p');
+          peerCommit('base');
+          // Feature branch: change p regular
+          peerBranch('feature');
+          peerWrite('p', 'feature-content\n');
+          peerAdd('p');
+          peerCommit('make p regular change');
+          // Back to main: replace p with a symlink
+          peerCheckout('main');
+          runGit(['-C', pair.peer, 'rm', '-q', 'p']);
+          peerSymlink('link-target', 'p');
+          peerAdd('p');
+          peerCommit('make p a symlink');
+          const featureOid = runGit(['-C', pair.peer, 'rev-parse', 'feature']).trim();
+          const abbrev = featureOid.slice(0, 7);
+          // Peer cherry-pick with conflict
+          const peerResult = tryRunGit(
+            [
+              '-C',
+              pair.peer,
+              '-c',
+              'merge.conflictStyle=merge',
+              '-c',
+              'core.editor=true',
+              'cherry-pick',
+              featureOid,
+            ],
+            { env: COMMIT_ENV },
+          );
+
+          // Arrange — tsgit
+          await oursWrite('root.txt', 'root\n');
+          await oursWrite('p', 'base-content\n');
+          await repo.add(['root.txt', 'p']);
+          await oursCommit('base');
+          // Feature branch: change p regular
+          await repo.branch.create({ name: 'feature' });
+          await repo.checkout({ rev: 'feature' });
+          await oursWrite('p', 'feature-content\n');
+          await repo.add(['p']);
+          await oursCommit('make p regular change');
+          // Back to main: replace p with a symlink
+          await repo.checkout({ rev: 'main' });
+          await repo.rm(['p']);
+          symlinkSync('link-target', path.join(pair.ours, 'p'));
+          await repo.add(['p']);
+          await oursCommit('make p a symlink');
+
+          // Act — cherry-pick feature onto main
+          const pickResult = await repo.cherryPick.run({ commits: ['feature'] });
+
+          // Assert — both tools conflict
+          expect(peerResult.ok).toBe(false);
+          expect(pickResult.kind).toBe('conflict');
+
+          // Stages match git
+          expect(lsStage(pair.ours)).toBe(lsStage(pair.peer));
+
+          // Worktree: symlink at p on both
+          const oursLink = readlinkSync(path.join(pair.ours, 'p'));
+          const peerLink = readlinkSync(path.join(pair.peer, 'p'));
+          expect(oursLink).toBe(peerLink);
+
+          // Regular side renamed to p~<abbrev> (make p regular change) on both
+          const renamedPath = `p~${abbrev} (make p regular change)`;
+          const oursRenamed = await readFile(path.join(pair.ours, renamedPath), 'utf8');
+          const peerRenamed = await readFile(path.join(pair.peer, renamedPath), 'utf8');
+          expect(oursRenamed).toBe(peerRenamed);
+
+          // MERGE_MSG byte parity — trailer lists both recorded paths
+          const oursMergeMsg = await readFile(path.join(pair.ours, '.git', 'MERGE_MSG'), 'utf8');
+          const peerMergeMsg = await readFile(path.join(pair.peer, '.git', 'MERGE_MSG'), 'utf8');
+          expect(oursMergeMsg).toBe(peerMergeMsg);
+          expect(oursMergeMsg).toContain('# Conflicts:\n');
+          expect(oursMergeMsg).toContain('#\tp\n');
+          expect(oursMergeMsg).toContain(`#\t${renamedPath}\n`);
+        });
+      });
+    });
+
+    // ── P5: with-base distinct-types via revert ──────────────────────────────
+    //
+    // Root commit has `p` regular. Commit A "make p a symlink". Commit B changes
+    // symlink target. Revert A: base=A's tree (symlink), ours=HEAD (symlink at
+    // target-b), theirs=A's parent (regular p). → distinct-types; theirs (regular)
+    // renamed to `p~parent of <abbrev> (make p a symlink)`.
+    // MERGE_MSG must list both `p` and the renamed path.
+
+    describe('Given reverting a symlink-creation commit while HEAD has a changed symlink (P5)', () => {
+      describe('When revert runs on both tools', () => {
+        it('Then stages, worktree, and MERGE_MSG trailer byte-match git', async () => {
+          // Arrange — peer
+          peerWrite('root.txt', 'root\n');
+          peerWrite('p', 'regular-content\n');
+          peerAdd('root.txt', 'p');
+          peerCommit('root');
+          // Commit A: replace p with a symlink
+          runGit(['-C', pair.peer, 'rm', '-q', 'p']);
+          peerSymlink('target-a', 'p');
+          peerAdd('p');
+          peerCommit('make p a symlink');
+          const commitA = runGit(['-C', pair.peer, 'rev-parse', 'HEAD']).trim();
+          const abbrev = commitA.slice(0, 7);
+          // Commit B: change symlink target
+          runGit(['-C', pair.peer, 'rm', '-q', 'p']);
+          peerSymlink('target-b', 'p');
+          peerAdd('p');
+          peerCommit('change symlink target');
+          // Peer revert commit A
+          const peerResult = tryRunGit(
+            [
+              '-C',
+              pair.peer,
+              '-c',
+              'merge.conflictStyle=merge',
+              '-c',
+              'core.editor=true',
+              'revert',
+              '--no-commit',
+              commitA,
+            ],
+            { env: COMMIT_ENV },
+          );
+
+          // Arrange — tsgit
+          await oursWrite('root.txt', 'root\n');
+          await oursWrite('p', 'regular-content\n');
+          await repo.add(['root.txt', 'p']);
+          await oursCommit('root');
+          // Commit A: replace p with a symlink
+          await repo.rm(['p']);
+          symlinkSync('target-a', path.join(pair.ours, 'p'));
+          await repo.add(['p']);
+          await oursCommit('make p a symlink');
+          const tsgitCommitA = runGit(['-C', pair.ours, 'rev-parse', 'HEAD']).trim();
+          // Commit B: change symlink target
+          unlinkSync(path.join(pair.ours, 'p'));
+          symlinkSync('target-b', path.join(pair.ours, 'p'));
+          await repo.add(['p']);
+          await oursCommit('change symlink target');
+
+          // Act — revert commit A
+          const revertResult = await repo.revert.run({ commits: [tsgitCommitA] });
+
+          // Assert — both tools conflict
+          expect(peerResult.ok).toBe(false);
+          expect(revertResult.kind).toBe('conflict');
+
+          // Stages match git
+          expect(lsStage(pair.ours)).toBe(lsStage(pair.peer));
+
+          // The rename suffix uses the theirs label: parent of <abbrev> (make p a symlink)
+          const renamedPath = `p~parent of ${abbrev} (make p a symlink)`;
+
+          // MERGE_MSG byte parity
+          const oursMergeMsg = await readFile(path.join(pair.ours, '.git', 'MERGE_MSG'), 'utf8');
+          const peerMergeMsg = await readFile(path.join(pair.peer, '.git', 'MERGE_MSG'), 'utf8');
+          expect(oursMergeMsg).toBe(peerMergeMsg);
+          expect(oursMergeMsg).toContain('# Conflicts:\n');
+          expect(oursMergeMsg).toContain('#\tp\n');
+          expect(oursMergeMsg).toContain(`#\t${renamedPath}\n`);
+        });
+      });
+    });
   },
 );

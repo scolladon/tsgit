@@ -13,7 +13,7 @@ import {
   noOperationInProgress,
   workingTreeDirty,
 } from '../../domain/commands/error.js';
-import { renderPatch } from '../../domain/diff/index.js';
+import { renderPatch, sortedRecordedPaths } from '../../domain/diff/index.js';
 import { TsgitError } from '../../domain/error.js';
 import type { IndexEntry } from '../../domain/git-index/index.js';
 import { type ConflictType, type MergeConflict, replayLabels } from '../../domain/merge/index.js';
@@ -340,10 +340,7 @@ const persistStop = async (
     remaining: rc.todo.slice(index + 1),
     stoppedSha: rc.todo[index]!.oid,
     stoppedAuthor: cData.author,
-    message: conflictMergeMsg(
-      cData.message,
-      conflicts.map((c) => c.path),
-    ),
+    message: conflictMergeMsg(cData.message, sortedRecordedPaths(conflicts)),
     rewritten,
     patch: await renderCommitPatch(ctx, cData),
     // equivalent-mutant (`!== undefined` → `true`): on a continue/skip re-stop
@@ -1056,10 +1053,7 @@ const replayInteractive = async (
         await persistInteractiveStop(ctx, ic, i, {
           stoppedSha: inst.oid,
           author: cData.author,
-          message: conflictMergeMsg(
-            template,
-            meld.conflicts.map((c) => c.path),
-          ),
+          message: conflictMergeMsg(template, sortedRecordedPaths(meld.conflicts)),
           patch,
           rewritten,
           currentFixups: [...group.fixups, { action: inst.action, oid: inst.oid }],
@@ -1078,10 +1072,7 @@ const replayInteractive = async (
       await persistInteractiveStop(ctx, ic, i, {
         stoppedSha: inst.oid,
         author: cData.author,
-        message: conflictMergeMsg(
-          cData.message,
-          step.conflicts.map((c) => c.path),
-        ),
+        message: conflictMergeMsg(cData.message, sortedRecordedPaths(step.conflicts)),
         patch,
         rewritten,
       });
