@@ -1,9 +1,9 @@
 ---
-description: Run the tsgit workflow on a backlog item, PRD file, or free-text feature description. All phases run in this session except implementation slices, which are delegated one-per-slice to sonnet subagents.
+description: Run the tsgit workflow on a backlog item, PRD file, or free-text feature description. Heavy phases are delegated to model-matched subagents (fable for design/plan/review/refactor, sonnet for slices/mutation-triage, haiku for mechanical docs); the session orchestrates, decides with the user, applies review fixes, and owns the synthesis artifacts (ADRs, backlog follow-ups, PR body).
 argument-hint: <backlog-id | docs/prd/file.md | "feature description">
 ---
 
-You are running tsgit's development workflow (see `CLAUDE.md` §"Development Workflow"). Run the workflow on the input below **in this session, in-thread** — with ONE exception: each implementation slice (Step 5) is executed by a dedicated subagent on the `sonnet` model, orchestrated and verified from this session. Every other phase — design, ADR, plan, review, mutation, docs, PR — happens here, in-thread. The user sees every action as it happens.
+You are running tsgit's development workflow (see `CLAUDE.md` §"Development Workflow"). The session is the **orchestrator**: it resolves the input, talks to the user (ADRs, escalations), verifies every delegated artifact, applies review fixes, runs the phase-boundary gates, and owns all synthesis (backlog follow-ups, PR body, merge). Heavy exploration and production runs in **model-matched subagents** per the delegation map in the Hard rules — this keeps the session's context lean (cheaper every later turn) without lowering the quality bar where it matters.
 
 ## Input
 
@@ -37,11 +37,16 @@ npm install
 
 If the branch already exists or the worktree path collides, STOP and ask the user.
 
-## Step 2 — Design
+## Step 2 — Design (fable subagent)
 
-Write `docs/design/<slug>.md` directly. Read the existing related design docs (`docs/design/`), ADRs (`docs/adr/`), and the codebase patterns it must follow (hexagonal architecture, branded types, GWT/AAA test conventions, 100% coverage, mutation-resistant tests — all per `CLAUDE.md`).
+Delegate the design to a dedicated subagent (`Agent` tool, `model: "fable"`, general-purpose type). Its prompt carries: the resolved brief, the absolute worktree path (work ONLY there; Serena already active — symbol tools right away, no `activate_project`), and this contract:
 
-Self-review until convergence (max 3 passes — stop the moment a pass yields no changes). Commit: `docs(design): <slug>`.
+- Read the related design docs (`docs/design/`), ADRs (`docs/adr/`), and the codebase patterns the feature must follow (hexagonal architecture, branded types, GWT/AAA test conventions, 100% coverage, mutation-resistant tests — all per `CLAUDE.md`).
+- When git-faithfulness is in play, **pin real git's behaviour empirically** (scrubbed env, isolated HOME, signing off) and record the pinned matrix in the doc — never design from memory of git.
+- Write `docs/design/<slug>.md`; self-review until convergence (max 3 passes). Commit: `docs(design): <slug>`.
+- Return: the doc path + a list of **decision candidates** — every load-bearing choice not pre-decided by existing ADRs, each with ≤3 alternatives and a recommendation. The agent NEVER decides those itself; the user does, in Step 3.
+
+The session reads the returned doc (not the agent's exploration), sanity-checks it against the brief, and carries the decision candidates into Step 3.
 
 ## Step 3 — ADR conversation
 
@@ -53,47 +58,60 @@ For every load-bearing choice the design makes that's not pre-decided by existin
 
 If the design has no user-judgment decisions, skip to Step 4 without inventing questions. If user decisions deviate from the design's recommendations, revise the design doc to absorb them in a follow-up `docs(design): revise <slug> against ADRs <range>` commit BEFORE moving to Step 4.
 
-## Step 4 — Plan
+## Step 4 — Plan (fable subagent)
 
-Write `docs/plan/<slug>.md` directly. The plan is the implementation script — per-slice TDD steps the next phase reads top-to-bottom. Self-review until convergence (max 3 passes). Commit: `docs(plan): <slug>`.
+Delegate to a fable subagent (same worktree + Serena-already-active hygiene as Step 2; pass the design doc path + the accepted ADRs). It writes `docs/plan/<slug>.md`, self-reviews until convergence (max 3 passes), commits `docs(plan): <slug>`.
+
+The plan is the implementation script **and the knowledge handoff**: the session no longer explores the code itself, so whatever the plan omits is paid later as slice-agent rediscovery. Hard contract — **every slice block carries a pre-chewed context section**: exact file paths and symbol name-paths to touch, current signatures being changed, the helpers/fixtures/describe blocks to extend and where they live, and any pinned behaviour bytes the slice must reproduce. Step 5 prompts are assembled FROM these blocks.
+
+**Slice sizing (cycle-time contract):** every slice costs a full agent lifecycle (spin-up, zero-context rebuild, gate), so slices must earn it. **No standalone test-only slices** — coverage tests, interop pins, and property tests are folded into the implementation slice whose code they exercise (the slice's TDD steps simply carry more RED entries). A slice that would be a pure test pass over already-landed code is a smell: merge it into its neighbour.
 
 ## Step 5 — Implementation (one sonnet subagent per slice)
 
 Execute the plan's slices top-to-bottom, **delegating each slice to its own subagent** (`Agent` tool, `model: "sonnet"`, general-purpose type). Slices share one worktree and build on each other, so run them **sequentially** — never two agents writing the same worktree concurrently. The session stays the orchestrator: it launches, verifies, and gates every slice.
 
-**Per-slice agent prompt must carry** (the agent starts with zero context):
+**Per-slice agent prompt must carry** (the agent starts with zero context — every line of rediscovery it has to do is wasted cycle time you could have pre-paid from the session's own exploration):
 
 - The absolute worktree path and an instruction to work ONLY there.
+- **The Serena mandate:** Serena is ALREADY ACTIVATED on this worktree (Step 1 did it; all slices share that worktree) — use its symbol/LSP tools right away, no `activate_project` call. Serena is the default for all TS reading/editing (test files included); `get_diagnostics_for_file` after each source edit; Bash for git/npm only.
 - The plan file path + the exact slice to execute (quote the slice text verbatim if short).
 - The design doc path for grammar/behaviour reference.
+- **The slice's pre-chewed context block, quoted from the plan:** exact file paths and symbol name-paths to touch, the helpers/fixtures/describe blocks to extend and where they live, current type signatures being changed, and any pinned behaviour bytes the slice must reproduce (the Step 4 plan contract guarantees each slice carries this block — hand it over verbatim instead of letting the agent re-grep it; slice agents have burned 100+ tool calls on rediscovery).
 - The TDD contract: **Red** (write the test first, run `npx vitest run <file>`, it must fail for the stated reason) → **Green** (minimal code, re-run) → **Refactor** (keep green).
-- The gate: run `npm run validate`; NEVER commit on red; commit exactly one atomic conventional-commit with the message the plan names; never `--no-verify`.
+- **The slice gate (targeted, NOT the full validate):** `npx vitest run` on every touched test file, `npm run check:types`, and biome on the touched files (`npx biome check <files>`) — all green before committing; NEVER commit on a red gate; commit exactly one atomic conventional-commit with the message the plan names; never `--no-verify`. The agent does NOT run `npm run validate` — that gate moves to the phase boundary (below).
 - The conventions: GWT describe/it split, AAA sections with real statements, `sut` = the unit under test (result goes in `result`), no `@ts-ignore` / `eslint-disable` / `v8 ignore` / `stryker-disable` / `biome-ignore`, no phase/ADR/backlog refs in source or tests, git-faithful behaviour.
 - The blocker protocol: on any wall (ambiguous spec, ADR-level decision, failing gate it cannot honestly fix) the agent must NOT commit — it reports `{ slice, reason, ≤3 candidate options }` back as its final message.
 
-**After each agent returns, verify in-session before launching the next slice**: the commit exists and contains what the slice promised (`git log`/`git show --stat`), `npm run validate` is green, and the diff honours the conventions (spot-check; deep review still happens in Step 6). A failed or blocked slice is handled in-session: fix it directly or surface to the user with the agent's options — never relaunch blindly.
+**After each agent returns, verify in-session before launching the next slice**: the commit exists and contains what the slice promised (`git log`/`git show --stat`), and the diff honours the conventions (spot-check; deep review still happens in Step 6). A failed or blocked slice is handled in-session: fix it directly or surface to the user with the agent's options — never relaunch blindly.
+
+**Phase-boundary gate:** after the LAST slice lands, run `npm run validate` once in-session. It MUST be green before Step 6 — anything it surfaces (cross-slice breakage, coverage holes, doc-typedoc / `reports/api.json` regeneration, spelling) is fixed and committed here (`fix(<scope>): close validate gap after slice N` or the regenerated artefact in its own commit). One full validate for the whole phase replaces N per-slice runs — that was the single biggest cycle-time cost of the delegated form.
 
 If blocked at orchestration level (design hits a wall, ADR-level decision needed): surface to the user with `{ slice, reason, ≤3 candidate options }`. Never spin, never silently abandon.
 
-## Step 6 — Review × 3 (sequential, in-thread)
+## Step 6 — Review × 4 (parallel dimensions, per-dimension convergence; read-only fable reviewers; fixes in-thread)
 
-Run three review passes in this order:
+Four review dimensions, **fanned out in parallel** (one message, four `Agent` calls, `model: "fable"`), each converging **independently** (≤3 cycles per dimension):
 
-1. **TypeScript review** — types, correctness, bugs, project conventions, immutability.
+1. **Code review (TypeScript)** — types, correctness, bugs, project conventions, immutability.
 2. **Security review** — config/path/URL injection, traversal, SSRF, resource exhaustion, cache poisoning.
-3. **Test review** — mutation gaps, coverage holes, isolation, GWT/AAA conventions.
+3. **Perf review** — scoped to the repo's performance priorities (CLAUDE.md §Performance): allocation churn on hot paths, accidental O(n²), buffer copies, sync I/O in async pipelines, cache-defeating patterns. Calibrate to the diff: a cold-path feature legitimately returns zero findings.
+4. **Test review** — run the `test-review` skill's audit dimensions over the diff's tests, **minus its mutation dimension** (mutation is willingly deferred to Step 8's background run — do not anticipate or duplicate it here): behaviour focus, coverage holes, freshness, mocks, isolation, assertion strength, GWT/AAA + `sut`/`result` conventions, maintainability, forbidden refs/directives.
 
-For each: read the branch's diff (`git diff main...HEAD`), identify every finding, **apply fixes directly**, run `npm run validate` after each fix batch, self-review until the next pass yields zero findings (max 3 cycles per reviewer).
+Each reviewer is a **read-only fable subagent**: worktree path, design doc path, mission to read `git diff main...HEAD` plus whatever surrounding code it needs (Serena already active); no edits, no commits; returns a structured findings list `{ file:line, severity, finding, suggested fix }` (empty list valid — and a converged dimension).
 
-**Security gate:** for HIGH/CRITICAL security findings, surface the fix diff to the user BEFORE committing. MEDIUM/LOW security findings + all typescript/test findings: fix-all-then-converge, no user round-trip.
+**Convergence loop:** collect the round's findings → the SESSION applies every fix directly (Serena), batched and committed **per dimension**, `npm run validate` after the round's batches → re-launch in parallel a **fresh** reviewer for each dimension that had findings, on the updated diff (a clean dimension stays converged and is not re-run; later rounds see the other dimensions' fixes, which is the point) → repeat until every dimension returns a clean cycle or hits 3 cycles. Fresh per-cycle contexts keep reviewers unbiased by the implementer's history and their own previous pass.
 
-Commit fixes per reviewer as conventional commits (e.g. `refactor(config): apply typescript-review fixes`, `fix(security): tighten path validator`, `test(coverage): close gap surfaced by test-review`).
+Commit fixes per dimension as conventional commits (e.g. `refactor(config): apply code-review fixes`, `fix(security): tighten path validator`, `perf(pack): hoist allocation out of loop`, `test(coverage): close gap surfaced by test-review`).
 
-## Step 7 — Architecture refactor + scoped re-review (in-thread)
+**Security gate:** for HIGH/CRITICAL security findings, surface the fix diff to the user BEFORE committing. MEDIUM/LOW security findings + all code/perf/test findings: fix-all-then-converge, no user round-trip.
 
-Implementation and the three reviews are scoped to the diff. This pass widens the lens: with the feature landed, look across the **whole codebase** for structural gains the scoped passes can't see — duplication that now warrants centralizing, a responsibility sitting in the wrong layer, the Nth consumer of a pattern that should become a shared primitive/port. Improve SOLID / hexagonal layering / SoC / DRY; stay bounded by YAGNI + KISS — no speculative abstraction.
+## Step 7 — Architecture refactor (conditional fable subagent) + scoped re-review
+
+Implementation and the four review dimensions are scoped to the diff. This pass widens the lens: with the feature landed, look across the **whole codebase** for structural gains the scoped passes can't see — duplication that now warrants centralizing, a responsibility sitting in the wrong layer, the Nth consumer of a pattern that should become a shared primitive/port. Improve SOLID / hexagonal layering / SoC / DRY; stay bounded by YAGNI + KISS — no speculative abstraction.
 
 Discovery is **seeded by the feature's diff** and radiates only as far as the feature's concerns reach.
+
+**Two-stage, judgment vs execution:** the session (fable) owns the judgment — a quick in-thread candidate scan (diff + targeted symbol lookups — minutes, not an exploration), then scoping each surviving candidate into a precise spec: what moves where, which symbols/files, expected mechanical test changes, blast radius. If nothing clears the bar → write the 1–3 line no-op justification and move on; spawning an agent to conclude "no-op" is forbidden waste. If candidates survive → delegate **execution to a `sonnet` subagent** (same trust level as feature slices, and the spec makes it slice-grade work): worktree path, Serena-active note, the scoped candidate specs, the behavior-preserving contract below, targeted slice-style gates, atomic `refactor(<scope>): <what>` commits.
 
 **Contract:**
 
@@ -103,19 +121,36 @@ Discovery is **seeded by the feature's diff** and radiates only as far as the fe
 - **May be a no-op:** if the code is already in good shape, the step still emits a 1–3 line written justification of what was considered and why nothing changed. A silent skip is not allowed.
 - **Atomic commits:** each refactor lands as its own `refactor(<scope>): <what>` commit, separate from the feature commits.
 
-Then **re-review**, scoped to *only* the refactor diff (`git diff` of the `refactor(...)` commits), through the same three lenses (typescript / security / tests), fix-all-until-converged (≤3 cycles), re-validate. Findings that imply *further* refactoring become follow-ups, not another refactor loop.
+Then **re-review**, scoped to *only* the refactor diff (`git diff` of the `refactor(...)` commits), through the same four dimensions (code / security / perf / tests, parallel, per-dimension convergence ≤3), fix-all-until-converged, re-validate. Findings that imply *further* refactoring become follow-ups, not another refactor loop.
 
 **Why here (before mutation):** mutation testing scores test strength against the *final* code shape. Refactoring after mutation would invalidate the run and force a costly redo. Refactor → re-review → green validate → then mutation.
 
-## Step 8 — Mutation testing
+## Step 8 — Mutation testing (background; NEVER wait)
 
-Run `npm run test:mutation` (or `stryker run`). Per surviving mutant: kill it with a new test, or document it inline as `// equivalent-mutant: <why>` when provably equivalent. Re-run until 0 killable survivors. Commit each kill as `test(mutation): <module>`.
+The moment Step 7's validate is green, start the scoped run **in the background** and IMMEDIATELY proceed to Step 9 — **no step, including PR creation and merge, ever blocks on mutation, local or CI**:
 
-If the project has no mutation config or the run is intractable (>30 min), surface to the user.
+```bash
+./node_modules/.bin/stryker run --mutate "<comma-separated changed src files>"   # run_in_background
+```
 
-## Step 9 — Docs refresh + PR
+(One `--mutate` flag with a comma list — repeated flags override each other. Line-range scoping `src/file.ts:170-345` is faster when the diff is localized.)
 
-Update `README.md`, `RUNBOOK.md`, `CONTRIBUTING.md`, and the relevant `docs/get-started/` / `docs/use/` / `docs/understand/` pages. Flip the `docs/BACKLOG.md` entry (`[ ]` / `[~]` → `[x]`) inside this PR's commits. Push the branch with `-u origin`. Run `gh pr create` with a thorough body (summary + test plan).
+**When the run lands**, filter survivors/no-coverage to **the diff's lines only** (pre-existing-line survivors are out of scope) and triage with a **sonnet subagent**: kill each with a mutation-resistant test, or document inline as `// equivalent-mutant: <why>` when provably equivalent; commit kills as `test(mutation): <module>`. Known caveat: local Stryker under vitest-4 can report false survivors — verify a survivor is real before writing a test for it. If the run lands after the merge, triage in a tiny follow-up PR. If the project has no mutation config, note it and move on.
+
+## Step 9 — Docs refresh (haiku subagent, parallel with mutation) + PR (in-session)
+
+While mutation grinds in the background, delegate the **mechanical** documentation to a **haiku subagent** (worktree path, design doc path, the list of public-surface changes, Serena-active note, targeted gates):
+
+- `README.md` / `RUNBOOK.md` / `CONTRIBUTING.md` touches and the relevant `docs/get-started/` / `docs/use/` / `docs/understand/` pages — signature blocks, behaviour-note bullets, error tables, ADR/design links (content sourced from the design doc, not invented).
+- **The backlog flip, bare:** `[ ]` / `[~]` → `[x]` plus appending only `· ADRs NNN–NNN · design/<slug>.md`. **NO retrospective prose** — the squash commit and PR body are the permanent record; `git blame` on the line finds them.
+- One commit: `docs(<slug>): refresh pages + backlog flip`.
+
+The SESSION keeps the synthesis work (these are specs and records other sessions depend on — never haiku):
+
+- **New backlog follow-up entries** surfaced during the run — full context, cross-links (`surfaced by`/`same shape as`), placed in dependency order. They are what a future `/apply-workflow <id>` resolves from.
+- **The PR body** — now the single source of truth for what shipped: decisions + ADR numbers, design doc path, divergences, pinned behaviours, test plan. Write it accordingly.
+
+Then push the branch with `-u origin` and run `gh pr create` with that body. Do not wait for the mutation run to create the PR — survivor kills land as extra commits on the open PR (or a follow-up PR post-merge).
 
 ## Step 10 — Merge + cleanup
 
@@ -135,11 +170,13 @@ After `git sync` removes the worktree, **clean up Serena's project entry** for i
 
 ## Hard rules
 
-- **Subagents ONLY for Step 5 implementation slices, always on `sonnet`, one per slice, sequential.** Every other phase — design, ADR, plan, reviews, refactor, mutation, docs, PR — runs in this session, in-thread. The session orchestrates and verifies each slice; the user can interrupt at any point, can steer mid-flight.
+- **Delegation map (fixed):** design (2) + plan (4) + review dimensions (6, read-only, 4 in parallel, per-dimension convergence ≤3) → `fable`; implementation slices (5, one per slice, sequential) + scoped refactor execution (7) + mutation triage (8) → `sonnet`; mechanical docs + bare backlog flip (9) → `haiku`. Refactor *judgment* (candidate scan + scoping) stays with the session — only the scoped execution is delegated. The SESSION keeps: input resolution, branch setup, the ADR conversation, slice verification, review-fix application, all phase-boundary validates, backlog follow-up authoring, the PR body, CI monitoring, merge + cleanup. Review agents never edit; only the session edits during review. The user can interrupt at any point and steer mid-flight.
+- **Never wait on mutation testing** — local run backgrounds at Step 8 and the workflow continues through docs/PR/merge; the `mutation` CI job is non-blocking; survivors are triaged when the run lands, wherever the workflow is by then.
 - **Never skip the ADR step** when user-judgment was required to disambiguate the design.
-- **Never skip the three review passes** before pushing.
+- **Never skip the four review dimensions** before pushing.
 - **Never skip the architecture refactor pass** (Step 7). It may be a no-op, but a no-op must carry a written justification — never a silent skip. Refactor commits are atomic and behavior-preserving, and are re-reviewed before mutation.
 - **Never `--no-verify` the commit hook**, never use ignore directives.
+- **Validate cadence:** slice agents gate on targeted checks (touched-file vitest + `check:types` + biome); the full `npm run validate` runs at phase boundaries — once after the last slice, after each review/refactor fix batch, and before push — and must be green there. Nothing is ever committed on a known-red gate.
 - **Never include phase/ADR refs inside source or test code** (`§X.Y.Z`, `Phase N`, `ADR-NNN`, `BACKLOG 20.6` etc.). Those belong in the design doc and PR body. Source code is silent about its provenance.
 - **Be git-faithful** unless an ADR explicitly diverges.
 - **Always merge with `--delete-branch`** (`gh pr merge --squash --delete-branch --admin`) so no merged branch lingers on the remote.
