@@ -11,7 +11,7 @@ import { invalidOption } from '../../../domain/commands/error.js';
  * whitespace, CRLF line-ending). TAB, `"`, `\`, and LF do NOT trigger quoting
  * — they are always escaped instead (git's `write_pair` grammar).
  */
-export const needsQuote = (value: string): boolean =>
+const needsQuote = (value: string): boolean =>
   value.startsWith(' ') ||
   value.endsWith(' ') ||
   value.includes(';') ||
@@ -25,7 +25,7 @@ export const needsQuote = (value: string): boolean =>
  * The value is then wrapped in `"…"` iff `needsQuote` is true.
  * Escape order matters — backslashes MUST be escaped first.
  */
-export const renderValue = (value: string): string => {
+const renderValue = (value: string): string => {
   const escaped = value
     .replaceAll('\\', '\\\\')
     .replaceAll('"', '\\"')
@@ -43,7 +43,7 @@ export const renderEntry = (key: string, value: string): string =>
  * `write_section` escapes `\` → `\\` first (order matters), then `"` → `\"`.
  * Every other byte — `]`, CR, `#`, `;`, spaces — is written raw.
  */
-export const escapeSubsection = (subsection: string): string =>
+const escapeSubsection = (subsection: string): string =>
   subsection.replaceAll('\\', '\\\\').replaceAll('"', '\\"');
 
 /** Render a `[section]` / `[section "subsection"]` header line. */

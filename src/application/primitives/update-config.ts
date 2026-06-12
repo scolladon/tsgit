@@ -37,14 +37,14 @@ import {
   renderSectionHeader,
 } from './internal/config-write-shared.js';
 
-export { renderSectionHeader } from './internal/config-write-shared.js';
-
 import {
   rawSectionName,
+  readConfigText,
   removeConfigSectionInText,
   renameConfigSectionInText,
 } from './update-config-sections.js';
 
+export { renderSectionHeader } from './internal/config-write-shared.js';
 export type { NewSectionName } from './update-config-sections.js';
 export {
   parseNewSectionName,
@@ -469,20 +469,6 @@ export const updateConfigOperations = async (
   const updated = ops.reduce(applyConfigOpInText, original);
   await ctx.fs.writeUtf8(path, updated);
   invalidateConfigCache(ctx);
-};
-
-/**
- * Read the raw config text; a missing file yields `''` (not an error). Other
- * failures (permission denied, disk error) propagate — matching `config-read`,
- * only `FILE_NOT_FOUND` is swallowed.
- */
-const readConfigText = async (ctx: Context, path: string): Promise<string> => {
-  try {
-    return await ctx.fs.readUtf8(path);
-  } catch (err) {
-    if (err instanceof TsgitError && err.data.code === 'FILE_NOT_FOUND') return '';
-    throw err;
-  }
 };
 
 /**

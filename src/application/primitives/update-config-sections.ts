@@ -180,10 +180,10 @@ export const parseNewSectionName = (name: string): NewSectionName => {
 
 /**
  * Read the raw config text; a missing file yields `''` (not an error). Other
- * failures (permission denied, disk error) propagate — only `FILE_NOT_FOUND`
- * is swallowed.
+ * failures (permission denied, disk error) propagate — matching `config-read`,
+ * only `FILE_NOT_FOUND` is swallowed. Shared with the entry-write module.
  */
-const readConfigText = async (ctx: Context, path: string): Promise<string> => {
+export const readConfigText = async (ctx: Context, path: string): Promise<string> => {
   try {
     return await ctx.fs.readUtf8(path);
   } catch (err) {
