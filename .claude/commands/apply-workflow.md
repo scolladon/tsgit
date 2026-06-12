@@ -99,7 +99,7 @@ Four review dimensions, **fanned out in parallel** (one message, four `Agent` ca
 
 Each reviewer is a **read-only fable subagent**: worktree path, design doc path, mission to read `git diff main...HEAD` plus whatever surrounding code it needs (Serena already active); no edits, no commits; returns a structured findings list `{ file:line, severity, finding, suggested fix }` (empty list valid — and a converged dimension).
 
-**Convergence loop:** collect the round's findings → the SESSION applies every fix directly (Serena), batched and committed **per dimension**, `npm run validate` after the round's batches → then converge per dimension by severity:
+**Convergence loop:** collect the round's findings → the SESSION applies every fix directly (Serena), batched and committed **per dimension** — each batch gates on the targeted checks **plus `npm run check:spelling`** before its commit (the md-scoped commit hook misses words in TS test titles/comments and doc filename tokens; catching them per batch beats a failed validate later) — `npm run validate` after the round's batches → then converge per dimension by severity:
 
 - **LOW-only dimension:** converged once the session applies its fixes — NO fresh reviewer relaunch just to confirm polish (a relaunch to rubber-stamp LOWs costs a full review pass for predictable empty lists).
 - **MEDIUM+ dimension:** re-launch a **fresh** reviewer — but scoped to the **fix delta**, not the whole branch: its prompt carries the prior round's findings list, the fix commits' diff (`git diff <pre-fix>..HEAD`), and the mission "verify each finding's resolution + review the fix diff itself"; it does NOT re-read the full `main...HEAD` diff (round 1 already deep-read every line — what needs fresh eyes is the fixes).
