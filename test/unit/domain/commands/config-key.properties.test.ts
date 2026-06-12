@@ -51,23 +51,28 @@ describe('parseConfigKey properties', () => {
 
   describe('Given an arbitrary key with an empty section and a subsection', () => {
     describe('When parseConfigKey runs', () => {
-      it('Then it never throws (totality) and parsing twice yields deeply-equal results (idempotence)', () => {
-        // Arrange — generator produces ..name and .sub.name forms
+      it('Then it never throws (totality), maps subsection and name structurally, and re-parses identically', () => {
+        // Arrange — generator produces ..name and .sub.name forms, carrying
+        // the expected structural parts alongside the raw key
         const arbEmptySectionKey = fc.oneof(
-          arbSafeSection().map((name) => `..${name}`),
-          fc.tuple(arbSafeSection(), arbSafeSection()).map(([sub, name]) => `.${sub}.${name}`),
+          arbSafeSection().map((name) => ({ key: `..${name}`, subsection: '', name })),
+          fc
+            .tuple(arbSafeSection(), arbSafeSection())
+            .map(([sub, name]) => ({ key: `.${sub}.${name}`, subsection: sub, name })),
         );
 
         // Act + Assert
         fc.assert(
-          fc.property(arbEmptySectionKey, (key) => {
+          fc.property(arbEmptySectionKey, ({ key, subsection, name }) => {
             // Totality: must not throw
             const first = parseConfigKey(key);
 
-            // Section must be empty string
+            // Structural mapping: empty section, verbatim subsection, name
             expect(first.section).toBe('');
+            expect(first.subsection).toBe(subsection);
+            expect(first.name).toBe(name);
 
-            // Idempotence: parsing the same key twice yields the same result
+            // Determinism: parsing the same key twice yields the same result
             const second = parseConfigKey(key);
             expect(first).toEqual(second);
           }),

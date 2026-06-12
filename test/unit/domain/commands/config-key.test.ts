@@ -427,7 +427,7 @@ describe('parseConfigKey', () => {
 
   describe('Given a leading-dot key with an upper-case subsection .X.k', () => {
     describe('When parsed', () => {
-      it('Then the subsection case is preserved and name is lower-cased', () => {
+      it('Then the subsection case is preserved', () => {
         // Arrange
         const sut = parseConfigKey;
 

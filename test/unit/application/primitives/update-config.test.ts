@@ -1543,7 +1543,7 @@ describe('primitives/update-config', () => {
 
     describe('Given both.conf ([s] and [s ""]) and target subsection=undefined', () => {
       describe('When setConfigEntryInText sets s.k to v', () => {
-        it('Then only [s] is updated, [s ""] is untouched (row 1)', () => {
+        it('Then only [s] is updated, [s ""] is untouched', () => {
           // Arrange
           const sut = setConfigEntryInText;
           const text = '[s]\n\tk = a\n[s ""]\n\tk = b\n';
@@ -1559,7 +1559,7 @@ describe('primitives/update-config', () => {
 
     describe('Given both.conf ([s] and [s ""]) and target subsection=""', () => {
       describe('When setConfigEntryInText sets s..k to v', () => {
-        it('Then only [s ""] is updated, [s] is untouched (row 2 — direction pin)', () => {
+        it('Then only [s ""] is updated, [s] is untouched (direction pin)', () => {
           // Arrange
           const sut = setConfigEntryInText;
           const text = '[s]\n\tk = a\n[s ""]\n\tk = b\n';
@@ -1575,7 +1575,7 @@ describe('primitives/update-config', () => {
 
     describe('Given rev.conf ([s ""] first then [s]) and target subsection=undefined', () => {
       describe('When setConfigEntryInText sets s.k to v', () => {
-        it('Then only [s] is updated, [s ""] is untouched (row 3)', () => {
+        it('Then only [s] is updated, [s ""] is untouched', () => {
           // Arrange
           const sut = setConfigEntryInText;
           const text = '[s ""]\n\tk = b\n[s]\n\tk = a\n';
@@ -1591,7 +1591,7 @@ describe('primitives/update-config', () => {
 
     describe('Given rev.conf ([s ""] first then [s]) and target subsection=""', () => {
       describe('When setConfigEntryInText sets s..k to v', () => {
-        it('Then only [s ""] is updated, [s] is untouched (row 4 — direction pin)', () => {
+        it('Then only [s ""] is updated, [s] is untouched (direction pin)', () => {
           // Arrange
           const sut = setConfigEntryInText;
           const text = '[s ""]\n\tk = b\n[s]\n\tk = a\n';
@@ -1607,7 +1607,7 @@ describe('primitives/update-config', () => {
 
     describe('Given empty-only.conf ([s ""] only) and target subsection=undefined', () => {
       describe('When setConfigEntryInText sets s.k to v', () => {
-        it('Then [s ""] is NOT matched and a new [s] is appended (row 5)', () => {
+        it('Then [s ""] is NOT matched and a new [s] is appended', () => {
           // Arrange
           const sut = setConfigEntryInText;
           const text = '[s ""]\n\tk = b\n';
@@ -1623,7 +1623,7 @@ describe('primitives/update-config', () => {
 
     describe('Given plain-only.conf ([s] only) and target subsection=""', () => {
       describe('When setConfigEntryInText sets s..k to v', () => {
-        it('Then [s] is NOT matched and a new [s ""] is appended (row 6 — mirror pin)', () => {
+        it('Then [s] is NOT matched and a new [s ""] is appended (mirror pin)', () => {
           // Arrange
           const sut = setConfigEntryInText;
           const text = '[s]\n\tk = a\n';
@@ -1633,6 +1633,22 @@ describe('primitives/update-config', () => {
 
           // Assert — [s] untouched; new [s ""] appended at end
           expect(result).toBe('[s]\n\tk = a\n[s ""]\n\tk = v\n');
+        });
+      });
+    });
+
+    describe('Given a file holding only [ ""] and target section=s subsection=undefined', () => {
+      describe('When setConfigEntryInText sets s.k to v', () => {
+        it('Then [ ""] is NOT matched and a new [s] is appended', () => {
+          // Arrange
+          const sut = setConfigEntryInText;
+          const text = '[ ""]\n\tk = e\n';
+
+          // Act
+          const result = sut(text, 's', undefined, 'k', 'v');
+
+          // Assert — [ ""] untouched; new [s] appended at end
+          expect(result).toBe('[ ""]\n\tk = e\n[s]\n\tk = v\n');
         });
       });
     });
@@ -2095,7 +2111,7 @@ describe('primitives/update-config', () => {
 
     describe('Given both.conf ([s] k=a and [s ""] k=b), target subsection=undefined', () => {
       describe('When removeConfigEntry removes s.k', () => {
-        it('Then only the [s] entry is removed; [s ""] k=b is preserved (unset row 1)', () => {
+        it('Then only the [s] entry is removed; [s ""] k=b is preserved', () => {
           // Arrange
           const sut = removeConfigEntry;
           const text = '[s]\n\tk = a\n[s ""]\n\tk = b\n';
@@ -2111,7 +2127,7 @@ describe('primitives/update-config', () => {
 
     describe('Given both.conf ([s] k=a and [s ""] k=b), target subsection=""', () => {
       describe('When removeConfigEntry removes s..k', () => {
-        it('Then only the [s ""] entry is removed; [s] k=a is preserved (unset row 2)', () => {
+        it('Then only the [s ""] entry is removed; [s] k=a is preserved', () => {
           // Arrange
           const sut = removeConfigEntry;
           const text = '[s]\n\tk = a\n[s ""]\n\tk = b\n';
@@ -2127,7 +2143,7 @@ describe('primitives/update-config', () => {
 
     describe('Given three blocks [s] k=a · [s ""] k=b · [s] k=c, target subsection=undefined', () => {
       describe('When removeConfigEntry removes s.k (unset-all semantics)', () => {
-        it('Then both [s] entries are removed and [s ""] k=b is preserved (unset-all row 1)', () => {
+        it('Then both [s] entries are removed and [s ""] k=b is preserved', () => {
           // Arrange
           const sut = removeConfigEntry;
           const text = '[s]\n\tk = a\n[s ""]\n\tk = b\n[s]\n\tk = c\n';
@@ -2143,7 +2159,7 @@ describe('primitives/update-config', () => {
 
     describe('Given three blocks [s ""] k=a · [s ""] k=b · [s] k=c, target subsection=""', () => {
       describe('When removeConfigEntry removes s..k (unset-all semantics)', () => {
-        it('Then both [s ""] entries are removed and [s] k=c is preserved (unset-all row 2)', () => {
+        it('Then both [s ""] entries are removed and [s] k=c is preserved', () => {
           // Arrange
           const sut = removeConfigEntry;
           const text = '[s ""]\n\tk = a\n[s ""]\n\tk = b\n[s]\n\tk = c\n';
@@ -2153,6 +2169,22 @@ describe('primitives/update-config', () => {
 
           // Assert — both [s ""] blocks pruned; [s] preserved
           expect(result).toBe('[s]\n\tk = c\n');
+        });
+      });
+    });
+
+    describe('Given [ "x"] k=a · [ ""] k=e, target section="" subsection="x"', () => {
+      describe('When removeConfigEntry removes .x.k', () => {
+        it('Then only [ "x"] is removed and pruned; [ ""] k=e is preserved', () => {
+          // Arrange — subsection identity holds inside the empty-name family
+          const sut = removeConfigEntry;
+          const text = '[ "x"]\n\tk = a\n[ ""]\n\tk = e\n';
+
+          // Act
+          const result = sut(text, '', 'x', 'k');
+
+          // Assert — [ "x"] pruned; [ ""] preserved byte-identically
+          expect(result).toBe('[ ""]\n\tk = e\n');
         });
       });
     });
@@ -2269,7 +2301,7 @@ describe('primitives/update-config', () => {
           // Act
           const result = sut(text, 's');
 
-          // Assert — row 1: s matches only [s], not [s ""]
+          // Assert — s matches only [s], not [s ""]
           expect(result).toBe('[s ""]\n\tk = b\n');
         });
       });
@@ -2283,7 +2315,7 @@ describe('primitives/update-config', () => {
           // Act
           const result = sut(text, 's.');
 
-          // Assert — row 2: trailing-dot name s. matches [s ""] only
+          // Assert — trailing-dot name s. matches [s ""] only
           expect(result).toBe('[s]\n\tk = a\n');
         });
       });
@@ -2297,7 +2329,7 @@ describe('primitives/update-config', () => {
           // Act
           const result = sut(text, 's.""');
 
-          // Assert — row 3: s."" does not match s. or s; text unchanged
+          // Assert — s."" does not match s. or s; text unchanged
           expect(result).toBe(text);
         });
       });
@@ -2313,7 +2345,7 @@ describe('primitives/update-config', () => {
           // Act
           const result = sut(text, 's');
 
-          // Assert — row 4: s does not match [S]; text unchanged
+          // Assert — s does not match [S]; text unchanged
           expect(result).toBe(text);
         });
       });
@@ -2329,7 +2361,7 @@ describe('primitives/update-config', () => {
           // Act
           const result = sut(text, 's.X');
 
-          // Assert — row 5a: s.X matches deprecated [s.X]
+          // Assert — s.X matches deprecated [s.X]
           expect(result).toBe('');
         });
       });
@@ -2343,7 +2375,7 @@ describe('primitives/update-config', () => {
           // Act
           const result = sut(text, 's.x');
 
-          // Assert — row 5b: s.x does not match [s.X]; text unchanged
+          // Assert — s.x does not match [s.X]; text unchanged
           expect(result).toBe(text);
         });
       });
@@ -2359,7 +2391,7 @@ describe('primitives/update-config', () => {
           // Act
           const result = sut(text, 'a.b');
 
-          // Assert — row 6: documented a.b ambiguity; both blocks removed
+          // Assert — documented a.b ambiguity; both blocks removed
           expect(result).toBe('');
         });
       });
@@ -2375,7 +2407,7 @@ describe('primitives/update-config', () => {
           // Act
           const result = sut(text, 's');
 
-          // Assert — row 8: multi-block plain removal
+          // Assert — multi-block plain removal
           expect(result).toBe('[s "x"]\n\tk = b\n');
         });
       });
@@ -2391,7 +2423,7 @@ describe('primitives/update-config', () => {
           // Act
           const result = sut(text, '.');
 
-          // Assert — row 10a: . matches [ ""] only
+          // Assert — . matches [ ""] only
           expect(result).toBe('[s]\n\tk = a\n[s ""]\n\tk = b\n');
         });
       });
@@ -2407,7 +2439,7 @@ describe('primitives/update-config', () => {
           // Act
           const result = sut(text, '.x');
 
-          // Assert — row 10b: .x matches [ "x"] only
+          // Assert — .x matches [ "x"] only
           expect(result).toBe('[s]\n\tk = a\n');
         });
       });
@@ -2423,7 +2455,7 @@ describe('primitives/update-config', () => {
           // Act
           const result = sut(text, 's.');
 
-          // Assert — row 11: whitespace before quote is not identity
+          // Assert — whitespace before quote is not identity
           expect(result).toBe('');
         });
       });
@@ -2439,7 +2471,7 @@ describe('primitives/update-config', () => {
           // Act
           const result = sut(text, 's.a"b');
 
-          // Assert — row 12: subsection is unescaped before raw-name comparison
+          // Assert — subsection is unescaped before raw-name comparison
           expect(result).toBe('');
         });
       });
@@ -2457,7 +2489,7 @@ describe('primitives/update-config', () => {
           // Act
           const result = sut(text, 'a.b.', { section: 't' });
 
-          // Assert — row 7: a.b. is the raw name of both [a "b."] and [a.b ""]
+          // Assert — a.b. is the raw name of both [a "b."] and [a.b ""]
           expect(result).toBe('[t]\n\tk = p\n[t]\n\tk = q\n');
         });
       });
@@ -2473,7 +2505,7 @@ describe('primitives/update-config', () => {
           // Act
           const result = sut(text, 's', { section: 't' });
 
-          // Assert — row 9: multi-block plain rename
+          // Assert — multi-block plain rename
           expect(result).toBe('[t]\n\tk = a\n[s "x"]\n\tk = b\n[t]\n\tk = c\n');
         });
       });
@@ -2489,7 +2521,7 @@ describe('primitives/update-config', () => {
           // Act
           const result = sut(text, 's', { section: 's', subsection: '' });
 
-          // Assert — row 13: rename plain → empty-subsection form
+          // Assert — rename plain → empty-subsection form
           expect(result).toBe('[s ""]\n\tk = a\n');
         });
       });
@@ -2505,7 +2537,71 @@ describe('primitives/update-config', () => {
           // Act
           const result = sut(text, 's.x', { section: 't' });
 
-          // Assert — row 14: cross-family rename at primitive level
+          // Assert — cross-family rename at primitive level
+          expect(result).toBe('[t]\n\tk = a\n');
+        });
+      });
+    });
+
+    describe('Given [s "x"]k=a', () => {
+      describe('When renameConfigSectionInText renames "s.x" to { section: "s", subsection: "" }', () => {
+        it('Then the header becomes [s ""] (named subsection collapses to the empty form)', () => {
+          // Arrange
+          const text = '[s "x"]\n\tk = a\n';
+          const sut = renameConfigSectionInText;
+
+          // Act
+          const result = sut(text, 's.x', { section: 's', subsection: '' });
+
+          // Assert
+          expect(result).toBe('[s ""]\n\tk = a\n');
+        });
+      });
+    });
+
+    describe('Given [s "x"]k=a', () => {
+      describe('When renameConfigSectionInText renames "s.x" to { section: "", subsection: "" }', () => {
+        it('Then the header becomes [ ""] (named form moves into the empty-name family)', () => {
+          // Arrange
+          const text = '[s "x"]\n\tk = a\n';
+          const sut = renameConfigSectionInText;
+
+          // Act
+          const result = sut(text, 's.x', { section: '', subsection: '' });
+
+          // Assert
+          expect(result).toBe('[ ""]\n\tk = a\n');
+        });
+      });
+    });
+
+    describe('Given [S]k=a (upper-case header)', () => {
+      describe('When renameConfigSectionInText renames the byte-exact "S" to { section: "t" }', () => {
+        it('Then the header becomes [t] (matching success direction of case sensitivity)', () => {
+          // Arrange
+          const text = '[S]\n\tk = a\n';
+          const sut = renameConfigSectionInText;
+
+          // Act
+          const result = sut(text, 'S', { section: 't' });
+
+          // Assert
+          expect(result).toBe('[t]\n\tk = a\n');
+        });
+      });
+    });
+
+    describe('Given [s "X"]k=a (upper-case subsection)', () => {
+      describe('When renameConfigSectionInText renames the byte-exact "s.X" to { section: "t" }', () => {
+        it('Then the header becomes [t] (matching success direction of subsection case)', () => {
+          // Arrange
+          const text = '[s "X"]\n\tk = a\n';
+          const sut = renameConfigSectionInText;
+
+          // Act
+          const result = sut(text, 's.X', { section: 't' });
+
+          // Assert
           expect(result).toBe('[t]\n\tk = a\n');
         });
       });
@@ -2529,6 +2625,45 @@ describe('primitives/update-config', () => {
 
           // Assert
           expect(result).toBe('[s ""]\n\tk = b\n');
+        });
+      });
+    });
+
+    describe('Given [s]k=a and [s ""]k=b, and a removeSection op with section "s" and subsection ""', () => {
+      describe('When applyConfigOpInText applies the op', () => {
+        it('Then only [s ""] is removed, [s] is preserved', () => {
+          // Arrange — the op maps to the raw name "s." addressing only [s ""]
+          const text = '[s]\n\tk = a\n[s ""]\n\tk = b\n';
+          const op: ConfigOperation = { kind: 'removeSection', section: 's', subsection: '' };
+
+          // Act
+          const result = applyConfigOpInText(text, op);
+
+          // Assert
+          expect(result).toBe('[s]\n\tk = a\n');
+        });
+      });
+    });
+  });
+
+  describe('applyConfigOpInText (renameSection call-site)', () => {
+    describe('Given [remote "old"]url=u, and a renameSection op from "old" to "new"', () => {
+      describe('When applyConfigOpInText applies the op', () => {
+        it('Then the op addresses the raw name remote.old and rewrites the header to [remote "new"]', () => {
+          // Arrange
+          const text = '[remote "old"]\n\turl = u\n';
+          const op: ConfigOperation = {
+            kind: 'renameSection',
+            section: 'remote',
+            from: 'old',
+            to: 'new',
+          };
+
+          // Act
+          const result = applyConfigOpInText(text, op);
+
+          // Assert
+          expect(result).toBe('[remote "new"]\n\turl = u\n');
         });
       });
     });
@@ -3214,7 +3349,7 @@ describe('primitives/update-config', () => {
 
     describe('Given an empty file, target subsection=""', () => {
       describe('When appendConfigEntry adds s..k with value v', () => {
-        it('Then a new [s ""] section is created with k = v (row 7)', () => {
+        it('Then a new [s ""] section is created with k = v', () => {
           // Arrange
           const sut = appendConfigEntry;
           const text = '';
@@ -3228,9 +3363,9 @@ describe('primitives/update-config', () => {
       });
     });
 
-    describe('Given [s ""] with k=v already (from row 7), target subsection=""', () => {
+    describe('Given [s ""] with k=v already (from the prior append), target subsection=""', () => {
       describe('When appendConfigEntry adds another s..k with value v2', () => {
-        it('Then a second k entry is appended inside [s ""] (row 8)', () => {
+        it('Then a second k entry is appended inside [s ""]', () => {
           // Arrange
           const sut = appendConfigEntry;
           const text = '[s ""]\n\tk = v\n';
@@ -3246,7 +3381,7 @@ describe('primitives/update-config', () => {
 
     describe('Given empty-only.conf ([s ""] with k=b), target subsection=undefined', () => {
       describe('When appendConfigEntry adds s.k with value x', () => {
-        it('Then a new [s] section is appended with k = x (row 9)', () => {
+        it('Then a new [s] section is appended with k = x', () => {
           // Arrange
           const sut = appendConfigEntry;
           const text = '[s ""]\n\tk = b\n';
@@ -3256,6 +3391,22 @@ describe('primitives/update-config', () => {
 
           // Assert — [s ""] untouched; new [s] appended
           expect(result).toBe('[s ""]\n\tk = b\n[s]\n\tk = x\n');
+        });
+      });
+    });
+
+    describe('Given [ ""] with k=v already, target section="" subsection=""', () => {
+      describe('When appendConfigEntry adds another ..k with value v2', () => {
+        it('Then the second entry is appended inside [ ""]', () => {
+          // Arrange
+          const sut = appendConfigEntry;
+          const text = '[ ""]\n\tk = v\n';
+
+          // Act
+          const result = sut(text, '', '', 'k', 'v2');
+
+          // Assert — appended inside the same [ ""] block
+          expect(result).toBe('[ ""]\n\tk = v\n\tk = v2\n');
         });
       });
     });
@@ -5031,7 +5182,7 @@ describe('write-path refusal on malformed config files', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // Step 6 — unsetConfigEntry identity consistency (I/O)
+  // unsetConfigEntry identity consistency (I/O)
   // ---------------------------------------------------------------------------
 
   describe('unsetConfigEntry identity consistency', () => {
@@ -5085,7 +5236,7 @@ describe('write-path refusal on malformed config files', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // Step 7 — empty-section-name writes via I/O wrappers (memory context)
+  // empty-section-name writes via I/O wrappers (memory context)
   // ---------------------------------------------------------------------------
 
   describe('setConfigEntry with empty-section-name keys', () => {

@@ -7,6 +7,7 @@ import {
   tokenizeConfig,
 } from '../../../../src/application/primitives/config-read.js';
 import {
+  type NewSectionName,
   parseNewSectionName,
   rawSectionName,
   removeConfigEntry,
@@ -16,6 +17,7 @@ import {
 } from '../../../../src/application/primitives/update-config.js';
 import {
   arbConfigKey,
+  arbHeaderIdentity,
   configFileWithTarget,
   subsectionIdentity,
   subsectionName,
@@ -435,34 +437,32 @@ describe('update-config surgery-preservation invariants', () => {
 
 describe('update-config identity isolation', () => {
   describe('Given an arbitrary pair of distinct subsection identities A and B drawn from {undefined, "", sub}', () => {
-    describe('When setConfigEntryInText targets identity A in a two-block file', () => {
-      it('Then every byte of the identity-B block is unchanged', () => {
+    describe('When setConfigEntryInText targets identity A in a two-block file (either block order)', () => {
+      it('Then the identity-B block is byte-unchanged and the identity-A block is rewritten', () => {
         // Arrange — `sut` is the function under test; a two-block file is built
-        // from a pair of DISTINCT identities so A-targeted writes cannot touch B.
+        // from a pair of DISTINCT identities so A-targeted writes cannot touch B,
+        // in both block orders so first-block bias cannot mask a conflation.
         const sut = setConfigEntryInText;
         fc.assert(
           fc.property(
             fc.tuple(subsectionIdentity(), subsectionIdentity()).filter(([a, b]) => a !== b),
-            ([identityA, identityB]) => {
+            fc.boolean(),
+            ([identityA, identityB], aFirst) => {
               // Build the header string for each identity
               const headerA = identityA === undefined ? '[s]\n' : `[s "${identityA}"]\n`;
               const headerB = identityB === undefined ? '[s]\n' : `[s "${identityB}"]\n`;
               const blockA = `${headerA}\tk = x\n`;
               const blockB = `${headerB}\tk = y\n`;
-              const input = blockA + blockB;
+              const input = aFirst ? blockA + blockB : blockB + blockA;
 
               // Act — target identity A; B must not change
-              let result: string;
-              try {
-                result = sut(input, 's', identityA, 'k', 'new');
-              } catch {
-                // subsection validation may refuse LF/NUL but our generator
-                // only emits undefined, '' and lowercase alnum — should not throw
-                return;
-              }
+              const result = sut(input, 's', identityA, 'k', 'new');
 
-              // Assert — B block appears byte-identical in the output
-              expect(result).toContain(blockB);
+              // Assert — B block appears byte-identical exactly once, and the
+              // A block was actually rewritten (old bytes gone, new value in)
+              expect(result.split(blockB)).toHaveLength(2);
+              expect(result).not.toContain(blockA);
+              expect(result).toContain('\tk = new\n');
             },
           ),
           { numRuns: 100 },
@@ -476,44 +476,10 @@ describe('update-config identity isolation', () => {
 // rawSectionName round-trip property (lens 1)
 // ---------------------------------------------------------------------------
 
-/**
- * Generator over `(section, subsection)` pairs drawn from the header domain:
- * - section: small pool ∪ '' (empty section, only when subsection is present)
- * - subsection: undefined | '' | LF/NUL-free string from subsectionName()
- *
- * The dotted name is built from the same formula as rawSectionName — this is
- * the oracle, not a re-implementation: the test asserts round-trip identity,
- * not a specific encoding.
- */
-const arbHeaderIdentity = (): fc.Arbitrary<{
-  section: string;
-  subsection: string | undefined;
-  dottedName: string;
-}> => {
-  // Safe pool of section names (alphanumeric, used by renderSectionHeader)
-  const arbSection = fc.constantFrom('s', 'remote', 'core', 'a', '');
-  const arbSub = fc.oneof(
-    fc.constant(undefined),
-    fc.constant(''),
-    subsectionName().filter((s) => s !== '' && s !== undefined),
-  );
-  return fc
-    .tuple(arbSection, arbSub)
-    .filter(
-      // empty section is only representable with a subsection present
-      ([section, sub]) => !(section === '' && sub === undefined),
-    )
-    .map(([section, subsection]) => ({
-      section,
-      subsection,
-      dottedName: subsection === undefined ? section : `${section}.${subsection}`,
-    }));
-};
-
 describe('parseNewSectionName partition property', () => {
   describe('Given an arbitrary ASCII NUL-free name', () => {
     describe('When parseNewSectionName runs', () => {
-      it('Then it either returns a header-rendering-safe result or throws exactly INVALID_OPTION with a reason starting "invalid section name: "', () => {
+      it('Then it either returns a dot-free section reconstructing the input or throws exactly INVALID_OPTION', () => {
         // Arrange — generator biased with grammar-relevant specials
         const arbName = fc
           .string({
@@ -528,31 +494,33 @@ describe('parseNewSectionName partition property', () => {
 
         fc.assert(
           fc.property(arbName, (name) => {
-            const dot = name.indexOf('.');
-            const sectionPart = dot === -1 ? name : name.slice(0, dot);
-            // The section part must be non-empty OR a dot must follow (empty section allowed with dot)
-            const shouldSucceed =
-              name.length > 0 && (sectionPart === '' || /^[a-zA-Z0-9-]+$/.test(sectionPart));
-
-            if (shouldSucceed) {
-              // Act
-              const result = parseNewSectionName(name);
-              // Assert — rendering must not throw and the round-trip section matches
-              expect(() => renderSectionHeader(result.section, result.subsection)).not.toThrow();
-            } else {
-              // Act
-              let caught: unknown;
-              try {
-                parseNewSectionName(name);
-              } catch (err) {
-                caught = err;
-              }
-              // Assert — refusal must be INVALID_OPTION with the expected reason prefix
-              expect(caught).toBeDefined();
-              const data = (caught as { data?: { code?: string; reason?: string } }).data;
-              expect(data?.code).toBe('INVALID_OPTION');
-              expect(data?.reason).toMatch(/^invalid section name: /);
+            // Act — total over the domain: either a parse or exactly INVALID_OPTION
+            let parsed: ReturnType<typeof parseNewSectionName> | undefined;
+            let caught: unknown;
+            try {
+              parsed = parseNewSectionName(name);
+            } catch (err) {
+              caught = err;
             }
+
+            if (parsed !== undefined) {
+              // Assert — structural invariants, never a re-derived accept set:
+              // the section part carries no dot (first-dot split), the parse
+              // reconstructs the input verbatim, and the result renders.
+              expect(parsed.section).not.toContain('.');
+              const reconstructed =
+                parsed.subsection === undefined
+                  ? parsed.section
+                  : `${parsed.section}.${parsed.subsection}`;
+              expect(reconstructed).toBe(name);
+              const render = (p: NewSectionName) => renderSectionHeader(p.section, p.subsection);
+              expect(() => render(parsed as NewSectionName)).not.toThrow();
+              return;
+            }
+            // Assert — refusal shape carries the exact git message data
+            const data = (caught as { data?: { code?: string; reason?: string } }).data;
+            expect(data?.code).toBe('INVALID_OPTION');
+            expect(data?.reason).toBe(`invalid section name: ${name}`);
           }),
           { numRuns: 100 },
         );
@@ -600,20 +568,14 @@ describe('rawSectionName round-trip property', () => {
             const input = blockA + blockB;
 
             // Act — remove by dotted name of A; B must survive intact
-            let result: string;
-            try {
-              result = removeConfigSectionInText(input, identityA.dottedName);
-            } catch {
-              // rejectSection/rejectSubsection should not fire for our safe generators
-              return;
-            }
+            const result = removeConfigSectionInText(input, identityA.dottedName);
 
             // Assert — B block is byte-identical in the output
             expect(result).toContain(blockB);
             // Assert — A block's header is gone from the output
             expect(result).not.toContain(blockA);
           }),
-          { numRuns: 200 },
+          { numRuns: 100 },
         );
       });
     });

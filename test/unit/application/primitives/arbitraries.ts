@@ -323,11 +323,40 @@ export const subsectionIdentity = (): fc.Arbitrary<string | undefined> =>
   fc.oneof(
     fc.constant(undefined),
     fc.constant(''),
-    fc
-      .string({
-        unit: fc.integer({ min: 0x61, max: 0x7a }).map((cp) => String.fromCodePoint(cp)),
-        minLength: 1,
-        maxLength: 4,
-      })
-      .filter((s) => s !== ''),
+    fc.string({
+      unit: fc.integer({ min: 0x61, max: 0x7a }).map((cp) => String.fromCodePoint(cp)),
+      minLength: 1,
+      maxLength: 4,
+    }),
   );
+
+/**
+ * Arbitrary over `(section, subsection)` header identities plus the dotted
+ * name that addresses them in section ops: section from a safe pool ∪ ''
+ * (empty section only with a subsection present), subsection from
+ * {undefined, ''} ∪ subsectionName(). The dotted name mirrors git's raw
+ * header reduction (section alone, or section + '.' + subsection).
+ */
+export const arbHeaderIdentity = (): fc.Arbitrary<{
+  section: string;
+  subsection: string | undefined;
+  dottedName: string;
+}> => {
+  const arbSection = fc.constantFrom('s', 'remote', 'core', 'a', '');
+  const arbSub = fc.oneof(
+    fc.constant(undefined),
+    fc.constant(''),
+    subsectionName().filter((s) => s !== ''),
+  );
+  return fc
+    .tuple(arbSection, arbSub)
+    .filter(
+      // empty section is only representable with a subsection present
+      ([section, sub]) => !(section === '' && sub === undefined),
+    )
+    .map(([section, subsection]) => ({
+      section,
+      subsection,
+      dottedName: subsection === undefined ? section : `${section}.${subsection}`,
+    }));
+};
