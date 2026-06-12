@@ -187,19 +187,20 @@ describe('primitives/update-config', () => {
       });
     });
 
-    describe('Given an explicitly empty `[core ""]` header', () => {
-      describe('When setCoreConfigEntryInText', () => {
-        it('Then it is treated as the [core] section', () => {
-          // Arrange — git writes `[core ""]` for an empty subsection; it is the
-          // core section and must be edited in place.
+    describe('Given an explicitly empty `[core ""]` header (distinct from [core])', () => {
+      describe('When setCoreConfigEntryInText inserts sparseCheckout', () => {
+        it('Then [core ""] is NOT matched and a new [core] section is appended', () => {
+          // Arrange — [core ""] has subsection="", which is distinct from [core]
+          // (subsection=undefined). setCoreConfigEntryInText targets core with no
+          // subsection, so it must not edit [core ""] in place.
           const text = '[core ""]\n\tbare = false\n';
 
           // Act
           const sut = setCoreConfigEntryInText;
           const result = sut(text, 'sparseCheckout', 'true');
 
-          // Assert — the key is inserted at the end of the `[core ""]` section.
-          expect(result).toBe('[core ""]\n\tbare = false\n\tsparseCheckout = true\n');
+          // Assert — [core ""] is left byte-identical; a new [core] is appended.
+          expect(result).toBe('[core ""]\n\tbare = false\n[core]\n\tsparseCheckout = true\n');
         });
       });
     });
@@ -1510,6 +1511,138 @@ describe('primitives/update-config', () => {
         });
       });
     });
+
+    // ---------------------------------------------------------------------------
+    // Identity matrix — [s] vs [s ""] are distinct targets (rows 1–6 of pinned table)
+    // ---------------------------------------------------------------------------
+
+    describe('Given both.conf ([s] and [s ""]) and target subsection=undefined', () => {
+      describe('When setConfigEntryInText sets s.k to v', () => {
+        it('Then only [s] is updated, [s ""] is untouched (row 1)', () => {
+          // Arrange
+          const sut = setConfigEntryInText;
+          const text = '[s]\n\tk = a\n[s ""]\n\tk = b\n';
+
+          // Act
+          const result = sut(text, 's', undefined, 'k', 'v');
+
+          // Assert — [s] updated in place; [s ""] byte-identical
+          expect(result).toBe('[s]\n\tk = v\n[s ""]\n\tk = b\n');
+        });
+      });
+    });
+
+    describe('Given both.conf ([s] and [s ""]) and target subsection=""', () => {
+      describe('When setConfigEntryInText sets s..k to v', () => {
+        it('Then only [s ""] is updated, [s] is untouched (row 2 — direction pin)', () => {
+          // Arrange
+          const sut = setConfigEntryInText;
+          const text = '[s]\n\tk = a\n[s ""]\n\tk = b\n';
+
+          // Act
+          const result = sut(text, 's', '', 'k', 'v');
+
+          // Assert — [s ""] updated in place; [s] byte-identical
+          expect(result).toBe('[s]\n\tk = a\n[s ""]\n\tk = v\n');
+        });
+      });
+    });
+
+    describe('Given rev.conf ([s ""] first then [s]) and target subsection=undefined', () => {
+      describe('When setConfigEntryInText sets s.k to v', () => {
+        it('Then only [s] is updated, [s ""] is untouched (row 3)', () => {
+          // Arrange
+          const sut = setConfigEntryInText;
+          const text = '[s ""]\n\tk = b\n[s]\n\tk = a\n';
+
+          // Act
+          const result = sut(text, 's', undefined, 'k', 'v');
+
+          // Assert — [s] updated in place (even though [s ""] appears first); [s ""] unchanged
+          expect(result).toBe('[s ""]\n\tk = b\n[s]\n\tk = v\n');
+        });
+      });
+    });
+
+    describe('Given rev.conf ([s ""] first then [s]) and target subsection=""', () => {
+      describe('When setConfigEntryInText sets s..k to v', () => {
+        it('Then only [s ""] is updated, [s] is untouched (row 4 — direction pin)', () => {
+          // Arrange
+          const sut = setConfigEntryInText;
+          const text = '[s ""]\n\tk = b\n[s]\n\tk = a\n';
+
+          // Act
+          const result = sut(text, 's', '', 'k', 'v');
+
+          // Assert — [s ""] updated in place; [s] byte-identical
+          expect(result).toBe('[s ""]\n\tk = v\n[s]\n\tk = a\n');
+        });
+      });
+    });
+
+    describe('Given empty-only.conf ([s ""] only) and target subsection=undefined', () => {
+      describe('When setConfigEntryInText sets s.k to v', () => {
+        it('Then [s ""] is NOT matched and a new [s] is appended (row 5)', () => {
+          // Arrange
+          const sut = setConfigEntryInText;
+          const text = '[s ""]\n\tk = b\n';
+
+          // Act
+          const result = sut(text, 's', undefined, 'k', 'v');
+
+          // Assert — [s ""] untouched; new [s] appended at end
+          expect(result).toBe('[s ""]\n\tk = b\n[s]\n\tk = v\n');
+        });
+      });
+    });
+
+    describe('Given plain-only.conf ([s] only) and target subsection=""', () => {
+      describe('When setConfigEntryInText sets s..k to v', () => {
+        it('Then [s] is NOT matched and a new [s ""] is appended (row 6 — mirror pin)', () => {
+          // Arrange
+          const sut = setConfigEntryInText;
+          const text = '[s]\n\tk = a\n';
+
+          // Act
+          const result = sut(text, 's', '', 'k', 'v');
+
+          // Assert — [s] untouched; new [s ""] appended at end
+          expect(result).toBe('[s]\n\tk = a\n[s ""]\n\tk = v\n');
+        });
+      });
+    });
+
+    describe('Given both.conf and a new key n, target subsection=undefined', () => {
+      describe('When setConfigEntryInText inserts s.n', () => {
+        it('Then new key n lands at end of [s] block, not inside [s ""]', () => {
+          // Arrange
+          const sut = setConfigEntryInText;
+          const text = '[s]\n\tk = a\n[s ""]\n\tk = b\n';
+
+          // Act
+          const result = sut(text, 's', undefined, 'n', 'v');
+
+          // Assert — n inserted at end of [s]; [s ""] untouched
+          expect(result).toBe('[s]\n\tk = a\n\tn = v\n[s ""]\n\tk = b\n');
+        });
+      });
+    });
+
+    describe('Given a [S] section (uppercase) and target s (lowercase, no subsection)', () => {
+      describe('When setConfigEntryInText sets s.k to v', () => {
+        it('Then [S] is matched case-insensitively and rewritten in place', () => {
+          // Arrange
+          const sut = setConfigEntryInText;
+          const text = '[S]\n\tk = a\n';
+
+          // Act
+          const result = sut(text, 's', undefined, 'k', 'v');
+
+          // Assert — [S] rewritten in place; original header casing preserved
+          expect(result).toBe('[S]\n\tk = v\n');
+        });
+      });
+    });
   });
 
   describe('updateConfigEntries', () => {
@@ -1927,6 +2060,74 @@ describe('primitives/update-config', () => {
 
           // Assert — "[half" comment-token keeps the header
           expect(result).toBe('[a]\n\t[half\n');
+        });
+      });
+    });
+
+    // ---------------------------------------------------------------------------
+    // Unset identity rows from the pinned table
+    // ---------------------------------------------------------------------------
+
+    describe('Given both.conf ([s] k=a and [s ""] k=b), target subsection=undefined', () => {
+      describe('When removeConfigEntry removes s.k', () => {
+        it('Then only the [s] entry is removed; [s ""] k=b is preserved (unset row 1)', () => {
+          // Arrange
+          const sut = removeConfigEntry;
+          const text = '[s]\n\tk = a\n[s ""]\n\tk = b\n';
+
+          // Act
+          const result = sut(text, 's', undefined, 'k');
+
+          // Assert — [s] block pruned (was its only entry); [s ""] untouched
+          expect(result).toBe('[s ""]\n\tk = b\n');
+        });
+      });
+    });
+
+    describe('Given both.conf ([s] k=a and [s ""] k=b), target subsection=""', () => {
+      describe('When removeConfigEntry removes s..k', () => {
+        it('Then only the [s ""] entry is removed; [s] k=a is preserved (unset row 2)', () => {
+          // Arrange
+          const sut = removeConfigEntry;
+          const text = '[s]\n\tk = a\n[s ""]\n\tk = b\n';
+
+          // Act
+          const result = sut(text, 's', '', 'k');
+
+          // Assert — [s ""] block pruned (was its only entry); [s] untouched
+          expect(result).toBe('[s]\n\tk = a\n');
+        });
+      });
+    });
+
+    describe('Given three blocks [s] k=a · [s ""] k=b · [s] k=c, target subsection=undefined', () => {
+      describe('When removeConfigEntry removes s.k (unset-all semantics)', () => {
+        it('Then both [s] entries are removed and [s ""] k=b is preserved (unset-all row 1)', () => {
+          // Arrange
+          const sut = removeConfigEntry;
+          const text = '[s]\n\tk = a\n[s ""]\n\tk = b\n[s]\n\tk = c\n';
+
+          // Act
+          const result = sut(text, 's', undefined, 'k');
+
+          // Assert — both [s] blocks pruned; [s ""] preserved
+          expect(result).toBe('[s ""]\n\tk = b\n');
+        });
+      });
+    });
+
+    describe('Given three blocks [s ""] k=a · [s ""] k=b · [s] k=c, target subsection=""', () => {
+      describe('When removeConfigEntry removes s..k (unset-all semantics)', () => {
+        it('Then both [s ""] entries are removed and [s] k=c is preserved (unset-all row 2)', () => {
+          // Arrange
+          const sut = removeConfigEntry;
+          const text = '[s ""]\n\tk = a\n[s ""]\n\tk = b\n[s]\n\tk = c\n';
+
+          // Act
+          const result = sut(text, 's', '', 'k');
+
+          // Assert — both [s ""] blocks pruned; [s] preserved
+          expect(result).toBe('[s]\n\tk = c\n');
         });
       });
     });
@@ -2498,6 +2699,58 @@ describe('primitives/update-config', () => {
 
           // Assert — new entry appended after the full span of the continuation
           expect(result).toBe('[remote "o"]\n\tfetch = A\\\n   tail\n\tfetch = B\n');
+        });
+      });
+    });
+
+    // ---------------------------------------------------------------------------
+    // Append identity rows 7–9 from the pinned table
+    // ---------------------------------------------------------------------------
+
+    describe('Given an empty file, target subsection=""', () => {
+      describe('When appendConfigEntry adds s..k with value v', () => {
+        it('Then a new [s ""] section is created with k = v (row 7)', () => {
+          // Arrange
+          const sut = appendConfigEntry;
+          const text = '';
+
+          // Act
+          const result = sut(text, 's', '', 'k', 'v');
+
+          // Assert
+          expect(result).toBe('[s ""]\n\tk = v\n');
+        });
+      });
+    });
+
+    describe('Given [s ""] with k=v already (from row 7), target subsection=""', () => {
+      describe('When appendConfigEntry adds another s..k with value v2', () => {
+        it('Then a second k entry is appended inside [s ""] (row 8)', () => {
+          // Arrange
+          const sut = appendConfigEntry;
+          const text = '[s ""]\n\tk = v\n';
+
+          // Act
+          const result = sut(text, 's', '', 'k', 'v2');
+
+          // Assert — second entry appended inside the same [s ""] block
+          expect(result).toBe('[s ""]\n\tk = v\n\tk = v2\n');
+        });
+      });
+    });
+
+    describe('Given empty-only.conf ([s ""] with k=b), target subsection=undefined', () => {
+      describe('When appendConfigEntry adds s.k with value x', () => {
+        it('Then a new [s] section is appended with k = x (row 9)', () => {
+          // Arrange
+          const sut = appendConfigEntry;
+          const text = '[s ""]\n\tk = b\n';
+
+          // Act
+          const result = sut(text, 's', undefined, 'k', 'x');
+
+          // Assert — [s ""] untouched; new [s] appended
+          expect(result).toBe('[s ""]\n\tk = b\n[s]\n\tk = x\n');
         });
       });
     });
@@ -3560,6 +3813,134 @@ describe('write-path refusal on malformed config files', () => {
 
           const result = await ctx.fs.readUtf8(path);
           expect(result).not.toContain('[t "x"]');
+        });
+      });
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Step 6 — unsetConfigEntry identity consistency (I/O)
+  // ---------------------------------------------------------------------------
+
+  describe('unsetConfigEntry identity consistency', () => {
+    describe('Given both.conf ([s] k=a · [s ""] k=b) seeded into .git/config', () => {
+      describe('When unsetConfigEntry removes s.k', () => {
+        it('Then the file is exactly [s ""]\\n\\tk = b\\n (no over-delete)', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          const path = `${ctx.layout.gitDir}/config`;
+          await ctx.fs.writeUtf8(path, '[s]\n\tk = a\n[s ""]\n\tk = b\n');
+
+          // Act
+          await unsetConfigEntry({ ctx, key: 's.k' });
+
+          // Assert — only the plain [s] entry is removed; [s ""] is preserved byte-exact
+          const result = await ctx.fs.readUtf8(path);
+          expect(result).toBe('[s ""]\n\tk = b\n');
+        });
+      });
+    });
+
+    describe('Given [s] k=a · [s] k=c · [s ""] k=b seeded into .git/config', () => {
+      describe('When unsetConfigEntry removes s.k', () => {
+        it('Then it throws CONFIG_MULTIPLE_VALUES with count=2, key=s.k, requested=remove', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          const path = `${ctx.layout.gitDir}/config`;
+          await ctx.fs.writeUtf8(path, '[s]\n\tk = a\n\tk = c\n[s ""]\n\tk = b\n');
+          let caught: TsgitError | undefined;
+
+          // Act
+          try {
+            await unsetConfigEntry({ ctx, key: 's.k' });
+          } catch (err) {
+            caught = err as TsgitError;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = caught?.data;
+          expect(data).toEqual({
+            code: 'CONFIG_MULTIPLE_VALUES',
+            key: 's.k',
+            count: 2,
+            requested: 'remove',
+            scope: 'local',
+          });
+        });
+      });
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Step 7 — empty-section-name writes via I/O wrappers (memory context)
+  // ---------------------------------------------------------------------------
+
+  describe('setConfigEntry with empty-section-name keys', () => {
+    describe('Given an empty .git/config and key "..k"', () => {
+      describe('When setConfigEntry writes ..k = v', () => {
+        it('Then the file is [ ""]\\n\\tk = v\\n', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+
+          // Act
+          await setConfigEntry({ ctx, key: '..k', value: 'v' });
+
+          // Assert
+          const result = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
+          expect(result).toBe('[ ""]\n\tk = v\n');
+        });
+      });
+    });
+
+    describe('Given an empty .git/config and key ".x.k"', () => {
+      describe('When setConfigEntry writes .x.k = v', () => {
+        it('Then the file is [ "x"]\\n\\tk = v\\n', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+
+          // Act
+          await setConfigEntry({ ctx, key: '.x.k', value: 'v' });
+
+          // Assert
+          const result = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
+          expect(result).toBe('[ "x"]\n\tk = v\n');
+        });
+      });
+    });
+
+    describe('Given plain-only.conf ([s] k=a) seeded, key "..k"', () => {
+      describe('When setConfigEntry writes ..k = v', () => {
+        it('Then [s] is untouched and a new [ ""] section is appended', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          const path = `${ctx.layout.gitDir}/config`;
+          await ctx.fs.writeUtf8(path, '[s]\n\tk = a\n');
+
+          // Act
+          await setConfigEntry({ ctx, key: '..k', value: 'v' });
+
+          // Assert
+          const result = await ctx.fs.readUtf8(path);
+          expect(result).toBe('[s]\n\tk = a\n[ ""]\n\tk = v\n');
+        });
+      });
+    });
+
+    describe('Given [ ""] k=v seeded and key "..k"', () => {
+      describe('When unsetConfigEntry removes ..k', () => {
+        it('Then the file is empty (block pruned)', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          const path = `${ctx.layout.gitDir}/config`;
+          await ctx.fs.writeUtf8(path, '[ ""]\n\tk = v\n');
+
+          // Act
+          await unsetConfigEntry({ ctx, key: '..k' });
+
+          // Assert — sole entry removed, block pruned to empty
+          const result = await ctx.fs.readUtf8(path);
+          expect(result).toBe('');
         });
       });
     });

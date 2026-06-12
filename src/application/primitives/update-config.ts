@@ -139,9 +139,6 @@ interface LineSpan {
  */
 const matchesTarget = (header: HeaderToken, target: SectionTarget): boolean => {
   if (header.section.toLowerCase() !== target.sectionLc) return false;
-  if (target.subsection === undefined) {
-    return header.subsection === undefined || header.subsection === '';
-  }
   return header.subsection === target.subsection;
 };
 

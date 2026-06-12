@@ -9,7 +9,12 @@ import {
   removeConfigEntry,
   setConfigEntryInText,
 } from '../../../../src/application/primitives/update-config.js';
-import { arbConfigKey, configFileWithTarget, subsectionName } from './arbitraries.js';
+import {
+  arbConfigKey,
+  configFileWithTarget,
+  subsectionIdentity,
+  subsectionName,
+} from './arbitraries.js';
 
 const findValue = (
   sections: ReadonlyArray<IniSection>,
@@ -412,6 +417,49 @@ describe('update-config surgery-preservation invariants', () => {
               }
             }
           }),
+          { numRuns: 100 },
+        );
+      });
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Identity-isolation property (lens 2 — compositional invariant)
+// ---------------------------------------------------------------------------
+
+describe('update-config identity isolation', () => {
+  describe('Given an arbitrary pair of distinct subsection identities A and B drawn from {undefined, "", sub}', () => {
+    describe('When setConfigEntryInText targets identity A in a two-block file', () => {
+      it('Then every byte of the identity-B block is unchanged', () => {
+        // Arrange — `sut` is the function under test; a two-block file is built
+        // from a pair of DISTINCT identities so A-targeted writes cannot touch B.
+        const sut = setConfigEntryInText;
+        fc.assert(
+          fc.property(
+            fc.tuple(subsectionIdentity(), subsectionIdentity()).filter(([a, b]) => a !== b),
+            ([identityA, identityB]) => {
+              // Build the header string for each identity
+              const headerA = identityA === undefined ? '[s]\n' : `[s "${identityA}"]\n`;
+              const headerB = identityB === undefined ? '[s]\n' : `[s "${identityB}"]\n`;
+              const blockA = `${headerA}\tk = x\n`;
+              const blockB = `${headerB}\tk = y\n`;
+              const input = blockA + blockB;
+
+              // Act — target identity A; B must not change
+              let result: string;
+              try {
+                result = sut(input, 's', identityA, 'k', 'new');
+              } catch {
+                // subsection validation may refuse LF/NUL but our generator
+                // only emits undefined, '' and lowercase alnum — should not throw
+                return;
+              }
+
+              // Assert — B block appears byte-identical in the output
+              expect(result).toContain(blockB);
+            },
+          ),
           { numRuns: 100 },
         );
       });

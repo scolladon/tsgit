@@ -311,3 +311,23 @@ export const oracleBaseIndices = (spec: DagSpec, a: number, b: number): number[]
   const closures = new Map(common.map((c) => [c, ancestorIndices(spec, c)]));
   return common.filter((x) => !common.some((y) => y !== x && closures.get(y)!.has(x)));
 };
+
+/**
+ * Arbitrary over the three canonical subsection identities: undefined (plain
+ * section, e.g. [s]), empty string (empty subsection, e.g. [s ""]), and a
+ * short alphanumeric subsection name (e.g. [s "x"]). Used only in the
+ * identity-isolation property; deliberately not mixed into arbSubsectionOrNone
+ * to avoid poisoning existing surgery-preservation oracle queries.
+ */
+export const subsectionIdentity = (): fc.Arbitrary<string | undefined> =>
+  fc.oneof(
+    fc.constant(undefined),
+    fc.constant(''),
+    fc
+      .string({
+        unit: fc.integer({ min: 0x61, max: 0x7a }).map((cp) => String.fromCodePoint(cp)),
+        minLength: 1,
+        maxLength: 4,
+      })
+      .filter((s) => s !== ''),
+  );

@@ -31,6 +31,7 @@ import {
   type ConfigOperation,
   renameConfigSection,
   setConfigEntry,
+  unsetConfigEntry,
   updateConfigEntries,
   updateConfigOperations,
 } from '../../src/application/primitives/update-config.js';
@@ -1511,6 +1512,296 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
         // Assert
         const { oursConfig, peerConfig } = await readTwinConfigs(pair);
         expect(oursConfig).toBe(peerConfig);
+      }, 60_000);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Subsection identity interop — [s] vs [s ""] are distinct (Slice 2 matrix)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Extract from the first `[s` header onward, skipping the differing [core]
+   * preambles produced by tsgit and canonical git.
+   */
+  const extractFromS = (content: string): string => {
+    const idx = content.indexOf('[s');
+    if (idx === -1) return content;
+    return content.slice(idx);
+  };
+
+  // Fixtures (verbatim from the pinned bytes table)
+  const BOTH_CONF = '[core]\n\trepositoryformatversion = 0\n[s]\n\tk = a\n[s ""]\n\tk = b\n';
+  const REV_CONF = '[core]\n\trepositoryformatversion = 0\n[s ""]\n\tk = b\n[s]\n\tk = a\n';
+  const EMPTY_ONLY_CONF = '[core]\n\trepositoryformatversion = 0\n[s ""]\n\tk = b\n';
+  const PLAIN_ONLY_CONF = '[core]\n\trepositoryformatversion = 0\n[s]\n\tk = a\n';
+
+  describe('Given both.conf seeded ([s] k=a and [s ""] k=b)', () => {
+    describe('When git and tsgit each set s.k to v (target = plain)', () => {
+      it('Then [s] k is replaced, [s ""] k=b preserved (row 1)', async () => {
+        // Arrange
+        const { peerConfigPath } = await seedTwinConfigs(pair, BOTH_CONF);
+
+        // Act — canonical git
+        const gitResult = tryRunGit(['config', '--file', peerConfigPath, 's.k', 'v']);
+        expect(gitResult.ok, `git config set failed: ${gitResult.stderr}`).toBe(true);
+
+        // Act — tsgit
+        const ctx = createNodeContext({ workDir: pair.ours });
+        await configSet(ctx, { key: 's.k', value: 'v', scope: 'local' });
+
+        // Assert — byte-identical [s]-onward content
+        const { oursConfig, peerConfig } = await readTwinConfigs(pair);
+        expect(extractFromS(oursConfig)).toBe(extractFromS(peerConfig));
+      }, 60_000);
+    });
+  });
+
+  describe('Given both.conf seeded ([s] k=a and [s ""] k=b)', () => {
+    describe('When git and tsgit each set s..k to v (target = empty subsection)', () => {
+      it('Then [s ""] k is replaced, [s] k=a preserved (row 2)', async () => {
+        // Arrange
+        const { peerConfigPath } = await seedTwinConfigs(pair, BOTH_CONF);
+
+        // Act — canonical git
+        const gitResult = tryRunGit(['config', '--file', peerConfigPath, 's..k', 'v']);
+        expect(gitResult.ok, `git config set failed: ${gitResult.stderr}`).toBe(true);
+
+        // Act — tsgit (key '..k' parses as section='', subsection=''; use via setConfigEntry)
+        const ctx = createNodeContext({ workDir: pair.ours });
+        await setConfigEntry({ ctx, key: 's..k', value: 'v', scope: 'local' });
+
+        // Assert
+        const { oursConfig, peerConfig } = await readTwinConfigs(pair);
+        expect(extractFromS(oursConfig)).toBe(extractFromS(peerConfig));
+      }, 60_000);
+    });
+  });
+
+  describe('Given rev.conf seeded ([s ""] k=b then [s] k=a)', () => {
+    describe('When git and tsgit each set s.k to v (target = plain)', () => {
+      it('Then [s] k is replaced in place, [s ""] k=b preserved (row 3)', async () => {
+        // Arrange
+        const { peerConfigPath } = await seedTwinConfigs(pair, REV_CONF);
+
+        // Act — canonical git
+        const gitResult = tryRunGit(['config', '--file', peerConfigPath, 's.k', 'v']);
+        expect(gitResult.ok, `git config set failed: ${gitResult.stderr}`).toBe(true);
+
+        // Act — tsgit
+        const ctx = createNodeContext({ workDir: pair.ours });
+        await configSet(ctx, { key: 's.k', value: 'v', scope: 'local' });
+
+        // Assert
+        const { oursConfig, peerConfig } = await readTwinConfigs(pair);
+        expect(extractFromS(oursConfig)).toBe(extractFromS(peerConfig));
+      }, 60_000);
+    });
+  });
+
+  describe('Given rev.conf seeded ([s ""] k=b then [s] k=a)', () => {
+    describe('When git and tsgit each set s..k to v (target = empty subsection)', () => {
+      it('Then [s ""] k is replaced in place, [s] k=a preserved (row 4)', async () => {
+        // Arrange
+        const { peerConfigPath } = await seedTwinConfigs(pair, REV_CONF);
+
+        // Act — canonical git
+        const gitResult = tryRunGit(['config', '--file', peerConfigPath, 's..k', 'v']);
+        expect(gitResult.ok, `git config set failed: ${gitResult.stderr}`).toBe(true);
+
+        // Act — tsgit
+        const ctx = createNodeContext({ workDir: pair.ours });
+        await setConfigEntry({ ctx, key: 's..k', value: 'v', scope: 'local' });
+
+        // Assert
+        const { oursConfig, peerConfig } = await readTwinConfigs(pair);
+        expect(extractFromS(oursConfig)).toBe(extractFromS(peerConfig));
+      }, 60_000);
+    });
+  });
+
+  describe('Given empty-only.conf seeded ([s ""] k=b only)', () => {
+    describe('When git and tsgit each set s.k to v (target = plain)', () => {
+      it('Then [s ""] unchanged and a new [s] k=v is appended (row 5)', async () => {
+        // Arrange
+        const { peerConfigPath } = await seedTwinConfigs(pair, EMPTY_ONLY_CONF);
+
+        // Act — canonical git
+        const gitResult = tryRunGit(['config', '--file', peerConfigPath, 's.k', 'v']);
+        expect(gitResult.ok, `git config set failed: ${gitResult.stderr}`).toBe(true);
+
+        // Act — tsgit
+        const ctx = createNodeContext({ workDir: pair.ours });
+        await configSet(ctx, { key: 's.k', value: 'v', scope: 'local' });
+
+        // Assert
+        const { oursConfig, peerConfig } = await readTwinConfigs(pair);
+        expect(extractFromS(oursConfig)).toBe(extractFromS(peerConfig));
+      }, 60_000);
+    });
+  });
+
+  describe('Given plain-only.conf seeded ([s] k=a only)', () => {
+    describe('When git and tsgit each set s..k to v (target = empty subsection)', () => {
+      it('Then [s] unchanged and a new [s ""] k=v is appended (row 6)', async () => {
+        // Arrange
+        const { peerConfigPath } = await seedTwinConfigs(pair, PLAIN_ONLY_CONF);
+
+        // Act — canonical git
+        const gitResult = tryRunGit(['config', '--file', peerConfigPath, 's..k', 'v']);
+        expect(gitResult.ok, `git config set failed: ${gitResult.stderr}`).toBe(true);
+
+        // Act — tsgit
+        const ctx = createNodeContext({ workDir: pair.ours });
+        await setConfigEntry({ ctx, key: 's..k', value: 'v', scope: 'local' });
+
+        // Assert
+        const { oursConfig, peerConfig } = await readTwinConfigs(pair);
+        expect(extractFromS(oursConfig)).toBe(extractFromS(peerConfig));
+      }, 60_000);
+    });
+  });
+
+  describe('Given an empty file and key "..k"', () => {
+    describe('When git and tsgit each set ..k to v', () => {
+      it('Then the file is [ ""]\\n\\tk = v\\n (row: empty-name set)', async () => {
+        // Arrange
+        const emptyConf = '[core]\n\trepositoryformatversion = 0\n';
+        const { peerConfigPath } = await seedTwinConfigs(pair, emptyConf);
+
+        // Act — canonical git
+        const gitResult = tryRunGit(['config', '--file', peerConfigPath, '..k', 'v']);
+        expect(gitResult.ok, `git config set failed: ${gitResult.stderr}`).toBe(true);
+
+        // Act — tsgit
+        const ctx = createNodeContext({ workDir: pair.ours });
+        await setConfigEntry({ ctx, key: '..k', value: 'v', scope: 'local' });
+
+        // Assert — byte comparison from the empty-name section header onward
+        const { oursConfig, peerConfig } = await readTwinConfigs(pair);
+        const extractFromEmpty = (content: string): string => {
+          const idx = content.indexOf('[ "');
+          return idx === -1 ? content : content.slice(idx);
+        };
+        expect(extractFromEmpty(oursConfig)).toBe(extractFromEmpty(peerConfig));
+      }, 60_000);
+    });
+  });
+
+  describe('Given both.conf seeded ([s] k=a and [s ""] k=b)', () => {
+    describe('When git and tsgit each unset s.k (target = plain)', () => {
+      it('Then [s] entry removed (block pruned), [s ""] k=b preserved (unset row 1)', async () => {
+        // Arrange
+        const { peerConfigPath } = await seedTwinConfigs(pair, BOTH_CONF);
+
+        // Act — canonical git
+        const gitResult = tryRunGit(['config', '--file', peerConfigPath, '--unset', 's.k']);
+        expect(gitResult.ok, `git --unset failed: ${gitResult.stderr}`).toBe(true);
+
+        // Act — tsgit
+        const ctx = createNodeContext({ workDir: pair.ours });
+        await unsetConfigEntry({ ctx, key: 's.k', scope: 'local' });
+
+        // Assert
+        const { oursConfig, peerConfig } = await readTwinConfigs(pair);
+        expect(extractFromS(oursConfig)).toBe(extractFromS(peerConfig));
+      }, 60_000);
+    });
+  });
+
+  describe('Given both.conf seeded ([s] k=a and [s ""] k=b)', () => {
+    describe('When git and tsgit each unset s..k (target = empty subsection)', () => {
+      it('Then [s ""] entry removed (block pruned), [s] k=a preserved (unset row 2)', async () => {
+        // Arrange
+        const { peerConfigPath } = await seedTwinConfigs(pair, BOTH_CONF);
+
+        // Act — canonical git
+        const gitResult = tryRunGit(['config', '--file', peerConfigPath, '--unset', 's..k']);
+        expect(gitResult.ok, `git --unset failed: ${gitResult.stderr}`).toBe(true);
+
+        // Act — tsgit
+        const ctx = createNodeContext({ workDir: pair.ours });
+        await unsetConfigEntry({ ctx, key: 's..k', scope: 'local' });
+
+        // Assert
+        const { oursConfig, peerConfig } = await readTwinConfigs(pair);
+        expect(extractFromS(oursConfig)).toBe(extractFromS(peerConfig));
+      }, 60_000);
+    });
+  });
+
+  describe('Given empty-only.conf seeded ([s ""] k=b only), GET s.k', () => {
+    describe('When git and tsgit each read s.k', () => {
+      it('Then git exits 1 with no output; tsgit returns value: undefined', async () => {
+        // Arrange
+        const { peerConfigPath } = await seedTwinConfigs(pair, EMPTY_ONLY_CONF);
+
+        // Act — canonical git (exit 1 means key not found)
+        const gitResult = tryRunGit(['config', '--file', peerConfigPath, '--get', 's.k']);
+        expect(gitResult.ok).toBe(false);
+        expect(gitResult.stdout.trim()).toBe('');
+
+        // Act — tsgit
+        const ctx = createNodeContext({ workDir: pair.ours });
+        const result = await getConfigValue({ ctx, key: 's.k', scope: 'local' });
+
+        // Assert — tsgit also sees no value for the plain s.k key
+        expect(result.value).toBeUndefined();
+      }, 60_000);
+    });
+  });
+
+  describe('Given both.conf seeded and GET s.k vs s..k', () => {
+    describe('When git and tsgit each read s.k and s..k', () => {
+      it('Then s.k=a and s..k=b regardless of block order', async () => {
+        // Arrange
+        const { peerConfigPath } = await seedTwinConfigs(pair, BOTH_CONF);
+
+        // Act — canonical git GET
+        const gitSK = tryRunGit(['config', '--file', peerConfigPath, '--get', 's.k']);
+        expect(gitSK.ok, `git --get s.k failed: ${gitSK.stderr}`).toBe(true);
+        expect(gitSK.stdout.trim()).toBe('a');
+
+        const gitSEK = tryRunGit(['config', '--file', peerConfigPath, '--get', 's..k']);
+        expect(gitSEK.ok, `git --get s..k failed: ${gitSEK.stderr}`).toBe(true);
+        expect(gitSEK.stdout.trim()).toBe('b');
+
+        // Act — tsgit
+        const ctx = createNodeContext({ workDir: pair.ours });
+        const resultSK = await getConfigValue({ ctx, key: 's.k', scope: 'local' });
+        const resultSEK = await getConfigValue({ ctx, key: 's..k', scope: 'local' });
+
+        // Assert
+        expect(resultSK.value).toBe('a');
+        expect(resultSEK.value).toBe('b');
+      }, 60_000);
+    });
+  });
+
+  describe('Given name-mix.conf seeded ([ ""] k=e · [s] k=a · [s ""] k=b)', () => {
+    describe('When git and tsgit each --list and reconstruct key=value lines', () => {
+      it('Then the reconstructed key=value lines match for ..k, s.k, and s..k', async () => {
+        // Arrange — name-mix.conf: empty-name section plus two [s] variants
+        const nameMixConf =
+          '[core]\n\trepositoryformatversion = 0\n[ ""]\n\tk = e\n[s]\n\tk = a\n[s ""]\n\tk = b\n';
+        const { peerConfigPath } = await seedTwinConfigs(pair, nameMixConf);
+
+        // Act — canonical git --list (no -z for human-readable key=value)
+        const gitResult = tryRunGit(['config', '--file', peerConfigPath, '--list']);
+        expect(gitResult.ok, `git --list failed: ${gitResult.stderr}`).toBe(true);
+        const gitLines = gitResult.stdout
+          .split('\n')
+          .filter((l) => l.startsWith('..k') || l.startsWith('s.k') || l.startsWith('s..k'));
+
+        // Act — tsgit configList
+        const ctx = createNodeContext({ workDir: pair.ours });
+        const listResult = await configList(ctx, { scope: 'local' });
+        const tsgitLines = listResult.entries
+          .filter((e) => e.key === '..k' || e.key === 's.k' || e.key === 's..k')
+          .map((e) => `${e.key}=${e.value ?? ''}`);
+
+        // Assert — same key=value pairs (order-independent via sort)
+        expect([...tsgitLines].sort()).toEqual([...gitLines].sort());
       }, 60_000);
     });
   });
