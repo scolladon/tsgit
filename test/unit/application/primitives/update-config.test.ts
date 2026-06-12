@@ -7,7 +7,9 @@ import {
 } from '../../../../src/application/primitives/config-read.js';
 import {
   appendConfigEntry,
+  applyConfigOpInText,
   type ConfigOperation,
+  rawSectionName,
   removeConfigEntry,
   removeConfigSectionInText,
   renameConfigSectionInText,
@@ -2133,16 +2135,392 @@ describe('primitives/update-config', () => {
     });
   });
 
+  // ---------------------------------------------------------------------------
+  // rawSectionName — pinned raw-name reductions
+  // ---------------------------------------------------------------------------
+
+  describe('rawSectionName', () => {
+    describe('Given a plain header [s]', () => {
+      describe('When rawSectionName is called', () => {
+        it('Then it returns "s"', () => {
+          // Arrange
+          const sut = rawSectionName;
+
+          // Act
+          const result = sut({ section: 's', subsection: undefined });
+
+          // Assert
+          expect(result).toBe('s');
+        });
+      });
+    });
+
+    describe('Given a subsectioned header [s "x"]', () => {
+      describe('When rawSectionName is called', () => {
+        it('Then it returns "s.x"', () => {
+          // Arrange
+          const sut = rawSectionName;
+
+          // Act
+          const result = sut({ section: 's', subsection: 'x' });
+
+          // Assert
+          expect(result).toBe('s.x');
+        });
+      });
+    });
+
+    describe('Given an explicitly empty subsection [s ""]', () => {
+      describe('When rawSectionName is called', () => {
+        it('Then it returns "s." (trailing dot)', () => {
+          // Arrange
+          const sut = rawSectionName;
+
+          // Act
+          const result = sut({ section: 's', subsection: '' });
+
+          // Assert
+          expect(result).toBe('s.');
+        });
+      });
+    });
+
+    describe('Given the empty-name family [ ""]', () => {
+      describe('When rawSectionName is called', () => {
+        it('Then it returns "." (leading dot)', () => {
+          // Arrange
+          const sut = rawSectionName;
+
+          // Act
+          const result = sut({ section: '', subsection: '' });
+
+          // Assert
+          expect(result).toBe('.');
+        });
+      });
+    });
+
+    describe('Given the empty-name family [ "x"]', () => {
+      describe('When rawSectionName is called', () => {
+        it('Then it returns ".x"', () => {
+          // Arrange
+          const sut = rawSectionName;
+
+          // Act
+          const result = sut({ section: '', subsection: 'x' });
+
+          // Assert
+          expect(result).toBe('.x');
+        });
+      });
+    });
+
+    describe('Given a deprecated dotted header [s.X] (section="s.X", subsection=undefined)', () => {
+      describe('When rawSectionName is called', () => {
+        it('Then it returns "s.X" (raw header bytes)', () => {
+          // Arrange — parseSectionHeader parses [s.X] as section="s.X", subsection=undefined
+          const sut = rawSectionName;
+
+          // Act
+          const result = sut({ section: 's.X', subsection: undefined });
+
+          // Assert
+          expect(result).toBe('s.X');
+        });
+      });
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Pinned raw-name reduction rows — removeConfigSectionInText & renameConfigSectionInText
+  // ---------------------------------------------------------------------------
+
+  describe('removeConfigSectionInText (pinned raw-name rows)', () => {
+    describe('Given [s]k=a and [s ""]k=b (both.conf)', () => {
+      describe('When removeConfigSectionInText removes "s"', () => {
+        it('Then only [s] is removed, [s ""] is preserved', () => {
+          // Arrange
+          const text = '[s]\n\tk = a\n[s ""]\n\tk = b\n';
+          const sut = removeConfigSectionInText;
+
+          // Act
+          const result = sut(text, 's');
+
+          // Assert — row 1: s matches only [s], not [s ""]
+          expect(result).toBe('[s ""]\n\tk = b\n');
+        });
+      });
+
+      describe('When removeConfigSectionInText removes "s."', () => {
+        it('Then only [s ""] is removed, [s] is preserved', () => {
+          // Arrange
+          const text = '[s]\n\tk = a\n[s ""]\n\tk = b\n';
+          const sut = removeConfigSectionInText;
+
+          // Act
+          const result = sut(text, 's.');
+
+          // Assert — row 2: trailing-dot name s. matches [s ""] only
+          expect(result).toBe('[s]\n\tk = a\n');
+        });
+      });
+
+      describe('When removeConfigSectionInText removes \'s.""\'', () => {
+        it('Then nothing is removed (two-quote-char subsection is a distinct name)', () => {
+          // Arrange
+          const text = '[s]\n\tk = a\n[s ""]\n\tk = b\n';
+          const sut = removeConfigSectionInText;
+
+          // Act
+          const result = sut(text, 's.""');
+
+          // Assert — row 3: s."" does not match s. or s; text unchanged
+          expect(result).toBe(text);
+        });
+      });
+    });
+
+    describe('Given [S]k=a (upper-case section)', () => {
+      describe('When removeConfigSectionInText removes "s" (lower-case)', () => {
+        it('Then nothing is removed (byte-exact case-sensitive matching)', () => {
+          // Arrange
+          const text = '[S]\n\tk = a\n';
+          const sut = removeConfigSectionInText;
+
+          // Act
+          const result = sut(text, 's');
+
+          // Assert — row 4: s does not match [S]; text unchanged
+          expect(result).toBe(text);
+        });
+      });
+    });
+
+    describe('Given deprecated [s.X]k=a', () => {
+      describe('When removeConfigSectionInText removes "s.X"', () => {
+        it('Then the deprecated header is removed (raw byte match)', () => {
+          // Arrange
+          const text = '[s.X]\n\tk = a\n';
+          const sut = removeConfigSectionInText;
+
+          // Act
+          const result = sut(text, 's.X');
+
+          // Assert — row 5a: s.X matches deprecated [s.X]
+          expect(result).toBe('');
+        });
+      });
+
+      describe('When removeConfigSectionInText removes "s.x" (lower-case)', () => {
+        it('Then nothing is removed (case-sensitive; s.x ≠ s.X)', () => {
+          // Arrange
+          const text = '[s.X]\n\tk = a\n';
+          const sut = removeConfigSectionInText;
+
+          // Act
+          const result = sut(text, 's.x');
+
+          // Assert — row 5b: s.x does not match [s.X]; text unchanged
+          expect(result).toBe(text);
+        });
+      });
+    });
+
+    describe('Given [a.b]k=p and [a "b"]k=q (ambiguity)', () => {
+      describe('When removeConfigSectionInText removes "a.b"', () => {
+        it('Then both blocks are removed (a.b is the raw name of both)', () => {
+          // Arrange
+          const text = '[a.b]\n\tk = p\n[a "b"]\n\tk = q\n';
+          const sut = removeConfigSectionInText;
+
+          // Act
+          const result = sut(text, 'a.b');
+
+          // Assert — row 6: documented a.b ambiguity; both blocks removed
+          expect(result).toBe('');
+        });
+      });
+    });
+
+    describe('Given [s]k=a, [s "x"]k=b, and [s]k=c (multi-block plain)', () => {
+      describe('When removeConfigSectionInText removes "s"', () => {
+        it('Then both [s] blocks are removed, [s "x"] is preserved', () => {
+          // Arrange
+          const text = '[s]\n\tk = a\n[s "x"]\n\tk = b\n[s]\n\tk = c\n';
+          const sut = removeConfigSectionInText;
+
+          // Act
+          const result = sut(text, 's');
+
+          // Assert — row 8: multi-block plain removal
+          expect(result).toBe('[s "x"]\n\tk = b\n');
+        });
+      });
+    });
+
+    describe('Given [ ""] in name-mix.conf', () => {
+      describe('When removeConfigSectionInText removes "."', () => {
+        it('Then only [ ""] is removed, [s] and [s ""] are preserved', () => {
+          // Arrange
+          const text = '[ ""]\n\tk = e\n[s]\n\tk = a\n[s ""]\n\tk = b\n';
+          const sut = removeConfigSectionInText;
+
+          // Act
+          const result = sut(text, '.');
+
+          // Assert — row 10a: . matches [ ""] only
+          expect(result).toBe('[s]\n\tk = a\n[s ""]\n\tk = b\n');
+        });
+      });
+    });
+
+    describe('Given [ "x"]k=e in the file', () => {
+      describe('When removeConfigSectionInText removes ".x"', () => {
+        it('Then only [ "x"] is removed', () => {
+          // Arrange
+          const text = '[ "x"]\n\tk = e\n[s]\n\tk = a\n';
+          const sut = removeConfigSectionInText;
+
+          // Act
+          const result = sut(text, '.x');
+
+          // Assert — row 10b: .x matches [ "x"] only
+          expect(result).toBe('[s]\n\tk = a\n');
+        });
+      });
+    });
+
+    describe('Given [s     ""] (pre-quote whitespace, whitespace not identity)', () => {
+      describe('When removeConfigSectionInText removes "s."', () => {
+        it('Then the block is removed (pre-quote whitespace is not part of the raw name)', () => {
+          // Arrange — parseSectionHeader strips pre-quote whitespace; raw name is still s.
+          const text = '[s     ""]\n\tk = a\n';
+          const sut = removeConfigSectionInText;
+
+          // Act
+          const result = sut(text, 's.');
+
+          // Assert — row 11: whitespace before quote is not identity
+          expect(result).toBe('');
+        });
+      });
+    });
+
+    describe('Given [s "a\\"b"] (escaped quote in subsection)', () => {
+      describe("When removeConfigSectionInText removes 's.a\"b'", () => {
+        it('Then the block is removed (subsection unescaped before joining)', () => {
+          // Arrange — parseSectionHeader unescapes \\\" → "; rawSectionName joins s + . + a"b
+          const text = '[s "a\\"b"]\n\tk = a\n';
+          const sut = removeConfigSectionInText;
+
+          // Act
+          const result = sut(text, 's.a"b');
+
+          // Assert — row 12: subsection is unescaped before raw-name comparison
+          expect(result).toBe('');
+        });
+      });
+    });
+  });
+
+  describe('renameConfigSectionInText (pinned raw-name rows)', () => {
+    describe('Given [a "b."]k=p and [a.b ""]k=q', () => {
+      describe('When renameConfigSectionInText renames "a.b." to { section: "t", subsection: undefined }', () => {
+        it('Then both ambiguous headers become [t] (raw a.b. matches both)', () => {
+          // Arrange
+          const text = '[a "b."]\n\tk = p\n[a.b ""]\n\tk = q\n';
+          const sut = renameConfigSectionInText;
+
+          // Act
+          const result = sut(text, 'a.b.', { section: 't' });
+
+          // Assert — row 7: a.b. is the raw name of both [a "b."] and [a.b ""]
+          expect(result).toBe('[t]\n\tk = p\n[t]\n\tk = q\n');
+        });
+      });
+    });
+
+    describe('Given [s]k=a, [s "x"]k=b, and [s]k=c', () => {
+      describe('When renameConfigSectionInText renames "s" to { section: "t" }', () => {
+        it('Then both [s] blocks become [t], [s "x"] is preserved', () => {
+          // Arrange
+          const text = '[s]\n\tk = a\n[s "x"]\n\tk = b\n[s]\n\tk = c\n';
+          const sut = renameConfigSectionInText;
+
+          // Act
+          const result = sut(text, 's', { section: 't' });
+
+          // Assert — row 9: multi-block plain rename
+          expect(result).toBe('[t]\n\tk = a\n[s "x"]\n\tk = b\n[t]\n\tk = c\n');
+        });
+      });
+    });
+
+    describe('Given [s]k=a (plain header)', () => {
+      describe('When renameConfigSectionInText renames "s" to { section: "s", subsection: "" }', () => {
+        it('Then the header becomes [s ""] (duplicate-with-empty allowed at primitive level)', () => {
+          // Arrange
+          const text = '[s]\n\tk = a\n';
+          const sut = renameConfigSectionInText;
+
+          // Act
+          const result = sut(text, 's', { section: 's', subsection: '' });
+
+          // Assert — row 13: rename plain → empty-subsection form
+          expect(result).toBe('[s ""]\n\tk = a\n');
+        });
+      });
+    });
+
+    describe('Given [s "x"]k=a', () => {
+      describe('When renameConfigSectionInText renames "s.x" to { section: "t" } (cross-family)', () => {
+        it('Then the header becomes [t] (cross-family at the primitive level)', () => {
+          // Arrange
+          const text = '[s "x"]\n\tk = a\n';
+          const sut = renameConfigSectionInText;
+
+          // Act
+          const result = sut(text, 's.x', { section: 't' });
+
+          // Assert — row 14: cross-family rename at primitive level
+          expect(result).toBe('[t]\n\tk = a\n');
+        });
+      });
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // applyConfigOpInText — removeSection call-site adaptation
+  // ---------------------------------------------------------------------------
+
+  describe('applyConfigOpInText (removeSection call-site)', () => {
+    describe('Given [s]k=a and [s ""]k=b, and a removeSection op with section "s" (no subsection)', () => {
+      describe('When applyConfigOpInText applies the op', () => {
+        it('Then only [s] is removed, [s ""] is preserved', () => {
+          // Arrange — { kind: "removeSection", section: "s" } maps to raw name "s"
+          const text = '[s]\n\tk = a\n[s ""]\n\tk = b\n';
+          const op: ConfigOperation = { kind: 'removeSection', section: 's' };
+
+          // Act
+          const result = applyConfigOpInText(text, op);
+
+          // Assert
+          expect(result).toBe('[s ""]\n\tk = b\n');
+        });
+      });
+    });
+  });
+
   describe('removeConfigSectionInText', () => {
     describe('Given a section that is the last block', () => {
-      describe('When removeConfigSectionInText', () => {
+      describe('When removeConfigSectionInText removes remote.origin', () => {
         it('Then the header and body are gone', () => {
           // Arrange
           const text = '[remote "origin"]\n\turl = u\n\tfetch = +A:B\n';
 
           // Act
           const sut = removeConfigSectionInText;
-          const result = sut(text, 'remote', 'origin');
+          const result = sut(text, 'remote.origin');
 
           // Assert
           expect(result).toBe('');
@@ -2151,14 +2529,14 @@ describe('primitives/update-config', () => {
     });
 
     describe('Given a section followed by another section', () => {
-      describe('When removeConfigSectionInText', () => {
+      describe('When removeConfigSectionInText removes remote.origin', () => {
         it('Then the following section is preserved byte-for-byte', () => {
           // Arrange
           const text = '[remote "origin"]\n\turl = O\n[remote "upstream"]\n\turl = U\n';
 
           // Act
           const sut = removeConfigSectionInText;
-          const result = sut(text, 'remote', 'origin');
+          const result = sut(text, 'remote.origin');
 
           // Assert
           expect(result).toBe('[remote "upstream"]\n\turl = U\n');
@@ -2167,14 +2545,14 @@ describe('primitives/update-config', () => {
     });
 
     describe('Given a section preceded by another section', () => {
-      describe('When removeConfigSectionInText', () => {
+      describe('When removeConfigSectionInText removes remote.origin', () => {
         it('Then the preceding section is preserved', () => {
           // Arrange
           const text = '[core]\n\tbare = false\n[remote "origin"]\n\turl = u\n';
 
           // Act
           const sut = removeConfigSectionInText;
-          const result = sut(text, 'remote', 'origin');
+          const result = sut(text, 'remote.origin');
 
           // Assert
           expect(result).toBe('[core]\n\tbare = false\n');
@@ -2183,14 +2561,14 @@ describe('primitives/update-config', () => {
     });
 
     describe('Given no matching section', () => {
-      describe('When removeConfigSectionInText', () => {
+      describe('When removeConfigSectionInText removes remote.origin', () => {
         it('Then the text is byte-identical', () => {
           // Arrange
           const text = '[core]\n\tbare = false\n';
 
           // Act
           const sut = removeConfigSectionInText;
-          const result = sut(text, 'remote', 'origin');
+          const result = sut(text, 'remote.origin');
 
           // Assert
           expect(result).toBe(text);
@@ -2199,7 +2577,7 @@ describe('primitives/update-config', () => {
     });
 
     describe('Given two matching section blocks (corrupt config)', () => {
-      describe('When removeConfigSectionInText', () => {
+      describe('When removeConfigSectionInText removes remote.origin', () => {
         it('Then every occurrence is removed', () => {
           // Arrange — two `[remote "origin"]` headers from a manually-edited file.
           const text =
@@ -2207,7 +2585,7 @@ describe('primitives/update-config', () => {
 
           // Act
           const sut = removeConfigSectionInText;
-          const result = sut(text, 'remote', 'origin');
+          const result = sut(text, 'remote.origin');
 
           // Assert
           expect(result).toBe('[core]\n\tbare = false\n');
@@ -2216,14 +2594,14 @@ describe('primitives/update-config', () => {
     });
 
     describe('Given a section without a subsection', () => {
-      describe('When removeConfigSectionInText (no subsection)', () => {
+      describe('When removeConfigSectionInText removes core (no subsection)', () => {
         it('Then it removes the matching plain section', () => {
           // Arrange
           const text = '[core]\n\tbare = false\n[user]\n\tname = Ada\n';
 
           // Act
           const sut = removeConfigSectionInText;
-          const result = sut(text, 'core', undefined);
+          const result = sut(text, 'core');
 
           // Assert
           expect(result).toBe('[user]\n\tname = Ada\n');
@@ -2239,7 +2617,7 @@ describe('primitives/update-config', () => {
 
           // Act
           const sut = removeConfigSectionInText;
-          const result = sut(text, 'remote', 'origin');
+          const result = sut(text, 'remote.origin');
 
           // Assert
           expect(result).toBe('[core]\n\tbare = false');
@@ -2247,34 +2625,35 @@ describe('primitives/update-config', () => {
       });
     });
 
-    describe('Given a section name containing a bracket', () => {
-      describe('When removeConfigSectionInText', () => {
-        it('Then it throws INVALID_OPTION', () => {
-          // Arrange
-          let caught: unknown;
-          try {
-            removeConfigSectionInText('', 'core]\n[evil', undefined);
-          } catch (err) {
-            caught = err;
-          }
+    describe('Given a raw oldName that would be syntactically invalid as a section name', () => {
+      describe('When removeConfigSectionInText is called with oldName "core]\\n[evil"', () => {
+        it('Then no validation occurs and the text is returned byte-identical (no match)', () => {
+          // Arrange — raw matching never validates the old name; an invalid-looking
+          // name is just a lookup miss, not a grammar error.
+          const text = '[core]\n\ta = b\n';
 
-          // Assert
-          expect((caught as TsgitError).data.code).toBe('INVALID_OPTION');
+          // Act
+          const sut = removeConfigSectionInText;
+          const result = sut(text, 'core]\n[evil');
+
+          // Assert — matches nothing, text unchanged
+          expect(result).toBe(text);
         });
       });
     });
 
     describe('Given a subsection containing a quote (a"b)', () => {
-      describe('When removeConfigSectionInText', () => {
-        it('Then the subsection is accepted and the matching section is removed', () => {
-          // Arrange — subsection with a quote is now accepted and escaped on render
+      describe('When removeConfigSectionInText removes remote.a"b', () => {
+        it('Then the subsection is matched by its unescaped raw name and the section is removed', () => {
+          // Arrange — parseSectionHeader unescapes \" → "; rawSectionName joins to
+          // 'remote.a"b'; the raw name 'remote.a"b' matches exactly.
           const text = '[remote "a\\"b"]\n\turl = u\n';
 
           // Act
           const sut = removeConfigSectionInText;
-          const result = sut(text, 'remote', 'a"b');
+          const result = sut(text, 'remote.a"b');
 
-          // Assert — the section is removed (no-op on empty text is fine; here we verify it works)
+          // Assert — the section is removed
           expect(result).toBe('');
         });
       });
@@ -2292,7 +2671,7 @@ describe('primitives/update-config', () => {
 
           // Act
           const sut = removeConfigSectionInText;
-          const result = sut(text, 'a', undefined);
+          const result = sut(text, 'a');
 
           // Assert
           expect(result).toBe('[b]\n\tk = v\n');
@@ -2313,7 +2692,7 @@ describe('primitives/update-config', () => {
 
           // Act
           const sut = removeConfigSectionInText;
-          const result = sut(text, 'a', undefined);
+          const result = sut(text, 'a');
 
           // Assert
           expect(result).toBe('[b]\n\tk = v\n');
@@ -2332,7 +2711,7 @@ describe('primitives/update-config', () => {
 
           // Act
           const sut = removeConfigSectionInText;
-          const result = sut(text, 'b', undefined);
+          const result = sut(text, 'b');
 
           // Assert
           expect(result).toBe('[a]\n\tkey = one\\\n[d]\n\te = f\n');
@@ -2378,15 +2757,15 @@ describe('primitives/update-config', () => {
   });
 
   describe('renameConfigSectionInText', () => {
-    describe('Given a section block matching `from`', () => {
-      describe('When renameConfigSectionInText', () => {
-        it('Then the header subsection becomes `to` and the body is preserved', () => {
+    describe('Given a section block matching oldName remote.old', () => {
+      describe('When renameConfigSectionInText renames remote.old to { section: remote, subsection: new }', () => {
+        it('Then the header subsection becomes "new" and the body is preserved', () => {
           // Arrange
           const text = '[remote "old"]\n\turl = u\n\tfetch = +A:B\n';
 
           // Act
           const sut = renameConfigSectionInText;
-          const result = sut(text, 'remote', 'old', 'new');
+          const result = sut(text, 'remote.old', { section: 'remote', subsection: 'new' });
 
           // Assert
           expect(result).toBe('[remote "new"]\n\turl = u\n\tfetch = +A:B\n');
@@ -2395,7 +2774,7 @@ describe('primitives/update-config', () => {
     });
 
     describe('Given the section is one of several', () => {
-      describe('When renameConfigSectionInText', () => {
+      describe('When renameConfigSectionInText renames remote.old to { section: remote, subsection: new }', () => {
         it('Then unrelated sections are preserved', () => {
           // Arrange
           const text =
@@ -2403,7 +2782,7 @@ describe('primitives/update-config', () => {
 
           // Act
           const sut = renameConfigSectionInText;
-          const result = sut(text, 'remote', 'old', 'new');
+          const result = sut(text, 'remote.old', { section: 'remote', subsection: 'new' });
 
           // Assert
           expect(result).toBe(
@@ -2414,14 +2793,14 @@ describe('primitives/update-config', () => {
     });
 
     describe('Given no matching section', () => {
-      describe('When renameConfigSectionInText', () => {
+      describe('When renameConfigSectionInText renames remote.old to { section: remote, subsection: new }', () => {
         it('Then the text is byte-identical', () => {
           // Arrange
           const text = '[remote "other"]\n\turl = o\n';
 
           // Act
           const sut = renameConfigSectionInText;
-          const result = sut(text, 'remote', 'old', 'new');
+          const result = sut(text, 'remote.old', { section: 'remote', subsection: 'new' });
 
           // Assert
           expect(result).toBe(text);
@@ -2430,14 +2809,14 @@ describe('primitives/update-config', () => {
     });
 
     describe('Given the same section name twice', () => {
-      describe('When renameConfigSectionInText', () => {
+      describe('When renameConfigSectionInText renames remote.old to { section: remote, subsection: new }', () => {
         it('Then every occurrence is renamed', () => {
           // Arrange
           const text = '[remote "old"]\n\turl = A\n[remote "old"]\n\turl = B\n';
 
           // Act
           const sut = renameConfigSectionInText;
-          const result = sut(text, 'remote', 'old', 'new');
+          const result = sut(text, 'remote.old', { section: 'remote', subsection: 'new' });
 
           // Assert
           expect(result).toBe('[remote "new"]\n\turl = A\n[remote "new"]\n\turl = B\n');
@@ -2446,14 +2825,14 @@ describe('primitives/update-config', () => {
     });
 
     describe('Given a section with the `from` name in a different section family', () => {
-      describe('When renameConfigSectionInText', () => {
-        it('Then only the targeted family is renamed', () => {
-          // Arrange — `[branch "old"]` must NOT be renamed when family is `remote`.
+      describe('When renameConfigSectionInText renames remote.old to { section: remote, subsection: new }', () => {
+        it('Then only the targeted raw name is renamed, branch.old is untouched', () => {
+          // Arrange — `[branch "old"]` raw name is 'branch.old', not 'remote.old'; must not match.
           const text = '[branch "old"]\n\tmerge = m\n[remote "old"]\n\turl = u\n';
 
           // Act
           const sut = renameConfigSectionInText;
-          const result = sut(text, 'remote', 'old', 'new');
+          const result = sut(text, 'remote.old', { section: 'remote', subsection: 'new' });
 
           // Assert
           expect(result).toBe('[branch "old"]\n\tmerge = m\n[remote "new"]\n\turl = u\n');
@@ -2461,58 +2840,88 @@ describe('primitives/update-config', () => {
       });
     });
 
-    describe('Given a target subsection containing a newline', () => {
-      describe('When renameConfigSectionInText', () => {
-        it('Then it throws INVALID_OPTION', () => {
-          // Arrange
+    describe('Given a new subsection containing a newline', () => {
+      describe('When renameConfigSectionInText is called with to.subsection "ne\\nw"', () => {
+        it('Then it throws INVALID_OPTION (LF divergence guard)', () => {
+          // Arrange — rejectSubsection fires on the to.subsection before any I/O
           let caught: unknown;
           try {
-            renameConfigSectionInText('', 'remote', 'old', 'ne\nw');
+            renameConfigSectionInText('', 'remote.old', { section: 'remote', subsection: 'ne\nw' });
           } catch (err) {
             caught = err;
           }
 
           // Assert
           expect(caught).toBeInstanceOf(TsgitError);
-          expect((caught as TsgitError).data.code).toBe('INVALID_OPTION');
+          const data = (caught as TsgitError).data;
+          expect(data.code).toBe('INVALID_OPTION');
+          if (data.code === 'INVALID_OPTION') {
+            expect(data.option).toBe('config');
+            expect(data.reason).toBe('subsection must not contain a newline or NUL');
+          }
         });
       });
     });
 
-    describe('Given a target subsection containing a quote (a"b)', () => {
-      describe('When renameConfigSectionInText', () => {
+    describe('Given a new section name containing a bracket', () => {
+      describe('When renameConfigSectionInText is called with to.section "bad]name"', () => {
+        it('Then it throws INVALID_OPTION (section guard)', () => {
+          // Arrange — rejectSection fires on to.section before any I/O
+          let caught: unknown;
+          try {
+            renameConfigSectionInText('', 'remote.old', { section: 'bad]name' });
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data;
+          expect(data.code).toBe('INVALID_OPTION');
+          if (data.code === 'INVALID_OPTION') {
+            expect(data.option).toBe('config');
+            expect(data.reason).toBe(
+              'section must not contain a newline, NUL, bracket, quote, or backslash',
+            );
+          }
+        });
+      });
+    });
+
+    describe('Given a new subsection containing a quote (a"b)', () => {
+      describe('When renameConfigSectionInText renames remote.old to { section: remote, subsection: a"b }', () => {
         it('Then the quote is escaped and the new header is rendered as [remote "a\\"b"]', () => {
           // Arrange
           const text = '[remote "old"]\n\turl = u\n';
 
           // Act
           const sut = renameConfigSectionInText;
-          const result = sut(text, 'remote', 'old', 'a"b');
+          const result = sut(text, 'remote.old', { section: 'remote', subsection: 'a"b' });
 
-          // Assert — git escapes " → \" in the target subsection
+          // Assert — renderSectionHeader escapes " → \" in the subsection
           expect(result).toBe('[remote "a\\"b"]\n\turl = u\n');
         });
       });
     });
 
-    describe('Given a target subsection containing a backslash (a\\b)', () => {
-      describe('When renameConfigSectionInText', () => {
+    describe('Given a new subsection containing a backslash (a\\b)', () => {
+      describe('When renameConfigSectionInText renames remote.old to { section: remote, subsection: a\\b }', () => {
         it('Then the backslash is escaped and the new header is rendered as [remote "a\\\\b"]', () => {
           // Arrange
           const text = '[remote "old"]\n\turl = u\n';
 
           // Act
           const sut = renameConfigSectionInText;
-          const result = sut(text, 'remote', 'old', 'a\\b');
+          const result = sut(text, 'remote.old', { section: 'remote', subsection: 'a\\b' });
 
-          // Assert — git escapes \ → \\ in the target subsection
+          // Assert — renderSectionHeader escapes \ → \\ in the subsection
           expect(result).toBe('[remote "a\\\\b"]\n\turl = u\n');
         });
       });
     });
 
     describe('Given a section with a continuation tail that parses as the rename target', () => {
-      describe('When renameConfigSectionInText renames b.s to b.t', () => {
+      describe('When renameConfigSectionInText renames b.s to { section: b, subsection: t }', () => {
         it('Then both the real header and the lookalike tail are renamed (N1)', () => {
           // Arrange — row N1: `[a]` has `key = one\` then `[b "s"]` (a lookalike tail);
           // a real `[b "s"]` block follows. Canonical git's rename-section machinery is
@@ -2523,7 +2932,7 @@ describe('primitives/update-config', () => {
 
           // Act
           const sut = renameConfigSectionInText;
-          const result = sut(text, 'b', 's', 't');
+          const result = sut(text, 'b.s', { section: 'b', subsection: 't' });
 
           // Assert
           expect(result).toBe('[a]\n\tkey = one\\\n[b "t"]\n[b "t"]\n\tk = v\n');
@@ -2532,7 +2941,7 @@ describe('primitives/update-config', () => {
     });
 
     describe('Given a section with a continuation tail that does NOT parse as the rename target', () => {
-      describe('When renameConfigSectionInText renames a.s to a.t', () => {
+      describe('When renameConfigSectionInText renames a.s to { section: a, subsection: t }', () => {
         it('Then the header is renamed and body tails pass through verbatim (N2)', () => {
           // Arrange — row N2: `[a "s"]` has a two-line continuation body tail `   two`.
           // That tail does not parse as any section header, so it passes through verbatim.
@@ -2540,7 +2949,7 @@ describe('primitives/update-config', () => {
 
           // Act
           const sut = renameConfigSectionInText;
-          const result = sut(text, 'a', 's', 't');
+          const result = sut(text, 'a.s', { section: 'a', subsection: 't' });
 
           // Assert
           expect(result).toBe('[a "t"]\n\tkey = one\\\n   two\n[b]\n\tk = v\n');
@@ -2561,7 +2970,7 @@ describe('primitives/update-config', () => {
 
           // Act
           const sut = removeConfigSectionInText;
-          const result = sut(text, 'b', 's');
+          const result = sut(text, 'b.s');
 
           // Assert
           expect(result).toBe('[a]\n\tkey = one\\\n[d]\n\te = f\n');

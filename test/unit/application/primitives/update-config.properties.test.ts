@@ -3,10 +3,14 @@ import { describe, expect, it } from 'vitest';
 import {
   type IniSection,
   parseIniSections,
+  parseSectionHeader,
   tokenizeConfig,
 } from '../../../../src/application/primitives/config-read.js';
 import {
+  rawSectionName,
   removeConfigEntry,
+  removeConfigSectionInText,
+  renderSectionHeader,
   setConfigEntryInText,
 } from '../../../../src/application/primitives/update-config.js';
 import {
@@ -461,6 +465,103 @@ describe('update-config identity isolation', () => {
             },
           ),
           { numRuns: 100 },
+        );
+      });
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// rawSectionName round-trip property (lens 1)
+// ---------------------------------------------------------------------------
+
+/**
+ * Generator over `(section, subsection)` pairs drawn from the header domain:
+ * - section: small pool ∪ '' (empty section, only when subsection is present)
+ * - subsection: undefined | '' | LF/NUL-free string from subsectionName()
+ *
+ * The dotted name is built from the same formula as rawSectionName — this is
+ * the oracle, not a re-implementation: the test asserts round-trip identity,
+ * not a specific encoding.
+ */
+const arbHeaderIdentity = (): fc.Arbitrary<{
+  section: string;
+  subsection: string | undefined;
+  dottedName: string;
+}> => {
+  // Safe pool of section names (alphanumeric, used by renderSectionHeader)
+  const arbSection = fc.constantFrom('s', 'remote', 'core', 'a', '');
+  const arbSub = fc.oneof(
+    fc.constant(undefined),
+    fc.constant(''),
+    subsectionName().filter((s) => s !== '' && s !== undefined),
+  );
+  return fc
+    .tuple(arbSection, arbSub)
+    .filter(
+      // empty section is only representable with a subsection present
+      ([section, sub]) => !(section === '' && sub === undefined),
+    )
+    .map(([section, subsection]) => ({
+      section,
+      subsection,
+      dottedName: subsection === undefined ? section : `${section}.${subsection}`,
+    }));
+};
+
+describe('rawSectionName round-trip property', () => {
+  describe('Given an arbitrary header identity (section from safe pool ∪ empty, subsection from LF/NUL-free domain)', () => {
+    describe('When rendered via renderSectionHeader and re-parsed via parseSectionHeader', () => {
+      it('Then rawSectionName of the parsed header equals the dotted name built from the original identity', () => {
+        // Arrange — sut is the round-trip: render → parse → rawSectionName
+        const sut = rawSectionName;
+        fc.assert(
+          fc.property(arbHeaderIdentity(), ({ section, subsection, dottedName }) => {
+            // Act
+            const rendered = renderSectionHeader(section, subsection);
+            const parsed = parseSectionHeader(rendered.trim());
+
+            // Assert — parse must succeed and the reduced name must match
+            expect(parsed.kind).toBe('header');
+            if (parsed.kind !== 'header') return;
+            const result = sut(parsed);
+            expect(result).toBe(dottedName);
+          }),
+          { numRuns: 200 },
+        );
+      });
+    });
+
+    describe('When addressing a two-block file by that dotted name via removeConfigSectionInText', () => {
+      it('Then exactly the target block is removed and the sibling block bytes are intact', () => {
+        // Arrange — two-block file from distinct identity pairs; removing by dotted name
+        // must touch only the matching block.
+        fc.assert(
+          fc.property(arbHeaderIdentity(), arbHeaderIdentity(), (identityA, identityB) => {
+            // Build a sibling block with a DIFFERENT raw name so the remove is unambiguous
+            fc.pre(identityA.dottedName !== identityB.dottedName);
+
+            const headerA = renderSectionHeader(identityA.section, identityA.subsection);
+            const headerB = renderSectionHeader(identityB.section, identityB.subsection);
+            const blockA = `${headerA}\n\tk = x\n`;
+            const blockB = `${headerB}\n\tk = y\n`;
+            const input = blockA + blockB;
+
+            // Act — remove by dotted name of A; B must survive intact
+            let result: string;
+            try {
+              result = removeConfigSectionInText(input, identityA.dottedName);
+            } catch {
+              // rejectSection/rejectSubsection should not fire for our safe generators
+              return;
+            }
+
+            // Assert — B block is byte-identical in the output
+            expect(result).toContain(blockB);
+            // Assert — A block's header is gone from the output
+            expect(result).not.toContain(blockA);
+          }),
+          { numRuns: 200 },
         );
       });
     });

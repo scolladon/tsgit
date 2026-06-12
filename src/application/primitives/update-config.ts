@@ -32,20 +32,31 @@ import { collectValues } from './internal/config-key.js';
 import { resolveScopePath } from './internal/config-scope.js';
 
 /**
- * True when `line` is the header for `[section]` / `[section "subsection"]`.
- * Section names are matched case-insensitively (git semantics); subsection
- * names case-sensitively. A `subsection` of `undefined` matches a header with
- * no subsection or an explicitly empty one (`[section ""]`). Malformed headers
- * never match — only `kind: 'header'` results are considered.
+ * The raw dotted name of a parsed section header: `[s]` → `'s'`,
+ * `[s "x"]` → `'s.x'`, `[s ""]` → `'s.'`, `[ ""]` → `'.'`,
+ * deprecated `[s.X]` → `'s.X'`. The subsection is taken post-unescaping
+ * (exactly what `parseSectionHeader` returns), making this the canonical
+ * reduction used by git's section-op matching.
+ *
+ * The `'a.b'` ambiguity is documented and faithful: both `[a.b]` and
+ * `[a "b"]` reduce to the same raw name `'a.b'`, so an old-name lookup
+ * against `'a.b'` matches both blocks — exactly what canonical git does.
  */
-const matchesSection = (line: string, section: string, subsection: string | undefined): boolean => {
+export const rawSectionName = (header: {
+  readonly section: string;
+  readonly subsection: string | undefined;
+}): string =>
+  header.subsection === undefined ? header.section : `${header.section}.${header.subsection}`;
+
+/**
+ * True when `line` is a section header whose raw dotted name equals `oldName`
+ * byte-for-byte (case-sensitive). Malformed headers never match.
+ * Pre-quote whitespace is not identity — `parseSectionHeader` already strips it.
+ */
+const matchesRawSectionName = (line: string, oldName: string): boolean => {
   const header = parseSectionHeader(line.trim());
   if (header.kind !== 'header') return false;
-  if (header.section.toLowerCase() !== section.toLowerCase()) return false;
-  if (subsection === undefined) {
-    return header.subsection === undefined || header.subsection === '';
-  }
-  return header.subsection === subsection;
+  return rawSectionName(header) === oldName;
 };
 
 /** Any `[section]` / `[section "sub"]` header line — marks the end of a section. */
@@ -96,17 +107,16 @@ const escapeSubsection = (subsection: string): string =>
   subsection.replaceAll('\\', '\\\\').replaceAll('"', '\\"');
 
 /** Render a `[section]` / `[section "subsection"]` header line. */
-const renderSectionHeader = (section: string, subsection: string | undefined): string =>
+export const renderSectionHeader = (section: string, subsection: string | undefined): string =>
   subsection === undefined ? `[${section}]` : `[${section} "${escapeSubsection(subsection)}"]`;
 
-/** Index of the matching section header line, or `-1` when absent. */
-const findSectionHeader = (
-  lines: ReadonlyArray<string>,
-  section: string,
-  subsection: string | undefined,
-): number => {
+/**
+ * Index of the first header line whose raw dotted name equals `oldName`
+ * byte-for-byte, or `-1` when absent.
+ */
+const findSectionHeader = (lines: ReadonlyArray<string>, oldName: string): number => {
   for (let i = 0; i < lines.length; i += 1) {
-    if (matchesSection(lines[i] as string, section, subsection)) return i;
+    if (matchesRawSectionName(lines[i] as string, oldName)) return i;
   }
   return -1;
 };
@@ -436,27 +446,36 @@ export const removeConfigEntry = (
 };
 
 /**
- * Remove the header + body of every `[section]` / `[section "subsection"]`
- * block matching the target. Header and body are gone; following sections
- * are preserved byte-for-byte. No-op when no matching section exists.
+ * The validated destination for a section rename. The `section` part must
+ * survive `renderSectionHeader` (i.e. no `]`, `"`, `\`, or control chars);
+ * the optional `subsection` must be LF/NUL-free (validated by the caller
+ * via `rejectSubsection` before any I/O).
+ */
+export interface NewSectionName {
+  readonly section: string;
+  readonly subsection?: string;
+}
+
+/**
+ * Drops every block (header + body) whose raw dotted name equals `oldName`
+ * byte-for-byte (case-sensitive). No validation is applied to `oldName` —
+ * an unrecognised or syntactically unusual name simply matches nothing.
+ *
+ * The `'a.b'` ambiguity is faithful: both the deprecated `[a.b]` header and
+ * the canonical `[a "b"]` header reduce to the same raw name, so a lookup
+ * against `'a.b'` removes both blocks — exactly what canonical git does.
  *
  * Trailing blank line cleanup: the final `\n` separator that introduced
  * the dropped section is also dropped so a removed section at the end
  * of the file does not leave a stray trailing newline.
  */
-export const removeConfigSectionInText = (
-  text: string,
-  section: string,
-  subsection: string | undefined,
-): string => {
-  rejectSection(section);
-  if (subsection !== undefined) rejectSubsection(subsection);
+export const removeConfigSectionInText = (text: string, oldName: string): string => {
   const lines = text.split('\n');
   const out: string[] = [];
   let skipping = false;
   for (const line of lines) {
     if (isSectionHeader(line)) {
-      skipping = matchesSection(line, section, subsection);
+      skipping = matchesRawSectionName(line, oldName);
       if (skipping) continue;
       out.push(line);
       continue;
@@ -468,25 +487,26 @@ export const removeConfigSectionInText = (
 };
 
 /**
- * Rename every `[section "fromSubsection"]` header line to
- * `[section "toSubsection"]`. Body lines are not touched; other section
- * families (e.g. `[branch "fromSubsection"]` when family is `remote`)
- * are preserved. The new subsection name is validated with the same
- * line-surgery rules as `setConfigEntryInText`.
+ * Rewrites every header whose raw dotted name equals `oldName` byte-for-byte
+ * to `renderSectionHeader(to.section, to.subsection)`. Body lines are not
+ * touched; non-matching headers are preserved verbatim. The write-side guards
+ * (`rejectSection`, `rejectSubsection`) are applied by the caller before
+ * passing `to` — this function trusts the validated destination.
+ *
+ * Cross-family renames (`s.x → t.y`, `s → t.y`, `s. → t`) are supported:
+ * the only constraint is that the old name matches and the new name is valid.
  */
 export const renameConfigSectionInText = (
   text: string,
-  section: string,
-  fromSubsection: string,
-  toSubsection: string,
+  oldName: string,
+  to: NewSectionName,
 ): string => {
-  rejectSection(section);
-  rejectSubsection(fromSubsection);
-  rejectSubsection(toSubsection);
+  rejectSection(to.section);
+  if (to.subsection !== undefined) rejectSubsection(to.subsection);
   const lines = text.split('\n');
   const renamed = lines.map((line) => {
-    if (!matchesSection(line, section, fromSubsection)) return line;
-    return renderSectionHeader(section, toSubsection);
+    if (!matchesRawSectionName(line, oldName)) return line;
+    return renderSectionHeader(to.section, to.subsection);
   });
   return renamed.join('\n');
 };
@@ -586,9 +606,15 @@ export const applyConfigOpInText = (text: string, op: ConfigOperation): string =
     return removeConfigEntry(text, op.section, op.subsection, op.key);
   }
   if (op.kind === 'removeSection') {
-    return removeConfigSectionInText(text, op.section, op.subsection);
+    return removeConfigSectionInText(
+      text,
+      op.subsection === undefined ? op.section : `${op.section}.${op.subsection}`,
+    );
   }
-  return renameConfigSectionInText(text, op.section, op.from, op.to);
+  return renameConfigSectionInText(text, `${op.section}.${op.from}`, {
+    section: op.section,
+    subsection: op.to,
+  });
 };
 
 /**
@@ -868,16 +894,14 @@ export const renameConfigSection = async ({
   const text = await readConfigText(ctx, path);
   // Line-based existence check — lenient on malformed headers/values, exactly
   // like git's copy_or_rename machinery. A malformed header never matches
-  // matchesSection (kind !== 'header'), so it is never the rename source.
-  if (findSectionHeader(text.split('\n'), oldParts.section, oldParts.subsection) === -1) {
+  // matchesRawSectionName (kind !== 'header'), so it is never the rename source.
+  if (findSectionHeader(text.split('\n'), oldName) === -1) {
     throw configSectionNotFound(oldName, targetScope);
   }
-  const after = renameConfigSectionInText(
-    text,
-    oldParts.section,
-    oldParts.subsection,
-    newParts.subsection,
-  );
+  const after = renameConfigSectionInText(text, oldName, {
+    section: newParts.section,
+    subsection: newParts.subsection,
+  });
   await ctx.fs.writeUtf8(path, after);
   invalidateConfigCache(ctx);
   invalidateScopedConfigCache(ctx);
@@ -897,16 +921,17 @@ export const removeConfigSection = async ({
   readonly sectionName: string;
   readonly scope?: ConfigScope;
 }): Promise<void> => {
-  const parts = parseSectionName(sectionName);
+  // Validate the name grammar — throws INVALID_OPTION for plain or trailing-dot names.
+  parseSectionName(sectionName);
   const targetScope: ConfigScope = scope ?? 'local';
   const path = await resolveScopePath(ctx, targetScope);
   const text = await readConfigText(ctx, path);
   // Line-based existence check — lenient on malformed headers/values, exactly
-  // like git's remove-section machinery.
-  if (findSectionHeader(text.split('\n'), parts.section, parts.subsection) === -1) {
+  // like git's remove-section machinery. Matching is raw/byte-exact on `sectionName`.
+  if (findSectionHeader(text.split('\n'), sectionName) === -1) {
     throw configSectionNotFound(sectionName, targetScope);
   }
-  const after = removeConfigSectionInText(text, parts.section, parts.subsection);
+  const after = removeConfigSectionInText(text, sectionName);
   await ctx.fs.writeUtf8(path, after);
   invalidateConfigCache(ctx);
   invalidateScopedConfigCache(ctx);
