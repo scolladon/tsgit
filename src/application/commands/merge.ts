@@ -16,7 +16,6 @@ import {
   type MergeOutcome,
   mergeLabels,
   mergeTrees,
-  writeConflictMarkers,
 } from '../../domain/merge/index.js';
 import type { CommitData } from '../../domain/objects/commit.js';
 import { treeDepthExceeded, unexpectedObjectType } from '../../domain/objects/error.js';
@@ -614,28 +613,21 @@ export const writeOutcomeToTree = async (
   // 'conflict' outcomes are handled by the parallel conflicts batch.
 };
 
-const writeConflictToTree = async (ctx: Context, conflict: MergeConflict): Promise<void> => {
+export const writeConflictToTree = async (ctx: Context, conflict: MergeConflict): Promise<void> => {
   if (conflict.type === 'distinct-types') {
     await writeDistinctTypesSides(ctx, conflict);
     return;
   }
+  // Materialise with the merged mode when the merge resolved one, else the
+  // surviving side's (ours, or theirs for modify-delete with ours deleted) so
+  // the kind (symlink / exec bit) is preserved. Every conflict constructor
+  // pairs ids with modes, so bytes being derivable implies a mode exists; the
+  // guard checks anyway and skips the blob read when no mode is present.
+  const mode = conflict.mergedMode ?? conflict.ourMode ?? conflict.theirMode;
+  if (mode === undefined) return;
   const bytes = await materialiseConflictBytes(ctx, conflict);
   if (bytes === undefined) return;
-  // When the materialised bytes come from the ours blob verbatim (no conflict
-  // markers were injected), the file must be written with the original mode.
-  // Symlink/symlink add-add conflicts fall here: the bytes are the ours
-  // symlink target, and we must re-create a symlink, not a regular file.
-  const useMode =
-    conflict.type === 'add-add' &&
-    conflict.conflictContent === undefined &&
-    conflict.ourMode !== undefined
-      ? conflict.ourMode
-      : undefined;
-  if (useMode !== undefined) {
-    await writeWorkingTreeEntry(ctx, conflict.path, bytes, useMode);
-    return;
-  }
-  await writeWorkingTreeFile(ctx, conflict.path, bytes);
+  await writeWorkingTreeEntry(ctx, conflict.path, bytes, mode);
 };
 
 // Stryker disable next-line ObjectLiteral: equivalent — the 256 MiB cap is unobservable without a 256 MiB fixture; cap mechanics covered by read-blob.test.ts.
@@ -646,7 +638,7 @@ const readOursBlob = (ctx: Context, conflict: MergeConflict): Promise<Uint8Array
   return readBlob(ctx, conflict.ourId, READ_BLOB_OPTS).then((b) => b.content);
 };
 
-const materialiseAddAdd = async (
+const materialiseMarkedOrOurs = async (
   ctx: Context,
   conflict: MergeConflict,
 ): Promise<Uint8Array | undefined> => {
@@ -654,26 +646,13 @@ const materialiseAddAdd = async (
   return readOursBlob(ctx, conflict);
 };
 
-const materialiseContent = async (
-  ctx: Context,
-  conflict: MergeConflict,
-): Promise<Uint8Array | undefined> => {
-  if (conflict.conflictContent !== undefined) return conflict.conflictContent;
-  if (conflict.ourId === undefined || conflict.theirId === undefined) return undefined;
-  const [ours, theirs] = await Promise.all([
-    readBlob(ctx, conflict.ourId, READ_BLOB_OPTS),
-    readBlob(ctx, conflict.theirId, READ_BLOB_OPTS),
-  ]);
-  return writeConflictMarkers([ours.content], [theirs.content]);
-};
-
 /** Derive the working-tree bytes for a conflicting path. Exported for direct unit testing. */
 export const materialiseConflictBytes = async (
   ctx: Context,
   conflict: MergeConflict,
 ): Promise<Uint8Array | undefined> => {
-  if (conflict.type === 'content') return materialiseContent(ctx, conflict);
-  if (conflict.type === 'add-add') return materialiseAddAdd(ctx, conflict);
+  if (conflict.type === 'content') return materialiseMarkedOrOurs(ctx, conflict);
+  if (conflict.type === 'add-add') return materialiseMarkedOrOurs(ctx, conflict);
   if (conflict.type === 'binary') return readOursBlob(ctx, conflict);
   if (conflict.type === 'type-change') return readOursBlob(ctx, conflict);
   if (conflict.type === 'modify-delete') {

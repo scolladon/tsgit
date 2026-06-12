@@ -14,6 +14,7 @@ import {
   noOperationInProgress,
   workingTreeDirty,
 } from '../../domain/commands/error.js';
+import { sortedRecordedPaths } from '../../domain/diff/index.js';
 import { TsgitError } from '../../domain/error.js';
 import type { IndexEntry } from '../../domain/git-index/index.js';
 import { unsupportedOperation } from '../../domain/index.js';
@@ -356,10 +357,7 @@ const persistStop = async (
     // conflict, so `length > 0` and `length >= 0` are indistinguishable here; the
     // `!== undefined` guard is what separates the conflict path from the empty stop.
     conflicts !== undefined && conflicts.length > 0
-      ? conflictMergeMsg(
-          draft,
-          conflicts.map((c) => c.path),
-        )
+      ? conflictMergeMsg(draft, sortedRecordedPaths(conflicts))
       : draft;
   await writeMergeMsg(ctx, message);
 };

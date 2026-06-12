@@ -305,6 +305,47 @@ describe('rebaseRun', () => {
     });
   });
 
+  describe('Given a topic commit that causes a distinct-types conflict on replay', () => {
+    describe('When rebased onto an advanced main', () => {
+      it('Then MERGE_MSG lists the recorded paths, not just the conflict path', async () => {
+        // Arrange — base has `p` regular; topic changes `p` regular differently;
+        // main replaces `p` with a symlink.
+        // Replaying topic's `p` change onto main's symlink → distinct-types.
+        // In rebase, theirs = topic commit → rename suffix is p~<abbrev> (topic-change).
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await setUser(ctx);
+        await writeAddCommit(ctx, 'p', 'base-p\n', 'base');
+        await branchCreate(ctx, { name: 'topic' });
+        await checkout(ctx, { rev: 'topic' });
+        const topicCommit = await writeAddCommit(ctx, 'p', 'topic-p\n', 'topic-change');
+        await checkout(ctx, { rev: 'main' });
+        // Replace p with a symlink on main
+        await ctx.fs.rm(work(ctx, 'p'));
+        await ctx.fs.symlink('link-tgt', work(ctx, 'p'));
+        await add(ctx, ['p']);
+        await commit(ctx, { message: 'main-symlink', author: FEAT_AUTHOR });
+        // Checkout topic: must remove symlink so checkout can place regular file
+        await ctx.fs.rm(work(ctx, 'p'));
+        await checkout(ctx, { rev: 'topic' });
+
+        // Act
+        const sut = await rebaseRun(ctx, { upstream: 'main' });
+
+        // Assert — distinct-types conflict; message lists both recorded paths
+        expect(sut.kind).toBe('conflict');
+        const msg = await readMerge(ctx, 'message');
+        expect(msg).toContain('# Conflicts:\n');
+        expect(msg).toContain('#\tp\n');
+        // The regular side (theirs = topic commit) is renamed p~<abbrev> (topic-change)
+        const abbrev = topicCommit.slice(0, 7);
+        expect(msg).toContain(`#\tp~${abbrev} (topic-change)\n`);
+        // Must not only list `p` once (old behaviour before fix)
+        expect(msg).not.toBe('topic-change\n\n# Conflicts:\n#\tp\n');
+      });
+    });
+  });
+
   describe('Given a replay conflict', () => {
     describe('When the rebase stops', () => {
       it('Then the working-tree markers are labelled HEAD and the replayed commit', async () => {
@@ -1723,6 +1764,93 @@ describe('rebaseRun (interactive squash / fixup)', () => {
         expect(combined.message).toBe('t1 subject\n\nt2 subject\n');
         expect(combined.parents).toEqual([mainTip]); // group commit replaced t1', not stacked
         expect((await reflogMessages(ctx, 'HEAD'))[1]).toBe('rebase (continue): t1 subject');
+      });
+    });
+  });
+
+  describe('Given a squash whose meld produces a distinct-types conflict', () => {
+    describe('When the meld stops', () => {
+      it('Then MERGE_MSG lists recorded paths from the distinct-types conflict', async () => {
+        // Arrange — base has `p` regular; t1 adds unrelated a.txt; t2 squashes
+        // and changes `p` regular; main replaces `p` with a symlink.
+        // Squash meld of t1+t2 onto main hits distinct-types on `p`.
+        // In rebase, theirs = t2 → rename suffix is p~<t2-abbrev> (t2 sub).
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await setUser(ctx);
+        await writeAddCommit(ctx, 'p', 'base-p\n', 'base');
+        await branchCreate(ctx, { name: 'topic' });
+        await checkout(ctx, { rev: 'topic' });
+        const t1 = await writeAddCommit(ctx, 'a.txt', 'a\n', 't1 sub');
+        const t2 = await writeAddCommit(ctx, 'p', 'topic-p\n', 't2 sub');
+        await checkout(ctx, { rev: 'main' });
+        // Replace p with a symlink on main
+        await ctx.fs.rm(work(ctx, 'p'));
+        await ctx.fs.symlink('link-tgt', work(ctx, 'p'));
+        await add(ctx, ['p']);
+        await commit(ctx, { message: 'main-symlink', author: FEAT_AUTHOR });
+        // Checkout topic: must remove symlink so checkout can place regular file
+        await ctx.fs.rm(work(ctx, 'p'));
+        await checkout(ctx, { rev: 'topic' });
+
+        // Act
+        const stop = await rebaseRun(ctx, {
+          upstream: 'main',
+          interactive: [
+            { action: 'pick', oid: t1 },
+            { action: 'squash', oid: t2 },
+          ],
+        });
+
+        // Assert — conflict; message lists both recorded paths
+        expect(stop.kind).toBe('conflict');
+        const msg = await readMerge(ctx, 'message');
+        expect(msg).toContain('# Conflicts:\n');
+        expect(msg).toContain('#\tp\n');
+        // The regular side (theirs = t2) is renamed p~<t2-abbrev> (t2 sub)
+        const abbrev = t2.slice(0, 7);
+        expect(msg).toContain(`#\tp~${abbrev} (t2 sub)\n`);
+      });
+    });
+  });
+
+  describe('Given an interactive pick that produces a distinct-types conflict', () => {
+    describe('When the step stops', () => {
+      it('Then MERGE_MSG lists recorded paths from the distinct-types conflict', async () => {
+        // Arrange — base has `p` regular; topic t1 changes `p` regular;
+        // main replaces `p` with a symlink. Interactive pick of t1 conflicts.
+        // In rebase, theirs = t1 → rename suffix is p~<t1-abbrev> (topic-change).
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await setUser(ctx);
+        await writeAddCommit(ctx, 'p', 'base-p\n', 'base');
+        await branchCreate(ctx, { name: 'topic' });
+        await checkout(ctx, { rev: 'topic' });
+        const t1 = await writeAddCommit(ctx, 'p', 'topic-p\n', 'topic-change');
+        await checkout(ctx, { rev: 'main' });
+        // Replace p with a symlink on main
+        await ctx.fs.rm(work(ctx, 'p'));
+        await ctx.fs.symlink('link-tgt', work(ctx, 'p'));
+        await add(ctx, ['p']);
+        await commit(ctx, { message: 'main-symlink', author: FEAT_AUTHOR });
+        // Checkout topic: must remove symlink so checkout can place regular file
+        await ctx.fs.rm(work(ctx, 'p'));
+        await checkout(ctx, { rev: 'topic' });
+
+        // Act
+        const stop = await rebaseRun(ctx, {
+          upstream: 'main',
+          interactive: [{ action: 'pick', oid: t1 }],
+        });
+
+        // Assert — conflict; message lists both recorded paths
+        expect(stop.kind).toBe('conflict');
+        const msg = await readMerge(ctx, 'message');
+        expect(msg).toContain('# Conflicts:\n');
+        expect(msg).toContain('#\tp\n');
+        // The regular side (theirs = t1) is renamed p~<t1-abbrev> (topic-change)
+        const abbrev = t1.slice(0, 7);
+        expect(msg).toContain(`#\tp~${abbrev} (topic-change)\n`);
       });
     });
   });

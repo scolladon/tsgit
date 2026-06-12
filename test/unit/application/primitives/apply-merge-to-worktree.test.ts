@@ -1,10 +1,14 @@
-import { describe, expect, it } from 'vitest';
-import { applyMergeToWorktree } from '../../../../src/application/primitives/apply-merge-to-worktree.js';
+import { describe, expect, it, vi } from 'vitest';
+import {
+  applyMergeToWorktree,
+  writeMarkedConflict,
+} from '../../../../src/application/primitives/apply-merge-to-worktree.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { writeTree } from '../../../../src/application/primitives/write-tree.js';
 import { TsgitError } from '../../../../src/domain/error.js';
 import type { GitIndex, IndexEntry } from '../../../../src/domain/git-index/index.js';
 import { STAGE0_FLAGS } from '../../../../src/domain/git-index/index.js';
+import type { MergeConflict } from '../../../../src/domain/merge/index.js';
 import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
 import type {
   FileMode,
@@ -419,8 +423,8 @@ describe('applyMergeToWorktree', () => {
         const aStages = sut.indexEntries.filter((e) => e.path === 'a').map((e) => e.flags.stage);
         expect(aStages).toEqual([1, 2, 3]);
         const paths = sut.indexEntries.map((e) => e.path);
-        const posA = paths.findIndex((p) => p === 'a');
-        const posB = paths.findIndex((p) => p === 'b');
+        const posA = paths.indexOf('a' as FilePath);
+        const posB = paths.indexOf('b' as FilePath);
         expect(posA).toBeLessThan(posB);
       });
     });
@@ -766,6 +770,192 @@ describe('applyMergeToWorktree', () => {
           }
         });
         await expect(act).rejects.toBeInstanceOf(TsgitError);
+      });
+    });
+  });
+});
+
+describe('writeMarkedConflict (direct)', () => {
+  const seedBlob = (ctx: Context, text: string): Promise<ObjectId> =>
+    writeObject(ctx, {
+      type: 'blob',
+      content: new TextEncoder().encode(text),
+      id: '' as ObjectId,
+    });
+  const conflictOf = (over: Partial<MergeConflict>): MergeConflict =>
+    ({ path: 'p' as FilePath, ...over }) as MergeConflict;
+
+  // Bare content symlink-pair — ours symlink re-created
+  describe('Given a bare content conflict with symlink modes on both sides', () => {
+    describe('When writeMarkedConflict runs', () => {
+      it('Then ours symlink is re-created at the path (not target bytes as a regular file)', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const oursId = await seedBlob(ctx, 'ours-target');
+        const theirsId = await seedBlob(ctx, 'theirs-target');
+        const baseId = await seedBlob(ctx, 'base-file-content');
+        const conflict = conflictOf({
+          type: 'content',
+          ourId: oursId,
+          theirId: theirsId,
+          baseId,
+          ourMode: FILE_MODE.SYMLINK,
+          theirMode: FILE_MODE.SYMLINK,
+          baseMode: FILE_MODE.REGULAR,
+        });
+
+        // Act
+        await writeMarkedConflict(ctx, conflict);
+
+        // Assert — lstat reveals a symlink; readlink returns ours' target
+        const stat = await ctx.fs.lstat(`${ctx.layout.workDir}/p`);
+        expect(stat.isSymbolicLink).toBe(true);
+        const target = await ctx.fs.readlink(`${ctx.layout.workDir}/p`);
+        expect(target).toBe('ours-target');
+      });
+    });
+  });
+
+  // conflictContent + executable ourMode — exec bit preserved
+  describe('Given a content conflict with conflictContent and executable ourMode', () => {
+    describe('When writeMarkedConflict runs', () => {
+      it('Then the marker file is written with exec mode (chmod 0o755 called)', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const chmodSpy = vi.spyOn(ctx.fs, 'chmod');
+        const conflict = conflictOf({
+          type: 'content',
+          conflictContent: new TextEncoder().encode(
+            '<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> side\n',
+          ),
+          ourMode: FILE_MODE.EXECUTABLE,
+        });
+
+        // Act
+        await writeMarkedConflict(ctx, conflict);
+
+        // Assert
+        expect(chmodSpy).toHaveBeenCalledWith(`${ctx.layout.workDir}/p`, 0o755);
+      });
+    });
+  });
+
+  // Marker bytes carry the three-way-merged mode, not ours' stage mode
+  describe('Given a content conflict where mergedMode is executable but ourMode is regular', () => {
+    describe('When writeMarkedConflict runs', () => {
+      it('Then the marker file is written with the merged exec mode', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const chmodSpy = vi.spyOn(ctx.fs, 'chmod');
+        const conflict = conflictOf({
+          type: 'content',
+          conflictContent: new TextEncoder().encode(
+            '<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> side\n',
+          ),
+          ourMode: FILE_MODE.REGULAR,
+          theirMode: FILE_MODE.EXECUTABLE,
+          mergedMode: FILE_MODE.EXECUTABLE,
+        });
+
+        // Act
+        await writeMarkedConflict(ctx, conflict);
+
+        // Assert — merged mode wins over ours' stage mode
+        expect(chmodSpy).toHaveBeenCalledWith(`${ctx.layout.workDir}/p`, 0o755);
+      });
+    });
+  });
+
+  // Refusal seam: no mode at all — nothing is written, no blob is read
+  describe('Given a conflict carrying conflictContent but no mode on any field', () => {
+    describe('When writeMarkedConflict runs', () => {
+      it('Then nothing is written at the path', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const conflict = conflictOf({
+          type: 'content',
+          conflictContent: new TextEncoder().encode('marker-bytes\n'),
+        });
+
+        // Act
+        await writeMarkedConflict(ctx, conflict);
+
+        // Assert — no file materialised
+        expect(await ctx.fs.exists(`${ctx.layout.workDir}/p`)).toBe(false);
+      });
+    });
+  });
+
+  // Refusal seam: mode defined but no derivable bytes — no write, no throw
+  describe('Given a bare add-add conflict with only theirId and theirMode', () => {
+    describe('When writeMarkedConflict runs', () => {
+      it('Then nothing is written at the path', async () => {
+        // Arrange — conflictContent absent and ourId absent, so no bytes can be derived
+        // while the theirs mode is present
+        const ctx = await buildSeededContext();
+        const theirsId = await seedBlob(ctx, 'theirs-only');
+        const conflict = conflictOf({
+          type: 'add-add',
+          theirId: theirsId,
+          theirMode: FILE_MODE.REGULAR,
+        });
+
+        // Act
+        await writeMarkedConflict(ctx, conflict);
+
+        // Assert — no file materialised
+        expect(await ctx.fs.exists(`${ctx.layout.workDir}/p`)).toBe(false);
+      });
+    });
+  });
+
+  // Modify-delete with ours deleted: the survivor keeps its kind on disk
+  describe('Given a modify-delete conflict whose surviving theirs side is a symlink', () => {
+    describe('When writeMarkedConflict runs', () => {
+      it('Then the survivor symlink is re-created at the path', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const theirsId = await seedBlob(ctx, 'survivor-target');
+        const conflict = conflictOf({
+          type: 'modify-delete',
+          theirId: theirsId,
+          theirMode: FILE_MODE.SYMLINK,
+          // ourId/ourMode are absent: ours deleted the path
+        });
+
+        // Act
+        await writeMarkedConflict(ctx, conflict);
+
+        // Assert — lstat reveals a symlink pointing at theirs' target
+        const stat = await ctx.fs.lstat(`${ctx.layout.workDir}/p`);
+        expect(stat.isSymbolicLink).toBe(true);
+        const target = await ctx.fs.readlink(`${ctx.layout.workDir}/p`);
+        expect(target).toBe('survivor-target');
+      });
+    });
+  });
+
+  // Bare type-change with symlink ourMode
+  describe('Given a bare type-change conflict with symlink ourMode', () => {
+    describe('When writeMarkedConflict runs', () => {
+      it('Then ours symlink is re-created at the path', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const oursId = await seedBlob(ctx, 'symlink-target');
+        const conflict = conflictOf({
+          type: 'type-change',
+          ourId: oursId,
+          ourMode: FILE_MODE.SYMLINK,
+        });
+
+        // Act
+        await writeMarkedConflict(ctx, conflict);
+
+        // Assert
+        const stat = await ctx.fs.lstat(`${ctx.layout.workDir}/p`);
+        expect(stat.isSymbolicLink).toBe(true);
+        const target = await ctx.fs.readlink(`${ctx.layout.workDir}/p`);
+        expect(target).toBe('symlink-target');
       });
     });
   });

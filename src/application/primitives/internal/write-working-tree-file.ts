@@ -8,6 +8,9 @@ import type { Context } from '../../../ports/context.js';
 
 const decoder = new TextDecoder();
 
+const MODE_REGULAR_PERM = 0o644;
+const MODE_EXEC_PERM = 0o755;
+
 /**
  * Remove a working-tree path if it exists, probing with `lstat` (no symlink
  * follow) so dangling symlinks are detected and removed. Only the existence
@@ -65,6 +68,7 @@ export const writeWorkingTreeEntry = async (
     return;
   }
   await ctx.fs.write(fullPath, content);
+  await ctx.fs.chmod(fullPath, mode === FILE_MODE.EXECUTABLE ? MODE_EXEC_PERM : MODE_REGULAR_PERM);
 };
 
 export const removeWorkingTreeFile = async (ctx: Context, path: FilePath): Promise<void> => {

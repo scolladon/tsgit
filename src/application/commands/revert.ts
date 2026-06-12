@@ -15,6 +15,7 @@ import {
   revertMergeNoMainline,
   workingTreeDirty,
 } from '../../domain/commands/error.js';
+import { sortedRecordedPaths } from '../../domain/diff/index.js';
 import { TsgitError } from '../../domain/error.js';
 import type { IndexEntry } from '../../domain/git-index/index.js';
 import { unsupportedOperation } from '../../domain/index.js';
@@ -188,10 +189,7 @@ const persistStop = async (
   await writeRevertHead(ctx, source);
   await writeMergeMsg(
     ctx,
-    conflictMergeMsg(
-      revertMessage(cData, source),
-      conflicts.map((c) => c.path),
-    ),
+    conflictMergeMsg(revertMessage(cData, source), sortedRecordedPaths(conflicts)),
   );
 };
 

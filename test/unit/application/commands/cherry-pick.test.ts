@@ -837,6 +837,47 @@ describe('cherryPickRun', () => {
         expect(file).toContain(`>>>>>>> ${feature.id.slice(0, 7)} (feat change)\n`);
       });
     });
+
+    describe('When a distinct-types conflict occurs', () => {
+      it('Then MERGE_MSG lists the recorded paths, not the conflict path', async () => {
+        // Arrange — base has `p` as regular file; feature makes `p` regular with
+        // different content; main makes `p` a symlink.
+        // Cherry-pick feature onto main: base=regular, ours=symlink, theirs=regular
+        // → distinct-types conflict; theirs renamed to p~<abbrev> (feat-sym).
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await setUser(ctx);
+        await ctx.fs.writeUtf8(work(ctx, 'p'), 'base-content\n');
+        await add(ctx, ['p']);
+        await commit(ctx, { message: 'base', author: MAIN_AUTHOR });
+        // Feature branch: change `p` regular content
+        await branchCreate(ctx, { name: 'feature' });
+        await checkout(ctx, { rev: 'feature' });
+        await ctx.fs.writeUtf8(work(ctx, 'p'), 'feat-content\n');
+        await add(ctx, ['p']);
+        const feature = await commit(ctx, { message: 'feat-sym', author: FEAT_AUTHOR });
+        // Main: replace `p` with a symlink
+        await checkout(ctx, { rev: 'main' });
+        await ctx.fs.rm(work(ctx, 'p'));
+        await ctx.fs.symlink('link-target', work(ctx, 'p'));
+        await add(ctx, ['p']);
+        await commit(ctx, { message: 'main-symlink', author: MAIN_AUTHOR });
+
+        // Act
+        const result = await cherryPickRun(ctx, { commits: [feature.id] });
+
+        // Assert — conflict with distinct-types
+        expect(result.kind).toBe('conflict');
+        const mergeMsg = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/MERGE_MSG`);
+        // MERGE_MSG must contain both recorded paths (p and p~<abbrev> (feat-sym))
+        const abbrev = feature.id.slice(0, 7);
+        const renamedPath = `p~${abbrev} (feat-sym)`;
+        expect(mergeMsg).toContain('#\tp\n');
+        expect(mergeMsg).toContain(`#\t${renamedPath}\n`);
+        // Must NOT list only `p` once (i.e. must include the rename path too)
+        expect(mergeMsg).not.toBe(`feat-sym\n\n# Conflicts:\n#\tp\n`);
+      });
+    });
   });
 
   describe('Given a pick whose change is already applied', () => {

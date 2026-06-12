@@ -28,6 +28,8 @@ export {
   conflictsToIndexEntries,
   diffIndexAgainstTree,
   groupUnmergedEntries,
+  recordedPaths,
+  sortedRecordedPaths,
 } from './index-diff.js';
 
 // Line diff

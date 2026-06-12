@@ -392,6 +392,51 @@ describe('mergeTrees — contentMerger contract', () => {
     });
   });
 
+  describe('Given a content conflict where only theirs flipped the exec bit', () => {
+    describe('When mergeTrees called', () => {
+      it('Then the conflict carries mergedMode with theirs executable mode', async () => {
+        // Arrange
+        const base = tree([['p', entry(ID_A)]]);
+        const ours = tree([['p', entry(ID_B)]]);
+        const theirs = tree([['p', entry(ID_C, FILE_MODE.EXECUTABLE)]]);
+        const spy = spyMerger({
+          status: 'conflict',
+          conflictType: 'content',
+          markedBytes: new Uint8Array([0xff]),
+        });
+
+        // Act
+        const result = await mergeTrees(base, ours, theirs, spy.fn);
+
+        // Assert — three-way mode merge: ours kept the base mode, theirs wins
+        expect(result.conflicts[0]?.mergedMode).toBe(FILE_MODE.EXECUTABLE);
+        expect(result.conflicts[0]?.ourMode).toBe(FILE_MODE.REGULAR);
+      });
+    });
+  });
+
+  describe('Given a content conflict where only ours flipped the exec bit', () => {
+    describe('When mergeTrees called', () => {
+      it('Then the conflict carries mergedMode with ours mode', async () => {
+        // Arrange
+        const base = tree([['p', entry(ID_A, FILE_MODE.EXECUTABLE)]]);
+        const ours = tree([['p', entry(ID_B)]]);
+        const theirs = tree([['p', entry(ID_C, FILE_MODE.EXECUTABLE)]]);
+        const spy = spyMerger({
+          status: 'conflict',
+          conflictType: 'content',
+          markedBytes: new Uint8Array([0xff]),
+        });
+
+        // Act
+        const result = await mergeTrees(base, ours, theirs, spy.fn);
+
+        // Assert — ours diverged from the base mode, so ours wins
+        expect(result.conflicts[0]?.mergedMode).toBe(FILE_MODE.REGULAR);
+      });
+    });
+  });
+
   describe('Given contentMerger returning binary conflict with markedBytes', () => {
     describe('When mergeTrees called', () => {
       it('Then conflict with type binary', async () => {
@@ -902,21 +947,498 @@ describe('mergeTrees — mode handling', () => {
   });
 
   describe('Given modify-modify with kind change (file vs symlink) on ours vs theirs', () => {
-    describe('When mergeTrees called', () => {
-      it('Then type-change conflict', async () => {
+    describe('When mergeTrees called with labels {ours:"HEAD", theirs:"side"}', () => {
+      it('Then a with-base distinct-types conflict renames the regular side and records the base with it', async () => {
         // Arrange
         const base = tree([['p', entry(ID_A, FILE_MODE.REGULAR)]]);
         const ours = tree([['p', entry(ID_B, FILE_MODE.REGULAR)]]);
         const theirs = tree([['p', entry(ID_C, FILE_MODE.SYMLINK)]]);
-        const spy = vi.fn(noopMerger);
+        const spy = spyMerger({ status: 'clean', bytes: new Uint8Array(0) });
 
         // Act
-        const result = await mergeTrees(base, ours, theirs, spy);
+        const result = await mergeTrees(base, ours, theirs, spy.fn, {
+          ours: 'HEAD',
+          theirs: 'side',
+          base: '',
+        });
 
         // Assert
-        expect(spy).not.toHaveBeenCalled();
+        expect(spy.ctxs).toHaveLength(0);
         expect(result.conflicts).toHaveLength(1);
-        expect(result.conflicts[0]?.type).toBe('type-change');
+        const conflict = result.conflicts[0];
+        expect(conflict?.type).toBe('distinct-types');
+        expect(conflict?.path).toBe('p');
+        expect(conflict?.ourPath).toBe('p~HEAD');
+        expect(conflict?.theirPath).toBe('p');
+        expect(conflict?.basePath).toBe('p~HEAD');
+        expect(conflict?.baseId).toBe(ID_A);
+        expect(conflict?.baseMode).toBe(FILE_MODE.REGULAR);
+        expect(conflict?.ourId).toBe(ID_B);
+        expect(conflict?.ourMode).toBe(FILE_MODE.REGULAR);
+        expect(conflict?.theirId).toBe(ID_C);
+        expect(conflict?.theirMode).toBe(FILE_MODE.SYMLINK);
+      });
+    });
+  });
+
+  describe('Given ours is symlink and theirs is regular and base is regular', () => {
+    describe('When mergeTrees called with labels {ours:"HEAD", theirs:"side"}', () => {
+      it('Then distinct-types conflict with theirPath renamed, basePath equals theirPath', async () => {
+        // Arrange — S2 shape: ours=symlink, theirs=regular, base=regular
+        const base = tree([['p', entry(ID_A, FILE_MODE.REGULAR)]]);
+        const ours = tree([['p', entry(ID_B, FILE_MODE.SYMLINK)]]);
+        const theirs = tree([['p', entry(ID_C, FILE_MODE.REGULAR)]]);
+        const spy = spyMerger({ status: 'clean', bytes: new Uint8Array(0) });
+
+        // Act
+        const result = await mergeTrees(base, ours, theirs, spy.fn, {
+          ours: 'HEAD',
+          theirs: 'side',
+          base: '',
+        });
+
+        // Assert
+        expect(spy.ctxs).toHaveLength(0);
+        expect(result.conflicts).toHaveLength(1);
+        const conflict = result.conflicts[0];
+        expect(conflict?.type).toBe('distinct-types');
+        expect(conflict?.path).toBe('p');
+        expect(conflict?.ourPath).toBe('p');
+        expect(conflict?.theirPath).toBe('p~side');
+        expect(conflict?.basePath).toBe('p~side');
+        expect(conflict?.baseId).toBe(ID_A);
+        expect(conflict?.baseMode).toBe(FILE_MODE.REGULAR);
+        expect(conflict?.ourId).toBe(ID_B);
+        expect(conflict?.ourMode).toBe(FILE_MODE.SYMLINK);
+        expect(conflict?.theirId).toBe(ID_C);
+        expect(conflict?.theirMode).toBe(FILE_MODE.REGULAR);
+      });
+    });
+  });
+
+  describe('Given ours is symlink and theirs is regular and base is symlink', () => {
+    describe('When mergeTrees called with labels {ours:"HEAD", theirs:"side"}', () => {
+      it('Then distinct-types conflict with basePath equals ourPath (symlink side)', async () => {
+        // Arrange — S3 shape: ours=symlink, theirs=regular, base=symlink
+        const base = tree([['p', entry(ID_A, FILE_MODE.SYMLINK)]]);
+        const ours = tree([['p', entry(ID_B, FILE_MODE.SYMLINK)]]);
+        const theirs = tree([['p', entry(ID_C, FILE_MODE.REGULAR)]]);
+        const spy = spyMerger({ status: 'clean', bytes: new Uint8Array(0) });
+
+        // Act
+        const result = await mergeTrees(base, ours, theirs, spy.fn, {
+          ours: 'HEAD',
+          theirs: 'side',
+          base: '',
+        });
+
+        // Assert
+        expect(spy.ctxs).toHaveLength(0);
+        expect(result.conflicts).toHaveLength(1);
+        const conflict = result.conflicts[0];
+        expect(conflict?.type).toBe('distinct-types');
+        expect(conflict?.path).toBe('p');
+        expect(conflict?.ourPath).toBe('p');
+        expect(conflict?.theirPath).toBe('p~side');
+        expect(conflict?.basePath).toBe('p');
+        expect(conflict?.baseId).toBe(ID_A);
+        expect(conflict?.baseMode).toBe(FILE_MODE.SYMLINK);
+        expect(conflict?.ourId).toBe(ID_B);
+        expect(conflict?.ourMode).toBe(FILE_MODE.SYMLINK);
+        expect(conflict?.theirId).toBe(ID_C);
+        expect(conflict?.theirMode).toBe(FILE_MODE.REGULAR);
+      });
+    });
+  });
+
+  describe('Given ours is regular and theirs is symlink and base is symlink', () => {
+    describe('When mergeTrees called with labels {ours:"HEAD", theirs:"side"}', () => {
+      it('Then distinct-types conflict with basePath equals theirPath (symlink side)', async () => {
+        // Arrange — S4 shape: ours=regular, theirs=symlink, base=symlink
+        const base = tree([['p', entry(ID_A, FILE_MODE.SYMLINK)]]);
+        const ours = tree([['p', entry(ID_B, FILE_MODE.REGULAR)]]);
+        const theirs = tree([['p', entry(ID_C, FILE_MODE.SYMLINK)]]);
+        const spy = spyMerger({ status: 'clean', bytes: new Uint8Array(0) });
+
+        // Act
+        const result = await mergeTrees(base, ours, theirs, spy.fn, {
+          ours: 'HEAD',
+          theirs: 'side',
+          base: '',
+        });
+
+        // Assert
+        expect(spy.ctxs).toHaveLength(0);
+        expect(result.conflicts).toHaveLength(1);
+        const conflict = result.conflicts[0];
+        expect(conflict?.type).toBe('distinct-types');
+        expect(conflict?.path).toBe('p');
+        expect(conflict?.ourPath).toBe('p~HEAD');
+        expect(conflict?.theirPath).toBe('p');
+        expect(conflict?.basePath).toBe('p');
+        expect(conflict?.baseId).toBe(ID_A);
+        expect(conflict?.baseMode).toBe(FILE_MODE.SYMLINK);
+        expect(conflict?.ourId).toBe(ID_B);
+        expect(conflict?.ourMode).toBe(FILE_MODE.REGULAR);
+        expect(conflict?.theirId).toBe(ID_C);
+        expect(conflict?.theirMode).toBe(FILE_MODE.SYMLINK);
+      });
+    });
+  });
+
+  describe('Given ours is regular and theirs is symlink and base is regular, with f~HEAD already reserved', () => {
+    describe('When mergeTrees called with labels {ours:"HEAD", theirs:"side"}', () => {
+      it('Then ourPath is f~HEAD_0 and basePath follows the probed path', async () => {
+        // Arrange — f~HEAD is taken in ours tree; reserved set must include it
+        const base = tree([['f', entry(ID_A, FILE_MODE.REGULAR)]]);
+        const ours = tree([
+          ['f', entry(ID_B, FILE_MODE.REGULAR)],
+          ['f~HEAD', entry(ID_D, FILE_MODE.REGULAR)],
+        ]);
+        const theirs = tree([['f', entry(ID_C, FILE_MODE.SYMLINK)]]);
+        const spy = spyMerger({ status: 'clean', bytes: new Uint8Array(0) });
+
+        // Act
+        const result = await mergeTrees(base, ours, theirs, spy.fn, {
+          ours: 'HEAD',
+          theirs: 'side',
+          base: '',
+        });
+
+        // Assert
+        expect(spy.ctxs).toHaveLength(0);
+        expect(result.conflicts).toHaveLength(1);
+        const conflict = result.conflicts[0];
+        expect(conflict?.type).toBe('distinct-types');
+        expect(conflict?.ourPath).toBe('f~HEAD_0');
+        expect(conflict?.basePath).toBe('f~HEAD_0');
+      });
+    });
+  });
+
+  describe('Given ours gitlink and theirs regular and base regular (R8 regression)', () => {
+    describe('When mergeTrees called', () => {
+      it('Then type-change conflict with no rename fields', async () => {
+        // Arrange
+        const base = tree([['p', entry(ID_A, FILE_MODE.REGULAR)]]);
+        const ours = tree([['p', entry(ID_B, FILE_MODE.GITLINK)]]);
+        const theirs = tree([['p', entry(ID_C, FILE_MODE.REGULAR)]]);
+        const spy = spyMerger({ status: 'clean', bytes: new Uint8Array(0) });
+
+        // Act
+        const result = await mergeTrees(base, ours, theirs, spy.fn);
+
+        // Assert
+        expect(spy.ctxs).toHaveLength(0);
+        expect(result.conflicts).toHaveLength(1);
+        const conflict = result.conflicts[0];
+        expect(conflict?.type).toBe('type-change');
+        expect(conflict?.basePath).toBeUndefined();
+        expect(conflict?.ourPath).toBeUndefined();
+        expect(conflict?.theirPath).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given ours regular and theirs symlink and base gitlink (R8 regression)', () => {
+    describe('When mergeTrees called', () => {
+      it('Then type-change conflict with no rename fields', async () => {
+        // Arrange
+        const base = tree([['p', entry(ID_A, FILE_MODE.GITLINK)]]);
+        const ours = tree([['p', entry(ID_B, FILE_MODE.REGULAR)]]);
+        const theirs = tree([['p', entry(ID_C, FILE_MODE.SYMLINK)]]);
+        const spy = spyMerger({ status: 'clean', bytes: new Uint8Array(0) });
+
+        // Act
+        const result = await mergeTrees(base, ours, theirs, spy.fn);
+
+        // Assert
+        expect(spy.ctxs).toHaveLength(0);
+        expect(result.conflicts).toHaveLength(1);
+        const conflict = result.conflicts[0];
+        expect(conflict?.type).toBe('type-change');
+        expect(conflict?.basePath).toBeUndefined();
+        expect(conflict?.ourPath).toBeUndefined();
+        expect(conflict?.theirPath).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given ours gitlink and theirs gitlink and base regular (R8 regression)', () => {
+    describe('When mergeTrees called', () => {
+      it('Then type-change conflict with no rename fields', async () => {
+        // Arrange
+        const base = tree([['p', entry(ID_A, FILE_MODE.REGULAR)]]);
+        const ours = tree([['p', entry(ID_B, FILE_MODE.GITLINK)]]);
+        const theirs = tree([['p', entry(ID_C, FILE_MODE.GITLINK)]]);
+        const spy = spyMerger({ status: 'clean', bytes: new Uint8Array(0) });
+
+        // Act
+        const result = await mergeTrees(base, ours, theirs, spy.fn);
+
+        // Assert
+        expect(spy.ctxs).toHaveLength(0);
+        expect(result.conflicts).toHaveLength(1);
+        const conflict = result.conflicts[0];
+        expect(conflict?.type).toBe('type-change');
+        expect(conflict?.basePath).toBeUndefined();
+        expect(conflict?.ourPath).toBeUndefined();
+        expect(conflict?.theirPath).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given ours symlink and theirs symlink and base regular (R5)', () => {
+    describe('When mergeTrees called', () => {
+      it('Then bare content conflict carries all three stages and no merged bytes', async () => {
+        // Arrange
+        const base = tree([['p', entry(ID_A, FILE_MODE.REGULAR)]]);
+        const ours = tree([['p', entry(ID_B, FILE_MODE.SYMLINK)]]);
+        const theirs = tree([['p', entry(ID_C, FILE_MODE.SYMLINK)]]);
+        const spy = spyMerger({ status: 'clean', bytes: new Uint8Array(0) });
+
+        // Act
+        const result = await mergeTrees(base, ours, theirs, spy.fn);
+
+        // Assert
+        expect(spy.ctxs).toHaveLength(0);
+        expect(result.conflicts).toHaveLength(1);
+        const conflict = result.conflicts[0];
+        expect(conflict?.type).toBe('content');
+        expect(conflict?.conflictContent).toBeUndefined();
+        expect(conflict?.contentVerdict).toBeUndefined();
+        expect(conflict?.baseId).toBe(ID_A);
+        expect(conflict?.baseMode).toBe(FILE_MODE.REGULAR);
+        expect(conflict?.ourId).toBe(ID_B);
+        expect(conflict?.ourMode).toBe(FILE_MODE.SYMLINK);
+        expect(conflict?.theirId).toBe(ID_C);
+        expect(conflict?.theirMode).toBe(FILE_MODE.SYMLINK);
+      });
+    });
+  });
+
+  describe('Given ours symlink and theirs symlink and base symlink (R5)', () => {
+    describe('When mergeTrees called', () => {
+      it('Then bare content conflict carries all three stages and no merged bytes', async () => {
+        // Arrange
+        const base = tree([['p', entry(ID_A, FILE_MODE.SYMLINK)]]);
+        const ours = tree([['p', entry(ID_B, FILE_MODE.SYMLINK)]]);
+        const theirs = tree([['p', entry(ID_C, FILE_MODE.SYMLINK)]]);
+        const spy = spyMerger({ status: 'clean', bytes: new Uint8Array(0) });
+
+        // Act
+        const result = await mergeTrees(base, ours, theirs, spy.fn);
+
+        // Assert
+        expect(spy.ctxs).toHaveLength(0);
+        expect(result.conflicts).toHaveLength(1);
+        const conflict = result.conflicts[0];
+        expect(conflict?.type).toBe('content');
+        expect(conflict?.conflictContent).toBeUndefined();
+        expect(conflict?.contentVerdict).toBeUndefined();
+        expect(conflict?.baseId).toBe(ID_A);
+        expect(conflict?.baseMode).toBe(FILE_MODE.SYMLINK);
+        expect(conflict?.ourId).toBe(ID_B);
+        expect(conflict?.ourMode).toBe(FILE_MODE.SYMLINK);
+        expect(conflict?.theirId).toBe(ID_C);
+        expect(conflict?.theirMode).toBe(FILE_MODE.SYMLINK);
+      });
+    });
+  });
+
+  describe('Given base symlink and both sides regular with different ids (R4 ctx shape)', () => {
+    describe('When merger returns a content conflict', () => {
+      it('Then merger called once with no baseId/baseMode in ctx, conflict carries base fields', async () => {
+        // Arrange
+        const base = tree([['p', entry(ID_A, FILE_MODE.SYMLINK)]]);
+        const ours = tree([['p', entry(ID_B, FILE_MODE.REGULAR)]]);
+        const theirs = tree([['p', entry(ID_C, FILE_MODE.REGULAR)]]);
+        const markedBytes = new Uint8Array([1, 2, 3]);
+        const spy = spyMerger({
+          status: 'conflict',
+          conflictType: 'content',
+          markedBytes,
+        });
+
+        // Act
+        const result = await mergeTrees(base, ours, theirs, spy.fn);
+
+        // Assert
+        expect(spy.ctxs).toHaveLength(1);
+        expect(spy.ctxs[0]?.baseId).toBeUndefined();
+        expect(spy.ctxs[0]?.baseMode).toBeUndefined();
+        expect(result.conflicts).toHaveLength(1);
+        const conflict = result.conflicts[0];
+        expect(conflict?.type).toBe('content');
+        expect(conflict?.baseId).toBe(ID_A);
+        expect(conflict?.baseMode).toBe(FILE_MODE.SYMLINK);
+        expect(conflict?.ourId).toBe(ID_B);
+        expect(conflict?.ourMode).toBe(FILE_MODE.REGULAR);
+        expect(conflict?.theirId).toBe(ID_C);
+        expect(conflict?.theirMode).toBe(FILE_MODE.REGULAR);
+        expect(conflict?.conflictContent).toBe(markedBytes);
+      });
+    });
+
+    describe('When merger returns a binary conflict', () => {
+      it('Then the conflict type is binary (merger verdict passed through)', async () => {
+        // Arrange
+        const base = tree([['p', entry(ID_A, FILE_MODE.SYMLINK)]]);
+        const ours = tree([['p', entry(ID_B, FILE_MODE.REGULAR)]]);
+        const theirs = tree([['p', entry(ID_C, FILE_MODE.REGULAR)]]);
+        const markedBytes = new Uint8Array([9, 0, 9]);
+        const spy = spyMerger({
+          status: 'conflict',
+          conflictType: 'binary',
+          markedBytes,
+        });
+
+        // Act
+        const result = await mergeTrees(base, ours, theirs, spy.fn);
+
+        // Assert — the merger's binary verdict survives the kind-changed route
+        expect(result.conflicts[0]?.type).toBe('binary');
+        expect(result.conflicts[0]?.baseId).toBe(ID_A);
+        expect(result.conflicts[0]?.conflictContent).toBe(markedBytes);
+      });
+    });
+  });
+
+  describe('Given base symlink and both sides regular with equal modes (R4 clean/equal)', () => {
+    describe('When merger returns clean bytes', () => {
+      it('Then resolved-merged outcome with mode from sides', async () => {
+        // Arrange
+        const base = tree([['p', entry(ID_A, FILE_MODE.SYMLINK)]]);
+        const ours = tree([['p', entry(ID_B, FILE_MODE.REGULAR)]]);
+        const theirs = tree([['p', entry(ID_C, FILE_MODE.REGULAR)]]);
+        const cleanBytes = new Uint8Array([4, 5]);
+        const spy = spyMerger({ status: 'clean', bytes: cleanBytes });
+
+        // Act
+        const result = await mergeTrees(base, ours, theirs, spy.fn);
+
+        // Assert
+        expect(spy.ctxs).toHaveLength(1);
+        expect(result.conflicts).toHaveLength(0);
+        expect(result.outcomes[0]?.status).toBe('resolved-merged');
+        const outcome = result.outcomes[0];
+        if (outcome?.status === 'resolved-merged') {
+          expect(outcome.bytes).toBe(cleanBytes);
+          expect(outcome.mode).toBe(FILE_MODE.REGULAR);
+        }
+      });
+    });
+
+    describe('When merger returns clean bytes with id fast-path', () => {
+      it('Then resolved-known outcome with id and mode from sides', async () => {
+        // Arrange
+        const base = tree([['p', entry(ID_A, FILE_MODE.SYMLINK)]]);
+        const ours = tree([['p', entry(ID_B, FILE_MODE.REGULAR)]]);
+        const theirs = tree([['p', entry(ID_C, FILE_MODE.REGULAR)]]);
+        const spy = spyMerger({ status: 'clean', bytes: new Uint8Array(0), id: ID_D });
+
+        // Act
+        const result = await mergeTrees(base, ours, theirs, spy.fn);
+
+        // Assert
+        expect(spy.ctxs).toHaveLength(1);
+        expect(result.conflicts).toHaveLength(0);
+        expect(result.outcomes[0]?.status).toBe('resolved-known');
+        const outcome = result.outcomes[0];
+        if (outcome?.status === 'resolved-known') {
+          expect(outcome.id).toBe(ID_D);
+          expect(outcome.mode).toBe(FILE_MODE.REGULAR);
+        }
+      });
+    });
+  });
+
+  describe('Given base symlink and both sides regular with differing modes (R4 clean/differing)', () => {
+    describe('When merger returns clean bytes', () => {
+      it('Then content conflict with contentVerdict clean and base fields', async () => {
+        // Arrange — Q1/Q2 domain shape
+        const base = tree([['p', entry(ID_A, FILE_MODE.SYMLINK)]]);
+        const ours = tree([['p', entry(ID_B, FILE_MODE.EXECUTABLE)]]);
+        const theirs = tree([['p', entry(ID_C, FILE_MODE.REGULAR)]]);
+        const cleanBytes = new Uint8Array([7, 8]);
+        const spy = spyMerger({ status: 'clean', bytes: cleanBytes });
+
+        // Act
+        const result = await mergeTrees(base, ours, theirs, spy.fn);
+
+        // Assert
+        expect(spy.ctxs).toHaveLength(1);
+        expect(result.conflicts).toHaveLength(1);
+        const conflict = result.conflicts[0];
+        expect(conflict?.type).toBe('content');
+        expect(conflict?.contentVerdict).toBe('clean');
+        expect(conflict?.conflictContent).toBe(cleanBytes);
+        expect(conflict?.baseId).toBe(ID_A);
+        expect(conflict?.baseMode).toBe(FILE_MODE.SYMLINK);
+        expect(conflict?.ourId).toBe(ID_B);
+        expect(conflict?.ourMode).toBe(FILE_MODE.EXECUTABLE);
+        expect(conflict?.theirId).toBe(ID_C);
+        expect(conflict?.theirMode).toBe(FILE_MODE.REGULAR);
+      });
+    });
+  });
+
+  describe('Given base symlink and both sides regular (R4 cap — oversize clean bytes)', () => {
+    describe('When merger returns oversize clean bytes', () => {
+      it('Then throws invalidMergeInput with INVALID_MERGE_INPUT code', async () => {
+        // Arrange
+        const base = tree([['p', entry(ID_A, FILE_MODE.SYMLINK)]]);
+        const ours = tree([['p', entry(ID_B, FILE_MODE.REGULAR)]]);
+        const theirs = tree([['p', entry(ID_C, FILE_MODE.REGULAR)]]);
+        const oversizeBytes = new Uint8Array(MAX_CONFLICT_OUTPUT_BYTES + 1);
+        const spy = spyMerger({ status: 'clean', bytes: oversizeBytes });
+
+        // Act
+        let thrown: unknown;
+        try {
+          await mergeTrees(base, ours, theirs, spy.fn);
+        } catch (err) {
+          thrown = err;
+        }
+
+        // Assert
+        expect(thrown).toBeDefined();
+        expect((thrown as { data: { code: string } }).data.code).toBe('INVALID_MERGE_INPUT');
+        expect((thrown as { data: { reason: string } }).data.reason).toBe(
+          'contentMerger returned oversize clean bytes',
+        );
+      });
+    });
+  });
+
+  describe('Given base symlink and both sides regular (R4 cap — oversize marked bytes)', () => {
+    describe('When merger returns oversize marked bytes', () => {
+      it('Then throws invalidMergeInput with INVALID_MERGE_INPUT code', async () => {
+        // Arrange
+        const base = tree([['p', entry(ID_A, FILE_MODE.SYMLINK)]]);
+        const ours = tree([['p', entry(ID_B, FILE_MODE.REGULAR)]]);
+        const theirs = tree([['p', entry(ID_C, FILE_MODE.REGULAR)]]);
+        const oversizeBytes = new Uint8Array(MAX_CONFLICT_OUTPUT_BYTES + 1);
+        const spy = spyMerger({
+          status: 'conflict',
+          conflictType: 'content',
+          markedBytes: oversizeBytes,
+        });
+
+        // Act
+        let thrown: unknown;
+        try {
+          await mergeTrees(base, ours, theirs, spy.fn);
+        } catch (err) {
+          thrown = err;
+        }
+
+        // Assert
+        expect(thrown).toBeDefined();
+        expect((thrown as { data: { code: string } }).data.code).toBe('INVALID_MERGE_INPUT');
+        expect((thrown as { data: { reason: string } }).data.reason).toBe(
+          'contentMerger returned oversize marked bytes',
+        );
       });
     });
   });
@@ -1462,7 +1984,7 @@ describe('mergeTrees — distinct-types add/add rename conflict', () => {
 
   describe('Given f~HEAD and f~HEAD_0 both already present in input trees', () => {
     describe('When ours is regular and theirs is symlink', () => {
-      it('Then ourPath=f~HEAD_0_1 (probe loop appends _n to current candidate)', async () => {
+      it('Then ourPath=f~HEAD_1 (probing resets to the stem)', async () => {
         // Arrange — both f~HEAD and f~HEAD_0 are taken
         const ours = tree([
           ['f', entry(ID_A, FILE_MODE.REGULAR)],
@@ -1478,7 +2000,7 @@ describe('mergeTrees — distinct-types add/add rename conflict', () => {
 
         // Assert
         expect(result.conflicts[0]?.type).toBe('distinct-types');
-        expect(result.conflicts[0]?.ourPath).toBe('f~HEAD_0_1');
+        expect(result.conflicts[0]?.ourPath).toBe('f~HEAD_1');
         expect(result.conflicts[0]?.theirPath).toBe('f');
       });
     });
@@ -1526,7 +2048,7 @@ describe('mergeTrees — distinct-types add/add rename conflict', () => {
         // reserved-set tracking via a direct collision chain instead).
         // Use: ours has 'g' (regular) and 'g~HEAD' is occupied in ours.
         // Also ours has 'h' (regular), theirs has 'g~HEAD_0' occupied in theirs.
-        // First: g → g~HEAD taken → g~HEAD_0 taken → g~HEAD_0_1 generated and reserved.
+        // First: g → g~HEAD taken → g~HEAD_0 taken → g~HEAD_1 (probing resets to stem).
         // Then: h → h~HEAD not taken → h~HEAD generated.
         // This confirms the reserved set grows with each generated path.
         const ours = tree([
@@ -1547,7 +2069,7 @@ describe('mergeTrees — distinct-types add/add rename conflict', () => {
         expect(result.conflicts).toHaveLength(2);
         const conflictG = result.conflicts.find((c) => c.path === 'g');
         const conflictH = result.conflicts.find((c) => c.path === 'h');
-        expect(conflictG?.ourPath).toBe('g~HEAD_0_1');
+        expect(conflictG?.ourPath).toBe('g~HEAD_1');
         expect(conflictH?.ourPath).toBe('h~HEAD');
       });
     });
