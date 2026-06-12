@@ -275,16 +275,29 @@ const rejectSubsection = (subsection: string): void => {
 };
 
 /**
- * Reject a section name that would break the `[section]` line: control chars
- * plus `]`, `"`, `\`. Every current caller passes a hardcoded literal; the
- * guard is defence-in-depth for a future dynamic caller of this public helper.
+ * Reject a section name that would break the `[section]` line or render a
+ * header canonical git refuses to re-read: whitespace, NUL, brackets, `"`,
+ * `\`. Defence-in-depth for direct callers of the exported writers — every
+ * key-derived path is already constrained by `parseConfigKey` /
+ * `parseNewSectionName`.
  */
 const rejectSection = (section: string): void => {
-  if (/[\n\r\0\]"\\]/.test(section)) {
+  if (/[\s\0[\]"\\]/.test(section)) {
     throw invalidOption(
       'config',
-      'section must not contain a newline, NUL, bracket, quote, or backslash',
+      'section must not contain whitespace, NUL, brackets, quotes, or backslashes',
     );
+  }
+};
+
+/**
+ * Reject the subsection-less empty section in entry writes: `[]` is not a
+ * parseable header (the empty name has no plain form — git refuses `.k`
+ * too), so writing it would corrupt the file for every later reader.
+ */
+const rejectEmptyPlainSection = (section: string, subsection: string | undefined): void => {
+  if (section === '' && subsection === undefined) {
+    throw invalidOption('config', 'section name must not be empty without a subsection');
   }
 };
 
@@ -306,6 +319,7 @@ export const setConfigEntryInText = (
   value: string,
 ): string => {
   rejectSection(section);
+  rejectEmptyPlainSection(section, subsection);
   rejectControlChars('key', key);
   rejectValueControlChars(value);
   if (subsection !== undefined) rejectSubsection(subsection);
@@ -637,6 +651,7 @@ export const appendConfigEntry = (
   value: string,
 ): string => {
   rejectSection(section);
+  rejectEmptyPlainSection(section, subsection);
   rejectControlChars('key', key);
   rejectValueControlChars(value);
   if (subsection !== undefined) rejectSubsection(subsection);

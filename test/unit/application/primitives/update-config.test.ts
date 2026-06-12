@@ -574,6 +574,29 @@ describe('primitives/update-config', () => {
   });
 
   describe('setConfigEntryInText', () => {
+    describe('Given an empty section name with no subsection', () => {
+      describe('When setConfigEntryInText is called', () => {
+        it('Then it throws INVALID_OPTION instead of writing an unparseable [] header', () => {
+          // Arrange
+          let caught: unknown;
+          try {
+            setConfigEntryInText('', '', undefined, 'k', 'v');
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data;
+          expect(data.code).toBe('INVALID_OPTION');
+          if (data.code === 'INVALID_OPTION') {
+            expect(data.option).toBe('config');
+            expect(data.reason).toBe('section name must not be empty without a subsection');
+          }
+        });
+      });
+    });
+
     describe('Given no matching section', () => {
       describe('When setConfigEntryInText', () => {
         it('Then the section is appended', () => {
@@ -2881,7 +2904,57 @@ describe('primitives/update-config', () => {
           if (data.code === 'INVALID_OPTION') {
             expect(data.option).toBe('config');
             expect(data.reason).toBe(
-              'section must not contain a newline, NUL, bracket, quote, or backslash',
+              'section must not contain whitespace, NUL, brackets, quotes, or backslashes',
+            );
+          }
+        });
+      });
+    });
+
+    describe('Given a new section name containing a space', () => {
+      describe('When renameConfigSectionInText is called with to.section "a b"', () => {
+        it('Then it throws INVALID_OPTION (unparseable-header guard)', () => {
+          // Arrange — a space would render "[a b]", which git refuses to re-read
+          let caught: unknown;
+          try {
+            renameConfigSectionInText('', 'remote.old', { section: 'a b' });
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data;
+          expect(data.code).toBe('INVALID_OPTION');
+          if (data.code === 'INVALID_OPTION') {
+            expect(data.option).toBe('config');
+            expect(data.reason).toBe(
+              'section must not contain whitespace, NUL, brackets, quotes, or backslashes',
+            );
+          }
+        });
+      });
+    });
+
+    describe('Given a new section name containing an opening bracket', () => {
+      describe('When renameConfigSectionInText is called with to.section "a[b"', () => {
+        it('Then it throws INVALID_OPTION (unparseable-header guard)', () => {
+          // Arrange
+          let caught: unknown;
+          try {
+            renameConfigSectionInText('', 'remote.old', { section: 'a[b' });
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data;
+          expect(data.code).toBe('INVALID_OPTION');
+          if (data.code === 'INVALID_OPTION') {
+            expect(data.option).toBe('config');
+            expect(data.reason).toBe(
+              'section must not contain whitespace, NUL, brackets, quotes, or backslashes',
             );
           }
         });
@@ -2980,6 +3053,29 @@ describe('primitives/update-config', () => {
   });
 
   describe('appendConfigEntry', () => {
+    describe('Given an empty section name with no subsection', () => {
+      describe('When appendConfigEntry is called', () => {
+        it('Then it throws INVALID_OPTION instead of writing an unparseable [] header', () => {
+          // Arrange
+          let caught: unknown;
+          try {
+            appendConfigEntry('', '', undefined, 'k', 'v');
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data;
+          expect(data.code).toBe('INVALID_OPTION');
+          if (data.code === 'INVALID_OPTION') {
+            expect(data.option).toBe('config');
+            expect(data.reason).toBe('section name must not be empty without a subsection');
+          }
+        });
+      });
+    });
+
     describe('Given an existing section with one prior entry for the key', () => {
       describe('When appendConfigEntry', () => {
         it('Then the new entry is inserted AFTER the existing one (order preserved)', () => {
