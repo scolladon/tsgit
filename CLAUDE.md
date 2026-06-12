@@ -85,6 +85,7 @@ diagnostics when the type-check is green.
 - **Prefer try/catch over toThrow for data assertions:** `toThrow(expect.objectContaining(...))` can miss nested property mutations. Use try/catch + direct `.data` assertions for reliable mutant killing.
 - **Watch for dead code in guards:** `string.split('\n')` always returns at least one element — `if (lines.length === 0)` is unreachable dead code. Mutation testing reveals these. Remove them rather than writing impossible tests.
 - **Accept provably equivalent mutants:** Loop bounds (`i < len` vs `i <= len` where out-of-bounds returns `undefined`) and search start offsets in homogeneous data are often equivalent. Document why, don't write contrived tests.
+- **Triage suspected false survivors before writing kill tests:** local Stryker under vitest 4 under-reports kills (false survivors + false NoCoverage). Hand-apply the mutant's replacement from the report to the source, run the named unit test file (`npx vitest run <file>`), then restore. A failing run proves the mutant is already killed — record it as a false survivor, no kill test needed. Only a genuinely passing run makes the survivor real and worth a new test.
 
 ### Property-Based Testing (when to reach for `fast-check`)
 
