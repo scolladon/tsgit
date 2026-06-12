@@ -7,6 +7,7 @@ import {
   tokenizeConfig,
 } from '../../../../src/application/primitives/config-read.js';
 import {
+  parseNewSectionName,
   rawSectionName,
   removeConfigEntry,
   removeConfigSectionInText,
@@ -508,6 +509,57 @@ const arbHeaderIdentity = (): fc.Arbitrary<{
       dottedName: subsection === undefined ? section : `${section}.${subsection}`,
     }));
 };
+
+describe('parseNewSectionName partition property', () => {
+  describe('Given an arbitrary ASCII NUL-free name', () => {
+    describe('When parseNewSectionName runs', () => {
+      it('Then it either returns a header-rendering-safe result or throws exactly INVALID_OPTION with a reason starting "invalid section name: "', () => {
+        // Arrange — generator biased with grammar-relevant specials
+        const arbName = fc
+          .string({
+            unit: fc.oneof(
+              fc.constantFrom('.', '-', '_', '!', 'a', 'z', 'A', 'Z', '0', '9'),
+              fc.integer({ min: 0x20, max: 0x7e }).map((cp) => String.fromCodePoint(cp)),
+            ),
+            maxLength: 64,
+          })
+          // NUL excluded from unit; also exclude LF so the subsection render won't hit rejectSubsection
+          .filter((s) => !s.includes('\n') && !s.includes('\0'));
+
+        fc.assert(
+          fc.property(arbName, (name) => {
+            const dot = name.indexOf('.');
+            const sectionPart = dot === -1 ? name : name.slice(0, dot);
+            // The section part must be non-empty OR a dot must follow (empty section allowed with dot)
+            const shouldSucceed =
+              name.length > 0 && (sectionPart === '' || /^[a-zA-Z0-9-]+$/.test(sectionPart));
+
+            if (shouldSucceed) {
+              // Act
+              const result = parseNewSectionName(name);
+              // Assert — rendering must not throw and the round-trip section matches
+              expect(() => renderSectionHeader(result.section, result.subsection)).not.toThrow();
+            } else {
+              // Act
+              let caught: unknown;
+              try {
+                parseNewSectionName(name);
+              } catch (err) {
+                caught = err;
+              }
+              // Assert — refusal must be INVALID_OPTION with the expected reason prefix
+              expect(caught).toBeDefined();
+              const data = (caught as { data?: { code?: string; reason?: string } }).data;
+              expect(data?.code).toBe('INVALID_OPTION');
+              expect(data?.reason).toMatch(/^invalid section name: /);
+            }
+          }),
+          { numRuns: 100 },
+        );
+      });
+    });
+  });
+});
 
 describe('rawSectionName round-trip property', () => {
   describe('Given an arbitrary header identity (section from safe pool ∪ empty, subsection from LF/NUL-free domain)', () => {

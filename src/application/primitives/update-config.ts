@@ -838,37 +838,35 @@ export const unsetAllConfigEntries = async ({
 };
 
 /**
- * Split a dotted section name into `(section, subsection)`. v1 only supports
- * rename/remove on sections that carry an explicit subsection — top-level
- * sections (e.g. `[user]`) cannot be renamed by canonical git either.
+ * Parse a new-section name using git's grammar: the section part (before the
+ * first dot, or the whole string if no dot) must consist only of `[a-zA-Z0-9-]`
+ * characters — an empty section part is allowed only when a dot follows (e.g.
+ * `'.'` → `{ section: '', subsection: '' }`, `'.x'` → `{ section: '', subsection: 'x' }`).
+ * Everything after the first dot is the subsection verbatim (no further grammar
+ * restriction; may be empty for a trailing-dot form, may contain further dots).
+ * The empty string is always refused. Case is preserved.
  */
-const parseSectionName = (
-  name: string,
-): { readonly section: string; readonly subsection: string } => {
+export const parseNewSectionName = (name: string): NewSectionName => {
+  if (name === '') {
+    throw invalidOption('config', `invalid section name: ${name}`);
+  }
   const dot = name.indexOf('.');
-  if (dot === -1 || dot === 0 || dot === name.length - 1) {
-    throw invalidOption(
-      'config',
-      `section name must be of the form "<section>.<subsection>": ${name}`,
-    );
+  const sectionPart = dot === -1 ? name : name.slice(0, dot);
+  if (sectionPart.length > 0 && !/^[a-zA-Z0-9-]+$/.test(sectionPart)) {
+    throw invalidOption('config', `invalid section name: ${name}`);
   }
-  const section = name.slice(0, dot);
-  const subsection = name.slice(dot + 1);
-  if (subsection.length === 0) {
-    throw invalidOption(
-      'config',
-      `section name must be of the form "<section>.<subsection>": ${name}`,
-    );
+  if (dot === -1) {
+    return { section: sectionPart };
   }
-  return { section, subsection };
+  return { section: sectionPart, subsection: name.slice(dot + 1) };
 };
 
 /**
- * Rename `[<section> "<oldSubsection>"]` to `[<section> "<newSubsection>"]`.
- * Both inputs are dotted (`'remote.origin'`). The two section families MUST
- * match — renaming across families (e.g. `remote.origin` → `branch.main`) is
- * rejected with `INVALID_OPTION`. Throws `CONFIG_SECTION_NOT_FOUND` if the
- * source section does not exist in the targeted scope.
+ * Rename headers matching `oldName` (raw byte-exact dotted name) to the new
+ * section shape derived from `newName` (parsed via `parseNewSectionName`).
+ * The old name is never validated — any string is a legal lookup key; a miss
+ * throws `CONFIG_SECTION_NOT_FOUND` carrying the raw input verbatim. Throws
+ * `INVALID_OPTION` when the new subsection contains a LF or NUL.
  */
 export const renameConfigSection = async ({
   ctx,
@@ -881,14 +879,8 @@ export const renameConfigSection = async ({
   readonly newName: string;
   readonly scope?: ConfigScope;
 }): Promise<void> => {
-  const oldParts = parseSectionName(oldName);
-  const newParts = parseSectionName(newName);
-  if (oldParts.section.toLowerCase() !== newParts.section.toLowerCase()) {
-    throw invalidOption(
-      'config',
-      `cannot rename across section families: ${oldParts.section} → ${newParts.section}`,
-    );
-  }
+  const to = parseNewSectionName(newName);
+  if (to.subsection !== undefined) rejectSubsection(to.subsection);
   const targetScope: ConfigScope = scope ?? 'local';
   const path = await resolveScopePath(ctx, targetScope);
   const text = await readConfigText(ctx, path);
@@ -898,19 +890,18 @@ export const renameConfigSection = async ({
   if (findSectionHeader(text.split('\n'), oldName) === -1) {
     throw configSectionNotFound(oldName, targetScope);
   }
-  const after = renameConfigSectionInText(text, oldName, {
-    section: newParts.section,
-    subsection: newParts.subsection,
-  });
+  const after = renameConfigSectionInText(text, oldName, to);
   await ctx.fs.writeUtf8(path, after);
   invalidateConfigCache(ctx);
   invalidateScopedConfigCache(ctx);
 };
 
 /**
- * Delete `[<section> "<subsection>"]` and its body. `sectionName` is dotted
- * (`'remote.origin'`). Throws `CONFIG_SECTION_NOT_FOUND` when the section is
- * absent in the targeted scope.
+ * Delete headers matching `sectionName` (raw byte-exact dotted name) and their
+ * bodies. The name is never validated — any string is a legal lookup key (e.g.
+ * `'remote'`, `'s.'`, `''`); a miss throws `CONFIG_SECTION_NOT_FOUND` carrying
+ * the raw input verbatim. For the trailing-dot and empty-name forms see
+ * `rawSectionName` and `removeConfigSectionInText` documentation.
  */
 export const removeConfigSection = async ({
   ctx,
@@ -921,8 +912,6 @@ export const removeConfigSection = async ({
   readonly sectionName: string;
   readonly scope?: ConfigScope;
 }): Promise<void> => {
-  // Validate the name grammar — throws INVALID_OPTION for plain or trailing-dot names.
-  parseSectionName(sectionName);
   const targetScope: ConfigScope = scope ?? 'local';
   const path = await resolveScopePath(ctx, targetScope);
   const text = await readConfigText(ctx, path);

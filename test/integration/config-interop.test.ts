@@ -29,6 +29,7 @@ import { readConfig } from '../../src/application/primitives/config-read.js';
 import { getConfigValue } from '../../src/application/primitives/config-scoped-read.js';
 import {
   type ConfigOperation,
+  removeConfigSection,
   renameConfigSection,
   setConfigEntry,
   unsetConfigEntry,
@@ -1802,6 +1803,420 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
 
         // Assert — same key=value pairs (order-independent via sort)
         expect([...tsgitLines].sort()).toEqual([...gitLines].sort());
+      }, 60_000);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // New-name grammar interop twins — --rename-section and --remove-section parity
+  // ---------------------------------------------------------------------------
+
+  describe('Given a config with [s] k=a and [s ""] k=b (both.conf)', () => {
+    const bothConf = '[core]\n\trepositoryformatversion = 0\n[s]\n\tk = a\n[s ""]\n\tk = b\n';
+
+    describe('When git and tsgit each --remove-section s (plain)', () => {
+      it('Then both leave only [s ""] k=b (byte-identical)', async () => {
+        // Arrange
+        const { peerConfigPath } = await seedTwinConfigs(pair, bothConf);
+
+        // Act — git
+        const gitResult = tryRunGit(['config', '--file', peerConfigPath, '--remove-section', 's']);
+        expect(gitResult.ok, `git --remove-section failed: ${gitResult.stderr}`).toBe(true);
+
+        // Act — tsgit
+        const ctx = createNodeContext({ workDir: pair.ours });
+        await removeConfigSection({ ctx, sectionName: 's' });
+
+        // Assert — byte-identical result from [s] onward
+        const { oursConfig, peerConfig } = await readTwinConfigs(pair);
+        const extractFromS = (c: string): string => {
+          const idx = c.indexOf('[s');
+          return idx === -1 ? c : c.slice(idx);
+        };
+        expect(extractFromS(oursConfig)).toBe(extractFromS(peerConfig));
+      }, 60_000);
+    });
+
+    describe('When git and tsgit each --remove-section s. (trailing-dot)', () => {
+      it('Then both leave only [s] k=a (byte-identical)', async () => {
+        // Arrange
+        const { peerConfigPath } = await seedTwinConfigs(pair, bothConf);
+
+        // Act — git
+        const gitResult = tryRunGit(['config', '--file', peerConfigPath, '--remove-section', 's.']);
+        expect(gitResult.ok, `git --remove-section s. failed: ${gitResult.stderr}`).toBe(true);
+
+        // Act — tsgit
+        const ctx = createNodeContext({ workDir: pair.ours });
+        await removeConfigSection({ ctx, sectionName: 's.' });
+
+        // Assert — byte-identical
+        const { oursConfig, peerConfig } = await readTwinConfigs(pair);
+        expect(oursConfig).toBe(peerConfig);
+      }, 60_000);
+    });
+
+    describe('When git and tsgit each --rename-section s t', () => {
+      it('Then both rename only [s] to [t], leaving [s ""] intact (byte-identical)', async () => {
+        // Arrange
+        const { peerConfigPath } = await seedTwinConfigs(pair, bothConf);
+
+        // Act — git
+        const gitResult = tryRunGit([
+          'config',
+          '--file',
+          peerConfigPath,
+          '--rename-section',
+          's',
+          't',
+        ]);
+        expect(gitResult.ok, `git --rename-section s t failed: ${gitResult.stderr}`).toBe(true);
+
+        // Act — tsgit
+        const ctx = createNodeContext({ workDir: pair.ours });
+        await renameConfigSection({ ctx, oldName: 's', newName: 't' });
+
+        // Assert — byte-identical from [s ""] onward
+        const { oursConfig, peerConfig } = await readTwinConfigs(pair);
+        expect(oursConfig).toBe(peerConfig);
+      }, 60_000);
+    });
+
+    describe('When git and tsgit each --rename-section s. t.', () => {
+      it('Then both rename only [s ""] to [t ""], leaving [s] intact (byte-identical)', async () => {
+        // Arrange
+        const { peerConfigPath } = await seedTwinConfigs(pair, bothConf);
+
+        // Act — git
+        const gitResult = tryRunGit([
+          'config',
+          '--file',
+          peerConfigPath,
+          '--rename-section',
+          's.',
+          't.',
+        ]);
+        expect(gitResult.ok, `git --rename-section s. t. failed: ${gitResult.stderr}`).toBe(true);
+
+        // Act — tsgit
+        const ctx = createNodeContext({ workDir: pair.ours });
+        await renameConfigSection({ ctx, oldName: 's.', newName: 't.' });
+
+        // Assert — byte-identical
+        const { oursConfig, peerConfig } = await readTwinConfigs(pair);
+        expect(oursConfig).toBe(peerConfig);
+      }, 60_000);
+    });
+
+    describe('When git and tsgit each --rename-section s. t (trailing-dot to plain)', () => {
+      it('Then both rename [s ""] to [t] (byte-identical)', async () => {
+        // Arrange
+        const { peerConfigPath } = await seedTwinConfigs(pair, bothConf);
+
+        // Act — git
+        const gitResult = tryRunGit([
+          'config',
+          '--file',
+          peerConfigPath,
+          '--rename-section',
+          's.',
+          't',
+        ]);
+        expect(gitResult.ok, `git --rename-section s. t failed: ${gitResult.stderr}`).toBe(true);
+
+        // Act — tsgit
+        const ctx = createNodeContext({ workDir: pair.ours });
+        await renameConfigSection({ ctx, oldName: 's.', newName: 't' });
+
+        // Assert — byte-identical
+        const { oursConfig, peerConfig } = await readTwinConfigs(pair);
+        expect(oursConfig).toBe(peerConfig);
+      }, 60_000);
+    });
+  });
+
+  describe('Given a config with [s] k=a, [s "x"] k=b, [s ""] k=c (mix.conf)', () => {
+    const mixConf =
+      '[core]\n\trepositoryformatversion = 0\n[s]\n\tk = a\n[s "x"]\n\tk = b\n[s ""]\n\tk = c\n';
+
+    describe('When git and tsgit each --rename-section s t', () => {
+      it('Then only [s] becomes [t]; [s "x"] and [s ""] are unchanged (byte-identical)', async () => {
+        // Arrange
+        const { peerConfigPath } = await seedTwinConfigs(pair, mixConf);
+
+        // Act — git
+        const gitResult = tryRunGit([
+          'config',
+          '--file',
+          peerConfigPath,
+          '--rename-section',
+          's',
+          't',
+        ]);
+        expect(gitResult.ok, `git --rename-section s t failed: ${gitResult.stderr}`).toBe(true);
+
+        // Act — tsgit
+        const ctx = createNodeContext({ workDir: pair.ours });
+        await renameConfigSection({ ctx, oldName: 's', newName: 't' });
+
+        // Assert — byte-identical
+        const { oursConfig, peerConfig } = await readTwinConfigs(pair);
+        expect(oursConfig).toBe(peerConfig);
+      }, 60_000);
+    });
+
+    describe('When git and tsgit each --rename-section s.x t.y', () => {
+      it('Then only [s "x"] becomes [t "y"] (byte-identical)', async () => {
+        // Arrange
+        const { peerConfigPath } = await seedTwinConfigs(pair, mixConf);
+
+        // Act — git
+        const gitResult = tryRunGit([
+          'config',
+          '--file',
+          peerConfigPath,
+          '--rename-section',
+          's.x',
+          't.y',
+        ]);
+        expect(gitResult.ok, `git --rename-section s.x t.y failed: ${gitResult.stderr}`).toBe(true);
+
+        // Act — tsgit
+        const ctx = createNodeContext({ workDir: pair.ours });
+        await renameConfigSection({ ctx, oldName: 's.x', newName: 't.y' });
+
+        // Assert — byte-identical
+        const { oursConfig, peerConfig } = await readTwinConfigs(pair);
+        expect(oursConfig).toBe(peerConfig);
+      }, 60_000);
+    });
+  });
+
+  describe('Given a config with [ ""] k=e, [s] k=a, [s ""] k=b (name-mix.conf)', () => {
+    const nameMixConf =
+      '[core]\n\trepositoryformatversion = 0\n[ ""]\n\tk = e\n[s]\n\tk = a\n[s ""]\n\tk = b\n';
+
+    describe('When git and tsgit each --remove-section . (empty-name)', () => {
+      it('Then only [ ""] is removed; [s] and [s ""] survive (byte-identical)', async () => {
+        // Arrange
+        const { peerConfigPath } = await seedTwinConfigs(pair, nameMixConf);
+
+        // Act — git
+        const gitResult = tryRunGit(['config', '--file', peerConfigPath, '--remove-section', '.']);
+        expect(gitResult.ok, `git --remove-section . failed: ${gitResult.stderr}`).toBe(true);
+
+        // Act — tsgit
+        const ctx = createNodeContext({ workDir: pair.ours });
+        await removeConfigSection({ ctx, sectionName: '.' });
+
+        // Assert — byte-identical
+        const { oursConfig, peerConfig } = await readTwinConfigs(pair);
+        expect(oursConfig).toBe(peerConfig);
+      }, 60_000);
+    });
+
+    describe('When git and tsgit each --rename-section . t', () => {
+      it('Then [ ""] becomes [t] (byte-identical)', async () => {
+        // Arrange
+        const { peerConfigPath } = await seedTwinConfigs(pair, nameMixConf);
+
+        // Act — git
+        const gitResult = tryRunGit([
+          'config',
+          '--file',
+          peerConfigPath,
+          '--rename-section',
+          '.',
+          't',
+        ]);
+        expect(gitResult.ok, `git --rename-section . t failed: ${gitResult.stderr}`).toBe(true);
+
+        // Act — tsgit
+        const ctx = createNodeContext({ workDir: pair.ours });
+        await renameConfigSection({ ctx, oldName: '.', newName: 't' });
+
+        // Assert — byte-identical
+        const { oursConfig, peerConfig } = await readTwinConfigs(pair);
+        expect(oursConfig).toBe(peerConfig);
+      }, 60_000);
+    });
+  });
+
+  describe('Given refusal conditions for new-name grammar', () => {
+    const seedConf = '[s]\n\tk = a\n';
+
+    describe('When git and tsgit both refuse invalid new name "t_x"', () => {
+      it('Then git exits non-zero with "invalid section name" and tsgit throws INVALID_OPTION with matching reason', async () => {
+        // Arrange
+        const { peerConfigPath } = await seedTwinConfigs(pair, seedConf);
+
+        // Act — git
+        const gitResult = tryRunGit([
+          'config',
+          '--file',
+          peerConfigPath,
+          '--rename-section',
+          's',
+          't_x',
+        ]);
+        expect(gitResult.ok).toBe(false);
+        expect(gitResult.stderr).toMatch(/invalid section name/i);
+
+        // Act — tsgit
+        const ctx = createNodeContext({ workDir: pair.ours });
+        let caught: TsgitError | undefined;
+        try {
+          await renameConfigSection({ ctx, oldName: 's', newName: 't_x' });
+        } catch (err) {
+          caught = err as TsgitError;
+        }
+
+        // Assert — tsgit throws INVALID_OPTION with reason matching the grammar refusal
+        expect(caught?.data).toMatchObject({
+          code: 'INVALID_OPTION',
+          option: 'config',
+          reason: 'invalid section name: t_x',
+        });
+      }, 60_000);
+    });
+
+    describe('When git and tsgit both refuse empty new name ""', () => {
+      it('Then git exits non-zero with "invalid section name" and tsgit throws INVALID_OPTION', async () => {
+        // Arrange
+        const { peerConfigPath } = await seedTwinConfigs(pair, seedConf);
+
+        // Act — git
+        const gitResult = tryRunGit([
+          'config',
+          '--file',
+          peerConfigPath,
+          '--rename-section',
+          's',
+          '',
+        ]);
+        expect(gitResult.ok).toBe(false);
+        expect(gitResult.stderr).toMatch(/invalid section name/i);
+
+        // Act — tsgit
+        const ctx = createNodeContext({ workDir: pair.ours });
+        let caught: TsgitError | undefined;
+        try {
+          await renameConfigSection({ ctx, oldName: 's', newName: '' });
+        } catch (err) {
+          caught = err as TsgitError;
+        }
+
+        // Assert
+        expect(caught?.data).toMatchObject({
+          code: 'INVALID_OPTION',
+          option: 'config',
+          reason: 'invalid section name: ',
+        });
+      }, 60_000);
+    });
+
+    describe('When git and tsgit both refuse a missing old name (lookup miss)', () => {
+      it('Then git exits non-zero with "no such section" and tsgit throws CONFIG_SECTION_NOT_FOUND with name "t.y"', async () => {
+        // Arrange
+        const { peerConfigPath } = await seedTwinConfigs(pair, seedConf);
+
+        // Act — git
+        const gitResult = tryRunGit([
+          'config',
+          '--file',
+          peerConfigPath,
+          '--rename-section',
+          't.y',
+          'u',
+        ]);
+        expect(gitResult.ok).toBe(false);
+        expect(gitResult.stderr).toMatch(/no such section/i);
+
+        // Act — tsgit
+        const ctx = createNodeContext({ workDir: pair.ours });
+        let caught: TsgitError | undefined;
+        try {
+          await renameConfigSection({ ctx, oldName: 't.y', newName: 'u' });
+        } catch (err) {
+          caught = err as TsgitError;
+        }
+
+        // Assert
+        expect(caught?.data).toMatchObject({
+          code: 'CONFIG_SECTION_NOT_FOUND',
+          name: 't.y',
+          scope: 'local',
+        });
+      }, 60_000);
+    });
+
+    describe('When git and tsgit both refuse an old name with bad chars (lookup miss, not grammar error)', () => {
+      it('Then git exits non-zero with "no such section" and tsgit throws CONFIG_SECTION_NOT_FOUND with name "bad!name"', async () => {
+        // Arrange
+        const { peerConfigPath } = await seedTwinConfigs(pair, seedConf);
+
+        // Act — git
+        const gitResult = tryRunGit([
+          'config',
+          '--file',
+          peerConfigPath,
+          '--rename-section',
+          'bad!name',
+          't',
+        ]);
+        expect(gitResult.ok).toBe(false);
+        expect(gitResult.stderr).toMatch(/no such section/i);
+
+        // Act — tsgit
+        const ctx = createNodeContext({ workDir: pair.ours });
+        let caught: TsgitError | undefined;
+        try {
+          await renameConfigSection({ ctx, oldName: 'bad!name', newName: 't' });
+        } catch (err) {
+          caught = err as TsgitError;
+        }
+
+        // Assert — old name never validated; tsgit carries raw input in error
+        expect(caught?.data).toMatchObject({
+          code: 'CONFIG_SECTION_NOT_FOUND',
+          name: 'bad!name',
+          scope: 'local',
+        });
+      }, 60_000);
+    });
+
+    describe('When git and tsgit encounter a case-mismatched old name ("s" vs [S])', () => {
+      it('Then git exits non-zero with "no such section" and tsgit throws CONFIG_SECTION_NOT_FOUND', async () => {
+        // Arrange — file has [S] but we look for s (raw/case-sensitive matching)
+        const { peerConfigPath } = await seedTwinConfigs(pair, '[S]\n\tk = a\n');
+
+        // Act — git
+        const gitResult = tryRunGit([
+          'config',
+          '--file',
+          peerConfigPath,
+          '--rename-section',
+          's',
+          't',
+        ]);
+        expect(gitResult.ok).toBe(false);
+        expect(gitResult.stderr).toMatch(/no such section/i);
+
+        // Act — tsgit
+        const ctx = createNodeContext({ workDir: pair.ours });
+        let caught: TsgitError | undefined;
+        try {
+          await renameConfigSection({ ctx, oldName: 's', newName: 't' });
+        } catch (err) {
+          caught = err as TsgitError;
+        }
+
+        // Assert
+        expect(caught?.data).toMatchObject({
+          code: 'CONFIG_SECTION_NOT_FOUND',
+          name: 's',
+          scope: 'local',
+        });
       }, 60_000);
     });
   });

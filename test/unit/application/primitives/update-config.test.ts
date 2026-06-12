@@ -3304,6 +3304,7 @@ describe('primitives/update-config', () => {
 });
 
 import {
+  parseNewSectionName,
   removeConfigSection,
   renameConfigSection,
   setConfigEntry,
@@ -3830,43 +3831,62 @@ describe('renameConfigSection (I/O)', () => {
     });
   });
 
-  describe('Given a cross-family rename (remote.origin → branch.main), When renameConfigSection runs', () => {
-    it('Then it throws INVALID_OPTION', async () => {
+  describe('Given [remote "origin"] seeded, When renameConfigSection renames remote.origin to branch.main', () => {
+    it('Then the header is rewritten to [branch "main"] (cross-family allowed)', async () => {
       // Arrange
       const ctx = createMemoryContext();
-      let caught: TsgitError | undefined;
+      await ctx.fs.writeUtf8(
+        `${ctx.layout.gitDir}/config`,
+        '[remote "origin"]\n\turl = git@example.com:r.git\n',
+      );
 
       // Act
-      try {
-        await renameConfigSection({
-          ctx,
-          oldName: 'remote.origin',
-          newName: 'branch.main',
-        });
-      } catch (err) {
-        caught = err as TsgitError;
-      }
+      await renameConfigSection({
+        ctx,
+        oldName: 'remote.origin',
+        newName: 'branch.main',
+      });
 
       // Assert
-      expect(caught?.data.code).toBe('INVALID_OPTION');
+      const text = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
+      expect(text).toBe('[branch "main"]\n\turl = git@example.com:r.git\n');
     });
   });
 
-  describe('Given oldName with no subsection (just "user"), When renameConfigSection runs', () => {
-    it('Then it throws INVALID_OPTION', async () => {
+  describe('Given no [user] block seeded, When renameConfigSection renames "user" to "team"', () => {
+    it('Then it throws CONFIG_SECTION_NOT_FOUND with name "user"', async () => {
       // Arrange
       const ctx = createMemoryContext();
       let caught: TsgitError | undefined;
 
       // Act
       try {
-        await renameConfigSection({ ctx, oldName: 'user', newName: 'user.x' });
+        await renameConfigSection({ ctx, oldName: 'user', newName: 'team' });
       } catch (err) {
         caught = err as TsgitError;
       }
 
       // Assert
-      expect(caught?.data.code).toBe('INVALID_OPTION');
+      expect(caught?.data).toEqual({
+        code: 'CONFIG_SECTION_NOT_FOUND',
+        name: 'user',
+        scope: 'local',
+      });
+    });
+  });
+
+  describe('Given [user] block seeded, When renameConfigSection renames "user" to "team"', () => {
+    it('Then the header becomes [team] and the body is preserved', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[user]\n\tname = Ada\n');
+
+      // Act
+      await renameConfigSection({ ctx, oldName: 'user', newName: 'team' });
+
+      // Assert
+      const text = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
+      expect(text).toBe('[team]\n\tname = Ada\n');
     });
   });
 });
@@ -3913,10 +3933,11 @@ describe('removeConfigSection (I/O)', () => {
     });
   });
 
-  describe('Given a malformed sectionName (no dot), When removeConfigSection runs', () => {
-    it('Then it throws INVALID_OPTION', async () => {
-      // Arrange
+  describe('Given only [remote "origin"] present, When removeConfigSection is called with "remote" (no dot)', () => {
+    it('Then it throws CONFIG_SECTION_NOT_FOUND with name "remote" (old name never validated)', async () => {
+      // Arrange — only [remote "origin"] present; raw name "remote" matches nothing
       const ctx = createMemoryContext();
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[remote "origin"]\n\turl = x\n');
       let caught: TsgitError | undefined;
 
       // Act
@@ -3927,7 +3948,693 @@ describe('removeConfigSection (I/O)', () => {
       }
 
       // Assert
-      expect(caught?.data.code).toBe('INVALID_OPTION');
+      expect(caught?.data).toEqual({
+        code: 'CONFIG_SECTION_NOT_FOUND',
+        name: 'remote',
+        scope: 'local',
+      });
+    });
+  });
+});
+
+describe('parseNewSectionName', () => {
+  const sut = parseNewSectionName;
+
+  describe('Given accepted new-name inputs', () => {
+    describe('When parseNewSectionName parses "t.a.b"', () => {
+      it('Then returns { section: "t", subsection: "a.b" } (first-dot split)', () => {
+        // Arrange + Act
+        const result = sut('t.a.b');
+        // Assert
+        expect(result).toEqual({ section: 't', subsection: 'a.b' });
+      });
+    });
+
+    describe('When parseNewSectionName parses "1num"', () => {
+      it('Then returns { section: "1num" } (digit-leading accepted)', () => {
+        // Arrange + Act
+        const result = sut('1num');
+        // Assert
+        expect(result).toEqual({ section: '1num' });
+      });
+    });
+
+    describe('When parseNewSectionName parses "t-x"', () => {
+      it('Then returns { section: "t-x" }', () => {
+        // Arrange + Act
+        const result = sut('t-x');
+        // Assert
+        expect(result).toEqual({ section: 't-x' });
+      });
+    });
+
+    describe('When parseNewSectionName parses "t.bad!sub"', () => {
+      it('Then returns { section: "t", subsection: "bad!sub" } (subsection free after first dot)', () => {
+        // Arrange + Act
+        const result = sut('t.bad!sub');
+        // Assert
+        expect(result).toEqual({ section: 't', subsection: 'bad!sub' });
+      });
+    });
+
+    describe("When parseNewSectionName parses 't.with\"quote'", () => {
+      it('Then returns { section: "t", subsection: \'with"quote\' } (quote in subsection accepted)', () => {
+        // Arrange + Act
+        const result = sut('t.with"quote');
+        // Assert
+        expect(result).toEqual({ section: 't', subsection: 'with"quote' });
+      });
+    });
+
+    describe('When parseNewSectionName parses "T.Y"', () => {
+      it('Then returns { section: "T", subsection: "Y" } (case preserved)', () => {
+        // Arrange + Act
+        const result = sut('T.Y');
+        // Assert
+        expect(result).toEqual({ section: 'T', subsection: 'Y' });
+      });
+    });
+
+    describe('When parseNewSectionName parses "t."', () => {
+      it('Then returns { section: "t", subsection: "" } (trailing dot = empty subsection)', () => {
+        // Arrange + Act
+        const result = sut('t.');
+        // Assert
+        expect(result).toEqual({ section: 't', subsection: '' });
+      });
+    });
+
+    describe('When parseNewSectionName parses "."', () => {
+      it('Then returns { section: "", subsection: "" }', () => {
+        // Arrange + Act
+        const result = sut('.');
+        // Assert
+        expect(result).toEqual({ section: '', subsection: '' });
+      });
+    });
+
+    describe('When parseNewSectionName parses ".x"', () => {
+      it('Then returns { section: "", subsection: "x" }', () => {
+        // Arrange + Act
+        const result = sut('.x');
+        // Assert
+        expect(result).toEqual({ section: '', subsection: 'x' });
+      });
+    });
+
+    describe('When parseNewSectionName parses "a" (single alnum char)', () => {
+      it('Then returns { section: "a" }', () => {
+        // Arrange + Act
+        const result = sut('a');
+        // Assert
+        expect(result).toEqual({ section: 'a' });
+      });
+    });
+
+    describe('When parseNewSectionName parses "tz.y" (letter-only section)', () => {
+      it('Then returns { section: "tz", subsection: "y" }', () => {
+        // Arrange + Act
+        const result = sut('tz.y');
+        // Assert
+        expect(result).toEqual({ section: 'tz', subsection: 'y' });
+      });
+    });
+  });
+
+  describe('Given refused new-name inputs', () => {
+    describe('When parseNewSectionName parses "" (empty)', () => {
+      it('Then throws INVALID_OPTION with reason "invalid section name: "', () => {
+        // Arrange
+        let caught: TsgitError | undefined;
+
+        // Act
+        try {
+          sut('');
+        } catch (err) {
+          caught = err as TsgitError;
+        }
+
+        // Assert
+        expect(caught?.data).toEqual({
+          code: 'INVALID_OPTION',
+          option: 'config',
+          reason: 'invalid section name: ',
+        });
+      });
+    });
+
+    describe('When parseNewSectionName parses "t_x" (underscore in section)', () => {
+      it('Then throws INVALID_OPTION with reason "invalid section name: t_x"', () => {
+        // Arrange
+        let caught: TsgitError | undefined;
+
+        // Act
+        try {
+          sut('t_x');
+        } catch (err) {
+          caught = err as TsgitError;
+        }
+
+        // Assert
+        expect(caught?.data).toEqual({
+          code: 'INVALID_OPTION',
+          option: 'config',
+          reason: 'invalid section name: t_x',
+        });
+      });
+    });
+
+    describe('When parseNewSectionName parses "bad!name" (bang in section)', () => {
+      it('Then throws INVALID_OPTION with reason "invalid section name: bad!name"', () => {
+        // Arrange
+        let caught: TsgitError | undefined;
+
+        // Act
+        try {
+          sut('bad!name');
+        } catch (err) {
+          caught = err as TsgitError;
+        }
+
+        // Assert
+        expect(caught?.data).toEqual({
+          code: 'INVALID_OPTION',
+          option: 'config',
+          reason: 'invalid section name: bad!name',
+        });
+      });
+    });
+
+    describe('When parseNewSectionName parses "t!x.y" (bad char before first dot)', () => {
+      it('Then throws INVALID_OPTION with reason "invalid section name: t!x.y"', () => {
+        // Arrange
+        let caught: TsgitError | undefined;
+
+        // Act
+        try {
+          sut('t!x.y');
+        } catch (err) {
+          caught = err as TsgitError;
+        }
+
+        // Assert
+        expect(caught?.data).toEqual({
+          code: 'INVALID_OPTION',
+          option: 'config',
+          reason: 'invalid section name: t!x.y',
+        });
+      });
+    });
+  });
+});
+
+describe('renameConfigSection — extended porcelain I/O', () => {
+  const bothConf = '[s]\n\tk = a\n[s ""]\n\tk = b\n';
+  const mixConf = '[s]\n\tk = a\n[s "x"]\n\tk = b\n[s ""]\n\tk = c\n';
+  const nameMixConf = '[ ""]\n\tk = e\n[s]\n\tk = a\n[s ""]\n\tk = b\n';
+
+  describe('Given both.conf seeded ([s] k=a · [s ""] k=b)', () => {
+    describe('When renameConfigSection renames "s" (plain) to "t"', () => {
+      it('Then only [s] becomes [t], [s ""] is unchanged', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, bothConf);
+
+        // Act
+        await renameConfigSection({ ctx, oldName: 's', newName: 't' });
+
+        // Assert
+        const text = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
+        expect(text).toBe('[t]\n\tk = a\n[s ""]\n\tk = b\n');
+      });
+    });
+
+    describe('When renameConfigSection renames "s." (trailing-dot) to "t."', () => {
+      it('Then only [s ""] becomes [t ""], [s] is unchanged', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, bothConf);
+
+        // Act
+        await renameConfigSection({ ctx, oldName: 's.', newName: 't.' });
+
+        // Assert
+        const text = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
+        expect(text).toBe('[s]\n\tk = a\n[t ""]\n\tk = b\n');
+      });
+    });
+
+    describe('When renameConfigSection renames "s." to "t" (trailing-dot to plain)', () => {
+      it('Then [s ""] becomes [t], [s] unchanged', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, bothConf);
+
+        // Act
+        await renameConfigSection({ ctx, oldName: 's.', newName: 't' });
+
+        // Assert
+        const text = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
+        expect(text).toBe('[s]\n\tk = a\n[t]\n\tk = b\n');
+      });
+    });
+
+    describe('When renameConfigSection renames "s" to "s." (plain to trailing-dot)', () => {
+      it('Then [s] becomes a second [s ""] (duplicate headers allowed)', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, bothConf);
+
+        // Act
+        await renameConfigSection({ ctx, oldName: 's', newName: 's.' });
+
+        // Assert
+        const text = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
+        expect(text).toBe('[s ""]\n\tk = a\n[s ""]\n\tk = b\n');
+      });
+    });
+  });
+
+  describe('Given mix.conf seeded ([s] k=a · [s "x"] k=b · [s ""] k=c)', () => {
+    describe('When renameConfigSection renames "s" to "t"', () => {
+      it('Then only [s] becomes [t], [s "x"] and [s ""] are unchanged', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, mixConf);
+
+        // Act
+        await renameConfigSection({ ctx, oldName: 's', newName: 't' });
+
+        // Assert
+        const text = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
+        expect(text).toBe('[t]\n\tk = a\n[s "x"]\n\tk = b\n[s ""]\n\tk = c\n');
+      });
+    });
+
+    describe('When renameConfigSection renames "s.x" to "t.y"', () => {
+      it('Then only [s "x"] becomes [t "y"]', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, mixConf);
+
+        // Act
+        await renameConfigSection({ ctx, oldName: 's.x', newName: 't.y' });
+
+        // Assert
+        const text = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
+        expect(text).toBe('[s]\n\tk = a\n[t "y"]\n\tk = b\n[s ""]\n\tk = c\n');
+      });
+    });
+
+    describe('When renameConfigSection renames "s.x" to "t" (subsection to plain)', () => {
+      it('Then [s "x"] becomes [t]', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, mixConf);
+
+        // Act
+        await renameConfigSection({ ctx, oldName: 's.x', newName: 't' });
+
+        // Assert
+        const text = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
+        expect(text).toBe('[s]\n\tk = a\n[t]\n\tk = b\n[s ""]\n\tk = c\n');
+      });
+    });
+
+    describe('When renameConfigSection renames "s" to "t.y" (plain to subsectioned)', () => {
+      it('Then [s] becomes [t "y"]', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, mixConf);
+
+        // Act
+        await renameConfigSection({ ctx, oldName: 's', newName: 't.y' });
+
+        // Assert
+        const text = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
+        expect(text).toBe('[t "y"]\n\tk = a\n[s "x"]\n\tk = b\n[s ""]\n\tk = c\n');
+      });
+    });
+  });
+
+  describe('Given name-mix.conf seeded ([ ""] k=e · [s] k=a · [s ""] k=b)', () => {
+    describe('When renameConfigSection renames "." to "t"', () => {
+      it('Then [ ""] becomes [t]', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, nameMixConf);
+
+        // Act
+        await renameConfigSection({ ctx, oldName: '.', newName: 't' });
+
+        // Assert
+        const text = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
+        expect(text).toBe('[t]\n\tk = e\n[s]\n\tk = a\n[s ""]\n\tk = b\n');
+      });
+    });
+
+    describe('When renameConfigSection renames "." to "t."', () => {
+      it('Then [ ""] becomes [t ""]', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, nameMixConf);
+
+        // Act
+        await renameConfigSection({ ctx, oldName: '.', newName: 't.' });
+
+        // Assert
+        const text = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
+        expect(text).toBe('[t ""]\n\tk = e\n[s]\n\tk = a\n[s ""]\n\tk = b\n');
+      });
+    });
+
+    describe('When renameConfigSection renames "." to ".x"', () => {
+      it('Then [ ""] becomes [ "x"]', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, nameMixConf);
+
+        // Act
+        await renameConfigSection({ ctx, oldName: '.', newName: '.x' });
+
+        // Assert
+        const text = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
+        expect(text).toBe('[ "x"]\n\tk = e\n[s]\n\tk = a\n[s ""]\n\tk = b\n');
+      });
+    });
+
+    describe('When renameConfigSection renames "." to "s.x"', () => {
+      it('Then [ ""] becomes [s "x"]', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, nameMixConf);
+
+        // Act
+        await renameConfigSection({ ctx, oldName: '.', newName: 's.x' });
+
+        // Assert
+        const text = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
+        expect(text).toBe('[s "x"]\n\tk = e\n[s]\n\tk = a\n[s ""]\n\tk = b\n');
+      });
+    });
+
+    describe('When renameConfigSection renames "s" to "." on name-mix.conf', () => {
+      it('Then [s] becomes a second [ ""] block', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, nameMixConf);
+
+        // Act
+        await renameConfigSection({ ctx, oldName: 's', newName: '.' });
+
+        // Assert
+        const text = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
+        expect(text).toBe('[ ""]\n\tk = e\n[ ""]\n\tk = a\n[s ""]\n\tk = b\n');
+      });
+    });
+  });
+
+  describe('Given CONFIG_SECTION_NOT_FOUND scenarios', () => {
+    describe('When renameConfigSection is called with case-mismatched old name ("s" vs [S])', () => {
+      it('Then throws CONFIG_SECTION_NOT_FOUND with name "s"', async () => {
+        // Arrange — file has [S] but we search for s (case-sensitive raw match)
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[S]\n\tk = a\n');
+        let caught: TsgitError | undefined;
+
+        // Act
+        try {
+          await renameConfigSection({ ctx, oldName: 's', newName: 't' });
+        } catch (err) {
+          caught = err as TsgitError;
+        }
+
+        // Assert
+        expect(caught?.data).toEqual({
+          code: 'CONFIG_SECTION_NOT_FOUND',
+          name: 's',
+          scope: 'local',
+        });
+      });
+    });
+
+    describe('When renameConfigSection is called with old name "bad!name"', () => {
+      it('Then throws CONFIG_SECTION_NOT_FOUND with name "bad!name" (old name never validated)', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        let caught: TsgitError | undefined;
+
+        // Act
+        try {
+          await renameConfigSection({ ctx, oldName: 'bad!name', newName: 't' });
+        } catch (err) {
+          caught = err as TsgitError;
+        }
+
+        // Assert
+        expect(caught?.data).toEqual({
+          code: 'CONFIG_SECTION_NOT_FOUND',
+          name: 'bad!name',
+          scope: 'local',
+        });
+      });
+    });
+
+    describe('When renameConfigSection is called with old name "" (empty)', () => {
+      it('Then throws CONFIG_SECTION_NOT_FOUND with name "" (old name never validated)', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        let caught: TsgitError | undefined;
+
+        // Act
+        try {
+          await renameConfigSection({ ctx, oldName: '', newName: 't' });
+        } catch (err) {
+          caught = err as TsgitError;
+        }
+
+        // Assert
+        expect(caught?.data).toEqual({
+          code: 'CONFIG_SECTION_NOT_FOUND',
+          name: '',
+          scope: 'local',
+        });
+      });
+    });
+  });
+
+  describe('Given new name contains a LF in its subsection part', () => {
+    describe('When renameConfigSection is called with newName "t.a\\nb"', () => {
+      it('Then throws INVALID_OPTION before any I/O (tsgit refuses LF in subsections)', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[s]\n\tk = a\n');
+        const writeSpy = vi.spyOn(ctx.fs, 'writeUtf8');
+        let caught: TsgitError | undefined;
+
+        // Act
+        try {
+          await renameConfigSection({ ctx, oldName: 's', newName: 't.a\nb' });
+        } catch (err) {
+          caught = err as TsgitError;
+        }
+
+        // Assert
+        expect(caught?.data).toEqual({
+          code: 'INVALID_OPTION',
+          option: 'config',
+          reason: 'subsection must not contain a newline or NUL',
+        });
+        expect(writeSpy).not.toHaveBeenCalled();
+      });
+    });
+  });
+});
+
+describe('removeConfigSection — extended porcelain I/O', () => {
+  const bothConf = '[s]\n\tk = a\n[s ""]\n\tk = b\n';
+  const mixConf = '[s]\n\tk = a\n[s "x"]\n\tk = b\n[s ""]\n\tk = c\n';
+  const nameMixConf = '[ ""]\n\tk = e\n[s]\n\tk = a\n[s ""]\n\tk = b\n';
+
+  describe('Given both.conf ([s] k=a · [s ""] k=b)', () => {
+    describe('When removeConfigSection removes "s" (plain)', () => {
+      it('Then only [s] is removed; [s ""] k=b survives', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, bothConf);
+
+        // Act
+        await removeConfigSection({ ctx, sectionName: 's' });
+
+        // Assert
+        const text = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
+        expect(text).toBe('[s ""]\n\tk = b\n');
+      });
+    });
+
+    describe('When removeConfigSection removes "s." (trailing-dot)', () => {
+      it('Then only [s ""] is removed; [s] k=a survives', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, bothConf);
+
+        // Act
+        await removeConfigSection({ ctx, sectionName: 's.' });
+
+        // Assert
+        const text = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
+        expect(text).toBe('[s]\n\tk = a\n');
+      });
+    });
+
+    describe('When removeConfigSection removes \'s.""\'', () => {
+      it('Then throws CONFIG_SECTION_NOT_FOUND (two-quote-char name matches nothing)', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, bothConf);
+        let caught: TsgitError | undefined;
+
+        // Act
+        try {
+          await removeConfigSection({ ctx, sectionName: 's.""' });
+        } catch (err) {
+          caught = err as TsgitError;
+        }
+
+        // Assert
+        expect(caught?.data).toEqual({
+          code: 'CONFIG_SECTION_NOT_FOUND',
+          name: 's.""',
+          scope: 'local',
+        });
+      });
+    });
+  });
+
+  describe('Given mix.conf ([s] k=a · [s "x"] k=b · [s ""] k=c)', () => {
+    describe('When removeConfigSection removes "s" (plain)', () => {
+      it('Then only [s] is removed; [s "x"] and [s ""] survive', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, mixConf);
+
+        // Act
+        await removeConfigSection({ ctx, sectionName: 's' });
+
+        // Assert
+        const text = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
+        expect(text).toBe('[s "x"]\n\tk = b\n[s ""]\n\tk = c\n');
+      });
+    });
+  });
+
+  describe('Given name-mix.conf ([ ""] k=e · [s] k=a · [s ""] k=b)', () => {
+    describe('When removeConfigSection removes "." (empty-name section)', () => {
+      it('Then only [ ""] is removed; [s] and [s ""] survive', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, nameMixConf);
+
+        // Act
+        await removeConfigSection({ ctx, sectionName: '.' });
+
+        // Assert
+        const text = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
+        expect(text).toBe('[s]\n\tk = a\n[s ""]\n\tk = b\n');
+      });
+    });
+  });
+
+  describe('Given CONFIG_SECTION_NOT_FOUND scenarios', () => {
+    describe('When removeConfigSection is called with "s." on a plain-only config', () => {
+      it('Then throws CONFIG_SECTION_NOT_FOUND with name "s."', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[s]\n\tk = a\n');
+        let caught: TsgitError | undefined;
+
+        // Act
+        try {
+          await removeConfigSection({ ctx, sectionName: 's.' });
+        } catch (err) {
+          caught = err as TsgitError;
+        }
+
+        // Assert
+        expect(caught?.data).toEqual({
+          code: 'CONFIG_SECTION_NOT_FOUND',
+          name: 's.',
+          scope: 'local',
+        });
+      });
+    });
+
+    describe('When removeConfigSection is called with "s" on an empty-only config', () => {
+      it('Then throws CONFIG_SECTION_NOT_FOUND with name "s"', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[s ""]\n\tk = b\n');
+        let caught: TsgitError | undefined;
+
+        // Act
+        try {
+          await removeConfigSection({ ctx, sectionName: 's' });
+        } catch (err) {
+          caught = err as TsgitError;
+        }
+
+        // Assert
+        expect(caught?.data).toEqual({
+          code: 'CONFIG_SECTION_NOT_FOUND',
+          name: 's',
+          scope: 'local',
+        });
+      });
+    });
+
+    describe('When removeConfigSection is called with "" (empty string)', () => {
+      it('Then throws CONFIG_SECTION_NOT_FOUND with name "" (old name never validated)', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        let caught: TsgitError | undefined;
+
+        // Act
+        try {
+          await removeConfigSection({ ctx, sectionName: '' });
+        } catch (err) {
+          caught = err as TsgitError;
+        }
+
+        // Assert
+        expect(caught?.data).toEqual({
+          code: 'CONFIG_SECTION_NOT_FOUND',
+          name: '',
+          scope: 'local',
+        });
+      });
+    });
+
+    describe('When removeConfigSection is called with "." when [ ""] is absent', () => {
+      it('Then throws CONFIG_SECTION_NOT_FOUND with name "."', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[s]\n\tk = a\n');
+        let caught: TsgitError | undefined;
+
+        // Act
+        try {
+          await removeConfigSection({ ctx, sectionName: '.' });
+        } catch (err) {
+          caught = err as TsgitError;
+        }
+
+        // Assert
+        expect(caught?.data).toEqual({
+          code: 'CONFIG_SECTION_NOT_FOUND',
+          name: '.',
+          scope: 'local',
+        });
+      });
     });
   });
 });
