@@ -35,6 +35,7 @@ const isAlnumDashChar = (ch: string): boolean => /[a-zA-Z0-9-]/.test(ch);
 const findInvalidIdentifierIndex = (text: string): number | undefined => {
   if (!isLetter(text[0] as string)) return 0;
   for (let i = 1; i < text.length; i += 1) {
+    // equivalent-mutant: i<=text.length — text[length] is undefined; /[a-zA-Z0-9-]/.test(undefined) coerces to "undefined" which matches, so the extra iteration never returns an index; result is identical
     if (!isAlnumDashChar(text[i] as string)) return i;
   }
   return undefined;
@@ -75,6 +76,7 @@ export const parseConfigKey = (raw: string): ParsedConfigKey => {
     throw configKeyInvalid(raw, 'missing-name');
   }
   if (sectionRaw.length > 0) {
+    // equivalent-mutant: true/>=0 — findInvalidIdentifierIndex('') returns undefined because ''.text[0] is undefined; /[a-zA-Z]/.test(undefined) coerces to "undefined" which matches, so no bad-char index is returned; calling with empty sectionRaw is safe and equivalent
     const sectionBad = findInvalidIdentifierIndex(sectionRaw);
     if (sectionBad !== undefined) {
       throw configKeyInvalid(raw, 'bad-character', sectionBad);

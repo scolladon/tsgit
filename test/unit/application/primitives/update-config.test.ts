@@ -2876,6 +2876,75 @@ describe('primitives/update-config', () => {
         });
       });
     });
+
+    describe('Given a leading comment line before the first section header', () => {
+      describe('When removeConfigSectionInText removes "s"', () => {
+        it('Then the leading comment is preserved and the matching section is dropped', () => {
+          // Arrange — skipping starts false; content before the first header must pass through
+          const text = '# repository config\n[s]\n\tk = a\n[t]\n\tk = b\n';
+          const sut = removeConfigSectionInText;
+
+          // Act
+          const result = sut(text, 's');
+
+          // Assert
+          expect(result).toBe('# repository config\n[t]\n\tk = b\n');
+        });
+      });
+    });
+
+    describe('Given an indented section header "  [s]"', () => {
+      describe('When removeConfigSectionInText removes "s"', () => {
+        it('Then the indented header and its body are removed (trim is applied before header detection and matching)', () => {
+          // Arrange — git accepts leading whitespace before a header; both isSectionHeader
+          // and matchesRawSectionName must trim before parsing
+          const text = '  [s]\n\tk = a\n[t]\n\tk = b\n';
+          const sut = removeConfigSectionInText;
+
+          // Act
+          const result = sut(text, 's');
+
+          // Assert
+          expect(result).toBe('[t]\n\tk = b\n');
+        });
+      });
+    });
+
+    describe('Given a body line ending in "]" inside a removed section', () => {
+      describe('When removeConfigSectionInText removes "s"', () => {
+        it('Then the body line is dropped along with the rest of the section (isSectionHeader requires both "[" prefix and "]" suffix)', () => {
+          // Arrange — a value like `val = [x]` ends in ] but does not start with [;
+          // the logical-OR prefilter mutant would stop skipping here and preserve
+          // subsequent body lines incorrectly
+          const text = '[s]\n\tval = [x]\n\tother = z\n[t]\n\tk = b\n';
+          const sut = removeConfigSectionInText;
+
+          // Act
+          const result = sut(text, 's');
+
+          // Assert
+          expect(result).toBe('[t]\n\tk = b\n');
+        });
+      });
+    });
+
+    describe('Given a body line starting with "[" but without a closing "]" inside a removed section', () => {
+      describe('When removeConfigSectionInText removes "s"', () => {
+        it('Then the body line is dropped along with the rest of the section (isSectionHeader requires the "]" suffix)', () => {
+          // Arrange — a malformed line `[no-close` starts with [ but lacks ] ;
+          // the endsWith-empty-string mutant would stop skipping here and preserve
+          // subsequent body lines incorrectly
+          const text = '[s]\n\tk = a\n[no-close\n\tother = z\n[t]\n\tk = b\n';
+          const sut = removeConfigSectionInText;
+
+          // Act
+          const result = sut(text, 's');
+
+          // Assert
+          expect(result).toBe('[t]\n\tk = b\n');
+        });
+      });
+    });
   });
 
   describe('removeConfigEntry validation', () => {
@@ -3184,6 +3253,22 @@ describe('primitives/update-config', () => {
 
           // Assert
           expect(result).toBe('[a "t"]\n\tkey = one\\\n   two\n[b]\n\tk = v\n');
+        });
+      });
+    });
+
+    describe('Given an indented section header "  [s]"', () => {
+      describe('When renameConfigSectionInText renames "s" to { section: "t" }', () => {
+        it('Then the indented header is matched and renamed (trim is applied before parsing)', () => {
+          // Arrange — matchesRawSectionName must trim the line before calling parseSectionHeader
+          const text = '  [s]\n\tk = a\n';
+          const sut = renameConfigSectionInText;
+
+          // Act
+          const result = sut(text, 's', { section: 't' });
+
+          // Assert
+          expect(result).toBe('[t]\n\tk = a\n');
         });
       });
     });
