@@ -63,6 +63,10 @@ const everything = await repo.config.list();
 - **Multi-valued keys:** `get` and `set` throw `CONFIG_MULTIPLE_VALUES` when the key has more than one entry in the active scope set. Use `getAll` / `unsetAll` for multi-valued keys.
 - **Idempotent `unset`:** a missing key produces `{ removed: false }`, not an error (diverges from `git config --unset` exit-5).
 - **Regex flavour:** `getRegexp` uses native JavaScript `RegExp`; not POSIX-ERE (ADR-185).
+- **Exact subsection identity:** `[s]` and `[s ""]` are distinct sections everywhere. Entry writes targeting `s.k` (subsection `undefined`) never touch `[s ""]` blocks, and vice versa for `s..k` (subsection `''`) — identical to git's identity rule. A write to a missing section appends a new block of the correct form.
+- **Empty-section keys:** `parseConfigKey` accepts `..k` → `{section: '', subsection: '', name: 'k'}` and `.x.k` → `{section: '', subsection: 'x', name: 'k'}`, representing the `[ ""]` and `[ "x"]` header families. The subsection-less form `.k` remains refused with `CONFIG_KEY_INVALID` reason `'empty-section'`, matching git's refusal.
+- **Section-op old-name matching (raw, byte-exact, case-sensitive):** `removeSection` and `renameSection` match the old name against each header's raw dotted form: `[s]` → `s`, `[s "x"]` → `s.x`, `[s ""]` → `s.`, `[ ""]` → `.`, `[ "x"]` → `.x`. Plain names (no dot) and cross-family renames (`s → t.y`, `s.x → t`, etc.) are all supported. The old name is never validated — a case mismatch or malformed name simply misses all headers (`CONFIG_SECTION_NOT_FOUND`), matching git. All matching blocks are renamed or removed (multi-block support), including git's faithful `a.b` ambiguity: the deprecated `[a.b]` header and `[a "b"]` share the raw name `a.b`, so both match. The error carries the raw input verbatim (ADR-324).
+- **Section-op new-name grammar:** the new name is parsed at the **first** dot — section part before, subsection (free-form) after. The section part must contain only alphanumeric / `-` chars; an empty whole name is refused; an empty section part is allowed when a dot follows (e.g. `.x` is valid). Grammar violations throw `INVALID_OPTION` with reason `invalid section name: <name>` (ADR-322). A newline in the new subsection is refused too (`INVALID_OPTION`, reason `subsection must not contain a newline or NUL`) — a deliberate divergence from git, which writes the newline raw and corrupts its own file (ADR-325).
 - **Valueless keys (git NULL parity):** a `key` line with no `=` is a present-but-valueless entry — surfaced as `value: null`, distinct from `value: undefined` (key absent) and `''` (empty value after `key =`). Boolean interpretation maps `null` to `true` (`[core]` + `bare` ⇒ bare repository), and `getRegexp`'s `valuePattern` matches a `null` value as the empty string — both exactly like git (ADR-314). A malformed no-`=` line (`key ; c`, `bad!key`, `9key`) throws `CONFIG_PARSE_ERROR` where git dies `bad config line N`. Writes never emit valueless entries (git's CLI cannot either); `set` on a valueless entry replaces the line with canonical `key = value`, `unset` removes it (`previousValue: null`).
 - **Worktree scope:** gated on `[extensions] worktreeConfig = true` in `local`; otherwise throws `CONFIG_SCOPE_NOT_AVAILABLE`.
 - **Browser adapter:** `global` and `system` scopes throw `CONFIG_SCOPE_NOT_AVAILABLE` with `reason: 'browser-adapter'`.
@@ -78,7 +82,8 @@ const everything = await repo.config.list();
 - `CONFIG_PARSE_ERROR` — a config file contains a malformed value (unknown escape, unclosed quote) or a malformed quoted-subsection header; carries the 1-based `line`, the file as `source`, and (for header malformations) the partially-accumulated `partialSectionName`.
 - `CONFIG_INVALID_FILE` — a `set`/`unset` write refused because the file holds a malformed quoted-subsection header; carries `sectionName` (git's `invalid section name` diagnostic) and `source`.
 - `CONFIG_MULTIPLE_VALUES` — single-value operation (`get` / `set` / `unset`) on a multi-valued key.
-- `CONFIG_SECTION_NOT_FOUND` — `renameSection` / `removeSection` target missing.
+- `CONFIG_SECTION_NOT_FOUND` — `renameSection` / `removeSection` old-name lookup missed all headers (no section header matched the raw dotted old-name); carries the raw input verbatim (e.g. `'s.'`, `'.'`, `'bad!name'`), matching git's `fatal: no such section: <name>` diagnostic.
+- `INVALID_OPTION` — `renameSection` new-name validation failed: section-grammar violations carry reason `invalid section name: <name>`; a newline/NUL in the new subsection carries reason `subsection must not contain a newline or NUL`.
 - `CONFIG_SCOPE_NOT_AVAILABLE` — `worktree` scope without the extension, or `global`/`system` on the browser adapter.
 - `CONFIG_SYSTEM_PATH_UNRESOLVED` — platform-specific system-config path could not be resolved.
 - `NOT_A_REPOSITORY` — `ctx` does not target a repository.
@@ -86,21 +91,25 @@ const everything = await repo.config.list();
 ## Design + ADRs
 
 - `docs/design/phase-20-6-config-porcelain.md`
+- `docs/design/config-empty-subsection-matching.md` (section identity and addressing)
 - `docs/adr/181-nested-namespace-porcelain.md` (surface shape)
 - `docs/adr/182-config-all-scopes-v1.md` (scopes)
 - `docs/adr/183-config-get-multi-valued-throws.md`
 - `docs/adr/184-config-unset-idempotent.md`
 - `docs/adr/185-config-getregexp-javascript-regex.md`
-- `docs/adr/308-config-parse-error-refusal.md` (malformed-value refusal)
-- `docs/adr/309-config-value-write-grammar-parity.md` (value write grammar)
-- `docs/adr/312-config-subsection-header-grammar-parity.md` (subsection grammar)
-- `docs/adr/313-config-write-path-refusal-shapes.md` (write-path refusals)
-- `docs/adr/314-valueless-config-key-null-representation.md` (valueless keys are `value: null`)
-- `docs/adr/315-valueless-string-config-fields-absent.md` (valueless string-typed internals)
-- `docs/design/config-subsection-escaping.md`
-- `docs/design/config-valueless-keys.md`
 - `docs/adr/186-config-write-quote-on-write.md`
 - `docs/adr/187-config-primitives-keep-writers-add-readers.md`
 - `docs/adr/188-config-text-helper-rename.md`
 - `docs/adr/308-config-parse-error-refusal.md` (malformed values refuse like git)
 - `docs/adr/309-config-value-write-grammar-parity.md` (byte-exact `write_pair` grammar)
+- `docs/adr/312-config-subsection-header-grammar-parity.md` (subsection grammar)
+- `docs/adr/313-config-write-path-refusal-shapes.md` (write-path refusals)
+- `docs/adr/314-valueless-config-key-null-representation.md` (valueless keys are `value: null`)
+- `docs/adr/315-valueless-string-config-fields-absent.md` (valueless string-typed internals)
+- `docs/adr/322-empty-subsection-section-op-addressing.md` (trailing-dot addressing of `[s ""]`)
+- `docs/adr/323-fold-section-addressing-gaps-into-empty-subsection-fix.md` (identity and addressing gaps)
+- `docs/adr/324-raw-section-name-matching.md` (byte-exact old-name matching)
+- `docs/adr/325-refuse-linefeed-in-new-subsection.md` (LF refusal in new subsection)
+- `docs/adr/326-reshape-section-op-intext-primitives.md` (exported section-op primitive signatures)
+- `docs/design/config-subsection-escaping.md`
+- `docs/design/config-valueless-keys.md`

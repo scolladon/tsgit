@@ -51266,15 +51266,7 @@
 								"summary": [
 									{
 										"kind": "text",
-										"text": "Delete "
-									},
-									{
-										"kind": "code",
-										"text": "`[<section> \"<subsection>\"]`"
-									},
-									{
-										"kind": "text",
-										"text": " and its body. "
+										"text": "Delete headers matching "
 									},
 									{
 										"kind": "code",
@@ -51282,15 +51274,31 @@
 									},
 									{
 										"kind": "text",
-										"text": " is dotted\n("
+										"text": " (raw byte-exact dotted name) and their\nbodies. The name is never validated — any string is a legal lookup key (e.g.\n"
 									},
 									{
 										"kind": "code",
-										"text": "`'remote.origin'`"
+										"text": "`'remote'`"
 									},
 									{
 										"kind": "text",
-										"text": "). Throws "
+										"text": ", "
+									},
+									{
+										"kind": "code",
+										"text": "`'s.'`"
+									},
+									{
+										"kind": "text",
+										"text": ", "
+									},
+									{
+										"kind": "code",
+										"text": "`''`"
+									},
+									{
+										"kind": "text",
+										"text": "); a miss throws "
 									},
 									{
 										"kind": "code",
@@ -51298,7 +51306,23 @@
 									},
 									{
 										"kind": "text",
-										"text": " when the section is\nabsent in the targeted scope."
+										"text": " carrying\nthe raw input verbatim. For the trailing-dot and empty-name forms see\n"
+									},
+									{
+										"kind": "code",
+										"text": "`rawSectionName`"
+									},
+									{
+										"kind": "text",
+										"text": " and "
+									},
+									{
+										"kind": "code",
+										"text": "`removeConfigSectionInText`"
+									},
+									{
+										"kind": "text",
+										"text": " documentation."
 									}
 								]
 							},
@@ -51413,55 +51437,31 @@
 								"summary": [
 									{
 										"kind": "text",
-										"text": "Rename "
+										"text": "Rename headers matching "
 									},
 									{
 										"kind": "code",
-										"text": "`[<section> \"<oldSubsection>\"]`"
+										"text": "`oldName`"
 									},
 									{
 										"kind": "text",
-										"text": " to "
+										"text": " (raw byte-exact dotted name) to the new\nsection shape derived from "
 									},
 									{
 										"kind": "code",
-										"text": "`[<section> \"<newSubsection>\"]`"
+										"text": "`newName`"
 									},
 									{
 										"kind": "text",
-										"text": ".\nBoth inputs are dotted ("
+										"text": " (parsed via "
 									},
 									{
 										"kind": "code",
-										"text": "`'remote.origin'`"
+										"text": "`parseNewSectionName`"
 									},
 									{
 										"kind": "text",
-										"text": "). The two section families MUST\nmatch — renaming across families (e.g. "
-									},
-									{
-										"kind": "code",
-										"text": "`remote.origin`"
-									},
-									{
-										"kind": "text",
-										"text": " → "
-									},
-									{
-										"kind": "code",
-										"text": "`branch.main`"
-									},
-									{
-										"kind": "text",
-										"text": ") is\nrejected with "
-									},
-									{
-										"kind": "code",
-										"text": "`INVALID_OPTION`"
-									},
-									{
-										"kind": "text",
-										"text": ". Throws "
+										"text": ").\nThe old name is never validated — any string is a legal lookup key; a miss\nthrows "
 									},
 									{
 										"kind": "code",
@@ -51469,7 +51469,15 @@
 									},
 									{
 										"kind": "text",
-										"text": " if the\nsource section does not exist in the targeted scope."
+										"text": " carrying the raw input verbatim. Throws\n"
+									},
+									{
+										"kind": "code",
+										"text": "`INVALID_OPTION`"
+									},
+									{
+										"kind": "text",
+										"text": " when the new subsection contains a LF or NUL."
 									}
 								]
 							},
@@ -79341,7 +79349,7 @@
 								"summary": [
 									{
 										"kind": "text",
-										"text": "Parse a fully-qualified config key. Two grammars accepted:\n\n  \"section.name\"                          → { section, undefined, name }\n  \"section.subsection.with.dots.name\"     → { section, \"subsection.with.dots\", name }\n\nSection and name are lower-cased per git's case-insensitive rules; the\nsubsection is preserved verbatim (case-sensitive). The subsection is the\nslice between the FIRST and LAST "
+										"text": "Parse a fully-qualified config key. Three grammars accepted:\n\n  \"section.name\"                          → { section, undefined, name }\n  \"section.subsection.with.dots.name\"     → { section, \"subsection.with.dots\", name }\n  \"..name\" / \".subsection.name\"           → { \"\", \"\" | subsection, name }\n\nSection and name are lower-cased per git's case-insensitive rules; the\nsubsection is preserved verbatim (case-sensitive). The subsection is the\nslice between the FIRST and LAST "
 									},
 									{
 										"kind": "code",
@@ -79349,7 +79357,23 @@
 									},
 									{
 										"kind": "text",
-										"text": " — a subsection containing dots is\nlegal and round-trips through the parser."
+										"text": " — a subsection containing dots is\nlegal and round-trips through the parser. An empty section is legal only\nwhen a subsection is present (the "
+									},
+									{
+										"kind": "code",
+										"text": "`[ \"\"]`"
+									},
+									{
+										"kind": "text",
+										"text": " family); the subsection-less\n\".name\" form stays refused, mirroring git's "
+									},
+									{
+										"kind": "code",
+										"text": "`key does not contain a\nsection`"
+									},
+									{
+										"kind": "text",
+										"text": " refusal."
 									}
 								]
 							},
@@ -117183,77 +117207,77 @@
 		},
 		"2403": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/primitives/update-config.ts",
+			"packagePath": "src/application/primitives/update-config-sections.ts",
 			"qualifiedName": "removeConfigSection"
 		},
 		"2404": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/primitives/update-config.ts",
+			"packagePath": "src/application/primitives/update-config-sections.ts",
 			"qualifiedName": "removeConfigSection"
 		},
 		"2405": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/primitives/update-config.ts",
+			"packagePath": "src/application/primitives/update-config-sections.ts",
 			"qualifiedName": "__0"
 		},
 		"2406": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/primitives/update-config.ts",
+			"packagePath": "src/application/primitives/update-config-sections.ts",
 			"qualifiedName": "__type"
 		},
 		"2407": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/primitives/update-config.ts",
+			"packagePath": "src/application/primitives/update-config-sections.ts",
 			"qualifiedName": "__type.ctx"
 		},
 		"2408": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/primitives/update-config.ts",
+			"packagePath": "src/application/primitives/update-config-sections.ts",
 			"qualifiedName": "__type.sectionName"
 		},
 		"2409": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/primitives/update-config.ts",
+			"packagePath": "src/application/primitives/update-config-sections.ts",
 			"qualifiedName": "__type.scope"
 		},
 		"2410": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/primitives/update-config.ts",
+			"packagePath": "src/application/primitives/update-config-sections.ts",
 			"qualifiedName": "renameConfigSection"
 		},
 		"2411": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/primitives/update-config.ts",
+			"packagePath": "src/application/primitives/update-config-sections.ts",
 			"qualifiedName": "renameConfigSection"
 		},
 		"2412": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/primitives/update-config.ts",
+			"packagePath": "src/application/primitives/update-config-sections.ts",
 			"qualifiedName": "__0"
 		},
 		"2413": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/primitives/update-config.ts",
+			"packagePath": "src/application/primitives/update-config-sections.ts",
 			"qualifiedName": "__type"
 		},
 		"2414": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/primitives/update-config.ts",
+			"packagePath": "src/application/primitives/update-config-sections.ts",
 			"qualifiedName": "__type.ctx"
 		},
 		"2415": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/primitives/update-config.ts",
+			"packagePath": "src/application/primitives/update-config-sections.ts",
 			"qualifiedName": "__type.oldName"
 		},
 		"2416": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/primitives/update-config.ts",
+			"packagePath": "src/application/primitives/update-config-sections.ts",
 			"qualifiedName": "__type.newName"
 		},
 		"2417": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/primitives/update-config.ts",
+			"packagePath": "src/application/primitives/update-config-sections.ts",
 			"qualifiedName": "__type.scope"
 		},
 		"2418": {

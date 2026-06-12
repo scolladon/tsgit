@@ -3,13 +3,24 @@ import { describe, expect, it } from 'vitest';
 import {
   type IniSection,
   parseIniSections,
+  parseSectionHeader,
   tokenizeConfig,
 } from '../../../../src/application/primitives/config-read.js';
 import {
+  parseNewSectionName,
+  rawSectionName,
   removeConfigEntry,
+  removeConfigSectionInText,
+  renderSectionHeader,
   setConfigEntryInText,
 } from '../../../../src/application/primitives/update-config.js';
-import { arbConfigKey, configFileWithTarget, subsectionName } from './arbitraries.js';
+import {
+  arbConfigKey,
+  arbHeaderIdentity,
+  configFileWithTarget,
+  subsectionIdentity,
+  subsectionName,
+} from './arbitraries.js';
 
 const findValue = (
   sections: ReadonlyArray<IniSection>,
@@ -411,6 +422,157 @@ describe('update-config surgery-preservation invariants', () => {
                 ).toBeDefined();
               }
             }
+          }),
+          { numRuns: 100 },
+        );
+      });
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Identity-isolation property (lens 2 — compositional invariant)
+// ---------------------------------------------------------------------------
+
+describe('update-config identity isolation', () => {
+  describe('Given an arbitrary pair of distinct subsection identities A and B drawn from {undefined, "", sub}', () => {
+    describe('When setConfigEntryInText targets identity A in a two-block file (either block order)', () => {
+      it('Then the identity-B block is byte-unchanged and the identity-A block is rewritten', () => {
+        // Arrange — `sut` is the function under test; a two-block file is built
+        // from a pair of DISTINCT identities so A-targeted writes cannot touch B,
+        // in both block orders so first-block bias cannot mask a conflation.
+        const sut = setConfigEntryInText;
+        fc.assert(
+          fc.property(
+            fc.tuple(subsectionIdentity(), subsectionIdentity()).filter(([a, b]) => a !== b),
+            fc.boolean(),
+            ([identityA, identityB], aFirst) => {
+              // Build the header string for each identity
+              const headerA = identityA === undefined ? '[s]\n' : `[s "${identityA}"]\n`;
+              const headerB = identityB === undefined ? '[s]\n' : `[s "${identityB}"]\n`;
+              const blockA = `${headerA}\tk = x\n`;
+              const blockB = `${headerB}\tk = y\n`;
+              const input = aFirst ? blockA + blockB : blockB + blockA;
+
+              // Act — target identity A; B must not change
+              const result = sut(input, 's', identityA, 'k', 'new');
+
+              // Assert — B block appears byte-identical exactly once, and the
+              // A block was actually rewritten (old bytes gone, new value in)
+              expect(result.split(blockB)).toHaveLength(2);
+              expect(result).not.toContain(blockA);
+              expect(result).toContain('\tk = new\n');
+            },
+          ),
+          { numRuns: 100 },
+        );
+      });
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// rawSectionName round-trip property (lens 1)
+// ---------------------------------------------------------------------------
+
+describe('parseNewSectionName partition property', () => {
+  describe('Given an arbitrary ASCII NUL-free name', () => {
+    describe('When parseNewSectionName runs', () => {
+      it('Then it either returns a dot-free section reconstructing the input or throws exactly INVALID_OPTION', () => {
+        // Arrange — generator biased with grammar-relevant specials
+        const arbName = fc
+          .string({
+            unit: fc.oneof(
+              fc.constantFrom('.', '-', '_', '!', 'a', 'z', 'A', 'Z', '0', '9'),
+              fc.integer({ min: 0x20, max: 0x7e }).map((cp) => String.fromCodePoint(cp)),
+            ),
+            maxLength: 64,
+          })
+          // NUL excluded from unit; also exclude LF so the subsection render won't hit rejectSubsection
+          .filter((s) => !s.includes('\n') && !s.includes('\0'));
+
+        fc.assert(
+          fc.property(arbName, (name) => {
+            // Act — total over the domain: either a parse or exactly INVALID_OPTION
+            let parsed: ReturnType<typeof parseNewSectionName> | undefined;
+            let caught: unknown;
+            try {
+              parsed = parseNewSectionName(name);
+            } catch (err) {
+              caught = err;
+            }
+
+            if (parsed !== undefined) {
+              // Assert — structural invariants, never a re-derived accept set:
+              // the section part carries no dot (first-dot split), the parse
+              // reconstructs the input verbatim, and the result renders.
+              expect(parsed.section).not.toContain('.');
+              const reconstructed =
+                parsed.subsection === undefined
+                  ? parsed.section
+                  : `${parsed.section}.${parsed.subsection}`;
+              expect(reconstructed).toBe(name);
+              const { section, subsection } = parsed;
+              expect(() => renderSectionHeader(section, subsection)).not.toThrow();
+              return;
+            }
+            // Assert — refusal shape carries the exact git message data
+            const data = (caught as { data?: { code?: string; reason?: string } }).data;
+            expect(data?.code).toBe('INVALID_OPTION');
+            expect(data?.reason).toBe(`invalid section name: ${name}`);
+          }),
+          { numRuns: 100 },
+        );
+      });
+    });
+  });
+});
+
+describe('rawSectionName round-trip property', () => {
+  describe('Given an arbitrary header identity (section from safe pool ∪ empty, subsection from LF/NUL-free domain)', () => {
+    describe('When rendered via renderSectionHeader and re-parsed via parseSectionHeader', () => {
+      it('Then rawSectionName of the parsed header equals the dotted name built from the original identity', () => {
+        // Arrange — sut is the round-trip: render → parse → rawSectionName
+        const sut = rawSectionName;
+        fc.assert(
+          fc.property(arbHeaderIdentity(), ({ section, subsection, dottedName }) => {
+            // Act
+            const rendered = renderSectionHeader(section, subsection);
+            const parsed = parseSectionHeader(rendered.trim());
+
+            // Assert — parse must succeed and the reduced name must match
+            expect(parsed.kind).toBe('header');
+            if (parsed.kind !== 'header') return;
+            const result = sut(parsed);
+            expect(result).toBe(dottedName);
+          }),
+          { numRuns: 200 },
+        );
+      });
+    });
+
+    describe('When addressing a two-block file by that dotted name via removeConfigSectionInText', () => {
+      it('Then exactly the target block is removed and the sibling block bytes are intact', () => {
+        // Arrange — two-block file from distinct identity pairs; removing by dotted name
+        // must touch only the matching block.
+        fc.assert(
+          fc.property(arbHeaderIdentity(), arbHeaderIdentity(), (identityA, identityB) => {
+            // Build a sibling block with a DIFFERENT raw name so the remove is unambiguous
+            fc.pre(identityA.dottedName !== identityB.dottedName);
+
+            const headerA = renderSectionHeader(identityA.section, identityA.subsection);
+            const headerB = renderSectionHeader(identityB.section, identityB.subsection);
+            const blockA = `${headerA}\n\tk = x\n`;
+            const blockB = `${headerB}\n\tk = y\n`;
+            const input = blockA + blockB;
+
+            // Act — remove by dotted name of A; B must survive intact
+            const result = removeConfigSectionInText(input, identityA.dottedName);
+
+            // Assert — B block is byte-identical in the output
+            expect(result).toContain(blockB);
+            // Assert — A block's header is gone from the output
+            expect(result).not.toContain(blockA);
           }),
           { numRuns: 100 },
         );

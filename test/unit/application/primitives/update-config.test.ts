@@ -7,7 +7,9 @@ import {
 } from '../../../../src/application/primitives/config-read.js';
 import {
   appendConfigEntry,
+  applyConfigOpInText,
   type ConfigOperation,
+  rawSectionName,
   removeConfigEntry,
   removeConfigSectionInText,
   renameConfigSectionInText,
@@ -187,19 +189,20 @@ describe('primitives/update-config', () => {
       });
     });
 
-    describe('Given an explicitly empty `[core ""]` header', () => {
-      describe('When setCoreConfigEntryInText', () => {
-        it('Then it is treated as the [core] section', () => {
-          // Arrange — git writes `[core ""]` for an empty subsection; it is the
-          // core section and must be edited in place.
+    describe('Given an explicitly empty `[core ""]` header (distinct from [core])', () => {
+      describe('When setCoreConfigEntryInText inserts sparseCheckout', () => {
+        it('Then [core ""] is NOT matched and a new [core] section is appended', () => {
+          // Arrange — [core ""] has subsection="", which is distinct from [core]
+          // (subsection=undefined). setCoreConfigEntryInText targets core with no
+          // subsection, so it must not edit [core ""] in place.
           const text = '[core ""]\n\tbare = false\n';
 
           // Act
           const sut = setCoreConfigEntryInText;
           const result = sut(text, 'sparseCheckout', 'true');
 
-          // Assert — the key is inserted at the end of the `[core ""]` section.
-          expect(result).toBe('[core ""]\n\tbare = false\n\tsparseCheckout = true\n');
+          // Assert — [core ""] is left byte-identical; a new [core] is appended.
+          expect(result).toBe('[core ""]\n\tbare = false\n[core]\n\tsparseCheckout = true\n');
         });
       });
     });
@@ -571,6 +574,29 @@ describe('primitives/update-config', () => {
   });
 
   describe('setConfigEntryInText', () => {
+    describe('Given an empty section name with no subsection', () => {
+      describe('When setConfigEntryInText is called', () => {
+        it('Then it throws INVALID_OPTION instead of writing an unparseable [] header', () => {
+          // Arrange
+          let caught: unknown;
+          try {
+            setConfigEntryInText('', '', undefined, 'k', 'v');
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data;
+          expect(data.code).toBe('INVALID_OPTION');
+          if (data.code === 'INVALID_OPTION') {
+            expect(data.option).toBe('config');
+            expect(data.reason).toBe('section name must not be empty without a subsection');
+          }
+        });
+      });
+    });
+
     describe('Given no matching section', () => {
       describe('When setConfigEntryInText', () => {
         it('Then the section is appended', () => {
@@ -1510,6 +1536,154 @@ describe('primitives/update-config', () => {
         });
       });
     });
+
+    // ---------------------------------------------------------------------------
+    // Identity matrix — [s] vs [s ""] are distinct targets
+    // ---------------------------------------------------------------------------
+
+    describe('Given both.conf ([s] and [s ""]) and target subsection=undefined', () => {
+      describe('When setConfigEntryInText sets s.k to v', () => {
+        it('Then only [s] is updated, [s ""] is untouched', () => {
+          // Arrange
+          const sut = setConfigEntryInText;
+          const text = '[s]\n\tk = a\n[s ""]\n\tk = b\n';
+
+          // Act
+          const result = sut(text, 's', undefined, 'k', 'v');
+
+          // Assert — [s] updated in place; [s ""] byte-identical
+          expect(result).toBe('[s]\n\tk = v\n[s ""]\n\tk = b\n');
+        });
+      });
+    });
+
+    describe('Given both.conf ([s] and [s ""]) and target subsection=""', () => {
+      describe('When setConfigEntryInText sets s..k to v', () => {
+        it('Then only [s ""] is updated, [s] is untouched (direction pin)', () => {
+          // Arrange
+          const sut = setConfigEntryInText;
+          const text = '[s]\n\tk = a\n[s ""]\n\tk = b\n';
+
+          // Act
+          const result = sut(text, 's', '', 'k', 'v');
+
+          // Assert — [s ""] updated in place; [s] byte-identical
+          expect(result).toBe('[s]\n\tk = a\n[s ""]\n\tk = v\n');
+        });
+      });
+    });
+
+    describe('Given rev.conf ([s ""] first then [s]) and target subsection=undefined', () => {
+      describe('When setConfigEntryInText sets s.k to v', () => {
+        it('Then only [s] is updated, [s ""] is untouched', () => {
+          // Arrange
+          const sut = setConfigEntryInText;
+          const text = '[s ""]\n\tk = b\n[s]\n\tk = a\n';
+
+          // Act
+          const result = sut(text, 's', undefined, 'k', 'v');
+
+          // Assert — [s] updated in place (even though [s ""] appears first); [s ""] unchanged
+          expect(result).toBe('[s ""]\n\tk = b\n[s]\n\tk = v\n');
+        });
+      });
+    });
+
+    describe('Given rev.conf ([s ""] first then [s]) and target subsection=""', () => {
+      describe('When setConfigEntryInText sets s..k to v', () => {
+        it('Then only [s ""] is updated, [s] is untouched (direction pin)', () => {
+          // Arrange
+          const sut = setConfigEntryInText;
+          const text = '[s ""]\n\tk = b\n[s]\n\tk = a\n';
+
+          // Act
+          const result = sut(text, 's', '', 'k', 'v');
+
+          // Assert — [s ""] updated in place; [s] byte-identical
+          expect(result).toBe('[s ""]\n\tk = v\n[s]\n\tk = a\n');
+        });
+      });
+    });
+
+    describe('Given empty-only.conf ([s ""] only) and target subsection=undefined', () => {
+      describe('When setConfigEntryInText sets s.k to v', () => {
+        it('Then [s ""] is NOT matched and a new [s] is appended', () => {
+          // Arrange
+          const sut = setConfigEntryInText;
+          const text = '[s ""]\n\tk = b\n';
+
+          // Act
+          const result = sut(text, 's', undefined, 'k', 'v');
+
+          // Assert — [s ""] untouched; new [s] appended at end
+          expect(result).toBe('[s ""]\n\tk = b\n[s]\n\tk = v\n');
+        });
+      });
+    });
+
+    describe('Given plain-only.conf ([s] only) and target subsection=""', () => {
+      describe('When setConfigEntryInText sets s..k to v', () => {
+        it('Then [s] is NOT matched and a new [s ""] is appended (mirror pin)', () => {
+          // Arrange
+          const sut = setConfigEntryInText;
+          const text = '[s]\n\tk = a\n';
+
+          // Act
+          const result = sut(text, 's', '', 'k', 'v');
+
+          // Assert — [s] untouched; new [s ""] appended at end
+          expect(result).toBe('[s]\n\tk = a\n[s ""]\n\tk = v\n');
+        });
+      });
+    });
+
+    describe('Given a file holding only [ ""] and target section=s subsection=undefined', () => {
+      describe('When setConfigEntryInText sets s.k to v', () => {
+        it('Then [ ""] is NOT matched and a new [s] is appended', () => {
+          // Arrange
+          const sut = setConfigEntryInText;
+          const text = '[ ""]\n\tk = e\n';
+
+          // Act
+          const result = sut(text, 's', undefined, 'k', 'v');
+
+          // Assert — [ ""] untouched; new [s] appended at end
+          expect(result).toBe('[ ""]\n\tk = e\n[s]\n\tk = v\n');
+        });
+      });
+    });
+
+    describe('Given both.conf and a new key n, target subsection=undefined', () => {
+      describe('When setConfigEntryInText inserts s.n', () => {
+        it('Then new key n lands at end of [s] block, not inside [s ""]', () => {
+          // Arrange
+          const sut = setConfigEntryInText;
+          const text = '[s]\n\tk = a\n[s ""]\n\tk = b\n';
+
+          // Act
+          const result = sut(text, 's', undefined, 'n', 'v');
+
+          // Assert — n inserted at end of [s]; [s ""] untouched
+          expect(result).toBe('[s]\n\tk = a\n\tn = v\n[s ""]\n\tk = b\n');
+        });
+      });
+    });
+
+    describe('Given a [S] section (uppercase) and target s (lowercase, no subsection)', () => {
+      describe('When setConfigEntryInText sets s.k to v', () => {
+        it('Then [S] is matched case-insensitively and rewritten in place', () => {
+          // Arrange
+          const sut = setConfigEntryInText;
+          const text = '[S]\n\tk = a\n';
+
+          // Act
+          const result = sut(text, 's', undefined, 'k', 'v');
+
+          // Assert — [S] rewritten in place; original header casing preserved
+          expect(result).toBe('[S]\n\tk = v\n');
+        });
+      });
+    });
   });
 
   describe('updateConfigEntries', () => {
@@ -1930,18 +2104,581 @@ describe('primitives/update-config', () => {
         });
       });
     });
+
+    // ---------------------------------------------------------------------------
+    // Unset identity rows from the pinned table
+    // ---------------------------------------------------------------------------
+
+    describe('Given both.conf ([s] k=a and [s ""] k=b), target subsection=undefined', () => {
+      describe('When removeConfigEntry removes s.k', () => {
+        it('Then only the [s] entry is removed; [s ""] k=b is preserved', () => {
+          // Arrange
+          const sut = removeConfigEntry;
+          const text = '[s]\n\tk = a\n[s ""]\n\tk = b\n';
+
+          // Act
+          const result = sut(text, 's', undefined, 'k');
+
+          // Assert — [s] block pruned (was its only entry); [s ""] untouched
+          expect(result).toBe('[s ""]\n\tk = b\n');
+        });
+      });
+    });
+
+    describe('Given both.conf ([s] k=a and [s ""] k=b), target subsection=""', () => {
+      describe('When removeConfigEntry removes s..k', () => {
+        it('Then only the [s ""] entry is removed; [s] k=a is preserved', () => {
+          // Arrange
+          const sut = removeConfigEntry;
+          const text = '[s]\n\tk = a\n[s ""]\n\tk = b\n';
+
+          // Act
+          const result = sut(text, 's', '', 'k');
+
+          // Assert — [s ""] block pruned (was its only entry); [s] untouched
+          expect(result).toBe('[s]\n\tk = a\n');
+        });
+      });
+    });
+
+    describe('Given three blocks [s] k=a · [s ""] k=b · [s] k=c, target subsection=undefined', () => {
+      describe('When removeConfigEntry removes s.k (unset-all semantics)', () => {
+        it('Then both [s] entries are removed and [s ""] k=b is preserved', () => {
+          // Arrange
+          const sut = removeConfigEntry;
+          const text = '[s]\n\tk = a\n[s ""]\n\tk = b\n[s]\n\tk = c\n';
+
+          // Act
+          const result = sut(text, 's', undefined, 'k');
+
+          // Assert — both [s] blocks pruned; [s ""] preserved
+          expect(result).toBe('[s ""]\n\tk = b\n');
+        });
+      });
+    });
+
+    describe('Given three blocks [s ""] k=a · [s ""] k=b · [s] k=c, target subsection=""', () => {
+      describe('When removeConfigEntry removes s..k (unset-all semantics)', () => {
+        it('Then both [s ""] entries are removed and [s] k=c is preserved', () => {
+          // Arrange
+          const sut = removeConfigEntry;
+          const text = '[s ""]\n\tk = a\n[s ""]\n\tk = b\n[s]\n\tk = c\n';
+
+          // Act
+          const result = sut(text, 's', '', 'k');
+
+          // Assert — both [s ""] blocks pruned; [s] preserved
+          expect(result).toBe('[s]\n\tk = c\n');
+        });
+      });
+    });
+
+    describe('Given [ "x"] k=a · [ ""] k=e, target section="" subsection="x"', () => {
+      describe('When removeConfigEntry removes .x.k', () => {
+        it('Then only [ "x"] is removed and pruned; [ ""] k=e is preserved', () => {
+          // Arrange — subsection identity holds inside the empty-name family
+          const sut = removeConfigEntry;
+          const text = '[ "x"]\n\tk = a\n[ ""]\n\tk = e\n';
+
+          // Act
+          const result = sut(text, '', 'x', 'k');
+
+          // Assert — [ "x"] pruned; [ ""] preserved byte-identically
+          expect(result).toBe('[ ""]\n\tk = e\n');
+        });
+      });
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // rawSectionName — pinned raw-name reductions
+  // ---------------------------------------------------------------------------
+
+  describe('rawSectionName', () => {
+    describe('Given a plain header [s]', () => {
+      describe('When rawSectionName is called', () => {
+        it('Then it returns "s"', () => {
+          // Arrange
+          const sut = rawSectionName;
+
+          // Act
+          const result = sut({ section: 's', subsection: undefined });
+
+          // Assert
+          expect(result).toBe('s');
+        });
+      });
+    });
+
+    describe('Given a subsectioned header [s "x"]', () => {
+      describe('When rawSectionName is called', () => {
+        it('Then it returns "s.x"', () => {
+          // Arrange
+          const sut = rawSectionName;
+
+          // Act
+          const result = sut({ section: 's', subsection: 'x' });
+
+          // Assert
+          expect(result).toBe('s.x');
+        });
+      });
+    });
+
+    describe('Given an explicitly empty subsection [s ""]', () => {
+      describe('When rawSectionName is called', () => {
+        it('Then it returns "s." (trailing dot)', () => {
+          // Arrange
+          const sut = rawSectionName;
+
+          // Act
+          const result = sut({ section: 's', subsection: '' });
+
+          // Assert
+          expect(result).toBe('s.');
+        });
+      });
+    });
+
+    describe('Given the empty-name family [ ""]', () => {
+      describe('When rawSectionName is called', () => {
+        it('Then it returns "." (leading dot)', () => {
+          // Arrange
+          const sut = rawSectionName;
+
+          // Act
+          const result = sut({ section: '', subsection: '' });
+
+          // Assert
+          expect(result).toBe('.');
+        });
+      });
+    });
+
+    describe('Given the empty-name family [ "x"]', () => {
+      describe('When rawSectionName is called', () => {
+        it('Then it returns ".x"', () => {
+          // Arrange
+          const sut = rawSectionName;
+
+          // Act
+          const result = sut({ section: '', subsection: 'x' });
+
+          // Assert
+          expect(result).toBe('.x');
+        });
+      });
+    });
+
+    describe('Given a deprecated dotted header [s.X] (section="s.X", subsection=undefined)', () => {
+      describe('When rawSectionName is called', () => {
+        it('Then it returns "s.X" (raw header bytes)', () => {
+          // Arrange — parseSectionHeader parses [s.X] as section="s.X", subsection=undefined
+          const sut = rawSectionName;
+
+          // Act
+          const result = sut({ section: 's.X', subsection: undefined });
+
+          // Assert
+          expect(result).toBe('s.X');
+        });
+      });
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Pinned raw-name reduction rows — removeConfigSectionInText & renameConfigSectionInText
+  // ---------------------------------------------------------------------------
+
+  describe('removeConfigSectionInText (pinned raw-name rows)', () => {
+    describe('Given [s]k=a and [s ""]k=b (both.conf)', () => {
+      describe('When removeConfigSectionInText removes "s"', () => {
+        it('Then only [s] is removed, [s ""] is preserved', () => {
+          // Arrange
+          const text = '[s]\n\tk = a\n[s ""]\n\tk = b\n';
+          const sut = removeConfigSectionInText;
+
+          // Act
+          const result = sut(text, 's');
+
+          // Assert — s matches only [s], not [s ""]
+          expect(result).toBe('[s ""]\n\tk = b\n');
+        });
+      });
+
+      describe('When removeConfigSectionInText removes "s."', () => {
+        it('Then only [s ""] is removed, [s] is preserved', () => {
+          // Arrange
+          const text = '[s]\n\tk = a\n[s ""]\n\tk = b\n';
+          const sut = removeConfigSectionInText;
+
+          // Act
+          const result = sut(text, 's.');
+
+          // Assert — trailing-dot name s. matches [s ""] only
+          expect(result).toBe('[s]\n\tk = a\n');
+        });
+      });
+
+      describe('When removeConfigSectionInText removes \'s.""\'', () => {
+        it('Then nothing is removed (two-quote-char subsection is a distinct name)', () => {
+          // Arrange
+          const text = '[s]\n\tk = a\n[s ""]\n\tk = b\n';
+          const sut = removeConfigSectionInText;
+
+          // Act
+          const result = sut(text, 's.""');
+
+          // Assert — s."" does not match s. or s; text unchanged
+          expect(result).toBe(text);
+        });
+      });
+    });
+
+    describe('Given [S]k=a (upper-case section)', () => {
+      describe('When removeConfigSectionInText removes "s" (lower-case)', () => {
+        it('Then nothing is removed (byte-exact case-sensitive matching)', () => {
+          // Arrange
+          const text = '[S]\n\tk = a\n';
+          const sut = removeConfigSectionInText;
+
+          // Act
+          const result = sut(text, 's');
+
+          // Assert — s does not match [S]; text unchanged
+          expect(result).toBe(text);
+        });
+      });
+    });
+
+    describe('Given deprecated [s.X]k=a', () => {
+      describe('When removeConfigSectionInText removes "s.X"', () => {
+        it('Then the deprecated header is removed (raw byte match)', () => {
+          // Arrange
+          const text = '[s.X]\n\tk = a\n';
+          const sut = removeConfigSectionInText;
+
+          // Act
+          const result = sut(text, 's.X');
+
+          // Assert — s.X matches deprecated [s.X]
+          expect(result).toBe('');
+        });
+      });
+
+      describe('When removeConfigSectionInText removes "s.x" (lower-case)', () => {
+        it('Then nothing is removed (case-sensitive; s.x ≠ s.X)', () => {
+          // Arrange
+          const text = '[s.X]\n\tk = a\n';
+          const sut = removeConfigSectionInText;
+
+          // Act
+          const result = sut(text, 's.x');
+
+          // Assert — s.x does not match [s.X]; text unchanged
+          expect(result).toBe(text);
+        });
+      });
+    });
+
+    describe('Given [a.b]k=p and [a "b"]k=q (ambiguity)', () => {
+      describe('When removeConfigSectionInText removes "a.b"', () => {
+        it('Then both blocks are removed (a.b is the raw name of both)', () => {
+          // Arrange
+          const text = '[a.b]\n\tk = p\n[a "b"]\n\tk = q\n';
+          const sut = removeConfigSectionInText;
+
+          // Act
+          const result = sut(text, 'a.b');
+
+          // Assert — documented a.b ambiguity; both blocks removed
+          expect(result).toBe('');
+        });
+      });
+    });
+
+    describe('Given [s]k=a, [s "x"]k=b, and [s]k=c (multi-block plain)', () => {
+      describe('When removeConfigSectionInText removes "s"', () => {
+        it('Then both [s] blocks are removed, [s "x"] is preserved', () => {
+          // Arrange
+          const text = '[s]\n\tk = a\n[s "x"]\n\tk = b\n[s]\n\tk = c\n';
+          const sut = removeConfigSectionInText;
+
+          // Act
+          const result = sut(text, 's');
+
+          // Assert — multi-block plain removal
+          expect(result).toBe('[s "x"]\n\tk = b\n');
+        });
+      });
+    });
+
+    describe('Given [ ""] in name-mix.conf', () => {
+      describe('When removeConfigSectionInText removes "."', () => {
+        it('Then only [ ""] is removed, [s] and [s ""] are preserved', () => {
+          // Arrange
+          const text = '[ ""]\n\tk = e\n[s]\n\tk = a\n[s ""]\n\tk = b\n';
+          const sut = removeConfigSectionInText;
+
+          // Act
+          const result = sut(text, '.');
+
+          // Assert — . matches [ ""] only
+          expect(result).toBe('[s]\n\tk = a\n[s ""]\n\tk = b\n');
+        });
+      });
+    });
+
+    describe('Given [ "x"]k=e in the file', () => {
+      describe('When removeConfigSectionInText removes ".x"', () => {
+        it('Then only [ "x"] is removed', () => {
+          // Arrange
+          const text = '[ "x"]\n\tk = e\n[s]\n\tk = a\n';
+          const sut = removeConfigSectionInText;
+
+          // Act
+          const result = sut(text, '.x');
+
+          // Assert — .x matches [ "x"] only
+          expect(result).toBe('[s]\n\tk = a\n');
+        });
+      });
+    });
+
+    describe('Given [s     ""] (pre-quote whitespace, whitespace not identity)', () => {
+      describe('When removeConfigSectionInText removes "s."', () => {
+        it('Then the block is removed (pre-quote whitespace is not part of the raw name)', () => {
+          // Arrange — parseSectionHeader strips pre-quote whitespace; raw name is still s.
+          const text = '[s     ""]\n\tk = a\n';
+          const sut = removeConfigSectionInText;
+
+          // Act
+          const result = sut(text, 's.');
+
+          // Assert — whitespace before quote is not identity
+          expect(result).toBe('');
+        });
+      });
+    });
+
+    describe('Given [s "a\\"b"] (escaped quote in subsection)', () => {
+      describe("When removeConfigSectionInText removes 's.a\"b'", () => {
+        it('Then the block is removed (subsection unescaped before joining)', () => {
+          // Arrange — parseSectionHeader unescapes \\\" → "; rawSectionName joins s + . + a"b
+          const text = '[s "a\\"b"]\n\tk = a\n';
+          const sut = removeConfigSectionInText;
+
+          // Act
+          const result = sut(text, 's.a"b');
+
+          // Assert — subsection is unescaped before raw-name comparison
+          expect(result).toBe('');
+        });
+      });
+    });
+  });
+
+  describe('renameConfigSectionInText (pinned raw-name rows)', () => {
+    describe('Given [a "b."]k=p and [a.b ""]k=q', () => {
+      describe('When renameConfigSectionInText renames "a.b." to { section: "t", subsection: undefined }', () => {
+        it('Then both ambiguous headers become [t] (raw a.b. matches both)', () => {
+          // Arrange
+          const text = '[a "b."]\n\tk = p\n[a.b ""]\n\tk = q\n';
+          const sut = renameConfigSectionInText;
+
+          // Act
+          const result = sut(text, 'a.b.', { section: 't' });
+
+          // Assert — a.b. is the raw name of both [a "b."] and [a.b ""]
+          expect(result).toBe('[t]\n\tk = p\n[t]\n\tk = q\n');
+        });
+      });
+    });
+
+    describe('Given [s]k=a, [s "x"]k=b, and [s]k=c', () => {
+      describe('When renameConfigSectionInText renames "s" to { section: "t" }', () => {
+        it('Then both [s] blocks become [t], [s "x"] is preserved', () => {
+          // Arrange
+          const text = '[s]\n\tk = a\n[s "x"]\n\tk = b\n[s]\n\tk = c\n';
+          const sut = renameConfigSectionInText;
+
+          // Act
+          const result = sut(text, 's', { section: 't' });
+
+          // Assert — multi-block plain rename
+          expect(result).toBe('[t]\n\tk = a\n[s "x"]\n\tk = b\n[t]\n\tk = c\n');
+        });
+      });
+    });
+
+    describe('Given [s]k=a (plain header)', () => {
+      describe('When renameConfigSectionInText renames "s" to { section: "s", subsection: "" }', () => {
+        it('Then the header becomes [s ""] (duplicate-with-empty allowed at primitive level)', () => {
+          // Arrange
+          const text = '[s]\n\tk = a\n';
+          const sut = renameConfigSectionInText;
+
+          // Act
+          const result = sut(text, 's', { section: 's', subsection: '' });
+
+          // Assert — rename plain → empty-subsection form
+          expect(result).toBe('[s ""]\n\tk = a\n');
+        });
+      });
+    });
+
+    describe('Given [s "x"]k=a', () => {
+      describe('When renameConfigSectionInText renames "s.x" to { section: "t" } (cross-family)', () => {
+        it('Then the header becomes [t] (cross-family at the primitive level)', () => {
+          // Arrange
+          const text = '[s "x"]\n\tk = a\n';
+          const sut = renameConfigSectionInText;
+
+          // Act
+          const result = sut(text, 's.x', { section: 't' });
+
+          // Assert — cross-family rename at primitive level
+          expect(result).toBe('[t]\n\tk = a\n');
+        });
+      });
+    });
+
+    describe('Given [s "x"]k=a', () => {
+      describe('When renameConfigSectionInText renames "s.x" to { section: "s", subsection: "" }', () => {
+        it('Then the header becomes [s ""] (named subsection collapses to the empty form)', () => {
+          // Arrange
+          const text = '[s "x"]\n\tk = a\n';
+          const sut = renameConfigSectionInText;
+
+          // Act
+          const result = sut(text, 's.x', { section: 's', subsection: '' });
+
+          // Assert
+          expect(result).toBe('[s ""]\n\tk = a\n');
+        });
+      });
+    });
+
+    describe('Given [s "x"]k=a', () => {
+      describe('When renameConfigSectionInText renames "s.x" to { section: "", subsection: "" }', () => {
+        it('Then the header becomes [ ""] (named form moves into the empty-name family)', () => {
+          // Arrange
+          const text = '[s "x"]\n\tk = a\n';
+          const sut = renameConfigSectionInText;
+
+          // Act
+          const result = sut(text, 's.x', { section: '', subsection: '' });
+
+          // Assert
+          expect(result).toBe('[ ""]\n\tk = a\n');
+        });
+      });
+    });
+
+    describe('Given [S]k=a (upper-case header)', () => {
+      describe('When renameConfigSectionInText renames the byte-exact "S" to { section: "t" }', () => {
+        it('Then the header becomes [t] (matching success direction of case sensitivity)', () => {
+          // Arrange
+          const text = '[S]\n\tk = a\n';
+          const sut = renameConfigSectionInText;
+
+          // Act
+          const result = sut(text, 'S', { section: 't' });
+
+          // Assert
+          expect(result).toBe('[t]\n\tk = a\n');
+        });
+      });
+    });
+
+    describe('Given [s "X"]k=a (upper-case subsection)', () => {
+      describe('When renameConfigSectionInText renames the byte-exact "s.X" to { section: "t" }', () => {
+        it('Then the header becomes [t] (matching success direction of subsection case)', () => {
+          // Arrange
+          const text = '[s "X"]\n\tk = a\n';
+          const sut = renameConfigSectionInText;
+
+          // Act
+          const result = sut(text, 's.X', { section: 't' });
+
+          // Assert
+          expect(result).toBe('[t]\n\tk = a\n');
+        });
+      });
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // applyConfigOpInText — removeSection call-site adaptation
+  // ---------------------------------------------------------------------------
+
+  describe('applyConfigOpInText (removeSection call-site)', () => {
+    describe('Given [s]k=a and [s ""]k=b, and a removeSection op with section "s" (no subsection)', () => {
+      describe('When applyConfigOpInText applies the op', () => {
+        it('Then only [s] is removed, [s ""] is preserved', () => {
+          // Arrange — { kind: "removeSection", section: "s" } maps to raw name "s"
+          const text = '[s]\n\tk = a\n[s ""]\n\tk = b\n';
+          const op: ConfigOperation = { kind: 'removeSection', section: 's' };
+
+          // Act
+          const result = applyConfigOpInText(text, op);
+
+          // Assert
+          expect(result).toBe('[s ""]\n\tk = b\n');
+        });
+      });
+    });
+
+    describe('Given [s]k=a and [s ""]k=b, and a removeSection op with section "s" and subsection ""', () => {
+      describe('When applyConfigOpInText applies the op', () => {
+        it('Then only [s ""] is removed, [s] is preserved', () => {
+          // Arrange — the op maps to the raw name "s." addressing only [s ""]
+          const text = '[s]\n\tk = a\n[s ""]\n\tk = b\n';
+          const op: ConfigOperation = { kind: 'removeSection', section: 's', subsection: '' };
+
+          // Act
+          const result = applyConfigOpInText(text, op);
+
+          // Assert
+          expect(result).toBe('[s]\n\tk = a\n');
+        });
+      });
+    });
+  });
+
+  describe('applyConfigOpInText (renameSection call-site)', () => {
+    describe('Given [remote "old"]url=u, and a renameSection op from "old" to "new"', () => {
+      describe('When applyConfigOpInText applies the op', () => {
+        it('Then the op addresses the raw name remote.old and rewrites the header to [remote "new"]', () => {
+          // Arrange
+          const text = '[remote "old"]\n\turl = u\n';
+          const op: ConfigOperation = {
+            kind: 'renameSection',
+            section: 'remote',
+            from: 'old',
+            to: 'new',
+          };
+
+          // Act
+          const result = applyConfigOpInText(text, op);
+
+          // Assert
+          expect(result).toBe('[remote "new"]\n\turl = u\n');
+        });
+      });
+    });
   });
 
   describe('removeConfigSectionInText', () => {
     describe('Given a section that is the last block', () => {
-      describe('When removeConfigSectionInText', () => {
+      describe('When removeConfigSectionInText removes remote.origin', () => {
         it('Then the header and body are gone', () => {
           // Arrange
           const text = '[remote "origin"]\n\turl = u\n\tfetch = +A:B\n';
 
           // Act
           const sut = removeConfigSectionInText;
-          const result = sut(text, 'remote', 'origin');
+          const result = sut(text, 'remote.origin');
 
           // Assert
           expect(result).toBe('');
@@ -1950,14 +2687,14 @@ describe('primitives/update-config', () => {
     });
 
     describe('Given a section followed by another section', () => {
-      describe('When removeConfigSectionInText', () => {
+      describe('When removeConfigSectionInText removes remote.origin', () => {
         it('Then the following section is preserved byte-for-byte', () => {
           // Arrange
           const text = '[remote "origin"]\n\turl = O\n[remote "upstream"]\n\turl = U\n';
 
           // Act
           const sut = removeConfigSectionInText;
-          const result = sut(text, 'remote', 'origin');
+          const result = sut(text, 'remote.origin');
 
           // Assert
           expect(result).toBe('[remote "upstream"]\n\turl = U\n');
@@ -1966,14 +2703,14 @@ describe('primitives/update-config', () => {
     });
 
     describe('Given a section preceded by another section', () => {
-      describe('When removeConfigSectionInText', () => {
+      describe('When removeConfigSectionInText removes remote.origin', () => {
         it('Then the preceding section is preserved', () => {
           // Arrange
           const text = '[core]\n\tbare = false\n[remote "origin"]\n\turl = u\n';
 
           // Act
           const sut = removeConfigSectionInText;
-          const result = sut(text, 'remote', 'origin');
+          const result = sut(text, 'remote.origin');
 
           // Assert
           expect(result).toBe('[core]\n\tbare = false\n');
@@ -1982,14 +2719,14 @@ describe('primitives/update-config', () => {
     });
 
     describe('Given no matching section', () => {
-      describe('When removeConfigSectionInText', () => {
+      describe('When removeConfigSectionInText removes remote.origin', () => {
         it('Then the text is byte-identical', () => {
           // Arrange
           const text = '[core]\n\tbare = false\n';
 
           // Act
           const sut = removeConfigSectionInText;
-          const result = sut(text, 'remote', 'origin');
+          const result = sut(text, 'remote.origin');
 
           // Assert
           expect(result).toBe(text);
@@ -1998,7 +2735,7 @@ describe('primitives/update-config', () => {
     });
 
     describe('Given two matching section blocks (corrupt config)', () => {
-      describe('When removeConfigSectionInText', () => {
+      describe('When removeConfigSectionInText removes remote.origin', () => {
         it('Then every occurrence is removed', () => {
           // Arrange — two `[remote "origin"]` headers from a manually-edited file.
           const text =
@@ -2006,7 +2743,7 @@ describe('primitives/update-config', () => {
 
           // Act
           const sut = removeConfigSectionInText;
-          const result = sut(text, 'remote', 'origin');
+          const result = sut(text, 'remote.origin');
 
           // Assert
           expect(result).toBe('[core]\n\tbare = false\n');
@@ -2015,14 +2752,14 @@ describe('primitives/update-config', () => {
     });
 
     describe('Given a section without a subsection', () => {
-      describe('When removeConfigSectionInText (no subsection)', () => {
+      describe('When removeConfigSectionInText removes core (no subsection)', () => {
         it('Then it removes the matching plain section', () => {
           // Arrange
           const text = '[core]\n\tbare = false\n[user]\n\tname = Ada\n';
 
           // Act
           const sut = removeConfigSectionInText;
-          const result = sut(text, 'core', undefined);
+          const result = sut(text, 'core');
 
           // Assert
           expect(result).toBe('[user]\n\tname = Ada\n');
@@ -2038,7 +2775,7 @@ describe('primitives/update-config', () => {
 
           // Act
           const sut = removeConfigSectionInText;
-          const result = sut(text, 'remote', 'origin');
+          const result = sut(text, 'remote.origin');
 
           // Assert
           expect(result).toBe('[core]\n\tbare = false');
@@ -2046,34 +2783,35 @@ describe('primitives/update-config', () => {
       });
     });
 
-    describe('Given a section name containing a bracket', () => {
-      describe('When removeConfigSectionInText', () => {
-        it('Then it throws INVALID_OPTION', () => {
-          // Arrange
-          let caught: unknown;
-          try {
-            removeConfigSectionInText('', 'core]\n[evil', undefined);
-          } catch (err) {
-            caught = err;
-          }
+    describe('Given a raw oldName that would be syntactically invalid as a section name', () => {
+      describe('When removeConfigSectionInText is called with oldName "core]\\n[evil"', () => {
+        it('Then no validation occurs and the text is returned byte-identical (no match)', () => {
+          // Arrange — raw matching never validates the old name; an invalid-looking
+          // name is just a lookup miss, not a grammar error.
+          const text = '[core]\n\ta = b\n';
 
-          // Assert
-          expect((caught as TsgitError).data.code).toBe('INVALID_OPTION');
+          // Act
+          const sut = removeConfigSectionInText;
+          const result = sut(text, 'core]\n[evil');
+
+          // Assert — matches nothing, text unchanged
+          expect(result).toBe(text);
         });
       });
     });
 
     describe('Given a subsection containing a quote (a"b)', () => {
-      describe('When removeConfigSectionInText', () => {
-        it('Then the subsection is accepted and the matching section is removed', () => {
-          // Arrange — subsection with a quote is now accepted and escaped on render
+      describe('When removeConfigSectionInText removes remote.a"b', () => {
+        it('Then the subsection is matched by its unescaped raw name and the section is removed', () => {
+          // Arrange — parseSectionHeader unescapes \" → "; rawSectionName joins to
+          // 'remote.a"b'; the raw name 'remote.a"b' matches exactly.
           const text = '[remote "a\\"b"]\n\turl = u\n';
 
           // Act
           const sut = removeConfigSectionInText;
-          const result = sut(text, 'remote', 'a"b');
+          const result = sut(text, 'remote.a"b');
 
-          // Assert — the section is removed (no-op on empty text is fine; here we verify it works)
+          // Assert — the section is removed
           expect(result).toBe('');
         });
       });
@@ -2091,7 +2829,7 @@ describe('primitives/update-config', () => {
 
           // Act
           const sut = removeConfigSectionInText;
-          const result = sut(text, 'a', undefined);
+          const result = sut(text, 'a');
 
           // Assert
           expect(result).toBe('[b]\n\tk = v\n');
@@ -2112,7 +2850,7 @@ describe('primitives/update-config', () => {
 
           // Act
           const sut = removeConfigSectionInText;
-          const result = sut(text, 'a', undefined);
+          const result = sut(text, 'a');
 
           // Assert
           expect(result).toBe('[b]\n\tk = v\n');
@@ -2131,10 +2869,79 @@ describe('primitives/update-config', () => {
 
           // Act
           const sut = removeConfigSectionInText;
-          const result = sut(text, 'b', undefined);
+          const result = sut(text, 'b');
 
           // Assert
           expect(result).toBe('[a]\n\tkey = one\\\n[d]\n\te = f\n');
+        });
+      });
+    });
+
+    describe('Given a leading comment line before the first section header', () => {
+      describe('When removeConfigSectionInText removes "s"', () => {
+        it('Then the leading comment is preserved and the matching section is dropped', () => {
+          // Arrange — skipping starts false; content before the first header must pass through
+          const text = '# repository config\n[s]\n\tk = a\n[t]\n\tk = b\n';
+          const sut = removeConfigSectionInText;
+
+          // Act
+          const result = sut(text, 's');
+
+          // Assert
+          expect(result).toBe('# repository config\n[t]\n\tk = b\n');
+        });
+      });
+    });
+
+    describe('Given an indented section header "  [s]"', () => {
+      describe('When removeConfigSectionInText removes "s"', () => {
+        it('Then the indented header and its body are removed (trim is applied before header detection and matching)', () => {
+          // Arrange — git accepts leading whitespace before a header; both isSectionHeader
+          // and matchesRawSectionName must trim before parsing
+          const text = '  [s]\n\tk = a\n[t]\n\tk = b\n';
+          const sut = removeConfigSectionInText;
+
+          // Act
+          const result = sut(text, 's');
+
+          // Assert
+          expect(result).toBe('[t]\n\tk = b\n');
+        });
+      });
+    });
+
+    describe('Given a body line ending in "]" inside a removed section', () => {
+      describe('When removeConfigSectionInText removes "s"', () => {
+        it('Then the body line is dropped along with the rest of the section (isSectionHeader requires both "[" prefix and "]" suffix)', () => {
+          // Arrange — a value like `val = [x]` ends in ] but does not start with [;
+          // the logical-OR pre-filter mutant would stop skipping here and preserve
+          // subsequent body lines incorrectly
+          const text = '[s]\n\tval = [x]\n\tother = z\n[t]\n\tk = b\n';
+          const sut = removeConfigSectionInText;
+
+          // Act
+          const result = sut(text, 's');
+
+          // Assert
+          expect(result).toBe('[t]\n\tk = b\n');
+        });
+      });
+    });
+
+    describe('Given a body line starting with "[" but without a closing "]" inside a removed section', () => {
+      describe('When removeConfigSectionInText removes "s"', () => {
+        it('Then the body line is dropped along with the rest of the section (isSectionHeader requires the "]" suffix)', () => {
+          // Arrange — a malformed line `[no-close` starts with [ but lacks ] ;
+          // the endsWith-empty-string mutant would stop skipping here and preserve
+          // subsequent body lines incorrectly
+          const text = '[s]\n\tk = a\n[no-close\n\tother = z\n[t]\n\tk = b\n';
+          const sut = removeConfigSectionInText;
+
+          // Act
+          const result = sut(text, 's');
+
+          // Assert
+          expect(result).toBe('[t]\n\tk = b\n');
         });
       });
     });
@@ -2177,15 +2984,15 @@ describe('primitives/update-config', () => {
   });
 
   describe('renameConfigSectionInText', () => {
-    describe('Given a section block matching `from`', () => {
-      describe('When renameConfigSectionInText', () => {
-        it('Then the header subsection becomes `to` and the body is preserved', () => {
+    describe('Given a section block matching oldName remote.old', () => {
+      describe('When renameConfigSectionInText renames remote.old to { section: remote, subsection: new }', () => {
+        it('Then the header subsection becomes "new" and the body is preserved', () => {
           // Arrange
           const text = '[remote "old"]\n\turl = u\n\tfetch = +A:B\n';
 
           // Act
           const sut = renameConfigSectionInText;
-          const result = sut(text, 'remote', 'old', 'new');
+          const result = sut(text, 'remote.old', { section: 'remote', subsection: 'new' });
 
           // Assert
           expect(result).toBe('[remote "new"]\n\turl = u\n\tfetch = +A:B\n');
@@ -2194,7 +3001,7 @@ describe('primitives/update-config', () => {
     });
 
     describe('Given the section is one of several', () => {
-      describe('When renameConfigSectionInText', () => {
+      describe('When renameConfigSectionInText renames remote.old to { section: remote, subsection: new }', () => {
         it('Then unrelated sections are preserved', () => {
           // Arrange
           const text =
@@ -2202,7 +3009,7 @@ describe('primitives/update-config', () => {
 
           // Act
           const sut = renameConfigSectionInText;
-          const result = sut(text, 'remote', 'old', 'new');
+          const result = sut(text, 'remote.old', { section: 'remote', subsection: 'new' });
 
           // Assert
           expect(result).toBe(
@@ -2213,14 +3020,14 @@ describe('primitives/update-config', () => {
     });
 
     describe('Given no matching section', () => {
-      describe('When renameConfigSectionInText', () => {
+      describe('When renameConfigSectionInText renames remote.old to { section: remote, subsection: new }', () => {
         it('Then the text is byte-identical', () => {
           // Arrange
           const text = '[remote "other"]\n\turl = o\n';
 
           // Act
           const sut = renameConfigSectionInText;
-          const result = sut(text, 'remote', 'old', 'new');
+          const result = sut(text, 'remote.old', { section: 'remote', subsection: 'new' });
 
           // Assert
           expect(result).toBe(text);
@@ -2229,14 +3036,14 @@ describe('primitives/update-config', () => {
     });
 
     describe('Given the same section name twice', () => {
-      describe('When renameConfigSectionInText', () => {
+      describe('When renameConfigSectionInText renames remote.old to { section: remote, subsection: new }', () => {
         it('Then every occurrence is renamed', () => {
           // Arrange
           const text = '[remote "old"]\n\turl = A\n[remote "old"]\n\turl = B\n';
 
           // Act
           const sut = renameConfigSectionInText;
-          const result = sut(text, 'remote', 'old', 'new');
+          const result = sut(text, 'remote.old', { section: 'remote', subsection: 'new' });
 
           // Assert
           expect(result).toBe('[remote "new"]\n\turl = A\n[remote "new"]\n\turl = B\n');
@@ -2245,14 +3052,14 @@ describe('primitives/update-config', () => {
     });
 
     describe('Given a section with the `from` name in a different section family', () => {
-      describe('When renameConfigSectionInText', () => {
-        it('Then only the targeted family is renamed', () => {
-          // Arrange — `[branch "old"]` must NOT be renamed when family is `remote`.
+      describe('When renameConfigSectionInText renames remote.old to { section: remote, subsection: new }', () => {
+        it('Then only the targeted raw name is renamed, branch.old is untouched', () => {
+          // Arrange — `[branch "old"]` raw name is 'branch.old', not 'remote.old'; must not match.
           const text = '[branch "old"]\n\tmerge = m\n[remote "old"]\n\turl = u\n';
 
           // Act
           const sut = renameConfigSectionInText;
-          const result = sut(text, 'remote', 'old', 'new');
+          const result = sut(text, 'remote.old', { section: 'remote', subsection: 'new' });
 
           // Assert
           expect(result).toBe('[branch "old"]\n\tmerge = m\n[remote "new"]\n\turl = u\n');
@@ -2260,58 +3067,161 @@ describe('primitives/update-config', () => {
       });
     });
 
-    describe('Given a target subsection containing a newline', () => {
-      describe('When renameConfigSectionInText', () => {
-        it('Then it throws INVALID_OPTION', () => {
-          // Arrange
+    describe('Given a new subsection containing a newline', () => {
+      describe('When renameConfigSectionInText is called with to.subsection "ne\\nw"', () => {
+        it('Then it throws INVALID_OPTION (LF divergence guard)', () => {
+          // Arrange — rejectSubsection fires on the to.subsection before any I/O
           let caught: unknown;
           try {
-            renameConfigSectionInText('', 'remote', 'old', 'ne\nw');
+            renameConfigSectionInText('', 'remote.old', { section: 'remote', subsection: 'ne\nw' });
           } catch (err) {
             caught = err;
           }
 
           // Assert
           expect(caught).toBeInstanceOf(TsgitError);
-          expect((caught as TsgitError).data.code).toBe('INVALID_OPTION');
+          const data = (caught as TsgitError).data;
+          expect(data.code).toBe('INVALID_OPTION');
+          if (data.code === 'INVALID_OPTION') {
+            expect(data.option).toBe('config');
+            expect(data.reason).toBe('subsection must not contain a newline or NUL');
+          }
         });
       });
     });
 
-    describe('Given a target subsection containing a quote (a"b)', () => {
-      describe('When renameConfigSectionInText', () => {
+    describe('Given a new section name containing a bracket', () => {
+      describe('When renameConfigSectionInText is called with to.section "bad]name"', () => {
+        it('Then it throws INVALID_OPTION (section guard)', () => {
+          // Arrange — rejectSection fires on to.section before any I/O
+          let caught: unknown;
+          try {
+            renameConfigSectionInText('', 'remote.old', { section: 'bad]name' });
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data;
+          expect(data.code).toBe('INVALID_OPTION');
+          if (data.code === 'INVALID_OPTION') {
+            expect(data.option).toBe('config');
+            expect(data.reason).toBe(
+              'section must not contain whitespace, NUL, brackets, quotes, or backslashes',
+            );
+          }
+        });
+      });
+    });
+
+    describe('Given a new section name containing a space', () => {
+      describe('When renameConfigSectionInText is called with to.section "a b"', () => {
+        it('Then it throws INVALID_OPTION (unparseable-header guard)', () => {
+          // Arrange — a space would render "[a b]", which git refuses to re-read
+          let caught: unknown;
+          try {
+            renameConfigSectionInText('', 'remote.old', { section: 'a b' });
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data;
+          expect(data.code).toBe('INVALID_OPTION');
+          if (data.code === 'INVALID_OPTION') {
+            expect(data.option).toBe('config');
+            expect(data.reason).toBe(
+              'section must not contain whitespace, NUL, brackets, quotes, or backslashes',
+            );
+          }
+        });
+      });
+    });
+
+    describe('Given a new name with an empty section and no subsection', () => {
+      describe('When renameConfigSectionInText is called with to.section ""', () => {
+        it('Then it throws INVALID_OPTION instead of writing an unparseable [] header', () => {
+          // Arrange
+          let caught: unknown;
+          try {
+            renameConfigSectionInText('', 'x', { section: '' });
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data;
+          expect(data.code).toBe('INVALID_OPTION');
+          if (data.code === 'INVALID_OPTION') {
+            expect(data.option).toBe('config');
+            expect(data.reason).toBe('section name must not be empty without a subsection');
+          }
+        });
+      });
+    });
+
+    describe('Given a new section name containing an opening bracket', () => {
+      describe('When renameConfigSectionInText is called with to.section "a[b"', () => {
+        it('Then it throws INVALID_OPTION (unparseable-header guard)', () => {
+          // Arrange
+          let caught: unknown;
+          try {
+            renameConfigSectionInText('', 'remote.old', { section: 'a[b' });
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data;
+          expect(data.code).toBe('INVALID_OPTION');
+          if (data.code === 'INVALID_OPTION') {
+            expect(data.option).toBe('config');
+            expect(data.reason).toBe(
+              'section must not contain whitespace, NUL, brackets, quotes, or backslashes',
+            );
+          }
+        });
+      });
+    });
+
+    describe('Given a new subsection containing a quote (a"b)', () => {
+      describe('When renameConfigSectionInText renames remote.old to { section: remote, subsection: a"b }', () => {
         it('Then the quote is escaped and the new header is rendered as [remote "a\\"b"]', () => {
           // Arrange
           const text = '[remote "old"]\n\turl = u\n';
 
           // Act
           const sut = renameConfigSectionInText;
-          const result = sut(text, 'remote', 'old', 'a"b');
+          const result = sut(text, 'remote.old', { section: 'remote', subsection: 'a"b' });
 
-          // Assert — git escapes " → \" in the target subsection
+          // Assert — renderSectionHeader escapes " → \" in the subsection
           expect(result).toBe('[remote "a\\"b"]\n\turl = u\n');
         });
       });
     });
 
-    describe('Given a target subsection containing a backslash (a\\b)', () => {
-      describe('When renameConfigSectionInText', () => {
+    describe('Given a new subsection containing a backslash (a\\b)', () => {
+      describe('When renameConfigSectionInText renames remote.old to { section: remote, subsection: a\\b }', () => {
         it('Then the backslash is escaped and the new header is rendered as [remote "a\\\\b"]', () => {
           // Arrange
           const text = '[remote "old"]\n\turl = u\n';
 
           // Act
           const sut = renameConfigSectionInText;
-          const result = sut(text, 'remote', 'old', 'a\\b');
+          const result = sut(text, 'remote.old', { section: 'remote', subsection: 'a\\b' });
 
-          // Assert — git escapes \ → \\ in the target subsection
+          // Assert — renderSectionHeader escapes \ → \\ in the subsection
           expect(result).toBe('[remote "a\\\\b"]\n\turl = u\n');
         });
       });
     });
 
     describe('Given a section with a continuation tail that parses as the rename target', () => {
-      describe('When renameConfigSectionInText renames b.s to b.t', () => {
+      describe('When renameConfigSectionInText renames b.s to { section: b, subsection: t }', () => {
         it('Then both the real header and the lookalike tail are renamed (N1)', () => {
           // Arrange — row N1: `[a]` has `key = one\` then `[b "s"]` (a lookalike tail);
           // a real `[b "s"]` block follows. Canonical git's rename-section machinery is
@@ -2322,7 +3232,7 @@ describe('primitives/update-config', () => {
 
           // Act
           const sut = renameConfigSectionInText;
-          const result = sut(text, 'b', 's', 't');
+          const result = sut(text, 'b.s', { section: 'b', subsection: 't' });
 
           // Assert
           expect(result).toBe('[a]\n\tkey = one\\\n[b "t"]\n[b "t"]\n\tk = v\n');
@@ -2331,7 +3241,7 @@ describe('primitives/update-config', () => {
     });
 
     describe('Given a section with a continuation tail that does NOT parse as the rename target', () => {
-      describe('When renameConfigSectionInText renames a.s to a.t', () => {
+      describe('When renameConfigSectionInText renames a.s to { section: a, subsection: t }', () => {
         it('Then the header is renamed and body tails pass through verbatim (N2)', () => {
           // Arrange — row N2: `[a "s"]` has a two-line continuation body tail `   two`.
           // That tail does not parse as any section header, so it passes through verbatim.
@@ -2339,10 +3249,26 @@ describe('primitives/update-config', () => {
 
           // Act
           const sut = renameConfigSectionInText;
-          const result = sut(text, 'a', 's', 't');
+          const result = sut(text, 'a.s', { section: 'a', subsection: 't' });
 
           // Assert
           expect(result).toBe('[a "t"]\n\tkey = one\\\n   two\n[b]\n\tk = v\n');
+        });
+      });
+    });
+
+    describe('Given an indented section header "  [s]"', () => {
+      describe('When renameConfigSectionInText renames "s" to { section: "t" }', () => {
+        it('Then the indented header is matched and renamed (trim is applied before parsing)', () => {
+          // Arrange — matchesRawSectionName must trim the line before calling parseSectionHeader
+          const text = '  [s]\n\tk = a\n';
+          const sut = renameConfigSectionInText;
+
+          // Act
+          const result = sut(text, 's', { section: 't' });
+
+          // Assert
+          expect(result).toBe('[t]\n\tk = a\n');
         });
       });
     });
@@ -2360,7 +3286,7 @@ describe('primitives/update-config', () => {
 
           // Act
           const sut = removeConfigSectionInText;
-          const result = sut(text, 'b', 's');
+          const result = sut(text, 'b.s');
 
           // Assert
           expect(result).toBe('[a]\n\tkey = one\\\n[d]\n\te = f\n');
@@ -2370,6 +3296,29 @@ describe('primitives/update-config', () => {
   });
 
   describe('appendConfigEntry', () => {
+    describe('Given an empty section name with no subsection', () => {
+      describe('When appendConfigEntry is called', () => {
+        it('Then it throws INVALID_OPTION instead of writing an unparseable [] header', () => {
+          // Arrange
+          let caught: unknown;
+          try {
+            appendConfigEntry('', '', undefined, 'k', 'v');
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data;
+          expect(data.code).toBe('INVALID_OPTION');
+          if (data.code === 'INVALID_OPTION') {
+            expect(data.option).toBe('config');
+            expect(data.reason).toBe('section name must not be empty without a subsection');
+          }
+        });
+      });
+    });
+
     describe('Given an existing section with one prior entry for the key', () => {
       describe('When appendConfigEntry', () => {
         it('Then the new entry is inserted AFTER the existing one (order preserved)', () => {
@@ -2498,6 +3447,74 @@ describe('primitives/update-config', () => {
 
           // Assert — new entry appended after the full span of the continuation
           expect(result).toBe('[remote "o"]\n\tfetch = A\\\n   tail\n\tfetch = B\n');
+        });
+      });
+    });
+
+    // ---------------------------------------------------------------------------
+    // Append identity rows 7–9 from the pinned table
+    // ---------------------------------------------------------------------------
+
+    describe('Given an empty file, target subsection=""', () => {
+      describe('When appendConfigEntry adds s..k with value v', () => {
+        it('Then a new [s ""] section is created with k = v', () => {
+          // Arrange
+          const sut = appendConfigEntry;
+          const text = '';
+
+          // Act
+          const result = sut(text, 's', '', 'k', 'v');
+
+          // Assert
+          expect(result).toBe('[s ""]\n\tk = v\n');
+        });
+      });
+    });
+
+    describe('Given [s ""] with k=v already (from the prior append), target subsection=""', () => {
+      describe('When appendConfigEntry adds another s..k with value v2', () => {
+        it('Then a second k entry is appended inside [s ""]', () => {
+          // Arrange
+          const sut = appendConfigEntry;
+          const text = '[s ""]\n\tk = v\n';
+
+          // Act
+          const result = sut(text, 's', '', 'k', 'v2');
+
+          // Assert — second entry appended inside the same [s ""] block
+          expect(result).toBe('[s ""]\n\tk = v\n\tk = v2\n');
+        });
+      });
+    });
+
+    describe('Given empty-only.conf ([s ""] with k=b), target subsection=undefined', () => {
+      describe('When appendConfigEntry adds s.k with value x', () => {
+        it('Then a new [s] section is appended with k = x', () => {
+          // Arrange
+          const sut = appendConfigEntry;
+          const text = '[s ""]\n\tk = b\n';
+
+          // Act
+          const result = sut(text, 's', undefined, 'k', 'x');
+
+          // Assert — [s ""] untouched; new [s] appended
+          expect(result).toBe('[s ""]\n\tk = b\n[s]\n\tk = x\n');
+        });
+      });
+    });
+
+    describe('Given [ ""] with k=v already, target section="" subsection=""', () => {
+      describe('When appendConfigEntry adds another ..k with value v2', () => {
+        it('Then the second entry is appended inside [ ""]', () => {
+          // Arrange
+          const sut = appendConfigEntry;
+          const text = '[ ""]\n\tk = v\n';
+
+          // Act
+          const result = sut(text, '', '', 'k', 'v2');
+
+          // Assert — appended inside the same [ ""] block
+          expect(result).toBe('[ ""]\n\tk = v\n\tk = v2\n');
         });
       });
     });
@@ -2642,6 +3659,7 @@ describe('primitives/update-config', () => {
 });
 
 import {
+  parseNewSectionName,
   removeConfigSection,
   renameConfigSection,
   setConfigEntry,
@@ -3168,43 +4186,62 @@ describe('renameConfigSection (I/O)', () => {
     });
   });
 
-  describe('Given a cross-family rename (remote.origin → branch.main), When renameConfigSection runs', () => {
-    it('Then it throws INVALID_OPTION', async () => {
+  describe('Given [remote "origin"] seeded, When renameConfigSection renames remote.origin to branch.main', () => {
+    it('Then the header is rewritten to [branch "main"] (cross-family allowed)', async () => {
       // Arrange
       const ctx = createMemoryContext();
-      let caught: TsgitError | undefined;
+      await ctx.fs.writeUtf8(
+        `${ctx.layout.gitDir}/config`,
+        '[remote "origin"]\n\turl = git@example.com:r.git\n',
+      );
 
       // Act
-      try {
-        await renameConfigSection({
-          ctx,
-          oldName: 'remote.origin',
-          newName: 'branch.main',
-        });
-      } catch (err) {
-        caught = err as TsgitError;
-      }
+      await renameConfigSection({
+        ctx,
+        oldName: 'remote.origin',
+        newName: 'branch.main',
+      });
 
       // Assert
-      expect(caught?.data.code).toBe('INVALID_OPTION');
+      const text = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
+      expect(text).toBe('[branch "main"]\n\turl = git@example.com:r.git\n');
     });
   });
 
-  describe('Given oldName with no subsection (just "user"), When renameConfigSection runs', () => {
-    it('Then it throws INVALID_OPTION', async () => {
+  describe('Given no [user] block seeded, When renameConfigSection renames "user" to "team"', () => {
+    it('Then it throws CONFIG_SECTION_NOT_FOUND with name "user"', async () => {
       // Arrange
       const ctx = createMemoryContext();
       let caught: TsgitError | undefined;
 
       // Act
       try {
-        await renameConfigSection({ ctx, oldName: 'user', newName: 'user.x' });
+        await renameConfigSection({ ctx, oldName: 'user', newName: 'team' });
       } catch (err) {
         caught = err as TsgitError;
       }
 
       // Assert
-      expect(caught?.data.code).toBe('INVALID_OPTION');
+      expect(caught?.data).toEqual({
+        code: 'CONFIG_SECTION_NOT_FOUND',
+        name: 'user',
+        scope: 'local',
+      });
+    });
+  });
+
+  describe('Given [user] block seeded, When renameConfigSection renames "user" to "team"', () => {
+    it('Then the header becomes [team] and the body is preserved', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[user]\n\tname = Ada\n');
+
+      // Act
+      await renameConfigSection({ ctx, oldName: 'user', newName: 'team' });
+
+      // Assert
+      const text = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
+      expect(text).toBe('[team]\n\tname = Ada\n');
     });
   });
 });
@@ -3251,10 +4288,11 @@ describe('removeConfigSection (I/O)', () => {
     });
   });
 
-  describe('Given a malformed sectionName (no dot), When removeConfigSection runs', () => {
-    it('Then it throws INVALID_OPTION', async () => {
-      // Arrange
+  describe('Given only [remote "origin"] present, When removeConfigSection is called with "remote" (no dot)', () => {
+    it('Then it throws CONFIG_SECTION_NOT_FOUND with name "remote" (old name never validated)', async () => {
+      // Arrange — only [remote "origin"] present; raw name "remote" matches nothing
       const ctx = createMemoryContext();
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[remote "origin"]\n\turl = x\n');
       let caught: TsgitError | undefined;
 
       // Act
@@ -3265,7 +4303,693 @@ describe('removeConfigSection (I/O)', () => {
       }
 
       // Assert
-      expect(caught?.data.code).toBe('INVALID_OPTION');
+      expect(caught?.data).toEqual({
+        code: 'CONFIG_SECTION_NOT_FOUND',
+        name: 'remote',
+        scope: 'local',
+      });
+    });
+  });
+});
+
+describe('parseNewSectionName', () => {
+  const sut = parseNewSectionName;
+
+  describe('Given accepted new-name inputs', () => {
+    describe('When parseNewSectionName parses "t.a.b"', () => {
+      it('Then returns { section: "t", subsection: "a.b" } (first-dot split)', () => {
+        // Arrange + Act
+        const result = sut('t.a.b');
+        // Assert
+        expect(result).toEqual({ section: 't', subsection: 'a.b' });
+      });
+    });
+
+    describe('When parseNewSectionName parses "1num"', () => {
+      it('Then returns { section: "1num" } (digit-leading accepted)', () => {
+        // Arrange + Act
+        const result = sut('1num');
+        // Assert
+        expect(result).toEqual({ section: '1num' });
+      });
+    });
+
+    describe('When parseNewSectionName parses "t-x"', () => {
+      it('Then returns { section: "t-x" }', () => {
+        // Arrange + Act
+        const result = sut('t-x');
+        // Assert
+        expect(result).toEqual({ section: 't-x' });
+      });
+    });
+
+    describe('When parseNewSectionName parses "t.bad!sub"', () => {
+      it('Then returns { section: "t", subsection: "bad!sub" } (subsection free after first dot)', () => {
+        // Arrange + Act
+        const result = sut('t.bad!sub');
+        // Assert
+        expect(result).toEqual({ section: 't', subsection: 'bad!sub' });
+      });
+    });
+
+    describe("When parseNewSectionName parses 't.with\"quote'", () => {
+      it('Then returns { section: "t", subsection: \'with"quote\' } (quote in subsection accepted)', () => {
+        // Arrange + Act
+        const result = sut('t.with"quote');
+        // Assert
+        expect(result).toEqual({ section: 't', subsection: 'with"quote' });
+      });
+    });
+
+    describe('When parseNewSectionName parses "T.Y"', () => {
+      it('Then returns { section: "T", subsection: "Y" } (case preserved)', () => {
+        // Arrange + Act
+        const result = sut('T.Y');
+        // Assert
+        expect(result).toEqual({ section: 'T', subsection: 'Y' });
+      });
+    });
+
+    describe('When parseNewSectionName parses "t."', () => {
+      it('Then returns { section: "t", subsection: "" } (trailing dot = empty subsection)', () => {
+        // Arrange + Act
+        const result = sut('t.');
+        // Assert
+        expect(result).toEqual({ section: 't', subsection: '' });
+      });
+    });
+
+    describe('When parseNewSectionName parses "."', () => {
+      it('Then returns { section: "", subsection: "" }', () => {
+        // Arrange + Act
+        const result = sut('.');
+        // Assert
+        expect(result).toEqual({ section: '', subsection: '' });
+      });
+    });
+
+    describe('When parseNewSectionName parses ".x"', () => {
+      it('Then returns { section: "", subsection: "x" }', () => {
+        // Arrange + Act
+        const result = sut('.x');
+        // Assert
+        expect(result).toEqual({ section: '', subsection: 'x' });
+      });
+    });
+
+    describe('When parseNewSectionName parses "a" (single alnum char)', () => {
+      it('Then returns { section: "a" }', () => {
+        // Arrange + Act
+        const result = sut('a');
+        // Assert
+        expect(result).toEqual({ section: 'a' });
+      });
+    });
+
+    describe('When parseNewSectionName parses "tz.y" (letter-only section)', () => {
+      it('Then returns { section: "tz", subsection: "y" }', () => {
+        // Arrange + Act
+        const result = sut('tz.y');
+        // Assert
+        expect(result).toEqual({ section: 'tz', subsection: 'y' });
+      });
+    });
+  });
+
+  describe('Given refused new-name inputs', () => {
+    describe('When parseNewSectionName parses "" (empty)', () => {
+      it('Then throws INVALID_OPTION with reason "invalid section name: "', () => {
+        // Arrange
+        let caught: TsgitError | undefined;
+
+        // Act
+        try {
+          sut('');
+        } catch (err) {
+          caught = err as TsgitError;
+        }
+
+        // Assert
+        expect(caught?.data).toEqual({
+          code: 'INVALID_OPTION',
+          option: 'config',
+          reason: 'invalid section name: ',
+        });
+      });
+    });
+
+    describe('When parseNewSectionName parses "t_x" (underscore in section)', () => {
+      it('Then throws INVALID_OPTION with reason "invalid section name: t_x"', () => {
+        // Arrange
+        let caught: TsgitError | undefined;
+
+        // Act
+        try {
+          sut('t_x');
+        } catch (err) {
+          caught = err as TsgitError;
+        }
+
+        // Assert
+        expect(caught?.data).toEqual({
+          code: 'INVALID_OPTION',
+          option: 'config',
+          reason: 'invalid section name: t_x',
+        });
+      });
+    });
+
+    describe('When parseNewSectionName parses "bad!name" (bang in section)', () => {
+      it('Then throws INVALID_OPTION with reason "invalid section name: bad!name"', () => {
+        // Arrange
+        let caught: TsgitError | undefined;
+
+        // Act
+        try {
+          sut('bad!name');
+        } catch (err) {
+          caught = err as TsgitError;
+        }
+
+        // Assert
+        expect(caught?.data).toEqual({
+          code: 'INVALID_OPTION',
+          option: 'config',
+          reason: 'invalid section name: bad!name',
+        });
+      });
+    });
+
+    describe('When parseNewSectionName parses "t!x.y" (bad char before first dot)', () => {
+      it('Then throws INVALID_OPTION with reason "invalid section name: t!x.y"', () => {
+        // Arrange
+        let caught: TsgitError | undefined;
+
+        // Act
+        try {
+          sut('t!x.y');
+        } catch (err) {
+          caught = err as TsgitError;
+        }
+
+        // Assert
+        expect(caught?.data).toEqual({
+          code: 'INVALID_OPTION',
+          option: 'config',
+          reason: 'invalid section name: t!x.y',
+        });
+      });
+    });
+  });
+});
+
+describe('renameConfigSection — extended porcelain I/O', () => {
+  const bothConf = '[s]\n\tk = a\n[s ""]\n\tk = b\n';
+  const mixConf = '[s]\n\tk = a\n[s "x"]\n\tk = b\n[s ""]\n\tk = c\n';
+  const nameMixConf = '[ ""]\n\tk = e\n[s]\n\tk = a\n[s ""]\n\tk = b\n';
+
+  describe('Given both.conf seeded ([s] k=a · [s ""] k=b)', () => {
+    describe('When renameConfigSection renames "s" (plain) to "t"', () => {
+      it('Then only [s] becomes [t], [s ""] is unchanged', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, bothConf);
+
+        // Act
+        await renameConfigSection({ ctx, oldName: 's', newName: 't' });
+
+        // Assert
+        const text = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
+        expect(text).toBe('[t]\n\tk = a\n[s ""]\n\tk = b\n');
+      });
+    });
+
+    describe('When renameConfigSection renames "s." (trailing-dot) to "t."', () => {
+      it('Then only [s ""] becomes [t ""], [s] is unchanged', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, bothConf);
+
+        // Act
+        await renameConfigSection({ ctx, oldName: 's.', newName: 't.' });
+
+        // Assert
+        const text = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
+        expect(text).toBe('[s]\n\tk = a\n[t ""]\n\tk = b\n');
+      });
+    });
+
+    describe('When renameConfigSection renames "s." to "t" (trailing-dot to plain)', () => {
+      it('Then [s ""] becomes [t], [s] unchanged', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, bothConf);
+
+        // Act
+        await renameConfigSection({ ctx, oldName: 's.', newName: 't' });
+
+        // Assert
+        const text = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
+        expect(text).toBe('[s]\n\tk = a\n[t]\n\tk = b\n');
+      });
+    });
+
+    describe('When renameConfigSection renames "s" to "s." (plain to trailing-dot)', () => {
+      it('Then [s] becomes a second [s ""] (duplicate headers allowed)', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, bothConf);
+
+        // Act
+        await renameConfigSection({ ctx, oldName: 's', newName: 's.' });
+
+        // Assert
+        const text = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
+        expect(text).toBe('[s ""]\n\tk = a\n[s ""]\n\tk = b\n');
+      });
+    });
+  });
+
+  describe('Given mix.conf seeded ([s] k=a · [s "x"] k=b · [s ""] k=c)', () => {
+    describe('When renameConfigSection renames "s" to "t"', () => {
+      it('Then only [s] becomes [t], [s "x"] and [s ""] are unchanged', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, mixConf);
+
+        // Act
+        await renameConfigSection({ ctx, oldName: 's', newName: 't' });
+
+        // Assert
+        const text = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
+        expect(text).toBe('[t]\n\tk = a\n[s "x"]\n\tk = b\n[s ""]\n\tk = c\n');
+      });
+    });
+
+    describe('When renameConfigSection renames "s.x" to "t.y"', () => {
+      it('Then only [s "x"] becomes [t "y"]', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, mixConf);
+
+        // Act
+        await renameConfigSection({ ctx, oldName: 's.x', newName: 't.y' });
+
+        // Assert
+        const text = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
+        expect(text).toBe('[s]\n\tk = a\n[t "y"]\n\tk = b\n[s ""]\n\tk = c\n');
+      });
+    });
+
+    describe('When renameConfigSection renames "s.x" to "t" (subsection to plain)', () => {
+      it('Then [s "x"] becomes [t]', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, mixConf);
+
+        // Act
+        await renameConfigSection({ ctx, oldName: 's.x', newName: 't' });
+
+        // Assert
+        const text = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
+        expect(text).toBe('[s]\n\tk = a\n[t]\n\tk = b\n[s ""]\n\tk = c\n');
+      });
+    });
+
+    describe('When renameConfigSection renames "s" to "t.y" (plain to subsectioned)', () => {
+      it('Then [s] becomes [t "y"]', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, mixConf);
+
+        // Act
+        await renameConfigSection({ ctx, oldName: 's', newName: 't.y' });
+
+        // Assert
+        const text = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
+        expect(text).toBe('[t "y"]\n\tk = a\n[s "x"]\n\tk = b\n[s ""]\n\tk = c\n');
+      });
+    });
+  });
+
+  describe('Given name-mix.conf seeded ([ ""] k=e · [s] k=a · [s ""] k=b)', () => {
+    describe('When renameConfigSection renames "." to "t"', () => {
+      it('Then [ ""] becomes [t]', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, nameMixConf);
+
+        // Act
+        await renameConfigSection({ ctx, oldName: '.', newName: 't' });
+
+        // Assert
+        const text = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
+        expect(text).toBe('[t]\n\tk = e\n[s]\n\tk = a\n[s ""]\n\tk = b\n');
+      });
+    });
+
+    describe('When renameConfigSection renames "." to "t."', () => {
+      it('Then [ ""] becomes [t ""]', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, nameMixConf);
+
+        // Act
+        await renameConfigSection({ ctx, oldName: '.', newName: 't.' });
+
+        // Assert
+        const text = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
+        expect(text).toBe('[t ""]\n\tk = e\n[s]\n\tk = a\n[s ""]\n\tk = b\n');
+      });
+    });
+
+    describe('When renameConfigSection renames "." to ".x"', () => {
+      it('Then [ ""] becomes [ "x"]', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, nameMixConf);
+
+        // Act
+        await renameConfigSection({ ctx, oldName: '.', newName: '.x' });
+
+        // Assert
+        const text = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
+        expect(text).toBe('[ "x"]\n\tk = e\n[s]\n\tk = a\n[s ""]\n\tk = b\n');
+      });
+    });
+
+    describe('When renameConfigSection renames "." to "s.x"', () => {
+      it('Then [ ""] becomes [s "x"]', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, nameMixConf);
+
+        // Act
+        await renameConfigSection({ ctx, oldName: '.', newName: 's.x' });
+
+        // Assert
+        const text = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
+        expect(text).toBe('[s "x"]\n\tk = e\n[s]\n\tk = a\n[s ""]\n\tk = b\n');
+      });
+    });
+
+    describe('When renameConfigSection renames "s" to "." on name-mix.conf', () => {
+      it('Then [s] becomes a second [ ""] block', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, nameMixConf);
+
+        // Act
+        await renameConfigSection({ ctx, oldName: 's', newName: '.' });
+
+        // Assert
+        const text = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
+        expect(text).toBe('[ ""]\n\tk = e\n[ ""]\n\tk = a\n[s ""]\n\tk = b\n');
+      });
+    });
+  });
+
+  describe('Given CONFIG_SECTION_NOT_FOUND scenarios', () => {
+    describe('When renameConfigSection is called with case-mismatched old name ("s" vs [S])', () => {
+      it('Then throws CONFIG_SECTION_NOT_FOUND with name "s"', async () => {
+        // Arrange — file has [S] but we search for s (case-sensitive raw match)
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[S]\n\tk = a\n');
+        let caught: TsgitError | undefined;
+
+        // Act
+        try {
+          await renameConfigSection({ ctx, oldName: 's', newName: 't' });
+        } catch (err) {
+          caught = err as TsgitError;
+        }
+
+        // Assert
+        expect(caught?.data).toEqual({
+          code: 'CONFIG_SECTION_NOT_FOUND',
+          name: 's',
+          scope: 'local',
+        });
+      });
+    });
+
+    describe('When renameConfigSection is called with old name "bad!name"', () => {
+      it('Then throws CONFIG_SECTION_NOT_FOUND with name "bad!name" (old name never validated)', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        let caught: TsgitError | undefined;
+
+        // Act
+        try {
+          await renameConfigSection({ ctx, oldName: 'bad!name', newName: 't' });
+        } catch (err) {
+          caught = err as TsgitError;
+        }
+
+        // Assert
+        expect(caught?.data).toEqual({
+          code: 'CONFIG_SECTION_NOT_FOUND',
+          name: 'bad!name',
+          scope: 'local',
+        });
+      });
+    });
+
+    describe('When renameConfigSection is called with old name "" (empty)', () => {
+      it('Then throws CONFIG_SECTION_NOT_FOUND with name "" (old name never validated)', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        let caught: TsgitError | undefined;
+
+        // Act
+        try {
+          await renameConfigSection({ ctx, oldName: '', newName: 't' });
+        } catch (err) {
+          caught = err as TsgitError;
+        }
+
+        // Assert
+        expect(caught?.data).toEqual({
+          code: 'CONFIG_SECTION_NOT_FOUND',
+          name: '',
+          scope: 'local',
+        });
+      });
+    });
+  });
+
+  describe('Given new name contains a LF in its subsection part', () => {
+    describe('When renameConfigSection is called with newName "t.a\\nb"', () => {
+      it('Then throws INVALID_OPTION before any I/O (tsgit refuses LF in subsections)', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[s]\n\tk = a\n');
+        const writeSpy = vi.spyOn(ctx.fs, 'writeUtf8');
+        let caught: TsgitError | undefined;
+
+        // Act
+        try {
+          await renameConfigSection({ ctx, oldName: 's', newName: 't.a\nb' });
+        } catch (err) {
+          caught = err as TsgitError;
+        }
+
+        // Assert
+        expect(caught?.data).toEqual({
+          code: 'INVALID_OPTION',
+          option: 'config',
+          reason: 'subsection must not contain a newline or NUL',
+        });
+        expect(writeSpy).not.toHaveBeenCalled();
+      });
+    });
+  });
+});
+
+describe('removeConfigSection — extended porcelain I/O', () => {
+  const bothConf = '[s]\n\tk = a\n[s ""]\n\tk = b\n';
+  const mixConf = '[s]\n\tk = a\n[s "x"]\n\tk = b\n[s ""]\n\tk = c\n';
+  const nameMixConf = '[ ""]\n\tk = e\n[s]\n\tk = a\n[s ""]\n\tk = b\n';
+
+  describe('Given both.conf ([s] k=a · [s ""] k=b)', () => {
+    describe('When removeConfigSection removes "s" (plain)', () => {
+      it('Then only [s] is removed; [s ""] k=b survives', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, bothConf);
+
+        // Act
+        await removeConfigSection({ ctx, sectionName: 's' });
+
+        // Assert
+        const text = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
+        expect(text).toBe('[s ""]\n\tk = b\n');
+      });
+    });
+
+    describe('When removeConfigSection removes "s." (trailing-dot)', () => {
+      it('Then only [s ""] is removed; [s] k=a survives', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, bothConf);
+
+        // Act
+        await removeConfigSection({ ctx, sectionName: 's.' });
+
+        // Assert
+        const text = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
+        expect(text).toBe('[s]\n\tk = a\n');
+      });
+    });
+
+    describe('When removeConfigSection removes \'s.""\'', () => {
+      it('Then throws CONFIG_SECTION_NOT_FOUND (two-quote-char name matches nothing)', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, bothConf);
+        let caught: TsgitError | undefined;
+
+        // Act
+        try {
+          await removeConfigSection({ ctx, sectionName: 's.""' });
+        } catch (err) {
+          caught = err as TsgitError;
+        }
+
+        // Assert
+        expect(caught?.data).toEqual({
+          code: 'CONFIG_SECTION_NOT_FOUND',
+          name: 's.""',
+          scope: 'local',
+        });
+      });
+    });
+  });
+
+  describe('Given mix.conf ([s] k=a · [s "x"] k=b · [s ""] k=c)', () => {
+    describe('When removeConfigSection removes "s" (plain)', () => {
+      it('Then only [s] is removed; [s "x"] and [s ""] survive', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, mixConf);
+
+        // Act
+        await removeConfigSection({ ctx, sectionName: 's' });
+
+        // Assert
+        const text = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
+        expect(text).toBe('[s "x"]\n\tk = b\n[s ""]\n\tk = c\n');
+      });
+    });
+  });
+
+  describe('Given name-mix.conf ([ ""] k=e · [s] k=a · [s ""] k=b)', () => {
+    describe('When removeConfigSection removes "." (empty-name section)', () => {
+      it('Then only [ ""] is removed; [s] and [s ""] survive', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, nameMixConf);
+
+        // Act
+        await removeConfigSection({ ctx, sectionName: '.' });
+
+        // Assert
+        const text = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
+        expect(text).toBe('[s]\n\tk = a\n[s ""]\n\tk = b\n');
+      });
+    });
+  });
+
+  describe('Given CONFIG_SECTION_NOT_FOUND scenarios', () => {
+    describe('When removeConfigSection is called with "s." on a plain-only config', () => {
+      it('Then throws CONFIG_SECTION_NOT_FOUND with name "s."', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[s]\n\tk = a\n');
+        let caught: TsgitError | undefined;
+
+        // Act
+        try {
+          await removeConfigSection({ ctx, sectionName: 's.' });
+        } catch (err) {
+          caught = err as TsgitError;
+        }
+
+        // Assert
+        expect(caught?.data).toEqual({
+          code: 'CONFIG_SECTION_NOT_FOUND',
+          name: 's.',
+          scope: 'local',
+        });
+      });
+    });
+
+    describe('When removeConfigSection is called with "s" on an empty-only config', () => {
+      it('Then throws CONFIG_SECTION_NOT_FOUND with name "s"', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[s ""]\n\tk = b\n');
+        let caught: TsgitError | undefined;
+
+        // Act
+        try {
+          await removeConfigSection({ ctx, sectionName: 's' });
+        } catch (err) {
+          caught = err as TsgitError;
+        }
+
+        // Assert
+        expect(caught?.data).toEqual({
+          code: 'CONFIG_SECTION_NOT_FOUND',
+          name: 's',
+          scope: 'local',
+        });
+      });
+    });
+
+    describe('When removeConfigSection is called with "" (empty string)', () => {
+      it('Then throws CONFIG_SECTION_NOT_FOUND with name "" (old name never validated)', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        let caught: TsgitError | undefined;
+
+        // Act
+        try {
+          await removeConfigSection({ ctx, sectionName: '' });
+        } catch (err) {
+          caught = err as TsgitError;
+        }
+
+        // Assert
+        expect(caught?.data).toEqual({
+          code: 'CONFIG_SECTION_NOT_FOUND',
+          name: '',
+          scope: 'local',
+        });
+      });
+    });
+
+    describe('When removeConfigSection is called with "." when [ ""] is absent', () => {
+      it('Then throws CONFIG_SECTION_NOT_FOUND with name "."', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[s]\n\tk = a\n');
+        let caught: TsgitError | undefined;
+
+        // Act
+        try {
+          await removeConfigSection({ ctx, sectionName: '.' });
+        } catch (err) {
+          caught = err as TsgitError;
+        }
+
+        // Assert
+        expect(caught?.data).toEqual({
+          code: 'CONFIG_SECTION_NOT_FOUND',
+          name: '.',
+          scope: 'local',
+        });
+      });
     });
   });
 });
@@ -3560,6 +5284,134 @@ describe('write-path refusal on malformed config files', () => {
 
           const result = await ctx.fs.readUtf8(path);
           expect(result).not.toContain('[t "x"]');
+        });
+      });
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // unsetConfigEntry identity consistency (I/O)
+  // ---------------------------------------------------------------------------
+
+  describe('unsetConfigEntry identity consistency', () => {
+    describe('Given both.conf ([s] k=a · [s ""] k=b) seeded into .git/config', () => {
+      describe('When unsetConfigEntry removes s.k', () => {
+        it('Then the file is exactly [s ""]\\n\\tk = b\\n (no over-delete)', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          const path = `${ctx.layout.gitDir}/config`;
+          await ctx.fs.writeUtf8(path, '[s]\n\tk = a\n[s ""]\n\tk = b\n');
+
+          // Act
+          await unsetConfigEntry({ ctx, key: 's.k' });
+
+          // Assert — only the plain [s] entry is removed; [s ""] is preserved byte-exact
+          const result = await ctx.fs.readUtf8(path);
+          expect(result).toBe('[s ""]\n\tk = b\n');
+        });
+      });
+    });
+
+    describe('Given [s] k=a · [s] k=c · [s ""] k=b seeded into .git/config', () => {
+      describe('When unsetConfigEntry removes s.k', () => {
+        it('Then it throws CONFIG_MULTIPLE_VALUES with count=2, key=s.k, requested=remove', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          const path = `${ctx.layout.gitDir}/config`;
+          await ctx.fs.writeUtf8(path, '[s]\n\tk = a\n\tk = c\n[s ""]\n\tk = b\n');
+          let caught: TsgitError | undefined;
+
+          // Act
+          try {
+            await unsetConfigEntry({ ctx, key: 's.k' });
+          } catch (err) {
+            caught = err as TsgitError;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = caught?.data;
+          expect(data).toEqual({
+            code: 'CONFIG_MULTIPLE_VALUES',
+            key: 's.k',
+            count: 2,
+            requested: 'remove',
+            scope: 'local',
+          });
+        });
+      });
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // empty-section-name writes via I/O wrappers (memory context)
+  // ---------------------------------------------------------------------------
+
+  describe('setConfigEntry with empty-section-name keys', () => {
+    describe('Given an empty .git/config and key "..k"', () => {
+      describe('When setConfigEntry writes ..k = v', () => {
+        it('Then the file is [ ""]\\n\\tk = v\\n', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+
+          // Act
+          await setConfigEntry({ ctx, key: '..k', value: 'v' });
+
+          // Assert
+          const result = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
+          expect(result).toBe('[ ""]\n\tk = v\n');
+        });
+      });
+    });
+
+    describe('Given an empty .git/config and key ".x.k"', () => {
+      describe('When setConfigEntry writes .x.k = v', () => {
+        it('Then the file is [ "x"]\\n\\tk = v\\n', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+
+          // Act
+          await setConfigEntry({ ctx, key: '.x.k', value: 'v' });
+
+          // Assert
+          const result = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
+          expect(result).toBe('[ "x"]\n\tk = v\n');
+        });
+      });
+    });
+
+    describe('Given plain-only.conf ([s] k=a) seeded, key "..k"', () => {
+      describe('When setConfigEntry writes ..k = v', () => {
+        it('Then [s] is untouched and a new [ ""] section is appended', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          const path = `${ctx.layout.gitDir}/config`;
+          await ctx.fs.writeUtf8(path, '[s]\n\tk = a\n');
+
+          // Act
+          await setConfigEntry({ ctx, key: '..k', value: 'v' });
+
+          // Assert
+          const result = await ctx.fs.readUtf8(path);
+          expect(result).toBe('[s]\n\tk = a\n[ ""]\n\tk = v\n');
+        });
+      });
+    });
+
+    describe('Given [ ""] k=v seeded and key "..k"', () => {
+      describe('When unsetConfigEntry removes ..k', () => {
+        it('Then the file is empty (block pruned)', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          const path = `${ctx.layout.gitDir}/config`;
+          await ctx.fs.writeUtf8(path, '[ ""]\n\tk = v\n');
+
+          // Act
+          await unsetConfigEntry({ ctx, key: '..k' });
+
+          // Assert — sole entry removed, block pruned to empty
+          const result = await ctx.fs.readUtf8(path);
+          expect(result).toBe('');
         });
       });
     });

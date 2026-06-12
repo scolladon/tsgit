@@ -1188,6 +1188,46 @@ describe('mergeTrees — mode handling', () => {
     });
   });
 
+  describe('Given ours gitlink and theirs regular and base gitlink', () => {
+    describe('When mergeTrees called', () => {
+      it('Then type-change conflict, not a gitlink conflict', async () => {
+        // Arrange
+        const base = tree([['p', entry(ID_A, FILE_MODE.GITLINK)]]);
+        const ours = tree([['p', entry(ID_B, FILE_MODE.GITLINK)]]);
+        const theirs = tree([['p', entry(ID_C, FILE_MODE.REGULAR)]]);
+        const spy = spyMerger({ status: 'clean', bytes: new Uint8Array(0) });
+
+        // Act
+        const result = await mergeTrees(base, ours, theirs, spy.fn);
+
+        // Assert
+        expect(spy.ctxs).toHaveLength(0);
+        expect(result.conflicts).toHaveLength(1);
+        expect(result.conflicts[0]?.type).toBe('type-change');
+      });
+    });
+  });
+
+  describe('Given ours regular and theirs gitlink and base gitlink', () => {
+    describe('When mergeTrees called', () => {
+      it('Then type-change conflict, not a gitlink conflict', async () => {
+        // Arrange
+        const base = tree([['p', entry(ID_A, FILE_MODE.GITLINK)]]);
+        const ours = tree([['p', entry(ID_B, FILE_MODE.REGULAR)]]);
+        const theirs = tree([['p', entry(ID_C, FILE_MODE.GITLINK)]]);
+        const spy = spyMerger({ status: 'clean', bytes: new Uint8Array(0) });
+
+        // Act
+        const result = await mergeTrees(base, ours, theirs, spy.fn);
+
+        // Assert
+        expect(spy.ctxs).toHaveLength(0);
+        expect(result.conflicts).toHaveLength(1);
+        expect(result.conflicts[0]?.type).toBe('type-change');
+      });
+    });
+  });
+
   describe('Given ours symlink and theirs symlink and base regular (R5)', () => {
     describe('When mergeTrees called', () => {
       it('Then bare content conflict carries all three stages and no merged bytes', async () => {
