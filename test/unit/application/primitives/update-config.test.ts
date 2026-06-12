@@ -1538,7 +1538,7 @@ describe('primitives/update-config', () => {
     });
 
     // ---------------------------------------------------------------------------
-    // Identity matrix — [s] vs [s ""] are distinct targets (rows 1–6 of pinned table)
+    // Identity matrix — [s] vs [s ""] are distinct targets
     // ---------------------------------------------------------------------------
 
     describe('Given both.conf ([s] and [s ""]) and target subsection=undefined', () => {
@@ -3066,6 +3066,29 @@ describe('primitives/update-config', () => {
             expect(data.reason).toBe(
               'section must not contain whitespace, NUL, brackets, quotes, or backslashes',
             );
+          }
+        });
+      });
+    });
+
+    describe('Given a new name with an empty section and no subsection', () => {
+      describe('When renameConfigSectionInText is called with to.section ""', () => {
+        it('Then it throws INVALID_OPTION instead of writing an unparseable [] header', () => {
+          // Arrange
+          let caught: unknown;
+          try {
+            renameConfigSectionInText('', 'x', { section: '' });
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data;
+          expect(data.code).toBe('INVALID_OPTION');
+          if (data.code === 'INVALID_OPTION') {
+            expect(data.option).toBe('config');
+            expect(data.reason).toBe('section name must not be empty without a subsection');
           }
         });
       });

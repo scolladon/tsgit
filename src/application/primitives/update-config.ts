@@ -462,10 +462,11 @@ export const removeConfigEntry = (
 
 /**
  * The destination for a section rename. The `section` part must survive
- * `renderSectionHeader` (i.e. no `]`, `"`, `\`, or control chars); the
- * optional `subsection` must be LF/NUL-free. `renameConfigSectionInText`
- * validates both parts itself; porcelain callers may additionally fast-fail
- * before any I/O.
+ * `renderSectionHeader` (no whitespace, NUL, brackets, quotes, or
+ * backslashes); the optional `subsection` must be LF/NUL-free, and a missing
+ * subsection requires a non-empty section (`[]` is unparseable).
+ * `renameConfigSectionInText` validates all of this itself; porcelain
+ * callers may additionally fast-fail before any I/O.
  */
 export interface NewSectionName {
   readonly section: string;
@@ -518,6 +519,7 @@ export const renameConfigSectionInText = (
   to: NewSectionName,
 ): string => {
   rejectSection(to.section);
+  rejectEmptyPlainSection(to.section, to.subsection);
   if (to.subsection !== undefined) rejectSubsection(to.subsection);
   const lines = text.split('\n');
   const renamed = lines.map((line) => {
