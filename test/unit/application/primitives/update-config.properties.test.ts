@@ -7,7 +7,6 @@ import {
   tokenizeConfig,
 } from '../../../../src/application/primitives/config-read.js';
 import {
-  type NewSectionName,
   parseNewSectionName,
   rawSectionName,
   removeConfigEntry,
@@ -513,8 +512,8 @@ describe('parseNewSectionName partition property', () => {
                   ? parsed.section
                   : `${parsed.section}.${parsed.subsection}`;
               expect(reconstructed).toBe(name);
-              const render = (p: NewSectionName) => renderSectionHeader(p.section, p.subsection);
-              expect(() => render(parsed as NewSectionName)).not.toThrow();
+              const { section, subsection } = parsed;
+              expect(() => renderSectionHeader(section, subsection)).not.toThrow();
               return;
             }
             // Assert — refusal shape carries the exact git message data

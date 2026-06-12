@@ -2603,7 +2603,7 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
         // Act — canonical git
         const gitResult = tryRunGit(['config', '--file', peerConfigPath, '--remove-section', 's.']);
         expect(gitResult.ok).toBe(false);
-        expect(gitResult.stderr).toMatch(/no such section/i);
+        expect(gitResult.stderr).toMatch(/no such section: s\.\s*$/m);
 
         // Act — tsgit
         const ctx = createNodeContext({ workDir: pair.ours });
@@ -2631,7 +2631,7 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
         // Act — canonical git
         const gitResult = tryRunGit(['config', '--file', peerConfigPath, '--remove-section', 's']);
         expect(gitResult.ok).toBe(false);
-        expect(gitResult.stderr).toMatch(/no such section/i);
+        expect(gitResult.stderr).toMatch(/no such section: s\s*$/m);
 
         // Act — tsgit
         const ctx = createNodeContext({ workDir: pair.ours });
