@@ -45,15 +45,19 @@ const findInvalidIdentifierIndex = (text: string): number | undefined => {
 const SUBSECTION_FORBIDDEN = /[\n\0]/;
 
 /**
- * Parse a fully-qualified config key. Two grammars accepted:
+ * Parse a fully-qualified config key. Three grammars accepted:
  *
  *   "section.name"                          → { section, undefined, name }
  *   "section.subsection.with.dots.name"     → { section, "subsection.with.dots", name }
+ *   "..name" / ".subsection.name"           → { "", "" | subsection, name }
  *
  * Section and name are lower-cased per git's case-insensitive rules; the
  * subsection is preserved verbatim (case-sensitive). The subsection is the
  * slice between the FIRST and LAST `.` — a subsection containing dots is
- * legal and round-trips through the parser.
+ * legal and round-trips through the parser. An empty section is legal only
+ * when a subsection is present (the `[ ""]` family); the subsection-less
+ * ".name" form stays refused, mirroring git's `key does not contain a
+ * section` refusal.
  */
 export const parseConfigKey = (raw: string): ParsedConfigKey => {
   const firstDot = raw.indexOf('.');

@@ -143,9 +143,10 @@ interface LineSpan {
 }
 
 /**
- * True when `header` token matches `target`: case-insensitive section,
- * case-sensitive subsection, `undefined` matches `undefined` or `''`.
- * Mirrors the semantics of `matchesSection`.
+ * True when `header` token matches `target`: case-insensitive section
+ * (entry writes only — section ops match raw names case-sensitively) and
+ * strict subsection identity — `undefined` matches only plain `[s]` headers,
+ * `''` only explicitly empty `[s ""]` ones, never each other.
  */
 const matchesTarget = (header: HeaderToken, target: SectionTarget): boolean => {
   if (header.section.toLowerCase() !== target.sectionLc) return false;
@@ -446,10 +447,11 @@ export const removeConfigEntry = (
 };
 
 /**
- * The validated destination for a section rename. The `section` part must
- * survive `renderSectionHeader` (i.e. no `]`, `"`, `\`, or control chars);
- * the optional `subsection` must be LF/NUL-free (validated by the caller
- * via `rejectSubsection` before any I/O).
+ * The destination for a section rename. The `section` part must survive
+ * `renderSectionHeader` (i.e. no `]`, `"`, `\`, or control chars); the
+ * optional `subsection` must be LF/NUL-free. `renameConfigSectionInText`
+ * validates both parts itself; porcelain callers may additionally fast-fail
+ * before any I/O.
  */
 export interface NewSectionName {
   readonly section: string;
@@ -490,8 +492,8 @@ export const removeConfigSectionInText = (text: string, oldName: string): string
  * Rewrites every header whose raw dotted name equals `oldName` byte-for-byte
  * to `renderSectionHeader(to.section, to.subsection)`. Body lines are not
  * touched; non-matching headers are preserved verbatim. The write-side guards
- * (`rejectSection`, `rejectSubsection`) are applied by the caller before
- * passing `to` — this function trusts the validated destination.
+ * (`rejectSection`, `rejectSubsection`) run inside this function, so every
+ * caller — porcelain or batch — gets the same protection.
  *
  * Cross-family renames (`s.x → t.y`, `s → t.y`, `s. → t`) are supported:
  * the only constraint is that the old name matches and the new name is valid.
@@ -608,13 +610,17 @@ export const applyConfigOpInText = (text: string, op: ConfigOperation): string =
   if (op.kind === 'removeSection') {
     return removeConfigSectionInText(
       text,
-      op.subsection === undefined ? op.section : `${op.section}.${op.subsection}`,
+      rawSectionName({ section: op.section, subsection: op.subsection }),
     );
   }
-  return renameConfigSectionInText(text, `${op.section}.${op.from}`, {
-    section: op.section,
-    subsection: op.to,
-  });
+  return renameConfigSectionInText(
+    text,
+    rawSectionName({ section: op.section, subsection: op.from }),
+    {
+      section: op.section,
+      subsection: op.to,
+    },
+  );
 };
 
 /**
