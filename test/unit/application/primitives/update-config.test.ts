@@ -2914,7 +2914,7 @@ describe('primitives/update-config', () => {
       describe('When removeConfigSectionInText removes "s"', () => {
         it('Then the body line is dropped along with the rest of the section (isSectionHeader requires both "[" prefix and "]" suffix)', () => {
           // Arrange — a value like `val = [x]` ends in ] but does not start with [;
-          // the logical-OR prefilter mutant would stop skipping here and preserve
+          // the logical-OR pre-filter mutant would stop skipping here and preserve
           // subsequent body lines incorrectly
           const text = '[s]\n\tval = [x]\n\tother = z\n[t]\n\tk = b\n';
           const sut = removeConfigSectionInText;
