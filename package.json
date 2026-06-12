@@ -730,7 +730,7 @@
   },
   "devDependencies": {
     "@arethetypeswrong/cli": "0.18.3",
-    "@biomejs/biome": "2.4.16",
+    "@biomejs/biome": "2.5.0",
     "@cloudflare/vitest-pool-workers": "0.16.15",
     "@cloudflare/workers-types": "4.20260612.1",
     "@commitlint/cli": "21.0.2",
