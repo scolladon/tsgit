@@ -11,6 +11,9 @@ export default defineConfig({
     // Pin the timezone so calendar-component date arithmetic (approxidate's
     // ISO-form parsing) is deterministic across hosts and CI runners.
     env: { TZ: 'UTC' },
+    // Use every logical core (default is n-1 on runs and n/2 in watch mode);
+    // the percentage form scales to each machine, so CI stays safe.
+    maxWorkers: '100%',
     projects: [
       {
         extends: true,
