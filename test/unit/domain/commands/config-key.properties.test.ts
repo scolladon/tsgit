@@ -48,4 +48,32 @@ describe('parseConfigKey properties', () => {
       });
     });
   });
+
+  describe('Given an arbitrary key with an empty section and a subsection', () => {
+    describe('When parseConfigKey runs', () => {
+      it('Then it never throws (totality) and parsing twice yields deeply-equal results (idempotence)', () => {
+        // Arrange — generator produces ..name and .sub.name forms
+        const arbEmptySectionKey = fc.oneof(
+          arbSafeSection().map((name) => `..${name}`),
+          fc.tuple(arbSafeSection(), arbSafeSection()).map(([sub, name]) => `.${sub}.${name}`),
+        );
+
+        // Act + Assert
+        fc.assert(
+          fc.property(arbEmptySectionKey, (key) => {
+            // Totality: must not throw
+            const first = parseConfigKey(key);
+
+            // Section must be empty string
+            expect(first.section).toBe('');
+
+            // Idempotence: parsing the same key twice yields the same result
+            const second = parseConfigKey(key);
+            expect(first).toEqual(second);
+          }),
+          { numRuns: 100 },
+        );
+      });
+    });
+  });
 });

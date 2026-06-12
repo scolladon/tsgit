@@ -61,23 +61,25 @@ export const parseConfigKey = (raw: string): ParsedConfigKey => {
     throw configKeyInvalid(raw, 'missing-name');
   }
   const sectionRaw = raw.slice(0, firstDot);
-  if (sectionRaw.length === 0) {
-    throw configKeyInvalid(raw, 'empty-section');
-  }
   const lastDot = raw.lastIndexOf('.');
   const nameRaw = raw.slice(lastDot + 1);
+  const subsection = firstDot === lastDot ? undefined : raw.slice(firstDot + 1, lastDot);
+  if (sectionRaw.length === 0 && subsection === undefined) {
+    throw configKeyInvalid(raw, 'empty-section');
+  }
   if (nameRaw.length === 0) {
     throw configKeyInvalid(raw, 'missing-name');
   }
-  const sectionBad = findInvalidIdentifierIndex(sectionRaw);
-  if (sectionBad !== undefined) {
-    throw configKeyInvalid(raw, 'bad-character', sectionBad);
+  if (sectionRaw.length > 0) {
+    const sectionBad = findInvalidIdentifierIndex(sectionRaw);
+    if (sectionBad !== undefined) {
+      throw configKeyInvalid(raw, 'bad-character', sectionBad);
+    }
   }
   const nameBad = findInvalidIdentifierIndex(nameRaw);
   if (nameBad !== undefined) {
     throw configKeyInvalid(raw, 'bad-character', lastDot + 1 + nameBad);
   }
-  const subsection = firstDot === lastDot ? undefined : raw.slice(firstDot + 1, lastDot);
   if (subsection !== undefined && SUBSECTION_FORBIDDEN.test(subsection)) {
     const localBad = subsection.search(SUBSECTION_FORBIDDEN);
     throw configKeyInvalid(raw, 'bad-character', firstDot + 1 + localBad);
