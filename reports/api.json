@@ -79349,7 +79349,7 @@
 								"summary": [
 									{
 										"kind": "text",
-										"text": "Parse a fully-qualified config key. Two grammars accepted:\n\n  \"section.name\"                          → { section, undefined, name }\n  \"section.subsection.with.dots.name\"     → { section, \"subsection.with.dots\", name }\n\nSection and name are lower-cased per git's case-insensitive rules; the\nsubsection is preserved verbatim (case-sensitive). The subsection is the\nslice between the FIRST and LAST "
+										"text": "Parse a fully-qualified config key. Three grammars accepted:\n\n  \"section.name\"                          → { section, undefined, name }\n  \"section.subsection.with.dots.name\"     → { section, \"subsection.with.dots\", name }\n  \"..name\" / \".subsection.name\"           → { \"\", \"\" | subsection, name }\n\nSection and name are lower-cased per git's case-insensitive rules; the\nsubsection is preserved verbatim (case-sensitive). The subsection is the\nslice between the FIRST and LAST "
 									},
 									{
 										"kind": "code",
@@ -79357,7 +79357,23 @@
 									},
 									{
 										"kind": "text",
-										"text": " — a subsection containing dots is\nlegal and round-trips through the parser."
+										"text": " — a subsection containing dots is\nlegal and round-trips through the parser. An empty section is legal only\nwhen a subsection is present (the "
+									},
+									{
+										"kind": "code",
+										"text": "`[ \"\"]`"
+									},
+									{
+										"kind": "text",
+										"text": " family); the subsection-less\n\".name\" form stays refused, mirroring git's "
+									},
+									{
+										"kind": "code",
+										"text": "`key does not contain a\nsection`"
+									},
+									{
+										"kind": "text",
+										"text": " refusal."
 									}
 								]
 							},
@@ -117191,77 +117207,77 @@
 		},
 		"2403": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/primitives/update-config.ts",
+			"packagePath": "src/application/primitives/update-config-sections.ts",
 			"qualifiedName": "removeConfigSection"
 		},
 		"2404": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/primitives/update-config.ts",
+			"packagePath": "src/application/primitives/update-config-sections.ts",
 			"qualifiedName": "removeConfigSection"
 		},
 		"2405": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/primitives/update-config.ts",
+			"packagePath": "src/application/primitives/update-config-sections.ts",
 			"qualifiedName": "__0"
 		},
 		"2406": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/primitives/update-config.ts",
+			"packagePath": "src/application/primitives/update-config-sections.ts",
 			"qualifiedName": "__type"
 		},
 		"2407": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/primitives/update-config.ts",
+			"packagePath": "src/application/primitives/update-config-sections.ts",
 			"qualifiedName": "__type.ctx"
 		},
 		"2408": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/primitives/update-config.ts",
+			"packagePath": "src/application/primitives/update-config-sections.ts",
 			"qualifiedName": "__type.sectionName"
 		},
 		"2409": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/primitives/update-config.ts",
+			"packagePath": "src/application/primitives/update-config-sections.ts",
 			"qualifiedName": "__type.scope"
 		},
 		"2410": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/primitives/update-config.ts",
+			"packagePath": "src/application/primitives/update-config-sections.ts",
 			"qualifiedName": "renameConfigSection"
 		},
 		"2411": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/primitives/update-config.ts",
+			"packagePath": "src/application/primitives/update-config-sections.ts",
 			"qualifiedName": "renameConfigSection"
 		},
 		"2412": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/primitives/update-config.ts",
+			"packagePath": "src/application/primitives/update-config-sections.ts",
 			"qualifiedName": "__0"
 		},
 		"2413": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/primitives/update-config.ts",
+			"packagePath": "src/application/primitives/update-config-sections.ts",
 			"qualifiedName": "__type"
 		},
 		"2414": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/primitives/update-config.ts",
+			"packagePath": "src/application/primitives/update-config-sections.ts",
 			"qualifiedName": "__type.ctx"
 		},
 		"2415": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/primitives/update-config.ts",
+			"packagePath": "src/application/primitives/update-config-sections.ts",
 			"qualifiedName": "__type.oldName"
 		},
 		"2416": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/primitives/update-config.ts",
+			"packagePath": "src/application/primitives/update-config-sections.ts",
 			"qualifiedName": "__type.newName"
 		},
 		"2417": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/primitives/update-config.ts",
+			"packagePath": "src/application/primitives/update-config-sections.ts",
 			"qualifiedName": "__type.scope"
 		},
 		"2418": {
