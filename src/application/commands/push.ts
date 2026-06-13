@@ -14,6 +14,7 @@
  *  10. Update local `refs/remotes/<remote>/*` cache for accepted refs.
  */
 import {
+  configMissingValue,
   invalidOption,
   nonFastForward,
   pushRejected,
@@ -38,7 +39,7 @@ import { readableStreamToAsyncIterable } from '../../operators/readable-stream.j
 import type { Context } from '../../ports/context.js';
 import type { HttpTransport } from '../../ports/http-transport.js';
 import { buildPack } from '../primitives/build-pack.js';
-import { readConfig } from '../primitives/config-read.js';
+import { findFirstValuelessEntry, readConfig } from '../primitives/config-read.js';
 import { enumeratePushObjects } from '../primitives/enumerate-push-objects.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
 import { runHook } from '../primitives/run-hook.js';
@@ -152,7 +153,11 @@ const resolveRemoteUrl = async (ctx: Context, remoteName: string): Promise<strin
   const remote = config.remote?.get(remoteName);
   // `pushurl` overrides `url` for push (canonical-git parity).
   const url = remote?.pushUrl ?? remote?.url;
-  if (url === undefined) throw remoteNotConfigured(remoteName);
+  if (url === undefined) {
+    const found = await findFirstValuelessEntry(ctx, 'remote', remoteName, ['url']);
+    if (found !== undefined) throw configMissingValue(found.key, found.source, found.line);
+    throw remoteNotConfigured(remoteName);
+  }
   return url;
 };
 

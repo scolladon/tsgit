@@ -16,6 +16,7 @@
  *
  * Working-tree materialization is.1; out of scope.
  */
+import { configMissingValue } from '../../domain/commands/error.js';
 import { TsgitError } from '../../domain/error.js';
 import { remoteAdvertisesNoRefs, remoteNotConfigured } from '../../domain/index.js';
 import type { ObjectId, RefName } from '../../domain/objects/index.js';
@@ -28,7 +29,7 @@ import {
 } from '../../domain/protocol/index.js';
 import { validateRefName } from '../../domain/refs/ref-validation.js';
 import type { Context } from '../../ports/context.js';
-import { readConfig } from '../primitives/config-read.js';
+import { findFirstValuelessEntry, readConfig } from '../primitives/config-read.js';
 import { fetchPack } from '../primitives/fetch-pack.js';
 import { getRefStore } from '../primitives/ref-store.js';
 import { updateShallow } from '../primitives/shallow-file.js';
@@ -138,7 +139,11 @@ const resolveRemoteUrl = async (
   const config = await readConfig(ctx);
   const remote = config.remote?.get(remoteName);
   // An absent OR empty url means the remote is not usably configured.
-  if (remote?.url === undefined || remote.url === '') throw remoteNotConfigured(remoteName);
+  if (remote?.url === undefined || remote.url === '') {
+    const found = await findFirstValuelessEntry(ctx, 'remote', remoteName, ['url']);
+    if (found !== undefined) throw configMissingValue(found.key, found.source, found.line);
+    throw remoteNotConfigured(remoteName);
+  }
   // A partial repo re-applies its recorded filter so a fetch does not pull
   // full blobs and silently un-partial the repo. The stored value is
   // re-validated — a hand-corrupted config filter is rejected before the wire.

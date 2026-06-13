@@ -23,6 +23,7 @@ import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { MemoryHookRunner } from '../../../../src/adapters/memory/memory-hook-runner.js';
 import { push } from '../../../../src/application/commands/push.js';
+import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { writeTree } from '../../../../src/application/primitives/write-tree.js';
 import { TsgitError } from '../../../../src/domain/index.js';
@@ -246,7 +247,7 @@ describe('push — config + refspec guards', () => {
 
   describe('Given no remote configured', () => {
     describe('When push runs', () => {
-      it('Then throws REMOTE_NOT_CONFIGURED', async () => {
+      it('Then throws REMOTE_NOT_CONFIGURED and NOT CONFIG_MISSING_VALUE', async () => {
         // Arrange
         const ctx = createMemoryContext();
         await seedRepo(ctx, {});
@@ -258,7 +259,73 @@ describe('push — config + refspec guards', () => {
         }
         // Assert
         expect(caught).toBeInstanceOf(TsgitError);
-        expect((caught as TsgitError).data.code).toBe('REMOTE_NOT_CONFIGURED');
+        const data = (caught as TsgitError).data as { code: string };
+        expect(data.code).toBe('REMOTE_NOT_CONFIGURED');
+        expect(data.code).not.toBe('CONFIG_MISSING_VALUE');
+      });
+    });
+  });
+
+  describe('Given a remote with a valueless url entry', () => {
+    describe('When push runs', () => {
+      it('Then throws CONFIG_MISSING_VALUE with key remote.origin.url at line 2', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, {});
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[remote "origin"]\n\turl\n');
+        __resetConfigCacheForTests();
+
+        // Act
+        let caught: unknown;
+        try {
+          await push(ctx);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as {
+          code: string;
+          key: string;
+          line: number;
+          source: string;
+        };
+        expect(data.code).toBe('CONFIG_MISSING_VALUE');
+        expect(data.key).toBe('remote.origin.url');
+        expect(data.line).toBe(2);
+        expect(data.source).toMatch(/\/config$/);
+      });
+    });
+  });
+
+  describe('Given a remote with a valueless url but a valued pushurl', () => {
+    describe('When push runs', () => {
+      it('Then resolves via pushurl and does NOT throw CONFIG_MISSING_VALUE', async () => {
+        // Arrange — pushUrl is valued, url is valueless; push should resolve from pushUrl
+        const ctx = createMemoryContext();
+        const parent = await seedCommit(ctx, [], 'p');
+        const tip = await seedCommit(ctx, [parent.id], 't');
+        await seedRepo(ctx, { refs: { 'refs/heads/main': tip.id } });
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          '[remote "origin"]\n\turl\n\tpushurl = https://push.example.com/r.git\n',
+        );
+        __resetConfigCacheForTests();
+        const { transport, requests } = fakeServer({
+          url: 'https://push.example.com/r.git',
+          advertisedRefs: [{ name: 'refs/heads/main', id: parent.id }],
+          reportStatus: { unpack: 'ok', refs: [{ name: 'refs/heads/main', status: 'ok' }] },
+        });
+
+        // Act — should succeed past url resolution (no refusal)
+        await push({ ...ctx, transport });
+
+        // Assert — requests landed on pushurl, not errored out
+        expect(requests.length).toBeGreaterThan(0);
+        for (const req of requests) {
+          expect(req.url.startsWith('https://push.example.com/r.git')).toBe(true);
+        }
       });
     });
   });

@@ -13,6 +13,7 @@
 import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { fetch } from '../../../../src/application/commands/fetch.js';
+import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
 import { readShallow } from '../../../../src/application/primitives/shallow-file.js';
 import { TsgitError } from '../../../../src/domain/index.js';
 import type { ObjectId, RefName } from '../../../../src/domain/objects/index.js';
@@ -184,7 +185,42 @@ describe('fetch', () => {
 
           // Assert
           expect(caught).toBeInstanceOf(TsgitError);
-          expect((caught as TsgitError).data.code).toBe('REMOTE_NOT_CONFIGURED');
+          const data = (caught as TsgitError).data as { code: string };
+          expect(data.code).toBe('REMOTE_NOT_CONFIGURED');
+          expect(data.code).not.toBe('CONFIG_MISSING_VALUE');
+        });
+      });
+    });
+
+    describe('Given a remote with a valueless url entry', () => {
+      describe('When fetch', () => {
+        it('Then throws CONFIG_MISSING_VALUE with key remote.origin.url at line 2', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRepo(ctx, {});
+          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[remote "origin"]\n\turl\n');
+          __resetConfigCacheForTests();
+
+          // Act
+          let caught: unknown;
+          try {
+            await fetch(ctx);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data as {
+            code: string;
+            key: string;
+            line: number;
+            source: string;
+          };
+          expect(data.code).toBe('CONFIG_MISSING_VALUE');
+          expect(data.key).toBe('remote.origin.url');
+          expect(data.line).toBe(2);
+          expect(data.source).toMatch(/\/config$/);
         });
       });
     });
