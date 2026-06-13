@@ -115,7 +115,7 @@ const matchesSection = (
  * Cold-path detection: re-tokenize the repo-local config and return the FIRST
  * valueless (`value === null`) entry, by config-file line, whose key
  * (case-insensitive) is one of `keys` and which sits under `[<section> "<subsection>"]`
- * (subsection `undefined` ⇒ the unsubsectioned section). Returns the fully-qualified
+ * (subsection `undefined` ⇒ the section with no subsection). Returns the fully-qualified
  * key, the absolute config path, and the 1-based line, or `undefined` when no such
  * entry exists. Runs ONLY on a command's refusal path.
  */

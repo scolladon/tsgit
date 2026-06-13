@@ -97,7 +97,7 @@ stay UNCHANGED (ADR-315 D4 preserved); the porcelain read path is untouched.
    * Cold-path detection (ADR-327): re-tokenize the repo-local config and return the
    * FIRST valueless (`value === null`) entry, by config-file line, whose key (case-
    * insensitive) is one of `keys` and which sits under `[<section> "<subsection>"]`
-   * (subsection `undefined` ⇒ the unsubsectioned section). Returns the fully-qualified
+   * (subsection `undefined` ⇒ the section with no subsection). Returns the fully-qualified
    * key, the absolute config path, and the 1-based line, or `undefined` when no such
    * entry exists (key absent or valued). Runs ONLY on a command's refusal path. Leaves
    * `ParsedConfig`/`IniSection` untouched (ADR-315 D4).
@@ -256,7 +256,7 @@ make them async (ADR-329 / requirement 3: absent ≠ valueless).
   };
   ```
   The returned `found.key` is already `'user.name'` / `'user.email'` (slice 1 contract:
-  `<section>.<key>` for an unsubsectioned section) — pass it straight through.
+  `<section>.<key>` for a section with no subsection) — pass it straight through.
 
 **Wire site 1 — `src/application/commands/commit.ts`**:
 
@@ -385,7 +385,7 @@ make them async (ADR-329 / requirement 3: absent ≠ valueless).
      `AUTHOR_UNCONFIGURED` — assert `.data.code === 'AUTHOR_UNCONFIGURED'`, explicitly NOT
      `'CONFIG_MISSING_VALUE'`. (Documents the pre-existing absent-case divergence without
      regressing it. Use scrubbed env per `runGitEnv()`; signing off — `initBothRepos` already
-     sets a clean identity, but here we are deliberately UNCONFIGURING identity, so ensure
+     sets a clean identity, but here we are deliberately leaving identity unconfigured, so ensure
      `GIT_CONFIG_NOSYSTEM=1` and an isolated `HOME` so the developer's global `[user]` does not
      leak in and make git resolve identity from global. Set `HOME` to a tmpdir and add
      `GIT_CONFIG_NOSYSTEM: '1'` to the env, matching the design's interop-env discipline.)
