@@ -571,6 +571,7 @@ describe('commit — valueless identity refusal', () => {
         expect(data.code).toBe('CONFIG_MISSING_VALUE');
         expect((data as { key: string }).key).toBe('user.email');
         expect((data as { line: number }).line).toBe(3);
+        expect((data as { source: string }).source).toMatch(/\/config$/);
       });
     });
   });
@@ -597,6 +598,7 @@ describe('commit — valueless identity refusal', () => {
         expect(data.code).toBe('CONFIG_MISSING_VALUE');
         expect((data as { key: string }).key).toBe('user.name');
         expect((data as { line: number }).line).toBe(2);
+        expect((data as { source: string }).source).toMatch(/\/config$/);
       });
     });
   });
@@ -623,6 +625,7 @@ describe('commit — valueless identity refusal', () => {
         expect(data.code).toBe('CONFIG_MISSING_VALUE');
         expect((data as { key: string }).key).toBe('user.email');
         expect((data as { line: number }).line).toBe(2);
+        expect((data as { source: string }).source).toMatch(/\/config$/);
       });
     });
   });

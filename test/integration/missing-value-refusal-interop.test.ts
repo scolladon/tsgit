@@ -251,7 +251,8 @@ describe.skipIf(!GIT_AVAILABLE)('missing-value-refusal interop', () => {
   });
 
   /**
-   * A fixture that controls line numbers. The valueless `remote.origin.url` lands at line 3.
+   * A fixture that controls line numbers. The `[remote "origin"]` header lands at line 3;
+   * the valueless `url` entry lands at line 4.
    * Line 1: [core]
    * Line 2: \trepositoryformatversion = 0
    * Line 3: [remote "origin"]

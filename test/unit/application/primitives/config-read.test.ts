@@ -3763,5 +3763,18 @@ describe('Given a config with valueless/valued entries', () => {
       // Assert
       expect(result).toBeUndefined();
     });
+
+    it('Then matches the subsection case-sensitively (a differing case does not match)', async () => {
+      // Arrange — git subsection names are case-SENSITIVE, unlike section names.
+      const ctx = createMemoryContext();
+      const sut = findFirstValuelessEntry;
+      await seed(ctx, '[remote "Origin"]\n\turl\n');
+
+      // Act
+      const result = await sut(ctx, 'remote', 'origin', ['url']);
+
+      // Assert
+      expect(result).toBeUndefined();
+    });
   });
 });

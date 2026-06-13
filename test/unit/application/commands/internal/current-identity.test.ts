@@ -53,6 +53,7 @@ describe('resolveCurrentIdentity', () => {
 
         // Assert
         expect(caught?.data.code).toBe('AUTHOR_UNCONFIGURED');
+        expect(caught?.data.code).not.toBe('CONFIG_MISSING_VALUE');
       });
     });
   });
@@ -102,6 +103,31 @@ describe('resolveCurrentIdentity', () => {
         expect(caught?.data.code).toBe('CONFIG_MISSING_VALUE');
         expect((caught?.data as { key: string }).key).toBe('user.email');
         expect((caught?.data as { line: number }).line).toBe(3);
+        expect((caught?.data as { source: string }).source).toMatch(/\/config$/);
+      });
+    });
+  });
+
+  describe('Given a config with both valueless, name earlier', () => {
+    describe('When resolveCurrentIdentity', () => {
+      it('Then throws CONFIG_MISSING_VALUE with key user.name at line 2 (file-position order)', async () => {
+        // Arrange
+        const ctx = await seed();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[user]\n\tname\n\temail\n');
+        __resetConfigCacheForTests();
+
+        // Act
+        let caught: TsgitError | undefined;
+        try {
+          await resolveCurrentIdentity(ctx);
+        } catch (err) {
+          caught = err as TsgitError;
+        }
+
+        // Assert
+        expect(caught?.data.code).toBe('CONFIG_MISSING_VALUE');
+        expect((caught?.data as { key: string }).key).toBe('user.name');
+        expect((caught?.data as { line: number }).line).toBe(2);
       });
     });
   });
@@ -126,6 +152,7 @@ describe('resolveCurrentIdentity', () => {
         expect(caught?.data.code).toBe('CONFIG_MISSING_VALUE');
         expect((caught?.data as { key: string }).key).toBe('user.email');
         expect((caught?.data as { line: number }).line).toBe(2);
+        expect((caught?.data as { source: string }).source).toMatch(/\/config$/);
       });
     });
   });
