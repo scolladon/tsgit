@@ -128,6 +128,7 @@ describe('resolveCurrentIdentity', () => {
         expect(caught?.data.code).toBe('CONFIG_MISSING_VALUE');
         expect((caught?.data as { key: string }).key).toBe('user.name');
         expect((caught?.data as { line: number }).line).toBe(2);
+        expect((caught?.data as { source: string }).source).toMatch(/\/config$/);
       });
     });
   });
