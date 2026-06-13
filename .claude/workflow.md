@@ -3,13 +3,16 @@ backlog: docs/BACKLOG.md
 paths: { design: docs/design, adr: docs/adr, plan: docs/plan }
 context: .claude/workflow/serena.md
 gates:
-  slice: "npx vitest run <touched-tests> && npm run check:types && npx biome check <touched-files>"
+  slice: "npx vitest run <touched-tests> && npm run check:types && ./node_modules/.bin/biome check <touched-files>"
   phase: "npm run validate"
   review-batch: "npm run check:spelling"
 phases:
-  design:   { context: .claude/workflow/faithfulness.md }
-  mutation: { override: .claude/workflow/mutation.md }
-  merge:    { merge-flags: "--admin", non-blocking-jobs: [mutation, benchmark-compare] }
+  design:    { context: .claude/workflow/faithfulness.md }
+  plan:      { context: .claude/workflow/surface-gates.md }
+  implement: { context: [.claude/workflow/surface-gates.md, .claude/workflow/faithfulness.md] }
+  review:    { context: .claude/workflow/surface-gates.md }
+  mutation:  { override: .claude/workflow/mutation.md }
+  merge:     { merge-flags: "--admin", non-blocking-jobs: [mutation, benchmark-compare] }
 pr: { creator: session, pre-pr-gate: "npm outdated" }
 scripts: { pre-teardown: .claude/workflow/serena-prune.sh }
 ---

@@ -9,9 +9,12 @@ The engine preamble already probed the config and the engine invariants still bi
   from `git diff --no-ext-diff main...HEAD` and pass one `<file>:<start>-<end>` entry
   per region — the same file may appear several times. Widen to the whole file only
   when the diff blankets it (mostly-changed file, or a file-wide mechanical rename
-  where ranges add noise). **Post-refactor runs scope whole files** (the refactor
-  moved lines), with the triage step filtering survivors back to feature-changed
-  logic.
+  where ranges add noise). After the refactor phase, **widen to whole-file scope ONLY
+  for files the refactor actually restructured** (moved/extracted/renamed within) —
+  files it merely line-touched stay line-range scoped. Whole-file scope surfaces
+  pre-existing survivors, so the triage step MUST filter them back to the diff's lines;
+  never write kill tests for survivors outside the change (the step-5 run swept in 4
+  pre-existing `error.ts` survivors exactly this way).
 
 ```bash
 ./node_modules/.bin/stryker run --incremental \
