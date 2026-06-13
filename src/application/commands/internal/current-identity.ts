@@ -12,7 +12,7 @@ import { assertNoValuelessConfig } from './valueless-config-guard.js';
 export const resolveCurrentIdentity = async (ctx: Context): Promise<AuthorIdentity> => {
   const config = await readConfig(ctx);
   const user = config.user;
-  if (user === undefined) await assertNoValuelessConfig(ctx, 'user', undefined, ['name', 'email']);
+  if (user === undefined) await assertNoValuelessConfig(ctx, 'user', undefined, ['name', 'email']); // equivalent-mutant: when user !== undefined both name and email are valued (readConfig only sets user when both are non-null), so the guard is always a no-op for that branch
   const configUser =
     user !== undefined
       ? {

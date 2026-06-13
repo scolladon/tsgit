@@ -93,6 +93,7 @@ export const commit = async (ctx: Context, opts: CommitOptions): Promise<CommitR
   const config = await readConfig(ctx);
   const configUser = toAuthor(config.user);
   if (opts.author === undefined && configUser === undefined) {
+    // equivalent-mutant: configUser is undefined iff config.user is undefined (toAuthor returns undefined for undefined); when configUser is defined all keys are valued so the guard is a no-op
     await assertNoValuelessConfig(ctx, 'user', undefined, ['name', 'email']);
   }
   const author = resolveAuthor(buildResolverInput(opts.author, configUser));

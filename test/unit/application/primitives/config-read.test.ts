@@ -3776,5 +3776,34 @@ describe('Given a config with valueless/valued entries', () => {
       // Assert
       expect(result).toBeUndefined();
     });
+
+    it('Then returns undefined for a valueless target key that appears before any section header', async () => {
+      // Arrange — a pre-header bare key must NOT match: inSection starts false
+      // and is only set to true when a matching [section] header is seen.
+      // Mutant (inSection=true) would wrongly return the pre-header entry.
+      const ctx = createMemoryContext();
+      const sut = findFirstValuelessEntry;
+      await seed(ctx, '\tname\n[user]\n\temail = a@b.c\n');
+
+      // Act
+      const result = await sut(ctx, 'user', undefined, ['name', 'email']);
+
+      // Assert
+      expect(result).toBeUndefined();
+    });
+
+    it('Then returns undefined for a valueless non-target key under the matching section', async () => {
+      // Arrange — a valueless key that is NOT in the requested key set must be
+      // skipped. Mutant (!keySet.has → false) would wrongly return it.
+      const ctx = createMemoryContext();
+      const sut = findFirstValuelessEntry;
+      await seed(ctx, '[user]\n\tfoo\n\temail = a@b.c\n');
+
+      // Act
+      const result = await sut(ctx, 'user', undefined, ['name', 'email']);
+
+      // Assert
+      expect(result).toBeUndefined();
+    });
   });
 });

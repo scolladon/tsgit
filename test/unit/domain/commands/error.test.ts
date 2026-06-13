@@ -1335,6 +1335,10 @@ describe('domain commands error — extractDetail message formatting', () => {
       { code: 'STASH_APPLY_WOULD_OVERWRITE', paths: ['a' as FilePath, 'b' as FilePath] },
       'STASH_APPLY_WOULD_OVERWRITE: cannot apply stash: 2 local change(s) would be overwritten',
     ],
+    [
+      { code: 'CONFIG_MISSING_VALUE', key: 'user.name', source: '/repo/.git/config', line: 2 },
+      "CONFIG_MISSING_VALUE: missing value for 'user.name' in file '/repo/.git/config' at line 2",
+    ],
   ];
 
   describe('Given command error %j', () => {
