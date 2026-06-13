@@ -28,7 +28,6 @@ import {
   sanitizeMessage,
   stripComments,
 } from './internal/commit-message.js';
-import { assertUserNotValueless } from './internal/identity-config.js';
 import {
   clearMergeMsg,
   clearMergeState,
@@ -42,6 +41,7 @@ import {
   readHeadRaw,
 } from './internal/repo-state.js';
 import { clearRevertHead, readRevertHead } from './internal/revert-state.js';
+import { assertNoValuelessConfig } from './internal/valueless-config-guard.js';
 
 export interface CommitOptions {
   readonly message: string;
@@ -93,7 +93,7 @@ export const commit = async (ctx: Context, opts: CommitOptions): Promise<CommitR
   const config = await readConfig(ctx);
   const configUser = toAuthor(config.user);
   if (opts.author === undefined && configUser === undefined) {
-    await assertUserNotValueless(ctx);
+    await assertNoValuelessConfig(ctx, 'user', undefined, ['name', 'email']);
   }
   const author = resolveAuthor(buildResolverInput(opts.author, configUser));
   const committer = resolveCommitter(buildCommitterInput(opts.committer, author, configUser));

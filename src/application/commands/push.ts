@@ -14,7 +14,6 @@
  *  10. Update local `refs/remotes/<remote>/*` cache for accepted refs.
  */
 import {
-  configMissingValue,
   invalidOption,
   nonFastForward,
   pushRejected,
@@ -39,7 +38,7 @@ import { readableStreamToAsyncIterable } from '../../operators/readable-stream.j
 import type { Context } from '../../ports/context.js';
 import type { HttpTransport } from '../../ports/http-transport.js';
 import { buildPack } from '../primitives/build-pack.js';
-import { findFirstValuelessEntry, readConfig } from '../primitives/config-read.js';
+import { readConfig } from '../primitives/config-read.js';
 import { enumeratePushObjects } from '../primitives/enumerate-push-objects.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
 import { runHook } from '../primitives/run-hook.js';
@@ -49,6 +48,7 @@ import { withDefaults } from './internal/network-pipeline.js';
 import { discoverReceivePackRefs, selectPushCapabilities } from './internal/receive-pack-client.js';
 import { type ParsedRefspec, parseRefspec } from './internal/refspec.js';
 import { assertRepository, readHeadRaw } from './internal/repo-state.js';
+import { assertNoValuelessConfig } from './internal/valueless-config-guard.js';
 
 export interface PushOptions {
   readonly remote?: string;
@@ -156,8 +156,7 @@ const resolveRemoteUrl = async (ctx: Context, remoteName: string): Promise<strin
   if (url === undefined) {
     // Only a valueless `url` reproduces git's lazy `missing value` die here; a
     // valueless `pushurl` is not yet in scope (no pinned matrix row for it).
-    const found = await findFirstValuelessEntry(ctx, 'remote', remoteName, ['url']);
-    if (found !== undefined) throw configMissingValue(found.key, found.source, found.line);
+    await assertNoValuelessConfig(ctx, 'remote', remoteName, ['url']);
     throw remoteNotConfigured(remoteName);
   }
   return url;

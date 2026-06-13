@@ -2,7 +2,7 @@ import type { AuthorIdentity } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
 import { readConfig } from '../../primitives/config-read.js';
 import { resolveCommitter } from './commit-message.js';
-import { assertUserNotValueless } from './identity-config.js';
+import { assertNoValuelessConfig } from './valueless-config-guard.js';
 
 /**
  * The current identity (config `user.name`/`user.email` + the current time) used
@@ -12,7 +12,7 @@ import { assertUserNotValueless } from './identity-config.js';
 export const resolveCurrentIdentity = async (ctx: Context): Promise<AuthorIdentity> => {
   const config = await readConfig(ctx);
   const user = config.user;
-  if (user === undefined) await assertUserNotValueless(ctx);
+  if (user === undefined) await assertNoValuelessConfig(ctx, 'user', undefined, ['name', 'email']);
   const configUser =
     user !== undefined
       ? {
