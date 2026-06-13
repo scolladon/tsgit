@@ -85,7 +85,7 @@ diagnostics when the type-check is green.
 - **Prefer try/catch over toThrow for data assertions:** `toThrow(expect.objectContaining(...))` can miss nested property mutations. Use try/catch + direct `.data` assertions for reliable mutant killing.
 - **Watch for dead code in guards:** `string.split('\n')` always returns at least one element — `if (lines.length === 0)` is unreachable dead code. Mutation testing reveals these. Remove them rather than writing impossible tests.
 - **Accept provably equivalent mutants:** Loop bounds (`i < len` vs `i <= len` where out-of-bounds returns `undefined`) and search start offsets in homogeneous data are often equivalent. Document why, don't write contrived tests.
-- **Triage suspected false survivors before writing kill tests:** local Stryker under vitest 4 under-reports kills (false survivors + false NoCoverage). Hand-apply the mutant's replacement from the report to the source, run the named unit test file (`npx vitest run <file>`), then restore. A failing run proves the mutant is already killed — record it as a false survivor, no kill test needed. Only a genuinely passing run makes the survivor real and worth a new test.
+- **Triage suspected false survivors before writing kill tests:** the procedure (and all Stryker run scoping) lives in `.claude/workflow/mutation.md` — its single home, used by the forge mutation phase.
 
 ### Property-Based Testing (when to reach for `fast-check`)
 
@@ -143,13 +143,11 @@ If the work touches a parser/decoder/matcher and the diff lands without a `*.pro
 
 ## Development Workflow (MANDATORY)
 
-The operational workflow lives in **`.claude/commands/apply-workflow.md`** (run via `/apply-workflow <backlog-id | file | description>`). It runs every phase **in the current session, in-thread** — except implementation slices, which are each delegated to a dedicated **sonnet subagent** (one per slice, sequential, orchestrated and verified from the session) — so every action stays visible and steerable.
+The workflow is the **forge plugin**: run `/forge:run <backlog-id | file | description>`. The repo customizes it through the committed declination manifest **`.claude/workflow.md`** plus `.claude/workflow/` (Serena mandate as global context, git-faithfulness pinning as design context, the Stryker procedure as the mutation override, `serena-prune.sh` as teardown). Triggers: `"apply the workflow"`, `"the usual flow"`, or `/forge:run` directly. Phase skills also run standalone — `/forge:review` (four-dimension battery on the current branch), `/forge:mutation` (scoped run + triage).
 
-Phase sequence: **branch → design (self-review ≤×3) → ADR (with user) → plan (self-review ≤×3) → implement (TDD per slice via sonnet subagents, atomic commits) → review ×3 (typescript / security / tests, fix-all-until-converged) → architecture refactor + scoped re-review (behavior-preserving, may no-op with justification) → mutation (0 killable) → docs + PR**.
+Phase sequence (engine-fixed): **branch → design → ADR (with user) → plan → implement (TDD per slice, sonnet subagents, atomic commits) → review ×4 (code / security / perf / tests, per-dimension convergence) → architecture refactor + scoped re-review (behavior-preserving, may no-op with written justification) → mutation (gates the PR) → docs → PR → merge + cleanup**. The session orchestrates and verifies; agents produce committed artifacts.
 
-**Precedence:** this in-repo workflow supersedes the user-global "Default feature workflow" when working inside this repository. The project triggers (`"apply the workflow"`, `/apply-workflow`, "the usual flow") drive it; the user-global workflow fires only on its own trigger (`"use my default workflow"`).
-
-**Non-negotiables:** never commit on a red `npm run validate`; never `--no-verify`; never use ignore directives (`@ts-ignore` / `v8 ignore` / `stryker-disable` / `biome-ignore`); never include phase/ADR refs inside source or test code; be git-faithful unless an ADR diverges. Escalate blockers as `{ slice/finding, reason, ≤3 options }` — never spin, never silently abandon.
+**Non-negotiables** (hook-enforced where mechanical — see `.claude/hooks/` and the forge plugin hooks): never commit on a red `npm run validate`; never `--no-verify`; never use ignore directives (`@ts-ignore` / `v8 ignore` / `stryker-disable` / `biome-ignore`); never include phase/ADR refs inside source or test code; be git-faithful unless an ADR diverges. Escalate blockers as `{ slice/finding, reason, ≤3 options }` — never spin, never silently abandon.
 
 ## Docs
 
