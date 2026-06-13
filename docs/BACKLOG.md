@@ -172,7 +172,7 @@ Design: `design/repository-facade.md`
 
 ## Phase 16 — Supply-chain & ops hardening (v1.x)
 
-- [-] **16.1** SHA-pin GitHub Actions — abandoned · ADR-057
+- [-] ~~**16.1** SHA-pin GitHub Actions~~ — abandoned · ADR-057
 - [x] **16.2** Dependabot grouped action bumps
 - [x] **16.3** Browser E2E surface parity (`log`/`branch`/`checkout`/`tag` on OPFS)
 - [x] **16.4** Split OPFS round-trip into per-step assertions
@@ -187,7 +187,7 @@ Design: `design/repository-facade.md`
 - [x] **17.4** Partial clone (`blob:none`/`blob:limit`/`tree:N`, lazy-fetch, `fetchMissing`) · ADRs 078–082 · `design/partial-clone.md`
 - [x] **17.5** Submodule walk (`repo.submodules`, `walkSubmodules` AsyncIterable) · ADRs 083–086 · `design/submodule-walk.md`
 - [x] **17.6** `cat-file --batch` (`catFileBatch` primitive + `repo.catFile`) · ADRs 087–090 · `design/cat-file-batch.md`
-- [-] **17.7** isomorphic-git compat shim — abandoned · ADR-091
+- [-] ~~**17.7** isomorphic-git compat shim~~ — abandoned · ADR-091
 
 ---
 
@@ -407,9 +407,9 @@ Not abandoned — deferred indefinitely. Pull back into a phase if profiling or 
 
 ## Abandoned
 
-- **14.5.3** Skip-resolve optimization in `checkContainment` · ADR-053
-- **16.1** SHA-pin GitHub Actions · ADR-057
-- **17.7** isomorphic-git compat shim · ADR-091
+- ~~**14.5.3** Skip-resolve optimization in `checkContainment` · ADR-053~~
+- ~~**16.1** SHA-pin GitHub Actions · ADR-057~~
+- ~~**17.7** isomorphic-git compat shim · ADR-091~~
 
 ---
 
