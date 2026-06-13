@@ -1,7 +1,7 @@
 # Design — missing-value-refusal-parity
 
 > Brief: refuse the valueless string-typed config case (`user.name`/`email`, `remote.*.url`) with a structured error that reconstructs git's two-line `missing value for '<key>'` / `bad config variable '<key>' … at line N` message, while leaving the absent case on its existing path.
-> Status: draft → self-reviewed ×3 → accepted
+> Status: accepted — decisions locked by ADR-327 (detection: cold-path raw re-read), ADR-328 (error shape: `CONFIG_MISSING_VALUE { key, source, line }`, absolute `source`), ADR-329 (scope: identity **and** remote-URL).
 
 ## Context
 
@@ -28,8 +28,8 @@ ADR-226 (prime directive) binds observable behaviour byte-for-byte; ADR-249 refi
 2. **Identity ordering is file-position, not name-before-email** (pinned — see the discriminator row in the matrix). git's `git_ident_config` callback fires per-entry during the in-order config scan, so the refusal trips on the **first valueless `user.*` entry by config-file line order**, reporting that key + line. With both valueless, refuse on whichever of `user.name`/`user.email` appears first in the file; with one valued, refuse on the valueless one at its line.
 3. **Absent ≠ valueless.** Both identity fields absent (no `[user]` section / no key lines) keeps the existing `AUTHOR_UNCONFIGURED` path (a pre-existing divergence — tsgit can't portably probe GECOS; out of scope). Only the valueless case gets the new shape. No `AUTHOR_UNCONFIGURED` regression.
 4. The porcelain surfaces (`config --get`/`--list`/`--type=bool`) are **unchanged** — they already succeed on valueless keys via ADR-314. The refusal lives at the command consumers, not the read primitive.
-5. `line` is 1-based; `source` is the config file the key was read from (decision required on its exact contents — see candidate table — given the absolute-vs-repo-relative divergence).
-6. Scope decision (see candidate table): identity-only vs. also remote-URL on fetch/push. Deferrals listed as backlog candidates in dependency order.
+5. `line` is 1-based; `source` is tsgit's resolved **absolute** config path (ADR-328) — the interop test normalizes the `file '<F>'` token; `key`/`line` compare verbatim.
+6. Scope is **identity and remote-URL** (ADR-329): `commit` + the `resolveCurrentIdentity` consumers (cherry-pick, rebase, revert, merge), and `fetch`/`push` valueless `remote.<n>.url`. The remaining string fields (`branch.*.merge`, `merge.*.driver`, `submodule.*.url`, `core` path-likes) and the int-typed shape are deferred backlog follow-ups in dependency order.
 
 ## Design
 
@@ -63,7 +63,7 @@ At each in-scope consumer, the resolution order is: **the new valueless refusal 
 1. Walk the `user.name`/`user.email` entries in the order they appear in the config source. The **first** present-but-null one → refuse `{ key, source, line }` (`key` ∈ {`user.name`, `user.email`}, `line` = that entry's 1-based line).
 2. Else fall through to the existing pipeline: both valued → succeed; both absent → `AUTHOR_UNCONFIGURED` (unchanged).
 
-This file-position rule reproduces every pinned row: `name`@2 + `email`@3 both valueless ⇒ dies on `user.name`@2; `email`@2 + `name`@3 both valueless ⇒ dies on `user.email`@2 (the discriminator); one valued + one valueless ⇒ dies on the valueless one at its line; both absent ⇒ unchanged. The same shape applies to `remote.<n>.url` at `fetch`/`push` if candidate #3 selects breadth: present-but-null url → refuse `{ key: 'remote.<n>.url', source, line }` before the `REMOTE_NOT_CONFIGURED` (= url absent) path.
+This file-position rule reproduces every pinned row: `name`@2 + `email`@3 both valueless ⇒ dies on `user.name`@2; `email`@2 + `name`@3 both valueless ⇒ dies on `user.email`@2 (the discriminator); one valued + one valueless ⇒ dies on the valueless one at its line; both absent ⇒ unchanged. The same shape applies to `remote.<n>.url` at `fetch`/`push` (in scope per ADR-329): present-but-null url → refuse `{ key: 'remote.<n>.url', source, line }` before the `REMOTE_NOT_CONFIGURED` (= url absent) path.
 
 **Ordering basis — pinned (was an open probe; now resolved).** The discriminator row settles it: git refuses on the first valueless `user.*` entry **by config-file line**, not by a fixed name-before-email read order. Mechanically, git's `git_ident_config` callback runs per config entry during the in-order scan and trips `config_error_nonbool` on the first NULL it hits. So the detection must iterate entries in token/file order (which tsgit's tokenizer already yields) and refuse on the first valueless identity key — naturally giving both the correct key and its line. This slightly favours detection mechanism (a) (re-read raw tokens), which provides file order + line directly.
 
@@ -87,6 +87,8 @@ git prints the path it resolved against CWD — repo-relative `.git/config` in t
 
 ## Decision candidates
 
+**All three resolved in the ADR phase:** #1 → **(a) re-read raw tokens** (ADR-327); #2 → **(a) `CONFIG_MISSING_VALUE`, absolute `source`** (ADR-328); #3 → **(b) identity + remote-URL** (ADR-329, the one choice that took the broader-than-recommended option). The table below is the as-proposed record; the recommendation column is what was put to the user.
+
 | # | Choice | Alternatives (≤3) | Recommendation | Why |
 |---|---|---|---|---|
 | 1 | **Detection mechanism** — how the consumer learns a string key is present-but-null and at which line | (a) **Re-read raw tokens** at the consumer: call a small `findValuelessEntry(ctx, section, subsection, key)` that re-tokenizes (or reuses cached `IniSection` widened with line) to locate the NULL entry + its 1-based line; merge layer unchanged. (b) **Thread a present-but-null marker through `ParsedConfig`**: widen `IniSection.entries` to carry `line`, and widen the merged string fields to a `{ value: string } | { missing: true; line: number }`-style provenance so `mergeUser`/`applyRemoteEntry` keep the null with its line instead of dropping it; consumers branch on it. (c) **Hybrid**: keep `ParsedConfig` as-is (absent), but have it expose a sibling `missingStringKeys: ReadonlyArray<{ key; line }>` collected during merge, consulted only on the refusal path. | **(a)** for an identity-first scope; revisit toward (c) if breadth is chosen | (a) is the smallest diff and keeps ADR-315 D4 (`ParsedConfig` stays "valueless = absent") fully intact — the merged shape never changes, so no public-type ripple and no consumer outside the refusal path is touched. The line provenance the tokenizer already computes (`startLine`) is recoverable by re-tokenizing the same file (cheap; `readRawConfig` is cached per-Context). (b) is the "feature-sized thread-through" ADR-315 flagged; even now-scoped it widens `IniSection` + every merged string field + every consumer's type — a public-type change (`ParsedConfig`) and the largest blast radius, disproportionate to a refusal-only need. (c) bounds the blast radius better than (b) but still adds a parallel structure to `ParsedConfig` and couples merge to refusal concerns (CQS smell: the merge now also collects diagnostics). Verdict: ADR-315's "thread-through is feature-sized" **still holds** for (b); (a) sidesteps it. **User decides** the mechanism. |
@@ -103,14 +105,14 @@ Drive through whichever detection site candidate #1 selects. Assert `.data` fiel
 - both valueless, `email` on the earlier line (`[user]\n\temail\n\tname`) → `{ key: 'user.email', line: 2 }` — the **discriminator** test: pins file-position order and kills a "fixed name-first" mutant. This pair (name-earlier vs email-earlier) is what proves the ordering is by file line, not by key name.
 - both absent → still `AUTHOR_UNCONFIGURED` (regression guard for requirement 3; assert the code, not the type alone).
 - both valued → succeeds (identity resolves; no throw).
-If candidate #3 picks breadth: sibling `fetch`/`push` unit tests — valueless `remote.<n>.url` → `{ key: 'remote.<n>.url', line, source }`; absent url → still `REMOTE_NOT_CONFIGURED`.
+Remote-URL (in scope, ADR-329): sibling `fetch`/`push` unit tests — valueless `remote.<n>.url` → `{ key: 'remote.<n>.url', line, source }`; absent url → still `REMOTE_NOT_CONFIGURED`.
 
 ### Interop (`test/integration/config-interop.test.ts`, or a new `missing-value-refusal-interop.test.ts`)
 Twin git/tsgit via `interop-helpers.ts` (`tryRunGit` for co-refusal, `git -C <tmp>` into a tmpdir's `.git/config` — never the worktree). Write the valueless line by **file write** into `<dir>/.git/config` (git's CLI cannot emit a valueless entry), then:
 - run real `git commit` via `tryRunGit` → capture exit 128 + the two stderr lines; run tsgit `commit` on the same repo → catch `CONFIG_MISSING_VALUE`; reconstruct git's two lines from `{ key, source, line }` and assert equality of `error: missing value for '<key>'` and `fatal: bad config variable '<key>' in file '<F>' at line <N>` — applying the **path-token normalization** (conclusion #5: normalize tsgit's absolute `source` to git's repo-relative token before comparing the `file '<F>'` segment; the `key` and `line` segments compare verbatim).
 - `git config --list` on the same file **succeeds** in both (distinct outcome from the refusal — proves requirement 4).
 - absent identity is a **distinct** outcome: real git auto-commits (exit 0); tsgit refuses `AUTHOR_UNCONFIGURED` — assert this is *not* `CONFIG_MISSING_VALUE` (documents the pre-existing absent-case divergence without regressing it).
-- (if breadth) `git fetch origin` / `git push origin main` with valueless `remote.origin.url` → same two-line reconstruction for `remote.origin.url`.
+- `git fetch origin` / `git push origin main` with valueless `remote.origin.url` (in scope, ADR-329) → same two-line reconstruction for `remote.origin.url`.
 
 ### Property tests — DO NOT APPLY
 Per the project's four-lens rule: this is a **command-surface refusal**, not a parser/round-trip, matcher/aggregator, total-function-over-grammar, or idempotence/counting invariant. The detection is a small fixed decision (name-vs-email-vs-absent), not an algebraic grammar; the parser/round-trip property already lives with the ADR-314 valueless-key work. No `*.properties.test.ts` sibling is warranted; example + interop tests document the literal behaviour exactly.
@@ -119,7 +121,7 @@ Per the project's four-lens rule: this is a **command-surface refusal**, not a p
 
 - **Absent-identity parity.** git auto-detects GECOS + hostname and commits with a "configured automatically" warning; tsgit can't portably probe GECOS and refuses `AUTHOR_UNCONFIGURED`. Pre-existing divergence, untouched here, no regression.
 - **Int-typed valueless shape.** git's `fatal: bad numeric config value '' for '<key>' … invalid unit` is a single fatal line (no `error:` prefix, no `at line N`) — a different message shape. No int-typed key is merged into `ParsedConfig` today (ADR-315 §Neutral). If one is ever added it needs its **own** error code/shape, not `CONFIG_MISSING_VALUE`. Backlog candidate, blocked on such a key existing.
-- **Remote-URL (and other string-typed) refusal** — in scope only if candidate #3 selects breadth; otherwise a tracked follow-up in dependency order (remote-URL first, then `branch.*.merge` / `merge.*.driver` / `submodule.*.url` / `core` path-likes).
+- **Other string-typed refusal** — `branch.*.merge` / `merge.*.driver` / `submodule.*.url` / `core` path-likes are deferred tracked follow-ups in dependency order (ADR-329). Remote-URL (`fetch`/`push`) is **in scope** here, not deferred.
 - **Porcelain read surfaces** (`config --get`/`--list`/`--type=bool`) — already faithful via ADR-314; unchanged.
 - **Writing valueless entries** — git's CLI cannot; not a surface (ADR-314/315 D5).
 - **The byte-exact repo-relative `file '<F>'` path token** — a caller-side rendering concern (ADR-249); the library emits its resolved path in `source`, and the interop test normalizes for comparison.
