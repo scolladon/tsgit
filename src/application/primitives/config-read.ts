@@ -139,10 +139,11 @@ export const findFirstValuelessEntry = async (
     if (!inSection || token.kind !== 'entry' || token.value !== null) continue;
     const loweredKey = token.key.toLowerCase();
     if (!keySet.has(loweredKey)) continue;
+    const loweredSection = section.toLowerCase();
     const qualifiedKey =
       subsection === undefined
-        ? `${section}.${loweredKey}`
-        : `${section}.${subsection}.${loweredKey}`;
+        ? `${loweredSection}.${loweredKey}`
+        : `${loweredSection}.${subsection}.${loweredKey}`;
     return { key: qualifiedKey, source: path, line: token.startLine + 1 };
   }
   return undefined;

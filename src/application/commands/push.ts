@@ -154,6 +154,8 @@ const resolveRemoteUrl = async (ctx: Context, remoteName: string): Promise<strin
   // `pushurl` overrides `url` for push (canonical-git parity).
   const url = remote?.pushUrl ?? remote?.url;
   if (url === undefined) {
+    // Only a valueless `url` reproduces git's lazy `missing value` die here; a
+    // valueless `pushurl` is not yet in scope (no pinned matrix row for it).
     const found = await findFirstValuelessEntry(ctx, 'remote', remoteName, ['url']);
     if (found !== undefined) throw configMissingValue(found.key, found.source, found.line);
     throw remoteNotConfigured(remoteName);
