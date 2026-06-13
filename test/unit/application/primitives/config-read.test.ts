@@ -3,6 +3,7 @@ import { createMemoryContext } from '../../../../src/adapters/memory/memory-adap
 import {
   __resetConfigCacheForTests,
   type ConfigToken,
+  findFirstValuelessEntry,
   type IniSection,
   invalidateConfigCache,
   parseIniSections,
@@ -3580,6 +3581,229 @@ describe('primitives/config-read tokenizeConfig', () => {
           expect(err.data).toMatchObject({ code: 'CONFIG_PARSE_ERROR', source });
         }
       });
+    });
+  });
+});
+
+describe('Given a config with valueless/valued entries', () => {
+  describe('When findFirstValuelessEntry', () => {
+    it('Then returns the valueless entry for a matching key (step 2: single valueless key)', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      const sut = findFirstValuelessEntry;
+      await seed(ctx, '[user]\n\tname\n\temail = a@b.c\n');
+
+      // Act
+      const result = await sut(ctx, 'user', undefined, ['name', 'email']);
+
+      // Assert
+      expect(result?.key).toBe('user.name');
+      expect(result?.line).toBe(2);
+      expect(result?.source).toBe(`${ctx.layout.gitDir}/config`);
+    });
+
+    it('Then returns undefined when all keys are valued (step 3: valued only)', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      const sut = findFirstValuelessEntry;
+      await seed(ctx, '[user]\n\tname = Ada\n\temail = a@b.c\n');
+
+      // Act
+      const result = await sut(ctx, 'user', undefined, ['name', 'email']);
+
+      // Assert
+      expect(result).toBeUndefined();
+    });
+
+    it('Then returns undefined when the key is absent (step 4: key absent)', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      const sut = findFirstValuelessEntry;
+      await seed(ctx, '[user]\n\temail = a@b.c\n');
+
+      // Act
+      const result = await sut(ctx, 'user', undefined, ['name']);
+
+      // Assert
+      expect(result).toBeUndefined();
+    });
+
+    it('Then returns undefined when config is empty (step 4: empty config)', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      const sut = findFirstValuelessEntry;
+      await seed(ctx, '');
+
+      // Act
+      const result = await sut(ctx, 'user', undefined, ['name']);
+
+      // Assert
+      expect(result).toBeUndefined();
+    });
+
+    it('Then returns undefined when config file does not exist (step 4: missing file)', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      const sut = findFirstValuelessEntry;
+
+      // Act
+      const result = await sut(ctx, 'user', undefined, ['name']);
+
+      // Assert
+      expect(result).toBeUndefined();
+    });
+
+    it('Then returns the valueless email when name is valued (step 5: file-order, valued name)', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      const sut = findFirstValuelessEntry;
+      await seed(ctx, '[user]\n\tname = Ada\n\temail\n');
+
+      // Act
+      const result = await sut(ctx, 'user', undefined, ['name', 'email']);
+
+      // Assert
+      expect(result?.key).toBe('user.email');
+      expect(result?.line).toBe(3);
+    });
+
+    it('Then returns the first valueless when name appears before email (step 6: both valueless, name earlier)', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      const sut = findFirstValuelessEntry;
+      await seed(ctx, '[user]\n\tname\n\temail\n');
+
+      // Act
+      const result = await sut(ctx, 'user', undefined, ['name', 'email']);
+
+      // Assert
+      expect(result?.key).toBe('user.name');
+      expect(result?.line).toBe(2);
+    });
+
+    it('Then returns the first valueless when email appears before name (step 7: discriminator — file-position order)', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      const sut = findFirstValuelessEntry;
+      await seed(ctx, '[user]\n\temail\n\tname\n');
+
+      // Act
+      const result = await sut(ctx, 'user', undefined, ['name', 'email']);
+
+      // Assert
+      expect(result?.key).toBe('user.email');
+      expect(result?.line).toBe(2);
+    });
+
+    it('Then matches the key case-insensitively and returns canonical lower-case (step 8)', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      const sut = findFirstValuelessEntry;
+      await seed(ctx, '[user]\n\tNAME\n');
+
+      // Act
+      const result = await sut(ctx, 'user', undefined, ['name']);
+
+      // Assert
+      expect(result?.key).toBe('user.name');
+      expect(result?.line).toBe(2);
+    });
+
+    it('Then does not match entries under the wrong section (step 9: negative scoping)', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      const sut = findFirstValuelessEntry;
+      await seed(ctx, '[other]\n\tname\n[user]\n\temail = a@b.c\n');
+
+      // Act
+      const result = await sut(ctx, 'user', undefined, ['name', 'email']);
+
+      // Assert
+      expect(result).toBeUndefined();
+    });
+
+    it('Then returns the entry only under the correct section (step 9: positive scoping)', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      const sut = findFirstValuelessEntry;
+      await seed(ctx, '[other]\n\tname\n[user]\n\tname\n');
+
+      // Act
+      const result = await sut(ctx, 'user', undefined, ['name']);
+
+      // Assert
+      expect(result?.key).toBe('user.name');
+      expect(result?.line).toBe(4);
+    });
+
+    it('Then returns the full qualified key including subsection (step 10: subsection match)', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      const sut = findFirstValuelessEntry;
+      await seed(ctx, '[remote "origin"]\n\turl\n');
+
+      // Act
+      const result = await sut(ctx, 'remote', 'origin', ['url']);
+
+      // Assert
+      expect(result?.key).toBe('remote.origin.url');
+      expect(result?.line).toBe(2);
+      expect(result?.source).toBe(`${ctx.layout.gitDir}/config`);
+    });
+
+    it('Then returns undefined when subsection does not match (step 10: subsection mismatch)', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      const sut = findFirstValuelessEntry;
+      await seed(ctx, '[remote "origin"]\n\turl\n');
+
+      // Act
+      const result = await sut(ctx, 'remote', 'other', ['url']);
+
+      // Assert
+      expect(result).toBeUndefined();
+    });
+
+    it('Then matches the subsection case-sensitively (a differing case does not match)', async () => {
+      // Arrange — git subsection names are case-SENSITIVE, unlike section names.
+      const ctx = createMemoryContext();
+      const sut = findFirstValuelessEntry;
+      await seed(ctx, '[remote "Origin"]\n\turl\n');
+
+      // Act
+      const result = await sut(ctx, 'remote', 'origin', ['url']);
+
+      // Assert
+      expect(result).toBeUndefined();
+    });
+
+    it('Then returns undefined for a valueless target key that appears before any section header', async () => {
+      // Arrange — a pre-header bare key must NOT match: inSection starts false
+      // and is only set to true when a matching [section] header is seen.
+      // Mutant (inSection=true) would wrongly return the pre-header entry.
+      const ctx = createMemoryContext();
+      const sut = findFirstValuelessEntry;
+      await seed(ctx, '\tname\n[user]\n\temail = a@b.c\n');
+
+      // Act
+      const result = await sut(ctx, 'user', undefined, ['name', 'email']);
+
+      // Assert
+      expect(result).toBeUndefined();
+    });
+
+    it('Then returns undefined for a valueless non-target key under the matching section', async () => {
+      // Arrange — a valueless key that is NOT in the requested key set must be
+      // skipped. Mutant (!keySet.has → false) would wrongly return it.
+      const ctx = createMemoryContext();
+      const sut = findFirstValuelessEntry;
+      await seed(ctx, '[user]\n\tfoo\n\temail = a@b.c\n');
+
+      // Act
+      const result = await sut(ctx, 'user', undefined, ['name', 'email']);
+
+      // Assert
+      expect(result).toBeUndefined();
     });
   });
 });

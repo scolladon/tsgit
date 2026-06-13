@@ -12,6 +12,7 @@ import {
   checkoutOverwriteDirty,
   cherryPickMergeNoMainline,
   configKeyInvalid,
+  configMissingValue,
   configMultipleValues,
   configScopeNotAvailable,
   configSectionNotFound,
@@ -1088,6 +1089,23 @@ describe('domain commands error — config factory data', () => {
       });
     });
   });
+
+  describe('Given the configMissingValue helper', () => {
+    describe("When called with key='user.name', source='/abs/.git/config', line=2", () => {
+      it('Then data carries code, key, source, and line individually', () => {
+        // Arrange + Act
+        const sut = configMissingValue('user.name', '/abs/.git/config', 2);
+
+        // Assert
+        const data = sut.data;
+        expect(data.code).toBe('CONFIG_MISSING_VALUE');
+        if (data.code !== 'CONFIG_MISSING_VALUE') return;
+        expect(data.key).toBe('user.name');
+        expect(data.source).toBe('/abs/.git/config');
+        expect(data.line).toBe(2);
+      });
+    });
+  });
 });
 
 describe('domain commands error — extractDetail message formatting', () => {
@@ -1316,6 +1334,10 @@ describe('domain commands error — extractDetail message formatting', () => {
     [
       { code: 'STASH_APPLY_WOULD_OVERWRITE', paths: ['a' as FilePath, 'b' as FilePath] },
       'STASH_APPLY_WOULD_OVERWRITE: cannot apply stash: 2 local change(s) would be overwritten',
+    ],
+    [
+      { code: 'CONFIG_MISSING_VALUE', key: 'user.name', source: '/repo/.git/config', line: 2 },
+      "CONFIG_MISSING_VALUE: missing value for 'user.name' in file '/repo/.git/config' at line 2",
     ],
   ];
 

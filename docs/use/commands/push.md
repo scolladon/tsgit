@@ -71,6 +71,7 @@ for (const r of result.pushedRefs) {
 - `HOOK_FAILED` — `pre-push` returned non-zero exit (when hooks are enabled).
 - `NETWORK_ERROR` — transport failure.
 - `REMOTE_NOT_CONFIGURED` — `remote` is not in `.git/config`.
+- `CONFIG_MISSING_VALUE` — `remote.<name>.url` is present but valueless (git NULL); carries `{ key, source, line }`. Push checks `url`, not `pushUrl`. Distinct from the absent case (`REMOTE_NOT_CONFIGURED`).
 
 ## See also
 

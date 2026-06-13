@@ -65,6 +65,8 @@ await repo.commit({ message: 'resolve conflict' });
 - `NOTHING_TO_COMMIT` — index matches HEAD's tree (no changes to commit).
 - `HOOK_FAILED` — `pre-commit` or `commit-msg` returned non-zero exit (when hooks are enabled).
 - `BARE_REPOSITORY` — commit is not valid in a bare repository.
+- `AUTHOR_UNCONFIGURED` — no `user.name` / `user.email` in config and no caller-supplied identity.
+- `CONFIG_MISSING_VALUE` — a `[user]` `name` or `email` line is present but valueless (git NULL); carries `{ key, source, line }`. Distinct from the absent case (`AUTHOR_UNCONFIGURED`). The first valueless `user.*` entry by config-file line order is reported.
 
 ## See also
 

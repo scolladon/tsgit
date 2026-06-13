@@ -120,6 +120,12 @@ export type CommandError =
       readonly partialSectionName?: string;
     }
   | {
+      readonly code: 'CONFIG_MISSING_VALUE';
+      readonly key: string;
+      readonly source: string;
+      readonly line: number;
+    }
+  | {
       readonly code: 'CONFIG_MULTIPLE_VALUES';
       readonly key: string;
       readonly count: number;
@@ -427,6 +433,15 @@ export const configParseError = (
     ...(source !== undefined ? { source } : {}),
     ...(partialSectionName !== undefined ? { partialSectionName } : {}),
   });
+
+/**
+ * A string-typed config key is present-but-valueless (git's internal NULL) at the
+ * 1-based `line` of `source`. `key` is the fully-qualified config key
+ * (`'user.name'`, `'remote.origin.url'`). Lets a caller reconstruct git's two-line
+ * `missing value for '<key>'` / `bad config variable '<key>' … at line <N>` refusal.
+ */
+export const configMissingValue = (key: string, source: string, line: number): TsgitError =>
+  new TsgitError({ code: 'CONFIG_MISSING_VALUE', key, source, line });
 
 /**
  * A write operation was refused because the config file contains a malformed

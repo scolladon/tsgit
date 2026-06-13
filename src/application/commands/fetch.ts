@@ -43,6 +43,7 @@ import {
   selectFetchCapabilities,
   uniqueRefOids,
 } from './internal/upload-pack-client.js';
+import { assertNoValuelessConfig } from './internal/valueless-config-guard.js';
 
 export interface FetchOptions {
   readonly remote?: string;
@@ -138,7 +139,10 @@ const resolveRemoteUrl = async (
   const config = await readConfig(ctx);
   const remote = config.remote?.get(remoteName);
   // An absent OR empty url means the remote is not usably configured.
-  if (remote?.url === undefined || remote.url === '') throw remoteNotConfigured(remoteName);
+  if (remote?.url === undefined || remote.url === '') {
+    await assertNoValuelessConfig(ctx, 'remote', remoteName, ['url']);
+    throw remoteNotConfigured(remoteName);
+  }
   // A partial repo re-applies its recorded filter so a fetch does not pull
   // full blobs and silently un-partial the repo. The stored value is
   // re-validated — a hand-corrupted config filter is rejected before the wire.

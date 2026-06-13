@@ -48,6 +48,7 @@ import { withDefaults } from './internal/network-pipeline.js';
 import { discoverReceivePackRefs, selectPushCapabilities } from './internal/receive-pack-client.js';
 import { type ParsedRefspec, parseRefspec } from './internal/refspec.js';
 import { assertRepository, readHeadRaw } from './internal/repo-state.js';
+import { assertNoValuelessConfig } from './internal/valueless-config-guard.js';
 
 export interface PushOptions {
   readonly remote?: string;
@@ -152,7 +153,12 @@ const resolveRemoteUrl = async (ctx: Context, remoteName: string): Promise<strin
   const remote = config.remote?.get(remoteName);
   // `pushurl` overrides `url` for push (canonical-git parity).
   const url = remote?.pushUrl ?? remote?.url;
-  if (url === undefined) throw remoteNotConfigured(remoteName);
+  if (url === undefined) {
+    // Only a valueless `url` reproduces git's lazy `missing value` die here; a
+    // valueless `pushurl` is not yet in scope (no pinned matrix row for it).
+    await assertNoValuelessConfig(ctx, 'remote', remoteName, ['url']);
+    throw remoteNotConfigured(remoteName);
+  }
   return url;
 };
 

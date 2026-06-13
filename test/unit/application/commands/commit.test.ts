@@ -521,6 +521,156 @@ describe('commit', () => {
   });
 });
 
+describe('commit — valueless identity refusal', () => {
+  describe('Given a config with valueless user.name and valued user.email', () => {
+    describe('When commit without an explicit author', () => {
+      it('Then throws CONFIG_MISSING_VALUE with key user.name at line 2', async () => {
+        // Arrange
+        const ctx = await seed();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[user]\n\tname\n\temail = a@b.c\n');
+        __resetConfigCacheForTests();
+
+        // Act
+        let caught: unknown;
+        try {
+          await commit(ctx, { message: 'x' });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data;
+        expect(data.code).toBe('CONFIG_MISSING_VALUE');
+        expect((data as { key: string }).key).toBe('user.name');
+        expect((data as { line: number }).line).toBe(2);
+        expect((data as { source: string }).source).toMatch(/\/config$/);
+      });
+    });
+  });
+
+  describe('Given a config with valued user.name and valueless user.email', () => {
+    describe('When commit without an explicit author', () => {
+      it('Then throws CONFIG_MISSING_VALUE with key user.email at line 3', async () => {
+        // Arrange
+        const ctx = await seed();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[user]\n\tname = Ada\n\temail\n');
+        __resetConfigCacheForTests();
+
+        // Act
+        let caught: unknown;
+        try {
+          await commit(ctx, { message: 'x' });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data;
+        expect(data.code).toBe('CONFIG_MISSING_VALUE');
+        expect((data as { key: string }).key).toBe('user.email');
+        expect((data as { line: number }).line).toBe(3);
+        expect((data as { source: string }).source).toMatch(/\/config$/);
+      });
+    });
+  });
+
+  describe('Given a config with both user.name and user.email valueless, name earlier', () => {
+    describe('When commit without an explicit author', () => {
+      it('Then throws CONFIG_MISSING_VALUE with key user.name at line 2', async () => {
+        // Arrange
+        const ctx = await seed();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[user]\n\tname\n\temail\n');
+        __resetConfigCacheForTests();
+
+        // Act
+        let caught: unknown;
+        try {
+          await commit(ctx, { message: 'x' });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data;
+        expect(data.code).toBe('CONFIG_MISSING_VALUE');
+        expect((data as { key: string }).key).toBe('user.name');
+        expect((data as { line: number }).line).toBe(2);
+        expect((data as { source: string }).source).toMatch(/\/config$/);
+      });
+    });
+  });
+
+  describe('Given a config with both user.email and user.name valueless, email earlier', () => {
+    describe('When commit without an explicit author', () => {
+      it('Then throws CONFIG_MISSING_VALUE with key user.email at line 2 (file-position order)', async () => {
+        // Arrange
+        const ctx = await seed();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[user]\n\temail\n\tname\n');
+        __resetConfigCacheForTests();
+
+        // Act
+        let caught: unknown;
+        try {
+          await commit(ctx, { message: 'x' });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data;
+        expect(data.code).toBe('CONFIG_MISSING_VALUE');
+        expect((data as { key: string }).key).toBe('user.email');
+        expect((data as { line: number }).line).toBe(2);
+        expect((data as { source: string }).source).toMatch(/\/config$/);
+      });
+    });
+  });
+
+  describe('Given no [user] section (absent)', () => {
+    describe('When commit without an explicit author', () => {
+      it('Then throws AUTHOR_UNCONFIGURED and NOT CONFIG_MISSING_VALUE', async () => {
+        // Arrange
+        const ctx = await seed();
+
+        // Act
+        let caught: unknown;
+        try {
+          await commit(ctx, { message: 'x' });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data;
+        expect(data.code).toBe('AUTHOR_UNCONFIGURED');
+        expect(data.code).not.toBe('CONFIG_MISSING_VALUE');
+      });
+    });
+  });
+
+  describe('Given a config with valueless user.name and an explicit opts.author', () => {
+    describe('When commit with an explicit author', () => {
+      it('Then succeeds without refusing (guard is opts.author === undefined)', async () => {
+        // Arrange
+        const ctx = await seed();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[user]\n\tname\n');
+        __resetConfigCacheForTests();
+
+        // Act
+        const result = await commit(ctx, { message: 'x', author });
+
+        // Assert
+        expect(result.id).toMatch(/^[0-9a-f]{40}$/);
+      });
+    });
+  });
+});
+
 describe('commit — hooks', () => {
   const hookedCtx = (
     over: {
