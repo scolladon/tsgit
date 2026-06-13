@@ -28,6 +28,7 @@ import {
   sanitizeMessage,
   stripComments,
 } from './internal/commit-message.js';
+import { assertUserNotValueless } from './internal/identity-config.js';
 import {
   clearMergeMsg,
   clearMergeState,
@@ -91,6 +92,9 @@ export const commit = async (ctx: Context, opts: CommitOptions): Promise<CommitR
   const resolved = await resolveCommitMessage(ctx, opts, resolvingPending);
   const config = await readConfig(ctx);
   const configUser = toAuthor(config.user);
+  if (opts.author === undefined && configUser === undefined) {
+    await assertUserNotValueless(ctx);
+  }
   const author = resolveAuthor(buildResolverInput(opts.author, configUser));
   const committer = resolveCommitter(buildCommitterInput(opts.committer, author, configUser));
   const index = await readIndex(ctx);

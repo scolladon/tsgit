@@ -2,6 +2,7 @@ import type { AuthorIdentity } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
 import { readConfig } from '../../primitives/config-read.js';
 import { resolveCommitter } from './commit-message.js';
+import { assertUserNotValueless } from './identity-config.js';
 
 /**
  * The current identity (config `user.name`/`user.email` + the current time) used
@@ -11,6 +12,7 @@ import { resolveCommitter } from './commit-message.js';
 export const resolveCurrentIdentity = async (ctx: Context): Promise<AuthorIdentity> => {
   const config = await readConfig(ctx);
   const user = config.user;
+  if (user === undefined) await assertUserNotValueless(ctx);
   const configUser =
     user !== undefined
       ? {
