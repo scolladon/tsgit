@@ -1,5 +1,75 @@
 # Changelog
 
+## [3.0.0](https://github.com/scolladon/tsgit/compare/v2.0.1...v3.0.0) (2026-06-13)
+
+
+### ⚠ BREAKING CHANGES
+
+* **status:** correlate staged/unstaged per path with diff endpoints ([#140](https://github.com/scolladon/tsgit/issues/140))
+* standardise the commit-ish parameter on `rev` (rev/from-to/ref vocabulary) ([#137](https://github.com/scolladon/tsgit/issues/137))
+* **merge:** run/continue/abort namespace, fastForward enum, internal reflog channel ([#136](https://github.com/scolladon/tsgit/issues/136))
+* **snapshot:** stop leaking snapshot wiring from the public barrel ([#133](https://github.com/scolladon/tsgit/issues/133))
+* **status:** type-changed/mode-changed kinds + unmerged paths ([#128](https://github.com/scolladon/tsgit/issues/128))
+* **status:** real index-vs-HEAD staged column (Changes to be committed) ([#127](https://github.com/scolladon/tsgit/issues/127))
+* **show,diff:** structured output only — drop cosmetic rendering surface ([#126](https://github.com/scolladon/tsgit/issues/126))
+
+### Features
+
+* **blame:** line-by-line authorship via reverse-diff history walk ([#130](https://github.com/scolladon/tsgit/issues/130)) ([5e542d6](https://github.com/scolladon/tsgit/commit/5e542d68c4e142260c54a98faec09b3e33b871b5))
+* **config:** exact subsection identity and raw section-name addressing ([#168](https://github.com/scolladon/tsgit/issues/168)) ([c67bcc2](https://github.com/scolladon/tsgit/commit/c67bcc244af8efd7dabc667410c6f91d90525822))
+* **config:** git-faithful quoted-value (un)escaping in the config reader and writer ([#162](https://github.com/scolladon/tsgit/issues/162)) ([3356c5f](https://github.com/scolladon/tsgit/commit/3356c5f13c29822b48201ea5235d148c86f0a9b5))
+* **config:** span-aware line surgery for multi-line entries ([#166](https://github.com/scolladon/tsgit/issues/166)) ([586affe](https://github.com/scolladon/tsgit/commit/586affeea5c1171fe7b4eb17dccc58966fb2c215))
+* **config:** subsection-name (un)escaping in section headers ([#164](https://github.com/scolladon/tsgit/issues/164)) ([3a5605c](https://github.com/scolladon/tsgit/commit/3a5605c17f403bafef52c8d46ecb63844bf55a59))
+* **config:** valueless keys parse as git NULL entries ([#165](https://github.com/scolladon/tsgit/issues/165)) ([0452ce7](https://github.com/scolladon/tsgit/commit/0452ce79e2223867250ecde41ed69fea7601387d))
+* conflict-marker size + per-operation conflict labels ([#161](https://github.com/scolladon/tsgit/issues/161)) ([1c96a0c](https://github.com/scolladon/tsgit/commit/1c96a0c7a77ea1b1c2b04d1b1306c038c7100af4))
+* converge log/diff onto the read model (log defaults to git date order) ([#142](https://github.com/scolladon/tsgit/issues/142)) ([9e8f183](https://github.com/scolladon/tsgit/commit/9e8f1833c487aada2354564a50039b18d918eb65))
+* custom merge drivers (.gitattributes merge=&lt;driver&gt;) ([#159](https://github.com/scolladon/tsgit/issues/159)) ([eac30e5](https://github.com/scolladon/tsgit/commit/eac30e58100ca3da901615557e48e3ab898b7498))
+* **describe:** byte-faithful candidate selection (git early-termination) ([#145](https://github.com/scolladon/tsgit/issues/145)) ([a86d101](https://github.com/scolladon/tsgit/commit/a86d101d3d88bc0e74789439b28c9690f40f9f3f))
+* **describe:** nearest-tag distance (git describe), structured-output only ([#123](https://github.com/scolladon/tsgit/issues/123)) ([bb22dcb](https://github.com/scolladon/tsgit/commit/bb22dcbc166daedca76912467aa210eaf236ace9))
+* **diff:** recursive tree-diff for the shared patch path ([#121](https://github.com/scolladon/tsgit/issues/121)) ([4492407](https://github.com/scolladon/tsgit/commit/4492407b9a8343cafc5b0fd5a3ecf84edda9b319))
+* **hooks:** hook coverage parity — prepare-commit-msg, post-commit, post-merge, post-checkout, pre-rebase, post-rewrite ([#158](https://github.com/scolladon/tsgit/issues/158)) ([e9a15c7](https://github.com/scolladon/tsgit/commit/e9a15c7d8481a97639591e9dceec0a7f7de4e586))
+* **merge:** add/add content merge + distinct-types rename ([#163](https://github.com/scolladon/tsgit/issues/163)) ([b59717f](https://github.com/scolladon/tsgit/commit/b59717f6fb6b9f360728236c105aea3e41f67efd))
+* **merge:** distinct types with a base — per-side renames, symlink pairs, mode-aware conflict writes ([#167](https://github.com/scolladon/tsgit/issues/167)) ([bb7b607](https://github.com/scolladon/tsgit/commit/bb7b607e377aded96b63b6e38be9c4bd62095520))
+* **merge:** materialise non-conflict outcomes to the working tree + index ([#156](https://github.com/scolladon/tsgit/issues/156)) ([d346826](https://github.com/scolladon/tsgit/commit/d346826a3c11535a5915627d30613870a69961d0))
+* **merge:** union built-in merge driver via per-region content merge ([#160](https://github.com/scolladon/tsgit/issues/160)) ([c886c7a](https://github.com/scolladon/tsgit/commit/c886c7abe43dbdfb6d6d3646787fe249d72317bc))
+* **name-rev:** name a commit by the nearest containing ref (+ describe --contains) ([#150](https://github.com/scolladon/tsgit/issues/150)) ([7b8a65c](https://github.com/scolladon/tsgit/commit/7b8a65cdd351aca40c0f75081bb55e6f2c9cf6dd))
+* **range-diff:** compare two commit ranges (structured range-diff) ([#148](https://github.com/scolladon/tsgit/issues/148)) ([11605d1](https://github.com/scolladon/tsgit/commit/11605d1f2c557e03109c6ad9f8e0e2afea6e9b5d))
+* **read-model:** readFileAt(rev, path) ([#135](https://github.com/scolladon/tsgit/issues/135)) ([6334215](https://github.com/scolladon/tsgit/commit/63342156095a85e2543d835edfbdbef716905c61))
+* **read-model:** walkCommitsByDate + foldSubject (23.4b) ([#134](https://github.com/scolladon/tsgit/issues/134)) ([9ebe48b](https://github.com/scolladon/tsgit/commit/9ebe48bdd024571cfee47bb18a0ae0914fc57610))
+* **shortlog:** per-author commit summary ([#147](https://github.com/scolladon/tsgit/issues/147)) ([d79b75a](https://github.com/scolladon/tsgit/commit/d79b75a0c71beefe028f33518ccd08becd3083f8))
+* **show,diff:** structured output only — drop cosmetic rendering surface ([#126](https://github.com/scolladon/tsgit/issues/126)) ([240cc89](https://github.com/scolladon/tsgit/commit/240cc89ee9f11a10a696eb77d3015a0b716741aa))
+* **show:** formatted object output for commit/tag/tree/blob ([#118](https://github.com/scolladon/tsgit/issues/118)) ([9ca696a](https://github.com/scolladon/tsgit/commit/9ca696a63fbb51211b2b8e6d3b66774de746509b))
+* **show:** v2 flags (pretty, stat, combined diff, date modes, rev:path) ([#122](https://github.com/scolladon/tsgit/issues/122)) ([a2e8722](https://github.com/scolladon/tsgit/commit/a2e8722e453a527fc49a034511e64caea8fe03dd))
+* **status:** carry conflicted-path worktree mode on UnmergedEntry ([#146](https://github.com/scolladon/tsgit/issues/146)) ([6c432ad](https://github.com/scolladon/tsgit/commit/6c432ad9ee26507bfb901e85c39ab125b1b901ac))
+* **status:** correlate staged/unstaged per path with diff endpoints ([#140](https://github.com/scolladon/tsgit/issues/140)) ([ace3785](https://github.com/scolladon/tsgit/commit/ace3785bebca44b171064c16613efd63968d1438))
+* **status:** real index-vs-HEAD staged column (Changes to be committed) ([#127](https://github.com/scolladon/tsgit/issues/127)) ([4e9f943](https://github.com/scolladon/tsgit/commit/4e9f9433ee9f89f57d0648fe3bb883248d8b82dd))
+* **status:** type-changed/mode-changed kinds + unmerged paths ([#128](https://github.com/scolladon/tsgit/issues/128)) ([33fa9f4](https://github.com/scolladon/tsgit/commit/33fa9f4fddc397f8f76f01209e8d7c9c21610fd1))
+* **submodule:** network write side — add / update (+ sync --recursive) ([#155](https://github.com/scolladon/tsgit/issues/155)) ([79a9d6e](https://github.com/scolladon/tsgit/commit/79a9d6e37a407d7365babda81b3ce3454bfa850f))
+* **submodule:** write side (local) — init/sync/deinit ([#153](https://github.com/scolladon/tsgit/issues/153)) ([dfd397b](https://github.com/scolladon/tsgit/commit/dfd397b133ca5aaf87da071bb1768ee80213c202))
+* **whatchanged:** log walk with raw structured changes ([#149](https://github.com/scolladon/tsgit/issues/149)) ([30466f5](https://github.com/scolladon/tsgit/commit/30466f56cb6342abf935786ffc428dd7bf9aa753))
+* **worktree:** add / list / move / remove (linked working trees over one gitdir) ([#157](https://github.com/scolladon/tsgit/issues/157)) ([b3c53ef](https://github.com/scolladon/tsgit/commit/b3c53efa0298b66f425341c9acf6b36a6b2670b0))
+
+
+### Documentation
+
+* **backlog:** add 23.1b for deferred show v2 flags ([#120](https://github.com/scolladon/tsgit/issues/120)) ([f9a1302](https://github.com/scolladon/tsgit/commit/f9a1302040e65ea6e2e7e2aa53f91a7ef827a625))
+* **backlog:** reorder Phase 26 so refactoring precedes the perf pass ([#154](https://github.com/scolladon/tsgit/issues/154)) ([6adba12](https://github.com/scolladon/tsgit/commit/6adba128c25bd01537a6e849b3c9812b8212f71e))
+* **backlog:** sub-itemize 23.4 API-foundation program; renumber inspection tail ([#132](https://github.com/scolladon/tsgit/issues/132)) ([dd50478](https://github.com/scolladon/tsgit/commit/dd50478e94494aad0a72d926a3225b5e31b5c08b))
+* **backlog:** track 23.2b — status staged column (describe --dirty follow-up) ([#124](https://github.com/scolladon/tsgit/issues/124)) ([6285019](https://github.com/scolladon/tsgit/commit/628501938f003856c5a26ddea00e7828dfe13c57))
+* **backlog:** track 23.7 (name-rev / describe --contains); multi-arg non-goal ([#125](https://github.com/scolladon/tsgit/issues/125)) ([010cdce](https://github.com/scolladon/tsgit/commit/010cdce1483c30871f7f01f4f2bcb30becc354b4))
+* **workflow:** add promote-workflow design-session brief ([aceb5aa](https://github.com/scolladon/tsgit/commit/aceb5aa41b28548e9706eb95cc63a12a503de18a))
+* **workflow:** add spelling check to review fix-batch gate ([f38dd6c](https://github.com/scolladon/tsgit/commit/f38dd6c4865cf5bc4021d5af69973693de80f82f))
+* **workflow:** gate PR creation on scoped mutation triage ([044a925](https://github.com/scolladon/tsgit/commit/044a9254ea60667f2dd0f37882ff6271f2547c00))
+* **workflow:** model-matched delegation, parallel 4-dim reviews, non-blocking mutation ([5d9b915](https://github.com/scolladon/tsgit/commit/5d9b9150db7bfd821c5e70dbcc8e1dc4f265d468))
+
+
+### Refactor
+
+* consolidate the date-ordered commit priority-queue ([#131](https://github.com/scolladon/tsgit/issues/131)) ([4640a2f](https://github.com/scolladon/tsgit/commit/4640a2fe23fcb635f02d88810622aa9eca902c57))
+* **merge:** run/continue/abort namespace, fastForward enum, internal reflog channel ([#136](https://github.com/scolladon/tsgit/issues/136)) ([7f761e4](https://github.com/scolladon/tsgit/commit/7f761e4c49ccfd70e7218fb643852d73665e456f))
+* **snapshot:** stop leaking snapshot wiring from the public barrel ([#133](https://github.com/scolladon/tsgit/issues/133)) ([914c15c](https://github.com/scolladon/tsgit/commit/914c15c96a66d6dd4b935144af5c64f0f8552d06))
+* standardise the commit-ish parameter on `rev` (rev/from-to/ref vocabulary) ([#137](https://github.com/scolladon/tsgit/issues/137)) ([0339612](https://github.com/scolladon/tsgit/commit/033961228e0f545e7cdeaa30c0c9093c261dd486))
+
 ## [2.0.1](https://github.com/scolladon/tsgit/compare/v2.0.0...v2.0.1) (2026-06-02)
 
 
