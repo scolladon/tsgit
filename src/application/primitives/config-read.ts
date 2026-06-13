@@ -97,6 +97,57 @@ const readRawConfig = async (ctx: Context, path: string): Promise<string | undef
   }
 };
 
+export interface ValuelessEntry {
+  readonly key: string;
+  readonly source: string;
+  readonly line: number;
+}
+
+const matchesSection = (
+  tokenSection: string,
+  tokenSubsection: string | undefined,
+  section: string,
+  subsection: string | undefined,
+): boolean =>
+  tokenSection.toLowerCase() === section.toLowerCase() && tokenSubsection === subsection;
+
+/**
+ * Cold-path detection: re-tokenize the repo-local config and return the FIRST
+ * valueless (`value === null`) entry, by config-file line, whose key
+ * (case-insensitive) is one of `keys` and which sits under `[<section> "<subsection>"]`
+ * (subsection `undefined` ⇒ the unsubsectioned section). Returns the fully-qualified
+ * key, the absolute config path, and the 1-based line, or `undefined` when no such
+ * entry exists. Runs ONLY on a command's refusal path.
+ */
+export const findFirstValuelessEntry = async (
+  ctx: Context,
+  section: string,
+  subsection: string | undefined,
+  keys: ReadonlyArray<string>,
+): Promise<ValuelessEntry | undefined> => {
+  const path = `${commonGitDir(ctx)}/config`;
+  const raw = await readRawConfig(ctx, path);
+  if (raw === undefined) return undefined;
+  const tokens = tokenizeConfig(raw, path);
+  const keySet = new Set(keys.map((k) => k.toLowerCase()));
+  let inSection = false;
+  for (const token of tokens) {
+    if (token.kind === 'header') {
+      inSection = matchesSection(token.section, token.subsection, section, subsection);
+      continue;
+    }
+    if (!inSection || token.kind !== 'entry' || token.value !== null) continue;
+    const loweredKey = token.key.toLowerCase();
+    if (!keySet.has(loweredKey)) continue;
+    const qualifiedKey =
+      subsection === undefined
+        ? `${section}.${loweredKey}`
+        : `${section}.${subsection}.${loweredKey}`;
+    return { key: qualifiedKey, source: path, line: token.startLine + 1 };
+  }
+  return undefined;
+};
+
 /**
  * One `[section "subsection"]` block of a git-config-format INI file: the
  * section name, an optional quoted subsection, and its key/value entries.

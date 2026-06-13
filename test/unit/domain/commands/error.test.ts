@@ -12,6 +12,7 @@ import {
   checkoutOverwriteDirty,
   cherryPickMergeNoMainline,
   configKeyInvalid,
+  configMissingValue,
   configMultipleValues,
   configScopeNotAvailable,
   configSectionNotFound,
@@ -1085,6 +1086,23 @@ describe('domain commands error — config factory data', () => {
 
         // Assert
         expect(sut.data).toEqual({ code: 'CONFIG_SYSTEM_PATH_UNRESOLVED' });
+      });
+    });
+  });
+
+  describe('Given the configMissingValue helper', () => {
+    describe("When called with key='user.name', source='/abs/.git/config', line=2", () => {
+      it('Then data carries code, key, source, and line individually', () => {
+        // Arrange + Act
+        const sut = configMissingValue('user.name', '/abs/.git/config', 2);
+
+        // Assert
+        const data = sut.data;
+        expect(data.code).toBe('CONFIG_MISSING_VALUE');
+        if (data.code !== 'CONFIG_MISSING_VALUE') return;
+        expect(data.key).toBe('user.name');
+        expect(data.source).toBe('/abs/.git/config');
+        expect(data.line).toBe(2);
       });
     });
   });
