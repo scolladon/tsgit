@@ -60,6 +60,7 @@ console.log(result.prunedRefs);
 ## Throws
 
 - `REMOTE_NOT_CONFIGURED` — `remote` is not in `.git/config`.
+- `CONFIG_MISSING_VALUE` — `remote.<name>.url` is present but valueless (git NULL); carries `{ key, source, line }`. Distinct from the absent case (`REMOTE_NOT_CONFIGURED`).
 - `INVALID_URL` — remote URL failed SSRF validation.
 - `NETWORK_ERROR` — transport failure (reason varies).
 - `REFSPEC_INVALID` — refspec syntactically invalid.
