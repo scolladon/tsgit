@@ -386,7 +386,7 @@ const emitHeaderLine = (
 };
 
 /** Index of the first non-GIT_SPACE character at or after `start` (space/TAB/CR skipped). */
-const skipGitSpace = (line: string, start: number): number => {
+export const skipGitSpace = (line: string, start: number): number => {
   let col = start;
   while (col < line.length && GIT_SPACE.has(line[col] as string)) col += 1;
   return col;
@@ -700,7 +700,7 @@ const scanQuotedSpan = (
  * `]` that closes the bracket span. Same-line entry content (`[a] key = v`)
  * begins after `endOffset`; the writer slices the raw header bytes by it.
  */
-interface HeaderPrefixScan {
+export interface HeaderPrefixScan {
   readonly parse: SectionHeaderParse;
   readonly endOffset: number;
 }
@@ -713,7 +713,7 @@ interface HeaderPrefixScan {
  * malformed unquoted bracket span, reports `not-header` (the tokenizer keeps its
  * lenient skip); a malformed quoted subsection reports `malformed`.
  */
-const scanHeaderPrefix = (rawLine: string): HeaderPrefixScan => {
+export const scanHeaderPrefix = (rawLine: string): HeaderPrefixScan => {
   const open = firstNonGap(rawLine, 0);
   if (rawLine[open] !== '[') return NOT_HEADER_SCAN;
   const afterOpen = rawLine.slice(open + 1);

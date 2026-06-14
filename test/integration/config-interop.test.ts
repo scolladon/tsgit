@@ -2952,4 +2952,79 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
       }, 60_000);
     });
   });
+
+  describe('Given same-line header blocks seeded into twin configs', () => {
+    const renameRow = (label: string, bytes: string, oldName: string, newName: string): void => {
+      describe(`When git and tsgit each --rename-section for ${label}`, () => {
+        it('Then the renamed config bytes are identical', async () => {
+          // Arrange — same starting bytes in both repos, no preamble
+          const { peerConfigPath } = await seedTwinConfigs(pair, bytes);
+
+          // Act — canonical git
+          const gitResult = tryRunGit([
+            'config',
+            '--file',
+            peerConfigPath,
+            '--rename-section',
+            oldName,
+            newName,
+          ]);
+          expect(gitResult.ok, `git --rename-section failed: ${gitResult.stderr}`).toBe(true);
+
+          // Act — tsgit
+          const ctx = createNodeContext({ workDir: pair.ours });
+          await configRenameSectionCmd(ctx, { oldName, newName, scope: 'local' });
+
+          // Assert
+          const { oursConfig, peerConfig } = await readTwinConfigs(pair);
+          expect(oursConfig).toBe(peerConfig);
+        }, 60_000);
+      });
+    };
+
+    const removeRow = (label: string, bytes: string, sectionName: string): void => {
+      describe(`When git and tsgit each --remove-section for ${label}`, () => {
+        it('Then the resulting config bytes are identical', async () => {
+          // Arrange
+          const { peerConfigPath } = await seedTwinConfigs(pair, bytes);
+
+          // Act — canonical git
+          const gitResult = tryRunGit([
+            'config',
+            '--file',
+            peerConfigPath,
+            '--remove-section',
+            sectionName,
+          ]);
+          expect(gitResult.ok, `git --remove-section failed: ${gitResult.stderr}`).toBe(true);
+
+          // Act — tsgit
+          const ctx = createNodeContext({ workDir: pair.ours });
+          await configRemoveSection(ctx, { name: sectionName, scope: 'local' });
+
+          // Assert
+          const { oursConfig, peerConfig } = await readTwinConfigs(pair);
+          expect(oursConfig).toBe(peerConfig);
+        }, 60_000);
+      });
+    };
+
+    renameRow('a same-line entry (W8)', '[a] key = v\n', 'a', 'b');
+    renameRow('a same-line entry with a body (R1)', '[a] key = v\n\tk2 = w\n', 'a', 'b');
+    renameRow('a same-line valueless entry (N3)', '[a] key\n', 'a', 'b');
+    renameRow('trailing spaces after the bracket (N4)', '[a]  \n\tk = v\n', 'a', 'b');
+    renameRow('a raw no-space tail (C1)', '[a]   key=v\n', 'a', 'b');
+    renameRow('a trailing comment in the tail (C2)', '[a] key = v ; cmt\n', 'a', 'b');
+    renameRow('a continuation tail (C7)', '[a] key = one\\\n  two\n', 'a', 'b');
+
+    removeRow('a same-line block (W9)', '[a] key = v\n', 'a');
+    removeRow('a same-line block before a section (C3)', '[a] key = v\n\tk2=w\n[c]\n\tk3=x\n', 'a');
+    removeRow('one of two same-line blocks (C5)', '[a] k1 = v1\n[b] k2 = v2\n', 'a');
+    removeRow('a section below an orphan line (N7)', 'o = 1\n[a]\n\tk = v\n', 'a');
+
+    renameRow('a bad-key sibling block (D2a)', '[a]\n\tbad!key = v\n[b]\n\tk = w\n', 'b', 'c');
+    renameRow('the bad-key block itself (D2c)', '[a]\n\tbad!key = v\n[b]\n\tk = w\n', 'a', 'c');
+    removeRow('a bad-key sibling block (D2b)', '[a]\n\tbad!key = v\n[b]\n\tk = w\n', 'b');
+    removeRow('a malformed-value sibling block (D2d)', '[a]\n\tk = "unclosed\n[b]\n\tk = w\n', 'b');
+  });
 });
