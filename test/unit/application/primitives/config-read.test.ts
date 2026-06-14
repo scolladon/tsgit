@@ -3815,14 +3815,16 @@ describe('Given a config with valueless/valued entries', () => {
       expect(result).toBeUndefined();
     });
   });
+});
 
+describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
   const headerToken = (
     section: string,
     subsection: string | undefined,
     line: number,
   ): ConfigToken => ({ kind: 'header', section, subsection, line, hasComment: false });
 
-  const parseConfigThrows = (input: string, line: number): void => {
+  const assertParseConfigRefuses = (input: string, line: number): void => {
     try {
       parseIniSections(input, 'test.cfg');
       expect.unreachable(`must throw CONFIG_PARSE_ERROR on line ${line}`);
@@ -4129,70 +4131,70 @@ describe('Given a config with valueless/valued entries', () => {
     describe('Given `[a] bad!key = v` (exclamation in same-line key), When parseIniSections', () => {
       it('Then CONFIG_PARSE_ERROR carries line 1', () => {
         // Arrange + Act + Assert
-        parseConfigThrows('[a] bad!key = v\n', 1);
+        assertParseConfigRefuses('[a] bad!key = v\n', 1);
       });
     });
 
     describe('Given `[a] foo bar = v` (space inside same-line key), When parseIniSections', () => {
       it('Then CONFIG_PARSE_ERROR carries line 1', () => {
         // Arrange + Act + Assert
-        parseConfigThrows('[a] foo bar = v\n', 1);
+        assertParseConfigRefuses('[a] foo bar = v\n', 1);
       });
     });
 
     describe('Given `[a] foo.dot = v` (dot in same-line key), When parseIniSections', () => {
       it('Then CONFIG_PARSE_ERROR carries line 1', () => {
         // Arrange + Act + Assert
-        parseConfigThrows('[a] foo.dot = v\n', 1);
+        assertParseConfigRefuses('[a] foo.dot = v\n', 1);
       });
     });
 
     describe('Given `\\tbad!key = v` under a header (exclamation), When parseIniSections', () => {
       it('Then CONFIG_PARSE_ERROR carries line 2', () => {
         // Arrange + Act + Assert
-        parseConfigThrows('[a]\n\tbad!key = v\n', 2);
+        assertParseConfigRefuses('[a]\n\tbad!key = v\n', 2);
       });
     });
 
     describe('Given `\\tunder_score = v` under a header (underscore), When parseIniSections', () => {
       it('Then CONFIG_PARSE_ERROR carries line 2', () => {
         // Arrange + Act + Assert
-        parseConfigThrows('[a]\n\tunder_score = v\n', 2);
+        assertParseConfigRefuses('[a]\n\tunder_score = v\n', 2);
       });
     });
 
     describe('Given `\\t9key = v` under a header (digit-first), When parseIniSections', () => {
       it('Then CONFIG_PARSE_ERROR carries line 2', () => {
         // Arrange + Act + Assert
-        parseConfigThrows('[a]\n\t9key = v\n', 2);
+        assertParseConfigRefuses('[a]\n\t9key = v\n', 2);
       });
     });
 
     describe('Given `\\t-key = v` under a header (dash-first), When parseIniSections', () => {
       it('Then CONFIG_PARSE_ERROR carries line 2', () => {
         // Arrange + Act + Assert
-        parseConfigThrows('[a]\n\t-key = v\n', 2);
+        assertParseConfigRefuses('[a]\n\t-key = v\n', 2);
       });
     });
 
     describe('Given `\\tkey.dot = v` under a header (dot in key), When parseIniSections', () => {
       it('Then CONFIG_PARSE_ERROR carries line 2', () => {
         // Arrange + Act + Assert
-        parseConfigThrows('[a]\n\tkey.dot = v\n', 2);
+        assertParseConfigRefuses('[a]\n\tkey.dot = v\n', 2);
       });
     });
 
     describe('Given `\\tkey@at = v` under a header (at in key), When parseIniSections', () => {
       it('Then CONFIG_PARSE_ERROR carries line 2', () => {
         // Arrange + Act + Assert
-        parseConfigThrows('[a]\n\tkey@at = v\n', 2);
+        assertParseConfigRefuses('[a]\n\tkey@at = v\n', 2);
       });
     });
 
     describe('Given `\\tkey x = v` under a header (space then non-`=`), When parseIniSections', () => {
       it('Then CONFIG_PARSE_ERROR carries line 2', () => {
         // Arrange + Act + Assert
-        parseConfigThrows('[a]\n\tkey x = v\n', 2);
+        assertParseConfigRefuses('[a]\n\tkey x = v\n', 2);
       });
     });
   });
@@ -4324,14 +4326,14 @@ describe('Given a config with valueless/valued entries', () => {
     describe('Given `bad!orphan = v` before any header, When parseIniSections', () => {
       it('Then CONFIG_PARSE_ERROR carries line 1', () => {
         // Arrange + Act + Assert
-        parseConfigThrows('bad!orphan = v\n', 1);
+        assertParseConfigRefuses('bad!orphan = v\n', 1);
       });
     });
 
     describe('Given `9orphan = v` before any header, When parseIniSections', () => {
       it('Then CONFIG_PARSE_ERROR carries line 1', () => {
         // Arrange + Act + Assert
-        parseConfigThrows('9orphan = v\n', 1);
+        assertParseConfigRefuses('9orphan = v\n', 1);
       });
     });
 
@@ -4394,28 +4396,28 @@ describe('Given a config with valueless/valued entries', () => {
     describe('Given `\\tab#cd = x` under a header (hash inside the key), When parseIniSections', () => {
       it('Then CONFIG_PARSE_ERROR carries line 2', () => {
         // Arrange + Act + Assert
-        parseConfigThrows('[a]\n\tab#cd = x\n', 2);
+        assertParseConfigRefuses('[a]\n\tab#cd = x\n', 2);
       });
     });
 
     describe('Given `\\tab;cd = x` under a header (semicolon inside the key), When parseIniSections', () => {
       it('Then CONFIG_PARSE_ERROR carries line 2', () => {
         // Arrange + Act + Assert
-        parseConfigThrows('[a]\n\tab;cd = x\n', 2);
+        assertParseConfigRefuses('[a]\n\tab;cd = x\n', 2);
       });
     });
 
     describe('Given `\\tab # cd = x` under a header (space-hash inside the key), When parseIniSections', () => {
       it('Then CONFIG_PARSE_ERROR carries line 2', () => {
         // Arrange + Act + Assert
-        parseConfigThrows('[a]\n\tab # cd = x\n', 2);
+        assertParseConfigRefuses('[a]\n\tab # cd = x\n', 2);
       });
     });
 
     describe('Given `\\tkey#=v` under a header (hash before the `=`), When parseIniSections', () => {
       it('Then CONFIG_PARSE_ERROR carries line 2', () => {
         // Arrange + Act + Assert
-        parseConfigThrows('[a]\n\tkey#=v\n', 2);
+        assertParseConfigRefuses('[a]\n\tkey#=v\n', 2);
       });
     });
 
@@ -4459,7 +4461,7 @@ describe('Given a config with valueless/valued entries', () => {
     describe('Given a first character that is not a letter, When parseIniSections', () => {
       it('Then the digit-first key alone refuses on its physical line', () => {
         // Arrange + Act + Assert — isolates the first-char-alpha guard
-        parseConfigThrows('[a]\n\t1 = v\n', 2);
+        assertParseConfigRefuses('[a]\n\t1 = v\n', 2);
       });
     });
 
@@ -4535,7 +4537,7 @@ describe('Given a config with valueless/valued entries', () => {
 
       it('Then any other char after the key refuses', () => {
         // Arrange + Act + Assert — isolates the catch-all parse-error branch
-        parseConfigThrows('[a]\n\tk: v\n', 2);
+        assertParseConfigRefuses('[a]\n\tk: v\n', 2);
       });
     });
   });
