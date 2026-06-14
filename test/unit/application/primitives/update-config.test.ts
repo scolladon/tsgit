@@ -1684,6 +1684,80 @@ describe('primitives/update-config', () => {
         });
       });
     });
+
+    describe('Given a same-line header+entry block', () => {
+      describe('When setConfigEntryInText replaces the same-line key', () => {
+        it('Then the header is split onto its own line above the rewritten entry', () => {
+          // Arrange — git rewrites the matched same-line entry as a canonical
+          // `\tkey = value` line and drops `[a]` onto its own line.
+          const sut = setConfigEntryInText;
+          const text = '[a] key = v\n';
+
+          // Act
+          const result = sut(text, 'a', undefined, 'key', 'x2');
+
+          // Assert
+          expect(result).toBe('[a]\n\tkey = x2\n');
+        });
+      });
+
+      describe('When setConfigEntryInText replaces a valueless same-line key', () => {
+        it('Then the header is split and the rewritten entry gains the value', () => {
+          // Arrange — a valueless same-line entry splits identically on replace.
+          const sut = setConfigEntryInText;
+          const text = '[a] key\n';
+
+          // Act
+          const result = sut(text, 'a', undefined, 'key', 'x2');
+
+          // Assert
+          expect(result).toBe('[a]\n\tkey = x2\n');
+        });
+      });
+
+      describe('When setConfigEntryInText sets a NEW key in a same-line block', () => {
+        it('Then the same-line header line is left verbatim and the new entry appends below', () => {
+          // Arrange — a new key does NOT split; the header line stays byte-exact
+          // and the fresh entry lands at the section end.
+          const sut = setConfigEntryInText;
+          const text = '[a] key = v\n';
+
+          // Act
+          const result = sut(text, 'a', undefined, 'other', 'y');
+
+          // Assert
+          expect(result).toBe('[a] key = v\n\tother = y\n');
+        });
+      });
+
+      describe('When setConfigEntryInText replaces the same-line key with a following body entry', () => {
+        it('Then the header splits above the rewritten entry and the body survives verbatim', () => {
+          // Arrange — replace splits the head; the trailing normal entry is kept.
+          const sut = setConfigEntryInText;
+          const text = '[a] key = v\n\tk2 = w\n';
+
+          // Act
+          const result = sut(text, 'a', undefined, 'key', 'x2');
+
+          // Assert
+          expect(result).toBe('[a]\n\tkey = x2\n\tk2 = w\n');
+        });
+      });
+
+      describe('When setConfigEntryInText replaces an entry under a section below an orphan line', () => {
+        it('Then the orphan line is preserved and the entry surgery still applies', () => {
+          // Arrange — an orphan key above the section must not break entry surgery.
+          const sut = setConfigEntryInText;
+          const text = 'o = 1\n[a]\n\tk = v\n';
+
+          // Act
+          const result = sut(text, 'a', undefined, 'k', 'x2');
+
+          // Assert
+          expect(result).toBe('o = 1\n[a]\n\tk = x2\n');
+        });
+      });
+    });
   });
 
   describe('updateConfigEntries', () => {
@@ -2185,6 +2259,95 @@ describe('primitives/update-config', () => {
 
           // Assert — [ "x"] pruned; [ ""] preserved byte-identically
           expect(result).toBe('[ ""]\n\tk = e\n');
+        });
+      });
+    });
+
+    describe('Given a same-line header+entry block', () => {
+      describe('When removeConfigEntry unsets the only same-line key', () => {
+        it('Then the whole physical line (header and entry) is pruned', () => {
+          // Arrange — nothing protects the block, so header + entry both go.
+          const sut = removeConfigEntry;
+          const text = '[a] key = v\n';
+
+          // Act
+          const result = sut(text, 'a', undefined, 'key');
+
+          // Assert
+          expect(result).toBe('');
+        });
+      });
+
+      describe('When removeConfigEntry unsets the only valueless same-line key', () => {
+        it('Then the whole physical line is pruned', () => {
+          // Arrange — valueless same-line block prunes identically.
+          const sut = removeConfigEntry;
+          const text = '[a] key\n';
+
+          // Act
+          const result = sut(text, 'a', undefined, 'key');
+
+          // Assert
+          expect(result).toBe('');
+        });
+      });
+
+      describe('When removeConfigEntry unsets a NON-matching key in a same-line block', () => {
+        it('Then the same-line header line is left verbatim', () => {
+          // Arrange — unsetting the body key leaves the same-line head untouched;
+          // the head is still an entry so the block is not pruned.
+          const sut = removeConfigEntry;
+          const text = '[a] key = v\n\tk2 = w\n';
+
+          // Act
+          const result = sut(text, 'a', undefined, 'k2');
+
+          // Assert
+          expect(result).toBe('[a] key = v\n');
+        });
+      });
+
+      describe('When removeConfigEntry unsets the same-line key with a surviving comment', () => {
+        it('Then the header is split onto its own line and the comment is kept', () => {
+          // Arrange — the comment protects the block, so the header re-emits alone
+          // and the same-line entry is dropped.
+          const sut = removeConfigEntry;
+          const text = '[a] key = v\n\t# keep\n';
+
+          // Act
+          const result = sut(text, 'a', undefined, 'key');
+
+          // Assert
+          expect(result).toBe('[a]\n\t# keep\n');
+        });
+      });
+
+      describe('When removeConfigEntry unsets the same-line key with a surviving entry', () => {
+        it('Then the header is split onto its own line and the entry is kept', () => {
+          // Arrange — a surviving normal entry protects the block; the header
+          // re-emits alone above it.
+          const sut = removeConfigEntry;
+          const text = '[a] key = v\n\tk2 = w\n';
+
+          // Act
+          const result = sut(text, 'a', undefined, 'key');
+
+          // Assert
+          expect(result).toBe('[a]\n\tk2 = w\n');
+        });
+      });
+
+      describe('When removeConfigEntry unset-all spans two same-line blocks of the same key', () => {
+        it('Then every same-line block is pruned', () => {
+          // Arrange — each same-line occurrence and its block are removed.
+          const sut = removeConfigEntry;
+          const text = '[a] key = 1\n[a] key = 2\n';
+
+          // Act
+          const result = sut(text, 'a', undefined, 'key');
+
+          // Assert
+          expect(result).toBe('');
         });
       });
     });

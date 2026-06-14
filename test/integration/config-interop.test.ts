@@ -1274,6 +1274,153 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
     });
   });
 
+  // ---------------------------------------------------------------------------
+  // Same-line header+entry surgery interop twins — split/prune byte parity
+  // ---------------------------------------------------------------------------
+
+  const PREAMBLE = '[core]\n\trepositoryformatversion = 0\n';
+
+  const SAME_LINE_SET_MATRIX: ReadonlyArray<{
+    label: string;
+    body: string;
+    key: string;
+    value: string;
+  }> = [
+    {
+      label: 'W1 replace same-line key splits the header',
+      body: '[a] key = v\n',
+      key: 'a.key',
+      value: 'x2',
+    },
+    {
+      label: 'W3 replace valueless same-line key splits the header',
+      body: '[a] key\n',
+      key: 'a.key',
+      value: 'x2',
+    },
+    {
+      label: 'W5 new key keeps the same-line head verbatim',
+      body: '[a] key = v\n',
+      key: 'a.other',
+      value: 'y',
+    },
+    {
+      label: 'W6 replace same-line key, body survives',
+      body: '[a] key = v\n\tk2 = w\n',
+      key: 'a.key',
+      value: 'x2',
+    },
+  ];
+
+  describe('Given twin repos with a same-line header+entry block', () => {
+    describe.each(SAME_LINE_SET_MATRIX)('When git and tsgit each set "$key" ($label)', ({
+      body,
+      key,
+      value,
+    }) => {
+      it('Then the [a]-onward section bytes are identical', async () => {
+        // Arrange — identical seed bytes in both repos
+        const { peerConfigPath } = await seedTwinConfigs(pair, PREAMBLE + body);
+
+        // Act — canonical git set via --file
+        const gitResult = tryRunGit(['config', '--file', peerConfigPath, key, value]);
+        expect(gitResult.ok, `git config set failed: ${gitResult.stderr}`).toBe(true);
+
+        // Act — tsgit configSet on ours
+        const ctx = createNodeContext({ workDir: pair.ours });
+        await configSet(ctx, { key, value, scope: 'local' });
+
+        // Assert — byte-identical [a]-onward content
+        const { oursConfig, peerConfig } = await readTwinConfigs(pair);
+        expect(extractFromA(oursConfig)).toBe(extractFromA(peerConfig));
+      }, 60_000);
+    });
+  });
+
+  const SAME_LINE_UNSET_MATRIX: ReadonlyArray<{ label: string; body: string; key: string }> = [
+    {
+      label: 'W2 unset the only same-line key prunes the block',
+      body: '[a] key = v\n',
+      key: 'a.key',
+    },
+    {
+      label: 'W4 unset the only valueless same-line key prunes the block',
+      body: '[a] key\n',
+      key: 'a.key',
+    },
+    {
+      label: 'W7 unset a non-matching key keeps the same-line head verbatim',
+      body: '[a] key = v\n\tk2 = w\n',
+      key: 'a.k2',
+    },
+    {
+      label: 'W7c unset same-line key, comment survives, head splits',
+      body: '[a] key = v\n\t# keep\n',
+      key: 'a.key',
+    },
+    {
+      label: 'W7d unset same-line key, body entry survives, head splits',
+      body: '[a] key = v\n\tk2 = w\n',
+      key: 'a.key',
+    },
+  ];
+
+  // Unsetting may prune `[a]` entirely (W2/W4), so the comparator returns `''`
+  // when the marker is absent instead of throwing like `extractFromA`.
+  const sliceFromA = (content: string): string => {
+    const idx = content.indexOf('[a]');
+    return idx === -1 ? '' : content.slice(idx);
+  };
+
+  describe('Given twin repos with a same-line header+entry block to unset', () => {
+    describe.each(SAME_LINE_UNSET_MATRIX)('When git and tsgit each unset "$key" ($label)', ({
+      body,
+      key,
+    }) => {
+      it('Then the [a]-onward section bytes are identical', async () => {
+        // Arrange
+        const { peerConfigPath } = await seedTwinConfigs(pair, PREAMBLE + body);
+
+        // Act — canonical git --unset via --file
+        const gitResult = tryRunGit(['config', '--file', peerConfigPath, '--unset', key]);
+        expect(gitResult.ok, `git --unset failed: ${gitResult.stderr}`).toBe(true);
+
+        // Act — tsgit configUnset on ours
+        const ctx = createNodeContext({ workDir: pair.ours });
+        await configUnset(ctx, { key, scope: 'local' });
+
+        // Assert
+        const { oursConfig, peerConfig } = await readTwinConfigs(pair);
+        expect(sliceFromA(oursConfig)).toBe(sliceFromA(peerConfig));
+      }, 60_000);
+    });
+  });
+
+  describe('Given twin repos with two same-line [a] blocks of the same key (R6)', () => {
+    describe('When git and tsgit each unset-all a.key', () => {
+      it('Then both repos collapse to an empty config (every block pruned)', async () => {
+        // Arrange — R6: every same-line occurrence + its block is removed
+        const { peerConfigPath } = await seedTwinConfigs(
+          pair,
+          `${PREAMBLE}[a] key = 1\n[a] key = 2\n`,
+        );
+
+        // Act — canonical git --unset-all via --file
+        const gitResult = tryRunGit(['config', '--file', peerConfigPath, '--unset-all', 'a.key']);
+        expect(gitResult.ok, `git --unset-all failed: ${gitResult.stderr}`).toBe(true);
+
+        // Act — tsgit configUnsetAll on ours
+        const ctx = createNodeContext({ workDir: pair.ours });
+        await configUnsetAll(ctx, { key: 'a.key', scope: 'local' });
+
+        // Assert — both [a]-onward views are empty (every block gone)
+        const { oursConfig, peerConfig } = await readTwinConfigs(pair);
+        expect(sliceFromA(oursConfig)).toBe(sliceFromA(peerConfig));
+        expect(sliceFromA(oursConfig)).toBe('');
+      }, 60_000);
+    });
+  });
+
   describe('Given twin repos where [a] has one entry followed by [b] (row I1)', () => {
     describe('When git and tsgit each set a.other to "val"', () => {
       it('Then the [a] section bytes are identical — new key is inserted at the end of the section, not after the header', async () => {

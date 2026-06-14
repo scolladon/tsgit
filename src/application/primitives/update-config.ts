@@ -109,6 +109,23 @@ const findEntry = (
 };
 
 /**
+ * The header token a same-line entry shares its physical line with: the one
+ * whose `line` equals the entry's `startLine`. git's set/unset re-emit this
+ * header onto its own line whenever they rewrite the shared line, so the
+ * `[section]` is never lost when the entry that followed it is replaced or
+ * removed.
+ */
+const sharedHeaderOf = (
+  tokens: ReadonlyArray<ConfigToken>,
+  entry: EntryToken,
+): HeaderToken | undefined => {
+  for (const token of tokens) {
+    if (token.kind === 'header' && token.line === entry.startLine) return token;
+  }
+  return undefined;
+};
+
+/**
  * Insertion line for a new key: the end of the LAST matching block — the
  * last entry token's `endLine`, or `headerLine + 1` when that block has no
  * entries. Returns `undefined` when no block matches `target`.
@@ -157,6 +174,33 @@ const spliceEntryAt = (
 };
 
 /**
+ * Replace the physical-line span of `existing` with a canonical `key = value`
+ * line. A same-line entry (`[a] key = v`) re-emits its header on its own line
+ * above the rewritten entry so the `[section]` survives the split — git's set
+ * splits the shared line here. The rewritten entry is always LF-terminated,
+ * even when the span reached EOF of a file lacking a final newline.
+ */
+const replaceEntrySpan = (
+  lines: ReadonlyArray<string>,
+  tokens: ReadonlyArray<ConfigToken>,
+  existing: EntryToken,
+  entry: string,
+): string => {
+  const header = existing.sharesHeaderLine ? sharedHeaderOf(tokens, existing) : undefined;
+  const replacement =
+    header !== undefined
+      ? [renderSectionHeader(header.section, header.subsection), entry]
+      : [entry];
+  const out = [
+    ...lines.slice(0, existing.startLine),
+    ...replacement,
+    ...lines.slice(existing.endLine),
+  ];
+  const terminated = existing.endLine === lines.length ? [...out, ''] : out;
+  return terminated.join('\n');
+};
+
+/**
  * Set `key` under `[section]` / `[section "subsection"]`, preserving every
  * other byte verbatim.
  *
@@ -183,17 +227,7 @@ export const setConfigEntryInText = (
   const target = makeTarget(section, subsection);
   const existing = findEntry(tokens, target, key);
   if (existing !== undefined) {
-    // The tokenizer's endLine never exceeds the tokenized line count.
-    const end = existing.endLine;
-    const out = [
-      ...lines.slice(0, existing.startLine),
-      renderEntry(key, value),
-      ...lines.slice(end),
-    ];
-    // git's write_pair always terminates the rewritten entry with LF, even
-    // when the replaced span reached EOF of a file lacking a final newline.
-    const terminated = end === lines.length ? [...out, ''] : out;
-    return terminated.join('\n');
+    return replaceEntrySpan(lines, tokens, existing, renderEntry(key, value));
   }
   const at = insertionLine(tokens, target);
   if (at === undefined) {
@@ -269,6 +303,69 @@ const spanExclusions = (spans: ReadonlyArray<LineSpan>): ReadonlyArray<number> =
     Array.from({ length: span.endLine - span.startLine }, (_, i) => span.startLine + i),
   );
 
+/** A header-line rewrite kept while removing the same-line entry that followed it. */
+interface HeaderRewrite {
+  readonly line: number;
+  readonly text: string;
+}
+
+/** Per-block removal edit: lines to drop, plus an optional shared-header rewrite. */
+interface BlockEdit {
+  readonly excluded: ReadonlyArray<number>;
+  readonly headerRewrite?: HeaderRewrite;
+}
+
+/**
+ * Compute the removal edit for one matching block. Three shapes, mirroring
+ * git's event-driven unset:
+ *  - nothing protects the block ⇒ prune the whole block (header included);
+ *  - the removed entry shares the header's physical line and the block survives
+ *    ⇒ re-emit `[section]` alone on that line and drop only the entry's trailing
+ *    continuation lines (and any other matched spans);
+ *  - the removed entry is a plain body entry ⇒ drop its span(s), header verbatim.
+ */
+const blockEdit = (block: TokenBlock, keyLc: string): BlockEdit => {
+  const spans = matchingEntrySpans(block, keyLc);
+  if (spans.length === 0) return { excluded: [] };
+  if (!blockHasProtectingContent(block, keyLc)) return { excluded: blockExclusions(block) };
+  const sharesHeaderLine = spans.some((span) => span.startLine === block.header.line);
+  if (!sharesHeaderLine) return { excluded: spanExclusions(spans) };
+  // The header line stays (rewritten); only the entry's tail lines are dropped.
+  const excluded = spanExclusions(spans).filter((idx) => idx !== block.header.line);
+  return {
+    excluded,
+    headerRewrite: {
+      line: block.header.line,
+      text: renderSectionHeader(block.header.section, block.header.subsection),
+    },
+  };
+};
+
+/**
+ * Apply the per-block removal `edits` to `lines`, returning the new text — or
+ * `undefined` when no line is dropped and no header is re-emitted (a no-op).
+ * Shared header lines are re-emitted before the excluded lines are filtered
+ * out; the EOF terminator is preserved when the removed region reached EOF.
+ */
+const applyRemovalEdits = (
+  lines: ReadonlyArray<string>,
+  edits: ReadonlyArray<BlockEdit>,
+): string | undefined => {
+  const excluded = new Set(edits.flatMap((edit) => edit.excluded));
+  const rewrites = edits.flatMap((edit) => (edit.headerRewrite ? [edit.headerRewrite] : []));
+  if (excluded.size === 0 && rewrites.length === 0) return undefined;
+  const rewritten = rewrites.reduce<ReadonlyArray<string>>(
+    (acc, { line, text: header }) => acc.map((value, idx) => (idx === line ? header : value)),
+    lines,
+  );
+  const kept = rewritten.filter((_, idx) => !excluded.has(idx));
+  // When the removed region reached EOF, every kept line was followed by LF
+  // in the original, so the output keeps that terminator — like git, which
+  // copies the bytes before the removed region verbatim.
+  const out = excluded.has(lines.length - 1) ? [...kept, ''] : kept;
+  return out.join('\n');
+};
+
 /**
  * Remove every entry span for `key` from the section
  * `[section]` / `[section "subsection"]`. No-op when the section or key
@@ -278,8 +375,9 @@ const spanExclusions = (spans: ReadonlyArray<LineSpan>): ReadonlyArray<number> =
  *
  * Empty-block pruning: after removing the matched spans, a block whose
  * remaining tokens contain no entries and no comments (including the header's
- * own inline comment) is removed entirely, blank lines included. The rule is
- * per block occurrence, not per logical section name.
+ * own inline comment) is removed entirely, blank lines included. A same-line
+ * entry whose block survives instead re-emits `[section]` on its own line. The
+ * rule is per block occurrence, not per logical section name.
  */
 export const removeConfigEntry = (
   text: string,
@@ -295,24 +393,10 @@ export const removeConfigEntry = (
   const target = makeTarget(section, subsection);
   const blocks = buildTokenBlocks(tokenizeConfigLines(lines, text.endsWith('\n')));
   const keyLc = key.toLowerCase();
-  const excluded = new Set(
-    blocks.flatMap((block) => {
-      if (!matchesTarget(block.header, target)) return [];
-      const spans = matchingEntrySpans(block, keyLc);
-      if (spans.length === 0) return [];
-      return blockHasProtectingContent(block, keyLc)
-        ? spanExclusions(spans)
-        : blockExclusions(block);
-    }),
-  );
-
-  if (excluded.size === 0) return text;
-  const kept = lines.filter((_, idx) => !excluded.has(idx));
-  // When the removed region reached EOF, every kept line was followed by LF
-  // in the original, so the output keeps that terminator — like git, which
-  // copies the bytes before the removed region verbatim.
-  const out = excluded.has(lines.length - 1) ? [...kept, ''] : kept;
-  return out.join('\n');
+  const edits = blocks
+    .filter((block) => matchesTarget(block.header, target))
+    .map((block) => blockEdit(block, keyLc));
+  return applyRemovalEdits(lines, edits) ?? text;
 };
 
 /** One `key = value` write under `[section]` / `[section "subsection"]`. */

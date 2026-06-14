@@ -189,11 +189,44 @@ export const configEntryBlock = (): fc.Arbitrary<string> =>
     .map(([header, items]) => header.text + items.join(''));
 
 /**
+ * Arbitrary of one same-line block: a header carrying a `key = value` (or
+ * valueless `key`) on its own physical line, followed by 0–3 body items.
+ * Models git's `[s] key = v` form, which the writer must split on replace and
+ * prune on unset while leaving the head verbatim for unrelated operations.
+ */
+export const configFileWithSameLineBlock = (): fc.Arbitrary<string> =>
+  fc
+    .tuple(
+      fc.constantFrom(...ARB_SECTIONS),
+      arbConfigKey(),
+      fc.option(arbSafeValue(), { nil: undefined }),
+      fc.array(arbBodyItem(), { minLength: 0, maxLength: 3 }),
+    )
+    .map(([section, key, value, items]) => {
+      const head =
+        value === undefined ? `[${section}] ${key}\n` : `[${section}] ${key} = ${value}\n`;
+      return head + items.join('');
+    });
+
+/**
  * Arbitrary of a complete LF-terminated config file: 1–4 blocks concatenated.
  * Always ends with `\n` (the last block item always terminates with LF).
  */
 export const configFile = (): fc.Arbitrary<string> =>
   fc.array(configEntryBlock(), { minLength: 1, maxLength: 4 }).map((blocks) => blocks.join(''));
+
+/**
+ * Like `configFile`, but each block is independently chosen to be either a
+ * plain block or a same-line block (`[s] key = v`), so surgery-preservation
+ * properties also exercise the header-split path. Always LF-terminated.
+ */
+export const configFileMaybeSameLine = (): fc.Arbitrary<string> =>
+  fc
+    .array(fc.oneof(configEntryBlock(), configFileWithSameLineBlock()), {
+      minLength: 1,
+      maxLength: 4,
+    })
+    .map((blocks) => blocks.join(''));
 
 /**
  * A config file plus an operation target whose section comes from the same
@@ -207,7 +240,7 @@ export const configFileWithTarget = (): fc.Arbitrary<{
   readonly section: string;
   readonly key: string;
 }> =>
-  configFile().chain((file) => {
+  configFileMaybeSameLine().chain((file) => {
     const presentKeys = [
       ...new Set(
         tokenizeConfig(file).flatMap((t) => (t.kind === 'entry' && t.key !== '' ? [t.key] : [])),
