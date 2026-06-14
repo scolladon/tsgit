@@ -173,11 +173,14 @@ describe('config-read same-line and orphan grammar properties', () => {
           fc.property(arbScannedLine, (raw) => {
             try {
               const result = sut(`[a]\n\t${raw}\n`);
-              expect(result).toHaveLength(1);
-              const entries = result[0]?.entries ?? [];
-              for (const entry of entries) {
-                expect(typeof entry.key).toBe('string');
-                expect(entry.value === null || typeof entry.value === 'string').toBe(true);
+              // `raw` may itself be a valid header (e.g. `[b]`), yielding a
+              // second indented section; totality only requires well-shaped
+              // entries across every section, never a fixed section count.
+              for (const section of result) {
+                for (const entry of section.entries) {
+                  expect(typeof entry.key).toBe('string');
+                  expect(entry.value === null || typeof entry.value === 'string').toBe(true);
+                }
               }
             } catch (err) {
               if (!(err instanceof TsgitError)) throw err;
