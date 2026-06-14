@@ -2436,7 +2436,7 @@ describe('primitives/update-config', () => {
     describe('Given a deprecated dotted header [s.X] (section="s.X", subsection=undefined)', () => {
       describe('When rawSectionName is called', () => {
         it('Then it returns "s.X" (raw header bytes)', () => {
-          // Arrange — parseSectionHeader parses [s.X] as section="s.X", subsection=undefined
+          // Arrange — the header scan parses [s.X] as section="s.X", subsection=undefined
           const sut = rawSectionName;
 
           // Act
@@ -2611,7 +2611,7 @@ describe('primitives/update-config', () => {
     describe('Given [s     ""] (pre-quote whitespace, whitespace not identity)', () => {
       describe('When removeConfigSectionInText removes "s."', () => {
         it('Then the block is removed (pre-quote whitespace is not part of the raw name)', () => {
-          // Arrange — parseSectionHeader strips pre-quote whitespace; raw name is still s.
+          // Arrange — the header scan strips pre-quote whitespace; raw name is still s.
           const text = '[s     ""]\n\tk = a\n';
           const sut = removeConfigSectionInText;
 
@@ -2627,7 +2627,7 @@ describe('primitives/update-config', () => {
     describe('Given [s "a\\"b"] (escaped quote in subsection)', () => {
       describe("When removeConfigSectionInText removes 's.a\"b'", () => {
         it('Then the block is removed (subsection unescaped before joining)', () => {
-          // Arrange — parseSectionHeader unescapes \\\" → "; rawSectionName joins s + . + a"b
+          // Arrange — the header scan unescapes \\\" → "; rawSectionName joins s + . + a"b
           const text = '[s "a\\"b"]\n\tk = a\n';
           const sut = removeConfigSectionInText;
 
@@ -2966,7 +2966,7 @@ describe('primitives/update-config', () => {
     describe('Given a subsection containing a quote (a"b)', () => {
       describe('When removeConfigSectionInText removes remote.a"b', () => {
         it('Then the subsection is matched by its unescaped raw name and the section is removed', () => {
-          // Arrange — parseSectionHeader unescapes \" → "; rawSectionName joins to
+          // Arrange — the header scan unescapes \" → "; rawSectionName joins to
           // 'remote.a"b'; the raw name 'remote.a"b' matches exactly.
           const text = '[remote "a\\"b"]\n\turl = u\n';
 
@@ -3422,8 +3422,8 @@ describe('primitives/update-config', () => {
 
     describe('Given an indented section header "  [s]"', () => {
       describe('When renameConfigSectionInText renames "s" to { section: "t" }', () => {
-        it('Then the indented header is matched and renamed (trim is applied before parsing)', () => {
-          // Arrange — matchesRawSectionName must trim the line before calling parseSectionHeader
+        it('Then the indented header is matched and renamed (leading gap is skipped before parsing)', () => {
+          // Arrange — the header scan skips the leading gap before recognising the bracket span
           const text = '  [s]\n\tk = a\n';
           const sut = renameConfigSectionInText;
 

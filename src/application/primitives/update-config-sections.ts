@@ -26,7 +26,7 @@ import {
  * The raw dotted name of a parsed section header: `[s]` → `'s'`,
  * `[s "x"]` → `'s.x'`, `[s ""]` → `'s.'`, `[ ""]` → `'.'`,
  * deprecated `[s.X]` → `'s.X'`. The subsection is taken post-unescaping
- * (exactly what `parseSectionHeader` returns), making this the canonical
+ * (exactly what the header scan returns), making this the canonical
  * reduction used by git's section-op matching.
  *
  * The `'a.b'` ambiguity is documented and faithful: both `[a.b]` and

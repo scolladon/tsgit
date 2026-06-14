@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   type IniSection,
   parseIniSections,
-  parseSectionHeader,
+  scanHeaderPrefix,
   tokenizeConfig,
 } from '../../../../src/application/primitives/config-read.js';
 import {
@@ -530,7 +530,7 @@ describe('parseNewSectionName partition property', () => {
 
 describe('rawSectionName round-trip property', () => {
   describe('Given an arbitrary header identity (section from safe pool ∪ empty, subsection from LF/NUL-free domain)', () => {
-    describe('When rendered via renderSectionHeader and re-parsed via parseSectionHeader', () => {
+    describe('When rendered via renderSectionHeader and re-parsed via scanHeaderPrefix', () => {
       it('Then rawSectionName of the parsed header equals the dotted name built from the original identity', () => {
         // Arrange — sut is the round-trip: render → parse → rawSectionName
         const sut = rawSectionName;
@@ -538,7 +538,7 @@ describe('rawSectionName round-trip property', () => {
           fc.property(arbHeaderIdentity(), ({ section, subsection, dottedName }) => {
             // Act
             const rendered = renderSectionHeader(section, subsection);
-            const parsed = parseSectionHeader(rendered.trim());
+            const parsed = scanHeaderPrefix(rendered).parse;
 
             // Assert — parse must succeed and the reduced name must match
             expect(parsed.kind).toBe('header');

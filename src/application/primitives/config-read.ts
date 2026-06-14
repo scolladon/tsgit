@@ -602,41 +602,15 @@ export type SectionHeaderParse =
   | { readonly kind: 'malformed'; readonly partialName: string }
   | { readonly kind: 'not-header' };
 
-/**
- * Parse a trimmed `[section]` / `[section "subsection"]` header line.
- * Returns a three-state discriminated union: `header` on success, `malformed`
- * when the `[…]` shape is present but the quoted-subsection grammar is
- * violated (git refuses the file), or `not-header` when the line is not
- * `[…]`-shaped at all (lenient skip, like git for unquoted malformations).
- *
- * For quoted subsections the scan is performed over `line.slice(1)` (everything
- * after the opening `[`) so that unclosed spans accumulate raw trailing chars
- * including any `]` that would otherwise be treated as the header terminator —
- * matching git's partial-name diagnostic.
- */
-export const parseSectionHeader = (line: string): SectionHeaderParse => {
-  if (!line.startsWith('[')) return { kind: 'not-header' };
-  const afterOpen = line.slice(1);
-  const quoteAt = afterOpen.indexOf('"');
-  if (quoteAt === -1) {
-    if (!line.endsWith(']')) return { kind: 'not-header' };
-    const inner = afterOpen.slice(0, -1).trim();
-    // Stryker disable next-line ConditionalExpression,StringLiteral: equivalent — an empty `inner` yields a section named '' which assembleParsed never matches, so rejecting it or returning a '' section produces the same parsed config.
-    if (inner === '') return { kind: 'not-header' };
-    return { kind: 'header', section: inner, subsection: undefined };
-  }
-  return parseQuotedSubsectionHeader(afterOpen, quoteAt);
-};
-
-/** Handle the quoted-subsection branch of `parseSectionHeader`. */
-const parseQuotedSubsectionHeader = (afterOpen: string, quoteAt: number): SectionHeaderParse => {
+/** Scan the quoted-subsection branch of a `[section "subsection"]` header. */
+const parseQuotedSubsectionHeader = (afterOpen: string, quoteAt: number): QuotedHeaderScan => {
   const section = afterOpen.slice(0, quoteAt).trim();
   const sectionPart = section.toLowerCase();
   // `afterOpen[-1]` is `undefined` when the quote opens the header content,
   // which the guard below treats as missing whitespace — exactly git's refusal.
   const charBeforeQuote = afterOpen[quoteAt - 1];
   if (charBeforeQuote === undefined || !GIT_SPACE.has(charBeforeQuote)) {
-    return { kind: 'malformed', partialName: sectionPart };
+    return { parse: { kind: 'malformed', partialName: sectionPart } };
   }
   return scanQuotedSpan(afterOpen, quoteAt, section, sectionPart);
 };
@@ -674,6 +648,16 @@ const decodeSubsection = (
 };
 
 /**
+ * A quoted-header scan: the three-state parse plus, on success, the index of the
+ * closing `"` so the raw-line scanner can derive the bracket end-offset from the
+ * single identity decode rather than decoding the span a second time.
+ */
+interface QuotedHeaderScan {
+  readonly parse: SectionHeaderParse;
+  readonly closeQuoteAt?: number;
+}
+
+/**
  * Scan the quoted subsection span starting at `openAt` (the index of `"`).
  * On success, the closing `"` must be immediately followed by `]` — the last
  * char on a trimmed line, or the bracket terminator before same-line entry
@@ -684,15 +668,18 @@ const scanQuotedSpan = (
   openAt: number,
   section: string,
   sectionPart: string,
-): SectionHeaderParse => {
+): QuotedHeaderScan => {
   const decoded = decodeSubsection(afterOpen, openAt);
   if ('partial' in decoded) {
-    return { kind: 'malformed', partialName: `${sectionPart}.${decoded.partial}` };
+    return { parse: { kind: 'malformed', partialName: `${sectionPart}.${decoded.partial}` } };
   }
   if (afterOpen.startsWith(']', decoded.closeQuoteAt + 1)) {
-    return { kind: 'header', section, subsection: decoded.subsection };
+    return {
+      parse: { kind: 'header', section, subsection: decoded.subsection },
+      closeQuoteAt: decoded.closeQuoteAt,
+    };
   }
-  return { kind: 'malformed', partialName: `${sectionPart}.${decoded.subsection}` };
+  return { parse: { kind: 'malformed', partialName: `${sectionPart}.${decoded.subsection}` } };
 };
 
 /**
@@ -706,9 +693,8 @@ export interface HeaderPrefixScan {
 }
 
 /**
- * Scan a header at the start of a raw (untrimmed) line. Unlike `parseSectionHeader`
- * — which needs the bracket span to fill a trimmed line — this stops at the `]`
- * that closes the span, so a same-line entry may follow it. `endOffset` is the
+ * Scan a header at the start of a raw (untrimmed) line. It stops at the `]` that
+ * closes the bracket span, so a same-line entry may follow it. `endOffset` is the
  * column just past that `]`. A line whose first non-space char is not `[`, or a
  * malformed unquoted bracket span, reports `not-header` (the tokenizer keeps its
  * lenient skip); a malformed quoted subsection reports `malformed`.
@@ -742,18 +728,17 @@ const scanPlainHeaderPrefix = (
 
 /**
  * Quoted `[section "sub"]` prefix: the closing `]` follows the closing `"`, so
- * the offset is taken from the decoded span's quote index, not the first `]`
- * (which may be content inside the quotes).
+ * the offset is taken from the single identity scan's quote index, not the first
+ * `]` (which may be content inside the quotes).
  */
 const scanQuotedHeaderPrefix = (
   afterOpen: string,
   open: number,
   quoteAt: number,
 ): HeaderPrefixScan => {
-  const parse = parseQuotedSubsectionHeader(afterOpen, quoteAt);
-  if (parse.kind !== 'header') return { parse, endOffset: 0 };
-  const decoded = decodeSubsection(afterOpen, quoteAt) as ClosedSubsection;
-  const closeBracket = decoded.closeQuoteAt + 1;
+  const { parse, closeQuoteAt } = parseQuotedSubsectionHeader(afterOpen, quoteAt);
+  if (parse.kind !== 'header' || closeQuoteAt === undefined) return { parse, endOffset: 0 };
+  const closeBracket = closeQuoteAt + 1;
   return { parse, endOffset: open + 1 + closeBracket + 1 };
 };
 
