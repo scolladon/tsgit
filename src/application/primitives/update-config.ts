@@ -358,6 +358,7 @@ const applyRemovalEdits = (
       edit.headerRewrite ? [[edit.headerRewrite.line, edit.headerRewrite.text]] : [],
     ),
   );
+  // equivalent-mutant: with no exclusions or rewrites the loop copies every line verbatim and appends no terminator, so `kept.join('\n')` reconstructs `text` byte-for-byte — dropping this optimisation returns the same bytes the caller's `?? text` would.
   if (excluded.size === 0 && rewrites.size === 0) return undefined;
   const kept: Array<string> = [];
   for (const [idx, value] of lines.entries()) {

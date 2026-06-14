@@ -2363,6 +2363,38 @@ describe('primitives/update-config', () => {
           expect(result).toBe('');
         });
       });
+
+      describe('When removeConfigEntry unsets a key matched both same-line and below, block surviving', () => {
+        it('Then the header re-emits alone and every matched occurrence is dropped', () => {
+          // Arrange — same-line `key` (shares the header line) plus a body `key`
+          // (does not); a third `k2` protects the block. The shares-header branch
+          // must fire because at least one span sits on the header line.
+          const sut = removeConfigEntry;
+          const text = '[a] key = v\n\tkey = w\n\tk2 = keep\n';
+
+          // Act
+          const result = sut(text, 'a', undefined, 'key');
+
+          // Assert — git: header alone, both `key` lines gone, `k2` kept.
+          expect(result).toBe('[a]\n\tk2 = keep\n');
+        });
+      });
+
+      describe('When removeConfigEntry unsets a same-line key with a continuation tail, block surviving', () => {
+        it('Then the header re-emits alone and the entry continuation tail lines are dropped', () => {
+          // Arrange — the same-line entry spans two physical lines (backslash
+          // continuation); a comment protects the block. The header keeps its
+          // line (rewritten), and the entry's tail lines below it are excluded.
+          const sut = removeConfigEntry;
+          const text = '[a] key = one\\\n  two\n\t# keep\n';
+
+          // Act
+          const result = sut(text, 'a', undefined, 'key');
+
+          // Assert — git: header alone, `key = one\` and its `  two` tail gone, comment kept.
+          expect(result).toBe('[a]\n\t# keep\n');
+        });
+      });
     });
   });
 

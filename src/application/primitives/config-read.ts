@@ -642,6 +642,7 @@ const parseQuotedSubsectionHeader = (
   const sectionPart = section.toLowerCase();
   // A quote that opens the header content (no char between `[` and `"`) has no
   // separating whitespace, which the guard below treats as git's refusal.
+  // equivalent-mutant: at quoteAt === contentStart, line[quoteAt-1] is the opening `[`, never GIT_SPACE, so `>`/`>=`/`true` all reach the same `!GIT_SPACE` refusal below.
   const charBeforeQuote = quoteAt > contentStart ? line[quoteAt - 1] : undefined;
   if (charBeforeQuote === undefined || !GIT_SPACE.has(charBeforeQuote)) {
     return { parse: { kind: 'malformed', partialName: sectionPart } };
@@ -808,6 +809,7 @@ const scanQuotedHeaderPrefix = (
   quoteAt: number,
 ): HeaderPrefixScan => {
   const { parse, closeQuoteAt } = parseQuotedSubsectionHeader(line, contentStart, quoteAt);
+  // equivalent-mutant: every reader gates `endOffset` behind `parse.kind === 'header'` (which always carries a defined closeQuoteAt), so dropping the early return — its NaN endOffset on a malformed parse — is never observed.
   if (parse.kind !== 'header' || closeQuoteAt === undefined) return { parse, endOffset: 0 };
   return { parse, endOffset: closeQuoteAt + 2 };
 };
