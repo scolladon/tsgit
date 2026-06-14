@@ -15,7 +15,7 @@ A key before any `[section]` (`orphan = v`, `orphan`) is recorded by git and dum
 
 ## Decision
 
-`parseIniSections` opens an implicit orphan section (`('', undefined)`) into which pre-header key lines accumulate, reusing 24.9k's empty-section-name representation. `qualifyKey` renders `('', undefined)` as the bare `name` — **distinct** from `[ ""]`→`.name` and `[ "x"]`→`.x.name`. Orphan keys surface on `configList`/`configGetRegexp` and the token stream, and on **no** typed `ParsedConfig` field. They stay unaddressable by `configGet`/`setConfigEntry`: `parseConfigKey('orphan')` already throws `CONFIG_KEY_INVALID 'missing-name'` — the structured twin of git's `key does not contain a section`. The unified key grammar (ADR-332) applies to orphan lines.
+`parseIniSections` opens an implicit orphan section (`('', undefined)`) into which pre-header key lines accumulate, reusing 24.9k's empty-section-name representation. `qualifyKey` renders `('', undefined)` as the bare `name` — **distinct** from `[ ""]`→`..name` and `[ "x"]`→`.x.name`. Orphan keys surface on `configList`/`configGetRegexp` and the token stream, and on **no** typed `ParsedConfig` field. They stay unaddressable by `configGet`/`setConfigEntry`: `parseConfigKey('orphan')` already throws `CONFIG_KEY_INVALID 'missing-name'` — the structured twin of git's `key does not contain a section`. The unified key grammar (ADR-332) applies to orphan lines.
 
 ## Consequences
 
