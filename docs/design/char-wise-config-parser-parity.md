@@ -171,7 +171,7 @@ Span/offset bookkeeping: the same-line entry's `startLine` is the header's line;
 
 Today `parseIniSections` drops entries when `current === undefined`. Change: maintain an implicit **orphan section** open from the file start — a `SectionBuilder` with `section: ''` (empty name) and `subsection: undefined` — into which key lines before the first header accumulate. This reuses 24.9k's empty-section-name representation (`section: ''` is already a first-class identity there; `dispatchSection` ignores it, so it flows only into the raw entry list — exactly git's "recorded but not typed").
 
-But git's orphan keys are **not the same** as `[ ""]` (empty section *with* an empty subsection): an orphan is `('', undefined)`, `[ ""]` is `('', '')`. `qualifyKey` must render an orphan (`section: '', subsection: undefined`) as the **bare key with no leading dot** (`orphan`), whereas `[ ""]` renders as `.key` and `[ "x"]` as `.x.key` (24.9k, pinned). Today `qualifyKey('', name)` would produce `.name` — wrong for orphans. The fix: `qualifyKey` special-cases the orphan identity (`section === '' && subsection === undefined`) to emit just `name`.
+But git's orphan keys are **not the same** as `[ ""]` (empty section *with* an empty subsection): an orphan is `('', undefined)`, `[ ""]` is `('', '')`. `qualifyKey` must render an orphan (`section: '', subsection: undefined`) as the **bare key with no leading dot** (`orphan`), whereas `[ ""]` renders as `..key` (empty section + empty subsection) and `[ "x"]` as `.x.key` (24.9k, pinned). Today `qualifyKey('', name)` would produce `.name` — wrong for orphans. The fix: `qualifyKey` special-cases the orphan identity (`section === '' && subsection === undefined`) to emit just `name`.
 
 Orphan keys therefore surface on `configList` / `configGetRegexp` (which iterate `IniSection.entries` via `qualifyKey`) and on the token stream, and on **no** typed `ParsedConfig` field (`dispatchSection`'s literal section names never match `''`). They are **not** addressable by `configGet` / `setConfigEntry`: `parseConfigKey('orphan')` already throws `CONFIG_KEY_INVALID 'missing-name'` (no dot) — which is git's `key does not contain a section` refusal (the structured twin). So the read/write asymmetry falls out of the existing key parser with no change. The grammar still applies (a malformed orphan line refuses the whole file via the unified scanner).
 
@@ -284,10 +284,42 @@ New generators (`configFileWithSameLineBlock`, orphan-prefix option) join `arbit
 ### Mutation
 Standard target (0 killable survivors). The `scanKey` char-class boundaries (first-char-alpha vs alnum-dash, `=`-vs-EOL-vs-`#`/`;` branch), the same-line `endOffset` arithmetic, and the writer's shared-line split branch are the mutation hotspots — each gets a per-boundary kill test. Loop-bound and homogeneous-search equivalents documented inline per CLAUDE.md.
 
+## Scope expansion (user-directed, landed in this PR)
+
+Two faithfulness gaps the surface review flagged — originally out-of-scope neighbours — were pulled into this PR. Both are read/tokenize-side only: the writer already keys a line on its **first** header and copies the rest as a raw tail, so it reproduces git's bytes once the reader accepts the construct (verified — no writer change needed).
+
+### Chained section headers (ADR-335)
+
+git's char-wise parser opens a new section per `[…]` on a line; content lands under the **last** header. Pinned against git 2.54:
+
+| input | recorded |
+| --- | --- |
+| `[a][b]⏎x=1` | `b.x=1` (`a` is an empty section) |
+| `[a][b]k=1` | `b.k=1` (same-line entry under `b`) |
+| `[a][b][c] k=1` | `c.k=1` |
+| `[a "s"][b] k=1` / `[a][b "s"] k=1` | `b.k` / `b.s.k` |
+| `[a][b]⏎` (no entry) | two empty sections (nothing listed) |
+| `[a][b` / `[a][]` / `[a][ b]` (malformed chain) | `fatal: bad config line 1` |
+| writer `rename a→c` on `[a][b]⏎x=1` | `[c]⏎⇥[b]⏎x=1` (raw tail) |
+| writer `set b.x v2` / `remove-section b` | `[a][b]⏎⇥x = v2` / no-op |
+
+`emitHeaderLine` loops over `[`-spans scanning the line **in place** (an offset into `line`, no per-iteration `slice`) — O(n), matching git's streaming parser (a quadratic first cut was caught in review and fixed).
+
+### Unquoted section-name grammar (ADR-336)
+
+git's plain (no-quote) section name is `[A-Za-z0-9.-]+` — alnum + dot + dash, digit-first allowed, NO interior/leading/trailing whitespace, immediately before `]`. Pinned:
+
+| input | result |
+| --- | --- |
+| `[a]` / `[a.b]` / `[a-b]` / `[1a]` (digit-first) | accepted |
+| `[a ]` / `[ a]` / `[a b]` / `[]` / `[ core ]` / `[a_b]` (underscore) / `[foo` (unclosed) | `fatal: bad config line N` |
+
+`scanPlainHeaderPrefix` validates the **untrimmed** inner against the grammar; the prior lenient `[`-prefix comment-skip was removed so every bracket-shaped non-header refuses like git (closing a divergence wider than the originally-flagged `[a ]` — `[foo`/`[]`/`[ core ]` were silently swallowed as comments before). The `[section.subsection]` legacy dotted-header remains the sole unquoted out-of-scope item (below).
+
 ## Out of scope
 
 - **`[section.subsection]` legacy dotted-header same-line content** — git lowercases the dotted subsection; tsgit parses the whole inner as section. Pre-existing (24.9g out-of-scope), unchanged.
-- **Whole unquoted-header refusal parity** (`[foo`, `[]`, `[s ]`) — 24.9g out-of-scope; tsgit keeps lenient skip for unquoted-header malformations. Same-line scanning only triggers on a *successful* bracket parse.
+- **Whole unquoted-header refusal parity** (`[foo`, `[]`, `[s ]`) — **now IN scope** (user-directed; see "Scope expansion" → ADR-336). The unquoted section-name grammar is enforced and the lenient `[`-prefix skip removed. The `[section.subsection]` legacy dotted-header (bullet above) remains the sole unquoted out-of-scope item.
 - **Per-use-site lazy `missing value` refusal** for string-typed internal reads — 24.9h/ADR-315 divergence, unchanged; orphan/valueless string fields stay treated as absent.
 - **Writing orphan or same-line entries** — git's CLI cannot write an orphan (`set orphan x` → exit 2) nor a same-line entry; the writer gains no such surface. The writer always emits canonical `[s]⏎⇥key = value`.
 - **`[a]key=v` write-canonicalisation subtleties beyond the pinned rows** — git's set always emits canonical `⏎⇥key = value` at the split position; whether it preserves any subtler original-indentation detail elsewhere is untested and unchanged (same boundary 24.9i drew).
