@@ -2,6 +2,21 @@ import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import { parseIniSections } from '../../../../src/application/primitives/config-read.js';
 import { TsgitError } from '../../../../src/domain/error.js';
+import { arbConfigKey, arbHeaderIdentity } from './arbitraries.js';
+
+/**
+ * A grammar-safe config value: 1–12 printable ASCII chars with no characters
+ * that would trigger quoting or comment parsing, so the round-trip stays exact.
+ */
+const arbSafeValue = (): fc.Arbitrary<string> =>
+  fc.string({
+    unit: fc.integer({ min: 0x21, max: 0x7e }).map((cp) => {
+      const ch = String.fromCodePoint(cp);
+      return ch === '\\' || ch === '"' || ch === '#' || ch === ';' || ch === '=' ? 'x' : ch;
+    }),
+    minLength: 1,
+    maxLength: 12,
+  });
 
 /** Arbitrary for a single alpha character (A–Z or a–z). */
 const arbAlpha = (): fc.Arbitrary<string> =>
@@ -82,6 +97,142 @@ describe('config-read valueless key grammar properties', () => {
             }
           }),
           { numRuns: 50 },
+        );
+      });
+    });
+  });
+});
+
+/** Header text for an identity whose subsection (when present) is quote-safe. */
+const headerText = (section: string, subsection: string | undefined): string => {
+  if (subsection === undefined) return `[${section}]`;
+  return `[${section} "${subsection}"]`;
+};
+
+/**
+ * Header identities restricted to quote/backslash-free subsections so a literal
+ * `[s "sub"]` round-trips without re-deriving git's subsection escaping.
+ */
+const arbSafeHeaderIdentity = (): ReturnType<typeof arbHeaderIdentity> =>
+  arbHeaderIdentity().filter(
+    ({ subsection }) => subsection === undefined || !/["\\\]\r\n#;]/.test(subsection),
+  );
+
+describe('config-read same-line and orphan grammar properties', () => {
+  describe('Given an arbitrary header identity, a valid key, and a safe value', () => {
+    describe('When parseIniSections parses the header with a same-line entry', () => {
+      it('Then the section records the key/value (round-trip), and the no-`=` form records null', () => {
+        // Arrange
+        const sut = parseIniSections;
+
+        // Act + Assert
+        fc.assert(
+          fc.property(
+            arbSafeHeaderIdentity(),
+            arbConfigKey(),
+            arbSafeValue(),
+            ({ section, subsection }, key, value) => {
+              const header = headerText(section, subsection);
+              const valued = sut(`${header} ${key} = ${value}\n`);
+              expect(valued).toHaveLength(1);
+              expect(valued[0]).toEqual({
+                section,
+                subsection,
+                entries: [{ key, value }],
+              });
+              const valueless = sut(`${header} ${key}\n`);
+              expect(valueless).toHaveLength(1);
+              expect(valueless[0]).toEqual({
+                section,
+                subsection,
+                entries: [{ key, value: null }],
+              });
+            },
+          ),
+          { numRuns: 200 },
+        );
+      });
+    });
+  });
+
+  describe('Given an arbitrary key built across the alpha/alnum-dash boundary', () => {
+    describe('When parseIniSections scans it under a header', () => {
+      it('Then it either records the key or throws exactly CONFIG_PARSE_ERROR (totality)', () => {
+        // Arrange — partition over first-char-alpha vs the alnum-dash body set,
+        // mixed with junk so both the accept and reject arms are exercised.
+        const sut = parseIniSections;
+        const arbKeyChar = fc
+          .integer({ min: 0x21, max: 0x7e })
+          .map((cp) => String.fromCodePoint(cp));
+        const arbScannedLine = fc
+          .array(arbKeyChar, { minLength: 1, maxLength: 8 })
+          .map((cs) => cs.join(''));
+
+        // Act + Assert
+        fc.assert(
+          fc.property(arbScannedLine, (raw) => {
+            try {
+              const result = sut(`[a]\n\t${raw}\n`);
+              expect(result).toHaveLength(1);
+              const entries = result[0]?.entries ?? [];
+              for (const entry of entries) {
+                expect(typeof entry.key).toBe('string');
+                expect(entry.value === null || typeof entry.value === 'string').toBe(true);
+              }
+            } catch (err) {
+              if (!(err instanceof TsgitError)) throw err;
+              expect(err.data.code).toBe('CONFIG_PARSE_ERROR');
+            }
+          }),
+          { numRuns: 100 },
+        );
+      });
+    });
+  });
+
+  describe('Given a parsed same-line or orphan file re-rendered to canonical form', () => {
+    describe('When parseIniSections re-parses the rendering', () => {
+      it('Then the section structure is stable (idempotence)', () => {
+        // Arrange — a small renderer that emits the canonical `[s]\n\tkey = v`
+        // (or bare orphan) shape, then proves re-parsing is a fixpoint.
+        const sut = parseIniSections;
+        const rerender = (sections: ReturnType<typeof parseIniSections>): string =>
+          sections
+            .map((s) => {
+              const body = s.entries
+                .map((e) => (e.value === null ? `\t${e.key}\n` : `\t${e.key} = ${e.value}\n`))
+                .join('');
+              if (s.section === '' && s.subsection === undefined) {
+                return s.entries
+                  .map((e) => (e.value === null ? `${e.key}\n` : `${e.key} = ${e.value}\n`))
+                  .join('');
+              }
+              const header =
+                s.subsection === undefined ? `[${s.section}]` : `[${s.section} "${s.subsection}"]`;
+              return `${header}\n${body}`;
+            })
+            .join('');
+
+        const arbInput = fc.oneof(
+          // same-line valued
+          fc
+            .tuple(arbSafeHeaderIdentity(), arbConfigKey(), arbSafeValue())
+            .map(
+              ([{ section, subsection }, k, v]) =>
+                `${headerText(section, subsection)} ${k} = ${v}\n`,
+            ),
+          // bare orphan
+          fc.tuple(arbConfigKey(), arbSafeValue()).map(([k, v]) => `${k} = ${v}\n`),
+        );
+
+        // Act + Assert
+        fc.assert(
+          fc.property(arbInput, (input) => {
+            const once = sut(input);
+            const twice = sut(rerender(once));
+            expect(twice).toEqual(once);
+          }),
+          { numRuns: 100 },
         );
       });
     });

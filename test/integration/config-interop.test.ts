@@ -37,6 +37,7 @@ import {
   updateConfigEntries,
   updateConfigOperations,
 } from '../../src/application/primitives/update-config.js';
+import { parseConfigKey } from '../../src/domain/commands/config-key.js';
 import { TsgitError } from '../../src/domain/error.js';
 import {
   GIT_AVAILABLE,
@@ -929,6 +930,159 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
 
         // Assert — same matched key set (order and count)
         expect(tsgitMatched).toEqual(gitMatched);
+      }, 60_000);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Same-line header + entry, orphan key, and `=`-grammar read/refusal parity
+  // ---------------------------------------------------------------------------
+
+  /** Reconstruct git's `--list` stdout from tsgit's structured entries. */
+  const reconstructList = (entries: ReadonlyArray<{ key: string; value: string | null }>): string =>
+    entries.map((e) => (e.value === null ? `${e.key}\n` : `${e.key}=${e.value}\n`)).join('');
+
+  const SAME_LINE_READ_MATRIX: ReadonlyArray<{ label: string; bytes: string }> = [
+    { label: 'B1a [a] key = v', bytes: '[a] key = v\n' },
+    { label: 'B1b [a] key (valueless)', bytes: '[a] key\n' },
+    { label: 'B1c [a]key=v', bytes: '[a]key=v\n' },
+    { label: 'B1g [a "s"] key = v', bytes: '[a "s"] key = v\n' },
+    { label: 'B1l [a] key= (empty)', bytes: '[a] key=\n' },
+    { label: 'B1m same-line then following entry', bytes: '[a] key = v\n\tk2 = v2\n' },
+  ];
+
+  describe('Given a config file with a header and an entry on the same physical line', () => {
+    describe('When tsgit and git read --list', () => {
+      it.each(
+        SAME_LINE_READ_MATRIX,
+      )('Then the reconstructed --list matches git byte-for-byte for "$label"', async ({
+        bytes,
+      }) => {
+        // Arrange
+        const oursConfigPath = path.join(pair.ours, '.git', 'config');
+        await writeFile(oursConfigPath, bytes, 'utf8');
+
+        // Act — canonical git
+        const gitResult = tryRunGit(['config', '--file', oursConfigPath, '--list']);
+        expect(gitResult.ok, `git --list failed: ${gitResult.stderr}`).toBe(true);
+
+        // Act — tsgit configList
+        const ctx = createNodeContext({ workDir: pair.ours });
+        const result = await configList(ctx, { scope: 'local' });
+
+        // Assert — byte-identical reconstruction
+        expect(reconstructList(result.entries)).toBe(gitResult.stdout);
+      }, 60_000);
+    });
+  });
+
+  describe('Given a config file with an orphan (sectionless) key', () => {
+    describe('When tsgit and git read --list', () => {
+      it.each([
+        { label: 'B2a orphan = v', bytes: 'orphan = v\n' },
+        { label: 'B2b orphan (valueless)', bytes: 'orphan\n' },
+      ])('Then git lists the bare key and tsgit reconstructs it identically for "$label"', async ({
+        bytes,
+      }) => {
+        // Arrange
+        const oursConfigPath = path.join(pair.ours, '.git', 'config');
+        await writeFile(oursConfigPath, bytes, 'utf8');
+
+        // Act — canonical git
+        const gitResult = tryRunGit(['config', '--file', oursConfigPath, '--list']);
+        expect(gitResult.ok, `git --list failed: ${gitResult.stderr}`).toBe(true);
+
+        // Act — tsgit configList
+        const ctx = createNodeContext({ workDir: pair.ours });
+        const result = await configList(ctx, { scope: 'local' });
+
+        // Assert — byte-identical (bare key, no dot)
+        expect(reconstructList(result.entries)).toBe(gitResult.stdout);
+      }, 60_000);
+    });
+
+    describe('When git and tsgit try to address the orphan key directly', () => {
+      it('Then git --get refuses with "key does not contain a section" and tsgit refuses CONFIG_KEY_INVALID', async () => {
+        // Arrange
+        const oursConfigPath = path.join(pair.ours, '.git', 'config');
+        await writeFile(oursConfigPath, 'orphan = v\n', 'utf8');
+
+        // Act — canonical git --get orphan (exit 1)
+        const gitResult = tryRunGit(['config', '--file', oursConfigPath, '--get', 'orphan']);
+
+        // Assert — git refuses with the section-less message
+        expect(gitResult.ok).toBe(false);
+        expect(gitResult.stderr).toContain('key does not contain a section');
+
+        // Act + Assert — tsgit parseConfigKey refuses the dotless key
+        let tsgitError: TsgitError | undefined;
+        try {
+          parseConfigKey('orphan');
+        } catch (err) {
+          if (err instanceof TsgitError) tsgitError = err;
+          else throw err;
+        }
+        expect(tsgitError, 'expected tsgit to refuse the orphan key').not.toBeUndefined();
+        const data = (tsgitError as TsgitError).data;
+        expect(data.code).toBe('CONFIG_KEY_INVALID');
+        if (data.code === 'CONFIG_KEY_INVALID') {
+          expect(data.reason).toBe('missing-name');
+        }
+      }, 60_000);
+    });
+  });
+
+  // Each refusal fixture pins the 1-based line both tools report.
+  const SAME_LINE_REFUSAL_MATRIX: ReadonlyArray<{ label: string; bytes: string; line: number }> = [
+    { label: 'B1h [a] bad!key = v', bytes: '[a] bad!key = v\n', line: 1 },
+    { label: 'B1r [a] foo bar = v', bytes: '[a] foo bar = v\n', line: 1 },
+    { label: 'B1s [a] foo.dot = v', bytes: '[a] foo.dot = v\n', line: 1 },
+    { label: 'B2d bad!orphan = v', bytes: 'bad!orphan = v\n', line: 1 },
+    { label: 'B2e 9orphan = v', bytes: '9orphan = v\n', line: 1 },
+    { label: 'B3a bad!key', bytes: '[a]\n\tbad!key = v\n', line: 2 },
+    { label: 'B3c under_score', bytes: '[a]\n\tunder_score = v\n', line: 2 },
+    { label: 'B3d 9key', bytes: '[a]\n\t9key = v\n', line: 2 },
+    { label: 'B3e -key', bytes: '[a]\n\t-key = v\n', line: 2 },
+    { label: 'B3f key.dot', bytes: '[a]\n\tkey.dot = v\n', line: 2 },
+    { label: 'B3g key@at', bytes: '[a]\n\tkey@at = v\n', line: 2 },
+    { label: 'B3j key x', bytes: '[a]\n\tkey x = v\n', line: 2 },
+  ];
+
+  describe('Given a config file with a bad `=`-path key', () => {
+    describe('When git and tsgit parse the file', () => {
+      it.each(
+        SAME_LINE_REFUSAL_MATRIX,
+      )('Then both refuse on the same 1-based line for "$label"', async ({ bytes, line }) => {
+        // Arrange
+        const oursConfigPath = path.join(pair.ours, '.git', 'config');
+        await writeFile(oursConfigPath, bytes, 'utf8');
+
+        // Act — canonical git
+        const gitResult = tryRunGit(['config', '--file', oursConfigPath, '--list']);
+
+        // Assert — git refuses with bad config line N
+        expect(gitResult.ok).toBe(false);
+        const lineMatch = /bad config line (\d+)/i.exec(gitResult.stderr);
+        expect(lineMatch, `expected 'bad config line N' in: ${gitResult.stderr}`).not.toBeNull();
+        expect(Number((lineMatch as RegExpExecArray)[1])).toBe(line);
+
+        // Act — tsgit
+        const ctx = createNodeContext({ workDir: pair.ours });
+        let tsgitError: TsgitError | undefined;
+        try {
+          await readConfig(ctx);
+        } catch (err) {
+          if (err instanceof TsgitError) tsgitError = err;
+          else throw err;
+        }
+
+        // Assert — tsgit refuses on the same line
+        expect(tsgitError, 'expected tsgit to throw').not.toBeUndefined();
+        const data = (tsgitError as TsgitError).data;
+        expect(data.code).toBe('CONFIG_PARSE_ERROR');
+        if (data.code === 'CONFIG_PARSE_ERROR') {
+          expect(data.line).toBe(line);
+        }
       }, 60_000);
     });
   });
