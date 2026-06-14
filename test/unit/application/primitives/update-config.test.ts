@@ -262,19 +262,25 @@ describe('primitives/update-config', () => {
     });
 
     describe('Given a [core] body line that starts with `[` but has no closing `]`', () => {
-      describe('When setCoreConfigEntryInText replaces a later key', () => {
-        it('Then that line is not treated as a section boundary', () => {
-          // Arrange — `[not-a-header` starts with `[` yet is not a real header (no `]`).
-          // The scan must require BOTH brackets, else it stops here and inserts a
-          // duplicate instead of replacing the real `sparseCheckout` line below it.
+      describe('When setCoreConfigEntryInText runs on this malformed content', () => {
+        it('Then it refuses with CONFIG_PARSE_ERROR on line 2 like git refuses the write', () => {
+          // Arrange — `[not-a-header` starts with `[` but never closes, so it is not
+          // a valid header and has no key char at its first column; git refuses the
+          // whole write ("invalid section name") rather than replacing in place.
           const text = '[core]\n\t[not-a-header\n\tsparseCheckout = false\n';
 
-          // Act
+          // Act + Assert
           const sut = setCoreConfigEntryInText;
-          const result = sut(text, 'sparseCheckout', 'true');
-
-          // Assert — the existing `sparseCheckout` line is replaced in place.
-          expect(result).toBe('[core]\n\t[not-a-header\n\tsparseCheckout = true\n');
+          try {
+            sut(text, 'sparseCheckout', 'true');
+            expect.unreachable('setCoreConfigEntryInText must refuse the malformed bracket line');
+          } catch (err) {
+            if (!(err instanceof TsgitError)) throw err;
+            expect(err.data.code).toBe('CONFIG_PARSE_ERROR');
+            if (err.data.code === 'CONFIG_PARSE_ERROR') {
+              expect(err.data.line).toBe(2);
+            }
+          }
         });
       });
     });
@@ -2163,18 +2169,25 @@ describe('primitives/update-config', () => {
       });
     });
 
-    describe('Given a block with a lenient bracket body line as the only non-entry token', () => {
-      describe('When removeConfigEntry empties the entries', () => {
-        it('Then the header is kept because opaque content protects the block', () => {
-          // Arrange — guard sentinel: lenient "[half" tokenized as comment → protects block
+    describe('Given a block with a bracket-shaped non-header body line (`[half`)', () => {
+      describe('When removeConfigEntry runs on this malformed content', () => {
+        it('Then it refuses with CONFIG_PARSE_ERROR on line 2 like git refuses the unset', () => {
+          // Arrange — `[half` is not a valid header and has no key char at column 0;
+          // git refuses the whole unset ("invalid section name") and leaves the file.
           const text = '[a]\n\t[half\n\tkey = v\n';
 
-          // Act
+          // Act + Assert
           const sut = removeConfigEntry;
-          const result = sut(text, 'a', undefined, 'key');
-
-          // Assert — "[half" comment-token keeps the header
-          expect(result).toBe('[a]\n\t[half\n');
+          try {
+            sut(text, 'a', undefined, 'key');
+            expect.unreachable('removeConfigEntry must refuse the malformed bracket line');
+          } catch (err) {
+            if (!(err instanceof TsgitError)) throw err;
+            expect(err.data.code).toBe('CONFIG_PARSE_ERROR');
+            if (err.data.code === 'CONFIG_PARSE_ERROR') {
+              expect(err.data.line).toBe(2);
+            }
+          }
         });
       });
     });

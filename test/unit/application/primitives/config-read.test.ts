@@ -712,14 +712,24 @@ describe('primitives/config-read', () => {
 
   describe('Given a section header without closing bracket', () => {
     describe('When readConfig', () => {
-      it('Then the malformed line is ignored', async () => {
-        // Arrange
+      it('Then it refuses with CONFIG_PARSE_ERROR on line 1 like git', async () => {
+        // Arrange — `[core` has no closing `]`; git refuses the whole file
+        // (bad config line 1) rather than skipping the malformed header.
         const ctx = createMemoryContext();
         await seed(ctx, '[core\n  bare = true\n[user]\n  name = X\n  email = x@y.com\n');
-        const sut = await readConfig(ctx);
-        // Assert
-        expect(sut.core?.bare).toBeUndefined();
-        expect(sut.user?.name).toBe('X');
+
+        // Act + Assert
+        try {
+          await readConfig(ctx);
+          expect.unreachable('readConfig must refuse an unclosed section header');
+        } catch (err) {
+          if (!(err instanceof TsgitError)) throw err;
+          expect(err.data.code).toBe('CONFIG_PARSE_ERROR');
+          if (err.data.code === 'CONFIG_PARSE_ERROR') {
+            expect(err.data.line).toBe(1);
+            expect(err.data.source).toBe(`${ctx.layout.gitDir}/config`);
+          }
+        }
       });
     });
   });
@@ -920,32 +930,44 @@ describe('primitives/config-read', () => {
 
   describe('Given a header starting with `[` but missing `]`', () => {
     describe('When readConfig', () => {
-      it('Then it is rejected', async () => {
-        // Arrange — `[core.` starts with `[`; only the missing `]` should reject it.
+      it('Then it refuses with CONFIG_PARSE_ERROR on line 1 like git', async () => {
+        // Arrange — `[core.` starts with `[` but never closes; git refuses it.
         const ctx = createMemoryContext();
         await seed(ctx, '[core.\n  bare = true\n');
 
-        // Act
-        const sut = await readConfig(ctx);
-
-        // Assert
-        expect(sut.core).toBeUndefined();
+        // Act + Assert
+        try {
+          await readConfig(ctx);
+          expect.unreachable('readConfig must refuse a header missing its `]`');
+        } catch (err) {
+          if (!(err instanceof TsgitError)) throw err;
+          expect(err.data.code).toBe('CONFIG_PARSE_ERROR');
+          if (err.data.code === 'CONFIG_PARSE_ERROR') {
+            expect(err.data.line).toBe(1);
+          }
+        }
       });
     });
   });
 
   describe('Given a header with neither bracket where one is required', () => {
     describe('When readConfig', () => {
-      it('Then it is rejected (both brackets needed)', async () => {
-        // Arrange — `[core)` has `[` but `)` not `]`; the `||` guard must reject it.
+      it('Then it refuses with CONFIG_PARSE_ERROR on line 1 like git', async () => {
+        // Arrange — `[core)` has `[` but `)` not `]`, so it never closes; git refuses.
         const ctx = createMemoryContext();
         await seed(ctx, '[core)\n  bare = true\n');
 
-        // Act
-        const sut = await readConfig(ctx);
-
-        // Assert
-        expect(sut.core).toBeUndefined();
+        // Act + Assert
+        try {
+          await readConfig(ctx);
+          expect.unreachable('readConfig must refuse a header with no closing bracket');
+        } catch (err) {
+          if (!(err instanceof TsgitError)) throw err;
+          expect(err.data.code).toBe('CONFIG_PARSE_ERROR');
+          if (err.data.code === 'CONFIG_PARSE_ERROR') {
+            expect(err.data.line).toBe(1);
+          }
+        }
       });
     });
   });
@@ -1233,18 +1255,24 @@ describe('primitives/config-read', () => {
 
   describe('Given a section header with whitespace inside the brackets (`[ core ]`)', () => {
     describe('When readConfig', () => {
-      it('Then the inner name is trimmed and the section is recognized', async () => {
-        // Arrange — `slice(1, -1)` yields ` core `; only the `.trim()` makes it
-        // equal `core`. Dropping `.trim()` leaves the section named ` core `,
-        // which assembleParsed never matches, so `bare` would be lost.
+      it('Then it refuses with CONFIG_PARSE_ERROR on line 1 like git (no trim-accept)', async () => {
+        // Arrange — git's unquoted section grammar is `[A-Za-z0-9.-]+` with no
+        // whitespace; `[ core ]` is not trimmed to `core` but refused outright.
         const ctx = createMemoryContext();
         await seed(ctx, '[ core ]\n  bare = true\n');
 
-        // Act
-        const sut = await readConfig(ctx);
-
-        // Assert
-        expect(sut.core?.bare).toBe(true);
+        // Act + Assert
+        try {
+          await readConfig(ctx);
+          expect.unreachable('readConfig must refuse a whitespace-bearing header');
+        } catch (err) {
+          if (!(err instanceof TsgitError)) throw err;
+          expect(err.data.code).toBe('CONFIG_PARSE_ERROR');
+          if (err.data.code === 'CONFIG_PARSE_ERROR') {
+            expect(err.data.line).toBe(1);
+            expect(err.data.source).toBe(`${ctx.layout.gitDir}/config`);
+          }
+        }
       });
     });
   });
@@ -3395,19 +3423,23 @@ describe('primitives/config-read tokenizeConfig', () => {
     });
   });
 
-  describe('Given a lenient not-header body line starting with [, When tokenizeConfig', () => {
-    it('Then the not-header body line is classified as a comment token', () => {
-      // Arrange
+  describe('Given a not-header body line starting with [ (`[half`), When tokenizeConfig', () => {
+    it('Then it refuses with CONFIG_PARSE_ERROR on its physical line like git', () => {
+      // Arrange — `[half` is not a valid header and has no key char at column 0,
+      // so git refuses it (bad config line 2); the parser must not skip it.
       const sut = tokenizeConfig;
 
-      // Act
-      const result = sut('[a]\n\t[half\n');
-
-      // Assert
-      expect(result).toEqual<ReadonlyArray<ConfigToken>>([
-        { kind: 'header', section: 'a', subsection: undefined, line: 0, hasComment: false },
-        { kind: 'comment', line: 1 },
-      ]);
+      // Act + Assert
+      try {
+        sut('[a]\n\t[half\n');
+        expect.unreachable('tokenizeConfig must refuse a bracket-shaped non-header line');
+      } catch (err) {
+        if (!(err instanceof TsgitError)) throw err;
+        expect(err.data.code).toBe('CONFIG_PARSE_ERROR');
+        if (err.data.code === 'CONFIG_PARSE_ERROR') {
+          expect(err.data.line).toBe(2);
+        }
+      }
     });
   });
 
@@ -4402,6 +4434,105 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
       it('Then CONFIG_PARSE_ERROR carries line 2', () => {
         // Arrange + Act + Assert
         assertParseConfigRefuses('[a]\n\tkey x = v\n', 2);
+      });
+    });
+  });
+
+  describe('the unquoted section-name grammar accepts what git accepts', () => {
+    describe('Given `[1a]` (digit-first section, unlike keys), When parseIniSections', () => {
+      it('Then the section records as 1a', () => {
+        // Arrange
+        const sut = parseIniSections;
+
+        // Act
+        const result = sut('[1a]\nk=1\n');
+
+        // Assert
+        expect(result).toEqual<ReadonlyArray<IniSection>>([
+          { section: '1a', subsection: undefined, entries: [{ key: 'k', value: '1' }] },
+        ]);
+      });
+    });
+
+    describe('Given `[a.b]` (dot in section), When parseIniSections', () => {
+      it('Then the section records as a.b', () => {
+        // Arrange
+        const sut = parseIniSections;
+
+        // Act
+        const result = sut('[a.b]\nk=1\n');
+
+        // Assert
+        expect(result).toEqual<ReadonlyArray<IniSection>>([
+          { section: 'a.b', subsection: undefined, entries: [{ key: 'k', value: '1' }] },
+        ]);
+      });
+    });
+
+    describe('Given `[a-b]` (dash in section), When parseIniSections', () => {
+      it('Then the section records as a-b', () => {
+        // Arrange
+        const sut = parseIniSections;
+
+        // Act
+        const result = sut('[a-b]\nk=1\n');
+
+        // Assert
+        expect(result).toEqual<ReadonlyArray<IniSection>>([
+          { section: 'a-b', subsection: undefined, entries: [{ key: 'k', value: '1' }] },
+        ]);
+      });
+    });
+
+    describe('Given `[a] ` (trailing space after the bracket), When parseIniSections', () => {
+      it('Then the section records as a with the trailing gap ignored', () => {
+        // Arrange — a gap after `]` is fine; only whitespace INSIDE the brackets refuses
+        const sut = parseIniSections;
+
+        // Act
+        const result = sut('[a] \nk=1\n');
+
+        // Assert
+        expect(result).toEqual<ReadonlyArray<IniSection>>([
+          { section: 'a', subsection: undefined, entries: [{ key: 'k', value: '1' }] },
+        ]);
+      });
+    });
+  });
+
+  describe('the unquoted section-name grammar refuses what git refuses', () => {
+    describe('Given `[a ]` (whitespace before the close), When parseIniSections', () => {
+      it('Then CONFIG_PARSE_ERROR carries line 1', () => {
+        // Arrange + Act + Assert
+        assertParseConfigRefuses('[a ]\nk=1\n', 1);
+      });
+    });
+
+    describe('Given `[ a]` (whitespace after the open), When parseIniSections', () => {
+      it('Then CONFIG_PARSE_ERROR carries line 1', () => {
+        // Arrange + Act + Assert
+        assertParseConfigRefuses('[ a]\nk=1\n', 1);
+      });
+    });
+
+    describe('Given `[a b]` (interior whitespace), When parseIniSections', () => {
+      it('Then CONFIG_PARSE_ERROR carries line 1', () => {
+        // Arrange + Act + Assert
+        assertParseConfigRefuses('[a b]\nk=1\n', 1);
+      });
+    });
+
+    describe('Given `[ core ]` (padded section name), When parseIniSections', () => {
+      it('Then CONFIG_PARSE_ERROR carries line 1', () => {
+        // Arrange + Act + Assert
+        assertParseConfigRefuses('[ core ]\nk=1\n', 1);
+      });
+    });
+
+    describe('Given `[a_b]` (underscore in section, outside the grammar), When parseIniSections', () => {
+      it('Then CONFIG_PARSE_ERROR carries line 1', () => {
+        // Arrange + Act + Assert
+        assertParseConfigRefuses('[a_b]\nk=1\n', 1);
       });
     });
   });

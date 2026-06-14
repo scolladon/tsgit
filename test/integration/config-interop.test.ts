@@ -3067,6 +3067,47 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
       }, 60_000);
     });
 
+    // git refuses each of these unquoted headers at line 1 (exit 128).
+    const CHAIN_REFUSE_MATRIX: ReadonlyArray<{ label: string; bytes: string }> = [
+      { label: 'whitespace before the close `[a ]`', bytes: '[a ]\nk=1\n' },
+      { label: 'whitespace after the open `[ a]`', bytes: '[ a]\nk=1\n' },
+      { label: 'interior whitespace `[a b]`', bytes: '[a b]\nk=1\n' },
+      { label: 'padded `[ core ]`', bytes: '[ core ]\nk=1\n' },
+    ];
+
+    describe('When git and tsgit parse a whitespace-bearing unquoted header', () => {
+      it.each(CHAIN_REFUSE_MATRIX)('Then both refuse at line 1 for $label', async ({ bytes }) => {
+        // Arrange
+        const oursConfigPath = path.join(pair.ours, '.git', 'config');
+        await writeFile(oursConfigPath, bytes, 'utf8');
+
+        // Act — canonical git refuses with "bad config line 1"
+        const gitResult = tryRunGit(['config', '--file', oursConfigPath, '--list']);
+        expect(gitResult.ok).toBe(false);
+        const lineMatch = /bad config line (\d+)/i.exec(gitResult.stderr);
+        expect(lineMatch, `expected 'bad config line N' in: ${gitResult.stderr}`).not.toBeNull();
+        expect(Number((lineMatch as RegExpExecArray)[1])).toBe(1);
+
+        // Act — tsgit
+        const ctx = createNodeContext({ workDir: pair.ours });
+        let tsgitError: TsgitError | undefined;
+        try {
+          await readConfig(ctx);
+        } catch (err) {
+          if (err instanceof TsgitError) tsgitError = err;
+          else throw err;
+        }
+
+        // Assert — tsgit throws CONFIG_PARSE_ERROR at the same 1-based line
+        expect(tsgitError, 'expected tsgit to throw TsgitError').not.toBeUndefined();
+        const data = (tsgitError as TsgitError).data;
+        expect(data.code).toBe('CONFIG_PARSE_ERROR');
+        if (data.code === 'CONFIG_PARSE_ERROR') {
+          expect(data.line).toBe(1);
+        }
+      }, 60_000);
+    });
+
     describe('When git and tsgit each rename the first chained section `a` to `c`', () => {
       it('Then the chain line keys on `a` and the resulting bytes are identical', async () => {
         // Arrange — `[a][b]` keys on its first header; the `[b]` tail is raw

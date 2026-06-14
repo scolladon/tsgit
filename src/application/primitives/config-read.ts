@@ -319,12 +319,9 @@ const tokenizeLine = (
   if (header.parse.kind === 'malformed') {
     throw configParseError(lineIdx + 1, source, header.parse.partialName);
   }
-  // A bracket-shaped line git neither parses as a header nor as a key is skipped
-  // leniently (unquoted-header malformations); otherwise scan it as a key line.
-  if (trimmed.startsWith('[')) {
-    tokens.push({ kind: 'comment', line: lineIdx });
-    return lineIdx + 1;
-  }
+  // Not a header and not a comment: scan it as a key line. A bracket-shaped line
+  // that is not a valid header (`[ core ]`, `[a b]`, `[half`) has no key character
+  // at its first column, so `scanKey` refuses it — exactly as git does.
   return emitBodyEntry(tokens, lines, lineIdx, source);
 };
 
@@ -741,15 +738,27 @@ export const scanHeaderPrefix = (rawLine: string): HeaderPrefixScan => {
 
 const NOT_HEADER_SCAN: HeaderPrefixScan = { parse: { kind: 'not-header' }, endOffset: 0 };
 
-/** Plain `[section]` prefix: the section name is the trimmed span up to the first `]`. */
+/**
+ * git's unquoted section-name grammar: one or more of letter/digit/dot/dash,
+ * with no whitespace, underscore, or other punctuation. Digit-first is allowed
+ * for sections (unlike keys). A name outside this set makes the line not a
+ * header, so it falls to the key path and refuses exactly as git does.
+ */
+const PLAIN_SECTION_NAME = /^[A-Za-z0-9.-]+$/;
+
+/**
+ * Plain `[section]` prefix: the section name is the exact (untrimmed) span up to
+ * the first `]`, accepted only when it matches git's unquoted grammar. Interior
+ * or edge whitespace (`[a ]`, `[ a]`, `[a b]`) is therefore refused, not trimmed.
+ */
 const scanPlainHeaderPrefix = (
   afterOpen: string,
   open: number,
   closeAt: number,
 ): HeaderPrefixScan => {
   if (closeAt === -1) return NOT_HEADER_SCAN;
-  const inner = afterOpen.slice(0, closeAt).trim();
-  if (inner === '') return NOT_HEADER_SCAN;
+  const inner = afterOpen.slice(0, closeAt);
+  if (!PLAIN_SECTION_NAME.test(inner)) return NOT_HEADER_SCAN;
   const endOffset = open + 1 + closeAt + 1;
   return { parse: { kind: 'header', section: inner, subsection: undefined }, endOffset };
 };
