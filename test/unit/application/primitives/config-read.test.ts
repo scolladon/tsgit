@@ -4364,6 +4364,27 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
         ]);
       });
     });
+
+    describe('Given `[a][b` (a valid header chained to an unclosed second span), When parseIniSections', () => {
+      it('Then CONFIG_PARSE_ERROR carries line 1', () => {
+        // Arrange + Act + Assert
+        assertParseConfigRefuses('[a][b\n', 1);
+      });
+    });
+
+    describe('Given `[a][]` (a valid header chained to an empty second span), When parseIniSections', () => {
+      it('Then CONFIG_PARSE_ERROR carries line 1', () => {
+        // Arrange + Act + Assert
+        assertParseConfigRefuses('[a][]\n', 1);
+      });
+    });
+
+    describe('Given `[a][ b]` (a valid header chained to an interior-whitespace second span), When parseIniSections', () => {
+      it('Then CONFIG_PARSE_ERROR carries line 1', () => {
+        // Arrange + Act + Assert
+        assertParseConfigRefuses('[a][ b]\n', 1);
+      });
+    });
   });
 
   describe('the unified key grammar refuses what git refuses', () => {

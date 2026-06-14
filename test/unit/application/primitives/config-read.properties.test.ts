@@ -1,6 +1,9 @@
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
-import { parseIniSections } from '../../../../src/application/primitives/config-read.js';
+import {
+  parseIniSections,
+  scanHeaderPrefix,
+} from '../../../../src/application/primitives/config-read.js';
 import { TsgitError } from '../../../../src/domain/error.js';
 import { arbConfigKey, arbHeaderIdentity } from './arbitraries.js';
 
@@ -236,6 +239,49 @@ describe('config-read same-line and orphan grammar properties', () => {
             expect(twice).toEqual(once);
           }),
           { numRuns: 100 },
+        );
+      });
+    });
+  });
+});
+
+/**
+ * Section-name characters spanning the accept grammar (letters/digits/`.`/`-`)
+ * and the reject grammar (`_`/space) so a bracketed line lands on either arm.
+ */
+const arbSectionNameChar = (): fc.Arbitrary<string> =>
+  fc.oneof(
+    arbAlpha(),
+    fc.integer({ min: 0x30, max: 0x39 }).map((cp) => String.fromCodePoint(cp)), // 0–9
+    fc.constantFrom('.', '-', '_', ' '),
+  );
+
+describe('config-read section-name totality property', () => {
+  describe('Given an arbitrary bracketed ASCII-no-NUL line `[<chars>]`', () => {
+    describe('When scanHeaderPrefix and parseIniSections classify it', () => {
+      it('Then it is recognised as a header OR refused with CONFIG_PARSE_ERROR, never silently section-absent', () => {
+        // Arrange
+        const sut = scanHeaderPrefix;
+        const arbBracketedLine = fc
+          .array(arbSectionNameChar(), { minLength: 0, maxLength: 8 })
+          .map((chars) => `[${chars.join('')}]`);
+
+        // Act + Assert — for every sample, the disjunction must hold: a header
+        // parse is the accept arm; otherwise parseIniSections must throw, so the
+        // grammar is total and no bracketed line silently drops to section-absent.
+        fc.assert(
+          fc.property(arbBracketedLine, (line) => {
+            if (sut(line).parse.kind === 'header') return;
+            try {
+              parseIniSections(`${line}\n`);
+              return false;
+            } catch (err) {
+              if (!(err instanceof TsgitError)) throw err;
+              expect(err.data.code).toBe('CONFIG_PARSE_ERROR');
+              return true;
+            }
+          }),
+          { numRuns: 50 },
         );
       });
     });

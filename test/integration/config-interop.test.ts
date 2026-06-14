@@ -278,6 +278,48 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
     });
   });
 
+  describe('Given a config file whose first line chains a header to a malformed span', () => {
+    describe('When git and tsgit parse the file', () => {
+      it('Then both refuse on line 1 and tsgit names the ours config as the source', async () => {
+        // Arrange — `[a][b` chains a valid header to an unclosed second span;
+        // git refuses with `bad config line 1`.
+        const configContent = '[a][b\n';
+        const oursConfigPath = path.join(pair.ours, '.git', 'config');
+        await writeFile(oursConfigPath, configContent, 'utf8');
+
+        // Act — canonical git
+        const gitResult = tryRunGit(['-C', pair.ours, 'config', '--local', '--get', 'test.v']);
+
+        // Assert — git exits non-zero with bad config line 1
+        expect(gitResult.ok).toBe(false);
+        const lineMatch = /bad config line (\d+)/i.exec(gitResult.stderr);
+        expect(lineMatch, `expected 'bad config line N' in: ${gitResult.stderr}`).not.toBeNull();
+        const gitLine = Number((lineMatch as RegExpExecArray)[1]);
+        expect(gitLine).toBe(1);
+
+        // Act — tsgit (fresh context to bypass cache)
+        const ctx = createNodeContext({ workDir: pair.ours });
+        let tsgitError: TsgitError | undefined;
+        try {
+          await readConfig(ctx);
+        } catch (err) {
+          if (err instanceof TsgitError) tsgitError = err;
+          else throw err;
+        }
+
+        // Assert — tsgit refuses on the same 1-based line and names the source
+        expect(tsgitError, 'expected tsgit to throw TsgitError').not.toBeUndefined();
+        const data = (tsgitError as TsgitError).data;
+        expect(data.code).toBe('CONFIG_PARSE_ERROR');
+        if (data.code === 'CONFIG_PARSE_ERROR') {
+          expect(data.line).toBe(gitLine);
+          expect(data.line).toBe(1);
+          expect(data.source).toBe(oursConfigPath);
+        }
+      });
+    });
+  });
+
   const SUBSECTION_WRITE_MATRIX: ReadonlyArray<{
     label: string;
     subsection: string;
