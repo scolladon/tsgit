@@ -344,21 +344,26 @@ const blockEdit = (block: TokenBlock, keyLc: string): BlockEdit => {
 /**
  * Apply the per-block removal `edits` to `lines`, returning the new text — or
  * `undefined` when no line is dropped and no header is re-emitted (a no-op).
- * Shared header lines are re-emitted before the excluded lines are filtered
- * out; the EOF terminator is preserved when the removed region reached EOF.
+ * A single pass over the lines drops the excluded indices and substitutes the
+ * re-emitted header text for any kept line that carries a rewrite (exclusion
+ * wins); the EOF terminator is preserved when the removed region reached EOF.
  */
 const applyRemovalEdits = (
   lines: ReadonlyArray<string>,
   edits: ReadonlyArray<BlockEdit>,
 ): string | undefined => {
   const excluded = new Set(edits.flatMap((edit) => edit.excluded));
-  const rewrites = edits.flatMap((edit) => (edit.headerRewrite ? [edit.headerRewrite] : []));
-  if (excluded.size === 0 && rewrites.length === 0) return undefined;
-  const rewritten = rewrites.reduce<ReadonlyArray<string>>(
-    (acc, { line, text: header }) => acc.map((value, idx) => (idx === line ? header : value)),
-    lines,
+  const rewrites = new Map(
+    edits.flatMap((edit) =>
+      edit.headerRewrite ? [[edit.headerRewrite.line, edit.headerRewrite.text]] : [],
+    ),
   );
-  const kept = rewritten.filter((_, idx) => !excluded.has(idx));
+  if (excluded.size === 0 && rewrites.size === 0) return undefined;
+  const kept: Array<string> = [];
+  for (const [idx, value] of lines.entries()) {
+    if (excluded.has(idx)) continue;
+    kept.push(rewrites.get(idx) ?? value);
+  }
   // When the removed region reached EOF, every kept line was followed by LF
   // in the original, so the output keeps that terminator — like git, which
   // copies the bytes before the removed region verbatim.
