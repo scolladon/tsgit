@@ -351,8 +351,9 @@ const emitBodyEntry = (
  * the chain — same-line entry, `#`/`;` comment, or nothing — lands under the
  * LAST header (it is the open section when the body is read). A same-line entry
  * keeps its `sharesHeaderLine`/`startCol` marker relative to that last header.
- * Cost stays linear: one cursor advances past each bracket span; no re-scan
- * from the line start.
+ * Cost stays linear: a single integer cursor advances over the line, scanning
+ * each bracket span in place from its offset — no per-span substring copy and
+ * no re-scan from the line start, so a chain of K headers is O(line length).
  */
 const emitHeaderLine = (
   tokens: ConfigToken[],
@@ -366,11 +367,11 @@ const emitHeaderLine = (
   let contentStart = skipGitSpace(line, current.endOffset);
   while (line[contentStart] === '[') {
     pushHeaderToken(tokens, current, lineIdx, false);
-    current = scanHeaderPrefix(line.slice(contentStart));
+    current = scanHeaderPrefix(line, contentStart);
     if (current.parse.kind !== 'header') {
       throw configParseError(lineIdx + 1, source, malformedPartialName(current.parse));
     }
-    contentStart = skipGitSpace(line, contentStart + current.endOffset);
+    contentStart = skipGitSpace(line, current.endOffset);
   }
   const next = line[contentStart];
   const hasComment = next === '#' || next === ';';
@@ -627,17 +628,25 @@ export type SectionHeaderParse =
   | { readonly kind: 'malformed'; readonly partialName: string }
   | { readonly kind: 'not-header' };
 
-/** Scan the quoted-subsection branch of a `[section "subsection"]` header. */
-const parseQuotedSubsectionHeader = (afterOpen: string, quoteAt: number): QuotedHeaderScan => {
-  const section = afterOpen.slice(0, quoteAt).trim();
+/**
+ * Scan the quoted-subsection branch of a `[section "subsection"]` header.
+ * `contentStart` is the absolute index just past `[`; `quoteAt` the absolute
+ * index of the opening `"`. The section name is the span between them.
+ */
+const parseQuotedSubsectionHeader = (
+  line: string,
+  contentStart: number,
+  quoteAt: number,
+): QuotedHeaderScan => {
+  const section = line.slice(contentStart, quoteAt).trim();
   const sectionPart = section.toLowerCase();
-  // `afterOpen[-1]` is `undefined` when the quote opens the header content,
-  // which the guard below treats as missing whitespace — exactly git's refusal.
-  const charBeforeQuote = afterOpen[quoteAt - 1];
+  // A quote that opens the header content (no char between `[` and `"`) has no
+  // separating whitespace, which the guard below treats as git's refusal.
+  const charBeforeQuote = quoteAt > contentStart ? line[quoteAt - 1] : undefined;
   if (charBeforeQuote === undefined || !GIT_SPACE.has(charBeforeQuote)) {
     return { parse: { kind: 'malformed', partialName: sectionPart } };
   }
-  return scanQuotedSpan(afterOpen, quoteAt, section, sectionPart);
+  return scanQuotedSpan(line, quoteAt, section, sectionPart);
 };
 
 /** A closed quoted subsection: its decoded text and the index of the closing `"`. */
@@ -647,21 +656,22 @@ interface ClosedSubsection {
 }
 
 /**
- * Decode the quoted subsection starting at `openAt` (the opening `"`), honouring
- * `\`-escapes. Returns the decoded text and the closing `"` index, or the partial
- * text on an unclosed/dangling span (so the caller can build a `malformed` name).
+ * Decode the quoted subsection starting at absolute `openAt` (the opening `"`)
+ * in `line`, honouring `\`-escapes. Returns the decoded text and the absolute
+ * closing `"` index, or the partial text on an unclosed/dangling span (so the
+ * caller can build a `malformed` name).
  */
 const decodeSubsection = (
-  afterOpen: string,
+  line: string,
   openAt: number,
 ): ClosedSubsection | { readonly partial: string } => {
   let subsection = '';
   let i = openAt + 1;
-  while (i < afterOpen.length) {
-    const c = afterOpen[i] as string;
+  while (i < line.length) {
+    const c = line[i] as string;
     if (c === '\\') {
-      if (i + 1 >= afterOpen.length) return { partial: subsection };
-      subsection += afterOpen[i + 1] as string;
+      if (i + 1 >= line.length) return { partial: subsection };
+      subsection += line[i + 1] as string;
       i += 2;
       continue;
     }
@@ -683,22 +693,22 @@ interface QuotedHeaderScan {
 }
 
 /**
- * Scan the quoted subsection span starting at `openAt` (the index of `"`).
- * On success, the closing `"` must be immediately followed by `]` — the last
- * char on a trimmed line, or the bracket terminator before same-line entry
- * content on a raw line. Otherwise produces a `malformed` result.
+ * Scan the quoted subsection span starting at absolute `openAt` (the index of
+ * `"` in `line`). On success, the closing `"` must be immediately followed by
+ * `]` — the last char on a trimmed line, or the bracket terminator before
+ * same-line entry content on a raw line. Otherwise produces a `malformed` result.
  */
 const scanQuotedSpan = (
-  afterOpen: string,
+  line: string,
   openAt: number,
   section: string,
   sectionPart: string,
 ): QuotedHeaderScan => {
-  const decoded = decodeSubsection(afterOpen, openAt);
+  const decoded = decodeSubsection(line, openAt);
   if ('partial' in decoded) {
     return { parse: { kind: 'malformed', partialName: `${sectionPart}.${decoded.partial}` } };
   }
-  if (afterOpen.startsWith(']', decoded.closeQuoteAt + 1)) {
+  if (line.startsWith(']', decoded.closeQuoteAt + 1)) {
     return {
       parse: { kind: 'header', section, subsection: decoded.subsection },
       closeQuoteAt: decoded.closeQuoteAt,
@@ -718,22 +728,42 @@ export interface HeaderPrefixScan {
 }
 
 /**
- * Scan a header at the start of a raw (untrimmed) line. It stops at the `]` that
- * closes the bracket span, so a same-line entry may follow it. `endOffset` is the
- * column just past that `]`. A line whose first non-space char is not `[`, or a
- * malformed unquoted bracket span, reports `not-header` (the tokenizer keeps its
- * lenient skip); a malformed quoted subsection reports `malformed`.
+ * Scan a header at offset `start` of a raw (untrimmed) line. It stops at the `]`
+ * that closes the bracket span, so a same-line entry — or another chained header
+ * — may follow it. `endOffset` is the absolute column just past that `]`, in the
+ * original line. A char at `start` that is not `[` (after a leading-space skip),
+ * or a malformed unquoted bracket span, reports `not-header` (the tokenizer keeps
+ * its lenient skip); a malformed quoted subsection reports `malformed`. Scanning
+ * from an offset (rather than a fresh slice) keeps a chain of headers linear in
+ * the line length: the cursor advances over the line, never re-copying the tail.
  */
-export const scanHeaderPrefix = (rawLine: string): HeaderPrefixScan => {
-  const open = firstNonGap(rawLine, 0);
-  if (rawLine[open] !== '[') return NOT_HEADER_SCAN;
-  const afterOpen = rawLine.slice(open + 1);
-  const quoteAt = afterOpen.indexOf('"');
-  const closeAt = afterOpen.indexOf(']');
-  if (quoteAt === -1 || (closeAt !== -1 && closeAt < quoteAt)) {
-    return scanPlainHeaderPrefix(afterOpen, open, closeAt);
+export const scanHeaderPrefix = (line: string, start = 0): HeaderPrefixScan => {
+  const open = firstNonGap(line, start);
+  if (line[open] !== '[') return NOT_HEADER_SCAN;
+  const contentStart = open + 1;
+  // The first `]` bounds the span; the `"` lookup only matters before it, so a
+  // chain of quote-free `[a][b]...` headers never re-scans to end-of-line.
+  const closeAt = line.indexOf(']', contentStart);
+  const quoteAt = quoteBefore(line, contentStart, closeAt);
+  if (quoteAt === -1) {
+    return scanPlainHeaderPrefix(line, contentStart, closeAt);
   }
-  return scanQuotedHeaderPrefix(afterOpen, open, quoteAt);
+  return scanQuotedHeaderPrefix(line, contentStart, quoteAt);
+};
+
+/**
+ * Absolute index of the first `"` in `[from, closeAt)`, or -1 when none. A quote
+ * at or after the span's closing `]` is content of a later span, not this header's
+ * subsection opener, so the search is bounded to the span: a chain of quote-free
+ * `[a][b]...` headers never re-scans to end-of-line. With no closing `]` (an
+ * unclosed span) the search runs to end-of-line — that line terminates anyway.
+ */
+const quoteBefore = (line: string, from: number, closeAt: number): number => {
+  const limit = closeAt === -1 ? line.length : closeAt;
+  for (let col = from; col < limit; col += 1) {
+    if (line[col] === '"') return col;
+  }
+  return -1;
 };
 
 const NOT_HEADER_SCAN: HeaderPrefixScan = { parse: { kind: 'not-header' }, endOffset: 0 };
@@ -747,36 +777,39 @@ const NOT_HEADER_SCAN: HeaderPrefixScan = { parse: { kind: 'not-header' }, endOf
 const PLAIN_SECTION_NAME = /^[A-Za-z0-9.-]+$/;
 
 /**
- * Plain `[section]` prefix: the section name is the exact (untrimmed) span up to
- * the first `]`, accepted only when it matches git's unquoted grammar. Interior
- * or edge whitespace (`[a ]`, `[ a]`, `[a b]`) is therefore refused, not trimmed.
+ * Plain `[section]` prefix: the section name is the exact (untrimmed) span from
+ * `contentStart` (just past `[`) up to the closing `]` at absolute `closeAt`,
+ * accepted only when it matches git's unquoted grammar. Interior or edge
+ * whitespace (`[a ]`, `[ a]`, `[a b]`) is therefore refused, not trimmed.
  */
 const scanPlainHeaderPrefix = (
-  afterOpen: string,
-  open: number,
+  line: string,
+  contentStart: number,
   closeAt: number,
 ): HeaderPrefixScan => {
   if (closeAt === -1) return NOT_HEADER_SCAN;
-  const inner = afterOpen.slice(0, closeAt);
+  const inner = line.slice(contentStart, closeAt);
   if (!PLAIN_SECTION_NAME.test(inner)) return NOT_HEADER_SCAN;
-  const endOffset = open + 1 + closeAt + 1;
-  return { parse: { kind: 'header', section: inner, subsection: undefined }, endOffset };
+  return {
+    parse: { kind: 'header', section: inner, subsection: undefined },
+    endOffset: closeAt + 1,
+  };
 };
 
 /**
  * Quoted `[section "sub"]` prefix: the closing `]` follows the closing `"`, so
  * the offset is taken from the single identity scan's quote index, not the first
- * `]` (which may be content inside the quotes).
+ * `]` (which may be content inside the quotes). `quoteAt` is the absolute index
+ * of the opening `"` in `line`; the scan works in place from `contentStart`.
  */
 const scanQuotedHeaderPrefix = (
-  afterOpen: string,
-  open: number,
+  line: string,
+  contentStart: number,
   quoteAt: number,
 ): HeaderPrefixScan => {
-  const { parse, closeQuoteAt } = parseQuotedSubsectionHeader(afterOpen, quoteAt);
+  const { parse, closeQuoteAt } = parseQuotedSubsectionHeader(line, contentStart, quoteAt);
   if (parse.kind !== 'header' || closeQuoteAt === undefined) return { parse, endOffset: 0 };
-  const closeBracket = closeQuoteAt + 1;
-  return { parse, endOffset: open + 1 + closeBracket + 1 };
+  return { parse, endOffset: closeQuoteAt + 2 };
 };
 
 interface MutableParsedConfig {
