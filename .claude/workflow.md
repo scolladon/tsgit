@@ -25,22 +25,19 @@ workflow" / "the usual flow" resolve here (see CLAUDE.md §Development Workflow)
 
 ## Why these policies
 
-- **`merge-flags: --admin`** — the `main` ruleset blocks normal merges; admin
-  squash-merge is the only path. Always with `--delete-branch` (engine default).
-- **`non-blocking-jobs`** — the `mutation` CI job is informational (the local triage
-  in the mutation phase is the real gate); `benchmark-compare` measures runner noise
-  and is `continue-on-error`.
-- **`pr.creator: session`** — the session pushes AND creates the PR as the final
-  workflow step; the user owns only the merge confirmation.
+- **`merge-flags: --admin`** — the `main` ruleset blocks normal merges; admin squash is
+  the only path. Always `--delete-branch` (engine default).
+- **`non-blocking-jobs`** — `mutation` is informational (the local triage is the real
+  gate); `benchmark-compare` measures runner noise (`continue-on-error`).
+- **`pr.creator: session`** — the session pushes and creates the PR; the user owns only
+  the merge confirmation.
 - **`pre-pr-gate: npm outdated`** — the CI `deps` job gates on freshness; catching it
-  pre-PR saves a CI round. Remediation: bump in a dedicated `chore(deps): bump <pkgs>`
-  commit and re-validate. **Documented exception:** `@ls-lint/ls-lint` can be flagged
-  at its own installed version (publisher metadata bug) — local-only, ignorable, do
-  not attempt to bump.
-- **`review-batch: check:spelling`** — the md-scoped commit hook misses words in TS
-  test titles/comments and doc filename tokens; catching them per fix batch beats a
-  failed validate later. The cspell dictionary lags on some British `-ising/-ised`
-  forms — full validate is the authority.
+  pre-PR saves a round. Remediation: bump in a `chore(deps): bump <pkgs>` commit,
+  re-validate. **Exception:** `@ls-lint/ls-lint` flags at its own installed version
+  (publisher bug) — local-only, ignore, don't bump.
+- **`review-batch: check:spelling`** — the md-scoped commit hook misses words in TS test
+  titles/comments and doc filenames; per-batch spelling beats a failed validate. The
+  cspell dict lags on some British `-ising/-ised` forms — full validate is the authority.
 
 ## Backlog conventions
 
