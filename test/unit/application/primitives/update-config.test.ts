@@ -262,19 +262,25 @@ describe('primitives/update-config', () => {
     });
 
     describe('Given a [core] body line that starts with `[` but has no closing `]`', () => {
-      describe('When setCoreConfigEntryInText replaces a later key', () => {
-        it('Then that line is not treated as a section boundary', () => {
-          // Arrange — `[not-a-header` starts with `[` yet is not a real header (no `]`).
-          // The scan must require BOTH brackets, else it stops here and inserts a
-          // duplicate instead of replacing the real `sparseCheckout` line below it.
+      describe('When setCoreConfigEntryInText runs on this malformed content', () => {
+        it('Then it refuses with CONFIG_PARSE_ERROR on line 2 like git refuses the write', () => {
+          // Arrange — `[not-a-header` starts with `[` but never closes, so it is not
+          // a valid header and has no key char at its first column; git refuses the
+          // whole write ("invalid section name") rather than replacing in place.
           const text = '[core]\n\t[not-a-header\n\tsparseCheckout = false\n';
 
-          // Act
+          // Act + Assert
           const sut = setCoreConfigEntryInText;
-          const result = sut(text, 'sparseCheckout', 'true');
-
-          // Assert — the existing `sparseCheckout` line is replaced in place.
-          expect(result).toBe('[core]\n\t[not-a-header\n\tsparseCheckout = true\n');
+          try {
+            sut(text, 'sparseCheckout', 'true');
+            expect.unreachable('setCoreConfigEntryInText must refuse the malformed bracket line');
+          } catch (err) {
+            if (!(err instanceof TsgitError)) throw err;
+            expect(err.data.code).toBe('CONFIG_PARSE_ERROR');
+            if (err.data.code === 'CONFIG_PARSE_ERROR') {
+              expect(err.data.line).toBe(2);
+            }
+          }
         });
       });
     });
@@ -1684,6 +1690,80 @@ describe('primitives/update-config', () => {
         });
       });
     });
+
+    describe('Given a same-line header+entry block', () => {
+      describe('When setConfigEntryInText replaces the same-line key', () => {
+        it('Then the header is split onto its own line above the rewritten entry', () => {
+          // Arrange — git rewrites the matched same-line entry as a canonical
+          // `\tkey = value` line and drops `[a]` onto its own line.
+          const sut = setConfigEntryInText;
+          const text = '[a] key = v\n';
+
+          // Act
+          const result = sut(text, 'a', undefined, 'key', 'x2');
+
+          // Assert
+          expect(result).toBe('[a]\n\tkey = x2\n');
+        });
+      });
+
+      describe('When setConfigEntryInText replaces a valueless same-line key', () => {
+        it('Then the header is split and the rewritten entry gains the value', () => {
+          // Arrange — a valueless same-line entry splits identically on replace.
+          const sut = setConfigEntryInText;
+          const text = '[a] key\n';
+
+          // Act
+          const result = sut(text, 'a', undefined, 'key', 'x2');
+
+          // Assert
+          expect(result).toBe('[a]\n\tkey = x2\n');
+        });
+      });
+
+      describe('When setConfigEntryInText sets a NEW key in a same-line block', () => {
+        it('Then the same-line header line is left verbatim and the new entry appends below', () => {
+          // Arrange — a new key does NOT split; the header line stays byte-exact
+          // and the fresh entry lands at the section end.
+          const sut = setConfigEntryInText;
+          const text = '[a] key = v\n';
+
+          // Act
+          const result = sut(text, 'a', undefined, 'other', 'y');
+
+          // Assert
+          expect(result).toBe('[a] key = v\n\tother = y\n');
+        });
+      });
+
+      describe('When setConfigEntryInText replaces the same-line key with a following body entry', () => {
+        it('Then the header splits above the rewritten entry and the body survives verbatim', () => {
+          // Arrange — replace splits the head; the trailing normal entry is kept.
+          const sut = setConfigEntryInText;
+          const text = '[a] key = v\n\tk2 = w\n';
+
+          // Act
+          const result = sut(text, 'a', undefined, 'key', 'x2');
+
+          // Assert
+          expect(result).toBe('[a]\n\tkey = x2\n\tk2 = w\n');
+        });
+      });
+
+      describe('When setConfigEntryInText replaces an entry under a section below an orphan line', () => {
+        it('Then the orphan line is preserved and the entry surgery still applies', () => {
+          // Arrange — an orphan key above the section must not break entry surgery.
+          const sut = setConfigEntryInText;
+          const text = 'o = 1\n[a]\n\tk = v\n';
+
+          // Act
+          const result = sut(text, 'a', undefined, 'k', 'x2');
+
+          // Assert
+          expect(result).toBe('o = 1\n[a]\n\tk = x2\n');
+        });
+      });
+    });
   });
 
   describe('updateConfigEntries', () => {
@@ -2089,18 +2169,25 @@ describe('primitives/update-config', () => {
       });
     });
 
-    describe('Given a block with a lenient bracket body line as the only non-entry token', () => {
-      describe('When removeConfigEntry empties the entries', () => {
-        it('Then the header is kept because opaque content protects the block', () => {
-          // Arrange — guard sentinel: lenient "[half" tokenized as comment → protects block
+    describe('Given a block with a bracket-shaped non-header body line (`[half`)', () => {
+      describe('When removeConfigEntry runs on this malformed content', () => {
+        it('Then it refuses with CONFIG_PARSE_ERROR on line 2 like git refuses the unset', () => {
+          // Arrange — `[half` is not a valid header and has no key char at column 0;
+          // git refuses the whole unset ("invalid section name") and leaves the file.
           const text = '[a]\n\t[half\n\tkey = v\n';
 
-          // Act
+          // Act + Assert
           const sut = removeConfigEntry;
-          const result = sut(text, 'a', undefined, 'key');
-
-          // Assert — "[half" comment-token keeps the header
-          expect(result).toBe('[a]\n\t[half\n');
+          try {
+            sut(text, 'a', undefined, 'key');
+            expect.unreachable('removeConfigEntry must refuse the malformed bracket line');
+          } catch (err) {
+            if (!(err instanceof TsgitError)) throw err;
+            expect(err.data.code).toBe('CONFIG_PARSE_ERROR');
+            if (err.data.code === 'CONFIG_PARSE_ERROR') {
+              expect(err.data.line).toBe(2);
+            }
+          }
         });
       });
     });
@@ -2185,6 +2272,127 @@ describe('primitives/update-config', () => {
 
           // Assert — [ "x"] pruned; [ ""] preserved byte-identically
           expect(result).toBe('[ ""]\n\tk = e\n');
+        });
+      });
+    });
+
+    describe('Given a same-line header+entry block', () => {
+      describe('When removeConfigEntry unsets the only same-line key', () => {
+        it('Then the whole physical line (header and entry) is pruned', () => {
+          // Arrange — nothing protects the block, so header + entry both go.
+          const sut = removeConfigEntry;
+          const text = '[a] key = v\n';
+
+          // Act
+          const result = sut(text, 'a', undefined, 'key');
+
+          // Assert
+          expect(result).toBe('');
+        });
+      });
+
+      describe('When removeConfigEntry unsets the only valueless same-line key', () => {
+        it('Then the whole physical line is pruned', () => {
+          // Arrange — valueless same-line block prunes identically.
+          const sut = removeConfigEntry;
+          const text = '[a] key\n';
+
+          // Act
+          const result = sut(text, 'a', undefined, 'key');
+
+          // Assert
+          expect(result).toBe('');
+        });
+      });
+
+      describe('When removeConfigEntry unsets a NON-matching key in a same-line block', () => {
+        it('Then the same-line header line is left verbatim', () => {
+          // Arrange — unsetting the body key leaves the same-line head untouched;
+          // the head is still an entry so the block is not pruned.
+          const sut = removeConfigEntry;
+          const text = '[a] key = v\n\tk2 = w\n';
+
+          // Act
+          const result = sut(text, 'a', undefined, 'k2');
+
+          // Assert
+          expect(result).toBe('[a] key = v\n');
+        });
+      });
+
+      describe('When removeConfigEntry unsets the same-line key with a surviving comment', () => {
+        it('Then the header is split onto its own line and the comment is kept', () => {
+          // Arrange — the comment protects the block, so the header re-emits alone
+          // and the same-line entry is dropped.
+          const sut = removeConfigEntry;
+          const text = '[a] key = v\n\t# keep\n';
+
+          // Act
+          const result = sut(text, 'a', undefined, 'key');
+
+          // Assert
+          expect(result).toBe('[a]\n\t# keep\n');
+        });
+      });
+
+      describe('When removeConfigEntry unsets the same-line key with a surviving entry', () => {
+        it('Then the header is split onto its own line and the entry is kept', () => {
+          // Arrange — a surviving normal entry protects the block; the header
+          // re-emits alone above it.
+          const sut = removeConfigEntry;
+          const text = '[a] key = v\n\tk2 = w\n';
+
+          // Act
+          const result = sut(text, 'a', undefined, 'key');
+
+          // Assert
+          expect(result).toBe('[a]\n\tk2 = w\n');
+        });
+      });
+
+      describe('When removeConfigEntry unset-all spans two same-line blocks of the same key', () => {
+        it('Then every same-line block is pruned', () => {
+          // Arrange — each same-line occurrence and its block are removed.
+          const sut = removeConfigEntry;
+          const text = '[a] key = 1\n[a] key = 2\n';
+
+          // Act
+          const result = sut(text, 'a', undefined, 'key');
+
+          // Assert
+          expect(result).toBe('');
+        });
+      });
+
+      describe('When removeConfigEntry unsets a key matched both same-line and below, block surviving', () => {
+        it('Then the header re-emits alone and every matched occurrence is dropped', () => {
+          // Arrange — same-line `key` (shares the header line) plus a body `key`
+          // (does not); a third `k2` protects the block. The shares-header branch
+          // must fire because at least one span sits on the header line.
+          const sut = removeConfigEntry;
+          const text = '[a] key = v\n\tkey = w\n\tk2 = keep\n';
+
+          // Act
+          const result = sut(text, 'a', undefined, 'key');
+
+          // Assert — git: header alone, both `key` lines gone, `k2` kept.
+          expect(result).toBe('[a]\n\tk2 = keep\n');
+        });
+      });
+
+      describe('When removeConfigEntry unsets a same-line key with a continuation tail, block surviving', () => {
+        it('Then the header re-emits alone and the entry continuation tail lines are dropped', () => {
+          // Arrange — the same-line entry spans two physical lines (backslash
+          // continuation); a comment protects the block. The header keeps its
+          // line (rewritten), and the entry's tail lines below it are excluded.
+          const sut = removeConfigEntry;
+          const text = '[a] key = one\\\n  two\n\t# keep\n';
+
+          // Act
+          const result = sut(text, 'a', undefined, 'key');
+
+          // Assert — git: header alone, `key = one\` and its `  two` tail gone, comment kept.
+          expect(result).toBe('[a]\n\t# keep\n');
         });
       });
     });
@@ -2273,7 +2481,7 @@ describe('primitives/update-config', () => {
     describe('Given a deprecated dotted header [s.X] (section="s.X", subsection=undefined)', () => {
       describe('When rawSectionName is called', () => {
         it('Then it returns "s.X" (raw header bytes)', () => {
-          // Arrange — parseSectionHeader parses [s.X] as section="s.X", subsection=undefined
+          // Arrange — the header scan parses [s.X] as section="s.X", subsection=undefined
           const sut = rawSectionName;
 
           // Act
@@ -2448,7 +2656,7 @@ describe('primitives/update-config', () => {
     describe('Given [s     ""] (pre-quote whitespace, whitespace not identity)', () => {
       describe('When removeConfigSectionInText removes "s."', () => {
         it('Then the block is removed (pre-quote whitespace is not part of the raw name)', () => {
-          // Arrange — parseSectionHeader strips pre-quote whitespace; raw name is still s.
+          // Arrange — the header scan strips pre-quote whitespace; raw name is still s.
           const text = '[s     ""]\n\tk = a\n';
           const sut = removeConfigSectionInText;
 
@@ -2464,7 +2672,7 @@ describe('primitives/update-config', () => {
     describe('Given [s "a\\"b"] (escaped quote in subsection)', () => {
       describe("When removeConfigSectionInText removes 's.a\"b'", () => {
         it('Then the block is removed (subsection unescaped before joining)', () => {
-          // Arrange — parseSectionHeader unescapes \\\" → "; rawSectionName joins s + . + a"b
+          // Arrange — the header scan unescapes \\\" → "; rawSectionName joins s + . + a"b
           const text = '[s "a\\"b"]\n\tk = a\n';
           const sut = removeConfigSectionInText;
 
@@ -2803,7 +3011,7 @@ describe('primitives/update-config', () => {
     describe('Given a subsection containing a quote (a"b)', () => {
       describe('When removeConfigSectionInText removes remote.a"b', () => {
         it('Then the subsection is matched by its unescaped raw name and the section is removed', () => {
-          // Arrange — parseSectionHeader unescapes \" → "; rawSectionName joins to
+          // Arrange — the header scan unescapes \" → "; rawSectionName joins to
           // 'remote.a"b'; the raw name 'remote.a"b' matches exactly.
           const text = '[remote "a\\"b"]\n\turl = u\n';
 
@@ -3259,8 +3467,8 @@ describe('primitives/update-config', () => {
 
     describe('Given an indented section header "  [s]"', () => {
       describe('When renameConfigSectionInText renames "s" to { section: "t" }', () => {
-        it('Then the indented header is matched and renamed (trim is applied before parsing)', () => {
-          // Arrange — matchesRawSectionName must trim the line before calling parseSectionHeader
+        it('Then the indented header is matched and renamed (leading gap is skipped before parsing)', () => {
+          // Arrange — the header scan skips the leading gap before recognising the bracket span
           const text = '  [s]\n\tk = a\n';
           const sut = renameConfigSectionInText;
 
@@ -3290,6 +3498,318 @@ describe('primitives/update-config', () => {
 
           // Assert
           expect(result).toBe('[a]\n\tkey = one\\\n[d]\n\te = f\n');
+        });
+      });
+    });
+  });
+
+  describe('renameConfigSectionInText (same-line header blocks)', () => {
+    describe('Given a same-line header+entry block matching the old name', () => {
+      describe('When renameConfigSectionInText renames "a" to { section: "b" }', () => {
+        it('Then the header is split onto its own line and the entry follows on a tab line', () => {
+          // Arrange — git re-emits the new header, then the entry on its own line
+          const text = '[a] key = v\n';
+
+          // Act
+          const sut = renameConfigSectionInText;
+          const result = sut(text, 'a', { section: 'b' });
+
+          // Assert
+          expect(result).toBe('[b]\n\tkey = v\n');
+        });
+      });
+    });
+
+    describe('Given a same-line header with a following body entry', () => {
+      describe('When renameConfigSectionInText renames "a" to { section: "b" }', () => {
+        it('Then the header splits and both the same-line and body entries are preserved', () => {
+          // Arrange
+          const text = '[a] key = v\n\tk2 = w\n';
+
+          // Act
+          const sut = renameConfigSectionInText;
+          const result = sut(text, 'a', { section: 'b' });
+
+          // Assert
+          expect(result).toBe('[b]\n\tkey = v\n\tk2 = w\n');
+        });
+      });
+    });
+
+    describe('Given a same-line valueless entry', () => {
+      describe('When renameConfigSectionInText renames "a" to { section: "b" }', () => {
+        it('Then the valueless entry is preserved verbatim after the split', () => {
+          // Arrange
+          const text = '[a] key\n';
+
+          // Act
+          const sut = renameConfigSectionInText;
+          const result = sut(text, 'a', { section: 'b' });
+
+          // Assert
+          expect(result).toBe('[b]\n\tkey\n');
+        });
+      });
+    });
+
+    describe('Given a header with only trailing spaces after the closing bracket', () => {
+      describe('When renameConfigSectionInText renames "a" to { section: "b" }', () => {
+        it('Then the trailing spaces are dropped and the body is re-emitted from the section', () => {
+          // Arrange — `[a]  ` carries no same-line entry, only trailing GIT_SPACE
+          const text = '[a]  \n\tk = v\n';
+
+          // Act
+          const sut = renameConfigSectionInText;
+          const result = sut(text, 'a', { section: 'b' });
+
+          // Assert
+          expect(result).toBe('[b]\n\tk = v\n');
+        });
+      });
+    });
+
+    describe('Given a same-line entry with a no-space `key=v` tail and extra `]`-to-key gap', () => {
+      describe('When renameConfigSectionInText renames "a" to { section: "b" }', () => {
+        it('Then the entry tail is copied raw and only the `]`-to-key gap normalises', () => {
+          // Arrange — the raw `key=v` is not re-rendered to `key = v`
+          const text = '[a]   key=v\n';
+
+          // Act
+          const sut = renameConfigSectionInText;
+          const result = sut(text, 'a', { section: 'b' });
+
+          // Assert
+          expect(result).toBe('[b]\n\tkey=v\n');
+        });
+      });
+    });
+
+    describe('Given a same-line entry with a trailing comment in its tail', () => {
+      describe('When renameConfigSectionInText renames "a" to { section: "b" }', () => {
+        it('Then the trailing comment is copied raw with the rest of the tail', () => {
+          // Arrange
+          const text = '[a] key = v ; cmt\n';
+
+          // Act
+          const sut = renameConfigSectionInText;
+          const result = sut(text, 'a', { section: 'b' });
+
+          // Assert
+          expect(result).toBe('[b]\n\tkey = v ; cmt\n');
+        });
+      });
+    });
+
+    describe('Given a same-line entry whose value continues onto the next line', () => {
+      describe('When renameConfigSectionInText renames "a" to { section: "b" }', () => {
+        it('Then the continuation tail survives the split verbatim', () => {
+          // Arrange — backslash-newline continuation in the same-line value
+          const text = '[a] key = one\\\n  two\n';
+
+          // Act
+          const sut = renameConfigSectionInText;
+          const result = sut(text, 'a', { section: 'b' });
+
+          // Assert
+          expect(result).toBe('[b]\n\tkey = one\\\n  two\n');
+        });
+      });
+    });
+
+    describe('Given a same-line header that does not match the old name', () => {
+      describe('When renameConfigSectionInText renames "a" to { section: "b" }', () => {
+        it('Then the non-matching same-line block is copied byte-for-byte', () => {
+          // Arrange — only `[a]` is renamed; `[c] k = v` keeps its same-line form
+          const text = '[a] key = v\n[c] k = v\n';
+
+          // Act
+          const sut = renameConfigSectionInText;
+          const result = sut(text, 'a', { section: 'b' });
+
+          // Assert
+          expect(result).toBe('[b]\n\tkey = v\n[c] k = v\n');
+        });
+      });
+    });
+
+    describe('Given a file containing a block with a key the read path would refuse', () => {
+      describe('When renameConfigSectionInText renames a different block', () => {
+        it('Then it succeeds without throwing and copies the bad-key block verbatim', () => {
+          // Arrange — `bad!key` would throw on a tokenizing read; section ops stay lenient
+          const text = '[a]\n\tbad!key = v\n[b]\n\tk = w\n';
+
+          // Act
+          const sut = renameConfigSectionInText;
+          const result = sut(text, 'b', { section: 'c' });
+
+          // Assert
+          expect(result).toBe('[a]\n\tbad!key = v\n[c]\n\tk = w\n');
+        });
+      });
+    });
+
+    describe('Given a file whose matched block itself holds a key the read path would refuse', () => {
+      describe('When renameConfigSectionInText renames the bad-key block', () => {
+        it('Then it succeeds and copies the bad-key body verbatim under the new header', () => {
+          // Arrange
+          const text = '[a]\n\tbad!key = v\n[b]\n\tk = w\n';
+
+          // Act
+          const sut = renameConfigSectionInText;
+          const result = sut(text, 'a', { section: 'c' });
+
+          // Assert
+          expect(result).toBe('[c]\n\tbad!key = v\n[b]\n\tk = w\n');
+        });
+      });
+    });
+  });
+
+  describe('chained section headers on one physical line', () => {
+    describe('Given `[a][b]\\nx=1` with the body keyed on the last section', () => {
+      describe('When setConfigEntryInText sets b.x to v2', () => {
+        it('Then the chained header line is preserved and only the body entry is replaced', () => {
+          // Arrange — the writer keys the block on the last header; the chain
+          // line stays verbatim, the body entry becomes the canonical form.
+          const text = '[a][b]\nx=1\n';
+
+          // Act
+          const sut = setConfigEntryInText;
+          const result = sut(text, 'b', undefined, 'x', 'v2');
+
+          // Assert
+          expect(result).toBe('[a][b]\n\tx = v2\n');
+        });
+      });
+    });
+
+    describe('Given `[a][b]\\nx=1` whose first header is `a`', () => {
+      describe('When renameConfigSectionInText renames "a"', () => {
+        it('Then the chain line keys on `a`, the `[b]` tail is copied raw onto a tab line', () => {
+          // Arrange — recognition keys the line on its FIRST header `a`; the
+          // `[b]` chain is the raw tail re-emitted after the rendered header.
+          const text = '[a][b]\nx=1\n';
+
+          // Act
+          const sut = renameConfigSectionInText;
+          const result = sut(text, 'a', { section: 'c' });
+
+          // Assert
+          expect(result).toBe('[c]\n\t[b]\nx=1\n');
+        });
+      });
+    });
+
+    describe('Given `[a][b]\\nx=1` whose first header is `a`', () => {
+      describe('When removeConfigSectionInText removes "b"', () => {
+        it('Then it is a no-op because the line keys on its first header `a`, not `b`', () => {
+          // Arrange — `b` is not a line-leading header, so it matches nothing.
+          const text = '[a][b]\nx=1\n';
+
+          // Act
+          const sut = removeConfigSectionInText;
+          const result = sut(text, 'b');
+
+          // Assert
+          expect(result).toBe('[a][b]\nx=1\n');
+        });
+      });
+    });
+  });
+
+  describe('removeConfigSectionInText (same-line header blocks)', () => {
+    describe('Given a same-line header block matching the old name', () => {
+      describe('When removeConfigSectionInText removes "a"', () => {
+        it('Then the whole same-line block is removed leaving an empty file', () => {
+          // Arrange
+          const text = '[a] key = v\n';
+
+          // Act
+          const sut = removeConfigSectionInText;
+          const result = sut(text, 'a');
+
+          // Assert
+          expect(result).toBe('');
+        });
+      });
+    });
+
+    describe('Given a same-line block followed by a body and a plain following section', () => {
+      describe('When removeConfigSectionInText removes "a"', () => {
+        it('Then the matched block and body are dropped and the following section is verbatim', () => {
+          // Arrange — `[c]`'s original `k3=x` bytes are preserved (not re-rendered)
+          const text = '[a] key = v\n\tk2=w\n[c]\n\tk3=x\n';
+
+          // Act
+          const sut = removeConfigSectionInText;
+          const result = sut(text, 'a');
+
+          // Assert
+          expect(result).toBe('[c]\n\tk3=x\n');
+        });
+      });
+    });
+
+    describe('Given two same-line blocks where only the first matches', () => {
+      describe('When removeConfigSectionInText removes "a"', () => {
+        it('Then only the matching block is removed and the other keeps its same-line form', () => {
+          // Arrange — `[b] k2 = v2` is kept verbatim, not rewritten to a split form
+          const text = '[a] k1 = v1\n[b] k2 = v2\n';
+
+          // Act
+          const sut = removeConfigSectionInText;
+          const result = sut(text, 'a');
+
+          // Assert
+          expect(result).toBe('[b] k2 = v2\n');
+        });
+      });
+    });
+
+    describe('Given an orphan line above the matched section', () => {
+      describe('When removeConfigSectionInText removes "a"', () => {
+        it('Then the orphan line is preserved and the section is removed', () => {
+          // Arrange — `o = 1` precedes the first header and is outside every block
+          const text = 'o = 1\n[a]\n\tk = v\n';
+
+          // Act
+          const sut = removeConfigSectionInText;
+          const result = sut(text, 'a');
+
+          // Assert
+          expect(result).toBe('o = 1\n');
+        });
+      });
+    });
+
+    describe('Given a file containing a block with a key the read path would refuse', () => {
+      describe('When removeConfigSectionInText removes a different block', () => {
+        it('Then it succeeds without throwing and keeps the bad-key block verbatim', () => {
+          // Arrange
+          const text = '[a]\n\tbad!key = v\n[b]\n\tk = w\n';
+
+          // Act
+          const sut = removeConfigSectionInText;
+          const result = sut(text, 'b');
+
+          // Assert
+          expect(result).toBe('[a]\n\tbad!key = v\n');
+        });
+      });
+    });
+
+    describe('Given a file containing a block with a value the read path would refuse', () => {
+      describe('When removeConfigSectionInText removes a different block', () => {
+        it('Then it succeeds without throwing and keeps the malformed-value block verbatim', () => {
+          // Arrange — `"unclosed` is an unterminated quoted value
+          const text = '[a]\n\tk = "unclosed\n[b]\n\tk = w\n';
+
+          // Act
+          const sut = removeConfigSectionInText;
+          const result = sut(text, 'b');
+
+          // Assert
+          expect(result).toBe('[a]\n\tk = "unclosed\n');
         });
       });
     });

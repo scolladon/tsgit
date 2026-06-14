@@ -17,6 +17,8 @@ import {
   invalidateScopedConfigCache,
   readConfigSections,
 } from '../../../../src/application/primitives/config-scoped-read.js';
+import { qualifyKey } from '../../../../src/application/primitives/internal/config-key.js';
+import { parseConfigKey } from '../../../../src/domain/commands/config-key.js';
 import { TsgitError } from '../../../../src/domain/error.js';
 import type { Context } from '../../../../src/ports/context.js';
 
@@ -710,14 +712,24 @@ describe('primitives/config-read', () => {
 
   describe('Given a section header without closing bracket', () => {
     describe('When readConfig', () => {
-      it('Then the malformed line is ignored', async () => {
-        // Arrange
+      it('Then it refuses with CONFIG_PARSE_ERROR on line 1 like git', async () => {
+        // Arrange — `[core` has no closing `]`; git refuses the whole file
+        // (bad config line 1) rather than skipping the malformed header.
         const ctx = createMemoryContext();
         await seed(ctx, '[core\n  bare = true\n[user]\n  name = X\n  email = x@y.com\n');
-        const sut = await readConfig(ctx);
-        // Assert
-        expect(sut.core?.bare).toBeUndefined();
-        expect(sut.user?.name).toBe('X');
+
+        // Act + Assert
+        try {
+          await readConfig(ctx);
+          expect.unreachable('readConfig must refuse an unclosed section header');
+        } catch (err) {
+          if (!(err instanceof TsgitError)) throw err;
+          expect(err.data.code).toBe('CONFIG_PARSE_ERROR');
+          if (err.data.code === 'CONFIG_PARSE_ERROR') {
+            expect(err.data.line).toBe(1);
+            expect(err.data.source).toBe(`${ctx.layout.gitDir}/config`);
+          }
+        }
       });
     });
   });
@@ -918,32 +930,44 @@ describe('primitives/config-read', () => {
 
   describe('Given a header starting with `[` but missing `]`', () => {
     describe('When readConfig', () => {
-      it('Then it is rejected', async () => {
-        // Arrange — `[core.` starts with `[`; only the missing `]` should reject it.
+      it('Then it refuses with CONFIG_PARSE_ERROR on line 1 like git', async () => {
+        // Arrange — `[core.` starts with `[` but never closes; git refuses it.
         const ctx = createMemoryContext();
         await seed(ctx, '[core.\n  bare = true\n');
 
-        // Act
-        const sut = await readConfig(ctx);
-
-        // Assert
-        expect(sut.core).toBeUndefined();
+        // Act + Assert
+        try {
+          await readConfig(ctx);
+          expect.unreachable('readConfig must refuse a header missing its `]`');
+        } catch (err) {
+          if (!(err instanceof TsgitError)) throw err;
+          expect(err.data.code).toBe('CONFIG_PARSE_ERROR');
+          if (err.data.code === 'CONFIG_PARSE_ERROR') {
+            expect(err.data.line).toBe(1);
+          }
+        }
       });
     });
   });
 
   describe('Given a header with neither bracket where one is required', () => {
     describe('When readConfig', () => {
-      it('Then it is rejected (both brackets needed)', async () => {
-        // Arrange — `[core)` has `[` but `)` not `]`; the `||` guard must reject it.
+      it('Then it refuses with CONFIG_PARSE_ERROR on line 1 like git', async () => {
+        // Arrange — `[core)` has `[` but `)` not `]`, so it never closes; git refuses.
         const ctx = createMemoryContext();
         await seed(ctx, '[core)\n  bare = true\n');
 
-        // Act
-        const sut = await readConfig(ctx);
-
-        // Assert
-        expect(sut.core).toBeUndefined();
+        // Act + Assert
+        try {
+          await readConfig(ctx);
+          expect.unreachable('readConfig must refuse a header with no closing bracket');
+        } catch (err) {
+          if (!(err instanceof TsgitError)) throw err;
+          expect(err.data.code).toBe('CONFIG_PARSE_ERROR');
+          if (err.data.code === 'CONFIG_PARSE_ERROR') {
+            expect(err.data.line).toBe(1);
+          }
+        }
       });
     });
   });
@@ -1231,18 +1255,24 @@ describe('primitives/config-read', () => {
 
   describe('Given a section header with whitespace inside the brackets (`[ core ]`)', () => {
     describe('When readConfig', () => {
-      it('Then the inner name is trimmed and the section is recognized', async () => {
-        // Arrange — `slice(1, -1)` yields ` core `; only the `.trim()` makes it
-        // equal `core`. Dropping `.trim()` leaves the section named ` core `,
-        // which assembleParsed never matches, so `bare` would be lost.
+      it('Then it refuses with CONFIG_PARSE_ERROR on line 1 like git (no trim-accept)', async () => {
+        // Arrange — git's unquoted section grammar is `[A-Za-z0-9.-]+` with no
+        // whitespace; `[ core ]` is not trimmed to `core` but refused outright.
         const ctx = createMemoryContext();
         await seed(ctx, '[ core ]\n  bare = true\n');
 
-        // Act
-        const sut = await readConfig(ctx);
-
-        // Assert
-        expect(sut.core?.bare).toBe(true);
+        // Act + Assert
+        try {
+          await readConfig(ctx);
+          expect.unreachable('readConfig must refuse a whitespace-bearing header');
+        } catch (err) {
+          if (!(err instanceof TsgitError)) throw err;
+          expect(err.data.code).toBe('CONFIG_PARSE_ERROR');
+          if (err.data.code === 'CONFIG_PARSE_ERROR') {
+            expect(err.data.line).toBe(1);
+            expect(err.data.source).toBe(`${ctx.layout.gitDir}/config`);
+          }
+        }
       });
     });
   });
@@ -3009,7 +3039,7 @@ describe('primitives/config-read valueless keys', () => {
 
   describe('parseIniSections — leniency preserved', () => {
     describe('Given a valid valueless key before any section (orphan), When parseIniSections', () => {
-      it('Then no entry produced and no throw (orphan key has no section and is dropped)', () => {
+      it('Then the orphan records under the empty section ahead of the named section', () => {
         // Arrange
         const sut = parseIniSections;
 
@@ -3018,24 +3048,32 @@ describe('primitives/config-read valueless keys', () => {
 
         // Assert
         expect(result).toEqual([
+          { section: '', subsection: undefined, entries: [{ key: 'key', value: null }] },
           { section: 'a', subsection: undefined, entries: [{ key: 'v', value: 'ok' }] },
         ]);
       });
     });
 
-    describe('Given [a] key on the header line (line-wise unparseable), When parseIniSections', () => {
-      it('Then skipped and no throw (line-wise vs char-wise known divergence)', () => {
-        // Arrange — `[a] key` is not-header; it starts with `[` so it gets the
-        // lenient skip. A proper `[a]` header precedes it so we can verify that a
-        // following valued entry still lands correctly.
+    describe('Given `[a] key` on a header line followed by a body entry, When parseIniSections', () => {
+      it('Then the header opens a section and the same-line valueless key joins the body entry', () => {
+        // Arrange — `[a] key` is a header `[a]` plus a same-line valueless entry;
+        // the following `v = ok` lands in the same re-opened section.
         const sut = parseIniSections;
 
         // Act
         const result = sut('[a]\n[a] key\n\tv = ok\n');
 
-        // Assert — `[a] key` is dropped but the section stays open; `v` is recorded.
+        // Assert — first `[a]` is empty; the second carries the same-line key and `v`.
         expect(result).toEqual([
-          { section: 'a', subsection: undefined, entries: [{ key: 'v', value: 'ok' }] },
+          { section: 'a', subsection: undefined, entries: [] },
+          {
+            section: 'a',
+            subsection: undefined,
+            entries: [
+              { key: 'key', value: null },
+              { key: 'v', value: 'ok' },
+            ],
+          },
         ]);
       });
     });
@@ -3385,19 +3423,23 @@ describe('primitives/config-read tokenizeConfig', () => {
     });
   });
 
-  describe('Given a lenient not-header body line starting with [, When tokenizeConfig', () => {
-    it('Then the not-header body line is classified as a comment token', () => {
-      // Arrange
+  describe('Given a not-header body line starting with [ (`[half`), When tokenizeConfig', () => {
+    it('Then it refuses with CONFIG_PARSE_ERROR on its physical line like git', () => {
+      // Arrange — `[half` is not a valid header and has no key char at column 0,
+      // so git refuses it (bad config line 2); the parser must not skip it.
       const sut = tokenizeConfig;
 
-      // Act
-      const result = sut('[a]\n\t[half\n');
-
-      // Assert
-      expect(result).toEqual<ReadonlyArray<ConfigToken>>([
-        { kind: 'header', section: 'a', subsection: undefined, line: 0, hasComment: false },
-        { kind: 'comment', line: 1 },
-      ]);
+      // Act + Assert
+      try {
+        sut('[a]\n\t[half\n');
+        expect.unreachable('tokenizeConfig must refuse a bracket-shaped non-header line');
+      } catch (err) {
+        if (!(err instanceof TsgitError)) throw err;
+        expect(err.data.code).toBe('CONFIG_PARSE_ERROR');
+        if (err.data.code === 'CONFIG_PARSE_ERROR') {
+          expect(err.data.line).toBe(2);
+        }
+      }
     });
   });
 
@@ -3417,30 +3459,28 @@ describe('primitives/config-read tokenizeConfig', () => {
     });
   });
 
-  describe('Given an empty-key entry, When tokenizeConfig', () => {
-    it('Then the entry token has an empty key and parseIniSections yields no entries for the section', () => {
+  describe('Given a line whose key is missing (`\\t= v`), When tokenizeConfig', () => {
+    it('Then it refuses with CONFIG_PARSE_ERROR on its physical line (no key char before `=`)', () => {
       // Arrange
       const sut = tokenizeConfig;
       const input = '[a]\n\t= v\n';
 
-      // Act
-      const tokens = sut(input);
-      const sections = parseIniSections(input);
-
-      // Assert — tokenizer emits the entry (every physical line classified)
-      expect(tokens).toEqual<ReadonlyArray<ConfigToken>>([
-        { kind: 'header', section: 'a', subsection: undefined, line: 0, hasComment: false },
-        { kind: 'entry', key: '', value: 'v', startLine: 1, endLine: 2 },
-      ]);
-      // fold parity: empty key is not pushed into section entries
-      expect(sections).toEqual<ReadonlyArray<IniSection>>([
-        { section: 'a', subsection: undefined, entries: [] },
-      ]);
+      // Act + Assert — the key scanner requires an alpha first char
+      try {
+        sut(input);
+        expect.unreachable('tokenizeConfig must refuse a line with no key');
+      } catch (err) {
+        if (!(err instanceof TsgitError)) throw err;
+        expect(err.data.code).toBe('CONFIG_PARSE_ERROR');
+        if (err.data.code === 'CONFIG_PARSE_ERROR') {
+          expect(err.data.line).toBe(2);
+        }
+      }
     });
   });
 
   describe('Given an orphan entry before any header, When tokenizeConfig', () => {
-    it('Then the orphan entry token precedes the header token and parseIniSections yields only the header section', () => {
+    it('Then the orphan entry token precedes the header token and parseIniSections records the orphan section', () => {
       // Arrange
       const sut = tokenizeConfig;
       const input = 'key = v\n[a]\n';
@@ -3454,8 +3494,9 @@ describe('primitives/config-read tokenizeConfig', () => {
         { kind: 'entry', key: 'key', value: 'v', startLine: 0, endLine: 1 },
         { kind: 'header', section: 'a', subsection: undefined, line: 1, hasComment: false },
       ]);
-      // fold parity: orphan entry (no current section) is not included
+      // fold parity: the orphan entry records under the empty section, ahead of [a]
       expect(sections).toEqual<ReadonlyArray<IniSection>>([
+        { section: '', subsection: undefined, entries: [{ key: 'key', value: 'v' }] },
         { section: 'a', subsection: undefined, entries: [] },
       ]);
     });
@@ -3804,6 +3845,1059 @@ describe('Given a config with valueless/valued entries', () => {
 
       // Assert
       expect(result).toBeUndefined();
+    });
+  });
+});
+
+describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
+  const headerToken = (
+    section: string,
+    subsection: string | undefined,
+    line: number,
+  ): ConfigToken => ({ kind: 'header', section, subsection, line, hasComment: false });
+
+  const assertParseConfigRefuses = (input: string, line: number): void => {
+    try {
+      parseIniSections(input, 'test.cfg');
+      expect.unreachable(`must throw CONFIG_PARSE_ERROR on line ${line}`);
+    } catch (err) {
+      if (!(err instanceof TsgitError)) throw err;
+      expect(err.data.code).toBe('CONFIG_PARSE_ERROR');
+      if (err.data.code === 'CONFIG_PARSE_ERROR') {
+        expect(err.data.line).toBe(line);
+        expect(err.data.source).toBe('test.cfg');
+      }
+    }
+  };
+
+  describe('header and entry on the same physical line', () => {
+    describe('Given `[a] key = v`, When tokenizeConfig', () => {
+      it('Then a header token is followed by a shared-line entry token and the section records a.key = v', () => {
+        // Arrange
+        const sut = tokenizeConfig;
+
+        // Act
+        const tokens = sut('[a] key = v\n');
+        const sections = parseIniSections('[a] key = v\n');
+
+        // Assert
+        expect(tokens).toEqual<ReadonlyArray<ConfigToken>>([
+          headerToken('a', undefined, 0),
+          {
+            kind: 'entry',
+            key: 'key',
+            value: 'v',
+            startLine: 0,
+            endLine: 1,
+            sharesHeaderLine: true,
+            startCol: 4,
+          },
+        ]);
+        expect(sections).toEqual<ReadonlyArray<IniSection>>([
+          { section: 'a', subsection: undefined, entries: [{ key: 'key', value: 'v' }] },
+        ]);
+      });
+    });
+
+    describe('Given `[a] key` (valueless same-line), When tokenizeConfig', () => {
+      it('Then a shared-line valueless entry token follows the header', () => {
+        // Arrange
+        const sut = tokenizeConfig;
+
+        // Act
+        const tokens = sut('[a] key\n');
+        const sections = parseIniSections('[a] key\n');
+
+        // Assert
+        expect(tokens).toEqual<ReadonlyArray<ConfigToken>>([
+          headerToken('a', undefined, 0),
+          {
+            kind: 'entry',
+            key: 'key',
+            value: null,
+            startLine: 0,
+            endLine: 1,
+            sharesHeaderLine: true,
+            startCol: 4,
+          },
+        ]);
+        expect(sections).toEqual<ReadonlyArray<IniSection>>([
+          { section: 'a', subsection: undefined, entries: [{ key: 'key', value: null }] },
+        ]);
+      });
+    });
+
+    describe('Given `[a]key=v` (no gap after the bracket), When tokenizeConfig', () => {
+      it('Then the shared-line entry starts right after the bracket and records a.key = v', () => {
+        // Arrange
+        const sut = tokenizeConfig;
+
+        // Act
+        const tokens = sut('[a]key=v\n');
+        const sections = parseIniSections('[a]key=v\n');
+
+        // Assert
+        expect(tokens).toEqual<ReadonlyArray<ConfigToken>>([
+          headerToken('a', undefined, 0),
+          {
+            kind: 'entry',
+            key: 'key',
+            value: 'v',
+            startLine: 0,
+            endLine: 1,
+            sharesHeaderLine: true,
+            startCol: 3,
+          },
+        ]);
+        expect(sections).toEqual<ReadonlyArray<IniSection>>([
+          { section: 'a', subsection: undefined, entries: [{ key: 'key', value: 'v' }] },
+        ]);
+      });
+    });
+
+    describe('Given `[a]\\tkey = v` (TAB gap after the bracket), When parseIniSections', () => {
+      it('Then a.key = v is recorded', () => {
+        // Arrange
+        const sut = parseIniSections;
+
+        // Act
+        const result = sut('[a]\tkey = v\n');
+
+        // Assert
+        expect(result).toEqual<ReadonlyArray<IniSection>>([
+          { section: 'a', subsection: undefined, entries: [{ key: 'key', value: 'v' }] },
+        ]);
+      });
+    });
+
+    describe('Given `[a "s"] key = v` (subsectioned header + same-line entry), When tokenizeConfig', () => {
+      it('Then the shared-line entry starts past the closing quote+bracket and records a.s.key = v', () => {
+        // Arrange
+        const sut = tokenizeConfig;
+
+        // Act
+        const tokens = sut('[a "s"] key = v\n');
+        const sections = parseIniSections('[a "s"] key = v\n');
+
+        // Assert
+        expect(tokens).toEqual<ReadonlyArray<ConfigToken>>([
+          headerToken('a', 's', 0),
+          {
+            kind: 'entry',
+            key: 'key',
+            value: 'v',
+            startLine: 0,
+            endLine: 1,
+            sharesHeaderLine: true,
+            startCol: 8,
+          },
+        ]);
+        expect(sections).toEqual<ReadonlyArray<IniSection>>([
+          { section: 'a', subsection: 's', entries: [{ key: 'key', value: 'v' }] },
+        ]);
+      });
+    });
+
+    describe('Given `[a]key` (no gap, valueless), When parseIniSections', () => {
+      it('Then a.key valueless is recorded', () => {
+        // Arrange
+        const sut = parseIniSections;
+
+        // Act
+        const result = sut('[a]key\n');
+
+        // Assert
+        expect(result).toEqual<ReadonlyArray<IniSection>>([
+          { section: 'a', subsection: undefined, entries: [{ key: 'key', value: null }] },
+        ]);
+      });
+    });
+
+    describe('Given `[a] key=` (empty value), When parseIniSections', () => {
+      it('Then a.key records the empty string distinct from valueless', () => {
+        // Arrange
+        const sut = parseIniSections;
+
+        // Act
+        const result = sut('[a] key=\n');
+
+        // Assert
+        expect(result).toEqual<ReadonlyArray<IniSection>>([
+          { section: 'a', subsection: undefined, entries: [{ key: 'key', value: '' }] },
+        ]);
+      });
+    });
+
+    describe('Given `[a] key = v\\n\\tk2 = v2` (same-line entry then a following entry), When parseIniSections', () => {
+      it('Then both a.key = v and a.k2 = v2 are recorded', () => {
+        // Arrange
+        const sut = parseIniSections;
+
+        // Act
+        const result = sut('[a] key = v\n\tk2 = v2\n');
+
+        // Assert
+        expect(result).toEqual<ReadonlyArray<IniSection>>([
+          {
+            section: 'a',
+            subsection: undefined,
+            entries: [
+              { key: 'key', value: 'v' },
+              { key: 'k2', value: 'v2' },
+            ],
+          },
+        ]);
+      });
+    });
+
+    describe('Given `[a] key = a=b` (first `=` splits, rest is value), When parseIniSections', () => {
+      it('Then a.key records the value a=b', () => {
+        // Arrange
+        const sut = parseIniSections;
+
+        // Act
+        const result = sut('[a] key = a=b\n');
+
+        // Assert
+        expect(result).toEqual<ReadonlyArray<IniSection>>([
+          { section: 'a', subsection: undefined, entries: [{ key: 'key', value: 'a=b' }] },
+        ]);
+      });
+    });
+
+    describe('Given `[a]  key  =  v` (surrounding spaces), When parseIniSections', () => {
+      it('Then a.key = v is recorded with the value trimmed', () => {
+        // Arrange
+        const sut = parseIniSections;
+
+        // Act
+        const result = sut('[a]  key  =  v\n');
+
+        // Assert
+        expect(result).toEqual<ReadonlyArray<IniSection>>([
+          { section: 'a', subsection: undefined, entries: [{ key: 'key', value: 'v' }] },
+        ]);
+      });
+    });
+
+    describe('Given `[a] key = one\\\\\\n  two` (same-line continuation), When tokenizeConfig', () => {
+      it('Then the shared-line entry spans onto the next physical line with value one␣␣two', () => {
+        // Arrange
+        const sut = tokenizeConfig;
+        const input = '[a] key = one\\\n  two\n';
+
+        // Act
+        const tokens = sut(input);
+        const sections = parseIniSections(input);
+
+        // Assert — endLine crosses the physical line boundary
+        expect(tokens).toEqual<ReadonlyArray<ConfigToken>>([
+          headerToken('a', undefined, 0),
+          {
+            kind: 'entry',
+            key: 'key',
+            value: 'one  two',
+            startLine: 0,
+            endLine: 2,
+            sharesHeaderLine: true,
+            startCol: 4,
+          },
+        ]);
+        expect(sections).toEqual<ReadonlyArray<IniSection>>([
+          { section: 'a', subsection: undefined, entries: [{ key: 'key', value: 'one  two' }] },
+        ]);
+      });
+    });
+
+    describe('Given `[a] key = v\\r` (CRLF line), When parseIniSections', () => {
+      it('Then a.key = v is recorded ignoring the trailing CR', () => {
+        // Arrange
+        const sut = parseIniSections;
+
+        // Act
+        const result = sut('[a] key = v\r\n');
+
+        // Assert
+        expect(result).toEqual<ReadonlyArray<IniSection>>([
+          { section: 'a', subsection: undefined, entries: [{ key: 'key', value: 'v' }] },
+        ]);
+      });
+    });
+
+    describe('Given `[a] # c` (same-line comment after header), When tokenizeConfig', () => {
+      it('Then only the header token is emitted with no entry', () => {
+        // Arrange
+        const sut = tokenizeConfig;
+
+        // Act
+        const tokens = sut('[a] # c\n');
+        const sections = parseIniSections('[a] # c\n');
+
+        // Assert
+        expect(tokens).toEqual<ReadonlyArray<ConfigToken>>([
+          { kind: 'header', section: 'a', subsection: undefined, line: 0, hasComment: true },
+        ]);
+        expect(sections).toEqual<ReadonlyArray<IniSection>>([
+          { section: 'a', subsection: undefined, entries: [] },
+        ]);
+      });
+    });
+
+    describe('Given `[a] ; c` (same-line semicolon comment), When tokenizeConfig', () => {
+      it('Then only the header token is emitted with no entry', () => {
+        // Arrange
+        const sut = tokenizeConfig;
+
+        // Act
+        const result = sut('[a] ; c\n');
+
+        // Assert
+        expect(result).toEqual<ReadonlyArray<ConfigToken>>([
+          { kind: 'header', section: 'a', subsection: undefined, line: 0, hasComment: true },
+        ]);
+      });
+    });
+  });
+
+  describe('chained section headers on one physical line', () => {
+    describe('Given `[a][b]\\nx=1` (chain then body entry), When tokenizeConfig', () => {
+      it('Then two header tokens at line 0 precede the body entry recorded under the last section', () => {
+        // Arrange
+        const sut = tokenizeConfig;
+        const input = '[a][b]\nx=1\n';
+
+        // Act
+        const tokens = sut(input);
+        const sections = parseIniSections(input);
+
+        // Assert
+        expect(tokens).toEqual<ReadonlyArray<ConfigToken>>([
+          headerToken('a', undefined, 0),
+          headerToken('b', undefined, 0),
+          { kind: 'entry', key: 'x', value: '1', startLine: 1, endLine: 2 },
+        ]);
+        expect(sections).toEqual<ReadonlyArray<IniSection>>([
+          { section: 'a', subsection: undefined, entries: [] },
+          { section: 'b', subsection: undefined, entries: [{ key: 'x', value: '1' }] },
+        ]);
+      });
+    });
+
+    describe('Given `[a][b]k=1` (chain then same-line entry, no gap), When tokenizeConfig', () => {
+      it('Then the same-line entry shares the last header line and records b.k = 1', () => {
+        // Arrange
+        const sut = tokenizeConfig;
+        const input = '[a][b]k=1\n';
+
+        // Act
+        const tokens = sut(input);
+        const sections = parseIniSections(input);
+
+        // Assert
+        expect(tokens).toEqual<ReadonlyArray<ConfigToken>>([
+          headerToken('a', undefined, 0),
+          headerToken('b', undefined, 0),
+          {
+            kind: 'entry',
+            key: 'k',
+            value: '1',
+            startLine: 0,
+            endLine: 1,
+            sharesHeaderLine: true,
+            startCol: 6,
+          },
+        ]);
+        expect(sections).toEqual<ReadonlyArray<IniSection>>([
+          { section: 'a', subsection: undefined, entries: [] },
+          { section: 'b', subsection: undefined, entries: [{ key: 'k', value: '1' }] },
+        ]);
+      });
+    });
+
+    describe('Given `[a] [b] k=1` (chain with gaps then same-line entry), When parseIniSections', () => {
+      it('Then b.k = 1 is recorded under the last section', () => {
+        // Arrange
+        const sut = parseIniSections;
+
+        // Act
+        const result = sut('[a] [b] k=1\n');
+
+        // Assert
+        expect(result).toEqual<ReadonlyArray<IniSection>>([
+          { section: 'a', subsection: undefined, entries: [] },
+          { section: 'b', subsection: undefined, entries: [{ key: 'k', value: '1' }] },
+        ]);
+      });
+    });
+
+    describe('Given `[a][b][c] k=1` (three-header chain then same-line entry), When tokenizeConfig', () => {
+      it('Then three header tokens at line 0 precede the entry recorded under the last section', () => {
+        // Arrange
+        const sut = tokenizeConfig;
+        const input = '[a][b][c] k=1\n';
+
+        // Act
+        const tokens = sut(input);
+        const sections = parseIniSections(input);
+
+        // Assert
+        expect(tokens).toEqual<ReadonlyArray<ConfigToken>>([
+          headerToken('a', undefined, 0),
+          headerToken('b', undefined, 0),
+          headerToken('c', undefined, 0),
+          {
+            kind: 'entry',
+            key: 'k',
+            value: '1',
+            startLine: 0,
+            endLine: 1,
+            sharesHeaderLine: true,
+            startCol: 10,
+          },
+        ]);
+        expect(sections).toEqual<ReadonlyArray<IniSection>>([
+          { section: 'a', subsection: undefined, entries: [] },
+          { section: 'b', subsection: undefined, entries: [] },
+          { section: 'c', subsection: undefined, entries: [{ key: 'k', value: '1' }] },
+        ]);
+      });
+    });
+
+    describe('Given `[a]\\n[b][c]\\nk=1` (header, then a chain on its own line, then a body entry), When parseIniSections', () => {
+      it('Then the body entry records under the last chained section', () => {
+        // Arrange
+        const sut = parseIniSections;
+
+        // Act
+        const result = sut('[a]\n[b][c]\nk=1\n');
+
+        // Assert
+        expect(result).toEqual<ReadonlyArray<IniSection>>([
+          { section: 'a', subsection: undefined, entries: [] },
+          { section: 'b', subsection: undefined, entries: [] },
+          { section: 'c', subsection: undefined, entries: [{ key: 'k', value: '1' }] },
+        ]);
+      });
+    });
+
+    describe('Given `[a][b "s"] k=1` (plain header chained to a subsectioned header), When tokenizeConfig', () => {
+      it('Then the entry records under the subsectioned last section b.s.k = 1', () => {
+        // Arrange
+        const sut = tokenizeConfig;
+        const input = '[a][b "s"] k=1\n';
+
+        // Act
+        const tokens = sut(input);
+        const sections = parseIniSections(input);
+
+        // Assert
+        expect(tokens).toEqual<ReadonlyArray<ConfigToken>>([
+          headerToken('a', undefined, 0),
+          headerToken('b', 's', 0),
+          {
+            kind: 'entry',
+            key: 'k',
+            value: '1',
+            startLine: 0,
+            endLine: 1,
+            sharesHeaderLine: true,
+            startCol: 11,
+          },
+        ]);
+        expect(sections).toEqual<ReadonlyArray<IniSection>>([
+          { section: 'a', subsection: undefined, entries: [] },
+          { section: 'b', subsection: 's', entries: [{ key: 'k', value: '1' }] },
+        ]);
+      });
+    });
+
+    describe('Given `[a "s"][b] k=1` (subsectioned header chained to a plain header), When parseIniSections', () => {
+      it('Then the entry records under the plain last section b.k = 1', () => {
+        // Arrange
+        const sut = parseIniSections;
+
+        // Act
+        const result = sut('[a "s"][b] k=1\n');
+
+        // Assert
+        expect(result).toEqual<ReadonlyArray<IniSection>>([
+          { section: 'a', subsection: 's', entries: [] },
+          { section: 'b', subsection: undefined, entries: [{ key: 'k', value: '1' }] },
+        ]);
+      });
+    });
+
+    describe('Given `[a][b]` (chain with no entry), When tokenizeConfig', () => {
+      it('Then both headers are emitted as empty sections with no entry', () => {
+        // Arrange
+        const sut = tokenizeConfig;
+        const input = '[a][b]\n';
+
+        // Act
+        const tokens = sut(input);
+        const sections = parseIniSections(input);
+
+        // Assert
+        expect(tokens).toEqual<ReadonlyArray<ConfigToken>>([
+          headerToken('a', undefined, 0),
+          headerToken('b', undefined, 0),
+        ]);
+        expect(sections).toEqual<ReadonlyArray<IniSection>>([
+          { section: 'a', subsection: undefined, entries: [] },
+          { section: 'b', subsection: undefined, entries: [] },
+        ]);
+      });
+    });
+
+    describe('Given `[a][b] # c` (chain then a same-line comment), When tokenizeConfig', () => {
+      it('Then both headers are emitted, the last carrying the comment flag, with no entry', () => {
+        // Arrange
+        const sut = tokenizeConfig;
+
+        // Act
+        const result = sut('[a][b] # c\n');
+
+        // Assert
+        expect(result).toEqual<ReadonlyArray<ConfigToken>>([
+          { kind: 'header', section: 'a', subsection: undefined, line: 0, hasComment: false },
+          { kind: 'header', section: 'b', subsection: undefined, line: 0, hasComment: true },
+        ]);
+      });
+    });
+
+    describe('Given `[a][b` (a valid header chained to an unclosed second span), When parseIniSections', () => {
+      it('Then CONFIG_PARSE_ERROR carries line 1', () => {
+        // Arrange + Act + Assert
+        assertParseConfigRefuses('[a][b\n', 1);
+      });
+    });
+
+    describe('Given `[a][]` (a valid header chained to an empty second span), When parseIniSections', () => {
+      it('Then CONFIG_PARSE_ERROR carries line 1', () => {
+        // Arrange + Act + Assert
+        assertParseConfigRefuses('[a][]\n', 1);
+      });
+    });
+
+    describe('Given `[a][ b]` (a valid header chained to an interior-whitespace second span), When parseIniSections', () => {
+      it('Then CONFIG_PARSE_ERROR carries line 1', () => {
+        // Arrange + Act + Assert
+        assertParseConfigRefuses('[a][ b]\n', 1);
+      });
+    });
+  });
+
+  describe('the unified key grammar refuses what git refuses', () => {
+    describe('Given `[a] bad!key = v` (exclamation in same-line key), When parseIniSections', () => {
+      it('Then CONFIG_PARSE_ERROR carries line 1', () => {
+        // Arrange + Act + Assert
+        assertParseConfigRefuses('[a] bad!key = v\n', 1);
+      });
+    });
+
+    describe('Given `[a] foo bar = v` (space inside same-line key), When parseIniSections', () => {
+      it('Then CONFIG_PARSE_ERROR carries line 1', () => {
+        // Arrange + Act + Assert
+        assertParseConfigRefuses('[a] foo bar = v\n', 1);
+      });
+    });
+
+    describe('Given `[a] foo.dot = v` (dot in same-line key), When parseIniSections', () => {
+      it('Then CONFIG_PARSE_ERROR carries line 1', () => {
+        // Arrange + Act + Assert
+        assertParseConfigRefuses('[a] foo.dot = v\n', 1);
+      });
+    });
+
+    describe('Given `\\tbad!key = v` under a header (exclamation), When parseIniSections', () => {
+      it('Then CONFIG_PARSE_ERROR carries line 2', () => {
+        // Arrange + Act + Assert
+        assertParseConfigRefuses('[a]\n\tbad!key = v\n', 2);
+      });
+    });
+
+    describe('Given `\\tunder_score = v` under a header (underscore), When parseIniSections', () => {
+      it('Then CONFIG_PARSE_ERROR carries line 2', () => {
+        // Arrange + Act + Assert
+        assertParseConfigRefuses('[a]\n\tunder_score = v\n', 2);
+      });
+    });
+
+    describe('Given `\\t9key = v` under a header (digit-first), When parseIniSections', () => {
+      it('Then CONFIG_PARSE_ERROR carries line 2', () => {
+        // Arrange + Act + Assert
+        assertParseConfigRefuses('[a]\n\t9key = v\n', 2);
+      });
+    });
+
+    describe('Given `\\t-key = v` under a header (dash-first), When parseIniSections', () => {
+      it('Then CONFIG_PARSE_ERROR carries line 2', () => {
+        // Arrange + Act + Assert
+        assertParseConfigRefuses('[a]\n\t-key = v\n', 2);
+      });
+    });
+
+    describe('Given `\\tkey.dot = v` under a header (dot in key), When parseIniSections', () => {
+      it('Then CONFIG_PARSE_ERROR carries line 2', () => {
+        // Arrange + Act + Assert
+        assertParseConfigRefuses('[a]\n\tkey.dot = v\n', 2);
+      });
+    });
+
+    describe('Given `\\tkey@at = v` under a header (at in key), When parseIniSections', () => {
+      it('Then CONFIG_PARSE_ERROR carries line 2', () => {
+        // Arrange + Act + Assert
+        assertParseConfigRefuses('[a]\n\tkey@at = v\n', 2);
+      });
+    });
+
+    describe('Given `\\tkey x = v` under a header (space then non-`=`), When parseIniSections', () => {
+      it('Then CONFIG_PARSE_ERROR carries line 2', () => {
+        // Arrange + Act + Assert
+        assertParseConfigRefuses('[a]\n\tkey x = v\n', 2);
+      });
+    });
+  });
+
+  describe('the unquoted section-name grammar accepts what git accepts', () => {
+    describe('Given `[1a]` (digit-first section, unlike keys), When parseIniSections', () => {
+      it('Then the section records as 1a', () => {
+        // Arrange
+        const sut = parseIniSections;
+
+        // Act
+        const result = sut('[1a]\nk=1\n');
+
+        // Assert
+        expect(result).toEqual<ReadonlyArray<IniSection>>([
+          { section: '1a', subsection: undefined, entries: [{ key: 'k', value: '1' }] },
+        ]);
+      });
+    });
+
+    describe('Given `[a.b]` (dot in section), When parseIniSections', () => {
+      it('Then the section records as a.b', () => {
+        // Arrange
+        const sut = parseIniSections;
+
+        // Act
+        const result = sut('[a.b]\nk=1\n');
+
+        // Assert
+        expect(result).toEqual<ReadonlyArray<IniSection>>([
+          { section: 'a.b', subsection: undefined, entries: [{ key: 'k', value: '1' }] },
+        ]);
+      });
+    });
+
+    describe('Given `[a-b]` (dash in section), When parseIniSections', () => {
+      it('Then the section records as a-b', () => {
+        // Arrange
+        const sut = parseIniSections;
+
+        // Act
+        const result = sut('[a-b]\nk=1\n');
+
+        // Assert
+        expect(result).toEqual<ReadonlyArray<IniSection>>([
+          { section: 'a-b', subsection: undefined, entries: [{ key: 'k', value: '1' }] },
+        ]);
+      });
+    });
+
+    describe('Given `[a] ` (trailing space after the bracket), When parseIniSections', () => {
+      it('Then the section records as a with the trailing gap ignored', () => {
+        // Arrange — a gap after `]` is fine; only whitespace INSIDE the brackets refuses
+        const sut = parseIniSections;
+
+        // Act
+        const result = sut('[a] \nk=1\n');
+
+        // Assert
+        expect(result).toEqual<ReadonlyArray<IniSection>>([
+          { section: 'a', subsection: undefined, entries: [{ key: 'k', value: '1' }] },
+        ]);
+      });
+    });
+  });
+
+  describe('the unquoted section-name grammar refuses what git refuses', () => {
+    describe('Given `[a ]` (whitespace before the close), When parseIniSections', () => {
+      it('Then CONFIG_PARSE_ERROR carries line 1', () => {
+        // Arrange + Act + Assert
+        assertParseConfigRefuses('[a ]\nk=1\n', 1);
+      });
+    });
+
+    describe('Given `[ a]` (whitespace after the open), When parseIniSections', () => {
+      it('Then CONFIG_PARSE_ERROR carries line 1', () => {
+        // Arrange + Act + Assert
+        assertParseConfigRefuses('[ a]\nk=1\n', 1);
+      });
+    });
+
+    describe('Given `[a b]` (interior whitespace), When parseIniSections', () => {
+      it('Then CONFIG_PARSE_ERROR carries line 1', () => {
+        // Arrange + Act + Assert
+        assertParseConfigRefuses('[a b]\nk=1\n', 1);
+      });
+    });
+
+    describe('Given `[ core ]` (padded section name), When parseIniSections', () => {
+      it('Then CONFIG_PARSE_ERROR carries line 1', () => {
+        // Arrange + Act + Assert
+        assertParseConfigRefuses('[ core ]\nk=1\n', 1);
+      });
+    });
+
+    describe('Given `[a_b]` (underscore in section, outside the grammar), When parseIniSections', () => {
+      it('Then CONFIG_PARSE_ERROR carries line 1', () => {
+        // Arrange + Act + Assert
+        assertParseConfigRefuses('[a_b]\nk=1\n', 1);
+      });
+    });
+  });
+
+  describe('the unified key grammar accepts what git accepts', () => {
+    describe('Given `\\tk = v` under a header, When parseIniSections', () => {
+      it('Then a.k = v is recorded', () => {
+        // Arrange
+        const sut = parseIniSections;
+
+        // Act
+        const result = sut('[a]\n\tk = v\n');
+
+        // Assert
+        expect(result).toEqual<ReadonlyArray<IniSection>>([
+          { section: 'a', subsection: undefined, entries: [{ key: 'k', value: 'v' }] },
+        ]);
+      });
+    });
+
+    describe('Given `\\tk   = v` under a header (spaces before `=`), When parseIniSections', () => {
+      it('Then a.k = v is recorded', () => {
+        // Arrange
+        const sut = parseIniSections;
+
+        // Act
+        const result = sut('[a]\n\tk   = v\n');
+
+        // Assert
+        expect(result).toEqual<ReadonlyArray<IniSection>>([
+          { section: 'a', subsection: undefined, entries: [{ key: 'k', value: 'v' }] },
+        ]);
+      });
+    });
+
+    describe('Given `\\tk\\t= v` under a header (TAB before `=`), When parseIniSections', () => {
+      it('Then a.k = v is recorded', () => {
+        // Arrange
+        const sut = parseIniSections;
+
+        // Act
+        const result = sut('[a]\n\tk\t= v\n');
+
+        // Assert
+        expect(result).toEqual<ReadonlyArray<IniSection>>([
+          { section: 'a', subsection: undefined, entries: [{ key: 'k', value: 'v' }] },
+        ]);
+      });
+    });
+
+    describe('Given `\\tkey   ` under a header (trailing spaces, no `=`), When parseIniSections', () => {
+      it('Then a.key valueless is recorded', () => {
+        // Arrange
+        const sut = parseIniSections;
+
+        // Act
+        const result = sut('[a]\n\tkey   \n');
+
+        // Assert
+        expect(result).toEqual<ReadonlyArray<IniSection>>([
+          { section: 'a', subsection: undefined, entries: [{ key: 'key', value: null }] },
+        ]);
+      });
+    });
+  });
+
+  describe('orphan (sectionless) keys', () => {
+    describe('Given `orphan = v` before any header, When parseIniSections', () => {
+      it('Then it records under the empty section with no subsection', () => {
+        // Arrange
+        const sut = parseIniSections;
+
+        // Act
+        const result = sut('orphan = v\n');
+
+        // Assert
+        expect(result).toEqual<ReadonlyArray<IniSection>>([
+          { section: '', subsection: undefined, entries: [{ key: 'orphan', value: 'v' }] },
+        ]);
+      });
+    });
+
+    describe('Given `orphan` (valueless) before any header, When parseIniSections', () => {
+      it('Then it records valueless under the empty section', () => {
+        // Arrange
+        const sut = parseIniSections;
+
+        // Act
+        const result = sut('orphan\n');
+
+        // Assert
+        expect(result).toEqual<ReadonlyArray<IniSection>>([
+          { section: '', subsection: undefined, entries: [{ key: 'orphan', value: null }] },
+        ]);
+      });
+    });
+
+    describe('Given `orphan = v\\n[a]\\n\\tk = w` (orphan then a section), When parseIniSections', () => {
+      it('Then the orphan section precedes the named section', () => {
+        // Arrange
+        const sut = parseIniSections;
+
+        // Act
+        const result = sut('orphan = v\n[a]\n\tk = w\n');
+
+        // Assert
+        expect(result).toEqual<ReadonlyArray<IniSection>>([
+          { section: '', subsection: undefined, entries: [{ key: 'orphan', value: 'v' }] },
+          { section: 'a', subsection: undefined, entries: [{ key: 'k', value: 'w' }] },
+        ]);
+      });
+    });
+
+    describe('Given a header-only file, When parseIniSections', () => {
+      it('Then no empty orphan section is emitted', () => {
+        // Arrange
+        const sut = parseIniSections;
+
+        // Act
+        const result = sut('[a]\n\tk = v\n');
+
+        // Assert
+        expect(result).toEqual<ReadonlyArray<IniSection>>([
+          { section: 'a', subsection: undefined, entries: [{ key: 'k', value: 'v' }] },
+        ]);
+      });
+    });
+
+    describe('Given `bad!orphan = v` before any header, When parseIniSections', () => {
+      it('Then CONFIG_PARSE_ERROR carries line 1', () => {
+        // Arrange + Act + Assert
+        assertParseConfigRefuses('bad!orphan = v\n', 1);
+      });
+    });
+
+    describe('Given `9orphan = v` before any header, When parseIniSections', () => {
+      it('Then CONFIG_PARSE_ERROR carries line 1', () => {
+        // Arrange + Act + Assert
+        assertParseConfigRefuses('9orphan = v\n', 1);
+      });
+    });
+
+    describe('Given the three empty-section identities, When qualifyKey', () => {
+      it('Then an orphan (undefined subsection) renders the bare key with no dot', () => {
+        // Arrange
+        const sut = qualifyKey;
+
+        // Act
+        const result = sut({ section: '', subsection: undefined, entries: [] }, 'Key');
+
+        // Assert
+        expect(result).toBe('key');
+      });
+
+      it('Then an empty section with an empty subsection renders both dots before the key', () => {
+        // Arrange
+        const sut = qualifyKey;
+
+        // Act
+        const result = sut({ section: '', subsection: '', entries: [] }, 'Key');
+
+        // Assert
+        expect(result).toBe('..key');
+      });
+
+      it('Then a named empty-section subsection renders .subsection.key', () => {
+        // Arrange
+        const sut = qualifyKey;
+
+        // Act
+        const result = sut({ section: '', subsection: 'x', entries: [] }, 'Key');
+
+        // Assert
+        expect(result).toBe('.x.key');
+      });
+    });
+
+    describe('Given the orphan key `orphan`, When parseConfigKey', () => {
+      it('Then it is unaddressable — CONFIG_KEY_INVALID with reason missing-name', () => {
+        // Arrange
+        const sut = parseConfigKey;
+
+        // Act + Assert
+        try {
+          sut('orphan');
+          expect.unreachable('orphan key must be unaddressable');
+        } catch (err) {
+          if (!(err instanceof TsgitError)) throw err;
+          expect(err.data.code).toBe('CONFIG_KEY_INVALID');
+          if (err.data.code === 'CONFIG_KEY_INVALID') {
+            expect(err.data.reason).toBe('missing-name');
+          }
+        }
+      });
+    });
+  });
+
+  describe('mid-key and comment preservation forms', () => {
+    describe('Given `\\tab#cd = x` under a header (hash inside the key), When parseIniSections', () => {
+      it('Then CONFIG_PARSE_ERROR carries line 2', () => {
+        // Arrange + Act + Assert
+        assertParseConfigRefuses('[a]\n\tab#cd = x\n', 2);
+      });
+    });
+
+    describe('Given `\\tab;cd = x` under a header (semicolon inside the key), When parseIniSections', () => {
+      it('Then CONFIG_PARSE_ERROR carries line 2', () => {
+        // Arrange + Act + Assert
+        assertParseConfigRefuses('[a]\n\tab;cd = x\n', 2);
+      });
+    });
+
+    describe('Given `\\tab # cd = x` under a header (space-hash inside the key), When parseIniSections', () => {
+      it('Then CONFIG_PARSE_ERROR carries line 2', () => {
+        // Arrange + Act + Assert
+        assertParseConfigRefuses('[a]\n\tab # cd = x\n', 2);
+      });
+    });
+
+    describe('Given `\\tkey#=v` under a header (hash before the `=`), When parseIniSections', () => {
+      it('Then CONFIG_PARSE_ERROR carries line 2', () => {
+        // Arrange + Act + Assert
+        assertParseConfigRefuses('[a]\n\tkey#=v\n', 2);
+      });
+    });
+
+    describe('Given `\\t#whole = line` under a header (whole-line comment), When tokenizeConfig', () => {
+      it('Then it is a comment token and no entry records', () => {
+        // Arrange
+        const sut = tokenizeConfig;
+
+        // Act
+        const tokens = sut('[a]\n\t#whole = line\n');
+        const sections = parseIniSections('[a]\n\t#whole = line\n');
+
+        // Assert
+        expect(tokens).toEqual<ReadonlyArray<ConfigToken>>([
+          headerToken('a', undefined, 0),
+          { kind: 'comment', line: 1 },
+        ]);
+        expect(sections).toEqual<ReadonlyArray<IniSection>>([
+          { section: 'a', subsection: undefined, entries: [] },
+        ]);
+      });
+    });
+
+    describe('Given `\\tk = v # trailing` under a header (value-side comment), When parseIniSections', () => {
+      it('Then a.k = v is recorded with the comment dropped', () => {
+        // Arrange
+        const sut = parseIniSections;
+
+        // Act
+        const result = sut('[a]\n\tk = v # trailing\n');
+
+        // Assert
+        expect(result).toEqual<ReadonlyArray<IniSection>>([
+          { section: 'a', subsection: undefined, entries: [{ key: 'k', value: 'v' }] },
+        ]);
+      });
+    });
+  });
+
+  describe('key-scanner guard isolation', () => {
+    describe('Given a first character that is not a letter, When parseIniSections', () => {
+      it('Then the digit-first key alone refuses on its physical line', () => {
+        // Arrange + Act + Assert — isolates the first-char-alpha guard
+        assertParseConfigRefuses('[a]\n\t1 = v\n', 2);
+      });
+    });
+
+    describe('Given a key followed by spaces then `=` (`k   =`), When parseIniSections', () => {
+      it('Then the space run is skipped and a.k = v is recorded', () => {
+        // Arrange — isolates the post-key space skip on the `=` branch
+        const sut = parseIniSections;
+
+        // Act
+        const result = sut('[a]\n\tk   = v\n');
+
+        // Assert
+        expect(result).toEqual<ReadonlyArray<IniSection>>([
+          { section: 'a', subsection: undefined, entries: [{ key: 'k', value: 'v' }] },
+        ]);
+      });
+    });
+
+    describe('Given a key followed by a TAB then `=` (`k\\t=`), When parseIniSections', () => {
+      it('Then the TAB is skipped and a.k = v is recorded', () => {
+        // Arrange — isolates the post-key TAB skip on the `=` branch
+        const sut = parseIniSections;
+
+        // Act
+        const result = sut('[a]\n\tk\t= v\n');
+
+        // Assert
+        expect(result).toEqual<ReadonlyArray<IniSection>>([
+          { section: 'a', subsection: undefined, entries: [{ key: 'k', value: 'v' }] },
+        ]);
+      });
+    });
+
+    describe('Given the post-key terminator branches, When parseIniSections', () => {
+      it('Then a bare EOL records a valueless entry', () => {
+        // Arrange — isolates the EOL branch
+        const sut = parseIniSections;
+
+        // Act
+        const result = sut('[a]\n\tk\n');
+
+        // Assert
+        expect(result).toEqual<ReadonlyArray<IniSection>>([
+          { section: 'a', subsection: undefined, entries: [{ key: 'k', value: null }] },
+        ]);
+      });
+
+      it('Then a CR-at-EOL records a valueless entry', () => {
+        // Arrange — isolates the CR-at-EOL branch
+        const sut = parseIniSections;
+
+        // Act
+        const result = sut('[a]\n\tk\r\n');
+
+        // Assert
+        expect(result).toEqual<ReadonlyArray<IniSection>>([
+          { section: 'a', subsection: undefined, entries: [{ key: 'k', value: null }] },
+        ]);
+      });
+
+      it('Then an `=` records a valued entry', () => {
+        // Arrange — isolates the `=` branch
+        const sut = parseIniSections;
+
+        // Act
+        const result = sut('[a]\n\tk = v\n');
+
+        // Assert
+        expect(result).toEqual<ReadonlyArray<IniSection>>([
+          { section: 'a', subsection: undefined, entries: [{ key: 'k', value: 'v' }] },
+        ]);
+      });
+
+      it('Then any other char after the key refuses', () => {
+        // Arrange + Act + Assert — isolates the catch-all parse-error branch
+        assertParseConfigRefuses('[a]\n\tk: v\n', 2);
+      });
     });
   });
 });

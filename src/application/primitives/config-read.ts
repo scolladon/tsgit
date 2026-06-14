@@ -190,6 +190,14 @@ export type ConfigToken =
       readonly startLine: number;
       /** Exclusive — `parseConfigValue`'s `nextLineIdx`; `startLine + 1` for single-line entries. */
       readonly endLine: number;
+      /**
+       * Present when the entry shares the header's physical line (`[a] key = v`).
+       * The header still owns the bytes before `startCol`; the writer re-emits the
+       * header onto its own line before this entry when it rewrites the shared line.
+       */
+      readonly sharesHeaderLine?: true;
+      /** Column where a shared-header-line entry begins (just past the header skip). */
+      readonly startCol?: number;
     }
   | { readonly kind: 'comment'; readonly line: number }
   | { readonly kind: 'blank'; readonly line: number };
@@ -199,44 +207,66 @@ const parseConfigText = (text: string, source: string): ParsedConfig => {
   return assembleParsed(sections);
 };
 
-/**
- * Key grammar for a valueless (no `=`) body line, anchored to the full raw line.
- * Accepts optional leading whitespace, an alpha-first alnum+dash key, optional
- * trailing space/TAB, and an optional CR (CRLF files). Anything else is refused
- * with `CONFIG_PARSE_ERROR`, mirroring git's `bad config line N in file F`.
- */
-const VALUELESS_KEY_RE = /^[ \t\r]*([a-zA-Z][a-zA-Z0-9-]*)[ \t]*\r?$/;
+/** One scanned key: its name, its value (`null` when valueless), and the line after it. */
+interface ScannedKey {
+  readonly key: string;
+  readonly value: string | null;
+  readonly nextLineIdx: number;
+}
+
+/** A key character: the first must be a letter, the rest letters/digits/dash. */
+const isKeyHead = (c: string): boolean => (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
+const isKeyTail = (c: string): boolean => isKeyHead(c) || (c >= '0' && c <= '9') || c === '-';
+
+/** Space and TAB only — the run git skips between a key and its `=` or EOL (no CR). */
+const isKeyGap = (c: string): boolean => c === ' ' || c === '\t';
 
 /**
- * Classify a single physical line that has no effective `=` into a `ConfigToken`.
- * Lines whose stripped form starts with `[` get the lenient comment classification.
- * Otherwise the valueless-key grammar is checked: match → entry token with null value;
- * no match → throw `CONFIG_PARSE_ERROR`.
+ * git's one key scanner, shared by the `=` and no-`=` paths. From column `start`
+ * on `lines[lineIdx]`: the first char must be a letter, then letters/digits/dash
+ * run into the key, then space/TAB is skipped. End of line (or a trailing CR)
+ * yields a valueless entry (`value: null`); an `=` hands the rest to the value
+ * grammar; anything else — including a mid-key `#`/`;` — refuses the whole file
+ * with `CONFIG_PARSE_ERROR`, mirroring git's `bad config line N`.
  */
-const classifyValuelessLine = (
-  line: string,
-  trimmed: string,
+const scanKey = (
+  lines: ReadonlyArray<string>,
   lineIdx: number,
+  start: number,
   source: string | undefined,
-): ConfigToken => {
-  if (trimmed.startsWith('[')) return { kind: 'comment', line: lineIdx };
-  const match = VALUELESS_KEY_RE.exec(line);
-  if (match === null) throw configParseError(lineIdx + 1, source);
-  return {
-    kind: 'entry',
-    key: match[1] as string,
-    value: null,
-    startLine: lineIdx,
-    endLine: lineIdx + 1,
-  };
+): ScannedKey => {
+  const line = lines[lineIdx] as string;
+  if (start >= line.length || !isKeyHead(line[start] as string)) {
+    throw configParseError(lineIdx + 1, source);
+  }
+  let col = start + 1;
+  while (col < line.length && isKeyTail(line[col] as string)) col += 1;
+  const key = line.slice(start, col);
+  while (col < line.length && isKeyGap(line[col] as string)) col += 1;
+  const valueless: ScannedKey = { key, value: null, nextLineIdx: lineIdx + 1 };
+  if (col >= line.length) return valueless;
+  const c = line[col] as string;
+  if (c === '\r' && col === line.length - 1) return valueless;
+  if (c !== '=') throw configParseError(lineIdx + 1, source);
+  const parsed = parseConfigValue(lines, lineIdx, col + 1, source);
+  return { key, value: parsed.value, nextLineIdx: parsed.nextLineIdx };
+};
+
+/** Index of the first non-space/TAB character at or after `start`, or the line length. */
+const firstNonGap = (line: string, start: number): number => {
+  let col = start;
+  while (col < line.length && isKeyGap(line[col] as string)) col += 1;
+  return col;
 };
 
 /**
  * Produce a flat token stream of physical-line classifications for git-config text.
- * Each `ConfigToken` carries the physical line index (0-based) or span it occupies.
- * The stream is the writer's surgery unit — every physical line maps to exactly one token.
- * Degenerate case: empty text (`''`) yields one `blank` token at line 0, because
- * `''.split('\n')` produces a single empty line; consumers that skip blanks see `[]`.
+ * The scan is char-wise like git's: a header may be followed on the same line by
+ * an entry, so one physical line can yield a `header` token plus a same-line
+ * `entry` token (marked `sharesHeaderLine`). The stream is the writer's surgery
+ * unit. Degenerate case: empty text (`''`) yields one `blank` token at line 0,
+ * because `''.split('\n')` produces a single empty line; consumers that skip
+ * blanks see `[]`.
  *
  * Terminator handling: when `text` ends with `\n`, the final empty element from
  * `split('\n')` is the file terminator and emits no token. Continuation values may
@@ -262,49 +292,130 @@ export const tokenizeConfigLines = (
   const limit = endsWithNewline ? lines.length - 1 : lines.length;
   let lineIdx = 0;
   while (lineIdx < limit) {
-    const line = lines[lineIdx] as string;
-    const stripped = stripInlineComment(line);
-    const trimmed = stripped.trim();
-    if (trimmed === '') {
-      tokens.push(
-        line.trim() === '' ? { kind: 'blank', line: lineIdx } : { kind: 'comment', line: lineIdx },
-      );
-      lineIdx += 1;
-      continue;
-    }
-    const header = parseSectionHeader(trimmed);
-    if (header.kind === 'header') {
-      tokens.push({
-        kind: 'header',
-        section: header.section,
-        subsection: header.subsection,
-        line: lineIdx,
-        hasComment: stripped !== line,
-      });
-      lineIdx += 1;
-      continue;
-    }
-    if (header.kind === 'malformed') {
-      throw configParseError(lineIdx + 1, source, header.partialName);
-    }
-    const eqAt = effectiveEqualsIndex(line);
-    if (eqAt === -1) {
-      tokens.push(classifyValuelessLine(line, trimmed, lineIdx, source));
-      lineIdx += 1;
-      continue;
-    }
-    const key = line.slice(0, eqAt).trim();
-    const parsed = parseConfigValue(lines, lineIdx, eqAt + 1, source);
-    tokens.push({
-      kind: 'entry',
-      key,
-      value: parsed.value,
-      startLine: lineIdx,
-      endLine: parsed.nextLineIdx,
-    });
-    lineIdx = parsed.nextLineIdx;
+    lineIdx = tokenizeLine(tokens, lines, lineIdx, source);
   }
   return tokens;
+};
+
+/** Tokenize one physical line, pushing its token(s) and returning the next line index. */
+const tokenizeLine = (
+  tokens: ConfigToken[],
+  lines: ReadonlyArray<string>,
+  lineIdx: number,
+  source: string | undefined,
+): number => {
+  const line = lines[lineIdx] as string;
+  const trimmed = stripInlineComment(line).trim();
+  if (trimmed === '') {
+    tokens.push(
+      line.trim() === '' ? { kind: 'blank', line: lineIdx } : { kind: 'comment', line: lineIdx },
+    );
+    return lineIdx + 1;
+  }
+  const header = scanHeaderPrefix(line);
+  if (header.parse.kind === 'header') {
+    return emitHeaderLine(tokens, lines, lineIdx, header, source);
+  }
+  if (header.parse.kind === 'malformed') {
+    throw configParseError(lineIdx + 1, source, header.parse.partialName);
+  }
+  // Not a header and not a comment: scan it as a key line. A bracket-shaped line
+  // that is not a valid header (`[ core ]`, `[a b]`, `[half`) has no key character
+  // at its first column, so `scanKey` refuses it — exactly as git does.
+  return emitBodyEntry(tokens, lines, lineIdx, source);
+};
+
+/** Scan a whole-line entry from its first non-space column. */
+const emitBodyEntry = (
+  tokens: ConfigToken[],
+  lines: ReadonlyArray<string>,
+  lineIdx: number,
+  source: string | undefined,
+): number => {
+  const start = firstNonGap(lines[lineIdx] as string, 0);
+  const scanned = scanKey(lines, lineIdx, start, source);
+  tokens.push({
+    kind: 'entry',
+    key: scanned.key,
+    value: scanned.value,
+    startLine: lineIdx,
+    endLine: scanned.nextLineIdx,
+  });
+  return scanned.nextLineIdx;
+};
+
+/**
+ * Push the header token(s) on this physical line, then scan its remainder.
+ * git lets headers chain on one line (`[a][b]`): each `]`-closed bracket span
+ * after GIT_SPACE that opens with `[` is another header, and the content after
+ * the chain — same-line entry, `#`/`;` comment, or nothing — lands under the
+ * LAST header (it is the open section when the body is read). A same-line entry
+ * keeps its `sharesHeaderLine`/`startCol` marker relative to that last header.
+ * Cost stays linear: a single integer cursor advances over the line, scanning
+ * each bracket span in place from its offset — no per-span substring copy and
+ * no re-scan from the line start, so a chain of K headers is O(line length).
+ */
+const emitHeaderLine = (
+  tokens: ConfigToken[],
+  lines: ReadonlyArray<string>,
+  lineIdx: number,
+  header: HeaderPrefixScan,
+  source: string | undefined,
+): number => {
+  const line = lines[lineIdx] as string;
+  let current = header;
+  let contentStart = skipGitSpace(line, current.endOffset);
+  while (line[contentStart] === '[') {
+    pushHeaderToken(tokens, current, lineIdx, false);
+    current = scanHeaderPrefix(line, contentStart);
+    if (current.parse.kind !== 'header') {
+      throw configParseError(lineIdx + 1, source, malformedPartialName(current.parse));
+    }
+    contentStart = skipGitSpace(line, current.endOffset);
+  }
+  const next = line[contentStart];
+  const hasComment = next === '#' || next === ';';
+  pushHeaderToken(tokens, current, lineIdx, hasComment);
+  if (contentStart >= line.length || hasComment) return lineIdx + 1;
+  const scanned = scanKey(lines, lineIdx, contentStart, source);
+  tokens.push({
+    kind: 'entry',
+    key: scanned.key,
+    value: scanned.value,
+    startLine: lineIdx,
+    endLine: scanned.nextLineIdx,
+    sharesHeaderLine: true,
+    startCol: contentStart,
+  });
+  return scanned.nextLineIdx;
+};
+
+/** Push one header token from a recognised header scan onto the stream. */
+const pushHeaderToken = (
+  tokens: ConfigToken[],
+  header: HeaderPrefixScan,
+  lineIdx: number,
+  hasComment: boolean,
+): void => {
+  const parse = header.parse as Extract<SectionHeaderParse, { kind: 'header' }>;
+  tokens.push({
+    kind: 'header',
+    section: parse.section,
+    subsection: parse.subsection,
+    line: lineIdx,
+    hasComment,
+  });
+};
+
+/** Partial name carried by a malformed parse, for the refusal message. */
+const malformedPartialName = (parse: SectionHeaderParse): string | undefined =>
+  parse.kind === 'malformed' ? parse.partialName : undefined;
+
+/** Index of the first non-GIT_SPACE character at or after `start` (space/TAB/CR skipped). */
+export const skipGitSpace = (line: string, start: number): number => {
+  let col = start;
+  while (col < line.length && GIT_SPACE.has(line[col] as string)) col += 1;
+  return col;
 };
 
 /**
@@ -318,42 +429,29 @@ export const tokenizeConfigLines = (
  * refusal. A malformed quoted-subsection header (e.g. `[s"a"]`, `[s "a" x]`,
  * unclosed quote) also throws `CONFIG_PARSE_ERROR` with `partialSectionName`.
  *
- * Lines with no effective `=` are treated as valueless keys: `key` (no `=`)
- * pushes `{ key, value: null }` into the current section. The valueless grammar
- * is `^[ \t\r]*([a-zA-Z][a-zA-Z0-9-]*)[ \t]*\r?$`; anything that fails it
- * (e.g. `key ; c`, `bad!key`, `9key`) throws `CONFIG_PARSE_ERROR`. Lines whose
- * first non-space character is `[` (a `not-header` result from
- * `parseSectionHeader`) keep the existing lenient skip.
+ * Keys before the first header are recorded under an implicit orphan section
+ * (`section: ''`, `subsection: undefined`), so they surface on the token stream
+ * and porcelain `--list`, mirroring git, which dumps them with no section prefix
+ * but refuses to address them. The orphan section is emitted only when it
+ * gathered an entry — a header-only file yields no leading empty section.
+ *
+ * A line with no `=` records a valueless key (`value: null`); the key grammar
+ * (alpha-first, `[a-zA-Z0-9-]`, then space/TAB and `=`-or-EOL) refuses anything
+ * else — `bad!key`, `9key`, a mid-key `#`/`;` — with `CONFIG_PARSE_ERROR`.
  */
 export const parseIniSections = (text: string, source?: string): ReadonlyArray<IniSection> => {
   const sections: SectionBuilder[] = [];
-  let current: SectionBuilder | undefined;
+  const orphan: SectionBuilder = { section: '', subsection: undefined, entries: [] };
+  let current: SectionBuilder = orphan;
   for (const token of tokenizeConfig(text, source)) {
     if (token.kind === 'header') {
       current = { section: token.section, subsection: token.subsection, entries: [] };
       sections.push(current);
-    } else if (token.kind === 'entry' && current !== undefined && token.key !== '') {
+    } else if (token.kind === 'entry') {
       current.entries.push({ key: token.key, value: token.value });
     }
   }
-  return sections;
-};
-
-/**
- * Index of the `=` that introduces a value, or `-1` when the line carries no
- * key/value: no `=` at all, or an unquoted comment starts before the `=`
- * (the comment swallows it, e.g. `ab#cd = x`).
- */
-const effectiveEqualsIndex = (line: string): number => {
-  const eqAt = line.indexOf('=');
-  if (eqAt === -1) return -1;
-  const hashAt = indexOfUnquoted(line, '#');
-  const semiAt = indexOfUnquoted(line, ';');
-  const cuts = [hashAt, semiAt].filter((n) => n >= 0);
-  // equivalent-mutant: `<=` is observably equivalent — a cut index holds `#`
-  // or `;` while `eqAt` holds `=`, so the two indices can never be equal.
-  if (cuts.length > 0 && Math.min(...cuts) < eqAt) return -1;
-  return eqAt;
+  return orphan.entries.length > 0 ? [orphan, ...sections] : sections;
 };
 
 /** Escape sequences git's value grammar accepts; anything else is a parse error. */
@@ -531,76 +629,189 @@ export type SectionHeaderParse =
   | { readonly kind: 'not-header' };
 
 /**
- * Parse a trimmed `[section]` / `[section "subsection"]` header line.
- * Returns a three-state discriminated union: `header` on success, `malformed`
- * when the `[…]` shape is present but the quoted-subsection grammar is
- * violated (git refuses the file), or `not-header` when the line is not
- * `[…]`-shaped at all (lenient skip, like git for unquoted malformations).
- *
- * For quoted subsections the scan is performed over `line.slice(1)` (everything
- * after the opening `[`) so that unclosed spans accumulate raw trailing chars
- * including any `]` that would otherwise be treated as the header terminator —
- * matching git's partial-name diagnostic.
+ * Scan the quoted-subsection branch of a `[section "subsection"]` header.
+ * `contentStart` is the absolute index just past `[`; `quoteAt` the absolute
+ * index of the opening `"`. The section name is the span between them.
  */
-export const parseSectionHeader = (line: string): SectionHeaderParse => {
-  if (!line.startsWith('[')) return { kind: 'not-header' };
-  const afterOpen = line.slice(1);
-  const quoteAt = afterOpen.indexOf('"');
-  if (quoteAt === -1) {
-    if (!line.endsWith(']')) return { kind: 'not-header' };
-    const inner = afterOpen.slice(0, -1).trim();
-    // Stryker disable next-line ConditionalExpression,StringLiteral: equivalent — an empty `inner` yields a section named '' which assembleParsed never matches, so rejecting it or returning a '' section produces the same parsed config.
-    if (inner === '') return { kind: 'not-header' };
-    return { kind: 'header', section: inner, subsection: undefined };
+const parseQuotedSubsectionHeader = (
+  line: string,
+  contentStart: number,
+  quoteAt: number,
+): QuotedHeaderScan => {
+  const section = line.slice(contentStart, quoteAt).trim();
+  const sectionPart = section.toLowerCase();
+  // A quote that opens the header content (no char between `[` and `"`) has no
+  // separating whitespace, which the guard below treats as git's refusal.
+  // equivalent-mutant: at quoteAt === contentStart, line[quoteAt-1] is the opening `[`, never GIT_SPACE, so `>`/`>=`/`true` all reach the same `!GIT_SPACE` refusal below.
+  const charBeforeQuote = quoteAt > contentStart ? line[quoteAt - 1] : undefined;
+  if (charBeforeQuote === undefined || !GIT_SPACE.has(charBeforeQuote)) {
+    return { parse: { kind: 'malformed', partialName: sectionPart } };
   }
-  return parseQuotedSubsectionHeader(afterOpen, quoteAt);
+  return scanQuotedSpan(line, quoteAt, section, sectionPart);
 };
 
-/** Handle the quoted-subsection branch of `parseSectionHeader`. */
-const parseQuotedSubsectionHeader = (afterOpen: string, quoteAt: number): SectionHeaderParse => {
-  const section = afterOpen.slice(0, quoteAt).trim();
-  const sectionPart = section.toLowerCase();
-  // `afterOpen[-1]` is `undefined` when the quote opens the header content,
-  // which the guard below treats as missing whitespace — exactly git's refusal.
-  const charBeforeQuote = afterOpen[quoteAt - 1];
-  if (charBeforeQuote === undefined || !GIT_SPACE.has(charBeforeQuote)) {
-    return { kind: 'malformed', partialName: sectionPart };
-  }
-  return scanQuotedSpan(afterOpen, quoteAt, section, sectionPart);
-};
+/** A closed quoted subsection: its decoded text and the index of the closing `"`. */
+interface ClosedSubsection {
+  readonly subsection: string;
+  readonly closeQuoteAt: number;
+}
 
 /**
- * Scan the quoted subsection span starting at `openAt` (the index of `"`).
- * On success, the closing `"` must be immediately followed by `]` (end of
- * `afterOpen`). Otherwise produces a `malformed` result with the partial name.
+ * Decode the quoted subsection starting at absolute `openAt` (the opening `"`)
+ * in `line`, honouring `\`-escapes. Returns the decoded text and the absolute
+ * closing `"` index, or the partial text on an unclosed/dangling span (so the
+ * caller can build a `malformed` name).
  */
-const scanQuotedSpan = (
-  afterOpen: string,
+const decodeSubsection = (
+  line: string,
   openAt: number,
-  section: string,
-  sectionPart: string,
-): SectionHeaderParse => {
+): ClosedSubsection | { readonly partial: string } => {
   let subsection = '';
   let i = openAt + 1;
-  while (i < afterOpen.length) {
-    const c = afterOpen[i] as string;
+  while (i < line.length) {
+    const c = line[i] as string;
     if (c === '\\') {
-      if (i + 1 >= afterOpen.length) {
-        return { kind: 'malformed', partialName: `${sectionPart}.${subsection}` };
-      }
-      subsection += afterOpen[i + 1] as string;
+      if (i + 1 >= line.length) return { partial: subsection };
+      subsection += line[i + 1] as string;
       i += 2;
       continue;
     }
-    if (c === '"') {
-      const rest = afterOpen.slice(i + 1);
-      if (rest === ']') return { kind: 'header', section, subsection };
-      return { kind: 'malformed', partialName: `${sectionPart}.${subsection}` };
-    }
+    if (c === '"') return { subsection, closeQuoteAt: i };
     subsection += c;
     i += 1;
   }
-  return { kind: 'malformed', partialName: `${sectionPart}.${subsection}` };
+  return { partial: subsection };
+};
+
+/**
+ * A quoted-header scan: the three-state parse plus, on success, the index of the
+ * closing `"` so the raw-line scanner can derive the bracket end-offset from the
+ * single identity decode rather than decoding the span a second time.
+ */
+interface QuotedHeaderScan {
+  readonly parse: SectionHeaderParse;
+  readonly closeQuoteAt?: number;
+}
+
+/**
+ * Scan the quoted subsection span starting at absolute `openAt` (the index of
+ * `"` in `line`). On success, the closing `"` must be immediately followed by
+ * `]` — the last char on a trimmed line, or the bracket terminator before
+ * same-line entry content on a raw line. Otherwise produces a `malformed` result.
+ */
+const scanQuotedSpan = (
+  line: string,
+  openAt: number,
+  section: string,
+  sectionPart: string,
+): QuotedHeaderScan => {
+  const decoded = decodeSubsection(line, openAt);
+  if ('partial' in decoded) {
+    return { parse: { kind: 'malformed', partialName: `${sectionPart}.${decoded.partial}` } };
+  }
+  if (line.startsWith(']', decoded.closeQuoteAt + 1)) {
+    return {
+      parse: { kind: 'header', section, subsection: decoded.subsection },
+      closeQuoteAt: decoded.closeQuoteAt,
+    };
+  }
+  return { parse: { kind: 'malformed', partialName: `${sectionPart}.${decoded.subsection}` } };
+};
+
+/**
+ * A recognised header over a raw line plus `endOffset`: the column just past the
+ * `]` that closes the bracket span. Same-line entry content (`[a] key = v`)
+ * begins after `endOffset`; the writer slices the raw header bytes by it.
+ */
+export interface HeaderPrefixScan {
+  readonly parse: SectionHeaderParse;
+  readonly endOffset: number;
+}
+
+/**
+ * Scan a header at offset `start` of a raw (untrimmed) line. It stops at the `]`
+ * that closes the bracket span, so a same-line entry — or another chained header
+ * — may follow it. `endOffset` is the absolute column just past that `]`, in the
+ * original line. A char at `start` that is not `[` (after a leading-space skip),
+ * or a malformed unquoted bracket span, reports `not-header` (the tokenizer keeps
+ * its lenient skip); a malformed quoted subsection reports `malformed`. Scanning
+ * from an offset (rather than a fresh slice) keeps a chain of headers linear in
+ * the line length: the cursor advances over the line, never re-copying the tail.
+ */
+export const scanHeaderPrefix = (line: string, start = 0): HeaderPrefixScan => {
+  const open = firstNonGap(line, start);
+  if (line[open] !== '[') return NOT_HEADER_SCAN;
+  const contentStart = open + 1;
+  // The first `]` bounds the span; the `"` lookup only matters before it, so a
+  // chain of quote-free `[a][b]...` headers never re-scans to end-of-line.
+  const closeAt = line.indexOf(']', contentStart);
+  const quoteAt = quoteBefore(line, contentStart, closeAt);
+  if (quoteAt === -1) {
+    return scanPlainHeaderPrefix(line, contentStart, closeAt);
+  }
+  return scanQuotedHeaderPrefix(line, contentStart, quoteAt);
+};
+
+/**
+ * Absolute index of the first `"` in `[from, closeAt)`, or -1 when none. A quote
+ * at or after the span's closing `]` is content of a later span, not this header's
+ * subsection opener, so the search is bounded to the span: a chain of quote-free
+ * `[a][b]...` headers never re-scans to end-of-line. With no closing `]` (an
+ * unclosed span) the search runs to end-of-line — that line terminates anyway.
+ */
+const quoteBefore = (line: string, from: number, closeAt: number): number => {
+  const limit = closeAt === -1 ? line.length : closeAt;
+  for (let col = from; col < limit; col += 1) {
+    if (line[col] === '"') return col;
+  }
+  return -1;
+};
+
+const NOT_HEADER_SCAN: HeaderPrefixScan = { parse: { kind: 'not-header' }, endOffset: 0 };
+
+/**
+ * git's unquoted section-name grammar: one or more of letter/digit/dot/dash,
+ * with no whitespace, underscore, or other punctuation. Digit-first is allowed
+ * for sections (unlike keys). A name outside this set makes the line not a
+ * header, so it falls to the key path and refuses exactly as git does.
+ */
+const PLAIN_SECTION_NAME = /^[A-Za-z0-9.-]+$/;
+
+/**
+ * Plain `[section]` prefix: the section name is the exact (untrimmed) span from
+ * `contentStart` (just past `[`) up to the closing `]` at absolute `closeAt`,
+ * accepted only when it matches git's unquoted grammar. Interior or edge
+ * whitespace (`[a ]`, `[ a]`, `[a b]`) is therefore refused, not trimmed.
+ */
+const scanPlainHeaderPrefix = (
+  line: string,
+  contentStart: number,
+  closeAt: number,
+): HeaderPrefixScan => {
+  if (closeAt === -1) return NOT_HEADER_SCAN;
+  const inner = line.slice(contentStart, closeAt);
+  if (!PLAIN_SECTION_NAME.test(inner)) return NOT_HEADER_SCAN;
+  return {
+    parse: { kind: 'header', section: inner, subsection: undefined },
+    endOffset: closeAt + 1,
+  };
+};
+
+/**
+ * Quoted `[section "sub"]` prefix: the closing `]` follows the closing `"`, so
+ * the offset is taken from the single identity scan's quote index, not the first
+ * `]` (which may be content inside the quotes). `quoteAt` is the absolute index
+ * of the opening `"` in `line`; the scan works in place from `contentStart`.
+ */
+const scanQuotedHeaderPrefix = (
+  line: string,
+  contentStart: number,
+  quoteAt: number,
+): HeaderPrefixScan => {
+  const { parse, closeQuoteAt } = parseQuotedSubsectionHeader(line, contentStart, quoteAt);
+  // equivalent-mutant: every reader gates `endOffset` behind `parse.kind === 'header'` (which always carries a defined closeQuoteAt), so dropping the early return — its NaN endOffset on a malformed parse — is never observed.
+  if (parse.kind !== 'header' || closeQuoteAt === undefined) return { parse, endOffset: 0 };
+  return { parse, endOffset: closeQuoteAt + 2 };
 };
 
 interface MutableParsedConfig {

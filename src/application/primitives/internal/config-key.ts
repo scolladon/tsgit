@@ -5,10 +5,16 @@ import type { IniSection } from '../config-read.js';
  * Render a fully-qualified key string from a config section header + raw entry
  * name. Section and name are lower-cased; subsection is preserved verbatim
  * (case-sensitive, per git's grammar).
+ *
+ * An orphan key (empty section, no subsection) renders as the bare lowered name
+ * with no leading dot — git dumps sectionless keys without a prefix. This is
+ * distinct from `[ ""]` (empty section *with* an empty subsection), which keeps
+ * its `.name` shape.
  */
 export const qualifyKey = (section: IniSection, rawName: string): string => {
-  const lowerSection = section.section.toLowerCase();
   const lowerName = rawName.toLowerCase();
+  if (section.section === '' && section.subsection === undefined) return lowerName;
+  const lowerSection = section.section.toLowerCase();
   if (section.subsection === undefined) return `${lowerSection}.${lowerName}`;
   return `${lowerSection}.${section.subsection}.${lowerName}`;
 };

@@ -50352,55 +50352,63 @@
 									},
 									{
 										"kind": "text",
-										"text": ".\n\nLines with no effective "
+										"text": ".\n\nKeys before the first header are recorded under an implicit orphan section\n("
 									},
 									{
 										"kind": "code",
-										"text": "`=`"
-									},
-									{
-										"kind": "text",
-										"text": " are treated as valueless keys: "
-									},
-									{
-										"kind": "code",
-										"text": "`key`"
-									},
-									{
-										"kind": "text",
-										"text": " (no "
-									},
-									{
-										"kind": "code",
-										"text": "`=`"
-									},
-									{
-										"kind": "text",
-										"text": ")\npushes "
-									},
-									{
-										"kind": "code",
-										"text": "`{ key, value: null }`"
-									},
-									{
-										"kind": "text",
-										"text": " into the current section. The valueless grammar\nis "
-									},
-									{
-										"kind": "code",
-										"text": "`^[ \\t\\r]*([a-zA-Z][a-zA-Z0-9-]*)[ \\t]*\\r?$`"
-									},
-									{
-										"kind": "text",
-										"text": "; anything that fails it\n(e.g. "
-									},
-									{
-										"kind": "code",
-										"text": "`key ; c`"
+										"text": "`section: ''`"
 									},
 									{
 										"kind": "text",
 										"text": ", "
+									},
+									{
+										"kind": "code",
+										"text": "`subsection: undefined`"
+									},
+									{
+										"kind": "text",
+										"text": "), so they surface on the token stream\nand porcelain "
+									},
+									{
+										"kind": "code",
+										"text": "`--list`"
+									},
+									{
+										"kind": "text",
+										"text": ", mirroring git, which dumps them with no section prefix\nbut refuses to address them. The orphan section is emitted only when it\ngathered an entry — a header-only file yields no leading empty section.\n\nA line with no "
+									},
+									{
+										"kind": "code",
+										"text": "`=`"
+									},
+									{
+										"kind": "text",
+										"text": " records a valueless key ("
+									},
+									{
+										"kind": "code",
+										"text": "`value: null`"
+									},
+									{
+										"kind": "text",
+										"text": "); the key grammar\n(alpha-first, "
+									},
+									{
+										"kind": "code",
+										"text": "`[a-zA-Z0-9-]`"
+									},
+									{
+										"kind": "text",
+										"text": ", then space/TAB and "
+									},
+									{
+										"kind": "code",
+										"text": "`=`"
+									},
+									{
+										"kind": "text",
+										"text": "-or-EOL) refuses anything\nelse — "
 									},
 									{
 										"kind": "code",
@@ -50416,7 +50424,23 @@
 									},
 									{
 										"kind": "text",
-										"text": ") throws "
+										"text": ", a mid-key "
+									},
+									{
+										"kind": "code",
+										"text": "`#`"
+									},
+									{
+										"kind": "text",
+										"text": "/"
+									},
+									{
+										"kind": "code",
+										"text": "`;`"
+									},
+									{
+										"kind": "text",
+										"text": " — with "
 									},
 									{
 										"kind": "code",
@@ -50424,31 +50448,7 @@
 									},
 									{
 										"kind": "text",
-										"text": ". Lines whose\nfirst non-space character is "
-									},
-									{
-										"kind": "code",
-										"text": "`[`"
-									},
-									{
-										"kind": "text",
-										"text": " (a "
-									},
-									{
-										"kind": "code",
-										"text": "`not-header`"
-									},
-									{
-										"kind": "text",
-										"text": " result from\n"
-									},
-									{
-										"kind": "code",
-										"text": "`parseSectionHeader`"
-									},
-									{
-										"kind": "text",
-										"text": ") keep the existing lenient skip."
+										"text": "."
 									}
 								]
 							},

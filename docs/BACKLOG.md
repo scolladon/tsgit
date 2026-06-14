@@ -172,7 +172,7 @@ Design: `design/repository-facade.md`
 
 ## Phase 16 — Supply-chain & ops hardening (v1.x)
 
-- [-] **16.1** SHA-pin GitHub Actions — abandoned · ADR-057
+- [-] ~~**16.1** SHA-pin GitHub Actions~~ — abandoned · ADR-057
 - [x] **16.2** Dependabot grouped action bumps
 - [x] **16.3** Browser E2E surface parity (`log`/`branch`/`checkout`/`tag` on OPFS)
 - [x] **16.4** Split OPFS round-trip into per-step assertions
@@ -187,7 +187,7 @@ Design: `design/repository-facade.md`
 - [x] **17.4** Partial clone (`blob:none`/`blob:limit`/`tree:N`, lazy-fetch, `fetchMissing`) · ADRs 078–082 · `design/partial-clone.md`
 - [x] **17.5** Submodule walk (`repo.submodules`, `walkSubmodules` AsyncIterable) · ADRs 083–086 · `design/submodule-walk.md`
 - [x] **17.6** `cat-file --batch` (`catFileBatch` primitive + `repo.catFile`) · ADRs 087–090 · `design/cat-file-batch.md`
-- [-] **17.7** isomorphic-git compat shim — abandoned · ADR-091
+- [-] ~~**17.7** isomorphic-git compat shim~~ — abandoned · ADR-091
 
 ---
 
@@ -343,7 +343,7 @@ Deferred from **24.9** (custom merge drivers), in dependency order:
 - [x] **24.9j** Distinct types **with a base** — 24.9f covers the no-base (add/add) collision; when a base exists and the two sides diverge to different kinds, tsgit still emits the take-ours `type-change` conflict, while git's ort renames per side like the add/add case. Same shape as 24.9f: per-side recorded paths + symlink-aware writes (today a type-change whose ours side is a symlink writes the link-target bytes as a regular file). _(surfaced by 24.9f.)_ · ADRs 318–321 · `design/distinct-types-with-base.md`
 - [x] **24.9k** Empty subsection `[s ""]` vs `[s]` matching — git treats an explicitly empty subsection as a distinct section (`s.k` does not match `[s ""]`, pinned against git 2.54); tsgit's `matchesSection` conflates them (`subsection === undefined` matches both `[s]` and `[s ""]`), and 24.9i's token-based `matchesTarget` reproduces the conflation verbatim — fix BOTH matchers together (line-based section ops + token-based entry surgery share the identity rule) + pin with interop (set/get/unset against a file holding both forms). _(surfaced by 24.9g; twin matcher noted by 24.9i.)_ · ADRs 322–326 · `design/config-empty-subsection-matching.md`
 - [x] **24.9l** Per-use-site `missing value` refusal parity — a string-typed config key read for a real purpose while present-but-valueless (git's internal NULL) now refuses with a structured `CONFIG_MISSING_VALUE { key, source, line }` that reconstructs git's two-line `error: missing value for '<key>'` / `fatal: bad config variable '<key>' in file '<F>' at line <N>` (exit 128), closing the ADR-315 D4 divergence. Detection is a **cold-path-only re-read** (new `findFirstValuelessEntry` primitive + a shared `assertNoValuelessConfig` guard) — `ParsedConfig`/`IniSection` stay unchanged (ADR-315 D4 preserved: valueless string fields still merge as absent; the raw `null` stays visible on porcelain reads per ADR-314), so `config --get`/`--list` still succeed. Refuses on the **first** valueless key by config-file line order (git's per-entry config-callback order — pinned: `[user]` with `email`/`name` both valueless dies on whichever is earlier, not a fixed name-first read). Scope: commit identity (`user.name`/`email`, via `commit` + the shared `resolveCurrentIdentity` consumers cherry-pick/rebase/revert/merge) **and** remote URL (`remote.<n>.url` on `fetch`/`push`); the **absent** case is untouched (`AUTHOR_UNCONFIGURED`/`REMOTE_NOT_CONFIGURED` — a pre-existing GECOS-probe divergence). `source` is tsgit's absolute config path; the interop test normalises the `file '<F>'` token (ADR-249 — the library emits data, not git's rendered string). Pinned byte-for-byte by `missing-value-refusal-interop` (twin git/tsgit: valueless-identity + valueless-remote-url two-line reconstruction, `--list` succeeds, absent-case distinctness). _(surfaced by 24.9h / ADR-315.)_ · ADRs 327–329 · `design/missing-value-refusal-parity.md`
-- [ ] **24.9m** Char-wise config parser parity — the line-wise tokenizer cannot represent constructs git's char-wise parser accepts on one line: `[a] key = v` / `[a] key` (header **plus** entry on the same physical line — git records `a.key`; tsgit lenient-skips or mis-keys), keys before any section header (git records the sectionless name `orphan`; tsgit drops it), and the `=`-path key grammar (`bad!key = v` is `fatal: bad config line` in git; tsgit accepts a garbage key). All one bucket: the fix is parsing entry content continuation after a header token instead of line classification. 24.9h pinned the no-`=` half of the grammar; this entry closes the `=` half + same-line constructs. _(surfaced by 24.9h.)_
+- [x] **24.9m** Char-wise config parser parity — the line-wise tokenizer cannot represent constructs git's char-wise parser accepts on one line: `[a] key = v` / `[a] key` (header **plus** entry on the same physical line — git records `a.key`; tsgit lenient-skips or mis-keys), keys before any section header (git records the sectionless name `orphan`; tsgit drops it), and the `=`-path key grammar (`bad!key = v` is `fatal: bad config line` in git; tsgit accepts a garbage key). All one bucket: the fix is parsing entry content continuation after a header token instead of line classification. 24.9h pinned the no-`=` half of the grammar; this entry closes the `=` half + same-line constructs. _(surfaced by 24.9h.)_ · ADRs 330–336 · design/char-wise-config-parser-parity.md
 - [x] **24.9n** Flat-section `renameSection`/`removeSection` — `git config --rename-section a b` works on subsection-less sections (pinned: `[a]\n\tkey\n` → `[b]\n\tkey\n`); tsgit's `parseSectionName` requires the dotted `<section>.<subsection>` form, so flat renames/removals are refused with `INVALID_OPTION`. Accept the flat form + pin with interop. _(surfaced by 24.9h's interop slice.)_ · absorbed by 24.9k · ADR-323 · `design/config-empty-subsection-matching.md`
 - [ ] **24.9o** Interop-helper env hardening — `interop-helpers.ts`'s `runGit`/`tryRunGit` scrub `GIT_*` and set `GIT_CEILING_DIRECTORIES` but spawn git with the inherited `HOME` and no `GIT_CONFIG_NOSYSTEM`, so porcelain-flow twins (e.g. `git remote add`, rename-section flows) run against the developer's global config while the pinned design matrices are produced under `env -i` + isolated `HOME`; same trap class as the `merge.conflictStyle=diff3` interop flake. Harden the helpers (isolated `HOME` + `GIT_CONFIG_NOSYSTEM=1`) and sweep existing interop suites for tests that silently depended on global config. _(surfaced by 24.9i's test review; same shape as the conflict-style diff3 trap.)_
 - [ ] **24.9p** Checkout cannot replace a symlink with a regular file — `apply-changeset.ts`'s `writeFileEntry` writes the regular payload through the node adapter's creation-mode containment, which refuses when a symlink occupies the path, so `checkout` between branches that change a path's kind (symlink → file) throws where git succeeds; the merge-side writers already solved this with an unlink-then-write (`writeWorkingTreeFile`'s `rmIfExists`). Fix `writeFileEntry` the same way + pin with a twin-checkout interop; then drop the manual `unlinkSync` workarounds baked into `distinct-types-with-base-interop.test.ts`'s `setupWithBase`/S8/P1/Q6 and P5 setups. _(surfaced by 24.9j's interop slices.)_
@@ -407,9 +407,9 @@ Not abandoned — deferred indefinitely. Pull back into a phase if profiling or 
 
 ## Abandoned
 
-- **14.5.3** Skip-resolve optimization in `checkContainment` · ADR-053
-- **16.1** SHA-pin GitHub Actions · ADR-057
-- **17.7** isomorphic-git compat shim · ADR-091
+- ~~**14.5.3** Skip-resolve optimization in `checkContainment` · ADR-053~~
+- ~~**16.1** SHA-pin GitHub Actions · ADR-057~~
+- ~~**17.7** isomorphic-git compat shim · ADR-091~~
 
 ---
 
