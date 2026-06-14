@@ -4127,6 +4127,213 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
     });
   });
 
+  describe('chained section headers on one physical line', () => {
+    describe('Given `[a][b]\\nx=1` (chain then body entry), When tokenizeConfig', () => {
+      it('Then two header tokens at line 0 precede the body entry recorded under the last section', () => {
+        // Arrange
+        const sut = tokenizeConfig;
+        const input = '[a][b]\nx=1\n';
+
+        // Act
+        const tokens = sut(input);
+        const sections = parseIniSections(input);
+
+        // Assert
+        expect(tokens).toEqual<ReadonlyArray<ConfigToken>>([
+          headerToken('a', undefined, 0),
+          headerToken('b', undefined, 0),
+          { kind: 'entry', key: 'x', value: '1', startLine: 1, endLine: 2 },
+        ]);
+        expect(sections).toEqual<ReadonlyArray<IniSection>>([
+          { section: 'a', subsection: undefined, entries: [] },
+          { section: 'b', subsection: undefined, entries: [{ key: 'x', value: '1' }] },
+        ]);
+      });
+    });
+
+    describe('Given `[a][b]k=1` (chain then same-line entry, no gap), When tokenizeConfig', () => {
+      it('Then the same-line entry shares the last header line and records b.k = 1', () => {
+        // Arrange
+        const sut = tokenizeConfig;
+        const input = '[a][b]k=1\n';
+
+        // Act
+        const tokens = sut(input);
+        const sections = parseIniSections(input);
+
+        // Assert
+        expect(tokens).toEqual<ReadonlyArray<ConfigToken>>([
+          headerToken('a', undefined, 0),
+          headerToken('b', undefined, 0),
+          {
+            kind: 'entry',
+            key: 'k',
+            value: '1',
+            startLine: 0,
+            endLine: 1,
+            sharesHeaderLine: true,
+            startCol: 6,
+          },
+        ]);
+        expect(sections).toEqual<ReadonlyArray<IniSection>>([
+          { section: 'a', subsection: undefined, entries: [] },
+          { section: 'b', subsection: undefined, entries: [{ key: 'k', value: '1' }] },
+        ]);
+      });
+    });
+
+    describe('Given `[a] [b] k=1` (chain with gaps then same-line entry), When parseIniSections', () => {
+      it('Then b.k = 1 is recorded under the last section', () => {
+        // Arrange
+        const sut = parseIniSections;
+
+        // Act
+        const result = sut('[a] [b] k=1\n');
+
+        // Assert
+        expect(result).toEqual<ReadonlyArray<IniSection>>([
+          { section: 'a', subsection: undefined, entries: [] },
+          { section: 'b', subsection: undefined, entries: [{ key: 'k', value: '1' }] },
+        ]);
+      });
+    });
+
+    describe('Given `[a][b][c] k=1` (three-header chain then same-line entry), When tokenizeConfig', () => {
+      it('Then three header tokens at line 0 precede the entry recorded under the last section', () => {
+        // Arrange
+        const sut = tokenizeConfig;
+        const input = '[a][b][c] k=1\n';
+
+        // Act
+        const tokens = sut(input);
+        const sections = parseIniSections(input);
+
+        // Assert
+        expect(tokens).toEqual<ReadonlyArray<ConfigToken>>([
+          headerToken('a', undefined, 0),
+          headerToken('b', undefined, 0),
+          headerToken('c', undefined, 0),
+          {
+            kind: 'entry',
+            key: 'k',
+            value: '1',
+            startLine: 0,
+            endLine: 1,
+            sharesHeaderLine: true,
+            startCol: 10,
+          },
+        ]);
+        expect(sections).toEqual<ReadonlyArray<IniSection>>([
+          { section: 'a', subsection: undefined, entries: [] },
+          { section: 'b', subsection: undefined, entries: [] },
+          { section: 'c', subsection: undefined, entries: [{ key: 'k', value: '1' }] },
+        ]);
+      });
+    });
+
+    describe('Given `[a]\\n[b][c]\\nk=1` (header, then a chain on its own line, then a body entry), When parseIniSections', () => {
+      it('Then the body entry records under the last chained section', () => {
+        // Arrange
+        const sut = parseIniSections;
+
+        // Act
+        const result = sut('[a]\n[b][c]\nk=1\n');
+
+        // Assert
+        expect(result).toEqual<ReadonlyArray<IniSection>>([
+          { section: 'a', subsection: undefined, entries: [] },
+          { section: 'b', subsection: undefined, entries: [] },
+          { section: 'c', subsection: undefined, entries: [{ key: 'k', value: '1' }] },
+        ]);
+      });
+    });
+
+    describe('Given `[a][b "s"] k=1` (plain header chained to a subsectioned header), When tokenizeConfig', () => {
+      it('Then the entry records under the subsectioned last section b.s.k = 1', () => {
+        // Arrange
+        const sut = tokenizeConfig;
+        const input = '[a][b "s"] k=1\n';
+
+        // Act
+        const tokens = sut(input);
+        const sections = parseIniSections(input);
+
+        // Assert
+        expect(tokens).toEqual<ReadonlyArray<ConfigToken>>([
+          headerToken('a', undefined, 0),
+          headerToken('b', 's', 0),
+          {
+            kind: 'entry',
+            key: 'k',
+            value: '1',
+            startLine: 0,
+            endLine: 1,
+            sharesHeaderLine: true,
+            startCol: 11,
+          },
+        ]);
+        expect(sections).toEqual<ReadonlyArray<IniSection>>([
+          { section: 'a', subsection: undefined, entries: [] },
+          { section: 'b', subsection: 's', entries: [{ key: 'k', value: '1' }] },
+        ]);
+      });
+    });
+
+    describe('Given `[a "s"][b] k=1` (subsectioned header chained to a plain header), When parseIniSections', () => {
+      it('Then the entry records under the plain last section b.k = 1', () => {
+        // Arrange
+        const sut = parseIniSections;
+
+        // Act
+        const result = sut('[a "s"][b] k=1\n');
+
+        // Assert
+        expect(result).toEqual<ReadonlyArray<IniSection>>([
+          { section: 'a', subsection: 's', entries: [] },
+          { section: 'b', subsection: undefined, entries: [{ key: 'k', value: '1' }] },
+        ]);
+      });
+    });
+
+    describe('Given `[a][b]` (chain with no entry), When tokenizeConfig', () => {
+      it('Then both headers are emitted as empty sections with no entry', () => {
+        // Arrange
+        const sut = tokenizeConfig;
+        const input = '[a][b]\n';
+
+        // Act
+        const tokens = sut(input);
+        const sections = parseIniSections(input);
+
+        // Assert
+        expect(tokens).toEqual<ReadonlyArray<ConfigToken>>([
+          headerToken('a', undefined, 0),
+          headerToken('b', undefined, 0),
+        ]);
+        expect(sections).toEqual<ReadonlyArray<IniSection>>([
+          { section: 'a', subsection: undefined, entries: [] },
+          { section: 'b', subsection: undefined, entries: [] },
+        ]);
+      });
+    });
+
+    describe('Given `[a][b] # c` (chain then a same-line comment), When tokenizeConfig', () => {
+      it('Then both headers are emitted, the last carrying the comment flag, with no entry', () => {
+        // Arrange
+        const sut = tokenizeConfig;
+
+        // Act
+        const result = sut('[a][b] # c\n');
+
+        // Assert
+        expect(result).toEqual<ReadonlyArray<ConfigToken>>([
+          { kind: 'header', section: 'a', subsection: undefined, line: 0, hasComment: false },
+          { kind: 'header', section: 'b', subsection: undefined, line: 0, hasComment: true },
+        ]);
+      });
+    });
+  });
+
   describe('the unified key grammar refuses what git refuses', () => {
     describe('Given `[a] bad!key = v` (exclamation in same-line key), When parseIniSections', () => {
       it('Then CONFIG_PARSE_ERROR carries line 1', () => {

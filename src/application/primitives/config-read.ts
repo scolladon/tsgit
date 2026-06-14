@@ -348,9 +348,14 @@ const emitBodyEntry = (
 };
 
 /**
- * Push a header token, then scan the rest of its physical line: GIT_SPACE is
- * skipped, a `#`/`;` starts a header comment (no entry), and any other content
- * is a same-line entry sharing the header's line.
+ * Push the header token(s) on this physical line, then scan its remainder.
+ * git lets headers chain on one line (`[a][b]`): each `]`-closed bracket span
+ * after GIT_SPACE that opens with `[` is another header, and the content after
+ * the chain — same-line entry, `#`/`;` comment, or nothing — lands under the
+ * LAST header (it is the open section when the body is read). A same-line entry
+ * keeps its `sharesHeaderLine`/`startCol` marker relative to that last header.
+ * Cost stays linear: one cursor advances past each bracket span; no re-scan
+ * from the line start.
  */
 const emitHeaderLine = (
   tokens: ConfigToken[],
@@ -360,17 +365,19 @@ const emitHeaderLine = (
   source: string | undefined,
 ): number => {
   const line = lines[lineIdx] as string;
-  const contentStart = skipGitSpace(line, header.endOffset);
+  let current = header;
+  let contentStart = skipGitSpace(line, current.endOffset);
+  while (line[contentStart] === '[') {
+    pushHeaderToken(tokens, current, lineIdx, false);
+    current = scanHeaderPrefix(line.slice(contentStart));
+    if (current.parse.kind !== 'header') {
+      throw configParseError(lineIdx + 1, source, malformedPartialName(current.parse));
+    }
+    contentStart = skipGitSpace(line, contentStart + current.endOffset);
+  }
   const next = line[contentStart];
   const hasComment = next === '#' || next === ';';
-  const parse = header.parse as Extract<SectionHeaderParse, { kind: 'header' }>;
-  tokens.push({
-    kind: 'header',
-    section: parse.section,
-    subsection: parse.subsection,
-    line: lineIdx,
-    hasComment,
-  });
+  pushHeaderToken(tokens, current, lineIdx, hasComment);
   if (contentStart >= line.length || hasComment) return lineIdx + 1;
   const scanned = scanKey(lines, lineIdx, contentStart, source);
   tokens.push({
@@ -384,6 +391,27 @@ const emitHeaderLine = (
   });
   return scanned.nextLineIdx;
 };
+
+/** Push one header token from a recognised header scan onto the stream. */
+const pushHeaderToken = (
+  tokens: ConfigToken[],
+  header: HeaderPrefixScan,
+  lineIdx: number,
+  hasComment: boolean,
+): void => {
+  const parse = header.parse as Extract<SectionHeaderParse, { kind: 'header' }>;
+  tokens.push({
+    kind: 'header',
+    section: parse.section,
+    subsection: parse.subsection,
+    line: lineIdx,
+    hasComment,
+  });
+};
+
+/** Partial name carried by a malformed parse, for the refusal message. */
+const malformedPartialName = (parse: SectionHeaderParse): string | undefined =>
+  parse.kind === 'malformed' ? parse.partialName : undefined;
 
 /** Index of the first non-GIT_SPACE character at or after `start` (space/TAB/CR skipped). */
 export const skipGitSpace = (line: string, start: number): number => {

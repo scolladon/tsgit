@@ -3620,6 +3620,58 @@ describe('primitives/update-config', () => {
     });
   });
 
+  describe('chained section headers on one physical line', () => {
+    describe('Given `[a][b]\\nx=1` with the body keyed on the last section', () => {
+      describe('When setConfigEntryInText sets b.x to v2', () => {
+        it('Then the chained header line is preserved and only the body entry is replaced', () => {
+          // Arrange — the writer keys the block on the last header; the chain
+          // line stays verbatim, the body entry becomes the canonical form.
+          const text = '[a][b]\nx=1\n';
+
+          // Act
+          const sut = setConfigEntryInText;
+          const result = sut(text, 'b', undefined, 'x', 'v2');
+
+          // Assert
+          expect(result).toBe('[a][b]\n\tx = v2\n');
+        });
+      });
+    });
+
+    describe('Given `[a][b]\\nx=1` whose first header is `a`', () => {
+      describe('When renameConfigSectionInText renames "a"', () => {
+        it('Then the chain line keys on `a`, the `[b]` tail is copied raw onto a tab line', () => {
+          // Arrange — recognition keys the line on its FIRST header `a`; the
+          // `[b]` chain is the raw tail re-emitted after the rendered header.
+          const text = '[a][b]\nx=1\n';
+
+          // Act
+          const sut = renameConfigSectionInText;
+          const result = sut(text, 'a', { section: 'c' });
+
+          // Assert
+          expect(result).toBe('[c]\n\t[b]\nx=1\n');
+        });
+      });
+    });
+
+    describe('Given `[a][b]\\nx=1` whose first header is `a`', () => {
+      describe('When removeConfigSectionInText removes "b"', () => {
+        it('Then it is a no-op because the line keys on its first header `a`, not `b`', () => {
+          // Arrange — `b` is not a line-leading header, so it matches nothing.
+          const text = '[a][b]\nx=1\n';
+
+          // Act
+          const sut = removeConfigSectionInText;
+          const result = sut(text, 'b');
+
+          // Assert
+          expect(result).toBe('[a][b]\nx=1\n');
+        });
+      });
+    });
+  });
+
   describe('removeConfigSectionInText (same-line header blocks)', () => {
     describe('Given a same-line header block matching the old name', () => {
       describe('When removeConfigSectionInText removes "a"', () => {
