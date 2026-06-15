@@ -47,7 +47,7 @@ type MergeResult =
 
 ## Working tree and index
 
-A **fast-forward** and a **clean true-merge** both check the result out: the working tree and index advance to the merged tree, exactly like `git merge` (a true merge additionally creates the merge commit on top). If a path the merge would change has uncommitted working-tree modifications — or an untracked file would be clobbered by an incoming add — `run` refuses with `WORKING_TREE_DIRTY` and leaves HEAD, the index, and the working tree untouched.
+A **fast-forward** and a **clean true-merge** both check the result out: the working tree and index advance to the merged tree, exactly like `git merge` (a true merge additionally creates the merge commit on top). If a path the merge would change has uncommitted working-tree modifications — or an untracked file would be clobbered by an incoming add — `run` refuses with `WORKING_TREE_DIRTY` and leaves HEAD, the index, and the working tree untouched. A **conflicting** true-merge refuses the same way: before any conflict is materialised, every path the merge would change is checked, and `run` refuses with `WORKING_TREE_DIRTY` if writing the conflict would overwrite a tracked-and-modified or untracked path — atomically and pre-write, so HEAD, the index, and the working tree are untouched and no `MERGE_HEAD` is written. The offending paths are split across the error's two arrays: `localChanges` for tracked-dirty paths, `untracked` for untracked clashes.
 
 ## Conflict handling
 
@@ -71,7 +71,7 @@ When both sides **change** to different kinds — one a regular file and one a s
 - **No base (add/add).** Both sides add; each lands as a single-stage entry at its recorded path (`ourPath` / `theirPath`), with stages 2/3 only.
 - **With base (both sides changed).** The base's stage-1 entry travels with the side whose kind matches the base: base file ⇒ stage 1 at the renamed regular side's path (so that path carries two stages); base symlink ⇒ stage 1 at the original path alongside the symlink side's stage. The conflict carries `basePath` recording where stage 1 was emitted.
 
-An untracked working file at the rename target refuses with `WORKING_TREE_DIRTY` before anything is written.
+An untracked working file at the rename target refuses with `WORKING_TREE_DIRTY` before anything is written (the target lands in the error's `untracked` array, covered by the conflict-wide guard above).
 
 ### Both-added paths
 
@@ -197,7 +197,7 @@ switch (result.kind) {
 
 - `UNSUPPORTED_OPERATION` — conflict type not supported in v1 (e.g. rename/rename), or HEAD is detached. Also surfaced by `merge.abort` when HEAD is detached.
 - `NON_FAST_FORWARD` — `fastForward: 'only'` and no fast-forward is possible.
-- `WORKING_TREE_DIRTY` — a fast-forward or clean merge would overwrite uncommitted working-tree changes (or clobber an untracked file); nothing is written.
+- `WORKING_TREE_DIRTY` — a fast-forward, clean, or conflicting merge would overwrite uncommitted working-tree changes (or clobber an untracked file); nothing is written. Tracked-dirty paths arrive in `localChanges`, untracked clashes in `untracked`.
 - `REF_NOT_FOUND` — `target` does not resolve.
 - `NO_OPERATION_IN_PROGRESS` — `merge.continue` / `merge.abort` called outside an in-progress merge.
 
