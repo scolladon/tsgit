@@ -80,10 +80,7 @@ export const writeWorkingTreeFile = async (
   path: FilePath,
   content: Uint8Array,
 ): Promise<void> => {
-  const fullPath = `${ctx.layout.workDir}/${path}`;
-  const parent = parentDir(fullPath);
-  if (parent !== undefined) await ctx.fs.mkdir(parent);
-  await ctx.fs.write(fullPath, content);
+  await writeRegularFile(ctx, joinPath(ctx.layout.workDir, path), content);
 };
 
 /**

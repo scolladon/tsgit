@@ -59,6 +59,40 @@ describe('write-working-tree-file', () => {
         });
       });
     });
+
+    describe('Given a symlink occupies the target path', () => {
+      describe('When the file is written', () => {
+        it('Then the symlink is replaced by a regular file holding the bytes', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const fullPath = `${ctx.layout.workDir}/r.txt`;
+          await ctx.fs.symlink('old-target', fullPath);
+
+          // Act
+          await writeWorkingTreeFile(ctx, 'r.txt' as FilePath, encode('x'));
+
+          // Assert
+          expect((await ctx.fs.lstat(fullPath)).isSymbolicLink).toBe(false);
+          expect(decode(await ctx.fs.read(fullPath))).toBe('x');
+        });
+      });
+    });
+
+    describe('Given the regular-only façade', () => {
+      describe('When the file is written', () => {
+        it('Then chmod is never called', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const chmodSpy = vi.spyOn(ctx.fs, 'chmod');
+
+          // Act
+          await writeWorkingTreeFile(ctx, 'r.txt' as FilePath, encode('x'));
+
+          // Assert
+          expect(chmodSpy).not.toHaveBeenCalled();
+        });
+      });
+    });
   });
 
   describe('writeRegularFile', () => {
