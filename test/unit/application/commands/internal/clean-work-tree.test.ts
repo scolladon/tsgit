@@ -202,6 +202,43 @@ describe('assertCleanWorkTree', () => {
     });
   });
 
+  describe('Given multiple non-ASCII staged-dirty paths whose byte order differs from UTF-16 order', () => {
+    describe('When asserted', () => {
+      it('Then localChanges is sorted by raw path bytes, not the index entry order', async () => {
+        // Arrange — empty HEAD tree so every index entry reads as a staged
+        // addition (path absent from HEAD). The three names are supplied to the
+        // index in UTF-16 ascending order; the supplementary-plane emoji sorts
+        // BEFORE the high-BMP private-use char by UTF-16 code units but AFTER it
+        // by raw UTF-8 bytes, so a byte sort is observable.
+        const cjk = 'f-\u{4E2D}.txt';
+        const emoji = 'f-\u{1F600}.txt';
+        const bmp = 'f-\u{F8FF}.txt';
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const emptyTree = await writeTree(ctx, []);
+        await writeFramedIndex(ctx, [
+          stageEntry(cjk, 'a'.repeat(40) as ObjectId, 0),
+          stageEntry(emoji, 'b'.repeat(40) as ObjectId, 0),
+          stageEntry(bmp, 'c'.repeat(40) as ObjectId, 0),
+        ]);
+
+        // Act
+        let caught: TsgitError | undefined;
+        try {
+          await assertCleanWorkTree(ctx, emptyTree);
+        } catch (err) {
+          caught = err as TsgitError;
+        }
+
+        // Assert — byte order swaps emoji and bmp relative to the index order.
+        expect(caught?.data.code).toBe('WORKING_TREE_DIRTY');
+        if (caught?.data.code === 'WORKING_TREE_DIRTY') {
+          expect(caught.data.localChanges).toEqual([cjk, bmp, emoji]);
+        }
+      });
+    });
+  });
+
   describe('Given a skip-worktree entry whose file is absent', () => {
     describe('When asserted', () => {
       it('Then it passes (the sparse-excluded path is not compared on disk)', async () => {

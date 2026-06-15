@@ -14,6 +14,7 @@
  * see.
  */
 import { checkoutOverwriteDirty, type WouldOverwriteClasses } from '../../domain/commands/error.js';
+import { comparePaths } from '../../domain/diff/index.js';
 import { TsgitError } from '../../domain/error.js';
 import { type IndexEntry, STAGE0_FLAGS } from '../../domain/git-index/index.js';
 import {
@@ -118,7 +119,10 @@ const checkDirty = async (
     if (offending.class === 'local-changes') localChanges.push(offending.path);
     else untracked.push(offending.path);
   }
-  return { localChanges, untracked };
+  // Refusal arrays mirror git's raw-byte path order, matching `findWouldOverwrite`
+  // — `changeset.entries` order (UTF-16 from a JS sort upstream) is not faithful
+  // for non-ASCII paths.
+  return { localChanges: localChanges.sort(comparePaths), untracked: untracked.sort(comparePaths) };
 };
 
 const buildIndexEntry = async (

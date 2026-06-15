@@ -50,6 +50,14 @@ interface MergeSnapshot {
   readonly stage: string;
 }
 
+/** git's local-changes prose block, reconstructed from the structured array. */
+const localChangesBlock = (paths: ReadonlyArray<string>): string =>
+  [
+    'error: Your local changes to the following files would be overwritten by merge:',
+    ...paths.map((p) => `\t${p}`),
+    'Please commit your changes or stash them before you merge.',
+  ].join('\n');
+
 describe.skipIf(!GIT_AVAILABLE)('merge interop — non-conflict materialisation', () => {
   let pair: PeerPair;
   let repo: Repository;
@@ -257,6 +265,67 @@ describe.skipIf(!GIT_AVAILABLE)('merge interop — non-conflict materialisation'
         expect(code).toBe('WORKING_TREE_DIRTY');
         expect(snapshot(pair.ours)).toEqual(before);
         expect(await readMaybe(pair.ours, 'f.txt')).toBe('DIRTY\n');
+      });
+    });
+  });
+
+  describe('Given multiple non-ASCII paths a clean merge would overwrite are dirty', () => {
+    describe('When merge runs on both tools', () => {
+      it('Then both list the paths in raw-byte order, not UTF-16 code-unit order', async () => {
+        // Arrange — three names where the supplementary-plane emoji (UTF-8 lead
+        // 0xF0) sorts AFTER the high-BMP private-use char (UTF-8 lead 0xEF) by
+        // bytes, yet BEFORE it by UTF-16 code units. theirs edits all three
+        // (clean, theirs-only); ours adds a disjoint file; then all three drift
+        // dirty so the clean merge would overwrite local changes.
+        const cjk = 'f-\u{4E2D}.txt';
+        const emoji = 'f-\u{1F600}.txt';
+        const bmp = 'f-\u{F8FF}.txt';
+        const byteOrder = [cjk, bmp, emoji];
+        await writeBoth(cjk, 'base\n');
+        await writeBoth(emoji, 'base\n');
+        await writeBoth(bmp, 'base\n');
+        await commitBoth('base', [cjk, emoji, bmp]);
+        await branchBoth('theirs');
+        await writeBoth(cjk, 'theirs\n');
+        await writeBoth(emoji, 'theirs\n');
+        await writeBoth(bmp, 'theirs\n');
+        await commitBoth('theirs-edit', [cjk, emoji, bmp]);
+        await checkoutBoth('main');
+        await writeBoth('o.txt', 'o\n');
+        await commitBoth('ours-add', ['o.txt']);
+        for (const name of byteOrder) {
+          await writeFile(path.join(pair.peer, name), 'DIRTY\n');
+          await writeFile(path.join(pair.ours, name), 'DIRTY\n');
+        }
+
+        // Act — git refuses; repo.merge refuses with WORKING_TREE_DIRTY.
+        const peerResult = tryRunGit(
+          [
+            '-C',
+            pair.peer,
+            '-c',
+            'core.quotePath=false',
+            'merge',
+            '--no-ff',
+            '-m',
+            'merge theirs',
+            'theirs',
+          ],
+          { env: COMMIT_ENV },
+        );
+        let data: { readonly code?: string; readonly localChanges?: ReadonlyArray<string> } = {};
+        try {
+          await repo.merge.run({ rev: 'theirs', message: 'merge theirs', author: AUTHOR });
+        } catch (caught) {
+          data = (caught as { readonly data?: typeof data }).data ?? {};
+        }
+
+        // Assert — tsgit's structured array is byte-sorted and equals the order
+        // git prints in its reconstructed refusal block (byte order, not UTF-16).
+        expect(peerResult.ok).toBe(false);
+        expect(data.code).toBe('WORKING_TREE_DIRTY');
+        expect(data.localChanges).toEqual(byteOrder);
+        expect(peerResult.stderr).toContain(localChangesBlock(byteOrder));
       });
     });
   });
