@@ -248,7 +248,7 @@ always-`rmIfExists` that produces exactly these states).
 | C | `feat` has regular `p`; disk has a **dangling** symlink `/nonexistent/dangling` squatting `p` | `git checkout --force -- p` | regular file `regular file content\n`, **not a symlink** | unchanged | clean |
 | D | base+main: symlink `tgt`; `feat`: executable regular `#!/bin/sh…` (755). On disk: symlink (HEAD=main). | `git checkout feat` | regular file, mode **755**, **not a symlink** | `100755 … p` | clean |
 
-Take-aways the consolidated writer must satisfy: symlink→file leaves a regular file with the committed content and
+What the consolidated writer must satisfy: symlink→file leaves a regular file with the committed content and
 mode (644 *or* 755), no residual symlink, clean status (A, D); the reverse (B) is git's symlink-over-file replace
 that the SYMLINK branch already does; dangling-symlink squat (C) is removed by the lstat-probing `rmIfExists` (no
 follow).
