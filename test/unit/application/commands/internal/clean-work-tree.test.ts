@@ -104,7 +104,7 @@ describe('assertCleanWorkTree', () => {
         // Assert
         expect(caught?.data.code).toBe('WORKING_TREE_DIRTY');
         if (caught?.data.code === 'WORKING_TREE_DIRTY') {
-          expect(caught.data.paths).toContain('a.txt');
+          expect(caught.data.localChanges).toContain('a.txt');
         }
       });
     });

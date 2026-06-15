@@ -438,7 +438,8 @@ export const stashApply = async (
       currentIndex,
       labels: STASH_LABELS,
     });
-    if (result.kind === 'would-overwrite') throw stashApplyWouldOverwrite(result.paths);
+    if (result.kind === 'would-overwrite')
+      throw stashApplyWouldOverwrite([...result.localChanges, ...result.untracked]);
     if (result.kind === 'conflict') {
       await lock.commit(result.indexEntries);
       return {

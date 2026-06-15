@@ -70,5 +70,5 @@ export const assertCleanWorkTree = async (ctx: Context, headTree: ObjectId): Pro
     ...(await stagedDirty(ctx, stage0, headTree)),
     ...(await unstagedDirty(ctx, stage0)),
   ]);
-  if (dirty.size > 0) throw workingTreeDirty([...dirty]);
+  if (dirty.size > 0) throw workingTreeDirty({ localChanges: [...dirty], untracked: [] });
 };

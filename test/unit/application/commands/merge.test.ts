@@ -404,7 +404,8 @@ describe('merge', () => {
         const data = (error as TsgitError).data;
         expect(data.code).toBe('WORKING_TREE_DIRTY');
         if (data.code === 'WORKING_TREE_DIRTY') {
-          expect(data.paths).toContain('f.txt');
+          expect(data.localChanges).toContain('f.txt');
+          expect(data.untracked).toEqual([]);
         }
         expect(await resolveRef(ctx, 'refs/heads/main' as RefName)).toBe(oursTip.id);
         expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/f.txt`)).toBe('DIRTY\n');
@@ -446,7 +447,8 @@ describe('merge', () => {
         const data = (error as TsgitError).data;
         expect(data.code).toBe('WORKING_TREE_DIRTY');
         if (data.code === 'WORKING_TREE_DIRTY') {
-          expect(data.paths).toContain('m.txt');
+          expect(data.untracked).toContain('m.txt');
+          expect(data.localChanges).toEqual([]);
         }
         expect(await resolveRef(ctx, 'refs/heads/main' as RefName)).toBe(oursTip.id);
         expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/m.txt`)).toBe('untracked\n');
@@ -2625,16 +2627,19 @@ describe('merge — sparse checkout', () => {
 describe('asMergeDirtyError (direct)', () => {
   describe('Given a CHECKOUT_OVERWRITE_DIRTY error', () => {
     describe('When asMergeDirtyError maps it', () => {
-      it('Then returns WORKING_TREE_DIRTY carrying the same paths', () => {
+      it('Then returns WORKING_TREE_DIRTY carrying the same classes', () => {
         // Arrange
-        const sut = asMergeDirtyError(checkoutOverwriteDirty(['x.txt' as FilePath]));
+        const sut = asMergeDirtyError(
+          checkoutOverwriteDirty({ localChanges: ['x.txt' as FilePath], untracked: [] }),
+        );
 
         // Assert
         expect(sut).toBeInstanceOf(TsgitError);
         const data = (sut as TsgitError).data;
         expect(data.code).toBe('WORKING_TREE_DIRTY');
         if (data.code === 'WORKING_TREE_DIRTY') {
-          expect(data.paths).toEqual(['x.txt']);
+          expect(data.localChanges).toEqual(['x.txt']);
+          expect(data.untracked).toEqual([]);
         }
       });
     });

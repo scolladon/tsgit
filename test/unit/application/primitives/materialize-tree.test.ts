@@ -463,9 +463,18 @@ describe('materializeTree', () => {
         }
         // Assert
         expect(captured).toBeInstanceOf(Error);
-        const data = (captured as { data: { code: string; paths: ReadonlyArray<string> } }).data;
+        const data = (
+          captured as {
+            data: {
+              code: string;
+              localChanges: ReadonlyArray<string>;
+              untracked: ReadonlyArray<string>;
+            };
+          }
+        ).data;
         expect(data.code).toBe('CHECKOUT_OVERWRITE_DIRTY');
-        expect(data.paths).toEqual(['a.txt']);
+        expect(data.untracked).toEqual(['a.txt']);
+        expect(data.localChanges).toEqual([]);
         expect((captured as Error).message).toBe(
           'CHECKOUT_OVERWRITE_DIRTY: checkout would overwrite uncommitted changes: 1 files',
         );

@@ -342,7 +342,8 @@ describe('rm', () => {
         // CHECKOUT_OVERWRITE_DIRTY) and the `-> true` ConditionalExpression mutant.
         const err = await expectError(() => rm(ctx, ['a.txt']), 'CHECKOUT_OVERWRITE_DIRTY');
         if (err.data.code !== 'CHECKOUT_OVERWRITE_DIRTY') throw new Error('unexpected error shape');
-        expect(err.data.paths).toEqual(['a.txt']);
+        expect(err.data.localChanges).toEqual(['a.txt']);
+        expect(err.data.untracked).toEqual([]);
       });
     });
   });

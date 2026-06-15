@@ -287,7 +287,10 @@ describe('applyMergeToWorktree', () => {
 
         // Assert
         expect(sut.kind).toBe('would-overwrite');
-        if (sut.kind === 'would-overwrite') expect(sut.paths).toEqual(['a']);
+        if (sut.kind === 'would-overwrite') {
+          expect(sut.localChanges).toEqual(['a']);
+          expect(sut.untracked).toEqual([]);
+        }
         expect(await readWork(ctx, 'a')).toBe('local edit\n');
       });
     });
@@ -315,7 +318,10 @@ describe('applyMergeToWorktree', () => {
 
         // Assert
         expect(sut.kind).toBe('would-overwrite');
-        if (sut.kind === 'would-overwrite') expect(sut.paths).toEqual(['new']);
+        if (sut.kind === 'would-overwrite') {
+          expect(sut.untracked).toEqual(['new']);
+          expect(sut.localChanges).toEqual([]);
+        }
         expect(await readWork(ctx, 'new')).toBe('in the way\n');
       });
     });
@@ -677,7 +683,7 @@ describe('applyMergeToWorktree', () => {
         // Assert
         expect(sut.kind).toBe('would-overwrite');
         if (sut.kind !== 'would-overwrite') return;
-        expect(sut.paths).toContain('f~HEAD');
+        expect(sut.untracked).toContain('f~HEAD');
         // The obstructing file is untouched
         const onDisk = new TextDecoder().decode(await ctx.fs.read(`${ctx.layout.workDir}/f~HEAD`));
         expect(onDisk).toBe('in the way\n');
@@ -730,7 +736,7 @@ describe('applyMergeToWorktree', () => {
         // Assert
         expect(sut.kind).toBe('would-overwrite');
         if (sut.kind !== 'would-overwrite') return;
-        expect(sut.paths).toContain('f~HEAD');
+        expect(sut.localChanges).toContain('f~HEAD');
       });
     });
   });

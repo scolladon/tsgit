@@ -13,7 +13,7 @@
  * Atomicity: per-file (matches canonical git). No cross-file rollback —
  * see.
  */
-import { checkoutOverwriteDirty } from '../../domain/commands/error.js';
+import { checkoutOverwriteDirty, type WouldOverwriteClasses } from '../../domain/commands/error.js';
 import { TsgitError } from '../../domain/error.js';
 import { type IndexEntry, STAGE0_FLAGS } from '../../domain/git-index/index.js';
 import {
@@ -80,18 +80,27 @@ export const isWorkingTreeDirty = async (
 const isUntrackedClash = async (ctx: Context, absPath: string): Promise<boolean> =>
   ctx.fs.exists(absPath);
 
+interface DirtyClass {
+  readonly class: 'local-changes' | 'untracked';
+  readonly path: FilePath;
+}
+
 const evaluateDirtyPath = async (
   ctx: Context,
   workdir: string,
   entry: ChangesetEntry,
-): Promise<FilePath | undefined> => {
+): Promise<DirtyClass | undefined> => {
   const absPath = joinPath(workdir, entry.path);
   if (entry.kind === 'update' || entry.kind === 'delete') {
     if (entry.previousId === undefined) return undefined;
-    return (await isWorkingTreeDirty(ctx, absPath, entry.previousId)) ? entry.path : undefined;
+    return (await isWorkingTreeDirty(ctx, absPath, entry.previousId))
+      ? { class: 'local-changes', path: entry.path }
+      : undefined;
   }
   if (entry.kind === 'add') {
-    return (await isUntrackedClash(ctx, absPath)) ? entry.path : undefined;
+    return (await isUntrackedClash(ctx, absPath))
+      ? { class: 'untracked', path: entry.path }
+      : undefined;
   }
   return undefined;
 };
@@ -100,13 +109,16 @@ const checkDirty = async (
   ctx: Context,
   workdir: string,
   changeset: Changeset,
-): Promise<ReadonlyArray<FilePath>> => {
-  const dirty: FilePath[] = [];
+): Promise<WouldOverwriteClasses> => {
+  const localChanges: FilePath[] = [];
+  const untracked: FilePath[] = [];
   for (const entry of changeset.entries) {
     const offending = await evaluateDirtyPath(ctx, workdir, entry);
-    if (offending !== undefined) dirty.push(offending);
+    if (offending === undefined) continue;
+    if (offending.class === 'local-changes') localChanges.push(offending.path);
+    else untracked.push(offending.path);
   }
-  return dirty;
+  return { localChanges, untracked };
 };
 
 const buildIndexEntry = async (
@@ -163,7 +175,9 @@ export const applyChangeset = async (
 
   if (!force) {
     const dirty = await checkDirty(ctx, workdir, changeset);
-    if (dirty.length > 0) throw checkoutOverwriteDirty(dirty);
+    if (dirty.localChanges.length > 0 || dirty.untracked.length > 0) {
+      throw checkoutOverwriteDirty(dirty);
+    }
   }
 
   const writtenEntries: IndexEntry[] = [];

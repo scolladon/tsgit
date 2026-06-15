@@ -212,7 +212,7 @@ const mergeCommit = async (
  */
 export const asMergeDirtyError = (err: unknown): unknown =>
   err instanceof TsgitError && err.data.code === 'CHECKOUT_OVERWRITE_DIRTY'
-    ? workingTreeDirty(err.data.paths)
+    ? workingTreeDirty({ localChanges: err.data.localChanges, untracked: err.data.untracked })
     : err;
 
 /**
@@ -535,7 +535,7 @@ const writeConflictingWorkingTree = async (
   // distinct-types rename. Mirrors git's "untracked working tree file would
   // be overwritten by merge" refusal (checked before any working-tree write).
   const blockers = await collectUntrackedRenameBlockers(ctx, conflicts);
-  if (blockers.length > 0) throw workingTreeDirty(blockers);
+  if (blockers.length > 0) throw workingTreeDirty({ localChanges: [], untracked: blockers });
 
   // Bounded parallelism — independent path writes overlap, but the pool
   // caps in-flight at MAX_CONCURRENT_PATH_WRITES so a 10k-path merge

@@ -208,7 +208,7 @@ describe('applyChangeset', () => {
           expect(err).toBeInstanceOf(TsgitError);
           if (!(err instanceof TsgitError)) throw err;
           expect(err.data.code).toBe('CHECKOUT_OVERWRITE_DIRTY');
-          expect(err.data.code === 'CHECKOUT_OVERWRITE_DIRTY' && err.data.paths).toEqual([
+          expect(err.data.code === 'CHECKOUT_OVERWRITE_DIRTY' && err.data.localChanges).toEqual([
             'mod.txt',
           ]);
         }
@@ -455,7 +455,7 @@ describe('applyChangeset', () => {
           if (!(err instanceof TsgitError)) throw err;
           // Assert
           expect(err.data.code).toBe('CHECKOUT_OVERWRITE_DIRTY');
-          expect(err.data.code === 'CHECKOUT_OVERWRITE_DIRTY' && err.data.paths).toEqual([
+          expect(err.data.code === 'CHECKOUT_OVERWRITE_DIRTY' && err.data.localChanges).toEqual([
             'del.txt',
           ]);
         }

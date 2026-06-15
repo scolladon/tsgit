@@ -547,6 +547,29 @@ describe('stash apply', () => {
     });
   });
 
+  describe('Given a dangling symlink squatting a stashed untracked path', () => {
+    describe('When apply runs', () => {
+      it('Then it refuses with STASH_APPLY_WOULD_OVERWRITE naming the dangling path', async () => {
+        // Arrange — stash an untracked file, then squat its path with a dangling
+        // symlink (its target does not exist). The lstat-based presence probe sees
+        // the link where a target-following probe would not.
+        const ctx = await setupRepo();
+        await write(ctx, 'new.txt', 'untracked\n');
+        await stashPush(ctx, { includeUntracked: true });
+        await ctx.fs.symlink('/nonexistent/target', `${ctx.layout.workDir}/new.txt`);
+
+        // Act
+        const act = stashApply(ctx, {});
+
+        // Assert
+        await act.catch((err: TsgitError) => {
+          expect(err.data).toEqual({ code: 'STASH_APPLY_WOULD_OVERWRITE', paths: ['new.txt'] });
+        });
+        await expect(act).rejects.toBeInstanceOf(TsgitError);
+      });
+    });
+  });
+
   describe('Given an include-untracked stash applied onto a clean tree', () => {
     describe('When apply runs', () => {
       it('Then the untracked file is restored', async () => {
