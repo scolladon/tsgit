@@ -156,8 +156,8 @@ Derived rules:
   into two class-keyed arrays on a single code:
   `WORKING_TREE_DIRTY { localChanges, untracked }`. A refusal is raised when
   either array is non-empty; a consumer reconstructs git's prose blocks straight
-  from the two arrays without re-statting. The single flat `{ paths }` shape the
-  original draft analysed is **superseded** by this two-array shape across the
+  from the two arrays without a re-stat. The single flat `{ paths }` shape the
+  original draft proposed is **superseded** by this two-array shape across the
   whole merge family (the untracked refusal, the clean-path dirty refusal, and the
   apply consumers).
 
