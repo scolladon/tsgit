@@ -1223,3 +1223,347 @@ describe.skipIf(!GIT_AVAILABLE)('missing-value-refusal interop — submodule url
     });
   });
 });
+
+/**
+ * Heavy submodule update-mode block (`file://` upstream submodule). One shared
+ * `beforeAll` builds a real upstream sub (C1→C2), a superproject pinning it at C2,
+ * and a `driftedClone()` helper that clones, populates the submodule (at C2 via
+ * `submodule update --init`), and drifts the working submodule back to C1 — so a
+ * `checkout`-mode update moves it C1→C2 and a `none`-mode update leaves it at C1.
+ * The block pins:
+ *   - the config-over-`.gitmodules` precedence matrix (tsgit submodule HEAD == git
+ *     HEAD per row, both override directions),
+ *   - the valueless `submodule.mysub.update` refusal (git pin / tsgit pin /
+ *     reconstruction / absent → `.gitmodules`-sourced mode / `--list` ok),
+ *   - the update-priority co-occurrence ordering (both orders report `update`,
+ *     url-only reports `url`).
+ * 60s timeout: heavy git-spawning interop times out hooks under validate's
+ * concurrency otherwise (project memory).
+ */
+interface UpdateModeFixture {
+  readonly base: string;
+  /** Clone the superproject, populate the submodule at C2, drift it back to C1. */
+  readonly driftedClone: () => string;
+  /** Read the working submodule's current HEAD oid in a clone. */
+  readonly subHead: (clone: string) => string;
+  readonly c1: string;
+  readonly c2: string;
+}
+
+/** Rewrite `submodule.mysub.update` in `.gitmodules`/config (file-write, valued). */
+const setUpdateLine = async (
+  filePath: string,
+  baseText: string,
+  mode: string | undefined,
+): Promise<void> => {
+  const line = mode !== undefined ? `\tupdate = ${mode}\n` : '';
+  await writeFile(filePath, `${baseText}${line}`);
+};
+
+/**
+ * Controls line numbers for the valueless `submodule.mysub.update` case.
+ * Line 1: [core]
+ * Line 2: \trepositoryformatversion = 0
+ * Line 3: [submodule "mysub"]
+ * Line 4: \turl = <relative>
+ * Line 5: \tupdate          <- valueless
+ */
+const VALUELESS_SUBMODULE_UPDATE_LINE = 5;
+/** url@L4 valueless, update@L5 valueless → git reports update (update-priority). */
+const URL_THEN_UPDATE_VALUELESS =
+  '[core]\n\trepositoryformatversion = 0\n[submodule "mysub"]\n\turl\n\tupdate\n';
+/** update@L4 valueless, url@L5 valueless → git reports update. */
+const UPDATE_THEN_URL_VALUELESS =
+  '[core]\n\trepositoryformatversion = 0\n[submodule "mysub"]\n\tupdate\n\turl\n';
+/** url@L4 valueless, update absent → git reports url. */
+const URL_VALUELESS_UPDATE_ABSENT =
+  '[core]\n\trepositoryformatversion = 0\n[submodule "mysub"]\n\turl\n';
+
+describe.skipIf(!GIT_AVAILABLE)('missing-value-refusal interop — submodule update', () => {
+  let fixture: UpdateModeFixture;
+  /** The clone config preamble whose valueless `url`/`update` lands at line 5. */
+  let configWithUrl: string;
+  /** The clone's `.gitmodules` text up to (not including) the `update` line. */
+  let gitmodulesBase: string;
+
+  beforeAll(async () => {
+    const base = await realpath(await mkdtemp(path.join(os.tmpdir(), 'tsgit-mv-subupd-')));
+    const subDir = path.join(base, 'sub');
+    runGit(['init', '-q', '-b', 'main', subDir]);
+    await writeFile(path.join(subDir, 'a.txt'), 'sub v1\n');
+    subGit(subDir, 'add', 'a.txt');
+    subGit(subDir, 'commit', '-q', '-m', 'c1');
+    const c1 = subGit(subDir, 'rev-parse', 'HEAD').trim();
+    await writeFile(path.join(subDir, 'a.txt'), 'sub v2\n');
+    subGit(subDir, 'add', 'a.txt');
+    subGit(subDir, 'commit', '-q', '-m', 'c2');
+    const c2 = subGit(subDir, 'rev-parse', 'HEAD').trim();
+    const superDir = path.join(base, 'super');
+    runGit(['init', '-q', '-b', 'main', superDir]);
+    await writeFile(path.join(superDir, 'r.txt'), 'root\n');
+    subGit(superDir, 'add', 'r.txt');
+    subGit(superDir, 'commit', '-q', '-m', 'root');
+    subGit(superDir, 'submodule', 'add', '../sub', 'mysub');
+    // Pin the submodule at C2, then drift the superproject's recorded gitlink
+    // is left at C2 (the just-added tip). The clone drifts its working copy.
+    subGit(superDir, 'commit', '-q', '-m', 'add submodule');
+    let cloneCounter = 0;
+    const driftedClone = (): string => {
+      cloneCounter += 1;
+      const dir = path.join(base, `clone-${cloneCounter}`);
+      subGit(base, 'clone', '-q', superDir, dir);
+      subGit(dir, 'submodule', 'update', '--init');
+      subGit(path.join(dir, 'mysub'), 'checkout', '-q', c1);
+      return dir;
+    };
+    const subHead = (clone: string): string =>
+      subGit(path.join(clone, 'mysub'), 'rev-parse', 'HEAD').trim();
+    fixture = { base, driftedClone, subHead, c1, c2 };
+    // The relative url a clone records for the submodule (read from a sample clone).
+    const sample = driftedClone();
+    const url = subGit(sample, 'config', '--get', 'submodule.mysub.url').trim();
+    configWithUrl = `[core]\n\trepositoryformatversion = 0\n[submodule "mysub"]\n\turl = ${url}\n`;
+    gitmodulesBase = `[submodule "mysub"]\n\tpath = mysub\n\turl = ${url}\n`;
+  }, 60_000);
+
+  afterAll(async () => {
+    if (fixture !== undefined) await rm(fixture.base, { recursive: true, force: true });
+  });
+
+  describe('Given config submodule.mysub.update overrides the .gitmodules mode', () => {
+    const matrix: ReadonlyArray<{
+      readonly title: string;
+      readonly gitmodulesMode: string | undefined;
+      readonly configMode: string | undefined;
+    }> = [
+      {
+        title: 'config checkout over .gitmodules none',
+        gitmodulesMode: 'none',
+        configMode: 'checkout',
+      },
+      {
+        title: 'config none over .gitmodules checkout',
+        gitmodulesMode: 'checkout',
+        configMode: 'none',
+      },
+      {
+        title: '.gitmodules none with config unset',
+        gitmodulesMode: 'none',
+        configMode: undefined,
+      },
+      {
+        title: '.gitmodules checkout with config unset',
+        gitmodulesMode: 'checkout',
+        configMode: undefined,
+      },
+      { title: 'both unset (checkout default)', gitmodulesMode: undefined, configMode: undefined },
+    ];
+
+    const applyModes = async (
+      clone: string,
+      gitmodulesMode: string | undefined,
+      configMode: string | undefined,
+    ): Promise<void> => {
+      await setUpdateLine(path.join(clone, '.gitmodules'), gitmodulesBase, gitmodulesMode);
+      if (configMode !== undefined) subGit(clone, 'config', 'submodule.mysub.update', configMode);
+    };
+
+    for (const row of matrix) {
+      describe(`When the resolved mode is ${row.title}`, () => {
+        it('Then tsgit reconciles the working submodule to the same HEAD as git', async () => {
+          // Arrange — two independent drifted clones, identical modes
+          const gitClone = fixture.driftedClone();
+          const tsgitClone = fixture.driftedClone();
+          await applyModes(gitClone, row.gitmodulesMode, row.configMode);
+          await applyModes(tsgitClone, row.gitmodulesMode, row.configMode);
+
+          // Act
+          subGit(gitClone, 'submodule', 'update');
+          const repo = await openRepository({ cwd: tsgitClone });
+          await repo.submodule.update({});
+
+          // Assert — same submodule HEAD, and it is the precedence-decided one
+          expect(fixture.subHead(tsgitClone)).toBe(fixture.subHead(gitClone));
+        });
+      });
+    }
+  });
+
+  describe('Given a clone with a valueless submodule.mysub.update at line 5', () => {
+    const fixtureText = (): string => `${configWithUrl}\tupdate\n`;
+
+    describe('When git submodule update is run', () => {
+      it('Then git refuses with exit 128 and the two-line missing-value message', async () => {
+        // Arrange
+        const clone = fixture.driftedClone();
+        await writeFile(path.join(clone, '.git', 'config'), fixtureText());
+
+        // Act
+        const g = tryRunGit(
+          ['-c', 'protocol.file.allow=always', '-C', clone, 'submodule', 'update'],
+          { env: SUBMODULE_AUTHOR_ENV },
+        );
+
+        // Assert
+        expect(g.ok).toBe(false);
+        expect(g.stderr).toContain("missing value for 'submodule.mysub.update'");
+        expect(g.stderr).toContain("bad config variable 'submodule.mysub.update'");
+        expect(g.stderr).toContain(`at line ${VALUELESS_SUBMODULE_UPDATE_LINE}`);
+      });
+    });
+
+    describe('When tsgit submodule.update is run', () => {
+      it('Then it throws CONFIG_MISSING_VALUE with key submodule.mysub.update and correct line', async () => {
+        // Arrange
+        const clone = fixture.driftedClone();
+        await writeFile(path.join(clone, '.git', 'config'), fixtureText());
+        const repo = await openRepository({ cwd: clone });
+
+        // Act
+        let caught: unknown;
+        try {
+          await repo.submodule.update({});
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert — each field individually (mutation-resistant)
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as {
+          code: string;
+          key: string;
+          line: number;
+          source: string;
+        };
+        expect(data.code).toBe('CONFIG_MISSING_VALUE');
+        expect(data.key).toBe('submodule.mysub.update');
+        expect(data.line).toBe(VALUELESS_SUBMODULE_UPDATE_LINE);
+        expect(data.source).toMatch(/\/config$/);
+      });
+    });
+
+    describe("When reconstructing git's two lines from tsgit structured fields", () => {
+      it("Then the reconstructed lines match git's stderr after path-token normalization", async () => {
+        // Arrange
+        const clone = fixture.driftedClone();
+        await writeFile(path.join(clone, '.git', 'config'), fixtureText());
+
+        // Act — run both git and tsgit against the same clone
+        const g = tryRunGit(
+          ['-c', 'protocol.file.allow=always', '-C', clone, 'submodule', 'update'],
+          { env: SUBMODULE_AUTHOR_ENV },
+        );
+        const repo = await openRepository({ cwd: clone });
+        let caught: unknown;
+        try {
+          await repo.submodule.update({});
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as { key: string; line: number };
+        const gitLines = g.stderr.split('\n').filter((l) => l.length > 0);
+        const errorLine = gitLines.find((l) => l.startsWith('error:')) ?? '';
+        const fatalLine = gitLines.find((l) => l.startsWith('fatal:')) ?? '';
+
+        expect(errorLine).toBe(`error: missing value for '${data.key}'`);
+
+        const normalizedSource = '.git/config';
+        const tsgitFatalLine = `fatal: bad config variable '${data.key}' in file '${normalizedSource}' at line ${data.line}`;
+        const normalizedFatalLine = fatalLine.replace(
+          /in file '[^']+'/,
+          `in file '${normalizedSource}'`,
+        );
+        expect(normalizedFatalLine).toBe(tsgitFatalLine);
+      });
+    });
+
+    describe('When tsgit configList is run on the same file', () => {
+      it('Then tsgit configList does not throw (refusal is at consumer, not read)', async () => {
+        // Arrange
+        const clone = fixture.driftedClone();
+        await writeFile(path.join(clone, '.git', 'config'), fixtureText());
+        const ctx = createNodeContext({ workDir: clone });
+
+        // Act + Assert — no throw
+        await expect(configList(ctx, {})).resolves.toBeDefined();
+      });
+    });
+  });
+
+  describe('Given a clone whose submodule.mysub.update is absent (only .gitmodules sets it)', () => {
+    describe('When tsgit submodule.update is run', () => {
+      it('Then the .gitmodules-sourced mode applies (none) and NOT CONFIG_MISSING_VALUE', async () => {
+        // Arrange — .gitmodules update=none, config has a valued url and no update
+        const clone = fixture.driftedClone();
+        await setUpdateLine(path.join(clone, '.gitmodules'), gitmodulesBase, 'none');
+        const repo = await openRepository({ cwd: clone });
+
+        // Act
+        const result = await repo.submodule.update({});
+
+        // Assert — .gitmodules none was applied (no-op), working submodule stays C1
+        expect(result.entries[0]).toMatchObject({ mode: 'none', changed: false });
+        expect(fixture.subHead(clone)).toBe(fixture.c1);
+      });
+    });
+  });
+
+  describe('Given co-occurring valueless submodule.mysub keys (update-priority)', () => {
+    const cases: ReadonlyArray<{
+      readonly title: string;
+      readonly text: string;
+      readonly expectedKey: string;
+    }> = [
+      {
+        title: 'url valueless on an earlier line than a valueless update',
+        text: URL_THEN_UPDATE_VALUELESS,
+        expectedKey: 'submodule.mysub.update',
+      },
+      {
+        title: 'update valueless on an earlier line than a valueless url',
+        text: UPDATE_THEN_URL_VALUELESS,
+        expectedKey: 'submodule.mysub.update',
+      },
+      {
+        title: 'url valueless and update absent',
+        text: URL_VALUELESS_UPDATE_ABSENT,
+        expectedKey: 'submodule.mysub.url',
+      },
+    ];
+
+    for (const c of cases) {
+      describe(`When ${c.title}`, () => {
+        it(`Then both git and tsgit report ${c.expectedKey}`, async () => {
+          // Arrange
+          const clone = fixture.driftedClone();
+          await writeFile(path.join(clone, '.git', 'config'), c.text);
+
+          // Act — git
+          const g = tryRunGit(
+            ['-c', 'protocol.file.allow=always', '-C', clone, 'submodule', 'update'],
+            { env: SUBMODULE_AUTHOR_ENV },
+          );
+          // Act — tsgit
+          const repo = await openRepository({ cwd: clone });
+          let caught: unknown;
+          try {
+            await repo.submodule.update({});
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert — git reports the priority key, tsgit matches
+          expect(g.ok).toBe(false);
+          expect(g.stderr).toContain(`missing value for '${c.expectedKey}'`);
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data as { code: string; key: string };
+          expect(data.code).toBe('CONFIG_MISSING_VALUE');
+          expect(data.key).toBe(c.expectedKey);
+        });
+      });
+    }
+  });
+});

@@ -669,6 +669,27 @@ const gitlinkFromIndex = (
   index.entries.find((e) => e.path === path && e.mode === FILE_MODE.GITLINK)?.id;
 
 /**
+ * The update mode git applies, by precedence: `opts.mode` (CLI) over config
+ * `submodule.<n>.update` over the `.gitmodules` mode over the `checkout` default.
+ * The config mode overrides `.gitmodules` in both directions. An unrecognised
+ * config value refuses with the same `invalidOption` shape as the `.gitmodules`
+ * path (`validateUpdateModes`).
+ */
+const resolveUpdateMode = (
+  opts: SubmoduleUpdateOptions,
+  config: ParsedConfig,
+  gitmodulesMode: SubmoduleUpdateMode | undefined,
+  name: string,
+): SubmoduleUpdateMode => {
+  const configRaw = config.submodule?.get(name)?.update;
+  const configMode = configRaw === undefined ? undefined : parseUpdateMode(configRaw);
+  if (configRaw !== undefined && configMode === undefined) {
+    throw invalidOption(`submodule.${name}.update`, `invalid value '${configRaw}'`);
+  }
+  return opts.mode ?? configMode ?? gitmodulesMode ?? 'checkout';
+};
+
+/**
  * Reconcile a submodule to the pinned oid per `mode`. `checkout` detaches HEAD at
  * the pin (skipped when already detached there); `rebase`/`merge` delegate to the
  * faithful `rebaseRun`/`mergeRun` on the submodule's current branch. Returns
@@ -715,13 +736,17 @@ export const submoduleUpdate = async (
   for (const row of selected) {
     const pinned = gitlinkFromIndex(index, row.path);
     if (pinned === undefined) continue;
+    // git reads `submodule.<n>.update` before `url` and refuses a valueless one
+    // with strict priority, regardless of file-line order — so this guard fires
+    // before the url-undefined branch below.
+    await assertNoValuelessConfig(ctx, 'submodule', row.name, ['update']);
     if (config.submodule?.get(row.name)?.url === undefined) {
       await assertNoValuelessConfig(ctx, 'submodule', row.name, ['url']);
       if (opts.init !== true) continue;
       await submoduleInit(ctx, { paths: [row.path] });
       config = await readConfig(ctx);
     }
-    const mode = opts.mode ?? updateModes.get(row.name) ?? 'checkout';
+    const mode = resolveUpdateMode(opts, config, updateModes.get(row.name), row.name);
     if (mode === 'none') {
       entries.push({
         name: row.name,
