@@ -61,8 +61,8 @@ It is enforced mechanically, not by review opinion — a divergence fails the bu
 - **The write-surface audit** forces every write surface to ship interop coverage
   ([ADR-204](../adr/204-porcelain-commands-as-write-surfaces.md)).
 
-When in doubt, verify against real `git` (scrubbed `GIT_*`, signing off) rather than
-guessing its behaviour. A deliberate divergence is permitted only when it
+When in doubt, verify against real `git` (scrubbed `GIT_*`, isolated `HOME`,
+`GIT_CONFIG_NOSYSTEM`, signing off) rather than guessing its behaviour. A deliberate divergence is permitted only when it
 carries its own ADR recording what diverges and why
 ([ADR-206](../adr/206-log-message-returns-raw-body-with-trailing-newline.md) is the
 template: a conscious, documented, interop-pinned divergence).
