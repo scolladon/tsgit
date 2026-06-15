@@ -37,19 +37,14 @@ const VALUELESS_NAME_LINE = 4;
 const ABSENT_USER_FIXTURE = '[core]\n\trepositoryformatversion = 0\n';
 
 /**
- * Build commit env: scrubbed GIT_* + isolated HOME + GIT_CONFIG_NOSYSTEM=1.
- * We deliberately do NOT set GIT_AUTHOR_* when testing the valueless case so git
- * reads from config and trips on the NULL. We DO set them for the absent case so
- * git can commit (proving absent is distinct from valueless).
+ * Build commit env with an identity supplied via the GIT_AUTHOR and
+ * GIT_COMMITTER variables.
+ * We deliberately do NOT supply an identity when testing the valueless case so
+ * git reads from config and trips on the NULL. We DO supply one for the absent
+ * case so git can commit (proving absent is distinct from valueless).
  */
-const makeCleanEnv = (isolatedHome: string): NodeJS.ProcessEnv => ({
+const makeIdentityEnv = (): NodeJS.ProcessEnv => ({
   ...runGitEnv(),
-  GIT_CONFIG_NOSYSTEM: '1',
-  HOME: isolatedHome,
-});
-
-const makeIdentityEnv = (isolatedHome: string): NodeJS.ProcessEnv => ({
-  ...makeCleanEnv(isolatedHome),
   GIT_AUTHOR_NAME: 'Test',
   GIT_AUTHOR_EMAIL: 'test@example.com',
   GIT_AUTHOR_DATE: '1700000000 +0000',
@@ -60,16 +55,13 @@ const makeIdentityEnv = (isolatedHome: string): NodeJS.ProcessEnv => ({
 
 describe.skipIf(!GIT_AVAILABLE)('missing-value-refusal interop', () => {
   let ours: string;
-  let isolatedHome: string;
 
   beforeEach(async () => {
     ours = await realpath(await mkdtemp(path.join(os.tmpdir(), 'tsgit-missing-value-ours-')));
-    isolatedHome = await mkdtemp(path.join(os.tmpdir(), 'tsgit-missing-value-home-'));
   });
 
   afterEach(async () => {
     await rm(ours, { recursive: true, force: true });
-    await rm(isolatedHome, { recursive: true, force: true });
   });
 
   const initRepo = (dir: string): void => {
@@ -91,7 +83,7 @@ describe.skipIf(!GIT_AVAILABLE)('missing-value-refusal interop', () => {
 
         // Act — no GIT_AUTHOR_* so git reads from config and trips on the NULL
         const g = tryRunGit(['-C', ours, 'commit', '-m', 'x'], {
-          env: makeCleanEnv(isolatedHome),
+          env: runGitEnv(),
         });
 
         // Assert
@@ -142,7 +134,7 @@ describe.skipIf(!GIT_AVAILABLE)('missing-value-refusal interop', () => {
 
         // Act — run both git and tsgit against the same repo
         const g = tryRunGit(['-C', ours, 'commit', '-m', 'x'], {
-          env: makeCleanEnv(isolatedHome),
+          env: runGitEnv(),
         });
         const repo = await openRepository({ cwd: ours });
         let caught: unknown;
@@ -217,7 +209,7 @@ describe.skipIf(!GIT_AVAILABLE)('missing-value-refusal interop', () => {
 
         // Act — provide identity via GIT_AUTHOR_* so git can commit
         const g = tryRunGit(['-C', ours, 'commit', '-m', 'x'], {
-          env: makeIdentityEnv(isolatedHome),
+          env: makeIdentityEnv(),
         });
 
         // Assert — git succeeds (absent identity resolves from env, not config)
@@ -265,12 +257,6 @@ describe.skipIf(!GIT_AVAILABLE)('missing-value-refusal interop', () => {
   /** Fixture with [remote "origin"] but no url line — the absent case. */
   const ABSENT_REMOTE_URL_FIXTURE = '[core]\n\trepositoryformatversion = 0\n[remote "origin"]\n';
 
-  const makeRemoteCleanEnv = (): NodeJS.ProcessEnv => ({
-    ...runGitEnv(),
-    GIT_CONFIG_NOSYSTEM: '1',
-    HOME: isolatedHome,
-  });
-
   describe('Given a config with a valueless remote.origin.url', () => {
     describe('When git fetch origin is run', () => {
       it('Then git refuses with exit 128 and the two-line missing-value message', async () => {
@@ -280,7 +266,7 @@ describe.skipIf(!GIT_AVAILABLE)('missing-value-refusal interop', () => {
 
         // Act
         const g = tryRunGit(['-C', ours, 'fetch', 'origin'], {
-          env: makeRemoteCleanEnv(),
+          env: runGitEnv(),
         });
 
         // Assert
@@ -329,7 +315,7 @@ describe.skipIf(!GIT_AVAILABLE)('missing-value-refusal interop', () => {
 
         // Act — run both git and tsgit against the same repo
         const g = tryRunGit(['-C', ours, 'fetch', 'origin'], {
-          env: makeRemoteCleanEnv(),
+          env: runGitEnv(),
         });
         const repo = await openRepository({ cwd: ours });
         let caught: unknown;
@@ -371,7 +357,7 @@ describe.skipIf(!GIT_AVAILABLE)('missing-value-refusal interop', () => {
 
         // Act
         const g = tryRunGit(['-C', ours, 'push', 'origin', 'main'], {
-          env: makeRemoteCleanEnv(),
+          env: runGitEnv(),
         });
 
         // Assert
@@ -420,7 +406,7 @@ describe.skipIf(!GIT_AVAILABLE)('missing-value-refusal interop', () => {
 
         // Act — run both git and tsgit against the same repo
         const g = tryRunGit(['-C', ours, 'push', 'origin', 'main'], {
-          env: makeRemoteCleanEnv(),
+          env: runGitEnv(),
         });
         const repo = await openRepository({ cwd: ours });
         let caught: unknown;
