@@ -2102,3 +2102,192 @@ describe.skipIf(!GIT_AVAILABLE)(
     });
   },
 );
+
+/**
+ * `core.hooksPath` per-accessor refusal. Unlike the `[core]` path-likes above,
+ * `hooksPath`'s git death breadth is intricate, ruleless, and flag-dependent, so
+ * tsgit gates it per-accessor at the hook-resolution point (`run-hook`/
+ * `invokeHook`), mirroring git's `find_hook` mechanism. tsgit and git AGREE on
+ * hook-running commands (commit/merge/checkout/…); tsgit accepts a DOCUMENTED
+ * UNDER-REFUSAL on commands that resolve no hook (`branch.list`, `log`, …) where
+ * git dies incidentally — those pins assert tsgit survives and do NOT assert git
+ * agreement.
+ *
+ * The fixtures are light (a one-commit repo + a hand-written `[core]` config), so
+ * each case uses its own `beforeEach` tmpdir.
+ */
+const VALUELESS_HOOKSPATH_FIXTURE = '[core]\n\thooksPath\n';
+const VALUELESS_HOOKSPATH_LINE = 2;
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'missing-value-refusal interop — core.hooksPath per-accessor',
+  () => {
+    let ours: string;
+
+    beforeEach(async () => {
+      ours = await realpath(await mkdtemp(path.join(os.tmpdir(), 'tsgit-mv-hookspath-')));
+      runGit(['init', '-q', '-b', 'main', ours]);
+      await writeFile(path.join(ours, 'r.txt'), 'root\n');
+      runGit(['-C', ours, 'add', 'r.txt']);
+      runGit(['-C', ours, 'commit', '-q', '-m', 'root'], { env: CORE_AUTHOR_ENV });
+    });
+
+    afterEach(async () => {
+      await rm(ours, { recursive: true, force: true });
+    });
+
+    describe('Given a config with a valueless core.hooksPath at line 2', () => {
+      describe('When a hook-resolving command runs', () => {
+        it('Then git commit refuses with exit 128 and the two-line missing-value message', async () => {
+          // Arrange
+          await writeFile(path.join(ours, 'r.txt'), 'changed\n');
+          runGit(['-C', ours, 'add', 'r.txt']);
+          await writeFile(path.join(ours, '.git', 'config'), VALUELESS_HOOKSPATH_FIXTURE);
+
+          // Act
+          const g = tryRunGit(['-C', ours, 'commit', '-m', 'x'], { env: CORE_AUTHOR_ENV });
+
+          // Assert
+          expect(g.ok).toBe(false);
+          expect(g.stderr).toContain("missing value for 'core.hookspath'");
+          expect(g.stderr).toContain("bad config variable 'core.hookspath'");
+          expect(g.stderr).toContain(`at line ${VALUELESS_HOOKSPATH_LINE}`);
+        });
+
+        it('Then tsgit commit refuses with CONFIG_MISSING_VALUE for core.hookspath', async () => {
+          // Arrange
+          await writeFile(path.join(ours, 'r.txt'), 'changed\n');
+          runGit(['-C', ours, 'add', 'r.txt']);
+          await writeFile(path.join(ours, '.git', 'config'), VALUELESS_HOOKSPATH_FIXTURE);
+          const repo = await openRepository({ cwd: ours });
+
+          // Act
+          let caught: unknown;
+          try {
+            await repo.commit({ message: 'x', author: CORE_COMMIT_AUTHOR });
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert — each field individually (mutation-resistant)
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data as CoreData;
+          expect(data.code).toBe('CONFIG_MISSING_VALUE');
+          expect(data.key).toBe('core.hookspath');
+          expect(data.line).toBe(VALUELESS_HOOKSPATH_LINE);
+          expect(data.source).toMatch(/\/config$/);
+        });
+      });
+
+      describe("When reconstructing git's two lines from tsgit commit fields", () => {
+        it("Then the reconstructed lines match git's stderr after path-token normalization", async () => {
+          // Arrange
+          await writeFile(path.join(ours, 'r.txt'), 'changed\n');
+          runGit(['-C', ours, 'add', 'r.txt']);
+          await writeFile(path.join(ours, '.git', 'config'), VALUELESS_HOOKSPATH_FIXTURE);
+
+          // Act — run both git and tsgit on the same fixture
+          const g = tryRunGit(['-C', ours, 'commit', '-m', 'x'], { env: CORE_AUTHOR_ENV });
+          const repo = await openRepository({ cwd: ours });
+          let caught: unknown;
+          try {
+            await repo.commit({ message: 'x', author: CORE_COMMIT_AUTHOR });
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data as CoreData;
+          const gitLines = g.stderr.split('\n').filter((l) => l.length > 0);
+          const errorLine = gitLines.find((l) => l.startsWith('error:')) ?? '';
+          const fatalLine = gitLines.find((l) => l.startsWith('fatal:')) ?? '';
+
+          expect(errorLine).toBe(`error: missing value for '${data.key}'`);
+
+          const normalizedSource = '.git/config';
+          const tsgitFatalLine = `fatal: bad config variable '${data.key}' in file '${normalizedSource}' at line ${data.line}`;
+          const normalizedFatalLine = fatalLine.replace(
+            /in file '[^']+'/,
+            `in file '${normalizedSource}'`,
+          );
+          expect(normalizedFatalLine).toBe(tsgitFatalLine);
+        });
+      });
+
+      describe('When a command that resolves no hook runs (documented under-refusal)', () => {
+        it('Then tsgit branch.list SURVIVES the valueless hooksPath (no agreement with git asserted)', async () => {
+          // Arrange — git's branch listing dies incidentally on a valueless
+          // hooksPath; tsgit's per-accessor gate is the recorded boundary:
+          // branch.list resolves no hook, so tsgit does NOT refuse. Agreement with
+          // git is deliberately NOT asserted here.
+          await writeFile(path.join(ours, '.git', 'config'), VALUELESS_HOOKSPATH_FIXTURE);
+          const repo = await openRepository({ cwd: ours });
+
+          // Act
+          let caught: unknown;
+          try {
+            await repo.branch.list();
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert — tsgit survives (under-refusal); definitely not a missing-value refusal
+          expect(caught).toBeUndefined();
+        });
+      });
+
+      describe('When the config porcelain reads the same fixture', () => {
+        it('Then tsgit configList/configGet survive with the valueless entry visible', async () => {
+          // Arrange
+          await writeFile(path.join(ours, '.git', 'config'), VALUELESS_HOOKSPATH_FIXTURE);
+          const ctx = createNodeContext({ workDir: ours });
+
+          // Act
+          const list = await configList(ctx, {});
+          let getCaught: unknown;
+          try {
+            await configGet(ctx, { key: 'core.hookspath' });
+          } catch (err) {
+            getCaught = err;
+          }
+
+          // Assert — porcelain survives; the valueless entry is visible as value: null
+          const listed = list.entries.find((e) => e.key === 'core.hookspath');
+          expect(listed?.value).toBeNull();
+          if (getCaught !== undefined) {
+            expect((getCaught as TsgitError).data.code).not.toBe('CONFIG_MISSING_VALUE');
+          }
+        });
+      });
+    });
+
+    describe('Given a config with an absent core.hooksPath', () => {
+      describe('When tsgit commit runs', () => {
+        it('Then it proceeds (default hooks dir), not a CONFIG_MISSING_VALUE refusal', async () => {
+          // Arrange
+          await writeFile(path.join(ours, 'r.txt'), 'changed\n');
+          runGit(['-C', ours, 'add', 'r.txt']);
+          await writeFile(
+            path.join(ours, '.git', 'config'),
+            '[core]\n\trepositoryformatversion = 0\n',
+          );
+          const repo = await openRepository({ cwd: ours });
+
+          // Act
+          let caught: unknown;
+          try {
+            await repo.commit({ message: 'x', author: CORE_COMMIT_AUTHOR });
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert — no missing-value refusal on the absent path
+          if (caught !== undefined) {
+            expect((caught as TsgitError).data.code).not.toBe('CONFIG_MISSING_VALUE');
+          }
+        });
+      });
+    });
+  },
+);
