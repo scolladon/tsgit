@@ -1076,6 +1076,43 @@ describe('merge.4b conflict persistence', () => {
     });
   });
 
+  describe('Given a conflicting merge with a clean theirs-only-changed sibling path', () => {
+    describe('When merge runs', () => {
+      it('Then the clean sibling is materialised in the working tree with theirs content', async () => {
+        // Arrange — file.txt conflicts (both sides change it); clean.txt is
+        // changed by theirs ONLY and is NOT dirty in the working tree (ours
+        // never touched it, so it still holds the base bytes). The conflict
+        // writer must still materialise this clean, theirs-only-changed path.
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'a\nb\nc\n');
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/clean.txt`, 'base-clean\n');
+        await add(ctx, ['file.txt', 'clean.txt']);
+        await commit(ctx, { message: 'base', author });
+        await branchCreate(ctx, { name: 'theirs' });
+        await checkout(ctx, { rev: 'theirs' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'a\nY\nc\n');
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/clean.txt`, 'THEIRS-CLEAN\n');
+        await add(ctx, ['file.txt', 'clean.txt']);
+        await commit(ctx, { message: 'theirs-edit-both', author });
+        await checkout(ctx, { rev: 'main' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'a\nX\nc\n');
+        await add(ctx, ['file.txt']);
+        await commit(ctx, { message: 'ours-edit-file-only', author });
+
+        // Act — conflicting merge: file.txt conflicts, clean.txt resolves to theirs.
+        const sut = await mergeRun(ctx, { rev: 'theirs', author });
+
+        // Assert — the merge conflicts on file.txt yet the clean, theirs-only
+        // sibling is written to the working tree with theirs bytes (the base
+        // bytes are gone). Under a neutered conflict-writer filter the sibling
+        // would still read 'base-clean\n'.
+        expect(sut.kind).toBe('conflict');
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/clean.txt`)).toBe('THEIRS-CLEAN\n');
+      });
+    });
+  });
+
   describe('Given a resolved content conflict', () => {
     describe('When add + commit run', () => {
       it('Then a merge commit is created with two parents (origHead + mergeHead)', async () => {
