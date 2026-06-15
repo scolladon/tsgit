@@ -76,7 +76,7 @@ real git 2.54.0 in the design's Matrix B/C/D). Insert them AFTER the existing
    read/init/add/commit with signing off (Matrix D), so there is nothing to create and
    nothing to clean up.
 2. **`env.GIT_CONFIG_NOSYSTEM = '1'`** (ADR-337). Closes the system-config vector — the
-   Matrix B canary is `credential.helper=osxkeychain` from `/etc/gitconfig` /
+   Matrix B canary is `credential.helper` from `/etc/gitconfig` /
    `$(brew --prefix)/etc/gitconfig`.
 3. **`env.XDG_CONFIG_HOME = path.join(env.HOME, '.config')`** (ADR-338, decision (b)
    alternative 2). Points the *independent* XDG config-discovery root into the same

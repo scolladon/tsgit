@@ -36,7 +36,7 @@ The empirical-pinning contract for this doc: `.claude/workflow/faithfulness.md`;
 Verifiable statements (each maps to a test or a pinned matrix row):
 
 1. **No developer global config is read.** Spawned git resolves no value from `~/.gitconfig` for any of: `merge.conflictStyle`, `init.defaultBranch`, `user.name`, `user.email`, `commit.gpgsign`, `diff.external`, `core.excludesfile`, and any custom `merge.<name>.driver`. (Matrix B.)
-2. **No system config is read.** Spawned git resolves no value from `/etc/gitconfig` / `$(brew --prefix)/etc/gitconfig` (`credential.helper=osxkeychain` is the canary). (Matrix B.)
+2. **No system config is read.** Spawned git resolves no value from `/etc/gitconfig` / `$(brew --prefix)/etc/gitconfig` (`credential.helper` is the canary). (Matrix B.)
 3. **No `XDG_CONFIG_HOME` config is read.** If the dev has `XDG_CONFIG_HOME` set to a directory containing `git/config`, spawned git must not read it. (Matrix C — independent leak vector, not covered by HOME isolation alone.)
 4. **The per-test env spread survives.** `{ ...runGitEnv(), GIT_AUTHOR_DATE: … }` and `{ ...runGitEnv(), GIT_AUTHOR_NAME: … }` callers still get the isolation; the `HOME` / `GIT_CONFIG_NOSYSTEM` / scrub keys are present in the spread and are not clobbered by the author/committer additions.
 5. **Explicit per-invocation config still wins.** A suite that *wants* a non-default value (`-c merge.conflictStyle=diff3`, `-c commit.gpgsign=false`) still gets it; isolation removes ambient defaults, it does not block explicit `-c`. (Matrix E.)
@@ -48,20 +48,20 @@ Verifiable statements (each maps to a test or a pinned matrix row):
 
 ### Empirical pinning (git 2.54.0, darwin)
 
-All probes ran with `GIT_*` scrubbed. WRITE probes ran in `mktemp -d` throwaways, never in the worktree (a worktree shares `.git/config` with the main checkout and all siblings via the common dir). The dev's real ambient config used as the test oracle:
+All probes ran with `GIT_*` scrubbed. WRITE probes ran in `mktemp -d` throwaways, never in the worktree (a worktree shares `.git/config` with the main checkout and all siblings via the common dir). The dev's ambient config used as the test oracle (personal values redacted to representative placeholders — only the keys' presence matters to the leak proof):
 
 ```
-# ~/.gitconfig (global) — relevant keys
+# ~/.gitconfig (global) — representative keys
 init.defaultbranch=main
 merge.conflictstyle=diff3
 commit.gpgsign=true
-diff.external=difft
-user.name=Sébastien Colladon
-user.email=colladonsebastien@gmail.com
+diff.external=<external-differ>
+user.name=Developer Name
+user.email=dev@example.com
 core.excludesfile=~/.gitignore
-merge.mergiraf.driver=mergiraf merge … (custom driver)
+merge.<name>.driver=<custom merge driver>
 # $(brew --prefix)/etc/gitconfig (system)
-credential.helper=osxkeychain
+credential.helper=<platform default>
 ```
 
 #### Matrix A — current `SAFE_ENV` LEAKS (inherited HOME, no NOSYSTEM)
@@ -72,13 +72,13 @@ Env = `GIT_*` scrubbed + `GIT_CEILING_DIRECTORIES=<tmp>` + **inherited `HOME`**,
 |---|---|---|---|
 | `merge.conflictStyle` | `diff3` | 0 | global |
 | `init.defaultBranch` | `main` | 0 | global |
-| `user.name` | `Sébastien Colladon` | 0 | global |
-| `user.email` | `colladonsebastien@gmail.com` | 0 | global |
+| `user.name` | `Developer Name` | 0 | global |
+| `user.email` | `dev@example.com` | 0 | global |
 | `commit.gpgsign` | `true` | 0 | global |
-| `diff.external` | `difft` | 0 | global |
+| `diff.external` | `<external-differ>` | 0 | global |
 | `core.excludesfile` | `~/.gitignore` | 0 | global |
-| `merge.mergiraf.driver` | `mergiraf merge …` | 0 | global |
-| `credential.helper` | `osxkeychain` | 0 | **system** |
+| `merge.<name>.driver` | `<custom merge driver>` | 0 | global |
+| `credential.helper` | `<platform default>` | 0 | **system** |
 
 Every key leaks. This is the bug.
 
@@ -189,11 +189,11 @@ This is a **test-infrastructure** change; the primary proof is that the existing
 
 Corpus: 44 `*-interop.test.ts`. **1 spawns no git** (`adapter-domain-interop.test.ts` — out of scope). The other **43** spawn git via the helper. Per-key dependency on *ambient* config:
 
-- **User identity (`user.name` / `user.email`):** No suite that commits relies on ambient `user.*`. Every committing suite sets identity explicitly — either via `initBothRepos` (`config user.name Ada` / `user.email ada@example.com`), via per-repo `git config user.*`, or via spread `GIT_AUTHOR_*` / `GIT_COMMITTER_*`. The four suites that set *no* identity (`add-interop`, `mv-interop`, `symbolic-ref-interop`, `adapter-domain-interop`) **never commit** — they only `init -b main` + `add` / `mv` / `symbolic-ref` / `write-tree`, none of which read identity. Without hardening, the dev's `user.name=Sébastien Colladon` would have leaked into any unguarded commit; the corpus guards every one.
+- **User identity (`user.name` / `user.email`):** No suite that commits relies on ambient `user.*`. Every committing suite sets identity explicitly — either via `initBothRepos` (`config user.name Ada` / `user.email ada@example.com`), via per-repo `git config user.*`, or via spread `GIT_AUTHOR_*` / `GIT_COMMITTER_*`. The four suites that set *no* identity (`add-interop`, `mv-interop`, `symbolic-ref-interop`, `adapter-domain-interop`) **never commit** — they only `init -b main` + `add` / `mv` / `symbolic-ref` / `write-tree`, none of which read identity. Without hardening, the dev's ambient `user.name` would have leaked into any unguarded commit; the corpus guards every one.
 - **`merge.conflictStyle`:** Already defended per-test. `add-add-content`, `conflict-marker-size-and-labels`, `distinct-types-with-base`, and `merge-conflict` pin `-c merge.conflictStyle=merge` with comments explicitly naming the diff3 trap ("the machine's global config may use diff3"). After hardening these become redundant-but-correct (Matrix B unsets the key → built-in `merge`).
 - **`init.defaultBranch`:** Latent, not active. Every `init` passes `-b main`/`-b <branch>` explicitly (and `initBothRepos` defaults to `main`). Matrix B2 shows hardening flips the *unspecified* default `main`→`master`, but no suite leaves it unspecified — so green stays green, and the corpus is now robust to a dev with a different ambient default.
 - **`commit.gpgsign`:** Already defended ubiquitously — ~25 suites set `commit.gpgsign=false` (per-repo `config` or `-c`) with comments noting a globally-enabled signing key would otherwise diverge the SHA. Hardening makes these redundant-but-correct (Matrix B unsets it → git's default off).
-- **System config / `core.*` / `diff.external` / custom merge drivers:** No suite reads ambient values; suites that need a merge driver (`merge-driver-interop`, `merge.custom.driver`; `add-add-content`/`distinct-types`/`merge-driver` via `.gitattributes merge=union`) define it explicitly per-repo. `credential.helper=osxkeychain` (system) leaked under Matrix A but no suite consumes it; NOSYSTEM closes it cleanly.
+- **System config / `core.*` / `diff.external` / custom merge drivers:** No suite reads ambient values; suites that need a merge driver (`merge-driver-interop`, `merge.custom.driver`; `add-add-content`/`distinct-types`/`merge-driver` via `.gitattributes merge=union`) define it explicitly per-repo. `credential.helper` (system) leaked under Matrix A but no suite consumes it; NOSYSTEM closes it cleanly.
 - **`config-interop.test.ts`:** The clearest evidence — line ~118 uses `git config --local --list` *specifically* because "the user's global config bleeds into the result on developer machines." After hardening, `--local` is belt-and-suspenders rather than load-bearing.
 - **`missing-value-refusal-interop.test.ts`:** *Already hardened locally* — `mkdtemp` isolated HOME + `GIT_CONFIG_NOSYSTEM=1` spread over `runGitEnv()` (its valueless-identity assertion requires git to read no ambient `user.*`). After centralising, its local HOME/NOSYSTEM additions become dead duplication of the helper's own mechanism and are removed in this change ([ADR-339](../adr/339-interop-sweep-drop-redundant-isolation-duplication.md)) — behaviour-preserving, since git still reads no ambient `user.*`, now via the helper's non-existent `HOME` (`isolatedHome` was never a `writeFile` target).
 

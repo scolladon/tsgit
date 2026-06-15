@@ -787,14 +787,11 @@
     "pathed",
     "nopath",
     "nourl",
-    "osxkeychain",
     "askpass",
     "centralising",
     "neutralise",
     "defaultbranch",
-    "conflictstyle",
-    "difft",
-    "mergiraf"
+    "conflictstyle"
   ],
   "ignorePaths": [
     "node_modules",
