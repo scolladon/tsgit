@@ -12,8 +12,6 @@ import {
   MAX_MERGE_TREE_DEPTH,
   materialiseConflictBytes,
   mergeRun,
-  parentDir,
-  removeWorkingTreeFile,
   resolveMergeAuthor,
   resolveMergeCommitter,
   writeConflictToTree,
@@ -1859,44 +1857,6 @@ describe('resolveMergeAuthor / resolveMergeCommitter (direct)', () => {
   });
 });
 
-describe('parentDir (direct)', () => {
-  describe('Given a nested path', () => {
-    describe('When parentDir is called', () => {
-      it('Then returns the directory above the leaf', () => {
-        // Arrange
-        const sut = parentDir('/work/sub/file.txt');
-
-        // Assert
-        expect(sut).toBe('/work/sub');
-      });
-    });
-  });
-
-  describe('Given a path whose only slash is at index 0', () => {
-    describe('When parentDir is called', () => {
-      it('Then returns undefined (lastSlash <= 0)', () => {
-        // Arrange
-        const sut = parentDir('/abc');
-
-        // Assert
-        expect(sut).toBeUndefined();
-      });
-    });
-  });
-
-  describe('Given a path with no slash', () => {
-    describe('When parentDir is called', () => {
-      it('Then returns undefined (lastSlash === -1)', () => {
-        // Arrange
-        const sut = parentDir('abc');
-
-        // Assert
-        expect(sut).toBeUndefined();
-      });
-    });
-  });
-});
-
 describe('writeNestedTree (direct)', () => {
   describe('Given flat leaves at depth exactly MAX_MERGE_TREE_DEPTH', () => {
     describe('When writeNestedTree runs', () => {
@@ -2045,38 +2005,6 @@ describe('writeOutcomeToTree (direct)', () => {
 
         // Assert
         expect(await ctx.fs.exists(`${ctx.layout.workDir}/d.txt`)).toBe(false);
-      });
-    });
-  });
-});
-
-describe('removeWorkingTreeFile (direct)', () => {
-  describe('Given an existing working-tree file', () => {
-    describe('When removeWorkingTreeFile runs', () => {
-      it('Then the file is deleted', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await init(ctx);
-        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/gone.txt`, 'bytes');
-
-        // Act
-        await removeWorkingTreeFile(ctx, 'gone.txt' as FilePath);
-
-        // Assert
-        expect(await ctx.fs.exists(`${ctx.layout.workDir}/gone.txt`)).toBe(false);
-      });
-    });
-  });
-
-  describe('Given a path with no working-tree file', () => {
-    describe('When removeWorkingTreeFile runs', () => {
-      it('Then it does NOT throw (exists guard)', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await init(ctx);
-
-        // Act / Assert — the `if (exists)` guard prevents an rm on a missing path.
-        await expect(removeWorkingTreeFile(ctx, 'absent.txt' as FilePath)).resolves.toBeUndefined();
       });
     });
   });

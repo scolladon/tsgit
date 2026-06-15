@@ -208,11 +208,6 @@ describe.skipIf(!GIT_AVAILABLE)(
       await oursCommit('side-change');
 
       // Back to main: replace p with ours' shape.
-      // When theirs is a symlink, tsgit's checkout can't overwrite the symlink
-      // with a regular file — manually remove it first so checkout succeeds.
-      if (spec.theirs.kind === 'symlink') {
-        unlinkSync(path.join(pair.ours, 'p'));
-      }
       await repo.checkout({ rev: 'main' });
       await repo.rm(['p']);
       if (spec.ours.kind === 'file') {
@@ -499,9 +494,6 @@ describe.skipIf(!GIT_AVAILABLE)(
           symlinkSync('target-b', path.join(pair.ours, 'p'));
           await repo.add(['p']);
           await oursCommit('side-symlink');
-          // Returning to main: symlink → regular file. tsgit's checkout cannot
-          // overwrite a symlink with a regular file — remove it manually first.
-          unlinkSync(path.join(pair.ours, 'p'));
           await repo.checkout({ rev: 'main' });
           await oursWrite('root2.txt', 'extra\n');
           await repo.add(['root2.txt']);
@@ -657,9 +649,6 @@ describe.skipIf(!GIT_AVAILABLE)(
           symlinkSync('target-b', path.join(pair.ours, 'p'));
           await repo.add(['p']);
           await oursCommit('side-symlink');
-          // Returning to main: symlink → regular file. tsgit's checkout cannot
-          // overwrite a symlink with a regular file — remove it manually first.
-          unlinkSync(path.join(pair.ours, 'p'));
           await repo.checkout({ rev: 'main' });
           await repo.rm(['p']);
           await oursWrite('p', 'ours\n');
@@ -715,9 +704,6 @@ describe.skipIf(!GIT_AVAILABLE)(
           symlinkSync('target-b', path.join(pair.ours, 'p'));
           await repo.add(['p']);
           await oursCommit('side-symlink');
-          // Returning to main: symlink → regular file. tsgit's checkout cannot
-          // overwrite a symlink with a regular file — remove it manually first.
-          unlinkSync(path.join(pair.ours, 'p'));
           await repo.checkout({ rev: 'main' });
           await repo.rm(['p']);
           await oursWrite('p', 'ours\n');
