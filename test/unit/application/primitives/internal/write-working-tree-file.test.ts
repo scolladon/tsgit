@@ -1,6 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
-  parentDir,
   removeWorkingTreeFile,
   writeRegularFile,
   writeWorkingTreeEntry,
@@ -14,35 +13,6 @@ const encode = (text: string): Uint8Array => new TextEncoder().encode(text);
 const decode = (bytes: Uint8Array): string => new TextDecoder().decode(bytes);
 
 describe('write-working-tree-file', () => {
-  describe('parentDir', () => {
-    describe('Given a nested path', () => {
-      describe('When the parent is computed', () => {
-        it('Then it returns the directory portion', () => {
-          // Arrange + Act + Assert
-          expect(parentDir('/work/dir/a.txt')).toBe('/work/dir');
-        });
-      });
-    });
-
-    describe('Given a root-level path', () => {
-      describe('When the parent is computed', () => {
-        it('Then it returns undefined (no parent to create)', () => {
-          // Arrange + Act + Assert — the leading-slash-only case (lastSlash === 0).
-          expect(parentDir('/foo')).toBeUndefined();
-        });
-      });
-    });
-
-    describe('Given a path with no slash', () => {
-      describe('When the parent is computed', () => {
-        it('Then it returns undefined', () => {
-          // Arrange + Act + Assert
-          expect(parentDir('foo')).toBeUndefined();
-        });
-      });
-    });
-  });
-
   describe('writeWorkingTreeFile', () => {
     describe('Given a nested path whose parent does not exist', () => {
       describe('When the file is written', () => {

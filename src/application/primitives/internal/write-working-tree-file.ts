@@ -28,23 +28,6 @@ export const rmIfExists = async (ctx: Context, fullPath: string): Promise<void> 
 };
 
 /**
- * The parent directory of an absolute path, or `undefined` when there is none
- * to create (no slash, or a root-level path like `/foo`). Exported for direct
- * unit testing of the boundary.
- */
-export const parentDir = (fullPath: string): string | undefined => {
-  const lastSlash = fullPath.lastIndexOf('/');
-  if (lastSlash <= 0) return undefined;
-  return fullPath.slice(0, lastSlash);
-};
-
-/** Create the parent directory of an absolute path when there is one. */
-export const ensureParent = async (ctx: Context, fullPath: string): Promise<void> => {
-  const parent = parentDir(fullPath);
-  if (parent !== undefined) await ctx.fs.mkdir(parent);
-};
-
-/**
  * Join a working-tree-relative path onto the work directory, collapsing a
  * trailing slash so the result is byte-identical regardless of how `workDir`
  * is configured (the single definition shared with `apply-changeset`).
@@ -64,7 +47,6 @@ export const writeRegularFile = async (
   content: Uint8Array,
   mode?: FileMode,
 ): Promise<void> => {
-  await ensureParent(ctx, fullPath);
   await rmIfExists(ctx, fullPath);
   await ctx.fs.write(fullPath, content);
   if (mode !== undefined) {
@@ -99,13 +81,11 @@ export const writeWorkingTreeEntry = async (
 ): Promise<void> => {
   const fullPath = joinPath(ctx.layout.workDir, path);
   if (mode === FILE_MODE.SYMLINK) {
-    await ensureParent(ctx, fullPath);
     await rmIfExists(ctx, fullPath);
     await ctx.fs.symlink(decoder.decode(content), fullPath);
     return;
   }
   if (mode === FILE_MODE.GITLINK) {
-    await ensureParent(ctx, fullPath);
     await ctx.fs.mkdir(fullPath);
     return;
   }
