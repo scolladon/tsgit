@@ -25,7 +25,7 @@ import {
 import type { Context } from '../../ports/context.js';
 import type { Changeset, ChangesetEntry } from './compute-changeset.js';
 import { serializeAndHash } from './internal/serialize-and-hash.js';
-import { rmIfExists } from './internal/write-working-tree-file.js';
+import { joinPath, rmIfExists, writeWorkingTreeEntry } from './internal/write-working-tree-file.js';
 import { readBlob } from './read-blob.js';
 
 export interface ApplyChangesetOpts {
@@ -41,13 +41,6 @@ export interface ApplyChangesetResult {
 }
 
 const CHECKOUT_OP = 'checkout:materialize';
-const MODE_REGULAR_PERM = 0o644;
-const MODE_EXEC_PERM = 0o755;
-
-const decoder = new TextDecoder();
-
-const joinPath = (workdir: string, rel: FilePath): string =>
-  workdir.endsWith('/') ? `${workdir}${rel}` : `${workdir}/${rel}`;
 
 const blobMatches = async (ctx: Context, absPath: string, expectedId: string): Promise<boolean> => {
   let bytes: Uint8Array;
@@ -116,28 +109,6 @@ const checkDirty = async (
   return dirty;
 };
 
-const writeFileEntry = async (
-  ctx: Context,
-  absPath: string,
-  content: Uint8Array,
-  mode: FileMode,
-): Promise<void> => {
-  if (mode === FILE_MODE.SYMLINK) {
-    const target = decoder.decode(content);
-    // Symlinks are written atomically by the platform; rm any previous entry
-    // at the path first (lstat-probing, so dangling symlinks are removed too).
-    await rmIfExists(ctx, absPath);
-    await ctx.fs.symlink(target, absPath);
-    return;
-  }
-  if (mode === FILE_MODE.GITLINK) {
-    await ctx.fs.mkdir(absPath);
-    return;
-  }
-  await ctx.fs.write(absPath, content);
-  await ctx.fs.chmod(absPath, mode === FILE_MODE.EXECUTABLE ? MODE_EXEC_PERM : MODE_REGULAR_PERM);
-};
-
 const buildIndexEntry = async (
   ctx: Context,
   absPath: string,
@@ -177,9 +148,9 @@ const applyEntry = async (
   if (entry.id === undefined) return undefined;
   if (entry.mode !== FILE_MODE.GITLINK) {
     const blob = await readBlob(ctx, entry.id as IndexEntry['id']);
-    await writeFileEntry(ctx, absPath, blob.content, entry.mode);
+    await writeWorkingTreeEntry(ctx, entry.path, blob.content, entry.mode);
   } else {
-    await writeFileEntry(ctx, absPath, new Uint8Array(), entry.mode);
+    await writeWorkingTreeEntry(ctx, entry.path, new Uint8Array(), entry.mode);
   }
   return buildIndexEntry(ctx, absPath, entry.path, entry.id, entry.mode);
 };

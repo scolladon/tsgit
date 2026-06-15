@@ -1,7 +1,10 @@
 /**
- * Primitive-layer working-tree file writer/remover. Writing creates parent
- * directories; removing is a no-op when the file is already absent. Used by the
- * three-way merge → working-tree application (`apply-merge-to-worktree`).
+ * Primitive-layer working-tree file writers/remover. Writing creates parent
+ * directories; removing is a no-op when the file is already absent. The
+ * low-level `writeRegularFile` always unlinks an occupant before a regular
+ * write; the mode-aware `writeWorkingTreeEntry` dispatches symlink / gitlink /
+ * regular on top of it. Shared by checkout's changeset application and the
+ * three-way merge → working-tree application.
  */
 import { FILE_MODE, type FileMode, type FilePath } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
@@ -35,6 +38,43 @@ export const parentDir = (fullPath: string): string | undefined => {
   return fullPath.slice(0, lastSlash);
 };
 
+/** Create the parent directory of an absolute path when there is one. */
+export const ensureParent = async (ctx: Context, fullPath: string): Promise<void> => {
+  const parent = parentDir(fullPath);
+  if (parent !== undefined) await ctx.fs.mkdir(parent);
+};
+
+/**
+ * Join a working-tree-relative path onto the work directory, collapsing a
+ * trailing slash so the result is byte-identical regardless of how `workDir`
+ * is configured (the single definition shared with `apply-changeset`).
+ */
+export const joinPath = (workDir: string, path: FilePath): string =>
+  workDir.endsWith('/') ? `${workDir}${path}` : `${workDir}/${path}`;
+
+/**
+ * Low-level regular-file writer and the single owner of the
+ * unlink-before-regular-write rule: it `rmIfExists` unconditionally before the
+ * write so a kind change (symlink → file) self-heals and the memory adapter
+ * never keeps a stale symlink entry. `chmod` runs only when a `mode` is given.
+ */
+export const writeRegularFile = async (
+  ctx: Context,
+  fullPath: string,
+  content: Uint8Array,
+  mode?: FileMode,
+): Promise<void> => {
+  await ensureParent(ctx, fullPath);
+  await rmIfExists(ctx, fullPath);
+  await ctx.fs.write(fullPath, content);
+  if (mode !== undefined) {
+    await ctx.fs.chmod(
+      fullPath,
+      mode === FILE_MODE.EXECUTABLE ? MODE_EXEC_PERM : MODE_REGULAR_PERM,
+    );
+  }
+};
+
 export const writeWorkingTreeFile = async (
   ctx: Context,
   path: FilePath,
@@ -47,10 +87,12 @@ export const writeWorkingTreeFile = async (
 };
 
 /**
- * Mode-aware working-tree write: symlink mode (120000) → create a symlink whose
- * target is the blob content decoded as UTF-8 (rm-if-exists first, mirroring
- * `apply-changeset`'s `writeFileEntry`); regular modes → plain file write.
- * Exported for use by the merge conflict materialisation step.
+ * Mode-aware working-tree write dispatching on `FileMode`: symlink (120000) →
+ * create a symlink whose target is the blob content decoded as UTF-8 (rm-if-exists
+ * first); gitlink (160000) → create the submodule directory (only checkout feeds
+ * this arm); regular modes → delegate to `writeRegularFile`, which always unlinks
+ * an occupant first so a kind change self-heals. Exported for the merge conflict
+ * materialisation step and checkout's changeset application.
  */
 export const writeWorkingTreeEntry = async (
   ctx: Context,
@@ -58,17 +100,19 @@ export const writeWorkingTreeEntry = async (
   content: Uint8Array,
   mode: FileMode,
 ): Promise<void> => {
-  const fullPath = `${ctx.layout.workDir}/${path}`;
-  const parent = parentDir(fullPath);
-  if (parent !== undefined) await ctx.fs.mkdir(parent);
+  const fullPath = joinPath(ctx.layout.workDir, path);
   if (mode === FILE_MODE.SYMLINK) {
-    const target = decoder.decode(content);
+    await ensureParent(ctx, fullPath);
     await rmIfExists(ctx, fullPath);
-    await ctx.fs.symlink(target, fullPath);
+    await ctx.fs.symlink(decoder.decode(content), fullPath);
     return;
   }
-  await ctx.fs.write(fullPath, content);
-  await ctx.fs.chmod(fullPath, mode === FILE_MODE.EXECUTABLE ? MODE_EXEC_PERM : MODE_REGULAR_PERM);
+  if (mode === FILE_MODE.GITLINK) {
+    await ensureParent(ctx, fullPath);
+    await ctx.fs.mkdir(fullPath);
+    return;
+  }
+  await writeRegularFile(ctx, fullPath, content, mode);
 };
 
 export const removeWorkingTreeFile = async (ctx: Context, path: FilePath): Promise<void> => {
