@@ -35,7 +35,7 @@ import { createCommit } from '../primitives/create-commit.js';
 import { flattenTree } from '../primitives/flatten-tree.js';
 import { writeDistinctTypesSides } from '../primitives/internal/write-distinct-types-sides.js';
 import {
-  rmIfExists,
+  removeWorkingTreeFile,
   writeWorkingTreeEntry,
   writeWorkingTreeFile,
 } from '../primitives/internal/write-working-tree-file.js';
@@ -663,12 +663,6 @@ export const materialiseConflictBytes = async (
     return (await readBlob(ctx, survivorId, READ_BLOB_OPTS)).content;
   }
   return undefined;
-};
-
-/** Remove a working-tree file if it exists. Exported for direct unit testing. */
-export const removeWorkingTreeFile = async (ctx: Context, path: FilePath): Promise<void> => {
-  const fullPath = `${ctx.layout.workDir}/${path}`;
-  await rmIfExists(ctx, fullPath);
 };
 
 const zeroStat = (mode: FileMode): StatData => ({
