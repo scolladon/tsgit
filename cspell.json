@@ -786,7 +786,15 @@
     "unregistering",
     "pathed",
     "nopath",
-    "nourl"
+    "nourl",
+    "osxkeychain",
+    "askpass",
+    "centralising",
+    "neutralise",
+    "defaultbranch",
+    "conflictstyle",
+    "difft",
+    "mergiraf"
   ],
   "ignorePaths": [
     "node_modules",
