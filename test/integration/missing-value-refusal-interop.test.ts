@@ -14,12 +14,20 @@ import { mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
 import { configList } from '../../src/application/commands/config.js';
 import { TsgitError } from '../../src/domain/error.js';
+import type { AuthorIdentity } from '../../src/domain/objects/index.js';
 import { openRepository } from '../../src/index.node.js';
 import { GIT_AVAILABLE, runGit, runGitEnv, tryRunGit } from './interop-helpers.js';
+
+const AUTHOR: AuthorIdentity = {
+  name: 'Ada',
+  email: 'ada@example.com',
+  timestamp: 1_700_000_000,
+  timezoneOffset: '+0000',
+};
 
 /**
  * A fixture that controls line numbers. The valueless `user.name` lands at line 4.
@@ -703,6 +711,291 @@ describe.skipIf(!GIT_AVAILABLE)('missing-value-refusal interop', () => {
         const data = (caught as TsgitError).data;
         expect(data.code).toBe('NO_UPSTREAM_CONFIGURED');
         expect(data.code).not.toBe('CONFIG_MISSING_VALUE');
+      });
+    });
+  });
+});
+
+/**
+ * Heavy merge-driver block (`.gitattributes` `* merge=mydriver` + a real
+ * conflicting content merge). One shared `beforeAll` repo pair (project memory:
+ * heavy git-spawning interop times out hooks under validate's concurrency
+ * otherwise). The valueless `[merge "mydriver"]` death fires only when the
+ * driver is selected for a conflicting path, so each test resets the diverged
+ * graph to its pre-merge `main` tip, rewrites `.git/config`, then merges —
+ * neither tool commits on the valueless death, so the shared graph survives.
+ */
+const MERGE_AUTHOR_ENV: NodeJS.ProcessEnv = {
+  ...runGitEnv(),
+  GIT_AUTHOR_NAME: 'Ada',
+  GIT_AUTHOR_EMAIL: 'ada@example.com',
+  GIT_AUTHOR_DATE: '1700000000 +0000',
+  GIT_COMMITTER_NAME: 'Ada',
+  GIT_COMMITTER_EMAIL: 'ada@example.com',
+  GIT_COMMITTER_DATE: '1700000000 +0000',
+};
+
+/**
+ * Controls line numbers: the valueless `driver` lands at line 4.
+ * Line 1: [core]
+ * Line 2: \trepositoryformatversion = 0
+ * Line 3: [merge "mydriver"]
+ * Line 4: \tdriver           <- valueless
+ */
+const VALUELESS_MERGE_DRIVER_FIXTURE =
+  '[core]\n\trepositoryformatversion = 0\n[merge "mydriver"]\n\tdriver\n';
+const VALUELESS_MERGE_DRIVER_LINE = 4;
+
+/** Both driver keys valueless, driver earlier (line 4) than name (line 5). */
+const VALUELESS_MERGE_BOTH_DRIVER_FIRST_FIXTURE =
+  '[core]\n\trepositoryformatversion = 0\n[merge "mydriver"]\n\tdriver\n\tname\n';
+
+/** Both driver keys valueless, name earlier (line 4) than driver (line 5). */
+const VALUELESS_MERGE_BOTH_NAME_FIRST_FIXTURE =
+  '[core]\n\trepositoryformatversion = 0\n[merge "mydriver"]\n\tname\n\tdriver\n';
+
+/** No [merge "mydriver"] section — the absent case (built-in text driver). */
+const ABSENT_MERGE_DRIVER_FIXTURE = '[core]\n\trepositoryformatversion = 0\n';
+
+describe.skipIf(!GIT_AVAILABLE)('missing-value-refusal interop — merge driver', () => {
+  let peer: string;
+  let ours: string;
+
+  /** Build a diverged graph whose merge conflicts on data.txt and engages mydriver. */
+  beforeAll(async () => {
+    peer = await realpath(await mkdtemp(path.join(os.tmpdir(), 'tsgit-mv-merge-peer-')));
+    ours = await realpath(await mkdtemp(path.join(os.tmpdir(), 'tsgit-mv-merge-ours-')));
+    for (const dir of [peer, ours]) {
+      runGit(['init', '-q', '-b', 'main', dir]);
+      await writeFile(path.join(dir, '.gitattributes'), '* merge=mydriver\n');
+      await writeFile(path.join(dir, 'data.txt'), 'base\n');
+      runGit(['-C', dir, 'add', '.gitattributes', 'data.txt']);
+      runGit(['-C', dir, 'commit', '-q', '-m', 'base'], { env: MERGE_AUTHOR_ENV });
+      runGit(['-C', dir, 'checkout', '-q', '-b', 'theirs']);
+      await writeFile(path.join(dir, 'data.txt'), 'theirs\n');
+      runGit(['-C', dir, 'add', 'data.txt']);
+      runGit(['-C', dir, 'commit', '-q', '-m', 'theirs'], { env: MERGE_AUTHOR_ENV });
+      runGit(['-C', dir, 'checkout', '-q', 'main']);
+      await writeFile(path.join(dir, 'data.txt'), 'ours\n');
+      runGit(['-C', dir, 'add', 'data.txt']);
+      runGit(['-C', dir, 'commit', '-q', '-m', 'ours'], { env: MERGE_AUTHOR_ENV });
+    }
+  }, 60_000);
+
+  afterAll(async () => {
+    await rm(peer, { recursive: true, force: true });
+    await rm(ours, { recursive: true, force: true });
+  });
+
+  /** Restore both repos to the pre-merge `main` tip with a clean worktree. */
+  const resetBoth = (): void => {
+    for (const dir of [peer, ours]) {
+      runGit(['-C', dir, 'merge', '--abort'], { env: MERGE_AUTHOR_ENV });
+      runGit(['-C', dir, 'checkout', '-q', '-f', 'main']);
+      runGit(['-C', dir, 'reset', '-q', '--hard', 'main']);
+    }
+  };
+
+  const writeBothConfig = async (fixture: string): Promise<void> => {
+    await writeFile(path.join(peer, '.git', 'config'), fixture);
+    await writeFile(path.join(ours, '.git', 'config'), fixture);
+  };
+
+  beforeEach(() => {
+    // merge --abort fails cleanly when no merge is in progress; ignore.
+    try {
+      resetBoth();
+    } catch {
+      runGit(['-C', peer, 'checkout', '-q', '-f', 'main']);
+      runGit(['-C', ours, 'checkout', '-q', '-f', 'main']);
+    }
+  });
+
+  describe('Given a config with a valueless merge.mydriver.driver at line 4', () => {
+    describe('When git merge engages the driver', () => {
+      it('Then git refuses with exit 128 and the two-line missing-value message', async () => {
+        // Arrange
+        await writeBothConfig(VALUELESS_MERGE_DRIVER_FIXTURE);
+
+        // Act
+        const g = tryRunGit(['-C', peer, 'merge', '--no-ff', '-m', 'm', 'theirs'], {
+          env: MERGE_AUTHOR_ENV,
+        });
+
+        // Assert
+        expect(g.ok).toBe(false);
+        expect(g.stderr).toContain("missing value for 'merge.mydriver.driver'");
+        expect(g.stderr).toContain("bad config variable 'merge.mydriver.driver'");
+        expect(g.stderr).toContain(`at line ${VALUELESS_MERGE_DRIVER_LINE}`);
+      });
+    });
+
+    describe('When tsgit merge engages the driver', () => {
+      it('Then throws CONFIG_MISSING_VALUE with key merge.mydriver.driver and correct line', async () => {
+        // Arrange
+        await writeBothConfig(VALUELESS_MERGE_DRIVER_FIXTURE);
+        const repo = await openRepository({ cwd: ours });
+
+        // Act
+        let caught: unknown;
+        try {
+          await repo.merge.run({ rev: 'theirs', message: 'm' });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert — each field individually (mutation-resistant)
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as {
+          code: string;
+          key: string;
+          line: number;
+          source: string;
+        };
+        expect(data.code).toBe('CONFIG_MISSING_VALUE');
+        expect(data.key).toBe('merge.mydriver.driver');
+        expect(data.line).toBe(VALUELESS_MERGE_DRIVER_LINE);
+        expect(data.source).toMatch(/\/config$/);
+      });
+    });
+
+    describe("When reconstructing git's two lines from tsgit merge structured fields", () => {
+      it("Then the reconstructed lines match git's stderr after path-token normalization", async () => {
+        // Arrange
+        await writeBothConfig(VALUELESS_MERGE_DRIVER_FIXTURE);
+
+        // Act — run both git and tsgit against the same fixture
+        const g = tryRunGit(['-C', peer, 'merge', '--no-ff', '-m', 'm', 'theirs'], {
+          env: MERGE_AUTHOR_ENV,
+        });
+        const repo = await openRepository({ cwd: ours });
+        let caught: unknown;
+        try {
+          await repo.merge.run({ rev: 'theirs', message: 'm' });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as {
+          code: string;
+          key: string;
+          line: number;
+          source: string;
+        };
+        const gitLines = g.stderr.split('\n').filter((l) => l.length > 0);
+        const errorLine = gitLines.find((l) => l.startsWith('error:')) ?? '';
+        const fatalLine = gitLines.find((l) => l.startsWith('fatal:')) ?? '';
+
+        expect(errorLine).toBe(`error: missing value for '${data.key}'`);
+
+        const normalizedSource = '.git/config';
+        const tsgitFatalLine = `fatal: bad config variable '${data.key}' in file '${normalizedSource}' at line ${data.line}`;
+        const normalizedFatalLine = fatalLine.replace(
+          /in file '[^']+'/,
+          `in file '${normalizedSource}'`,
+        );
+        expect(normalizedFatalLine).toBe(tsgitFatalLine);
+      });
+    });
+
+    describe('When tsgit configList is run on the same file', () => {
+      it('Then tsgit configList does not throw (refusal is at consumer, not read)', async () => {
+        // Arrange
+        await writeBothConfig(VALUELESS_MERGE_DRIVER_FIXTURE);
+        const ctx = createNodeContext({ workDir: ours });
+
+        // Act + Assert — no throw
+        await expect(configList(ctx, {})).resolves.toBeDefined();
+      });
+    });
+  });
+
+  describe('Given both merge.mydriver.driver and name valueless with driver earlier', () => {
+    describe('When git merge and tsgit merge engage the driver', () => {
+      it('Then both report the earlier-by-line key merge.mydriver.driver at line 4', async () => {
+        // Arrange
+        await writeBothConfig(VALUELESS_MERGE_BOTH_DRIVER_FIRST_FIXTURE);
+
+        // Act
+        const g = tryRunGit(['-C', peer, 'merge', '--no-ff', '-m', 'm', 'theirs'], {
+          env: MERGE_AUTHOR_ENV,
+        });
+        const repo = await openRepository({ cwd: ours });
+        let caught: unknown;
+        try {
+          await repo.merge.run({ rev: 'theirs', message: 'm' });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert — git reports driver (earlier line)
+        expect(g.ok).toBe(false);
+        expect(g.stderr).toContain("missing value for 'merge.mydriver.driver'");
+        expect(g.stderr).toContain('at line 4');
+        // tsgit reports the same earlier-by-line key
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as { code: string; key: string; line: number };
+        expect(data.code).toBe('CONFIG_MISSING_VALUE');
+        expect(data.key).toBe('merge.mydriver.driver');
+        expect(data.line).toBe(4);
+      });
+    });
+  });
+
+  describe('Given both merge.mydriver.driver and name valueless with name earlier', () => {
+    describe('When git merge and tsgit merge engage the driver', () => {
+      it('Then both report the earlier-by-line key merge.mydriver.name at line 4', async () => {
+        // Arrange
+        await writeBothConfig(VALUELESS_MERGE_BOTH_NAME_FIRST_FIXTURE);
+
+        // Act
+        const g = tryRunGit(['-C', peer, 'merge', '--no-ff', '-m', 'm', 'theirs'], {
+          env: MERGE_AUTHOR_ENV,
+        });
+        const repo = await openRepository({ cwd: ours });
+        let caught: unknown;
+        try {
+          await repo.merge.run({ rev: 'theirs', message: 'm' });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert — git reports name (earlier line)
+        expect(g.ok).toBe(false);
+        expect(g.stderr).toContain("missing value for 'merge.mydriver.name'");
+        expect(g.stderr).toContain('at line 4');
+        // tsgit reports the same earlier-by-line key
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as { code: string; key: string; line: number };
+        expect(data.code).toBe('CONFIG_MISSING_VALUE');
+        expect(data.key).toBe('merge.mydriver.name');
+        expect(data.line).toBe(4);
+      });
+    });
+  });
+
+  describe('Given no [merge "mydriver"] section (absent driver config)', () => {
+    describe('When tsgit merge engages the built-in text driver', () => {
+      it('Then the merge proceeds with a conflict and NOT CONFIG_MISSING_VALUE', async () => {
+        // Arrange — no driver config: mydriver falls back to the built-in text
+        // driver, which conflicts on the whole-file divergence (no death).
+        await writeBothConfig(ABSENT_MERGE_DRIVER_FIXTURE);
+        const repo = await openRepository({ cwd: ours });
+
+        // Act
+        let caught: unknown;
+        let result: { kind: string } | undefined;
+        try {
+          result = await repo.merge.run({ rev: 'theirs', message: 'm', author: AUTHOR });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert — no CONFIG_MISSING_VALUE; the merge engaged the built-in driver
+        expect(caught).toBeUndefined();
+        expect(result?.kind).toBe('conflict');
       });
     });
   });

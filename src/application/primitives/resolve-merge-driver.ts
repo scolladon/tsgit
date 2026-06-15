@@ -7,6 +7,7 @@ import type { FilePath } from '../../domain/objects/object-id.js';
 import type { Context } from '../../ports/context.js';
 import { readConfig } from './config-read.js';
 import type { AttributeProvider } from './internal/read-gitattributes.js';
+import { assertNoValuelessConfig } from './internal/valueless-config-guard.js';
 
 /**
  * How a path's content merge should be performed:
@@ -30,6 +31,7 @@ const namedChoice = async (ctx: Context, name: string): Promise<MergeDriverChoic
   if (name === 'text') return TEXT;
   if (name === 'binary') return BINARY;
   if (name === 'union') return UNION;
+  await assertNoValuelessConfig(ctx, 'merge', name, ['driver', 'name']);
   const driver = (await readConfig(ctx)).merge?.get(name);
   if (driver?.driver === undefined) return TEXT; // unconfigured / driverless → built-in text
   return driver.name === undefined
