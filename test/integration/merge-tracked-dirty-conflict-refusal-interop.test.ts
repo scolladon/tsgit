@@ -330,6 +330,9 @@ describe.skipIf(!GIT_AVAILABLE)(
           expect(result.kind).toBe('conflict');
           expect(hasMergeHead(pair.ours)).toBe(true);
           expect(hasMergeHead(pair.peer)).toBe(true);
+          // The untouched path's dirty bytes survive on both tools, byte-for-byte.
+          expect(await read(pair.ours, 'f3.txt')).toBe(await read(pair.peer, 'f3.txt'));
+          expect(await read(pair.ours, 'f3.txt')).toBe('DRIFTED\n');
         });
       });
     });

@@ -461,7 +461,7 @@ const persistConflictState = async (
   const matcher = await loadSparseMatcher(ctx);
   const lock = await acquireIndexLock(ctx);
   try {
-    await writeConflictingWorkingTree(ctx, result.outcomes, result.conflicts, matcher);
+    await writeConflictingWorkingTree(ctx, result.outcomes, result.conflicts, changed, matcher);
     await writeOrigHead(ctx, ourId);
     await writeMergeHead(ctx, theirId);
     const message = sanitizeMessage(opts.message ?? `Merge ${opts.rev}`, { allowEmpty: false });
@@ -514,12 +514,21 @@ const writeConflictingWorkingTree = async (
   ctx: Context,
   outcomes: ReadonlyArray<MergeOutcome>,
   conflicts: ReadonlyArray<MergeConflict>,
+  changed: ReadonlySet<FilePath>,
   matcher: SparseMatcher | undefined,
 ): Promise<void> => {
+  // Only outcomes the merge actually changes reach the working tree; an
+  // outcome the merge leaves alone (e.g. `unchanged` on both sides) must
+  // not be rewritten from its committed blob, or it would clobber bytes the
+  // user modified locally at a path the merge never touched. Conflict
+  // outcomes carry no path and are materialised by the conflicts batch below.
+  const touched = outcomes.filter(
+    (outcome) => outcome.status !== 'conflict' && changed.has(outcome.path),
+  );
   // Bounded parallelism — independent path writes overlap, but the pool
   // caps in-flight at MAX_CONCURRENT_PATH_WRITES so a 10k-path merge
   // doesn't exhaust file descriptors.
-  await runBounded(outcomes, MAX_CONCURRENT_PATH_WRITES, (outcome) =>
+  await runBounded(touched, MAX_CONCURRENT_PATH_WRITES, (outcome) =>
     writeOutcomeToTree(ctx, outcome, matcher),
   );
   // Conflicted paths are materialised even when sparse-excluded — a conflict

@@ -691,9 +691,11 @@ describe('merge', () => {
         const sut = await mergeRun(ctx, { rev: 'theirs', author });
 
         // Assert — the guard does not over-fire: the conflict materialises and
-        // MERGE_HEAD is written (the untouched path is outside changedPaths).
+        // MERGE_HEAD is written (the untouched path is outside changedPaths),
+        // and the dirty bytes at the untouched path survive untouched.
         expect(sut.kind).toBe('conflict');
         expect(await ctx.fs.exists(`${ctx.layout.gitDir}/MERGE_HEAD`)).toBe(true);
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/untouched.txt`)).toBe('DRIFTED\n');
       });
     });
   });
