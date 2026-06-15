@@ -23,11 +23,29 @@
  * The fix is to scrub `GIT_*` from the env we pass to spawned `git`.
  * `GIT_CEILING_DIRECTORIES` is added back as a defence-in-depth guard
  * against discovery-time walk-up when (rarely) `GIT_DIR` isn't set.
+ *
+ * **Ambient config isolation (same trap class, different vector).** Scrubbing
+ * `GIT_*` is not enough: spawned `git` still inherits the developer's `HOME`
+ * and so reads `~/.gitconfig` (global). Without `GIT_CONFIG_NOSYSTEM` it also
+ * reads `/etc/gitconfig` (system), and it reads `$XDG_CONFIG_HOME/git/config`
+ * (XDG) on a path discovered independently of `HOME`. Any of these silently
+ * changes git's observable bytes from one machine to another (e.g. a global
+ * `merge.conflictStyle=diff3` rewriting conflict markers, or a system
+ * `credential.helper`) — the same flakiness class as the `GIT_DIR` leak above.
+ * We point `HOME` (and the XDG root under it) at a deterministic NON-existent
+ * path inside `os.tmpdir()` and set `GIT_CONFIG_NOSYSTEM=1`: git's lookups miss
+ * and it fails soft to "no config". The path is never created — read/init/add/
+ * commit (signing off) write nothing under `HOME` — so there is nothing to set
+ * up and nothing to clean up.
  */
 import { execFileSync } from 'node:child_process';
 import { mkdtemp, rm } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
+
+// Single source for the isolation HOME: a deterministic path under os.tmpdir()
+// that is never created, so git's global/XDG config lookups miss and fail soft.
+const ISOLATED_HOME = path.join(os.tmpdir(), 'tsgit-interop-nonexistent-home');
 
 const buildSafeEnv = (): NodeJS.ProcessEnv => {
   const env: NodeJS.ProcessEnv = {};
@@ -36,6 +54,9 @@ const buildSafeEnv = (): NodeJS.ProcessEnv => {
     if (value !== undefined) env[key] = value;
   }
   env.GIT_CEILING_DIRECTORIES = os.tmpdir();
+  env.HOME = ISOLATED_HOME;
+  env.GIT_CONFIG_NOSYSTEM = '1';
+  env.XDG_CONFIG_HOME = path.join(ISOLATED_HOME, '.config');
   return env;
 };
 

@@ -786,7 +786,12 @@
     "unregistering",
     "pathed",
     "nopath",
-    "nourl"
+    "nourl",
+    "askpass",
+    "centralising",
+    "neutralise",
+    "defaultbranch",
+    "conflictstyle"
   ],
   "ignorePaths": [
     "node_modules",
