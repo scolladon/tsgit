@@ -38,7 +38,7 @@ import {
 import {
   assertNoPendingOperation,
   assertNotBare,
-  assertRepository,
+  assertOperationalRepository,
   readHeadRaw,
 } from './internal/repo-state.js';
 import { clearRevertHead, readRevertHead } from './internal/revert-state.js';
@@ -70,7 +70,7 @@ export interface CommitResult {
  * and `allowEmptyMessage` is not set.
  */
 export const commit = async (ctx: Context, opts: CommitOptions): Promise<CommitResult> => {
-  await assertRepository(ctx);
+  await assertOperationalRepository(ctx);
   await assertNotBare(ctx, 'commit');
   // Resolving a conflicted merge / cherry-pick / revert IS the legitimate way to
   // clear its marker — skip that marker's check. All other in-progress operations

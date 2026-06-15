@@ -22,7 +22,7 @@ import { peelRefToCommit } from '../primitives/internal/peel-ref-to-commit.js';
 import { readObject } from '../primitives/read-object.js';
 import { getRefStore } from '../primitives/ref-store.js';
 import { parseNameRevOptions } from './internal/name-rev-options.js';
-import { assertRepository } from './internal/repo-state.js';
+import { assertOperationalRepository } from './internal/repo-state.js';
 import { resolveCommit } from './internal/resolve-rev.js';
 
 export type { NameRevStep };
@@ -55,7 +55,7 @@ export const nameRev = async (
   rev?: string,
   opts: NameRevOptions = {},
 ): Promise<NameRevResult> => {
-  await assertRepository(ctx);
+  await assertOperationalRepository(ctx);
   const target = await resolveCommit(ctx, rev ?? DEFAULT_REV);
   const filter = buildRefFilter(parseNameRevOptions(opts));
   const refs = [...(await enumerateRefs(ctx))].filter((ref) => filter.qualifies(ref)).sort();

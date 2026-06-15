@@ -16,7 +16,7 @@ import {
 } from '../../domain/shortlog/index.js';
 import type { Context } from '../../ports/context.js';
 import { walkCommitsByDate } from '../primitives/walk-commits-by-date.js';
-import { assertRepository } from './internal/repo-state.js';
+import { assertOperationalRepository } from './internal/repo-state.js';
 import { resolveCommit } from './internal/resolve-rev.js';
 
 export type { ShortlogCommit, ShortlogGroup };
@@ -37,7 +37,7 @@ export const shortlog = async (
   ctx: Context,
   opts: ShortlogOptions = {},
 ): Promise<ReadonlyArray<ShortlogGroup>> => {
-  await assertRepository(ctx);
+  await assertOperationalRepository(ctx);
   const startId = await resolveCommit(ctx, opts.rev ?? 'HEAD');
   const exclude = await Promise.all((opts.excluding ?? []).map((r) => resolveCommit(ctx, r)));
   const byCommitter = opts.by === 'committer';

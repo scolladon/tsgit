@@ -16,7 +16,7 @@ import { enumerateRefs } from '../primitives/enumerate-refs.js';
 import { listReflogs, readReflog, reflogExists, writeReflog } from '../primitives/reflog-store.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
 import { walkCommits } from '../primitives/walk-commits.js';
-import { assertRepository } from './internal/repo-state.js';
+import { assertOperationalRepository } from './internal/repo-state.js';
 
 export type ReflogAction =
   | { readonly action?: 'show'; readonly ref?: string }
@@ -63,7 +63,7 @@ const DEFAULT_EXPIRE_UNREACHABLE = '30.days.ago';
 const resolveUserRef = (ref: string): RefName => validateRefName(ref);
 
 export const reflog = async (ctx: Context, opts: ReflogAction = {}): Promise<ReflogResult> => {
-  await assertRepository(ctx);
+  await assertOperationalRepository(ctx);
   if (opts.action === 'exists') return runExists(ctx, opts.ref);
   if (opts.action === 'delete') return runDelete(ctx, opts);
   if (opts.action === 'expire') return runExpire(ctx, opts);

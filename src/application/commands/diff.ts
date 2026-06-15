@@ -2,7 +2,7 @@ import type { StatTreeDiff, TreeDiff } from '../../domain/diff/index.js';
 import type { Context } from '../../ports/context.js';
 import { diffTrees } from '../primitives/diff-trees.js';
 import type { DiffTreesOptions } from '../primitives/types.js';
-import { assertRepository } from './internal/repo-state.js';
+import { assertOperationalRepository } from './internal/repo-state.js';
 import { resolveTreeish } from './internal/resolve-rev.js';
 
 export interface DiffOptions {
@@ -30,7 +30,7 @@ export interface DiffOptions {
 export function diff(ctx: Context, opts: DiffOptions & { withStat: true }): Promise<StatTreeDiff>;
 export function diff(ctx: Context, opts?: DiffOptions): Promise<TreeDiff>;
 export async function diff(ctx: Context, opts: DiffOptions = {}): Promise<TreeDiff | StatTreeDiff> {
-  await assertRepository(ctx);
+  await assertOperationalRepository(ctx);
   const from = await resolveTreeish(ctx, opts.from ?? 'HEAD');
   const to = opts.to !== undefined ? await resolveTreeish(ctx, opts.to) : undefined;
   const treeOptions: DiffTreesOptions = {

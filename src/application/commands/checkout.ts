@@ -22,7 +22,7 @@ import { acquireIndexLock } from './internal/index-update.js';
 import {
   assertNoPendingOperation,
   assertNotBare,
-  assertRepository,
+  assertOperationalRepository,
   readHeadRaw,
 } from './internal/repo-state.js';
 import { enforceLiteralMustMatch, resolvePathspec } from './internal/resolve-pathspec.js';
@@ -305,7 +305,7 @@ const enumerateSourcePaths = async (
 };
 
 export const checkout = async (ctx: Context, opts: CheckoutOptions): Promise<CheckoutResult> => {
-  await assertRepository(ctx);
+  await assertOperationalRepository(ctx);
   await assertNotBare(ctx, 'checkout');
   await assertNoPendingOperation(ctx);
 

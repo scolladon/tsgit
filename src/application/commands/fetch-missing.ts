@@ -18,7 +18,7 @@ import { fetchPack } from '../primitives/fetch-pack.js';
 import { createPackRegistry, type PackRegistry } from '../primitives/pack-registry.js';
 import { looseObjectPath } from '../primitives/path-layout.js';
 import { withDefaults } from './internal/network-pipeline.js';
-import { assertRepository } from './internal/repo-state.js';
+import { assertOperationalRepository } from './internal/repo-state.js';
 import { discoverRefs, selectFetchCapabilities } from './internal/upload-pack-client.js';
 
 export interface FetchMissingOptions {
@@ -79,7 +79,7 @@ const fetchMissingInternal = async (
   ctx: Context,
   oids: ReadonlyArray<ObjectId>,
 ): Promise<FetchMissingOutcome> => {
-  await assertRepository(ctx);
+  await assertOperationalRepository(ctx);
   const config = await readConfig(ctx);
   const remoteName = config.extensions?.partialClone;
   if (remoteName === undefined) return { kind: 'no-promisor' };

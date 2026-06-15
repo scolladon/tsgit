@@ -19,7 +19,7 @@ import { type FetchResult, fetch } from './fetch.js';
 import {
   assertNoPendingOperation,
   assertNotBare,
-  assertRepository,
+  assertOperationalRepository,
   readHeadRaw,
 } from './internal/repo-state.js';
 import { type MergeInternalOptions, type MergeResult, mergeRun } from './merge.js';
@@ -93,7 +93,7 @@ const resolveUpstream = async (
 };
 
 export const pull = async (ctx: Context, opts: PullOptions = {}): Promise<PullResult> => {
-  await assertRepository(ctx);
+  await assertOperationalRepository(ctx);
   await assertNotBare(ctx, 'pull');
   await assertNoPendingOperation(ctx);
 

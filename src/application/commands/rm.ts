@@ -34,7 +34,7 @@ import { acquireIndexLock } from './internal/index-update.js';
 import {
   assertNoPendingOperation,
   assertNotBare,
-  assertRepository,
+  assertOperationalRepository,
 } from './internal/repo-state.js';
 import { enforceLiteralMustMatch, resolvePathspec } from './internal/resolve-pathspec.js';
 import { removeFile } from './internal/working-tree.js';
@@ -64,7 +64,7 @@ export const rm = async (
   paths: ReadonlyArray<string>,
   opts: RmOptions = {},
 ): Promise<RmResult> => {
-  await assertRepository(ctx);
+  await assertOperationalRepository(ctx);
   await assertNotBare(ctx, 'rm');
   await assertNoPendingOperation(ctx);
   if (paths.length === 0) throw emptyPathspec();

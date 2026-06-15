@@ -28,7 +28,7 @@ import { acquireIndexLock } from './internal/index-update.js';
 import {
   assertNoPendingOperation,
   assertNotBare,
-  assertRepository,
+  assertOperationalRepository,
 } from './internal/repo-state.js';
 import { enforceLiteralMustMatch, resolvePathspec } from './internal/resolve-pathspec.js';
 import { readFile } from './internal/working-tree.js';
@@ -68,7 +68,7 @@ export const add = async (
   paths: ReadonlyArray<string>,
   opts: AddOptions = {},
 ): Promise<AddResult> => {
-  await assertRepository(ctx);
+  await assertOperationalRepository(ctx);
   await assertNotBare(ctx, 'add');
   // Allow `add` during a conflicted operation — staging resolved files IS the
   // path forward for merge / cherry-pick / revert / rebase alike.

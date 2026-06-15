@@ -58,7 +58,7 @@ import { writeMergeHead, writeMergeMsg, writeOrigHead } from './internal/merge-s
 import {
   assertNoPendingOperation,
   assertNotBare,
-  assertRepository,
+  assertOperationalRepository,
   readHeadRaw,
 } from './internal/repo-state.js';
 
@@ -147,7 +147,7 @@ const computeMerge = async (
   opts: MergeRunInput,
   internal: MergeInternalOptions,
 ): Promise<MergeResult> => {
-  await assertRepository(ctx);
+  await assertOperationalRepository(ctx);
   await assertNotBare(ctx, 'merge');
   await assertNoPendingOperation(ctx);
   const head = await readHeadRaw(ctx);

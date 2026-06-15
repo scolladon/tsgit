@@ -3,6 +3,8 @@ import { createMemoryContext } from '../../../../../src/adapters/memory/memory-a
 import {
   assertNoPendingOperation,
   assertNotBare,
+  assertNoValuelessCorePaths,
+  assertOperationalRepository,
   assertRepository,
   isBare,
   readHeadRaw,
@@ -13,6 +15,17 @@ import type { Context } from '../../../../../src/ports/context.js';
 const seedRepo = async (ctx: Context, head = 'ref: refs/heads/main\n'): Promise<void> => {
   await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, head);
 };
+
+const seedConfig = async (ctx: Context, config: string): Promise<void> => {
+  await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, config);
+};
+
+interface MissingValueData {
+  readonly code: string;
+  readonly key: string;
+  readonly line: number;
+  readonly source: string;
+}
 
 describe('internal/repo-state', () => {
   describe('assertRepository', () => {
@@ -390,6 +403,255 @@ describe('internal/repo-state', () => {
           } else {
             expect.fail(`expected OPERATION_IN_PROGRESS, got ${data.code}`);
           }
+        });
+      });
+    });
+  });
+
+  describe('assertNoValuelessCorePaths', () => {
+    describe('Given a config with a valueless core.excludesfile', () => {
+      describe('When called', () => {
+        it('Then throws CONFIG_MISSING_VALUE for core.excludesfile', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRepo(ctx);
+          await seedConfig(ctx, '[core]\n\texcludesfile\n');
+
+          // Act
+          let caught: unknown;
+          try {
+            await assertNoValuelessCorePaths(ctx);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data as MissingValueData;
+          expect(data.code).toBe('CONFIG_MISSING_VALUE');
+          expect(data.key).toBe('core.excludesfile');
+          expect(data.line).toBe(2);
+          expect(data.source).toMatch(/\/config$/);
+        });
+      });
+    });
+
+    describe('Given a config with a valueless core.attributesfile', () => {
+      describe('When called', () => {
+        it('Then throws CONFIG_MISSING_VALUE for core.attributesfile', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRepo(ctx);
+          await seedConfig(ctx, '[core]\n\tattributesfile\n');
+
+          // Act
+          let caught: unknown;
+          try {
+            await assertNoValuelessCorePaths(ctx);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data as MissingValueData;
+          expect(data.code).toBe('CONFIG_MISSING_VALUE');
+          expect(data.key).toBe('core.attributesfile');
+          expect(data.line).toBe(2);
+          expect(data.source).toMatch(/\/config$/);
+        });
+      });
+    });
+
+    describe('Given a config with hookspath valueless but the core path-likes valued', () => {
+      describe('When called', () => {
+        it('Then resolves (hookspath is not in the broad pair)', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRepo(ctx);
+          await seedConfig(
+            ctx,
+            '[core]\n\texcludesfile = /x\n\tattributesfile = /y\n\thookspath\n',
+          );
+
+          // Act + Assert — must not throw; hookspath is out of the broad gate.
+          await assertNoValuelessCorePaths(ctx);
+        });
+      });
+    });
+  });
+
+  describe('assertOperationalRepository', () => {
+    describe('Given a valueless core.excludesfile and excludesfile earlier than attributesfile', () => {
+      describe('When called', () => {
+        it('Then throws CONFIG_MISSING_VALUE for the earlier-line key core.excludesfile', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRepo(ctx);
+          await seedConfig(ctx, '[core]\n\texcludesfile\n\tattributesfile\n');
+
+          // Act
+          let caught: unknown;
+          try {
+            await assertOperationalRepository(ctx);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data as MissingValueData;
+          expect(data.code).toBe('CONFIG_MISSING_VALUE');
+          expect(data.key).toBe('core.excludesfile');
+          expect(data.line).toBe(2);
+        });
+      });
+    });
+
+    describe('Given two core path-likes both valueless with attributesfile earlier', () => {
+      describe('When called', () => {
+        it('Then throws CONFIG_MISSING_VALUE for the earlier-line key core.attributesfile', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRepo(ctx);
+          await seedConfig(ctx, '[core]\n\tattributesfile\n\texcludesfile\n');
+
+          // Act
+          let caught: unknown;
+          try {
+            await assertOperationalRepository(ctx);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data as MissingValueData;
+          expect(data.code).toBe('CONFIG_MISSING_VALUE');
+          expect(data.key).toBe('core.attributesfile');
+          expect(data.line).toBe(2);
+        });
+      });
+    });
+
+    describe('Given a valueless core.excludesfile', () => {
+      describe('When called', () => {
+        it('Then throws CONFIG_MISSING_VALUE in isolation', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRepo(ctx);
+          await seedConfig(ctx, '[core]\n\texcludesfile\n');
+
+          // Act
+          let caught: unknown;
+          try {
+            await assertOperationalRepository(ctx);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data as MissingValueData;
+          expect(data.code).toBe('CONFIG_MISSING_VALUE');
+          expect(data.key).toBe('core.excludesfile');
+        });
+      });
+    });
+
+    describe('Given a valueless core.attributesfile', () => {
+      describe('When called', () => {
+        it('Then throws CONFIG_MISSING_VALUE in isolation', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRepo(ctx);
+          await seedConfig(ctx, '[core]\n\tattributesfile\n');
+
+          // Act
+          let caught: unknown;
+          try {
+            await assertOperationalRepository(ctx);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data as MissingValueData;
+          expect(data.code).toBe('CONFIG_MISSING_VALUE');
+          expect(data.key).toBe('core.attributesfile');
+        });
+      });
+    });
+
+    describe('Given a valued core section', () => {
+      describe('When called', () => {
+        it('Then returns the repo root (no throw)', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRepo(ctx);
+          await seedConfig(ctx, '[core]\n\texcludesfile = /x\n');
+
+          // Act
+          const sut = await assertOperationalRepository(ctx);
+
+          // Assert
+          expect(sut).toBe(ctx.layout.workDir);
+        });
+      });
+    });
+
+    describe('Given no [core] section', () => {
+      describe('When called', () => {
+        it('Then returns the repo root (no throw)', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRepo(ctx);
+          await seedConfig(ctx, '[user]\n\tname = Bob\n');
+
+          // Act
+          const sut = await assertOperationalRepository(ctx);
+
+          // Assert
+          expect(sut).toBe(ctx.layout.workDir);
+        });
+      });
+    });
+
+    describe('Given no .git/HEAD on a valued config', () => {
+      describe('When called', () => {
+        it('Then throws NOT_A_REPOSITORY (the HEAD check runs)', async () => {
+          // Arrange — no HEAD seeded
+          const ctx = createMemoryContext();
+
+          // Act
+          let caught: unknown;
+          try {
+            await assertOperationalRepository(ctx);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as TsgitError).data.code).toBe('NOT_A_REPOSITORY');
+        });
+      });
+    });
+
+    describe('Given a valueless core.excludesfile (the porcelain bypass)', () => {
+      describe('When bare assertRepository is called', () => {
+        it('Then returns the repo root without throwing (config porcelain survives)', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRepo(ctx);
+          await seedConfig(ctx, '[core]\n\texcludesfile\n');
+
+          // Act
+          const sut = await assertRepository(ctx);
+
+          // Assert
+          expect(sut).toBe(ctx.layout.workDir);
         });
       });
     });

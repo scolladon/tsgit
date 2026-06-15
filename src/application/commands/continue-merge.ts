@@ -3,7 +3,7 @@ import type { AuthorIdentity } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
 import { type CommitOptions, type CommitResult, commit } from './commit.js';
 import { readMergeHead } from './internal/merge-state.js';
-import { assertNotBare, assertRepository } from './internal/repo-state.js';
+import { assertNotBare, assertOperationalRepository } from './internal/repo-state.js';
 
 export interface MergeContinueInput {
   /** Override `MERGE_MSG`. Empty/undefined falls back to the draft. */
@@ -31,7 +31,7 @@ export const mergeContinue = async (
   ctx: Context,
   opts: MergeContinueInput = {},
 ): Promise<MergeContinueResult> => {
-  await assertRepository(ctx);
+  await assertOperationalRepository(ctx);
   await assertNotBare(ctx, 'merge --continue');
   const mergeHead = await readMergeHead(ctx);
   if (mergeHead === undefined) throw noOperationInProgress('merge');
