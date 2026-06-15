@@ -417,25 +417,25 @@ consolidation.
     '../primitives/internal/write-working-tree-file.js';`. **Add `writeWorkingTreeFile`**
     to this import. `rmIfExists` is still imported (used by the private `removeWorkingTreeFile`
     at L685–688 — see scope note).
-  - **SCOPE NOTE — do NOT delete merge's private `parentDir` / `removeWorkingTreeFile`.**
-    Verified: `merge.ts` also defines private `parentDir` (L691–695) and
-    `removeWorkingTreeFile` (L685–688). They are duplicates of the internal module's, BUT:
-    (a) the design's call-site table mandates deleting ONLY the merge-local
-    `writeWorkingTreeFile`; (b) both are **directly imported and unit-tested** in
-    `test/unit/application/commands/merge.test.ts` (`parentDir` direct tests L1864–1894;
-    `removeWorkingTreeFile` direct tests L2055–2079). Deleting them is out of scope for
-    24.9p (it would force test rewrites the design did not sanction and is the refactor
-    phase's job). Leave them. After deleting `writeWorkingTreeFile`, `parentDir` is still
-    referenced (by the now-deleted function?) — verify: `parentDir` is referenced ONLY by
-    the deleted `writeWorkingTreeFile` (find_referencing showed merge.ts L672) AND by
-    merge.test.ts. Once `writeWorkingTreeFile` is deleted, `parentDir`'s only remaining
-    use is the direct unit test — it would become unused in src. **If `parentDir` becomes
-    unreferenced in `src/` after the deletion, that is a real issue:** surface it as a
-    slice decision — either keep the direct unit test referencing it (so it stays exported
-    and exercised) or, if biome/knip flags dead code, escalate `{ slice 3, reason:
-    parentDir orphaned by writeWorkingTreeFile deletion, options: (a) leave the export +
-    its direct unit test as the only consumer, (b) remove parentDir + its merge.test.ts
-    block, (c) defer to refactor phase }`. Do NOT silently delete the tested symbol.
+  - **SCOPE NOTE — the `parentDir` orphan is DECIDED (resolved by the session at plan
+    verification, via `find_referencing_symbols`):**
+    - merge-local **`parentDir`** (L691–695) is referenced in `src/` **only** by the
+      private `writeWorkingTreeFile` (L672). Deleting `writeWorkingTreeFile` orphans it →
+      dead code in `src/` (the "no dead code" guardrail forbids leaving it). **DELETE
+      merge-local `parentDir` too**, and remove its 3 direct unit tests in
+      `test/unit/application/commands/merge.test.ts` (`describe('parentDir (direct)')`,
+      L1864–1894) plus drop `parentDir` from that file's import from `merge.js` (L14). No
+      coverage is lost: the canonical `parentDir` lives in
+      `internal/write-working-tree-file.ts` and is already directly unit-tested in
+      `test/unit/application/primitives/internal/write-working-tree-file.test.ts`
+      (`describe('parentDir')`). This is the minimal consequence of the writer deletion,
+      not new scope.
+    - merge-local **`removeWorkingTreeFile`** (L685–688) is **still used in `src/`** by
+      `writeOutcomeToTree`'s `resolved-deleted` branch (L610) — **KEEP it**, its 2 direct
+      unit tests (L2055–2079), and its `rmIfExists` import (it calls it). It remains a
+      duplicate of the internal module's `removeWorkingTreeFile`; **consolidating that
+      duplicate is deferred to the refactor phase** (phase 7, whole-codebase lens) — out
+      of scope for 24.9p, which ADR-340 scopes to the *writers*.
 
 **Behaviour-preservation guard (existing interop suites — no edit):**
 `merge-interop`, `merge-conflict-interop`, `merge-driver-interop`, `merge-abort-interop`,
