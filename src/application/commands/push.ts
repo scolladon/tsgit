@@ -150,13 +150,14 @@ const resolveRemoteUrl = async (ctx: Context, remoteName: string): Promise<strin
     throw invalidOption('remote', `invalid remote name: ${remoteName}`);
   }
   const config = await readConfig(ctx);
+  // Git validates each entry eagerly: a valueless `pushurl` or `url` dies before
+  // the `pushurl ?? url` fallback can substitute the other, reporting whichever
+  // is valueless first by config-file line.
+  await assertNoValuelessConfig(ctx, 'remote', remoteName, ['pushurl', 'url']);
   const remote = config.remote?.get(remoteName);
   // `pushurl` overrides `url` for push (canonical-git parity).
   const url = remote?.pushUrl ?? remote?.url;
   if (url === undefined) {
-    // Only a valueless `url` reproduces git's lazy `missing value` die here; a
-    // valueless `pushurl` is not yet in scope (no pinned matrix row for it).
-    await assertNoValuelessConfig(ctx, 'remote', remoteName, ['url']);
     throw remoteNotConfigured(remoteName);
   }
   return url;
