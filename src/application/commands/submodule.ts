@@ -673,7 +673,9 @@ const gitlinkFromIndex = (
  * `submodule.<n>.update` over the `.gitmodules` mode over the `checkout` default.
  * The config mode overrides `.gitmodules` in both directions. An unrecognised
  * config value refuses with the same `invalidOption` shape as the `.gitmodules`
- * path (`validateUpdateModes`).
+ * path (`validateUpdateModes`) — but only when no CLI mode shadows it: git
+ * validates the config value at the point it would be consumed, so a CLI mode
+ * overrides an invalid config value without reading it.
  */
 const resolveUpdateMode = (
   opts: SubmoduleUpdateOptions,
@@ -681,12 +683,14 @@ const resolveUpdateMode = (
   gitmodulesMode: SubmoduleUpdateMode | undefined,
   name: string,
 ): SubmoduleUpdateMode => {
+  // A CLI mode wins without consuming the config value, so it is never validated.
+  if (opts.mode !== undefined) return opts.mode;
   const configRaw = config.submodule?.get(name)?.update;
   const configMode = configRaw === undefined ? undefined : parseUpdateMode(configRaw);
   if (configRaw !== undefined && configMode === undefined) {
     throw invalidOption(`submodule.${name}.update`, `invalid value '${configRaw}'`);
   }
-  return opts.mode ?? configMode ?? gitmodulesMode ?? 'checkout';
+  return configMode ?? gitmodulesMode ?? 'checkout';
 };
 
 /**

@@ -604,6 +604,19 @@ describe('Given a superproject whose submodule update mode is sourced from confi
       expect(data.reason).toContain("invalid value 'bogus'");
     });
   });
+
+  describe('When opts.mode shadows an unrecognised config update mode', () => {
+    it('Then the CLI mode wins and the config value is never validated', async () => {
+      // Arrange
+      const ctx = await seedSuperWithModes({ configMode: 'bogus' });
+
+      // Act
+      const result = await submoduleUpdate(ctx, { paths: ['lib'], mode: 'checkout' });
+
+      // Assert — git does not validate a config value a CLI mode shadows
+      expect(result.entries[0]).toMatchObject({ mode: 'checkout', changed: true });
+    });
+  });
 });
 
 /**
