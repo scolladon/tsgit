@@ -116,14 +116,24 @@ interface SubmoduleUpdateEntry {
 ```
 
 Reads the pinned commit from the superproject index gitlink, clones the module
-gitdir **if missing**, then reconciles to the pin per
-`submodule.<name>.update` (or `mode`): `checkout` (default) detaches at the pin;
-`rebase`/`merge` reconcile the submodule's current branch (delegating to
-`repo.rebase`/`repo.merge`); `none` skips. An unregistered submodule is skipped
-unless `init`. When the pinned commit is absent after cloning (the remote advanced
-past the initial clone), `update` refuses `OBJECT_NOT_FOUND` — tsgit's smart-HTTP
-v1 has no incremental fetch (roadmap 25.3). `rebase`/`merge` need a `[user]`
-identity in the module config (tsgit reads local config only).
+gitdir **if missing**, then reconciles to the pin per the resolved update mode:
+`checkout` (default) detaches at the pin; `rebase`/`merge` reconcile the
+submodule's current branch (delegating to `repo.rebase`/`repo.merge`); `none`
+skips. The mode is resolved by precedence: the CLI **`mode`** option > `.git/config`
+**`submodule.<name>.update`** > `.gitmodules` **`submodule.<name>.update`** > the
+**`checkout`** default. The repo-local config value overrides the `.gitmodules`
+value in both directions — it can both enable an update (config `checkout` over
+`.gitmodules none`) and suppress one (config `none` over `.gitmodules checkout`).
+An unregistered submodule is skipped unless `init`. When the pinned commit is
+absent after cloning (the remote advanced past the initial clone), `update`
+refuses `OBJECT_NOT_FOUND` — tsgit's smart-HTTP v1 has no incremental fetch
+(roadmap 25.3). `rebase`/`merge` need a `[user]` identity in the module config
+(tsgit reads local config only).
+
+A valueless `submodule.<name>.update` (or `submodule.<name>.url`) in `.git/config`
+refuses `CONFIG_MISSING_VALUE`; an unrecognised `submodule.<name>.update` value
+refuses `INVALID_OPTION`. Both fire only when no CLI `mode` shadows the config —
+a CLI `mode` wins without reading (or validating) the config value.
 
 ```ts
 await repo.submodule.update({ init: true });              // clone + checkout every pin

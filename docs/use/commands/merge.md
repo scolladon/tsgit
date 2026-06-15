@@ -129,6 +129,11 @@ shared with `stash apply` / `cherry-pick` / `revert` / `rebase`:
   conflict). `%L` is the resolved `conflict-marker-size` (default 7); `%S` / `%X`
   / `%Y` are the base / ours / theirs conflict labels.
 
+When a path selects `merge=<name>` and the chosen `merge.<name>.driver` or
+`merge.<name>.name` is present but valueless (git NULL), the content merge refuses
+`CONFIG_MISSING_VALUE` (`{ key, source, line }`) rather than falling back to the
+built-in driver. An absent `[merge "<name>"]` section keeps the built-in fallback.
+
 In Node the driver runs by default; pass `openRepository({ command: false })` to
 disable external drivers (they fall back to the built-in merge). The browser /
 memory adapters have no command runner, so external drivers always fall back
