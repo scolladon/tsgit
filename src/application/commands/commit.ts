@@ -9,6 +9,7 @@ import type { RefName } from '../../domain/objects/object-id.js';
 import type { Context } from '../../ports/context.js';
 import { readConfig } from '../primitives/config-read.js';
 import { createCommit } from '../primitives/create-commit.js';
+import { assertNoValuelessConfig } from '../primitives/internal/valueless-config-guard.js';
 import { readIndex } from '../primitives/read-index.js';
 import { readObject } from '../primitives/read-object.js';
 import { recordRefUpdate } from '../primitives/record-ref-update.js';
@@ -41,7 +42,6 @@ import {
   readHeadRaw,
 } from './internal/repo-state.js';
 import { clearRevertHead, readRevertHead } from './internal/revert-state.js';
-import { assertNoValuelessConfig } from './internal/valueless-config-guard.js';
 
 export interface CommitOptions {
   readonly message: string;

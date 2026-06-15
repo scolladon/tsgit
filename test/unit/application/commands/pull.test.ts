@@ -598,6 +598,146 @@ describe('pull', () => {
     });
   });
 
+  const seedValuelessUpstream = async (ctx: Context, config: string): Promise<void> => {
+    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, config);
+  };
+
+  const pullData = async (
+    ctx: Context,
+  ): Promise<{ code?: string; key?: string; line?: number; source?: string }> => {
+    try {
+      await pull(ctx);
+    } catch (err) {
+      return (err as { data?: { code?: string; key?: string; line?: number; source?: string } })
+        .data as { code?: string; key?: string; line?: number; source?: string };
+    }
+    return {};
+  };
+
+  describe('Given branch.main.remote is present-but-valueless', () => {
+    describe('When pull resolves the upstream', () => {
+      it('Then throws CONFIG_MISSING_VALUE for branch.main.remote at its line', async () => {
+        // Arrange — remote valueless at line 2; merge valued at line 3.
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await seedValuelessUpstream(ctx, '[branch "main"]\n\tremote\n\tmerge = refs/heads/main\n');
+
+        // Act
+        const result = await pullData(ctx);
+
+        // Assert
+        expect(result.code).toBe('CONFIG_MISSING_VALUE');
+        expect(result.key).toBe('branch.main.remote');
+        expect(result.line).toBe(2);
+        expect(result.source).toMatch(/\/config$/);
+      });
+    });
+  });
+
+  describe('Given branch.main.merge is present-but-valueless', () => {
+    describe('When pull resolves the upstream', () => {
+      it('Then throws CONFIG_MISSING_VALUE for branch.main.merge at its line', async () => {
+        // Arrange — remote valued at line 2; merge valueless at line 3.
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await seedValuelessUpstream(ctx, '[branch "main"]\n\tremote = origin\n\tmerge\n');
+
+        // Act
+        const result = await pullData(ctx);
+
+        // Assert
+        expect(result.code).toBe('CONFIG_MISSING_VALUE');
+        expect(result.key).toBe('branch.main.merge');
+        expect(result.line).toBe(3);
+      });
+    });
+  });
+
+  describe('Given both branch.main.remote and merge valueless with remote earlier', () => {
+    describe('When pull resolves the upstream', () => {
+      it('Then reports the earlier-by-line key branch.main.remote', async () => {
+        // Arrange — remote valueless at line 2, merge valueless at line 3.
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await seedValuelessUpstream(ctx, '[branch "main"]\n\tremote\n\tmerge\n');
+
+        // Act
+        const result = await pullData(ctx);
+
+        // Assert
+        expect(result.code).toBe('CONFIG_MISSING_VALUE');
+        expect(result.key).toBe('branch.main.remote');
+        expect(result.line).toBe(2);
+      });
+    });
+  });
+
+  describe('Given both branch.main.remote and merge valueless with merge earlier', () => {
+    describe('When pull resolves the upstream', () => {
+      it('Then reports the earlier-by-line key branch.main.merge', async () => {
+        // Arrange — merge valueless at line 2, remote valueless at line 3.
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await seedValuelessUpstream(ctx, '[branch "main"]\n\tmerge\n\tremote\n');
+
+        // Act
+        const result = await pullData(ctx);
+
+        // Assert
+        expect(result.code).toBe('CONFIG_MISSING_VALUE');
+        expect(result.key).toBe('branch.main.merge');
+        expect(result.line).toBe(2);
+      });
+    });
+  });
+
+  describe('Given branch.main.remote and merge both valued', () => {
+    describe('When pull resolves the upstream', () => {
+      it('Then does not throw CONFIG_MISSING_VALUE (the guard no-ops)', async () => {
+        // Arrange — both keys valued; no remote tip exists so a downstream error follows.
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await commitFile(ctx, 'a.txt', 'a', 'A');
+        await seedValuelessUpstream(
+          ctx,
+          '[branch "main"]\n\tremote = origin\n\tmerge = refs/heads/main\n',
+        );
+        const { transport } = buildPullRemote([], await emptyPack(ctx));
+
+        // Act
+        let caught: unknown;
+        try {
+          await pull(withTransport(ctx, transport));
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as { data?: { code?: string } })?.data?.code).not.toBe(
+          'CONFIG_MISSING_VALUE',
+        );
+      });
+    });
+  });
+
+  describe('Given no branch.main section (absent upstream)', () => {
+    describe('When pull resolves the upstream', () => {
+      it('Then throws NO_UPSTREAM_CONFIGURED and NOT CONFIG_MISSING_VALUE', async () => {
+        // Arrange — config with no [branch "main"] section.
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await seedValuelessUpstream(ctx, '[core]\n\trepositoryformatversion = 0\n');
+
+        // Act
+        const result = await pullData(ctx);
+
+        // Assert
+        expect(result.code).toBe('NO_UPSTREAM_CONFIGURED');
+        expect(result.code).not.toBe('CONFIG_MISSING_VALUE');
+      });
+    });
+  });
+
   describe('Given a distinct committer', () => {
     describe('When pull over a true merge', () => {
       it('Then forwards the committer to the merge commit', async () => {

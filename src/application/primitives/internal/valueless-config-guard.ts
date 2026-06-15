@@ -1,6 +1,6 @@
 import { configMissingValue } from '../../../domain/commands/error.js';
 import type { Context } from '../../../ports/context.js';
-import { findFirstValuelessEntry } from '../../primitives/config-read.js';
+import { findFirstValuelessEntry } from '../config-read.js';
 
 /**
  * Refuse with `CONFIG_MISSING_VALUE` when any of `keys` (case-insensitive) under

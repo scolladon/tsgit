@@ -1,8 +1,8 @@
 import type { AuthorIdentity } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
 import { readConfig } from '../../primitives/config-read.js';
+import { assertNoValuelessConfig } from '../../primitives/internal/valueless-config-guard.js';
 import { resolveCommitter } from './commit-message.js';
-import { assertNoValuelessConfig } from './valueless-config-guard.js';
 
 /**
  * The current identity (config `user.name`/`user.email` + the current time) used

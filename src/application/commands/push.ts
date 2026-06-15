@@ -40,6 +40,7 @@ import type { HttpTransport } from '../../ports/http-transport.js';
 import { buildPack } from '../primitives/build-pack.js';
 import { readConfig } from '../primitives/config-read.js';
 import { enumeratePushObjects } from '../primitives/enumerate-push-objects.js';
+import { assertNoValuelessConfig } from '../primitives/internal/valueless-config-guard.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
 import { runHook } from '../primitives/run-hook.js';
 import { updateRef } from '../primitives/update-ref.js';
@@ -48,7 +49,6 @@ import { withDefaults } from './internal/network-pipeline.js';
 import { discoverReceivePackRefs, selectPushCapabilities } from './internal/receive-pack-client.js';
 import { type ParsedRefspec, parseRefspec } from './internal/refspec.js';
 import { assertRepository, readHeadRaw } from './internal/repo-state.js';
-import { assertNoValuelessConfig } from './internal/valueless-config-guard.js';
 
 export interface PushOptions {
   readonly remote?: string;

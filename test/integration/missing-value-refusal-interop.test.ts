@@ -488,4 +488,222 @@ describe.skipIf(!GIT_AVAILABLE)('missing-value-refusal interop', () => {
       });
     });
   });
+
+  /**
+   * A fixture that controls line numbers. The `[branch "main"]` header lands at
+   * line 3; the valueless `remote` entry lands at line 4 (merge valued at line 5).
+   * Line 1: [core]
+   * Line 2: \trepositoryformatversion = 0
+   * Line 3: [branch "main"]
+   * Line 4: \tremote          <- valueless
+   * Line 5: \tmerge = refs/heads/main
+   */
+  const VALUELESS_BRANCH_REMOTE_FIXTURE =
+    '[core]\n\trepositoryformatversion = 0\n[branch "main"]\n\tremote\n\tmerge = refs/heads/main\n';
+  const VALUELESS_BRANCH_REMOTE_LINE = 4;
+
+  /** Both upstream keys valueless, remote earlier (line 4) than merge (line 5). */
+  const VALUELESS_BRANCH_BOTH_REMOTE_FIRST_FIXTURE =
+    '[core]\n\trepositoryformatversion = 0\n[branch "main"]\n\tremote\n\tmerge\n';
+
+  /** Both upstream keys valueless, merge earlier (line 4) than remote (line 5). */
+  const VALUELESS_BRANCH_BOTH_MERGE_FIRST_FIXTURE =
+    '[core]\n\trepositoryformatversion = 0\n[branch "main"]\n\tmerge\n\tremote\n';
+
+  /** Fixture with [branch "main"] but no remote/merge — the absent case. */
+  const ABSENT_BRANCH_UPSTREAM_FIXTURE = '[core]\n\trepositoryformatversion = 0\n[branch "main"]\n';
+
+  describe('Given a config with a valueless branch.main.remote', () => {
+    describe('When git pull is run', () => {
+      it('Then git refuses with exit 128 and the two-line missing-value message', async () => {
+        // Arrange
+        initRepo(ours);
+        await writeFile(path.join(ours, '.git', 'config'), VALUELESS_BRANCH_REMOTE_FIXTURE);
+
+        // Act
+        const g = tryRunGit(['-C', ours, 'pull'], { env: runGitEnv() });
+
+        // Assert
+        expect(g.ok).toBe(false);
+        expect(g.stderr).toContain("missing value for 'branch.main.remote'");
+        expect(g.stderr).toContain("bad config variable 'branch.main.remote'");
+        expect(g.stderr).toContain(`at line ${VALUELESS_BRANCH_REMOTE_LINE}`);
+      });
+    });
+
+    describe('When tsgit pull is run', () => {
+      it('Then throws CONFIG_MISSING_VALUE with key branch.main.remote and correct line', async () => {
+        // Arrange
+        initRepo(ours);
+        await writeFile(path.join(ours, '.git', 'config'), VALUELESS_BRANCH_REMOTE_FIXTURE);
+        const repo = await openRepository({ cwd: ours });
+
+        // Act
+        let caught: unknown;
+        try {
+          await repo.pull({});
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert — each field individually (mutation-resistant)
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as {
+          code: string;
+          key: string;
+          line: number;
+          source: string;
+        };
+        expect(data.code).toBe('CONFIG_MISSING_VALUE');
+        expect(data.key).toBe('branch.main.remote');
+        expect(data.line).toBe(VALUELESS_BRANCH_REMOTE_LINE);
+        expect(data.source).toMatch(/\/config$/);
+      });
+    });
+
+    describe("When reconstructing git's two lines from tsgit pull structured fields", () => {
+      it("Then the reconstructed lines match git's stderr after path-token normalization", async () => {
+        // Arrange
+        initRepo(ours);
+        await writeFile(path.join(ours, '.git', 'config'), VALUELESS_BRANCH_REMOTE_FIXTURE);
+
+        // Act — run both git and tsgit against the same repo
+        const g = tryRunGit(['-C', ours, 'pull'], { env: runGitEnv() });
+        const repo = await openRepository({ cwd: ours });
+        let caught: unknown;
+        try {
+          await repo.pull({});
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as {
+          code: string;
+          key: string;
+          line: number;
+          source: string;
+        };
+        const gitLines = g.stderr.split('\n').filter((l) => l.length > 0);
+        const errorLine = gitLines.find((l) => l.startsWith('error:')) ?? '';
+        const fatalLine = gitLines.find((l) => l.startsWith('fatal:')) ?? '';
+
+        expect(errorLine).toBe(`error: missing value for '${data.key}'`);
+
+        const normalizedSource = '.git/config';
+        const tsgitFatalLine = `fatal: bad config variable '${data.key}' in file '${normalizedSource}' at line ${data.line}`;
+        const normalizedFatalLine = fatalLine.replace(
+          /in file '[^']+'/,
+          `in file '${normalizedSource}'`,
+        );
+        expect(normalizedFatalLine).toBe(tsgitFatalLine);
+      });
+    });
+
+    describe('When tsgit configList is run on the same file', () => {
+      it('Then tsgit configList does not throw (refusal is at consumer, not read)', async () => {
+        // Arrange
+        initRepo(ours);
+        await writeFile(path.join(ours, '.git', 'config'), VALUELESS_BRANCH_REMOTE_FIXTURE);
+        const ctx = createNodeContext({ workDir: ours });
+
+        // Act + Assert — no throw
+        await expect(configList(ctx, {})).resolves.toBeDefined();
+      });
+    });
+  });
+
+  describe('Given both branch.main.remote and merge valueless with remote earlier', () => {
+    describe('When git pull and tsgit pull are run', () => {
+      it('Then both report the earlier-by-line key branch.main.remote at line 4', async () => {
+        // Arrange
+        initRepo(ours);
+        await writeFile(
+          path.join(ours, '.git', 'config'),
+          VALUELESS_BRANCH_BOTH_REMOTE_FIRST_FIXTURE,
+        );
+
+        // Act
+        const g = tryRunGit(['-C', ours, 'pull'], { env: runGitEnv() });
+        const repo = await openRepository({ cwd: ours });
+        let caught: unknown;
+        try {
+          await repo.pull({});
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert — git reports remote (earlier line)
+        expect(g.ok).toBe(false);
+        expect(g.stderr).toContain("missing value for 'branch.main.remote'");
+        expect(g.stderr).toContain('at line 4');
+        // tsgit reports the same earlier-by-line key
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as { code: string; key: string; line: number };
+        expect(data.code).toBe('CONFIG_MISSING_VALUE');
+        expect(data.key).toBe('branch.main.remote');
+        expect(data.line).toBe(4);
+      });
+    });
+  });
+
+  describe('Given both branch.main.remote and merge valueless with merge earlier', () => {
+    describe('When git pull and tsgit pull are run', () => {
+      it('Then both report the earlier-by-line key branch.main.merge at line 4', async () => {
+        // Arrange
+        initRepo(ours);
+        await writeFile(
+          path.join(ours, '.git', 'config'),
+          VALUELESS_BRANCH_BOTH_MERGE_FIRST_FIXTURE,
+        );
+
+        // Act
+        const g = tryRunGit(['-C', ours, 'pull'], { env: runGitEnv() });
+        const repo = await openRepository({ cwd: ours });
+        let caught: unknown;
+        try {
+          await repo.pull({});
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert — git reports merge (earlier line)
+        expect(g.ok).toBe(false);
+        expect(g.stderr).toContain("missing value for 'branch.main.merge'");
+        expect(g.stderr).toContain('at line 4');
+        // tsgit reports the same earlier-by-line key
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as { code: string; key: string; line: number };
+        expect(data.code).toBe('CONFIG_MISSING_VALUE');
+        expect(data.key).toBe('branch.main.merge');
+        expect(data.line).toBe(4);
+      });
+    });
+  });
+
+  describe('Given a config with [branch "main"] but no upstream keys (absent upstream)', () => {
+    describe('When tsgit pull is run', () => {
+      it('Then throws NO_UPSTREAM_CONFIGURED and NOT CONFIG_MISSING_VALUE', async () => {
+        // Arrange
+        initRepo(ours);
+        await writeFile(path.join(ours, '.git', 'config'), ABSENT_BRANCH_UPSTREAM_FIXTURE);
+        const repo = await openRepository({ cwd: ours });
+
+        // Act
+        let caught: unknown;
+        try {
+          await repo.pull({});
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data;
+        expect(data.code).toBe('NO_UPSTREAM_CONFIGURED');
+        expect(data.code).not.toBe('CONFIG_MISSING_VALUE');
+      });
+    });
+  });
 });
