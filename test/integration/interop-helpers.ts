@@ -43,6 +43,10 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
+// Single source for the isolation HOME: a deterministic path under os.tmpdir()
+// that is never created, so git's global/XDG config lookups miss and fail soft.
+const ISOLATED_HOME = path.join(os.tmpdir(), 'tsgit-interop-nonexistent-home');
+
 const buildSafeEnv = (): NodeJS.ProcessEnv => {
   const env: NodeJS.ProcessEnv = {};
   for (const [key, value] of Object.entries(process.env)) {
@@ -50,9 +54,9 @@ const buildSafeEnv = (): NodeJS.ProcessEnv => {
     if (value !== undefined) env[key] = value;
   }
   env.GIT_CEILING_DIRECTORIES = os.tmpdir();
-  env.HOME = path.join(os.tmpdir(), 'tsgit-interop-nonexistent-home');
+  env.HOME = ISOLATED_HOME;
   env.GIT_CONFIG_NOSYSTEM = '1';
-  env.XDG_CONFIG_HOME = path.join(env.HOME, '.config');
+  env.XDG_CONFIG_HOME = path.join(ISOLATED_HOME, '.config');
   return env;
 };
 
