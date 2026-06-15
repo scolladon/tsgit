@@ -558,14 +558,17 @@ describe('stash apply', () => {
         await stashPush(ctx, { includeUntracked: true });
         await ctx.fs.symlink('/nonexistent/target', `${ctx.layout.workDir}/new.txt`);
 
-        // Act
-        const act = stashApply(ctx, {});
-
-        // Assert
-        await act.catch((err: TsgitError) => {
-          expect(err.data).toEqual({ code: 'STASH_APPLY_WOULD_OVERWRITE', paths: ['new.txt'] });
-        });
-        await expect(act).rejects.toBeInstanceOf(TsgitError);
+        // Act + Assert
+        try {
+          await stashApply(ctx, {});
+          expect.fail('stash apply must refuse the dangling-symlink squat');
+        } catch (err) {
+          expect(err).toBeInstanceOf(TsgitError);
+          expect((err as TsgitError).data).toEqual({
+            code: 'STASH_APPLY_WOULD_OVERWRITE',
+            paths: ['new.txt'],
+          });
+        }
       });
     });
   });

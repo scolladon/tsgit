@@ -10,6 +10,8 @@ import type { FilePath, ObjectId } from '../../../../src/domain/objects/index.js
 import type { Context } from '../../../../src/ports/context.js';
 import { type ChangedPathSpec, changedPathSpecsArb } from './arbitraries.js';
 
+const sut = findWouldOverwrite;
+
 const COMMITTED = 'committed\n';
 const DIRTY = 'dirty\n';
 
@@ -72,7 +74,7 @@ describe('findWouldOverwrite properties', () => {
         // Arrange + Act + Assert
         const ctx = createMemoryContext();
         const { index } = await materialise(ctx, []);
-        const result = await findWouldOverwrite(ctx, new Set<FilePath>(), index);
+        const result = await sut(ctx, new Set<FilePath>(), index);
         expect(result.localChanges).toEqual([]);
         expect(result.untracked).toEqual([]);
       });
@@ -83,7 +85,7 @@ describe('findWouldOverwrite properties', () => {
           fc.asyncProperty(changedPathSpecsArb(), async (specs) => {
             const ctx = createMemoryContext();
             const { paths, index } = await materialise(ctx, specs);
-            const result = await findWouldOverwrite(ctx, paths, index);
+            const result = await sut(ctx, paths, index);
             for (const spec of specs) {
               if (spec.kind === 'tracked-dirty') {
                 expect(result.localChanges).toContain(spec.path);
@@ -100,7 +102,7 @@ describe('findWouldOverwrite properties', () => {
           fc.asyncProperty(changedPathSpecsArb(), async (specs) => {
             const ctx = createMemoryContext();
             const { paths, index } = await materialise(ctx, specs);
-            const result = await findWouldOverwrite(ctx, paths, index);
+            const result = await sut(ctx, paths, index);
             for (const spec of specs) {
               if (spec.kind === 'untracked-present') {
                 expect(result.untracked).toContain(spec.path);
@@ -117,7 +119,7 @@ describe('findWouldOverwrite properties', () => {
           fc.asyncProperty(changedPathSpecsArb(), async (specs) => {
             const ctx = createMemoryContext();
             const { paths, index } = await materialise(ctx, specs);
-            const result = await findWouldOverwrite(ctx, paths, index);
+            const result = await sut(ctx, paths, index);
             const untrackedSet = new Set<FilePath>(result.untracked);
             for (const local of result.localChanges) {
               expect(untrackedSet.has(local)).toBe(false);
@@ -133,7 +135,7 @@ describe('findWouldOverwrite properties', () => {
           fc.asyncProperty(changedPathSpecsArb(), async (specs) => {
             const ctx = createMemoryContext();
             const { paths, index } = await materialise(ctx, specs);
-            const result = await findWouldOverwrite(ctx, paths, index);
+            const result = await sut(ctx, paths, index);
             const reported = new Set<FilePath>([...result.localChanges, ...result.untracked]);
             for (const spec of specs) {
               if (spec.kind === 'tracked-clean' || spec.kind === 'absent') {

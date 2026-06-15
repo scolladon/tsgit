@@ -80,6 +80,16 @@ const isUntrackedPresent = async (ctx: Context, path: FilePath): Promise<boolean
   }
 };
 
+/** Index entries keyed by path, stage-0 only. */
+const stage0ByPath = (currentIndex: GitIndex): Map<FilePath, IndexEntry> => {
+  const byPath = new Map<FilePath, IndexEntry>();
+  for (const entry of currentIndex.entries) {
+    // Stryker disable next-line ConditionalExpression: equivalent — the apply caller's `currentIndex` is a stage-0 index (synthesised from the real index), so every entry already has stage 0; the filter never excludes anything.
+    if (entry.flags.stage === 0) byPath.set(entry.path, entry);
+  }
+  return byPath;
+};
+
 /**
  * Classify the changed paths that would lose working-tree content. Tracked
  * paths modified vs the stage-0 index go to `localChanges`; index-absent paths
@@ -92,11 +102,7 @@ export const findWouldOverwrite = async (
   paths: ReadonlySet<FilePath>,
   currentIndex: GitIndex,
 ): Promise<WouldOverwrite> => {
-  const byPath = new Map<FilePath, IndexEntry>();
-  for (const entry of currentIndex.entries) {
-    // Stryker disable next-line ConditionalExpression: equivalent — the apply caller's `currentIndex` is a stage-0 index (synthesised from the real index), so every entry already has stage 0; the filter never excludes anything.
-    if (entry.flags.stage === 0) byPath.set(entry.path, entry);
-  }
+  const byPath = stage0ByPath(currentIndex);
   const localChanges: FilePath[] = [];
   const untracked: FilePath[] = [];
   for (const path of paths) {
