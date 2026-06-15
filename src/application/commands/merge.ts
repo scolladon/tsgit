@@ -32,6 +32,7 @@ import type { Context } from '../../ports/context.js';
 import { buildContentMerger } from '../primitives/build-content-merger.js';
 import { readConfig } from '../primitives/config-read.js';
 import { createCommit } from '../primitives/create-commit.js';
+import { changedPaths, findWouldOverwrite } from '../primitives/find-would-overwrite.js';
 import { flattenTree } from '../primitives/flatten-tree.js';
 import { writeDistinctTypesSides } from '../primitives/internal/write-distinct-types-sides.js';
 import {
@@ -212,7 +213,7 @@ const mergeCommit = async (
  */
 export const asMergeDirtyError = (err: unknown): unknown =>
   err instanceof TsgitError && err.data.code === 'CHECKOUT_OVERWRITE_DIRTY'
-    ? workingTreeDirty(err.data.paths)
+    ? workingTreeDirty({ localChanges: err.data.localChanges, untracked: err.data.untracked })
     : err;
 
 /**
@@ -292,6 +293,7 @@ type MergeTreeResult =
       readonly kind: 'conflict';
       readonly outcomes: ReadonlyArray<MergeOutcome>;
       readonly conflicts: ReadonlyArray<MergeConflict>;
+      readonly ours: ReadonlyMap<FilePath, { readonly id: ObjectId; readonly mode: FileMode }>;
     };
 
 const computeMergeTreeResult = async (
@@ -319,7 +321,12 @@ const computeMergeTreeResult = async (
     const tree = await synthesiseMergedTree(ctx, result.outcomes);
     return { kind: 'clean', tree };
   }
-  return { kind: 'conflict', outcomes: result.outcomes, conflicts: result.conflicts };
+  return {
+    kind: 'conflict',
+    outcomes: result.outcomes,
+    conflicts: result.conflicts,
+    ours: ourFlat.entries,
+  };
 };
 
 interface LeafRecord {
@@ -424,8 +431,9 @@ export const writeNestedTree = async (
  * Persist the conflicting-merge state on disk's write order:
  * working-tree files → ORIG_HEAD → MERGE_HEAD → MERGE_MSG → index.
  *
- * Unsupported conflict types are rejected upfront BEFORE any disk write
- * so the operation fails atomically (HEAD/index/working-tree untouched).
+ * Unsupported conflict types and would-overwrite refusals are checked upfront
+ * BEFORE any disk write so the operation fails atomically (HEAD/index/working-
+ * tree untouched, no MERGE_HEAD, no leaked index lock).
  */
 const persistConflictState = async (
   ctx: Context,
@@ -436,13 +444,24 @@ const persistConflictState = async (
 ): Promise<MergeResult> => {
   rejectUnsupportedConflicts(result.conflicts);
 
+  // Refuse before any write when materialising the conflict would clobber a
+  // tracked working file with local changes, or squat an untracked file on a
+  // path the merge adds. Pure, lock-free reads — so the refusal is atomic
+  // (working tree / index / HEAD untouched, no MERGE_HEAD, no leaked lock).
+  const currentIndex = await readIndex(ctx);
+  const changed = changedPaths(result.outcomes, result.conflicts, result.ours);
+  const { localChanges, untracked } = await findWouldOverwrite(ctx, changed, currentIndex);
+  if (localChanges.length > 0 || untracked.length > 0) {
+    throw workingTreeDirty({ localChanges, untracked });
+  }
+
   // loadSparseMatcher is a pure config/pattern-file read — no lock needed. A
   // defined matcher keeps excluded blob-backed paths out of the working tree
   // and marks their stage-0 conflict-state entries skip-worktree.
   const matcher = await loadSparseMatcher(ctx);
   const lock = await acquireIndexLock(ctx);
   try {
-    await writeConflictingWorkingTree(ctx, result.outcomes, result.conflicts, matcher);
+    await writeConflictingWorkingTree(ctx, result.outcomes, result.conflicts, changed, matcher);
     await writeOrigHead(ctx, ourId);
     await writeMergeHead(ctx, theirId);
     const message = sanitizeMessage(opts.message ?? `Merge ${opts.rev}`, { allowEmpty: false });
@@ -491,56 +510,25 @@ const MAX_CONCURRENT_PATH_WRITES = 32;
 const isExcluded = (matcher: SparseMatcher | undefined, path: FilePath): boolean =>
   matcher !== undefined && !matcher(path);
 
-/** Whether a distinct-types rename target already exists on disk (lstat — no follow). */
-const isUntrackedBlocker = async (ctx: Context, renamedPath: FilePath): Promise<boolean> => {
-  const abs = `${ctx.layout.workDir}/${renamedPath}`;
-  try {
-    await ctx.fs.lstat(abs);
-    return true;
-  } catch {
-    return false;
-  }
-};
-
-/**
- * Collect the distinct-types rename targets that exist on disk. Only the side
- * whose recorded path differs from the original (`conflict.path`) was renamed;
- * its target is probed unique against every tracked path of the three input
- * trees, so anything found there is necessarily untracked. The non-renamed
- * side's path legitimately exists on disk (ours is checked out) and is skipped.
- * Mirrors git's "untracked working tree file would be overwritten by merge" refusal.
- */
-const collectUntrackedRenameBlockers = async (
-  ctx: Context,
-  conflicts: ReadonlyArray<MergeConflict>,
-): Promise<ReadonlyArray<FilePath>> => {
-  const blockers: FilePath[] = [];
-  for (const conflict of conflicts) {
-    if (conflict.type !== 'distinct-types') continue;
-    for (const recordedPath of [conflict.ourPath, conflict.theirPath]) {
-      if (recordedPath === undefined || recordedPath === conflict.path) continue;
-      if (await isUntrackedBlocker(ctx, recordedPath)) blockers.push(recordedPath);
-    }
-  }
-  return blockers;
-};
-
 const writeConflictingWorkingTree = async (
   ctx: Context,
   outcomes: ReadonlyArray<MergeOutcome>,
   conflicts: ReadonlyArray<MergeConflict>,
+  changed: ReadonlySet<FilePath>,
   matcher: SparseMatcher | undefined,
 ): Promise<void> => {
-  // Pre-flight: refuse when an untracked file would be overwritten by a
-  // distinct-types rename. Mirrors git's "untracked working tree file would
-  // be overwritten by merge" refusal (checked before any working-tree write).
-  const blockers = await collectUntrackedRenameBlockers(ctx, conflicts);
-  if (blockers.length > 0) throw workingTreeDirty(blockers);
-
+  // Only outcomes the merge actually changes reach the working tree; an
+  // outcome the merge leaves alone (e.g. `unchanged` on both sides) must
+  // not be rewritten from its committed blob, or it would clobber bytes the
+  // user modified locally at a path the merge never touched. Conflict
+  // outcomes carry no path and are materialised by the conflicts batch below.
+  const touched = outcomes.filter(
+    (outcome) => outcome.status !== 'conflict' && changed.has(outcome.path),
+  );
   // Bounded parallelism — independent path writes overlap, but the pool
   // caps in-flight at MAX_CONCURRENT_PATH_WRITES so a 10k-path merge
   // doesn't exhaust file descriptors.
-  await runBounded(outcomes, MAX_CONCURRENT_PATH_WRITES, (outcome) =>
+  await runBounded(touched, MAX_CONCURRENT_PATH_WRITES, (outcome) =>
     writeOutcomeToTree(ctx, outcome, matcher),
   );
   // Conflicted paths are materialised even when sparse-excluded — a conflict

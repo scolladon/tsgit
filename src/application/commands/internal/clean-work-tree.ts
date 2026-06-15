@@ -5,6 +5,7 @@
  * unmerged entries. Collects every offending path and throws `WORKING_TREE_DIRTY`.
  */
 import { workingTreeDirty } from '../../../domain/commands/error.js';
+import { comparePaths } from '../../../domain/diff/index.js';
 import type { IndexEntry } from '../../../domain/git-index/index.js';
 import type { FilePath, ObjectId } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
@@ -70,5 +71,9 @@ export const assertCleanWorkTree = async (ctx: Context, headTree: ObjectId): Pro
     ...(await stagedDirty(ctx, stage0, headTree)),
     ...(await unstagedDirty(ctx, stage0)),
   ]);
-  if (dirty.size > 0) throw workingTreeDirty([...dirty]);
+  // Raw-byte path order matches git's refusal; the Set's insertion order
+  // (unmerged, staged-dirty, unstaged-dirty) is not faithful for non-ASCII paths.
+  if (dirty.size > 0) {
+    throw workingTreeDirty({ localChanges: [...dirty].sort(comparePaths), untracked: [] });
+  }
 };

@@ -617,7 +617,8 @@ describe('internal/working-tree', () => {
           // Assert — the offending path is reported (kills L99 ArrayDeclaration `[]`).
           const data = err.data;
           if (data.code === 'CHECKOUT_OVERWRITE_DIRTY') {
-            expect(data.paths).toEqual([dir]);
+            expect(data.localChanges).toEqual([dir]);
+            expect(data.untracked).toEqual([]);
           }
         });
       });
@@ -637,7 +638,8 @@ describe('internal/working-tree', () => {
           // Assert — the offending path is reported (kills L96 ArrayDeclaration `[]`).
           const data = err.data;
           if (data.code === 'CHECKOUT_OVERWRITE_DIRTY') {
-            expect(data.paths).toEqual([path]);
+            expect(data.localChanges).toEqual([path]);
+            expect(data.untracked).toEqual([]);
           }
         });
       });

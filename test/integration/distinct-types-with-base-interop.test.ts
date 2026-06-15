@@ -594,18 +594,33 @@ describe.skipIf(!GIT_AVAILABLE)(
 
           // Act
           const peerResult = peerMergeConflict('side');
-          let refusal: { code?: string; paths?: ReadonlyArray<string> } | undefined;
+          let refusal:
+            | {
+                code?: string;
+                localChanges?: ReadonlyArray<string>;
+                untracked?: ReadonlyArray<string>;
+              }
+            | undefined;
           try {
             await repo.merge.run({ rev: 'side', message: 'm', author: AUTHOR });
           } catch (err) {
-            refusal = (err as { data?: { code?: string; paths?: ReadonlyArray<string> } }).data;
+            refusal = (
+              err as {
+                data?: {
+                  code?: string;
+                  localChanges?: ReadonlyArray<string>;
+                  untracked?: ReadonlyArray<string>;
+                };
+              }
+            ).data;
           }
 
           // Assert — both tools refuse with the untracked-overwrite shape
           expect(peerResult.ok).toBe(false);
           expect(peerResult.stderr + peerResult.stdout).toContain('untracked');
           expect(refusal?.code).toBe('WORKING_TREE_DIRTY');
-          expect(refusal?.paths).toContain('p~HEAD');
+          expect(refusal?.untracked).toContain('p~HEAD');
+          expect(refusal?.localChanges).toEqual([]);
 
           // Blocker untouched, HEAD and index unchanged
           const blocker = await readFile(path.join(pair.ours, 'p~HEAD'), 'utf8');

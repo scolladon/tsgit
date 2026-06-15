@@ -534,15 +534,44 @@ describe('stash apply', () => {
         await stashPush(ctx, {});
         await write(ctx, 'a.txt', 'local edit\n');
 
-        // Act
-        const act = stashApply(ctx, {});
-
-        // Assert
-        await act.catch((err: TsgitError) => {
-          expect(err.data).toEqual({ code: 'STASH_APPLY_WOULD_OVERWRITE', paths: ['a.txt'] });
-        });
-        await expect(act).rejects.toBeInstanceOf(TsgitError);
+        // Act + Assert
+        try {
+          await stashApply(ctx, {});
+          expect.fail('stash apply must refuse a dirty working file on the stashed path');
+        } catch (err) {
+          expect(err).toBeInstanceOf(TsgitError);
+          expect((err as TsgitError).data).toEqual({
+            code: 'STASH_APPLY_WOULD_OVERWRITE',
+            paths: ['a.txt'],
+          });
+        }
         expect(await read(ctx, 'a.txt')).toBe('local edit\n');
+      });
+    });
+  });
+
+  describe('Given a dangling symlink squatting a stashed untracked path', () => {
+    describe('When apply runs', () => {
+      it('Then it refuses with STASH_APPLY_WOULD_OVERWRITE naming the dangling path', async () => {
+        // Arrange — stash an untracked file, then squat its path with a dangling
+        // symlink (its target does not exist). The lstat-based presence probe sees
+        // the link where a target-following probe would not.
+        const ctx = await setupRepo();
+        await write(ctx, 'new.txt', 'untracked\n');
+        await stashPush(ctx, { includeUntracked: true });
+        await ctx.fs.symlink('/nonexistent/target', `${ctx.layout.workDir}/new.txt`);
+
+        // Act + Assert
+        try {
+          await stashApply(ctx, {});
+          expect.fail('stash apply must refuse the dangling-symlink squat');
+        } catch (err) {
+          expect(err).toBeInstanceOf(TsgitError);
+          expect((err as TsgitError).data).toEqual({
+            code: 'STASH_APPLY_WOULD_OVERWRITE',
+            paths: ['new.txt'],
+          });
+        }
       });
     });
   });

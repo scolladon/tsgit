@@ -93,10 +93,10 @@ export const removeFile = async (ctx: Context, rawPath: string): Promise<void> =
   try {
     stat = await ctx.fs.lstat(full);
   } catch {
-    throw checkoutOverwriteDirty([path]);
+    throw checkoutOverwriteDirty({ localChanges: [path], untracked: [] });
   }
   if (!stat.isFile && !stat.isSymbolicLink) {
-    throw checkoutOverwriteDirty([path]);
+    throw checkoutOverwriteDirty({ localChanges: [path], untracked: [] });
   }
   await ctx.fs.rm(full);
 };

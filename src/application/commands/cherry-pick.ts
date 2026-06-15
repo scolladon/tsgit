@@ -324,7 +324,8 @@ const applyOnePick = async (
       currentIndex,
       labels: replayLabels(source, subjectLine(cData.message)),
     });
-    if (res.kind === 'would-overwrite') throw workingTreeDirty(res.paths);
+    if (res.kind === 'would-overwrite')
+      throw workingTreeDirty({ localChanges: res.localChanges, untracked: res.untracked });
     if (res.kind === 'conflict') {
       await lock.commit(res.indexEntries);
       return { kind: 'conflict', conflicts: res.conflicts };
@@ -391,7 +392,8 @@ const runNoCommit = async (
         currentIndex,
         labels: replayLabels(source, subjectLine(cData.message)),
       });
-      if (res.kind === 'would-overwrite') throw workingTreeDirty(res.paths);
+      if (res.kind === 'would-overwrite')
+        throw workingTreeDirty({ localChanges: res.localChanges, untracked: res.untracked });
       if (res.kind === 'conflict') {
         await lock.commit(res.indexEntries);
         return {

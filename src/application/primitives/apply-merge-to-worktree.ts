@@ -16,7 +16,7 @@
  *                tree (git's "local changes would be overwritten" guard);
  *                nothing is written.
  */
-import { conflictsToIndexEntries, recordedPaths } from '../../domain/diff/index.js';
+import { conflictsToIndexEntries } from '../../domain/diff/index.js';
 import { unsupportedOperation } from '../../domain/error.js';
 import type { GitIndex, IndexEntry } from '../../domain/git-index/index.js';
 import {
@@ -27,10 +27,10 @@ import {
   type MergeOutcome,
   mergeTrees,
 } from '../../domain/merge/index.js';
-import type { FileMode, FilePath, ObjectId } from '../../domain/objects/index.js';
+import type { FilePath, ObjectId } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
 import { buildContentMerger } from './build-content-merger.js';
-import { compareWorkingTreeEntry, isWorkingTreeModified } from './compare-working-tree-entry.js';
+import { changedPaths, findWouldOverwrite } from './find-would-overwrite.js';
 import { flattenTree } from './flatten-tree.js';
 import { stage0Entry, zeroStat } from './internal/synthetic-index-entry.js';
 import { writeDistinctTypesSides } from './internal/write-distinct-types-sides.js';
@@ -66,76 +66,11 @@ export type ApplyMergeResult =
       readonly conflicts: ReadonlyArray<MergeConflict>;
       readonly indexEntries: ReadonlyArray<IndexEntry>;
     }
-  | { readonly kind: 'would-overwrite'; readonly paths: ReadonlyArray<FilePath> };
-
-/** Whether a clean outcome changes the path relative to `ours`. */
-const outcomeChangesOurs = (
-  outcome: MergeOutcome,
-  ours: ReadonlyMap<FilePath, { readonly id: ObjectId; readonly mode: FileMode }>,
-): boolean => {
-  // The changed-vs-ours classification only narrows `changedPaths`, which gates
-  // the overwrite guard and the conflict-path writer. Misclassifying a path is
-  // observationally equivalent: a clean merge's delta is re-derived by
-  // `materializeTree`, an unchanged/equal outcome the conflict-writer would
-  // additionally touch reproduces bytes the working tree already holds, and an
-  // extra clean path in the guard simply passes (it is not dirty). Hence the
-  // sub-conditions below are equivalent mutants — the wrong-but-superset
-  // classification yields the identical working tree + index.
-  // Stryker disable next-line ConditionalExpression,BooleanLiteral: equivalent — see above.
-  if (outcome.status === 'unchanged') return false;
-  if (outcome.status === 'resolved-known') {
-    const o = ours.get(outcome.path);
-    // Stryker disable next-line ConditionalExpression,EqualityOperator: equivalent — see above (a superset `changed` set is observationally identical).
-    return o === undefined || o.id !== outcome.id || o.mode !== outcome.mode;
-  }
-  // Stryker disable next-line ConditionalExpression,BooleanLiteral: equivalent — see above.
-  if (outcome.status === 'resolved-merged') return true;
-  // resolved-deleted: a change only when `ours` actually had the path.
-  // (`conflict` outcomes never reach here — the caller filters them out.)
-  // Stryker disable next-line ConditionalExpression: equivalent — see above; `ours` always has a resolved-deleted path (it existed to be deleted).
-  return outcome.status === 'resolved-deleted' && ours.has(outcome.path);
-};
-
-/** Every path the merge would touch in the working tree (changed clean + conflicts). */
-const changedPaths = (
-  outcomes: ReadonlyArray<MergeOutcome>,
-  conflicts: ReadonlyArray<MergeConflict>,
-  ours: ReadonlyMap<FilePath, { readonly id: ObjectId; readonly mode: FileMode }>,
-): ReadonlySet<FilePath> => {
-  const paths = new Set<FilePath>();
-  for (const outcome of outcomes) {
-    if (outcome.status !== 'conflict' && outcomeChangesOurs(outcome, ours)) paths.add(outcome.path);
-  }
-  for (const conflict of conflicts) {
-    for (const path of recordedPaths(conflict)) paths.add(path);
-  }
-  return paths;
-};
-
-/** Paths whose working file would lose changes if overwritten (git's guard). */
-const findWouldOverwrite = async (
-  ctx: Context,
-  paths: ReadonlySet<FilePath>,
-  currentIndex: GitIndex,
-): Promise<ReadonlyArray<FilePath>> => {
-  const byPath = new Map<FilePath, IndexEntry>();
-  for (const entry of currentIndex.entries) {
-    // Stryker disable next-line ConditionalExpression: equivalent — the apply caller's `currentIndex` is a stage-0 index (synthesised from the real index), so every entry already has stage 0; the filter never excludes anything.
-    if (entry.flags.stage === 0) byPath.set(entry.path, entry);
-  }
-  const dirty: FilePath[] = [];
-  for (const path of paths) {
-    const entry = byPath.get(path);
-    if (entry === undefined) {
-      // A path the stash adds: an existing (untracked) working file would be clobbered.
-      const exists = await ctx.fs.exists(`${ctx.layout.workDir}/${path}`);
-      if (exists) dirty.push(path);
-      continue;
-    }
-    if (isWorkingTreeModified(await compareWorkingTreeEntry(ctx, entry))) dirty.push(path);
-  }
-  return dirty;
-};
+  | {
+      readonly kind: 'would-overwrite';
+      readonly localChanges: ReadonlyArray<FilePath>;
+      readonly untracked: ReadonlyArray<FilePath>;
+    };
 
 /** Write the clean outcomes' merged blobs and synthesise the merged root tree. */
 const synthesiseMergedTree = async (
@@ -303,7 +238,13 @@ export const applyMergeToWorktree = async (
 
   const changed = changedPaths(merged.outcomes, merged.conflicts, ours.entries);
   const overwrite = await findWouldOverwrite(ctx, changed, input.currentIndex);
-  if (overwrite.length > 0) return { kind: 'would-overwrite', paths: overwrite };
+  if (overwrite.localChanges.length > 0 || overwrite.untracked.length > 0) {
+    return {
+      kind: 'would-overwrite',
+      localChanges: overwrite.localChanges,
+      untracked: overwrite.untracked,
+    };
+  }
 
   if (merged.cleanMerge) {
     const mergedTree = await synthesiseMergedTree(ctx, merged.outcomes);

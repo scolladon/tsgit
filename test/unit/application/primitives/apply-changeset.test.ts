@@ -208,7 +208,7 @@ describe('applyChangeset', () => {
           expect(err).toBeInstanceOf(TsgitError);
           if (!(err instanceof TsgitError)) throw err;
           expect(err.data.code).toBe('CHECKOUT_OVERWRITE_DIRTY');
-          expect(err.data.code === 'CHECKOUT_OVERWRITE_DIRTY' && err.data.paths).toEqual([
+          expect(err.data.code === 'CHECKOUT_OVERWRITE_DIRTY' && err.data.localChanges).toEqual([
             'mod.txt',
           ]);
         }
@@ -455,7 +455,7 @@ describe('applyChangeset', () => {
           if (!(err instanceof TsgitError)) throw err;
           // Assert
           expect(err.data.code).toBe('CHECKOUT_OVERWRITE_DIRTY');
-          expect(err.data.code === 'CHECKOUT_OVERWRITE_DIRTY' && err.data.paths).toEqual([
+          expect(err.data.code === 'CHECKOUT_OVERWRITE_DIRTY' && err.data.localChanges).toEqual([
             'del.txt',
           ]);
         }
@@ -703,6 +703,87 @@ describe('applyChangeset', () => {
 
         // Assert
         expect(progressUpdate).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe('Given multiple non-ASCII tracked paths whose byte order differs from UTF-16 order are all dirty and force=false', () => {
+    describe('When applyChangeset runs', () => {
+      it('Then localChanges is sorted by raw path bytes, not the changeset entry order', async () => {
+        // Arrange — three names where the supplementary-plane emoji (UTF-8 lead
+        // 0xF0) sorts AFTER the high-BMP private-use char (UTF-8 lead 0xEF) by
+        // bytes, but BEFORE it by UTF-16 code units (its lead surrogate < 0xF8FF).
+        // Entries are supplied in UTF-16 ascending order so a byte sort is observable.
+        const cjk = 'f-\u{4E2D}.txt';
+        const emoji = 'f-\u{1F600}.txt';
+        const bmp = 'f-\u{F8FF}.txt';
+        const ctx = await buildSeededContext();
+        const oldId = await writeBlob(ctx, new TextEncoder().encode('original'));
+        const newId = await writeBlob(ctx, new TextEncoder().encode('updated'));
+        for (const name of [cjk, emoji, bmp]) {
+          await ctx.fs.write(`${WORKDIR}/${name}`, new TextEncoder().encode('local-edit'));
+        }
+        const sut = applyChangeset;
+
+        // Act + Assert
+        try {
+          await sut(ctx, {
+            // Entry order = UTF-16 ascending (cjk, emoji, bmp).
+            changeset: makeChangeset([
+              makeUpdate(cjk, oldId, newId),
+              makeUpdate(emoji, oldId, newId),
+              makeUpdate(bmp, oldId, newId),
+            ]),
+            force: false,
+            workdir: WORKDIR,
+          });
+          throw new Error('expected throw');
+        } catch (err) {
+          if (!(err instanceof TsgitError)) throw err;
+          // Assert — byte order swaps emoji and bmp relative to the UTF-16 entry order.
+          expect(err.data.code).toBe('CHECKOUT_OVERWRITE_DIRTY');
+          expect(err.data.code === 'CHECKOUT_OVERWRITE_DIRTY' && err.data.localChanges).toEqual([
+            cjk,
+            bmp,
+            emoji,
+          ]);
+        }
+      });
+    });
+  });
+
+  describe('Given multiple non-ASCII untracked clash paths whose byte order differs from UTF-16 order and force=false', () => {
+    describe('When applyChangeset runs', () => {
+      it('Then untracked is sorted by raw path bytes, not the changeset entry order', async () => {
+        // Arrange — same three names occupied by untracked files an add would clobber.
+        const cjk = 'f-\u{4E2D}.txt';
+        const emoji = 'f-\u{1F600}.txt';
+        const bmp = 'f-\u{F8FF}.txt';
+        const ctx = await buildSeededContext();
+        const id = await writeBlob(ctx, new TextEncoder().encode('new'));
+        for (const name of [cjk, emoji, bmp]) {
+          await ctx.fs.write(`${WORKDIR}/${name}`, new TextEncoder().encode('squatter'));
+        }
+        const sut = applyChangeset;
+
+        // Act + Assert
+        try {
+          await sut(ctx, {
+            changeset: makeChangeset([makeAdd(cjk, id), makeAdd(emoji, id), makeAdd(bmp, id)]),
+            force: false,
+            workdir: WORKDIR,
+          });
+          throw new Error('expected throw');
+        } catch (err) {
+          if (!(err instanceof TsgitError)) throw err;
+          // Assert — byte order, not entry order.
+          expect(err.data.code).toBe('CHECKOUT_OVERWRITE_DIRTY');
+          expect(err.data.code === 'CHECKOUT_OVERWRITE_DIRTY' && err.data.untracked).toEqual([
+            cjk,
+            bmp,
+            emoji,
+          ]);
+        }
       });
     });
   });

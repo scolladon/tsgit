@@ -96,7 +96,7 @@ Codes are grouped by domain. Within each group, alphabetical.
 
 | Code | Payload | Raised when |
 |---|---|---|
-| `CHECKOUT_OVERWRITE_DIRTY` | `paths` | `checkout` switch mode would discard tracked modifications and no `force`. |
+| `CHECKOUT_OVERWRITE_DIRTY` | `localChanges`, `untracked` | `checkout` switch mode would discard tracked modifications or clobber untracked files and no `force`. |
 | `GITIGNORE_FILE_TOO_LARGE` | `name, bytes, limit` | `.gitignore` (or `core.excludesFile`) exceeds 1 MiB cap. |
 | `INVALID_INDEX_ENTRY` | `offset, reason` | Entry in `.git/index` malformed. |
 | `INVALID_INDEX_HEADER` | `reason` | `.git/index` header malformed. |
@@ -107,7 +107,7 @@ Codes are grouped by domain. Within each group, alphabetical.
 | `TREE_CYCLE_DETECTED` | `path` | Recursing into a tree formed a cycle (gitlink loop). |
 | `TREE_DEPTH_EXCEEDED` | `depth, limit` | Tree recursion exceeded `MAX_TREE_DEPTH` (4096). |
 | `TREE_ENTRY_LIMIT_EXCEEDED` | `path, limit` | Tree had more than the configured entry cap. |
-| `WORKING_TREE_DIRTY` | `paths` | Operation requires a clean working tree (and no `force`). |
+| `WORKING_TREE_DIRTY` | `localChanges`, `untracked` | Operation requires a clean working tree (and no `force`), or a conflicting merge whose materialisation would overwrite a tracked-and-modified or untracked path. `localChanges` holds the tracked-dirty paths, `untracked` the untracked-clash paths. |
 | `WORKING_TREE_FILE_TOO_LARGE` | `path, bytes, limit` | File exceeds `MAX_WORKING_TREE_BLOB_BYTES` (256 MiB). |
 | `WORKTREE_FILE_ABSENT` | `path` | Working-tree blame (`worktree: true`) of a tracked path whose file is missing from disk. |
 

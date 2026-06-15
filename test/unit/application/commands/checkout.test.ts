@@ -745,7 +745,7 @@ describe('checkout — mutation hardening', () => {
         const data = (caught as TsgitError).data;
         expect(data.code).toBe('CHECKOUT_OVERWRITE_DIRTY');
         if (data.code === 'CHECKOUT_OVERWRITE_DIRTY') {
-          expect(data.paths).toContain('foo.txt');
+          expect(data.localChanges).toContain('foo.txt');
         }
       });
     });

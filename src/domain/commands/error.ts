@@ -5,7 +5,11 @@ import type { ReceivePackResponse as ReportStatus } from '../protocol/receive-pa
 import type { ConfigScope } from './config-key.js';
 
 export type CommandError =
-  | { readonly code: 'WORKING_TREE_DIRTY'; readonly paths: ReadonlyArray<FilePath> }
+  | {
+      readonly code: 'WORKING_TREE_DIRTY';
+      readonly localChanges: ReadonlyArray<FilePath>;
+      readonly untracked: ReadonlyArray<FilePath>;
+    }
   | { readonly code: 'PATHSPEC_NO_MATCH'; readonly pattern: string }
   | { readonly code: 'PATHSPEC_OUTSIDE_REPO'; readonly path: FilePath }
   | { readonly code: 'NOTHING_TO_COMMIT' }
@@ -41,7 +45,11 @@ export type CommandError =
       readonly paths: ReadonlyArray<FilePath>;
       readonly truncated?: boolean;
     }
-  | { readonly code: 'CHECKOUT_OVERWRITE_DIRTY'; readonly paths: ReadonlyArray<FilePath> }
+  | {
+      readonly code: 'CHECKOUT_OVERWRITE_DIRTY';
+      readonly localChanges: ReadonlyArray<FilePath>;
+      readonly untracked: ReadonlyArray<FilePath>;
+    }
   | {
       readonly code: 'REVPARSE_AMBIGUOUS';
       readonly expression: string;
@@ -211,8 +219,19 @@ const sanitizeForDisplay = (s: string): string => {
 
 export const sanitize = sanitizeForDisplay;
 
-export const workingTreeDirty = (paths: ReadonlyArray<FilePath>): TsgitError =>
-  new TsgitError({ code: 'WORKING_TREE_DIRTY', paths });
+/**
+ * The two would-overwrite refusal classes: `localChanges` is git's "Your local
+ * changes …" block (tracked, locally-modified paths); `untracked` is git's "The
+ * following untracked working tree files …" block (index-absent paths present on
+ * disk). A refusal is raised when either array is non-empty.
+ */
+export interface WouldOverwriteClasses {
+  readonly localChanges: ReadonlyArray<FilePath>;
+  readonly untracked: ReadonlyArray<FilePath>;
+}
+
+export const workingTreeDirty = ({ localChanges, untracked }: WouldOverwriteClasses): TsgitError =>
+  new TsgitError({ code: 'WORKING_TREE_DIRTY', localChanges, untracked });
 
 export const pathspecNoMatch = (pattern: string): TsgitError =>
   new TsgitError({ code: 'PATHSPEC_NO_MATCH', pattern });
@@ -298,8 +317,11 @@ export const mergeHasConflicts = (
   );
 };
 
-export const checkoutOverwriteDirty = (paths: ReadonlyArray<FilePath>): TsgitError =>
-  new TsgitError({ code: 'CHECKOUT_OVERWRITE_DIRTY', paths });
+export const checkoutOverwriteDirty = ({
+  localChanges,
+  untracked,
+}: WouldOverwriteClasses): TsgitError =>
+  new TsgitError({ code: 'CHECKOUT_OVERWRITE_DIRTY', localChanges, untracked });
 
 export const revparseAmbiguous = (
   expression: string,

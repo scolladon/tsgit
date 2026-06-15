@@ -3,7 +3,12 @@ import fc from 'fast-check';
 import { tokenizeConfig } from '../../../../src/application/primitives/config-read.js';
 import { createCommit } from '../../../../src/application/primitives/create-commit.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
-import type { AuthorIdentity, ObjectId, Tree } from '../../../../src/domain/objects/index.js';
+import type {
+  AuthorIdentity,
+  FilePath,
+  ObjectId,
+  Tree,
+} from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
 
 /**
@@ -392,4 +397,47 @@ export const arbHeaderIdentity = (): fc.Arbitrary<{
       subsection,
       dottedName: subsection === undefined ? section : `${section}.${subsection}`,
     }));
+};
+
+/**
+ * One changed-path classification for the would-overwrite property suite. The
+ * kind decides how the property test materialises the path:
+ * - `tracked-clean`    — an index entry whose working file matches (not dirty).
+ * - `tracked-dirty`    — an index entry whose working file differs (a local change).
+ * - `untracked-present`— no index entry, a working file present on disk.
+ * - `absent`           — neither tracked nor present (the merge would create it).
+ */
+export type ChangedPathKind = 'tracked-clean' | 'tracked-dirty' | 'untracked-present' | 'absent';
+
+export interface ChangedPathSpec {
+  readonly path: FilePath;
+  readonly kind: ChangedPathKind;
+}
+
+/**
+ * Arbitrary over a changed-path set: distinct path names, each tagged with one
+ * of the four would-overwrite classifications. Names are drawn from a small
+ * lowercase pool so shrinking is legible; uniqueness keeps the materialised
+ * scenario well-formed (one classification per path).
+ */
+export const changedPathSpecsArb = (): fc.Arbitrary<ReadonlyArray<ChangedPathSpec>> => {
+  const arbName = fc
+    .string({
+      unit: fc.integer({ min: 0x61, max: 0x7a }).map((cp) => String.fromCodePoint(cp)),
+      minLength: 1,
+      maxLength: 6,
+    })
+    .filter((s) => s.length > 0);
+  const arbKind = fc.constantFrom<ChangedPathKind>(
+    'tracked-clean',
+    'tracked-dirty',
+    'untracked-present',
+    'absent',
+  );
+  return fc
+    .uniqueArray(fc.record({ name: arbName, kind: arbKind }), {
+      selector: (e) => e.name,
+      maxLength: 8,
+    })
+    .map((entries) => entries.map((e) => ({ path: e.name as FilePath, kind: e.kind })));
 };

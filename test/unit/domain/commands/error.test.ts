@@ -76,9 +76,10 @@ describe('domain commands error — factory data', () => {
     describe('When called', () => {
       it('Then data matches expected shape', () => {
         // Arrange + Assert
-        expect(workingTreeDirty(['a' as FilePath]).data).toEqual({
+        expect(workingTreeDirty({ localChanges: ['a' as FilePath], untracked: [] }).data).toEqual({
           code: 'WORKING_TREE_DIRTY',
-          paths: ['a'],
+          localChanges: ['a'],
+          untracked: [],
         });
       });
     });
@@ -543,9 +544,12 @@ describe('domain commands error — factory data', () => {
     describe('When called', () => {
       it('Then data matches expected shape', () => {
         // Arrange + Assert
-        expect(checkoutOverwriteDirty(['a' as FilePath]).data).toEqual({
+        expect(
+          checkoutOverwriteDirty({ localChanges: ['a' as FilePath], untracked: [] }).data,
+        ).toEqual({
           code: 'CHECKOUT_OVERWRITE_DIRTY',
-          paths: ['a'],
+          localChanges: ['a'],
+          untracked: [],
         });
       });
     });
@@ -1112,7 +1116,11 @@ describe('domain commands error — extractDetail message formatting', () => {
   type Case = readonly [CommandError, string];
   const cases: ReadonlyArray<Case> = [
     [
-      { code: 'WORKING_TREE_DIRTY', paths: ['a' as FilePath, 'b' as FilePath] },
+      {
+        code: 'WORKING_TREE_DIRTY',
+        localChanges: ['a' as FilePath],
+        untracked: ['b' as FilePath],
+      },
       'WORKING_TREE_DIRTY: working tree has uncommitted changes: 2 files',
     ],
     [
@@ -1188,7 +1196,7 @@ describe('domain commands error — extractDetail message formatting', () => {
       'MERGE_HAS_CONFLICTS: merge has unresolved conflicts: 3 files',
     ],
     [
-      { code: 'CHECKOUT_OVERWRITE_DIRTY', paths: ['a' as FilePath] },
+      { code: 'CHECKOUT_OVERWRITE_DIRTY', localChanges: ['a' as FilePath], untracked: [] },
       'CHECKOUT_OVERWRITE_DIRTY: checkout would overwrite uncommitted changes: 1 files',
     ],
     [

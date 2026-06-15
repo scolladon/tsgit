@@ -279,7 +279,7 @@ function extractDetail(data: TsgitErrorData): string {
     case 'ALREADY_INITIALIZED':
       return `repository already exists: ${basename(data.path)}`;
     case 'WORKING_TREE_DIRTY':
-      return `working tree has uncommitted changes: ${data.paths.length} files`;
+      return `working tree has uncommitted changes: ${data.localChanges.length + data.untracked.length} files`;
     case 'PATHSPEC_NO_MATCH':
       return `pathspec did not match any files: ${data.pattern}`;
     case 'PATHSPEC_OUTSIDE_REPO':
@@ -319,7 +319,7 @@ function extractDetail(data: TsgitErrorData): string {
     case 'MERGE_HAS_CONFLICTS':
       return `merge has unresolved conflicts: ${data.count} files`;
     case 'CHECKOUT_OVERWRITE_DIRTY':
-      return `checkout would overwrite uncommitted changes: ${data.paths.length} files`;
+      return `checkout would overwrite uncommitted changes: ${data.localChanges.length + data.untracked.length} files`;
     case 'REVPARSE_AMBIGUOUS':
       return `revision expression "${data.expression}" is ambiguous (${data.candidates.length} candidates)`;
     case 'REVPARSE_UNRESOLVED':
