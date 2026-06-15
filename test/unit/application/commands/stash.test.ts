@@ -534,14 +534,17 @@ describe('stash apply', () => {
         await stashPush(ctx, {});
         await write(ctx, 'a.txt', 'local edit\n');
 
-        // Act
-        const act = stashApply(ctx, {});
-
-        // Assert
-        await act.catch((err: TsgitError) => {
-          expect(err.data).toEqual({ code: 'STASH_APPLY_WOULD_OVERWRITE', paths: ['a.txt'] });
-        });
-        await expect(act).rejects.toBeInstanceOf(TsgitError);
+        // Act + Assert
+        try {
+          await stashApply(ctx, {});
+          expect.fail('stash apply must refuse a dirty working file on the stashed path');
+        } catch (err) {
+          expect(err).toBeInstanceOf(TsgitError);
+          expect((err as TsgitError).data).toEqual({
+            code: 'STASH_APPLY_WOULD_OVERWRITE',
+            paths: ['a.txt'],
+          });
+        }
         expect(await read(ctx, 'a.txt')).toBe('local edit\n');
       });
     });
