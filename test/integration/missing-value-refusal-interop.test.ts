@@ -1000,3 +1000,226 @@ describe.skipIf(!GIT_AVAILABLE)('missing-value-refusal interop — merge driver'
     });
   });
 });
+
+/**
+ * Heavy submodule block (`file://` upstream submodule). One shared `beforeAll`
+ * builds a real upstream sub (two commits C1→C2), a superproject pinning the sub
+ * at C2 via a relative url, and `.gitmodules` declaring it — exactly the
+ * canonical-git layout `git submodule update` consumes. Each test takes a fresh
+ * clone (its own `.git/config` to rewrite with a valueless `submodule.mysub.url`),
+ * so the shared upstream survives across cases. 60s timeout: heavy git-spawning
+ * interop times out hooks under validate's concurrency otherwise (project memory).
+ *
+ * The fixture is REUSABLE — `subModuleFixture()` exposes the shared dirs and the
+ * `freshClone()` helper so a later mode-precedence block can drift the working
+ * submodule and vary `.gitmodules` vs config update modes against the same C2 pin.
+ */
+const SUBMODULE_AUTHOR_ENV: NodeJS.ProcessEnv = {
+  ...runGitEnv(),
+  GIT_AUTHOR_NAME: 'Ada',
+  GIT_AUTHOR_EMAIL: 'ada@example.com',
+  GIT_AUTHOR_DATE: '1700000000 +0000',
+  GIT_COMMITTER_NAME: 'Ada',
+  GIT_COMMITTER_EMAIL: 'ada@example.com',
+  GIT_COMMITTER_DATE: '1700000000 +0000',
+};
+
+/** `git` with `protocol.file.allow=always` (mandatory for `file://` submodules). */
+const subGit = (cwd: string, ...args: ReadonlyArray<string>): string =>
+  runGit(['-c', 'protocol.file.allow=always', '-C', cwd, ...args], { env: SUBMODULE_AUTHOR_ENV });
+
+interface SubmoduleFixture {
+  /** The base tmpdir holding `sub`, `super`, and the per-test clones. */
+  readonly base: string;
+  /** Clone the superproject into a fresh dir under `base`; returns its path. */
+  readonly freshClone: () => string;
+  /** The sub's C1 and C2 commit oids (C2 is the superproject pin). */
+  readonly c1: string;
+  readonly c2: string;
+}
+
+/**
+ * Controls line numbers in the rewritten clone config: the valueless `url`
+ * lands at line 4.
+ * Line 1: [core]
+ * Line 2: \trepositoryformatversion = 0
+ * Line 3: [submodule "mysub"]
+ * Line 4: \turl           <- valueless
+ */
+const VALUELESS_SUBMODULE_URL_FIXTURE =
+  '[core]\n\trepositoryformatversion = 0\n[submodule "mysub"]\n\turl\n';
+const VALUELESS_SUBMODULE_URL_LINE = 4;
+
+/** `[submodule "mysub"]` present but no url line — the absent case. */
+const ABSENT_SUBMODULE_URL_FIXTURE = '[core]\n\trepositoryformatversion = 0\n[submodule "mysub"]\n';
+
+describe.skipIf(!GIT_AVAILABLE)('missing-value-refusal interop — submodule url', () => {
+  let fixture: SubmoduleFixture;
+
+  beforeAll(async () => {
+    const base = await realpath(await mkdtemp(path.join(os.tmpdir(), 'tsgit-mv-sub-')));
+    // Upstream sub: two commits so the pin (C2) differs from the tip a fresh
+    // clone might land on — slice-4-ready for a drift-to-C1 precedence matrix.
+    const subDir = path.join(base, 'sub');
+    runGit(['init', '-q', '-b', 'main', subDir]);
+    await writeFile(path.join(subDir, 'a.txt'), 'sub v1\n');
+    subGit(subDir, 'add', 'a.txt');
+    subGit(subDir, 'commit', '-q', '-m', 'c1');
+    const c1 = subGit(subDir, 'rev-parse', 'HEAD').trim();
+    await writeFile(path.join(subDir, 'a.txt'), 'sub v2\n');
+    subGit(subDir, 'add', 'a.txt');
+    subGit(subDir, 'commit', '-q', '-m', 'c2');
+    const c2 = subGit(subDir, 'rev-parse', 'HEAD').trim();
+    // Superproject pinning the sub (at C2) via a relative url.
+    const superDir = path.join(base, 'super');
+    runGit(['init', '-q', '-b', 'main', superDir]);
+    await writeFile(path.join(superDir, 'r.txt'), 'root\n');
+    subGit(superDir, 'add', 'r.txt');
+    subGit(superDir, 'commit', '-q', '-m', 'root');
+    subGit(superDir, 'submodule', 'add', '../sub', 'mysub');
+    subGit(superDir, 'commit', '-q', '-m', 'add submodule');
+    let cloneCounter = 0;
+    const freshClone = (): string => {
+      cloneCounter += 1;
+      const dir = path.join(base, `clone-${cloneCounter}`);
+      subGit(base, 'clone', '-q', superDir, dir);
+      return dir;
+    };
+    fixture = { base, freshClone, c1, c2 };
+  }, 60_000);
+
+  afterAll(async () => {
+    if (fixture !== undefined) await rm(fixture.base, { recursive: true, force: true });
+  });
+
+  describe('Given a clone with a valueless submodule.mysub.url at line 4', () => {
+    describe('When git submodule update is run', () => {
+      it('Then git refuses with exit 128 and the two-line missing-value message', async () => {
+        // Arrange
+        const clone = fixture.freshClone();
+        await writeFile(path.join(clone, '.git', 'config'), VALUELESS_SUBMODULE_URL_FIXTURE);
+
+        // Act
+        const g = tryRunGit(
+          ['-c', 'protocol.file.allow=always', '-C', clone, 'submodule', 'update'],
+          { env: SUBMODULE_AUTHOR_ENV },
+        );
+
+        // Assert
+        expect(g.ok).toBe(false);
+        expect(g.stderr).toContain("missing value for 'submodule.mysub.url'");
+        expect(g.stderr).toContain("bad config variable 'submodule.mysub.url'");
+        expect(g.stderr).toContain(`at line ${VALUELESS_SUBMODULE_URL_LINE}`);
+      });
+    });
+
+    describe('When tsgit submodule.update is run', () => {
+      it('Then throws CONFIG_MISSING_VALUE with key submodule.mysub.url and correct line', async () => {
+        // Arrange
+        const clone = fixture.freshClone();
+        await writeFile(path.join(clone, '.git', 'config'), VALUELESS_SUBMODULE_URL_FIXTURE);
+        const repo = await openRepository({ cwd: clone });
+
+        // Act
+        let caught: unknown;
+        try {
+          await repo.submodule.update({});
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert — each field individually (mutation-resistant)
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as {
+          code: string;
+          key: string;
+          line: number;
+          source: string;
+        };
+        expect(data.code).toBe('CONFIG_MISSING_VALUE');
+        expect(data.key).toBe('submodule.mysub.url');
+        expect(data.line).toBe(VALUELESS_SUBMODULE_URL_LINE);
+        expect(data.source).toMatch(/\/config$/);
+      });
+    });
+
+    describe("When reconstructing git's two lines from tsgit submodule.update structured fields", () => {
+      it("Then the reconstructed lines match git's stderr after path-token normalization", async () => {
+        // Arrange
+        const clone = fixture.freshClone();
+        await writeFile(path.join(clone, '.git', 'config'), VALUELESS_SUBMODULE_URL_FIXTURE);
+
+        // Act — run both git and tsgit against the same clone
+        const g = tryRunGit(
+          ['-c', 'protocol.file.allow=always', '-C', clone, 'submodule', 'update'],
+          { env: SUBMODULE_AUTHOR_ENV },
+        );
+        const repo = await openRepository({ cwd: clone });
+        let caught: unknown;
+        try {
+          await repo.submodule.update({});
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as {
+          code: string;
+          key: string;
+          line: number;
+          source: string;
+        };
+        const gitLines = g.stderr.split('\n').filter((l) => l.length > 0);
+        const errorLine = gitLines.find((l) => l.startsWith('error:')) ?? '';
+        const fatalLine = gitLines.find((l) => l.startsWith('fatal:')) ?? '';
+
+        expect(errorLine).toBe(`error: missing value for '${data.key}'`);
+
+        const normalizedSource = '.git/config';
+        const tsgitFatalLine = `fatal: bad config variable '${data.key}' in file '${normalizedSource}' at line ${data.line}`;
+        const normalizedFatalLine = fatalLine.replace(
+          /in file '[^']+'/,
+          `in file '${normalizedSource}'`,
+        );
+        expect(normalizedFatalLine).toBe(tsgitFatalLine);
+      });
+    });
+
+    describe('When tsgit configList is run on the same file', () => {
+      it('Then tsgit configList does not throw (refusal is at consumer, not read)', async () => {
+        // Arrange
+        const clone = fixture.freshClone();
+        await writeFile(path.join(clone, '.git', 'config'), VALUELESS_SUBMODULE_URL_FIXTURE);
+        const ctx = createNodeContext({ workDir: clone });
+
+        // Act + Assert — no throw
+        await expect(configList(ctx, {})).resolves.toBeDefined();
+      });
+    });
+  });
+
+  describe('Given a clone with [submodule "mysub"] but no url (absent)', () => {
+    describe('When tsgit submodule.update is run without init', () => {
+      it('Then the registered-but-urlless submodule is skipped and NOT CONFIG_MISSING_VALUE', async () => {
+        // Arrange
+        const clone = fixture.freshClone();
+        await writeFile(path.join(clone, '.git', 'config'), ABSENT_SUBMODULE_URL_FIXTURE);
+        const repo = await openRepository({ cwd: clone });
+
+        // Act
+        let caught: unknown;
+        let result: { entries: ReadonlyArray<unknown> } | undefined;
+        try {
+          result = await repo.submodule.update({});
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert — absent url skips the row, no death
+        expect(caught).toBeUndefined();
+        expect(result?.entries).toHaveLength(0);
+      });
+    });
+  });
+});

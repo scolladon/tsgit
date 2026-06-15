@@ -36,6 +36,7 @@ import {
   deriveSubmoduleCloneContext,
   deriveSubmoduleContext,
 } from '../primitives/internal/submodule-context.js';
+import { assertNoValuelessConfig } from '../primitives/internal/valueless-config-guard.js';
 import { materializeWorktreeFromHead } from '../primitives/materialize-worktree-from-head.js';
 import { type GitmodulesRow, parseGitmodules } from '../primitives/parse-gitmodules.js';
 import { readIndex } from '../primitives/read-index.js';
@@ -715,6 +716,7 @@ export const submoduleUpdate = async (
     const pinned = gitlinkFromIndex(index, row.path);
     if (pinned === undefined) continue;
     if (config.submodule?.get(row.name)?.url === undefined) {
+      await assertNoValuelessConfig(ctx, 'submodule', row.name, ['url']);
       if (opts.init !== true) continue;
       await submoduleInit(ctx, { paths: [row.path] });
       config = await readConfig(ctx);
