@@ -497,6 +497,207 @@ describe('merge', () => {
     });
   });
 
+  describe('Given a tracked file the conflicting merge would overwrite is locally modified', () => {
+    describe('When merge', () => {
+      it('Then it refuses with WORKING_TREE_DIRTY, leaving HEAD and the dirty file intact with no MERGE_HEAD', async () => {
+        // Arrange — base file.txt; both sides change the SAME line → content
+        // conflict. Drift the working file.txt before merging.
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'a\nb\nc\n');
+        await add(ctx, ['file.txt']);
+        await commit(ctx, { message: 'base', author });
+        await branchCreate(ctx, { name: 'theirs' });
+        await checkout(ctx, { rev: 'theirs' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'a\nY\nc\n');
+        await add(ctx, ['file.txt']);
+        await commit(ctx, { message: 'theirs-edit', author });
+        await checkout(ctx, { rev: 'main' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'a\nX\nc\n');
+        await add(ctx, ['file.txt']);
+        const oursTip = await commit(ctx, { message: 'ours-edit', author });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'a\nDIRTY-LOCAL\nc\n');
+
+        // Act
+        let error: unknown;
+        try {
+          await mergeRun(ctx, { rev: 'theirs', author });
+        } catch (caught) {
+          error = caught;
+        }
+
+        // Assert — WORKING_TREE_DIRTY on file.txt; HEAD, dirty bytes, no MERGE_HEAD.
+        expect(error).toBeInstanceOf(TsgitError);
+        const data = (error as TsgitError).data;
+        expect(data.code).toBe('WORKING_TREE_DIRTY');
+        if (data.code === 'WORKING_TREE_DIRTY') {
+          expect(data.localChanges).toContain('file.txt');
+          expect(data.untracked).toEqual([]);
+        }
+        expect(await resolveRef(ctx, 'refs/heads/main' as RefName)).toBe(oursTip.id);
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/file.txt`)).toBe('a\nDIRTY-LOCAL\nc\n');
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/MERGE_HEAD`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a conflicting-merge tracked-dirty refusal acquired the index lock', () => {
+    describe('When a later index operation runs', () => {
+      it('Then the lock was released so the operation is not blocked', async () => {
+        // Arrange — a content conflict on file.txt, drifted so it refuses.
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'a\nb\nc\n');
+        await add(ctx, ['file.txt']);
+        await commit(ctx, { message: 'base', author });
+        await branchCreate(ctx, { name: 'theirs' });
+        await checkout(ctx, { rev: 'theirs' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'a\nY\nc\n');
+        await add(ctx, ['file.txt']);
+        await commit(ctx, { message: 'theirs-edit', author });
+        await checkout(ctx, { rev: 'main' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'a\nX\nc\n');
+        await add(ctx, ['file.txt']);
+        await commit(ctx, { message: 'ours-edit', author });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'a\nDIRTY-LOCAL\nc\n');
+        let refused = false;
+        try {
+          await mergeRun(ctx, { rev: 'theirs', author });
+        } catch (caught) {
+          refused =
+            (caught as { readonly data?: { readonly code?: string } }).data?.code ===
+            'WORKING_TREE_DIRTY';
+        }
+        expect(refused).toBe(true);
+
+        // Act — a follow-up op that re-acquires the index lock; a leaked lock
+        // would surface as RESOURCE_LOCKED here.
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/q.txt`, 'q\n');
+        await add(ctx, ['q.txt']);
+
+        // Assert — the add succeeded, so the refused merge released the lock.
+        const indexPaths = (await readIndex(ctx)).entries.map((e) => e.path).sort();
+        expect(indexPaths).toContain('q.txt');
+      });
+    });
+  });
+
+  describe('Given only a tracked-dirty conflict path (untracked guard branch quiet)', () => {
+    describe('When merge', () => {
+      it('Then it refuses with the path in localChanges and untracked empty', async () => {
+        // Arrange — single content conflict on file.txt, drifted dirty; nothing
+        // else the merge touches is squatted.
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'a\nb\nc\n');
+        await add(ctx, ['file.txt']);
+        await commit(ctx, { message: 'base', author });
+        await branchCreate(ctx, { name: 'theirs' });
+        await checkout(ctx, { rev: 'theirs' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'a\nY\nc\n');
+        await add(ctx, ['file.txt']);
+        await commit(ctx, { message: 'theirs-edit', author });
+        await checkout(ctx, { rev: 'main' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'a\nX\nc\n');
+        await add(ctx, ['file.txt']);
+        await commit(ctx, { message: 'ours-edit', author });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'a\nDIRTY-LOCAL\nc\n');
+
+        // Act
+        let error: unknown;
+        try {
+          await mergeRun(ctx, { rev: 'theirs', author });
+        } catch (caught) {
+          error = caught;
+        }
+
+        // Assert — localChanges carries file.txt; untracked is empty.
+        const data = (error as TsgitError).data;
+        expect(data.code).toBe('WORKING_TREE_DIRTY');
+        if (data.code === 'WORKING_TREE_DIRTY') {
+          expect(data.localChanges).toEqual(['file.txt']);
+          expect(data.untracked).toEqual([]);
+        }
+      });
+    });
+  });
+
+  describe('Given only an untracked file squatting a theirs-only add during a conflicting merge', () => {
+    describe('When merge', () => {
+      it('Then it refuses with the path in untracked and localChanges empty', async () => {
+        // Arrange — file.txt conflicts (both sides change), theirs also adds
+        // m.txt; an untracked m.txt squats it. file.txt is NOT drifted, so only
+        // the untracked branch fires.
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'a\nb\nc\n');
+        await add(ctx, ['file.txt']);
+        await commit(ctx, { message: 'base', author });
+        await branchCreate(ctx, { name: 'theirs' });
+        await checkout(ctx, { rev: 'theirs' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'a\nY\nc\n');
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/m.txt`, 'theirs-m\n');
+        await add(ctx, ['file.txt', 'm.txt']);
+        await commit(ctx, { message: 'theirs-edit-and-add', author });
+        await checkout(ctx, { rev: 'main' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'a\nX\nc\n');
+        await add(ctx, ['file.txt']);
+        await commit(ctx, { message: 'ours-edit', author });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/m.txt`, 'untracked\n');
+
+        // Act
+        let error: unknown;
+        try {
+          await mergeRun(ctx, { rev: 'theirs', author });
+        } catch (caught) {
+          error = caught;
+        }
+
+        // Assert — untracked carries m.txt; localChanges is empty.
+        const data = (error as TsgitError).data;
+        expect(data.code).toBe('WORKING_TREE_DIRTY');
+        if (data.code === 'WORKING_TREE_DIRTY') {
+          expect(data.untracked).toEqual(['m.txt']);
+          expect(data.localChanges).toEqual([]);
+        }
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/m.txt`)).toBe('untracked\n');
+      });
+    });
+  });
+
+  describe('Given a dirty file the conflicting merge does not touch', () => {
+    describe('When merge', () => {
+      it('Then it does not refuse, the conflict materialises and MERGE_HEAD is written', async () => {
+        // Arrange — file.txt conflicts; untouched.txt exists on both sides
+        // unchanged and is drifted dirty. The guard must NOT fire on it (M3).
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'a\nb\nc\n');
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/untouched.txt`, 'keep\n');
+        await add(ctx, ['file.txt', 'untouched.txt']);
+        await commit(ctx, { message: 'base', author });
+        await branchCreate(ctx, { name: 'theirs' });
+        await checkout(ctx, { rev: 'theirs' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'a\nY\nc\n');
+        await add(ctx, ['file.txt']);
+        await commit(ctx, { message: 'theirs-edit', author });
+        await checkout(ctx, { rev: 'main' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'a\nX\nc\n');
+        await add(ctx, ['file.txt']);
+        await commit(ctx, { message: 'ours-edit', author });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/untouched.txt`, 'DRIFTED\n');
+
+        // Act
+        const sut = await mergeRun(ctx, { rev: 'theirs', author });
+
+        // Assert — the guard does not over-fire: the conflict materialises and
+        // MERGE_HEAD is written (the untouched path is outside changedPaths).
+        expect(sut.kind).toBe('conflict');
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/MERGE_HEAD`)).toBe(true);
+      });
+    });
+  });
+
   describe('Given a non-overlapping content change to the same file on each side', () => {
     describe('When merge', () => {
       it('Then merged content combines both edits', async () => {
@@ -2975,8 +3176,9 @@ describe('merge — add-add content merge (slice 4, end-to-end)', () => {
           reflogMessage: 'branch: Created',
         });
         await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
-        // Place the ours symlink on disk
+        // Place the ours symlink on disk and stage it (a real checkout tracks it).
         await ctx.fs.symlink('target-ours', `${ctx.layout.workDir}/link`);
+        await add(ctx, ['link']);
 
         // Build theirs commit: symlink 'link' → 'target-theirs'
         const theirsBlobId = await writeObject(ctx, {
@@ -3121,8 +3323,9 @@ describe('merge — distinct-types conflict (slice 4, end-to-end)', () => {
           reflogMessage: 'branch: Created',
         });
         await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
-        // Place ours symlink on disk
+        // Place ours symlink on disk and stage it (a real checkout tracks it).
         await ctx.fs.symlink('some-target', `${ctx.layout.workDir}/f.txt`);
+        await add(ctx, ['f.txt']);
 
         await buildUnrelatedCommit(ctx, 'theirs', [
           { name: 'f.txt', content: 'theirs-regular-content\n', mode: FILE_MODE.REGULAR },
