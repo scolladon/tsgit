@@ -791,7 +791,13 @@
     "centralising",
     "neutralise",
     "defaultbranch",
-    "conflictstyle"
+    "conflictstyle",
+    "mydriver",
+    "mycmd",
+    "mysub",
+    "urlless",
+    "subupd",
+    "fixturepath"
   ],
   "ignorePaths": [
     "node_modules",
