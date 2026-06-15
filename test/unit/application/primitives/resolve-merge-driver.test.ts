@@ -299,10 +299,10 @@ describe('resolvePathMergeSpec — valueless merge driver config', () => {
         await seed(ctx, '* merge=mydriver\n');
 
         // Act
-        const sut = await choose(ctx, 'a.txt');
+        const result = await choose(ctx, 'a.txt');
 
         // Assert
-        expect(sut).toEqual({ kind: 'text' });
+        expect(result).toEqual({ kind: 'text' });
       });
     });
   });
@@ -319,10 +319,10 @@ describe('resolvePathMergeSpec — valueless merge driver config', () => {
         );
 
         // Act
-        const sut = await choose(ctx, 'a.txt');
+        const result = await choose(ctx, 'a.txt');
 
         // Assert
-        expect(sut).toEqual({ kind: 'external', command: 'mycmd', name: 'My Driver' });
+        expect(result).toEqual({ kind: 'external', command: 'mycmd', name: 'My Driver' });
       });
     });
   });
@@ -336,10 +336,10 @@ describe('resolvePathMergeSpec — valueless merge driver config', () => {
         await seed(ctx, '* merge=text\n', '[merge "text"]\n\tdriver\n');
 
         // Act
-        const sut = await choose(ctx, 'a.txt');
+        const result = await choose(ctx, 'a.txt');
 
         // Assert
-        expect(sut).toEqual({ kind: 'text' });
+        expect(result).toEqual({ kind: 'text' });
       });
     });
   });

@@ -935,6 +935,14 @@ const VALUELESS_MERGE_BOTH_NAME_FIRST_FIXTURE =
 /** No [merge "mydriver"] section — the absent case (built-in text driver). */
 const ABSENT_MERGE_DRIVER_FIXTURE = '[core]\n\trepositoryformatversion = 0\n';
 
+/**
+ * Valued driver, valueless `name` at line 5 — git reads `name` independently of
+ * `driver`, so it dies on `merge.mydriver.name` even with a valued driver.
+ */
+const VALUELESS_MERGE_NAME_VALUED_DRIVER_FIXTURE =
+  '[core]\n\trepositoryformatversion = 0\n[merge "mydriver"]\n\tdriver = cat %A\n\tname\n';
+const VALUELESS_MERGE_NAME_LINE = 5;
+
 describe.skipIf(!GIT_AVAILABLE)('missing-value-refusal interop — merge driver', () => {
   let peer: string;
   let ours: string;
@@ -987,6 +995,44 @@ describe.skipIf(!GIT_AVAILABLE)('missing-value-refusal interop — merge driver'
       runGit(['-C', peer, 'checkout', '-q', '-f', 'main']);
       runGit(['-C', ours, 'checkout', '-q', '-f', 'main']);
     }
+  });
+
+  describe('Given a valued driver but a valueless merge.mydriver.name at line 5', () => {
+    it('Then git dies on merge.mydriver.name (name read independently of driver)', async () => {
+      // Arrange
+      await writeBothConfig(VALUELESS_MERGE_NAME_VALUED_DRIVER_FIXTURE);
+
+      // Act
+      const g = tryRunGit(['-C', peer, 'merge', '--no-ff', '-m', 'm', 'theirs'], {
+        env: MERGE_AUTHOR_ENV,
+      });
+
+      // Assert
+      expect(g.ok).toBe(false);
+      expect(g.stderr).toContain("missing value for 'merge.mydriver.name'");
+      expect(g.stderr).toContain(`at line ${VALUELESS_MERGE_NAME_LINE}`);
+    });
+
+    it('Then tsgit throws CONFIG_MISSING_VALUE with key merge.mydriver.name and line 5', async () => {
+      // Arrange
+      await writeBothConfig(VALUELESS_MERGE_NAME_VALUED_DRIVER_FIXTURE);
+      const repo = await openRepository({ cwd: ours });
+
+      // Act
+      let caught: unknown;
+      try {
+        await repo.merge.run({ rev: 'theirs', message: 'm' });
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert — each field individually (mutation-resistant)
+      expect(caught).toBeInstanceOf(TsgitError);
+      const data = (caught as TsgitError).data as { code: string; key: string; line: number };
+      expect(data.code).toBe('CONFIG_MISSING_VALUE');
+      expect(data.key).toBe('merge.mydriver.name');
+      expect(data.line).toBe(VALUELESS_MERGE_NAME_LINE);
+    });
   });
 
   describe('Given a config with a valueless merge.mydriver.driver at line 4', () => {
