@@ -12,7 +12,6 @@ import {
   MAX_MERGE_TREE_DEPTH,
   materialiseConflictBytes,
   mergeRun,
-  parentDir,
   removeWorkingTreeFile,
   resolveMergeAuthor,
   resolveMergeCommitter,
@@ -1854,44 +1853,6 @@ describe('resolveMergeAuthor / resolveMergeCommitter (direct)', () => {
 
         // Assert
         expect(sut).toEqual(author);
-      });
-    });
-  });
-});
-
-describe('parentDir (direct)', () => {
-  describe('Given a nested path', () => {
-    describe('When parentDir is called', () => {
-      it('Then returns the directory above the leaf', () => {
-        // Arrange
-        const sut = parentDir('/work/sub/file.txt');
-
-        // Assert
-        expect(sut).toBe('/work/sub');
-      });
-    });
-  });
-
-  describe('Given a path whose only slash is at index 0', () => {
-    describe('When parentDir is called', () => {
-      it('Then returns undefined (lastSlash <= 0)', () => {
-        // Arrange
-        const sut = parentDir('/abc');
-
-        // Assert
-        expect(sut).toBeUndefined();
-      });
-    });
-  });
-
-  describe('Given a path with no slash', () => {
-    describe('When parentDir is called', () => {
-      it('Then returns undefined (lastSlash === -1)', () => {
-        // Arrange
-        const sut = parentDir('abc');
-
-        // Assert
-        expect(sut).toBeUndefined();
       });
     });
   });

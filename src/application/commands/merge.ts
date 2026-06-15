@@ -37,6 +37,7 @@ import { writeDistinctTypesSides } from '../primitives/internal/write-distinct-t
 import {
   rmIfExists,
   writeWorkingTreeEntry,
+  writeWorkingTreeFile,
 } from '../primitives/internal/write-working-tree-file.js';
 import { materializeTree } from '../primitives/materialize-tree.js';
 import { mergeBase } from '../primitives/merge-base.js';
@@ -664,35 +665,10 @@ export const materialiseConflictBytes = async (
   return undefined;
 };
 
-const writeWorkingTreeFile = async (
-  ctx: Context,
-  path: FilePath,
-  content: Uint8Array,
-): Promise<void> => {
-  const fullPath = `${ctx.layout.workDir}/${path}`;
-  const parent = parentDir(fullPath);
-  // Stryker disable next-line BlockStatement: equivalent — the FileSystem port contract requires `write` to create parent directories ("creating parent directories as needed"), so this explicit mkdir is redundant defensive belt-and-braces.
-  if (parent !== undefined) {
-    await ctx.fs.mkdir(parent);
-  }
-  // Remove any existing symlink (including dangling) before writing a regular
-  // file — NodeFileSystem.write uses 'creation' mode and would throw
-  // PERMISSION_DENIED if a symlink already occupies the path.
-  await rmIfExists(ctx, fullPath);
-  await ctx.fs.write(fullPath, content);
-};
-
 /** Remove a working-tree file if it exists. Exported for direct unit testing. */
 export const removeWorkingTreeFile = async (ctx: Context, path: FilePath): Promise<void> => {
   const fullPath = `${ctx.layout.workDir}/${path}`;
   await rmIfExists(ctx, fullPath);
-};
-
-/** Compute the parent directory of a path. Exported for direct unit testing. */
-export const parentDir = (fullPath: string): string | undefined => {
-  const lastSlash = fullPath.lastIndexOf('/');
-  if (lastSlash <= 0) return undefined;
-  return fullPath.slice(0, lastSlash);
 };
 
 const zeroStat = (mode: FileMode): StatData => ({
